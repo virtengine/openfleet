@@ -578,6 +578,14 @@ export function VoiceOverlay({
     if (!visible || started) return;
     setStarted(true);
     autoFallbackTriedRef.current = false;
+    let legacyFallbackStarted = false;
+
+    const startLegacyFallbackOnce = () => {
+      if (legacyFallbackStarted) return;
+      legacyFallbackStarted = true;
+      setUsingSdk(false);
+      startVoiceSession({ sessionId, executor, mode, model });
+    };
 
     if (tier === 1) {
       // Try SDK-first for tier 1
@@ -587,20 +595,17 @@ export function VoiceOverlay({
             setUsingSdk(true);
           } else {
             // SDK not available — fallback to legacy WebRTC
-            setUsingSdk(false);
-            startVoiceSession({ sessionId, executor, mode, model });
+            startLegacyFallbackOnce();
           }
         })
         .catch(() => {
           // SDK threw unexpectedly — fallback to legacy
-          setUsingSdk(false);
-          startVoiceSession({ sessionId, executor, mode, model });
+          startLegacyFallbackOnce();
         });
 
       // Listen for SDK runtime failures to auto-fallback
       const cleanup = onSdkVoiceEvent("sdk-unavailable", () => {
-        setUsingSdk(false);
-        startVoiceSession({ sessionId, executor, mode, model });
+        startLegacyFallbackOnce();
       });
       sdkFallbackCleanupRef.current = cleanup;
     } else if (sessionId) {

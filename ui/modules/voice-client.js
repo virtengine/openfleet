@@ -39,6 +39,8 @@ let _reconnectTimer = null;    // 28-min reconnect timer
 let _durationTimer = null;     // Duration counter
 let _sessionStartTime = 0;
 let _eventHandlers = new Map();
+let _explicitStop = false;     // user-initiated stop; suppresses reconnect/error noise
+let _reconnectInFlight = false;
 let _callContext = {
   sessionId: null,
   executor: null,
@@ -305,6 +307,7 @@ export async function startVoiceSession(options = {}) {
   }
 
   _callContext = _normalizeCallContext(options);
+  _explicitStop = false;
   voiceBoundSessionId.value = _callContext.sessionId;
   voiceState.value = "connecting";
   voiceError.value = null;
@@ -395,15 +398,28 @@ export async function startVoiceSession(options = {}) {
       });
     };
     _dc.onclose = () => {
-      if (voiceState.value !== "reconnecting") {
+      if (_explicitStop) return;
+      if (voiceState.value === "reconnecting" || _reconnectInFlight) return;
+      safeReconnect("data channel closed").catch(() => {
         handleDisconnect("data channel closed");
-      }
+      });
     };
     _dc.onmessage = (event) => {
       try {
         handleServerEvent(JSON.parse(event.data));
       } catch (err) {
         console.error("[voice-client] Failed to parse server event:", err);
+      }
+    };
+
+    _pc.onconnectionstatechange = () => {
+      const state = String(_pc?.connectionState || "").toLowerCase();
+      if (_explicitStop) return;
+      if (state === "failed" || state === "disconnected") {
+        if (voiceState.value === "reconnecting" || _reconnectInFlight) return;
+        safeReconnect(`peer connection ${state}`).catch(() => {
+          handleDisconnect(`peer connection ${state}`);
+        });
       }
     };
 
@@ -453,6 +469,7 @@ export async function startVoiceSession(options = {}) {
  * Stop the current voice session.
  */
 export function stopVoiceSession() {
+  _explicitStop = true;
   emit("session-ending", { sessionId: voiceSessionId.value });
   cleanup();
   voiceState.value = "idle";
@@ -692,7 +709,11 @@ function startReconnectTimer() {
 }
 
 async function reconnect() {
+  if (_explicitStop) return;
+  if (_reconnectInFlight) return;
+  _reconnectInFlight = true;
   if (_reconnectAttempts >= MAX_RECONNECT_ATTEMPTS) {
+    _reconnectInFlight = false;
     handleDisconnect("max reconnect attempts reached");
     return;
   }
@@ -709,13 +730,29 @@ async function reconnect() {
 
   try {
     await startVoiceSession(_callContext);
+    _reconnectInFlight = false;
   } catch (err) {
     console.error("[voice-client] Reconnect failed:", err);
     if (_reconnectAttempts < MAX_RECONNECT_ATTEMPTS) {
+      _reconnectInFlight = false;
       setTimeout(() => { reconnect().catch(e => console.error("[voice-client] Reconnect error:", e)); }, 2000 * _reconnectAttempts);
     } else {
+      _reconnectInFlight = false;
       handleDisconnect("reconnect failed");
     }
+  }
+}
+
+async function safeReconnect(reason = "connection lost") {
+  if (_explicitStop) return;
+  try {
+    await reconnect();
+  } catch (err) {
+    console.error("[voice-client] safeReconnect failed:", err);
+    throw err;
+  }
+  if (voiceState.value === "idle" || voiceState.value === "error") {
+    throw new Error(reason);
   }
 }
 
@@ -760,6 +797,7 @@ function cleanupConnection() {
 }
 
 function cleanup() {
+  _reconnectInFlight = false;
   cleanupConnection();
 
   clearInterval(_durationTimer);

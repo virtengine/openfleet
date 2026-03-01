@@ -188,6 +188,7 @@ const OPENAI_DEFAULT_SCOPES = [
   "profile",
   "email",
   "offline_access",
+  "api.model.read",
 ].join(" ");
 
 function normalizeScopeList(scopes) {
@@ -199,6 +200,15 @@ function normalizeScopeList(scopes) {
         .filter(Boolean),
     ),
   ).join(" ");
+}
+
+function envOrDefault(name, fallback = "") {
+  const raw = process.env[name];
+  const value = String(raw ?? "").trim();
+  if (!value) return fallback;
+  const normalized = value.toLowerCase();
+  if (normalized === "undefined" || normalized === "null") return fallback;
+  return value;
 }
 
 const GEMINI_DEFAULT_SCOPES = [
@@ -227,29 +237,32 @@ const OAUTH_PROVIDERS = {
   },
   claude: {
     // Claude Code official OAuth client + scopes (Anthropic CLI parity).
-    clientId: process.env.BOSUN_CLAUDE_OAUTH_CLIENT_ID?.trim()
+    clientId: envOrDefault("BOSUN_CLAUDE_OAUTH_CLIENT_ID")
       || "9d1c250a-e61b-44d9-88ed-5944d1962f5e",
-    authorizeUrl: process.env.BOSUN_CLAUDE_OAUTH_AUTHORIZE_URL?.trim()
+    authorizeUrl: envOrDefault("BOSUN_CLAUDE_OAUTH_AUTHORIZE_URL")
       || "https://platform.claude.com/oauth/authorize",
-    tokenUrl: process.env.BOSUN_CLAUDE_OAUTH_TOKEN_URL?.trim()
+    tokenUrl: envOrDefault("BOSUN_CLAUDE_OAUTH_TOKEN_URL")
       || "https://platform.claude.com/v1/oauth/token",
     redirectUri: "http://localhost:10001/auth/callback",
     port: 10001,
     // Claude requires explicit scopes. Keep env override for emergency rotation.
-    scopes: process.env.BOSUN_CLAUDE_OAUTH_SCOPES?.trim() || CLAUDE_DEFAULT_SCOPES,
+    scopes: envOrDefault("BOSUN_CLAUDE_OAUTH_SCOPES") || CLAUDE_DEFAULT_SCOPES,
     extraParams: {},
     accentColor: "#d97706",
   },
   gemini: {
     // Gemini CLI OAuth client (google-gemini/gemini-cli-core parity).
-    clientId: process.env.BOSUN_GEMINI_OAUTH_CLIENT_ID?.trim(),
-    clientSecret: process.env.BOSUN_GEMINI_OAUTH_CLIENT_SECRET?.trim(),
+    // Set BOSUN_GEMINI_OAUTH_CLIENT_ID / BOSUN_GEMINI_OAUTH_CLIENT_SECRET in
+    // your .env, or use the well-known public credentials from the gemini-cli
+    // open-source repo (see .env.example for guidance).
+    clientId: envOrDefault("BOSUN_GEMINI_OAUTH_CLIENT_ID"),
+    clientSecret: envOrDefault("BOSUN_GEMINI_OAUTH_CLIENT_SECRET"),
     authorizeUrl: "https://accounts.google.com/o/oauth2/v2/auth",
     tokenUrl: "https://oauth2.googleapis.com/token",
     // Google recommends loopback IP literals for local OAuth callbacks.
     redirectUri: "http://127.0.0.1:10002/auth/callback",
     port: 10002,
-    scopes: process.env.BOSUN_GEMINI_OAUTH_SCOPES?.trim() || GEMINI_DEFAULT_SCOPES,
+    scopes: envOrDefault("BOSUN_GEMINI_OAUTH_SCOPES") || GEMINI_DEFAULT_SCOPES,
     extraParams: {
       // Offline access (refresh token) + force consent screen to re-issue refresh_token
       access_type: "offline",

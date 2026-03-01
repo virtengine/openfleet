@@ -181,8 +181,6 @@ const ENV_KEYS = [
   "__MOCK_CODEX_AVAILABLE",
   "__MOCK_COPILOT_AVAILABLE",
   "__MOCK_CLAUDE_AVAILABLE",
-  "DEVMODE_MONITOR_MONITOR_TIMEOUT_MIN_MS",
-  "DEVMODE_MONITOR_MONITOR_TIMEOUT_MAX_MS",
   "COPILOT_MODEL",
   "COPILOT_SDK_MODEL",
   "GITHUB_TOKEN",
@@ -227,8 +225,6 @@ function clearSdkEnv() {
   delete process.env.__MOCK_CODEX_AVAILABLE;
   delete process.env.__MOCK_COPILOT_AVAILABLE;
   delete process.env.__MOCK_CLAUDE_AVAILABLE;
-  delete process.env.DEVMODE_MONITOR_MONITOR_TIMEOUT_MIN_MS;
-  delete process.env.DEVMODE_MONITOR_MONITOR_TIMEOUT_MAX_MS;
   delete process.env.COPILOT_MODEL;
   delete process.env.COPILOT_SDK_MODEL;
   delete process.env.GITHUB_TOKEN;

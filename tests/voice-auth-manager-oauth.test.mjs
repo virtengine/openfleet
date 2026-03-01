@@ -128,6 +128,7 @@ describe("voice-auth-manager OAuth", () => {
     expect(params.get("scope")).toContain("offline_access");
     expect(params.get("scope")).toContain("profile");
     expect(params.get("scope")).toContain("email");
+    expect(params.get("scope")).toContain("api.model.read");
   });
 
   it("allows OpenAI OAuth full scope override via BOSUN_OPENAI_OAUTH_SCOPES", async () => {
@@ -146,6 +147,31 @@ describe("voice-auth-manager OAuth", () => {
     } finally {
       if (prevOverride == null) delete process.env.BOSUN_OPENAI_OAUTH_SCOPES;
       else process.env.BOSUN_OPENAI_OAUTH_SCOPES = prevOverride;
+      vi.resetModules();
+      mod = await import("../voice-auth-manager.mjs");
+    }
+  });
+
+  it("treats BOSUN_*_OAUTH_CLIENT_ID=undefined as unset (gemini throws, claude uses its default)", async () => {
+    const prevGemini = process.env.BOSUN_GEMINI_OAUTH_CLIENT_ID;
+    const prevClaude = process.env.BOSUN_CLAUDE_OAUTH_CLIENT_ID;
+    try {
+      process.env.BOSUN_GEMINI_OAUTH_CLIENT_ID = "undefined";
+      process.env.BOSUN_CLAUDE_OAUTH_CLIENT_ID = "undefined";
+      vi.resetModules();
+      const reloaded = await import("../voice-auth-manager.mjs");
+
+      // Gemini has no hardcoded fallback — must set BOSUN_GEMINI_OAUTH_CLIENT_ID
+      expect(() => reloaded.startGeminiLogin()).toThrow(/client_id is missing/);
+      const claude = new URL(reloaded.startClaudeLogin().authUrl);
+      expect(claude.searchParams.get("client_id")).toBe("9d1c250a-e61b-44d9-88ed-5944d1962f5e");
+      reloaded.cancelClaudeLogin?.();
+      reloaded.cancelClaudeLogin?.();
+    } finally {
+      if (prevGemini === undefined) delete process.env.BOSUN_GEMINI_OAUTH_CLIENT_ID;
+      else process.env.BOSUN_GEMINI_OAUTH_CLIENT_ID = prevGemini;
+      if (prevClaude === undefined) delete process.env.BOSUN_CLAUDE_OAUTH_CLIENT_ID;
+      else process.env.BOSUN_CLAUDE_OAUTH_CLIENT_ID = prevClaude;
       vi.resetModules();
       mod = await import("../voice-auth-manager.mjs");
     }

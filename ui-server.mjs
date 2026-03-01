@@ -732,7 +732,6 @@ async function handleVendor(req, res, url) {
 }
 const statusPath = resolve(repoRoot, ".cache", "ve-orchestrator-status.json");
 const logsDir = resolve(__dirname, "logs");
-const monitorMonitorLogsDir = resolve(repoRoot, ".cache", "monitor-monitor-logs");
 const agentLogsDirCandidates = [
   resolve(__dirname, "logs", "agents"),
   resolve(repoRoot, ".cache", "agent-logs"),
@@ -4325,16 +4324,17 @@ function checkSessionToken(req) {
 /**
  * Check whether the request carries a valid desktop API key.
  *
- * The Electron main process sets BOSUN_DESKTOP_API_KEY in process.env before
- * starting (or connecting to) the UI server. When that env var is present any
- * request bearing the matching Bearer token is treated as fully authenticated —
- * no session cookie or Telegram initData required.
+ * Primary source is BOSUN_DESKTOP_API_KEY from process.env. If that is missing
+ * (for example when connecting to an already-running daemon), we also load
+ * {configDir}/desktop-api-key.json so long-lived desktop auth still works.
+ * Any request bearing the matching Bearer token is treated as fully
+ * authenticated — no session cookie or Telegram initData required.
  *
  * This allows the desktop app to connect to a separately-running daemon server
  * without needing to share the TTL-based session token.
  */
 function checkDesktopApiKey(req) {
-  const expected = (process.env.BOSUN_DESKTOP_API_KEY || "").trim();
+  const expected = getExpectedDesktopApiKey();
   if (!expected) return false;
   const authHeader = req.headers.authorization || "";
   if (!authHeader.startsWith("Bearer ")) return false;
@@ -4373,6 +4373,54 @@ function getHeaderString(value) {
   return String(value || "");
 }
 
+const DESKTOP_API_KEY_FILE = "desktop-api-key.json";
+const DESKTOP_API_KEY_CACHE_TTL_MS = 5_000;
+let _desktopApiKeyCache = {
+  key: "",
+  configDir: "",
+  loadedAt: 0,
+};
+
+function readDesktopApiKeyFromConfig(configDir) {
+  const dir = String(configDir || "").trim();
+  if (!dir) return "";
+  const filePath = resolve(dir, DESKTOP_API_KEY_FILE);
+  if (!existsSync(filePath)) return "";
+  try {
+    const payload = JSON.parse(readFileSync(filePath, "utf8"));
+    const key = String(payload?.key || "").trim();
+    if (!key.startsWith("bosun_desktop_")) return "";
+    return key;
+  } catch {
+    return "";
+  }
+}
+
+function getExpectedDesktopApiKey() {
+  const fromEnv = String(process.env.BOSUN_DESKTOP_API_KEY || "").trim();
+  if (fromEnv) return fromEnv;
+
+  const configDir = resolveUiConfigDir();
+  if (!configDir) return "";
+
+  const now = Date.now();
+  if (
+    _desktopApiKeyCache.key
+    && _desktopApiKeyCache.configDir === configDir
+    && (now - _desktopApiKeyCache.loadedAt) < DESKTOP_API_KEY_CACHE_TTL_MS
+  ) {
+    return _desktopApiKeyCache.key;
+  }
+
+  const keyFromFile = readDesktopApiKeyFromConfig(configDir);
+  _desktopApiKeyCache = {
+    key: keyFromFile,
+    configDir,
+    loadedAt: now,
+  };
+  return keyFromFile;
+}
+
 async function requireAuth(req) {
   if (isAllowUnsafe()) return { ok: true, source: "unsafe", issueSessionCookie: false };
   // Desktop Electron API key — non-expiring, set via BOSUN_DESKTOP_API_KEY env
@@ -4401,7 +4449,7 @@ async function requireAuth(req) {
 function requireWsAuth(req, url) {
   if (isAllowUnsafe()) return true;
   // Desktop Electron API key (query param: desktopKey=...)
-  const desktopKey = (process.env.BOSUN_DESKTOP_API_KEY || "").trim();
+  const desktopKey = getExpectedDesktopApiKey();
   if (desktopKey) {
     const qDesktopKey = url.searchParams.get("desktopKey") || "";
     if (qDesktopKey) {
@@ -4524,14 +4572,7 @@ async function resolvePreferredSystemLogPath() {
   );
   const nonDaemonEntries = rootLogEntries.filter((entry) => entry.name !== "daemon.log");
 
-  const monitorPromptEntries = await listDirFilesWithMtime(
-    monitorMonitorLogsDir,
-    (name) =>
-      name.startsWith("monitor-monitor-") &&
-      (name.endsWith(".prompt.md") || name.endsWith(".md")),
-  );
-
-  const preferredEntries = [...nonDaemonEntries, ...monitorPromptEntries].sort(
+  const preferredEntries = [...nonDaemonEntries].sort(
     (a, b) => b.mtimeMs - a.mtimeMs,
   );
   if (preferredEntries.length > 0) return preferredEntries[0].path;
@@ -10311,7 +10352,7 @@ export async function startTelegramUiServer(options = {}) {
     // without depending on the TTL-based session token.
     const qDesktopKey = url.searchParams.get("desktopKey");
     if (qDesktopKey) {
-      const expectedDesktopKey = (process.env.BOSUN_DESKTOP_API_KEY || "").trim();
+      const expectedDesktopKey = getExpectedDesktopApiKey();
       if (expectedDesktopKey) {
         try {
           const a = Buffer.from(qDesktopKey);

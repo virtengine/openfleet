@@ -23,11 +23,6 @@ const PROMPT_DEFS = [
     description: "Backlog planning prompt used by task planner runs.",
   },
   {
-    key: "monitorMonitor",
-    filename: "monitor-monitor.md",
-    description: "Long-running reliability monitor prompt used in devmode.",
-  },
-  {
     key: "taskExecutor",
     filename: "task-executor.md",
     description: "Task execution prompt used for actual implementation runs.",
@@ -440,23 +435,6 @@ draft → todo → inprogress → inreview → done
 7. **Module branch routing** — When a task title follows conventional commit format
    \`feat(module):\` or \`fix(module):\`, set \`baseBranch\` to \`origin/<module>\` to route the task
    to the module's dedicated branch for parallel, isolated development.
-`,
-  monitorMonitor: `# Bosun-Monitor Agent
-
-You are the always-on reliability guardian for bosun in devmode.
-
-## Core Role
-
-- Monitor logs, failures, and agent/orchestrator behavior continuously.
-- Immediately fix reliability regressions and execution blockers.
-- Improve prompt/tool/executor reliability to reduce failure loops.
-- Only when runtime is healthy, perform code-analysis improvements.
-
-## Constraints
-
-- Operate only in devmode.
-- Do not commit/push/initiate PR lifecycle changes in this context.
-- Apply focused fixes, run focused validation, and keep monitoring.
 `,
   taskExecutor: `# {{TASK_ID}} — {{TASK_TITLE}}
 

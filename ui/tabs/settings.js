@@ -2140,7 +2140,14 @@ function VoiceEndpointsEditor() {
       try {
         const res = await apiFetch(`/api/voice/auth/${provider}/status`);
         if (res.ok) {
-          setOauthStatus((prev) => ({ ...prev, [provider]: { status: res.status || "idle", hasToken: !!res.hasToken } }));
+          const connected = !!res.hasToken || res.status === "connected" || res.status === "complete";
+          setOauthStatus((prev) => ({
+            ...prev,
+            [provider]: {
+              status: connected ? "connected" : (res.status || "idle"),
+              hasToken: connected,
+            },
+          }));
         }
       } catch { /* best-effort */ }
     }
@@ -2331,10 +2338,10 @@ function VoiceEndpointsEditor() {
                   <option value="apiKey">API Key</option>
                   <option value="oauth">OAuth (Connected Account)</option>
                 </select>
-                ${ep.authSource === "oauth" && oauthStatus[ep.provider]?.status === "connected" && html`
+                ${ep.authSource === "oauth" && (oauthStatus[ep.provider]?.status === "connected" || oauthStatus[ep.provider]?.status === "complete" || oauthStatus[ep.provider]?.hasToken) && html`
                   <div class="meta-text" style="margin-top:3px;color:var(--color-success,#22c55e)">✓ Connected — will use your ${ep.provider === "openai" ? "OpenAI" : ep.provider === "claude" ? "Claude" : "Gemini"} account.</div>
                 `}
-                ${ep.authSource === "oauth" && oauthStatus[ep.provider]?.status !== "connected" && html`
+                ${ep.authSource === "oauth" && !(oauthStatus[ep.provider]?.status === "connected" || oauthStatus[ep.provider]?.status === "complete" || oauthStatus[ep.provider]?.hasToken) && html`
                   <div class="meta-text" style="margin-top:3px;color:var(--color-warning,#f59e0b)">⚠ Not connected. Sign in via Connected Accounts above to use OAuth.</div>
                 `}
               </div>

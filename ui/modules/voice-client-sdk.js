@@ -46,6 +46,7 @@ let _callContext = {
 };
 let _sdkConfig = null;
 let _usingLegacyFallback = false;
+let _sdkModuleUnavailableLogged = false;
 
 // ── Event System ────────────────────────────────────────────────────────────
 
@@ -133,7 +134,19 @@ async function _recordTranscript(role, content, eventType = "") {
 async function startAgentsSdkSession(config, options = {}) {
   const resolvedConfig = config && typeof config === "object" ? config : {};
   // Dynamically import @openai/agents/realtime (browser bundle)
-  const agentsMod = await import("@openai/agents/realtime");
+  let agentsMod;
+  try {
+    agentsMod = await import("@openai/agents/realtime");
+  } catch (err) {
+    const message = String(err?.message || err || "");
+    if (
+      /Failed to resolve module specifier '@openai\/agents\/realtime'/i.test(message) ||
+      /Cannot find module '@openai\/agents\/realtime'/i.test(message)
+    ) {
+      throw new Error("SDK module unavailable in browser; falling back to legacy voice");
+    }
+    throw err;
+  }
   const { RealtimeAgent, RealtimeSession } = agentsMod;
 
   if (!RealtimeAgent || !RealtimeSession) {
@@ -607,17 +620,35 @@ export async function startSdkVoiceSession(options = {}) {
 
     return { sdk: false, provider: _sdkConfig.provider, reason: _sdkConfig.fallbackReason };
   } catch (err) {
-    console.error("[voice-client-sdk] SDK session failed, signaling fallback:", err);
+    const reason = String(err?.message || "");
+    const expectedModuleMissing =
+      /SDK module unavailable in browser/i.test(reason) ||
+      /Failed to resolve module specifier '@openai\/agents\/realtime'/i.test(reason) ||
+      /Cannot find module '@openai\/agents\/realtime'/i.test(reason);
+    if (expectedModuleMissing) {
+      if (!_sdkModuleUnavailableLogged) {
+        console.warn(
+          "[voice-client-sdk] Realtime SDK bundle unavailable; using legacy voice transport.",
+        );
+        _sdkModuleUnavailableLogged = true;
+      }
+    } else {
+      console.error("[voice-client-sdk] SDK session failed, signaling fallback:", err);
+    }
     _usingLegacyFallback = true;
     sdkVoiceSdkActive.value = false;
     sdkVoiceState.value = "idle";
     sdkVoiceError.value = null; // Don't show error — we'll fallback
     emit("sdk-unavailable", {
-      reason: err.message,
+      reason: reason || "SDK unavailable",
       provider: _sdkConfig?.provider || "unknown",
     });
 
-    return { sdk: false, provider: _sdkConfig?.provider || "unknown", reason: err.message };
+    return {
+      sdk: false,
+      provider: _sdkConfig?.provider || "unknown",
+      reason: reason || "SDK unavailable",
+    };
   }
 }
 
