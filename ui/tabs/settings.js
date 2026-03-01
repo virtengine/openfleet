@@ -201,9 +201,9 @@ const SETTINGS_STYLES = `
   flex-wrap: wrap;
   margin-left: auto;
 }
-@media (min-width: 1200px) {
+@media (min-width: 1400px) {
   .settings-save-bar {
-    bottom: 16px;
+    bottom: 20px;
   }
 }
 /* Individual setting row */
@@ -441,7 +441,7 @@ const SETTINGS_STYLES = `
   margin-right: auto;
   width: 100%;
   box-sizing: border-box;
-  padding-bottom: 80px;
+  padding-bottom: calc(var(--nav-height, 56px) + var(--safe-bottom, 0px) + 48px);
   overflow-x: clip;
 }
 
@@ -459,7 +459,7 @@ const SETTINGS_STYLES = `
 body.settings-save-open .main-content {
   padding-bottom: calc(var(--nav-height) + var(--safe-bottom) + 110px);
 }
-@media (min-width: 1200px) {
+@media (min-width: 1400px) {
   body.settings-save-open .main-content {
     padding-bottom: 140px;
   }
