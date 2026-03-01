@@ -122,6 +122,7 @@ const INTENTIONALLY_SKIPPED = new Set([
   "/api/voice/tool",           // Voice tool execution — server-only (runs real tools)
   "/api/voice/transcript",     // Voice transcript persistence into session history
   "/api/voice/endpoints",      // Voice endpoints config — server-only (reads/writes bosun.config.json)
+  "/api/voice/endpoints/test",  // Voice endpoint connectivity test — server-only (calls provider APIs)
   "/api/vision/frame",         // Live vision frame ingestion + analysis
   "/api/voice/dispatch",       // Voice action dispatch — server-only (executes real tools/workflows)
   "/api/voice/dispatch-batch", // Batched voice action dispatch — server-only

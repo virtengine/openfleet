@@ -188,7 +188,11 @@
                       "verse"
                     ]
                   },
-                  "azureDeployment": { "type": "string" }
+                  "azureDeployment": { "type": "string" },
+                  "endpointId": {
+                    "type": "string",
+                    "description": "ID of the voice endpoint to use for this provider slot"
+                  }
                 },
                 "required": ["provider"]
               }
@@ -304,13 +308,17 @@
             "additionalProperties": false,
             "required": ["provider"],
             "properties": {
+              "id": {
+                "type": "string",
+                "description": "Unique identifier for this endpoint"
+              },
               "name": {
                 "type": "string",
                 "description": "Friendly label for this endpoint"
               },
               "provider": {
                 "type": "string",
-                "enum": ["azure", "openai"],
+                "enum": ["azure", "openai", "claude", "gemini"],
                 "description": "Provider type"
               },
               "endpoint": {
