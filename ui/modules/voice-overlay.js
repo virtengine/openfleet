@@ -886,6 +886,29 @@ export function VoiceOverlay({
     autoVisionAppliedRef.current = false;
   }, [visible]);
 
+  useEffect(() => {
+    if (visible || !started) return;
+    stopVisionShare().catch(() => {});
+    if (typeof sdkFallbackCleanupRef.current === "function") {
+      sdkFallbackCleanupRef.current();
+      sdkFallbackCleanupRef.current = null;
+    }
+    if (typeof legacyFallbackCleanupRef.current === "function") {
+      legacyFallbackCleanupRef.current();
+      legacyFallbackCleanupRef.current = null;
+    }
+    if (usingSdk) {
+      stopSdkVoiceSession();
+    } else if (tier === 1) {
+      stopVoiceSession();
+    } else {
+      stopFallbackSession();
+    }
+    setStarted(false);
+    setUsingSdk(false);
+    autoFallbackTriedRef.current = false;
+  }, [visible, started, usingSdk, tier]);
+
   const loadMeetingMessages = useCallback(async () => {
     const activeSessionId = String(sessionId || "").trim();
     if (!activeSessionId) {

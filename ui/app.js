@@ -2324,12 +2324,29 @@ function App() {
             title=${floatingCallLabel}
             onClick=${async () => {
               try {
-                const result = await globalThis.veDesktop.follow.restore();
-                if (!result?.ok) {
-                  const nextFloatingState = { active: false, call: floatingCallState?.call };
-                  setFloatingCallState(nextFloatingState);
-                  writeFloatingCallState(nextFloatingState);
-                  showToast("No floating call window is active.", "info");
+                if (typeof globalThis?.veDesktop?.follow?.restore === "function") {
+                  const result = await globalThis.veDesktop.follow.restore();
+                  if (!result?.ok) {
+                    const nextFloatingState = { active: false, call: floatingCallState?.call };
+                    setFloatingCallState(nextFloatingState);
+                    writeFloatingCallState(nextFloatingState);
+                    showToast("No floating call window is active.", "info");
+                  }
+                  return;
+                }
+                const popupResult = openBrowserFollowWindow({
+                  call: floatingCallState?.call,
+                  sessionId: floatingCallState?.sessionId,
+                  initialVisionSource: floatingCallState?.initialVisionSource,
+                  executor: floatingCallState?.executor,
+                  mode: floatingCallState?.mode,
+                  model: floatingCallState?.model,
+                });
+                if (!popupResult.ok) {
+                  showToast(
+                    popupResult.reason || "Could not restore floating browser call window.",
+                    "error",
+                  );
                 }
               } catch {
                 showToast("Could not restore floating call window.", "error");
@@ -2346,7 +2363,64 @@ function App() {
     <${VoiceOverlay}
       visible=${voiceOverlayOpen}
       onClose=${() => setVoiceOverlayOpen(false)}
-      onDismiss=${() => {
+      onDismiss=${(detail = {}) => {
+        const reason = String(detail?.reason || "").trim().toLowerCase();
+        if (!followWindowMode && reason === "externalize") {
+          const followDetail = {
+            call: voiceCallType,
+            sessionId: voiceSessionId,
+            initialVisionSource: voiceInitialVisionSource,
+            executor: voiceExecutor,
+            mode: voiceAgentMode,
+            model: voiceModel,
+          };
+          const desktopFollowApi = globalThis?.veDesktop?.follow;
+          if (typeof desktopFollowApi?.open === "function") {
+            desktopFollowApi
+              .open(followDetail)
+              .then((result) => {
+                if (!result?.ok) {
+                  showToast("Could not open floating call window.", "error");
+                  return;
+                }
+                const nextFloatingState = {
+                  active: true,
+                  call: followDetail.call,
+                  sessionId: followDetail.sessionId,
+                  executor: followDetail.executor,
+                  mode: followDetail.mode,
+                  model: followDetail.model,
+                  initialVisionSource: followDetail.initialVisionSource,
+                };
+                setFloatingCallState(nextFloatingState);
+                writeFloatingCallState(nextFloatingState);
+                setVoiceOverlayOpen(false);
+              })
+              .catch(() => showToast("Could not open floating call window.", "error"));
+            return;
+          }
+          const popupResult = openBrowserFollowWindow(followDetail);
+          if (!popupResult.ok) {
+            showToast(
+              popupResult.reason || "Could not open floating browser call window.",
+              "error",
+            );
+            return;
+          }
+          const nextFloatingState = {
+            active: true,
+            call: followDetail.call,
+            sessionId: followDetail.sessionId,
+            executor: followDetail.executor,
+            mode: followDetail.mode,
+            model: followDetail.model,
+            initialVisionSource: followDetail.initialVisionSource,
+          };
+          setFloatingCallState(nextFloatingState);
+          writeFloatingCallState(nextFloatingState);
+          setVoiceOverlayOpen(false);
+          return;
+        }
         if (followWindowMode && globalThis?.veDesktop?.follow?.hide) {
           globalThis.veDesktop.follow.hide().catch(() => {});
           return;
