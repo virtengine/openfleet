@@ -18,7 +18,7 @@ import {
   voiceState, voiceTranscript, voiceResponse, voiceError,
   voiceToolCalls, voiceDuration,
   startVoiceSession, stopVoiceSession, interruptResponse,
-  sendTextMessage,
+  sendTextMessage, onVoiceEvent,
 } from "./voice-client.js";
 import {
   sdkVoiceState, sdkVoiceTranscript, sdkVoiceResponse, sdkVoiceError,
@@ -531,6 +531,8 @@ export function VoiceOverlay({
   const meetingScrollRef = useRef(null);
   const [usingSdk, setUsingSdk] = useState(false);
   const sdkFallbackCleanupRef = useRef(null);
+  const legacyFallbackCleanupRef = useRef(null);
+  const autoFallbackTriedRef = useRef(false);
 
   useEffect(() => { injectOverlayStyles(); }, []);
 
@@ -575,6 +577,7 @@ export function VoiceOverlay({
   useEffect(() => {
     if (!visible || started) return;
     setStarted(true);
+    autoFallbackTriedRef.current = false;
 
     if (tier === 1) {
       // Try SDK-first for tier 1
@@ -604,6 +607,19 @@ export function VoiceOverlay({
       startFallbackSession(sessionId, { executor, mode, model });
     }
   }, [visible, started, tier, sessionId, executor, mode, model]);
+
+  useEffect(() => {
+    if (!visible || !started || tier !== 1 || !sessionId) return;
+    const cleanup = onVoiceEvent("error", () => {
+      if (usingSdk) return;
+      if (autoFallbackTriedRef.current) return;
+      autoFallbackTriedRef.current = true;
+      try { stopVoiceSession(); } catch { /* best effort */ }
+      startFallbackSession(sessionId, { executor, mode, model });
+    });
+    legacyFallbackCleanupRef.current = cleanup;
+    return cleanup;
+  }, [visible, started, tier, sessionId, executor, mode, model, usingSdk]);
 
   useEffect(() => {
     if (visible) return;
@@ -739,6 +755,10 @@ export function VoiceOverlay({
       sdkFallbackCleanupRef.current();
       sdkFallbackCleanupRef.current = null;
     }
+    if (typeof legacyFallbackCleanupRef.current === "function") {
+      legacyFallbackCleanupRef.current();
+      legacyFallbackCleanupRef.current = null;
+    }
     if (usingSdk) {
       stopSdkVoiceSession();
     } else if (tier === 1) {
@@ -746,6 +766,7 @@ export function VoiceOverlay({
     } else {
       stopFallbackSession();
     }
+    autoFallbackTriedRef.current = false;
     setUsingSdk(false);
     setStarted(false);
     onClose();
