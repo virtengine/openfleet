@@ -31,6 +31,7 @@ import {
   executorData,
   configData,
   showToast,
+  pendingChanges,
   setPendingChange,
   clearPendingChange,
 } from "../modules/state.js";
@@ -56,6 +57,40 @@ import {
   validateSetting,
   SENSITIVE_KEYS,
 } from "../modules/settings-schema.js";
+
+const SETTINGS_EXTERNAL_EDITORS = new Map();
+
+function registerSettingsExternalEditor(editorId, editorOps) {
+  const key = String(editorId || "").trim();
+  if (!key || !editorOps || typeof editorOps !== "object") {
+    return () => {};
+  }
+  SETTINGS_EXTERNAL_EDITORS.set(key, editorOps);
+  return () => {
+    const current = SETTINGS_EXTERNAL_EDITORS.get(key);
+    if (current === editorOps) SETTINGS_EXTERNAL_EDITORS.delete(key);
+  };
+}
+
+async function runSettingsExternalEditorAction(action) {
+  const mode = action === "discard" ? "discard" : "save";
+  const errors = [];
+  for (const [key, ops] of SETTINGS_EXTERNAL_EDITORS.entries()) {
+    const isDirty = Boolean(ops?.isDirty?.());
+    if (!isDirty) continue;
+    const fn = mode === "discard" ? ops?.discard : ops?.save;
+    if (typeof fn !== "function") continue;
+    try {
+      await fn();
+    } catch (err) {
+      const message = err?.message || "Action failed";
+      errors.push(`${key}: ${message}`);
+    }
+  }
+  if (errors.length > 0) {
+    throw new Error(errors.join(" | "));
+  }
+}
 
 /* ─── Scoped Styles ─── */
 const SETTINGS_STYLES = `
