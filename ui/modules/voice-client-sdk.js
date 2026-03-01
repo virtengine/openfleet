@@ -992,6 +992,64 @@ export function sendSdkTextMessage(text) {
 }
 
 /**
+ * Stream an image frame into the active Realtime session without forcing
+ * an immediate spoken response. Returns true when sent via realtime transport.
+ */
+export function sendSdkImageFrame(imageDataUrl, options = {}) {
+  const image = String(imageDataUrl || "").trim();
+  if (!image || !_session) return false;
+  const source = String(options?.source || "screen").trim() || "screen";
+  const width = Number(options?.width) || undefined;
+  const height = Number(options?.height) || undefined;
+
+  try {
+    if (typeof _session.addImage === "function") {
+      _session.addImage(image, { triggerResponse: false });
+      return true;
+    }
+    if (typeof _session.sendMessage === "function") {
+      _session.sendMessage(
+        {
+          type: "message",
+          role: "user",
+          content: [
+            {
+              type: "input_image",
+              image,
+              image_url: image,
+              detail: "low",
+              providerData: { source, width, height },
+            },
+          ],
+        },
+        { source: "vision_stream", sourceType: source, width, height },
+      );
+      return true;
+    }
+    if (typeof _session.sendEvent === "function") {
+      _session.sendEvent({
+        type: "conversation.item.create",
+        item: {
+          type: "message",
+          role: "user",
+          content: [
+            {
+              type: "input_image",
+              image_url: image,
+              detail: "low",
+            },
+          ],
+        },
+      });
+      return true;
+    }
+  } catch (err) {
+    console.warn("[voice-client-sdk] failed to send realtime image frame:", err?.message || err);
+  }
+  return false;
+}
+
+/**
  * Check if falling back to legacy voice.
  */
 export function isUsingLegacyFallback() {

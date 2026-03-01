@@ -253,18 +253,21 @@ describe("voice-tools", () => {
       expect(callArgs?.[1]).toMatchObject({ mode: "instant" });
     });
 
-    it("run_command returns acknowledgment for safe command", async () => {
+    it("run_command returns system status for 'status'", async () => {
       const result = await executeToolCall("run_command", { command: "status" });
       expect(result.error).toBeUndefined();
-      expect(result.result).toMatch(/acknowledged/i);
+      // Now actually dispatches to get_system_status — expect a structured result
+      const parsed = JSON.parse(result.result);
+      expect(parsed).toMatchObject({ primaryAgent: expect.any(String) });
     });
 
-    it("run_command rejects unsafe command", async () => {
+    it("run_command returns informative error for unknown command", async () => {
       const result = await executeToolCall("run_command", {
         command: "rm -rf /",
       });
       expect(result.error).toBeUndefined();
-      expect(result.result).toMatch(/not allowed/i);
+      // The new handler returns a help message pointing to run_workspace_command
+      expect(result.result).toMatch(/unknown command|not recognized|supported|run_workspace_command/i);
     });
   });
 });

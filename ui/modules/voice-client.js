@@ -878,6 +878,48 @@ export function sendTextMessage(text) {
   _dc.send(JSON.stringify({ type: "response.create" }));
 }
 
+/**
+ * Stream an image frame into the legacy realtime data channel without forcing
+ * an immediate response turn. Returns true when sent to realtime transport.
+ */
+export function sendImageFrame(imageDataUrl, options = {}) {
+  if (_transport === "responses-audio") return false;
+  const imageUrl = String(imageDataUrl || "").trim();
+  if (!imageUrl) return false;
+  if (!_dc || _dc.readyState !== "open") {
+    return false;
+  }
+  const source = String(options?.source || "screen").trim() || "screen";
+  const width = Number(options?.width) || undefined;
+  const height = Number(options?.height) || undefined;
+  try {
+    _dc.send(JSON.stringify({
+      type: "conversation.item.create",
+      item: {
+        type: "message",
+        role: "user",
+        content: [
+          {
+            type: "input_image",
+            image_url: imageUrl,
+            detail: "low",
+          },
+        ],
+      },
+      metadata: {
+        source: "vision_stream",
+        sourceType: source,
+        width,
+        height,
+      },
+    }));
+    return true;
+  } catch (err) {
+    console.warn("[voice-client] failed to send realtime image frame:", err?.message || err);
+    return false;
+  }
+}
+
 // ── Reconnect Logic ─────────────────────────────────────────────────────────
 
 function startReconnectTimer() {

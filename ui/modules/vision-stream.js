@@ -27,6 +27,8 @@ let _context = {
   intervalMs: 1000,
   maxWidth: 1280,
   jpegQuality: 0.65,
+  onFrame: null,
+  preferRealtimeVision: false,
 };
 
 function isLocalhostLikeHost() {
@@ -110,6 +112,8 @@ function resetContext() {
     intervalMs: 1000,
     maxWidth: 1280,
     jpegQuality: 0.65,
+    onFrame: null,
+    preferRealtimeVision: false,
   };
 }
 
@@ -169,19 +173,48 @@ async function captureAndSendFrame() {
 
   _sendInFlight = true;
   try {
+    const framePayload = {
+      sessionId: _context.sessionId,
+      executor: _context.executor || undefined,
+      mode: _context.mode || undefined,
+      model: _context.model || undefined,
+      source: _context.source || "screen",
+      frameDataUrl,
+      width: targetWidth,
+      height: targetHeight,
+    };
+
+    if (typeof _context.onFrame === "function") {
+      try {
+        const handled = await _context.onFrame(frameDataUrl, {
+          source: framePayload.source,
+          width: targetWidth,
+          height: targetHeight,
+          sessionId: _context.sessionId,
+        });
+        const wasHandled = handled === true || handled?.handled === true;
+        if (wasHandled) {
+          const summary = String(handled?.summary || "").trim();
+          if (summary) {
+            visionLastSummary.value = summary;
+            visionLastAnalyzedAt.value = Date.now();
+          } else if (_context.preferRealtimeVision) {
+            visionLastSummary.value = "Live vision streaming is active in the realtime session.";
+            visionLastAnalyzedAt.value = Date.now();
+          }
+          return;
+        }
+      } catch (err) {
+        if (_context.preferRealtimeVision) {
+          console.warn("[vision-stream] realtime frame path failed; using server analysis fallback:", err?.message || err);
+        }
+      }
+    }
+
     const res = await fetch("/api/vision/frame", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        sessionId: _context.sessionId,
-        executor: _context.executor || undefined,
-        mode: _context.mode || undefined,
-        model: _context.model || undefined,
-        source: _context.source || "screen",
-        frameDataUrl,
-        width: targetWidth,
-        height: targetHeight,
-      }),
+      body: JSON.stringify(framePayload),
     });
     const data = await res.json().catch(() => ({}));
     if (!res.ok) {
@@ -288,6 +321,8 @@ export async function startVisionShare(options = {}) {
       intervalMs,
       maxWidth,
       jpegQuality,
+      onFrame: typeof options?.onFrame === "function" ? options.onFrame : null,
+      preferRealtimeVision: options?.preferRealtimeVision === true,
     };
 
     visionShareState.value = "streaming";
