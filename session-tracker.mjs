@@ -30,7 +30,7 @@ const DEFAULT_CHAT_MAX_MESSAGES = 2000;
 const MAX_MESSAGE_CHARS = 2000;
 
 /** Maximum total sessions to keep in memory. */
-const MAX_SESSIONS = 50;
+const MAX_SESSIONS = 100;
 
 function resolveSessionMaxMessages(type, metadata, explicitMax, fallbackMax) {
   if (Number.isFinite(explicitMax)) {
@@ -124,6 +124,9 @@ export class SessionTracker {
   /** @type {ReturnType<typeof setInterval>|null} */
   #flushTimer = null;
 
+  /** @type {ReturnType<typeof setInterval>|null} */
+  #reaperTimer = null;
+
   /**
    * @param {Object} [options]
    * @param {number} [options.maxMessages=10]
@@ -138,9 +141,15 @@ export class SessionTracker {
     if (this.#persistDir) {
       this.#ensureDir();
       this.#loadFromDisk();
+      this.#purgeExcessFiles();
       this.#flushTimer = setInterval(() => this.#flushDirty(), FLUSH_INTERVAL_MS);
       if (this.#flushTimer.unref) this.#flushTimer.unref();
     }
+
+    // Idle reaper — runs periodically to mark stale "active" sessions as "completed"
+    const reaperInterval = Math.max(60_000, this.#idleThresholdMs);
+    this.#reaperTimer = setInterval(() => this.#reapIdleSessions(), reaperInterval);
+    if (this.#reaperTimer.unref) this.#reaperTimer.unref();
   }
 
   /**
@@ -153,12 +162,7 @@ export class SessionTracker {
   startSession(taskId, taskTitle) {
     // Evict oldest sessions if at capacity
     if (this.#sessions.size >= MAX_SESSIONS && !this.#sessions.has(taskId)) {
-      const oldest = [...this.#sessions.entries()]
-        .sort((a, b) => a[1].startedAt - b[1].startedAt)
-        .slice(0, Math.ceil(MAX_SESSIONS / 4));
-      for (const [id] of oldest) {
-        this.#sessions.delete(id);
-      }
+      this.#evictOldest();
     }
 
     this.#sessions.set(taskId, {
@@ -475,6 +479,11 @@ export class SessionTracker {
    * @param {{ id: string, type?: string, taskId?: string, metadata?: Object }} opts
    */
   createSession({ id, type = "manual", taskId, metadata = {}, maxMessages }) {
+    // Evict oldest non-active sessions if at capacity
+    if (this.#sessions.size >= MAX_SESSIONS && !this.#sessions.has(id)) {
+      this.#evictOldest();
+    }
+
     const now = new Date().toISOString();
     const resolvedMax = resolveSessionMaxMessages(
       type,
@@ -666,6 +675,7 @@ export class SessionTracker {
   /**
    * Merge any on-disk session updates into memory.
    * Useful when another process writes session files.
+   * Respects MAX_SESSIONS and heals stale "active" status.
    */
   refreshFromDisk() {
     if (!this.#persistDir) return;
@@ -676,6 +686,10 @@ export class SessionTracker {
     } catch {
       return;
     }
+
+    // Pre-parse for sorting
+    /** @type {Array<{file: string, data: Object, lastActive: number}>} */
+    const parsed = [];
     for (const file of files) {
       const filePath = resolve(this.#persistDir, file);
       try {
@@ -687,33 +701,52 @@ export class SessionTracker {
           Date.parse(data.lastActiveAt || "") ||
           Date.parse(data.updatedAt || "") ||
           0;
+        // Skip if already in memory and newer
         const existing = this.#sessions.get(sessionId);
         const existingLast =
           existing?.lastActivityAt ||
           Date.parse(existing?.lastActiveAt || "") ||
           0;
-        if (existing && existingLast >= lastActiveAt) {
-          continue;
-        }
-        this.#sessions.set(sessionId, {
-          taskId: data.taskId || sessionId,
-          taskTitle: data.title || data.taskTitle || null,
-          id: sessionId,
-          type: data.type || "task",
-          startedAt: Date.parse(data.createdAt || "") || Date.now(),
-          createdAt: data.createdAt || new Date().toISOString(),
-          lastActiveAt: data.lastActiveAt || data.updatedAt || new Date().toISOString(),
-          endedAt: data.endedAt || null,
-          messages: Array.isArray(data.messages) ? data.messages : [],
-          totalEvents: Array.isArray(data.messages) ? data.messages.length : 0,
-          turnCount: data.turnCount || 0,
-          status: data.status || "active",
-          lastActivityAt: lastActiveAt || Date.now(),
-          metadata: data.metadata || {},
-        });
+        if (existing && existingLast >= lastActiveAt) continue;
+        parsed.push({ file, data, lastActive: lastActiveAt });
       } catch {
         /* ignore corrupt session file */
       }
+    }
+
+    // Sort by lastActive descending and limit to MAX_SESSIONS
+    parsed.sort((a, b) => b.lastActive - a.lastActive);
+    const available = MAX_SESSIONS - this.#sessions.size;
+    const toLoad = parsed.slice(0, Math.max(0, available));
+
+    for (const { data, lastActive } of toLoad) {
+      const sessionId = String(data.id || data.taskId || "").trim();
+      // Heal stale "active" sessions
+      let status = data.status || "completed";
+      let endedAt = data.endedAt || null;
+      if (status === "active" && lastActive > 0) {
+        const ageMs = Date.now() - lastActive;
+        if (ageMs > this.#idleThresholdMs) {
+          status = "completed";
+          endedAt = endedAt || lastActive;
+        }
+      }
+      this.#sessions.set(sessionId, {
+        taskId: data.taskId || sessionId,
+        taskTitle: data.title || data.taskTitle || null,
+        id: sessionId,
+        type: data.type || "task",
+        startedAt: Date.parse(data.createdAt || "") || Date.now(),
+        createdAt: data.createdAt || new Date().toISOString(),
+        lastActiveAt: data.lastActiveAt || data.updatedAt || new Date().toISOString(),
+        endedAt,
+        messages: Array.isArray(data.messages) ? data.messages : [],
+        totalEvents: Array.isArray(data.messages) ? data.messages.length : 0,
+        turnCount: data.turnCount || 0,
+        status,
+        lastActivityAt: lastActive || Date.now(),
+        metadata: data.metadata || {},
+      });
     }
   }
 
@@ -728,6 +761,49 @@ export class SessionTracker {
       taskId,
       metadata: { autoCreated: true },
     });
+  }
+
+  /**
+   * Evict the oldest 25% of sessions, preferring completed/idle sessions first.
+   * Active sessions are only evicted as a last resort.
+   */
+  #evictOldest() {
+    const evictCount = Math.max(1, Math.ceil(MAX_SESSIONS / 4));
+    // Prefer evicting completed/idle/failed sessions before active ones
+    const sorted = [...this.#sessions.entries()]
+      .sort((a, b) => {
+        const aActive = a[1].status === "active" ? 1 : 0;
+        const bActive = b[1].status === "active" ? 1 : 0;
+        if (aActive !== bActive) return aActive - bActive; // non-active first
+        return (a[1].lastActivityAt || a[1].startedAt) - (b[1].lastActivityAt || b[1].startedAt);
+      });
+    const toEvict = sorted.slice(0, evictCount);
+    for (const [id] of toEvict) {
+      this.#sessions.delete(id);
+    }
+  }
+
+  /**
+   * Reap idle sessions: mark sessions as "completed" if they have been
+   * inactive for longer than the idle threshold.
+   * Called periodically by the reaper interval.
+   */
+  #reapIdleSessions() {
+    const now = Date.now();
+    let reaped = 0;
+    for (const [id, session] of this.#sessions) {
+      if (session.status !== "active") continue;
+      const idleMs = now - (session.lastActivityAt || session.startedAt || now);
+      if (idleMs > this.#idleThresholdMs) {
+        session.status = "completed";
+        session.endedAt = now;
+        this.#markDirty(id);
+        reaped++;
+      }
+    }
+    if (reaped > 0) {
+      console.log(`${TAG} idle reaper: marked ${reaped} stale session(s) as completed`);
+    }
   }
 
   /** Get preview text from last message */
@@ -785,10 +861,17 @@ export class SessionTracker {
     this.#dirty.clear();
   }
 
+  /** @type {Set<string>} filenames loaded during #loadFromDisk (for purge) */
+  #loadedFiles = new Set();
+
   #loadFromDisk() {
     if (!this.#persistDir || !existsSync(this.#persistDir)) return;
     try {
       const files = readdirSync(this.#persistDir).filter((f) => f.endsWith(".json"));
+
+      // Pre-parse all session files with their timestamps for sorting
+      /** @type {Array<{file: string, data: Object, lastActive: number}>} */
+      const parsed = [];
       for (const file of files) {
         try {
           const raw = readFileSync(resolve(this.#persistDir, file), "utf8");
@@ -796,28 +879,86 @@ export class SessionTracker {
           if (!data.id && !data.taskId) continue;
           const id = data.id || data.taskId;
           if (this.#sessions.has(id)) continue; // don't overwrite in-memory
-          this.#sessions.set(id, {
-            id,
-            taskId: data.taskId || id,
-            taskTitle: data.metadata?.title || id,
-            type: data.type || "task",
-            status: data.status || "completed",
-            createdAt: data.createdAt || new Date().toISOString(),
-            lastActiveAt: data.lastActiveAt || new Date().toISOString(),
-            startedAt: data.createdAt ? new Date(data.createdAt).getTime() : Date.now(),
-            endedAt: data.status !== "active" ? Date.now() : null,
-            messages: data.messages || [],
-            totalEvents: (data.messages || []).length,
-            turnCount: data.turnCount || 0,
-            lastActivityAt: data.lastActiveAt ? new Date(data.lastActiveAt).getTime() : Date.now(),
-            metadata: data.metadata || {},
-          });
+          const lastActive = data.lastActiveAt
+            ? new Date(data.lastActiveAt).getTime()
+            : data.createdAt
+              ? new Date(data.createdAt).getTime()
+              : 0;
+          parsed.push({ file, data, lastActive });
         } catch {
           // Skip corrupt files
         }
       }
+
+      // Sort by lastActive descending (newest first) and keep only MAX_SESSIONS
+      parsed.sort((a, b) => b.lastActive - a.lastActive);
+      const toLoad = parsed.slice(0, MAX_SESSIONS);
+
+      // Track which files were loaded so #purgeExcessFiles can remove the rest
+      this.#loadedFiles = new Set(toLoad.map((p) => p.file));
+
+      for (const { data, lastActive } of toLoad) {
+        const id = data.id || data.taskId;
+        // Heal stale "active" sessions — if restored from disk and the last
+        // activity was more than idleThresholdMs ago, mark as completed.
+        let status = data.status || "completed";
+        let endedAt = data.endedAt || null;
+        if (status === "active" && lastActive > 0) {
+          const ageMs = Date.now() - lastActive;
+          if (ageMs > this.#idleThresholdMs) {
+            status = "completed";
+            endedAt = endedAt || lastActive;
+          }
+        }
+
+        this.#sessions.set(id, {
+          id,
+          taskId: data.taskId || id,
+          taskTitle: data.metadata?.title || id,
+          type: data.type || "task",
+          status,
+          createdAt: data.createdAt || new Date().toISOString(),
+          lastActiveAt: data.lastActiveAt || new Date().toISOString(),
+          startedAt: data.createdAt ? new Date(data.createdAt).getTime() : Date.now(),
+          endedAt,
+          messages: data.messages || [],
+          totalEvents: (data.messages || []).length,
+          turnCount: data.turnCount || 0,
+          lastActivityAt: lastActive || Date.now(),
+          metadata: data.metadata || {},
+        });
+      }
     } catch {
       // Directory read failed — proceed without disk data
+    }
+  }
+
+  /**
+   * Remove session files that were NOT loaded into memory (excess beyond MAX_SESSIONS).
+   * This runs once at startup to clean up historical bloat.
+   */
+  #purgeExcessFiles() {
+    if (!this.#persistDir || !existsSync(this.#persistDir)) return;
+    try {
+      const files = readdirSync(this.#persistDir).filter((f) => f.endsWith(".json"));
+      let purged = 0;
+      for (const file of files) {
+        if (!this.#loadedFiles.has(file)) {
+          try {
+            unlinkSync(resolve(this.#persistDir, file));
+            purged++;
+          } catch {
+            // best-effort cleanup
+          }
+        }
+      }
+      if (purged > 0) {
+        console.log(`${TAG} purged ${purged} excess session file(s) from disk`);
+      }
+      // Free the reference — only needed once at startup
+      this.#loadedFiles.clear();
+    } catch {
+      // best-effort
     }
   }
 

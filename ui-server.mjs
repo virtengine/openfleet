@@ -8953,6 +8953,10 @@ async function handleApi(req, res, url) {
           jsonResponse(res, 400, { ok: false, error: `Session is ${session.status}` });
           return;
         }
+        // Re-activate completed/failed sessions when user sends a new message
+        if (session.status === "completed" || session.status === "failed") {
+          tracker.updateSessionStatus(sessionId, "active");
+        }
         const body = await readJsonBody(req);
         const content = body?.content;
         const attachments = Array.isArray(body?.attachments) ? body.attachments : [];
@@ -9024,6 +9028,9 @@ async function handleApi(req, res, url) {
             attachmentsAppended,
             onEvent: streamOnEvent,
           }).then(() => {
+            // Mark session as completed once the agent finishes — prevents
+            // sessions from staying "active" forever and causing session bloat.
+            tracker.updateSessionStatus(sessionId, "completed");
             broadcastUiEvent(["sessions"], "invalidate", { reason: "agent-response", sessionId });
           }).catch((execErr) => {
             // Record error as system message so user sees feedback
@@ -9033,6 +9040,7 @@ async function handleApi(req, res, url) {
               content: `Agent error: ${execErr.message || "Unknown error"}`,
               timestamp: new Date().toISOString(),
             });
+            tracker.updateSessionStatus(sessionId, "failed");
             broadcastUiEvent(["sessions"], "invalidate", { reason: "agent-error", sessionId });
           });
         } else {
