@@ -10071,6 +10071,10 @@ function stopTaskPlannerStatusLoop() {
 
 function startTaskPlannerStatusLoop() {
   stopTaskPlannerStatusLoop();
+  if (isWorkflowReplacingModule("monitor.mjs")) {
+    console.log("[monitor] skipping legacy task planner status loop — handled by workflow");
+    return;
+  }
   taskPlannerStatus.enabled = isDevMode();
   taskPlannerStatus.intervalMs = Math.max(
     5 * 60_000,
@@ -10092,6 +10096,10 @@ function startTaskPlannerStatusLoop() {
 }
 
 async function maybeTriggerTaskPlanner(reason, details, options = {}) {
+  if (isWorkflowReplacingModule("monitor.mjs")) {
+    console.log("[monitor] skipping legacy task planner trigger — handled by workflow");
+    return;
+  }
   if (internalTaskExecutor?.isPaused?.()) {
     console.log("[monitor] task planner skipped: executor paused");
     return;

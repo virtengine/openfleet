@@ -161,11 +161,24 @@ function createMockServices() {
       }),
       launchEphemeralThread: vi.fn(async (prompt, cwd, timeout, extra) => {
         record("agentPool", "launchEphemeralThread", [prompt, cwd, timeout]);
-        return { success: true, output: "mock agent completed", sdk: "mock", threadId: `thread-${Date.now()}` };
+        // Return planner-parseable output so materialize_planner_tasks succeeds
+        const plannerOutput = JSON.stringify({
+          tasks: [
+            { title: "Mock task: implement feature", description: "Auto-generated placeholder task" },
+            { title: "Mock task: write tests", description: "Auto-generated placeholder task" },
+          ],
+        });
+        return { success: true, output: plannerOutput, sdk: "mock", threadId: `thread-${Date.now()}` };
       }),
       execWithRetry: vi.fn(async (prompt, opts) => {
         record("agentPool", "execWithRetry", [prompt, opts]);
-        return { success: true, output: "mock agent completed", sdk: "mock", threadId: `thread-${Date.now()}`, attempts: 1, continues: 0 };
+        const plannerOutput = JSON.stringify({
+          tasks: [
+            { title: "Mock task: implement feature", description: "Auto-generated placeholder task" },
+            { title: "Mock task: write tests", description: "Auto-generated placeholder task" },
+          ],
+        });
+        return { success: true, output: plannerOutput, sdk: "mock", threadId: `thread-${Date.now()}`, attempts: 1, continues: 0 };
       }),
       launchOrResumeThread: vi.fn(async (prompt, cwd, timeout, opts) => {
         record("agentPool", "launchOrResumeThread", [prompt, cwd, timeout]);
@@ -248,6 +261,10 @@ function createMockServices() {
         record("telegram", "send", [msg]);
         return { sent: true, messageId: Date.now() };
       }),
+      sendMessage: vi.fn(async (chatId, msg, opts) => {
+        record("telegram", "sendMessage", [chatId, msg, opts]);
+        return { sent: true, messageId: Date.now() };
+      }),
     },
 
     meeting: {
@@ -259,6 +276,33 @@ function createMockServices() {
         record("meeting", "createSession", [opts]);
         return { id: `session-${Date.now()}`, ...opts, active: true };
       }),
+      startMeeting: vi.fn(async (opts) => {
+        record("meeting", "startMeeting", [opts]);
+        return { sessionId: opts?.sessionId || `meeting-${Date.now()}`, created: true, session: { active: true } };
+      }),
+      sendMeetingMessage: vi.fn(async (sessionId, message, opts) => {
+        record("meeting", "sendMeetingMessage", [sessionId, message]);
+        return { sent: true, sessionId };
+      }),
+      fetchMeetingTranscript: vi.fn(async (sessionId, opts) => {
+        record("meeting", "fetchMeetingTranscript", [sessionId]);
+        return {
+          messages: [{ role: "system", content: "Mock meeting transcript" }],
+          page: 1, pageSize: 200, totalMessages: 1, totalPages: 1,
+        };
+      }),
+      stopMeeting: vi.fn(async (sessionId, opts) => {
+        record("meeting", "stopMeeting", [sessionId]);
+        return { ok: true, sessionId, status: opts?.status || "completed" };
+      }),
+      analyzeMeetingFrame: vi.fn(async (sessionId, frameDataUrl, opts) => {
+        record("meeting", "analyzeMeetingFrame", [sessionId]);
+        return { ok: true, analyzed: true, summary: "Mock vision analysis", sessionId };
+      }),
+    },
+
+    prompts: {
+      planner: "Generate {{taskCount}} tasks for the project backlog. Return JSON with shape { tasks: [...] }.",
     },
   };
 }
@@ -384,10 +428,14 @@ describe("workflow-templates E2E execution", () => {
 
   // ── Parametric: Every template installs and force-executes cleanly ────
 
+  // Override delay-related variables so templates with action.delay nodes
+  // don't sleep for minutes during tests (e.g. canary-deploy promotionDelayMs).
+  const DELAY_OVERRIDES = { promotionDelayMs: 10 };
+
   describe("all templates execute without engine errors", () => {
     for (const template of WORKFLOW_TEMPLATES) {
       it(`${template.id} installs, executes, and returns valid context`, async () => {
-        const installed = installTemplate(template.id, engine);
+        const installed = installTemplate(template.id, engine, DELAY_OVERRIDES);
         expect(installed.id).toBeDefined();
         expect(installed.metadata.installedFrom).toBe(template.id);
 
@@ -712,7 +760,9 @@ describe("workflow-templates E2E execution", () => {
 
   describe("Canary Deploy (template-canary-deploy)", () => {
     it("runs canary deployment flow", async () => {
-      const installed = installTemplate("template-canary-deploy", engine);
+      const installed = installTemplate("template-canary-deploy", engine, {
+        promotionDelayMs: 10,
+      });
       const ctx = await engine.execute(installed.id, {
         branch: "main",
         canaryPercent: 10,
@@ -727,11 +777,8 @@ describe("workflow-templates E2E execution", () => {
 
   describe("Error Recovery (template-error-recovery)", () => {
     it("processes error recovery with retry chain", async () => {
+      // installTemplate auto-installs the required sibling (task-repair-worktree)
       const installed = installTemplate("template-error-recovery", engine);
-
-      // Also install the chain target (task-repair-worktree) so the
-      // action.execute_workflow node can find it
-      const repairInstalled = installTemplate("template-task-repair-worktree", engine);
 
       const ctx = await engine.execute(installed.id, {
         taskId: "TASK-ERR-1",
@@ -791,10 +838,8 @@ describe("workflow-templates E2E execution", () => {
 
   describe("Task Finalization Guard (template-task-finalization-guard)", () => {
     it("finalizes task with PR and archival chain", async () => {
+      // installTemplate auto-installs the required sibling (task-archiver)
       const installed = installTemplate("template-task-finalization-guard", engine);
-
-      // Install chain target
-      const archiverInstalled = installTemplate("template-task-archiver", engine);
 
       const ctx = await engine.execute(installed.id, {
         taskId: "TASK-FIN-1",
@@ -1042,7 +1087,8 @@ describe("workflow-templates E2E execution", () => {
         recommended.map((t) => t.id),
       );
       expect(result.errors).toEqual([]);
-      expect(result.installed.length).toBe(recommended.length);
+      // installed + skipped (auto-installed by grouped flows) = total
+      expect(result.installed.length + result.skipped.length).toBe(recommended.length);
     });
 
     it("installing all 36 templates succeeds without conflicts", () => {
@@ -1051,25 +1097,35 @@ describe("workflow-templates E2E execution", () => {
         WORKFLOW_TEMPLATES.map((t) => t.id),
       );
       expect(result.errors).toEqual([]);
-      expect(result.installed.length).toBe(WORKFLOW_TEMPLATES.length);
+      // installed + skipped (auto-installed by grouped flows) = total
+      expect(result.installed.length + result.skipped.length).toBe(WORKFLOW_TEMPLATES.length);
     });
 
     it("double-install is correctly skipped", () => {
       installTemplate("template-error-recovery", engine);
+      // error-recovery auto-installed task-repair-worktree;
+      // installTemplateSet expands groups, so both should be skipped
       const result = installTemplateSet(engine, ["template-error-recovery"]);
-      expect(result.skipped.length).toBe(1);
+      expect(result.skipped).toContain("template-error-recovery");
       expect(result.installed.length).toBe(0);
     });
   });
 
   describe("full pipeline: install all + execute all", () => {
     it("installs and executes every template in sequence without cross-contamination", async () => {
+      // Use installTemplateSet to handle grouped flow dedup correctly
+      const allIds = WORKFLOW_TEMPLATES.map((t) => t.id);
+      // Build per-template overrides map so canary-deploy gets short delay
+      const overridesById = {};
+      for (const id of allIds) overridesById[id] = DELAY_OVERRIDES;
+      const installResult = installTemplateSet(engine, allIds, overridesById);
+      expect(installResult.errors).toEqual([]);
+
       const results = [];
-      for (const template of WORKFLOW_TEMPLATES) {
-        const installed = installTemplate(template.id, engine);
-        const ctx = await engine.execute(installed.id, {}, { force: true });
+      for (const wf of engine.list()) {
+        const ctx = await engine.execute(wf.id, {}, { force: true });
         results.push({
-          id: template.id,
+          id: wf.metadata?.installedFrom || wf.id,
           status: ctx.errors.length > 0 ? "failed" : "completed",
           errorCount: ctx.errors.length,
           nodeCount: ctx.nodeStatuses.size,
@@ -1082,7 +1138,7 @@ describe("workflow-templates E2E execution", () => {
         `${failures.length} templates failed: ${failures.map((f) => f.id).join(", ")}`,
       ).toEqual([]);
       expect(results.length).toBe(WORKFLOW_TEMPLATES.length);
-    });
+    }, 120_000);
   });
 
   describe("template node type coverage", () => {
@@ -1126,6 +1182,110 @@ describe("workflow-templates E2E execution", () => {
         expect(template.category).toBeDefined();
         expect(TEMPLATE_CATEGORIES[template.category], `Unknown category "${template.category}" for ${template.id}`).toBeDefined();
       }
+    });
+  });
+
+  // ═══════════════════════════════════════════════════════════════════════
+  //  Grouped Flows
+  // ═══════════════════════════════════════════════════════════════════════
+
+  describe("grouped flows", () => {
+    const KNOWN_GROUPS = [
+      { parent: "template-error-recovery", child: "template-task-repair-worktree" },
+      { parent: "template-task-finalization-guard", child: "template-task-archiver" },
+      { parent: "template-sdk-conflict-resolver", child: "template-pr-merge-strategy" },
+      { parent: "template-meeting-subworkflow-chain", child: "template-task-planner" },
+    ];
+
+    it("every template with requiredTemplates references valid template IDs", () => {
+      for (const template of WORKFLOW_TEMPLATES) {
+        const required = template.metadata?.requiredTemplates;
+        if (!Array.isArray(required)) continue;
+        for (const depId of required) {
+          expect(getTemplate(depId), `${template.id} requires unknown template "${depId}"`).not.toBeNull();
+        }
+      }
+    });
+
+    it("all 4 known execute_workflow chains have requiredTemplates metadata", () => {
+      for (const { parent, child } of KNOWN_GROUPS) {
+        const template = getTemplate(parent);
+        expect(template, `Template ${parent} not found`).not.toBeNull();
+        expect(
+          template.metadata?.requiredTemplates,
+          `${parent} missing requiredTemplates metadata`,
+        ).toContain(child);
+      }
+    });
+
+    it("getTemplateGroup returns full transitive group", async () => {
+      const { getTemplateGroup } = await import("../workflow-templates.mjs");
+      for (const { parent, child } of KNOWN_GROUPS) {
+        const group = getTemplateGroup(parent);
+        expect(group, `getTemplateGroup("${parent}") returned null`).not.toBeNull();
+        expect(group.root).toBe(parent);
+        expect(group.members).toContain(parent);
+        expect(group.members).toContain(child);
+      }
+    });
+
+    it("expandTemplateGroups adds missing group members", async () => {
+      const { expandTemplateGroups } = await import("../workflow-templates.mjs");
+      // Requesting only the parent should auto-expand to include children
+      const expanded = expandTemplateGroups(["template-error-recovery"]);
+      expect(expanded).toContain("template-error-recovery");
+      expect(expanded).toContain("template-task-repair-worktree");
+    });
+
+    it("installTemplate auto-installs required sibling templates", () => {
+      // Installing error-recovery should also install task-repair-worktree
+      installTemplate("template-error-recovery", engine);
+      const all = engine.list();
+      const installedFromIds = all.map((w) => w.metadata?.installedFrom);
+      expect(installedFromIds).toContain("template-error-recovery");
+      expect(installedFromIds).toContain("template-task-repair-worktree");
+    });
+
+    it("installTemplateSet expands groups automatically", () => {
+      // Requesting only parent should bring in children too
+      const result = installTemplateSet(engine, ["template-task-finalization-guard"]);
+      expect(result.errors).toEqual([]);
+      const all = engine.list();
+      const installedFromIds = all.map((w) => w.metadata?.installedFrom);
+      expect(installedFromIds).toContain("template-task-finalization-guard");
+      expect(installedFromIds).toContain("template-task-archiver");
+    });
+
+    it("enabling a parent workflow auto-enables disabled children", () => {
+      // Install both — child disabled
+      const parent = installTemplate("template-error-recovery", engine);
+      const all = engine.list();
+      const child = all.find((w) => w.metadata?.installedFrom === "template-task-repair-worktree");
+      expect(child).toBeDefined();
+
+      // Manually disable child
+      child.enabled = false;
+      engine.save(child);
+      expect(engine.get(child.id).enabled).toBe(false);
+
+      // Re-enable parent (trigger save with enabled=true)
+      parent.enabled = true;
+      engine.save(parent);
+
+      // Child should now be auto-enabled
+      const refreshedChild = engine.get(child.id);
+      expect(refreshedChild.enabled).not.toBe(false);
+    });
+
+    it("getTemplateGroup returns null for unknown template", async () => {
+      const { getTemplateGroup } = await import("../workflow-templates.mjs");
+      expect(getTemplateGroup("nonexistent-template")).toBeNull();
+    });
+
+    it("templates without requiredTemplates have singleton groups", async () => {
+      const { getTemplateGroup } = await import("../workflow-templates.mjs");
+      const group = getTemplateGroup("template-health-check");
+      expect(group.members).toEqual(["template-health-check"]);
     });
   });
 });

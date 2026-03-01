@@ -1355,6 +1355,7 @@ export const SDK_CONFLICT_RESOLVER_TEMPLATE = {
     createdAt: "2025-06-01T00:00:00Z",
     templateVersion: "1.0.0",
     tags: ["github", "merge", "conflict", "sdk", "agent", "resolution"],
+    requiredTemplates: ["template-pr-merge-strategy"],
     replaces: {
       module: "sdk-conflict-resolver.mjs",
       functions: [

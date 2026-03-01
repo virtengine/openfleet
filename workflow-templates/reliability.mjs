@@ -93,6 +93,7 @@ export const ERROR_RECOVERY_TEMPLATE = {
     createdAt: "2025-02-24T00:00:00Z",
     templateVersion: "1.0.0",
     tags: ["error", "recovery", "autofix"],
+    requiredTemplates: ["template-task-repair-worktree"],
     replaces: {
       module: "monitor.mjs",
       functions: ["runCodexRecovery"],
@@ -522,6 +523,7 @@ export const TASK_FINALIZATION_GUARD_TEMPLATE = {
     createdAt: "2026-02-26T00:00:00Z",
     templateVersion: "1.0.0",
     tags: ["finalization", "quality-gate", "prepush", "handoff", "reliability"],
+    requiredTemplates: ["template-task-archiver"],
     replaces: {
       module: "task-executor.mjs",
       functions: ["_handleTaskResult finalization gate"],

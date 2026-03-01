@@ -590,16 +590,24 @@ describe("installTemplateSet", () => {
       "template-task-planner",
       "template-nope",
     ]);
+    // error-recovery auto-installs task-repair-worktree (grouped flow).
+    // installTemplateSet sees the child as already installed → skips it.
+    // So installed=2 (error-recovery, task-planner), skipped=1 (task-repair-worktree), errors=1.
     expect(result.installed.length).toBe(2);
+    expect(result.skipped.length).toBe(1);
     expect(result.errors.length).toBe(1);
     expect(result.errors[0].id).toBe("template-nope");
+    // Verify all 3 valid templates are actually present in the engine
+    const all = engine.list();
+    expect(all.length).toBe(3);
 
     const second = installTemplateSet(engine, [
       "template-error-recovery",
       "template-task-planner",
     ]);
     expect(second.installed.length).toBe(0);
-    expect(second.skipped.length).toBe(2);
+    // error-recovery expands to include task-repair-worktree, so 3 skipped
+    expect(second.skipped.length).toBe(3);
   });
 });
 

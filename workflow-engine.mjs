@@ -444,7 +444,45 @@ export class WorkflowEngine extends EventEmitter {
     const filePath = resolve(this.workflowDir, `${def.id}.json`);
     writeFileSync(filePath, JSON.stringify(def, null, 2), "utf8");
     this.emit("saved", { id: def.id, name: def.name });
+
+    // ── Grouped flows: auto-enable required sibling workflows ───────────
+    // When a template-backed workflow is enabled, ensure all workflows from
+    // its requiredTemplates group are also enabled so chains don't break.
+    if (def.enabled !== false && def.metadata?.installedFrom) {
+      this._autoEnableGroupedWorkflows(def);
+    }
+
     return def;
+  }
+
+  /**
+   * When a workflow from a grouped template is enabled, find sibling
+   * workflows installed from that template's requiredTemplates and enable
+   * them if they're currently disabled.
+   * @private
+   */
+  _autoEnableGroupedWorkflows(def) {
+    try {
+      // requiredTemplates is stored in the workflow's own metadata
+      // (carried over from the template definition during install)
+      const requiredIds = def.metadata?.requiredTemplates;
+      if (!Array.isArray(requiredIds) || requiredIds.length === 0) return;
+
+      for (const depId of requiredIds) {
+        for (const [, wf] of this._workflows) {
+          if (wf.metadata?.installedFrom === depId && wf.enabled === false) {
+            wf.enabled = true;
+            wf.metadata.updatedAt = new Date().toISOString();
+            wf.metadata.version = (wf.metadata.version || 0) + 1;
+            const fp = resolve(this.workflowDir, `${wf.id}.json`);
+            writeFileSync(fp, JSON.stringify(wf, null, 2), "utf8");
+            this.emit("saved", { id: wf.id, name: wf.name });
+          }
+        }
+      }
+    } catch {
+      /* best-effort — should not crash save() */
+    }
   }
 
   /** Delete a workflow */
