@@ -469,11 +469,19 @@ const TOOL_DEFS = [
   {
     type: "function",
     name: "run_command",
-    description: "Execute a bosun CLI command (e.g., 'sync', 'maintenance', 'config show').",
+    description:
+      "Execute a Bosun system command by name. Supported commands: status, health, config, " +
+      "fleet, sync, tasks, agents, version, maintenance. These map to the equivalent Bosun " +
+      "CLI operations and return live results. For free-form workspace shell commands " +
+      "(git, npm, grep…) use run_workspace_command instead.",
     parameters: {
       type: "object",
       properties: {
-        command: { type: "string", description: "The bosun command to run" },
+        command: {
+          type: "string",
+          description:
+            "Bosun command name. Examples: 'status', 'health', 'config', 'fleet', 'tasks inprogress', 'sync'.",
+        },
       },
       required: ["command"],
     },
@@ -718,6 +726,86 @@ const TOOL_DEFS = [
     description: "Pre-load codebase context into the agent so subsequent code questions answer instantly. Call this once at the start of a voice session when you know the user will ask project-specific questions.",
     parameters: { type: "object", properties: {} },
   },
+
+  // ── Slash Commands ──
+  {
+    type: "function",
+    name: "bosun_slash_command",
+    description:
+      "Invoke a Bosun slash command by exact name. Supports: " +
+      "/instant <prompt> (fast inline answer), " +
+      "/ask <prompt> (read-only agent answer), " +
+      "/background <prompt> or /bg <prompt> (fire-and-forget agent delegation), " +
+      "/status, /tasks, /agents, /health, /version, " +
+      "/mcp <tool_name> [server] (invoke an MCP tool). " +
+      "Use this when the user explicitly says a slash command or when you need a fast inline " +
+      "answer vs a background task.",
+    parameters: {
+      type: "object",
+      properties: {
+        command: {
+          type: "string",
+          description:
+            "Full slash command string including leading /. Examples: " +
+            "'/instant what does the auth module do?', " +
+            "'/background write unit tests for config.mjs', " +
+            "'/ask summarize the git log', " +
+            "'/mcp create_issue server=github', " +
+            "'/status'",
+        },
+      },
+      required: ["command"],
+    },
+  },
+
+  // ── Workspace Shell ──
+  {
+    type: "function",
+    name: "run_workspace_command",
+    description:
+      "Execute a safe read-only shell or git command in the workspace and return the live output. " +
+      "Use this to check git status, recent commits, run tests, read file content, or list directories. " +
+      "Only non-destructive, read-only commands are permitted — writes and destructive operations are " +
+      "automatically routed to the agent instead.",
+    parameters: {
+      type: "object",
+      properties: {
+        command: {
+          type: "string",
+          description:
+            "Shell command to run in the workspace root. Examples: " +
+            "'git status --short', 'git log --oneline -10', " +
+            "'npm test -- --passWithNoTests 2>&1 | tail -20', " +
+            "'cat package.json', 'ls src/', 'grep -r TODO . --include=*.mjs | head -20'",
+        },
+      },
+      required: ["command"],
+    },
+  },
+
+  // ── Background Session Polling ──
+  {
+    type: "function",
+    name: "poll_background_session",
+    description:
+      "Check the current status and latest output of a background agent session that was " +
+      "previously started with delegate_to_agent. Use this when the user asks 'what's the status of that " +
+      "background task?' or 'is the agent done yet?'.",
+    parameters: {
+      type: "object",
+      properties: {
+        backgroundSessionId: {
+          type: "string",
+          description: "The background session ID returned by delegate_to_agent (starts with 'voice-bg-').",
+        },
+        limit: {
+          type: "number",
+          description: "Number of most-recent messages to include. Default: 5",
+        },
+      },
+      required: ["backgroundSessionId"],
+    },
+  },
 ];
 
 // ── Tool Execution ──────────────────────────────────────────────────────────
@@ -813,10 +901,10 @@ const TOOL_HANDLERS = {
       ? requestedExecutor
       : (cfg.voice?.delegateExecutor || cfg.primaryAgent || "codex-sdk");
 
-    const rawMode = String(args.mode || context.mode || "instant")
+    const rawMode = String(args.mode || context.mode || "agent")
       .trim()
       .toLowerCase();
-    const mode = MODE_ALIASES[rawMode] || (VALID_AGENT_MODES.has(rawMode) ? rawMode : "instant");
+    const mode = MODE_ALIASES[rawMode] || (VALID_AGENT_MODES.has(rawMode) ? rawMode : "agent");
     const model = String(args.model || context.model || "").trim() || undefined;
     const parentSessionId = String(context.sessionId || "").trim() || null;
     const backgroundSessionId = makeBackgroundSessionId();
@@ -992,7 +1080,7 @@ const TOOL_HANDLERS = {
         mode,
         model,
         cwd,
-        timeoutMs: 10_000,
+        timeoutMs: 15_000,
       });
       const text = typeof result === "string"
         ? result
@@ -1003,21 +1091,20 @@ const TOOL_HANDLERS = {
       // Apply TTS-safe formatting (extracts VOICE_RESPONSE: marker if present)
       return `{RESPONSE}: ${formatVoiceToolResult(clipped)}`;
     } catch (err) {
-      // If quick mode cannot answer in time, auto-delegate to background.
-      const backgroundMsg = await TOOL_HANDLERS.delegate_to_agent(
-        {
-          message: args.message,
-          executor,
-          mode: "agent",
-          model,
-        },
-        context,
-      );
-      const cleanedBackgroundMsg = String(backgroundMsg || "")
-        .replace(/^\{RESPONSE\}:\s*/i, "")
-        .trim();
       const reason = String(err?.message || "instant query timed out").trim();
-      return `{RESPONSE}: Quick answer unavailable (${reason}). ${cleanedBackgroundMsg}`;
+      const isTimeout = /timeout|time.out|timed.out|aborted/i.test(reason);
+      if (isTimeout) {
+        // Only auto-background on timeout — surface genuine errors directly.
+        const backgroundMsg = await TOOL_HANDLERS.delegate_to_agent(
+          { message: args.message, executor, mode: "agent", model },
+          context,
+        );
+        const cleanedBackgroundMsg = String(backgroundMsg || "")
+          .replace(/^\{RESPONSE\}:\s*/i, "")
+          .trim();
+        return `{RESPONSE}: Query is taking longer than expected; handing off to background agent. ${cleanedBackgroundMsg}`;
+      }
+      return `{RESPONSE}: Agent query failed: ${reason}`;
     }
   },
 
@@ -1124,15 +1211,53 @@ const TOOL_HANDLERS = {
     }
   },
 
-  async run_command(args) {
-    // Only allow safe read-only commands via voice
-    const safeCommands = ["status", "config show", "sync", "health", "fleet status"];
-    const cmd = String(args.command || "").trim().toLowerCase();
-    const isSafe = safeCommands.some(s => cmd.startsWith(s));
-    if (!isSafe) {
-      return `Command "${args.command}" is not allowed via voice. Safe commands: ${safeCommands.join(", ")}`;
+  async run_command(args, context) {
+    const rawCmd = String(args.command || "").trim();
+    const cmd = rawCmd.toLowerCase();
+
+    // Map to existing tool handlers where possible
+    if (cmd === "status" || cmd === "health") {
+      return TOOL_HANDLERS.get_system_status({}, context);
     }
-    return `Command "${args.command}" acknowledged. Use the UI or CLI for execution.`;
+    if (cmd === "config" || cmd === "config show") {
+      return TOOL_HANDLERS.get_config({}, context);
+    }
+    if (cmd === "fleet" || cmd === "fleet status") {
+      return TOOL_HANDLERS.get_fleet_status({}, context);
+    }
+    if (cmd === "tasks" || cmd.startsWith("tasks ")) {
+      const statusArg = cmd.split(/\s+/)[1] || "all";
+      return TOOL_HANDLERS.list_tasks({ status: statusArg }, context);
+    }
+    if (cmd === "agents") {
+      return TOOL_HANDLERS.get_agent_status({}, context);
+    }
+    if (cmd === "version") {
+      try {
+        const { readFileSync } = await import("node:fs");
+        const { resolve } = await import("node:path");
+        const pkgPath = resolve(process.cwd(), "package.json");
+        const pkg = JSON.parse(readFileSync(pkgPath, "utf8"));
+        return `Bosun v${pkg.version}`;
+      } catch {
+        return "Version unavailable.";
+      }
+    }
+    if (cmd === "sync") {
+      return TOOL_HANDLERS.ask_agent_context(
+        { message: "Run git fetch in the workspace and report what changed in one sentence.", mode: "instant" },
+        context,
+      );
+    }
+    if (cmd === "maintenance" || cmd.startsWith("maintenance ")) {
+      return TOOL_HANDLERS.delegate_to_agent(
+        { message: `Execute maintenance command: ${rawCmd}`, mode: "agent" },
+        context,
+      );
+    }
+
+    const supported = ["status", "health", "config", "fleet", "tasks", "agents", "version", "sync", "maintenance"];
+    return `Unknown command "${rawCmd}". Supported: ${supported.join(", ")}. For shell commands use run_workspace_command.`;
   },
 
   async get_pr_status(args) {
@@ -1438,12 +1563,56 @@ const TOOL_HANDLERS = {
     if (!tool) return "{RESPONSE}: tool name is required.";
     const server = String(args.server || "").trim();
     const mcpArgs = args.args && typeof args.args === "object" ? args.args : {};
-    const toolRef = server ? `${server} MCP server's \"${tool}\" tool` : `\"${tool}\" MCP tool`;
+    const toolRef = server
+      ? `the "${tool}" tool from the "${server}" MCP server`
+      : `the "${tool}" MCP tool`;
+    const serverHint = server ? ` Use the "${server}" MCP server.` : "";
     const argsJson = Object.keys(mcpArgs).length
-      ? `\n\nArguments:\n${JSON.stringify(mcpArgs, null, 2)}`
+      ? `\n\nCall it with these exact arguments:\n${JSON.stringify(mcpArgs, null, 2)}`
       : "";
-    const taskPrompt = `Invoke the ${toolRef} right now.${argsJson}\n\nAfter invoking the tool, respond with:\nVOICE_RESPONSE: [1-sentence natural language confirmation of what happened]`;
-    return TOOL_HANDLERS.ask_agent_context({ message: taskPrompt, mode: "instant" }, context);
+    // Use a direct, strict MCP invocation prompt — no VOICE_CONTEXT preamble that
+    // might confuse MCP routing in the executor.
+    const taskPrompt =
+      `Invoke ${toolRef} right now.${serverHint}${argsJson}\n\n` +
+      `IMPORTANT: Actually call the tool — do not just describe it.\n` +
+      `After invoking, respond ONLY with:\n` +
+      `VOICE_RESPONSE: [exactly 1 sentence confirming what happened or the key result]`;
+
+    const cfg = loadConfig();
+    const requestedExecutor = String(
+      context?.executor || cfg.voice?.delegateExecutor || cfg.primaryAgent || "codex-sdk",
+    ).trim().toLowerCase();
+    const executor = VALID_EXECUTORS.has(requestedExecutor)
+      ? requestedExecutor
+      : (cfg.voice?.delegateExecutor || cfg.primaryAgent || "codex-sdk");
+    const model = String(context?.model || "").trim() || undefined;
+    const cwd = await resolveToolCwd(context);
+
+    try {
+      const pool = await getAgentPool();
+      const result = await pool.execPooledPrompt(taskPrompt, {
+        sdk: executor,
+        mode: "instant",
+        model,
+        cwd,
+        timeoutMs: 15_000,
+      });
+      const text = typeof result === "string"
+        ? result
+        : result?.finalResponse || result?.text || result?.message || JSON.stringify(result);
+      const trimmed = String(text || "").trim();
+      if (!trimmed) return "{RESPONSE}: MCP tool returned no output.";
+      return `{RESPONSE}: ${formatVoiceToolResult(trimmed)}`;
+    } catch (err) {
+      const reason = String(err?.message || "tool invocation failed").trim();
+      // On timeout, background-delegate so the MCP call can still complete.
+      const bgMsg = await TOOL_HANDLERS.delegate_to_agent(
+        { message: taskPrompt, executor, mode: "agent", model },
+        context,
+      );
+      const cleaned = String(bgMsg || "").replace(/^\{RESPONSE\}:\s*/i, "").trim();
+      return `{RESPONSE}: MCP call timed out (${reason}); continuing in background. ${cleaned}`;
+    }
   },
 
   /**
@@ -1466,6 +1635,196 @@ const TOOL_HANDLERS = {
     const warmPrompt = `You are being pre-loaded with workspace context for an upcoming voice session.\nTop-level items in the project: ${topLevel.join(", ") || "(unknown)"}\nBriefly orient yourself to the project structure so you can answer questions quickly.`;
     TOOL_HANDLERS.ask_agent_context({ message: warmPrompt, mode: "instant" }, context).catch(() => {});
     return "{RESPONSE}: Codebase context pre-loading started in the background.";
+  },
+
+  // ── Slash Command Router ─────────────────────────────────────────────────
+
+  /**
+   * Routes Bosun slash commands to the appropriate tool handler.
+   * Supports /instant, /ask, /background (/bg), /status, /tasks, /agents,
+   * /health, /version, /mcp, and delegates unrecognised commands to the agent.
+   */
+  async bosun_slash_command(args, context) {
+    const raw = String(args.command || "").trim();
+    if (!raw.startsWith("/")) {
+      return `{RESPONSE}: Command must start with / (received: "${raw}"). Example: /instant summarize the auth module.`;
+    }
+    const parts = raw.slice(1).split(/\s+/);
+    const base = parts[0].toLowerCase();
+    const rest = parts.slice(1).join(" ").trim();
+
+    // ── Agent mode shortcuts ──────────────────────────────────────────────
+    const INLINE_MODES = { instant: "instant", ask: "ask" };
+    if (INLINE_MODES[base] !== undefined) {
+      if (!rest) return `{RESPONSE}: Usage: /${base} <prompt>`;
+      return TOOL_HANDLERS.ask_agent_context(
+        { message: rest, mode: INLINE_MODES[base] },
+        context,
+      );
+    }
+
+    const BACKGROUND_BASES = new Set(["background", "bg", "agent"]);
+    if (BACKGROUND_BASES.has(base)) {
+      if (!rest) return `{RESPONSE}: Usage: /${base} <task description>`;
+      return TOOL_HANDLERS.delegate_to_agent(
+        { message: rest, mode: "agent" },
+        context,
+      );
+    }
+
+    // ── System info commands ──────────────────────────────────────────────
+    const INFO_BASES = new Set(["status", "health", "tasks", "agents", "fleet", "version", "config"]);
+    if (INFO_BASES.has(base)) {
+      return TOOL_HANDLERS.run_command(
+        { command: rest ? `${base} ${rest}` : base },
+        context,
+      );
+    }
+
+    // ── /mcp <tool_name> [server=<name>] ─────────────────────────────────
+    if (base === "mcp") {
+      const mcpParts = rest.split(/\s+/);
+      const toolName = mcpParts[0] || "";
+      if (!toolName) return `{RESPONSE}: Usage: /mcp <tool_name> [server=<name>]`;
+      // Parse optional server=<name> or bare server name from remaining tokens
+      let server = "";
+      for (const tok of mcpParts.slice(1)) {
+        const m = tok.match(/^server=(.+)$/i);
+        if (m) { server = m[1]; break; }
+        if (!tok.includes("=")) { server = tok; break; }
+      }
+      return TOOL_HANDLERS.invoke_mcp_tool({ tool: toolName, server }, context);
+    }
+
+    // ── /workspace <shell command> ────────────────────────────────────────
+    if (base === "workspace" || base === "shell" || base === "run") {
+      if (!rest) return `{RESPONSE}: Usage: /${base} <shell command>`;
+      return TOOL_HANDLERS.run_workspace_command({ command: rest }, context);
+    }
+
+    // ── Fallback: delegate unrecognised commands to the agent ─────────────
+    const fallbackPrompt =
+      `Execute this Bosun slash command: ${raw}\n` +
+      `VOICE_RESPONSE: [1-sentence result or outcome]`;
+    return TOOL_HANDLERS.ask_agent_context(
+      { message: fallbackPrompt, mode: "instant" },
+      context,
+    );
+  },
+
+  // ── Workspace Shell Execution ────────────────────────────────────────────
+
+  /**
+   * Runs a safe, read-only shell command in the workspace and returns stdout.
+   * Commands that look destructive are automatically delegated to the agent
+   * rather than executed directly.
+   */
+  async run_workspace_command(args, context) {
+    const rawCmd = String(args.command || "").trim();
+    if (!rawCmd) return "{RESPONSE}: command is required.";
+
+    // Only execute obviously read-only commands directly.
+    const SAFE_PATTERNS = [
+      /^git\s+(status|log|diff\s|show\s|branch|remote|tag|stash\s+list|ls-files|rev-parse|shortlog|describe)\b/i,
+      /^git\s+diff$/i,
+      /^git\s+log$/i,
+      /^npm\s+(test|run\s+(test|lint|build|check)|ls|audit)\b/i,
+      /^node\s+(--version|-v)$/i,
+      /^npm\s+(--version|-v)$/i,
+      /^ls(\s|$)/i,
+      /^cat\s+/i,
+      /^head\s+/i,
+      /^tail(\s|$)/i,
+      /^wc(\s|$)/i,
+      /^find\s+/i,
+      /^grep(\s|$)/i,
+      /^echo\s+/i,
+      /^pwd$/i,
+      /^which\s+/i,
+      /^type\s+/i,
+    ];
+
+    const isSafe = SAFE_PATTERNS.some((p) => p.test(rawCmd));
+    if (!isSafe) {
+      // Delegate potentially-mutating commands to the agent instead.
+      return TOOL_HANDLERS.ask_agent_context(
+        {
+          message:
+            `Run this command in the workspace and report the output: ${rawCmd}\n` +
+            `VOICE_RESPONSE: [key result in 1–2 sentences]`,
+          mode: "instant",
+        },
+        context,
+      );
+    }
+
+    try {
+      const { execSync } = await import("node:child_process");
+      const cwd = await resolveToolCwd(context);
+      const output = execSync(rawCmd, {
+        encoding: "utf8",
+        timeout: 20_000,
+        cwd,
+        shell: true,
+      });
+      const trimmed = String(output || "").trim();
+      if (!trimmed) return "Command completed with no output.";
+      return trimmed.length > 3000 ? trimmed.slice(0, 3000) + "\n… (truncated)" : trimmed;
+    } catch (err) {
+      const stderr = String(err?.stderr || "").trim();
+      const stdout = String(err?.stdout || "").trim();
+      const combined = [stdout, stderr].filter(Boolean).join("\n").trim();
+      const summary = String(err?.message || "command failed").split("\n")[0];
+      return `Command failed: ${summary}${combined ? `\n${combined.slice(0, 500)}` : ""}`;
+    }
+  },
+
+  // ── Background Session Polling ───────────────────────────────────────────
+
+  /**
+   * Polls a background session started by delegate_to_agent.
+   * Returns the current status and the last few messages.
+   */
+  async poll_background_session(args, context) {
+    const bgId = String(args.backgroundSessionId || "").trim();
+    if (!bgId) return "{RESPONSE}: backgroundSessionId is required.";
+    const limit = Math.min(Number(args.limit) || 5, 20);
+
+    try {
+      const tracker = await getSessionTracker();
+      const session =
+        tracker.getSessionById?.(bgId) || tracker.getSession?.(bgId) || null;
+      if (!session) {
+        return `{RESPONSE}: Background session "${bgId}" not found. It may have expired or the ID is incorrect.`;
+      }
+
+      const status = String(session.status || "running").trim();
+      const messages = (Array.isArray(session.messages) ? session.messages : []).slice(-limit);
+
+      // Find the most informative recent message (assistant or system summary)
+      const relevant = messages
+        .filter((m) => {
+          const role = String(m?.role || "").toLowerCase();
+          const content = String(m?.content || "");
+          return (
+            (role === "assistant" || (role === "system" && content.includes("{RESPONSE}"))) &&
+            content.trim().length > 0
+          );
+        })
+        .slice(-1)[0];
+
+      const latestText = relevant
+        ? formatVoiceToolResult(
+            String(relevant.content || "")
+              .replace(/^\{RESPONSE\}:\s*/i, "")
+              .trim(),
+          )
+        : "(no output yet)";
+
+      return `{RESPONSE}: Background session ${bgId} is ${status}. Latest: ${latestText}`;
+    } catch (err) {
+      return `{RESPONSE}: Could not poll session: ${String(err?.message || "unknown error")}`;
+    }
   },
 };
 

@@ -297,19 +297,35 @@ async function startAgentsSdkSession(config, options = {}) {
     instructions: tokenData.instructions || "You are Bosun, a helpful voice assistant.",
     tools: (tokenData.tools || []).map((t) => {
       const executeTool = async (args) => {
-        // Execute tool via server
-        const res = await fetch("/api/voice/tool", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            toolName: t.name,
-            args,
-            sessionId: sdkVoiceSessionId.value,
-            executor: _callContext.executor || undefined,
-            mode: _callContext.mode || undefined,
-            model: _callContext.model || undefined,
-          }),
-        });
+        // Execute tool via server with a 30 s timeout guard so a hung server call
+        // never permanently stalls the Realtime session in 'thinking' state.
+        const controller = new AbortController();
+        const timeoutId = setTimeout(() => controller.abort(), 30_000);
+        let res;
+        try {
+          res = await fetch("/api/voice/tool", {
+            method: "POST",
+            signal: controller.signal,
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              toolName: t.name,
+              args,
+              sessionId: sdkVoiceSessionId.value,
+              executor: _callContext.executor || undefined,
+              mode: _callContext.mode || undefined,
+              model: _callContext.model || undefined,
+            }),
+          });
+        } catch (fetchErr) {
+          const isTimeout = fetchErr?.name === "AbortError";
+          throw new Error(
+            isTimeout
+              ? `Tool "${t.name}" timed out after 30 s — the server may still be processing`
+              : (fetchErr?.message || `Tool "${t.name}" fetch failed`),
+          );
+        } finally {
+          clearTimeout(timeoutId);
+        }
         const result = await res.json().catch(() => ({}));
         if (!res.ok || result?.error) {
           const message = String(result?.error || `Tool ${t.name} failed (${res.status})`).trim();
@@ -430,7 +446,25 @@ async function startAgentsSdkSession(config, options = {}) {
     sdkVoiceToolCalls.value = sdkVoiceToolCalls.value.map((tc) =>
       tc.callId === callId ? { ...tc, status: "complete" } : tc
     );
+    // Return to listening once all tool calls have resolved.
+    const stillRunning = sdkVoiceToolCalls.value.some((tc) => tc.status === "running");
+    if (!stillRunning && sdkVoiceState.value === "thinking") {
+      sdkVoiceState.value = "listening";
+    }
     emit("tool-call-complete", { callId });
+  });
+
+  session.on("tool_call_error", (event) => {
+    const callId = event?.callId || event?.call_id;
+    const errMsg = String(event?.error?.message || event?.message || "Tool failed");
+    sdkVoiceToolCalls.value = sdkVoiceToolCalls.value.map((tc) =>
+      tc.callId === callId ? { ...tc, status: "error", error: errMsg } : tc
+    );
+    const stillRunning = sdkVoiceToolCalls.value.some((tc) => tc.status === "running");
+    if (!stillRunning && sdkVoiceState.value === "thinking") {
+      sdkVoiceState.value = "listening";
+    }
+    emit("tool-call-error", { callId, error: errMsg });
   });
 
   session.on("error", (err) => {
@@ -977,6 +1011,38 @@ export function getSdkSessionInfo() {
     usingLegacy: _usingLegacyFallback,
     sdkConfig: _sdkConfig,
   };
+}
+
+/**
+ * Send a Bosun slash command or plain text to the active voice session.
+ *
+ * Slash command routing:
+ *   /instant <prompt>    → prompts the agent for a fast inline answer
+ *   /ask <prompt>        → prompts the agent in read-only ask mode
+ *   /background <prompt> → requests a background agent delegation
+ *   /bg <prompt>         → alias for /background
+ *   /mcp <tool> [server] → invokes an MCP tool via the agent
+ *   /workspace <cmd>     → runs a workspace shell command
+ *   <plain text>         → sent directly to the Realtime session
+ *
+ * @param {string} commandOrText  Slash command or plain message text.
+ */
+export function sendVoiceCommand(commandOrText) {
+  const text = String(commandOrText || "").trim();
+  if (!text) return;
+
+  if (!text.startsWith("/")) {
+    sendSdkTextMessage(text);
+    return;
+  }
+
+  // For slash commands, send a structured natural-language instruction that
+  // will cause the Realtime agent to call bosun_slash_command tool.
+  // Wrapping in a clear directive avoids the agent interpreting the slash as
+  // part of the conversation rather than a tool invocation trigger.
+  const instruction =
+    `[SYSTEM COMMAND] Call the bosun_slash_command tool with command: ${text}`;
+  sendSdkTextMessage(instruction);
 }
 
 // ── Duration Timer ──────────────────────────────────────────────────────────
