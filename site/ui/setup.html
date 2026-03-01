@@ -994,10 +994,10 @@ function App() {
   };
 
   const VOICE_PROVIDER_MODEL_DEFAULTS = {
-    openai: { model: "gpt-realtime-1.5", visionModel: "gpt-4.1-nano", models: ["gpt-realtime-1.5", "gpt-realtime-1.5", "gpt-4o-realtime-preview-2024-12-17"], visionModels: ["gpt-4.1-nano", "gpt-4.1-mini", "gpt-4.1"] },
-    azure: { model: "gpt-realtime-1.5", visionModel: "gpt-4.1-nano", models: ["gpt-realtime-1.5", "gpt-realtime-1.5", "gpt-4o-realtime-preview"], visionModels: ["gpt-4.1-nano", "gpt-4.1-mini", "gpt-4.1"] },
-    claude: { model: "claude-3-7-sonnet-latest", visionModel: "claude-3-7-sonnet-latest", models: ["claude-3-7-sonnet-latest", "claude-sonnet-4-20250514"], visionModels: ["claude-3-7-sonnet-latest", "claude-sonnet-4-20250514"] },
-    gemini: { model: "gemini-2.5-pro", visionModel: "gemini-2.5-flash", models: ["gemini-2.5-pro", "gemini-2.5-flash", "gemini-2.0-flash", "gemini-3.0-flash", "gemini-3.1-pro"], visionModels: ["gemini-2.5-flash", "gemini-2.5-pro", "gemini-2.0-flash", "gemini-3.0-flash", "gemini-3.1-pro"] },
+    openai: { model: "gpt-realtime-1.5", visionModel: "gpt-4.1-nano", models: ["gpt-realtime-1.5", "gpt-audio-1.5", "gpt-4o-realtime-preview-2024-12-17"], visionModels: ["gpt-4.1-nano", "gpt-4.1-mini", "gpt-4.1"] },
+    azure: { model: "gpt-realtime-1.5", visionModel: "gpt-4.1-nano", models: ["gpt-realtime-1.5", "gpt-4o-realtime-preview"], visionModels: ["gpt-4.1-nano", "gpt-4.1-mini", "gpt-4.1"] },
+    claude: { model: "claude-sonnet-4.6", visionModel: "claude-sonnet-4.6", models: ["claude-sonnet-4.6", "claude-haiku-4.5"], visionModels: ["claude-sonnet-4.6", "claude-haiku-4.5"] },
+    gemini: { model: "gemini-3.1-pro", visionModel: "gemini-3.0-flash", models: ["gemini-2.5-pro", "gemini-2.5-flash", "gemini-2.0-flash", "gemini-3.0-flash", "gemini-3.1-pro"], visionModels: ["gemini-2.5-flash", "gemini-2.5-pro", "gemini-2.0-flash", "gemini-3.0-flash", "gemini-3.1-pro"] },
     fallback: { model: "", visionModel: "", models: [], visionModels: [] },
   };
 
@@ -2065,7 +2065,7 @@ function App() {
       {
         name: `executor-${prev.length + 1}`,
         executor: "COPILOT",
-        model: "claude-sonnet-4",
+        model: "claude-sonnet-4.6",
         weight: 50,
         role: "backup",
         enabled: true,
@@ -3711,7 +3711,7 @@ function App() {
                   ${ep.provider === "claude" && html`
                     <div class="form-group">
                       <label>Model</label>
-                      <input type="text" value=${ep.model} oninput=${(e) => updateVoiceEndpoint(i, "model", e.target.value)} placeholder="claude-opus-4-5" />
+                      <input type="text" value=${ep.model} oninput=${(e) => updateVoiceEndpoint(i, "model", e.target.value)} placeholder="claude-sonnet-4.6" />
                     </div>
                   `}
                   ${ep.provider === "gemini" && html`

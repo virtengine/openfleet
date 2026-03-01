@@ -23,6 +23,7 @@ const CONFIG_TTL_MS = 30_000; // re-read config every 30s
 
 const OPENAI_REALTIME_URL = "https://api.openai.com/v1/realtime";
 const OPENAI_REALTIME_MODEL = "gpt-realtime-1.5";
+const OPENAI_AUDIO_RESPONSES_MODEL = "gpt-audio-1.5";
 const OPENAI_RESPONSES_URL = "https://api.openai.com/v1/responses";
 const OPENAI_DEFAULT_VISION_MODEL = "gpt-4.1-nano";
 
@@ -46,11 +47,11 @@ function normalizeAzureEndpoint(raw) {
 
 const ANTHROPIC_MESSAGES_URL = "https://api.anthropic.com/v1/messages";
 const ANTHROPIC_API_VERSION = "2023-06-01";
-const CLAUDE_DEFAULT_MODEL = "claude-3-7-sonnet-latest";
-const CLAUDE_DEFAULT_VISION_MODEL = "claude-3-7-sonnet-latest";
+const CLAUDE_DEFAULT_MODEL = "claude-sonnet-4.6";
+const CLAUDE_DEFAULT_VISION_MODEL = "claude-sonnet-4.6";
 const GEMINI_GENERATE_CONTENT_URL = "https://generativelanguage.googleapis.com/v1beta/models";
-const GEMINI_DEFAULT_MODEL = "gemini-2.5-pro";
-const GEMINI_DEFAULT_VISION_MODEL = "gemini-2.5-flash";
+const GEMINI_DEFAULT_MODEL = "gemini-3.1-pro";
+const GEMINI_DEFAULT_VISION_MODEL = "gemini-3.0-flash";
 
 function buildOpenAIRealtimeSessionUrl(overrideBase = "") {
   const trimmed = String(overrideBase || "").trim().replace(/\/+$/, "");
@@ -89,6 +90,11 @@ function normalizeAzureRealtimeDeployment(rawDeployment) {
   if (!deployment) return OPENAI_REALTIME_MODEL;
   if (/^gpt-audio/i.test(deployment)) return OPENAI_REALTIME_MODEL;
   return deployment;
+}
+
+function isOpenAIAudioResponsesModel(rawModel) {
+  const model = String(rawModel || "").trim().toLowerCase();
+  return /^gpt-audio/.test(model);
 }
 
 const VALID_EXECUTORS = new Set([
@@ -803,7 +809,7 @@ export function getVoiceConfig(forceReload = false) {
       : provider === "gemini"
         ? GEMINI_DEFAULT_MODEL
         : OPENAI_REALTIME_MODEL;
-  const model = normalizeOpenAIRealtimeModel(voice.model || process.env.VOICE_MODEL || defaultModel);
+  const model = String(voice.model || process.env.VOICE_MODEL || defaultModel).trim() || defaultModel;
   const voiceId = voice.voiceId || process.env.VOICE_ID || "alloy";
   const turnDetection =
     voice.turnDetection || process.env.VOICE_TURN_DETECTION || "server_vad";
@@ -904,6 +910,33 @@ export function isVoiceAvailable() {
  */
 export async function createEphemeralToken(toolDefinitions = [], callContext = {}) {
   const cfg = getVoiceConfig();
+  const requestedModel = String(callContext?.model || cfg.model || "").trim();
+
+  // gpt-audio-* models use OpenAI Responses API (non-SDP transport).
+  if (isOpenAIAudioResponsesModel(requestedModel)) {
+    const openaiCandidate =
+      cfg.realtimeCandidates.find(
+        (entry) =>
+          entry.provider === "openai" &&
+          candidateHasCredentials(entry, cfg),
+      )
+      || (candidateHasCredentials({ provider: "openai", authSource: "api-key" }, cfg)
+        ? { provider: "openai", authSource: "api-key", model: requestedModel, voiceId: cfg.voiceId }
+        : null);
+    if (openaiCandidate) {
+      const context = sanitizeVoiceCallContext(callContext);
+      const instructions = await buildSessionScopedInstructions(cfg.instructions, context);
+      const voiceId = String(openaiCandidate?.voiceId || cfg.voiceId || "alloy").trim() || "alloy";
+      return {
+        provider: "openai",
+        model: requestedModel || OPENAI_AUDIO_RESPONSES_MODEL,
+        voiceId,
+        transport: "responses-audio",
+        instructions,
+      };
+    }
+  }
+
   const candidates = cfg.realtimeCandidates.filter((entry) => candidateHasCredentials(entry, cfg));
 
   if (!candidates.length) {
@@ -933,6 +966,101 @@ export async function createEphemeralToken(toolDefinitions = [], callContext = {
   }
 
   throw lastError || new Error("Failed to create realtime token");
+}
+
+function extractAudioBase64FromResponsesPayload(payload) {
+  if (!payload || typeof payload !== "object") return "";
+  const direct = String(
+    payload?.audio?.data
+      || payload?.audio?.base64
+      || payload?.output_audio?.data
+      || payload?.output_audio?.base64
+      || "",
+  ).trim();
+  if (direct) return direct;
+
+  const output = Array.isArray(payload.output) ? payload.output : [];
+  for (const item of output) {
+    const content = Array.isArray(item?.content) ? item.content : [];
+    for (const part of content) {
+      const maybe = String(
+        part?.audio?.data
+          || part?.audio?.base64
+          || part?.data
+          || part?.b64_json
+          || "",
+      ).trim();
+      if (maybe) return maybe;
+    }
+  }
+  return "";
+}
+
+/**
+ * Execute a single turn using OpenAI Responses audio models (gpt-audio-*).
+ * Returns text + optional audio bytes (base64).
+ */
+export async function generateOpenAIAudioResponse(inputText, callContext = {}, options = {}) {
+  const cfg = getVoiceConfig();
+  const text = String(inputText || "").trim();
+  if (!text) throw new Error("inputText is required");
+
+  const credential = String(cfg.openaiOAuthToken || cfg.openaiKey || "").trim();
+  if (!credential) {
+    throw new Error("OpenAI voice credential not configured (OAuth token or API key required)");
+  }
+
+  const context = sanitizeVoiceCallContext(callContext);
+  const instructions = await buildSessionScopedInstructions(cfg.instructions, context);
+  const preferredModel = String(options?.model || context.model || cfg.model || OPENAI_AUDIO_RESPONSES_MODEL).trim();
+  const model = isOpenAIAudioResponsesModel(preferredModel)
+    ? preferredModel
+    : OPENAI_AUDIO_RESPONSES_MODEL;
+  const voiceId = String(options?.voiceId || cfg.voiceId || "alloy").trim() || "alloy";
+
+  const response = await fetch(OPENAI_RESPONSES_URL, {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${credential}`,
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({
+      model,
+      modalities: ["text", "audio"],
+      audio: {
+        voice: voiceId,
+        format: "mp3",
+      },
+      input: [
+        {
+          role: "system",
+          content: [{ type: "input_text", text: instructions }],
+        },
+        {
+          role: "user",
+          content: [{ type: "input_text", text }],
+        },
+      ],
+    }),
+  });
+
+  if (!response.ok) {
+    const errorText = await buildProviderErrorDetails(response, "unknown");
+    throw new Error(`OpenAI audio response failed (${response.status}): ${errorText}`);
+  }
+
+  const payload = await response.json();
+  const outputText = extractModelResponseText(payload) || "";
+  const audioBase64 = extractAudioBase64FromResponsesPayload(payload);
+
+  return {
+    provider: "openai",
+    model,
+    voiceId,
+    text: outputText,
+    audioBase64,
+    audioMimeType: "audio/mpeg",
+  };
 }
 
 async function createOpenAIEphemeralToken(cfg, toolDefinitions = [], callContext = {}, candidate = {}) {
@@ -1263,6 +1391,19 @@ export function getRealtimeConnectionInfo() {
     };
   }
 
+  // For gpt-audio-* models we use the non-SDP Responses transport.
+  if (
+    candidate.provider === "openai"
+    && isOpenAIAudioResponsesModel(cfg.model || candidate?.model || "")
+  ) {
+    return {
+      provider: "openai",
+      url: null,
+      model: String(cfg.model || candidate?.model || OPENAI_AUDIO_RESPONSES_MODEL).trim() || OPENAI_AUDIO_RESPONSES_MODEL,
+      transport: "responses-audio",
+    };
+  }
+
   if (candidate.provider === "azure") {
     const endpoint = normalizeAzureEndpoint(candidate?.endpoint || cfg.azureEndpoint || "");
     const deployment = normalizeAzureRealtimeDeployment(
@@ -1277,6 +1418,7 @@ export function getRealtimeConnectionInfo() {
       provider: "azure",
       url,
       model: deployment,
+      transport: "webrtc",
     };
   }
   const model = normalizeOpenAIRealtimeModel(candidate?.model || cfg.model || OPENAI_REALTIME_MODEL);
@@ -1284,6 +1426,7 @@ export function getRealtimeConnectionInfo() {
     provider: "openai",
     url: buildOpenAIRealtimeWebRtcUrl(model, candidate?.endpoint || ""),
     model,
+    transport: "webrtc",
   };
 }
 

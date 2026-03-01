@@ -650,18 +650,26 @@ export async function resolveBestVoiceSession(voiceConfig = {}, options = {}) {
  */
 export async function getClientSdkConfig(voiceConfig = {}) {
   const provider = voiceConfig.provider || "fallback";
+  const configuredModel = String(voiceConfig.model || OPENAI_REALTIME_MODEL).trim();
+  const audioResponsesMode = /^gpt-audio/i.test(configuredModel);
   const availability = await checkSdkAvailability(provider);
+  const useSdk = availability.available && !audioResponsesMode;
+  const fallbackReason = !useSdk
+    ? (audioResponsesMode
+      ? "gpt-audio models use Responses audio transport (legacy client path)"
+      : availability.reason)
+    : null;
 
   return {
-    useSdk: availability.available,
+    useSdk,
     provider,
     sdkPackage: availability.info?.sdkPackage || null,
-    transport: availability.info?.transport || "fallback",
+    transport: audioResponsesMode ? "responses-audio" : (availability.info?.transport || "fallback"),
     tier: availability.info?.tier || 2,
-    model: voiceConfig.model || OPENAI_REALTIME_MODEL,
+    model: configuredModel,
     voiceId: voiceConfig.voiceId || "alloy",
     turnDetection: voiceConfig.turnDetection || "server_vad",
-    fallbackReason: availability.available ? null : availability.reason,
+    fallbackReason,
   };
 }
 

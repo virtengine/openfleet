@@ -2044,8 +2044,8 @@ function VoiceEndpointsEditor() {
       "gpt-audio-1.5",
       "gpt-realtime-1.5",
       "gpt-4o-realtime-preview-2024-12-17",
-      "claude-3-7-sonnet-latest",
-      "claude-sonnet-4-20250514",
+      "claude-sonnet-4.6",
+      "claude-haiku-4.5",
       "gemini-2.5-pro",
       "gemini-2.5-flash",
       "gemini-3.0-flash",
@@ -2356,7 +2356,7 @@ function VoiceEndpointsEditor() {
             ${ep.provider === "claude" && html`
               <div style="grid-column:1/-1">
                 <div class="setting-row-label">Model</div>
-                <input type="text" value=${ep.model} placeholder="claude-opus-4-5"
+                <input type="text" value=${ep.model} placeholder="claude-sonnet-4.6"
                   onInput=${(e) => updateEndpoint(ep._id, "model", e.target.value)} />
               </div>
             `}
@@ -2370,7 +2370,7 @@ function VoiceEndpointsEditor() {
             <div style="grid-column:1/-1">
               <div class="setting-row-label">Vision Model</div>
               <input type="text" value=${ep.visionModel}
-                placeholder=${ep.provider === "azure" ? "gpt-4o" : ep.provider === "claude" ? "claude-opus-4-5" : ep.provider === "gemini" ? "gemini-2.5-flash" : "gpt-4o"}
+                placeholder=${ep.provider === "azure" ? "gpt-4o" : ep.provider === "claude" ? "claude-sonnet-4.6" : ep.provider === "gemini" ? "gemini-3.0-flash" : "gpt-4o"}
                 onInput=${(e) => updateEndpoint(ep._id, "visionModel", e.target.value)} />
               <div class="meta-text" style="margin-top:3px">Model used for screenshot / image analysis tasks.</div>
             </div>
@@ -2414,8 +2414,8 @@ function VoiceEndpointsEditor() {
 const VOICE_PROVIDER_MODEL_DEFAULTS = {
   openai: { model: "gpt-audio-1.5", visionModel: "gpt-4.1-nano", models: ["gpt-audio-1.5", "gpt-realtime-1.5", "gpt-4o-realtime-preview-2024-12-17"], visionModels: ["gpt-4.1-nano", "gpt-4.1-mini", "gpt-4.1"] },
   azure: { model: "gpt-audio-1.5", visionModel: "gpt-4.1-nano", models: ["gpt-audio-1.5", "gpt-realtime-1.5", "gpt-4o-realtime-preview"], visionModels: ["gpt-4.1-nano", "gpt-4.1-mini", "gpt-4.1"] },
-  claude: { model: "claude-3-7-sonnet-latest", visionModel: "claude-3-7-sonnet-latest", models: ["claude-3-7-sonnet-latest", "claude-sonnet-4-20250514"], visionModels: ["claude-3-7-sonnet-latest", "claude-sonnet-4-20250514"] },
-  gemini: { model: "gemini-2.5-pro", visionModel: "gemini-2.5-flash", models: ["gemini-2.5-pro", "gemini-2.5-flash", "gemini-2.0-flash", "gemini-3.0-flash", "gemini-3.1-pro"], visionModels: ["gemini-2.5-flash", "gemini-2.5-pro", "gemini-2.0-flash", "gemini-3.0-flash", "gemini-3.1-pro"] },
+  claude: { model: "claude-sonnet-4.6", visionModel: "claude-sonnet-4.6", models: ["claude-sonnet-4.6", "claude-haiku-4.5"], visionModels: ["claude-sonnet-4.6", "claude-haiku-4.5"] },
+  gemini: { model: "gemini-3.1-pro", visionModel: "gemini-3.0-flash", models: ["gemini-2.5-pro", "gemini-2.5-flash", "gemini-2.0-flash", "gemini-3.0-flash", "gemini-3.1-pro"], visionModels: ["gemini-2.5-flash", "gemini-2.5-pro", "gemini-2.0-flash", "gemini-3.0-flash", "gemini-3.1-pro"] },
   fallback: { model: "", visionModel: "", models: [], visionModels: [] },
 };
 const _getProviderDefaults = (provider) =>

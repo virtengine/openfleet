@@ -30,6 +30,11 @@ let _pc = null;               // RTCPeerConnection
 let _dc = null;               // DataChannel for events
 let _mediaStream = null;      // User mic MediaStream
 let _audioElement = null;      // <audio> for playback
+let _transport = "webrtc";     // webrtc | responses-audio
+let _responsesTokenData = null;
+let _responsesRecognition = null;
+let _responsesAudioElement = null;
+let _responsesAbortController = null;
 let _reconnectTimer = null;    // 28-min reconnect timer
 let _durationTimer = null;     // Duration counter
 let _sessionStartTime = 0;
@@ -44,6 +49,9 @@ let _callContext = {
 const RECONNECT_AT_MS = 28 * 60 * 1000; // 28 minutes
 const MAX_RECONNECT_ATTEMPTS = 3;
 let _reconnectAttempts = 0;
+const SpeechRecognition = typeof globalThis !== "undefined"
+  ? (globalThis.SpeechRecognition || globalThis.webkitSpeechRecognition)
+  : null;
 
 function _normalizeCallContext(options = {}) {
   const sessionId = String(options?.sessionId || "").trim() || null;
@@ -51,6 +59,191 @@ function _normalizeCallContext(options = {}) {
   const mode = String(options?.mode || "").trim() || null;
   const model = String(options?.model || "").trim() || null;
   return { sessionId, executor, mode, model };
+}
+
+function _isResponsesAudioTransport(tokenData) {
+  return String(tokenData?.transport || "").trim().toLowerCase() === "responses-audio";
+}
+
+function _toDataUrl(base64, mimeType = "audio/mpeg") {
+  const bytes = String(base64 || "").trim();
+  if (!bytes) return "";
+  return `data:${mimeType};base64,${bytes}`;
+}
+
+function _startResponsesRecognition() {
+  if (!_responsesRecognition) return;
+  try {
+    _responsesRecognition.start();
+  } catch {
+    // best effort
+  }
+}
+
+function _stopResponsesRecognition() {
+  if (_responsesRecognition) {
+    try { _responsesRecognition.abort(); } catch { /* ignore */ }
+    _responsesRecognition = null;
+  }
+}
+
+async function _playResponsesAudio(base64, mimeType = "audio/mpeg") {
+  const dataUrl = _toDataUrl(base64, mimeType);
+  if (!dataUrl) return;
+  if (!_responsesAudioElement) {
+    _responsesAudioElement = new Audio();
+  }
+  const audio = _responsesAudioElement;
+  audio.src = dataUrl;
+  audio.autoplay = true;
+  await new Promise((resolve, reject) => {
+    const onEnded = () => {
+      cleanup();
+      resolve();
+    };
+    const onError = () => {
+      cleanup();
+      reject(new Error("Audio playback failed"));
+    };
+    const cleanup = () => {
+      audio.removeEventListener("ended", onEnded);
+      audio.removeEventListener("error", onError);
+    };
+    audio.addEventListener("ended", onEnded, { once: true });
+    audio.addEventListener("error", onError, { once: true });
+    audio.play().catch((err) => {
+      cleanup();
+      reject(err);
+    });
+  });
+}
+
+async function _processResponsesAudioTurn(text) {
+  const inputText = String(text || "").trim();
+  if (!inputText) return;
+  if (!_responsesTokenData) {
+    throw new Error("Audio responses transport not initialized");
+  }
+
+  voiceState.value = "thinking";
+  voiceTranscript.value = inputText;
+  emit("transcript", { text: inputText, final: true });
+  await _recordVoiceTranscript("user", inputText, "responses-audio.user_input");
+
+  if (_responsesAbortController) {
+    try { _responsesAbortController.abort(); } catch { /* ignore */ }
+  }
+  _responsesAbortController = new AbortController();
+
+  const res = await fetch("/api/voice/audio/respond", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    signal: _responsesAbortController.signal,
+    body: JSON.stringify({
+      inputText,
+      sessionId: _callContext.sessionId || undefined,
+      executor: _callContext.executor || undefined,
+      mode: _callContext.mode || undefined,
+      model: _callContext.model || _responsesTokenData.model || undefined,
+      voiceId: _responsesTokenData.voiceId || undefined,
+    }),
+  });
+
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({ error: `Audio response failed (${res.status})` }));
+    throw new Error(err.error || `Audio response failed (${res.status})`);
+  }
+
+  const data = await res.json();
+  const responseText = String(data?.text || "").trim();
+  if (responseText) {
+    voiceResponse.value = responseText;
+    emit("response-complete", { text: responseText });
+    await _recordVoiceTranscript("assistant", responseText, "responses-audio.assistant_output");
+  }
+
+  const audioBase64 = String(data?.audioBase64 || "").trim();
+  if (audioBase64) {
+    voiceState.value = "speaking";
+    await _playResponsesAudio(audioBase64, data?.audioMimeType || "audio/mpeg");
+  }
+
+  voiceResponse.value = "";
+  voiceState.value = "listening";
+}
+
+async function _startResponsesAudioSession(tokenData) {
+  if (!SpeechRecognition) {
+    throw new Error("Browser speech recognition is unavailable for gpt-audio mode");
+  }
+  _transport = "responses-audio";
+  _responsesTokenData = tokenData || {};
+  _responsesAbortController = null;
+
+  _responsesRecognition = new SpeechRecognition();
+  _responsesRecognition.continuous = false;
+  _responsesRecognition.interimResults = true;
+  _responsesRecognition.lang = navigator?.language || "en-US";
+  _responsesRecognition.maxAlternatives = 1;
+
+  _responsesRecognition.onstart = () => {
+    if (voiceState.value !== "speaking" && voiceState.value !== "thinking") {
+      voiceState.value = "listening";
+    }
+  };
+
+  _responsesRecognition.onresult = (event) => {
+    let transcript = "";
+    let isFinal = false;
+    for (const result of event.results) {
+      transcript += result[0]?.transcript || "";
+      if (result.isFinal) isFinal = true;
+    }
+    voiceTranscript.value = transcript;
+    if (isFinal && transcript.trim()) {
+      _processResponsesAudioTurn(transcript.trim())
+        .catch((err) => {
+          voiceState.value = "error";
+          voiceError.value = err.message;
+          emit("error", { message: err.message });
+        })
+        .finally(() => {
+          if (voiceState.value !== "error") {
+            _startResponsesRecognition();
+          }
+        });
+    }
+  };
+
+  _responsesRecognition.onerror = (event) => {
+    if (event?.error === "no-speech") {
+      setTimeout(() => _startResponsesRecognition(), 250);
+      return;
+    }
+    if (event?.error === "aborted") return;
+    const msg = `Speech recognition error: ${event?.error || "unknown"}`;
+    voiceState.value = "error";
+    voiceError.value = msg;
+    emit("error", { message: msg });
+  };
+
+  _responsesRecognition.onend = () => {
+    if (voiceState.value === "listening") {
+      setTimeout(() => _startResponsesRecognition(), 220);
+    }
+  };
+
+  voiceSessionId.value = _callContext.sessionId || `voice-${Date.now()}`;
+  _sessionStartTime = Date.now();
+  startDurationTimer();
+  voiceState.value = "connected";
+  emit("connected", {
+    provider: tokenData?.provider || "openai",
+    sessionId: voiceSessionId.value,
+    callContext: { ..._callContext },
+    transport: "responses-audio",
+  });
+  _startResponsesRecognition();
 }
 
 async function _recordVoiceTranscript(role, content, eventType = "") {
@@ -138,6 +331,16 @@ export async function startVoiceSession(options = {}) {
       throw new Error(err.error || `Token fetch failed (${tokenRes.status})`);
     }
     const tokenData = await tokenRes.json();
+    if (_isResponsesAudioTransport(tokenData)) {
+      await _startResponsesAudioSession(tokenData);
+      emit("session-started", {
+        sessionId: voiceSessionId.value,
+        callContext: { ..._callContext },
+        transport: "responses-audio",
+      });
+      return;
+    }
+    _transport = "webrtc";
 
     // 2. Get microphone
     const mediaDevices = navigator?.mediaDevices;
@@ -430,6 +633,21 @@ async function handleToolCall(event) {
  * Interrupt the current response (barge-in).
  */
 export function interruptResponse() {
+  if (_transport === "responses-audio") {
+    if (_responsesAbortController) {
+      try { _responsesAbortController.abort(); } catch { /* ignore */ }
+      _responsesAbortController = null;
+    }
+    if (_responsesAudioElement) {
+      try {
+        _responsesAudioElement.pause();
+        _responsesAudioElement.currentTime = 0;
+      } catch { /* ignore */ }
+    }
+    voiceState.value = "listening";
+    emit("interrupt", {});
+    return;
+  }
   if (_dc && _dc.readyState === "open") {
     _dc.send(JSON.stringify({ type: "response.cancel" }));
     emit("interrupt", {});
@@ -439,6 +657,14 @@ export function interruptResponse() {
 // ── Send text message via data channel ──────────────────────────────────────
 
 export function sendTextMessage(text) {
+  if (_transport === "responses-audio") {
+    _processResponsesAudioTurn(text).catch((err) => {
+      voiceState.value = "error";
+      voiceError.value = err.message;
+      emit("error", { message: err.message });
+    });
+    return;
+  }
   if (!_dc || _dc.readyState !== "open") {
     console.warn("[voice-client] Cannot send text — data channel not open");
     return;
@@ -545,4 +771,18 @@ function cleanup() {
     }
     _mediaStream = null;
   }
+  _stopResponsesRecognition();
+  if (_responsesAbortController) {
+    try { _responsesAbortController.abort(); } catch { /* ignore */ }
+    _responsesAbortController = null;
+  }
+  if (_responsesAudioElement) {
+    try {
+      _responsesAudioElement.pause();
+      _responsesAudioElement.src = "";
+    } catch { /* ignore */ }
+    _responsesAudioElement = null;
+  }
+  _responsesTokenData = null;
+  _transport = "webrtc";
 }

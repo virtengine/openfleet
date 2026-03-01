@@ -9726,6 +9726,35 @@ async function handleApi(req, res, url) {
     return;
   }
 
+  // POST /api/voice/audio/respond
+  // Single-turn audio response transport for OpenAI gpt-audio-* models.
+  if (path === "/api/voice/audio/respond" && req.method === "POST") {
+    try {
+      const body = await readJsonBody(req);
+      const inputText = String(body?.inputText || body?.text || "").trim();
+      if (!inputText) {
+        jsonResponse(res, 400, { ok: false, error: "inputText required" });
+        return;
+      }
+      const context = {
+        sessionId: String(body?.sessionId || "").trim() || undefined,
+        executor: String(body?.executor || "").trim() || undefined,
+        mode: String(body?.mode || "").trim() || undefined,
+        model: String(body?.model || "").trim() || undefined,
+      };
+      const options = {
+        voiceId: String(body?.voiceId || "").trim() || undefined,
+        model: String(body?.model || "").trim() || undefined,
+      };
+      const { generateOpenAIAudioResponse } = await import("./voice-relay.mjs");
+      const result = await generateOpenAIAudioResponse(inputText, context, options);
+      jsonResponse(res, 200, { ok: true, ...result });
+    } catch (err) {
+      jsonResponse(res, 500, { ok: false, error: err.message });
+    }
+    return;
+  }
+
   // POST /api/voice/tool
   if (path === "/api/voice/tool" && req.method === "POST") {
     try {
