@@ -901,8 +901,7 @@ function App() {
 
   const fetchOAuthStatus = async (provider) => {
     try {
-      const r = await fetch("/api/voice/auth/" + provider + "/status");
-      const d = await r.json();
+      const d = await apiGet("voice/auth/" + provider + "/status");
       if (d.ok) {
         setOauthAccounts((prev) => ({ ...prev, [provider]: { ...prev[provider], status: d.status || "idle", hasToken: !!d.hasToken, loading: false } }));
       }
@@ -918,16 +917,14 @@ function App() {
   const startOAuthLogin = async (provider) => {
     setOauthAccounts((prev) => ({ ...prev, [provider]: { ...prev[provider], loading: true } }));
     try {
-      const r = await fetch("/api/voice/auth/" + provider + "/login", { method: "POST" });
-      const d = await r.json();
+      const d = await apiPost("voice/auth/" + provider + "/login");
       if (d.ok && d.authUrl) {
         window.open(d.authUrl, "_blank", "noopener");
         setOauthAccounts((prev) => ({ ...prev, [provider]: { ...prev[provider], status: "pending", loading: false } }));
         // Poll for completion
         const poll = setInterval(async () => {
           try {
-            const pr = await fetch("/api/voice/auth/" + provider + "/status");
-            const pd = await pr.json();
+            const pd = await apiGet("voice/auth/" + provider + "/status");
             if (pd.ok && (pd.status === "connected" || pd.status === "complete" || pd.hasToken)) {
               setOauthAccounts((prev) => ({ ...prev, [provider]: { status: "connected", hasToken: true, loading: false } }));
               clearInterval(poll);
@@ -950,7 +947,7 @@ function App() {
   const doOAuthLogout = async (provider) => {
     setOauthAccounts((prev) => ({ ...prev, [provider]: { ...prev[provider], loading: true } }));
     try {
-      await fetch("/api/voice/auth/" + provider + "/logout", { method: "POST" });
+      await apiPost("voice/auth/" + provider + "/logout");
       setOauthAccounts((prev) => ({ ...prev, [provider]: { status: "idle", hasToken: false, loading: false } }));
     } catch {
       setOauthAccounts((prev) => ({ ...prev, [provider]: { ...prev[provider], loading: false } }));
@@ -976,12 +973,7 @@ function App() {
     const key = ep.id;
     setEndpointTestResults((prev) => ({ ...prev, [key]: { testing: true, result: null, error: null } }));
     try {
-      const r = await fetch("/api/voice/endpoints/test", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ provider: ep.provider, apiKey: ep.apiKey, endpoint: ep.endpoint, deployment: ep.deployment, model: ep.model, authSource: ep.authSource }),
-      });
-      const d = await r.json();
+      const d = await apiPost("voice/endpoints/test", { provider: ep.provider, apiKey: ep.apiKey, endpoint: ep.endpoint, deployment: ep.deployment, model: ep.model, authSource: ep.authSource });
       if (d.ok) {
         setEndpointTestResults((prev) => ({ ...prev, [key]: { testing: false, result: "success", error: null, latencyMs: d.latencyMs } }));
       } else {

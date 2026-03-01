@@ -1442,12 +1442,13 @@ async function handleModelsProbe(body) {
 }
 
 async function handleVoiceEndpointTest(body) {
-  const { provider, apiKey, endpoint: azureEndpoint, deployment } = body || {};
+  const { provider, apiKey, endpoint: azureEndpoint, deployment, authSource } = body || {};
   if (!provider) {
     return { ok: false, error: "provider is required" };
   }
 
   const normalizedProvider = String(provider).trim().toLowerCase();
+  const useOAuth = authSource === "oauth";
   const start = Date.now();
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), 10_000);
@@ -1458,10 +1459,17 @@ async function handleVoiceEndpointTest(body) {
 
     if (normalizedProvider === "openai") {
       testUrl = "https://api.openai.com/v1/models";
-      if (apiKey) {
+      if (apiKey && !useOAuth) {
         headers.Authorization = `Bearer ${apiKey}`;
       } else {
-        return { ok: false, error: "OpenAI API key is required for setup connectivity test" };
+        try {
+          const { getOpenAILoginStatus } = await import("./voice-auth-manager.mjs");
+          const st = getOpenAILoginStatus();
+          if (st.hasToken && st.accessToken) headers.Authorization = `Bearer ${st.accessToken}`;
+        } catch (_) { /* no oauth available */ }
+      }
+      if (!headers.Authorization) {
+        return { ok: false, error: "No API key or OAuth token available" };
       }
     } else if (normalizedProvider === "azure") {
       if (!azureEndpoint) {
@@ -1471,21 +1479,37 @@ async function handleVoiceEndpointTest(body) {
         return { ok: false, error: "Azure API key is required" };
       }
       const base = String(azureEndpoint).replace(/\/+$/, "");
-      const dep = String(deployment || "gpt-4o-realtime-preview").trim();
-      testUrl = `${base}/openai/deployments/${dep}?api-version=2024-10-01-preview`;
+      // Use deployments list endpoint — works for all models regardless of GA/preview status
+      testUrl = `${base}/openai/deployments?api-version=2025-04-01-preview`;
       headers["api-key"] = apiKey;
     } else if (normalizedProvider === "claude") {
-      if (!apiKey) {
-        return { ok: false, error: "Anthropic API key is required for setup connectivity test" };
-      }
       testUrl = "https://api.anthropic.com/v1/models";
       headers["anthropic-version"] = "2023-06-01";
-      headers["x-api-key"] = apiKey;
-    } else if (normalizedProvider === "gemini") {
-      if (!apiKey) {
-        return { ok: false, error: "Gemini API key is required for setup connectivity test" };
+      if (apiKey && !useOAuth) {
+        headers["x-api-key"] = apiKey;
+      } else {
+        try {
+          const { getClaudeLoginStatus } = await import("./voice-auth-manager.mjs");
+          const st = getClaudeLoginStatus();
+          if (st.hasToken && st.accessToken) headers["x-api-key"] = st.accessToken;
+        } catch (_) { /* no oauth available */ }
       }
-      testUrl = `https://generativelanguage.googleapis.com/v1beta/models?key=${encodeURIComponent(apiKey)}`;
+      if (!headers["x-api-key"]) {
+        return { ok: false, error: "No API key or OAuth token available" };
+      }
+    } else if (normalizedProvider === "gemini") {
+      let k = (apiKey && !useOAuth) ? apiKey : null;
+      if (!k) {
+        try {
+          const { getGeminiLoginStatus } = await import("./voice-auth-manager.mjs");
+          const st = getGeminiLoginStatus();
+          if (st.hasToken && st.accessToken) k = st.accessToken;
+        } catch (_) { /* no oauth available */ }
+      }
+      if (!k) {
+        return { ok: false, error: "No API key or OAuth token available" };
+      }
+      testUrl = `https://generativelanguage.googleapis.com/v1beta/models?key=${encodeURIComponent(k)}`;
     } else {
       return { ok: false, error: `Unknown provider: ${provider}` };
     }
@@ -1494,6 +1518,18 @@ async function handleVoiceEndpointTest(body) {
     clearTimeout(timer);
     const latencyMs = Date.now() - start;
     if (resp.ok || resp.status === 200) {
+      // For Azure, verify the specific deployment exists in the list
+      if (normalizedProvider === "azure" && deployment) {
+        try {
+          const respBody = await resp.json();
+          const deployments = respBody.data || respBody.value || [];
+          const found = deployments.some((d) => d.id === deployment || d.model === deployment);
+          if (!found && deployments.length > 0) {
+            const available = deployments.map((d) => d.id || d.model).filter(Boolean).join(", ");
+            return { ok: false, error: `Deployment "${deployment}" not found. Available: ${available}`, latencyMs };
+          }
+        } catch (_) { /* if we can't parse, connection still succeeded */ }
+      }
       return { ok: true, latencyMs };
     }
     const text = await resp.text().catch(() => "");
@@ -2041,6 +2077,76 @@ async function handleRequest(req, res) {
           }
           jsonResponse(res, 200, await handleVoiceEndpointTest(await readBody(req)));
           return;
+
+        // ── Voice OAuth auth routes ─────────────────────────────────────────
+        case "voice/auth/openai/status":
+        case "voice/auth/claude/status":
+        case "voice/auth/gemini/status": {
+          const provider = route.split("/")[2]; // openai | claude | gemini
+          try {
+            const statusFns = {
+              openai: "getOpenAILoginStatus",
+              claude: "getClaudeLoginStatus",
+              gemini: "getGeminiLoginStatus",
+            };
+            const mod = await import("./voice-auth-manager.mjs");
+            const fn = mod[statusFns[provider]];
+            if (!fn) throw new Error(`No status function for ${provider}`);
+            jsonResponse(res, 200, { ok: true, ...fn() });
+          } catch (err) {
+            jsonResponse(res, 200, { ok: true, status: "idle", hasToken: false, error: err.message });
+          }
+          return;
+        }
+        case "voice/auth/openai/login":
+        case "voice/auth/claude/login":
+        case "voice/auth/gemini/login": {
+          if (req.method !== "POST") {
+            jsonResponse(res, 405, { ok: false, error: "POST required" });
+            return;
+          }
+          const provider = route.split("/")[2];
+          try {
+            const loginFns = {
+              openai: "startOpenAICodexLogin",
+              claude: "startClaudeLogin",
+              gemini: "startGeminiLogin",
+            };
+            const mod = await import("./voice-auth-manager.mjs");
+            const fn = mod[loginFns[provider]];
+            if (!fn) throw new Error(`No login function for ${provider}`);
+            const result = fn();
+            jsonResponse(res, 200, { ok: true, ...(result || {}) });
+          } catch (err) {
+            jsonResponse(res, 500, { ok: false, error: err.message });
+          }
+          return;
+        }
+        case "voice/auth/openai/logout":
+        case "voice/auth/claude/logout":
+        case "voice/auth/gemini/logout": {
+          if (req.method !== "POST") {
+            jsonResponse(res, 405, { ok: false, error: "POST required" });
+            return;
+          }
+          const provider = route.split("/")[2];
+          try {
+            const logoutFns = {
+              openai: "logoutOpenAI",
+              claude: "logoutClaude",
+              gemini: "logoutGemini",
+            };
+            const mod = await import("./voice-auth-manager.mjs");
+            const fn = mod[logoutFns[provider]];
+            if (!fn) throw new Error(`No logout function for ${provider}`);
+            const result = fn();
+            jsonResponse(res, 200, { ok: true, ...(result || {}) });
+          } catch (err) {
+            jsonResponse(res, 500, { ok: false, error: err.message });
+          }
+          return;
+        }
+
         case "validate":
           if (req.method !== "POST") {
             jsonResponse(res, 405, { ok: false, error: "POST required" });
