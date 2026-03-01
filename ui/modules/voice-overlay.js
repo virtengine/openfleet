@@ -35,6 +35,7 @@ import {
   visionShareSource,
   visionShareError,
   visionLastSummary,
+  visionTransportMode,
   supportsVisionSource,
   toggleVisionShare,
   stopVisionShare,
@@ -607,6 +608,7 @@ export function VoiceOverlay({
   const visionSource = visionShareSource.value;
   const visionErr = visionShareError.value;
   const latestVisionSummary = visionLastSummary.value;
+  const visionMode = visionTransportMode.value;
   const canShareVision = Boolean(sessionId);
   const canShareCamera = canShareVision && supportsVisionSource("camera");
   const canShareScreen = canShareVision && supportsVisionSource("screen");
@@ -1071,6 +1073,15 @@ export function VoiceOverlay({
 
               ${(visionErr || latestVisionSummary) && html`
                 <div class="voice-vision-status">
+                  ${visionState === "streaming" && html`
+                    <div>
+                      Vision mode: ${visionMode === "realtime"
+                        ? "realtime stream"
+                        : visionMode === "fallback"
+                          ? "analysis fallback"
+                          : "negotiating"}
+                    </div>
+                  `}
                   ${visionErr || latestVisionSummary}
                 </div>
               `}

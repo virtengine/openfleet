@@ -12,12 +12,15 @@ export const visionShareSource = signal(null); // screen | camera | null
 export const visionShareError = signal(null);
 export const visionLastSummary = signal("");
 export const visionLastAnalyzedAt = signal(0);
+export const visionTransportMode = signal("idle"); // idle | realtime | fallback | negotiating
 
 let _stream = null;
 let _video = null;
 let _canvas = null;
 let _captureTimer = null;
 let _sendInFlight = false;
+let _lastFrameFingerprint = "";
+let _lastFrameSentAt = 0;
 let _context = {
   sessionId: null,
   executor: null,
@@ -115,6 +118,15 @@ function resetContext() {
     onFrame: null,
     preferRealtimeVision: false,
   };
+  _lastFrameFingerprint = "";
+  _lastFrameSentAt = 0;
+}
+
+function fingerprintFrame(dataUrl) {
+  const raw = String(dataUrl || "");
+  if (!raw) return "";
+  // Cheap stable fingerprint to skip near-identical consecutive frames.
+  return `${raw.length}:${raw.slice(0, 80)}:${raw.slice(-80)}`;
 }
 
 function stopTracks(stream) {
@@ -170,6 +182,13 @@ async function captureAndSendFrame() {
   if (!ctx) return;
   ctx.drawImage(_video, 0, 0, targetWidth, targetHeight);
   const frameDataUrl = _canvas.toDataURL("image/jpeg", _context.jpegQuality);
+  const now = Date.now();
+  const fingerprint = fingerprintFrame(frameDataUrl);
+  if (fingerprint && fingerprint === _lastFrameFingerprint && now - _lastFrameSentAt < 900) {
+    return;
+  }
+  _lastFrameFingerprint = fingerprint;
+  _lastFrameSentAt = now;
 
   _sendInFlight = true;
   try {
@@ -194,6 +213,7 @@ async function captureAndSendFrame() {
         });
         const wasHandled = handled === true || handled?.handled === true;
         if (wasHandled) {
+          visionTransportMode.value = "realtime";
           const summary = String(handled?.summary || "").trim();
           if (summary) {
             visionLastSummary.value = summary;
@@ -221,8 +241,11 @@ async function captureAndSendFrame() {
       throw new Error(data?.error || `Vision upload failed (${res.status})`);
     }
     if (data?.analyzed && typeof data?.summary === "string" && data.summary.trim()) {
+      visionTransportMode.value = "fallback";
       visionLastSummary.value = data.summary.trim();
       visionLastAnalyzedAt.value = Date.now();
+    } else if (visionTransportMode.value === "negotiating") {
+      visionTransportMode.value = "fallback";
     }
   } catch (err) {
     visionShareState.value = "error";
@@ -258,6 +281,7 @@ export async function startVisionShare(options = {}) {
 
   await stopVisionShare();
   visionShareState.value = "starting";
+  visionTransportMode.value = "negotiating";
   visionShareError.value = null;
   visionShareSource.value = source;
 
@@ -355,6 +379,7 @@ export async function stopVisionShare() {
   resetContext();
   _sendInFlight = false;
   visionShareState.value = "off";
+  visionTransportMode.value = "idle";
   visionShareSource.value = null;
   visionShareError.value = null;
   visionLastSummary.value = "";
