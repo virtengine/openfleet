@@ -23,6 +23,15 @@ vi.mock("../voice-tools.mjs", () => ({
   ]),
 }));
 
+// Prevent real OAuth tokens on disk from leaking into tests
+vi.mock("../voice-auth-manager.mjs", () => ({
+  resolveVoiceOAuthToken: vi.fn(() => null),
+  saveVoiceOAuthToken: vi.fn(),
+  getOpenAILoginStatus: vi.fn(() => ({ status: "idle", hasToken: false })),
+  getClaudeLoginStatus: vi.fn(() => ({ status: "idle", hasToken: false })),
+  getGeminiLoginStatus: vi.fn(() => ({ status: "idle", hasToken: false })),
+}));
+
 // ── Global fetch mock ────────────────────────────────────────────────────────
 
 const _origFetch = globalThis.fetch;
@@ -45,6 +54,7 @@ afterEach(() => {
 // ── Lazy import (after mocks are set up) ─────────────────────────────────────
 
 const { loadConfig } = await import("../config.mjs");
+const { resolveVoiceOAuthToken } = await import("../voice-auth-manager.mjs");
 const {
   getVoiceConfig,
   isVoiceAvailable,
@@ -347,8 +357,8 @@ describe("voice-relay", () => {
 
       const fetchCall = vi.mocked(globalThis.fetch).mock.calls[0];
       expect(fetchCall[0]).toContain("myresource.openai.azure.com");
-      expect(fetchCall[0]).toContain("openai/v1/realtime/client_secrets");
-      expect(fetchCall[0]).not.toContain("api-version");
+      expect(fetchCall[0]).toContain("openai/v1/realtime/sessions");
+      expect(fetchCall[0]).toContain("api-version=2025-04-01-preview");
       expect(fetchCall[1].headers["api-key"]).toBe("az-key");
       // GA protocol requires type: "realtime" in the session POST body
       const body = JSON.parse(fetchCall[1].body);
@@ -381,7 +391,8 @@ describe("voice-relay", () => {
 
       const fetchCall = vi.mocked(globalThis.fetch).mock.calls[0];
       expect(fetchCall[0]).toContain("foundry.openai.azure.com");
-      expect(fetchCall[0]).toContain("openai/v1/realtime/client_secrets");
+      expect(fetchCall[0]).toContain("openai/v1/realtime/sessions");
+      expect(fetchCall[0]).toContain("api-version=2025-04-01-preview");
       expect(fetchCall[1].headers["api-key"]).toBe("ep-specific-key");
       // GA deployment — must have type: "realtime"
       expect(JSON.parse(fetchCall[1].body).type).toBe("realtime");
@@ -429,7 +440,9 @@ describe("voice-relay", () => {
     });
 
     it("prefers OpenAI OAuth token over API key when both are present", async () => {
-      process.env.OPENAI_OAUTH_ACCESS_TOKEN = "oauth-openai-token";
+      vi.mocked(resolveVoiceOAuthToken).mockImplementation((provider) =>
+        provider === "openai" ? { token: "oauth-openai-token" } : null,
+      );
       vi.mocked(loadConfig).mockReturnValue({
         voice: { provider: "openai", openaiApiKey: "sk-test" },
         primaryAgent: "codex-sdk",
@@ -560,7 +573,7 @@ describe("voice-relay", () => {
 
       const info = getRealtimeConnectionInfo();
       expect(info.provider).toBe("azure");
-      expect(info.url).toBe("https://myresource.openai.azure.com/openai/v1/realtime");
+      expect(info.url).toBe("https://myresource.openai.azure.com/openai/v1/realtime?api-version=2025-04-01-preview");
       expect(info.model).toBe("gpt-realtime-1.5");
     });
 

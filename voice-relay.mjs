@@ -960,11 +960,11 @@ async function createAzureEphemeralToken(cfg, toolDefinitions = [], callContext 
     String(candidate?.azureDeployment || candidate?.model || cfg.azureDeployment || "").trim()
     || "gpt-audio-1.5";
   const voiceId = String(candidate?.voiceId || cfg.voiceId || "alloy").trim() || "alloy";
-  // GA protocol (gpt-realtime-1.5, gpt-realtime, etc.) uses /openai/v1/realtime/client_secrets.
+  // GA protocol (gpt-realtime-1.5, gpt-realtime, etc.) uses /openai/v1/realtime/sessions?api-version=...
   // Preview protocol uses /openai/realtimeapi/sessions?api-version=...
   const url = isAzureGaProtocol(deployment)
-    ? `${resolvedEndpoint}/openai/v1/realtime/client_secrets`
-    : `${resolvedEndpoint}/openai/realtimeapi/sessions?api-version=${AZURE_API_VERSION}`;
+    ? `${resolvedEndpoint}/openai/v1/realtime/sessions?api-version=${AZURE_API_VERSION}`
+    : `${resolvedEndpoint}/openai/realtimeapi/sessions?api-version=${AZURE_API_VERSION}&deployment=${encodeURIComponent(deployment)}`;
 
   const headers = {
     "Content-Type": "application/json",
@@ -1179,11 +1179,11 @@ export function getRealtimeConnectionInfo() {
     const deployment =
       String(candidate?.azureDeployment || candidate?.model || cfg.azureDeployment || "").trim()
       || "gpt-audio-1.5";
-    // GA protocol: no api-version, no deployment query param.
-    // Preview protocol: include api-version and deployment.
+    // GA protocol: /openai/v1/realtime with api-version; model set during /sessions exchange.
+    // Preview protocol: /openai/realtime with api-version and deployment.
     const url = isAzureGaProtocol(deployment)
-      ? `${endpoint}/openai/v1/realtime`
-      : `${endpoint}/openai/realtime?api-version=${AZURE_API_VERSION}&deployment=${deployment}`;
+      ? `${endpoint}/openai/v1/realtime?api-version=${AZURE_API_VERSION}`
+      : `${endpoint}/openai/realtime?api-version=${AZURE_API_VERSION}&deployment=${encodeURIComponent(deployment)}`;
     return {
       provider: "azure",
       url,
