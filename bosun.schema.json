@@ -33,6 +33,16 @@
     "watchEnabled": { "type": "boolean" },
     "echoLogs": { "type": "boolean" },
     "autoFixEnabled": { "type": "boolean" },
+    "workflowFirst": {
+      "type": "boolean",
+      "default": false,
+      "description": "When true, all modules start in WORKFLOW mode by default. The task executor lifecycle is fully delegated to workflow templates (workflowOwnsTaskLifecycle). Bosun acts as a thin shell around the workflow engine."
+    },
+    "workflowOwnsTaskLifecycle": {
+      "type": "boolean",
+      "default": false,
+      "description": "Delegate task finalization and recovery to workflow automation instead of the legacy TaskExecutor. Automatically set to true when workflowFirst is enabled."
+    },
     "interactiveShellEnabled": { "type": "boolean" },
     "shellEnabled": { "type": "boolean" },
     "codexEnabled": { "type": "boolean" },

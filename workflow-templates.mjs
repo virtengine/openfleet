@@ -94,6 +94,12 @@ import {
   SECRET_SCANNER_TEMPLATE,
 } from "./workflow-templates/security.mjs";
 
+// Task Lifecycle (workflow-first core)
+import {
+  TASK_LIFECYCLE_TEMPLATE,
+  VE_ORCHESTRATOR_LITE_TEMPLATE,
+} from "./workflow-templates/task-lifecycle.mjs";
+
 // ── Re-export individual templates for direct import ────────────────────────
 
 export {
@@ -131,6 +137,8 @@ export {
   SYNC_ENGINE_TEMPLATE,
   DEPENDENCY_AUDIT_TEMPLATE,
   SECRET_SCANNER_TEMPLATE,
+  TASK_LIFECYCLE_TEMPLATE,
+  VE_ORCHESTRATOR_LITE_TEMPLATE,
 };
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -145,7 +153,8 @@ export const TEMPLATE_CATEGORIES = Object.freeze({
   "ci-cd":     { label: "CI / CD",      icon: ":refresh:", order: 4 },
   reliability: { label: "Reliability",  icon: ":shield:", order: 5 },
   security:    { label: "Security",     icon: ":lock:", order: 6 },
-  custom:      { label: "Custom",       icon: ":settings:", order: 7 },
+  lifecycle:   { label: "Lifecycle",    icon: ":rocket:", order: 7 },
+  custom:      { label: "Custom",       icon: ":settings:", order: 8 },
 });
 
 export const WORKFLOW_TEMPLATES = Object.freeze([
@@ -189,6 +198,9 @@ export const WORKFLOW_TEMPLATES = Object.freeze([
   // ── Security ──
   DEPENDENCY_AUDIT_TEMPLATE,
   SECRET_SCANNER_TEMPLATE,
+  // ── Task Lifecycle (workflow-first core) ──
+  TASK_LIFECYCLE_TEMPLATE,
+  VE_ORCHESTRATOR_LITE_TEMPLATE,
 ]);
 
 const _TEMPLATE_BY_ID = new Map(
@@ -478,6 +490,50 @@ export const WORKFLOW_SETUP_PROFILES = Object.freeze({
       "template-task-archiver",
       "template-sync-engine",
       "template-sdk-conflict-resolver",
+    ]),
+  }),
+  workflowFirst: Object.freeze({
+    id: "workflowFirst",
+    name: "Workflow-First (Full)",
+    description:
+      "Everything runs as a workflow — including the core task execution " +
+      "lifecycle. Bosun becomes a thin shell around the workflow engine. " +
+      "Enables workflowOwnsTaskLifecycle for complete workflow-driven control.",
+    recommendedFor:
+      "Teams ready for full workflow-first operation where every " +
+      "bosun behavior is a composable, visual workflow.",
+    workflowAutomationEnabled: true,
+    workflowFirst: true,
+    templateIds: Object.freeze([
+      // Core lifecycle
+      "template-task-lifecycle",
+      // GitHub
+      "template-pr-merge-strategy",
+      "template-bosun-pr-watchdog",
+      "template-github-kanban-sync",
+      "template-stale-pr-reaper",
+      "template-sdk-conflict-resolver",
+      // Agents
+      "template-review-agent",
+      "template-backend-agent",
+      "template-agent-session-monitor",
+      // Planning
+      "template-task-planner",
+      "template-task-replenish",
+      // Reliability
+      "template-error-recovery",
+      "template-anomaly-watchdog",
+      "template-workspace-hygiene",
+      "template-task-finalization-guard",
+      "template-task-repair-worktree",
+      "template-task-status-transition-manager",
+      "template-incident-response",
+      "template-task-archiver",
+      "template-sync-engine",
+      // CI/CD
+      "template-release-pipeline",
+      // Security
+      "template-dependency-audit",
     ]),
   }),
 });

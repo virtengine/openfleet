@@ -4223,6 +4223,936 @@ registerNodeType("action.mcp_list_tools", {
 });
 
 // ═══════════════════════════════════════════════════════════════════════════
+//  TASK LIFECYCLE — Workflow-first task execution primitives
+//
+//  These node types decompose the monolithic TaskExecutor.executeTask() flow
+//  into composable DAG nodes, enabling the full task lifecycle to run as a
+//  native workflow (template-task-lifecycle).
+// ═══════════════════════════════════════════════════════════════════════════
+
+/** Module-scope lazy caches for task lifecycle imports. */
+let _taskClaimsMod = null;
+let _taskComplexityMod = null;
+let _worktreeManagerMod = null;
+let _gitSafetyMod = null;
+let _kanbanAdapterMod = null;
+let _taskContextMod = null;
+let _agentPromptsMod = null;
+let _agentPoolMod = null;
+let _sessionTrackerMod = null;
+
+async function ensureTaskClaimsMod() {
+  if (!_taskClaimsMod) _taskClaimsMod = await import("./task-claims.mjs");
+  return _taskClaimsMod;
+}
+async function ensureTaskComplexityMod() {
+  if (!_taskComplexityMod) _taskComplexityMod = await import("./task-complexity.mjs");
+  return _taskComplexityMod;
+}
+async function ensureKanbanAdapterMod() {
+  if (!_kanbanAdapterMod) _kanbanAdapterMod = await import("./kanban-adapter.mjs");
+  return _kanbanAdapterMod;
+}
+async function ensureAgentPoolMod() {
+  if (!_agentPoolMod) _agentPoolMod = await import("./agent-pool.mjs");
+  return _agentPoolMod;
+}
+
+// ── trigger.task_available ──────────────────────────────────────────────────
+
+registerNodeType("trigger.task_available", {
+  describe: () =>
+    "Polling trigger that fires when todo tasks are available and execution " +
+    "slots are free. Replaces TaskExecutor._pollLoop() scheduling logic.",
+  schema: {
+    type: "object",
+    properties: {
+      maxParallel: {
+        type: "number",
+        default: 3,
+        description: "Maximum parallel task slots",
+      },
+      pollIntervalMs: {
+        type: "number",
+        default: 30000,
+        description: "Poll interval in milliseconds",
+      },
+      projectId: {
+        type: "string",
+        description: "Kanban project ID to query (optional)",
+      },
+      status: {
+        type: "string",
+        default: "todo",
+        description: "Task status to poll for",
+      },
+      filterCodexScoped: {
+        type: "boolean",
+        default: true,
+        description: "Only include codex-scoped tasks",
+      },
+      filterDrafts: {
+        type: "boolean",
+        default: true,
+        description: "Exclude draft tasks",
+      },
+    },
+  },
+  async execute(node, ctx) {
+    const maxParallel = node.config?.maxParallel ?? 3;
+    const status = node.config?.status ?? "todo";
+    const projectId = ctx.resolve(node.config?.projectId || "") || undefined;
+
+    // Check slot availability from context (injected by supervisor)
+    const activeSlotCount = ctx.data?.activeSlotCount ?? 0;
+    if (activeSlotCount >= maxParallel) {
+      ctx.log(node.id, `All ${maxParallel} slot(s) in use — skipping`);
+      return { triggered: false, reason: "slots_full", activeSlotCount, maxParallel };
+    }
+
+    // Query kanban for available tasks
+    let tasks = [];
+    try {
+      const kanban = ctx.data?._services?.kanban;
+      if (kanban?.listTasks) {
+        tasks = await kanban.listTasks(projectId, { status });
+      } else {
+        const ka = await ensureKanbanAdapterMod();
+        tasks = await ka.listTasks(projectId, { status });
+      }
+    } catch (err) {
+      ctx.log(node.id, `Failed to list tasks: ${err.message}`);
+      return { triggered: false, reason: "list_error", error: err.message };
+    }
+
+    // Client-side status filter (API may not respect status param)
+    if (tasks?.length > 0) {
+      tasks = tasks.filter((t) => t.status === status);
+    }
+
+    if (!tasks || tasks.length === 0) {
+      return { triggered: false, reason: "no_tasks", taskCount: 0 };
+    }
+
+    // Filter cooldowns / blocked tasks from context
+    const cooldowns = ctx.data?.taskCooldowns || {};
+    const blocked = ctx.data?.blockedTaskIds || [];
+    const now = Date.now();
+    tasks = tasks.filter((t) => {
+      const id = String(t.id || t.task_id || "");
+      if (!id) return false;
+      if (blocked.includes(id)) return false;
+      const cd = cooldowns[id];
+      if (cd && now < cd) return false;
+      return true;
+    });
+
+    if (tasks.length === 0) {
+      return { triggered: false, reason: "all_filtered", taskCount: 0 };
+    }
+
+    const remaining = maxParallel - activeSlotCount;
+    const toDispatch = tasks.slice(0, remaining);
+
+    ctx.log(node.id, `Found ${toDispatch.length} task(s) ready for dispatch (${remaining} slot(s) free)`);
+    return {
+      triggered: true,
+      tasks: toDispatch,
+      taskCount: toDispatch.length,
+      availableSlots: remaining,
+    };
+  },
+});
+
+// ── condition.slot_available ────────────────────────────────────────────────
+
+registerNodeType("condition.slot_available", {
+  describe: () =>
+    "Gate that checks whether a parallel execution slot is available. " +
+    "Used before allocating work to prevent over-subscription.",
+  schema: {
+    type: "object",
+    properties: {
+      maxParallel: {
+        type: "number",
+        default: 3,
+        description: "Maximum concurrent slots",
+      },
+      baseBranchLimit: {
+        type: "number",
+        default: 0,
+        description: "Per-base-branch concurrency limit (0 = unlimited)",
+      },
+      baseBranch: {
+        type: "string",
+        description: "Base branch to check limit against (optional)",
+      },
+    },
+  },
+  async execute(node, ctx) {
+    const maxParallel = node.config?.maxParallel ?? 3;
+    const baseBranchLimit = node.config?.baseBranchLimit ?? 0;
+    const activeSlotCount = ctx.data?.activeSlotCount ?? 0;
+    const slotsAvailable = activeSlotCount < maxParallel;
+
+    let baseBranchOk = true;
+    if (baseBranchLimit > 0 && node.config?.baseBranch) {
+      const baseBranch = ctx.resolve(node.config.baseBranch);
+      const baseBranchSlots = ctx.data?.baseBranchSlotCounts?.[baseBranch] ?? 0;
+      baseBranchOk = baseBranchSlots < baseBranchLimit;
+    }
+
+    const result = slotsAvailable && baseBranchOk;
+    ctx.log(node.id, `Slot check: ${activeSlotCount}/${maxParallel} used, result=${result}`);
+    return { result, slotsAvailable, baseBranchOk, activeSlotCount, maxParallel };
+  },
+});
+
+// ── action.allocate_slot ────────────────────────────────────────────────────
+
+registerNodeType("action.allocate_slot", {
+  describe: () =>
+    "Reserve a parallel execution slot for a task. Tracks the allocation " +
+    "in workflow context so downstream nodes and cleanup can reference it.",
+  schema: {
+    type: "object",
+    properties: {
+      taskId: { type: "string", description: "Task ID to allocate a slot for" },
+      taskTitle: { type: "string", description: "Task title (for logging)" },
+      sdk: { type: "string", description: "SDK name" },
+      model: { type: "string", description: "Model override" },
+      branch: { type: "string", description: "Git branch name" },
+      baseBranch: { type: "string", description: "Base/target branch" },
+    },
+    required: ["taskId"],
+  },
+  async execute(node, ctx) {
+    const taskId = ctx.resolve(node.config?.taskId || "");
+    const taskTitle = ctx.resolve(node.config?.taskTitle || "(untitled)");
+    const sdk = ctx.resolve(node.config?.sdk || "auto");
+    const model = ctx.resolve(node.config?.model || "");
+    const branch = ctx.resolve(node.config?.branch || "");
+    const baseBranch = ctx.resolve(node.config?.baseBranch || "");
+
+    if (!taskId) throw new Error("action.allocate_slot: taskId is required");
+
+    const slotInfo = {
+      taskId,
+      taskTitle,
+      sdk,
+      model,
+      branch,
+      baseBranch,
+      startedAt: Date.now(),
+      agentInstanceId: `wf-${randomUUID().slice(0, 8)}`,
+      status: "running",
+    };
+
+    // Store in workflow context for downstream use
+    ctx.data._allocatedSlot = slotInfo;
+    ctx.data.taskId = taskId;
+    ctx.data.taskTitle = taskTitle;
+    ctx.data.branch = branch;
+    ctx.data.baseBranch = baseBranch;
+
+    ctx.log(node.id, `Slot allocated for "${taskTitle}" (${taskId})`);
+    return { success: true, slot: slotInfo };
+  },
+});
+
+// ── action.release_slot ─────────────────────────────────────────────────────
+
+registerNodeType("action.release_slot", {
+  describe: () =>
+    "Release a previously allocated execution slot. Safe to call multiple " +
+    "times (idempotent). Should be in both success and failure branches.",
+  schema: {
+    type: "object",
+    properties: {
+      taskId: { type: "string", description: "Task ID whose slot to release" },
+    },
+  },
+  async execute(node, ctx) {
+    const taskId = ctx.resolve(node.config?.taskId || "") || ctx.data?.taskId || "";
+    const slot = ctx.data?._allocatedSlot;
+
+    if (slot && slot.taskId === taskId) {
+      slot.status = "released";
+      slot.releasedAt = Date.now();
+      ctx.data._allocatedSlot = null;
+    }
+
+    ctx.log(node.id, `Slot released for ${taskId || "(unknown)"}`);
+    return { success: true, taskId, releasedAt: Date.now() };
+  },
+});
+
+// ── action.claim_task ───────────────────────────────────────────────────────
+
+registerNodeType("action.claim_task", {
+  describe: () =>
+    "Acquire a distributed task claim via task-claims.mjs. Prevents " +
+    "multiple orchestrators from working on the same task. Returns a " +
+    "claim token that must be released on completion or failure.",
+  schema: {
+    type: "object",
+    properties: {
+      taskId: { type: "string", description: "Task ID to claim" },
+      taskTitle: { type: "string", description: "Task title (for metadata)" },
+      ttlMinutes: {
+        type: "number",
+        default: 180,
+        description: "Claim TTL in minutes",
+      },
+      instanceId: {
+        type: "string",
+        description: "Orchestrator instance ID (auto-generated if omitted)",
+      },
+      branch: { type: "string", description: "Branch for claim metadata" },
+      sdk: { type: "string", description: "SDK for claim metadata" },
+      model: { type: "string", description: "Model for claim metadata" },
+    },
+    required: ["taskId"],
+  },
+  async execute(node, ctx) {
+    const taskId = ctx.resolve(node.config?.taskId || "") || ctx.data?.taskId || "";
+    const taskTitle = ctx.resolve(node.config?.taskTitle || "") || ctx.data?.taskTitle || "";
+    const ttlMinutes = node.config?.ttlMinutes ?? 180;
+    const instanceId = ctx.resolve(node.config?.instanceId || "") || `wf-${randomUUID().slice(0, 8)}`;
+    const branch = ctx.resolve(node.config?.branch || "") || ctx.data?.branch || "";
+    const sdk = ctx.resolve(node.config?.sdk || "") || ctx.data?.sdk || "";
+    const model = ctx.resolve(node.config?.model || "") || ctx.data?.model || "";
+
+    if (!taskId) throw new Error("action.claim_task: taskId is required");
+
+    const claims = await ensureTaskClaimsMod();
+
+    let claimResult;
+    try {
+      claimResult = await claims.claimTask({
+        taskId,
+        instanceId,
+        ttlMinutes,
+        metadata: {
+          task_title: taskTitle,
+          branch,
+          owner: "workflow-engine",
+          sdk,
+          model: model || null,
+          pid: process.pid,
+        },
+      });
+    } catch (err) {
+      ctx.log(node.id, `Claim failed: ${err.message}`);
+      return { success: false, error: err.message, taskId, alreadyClaimed: false };
+    }
+
+    if (claimResult?.success) {
+      const token = claimResult.token || claimResult.claim?.claim_token || null;
+      // Store claim token in context for release_claim node
+      ctx.data._claimToken = token;
+      ctx.data._claimInstanceId = instanceId;
+      ctx.log(node.id, `Task "${taskTitle}" claimed successfully`);
+      return { success: true, taskId, claimToken: token, instanceId };
+    }
+
+    if (claimResult?.error === "task_already_claimed") {
+      const owner = claimResult?.existing_instance ||
+        claimResult?.existing_claim?.instance_id || "unknown";
+      ctx.log(node.id, `Task "${taskTitle}" already claimed by ${owner}`);
+      return {
+        success: false,
+        taskId,
+        alreadyClaimed: true,
+        claimedBy: owner,
+        error: "task_already_claimed",
+      };
+    }
+
+    ctx.log(node.id, `Claim warning: ${claimResult?.error || "unknown"}`);
+    return { success: false, taskId, error: claimResult?.error || "unknown", alreadyClaimed: false };
+  },
+});
+
+// ── action.release_claim ────────────────────────────────────────────────────
+
+registerNodeType("action.release_claim", {
+  describe: () =>
+    "Release a distributed task claim. Idempotent — safe on double-call. " +
+    "Should be in both success and failure workflow branches.",
+  schema: {
+    type: "object",
+    properties: {
+      taskId: { type: "string", description: "Task ID to release claim for" },
+      claimToken: { type: "string", description: "Claim token (auto-read from context if omitted)" },
+      instanceId: { type: "string", description: "Instance ID (auto-read from context if omitted)" },
+    },
+  },
+  async execute(node, ctx) {
+    const taskId = ctx.resolve(node.config?.taskId || "") || ctx.data?.taskId || "";
+    const claimToken = ctx.resolve(node.config?.claimToken || "") || ctx.data?._claimToken || "";
+    const instanceId = ctx.resolve(node.config?.instanceId || "") || ctx.data?._claimInstanceId || "";
+
+    if (!taskId || !claimToken) {
+      ctx.log(node.id, `No claim to release for ${taskId || "(unknown)"}`);
+      return { success: true, skipped: true, reason: "no_claim" };
+    }
+
+    const claims = await ensureTaskClaimsMod();
+    try {
+      await claims.releaseTaskClaim({ taskId, claimToken, instanceId });
+      ctx.data._claimToken = null;
+      ctx.log(node.id, `Claim released for ${taskId}`);
+      return { success: true, taskId };
+    } catch (err) {
+      ctx.log(node.id, `Claim release warning: ${err.message}`);
+      return { success: true, taskId, warning: err.message };
+    }
+  },
+});
+
+// ── action.resolve_executor ─────────────────────────────────────────────────
+
+registerNodeType("action.resolve_executor", {
+  describe: () =>
+    "Pick SDK + model based on task complexity routing. Wraps " +
+    "resolveExecutorForTask() and executorToSdk() from task-complexity.mjs.",
+  schema: {
+    type: "object",
+    properties: {
+      taskId: { type: "string", description: "Task ID" },
+      taskTitle: { type: "string", description: "Task title" },
+      taskDescription: { type: "string", description: "Task description/body" },
+      defaultSdk: {
+        type: "string",
+        default: "auto",
+        description: "Default SDK if complexity routing is unavailable",
+      },
+      sdkOverride: { type: "string", description: "Force a specific SDK" },
+      modelOverride: { type: "string", description: "Force a specific model" },
+    },
+  },
+  async execute(node, ctx) {
+    const defaultSdk = ctx.resolve(node.config?.defaultSdk || "auto");
+    const sdkOverride = ctx.resolve(node.config?.sdkOverride || "");
+    const modelOverride = ctx.resolve(node.config?.modelOverride || "");
+
+    // Manual override takes precedence
+    if (sdkOverride && sdkOverride !== "auto") {
+      const result = { sdk: sdkOverride, model: modelOverride || "", tier: "override", profile: null };
+      ctx.data.resolvedSdk = result.sdk;
+      ctx.data.resolvedModel = result.model;
+      ctx.log(node.id, `Executor resolved (override): sdk=${result.sdk}, model=${result.model}`);
+      return { success: true, ...result };
+    }
+
+    // Complexity-based routing
+    try {
+      const complexity = await ensureTaskComplexityMod();
+      const task = {
+        id: ctx.resolve(node.config?.taskId || "") || ctx.data?.taskId || "",
+        title: ctx.resolve(node.config?.taskTitle || "") || ctx.data?.taskTitle || "",
+        description: ctx.resolve(node.config?.taskDescription || "") || ctx.data?.taskDescription || "",
+      };
+
+      if (complexity.resolveExecutorForTask && complexity.executorToSdk) {
+        const resolved = complexity.resolveExecutorForTask(task);
+        const sdk = complexity.executorToSdk(resolved.executor);
+        const model = modelOverride || resolved.model || "";
+        const result = {
+          sdk,
+          model,
+          tier: resolved.tier || "default",
+          profile: resolved.name || null,
+          complexity: resolved.complexity || null,
+        };
+        ctx.data.resolvedSdk = result.sdk;
+        ctx.data.resolvedModel = result.model;
+        ctx.log(node.id, `Executor resolved: sdk=${result.sdk}, model=${result.model}, tier=${result.tier}`);
+        return { success: true, ...result };
+      }
+    } catch (err) {
+      ctx.log(node.id, `Complexity routing failed: ${err.message} — using default`);
+    }
+
+    // Fallback
+    let sdk = defaultSdk;
+    if (sdk === "auto") {
+      try {
+        const pool = await ensureAgentPoolMod();
+        sdk = pool.getPoolSdkName?.() || "codex";
+      } catch {
+        sdk = "codex";
+      }
+    }
+    const result = { sdk, model: modelOverride || "", tier: "default", profile: null };
+    ctx.data.resolvedSdk = result.sdk;
+    ctx.data.resolvedModel = result.model;
+    ctx.log(node.id, `Executor resolved (fallback): sdk=${result.sdk}`);
+    return { success: true, ...result };
+  },
+});
+
+// ── action.acquire_worktree ─────────────────────────────────────────────────
+
+registerNodeType("action.acquire_worktree", {
+  describe: () =>
+    "Create or checkout a git worktree for isolated task execution. " +
+    "Resolves the base branch, creates the worktree, and returns the path.",
+  schema: {
+    type: "object",
+    properties: {
+      repoRoot: { type: "string", description: "Repository root path" },
+      branch: { type: "string", description: "Working branch name" },
+      taskId: { type: "string", description: "Task ID (used as worktree owner)" },
+      baseBranch: {
+        type: "string",
+        default: "origin/main",
+        description: "Base branch to create worktree from",
+      },
+      defaultTargetBranch: {
+        type: "string",
+        default: "origin/main",
+        description: "Fallback target branch",
+      },
+    },
+    required: ["branch", "taskId"],
+  },
+  async execute(node, ctx) {
+    const taskId = ctx.resolve(node.config?.taskId || "") || ctx.data?.taskId || "";
+    const branch = ctx.resolve(node.config?.branch || "") || ctx.data?.branch || "";
+    const repoRoot = ctx.resolve(node.config?.repoRoot || "") || ctx.data?.repoRoot || process.cwd();
+    const baseBranch = ctx.resolve(node.config?.baseBranch || "") || ctx.data?.baseBranch || "origin/main";
+
+    if (!branch) throw new Error("action.acquire_worktree: branch is required");
+    if (!taskId) throw new Error("action.acquire_worktree: taskId is required");
+
+    // Check if repoRoot is actually a git repository
+    const isGit = existsSync(resolve(repoRoot, ".git"));
+    if (!isGit) {
+      // Non-git directory — agent spawns directly here
+      ctx.data.worktreePath = repoRoot;
+      ctx.data._worktreeCreated = false;
+      ctx.log(node.id, `Non-git directory — using ${repoRoot} directly`);
+      return { success: true, worktreePath: repoRoot, created: false, noGit: true };
+    }
+
+    try {
+      // Ensure the base branch ref is available locally
+      try {
+        execSync(`git fetch origin ${baseBranch.replace(/^origin\//, "")} --no-tags 2>/dev/null || true`, {
+          cwd: repoRoot,
+          encoding: "utf8",
+          timeout: 30000,
+          stdio: ["ignore", "pipe", "pipe"],
+        });
+      } catch {
+        /* best-effort fetch */
+      }
+
+      // Create worktree via git commands (avoids importing the full WorktreeManager)
+      const worktreesDir = resolve(repoRoot, ".bosun", "worktrees");
+      mkdirSync(worktreesDir, { recursive: true });
+      const sanitizedBranch = branch.replace(/[^a-zA-Z0-9._-]/g, "-");
+      const worktreePath = resolve(worktreesDir, sanitizedBranch);
+
+      if (existsSync(worktreePath)) {
+        // Worktree already exists — reuse
+        ctx.data.worktreePath = worktreePath;
+        ctx.data._worktreeCreated = false;
+        ctx.log(node.id, `Reusing existing worktree at ${worktreePath}`);
+        return { success: true, worktreePath, created: false, reused: true, branch, baseBranch };
+      }
+
+      // Try creating the worktree
+      try {
+        execSync(
+          `git worktree add "${worktreePath}" -b "${branch}" "${baseBranch}" 2>&1`,
+          { cwd: repoRoot, encoding: "utf8", timeout: 60000 },
+        );
+      } catch (branchErr) {
+        // Branch might already exist — try checkout instead of create
+        try {
+          execSync(
+            `git worktree add "${worktreePath}" "${branch}" 2>&1`,
+            { cwd: repoRoot, encoding: "utf8", timeout: 60000 },
+          );
+        } catch (checkoutErr) {
+          throw new Error(
+            `Worktree creation failed for branch "${branch}": ${checkoutErr.message}`,
+          );
+        }
+      }
+
+      ctx.data.worktreePath = worktreePath;
+      ctx.data._worktreeCreated = true;
+      ctx.log(node.id, `Worktree created at ${worktreePath} (branch: ${branch}, base: ${baseBranch})`);
+      return { success: true, worktreePath, created: true, branch, baseBranch };
+    } catch (err) {
+      ctx.log(node.id, `Worktree acquisition failed: ${err.message}`);
+      return { success: false, error: err.message, branch, baseBranch };
+    }
+  },
+});
+
+// ── action.release_worktree ─────────────────────────────────────────────────
+
+registerNodeType("action.release_worktree", {
+  describe: () =>
+    "Release a git worktree after task execution. Idempotent — safe on " +
+    "double-call. Does not remove the worktree directory (reaper handles that).",
+  schema: {
+    type: "object",
+    properties: {
+      worktreePath: { type: "string", description: "Worktree path to release" },
+      repoRoot: { type: "string", description: "Repository root" },
+      taskId: { type: "string", description: "Task ID (worktree owner)" },
+      prune: {
+        type: "boolean",
+        default: false,
+        description: "Run git worktree prune after release",
+      },
+    },
+  },
+  async execute(node, ctx) {
+    const worktreePath = ctx.resolve(node.config?.worktreePath || "") || ctx.data?.worktreePath || "";
+    const repoRoot = ctx.resolve(node.config?.repoRoot || "") || ctx.data?.repoRoot || process.cwd();
+    const taskId = ctx.resolve(node.config?.taskId || "") || ctx.data?.taskId || "";
+    const shouldPrune = node.config?.prune === true;
+
+    if (!worktreePath || !ctx.data?._worktreeCreated) {
+      ctx.log(node.id, `No worktree to release for ${taskId || "(unknown)"}`);
+      return { success: true, skipped: true, reason: "no_worktree" };
+    }
+
+    try {
+      try {
+        execSync(`git worktree remove "${worktreePath}" --force 2>&1 || true`, {
+          cwd: repoRoot,
+          encoding: "utf8",
+          timeout: 30000,
+        });
+      } catch {
+        /* best-effort */
+      }
+
+      if (shouldPrune) {
+        try {
+          execSync("git worktree prune", {
+            cwd: repoRoot,
+            encoding: "utf8",
+            timeout: 15000,
+          });
+        } catch {
+          /* best-effort */
+        }
+      }
+
+      ctx.data._worktreeCreated = false;
+      ctx.log(node.id, `Worktree released: ${worktreePath}`);
+      return { success: true, worktreePath, released: true };
+    } catch (err) {
+      ctx.log(node.id, `Worktree release warning: ${err.message}`);
+      return { success: true, worktreePath, warning: err.message };
+    }
+  },
+});
+
+// ── action.build_task_prompt ────────────────────────────────────────────────
+
+registerNodeType("action.build_task_prompt", {
+  describe: () =>
+    "Compose the full agent prompt from task data, repo context, comments, " +
+    "attachments, and AGENTS.md. Produces the prompt string that gets " +
+    "passed to action.run_agent.",
+  schema: {
+    type: "object",
+    properties: {
+      taskId: { type: "string" },
+      taskTitle: { type: "string" },
+      taskDescription: { type: "string" },
+      branch: { type: "string" },
+      baseBranch: { type: "string" },
+      worktreePath: { type: "string" },
+      repoRoot: { type: "string" },
+      repoSlug: { type: "string" },
+      retryReason: { type: "string", description: "If retrying, the reason for the retry" },
+      includeAgentsMd: {
+        type: "boolean",
+        default: true,
+        description: "Whether to include AGENTS.md content in prompt",
+      },
+      includeComments: {
+        type: "boolean",
+        default: true,
+        description: "Whether to include task comments in prompt",
+      },
+      promptTemplate: {
+        type: "string",
+        description: "Custom prompt template (overrides default construction)",
+      },
+    },
+    required: ["taskTitle"],
+  },
+  async execute(node, ctx) {
+    const taskId = ctx.resolve(node.config?.taskId || "") || ctx.data?.taskId || "";
+    const taskTitle = ctx.resolve(node.config?.taskTitle || "") || ctx.data?.taskTitle || "";
+    const taskDescription = ctx.resolve(node.config?.taskDescription || "") || ctx.data?.taskDescription || "";
+    const branch = ctx.resolve(node.config?.branch || "") || ctx.data?.branch || "";
+    const baseBranch = ctx.resolve(node.config?.baseBranch || "") || ctx.data?.baseBranch || "";
+    const worktreePath = ctx.resolve(node.config?.worktreePath || "") || ctx.data?.worktreePath || "";
+    const repoRoot = ctx.resolve(node.config?.repoRoot || "") || ctx.data?.repoRoot || process.cwd();
+    const repoSlug = ctx.resolve(node.config?.repoSlug || "") || ctx.data?.repoSlug || "";
+    const retryReason = ctx.resolve(node.config?.retryReason || "") || "";
+    const includeAgentsMd = node.config?.includeAgentsMd !== false;
+    const customTemplate = ctx.resolve(node.config?.promptTemplate || "");
+
+    // If a custom template is provided, resolve it and return
+    if (customTemplate) {
+      ctx.data._taskPrompt = customTemplate;
+      ctx.log(node.id, `Prompt built from custom template (${customTemplate.length} chars)`);
+      return { success: true, prompt: customTemplate, source: "custom" };
+    }
+
+    // Build structured prompt
+    const parts = [];
+
+    // Header
+    parts.push(`# Task: ${taskTitle}`);
+    parts.push("");
+
+    if (taskDescription) {
+      parts.push("## Description");
+      parts.push(taskDescription);
+      parts.push("");
+    }
+
+    // Context
+    parts.push("## Context");
+    const contextLines = [];
+    if (taskId) contextLines.push(`- **Task ID:** ${taskId}`);
+    if (branch) contextLines.push(`- **Branch:** ${branch}`);
+    if (baseBranch) contextLines.push(`- **Base Branch:** ${baseBranch}`);
+    if (repoSlug) contextLines.push(`- **Repository:** ${repoSlug}`);
+    parts.push(contextLines.join("\n"));
+    parts.push("");
+
+    // AGENTS.md
+    if (includeAgentsMd) {
+      const agentsMdPaths = [
+        resolve(worktreePath || repoRoot, "AGENTS.md"),
+        resolve(repoRoot, "AGENTS.md"),
+      ];
+      for (const agentsMdPath of agentsMdPaths) {
+        try {
+          if (existsSync(agentsMdPath)) {
+            const content = readFileSync(agentsMdPath, "utf8").trim();
+            if (content) {
+              parts.push("## Project Instructions (AGENTS.md)");
+              parts.push(content);
+              parts.push("");
+              break;
+            }
+          }
+        } catch {
+          /* best-effort */
+        }
+      }
+    }
+
+    // Retry context
+    if (retryReason) {
+      parts.push("## Retry Context");
+      parts.push(`Previous attempt failed: ${retryReason}`);
+      parts.push("Please try a different approach.");
+      parts.push("");
+    }
+
+    // Instructions
+    parts.push("## Instructions");
+    parts.push(
+      "1. Read and understand the task description above.\n" +
+      "2. Follow the project instructions in AGENTS.md.\n" +
+      "3. Implement the required changes.\n" +
+      "4. Ensure tests pass and build is clean.\n" +
+      "5. Commit your changes using conventional commits."
+    );
+
+    const prompt = parts.join("\n");
+    ctx.data._taskPrompt = prompt;
+    ctx.log(node.id, `Prompt built (${prompt.length} chars)`);
+    return { success: true, prompt, source: "generated", length: prompt.length };
+  },
+});
+
+// ── action.detect_new_commits ───────────────────────────────────────────────
+
+registerNodeType("action.detect_new_commits", {
+  describe: () =>
+    "Compare pre/post execution HEAD hashes to detect whether the agent " +
+    "produced new commits. Also collects basic diff stats.",
+  schema: {
+    type: "object",
+    properties: {
+      worktreePath: { type: "string", description: "Worktree path to check" },
+      preExecHead: { type: "string", description: "HEAD hash before agent execution" },
+      baseBranch: { type: "string", description: "Base branch for diff stats" },
+    },
+    required: ["worktreePath"],
+  },
+  async execute(node, ctx) {
+    const worktreePath = ctx.resolve(node.config?.worktreePath || "") || ctx.data?.worktreePath || "";
+    const preExecHead = ctx.resolve(node.config?.preExecHead || "") || ctx.data?._preExecHead || "";
+    const baseBranch = ctx.resolve(node.config?.baseBranch || "") || ctx.data?.baseBranch || "origin/main";
+
+    if (!worktreePath) throw new Error("action.detect_new_commits: worktreePath is required");
+
+    // Get current HEAD
+    let postExecHead = "";
+    try {
+      postExecHead = execSync("git rev-parse HEAD", {
+        cwd: worktreePath,
+        encoding: "utf8",
+        timeout: 5000,
+      }).trim();
+    } catch (err) {
+      ctx.log(node.id, `Failed to get HEAD: ${err.message}`);
+      return { success: false, error: err.message, hasCommits: false };
+    }
+
+    const hasNewCommits = preExecHead && postExecHead && preExecHead !== postExecHead;
+
+    // Count commits ahead of base
+    let commitCount = 0;
+    try {
+      const log = execSync(`git log --oneline ${baseBranch}..HEAD 2>/dev/null || echo ""`, {
+        cwd: worktreePath,
+        encoding: "utf8",
+        timeout: 10000,
+      }).trim();
+      commitCount = log ? log.split("\n").filter(Boolean).length : 0;
+    } catch {
+      /* best-effort */
+    }
+
+    // Basic diff stats
+    let diffStats = null;
+    try {
+      const statOutput = execSync(`git diff --stat ${baseBranch}..HEAD 2>/dev/null || echo ""`, {
+        cwd: worktreePath,
+        encoding: "utf8",
+        timeout: 10000,
+      }).trim();
+      if (statOutput) {
+        const lastLine = statOutput.split("\n").pop() || "";
+        const filesMatch = lastLine.match(/(\d+)\s+files?\s+changed/);
+        const insertMatch = lastLine.match(/(\d+)\s+insertions?/);
+        const deleteMatch = lastLine.match(/(\d+)\s+deletions?/);
+        diffStats = {
+          filesChanged: filesMatch ? parseInt(filesMatch[1], 10) : 0,
+          insertions: insertMatch ? parseInt(insertMatch[1], 10) : 0,
+          deletions: deleteMatch ? parseInt(deleteMatch[1], 10) : 0,
+          raw: statOutput,
+        };
+      }
+    } catch {
+      /* best-effort */
+    }
+
+    ctx.data._hasNewCommits = hasNewCommits;
+    ctx.data._postExecHead = postExecHead;
+    ctx.data._commitCount = commitCount;
+    ctx.data._diffStats = diffStats;
+
+    ctx.log(
+      node.id,
+      `Commit detection: hasNew=${hasNewCommits}, count=${commitCount}, ` +
+      `pre=${preExecHead?.slice(0, 8) || "?"}, post=${postExecHead?.slice(0, 8) || "?"}`,
+    );
+    return {
+      success: true,
+      hasCommits: hasNewCommits,
+      commitCount,
+      preExecHead,
+      postExecHead,
+      diffStats,
+    };
+  },
+});
+
+// ── action.push_branch ──────────────────────────────────────────────────────
+
+registerNodeType("action.push_branch", {
+  describe: () =>
+    "Push the current branch to the remote with --force-with-lease. " +
+    "Includes branch safety evaluation to prevent pushing to protected branches.",
+  schema: {
+    type: "object",
+    properties: {
+      worktreePath: { type: "string", description: "Working directory to push from" },
+      branch: { type: "string", description: "Branch name being pushed" },
+      remote: { type: "string", default: "origin", description: "Remote name" },
+      forceWithLease: {
+        type: "boolean",
+        default: true,
+        description: "Use --force-with-lease",
+      },
+      protectedBranches: {
+        type: "array",
+        items: { type: "string" },
+        default: ["main", "master", "develop", "production"],
+        description: "Branches that cannot be force-pushed",
+      },
+    },
+    required: ["worktreePath"],
+  },
+  async execute(node, ctx) {
+    const worktreePath = ctx.resolve(node.config?.worktreePath || "") || ctx.data?.worktreePath || "";
+    const branch = ctx.resolve(node.config?.branch || "") || ctx.data?.branch || "";
+    const remote = node.config?.remote || "origin";
+    const forceWithLease = node.config?.forceWithLease !== false;
+    const protectedBranches = node.config?.protectedBranches || ["main", "master", "develop", "production"];
+
+    if (!worktreePath) throw new Error("action.push_branch: worktreePath is required");
+
+    // Safety check: don't push to protected branches
+    const cleanBranch = branch.replace(/^origin\//, "");
+    if (protectedBranches.includes(cleanBranch)) {
+      ctx.log(node.id, `Refusing to push to protected branch: ${cleanBranch}`);
+      return { success: false, error: `Protected branch: ${cleanBranch}`, pushed: false };
+    }
+
+    const pushFlags = forceWithLease ? "--force-with-lease" : "";
+    const cmd = `git push ${pushFlags} --set-upstream ${remote} HEAD 2>&1`.trim();
+
+    try {
+      const output = execSync(cmd, {
+        cwd: worktreePath,
+        encoding: "utf8",
+        timeout: 120000,
+      });
+      ctx.log(node.id, `Push succeeded: ${branch} → ${remote}`);
+      return {
+        success: true,
+        pushed: true,
+        branch,
+        remote,
+        output: output?.trim()?.slice(0, 500) || "",
+      };
+    } catch (err) {
+      ctx.log(node.id, `Push failed: ${err.message}`);
+      return {
+        success: false,
+        pushed: false,
+        branch,
+        remote,
+        error: err.message,
+      };
+    }
+  },
+});
+
+// ═══════════════════════════════════════════════════════════════════════════
 //  Export all registered types for introspection
 // ═══════════════════════════════════════════════════════════════════════════
 
