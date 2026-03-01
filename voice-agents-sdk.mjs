@@ -321,7 +321,7 @@ export async function connectRealtimeSession(sessionHandle, config = {}) {
     if (!credential) {
       throw new Error("Azure voice credential not configured");
     }
-    const endpoint = String(config.azureEndpoint || "").trim().replace(/\/+$/, "");
+    const endpoint = String(config.azureEndpoint || "").trim().replace(/\/+$/, "").replace(/\/openai(?:\/.*)?$/, "");
     const deployment = String(
       config.azureDeployment || "gpt-audio-1.5",
     ).trim();
