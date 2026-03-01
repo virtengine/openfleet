@@ -1511,21 +1511,44 @@ function App() {
     // Poll the setup server for a pending OAuth callback that may have been
     // received on the callback-catcher (port 54317) while setup was open.
     let pollTimer;
+    let pollStopTimer;
+    let consecutivePollFailures = 0;
+    const OAUTH_STATE_POLL_MAX_MS = 300000; // 5 minutes
+    const OAUTH_STATE_POLL_MAX_FAILURES = 5;
+    const stopPolling = () => {
+      if (pollTimer) {
+        clearInterval(pollTimer);
+        pollTimer = null;
+      }
+      if (pollStopTimer) {
+        clearTimeout(pollStopTimer);
+        pollStopTimer = null;
+      }
+    };
     const poll = async () => {
       try {
         const r = await fetch("/api/setup/oauth-state");
         if (!r.ok) return;
+        consecutivePollFailures = 0;
         const data = await r.json();
         if (data?.pending) {
           setOauthStatus("received");
           if (data.installation_id) setOauthInstallationId(data.installation_id);
-          clearInterval(pollTimer);
+          stopPolling();
         }
-      } catch { /* server may not have this endpoint yet — ignore */ }
+      } catch {
+        // If the setup server is offline (e.g. wizard process stopped), avoid
+        // logging a failed network request forever.
+        consecutivePollFailures += 1;
+        if (consecutivePollFailures >= OAUTH_STATE_POLL_MAX_FAILURES) {
+          stopPolling();
+        }
+      }
     };
     pollTimer = setInterval(poll, 2000);
+    pollStopTimer = setTimeout(stopPolling, OAUTH_STATE_POLL_MAX_MS);
     poll(); // immediate first check
-    return () => clearInterval(pollTimer);
+    return stopPolling;
   }, []);
 
 
