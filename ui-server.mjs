@@ -9361,7 +9361,8 @@ async function handleApi(req, res, url) {
           }
           const base = azureEndpoint.replace(/\/+$/, "");
           const dep = deployment || "gpt-4o-realtime-preview";
-          testUrl = `${base}/openai/deployments/${dep}?api-version=2024-10-01-preview`;
+          // Use the deployments list endpoint — works for all models regardless of GA/preview status
+          testUrl = `${base}/openai/deployments?api-version=2025-04-01-preview`;
           if (apiKey) headers["api-key"] = apiKey;
           else {
             jsonResponse(res, 400, { ok: false, error: "Azure API key is required" });
@@ -9418,6 +9419,19 @@ async function handleApi(req, res, url) {
         clearTimeout(timer);
         const latencyMs = Date.now() - start;
         if (resp.ok || resp.status === 200) {
+          // For Azure, verify the specific deployment exists in the list
+          if (provider === "azure" && deployment) {
+            try {
+              const body = await resp.json();
+              const deployments = body.data || body.value || [];
+              const found = deployments.some((d) => d.id === deployment || d.model === deployment);
+              if (!found && deployments.length > 0) {
+                const available = deployments.map((d) => d.id || d.model).filter(Boolean).join(", ");
+                jsonResponse(res, 200, { ok: false, error: `Deployment "${deployment}" not found. Available: ${available}`, latencyMs });
+                return;
+              }
+            } catch (_) { /* if we can't parse, connection still succeeded */ }
+          }
           jsonResponse(res, 200, { ok: true, latencyMs });
         } else {
           const text = await resp.text().catch(() => "");
