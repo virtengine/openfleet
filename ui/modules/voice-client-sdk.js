@@ -333,10 +333,30 @@ async function startAgentsSdkSession(config, options = {}) {
   // Connect with the token
   const connectOpts = { apiKey: tokenData.token };
 
-  if (tokenData.provider === "azure" && tokenData.azureEndpoint) {
+  const explicitRealtimeUrl = String(tokenData.url || "").trim();
+  if (explicitRealtimeUrl) {
+    // Always prefer server-resolved realtime URL so endpoint/model/api-version stay
+    // aligned with the selected voice endpoint and provider protocol.
+    connectOpts.url = explicitRealtimeUrl;
+  } else if (tokenData.provider === "azure" && tokenData.azureEndpoint) {
     const endpoint = String(tokenData.azureEndpoint).replace(/\/+$/, "");
     const deployment = tokenData.azureDeployment || "gpt-realtime-1.5";
     connectOpts.url = `${endpoint}/openai/realtime?api-version=2025-04-01-preview&deployment=${deployment}`;
+  } else if (tokenData.provider === "openai") {
+    const model = String(tokenData.model || resolvedConfig.model || "gpt-realtime-1.5").trim();
+    connectOpts.url = `https://api.openai.com/v1/realtime?model=${encodeURIComponent(model)}`;
+  }
+
+  try {
+    const safeUrl = String(connectOpts.url || "").trim();
+    const parsed = safeUrl ? new URL(safeUrl) : null;
+    const safeOrigin = parsed ? parsed.origin : "default";
+    const safePath = parsed ? parsed.pathname : "";
+    console.info(
+      `[voice-client-sdk] connecting realtime session via ${safeOrigin}${safePath} (provider=${tokenData.provider || "unknown"})`,
+    );
+  } catch {
+    // ignore URL logging issues
   }
 
   await session.connect(connectOpts);
