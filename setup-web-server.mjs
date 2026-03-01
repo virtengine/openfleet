@@ -1478,14 +1478,16 @@ async function handleVoiceEndpointTest(body) {
       if (!apiKey) {
         return { ok: false, error: "Azure API key is required" };
       }
-      const base = String(azureEndpoint).replace(/\/+$/, "");
+      // Strip path suffix so users can paste full URLs without double-path 404s.
+      let base = String(azureEndpoint).replace(/\/+$/, "");
+      try { const u = new URL(base); base = `${u.protocol}//${u.host}`; } catch { /* keep as-is */ }
       // Single-deployment GET only requires Cognitive Services User role.
-      // Listing all deployments (GET /openai/deployments) requires Contributor —
-      // most restricted API keys lack this and return 403 "Missing scopes: api.model.read".
+      // Use the GA api-version (2024-10-21) for broad compatibility across
+      // classic Azure OpenAI and Azure AI Foundry resources.
       const dep = String(deployment || "").trim();
       testUrl = dep
-        ? `${base}/openai/deployments/${encodeURIComponent(dep)}?api-version=2025-04-01-preview`
-        : `${base}/openai/models?api-version=2025-04-01-preview`;
+        ? `${base}/openai/deployments/${encodeURIComponent(dep)}?api-version=2024-10-21`
+        : `${base}/openai/models?api-version=2024-10-21`;
       headers["api-key"] = apiKey;
     } else if (normalizedProvider === "claude") {
       testUrl = "https://api.anthropic.com/v1/models";
@@ -1523,18 +1525,6 @@ async function handleVoiceEndpointTest(body) {
     clearTimeout(timer);
     const latencyMs = Date.now() - start;
     if (resp.ok || resp.status === 200) {
-      // For Azure, verify the specific deployment exists in the list
-      if (normalizedProvider === "azure" && deployment) {
-        try {
-          const respBody = await resp.json();
-          const deployments = respBody.data || respBody.value || [];
-          const found = deployments.some((d) => d.id === deployment || d.model === deployment);
-          if (!found && deployments.length > 0) {
-            const available = deployments.map((d) => d.id || d.model).filter(Boolean).join(", ");
-            return { ok: false, error: `Deployment "${deployment}" not found. Available: ${available}`, latencyMs };
-          }
-        } catch (_) { /* if we can't parse, connection still succeeded */ }
-      }
       return { ok: true, latencyMs };
     }
     const text = await resp.text().catch(() => "");

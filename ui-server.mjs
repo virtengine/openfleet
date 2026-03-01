@@ -9359,14 +9359,16 @@ async function handleApi(req, res, url) {
             jsonResponse(res, 400, { ok: false, error: "Azure endpoint URL is required" });
             return;
           }
-          const base = azureEndpoint.replace(/\/+$/, "");
+          // Strip path suffix so users can paste full URLs without double-path 404s.
+          let base = azureEndpoint.replace(/\/+$/, "");
+          try { const u = new URL(base); base = `${u.protocol}//${u.host}`; } catch { /* keep as-is */ }
           // Single-deployment GET only requires Cognitive Services User role.
-          // Listing all deployments (GET /openai/deployments) requires Contributor —
-          // most restricted API keys lack this and return 403 "Missing scopes: api.model.read".
+          // Use the GA api-version (2024-10-21) for broad compatibility across
+          // classic Azure OpenAI and Azure AI Foundry resources.
           const dep = String(deployment || "").trim();
           testUrl = dep
-            ? `${base}/openai/deployments/${encodeURIComponent(dep)}?api-version=2025-04-01-preview`
-            : `${base}/openai/models?api-version=2025-04-01-preview`;
+            ? `${base}/openai/deployments/${encodeURIComponent(dep)}?api-version=2024-10-21`
+            : `${base}/openai/models?api-version=2024-10-21`;
           if (apiKey) headers["api-key"] = apiKey;
           else {
             jsonResponse(res, 400, { ok: false, error: "Azure API key is required" });
