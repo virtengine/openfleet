@@ -9864,9 +9864,45 @@ async function handleApi(req, res, url) {
     return;
   }
 
-  // POST /api/voice/tool
-  if (path === "/api/voice/tool" && req.method === "POST") {
+  // GET /api/agents/tools
+  if (path === "/api/agents/tools" && req.method === "GET") {
     try {
+      const { getVoiceToolDefinitions, getAllowedVoiceTools } = await import("./voice-relay.mjs");
+      const context = {
+        sessionId: String(url.searchParams.get("sessionId") || "").trim() || undefined,
+        executor: String(url.searchParams.get("executor") || "").trim() || undefined,
+        mode: String(url.searchParams.get("mode") || "").trim() || undefined,
+        model: String(url.searchParams.get("model") || "").trim() || undefined,
+        authSource: String(authResult?.source || "").trim() || undefined,
+      };
+      const allTools = await getVoiceToolDefinitions({ delegateOnly: false, context });
+      const allowed = await getAllowedVoiceTools(context);
+      const allowedTools = allowed instanceof Set ? allowed : null;
+      const tools = allowedTools
+        ? (Array.isArray(allTools) ? allTools : []).filter((tool) => allowedTools.has(String(tool?.name || "").trim()))
+        : allTools;
+      jsonResponse(res, 200, {
+        ok: true,
+        tools: Array.isArray(tools) ? tools : [],
+        allowedTools: allowedTools ? Array.from(allowedTools.values()).sort() : null,
+        totalTools: Array.isArray(tools) ? tools.length : 0,
+      });
+    } catch (err) {
+      jsonResponse(res, 500, { ok: false, error: err.message });
+    }
+    return;
+  }
+
+  // POST /api/voice/tool
+  // POST /api/agents/tool
+  if ((path === "/api/voice/tool" || path === "/api/agents/tool") && req.method === "POST") {
+    try {
+      const isVoiceToolRoute = path === "/api/voice/tool";
+      const eventSource = isVoiceToolRoute ? "voice" : "agent";
+      const startedEventType = isVoiceToolRoute ? "voice_tool_started" : "agent_tool_started";
+      const errorEventType = isVoiceToolRoute ? "voice_tool_error" : "agent_tool_error";
+      const completeEventType = isVoiceToolRoute ? "voice_tool_complete_summary" : "agent_tool_complete_summary";
+      const eventLabel = isVoiceToolRoute ? "Voice Action" : "Agent Tool";
       const body = await readJsonBody(req);
       const {
         toolName,
@@ -9878,7 +9914,11 @@ async function handleApi(req, res, url) {
       } = body || {};
       const normalizedToolName = String(toolName || "").trim();
       if (!normalizedToolName) {
-        jsonResponse(res, 400, { error: "toolName required" });
+        if (isVoiceToolRoute) {
+          jsonResponse(res, 400, { error: "toolName required" });
+        } else {
+          jsonResponse(res, 400, { ok: false, error: "toolName required" });
+        }
         return;
       }
       const summarizeToolArgs = (value) => {
@@ -9928,11 +9968,11 @@ async function handleApi(req, res, url) {
         }
         tracker.recordEvent(session?.id || context.sessionId, {
           role: "system",
-          content: `[Voice Action Started] ${normalizedToolName}\nArgs: ${summarizeToolArgs(normalizedArgs)}`,
+          content: `[${eventLabel} Started] ${normalizedToolName}\nArgs: ${summarizeToolArgs(normalizedArgs)}`,
           timestamp: new Date().toISOString(),
           meta: {
-            source: "voice",
-            eventType: "voice_tool_started",
+            source: eventSource,
+            eventType: startedEventType,
             toolName: normalizedToolName,
           },
         });
@@ -9941,9 +9981,12 @@ async function handleApi(req, res, url) {
         // Session-bound calls are validated against the allowed tool set
         const allowed = await getAllowedVoiceTools(context);
         if (!allowed.has(normalizedToolName)) {
-          jsonResponse(res, 400, {
-            error: `Tool "${normalizedToolName}" is not allowed for session-bound calls`,
-          });
+          const deniedMessage = `Tool "${normalizedToolName}" is not allowed for session-bound calls`;
+          if (isVoiceToolRoute) {
+            jsonResponse(res, 400, { error: deniedMessage });
+          } else {
+            jsonResponse(res, 400, { ok: false, error: deniedMessage });
+          }
           return;
         }
       }
@@ -9952,31 +9995,43 @@ async function handleApi(req, res, url) {
         if (result?.error) {
           tracker.recordEvent(session?.id || context.sessionId, {
             role: "system",
-            content: `[Voice Action Error] ${normalizedToolName}\nError: ${String(result.error || "Unknown error")}`,
+            content: `[${eventLabel} Error] ${normalizedToolName}\nError: ${String(result.error || "Unknown error")}`,
             timestamp: new Date().toISOString(),
             meta: {
-              source: "voice",
-              eventType: "voice_tool_error",
+              source: eventSource,
+              eventType: errorEventType,
               toolName: normalizedToolName,
             },
           });
         } else {
           tracker.recordEvent(session?.id || context.sessionId, {
             role: "system",
-            content: `[Voice Action Complete] ${normalizedToolName}\nSummary: ${summarizeToolResult(result?.result)}`,
+            content: `[${eventLabel} Complete] ${normalizedToolName}\nSummary: ${summarizeToolResult(result?.result)}`,
             timestamp: new Date().toISOString(),
             meta: {
-              source: "voice",
-              eventType: "voice_tool_complete_summary",
+              source: eventSource,
+              eventType: completeEventType,
               toolName: normalizedToolName,
             },
           });
         }
       }
 
-      jsonResponse(res, 200, result);
+      if (isVoiceToolRoute) {
+        jsonResponse(res, 200, result);
+      } else {
+        jsonResponse(res, 200, {
+          ok: !result?.error,
+          toolName: normalizedToolName,
+          ...result,
+        });
+      }
     } catch (err) {
-      jsonResponse(res, 500, { error: err.message });
+      if (path === "/api/voice/tool") {
+        jsonResponse(res, 500, { error: err.message });
+      } else {
+        jsonResponse(res, 500, { ok: false, error: err.message });
+      }
     }
     return;
   }

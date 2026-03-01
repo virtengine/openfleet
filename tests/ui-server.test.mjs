@@ -938,4 +938,47 @@ describe("ui-server mini app", () => {
 
     rmSync(tmpDir, { recursive: true, force: true });
   });
+
+  it("exposes and executes shared bosun tools via /api/agents/tool parity endpoints", async () => {
+    const mod = await import("../ui-server.mjs");
+    const server = await mod.startTelegramUiServer({
+      port: await getFreePort(),
+      host: "127.0.0.1",
+    });
+    const port = server.address().port;
+
+    const createResponse = await fetch(`http://127.0.0.1:${port}/api/sessions/create`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ type: "primary", prompt: "tool parity" }),
+    });
+    const createJson = await createResponse.json();
+    expect(createResponse.status).toBe(200);
+    expect(createJson.ok).toBe(true);
+    const sessionId = createJson.session.id;
+
+    const listResponse = await fetch(
+      `http://127.0.0.1:${port}/api/agents/tools?sessionId=${encodeURIComponent(sessionId)}`,
+    );
+    const listJson = await listResponse.json();
+    expect(listResponse.status).toBe(200);
+    expect(listJson.ok).toBe(true);
+    expect(Array.isArray(listJson.tools)).toBe(true);
+    expect(listJson.tools.some((tool) => tool?.name === "list_sessions")).toBe(true);
+
+    const execResponse = await fetch(`http://127.0.0.1:${port}/api/agents/tool`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        toolName: "list_sessions",
+        sessionId,
+        args: { limit: 5 },
+      }),
+    });
+    const execJson = await execResponse.json();
+    expect(execResponse.status).toBe(200);
+    expect(execJson.ok).toBe(true);
+    expect(execJson.toolName).toBe("list_sessions");
+    expect(typeof execJson.result).toBe("string");
+  });
 });

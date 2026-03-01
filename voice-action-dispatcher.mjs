@@ -746,6 +746,83 @@ registerAction("workflow.run_get", async (params) => {
   return run;
 });
 
+registerAction("workflow.save", async (params) => {
+  const wfEngineMod = await getWorkflowEngineModule();
+  const engine = typeof wfEngineMod.getWorkflowEngine === "function"
+    ? wfEngineMod.getWorkflowEngine()
+    : null;
+  if (!engine?.save) throw new Error("Workflow engine is unavailable");
+  const def = params?.definition;
+  if (!def || typeof def !== "object" || Array.isArray(def)) {
+    throw new Error("definition object is required");
+  }
+  const workflowId = String(params.workflowId || def.id || "").trim();
+  const payload = { ...def };
+  if (workflowId) payload.id = workflowId;
+  if (!Array.isArray(payload.nodes)) payload.nodes = [];
+  if (!Array.isArray(payload.edges)) payload.edges = [];
+  if (!payload.name) payload.name = payload.id || "Voice Workflow";
+  const saved = engine.save(payload);
+  return {
+    id: saved.id,
+    name: saved.name || saved.id,
+    enabled: saved.enabled !== false,
+    nodeCount: Array.isArray(saved.nodes) ? saved.nodes.length : 0,
+    edgeCount: Array.isArray(saved.edges) ? saved.edges.length : 0,
+  };
+});
+
+registerAction("workflow.delete", async (params) => {
+  const wfEngineMod = await getWorkflowEngineModule();
+  const engine = typeof wfEngineMod.getWorkflowEngine === "function"
+    ? wfEngineMod.getWorkflowEngine()
+    : null;
+  if (!engine?.delete) throw new Error("Workflow engine is unavailable");
+  const workflowId = String(params.workflowId || params.id || "").trim();
+  if (!workflowId) throw new Error("workflowId is required");
+  const deleted = await engine.delete(workflowId);
+  return { ok: Boolean(deleted), workflowId };
+});
+
+registerAction("workflow.execute", async (params) => {
+  const wfEngineMod = await getWorkflowEngineModule();
+  const engine = typeof wfEngineMod.getWorkflowEngine === "function"
+    ? wfEngineMod.getWorkflowEngine()
+    : null;
+  if (!engine?.execute) throw new Error("Workflow engine is unavailable");
+  const workflowId = String(params.workflowId || params.id || "").trim();
+  if (!workflowId) throw new Error("workflowId is required");
+  const input = params?.input && typeof params.input === "object" ? params.input : {};
+  const force = params?.force === true;
+  const ctx = await engine.execute(workflowId, input, { force });
+  return {
+    runId: ctx?.id || null,
+    workflowId,
+    status: Array.isArray(ctx?.errors) && ctx.errors.length > 0 ? "failed" : "completed",
+    errorCount: Array.isArray(ctx?.errors) ? ctx.errors.length : 0,
+  };
+});
+
+registerAction("workflow.retry", async (params) => {
+  const wfEngineMod = await getWorkflowEngineModule();
+  const engine = typeof wfEngineMod.getWorkflowEngine === "function"
+    ? wfEngineMod.getWorkflowEngine()
+    : null;
+  if (!engine?.retryRun) throw new Error("Workflow retry is unavailable");
+  const runId = String(params.runId || params.id || "").trim();
+  if (!runId) throw new Error("runId is required");
+  const mode = String(params.mode || "from_failed").trim().toLowerCase() === "from_scratch"
+    ? "from_scratch"
+    : "from_failed";
+  const currentRun = engine?.getRunDetail ? engine.getRunDetail(runId) : null;
+  if (!currentRun) throw new Error(`Workflow run "${runId}" not found`);
+  const currentStatus = String(currentRun?.status || "").trim().toLowerCase();
+  if (mode === "from_failed" && currentStatus !== "failed") {
+    throw new Error(`retry mode "from_failed" requires a failed run (current=${currentRun?.status || "unknown"})`);
+  }
+  return engine.retryRun(runId, { mode });
+});
+
 // ── Skill/prompt actions ────────────────────────────────────────────────────
 
 registerAction("skill.list", async () => {
@@ -860,6 +937,10 @@ export function getActionManifest() {
     { action: "workflow.saved_list", description: "List installed workflow definitions. params: {}" },
     { action: "workflow.runs", description: "List workflow run history. params: { workflowId?, status?, limit? }" },
     { action: "workflow.run_get", description: "Get a workflow run detail. params: { runId }" },
+    { action: "workflow.save", description: "Create/update a workflow definition. params: { workflowId?, definition }" },
+    { action: "workflow.delete", description: "Delete a workflow definition. params: { workflowId }" },
+    { action: "workflow.execute", description: "Execute a workflow now. params: { workflowId, input?, force? }" },
+    { action: "workflow.retry", description: "Retry a workflow run. params: { runId, mode?: from_failed|from_scratch }" },
     { action: "skill.list", description: "List available skills. params: {}" },
     { action: "prompt.list", description: "List agent prompt definitions. params: {}" },
     { action: "prompt.get", description: "Get a prompt template. params: { key }" },

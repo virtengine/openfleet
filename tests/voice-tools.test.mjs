@@ -53,6 +53,22 @@ vi.mock("../agent-pool.mjs", () => ({
 
 vi.mock("../workflow-engine.mjs", () => ({
   getWorkflowEngine: vi.fn(() => ({
+    save: vi.fn((def) => ({
+      ...def,
+      id: def?.id || "wf-saved",
+      metadata: {
+        ...(def?.metadata || {}),
+        updatedAt: "2026-03-01T00:00:00.000Z",
+      },
+    })),
+    delete: vi.fn(() => true),
+    execute: vi.fn(async (workflowId) => ({
+      id: `run-exec-${workflowId || "1"}`,
+      errors: [],
+      startedAt: 1000,
+      endedAt: 1200,
+      duration: 200,
+    })),
     list: vi.fn(() => [{
       id: "wf-1",
       name: "Workflow One",
@@ -113,7 +129,26 @@ vi.mock("../workflow-engine.mjs", () => ({
             nodeStatusEvents: [{ nodeId: "n2", status: "failed" }],
           },
         }
-      : null)),
+      : (runId === "run-ok"
+        ? {
+            runId: "run-ok",
+            workflowId: "wf-1",
+            workflowName: "Workflow One",
+            status: "completed",
+            startedAt: 1000,
+            endedAt: 2000,
+            duration: 1000,
+            errorCount: 0,
+            logCount: 1,
+            detail: {
+              data: { _workflowId: "wf-1", _workflowName: "Workflow One" },
+              errors: [],
+              logs: [{ level: "info", msg: "completed" }],
+              nodeStatuses: { n1: "completed", n2: "completed" },
+              nodeStatusEvents: [{ nodeId: "n2", status: "completed" }],
+            },
+          }
+        : null))),
     retryRun: vi.fn(async (runId, opts = {}) => ({
       originalRunId: runId,
       retryRunId: "run-2",
@@ -401,6 +436,48 @@ describe("voice-tools", () => {
       expect(Array.isArray(parsed.run.errors)).toBe(true);
     });
 
+    it("create_workflow creates a blank workflow when definition is omitted", async () => {
+      const result = await executeToolCall("create_workflow", {
+        name: "Voice-created Workflow",
+      });
+      expect(result.error).toBeUndefined();
+      const parsed = JSON.parse(result.result);
+      expect(parsed.ok).toBe(true);
+      expect(parsed.workflow.name).toContain("Voice-created Workflow");
+    });
+
+    it("update_workflow_definition updates an existing workflow", async () => {
+      const result = await executeToolCall("update_workflow_definition", {
+        workflowId: "wf-1",
+        patch: { description: "updated by test" },
+      });
+      expect(result.error).toBeUndefined();
+      const parsed = JSON.parse(result.result);
+      expect(parsed.ok).toBe(true);
+      expect(parsed.workflow.id).toBe("wf-1");
+    });
+
+    it("execute_workflow runs workflow and returns run summary", async () => {
+      const result = await executeToolCall("execute_workflow", {
+        workflowId: "wf-1",
+        input: { source: "voice-test" },
+      });
+      expect(result.error).toBeUndefined();
+      const parsed = JSON.parse(result.result);
+      expect(parsed.ok).toBe(true);
+      expect(parsed.run.runId).toContain("run-exec");
+      expect(parsed.run.status).toBe("completed");
+    });
+
+    it("analyze_workflow returns workflow health summary", async () => {
+      const result = await executeToolCall("analyze_workflow", { workflowId: "wf-1", limit: 10 });
+      expect(result.error).toBeUndefined();
+      const parsed = JSON.parse(result.result);
+      expect(parsed.ok).toBe(true);
+      expect(parsed.count).toBe(1);
+      expect(parsed.analyses[0].workflowId).toBe("wf-1");
+    });
+
     it("retry_workflow_run retries failed run by id", async () => {
       const result = await executeToolCall("retry_workflow_run", { runId: "run-1", mode: "from_failed" });
       expect(result.error).toBeUndefined();
@@ -408,6 +485,14 @@ describe("voice-tools", () => {
       expect(parsed.ok).toBe(true);
       expect(parsed.originalRunId).toBe("run-1");
       expect(parsed.retryRunId).toBe("run-2");
+    });
+
+    it("retry_workflow_run rejects from_failed for non-failed runs", async () => {
+      const result = await executeToolCall("retry_workflow_run", { runId: "run-ok", mode: "from_failed" });
+      expect(result.error).toBeUndefined();
+      const parsed = JSON.parse(result.result);
+      expect(parsed.ok).toBe(false);
+      expect(String(parsed.error || "")).toMatch(/requires a failed run/i);
     });
 
     it("query_live_view infers query from nested context history when query is missing", async () => {

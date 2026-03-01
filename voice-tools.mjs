@@ -330,6 +330,83 @@ async function getRecentSessionContextSnippet(sessionId, limit = 8) {
   }
 }
 
+function parseObjectArg(value, fieldName) {
+  if (value == null || value === "") return {};
+  if (typeof value === "object" && !Array.isArray(value)) return value;
+  if (typeof value === "string") {
+    try {
+      const parsed = JSON.parse(value);
+      if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+        return parsed;
+      }
+      throw new Error(`${fieldName} must decode to a JSON object`);
+    } catch (err) {
+      throw new Error(`Invalid JSON for ${fieldName}: ${err.message}`);
+    }
+  }
+  throw new Error(`${fieldName} must be an object or JSON string`);
+}
+
+function parseAnyJson(text) {
+  const raw = String(text || "").trim();
+  if (!raw) return null;
+  try {
+    return JSON.parse(raw);
+  } catch {
+    // fall through
+  }
+  const fenced = raw.match(/```(?:json)?\s*([\s\S]*?)```/i);
+  if (fenced?.[1]) {
+    try {
+      return JSON.parse(fenced[1].trim());
+    } catch {
+      // fall through
+    }
+  }
+  const firstObj = raw.indexOf("{");
+  const lastObj = raw.lastIndexOf("}");
+  if (firstObj >= 0 && lastObj > firstObj) {
+    try {
+      return JSON.parse(raw.slice(firstObj, lastObj + 1));
+    } catch {
+      // fall through
+    }
+  }
+  return null;
+}
+
+function normalizeWorkflowDefinition(def, args = {}) {
+  const input = def && typeof def === "object" && !Array.isArray(def) ? { ...def } : {};
+  if (typeof args.workflowId === "string" && args.workflowId.trim()) {
+    input.id = args.workflowId.trim();
+  } else if (typeof args.id === "string" && args.id.trim()) {
+    input.id = args.id.trim();
+  }
+  if (!input.name) {
+    const fallbackName = String(args.name || "").trim();
+    input.name = fallbackName || input.id || "Voice Workflow";
+  }
+  if (typeof args.description === "string" && args.description.trim()) {
+    input.description = args.description.trim();
+  }
+  if (!Array.isArray(input.nodes)) input.nodes = [];
+  if (!Array.isArray(input.edges)) input.edges = [];
+  if (!Array.isArray(input.triggers) && input.triggers != null) input.triggers = [];
+  if (!input.variables || typeof input.variables !== "object" || Array.isArray(input.variables)) {
+    input.variables = {};
+  }
+  if (!input.metadata || typeof input.metadata !== "object" || Array.isArray(input.metadata)) {
+    input.metadata = {};
+  }
+  input.metadata.updatedBy = "voice-tool";
+  if (typeof args.enabled === "boolean") {
+    input.enabled = args.enabled;
+  } else if (input.enabled == null) {
+    input.enabled = false;
+  }
+  return input;
+}
+
 function normalizeCandidatePath(input) {
   if (!input) return "";
   try {
@@ -812,6 +889,90 @@ const TOOL_DEFS = [
   },
   {
     type: "function",
+    name: "create_workflow",
+    description: "Create a new workflow from a JSON definition (or create a blank workflow by name).",
+    parameters: {
+      type: "object",
+      properties: {
+        definition: {
+          description: "Workflow definition object (or JSON string)",
+        },
+        name: { type: "string", description: "Workflow name (used for blank workflow creation)" },
+        description: { type: "string", description: "Workflow description" },
+        enabled: { type: "boolean", description: "Whether workflow should be enabled on save. Default: false" },
+        workflowId: { type: "string", description: "Optional explicit workflow id" },
+      },
+    },
+  },
+  {
+    type: "function",
+    name: "update_workflow_definition",
+    description: "Update an existing workflow definition (merge patch by default, or replace).",
+    parameters: {
+      type: "object",
+      properties: {
+        workflowId: { type: "string", description: "Workflow id to update" },
+        patch: {
+          description: "Partial workflow object patch (or JSON string)",
+        },
+        replace: {
+          type: "boolean",
+          description: "Replace the definition instead of merge-patch. Default: false",
+        },
+      },
+      required: ["workflowId"],
+    },
+  },
+  {
+    type: "function",
+    name: "delete_workflow",
+    description: "Delete a workflow definition by id.",
+    parameters: {
+      type: "object",
+      properties: {
+        workflowId: { type: "string", description: "Workflow id" },
+      },
+      required: ["workflowId"],
+    },
+  },
+  {
+    type: "function",
+    name: "create_workflow_from_template",
+    description: "Install a workflow template as a new workflow instance, with optional variable overrides.",
+    parameters: {
+      type: "object",
+      properties: {
+        templateId: { type: "string", description: "Workflow template id" },
+        overrides: {
+          description: "Variable override object (or JSON string)",
+        },
+        executeAfterCreate: { type: "boolean", description: "Run the new workflow immediately. Default: false" },
+        input: { description: "Input object (or JSON string) for executeAfterCreate" },
+      },
+      required: ["templateId"],
+    },
+  },
+  {
+    type: "function",
+    name: "generate_workflow_with_agent",
+    description: "Ask the coding agent to generate a workflow JSON, then optionally save it.",
+    parameters: {
+      type: "object",
+      properties: {
+        prompt: { type: "string", description: "What workflow to generate" },
+        save: { type: "boolean", description: "Save generated workflow automatically. Default: true" },
+        enabled: { type: "boolean", description: "When saving, set enabled state. Default: false" },
+        executor: {
+          type: "string",
+          enum: ["codex-sdk", "copilot-sdk", "claude-sdk", "gemini-sdk", "opencode-sdk"],
+          description: "Agent executor to use for generation",
+        },
+      },
+      required: ["prompt"],
+    },
+  },
+  {
+    type: "function",
     name: "get_workflow_definition",
     description: "Get a saved workflow definition (nodes, edges, metadata) by workflow id.",
     parameters: {
@@ -822,6 +983,20 @@ const TOOL_DEFS = [
           type: "boolean",
           description: "Include disabled workflows in lookups where relevant. Default: true",
         },
+      },
+      required: ["workflowId"],
+    },
+  },
+  {
+    type: "function",
+    name: "execute_workflow",
+    description: "Execute a workflow now with optional input payload.",
+    parameters: {
+      type: "object",
+      properties: {
+        workflowId: { type: "string", description: "Workflow id to run" },
+        input: { description: "Input payload object (or JSON string)" },
+        force: { type: "boolean", description: "Force run even if workflow is disabled. Default: false" },
       },
       required: ["workflowId"],
     },
@@ -869,8 +1044,20 @@ const TOOL_DEFS = [
   },
   {
     type: "function",
+    name: "analyze_workflow",
+    description: "Analyze workflow health using structure + recent run history.",
+    parameters: {
+      type: "object",
+      properties: {
+        workflowId: { type: "string", description: "Workflow id. Omit to analyze multiple workflows." },
+        limit: { type: "number", description: "Max runs used for analysis. Default: 30" },
+      },
+    },
+  },
+  {
+    type: "function",
     name: "retry_workflow_run",
-    description: "Retry a failed workflow run.",
+    description: "Retry workflow run: from_failed (only failed runs) or from_scratch (any run).",
     parameters: {
       type: "object",
       properties: {
@@ -1837,10 +2024,12 @@ const TOOL_HANDLERS = {
           id: w.id,
           name: w.name || w.id,
           enabled: w.enabled !== false,
-          triggerCount: Array.isArray(w.triggers) ? w.triggers.length : 0,
-          nodeCount: Array.isArray(w.nodes) ? w.nodes.length : 0,
-          edgeCount: Array.isArray(w.edges) ? w.edges.length : 0,
-          updatedAt: w.updatedAt || null,
+          triggerCount: Array.isArray(w.triggers)
+            ? w.triggers.length
+            : (w.trigger ? 1 : 0),
+          nodeCount: Number(w.nodeCount || (Array.isArray(w.nodes) ? w.nodes.length : 0)),
+          edgeCount: Number(w.edgeCount || (Array.isArray(w.edges) ? w.edges.length : 0)),
+          updatedAt: w?.metadata?.updatedAt || w.updatedAt || null,
         })),
       };
     } catch {
@@ -1852,14 +2041,198 @@ const TOOL_HANDLERS = {
           id: w.id,
           name: w.name || w.id,
           enabled: w.enabled !== false,
-          triggerCount: Array.isArray(w.triggers) ? w.triggers.length : 0,
-          nodeCount: Array.isArray(w.nodes) ? w.nodes.length : 0,
-          edgeCount: Array.isArray(w.edges) ? w.edges.length : 0,
-          updatedAt: w.updatedAt || null,
+          triggerCount: Array.isArray(w.triggers)
+            ? w.triggers.length
+            : (w.trigger ? 1 : 0),
+          nodeCount: Number(w.nodeCount || (Array.isArray(w.nodes) ? w.nodes.length : 0)),
+          edgeCount: Number(w.edgeCount || (Array.isArray(w.edges) ? w.edges.length : 0)),
+          updatedAt: w?.metadata?.updatedAt || w.updatedAt || null,
         })),
         error: "Workflow templates not available.",
       };
     }
+  },
+
+  async create_workflow(args = {}) {
+    const wfEngineMod = await getWorkflowEngineModule();
+    const engine = typeof wfEngineMod.getWorkflowEngine === "function"
+      ? wfEngineMod.getWorkflowEngine()
+      : null;
+    if (!engine?.save) return { ok: false, error: "Workflow engine is unavailable." };
+
+    const hasDefinition = args.definition != null && args.definition !== "";
+    const defInput = hasDefinition
+      ? parseObjectArg(args.definition, "definition")
+      : {};
+    const normalized = normalizeWorkflowDefinition(defInput, args);
+    const saved = engine.save(normalized);
+    return {
+      ok: true,
+      workflow: {
+        id: saved.id,
+        name: saved.name || saved.id,
+        enabled: saved.enabled !== false,
+        nodeCount: Array.isArray(saved.nodes) ? saved.nodes.length : 0,
+        edgeCount: Array.isArray(saved.edges) ? saved.edges.length : 0,
+        updatedAt: saved?.metadata?.updatedAt || null,
+      },
+    };
+  },
+
+  async update_workflow_definition(args = {}) {
+    const workflowId = String(args.workflowId || args.id || "").trim();
+    if (!workflowId) return { ok: false, error: "workflowId is required." };
+    const wfEngineMod = await getWorkflowEngineModule();
+    const engine = typeof wfEngineMod.getWorkflowEngine === "function"
+      ? wfEngineMod.getWorkflowEngine()
+      : null;
+    if (!engine?.get || !engine?.save) return { ok: false, error: "Workflow engine is unavailable." };
+    const existing = engine.get(workflowId);
+    if (!existing) return { ok: false, error: `Workflow "${workflowId}" not found.` };
+
+    const patchObj = parseObjectArg(
+      args.patch ?? args.definition ?? args.workflow ?? {},
+      "patch",
+    );
+    const replace = args.replace === true;
+    const merged = replace
+      ? { ...patchObj }
+      : {
+          ...existing,
+          ...patchObj,
+          metadata: {
+            ...(existing.metadata || {}),
+            ...(patchObj.metadata || {}),
+          },
+        };
+    const normalized = normalizeWorkflowDefinition(merged, {
+      ...args,
+      workflowId,
+      name: merged.name || existing.name,
+    });
+    const saved = engine.save(normalized);
+    return {
+      ok: true,
+      workflow: {
+        id: saved.id,
+        name: saved.name || saved.id,
+        enabled: saved.enabled !== false,
+        nodeCount: Array.isArray(saved.nodes) ? saved.nodes.length : 0,
+        edgeCount: Array.isArray(saved.edges) ? saved.edges.length : 0,
+        updatedAt: saved?.metadata?.updatedAt || null,
+      },
+    };
+  },
+
+  async delete_workflow(args = {}) {
+    const workflowId = String(args.workflowId || args.id || "").trim();
+    if (!workflowId) return { ok: false, error: "workflowId is required." };
+    const wfEngineMod = await getWorkflowEngineModule();
+    const engine = typeof wfEngineMod.getWorkflowEngine === "function"
+      ? wfEngineMod.getWorkflowEngine()
+      : null;
+    if (!engine?.delete) return { ok: false, error: "Workflow engine is unavailable." };
+    const deleted = await engine.delete(workflowId);
+    return { ok: Boolean(deleted), workflowId, deleted: Boolean(deleted) };
+  },
+
+  async create_workflow_from_template(args = {}) {
+    const templateId = String(args.templateId || args.id || "").trim();
+    if (!templateId) return { ok: false, error: "templateId is required." };
+    const wfEngineMod = await getWorkflowEngineModule();
+    const engine = typeof wfEngineMod.getWorkflowEngine === "function"
+      ? wfEngineMod.getWorkflowEngine()
+      : null;
+    if (!engine?.save || !engine?.execute) return { ok: false, error: "Workflow engine is unavailable." };
+    const wfTemplates = await import("./workflow-templates.mjs");
+    if (typeof wfTemplates.installTemplate !== "function") {
+      return { ok: false, error: "Workflow template installer is unavailable." };
+    }
+    const overrides = parseObjectArg(args.overrides ?? {}, "overrides");
+    const saved = wfTemplates.installTemplate(templateId, engine, overrides);
+    const executeAfterCreate = args.executeAfterCreate === true;
+    let run = null;
+    if (executeAfterCreate) {
+      const input = parseObjectArg(args.input ?? {}, "input");
+      const ctx = await engine.execute(saved.id, input);
+      run = {
+        runId: ctx?.id || null,
+        status: Array.isArray(ctx?.errors) && ctx.errors.length > 0 ? "failed" : "completed",
+        errorCount: Array.isArray(ctx?.errors) ? ctx.errors.length : 0,
+      };
+    }
+    return {
+      ok: true,
+      workflow: {
+        id: saved.id,
+        name: saved.name || saved.id,
+        enabled: saved.enabled !== false,
+        installedFrom: saved?.metadata?.installedFrom || templateId,
+        nodeCount: Array.isArray(saved.nodes) ? saved.nodes.length : 0,
+        edgeCount: Array.isArray(saved.edges) ? saved.edges.length : 0,
+      },
+      run,
+    };
+  },
+
+  async generate_workflow_with_agent(args = {}, context = {}) {
+    const prompt = String(args.prompt || "").trim();
+    if (!prompt) return { ok: false, error: "prompt is required." };
+    const cfg = loadConfig();
+    const requestedExecutor = String(
+      args.executor || context?.executor || cfg.voice?.delegateExecutor || cfg.primaryAgent || "codex-sdk",
+    ).trim().toLowerCase();
+    const executor = VALID_EXECUTORS.has(requestedExecutor)
+      ? requestedExecutor
+      : (VALID_EXECUTORS.has(cfg.primaryAgent) ? cfg.primaryAgent : "codex-sdk");
+
+    const generationPrompt =
+      "Generate a Bosun workflow JSON definition only. " +
+      "Return strict JSON with keys: name, description, enabled, variables, nodes, edges, triggers, metadata. " +
+      "Do not include markdown fences.\n\n" +
+      `User request:\n${prompt}`;
+    const result = await execPooledPrompt(generationPrompt, {
+      sdk: executor,
+      mode: "agent",
+      sessionId: context?.sessionId || `voice-workflow-generate-${Date.now()}`,
+      metadata: { source: "voice-workflow-generator" },
+      timeoutMs: 45_000,
+    });
+    const text = typeof result === "string"
+      ? result
+      : result?.finalResponse || result?.text || result?.message || JSON.stringify(result);
+    const parsed = parseAnyJson(text);
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+      return {
+        ok: false,
+        error: "Agent did not return valid workflow JSON.",
+        raw: String(text || "").slice(0, 2000),
+      };
+    }
+    const normalized = normalizeWorkflowDefinition(parsed, {
+      enabled: typeof args.enabled === "boolean" ? args.enabled : false,
+    });
+    const shouldSave = args.save !== false;
+    if (!shouldSave) {
+      return { ok: true, saved: false, workflow: normalized };
+    }
+    const wfEngineMod = await getWorkflowEngineModule();
+    const engine = typeof wfEngineMod.getWorkflowEngine === "function"
+      ? wfEngineMod.getWorkflowEngine()
+      : null;
+    if (!engine?.save) return { ok: false, error: "Workflow engine is unavailable." };
+    const saved = engine.save(normalized);
+    return {
+      ok: true,
+      saved: true,
+      workflow: {
+        id: saved.id,
+        name: saved.name || saved.id,
+        enabled: saved.enabled !== false,
+        nodeCount: Array.isArray(saved.nodes) ? saved.nodes.length : 0,
+        edgeCount: Array.isArray(saved.edges) ? saved.edges.length : 0,
+      },
+    };
   },
 
   async get_workflow_definition(args = {}) {
@@ -1881,6 +2254,31 @@ const TOOL_HANDLERS = {
         nodeCount: Array.isArray(workflow.nodes) ? workflow.nodes.length : 0,
         edgeCount: Array.isArray(workflow.edges) ? workflow.edges.length : 0,
         triggerCount: Array.isArray(workflow.triggers) ? workflow.triggers.length : 0,
+      },
+    };
+  },
+
+  async execute_workflow(args = {}) {
+    const workflowId = String(args.workflowId || args.id || "").trim();
+    if (!workflowId) return { ok: false, error: "workflowId is required." };
+    const wfEngineMod = await getWorkflowEngineModule();
+    const engine = typeof wfEngineMod.getWorkflowEngine === "function"
+      ? wfEngineMod.getWorkflowEngine()
+      : null;
+    if (!engine?.execute) return { ok: false, error: "Workflow engine is unavailable." };
+    const input = parseObjectArg(args.input ?? {}, "input");
+    const force = args.force === true;
+    const ctx = await engine.execute(workflowId, input, { force });
+    return {
+      ok: true,
+      run: {
+        runId: ctx?.id || null,
+        workflowId,
+        status: Array.isArray(ctx?.errors) && ctx.errors.length > 0 ? "failed" : "completed",
+        startedAt: Number(ctx?.startedAt) || null,
+        endedAt: Number(ctx?.endedAt) || Date.now(),
+        duration: Number(ctx?.duration) || null,
+        errorCount: Array.isArray(ctx?.errors) ? ctx.errors.length : 0,
       },
     };
   },
@@ -1991,6 +2389,15 @@ const TOOL_HANDLERS = {
     if (!engine?.retryRun) {
       return { ok: false, error: "Workflow retry is unavailable." };
     }
+    const currentRun = engine?.getRunDetail ? engine.getRunDetail(runId) : null;
+    if (!currentRun) return { ok: false, error: `Workflow run "${runId}" not found.` };
+    const currentStatus = String(currentRun?.status || "").trim().toLowerCase();
+    if (mode === "from_failed" && currentStatus !== "failed") {
+      return {
+        ok: false,
+        error: `retry mode "from_failed" requires a failed run. Current status is "${currentRun?.status || "unknown"}".`,
+      };
+    }
     const result = await engine.retryRun(runId, { mode });
     return {
       ok: true,
@@ -1998,6 +2405,65 @@ const TOOL_HANDLERS = {
       originalRunId: result?.originalRunId || runId,
       retryRunId: result?.retryRunId || null,
       status: result?.ctx?.errors?.length ? "failed" : "running_or_completed",
+    };
+  },
+
+  async analyze_workflow(args = {}) {
+    const wfEngineMod = await getWorkflowEngineModule();
+    const engine = typeof wfEngineMod.getWorkflowEngine === "function"
+      ? wfEngineMod.getWorkflowEngine()
+      : null;
+    if (!engine?.list || !engine?.getRunHistory) {
+      return { ok: false, error: "Workflow engine is unavailable." };
+    }
+    const workflowId = String(args.workflowId || args.id || "").trim();
+    const rawLimit = Number(args.limit);
+    const limit = Number.isFinite(rawLimit) && rawLimit > 0
+      ? Math.min(200, Math.floor(rawLimit))
+      : 30;
+    const targets = workflowId
+      ? [engine.get(workflowId)].filter(Boolean)
+      : engine.list().map((w) => engine.get(w.id)).filter(Boolean);
+    if (workflowId && !targets.length) {
+      return { ok: false, error: `Workflow "${workflowId}" not found.` };
+    }
+    const analyses = targets.map((wf) => {
+      const runs = engine.getRunHistory(wf.id, limit) || [];
+      const byStatus = {};
+      for (const run of runs) {
+        const status = String(run?.status || "unknown").trim().toLowerCase();
+        byStatus[status] = (byStatus[status] || 0) + 1;
+      }
+      const failedCount = Number(byStatus.failed || 0);
+      const completedCount = Number(byStatus.completed || 0);
+      const evaluated = failedCount + completedCount;
+      const failureRate = evaluated > 0 ? failedCount / evaluated : null;
+      const latest = runs[0] || null;
+      return {
+        workflowId: wf.id,
+        name: wf.name || wf.id,
+        enabled: wf.enabled !== false,
+        nodeCount: Array.isArray(wf.nodes) ? wf.nodes.length : Number(wf.nodeCount || 0),
+        edgeCount: Array.isArray(wf.edges) ? wf.edges.length : Number(wf.edgeCount || 0),
+        runCount: runs.length,
+        byStatus,
+        failureRate,
+        latestRun: latest
+          ? {
+              runId: latest.runId || null,
+              status: latest.status || "unknown",
+              startedAt: latest.startedAt || null,
+              duration: latest.duration ?? null,
+              errorCount: latest.errorCount ?? 0,
+              isStuck: latest.isStuck === true,
+            }
+          : null,
+      };
+    });
+    return {
+      ok: true,
+      count: analyses.length,
+      analyses,
     };
   },
 
