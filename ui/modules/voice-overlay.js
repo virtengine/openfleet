@@ -17,13 +17,13 @@ import {
   voiceState, voiceTranscript, voiceResponse, voiceError,
   voiceToolCalls, voiceDuration, isVoiceMicMuted,
   startVoiceSession, stopVoiceSession, interruptResponse,
-  sendTextMessage, onVoiceEvent, resumeVoiceAudio, toggleMicMute,
+  sendTextMessage, sendImageFrame, onVoiceEvent, resumeVoiceAudio, toggleMicMute,
 } from "./voice-client.js";
 import {
   sdkVoiceState, sdkVoiceTranscript, sdkVoiceResponse, sdkVoiceError,
   sdkVoiceToolCalls, sdkVoiceDuration, sdkVoiceSdkActive,
   startSdkVoiceSession, stopSdkVoiceSession, interruptSdkResponse,
-  sendSdkTextMessage, onSdkVoiceEvent,
+  sendSdkTextMessage, sendSdkImageFrame, onSdkVoiceEvent,
 } from "./voice-client-sdk.js";
 import {
   fallbackState, fallbackTranscript, fallbackResponse,
@@ -795,6 +795,16 @@ export function VoiceOverlay({
       intervalMs: 1000,
       maxWidth: normalizedInitialVisionSource === "screen" ? 1280 : 960,
       jpegQuality: normalizedInitialVisionSource === "screen" ? 0.65 : 0.62,
+      preferRealtimeVision: true,
+      onFrame: (frameDataUrl, frameMeta) => {
+        if (effectiveSdk) {
+          return sendSdkImageFrame(frameDataUrl, frameMeta);
+        }
+        if (tier === 1) {
+          return sendImageFrame(frameDataUrl, frameMeta);
+        }
+        return false;
+      },
     }).catch(() => {
       // Keep the session running even if camera/screen permissions fail.
     });
@@ -806,6 +816,8 @@ export function VoiceOverlay({
     executor,
     mode,
     model,
+    tier,
+    effectiveSdk,
   ]);
 
   const handleClose = useCallback(() => {
@@ -860,8 +872,18 @@ export function VoiceOverlay({
       intervalMs: 1000,
       maxWidth: 1280,
       jpegQuality: 0.65,
+      preferRealtimeVision: true,
+      onFrame: (frameDataUrl, frameMeta) => {
+        if (effectiveSdk) {
+          return sendSdkImageFrame(frameDataUrl, frameMeta);
+        }
+        if (tier === 1) {
+          return sendImageFrame(frameDataUrl, frameMeta);
+        }
+        return false;
+      },
     }).catch(() => {});
-  }, [sessionId, executor, mode, model]);
+  }, [sessionId, executor, mode, model, tier, effectiveSdk]);
 
   const handleToggleCameraShare = useCallback(() => {
     haptic("light");
@@ -873,8 +895,18 @@ export function VoiceOverlay({
       intervalMs: 1000,
       maxWidth: 960,
       jpegQuality: 0.62,
+      preferRealtimeVision: true,
+      onFrame: (frameDataUrl, frameMeta) => {
+        if (effectiveSdk) {
+          return sendSdkImageFrame(frameDataUrl, frameMeta);
+        }
+        if (tier === 1) {
+          return sendImageFrame(frameDataUrl, frameMeta);
+        }
+        return false;
+      },
     }).catch(() => {});
-  }, [sessionId, executor, mode, model]);
+  }, [sessionId, executor, mode, model, tier, effectiveSdk]);
 
   const handleToggleMic = useCallback(() => {
     haptic("light");
