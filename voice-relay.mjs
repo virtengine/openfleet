@@ -100,6 +100,26 @@ const VALID_VOICE_PROVIDERS = new Set([
   "fallback",
 ]);
 
+/**
+ * Check whether a realtime candidate entry has usable credentials.
+ * For OAuth entries (authSource === "oauth"), resolves the token from the
+ * voice-auth-manager state file instead of requiring a static apiKey.
+ */
+function candidateHasCredentials(entry, cfg) {
+  if (entry.provider === "openai") {
+    if (entry.authSource === "oauth") {
+      return Boolean(resolveVoiceOAuthToken("openai")?.token || cfg.openaiOAuthToken || cfg.openaiKey);
+    }
+    return Boolean(entry.apiKey || cfg.openaiOAuthToken || cfg.openaiKey);
+  }
+  if (entry.provider === "azure") {
+    const hasKey = Boolean(entry.apiKey || cfg.azureOAuthToken || cfg.azureKey);
+    const hasEndpoint = Boolean(entry.endpoint || cfg.azureEndpoint);
+    return hasKey && hasEndpoint;
+  }
+  return false;
+}
+
 const DEFAULT_VOICE_FAILOVER = Object.freeze({
   enabled: true,
   maxAttempts: 2,
@@ -123,6 +143,7 @@ function normalizeVoiceProviderEntry(entry) {
       azureDeployment: null,
       endpoint: null,
       apiKey: null,
+      authSource: "apiKey",
       role: "primary",
       weight: 100,
       name: null,
@@ -140,6 +161,7 @@ function normalizeVoiceProviderEntry(entry) {
   const azureDeployment = String(entry.azureDeployment || "").trim() || null;
   const endpoint = String(entry.endpoint || "").trim() || null;
   const apiKey = String(entry.apiKey || "").trim() || null;
+  const authSource = ["apiKey", "oauth"].includes(entry.authSource) ? entry.authSource : "apiKey";
   const role = String(entry.role || "primary").trim() || "primary";
   const weight = typeof entry.weight === "number" ? entry.weight : 100;
   const name = String(entry.name || "").trim() || null;
@@ -153,6 +175,7 @@ function normalizeVoiceProviderEntry(entry) {
     azureDeployment,
     endpoint,
     apiKey,
+    authSource,
     role,
     weight,
     name,
@@ -661,6 +684,7 @@ export function getVoiceConfig(forceReload = false) {
       provider: String(ep.provider || "").toLowerCase() === "custom" ? "openai" : String(ep.provider || "").toLowerCase(),
       endpoint: String(ep.endpoint || "").trim() || null,
       apiKey: String(ep.apiKey || "").trim() || null,
+      authSource: ["apiKey", "oauth"].includes(ep.authSource) ? ep.authSource : "apiKey",
       model: String(ep.model || "").trim() || null,
       azureDeployment: String(ep.deployment || ep.azureDeployment || "").trim() || null,
       voiceId: String(ep.voiceId || "").trim() || null,
@@ -804,17 +828,7 @@ export function isVoiceAvailable() {
   const cfg = getVoiceConfig();
   if (!cfg.enabled) return { available: false, tier: null, reason: "Voice disabled in config" };
 
-  const realtimeProvider = cfg.realtimeCandidates.find((candidate) => {
-    if (candidate.provider === "openai") {
-      return Boolean(candidate.apiKey || cfg.openaiOAuthToken || cfg.openaiKey);
-    }
-    if (candidate.provider === "azure") {
-      const hasKey = Boolean(candidate.apiKey || cfg.azureOAuthToken || cfg.azureKey);
-      const hasEndpoint = Boolean(candidate.endpoint || cfg.azureEndpoint);
-      return hasKey && hasEndpoint;
-    }
-    return false;
-  });
+  const realtimeProvider = cfg.realtimeCandidates.find((candidate) => candidateHasCredentials(candidate, cfg));
   if (realtimeProvider) {
     return { available: true, tier: 1, provider: realtimeProvider.provider };
   }
@@ -842,15 +856,7 @@ export function isVoiceAvailable() {
  */
 export async function createEphemeralToken(toolDefinitions = [], callContext = {}) {
   const cfg = getVoiceConfig();
-  const candidates = cfg.realtimeCandidates.filter((entry) => {
-    if (entry.provider === "openai") return Boolean(entry.apiKey || cfg.openaiOAuthToken || cfg.openaiKey);
-    if (entry.provider === "azure") {
-      const hasKey = Boolean(entry.apiKey || cfg.azureOAuthToken || cfg.azureKey);
-      const hasEndpoint = Boolean(entry.endpoint || cfg.azureEndpoint);
-      return hasKey && hasEndpoint;
-    }
-    return false;
-  });
+  const candidates = cfg.realtimeCandidates.filter((entry) => candidateHasCredentials(entry, cfg));
 
   if (!candidates.length) {
     throw new Error(
@@ -882,7 +888,14 @@ export async function createEphemeralToken(toolDefinitions = [], callContext = {
 }
 
 async function createOpenAIEphemeralToken(cfg, toolDefinitions = [], callContext = {}, candidate = {}) {
-  const credential = String(cfg.openaiOAuthToken || cfg.openaiKey || "").trim();
+  // Per-endpoint credentials take priority over global config.
+  // If the endpoint uses OAuth (authSource === "oauth"), resolve via the OAuth manager.
+  let credential = "";
+  if (candidate.authSource === "oauth") {
+    credential = String(resolveVoiceOAuthToken(candidate.provider || "openai")?.token || cfg.openaiOAuthToken || "").trim();
+  } else {
+    credential = String(candidate.apiKey || cfg.openaiOAuthToken || cfg.openaiKey || "").trim();
+  }
   if (!credential) {
     throw new Error("OpenAI voice credential not configured (OAuth token or API key required)");
   }
@@ -1156,15 +1169,7 @@ export async function getVoiceToolDefinitions(options = {}) {
  */
 export function getRealtimeConnectionInfo() {
   const cfg = getVoiceConfig();
-  const candidate = cfg.realtimeCandidates.find((entry) => {
-    if (entry.provider === "openai") return Boolean(entry.apiKey || cfg.openaiOAuthToken || cfg.openaiKey);
-    if (entry.provider === "azure") {
-      const hasKey = Boolean(entry.apiKey || cfg.azureOAuthToken || cfg.azureKey);
-      const hasEndpoint = Boolean(entry.endpoint || cfg.azureEndpoint);
-      return hasKey && hasEndpoint;
-    }
-    return false;
-  });
+  const candidate = cfg.realtimeCandidates.find((entry) => candidateHasCredentials(entry, cfg));
   if (!candidate) {
     return {
       provider: cfg.provider,
