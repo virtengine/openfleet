@@ -196,7 +196,9 @@ const OAUTH_PROVIDERS = {
     tokenUrl: "https://console.anthropic.com/v1/oauth/token",
     redirectUri: "http://localhost:10001/auth/callback",
     port: 10001,
-    scopes: "openid profile email offline_access",
+    // Claude's OAuth server does NOT support OIDC scopes (openid, profile, etc.).
+    // Empty scope string — the token inherits the user's default API permissions.
+    scopes: "",
     extraParams: {},
     accentColor: "#d97706",
   },
@@ -371,7 +373,7 @@ function _startProviderLogin(provider) {
     response_type: "code",
     client_id: cfg.clientId,
     redirect_uri: cfg.redirectUri,
-    scope: cfg.scopes,
+    ...(cfg.scopes ? { scope: cfg.scopes } : {}),
     state,
     code_challenge: codeChallenge,
     code_challenge_method: "S256",
@@ -396,17 +398,19 @@ function _startProviderLogin(provider) {
 }
 
 function _getProviderLoginStatus(provider) {
-  const hasToken = Boolean(resolveVoiceOAuthToken(provider, false));
+  const resolved = resolveVoiceOAuthToken(provider, false);
+  const hasToken = Boolean(resolved);
+  const accessToken = resolved?.token || null;
   const pending = _providerPendingLogin.get(provider);
   if (!pending) {
-    return { status: hasToken ? "connected" : "idle", hasToken };
+    return { status: hasToken ? "connected" : "idle", hasToken, accessToken };
   }
   const elapsed = Date.now() - pending.startedAt;
   if (elapsed > 5 * 60 * 1000 && pending.status === "pending") {
     _cancelProviderLogin(provider);
-    return { status: "idle", hasToken };
+    return { status: "idle", hasToken, accessToken };
   }
-  return { status: pending.status, result: pending.result || null, hasToken };
+  return { status: pending.status, result: pending.result || null, hasToken, accessToken };
 }
 
 function _cancelProviderLogin(provider) {

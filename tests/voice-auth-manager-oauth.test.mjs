@@ -128,6 +128,12 @@ describe("voice-auth-manager OAuth", () => {
     expect(params.get("scope")).toContain("offline_access");
   });
 
+  it("Claude authUrl does NOT contain openid scope", () => {
+    const { authUrl } = mod.startClaudeLogin();
+    const params = new URLSearchParams(new URL(authUrl).search);
+    expect(params.get("scope") || "").not.toContain("openid");
+  });
+
   it("authUrl contains codex_cli_simplified_flow param", () => {
     const { authUrl } = mod.startOpenAICodexLogin();
     const params = new URLSearchParams(new URL(authUrl).search);

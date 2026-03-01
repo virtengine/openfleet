@@ -954,6 +954,14 @@ function App() {
     }
   };
 
+  const cancelOAuthLogin = async (provider) => {
+    setOauthAccounts((prev) => ({ ...prev, [provider]: { ...prev[provider], loading: true } }));
+    try {
+      await apiPost("voice/auth/" + provider + "/cancel");
+    } catch { /* best-effort */ }
+    setOauthAccounts((prev) => ({ ...prev, [provider]: { status: "idle", hasToken: false, loading: false } }));
+  };
+
   // Endpoint test connection state — {[endpointId]: { testing, result, error, latencyMs }}
   const [endpointTestResults, setEndpointTestResults] = useState({});
   const [endpointCustomModelRows, setEndpointCustomModelRows] = useState({});
@@ -3294,23 +3302,39 @@ function App() {
                 const connected = acct.hasToken || acct.status === "connected" || acct.status === "complete";
                 const pending = acct.status === "pending";
                 const provLabel = prov === "openai" ? "OpenAI" : prov === "claude" ? "Claude" : "Gemini";
-                const statusColor = connected ? "#22c55e" : pending ? "#f59e0b" : "var(--text-secondary)";
-                const statusText = connected ? "Connected" : pending ? "Logging in…" : "Not connected";
+                const errored = acct.status === "error";
+                const statusColor = connected ? "#22c55e" : pending ? "#f59e0b" : errored ? "#ef4444" : "var(--text-secondary)";
+                const statusText = connected ? "Connected" : pending ? "Logging in…" : errored ? "Failed" : "Not connected";
                 return html`
                   <div style="border:1px solid var(--border);border-radius:6px;padding:10px 14px;min-width:160px;flex:1;max-width:240px">
                     <div style="display:flex;align-items:center;gap:6px;margin-bottom:6px">
                       <span style="font-weight:600;font-size:0.92em">${provLabel}</span>
                       <span style="display:inline-block;width:8px;height:8px;border-radius:50%;background:${statusColor}"></span>
                     </div>
-                    <div style="font-size:0.82em;color:${statusColor};margin-bottom:8px">${statusText}</div>
+                    <div style="font-size:0.82em;color:${statusColor};margin-bottom:4px">${statusText}</div>
+                    ${errored && acct.result?.error && html`
+                      <div style="font-size:0.78em;color:#ef4444;margin-bottom:6px;word-break:break-word">${acct.result.error}</div>
+                    `}
                     ${connected && html`
                       <button class="btn btn-sm btn-danger" onclick=${() => doOAuthLogout(prov)} disabled=${acct.loading}>
                         ${acct.loading ? "…" : "Logout"}
                       </button>
                     `}
-                    ${!connected && html`
-                      <button class="btn btn-sm" onclick=${() => startOAuthLogin(prov)} disabled=${acct.loading || pending}>
-                        ${acct.loading ? "…" : pending ? "Waiting…" : "Sign in"}
+                    ${(pending || errored) && html`
+                      <div style="display:flex;gap:6px">
+                        ${errored && html`
+                          <button class="btn btn-sm" onclick=${() => startOAuthLogin(prov)} disabled=${acct.loading}>
+                            Retry
+                          </button>
+                        `}
+                        <button class="btn btn-sm" style="${errored ? '' : 'color:var(--text-secondary)'}" onclick=${() => cancelOAuthLogin(prov)} disabled=${acct.loading}>
+                          Cancel
+                        </button>
+                      </div>
+                    `}
+                    ${!connected && !pending && !errored && html`
+                      <button class="btn btn-sm" onclick=${() => startOAuthLogin(prov)} disabled=${acct.loading}>
+                        ${acct.loading ? "…" : "Sign in"}
                       </button>
                     `}
                   </div>

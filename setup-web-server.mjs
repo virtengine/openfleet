@@ -2146,6 +2146,30 @@ async function handleRequest(req, res) {
           }
           return;
         }
+        case "voice/auth/openai/cancel":
+        case "voice/auth/claude/cancel":
+        case "voice/auth/gemini/cancel": {
+          if (req.method !== "POST") {
+            jsonResponse(res, 405, { ok: false, error: "POST required" });
+            return;
+          }
+          const provider = route.split("/")[2];
+          try {
+            const cancelFns = {
+              openai: "cancelOpenAILogin",
+              claude: "cancelClaudeLogin",
+              gemini: "cancelGeminiLogin",
+            };
+            const mod = await import("./voice-auth-manager.mjs");
+            const fn = mod[cancelFns[provider]];
+            if (!fn) throw new Error(`No cancel function for ${provider}`);
+            fn();
+            jsonResponse(res, 200, { ok: true });
+          } catch (err) {
+            jsonResponse(res, 500, { ok: false, error: err.message });
+          }
+          return;
+        }
 
         case "validate":
           if (req.method !== "POST") {
