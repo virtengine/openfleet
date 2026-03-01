@@ -8,7 +8,7 @@
  *
  * To configure:
  *   1. Go to your Marketplace listing draft → "Webhook" in left sidebar
- *   2. Payload URL: https://webhooks.bosun.virtengine.com/marketplace
+ *   2. Payload URL: https://webhooks.bosun.engineer/marketplace
  *   3. Content type: application/json
  *   4. Secret: value of BOSUN_MARKETPLACE_WEBHOOK_SECRET
  *   5. Check "Active"

@@ -54,7 +54,7 @@ Recommended (open source): **Umami**
 
 ```js
 window.BOSUN_ANALYTICS_CONFIG = {
-  provider: 'umami',
+  provider: "umami",
   umami: {
     scriptUrl: 'https://umami.example.com/script.js',
     websiteId: 'YOUR_UMAMI_WEBSITE_ID',

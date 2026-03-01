@@ -5,7 +5,7 @@
   "type": "module",
   "license": "Apache 2.0",
   "author": "VirtEngine Maintainers <hello@virtengine.com>",
-  "homepage": "https://bosun.virtengine.com",
+  "homepage": "https://bosun.engineer",
   "repository": {
     "type": "git",
     "url": "git+https://github.com/virtengine/bosun.git"
