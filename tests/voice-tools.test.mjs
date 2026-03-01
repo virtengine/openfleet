@@ -51,6 +51,21 @@ vi.mock("../agent-pool.mjs", () => ({
   })),
 }));
 
+vi.mock("../vision-session-state.mjs", () => ({
+  getVisionSessionState: vi.fn(() => ({
+    lastFrameDataUrl: "data:image/jpeg;base64,ZmFrZQ==",
+    lastFrameSource: "screen",
+  })),
+}));
+
+vi.mock("../voice-relay.mjs", () => ({
+  analyzeVisionFrame: vi.fn(async () => ({
+    summary: "The terminal shows a syntax error in voice-tools.mjs.",
+    provider: "openai",
+    model: "gpt-4o",
+  })),
+}));
+
 // ── Lazy import (after mocks are set up) ─────────────────────────────────────
 
 const {
@@ -62,6 +77,7 @@ const {
 const { execPrimaryPrompt, setPrimaryAgent } = await import("../primary-agent.mjs");
 const { execPooledPrompt } = await import("../agent-pool.mjs");
 const sessionTracker = await import("../session-tracker.mjs");
+const { analyzeVisionFrame } = await import("../voice-relay.mjs");
 
 // ── Tests ────────────────────────────────────────────────────────────────────
 
@@ -276,6 +292,42 @@ describe("voice-tools", () => {
       expect(result.error).toBeUndefined();
       // The new handler returns a help message pointing to run_workspace_command
       expect(result.result).toMatch(/unknown command|not recognized|supported|run_workspace_command/i);
+    });
+
+    it("query_live_view infers query from nested context history when query is missing", async () => {
+      const result = await executeToolCall(
+        "query_live_view",
+        {
+          context: {
+            history: [
+              {
+                role: "user",
+                content: [
+                  { type: "input_audio", transcript: "what exact error is visible on screen right now?" },
+                ],
+              },
+            ],
+          },
+        },
+        { sessionId: "voice-session-1", executor: "codex-sdk", mode: "instant", model: "gpt-realtime-1.5" },
+      );
+      expect(result.error).toBeUndefined();
+      expect(result.result).toMatch(/\{RESPONSE\}:/i);
+      expect(result.result).toMatch(/syntax error/i);
+      const callArgs = vi.mocked(analyzeVisionFrame).mock.calls.at(-1);
+      expect(String(callArgs?.[1]?.prompt || "")).toMatch(/error is visible on screen/i);
+    });
+
+    it("query_live_view uses default query when no user query context is present", async () => {
+      const result = await executeToolCall(
+        "query_live_view",
+        {},
+        { sessionId: "voice-session-2", executor: "codex-sdk", mode: "instant", model: "gpt-realtime-1.5" },
+      );
+      expect(result.error).toBeUndefined();
+      expect(result.result).toMatch(/\{RESPONSE\}:/i);
+      const callArgs = vi.mocked(analyzeVisionFrame).mock.calls.at(-1);
+      expect(String(callArgs?.[1]?.prompt || "")).toMatch(/Describe what is visible right now/i);
     });
   });
 });

@@ -312,6 +312,70 @@ function injectOverlayStyles() {
   background: rgba(249,171,0,0.12);
   border-color: rgba(249,171,0,0.35);
 }
+.voice-tool-event {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.voice-tool-event-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+.voice-tool-event-title {
+  font-size: 12px;
+  font-weight: 600;
+  color: #f9ab00;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+.voice-tool-event-chip {
+  display: inline-flex;
+  align-items: center;
+  border: 1px solid rgba(249,171,0,0.45);
+  background: rgba(249,171,0,0.16);
+  color: #f9ab00;
+  border-radius: 999px;
+  padding: 2px 8px;
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: .03em;
+}
+.voice-tool-event-sections {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.voice-tool-event-section {
+  border: 1px solid rgba(255,255,255,0.12);
+  border-radius: 8px;
+  background: rgba(32,33,36,0.55);
+  overflow: hidden;
+}
+.voice-tool-event-label {
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: .03em;
+  color: rgba(255,255,255,0.6);
+  padding: 5px 8px;
+  border-bottom: 1px solid rgba(255,255,255,0.08);
+}
+.voice-tool-event-code {
+  margin: 0;
+  padding: 8px;
+  font-size: 11px;
+  line-height: 1.4;
+  color: #e8eaed;
+  white-space: pre-wrap;
+  word-break: break-word;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace;
+}
+.voice-tool-event-summary {
+  font-size: 12px;
+  color: rgba(255,255,255,0.85);
+}
 .voice-overlay-chat-meta {
   display: flex; justify-content: space-between; align-items: center;
   gap: 8px; font-size: 10px; color: rgba(255,255,255,0.5);
@@ -624,6 +688,53 @@ function formatMeetingMessageContent(msg, baseText) {
     lines.push(`Message:\n${fallbackText}`);
   }
   return lines.join("\n").trim();
+}
+
+function extractToolEventDetails(msg, baseText = "") {
+  if (!isToolEventMessage(msg)) return null;
+  const msgType = String(msg?.type || "").trim().toLowerCase();
+  const eventType = String(msg?.meta?.eventType || "").trim().toLowerCase();
+  const kind = msgType === "tool_call" || eventType.includes("call")
+    ? "call"
+    : "result";
+  const toolName = String(
+    msg?.name ||
+    msg?.toolName ||
+    msg?.meta?.toolName ||
+    msg?.data?.name ||
+    msg?.data?.toolName ||
+    "unknown_tool",
+  ).trim() || "unknown_tool";
+  const argsText = stringifyToolData(
+    msg?.args ??
+      msg?.arguments ??
+      msg?.meta?.args ??
+      msg?.meta?.arguments ??
+      msg?.data?.args ??
+      msg?.data?.arguments,
+  );
+  const resultText = stringifyToolData(
+    msg?.result ??
+      msg?.output ??
+      msg?.meta?.result ??
+      msg?.meta?.output ??
+      msg?.data?.result ??
+      msg?.data?.output,
+  );
+  const errorText = stringifyToolData(
+    msg?.error ??
+      msg?.meta?.error ??
+      msg?.data?.error,
+  );
+  const summary = String(baseText || "").trim();
+  return {
+    kind,
+    toolName,
+    argsText,
+    resultText,
+    errorText,
+    summary,
+  };
 }
 
 function shouldSuppressCompactMeetingMessage(role, text, hasAttachments = false, isToolEvent = false) {
@@ -1022,6 +1133,7 @@ export function VoiceOverlay({
       maxWidth: normalizedInitialVisionSource === "screen" ? 1280 : 960,
       jpegQuality: normalizedInitialVisionSource === "screen" ? 0.65 : 0.62,
       preferRealtimeVision: true,
+      hybridSummaryIntervalMs: normalizedInitialVisionSource === "screen" ? 3500 : 4500,
       onFrame: (frameDataUrl, frameMeta) => {
         if (effectiveSdk) {
           return sendSdkImageFrame(frameDataUrl, frameMeta);
@@ -1099,6 +1211,7 @@ export function VoiceOverlay({
       maxWidth: 1280,
       jpegQuality: 0.65,
       preferRealtimeVision: true,
+      hybridSummaryIntervalMs: 3500,
       onFrame: (frameDataUrl, frameMeta) => {
         if (effectiveSdk) {
           return sendSdkImageFrame(frameDataUrl, frameMeta);
@@ -1122,6 +1235,7 @@ export function VoiceOverlay({
       maxWidth: 960,
       jpegQuality: 0.62,
       preferRealtimeVision: true,
+      hybridSummaryIntervalMs: 4500,
       onFrame: (frameDataUrl, frameMeta) => {
         if (effectiveSdk) {
           return sendSdkImageFrame(frameDataUrl, frameMeta);
@@ -1141,47 +1255,17 @@ export function VoiceOverlay({
 
   const handleMinimize = useCallback(() => {
     haptic("light");
-    if (
-      typeof globalThis?.veDesktop?.follow?.open === "function"
-      && !(globalThis.location?.search || "").includes("follow=1")
-    ) {
-      globalThis.veDesktop.follow
-        .open({
-          call: normalizedCallType,
-          sessionId: sessionId || undefined,
-          initialVisionSource: normalizedInitialVisionSource || undefined,
-          executor: executor || undefined,
-          mode: mode || undefined,
-          model: model || undefined,
-        })
-        .then((result) => {
-          if (result?.ok) {
-            handleDismiss();
-          } else {
-            setMinimized(true);
-          }
-        })
-        .catch(() => {
-          setMinimized(true);
-        });
-      return;
-    }
-    const canBrowserExternalize =
-      typeof globalThis?.open === "function"
-      && !(globalThis.location?.search || "").includes("follow=1");
-    if (canBrowserExternalize) {
+    // In the main/full window, minimize should externalize to a dedicated follow
+    // companion window (Electron) or browser popup fallback handled by App.
+    if (!isCompactFollowMode) {
       handleDismiss({ reason: "externalize" });
       return;
     }
+    // In compact follow mode, keep local in-window minimize behavior.
     setMinimized(true);
   }, [
     handleDismiss,
-    normalizedCallType,
-    normalizedInitialVisionSource,
-    sessionId,
-    executor,
-    mode,
-    model,
+    isCompactFollowMode,
   ]);
 
   useEffect(() => () => {
@@ -1370,6 +1454,9 @@ export function VoiceOverlay({
       const role = normalizeMeetingMessageRole(msg);
       const rawText = stringifyMeetingMessageContent(msg);
       const isToolEvent = isToolEventMessage(msg);
+      const toolDetails = isToolEvent
+        ? extractToolEventDetails(msg, rawText)
+        : null;
       const text = formatMeetingMessageContent(msg, rawText);
       const attachments = normalizeMeetingMessageAttachments(msg);
       if (
@@ -1419,6 +1506,7 @@ export function VoiceOverlay({
         role,
         content: normalizedText,
         isToolEvent,
+        toolDetails,
         attachments,
         timeLabel,
         timestampMs: parseMeetingTimestampMs(msg?.timestamp),
@@ -1546,8 +1634,43 @@ export function VoiceOverlay({
                       <span>${msg.isToolEvent ? "tool" : msg.role}</span>
                       <span>${msg.timeLabel}</span>
                     </div>
-                    ${msg.content && html`
+                    ${msg.content && !msg.isToolEvent && html`
                       <div class="voice-overlay-chat-content">${msg.content}</div>
+                    `}
+                    ${msg.isToolEvent && msg.toolDetails && html`
+                      <div class="voice-tool-event">
+                        <div class="voice-tool-event-head">
+                          <div class="voice-tool-event-title">
+                            🧰 ${msg.toolDetails.toolName}
+                          </div>
+                          <span class="voice-tool-event-chip">
+                            ${msg.toolDetails.kind === "call" ? "tool call" : "tool result"}
+                          </span>
+                        </div>
+                        <div class="voice-tool-event-sections">
+                          ${msg.toolDetails.argsText && html`
+                            <div class="voice-tool-event-section">
+                              <div class="voice-tool-event-label">arguments</div>
+                              <pre class="voice-tool-event-code">${msg.toolDetails.argsText}</pre>
+                            </div>
+                          `}
+                          ${msg.toolDetails.resultText && html`
+                            <div class="voice-tool-event-section">
+                              <div class="voice-tool-event-label">result</div>
+                              <pre class="voice-tool-event-code">${msg.toolDetails.resultText}</pre>
+                            </div>
+                          `}
+                          ${msg.toolDetails.errorText && html`
+                            <div class="voice-tool-event-section">
+                              <div class="voice-tool-event-label">error</div>
+                              <pre class="voice-tool-event-code">${msg.toolDetails.errorText}</pre>
+                            </div>
+                          `}
+                          ${msg.toolDetails.summary && !msg.toolDetails.argsText && !msg.toolDetails.resultText && !msg.toolDetails.errorText && html`
+                            <div class="voice-tool-event-summary">${msg.toolDetails.summary}</div>
+                          `}
+                        </div>
+                      </div>
                     `}
                     ${Array.isArray(msg.attachments) && msg.attachments.length > 0 && html`
                       <div style="margin-top:${msg.content ? "6px" : "0"};display:flex;flex-direction:column;gap:5px">

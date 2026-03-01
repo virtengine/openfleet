@@ -267,6 +267,33 @@ function resolveAskAgentMessage(args = {}) {
   return "";
 }
 
+function resolveVisionQuery(args = {}) {
+  const direct = String(
+    args?.query
+      || args?.prompt
+      || args?.question
+      || args?.request
+      || args?.message
+      || args?.text
+      || "",
+  ).trim();
+  if (direct) return direct;
+  const nested = args?.context && typeof args.context === "object" ? args.context : null;
+  const nestedDirect = String(
+    nested?.query
+      || nested?.prompt
+      || nested?.question
+      || nested?.request
+      || nested?.message
+      || nested?.text
+      || "",
+  ).trim();
+  if (nestedDirect) return nestedDirect;
+  const historyDerived = extractLatestTextFromHistoryItems(nested?.history);
+  if (historyDerived) return historyDerived;
+  return "";
+}
+
 async function getRecentSessionContextSnippet(sessionId, limit = 8) {
   const id = String(sessionId || "").trim();
   if (!id) return "";
@@ -671,7 +698,7 @@ const TOOL_DEFS = [
   {
     type: "function",
     name: "query_live_view",
-    description: "Analyze the latest live camera/screen frame for this session with a specific question. Use this for real visual understanding of what is currently on screen.",
+    description: "Analyze the latest live camera/screen frame for this session. Provide a query when available; if omitted, it will infer from recent voice context and still return a best-effort screen summary.",
     parameters: {
       type: "object",
       properties: {
@@ -680,7 +707,6 @@ const TOOL_DEFS = [
           description: "Question about the current visual frame. Example: 'What error is shown on screen?'",
         },
       },
-      required: ["query"],
     },
   },
   // ── Monitoring ──
@@ -1556,10 +1582,8 @@ const TOOL_HANDLERS = {
     if (!sessionId) {
       return "{RESPONSE}: Live vision query requires an active session.";
     }
-    const query = String(args?.query || "").trim();
-    if (!query) {
-      return "{RESPONSE}: Please provide a vision query.";
-    }
+    const query = resolveVisionQuery(args)
+      || "Describe what is visible right now and highlight any coding errors, failing commands, UI blockers, or next actionable step.";
     const state = getVisionSessionState(sessionId);
     const frameDataUrl = String(state?.lastFrameDataUrl || "").trim();
     if (!frameDataUrl) {

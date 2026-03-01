@@ -1391,6 +1391,7 @@ export async function executeVoiceTool(toolName, toolArgs, context = {}) {
  * Owner/admin sessions get additional tools via VOICE_OWNER_EXTRA_TOOLS.
  */
 const VOICE_SESSION_ALLOWED_TOOLS = new Set([
+  "get_admin_help",
   "ask_agent_context",
   "query_live_view",
   "delegate_to_agent",
@@ -1448,6 +1449,59 @@ export function isPrivilegedVoiceContext(context = {}) {
 }
 
 export function normalizeVoiceToolArgs(toolName, toolArgs) {
+  const extractLatestTextFromHistory = (history) => {
+    const items = Array.isArray(history) ? history : [];
+    for (let i = items.length - 1; i >= 0; i--) {
+      const item = items[i];
+      const role = String(item?.role || "").trim().toLowerCase();
+      if (role && role !== "user") continue;
+      const content = Array.isArray(item?.content) ? item.content : [];
+      for (let j = content.length - 1; j >= 0; j--) {
+        const part = content[j];
+        const transcript = String(part?.transcript || "").trim();
+        if (transcript) return transcript;
+        const text = String(part?.text || part?.input_text || "").trim();
+        if (text) return text;
+      }
+      const direct = String(item?.text || item?.message || "").trim();
+      if (direct) return direct;
+    }
+    return "";
+  };
+
+  const resolvePromptFromArgs = (value) => {
+    const direct = String(
+      value?.message ||
+      value?.prompt ||
+      value?.query ||
+      value?.question ||
+      value?.request ||
+      value?.text ||
+      "",
+    ).trim();
+    if (direct) return direct;
+
+    const nested = value?.context && typeof value.context === "object"
+      ? value.context
+      : null;
+    const nestedDirect = String(
+      nested?.message ||
+      nested?.prompt ||
+      nested?.query ||
+      nested?.question ||
+      nested?.request ||
+      nested?.text ||
+      "",
+    ).trim();
+    if (nestedDirect) return nestedDirect;
+
+    const fromNestedHistory = extractLatestTextFromHistory(nested?.history);
+    if (fromNestedHistory) return fromNestedHistory;
+    const fromTopHistory = extractLatestTextFromHistory(value?.history);
+    if (fromTopHistory) return fromTopHistory;
+    return "";
+  };
+
   const normalized =
     toolArgs && typeof toolArgs === "object" && !Array.isArray(toolArgs)
       ? { ...toolArgs }
@@ -1469,6 +1523,32 @@ export function normalizeVoiceToolArgs(toolName, toolArgs) {
       if (nestedFilePath) normalized.filePath = nestedFilePath;
       else if (nestedPath) normalized.filePath = nestedPath;
     }
+  }
+
+  const normalizedToolName = String(toolName || "").trim().toLowerCase();
+  if (
+    normalizedToolName === "ask_agent_context"
+    || normalizedToolName === "query_live_view"
+  ) {
+    const inferredPrompt = resolvePromptFromArgs(normalized);
+    if (normalizedToolName === "ask_agent_context") {
+      if (!String(normalized.message || "").trim() && inferredPrompt) {
+        normalized.message = inferredPrompt;
+      }
+    }
+    if (normalizedToolName === "query_live_view") {
+      if (!String(normalized.query || "").trim() && inferredPrompt) {
+        normalized.query = inferredPrompt;
+      }
+    }
+
+    // Tool logs can receive giant SDK history payloads; keep minimal fields.
+    if (normalized.context && typeof normalized.context === "object") {
+      const slimContext = { ...normalized.context };
+      delete slimContext.history;
+      normalized.context = slimContext;
+    }
+    delete normalized.history;
   }
 
   return normalized;

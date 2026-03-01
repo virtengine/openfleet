@@ -61,6 +61,9 @@ let _pendingUserTranscriptTimer = null;
 let _pendingAssistantTranscriptTimer = null;
 let _pendingUserTranscriptText = "";
 let _pendingAssistantTranscriptText = "";
+let _awaitingToolCompletionAck = false;
+let _toolCompletionAckTimer = null;
+let _assistantBaselineBeforeToolAck = "";
 
 // ── Event System ────────────────────────────────────────────────────────────
 
@@ -224,6 +227,12 @@ function _resetTranscriptPersistenceState() {
     clearTimeout(_pendingAssistantTranscriptTimer);
     _pendingAssistantTranscriptTimer = null;
   }
+  if (_toolCompletionAckTimer) {
+    clearTimeout(_toolCompletionAckTimer);
+    _toolCompletionAckTimer = null;
+  }
+  _awaitingToolCompletionAck = false;
+  _assistantBaselineBeforeToolAck = "";
 }
 
 function _persistTranscriptIfNew(role, text, eventType) {
@@ -231,7 +240,6 @@ function _persistTranscriptIfNew(role, text, eventType) {
   const value = String(text || "").trim();
   if (!value) return;
   if (normalizedRole === "user") {
-    if (!ENABLE_USER_TRANSCRIPT) return;
     if (value === _lastPersistedUserTranscript) return;
     _lastPersistedUserTranscript = value;
   } else if (normalizedRole === "assistant") {
@@ -239,6 +247,35 @@ function _persistTranscriptIfNew(role, text, eventType) {
     _lastPersistedAssistantTranscript = value;
   }
   _recordTranscript(normalizedRole, value, eventType);
+}
+
+function _markToolCompletionPending() {
+  _awaitingToolCompletionAck = true;
+  _assistantBaselineBeforeToolAck = String(_lastPersistedAssistantTranscript || "").trim();
+  if (_toolCompletionAckTimer) clearTimeout(_toolCompletionAckTimer);
+  _toolCompletionAckTimer = setTimeout(() => {
+    _toolCompletionAckTimer = null;
+    if (!_awaitingToolCompletionAck) return;
+    const ack = "Done.";
+    sdkVoiceResponse.value = ack;
+    emit("response-complete", { text: ack });
+    _persistTranscriptIfNew("assistant", ack, "tool_call.done.auto_ack.timeout");
+    _awaitingToolCompletionAck = false;
+    _assistantBaselineBeforeToolAck = "";
+  }, 6000);
+}
+
+function _markAssistantToolResponseObserved(latestAssistantText = "") {
+  if (!_awaitingToolCompletionAck) return;
+  const latest = String(latestAssistantText || _lastPersistedAssistantTranscript || "").trim();
+  if (!latest) return;
+  if (latest === _assistantBaselineBeforeToolAck) return;
+  _awaitingToolCompletionAck = false;
+  _assistantBaselineBeforeToolAck = "";
+  if (_toolCompletionAckTimer) {
+    clearTimeout(_toolCompletionAckTimer);
+    _toolCompletionAckTimer = null;
+  }
 }
 
 function _scheduleUserTranscriptFinalize(text) {
@@ -273,6 +310,7 @@ function _scheduleAssistantTranscriptFinalize(text) {
     sdkVoiceResponse.value = finalText;
     emit("response-complete", { text: finalText });
     _persistTranscriptIfNew("assistant", finalText, "sdk.history_updated.assistant.final");
+    _markAssistantToolResponseObserved(finalText);
     sdkVoiceState.value = "listening";
   }, 700);
 }
@@ -461,6 +499,7 @@ async function startAgentsSdkSession(config, options = {}) {
     if (lastAssistantMsg) {
       const response = lastAssistantMsg.content?.map((c) => c.transcript || c.text || "").join("") || "";
       if (response) {
+        _markAssistantToolResponseObserved(response);
         _scheduleAssistantTranscriptFinalize(response);
       }
     }
@@ -493,6 +532,9 @@ async function startAgentsSdkSession(config, options = {}) {
     const stillRunning = sdkVoiceToolCalls.value.some((tc) => tc.status === "running");
     if (!stillRunning && sdkVoiceState.value === "thinking") {
       sdkVoiceState.value = "listening";
+    }
+    if (!stillRunning) {
+      _markToolCompletionPending();
     }
     emit("tool-call-complete", { callId });
   });
@@ -755,16 +797,17 @@ function handleGeminiServerEvent(msg) {
       if (ENABLE_USER_TRANSCRIPT) {
         sdkVoiceTranscript.value = msg.text || "";
         emit("transcript", { text: msg.text, final: true });
-        _recordTranscript("user", msg.text, "gemini.user_transcript");
       } else {
         sdkVoiceTranscript.value = "";
       }
+      _persistTranscriptIfNew("user", msg.text, "gemini.user_transcript");
       break;
 
     case "transcript.assistant":
       sdkVoiceResponse.value = msg.text || "";
       emit("response-complete", { text: msg.text });
-      _recordTranscript("assistant", msg.text, "gemini.assistant_transcript");
+      _persistTranscriptIfNew("assistant", msg.text, "gemini.assistant_transcript");
+      _markAssistantToolResponseObserved(msg.text || "");
       break;
 
     case "audio.delta":
@@ -824,6 +867,10 @@ async function handleGeminiToolCall(msg) {
     sdkVoiceToolCalls.value = sdkVoiceToolCalls.value.map((tc) =>
       tc.callId === callId ? { ...tc, status: "complete", result: result.result } : tc
     );
+    const stillRunning = sdkVoiceToolCalls.value.some((tc) => tc.status === "running");
+    if (!stillRunning) {
+      _markToolCompletionPending();
+    }
 
     // Send tool result back to Gemini via WebSocket
     if (_session && _session.readyState === WebSocket.OPEN) {
@@ -1025,21 +1072,34 @@ export function interruptSdkResponse() {
 
 /**
  * Send a text message to the voice agent.
+ * @param {string} text
+ * @param {{ persistText?: string, eventType?: string }} [options]
  */
-export function sendSdkTextMessage(text) {
+export function sendSdkTextMessage(text, options = {}) {
+  const inputText = String(text || "").trim();
+  if (!inputText) return;
   if (!_session) {
     console.warn("[voice-client-sdk] Cannot send text — no active session");
     return;
   }
 
+  const persistText = String(options?.persistText ?? inputText).trim();
+  if (persistText) {
+    _persistTranscriptIfNew(
+      "user",
+      persistText,
+      String(options?.eventType || "sdk.send_text_message"),
+    );
+  }
+
   if (typeof _session.sendMessage === "function") {
     // @openai/agents SDK
-    _session.sendMessage(text);
+    _session.sendMessage(inputText);
   } else if (_session.readyState === WebSocket.OPEN) {
     // Gemini WebSocket
     _session.send(JSON.stringify({
       type: "text.input",
-      text,
+      text: inputText,
     }));
   }
 }
@@ -1126,7 +1186,10 @@ export function sendVoiceCommand(commandOrText) {
   if (!text) return;
 
   if (!text.startsWith("/")) {
-    sendSdkTextMessage(text);
+    sendSdkTextMessage(text, {
+      persistText: text,
+      eventType: "sdk.voice_command.text",
+    });
     return;
   }
 
@@ -1136,7 +1199,10 @@ export function sendVoiceCommand(commandOrText) {
   // part of the conversation rather than a tool invocation trigger.
   const instruction =
     `[SYSTEM COMMAND] Call the bosun_slash_command tool with command: ${text}`;
-  sendSdkTextMessage(instruction);
+  sendSdkTextMessage(instruction, {
+    persistText: text,
+    eventType: "sdk.voice_command.slash",
+  });
 }
 
 // ── Duration Timer ──────────────────────────────────────────────────────────

@@ -614,6 +614,7 @@ describe("voice-relay", () => {
     it("returns a Set of allowed tool names", () => {
       const allowed = getSessionAllowedTools();
       expect(allowed).toBeInstanceOf(Set);
+      expect(allowed.has("get_admin_help")).toBe(true);
       expect(allowed.has("delegate_to_agent")).toBe(true);
       expect(allowed.has("list_tasks")).toBe(true);
       expect(allowed.has("get_agent_status")).toBe(true);

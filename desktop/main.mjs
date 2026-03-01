@@ -4,6 +4,7 @@ import {
   desktopCapturer,
   dialog,
   Menu,
+  screen,
   shell,
   Tray,
   globalShortcut,
@@ -498,6 +499,22 @@ function setWindowVisible(win) {
   if (win.isMinimized()) win.restore();
   if (!win.isVisible()) win.show();
   win.focus();
+}
+
+function anchorFollowWindow(win) {
+  if (!win || win.isDestroyed()) return;
+  try {
+    const bounds = win.getBounds();
+    const targetDisplay = screen.getDisplayMatching(bounds);
+    const area = targetDisplay?.workArea;
+    if (!area) return;
+    const margin = 16;
+    const x = Math.max(area.x, area.x + area.width - bounds.width - margin);
+    const y = Math.max(area.y, area.y + area.height - bounds.height - margin);
+    win.setPosition(x, y, false);
+  } catch {
+    // best effort only
+  }
 }
 
 // ── Workspace helpers ─────────────────────────────────────────────────────────
@@ -1228,7 +1245,17 @@ async function createFollowWindow() {
   });
 
   followWindow.once("ready-to-show", () => {
+    anchorFollowWindow(followWindow);
     setWindowVisible(followWindow);
+  });
+
+  followWindow.on("show", () => {
+    followWindow?.setAlwaysOnTop(true, "floating", 1);
+    anchorFollowWindow(followWindow);
+  });
+
+  followWindow.on("resized", () => {
+    anchorFollowWindow(followWindow);
   });
 
   return followWindow;
@@ -1242,8 +1269,11 @@ async function openFollowWindow(detail = {}) {
   if (!win.webContents.getURL() || followWindowLaunchSignature !== signature) {
     followWindowLaunchSignature = signature;
     await win.loadURL(signature);
+    anchorFollowWindow(win);
+    setWindowVisible(win);
     return;
   }
+  anchorFollowWindow(win);
   setWindowVisible(win);
 }
 
