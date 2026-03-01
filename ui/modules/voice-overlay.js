@@ -478,6 +478,65 @@ function injectOverlayStyles() {
   height: 56px;
   font-size: 20px;
 }
+.voice-overlay.compact .voice-overlay-chat-toggle {
+  display: none;
+}
+.voice-overlay.compact .voice-overlay-stage {
+  display: none;
+}
+.voice-overlay.compact .voice-overlay-chat.follow-feed {
+  width: 100%;
+  max-width: none;
+  min-width: 0;
+  max-height: none;
+  height: calc(100vh - 150px);
+}
+.voice-overlay.compact .voice-overlay-chat.follow-feed .voice-overlay-chat-head {
+  padding: 10px 12px;
+}
+.voice-overlay.compact .voice-overlay-chat.follow-feed .voice-overlay-chat-title {
+  font-size: 12px;
+  letter-spacing: 0.01em;
+  text-transform: uppercase;
+  color: rgba(255,255,255,0.72);
+}
+.voice-overlay.compact .voice-overlay-chat.follow-feed .voice-overlay-chat-status {
+  font-size: 11px;
+}
+.voice-overlay.compact .voice-overlay-chat.follow-feed .voice-overlay-chat-body {
+  padding: 8px 10px 10px;
+  gap: 6px;
+}
+.voice-overlay.compact .voice-overlay-chat.follow-feed .voice-overlay-chat-msg {
+  padding: 8px;
+  border-radius: 10px;
+}
+.voice-overlay.compact .voice-overlay-chat.follow-feed .voice-overlay-chat-content {
+  font-size: 12px;
+  line-height: 1.35;
+}
+.voice-overlay.compact .voice-overlay-chat-live {
+  margin: 6px 10px 0;
+  border: 1px solid rgba(255,255,255,0.16);
+  background: rgba(255,255,255,0.06);
+  border-radius: 10px;
+  padding: 8px;
+  font-size: 12px;
+  line-height: 1.35;
+  color: rgba(255,255,255,0.9);
+}
+.voice-overlay.compact .voice-overlay-chat-live.user {
+  border-color: rgba(96,165,250,0.45);
+}
+.voice-overlay.compact .voice-overlay-chat-live.assistant {
+  border-color: rgba(74,222,128,0.45);
+}
+.voice-overlay.compact .voice-overlay-chat-input-wrap {
+  display: none;
+}
+.voice-overlay.compact .voice-overlay-footer {
+  padding: 8px 0 10px;
+}
   `;
   document.head.appendChild(style);
 }
@@ -488,6 +547,40 @@ function formatDuration(seconds) {
   const m = Math.floor(seconds / 60);
   const s = seconds % 60;
   return `${m}:${String(s).padStart(2, "0")}`;
+}
+
+function normalizeMeetingMessageRole(msg) {
+  const roleRaw = String(
+    msg?.role ||
+      (msg?.type === "tool_call" || msg?.type === "tool_result"
+        ? "system"
+        : "assistant"),
+  )
+    .trim()
+    .toLowerCase();
+  if (roleRaw === "user" || roleRaw === "assistant") return roleRaw;
+  return "system";
+}
+
+function stringifyMeetingMessageContent(msg) {
+  if (typeof msg?.content === "string") return msg.content;
+  if (msg?.content == null) return "";
+  try {
+    return JSON.stringify(msg.content);
+  } catch {
+    return String(msg.content);
+  }
+}
+
+function shouldSuppressCompactMeetingMessage(role, text) {
+  const value = String(text || "").trim();
+  if (!value) return true;
+  if (role === "system") return true;
+  if (/^reconnecting\.\.\./i.test(value)) return true;
+  if (/stream disconnected before completion/i.test(value)) return true;
+  if (/^turn completed$/i.test(value)) return true;
+  if (/^\*\*/.test(value)) return true;
+  return false;
 }
 
 // ── Voice Overlay Component ─────────────────────────────────────────────────
@@ -520,6 +613,7 @@ export function VoiceOverlay({
   callType = "voice",
   initialVisionSource = null,
 }) {
+  const isCompactFollowMode = compact === true;
   const [started, setStarted] = useState(false);
   const [chatOpen, setChatOpen] = useState(true);
   const [meetingMessages, setMeetingMessages] = useState([]);
@@ -871,6 +965,45 @@ export function VoiceOverlay({
       : meetingChatError
         ? "error"
         : "live";
+  const meetingFeedMessages = (() => {
+    const items = [];
+    for (const msg of meetingMessages) {
+      const role = normalizeMeetingMessageRole(msg);
+      const text = stringifyMeetingMessageContent(msg);
+      if (isCompactFollowMode && shouldSuppressCompactMeetingMessage(role, text)) {
+        continue;
+      }
+      const timeRaw = String(msg?.timestamp || "").trim();
+      const date = timeRaw ? new Date(timeRaw) : null;
+      const timeLabel =
+        date && Number.isFinite(date.getTime())
+          ? date.toLocaleTimeString([], {
+              hour: "2-digit",
+              minute: "2-digit",
+            })
+          : "";
+      const normalizedText = String(text || "").trim();
+      const prev = items.length > 0 ? items[items.length - 1] : null;
+      if (
+        prev
+        && prev.role === role
+        && prev.content === normalizedText
+      ) {
+        continue;
+      }
+      items.push({
+        id: msg?.id || `${role}-${items.length}`,
+        role,
+        content: normalizedText,
+        timeLabel,
+      });
+    }
+    if (!isCompactFollowMode) return items;
+    return items.slice(-120);
+  })();
+  const showMeetingChat = Boolean(sessionId) && (chatOpen || isCompactFollowMode);
+  const liveTranscriptText = String(transcript || "").trim();
+  const liveResponseText = String(response || "").trim();
 
   return html`
     <div class=${`voice-overlay${compact ? " compact" : ""}`}>
@@ -890,14 +1023,16 @@ export function VoiceOverlay({
           <span class="voice-overlay-call-pill">
             ${normalizedCallType === "video" ? "video call" : "voice call"}
           </span>
-          <button
-            class="voice-overlay-chat-toggle"
-            onClick=${() => setChatOpen((prev) => !prev)}
-            disabled=${!sessionId}
-            title=${sessionId ? "Toggle meeting chat" : "Open a session-bound call first"}
-          >
-            ${chatOpen ? "Hide Chat" : "Show Chat"}
-          </button>
+          ${!isCompactFollowMode && html`
+            <button
+              class="voice-overlay-chat-toggle"
+              onClick=${() => setChatOpen((prev) => !prev)}
+              disabled=${!sessionId}
+              title=${sessionId ? "Toggle meeting chat" : "Open a session-bound call first"}
+            >
+              ${chatOpen ? "Hide Chat" : "Show Chat"}
+            </button>
+          `}
         </div>
       </div>
 
@@ -984,74 +1119,59 @@ export function VoiceOverlay({
           </div>
         </div>
 
-        ${chatOpen && sessionId && html`
-          <aside class="voice-overlay-chat">
+        ${showMeetingChat && html`
+          <aside class=${`voice-overlay-chat${isCompactFollowMode ? " follow-feed" : ""}`}>
             <div class="voice-overlay-chat-head">
-              <div class="voice-overlay-chat-title">Meeting Chat + Transcript</div>
+              <div class="voice-overlay-chat-title">
+                ${isCompactFollowMode ? "Live Meeting Transcript" : "Meeting Chat + Transcript"}
+              </div>
               <div class="voice-overlay-chat-status">${chatStatusLabel}</div>
             </div>
+            ${isCompactFollowMode && liveTranscriptText && html`
+              <div class="voice-overlay-chat-live user">You: ${liveTranscriptText}</div>
+            `}
+            ${isCompactFollowMode && liveResponseText && html`
+              <div class="voice-overlay-chat-live assistant">Assistant: ${liveResponseText}</div>
+            `}
             <div class="voice-overlay-chat-body" ref=${meetingScrollRef}>
-              ${meetingMessages.length === 0 && !meetingChatLoading
+              ${meetingFeedMessages.length === 0 && !meetingChatLoading
                 ? html`<div class="voice-overlay-chat-empty">Conversation will appear here once the call starts.</div>`
                 : null}
-              ${meetingMessages.map((msg, idx) => {
-                const roleRaw = String(
-                  msg?.role ||
-                    (msg?.type === "tool_call" || msg?.type === "tool_result"
-                      ? "system"
-                      : "assistant"),
-                )
-                  .trim()
-                  .toLowerCase();
-                const role =
-                  roleRaw === "user" || roleRaw === "assistant" ? roleRaw : "system";
-                const timeRaw = String(msg?.timestamp || "").trim();
-                const date = timeRaw ? new Date(timeRaw) : null;
-                const timeLabel =
-                  date && Number.isFinite(date.getTime())
-                    ? date.toLocaleTimeString([], {
-                        hour: "2-digit",
-                        minute: "2-digit",
-                      })
-                    : "";
-                const text =
-                  typeof msg?.content === "string"
-                    ? msg.content
-                    : msg?.content == null
-                      ? ""
-                      : JSON.stringify(msg.content);
+              ${meetingFeedMessages.map((msg) => {
                 return html`
-                  <div class="voice-overlay-chat-msg ${role}" key=${msg?.id || `${role}-${idx}`}>
+                  <div class="voice-overlay-chat-msg ${msg.role}" key=${msg.id}>
                     <div class="voice-overlay-chat-meta">
-                      <span>${role}</span>
-                      <span>${timeLabel}</span>
+                      <span>${msg.role}</span>
+                      <span>${msg.timeLabel}</span>
                     </div>
-                    <div class="voice-overlay-chat-content">${text}</div>
+                    <div class="voice-overlay-chat-content">${msg.content}</div>
                   </div>
                 `;
               })}
             </div>
-            <div class="voice-overlay-chat-input-wrap">
-              <input
-                class="voice-overlay-chat-input"
-                placeholder="Message the agent during the call…"
-                value=${meetingChatInput}
-                onInput=${(e) => setMeetingChatInput(e.target.value)}
-                onKeyDown=${(e) => {
-                  if (e.key === "Enter" && !e.shiftKey) {
-                    e.preventDefault();
-                    handleSendMeetingChat().catch(() => {});
-                  }
-                }}
-              />
-              <button
-                class="voice-overlay-chat-send"
-                onClick=${() => handleSendMeetingChat().catch(() => {})}
-                disabled=${!meetingChatInput.trim() || meetingChatSending}
-              >
-                Send
-              </button>
-            </div>
+            ${!isCompactFollowMode && html`
+              <div class="voice-overlay-chat-input-wrap">
+                <input
+                  class="voice-overlay-chat-input"
+                  placeholder="Message the agent during the call…"
+                  value=${meetingChatInput}
+                  onInput=${(e) => setMeetingChatInput(e.target.value)}
+                  onKeyDown=${(e) => {
+                    if (e.key === "Enter" && !e.shiftKey) {
+                      e.preventDefault();
+                      handleSendMeetingChat().catch(() => {});
+                    }
+                  }}
+                />
+                <button
+                  class="voice-overlay-chat-send"
+                  onClick=${() => handleSendMeetingChat().catch(() => {})}
+                  disabled=${!meetingChatInput.trim() || meetingChatSending}
+                >
+                  Send
+                </button>
+              </div>
+            `}
           </aside>
         `}
       </div>

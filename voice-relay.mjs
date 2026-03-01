@@ -26,6 +26,7 @@ const OPENAI_REALTIME_MODEL = "gpt-realtime-1.5";
 const OPENAI_AUDIO_RESPONSES_MODEL = "gpt-audio-1.5";
 const OPENAI_RESPONSES_URL = "https://api.openai.com/v1/responses";
 const OPENAI_DEFAULT_VISION_MODEL = "gpt-4.1-nano";
+const REALTIME_TRANSCRIBE_MODEL = "gpt-4o-mini-transcribe";
 
 const AZURE_API_VERSION = "2025-04-01-preview";
 
@@ -1087,6 +1088,9 @@ async function createOpenAIEphemeralToken(cfg, toolDefinitions = [], callContext
     model,
     voice: voiceId,
     instructions,
+    modalities: ["text", "audio"],
+    input_audio_format: "pcm16",
+    output_audio_format: "pcm16",
     tool_choice: resolveToolChoice(toolDefinitions, context),
     turn_detection: {
       type: cfg.turnDetection,
@@ -1094,12 +1098,16 @@ async function createOpenAIEphemeralToken(cfg, toolDefinitions = [], callContext
         threshold: 0.5,
         prefix_padding_ms: 300,
         silence_duration_ms: 500,
+        create_response: true,
+        interrupt_response: true,
       } : {}),
       ...(cfg.turnDetection === "semantic_vad" ? {
         eagerness: "medium",
+        create_response: true,
+        interrupt_response: true,
       } : {}),
     },
-    input_audio_transcription: { model: "gpt-4o-mini-transcribe" },
+    input_audio_transcription: { model: REALTIME_TRANSCRIBE_MODEL },
     tools: toolDefinitions,
   };
 
@@ -1174,6 +1182,9 @@ async function createAzureEphemeralToken(cfg, toolDefinitions = [], callContext 
     model: deployment,
     voice: voiceId,
     instructions,
+    modalities: ["text", "audio"],
+    input_audio_format: "pcm16",
+    output_audio_format: "pcm16",
     tool_choice: resolveToolChoice(toolDefinitions, context),
     turn_detection: {
       type: cfg.turnDetection,
@@ -1181,9 +1192,16 @@ async function createAzureEphemeralToken(cfg, toolDefinitions = [], callContext 
         threshold: 0.5,
         prefix_padding_ms: 300,
         silence_duration_ms: 500,
+        create_response: true,
+        interrupt_response: true,
+      } : {}),
+      ...(cfg.turnDetection === "semantic_vad" ? {
+        eagerness: "medium",
+        create_response: true,
+        interrupt_response: true,
       } : {}),
     },
-    input_audio_transcription: { model: "whisper-1" },
+    input_audio_transcription: { model: REALTIME_TRANSCRIBE_MODEL },
     tools: toolDefinitions,
   };
 

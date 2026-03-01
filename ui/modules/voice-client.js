@@ -41,6 +41,7 @@ let _sessionStartTime = 0;
 let _eventHandlers = new Map();
 let _explicitStop = false;     // user-initiated stop; suppresses reconnect/error noise
 let _reconnectInFlight = false;
+let _audioAutoplayWarned = false;
 let _callContext = {
   sessionId: null,
   executor: null,
@@ -373,14 +374,24 @@ export async function startVoiceSession(options = {}) {
 
     // Add mic track
     for (const track of _mediaStream.getTracks()) {
+      track.enabled = true;
       _pc.addTrack(track, _mediaStream);
     }
 
     // Set up remote audio playback
     _audioElement = new Audio();
     _audioElement.autoplay = true;
+    _audioElement.playsInline = true;
+    _audioElement.muted = false;
     _pc.ontrack = (event) => {
       _audioElement.srcObject = event.streams[0];
+      const track = event.track;
+      if (track && typeof track.addEventListener === "function") {
+        track.addEventListener("unmute", () => {
+          ensureRemoteAudioPlayback().catch(() => {});
+        });
+      }
+      ensureRemoteAudioPlayback().catch(() => {});
     };
 
     // 4. Set up data channel for events
@@ -519,6 +530,11 @@ function handleServerEvent(event) {
       emit("response-delta", { delta: event.delta });
       break;
 
+    case "response.text.delta":
+      voiceResponse.value += event.delta || "";
+      emit("response-delta", { delta: event.delta });
+      break;
+
     case "response.audio_transcript.done":
       emit("response-complete", { text: voiceResponse.value });
       _recordVoiceTranscript(
@@ -529,8 +545,23 @@ function handleServerEvent(event) {
       voiceResponse.value = "";
       break;
 
+    case "response.text.done":
+      emit("response-complete", { text: voiceResponse.value });
+      _recordVoiceTranscript(
+        "assistant",
+        voiceResponse.value,
+        "response.text.done",
+      );
+      voiceResponse.value = "";
+      break;
+
     case "response.audio.delta":
       // Audio is handled via WebRTC tracks, not data channel
+      break;
+
+    case "conversation.item.input_audio_transcription.failed":
+      voiceError.value = event.error?.message || "Input transcription failed";
+      emit("error", event.error || { message: voiceError.value });
       break;
 
     case "response.created":
@@ -743,6 +774,28 @@ async function reconnect() {
   }
 }
 
+async function ensureRemoteAudioPlayback() {
+  if (!_audioElement) return false;
+  if (!_audioElement.srcObject) return false;
+  try {
+    _audioElement.muted = false;
+    _audioElement.volume = 1;
+    await _audioElement.play();
+    _audioAutoplayWarned = false;
+    return true;
+  } catch (err) {
+    if (!_audioAutoplayWarned) {
+      _audioAutoplayWarned = true;
+      const msg =
+        "Speaker playback was blocked by the browser. Click the call overlay once to enable audio.";
+      console.warn("[voice-client] remote audio autoplay blocked:", err?.message || err);
+      voiceError.value = msg;
+      emit("error", { message: msg });
+    }
+    return false;
+  }
+}
+
 async function safeReconnect(reason = "connection lost") {
   if (_explicitStop) return;
   try {
@@ -798,6 +851,7 @@ function cleanupConnection() {
 
 function cleanup() {
   _reconnectInFlight = false;
+  _audioAutoplayWarned = false;
   cleanupConnection();
 
   clearInterval(_durationTimer);

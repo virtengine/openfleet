@@ -1670,6 +1670,8 @@ let uiDeps = {};
  * agent works even when the UI server starts standalone.
  */
 let _fallbackExecPrimaryPrompt = null;
+/** Track in-flight chat turns so /api/sessions/:id/stop can abort them. */
+const sessionRunAbortControllers = new Map();
 async function resolveExecPrimaryPrompt() {
   if (typeof uiDeps.execPrimaryPrompt === "function") return uiDeps.execPrimaryPrompt;
   if (_fallbackExecPrimaryPrompt) return _fallbackExecPrimaryPrompt;
@@ -9013,6 +9015,42 @@ async function handleApi(req, res, url) {
       return;
     }
 
+    if (action === "stop" && req.method === "POST") {
+      try {
+        const tracker = getSessionTracker();
+        const session = tracker.getSessionById(sessionId);
+        if (!session) {
+          jsonResponse(res, 404, { ok: false, error: "Session not found" });
+          return;
+        }
+
+        const abortController = sessionRunAbortControllers.get(sessionId);
+        const wasRunning = Boolean(abortController && !abortController.signal?.aborted);
+        if (wasRunning) {
+          try {
+            abortController.abort("user_stop");
+          } catch {
+            /* best effort */
+          }
+          tracker.recordEvent(sessionId, {
+            role: "system",
+            type: "system",
+            content: "Stop requested. Cancelling current agent turn...",
+            timestamp: new Date().toISOString(),
+          });
+        }
+
+        jsonResponse(res, 200, { ok: true, stopped: wasRunning });
+        broadcastUiEvent(["sessions", "agents"], "invalidate", {
+          reason: wasRunning ? "session-stop-requested" : "session-stop-noop",
+          sessionId,
+        });
+      } catch (err) {
+        jsonResponse(res, 500, { ok: false, error: err.message });
+      }
+      return;
+    }
+
     if (action === "message" && req.method === "POST") {
       try {
         const tracker = getSessionTracker();
@@ -9088,6 +9126,8 @@ async function handleApi(req, res, url) {
           // Fire-and-forget: run agent asynchronously so the request handler
           // doesn't block and the agent doesn't appear "busy" to subsequent
           // messages from chat, telegram, portal, or any other source.
+          const abortController = new AbortController();
+          sessionRunAbortControllers.set(sessionId, abortController);
           exec(messageContent, {
             sessionId,
             sessionType: "primary",
@@ -9099,12 +9139,31 @@ async function handleApi(req, res, url) {
             attachments,
             attachmentsAppended,
             onEvent: streamOnEvent,
+            abortController,
           }).then(() => {
             // Mark session as completed once the agent finishes — prevents
             // sessions from staying "active" forever and causing session bloat.
             tracker.updateSessionStatus(sessionId, "completed");
             broadcastUiEvent(["sessions"], "invalidate", { reason: "agent-response", sessionId });
           }).catch((execErr) => {
+            const wasAborted =
+              abortController.signal.aborted ||
+              execErr?.name === "AbortError" ||
+              /abort|cancel|stop/i.test(String(execErr?.message || ""));
+            if (wasAborted) {
+              tracker.recordEvent(sessionId, {
+                role: "system",
+                type: "system",
+                content: "Agent turn stopped.",
+                timestamp: new Date().toISOString(),
+              });
+              tracker.updateSessionStatus(sessionId, "completed");
+              broadcastUiEvent(["sessions"], "invalidate", {
+                reason: "agent-stopped",
+                sessionId,
+              });
+              return;
+            }
             // Record error as system message so user sees feedback
             tracker.recordEvent(sessionId, {
               role: "system",
@@ -9114,6 +9173,15 @@ async function handleApi(req, res, url) {
             });
             tracker.updateSessionStatus(sessionId, "failed");
             broadcastUiEvent(["sessions"], "invalidate", { reason: "agent-error", sessionId });
+          }).finally(() => {
+            // Clear only if this turn still owns the session abort controller.
+            if (sessionRunAbortControllers.get(sessionId) === abortController) {
+              sessionRunAbortControllers.delete(sessionId);
+            }
+            broadcastUiEvent(["agents"], "invalidate", {
+              reason: "session-turn-finished",
+              sessionId,
+            });
           });
         } else {
           // No agent available — record user event and notify user

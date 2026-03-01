@@ -1079,10 +1079,10 @@ async function createFollowWindow() {
   if (followWindow && !followWindow.isDestroyed()) return followWindow;
   const iconPath = resolveDesktopIconPath();
   followWindow = new BrowserWindow({
-    width: 460,
-    height: 720,
-    minWidth: 380,
-    minHeight: 520,
+    width: 420,
+    height: 640,
+    minWidth: 340,
+    minHeight: 440,
     backgroundColor: "#0b0b0c",
     ...(iconPath && existsSync(iconPath) ? { icon: iconPath } : {}),
     show: false,
