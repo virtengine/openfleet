@@ -2114,7 +2114,7 @@ async function handleRequest(req, res) {
             const mod = await import("./voice-auth-manager.mjs");
             const fn = mod[loginFns[provider]];
             if (!fn) throw new Error(`No login function for ${provider}`);
-            const result = fn();
+            const result = fn({ openBrowser: false });
             jsonResponse(res, 200, { ok: true, ...(result || {}) });
           } catch (err) {
             jsonResponse(res, 500, { ok: false, error: err.message });

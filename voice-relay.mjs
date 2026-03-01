@@ -109,6 +109,8 @@ const VALID_AGENT_MODES = new Set([
   "ask",
   "agent",
   "plan",
+  "web",
+  "instant",
   "code",
   "architect",
 ]);

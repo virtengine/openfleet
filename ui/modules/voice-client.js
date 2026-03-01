@@ -144,8 +144,8 @@ async function _processResponsesAudioTurn(text) {
       sessionId: _callContext.sessionId || undefined,
       executor: _callContext.executor || undefined,
       mode: _callContext.mode || undefined,
-      model: _callContext.model || _responsesTokenData.model || undefined,
-      voiceId: _responsesTokenData.voiceId || undefined,
+      model: _callContext?.model || _responsesTokenData?.model || undefined,
+      voiceId: _responsesTokenData?.voiceId || undefined,
     }),
   });
 

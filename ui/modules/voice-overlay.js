@@ -42,6 +42,7 @@ import { AudioVisualizer } from "./audio-visualizer.js";
 import { resolveIcon } from "./icon-utils.js";
 
 const html = htm.bind(h);
+const CHAT_UPDATE_PREFIX_RE = /^\[Chat Update [—-] [A-Z]+]:\s*/;
 
 // ── Inject styles ───────────────────────────────────────────────────────────
 
@@ -701,6 +702,14 @@ export function VoiceOverlay({
       if (msgSessionId !== sessionId) return;
       const msg = payload.message;
       if (!msg || !msg.content) return;
+      const content = String(msg.content || "").trim();
+      if (!content) return;
+      // Prevent recursive injection loops from synthetic chat updates.
+      if (CHAT_UPDATE_PREFIX_RE.test(content)) return;
+      // Skip transcripts captured from the active voice pipeline.
+      const msgSource = String(msg?.meta?.source || "").trim().toLowerCase();
+      const msgEventType = String(msg?.meta?.eventType || "").trim().toLowerCase();
+      if (msgSource === "voice" || msgEventType.includes("transcript")) return;
       // Avoid re-injecting old messages
       const msgTs = msg.timestamp ? new Date(msg.timestamp).getTime() : Date.now();
       if (msgTs <= lastInjectedTsRef.current) return;
@@ -708,7 +717,7 @@ export function VoiceOverlay({
 
       // Build a short context injection for the voice model
       const role = String(msg.role || msg.type || "system").toUpperCase();
-      const text = `[Chat Update — ${role}]: ${String(msg.content).slice(0, 800)}`;
+      const text = `[Chat Update — ${role}]: ${content.slice(0, 800)}`;
 
       // Inject into the active voice session (no response.create — just context)
       if (effectiveSdk) {

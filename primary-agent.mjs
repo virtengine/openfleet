@@ -66,7 +66,20 @@ import {
 import { getModelsForExecutor, normalizeExecutorKey } from "./task-complexity.mjs";
 
 /** Valid agent interaction modes */
-const VALID_MODES = ["ask", "agent", "plan"];
+const VALID_MODES = ["ask", "agent", "plan", "web", "instant"];
+
+const MODE_ALIASES = Object.freeze({
+  code: "agent",
+  implement: "agent",
+  execute: "agent",
+  architect: "plan",
+  design: "plan",
+  chat: "ask",
+  question: "ask",
+  fast: "instant",
+  quick: "instant",
+  browser: "web",
+});
 
 /** Current interaction mode — affects how prompts are framed */
 let agentMode = "agent";
@@ -76,12 +89,34 @@ let agentMode = "agent";
  * - "ask"   → brief, direct answer without tool use
  * - "agent" → full agentic behavior (default, no prefix needed)
  * - "plan"  → create a plan but do not execute it
+ * - "web"   → web-style direct answer, avoid file changes or heavy tooling
+ * - "instant" → ultra-fast answer path for back-and-forth
  */
 const MODE_PREFIXES = {
   ask: "[MODE: ask] Respond briefly and directly. Avoid using tools unless absolutely necessary. Do not make code changes.\n\n",
   agent: "",
   plan: "[MODE: plan] Create a detailed plan for the following request but do NOT execute it. Outline the steps, files involved, and approach without making any changes.\n\n",
+  web: "[MODE: web] Respond in a concise, web-assistant style. Prioritize immediate answers and lightweight checks. Avoid code edits and long-running operations unless explicitly requested.\n\n",
+  instant: "[MODE: instant] Respond immediately with the fastest useful answer. Keep it short, avoid deep tool use, and do not make code changes unless explicitly requested.\n\n",
 };
+
+const MODE_EXEC_POLICIES = Object.freeze({
+  web: {
+    timeoutMs: Number(process.env.PRIMARY_AGENT_WEB_TIMEOUT_MS) || 2 * 60 * 1000,
+    maxFailoverAttempts: Number(process.env.PRIMARY_AGENT_WEB_FAILOVER_ATTEMPTS) || 0,
+  },
+  instant: {
+    timeoutMs: Number(process.env.PRIMARY_AGENT_INSTANT_TIMEOUT_MS) || 90 * 1000,
+    maxFailoverAttempts: Number(process.env.PRIMARY_AGENT_INSTANT_FAILOVER_ATTEMPTS) || 0,
+  },
+});
+
+function normalizeAgentMode(rawMode, fallback = "agent") {
+  const normalized = String(rawMode || "").trim().toLowerCase();
+  if (!normalized) return fallback;
+  const mapped = MODE_ALIASES[normalized] || normalized;
+  return VALID_MODES.includes(mapped) ? mapped : fallback;
+}
 
 function normalizeAttachments(input) {
   if (!Array.isArray(input)) return [];
@@ -663,13 +698,17 @@ export async function execPrimaryPrompt(userMessage, options = {}) {
   const sessionType =
     (options && options.sessionType ? String(options.sessionType) : "") ||
     "primary";
-  const timeoutMs = options.timeoutMs || PRIMARY_EXEC_TIMEOUT_MS;
+  const effectiveMode = normalizeAgentMode(options.mode || agentMode, agentMode);
+  const modePolicy = MODE_EXEC_POLICIES[effectiveMode] || null;
+  const timeoutMs = options.timeoutMs || modePolicy?.timeoutMs || PRIMARY_EXEC_TIMEOUT_MS;
+  const maxFailoverAttempts = Number.isInteger(options.maxFailoverAttempts)
+    ? Math.max(0, Number(options.maxFailoverAttempts))
+    : modePolicy?.maxFailoverAttempts ?? MAX_FAILOVER_ATTEMPTS;
   const tracker = getSessionTracker();
   const attachments = normalizeAttachments(options.attachments);
   const attachmentsAppended = options.attachmentsAppended === true;
 
   // Apply mode prefix (options.mode overrides the global setting for this call)
-  const effectiveMode = options.mode || agentMode;
   const modePrefix = MODE_PREFIXES[effectiveMode] || "";
   const messageWithAttachments = attachments.length && !attachmentsAppended
     ? appendAttachmentsToPrompt(userMessage, attachments).message
@@ -721,7 +760,7 @@ export async function execPrimaryPrompt(userMessage, options = {}) {
 
   let lastError = null;
 
-  for (let attempt = 0; attempt < Math.min(adaptersToTry.length, MAX_FAILOVER_ATTEMPTS + 1); attempt++) {
+  for (let attempt = 0; attempt < Math.min(adaptersToTry.length, maxFailoverAttempts + 1); attempt++) {
     const adapterName = adaptersToTry[attempt];
     const adapter = ADAPTERS[adapterName];
     if (!adapter) continue;
@@ -792,7 +831,7 @@ export async function execPrimaryPrompt(userMessage, options = {}) {
       );
 
       // If this is the last adapter, report to user
-      if (attempt >= Math.min(adaptersToTry.length, MAX_FAILOVER_ATTEMPTS + 1) - 1) {
+      if (attempt >= Math.min(adaptersToTry.length, maxFailoverAttempts + 1) - 1) {
         tracker.recordEvent(sessionId, {
           role: "system",
           type: "error",
@@ -868,7 +907,7 @@ export async function createPrimarySession(id) {
 // ── Agent mode & SDK command API ─────────────────────────────────────────────
 
 /**
- * Get the current interaction mode ("ask" | "agent" | "plan").
+ * Get the current interaction mode ("ask" | "agent" | "plan" | "web" | "instant").
  * @returns {string}
  */
 export function getAgentMode() {
@@ -877,11 +916,11 @@ export function getAgentMode() {
 
 /**
  * Set the interaction mode.
- * @param {"ask"|"agent"|"plan"} mode
+ * @param {"ask"|"agent"|"plan"|"web"|"instant"} mode
  * @returns {{ ok: boolean, mode: string, error?: string }}
  */
 export function setAgentMode(mode) {
-  const normalized = String(mode || "").trim().toLowerCase();
+  const normalized = normalizeAgentMode(mode, "");
   if (!VALID_MODES.includes(normalized)) {
     return { ok: false, mode: agentMode, error: `Invalid mode "${mode}". Valid: ${VALID_MODES.join(", ")}` };
   }

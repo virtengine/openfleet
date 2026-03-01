@@ -9462,6 +9462,10 @@ async function handleApi(req, res, url) {
           const text = await resp.text().catch(() => "");
           let errMsg = `HTTP ${resp.status}`;
           try { const j = JSON.parse(text); errMsg = j.error?.message || j.error || errMsg; } catch (_) { /* ignore */ }
+          if (provider === "openai" && useOAuth && /missing scopes?/i.test(String(errMsg || ""))) {
+            const missing = String(errMsg || "").match(/Missing scopes?:\s*([A-Za-z0-9._:\s-]+)/i)?.[1]?.trim() || "required scopes";
+            errMsg = `OpenAI Connected Account token is missing scopes (${missing}). Sign out and reconnect OpenAI in Connected Accounts. Also verify role access: org Owner/Reader, project Owner/Member, and workspace RBAC API/dashboard permissions.`;
+          }
           // Friendly message when the deployment name itself is not found (key is fine)
           if (resp.status === 404 && deployment) {
             errMsg = `Deployment "${deployment}" not found — check deployment name in Azure AI Foundry`;

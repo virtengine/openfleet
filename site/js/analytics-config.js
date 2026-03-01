@@ -7,7 +7,7 @@ window.BOSUN_ANALYTICS_CONFIG = {
   umami: {
     scriptUrl: 'https://cloud.umami.is/script.js',
     websiteId: '627ec37e-1fd6-4384-b6df-a144783baf2b',
-    domains: 'bosun.virtengine.com',
+    domains: 'bosun.engineer',
   },
   plausible: {
     scriptUrl: 'https://plausible.io/js/script.js',

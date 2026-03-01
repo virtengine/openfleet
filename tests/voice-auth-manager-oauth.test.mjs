@@ -126,6 +126,53 @@ describe("voice-auth-manager OAuth", () => {
     expect(params.get("redirect_uri")).toBe("http://localhost:1455/auth/callback");
     expect(params.get("scope")).toContain("openid");
     expect(params.get("scope")).toContain("offline_access");
+    expect(params.get("scope")).toContain("api.model.read");
+    expect(params.get("scope")).toContain("api.realtime.write");
+    expect(params.get("scope")).toContain("api.responses.read");
+    expect(params.get("scope")).toContain("api.responses.write");
+    expect(params.get("scope")).toContain("api.audio.write");
+    expect(params.get("scope") || "").not.toContain("api.files.read");
+    expect(params.get("scope") || "").not.toContain("api.files.write");
+  });
+
+  it("allows OpenAI OAuth scope expansion via BOSUN_OPENAI_OAUTH_EXTRA_SCOPES", async () => {
+    const prevExtra = process.env.BOSUN_OPENAI_OAUTH_EXTRA_SCOPES;
+    try {
+      process.env.BOSUN_OPENAI_OAUTH_EXTRA_SCOPES = "api.responses.read api.responses.write";
+      vi.resetModules();
+      const localMod = await import("../voice-auth-manager.mjs");
+      const { authUrl } = localMod.startOpenAICodexLogin();
+      const params = new URLSearchParams(new URL(authUrl).search);
+      const scope = params.get("scope") || "";
+      expect(scope).toContain("api.model.read");
+      expect(scope).toContain("api.responses.read");
+      expect(scope).toContain("api.responses.write");
+      localMod.cancelOpenAILogin();
+    } finally {
+      if (prevExtra == null) delete process.env.BOSUN_OPENAI_OAUTH_EXTRA_SCOPES;
+      else process.env.BOSUN_OPENAI_OAUTH_EXTRA_SCOPES = prevExtra;
+      vi.resetModules();
+      mod = await import("../voice-auth-manager.mjs");
+    }
+  });
+
+  it("includes OpenAI file scopes when BOSUN_OPENAI_OAUTH_ENABLE_FILE_SCOPES=true", async () => {
+    const prev = process.env.BOSUN_OPENAI_OAUTH_ENABLE_FILE_SCOPES;
+    try {
+      process.env.BOSUN_OPENAI_OAUTH_ENABLE_FILE_SCOPES = "true";
+      vi.resetModules();
+      const localMod = await import("../voice-auth-manager.mjs");
+      const { authUrl } = localMod.startOpenAICodexLogin();
+      const scope = new URLSearchParams(new URL(authUrl).search).get("scope") || "";
+      expect(scope).toContain("api.files.read");
+      expect(scope).toContain("api.files.write");
+      localMod.cancelOpenAILogin();
+    } finally {
+      if (prev == null) delete process.env.BOSUN_OPENAI_OAUTH_ENABLE_FILE_SCOPES;
+      else process.env.BOSUN_OPENAI_OAUTH_ENABLE_FILE_SCOPES = prev;
+      vi.resetModules();
+      mod = await import("../voice-auth-manager.mjs");
+    }
   });
 
   it("Claude authUrl does NOT contain openid scope", () => {
@@ -386,15 +433,22 @@ describe("voice-auth-manager Claude OAuth", () => {
     mod.cancelClaudeLogin?.();
   });
 
-  it("startClaudeLogin returns an authUrl pointing to claude.ai", () => {
+  it("startClaudeLogin returns an authUrl pointing to platform.claude.com", () => {
     const { authUrl } = mod.startClaudeLogin();
-    expect(authUrl).toMatch(/^https:\/\/claude\.ai\/oauth\/authorize\?/);
+    expect(authUrl).toMatch(/^https:\/\/platform\.claude\.com\/oauth\/authorize\?/);
   });
 
   it("authUrl contains the correct Claude client_id", () => {
     const { authUrl } = mod.startClaudeLogin();
     const params = new URLSearchParams(new URL(authUrl).search);
     expect(params.get("client_id")).toBe("9d1c250a-e61b-44d9-88ed-5944d1962f5e");
+  });
+
+  it("authUrl includes required Claude scopes (including user:inference)", () => {
+    const { authUrl } = mod.startClaudeLogin();
+    const scope = new URL(authUrl).searchParams.get("scope") || "";
+    expect(scope).toContain("user:inference");
+    expect(scope).toContain("user:profile");
   });
 
   it("authUrl contains PKCE code_challenge and S256 method", () => {
@@ -440,7 +494,7 @@ describe("voice-auth-manager Claude OAuth", () => {
     expect(result.wasLoggedIn).toBe(false);
   });
 
-  it("refreshClaudeToken calls console.anthropic.com/v1/oauth/token", async () => {
+  it("refreshClaudeToken calls platform.claude.com/v1/oauth/token", async () => {
     mod.saveVoiceOAuthToken("claude", {
       accessToken: "old",
       refreshToken: "rt_claude_abc",
@@ -452,7 +506,7 @@ describe("voice-auth-manager Claude OAuth", () => {
     }));
     await mod.refreshClaudeToken();
     const [url] = _fetchMock.mock.calls[0];
-    expect(url).toBe("https://console.anthropic.com/v1/oauth/token");
+    expect(url).toBe("https://platform.claude.com/v1/oauth/token");
     expect(mod.resolveVoiceOAuthToken("claude", true)?.token).toBe("new_claude");
   });
 });
@@ -463,18 +517,25 @@ describe("voice-auth-manager Claude OAuth", () => {
 describe("voice-auth-manager Gemini OAuth", () => {
   let mod;
 
+  const FAKE_GEMINI_CLIENT_ID = "test-gemini-client-id.apps.googleusercontent.com";
+  const FAKE_GEMINI_CLIENT_SECRET = "test-gemini-client-secret";
+
   beforeEach(async () => {
     _fsStore = {};
     _mockServer.listen.mockClear();
     _mockServer.close.mockClear();
     _mockServer.on.mockClear();
     _fetchMock.mockReset();
+    process.env.BOSUN_GEMINI_OAUTH_CLIENT_ID = FAKE_GEMINI_CLIENT_ID;
+    process.env.BOSUN_GEMINI_OAUTH_CLIENT_SECRET = FAKE_GEMINI_CLIENT_SECRET;
     vi.resetModules();
     mod = await import("../voice-auth-manager.mjs");
   });
 
   afterEach(() => {
     mod.cancelGeminiLogin?.();
+    delete process.env.BOSUN_GEMINI_OAUTH_CLIENT_ID;
+    delete process.env.BOSUN_GEMINI_OAUTH_CLIENT_SECRET;
   });
 
   it("startGeminiLogin returns an authUrl pointing to accounts.google.com", () => {
@@ -485,7 +546,7 @@ describe("voice-auth-manager Gemini OAuth", () => {
   it("authUrl contains the correct Gemini client_id", () => {
     const { authUrl } = mod.startGeminiLogin();
     const params = new URLSearchParams(new URL(authUrl).search);
-    expect(params.get("client_id")).toBe("681255809395-ets0jcnv5ak5mca0r35k1ofb3aqrdh28.apps.googleusercontent.com");
+    expect(params.get("client_id")).toBe(FAKE_GEMINI_CLIENT_ID);
   });
 
   it("authUrl contains access_type=offline and prompt=consent for refresh tokens", () => {
@@ -547,15 +608,17 @@ describe("voice-auth-manager Gemini OAuth", () => {
       expires_in: 3600,
     }));
     await mod.refreshGeminiToken();
-    const [url] = _fetchMock.mock.calls[0];
+    const [url, opts] = _fetchMock.mock.calls[0];
     expect(url).toBe("https://oauth2.googleapis.com/token");
+    const body = new URLSearchParams(opts.body);
+    expect(body.get("client_secret")).toBe(FAKE_GEMINI_CLIENT_SECRET);
     expect(mod.resolveVoiceOAuthToken("gemini", true)?.token).toBe("new_gemini");
   });
 
-  it("Gemini scope includes generative-language and cloud-platform", () => {
+  it("Gemini scope includes cloud-platform and user profile scopes", () => {
     const { authUrl } = mod.startGeminiLogin();
     const scope = new URL(authUrl).searchParams.get("scope");
-    expect(scope).toContain("generative-language");
     expect(scope).toContain("cloud-platform");
+    expect(scope).toContain("userinfo.email");
   });
 });

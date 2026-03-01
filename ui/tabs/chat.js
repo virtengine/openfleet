@@ -92,7 +92,18 @@ const BOSUN_COMMANDS = [
   { cmd: "/kanban", desc: "Open Kanban board", icon: "pin", source: "bosun" },
   { cmd: "/deploy", desc: "Trigger deployment", icon: "rocket", source: "bosun" },
   { cmd: "/ask", desc: "Ask the assistant", icon: "chat", source: "bosun" },
+  { cmd: "/agent", desc: "Send message in agent mode", icon: "bot", source: "bosun" },
+  { cmd: "/web", desc: "Send message in web mode", icon: "globe", source: "bosun" },
+  { cmd: "/instant", desc: "Send message in instant mode", icon: "zap", source: "bosun" },
 ];
+
+const MESSAGE_MODE_COMMANDS = Object.freeze({
+  "/ask": "ask",
+  "/agent": "agent",
+  "/plan": "plan",
+  "/web": "web",
+  "/instant": "instant",
+});
 
 /* ─── SDK commands (dynamic based on active agent) ─── */
 const SDK_COMMAND_META = {
@@ -518,11 +529,15 @@ export function ChatTab() {
     setShowSlashMenu(false);
     setSending(true);
 
-    try {
-      if (content.startsWith("/")) {
-        const cmdBase = content.split(/\s/)[0].toLowerCase();
-        const cmdArgs = content.slice(cmdBase.length).trim();
+    const cmdBase = content.startsWith("/") ? content.split(/\s/)[0].toLowerCase() : "";
+    const cmdArgs = cmdBase ? content.slice(cmdBase.length).trim() : "";
+    const modeOverride = MESSAGE_MODE_COMMANDS[cmdBase] || null;
+    const asModeMessage = Boolean(modeOverride && cmdArgs);
+    const outboundContent = asModeMessage ? cmdArgs : content;
+    const outboundMode = modeOverride || agentMode.value;
 
+    try {
+      if (content.startsWith("/") && !asModeMessage) {
         if (isSdkCommand(cmdBase)) {
           // Forward to agent SDK
           const resp = await apiFetch("/api/agents/sdk-command", {
@@ -566,19 +581,19 @@ export function ChatTab() {
         }
       } else if (sessionId) {
         // Send as message to current session with optimistic rendering
-        const tempId = addPendingMessage(sessionId, content);
+        const tempId = addPendingMessage(sessionId, outboundContent);
         markUserMessageSent(activeAgent.value, sessionId);
 
         // Use sendOrQueue for offline resilience
           const sendFn = async (sid, msg) => {
             await apiFetch(`/api/sessions/${encodeURIComponent(sid)}/message`, {
               method: "POST",
-              body: JSON.stringify({ content: msg, mode: agentMode.value, yolo: yoloMode.peek(), model: selectedModel.value || undefined }),
+              body: JSON.stringify({ content: msg, mode: outboundMode, yolo: yoloMode.peek(), model: selectedModel.value || undefined }),
             });
           };
 
         try {
-          await sendOrQueue(sessionId, content, sendFn);
+          await sendOrQueue(sessionId, outboundContent, sendFn);
           confirmMessage(tempId);
         } catch (err) {
           rejectMessage(tempId, err.message || "Send failed");
@@ -590,21 +605,21 @@ export function ChatTab() {
         // No session — create one with current agent/mode, then send first message
         const res = await createSession({
           type: "primary",
-          prompt: content,
+          prompt: outboundContent,
           agent: activeAgent.value,
-          mode: agentMode.value,
+          mode: outboundMode,
           yolo: yoloMode.peek(),
           model: selectedModel.value || undefined,
         });
         const newId = res?.session?.id;
         if (newId) {
-          const tempId = addPendingMessage(newId, content);
+          const tempId = addPendingMessage(newId, outboundContent);
           markUserMessageSent(activeAgent.value, newId);
 
           try {
             await apiFetch(`/api/sessions/${encodeURIComponent(newId)}/message`, {
               method: "POST",
-              body: JSON.stringify({ content, mode: agentMode.value, yolo: yoloMode.peek(), model: selectedModel.value || undefined }),
+              body: JSON.stringify({ content: outboundContent, mode: outboundMode, yolo: yoloMode.peek(), model: selectedModel.value || undefined }),
             });
             confirmMessage(tempId);
           } catch (err) {

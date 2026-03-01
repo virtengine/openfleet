@@ -130,6 +130,8 @@ describe("voice-action-dispatcher", () => {
       expect(actions).toContain("agent.ask");
       expect(actions).toContain("agent.plan");
       expect(actions).toContain("agent.code");
+      expect(actions).toContain("agent.web");
+      expect(actions).toContain("agent.instant");
       expect(actions).toContain("agent.status");
       expect(actions).toContain("agent.switch");
       expect(actions).toContain("agent.setMode");
@@ -335,6 +337,24 @@ describe("voice-action-dispatcher", () => {
       expect(result.data.mode).toBe("agent");
     });
 
+    it("agent.web delegates in web mode", async () => {
+      const result = await dispatchVoiceAction({
+        action: "agent.web",
+        params: { message: "Summarize this docs topic quickly" },
+      });
+      expect(result.ok).toBe(true);
+      expect(result.data.mode).toBe("web");
+    });
+
+    it("agent.instant delegates in instant mode", async () => {
+      const result = await dispatchVoiceAction({
+        action: "agent.instant",
+        params: { message: "Quickly explain why test failed" },
+      });
+      expect(result.ok).toBe(true);
+      expect(result.data.mode).toBe("instant");
+    });
+
     it("gets agent status", async () => {
       const result = await dispatchVoiceAction({ action: "agent.status", params: {} });
       expect(result.ok).toBe(true);
@@ -367,6 +387,15 @@ describe("voice-action-dispatcher", () => {
       });
       expect(result.ok).toBe(true);
       expect(result.data.current).toBe("plan");
+    });
+
+    it("sets agent mode using alias quick -> instant", async () => {
+      const result = await dispatchVoiceAction({
+        action: "agent.setMode",
+        params: { mode: "quick" },
+      });
+      expect(result.ok).toBe(true);
+      expect(result.data.current).toBe("instant");
     });
 
     it("rejects invalid mode", async () => {

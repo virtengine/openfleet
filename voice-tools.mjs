@@ -9,6 +9,8 @@
 
 import { loadConfig } from "./config.mjs";
 import { execPrimaryPrompt, getPrimaryAgentName, setPrimaryAgent, getAgentMode, setAgentMode } from "./primary-agent.mjs";
+import { existsSync } from "node:fs";
+import { resolve as resolvePath } from "node:path";
 
 // ── Module-scope lazy imports ───────────────────────────────────────────────
 
@@ -26,7 +28,17 @@ const VALID_EXECUTORS = new Set([
   "gemini-sdk",
   "opencode-sdk",
 ]);
-const VALID_AGENT_MODES = new Set(["ask", "agent", "plan"]);
+const VALID_AGENT_MODES = new Set(["ask", "agent", "plan", "web", "instant"]);
+const MODE_ALIASES = Object.freeze({
+  code: "agent",
+  architect: "plan",
+  design: "plan",
+  chat: "ask",
+  question: "ask",
+  fast: "instant",
+  quick: "instant",
+  browser: "web",
+});
 
 async function getKanban() {
   if (!_kanbanAdapter) {
@@ -97,6 +109,32 @@ function appendVisionSummary(message, visionSummary) {
   const summary = String(visionSummary || "").trim();
   if (!base || !summary) return base;
   return `${base}\n\nLive visual context from this call:\n${summary}`;
+}
+
+function normalizeCandidatePath(input) {
+  if (!input) return "";
+  try {
+    return resolvePath(String(input));
+  } catch {
+    return String(input || "");
+  }
+}
+
+async function resolveDelegationCwd(sessionId) {
+  const id = String(sessionId || "").trim();
+  if (!id) return process.cwd();
+  try {
+    const tracker = await getSessionTracker();
+    const session = tracker.getSessionById?.(id) || tracker.getSession?.(id) || null;
+    const metadata = session?.metadata && typeof session.metadata === "object"
+      ? session.metadata
+      : null;
+    const explicit = normalizeCandidatePath(metadata?.workspaceDir);
+    if (explicit && existsSync(explicit)) return explicit;
+  } catch {
+    // best effort
+  }
+  return process.cwd();
 }
 
 // ── Tool Definitions (OpenAI function-calling format) ────────────────────────
@@ -553,20 +591,14 @@ const TOOL_HANDLERS = {
       ? requestedExecutor
       : (cfg.voice?.delegateExecutor || cfg.primaryAgent || "codex-sdk");
 
-    const rawMode = String(args.mode || context.mode || "agent")
+    const rawMode = String(args.mode || context.mode || "instant")
       .trim()
       .toLowerCase();
-    const mode =
-      rawMode === "code"
-        ? "agent"
-        : rawMode === "architect"
-          ? "plan"
-          : VALID_AGENT_MODES.has(rawMode)
-            ? rawMode
-            : "agent";
+    const mode = MODE_ALIASES[rawMode] || (VALID_AGENT_MODES.has(rawMode) ? rawMode : "instant");
     const model = String(args.model || context.model || "").trim() || undefined;
     const sessionId = String(context.sessionId || "").trim() || `voice-delegate-${Date.now()}`;
     const sessionType = String(context.sessionType || "").trim() || (context.sessionId ? "primary" : "voice-delegate");
+    const cwd = await resolveDelegationCwd(sessionId);
     const visionSummary = await getLatestVisionSummary(sessionId);
     const delegateMessage = appendVisionSummary(args.message, visionSummary);
 
@@ -594,6 +626,7 @@ const TOOL_HANDLERS = {
       sdk: executor,
       mode,
       model,
+      cwd,
       timeoutMs: 5 * 60 * 1000,
       onEvent: (event) => {
         // Broadcast progress to WebSocket clients via session tracker event system

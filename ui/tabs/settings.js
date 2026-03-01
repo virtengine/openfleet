@@ -832,13 +832,19 @@ function ServerConfigMode() {
   );
 
   /* Count of unsaved changes */
-  const changeCount = useMemo(() => Object.keys(edits).length, [edits]);
+  const serverChangeCount = useMemo(() => Object.keys(edits).length, [edits]);
+  const externalPendingKeys = useMemo(() => {
+    const current = pendingChanges.value || {};
+    return Object.keys(current).filter((key) => key.startsWith("settings-voice-"));
+  }, [pendingChanges.value]);
+  const externalChangeCount = externalPendingKeys.length;
+  const changeCount = serverChangeCount + externalChangeCount;
 
   useEffect(() => {
     const key = "settings-server";
-    setPendingChange(key, changeCount > 0);
+    setPendingChange(key, serverChangeCount > 0);
     return () => clearPendingChange(key);
-  }, [changeCount]);
+  }, [serverChangeCount]);
 
   useEffect(() => {
     if (typeof document === "undefined") return undefined;
@@ -888,12 +894,18 @@ function ServerConfigMode() {
     [serverData],
   );
 
-  const handleDiscard = useCallback(() => {
+  const handleDiscard = useCallback(async () => {
     haptic("medium");
-    setEdits({});
-    setErrors({});
-    setCustomSelectMode({});
-    showToast("Changes discarded", "info");
+    try {
+      await runSettingsExternalEditorAction("discard");
+      setEdits({});
+      setErrors({});
+      setCustomSelectMode({});
+      showToast("Changes discarded", "info");
+    } catch (err) {
+      showToast(`Discard failed: ${err?.message || "Unknown error"}`, "error");
+      haptic("heavy");
+    }
   }, []);
 
   /* ─── Save flow ─── */
@@ -928,42 +940,43 @@ function ServerConfigMode() {
       for (const [key, value] of Object.entries(edits)) {
         changes[key] = value;
       }
-      let res;
-      try {
-        res = await apiFetch("/api/settings/update", {
-          method: "POST",
-          body: JSON.stringify({ changes }),
-        });
-      } catch (error_) {
-        const message = String(error_?.message || "");
-        const shouldTryLegacy =
-          /Request failed \((404|405|501)\)/.test(message)
-          || /Failed to fetch|NetworkError|Load failed/i.test(message);
+      const changeKeys = Object.keys(changes);
+      if (changeKeys.length > 0) {
+        let res;
+        try {
+          res = await apiFetch("/api/settings/update", {
+            method: "POST",
+            body: JSON.stringify({ changes }),
+          });
+        } catch (error_) {
+          const message = String(error_?.message || "");
+          const shouldTryLegacy =
+            /Request failed \((404|405|501)\)/.test(message)
+            || /Failed to fetch|NetworkError|Load failed/i.test(message);
 
-        if (!shouldTryLegacy) throw error_;
+          if (!shouldTryLegacy) throw error_;
 
-        const legacyKeyMap = {
-          INTERNAL_EXECUTOR_SDK: "sdk",
-          KANBAN_BACKEND: "kanban",
-          EXECUTOR_REGIONS: "region",
-        };
-        const entries = Object.entries(changes);
-        if (entries.length !== 1) throw error_;
+          const legacyKeyMap = {
+            INTERNAL_EXECUTOR_SDK: "sdk",
+            KANBAN_BACKEND: "kanban",
+            EXECUTOR_REGIONS: "region",
+          };
+          const entries = Object.entries(changes);
+          if (entries.length !== 1) throw error_;
 
-        const [envKey, value] = entries[0];
-        const legacyKey = legacyKeyMap[envKey];
-        if (!legacyKey) throw error_;
+          const [envKey, value] = entries[0];
+          const legacyKey = legacyKeyMap[envKey];
+          if (!legacyKey) throw error_;
 
-        res = await apiFetch("/api/config/update", {
-          method: "POST",
-          body: JSON.stringify({ key: legacyKey, value }),
-        });
-      }
-      if (res?.ok || (res && typeof res === "object" && !Array.isArray(res))) {
-        showToast("Settings saved successfully", "success");
-        haptic("medium");
+          res = await apiFetch("/api/config/update", {
+            method: "POST",
+            body: JSON.stringify({ key: legacyKey, value }),
+          });
+        }
+        if (!(res?.ok || (res && typeof res === "object" && !Array.isArray(res)))) {
+          throw new Error(res?.error || "Save failed");
+        }
         const updatedConfig = Array.isArray(res.updatedConfig) ? res.updatedConfig : Object.keys(changes);
-        const changeKeys = Object.keys(changes);
         const skipped = changeKeys.filter((key) => !updatedConfig.includes(key));
         setConfigSync({
           total: changeKeys.length,
@@ -981,11 +994,12 @@ function ServerConfigMode() {
         // Refresh from backend so derived/runtime-resolved values stay accurate.
         await fetchSettings({ silent: true, preserveConfigSync: true });
         setEdits({});
-        if (hasRestartSetting) {
-          showToast("Settings take effect after auto-reload (~2 seconds)", "info");
-        }
-      } else {
-        throw new Error(res?.error || "Save failed");
+      }
+      await runSettingsExternalEditorAction("save");
+      showToast("Settings saved successfully", "success");
+      haptic("medium");
+      if (hasRestartSetting && changeKeys.length > 0) {
+        showToast("Settings take effect after auto-reload (~2 seconds)", "info");
       }
     } catch (err) {
       let parsed = null;
@@ -1028,14 +1042,26 @@ function ServerConfigMode() {
 
   /* ─── Build the diff for the confirm dialog ─── */
   const diffEntries = useMemo(() => {
-    return Object.entries(edits).map(([key, newVal]) => {
+    const serverDiffs = Object.entries(edits).map(([key, newVal]) => {
       const def = SETTINGS_SCHEMA.find((s) => s.key === key);
       const oldVal = serverData?.[key] != null ? String(serverData[key]) : "(unset)";
       const displayOld = def?.sensitive ? maskValue(oldVal) : oldVal || "(unset)";
       const displayNew = def?.sensitive ? maskValue(newVal) : newVal || "(unset)";
       return { key, label: def?.label || key, oldVal: displayOld, newVal: displayNew };
     });
-  }, [edits, serverData]);
+    const externalDiffs = externalPendingKeys.map((key) => ({
+      key,
+      label:
+        key === "settings-voice-endpoints"
+          ? "Voice Endpoints"
+          : key === "settings-voice-providers"
+            ? "Voice Providers"
+            : key,
+      oldVal: "(unsaved)",
+      newVal: "Will be saved",
+    }));
+    return [...serverDiffs, ...externalDiffs];
+  }, [edits, serverData, externalPendingKeys]);
 
   /* ═══════════════════════════════════════════════
    *  Render a single setting control
@@ -2054,12 +2080,12 @@ function AppPreferencesMode() {
 function VoiceEndpointsEditor() {
   const [endpoints, setEndpoints] = useState([]);
   const [loading, setLoading] = useState(true);
-  const [saving, setSaving] = useState(false);
   const [dirty, setDirty] = useState(false);
   const [loadError, setLoadError] = useState(null);
   const [testResults, setTestResults] = useState({});
   const [oauthStatus, setOauthStatus] = useState({ openai: {}, claude: {}, gemini: {} });
   const [customModelMode, setCustomModelMode] = useState({});
+  const [savedEndpoints, setSavedEndpoints] = useState([]);
 
   const getDefaultEndpointUrl = useCallback((provider, authSource = "apiKey") => {
     const p = String(provider || "").toLowerCase();
@@ -2147,7 +2173,10 @@ function VoiceEndpointsEditor() {
       try {
         const res = await apiFetch("/api/voice/endpoints");
         const eps = Array.isArray(res?.voiceEndpoints) ? res.voiceEndpoints : [];
-        setEndpoints(eps.map((ep, i) => normalizeEp(ep, i)));
+        const normalized = eps.map((ep, i) => normalizeEp(ep, i));
+        setEndpoints(normalized);
+        setSavedEndpoints(normalized);
+        setDirty(false);
       } catch (err) {
         setLoadError(err.message || "Failed to load voice endpoints");
       } finally {
@@ -2211,23 +2240,32 @@ function VoiceEndpointsEditor() {
   }, [endpointModelOptions, getDefaultEndpointUrl, isEndpointEditable]);
 
   const handleSave = useCallback(async () => {
-    setSaving(true);
     try {
       const payload = endpoints.map(({ _id, ...ep }) => ep);
       await apiFetch("/api/voice/endpoints", {
         method: "POST",
         body: JSON.stringify({ voiceEndpoints: payload }),
       });
+      setSavedEndpoints(endpoints.map((ep) => ({ ...ep })));
       setDirty(false);
-      showToast("Voice endpoints saved", "success");
-      haptic("medium");
     } catch (err) {
-      showToast(`Save failed: ${err.message}`, "error");
-      haptic("heavy");
-    } finally {
-      setSaving(false);
+      throw new Error(err?.message || "Voice endpoints save failed");
     }
   }, [endpoints]);
+
+  const handleDiscard = useCallback(async () => {
+    setEndpoints(savedEndpoints.map((ep) => ({ ...ep })));
+    setCustomModelMode({});
+    setDirty(false);
+  }, [savedEndpoints]);
+
+  useEffect(() => {
+    return registerSettingsExternalEditor("settings-voice-endpoints", {
+      isDirty: () => dirty,
+      save: handleSave,
+      discard: handleDiscard,
+    });
+  }, [dirty, handleDiscard, handleSave]);
 
   if (loading) return html`<${SkeletonCard} height="80px" />`;
 
@@ -2240,15 +2278,6 @@ function VoiceEndpointsEditor() {
             Named endpoints with per-credential failover. Primary is tried first; backups on failure.
           </div>
         </div>
-        ${dirty && html`
-          <button
-            class=${`btn btn-primary btn-sm ${saving ? "btn-loading" : ""}`}
-            onClick=${handleSave}
-            disabled=${saving}
-          >
-            ${saving ? html`<${Spinner} size=${14} /> Saving…` : "Save"}
-          </button>
-        `}
       </div>
       ${loadError && html`
         <div class="settings-banner settings-banner-warn" style="margin-bottom:10px">${loadError}</div>
@@ -2466,9 +2495,9 @@ function VoiceProvidersEditor() {
   const [providers, setProviders] = useState([]);
   const [endpoints, setEndpoints] = useState([]);
   const [loading, setLoading] = useState(true);
-  const [saving, setSaving] = useState(false);
   const [dirty, setDirty] = useState(false);
   const [loadError, setLoadError] = useState(null);
+  const [savedProviders, setSavedProviders] = useState([]);
 
   const normalizeProvider = useCallback((entry = {}) => {
     const allowedProviders = ["openai", "azure", "claude", "gemini", "fallback"];
@@ -2495,7 +2524,10 @@ function VoiceProvidersEditor() {
           apiFetch("/api/voice/endpoints"),
         ]);
         const provs = Array.isArray(provRes?.providers) ? provRes.providers : [];
-        setProviders(provs.map((p) => normalizeProvider(p)));
+        const normalizedProviders = provs.map((p) => normalizeProvider(p));
+        setProviders(normalizedProviders);
+        setSavedProviders(normalizedProviders);
+        setDirty(false);
         const eps = Array.isArray(epRes?.voiceEndpoints) ? epRes.voiceEndpoints : [];
         setEndpoints(eps);
       } catch (err) {
@@ -2544,7 +2576,6 @@ function VoiceProvidersEditor() {
   }, []);
 
   const saveProviders = useCallback(async () => {
-    setSaving(true);
     try {
       const payload = providers.map(({ _id, ...rest }) => rest);
       const res = await apiFetch("/api/voice/providers", {
@@ -2552,28 +2583,33 @@ function VoiceProvidersEditor() {
         body: JSON.stringify({ providers: payload }),
       });
       if (!res.ok) throw new Error(res.error || "Save failed");
-      haptic("success");
+      setSavedProviders(providers.map((provider) => ({ ...provider })));
       setDirty(false);
     } catch (err) {
-      haptic("heavy");
-      setLoadError(err.message || "Save failed");
-      setTimeout(() => setLoadError(null), 4000);
-    } finally {
-      setSaving(false);
+      throw new Error(err?.message || "Voice providers save failed");
     }
   }, [providers]);
+
+  const discardProviders = useCallback(async () => {
+    setProviders(savedProviders.map((provider) => ({ ...provider })));
+    setDirty(false);
+    setLoadError(null);
+  }, [savedProviders]);
+
+  useEffect(() => {
+    return registerSettingsExternalEditor("settings-voice-providers", {
+      isDirty: () => dirty,
+      save: saveProviders,
+      discard: discardProviders,
+    });
+  }, [dirty, saveProviders, discardProviders]);
 
   if (loading) return html`<${Card} title="Voice Providers"><${Spinner} /> Loading…<//>`;
   if (loadError && providers.length === 0) return html`<${Card} title="Voice Providers"><div class="meta-text" style="color:var(--color-error)">${loadError}</div><//>`;
 
   return html`
     <${Card} title="Voice Providers (Priority Order)"
-      badge=${dirty ? html`<${Badge} variant="warning">Unsaved<//>` : null}
-      actions=${dirty ? html`
-        <button class="btn btn-sm btn-primary" onClick=${saveProviders} disabled=${saving}>
-          ${saving ? html`<${Spinner} size=${12} /> Saving…` : "Save Providers"}
-        </button>
-      ` : null}>
+      badge=${dirty ? html`<${Badge} variant="warning">Unsaved<//>` : null}>
       <div class="meta-text" style="margin-bottom:10px">
         Configure up to 5 providers in priority order. Bosun tries them in sequence during voice sessions.
       </div>

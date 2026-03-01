@@ -175,6 +175,53 @@ export function getVoiceAuthStatePath() {
 //
 // All use OAuth 2.0 Authorization Code + PKCE (RFC 7636) with no client secret
 // (public clients per RFC 8252 §8.4).
+const CLAUDE_DEFAULT_SCOPES = [
+  "org:create_api_key",
+  "user:profile",
+  "user:inference",
+  "user:sessions:claude_code",
+  "user:mcp_servers",
+].join(" ");
+
+const OPENAI_DEFAULT_SCOPES = [
+  "openid",
+  "profile",
+  "email",
+  "offline_access",
+  // Needed for /v1/models capability checks + endpoint test.
+  "api.model.read",
+  // Needed for realtime voice runtime session creation and media flow.
+  "api.realtime.write",
+  // Needed for primary response generation and result retrieval/debug.
+  "api.responses.read",
+  "api.responses.write",
+  // Needed for transcription / speech input-output flows.
+  "api.audio.write",
+].join(" ");
+
+const OPENAI_OPTIONAL_FILE_SCOPES = [
+  // Optional: enable only if you plan retrieval/context-file pipelines soon.
+  "api.files.read",
+  "api.files.write",
+].join(" ");
+
+function normalizeScopeList(scopes) {
+  return Array.from(
+    new Set(
+      String(scopes || "")
+        .split(/\s+/)
+        .map((s) => s.trim())
+        .filter(Boolean),
+    ),
+  ).join(" ");
+}
+
+const GEMINI_DEFAULT_SCOPES = [
+  "https://www.googleapis.com/auth/cloud-platform",
+  "https://www.googleapis.com/auth/userinfo.email",
+  "https://www.googleapis.com/auth/userinfo.profile",
+].join(" ");
+
 const OAUTH_PROVIDERS = {
   openai: {
     clientId: "app_EMoamEEZ73f0CkXaXp7hrann",
@@ -182,7 +229,17 @@ const OAUTH_PROVIDERS = {
     tokenUrl: "https://auth.openai.com/oauth/token",
     redirectUri: "http://localhost:1455/auth/callback",
     port: 1455,
-    scopes: "openid profile email offline_access",
+    // Keep stable defaults, while allowing future scope expansion without code edits:
+    // - BOSUN_OPENAI_OAUTH_SCOPES: full replacement list
+    // - BOSUN_OPENAI_OAUTH_EXTRA_SCOPES: appended scopes
+    scopes: normalizeScopeList(
+      process.env.BOSUN_OPENAI_OAUTH_SCOPES?.trim()
+      || `${OPENAI_DEFAULT_SCOPES} ${
+        process.env.BOSUN_OPENAI_OAUTH_ENABLE_FILE_SCOPES === "true"
+          ? OPENAI_OPTIONAL_FILE_SCOPES
+          : ""
+      } ${process.env.BOSUN_OPENAI_OAUTH_EXTRA_SCOPES || ""}`,
+    ),
     extraParams: {
       id_token_add_organizations: "true",
       codex_cli_simplified_flow: "true",
@@ -190,32 +247,29 @@ const OAUTH_PROVIDERS = {
     accentColor: "#10a37f",
   },
   claude: {
-    // Claude Code public client — same one used by `claude auth login`
-    clientId: "9d1c250a-e61b-44d9-88ed-5944d1962f5e",
-    authorizeUrl: "https://claude.ai/oauth/authorize",
-    tokenUrl: "https://console.anthropic.com/v1/oauth/token",
+    // Claude Code official OAuth client + scopes (Anthropic CLI parity).
+    clientId: process.env.BOSUN_CLAUDE_OAUTH_CLIENT_ID?.trim()
+      || "9d1c250a-e61b-44d9-88ed-5944d1962f5e",
+    authorizeUrl: process.env.BOSUN_CLAUDE_OAUTH_AUTHORIZE_URL?.trim()
+      || "https://platform.claude.com/oauth/authorize",
+    tokenUrl: process.env.BOSUN_CLAUDE_OAUTH_TOKEN_URL?.trim()
+      || "https://platform.claude.com/v1/oauth/token",
     redirectUri: "http://localhost:10001/auth/callback",
     port: 10001,
-    // Claude's OAuth server does NOT support OIDC scopes (openid, profile, etc.).
-    // Empty scope string — the token inherits the user's default API permissions.
-    scopes: "",
+    // Claude requires explicit scopes. Keep env override for emergency rotation.
+    scopes: process.env.BOSUN_CLAUDE_OAUTH_SCOPES?.trim() || CLAUDE_DEFAULT_SCOPES,
     extraParams: {},
     accentColor: "#d97706",
   },
   gemini: {
-    // Gemini CLI public client (google-gemini/gemini-cli open-source)
-    clientId: "681255809395-ets0jcnv5ak5mca0r35k1ofb3aqrdh28.apps.googleusercontent.com",
+    // Gemini CLI OAuth client (google-gemini/gemini-cli-core parity).
+    clientId: process.env.BOSUN_GEMINI_OAUTH_CLIENT_ID?.trim(),
+    clientSecret: process.env.BOSUN_GEMINI_OAUTH_CLIENT_SECRET?.trim(),
     authorizeUrl: "https://accounts.google.com/o/oauth2/v2/auth",
     tokenUrl: "https://oauth2.googleapis.com/token",
     redirectUri: "http://localhost:10002/auth/callback",
     port: 10002,
-    scopes: [
-      "https://www.googleapis.com/auth/generative-language",
-      "https://www.googleapis.com/auth/cloud-platform",
-      "openid",
-      "email",
-      "profile",
-    ].join(" "),
+    scopes: process.env.BOSUN_GEMINI_OAUTH_SCOPES?.trim() || GEMINI_DEFAULT_SCOPES,
     extraParams: {
       // Offline access (refresh token) + force consent screen to re-issue refresh_token
       access_type: "offline",
@@ -252,6 +306,7 @@ async function _exchangeCode(code, codeVerifier, cfg) {
     redirect_uri: cfg.redirectUri,
     code_verifier: codeVerifier,
   });
+  if (cfg.clientSecret) params.set("client_secret", cfg.clientSecret);
   const res = await fetch(cfg.tokenUrl, {
     method: "POST",
     headers: { "Content-Type": "application/x-www-form-urlencoded" },
@@ -358,7 +413,7 @@ function _openBrowser(url) {
 
 // ── Generic provider login functions ────────────────────────────────────────
 
-function _startProviderLogin(provider) {
+function _startProviderLogin(provider, options = {}) {
   const cfg = OAUTH_PROVIDERS[provider];
   if (!cfg) throw new Error(`Unknown OAuth provider: ${provider}`);
 
@@ -392,7 +447,9 @@ function _startProviderLogin(provider) {
     startedAt: Date.now(),
   });
 
-  try { _openBrowser(authUrl); } catch { /* ignore */ }
+  if (options.openBrowser !== false) {
+    try { _openBrowser(authUrl); } catch { /* ignore */ }
+  }
 
   return { authUrl };
 }
@@ -451,6 +508,7 @@ async function _refreshProviderToken(provider) {
     client_id: cfg.clientId,
     ...(cfg.extraParams?.access_type ? { access_type: cfg.extraParams.access_type } : {}),
   });
+  if (cfg.clientSecret) params.set("client_secret", cfg.clientSecret);
 
   const res = await fetch(cfg.tokenUrl, {
     method: "POST",
@@ -481,7 +539,7 @@ async function _refreshProviderToken(provider) {
 // ── Public API — OpenAI ──────────────────────────────────────────────────────
 
 /** Start the OpenAI Codex OAuth PKCE flow (same as Codex CLI / ChatGPT app). */
-export function startOpenAICodexLogin()    { return _startProviderLogin("openai"); }
+export function startOpenAICodexLogin(options)    { return _startProviderLogin("openai", options); }
 /** Poll the status of an in-progress OpenAI login. */
 export function getOpenAILoginStatus()     { return _getProviderLoginStatus("openai"); }
 /** Cancel an in-progress OpenAI login. */
@@ -494,7 +552,7 @@ export async function refreshOpenAICodexToken() { return _refreshProviderToken("
 // ── Public API — Claude ──────────────────────────────────────────────────────
 
 /** Start the Anthropic Claude OAuth PKCE flow (same as `claude auth login`). */
-export function startClaudeLogin()         { return _startProviderLogin("claude"); }
+export function startClaudeLogin(options)         { return _startProviderLogin("claude", options); }
 /** Poll the status of an in-progress Claude login. */
 export function getClaudeLoginStatus()     { return _getProviderLoginStatus("claude"); }
 /** Cancel an in-progress Claude login. */
@@ -507,7 +565,7 @@ export async function refreshClaudeToken() { return _refreshProviderToken("claud
 // ── Public API — Google Gemini ───────────────────────────────────────────────
 
 /** Start the Google Gemini OAuth PKCE flow (same as gemini-cli `gemini auth login`). */
-export function startGeminiLogin()         { return _startProviderLogin("gemini"); }
+export function startGeminiLogin(options)         { return _startProviderLogin("gemini", options); }
 /** Poll the status of an in-progress Gemini login. */
 export function getGeminiLoginStatus()     { return _getProviderLoginStatus("gemini"); }
 /** Cancel an in-progress Gemini login. */

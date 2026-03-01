@@ -198,6 +198,7 @@ let TELEGRAM_API_BASE = String(
 ).replace(/\/+$/, "");
 const POLL_TIMEOUT_S = 30; // long-poll timeout
 const MAX_MESSAGE_LEN = 4000; // Telegram max is 4096, leave margin
+const STREAM_INLINE_FINAL_RESPONSE_MAX = 1200;
 const POLL_ERROR_BACKOFF_MS = 5000;
 const TELEGRAM_FETCH_FAILURE_COOLDOWN_MS = 10 * 60 * 1000;
 // 409 Conflict cooldown: minimum 60 s, default 15 minutes
@@ -10050,10 +10051,30 @@ function buildStreamMessage({
     }
 
     lines.push("");
-    lines.push(finalResponse.slice(0, 1200));
+    const inlineFinal = String(finalResponse || "").slice(
+      0,
+      STREAM_INLINE_FINAL_RESPONSE_MAX,
+    );
+    lines.push(inlineFinal);
+    if (String(finalResponse || "").length > STREAM_INLINE_FINAL_RESPONSE_MAX) {
+      lines.push("");
+      lines.push(":page_facing_up: Full response continued in follow-up message(s).");
+    }
   }
 
   return lines.join("\n");
+}
+
+async function sendFullAgentResponseIfTruncated(chatId, finalResponse, summaryText = "") {
+  const responseText = String(finalResponse || "");
+  if (!responseText) return;
+  const summaryLen = String(summaryText || "").length;
+  const needsFollowUp =
+    responseText.length > STREAM_INLINE_FINAL_RESPONSE_MAX ||
+    summaryLen > MAX_MESSAGE_LEN;
+  if (!needsFollowUp) return;
+  const fullText = `:speech_balloon: Agent full response:\n\n${responseText}`;
+  await sendReply(chatId, fullText, { skipSticky: true });
 }
 
 async function handleFreeText(text, chatId, options = {}) {
@@ -10413,6 +10434,11 @@ async function handleFreeText(text, chatId, options = {}) {
         scheduleStickyMenuBump(chatId, finalMessageId);
       }
     }
+    await sendFullAgentResponseIfTruncated(
+      chatId,
+      result.finalResponse || "",
+      finalMsg,
+    );
   } catch (err) {
     if (editTimer) clearTimeout(editTimer);
     const finalMsg = buildStreamMessage({

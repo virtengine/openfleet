@@ -131,6 +131,7 @@ async function _recordTranscript(role, content, eventType = "") {
  * This runs entirely client-side with WebRTC auto-mic handling.
  */
 async function startAgentsSdkSession(config, options = {}) {
+  const resolvedConfig = config && typeof config === "object" ? config : {};
   // Dynamically import @openai/agents/realtime (browser bundle)
   const agentsMod = await import("@openai/agents/realtime");
   const { RealtimeAgent, RealtimeSession } = agentsMod;
@@ -188,9 +189,9 @@ async function startAgentsSdkSession(config, options = {}) {
   });
 
   // Determine model and voice
-  const model = String(tokenData.model || config.model || "gpt-realtime-1.5").trim();
-  const voiceId = String(tokenData.voiceId || config.voiceId || "alloy").trim();
-  const turnDetection = String(config.turnDetection || "server_vad").trim();
+  const model = String(tokenData.model || resolvedConfig.model || "gpt-realtime-1.5").trim();
+  const voiceId = String(tokenData.voiceId || resolvedConfig.voiceId || "alloy").trim();
+  const turnDetection = String(resolvedConfig.turnDetection || "server_vad").trim();
 
   // Create session with config
   const session = new RealtimeSession(agent, {
@@ -321,6 +322,7 @@ async function startAgentsSdkSession(config, options = {}) {
  * sends/receives audio via a bosun WebSocket relay.
  */
 async function startGeminiLiveSession(config, options = {}) {
+  const resolvedConfig = config && typeof config === "object" ? config : {};
   // For Gemini, fall back to server-mediated approach
   // The client sends mic audio via WebSocket to our server,
   // which forwards to Gemini Live API and returns audio.
@@ -344,7 +346,7 @@ async function startGeminiLiveSession(config, options = {}) {
         sessionId: _callContext.sessionId,
         executor: _callContext.executor,
         mode: _callContext.mode,
-        model: config.model,
+        model: resolvedConfig.model,
       }));
 
       _session = ws;

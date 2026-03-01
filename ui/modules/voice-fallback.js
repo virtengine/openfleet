@@ -166,7 +166,7 @@ async function processUserInput(text) {
         toolName: "delegate_to_agent",
         args: {
           message: text,
-          mode: _callContext.mode || "ask",
+          mode: _callContext.mode || "instant",
           executor: _callContext.executor || undefined,
           model: _callContext.model || undefined,
         },
