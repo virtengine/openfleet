@@ -100,8 +100,20 @@ function getSdkErrorMessage(err) {
   return "Session error";
 }
 
+function isGenericSdkErrorMessage(message) {
+  const normalized = String(message || "").trim().toLowerCase();
+  if (!normalized) return true;
+  return normalized === "session error" || normalized === "unknown error";
+}
+
 function isNonFatalSdkSessionError(err) {
   const message = getSdkErrorMessage(err);
+  const lower = String(message || "").toLowerCase();
+  // Tool policy errors are surfaced in tool-call UI; they should not trip a
+  // persistent top-level "Session error" banner while audio remains healthy.
+  if (lower.includes("not allowed for session-bound calls")) {
+    return true;
+  }
   if (!message) return false;
   // Seen during transient renegotiation on some browsers even when stream remains active.
   if (/setRemoteDescription/i.test(message) && /SessionDescription/i.test(message)) {
@@ -305,9 +317,8 @@ async function startAgentsSdkSession(config, options = {}) {
     name: "Bosun Voice Agent",
     instructions: tokenData.instructions || "You are Bosun, a helpful voice assistant.",
     tools: (tokenData.tools || []).map((t) => {
-      const executeTool = async (args) => {
-        // Execute tool via server with a 30 s timeout guard so a hung server call
-        // never permanently stalls the Realtime session in 'thinking' state.
+      // Core fetch logic for executing a tool via the server.
+      const fetchToolResult = async (args) => {
         const controller = new AbortController();
         const timeoutId = setTimeout(() => controller.abort(), 30_000);
         let res;
@@ -342,6 +353,26 @@ async function startAgentsSdkSession(config, options = {}) {
         }
         return result.result || "No output";
       };
+
+      // The @openai/agents SDK calls tool.invoke(runContext, inputString, details)
+      // where runContext is a RunContext object (contains context.history) and
+      // inputString is the raw JSON string of tool arguments from the model.
+      const invokeTool = async (_runContext, inputStr) => {
+        let args = {};
+        if (typeof inputStr === "string") {
+          try { args = JSON.parse(inputStr || "{}"); } catch { args = {}; }
+        } else if (inputStr && typeof inputStr === "object") {
+          args = inputStr;
+        }
+        return fetchToolResult(args);
+      };
+
+      // execute(parsedInput, runContext) — used if the SDK wraps via tool() helper.
+      const executeTool = async (parsedInput) => {
+        const args = (parsedInput && typeof parsedInput === "object") ? parsedInput : {};
+        return fetchToolResult(args);
+      };
+
       return {
         type: "function",
         name: t.name,
@@ -354,7 +385,7 @@ async function startAgentsSdkSession(config, options = {}) {
           return false;
         },
         execute: executeTool,
-        invoke: executeTool,
+        invoke: invokeTool,
       };
     }),
   });
@@ -409,6 +440,9 @@ async function startAgentsSdkSession(config, options = {}) {
   // ── Wire up SDK events to our signals ──
 
   session.on("history_updated", (history) => {
+    if (sdkVoiceError.value && sdkVoiceState.value !== "error") {
+      sdkVoiceError.value = null;
+    }
     const items = history || [];
     const lastUserMsg = [...items].reverse().find(
       (item) => item.role === "user" && item.type === "message"
@@ -480,6 +514,12 @@ async function startAgentsSdkSession(config, options = {}) {
     const message = getSdkErrorMessage(err);
     if (isNonFatalSdkSessionError(err)) {
       console.warn("[voice-client-sdk] transient session warning:", message);
+      return;
+    }
+    const currentState = String(sdkVoiceState.value || "").toLowerCase();
+    const sessionStillActive = ["connected", "listening", "thinking", "speaking"].includes(currentState);
+    if (sessionStillActive && isGenericSdkErrorMessage(message)) {
+      console.warn("[voice-client-sdk] ignoring generic session warning while active:", message);
       return;
     }
     console.error("[voice-client-sdk] session error:", err);
