@@ -1799,7 +1799,8 @@ function ContextViewer({ sessionId }) {
 /* ─── Fleet Full Session View ─── */
 function FleetSessionsPanel({ slots, onOpenWorkspace, onForceStop }) {
   const [detailTab, setDetailTab] = useState("stream");
-  const [selectedSlotKey, setSelectedSlotKey] = useState(null);
+  const [sessionScope, setSessionScope] = useState("active");
+  const [selectedEntryKey, setSelectedEntryKey] = useState(null);
   const [logText, setLogText] = useState("(no logs yet)");
   const logRef = useRef(null);
   const allSessions = sessionsData.value || [];
@@ -1827,22 +1828,71 @@ function FleetSessionsPanel({ slots, onOpenWorkspace, onForceStop }) {
       });
   }, [slots, allSessions]);
 
+  const historyEntries = useMemo(() => {
+    const activeSessionIds = new Set(
+      entries.map((entry) => String(entry?.session?.id || "").trim()).filter(Boolean),
+    );
+    const activeTaskIds = new Set(
+      entries.map((entry) => String(entry?.slot?.taskId || "").trim()).filter(Boolean),
+    );
+    return allSessions
+      .filter((session) => {
+        if (!session || typeof session !== "object") return false;
+        const id = String(session.id || "").trim();
+        if (!id) return false;
+        const taskId = String(session.taskId || "").trim();
+        if (activeSessionIds.has(id)) return false;
+        if (taskId && activeTaskIds.has(taskId)) return false;
+        return true;
+      })
+      .map((session) => ({
+        key: `session-${String(session.id || "").trim()}`,
+        slot: null,
+        index: null,
+        session,
+        isHistory: true,
+      }))
+      .sort((a, b) => {
+        const aScore =
+          new Date(
+            a.session?.lastActiveAt
+            || a.session?.updatedAt
+            || a.session?.createdAt
+            || a.session?.startedAt
+            || 0,
+          ).getTime() || 0;
+        const bScore =
+          new Date(
+            b.session?.lastActiveAt
+            || b.session?.updatedAt
+            || b.session?.createdAt
+            || b.session?.startedAt
+            || 0,
+          ).getTime() || 0;
+        return bScore - aScore;
+      });
+  }, [allSessions, entries]);
+
+  const visibleEntries = sessionScope === "history" ? historyEntries : entries;
+
   /* Build a stable fingerprint so the effect only fires when entries actually
      change rather than on every render (entries is now memoised but we still
      guard with a primitive dep). */
-  const entriesFingerprint = entries.map((e) => e.key).join(",");
+  const entriesFingerprint = visibleEntries.map((e) => e.key).join(",");
 
   useEffect(() => {
-    if (!entries.length) {
-      setSelectedSlotKey(null);
+    if (!visibleEntries.length) {
+      setSelectedEntryKey(null);
       return;
     }
-    const existing = entries.some((entry) => entry.key === selectedSlotKey);
-    if (!existing) setSelectedSlotKey(entries[0].key);
-  }, [entriesFingerprint]);
+    const existing = visibleEntries.some((entry) => entry.key === selectedEntryKey);
+    if (!existing) setSelectedEntryKey(visibleEntries[0].key);
+  }, [entriesFingerprint, sessionScope]);
 
   const selectedEntry =
-    entries.find((entry) => entry.key === selectedSlotKey) || entries[0] || null;
+    visibleEntries.find((entry) => entry.key === selectedEntryKey)
+    || visibleEntries[0]
+    || null;
   const sessionId = selectedEntry?.session?.id || null;
   const contextId = sessionId || selectedEntry?.slot?.taskId || null;
 
@@ -1854,6 +1904,7 @@ function FleetSessionsPanel({ slots, onOpenWorkspace, onForceStop }) {
     const query =
       selectedEntry?.slot?.branch ||
       selectedEntry?.slot?.taskId ||
+      selectedEntry?.session?.taskId ||
       selectedEntry?.session?.id ||
       "";
     if (!query) {
@@ -1894,24 +1945,57 @@ function FleetSessionsPanel({ slots, onOpenWorkspace, onForceStop }) {
     >
       <div class="fleet-fullview">
         <div class="fleet-slot-rail">
-          ${entries.length === 0
-            ? html`<div class="meta-text">No active slots</div>`
-            : html`${entries.map((entry) => html`
+          <div class="fleet-session-scope">
+            <button
+              class="fleet-session-scope-btn ${sessionScope === "active" ? "active" : ""}"
+              onClick=${() => {
+                haptic();
+                setSessionScope("active");
+              }}
+            >
+              Active (${entries.length})
+            </button>
+            <button
+              class="fleet-session-scope-btn ${sessionScope === "history" ? "active" : ""}"
+              onClick=${() => {
+                haptic();
+                setSessionScope("history");
+              }}
+            >
+              History (${historyEntries.length})
+            </button>
+          </div>
+          ${visibleEntries.length === 0
+            ? html`<div class="meta-text">${sessionScope === "history" ? "No historic sessions" : "No active slots"}</div>`
+            : html`${visibleEntries.map((entry) => html`
                 <button
                   key=${entry.key}
-                  class="fleet-slot-item ${selectedEntry?.key === entry.key ? "active" : ""}"
+                  class="fleet-slot-item ${selectedEntry?.key === entry.key ? "active" : ""} ${entry.isHistory ? "history" : ""}"
                   onClick=${() => {
                     haptic();
-                    setSelectedSlotKey(entry.key);
+                    setSelectedEntryKey(entry.key);
                     setDetailTab("stream");
                   }}
                 >
                   <div class="fleet-slot-item-title">
-                    <${StatusDot} status=${entry.slot?.status || "busy"} />
-                    ${truncate(entry.slot?.taskTitle || "(untitled)", 50)}
+                    <${StatusDot} status=${entry.slot?.status || entry.session?.status || "busy"} />
+                    ${truncate(
+                      entry.slot?.taskTitle
+                      || entry.session?.taskTitle
+                      || entry.session?.title
+                      || entry.session?.taskId
+                      || entry.session?.id
+                      || "(untitled)",
+                      50,
+                    )}
                   </div>
                   <div class="fleet-slot-item-meta">
-                    Slot ${(entry.index ?? 0) + 1} · ${entry.slot?.taskId || "no-task-id"}
+                    ${entry.isHistory
+                      ? `Session ${entry.session?.id || "unknown"} · ${entry.session?.status || "unknown"}`
+                      : `Slot ${(entry.index ?? 0) + 1} · ${entry.slot?.taskId || "no-task-id"}`}
+                    ${entry.isHistory && (entry.session?.lastActiveAt || entry.session?.updatedAt || entry.session?.createdAt)
+                      ? ` · ${formatRelative(entry.session?.lastActiveAt || entry.session?.updatedAt || entry.session?.createdAt)}`
+                      : ""}
                   </div>
                 </button>
               `)}`}
@@ -1922,22 +2006,35 @@ function FleetSessionsPanel({ slots, onOpenWorkspace, onForceStop }) {
                 <div class="fleet-session-header">
                   <div>
                     <div class="task-card-title">
-                      <${StatusDot} status=${selectedEntry.slot?.status || "busy"} />
-                      ${selectedEntry.slot?.taskTitle || "(untitled)"}
+                      <${StatusDot} status=${selectedEntry.slot?.status || selectedEntry.session?.status || "busy"} />
+                      ${selectedEntry.slot?.taskTitle
+                        || selectedEntry.session?.taskTitle
+                        || selectedEntry.session?.title
+                        || selectedEntry.session?.taskId
+                        || "(untitled)"}
                     </div>
                     <div class="task-card-meta">
-                      ${selectedEntry.slot?.taskId || "?"} · Slot ${(selectedEntry.index ?? 0) + 1}
-                      ${selectedEntry.slot?.branch ? ` · ${selectedEntry.slot.branch}` : ""}
+                      ${selectedEntry.slot?.taskId || selectedEntry.session?.taskId || selectedEntry.session?.id || "?"}
+                      ${selectedEntry.slot
+                        ? ` · Slot ${(selectedEntry.index ?? 0) + 1}`
+                        : ` · ${selectedEntry.session?.status || "history"}`}
+                      ${selectedEntry.slot?.branch
+                        ? ` · ${selectedEntry.slot.branch}`
+                        : selectedEntry.session?.branch
+                          ? ` · ${selectedEntry.session.branch}`
+                          : ""}
                     </div>
                   </div>
-                  <div class="btn-row">
-                    <button class="btn btn-ghost btn-sm" onClick=${() => onOpenWorkspace(selectedEntry.slot, selectedEntry.index)}>
-                      ${iconText(":search: Workspace")}
-                    </button>
-                    <button class="btn btn-danger btn-sm" onClick=${() => onForceStop({ ...selectedEntry.slot, index: selectedEntry.index })}>
-                      ${iconText(":ban: Stop")}
-                    </button>
-                  </div>
+                  ${selectedEntry.slot && html`
+                    <div class="btn-row">
+                      <button class="btn btn-ghost btn-sm" onClick=${() => onOpenWorkspace(selectedEntry.slot, selectedEntry.index)}>
+                        ${iconText(":search: Workspace")}
+                      </button>
+                      <button class="btn btn-danger btn-sm" onClick=${() => onForceStop({ ...selectedEntry.slot, index: selectedEntry.index })}>
+                        ${iconText(":ban: Stop")}
+                      </button>
+                    </div>
+                  `}
                 </div>
                 <div class="session-detail-tabs">
                   <button

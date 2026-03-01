@@ -23,6 +23,7 @@ export const voiceDuration = signal(0); // seconds connected
 export const isVoiceActive = computed(() =>
   voiceState.value !== "idle" && voiceState.value !== "error"
 );
+export const isVoiceMicMuted = signal(false);
 
 // ── Module-scope state ──────────────────────────────────────────────────────
 
@@ -35,10 +36,14 @@ let _responsesTokenData = null;
 let _responsesRecognition = null;
 let _responsesAudioElement = null;
 let _responsesAbortController = null;
+let _responsesRecognitionRestartTimer = null;
 let _reconnectTimer = null;    // 28-min reconnect timer
 let _durationTimer = null;     // Duration counter
 let _sessionStartTime = 0;
 let _eventHandlers = new Map();
+let _explicitStop = false;     // user-initiated stop; suppresses reconnect/error noise
+let _reconnectInFlight = false;
+let _audioAutoplayWarned = false;
 let _callContext = {
   sessionId: null,
   executor: null,
@@ -49,6 +54,8 @@ let _callContext = {
 const RECONNECT_AT_MS = 28 * 60 * 1000; // 28 minutes
 const MAX_RECONNECT_ATTEMPTS = 3;
 let _reconnectAttempts = 0;
+let _pendingResponseCreateTimer = null;
+let _awaitingAutoResponse = false;
 const SpeechRecognition = typeof globalThis !== "undefined"
   ? (globalThis.SpeechRecognition || globalThis.webkitSpeechRecognition)
   : null;
@@ -72,7 +79,14 @@ function _toDataUrl(base64, mimeType = "audio/mpeg") {
 }
 
 function _startResponsesRecognition() {
+  if (_explicitStop) return;
+  if (_transport !== "responses-audio") return;
+  if (voiceState.value === "idle" || voiceState.value === "error") return;
   if (!_responsesRecognition) return;
+  if (_responsesRecognitionRestartTimer) {
+    clearTimeout(_responsesRecognitionRestartTimer);
+    _responsesRecognitionRestartTimer = null;
+  }
   try {
     _responsesRecognition.start();
   } catch {
@@ -81,6 +95,10 @@ function _startResponsesRecognition() {
 }
 
 function _stopResponsesRecognition() {
+  if (_responsesRecognitionRestartTimer) {
+    clearTimeout(_responsesRecognitionRestartTimer);
+    _responsesRecognitionRestartTimer = null;
+  }
   if (_responsesRecognition) {
     try { _responsesRecognition.abort(); } catch { /* ignore */ }
     _responsesRecognition = null;
@@ -144,8 +162,8 @@ async function _processResponsesAudioTurn(text) {
       sessionId: _callContext.sessionId || undefined,
       executor: _callContext.executor || undefined,
       mode: _callContext.mode || undefined,
-      model: _callContext.model || _responsesTokenData.model || undefined,
-      voiceId: _responsesTokenData.voiceId || undefined,
+      model: _callContext?.model || _responsesTokenData?.model || undefined,
+      voiceId: _responsesTokenData?.voiceId || undefined,
     }),
   });
 
@@ -217,7 +235,11 @@ async function _startResponsesAudioSession(tokenData) {
 
   _responsesRecognition.onerror = (event) => {
     if (event?.error === "no-speech") {
-      setTimeout(() => _startResponsesRecognition(), 250);
+      if (_explicitStop || _transport !== "responses-audio") return;
+      _responsesRecognitionRestartTimer = setTimeout(() => {
+        _responsesRecognitionRestartTimer = null;
+        _startResponsesRecognition();
+      }, 250);
       return;
     }
     if (event?.error === "aborted") return;
@@ -229,7 +251,11 @@ async function _startResponsesAudioSession(tokenData) {
 
   _responsesRecognition.onend = () => {
     if (voiceState.value === "listening") {
-      setTimeout(() => _startResponsesRecognition(), 220);
+      if (_explicitStop || _transport !== "responses-audio") return;
+      _responsesRecognitionRestartTimer = setTimeout(() => {
+        _responsesRecognitionRestartTimer = null;
+        _startResponsesRecognition();
+      }, 220);
     }
   };
 
@@ -288,6 +314,90 @@ function emit(event, data) {
   }
 }
 
+function sendRealtimeEvent(payload) {
+  if (!_dc || _dc.readyState !== "open") return false;
+  try {
+    _dc.send(JSON.stringify(payload));
+    return true;
+  } catch (err) {
+    console.warn("[voice-client] failed to send realtime event:", err?.message || err);
+    return false;
+  }
+}
+
+function clearPendingResponseCreate() {
+  if (_pendingResponseCreateTimer) {
+    clearTimeout(_pendingResponseCreateTimer);
+    _pendingResponseCreateTimer = null;
+  }
+  _awaitingAutoResponse = false;
+}
+
+function scheduleManualResponseCreate(reason = "speech-stopped") {
+  if (_transport !== "webrtc") return;
+  if (_awaitingAutoResponse) return;
+  if (!_dc || _dc.readyState !== "open") return;
+  _awaitingAutoResponse = true;
+  if (_pendingResponseCreateTimer) clearTimeout(_pendingResponseCreateTimer);
+  _pendingResponseCreateTimer = setTimeout(() => {
+    _pendingResponseCreateTimer = null;
+    if (!_awaitingAutoResponse) return;
+    const sent = sendRealtimeEvent({
+      type: "response.create",
+      response: {
+        modalities: ["text", "audio"],
+      },
+    });
+    if (sent) {
+      console.info(`[voice-client] sent fallback response.create (${reason})`);
+    }
+    _awaitingAutoResponse = false;
+  }, 650);
+}
+
+function sendSessionUpdate(tokenData = {}) {
+  const sessionConfig = tokenData?.sessionConfig || {};
+  const voiceId = String(
+    tokenData?.voiceId || sessionConfig?.voice || "alloy",
+  ).trim() || "alloy";
+  const turnDetection =
+    sessionConfig?.turn_detection?.type ||
+    sessionConfig?.audio?.input?.turnDetection?.type ||
+    sessionConfig?.audio?.input?.turn_detection?.type ||
+    "server_vad";
+  const turnDetectionConfig = {
+    type: turnDetection,
+    ...(turnDetection === "server_vad"
+      ? {
+          threshold: 0.5,
+          prefix_padding_ms: 300,
+          silence_duration_ms: 500,
+          create_response: true,
+          interrupt_response: true,
+        }
+      : {}),
+    ...(turnDetection === "semantic_vad"
+      ? {
+          eagerness: "medium",
+          create_response: true,
+          interrupt_response: true,
+        }
+      : {}),
+  };
+
+  sendRealtimeEvent({
+    type: "session.update",
+    session: {
+      modalities: ["text", "audio"],
+      voice: voiceId,
+      input_audio_format: "pcm16",
+      output_audio_format: "pcm16",
+      input_audio_transcription: { model: "gpt-4o-mini-transcribe" },
+      turn_detection: turnDetectionConfig,
+    },
+  });
+}
+
 // ── Core Connection ─────────────────────────────────────────────────────────
 
 /**
@@ -305,6 +415,7 @@ export async function startVoiceSession(options = {}) {
   }
 
   _callContext = _normalizeCallContext(options);
+  _explicitStop = false;
   voiceBoundSessionId.value = _callContext.sessionId;
   voiceState.value = "connecting";
   voiceError.value = null;
@@ -370,19 +481,35 @@ export async function startVoiceSession(options = {}) {
 
     // Add mic track
     for (const track of _mediaStream.getTracks()) {
+      track.enabled = true;
       _pc.addTrack(track, _mediaStream);
     }
 
-    // Set up remote audio playback
+    // Set up remote audio playback.
+    // Start muted so the browser's autoplay policy allows the element to begin
+    // playing before a fresh user gesture is required; we unmute immediately
+    // after attaching srcObject so audio arrives unmuted from the start.
     _audioElement = new Audio();
     _audioElement.autoplay = true;
+    _audioElement.playsInline = true;
+    _audioElement.muted = true;
     _pc.ontrack = (event) => {
       _audioElement.srcObject = event.streams[0];
+      // Unmute now that the element is already playing (avoids autoplay block)
+      _audioElement.muted = false;
+      const track = event.track;
+      if (track && typeof track.addEventListener === "function") {
+        track.addEventListener("unmute", () => {
+          ensureRemoteAudioPlayback().catch(() => {});
+        });
+      }
+      ensureRemoteAudioPlayback().catch(() => {});
     };
 
     // 4. Set up data channel for events
     _dc = _pc.createDataChannel("oai-events");
     _dc.onopen = () => {
+      sendSessionUpdate(tokenData);
       voiceState.value = "connected";
       _sessionStartTime = Date.now();
       voiceSessionId.value = _callContext.sessionId || `voice-${Date.now()}`;
@@ -395,15 +522,28 @@ export async function startVoiceSession(options = {}) {
       });
     };
     _dc.onclose = () => {
-      if (voiceState.value !== "reconnecting") {
+      if (_explicitStop) return;
+      if (voiceState.value === "reconnecting" || _reconnectInFlight) return;
+      safeReconnect("data channel closed").catch(() => {
         handleDisconnect("data channel closed");
-      }
+      });
     };
     _dc.onmessage = (event) => {
       try {
         handleServerEvent(JSON.parse(event.data));
       } catch (err) {
         console.error("[voice-client] Failed to parse server event:", err);
+      }
+    };
+
+    _pc.onconnectionstatechange = () => {
+      const state = String(_pc?.connectionState || "").toLowerCase();
+      if (_explicitStop) return;
+      if (state === "failed" || state === "disconnected") {
+        if (voiceState.value === "reconnecting" || _reconnectInFlight) return;
+        safeReconnect(`peer connection ${state}`).catch(() => {
+          handleDisconnect(`peer connection ${state}`);
+        });
       }
     };
 
@@ -453,6 +593,7 @@ export async function startVoiceSession(options = {}) {
  * Stop the current voice session.
  */
 export function stopVoiceSession() {
+  _explicitStop = true;
   emit("session-ending", { sessionId: voiceSessionId.value });
   cleanup();
   voiceState.value = "idle";
@@ -484,6 +625,7 @@ function handleServerEvent(event) {
 
     case "input_audio_buffer.speech_stopped":
       voiceState.value = "thinking";
+      scheduleManualResponseCreate("speech-stopped");
       emit("speech-stopped", {});
       break;
 
@@ -495,9 +637,36 @@ function handleServerEvent(event) {
         event.transcript || "",
         "conversation.item.input_audio_transcription.completed",
       );
+      scheduleManualResponseCreate("transcription-completed");
       break;
 
+    case "conversation.item.created": {
+      const role = String(event?.item?.role || "").toLowerCase();
+      const content = Array.isArray(event?.item?.content) ? event.item.content : [];
+      if (role === "user") {
+        const transcript = content
+          .map((part) => String(part?.transcript || part?.text || ""))
+          .join("")
+          .trim();
+        if (transcript) {
+          voiceTranscript.value = transcript;
+          emit("transcript", { text: transcript, final: true });
+        }
+      }
+      break;
+    }
+
     case "response.audio_transcript.delta":
+      voiceResponse.value += event.delta || "";
+      emit("response-delta", { delta: event.delta });
+      break;
+
+    case "response.text.delta":
+      voiceResponse.value += event.delta || "";
+      emit("response-delta", { delta: event.delta });
+      break;
+
+    case "response.output_text.delta":
       voiceResponse.value += event.delta || "";
       emit("response-delta", { delta: event.delta });
       break;
@@ -512,11 +681,38 @@ function handleServerEvent(event) {
       voiceResponse.value = "";
       break;
 
+    case "response.text.done":
+      emit("response-complete", { text: voiceResponse.value });
+      _recordVoiceTranscript(
+        "assistant",
+        voiceResponse.value,
+        "response.text.done",
+      );
+      voiceResponse.value = "";
+      break;
+
+    case "response.output_text.done":
+      emit("response-complete", { text: voiceResponse.value });
+      _recordVoiceTranscript(
+        "assistant",
+        voiceResponse.value,
+        "response.output_text.done",
+      );
+      voiceResponse.value = "";
+      break;
+
     case "response.audio.delta":
       // Audio is handled via WebRTC tracks, not data channel
       break;
 
+    case "conversation.item.input_audio_transcription.failed":
+      clearPendingResponseCreate();
+      voiceError.value = event.error?.message || "Input transcription failed";
+      emit("error", event.error || { message: voiceError.value });
+      break;
+
     case "response.created":
+      clearPendingResponseCreate();
       voiceState.value = "thinking";
       break;
 
@@ -533,12 +729,14 @@ function handleServerEvent(event) {
       break;
 
     case "response.done":
+      clearPendingResponseCreate();
       if (voiceState.value !== "listening") {
         voiceState.value = "connected";
       }
       break;
 
     case "error":
+      clearPendingResponseCreate();
       console.error("[voice-client] Server error:", event.error);
       voiceError.value = event.error?.message || "Server error";
       emit("error", event.error);
@@ -692,7 +890,11 @@ function startReconnectTimer() {
 }
 
 async function reconnect() {
+  if (_explicitStop) return;
+  if (_reconnectInFlight) return;
+  _reconnectInFlight = true;
   if (_reconnectAttempts >= MAX_RECONNECT_ATTEMPTS) {
+    _reconnectInFlight = false;
     handleDisconnect("max reconnect attempts reached");
     return;
   }
@@ -709,13 +911,101 @@ async function reconnect() {
 
   try {
     await startVoiceSession(_callContext);
+    _reconnectInFlight = false;
   } catch (err) {
     console.error("[voice-client] Reconnect failed:", err);
     if (_reconnectAttempts < MAX_RECONNECT_ATTEMPTS) {
+      _reconnectInFlight = false;
       setTimeout(() => { reconnect().catch(e => console.error("[voice-client] Reconnect error:", e)); }, 2000 * _reconnectAttempts);
     } else {
+      _reconnectInFlight = false;
       handleDisconnect("reconnect failed");
     }
+  }
+}
+
+async function ensureRemoteAudioPlayback() {
+  if (!_audioElement) return false;
+  if (!_audioElement.srcObject) return false;
+  try {
+    _audioElement.muted = false;
+    _audioElement.volume = 1;
+    await _audioElement.play();
+    _audioAutoplayWarned = false;
+    return true;
+  } catch (err) {
+    if (!_audioAutoplayWarned) {
+      _audioAutoplayWarned = true;
+      const msg =
+        "Speaker playback was blocked by the browser. Tap the call overlay once to enable audio.";
+      console.warn("[voice-client] remote audio autoplay blocked:", err?.message || err);
+      voiceError.value = msg;
+      emit("error", { message: msg });
+    }
+    return false;
+  }
+}
+
+/**
+ * Attempt to (re-)start the remote audio element — call this from any user
+ * interaction (e.g. a tap on the call overlay) to unblock autoplay.
+ * Safe to call even when there is no active session; returns false if there
+ * is nothing to resume.
+ */
+export async function resumeVoiceAudio() {
+  const ok = await ensureRemoteAudioPlayback();
+  if (ok && _audioElement) {
+    // Clear any lingering "playback blocked" error now that the user has
+    // interacted and audio is confirmed playing.
+    if (voiceError.value && String(voiceError.value).includes("Speaker playback")) {
+      voiceError.value = null;
+    }
+    _audioAutoplayWarned = false;
+  }
+  return ok;
+}
+
+/**
+ * Toggle microphone mute state for the active WebRTC session.
+ * Immediately silences/restores the mic track without dropping the connection.
+ * Returns the new muted state.
+ */
+export function toggleMicMute() {
+  if (_mediaStream) {
+    const tracks = _mediaStream.getAudioTracks();
+    if (tracks.length > 0) {
+      const willBeMuted = tracks[0].enabled; // enabled=true means currently unmuted
+      for (const track of tracks) {
+        track.enabled = !willBeMuted;
+      }
+      isVoiceMicMuted.value = willBeMuted;
+      return willBeMuted;
+    }
+  }
+  // responses-audio transport: can only mute the SpeechRecognition
+  if (_transport === "responses-audio") {
+    const willBeMuted = !isVoiceMicMuted.value;
+    isVoiceMicMuted.value = willBeMuted;
+    if (willBeMuted) {
+      _stopResponsesRecognition();
+    } else {
+      _startResponsesRecognition();
+    }
+    return willBeMuted;
+  }
+  return isVoiceMicMuted.value;
+}
+
+async function safeReconnect(reason = "connection lost") {
+  if (_explicitStop) return;
+  try {
+    await reconnect();
+  } catch (err) {
+    console.error("[voice-client] safeReconnect failed:", err);
+    throw err;
+  }
+  if (voiceState.value === "idle" || voiceState.value === "error") {
+    throw new Error(reason);
   }
 }
 
@@ -741,6 +1031,7 @@ function handleDisconnect(reason) {
 function cleanupConnection() {
   clearTimeout(_reconnectTimer);
   _reconnectTimer = null;
+  clearPendingResponseCreate();
 
   if (_dc) {
     try { _dc.close(); } catch { /* ignore */ }
@@ -760,6 +1051,9 @@ function cleanupConnection() {
 }
 
 function cleanup() {
+  _reconnectInFlight = false;
+  _audioAutoplayWarned = false;
+  isVoiceMicMuted.value = false;
   cleanupConnection();
 
   clearInterval(_durationTimer);

@@ -1244,6 +1244,10 @@
   min-height: 0;
 }
 
+.app-shell[data-tab="fleet-sessions"] .main-content {
+  max-width: none;
+}
+
 .app-shell[data-tab="chat"] .main-content > * {
   min-height: 0;
 }

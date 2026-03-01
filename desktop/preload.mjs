@@ -83,5 +83,15 @@ contextBridge.exposeInMainWorld("veDesktop", {
      * @returns {Promise<{ ok: boolean }>}
      */
     showDialog: () => ipcRenderer.invoke("bosun:shortcuts:showDialog"),
+
+    /**
+     * Enable or disable global (system-wide) firing for a globalEligible shortcut.
+     * Has no effect on built-in global shortcuts (bosun.focus, bosun.quickchat).
+     * @param {string}  id       Shortcut ID.
+     * @param {boolean} isGlobal true to fire from anywhere, false for focused-only.
+     * @returns {Promise<{ ok: boolean, error?: string }>}
+     */
+    setScope: (id, isGlobal) =>
+      ipcRenderer.invoke("bosun:shortcuts:setScope", { id, isGlobal }),
   },
 });

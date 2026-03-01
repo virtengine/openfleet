@@ -29,7 +29,7 @@ const html = htm.bind(h);
  * ═══════════════════════════════════════════════ */
 
 /** Current agent interaction mode */
-export const agentMode = signal("ask"); // "ask" | "agent" | "plan"
+export const agentMode = signal("ask"); // "ask" | "agent" | "plan" | "web" | "instant"
 
 /** Available agents loaded from API */
 export const availableAgents = signal([]); // Array<{ id, name, provider, available, busy, capabilities }>
@@ -67,6 +67,8 @@ const MODES = [
   { id: "ask", label: "Ask", icon: "chat", description: "Ask a question" },
   { id: "agent", label: "Agent", icon: "bot", description: "Autonomous agent" },
   { id: "plan", label: "Plan", icon: "clipboard", description: "Create a plan first" },
+  { id: "web", label: "Web", icon: "globe", description: "Web-style quick answers" },
+  { id: "instant", label: "Instant", icon: "zap", description: "Fast back-and-forth" },
 ];
 
 const AGENT_ICONS = {
@@ -910,7 +912,7 @@ async function switchAgent(agentId) {
 
 /**
  * Set the agent interaction mode via API.
- * @param {"ask"|"agent"|"plan"} mode
+ * @param {"ask"|"agent"|"plan"|"web"|"instant"} mode
  */
 async function setAgentMode(mode) {
   const previous = agentMode.value;
@@ -928,7 +930,7 @@ async function setAgentMode(mode) {
 
 /* ═══════════════════════════════════════════════
  *  AgentModeSelector
- *  Native select: Ask | Agent | Plan
+ *  Native select: Ask | Agent | Plan | Web | Instant
  * ═══════════════════════════════════════════════ */
 
 export function AgentModeSelector() {

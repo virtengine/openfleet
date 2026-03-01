@@ -38,6 +38,8 @@ let _session = null;
 let _durationTimer = null;
 let _sessionStartTime = 0;
 let _eventHandlers = new Map();
+let _geminiMicStream = null;
+let _geminiRecorder = null;
 let _callContext = {
   sessionId: null,
   executor: null,
@@ -46,6 +48,9 @@ let _callContext = {
 };
 let _sdkConfig = null;
 let _usingLegacyFallback = false;
+let _sdkModuleUnavailableLogged = false;
+let _agentsRealtimeModulePromise = null;
+let _agentsRealtimeModuleSource = null;
 
 // ── Event System ────────────────────────────────────────────────────────────
 
@@ -75,6 +80,48 @@ function _normalizeCallContext(options = {}) {
     mode: String(options?.mode || "").trim() || null,
     model: String(options?.model || "").trim() || null,
   };
+}
+
+function isUsableAgentsRealtimeModule(mod) {
+  return Boolean(mod && mod.RealtimeAgent && mod.RealtimeSession);
+}
+
+async function loadAgentsRealtimeModule() {
+  if (_agentsRealtimeModulePromise) return _agentsRealtimeModulePromise;
+  _agentsRealtimeModulePromise = (async () => {
+    // 1) Prefer locally bundled dependency when available.
+    try {
+      const mod = await import("@openai/agents/realtime");
+      if (isUsableAgentsRealtimeModule(mod)) {
+        _agentsRealtimeModuleSource = "local-bundle";
+        return mod;
+      }
+    } catch {
+      // continue to browser ESM fallbacks
+    }
+
+    // 2) Browser-safe ESM fallbacks for non-bundled deployments.
+    const sources = [
+      "https://esm.sh/@openai/agents/realtime?bundle",
+      "https://cdn.jsdelivr.net/npm/@openai/agents/realtime/+esm",
+      "https://unpkg.com/@openai/agents/realtime?module",
+    ];
+    let lastErr = null;
+    for (const source of sources) {
+      try {
+        const mod = await import(source);
+        if (isUsableAgentsRealtimeModule(mod)) {
+          _agentsRealtimeModuleSource = source;
+          return mod;
+        }
+        lastErr = new Error(`Loaded SDK module from ${source}, but exports were incomplete`);
+      } catch (err) {
+        lastErr = err;
+      }
+    }
+    throw lastErr || new Error("Failed to load @openai/agents/realtime in browser");
+  })();
+  return _agentsRealtimeModulePromise;
 }
 
 // ── SDK Configuration Fetch ────────────────────────────────────────────────
@@ -131,8 +178,9 @@ async function _recordTranscript(role, content, eventType = "") {
  * This runs entirely client-side with WebRTC auto-mic handling.
  */
 async function startAgentsSdkSession(config, options = {}) {
-  // Dynamically import @openai/agents/realtime (browser bundle)
-  const agentsMod = await import("@openai/agents/realtime");
+  const resolvedConfig = config && typeof config === "object" ? config : {};
+  // Dynamically import @openai/agents/realtime using browser-safe sources.
+  const agentsMod = await loadAgentsRealtimeModule();
   const { RealtimeAgent, RealtimeSession } = agentsMod;
 
   if (!RealtimeAgent || !RealtimeSession) {
@@ -188,9 +236,9 @@ async function startAgentsSdkSession(config, options = {}) {
   });
 
   // Determine model and voice
-  const model = String(tokenData.model || config.model || "gpt-realtime-1.5").trim();
-  const voiceId = String(tokenData.voiceId || config.voiceId || "alloy").trim();
-  const turnDetection = String(config.turnDetection || "server_vad").trim();
+  const model = String(tokenData.model || resolvedConfig.model || "gpt-realtime-1.5").trim();
+  const voiceId = String(tokenData.voiceId || resolvedConfig.voiceId || "alloy").trim();
+  const turnDetection = String(resolvedConfig.turnDetection || "server_vad").trim();
 
   // Create session with config
   const session = new RealtimeSession(agent, {
@@ -293,6 +341,10 @@ async function startAgentsSdkSession(config, options = {}) {
 
   await session.connect(connectOpts);
 
+  if (_agentsRealtimeModuleSource) {
+    console.info(`[voice-client-sdk] using OpenAI Realtime SDK from ${_agentsRealtimeModuleSource}`);
+  }
+
   _session = session;
   sdkVoiceSdkActive.value = true;
   sdkVoiceState.value = "connected";
@@ -321,6 +373,7 @@ async function startAgentsSdkSession(config, options = {}) {
  * sends/receives audio via a bosun WebSocket relay.
  */
 async function startGeminiLiveSession(config, options = {}) {
+  const resolvedConfig = config && typeof config === "object" ? config : {};
   // For Gemini, fall back to server-mediated approach
   // The client sends mic audio via WebSocket to our server,
   // which forwards to Gemini Live API and returns audio.
@@ -344,7 +397,7 @@ async function startGeminiLiveSession(config, options = {}) {
         sessionId: _callContext.sessionId,
         executor: _callContext.executor,
         mode: _callContext.mode,
-        model: config.model,
+        model: resolvedConfig.model,
       }));
 
       _session = ws;
@@ -398,8 +451,6 @@ async function startGeminiLiveSession(config, options = {}) {
   });
 }
 
-let _geminiMicStream = null;
-
 async function startGeminiMicCapture(ws) {
   const mediaDevices = navigator?.mediaDevices;
   if (!mediaDevices?.getUserMedia) {
@@ -422,6 +473,7 @@ async function startGeminiMicCapture(ws) {
       ? "audio/webm;codecs=opus"
       : "audio/webm",
   });
+  _geminiRecorder = recorder;
 
   recorder.ondataavailable = (event) => {
     if (event.data.size > 0 && ws.readyState === WebSocket.OPEN) {
@@ -431,6 +483,47 @@ async function startGeminiMicCapture(ws) {
 
   recorder.start(250); // Send chunks every 250ms
   sdkVoiceState.value = "listening";
+}
+
+function stopMicLikeTracks(source) {
+  if (!source) return;
+  const streams = [
+    source,
+    source?.stream,
+    source?.localStream,
+    source?.mediaStream,
+    source?._mediaStream,
+    source?.audioInputStream,
+    source?.transport?.stream,
+    source?.transport?.localStream,
+    source?.transport?.mediaStream,
+    source?.transport?._mediaStream,
+  ].filter(Boolean);
+
+  for (const stream of streams) {
+    if (typeof stream?.getTracks !== "function") continue;
+    for (const track of stream.getTracks()) {
+      if (String(track?.kind || "").toLowerCase() !== "audio") continue;
+      try { track.stop(); } catch { /* ignore */ }
+    }
+  }
+
+  const pcs = [
+    source?.pc,
+    source?._pc,
+    source?.peerConnection,
+    source?.transport?.pc,
+    source?.transport?._pc,
+    source?.transport?.peerConnection,
+  ].filter(Boolean);
+  for (const pc of pcs) {
+    if (typeof pc?.getSenders !== "function") continue;
+    for (const sender of pc.getSenders()) {
+      const track = sender?.track;
+      if (!track || String(track.kind || "").toLowerCase() !== "audio") continue;
+      try { track.stop(); } catch { /* ignore */ }
+    }
+  }
 }
 
 function handleGeminiServerEvent(msg) {
@@ -605,17 +698,35 @@ export async function startSdkVoiceSession(options = {}) {
 
     return { sdk: false, provider: _sdkConfig.provider, reason: _sdkConfig.fallbackReason };
   } catch (err) {
-    console.error("[voice-client-sdk] SDK session failed, signaling fallback:", err);
+    const reason = String(err?.message || "");
+    const expectedModuleMissing =
+      /SDK module unavailable in browser/i.test(reason) ||
+      /Failed to resolve module specifier '@openai\/agents\/realtime'/i.test(reason) ||
+      /Cannot find module '@openai\/agents\/realtime'/i.test(reason);
+    if (expectedModuleMissing) {
+      if (!_sdkModuleUnavailableLogged) {
+        console.warn(
+          "[voice-client-sdk] Realtime SDK bundle unavailable; using legacy voice transport.",
+        );
+        _sdkModuleUnavailableLogged = true;
+      }
+    } else {
+      console.error("[voice-client-sdk] SDK session failed, signaling fallback:", err);
+    }
     _usingLegacyFallback = true;
     sdkVoiceSdkActive.value = false;
     sdkVoiceState.value = "idle";
     sdkVoiceError.value = null; // Don't show error — we'll fallback
     emit("sdk-unavailable", {
-      reason: err.message,
+      reason: reason || "SDK unavailable",
       provider: _sdkConfig?.provider || "unknown",
     });
 
-    return { sdk: false, provider: _sdkConfig?.provider || "unknown", reason: err.message };
+    return {
+      sdk: false,
+      provider: _sdkConfig?.provider || "unknown",
+      reason: reason || "SDK unavailable",
+    };
   }
 }
 
@@ -624,8 +735,13 @@ export async function startSdkVoiceSession(options = {}) {
  */
 export function stopSdkVoiceSession() {
   emit("session-ending", { sessionId: sdkVoiceSessionId.value });
+  if (_geminiRecorder) {
+    try { _geminiRecorder.stop(); } catch { /* ignore */ }
+    _geminiRecorder = null;
+  }
 
   if (_session) {
+    stopMicLikeTracks(_session);
     try {
       if (typeof _session.close === "function") {
         _session.close();

@@ -793,6 +793,93 @@ describe("ui-server mini app", () => {
     rmSync(tmpDir, { recursive: true, force: true });
   });
 
+  it("stops an in-flight session turn via /api/sessions/:id/stop", async () => {
+    let rejectTurn = null;
+    const execPrimaryPrompt = vi.fn().mockImplementation((_content, opts = {}) => {
+      return new Promise((_, reject) => {
+        rejectTurn = reject;
+        const signal = opts?.abortController?.signal;
+        if (!signal) return;
+        if (signal.aborted) {
+          const err = new Error("aborted");
+          err.name = "AbortError";
+          reject(err);
+          return;
+        }
+        signal.addEventListener("abort", () => {
+          const err = new Error("aborted");
+          err.name = "AbortError";
+          reject(err);
+        }, { once: true });
+      });
+    });
+
+    const mod = await import("../ui-server.mjs");
+    const server = await mod.startTelegramUiServer({
+      port: await getFreePort(),
+      host: "127.0.0.1",
+      dependencies: { execPrimaryPrompt },
+    });
+    const port = server.address().port;
+
+    const createResponse = await fetch(`http://127.0.0.1:${port}/api/sessions/create`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ type: "primary", prompt: "hello" }),
+    });
+    const createJson = await createResponse.json();
+    const sessionId = createJson.session.id;
+
+    const messageResponse = await fetch(
+      `http://127.0.0.1:${port}/api/sessions/${encodeURIComponent(sessionId)}/message`,
+      {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ content: "run until stopped", mode: "agent" }),
+      },
+    );
+    const messageJson = await messageResponse.json();
+    expect(messageResponse.status).toBe(200);
+    expect(messageJson.ok).toBe(true);
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(execPrimaryPrompt).toHaveBeenCalledTimes(1);
+    expect(execPrimaryPrompt.mock.calls[0][1]?.abortController).toBeTruthy();
+
+    const stopResponse = await fetch(
+      `http://127.0.0.1:${port}/api/sessions/${encodeURIComponent(sessionId)}/stop`,
+      {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({}),
+      },
+    );
+    const stopJson = await stopResponse.json();
+    expect(stopResponse.status).toBe(200);
+    expect(stopJson.ok).toBe(true);
+    expect(stopJson.stopped).toBe(true);
+
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    const stopAgainResponse = await fetch(
+      `http://127.0.0.1:${port}/api/sessions/${encodeURIComponent(sessionId)}/stop`,
+      {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({}),
+      },
+    );
+    const stopAgainJson = await stopAgainResponse.json();
+    expect(stopAgainResponse.status).toBe(200);
+    expect(stopAgainJson.ok).toBe(true);
+    expect(stopAgainJson.stopped).toBe(false);
+
+    // Ensure pending promise cannot leak if abort listener was not reached.
+    if (rejectTurn) {
+      const err = new Error("forced cleanup");
+      err.name = "AbortError";
+      rejectTurn(err);
+    }
+  });
+
   it("routes sdk commands with the session workspace cwd", async () => {
     const tmpDir = mkdtempSync(join(tmpdir(), "bosun-sdk-workspace-"));
     const configPath = join(tmpDir, "bosun.config.json");

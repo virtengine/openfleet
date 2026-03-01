@@ -241,11 +241,16 @@ export class SessionTracker {
     if (event && event.role && event.content !== undefined) {
       const msg = {
         id: event.id || `msg-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+        type: event.type || undefined,
         role: event.role,
         content: String(event.content).slice(0, MAX_MESSAGE_CHARS),
         timestamp: event.timestamp || new Date().toISOString(),
         turnIndex: event.turnIndex ?? session.turnCount,
         attachments: Array.isArray(event.attachments) ? event.attachments : undefined,
+        meta:
+          event.meta && typeof event.meta === "object"
+            ? { ...event.meta }
+            : undefined,
       };
       session.turnCount++;
       session.messages.push(msg);

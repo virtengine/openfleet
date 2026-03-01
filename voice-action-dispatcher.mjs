@@ -21,6 +21,8 @@
 
 import { loadConfig } from "./config.mjs";
 import { execPrimaryPrompt, getPrimaryAgentName, setPrimaryAgent, getAgentMode, setAgentMode } from "./primary-agent.mjs";
+import { existsSync } from "node:fs";
+import { resolve as resolvePath } from "node:path";
 
 // ── Module-scope lazy imports ───────────────────────────────────────────────
 
@@ -111,7 +113,7 @@ const VALID_EXECUTORS = new Set([
   "opencode-sdk",
 ]);
 
-const VALID_AGENT_MODES = new Set(["ask", "agent", "plan"]);
+const VALID_AGENT_MODES = new Set(["ask", "agent", "plan", "web", "instant"]);
 
 const MODE_ALIASES = Object.freeze({
   code: "agent",
@@ -121,6 +123,9 @@ const MODE_ALIASES = Object.freeze({
   implement: "agent",
   execute: "agent",
   design: "plan",
+  browser: "web",
+  fast: "instant",
+  quick: "instant",
 });
 
 // ── Action intent schema ────────────────────────────────────────────────────
@@ -153,6 +158,33 @@ const ACTION_HANDLERS = {};
 
 function registerAction(name, handler) {
   ACTION_HANDLERS[name] = handler;
+}
+
+function normalizeCandidatePath(input) {
+  if (!input) return "";
+  try {
+    return resolvePath(String(input));
+  } catch {
+    return String(input || "");
+  }
+}
+
+async function resolveDelegationCwd(sessionId = "") {
+  const id = String(sessionId || "").trim();
+  if (!id) return process.cwd();
+  try {
+    const tracker = await getSessionTracker();
+    const session =
+      tracker.getSessionById?.(id) || tracker.getSession?.(id) || null;
+    const metadata = session?.metadata && typeof session.metadata === "object"
+      ? session.metadata
+      : null;
+    const explicit = normalizeCandidatePath(metadata?.workspaceDir);
+    if (explicit && existsSync(explicit)) return explicit;
+  } catch {
+    // best effort
+  }
+  return process.cwd();
 }
 
 // ── Task actions ────────────────────────────────────────────────────────────
@@ -316,6 +348,7 @@ registerAction("agent.delegate", async (params, context) => {
   const mode = MODE_ALIASES[rawMode] || (VALID_AGENT_MODES.has(rawMode) ? rawMode : "agent");
   const model = String(params.model || context.model || "").trim() || undefined;
   const sessionId = String(context.sessionId || "").trim() || `voice-dispatch-${Date.now()}`;
+  const cwd = await resolveDelegationCwd(sessionId);
 
   const previousAgent = getPrimaryAgentName();
   if (executor !== previousAgent) {
@@ -326,6 +359,7 @@ registerAction("agent.delegate", async (params, context) => {
     const result = await execPrimaryPrompt(message, {
       mode,
       model,
+      cwd,
       sessionId,
       sessionType: "voice-dispatch",
       timeoutMs: 5 * 60 * 1000,
@@ -352,6 +386,14 @@ registerAction("agent.plan", async (params, context) => {
 
 registerAction("agent.code", async (params, context) => {
   return ACTION_HANDLERS["agent.delegate"]({ ...params, mode: "agent" }, context);
+});
+
+registerAction("agent.web", async (params, context) => {
+  return ACTION_HANDLERS["agent.delegate"]({ ...params, mode: "web" }, context);
+});
+
+registerAction("agent.instant", async (params, context) => {
+  return ACTION_HANDLERS["agent.delegate"]({ ...params, mode: "instant" }, context);
 });
 
 registerAction("agent.status", async () => {
@@ -699,7 +741,9 @@ export function getActionManifest() {
     { action: "agent.code", description: "Ask an agent to write/modify code. params: { message, executor? }" },
     { action: "agent.status", description: "Get active agent status. params: {}" },
     { action: "agent.switch", description: "Switch the primary agent. params: { executor }" },
-    { action: "agent.setMode", description: "Set agent interaction mode. params: { mode: ask|agent|plan }" },
+    { action: "agent.web", description: "Ask for web-style concise response. params: { message, executor?, model? }" },
+    { action: "agent.instant", description: "Ask for instant fast back-and-forth response. params: { message, executor?, model? }" },
+    { action: "agent.setMode", description: "Set agent interaction mode. params: { mode: ask|agent|plan|web|instant }" },
     { action: "session.list", description: "List active sessions. params: { limit? }" },
     { action: "session.history", description: "Get session message history. params: { sessionId, limit? }" },
     { action: "session.create", description: "Create a new session. params: { type?, executor? }" },

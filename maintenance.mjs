@@ -716,8 +716,7 @@ export function classifyMonitorCommandLine(commandLine) {
 
   if (
     normalized.includes("bosun") &&
-    normalized.includes("cli.mjs") &&
-    normalized.includes("monitormonitor")
+    normalized.includes("cli.mjs")
   ) {
     return "monitor";
   }

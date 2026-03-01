@@ -19,18 +19,6 @@ describe("loadAgentPrompts generic prompt loading", () => {
     if (rootDir) {
       await rm(rootDir, { recursive: true, force: true });
     }
-    delete process.env.BOSUN_PROMPT_MONITOR_MONITOR;
-  });
-
-  it("loads monitor-monitor prompt from .bosun/agents when present", async () => {
-    await writeFile(
-      resolve(rootDir, ".bosun", "agents", "monitor-monitor.md"),
-      "CUSTOM_MONITOR_PROMPT",
-      "utf8",
-    );
-
-    const prompts = loadAgentPrompts(rootDir, rootDir, {});
-    expect(prompts.monitorMonitor).toContain("CUSTOM_MONITOR_PROMPT");
   });
 
   it("supports config override path for planner prompt", async () => {
@@ -48,30 +36,9 @@ describe("loadAgentPrompts generic prompt loading", () => {
     expect(prompts.planner).toContain("PLANNER_OVERRIDE_PROMPT");
   });
 
-  it("supports env override path with highest priority", async () => {
-    await mkdir(resolve(rootDir, "env-prompts"), { recursive: true });
-    await writeFile(
-      resolve(rootDir, "env-prompts", "monitor.md"),
-      "ENV_MONITOR_PROMPT",
-      "utf8",
-    );
-
-    process.env.BOSUN_PROMPT_MONITOR_MONITOR =
-      "env-prompts/monitor.md";
-
-    const prompts = loadAgentPrompts(rootDir, rootDir, {
-      agentPrompts: {
-        monitorMonitor: ".bosun/agents/monitor-monitor.md",
-      },
-    });
-
-    expect(prompts.monitorMonitor).toContain("ENV_MONITOR_PROMPT");
-  });
-
   it("falls back to built-in prompt when no files exist", () => {
     const prompts = loadAgentPrompts(rootDir, rootDir, {});
     expect(prompts.orchestrator).toContain("Task Orchestrator Agent");
     expect(prompts.planner).toContain("Codex-Task-Planner Agent");
-    expect(prompts.monitorMonitor).toContain("Bosun-Monitor Agent");
   });
 });

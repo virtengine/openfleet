@@ -62,6 +62,7 @@ import {
   agentMode,
   activeAgent,
   activeAgentInfo,
+  availableAgents,
   yoloMode,
   selectedModel,
 } from "../components/agent-selector.js";
@@ -92,7 +93,18 @@ const BOSUN_COMMANDS = [
   { cmd: "/kanban", desc: "Open Kanban board", icon: "pin", source: "bosun" },
   { cmd: "/deploy", desc: "Trigger deployment", icon: "rocket", source: "bosun" },
   { cmd: "/ask", desc: "Ask the assistant", icon: "chat", source: "bosun" },
+  { cmd: "/agent", desc: "Send message in agent mode", icon: "bot", source: "bosun" },
+  { cmd: "/web", desc: "Send message in web mode", icon: "globe", source: "bosun" },
+  { cmd: "/instant", desc: "Send message in instant mode", icon: "zap", source: "bosun" },
 ];
+
+const MESSAGE_MODE_COMMANDS = Object.freeze({
+  "/ask": "ask",
+  "/agent": "agent",
+  "/plan": "plan",
+  "/web": "web",
+  "/instant": "instant",
+});
 
 /* ─── SDK commands (dynamic based on active agent) ─── */
 const SDK_COMMAND_META = {
@@ -274,6 +286,7 @@ export function ChatTab() {
   const messageQueueRef = useRef([]);
   const [showSendMenu, setShowSendMenu] = useState(false);
   const [queueCount, setQueueCount] = useState(0);
+  const [stoppingAgent, setStoppingAgent] = useState(false);
   const routeSessionId = String(routeParams.value?.sessionId || "").trim();
 
   /* ── Load sessions + agents on mount ── */
@@ -518,11 +531,15 @@ export function ChatTab() {
     setShowSlashMenu(false);
     setSending(true);
 
-    try {
-      if (content.startsWith("/")) {
-        const cmdBase = content.split(/\s/)[0].toLowerCase();
-        const cmdArgs = content.slice(cmdBase.length).trim();
+    const cmdBase = content.startsWith("/") ? content.split(/\s/)[0].toLowerCase() : "";
+    const cmdArgs = cmdBase ? content.slice(cmdBase.length).trim() : "";
+    const modeOverride = MESSAGE_MODE_COMMANDS[cmdBase] || null;
+    const asModeMessage = Boolean(modeOverride && cmdArgs);
+    const outboundContent = asModeMessage ? cmdArgs : content;
+    const outboundMode = modeOverride || agentMode.value;
 
+    try {
+      if (content.startsWith("/") && !asModeMessage) {
         if (isSdkCommand(cmdBase)) {
           // Forward to agent SDK
           const resp = await apiFetch("/api/agents/sdk-command", {
@@ -566,19 +583,19 @@ export function ChatTab() {
         }
       } else if (sessionId) {
         // Send as message to current session with optimistic rendering
-        const tempId = addPendingMessage(sessionId, content);
+        const tempId = addPendingMessage(sessionId, outboundContent);
         markUserMessageSent(activeAgent.value, sessionId);
 
         // Use sendOrQueue for offline resilience
           const sendFn = async (sid, msg) => {
             await apiFetch(`/api/sessions/${encodeURIComponent(sid)}/message`, {
               method: "POST",
-              body: JSON.stringify({ content: msg, mode: agentMode.value, yolo: yoloMode.peek(), model: selectedModel.value || undefined }),
+              body: JSON.stringify({ content: msg, mode: outboundMode, yolo: yoloMode.peek(), model: selectedModel.value || undefined }),
             });
           };
 
         try {
-          await sendOrQueue(sessionId, content, sendFn);
+          await sendOrQueue(sessionId, outboundContent, sendFn);
           confirmMessage(tempId);
         } catch (err) {
           rejectMessage(tempId, err.message || "Send failed");
@@ -590,21 +607,21 @@ export function ChatTab() {
         // No session — create one with current agent/mode, then send first message
         const res = await createSession({
           type: "primary",
-          prompt: content,
+          prompt: outboundContent,
           agent: activeAgent.value,
-          mode: agentMode.value,
+          mode: outboundMode,
           yolo: yoloMode.peek(),
           model: selectedModel.value || undefined,
         });
         const newId = res?.session?.id;
         if (newId) {
-          const tempId = addPendingMessage(newId, content);
+          const tempId = addPendingMessage(newId, outboundContent);
           markUserMessageSent(activeAgent.value, newId);
 
           try {
             await apiFetch(`/api/sessions/${encodeURIComponent(newId)}/message`, {
               method: "POST",
-              body: JSON.stringify({ content, mode: agentMode.value, yolo: yoloMode.peek(), model: selectedModel.value || undefined }),
+              body: JSON.stringify({ content: outboundContent, mode: outboundMode, yolo: yoloMode.peek(), model: selectedModel.value || undefined }),
             });
             confirmMessage(tempId);
           } catch (err) {
@@ -627,13 +644,48 @@ export function ChatTab() {
 
   /* ── Stop agent ── */
   async function handleStop() {
+    if (stoppingAgent) return;
+    setStoppingAgent(true);
     try {
-      await apiFetch("/api/command", {
-        method: "POST",
-        body: JSON.stringify({ command: "/stop" }),
-      });
-      showToast("Agent stopped", "info");
+      const activeId = String(activeAgent.peek() || "").trim();
+      const optimisticMarkIdle = () => {
+        if (!activeId) return;
+        const list = Array.isArray(availableAgents.peek()) ? availableAgents.peek() : [];
+        if (!list.length) return;
+        let changed = false;
+        const next = list.map((agent) => {
+          if (agent?.id !== activeId || agent?.busy === false) return agent;
+          changed = true;
+          return { ...agent, busy: false };
+        });
+        if (changed) availableAgents.value = next;
+      };
+
+      if (sessionId) {
+        const stopResult = await apiFetch(`/api/sessions/${encodeURIComponent(sessionId)}/stop`, {
+          method: "POST",
+          body: JSON.stringify({}),
+        });
+        if (stopResult?.stopped) {
+          optimisticMarkIdle();
+          showToast("Stopped current agent turn", "info");
+        } else {
+          showToast("No active agent turn to stop", "info");
+          setStoppingAgent(false);
+          return;
+        }
+      } else {
+        await apiFetch("/api/command", {
+          method: "POST",
+          body: JSON.stringify({ command: "/stop" }),
+        });
+        optimisticMarkIdle();
+        showToast("Agent stopped", "info");
+      }
+
+      try { await loadAvailableAgents(); } catch { /* best effort */ }
     } catch (err) {
+      setStoppingAgent(false);
       showToast("Stop failed: " + (err.message || "Unknown error"), "error");
     }
   }
@@ -682,6 +734,14 @@ export function ChatTab() {
     document.addEventListener("mousedown", handleOutside);
     return () => document.removeEventListener("mousedown", handleOutside);
   }, [showSendMenu]);
+
+  // Clear one-shot stop UI lock as soon as the selected agent reports idle.
+  useEffect(() => {
+    if (!stoppingAgent) return;
+    if (!activeAgentInfo.value?.busy) {
+      setStoppingAgent(false);
+    }
+  }, [stoppingAgent, activeAgentInfo.value?.busy]);
 
   /* ── Keyboard handling ── */
   function handleKeyDown(e) {
@@ -953,7 +1013,7 @@ export function ChatTab() {
                 disabled=${sending}
                 title="Live voice mode"
               />
-              ${activeAgentInfo.value?.busy && html`
+              ${activeAgentInfo.value?.busy && !stoppingAgent && html`
                 <button
                   class="chat-stop-btn"
                   onClick=${handleStop}

@@ -72,6 +72,7 @@ const {
   registerGlobalShortcuts,
   unregisterGlobalShortcuts,
   setShortcut,
+  setShortcutScope,
   resetShortcut,
   resetAllShortcuts,
 } = await loadShortcutsApi();
@@ -111,6 +112,11 @@ const WORKSPACE_CACHE_TTL_MS = 30_000;
 const acc = (id) => getEffectiveAccelerator(id) ?? undefined;
 
 const DAEMON_PID_FILE = resolve(homedir(), ".cache", "bosun", "daemon.pid");
+const gotSingleInstanceLock = app.requestSingleInstanceLock();
+
+if (!gotSingleInstanceLock) {
+  app.quit();
+}
 
 // Local/private-network patterns — TLS cert bypass for the embedded UI server
 const LOCAL_HOSTNAME_RE = [
@@ -421,6 +427,7 @@ function buildFollowWindowUrl(baseUrl, detail = {}) {
 
 function setWindowVisible(win) {
   if (!win || win.isDestroyed()) return;
+  win.setSkipTaskbar(false);
   if (win.isMinimized()) win.restore();
   if (!win.isVisible()) win.show();
   win.focus();
@@ -1045,16 +1052,12 @@ async function createMainWindow() {
   });
 
   mainWindow.on("close", (event) => {
-    // In tray mode, closing the window hides it to the tray instead of quitting.
-    if (trayMode && !shuttingDown) {
-      event.preventDefault();
-      mainWindow?.hide();
-      // On macOS, hide the dock icon when the window is hidden.
-      if (process.platform === "darwin") {
-        app.dock?.hide();
-      }
-      return;
-    }
+    // User close should not quit the app; minimize to taskbar/dock.
+    if (shuttingDown) return;
+    event.preventDefault();
+    if (mainWindow?.isMinimized()) return;
+    mainWindow?.setSkipTaskbar(false);
+    mainWindow?.minimize();
   });
 
   mainWindow.on("closed", () => {
@@ -1125,10 +1128,10 @@ async function createFollowWindow() {
   if (followWindow && !followWindow.isDestroyed()) return followWindow;
   const iconPath = resolveDesktopIconPath();
   followWindow = new BrowserWindow({
-    width: 460,
-    height: 720,
-    minWidth: 380,
-    minHeight: 520,
+    width: 420,
+    height: 640,
+    minWidth: 340,
+    minHeight: 440,
     backgroundColor: "#0b0b0c",
     ...(iconPath && existsSync(iconPath) ? { icon: iconPath } : {}),
     show: false,
@@ -1589,6 +1592,15 @@ function registerDesktopIpc() {
     return { ok: true };
   });
 
+  /**
+   * Enable or disable global (system-wide) firing for a globalEligible shortcut.
+   * Payload: { id: string, isGlobal: boolean }
+   * Returns: { ok: boolean, error?: string }
+   */
+  ipcMain.handle("bosun:shortcuts:setScope", (_event, { id, isGlobal }) => {
+    return setShortcutScope(id, Boolean(isGlobal));
+  });
+
   // ── Navigation IPC ───────────────────────────────────────────────────────
   /**
    * Navigate the main window to a given path or tab ID.
@@ -1673,8 +1685,8 @@ async function bootstrap() {
 
     // Determine tray / background mode before creating any windows.
     trayMode = isTrayModeEnabled();
-    // In tray mode we still open the main window by default on startup.
-    // Set BOSUN_DESKTOP_START_HIDDEN=1 to force background-only launch.
+    // Launch visible by default; allow opt-in hidden start only.
+    // Set BOSUN_DESKTOP_START_HIDDEN=1 to keep legacy background startup.
     startHidden = trayMode
       ? parseBoolEnv(process.env.BOSUN_DESKTOP_START_HIDDEN, false)
       : false;
@@ -1805,6 +1817,18 @@ app.on("activate", () => {
   } else {
     setWindowVisible(mainWindow);
   }
+});
+
+app.on("second-instance", () => {
+  if (followWindow && !followWindow.isDestroyed() && followWindow.isVisible()) {
+    setWindowVisible(followWindow);
+    return;
+  }
+  if (!mainWindow || mainWindow.isDestroyed()) {
+    void createMainWindow();
+    return;
+  }
+  setWindowVisible(mainWindow);
 });
 
 process.on("SIGINT", () => {

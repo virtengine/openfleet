@@ -904,7 +904,17 @@ function App() {
     try {
       const d = await apiGet("voice/auth/" + provider + "/status");
       if (d.ok) {
-        setOauthAccounts((prev) => ({ ...prev, [provider]: { ...prev[provider], status: d.status || "idle", hasToken: !!d.hasToken, loading: false } }));
+        const connected = !!d.hasToken || d.status === "connected" || d.status === "complete";
+        setOauthAccounts((prev) => ({
+          ...prev,
+          [provider]: {
+            ...prev[provider],
+            status: connected ? "connected" : (d.status || "idle"),
+            hasToken: connected,
+            loading: false,
+            result: d.result || null,
+          },
+        }));
       }
     } catch { /* best-effort */ }
   };
@@ -938,10 +948,28 @@ function App() {
         // Stop after 5 minutes
         setTimeout(() => clearInterval(poll), 300000);
       } else {
-        setOauthAccounts((prev) => ({ ...prev, [provider]: { ...prev[provider], loading: false } }));
+        setOauthAccounts((prev) => ({
+          ...prev,
+          [provider]: {
+            ...prev[provider],
+            status: "error",
+            hasToken: false,
+            loading: false,
+            result: d?.error ? { error: d.error } : prev[provider]?.result || null,
+          },
+        }));
       }
-    } catch {
-      setOauthAccounts((prev) => ({ ...prev, [provider]: { ...prev[provider], loading: false } }));
+    } catch (err) {
+      setOauthAccounts((prev) => ({
+        ...prev,
+        [provider]: {
+          ...prev[provider],
+          status: "error",
+          hasToken: false,
+          loading: false,
+          result: { error: err?.message || "OAuth start failed" },
+        },
+      }));
     }
   };
 
@@ -3618,10 +3646,10 @@ function App() {
                         <option value="apiKey">API Key</option>
                         <option value="oauth">OAuth (Connected Account)</option>
                       </select>
-                      ${ep.authSource === "oauth" && oauthAccounts[ep.provider]?.status === "connected" && html`
+                      ${ep.authSource === "oauth" && (oauthAccounts[ep.provider]?.status === "connected" || oauthAccounts[ep.provider]?.status === "complete" || oauthAccounts[ep.provider]?.hasToken) && html`
                         <div class="hint" style="color:var(--success,#22c55e)">✓ Connected — will use your ${ep.provider === "openai" ? "OpenAI" : ep.provider === "claude" ? "Claude" : "Gemini"} account.</div>
                       `}
-                      ${ep.authSource === "oauth" && oauthAccounts[ep.provider]?.status !== "connected" && html`
+                      ${ep.authSource === "oauth" && !(oauthAccounts[ep.provider]?.status === "connected" || oauthAccounts[ep.provider]?.status === "complete" || oauthAccounts[ep.provider]?.hasToken) && html`
                         <div class="hint" style="color:var(--warning,#f59e0b)">⚠ Not connected. Sign in via "Connected Accounts" above to use OAuth.</div>
                       `}
                     </div>
@@ -3644,7 +3672,7 @@ function App() {
                     <div class="form-group">
                       <label>Deployment</label>
                       <input type="text" value=${ep.deployment} oninput=${(e) => updateVoiceEndpoint(i, "deployment", e.target.value)} placeholder="gpt-realtime-1.5" />
-                      <div class="hint">GA models (gpt-realtime-1.5, gpt-realtime) use /openai/v1/ endpoints automatically.</div>
+                      <div class="hint">Connectivity tests use the endpoint URL exactly as entered. If you provide only a host, Bosun appends the default Azure OpenAI probe route.</div>
                     </div>
                   `}
                   ${ep.provider === "custom" && html`

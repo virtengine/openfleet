@@ -36,6 +36,7 @@ export const SCOPE_LOCAL = "local";
  * @property {string}  description        Longer description for tooltips/help.
  * @property {string}  defaultAccelerator Default Electron accelerator string.
  * @property {string}  scope              "global" | "local"
+ * @property {boolean} [globalEligible]   If true the user can opt this local shortcut in as a global one.
  * @property {string}  [group]            Optional display grouping.
  */
 
@@ -61,26 +62,35 @@ export const DEFAULT_SHORTCUTS = [
   {
     id: "bosun.voice.call",
     label: "Start Voice Call",
-    description: "Open the voice companion and start a voice call",
+    description:
+      "Open the voice companion and start a voice call. " +
+      "Only fires when Bosun is focused unless 'Enable as global shortcut' is on.",
     defaultAccelerator: "CmdOrCtrl+Shift+Space",
-    scope: SCOPE_GLOBAL,
-    group: "Global",
+    scope: SCOPE_LOCAL,
+    globalEligible: true,
+    group: "Voice",
   },
   {
     id: "bosun.voice.video",
     label: "Start Video Call",
-    description: "Open the voice companion and start a video call",
+    description:
+      "Open the voice companion and start a video call. " +
+      "Only fires when Bosun is focused unless 'Enable as global shortcut' is on.",
     defaultAccelerator: "CmdOrCtrl+Shift+K",
-    scope: SCOPE_GLOBAL,
-    group: "Global",
+    scope: SCOPE_LOCAL,
+    globalEligible: true,
+    group: "Voice",
   },
   {
     id: "bosun.voice.toggle",
     label: "Toggle Voice Companion",
-    description: "Show or hide the floating voice companion window",
+    description:
+      "Show or hide the floating voice companion window. " +
+      "Only fires when Bosun is focused unless 'Enable as global shortcut' is on.",
     defaultAccelerator: "CmdOrCtrl+Shift+V",
-    scope: SCOPE_GLOBAL,
-    group: "Global",
+    scope: SCOPE_LOCAL,
+    globalEligible: true,
+    group: "Voice",
   },
 
   // ── Local ─ menu accelerators, only when app is focused ───────────────────
@@ -217,6 +227,12 @@ const actionHandlers = new Map();
  */
 let customizations = new Map();
 
+/**
+ * Per-shortcut global-scope overrides for globalEligible shortcuts.
+ * Map<id, boolean> — true = user has opted this local shortcut in as global.
+ */
+let scopeOverrides = new Map();
+
 /** Path to the JSON config file. */
 let configFilePath = null;
 
@@ -233,7 +249,9 @@ let globalsActive = false;
  */
 export function initShortcuts(configDir) {
   configFilePath = resolve(configDir, "desktop-shortcuts.json");
-  customizations = _loadCustomizations(configFilePath);
+  const loaded = _loadPersisted(configFilePath);
+  customizations = loaded.customizations;
+  scopeOverrides = loaded.scopeOverrides;
 }
 
 /**
@@ -248,7 +266,24 @@ export function onShortcut(id, handler) {
 }
 
 /**
- * Register all SCOPE_GLOBAL shortcuts with Electron.
+ * Return true when a shortcut should currently be registered as a global.
+ * A shortcut qualifies if:
+ *  - Its catalog scope is SCOPE_GLOBAL, OR
+ *  - It is globalEligible AND the user has opted it in via setShortcutScope().
+ *
+ * @param {ShortcutDef} def
+ * @returns {boolean}
+ */
+function _isRegisteredGlobal(def) {
+  if (def.scope === SCOPE_GLOBAL) return true;
+  if (def.globalEligible && scopeOverrides.get(def.id) === true) return true;
+  return false;
+}
+
+/**
+ * Register all global shortcuts with Electron.
+ * Includes catalog-scope SCOPE_GLOBAL entries + any globalEligible shortcuts
+ * that the user has opted in to fire system-wide.
  * Silently skips shortcuts that have no registered action handler.
  * Safe to call multiple times — old registrations are cleared first.
  */
@@ -257,7 +292,7 @@ export function registerGlobalShortcuts() {
   _unregisterAllGlobals();
 
   for (const def of DEFAULT_SHORTCUTS) {
-    if (def.scope !== SCOPE_GLOBAL) continue;
+    if (!_isRegisteredGlobal(def)) continue;
 
     const accelerator = getEffectiveAccelerator(def.id);
     if (!accelerator) continue; // disabled by user
@@ -311,6 +346,15 @@ export function getAllShortcuts() {
         ? (overrideValue ?? null)
         : def.defaultAccelerator,
       scope: def.scope,
+      /** Whether this shortcut can be opted in as a system-wide global. */
+      globalEligible: def.globalEligible ?? false,
+      /**
+       * Whether this globalEligible shortcut is currently firing system-wide.
+       * Always true for catalog-scope SCOPE_GLOBAL shortcuts.
+       */
+      isGlobalEnabled:
+        def.scope === SCOPE_GLOBAL ||
+        (def.globalEligible === true && scopeOverrides.get(def.id) === true),
       group: def.group ?? "",
       isCustomized: hasOverride && overrideValue !== undefined,
       isDisabled: hasOverride && overrideValue === null,
@@ -342,6 +386,35 @@ export function getEffectiveAccelerator(id) {
  * @param   {string|null} accelerator  Electron accelerator string, or null to disable.
  * @returns {{ ok: boolean, error?: string }}
  */
+/**
+ * Enable or disable global (system-wide) firing for a globalEligible shortcut.
+ * Has no effect on shortcuts that are catalog-level SCOPE_GLOBAL.
+ *
+ * @param   {string}  id
+ * @param   {boolean} isGlobal
+ * @returns {{ ok: boolean, error?: string }}
+ */
+export function setShortcutScope(id, isGlobal) {
+  const def = DEFAULT_SHORTCUTS.find((d) => d.id === id);
+  if (!def) return { ok: false, error: `Unknown shortcut: ${id}` };
+  if (!def.globalEligible) {
+    return { ok: false, error: `Shortcut '${id}' does not support scope override.` };
+  }
+
+  if (isGlobal) {
+    scopeOverrides.set(id, true);
+  } else {
+    scopeOverrides.delete(id);
+  }
+
+  _savePersisted(configFilePath, customizations, scopeOverrides);
+
+  // Re-apply so the shortcut is registered / unregistered immediately.
+  if (globalsActive) registerGlobalShortcuts();
+
+  return { ok: true };
+}
+
 export function setShortcut(id, accelerator) {
   const def = DEFAULT_SHORTCUTS.find((d) => d.id === id);
   if (!def) return { ok: false, error: `Unknown shortcut: ${id}` };
@@ -362,10 +435,10 @@ export function setShortcut(id, accelerator) {
   }
 
   customizations.set(id, accelerator === undefined ? null : accelerator);
-  _saveCustomizations(configFilePath, customizations);
+  _savePersisted(configFilePath, customizations, scopeOverrides);
 
-  // Re-apply globals when a global shortcut is changed.
-  if (def.scope === SCOPE_GLOBAL && globalsActive) {
+  // Re-apply globals when a global/globally-enabled shortcut is changed.
+  if (_isRegisteredGlobal(def) && globalsActive) {
     registerGlobalShortcuts();
   }
 
@@ -383,9 +456,9 @@ export function resetShortcut(id) {
   if (!def) return { ok: false, error: `Unknown shortcut: ${id}` };
 
   customizations.delete(id);
-  _saveCustomizations(configFilePath, customizations);
+  _savePersisted(configFilePath, customizations, scopeOverrides);
 
-  if (def.scope === SCOPE_GLOBAL && globalsActive) {
+  if (_isRegisteredGlobal(def) && globalsActive) {
     registerGlobalShortcuts();
   }
 
@@ -399,7 +472,8 @@ export function resetShortcut(id) {
  */
 export function resetAllShortcuts() {
   customizations.clear();
-  _saveCustomizations(configFilePath, customizations);
+  scopeOverrides.clear();
+  _savePersisted(configFilePath, customizations, scopeOverrides);
 
   if (globalsActive) registerGlobalShortcuts();
   return { ok: true };
@@ -409,7 +483,10 @@ export function resetAllShortcuts() {
 
 function _unregisterAllGlobals() {
   for (const def of DEFAULT_SHORTCUTS) {
-    if (def.scope !== SCOPE_GLOBAL) continue;
+    // Unregister any shortcut that was or could be registered as global.
+    // This covers catalog-level globals AND globalEligible shortcuts regardless
+    // of the current scopeOverride value (handles transitions cleanly).
+    if (def.scope !== SCOPE_GLOBAL && !def.globalEligible) continue;
 
     // Unregister both the currently effective AND the default to be safe
     // when an override is being replaced.
@@ -454,25 +531,65 @@ function _normalizeAcc(acc) {
   return String(acc).toLowerCase().replace(/\s+/g, "");
 }
 
-function _loadCustomizations(filePath) {
+/**
+ * Load both accelerator customizations and scope overrides from disk.
+ * File format:
+ * {
+ *   "shortcut.id": "Accelerator" | null,
+ *   "_scopes": { "shortcut.id": true }
+ * }
+ * The "_scopes" key is reserved and never treated as a shortcut ID.
+ *
+ * @param {string} filePath
+ * @returns {{ customizations: Map<string, string|null>, scopeOverrides: Map<string, boolean> }}
+ */
+function _loadPersisted(filePath) {
   try {
-    if (!existsSync(filePath)) return new Map();
+    if (!existsSync(filePath)) {
+      return { customizations: new Map(), scopeOverrides: new Map() };
+    }
     const raw = JSON.parse(readFileSync(filePath, "utf8"));
-    if (!raw || typeof raw !== "object" || Array.isArray(raw)) return new Map();
-    return new Map(
-      Object.entries(raw).map(([k, v]) => [k, v === null ? null : String(v)]),
+    if (!raw || typeof raw !== "object" || Array.isArray(raw)) {
+      return { customizations: new Map(), scopeOverrides: new Map() };
+    }
+
+    const scopesRaw = raw._scopes;
+    const scopeOverridesMap = new Map(
+      scopesRaw && typeof scopesRaw === "object" && !Array.isArray(scopesRaw)
+        ? Object.entries(scopesRaw)
+            .filter(([, v]) => v === true)
+            .map(([k]) => [k, true])
+        : [],
     );
+
+    const customizationsMap = new Map(
+      Object.entries(raw)
+        .filter(([k]) => k !== "_scopes")
+        .map(([k, v]) => [k, v === null ? null : String(v)]),
+    );
+
+    return { customizations: customizationsMap, scopeOverrides: scopeOverridesMap };
   } catch {
-    return new Map();
+    return { customizations: new Map(), scopeOverrides: new Map() };
   }
 }
 
-function _saveCustomizations(filePath, map) {
+/**
+ * Persist both accelerator customizations and scope overrides to disk.
+ *
+ * @param {string|null}             filePath
+ * @param {Map<string, string|null>} customizationsMap
+ * @param {Map<string, boolean>}     scopeOverridesMap
+ */
+function _savePersisted(filePath, customizationsMap, scopeOverridesMap) {
   if (!filePath) return;
   try {
     const dir = dirname(filePath);
     if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
-    const obj = Object.fromEntries(map);
+    const obj = Object.fromEntries(customizationsMap);
+    if (scopeOverridesMap.size > 0) {
+      obj._scopes = Object.fromEntries(scopeOverridesMap);
+    }
     writeFileSync(filePath, JSON.stringify(obj, null, 2), "utf8");
   } catch (err) {
     console.warn("[shortcuts] failed to save:", err?.message || err);

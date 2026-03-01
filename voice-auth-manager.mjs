@@ -175,6 +175,48 @@ export function getVoiceAuthStatePath() {
 //
 // All use OAuth 2.0 Authorization Code + PKCE (RFC 7636) with no client secret
 // (public clients per RFC 8252 §8.4).
+const CLAUDE_DEFAULT_SCOPES = [
+  "org:create_api_key",
+  "user:profile",
+  "user:inference",
+  "user:sessions:claude_code",
+  "user:mcp_servers",
+].join(" ");
+
+const OPENAI_DEFAULT_SCOPES = [
+  "openid",
+  "profile",
+  "email",
+  "offline_access",
+  "api.model.read",
+].join(" ");
+
+function normalizeScopeList(scopes) {
+  return Array.from(
+    new Set(
+      String(scopes || "")
+        .split(/\s+/)
+        .map((s) => s.trim())
+        .filter(Boolean),
+    ),
+  ).join(" ");
+}
+
+function envOrDefault(name, fallback = "") {
+  const raw = process.env[name];
+  const value = String(raw ?? "").trim();
+  if (!value) return fallback;
+  const normalized = value.toLowerCase();
+  if (normalized === "undefined" || normalized === "null") return fallback;
+  return value;
+}
+
+const GEMINI_DEFAULT_SCOPES = [
+  "https://www.googleapis.com/auth/cloud-platform",
+  "https://www.googleapis.com/auth/userinfo.email",
+  "https://www.googleapis.com/auth/userinfo.profile",
+].join(" ");
+
 const OAUTH_PROVIDERS = {
   openai: {
     clientId: "app_EMoamEEZ73f0CkXaXp7hrann",
@@ -182,7 +224,11 @@ const OAUTH_PROVIDERS = {
     tokenUrl: "https://auth.openai.com/oauth/token",
     redirectUri: "http://localhost:1455/auth/callback",
     port: 1455,
-    scopes: "openid profile email offline_access",
+    // OpenAI's current public OAuth client allows OIDC-style scopes.
+    // Keep an override for custom/private clients that support additional scopes.
+    scopes: normalizeScopeList(
+      process.env.BOSUN_OPENAI_OAUTH_SCOPES?.trim() || OPENAI_DEFAULT_SCOPES,
+    ),
     extraParams: {
       id_token_add_organizations: "true",
       codex_cli_simplified_flow: "true",
@@ -190,32 +236,33 @@ const OAUTH_PROVIDERS = {
     accentColor: "#10a37f",
   },
   claude: {
-    // Claude Code public client — same one used by `claude auth login`
-    clientId: "9d1c250a-e61b-44d9-88ed-5944d1962f5e",
-    authorizeUrl: "https://claude.ai/oauth/authorize",
-    tokenUrl: "https://console.anthropic.com/v1/oauth/token",
+    // Claude Code official OAuth client + scopes (Anthropic CLI parity).
+    clientId: envOrDefault("BOSUN_CLAUDE_OAUTH_CLIENT_ID")
+      || "9d1c250a-e61b-44d9-88ed-5944d1962f5e",
+    authorizeUrl: envOrDefault("BOSUN_CLAUDE_OAUTH_AUTHORIZE_URL")
+      || "https://platform.claude.com/oauth/authorize",
+    tokenUrl: envOrDefault("BOSUN_CLAUDE_OAUTH_TOKEN_URL")
+      || "https://platform.claude.com/v1/oauth/token",
     redirectUri: "http://localhost:10001/auth/callback",
     port: 10001,
-    // Claude's OAuth server does NOT support OIDC scopes (openid, profile, etc.).
-    // Empty scope string — the token inherits the user's default API permissions.
-    scopes: "",
+    // Claude requires explicit scopes. Keep env override for emergency rotation.
+    scopes: envOrDefault("BOSUN_CLAUDE_OAUTH_SCOPES") || CLAUDE_DEFAULT_SCOPES,
     extraParams: {},
     accentColor: "#d97706",
   },
   gemini: {
-    // Gemini CLI public client (google-gemini/gemini-cli open-source)
-    clientId: "681255809395-ets0jcnv5ak5mca0r35k1ofb3aqrdh28.apps.googleusercontent.com",
+    // Gemini CLI OAuth client (google-gemini/gemini-cli-core parity).
+    // Set BOSUN_GEMINI_OAUTH_CLIENT_ID / BOSUN_GEMINI_OAUTH_CLIENT_SECRET in
+    // your .env, or use the well-known public credentials from the gemini-cli
+    // open-source repo (see .env.example for guidance).
+    clientId: envOrDefault("BOSUN_GEMINI_OAUTH_CLIENT_ID"),
+    clientSecret: envOrDefault("BOSUN_GEMINI_OAUTH_CLIENT_SECRET"),
     authorizeUrl: "https://accounts.google.com/o/oauth2/v2/auth",
     tokenUrl: "https://oauth2.googleapis.com/token",
-    redirectUri: "http://localhost:10002/auth/callback",
+    // Google recommends loopback IP literals for local OAuth callbacks.
+    redirectUri: "http://127.0.0.1:10002/auth/callback",
     port: 10002,
-    scopes: [
-      "https://www.googleapis.com/auth/generative-language",
-      "https://www.googleapis.com/auth/cloud-platform",
-      "openid",
-      "email",
-      "profile",
-    ].join(" "),
+    scopes: envOrDefault("BOSUN_GEMINI_OAUTH_SCOPES") || GEMINI_DEFAULT_SCOPES,
     extraParams: {
       // Offline access (refresh token) + force consent screen to re-issue refresh_token
       access_type: "offline",
@@ -252,6 +299,7 @@ async function _exchangeCode(code, codeVerifier, cfg) {
     redirect_uri: cfg.redirectUri,
     code_verifier: codeVerifier,
   });
+  if (cfg.clientSecret) params.set("client_secret", cfg.clientSecret);
   const res = await fetch(cfg.tokenUrl, {
     method: "POST",
     headers: { "Content-Type": "application/x-www-form-urlencoded" },
@@ -289,9 +337,12 @@ function _createCallbackServer(provider, cfg, expectedState, codeVerifier) {
     const pending = _providerPendingLogin.get(provider);
 
     if (error) {
+      const providerHint = provider === "openai" && /invalid_scope/i.test(String(error))
+        ? "<p><strong>Hint:</strong> OpenAI rejected one or more requested OAuth scopes. Reset to default OIDC scopes (openid profile email offline_access) and reconnect.</p>"
+        : "";
       res.writeHead(200, { "Content-Type": "text/html; charset=utf-8" });
       res.end(`<!DOCTYPE html><html><body style="font-family:system-ui;padding:40px">
-        <h2>Sign-in failed</h2><p>${errorDescription}</p><p>You can close this window.</p>
+        <h2>Sign-in failed</h2><p>${errorDescription}</p>${providerHint}<p>You can close this window.</p>
       </body></html>`);
       if (pending) { pending.status = "error"; pending.result = { error: errorDescription }; }
       setTimeout(() => server.close(), 500);
@@ -340,7 +391,10 @@ function _createCallbackServer(provider, cfg, expectedState, codeVerifier) {
     if (p?.status === "pending") { p.status = "error"; p.result = { error: err.message }; }
   });
 
-  server.listen(port, "localhost");
+  // Bind explicitly to 127.0.0.1 (IPv4) rather than "localhost", which Node.js
+  // resolves to ::1 (IPv6) on Windows — causing connection refused when the
+  // browser follows the OAuth redirect to http://localhost:<port>/auth/callback.
+  server.listen(port, "127.0.0.1");
   return server;
 }
 
@@ -358,9 +412,15 @@ function _openBrowser(url) {
 
 // ── Generic provider login functions ────────────────────────────────────────
 
-function _startProviderLogin(provider) {
+function _startProviderLogin(provider, options = {}) {
   const cfg = OAUTH_PROVIDERS[provider];
   if (!cfg) throw new Error(`Unknown OAuth provider: ${provider}`);
+  if (!cfg.clientId || String(cfg.clientId).trim().length < 8) {
+    throw new Error(
+      `OAuth client_id is missing for provider "${provider}". ` +
+      `Set the relevant BOSUN_*_OAUTH_CLIENT_ID env var or restore defaults in voice-auth-manager.mjs.`,
+    );
+  }
 
   // Cancel any existing login for this provider
   _cancelProviderLogin(provider);
@@ -392,7 +452,9 @@ function _startProviderLogin(provider) {
     startedAt: Date.now(),
   });
 
-  try { _openBrowser(authUrl); } catch { /* ignore */ }
+  if (options.openBrowser !== false) {
+    try { _openBrowser(authUrl); } catch { /* ignore */ }
+  }
 
   return { authUrl };
 }
@@ -451,6 +513,7 @@ async function _refreshProviderToken(provider) {
     client_id: cfg.clientId,
     ...(cfg.extraParams?.access_type ? { access_type: cfg.extraParams.access_type } : {}),
   });
+  if (cfg.clientSecret) params.set("client_secret", cfg.clientSecret);
 
   const res = await fetch(cfg.tokenUrl, {
     method: "POST",
@@ -481,7 +544,7 @@ async function _refreshProviderToken(provider) {
 // ── Public API — OpenAI ──────────────────────────────────────────────────────
 
 /** Start the OpenAI Codex OAuth PKCE flow (same as Codex CLI / ChatGPT app). */
-export function startOpenAICodexLogin()    { return _startProviderLogin("openai"); }
+export function startOpenAICodexLogin(options)    { return _startProviderLogin("openai", options); }
 /** Poll the status of an in-progress OpenAI login. */
 export function getOpenAILoginStatus()     { return _getProviderLoginStatus("openai"); }
 /** Cancel an in-progress OpenAI login. */
@@ -494,7 +557,7 @@ export async function refreshOpenAICodexToken() { return _refreshProviderToken("
 // ── Public API — Claude ──────────────────────────────────────────────────────
 
 /** Start the Anthropic Claude OAuth PKCE flow (same as `claude auth login`). */
-export function startClaudeLogin()         { return _startProviderLogin("claude"); }
+export function startClaudeLogin(options)         { return _startProviderLogin("claude", options); }
 /** Poll the status of an in-progress Claude login. */
 export function getClaudeLoginStatus()     { return _getProviderLoginStatus("claude"); }
 /** Cancel an in-progress Claude login. */
@@ -507,7 +570,7 @@ export async function refreshClaudeToken() { return _refreshProviderToken("claud
 // ── Public API — Google Gemini ───────────────────────────────────────────────
 
 /** Start the Google Gemini OAuth PKCE flow (same as gemini-cli `gemini auth login`). */
-export function startGeminiLogin()         { return _startProviderLogin("gemini"); }
+export function startGeminiLogin(options)         { return _startProviderLogin("gemini", options); }
 /** Poll the status of an in-progress Gemini login. */
 export function getGeminiLoginStatus()     { return _getProviderLoginStatus("gemini"); }
 /** Cancel an in-progress Gemini login. */

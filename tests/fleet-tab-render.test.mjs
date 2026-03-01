@@ -37,7 +37,9 @@ for (const { relPath, source } of sourceFiles) {
       // entries reference directly (which would fire on every render).
       // It should depend on a primitive fingerprint string.
       expect(source).toContain("entriesFingerprint");
-      expect(source).toContain("[entriesFingerprint]");
+      // The dep array must START with the fingerprint primitive (other stable
+      // primitives like sessionScope may also appear in the array).
+      expect(source).toMatch(/\[entriesFingerprint\b/);
       // Old pattern must be gone:
       expect(source).not.toContain("[entries, selectedSlotKey]");
     });

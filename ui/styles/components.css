@@ -3649,6 +3649,65 @@ select.input {
   gap: 16px;
 }
 
+.fleet-fullview-card {
+  width: 100%;
+}
+
+.fleet-fullview {
+  display: grid;
+  grid-template-columns: minmax(260px, 340px) minmax(0, 1fr);
+  gap: 12px;
+  min-height: 0;
+}
+
+.fleet-slot-rail {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  min-height: 0;
+}
+
+.fleet-session-scope {
+  display: flex;
+  gap: 6px;
+  margin-bottom: 2px;
+}
+
+.fleet-session-scope-btn {
+  flex: 1;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: var(--bg-secondary);
+  color: var(--text-secondary);
+  font-size: 12px;
+  font-weight: 600;
+  padding: 6px 10px;
+  cursor: pointer;
+}
+
+.fleet-session-scope-btn.active {
+  color: var(--text-primary);
+  border-color: color-mix(in srgb, var(--color-accent, #3b82f6) 45%, var(--border));
+  background: color-mix(in srgb, var(--color-accent, #3b82f6) 16%, var(--bg-secondary));
+}
+
+.fleet-slot-item {
+  width: 100%;
+  text-align: left;
+}
+
+.fleet-slot-item.history {
+  opacity: 0.96;
+}
+
+.fleet-session-detail {
+  min-height: 62vh;
+}
+
+.fleet-session-body {
+  min-height: 0;
+}
+
 .fleet-overview-card {
   /* clean — no gradient */
 }
@@ -3766,6 +3825,12 @@ select.input {
 @media (min-width: 900px) {
   .fleet-layout {
     grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
+@media (max-width: 980px) {
+  .fleet-fullview {
+    grid-template-columns: 1fr;
   }
 }
 

@@ -742,7 +742,6 @@ async function handleVendor(req, res, url) {
 }
 const statusPath = resolve(repoRoot, ".cache", "ve-orchestrator-status.json");
 const logsDir = resolve(__dirname, "logs");
-const monitorMonitorLogsDir = resolve(repoRoot, ".cache", "monitor-monitor-logs");
 const agentLogsDirCandidates = [
   resolve(__dirname, "logs", "agents"),
   resolve(repoRoot, ".cache", "agent-logs"),
@@ -1681,6 +1680,8 @@ let uiDeps = {};
  * agent works even when the UI server starts standalone.
  */
 let _fallbackExecPrimaryPrompt = null;
+/** Track in-flight chat turns so /api/sessions/:id/stop can abort them. */
+const sessionRunAbortControllers = new Map();
 async function resolveExecPrimaryPrompt() {
   if (typeof uiDeps.execPrimaryPrompt === "function") return uiDeps.execPrimaryPrompt;
   if (_fallbackExecPrimaryPrompt) return _fallbackExecPrimaryPrompt;
@@ -4335,16 +4336,17 @@ function checkSessionToken(req) {
 /**
  * Check whether the request carries a valid desktop API key.
  *
- * The Electron main process sets BOSUN_DESKTOP_API_KEY in process.env before
- * starting (or connecting to) the UI server. When that env var is present any
- * request bearing the matching Bearer token is treated as fully authenticated —
- * no session cookie or Telegram initData required.
+ * Primary source is BOSUN_DESKTOP_API_KEY from process.env. If that is missing
+ * (for example when connecting to an already-running daemon), we also load
+ * {configDir}/desktop-api-key.json so long-lived desktop auth still works.
+ * Any request bearing the matching Bearer token is treated as fully
+ * authenticated — no session cookie or Telegram initData required.
  *
  * This allows the desktop app to connect to a separately-running daemon server
  * without needing to share the TTL-based session token.
  */
 function checkDesktopApiKey(req) {
-  const expected = (process.env.BOSUN_DESKTOP_API_KEY || "").trim();
+  const expected = getExpectedDesktopApiKey();
   if (!expected) return false;
   const authHeader = req.headers.authorization || "";
   if (!authHeader.startsWith("Bearer ")) return false;
@@ -4383,6 +4385,54 @@ function getHeaderString(value) {
   return String(value || "");
 }
 
+const DESKTOP_API_KEY_FILE = "desktop-api-key.json";
+const DESKTOP_API_KEY_CACHE_TTL_MS = 5_000;
+let _desktopApiKeyCache = {
+  key: "",
+  configDir: "",
+  loadedAt: 0,
+};
+
+function readDesktopApiKeyFromConfig(configDir) {
+  const dir = String(configDir || "").trim();
+  if (!dir) return "";
+  const filePath = resolve(dir, DESKTOP_API_KEY_FILE);
+  if (!existsSync(filePath)) return "";
+  try {
+    const payload = JSON.parse(readFileSync(filePath, "utf8"));
+    const key = String(payload?.key || "").trim();
+    if (!key.startsWith("bosun_desktop_")) return "";
+    return key;
+  } catch {
+    return "";
+  }
+}
+
+function getExpectedDesktopApiKey() {
+  const fromEnv = String(process.env.BOSUN_DESKTOP_API_KEY || "").trim();
+  if (fromEnv) return fromEnv;
+
+  const configDir = resolveUiConfigDir();
+  if (!configDir) return "";
+
+  const now = Date.now();
+  if (
+    _desktopApiKeyCache.key
+    && _desktopApiKeyCache.configDir === configDir
+    && (now - _desktopApiKeyCache.loadedAt) < DESKTOP_API_KEY_CACHE_TTL_MS
+  ) {
+    return _desktopApiKeyCache.key;
+  }
+
+  const keyFromFile = readDesktopApiKeyFromConfig(configDir);
+  _desktopApiKeyCache = {
+    key: keyFromFile,
+    configDir,
+    loadedAt: now,
+  };
+  return keyFromFile;
+}
+
 async function requireAuth(req) {
   if (isAllowUnsafe()) return { ok: true, source: "unsafe", issueSessionCookie: false };
   // Desktop Electron API key — non-expiring, set via BOSUN_DESKTOP_API_KEY env
@@ -4411,7 +4461,7 @@ async function requireAuth(req) {
 function requireWsAuth(req, url) {
   if (isAllowUnsafe()) return true;
   // Desktop Electron API key (query param: desktopKey=...)
-  const desktopKey = (process.env.BOSUN_DESKTOP_API_KEY || "").trim();
+  const desktopKey = getExpectedDesktopApiKey();
   if (desktopKey) {
     const qDesktopKey = url.searchParams.get("desktopKey") || "";
     if (qDesktopKey) {
@@ -4534,14 +4584,7 @@ async function resolvePreferredSystemLogPath() {
   );
   const nonDaemonEntries = rootLogEntries.filter((entry) => entry.name !== "daemon.log");
 
-  const monitorPromptEntries = await listDirFilesWithMtime(
-    monitorMonitorLogsDir,
-    (name) =>
-      name.startsWith("monitor-monitor-") &&
-      (name.endsWith(".prompt.md") || name.endsWith(".md")),
-  );
-
-  const preferredEntries = [...nonDaemonEntries, ...monitorPromptEntries].sort(
+  const preferredEntries = [...nonDaemonEntries].sort(
     (a, b) => b.mtimeMs - a.mtimeMs,
   );
   if (preferredEntries.length > 0) return preferredEntries[0].path;
@@ -8982,6 +9025,42 @@ async function handleApi(req, res, url) {
       return;
     }
 
+    if (action === "stop" && req.method === "POST") {
+      try {
+        const tracker = getSessionTracker();
+        const session = tracker.getSessionById(sessionId);
+        if (!session) {
+          jsonResponse(res, 404, { ok: false, error: "Session not found" });
+          return;
+        }
+
+        const abortController = sessionRunAbortControllers.get(sessionId);
+        const wasRunning = Boolean(abortController && !abortController.signal?.aborted);
+        if (wasRunning) {
+          try {
+            abortController.abort("user_stop");
+          } catch {
+            /* best effort */
+          }
+          tracker.recordEvent(sessionId, {
+            role: "system",
+            type: "system",
+            content: "Stop requested. Cancelling current agent turn...",
+            timestamp: new Date().toISOString(),
+          });
+        }
+
+        jsonResponse(res, 200, { ok: true, stopped: wasRunning });
+        broadcastUiEvent(["sessions", "agents"], "invalidate", {
+          reason: wasRunning ? "session-stop-requested" : "session-stop-noop",
+          sessionId,
+        });
+      } catch (err) {
+        jsonResponse(res, 500, { ok: false, error: err.message });
+      }
+      return;
+    }
+
     if (action === "message" && req.method === "POST") {
       try {
         const tracker = getSessionTracker();
@@ -9057,6 +9136,8 @@ async function handleApi(req, res, url) {
           // Fire-and-forget: run agent asynchronously so the request handler
           // doesn't block and the agent doesn't appear "busy" to subsequent
           // messages from chat, telegram, portal, or any other source.
+          const abortController = new AbortController();
+          sessionRunAbortControllers.set(sessionId, abortController);
           exec(messageContent, {
             sessionId,
             sessionType: "primary",
@@ -9068,12 +9149,31 @@ async function handleApi(req, res, url) {
             attachments,
             attachmentsAppended,
             onEvent: streamOnEvent,
+            abortController,
           }).then(() => {
             // Mark session as completed once the agent finishes — prevents
             // sessions from staying "active" forever and causing session bloat.
             tracker.updateSessionStatus(sessionId, "completed");
             broadcastUiEvent(["sessions"], "invalidate", { reason: "agent-response", sessionId });
           }).catch((execErr) => {
+            const wasAborted =
+              abortController.signal.aborted ||
+              execErr?.name === "AbortError" ||
+              /abort|cancel|stop/i.test(String(execErr?.message || ""));
+            if (wasAborted) {
+              tracker.recordEvent(sessionId, {
+                role: "system",
+                type: "system",
+                content: "Agent turn stopped.",
+                timestamp: new Date().toISOString(),
+              });
+              tracker.updateSessionStatus(sessionId, "completed");
+              broadcastUiEvent(["sessions"], "invalidate", {
+                reason: "agent-stopped",
+                sessionId,
+              });
+              return;
+            }
             // Record error as system message so user sees feedback
             tracker.recordEvent(sessionId, {
               role: "system",
@@ -9083,6 +9183,15 @@ async function handleApi(req, res, url) {
             });
             tracker.updateSessionStatus(sessionId, "failed");
             broadcastUiEvent(["sessions"], "invalidate", { reason: "agent-error", sessionId });
+          }).finally(() => {
+            // Clear only if this turn still owns the session abort controller.
+            if (sessionRunAbortControllers.get(sessionId) === abortController) {
+              sessionRunAbortControllers.delete(sessionId);
+            }
+            broadcastUiEvent(["agents"], "invalidate", {
+              reason: "session-turn-finished",
+              sessionId,
+            });
           });
         } else {
           // No agent available — record user event and notify user
@@ -9400,16 +9509,31 @@ async function handleApi(req, res, url) {
             jsonResponse(res, 400, { ok: false, error: "Azure endpoint URL is required" });
             return;
           }
-          // Strip path suffix so users can paste full URLs without double-path 404s.
-          let base = azureEndpoint.replace(/\/+$/, "");
-          try { const u = new URL(base); base = `${u.protocol}//${u.host}`; } catch { /* keep as-is */ }
+          // Endpoint URL is authoritative: preserve user-provided path/host exactly.
+          // Only append default OpenAI probe routes when endpoint is just a bare host.
+          const rawEndpoint = String(azureEndpoint || "").trim();
+          const base = rawEndpoint.replace(/\/+$/, "");
           // Single-deployment GET only requires Cognitive Services User role.
           // Use the GA api-version (2024-10-21) for broad compatibility across
           // classic Azure OpenAI and Azure AI Foundry resources.
           const dep = String(deployment || "").trim();
-          testUrl = dep
-            ? `${base}/openai/deployments/${encodeURIComponent(dep)}?api-version=2024-10-21`
-            : `${base}/openai/models?api-version=2024-10-21`;
+          let endpointHasCustomPath = false;
+          try {
+            const parsed = new URL(base);
+            const p = String(parsed.pathname || "").trim();
+            endpointHasCustomPath = Boolean(p && p !== "/");
+          } catch {
+            endpointHasCustomPath = false;
+          }
+          if (endpointHasCustomPath) {
+            // User supplied a concrete URL (possibly including /openai/... and query).
+            // Respect it as final and issue the probe directly.
+            testUrl = base;
+          } else {
+            testUrl = dep
+              ? `${base}/openai/deployments/${encodeURIComponent(dep)}?api-version=2024-10-21`
+              : `${base}/openai/models?api-version=2024-10-21`;
+          }
           if (apiKey) headers["api-key"] = apiKey;
           else {
             jsonResponse(res, 400, { ok: false, error: "Azure API key is required" });
@@ -9472,6 +9596,10 @@ async function handleApi(req, res, url) {
           const text = await resp.text().catch(() => "");
           let errMsg = `HTTP ${resp.status}`;
           try { const j = JSON.parse(text); errMsg = j.error?.message || j.error || errMsg; } catch (_) { /* ignore */ }
+          if (provider === "openai" && useOAuth && /missing scopes?/i.test(String(errMsg || ""))) {
+            const missing = String(errMsg || "").match(/Missing scopes?:\s*([A-Za-z0-9._:\s-]+)/i)?.[1]?.trim() || "required scopes";
+            errMsg = `OpenAI Connected Account token is missing scopes (${missing}). Sign out and reconnect OpenAI in Connected Accounts. Also verify role access: org Owner/Reader, project Owner/Member, and workspace RBAC API/dashboard permissions.`;
+          }
           // Friendly message when the deployment name itself is not found (key is fine)
           if (resp.status === 404 && deployment) {
             errMsg = `Deployment "${deployment}" not found — check deployment name in Azure AI Foundry`;
@@ -10302,7 +10430,7 @@ export async function startTelegramUiServer(options = {}) {
     // without depending on the TTL-based session token.
     const qDesktopKey = url.searchParams.get("desktopKey");
     if (qDesktopKey) {
-      const expectedDesktopKey = (process.env.BOSUN_DESKTOP_API_KEY || "").trim();
+      const expectedDesktopKey = getExpectedDesktopApiKey();
       if (expectedDesktopKey) {
         try {
           const a = Buffer.from(qDesktopKey);
