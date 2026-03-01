@@ -47,6 +47,13 @@ let trayMode = false;
 let startHidden = false;
 const DEFAULT_TELEGRAM_UI_PORT = 3080;
 
+// ── Workspace cache (module-scope — refreshed by fetchWorkspaces) ─────────────
+/** @type {{ id: string, name: string, [key: string]: unknown }[]} */
+let _cachedWorkspaces = [];
+let _cachedActiveWorkspaceId = /** @type {string|null} */ (null);
+let _workspaceCacheAt = 0;
+const WORKSPACE_CACHE_TTL_MS = 30_000;
+
 /**
  * Shorthand: returns the effective accelerator for a shortcut ID.
  * Used throughout buildAppMenu() and refreshTrayMenu() so the menu
@@ -235,32 +242,176 @@ function setWindowVisible(win) {
   win.focus();
 }
 
+// ── Workspace helpers ─────────────────────────────────────────────────────────
+
+/**
+ * Make an authenticated JSON request to the UI server.
+ * Returns the parsed response body, or null on error.
+ * @param {string} urlStr
+ * @param {{ method?: string, body?: string }} [opts]
+ */
+function uiServerRequest(urlStr, { method = "GET", body } = {}) {
+  return new Promise((resolve) => {
+    try {
+      const isHttps = urlStr.startsWith("https://");
+      const desktopKey = process.env.BOSUN_DESKTOP_API_KEY || "";
+      const headers = /** @type {Record<string, string>} */ ({
+        Authorization: `Bearer ${desktopKey}`,
+        "Content-Type": "application/json",
+      });
+      if (body) headers["Content-Length"] = String(Buffer.byteLength(body));
+      const req = (isHttps ? httpsRequest : httpRequest)(
+        urlStr,
+        { method, headers, timeout: 5000, rejectUnauthorized: false },
+        (res) => {
+          let buf = "";
+          res.setEncoding("utf8");
+          res.on("data", (chunk) => { buf += chunk; });
+          res.on("end", () => {
+            try { resolve(JSON.parse(buf)); }
+            catch { resolve(null); }
+          });
+        },
+      );
+      req.on("error", () => resolve(null));
+      req.on("timeout", () => { req.destroy(); resolve(null); });
+      if (body) req.write(body);
+      req.end();
+    } catch {
+      resolve(null);
+    }
+  });
+}
+
+/**
+ * Fetch workspace list from the UI server and update the module-scope cache.
+ * Respects a 30-second TTL to avoid hammering the server.
+ * @param {{ force?: boolean }} [opts]
+ */
+async function fetchWorkspaces({ force = false } = {}) {
+  if (!uiOrigin) return _cachedWorkspaces;
+  const now = Date.now();
+  if (!force && _workspaceCacheAt > 0 && now - _workspaceCacheAt < WORKSPACE_CACHE_TTL_MS) {
+    return _cachedWorkspaces;
+  }
+  const data = await uiServerRequest(`${uiOrigin}/api/workspaces`);
+  if (data?.ok && Array.isArray(data.data)) {
+    _cachedWorkspaces = data.data;
+    _cachedActiveWorkspaceId = data.activeId || null;
+    _workspaceCacheAt = Date.now();
+  }
+  return _cachedWorkspaces;
+}
+
+/**
+ * Switch the active workspace and refresh menus.
+ * @param {string} workspaceId
+ */
+async function switchWorkspace(workspaceId) {
+  if (!uiOrigin || !workspaceId) return;
+  const body = JSON.stringify({ workspaceId });
+  const data = await uiServerRequest(`${uiOrigin}/api/workspaces/active`, {
+    method: "POST",
+    body,
+  });
+  if (data?.ok) {
+    _cachedActiveWorkspaceId = workspaceId;
+    _workspaceCacheAt = 0; // force re-fetch next time
+  }
+  await fetchWorkspaces({ force: true });
+  Menu.setApplicationMenu(buildAppMenu());
+  refreshTrayMenu();
+  navigateMainWindow("/");
+}
+
+/**
+ * Build workspace submenu items from the module-scope cache (sync).
+ * @returns {Electron.MenuItemConstructorOptions[]}
+ */
+function buildWorkspaceSubmenu() {
+  /** @type {Electron.MenuItemConstructorOptions[]} */
+  const items = [];
+
+  if (_cachedWorkspaces.length === 0) {
+    items.push({ label: "Loading workspaces\u2026", enabled: false });
+  } else {
+    for (const ws of _cachedWorkspaces) {
+      const wsId = String(ws.id || "");
+      const wsName = String(ws.name || ws.id || "Untitled Workspace");
+      const isActive = wsId === _cachedActiveWorkspaceId;
+      items.push({
+        label: isActive ? `\u2713 ${wsName}` : wsName,
+        type: /** @type {const} */ ("normal"),
+        enabled: !isActive,
+        click: () => {
+          switchWorkspace(wsId).catch((err) =>
+            console.warn("[desktop] workspace switch failed:", err?.message || err),
+          );
+        },
+      });
+    }
+  }
+
+  items.push({ type: /** @type {const} */ ("separator") });
+  items.push({
+    label: "Manage Workspaces\u2026",
+    click: () => navigateMainWindow("/settings"),
+  });
+  items.push({
+    label: "Refresh List",
+    click: () => {
+      fetchWorkspaces({ force: true })
+        .then(() => {
+          Menu.setApplicationMenu(buildAppMenu());
+          refreshTrayMenu();
+        })
+        .catch(() => {});
+    },
+  });
+  return items;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+
 /**
  * Navigate the main window's SPA to the given path.
- * Falls back to a no-op if the window is not ready.
+ * Uses the direct `__bosunSetTab` router API when available; falls back to
+ * pushState + popstate for robustness during page load.
  */
 function navigateMainWindow(path) {
   if (!mainWindow || mainWindow.isDestroyed()) return;
   setWindowVisible(mainWindow);
-  if (uiOrigin) {
-    const safePath = JSON.stringify(path);
-    mainWindow.webContents
-      .executeJavaScript(
-        `(function(){
-          if (window.history && window.history.pushState) {
-            window.history.pushState(null, '', ${safePath});
-            window.dispatchEvent(new PopStateEvent('popstate', { state: null }));
-          }
-        })()`,
-      )
-      .catch(() => {});
-  }
+  if (!uiOrigin) return;
+  // Derive SPA tab ID from the URL path. The router maps the first path
+  // segment directly to a tab identifier (empty segment = "dashboard").
+  const seg = String(path || "/").replace(/^\/+/, "").split("/")[0];
+  const tabId = seg || "dashboard";
+  const safePath = JSON.stringify(path);
+  const safeTabId = JSON.stringify(tabId);
+  mainWindow.webContents
+    .executeJavaScript(
+      `(function(){
+        var tabId = ${safeTabId};
+        var path  = ${safePath};
+        // Primary: direct SPA router call (most reliable, bypasses history state issues)
+        if (typeof window.__bosunSetTab === 'function') {
+          window.__bosunSetTab(tabId);
+          return;
+        }
+        // Fallback: pushState + popstate (for pages still loading)
+        if (window.history && window.history.pushState) {
+          window.history.pushState({ desktopNav: true }, '', path);
+          window.dispatchEvent(new PopStateEvent('popstate', { state: { desktopNav: true } }));
+        }
+      })()`,
+    )
+    .catch(() => {});
 }
 
 /**
  * Build and return the application menu template.
  * This is called once during bootstrap and can be refreshed when
- * pack status or update state changes.
+ * pack status or update state changes, or when workspaces are loaded.
  */
 function buildAppMenu() {
   const isMac = process.platform === "darwin";
@@ -297,13 +448,7 @@ function buildAppMenu() {
         {
           label: "New Chat",
           accelerator: acc("app.newchat"),
-          click: () => navigateMainWindow("/"),
-        },
-        { type: /** @type {const} */ ("separator") },
-        {
-          label: "Settings",
-          accelerator: acc("app.settings"),
-          click: () => navigateMainWindow("/settings"),
+          click: () => navigateMainWindow("/chat"),
         },
         { type: /** @type {const} */ ("separator") },
         isMac
@@ -336,6 +481,80 @@ function buildAppMenu() {
       ],
     },
 
+    // ── Go (full SPA navigation) ─────────────────────────────────────────────
+    {
+      label: "Go",
+      submenu: [
+        {
+          label: "Dashboard",
+          accelerator: acc("bosun.navigate.home"),
+          click: () => navigateMainWindow("/"),
+        },
+        {
+          label: "Chat \u0026 Sessions",
+          accelerator: acc("bosun.navigate.chat"),
+          click: () => navigateMainWindow("/chat"),
+        },
+        {
+          label: "Tasks",
+          accelerator: acc("bosun.navigate.tasks"),
+          click: () => navigateMainWindow("/tasks"),
+        },
+        {
+          label: "Workflows",
+          accelerator: acc("bosun.navigate.workflows"),
+          click: () => navigateMainWindow("/workflows"),
+        },
+        {
+          label: "Agents",
+          accelerator: acc("bosun.navigate.agents"),
+          click: () => navigateMainWindow("/agents"),
+        },
+        {
+          label: "Fleet Sessions",
+          accelerator: acc("bosun.navigate.fleet"),
+          click: () => navigateMainWindow("/fleet-sessions"),
+        },
+        {
+          label: "Control Panel",
+          accelerator: acc("bosun.navigate.control"),
+          click: () => navigateMainWindow("/control"),
+        },
+        {
+          label: "Infrastructure",
+          accelerator: acc("bosun.navigate.infra"),
+          click: () => navigateMainWindow("/infra"),
+        },
+        {
+          label: "Logs",
+          accelerator: acc("bosun.navigate.logs"),
+          click: () => navigateMainWindow("/logs"),
+        },
+        {
+          label: "Library",
+          accelerator: acc("bosun.navigate.library"),
+          click: () => navigateMainWindow("/library"),
+        },
+        {
+          label: "Telemetry",
+          accelerator: acc("bosun.navigate.telemetry"),
+          click: () => navigateMainWindow("/telemetry"),
+        },
+        { type: /** @type {const} */ ("separator") },
+        {
+          label: "Settings",
+          accelerator: acc("app.settings"),
+          click: () => navigateMainWindow("/settings"),
+        },
+      ],
+    },
+
+    // ── Workspace ────────────────────────────────────────────────────────────
+    {
+      label: "Workspace",
+      submenu: buildWorkspaceSubmenu(),
+    },
+
     // ── Bosun ───────────────────────────────────────────────────────────────
     {
       label: "Bosun",
@@ -361,38 +580,6 @@ function buildAppMenu() {
           click: () => {
             if (!restoreFollowWindow()) setWindowVisible(mainWindow);
           },
-        },
-        { type: /** @type {const} */ ("separator") },
-        {
-          label: "Dashboard",
-          accelerator: acc("bosun.navigate.home"),
-          click: () => navigateMainWindow("/"),
-        },
-        {
-          label: "Agents",
-          accelerator: acc("bosun.navigate.agents"),
-          click: () => navigateMainWindow("/agents"),
-        },
-        {
-          label: "Tasks",
-          accelerator: acc("bosun.navigate.tasks"),
-          click: () => navigateMainWindow("/tasks"),
-        },
-        {
-          label: "Logs",
-          accelerator: acc("bosun.navigate.logs"),
-          click: () => navigateMainWindow("/logs"),
-        },
-        {
-          label: "Settings",
-          accelerator: acc("bosun.navigate.settings"),
-          click: () => navigateMainWindow("/settings"),
-        },
-        { type: /** @type {const} */ ("separator") },
-        {
-          label: "Quick New Chat",
-          accelerator: acc("bosun.quickchat"),
-          click: () => navigateMainWindow("/"),
         },
         { type: /** @type {const} */ ("separator") },
         {
@@ -764,6 +951,26 @@ function refreshTrayMenu() {
   const openUrl = (url) => shell.openExternal(url).catch(() => {});
   const isDev = !app.isPackaged;
 
+  // Build workspace items from the module-scope cache
+  const workspaceItems = /** @type {Electron.MenuItemConstructorOptions[]} */ ([]);
+  if (_cachedWorkspaces.length > 0) {
+    for (const ws of _cachedWorkspaces) {
+      const wsId = String(ws.id || "");
+      const wsName = String(ws.name || ws.id || "Untitled Workspace");
+      const isActive = wsId === _cachedActiveWorkspaceId;
+      workspaceItems.push({
+        label: isActive ? `\u2713 ${wsName}` : wsName,
+        type: /** @type {const} */ ("normal"),
+        enabled: !isActive,
+        click: () => {
+          switchWorkspace(wsId).catch((err) =>
+            console.warn("[desktop] workspace switch failed:", err?.message || err),
+          );
+        },
+      });
+    }
+  }
+
   const menu = Menu.buildFromTemplate([
     // ── Identity header ──────────────────────────────────────────────────
     {
@@ -771,26 +978,46 @@ function refreshTrayMenu() {
       enabled: false,
     },
     {
-      label: "Open",
+      label: "Show Window",
       click: () => setWindowVisible(mainWindow),
     },
     { type: /** @type {const} */ ("separator") },
 
-    // ── Launch Control ───────────────────────────────────────────────────
+    // ── Navigation ───────────────────────────────────────────────────────
     {
-      label: "Launch Control",
+      label: "Go To",
       submenu: [
         {
           label: "Dashboard",
           click: () => navigateMainWindow("/"),
         },
         {
-          label: "Agents",
-          click: () => navigateMainWindow("/agents"),
+          label: "Chat \u0026 Sessions",
+          click: () => navigateMainWindow("/chat"),
         },
         {
           label: "Tasks",
           click: () => navigateMainWindow("/tasks"),
+        },
+        {
+          label: "Workflows",
+          click: () => navigateMainWindow("/workflows"),
+        },
+        {
+          label: "Agents",
+          click: () => navigateMainWindow("/agents"),
+        },
+        {
+          label: "Fleet Sessions",
+          click: () => navigateMainWindow("/fleet-sessions"),
+        },
+        {
+          label: "Control Panel",
+          click: () => navigateMainWindow("/control"),
+        },
+        {
+          label: "Infrastructure",
+          click: () => navigateMainWindow("/infra"),
         },
         {
           label: "Logs",
@@ -798,14 +1025,44 @@ function refreshTrayMenu() {
         },
         { type: /** @type {const} */ ("separator") },
         {
-          label: "Voice Companion",
-          accelerator: acc("bosun.voice.toggle"),
-          click: () => {
-            if (!restoreFollowWindow()) setWindowVisible(mainWindow);
-          },
+          label: "Settings",
+          accelerator: acc("app.settings"),
+          click: () => navigateMainWindow("/settings"),
         },
       ],
     },
+
+    // ── Workspace ────────────────────────────────────────────────────────
+    ...(workspaceItems.length > 0
+      ? [
+          {
+            label: "Workspace",
+            submenu: [
+              ...workspaceItems,
+              { type: /** @type {const} */ ("separator") },
+              {
+                label: "Manage Workspaces\u2026",
+                click: () => navigateMainWindow("/settings"),
+              },
+            ],
+          },
+        ]
+      : []),
+
+    // ── Voice ────────────────────────────────────────────────────────────
+    {
+      label: "Voice Companion",
+      accelerator: acc("bosun.voice.toggle"),
+      click: () => {
+        if (!restoreFollowWindow()) setWindowVisible(mainWindow);
+      },
+    },
+    {
+      label: "Voice Call",
+      click: () => openFollowWindow({ call: "voice" }).catch(() => {}),
+    },
+    { type: /** @type {const} */ ("separator") },
+
     {
       label: "Restart to Apply Update",
       enabled: app.isPackaged,
@@ -814,12 +1071,6 @@ function refreshTrayMenu() {
         void shutdown("tray_restart_update");
       },
     },
-    {
-      label: "Preferences",
-      accelerator: "CmdOrCtrl+,",
-      click: () => navigateMainWindow("/settings"),
-    },
-    { type: /** @type {const} */ ("separator") },
 
     // ── Troubleshooting ──────────────────────────────────────────────────
     {
@@ -834,7 +1085,7 @@ function refreshTrayMenu() {
           click: () => mainWindow?.webContents?.reloadIgnoringCache(),
         },
         {
-          label: "Clear Cache & Reload",
+          label: "Clear Cache \u0026 Reload",
           click: async () => {
             try {
               await session.defaultSession.clearCache();
@@ -865,7 +1116,7 @@ function refreshTrayMenu() {
     { type: /** @type {const} */ ("separator") },
 
     // ── Startup / login ──────────────────────────────────────────────
-    ...( app.isPackaged
+    ...(app.isPackaged
       ? [
           {
             label: "Start at Login",
@@ -991,7 +1242,7 @@ function initAndRegisterShortcuts(configDir) {
 
   onShortcut("bosun.quickchat", () => {
     setWindowVisible(mainWindow);
-    navigateMainWindow("/");
+    navigateMainWindow("/chat");
   });
 
   onShortcut("bosun.voice.call", () => {
@@ -1012,11 +1263,18 @@ function initAndRegisterShortcuts(configDir) {
 
   // Local: navigation (also in menu, but registered here for completeness)
   onShortcut("bosun.navigate.home", () => navigateMainWindow("/"));
-  onShortcut("bosun.navigate.agents", () => navigateMainWindow("/agents"));
+  onShortcut("bosun.navigate.chat", () => navigateMainWindow("/chat"));
   onShortcut("bosun.navigate.tasks", () => navigateMainWindow("/tasks"));
+  onShortcut("bosun.navigate.workflows", () => navigateMainWindow("/workflows"));
+  onShortcut("bosun.navigate.agents", () => navigateMainWindow("/agents"));
+  onShortcut("bosun.navigate.fleet", () => navigateMainWindow("/fleet-sessions"));
+  onShortcut("bosun.navigate.control", () => navigateMainWindow("/control"));
+  onShortcut("bosun.navigate.infra", () => navigateMainWindow("/infra"));
   onShortcut("bosun.navigate.logs", () => navigateMainWindow("/logs"));
+  onShortcut("bosun.navigate.library", () => navigateMainWindow("/library"));
+  onShortcut("bosun.navigate.telemetry", () => navigateMainWindow("/telemetry"));
   onShortcut("bosun.navigate.settings", () => navigateMainWindow("/settings"));
-  onShortcut("app.newchat", () => navigateMainWindow("/"));
+  onShortcut("app.newchat", () => navigateMainWindow("/chat"));
   onShortcut("app.settings", () => navigateMainWindow("/settings"));
   onShortcut("bosun.show.shortcuts", () => showShortcutsDialog());
 
@@ -1084,6 +1342,39 @@ function registerDesktopIpc() {
   ipcMain.handle("bosun:shortcuts:showDialog", () => {
     showShortcutsDialog();
     return { ok: true };
+  });
+
+  // ── Navigation IPC ───────────────────────────────────────────────────────
+  /**
+   * Navigate the main window to a given path or tab ID.
+   * Payload: { path: string } e.g. { path: "/chat" } or { path: "chat" }
+   */
+  ipcMain.handle("bosun:navigate", (_event, { path } = {}) => {
+    if (!path) return { ok: false, error: "path required" };
+    const normalizedPath = String(path).startsWith("/") ? path : `/${path}`;
+    navigateMainWindow(normalizedPath);
+    return { ok: true };
+  });
+
+  // ── Workspace IPC ────────────────────────────────────────────────────────
+  /** Returns the cached workspace list and active workspace ID. */
+  ipcMain.handle("bosun:workspaces:list", async () => {
+    await fetchWorkspaces();
+    return {
+      ok: true,
+      workspaces: _cachedWorkspaces,
+      activeId: _cachedActiveWorkspaceId,
+    };
+  });
+
+  /**
+   * Switch the active workspace.
+   * Payload: { workspaceId: string }
+   */
+  ipcMain.handle("bosun:workspaces:switch", async (_event, { workspaceId } = {}) => {
+    if (!workspaceId) return { ok: false, error: "workspaceId required" };
+    await switchWorkspace(workspaceId);
+    return { ok: true, activeId: workspaceId };
   });
 }
 
@@ -1167,6 +1458,17 @@ async function bootstrap() {
     if (!trayMode) {
       ensureTray();
     }
+
+    // Fetch workspace list in the background so the menu and tray show
+    // workspace switcher items as soon as the UI server is reachable.
+    fetchWorkspaces({ force: true })
+      .then(() => {
+        Menu.setApplicationMenu(buildAppMenu());
+        refreshTrayMenu();
+      })
+      .catch((err) =>
+        console.warn("[desktop] initial workspace fetch:", err?.message || err),
+      );
 
     await maybeAutoUpdate();
   } catch (error) {
