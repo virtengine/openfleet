@@ -469,9 +469,26 @@ async function ensureClientStarted() {
   const modeLabel = clientOptions.cliUrl ? "remote" : "local (stdio)";
   console.log(`[copilot-shell] starting client in ${modeLabel} mode`);
 
+  const START_TIMEOUT_MS =
+    Number(process.env.COPILOT_START_TIMEOUT_MS) || 20_000;
+
   await withSanitizedOpenAiEnv(async () => {
     copilotClient = new Cls(clientOptions);
-    await copilotClient.start();
+    await Promise.race([
+      copilotClient.start(),
+      new Promise((_, reject) =>
+        setTimeout(
+          () =>
+            reject(
+              new Error(
+                `Copilot CLI failed to start within ${START_TIMEOUT_MS / 1000}s — ` +
+                  `verify COPILOT_CLI_PATH or run \`gh auth login\``,
+              ),
+            ),
+          START_TIMEOUT_MS,
+        ),
+      ),
+    ]);
   });
   clientStarted = true;
   console.log("[copilot-shell] client started");

@@ -307,6 +307,11 @@ function injectOverlayStyles() {
   align-self: flex-start;
   background: rgba(129,201,149,0.14); border-color: rgba(129,201,149,0.28);
 }
+.voice-overlay-chat-msg.tool {
+  align-self: flex-start;
+  background: rgba(249,171,0,0.12);
+  border-color: rgba(249,171,0,0.35);
+}
 .voice-overlay-chat-meta {
   display: flex; justify-content: space-between; align-items: center;
   gap: 8px; font-size: 10px; color: rgba(255,255,255,0.5);
@@ -481,15 +486,17 @@ function formatDuration(seconds) {
 }
 
 function normalizeMeetingMessageRole(msg) {
+  const msgType = String(msg?.type || "").trim().toLowerCase();
+  if (msgType === "tool_call" || msgType === "tool_result") return "tool";
   const roleRaw = String(
     msg?.role ||
-      (msg?.type === "tool_call" || msg?.type === "tool_result"
-        ? "system"
+      (msgType === "tool_call" || msgType === "tool_result"
+        ? "tool"
         : "assistant"),
   )
     .trim()
     .toLowerCase();
-  if (roleRaw === "user" || roleRaw === "assistant") return roleRaw;
+  if (roleRaw === "user" || roleRaw === "assistant" || roleRaw === "tool") return roleRaw;
   return "system";
 }
 
@@ -545,10 +552,84 @@ function isVoiceAttachmentAllowed(file) {
   return false;
 }
 
-function shouldSuppressCompactMeetingMessage(role, text, hasAttachments = false) {
+function isToolEventMessage(msg) {
+  const msgType = String(msg?.type || "").trim().toLowerCase();
+  if (msgType === "tool_call" || msgType === "tool_result") return true;
+  const eventType = String(msg?.meta?.eventType || "").trim().toLowerCase();
+  return eventType.includes("tool");
+}
+
+function stringifyToolData(value, maxLength = 1200) {
+  if (value == null) return "";
+  let text = "";
+  if (typeof value === "string") {
+    text = value;
+  } else {
+    try {
+      text = JSON.stringify(value, null, 2);
+    } catch {
+      text = String(value);
+    }
+  }
+  const clean = String(text || "").trim();
+  if (clean.length <= maxLength) return clean;
+  return `${clean.slice(0, maxLength)}\n…`;
+}
+
+function formatMeetingMessageContent(msg, baseText) {
+  if (!isToolEventMessage(msg)) return String(baseText || "").trim();
+  const msgType = String(msg?.type || "").trim().toLowerCase();
+  const toolName = String(
+    msg?.name ||
+    msg?.toolName ||
+    msg?.meta?.toolName ||
+    msg?.data?.name ||
+    msg?.data?.toolName ||
+    "",
+  ).trim();
+  const argsRaw =
+    msg?.args ??
+    msg?.arguments ??
+    msg?.meta?.args ??
+    msg?.meta?.arguments ??
+    msg?.data?.args ??
+    msg?.data?.arguments;
+  const resultRaw =
+    msg?.result ??
+    msg?.output ??
+    msg?.meta?.result ??
+    msg?.meta?.output ??
+    msg?.data?.result ??
+    msg?.data?.output;
+  const errorRaw =
+    msg?.error ??
+    msg?.meta?.error ??
+    msg?.data?.error;
+
+  const lines = [];
+  if (msgType === "tool_call") {
+    lines.push(`[Tool Call] ${toolName || "unknown_tool"}`);
+    const argsText = stringifyToolData(argsRaw);
+    if (argsText) lines.push(`Args:\n${argsText}`);
+  } else {
+    lines.push(`[Tool Result] ${toolName || "unknown_tool"}`);
+    const resultText = stringifyToolData(resultRaw);
+    if (resultText) lines.push(`Result:\n${resultText}`);
+  }
+  const errorText = stringifyToolData(errorRaw);
+  if (errorText) lines.push(`Error:\n${errorText}`);
+
+  const fallbackText = String(baseText || "").trim();
+  if (fallbackText && !lines.join("\n").includes(fallbackText)) {
+    lines.push(`Message:\n${fallbackText}`);
+  }
+  return lines.join("\n").trim();
+}
+
+function shouldSuppressCompactMeetingMessage(role, text, hasAttachments = false, isToolEvent = false) {
   const value = String(text || "").trim();
   if (!value && !hasAttachments) return true;
-  if (role === "system") return true;
+  if (role === "system" && !isToolEvent) return true;
   if (/^reconnecting\.\.\./i.test(value)) return true;
   if (/stream disconnected before completion/i.test(value)) return true;
   if (/^turn completed$/i.test(value)) return true;
@@ -556,18 +637,16 @@ function shouldSuppressCompactMeetingMessage(role, text, hasAttachments = false)
   return false;
 }
 
-function shouldSuppressMeetingMessage(msg, role, text, hasAttachments = false) {
-  const msgType = String(msg?.type || "").trim().toLowerCase();
-  if (msgType === "tool_call" || msgType === "tool_result") return true;
+function shouldSuppressMeetingMessage(msg, role, text, hasAttachments = false, isToolEvent = false) {
   const eventType = String(msg?.meta?.eventType || "").trim().toLowerCase();
-  if (eventType.includes("tool")) return true;
+  if (eventType.includes("tool") && !isToolEvent) return true;
   if (eventType.includes("transcript")) return true;
   if (eventType.startsWith("voice_background_")) return true;
   const source = String(msg?.meta?.source || "").trim().toLowerCase();
   if (source === "vision") return true;
   const value = String(text || "").trim();
   if (!value && !hasAttachments) return true;
-  if (String(role || "").toLowerCase() === "system" && /^\[Vision\s/i.test(value)) {
+  if (!isToolEvent && String(role || "").toLowerCase() === "system" && /^\[Vision\s/i.test(value)) {
     return true;
   }
   if (/^\[Voice Action (Started|Complete|Error)\]/i.test(value)) return true;
@@ -1244,14 +1323,29 @@ export function VoiceOverlay({
     const items = [];
     for (const msg of meetingMessages) {
       const role = normalizeMeetingMessageRole(msg);
-      const text = stringifyMeetingMessageContent(msg);
+      const rawText = stringifyMeetingMessageContent(msg);
+      const isToolEvent = isToolEventMessage(msg);
+      const text = formatMeetingMessageContent(msg, rawText);
       const attachments = normalizeMeetingMessageAttachments(msg);
-      if (shouldSuppressMeetingMessage(msg, role, text, attachments.length > 0)) {
+      if (
+        shouldSuppressMeetingMessage(
+          msg,
+          role,
+          text,
+          attachments.length > 0,
+          isToolEvent,
+        )
+      ) {
         continue;
       }
       if (
         isCompactFollowMode
-        && shouldSuppressCompactMeetingMessage(role, text, attachments.length > 0)
+        && shouldSuppressCompactMeetingMessage(
+          role,
+          text,
+          attachments.length > 0,
+          isToolEvent,
+        )
       ) {
         continue;
       }
@@ -1271,6 +1365,7 @@ export function VoiceOverlay({
         && prev.role === role
         && prev.content === normalizedText
         && (!prev.attachments?.length && attachments.length === 0)
+        && !isToolEvent
       ) {
         continue;
       }
@@ -1278,6 +1373,7 @@ export function VoiceOverlay({
         id: msg?.id || `${role}-${items.length}`,
         role,
         content: normalizedText,
+        isToolEvent,
         attachments,
         timeLabel,
         timestampMs: parseMeetingTimestampMs(msg?.timestamp),
@@ -1402,7 +1498,7 @@ export function VoiceOverlay({
                 ${meetingFeedMessages.map((msg) => html`
                   <div class="voice-overlay-chat-msg ${msg.role}" key=${msg.id}>
                     <div class="voice-overlay-chat-meta">
-                      <span>${msg.role}</span>
+                      <span>${msg.isToolEvent ? "tool" : msg.role}</span>
                       <span>${msg.timeLabel}</span>
                     </div>
                     ${msg.content && html`

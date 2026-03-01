@@ -1007,25 +1007,8 @@ export function sendSdkImageFrame(imageDataUrl, options = {}) {
       _session.addImage(image, { triggerResponse: false });
       return true;
     }
-    if (typeof _session.sendMessage === "function") {
-      _session.sendMessage(
-        {
-          type: "message",
-          role: "user",
-          content: [
-            {
-              type: "input_image",
-              image,
-              image_url: image,
-              detail: "low",
-              providerData: { source, width, height },
-            },
-          ],
-        },
-        { source: "vision_stream", sourceType: source, width, height },
-      );
-      return true;
-    }
+    // Prefer low-level event fallback over custom sendMessage payload shapes
+    // to avoid SDK version mismatches (observed in some browser builds).
     if (typeof _session.sendEvent === "function") {
       _session.sendEvent({
         type: "conversation.item.create",
