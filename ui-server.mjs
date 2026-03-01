@@ -2706,8 +2706,31 @@ function validateConfigSchemaChanges(changes) {
 
 // ── Simple rate limiter for mutation endpoints ──
 const _rateLimitMap = new Map();
-function checkRateLimit(req, maxPerMin = 30) {
-  const key = req.headers["x-telegram-initdata"] || req.socket?.remoteAddress || "unknown";
+function getMutationRateLimitPerMin(authResult = null) {
+  const standardRaw = Number(process.env.BOSUN_UI_RATE_LIMIT_PER_MIN || "30");
+  const standard = Number.isFinite(standardRaw) && standardRaw > 0 ? standardRaw : 30;
+  if (!authResult?.ok) return standard;
+  // Owner/admin-controlled contexts should be less constrained:
+  // - desktop-api-key: local Electron owner session
+  // - fallback: explicit local secret auth
+  // - unsafe: auth disabled for trusted local environment
+  if (
+    authResult.source === "desktop-api-key"
+    || authResult.source === "fallback"
+    || authResult.source === "unsafe"
+  ) {
+    const privilegedRaw = Number(process.env.BOSUN_UI_RATE_LIMIT_PRIVILEGED_PER_MIN || "300");
+    return Number.isFinite(privilegedRaw) && privilegedRaw > 0 ? privilegedRaw : 300;
+  }
+  return standard;
+}
+
+function checkRateLimit(req, maxPerMin = 30, scope = "global") {
+  const keyParts = [
+    scope,
+    req.headers["x-telegram-initdata"] || req.socket?.remoteAddress || "unknown",
+  ];
+  const key = keyParts.join(":");
   const now = Date.now();
   let bucket = _rateLimitMap.get(key);
   if (!bucket || now - bucket.windowStart > 60000) {
@@ -5698,9 +5721,13 @@ async function handleApi(req, res, url) {
     res.setHeader("Set-Cookie", buildSessionCookieHeader());
   }
 
-  if (req.method === "POST" && !checkRateLimit(req, 30)) {
-    jsonResponse(res, 429, { ok: false, error: "Rate limit exceeded. Try again later." });
-    return;
+  if (req.method === "POST") {
+    const maxPerMin = getMutationRateLimitPerMin(authResult);
+    const rateScope = `post:${authResult?.source || "unknown"}`;
+    if (!checkRateLimit(req, maxPerMin, rateScope)) {
+      jsonResponse(res, 429, { ok: false, error: "Rate limit exceeded. Try again later." });
+      return;
+    }
   }
   if (path.startsWith("/api/attachments/") && req.method === "GET") {
     const rel = decodeURIComponent(path.slice("/api/attachments/".length));
@@ -6681,13 +6708,17 @@ async function handleApi(req, res, url) {
       const configDir = resolveUiConfigDir();
       if (req.method === "POST") {
         const body = await readJsonBody(req);
-        const wsId = body?.workspaceId || body?.id;
+        const wsId = String(body?.workspaceId || body?.id || "").trim();
         if (!wsId) {
           jsonResponse(res, 400, { ok: false, error: "workspaceId required" });
           return;
         }
         setActiveManagedWorkspace(configDir, wsId);
-        jsonResponse(res, 200, { ok: true, activeId: wsId });
+        const active = getActiveManagedWorkspace(configDir);
+        jsonResponse(res, 200, {
+          ok: true,
+          activeId: String(active?.id || wsId),
+        });
         broadcastUiEvent(["workspaces", "tasks", "overview"], "invalidate", {
           reason: "workspace-switched",
           workspaceId: wsId,

@@ -170,7 +170,31 @@ function getDaemonPid() {
 }
 
 function findGhostDaemonPids() {
-  if (process.platform === "win32") return [];
+  if (process.platform === "win32") {
+    try {
+      const cmd = [
+        "$ErrorActionPreference='Stop';",
+        "$procs = Get-CimInstance Win32_Process | Where-Object {",
+        "  $_.Name -match '^(node|node\\.exe)$' -and",
+        "  $_.CommandLine -and",
+        "  ($_.CommandLine -match '--daemon-child' -or $_.CommandLine -match 'BOSUN_DAEMON=1')",
+        "};",
+        "$procs | ForEach-Object { $_.ProcessId }",
+      ].join(" ");
+      const out = execFileSync(
+        "powershell.exe",
+        ["-NoProfile", "-NonInteractive", "-Command", cmd],
+        { encoding: "utf8", stdio: ["pipe", "pipe", "pipe"], timeout: 3500 },
+      ).trim();
+      if (!out) return [];
+      return out
+        .split(/\r?\n/)
+        .map((s) => parseInt(String(s).trim(), 10))
+        .filter((n) => Number.isFinite(n) && n > 0 && n !== process.pid);
+    } catch {
+      return [];
+    }
+  }
   try {
     const out = execFileSync(
       "pgrep",
@@ -205,6 +229,120 @@ function resolveBosunRoot() {
 
 function resolveBosunRuntimePath(file) {
   return resolve(resolveBosunRoot(), file);
+}
+
+function resolveDesktopIconPath() {
+  const candidates = [
+    resolveBosunRuntimePath("logo.png"),
+    resolveBosunRuntimePath("ui/logo.png"),
+    resolve(__dirname, "..", "ui", "logo.png"),
+    resolve(__dirname, "..", "logo.png"),
+  ];
+  return candidates.find((iconPath) => existsSync(iconPath)) || null;
+}
+
+function buildLoadingPageUrl(message = "Starting Bosun...") {
+  const safeMessage = String(message || "Starting Bosun...")
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;");
+  const html = `<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>Bosun Desktop</title>
+  <style>
+    :root {
+      --bg: #0b0f14;
+      --panel: #121a24;
+      --text: #e5e7eb;
+      --muted: #94a3b8;
+      --accent: #4f8cff;
+      --border: #243041;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      min-height: 100vh;
+      background: radial-gradient(1200px 600px at 10% -10%, rgba(79,140,255,0.20), transparent 55%), var(--bg);
+      color: var(--text);
+      font-family: "Segoe UI", Inter, system-ui, sans-serif;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      padding: 18px;
+    }
+    .card {
+      width: min(520px, 96vw);
+      border: 1px solid var(--border);
+      border-radius: 14px;
+      background: linear-gradient(180deg, rgba(255,255,255,0.02), rgba(255,255,255,0.01));
+      padding: 22px 20px;
+      box-shadow: 0 18px 50px rgba(0,0,0,0.40);
+    }
+    .title {
+      font-size: 20px;
+      font-weight: 700;
+      margin: 0 0 12px;
+      letter-spacing: 0.2px;
+    }
+    .row {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+    }
+    .spinner {
+      width: 18px;
+      height: 18px;
+      border-radius: 999px;
+      border: 2px solid rgba(79,140,255,0.30);
+      border-top-color: var(--accent);
+      animation: spin 900ms linear infinite;
+      flex: 0 0 auto;
+    }
+    @keyframes spin { to { transform: rotate(360deg); } }
+    .message {
+      margin: 0;
+      font-size: 14px;
+      color: var(--text);
+    }
+    .hint {
+      margin: 12px 0 0;
+      font-size: 12px;
+      color: var(--muted);
+      line-height: 1.45;
+    }
+  </style>
+</head>
+<body>
+  <div class="card">
+    <h1 class="title">Bosun Desktop</h1>
+    <div class="row">
+      <div class="spinner" aria-hidden="true"></div>
+      <p id="bosun-loading-message" class="message">${safeMessage}</p>
+    </div>
+    <p class="hint">First launch can take 5-10 seconds while Bosun services start in the background.</p>
+  </div>
+</body>
+</html>`;
+  return `data:text/html;charset=UTF-8,${encodeURIComponent(html)}`;
+}
+
+async function setLoadingMessage(message) {
+  if (!mainWindow || mainWindow.isDestroyed()) return;
+  const safe = JSON.stringify(String(message || "Starting Bosun..."));
+  try {
+    await mainWindow.webContents.executeJavaScript(
+      `(function () {
+        var el = document.getElementById('bosun-loading-message');
+        if (el) el.textContent = ${safe};
+      })()`,
+      true,
+    );
+  } catch {
+    // best effort
+  }
 }
 
 function encodeFollowParam(value) {
@@ -711,18 +849,74 @@ async function resolveDaemonUiUrl() {
 }
 
 /**
- * Previously attempted to auto-start the bosun daemon from the Electron process.
- * This behaviour has been intentionally removed: the desktop MUST NOT launch bosun.
+ * Wait for the daemon UI endpoint to become reachable.
+ */
+async function waitForDaemonUi(baseUrl, timeoutMs = 15000) {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    if (await probeUiServer(baseUrl)) return true;
+    await new Promise((resolveWait) => setTimeout(resolveWait, 500));
+  }
+  return false;
+}
+
+function spawnDetachedDaemon() {
+  const cliPath = resolveBosunRuntimePath("cli.mjs");
+  if (!existsSync(cliPath)) {
+    throw new Error(`CLI not found at ${cliPath}`);
+  }
+  const child = spawn(
+    process.execPath,
+    [cliPath, "--daemon", "--no-update-check"],
+    {
+      cwd: resolveBosunRoot(),
+      detached: true,
+      stdio: "ignore",
+      windowsHide: true,
+      env: {
+        ...process.env,
+        BOSUN_DESKTOP_SPAWNED_DAEMON: "1",
+      },
+    },
+  );
+  child.unref();
+  return child.pid;
+}
+
+/**
+ * Ensure the daemon is running when desktop starts.
  *
- * If the daemon is offline, buildUiUrl() sets bosunDaemonWasOffline=true and
- * createMainWindow() injects an in-page banner with instructions on how to
- * start bosun manually or configure auto-start via `bosun --setup`.
- *
- * Kept as a no-op so bootstrap() need not change its call site.
+ * Default behaviour: auto-start enabled.
+ * Opt-out: BOSUN_DESKTOP_AUTO_START_DAEMON=0
  */
 async function ensureDaemonRunning() {
-  // Intentional no-op. Daemon auto-start from the desktop is permanently disabled.
-  // Detection happens in buildUiUrl(); the offline banner is shown in createMainWindow().
+  const daemonBaseUrl = buildDaemonUiBaseUrl();
+  if (await probeUiServer(daemonBaseUrl)) return;
+
+  const ghostPids = findGhostDaemonPids();
+  // If a daemon is starting naturally, give it a short window first.
+  const existingPid = getDaemonPid();
+  if ((existingPid || ghostPids.length > 0) && await waitForDaemonUi(daemonBaseUrl, 5000)) {
+    return;
+  }
+
+  const autoStart = parseBoolEnv(process.env.BOSUN_DESKTOP_AUTO_START_DAEMON, true);
+  if (!autoStart) return;
+
+  try {
+    if (!existingPid && ghostPids.length === 0) {
+      const pid = spawnDetachedDaemon();
+      console.log(`[desktop] started bosun daemon in background (pid ${pid})`);
+    } else {
+      console.log("[desktop] existing bosun background process detected; not starting another instance");
+    }
+  } catch (error) {
+    console.warn("[desktop] failed to auto-start daemon:", error?.message || error);
+    return;
+  }
+
+  // Best effort wait. If it still isn't up we'll fall back to local UI mode.
+  await waitForDaemonUi(daemonBaseUrl, 15000);
 }
 
 async function startUiServer() {
@@ -783,7 +977,7 @@ async function buildUiUrl() {
 
 async function createMainWindow() {
   if (mainWindow) return;
-  const iconPath = resolveBosunRuntimePath("logo.png");
+  const iconPath = resolveDesktopIconPath();
 
   mainWindow = new BrowserWindow({
     width: 1280,
@@ -791,7 +985,7 @@ async function createMainWindow() {
     minWidth: 960,
     minHeight: 640,
     backgroundColor: "#0b0b0c",
-    ...(existsSync(iconPath) ? { icon: iconPath } : {}),
+    ...(iconPath && existsSync(iconPath) ? { icon: iconPath } : {}),
     show: false,
     // In tray mode Windows/Linux should not show a taskbar button for the
     // hidden state — the tray icon IS the taskbar presence.
@@ -836,12 +1030,17 @@ async function createMainWindow() {
     }
   });
 
+  // Always render an in-app loading screen first so startup latency
+  // (daemon boot, TLS init, server warm-up) is visible to the user.
+  await mainWindow.loadURL(buildLoadingPageUrl("Starting Bosun services..."));
+  await setLoadingMessage("Preparing background daemon...");
+  await ensureDaemonRunning();
+  await setLoadingMessage("Connecting to Bosun portal...");
   const uiUrl = await buildUiUrl();
   await mainWindow.loadURL(uiUrl);
 
-  // If the bosun daemon was not running when the desktop started, inject a
-  // non-blocking banner so the user knows and has clear instructions.
-  // The desktop NEVER auto-starts bosun — it is always a separate process.
+  // If the daemon UI is still offline after startup checks/auto-start, inject
+  // a non-blocking banner so the user has clear recovery instructions.
   if (bosunDaemonWasOffline) {
     mainWindow.webContents.once("did-finish-load", () => {
       mainWindow?.webContents
@@ -858,7 +1057,7 @@ async function createMainWindow() {
             ].join(';');
             b.innerHTML = [
               '<span>',
-              '\u26a0\ufe0f <strong>Bosun daemon is not running.</strong>',
+              '\u26a0\ufe0f <strong>Bosun daemon is not reachable.</strong>',
               ' This portal is in local mode — agents & tasks from your background service are unavailable.',
               ' Start it: ',
               '<code style="background:rgba(255,255,255,.15);padding:2px 6px;border-radius:3px">bosun --daemon</code>',
@@ -878,14 +1077,14 @@ async function createMainWindow() {
 
 async function createFollowWindow() {
   if (followWindow && !followWindow.isDestroyed()) return followWindow;
-  const iconPath = resolveBosunRuntimePath("logo.png");
+  const iconPath = resolveDesktopIconPath();
   followWindow = new BrowserWindow({
     width: 460,
     height: 720,
     minWidth: 380,
     minHeight: 520,
     backgroundColor: "#0b0b0c",
-    ...(existsSync(iconPath) ? { icon: iconPath } : {}),
+    ...(iconPath && existsSync(iconPath) ? { icon: iconPath } : {}),
     show: false,
     alwaysOnTop: true,
     autoHideMenuBar: true,
@@ -1145,8 +1344,8 @@ function refreshTrayMenu() {
 
 function ensureTray() {
   if (tray) return;
-  const iconPath = resolveBosunRuntimePath("logo.png");
-  if (!existsSync(iconPath)) return;
+  const iconPath = resolveDesktopIconPath();
+  if (!iconPath || !existsSync(iconPath)) return;
 
   tray = new Tray(iconPath);
   tray.setToolTip("Bosun — AI Control Center");
@@ -1397,8 +1596,8 @@ async function bootstrap() {
       app.commandLine.appendSwitch("disable-gpu-sandbox");
     }
     app.setAppUserModelId("com.virtengine.bosun");
-    const iconPath = resolveBosunRuntimePath("logo.png");
-    if (existsSync(iconPath)) {
+    const iconPath = resolveDesktopIconPath();
+    if (iconPath && existsSync(iconPath)) {
       try {
         app.setIcon(iconPath);
       } catch {
@@ -1419,8 +1618,6 @@ async function bootstrap() {
     } catch (err) {
       console.warn("[desktop] could not load desktop-api-key module:", err?.message || err);
     }
-
-    await ensureDaemonRunning();
 
     // Initialise shortcuts (loads user config) and register globals.
     // Must happen before buildAppMenu() so acc() returns correct values.

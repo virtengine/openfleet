@@ -48,12 +48,15 @@ export async function switchWorkspace(wsId) {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ workspaceId: wsId }),
     });
-    if (res?.ok) {
-      activeWorkspaceId.value = wsId;
-      await loadWorkspaces();
+    if (!res?.ok) {
+      throw new Error(res?.error || "Failed to switch workspace");
     }
+    activeWorkspaceId.value = String(res.activeId || wsId);
+    await loadWorkspaces();
+    return true;
   } catch (err) {
     console.warn("[workspace-switcher] Failed to switch workspace:", err);
+    return false;
   }
 }
 
@@ -452,6 +455,7 @@ export function WorkspaceManager({ open, onClose }) {
 // ─── Main component: native <select> dropdown + manage trigger ─────
 export function WorkspaceSwitcher() {
   const [managerOpen, setManagerOpen] = useState(false);
+  const [switchingId, setSwitchingId] = useState(null);
 
   useEffect(() => {
     loadWorkspaces();
@@ -460,7 +464,7 @@ export function WorkspaceSwitcher() {
   const wsList = workspaces.value;
   const currentId = activeWorkspaceId.value;
 
-  const handleChange = async (e) => {
+  const handleSelection = async (e) => {
     const wsId = e.target.value;
     if (wsId === "__manage__") {
       e.target.value = currentId || "";
@@ -469,8 +473,14 @@ export function WorkspaceSwitcher() {
       return;
     }
     if (!wsId || wsId === currentId) return;
+    if (switchingId && switchingId === wsId) return;
     haptic("light");
-    await switchWorkspace(wsId);
+    setSwitchingId(wsId);
+    try {
+      await switchWorkspace(wsId);
+    } finally {
+      setSwitchingId(null);
+    }
   };
 
   if (!wsList.length && !workspacesLoading.value) {
@@ -497,7 +507,9 @@ export function WorkspaceSwitcher() {
       <select
         class="ws-native-select"
         value=${currentId || ""}
-        onChange=${handleChange}
+        onChange=${handleSelection}
+        onInput=${handleSelection}
+        disabled=${Boolean(switchingId)}
       >
         ${wsList.map((ws) => html`
           <option key=${ws.id} value=${ws.id}>${ws.name || ws.id}</option>
