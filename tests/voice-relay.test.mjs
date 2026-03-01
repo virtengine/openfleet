@@ -619,6 +619,8 @@ describe("voice-relay", () => {
       expect(allowed.has("list_tasks")).toBe(true);
       expect(allowed.has("get_agent_status")).toBe(true);
       expect(allowed.has("get_session_history")).toBe(true);
+      expect(allowed.has("list_workflow_runs")).toBe(true);
+      expect(allowed.has("get_workflow_run")).toBe(true);
     });
 
     it("does not include write-heavy tools", () => {

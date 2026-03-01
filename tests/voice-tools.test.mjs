@@ -51,6 +51,77 @@ vi.mock("../agent-pool.mjs", () => ({
   })),
 }));
 
+vi.mock("../workflow-engine.mjs", () => ({
+  getWorkflowEngine: vi.fn(() => ({
+    list: vi.fn(() => [{
+      id: "wf-1",
+      name: "Workflow One",
+      enabled: true,
+      nodes: [{ id: "n1" }, { id: "n2" }],
+      edges: [{ from: "n1", to: "n2" }],
+      triggers: [{ type: "manual" }],
+    }]),
+    get: vi.fn((id) => (id === "wf-1"
+      ? {
+          id: "wf-1",
+          name: "Workflow One",
+          enabled: true,
+          nodes: [{ id: "n1" }, { id: "n2" }],
+          edges: [{ from: "n1", to: "n2" }],
+          triggers: [{ type: "manual" }],
+        }
+      : null)),
+    getRunHistory: vi.fn(() => [{
+      runId: "run-1",
+      workflowId: "wf-1",
+      workflowName: "Workflow One",
+      status: "failed",
+      startedAt: 1000,
+      endedAt: 2000,
+      duration: 1000,
+      errorCount: 1,
+      logCount: 2,
+      activeNodeCount: 0,
+      isStuck: false,
+      triggerEvent: "manual",
+      triggerSource: "manual",
+    }]),
+    getRunDetail: vi.fn((runId) => (runId === "run-1"
+      ? {
+          runId: "run-1",
+          workflowId: "wf-1",
+          workflowName: "Workflow One",
+          status: "failed",
+          startedAt: 1000,
+          endedAt: 2000,
+          duration: 1000,
+          errorCount: 1,
+          logCount: 2,
+          nodeCount: 2,
+          completedCount: 1,
+          failedCount: 1,
+          skippedCount: 0,
+          activeNodeCount: 0,
+          isStuck: false,
+          triggerEvent: "manual",
+          triggerSource: "manual",
+          detail: {
+            data: { _workflowId: "wf-1", _workflowName: "Workflow One" },
+            errors: ["node failed"],
+            logs: [{ level: "info", msg: "started" }, { level: "error", msg: "failed" }],
+            nodeStatuses: { n1: "completed", n2: "failed" },
+            nodeStatusEvents: [{ nodeId: "n2", status: "failed" }],
+          },
+        }
+      : null)),
+    retryRun: vi.fn(async (runId, opts = {}) => ({
+      originalRunId: runId,
+      retryRunId: "run-2",
+      ctx: { errors: [], mode: opts.mode || "from_failed" },
+    })),
+  })),
+}));
+
 vi.mock("../vision-session-state.mjs", () => ({
   getVisionSessionState: vi.fn(() => ({
     lastFrameDataUrl: "data:image/jpeg;base64,ZmFrZQ==",
@@ -114,6 +185,15 @@ describe("voice-tools", () => {
       const switchAgent = defs.find((def) => def.name === "switch_agent");
       expect(delegate?.parameters?.properties?.executor?.enum || []).toContain("gemini-sdk");
       expect(switchAgent?.parameters?.properties?.executor?.enum || []).toContain("gemini-sdk");
+    });
+
+    it("includes direct workflow run-inspection tools", () => {
+      const defs = getToolDefinitions();
+      const names = defs.map((def) => def.name);
+      expect(names).toContain("get_workflow_definition");
+      expect(names).toContain("list_workflow_runs");
+      expect(names).toContain("get_workflow_run");
+      expect(names).toContain("retry_workflow_run");
     });
   });
 
@@ -292,6 +372,42 @@ describe("voice-tools", () => {
       expect(result.error).toBeUndefined();
       // The new handler returns a help message pointing to run_workspace_command
       expect(result.result).toMatch(/unknown command|not recognized|supported|run_workspace_command/i);
+    });
+
+    it("list_workflow_runs returns structured run history", async () => {
+      const result = await executeToolCall("list_workflow_runs", { workflowId: "wf-1", limit: 10 });
+      expect(result.error).toBeUndefined();
+      const parsed = JSON.parse(result.result);
+      expect(parsed.ok).toBe(true);
+      expect(parsed.count).toBeGreaterThan(0);
+      expect(parsed.runs[0]).toMatchObject({
+        runId: "run-1",
+        workflowId: "wf-1",
+        status: "failed",
+      });
+    });
+
+    it("get_workflow_run returns run detail with errors and logs", async () => {
+      const result = await executeToolCall("get_workflow_run", { runId: "run-1", logLimit: 5 });
+      expect(result.error).toBeUndefined();
+      const parsed = JSON.parse(result.result);
+      expect(parsed.ok).toBe(true);
+      expect(parsed.run).toMatchObject({
+        runId: "run-1",
+        workflowId: "wf-1",
+        status: "failed",
+      });
+      expect(Array.isArray(parsed.run.logs)).toBe(true);
+      expect(Array.isArray(parsed.run.errors)).toBe(true);
+    });
+
+    it("retry_workflow_run retries failed run by id", async () => {
+      const result = await executeToolCall("retry_workflow_run", { runId: "run-1", mode: "from_failed" });
+      expect(result.error).toBeUndefined();
+      const parsed = JSON.parse(result.result);
+      expect(parsed.ok).toBe(true);
+      expect(parsed.originalRunId).toBe("run-1");
+      expect(parsed.retryRunId).toBe("run-2");
     });
 
     it("query_live_view infers query from nested context history when query is missing", async () => {

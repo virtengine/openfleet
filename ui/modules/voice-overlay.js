@@ -774,8 +774,9 @@ function shouldSuppressCompactMeetingMessage(role, text, hasAttachments = false,
 
 function shouldSuppressMeetingMessage(msg, role, text, hasAttachments = false, isToolEvent = false) {
   const eventType = String(msg?.meta?.eventType || "").trim().toLowerCase();
+  const normalizedRole = String(role || "").trim().toLowerCase();
   if (eventType.includes("tool") && !isToolEvent) return true;
-  if (eventType.includes("transcript")) return true;
+  if (eventType.includes("transcript") && normalizedRole === "system") return true;
   if (eventType.startsWith("voice_background_")) return true;
   const source = String(msg?.meta?.source || "").trim().toLowerCase();
   if (source === "vision") return true;

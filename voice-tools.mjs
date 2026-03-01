@@ -72,6 +72,7 @@ let _fleetCoordinator = null;
 let _agentSupervisor = null;
 let _sharedStateManager = null;
 let _agentPool = null;
+let _workflowEngine = null;
 
 const VALID_EXECUTORS = new Set([
   "codex-sdk",
@@ -132,6 +133,13 @@ async function getAgentPool() {
     _agentPool = await import("./agent-pool.mjs");
   }
   return _agentPool;
+}
+
+async function getWorkflowEngineModule() {
+  if (!_workflowEngine) {
+    _workflowEngine = await import("./workflow-engine.mjs");
+  }
+  return _workflowEngine;
 }
 
 async function resolveKanbanContext() {
@@ -799,8 +807,82 @@ const TOOL_DEFS = [
   {
     type: "function",
     name: "list_workflows",
-    description: "List available workflow templates.",
+    description: "List available workflow templates and installed workflow definitions.",
     parameters: { type: "object", properties: {} },
+  },
+  {
+    type: "function",
+    name: "get_workflow_definition",
+    description: "Get a saved workflow definition (nodes, edges, metadata) by workflow id.",
+    parameters: {
+      type: "object",
+      properties: {
+        workflowId: { type: "string", description: "Workflow id" },
+        includeDisabled: {
+          type: "boolean",
+          description: "Include disabled workflows in lookups where relevant. Default: true",
+        },
+      },
+      required: ["workflowId"],
+    },
+  },
+  {
+    type: "function",
+    name: "list_workflow_runs",
+    description: "List workflow run history across all workflows or for one workflow.",
+    parameters: {
+      type: "object",
+      properties: {
+        workflowId: { type: "string", description: "Optional workflow id filter" },
+        status: {
+          type: "string",
+          enum: ["running", "completed", "failed", "paused", "cancelled"],
+          description: "Optional status filter",
+        },
+        limit: { type: "number", description: "Max runs to return. Default: 20" },
+      },
+    },
+  },
+  {
+    type: "function",
+    name: "get_workflow_run",
+    description: "Get workflow run detail, including errors and recent logs.",
+    parameters: {
+      type: "object",
+      properties: {
+        runId: { type: "string", description: "Workflow run id" },
+        includeLogs: {
+          type: "boolean",
+          description: "Include run logs in response. Default: true",
+        },
+        logLimit: {
+          type: "number",
+          description: "Max log entries to return when includeLogs=true. Default: 120",
+        },
+        includeNodeStatusEvents: {
+          type: "boolean",
+          description: "Include node status event timeline. Default: false",
+        },
+      },
+      required: ["runId"],
+    },
+  },
+  {
+    type: "function",
+    name: "retry_workflow_run",
+    description: "Retry a failed workflow run.",
+    parameters: {
+      type: "object",
+      properties: {
+        runId: { type: "string", description: "Original failed workflow run id to retry" },
+        mode: {
+          type: "string",
+          enum: ["from_failed", "from_scratch"],
+          description: "Retry mode. Default: from_failed",
+        },
+      },
+      required: ["runId"],
+    },
   },
   {
     type: "function",
@@ -1730,6 +1812,16 @@ const TOOL_HANDLERS = {
   },
 
   async list_workflows() {
+    let installed = [];
+    try {
+      const wfEngineMod = await getWorkflowEngineModule();
+      const engine = typeof wfEngineMod.getWorkflowEngine === "function"
+        ? wfEngineMod.getWorkflowEngine()
+        : null;
+      installed = engine?.list ? engine.list() : [];
+    } catch {
+      installed = [];
+    }
     try {
       const wf = await import("./workflow-templates.mjs");
       const templates = wf.listTemplates ? wf.listTemplates() : [];
@@ -1740,10 +1832,173 @@ const TOOL_HANDLERS = {
           name: t.name || t.id,
           description: (t.description || "").slice(0, 100),
         })),
+        workflowCount: Array.isArray(installed) ? installed.length : 0,
+        workflows: (Array.isArray(installed) ? installed : []).map((w) => ({
+          id: w.id,
+          name: w.name || w.id,
+          enabled: w.enabled !== false,
+          triggerCount: Array.isArray(w.triggers) ? w.triggers.length : 0,
+          nodeCount: Array.isArray(w.nodes) ? w.nodes.length : 0,
+          edgeCount: Array.isArray(w.edges) ? w.edges.length : 0,
+          updatedAt: w.updatedAt || null,
+        })),
       };
     } catch {
-      return { count: 0, templates: [], error: "Workflow templates not available." };
+      return {
+        count: 0,
+        templates: [],
+        workflowCount: Array.isArray(installed) ? installed.length : 0,
+        workflows: (Array.isArray(installed) ? installed : []).map((w) => ({
+          id: w.id,
+          name: w.name || w.id,
+          enabled: w.enabled !== false,
+          triggerCount: Array.isArray(w.triggers) ? w.triggers.length : 0,
+          nodeCount: Array.isArray(w.nodes) ? w.nodes.length : 0,
+          edgeCount: Array.isArray(w.edges) ? w.edges.length : 0,
+          updatedAt: w.updatedAt || null,
+        })),
+        error: "Workflow templates not available.",
+      };
     }
+  },
+
+  async get_workflow_definition(args = {}) {
+    const workflowId = String(args.workflowId || args.id || "").trim();
+    if (!workflowId) return { ok: false, error: "workflowId is required." };
+    const wfEngineMod = await getWorkflowEngineModule();
+    const engine = typeof wfEngineMod.getWorkflowEngine === "function"
+      ? wfEngineMod.getWorkflowEngine()
+      : null;
+    if (!engine?.get) {
+      return { ok: false, error: "Workflow engine is unavailable." };
+    }
+    const workflow = engine.get(workflowId);
+    if (!workflow) return { ok: false, error: `Workflow "${workflowId}" not found.` };
+    return {
+      ok: true,
+      workflow: {
+        ...workflow,
+        nodeCount: Array.isArray(workflow.nodes) ? workflow.nodes.length : 0,
+        edgeCount: Array.isArray(workflow.edges) ? workflow.edges.length : 0,
+        triggerCount: Array.isArray(workflow.triggers) ? workflow.triggers.length : 0,
+      },
+    };
+  },
+
+  async list_workflow_runs(args = {}) {
+    const workflowId = String(args.workflowId || args.id || "").trim();
+    const statusFilter = String(args.status || "").trim().toLowerCase();
+    const rawLimit = Number(args.limit);
+    const limit = Number.isFinite(rawLimit) && rawLimit > 0
+      ? Math.min(200, Math.floor(rawLimit))
+      : 20;
+    const wfEngineMod = await getWorkflowEngineModule();
+    const engine = typeof wfEngineMod.getWorkflowEngine === "function"
+      ? wfEngineMod.getWorkflowEngine()
+      : null;
+    if (!engine?.getRunHistory) {
+      return { ok: false, error: "Workflow engine run history is unavailable." };
+    }
+    let runs = engine.getRunHistory(workflowId || null, limit);
+    runs = Array.isArray(runs) ? runs : [];
+    if (statusFilter) {
+      runs = runs.filter((run) => String(run?.status || "").trim().toLowerCase() === statusFilter);
+    }
+    return {
+      ok: true,
+      count: runs.length,
+      runs: runs.map((run) => ({
+        runId: run?.runId || null,
+        workflowId: run?.workflowId || null,
+        workflowName: run?.workflowName || null,
+        status: run?.status || "unknown",
+        startedAt: run?.startedAt || null,
+        endedAt: run?.endedAt ?? null,
+        duration: run?.duration ?? null,
+        errorCount: run?.errorCount ?? 0,
+        logCount: run?.logCount ?? 0,
+        activeNodeCount: run?.activeNodeCount ?? 0,
+        isStuck: run?.isStuck === true,
+        stuckMs: run?.stuckMs ?? 0,
+        triggerEvent: run?.triggerEvent || null,
+        triggerSource: run?.triggerSource || null,
+      })),
+    };
+  },
+
+  async get_workflow_run(args = {}) {
+    const runId = String(args.runId || args.id || "").trim();
+    if (!runId) return { ok: false, error: "runId is required." };
+    const includeLogs = args.includeLogs !== false;
+    const includeNodeStatusEvents = args.includeNodeStatusEvents === true;
+    const rawLogLimit = Number(args.logLimit);
+    const logLimit = Number.isFinite(rawLogLimit) && rawLogLimit > 0
+      ? Math.min(500, Math.floor(rawLogLimit))
+      : 120;
+    const wfEngineMod = await getWorkflowEngineModule();
+    const engine = typeof wfEngineMod.getWorkflowEngine === "function"
+      ? wfEngineMod.getWorkflowEngine()
+      : null;
+    if (!engine?.getRunDetail) {
+      return { ok: false, error: "Workflow engine run detail is unavailable." };
+    }
+    const run = engine.getRunDetail(runId);
+    if (!run) return { ok: false, error: `Workflow run "${runId}" not found.` };
+    const detail = run?.detail && typeof run.detail === "object" ? run.detail : {};
+    const logs = Array.isArray(detail.logs) ? detail.logs : [];
+    const errors = Array.isArray(detail.errors) ? detail.errors : [];
+    const nodeStatusEvents = Array.isArray(detail.nodeStatusEvents)
+      ? detail.nodeStatusEvents
+      : [];
+    return {
+      ok: true,
+      run: {
+        runId: run?.runId || runId,
+        workflowId: run?.workflowId || null,
+        workflowName: run?.workflowName || null,
+        status: run?.status || "unknown",
+        startedAt: run?.startedAt || null,
+        endedAt: run?.endedAt ?? null,
+        duration: run?.duration ?? null,
+        errorCount: run?.errorCount ?? errors.length,
+        logCount: run?.logCount ?? logs.length,
+        nodeCount: run?.nodeCount ?? null,
+        completedCount: run?.completedCount ?? null,
+        failedCount: run?.failedCount ?? null,
+        skippedCount: run?.skippedCount ?? null,
+        activeNodeCount: run?.activeNodeCount ?? null,
+        isStuck: run?.isStuck === true,
+        triggerEvent: run?.triggerEvent || null,
+        triggerSource: run?.triggerSource || null,
+        data: detail?.data || null,
+        errors,
+        logs: includeLogs ? logs.slice(-logLimit) : [],
+        nodeStatuses: detail?.nodeStatuses || {},
+        nodeStatusEvents: includeNodeStatusEvents ? nodeStatusEvents : [],
+      },
+    };
+  },
+
+  async retry_workflow_run(args = {}) {
+    const runId = String(args.runId || args.id || "").trim();
+    if (!runId) return { ok: false, error: "runId is required." };
+    const requestedMode = String(args.mode || "from_failed").trim().toLowerCase();
+    const mode = requestedMode === "from_scratch" ? "from_scratch" : "from_failed";
+    const wfEngineMod = await getWorkflowEngineModule();
+    const engine = typeof wfEngineMod.getWorkflowEngine === "function"
+      ? wfEngineMod.getWorkflowEngine()
+      : null;
+    if (!engine?.retryRun) {
+      return { ok: false, error: "Workflow retry is unavailable." };
+    }
+    const result = await engine.retryRun(runId, { mode });
+    return {
+      ok: true,
+      mode,
+      originalRunId: result?.originalRunId || runId,
+      retryRunId: result?.retryRunId || null,
+      status: result?.ctx?.errors?.length ? "failed" : "running_or_completed",
+    };
   },
 
   async list_skills() {

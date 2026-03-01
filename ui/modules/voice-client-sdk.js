@@ -235,6 +235,30 @@ function _resetTranscriptPersistenceState() {
   _assistantBaselineBeforeToolAck = "";
 }
 
+function _flushPendingTranscriptBuffers() {
+  if (_pendingUserTranscriptTimer) {
+    clearTimeout(_pendingUserTranscriptTimer);
+    _pendingUserTranscriptTimer = null;
+  }
+  if (_pendingAssistantTranscriptTimer) {
+    clearTimeout(_pendingAssistantTranscriptTimer);
+    _pendingAssistantTranscriptTimer = null;
+  }
+
+  const finalUser = String(_pendingUserTranscriptText || "").trim();
+  if (finalUser) {
+    _persistTranscriptIfNew("user", finalUser, "sdk.history_updated.user.flush");
+  }
+
+  const finalAssistant = String(_pendingAssistantTranscriptText || "").trim();
+  if (finalAssistant) {
+    _persistTranscriptIfNew("assistant", finalAssistant, "sdk.history_updated.assistant.flush");
+  }
+
+  _pendingUserTranscriptText = "";
+  _pendingAssistantTranscriptText = "";
+}
+
 function _persistTranscriptIfNew(role, text, eventType) {
   const normalizedRole = String(role || "").trim().toLowerCase();
   const value = String(text || "").trim();
@@ -279,10 +303,6 @@ function _markAssistantToolResponseObserved(latestAssistantText = "") {
 }
 
 function _scheduleUserTranscriptFinalize(text) {
-  if (!ENABLE_USER_TRANSCRIPT) {
-    sdkVoiceTranscript.value = "";
-    return;
-  }
   const value = String(text || "").trim();
   if (!value) return;
   _pendingUserTranscriptText = value;
@@ -291,8 +311,12 @@ function _scheduleUserTranscriptFinalize(text) {
     _pendingUserTranscriptTimer = null;
     const finalText = String(_pendingUserTranscriptText || "").trim();
     if (!finalText) return;
-    sdkVoiceTranscript.value = finalText;
-    emit("transcript", { text: finalText, final: true });
+    if (ENABLE_USER_TRANSCRIPT) {
+      sdkVoiceTranscript.value = finalText;
+      emit("transcript", { text: finalText, final: true });
+    } else {
+      sdkVoiceTranscript.value = "";
+    }
     _persistTranscriptIfNew("user", finalText, "sdk.history_updated.user.final");
   }, 350);
 }
@@ -1008,6 +1032,7 @@ export async function startSdkVoiceSession(options = {}) {
  */
 export function stopSdkVoiceSession() {
   emit("session-ending", { sessionId: sdkVoiceSessionId.value });
+  _flushPendingTranscriptBuffers();
   if (_geminiRecorder) {
     try { _geminiRecorder.stop(); } catch { /* ignore */ }
     _geminiRecorder = null;

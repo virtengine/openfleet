@@ -291,7 +291,7 @@ async function _recordVoiceTranscript(role, content, eventType = "") {
   const text = String(content || "").trim();
   if (!sessionId || !text) return;
   try {
-    await fetch("/api/voice/transcript", {
+    const res = await fetch("/api/voice/transcript", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
@@ -304,6 +304,11 @@ async function _recordVoiceTranscript(role, content, eventType = "") {
         model: _callContext?.model || undefined,
       }),
     });
+    if (!res.ok) {
+      const payload = await res.json().catch(() => ({}));
+      const detail = String(payload?.error || res.statusText || "request failed").trim();
+      throw new Error(`HTTP ${res.status}: ${detail}`);
+    }
   } catch (err) {
     console.warn("[voice-client] transcript persistence failed:", err?.message || err);
   }

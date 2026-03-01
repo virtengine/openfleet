@@ -34,6 +34,7 @@ let _sharedStateManager = null;
 let _agentPrompts = null;
 let _bosunSkills = null;
 let _workflowTemplates = null;
+let _workflowEngine = null;
 let _taskStore = null;
 
 async function getKanban() {
@@ -90,6 +91,13 @@ async function getWorkflowTemplates() {
     _workflowTemplates = await import("./workflow-templates.mjs");
   }
   return _workflowTemplates;
+}
+
+async function getWorkflowEngineModule() {
+  if (!_workflowEngine) {
+    _workflowEngine = await import("./workflow-engine.mjs");
+  }
+  return _workflowEngine;
 }
 
 async function getTaskStore() {
@@ -668,6 +676,76 @@ registerAction("workflow.get", async (params) => {
   };
 });
 
+registerAction("workflow.saved_list", async () => {
+  const wfEngineMod = await getWorkflowEngineModule();
+  const engine = typeof wfEngineMod.getWorkflowEngine === "function"
+    ? wfEngineMod.getWorkflowEngine()
+    : null;
+  if (!engine?.list) throw new Error("Workflow engine is unavailable");
+  const workflows = engine.list();
+  return {
+    count: Array.isArray(workflows) ? workflows.length : 0,
+    workflows: (Array.isArray(workflows) ? workflows : []).map((workflow) => ({
+      id: workflow?.id || null,
+      name: workflow?.name || workflow?.id || null,
+      enabled: workflow?.enabled !== false,
+      triggerCount: Array.isArray(workflow?.triggers) ? workflow.triggers.length : 0,
+      nodeCount: Array.isArray(workflow?.nodes) ? workflow.nodes.length : 0,
+      edgeCount: Array.isArray(workflow?.edges) ? workflow.edges.length : 0,
+      updatedAt: workflow?.updatedAt || null,
+    })),
+  };
+});
+
+registerAction("workflow.runs", async (params) => {
+  const wfEngineMod = await getWorkflowEngineModule();
+  const engine = typeof wfEngineMod.getWorkflowEngine === "function"
+    ? wfEngineMod.getWorkflowEngine()
+    : null;
+  if (!engine?.getRunHistory) throw new Error("Workflow run history is unavailable");
+  const workflowId = String(params.workflowId || params.id || "").trim() || null;
+  const rawLimit = Number(params.limit);
+  const limit = Number.isFinite(rawLimit) && rawLimit > 0
+    ? Math.min(200, Math.floor(rawLimit))
+    : 20;
+  const statusFilter = String(params.status || "").trim().toLowerCase();
+  let runs = engine.getRunHistory(workflowId, limit);
+  runs = Array.isArray(runs) ? runs : [];
+  if (statusFilter) {
+    runs = runs.filter((run) => String(run?.status || "").trim().toLowerCase() === statusFilter);
+  }
+  return {
+    count: runs.length,
+    runs: runs.map((run) => ({
+      runId: run?.runId || null,
+      workflowId: run?.workflowId || null,
+      workflowName: run?.workflowName || null,
+      status: run?.status || "unknown",
+      startedAt: run?.startedAt || null,
+      endedAt: run?.endedAt ?? null,
+      duration: run?.duration ?? null,
+      errorCount: run?.errorCount ?? 0,
+      logCount: run?.logCount ?? 0,
+      isStuck: run?.isStuck === true,
+      triggerEvent: run?.triggerEvent || null,
+      triggerSource: run?.triggerSource || null,
+    })),
+  };
+});
+
+registerAction("workflow.run_get", async (params) => {
+  const wfEngineMod = await getWorkflowEngineModule();
+  const engine = typeof wfEngineMod.getWorkflowEngine === "function"
+    ? wfEngineMod.getWorkflowEngine()
+    : null;
+  if (!engine?.getRunDetail) throw new Error("Workflow run detail is unavailable");
+  const runId = String(params.runId || params.id || "").trim();
+  if (!runId) throw new Error("runId is required");
+  const run = engine.getRunDetail(runId);
+  if (!run) throw new Error(`Workflow run "${runId}" not found`);
+  return run;
+});
+
 // ── Skill/prompt actions ────────────────────────────────────────────────────
 
 registerAction("skill.list", async () => {
@@ -779,6 +857,9 @@ export function getActionManifest() {
     { action: "tool.call", description: "Call a registered tool by name. params: { toolName, args }" },
     { action: "workflow.list", description: "List workflow templates. params: {}" },
     { action: "workflow.get", description: "Get a workflow template. params: { id }" },
+    { action: "workflow.saved_list", description: "List installed workflow definitions. params: {}" },
+    { action: "workflow.runs", description: "List workflow run history. params: { workflowId?, status?, limit? }" },
+    { action: "workflow.run_get", description: "Get a workflow run detail. params: { runId }" },
     { action: "skill.list", description: "List available skills. params: {}" },
     { action: "prompt.list", description: "List agent prompt definitions. params: {}" },
     { action: "prompt.get", description: "Get a prompt template. params: { key }" },
