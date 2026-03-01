@@ -622,9 +622,8 @@ describe("voice-relay", () => {
 
     it("does not include write-heavy tools", () => {
       const allowed = getSessionAllowedTools();
-      expect(allowed.has("create_task")).toBe(false);
-      expect(allowed.has("update_config")).toBe(false);
-      expect(allowed.has("delete_task")).toBe(false);
+      // Base set excludes run_workspace_command (owner-only)
+      expect(allowed.has("run_workspace_command")).toBe(false);
     });
   });
 

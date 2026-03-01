@@ -46,13 +46,20 @@ vi.mock("../session-tracker.mjs", () => ({
   listSessions: vi.fn(() => [
     { id: "sess-1", type: "primary", status: "active", lastActiveAt: "2026-03-01T00:00:00Z" },
   ]),
+  listAllSessions: vi.fn(() => [
+    { id: "sess-1", type: "primary", status: "active", lastActiveAt: "2026-03-01T00:00:00Z" },
+  ]),
   getSession: vi.fn((id) =>
     id === "sess-1"
       ? { id: "sess-1", messages: [{ role: "user", content: "Hello", timestamp: "2026-03-01T00:00:01Z" }] }
       : null,
   ),
-  createSession: vi.fn((opts) => ({ id: `sess-${Date.now()}`, type: opts?.type || "voice" })),
-  getSessionById: vi.fn(() => null),
+  getSessionById: vi.fn((id) =>
+    id === "sess-1"
+      ? { id: "sess-1", messages: [{ role: "user", content: "Hello", timestamp: "2026-03-01T00:00:01Z" }] }
+      : null,
+  ),
+  createSession: vi.fn((opts) => ({ id: opts?.id || `sess-${Date.now()}`, type: opts?.type || "voice", status: "active" })),
 }));
 
 vi.mock("../fleet-coordinator.mjs", () => ({

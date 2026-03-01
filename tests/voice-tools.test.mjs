@@ -163,10 +163,7 @@ describe("voice-tools", () => {
         message: "test instruction",
       });
       expect(result.error).toBeUndefined();
-      expect(result.result).toMatch(/delegation started/i);
-      // execPooledPrompt is called asynchronously (fire-and-forget)
-      // Give it a tick to fire
-      await new Promise((r) => setTimeout(r, 10));
+      expect(result.result).toMatch(/\{RESPONSE\}/i);
       expect(vi.mocked(execPooledPrompt)).toHaveBeenCalled();
       const callArgs = vi.mocked(execPooledPrompt).mock.calls[0];
       expect(callArgs[0]).toBe("test instruction");
@@ -184,10 +181,7 @@ describe("voice-tools", () => {
         },
       );
       expect(result.error).toBeUndefined();
-      expect(result.result).toMatch(/delegation started/i);
-      expect(result.result).toContain("claude-sdk");
-      // Non-blocking: no setPrimaryAgent call (we use execPooledPrompt now)
-      await new Promise((r) => setTimeout(r, 10));
+      expect(result.result).toMatch(/\{RESPONSE\}/i);
       const callArgs = vi.mocked(execPooledPrompt).mock.calls.at(-1);
       expect(callArgs?.[0]).toBe("ship it");
       expect(callArgs?.[1]).toMatchObject({
@@ -209,9 +203,7 @@ describe("voice-tools", () => {
         },
       );
       expect(result.error).toBeUndefined();
-      expect(result.result).toMatch(/delegation started/i);
-      expect(result.result).toContain("gemini-sdk");
-      await new Promise((r) => setTimeout(r, 10));
+      expect(result.result).toMatch(/\{RESPONSE\}/i);
       const callArgs = vi.mocked(execPooledPrompt).mock.calls.at(-1);
       expect(callArgs?.[1]).toMatchObject({
         sdk: "gemini-sdk",
@@ -236,8 +228,7 @@ describe("voice-tools", () => {
         { sessionId: "primary-vision-1" },
       );
       expect(result.error).toBeUndefined();
-      expect(result.result).toMatch(/delegation started/i);
-      await new Promise((r) => setTimeout(r, 10));
+      expect(result.result).toMatch(/\{RESPONSE\}/i);
       const callArgs = vi.mocked(execPooledPrompt).mock.calls.at(-1);
       expect(callArgs?.[0]).toContain("Please fix the failing test");
       expect(callArgs?.[0]).toContain("Live visual context from this call");
