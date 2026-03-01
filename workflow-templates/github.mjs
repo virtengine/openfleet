@@ -344,7 +344,7 @@ export const PR_CONFLICT_RESOLVER_TEMPLATE = {
         "  try { prs = typeof raw === 'string' ? JSON.parse(raw) : raw; } catch { return ''; }" +
         "  if (!Array.isArray(prs)) return '';" +
         "  const CONFLICT = new Set(['CONFLICTING', 'BEHIND', 'DIRTY']);" +
-        "  // Skip PRs already owned by the watchdog fix agent" +
+        "  /* Skip PRs already owned by the watchdog fix agent */" +
         "  const pr = prs.find((p) =>" +
         "    CONFLICT.has(String(p?.mergeable || '').toUpperCase()) &&" +
         "    !(p.labels || []).some((l) => l.name === 'bosun-needs-fix')" +

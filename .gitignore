@@ -41,3 +41,7 @@ workspaces.json
 /.bosun/
 *.bak
 .claude/settings.local.json
+__e2e-results.json
+tests/__e2e-out.txt
+tests/__e2e-results.txt
+__e2e-verbose.txt
