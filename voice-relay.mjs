@@ -949,6 +949,9 @@ async function createAzureEphemeralToken(cfg, toolDefinitions = [], callContext 
   }
 
   const sessionConfig = {
+    // GA protocol (gpt-realtime-1.5 etc.) requires type: "realtime" in the POST body.
+    // Preview protocol does not support this field — omit it to avoid 400s.
+    ...(isAzureGaProtocol(deployment) ? { type: "realtime" } : {}),
     model: deployment,
     voice: voiceId,
     instructions,

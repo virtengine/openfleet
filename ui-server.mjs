@@ -9254,6 +9254,7 @@ async function handleApi(req, res, url) {
         if (ep.endpoint) out.endpoint = String(ep.endpoint);
         if (ep.deployment) out.deployment = String(ep.deployment);
         if (ep.model) out.model = String(ep.model);
+        if (ep.visionModel) out.visionModel = String(ep.visionModel);
         if (ep.apiKey) out.apiKey = String(ep.apiKey);
         if (ep.voiceId) out.voiceId = String(ep.voiceId);
         if (ep.role) out.role = String(ep.role);
@@ -9271,6 +9272,164 @@ async function handleApi(req, res, url) {
     } catch (err) {
       jsonResponse(res, 500, { ok: false, error: err.message });
     }
+    return;
+  }
+
+  // ── OpenAI Codex OAuth routes ─────────────────────────────────────────────
+
+  // GET /api/voice/auth/openai/status — token presence + pending login state
+  if (path === "/api/voice/auth/openai/status" && req.method === "GET") {
+    try {
+      const { getOpenAILoginStatus } = await import("./voice-auth-manager.mjs");
+      jsonResponse(res, 200, { ok: true, ...getOpenAILoginStatus() });
+    } catch (err) {
+      jsonResponse(res, 500, { ok: false, error: err.message });
+    }
+    return;
+  }
+
+  // POST /api/voice/auth/openai/login — start PKCE login, open browser
+  if (path === "/api/voice/auth/openai/login" && req.method === "POST") {
+    try {
+      const { startOpenAICodexLogin } = await import("./voice-auth-manager.mjs");
+      const { authUrl } = startOpenAICodexLogin();
+      jsonResponse(res, 200, { ok: true, authUrl });
+    } catch (err) {
+      jsonResponse(res, 500, { ok: false, error: err.message });
+    }
+    return;
+  }
+
+  // POST /api/voice/auth/openai/cancel — cancel pending login
+  if (path === "/api/voice/auth/openai/cancel" && req.method === "POST") {
+    try {
+      const { cancelOpenAILogin } = await import("./voice-auth-manager.mjs");
+      cancelOpenAILogin();
+      jsonResponse(res, 200, { ok: true });
+    } catch (err) {
+      jsonResponse(res, 500, { ok: false, error: err.message });
+    }
+    return;
+  }
+
+  // POST /api/voice/auth/openai/logout — remove stored token
+  if (path === "/api/voice/auth/openai/logout" && req.method === "POST") {
+    try {
+      const { logoutOpenAI } = await import("./voice-auth-manager.mjs");
+      const result = logoutOpenAI();
+      broadcastUiEvent(["settings", "voice"], "invalidate", {
+        reason: "openai-oauth-logout",
+      });
+      jsonResponse(res, 200, { ok: true, ...result });
+    } catch (err) {
+      jsonResponse(res, 500, { ok: false, error: err.message });
+    }
+    return;
+  }
+
+  // POST /api/voice/auth/openai/refresh — exchange refresh_token for new access_token
+  if (path === "/api/voice/auth/openai/refresh" && req.method === "POST") {
+    try {
+      const { refreshOpenAICodexToken } = await import("./voice-auth-manager.mjs");
+      await refreshOpenAICodexToken();
+      jsonResponse(res, 200, { ok: true });
+    } catch (err) {
+      jsonResponse(res, 500, { ok: false, error: err.message });
+    }
+    return;
+  }
+
+  // ── Claude OAuth routes ────────────────────────────────────────────────────
+
+  if (path === "/api/voice/auth/claude/status" && req.method === "GET") {
+    try {
+      const { getClaudeLoginStatus } = await import("./voice-auth-manager.mjs");
+      jsonResponse(res, 200, { ok: true, ...getClaudeLoginStatus() });
+    } catch (err) { jsonResponse(res, 500, { ok: false, error: err.message }); }
+    return;
+  }
+
+  if (path === "/api/voice/auth/claude/login" && req.method === "POST") {
+    try {
+      const { startClaudeLogin } = await import("./voice-auth-manager.mjs");
+      const { authUrl } = startClaudeLogin();
+      jsonResponse(res, 200, { ok: true, authUrl });
+    } catch (err) { jsonResponse(res, 500, { ok: false, error: err.message }); }
+    return;
+  }
+
+  if (path === "/api/voice/auth/claude/cancel" && req.method === "POST") {
+    try {
+      const { cancelClaudeLogin } = await import("./voice-auth-manager.mjs");
+      cancelClaudeLogin();
+      jsonResponse(res, 200, { ok: true });
+    } catch (err) { jsonResponse(res, 500, { ok: false, error: err.message }); }
+    return;
+  }
+
+  if (path === "/api/voice/auth/claude/logout" && req.method === "POST") {
+    try {
+      const { logoutClaude } = await import("./voice-auth-manager.mjs");
+      const result = logoutClaude();
+      broadcastUiEvent(["settings", "voice"], "invalidate", { reason: "claude-oauth-logout" });
+      jsonResponse(res, 200, { ok: true, ...result });
+    } catch (err) { jsonResponse(res, 500, { ok: false, error: err.message }); }
+    return;
+  }
+
+  if (path === "/api/voice/auth/claude/refresh" && req.method === "POST") {
+    try {
+      const { refreshClaudeToken } = await import("./voice-auth-manager.mjs");
+      await refreshClaudeToken();
+      jsonResponse(res, 200, { ok: true });
+    } catch (err) { jsonResponse(res, 500, { ok: false, error: err.message }); }
+    return;
+  }
+
+  // ── Google Gemini OAuth routes ─────────────────────────────────────────────
+
+  if (path === "/api/voice/auth/gemini/status" && req.method === "GET") {
+    try {
+      const { getGeminiLoginStatus } = await import("./voice-auth-manager.mjs");
+      jsonResponse(res, 200, { ok: true, ...getGeminiLoginStatus() });
+    } catch (err) { jsonResponse(res, 500, { ok: false, error: err.message }); }
+    return;
+  }
+
+  if (path === "/api/voice/auth/gemini/login" && req.method === "POST") {
+    try {
+      const { startGeminiLogin } = await import("./voice-auth-manager.mjs");
+      const { authUrl } = startGeminiLogin();
+      jsonResponse(res, 200, { ok: true, authUrl });
+    } catch (err) { jsonResponse(res, 500, { ok: false, error: err.message }); }
+    return;
+  }
+
+  if (path === "/api/voice/auth/gemini/cancel" && req.method === "POST") {
+    try {
+      const { cancelGeminiLogin } = await import("./voice-auth-manager.mjs");
+      cancelGeminiLogin();
+      jsonResponse(res, 200, { ok: true });
+    } catch (err) { jsonResponse(res, 500, { ok: false, error: err.message }); }
+    return;
+  }
+
+  if (path === "/api/voice/auth/gemini/logout" && req.method === "POST") {
+    try {
+      const { logoutGemini } = await import("./voice-auth-manager.mjs");
+      const result = logoutGemini();
+      broadcastUiEvent(["settings", "voice"], "invalidate", { reason: "gemini-oauth-logout" });
+      jsonResponse(res, 200, { ok: true, ...result });
+    } catch (err) { jsonResponse(res, 500, { ok: false, error: err.message }); }
+    return;
+  }
+
+  if (path === "/api/voice/auth/gemini/refresh" && req.method === "POST") {
+    try {
+      const { refreshGeminiToken } = await import("./voice-auth-manager.mjs");
+      await refreshGeminiToken();
+      jsonResponse(res, 200, { ok: true });
+    } catch (err) { jsonResponse(res, 500, { ok: false, error: err.message }); }
     return;
   }
 

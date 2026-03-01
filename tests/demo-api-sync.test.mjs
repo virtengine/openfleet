@@ -128,6 +128,24 @@ const INTENTIONALLY_SKIPPED = new Set([
   "/api/voice/actions",        // Voice action catalog — server-only (reads server config)
   "/api/voice/prompt",         // Voice system prompt assembly — server-only (reads config + context)
   "/api/voice/action-manifest",// Voice action manifest — server-only (dynamic capability listing)
+  // OpenAI Codex OAuth flow — server-only (manages tokens, starts local callback server)
+  "/api/voice/auth/openai/status",
+  "/api/voice/auth/openai/login",
+  "/api/voice/auth/openai/cancel",
+  "/api/voice/auth/openai/logout",
+  "/api/voice/auth/openai/refresh",
+  // Claude OAuth flow — server-only
+  "/api/voice/auth/claude/status",
+  "/api/voice/auth/claude/login",
+  "/api/voice/auth/claude/cancel",
+  "/api/voice/auth/claude/logout",
+  "/api/voice/auth/claude/refresh",
+  // Google Gemini OAuth flow — server-only
+  "/api/voice/auth/gemini/status",
+  "/api/voice/auth/gemini/login",
+  "/api/voice/auth/gemini/cancel",
+  "/api/voice/auth/gemini/logout",
+  "/api/voice/auth/gemini/refresh",
 ]);
 
 // ── Session actions intentionally skipped in demo ─────────────────────
