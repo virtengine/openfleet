@@ -4223,6 +4223,1107 @@ registerNodeType("action.mcp_list_tools", {
 });
 
 // ═══════════════════════════════════════════════════════════════════════════
+//  TASK LIFECYCLE — Workflow-first task execution primitives
+//
+//  These node types decompose the monolithic TaskExecutor.executeTask() flow
+//  into composable DAG nodes, enabling the full task lifecycle to run as a
+//  native workflow (template-task-lifecycle).
+//
+//  Every node follows the contract:
+//    execute(node, ctx, engine) → { success: boolean, ... }
+//    describe() → string
+//    schema → JSON Schema with required[] where applicable
+//
+//  Design principles:
+//    1. Idempotent cleanup — release nodes are safe on double-call
+//    2. Context-first — nodes auto-read ctx.data when config is omitted
+//    3. Rich return values — every return contains enough info for conditions
+//    4. Error boundary — nodes never throw unless config is fatally wrong
+// ═══════════════════════════════════════════════════════════════════════════
+
+/** Module-scope lazy caches for task lifecycle imports. */
+let _taskClaimsMod = null;
+let _taskComplexityMod = null;
+let _kanbanAdapterMod = null;
+let _agentPoolMod = null;
+let _gitSafetyMod = null;
+let _diffStatsMod = null;
+
+async function ensureTaskClaimsMod() {
+  if (!_taskClaimsMod) _taskClaimsMod = await import("./task-claims.mjs");
+  return _taskClaimsMod;
+}
+async function ensureTaskComplexityMod() {
+  if (!_taskComplexityMod) _taskComplexityMod = await import("./task-complexity.mjs");
+  return _taskComplexityMod;
+}
+async function ensureKanbanAdapterMod() {
+  if (!_kanbanAdapterMod) _kanbanAdapterMod = await import("./kanban-adapter.mjs");
+  return _kanbanAdapterMod;
+}
+async function ensureAgentPoolMod() {
+  if (!_agentPoolMod) _agentPoolMod = await import("./agent-pool.mjs");
+  return _agentPoolMod;
+}
+async function ensureGitSafetyMod() {
+  if (!_gitSafetyMod) _gitSafetyMod = await import("./git-safety.mjs");
+  return _gitSafetyMod;
+}
+async function ensureDiffStatsMod() {
+  if (!_diffStatsMod) _diffStatsMod = await import("./diff-stats.mjs");
+  return _diffStatsMod;
+}
+
+/** Resolve a config value, falling back to ctx.data, then defaultVal. */
+function cfgOrCtx(node, ctx, key, defaultVal = "") {
+  const raw = node.config?.[key];
+  if (raw != null && raw !== "") return ctx.resolve(String(raw));
+  const ctxVal = ctx.data?.[key];
+  if (ctxVal != null && ctxVal !== "") return String(ctxVal);
+  return defaultVal;
+}
+
+/**
+ * Anti-thrash state — module-scope to survive across workflow runs.
+ * Mirrors TaskExecutor._noCommitCounts / _skipUntil / _completedWithPR.
+ */
+const _noCommitCounts = new Map();
+const _skipUntil = new Map();
+const _completedWithPR = new Set();
+const MAX_NO_COMMIT_ATTEMPTS = 3;
+const NO_COMMIT_BASE_COOLDOWN_MS = 15 * 60 * 1000; // 15 min
+const NO_COMMIT_MAX_COOLDOWN_MS = 2 * 60 * 60 * 1000; // 2 hours
+
+// ── trigger.task_available ──────────────────────────────────────────────────
+
+registerNodeType("trigger.task_available", {
+  describe: () =>
+    "Polling trigger that fires when todo tasks are available. Handles " +
+    "slot limits, anti-thrash filtering, cooldowns, task sorting (fire " +
+    "tasks first), and listTasks retry with backoff.",
+  schema: {
+    type: "object",
+    properties: {
+      maxParallel: { type: "number", default: 3, description: "Maximum parallel task slots" },
+      pollIntervalMs: { type: "number", default: 30000, description: "Poll interval in ms" },
+      projectId: { type: "string", description: "Kanban project ID (optional)" },
+      status: { type: "string", default: "todo", description: "Status to poll for" },
+      filterCodexScoped: { type: "boolean", default: true, description: "Only codex-scoped tasks" },
+      filterDrafts: { type: "boolean", default: true, description: "Exclude draft tasks" },
+      listRetries: { type: "number", default: 3, description: "Retries for listTasks calls" },
+      listRetryDelayMs: { type: "number", default: 2000, description: "Base delay between retries" },
+    },
+  },
+  async execute(node, ctx) {
+    const maxParallel = node.config?.maxParallel ?? 3;
+    const status = node.config?.status ?? "todo";
+    const projectId = cfgOrCtx(node, ctx, "projectId") || undefined;
+    const filterDrafts = node.config?.filterDrafts !== false;
+    const listRetries = node.config?.listRetries ?? 3;
+    const listRetryDelayMs = node.config?.listRetryDelayMs ?? 2000;
+
+    // Check slot availability
+    const activeSlotCount = ctx.data?.activeSlotCount ?? 0;
+    if (activeSlotCount >= maxParallel) {
+      ctx.log(node.id, `All ${maxParallel} slot(s) in use — skipping`);
+      return { triggered: false, reason: "slots_full", activeSlotCount, maxParallel };
+    }
+
+    // Query kanban with retry + backoff
+    let tasks = [];
+    let lastErr = null;
+    for (let attempt = 0; attempt <= listRetries; attempt++) {
+      try {
+        const kanban = ctx.data?._services?.kanban || engine?.services?.kanban;
+        if (kanban?.listTasks) {
+          tasks = await kanban.listTasks(projectId, { status });
+        } else {
+          const ka = await ensureKanbanAdapterMod();
+          tasks = await ka.listTasks(projectId, { status });
+        }
+        lastErr = null;
+        break;
+      } catch (err) {
+        lastErr = err;
+        if (attempt < listRetries) {
+          const delay = listRetryDelayMs * Math.pow(2, attempt);
+          ctx.log(node.id, `listTasks attempt ${attempt + 1} failed: ${err.message} — retrying in ${delay}ms`);
+          await new Promise((r) => setTimeout(r, delay));
+        }
+      }
+    }
+    if (lastErr) {
+      ctx.log(node.id, `listTasks failed after ${listRetries + 1} attempts: ${lastErr.message}`);
+      return { triggered: false, reason: "list_error", error: lastErr.message };
+    }
+
+    // Client-side status filter (backend may not respect status param)
+    if (tasks?.length > 0) {
+      tasks = tasks.filter((t) => t.status === status);
+    }
+    // Draft filter
+    if (filterDrafts && tasks?.length > 0) {
+      tasks = tasks.filter((t) => !t.draft && !t.isDraft);
+    }
+    if (!tasks || tasks.length === 0) {
+      return { triggered: false, reason: "no_tasks", taskCount: 0 };
+    }
+
+    // Anti-thrash + cooldown filters
+    const activeTaskIds = ctx.data?.activeTaskIds || [];
+    const now = Date.now();
+    tasks = tasks.filter((t) => {
+      const id = String(t.id || t.task_id || "");
+      if (!id) return false;
+      // Already running
+      if (activeTaskIds.includes(id)) return false;
+      // Already completed with PR this session
+      if (_completedWithPR.has(id)) return false;
+      // Skip-until cooldown (anti-thrash)
+      const skipUntil = _skipUntil.get(id);
+      if (skipUntil && now < skipUntil) return false;
+      // Hard-blocked after MAX_NO_COMMIT_ATTEMPTS
+      const noCommitCount = _noCommitCounts.get(id) || 0;
+      if (noCommitCount >= MAX_NO_COMMIT_ATTEMPTS) return false;
+      // Explicit cooldowns from context
+      const cooldowns = ctx.data?.taskCooldowns || {};
+      const cd = cooldowns[id];
+      if (cd && now < cd) return false;
+      // Blocked task IDs
+      const blocked = ctx.data?.blockedTaskIds || [];
+      if (blocked.includes(id)) return false;
+      return true;
+    });
+
+    if (tasks.length === 0) {
+      return { triggered: false, reason: "all_filtered", taskCount: 0 };
+    }
+
+    // Sort: fire tasks first, then by priority, then by created date
+    tasks.sort((a, b) => {
+      const aFire = (a.labels || []).some((l) => typeof l === "string" ? l.includes("fire") : l?.name?.includes("fire"));
+      const bFire = (b.labels || []).some((l) => typeof l === "string" ? l.includes("fire") : l?.name?.includes("fire"));
+      if (aFire && !bFire) return -1;
+      if (!aFire && bFire) return 1;
+      const aPri = a.priority ?? 999;
+      const bPri = b.priority ?? 999;
+      if (aPri !== bPri) return aPri - bPri;
+      return new Date(a.createdAt || 0) - new Date(b.createdAt || 0);
+    });
+
+    const remaining = maxParallel - activeSlotCount;
+    const toDispatch = tasks.slice(0, remaining);
+
+    ctx.log(node.id, `Found ${toDispatch.length} task(s) ready (${remaining} slot(s) free)`);
+    return {
+      triggered: true,
+      tasks: toDispatch,
+      taskCount: toDispatch.length,
+      availableSlots: remaining,
+    };
+  },
+});
+
+// ── condition.slot_available ────────────────────────────────────────────────
+
+registerNodeType("condition.slot_available", {
+  describe: () =>
+    "Gate checking both global and per-base-branch concurrency limits.",
+  schema: {
+    type: "object",
+    properties: {
+      maxParallel: { type: "number", default: 3, description: "Maximum concurrent slots" },
+      baseBranchLimit: { type: "number", default: 0, description: "Per-base-branch limit (0 = unlimited)" },
+      baseBranch: { type: "string", description: "Base branch to check against" },
+    },
+  },
+  async execute(node, ctx) {
+    const maxParallel = node.config?.maxParallel ?? 3;
+    const baseBranchLimit = node.config?.baseBranchLimit ?? 0;
+    const activeSlotCount = ctx.data?.activeSlotCount ?? 0;
+    const slotsAvailable = activeSlotCount < maxParallel;
+
+    let baseBranchOk = true;
+    if (baseBranchLimit > 0) {
+      const baseBranch = cfgOrCtx(node, ctx, "baseBranch");
+      if (baseBranch) {
+        const counts = ctx.data?.baseBranchSlotCounts || {};
+        const key = baseBranch.replace(/^origin\//, "");
+        baseBranchOk = (counts[key] ?? 0) < baseBranchLimit;
+      }
+    }
+
+    const result = slotsAvailable && baseBranchOk;
+    ctx.log(node.id, `Slot check: ${activeSlotCount}/${maxParallel}, perBranch=${baseBranchOk} → ${result}`);
+    return { result, slotsAvailable, baseBranchOk, activeSlotCount, maxParallel };
+  },
+});
+
+// ── action.allocate_slot ────────────────────────────────────────────────────
+
+registerNodeType("action.allocate_slot", {
+  describe: () =>
+    "Reserve a parallel execution slot. Saves process env snapshot for " +
+    "parallel isolation and stores slot metadata in workflow context.",
+  schema: {
+    type: "object",
+    properties: {
+      taskId: { type: "string", description: "Task ID" },
+      taskTitle: { type: "string", description: "Task title" },
+      branch: { type: "string", description: "Git branch" },
+      baseBranch: { type: "string", description: "Base branch" },
+    },
+    required: ["taskId"],
+  },
+  async execute(node, ctx) {
+    const taskId = cfgOrCtx(node, ctx, "taskId");
+    const taskTitle = cfgOrCtx(node, ctx, "taskTitle", "(untitled)");
+    const branch = cfgOrCtx(node, ctx, "branch");
+    const baseBranch = cfgOrCtx(node, ctx, "baseBranch");
+
+    if (!taskId) throw new Error("action.allocate_slot: taskId is required");
+
+    const agentInstanceId = `wf-${randomUUID().slice(0, 8)}`;
+    const slotInfo = {
+      taskId,
+      taskTitle,
+      branch,
+      baseBranch,
+      startedAt: Date.now(),
+      agentInstanceId,
+      status: "running",
+    };
+
+    // Save env snapshot for parallel isolation (restored by release_slot)
+    const envSnapshot = {};
+    const envPrefixes = ["VE_", "VK_", "BOSUN_", "COPILOT_", "CLAUDE_", "CODEX_"];
+    for (const key of Object.keys(process.env)) {
+      if (envPrefixes.some((p) => key.startsWith(p))) {
+        envSnapshot[key] = process.env[key];
+      }
+    }
+    slotInfo._envSnapshot = envSnapshot;
+
+    // Store in workflow context
+    ctx.data._allocatedSlot = slotInfo;
+    ctx.data._agentInstanceId = agentInstanceId;
+    ctx.data.taskId = taskId;
+    ctx.data.taskTitle = taskTitle;
+    ctx.data.branch = branch;
+    ctx.data.baseBranch = baseBranch;
+
+    ctx.log(node.id, `Slot allocated: "${taskTitle}" (${taskId}) agent=${agentInstanceId}`);
+    return { success: true, slot: slotInfo, agentInstanceId };
+  },
+});
+
+// ── action.release_slot ─────────────────────────────────────────────────────
+
+registerNodeType("action.release_slot", {
+  describe: () =>
+    "Release a previously allocated execution slot. Restores saved env vars " +
+    "for parallel isolation. Idempotent — safe on double-call.",
+  schema: {
+    type: "object",
+    properties: {
+      taskId: { type: "string", description: "Task ID whose slot to release" },
+    },
+  },
+  async execute(node, ctx) {
+    const taskId = cfgOrCtx(node, ctx, "taskId");
+    const slot = ctx.data?._allocatedSlot;
+
+    if (slot && slot.taskId === taskId) {
+      // Restore env vars saved during allocation
+      if (slot._envSnapshot && typeof slot._envSnapshot === "object") {
+        for (const [key, val] of Object.entries(slot._envSnapshot)) {
+          if (val === undefined) delete process.env[key];
+          else process.env[key] = val;
+        }
+      }
+      slot.status = "released";
+      slot.releasedAt = Date.now();
+      slot.durationMs = slot.releasedAt - (slot.startedAt || slot.releasedAt);
+      ctx.data._allocatedSlot = null;
+    }
+
+    ctx.log(node.id, `Slot released: ${taskId || "(unknown)"}`);
+    return { success: true, taskId, releasedAt: Date.now() };
+  },
+});
+
+// ── action.claim_task ───────────────────────────────────────────────────────
+
+registerNodeType("action.claim_task", {
+  describe: () =>
+    "Acquire a distributed task claim with auto-renewal. Prevents duplicate " +
+    "execution across orchestrators. Stores claim token + renewal timer in " +
+    "context for release_claim.",
+  schema: {
+    type: "object",
+    properties: {
+      taskId: { type: "string", description: "Task ID to claim" },
+      taskTitle: { type: "string", description: "Task title" },
+      ttlMinutes: { type: "number", default: 180, description: "Claim TTL in minutes" },
+      renewIntervalMs: { type: "number", default: 300000, description: "Renewal interval (5 min default)" },
+      instanceId: { type: "string", description: "Orchestrator instance ID (auto-gen if omitted)" },
+      branch: { type: "string", description: "Branch for claim metadata" },
+      sdk: { type: "string", description: "SDK for claim metadata" },
+      model: { type: "string", description: "Model for claim metadata" },
+    },
+    required: ["taskId"],
+  },
+  async execute(node, ctx) {
+    const taskId = cfgOrCtx(node, ctx, "taskId");
+    const taskTitle = cfgOrCtx(node, ctx, "taskTitle");
+    const ttlMinutes = node.config?.ttlMinutes ?? 180;
+    const renewIntervalMs = node.config?.renewIntervalMs ?? 300000;
+    const instanceId = cfgOrCtx(node, ctx, "instanceId") || ctx.data?._agentInstanceId || `wf-${randomUUID().slice(0, 8)}`;
+    const branch = cfgOrCtx(node, ctx, "branch");
+    const sdk = cfgOrCtx(node, ctx, "resolvedSdk", cfgOrCtx(node, ctx, "sdk"));
+    const model = cfgOrCtx(node, ctx, "resolvedModel", cfgOrCtx(node, ctx, "model"));
+
+    if (!taskId) throw new Error("action.claim_task: taskId is required");
+
+    const claims = await ensureTaskClaimsMod();
+
+    let claimResult;
+    try {
+      claimResult = await claims.claimTask({
+        taskId,
+        instanceId,
+        ttlMinutes,
+        metadata: {
+          task_title: taskTitle,
+          branch,
+          owner: "workflow-engine",
+          sdk,
+          model: model || null,
+          pid: process.pid,
+        },
+      });
+    } catch (err) {
+      ctx.log(node.id, `Claim failed: ${err.message}`);
+      return { success: false, error: err.message, taskId, alreadyClaimed: false };
+    }
+
+    if (claimResult?.success) {
+      const token = claimResult.token || claimResult.claim?.claim_token || null;
+      ctx.data._claimToken = token;
+      ctx.data._claimInstanceId = instanceId;
+
+      // Start renewal timer (stored in ctx for cleanup by release_claim)
+      if (renewIntervalMs > 0 && claims.renewTaskClaim) {
+        const renewTimer = setInterval(async () => {
+          try {
+            await claims.renewTaskClaim({ taskId, claimToken: token, instanceId, ttlMinutes });
+          } catch (renewErr) {
+            const msg = renewErr?.message || String(renewErr);
+            const fatal = ["claimed_by_different_instance", "claim_token_mismatch",
+              "task_not_claimed", "owner_mismatch"].some((e) => msg.includes(e));
+            if (fatal) {
+              ctx.log(node.id, `Claim renewal fatal: ${msg} — aborting task`);
+              clearInterval(renewTimer);
+              ctx.data._claimRenewTimer = null;
+              // Signal abort to downstream nodes via context
+              ctx.data._claimStolen = true;
+            } else {
+              ctx.log(node.id, `Claim renewal warning: ${msg}`);
+            }
+          }
+        }, renewIntervalMs);
+        // Prevent timer from keeping the process alive
+        if (renewTimer.unref) renewTimer.unref();
+        ctx.data._claimRenewTimer = renewTimer;
+      }
+
+      ctx.log(node.id, `Task "${taskTitle}" claimed (ttl=${ttlMinutes}min, renew=${renewIntervalMs}ms)`);
+      return { success: true, taskId, claimToken: token, instanceId };
+    }
+
+    if (claimResult?.error === "task_already_claimed") {
+      const owner = claimResult?.existing_instance || claimResult?.existing_claim?.instance_id || "unknown";
+      ctx.log(node.id, `Task "${taskTitle}" already claimed by ${owner}`);
+      return { success: false, taskId, alreadyClaimed: true, claimedBy: owner, error: "task_already_claimed" };
+    }
+
+    ctx.log(node.id, `Claim error: ${claimResult?.error || "unknown"}`);
+    return { success: false, taskId, error: claimResult?.error || "unknown", alreadyClaimed: false };
+  },
+});
+
+// ── action.release_claim ────────────────────────────────────────────────────
+
+registerNodeType("action.release_claim", {
+  describe: () =>
+    "Release a distributed task claim + cancel renewal timer. Idempotent.",
+  schema: {
+    type: "object",
+    properties: {
+      taskId: { type: "string", description: "Task ID to release claim for" },
+      claimToken: { type: "string", description: "Claim token (auto-read from ctx)" },
+      instanceId: { type: "string", description: "Instance ID (auto-read from ctx)" },
+    },
+  },
+  async execute(node, ctx) {
+    const taskId = cfgOrCtx(node, ctx, "taskId");
+    const claimToken = cfgOrCtx(node, ctx, "claimToken") || ctx.data?._claimToken || "";
+    const instanceId = cfgOrCtx(node, ctx, "instanceId") || ctx.data?._claimInstanceId || "";
+
+    // Always cancel the renewal timer first
+    if (ctx.data?._claimRenewTimer) {
+      try { clearInterval(ctx.data._claimRenewTimer); } catch { /* ok */ }
+      ctx.data._claimRenewTimer = null;
+    }
+
+    if (!taskId || !claimToken) {
+      ctx.log(node.id, `No claim to release for ${taskId || "(unknown)"}`);
+      return { success: true, skipped: true, reason: "no_claim" };
+    }
+
+    const claims = await ensureTaskClaimsMod();
+    try {
+      await claims.releaseTaskClaim({ taskId, claimToken, instanceId });
+      ctx.data._claimToken = null;
+      ctx.data._claimInstanceId = null;
+      ctx.log(node.id, `Claim released for ${taskId}`);
+      return { success: true, taskId };
+    } catch (err) {
+      // Release is best-effort — log but don't fail
+      ctx.log(node.id, `Claim release warning: ${err.message}`);
+      ctx.data._claimToken = null;
+      ctx.data._claimInstanceId = null;
+      return { success: true, taskId, warning: err.message };
+    }
+  },
+});
+
+// ── action.resolve_executor ─────────────────────────────────────────────────
+
+registerNodeType("action.resolve_executor", {
+  describe: () =>
+    "Pick SDK + model via complexity routing, env overrides, or defaults.",
+  schema: {
+    type: "object",
+    properties: {
+      taskId: { type: "string" },
+      taskTitle: { type: "string" },
+      taskDescription: { type: "string" },
+      defaultSdk: { type: "string", default: "auto", description: "Fallback SDK" },
+      sdkOverride: { type: "string", description: "Force a specific SDK" },
+      modelOverride: { type: "string", description: "Force a specific model" },
+    },
+  },
+  async execute(node, ctx) {
+    const defaultSdk = cfgOrCtx(node, ctx, "defaultSdk", "auto");
+    const sdkOverride = cfgOrCtx(node, ctx, "sdkOverride");
+    const modelOverride = cfgOrCtx(node, ctx, "modelOverride");
+
+    // Check env var overrides (mirrors TaskExecutor behavior)
+    const envModel =
+      process.env.COPILOT_MODEL || process.env.CLAUDE_MODEL || process.env.CODEX_MODEL || "";
+
+    // Manual override takes precedence
+    if (sdkOverride && sdkOverride !== "auto") {
+      const model = modelOverride || envModel || "";
+      ctx.data.resolvedSdk = sdkOverride;
+      ctx.data.resolvedModel = model;
+      ctx.log(node.id, `Executor override: sdk=${sdkOverride}, model=${model}`);
+      return { success: true, sdk: sdkOverride, model, tier: "override", profile: null };
+    }
+
+    // Complexity-based routing
+    try {
+      const complexity = await ensureTaskComplexityMod();
+      const task = {
+        id: cfgOrCtx(node, ctx, "taskId"),
+        title: cfgOrCtx(node, ctx, "taskTitle"),
+        description: cfgOrCtx(node, ctx, "taskDescription"),
+      };
+
+      if (complexity.resolveExecutorForTask && complexity.executorToSdk) {
+        const resolved = complexity.resolveExecutorForTask(task);
+        const sdk = complexity.executorToSdk(resolved.executor);
+        const model = modelOverride || envModel || resolved.model || "";
+        ctx.data.resolvedSdk = sdk;
+        ctx.data.resolvedModel = model;
+        ctx.log(node.id, `Executor: sdk=${sdk}, model=${model}, tier=${resolved.tier || "default"}`);
+        return {
+          success: true,
+          sdk,
+          model,
+          tier: resolved.tier || "default",
+          profile: resolved.name || null,
+          complexity: resolved.complexity || null,
+        };
+      }
+    } catch (err) {
+      ctx.log(node.id, `Complexity routing failed: ${err.message}`);
+    }
+
+    // Fallback
+    let sdk = defaultSdk;
+    if (sdk === "auto") {
+      try {
+        const pool = await ensureAgentPoolMod();
+        sdk = pool.getPoolSdkName?.() || "codex";
+      } catch {
+        sdk = "codex";
+      }
+    }
+    const model = modelOverride || envModel || "";
+    ctx.data.resolvedSdk = sdk;
+    ctx.data.resolvedModel = model;
+    ctx.log(node.id, `Executor fallback: sdk=${sdk}`);
+    return { success: true, sdk, model, tier: "default", profile: null };
+  },
+});
+
+// ── action.acquire_worktree ─────────────────────────────────────────────────
+
+registerNodeType("action.acquire_worktree", {
+  describe: () =>
+    "Create or checkout a git worktree for isolated task execution. " +
+    "Fetches base branch, creates worktree, handles branch conflicts.",
+  schema: {
+    type: "object",
+    properties: {
+      repoRoot: { type: "string", description: "Repository root path" },
+      branch: { type: "string", description: "Working branch name" },
+      taskId: { type: "string", description: "Task ID (worktree owner)" },
+      baseBranch: { type: "string", default: "origin/main", description: "Base branch" },
+      defaultTargetBranch: { type: "string", default: "origin/main", description: "Fallback" },
+      fetchTimeout: { type: "number", default: 30000, description: "Git fetch timeout (ms)" },
+      worktreeTimeout: { type: "number", default: 60000, description: "Worktree creation timeout (ms)" },
+    },
+    required: ["branch", "taskId"],
+  },
+  async execute(node, ctx) {
+    const taskId = cfgOrCtx(node, ctx, "taskId");
+    const branch = cfgOrCtx(node, ctx, "branch");
+    const repoRoot = cfgOrCtx(node, ctx, "repoRoot") || process.cwd();
+    const baseBranch = cfgOrCtx(node, ctx, "baseBranch", "origin/main");
+    const fetchTimeout = node.config?.fetchTimeout ?? 30000;
+    const worktreeTimeout = node.config?.worktreeTimeout ?? 60000;
+
+    if (!branch) throw new Error("action.acquire_worktree: branch is required");
+    if (!taskId) throw new Error("action.acquire_worktree: taskId is required");
+
+    // Non-git directory — agent spawns directly
+    const isGit = existsSync(resolve(repoRoot, ".git"));
+    if (!isGit) {
+      ctx.data.worktreePath = repoRoot;
+      ctx.data._worktreeCreated = false;
+      ctx.log(node.id, `Non-git directory — using ${repoRoot} directly`);
+      return { success: true, worktreePath: repoRoot, created: false, noGit: true };
+    }
+
+    try {
+      // Ensure base branch ref is fresh
+      const baseBranchShort = baseBranch.replace(/^origin\//, "");
+      try {
+        execSync(`git fetch origin ${baseBranchShort} --no-tags`, {
+          cwd: repoRoot, encoding: "utf8",
+          timeout: fetchTimeout,
+          stdio: ["ignore", "pipe", "pipe"],
+        });
+      } catch {
+        // Best-effort fetch — offline or transient issue is OK
+      }
+
+      const worktreesDir = resolve(repoRoot, ".bosun", "worktrees");
+      mkdirSync(worktreesDir, { recursive: true });
+      const sanitizedBranch = branch.replace(/[^a-zA-Z0-9._-]/g, "-");
+      const worktreePath = resolve(worktreesDir, sanitizedBranch);
+
+      if (existsSync(worktreePath)) {
+        // Reuse existing worktree — pull latest base if possible
+        try {
+          execSync(`git pull --rebase origin ${baseBranchShort}`, {
+            cwd: worktreePath, encoding: "utf8",
+            timeout: fetchTimeout,
+            stdio: ["ignore", "pipe", "pipe"],
+          });
+        } catch {
+          /* rebase failures are non-fatal for reuse */
+        }
+        ctx.data.worktreePath = worktreePath;
+        ctx.data._worktreeCreated = false;
+        ctx.log(node.id, `Reusing worktree: ${worktreePath}`);
+        return { success: true, worktreePath, created: false, reused: true, branch, baseBranch };
+      }
+
+      // Create fresh worktree
+      try {
+        execSync(
+          `git worktree add "${worktreePath}" -b "${branch}" "${baseBranch}" 2>&1`,
+          { cwd: repoRoot, encoding: "utf8", timeout: worktreeTimeout },
+        );
+      } catch {
+        // Branch may already exist — try checkout
+        try {
+          execSync(
+            `git worktree add "${worktreePath}" "${branch}" 2>&1`,
+            { cwd: repoRoot, encoding: "utf8", timeout: worktreeTimeout },
+          );
+        } catch (err2) {
+          throw new Error(`Worktree creation failed: ${err2.message}`);
+        }
+      }
+
+      ctx.data.worktreePath = worktreePath;
+      ctx.data._worktreeCreated = true;
+      ctx.log(node.id, `Worktree created: ${worktreePath} (branch: ${branch}, base: ${baseBranch})`);
+      return { success: true, worktreePath, created: true, branch, baseBranch };
+    } catch (err) {
+      ctx.log(node.id, `Worktree acquisition failed: ${err.message}`);
+      return { success: false, error: err.message, branch, baseBranch };
+    }
+  },
+});
+
+// ── action.release_worktree ─────────────────────────────────────────────────
+
+registerNodeType("action.release_worktree", {
+  describe: () =>
+    "Release a git worktree. Idempotent. Optionally prunes stale entries.",
+  schema: {
+    type: "object",
+    properties: {
+      worktreePath: { type: "string", description: "Worktree path to release" },
+      repoRoot: { type: "string", description: "Repository root" },
+      taskId: { type: "string", description: "Task ID (owner)" },
+      prune: { type: "boolean", default: false, description: "Run git worktree prune" },
+      removeTimeout: { type: "number", default: 30000, description: "Timeout for removal (ms)" },
+    },
+  },
+  async execute(node, ctx) {
+    const worktreePath = cfgOrCtx(node, ctx, "worktreePath");
+    const repoRoot = cfgOrCtx(node, ctx, "repoRoot") || process.cwd();
+    const taskId = cfgOrCtx(node, ctx, "taskId");
+    const shouldPrune = node.config?.prune === true;
+    const removeTimeout = node.config?.removeTimeout ?? 30000;
+
+    if (!worktreePath || !ctx.data?._worktreeCreated) {
+      ctx.log(node.id, `No worktree to release for ${taskId || "(unknown)"}`);
+      return { success: true, skipped: true, reason: "no_worktree" };
+    }
+
+    try {
+      if (existsSync(worktreePath)) {
+        try {
+          execSync(`git worktree remove "${worktreePath}" --force`, {
+            cwd: repoRoot, encoding: "utf8", timeout: removeTimeout,
+            stdio: ["ignore", "pipe", "pipe"],
+          });
+        } catch {
+          /* best-effort — directory might already be gone */
+        }
+      }
+
+      if (shouldPrune) {
+        try {
+          execSync("git worktree prune", {
+            cwd: repoRoot, encoding: "utf8", timeout: 15000,
+          });
+        } catch { /* best-effort */ }
+      }
+
+      ctx.data._worktreeCreated = false;
+      ctx.log(node.id, `Worktree released: ${worktreePath}`);
+      return { success: true, worktreePath, released: true };
+    } catch (err) {
+      ctx.log(node.id, `Worktree release warning: ${err.message}`);
+      return { success: true, worktreePath, warning: err.message };
+    }
+  },
+});
+
+// ── action.build_task_prompt ────────────────────────────────────────────────
+
+registerNodeType("action.build_task_prompt", {
+  describe: () =>
+    "Compose the full agent prompt from task data, AGENTS.md, comments, " +
+    "copilot-instructions.md, agent status endpoint, and co-author trailer.",
+  schema: {
+    type: "object",
+    properties: {
+      taskId: { type: "string" },
+      taskTitle: { type: "string" },
+      taskDescription: { type: "string" },
+      branch: { type: "string" },
+      baseBranch: { type: "string" },
+      worktreePath: { type: "string" },
+      repoRoot: { type: "string" },
+      repoSlug: { type: "string" },
+      retryReason: { type: "string", description: "Reason for retry (if retrying)" },
+      includeAgentsMd: { type: "boolean", default: true },
+      includeComments: { type: "boolean", default: true },
+      includeStatusEndpoint: { type: "boolean", default: true },
+      promptTemplate: { type: "string", description: "Custom template (overrides)" },
+    },
+    required: ["taskTitle"],
+  },
+  async execute(node, ctx) {
+    const taskId = cfgOrCtx(node, ctx, "taskId");
+    const taskTitle = cfgOrCtx(node, ctx, "taskTitle");
+    const taskDescription = cfgOrCtx(node, ctx, "taskDescription");
+    const branch = cfgOrCtx(node, ctx, "branch");
+    const baseBranch = cfgOrCtx(node, ctx, "baseBranch");
+    const worktreePath = cfgOrCtx(node, ctx, "worktreePath");
+    const repoRoot = cfgOrCtx(node, ctx, "repoRoot") || process.cwd();
+    const repoSlug = cfgOrCtx(node, ctx, "repoSlug");
+    const retryReason = cfgOrCtx(node, ctx, "retryReason");
+    const includeAgentsMd = node.config?.includeAgentsMd !== false;
+    const includeStatusEndpoint = node.config?.includeStatusEndpoint !== false;
+    const customTemplate = cfgOrCtx(node, ctx, "promptTemplate");
+
+    if (customTemplate) {
+      ctx.data._taskPrompt = customTemplate;
+      ctx.log(node.id, `Prompt from custom template (${customTemplate.length} chars)`);
+      return { success: true, prompt: customTemplate, source: "custom" };
+    }
+
+    const parts = [];
+
+    // Header
+    parts.push(`# Task: ${taskTitle}`);
+    if (taskId) parts.push(`Task ID: ${taskId}`);
+    parts.push("");
+
+    // Retry context (if applicable)
+    if (retryReason) {
+      parts.push("## Retry Context");
+      parts.push(`Previous attempt failed: ${retryReason}`);
+      parts.push("Try a different approach this time.");
+      parts.push("");
+    }
+
+    // Description
+    if (taskDescription) {
+      parts.push("## Description");
+      parts.push(taskDescription);
+      parts.push("");
+    }
+
+    // Environment context
+    parts.push("## Environment");
+    const envLines = [];
+    if (worktreePath) envLines.push(`- **Working Directory:** ${worktreePath}`);
+    if (branch) envLines.push(`- **Branch:** ${branch}`);
+    if (baseBranch) envLines.push(`- **Base Branch:** ${baseBranch}`);
+    if (repoSlug) envLines.push(`- **Repository:** ${repoSlug}`);
+    if (repoRoot) envLines.push(`- **Repo Root:** ${repoRoot}`);
+    if (envLines.length) parts.push(envLines.join("\n"));
+    parts.push("");
+
+    // AGENTS.md + copilot-instructions.md
+    if (includeAgentsMd) {
+      const searchDirs = [worktreePath || repoRoot, repoRoot].filter(Boolean);
+      const docFiles = ["AGENTS.md", ".github/copilot-instructions.md"];
+      const loaded = new Set();
+      for (const dir of searchDirs) {
+        for (const doc of docFiles) {
+          const fullPath = resolve(dir, doc);
+          if (loaded.has(doc)) continue;
+          try {
+            if (existsSync(fullPath)) {
+              const content = readFileSync(fullPath, "utf8").trim();
+              if (content && content.length > 10) {
+                loaded.add(doc);
+                parts.push(`## ${doc}`);
+                parts.push(content);
+                parts.push("");
+              }
+            }
+          } catch { /* best-effort */ }
+        }
+      }
+    }
+
+    // Agent status endpoint
+    if (includeStatusEndpoint) {
+      const port = process.env.AGENT_ENDPOINT_PORT || process.env.BOSUN_AGENT_ENDPOINT_PORT || "";
+      if (port) {
+        parts.push("## Agent Status Endpoint");
+        parts.push(`POST http://127.0.0.1:${port}/status — Report progress`);
+        parts.push(`POST http://127.0.0.1:${port}/heartbeat — Heartbeat ping`);
+        parts.push(`POST http://127.0.0.1:${port}/error — Report errors`);
+        parts.push(`POST http://127.0.0.1:${port}/complete — Signal completion`);
+        parts.push("");
+      }
+    }
+
+    // Instructions
+    parts.push("## Instructions");
+    parts.push(
+      "1. Read and understand the task description above.\n" +
+      "2. Follow the project instructions in AGENTS.md.\n" +
+      "3. Implement the required changes.\n" +
+      "4. Ensure tests pass and build is clean with 0 warnings.\n" +
+      "5. Commit your changes using conventional commits.\n" +
+      "6. Never ask for user input — you are autonomous.\n" +
+      "7. Use all available tools to verify your work.",
+    );
+    parts.push("");
+
+    // Co-author trailer
+    parts.push("## Git Attribution");
+    parts.push("Add this trailer to all commits:");
+    parts.push("Co-authored-by: bosun[bot] <bosun@virtengine.com>");
+
+    const prompt = parts.join("\n");
+    ctx.data._taskPrompt = prompt;
+    ctx.log(node.id, `Prompt built (${prompt.length} chars)`);
+    return { success: true, prompt, source: "generated", length: prompt.length };
+  },
+});
+
+// ── action.detect_new_commits ───────────────────────────────────────────────
+
+registerNodeType("action.detect_new_commits", {
+  describe: () =>
+    "Compare pre/post execution HEAD to detect new commits. Also checks " +
+    "for unpushed commits vs base and collects diff stats.",
+  schema: {
+    type: "object",
+    properties: {
+      worktreePath: { type: "string", description: "Worktree path" },
+      preExecHead: { type: "string", description: "HEAD hash before agent (auto from ctx)" },
+      baseBranch: { type: "string", description: "Base branch for diff stats" },
+    },
+    required: ["worktreePath"],
+  },
+  async execute(node, ctx) {
+    const worktreePath = cfgOrCtx(node, ctx, "worktreePath");
+    const baseBranch = cfgOrCtx(node, ctx, "baseBranch", "origin/main");
+
+    if (!worktreePath) throw new Error("action.detect_new_commits: worktreePath is required");
+
+    // Read preExecHead from record-head node output or ctx
+    const preExecHead = cfgOrCtx(node, ctx, "preExecHead")
+      || ctx.data?._preExecHead
+      || (() => {
+        // Try to get from record-head node output
+        const out = ctx.nodeOutputs?.get?.("record-head");
+        return typeof out === "string" ? out.trim()
+          : typeof out?.output === "string" ? out.output.trim()
+          : "";
+      })();
+
+    // Get current HEAD
+    let postExecHead = "";
+    try {
+      postExecHead = execSync("git rev-parse HEAD", {
+        cwd: worktreePath, encoding: "utf8", timeout: 5000,
+      }).trim();
+    } catch (err) {
+      ctx.log(node.id, `Failed to get HEAD: ${err.message}`);
+      return { success: false, error: err.message, hasCommits: false };
+    }
+
+    const hasNewCommits = !!(preExecHead && postExecHead && preExecHead !== postExecHead);
+
+    // Also check for unpushed commits vs base (three-tier validation)
+    let hasUnpushed = false;
+    let commitCount = 0;
+    try {
+      const log = execSync(`git log --oneline ${baseBranch}..HEAD`, {
+        cwd: worktreePath, encoding: "utf8", timeout: 10000,
+        stdio: ["ignore", "pipe", "pipe"],
+      }).trim();
+      commitCount = log ? log.split("\n").filter(Boolean).length : 0;
+      hasUnpushed = commitCount > 0;
+    } catch {
+      /* best-effort */
+    }
+
+    // Diff stats
+    let diffStats = null;
+    if (hasNewCommits || hasUnpushed) {
+      try {
+        const statOutput = execSync(`git diff --stat ${baseBranch}..HEAD`, {
+          cwd: worktreePath, encoding: "utf8", timeout: 10000,
+          stdio: ["ignore", "pipe", "pipe"],
+        }).trim();
+        if (statOutput) {
+          const lastLine = statOutput.split("\n").pop() || "";
+          const filesMatch = lastLine.match(/(\d+)\s+files?\s+changed/);
+          const insertMatch = lastLine.match(/(\d+)\s+insertions?/);
+          const deleteMatch = lastLine.match(/(\d+)\s+deletions?/);
+          diffStats = {
+            filesChanged: filesMatch ? parseInt(filesMatch[1], 10) : 0,
+            insertions: insertMatch ? parseInt(insertMatch[1], 10) : 0,
+            deletions: deleteMatch ? parseInt(deleteMatch[1], 10) : 0,
+          };
+        }
+      } catch { /* best-effort */ }
+    }
+
+    // Use hasNewCommits OR hasUnpushed — covers resumed worktrees
+    const hasCommits = hasNewCommits || hasUnpushed;
+
+    ctx.data._hasNewCommits = hasCommits;
+    ctx.data._postExecHead = postExecHead;
+    ctx.data._commitCount = commitCount;
+    ctx.data._diffStats = diffStats;
+
+    ctx.log(
+      node.id,
+      `Commits: new=${hasNewCommits} unpushed=${hasUnpushed} count=${commitCount} ` +
+      `pre=${preExecHead?.slice(0, 8) || "?"} post=${postExecHead?.slice(0, 8) || "?"}`,
+    );
+    return {
+      success: true,
+      hasCommits,
+      hasNewCommits,
+      hasUnpushed,
+      commitCount,
+      preExecHead,
+      postExecHead,
+      diffStats,
+    };
+  },
+});
+
+// ── action.push_branch ──────────────────────────────────────────────────────
+
+registerNodeType("action.push_branch", {
+  describe: () =>
+    "Push the current branch to the remote. Includes rebase-before-push, " +
+    "empty-diff guard, protected branch safety, and optional main-branch sync.",
+  schema: {
+    type: "object",
+    properties: {
+      worktreePath: { type: "string", description: "Working directory to push from" },
+      branch: { type: "string", description: "Branch name being pushed" },
+      baseBranch: { type: "string", description: "Base branch to rebase onto" },
+      remote: { type: "string", default: "origin", description: "Remote name" },
+      forceWithLease: { type: "boolean", default: true, description: "Use --force-with-lease" },
+      rebaseBeforePush: { type: "boolean", default: true, description: "Rebase onto base before push" },
+      emptyDiffGuard: { type: "boolean", default: true, description: "Abort if no files changed vs base" },
+      syncMainForModuleBranch: { type: "boolean", default: false, description: "Also sync base with main" },
+      pushTimeout: { type: "number", default: 120000, description: "Push timeout (ms)" },
+      protectedBranches: {
+        type: "array", items: { type: "string" },
+        default: ["main", "master", "develop", "production"],
+        description: "Branches that cannot be force-pushed",
+      },
+    },
+    required: ["worktreePath"],
+  },
+  async execute(node, ctx) {
+    const worktreePath = cfgOrCtx(node, ctx, "worktreePath");
+    const branch = cfgOrCtx(node, ctx, "branch", "");
+    const baseBranch = cfgOrCtx(node, ctx, "baseBranch", "origin/main");
+    const remote = node.config?.remote || "origin";
+    const forceWithLease = node.config?.forceWithLease !== false;
+    const rebaseBeforePush = node.config?.rebaseBeforePush !== false;
+    const emptyDiffGuard = node.config?.emptyDiffGuard !== false;
+    const syncMain = node.config?.syncMainForModuleBranch === true;
+    const pushTimeout = node.config?.pushTimeout || 120000;
+    const protectedBranches = node.config?.protectedBranches
+      || ["main", "master", "develop", "production"];
+
+    if (!worktreePath) throw new Error("action.push_branch: worktreePath is required");
+
+    // Safety check: don't push to protected branches
+    const cleanBranch = branch.replace(/^origin\//, "");
+    if (protectedBranches.includes(cleanBranch)) {
+      ctx.log(node.id, `Refusing to push to protected branch: ${cleanBranch}`);
+      return { success: false, error: `Protected branch: ${cleanBranch}`, pushed: false };
+    }
+
+    // ── Rebase-before-push ──
+    if (rebaseBeforePush) {
+      try {
+        execSync(`git fetch ${remote} --no-tags`, {
+          cwd: worktreePath, timeout: 30000, stdio: ["ignore", "pipe", "pipe"],
+        });
+        execSync(`git rebase ${baseBranch}`, {
+          cwd: worktreePath, encoding: "utf8", timeout: 60000,
+          stdio: ["ignore", "pipe", "pipe"],
+        });
+        ctx.log(node.id, `Rebased onto ${baseBranch}`);
+      } catch (rebaseErr) {
+        // Abort rebase on conflict — push what we have
+        try {
+          execSync("git rebase --abort", {
+            cwd: worktreePath, timeout: 10000, stdio: ["ignore", "pipe", "pipe"],
+          });
+        } catch { /* already aborted */ }
+        ctx.log(node.id, `Rebase conflict, skipping: ${rebaseErr.message?.slice(0, 200)}`);
+      }
+    }
+
+    // ── Optional: sync base branch with main (for module branches) ──
+    if (syncMain && baseBranch !== "origin/main" && baseBranch !== "main") {
+      try {
+        execSync(`git merge origin/main --no-edit`, {
+          cwd: worktreePath, timeout: 30000,
+          stdio: ["ignore", "pipe", "pipe"],
+        });
+        ctx.log(node.id, "Synced with origin/main for module branch");
+      } catch (mergeErr) {
+        try {
+          execSync("git merge --abort", {
+            cwd: worktreePath, timeout: 5000, stdio: ["ignore", "pipe", "pipe"],
+          });
+        } catch { /* already aborted */ }
+        ctx.log(node.id, `Main sync conflict, skipping: ${mergeErr.message?.slice(0, 200)}`);
+      }
+    }
+
+    // ── Empty diff guard ──
+    if (emptyDiffGuard) {
+      try {
+        const diffOutput = execSync(`git diff --name-only ${baseBranch}..HEAD`, {
+          cwd: worktreePath, encoding: "utf8", timeout: 10000,
+          stdio: ["ignore", "pipe", "pipe"],
+        }).trim();
+        const changedFiles = diffOutput ? diffOutput.split("\n").filter(Boolean).length : 0;
+        if (changedFiles === 0) {
+          ctx.log(node.id, "No files changed vs base — aborting push");
+          ctx.data._pushSkipped = true;
+          return { success: false, error: "No files changed vs base", pushed: false, changedFiles: 0 };
+        }
+        ctx.data._changedFileCount = changedFiles;
+      } catch {
+        /* best-effort — still try to push */
+      }
+    }
+
+    // ── Push ──
+    const pushFlags = forceWithLease ? "--force-with-lease" : "";
+    const cmd = `git push ${pushFlags} --set-upstream ${remote} HEAD`.trim();
+
+    try {
+      const output = execSync(cmd, {
+        cwd: worktreePath, encoding: "utf8", timeout: pushTimeout,
+        stdio: ["ignore", "pipe", "pipe"],
+      });
+      ctx.log(node.id, `Push succeeded: ${cleanBranch || "HEAD"} → ${remote}`);
+      return {
+        success: true,
+        pushed: true,
+        branch: cleanBranch,
+        remote,
+        output: output?.trim()?.slice(0, 500) || "",
+      };
+    } catch (err) {
+      ctx.log(node.id, `Push failed: ${err.message?.slice(0, 300)}`);
+      return {
+        success: false,
+        pushed: false,
+        branch: cleanBranch,
+        remote,
+        error: err.message?.slice(0, 500),
+      };
+    }
+  },
+});
+
+// ═══════════════════════════════════════════════════════════════════════════
 //  Export all registered types for introspection
 // ═══════════════════════════════════════════════════════════════════════════
 

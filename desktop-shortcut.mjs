@@ -13,6 +13,7 @@ import { spawnSync, execSync } from "node:child_process";
 import {
   existsSync,
   readFileSync,
+  statSync,
   writeFileSync,
   mkdirSync,
   chmodSync,
@@ -73,34 +74,56 @@ function findElectronBinary() {
   const envPath = process.env.BOSUN_ELECTRON_PATH;
   if (envPath) {
     const resolved = resolve(envPath);
-    if (existsSync(resolved)) return resolved;
+    if (existsSync(resolved)) {
+      return {
+        path: resolved,
+        kind: resolved.toLowerCase().endsWith(".cmd") ? "cmd" : "exe",
+      };
+    }
   }
 
   const isWin = process.platform === "win32";
   const candidates = isWin
     ? [
-        resolve(__dirname, "node_modules", ".bin", "electron.cmd"),
-        resolve(__dirname, "..", "node_modules", ".bin", "electron.cmd"),
+        // Prefer real electron.exe first so shortcuts don't depend on "node"
+        // being discoverable in PATH for cmd-shims.
+        resolve(__dirname, "desktop", "node_modules", "electron", "dist", "electron.exe"),
+        resolve(__dirname, "desktop", "node_modules", ".bin", "electron.exe"),
+        resolve(__dirname, "desktop", "node_modules", ".bin", "electron.cmd"),
+        resolve(__dirname, "node_modules", "electron", "dist", "electron.exe"),
         resolve(__dirname, "node_modules", ".bin", "electron.exe"),
-        resolve(__dirname, "..", "node_modules", ".bin", "electron.exe"),
+        resolve(__dirname, "node_modules", ".bin", "electron.cmd"),
+        resolve(__dirname, "node_modules", ".bin", "electron.exe"),
       ]
     : [
+        resolve(__dirname, "desktop", "node_modules", ".bin", "electron"),
         resolve(__dirname, "node_modules", ".bin", "electron"),
-        resolve(__dirname, "..", "node_modules", ".bin", "electron"),
       ];
 
   for (const c of candidates) {
-    if (existsSync(c)) return c;
+    if (existsSync(c)) {
+      return {
+        path: c,
+        kind: c.toLowerCase().endsWith(".cmd") ? "cmd" : "exe",
+      };
+    }
   }
 
   // 4. Search $PATH
   try {
-    const cmd = isWin ? "where electron.cmd 2>nul" : "which electron 2>/dev/null";
+    const cmd = isWin
+      ? "where electron.exe 2>nul || where electron.cmd 2>nul"
+      : "which electron 2>/dev/null";
     const found = execSync(cmd, { encoding: "utf8", stdio: "pipe", timeout: 2000 })
       .trim()
       .split("\n")[0]
       .trim();
-    if (found && existsSync(found)) return found;
+    if (found && existsSync(found)) {
+      return {
+        path: found,
+        kind: found.toLowerCase().endsWith(".cmd") ? "cmd" : "exe",
+      };
+    }
   } catch {
     /* not found on PATH */
   }
@@ -115,11 +138,81 @@ function findElectronBinary() {
  * - Otherwise: falls back to `node cli.mjs --desktop`
  */
 export function resolveElectronLauncher() {
-  const electronPath = findElectronBinary();
-  if (electronPath) {
-    return { executable: electronPath, args: [getDesktopMainPath()] };
+  const electron = findElectronBinary();
+  if (electron) {
+    // Windows .cmd launchers rely on PATH "node" lookup, which can fail when
+    // started from a desktop shortcut. Route cmd-shims through process.execPath.
+    if (process.platform === "win32" && electron.kind === "cmd") {
+      const shimDir = dirname(electron.path);
+      const electronCli = resolve(shimDir, "..", "electron", "cli.js");
+      if (existsSync(electronCli)) {
+        return { executable: getNodePath(), args: [electronCli, getDesktopMainPath()] };
+      }
+    }
+    return { executable: electron.path, args: [getDesktopMainPath()] };
   }
   return { executable: getNodePath(), args: [getCliPath(), "--desktop"] };
+}
+
+function resolveLogoPngPath() {
+  const candidates = [
+    resolve(__dirname, "logo.png"),
+    resolve(__dirname, "ui", "logo.png"),
+  ];
+  return candidates.find((p) => existsSync(p)) || null;
+}
+
+function createIcoFromPng(pngBuffer) {
+  if (pngBuffer.length < 24) {
+    throw new Error("Invalid PNG file");
+  }
+  const pngSignature = "89504e470d0a1a0a";
+  if (pngBuffer.subarray(0, 8).toString("hex") !== pngSignature) {
+    throw new Error("Invalid PNG signature");
+  }
+  const width = pngBuffer.readUInt32BE(16);
+  const height = pngBuffer.readUInt32BE(20);
+  const imageSize = pngBuffer.length;
+  const headerSize = 6 + 16;
+  const out = Buffer.alloc(headerSize + imageSize);
+
+  // ICONDIR
+  out.writeUInt16LE(0, 0); // reserved
+  out.writeUInt16LE(1, 2); // type = icon
+  out.writeUInt16LE(1, 4); // image count
+
+  // ICONDIRENTRY
+  out.writeUInt8(width >= 256 ? 0 : width, 6);
+  out.writeUInt8(height >= 256 ? 0 : height, 7);
+  out.writeUInt8(0, 8); // palette
+  out.writeUInt8(0, 9); // reserved
+  out.writeUInt16LE(1, 10); // color planes
+  out.writeUInt16LE(32, 12); // bits per pixel
+  out.writeUInt32LE(imageSize, 14); // image size
+  out.writeUInt32LE(headerSize, 18); // image offset
+
+  pngBuffer.copy(out, headerSize);
+  return out;
+}
+
+function ensureWindowsShortcutIcon() {
+  const pngPath = resolveLogoPngPath();
+  if (!pngPath) return null;
+  const cacheDir = resolve(homedir(), ".cache", "bosun", "icons");
+  const icoPath = resolve(cacheDir, "bosun-shortcut.ico");
+  try {
+    mkdirSync(cacheDir, { recursive: true });
+    const pngStat = statSync(pngPath);
+    const needsRefresh = !existsSync(icoPath) || statSync(icoPath).mtimeMs < pngStat.mtimeMs;
+    if (needsRefresh) {
+      const pngBytes = readFileSync(pngPath);
+      const icoBytes = createIcoFromPng(pngBytes);
+      writeFileSync(icoPath, icoBytes);
+    }
+    return icoPath;
+  } catch {
+    return pngPath;
+  }
 }
 
 /**
@@ -187,9 +280,9 @@ function installWindowsShortcut(desktopDir) {
   const { executable, args } = resolveElectronLauncher();
   const quotedArgs = args.map((a) => `"${a}"`).join(" ");
   const workingDir = getWorkingDirectory();
-  const iconPath = resolve(__dirname, "logo.png");
-  const iconLine = existsSync(iconPath)
-    ? `$Shortcut.IconLocation = '${escapePowerShell(iconPath)}'`
+  const iconPath = ensureWindowsShortcutIcon() || resolveLogoPngPath();
+  const iconLine = iconPath && existsSync(iconPath)
+    ? `$Shortcut.IconLocation = '${escapePowerShell(iconPath)},0'`
     : "";
   const psScript = `
 $WshShell = New-Object -ComObject WScript.Shell

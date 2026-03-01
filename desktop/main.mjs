@@ -93,6 +93,13 @@ let trayMode = false;
 let startHidden = false;
 const DEFAULT_TELEGRAM_UI_PORT = 3080;
 
+// ── Workspace cache (module-scope — refreshed by fetchWorkspaces) ─────────────
+/** @type {{ id: string, name: string, [key: string]: unknown }[]} */
+let _cachedWorkspaces = [];
+let _cachedActiveWorkspaceId = /** @type {string|null} */ (null);
+let _workspaceCacheAt = 0;
+const WORKSPACE_CACHE_TTL_MS = 30_000;
+
 /**
  * Shorthand: returns the effective accelerator for a shortcut ID.
  * Used throughout buildAppMenu() and refreshTrayMenu() so the menu
@@ -209,7 +216,31 @@ function getDaemonPid() {
 }
 
 function findGhostDaemonPids() {
-  if (process.platform === "win32") return [];
+  if (process.platform === "win32") {
+    try {
+      const cmd = [
+        "$ErrorActionPreference='Stop';",
+        "$procs = Get-CimInstance Win32_Process | Where-Object {",
+        "  $_.Name -match '^(node|node\\.exe)$' -and",
+        "  $_.CommandLine -and",
+        "  ($_.CommandLine -match '--daemon-child' -or $_.CommandLine -match 'BOSUN_DAEMON=1')",
+        "};",
+        "$procs | ForEach-Object { $_.ProcessId }",
+      ].join(" ");
+      const out = execFileSync(
+        "powershell.exe",
+        ["-NoProfile", "-NonInteractive", "-Command", cmd],
+        { encoding: "utf8", stdio: ["pipe", "pipe", "pipe"], timeout: 3500 },
+      ).trim();
+      if (!out) return [];
+      return out
+        .split(/\r?\n/)
+        .map((s) => parseInt(String(s).trim(), 10))
+        .filter((n) => Number.isFinite(n) && n > 0 && n !== process.pid);
+    } catch {
+      return [];
+    }
+  }
   try {
     const out = execFileSync(
       "pgrep",
@@ -244,6 +275,120 @@ function resolveBosunRoot() {
 
 function resolveBosunRuntimePath(file) {
   return resolve(resolveBosunRoot(), file);
+}
+
+function resolveDesktopIconPath() {
+  const candidates = [
+    resolveBosunRuntimePath("logo.png"),
+    resolveBosunRuntimePath("ui/logo.png"),
+    resolve(__dirname, "..", "ui", "logo.png"),
+    resolve(__dirname, "..", "logo.png"),
+  ];
+  return candidates.find((iconPath) => existsSync(iconPath)) || null;
+}
+
+function buildLoadingPageUrl(message = "Starting Bosun...") {
+  const safeMessage = String(message || "Starting Bosun...")
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;");
+  const html = `<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>Bosun Desktop</title>
+  <style>
+    :root {
+      --bg: #0b0f14;
+      --panel: #121a24;
+      --text: #e5e7eb;
+      --muted: #94a3b8;
+      --accent: #4f8cff;
+      --border: #243041;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      min-height: 100vh;
+      background: radial-gradient(1200px 600px at 10% -10%, rgba(79,140,255,0.20), transparent 55%), var(--bg);
+      color: var(--text);
+      font-family: "Segoe UI", Inter, system-ui, sans-serif;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      padding: 18px;
+    }
+    .card {
+      width: min(520px, 96vw);
+      border: 1px solid var(--border);
+      border-radius: 14px;
+      background: linear-gradient(180deg, rgba(255,255,255,0.02), rgba(255,255,255,0.01));
+      padding: 22px 20px;
+      box-shadow: 0 18px 50px rgba(0,0,0,0.40);
+    }
+    .title {
+      font-size: 20px;
+      font-weight: 700;
+      margin: 0 0 12px;
+      letter-spacing: 0.2px;
+    }
+    .row {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+    }
+    .spinner {
+      width: 18px;
+      height: 18px;
+      border-radius: 999px;
+      border: 2px solid rgba(79,140,255,0.30);
+      border-top-color: var(--accent);
+      animation: spin 900ms linear infinite;
+      flex: 0 0 auto;
+    }
+    @keyframes spin { to { transform: rotate(360deg); } }
+    .message {
+      margin: 0;
+      font-size: 14px;
+      color: var(--text);
+    }
+    .hint {
+      margin: 12px 0 0;
+      font-size: 12px;
+      color: var(--muted);
+      line-height: 1.45;
+    }
+  </style>
+</head>
+<body>
+  <div class="card">
+    <h1 class="title">Bosun Desktop</h1>
+    <div class="row">
+      <div class="spinner" aria-hidden="true"></div>
+      <p id="bosun-loading-message" class="message">${safeMessage}</p>
+    </div>
+    <p class="hint">First launch can take 5-10 seconds while Bosun services start in the background.</p>
+  </div>
+</body>
+</html>`;
+  return `data:text/html;charset=UTF-8,${encodeURIComponent(html)}`;
+}
+
+async function setLoadingMessage(message) {
+  if (!mainWindow || mainWindow.isDestroyed()) return;
+  const safe = JSON.stringify(String(message || "Starting Bosun..."));
+  try {
+    await mainWindow.webContents.executeJavaScript(
+      `(function () {
+        var el = document.getElementById('bosun-loading-message');
+        if (el) el.textContent = ${safe};
+      })()`,
+      true,
+    );
+  } catch {
+    // best effort
+  }
 }
 
 function encodeFollowParam(value) {
@@ -281,32 +426,176 @@ function setWindowVisible(win) {
   win.focus();
 }
 
+// ── Workspace helpers ─────────────────────────────────────────────────────────
+
+/**
+ * Make an authenticated JSON request to the UI server.
+ * Returns the parsed response body, or null on error.
+ * @param {string} urlStr
+ * @param {{ method?: string, body?: string }} [opts]
+ */
+function uiServerRequest(urlStr, { method = "GET", body } = {}) {
+  return new Promise((resolve) => {
+    try {
+      const isHttps = urlStr.startsWith("https://");
+      const desktopKey = process.env.BOSUN_DESKTOP_API_KEY || "";
+      const headers = /** @type {Record<string, string>} */ ({
+        Authorization: `Bearer ${desktopKey}`,
+        "Content-Type": "application/json",
+      });
+      if (body) headers["Content-Length"] = String(Buffer.byteLength(body));
+      const req = (isHttps ? httpsRequest : httpRequest)(
+        urlStr,
+        { method, headers, timeout: 5000, rejectUnauthorized: false },
+        (res) => {
+          let buf = "";
+          res.setEncoding("utf8");
+          res.on("data", (chunk) => { buf += chunk; });
+          res.on("end", () => {
+            try { resolve(JSON.parse(buf)); }
+            catch { resolve(null); }
+          });
+        },
+      );
+      req.on("error", () => resolve(null));
+      req.on("timeout", () => { req.destroy(); resolve(null); });
+      if (body) req.write(body);
+      req.end();
+    } catch {
+      resolve(null);
+    }
+  });
+}
+
+/**
+ * Fetch workspace list from the UI server and update the module-scope cache.
+ * Respects a 30-second TTL to avoid hammering the server.
+ * @param {{ force?: boolean }} [opts]
+ */
+async function fetchWorkspaces({ force = false } = {}) {
+  if (!uiOrigin) return _cachedWorkspaces;
+  const now = Date.now();
+  if (!force && _workspaceCacheAt > 0 && now - _workspaceCacheAt < WORKSPACE_CACHE_TTL_MS) {
+    return _cachedWorkspaces;
+  }
+  const data = await uiServerRequest(`${uiOrigin}/api/workspaces`);
+  if (data?.ok && Array.isArray(data.data)) {
+    _cachedWorkspaces = data.data;
+    _cachedActiveWorkspaceId = data.activeId || null;
+    _workspaceCacheAt = Date.now();
+  }
+  return _cachedWorkspaces;
+}
+
+/**
+ * Switch the active workspace and refresh menus.
+ * @param {string} workspaceId
+ */
+async function switchWorkspace(workspaceId) {
+  if (!uiOrigin || !workspaceId) return;
+  const body = JSON.stringify({ workspaceId });
+  const data = await uiServerRequest(`${uiOrigin}/api/workspaces/active`, {
+    method: "POST",
+    body,
+  });
+  if (data?.ok) {
+    _cachedActiveWorkspaceId = workspaceId;
+    _workspaceCacheAt = 0; // force re-fetch next time
+  }
+  await fetchWorkspaces({ force: true });
+  Menu.setApplicationMenu(buildAppMenu());
+  refreshTrayMenu();
+  navigateMainWindow("/");
+}
+
+/**
+ * Build workspace submenu items from the module-scope cache (sync).
+ * @returns {Electron.MenuItemConstructorOptions[]}
+ */
+function buildWorkspaceSubmenu() {
+  /** @type {Electron.MenuItemConstructorOptions[]} */
+  const items = [];
+
+  if (_cachedWorkspaces.length === 0) {
+    items.push({ label: "Loading workspaces\u2026", enabled: false });
+  } else {
+    for (const ws of _cachedWorkspaces) {
+      const wsId = String(ws.id || "");
+      const wsName = String(ws.name || ws.id || "Untitled Workspace");
+      const isActive = wsId === _cachedActiveWorkspaceId;
+      items.push({
+        label: isActive ? `\u2713 ${wsName}` : wsName,
+        type: /** @type {const} */ ("normal"),
+        enabled: !isActive,
+        click: () => {
+          switchWorkspace(wsId).catch((err) =>
+            console.warn("[desktop] workspace switch failed:", err?.message || err),
+          );
+        },
+      });
+    }
+  }
+
+  items.push({ type: /** @type {const} */ ("separator") });
+  items.push({
+    label: "Manage Workspaces\u2026",
+    click: () => navigateMainWindow("/settings"),
+  });
+  items.push({
+    label: "Refresh List",
+    click: () => {
+      fetchWorkspaces({ force: true })
+        .then(() => {
+          Menu.setApplicationMenu(buildAppMenu());
+          refreshTrayMenu();
+        })
+        .catch(() => {});
+    },
+  });
+  return items;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+
 /**
  * Navigate the main window's SPA to the given path.
- * Falls back to a no-op if the window is not ready.
+ * Uses the direct `__bosunSetTab` router API when available; falls back to
+ * pushState + popstate for robustness during page load.
  */
 function navigateMainWindow(path) {
   if (!mainWindow || mainWindow.isDestroyed()) return;
   setWindowVisible(mainWindow);
-  if (uiOrigin) {
-    const safePath = JSON.stringify(path);
-    mainWindow.webContents
-      .executeJavaScript(
-        `(function(){
-          if (window.history && window.history.pushState) {
-            window.history.pushState(null, '', ${safePath});
-            window.dispatchEvent(new PopStateEvent('popstate', { state: null }));
-          }
-        })()`,
-      )
-      .catch(() => {});
-  }
+  if (!uiOrigin) return;
+  // Derive SPA tab ID from the URL path. The router maps the first path
+  // segment directly to a tab identifier (empty segment = "dashboard").
+  const seg = String(path || "/").replace(/^\/+/, "").split("/")[0];
+  const tabId = seg || "dashboard";
+  const safePath = JSON.stringify(path);
+  const safeTabId = JSON.stringify(tabId);
+  mainWindow.webContents
+    .executeJavaScript(
+      `(function(){
+        var tabId = ${safeTabId};
+        var path  = ${safePath};
+        // Primary: direct SPA router call (most reliable, bypasses history state issues)
+        if (typeof window.__bosunSetTab === 'function') {
+          window.__bosunSetTab(tabId);
+          return;
+        }
+        // Fallback: pushState + popstate (for pages still loading)
+        if (window.history && window.history.pushState) {
+          window.history.pushState({ desktopNav: true }, '', path);
+          window.dispatchEvent(new PopStateEvent('popstate', { state: { desktopNav: true } }));
+        }
+      })()`,
+    )
+    .catch(() => {});
 }
 
 /**
  * Build and return the application menu template.
  * This is called once during bootstrap and can be refreshed when
- * pack status or update state changes.
+ * pack status or update state changes, or when workspaces are loaded.
  */
 function buildAppMenu() {
   const isMac = process.platform === "darwin";
@@ -343,13 +632,7 @@ function buildAppMenu() {
         {
           label: "New Chat",
           accelerator: acc("app.newchat"),
-          click: () => navigateMainWindow("/"),
-        },
-        { type: /** @type {const} */ ("separator") },
-        {
-          label: "Settings",
-          accelerator: acc("app.settings"),
-          click: () => navigateMainWindow("/settings"),
+          click: () => navigateMainWindow("/chat"),
         },
         { type: /** @type {const} */ ("separator") },
         isMac
@@ -382,6 +665,80 @@ function buildAppMenu() {
       ],
     },
 
+    // ── Go (full SPA navigation) ─────────────────────────────────────────────
+    {
+      label: "Go",
+      submenu: [
+        {
+          label: "Dashboard",
+          accelerator: acc("bosun.navigate.home"),
+          click: () => navigateMainWindow("/"),
+        },
+        {
+          label: "Chat \u0026 Sessions",
+          accelerator: acc("bosun.navigate.chat"),
+          click: () => navigateMainWindow("/chat"),
+        },
+        {
+          label: "Tasks",
+          accelerator: acc("bosun.navigate.tasks"),
+          click: () => navigateMainWindow("/tasks"),
+        },
+        {
+          label: "Workflows",
+          accelerator: acc("bosun.navigate.workflows"),
+          click: () => navigateMainWindow("/workflows"),
+        },
+        {
+          label: "Agents",
+          accelerator: acc("bosun.navigate.agents"),
+          click: () => navigateMainWindow("/agents"),
+        },
+        {
+          label: "Fleet Sessions",
+          accelerator: acc("bosun.navigate.fleet"),
+          click: () => navigateMainWindow("/fleet-sessions"),
+        },
+        {
+          label: "Control Panel",
+          accelerator: acc("bosun.navigate.control"),
+          click: () => navigateMainWindow("/control"),
+        },
+        {
+          label: "Infrastructure",
+          accelerator: acc("bosun.navigate.infra"),
+          click: () => navigateMainWindow("/infra"),
+        },
+        {
+          label: "Logs",
+          accelerator: acc("bosun.navigate.logs"),
+          click: () => navigateMainWindow("/logs"),
+        },
+        {
+          label: "Library",
+          accelerator: acc("bosun.navigate.library"),
+          click: () => navigateMainWindow("/library"),
+        },
+        {
+          label: "Telemetry",
+          accelerator: acc("bosun.navigate.telemetry"),
+          click: () => navigateMainWindow("/telemetry"),
+        },
+        { type: /** @type {const} */ ("separator") },
+        {
+          label: "Settings",
+          accelerator: acc("app.settings"),
+          click: () => navigateMainWindow("/settings"),
+        },
+      ],
+    },
+
+    // ── Workspace ────────────────────────────────────────────────────────────
+    {
+      label: "Workspace",
+      submenu: buildWorkspaceSubmenu(),
+    },
+
     // ── Bosun ───────────────────────────────────────────────────────────────
     {
       label: "Bosun",
@@ -407,38 +764,6 @@ function buildAppMenu() {
           click: () => {
             if (!restoreFollowWindow()) setWindowVisible(mainWindow);
           },
-        },
-        { type: /** @type {const} */ ("separator") },
-        {
-          label: "Dashboard",
-          accelerator: acc("bosun.navigate.home"),
-          click: () => navigateMainWindow("/"),
-        },
-        {
-          label: "Agents",
-          accelerator: acc("bosun.navigate.agents"),
-          click: () => navigateMainWindow("/agents"),
-        },
-        {
-          label: "Tasks",
-          accelerator: acc("bosun.navigate.tasks"),
-          click: () => navigateMainWindow("/tasks"),
-        },
-        {
-          label: "Logs",
-          accelerator: acc("bosun.navigate.logs"),
-          click: () => navigateMainWindow("/logs"),
-        },
-        {
-          label: "Settings",
-          accelerator: acc("bosun.navigate.settings"),
-          click: () => navigateMainWindow("/settings"),
-        },
-        { type: /** @type {const} */ ("separator") },
-        {
-          label: "Quick New Chat",
-          accelerator: acc("bosun.quickchat"),
-          click: () => navigateMainWindow("/"),
         },
         { type: /** @type {const} */ ("separator") },
         {
@@ -570,18 +895,74 @@ async function resolveDaemonUiUrl() {
 }
 
 /**
- * Previously attempted to auto-start the bosun daemon from the Electron process.
- * This behaviour has been intentionally removed: the desktop MUST NOT launch bosun.
+ * Wait for the daemon UI endpoint to become reachable.
+ */
+async function waitForDaemonUi(baseUrl, timeoutMs = 15000) {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    if (await probeUiServer(baseUrl)) return true;
+    await new Promise((resolveWait) => setTimeout(resolveWait, 500));
+  }
+  return false;
+}
+
+function spawnDetachedDaemon() {
+  const cliPath = resolveBosunRuntimePath("cli.mjs");
+  if (!existsSync(cliPath)) {
+    throw new Error(`CLI not found at ${cliPath}`);
+  }
+  const child = spawn(
+    process.execPath,
+    [cliPath, "--daemon", "--no-update-check"],
+    {
+      cwd: resolveBosunRoot(),
+      detached: true,
+      stdio: "ignore",
+      windowsHide: true,
+      env: {
+        ...process.env,
+        BOSUN_DESKTOP_SPAWNED_DAEMON: "1",
+      },
+    },
+  );
+  child.unref();
+  return child.pid;
+}
+
+/**
+ * Ensure the daemon is running when desktop starts.
  *
- * If the daemon is offline, buildUiUrl() sets bosunDaemonWasOffline=true and
- * createMainWindow() injects an in-page banner with instructions on how to
- * start bosun manually or configure auto-start via `bosun --setup`.
- *
- * Kept as a no-op so bootstrap() need not change its call site.
+ * Default behaviour: auto-start enabled.
+ * Opt-out: BOSUN_DESKTOP_AUTO_START_DAEMON=0
  */
 async function ensureDaemonRunning() {
-  // Intentional no-op. Daemon auto-start from the desktop is permanently disabled.
-  // Detection happens in buildUiUrl(); the offline banner is shown in createMainWindow().
+  const daemonBaseUrl = buildDaemonUiBaseUrl();
+  if (await probeUiServer(daemonBaseUrl)) return;
+
+  const ghostPids = findGhostDaemonPids();
+  // If a daemon is starting naturally, give it a short window first.
+  const existingPid = getDaemonPid();
+  if ((existingPid || ghostPids.length > 0) && await waitForDaemonUi(daemonBaseUrl, 5000)) {
+    return;
+  }
+
+  const autoStart = parseBoolEnv(process.env.BOSUN_DESKTOP_AUTO_START_DAEMON, true);
+  if (!autoStart) return;
+
+  try {
+    if (!existingPid && ghostPids.length === 0) {
+      const pid = spawnDetachedDaemon();
+      console.log(`[desktop] started bosun daemon in background (pid ${pid})`);
+    } else {
+      console.log("[desktop] existing bosun background process detected; not starting another instance");
+    }
+  } catch (error) {
+    console.warn("[desktop] failed to auto-start daemon:", error?.message || error);
+    return;
+  }
+
+  // Best effort wait. If it still isn't up we'll fall back to local UI mode.
+  await waitForDaemonUi(daemonBaseUrl, 15000);
 }
 
 async function startUiServer() {
@@ -642,7 +1023,7 @@ async function buildUiUrl() {
 
 async function createMainWindow() {
   if (mainWindow) return;
-  const iconPath = resolveBosunRuntimePath("logo.png");
+  const iconPath = resolveDesktopIconPath();
 
   mainWindow = new BrowserWindow({
     width: 1280,
@@ -650,7 +1031,7 @@ async function createMainWindow() {
     minWidth: 960,
     minHeight: 640,
     backgroundColor: "#0b0b0c",
-    ...(existsSync(iconPath) ? { icon: iconPath } : {}),
+    ...(iconPath && existsSync(iconPath) ? { icon: iconPath } : {}),
     show: false,
     // In tray mode Windows/Linux should not show a taskbar button for the
     // hidden state — the tray icon IS the taskbar presence.
@@ -695,12 +1076,17 @@ async function createMainWindow() {
     }
   });
 
+  // Always render an in-app loading screen first so startup latency
+  // (daemon boot, TLS init, server warm-up) is visible to the user.
+  await mainWindow.loadURL(buildLoadingPageUrl("Starting Bosun services..."));
+  await setLoadingMessage("Preparing background daemon...");
+  await ensureDaemonRunning();
+  await setLoadingMessage("Connecting to Bosun portal...");
   const uiUrl = await buildUiUrl();
   await mainWindow.loadURL(uiUrl);
 
-  // If the bosun daemon was not running when the desktop started, inject a
-  // non-blocking banner so the user knows and has clear instructions.
-  // The desktop NEVER auto-starts bosun — it is always a separate process.
+  // If the daemon UI is still offline after startup checks/auto-start, inject
+  // a non-blocking banner so the user has clear recovery instructions.
   if (bosunDaemonWasOffline) {
     mainWindow.webContents.once("did-finish-load", () => {
       mainWindow?.webContents
@@ -717,7 +1103,7 @@ async function createMainWindow() {
             ].join(';');
             b.innerHTML = [
               '<span>',
-              '\u26a0\ufe0f <strong>Bosun daemon is not running.</strong>',
+              '\u26a0\ufe0f <strong>Bosun daemon is not reachable.</strong>',
               ' This portal is in local mode — agents & tasks from your background service are unavailable.',
               ' Start it: ',
               '<code style="background:rgba(255,255,255,.15);padding:2px 6px;border-radius:3px">bosun --daemon</code>',
@@ -737,14 +1123,14 @@ async function createMainWindow() {
 
 async function createFollowWindow() {
   if (followWindow && !followWindow.isDestroyed()) return followWindow;
-  const iconPath = resolveBosunRuntimePath("logo.png");
+  const iconPath = resolveDesktopIconPath();
   followWindow = new BrowserWindow({
     width: 460,
     height: 720,
     minWidth: 380,
     minHeight: 520,
     backgroundColor: "#0b0b0c",
-    ...(existsSync(iconPath) ? { icon: iconPath } : {}),
+    ...(iconPath && existsSync(iconPath) ? { icon: iconPath } : {}),
     show: false,
     alwaysOnTop: true,
     autoHideMenuBar: true,
@@ -810,6 +1196,26 @@ function refreshTrayMenu() {
   const openUrl = (url) => shell.openExternal(url).catch(() => {});
   const isDev = !app.isPackaged;
 
+  // Build workspace items from the module-scope cache
+  const workspaceItems = /** @type {Electron.MenuItemConstructorOptions[]} */ ([]);
+  if (_cachedWorkspaces.length > 0) {
+    for (const ws of _cachedWorkspaces) {
+      const wsId = String(ws.id || "");
+      const wsName = String(ws.name || ws.id || "Untitled Workspace");
+      const isActive = wsId === _cachedActiveWorkspaceId;
+      workspaceItems.push({
+        label: isActive ? `\u2713 ${wsName}` : wsName,
+        type: /** @type {const} */ ("normal"),
+        enabled: !isActive,
+        click: () => {
+          switchWorkspace(wsId).catch((err) =>
+            console.warn("[desktop] workspace switch failed:", err?.message || err),
+          );
+        },
+      });
+    }
+  }
+
   const menu = Menu.buildFromTemplate([
     // ── Identity header ──────────────────────────────────────────────────
     {
@@ -817,26 +1223,46 @@ function refreshTrayMenu() {
       enabled: false,
     },
     {
-      label: "Open",
+      label: "Show Window",
       click: () => setWindowVisible(mainWindow),
     },
     { type: /** @type {const} */ ("separator") },
 
-    // ── Launch Control ───────────────────────────────────────────────────
+    // ── Navigation ───────────────────────────────────────────────────────
     {
-      label: "Launch Control",
+      label: "Go To",
       submenu: [
         {
           label: "Dashboard",
           click: () => navigateMainWindow("/"),
         },
         {
-          label: "Agents",
-          click: () => navigateMainWindow("/agents"),
+          label: "Chat \u0026 Sessions",
+          click: () => navigateMainWindow("/chat"),
         },
         {
           label: "Tasks",
           click: () => navigateMainWindow("/tasks"),
+        },
+        {
+          label: "Workflows",
+          click: () => navigateMainWindow("/workflows"),
+        },
+        {
+          label: "Agents",
+          click: () => navigateMainWindow("/agents"),
+        },
+        {
+          label: "Fleet Sessions",
+          click: () => navigateMainWindow("/fleet-sessions"),
+        },
+        {
+          label: "Control Panel",
+          click: () => navigateMainWindow("/control"),
+        },
+        {
+          label: "Infrastructure",
+          click: () => navigateMainWindow("/infra"),
         },
         {
           label: "Logs",
@@ -844,14 +1270,44 @@ function refreshTrayMenu() {
         },
         { type: /** @type {const} */ ("separator") },
         {
-          label: "Voice Companion",
-          accelerator: acc("bosun.voice.toggle"),
-          click: () => {
-            if (!restoreFollowWindow()) setWindowVisible(mainWindow);
-          },
+          label: "Settings",
+          accelerator: acc("app.settings"),
+          click: () => navigateMainWindow("/settings"),
         },
       ],
     },
+
+    // ── Workspace ────────────────────────────────────────────────────────
+    ...(workspaceItems.length > 0
+      ? [
+          {
+            label: "Workspace",
+            submenu: [
+              ...workspaceItems,
+              { type: /** @type {const} */ ("separator") },
+              {
+                label: "Manage Workspaces\u2026",
+                click: () => navigateMainWindow("/settings"),
+              },
+            ],
+          },
+        ]
+      : []),
+
+    // ── Voice ────────────────────────────────────────────────────────────
+    {
+      label: "Voice Companion",
+      accelerator: acc("bosun.voice.toggle"),
+      click: () => {
+        if (!restoreFollowWindow()) setWindowVisible(mainWindow);
+      },
+    },
+    {
+      label: "Voice Call",
+      click: () => openFollowWindow({ call: "voice" }).catch(() => {}),
+    },
+    { type: /** @type {const} */ ("separator") },
+
     {
       label: "Restart to Apply Update",
       enabled: app.isPackaged,
@@ -860,12 +1316,6 @@ function refreshTrayMenu() {
         void shutdown("tray_restart_update");
       },
     },
-    {
-      label: "Preferences",
-      accelerator: "CmdOrCtrl+,",
-      click: () => navigateMainWindow("/settings"),
-    },
-    { type: /** @type {const} */ ("separator") },
 
     // ── Troubleshooting ──────────────────────────────────────────────────
     {
@@ -880,7 +1330,7 @@ function refreshTrayMenu() {
           click: () => mainWindow?.webContents?.reloadIgnoringCache(),
         },
         {
-          label: "Clear Cache & Reload",
+          label: "Clear Cache \u0026 Reload",
           click: async () => {
             try {
               await session.defaultSession.clearCache();
@@ -911,7 +1361,7 @@ function refreshTrayMenu() {
     { type: /** @type {const} */ ("separator") },
 
     // ── Startup / login ──────────────────────────────────────────────
-    ...( app.isPackaged
+    ...(app.isPackaged
       ? [
           {
             label: "Start at Login",
@@ -940,8 +1390,8 @@ function refreshTrayMenu() {
 
 function ensureTray() {
   if (tray) return;
-  const iconPath = resolveBosunRuntimePath("logo.png");
-  if (!existsSync(iconPath)) return;
+  const iconPath = resolveDesktopIconPath();
+  if (!iconPath || !existsSync(iconPath)) return;
 
   tray = new Tray(iconPath);
   tray.setToolTip("Bosun — AI Control Center");
@@ -1037,7 +1487,7 @@ function initAndRegisterShortcuts(configDir) {
 
   onShortcut("bosun.quickchat", () => {
     setWindowVisible(mainWindow);
-    navigateMainWindow("/");
+    navigateMainWindow("/chat");
   });
 
   onShortcut("bosun.voice.call", () => {
@@ -1058,11 +1508,18 @@ function initAndRegisterShortcuts(configDir) {
 
   // Local: navigation (also in menu, but registered here for completeness)
   onShortcut("bosun.navigate.home", () => navigateMainWindow("/"));
-  onShortcut("bosun.navigate.agents", () => navigateMainWindow("/agents"));
+  onShortcut("bosun.navigate.chat", () => navigateMainWindow("/chat"));
   onShortcut("bosun.navigate.tasks", () => navigateMainWindow("/tasks"));
+  onShortcut("bosun.navigate.workflows", () => navigateMainWindow("/workflows"));
+  onShortcut("bosun.navigate.agents", () => navigateMainWindow("/agents"));
+  onShortcut("bosun.navigate.fleet", () => navigateMainWindow("/fleet-sessions"));
+  onShortcut("bosun.navigate.control", () => navigateMainWindow("/control"));
+  onShortcut("bosun.navigate.infra", () => navigateMainWindow("/infra"));
   onShortcut("bosun.navigate.logs", () => navigateMainWindow("/logs"));
+  onShortcut("bosun.navigate.library", () => navigateMainWindow("/library"));
+  onShortcut("bosun.navigate.telemetry", () => navigateMainWindow("/telemetry"));
   onShortcut("bosun.navigate.settings", () => navigateMainWindow("/settings"));
-  onShortcut("app.newchat", () => navigateMainWindow("/"));
+  onShortcut("app.newchat", () => navigateMainWindow("/chat"));
   onShortcut("app.settings", () => navigateMainWindow("/settings"));
   onShortcut("bosun.show.shortcuts", () => showShortcutsDialog());
 
@@ -1131,6 +1588,39 @@ function registerDesktopIpc() {
     showShortcutsDialog();
     return { ok: true };
   });
+
+  // ── Navigation IPC ───────────────────────────────────────────────────────
+  /**
+   * Navigate the main window to a given path or tab ID.
+   * Payload: { path: string } e.g. { path: "/chat" } or { path: "chat" }
+   */
+  ipcMain.handle("bosun:navigate", (_event, { path } = {}) => {
+    if (!path) return { ok: false, error: "path required" };
+    const normalizedPath = String(path).startsWith("/") ? path : `/${path}`;
+    navigateMainWindow(normalizedPath);
+    return { ok: true };
+  });
+
+  // ── Workspace IPC ────────────────────────────────────────────────────────
+  /** Returns the cached workspace list and active workspace ID. */
+  ipcMain.handle("bosun:workspaces:list", async () => {
+    await fetchWorkspaces();
+    return {
+      ok: true,
+      workspaces: _cachedWorkspaces,
+      activeId: _cachedActiveWorkspaceId,
+    };
+  });
+
+  /**
+   * Switch the active workspace.
+   * Payload: { workspaceId: string }
+   */
+  ipcMain.handle("bosun:workspaces:switch", async (_event, { workspaceId } = {}) => {
+    if (!workspaceId) return { ok: false, error: "workspaceId required" };
+    await switchWorkspace(workspaceId);
+    return { ok: true, activeId: workspaceId };
+  });
 }
 
 async function bootstrap() {
@@ -1152,8 +1642,8 @@ async function bootstrap() {
       app.commandLine.appendSwitch("disable-gpu-sandbox");
     }
     app.setAppUserModelId("com.virtengine.bosun");
-    const iconPath = resolveBosunRuntimePath("logo.png");
-    if (existsSync(iconPath)) {
+    const iconPath = resolveDesktopIconPath();
+    if (iconPath && existsSync(iconPath)) {
       try {
         app.setIcon(iconPath);
       } catch {
@@ -1174,8 +1664,6 @@ async function bootstrap() {
     } catch (err) {
       console.warn("[desktop] could not load desktop-api-key module:", err?.message || err);
     }
-
-    await ensureDaemonRunning();
 
     // Initialise shortcuts (loads user config) and register globals.
     // Must happen before buildAppMenu() so acc() returns correct values.
@@ -1213,6 +1701,17 @@ async function bootstrap() {
     if (!trayMode) {
       ensureTray();
     }
+
+    // Fetch workspace list in the background so the menu and tray show
+    // workspace switcher items as soon as the UI server is reachable.
+    fetchWorkspaces({ force: true })
+      .then(() => {
+        Menu.setApplicationMenu(buildAppMenu());
+        refreshTrayMenu();
+      })
+      .catch((err) =>
+        console.warn("[desktop] initial workspace fetch:", err?.message || err),
+      );
 
     await maybeAutoUpdate();
   } catch (error) {

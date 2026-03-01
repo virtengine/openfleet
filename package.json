@@ -1,6 +1,6 @@
 {
   "name": "bosun",
-  "version": "0.36.8",
+  "version": "0.36.29",
   "description": "AI-powered orchestrator supervisor — manages AI agent executors with failover, auto-restarts on failure, analyzes crashes with Codex SDK, creates PRs via Vibe-Kanban API, and sends Telegram notifications. Supports N executors with weighted distribution, multi-repo projects, and auto-setup.",
   "type": "module",
   "license": "Apache 2.0",
@@ -87,7 +87,8 @@
   },
   "scripts": {
     "start": "node cli.mjs",
-    "setup": "node setup.mjs",
+    "setup": "node cli.mjs --setup",
+    "setup:terminal": "node setup.mjs",
     "monitor": "node monitor.mjs",
     "desktop": "node cli.mjs --desktop",
     "desktop:install": "npm -C desktop install",
@@ -97,8 +98,8 @@
     "shared-workspaces": "node shared-workspace-cli.mjs",
     "syntax:check": "node --experimental-vm-modules --no-warnings=ExperimentalWarning syntax-check.mjs",
     "pretest": "npm run syntax:check",
-    "test": "vitest run --config vitest.config.mjs",
-    "test:vitest": "vitest run --config vitest.config.mjs",
+    "test": "node --max-old-space-size=4096 node_modules/vitest/vitest.mjs run --config vitest.config.mjs",
+    "test:vitest": "node --max-old-space-size=4096 node_modules/vitest/vitest.mjs run --config vitest.config.mjs",
     "test:node": "node --test tests/*.node.test.mjs",
     "test:all": "npm run test:vitest && npm run test:node",
     "test:voice-provider-smoke": "vitest run --config vitest.config.mjs tests/voice-provider-smoke.test.mjs",
@@ -258,6 +259,7 @@
     "workflow-templates/planning.mjs",
     "workflow-templates/reliability.mjs",
     "workflow-templates/security.mjs",
+    "workflow-templates/task-lifecycle.mjs",
     "ui/vendor/"
   ],
   "dependencies": {

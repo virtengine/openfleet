@@ -1,3 +1,13 @@
+import { _resetSingleton } from "../session-tracker.mjs";
+
+// ── Isolate session tracker from disk during tests ──────────────────────────
+// The singleton defaults to persistDir = `logs/sessions/`, which means any
+// test that transitively calls getSessionTracker() (e.g. via the real
+// ui-server) would write session JSON files into the working tree and pollute
+// real sessions after the run.  Pre-seed the singleton with persistDir: null
+// so all session tracking stays in-memory only.
+_resetSingleton({ persistDir: null });
+
 const ORIGINAL_CONSOLE = {
   error: console.error.bind(console),
   warn: console.warn.bind(console),

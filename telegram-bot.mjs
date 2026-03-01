@@ -960,7 +960,8 @@ function isTelegramInlineButtonUrlAllowed(inputUrl) {
 
 function getBrowserUiUrlOptions({ forTelegramButtons = true } = {}) {
   const tunnelUrl = getTunnelUrl();
-  const base = String(telegramUiUrl || getTelegramUiUrl?.() || tunnelUrl || "").trim();
+  const localUiUrl = String(getTelegramUiUrl?.() || "").trim();
+  const base = String(telegramUiUrl || localUiUrl || tunnelUrl || "").trim();
   if (!base && !tunnelUrl) return [];
   const token = getSessionToken();
   const options = [];
@@ -1003,10 +1004,19 @@ function getBrowserUiUrlOptions({ forTelegramButtons = true } = {}) {
     add(":monitor: Localhost", localhostUrl);
   }
 
-  if (parsed) {
+  // LAN should remain available even when a Cloudflare tunnel is active.
+  // Derive it from the local UI listener URL (port-bound), not the tunnel URL.
+  let localParsed = null;
+  try {
+    localParsed = new URL(localUiUrl);
+  } catch {
+    localParsed = null;
+  }
+  const lanSource = localParsed || parsed;
+  if (lanSource) {
     const lanIp = getLocalLanIp?.();
-    if (lanIp && parsed.port) {
-      const lanUrl = `${parsed.protocol}//${lanIp}:${parsed.port}`;
+    if (lanIp && lanSource.port) {
+      const lanUrl = `${lanSource.protocol}//${lanIp}:${lanSource.port}`;
       add(":chart: LAN", lanUrl);
     }
   }

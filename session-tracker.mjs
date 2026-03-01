@@ -662,12 +662,16 @@ export class SessionTracker {
   }
 
   /**
-   * Stop the flush timer (for cleanup).
+   * Stop all timers and flush pending writes (for cleanup).
    */
   destroy() {
     if (this.#flushTimer) {
       clearInterval(this.#flushTimer);
       this.#flushTimer = null;
+    }
+    if (this.#reaperTimer) {
+      clearInterval(this.#reaperTimer);
+      this.#reaperTimer = null;
     }
     this.#flushDirty();
   }
@@ -1451,4 +1455,24 @@ export function getSessionTracker(options) {
  */
 export function createSessionTracker(options) {
   return new SessionTracker(options);
+}
+
+/**
+ * Reset the singleton so the next `getSessionTracker()` call creates a fresh
+ * instance.  Intended **only** for tests — prevents test-created sessions from
+ * leaking into the real `logs/sessions/` directory on disk.
+ *
+ * @param {Object} [nextOptions] — options forwarded to the *next* singleton
+ *   creation.  Pass `{ persistDir: null }` to disable disk writes entirely.
+ */
+export function _resetSingleton(nextOptions) {
+  if (_instance) {
+    _instance.destroy();
+    _instance = null;
+  }
+  if (nextOptions) {
+    // Pre-create with the supplied options so the next getSessionTracker()
+    // call doesn't fall back to the default persistDir.
+    _instance = new SessionTracker(nextOptions);
+  }
 }

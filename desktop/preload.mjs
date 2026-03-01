@@ -16,6 +16,35 @@ contextBridge.exposeInMainWorld("veDesktop", {
   },
 
   /**
+   * Navigate the main window to a SPA route.
+   * Useful when renderer code needs to trigger navigation programmatically.
+   * @param {string} path  e.g. "/chat", "/tasks", "/settings"
+   * @returns {Promise<{ ok: boolean }>}
+   */
+  navigate: (path) =>
+    ipcRenderer.invoke("bosun:navigate", { path: String(path || "/") }),
+
+  /**
+   * Workspace management API.
+   * Available in the renderer via `window.veDesktop.workspaces.*`
+   */
+  workspaces: {
+    /**
+     * Returns the cached workspace list and currently active workspace ID.
+     * @returns {Promise<{ ok: boolean, workspaces: object[], activeId: string|null }>}
+     */
+    list: () => ipcRenderer.invoke("bosun:workspaces:list"),
+
+    /**
+     * Switch the active workspace.
+     * @param {string} workspaceId
+     * @returns {Promise<{ ok: boolean, activeId: string }>}
+     */
+    switch: (workspaceId) =>
+      ipcRenderer.invoke("bosun:workspaces:switch", { workspaceId }),
+  },
+
+  /**
    * Keyboard shortcuts API.
    * Available in the renderer via `window.veDesktop.shortcuts.*`
    */

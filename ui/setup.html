@@ -215,6 +215,74 @@
       display: flex; gap: 8px; margin-top: 8px;
     }
     .custom-input-row input { flex: 1; }
+    .label-with-help {
+      display: inline-flex !important;
+      align-items: center;
+      gap: 6px;
+      flex-wrap: wrap;
+    }
+    .help-tip {
+      position: relative;
+      display: inline-flex;
+      align-items: center;
+      vertical-align: middle;
+    }
+    .help-tip-btn {
+      width: 17px;
+      height: 17px;
+      border-radius: 999px;
+      border: 1px solid var(--border-primary);
+      background: rgba(99, 102, 241, 0.12);
+      color: var(--accent-light);
+      font-size: 0.68rem;
+      font-weight: 700;
+      line-height: 1;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      padding: 0;
+      cursor: help;
+      user-select: none;
+    }
+    .help-tip-btn:hover { border-color: var(--accent); }
+    .help-tip-btn:focus-visible {
+      outline: none;
+      box-shadow: 0 0 0 3px var(--accent-glow);
+      border-color: var(--accent);
+    }
+    .help-popover {
+      position: absolute;
+      top: calc(100% + 6px);
+      right: 0;
+      width: min(320px, 84vw);
+      padding: 10px 12px;
+      border-radius: var(--radius-sm);
+      border: 1px solid var(--border-primary);
+      background: rgba(9, 13, 22, 0.98);
+      color: var(--text-secondary);
+      font-size: 0.74rem;
+      line-height: 1.5;
+      box-shadow: 0 10px 24px rgba(0, 0, 0, 0.42);
+      opacity: 0;
+      transform: translateY(4px);
+      pointer-events: none;
+      transition: opacity var(--transition), transform var(--transition);
+      z-index: 20;
+      white-space: normal;
+    }
+    .help-tip.open .help-popover,
+    .help-tip:hover .help-popover,
+    .help-tip:focus-within .help-popover {
+      opacity: 1;
+      transform: translateY(0);
+      pointer-events: auto;
+    }
+    .help-popover strong {
+      color: var(--text-primary);
+      font-weight: 600;
+      display: block;
+      margin-top: 6px;
+    }
 
     /* ── Checkmark / Status Badges ───────────────────────────────────── */
     .prereq-list { list-style: none; }
@@ -494,6 +562,10 @@
       .executor-grid { grid-template-columns: 1fr; }
       .profile-cards { grid-template-columns: 1fr; }
       .progress-step .step-label { display: none; }
+      .help-popover {
+        right: auto;
+        left: -8px;
+      }
     }
   </style>
 </head>
@@ -519,9 +591,10 @@ import { iconText } from "./modules/icon-utils.js";
 const html = htm.bind(h);
 
 // ── API helpers ──────────────────────────────────────────────────────────────
+const apiBase = "/api/setup";
 
 const api = (path, opts) =>
-  fetch(`/api/setup/${path}`, {
+  fetch(`${apiBase}/${path}`, {
     headers: { "Content-Type": "application/json" },
     ...opts,
   }).then((r) => r.json());
@@ -542,6 +615,28 @@ const STEPS = [
   { id: "advanced", label: "Advanced", icon: ":settings:" },
   { id: "review", label: "Review", icon: ":rocket:" },
 ];
+
+const HELP_TEXT = {
+  bosunHome: "Main Bosun data root. Keep it outside git repos. Best practice: use a stable path like ~/bosun.",
+  workspacesDir: "Where Bosun creates per-project worktrees and shared dev config. Best practice: keep this on fast local disk with enough free space.",
+  projectName: "Human-readable project label used in UI, notifications, and workspace naming. Best practice: keep it short and stable.",
+  repoSlug: "Default GitHub repository (owner/repo) used for PR automation and project sync. Best practice: set this even if you add multiple repos later.",
+  executorType: "Defines which SDK/runtime handles tasks (Codex, Copilot, Claude, etc.). Best practice: keep one primary and add backups only for failover or cost control.",
+  authMode: "OAuth reuses your local login session; API key stores credentials in BOSUN_HOME .env. Best practice: prefer OAuth unless you need custom endpoints or account separation.",
+  executorModel: "Default model for this executor. Best practice: use a strong model for primary and a cheaper/faster model for backups.",
+  executorWeight: "Relative routing share when task distribution is weighted. Example: weights 100 and 50 route about 67% / 33%. Weight is ignored in primary-only mode.",
+  maxParallel: "Maximum concurrent task attempts across enabled executors. Best practice: start with 2-4 and increase only after stable runs.",
+  maxRetries: "Retry count before giving up on a failed task attempt. Best practice: 2-3 catches transient failures without creating loops.",
+  failoverStrategy: "How Bosun chooses the next executor after failures or when rotating. Weighted-random uses weights; round-robin ignores weights.",
+  executorMode: "Internal runs agents locally; VK uses remote VirtKanban; Hybrid combines both. Best practice: use Internal unless you already operate VK.",
+  taskDistribution: "How new tasks are assigned: weighted, round-robin, or primary-only. Best practice: choose weighted when using different executor capacities.",
+  voiceProviders: "Ordered provider chain for live voice. Bosun tries top to bottom. Best practice: place most reliable/lowest latency provider first.",
+  turnDetection: "How speech turn boundaries are detected. Best practice: use server_vad for most calls; semantic_vad for longer conversational pauses.",
+  fallbackMode: "Fallback path when provider setup fails. browser keeps local fallback available; disabled requires cloud voice endpoints only.",
+  delegateExecutor: "Executor used for deeper reasoning/tool work during voice sessions. Best practice: point to your most reliable task executor.",
+  voiceEndpointRole: "Primary endpoints are preferred first; backup endpoints are used when primaries fail.",
+  voiceEndpointWeight: "Weighted share among endpoints of the same role/provider. Example: 300 and 100 routes about 75% / 25% before failover.",
+};
 
 // ── SelectWithCustom component ───────────────────────────────────────────────
 
@@ -622,6 +717,37 @@ function Section({ id, title, defaultOpen, children }) {
   `;
 }
 
+function HelpTip({ text }) {
+  const [open, setOpen] = useState(false);
+  const closeSoon = () => setTimeout(() => setOpen(false), 120);
+  return html`
+    <span class=${`help-tip ${open ? "open" : ""}`}>
+      <button
+        type="button"
+        class="help-tip-btn"
+        aria-label="Field help"
+        title="Field help"
+        onclick=${(e) => {
+          e.preventDefault();
+          e.stopPropagation();
+          setOpen((v) => !v);
+        }}
+        onblur=${closeSoon}
+      >?</button>
+      <span class="help-popover" role="tooltip">${text}</span>
+    </span>
+  `;
+}
+
+function labelWithHelp(labelNode, helpText, extraClass = "") {
+  return html`
+    <label class=${`label-with-help ${extraClass}`.trim()}>
+      <span>${labelNode}</span>
+      <${HelpTip} text=${helpText} />
+    </label>
+  `;
+}
+
 // ── Main App ─────────────────────────────────────────────────────────────────
 
 function App() {
@@ -689,6 +815,7 @@ function App() {
   const [workflowRunStuckThresholdMs, setWorkflowRunStuckThresholdMs] = useState(300000);
   const [workflowMaxPersistedRuns, setWorkflowMaxPersistedRuns] = useState(200);
   const [workflowMaxConcurrentBranches, setWorkflowMaxConcurrentBranches] = useState(8);
+  const CURRENT_WORKFLOW_PROFILE_ID = "current-installed";
   // Kanban
   const [kanbanSyncPolicy, setKanbanSyncPolicy] = useState("internal-primary");
   // Multi-workspace
@@ -744,7 +871,7 @@ function App() {
   // Voice assistant
   const [voiceEnabled, setVoiceEnabled] = useState(true);
   const [voiceProvider, setVoiceProvider] = useState("auto");
-  const [voiceModel, setVoiceModel] = useState("gpt-audio-1.5");
+  const [voiceModel, setVoiceModel] = useState("gpt-realtime-1.5");
   const [voiceVisionModel, setVoiceVisionModel] = useState("gpt-4.1-nano");
   const [voiceId, setVoiceId] = useState("alloy");
   const [voiceTurnDetection, setVoiceTurnDetection] = useState("server_vad");
@@ -753,7 +880,7 @@ function App() {
   const [openaiRealtimeApiKey, setOpenaiRealtimeApiKey] = useState("");
   const [azureOpenaiRealtimeEndpoint, setAzureOpenaiRealtimeEndpoint] = useState("");
   const [azureOpenaiRealtimeApiKey, setAzureOpenaiRealtimeApiKey] = useState("");
-  const [azureOpenaiRealtimeDeployment, setAzureOpenaiRealtimeDeployment] = useState("gpt-audio-1.5");
+  const [azureOpenaiRealtimeDeployment, setAzureOpenaiRealtimeDeployment] = useState("gpt-realtime-1.5");
   // Multi-endpoint voice config — each entry has its own credentials for failover
   const [voiceEndpoints, setVoiceEndpoints] = useState([]);
   const [voiceProviders, setVoiceProviders] = useState([
@@ -775,8 +902,7 @@ function App() {
 
   const fetchOAuthStatus = async (provider) => {
     try {
-      const r = await fetch(apiBase + "/voice/auth/" + provider + "/status");
-      const d = await r.json();
+      const d = await apiGet("voice/auth/" + provider + "/status");
       if (d.ok) {
         setOauthAccounts((prev) => ({ ...prev, [provider]: { ...prev[provider], status: d.status || "idle", hasToken: !!d.hasToken, loading: false } }));
       }
@@ -792,16 +918,14 @@ function App() {
   const startOAuthLogin = async (provider) => {
     setOauthAccounts((prev) => ({ ...prev, [provider]: { ...prev[provider], loading: true } }));
     try {
-      const r = await fetch(apiBase + "/voice/auth/" + provider + "/login", { method: "POST" });
-      const d = await r.json();
+      const d = await apiPost("voice/auth/" + provider + "/login");
       if (d.ok && d.authUrl) {
         window.open(d.authUrl, "_blank", "noopener");
         setOauthAccounts((prev) => ({ ...prev, [provider]: { ...prev[provider], status: "pending", loading: false } }));
         // Poll for completion
         const poll = setInterval(async () => {
           try {
-            const pr = await fetch(apiBase + "/voice/auth/" + provider + "/status");
-            const pd = await pr.json();
+            const pd = await apiGet("voice/auth/" + provider + "/status");
             if (pd.ok && (pd.status === "connected" || pd.status === "complete" || pd.hasToken)) {
               setOauthAccounts((prev) => ({ ...prev, [provider]: { status: "connected", hasToken: true, loading: false } }));
               clearInterval(poll);
@@ -824,26 +948,41 @@ function App() {
   const doOAuthLogout = async (provider) => {
     setOauthAccounts((prev) => ({ ...prev, [provider]: { ...prev[provider], loading: true } }));
     try {
-      await fetch(apiBase + "/voice/auth/" + provider + "/logout", { method: "POST" });
+      await apiPost("voice/auth/" + provider + "/logout");
       setOauthAccounts((prev) => ({ ...prev, [provider]: { status: "idle", hasToken: false, loading: false } }));
     } catch {
       setOauthAccounts((prev) => ({ ...prev, [provider]: { ...prev[provider], loading: false } }));
     }
   };
 
+  const cancelOAuthLogin = async (provider) => {
+    setOauthAccounts((prev) => ({ ...prev, [provider]: { ...prev[provider], loading: true } }));
+    try {
+      await apiPost("voice/auth/" + provider + "/cancel");
+    } catch { /* best-effort */ }
+    setOauthAccounts((prev) => ({ ...prev, [provider]: { status: "idle", hasToken: false, loading: false } }));
+  };
+
   // Endpoint test connection state — {[endpointId]: { testing, result, error, latencyMs }}
   const [endpointTestResults, setEndpointTestResults] = useState({});
+  const [endpointCustomModelRows, setEndpointCustomModelRows] = useState({});
+
+  const getDefaultVoiceEndpointUrl = (provider, authSource = "apiKey") => {
+    const p = String(provider || "").toLowerCase();
+    if (p === "openai") return "https://api.openai.com";
+    if (p === "claude") return "https://api.anthropic.com";
+    if (p === "gemini") return "https://generativelanguage.googleapis.com";
+    return "";
+  };
+
+  const isEndpointUrlEditable = (provider) =>
+    ["azure", "custom"].includes(String(provider || "").toLowerCase());
 
   const testEndpointConnection = async (ep) => {
     const key = ep.id;
     setEndpointTestResults((prev) => ({ ...prev, [key]: { testing: true, result: null, error: null } }));
     try {
-      const r = await fetch(apiBase + "/voice/endpoints/test", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ provider: ep.provider, apiKey: ep.apiKey, endpoint: ep.endpoint, deployment: ep.deployment, model: ep.model }),
-      });
-      const d = await r.json();
+      const d = await apiPost("voice/endpoints/test", { provider: ep.provider, apiKey: ep.apiKey, endpoint: ep.endpoint, deployment: ep.deployment, model: ep.model, authSource: ep.authSource });
       if (d.ok) {
         setEndpointTestResults((prev) => ({ ...prev, [key]: { testing: false, result: "success", error: null, latencyMs: d.latencyMs } }));
       } else {
@@ -855,15 +994,22 @@ function App() {
   };
 
   const VOICE_PROVIDER_MODEL_DEFAULTS = {
-    openai: { model: "gpt-audio-1.5", visionModel: "gpt-4.1-nano", models: ["gpt-audio-1.5", "gpt-realtime-1.5", "gpt-4o-realtime-preview-2024-12-17"], visionModels: ["gpt-4.1-nano", "gpt-4.1-mini", "gpt-4.1"] },
-    azure: { model: "gpt-audio-1.5", visionModel: "gpt-4.1-nano", models: ["gpt-audio-1.5", "gpt-realtime-1.5", "gpt-4o-realtime-preview"], visionModels: ["gpt-4.1-nano", "gpt-4.1-mini", "gpt-4.1"] },
-    claude: { model: "claude-3-7-sonnet-latest", visionModel: "claude-3-7-sonnet-latest", models: ["claude-3-7-sonnet-latest", "claude-sonnet-4-20250514"], visionModels: ["claude-3-7-sonnet-latest", "claude-sonnet-4-20250514"] },
-    gemini: { model: "gemini-2.5-pro", visionModel: "gemini-2.5-flash", models: ["gemini-2.5-pro", "gemini-2.5-flash", "gemini-2.0-flash", "gemini-3.0-flash", "gemini-3.1-pro"], visionModels: ["gemini-2.5-flash", "gemini-2.5-pro", "gemini-2.0-flash", "gemini-3.0-flash", "gemini-3.1-pro"] },
+    openai: { model: "gpt-realtime-1.5", visionModel: "gpt-4.1-nano", models: ["gpt-realtime-1.5", "gpt-audio-1.5", "gpt-4o-realtime-preview-2024-12-17"], visionModels: ["gpt-4.1-nano", "gpt-4.1-mini", "gpt-4.1"] },
+    azure: { model: "gpt-realtime-1.5", visionModel: "gpt-4.1-nano", models: ["gpt-realtime-1.5", "gpt-4o-realtime-preview"], visionModels: ["gpt-4.1-nano", "gpt-4.1-mini", "gpt-4.1"] },
+    claude: { model: "claude-sonnet-4.6", visionModel: "claude-sonnet-4.6", models: ["claude-sonnet-4.6", "claude-haiku-4.5"], visionModels: ["claude-sonnet-4.6", "claude-haiku-4.5"] },
+    gemini: { model: "gemini-3.1-pro", visionModel: "gemini-3.0-flash", models: ["gemini-2.5-pro", "gemini-2.5-flash", "gemini-2.0-flash", "gemini-3.0-flash", "gemini-3.1-pro"], visionModels: ["gemini-2.5-flash", "gemini-2.5-pro", "gemini-2.0-flash", "gemini-3.0-flash", "gemini-3.1-pro"] },
     fallback: { model: "", visionModel: "", models: [], visionModels: [] },
   };
 
   const getVoiceProviderModelDefaults = (provider) =>
     VOICE_PROVIDER_MODEL_DEFAULTS[String(provider || "fallback").toLowerCase()] || VOICE_PROVIDER_MODEL_DEFAULTS.fallback;
+  const ALL_ENDPOINT_MODEL_OPTIONS = Array.from(
+    new Set(
+      Object.values(VOICE_PROVIDER_MODEL_DEFAULTS)
+        .flatMap((entry) => Array.isArray(entry?.models) ? entry.models : [])
+        .filter(Boolean),
+    ),
+  );
 
   const normalizeVoiceProviderEntry = (entry = {}, fallback = {}) => {
     const allowedProviders = ["openai", "azure", "claude", "gemini", "fallback"];
@@ -876,7 +1022,7 @@ function App() {
     const normalizedAzureDeployment = String(
       entry.azureDeployment ??
       fallback.azureDeployment ??
-      (normalizedProvider === "azure" ? "gpt-audio-1.5" : ""),
+      (normalizedProvider === "azure" ? "gpt-realtime-1.5" : ""),
     ).trim();
     return {
       id: entry.id || Date.now() + Math.random(),
@@ -912,7 +1058,7 @@ function App() {
           visionModel: defaults_.visionModel,
           azureDeployment:
             nextProvider === "azure"
-              ? String(target.azureDeployment || "gpt-audio-1.5")
+              ? String(target.azureDeployment || "gpt-realtime-1.5")
               : "",
           endpointId: "",
         });
@@ -947,19 +1093,33 @@ function App() {
     });
   };
 
-  const normalizeVoiceEndpoint = (ep = {}) => ({
-    id: ep.id || `ep-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
-    name: String(ep.name || "").trim(),
-    provider: ["azure", "openai", "claude", "gemini"].includes(String(ep.provider || "").toLowerCase()) ? String(ep.provider).toLowerCase() : "azure",
-    endpoint: String(ep.endpoint || "").trim(),
-    deployment: String(ep.deployment || ep.azureDeployment || "").trim(),
-    apiKey: String(ep.apiKey || "").trim(),
-    model: String(ep.model || "gpt-audio-1.5").trim(),
-    role: ["primary", "backup"].includes(String(ep.role || "")) ? String(ep.role) : "primary",
-    weight: typeof ep.weight === "number" ? ep.weight : 100,
-    enabled: ep.enabled !== false,
-    visionModel: String(ep.visionModel || "").trim(),
-  });
+  const normalizeVoiceEndpoint = (ep = {}) => {
+    const provider = ["azure", "openai", "claude", "gemini", "custom"].includes(String(ep.provider || "").toLowerCase())
+      ? String(ep.provider).toLowerCase()
+      : "azure";
+    const authSource = ["apiKey", "oauth"].includes(String(ep.authSource || "")) ? String(ep.authSource) : "apiKey";
+    const userEndpoint = String(ep.endpoint || "").trim();
+    const endpoint = isEndpointUrlEditable(provider)
+      ? userEndpoint
+      : (userEndpoint || getDefaultVoiceEndpointUrl(provider, authSource));
+    const defaultModel = provider === "custom"
+      ? (ALL_ENDPOINT_MODEL_OPTIONS[0] || "gpt-realtime-1.5")
+      : (getVoiceProviderModelDefaults(provider).model || "gpt-realtime-1.5");
+    return {
+      id: ep.id || `ep-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+      name: String(ep.name || "").trim(),
+      provider,
+      endpoint,
+      deployment: String(ep.deployment || ep.azureDeployment || "").trim(),
+      apiKey: String(ep.apiKey || "").trim(),
+      model: String(ep.model || defaultModel).trim(),
+      role: ["primary", "backup"].includes(String(ep.role || "")) ? String(ep.role) : "primary",
+      weight: typeof ep.weight === "number" ? ep.weight : 100,
+      enabled: ep.enabled !== false,
+      visionModel: String(ep.visionModel || "").trim(),
+      authSource,
+    };
+  };
 
   const addVoiceEndpoint = () => setVoiceEndpoints((prev) => [
     ...prev,
@@ -969,7 +1129,24 @@ function App() {
   const removeVoiceEndpoint = (idx) => setVoiceEndpoints((prev) => prev.filter((_, i) => i !== idx));
 
   const updateVoiceEndpoint = (idx, field, value) => setVoiceEndpoints((prev) =>
-    prev.map((ep, i) => i === idx ? normalizeVoiceEndpoint({ ...ep, [field]: value }) : ep),
+    prev.map((ep, i) => {
+      if (i !== idx) return ep;
+      const next = { ...ep, [field]: value };
+      if (field === "provider") {
+        const nextProvider = String(value || "").toLowerCase();
+        next.model = nextProvider === "custom"
+          ? (ALL_ENDPOINT_MODEL_OPTIONS[0] || "gpt-realtime-1.5")
+          : (getVoiceProviderModelDefaults(nextProvider).model || next.model || "gpt-realtime-1.5");
+        next.endpoint = isEndpointUrlEditable(nextProvider)
+          ? String(next.endpoint || "")
+          : getDefaultVoiceEndpointUrl(nextProvider, next.authSource || "apiKey");
+        if (nextProvider !== "azure") next.deployment = "";
+      }
+      if (field === "authSource" && !isEndpointUrlEditable(next.provider)) {
+        next.endpoint = getDefaultVoiceEndpointUrl(next.provider, String(value || "apiKey"));
+      }
+      return normalizeVoiceEndpoint(next);
+    }),
   );
 
   const getWorkflowProfileById = (profileId, profileList = workflowProfiles) =>
@@ -978,6 +1155,28 @@ function App() {
   const getWorkflowTemplateIdsForProfile = (profileId, profileList = workflowProfiles) => {
     const profile_ = getWorkflowProfileById(profileId, profileList);
     return Array.isArray(profile_?.templateIds) ? [...profile_.templateIds] : [];
+  };
+
+  const upsertCurrentWorkflowProfile = (templateIds, profileList = workflowProfiles) => {
+    const normalizedTemplateIds = Array.from(
+      new Set((templateIds || []).map((value) => String(value || "").trim()).filter(Boolean)),
+    );
+    const baseProfiles = Array.isArray(profileList) ? profileList : [];
+    const currentProfile = {
+      id: CURRENT_WORKFLOW_PROFILE_ID,
+      name: `Your current installed workflows (${normalizedTemplateIds.length} templates)`,
+      description: "Keeps your existing installed templates unchanged.",
+      recommendedFor: "Returning setups where you want to preserve current defaults.",
+      templateIds: normalizedTemplateIds,
+      templateCount: normalizedTemplateIds.length,
+      workflowAutomationEnabled: workflowAutomationEnabled,
+    };
+    const nextProfiles = [
+      currentProfile,
+      ...baseProfiles.filter((profile_) => profile_.id !== CURRENT_WORKFLOW_PROFILE_ID),
+    ];
+    setWorkflowProfiles(nextProfiles);
+    return nextProfiles;
   };
 
   const applyWorkflowProfileSelection = (profileId, profileList = workflowProfiles) => {
@@ -992,7 +1191,9 @@ function App() {
     if (profile_ && typeof profile_.workflowAutomationEnabled === "boolean") {
       setWorkflowAutomationEnabled(profile_.workflowAutomationEnabled);
     }
-    setWorkflowAutoInstall(true);
+    if (resolvedProfileId !== CURRENT_WORKFLOW_PROFILE_ID) {
+      setWorkflowAutoInstall(true);
+    }
   };
 
   const toggleWorkflowTemplate = (templateId, checked) => {
@@ -1134,8 +1335,13 @@ function App() {
       if (existingWorkflowDefaults.profile) {
         applyWorkflowProfileSelection(String(existingWorkflowDefaults.profile), workflowData.profiles || []);
       }
-      if (Array.isArray(existingWorkflowDefaults.templates) && existingWorkflowDefaults.templates.length > 0) {
-        setWorkflowDefaultTemplates(existingWorkflowDefaults.templates.map((templateId) => String(templateId).trim()).filter(Boolean));
+      if (Array.isArray(existingWorkflowDefaults.templates)) {
+        const existingTemplateIds = existingWorkflowDefaults.templates.map((templateId) => String(templateId).trim()).filter(Boolean);
+        setWorkflowDefaultTemplates(existingTemplateIds);
+        if (statusData.configured) {
+          upsertCurrentWorkflowProfile(existingTemplateIds, workflowData.profiles || []);
+          setWorkflowProfile(CURRENT_WORKFLOW_PROFILE_ID);
+        }
       }
       if (existingWorkflowDefaults.autoInstall != null) {
         setWorkflowAutoInstall(Boolean(existingWorkflowDefaults.autoInstall));
@@ -1226,7 +1432,7 @@ function App() {
           legacyEndpoints.push(normalizeVoiceEndpoint({ name: "azure-primary", provider: "azure", endpoint: existingVoice.azureEndpoint || "", deployment: existingVoice.azureDeployment || "gpt-realtime-1.5", apiKey: existingVoice.azureApiKey || "", role: "primary", weight: 100 }));
         }
         if (existingVoice.openaiApiKey) {
-          legacyEndpoints.push(normalizeVoiceEndpoint({ name: "openai-primary", provider: "openai", apiKey: existingVoice.openaiApiKey || "", model: existingVoice.model || "gpt-audio-1.5", role: legacyEndpoints.length === 0 ? "primary" : "backup", weight: legacyEndpoints.length === 0 ? 100 : 50 }));
+          legacyEndpoints.push(normalizeVoiceEndpoint({ name: "openai-primary", provider: "openai", apiKey: existingVoice.openaiApiKey || "", model: existingVoice.model || "gpt-realtime-1.5", role: legacyEndpoints.length === 0 ? "primary" : "backup", weight: legacyEndpoints.length === 0 ? 100 : 50 }));
         }
         if (legacyEndpoints.length > 0) setVoiceEndpoints(legacyEndpoints);
       }
@@ -1279,6 +1485,10 @@ function App() {
           ? rawTemplates.split(",").map((value) => value.trim()).filter(Boolean)
           : [];
         setWorkflowDefaultTemplates(parsedTemplates);
+        if (statusData.configured) {
+          upsertCurrentWorkflowProfile(parsedTemplates, workflowData.profiles || []);
+          setWorkflowProfile(CURRENT_WORKFLOW_PROFILE_ID);
+        }
         envLoaded = true;
       }
       if (env.WORKFLOW_DEFAULT_AUTOINSTALL !== undefined) {
@@ -1366,14 +1576,14 @@ function App() {
         envEps.push(normalizeVoiceEndpoint({ name: "azure-primary", provider: "azure", endpoint: env.AZURE_OPENAI_REALTIME_ENDPOINT || "", deployment: env.AZURE_OPENAI_REALTIME_DEPLOYMENT || "gpt-realtime-1.5", apiKey: env.AZURE_OPENAI_REALTIME_API_KEY || "", role: "primary", weight: 100 }));
       }
       if (env.OPENAI_REALTIME_API_KEY) {
-        envEps.push(normalizeVoiceEndpoint({ name: "openai-primary", provider: "openai", apiKey: env.OPENAI_REALTIME_API_KEY, model: env.VOICE_MODEL || "gpt-audio-1.5", role: envEps.length === 0 ? "primary" : "backup", weight: envEps.length === 0 ? 100 : 50 }));
+        envEps.push(normalizeVoiceEndpoint({ name: "openai-primary", provider: "openai", apiKey: env.OPENAI_REALTIME_API_KEY, model: env.VOICE_MODEL || "gpt-realtime-1.5", role: envEps.length === 0 ? "primary" : "backup", weight: envEps.length === 0 ? 100 : 50 }));
       }
       if (envEps.length > 0) { setVoiceEndpoints((prev) => (prev.length > 0 ? prev : envEps)); envLoaded = true; }
       const resolvedVoiceProvider = String(env.VOICE_PROVIDER || existingVoice.provider || d.voiceProvider || voiceProvider || "openai").trim().toLowerCase();
-      const resolvedVoiceModel = String(env.VOICE_MODEL || existingVoice.model || d.voiceModel || voiceModel || "gpt-audio-1.5").trim();
+      const resolvedVoiceModel = String(env.VOICE_MODEL || existingVoice.model || d.voiceModel || voiceModel || "gpt-realtime-1.5").trim();
       const resolvedVoiceVisionModel = String(env.VOICE_VISION_MODEL || existingVoice.visionModel || d.voiceVisionModel || voiceVisionModel || "gpt-4.1-nano").trim();
       const resolvedVoiceId = String(env.VOICE_ID || existingVoice.voiceId || d.voiceId || voiceId || "alloy").trim();
-      const resolvedAzureDeployment = String(env.AZURE_OPENAI_REALTIME_DEPLOYMENT || existingVoice.azureDeployment || d.azureOpenaiRealtimeDeployment || azureOpenaiRealtimeDeployment || "gpt-audio-1.5").trim();
+      const resolvedAzureDeployment = String(env.AZURE_OPENAI_REALTIME_DEPLOYMENT || existingVoice.azureDeployment || d.azureOpenaiRealtimeDeployment || azureOpenaiRealtimeDeployment || "gpt-realtime-1.5").trim();
       if (Array.isArray(existingVoice.providers) && existingVoice.providers.length > 0) {
         setVoiceProviders(
           normalizeVoiceProviders(existingVoice.providers, {
@@ -1855,7 +2065,7 @@ function App() {
       {
         name: `executor-${prev.length + 1}`,
         executor: "COPILOT",
-        model: "claude-sonnet-4",
+        model: "claude-sonnet-4.6",
         weight: 50,
         role: "backup",
         enabled: true,
@@ -2145,7 +2355,7 @@ function App() {
     <p class="step-desc">Choose how you'd like to configure bosun, then set your home directory.</p>
 
     <div class="form-group">
-      <label>Bosun Home Directory <span class="required">*</span></label>
+      ${labelWithHelp(html`Bosun Home Directory <span class="required">*</span>`, HELP_TEXT.bosunHome)}
       <input type="text" value=${bosunHome}
         oninput=${(e) => setBosunHome(e.target.value)}
         placeholder="~/bosun" />
@@ -2156,7 +2366,7 @@ function App() {
       </div>
     </div>
     <div class="form-group">
-      <label>Workspaces Directory</label>
+      ${labelWithHelp("Workspaces Directory", HELP_TEXT.workspacesDir)}
       <input type="text" value=${workspacesDir}
         oninput=${(e) => { setWorkspacesDir(e.target.value); setWorkspacesDirCustomized(true); }}
         placeholder="${bosunHome}/workspaces" />
@@ -2185,12 +2395,12 @@ function App() {
       </div>
     </div>
     <div class="form-group" style="margin-top:20px">
-      <label>Project Name <span class="required">*</span></label>
+      ${labelWithHelp(html`Project Name <span class="required">*</span>`, HELP_TEXT.projectName)}
       <input type="text" value=${projectName} oninput=${(e) => setProjectName(e.target.value)} placeholder="my-project" />
       <div class="hint">Display name for your project in bosun's UI and notifications.</div>
     </div>
     <div class="form-group">
-      <label>GitHub Repository</label>
+      ${labelWithHelp("GitHub Repository", HELP_TEXT.repoSlug)}
       <input type="text" value=${repoSlug} oninput=${(e) => setRepoSlug(e.target.value)} placeholder="owner/repo" />
       <div class="hint">Optional. Used for PR automation, status checks, and GitHub project sync.</div>
     </div>
@@ -2262,7 +2472,7 @@ function App() {
             <div class="hint">Disabled executors stay in config but are excluded from routing and chat picker lists.</div>
           </div>
           <div class="form-group">
-            <label>Executor Type</label>
+            ${labelWithHelp("Executor Type", HELP_TEXT.executorType)}
             <${SelectWithCustom}
               options=${executorTypes}
               value=${ex.executor}
@@ -2270,7 +2480,7 @@ function App() {
             />
           </div>
           <div class="form-group">
-            <label>Authentication</label>
+            ${labelWithHelp("Authentication", HELP_TEXT.authMode)}
             <select value=${authMode} onchange=${(e) => updateExecutor(i, "authMode", e.target.value)}>
               <option value="oauth">Use existing auth (OAuth / login session)</option>
               <option value="api-key">API Key</option>
@@ -2376,8 +2586,9 @@ function App() {
             }
           })()}
           <div class="form-group">
-            <label style="display:flex;align-items:center;justify-content:space-between">
+            <label class="label-with-help" style="display:flex;align-items:center;justify-content:space-between">
               <span>Model</span>
+              <${HelpTip} text=${HELP_TEXT.executorModel} />
               ${ex.executor !== "COPILOT" && html`
                 <button class="btn btn-sm" style="padding:3px 8px;font-size:0.72rem"
                   onclick=${() => probeExecutorModels(i)}
@@ -2402,7 +2613,7 @@ function App() {
             `}
           </div>
           <div class="form-group">
-            <label>Weight</label>
+            ${labelWithHelp("Weight", HELP_TEXT.executorWeight)}
             <input type="number" value=${ex.weight} min="1" max="100"
               oninput=${(e) => updateExecutor(i, "weight", Number(e.target.value) || 50)} />
             <div class="hint">Distribution weight (higher = more tasks)</div>
@@ -2422,18 +2633,18 @@ function App() {
     ${profile === "advanced" && html`
       <div class="executor-grid" style="margin-top:12px">
         <div class="form-group">
-          <label>Max Parallel</label>
+          ${labelWithHelp("Max Parallel", HELP_TEXT.maxParallel)}
           <input type="number" value=${maxParallel} min="1" max="20"
             oninput=${(e) => setMaxParallel(Number(e.target.value) || 4)} />
           <div class="hint">Simultaneous execution slots</div>
         </div>
         <div class="form-group">
-          <label>Max Retries</label>
+          ${labelWithHelp("Max Retries", HELP_TEXT.maxRetries)}
           <input type="number" value=${maxRetries} min="0" max="10"
             oninput=${(e) => setMaxRetries(Number(e.target.value) || 3)} />
         </div>
         <div class="form-group">
-          <label>Failover Strategy</label>
+          ${labelWithHelp("Failover Strategy", HELP_TEXT.failoverStrategy)}
           <select value=${failoverStrategy} onchange=${(e) => setFailoverStrategy(e.target.value)}>
             <option value="next-in-line">Next in Line</option>
             <option value="round-robin">Round Robin</option>
@@ -2797,24 +3008,26 @@ function App() {
 
       <${Section} title=":zap: Execution & Distribution" defaultOpen=${true}>
         <div class="form-group">
-          <label>Executor Mode</label>
+          ${labelWithHelp("Executor Mode", HELP_TEXT.executorMode)}
           <select value=${executorMode} onchange=${(e) => setExecutorMode(e.target.value)}>
             <option value="internal">Internal — bosun manages agents directly</option>
             <option value="vk">VirtKanban (VK) — remote agent server</option>
             <option value="hybrid">Hybrid — internal + remote fallback</option>
           </select>
+          <div class="hint">Use <strong>Internal</strong> for local-first reliability. Choose VK/Hybrid only if you already run a remote VK service.</div>
         </div>
         <div class="form-group">
-          <label>Task Distribution</label>
+          ${labelWithHelp("Task Distribution", HELP_TEXT.taskDistribution)}
           <select value=${executorDistribution} onchange=${(e) => setExecutorDistribution(e.target.value)}>
             <option value="weighted">Weighted — tasks assigned by executor weight</option>
             <option value="round-robin">Round Robin — rotate evenly</option>
             <option value="primary-only">Primary Only — always use the first executor</option>
           </select>
+          <div class="hint"><strong>Weighted</strong> uses each executor Weight value. <strong>Round Robin</strong> ignores weights. <strong>Primary Only</strong> sends all tasks to executor 1.</div>
         </div>
         <div class="executor-grid">
           <div class="form-group">
-            <label>Max Parallel Tasks</label>
+            ${labelWithHelp("Max Parallel Tasks", HELP_TEXT.maxParallel)}
             <input type="number" value=${maxParallel} min="1" max="32"
               oninput=${(e) => setMaxParallel(Number(e.target.value) || 4)} />
             <div class="hint">Simultaneous agent slots</div>
@@ -2875,29 +3088,33 @@ function App() {
 
       <${Section} title=":git: Failover">
         <div class="form-group">
-          <label>Failover Strategy</label>
+          ${labelWithHelp("Failover Strategy", HELP_TEXT.failoverStrategy)}
           <select value=${failoverStrategy} onchange=${(e) => setFailoverStrategy(e.target.value)}>
             <option value="next-in-line">Next in Line</option>
             <option value="round-robin">Round Robin</option>
             <option value="weighted-random">Weighted Random</option>
             <option value="random">Random</option>
           </select>
+          <div class="hint"><strong>Next in Line</strong> is deterministic and easiest to debug. <strong>Weighted Random</strong> respects weights for load spread.</div>
         </div>
         <div class="executor-grid">
           <div class="form-group" style="margin-bottom:0">
-            <label>Max Retries</label>
+            ${labelWithHelp("Max Retries", HELP_TEXT.maxRetries)}
             <input type="number" value=${maxRetries} min="0" max="10"
               oninput=${(e) => setMaxRetries(Number(e.target.value) || 3)} />
+            <div class="hint">Recommended: <strong>2-3</strong>. Higher values can hide persistent config errors.</div>
           </div>
           <div class="form-group" style="margin-bottom:0">
             <label>Cooldown (minutes)</label>
             <input type="number" value=${failoverCooldownMinutes} min="1" max="60"
               oninput=${(e) => setFailoverCooldownMinutes(Number(e.target.value) || 5)} />
+            <div class="hint">How long an executor stays out of rotation after failing. Recommended: <strong>5-10 minutes</strong>.</div>
           </div>
           <div class="form-group" style="margin-bottom:0">
             <label>Disable after N consecutive failures</label>
             <input type="number" value=${failoverDisableOnConsecutive} min="1" max="20"
               oninput=${(e) => setFailoverDisableOnConsecutive(Number(e.target.value) || 3)} />
+            <div class="hint">Protects the fleet from hot-looping a broken executor. Recommended: <strong>3</strong>.</div>
           </div>
         </div>
       <//>
@@ -3119,23 +3336,39 @@ function App() {
                 const connected = acct.hasToken || acct.status === "connected" || acct.status === "complete";
                 const pending = acct.status === "pending";
                 const provLabel = prov === "openai" ? "OpenAI" : prov === "claude" ? "Claude" : "Gemini";
-                const statusColor = connected ? "#22c55e" : pending ? "#f59e0b" : "var(--text-secondary)";
-                const statusText = connected ? "Connected" : pending ? "Logging in…" : "Not connected";
+                const errored = acct.status === "error";
+                const statusColor = connected ? "#22c55e" : pending ? "#f59e0b" : errored ? "#ef4444" : "var(--text-secondary)";
+                const statusText = connected ? "Connected" : pending ? "Logging in…" : errored ? "Failed" : "Not connected";
                 return html`
                   <div style="border:1px solid var(--border);border-radius:6px;padding:10px 14px;min-width:160px;flex:1;max-width:240px">
                     <div style="display:flex;align-items:center;gap:6px;margin-bottom:6px">
                       <span style="font-weight:600;font-size:0.92em">${provLabel}</span>
                       <span style="display:inline-block;width:8px;height:8px;border-radius:50%;background:${statusColor}"></span>
                     </div>
-                    <div style="font-size:0.82em;color:${statusColor};margin-bottom:8px">${statusText}</div>
+                    <div style="font-size:0.82em;color:${statusColor};margin-bottom:4px">${statusText}</div>
+                    ${errored && acct.result?.error && html`
+                      <div style="font-size:0.78em;color:#ef4444;margin-bottom:6px;word-break:break-word">${acct.result.error}</div>
+                    `}
                     ${connected && html`
                       <button class="btn btn-sm btn-danger" onclick=${() => doOAuthLogout(prov)} disabled=${acct.loading}>
                         ${acct.loading ? "…" : "Logout"}
                       </button>
                     `}
-                    ${!connected && html`
-                      <button class="btn btn-sm" onclick=${() => startOAuthLogin(prov)} disabled=${acct.loading || pending}>
-                        ${acct.loading ? "…" : pending ? "Waiting…" : "Sign in"}
+                    ${(pending || errored) && html`
+                      <div style="display:flex;gap:6px">
+                        ${errored && html`
+                          <button class="btn btn-sm" onclick=${() => startOAuthLogin(prov)} disabled=${acct.loading}>
+                            Retry
+                          </button>
+                        `}
+                        <button class="btn btn-sm" style="${errored ? '' : 'color:var(--text-secondary)'}" onclick=${() => cancelOAuthLogin(prov)} disabled=${acct.loading}>
+                          Cancel
+                        </button>
+                      </div>
+                    `}
+                    ${!connected && !pending && !errored && html`
+                      <button class="btn btn-sm" onclick=${() => startOAuthLogin(prov)} disabled=${acct.loading}>
+                        ${acct.loading ? "…" : "Sign in"}
                       </button>
                     `}
                   </div>
@@ -3145,7 +3378,7 @@ function App() {
           </div>
 
           <div class="form-group">
-            <label>Voice Providers (priority order)</label>
+            ${labelWithHelp("Voice Providers (priority order)", HELP_TEXT.voiceProviders)}
             <div class="hint">Configure up to 5 providers. Bosun will try them in order.</div>
           </div>
           ${(voiceProviders || []).slice(0, 5).map((providerRow, idx) => html`
@@ -3286,7 +3519,7 @@ function App() {
                       type="text"
                       value=${providerRow.azureDeployment || ""}
                       oninput=${(e) => updateVoiceProviderRow(idx, "azureDeployment", e.target.value)}
-                      placeholder="gpt-audio-1.5"
+                      placeholder="gpt-realtime-1.5"
                     />
                   </div>
                 `}
@@ -3313,22 +3546,24 @@ function App() {
           </div>
           <div class="executor-grid">
             <div class="form-group">
-              <label>Turn Detection</label>
+              ${labelWithHelp("Turn Detection", HELP_TEXT.turnDetection)}
               <select value=${voiceTurnDetection} onchange=${(e) => setVoiceTurnDetection(e.target.value)}>
                 <option value="server_vad">server_vad</option>
                 <option value="semantic_vad">semantic_vad</option>
                 <option value="none">none</option>
               </select>
+              <div class="hint"><strong>server_vad</strong> is the default for most calls. Use semantic only if users pause mid-thought frequently.</div>
             </div>
             <div class="form-group">
-              <label>Fallback Mode</label>
+              ${labelWithHelp("Fallback Mode", HELP_TEXT.voiceFallbackMode)}
               <select value=${voiceFallbackMode} onchange=${(e) => setVoiceFallbackMode(e.target.value)}>
                 <option value="browser">browser</option>
                 <option value="disabled">disabled</option>
               </select>
+              <div class="hint"><strong>browser</strong> keeps voice available when provider auth/endpoints are missing.</div>
             </div>
             <div class="form-group">
-              <label>Delegate Executor</label>
+              ${labelWithHelp("Delegate Executor", HELP_TEXT.delegateExecutor)}
               <select value=${voiceDelegateExecutor} onchange=${(e) => setVoiceDelegateExecutor(e.target.value)}>
                 <option value="codex-sdk">codex-sdk</option>
                 <option value="copilot-sdk">copilot-sdk</option>
@@ -3336,6 +3571,7 @@ function App() {
                 <option value="gemini-sdk">gemini-sdk</option>
                 <option value="opencode-sdk">opencode-sdk</option>
               </select>
+              <div class="hint">Pick the same executor family you trust for task execution to keep behavior consistent.</div>
             </div>
           </div>
           <div class="form-group">
@@ -3359,28 +3595,40 @@ function App() {
                       <option value="openai">OpenAI</option>
                       <option value="claude">Claude (Anthropic)</option>
                       <option value="gemini">Gemini (Google)</option>
+                      <option value="custom">Custom Endpoint</option>
                     </select>
                   </div>
                   <div class="form-group">
-                    <label>Role</label>
+                    ${labelWithHelp("Role", HELP_TEXT.voiceEndpointRole)}
                     <select value=${ep.role} onchange=${(e) => updateVoiceEndpoint(i, "role", e.target.value)}>
                       <option value="primary">Primary</option>
                       <option value="backup">Backup</option>
                     </select>
+                    <div class="hint">Primary handles normal traffic; backup is used on failure.</div>
                   </div>
                   <div class="form-group">
-                    <label>Weight</label>
+                    ${labelWithHelp("Weight", HELP_TEXT.voiceEndpointWeight)}
                     <input type="number" value=${ep.weight} min="1" max="1000" oninput=${(e) => updateVoiceEndpoint(i, "weight", Number(e.target.value) || 100)} />
+                    <div class="hint">Relative share within same role/provider. Example: 300 vs 100 gives roughly 75% vs 25%.</div>
                   </div>
-                  <div class="form-group">
-                    <label>API Key</label>
-                    <input type="password" value=${ep.apiKey} oninput=${(e) => updateVoiceEndpoint(i, "apiKey", e.target.value)} placeholder=${!ep.apiKey && ["openai","claude","gemini"].includes(ep.provider) && oauthAccounts[ep.provider]?.status === "connected" ? "Using OAuth token (connected above)" : "API key for this endpoint"} />
-                    ${!ep.apiKey && ["openai","claude","gemini"].includes(ep.provider) && oauthAccounts[ep.provider]?.status === "connected" && html`
-                      <div class="hint" style="color:var(--success,#22c55e)">✓ Will use your connected ${ep.provider === "openai" ? "OpenAI" : ep.provider === "claude" ? "Claude" : "Gemini"} account automatically.</div>
-                    `}
-                    ${!ep.apiKey && ["openai","claude","gemini"].includes(ep.provider) && oauthAccounts[ep.provider]?.status !== "connected" && html`
-                      <div class="hint">No API key set. Connect your ${ep.provider === "openai" ? "OpenAI" : ep.provider === "claude" ? "Claude" : "Gemini"} account above, or enter a key here.</div>
-                    `}
+                  ${["openai","claude","gemini"].includes(ep.provider) && html`
+                    <div class="form-group">
+                      <label>Auth Method</label>
+                      <select value=${ep.authSource || "apiKey"} onchange=${(e) => updateVoiceEndpoint(i, "authSource", e.target.value)}>
+                        <option value="apiKey">API Key</option>
+                        <option value="oauth">OAuth (Connected Account)</option>
+                      </select>
+                      ${ep.authSource === "oauth" && oauthAccounts[ep.provider]?.status === "connected" && html`
+                        <div class="hint" style="color:var(--success,#22c55e)">✓ Connected — will use your ${ep.provider === "openai" ? "OpenAI" : ep.provider === "claude" ? "Claude" : "Gemini"} account.</div>
+                      `}
+                      ${ep.authSource === "oauth" && oauthAccounts[ep.provider]?.status !== "connected" && html`
+                        <div class="hint" style="color:var(--warning,#f59e0b)">⚠ Not connected. Sign in via "Connected Accounts" above to use OAuth.</div>
+                      `}
+                    </div>
+                  `}
+                  <div class="form-group" style=${ep.authSource === "oauth" && ["openai","claude","gemini"].includes(ep.provider) ? "display:none" : ""}>
+                    <label>${ep.provider === "azure" ? "API Key" : "API Key (manual)"}</label>
+                    <input type="password" value=${ep.apiKey} oninput=${(e) => updateVoiceEndpoint(i, "apiKey", e.target.value)} placeholder="API key for this endpoint" />
                   </div>
                   <div class="form-group">
                     <label style="display:flex;align-items:center;gap:8px;cursor:pointer;user-select:none">
@@ -3399,16 +3647,71 @@ function App() {
                       <div class="hint">GA models (gpt-realtime-1.5, gpt-realtime) use /openai/v1/ endpoints automatically.</div>
                     </div>
                   `}
+                  ${ep.provider === "custom" && html`
+                    <div class="form-group">
+                      <label>Endpoint URL</label>
+                      <input
+                        type="text"
+                        value=${ep.endpoint}
+                        oninput=${(e) => updateVoiceEndpoint(i, "endpoint", e.target.value)}
+                        placeholder="https://your-custom-endpoint.example.com"
+                      />
+                    </div>
+                    <div class="form-group">
+                      <label>Model</label>
+                      ${(() => {
+                        const customModels = ALL_ENDPOINT_MODEL_OPTIONS;
+                        const isCustomModel = Boolean(endpointCustomModelRows[ep.id]) || (ep.model && !customModels.includes(ep.model));
+                        return html`
+                          <select value=${isCustomModel ? "__custom__" : ep.model}
+                            onchange=${(e) => {
+                              const nextValue = String(e.target.value || "");
+                              if (nextValue === "__custom__") {
+                                setEndpointCustomModelRows((prev) => ({ ...prev, [ep.id]: true }));
+                                updateVoiceEndpoint(i, "model", customModels.includes(ep.model) ? "" : ep.model);
+                                return;
+                              }
+                              setEndpointCustomModelRows((prev) => ({ ...prev, [ep.id]: false }));
+                              updateVoiceEndpoint(i, "model", nextValue);
+                            }}>
+                            ${customModels.map((m) => html`<option value=${m}>${m}</option>`)}
+                            <option value="__custom__">custom...</option>
+                          </select>
+                          ${isCustomModel && html`
+                            <input
+                              type="text"
+                              value=${ep.model || ""}
+                              oninput=${(e) => updateVoiceEndpoint(i, "model", e.target.value)}
+                              placeholder="Enter custom model slug..."
+                              style="margin-top:4px"
+                            />
+                          `}
+                        `;
+                      })()}
+                    </div>
+                  `}
+                  ${!isEndpointUrlEditable(ep.provider) && html`
+                    <div class="form-group">
+                      <label>Endpoint URL</label>
+                      <input
+                        type="text"
+                        value=${getDefaultVoiceEndpointUrl(ep.provider, ep.authSource)}
+                        readonly
+                        disabled
+                      />
+                      <div class="hint">Auto-derived from provider + auth method. Use Azure or Custom to override.</div>
+                    </div>
+                  `}
                   ${ep.provider === "openai" && html`
                     <div class="form-group">
                       <label>Model</label>
-                      <input type="text" value=${ep.model} oninput=${(e) => updateVoiceEndpoint(i, "model", e.target.value)} placeholder="gpt-audio-1.5" />
+                      <input type="text" value=${ep.model} oninput=${(e) => updateVoiceEndpoint(i, "model", e.target.value)} placeholder="gpt-realtime-1.5" />
                     </div>
                   `}
                   ${ep.provider === "claude" && html`
                     <div class="form-group">
                       <label>Model</label>
-                      <input type="text" value=${ep.model} oninput=${(e) => updateVoiceEndpoint(i, "model", e.target.value)} placeholder="claude-opus-4-5" />
+                      <input type="text" value=${ep.model} oninput=${(e) => updateVoiceEndpoint(i, "model", e.target.value)} placeholder="claude-sonnet-4.6" />
                     </div>
                   `}
                   ${ep.provider === "gemini" && html`
@@ -3822,3 +4125,4 @@ render(html`<${App} />`, document.getElementById("app"));
 </body>
 <script defer src="https://cloud.umami.is/script.js" data-website-id="24c5d605-7f25-4be5-875e-25c8f3cb4059"></script>
 </html>
+

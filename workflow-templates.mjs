@@ -94,6 +94,12 @@ import {
   SECRET_SCANNER_TEMPLATE,
 } from "./workflow-templates/security.mjs";
 
+// Task Lifecycle (workflow-first core)
+import {
+  TASK_LIFECYCLE_TEMPLATE,
+  VE_ORCHESTRATOR_LITE_TEMPLATE,
+} from "./workflow-templates/task-lifecycle.mjs";
+
 // ── Re-export individual templates for direct import ────────────────────────
 
 export {
@@ -131,6 +137,8 @@ export {
   SYNC_ENGINE_TEMPLATE,
   DEPENDENCY_AUDIT_TEMPLATE,
   SECRET_SCANNER_TEMPLATE,
+  TASK_LIFECYCLE_TEMPLATE,
+  VE_ORCHESTRATOR_LITE_TEMPLATE,
 };
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -145,7 +153,8 @@ export const TEMPLATE_CATEGORIES = Object.freeze({
   "ci-cd":     { label: "CI / CD",      icon: ":refresh:", order: 4 },
   reliability: { label: "Reliability",  icon: ":shield:", order: 5 },
   security:    { label: "Security",     icon: ":lock:", order: 6 },
-  custom:      { label: "Custom",       icon: ":settings:", order: 7 },
+  lifecycle:   { label: "Lifecycle",    icon: ":rocket:", order: 7 },
+  custom:      { label: "Custom",       icon: ":settings:", order: 8 },
 });
 
 export const WORKFLOW_TEMPLATES = Object.freeze([
@@ -189,6 +198,9 @@ export const WORKFLOW_TEMPLATES = Object.freeze([
   // ── Security ──
   DEPENDENCY_AUDIT_TEMPLATE,
   SECRET_SCANNER_TEMPLATE,
+  // ── Task Lifecycle (workflow-first core) ──
+  TASK_LIFECYCLE_TEMPLATE,
+  VE_ORCHESTRATOR_LITE_TEMPLATE,
 ]);
 
 const _TEMPLATE_BY_ID = new Map(
@@ -480,6 +492,50 @@ export const WORKFLOW_SETUP_PROFILES = Object.freeze({
       "template-sdk-conflict-resolver",
     ]),
   }),
+  workflowFirst: Object.freeze({
+    id: "workflowFirst",
+    name: "Workflow-First (Full)",
+    description:
+      "Everything runs as a workflow — including the core task execution " +
+      "lifecycle. Bosun becomes a thin shell around the workflow engine. " +
+      "Enables workflowOwnsTaskLifecycle for complete workflow-driven control.",
+    recommendedFor:
+      "Teams ready for full workflow-first operation where every " +
+      "bosun behavior is a composable, visual workflow.",
+    workflowAutomationEnabled: true,
+    workflowFirst: true,
+    templateIds: Object.freeze([
+      // Core lifecycle
+      "template-task-lifecycle",
+      // GitHub
+      "template-pr-merge-strategy",
+      "template-bosun-pr-watchdog",
+      "template-github-kanban-sync",
+      "template-stale-pr-reaper",
+      "template-sdk-conflict-resolver",
+      // Agents
+      "template-review-agent",
+      "template-backend-agent",
+      "template-agent-session-monitor",
+      // Planning
+      "template-task-planner",
+      "template-task-replenish",
+      // Reliability
+      "template-error-recovery",
+      "template-anomaly-watchdog",
+      "template-workspace-hygiene",
+      "template-task-finalization-guard",
+      "template-task-repair-worktree",
+      "template-task-status-transition-manager",
+      "template-incident-response",
+      "template-task-archiver",
+      "template-sync-engine",
+      // CI/CD
+      "template-release-pipeline",
+      // Security
+      "template-dependency-audit",
+    ]),
+  }),
 });
 
 function normalizeTemplateIdList(templateIds = []) {
@@ -509,6 +565,64 @@ function resolveProfileTemplateIds(profileId) {
  */
 export function getTemplate(id) {
   return _TEMPLATE_BY_ID.get(id) || null;
+}
+
+// ── Grouped Flows ──────────────────────────────────────────────────────────
+// Templates that use action.execute_workflow to chain into other templates
+// declare metadata.requiredTemplates. When one template in a group is
+// installed or enabled, all members of the group must be installed/enabled
+// together so that the chain doesn't break at runtime.
+
+/**
+ * Resolve the full dependency group for a template.
+ * Walks `metadata.requiredTemplates` transitively to collect every template
+ * that must be co-installed.
+ * @param {string} templateId
+ * @returns {{ root: string, members: string[] } | null}
+ */
+export function getTemplateGroup(templateId) {
+  const root = getTemplate(templateId);
+  if (!root) return null;
+
+  const members = new Set([templateId]);
+  const queue = [...(root.metadata?.requiredTemplates || [])];
+  while (queue.length > 0) {
+    const depId = queue.shift();
+    if (members.has(depId)) continue;
+    const dep = getTemplate(depId);
+    if (!dep) continue;
+    members.add(depId);
+    const nested = dep.metadata?.requiredTemplates || [];
+    for (const n of nested) {
+      if (!members.has(n)) queue.push(n);
+    }
+  }
+
+  return { root: templateId, members: [...members] };
+}
+
+/**
+ * Expand a list of template IDs to include all required group members.
+ * @param {string[]} templateIds
+ * @returns {string[]} Expanded list with dependencies (no duplicates, order preserved)
+ */
+export function expandTemplateGroups(templateIds) {
+  const seen = new Set();
+  const expanded = [];
+  for (const id of templateIds) {
+    if (seen.has(id)) continue;
+    seen.add(id);
+    expanded.push(id);
+    const group = getTemplateGroup(id);
+    if (!group) continue;
+    for (const memberId of group.members) {
+      if (!seen.has(memberId)) {
+        seen.add(memberId);
+        expanded.push(memberId);
+      }
+    }
+  }
+  return expanded;
 }
 
 /**
@@ -633,7 +747,25 @@ export function installTemplate(templateId, engine, overrides = {}) {
   }
 
   applyWorkflowTemplateState(def);
-  return engine.save(def);
+  const saved = engine.save(def);
+
+  // ── Grouped flows: auto-install required sibling templates ────────────
+  const requiredIds = template.metadata?.requiredTemplates || [];
+  for (const depId of requiredIds) {
+    const depTemplate = getTemplate(depId);
+    if (!depTemplate) continue;
+    const depExists = engine.list().some(
+      (wf) => wf.metadata?.installedFrom === depId || wf.name === depTemplate.name,
+    );
+    if (depExists) continue;
+    try {
+      installTemplate(depId, engine, overrides);
+    } catch {
+      /* best-effort — dedup check may fire if installed concurrently */
+    }
+  }
+
+  return saved;
 }
 
 /**
@@ -653,13 +785,16 @@ export function installTemplateSet(engine, templateIds = [], overridesById = {})
     if (!id || requested.includes(id)) continue;
     requested.push(id);
   }
+  // Expand grouped flows so required siblings are always included
+  const expanded = expandTemplateGroups(requested);
+
   const existing = engine.list();
   const installedLookup = new Set(
     existing.flatMap((wf) => [wf.metadata?.installedFrom, wf.name]).filter(Boolean),
   );
   const results = { installed: [], skipped: [], errors: [] };
 
-  for (const templateId of requested) {
+  for (const templateId of expanded) {
     const template = getTemplate(templateId);
     if (!template) {
       results.errors.push({ id: templateId, error: `Template "${templateId}" not found` });
@@ -675,6 +810,12 @@ export function installTemplateSet(engine, templateIds = [], overridesById = {})
       results.installed.push(wf);
       installedLookup.add(template.id);
       installedLookup.add(template.name);
+      // Auto-install may have added sibling templates; refresh the lookup
+      // so they are correctly skipped rather than triggering errors.
+      for (const existing of engine.list()) {
+        if (existing.metadata?.installedFrom) installedLookup.add(existing.metadata.installedFrom);
+        if (existing.name) installedLookup.add(existing.name);
+      }
     } catch (err) {
       results.errors.push({ id: template.id, error: err.message });
     }

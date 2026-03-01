@@ -2716,8 +2716,31 @@ function validateConfigSchemaChanges(changes) {
 
 // ── Simple rate limiter for mutation endpoints ──
 const _rateLimitMap = new Map();
-function checkRateLimit(req, maxPerMin = 30) {
-  const key = req.headers["x-telegram-initdata"] || req.socket?.remoteAddress || "unknown";
+function getMutationRateLimitPerMin(authResult = null) {
+  const standardRaw = Number(process.env.BOSUN_UI_RATE_LIMIT_PER_MIN || "30");
+  const standard = Number.isFinite(standardRaw) && standardRaw > 0 ? standardRaw : 30;
+  if (!authResult?.ok) return standard;
+  // Owner/admin-controlled contexts should be less constrained:
+  // - desktop-api-key: local Electron owner session
+  // - fallback: explicit local secret auth
+  // - unsafe: auth disabled for trusted local environment
+  if (
+    authResult.source === "desktop-api-key"
+    || authResult.source === "fallback"
+    || authResult.source === "unsafe"
+  ) {
+    const privilegedRaw = Number(process.env.BOSUN_UI_RATE_LIMIT_PRIVILEGED_PER_MIN || "300");
+    return Number.isFinite(privilegedRaw) && privilegedRaw > 0 ? privilegedRaw : 300;
+  }
+  return standard;
+}
+
+function checkRateLimit(req, maxPerMin = 30, scope = "global") {
+  const keyParts = [
+    scope,
+    req.headers["x-telegram-initdata"] || req.socket?.remoteAddress || "unknown",
+  ];
+  const key = keyParts.join(":");
   const now = Date.now();
   let bucket = _rateLimitMap.get(key);
   if (!bucket || now - bucket.windowStart > 60000) {
@@ -5708,9 +5731,13 @@ async function handleApi(req, res, url) {
     res.setHeader("Set-Cookie", buildSessionCookieHeader());
   }
 
-  if (req.method === "POST" && !checkRateLimit(req, 30)) {
-    jsonResponse(res, 429, { ok: false, error: "Rate limit exceeded. Try again later." });
-    return;
+  if (req.method === "POST") {
+    const maxPerMin = getMutationRateLimitPerMin(authResult);
+    const rateScope = `post:${authResult?.source || "unknown"}`;
+    if (!checkRateLimit(req, maxPerMin, rateScope)) {
+      jsonResponse(res, 429, { ok: false, error: "Rate limit exceeded. Try again later." });
+      return;
+    }
   }
   if (path.startsWith("/api/attachments/") && req.method === "GET") {
     const rel = decodeURIComponent(path.slice("/api/attachments/".length));
@@ -6691,13 +6718,17 @@ async function handleApi(req, res, url) {
       const configDir = resolveUiConfigDir();
       if (req.method === "POST") {
         const body = await readJsonBody(req);
-        const wsId = body?.workspaceId || body?.id;
+        const wsId = String(body?.workspaceId || body?.id || "").trim();
         if (!wsId) {
           jsonResponse(res, 400, { ok: false, error: "workspaceId required" });
           return;
         }
         setActiveManagedWorkspace(configDir, wsId);
-        jsonResponse(res, 200, { ok: true, activeId: wsId });
+        const active = getActiveManagedWorkspace(configDir);
+        jsonResponse(res, 200, {
+          ok: true,
+          activeId: String(active?.id || wsId),
+        });
         broadcastUiEvent(["workspaces", "tasks", "overview"], "invalidate", {
           reason: "workspace-switched",
           workspaceId: wsId,
@@ -9312,6 +9343,7 @@ async function handleApi(req, res, url) {
         if (ep.model) out.model = String(ep.model);
         if (ep.visionModel) out.visionModel = String(ep.visionModel);
         if (ep.apiKey) out.apiKey = String(ep.apiKey);
+        if (ep.authSource) out.authSource = ["apiKey", "oauth"].includes(ep.authSource) ? ep.authSource : "apiKey";
         if (ep.voiceId) out.voiceId = String(ep.voiceId);
         if (ep.role) out.role = String(ep.role);
         if (ep.weight != null) out.weight = Number(ep.weight) || 1;
@@ -9335,11 +9367,12 @@ async function handleApi(req, res, url) {
   if (path === "/api/voice/endpoints/test" && req.method === "POST") {
     try {
       const body = await readJsonBody(req);
-      const { provider, apiKey, endpoint: azureEndpoint, deployment, model } = body || {};
+      const { provider, apiKey, endpoint: azureEndpoint, deployment, model, authSource } = body || {};
       if (!provider) {
         jsonResponse(res, 400, { ok: false, error: "provider is required" });
         return;
       }
+      const useOAuth = authSource === "oauth";
       const start = Date.now();
       const controller = new AbortController();
       const timer = setTimeout(() => controller.abort(), 10_000);
@@ -9349,7 +9382,7 @@ async function handleApi(req, res, url) {
         const headers = {};
         if (provider === "openai") {
           testUrl = "https://api.openai.com/v1/models";
-          if (apiKey) headers["Authorization"] = `Bearer ${apiKey}`;
+          if (apiKey && !useOAuth) headers["Authorization"] = `Bearer ${apiKey}`;
           else {
             // Try OAuth token if no API key
             try {
@@ -9367,9 +9400,16 @@ async function handleApi(req, res, url) {
             jsonResponse(res, 400, { ok: false, error: "Azure endpoint URL is required" });
             return;
           }
-          const base = azureEndpoint.replace(/\/+$/, "");
-          const dep = deployment || "gpt-4o-realtime-preview";
-          testUrl = `${base}/openai/deployments/${dep}?api-version=2024-10-01-preview`;
+          // Strip path suffix so users can paste full URLs without double-path 404s.
+          let base = azureEndpoint.replace(/\/+$/, "");
+          try { const u = new URL(base); base = `${u.protocol}//${u.host}`; } catch { /* keep as-is */ }
+          // Single-deployment GET only requires Cognitive Services User role.
+          // Use the GA api-version (2024-10-21) for broad compatibility across
+          // classic Azure OpenAI and Azure AI Foundry resources.
+          const dep = String(deployment || "").trim();
+          testUrl = dep
+            ? `${base}/openai/deployments/${encodeURIComponent(dep)}?api-version=2024-10-21`
+            : `${base}/openai/models?api-version=2024-10-21`;
           if (apiKey) headers["api-key"] = apiKey;
           else {
             jsonResponse(res, 400, { ok: false, error: "Azure API key is required" });
@@ -9378,7 +9418,7 @@ async function handleApi(req, res, url) {
         } else if (provider === "claude") {
           testUrl = "https://api.anthropic.com/v1/models";
           headers["anthropic-version"] = "2023-06-01";
-          if (apiKey) headers["x-api-key"] = apiKey;
+          if (apiKey && !useOAuth) headers["x-api-key"] = apiKey;
           else {
             try {
               const { getClaudeLoginStatus } = await import("./voice-auth-manager.mjs");
@@ -9391,7 +9431,7 @@ async function handleApi(req, res, url) {
             return;
           }
         } else if (provider === "gemini") {
-          let k = apiKey || null;
+          let k = (apiKey && !useOAuth) ? apiKey : null;
           if (!k) {
             try {
               const { getGeminiLoginStatus } = await import("./voice-auth-manager.mjs");
@@ -9404,6 +9444,19 @@ async function handleApi(req, res, url) {
             return;
           }
           testUrl = `https://generativelanguage.googleapis.com/v1beta/models?key=${encodeURIComponent(k)}`;
+        } else if (provider === "custom") {
+          const base = String(azureEndpoint || "").trim().replace(/\/+$/, "");
+          if (!base) {
+            jsonResponse(res, 400, { ok: false, error: "Custom endpoint URL is required" });
+            return;
+          }
+          const bearer = String(apiKey || "").trim();
+          if (!bearer) {
+            jsonResponse(res, 400, { ok: false, error: "API key is required for custom endpoints" });
+            return;
+          }
+          testUrl = `${base}/v1/models`;
+          headers.Authorization = `Bearer ${bearer}`;
         } else {
           jsonResponse(res, 400, { ok: false, error: `Unknown provider: ${provider}` });
           return;
@@ -9413,11 +9466,16 @@ async function handleApi(req, res, url) {
         clearTimeout(timer);
         const latencyMs = Date.now() - start;
         if (resp.ok || resp.status === 200) {
+          // Single-deployment GET: a 200 means both key and deployment are valid.
           jsonResponse(res, 200, { ok: true, latencyMs });
         } else {
           const text = await resp.text().catch(() => "");
           let errMsg = `HTTP ${resp.status}`;
           try { const j = JSON.parse(text); errMsg = j.error?.message || j.error || errMsg; } catch (_) { /* ignore */ }
+          // Friendly message when the deployment name itself is not found (key is fine)
+          if (resp.status === 404 && deployment) {
+            errMsg = `Deployment "${deployment}" not found — check deployment name in Azure AI Foundry`;
+          }
           jsonResponse(res, 200, { ok: false, error: errMsg, latencyMs });
         }
       } catch (fetchErr) {
@@ -9678,6 +9736,35 @@ async function handleApi(req, res, url) {
     return;
   }
 
+  // POST /api/voice/audio/respond
+  // Single-turn audio response transport for OpenAI gpt-audio-* models.
+  if (path === "/api/voice/audio/respond" && req.method === "POST") {
+    try {
+      const body = await readJsonBody(req);
+      const inputText = String(body?.inputText || body?.text || "").trim();
+      if (!inputText) {
+        jsonResponse(res, 400, { ok: false, error: "inputText required" });
+        return;
+      }
+      const context = {
+        sessionId: String(body?.sessionId || "").trim() || undefined,
+        executor: String(body?.executor || "").trim() || undefined,
+        mode: String(body?.mode || "").trim() || undefined,
+        model: String(body?.model || "").trim() || undefined,
+      };
+      const options = {
+        voiceId: String(body?.voiceId || "").trim() || undefined,
+        model: String(body?.model || "").trim() || undefined,
+      };
+      const { generateOpenAIAudioResponse } = await import("./voice-relay.mjs");
+      const result = await generateOpenAIAudioResponse(inputText, context, options);
+      jsonResponse(res, 200, { ok: true, ...result });
+    } catch (err) {
+      jsonResponse(res, 500, { ok: false, error: err.message });
+    }
+    return;
+  }
+
   // POST /api/voice/tool
   if (path === "/api/voice/tool" && req.method === "POST") {
     try {
@@ -9702,11 +9789,16 @@ async function handleApi(req, res, url) {
         mode: String(mode || "").trim() || undefined,
         model: String(model || "").trim() || undefined,
       };
-      if (context.sessionId && normalizedToolName !== "delegate_to_agent") {
-        jsonResponse(res, 400, {
-          error: "Session-bound calls only allow delegate_to_agent",
-        });
-        return;
+      if (context.sessionId) {
+        // Session-bound calls are validated against the allowed tool set
+        const { getSessionAllowedTools } = await import("./voice-relay.mjs");
+        const allowed = getSessionAllowedTools();
+        if (!allowed.has(normalizedToolName)) {
+          jsonResponse(res, 400, {
+            error: `Tool "${normalizedToolName}" is not allowed for session-bound calls`,
+          });
+          return;
+        }
       }
       const result = await executeVoiceTool(normalizedToolName, args || {}, context);
 
@@ -10397,12 +10489,47 @@ export async function startTelegramUiServer(options = {}) {
               return;
             }
             const normalizedSessionId = String(voiceSessionId || "").trim() || undefined;
-            if (normalizedSessionId && normalizedToolName !== "delegate_to_agent") {
-              sendWsMessage(socket, {
-                type: "voice-tool-result",
-                callId,
-                error: "Session-bound calls only allow delegate_to_agent",
-                ts: Date.now(),
+            if (normalizedSessionId) {
+              // Validate tool is in the allowed set for session-bound calls
+              import("./voice-relay.mjs").then((relay) => {
+                const allowed = relay.getSessionAllowedTools();
+                if (!allowed.has(normalizedToolName)) {
+                  sendWsMessage(socket, {
+                    type: "voice-tool-result",
+                    callId,
+                    error: `Tool "${normalizedToolName}" is not allowed for session-bound calls`,
+                    ts: Date.now(),
+                  });
+                  return;
+                }
+                // Tool is allowed — execute it
+                relay.executeVoiceTool(normalizedToolName, args || {}, {
+                  sessionId: normalizedSessionId,
+                  executor: String(executor || "").trim() || undefined,
+                  mode: String(mode || "").trim() || undefined,
+                  model: String(model || "").trim() || undefined,
+                }).then((result) => {
+                  sendWsMessage(socket, {
+                    type: "voice-tool-result",
+                    callId,
+                    ...result,
+                    ts: Date.now(),
+                  });
+                }).catch((err) => {
+                  sendWsMessage(socket, {
+                    type: "voice-tool-result",
+                    callId,
+                    error: err.message,
+                    ts: Date.now(),
+                  });
+                });
+              }).catch((err) => {
+                sendWsMessage(socket, {
+                  type: "voice-tool-result",
+                  callId,
+                  error: "Session-bound tool validation failed",
+                  ts: Date.now(),
+                });
               });
               return;
             }

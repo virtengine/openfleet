@@ -171,6 +171,61 @@ const ICON_ALIAS_MAP = Object.freeze({
   pauseCircle: "pause",
 });
 
+const TOKEN_KEYWORD_ICON_RULES = Object.freeze([
+  { icon: "alert", regex: /(alert|warn|warning|danger|error|fail|panic|critical|unsafe|incident|fatal|ban|blocked)/i },
+  { icon: "check", regex: /(check|ok|good|pass|success|done|complete|approved|confirm)/i },
+  { icon: "close", regex: /(close|cancel|deny|reject|stop|abort|remove|delete|x)/i },
+  { icon: "refresh", regex: /(refresh|retry|reload|sync|repeat|again|loop)/i },
+  { icon: "play", regex: /(play|start|run|launch|resume|go)/i },
+  { icon: "pause", regex: /(pause|wait|hold|pending)/i },
+  { icon: "clock", regex: /(clock|time|timer|schedule|later|soon|deadline)/i },
+  { icon: "workflow", regex: /(workflow|flow|pipeline|process|orchestrate|route)/i },
+  { icon: "clipboard", regex: /(task|todo|backlog|ticket|issue|plan|board|job)/i },
+  { icon: "git", regex: /(git|repo|branch|commit|pr|pull|merge)/i },
+  { icon: "settings", regex: /(setting|config|option|tune|gear)/i },
+  { icon: "search", regex: /(search|find|lookup|scan|detect)/i },
+  { icon: "file", regex: /(file|doc|note|readme|log|text|report)/i },
+  { icon: "folder", regex: /(folder|dir|directory|path|workspace)/i },
+  { icon: "user", regex: /(user|person|human|people|baby|child|kid|owner|assignee)/i },
+  { icon: "users", regex: /(team|group|crew|everyone|all)/i },
+  { icon: "bot", regex: /(bot|agent|assistant|ai)/i },
+  { icon: "shield", regex: /(security|secure|shield|guard|protect|policy|mfa)/i },
+  { icon: "lock", regex: /(lock|private|secret|key|auth)/i },
+  { icon: "unlock", regex: /(unlock|public|open|access)/i },
+  { icon: "server", regex: /(server|infra|cloud|host|runtime|deploy|k8s|cluster)/i },
+  { icon: "globe", regex: /(globe|world|internet|network|web|lan|wan)/i },
+  { icon: "link", regex: /(link|url|uri|connect|chain|bridge)/i },
+  { icon: "mail", regex: /(mail|email|message|inbox)/i },
+  { icon: "phone", regex: /(phone|call|telegram|mobile|sms|whatsapp)/i },
+  { icon: "camera", regex: /(camera|photo|image|vision|video)/i },
+  { icon: "chart", regex: /(chart|graph|metric|stats|usage|cost|telemetry|monitor)/i },
+  { icon: "rocket", regex: /(rocket|ship|release|prod|production)/i },
+  { icon: "star", regex: /(star|favorite|fav|priority|important|highlight)/i },
+  { icon: "heart", regex: /(heart|love|health|healthy|wellness)/i },
+  { icon: "hash", regex: /(hash|number|num|id)/i },
+  { icon: "tag", regex: /(tag|label|category|type)/i },
+  { icon: "menu", regex: /(menu|list|nav|navigation)/i },
+  { icon: "dot", regex: /(dot|status|state|live|active|idle)/i },
+]);
+
+function resolveTokenFallbackIcon(token) {
+  const normalized = String(token || "")
+    .toLowerCase()
+    .replace(/[_-]+/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+  if (!normalized) return ICONS.help ? "help" : null;
+  if (ICONS[normalized]) return normalized;
+  for (const rule of TOKEN_KEYWORD_ICON_RULES) {
+    if (rule.regex.test(normalized) && ICONS[rule.icon]) {
+      return rule.icon;
+    }
+  }
+  if (ICONS.help) return "help";
+  if (ICONS.tag) return "tag";
+  return null;
+}
+
 function normalizeIconInput(icon) {
   return String(icon || "").replace(/[\uFE0E\uFE0F]/g, "");
 }
@@ -181,6 +236,7 @@ function resolveIconName(icon) {
   if (!normalizedRaw) return null;
 
   const tokenMatch = normalizedRaw.match(TOKEN_ICON_REGEX);
+  const isToken = Boolean(tokenMatch);
   const tokenName = tokenMatch ? tokenMatch[1] : normalizedRaw;
   const normalized = normalizeIconInput(tokenName).trim();
   if (!normalized) return null;
@@ -192,6 +248,7 @@ function resolveIconName(icon) {
   if (aliased && ICONS[aliased]) return aliased;
   const mapped = EMOJI_ICON_MAP[icon] || EMOJI_ICON_MAP[normalizedRaw] || EMOJI_ICON_MAP[normalized];
   if (mapped && ICONS[mapped]) return mapped;
+  if (isToken) return resolveTokenFallbackIcon(lowered);
   return null;
 }
 

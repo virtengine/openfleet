@@ -22,7 +22,8 @@ let _configLoadedAt = 0;   // timestamp of last config load
 const CONFIG_TTL_MS = 30_000; // re-read config every 30s
 
 const OPENAI_REALTIME_URL = "https://api.openai.com/v1/realtime";
-const OPENAI_REALTIME_MODEL = "gpt-audio-1.5";
+const OPENAI_REALTIME_MODEL = "gpt-realtime-1.5";
+const OPENAI_AUDIO_RESPONSES_MODEL = "gpt-audio-1.5";
 const OPENAI_RESPONSES_URL = "https://api.openai.com/v1/responses";
 const OPENAI_DEFAULT_VISION_MODEL = "gpt-4.1-nano";
 
@@ -46,17 +47,54 @@ function normalizeAzureEndpoint(raw) {
 
 const ANTHROPIC_MESSAGES_URL = "https://api.anthropic.com/v1/messages";
 const ANTHROPIC_API_VERSION = "2023-06-01";
-const CLAUDE_DEFAULT_MODEL = "claude-3-7-sonnet-latest";
-const CLAUDE_DEFAULT_VISION_MODEL = "claude-3-7-sonnet-latest";
+const CLAUDE_DEFAULT_MODEL = "claude-sonnet-4.6";
+const CLAUDE_DEFAULT_VISION_MODEL = "claude-sonnet-4.6";
 const GEMINI_GENERATE_CONTENT_URL = "https://generativelanguage.googleapis.com/v1beta/models";
-const GEMINI_DEFAULT_MODEL = "gemini-2.5-pro";
-const GEMINI_DEFAULT_VISION_MODEL = "gemini-2.5-flash";
+const GEMINI_DEFAULT_MODEL = "gemini-3.1-pro";
+const GEMINI_DEFAULT_VISION_MODEL = "gemini-3.0-flash";
+
+function buildOpenAIRealtimeSessionUrl(overrideBase = "") {
+  const trimmed = String(overrideBase || "").trim().replace(/\/+$/, "");
+  if (!trimmed) return `${OPENAI_REALTIME_URL}/sessions`;
+  if (/\/v1\/realtime$/i.test(trimmed)) return `${trimmed}/sessions`;
+  if (/\/v1$/i.test(trimmed)) return `${trimmed}/realtime/sessions`;
+  return `${trimmed}/v1/realtime/sessions`;
+}
+
+function buildOpenAIRealtimeWebRtcUrl(model, overrideBase = "") {
+  const trimmed = String(overrideBase || "").trim().replace(/\/+$/, "");
+  const encodedModel = encodeURIComponent(String(model || OPENAI_REALTIME_MODEL));
+  if (!trimmed) return `${OPENAI_REALTIME_URL}?model=${encodedModel}`;
+  if (/\/v1\/realtime$/i.test(trimmed)) return `${trimmed}?model=${encodedModel}`;
+  if (/\/v1$/i.test(trimmed)) return `${trimmed}/realtime?model=${encodedModel}`;
+  return `${trimmed}/v1/realtime?model=${encodedModel}`;
+}
 
 // GA models (gpt-realtime, gpt-realtime-1.5, gpt-realtime-mini, etc.) use /openai/v1/ paths.
-// Preview models (gpt-4o-realtime-preview, gpt-audio-1.5, etc.) use legacy /openai/realtimeapi/ paths.
+// Preview models (for example gpt-4o-realtime-preview-*) use legacy /openai/realtimeapi/ paths.
 function isAzureGaProtocol(deployment) {
   const d = String(deployment || "").toLowerCase().trim();
   return d.startsWith("gpt-realtime") && !d.startsWith("gpt-4o-realtime");
+}
+
+function normalizeOpenAIRealtimeModel(rawModel) {
+  const model = String(rawModel || "").trim();
+  if (!model) return OPENAI_REALTIME_MODEL;
+  // Audio-only model slugs are not accepted by realtime SDP/session endpoints.
+  if (/^gpt-audio/i.test(model)) return OPENAI_REALTIME_MODEL;
+  return model;
+}
+
+function normalizeAzureRealtimeDeployment(rawDeployment) {
+  const deployment = String(rawDeployment || "").trim();
+  if (!deployment) return OPENAI_REALTIME_MODEL;
+  if (/^gpt-audio/i.test(deployment)) return OPENAI_REALTIME_MODEL;
+  return deployment;
+}
+
+function isOpenAIAudioResponsesModel(rawModel) {
+  const model = String(rawModel || "").trim().toLowerCase();
+  return /^gpt-audio/.test(model);
 }
 
 const VALID_EXECUTORS = new Set([
@@ -83,6 +121,26 @@ const VALID_VOICE_PROVIDERS = new Set([
   "fallback",
 ]);
 
+/**
+ * Check whether a realtime candidate entry has usable credentials.
+ * For OAuth entries (authSource === "oauth"), resolves the token from the
+ * voice-auth-manager state file instead of requiring a static apiKey.
+ */
+function candidateHasCredentials(entry, cfg) {
+  if (entry.provider === "openai") {
+    if (entry.authSource === "oauth") {
+      return Boolean(resolveVoiceOAuthToken("openai")?.token || cfg.openaiOAuthToken || cfg.openaiKey);
+    }
+    return Boolean(entry.apiKey || cfg.openaiOAuthToken || cfg.openaiKey);
+  }
+  if (entry.provider === "azure") {
+    const hasKey = Boolean(entry.apiKey || cfg.azureOAuthToken || cfg.azureKey);
+    const hasEndpoint = Boolean(entry.endpoint || cfg.azureEndpoint);
+    return hasKey && hasEndpoint;
+  }
+  return false;
+}
+
 const DEFAULT_VOICE_FAILOVER = Object.freeze({
   enabled: true,
   maxAttempts: 2,
@@ -106,6 +164,7 @@ function normalizeVoiceProviderEntry(entry) {
       azureDeployment: null,
       endpoint: null,
       apiKey: null,
+      authSource: "apiKey",
       role: "primary",
       weight: 100,
       name: null,
@@ -123,6 +182,7 @@ function normalizeVoiceProviderEntry(entry) {
   const azureDeployment = String(entry.azureDeployment || "").trim() || null;
   const endpoint = String(entry.endpoint || "").trim() || null;
   const apiKey = String(entry.apiKey || "").trim() || null;
+  const authSource = ["apiKey", "oauth"].includes(entry.authSource) ? entry.authSource : "apiKey";
   const role = String(entry.role || "primary").trim() || "primary";
   const weight = typeof entry.weight === "number" ? entry.weight : 100;
   const name = String(entry.name || "").trim() || null;
@@ -136,6 +196,7 @@ function normalizeVoiceProviderEntry(entry) {
     azureDeployment,
     endpoint,
     apiKey,
+    authSource,
     role,
     weight,
     name,
@@ -211,6 +272,9 @@ function shouldFailoverRealtimeError(err) {
   if (status && (status === 401 || status === 403 || status === 408 || status === 409 || status === 429 || status >= 500)) {
     return true;
   }
+  if (/invalid_model|not supported in realtime mode|model .* not supported/i.test(message)) {
+    return true;
+  }
   if (/ECONNRESET|ETIMEDOUT|network|fetch failed|connection|connect/i.test(message)) {
     return true;
   }
@@ -247,10 +311,43 @@ function sanitizeVoiceCallContext(context = {}) {
   };
 }
 
-function buildSessionScopedInstructions(baseInstructions, callContext = {}) {
+async function buildSessionScopedInstructions(baseInstructions, callContext = {}) {
   const context = sanitizeVoiceCallContext(callContext);
   if (!context.sessionId && !context.executor && !context.mode && !context.model) {
     return baseInstructions;
+  }
+
+  // ── Chat history injection ────────────────────────────────────────────
+  let chatHistorySection = "";
+  if (context.sessionId) {
+    try {
+      const tracker = await import("./session-tracker.mjs");
+      const session = tracker.getSessionById
+        ? tracker.getSessionById(context.sessionId)
+        : null;
+      if (session && Array.isArray(session.messages) && session.messages.length > 0) {
+        const recent = session.messages.slice(-20);
+        const lines = recent.map((msg) => {
+          const role = String(msg.role || msg.type || "unknown").toUpperCase();
+          const content = String(msg.content || "").trim();
+          return `[${role}]: ${content}`;
+        });
+        const historyText = lines.join("\n");
+        // Cap at ~3000 chars to avoid bloating the Realtime context
+        const capped = historyText.length > 3000
+          ? historyText.slice(0, 3000) + "\n... (earlier messages truncated)"
+          : historyText;
+        chatHistorySection = [
+          "",
+          "## Recent Chat History",
+          "The following are the most recent messages from the active chat session.",
+          "Use this context to understand what the user has been working on.",
+          capped,
+        ].join("\n");
+      }
+    } catch {
+      // best effort — continue without chat history
+    }
   }
 
   const suffix = [
@@ -266,27 +363,24 @@ function buildSessionScopedInstructions(baseInstructions, callContext = {}) {
     context.model
       ? `Preferred model override: ${context.model}.`
       : "Preferred model override: none.",
+    chatHistorySection,
     "",
-    "## Required Behavior",
-    "- For every user turn in this call, invoke delegate_to_agent exactly once before any final spoken answer.",
-    "- For coding, repo, task, debugging, automation, or workspace requests, call delegate_to_agent before finalizing your response.",
+    "## Guidance for Session-Bound Calls",
+    "- You have access to multiple tools. Use them directly when the user asks about tasks, sessions, system status, etc.",
+    "- For coding, debugging, file changes, or complex workspace operations, use delegate_to_agent.",
+    "  Delegation is non-blocking — you will get a confirmation immediately and results will appear in the chat session.",
     "- Preserve user intent when delegating. Do not paraphrase away technical detail.",
-    "- Keep responses concise after receiving delegate_to_agent output.",
+    "- Keep spoken responses concise. The user can see detailed results in the chat sidebar.",
+    "- You can read chat history context to avoid asking the user to repeat themselves.",
   ].join("\n");
 
   return `${baseInstructions}${suffix}`;
 }
 
 function resolveToolChoice(toolDefinitions, callContext = {}) {
-  const context = sanitizeVoiceCallContext(callContext);
-  const hasDelegateTool = Array.isArray(toolDefinitions)
-    && toolDefinitions.some((tool) => tool?.name === "delegate_to_agent");
-  if (context.sessionId && hasDelegateTool) {
-    return {
-      type: "function",
-      name: "delegate_to_agent",
-    };
-  }
+  // Always let the model choose which tool to use — even in session-bound calls.
+  // The old behavior forced delegate_to_agent for every turn, which blocked the
+  // voice agent from answering quick questions directly or using read-only tools.
   return "auto";
 }
 
@@ -646,11 +740,12 @@ export function getVoiceConfig(forceReload = false) {
   // voiceEndpoints: named per-endpoint configs each with their own credentials.
   const rawVoiceEndpoints = Array.isArray(voice.voiceEndpoints) ? voice.voiceEndpoints : [];
   const voiceEndpointCandidates = rawVoiceEndpoints
-    .filter((ep) => ep && ep.enabled !== false && (ep.provider === "openai" || ep.provider === "azure"))
+    .filter((ep) => ep && ep.enabled !== false && (ep.provider === "openai" || ep.provider === "azure" || ep.provider === "custom"))
     .map((ep) => ({
-      provider: String(ep.provider || "").toLowerCase(),
+      provider: String(ep.provider || "").toLowerCase() === "custom" ? "openai" : String(ep.provider || "").toLowerCase(),
       endpoint: String(ep.endpoint || "").trim() || null,
       apiKey: String(ep.apiKey || "").trim() || null,
+      authSource: ["apiKey", "oauth"].includes(ep.authSource) ? ep.authSource : "apiKey",
       model: String(ep.model || "").trim() || null,
       azureDeployment: String(ep.deployment || ep.azureDeployment || "").trim() || null,
       voiceId: String(ep.voiceId || "").trim() || null,
@@ -721,7 +816,7 @@ export function getVoiceConfig(forceReload = false) {
       : provider === "gemini"
         ? GEMINI_DEFAULT_MODEL
         : OPENAI_REALTIME_MODEL;
-  const model = voice.model || process.env.VOICE_MODEL || defaultModel;
+  const model = String(voice.model || process.env.VOICE_MODEL || defaultModel).trim() || defaultModel;
   const voiceId = voice.voiceId || process.env.VOICE_ID || "alloy";
   const turnDetection =
     voice.turnDetection || process.env.VOICE_TURN_DETECTION || "server_vad";
@@ -794,17 +889,7 @@ export function isVoiceAvailable() {
   const cfg = getVoiceConfig();
   if (!cfg.enabled) return { available: false, tier: null, reason: "Voice disabled in config" };
 
-  const realtimeProvider = cfg.realtimeCandidates.find((candidate) => {
-    if (candidate.provider === "openai") {
-      return Boolean(candidate.apiKey || cfg.openaiOAuthToken || cfg.openaiKey);
-    }
-    if (candidate.provider === "azure") {
-      const hasKey = Boolean(candidate.apiKey || cfg.azureOAuthToken || cfg.azureKey);
-      const hasEndpoint = Boolean(candidate.endpoint || cfg.azureEndpoint);
-      return hasKey && hasEndpoint;
-    }
-    return false;
-  });
+  const realtimeProvider = cfg.realtimeCandidates.find((candidate) => candidateHasCredentials(candidate, cfg));
   if (realtimeProvider) {
     return { available: true, tier: 1, provider: realtimeProvider.provider };
   }
@@ -832,15 +917,34 @@ export function isVoiceAvailable() {
  */
 export async function createEphemeralToken(toolDefinitions = [], callContext = {}) {
   const cfg = getVoiceConfig();
-  const candidates = cfg.realtimeCandidates.filter((entry) => {
-    if (entry.provider === "openai") return Boolean(entry.apiKey || cfg.openaiOAuthToken || cfg.openaiKey);
-    if (entry.provider === "azure") {
-      const hasKey = Boolean(entry.apiKey || cfg.azureOAuthToken || cfg.azureKey);
-      const hasEndpoint = Boolean(entry.endpoint || cfg.azureEndpoint);
-      return hasKey && hasEndpoint;
+  const requestedModel = String(callContext?.model || cfg.model || "").trim();
+
+  // gpt-audio-* models use OpenAI Responses API (non-SDP transport).
+  if (isOpenAIAudioResponsesModel(requestedModel)) {
+    const openaiCandidate =
+      cfg.realtimeCandidates.find(
+        (entry) =>
+          entry.provider === "openai" &&
+          candidateHasCredentials(entry, cfg),
+      )
+      || (candidateHasCredentials({ provider: "openai", authSource: "api-key" }, cfg)
+        ? { provider: "openai", authSource: "api-key", model: requestedModel, voiceId: cfg.voiceId }
+        : null);
+    if (openaiCandidate) {
+      const context = sanitizeVoiceCallContext(callContext);
+      const instructions = await buildSessionScopedInstructions(cfg.instructions, context);
+      const voiceId = String(openaiCandidate?.voiceId || cfg.voiceId || "alloy").trim() || "alloy";
+      return {
+        provider: "openai",
+        model: requestedModel || OPENAI_AUDIO_RESPONSES_MODEL,
+        voiceId,
+        transport: "responses-audio",
+        instructions,
+      };
     }
-    return false;
-  });
+  }
+
+  const candidates = cfg.realtimeCandidates.filter((entry) => candidateHasCredentials(entry, cfg));
 
   if (!candidates.length) {
     throw new Error(
@@ -871,15 +975,117 @@ export async function createEphemeralToken(toolDefinitions = [], callContext = {
   throw lastError || new Error("Failed to create realtime token");
 }
 
-async function createOpenAIEphemeralToken(cfg, toolDefinitions = [], callContext = {}, candidate = {}) {
+function extractAudioBase64FromResponsesPayload(payload) {
+  if (!payload || typeof payload !== "object") return "";
+  const direct = String(
+    payload?.audio?.data
+      || payload?.audio?.base64
+      || payload?.output_audio?.data
+      || payload?.output_audio?.base64
+      || "",
+  ).trim();
+  if (direct) return direct;
+
+  const output = Array.isArray(payload.output) ? payload.output : [];
+  for (const item of output) {
+    const content = Array.isArray(item?.content) ? item.content : [];
+    for (const part of content) {
+      const maybe = String(
+        part?.audio?.data
+          || part?.audio?.base64
+          || part?.data
+          || part?.b64_json
+          || "",
+      ).trim();
+      if (maybe) return maybe;
+    }
+  }
+  return "";
+}
+
+/**
+ * Execute a single turn using OpenAI Responses audio models (gpt-audio-*).
+ * Returns text + optional audio bytes (base64).
+ */
+export async function generateOpenAIAudioResponse(inputText, callContext = {}, options = {}) {
+  const cfg = getVoiceConfig();
+  const text = String(inputText || "").trim();
+  if (!text) throw new Error("inputText is required");
+
   const credential = String(cfg.openaiOAuthToken || cfg.openaiKey || "").trim();
   if (!credential) {
     throw new Error("OpenAI voice credential not configured (OAuth token or API key required)");
   }
 
   const context = sanitizeVoiceCallContext(callContext);
-  const instructions = buildSessionScopedInstructions(cfg.instructions, context);
-  const model = String(candidate?.model || cfg.model || OPENAI_REALTIME_MODEL).trim() || OPENAI_REALTIME_MODEL;
+  const instructions = await buildSessionScopedInstructions(cfg.instructions, context);
+  const preferredModel = String(options?.model || context.model || cfg.model || OPENAI_AUDIO_RESPONSES_MODEL).trim();
+  const model = isOpenAIAudioResponsesModel(preferredModel)
+    ? preferredModel
+    : OPENAI_AUDIO_RESPONSES_MODEL;
+  const voiceId = String(options?.voiceId || cfg.voiceId || "alloy").trim() || "alloy";
+
+  const response = await fetch(OPENAI_RESPONSES_URL, {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${credential}`,
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({
+      model,
+      modalities: ["text", "audio"],
+      audio: {
+        voice: voiceId,
+        format: "mp3",
+      },
+      input: [
+        {
+          role: "system",
+          content: [{ type: "input_text", text: instructions }],
+        },
+        {
+          role: "user",
+          content: [{ type: "input_text", text }],
+        },
+      ],
+    }),
+  });
+
+  if (!response.ok) {
+    const errorText = await buildProviderErrorDetails(response, "unknown");
+    throw new Error(`OpenAI audio response failed (${response.status}): ${errorText}`);
+  }
+
+  const payload = await response.json();
+  const outputText = extractModelResponseText(payload) || "";
+  const audioBase64 = extractAudioBase64FromResponsesPayload(payload);
+
+  return {
+    provider: "openai",
+    model,
+    voiceId,
+    text: outputText,
+    audioBase64,
+    audioMimeType: "audio/mpeg",
+  };
+}
+
+async function createOpenAIEphemeralToken(cfg, toolDefinitions = [], callContext = {}, candidate = {}) {
+  // Per-endpoint credentials take priority over global config.
+  // If the endpoint uses OAuth (authSource === "oauth"), resolve via the OAuth manager.
+  let credential = "";
+  if (candidate.authSource === "oauth") {
+    credential = String(resolveVoiceOAuthToken(candidate.provider || "openai")?.token || cfg.openaiOAuthToken || "").trim();
+  } else {
+    credential = String(candidate.apiKey || cfg.openaiOAuthToken || cfg.openaiKey || "").trim();
+  }
+  if (!credential) {
+    throw new Error("OpenAI voice credential not configured (OAuth token or API key required)");
+  }
+
+  const context = sanitizeVoiceCallContext(callContext);
+  const instructions = await buildSessionScopedInstructions(cfg.instructions, context);
+  const model = normalizeOpenAIRealtimeModel(candidate?.model || cfg.model || OPENAI_REALTIME_MODEL);
   const voiceId = String(candidate?.voiceId || cfg.voiceId || "alloy").trim() || "alloy";
 
   const sessionConfig = {
@@ -902,7 +1108,7 @@ async function createOpenAIEphemeralToken(cfg, toolDefinitions = [], callContext
     tools: toolDefinitions,
   };
 
-  const response = await fetch(`${OPENAI_REALTIME_URL}/sessions`, {
+  const response = await fetch(buildOpenAIRealtimeSessionUrl(candidate?.endpoint || ""), {
     method: "POST",
     headers: {
       Authorization: `Bearer ${credential}`,
@@ -923,6 +1129,7 @@ async function createOpenAIEphemeralToken(cfg, toolDefinitions = [], callContext
     model,
     voiceId,
     provider: "openai",
+    url: buildOpenAIRealtimeWebRtcUrl(model, candidate?.endpoint || ""),
     sessionConfig,
     callContext: context,
   };
@@ -945,16 +1152,16 @@ async function createAzureEphemeralToken(cfg, toolDefinitions = [], callContext 
   }
 
   const context = sanitizeVoiceCallContext(callContext);
-  const instructions = buildSessionScopedInstructions(cfg.instructions, context);
-  const deployment =
-    String(candidate?.azureDeployment || candidate?.model || cfg.azureDeployment || "").trim()
-    || "gpt-audio-1.5";
+  const instructions = await buildSessionScopedInstructions(cfg.instructions, context);
+  const deployment = normalizeAzureRealtimeDeployment(
+    candidate?.azureDeployment || candidate?.model || cfg.azureDeployment || OPENAI_REALTIME_MODEL,
+  );
   const voiceId = String(candidate?.voiceId || cfg.voiceId || "alloy").trim() || "alloy";
-  // GA protocol (gpt-realtime-1.5, gpt-realtime, etc.) uses /openai/v1/realtime/client_secrets.
+  // GA protocol (gpt-realtime-1.5, gpt-realtime, etc.) uses /openai/v1/realtime/sessions?api-version=...
   // Preview protocol uses /openai/realtimeapi/sessions?api-version=...
   const url = isAzureGaProtocol(deployment)
-    ? `${resolvedEndpoint}/openai/v1/realtime/client_secrets`
-    : `${resolvedEndpoint}/openai/realtimeapi/sessions?api-version=${AZURE_API_VERSION}`;
+    ? `${resolvedEndpoint}/openai/v1/realtime/sessions?api-version=${AZURE_API_VERSION}`
+    : `${resolvedEndpoint}/openai/realtimeapi/sessions?api-version=${AZURE_API_VERSION}&deployment=${encodeURIComponent(deployment)}`;
 
   const headers = {
     "Content-Type": "application/json",
@@ -997,12 +1204,17 @@ async function createAzureEphemeralToken(cfg, toolDefinitions = [], callContext 
   }
 
   const data = await response.json();
+  // WebRTC URL diverges from /sessions URL: GA uses /openai/v1/realtime, preview uses /openai/realtime.
+  const webrtcUrl = isAzureGaProtocol(deployment)
+    ? `${resolvedEndpoint}/openai/v1/realtime?api-version=${AZURE_API_VERSION}`
+    : `${resolvedEndpoint}/openai/realtime?api-version=${AZURE_API_VERSION}&deployment=${encodeURIComponent(deployment)}`;
   return {
     token: data.client_secret?.value || data.token,
     expiresAt: data.client_secret?.expires_at || (Date.now() / 1000 + 60),
     model: deployment,
     voiceId,
     provider: "azure",
+    url: webrtcUrl,
     sessionConfig,
     azureEndpoint: resolvedEndpoint,
     azureDeployment: deployment,
@@ -1126,6 +1338,35 @@ export async function executeVoiceTool(toolName, toolArgs, context = {}) {
 }
 
 /**
+ * Tools allowed during session-bound voice calls (beyond delegate_to_agent).
+ * These are read-only or lightweight operations that shouldn't require full agent delegation.
+ */
+const VOICE_SESSION_ALLOWED_TOOLS = new Set([
+  "delegate_to_agent",
+  "list_tasks",
+  "get_task",
+  "get_agent_status",
+  "list_sessions",
+  "get_session_history",
+  "get_system_status",
+  "get_fleet_status",
+  "get_pr_status",
+  "get_config",
+  "search_tasks",
+  "get_task_stats",
+  "get_recent_logs",
+  "dispatch_action",
+]);
+
+/**
+ * Get the set of tools allowed for session-bound voice calls.
+ * Used by ui-server to validate tool calls.
+ */
+export function getSessionAllowedTools() {
+  return VOICE_SESSION_ALLOWED_TOOLS;
+}
+
+/**
  * Get the full tool definitions array for voice sessions.
  */
 export async function getVoiceToolDefinitions(options = {}) {
@@ -1134,7 +1375,8 @@ export async function getVoiceToolDefinitions(options = {}) {
     const allTools = getToolDefinitions();
     const delegateOnly = options?.delegateOnly === true;
     if (!delegateOnly) return allTools;
-    return allTools.filter((tool) => tool?.name === "delegate_to_agent");
+    // Session-bound calls get a curated subset instead of just delegate_to_agent
+    return allTools.filter((tool) => VOICE_SESSION_ALLOWED_TOOLS.has(tool?.name));
   } catch (err) {
     console.error("[voice-relay] failed to load voice tool definitions:", err.message);
     return [];
@@ -1146,15 +1388,7 @@ export async function getVoiceToolDefinitions(options = {}) {
  */
 export function getRealtimeConnectionInfo() {
   const cfg = getVoiceConfig();
-  const candidate = cfg.realtimeCandidates.find((entry) => {
-    if (entry.provider === "openai") return Boolean(entry.apiKey || cfg.openaiOAuthToken || cfg.openaiKey);
-    if (entry.provider === "azure") {
-      const hasKey = Boolean(entry.apiKey || cfg.azureOAuthToken || cfg.azureKey);
-      const hasEndpoint = Boolean(entry.endpoint || cfg.azureEndpoint);
-      return hasKey && hasEndpoint;
-    }
-    return false;
-  });
+  const candidate = cfg.realtimeCandidates.find((entry) => candidateHasCredentials(entry, cfg));
   if (!candidate) {
     return {
       provider: cfg.provider,
@@ -1164,27 +1398,42 @@ export function getRealtimeConnectionInfo() {
     };
   }
 
+  // For gpt-audio-* models we use the non-SDP Responses transport.
+  if (
+    candidate.provider === "openai"
+    && isOpenAIAudioResponsesModel(cfg.model || candidate?.model || "")
+  ) {
+    return {
+      provider: "openai",
+      url: null,
+      model: String(cfg.model || candidate?.model || OPENAI_AUDIO_RESPONSES_MODEL).trim() || OPENAI_AUDIO_RESPONSES_MODEL,
+      transport: "responses-audio",
+    };
+  }
+
   if (candidate.provider === "azure") {
     const endpoint = normalizeAzureEndpoint(candidate?.endpoint || cfg.azureEndpoint || "");
-    const deployment =
-      String(candidate?.azureDeployment || candidate?.model || cfg.azureDeployment || "").trim()
-      || "gpt-audio-1.5";
-    // GA protocol: no api-version, no deployment query param.
-    // Preview protocol: include api-version and deployment.
+    const deployment = normalizeAzureRealtimeDeployment(
+      candidate?.azureDeployment || candidate?.model || cfg.azureDeployment || OPENAI_REALTIME_MODEL,
+    );
+    // GA protocol: /openai/v1/realtime with api-version; model set during /sessions exchange.
+    // Preview protocol: /openai/realtime with api-version and deployment.
     const url = isAzureGaProtocol(deployment)
-      ? `${endpoint}/openai/v1/realtime`
-      : `${endpoint}/openai/realtime?api-version=${AZURE_API_VERSION}&deployment=${deployment}`;
+      ? `${endpoint}/openai/v1/realtime?api-version=${AZURE_API_VERSION}`
+      : `${endpoint}/openai/realtime?api-version=${AZURE_API_VERSION}&deployment=${encodeURIComponent(deployment)}`;
     return {
       provider: "azure",
       url,
       model: deployment,
+      transport: "webrtc",
     };
   }
-  const model = String(candidate?.model || cfg.model || OPENAI_REALTIME_MODEL).trim() || OPENAI_REALTIME_MODEL;
+  const model = normalizeOpenAIRealtimeModel(candidate?.model || cfg.model || OPENAI_REALTIME_MODEL);
   return {
     provider: "openai",
-    url: `${OPENAI_REALTIME_URL}?model=${model}`,
+    url: buildOpenAIRealtimeWebRtcUrl(model, candidate?.endpoint || ""),
     model,
+    transport: "webrtc",
   };
 }
 

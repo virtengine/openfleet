@@ -35,7 +35,7 @@ if (typeof net.setDefaultAutoSelectFamilyAttemptTimeout === "function") {
 }
 
 import { acquireMonitorLock, runMaintenanceSweep } from "./maintenance.mjs";
-import { archiveCompletedTasks } from "./task-archiver.mjs";
+
 import {
   attemptAutoFix,
   fixLoopingError,
@@ -152,12 +152,7 @@ import {
   formatDirtyTaskSummary,
   DIRTY_TASK_DEFAULTS,
 } from "./conflict-resolver.mjs";
-import {
-  resolveConflictsWithSDK,
-  isSDKResolutionOnCooldown,
-  isSDKResolutionExhausted,
-  clearSDKResolutionState,
-} from "./sdk-conflict-resolver.mjs";
+
 import {
   initSharedKnowledge,
   buildKnowledgeEntry,
@@ -218,7 +213,7 @@ import {
 import { createAgentEndpoint } from "./agent-endpoint.mjs";
 import { createAgentEventBus } from "./agent-event-bus.mjs";
 import { createReviewAgent } from "./review-agent.mjs";
-import { createSyncEngine } from "./sync-engine.mjs";
+
 import { createErrorDetector } from "./error-detector.mjs";
 import { createAgentSupervisor } from "./agent-supervisor.mjs";
 import { getSessionTracker } from "./session-tracker.mjs";
@@ -6568,128 +6563,60 @@ async function checkMergedPRsAndUpdateTasks() {
               conflictResolutionCooldown.set(task.id, Date.now());
               recordResolutionAttempt(task.id);
 
-              const sdkOnCooldown = isSDKResolutionOnCooldown(cc.branch);
-              const sdkExhausted = isSDKResolutionExhausted(cc.branch);
-
-              if (!sdkOnCooldown && !sdkExhausted) {
-                console.log(
-                  `[monitor] :alert: Task "${task.title}" PR #${cc.prNumber} has merge conflicts — launching SDK resolver (attempt ${shortId})`,
+              console.log(
+                `[monitor] :alert: Task "${task.title}" PR #${cc.prNumber} has merge conflicts — dispatching to workflow (attempt ${shortId})`,
+              );
+              if (telegramToken && telegramChatId) {
+                void sendTelegramMessage(
+                  `:git: PR #${cc.prNumber} for "${task.title}" has merge conflicts — dispatching to workflow (attempt ${shortId})`,
                 );
-                if (telegramToken && telegramChatId) {
-                  void sendTelegramMessage(
-                    `:git: PR #${cc.prNumber} for "${task.title}" has merge conflicts — launching SDK resolver (attempt ${shortId})`,
-                  );
-                }
+              }
 
-                let worktreePath = null;
-                const attemptInfo = await getAttemptInfo(resolveAttemptId);
-                worktreePath =
-                  attemptInfo?.worktree_dir || attemptInfo?.worktree || null;
-                if (!worktreePath) {
-                  worktreePath = findWorktreeForBranch(cc.branch);
-                }
+              let worktreePath = null;
+              const attemptInfo = await getAttemptInfo(resolveAttemptId);
+              worktreePath =
+                attemptInfo?.worktree_dir || attemptInfo?.worktree || null;
+              if (!worktreePath) {
+                worktreePath = findWorktreeForBranch(cc.branch);
+              }
 
-                // Create worktree via centralized manager if none found
-                if (!worktreePath && cc.branch) {
-                  try {
-                    const taskKey = task.id || cc.branch;
-                    const wt = await acquireWorktree(repoRoot, cc.branch, taskKey, {
-                      owner: "monitor-conflict",
-                    });
-                    if (wt?.path) {
-                      worktreePath = wt.path;
-                      console.log(
-                        `[monitor] Acquired worktree for ${cc.branch} at ${wt.path} (${wt.created ? "created" : "existing"})`,
-                      );
-                    }
-                  } catch (wErr) {
-                    console.warn(
-                      `[monitor] Worktree acquisition error: ${wErr.message}`,
+              // Create worktree via centralized manager if none found
+              if (!worktreePath && cc.branch) {
+                try {
+                  const taskKey = task.id || cc.branch;
+                  const wt = await acquireWorktree(repoRoot, cc.branch, taskKey, {
+                    owner: "monitor-conflict",
+                  });
+                  if (wt?.path) {
+                    worktreePath = wt.path;
+                    console.log(
+                      `[monitor] Acquired worktree for ${cc.branch} at ${wt.path} (${wt.created ? "created" : "existing"})`,
                     );
                   }
-                }
-
-                if (worktreePath) {
-                  if (isWorkflowReplacingModule("sdk-conflict-resolver.mjs")) {
-                    console.log(`[monitor] SDK conflict resolution delegated to workflow for PR #${cc.prNumber}`);
-                    void queueWorkflowEvent("pr.conflict_detected", {
-                      worktreePath,
-                      branch: cc.branch,
-                      baseBranch: resolveAttemptTargetBranch(attemptInfo, task),
-                      prNumber: cc.prNumber,
-                      taskId: task.id,
-                      taskTitle: task.title,
-                      taskDescription: task.description || "",
-                    });
-                  } else {
-                  void (async () => {
-                    try {
-                      const result = await resolveConflictsWithSDK({
-                        worktreePath,
-                        branch: cc.branch,
-                        baseBranch: resolveAttemptTargetBranch(
-                          attemptInfo,
-                          task,
-                        ),
-                        prNumber: cc.prNumber,
-                        taskTitle: task.title,
-                        taskDescription: task.description || "",
-                        logDir: logDir,
-                        promptTemplate: agentPrompts?.sdkConflictResolver,
-                      });
-                      if (result.success) {
-                        console.log(
-                          `[monitor] :check: SDK resolved conflicts for PR #${cc.prNumber} (${result.resolvedFiles.length} files)`,
-                        );
-                        clearDirtyTask(task.id);
-                        clearSDKResolutionState(cc.branch);
-                        conflictResolutionAttempts.delete(task.id); // Reset on success
-                        if (telegramToken && telegramChatId) {
-                          void sendTelegramMessage(
-                            `:check: SDK resolved merge conflicts for PR #${cc.prNumber} "${task.title}" (${result.resolvedFiles.length} files)`,
-                          );
-                        }
-                      } else {
-                        console.warn(
-                          `[monitor] :close: SDK conflict resolution failed for PR #${cc.prNumber}: ${result.error}`,
-                        );
-                        if (telegramToken && telegramChatId) {
-                          void sendTelegramMessage(
-                            `:close: SDK conflict resolution failed for PR #${cc.prNumber} "${task.title}": ${result.error}\nFalling back to orchestrator.`,
-                          );
-                        }
-                        conflictsTriggered++;
-                        void smartPRFlow(resolveAttemptId, shortId, "conflict");
-                      }
-                    } catch (err) {
-                      console.warn(
-                        `[monitor] SDK conflict resolution threw: ${err.message}`,
-                      );
-                    }
-                  })();
-                  } // end else (workflow not replacing sdk-conflict-resolver)
-                } else {
+                } catch (wErr) {
                   console.warn(
-                    `[monitor] No worktree found for ${cc.branch} — deferring to orchestrator`,
+                    `[monitor] Worktree acquisition error: ${wErr.message}`,
                   );
-                  if (telegramToken && telegramChatId) {
-                    void sendTelegramMessage(
-                      `:git: PR #${cc.prNumber} for "${task.title}" has merge conflicts — no worktree, orchestrator will handle (attempt ${shortId})`,
-                    );
-                  }
-                  conflictsTriggered++;
-                  void smartPRFlow(resolveAttemptId, shortId, "conflict");
                 }
+              }
+
+              if (worktreePath) {
+                void queueWorkflowEvent("pr.conflict_detected", {
+                  worktreePath,
+                  branch: cc.branch,
+                  baseBranch: resolveAttemptTargetBranch(attemptInfo, task),
+                  prNumber: cc.prNumber,
+                  taskId: task.id,
+                  taskTitle: task.title,
+                  taskDescription: task.description || "",
+                });
               } else {
-                const reason = sdkExhausted
-                  ? "SDK attempts exhausted"
-                  : "SDK on cooldown";
-                console.log(
-                  `[monitor] :alert: Task "${task.title}" PR #${cc.prNumber} has merge conflicts — ${reason}, deferring to orchestrator (attempt ${shortId})`,
+                console.warn(
+                  `[monitor] No worktree found for ${cc.branch} — deferring to orchestrator`,
                 );
                 if (telegramToken && telegramChatId) {
                   void sendTelegramMessage(
-                    `:git: PR #${cc.prNumber} for "${task.title}" has merge conflicts — ${reason}, orchestrator will handle (attempt ${shortId})`,
+                    `:git: PR #${cc.prNumber} for "${task.title}" has merge conflicts — no worktree, orchestrator will handle (attempt ${shortId})`,
                   );
                 }
                 conflictsTriggered++;
@@ -10144,6 +10071,10 @@ function stopTaskPlannerStatusLoop() {
 
 function startTaskPlannerStatusLoop() {
   stopTaskPlannerStatusLoop();
+  if (isWorkflowReplacingModule("monitor.mjs")) {
+    console.log("[monitor] skipping legacy task planner status loop — handled by workflow");
+    return;
+  }
   taskPlannerStatus.enabled = isDevMode();
   taskPlannerStatus.intervalMs = Math.max(
     5 * 60_000,
@@ -10169,6 +10100,10 @@ function restartGitHubReconciler() {}
 function stopGitHubReconciler() {}
 
 async function maybeTriggerTaskPlanner(reason, details, options = {}) {
+  if (isWorkflowReplacingModule("monitor.mjs")) {
+    console.log("[monitor] skipping legacy task planner trigger — handled by workflow");
+    return;
+  }
   if (internalTaskExecutor?.isPaused?.()) {
     console.log("[monitor] task planner skipped: executor paused");
     return;
@@ -15178,18 +15113,9 @@ try {
   );
 }
 
-// ── Startup sweep: kill stale processes, prune worktrees, archive old tasks ──
+// ── Startup sweep: kill stale processes, prune worktrees ──
 runGuarded("startup-maintenance-sweep", () =>
-  runMaintenanceSweep({
-    repoRoot,
-    archiveCompletedTasks: isWorkflowReplacingModule("task-archiver.mjs")
-      ? async () => { console.log("[monitor] task archiver delegated to workflow"); return { archived: 0 }; }
-      : async () => {
-          const projectId = await findVkProjectId();
-          if (!projectId) return { archived: 0 };
-          return await archiveCompletedTasks(fetchVk, projectId, { maxArchive: 50 });
-        },
-  }),
+  runMaintenanceSweep({ repoRoot }),
 );
 
 safeSetInterval("flush-error-queue", () => flushErrorQueue(), 60 * 1000);
@@ -15198,20 +15124,7 @@ safeSetInterval("flush-error-queue", () => flushErrorQueue(), 60 * 1000);
 const maintenanceIntervalMs = 5 * 60 * 1000;
 safeSetInterval("maintenance-sweep", () => {
   const childPid = currentChild ? currentChild.pid : undefined;
-  return runMaintenanceSweep({
-    repoRoot,
-    childPid,
-    archiveCompletedTasks: isWorkflowReplacingModule("task-archiver.mjs")
-      ? async () => { console.log("[monitor] task archiver delegated to workflow"); return { archived: 0 }; }
-      : async () => {
-          const projectId = await findVkProjectId();
-          if (!projectId) return { archived: 0 };
-          return await archiveCompletedTasks(fetchVk, projectId, {
-            maxArchive: 25,
-            dryRun: false,
-          });
-        },
-  });
+  return runMaintenanceSweep({ repoRoot, childPid });
 }, maintenanceIntervalMs);
 
 // ── Periodic merged PR check: every 10 min, move merged PRs to done ─────────
@@ -15464,7 +15377,7 @@ let agentEventBus = null;
 let reviewAgent = null;
 /** @type {Map<string, { approved: boolean, reviewedAt: string }>} */
 const reviewGateResults = new Map();
-/** @type {import("./sync-engine.mjs").SyncEngine|null} */
+/** @type {null} Sync engine lifecycle now managed by workflow template */
 let syncEngine = null;
 /** @type {import("./error-detector.mjs").ErrorDetector|null} */
 let errorDetector = null;
@@ -16070,57 +15983,9 @@ if (isExecutorDisabled()) {
     }
 
     // ── Sync Engine ──
-    try {
-      if (isWorkflowReplacingModule("sync-engine.mjs")) {
-        console.log("[monitor] sync engine delegated to workflow — skipping legacy init");
-      } else {
-      const activeKanbanBackend = getActiveKanbanBackend();
+    // Sync engine lifecycle is now managed by the template-sync-engine workflow.
+    // The workflow fires on `sync.requested` events instead of a fixed-interval timer.
 
-      // Sync engine only makes sense when there is an external backend to sync
-      // with.  When the backend is "internal" there is no remote to pull/push,
-      // and every sync attempt would fail, accumulating consecutive-failure
-      // counters and spamming alerts.
-      if (activeKanbanBackend === "internal") {
-        console.log(
-          `[monitor] sync engine skipped — kanban backend is "internal" (no external to sync)`,
-        );
-      } else {
-      const projectId = getConfiguredKanbanProjectId(activeKanbanBackend);
-      if (projectId) {
-        syncEngine = createSyncEngine({
-          projectId,
-          syncIntervalMs: 60_000, // 1 minute
-          syncPolicy: kanbanConfig?.syncPolicy || "internal-primary",
-          sendTelegram:
-            telegramToken && telegramChatId
-              ? (msg) => sendTelegramMessage(msg)
-              : null,
-          onAlert:
-            telegramToken && telegramChatId
-              ? (event) =>
-                  sendTelegramMessage(
-                    `:alert: Project sync alert: ${event?.message || "unknown"}`,
-                  )
-              : null,
-          failureAlertThreshold:
-            config?.githubProjectSync?.alertFailureThreshold || 3,
-          rateLimitAlertThreshold:
-            config?.githubProjectSync?.rateLimitAlertThreshold || 3,
-        });
-        syncEngine.start();
-        console.log(
-          `[monitor] sync engine started (interval: 60s, backend=${activeKanbanBackend}, policy=${kanbanConfig?.syncPolicy || "internal-primary"}, project=${projectId})`,
-        );
-      } else {
-        console.log(
-          `[monitor] sync engine skipped — no project ID configured for backend=${activeKanbanBackend}`,
-        );
-      }
-      } // end else (non-internal backend)
-      } // end else (workflow not replacing sync-engine)
-    } catch (err) {
-      console.warn(`[monitor] sync engine failed to start: ${err.message}`);
-    }
   } catch (err) {
     console.error(
       `[monitor] internal executor failed to start: ${err.message}`,

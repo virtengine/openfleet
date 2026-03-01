@@ -50,7 +50,21 @@ async function getGoogleGenAI() {
 
 // ── Constants ───────────────────────────────────────────────────────────────
 
-const OPENAI_REALTIME_MODEL = "gpt-audio-1.5";
+const OPENAI_REALTIME_MODEL = "gpt-realtime-1.5";
+
+function normalizeOpenAIRealtimeModel(rawModel) {
+  const model = String(rawModel || "").trim();
+  if (!model) return OPENAI_REALTIME_MODEL;
+  if (/^gpt-audio/i.test(model)) return OPENAI_REALTIME_MODEL;
+  return model;
+}
+
+function normalizeAzureRealtimeDeployment(rawDeployment) {
+  const deployment = String(rawDeployment || "").trim();
+  if (!deployment) return OPENAI_REALTIME_MODEL;
+  if (/^gpt-audio/i.test(deployment)) return OPENAI_REALTIME_MODEL;
+  return deployment;
+}
 
 // GA models (gpt-realtime, gpt-realtime-1.5, gpt-realtime-mini, etc.) use /openai/v1/ WebSocket path.
 // Preview models use /openai/realtime?api-version=...&deployment=...
@@ -252,9 +266,9 @@ export async function createRealtimeSession(agent, provider, config = {}, option
 
   const { RealtimeSession } = mod;
 
-  const model = String(
+  const model = normalizeOpenAIRealtimeModel(
     options.model || config.model || OPENAI_REALTIME_MODEL,
-  ).trim() || OPENAI_REALTIME_MODEL;
+  );
 
   const voiceId = String(
     options.voiceId || config.voiceId || "alloy",
@@ -322,9 +336,9 @@ export async function connectRealtimeSession(sessionHandle, config = {}) {
       throw new Error("Azure voice credential not configured");
     }
     const endpoint = String(config.azureEndpoint || "").trim().replace(/\/+$/, "").replace(/\/openai(?:\/.*)?$/, "");
-    const deployment = String(
-      config.azureDeployment || "gpt-audio-1.5",
-    ).trim();
+    const deployment = normalizeAzureRealtimeDeployment(
+      config.azureDeployment || OPENAI_REALTIME_MODEL,
+    );
     connectOpts.apiKey = credential;
     connectOpts.url = isAzureGaProtocol(deployment)
       ? `${endpoint}/openai/v1/realtime`
@@ -636,18 +650,26 @@ export async function resolveBestVoiceSession(voiceConfig = {}, options = {}) {
  */
 export async function getClientSdkConfig(voiceConfig = {}) {
   const provider = voiceConfig.provider || "fallback";
+  const configuredModel = String(voiceConfig.model || OPENAI_REALTIME_MODEL).trim();
+  const audioResponsesMode = /^gpt-audio/i.test(configuredModel);
   const availability = await checkSdkAvailability(provider);
+  const useSdk = availability.available && !audioResponsesMode;
+  const fallbackReason = !useSdk
+    ? (audioResponsesMode
+      ? "gpt-audio models use Responses audio transport (legacy client path)"
+      : availability.reason)
+    : null;
 
   return {
-    useSdk: availability.available,
+    useSdk,
     provider,
     sdkPackage: availability.info?.sdkPackage || null,
-    transport: availability.info?.transport || "fallback",
+    transport: audioResponsesMode ? "responses-audio" : (availability.info?.transport || "fallback"),
     tier: availability.info?.tier || 2,
-    model: voiceConfig.model || OPENAI_REALTIME_MODEL,
+    model: configuredModel,
     voiceId: voiceConfig.voiceId || "alloy",
     turnDetection: voiceConfig.turnDetection || "server_vad",
-    fallbackReason: availability.available ? null : availability.reason,
+    fallbackReason,
   };
 }
 

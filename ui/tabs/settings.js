@@ -31,6 +31,7 @@ import {
   executorData,
   configData,
   showToast,
+  pendingChanges,
   setPendingChange,
   clearPendingChange,
 } from "../modules/state.js";
@@ -56,6 +57,40 @@ import {
   validateSetting,
   SENSITIVE_KEYS,
 } from "../modules/settings-schema.js";
+
+const SETTINGS_EXTERNAL_EDITORS = new Map();
+
+function registerSettingsExternalEditor(editorId, editorOps) {
+  const key = String(editorId || "").trim();
+  if (!key || !editorOps || typeof editorOps !== "object") {
+    return () => {};
+  }
+  SETTINGS_EXTERNAL_EDITORS.set(key, editorOps);
+  return () => {
+    const current = SETTINGS_EXTERNAL_EDITORS.get(key);
+    if (current === editorOps) SETTINGS_EXTERNAL_EDITORS.delete(key);
+  };
+}
+
+async function runSettingsExternalEditorAction(action) {
+  const mode = action === "discard" ? "discard" : "save";
+  const errors = [];
+  for (const [key, ops] of SETTINGS_EXTERNAL_EDITORS.entries()) {
+    const isDirty = Boolean(ops?.isDirty?.());
+    if (!isDirty) continue;
+    const fn = mode === "discard" ? ops?.discard : ops?.save;
+    if (typeof fn !== "function") continue;
+    try {
+      await fn();
+    } catch (err) {
+      const message = err?.message || "Action failed";
+      errors.push(`${key}: ${message}`);
+    }
+  }
+  if (errors.length > 0) {
+    throw new Error(errors.join(" | "));
+  }
+}
 
 /* ─── Scoped Styles ─── */
 const SETTINGS_STYLES = `
@@ -1067,6 +1102,12 @@ function ServerConfigMode() {
                     setCustomSelectMode((prev) => ({ ...prev, [def.key]: false }));
                     handleChange(def.key, nextValue);
                   }}
+                  onInput=${(e) => {
+                    const nextValue = String(e.target.value || "");
+                    if (nextValue === "__custom__") return;
+                    setCustomSelectMode((prev) => ({ ...prev, [def.key]: false }));
+                    handleChange(def.key, nextValue);
+                  }}
                 >
                   ${presetOpts.map(
                     (o) => html`<option key=${o} value=${o}>${o}</option>`,
@@ -2018,12 +2059,44 @@ function VoiceEndpointsEditor() {
   const [loadError, setLoadError] = useState(null);
   const [testResults, setTestResults] = useState({});
   const [oauthStatus, setOauthStatus] = useState({ openai: {}, claude: {}, gemini: {} });
+  const [customModelMode, setCustomModelMode] = useState({});
+
+  const getDefaultEndpointUrl = useCallback((provider, authSource = "apiKey") => {
+    const p = String(provider || "").toLowerCase();
+    if (p === "openai") return "https://api.openai.com";
+    if (p === "claude") return "https://api.anthropic.com";
+    if (p === "gemini") return "https://generativelanguage.googleapis.com";
+    return "";
+  }, []);
+
+  const isEndpointEditable = useCallback((provider) => {
+    const p = String(provider || "").toLowerCase();
+    return p === "azure" || p === "custom";
+  }, []);
+
+  const endpointModelOptions = useMemo(() => {
+    return [
+      "gpt-audio-1.5",
+      "gpt-realtime-1.5",
+      "gpt-4o-realtime-preview-2024-12-17",
+      "claude-sonnet-4.6",
+      "claude-haiku-4.5",
+      "gemini-2.5-pro",
+      "gemini-2.5-flash",
+      "gemini-3.0-flash",
+      "gemini-3.1-pro",
+    ];
+  }, []);
 
   const normalizeEp = useCallback((ep = {}, idx = 0) => ({
     _id: ep._id ?? `ep-${idx}-${Date.now()}`,
     name: String(ep.name || `endpoint-${idx + 1}`),
-    provider: ["azure", "openai", "claude", "gemini"].includes(ep.provider) ? ep.provider : "azure",
-    endpoint: String(ep.endpoint || ""),
+    provider: ["azure", "openai", "claude", "gemini", "custom"].includes(ep.provider) ? ep.provider : "azure",
+    endpoint: (() => {
+      const p = ["azure", "openai", "claude", "gemini", "custom"].includes(ep.provider) ? ep.provider : "azure";
+      const raw = String(ep.endpoint || "");
+      return (p === "azure" || p === "custom") ? raw : (raw || getDefaultEndpointUrl(p, ep.authSource));
+    })(),
     deployment: String(ep.deployment || ""),
     model: String(ep.model || ""),
     visionModel: String(ep.visionModel || ""),
@@ -2032,7 +2105,8 @@ function VoiceEndpointsEditor() {
     role: ["primary", "backup"].includes(ep.role) ? ep.role : "primary",
     weight: Number(ep.weight) > 0 ? Number(ep.weight) : 1,
     enabled: ep.enabled !== false,
-  }), []);
+    authSource: ["apiKey", "oauth"].includes(ep.authSource) ? ep.authSource : "apiKey",
+  }), [getDefaultEndpointUrl]);
 
   // Fetch OAuth status for all providers
   const fetchOAuthStatuses = useCallback(async () => {
@@ -2053,7 +2127,7 @@ function VoiceEndpointsEditor() {
     try {
       const res = await apiFetch("/api/voice/endpoints/test", {
         method: "POST",
-        body: JSON.stringify({ provider: ep.provider, apiKey: ep.apiKey, endpoint: ep.endpoint, deployment: ep.deployment, model: ep.model }),
+        body: JSON.stringify({ provider: ep.provider, apiKey: ep.apiKey, endpoint: ep.endpoint, deployment: ep.deployment, model: ep.model, authSource: ep.authSource }),
       });
       if (res.ok) {
         setTestResults((prev) => ({ ...prev, [key]: { testing: false, result: "success", latencyMs: res.latencyMs } }));
@@ -2083,6 +2157,12 @@ function VoiceEndpointsEditor() {
     fetchOAuthStatuses();
   }, [normalizeEp, fetchOAuthStatuses]);
 
+  useEffect(() => {
+    const key = "settings-voice-endpoints";
+    setPendingChange(key, dirty);
+    return () => clearPendingChange(key);
+  }, [dirty]);
+
   const addEndpoint = useCallback(() => {
     setEndpoints((prev) => {
       const next = [
@@ -2109,11 +2189,26 @@ function VoiceEndpointsEditor() {
       setDirty(true);
       return prev.map((ep) =>
         ep._id === id
-          ? { ...ep, [field]: field === "weight" ? (Number(value) || 1) : value }
+          ? (() => {
+              const next = { ...ep, [field]: field === "weight" ? (Number(value) || 1) : value };
+              if (field === "provider") {
+                if (!isEndpointEditable(next.provider)) {
+                  next.endpoint = getDefaultEndpointUrl(next.provider, next.authSource);
+                }
+                if (next.provider !== "azure") next.deployment = "";
+                if (next.provider === "custom" && !next.model) {
+                  next.model = endpointModelOptions[0] || "gpt-audio-1.5";
+                }
+              }
+              if (field === "authSource" && !isEndpointEditable(next.provider)) {
+                next.endpoint = getDefaultEndpointUrl(next.provider, next.authSource);
+              }
+              return next;
+            })()
           : ep,
       );
     });
-  }, []);
+  }, [endpointModelOptions, getDefaultEndpointUrl, isEndpointEditable]);
 
   const handleSave = useCallback(async () => {
     setSaving(true);
@@ -2182,6 +2277,7 @@ function VoiceEndpointsEditor() {
                 <option value="openai">OpenAI</option>
                 <option value="claude">Claude (Anthropic)</option>
                 <option value="gemini">Google Gemini</option>
+                <option value="custom">Custom Endpoint</option>
               </select>
             </div>
             <div>
@@ -2199,17 +2295,26 @@ function VoiceEndpointsEditor() {
             <div style="display:flex;align-items:center;padding-top:16px">
               <${Toggle} checked=${ep.enabled} onChange=${(v) => updateEndpoint(ep._id, "enabled", v)} label="Enabled" />
             </div>
-            <div style="grid-column:1/-1">
-              <div class="setting-row-label">API Key</div>
+            ${["openai","claude","gemini"].includes(ep.provider) && html`
+              <div style="grid-column:1/-1">
+                <div class="setting-row-label">Auth Method</div>
+                <select value=${ep.authSource || "apiKey"} onChange=${(e) => updateEndpoint(ep._id, "authSource", e.target.value)}>
+                  <option value="apiKey">API Key</option>
+                  <option value="oauth">OAuth (Connected Account)</option>
+                </select>
+                ${ep.authSource === "oauth" && oauthStatus[ep.provider]?.status === "connected" && html`
+                  <div class="meta-text" style="margin-top:3px;color:var(--color-success,#22c55e)">✓ Connected — will use your ${ep.provider === "openai" ? "OpenAI" : ep.provider === "claude" ? "Claude" : "Gemini"} account.</div>
+                `}
+                ${ep.authSource === "oauth" && oauthStatus[ep.provider]?.status !== "connected" && html`
+                  <div class="meta-text" style="margin-top:3px;color:var(--color-warning,#f59e0b)">⚠ Not connected. Sign in via Connected Accounts above to use OAuth.</div>
+                `}
+              </div>
+            `}
+            <div style=${`grid-column:1/-1${ep.authSource === "oauth" && ["openai","claude","gemini"].includes(ep.provider) ? ";display:none" : ""}`}>
+              <div class="setting-row-label">${ep.provider === "azure" ? "API Key" : "API Key (manual)"}</div>
               <input type="password" value=${ep.apiKey}
-                placeholder=${!ep.apiKey && ["openai","claude","gemini"].includes(ep.provider) && oauthStatus[ep.provider]?.status === "connected" ? "Using OAuth token (connected above)" : "API key for this endpoint"}
+                placeholder="API key for this endpoint"
                 onInput=${(e) => updateEndpoint(ep._id, "apiKey", e.target.value)} />
-              ${!ep.apiKey && ["openai","claude","gemini"].includes(ep.provider) && oauthStatus[ep.provider]?.status === "connected" && html`
-                <div class="meta-text" style="margin-top:3px;color:var(--color-success,#22c55e)">✓ Will use your connected ${ep.provider === "openai" ? "OpenAI" : ep.provider === "claude" ? "Claude" : "Gemini"} account automatically.</div>
-              `}
-              ${!ep.apiKey && ["openai","claude","gemini"].includes(ep.provider) && oauthStatus[ep.provider]?.status !== "connected" && html`
-                <div class="meta-text" style="margin-top:3px">No API key set. Connect your account via OAuth above, or enter a key.</div>
-              `}
             </div>
             ${ep.provider === "azure" && html`
               <div style="grid-column:1/-1">
@@ -2227,6 +2332,61 @@ function VoiceEndpointsEditor() {
                 </div>
               </div>
             `}
+            ${ep.provider === "custom" && html`
+              <div style="grid-column:1/-1">
+                <div class="setting-row-label">Endpoint URL</div>
+                <input type="text" value=${ep.endpoint} placeholder="https://your-custom-endpoint.example.com"
+                  onInput=${(e) => updateEndpoint(ep._id, "endpoint", e.target.value)} />
+              </div>
+              <div style="grid-column:1/-1">
+                <div class="setting-row-label">Model</div>
+                ${(() => {
+                  const known = endpointModelOptions;
+                  const isCustom = Boolean(customModelMode[ep._id]) || (ep.model && !known.includes(ep.model));
+                  return html`
+                    <select
+                      value=${isCustom ? "__custom__" : (ep.model || (known[0] || ""))}
+                      onChange=${(e) => {
+                        const next = String(e.target.value || "");
+                        if (next === "__custom__") {
+                          setCustomModelMode((prev) => ({ ...prev, [ep._id]: true }));
+                          updateEndpoint(ep._id, "model", known.includes(ep.model) ? "" : ep.model);
+                          return;
+                        }
+                        setCustomModelMode((prev) => ({ ...prev, [ep._id]: false }));
+                        updateEndpoint(ep._id, "model", next);
+                      }}
+                    >
+                      ${known.map((m) => html`<option value=${m}>${m}</option>`)}
+                      <option value="__custom__">custom...</option>
+                    </select>
+                    ${isCustom && html`
+                      <input
+                        type="text"
+                        value=${ep.model || ""}
+                        placeholder="Enter custom model slug..."
+                        onInput=${(e) => updateEndpoint(ep._id, "model", e.target.value)}
+                        style="margin-top:6px"
+                      />
+                    `}
+                  `;
+                })()}
+              </div>
+            `}
+            ${!isEndpointEditable(ep.provider) && html`
+              <div style="grid-column:1/-1">
+                <div class="setting-row-label">Endpoint URL</div>
+                <input
+                  type="text"
+                  value=${getDefaultEndpointUrl(ep.provider, ep.authSource)}
+                  readonly
+                  disabled
+                />
+                <div class="meta-text" style="margin-top:3px">
+                  Auto-derived from provider and auth method. Use Azure or Custom to override.
+                </div>
+              </div>
+            `}
             ${ep.provider === "openai" && html`
               <div style="grid-column:1/-1">
                 <div class="setting-row-label">Audio Model (Realtime)</div>
@@ -2237,7 +2397,7 @@ function VoiceEndpointsEditor() {
             ${ep.provider === "claude" && html`
               <div style="grid-column:1/-1">
                 <div class="setting-row-label">Model</div>
-                <input type="text" value=${ep.model} placeholder="claude-opus-4-5"
+                <input type="text" value=${ep.model} placeholder="claude-sonnet-4.6"
                   onInput=${(e) => updateEndpoint(ep._id, "model", e.target.value)} />
               </div>
             `}
@@ -2251,7 +2411,7 @@ function VoiceEndpointsEditor() {
             <div style="grid-column:1/-1">
               <div class="setting-row-label">Vision Model</div>
               <input type="text" value=${ep.visionModel}
-                placeholder=${ep.provider === "azure" ? "gpt-4o" : ep.provider === "claude" ? "claude-opus-4-5" : ep.provider === "gemini" ? "gemini-2.5-flash" : "gpt-4o"}
+                placeholder=${ep.provider === "azure" ? "gpt-4o" : ep.provider === "claude" ? "claude-sonnet-4.6" : ep.provider === "gemini" ? "gemini-3.0-flash" : "gpt-4o"}
                 onInput=${(e) => updateEndpoint(ep._id, "visionModel", e.target.value)} />
               <div class="meta-text" style="margin-top:3px">Model used for screenshot / image analysis tasks.</div>
             </div>
@@ -2295,8 +2455,8 @@ function VoiceEndpointsEditor() {
 const VOICE_PROVIDER_MODEL_DEFAULTS = {
   openai: { model: "gpt-audio-1.5", visionModel: "gpt-4.1-nano", models: ["gpt-audio-1.5", "gpt-realtime-1.5", "gpt-4o-realtime-preview-2024-12-17"], visionModels: ["gpt-4.1-nano", "gpt-4.1-mini", "gpt-4.1"] },
   azure: { model: "gpt-audio-1.5", visionModel: "gpt-4.1-nano", models: ["gpt-audio-1.5", "gpt-realtime-1.5", "gpt-4o-realtime-preview"], visionModels: ["gpt-4.1-nano", "gpt-4.1-mini", "gpt-4.1"] },
-  claude: { model: "claude-3-7-sonnet-latest", visionModel: "claude-3-7-sonnet-latest", models: ["claude-3-7-sonnet-latest", "claude-sonnet-4-20250514"], visionModels: ["claude-3-7-sonnet-latest", "claude-sonnet-4-20250514"] },
-  gemini: { model: "gemini-2.5-pro", visionModel: "gemini-2.5-flash", models: ["gemini-2.5-pro", "gemini-2.5-flash", "gemini-2.0-flash", "gemini-3.0-flash", "gemini-3.1-pro"], visionModels: ["gemini-2.5-flash", "gemini-2.5-pro", "gemini-2.0-flash", "gemini-3.0-flash", "gemini-3.1-pro"] },
+  claude: { model: "claude-sonnet-4.6", visionModel: "claude-sonnet-4.6", models: ["claude-sonnet-4.6", "claude-haiku-4.5"], visionModels: ["claude-sonnet-4.6", "claude-haiku-4.5"] },
+  gemini: { model: "gemini-3.1-pro", visionModel: "gemini-3.0-flash", models: ["gemini-2.5-pro", "gemini-2.5-flash", "gemini-2.0-flash", "gemini-3.0-flash", "gemini-3.1-pro"], visionModels: ["gemini-2.5-flash", "gemini-2.5-pro", "gemini-2.0-flash", "gemini-3.0-flash", "gemini-3.1-pro"] },
   fallback: { model: "", visionModel: "", models: [], visionModels: [] },
 };
 const _getProviderDefaults = (provider) =>
@@ -2345,6 +2505,12 @@ function VoiceProvidersEditor() {
       }
     })();
   }, [normalizeProvider]);
+
+  useEffect(() => {
+    const key = "settings-voice-providers";
+    setPendingChange(key, dirty);
+    return () => clearPendingChange(key);
+  }, [dirty]);
 
   const addProvider = useCallback(() => {
     if (providers.length >= 5) return;

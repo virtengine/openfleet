@@ -919,6 +919,117 @@ section {
   line-height: 1.7;
 }
 
+/* ── Workflow Capabilities ─────────────────────────────────────────────── */
+.workflow-capability-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 1.5rem;
+  margin-bottom: 1.75rem;
+}
+
+.workflow-capability-card {
+  background: linear-gradient(180deg, rgba(15, 23, 36, 0.95), rgba(11, 18, 33, 0.95));
+  border: 1px solid var(--border-default);
+  border-radius: 14px;
+  padding: 1.5rem;
+  transition: border-color 0.2s ease, transform 0.2s ease, box-shadow 0.2s ease;
+}
+
+.workflow-capability-card:hover {
+  border-color: var(--border-glow);
+  transform: translateY(-2px);
+  box-shadow: 0 14px 28px rgba(10, 11, 18, 0.35);
+}
+
+.workflow-capability-card__title {
+  font-size: 1.12rem;
+  margin-bottom: 0.6rem;
+  letter-spacing: -0.01em;
+}
+
+.workflow-capability-card__desc {
+  color: var(--text-secondary);
+  font-size: 0.93rem;
+  line-height: 1.65;
+  margin-bottom: 0.95rem;
+}
+
+.workflow-capability-card__list {
+  list-style: none;
+  display: grid;
+  gap: 0.45rem;
+}
+
+.workflow-capability-card__list li {
+  color: var(--text-primary);
+  font-size: 0.86rem;
+  font-family: var(--font-mono);
+  padding: 0.36rem 0.55rem;
+  border: 1px solid var(--border-subtle);
+  border-radius: 8px;
+  background: rgba(15, 23, 36, 0.55);
+}
+
+.workflow-lifecycle {
+  border: 1px solid var(--border-default);
+  border-radius: 14px;
+  background: linear-gradient(180deg, rgba(11, 18, 33, 0.95), rgba(10, 11, 18, 0.95));
+  padding: 1.5rem;
+}
+
+.workflow-lifecycle__header {
+  font-family: var(--font-mono);
+  text-transform: uppercase;
+  letter-spacing: 0.12em;
+  color: var(--text-muted);
+  font-size: 0.78rem;
+  margin-bottom: 1rem;
+}
+
+.workflow-lifecycle__flow {
+  display: grid;
+  grid-template-columns: repeat(9, minmax(0, 1fr));
+  gap: 0.7rem;
+  align-items: stretch;
+}
+
+.workflow-stage {
+  grid-column: span 1;
+  border: 1px solid var(--border-subtle);
+  border-radius: 10px;
+  background: rgba(15, 23, 36, 0.7);
+  padding: 0.8rem;
+  min-height: 132px;
+}
+
+.workflow-stage__kicker {
+  font-size: 0.7rem;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--text-muted);
+  margin-bottom: 0.35rem;
+}
+
+.workflow-stage__title {
+  font-size: 0.95rem;
+  font-weight: 700;
+  margin-bottom: 0.35rem;
+}
+
+.workflow-stage__meta {
+  color: var(--text-secondary);
+  font-size: 0.82rem;
+  line-height: 1.45;
+}
+
+.workflow-stage__arrow {
+  display: grid;
+  place-items: center;
+  color: var(--text-muted);
+  font-size: 1.1rem;
+  font-weight: 700;
+}
+
 /* ── Terminal Section ──────────────────────────────────────────────────── */
 .terminal-section {
   padding: 6rem 0;
@@ -1567,6 +1678,19 @@ body.is-miniapp-fullscreen {
     grid-template-columns: repeat(2, 1fr);
   }
 
+  .workflow-capability-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .workflow-lifecycle__flow {
+    grid-template-columns: 1fr;
+  }
+
+  .workflow-stage__arrow {
+    transform: rotate(90deg);
+    min-height: 24px;
+  }
+
   .integrations-grid {
     grid-template-columns: repeat(2, 1fr);
   }
@@ -1632,6 +1756,10 @@ body.is-miniapp-fullscreen {
   }
 
   .features-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .workflow-capability-grid {
     grid-template-columns: 1fr;
   }
 

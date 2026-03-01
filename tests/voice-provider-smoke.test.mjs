@@ -205,6 +205,11 @@ afterEach(async () => {
   uiServerModule = null;
   globalThis.fetch = _realFetch;
 
+  // Reset session tracker singleton so smoke-test sessions don't leak
+  // into subsequent tests or persist to disk.
+  const { _resetSingleton } = await import("../session-tracker.mjs");
+  _resetSingleton({ persistDir: null });
+
   for (const key of ENV_KEYS) {
     if (envSnapshot[key] === undefined) delete process.env[key];
     else process.env[key] = envSnapshot[key];

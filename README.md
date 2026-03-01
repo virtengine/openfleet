@@ -3,10 +3,10 @@
 </p>
 <h1 align="center">bosun</h1>
 
-Bosun is a production-grade supervisor for AI coding agents. It routes tasks across executors, automates PR lifecycles, and keeps operators in control through Telegram, the Mini App dashboard, and optional WhatsApp notifications.
+Bosun is a production-grade control plane for an autonomous software engineer. It plans and routes work across executors, automates PR lifecycles, and keeps operators in control through Telegram, the Mini App dashboard, and optional WhatsApp notifications.
 
 <p align="center">
-  <a href="https://bosun.virtengine.com">Website</a> · <a href="https://bosun.virtengine.com/docs/">Docs</a> · <a href="https://github.com/virtengine/bosun?tab=readme-ov-file#bosun">GitHub</a> · <a href="https://www.npmjs.com/package/bosun">npm</a> · <a href="https://github.com/virtengine/bosun/issues">Issues</a>
+  <a href="https://bosun.engineer">Website</a> · <a href="https://bosun.engineer/docs/">Docs</a> · <a href="https://github.com/virtengine/bosun?tab=readme-ov-file#bosun">GitHub</a> · <a href="https://www.npmjs.com/package/bosun">npm</a> · <a href="https://github.com/virtengine/bosun/issues">Issues</a>
 </p>
 
 <p align="center">
@@ -82,6 +82,22 @@ Fallback admin auth (secondary path) is available and stores only Argon2id hash 
 - Provides Telegram control and a Mini App dashboard
 - Integrates with GitHub, Jira, and Vibe-Kanban boards
 
+## Autonomous Engineer Workflow Capabilities
+
+Bosun workflows provide a professional, end-to-end execution loop for autonomous delivery:
+
+- Trigger intake: consume issues, comments, schedules, and webhook events
+- Planning and decomposition: convert goals into scoped tasks with execution context
+- Routed execution: dispatch tasks to the best executor profile with retries and failover
+- Quality gates: enforce test/build/review checks before merge decisions
+- Recovery and escalation: auto-heal stalled runs, then escalate with clear operator signals
+
+Setup profiles for default workflow behavior:
+
+- Manual Dispatch: human-directed flow with guardrails and review automations
+- Balanced (Recommended): daily default with PR quality gates and targeted self-healing
+- Autonomous: expanded end-to-end automation for planning, recovery, and maintenance
+
 ### Executor quick-start
 
 | Executor          | `primaryAgent` value | Key env vars                                                                          |
@@ -103,7 +119,7 @@ Set `primaryAgent` in `.bosun/bosun.config.json` or choose an executor preset du
 
 ## Documentation
 
-**Published docs (website):** https://bosun.virtengine.com/docs/
+**Published docs (website):** https://bosun.engineer/docs/
 
 **Source docs (markdown):** `_docs/` is the source of truth for long-form documentation. The website should be generated from the same markdown content so docs stay in sync.
 

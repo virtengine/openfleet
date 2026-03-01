@@ -1,6 +1,6 @@
 # Bosun Site
 
-Static landing page and documentation for Bosun — the autonomous AI fleet supervisor.
+Static landing page and documentation for Bosun — the control plane for your autonomous engineer.
 
 ## Local Development
 
@@ -58,7 +58,7 @@ window.BOSUN_ANALYTICS_CONFIG = {
   umami: {
     scriptUrl: 'https://umami.example.com/script.js',
     websiteId: 'YOUR_UMAMI_WEBSITE_ID',
-    domains: 'bosun.virtengine.com',
+    domains: 'bosun.engineer',
   },
 };
 ```

@@ -82,11 +82,11 @@
   const cursorEl = document.getElementById('typed-cursor');
   if (typedEl) {
     const phrases = [
-      'supervized',
-      'monitored',
-      'orchestrated',
-      'synchronized',
-      'autonomous',
+      'planning',
+      'coding',
+      'reviewing',
+      'recovering',
+      'shipping',
     ];
     let phraseIdx = 0;
     let charIdx = 0;

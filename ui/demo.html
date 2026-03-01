@@ -2544,6 +2544,91 @@
       }
     }
 
+    let _demoVoiceAudioBase64 = '';
+
+    function _writeAscii(view, offset, text) {
+      for (let i = 0; i < text.length; i++) {
+        view.setUint8(offset + i, text.charCodeAt(i));
+      }
+    }
+
+    function _encodePcm16WavBase64(samples, sampleRateHz = 16000) {
+      const bytesPerSample = 2;
+      const channelCount = 1;
+      const blockAlign = channelCount * bytesPerSample;
+      const byteRate = sampleRateHz * blockAlign;
+      const dataSize = samples.length * bytesPerSample;
+      const wavBuffer = new ArrayBuffer(44 + dataSize);
+      const view = new DataView(wavBuffer);
+
+      _writeAscii(view, 0, 'RIFF');
+      view.setUint32(4, 36 + dataSize, true);
+      _writeAscii(view, 8, 'WAVE');
+      _writeAscii(view, 12, 'fmt ');
+      view.setUint32(16, 16, true); // PCM header size
+      view.setUint16(20, 1, true);  // PCM format
+      view.setUint16(22, channelCount, true);
+      view.setUint32(24, sampleRateHz, true);
+      view.setUint32(28, byteRate, true);
+      view.setUint16(32, blockAlign, true);
+      view.setUint16(34, 16, true); // bits per sample
+      _writeAscii(view, 36, 'data');
+      view.setUint32(40, dataSize, true);
+
+      let offset = 44;
+      for (const sample of samples) {
+        const clamped = Math.max(-1, Math.min(1, sample));
+        const intSample = clamped < 0 ? clamped * 32768 : clamped * 32767;
+        view.setInt16(offset, intSample | 0, true);
+        offset += 2;
+      }
+
+      const bytes = new Uint8Array(wavBuffer);
+      let binary = '';
+      for (let i = 0; i < bytes.length; i++) binary += String.fromCharCode(bytes[i]);
+      return btoa(binary);
+    }
+
+    function getDemoVoiceAudioBase64() {
+      if (_demoVoiceAudioBase64) return _demoVoiceAudioBase64;
+      const sampleRateHz = 16000;
+      const durationSec = 0.55;
+      const totalSamples = Math.floor(sampleRateHz * durationSec);
+      const samples = new Float32Array(totalSamples);
+      for (let i = 0; i < totalSamples; i++) {
+        const t = i / sampleRateHz;
+        const fadeIn = Math.min(1, t / 0.04);
+        const fadeOut = Math.min(1, (durationSec - t) / 0.08);
+        const env = Math.max(0, Math.min(1, fadeIn, fadeOut));
+        samples[i] = env * (
+          0.2 * Math.sin(2 * Math.PI * 440 * t) +
+          0.1 * Math.sin(2 * Math.PI * 660 * t)
+        );
+      }
+      _demoVoiceAudioBase64 = _encodePcm16WavBase64(samples, sampleRateHz);
+      return _demoVoiceAudioBase64;
+    }
+
+    function buildDemoVoiceText(inputText) {
+      const clean = String(inputText || '').trim().replace(/\s+/g, ' ');
+      if (!clean) return 'I did not catch that. Please try again.';
+
+      const lower = clean.toLowerCase();
+      if (lower.includes('status') || lower.includes('health')) {
+        const running = STATE.tasks.filter((t) => t.status === 'inprogress').length;
+        const total = STATE.tasks.length;
+        return `System looks healthy. ${running} tasks are running out of ${total} tracked tasks.`;
+      }
+      if (lower.includes('workspace')) {
+        const name = String(STATE.currentWorkspace || 'default');
+        return `Active workspace is ${name}. I can switch context once you pick a different workspace.`;
+      }
+      if (lower.includes('help') || lower.includes('what can you do')) {
+        return 'I can summarize task status, inspect queues, and help dispatch follow-up actions in demo mode.';
+      }
+      return `Understood: ${clean}. In demo mode I am returning a simulated voice response with real playback.`;
+    }
+
     /* ── API Route Handler (comprehensive — catches ALL /api/* calls) */
     async function handleApi(path, method, body) {
       // Normalize: strip query string for route matching
@@ -3384,6 +3469,30 @@
       // ── Project ──
       if (route === '/api/project' || route === '/api/project-summary')
         return { data: buildProjectSnapshot() };
+
+      // ── Voice ──
+      if (route === '/api/voice/audio/respond' && method === 'POST') {
+        const inputText = String(body?.inputText || body?.text || '').trim();
+        if (!inputText) {
+          return { ok: false, error: 'inputText required' };
+        }
+        const text = buildDemoVoiceText(inputText);
+        const provider = String(STATE.settings?.VOICE_PROVIDER || 'openai').trim() || 'openai';
+        const voiceId = String(body?.voiceId || STATE.settings?.VOICE_ID || 'alloy').trim() || 'alloy';
+        pushLiveLog('info', 'voice', `Demo voice response generated (${provider}/${voiceId})`);
+        return {
+          ok: true,
+          text,
+          audioBase64: getDemoVoiceAudioBase64(),
+          audioMimeType: 'audio/wav',
+          audioFormat: 'wav',
+          sampleRateHz: 16000,
+          provider,
+          voiceId,
+          transport: 'responses-audio',
+          latencyMs: 220 + Math.floor(Math.random() * 140),
+        };
+      }
 
       // ── Supervisor ──
       if (route === '/api/supervisor/status')
