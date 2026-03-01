@@ -85,10 +85,10 @@ jobs:
                   FORCE="${{ inputs.force }}"
                   if [ "$DOMINATED" = "true" ] || [ "$FORCE" = "true" ]; then
                     echo "should-publish=true" >> "$GITHUB_OUTPUT"
-                    echo "📦 Will publish: $LOCAL (registry: $REGISTRY)"
+                    echo ":box: Will publish: $LOCAL (registry: $REGISTRY)"
                   else
                     echo "should-publish=false" >> "$GITHUB_OUTPUT"
-                    echo "⏭️ Skipping: $LOCAL is not newer than $REGISTRY"
+                    echo ":play: Skipping: $LOCAL is not newer than $REGISTRY"
                   fi
 
     publish:
@@ -124,19 +124,19 @@ jobs:
             - name: Verify publication
               if: ${{ !inputs.dry-run }}
               run: |
-                  echo "⏳ Waiting for registry propagation..."
+                  echo ":clock: Waiting for registry propagation..."
                   sleep 10
                   PUBLISHED=$(npm view bosun version 2>/dev/null || echo "NOT_FOUND")
                   EXPECTED="${{ needs.check.outputs.local-version }}"
                   if [ "$PUBLISHED" = "$EXPECTED" ]; then
-                    echo "✅ Successfully published bosun@$PUBLISHED"
+                    echo ":check: Successfully published bosun@$PUBLISHED"
                   else
-                    echo "⚠️ Registry shows $PUBLISHED, expected $EXPECTED (may still be propagating)"
+                    echo ":alert: Registry shows $PUBLISHED, expected $EXPECTED (may still be propagating)"
                   fi
 
             - name: Summary
               run: |
-                  echo "## 📦 Bosun Publish" >> "$GITHUB_STEP_SUMMARY"
+                  echo "## :box: Bosun Publish" >> "$GITHUB_STEP_SUMMARY"
                   echo "| Field | Value |" >> "$GITHUB_STEP_SUMMARY"
                   echo "|-------|-------|" >> "$GITHUB_STEP_SUMMARY"
                   echo "| Package | \`bosun\` |" >> "$GITHUB_STEP_SUMMARY"

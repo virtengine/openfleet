@@ -21,7 +21,7 @@ const pkg = JSON.parse(
 );
 
 if (!pkg.version) {
-  console.error("❌ Missing version in package.json");
+  console.error(":close: Missing version in package.json");
   process.exit(1);
 }
 
@@ -37,7 +37,7 @@ for (const f of filesArray) {
 }
 if (duplicates.length > 0) {
   console.error(
-    `❌ Duplicate entries in files array: ${duplicates.join(", ")}`,
+    `:close: Duplicate entries in files array: ${duplicates.join(", ")}`,
   );
   process.exit(1);
 }
@@ -77,7 +77,7 @@ for (const file of mjsFiles) {
 }
 
 if (missing.length > 0) {
-  console.error("❌ Local imports not in package.json files array:");
+  console.error(":close: Local imports not in package.json files array:");
   for (const { file, imported } of missing) {
     console.error(`   ${file} → import from "./${imported}"`);
   }
@@ -86,5 +86,5 @@ if (missing.length > 0) {
 }
 
 console.log(
-  `✅ ${pkg.name}@${pkg.version} — ${filesArray.length} files, ${mjsFiles.length} .mjs scanned, 0 missing imports`,
+  `:check: ${pkg.name}@${pkg.version} — ${filesArray.length} files, ${mjsFiles.length} .mjs scanned, 0 missing imports`,
 );

@@ -48,6 +48,15 @@
   border-bottom: 1px solid var(--border-subtle);
 }
 
+.sidebar-brand__logo {
+  width: 28px;
+  height: 28px;
+  border-radius: 4px;
+  background: none;
+  display: block;
+  flex-shrink: 0;
+}
+
 .sidebar-brand__icon {
   width: 28px;
   height: 28px;

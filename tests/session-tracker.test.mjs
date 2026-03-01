@@ -122,6 +122,42 @@ describe("session-tracker", () => {
       expect(messages[0].content).toContain("Planning the next edit");
     });
 
+    it("records Codex reasoning update events as system messages", () => {
+      tracker.startSession("task-1", "Test");
+      tracker.recordEvent("task-1", {
+        type: "item.updated",
+        item: { type: "reasoning", text: "Inspecting workspace state" },
+      });
+
+      const messages = tracker.getLastMessages("task-1");
+      expect(messages).toHaveLength(1);
+      expect(messages[0].type).toBe("system");
+      expect(messages[0].content).toContain("Inspecting workspace state");
+    });
+
+    it("records Codex command start events as tool calls", () => {
+      tracker.startSession("task-1", "Test");
+      tracker.recordEvent("task-1", {
+        type: "item.started",
+        item: { type: "command_execution", command: "npm test" },
+      });
+
+      const messages = tracker.getLastMessages("task-1");
+      expect(messages).toHaveLength(1);
+      expect(messages[0].type).toBe("tool_call");
+      expect(messages[0].content).toContain("npm test");
+    });
+
+    it("records plain formatted stream lines as system messages", () => {
+      tracker.startSession("task-1", "Test");
+      tracker.recordEvent("task-1", ":u1f4ad: Thinking about approach");
+
+      const messages = tracker.getLastMessages("task-1");
+      expect(messages).toHaveLength(1);
+      expect(messages[0].type).toBe("system");
+      expect(messages[0].content).toContain("Thinking about approach");
+    });
+
     it("records assistant.message events", () => {
       tracker.startSession("task-1", "Test");
       tracker.recordEvent("task-1", {

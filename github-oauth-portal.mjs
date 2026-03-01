@@ -269,7 +269,7 @@ function htmlPage(title, bodyHtml) {
   </style>
 </head>
 <body>
-  <div class="logo">⚓</div>
+  <div class="logo">:link:</div>
   <h1>Bosun</h1>
   <div class="subtitle">GitHub App OAuth Setup Portal · <code>bosun-ve</code></div>
   ${bodyHtml}

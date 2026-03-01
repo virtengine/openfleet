@@ -116,17 +116,51 @@ const INTENTIONALLY_SKIPPED = new Set([
   "/api/github/device/start", // Device Flow initiation — server-only (calls GitHub API)
   "/api/github/device/poll",  // Device Flow polling — server-only (calls GitHub API)
   "/api/workspace-health",     // Workspace health diagnostics — server-only
+  "/api/voice/config",         // Voice config — server-only (reads real API keys + config)
+  "/api/voice/sdk-config",     // Voice SDK config — server-only (checks SDK availability)
+  "/api/voice/token",          // Ephemeral token creation — server-only (calls OpenAI/Azure API)
+  "/api/voice/tool",           // Voice tool execution — server-only (runs real tools)
+  "/api/voice/transcript",     // Voice transcript persistence into session history
+  "/api/voice/endpoints",      // Voice endpoints config — server-only (reads/writes bosun.config.json)
+  "/api/voice/endpoints/test",  // Voice endpoint connectivity test — server-only (calls provider APIs)
+  "/api/voice/providers",       // Voice provider routing config — server-only (reads/writes bosun.config.json)
+  "/api/vision/frame",         // Live vision frame ingestion + analysis
+  "/api/voice/dispatch",       // Voice action dispatch — server-only (executes real tools/workflows)
+  "/api/voice/dispatch-batch", // Batched voice action dispatch — server-only
+  "/api/voice/actions",        // Voice action catalog — server-only (reads server config)
+  "/api/voice/prompt",         // Voice system prompt assembly — server-only (reads config + context)
+  "/api/voice/action-manifest",// Voice action manifest — server-only (dynamic capability listing)
+  // OpenAI Codex OAuth flow — server-only (manages tokens, starts local callback server)
+  "/api/voice/auth/openai/status",
+  "/api/voice/auth/openai/login",
+  "/api/voice/auth/openai/cancel",
+  "/api/voice/auth/openai/logout",
+  "/api/voice/auth/openai/refresh",
+  // Claude OAuth flow — server-only
+  "/api/voice/auth/claude/status",
+  "/api/voice/auth/claude/login",
+  "/api/voice/auth/claude/cancel",
+  "/api/voice/auth/claude/logout",
+  "/api/voice/auth/claude/refresh",
+  // Google Gemini OAuth flow — server-only
+  "/api/voice/auth/gemini/status",
+  "/api/voice/auth/gemini/login",
+  "/api/voice/auth/gemini/cancel",
+  "/api/voice/auth/gemini/logout",
+  "/api/voice/auth/gemini/refresh",
 ]);
 
 // ── Session actions intentionally skipped in demo ─────────────────────
 const INTENTIONALLY_SKIPPED_ACTIONS = new Set([
-  "delete",   // Demo doesn't need session deletion
-  "rename",   // Demo doesn't need session renaming
-  "execute",  // Workflow :id/execute action (not a session action)
-  "runs",     // Workflow :id/runs action (not a session action)
+  "delete",              // Demo doesn't need session deletion
+  "rename",              // Demo doesn't need session renaming
+  "execute",             // Workflow :id/execute action (not a session action)
+  "runs",                // Workflow :id/runs action (not a session action)
+  "retry",               // Workflow :id/retry action (not a session action)
+  "missing_credentials", // Cloudflare DNS result value, not a session sub-action
 ]);
 
-describe("demo.html ↔ ui-server.mjs API sync", () => {
+describe("demo.html :workflow: ui-server.mjs API sync", () => {
   const serverSrc = readFile("ui-server.mjs");
   const demoSrc = readFile("ui/demo.html");
 

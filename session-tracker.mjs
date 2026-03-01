@@ -30,7 +30,7 @@ const DEFAULT_CHAT_MAX_MESSAGES = 2000;
 const MAX_MESSAGE_CHARS = 2000;
 
 /** Maximum total sessions to keep in memory. */
-const MAX_SESSIONS = 50;
+const MAX_SESSIONS = 100;
 
 function resolveSessionMaxMessages(type, metadata, explicitMax, fallbackMax) {
   if (Number.isFinite(explicitMax)) {
@@ -124,6 +124,9 @@ export class SessionTracker {
   /** @type {ReturnType<typeof setInterval>|null} */
   #flushTimer = null;
 
+  /** @type {ReturnType<typeof setInterval>|null} */
+  #reaperTimer = null;
+
   /**
    * @param {Object} [options]
    * @param {number} [options.maxMessages=10]
@@ -138,9 +141,15 @@ export class SessionTracker {
     if (this.#persistDir) {
       this.#ensureDir();
       this.#loadFromDisk();
+      this.#purgeExcessFiles();
       this.#flushTimer = setInterval(() => this.#flushDirty(), FLUSH_INTERVAL_MS);
       if (this.#flushTimer.unref) this.#flushTimer.unref();
     }
+
+    // Idle reaper — runs periodically to mark stale "active" sessions as "completed"
+    const reaperInterval = Math.max(60_000, this.#idleThresholdMs);
+    this.#reaperTimer = setInterval(() => this.#reapIdleSessions(), reaperInterval);
+    if (this.#reaperTimer.unref) this.#reaperTimer.unref();
   }
 
   /**
@@ -153,12 +162,7 @@ export class SessionTracker {
   startSession(taskId, taskTitle) {
     // Evict oldest sessions if at capacity
     if (this.#sessions.size >= MAX_SESSIONS && !this.#sessions.has(taskId)) {
-      const oldest = [...this.#sessions.entries()]
-        .sort((a, b) => a[1].startedAt - b[1].startedAt)
-        .slice(0, Math.ceil(MAX_SESSIONS / 4));
-      for (const [id] of oldest) {
-        this.#sessions.delete(id);
-      }
+      this.#evictOldest();
     }
 
     this.#sessions.set(taskId, {
@@ -218,9 +222,25 @@ export class SessionTracker {
         ? this.#maxMessages
         : session.maxMessages;
 
+    if (typeof event === "string" && event.trim()) {
+      const msg = {
+        type: "system",
+        content: event.trim().slice(0, MAX_MESSAGE_CHARS),
+        timestamp: new Date().toISOString(),
+      };
+      session.messages.push(msg);
+      if (Number.isFinite(maxMessages) && maxMessages > 0) {
+        while (session.messages.length > maxMessages) session.messages.shift();
+      }
+      this.#markDirty(taskId);
+      emitSessionEvent(session, msg);
+      return;
+    }
+
     // Direct message format (role/content)
     if (event && event.role && event.content !== undefined) {
       const msg = {
+        id: event.id || `msg-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
         role: event.role,
         content: String(event.content).slice(0, MAX_MESSAGE_CHARS),
         timestamp: event.timestamp || new Date().toISOString(),
@@ -459,6 +479,11 @@ export class SessionTracker {
    * @param {{ id: string, type?: string, taskId?: string, metadata?: Object }} opts
    */
   createSession({ id, type = "manual", taskId, metadata = {}, maxMessages }) {
+    // Evict oldest non-active sessions if at capacity
+    if (this.#sessions.size >= MAX_SESSIONS && !this.#sessions.has(id)) {
+      this.#evictOldest();
+    }
+
     const now = new Date().toISOString();
     const resolvedMax = resolveSessionMaxMessages(
       type,
@@ -563,6 +588,73 @@ export class SessionTracker {
   }
 
   /**
+   * Edit a previously recorded user message in-place.
+   * @param {string} sessionId
+   * @param {Object} payload
+   * @param {string} [payload.messageId]
+   * @param {string} [payload.timestamp]
+   * @param {string} [payload.previousContent]
+   * @param {string} payload.content
+   * @returns {{ok:boolean,error?:string,message?:object,index?:number}}
+   */
+  editUserMessage(sessionId, payload = {}) {
+    const session = this.#sessions.get(sessionId);
+    if (!session) return { ok: false, error: "Session not found" };
+
+    const nextContent = String(payload?.content || "").trim();
+    if (!nextContent) return { ok: false, error: "content is required" };
+
+    const messageId = String(payload?.messageId || "").trim();
+    const timestamp = String(payload?.timestamp || "").trim();
+    const previousContent = payload?.previousContent != null
+      ? String(payload.previousContent)
+      : "";
+    const messages = Array.isArray(session.messages) ? session.messages : [];
+
+    let idx = -1;
+    if (messageId) {
+      idx = messages.findIndex((msg) => String(msg?.id || "") === messageId);
+    }
+
+    if (idx < 0 && timestamp) {
+      idx = messages.findIndex((msg) => {
+        if (String(msg?.role || "").toLowerCase() !== "user") return false;
+        if (String(msg?.timestamp || "") !== timestamp) return false;
+        if (!previousContent) return true;
+        return String(msg?.content || "") === previousContent;
+      });
+    }
+
+    if (idx < 0 && previousContent) {
+      for (let i = messages.length - 1; i >= 0; i -= 1) {
+        const msg = messages[i];
+        if (String(msg?.role || "").toLowerCase() !== "user") continue;
+        if (String(msg?.content || "") === previousContent) {
+          idx = i;
+          break;
+        }
+      }
+    }
+
+    if (idx < 0) return { ok: false, error: "Message not found" };
+
+    const target = messages[idx];
+    if (String(target?.role || "").toLowerCase() !== "user") {
+      return { ok: false, error: "Only user messages can be edited" };
+    }
+
+    target.id = target.id || `msg-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+    target.content = nextContent.slice(0, MAX_MESSAGE_CHARS);
+    target.edited = true;
+    target.editedAt = new Date().toISOString();
+    session.lastActivityAt = Date.now();
+    session.lastActiveAt = new Date().toISOString();
+    this.#markDirty(sessionId);
+
+    return { ok: true, message: { ...target }, index: idx };
+  }
+
+  /**
    * Flush all dirty sessions to disk immediately.
    */
   flush() {
@@ -570,12 +662,16 @@ export class SessionTracker {
   }
 
   /**
-   * Stop the flush timer (for cleanup).
+   * Stop all timers and flush pending writes (for cleanup).
    */
   destroy() {
     if (this.#flushTimer) {
       clearInterval(this.#flushTimer);
       this.#flushTimer = null;
+    }
+    if (this.#reaperTimer) {
+      clearInterval(this.#reaperTimer);
+      this.#reaperTimer = null;
     }
     this.#flushDirty();
   }
@@ -583,6 +679,7 @@ export class SessionTracker {
   /**
    * Merge any on-disk session updates into memory.
    * Useful when another process writes session files.
+   * Respects MAX_SESSIONS and heals stale "active" status.
    */
   refreshFromDisk() {
     if (!this.#persistDir) return;
@@ -593,6 +690,10 @@ export class SessionTracker {
     } catch {
       return;
     }
+
+    // Pre-parse for sorting
+    /** @type {Array<{file: string, data: Object, lastActive: number}>} */
+    const parsed = [];
     for (const file of files) {
       const filePath = resolve(this.#persistDir, file);
       try {
@@ -604,33 +705,52 @@ export class SessionTracker {
           Date.parse(data.lastActiveAt || "") ||
           Date.parse(data.updatedAt || "") ||
           0;
+        // Skip if already in memory and newer
         const existing = this.#sessions.get(sessionId);
         const existingLast =
           existing?.lastActivityAt ||
           Date.parse(existing?.lastActiveAt || "") ||
           0;
-        if (existing && existingLast >= lastActiveAt) {
-          continue;
-        }
-        this.#sessions.set(sessionId, {
-          taskId: data.taskId || sessionId,
-          taskTitle: data.title || data.taskTitle || null,
-          id: sessionId,
-          type: data.type || "task",
-          startedAt: Date.parse(data.createdAt || "") || Date.now(),
-          createdAt: data.createdAt || new Date().toISOString(),
-          lastActiveAt: data.lastActiveAt || data.updatedAt || new Date().toISOString(),
-          endedAt: data.endedAt || null,
-          messages: Array.isArray(data.messages) ? data.messages : [],
-          totalEvents: Array.isArray(data.messages) ? data.messages.length : 0,
-          turnCount: data.turnCount || 0,
-          status: data.status || "active",
-          lastActivityAt: lastActiveAt || Date.now(),
-          metadata: data.metadata || {},
-        });
+        if (existing && existingLast >= lastActiveAt) continue;
+        parsed.push({ file, data, lastActive: lastActiveAt });
       } catch {
         /* ignore corrupt session file */
       }
+    }
+
+    // Sort by lastActive descending and limit to MAX_SESSIONS
+    parsed.sort((a, b) => b.lastActive - a.lastActive);
+    const available = MAX_SESSIONS - this.#sessions.size;
+    const toLoad = parsed.slice(0, Math.max(0, available));
+
+    for (const { data, lastActive } of toLoad) {
+      const sessionId = String(data.id || data.taskId || "").trim();
+      // Heal stale "active" sessions
+      let status = data.status || "completed";
+      let endedAt = data.endedAt || null;
+      if (status === "active" && lastActive > 0) {
+        const ageMs = Date.now() - lastActive;
+        if (ageMs > this.#idleThresholdMs) {
+          status = "completed";
+          endedAt = endedAt || lastActive;
+        }
+      }
+      this.#sessions.set(sessionId, {
+        taskId: data.taskId || sessionId,
+        taskTitle: data.title || data.taskTitle || null,
+        id: sessionId,
+        type: data.type || "task",
+        startedAt: Date.parse(data.createdAt || "") || Date.now(),
+        createdAt: data.createdAt || new Date().toISOString(),
+        lastActiveAt: data.lastActiveAt || data.updatedAt || new Date().toISOString(),
+        endedAt,
+        messages: Array.isArray(data.messages) ? data.messages : [],
+        totalEvents: Array.isArray(data.messages) ? data.messages.length : 0,
+        turnCount: data.turnCount || 0,
+        status,
+        lastActivityAt: lastActive || Date.now(),
+        metadata: data.metadata || {},
+      });
     }
   }
 
@@ -645,6 +765,49 @@ export class SessionTracker {
       taskId,
       metadata: { autoCreated: true },
     });
+  }
+
+  /**
+   * Evict the oldest 25% of sessions, preferring completed/idle sessions first.
+   * Active sessions are only evicted as a last resort.
+   */
+  #evictOldest() {
+    const evictCount = Math.max(1, Math.ceil(MAX_SESSIONS / 4));
+    // Prefer evicting completed/idle/failed sessions before active ones
+    const sorted = [...this.#sessions.entries()]
+      .sort((a, b) => {
+        const aActive = a[1].status === "active" ? 1 : 0;
+        const bActive = b[1].status === "active" ? 1 : 0;
+        if (aActive !== bActive) return aActive - bActive; // non-active first
+        return (a[1].lastActivityAt || a[1].startedAt) - (b[1].lastActivityAt || b[1].startedAt);
+      });
+    const toEvict = sorted.slice(0, evictCount);
+    for (const [id] of toEvict) {
+      this.#sessions.delete(id);
+    }
+  }
+
+  /**
+   * Reap idle sessions: mark sessions as "completed" if they have been
+   * inactive for longer than the idle threshold.
+   * Called periodically by the reaper interval.
+   */
+  #reapIdleSessions() {
+    const now = Date.now();
+    let reaped = 0;
+    for (const [id, session] of this.#sessions) {
+      if (session.status !== "active") continue;
+      const idleMs = now - (session.lastActivityAt || session.startedAt || now);
+      if (idleMs > this.#idleThresholdMs) {
+        session.status = "completed";
+        session.endedAt = now;
+        this.#markDirty(id);
+        reaped++;
+      }
+    }
+    if (reaped > 0) {
+      console.log(`${TAG} idle reaper: marked ${reaped} stale session(s) as completed`);
+    }
   }
 
   /** Get preview text from last message */
@@ -702,10 +865,17 @@ export class SessionTracker {
     this.#dirty.clear();
   }
 
+  /** @type {Set<string>} filenames loaded during #loadFromDisk (for purge) */
+  #loadedFiles = new Set();
+
   #loadFromDisk() {
     if (!this.#persistDir || !existsSync(this.#persistDir)) return;
     try {
       const files = readdirSync(this.#persistDir).filter((f) => f.endsWith(".json"));
+
+      // Pre-parse all session files with their timestamps for sorting
+      /** @type {Array<{file: string, data: Object, lastActive: number}>} */
+      const parsed = [];
       for (const file of files) {
         try {
           const raw = readFileSync(resolve(this.#persistDir, file), "utf8");
@@ -713,28 +883,86 @@ export class SessionTracker {
           if (!data.id && !data.taskId) continue;
           const id = data.id || data.taskId;
           if (this.#sessions.has(id)) continue; // don't overwrite in-memory
-          this.#sessions.set(id, {
-            id,
-            taskId: data.taskId || id,
-            taskTitle: data.metadata?.title || id,
-            type: data.type || "task",
-            status: data.status || "completed",
-            createdAt: data.createdAt || new Date().toISOString(),
-            lastActiveAt: data.lastActiveAt || new Date().toISOString(),
-            startedAt: data.createdAt ? new Date(data.createdAt).getTime() : Date.now(),
-            endedAt: data.status !== "active" ? Date.now() : null,
-            messages: data.messages || [],
-            totalEvents: (data.messages || []).length,
-            turnCount: data.turnCount || 0,
-            lastActivityAt: data.lastActiveAt ? new Date(data.lastActiveAt).getTime() : Date.now(),
-            metadata: data.metadata || {},
-          });
+          const lastActive = data.lastActiveAt
+            ? new Date(data.lastActiveAt).getTime()
+            : data.createdAt
+              ? new Date(data.createdAt).getTime()
+              : 0;
+          parsed.push({ file, data, lastActive });
         } catch {
           // Skip corrupt files
         }
       }
+
+      // Sort by lastActive descending (newest first) and keep only MAX_SESSIONS
+      parsed.sort((a, b) => b.lastActive - a.lastActive);
+      const toLoad = parsed.slice(0, MAX_SESSIONS);
+
+      // Track which files were loaded so #purgeExcessFiles can remove the rest
+      this.#loadedFiles = new Set(toLoad.map((p) => p.file));
+
+      for (const { data, lastActive } of toLoad) {
+        const id = data.id || data.taskId;
+        // Heal stale "active" sessions — if restored from disk and the last
+        // activity was more than idleThresholdMs ago, mark as completed.
+        let status = data.status || "completed";
+        let endedAt = data.endedAt || null;
+        if (status === "active" && lastActive > 0) {
+          const ageMs = Date.now() - lastActive;
+          if (ageMs > this.#idleThresholdMs) {
+            status = "completed";
+            endedAt = endedAt || lastActive;
+          }
+        }
+
+        this.#sessions.set(id, {
+          id,
+          taskId: data.taskId || id,
+          taskTitle: data.metadata?.title || id,
+          type: data.type || "task",
+          status,
+          createdAt: data.createdAt || new Date().toISOString(),
+          lastActiveAt: data.lastActiveAt || new Date().toISOString(),
+          startedAt: data.createdAt ? new Date(data.createdAt).getTime() : Date.now(),
+          endedAt,
+          messages: data.messages || [],
+          totalEvents: (data.messages || []).length,
+          turnCount: data.turnCount || 0,
+          lastActivityAt: lastActive || Date.now(),
+          metadata: data.metadata || {},
+        });
+      }
     } catch {
       // Directory read failed — proceed without disk data
+    }
+  }
+
+  /**
+   * Remove session files that were NOT loaded into memory (excess beyond MAX_SESSIONS).
+   * This runs once at startup to clean up historical bloat.
+   */
+  #purgeExcessFiles() {
+    if (!this.#persistDir || !existsSync(this.#persistDir)) return;
+    try {
+      const files = readdirSync(this.#persistDir).filter((f) => f.endsWith(".json"));
+      let purged = 0;
+      for (const file of files) {
+        if (!this.#loadedFiles.has(file)) {
+          try {
+            unlinkSync(resolve(this.#persistDir, file));
+            purged++;
+          } catch {
+            // best-effort cleanup
+          }
+        }
+      }
+      if (purged > 0) {
+        console.log(`${TAG} purged ${purged} excess session file(s) from disk`);
+      }
+      // Free the reference — only needed once at startup
+      this.#loadedFiles.clear();
+    } catch {
+      // best-effort
     }
   }
 
@@ -761,7 +989,7 @@ export class SessionTracker {
     };
 
     // ── Codex SDK events ──
-    if (event.type === "item.completed" && event.item) {
+    if ((event.type === "item.completed" || event.type === "item.updated") && event.item) {
       const item = event.item;
       const itemType = String(item.type || "").toLowerCase();
 
@@ -823,6 +1051,20 @@ ${output}`
         };
       }
 
+      if (
+        itemType === "agent_message" &&
+        event.type === "item.updated" &&
+        (item.text || item.delta)
+      ) {
+        const partial = toText(item.text || item.delta);
+        if (!partial) return null;
+        return {
+          type: "agent_message",
+          content: partial.slice(0, MAX_MESSAGE_CHARS),
+          timestamp: ts,
+        };
+      }
+
       if (itemType === "file_change") {
         const changes = Array.isArray(item.changes)
           ? item.changes
@@ -874,6 +1116,124 @@ ${items.join("\n")}` : "todo updated";
       }
 
       return null; // Skip other item types
+    }
+
+    if (event.type === "item.started" && event.item) {
+      const item = event.item;
+      const itemType = String(item.type || "").toLowerCase();
+
+      if (itemType === "command_execution") {
+        const command = toText(item.command || item.input || "").trim();
+        return {
+          type: "tool_call",
+          content: command || "(command)",
+          timestamp: ts,
+          meta: { toolName: "command_execution" },
+        };
+      }
+
+      if (itemType === "reasoning") {
+        const detail = toText(item.text || item.summary || "").trim();
+        if (!detail) return null;
+        return {
+          type: "system",
+          content: detail.slice(0, MAX_MESSAGE_CHARS),
+          timestamp: ts,
+        };
+      }
+
+      // ── Additional item.started subtypes ──────────────────────────────
+      // Emit lifecycle events so the streaming module keeps the
+      // "thinking / executing" indicator alive and the chat UI shows
+      // real-time progress instead of going silent for minutes.
+      if (itemType === "agent_message") {
+        return {
+          type: "system",
+          content: "Agent is composing a response…",
+          timestamp: ts,
+          meta: { lifecycle: "started", itemType },
+        };
+      }
+
+      if (itemType === "function_call") {
+        const name = toText(item.name || "").trim();
+        return {
+          type: "tool_call",
+          content: name ? `${name}(…)` : "(tool call starting)",
+          timestamp: ts,
+          meta: { toolName: name || "function_call", lifecycle: "started" },
+        };
+      }
+
+      if (itemType === "mcp_tool_call") {
+        const server = toText(item.server || "").trim();
+        const tool = toText(item.tool || "").trim();
+        return {
+          type: "tool_call",
+          content: `MCP [${server || "?"}]: ${tool || "(starting)"}`,
+          timestamp: ts,
+          meta: { toolName: tool || "mcp_tool_call", lifecycle: "started" },
+        };
+      }
+
+      if (itemType === "web_search") {
+        const query = toText(item.query || "").trim();
+        return {
+          type: "system",
+          content: query ? `Searching: ${query}` : "Web search…",
+          timestamp: ts,
+          meta: { lifecycle: "started", itemType },
+        };
+      }
+
+      if (itemType === "file_change") {
+        return {
+          type: "system",
+          content: "Editing files…",
+          timestamp: ts,
+          meta: { lifecycle: "started", itemType },
+        };
+      }
+
+      if (itemType === "todo_list") {
+        return {
+          type: "system",
+          content: "Updating plan…",
+          timestamp: ts,
+          meta: { lifecycle: "started", itemType },
+        };
+      }
+    }
+
+    // ── Turn lifecycle events ──────────────────────────────────────────
+    // Without these, the streaming module sees no events between the last
+    // item.completed and the response finishing, causing the indicator
+    // to flip between "thinking" and "idle".
+    if (event.type === "turn.completed") {
+      return {
+        type: "system",
+        content: "Turn completed",
+        timestamp: ts,
+        meta: { lifecycle: "turn_completed" },
+      };
+    }
+
+    if (event.type === "session.idle" || event.type === "session.completed") {
+      return {
+        type: "system",
+        content: "Session completed",
+        timestamp: ts,
+        meta: { lifecycle: "session_completed" },
+      };
+    }
+
+    if (event.type === "turn.failed") {
+      const detail = toText(event.error?.message || "unknown error");
+      return {
+        type: "error",
+        content: `Turn failed: ${detail}`.slice(0, MAX_MESSAGE_CHARS),
+        timestamp: ts,
+      };
     }
 
     if (event.type === "assistant.message" && event.data?.content) {
@@ -929,10 +1289,12 @@ ${items.join("\n")}` : "todo updated";
     }
 
     if (event.type === "message_stop" || event.type === "message_delta") {
+      const lifecycle = event.type === "message_stop" ? "turn_completed" : undefined;
       return {
         type: "system",
         content: `${event.type}${event.delta?.stop_reason ? ` (${event.delta.stop_reason})` : ""}`,
         timestamp: ts,
+        ...(lifecycle ? { meta: { lifecycle } } : {}),
       };
     }
 
@@ -942,6 +1304,56 @@ ${items.join("\n")}` : "todo updated";
         type: "error",
         content: (event.error?.message || event.message || JSON.stringify(event)).slice(0, MAX_MESSAGE_CHARS),
         timestamp: ts,
+      };
+    }
+
+    // ── Voice events ──
+    if (event.type === "voice.start") {
+      return {
+        type: "system",
+        content: `Voice session started (provider: ${event.provider || "unknown"}, tier: ${event.tier || "?"})`,
+        timestamp: ts,
+        meta: { voiceEvent: "start", provider: event.provider, tier: event.tier },
+      };
+    }
+    if (event.type === "voice.end") {
+      return {
+        type: "system",
+        content: `Voice session ended (duration: ${event.duration || 0}s)`,
+        timestamp: ts,
+        meta: { voiceEvent: "end", duration: event.duration },
+      };
+    }
+    if (event.type === "voice.transcript") {
+      return {
+        type: "user",
+        content: (event.text || event.transcript || "").slice(0, MAX_MESSAGE_CHARS),
+        timestamp: ts,
+        meta: { voiceEvent: "transcript" },
+      };
+    }
+    if (event.type === "voice.response") {
+      return {
+        type: "agent_message",
+        content: (event.text || event.response || "").slice(0, MAX_MESSAGE_CHARS),
+        timestamp: ts,
+        meta: { voiceEvent: "response" },
+      };
+    }
+    if (event.type === "voice.tool_call") {
+      return {
+        type: "tool_call",
+        content: `voice:${event.name || "tool"}(${(event.arguments || "").slice(0, 500)})`,
+        timestamp: ts,
+        meta: { voiceEvent: "tool_call", toolName: event.name },
+      };
+    }
+    if (event.type === "voice.delegate") {
+      return {
+        type: "system",
+        content: `Voice delegated to ${event.executor || "agent"}: ${(event.message || "").slice(0, 500)}`,
+        timestamp: ts,
+        meta: { voiceEvent: "delegate", executor: event.executor },
       };
     }
 
@@ -963,6 +1375,7 @@ ${items.join("\n")}` : "todo updated";
       case "system":        return "SYS";
       case "user":          return "USER";
       case "assistant":     return "ASSISTANT";
+      case "voice":         return "VOICE";
       default:              return type.toUpperCase();
     }
   }
@@ -1042,4 +1455,24 @@ export function getSessionTracker(options) {
  */
 export function createSessionTracker(options) {
   return new SessionTracker(options);
+}
+
+/**
+ * Reset the singleton so the next `getSessionTracker()` call creates a fresh
+ * instance.  Intended **only** for tests — prevents test-created sessions from
+ * leaking into the real `logs/sessions/` directory on disk.
+ *
+ * @param {Object} [nextOptions] — options forwarded to the *next* singleton
+ *   creation.  Pass `{ persistDir: null }` to disable disk writes entirely.
+ */
+export function _resetSingleton(nextOptions) {
+  if (_instance) {
+    _instance.destroy();
+    _instance = null;
+  }
+  if (nextOptions) {
+    // Pre-create with the supplied options so the next getSessionTracker()
+    // call doesn't fall back to the default persistDir.
+    _instance = new SessionTracker(nextOptions);
+  }
 }

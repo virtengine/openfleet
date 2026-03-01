@@ -308,6 +308,12 @@ const RE_ERROR_NOISE = [
 // Session completion indicators
 const RE_SESSION_DONE = /"Done"\s*:\s*"/;
 const STR_TASK_COMPLETE = "task_complete";
+const INTERNAL_SESSION_COMPLETION_MARKERS = [
+  "EVT[turn.completed]",
+  "EVT[session.completed]",
+  "EVT[response.completed]",
+  "EVT[thread.completed]",
+];
 
 // ── Main Detector Class ─────────────────────────────────────────────────────
 
@@ -520,7 +526,7 @@ export class AnomalyDetector {
     const s = this.getStats();
     const uptimeMin = Math.round(s.uptimeMs / 60_000);
     const lines = [
-      `<b>🔍 Anomaly Detector Status</b>`,
+      `<b>:search: Anomaly Detector Status</b>`,
       `Uptime: ${uptimeMin}m | Lines: ${s.totalLinesProcessed.toLocaleString()}`,
       `Active: ${s.activeProcesses} | Completed: ${s.completedProcesses}`,
     ];
@@ -567,7 +573,7 @@ export class AnomalyDetector {
       }
       if (concerns.length > 0) {
         lines.push(
-          `\n⚠️ <b>${escapeHtml(proc.shortId)}</b> (${escapeHtml(proc.taskTitle || "?")}):`,
+          `\n:alert: <b>${escapeHtml(proc.shortId)}</b> (${escapeHtml(proc.taskTitle || "?")}):`,
           `  ${concerns.join(", ")}`,
         );
       }
@@ -1061,7 +1067,13 @@ export class AnomalyDetector {
    * Detect session completion (mark as dead to stop analysis).
    */
   #detectSessionCompletion(line, state) {
-    if (RE_SESSION_DONE.test(line) || line.includes(STR_TASK_COMPLETE)) {
+    if (
+      RE_SESSION_DONE.test(line) ||
+      line.includes(STR_TASK_COMPLETE) ||
+      INTERNAL_SESSION_COMPLETION_MARKERS.some((marker) =>
+        line.includes(marker),
+      )
+    ) {
       state.isDead = true;
     }
   }
@@ -1190,13 +1202,13 @@ export class AnomalyDetector {
       anomaly.severity === Severity.CRITICAL ||
       anomaly.severity === Severity.HIGH
     ) {
-      const icon = anomaly.severity === Severity.CRITICAL ? "🔴" : "🟠";
+      const icon = anomaly.severity === Severity.CRITICAL ? ":dot:" : ":u1f7e0:";
       const actionLabel =
         anomaly.action === "kill"
-          ? "⛔ KILL"
+          ? ":ban: KILL"
           : anomaly.action === "restart"
-            ? "🔄 RESTART"
-            : "⚠️ ALERT";
+            ? ":refresh: RESTART"
+            : ":alert: ALERT";
 
       const msg = [
         `${icon} <b>Anomaly: ${escapeHtml(anomaly.type)}</b>`,

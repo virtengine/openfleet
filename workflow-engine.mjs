@@ -36,11 +36,75 @@ import { EventEmitter } from "node:events";
 const TAG = "[workflow-engine]";
 const WORKFLOW_DIR_NAME = "workflows";
 const WORKFLOW_RUNS_DIR = "workflow-runs";
-const MAX_NODE_RETRIES = 3;
-const NODE_TIMEOUT_MS = 10 * 60 * 1000; // 10 minutes per node default
-const MAX_CONCURRENT_BRANCHES = 8;
-const MAX_PERSISTED_RUNS = 200;
-const DEFAULT_RUN_STUCK_THRESHOLD_MS = 5 * 60 * 1000;
+function readBoundedEnvInt(name, fallback, { min = 0, max = Number.MAX_SAFE_INTEGER } = {}) {
+  const parsed = Number(process.env[name]);
+  if (!Number.isFinite(parsed)) return fallback;
+  const rounded = Math.round(parsed);
+  return Math.min(max, Math.max(min, rounded));
+}
+
+const MAX_NODE_RETRIES = readBoundedEnvInt("WORKFLOW_NODE_MAX_RETRIES", 3, {
+  min: 0,
+  max: 20,
+});
+const NODE_TIMEOUT_MIN_MS = 1000;
+const NODE_TIMEOUT_MAX_MS = 21_600_000;
+const NODE_TIMEOUT_MS = readBoundedEnvInt("WORKFLOW_NODE_TIMEOUT_MS", 10 * 60 * 1000, {
+  min: NODE_TIMEOUT_MIN_MS,
+  max: NODE_TIMEOUT_MAX_MS,
+});
+const MAX_CONCURRENT_BRANCHES = readBoundedEnvInt("WORKFLOW_MAX_CONCURRENT_BRANCHES", 8, {
+  min: 1,
+  max: 64,
+});
+const MAX_PERSISTED_RUNS = readBoundedEnvInt("WORKFLOW_MAX_PERSISTED_RUNS", 200, {
+  min: 20,
+  max: 5000,
+});
+const DEFAULT_RUN_STUCK_THRESHOLD_MS = readBoundedEnvInt(
+  "WORKFLOW_RUN_STUCK_THRESHOLD_MS",
+  5 * 60 * 1000,
+  { min: 10000, max: 7_200_000 },
+);
+
+// ── Auto-Retry Defaults ─────────────────────────────────────────────────────
+const DEFAULT_AUTO_RETRY_MAX_ATTEMPTS = readBoundedEnvInt(
+  "WORKFLOW_AUTO_RETRY_MAX_ATTEMPTS",
+  3,
+  { min: 0, max: 10 },
+);
+const DEFAULT_AUTO_RETRY_COOLDOWN_MS = readBoundedEnvInt(
+  "WORKFLOW_AUTO_RETRY_COOLDOWN_MS",
+  20 * 60 * 1000, // 20 minutes
+  { min: 0, max: 3_600_000 },
+);
+const CHECKPOINT_DEBOUNCE_MS = readBoundedEnvInt(
+  "WORKFLOW_CHECKPOINT_DEBOUNCE_MS",
+  500,
+  { min: 50, max: 10000 },
+);
+const ACTIVE_RUNS_INDEX = "_active-runs.json";
+
+function resolveNodeTimeoutMs(node, resolvedConfig) {
+  const candidates = [
+    resolvedConfig?.timeout,
+    resolvedConfig?.timeoutMs,
+    node?.timeout,
+    node?.timeoutMs,
+    NODE_TIMEOUT_MS,
+  ];
+
+  for (const candidate of candidates) {
+    const parsed = Number(candidate);
+    if (!Number.isFinite(parsed) || parsed <= 0) continue;
+    return Math.min(
+      NODE_TIMEOUT_MAX_MS,
+      Math.max(1, Math.round(parsed)),
+    );
+  }
+
+  return NODE_TIMEOUT_MS;
+}
 
 // ── Node Status ─────────────────────────────────────────────────────────────
 
@@ -224,7 +288,7 @@ export class WorkflowContext {
   /** Resolve a template string against context data */
   resolve(template) {
     if (typeof template !== "string") return template;
-    return template.replace(/\{\{(\w[\w.]*)\}\}/g, (match, path) => {
+    const resolvePathValue = (path) => {
       const parts = path.split(".");
 
       // Try context data first
@@ -233,7 +297,7 @@ export class WorkflowContext {
         if (value == null) break;
         value = value[part];
       }
-      if (value != null) return String(value);
+      if (value != null) return value;
 
       // Fall back to node outputs (e.g. {{step1.count}} → nodeOutputs["step1"].count)
       const [nodeId, ...rest] = parts;
@@ -241,12 +305,25 @@ export class WorkflowContext {
       if (nodeOut != null) {
         let val = nodeOut;
         for (const p of rest) {
-          if (val == null) return match;
+          if (val == null) return undefined;
           val = val[p];
         }
-        if (val != null) return String(val);
+        if (val != null) return val;
       }
-      return match;
+      return undefined;
+    };
+
+    // If template is exactly one placeholder, preserve raw value type.
+    // This allows numbers/booleans/objects to flow into node configs.
+    const exactMatch = template.match(/^\{\{(\w[\w.]*)\}\}$/);
+    if (exactMatch) {
+      const raw = resolvePathValue(exactMatch[1]);
+      return raw != null ? raw : template;
+    }
+
+    return template.replace(/\{\{(\w[\w.]*)\}\}/g, (match, path) => {
+      const value = resolvePathValue(path);
+      return value != null ? String(value) : match;
     });
   }
 
@@ -287,6 +364,8 @@ export class WorkflowEngine extends EventEmitter {
     this._activeRuns = new Map();
     this._triggerSubscriptions = new Map();
     this._loaded = false;
+    this._checkpointTimers = new Map(); // runId → debounce timer
+    this._resumingRuns = false;
   }
 
   // ── Lifecycle ───────────────────────────────────────────────────────────
@@ -313,6 +392,11 @@ export class WorkflowEngine extends EventEmitter {
     }
     this._loaded = true;
     this.emit("loaded", { count: this._workflows.size });
+
+    // Detect runs that were interrupted by a previous shutdown.
+    // These are runs persisted to disk with status=RUNNING that are
+    // NOT in our in-memory _activeRuns (because we just booted).
+    this._detectInterruptedRuns();
   }
 
   /** Ensure storage directories exist */
@@ -360,7 +444,45 @@ export class WorkflowEngine extends EventEmitter {
     const filePath = resolve(this.workflowDir, `${def.id}.json`);
     writeFileSync(filePath, JSON.stringify(def, null, 2), "utf8");
     this.emit("saved", { id: def.id, name: def.name });
+
+    // ── Grouped flows: auto-enable required sibling workflows ───────────
+    // When a template-backed workflow is enabled, ensure all workflows from
+    // its requiredTemplates group are also enabled so chains don't break.
+    if (def.enabled !== false && def.metadata?.installedFrom) {
+      this._autoEnableGroupedWorkflows(def);
+    }
+
     return def;
+  }
+
+  /**
+   * When a workflow from a grouped template is enabled, find sibling
+   * workflows installed from that template's requiredTemplates and enable
+   * them if they're currently disabled.
+   * @private
+   */
+  _autoEnableGroupedWorkflows(def) {
+    try {
+      // requiredTemplates is stored in the workflow's own metadata
+      // (carried over from the template definition during install)
+      const requiredIds = def.metadata?.requiredTemplates;
+      if (!Array.isArray(requiredIds) || requiredIds.length === 0) return;
+
+      for (const depId of requiredIds) {
+        for (const [, wf] of this._workflows) {
+          if (wf.metadata?.installedFrom === depId && wf.enabled === false) {
+            wf.enabled = true;
+            wf.metadata.updatedAt = new Date().toISOString();
+            wf.metadata.version = (wf.metadata.version || 0) + 1;
+            const fp = resolve(this.workflowDir, `${wf.id}.json`);
+            writeFileSync(fp, JSON.stringify(wf, null, 2), "utf8");
+            this.emit("saved", { id: wf.id, name: wf.name });
+          }
+        }
+      }
+    } catch {
+      /* best-effort — should not crash save() */
+    }
   }
 
   /** Delete a workflow */
@@ -420,6 +542,10 @@ export class WorkflowEngine extends EventEmitter {
       startedAt: ctx.startedAt,
       status: WorkflowStatus.RUNNING,
     });
+
+    // ── Persist run immediately so it survives process restarts ──────
+    this._persistActiveRunState(runId, workflowId, def.name, ctx);
+
     this.emit("run:start", { runId, workflowId, name: def.name });
 
     try {
@@ -444,10 +570,259 @@ export class WorkflowEngine extends EventEmitter {
       this.emit("run:error", { runId, workflowId, error: err.message });
     }
 
-    // Persist run log
+    // Persist final run log and remove from active-runs index
     this._persistRun(runId, workflowId, ctx);
+    this._clearActiveRunState(runId);
     this._activeRuns.delete(runId);
+
+    // ── Auto-retry on failure ───────────────────────────────────────────
+    // If the workflow failed and auto-retry is enabled, kick off the
+    // escalating retry strategy asynchronously. The caller still receives the
+    // original (failed) context immediately so we never block the event loop.
+    const finalStatus = ctx.errors.length > 0 ? WorkflowStatus.FAILED : WorkflowStatus.COMPLETED;
+    if (finalStatus === WorkflowStatus.FAILED && !opts._isRetry) {
+      const retryConfig = this._resolveAutoRetryConfig(def);
+      if (retryConfig.enabled) {
+        // Fire-and-forget — errors are logged, never thrown.
+        this._autoRetryLoop(runId, workflowId, inputData, retryConfig, opts).catch((err) => {
+          console.error(`${TAG} Auto-retry loop error for run ${runId}:`, err.message);
+        });
+      }
+    }
+
     return ctx;
+  }
+
+  // ── Run Retry ───────────────────────────────────────────────────────────
+
+  /**
+   * Retry a previously completed (failed) run.
+   *
+   * @param {string} runId - The original run ID to retry.
+   * @param {object} [retryOpts]
+   * @param {"from_failed"|"from_scratch"} [retryOpts.mode="from_failed"]
+   *   - `"from_failed"` — re-execute starting from the first failed node,
+   *     pre-populating the context with already-completed node outputs.
+   *   - `"from_scratch"` — re-execute the entire workflow from the beginning
+   *     with the same input data that was used originally.
+   * @returns {Promise<{retryRunId: string, mode: string, ctx: WorkflowContext}>}
+   */
+  async retryRun(runId, retryOpts = {}) {
+    const mode = retryOpts.mode === "from_scratch" ? "from_scratch" : "from_failed";
+    const originalRun = this.getRunDetail(runId);
+    if (!originalRun) {
+      throw new Error(`${TAG} Run "${runId}" not found — cannot retry`);
+    }
+
+    const workflowId = originalRun.workflowId || originalRun.detail?.data?._workflowId;
+    if (!workflowId) {
+      throw new Error(`${TAG} Cannot determine workflowId from run "${runId}"`);
+    }
+
+    const def = this.get(workflowId);
+    if (!def) {
+      throw new Error(`${TAG} Workflow "${workflowId}" no longer exists — cannot retry`);
+    }
+
+    // Recover original input data (strip internal enrichment keys).
+    const originalData = { ...(originalRun.detail?.data || {}) };
+    delete originalData._workflowId;
+    delete originalData._workflowName;
+
+    this.emit("run:retry", {
+      originalRunId: runId,
+      workflowId,
+      mode,
+      attempt: retryOpts._attempt || 1,
+    });
+
+    if (mode === "from_scratch") {
+      const ctx = await this.execute(workflowId, originalData, {
+        ...retryOpts,
+        _isRetry: true,
+        _originalRunId: runId,
+        force: true,
+      });
+      return { retryRunId: ctx.id, mode, originalRunId: runId, ctx };
+    }
+
+    // ── "from_failed" — resume from the first failed node ────────────
+    const detail = originalRun.detail || {};
+    const nodeStatuses = detail.nodeStatuses || {};
+    const nodeOutputs = detail.nodeOutputs || {};
+
+    // Build a fresh context but pre-seed completed node outputs.
+    const ctx = new WorkflowContext({
+      ...def.variables,
+      ...originalData,
+      _workflowId: workflowId,
+      _workflowName: def.name,
+      _retryOf: runId,
+    });
+    ctx.variables = { ...def.variables };
+
+    // Pre-populate nodes that already succeeded.
+    for (const [nodeId, status] of Object.entries(nodeStatuses)) {
+      if (status === NodeStatus.COMPLETED) {
+        ctx.setNodeStatus(nodeId, NodeStatus.COMPLETED);
+        if (nodeOutputs[nodeId] !== undefined) {
+          ctx.setNodeOutput(nodeId, nodeOutputs[nodeId]);
+        }
+      }
+      // Reset failed / skipped nodes so the DAG will re-run them.
+    }
+
+    const retryRunId = ctx.id;
+    this._activeRuns.set(retryRunId, {
+      workflowId,
+      workflowName: def.name,
+      ctx,
+      startedAt: ctx.startedAt,
+      status: WorkflowStatus.RUNNING,
+    });
+    this._persistActiveRunState(retryRunId, workflowId, def.name, ctx);
+    this.emit("run:start", { runId: retryRunId, workflowId, name: def.name, retryOf: runId, mode });
+
+    try {
+      const adjacency = this._buildAdjacency(def);
+      const entryNodes = this._findEntryNodes(def);
+      if (entryNodes.length === 0) {
+        throw new Error("Workflow has no entry nodes (no triggers or unconnected nodes)");
+      }
+
+      // _executeDag naturally skips nodes that are already COMPLETED because
+      // they were pre-seeded above, so it resumes from the failed point.
+      await this._executeDag(def, entryNodes, adjacency, ctx, { ...retryOpts, _isRetry: true });
+
+      const status = ctx.errors.length > 0 ? WorkflowStatus.FAILED : WorkflowStatus.COMPLETED;
+      this._activeRuns.get(retryRunId).status = status;
+      this.emit("run:end", {
+        runId: retryRunId,
+        workflowId,
+        status,
+        duration: Date.now() - ctx.startedAt,
+        retryOf: runId,
+        mode,
+      });
+    } catch (err) {
+      ctx.error("_engine", err);
+      this._activeRuns.get(retryRunId).status = WorkflowStatus.FAILED;
+      this.emit("run:error", { runId: retryRunId, workflowId, error: err.message, retryOf: runId });
+    }
+
+    this._persistRun(retryRunId, workflowId, ctx);
+    this._clearActiveRunState(retryRunId);
+    this._activeRuns.delete(retryRunId);
+
+    return { retryRunId, mode, originalRunId: runId, ctx };
+  }
+
+  // ── Auto-retry escalating strategy ───────────────────────────────────
+
+  /**
+   * Resolve the auto-retry configuration for a workflow definition.
+   * Supports per-workflow overrides via `def.autoRetry`.
+   */
+  _resolveAutoRetryConfig(def) {
+    const raw = def?.autoRetry || {};
+    // Auto-retry is opt-in: workflows must explicitly set autoRetry.enabled = true.
+    // This prevents unexpected background retries for workflows that don't want them.
+    const enabled = Boolean(raw.enabled);
+    const maxAttempts = Number.isFinite(Number(raw.maxAttempts))
+      ? Math.max(0, Math.trunc(Number(raw.maxAttempts)))
+      : DEFAULT_AUTO_RETRY_MAX_ATTEMPTS;
+    const cooldownMs = Number.isFinite(Number(raw.cooldownMs))
+      ? Math.max(0, Math.trunc(Number(raw.cooldownMs)))
+      : DEFAULT_AUTO_RETRY_COOLDOWN_MS;
+    return { enabled: enabled && maxAttempts > 0, maxAttempts, cooldownMs };
+  }
+
+  /**
+   * Escalating auto-retry loop.
+   *
+   * Strategy (configurable, defaults to 3 attempts):
+   *   Attempt 1 → from_failed (immediate)
+   *   Attempt 2 → from_scratch (immediate)
+   *   Attempt 3 → from_scratch (after cooldown period, default 20 min)
+   *
+   * If the workflow succeeds at any point the loop stops.
+   * Results are persisted as separate runs linked via `_retryOf`.
+   */
+  async _autoRetryLoop(originalRunId, workflowId, inputData, retryConfig, baseOpts) {
+    const { maxAttempts, cooldownMs } = retryConfig;
+
+    for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+      const mode = attempt === 1 ? "from_failed" : "from_scratch";
+      const needsCooldown = attempt >= 3 && cooldownMs > 0;
+
+      if (needsCooldown) {
+        console.log(
+          `${TAG} Auto-retry attempt ${attempt}/${maxAttempts} for run ${originalRunId} ` +
+          `— cooling down for ${Math.round(cooldownMs / 1000)}s before retry`,
+        );
+        this.emit("run:retry:cooldown", {
+          originalRunId,
+          workflowId,
+          attempt,
+          cooldownMs,
+        });
+        await new Promise((r) => setTimeout(r, cooldownMs));
+      }
+
+      console.log(
+        `${TAG} Auto-retry attempt ${attempt}/${maxAttempts} for run ${originalRunId} (mode=${mode})`,
+      );
+
+      try {
+        const { ctx, retryRunId } = await this.retryRun(originalRunId, {
+          mode,
+          _isRetry: true,
+          _attempt: attempt,
+        });
+
+        if (!ctx.errors || ctx.errors.length === 0) {
+          console.log(
+            `${TAG} Auto-retry succeeded on attempt ${attempt}/${maxAttempts} ` +
+            `for run ${originalRunId} → new run ${retryRunId}`,
+          );
+          this.emit("run:retry:success", {
+            originalRunId,
+            retryRunId,
+            workflowId,
+            attempt,
+          });
+          return; // Success — stop retrying
+        }
+
+        console.warn(
+          `${TAG} Auto-retry attempt ${attempt}/${maxAttempts} failed ` +
+          `for run ${originalRunId} → new run ${retryRunId}`,
+        );
+        this.emit("run:retry:failed", {
+          originalRunId,
+          retryRunId,
+          workflowId,
+          attempt,
+          errors: ctx.errors,
+        });
+      } catch (err) {
+        console.error(
+          `${TAG} Auto-retry attempt ${attempt}/${maxAttempts} threw for run ${originalRunId}:`,
+          err.message,
+        );
+        this.emit("run:retry:failed", {
+          originalRunId,
+          workflowId,
+          attempt,
+          errors: [{ error: err.message }],
+        });
+      }
+    }
+
+    console.error(
+      `${TAG} All ${maxAttempts} auto-retry attempts exhausted for run ${originalRunId}`,
+    );
+    this.emit("run:retry:exhausted", { originalRunId, workflowId, maxAttempts });
   }
 
   /**
@@ -474,7 +849,8 @@ export class WorkflowEngine extends EventEmitter {
           tNode.type !== "trigger.pr_event" &&
           tNode.type !== "trigger.task_assigned" &&
           tNode.type !== "trigger.anomaly" &&
-          tNode.type !== "trigger.webhook"
+          tNode.type !== "trigger.webhook" &&
+          tNode.type !== "trigger.meeting.wake_phrase"
         ) {
           continue;
         }
@@ -495,6 +871,13 @@ export class WorkflowEngine extends EventEmitter {
         }
         if (tNode.type === "trigger.webhook" && !String(eventType || "").startsWith("webhook")) {
           continue;
+        }
+        if (tNode.type === "trigger.meeting.wake_phrase") {
+          const meetingEvent =
+            eventType === "meeting.transcript" ||
+            eventType === "voice.transcript" ||
+            eventType === "meeting.wake_phrase";
+          if (!meetingEvent) continue;
         }
 
         const handler = getNodeType(tNode.type);
@@ -619,6 +1002,16 @@ export class WorkflowEngine extends EventEmitter {
     const queue = [...entryNodes.map((n) => n.id)];
     const nodeMap = new Map((def.nodes || []).map((n) => [n.id, n]));
 
+    // ── Resume support (retry from_failed) ──────────────────────────────
+    // If nodes are already marked COMPLETED in the context (pre-seeded by
+    // retryRun), treat them as already executed so the DAG skips them and
+    // begins from the first un-completed node.
+    for (const [nodeId, status] of ctx.nodeStatuses) {
+      if (status === NodeStatus.COMPLETED) {
+        executed.add(nodeId);
+      }
+    }
+
     // Track in-degree for proper scheduling
     const inDegree = new Map();
     for (const node of def.nodes || []) {
@@ -628,13 +1021,41 @@ export class WorkflowEngine extends EventEmitter {
       inDegree.set(edge.target, (inDegree.get(edge.target) || 0) + 1);
     }
 
-    // Ready set = nodes with all dependencies met
-    const ready = new Set(queue);
+    // ── Adjust in-degree for pre-completed nodes (retry resume) ─────────
+    // When resuming from a failed step, pre-completed source nodes have
+    // already satisfied their downstream edges. Decrement the in-degree for
+    // each target so successors become ready once all live deps are met.
+    for (const nodeId of executed) {
+      const edges = adjacency.get(nodeId) || [];
+      for (const edge of edges) {
+        const deg = (inDegree.get(edge.target) || 1) - 1;
+        inDegree.set(edge.target, Math.max(0, deg));
+      }
+    }
+
+    // Ready set = entry nodes (or nodes with no remaining unsatisfied deps)
+    const ready = new Set();
+    for (const nid of queue) {
+      if (!executed.has(nid)) {
+        ready.add(nid);
+      }
+    }
+    // Also add any non-entry nodes whose in-degree is now 0 due to pre-
+    // completed predecessors (this makes "from_failed" resume work).
+    for (const [nid, deg] of inDegree) {
+      if (deg <= 0 && !executed.has(nid) && !ready.has(nid)) {
+        ready.add(nid);
+      }
+    }
 
     while (ready.size > 0) {
-      // Execute all ready nodes (parallel where possible)
-      const batch = Array.from(ready);
+      // Execute ready nodes in bounded parallel batches.
+      const pendingReady = Array.from(ready);
+      const batch = pendingReady.slice(0, MAX_CONCURRENT_BRANCHES);
       ready.clear();
+      for (const deferredNodeId of pendingReady.slice(MAX_CONCURRENT_BRANCHES)) {
+        ready.add(deferredNodeId);
+      }
 
       const results = await Promise.allSettled(
         batch.map(async (nodeId) => {
@@ -645,9 +1066,23 @@ export class WorkflowEngine extends EventEmitter {
           ctx.setNodeStatus(nodeId, NodeStatus.RUNNING);
           this.emit("node:start", { nodeId, type: node.type, label: node.label });
 
-          // Retry loop — uses per-node maxRetries or global MAX_NODE_RETRIES
-          const maxRetries = (node.config?.retryable === false) ? 0 : (node.config?.maxRetries ?? MAX_NODE_RETRIES);
-          const baseRetryDelay = node.config?.retryDelayMs ?? 1000;
+          // Retry loop — uses per-node maxRetries/retryDelayMs with global fallbacks.
+          const resolvedMaxRetriesRaw =
+            node.config?.maxRetries !== undefined
+              ? Number(ctx.resolve(node.config.maxRetries))
+              : MAX_NODE_RETRIES;
+          const maxRetries = node.config?.retryable === false
+            ? 0
+            : Number.isFinite(resolvedMaxRetriesRaw)
+              ? Math.max(0, Math.trunc(resolvedMaxRetriesRaw))
+              : MAX_NODE_RETRIES;
+          const resolvedRetryDelayRaw =
+            node.config?.retryDelayMs !== undefined
+              ? Number(ctx.resolve(node.config.retryDelayMs))
+              : 1000;
+          const baseRetryDelay = Number.isFinite(resolvedRetryDelayRaw)
+            ? Math.max(0, Math.trunc(resolvedRetryDelayRaw))
+            : 1000;
           let lastErr;
 
           for (let attempt = 0; attempt <= maxRetries; attempt++) {
@@ -665,10 +1100,16 @@ export class WorkflowEngine extends EventEmitter {
               ctx.setNodeStatus(nodeId, NodeStatus.COMPLETED);
               executed.add(nodeId);
               this.emit("node:complete", { nodeId, type: node.type });
+
+              // Checkpoint progress to disk (debounced) so the run can
+              // be resumed from here if the process is interrupted.
+              this._checkpointRun(ctx);
+
               lastErr = null;
               return { nodeId, result };
             } catch (err) {
               lastErr = err;
+              if (err.retryable === false) break; // permanent error — skip remaining retry attempts
             }
           }
 
@@ -812,14 +1253,34 @@ export class WorkflowEngine extends EventEmitter {
     // Resolve config templates against context
     const resolvedConfig = this._resolveConfig(node.config || {}, ctx);
 
-    // Dry run — just validate
+    // Dry run — skip capability checks and handler execution.
+    // Services aren't needed for simulation; this keeps dry-run tests fast.
     if (opts.dryRun) {
       ctx.log(node.id, `[dry-run] Would execute ${node.type}`, "info");
       return { _dryRun: true, type: node.type, config: resolvedConfig };
     }
 
+    // ── Capability pre-flight check ──────────────────────────────────────
+    // Verify required services are present AFTER the dryRun early-return so
+    // dry-run tests work without needing real service dependencies wired up.
+    const requiredCapabilities = this._getNodeRequiredCapabilities(node.type);
+    const missingCapabilities = [];
+    for (const cap of requiredCapabilities) {
+      if (!this._hasCapability(cap)) {
+        missingCapabilities.push(cap);
+      }
+    }
+    if (missingCapabilities.length > 0) {
+      const detail = `Node "${node.label || node.id}" (${node.type}) requires capabilities: [${missingCapabilities.join(", ")}] which are not available. ` +
+        `Check that the required services (agent pool, kanban adapter, etc.) are configured and the agent has the necessary permissions.`;
+      ctx.log(node.id, detail, "error");
+      const capErr = new Error(detail);
+      capErr.retryable = false; // missing service is permanent — don't waste time retrying
+      throw capErr;
+    }
+
     // Execute with timeout — clear timer on completion to avoid resource leaks
-    const timeout = resolvedConfig.timeout || node.timeout || NODE_TIMEOUT_MS;
+    const timeout = resolveNodeTimeoutMs(node, resolvedConfig);
     let timer;
     try {
       const result = await Promise.race([
@@ -839,11 +1300,17 @@ export class WorkflowEngine extends EventEmitter {
   }
 
   _resolveConfig(config, ctx) {
+    if (Array.isArray(config)) {
+      return config.map((item) => this._resolveConfig(item, ctx));
+    }
+    if (config == null || typeof config !== "object") {
+      return config;
+    }
     const resolved = {};
     for (const [key, value] of Object.entries(config)) {
       if (typeof value === "string") {
         resolved[key] = ctx.resolve(value);
-      } else if (typeof value === "object" && value !== null && !Array.isArray(value)) {
+      } else if (typeof value === "object" && value !== null) {
         resolved[key] = this._resolveConfig(value, ctx);
       } else {
         resolved[key] = value;
@@ -852,16 +1319,74 @@ export class WorkflowEngine extends EventEmitter {
     return resolved;
   }
 
+  // ── Capability helpers ──────────────────────────────────────────────────
+  // Map node-type prefixes / names to the engine.services keys they need.
+  // This lets _executeNode fail-fast with a clear message instead of letting
+  // the handler throw a cryptic "cannot read property X of undefined".
+
+  /** @returns {string[]} service keys the node type needs (may be empty) */
+  _getNodeRequiredCapabilities(nodeType) {
+    // Agent nodes need the agentPool service
+    if (nodeType.startsWith("agent.") || nodeType === "action.run_agent") {
+      return ["agentPool"];
+    }
+    // Session continuation / restart also need agentPool
+    if (nodeType === "action.continue_session" || nodeType === "action.restart_agent") {
+      return ["agentPool"];
+    }
+    // Child workflow execution needs a live engine instance.
+    if (nodeType === "action.execute_workflow") {
+      return ["workflowEngine"];
+    }
+    // Meeting workflow nodes require the meeting service bridge.
+    if (nodeType.startsWith("meeting.")) {
+      return ["meeting"];
+    }
+    // Task-management nodes need kanban
+    if (
+      nodeType === "action.create_task" ||
+      nodeType === "action.update_task_status" ||
+      nodeType === "action.materialize_planner_tasks"
+    ) {
+      return ["kanban"];
+    }
+    // Telegram notification
+    if (nodeType === "notify.telegram") {
+      return ["telegram"];
+    }
+    // condition.task_has_tag reads from kanban
+    if (nodeType === "condition.task_has_tag") {
+      return ["kanban"];
+    }
+    // No special service required (file I/O, git, transforms, logs, etc.)
+    return [];
+  }
+
+  /** Check whether a named capability (service key) is available */
+  _hasCapability(cap) {
+    if (cap === "workflowEngine") {
+      return typeof this.execute === "function" && typeof this.get === "function";
+    }
+    const svc = this.services?.[cap];
+    // A capability is "present" when its value is a non-null object or function.
+    return svc != null && (typeof svc === "object" || typeof svc === "function");
+  }
+
   _evaluateCondition(condition, ctx, sourceNodeId) {
     // Simple expression evaluator — supports basic comparisons
     // Variables: $output (source node output), $data (context data), $status
     const output = ctx.getNodeOutput(sourceNodeId);
     const data = ctx.data;
     const status = ctx.getNodeStatus(sourceNodeId);
+    const resolvedCondition = typeof condition === "string" ? ctx.resolve(condition) : condition;
+    if (typeof resolvedCondition === "boolean") return resolvedCondition;
+    if (resolvedCondition == null) return false;
+    const expression = String(resolvedCondition).trim();
+    if (!expression) return false;
 
     // Safe subset evaluation
     try {
-      const fn = new Function("$output", "$data", "$status", "$ctx", `return (${condition});`);
+      const fn = new Function("$output", "$data", "$status", "$ctx", `return (${expression});`);
       return fn(output, data, status, ctx);
     } catch {
       return false;
@@ -1024,6 +1549,280 @@ export class WorkflowEngine extends EventEmitter {
     return normalized;
   }
 
+  // ── Active-runs persistence (crash recovery) ─────────────────────────
+
+  /**
+   * Read the active-runs index (_active-runs.json).
+   * Returns an array of { runId, workflowId, workflowName, startedAt }.
+   */
+  _readActiveRunsIndex() {
+    try {
+      const p = resolve(this.runsDir, ACTIVE_RUNS_INDEX);
+      if (!existsSync(p)) return [];
+      const raw = JSON.parse(readFileSync(p, "utf8"));
+      return Array.isArray(raw) ? raw : [];
+    } catch {
+      return [];
+    }
+  }
+
+  /** Write the active-runs index atomically. */
+  _writeActiveRunsIndex(entries) {
+    try {
+      this._ensureDirs();
+      const p = resolve(this.runsDir, ACTIVE_RUNS_INDEX);
+      writeFileSync(p, JSON.stringify(entries, null, 2), "utf8");
+    } catch (err) {
+      console.error(`${TAG} Failed to write active-runs index:`, err.message);
+    }
+  }
+
+  /**
+   * Persist a run to the active-runs index AND write an initial detail file.
+   * Called at the very start of execute() / retryRun() so the run is on disk
+   * before any node executes.
+   */
+  _persistActiveRunState(runId, workflowId, workflowName, ctx) {
+    try {
+      this._ensureDirs();
+
+      // Add to active-runs index
+      const entries = this._readActiveRunsIndex().filter((e) => e.runId !== runId);
+      entries.push({ runId, workflowId, workflowName, startedAt: ctx.startedAt });
+      this._writeActiveRunsIndex(entries);
+
+      // Write initial detail file so we can resume from it
+      const detail = this._serializeRunContext(ctx, true);
+      const detailPath = resolve(this.runsDir, `${runId}.json`);
+      writeFileSync(detailPath, JSON.stringify(detail, null, 2), "utf8");
+
+      // Also ensure the run appears in the main index (with RUNNING status)
+      // so that getRunDetail() can find it even before completion.
+      this._ensureRunInIndex(runId, workflowId, workflowName, detail);
+    } catch (err) {
+      console.error(`${TAG} Failed to persist active run state:`, err.message);
+    }
+  }
+
+  /**
+   * Debounced checkpoint — writes the current run context to disk after each
+   * node completes.  Debounced at CHECKPOINT_DEBOUNCE_MS to avoid disk
+   * thrashing when many nodes finish in quick succession.
+   */
+  _checkpointRun(ctx) {
+    const runId = ctx.id;
+    // Clear any pending timer for this run
+    const existing = this._checkpointTimers.get(runId);
+    if (existing) clearTimeout(existing);
+
+    const timer = setTimeout(() => {
+      this._checkpointTimers.delete(runId);
+      try {
+        this._ensureDirs();
+        const detail = this._serializeRunContext(ctx, true);
+        const detailPath = resolve(this.runsDir, `${runId}.json`);
+        writeFileSync(detailPath, JSON.stringify(detail, null, 2), "utf8");
+      } catch (err) {
+        console.error(`${TAG} Checkpoint failed for run ${runId}:`, err.message);
+      }
+    }, CHECKPOINT_DEBOUNCE_MS);
+
+    // Don't let the timer prevent clean process exit
+    if (timer.unref) timer.unref();
+    this._checkpointTimers.set(runId, timer);
+  }
+
+  /**
+   * Remove a run from the active-runs index and clear its checkpoint timer.
+   * Called after a run completes (success or failure) so it won't be
+   * mistakenly resumed on next boot.
+   */
+  _clearActiveRunState(runId) {
+    try {
+      // Clear debounce timer
+      const timer = this._checkpointTimers.get(runId);
+      if (timer) {
+        clearTimeout(timer);
+        this._checkpointTimers.delete(runId);
+      }
+      // Remove from active-runs index
+      const entries = this._readActiveRunsIndex().filter((e) => e.runId !== runId);
+      this._writeActiveRunsIndex(entries);
+    } catch (err) {
+      console.error(`${TAG} Failed to clear active run state:`, err.message);
+    }
+  }
+
+  /**
+   * Ensure a run entry exists in the main runs index (index.json).
+   * Deduplicates by runId — if the run already exists, updates it in place.
+   */
+  _ensureRunInIndex(runId, workflowId, workflowName, detail) {
+    try {
+      const indexPath = resolve(this.runsDir, "index.json");
+      const runs = this._readRunIndex();
+      const existingIdx = runs.findIndex((r) => r.runId === runId);
+
+      const summary = this._buildSummaryFromDetail({
+        runId,
+        workflowId,
+        workflowName,
+        status: WorkflowStatus.RUNNING,
+        detail,
+      });
+
+      if (existingIdx >= 0) {
+        runs[existingIdx] = summary;
+      } else {
+        runs.push(summary);
+      }
+      if (runs.length > MAX_PERSISTED_RUNS) runs.splice(0, runs.length - MAX_PERSISTED_RUNS);
+      writeFileSync(indexPath, JSON.stringify({ runs }, null, 2), "utf8");
+    } catch (err) {
+      console.error(`${TAG} Failed to ensure run in index:`, err.message);
+    }
+  }
+
+  /**
+   * Detect runs that were interrupted by a previous shutdown.
+   * Scans the _active-runs.json index for entries that are NOT in our
+   * in-memory _activeRuns map (which is empty on fresh boot). Marks them
+   * as PAUSED in the main index and clears the active-runs index.
+   */
+  _detectInterruptedRuns() {
+    try {
+      const activeEntries = this._readActiveRunsIndex();
+      if (!activeEntries.length) return;
+
+      const interrupted = [];
+      for (const entry of activeEntries) {
+        // If it's somehow still in _activeRuns, skip it (not interrupted)
+        if (this._activeRuns.has(entry.runId)) continue;
+
+        // Mark this run as PAUSED in the main index
+        const indexPath = resolve(this.runsDir, "index.json");
+        const runs = this._readRunIndex();
+        const idx = runs.findIndex((r) => r.runId === entry.runId);
+        if (idx >= 0) {
+          runs[idx].status = WorkflowStatus.PAUSED;
+          runs[idx].resumable = true;
+          runs[idx].interruptedAt = Date.now();
+          writeFileSync(indexPath, JSON.stringify({ runs }, null, 2), "utf8");
+        }
+        interrupted.push(entry);
+      }
+
+      // Clear the active-runs index — we've handled them
+      this._writeActiveRunsIndex([]);
+
+      if (interrupted.length > 0) {
+        console.log(
+          `${TAG} Detected ${interrupted.length} interrupted run(s): ${interrupted.map((e) => e.runId).join(", ")}`,
+        );
+        this.emit("runs:interrupted", { runs: interrupted });
+      }
+    } catch (err) {
+      console.error(`${TAG} Failed to detect interrupted runs:`, err.message);
+    }
+  }
+
+  /**
+   * Resume all interrupted (PAUSED + resumable) runs.
+   * Should be called AFTER services are wired up (e.g. after workflow
+   * engine is fully initialized with node executors).
+   */
+  async resumeInterruptedRuns() {
+    if (this._resumingRuns) return;
+    this._resumingRuns = true;
+
+    try {
+      const runs = this._readRunIndex().filter(
+        (r) => r.status === WorkflowStatus.PAUSED && r.resumable,
+      );
+
+      if (!runs.length) {
+        this._resumingRuns = false;
+        return;
+      }
+
+      console.log(`${TAG} Resuming ${runs.length} interrupted run(s)...`);
+
+      for (const run of runs) {
+        try {
+          // Check if the workflow definition still exists
+          const def = this.get(run.workflowId);
+          if (!def) {
+            console.warn(`${TAG} Cannot resume run ${run.runId}: workflow "${run.workflowId}" no longer exists`);
+            this._markRunUnresumable(run.runId, "workflow_deleted");
+            continue;
+          }
+
+          // Load the persisted detail file to get the context state
+          const detailPath = resolve(this.runsDir, `${run.runId}.json`);
+          if (!existsSync(detailPath)) {
+            console.warn(`${TAG} Cannot resume run ${run.runId}: no detail file found`);
+            this._markRunUnresumable(run.runId, "no_detail_file");
+            continue;
+          }
+
+          const detail = JSON.parse(readFileSync(detailPath, "utf8"));
+          const nodeStatuses = detail.nodeStatuses || {};
+          const hasCompletedNodes = Object.values(nodeStatuses).some(
+            (s) => s === NodeStatus.COMPLETED,
+          );
+
+          if (hasCompletedNodes) {
+            // Resume from where it left off using retryRun("from_failed")
+            console.log(`${TAG} Resuming run ${run.runId} from failed/interrupted node...`);
+            await this.retryRun(run.runId, { mode: "from_failed" }).catch((err) => {
+              console.error(`${TAG} Failed to resume run ${run.runId}:`, err.message);
+              this._markRunUnresumable(run.runId, `retry_error: ${err.message}`);
+            });
+          } else {
+            // No nodes completed — re-run from scratch
+            console.log(`${TAG} Re-executing run ${run.runId} from scratch...`);
+            const originalData = detail.inputData || detail.data || {};
+            // Clean up internal metadata from data before re-executing
+            const { _workflowId, _workflowName, _retryOf, ...cleanData } = originalData;
+            await this.execute(run.workflowId, cleanData, { force: true }).catch((err) => {
+              console.error(`${TAG} Failed to re-execute run ${run.runId}:`, err.message);
+              this._markRunUnresumable(run.runId, `execute_error: ${err.message}`);
+            });
+          }
+
+          // Mark the original interrupted run as no longer resumable
+          // (the retry/re-execute created a new run)
+          this._markRunUnresumable(run.runId, "resumed");
+        } catch (err) {
+          console.error(`${TAG} Error resuming run ${run.runId}:`, err.message);
+          this._markRunUnresumable(run.runId, `error: ${err.message}`);
+        }
+      }
+    } finally {
+      this._resumingRuns = false;
+    }
+  }
+
+  /**
+   * Mark a run as no longer resumable in the main index.
+   */
+  _markRunUnresumable(runId, reason) {
+    try {
+      const indexPath = resolve(this.runsDir, "index.json");
+      const runs = this._readRunIndex();
+      const idx = runs.findIndex((r) => r.runId === runId);
+      if (idx >= 0) {
+        runs[idx].resumable = false;
+        runs[idx].resumeResult = reason;
+        writeFileSync(indexPath, JSON.stringify({ runs }, null, 2), "utf8");
+      }
+    } catch (err) {
+      console.error(`${TAG} Failed to mark run unresumable:`, err.message);
+    }
+  }
+
+  // ── Persist completed run ─────────────────────────────────────────────
+
   _persistRun(runId, workflowId, ctx) {
     try {
       this._ensureDirs();
@@ -1037,14 +1836,13 @@ export class WorkflowEngine extends EventEmitter {
         detail,
       });
 
-      // Append to index
+      // Deduplicate: remove any existing entry for this runId before appending
       const indexPath = resolve(this.runsDir, "index.json");
-      let index = { runs: this._readRunIndex() };
-
-      index.runs.push(summary);
+      let runs = this._readRunIndex().filter((r) => r.runId !== runId);
+      runs.push(summary);
       // Keep last N runs
-      if (index.runs.length > MAX_PERSISTED_RUNS) index.runs = index.runs.slice(-MAX_PERSISTED_RUNS);
-      writeFileSync(indexPath, JSON.stringify(index, null, 2), "utf8");
+      if (runs.length > MAX_PERSISTED_RUNS) runs = runs.slice(-MAX_PERSISTED_RUNS);
+      writeFileSync(indexPath, JSON.stringify({ runs }, null, 2), "utf8");
 
       // Save full run detail
       const detailPath = resolve(this.runsDir, `${runId}.json`);
@@ -1083,3 +1881,4 @@ export function deleteWorkflow(id, opts) { return getWorkflowEngine(opts).delete
 export function listWorkflows(opts) { return getWorkflowEngine(opts).list(); }
 export function getWorkflow(id, opts) { return getWorkflowEngine(opts).get(id); }
 export async function executeWorkflow(id, data, opts) { return getWorkflowEngine(opts).execute(id, data, opts); }
+export async function retryWorkflowRun(runId, retryOpts, engineOpts) { return getWorkflowEngine(engineOpts).retryRun(runId, retryOpts); }

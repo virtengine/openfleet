@@ -129,7 +129,7 @@ export function DiffViewer({ sessionId }) {
   if (!sessionId) {
     return html`
       <div class="diff-viewer diff-empty">
-        <div class="session-empty-icon">${resolveIcon("📝")}</div>
+        <div class="session-empty-icon">${resolveIcon(":edit:")}</div>
         <div class="session-empty-text">Select a session to view diffs</div>
       </div>
     `;
@@ -147,7 +147,7 @@ export function DiffViewer({ sessionId }) {
     return html`
       <div class="diff-viewer">
         <div class="session-empty">
-          <div class="session-empty-icon">${resolveIcon("📝")}</div>
+          <div class="session-empty-icon">${resolveIcon(":edit:")}</div>
           <div class="session-empty-text">Diff not available</div>
           <button class="btn btn-primary btn-sm" onClick=${handleRetry}>
             Retry
@@ -183,7 +183,7 @@ export function DiffViewer({ sessionId }) {
             )
           : html`
               <div class="session-empty">
-                <div class="session-empty-icon">✨</div>
+                <div class="session-empty-icon">${resolveIcon(":star:")}</div>
                 <div class="session-empty-text">No changes yet</div>
               </div>
             `}

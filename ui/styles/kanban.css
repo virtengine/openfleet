@@ -37,12 +37,6 @@
   flex-shrink: 0;
 }
 
-.kanban-filter-icon svg {
-  width: 1em;
-  height: 1em;
-  display: inline-block;
-}
-
 .kanban-filter-input {
   border: none;
   background: transparent;
@@ -169,7 +163,8 @@
   padding: 8px 0;
   min-height: 0;
   flex: 1;
-  touch-action: pan-x;
+  /* pan-x: horizontal board scroll; pinch-zoom: allow standard gesture */
+  touch-action: pan-x pinch-zoom;
   overscroll-behavior-x: contain;
   align-items: stretch;
 }
@@ -205,6 +200,9 @@ body.kanban-dragging .kanban-card {
   max-height: calc(var(--viewport-stable-height, 100vh) - 180px);
   position: relative;
   border: 1px solid var(--border);
+  /* Limit layout recalculations to within the column — columns don't affect
+     each other's geometry, so the browser can skip cross-column layout work. */
+  contain: layout;
 }
 
 .kanban-column.drag-over {
@@ -295,9 +293,9 @@ body.kanban-dragging .kanban-card {
   padding: 4px;
   min-height: 0;
   touch-action: pan-y;
-  /* Do not trap wheel/trackpad scroll when the column itself can't scroll.
-     Allow scroll chaining to the page-level container. */
-  overscroll-behavior-y: auto;
+  /* Contain scroll within the column — prevents touch scroll spilling up to
+     main-content or the page when the user reaches the top/bottom of a column. */
+  overscroll-behavior-y: contain;
 }
 
 .kanban-card {
@@ -391,11 +389,6 @@ body.kanban-dragging .kanban-card {
   font-weight: 700;
   text-transform: uppercase;
   flex-shrink: 0;
-}
-
-.kanban-card-assignee svg {
-  width: 12px;
-  height: 12px;
 }
 
 .kanban-card-title {
@@ -502,7 +495,7 @@ body.kanban-dragging .kanban-card {
   }
 }
 
-@media (min-width: 1200px) {
+@media (min-width: 1400px) {
   .kanban-board {
     gap: 18px;
     padding: 12px 0 18px;
@@ -587,7 +580,7 @@ body.kanban-dragging .kanban-card {
 /* ═══════════════════════════════════════════════
  *  Desktop Premium Density Overrides
  * ═══════════════════════════════════════════════ */
-@media (min-width: 1200px) {
+@media (min-width: 1400px) {
   .kanban-board {
     gap: 12px;
     padding: 8px 0 12px;
@@ -616,5 +609,86 @@ body.kanban-dragging .kanban-card {
     font-size: 12px;
     padding: 6px 4px;
     margin-bottom: 6px;
+  }
+}
+
+/* ═══════════════════════════════════════════════
+ *  Performance hints
+ * ═══════════════════════════════════════════════ */
+
+/* Promote the horizontal scroll container to its own compositor layer so that
+   scrolling the board doesn't trigger main-thread layout. */
+.kanban-board {
+  will-change: scroll-position;
+}
+
+/* ═══════════════════════════════════════════════
+ *  Board View: Full-height bounded layout
+ *
+ *  Problem: .main-content is overflow-y:auto (a block element).
+ *  .kanban-container has flex:1/min-height:0 but those only work when
+ *  the *parent* is a flex container.  Without this, columns grow to
+ *  their natural content height and the outer page scrolls vertically
+ *  instead of each column scrolling its own cards.
+ *
+ *  Fix: TasksTab adds "tasks-board-view" to <body> when board view is
+ *  active.  CSS then converts main-content into a bounded flex column,
+ *  so the kanban-container fills the remaining height and columns can
+ *  scroll internally.
+ * ═══════════════════════════════════════════════ */
+
+body.tasks-board-view .main-content {
+  overflow: hidden !important;
+  display: flex !important;
+  flex-direction: column;
+  min-height: 0;
+  /* Remove vertical padding — kanban-board manages its own bottom clearance */
+  padding-top: 0 !important;
+  padding-bottom: 0 !important;
+}
+
+/* Toolbar stays fixed-height; no longer needs position:sticky since the
+   container no longer scrolls. */
+body.tasks-board-view .sticky-search {
+  flex-shrink: 0;
+  position: relative;
+  z-index: 10;
+}
+
+/* Status summary row stays fixed-height */
+body.tasks-board-view .snapshot-bar {
+  flex-shrink: 0;
+  margin-bottom: 0;
+}
+
+/* kanban-container fills all remaining vertical space.
+   It already carries flex:1 and min-height:0 — the parent flex
+   context added above is what makes those take effect. */
+body.tasks-board-view .kanban-container {
+  flex: 1;
+  min-height: 0;
+}
+
+/* On mobile, add clearance at the bottom of the board for the fixed nav bar
+   so the last card row isn't hidden behind it. */
+@media (max-width: 768px) {
+  body.tasks-board-view .kanban-board {
+    padding-bottom: calc(var(--nav-height, 56px) + var(--safe-bottom, 0px) + 12px);
+  }
+}
+
+/* ─── Reduced motion: disable decorative transitions on kanban cards ─── */
+@media (prefers-reduced-motion: reduce) {
+  .kanban-card {
+    transition: border-color 0.05s;
+  }
+  .kanban-card:hover {
+    transform: none;
+  }
+  .kanban-card:active {
+    transform: scale(0.99);
+  }
+  .kanban-card.touch-drag-clone {
+    transform: none;
   }
 }

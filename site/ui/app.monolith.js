@@ -2397,7 +2397,7 @@ function Header() {
   return html`
     <header class="app-header">
       <div class="app-header-brand">
-        <img src="logo.png" alt="Bosun" class="app-logo-img" />
+        <img src="/logo.png" alt="Bosun" class="app-logo-img" />
         <div class="app-header-title">Bosun</div>
       </div>
       <div class="connection-pill ${isConn ? "connected" : "disconnected"}">

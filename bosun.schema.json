@@ -33,12 +33,348 @@
     "watchEnabled": { "type": "boolean" },
     "echoLogs": { "type": "boolean" },
     "autoFixEnabled": { "type": "boolean" },
+    "workflowFirst": {
+      "type": "boolean",
+      "default": false,
+      "description": "When true, all modules start in WORKFLOW mode by default. The task executor lifecycle is fully delegated to workflow templates (workflowOwnsTaskLifecycle). Bosun acts as a thin shell around the workflow engine."
+    },
+    "workflowOwnsTaskLifecycle": {
+      "type": "boolean",
+      "default": false,
+      "description": "Delegate task finalization and recovery to workflow automation instead of the legacy TaskExecutor. Automatically set to true when workflowFirst is enabled."
+    },
     "interactiveShellEnabled": { "type": "boolean" },
     "shellEnabled": { "type": "boolean" },
     "codexEnabled": { "type": "boolean" },
     "primaryAgent": {
       "type": "string",
-      "enum": ["codex-sdk", "copilot-sdk", "claude-sdk"]
+      "enum": [
+        "codex-sdk",
+        "copilot-sdk",
+        "claude-sdk",
+        "gemini-sdk",
+        "opencode-sdk"
+      ]
+    },
+    "telegramUiTunnel": {
+      "type": "string",
+      "enum": ["named", "quick", "auto", "cloudflared", "disabled"],
+      "default": "named",
+      "description": "Mini App tunnel mode. named is the default permanent hostname mode."
+    },
+    "telegramUiAllowQuickTunnelFallback": {
+      "type": "boolean",
+      "default": false,
+      "description": "Allow quick trycloudflare fallback only when named tunnel startup fails."
+    },
+    "cloudflareTunnelName": {
+      "type": "string",
+      "description": "Named Cloudflare tunnel identifier."
+    },
+    "cloudflareTunnelCredentials": {
+      "type": "string",
+      "description": "Path to cloudflared tunnel credentials JSON."
+    },
+    "cloudflareBaseDomain": {
+      "type": "string",
+      "description": "Base domain used for deterministic per-user tunnel hostnames."
+    },
+    "cloudflareTunnelHostname": {
+      "type": "string",
+      "description": "Explicit tunnel hostname override."
+    },
+    "cloudflareUsernameHostnamePolicy": {
+      "type": "string",
+      "enum": ["per-user-fixed", "fixed"],
+      "default": "per-user-fixed",
+      "description": "Policy for deriving named tunnel hostname from workstation identity."
+    },
+    "cloudflareZoneId": {
+      "type": "string",
+      "description": "Cloudflare zone ID used for DNS orchestration."
+    },
+    "cloudflareApiToken": {
+      "type": "string",
+      "description": "Cloudflare API token scoped to Zone DNS edit."
+    },
+    "cloudflareDnsSyncEnabled": {
+      "type": "boolean",
+      "default": true,
+      "description": "Enable Cloudflare DNS idempotent create/verify/update during named tunnel startup."
+    },
+    "cloudflareDnsMaxRetries": {
+      "type": "number",
+      "default": 3,
+      "description": "Retry attempts for Cloudflare DNS API operations."
+    },
+    "cloudflareDnsRetryBaseMs": {
+      "type": "number",
+      "default": 750,
+      "description": "Base backoff delay for Cloudflare DNS API retries."
+    },
+    "telegramUiFallbackAuthEnabled": {
+      "type": "boolean",
+      "default": true,
+      "description": "Enable admin fallback PIN/password auth when Telegram/session auth is unavailable."
+    },
+    "telegramUiFallbackAuthRateLimitIpPerMin": {
+      "type": "number",
+      "default": 10,
+      "description": "Per-IP fallback auth attempt rate limit per minute."
+    },
+    "telegramUiFallbackAuthRateLimitGlobalPerMin": {
+      "type": "number",
+      "default": 60,
+      "description": "Global fallback auth attempt rate limit per minute."
+    },
+    "telegramUiFallbackAuthMaxFailures": {
+      "type": "number",
+      "default": 5,
+      "description": "Failed fallback auth attempts before temporary lockout."
+    },
+    "telegramUiFallbackAuthLockoutMs": {
+      "type": "number",
+      "default": 600000,
+      "description": "Temporary lockout duration in milliseconds after max fallback auth failures."
+    },
+    "telegramUiFallbackAuthRotateDays": {
+      "type": "number",
+      "default": 30,
+      "description": "Target credential rotation interval for fallback auth."
+    },
+    "telegramUiFallbackAuthTransientCooldownMs": {
+      "type": "number",
+      "default": 5000,
+      "description": "Cooldown when fallback auth backend has transient errors."
+    },
+    "voice": {
+      "type": "object",
+      "description": "Voice assistant configuration for real-time voice interaction",
+      "additionalProperties": false,
+      "properties": {
+        "enabled": {
+          "type": "boolean",
+          "default": true,
+          "description": "Enable voice assistant features"
+        },
+        "provider": {
+          "type": "string",
+          "enum": ["openai", "azure", "claude", "gemini", "fallback", "auto"],
+          "default": "auto",
+          "description": "Voice provider: openai/azure (Tier 1 realtime), claude/gemini (Tier 2 voice + provider vision), fallback (browser STT/TTS), auto (detect from env)"
+        },
+        "providers": {
+          "type": "array",
+          "description": "Ordered provider candidates for voice routing/failover. First match with credentials is used.",
+          "items": {
+            "anyOf": [
+              {
+                "type": "string",
+                "enum": ["openai", "azure", "claude", "gemini", "fallback"]
+              },
+              {
+                "type": "object",
+                "additionalProperties": false,
+                "properties": {
+                  "provider": {
+                    "type": "string",
+                    "enum": ["openai", "azure", "claude", "gemini", "fallback"]
+                  },
+                  "model": { "type": "string" },
+                  "visionModel": { "type": "string" },
+                  "voiceId": {
+                    "type": "string",
+                    "enum": [
+                      "alloy",
+                      "ash",
+                      "ballad",
+                      "coral",
+                      "echo",
+                      "fable",
+                      "onyx",
+                      "nova",
+                      "sage",
+                      "shimmer",
+                      "verse"
+                    ]
+                  },
+                  "azureDeployment": { "type": "string" },
+                  "endpointId": {
+                    "type": "string",
+                    "description": "ID of the voice endpoint to use for this provider slot"
+                  }
+                },
+                "required": ["provider"]
+              }
+            ]
+          }
+        },
+        "model": {
+          "type": "string",
+          "default": "gpt-4o-realtime-preview-2024-12-17",
+          "description": "Realtime API model name"
+        },
+        "visionModel": {
+          "type": "string",
+          "default": "gpt-4.1-mini",
+          "description": "Vision model used for live screen/camera frame analysis"
+        },
+        "openaiApiKey": {
+          "type": "string",
+          "description": "OpenAI API key for Realtime API (overrides OPENAI_API_KEY env)"
+        },
+        "openaiAccessToken": {
+          "type": "string",
+          "description": "OpenAI OAuth access token for voice (OAuth preferred over API key when present)"
+        },
+        "azureApiKey": {
+          "type": "string",
+          "description": "Azure OpenAI API key for Realtime API"
+        },
+        "azureAccessToken": {
+          "type": "string",
+          "description": "Azure OAuth/AAD access token for voice realtime"
+        },
+        "azureEndpoint": {
+          "type": "string",
+          "description": "Azure OpenAI endpoint URL"
+        },
+        "azureDeployment": {
+          "type": "string",
+          "default": "gpt-4o-realtime-preview",
+          "description": "Azure OpenAI deployment name"
+        },
+        "claudeApiKey": {
+          "type": "string",
+          "description": "Anthropic API key for Claude voice/vision provider mode"
+        },
+        "claudeAccessToken": {
+          "type": "string",
+          "description": "Claude OAuth access token for voice provider mode"
+        },
+        "geminiApiKey": {
+          "type": "string",
+          "description": "Gemini API key for Gemini voice/vision provider mode"
+        },
+        "geminiAccessToken": {
+          "type": "string",
+          "description": "Gemini OAuth access token for voice provider mode"
+        },
+        "voiceId": {
+          "type": "string",
+          "enum": [
+            "alloy",
+            "ash",
+            "ballad",
+            "coral",
+            "echo",
+            "fable",
+            "onyx",
+            "nova",
+            "sage",
+            "shimmer",
+            "verse"
+          ],
+          "default": "alloy",
+          "description": "Voice ID for TTS output"
+        },
+        "turnDetection": {
+          "type": "string",
+          "enum": ["server_vad", "semantic_vad", "none"],
+          "default": "server_vad",
+          "description": "Turn detection mode for voice activity detection"
+        },
+        "instructions": {
+          "type": "string",
+          "description": "Custom system instructions for the voice assistant"
+        },
+        "fallbackMode": {
+          "type": "string",
+          "enum": ["browser", "disabled"],
+          "default": "browser",
+          "description": "Fallback when Realtime API unavailable: browser (Web Speech API) or disabled"
+        },
+        "failover": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "enabled": {
+              "type": "boolean",
+              "default": true,
+              "description": "Enable automatic realtime failover across configured voice providers"
+            },
+            "maxAttempts": {
+              "type": "number",
+              "default": 2,
+              "description": "Maximum realtime provider attempts per voice session token request"
+            }
+          }
+        },
+        "voiceEndpoints": {
+          "type": "array",
+          "description": "Named realtime voice endpoints, each with its own credentials. Multiple endpoints enable automatic failover with context preservation.",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["provider"],
+            "properties": {
+              "id": {
+                "type": "string",
+                "description": "Unique identifier for this endpoint"
+              },
+              "name": {
+                "type": "string",
+                "description": "Friendly label for this endpoint"
+              },
+              "provider": {
+                "type": "string",
+                "enum": ["azure", "openai", "claude", "gemini"],
+                "description": "Provider type"
+              },
+              "endpoint": {
+                "type": "string",
+                "description": "Azure OpenAI endpoint URL (required for azure)"
+              },
+              "deployment": {
+                "type": "string",
+                "description": "Azure deployment name (required for azure)"
+              },
+              "apiKey": {
+                "type": "string",
+                "description": "API key for this endpoint"
+              },
+              "model": {
+                "type": "string",
+                "description": "Model name (for openai provider)"
+              },
+              "voiceId": { "type": "string" },
+              "visionModel": { "type": "string" },
+              "role": {
+                "type": "string",
+                "enum": ["primary", "backup"],
+                "default": "primary"
+              },
+              "weight": {
+                "type": "number",
+                "default": 100,
+                "description": "Priority weight — higher = tried first"
+              },
+              "enabled": { "type": "boolean", "default": true }
+            }
+          }
+        },
+        "delegateExecutor": {
+          "type": "string",
+          "enum": [
+            "codex-sdk",
+            "copilot-sdk",
+            "claude-sdk",
+            "gemini-sdk",
+            "opencode-sdk"
+          ],
+          "description": "Which executor to use for delegate_to_agent calls. Defaults to primaryAgent."
+        }
+      }
     },
     "vkSpawnEnabled": { "type": "boolean" },
     "kanban": {
@@ -388,6 +724,58 @@
           }
         }
       ]
+    },
+    "internalExecutor": {
+      "type": "object",
+      "additionalProperties": true,
+      "properties": {
+        "mode": {
+          "type": "string",
+          "enum": ["vk", "internal", "hybrid"]
+        },
+        "maxParallel": { "type": "number" },
+        "baseBranchParallelLimit": { "type": "number" },
+        "pollIntervalMs": { "type": "number" },
+        "sdk": {
+          "type": "string",
+          "enum": ["auto", "codex", "copilot", "claude", "gemini", "opencode"]
+        },
+        "taskTimeoutMs": { "type": "number" },
+        "maxRetries": { "type": "number" },
+        "reviewAgentEnabled": { "type": "boolean" },
+        "reviewMaxConcurrent": { "type": "number" },
+        "reviewTimeoutMs": { "type": "number" },
+        "stream": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "maxRetries": {
+              "type": "number",
+              "description": "Transient stream retry attempts per run"
+            },
+            "retryBaseMs": {
+              "type": "number",
+              "description": "Base stream retry delay in milliseconds"
+            },
+            "retryMaxMs": {
+              "type": "number",
+              "description": "Maximum stream retry delay in milliseconds"
+            },
+            "firstEventTimeoutMs": {
+              "type": "number",
+              "description": "Abort/retry if no stream events arrive within this timeout"
+            },
+            "maxItemsPerTurn": {
+              "type": "number",
+              "description": "Maximum completed stream items retained per turn"
+            },
+            "maxItemChars": {
+              "type": "number",
+              "description": "Maximum characters retained per string field in stored stream items"
+            }
+          }
+        }
+      }
     },
     "profiles": { "$ref": "#/$defs/profiles" },
     "envProfiles": { "$ref": "#/$defs/profiles" },

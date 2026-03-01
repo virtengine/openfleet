@@ -22,11 +22,11 @@
 
 **Missing Capabilities**:
 
-- ❌ Read tasks FROM project boards
-- ❌ Sync status TO project Status field
-- ❌ Read/write custom project fields
-- ❌ Update iteration/sprint fields
-- ❌ Manage project item metadata
+- :close: Read tasks FROM project boards
+- :close: Sync status TO project Status field
+- :close: Read/write custom project fields
+- :close: Update iteration/sprint fields
+- :close: Manage project item metadata
 
 **Impact**: Can't use GitHub Projects v2 as primary task board for bosun.
 
@@ -194,7 +194,7 @@
 
 ## Key Takeaways
 
-### 🔑 Technical Key Points
+### :lock: Technical Key Points
 
 1. **Projects v2 uses GraphQL exclusively** - No REST API
 2. **Everything requires node IDs** - Not issue numbers or project numbers
@@ -202,7 +202,7 @@
 4. **Caching is critical** - Project/field metadata rarely changes
 5. **Rate limiting exists** - 5,000 points/hour, implement backoff
 
-### 🎯 Implementation Key Points
+### :target: Implementation Key Points
 
 1. **Phase 1 is non-breaking** - Opt-in via config, default unchanged
 2. **Use high-level CLI** - `gh project item-list` > raw GraphQL for reads
@@ -210,7 +210,7 @@
 4. **Graceful degradation** - Log warnings, don't crash on missing fields
 5. **Test thoroughly** - Unit, integration, manual testing required
 
-### 📋 Process Key Points
+### :clipboard: Process Key Points
 
 1. **Research complete** - All API patterns documented
 2. **Three-phase plan** - Read → Write → Advanced
@@ -258,11 +258,11 @@
 
 ## Status & Timeline
 
-**Research Phase**: ✅ Complete (2026-02-15)  
-**Documentation**: ✅ Complete (2026-02-15)  
-**Phase 1 Implementation**: ✅ Complete (2026-02-16) — Read support, caching, normalization  
-**Phase 2 Implementation**: ✅ Complete (2026-02-16) — Write support, auto-sync, rate limiting  
-**Phase 3 Implementation**: ⬜️ Not Started
+**Research Phase**: :check: Complete (2026-02-15)  
+**Documentation**: :check: Complete (2026-02-15)  
+**Phase 1 Implementation**: :check: Complete (2026-02-16) — Read support, caching, normalization  
+**Phase 2 Implementation**: :check: Complete (2026-02-16) — Write support, auto-sync, rate limiting  
+**Phase 3 Implementation**: :dot: Not Started
 
 **Next Action**: Manual testing, code review, Phase 3 scoping.
 

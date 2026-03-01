@@ -29,7 +29,7 @@ const html = htm.bind(h);
  * ═══════════════════════════════════════════════ */
 
 /** Current agent interaction mode */
-export const agentMode = signal("agent"); // "ask" | "agent" | "plan"
+export const agentMode = signal("ask"); // "ask" | "agent" | "plan"
 
 /** Available agents loaded from API */
 export const availableAgents = signal([]); // Array<{ id, name, provider, available, busy, capabilities }>
@@ -589,6 +589,11 @@ const AGENT_SELECTOR_STYLES = `
   font-size: 13px;
   line-height: 1;
 }
+.yolo-icon svg {
+  width: 13px;
+  height: 13px;
+  display: block;
+}
 .yolo-checkbox {
   width: 13px;
   height: 13px;
@@ -692,6 +697,150 @@ const AGENT_SELECTOR_STYLES = `
 .toolbar-select:focus { outline: none; border-color: var(--tg-theme-button-color, #3b82f6); }
 .toolbar-select option { background: #1a1a2e; color: #fff; }
 .toolbar-select--wide { min-width: 110px; }
+
+/* ── Stop Button ── */
+.chat-stop-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 36px;
+  height: 36px;
+  border-radius: 50%;
+  border: 2px solid #ef4444;
+  background: rgba(239, 68, 68, 0.12);
+  color: #ef4444;
+  cursor: pointer;
+  font-size: 14px;
+  flex-shrink: 0;
+  transition: background 0.2s ease, transform 0.1s ease;
+  -webkit-tap-highlight-color: transparent;
+  padding: 0;
+}
+.chat-stop-btn:hover {
+  background: rgba(239, 68, 68, 0.22);
+  transform: scale(1.05);
+}
+.chat-stop-btn:active {
+  transform: scale(0.95);
+}
+
+/* ── Split Send Button Group ── */
+.chat-send-group {
+  position: relative;
+  display: flex;
+  flex-shrink: 0;
+}
+.chat-send-main {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  height: 36px;
+  padding: 0 13px;
+  border: none;
+  border-radius: 8px 0 0 8px;
+  background: var(--accent, var(--tg-theme-button-color, #3b82f6));
+  color: var(--accent-text, var(--tg-theme-button-text-color, #fff));
+  cursor: pointer;
+  font-size: 15px;
+  transition: background 0.2s ease, opacity 0.2s ease;
+  -webkit-tap-highlight-color: transparent;
+}
+.chat-send-main:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+.chat-send-main:not(:disabled):hover {
+  background: var(--accent-hover, #2563eb);
+}
+.chat-send-chevron {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  height: 36px;
+  width: 22px;
+  border: none;
+  border-left: 1px solid var(--border, rgba(255,255,255,0.2));
+  border-radius: 0 8px 8px 0;
+  background: var(--accent, var(--tg-theme-button-color, #3b82f6));
+  color: var(--accent-text, rgba(255,255,255,0.85));
+  cursor: pointer;
+  font-size: 10px;
+  transition: background 0.2s ease, opacity 0.2s ease;
+  -webkit-tap-highlight-color: transparent;
+  padding: 0;
+}
+.chat-send-chevron:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+.chat-send-chevron:not(:disabled):hover {
+  background: var(--accent-hover, #2563eb);
+  color: var(--accent-text, #fff);
+}
+
+/* ── Send Options Dropdown ── */
+.chat-send-menu {
+  position: absolute;
+  bottom: calc(100% + 6px);
+  right: 0;
+  min-width: 230px;
+  background: var(--tg-theme-bg-color, #0f0f23);
+  border: 1px solid rgba(255,255,255,0.1);
+  border-radius: 12px;
+  box-shadow: 0 8px 32px rgba(0,0,0,0.5);
+  backdrop-filter: blur(16px);
+  padding: 4px;
+  z-index: 1010;
+  animation: agentDropIn 0.15s ease-out;
+  overflow: hidden;
+}
+.chat-send-menu-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 9px 12px;
+  width: 100%;
+  border: none;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--tg-theme-text-color, #fff);
+  cursor: pointer;
+  font-size: 13px;
+  text-align: left;
+  transition: background 0.15s ease;
+  -webkit-tap-highlight-color: transparent;
+  line-height: 1.2;
+}
+.chat-send-menu-item:hover {
+  background: rgba(255,255,255,0.07);
+}
+.chat-send-menu-item.active {
+  background: rgba(59,130,246,0.15);
+  color: #93c5fd;
+}
+.chat-send-menu-item-icon {
+  font-size: 14px;
+  width: 18px;
+  text-align: center;
+  flex-shrink: 0;
+}
+.chat-send-menu-item-label {
+  flex: 1;
+  font-weight: 500;
+}
+.chat-send-menu-item-kbd {
+  display: inline-flex;
+  align-items: center;
+  padding: 1px 5px;
+  border-radius: 4px;
+  background: rgba(255,255,255,0.08);
+  border: 1px solid rgba(255,255,255,0.12);
+  font-size: 10px;
+  color: var(--tg-theme-hint-color, #999);
+  font-family: monospace;
+  white-space: nowrap;
+  flex-shrink: 0;
+}
 `;
 
 let _agentStylesInjected = false;
@@ -908,10 +1057,11 @@ export function AgentPicker() {
     >
       ${loading && html`<option disabled value="">Loading…</option>`}
       ${enabledAgents.map((agent) => {
-        const name = EXECUTOR_DISPLAY_NAMES[agent.id] || agent.name;
-        const busy = agent.busy ? " (busy)" : "";
+        const rawName = EXECUTOR_DISPLAY_NAMES[agent.id] || agent.name || "";
+        const name =
+          String(rawName).replace(/\s*\(busy\)\s*$/i, "").trim() || "Executor";
         return html`
-          <option key=${agent.id} value=${agent.id}>${name}${busy}</option>
+          <option key=${agent.id} value=${agent.id}>${name}</option>
         `;
       })}
     </select>
@@ -968,7 +1118,7 @@ function YoloToggle() {
         : 'Enable Yolo mode — agent will skip confirmation prompts'}
       aria-pressed=${isYolo}
     >
-      <span class="yolo-icon">⚡</span>
+      <span class="yolo-icon">${resolveIcon("zap")}</span>
       Yolo
     </button>
   `;

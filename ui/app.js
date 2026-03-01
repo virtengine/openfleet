@@ -61,6 +61,140 @@ const TABLET_MIN_WIDTH = 768;
 const COMPACT_NAV_MAX_WIDTH = 520;
 const RAIL_ICON_WIDTH = 54;
 const SIDEBAR_ICON_WIDTH = 54;
+const APP_LOGO_SOURCES = ["/logo.png", "/logo.svg", "/favicon.png"];
+const VOICE_LAUNCH_QUERY_KEYS = [
+  "launch",
+  "call",
+  "autostart",
+  "sessionId",
+  "executor",
+  "mode",
+  "model",
+  "vision",
+  "source",
+  "chat_id",
+];
+const FLOATING_CALL_STATE_KEY = "ve-floating-call-state";
+const FLOATING_CALL_HEARTBEAT_INTERVAL_MS = 15000;
+const FLOATING_CALL_STALE_THRESHOLD_MS = FLOATING_CALL_HEARTBEAT_INTERVAL_MS * 3;
+
+function getAppLogoSource(index = 0) {
+  const safeIndex = Number.isFinite(index) ? Math.trunc(index) : 0;
+  if (safeIndex <= 0) return APP_LOGO_SOURCES[0];
+  if (safeIndex >= APP_LOGO_SOURCES.length) {
+    return APP_LOGO_SOURCES[APP_LOGO_SOURCES.length - 1];
+  }
+  return APP_LOGO_SOURCES[safeIndex];
+}
+
+function handleAppLogoLoadError(event) {
+  const target = event?.currentTarget;
+  if (!target) return;
+
+  const currentIndex = Number.parseInt(
+    String(target.dataset?.logoFallbackIndex || "0"),
+    10,
+  );
+  const nextIndex = Number.isFinite(currentIndex) ? currentIndex + 1 : 1;
+  if (nextIndex >= APP_LOGO_SOURCES.length) return;
+
+  target.dataset.logoFallbackIndex = String(nextIndex);
+  target.src = getAppLogoSource(nextIndex);
+}
+
+function parseVoiceLaunchFromUrl() {
+  if (typeof window === "undefined") return null;
+  const params = new URLSearchParams(window.location.search || "");
+  const launch = String(params.get("launch") || "").trim().toLowerCase();
+  if (launch !== "meeting" && launch !== "voice") return null;
+
+  const callRaw = String(params.get("call") || "").trim().toLowerCase();
+  const call = callRaw === "video" ? "video" : "voice";
+  const explicitVision = String(params.get("vision") || "").trim().toLowerCase();
+  const initialVisionSource =
+    explicitVision === "camera" || explicitVision === "screen"
+      ? explicitVision
+      : call === "video"
+        ? "camera"
+        : null;
+
+  return {
+    tab: "chat",
+    detail: {
+      call,
+      initialVisionSource,
+      sessionId: String(params.get("sessionId") || "").trim() || null,
+      executor: String(params.get("executor") || "").trim() || null,
+      mode: String(params.get("mode") || "").trim() || null,
+      model: String(params.get("model") || "").trim() || null,
+    },
+  };
+}
+
+function scrubVoiceLaunchQuery() {
+  if (typeof window === "undefined" || !window.history?.replaceState) return;
+  const url = new URL(window.location.href);
+  let changed = false;
+  for (const key of VOICE_LAUNCH_QUERY_KEYS) {
+    if (url.searchParams.has(key)) {
+      url.searchParams.delete(key);
+      changed = true;
+    }
+  }
+  if (!changed) return;
+  const nextPath = `${url.pathname}${url.search}${url.hash}`;
+  window.history.replaceState(window.history.state, "", nextPath || "/");
+}
+
+function isFollowWindowFromUrl() {
+  if (typeof window === "undefined") return false;
+  const params = new URLSearchParams(window.location.search || "");
+  return params.get("follow") === "1";
+}
+
+function readFloatingCallState() {
+  if (typeof window === "undefined") return { active: false };
+  try {
+    const raw = localStorage.getItem(FLOATING_CALL_STATE_KEY);
+    if (!raw) return { active: false };
+    const parsed = JSON.parse(raw);
+    return {
+      active: parsed?.active === true,
+      call: String(parsed?.call || "").trim().toLowerCase() === "video"
+        ? "video"
+        : "voice",
+      updatedAt: Number(parsed?.updatedAt || 0) || 0,
+    };
+  } catch {
+    return { active: false };
+  }
+}
+
+function isFloatingCallStateFresh(state, now = Date.now()) {
+  if (state?.active !== true) return false;
+  const updatedAt = Number(state?.updatedAt || 0);
+  if (!Number.isFinite(updatedAt) || updatedAt <= 0) return false;
+  return now - updatedAt <= FLOATING_CALL_STALE_THRESHOLD_MS;
+}
+
+function writeFloatingCallState(nextState) {
+  if (typeof window === "undefined") return;
+  try {
+    localStorage.setItem(
+      FLOATING_CALL_STATE_KEY,
+      JSON.stringify({
+        active: nextState?.active === true,
+        call:
+          String(nextState?.call || "").trim().toLowerCase() === "video"
+            ? "video"
+            : "voice",
+        updatedAt: Date.now(),
+      }),
+    );
+  } catch {
+    // best effort
+  }
+}
 
 /* ── Module imports ── */
 import { ICONS } from "./modules/icons.js";
@@ -90,8 +224,14 @@ import {
   initWsInvalidationListener,
   loadNotificationPrefs,
   applyStoredDefaults,
+  hasPendingChanges,
 } from "./modules/state.js";
-import { activeTab, navigateTo, shouldBlockTabSwipe, TAB_CONFIG } from "./modules/router.js";
+import {
+  activeTab,
+  navigateTo,
+  shouldBlockTabSwipe,
+  TAB_CONFIG,
+} from "./modules/router.js";
 import { formatRelative } from "./modules/utils.js";
 
 /* ── Component imports ── */
@@ -105,18 +245,24 @@ import {
   sessionsData,
   initSessionWsListener,
 } from "./components/session-list.js";
+import {
+  activeAgent,
+  agentMode,
+  selectedModel,
+} from "./components/agent-selector.js";
 import { WorkspaceSwitcher } from "./components/workspace-switcher.js";
 import { DiffViewer } from "./components/diff-viewer.js";
 import {
   CommandPalette,
   useCommandPalette,
 } from "./components/command-palette.js";
+import { VoiceOverlay } from "./modules/voice-overlay.js";
 
 /* ── Tab imports ── */
 import { DashboardTab } from "./tabs/dashboard.js";
 import { TasksTab } from "./tabs/tasks.js";
 import { ChatTab } from "./tabs/chat.js";
-import { AgentsTab } from "./tabs/agents.js";
+import { AgentsTab, FleetSessionsTab } from "./tabs/agents.js";
 import { InfraTab } from "./tabs/infra.js";
 import { ControlTab } from "./tabs/control.js";
 import { LogsTab } from "./tabs/logs.js";
@@ -387,7 +533,7 @@ class TabErrorBoundary extends Component {
       return html`
         <div class="tab-error-boundary">
           <div class="tab-error-pulse">
-            <span style="font-size:20px;color:#ef4444;">⚠</span>
+            <span style="font-size:20px;color:#ef4444;">${resolveIcon(":alert:")}</span>
           </div>
           <div>
             <div style="font-size:14px;font-weight:600;margin-bottom:4px;color:var(--text-primary);">
@@ -425,6 +571,7 @@ const TAB_COMPONENTS = {
   tasks: TasksTab,
   chat: ChatTab,
   agents: AgentsTab,
+  "fleet-sessions": FleetSessionsTab,
   infra: InfraTab,
   control: ControlTab,
   logs: LogsTab,
@@ -517,7 +664,13 @@ function SidebarNav({ collapsed = false, onToggle }) {
       <div class="sidebar-brand-row">
         <div class="sidebar-brand">
           <div class="sidebar-logo">
-            <img src="logo.png" alt="Bosun" class="app-logo-img" />
+            <img
+              src=${getAppLogoSource(0)}
+              alt="Bosun"
+              class="app-logo-img"
+              data-logo-fallback-index="0"
+              onError=${handleAppLogoLoadError}
+            />
           </div>
           ${!collapsed && html`<div class="sidebar-title">Bosun</div>`}
         </div>
@@ -533,10 +686,10 @@ function SidebarNav({ collapsed = false, onToggle }) {
       ${!collapsed && html`
         <div class="sidebar-actions">
           <button class="btn btn-primary btn-block" onClick=${() => createSession({ type: "primary" })}>
-            <span class="btn-icon">${resolveIcon("➕")}</span> New Session
+            <span class="btn-icon">${resolveIcon(":plus:")}</span> New Session
           </button>
           <button class="btn btn-ghost btn-block" onClick=${() => navigateTo("tasks")}>
-            <span class="btn-icon">${resolveIcon("📋")}</span> View Tasks
+            <span class="btn-icon">${resolveIcon(":clipboard:")}</span> View Tasks
           </button>
         </div>
       `}
@@ -547,13 +700,14 @@ function SidebarNav({ collapsed = false, onToggle }) {
             onClick=${() => createSession({ type: "primary" })}
             title="New Session"
             aria-label="New Session"
-          >${resolveIcon("➕")}</button>
+          >${resolveIcon(":plus:")}</button>
         </div>
       `}
       <nav class="sidebar-nav" aria-label="Main navigation">
         ${TAB_CONFIG.map((tab) => {
           const isActive = activeTab.value === tab.id;
           const isHome = tab.id === "dashboard";
+          const isChild = !!tab.parent;
           let badge = 0;
           if (tab.id === "tasks") {
             badge = getActiveTaskCount();
@@ -563,7 +717,7 @@ function SidebarNav({ collapsed = false, onToggle }) {
           return html`
             <button
               key=${tab.id}
-              class="sidebar-nav-item ${isActive ? "active" : ""}"
+              class="sidebar-nav-item ${isActive ? "active" : ""} ${isChild ? "sidebar-nav-child" : ""}"
               style="position:relative"
               aria-label=${tab.label}
               aria-current=${isActive ? "page" : null}
@@ -594,7 +748,7 @@ function SidebarNav({ collapsed = false, onToggle }) {
   `;
 }
 
-function SessionRail({ onResizeStart, onResizeReset, showResizer, collapsed, onCollapse, onExpand }) {
+function SessionRail({ onResizeStart, onResizeReset, showResizer, collapsed, onCollapse, onExpand, sessionType = "primary" }) {
   const [showArchived, setShowArchived] = useState(false);
   const sessions = sessionsData.value || [];
   const activeCount = sessions.filter(
@@ -602,16 +756,11 @@ function SessionRail({ onResizeStart, onResizeReset, showResizer, collapsed, onC
   ).length;
 
   useEffect(() => {
-    let mounted = true;
-    loadSessions();
-    const interval = setInterval(() => {
-      if (mounted) loadSessions();
-    }, 5000);
-    return () => {
-      mounted = false;
-      clearInterval(interval);
-    };
-  }, []);
+    // Session polling belongs to the active tab (Chat/Agents). The rail only
+    // performs a one-time fallback load to avoid filter thrash/flicker.
+    if ((sessionsData.value || []).length > 0) return;
+    void loadSessions({ type: sessionType }).catch(() => {});
+  }, [sessionType]);
 
   useEffect(() => {
     if (selectedSessionId.value || sessions.length === 0) return;
@@ -866,7 +1015,7 @@ function InspectorPanel({ onResizeStart, onResizeReset, showResizer }) {
  *  Bottom Navigation
  * ═══════════════════════════════════════════════ */
 const PRIMARY_NAV_TABS = ["dashboard", "chat", "tasks", "agents"];
-const MORE_NAV_TABS = ["control", "infra", "logs", "library", "workflows", "settings"];
+const MORE_NAV_TABS = ["control", "infra", "logs", "telemetry", "library", "workflows", "settings"];
 
 function getTabsById(ids) {
   return ids
@@ -1024,25 +1173,25 @@ function MoreSheet({ open, onClose, onNavigate, onOpenBot }) {
  * ═══════════════════════════════════════════════ */
 const BOT_SCREENS = {
   home: {
-    title: "🎛️ Bosun Control Center",
+    title: ":sliders: Bosun Control Center",
     body: "Manage your automation fleet.",
     keyboard: [
-      [{ text: "📊 Status", cmd: "/status" }, { text: "📋 Tasks", cmd: "/tasks" }, { text: "🤖 Agents", cmd: "/agents" }],
-      [{ text: "⚙️ Executor", go: "executor" }, { text: "🛰 Routing", go: "routing" }, { text: "🌳 Workspaces", go: "workspaces" }],
-      [{ text: "📁 Logs", cmd: "/logs" }, { text: "🏥 Health", cmd: "/health" }, { text: "🔄 Refresh", cmd: "/status" }],
+      [{ text: ":chart: Status", cmd: "/status" }, { text: ":clipboard: Tasks", cmd: "/tasks" }, { text: ":bot: Agents", cmd: "/agents" }],
+      [{ text: ":settings: Executor", go: "executor" }, { text: ":server: Routing", go: "routing" }, { text: ":git: Workspaces", go: "workspaces" }],
+      [{ text: ":folder: Logs", cmd: "/logs" }, { text: ":heart: Health", cmd: "/health" }, { text: ":refresh: Refresh", cmd: "/status" }],
     ],
   },
   executor: {
-    title: "⚙️ Executor",
+    title: ":settings: Executor",
     parent: "home",
     body: "Task execution slots, pause, resume, and parallelism.",
     keyboard: [
-      [{ text: "📊 Status", cmd: "/executor" }, { text: "⏸ Pause", cmd: "/pause" }, { text: "▶️ Resume", cmd: "/resume" }],
-      [{ text: "🔢 Max Parallel", go: "maxparallel" }, { text: "🔁 Retry Active", cmd: "/retrytask" }],
+      [{ text: ":chart: Status", cmd: "/executor" }, { text: ":pause: Pause", cmd: "/pause" }, { text: ":play: Resume", cmd: "/resume" }],
+      [{ text: ":hash: Max Parallel", go: "maxparallel" }, { text: ":repeat: Retry Active", cmd: "/retrytask" }],
     ],
   },
   maxparallel: {
-    title: "🔢 Max Parallel Slots",
+    title: ":hash: Max Parallel Slots",
     parent: "executor",
     body: "Set the maximum number of concurrent task slots.",
     keyboard: [
@@ -1052,25 +1201,25 @@ const BOT_SCREENS = {
     ],
   },
   routing: {
-    title: "🛰 Routing & SDKs",
+    title: ":server: Routing & SDKs",
     parent: "home",
     body: "SDK routing, kanban binding, and version info.",
     keyboard: [
-      [{ text: "🤖 SDK Status", cmd: "/sdk" }, { text: "📋 Kanban", cmd: "/kanban" }],
-      [{ text: "🌐 Version", cmd: "/version" }, { text: "❓ Help", cmd: "/help" }],
+      [{ text: ":bot: SDK Status", cmd: "/sdk" }, { text: ":clipboard: Kanban", cmd: "/kanban" }],
+      [{ text: ":globe: Version", cmd: "/version" }, { text: ":help: Help", cmd: "/help" }],
     ],
   },
   workspaces: {
-    title: "🌳 Workspaces",
+    title: ":git: Workspaces",
     parent: "home",
     body: "Git worktrees, logs, and task planning.",
     keyboard: [
-      [{ text: "📊 Fleet Status", cmd: "/status" }, { text: "📁 Logs", cmd: "/logs" }],
-      [{ text: "🗺️ Planner", go: "planner" }, { text: "✅ Start Task", cmd: "/starttask" }],
+      [{ text: ":chart: Fleet Status", cmd: "/status" }, { text: ":folder: Logs", cmd: "/logs" }],
+      [{ text: ":grid: Planner", go: "planner" }, { text: ":check: Start Task", cmd: "/starttask" }],
     ],
   },
   planner: {
-    title: "🗺️ Task Planner",
+    title: ":grid: Task Planner",
     parent: "workspaces",
     body: "Seed new tasks from the backlog into the active queue.",
     keyboard: [
@@ -1142,7 +1291,7 @@ function BotControlsSheet({ open, onClose }) {
         } else if (d?.executed === false && d?.error) {
           setCmdError(d.error);
         } else {
-          setCmdOutput(`✅ ${cmd} sent.`);
+          setCmdOutput(`:check: ${cmd} sent.`);
         }
       } else {
         setCmdError(result?.error || "Command failed");
@@ -1169,7 +1318,7 @@ function BotControlsSheet({ open, onClose }) {
             </button>
             ${navStack.length > 1 ? html`
               <button class="btn btn-ghost btn-sm" type="button" onClick=${botGoHome} aria-label="Go to home">
-                ${iconText("🏠 Home")}
+                ${iconText(":home: Home")}
               </button>
             ` : null}
           </div>
@@ -1185,7 +1334,7 @@ function BotControlsSheet({ open, onClose }) {
         ` : null}
 
         ${cmdError && !cmdLoading ? html`
-          <div class="bot-controls-result bot-controls-result-error">${iconText(`❌ ${cmdError}`)}</div>
+          <div class="bot-controls-result bot-controls-result-error">${iconText(`:close: ${cmdError}`)}</div>
         ` : null}
 
         ${cmdOutput && !cmdLoading && !cmdError ? html`
@@ -1258,6 +1407,21 @@ function App() {
     };
   }, [isLoading]);
   const [isMoreOpen, setIsMoreOpen] = useState(false);
+  const [voiceOverlayOpen, setVoiceOverlayOpen] = useState(false);
+  const [voiceTier, setVoiceTier] = useState(2);
+  const [voiceSessionId, setVoiceSessionId] = useState(null);
+  const [voiceExecutor, setVoiceExecutor] = useState(null);
+  const [voiceAgentMode, setVoiceAgentMode] = useState(null);
+  const [voiceModel, setVoiceModel] = useState(null);
+  const [voiceCallType, setVoiceCallType] = useState("voice");
+  const [voiceInitialVisionSource, setVoiceInitialVisionSource] = useState(
+    null,
+  );
+  const followWindowMode = isFollowWindowFromUrl();
+  const followOverlayOpenedRef = useRef(false);
+  const [floatingCallState, setFloatingCallState] = useState(() =>
+    readFloatingCallState(),
+  );
   const resizeRef = useRef(null);
   const [isCompactNav, setIsCompactNav] = useState(() => {
     const win = globalThis.window;
@@ -1372,6 +1536,18 @@ function App() {
   useEffect(() => {
     const win = globalThis.window;
     if (!win?.matchMedia) return;
+    const query = win.matchMedia(`(max-width: ${COMPACT_NAV_MAX_WIDTH}px)`);
+    const update = () => setIsCompactNav(query.matches);
+    update();
+    query.addEventListener?.("change", update);
+    return () => {
+      query.removeEventListener?.("change", update);
+    };
+  }, []);
+
+  useEffect(() => {
+    const win = globalThis.window;
+    if (!win?.matchMedia) return;
     const tabletQuery = win.matchMedia(
       `(min-width: ${TABLET_MIN_WIDTH}px) and (max-width: ${DESKTOP_MIN_WIDTH - 1}px)`,
     );
@@ -1383,17 +1559,6 @@ function App() {
     };
   }, []);
 
-  useEffect(() => {
-    const win = globalThis.window;
-    if (!win?.matchMedia) return;
-    const query = win.matchMedia(`(max-width: ${COMPACT_NAV_MAX_WIDTH}px)`);
-    const update = () => setIsCompactNav(query.matches);
-    update();
-    query.addEventListener?.("change", update);
-    return () => {
-      query.removeEventListener?.("change", update);
-    };
-  }, []);
 
   useEffect(() => {
     if (!isDesktop || !globalThis.window) return;
@@ -1500,8 +1665,11 @@ function App() {
     // Load notification preferences early (non-blocking)
     loadNotificationPrefs();
 
-    // Load initial data for the default tab, then apply stored executor defaults
-    refreshTab("dashboard", { background: true, manual: false }).then(() => applyStoredDefaults());
+    // Load initial data for the route-selected tab, then apply stored defaults.
+    refreshTab(activeTab.value || "dashboard", {
+      background: true,
+      manual: false,
+    }).then(() => applyStoredDefaults());
 
     // Global keyboard shortcuts (1-7 for tabs, Escape for modals)
     function handleGlobalKeys(e) {
@@ -1550,6 +1718,198 @@ function App() {
   }, []);
 
   useEffect(() => {
+    const onBeforeUnload = (event) => {
+      if (!hasPendingChanges.value) return;
+      event.preventDefault();
+      event.returnValue = "";
+    };
+    globalThis.addEventListener?.("beforeunload", onBeforeUnload);
+    return () => globalThis.removeEventListener?.("beforeunload", onBeforeUnload);
+  }, []);
+
+  useEffect(() => {
+    const handleOpenVoiceMode = async (event) => {
+      try {
+        const requestedCallType =
+          String(event?.detail?.call || "").trim().toLowerCase() === "video"
+            ? "video"
+            : "voice";
+        const requestedVisionSourceRaw = String(
+          event?.detail?.initialVisionSource || "",
+        )
+          .trim()
+          .toLowerCase();
+        const requestedVisionSource =
+          requestedVisionSourceRaw === "camera" ||
+          requestedVisionSourceRaw === "screen"
+            ? requestedVisionSourceRaw
+            : requestedCallType === "video"
+              ? "camera"
+              : null;
+        const currentExecutor =
+          String(event?.detail?.executor || activeAgent.value || "").trim() ||
+          null;
+        const currentMode =
+          String(event?.detail?.mode || agentMode.value || "").trim() || null;
+        const currentModel =
+          String(event?.detail?.model || selectedModel.value || "").trim() ||
+          null;
+        const explicitSessionId =
+          String(event?.detail?.sessionId || "").trim() || null;
+        let currentSessionId =
+          explicitSessionId ||
+          (selectedSessionId.value ? String(selectedSessionId.value) : null);
+
+        // Ensure voice calls always bind to a real chat session so transcript +
+        // delegated agent output are persisted in shared history.
+        if (!currentSessionId) {
+          const created = await createSession({
+            type: "primary",
+            agent: currentExecutor || undefined,
+            mode: currentMode || undefined,
+            model: currentModel || undefined,
+          });
+          const createdId = String(created?.session?.id || "").trim();
+          currentSessionId = createdId || null;
+          if (currentSessionId) {
+            selectedSessionId.value = currentSessionId;
+          }
+        }
+
+        if (!currentSessionId) {
+          showToast("Could not create a chat session for voice mode.", "error");
+          return;
+        }
+
+        setVoiceSessionId(currentSessionId);
+        setVoiceExecutor(currentExecutor);
+        setVoiceAgentMode(currentMode);
+        setVoiceModel(currentModel);
+        setVoiceCallType(requestedCallType);
+        setVoiceInitialVisionSource(requestedVisionSource);
+
+        const response = await fetch("/api/voice/config", { method: "GET" });
+        const cfg = response.ok ? await response.json() : null;
+        if (!cfg?.available) {
+          showToast(cfg?.reason || "Voice mode is not available.", "error");
+          return;
+        }
+        setVoiceTier(Number(cfg?.tier) === 1 ? 1 : 2);
+        setVoiceOverlayOpen(true);
+      } catch (err) {
+        showToast(
+          `Could not open voice mode: ${err?.message || "unknown error"}`,
+          "error",
+        );
+      }
+    };
+
+    globalThis.addEventListener?.("ve:open-voice-mode", handleOpenVoiceMode);
+    return () =>
+      globalThis.removeEventListener?.("ve:open-voice-mode", handleOpenVoiceMode);
+  }, [followWindowMode]);
+
+  useEffect(() => {
+    const onStorage = (event) => {
+      if (event?.key && event.key !== FLOATING_CALL_STATE_KEY) return;
+      setFloatingCallState(readFloatingCallState());
+    };
+    globalThis.addEventListener?.("storage", onStorage);
+    return () => {
+      globalThis.removeEventListener?.("storage", onStorage);
+    };
+  }, []);
+
+  useEffect(() => {
+    if (!followWindowMode) return;
+    const nextFloatingState = {
+      active: Boolean(voiceOverlayOpen),
+      call: voiceCallType,
+    };
+    setFloatingCallState(nextFloatingState);
+    writeFloatingCallState(nextFloatingState);
+  }, [followWindowMode, voiceOverlayOpen, voiceCallType]);
+
+  useEffect(() => {
+    if (!followWindowMode || !voiceOverlayOpen) return;
+    const heartbeat = globalThis.setInterval(() => {
+      const nextFloatingState = {
+        active: true,
+        call: voiceCallType,
+      };
+      setFloatingCallState(nextFloatingState);
+      writeFloatingCallState(nextFloatingState);
+    }, FLOATING_CALL_HEARTBEAT_INTERVAL_MS);
+    return () => globalThis.clearInterval(heartbeat);
+  }, [followWindowMode, voiceOverlayOpen, voiceCallType]);
+
+  useEffect(() => {
+    if (followWindowMode || floatingCallState?.active !== true) return;
+    if (!isFloatingCallStateFresh(floatingCallState)) {
+      const cleared = { active: false, call: floatingCallState?.call };
+      setFloatingCallState(cleared);
+      writeFloatingCallState(cleared);
+      return;
+    }
+    const staleSweep = globalThis.setInterval(() => {
+      setFloatingCallState((previous) => {
+        if (!previous?.active || isFloatingCallStateFresh(previous)) return previous;
+        const cleared = { active: false, call: previous?.call };
+        writeFloatingCallState(cleared);
+        return cleared;
+      });
+    }, FLOATING_CALL_HEARTBEAT_INTERVAL_MS);
+    return () => globalThis.clearInterval(staleSweep);
+  }, [followWindowMode, floatingCallState]);
+
+  useEffect(() => {
+    if (!followWindowMode) return;
+    if (voiceOverlayOpen) {
+      followOverlayOpenedRef.current = true;
+      return;
+    }
+    if (!followOverlayOpenedRef.current) return;
+    globalThis?.veDesktop?.follow?.hide?.().catch?.(() => {});
+  }, [followWindowMode, voiceOverlayOpen]);
+
+  useEffect(() => {
+    const launch = parseVoiceLaunchFromUrl();
+    if (!launch) return;
+    let cancelled = false;
+
+    const start = async () => {
+      if (launch.tab === "chat") {
+        const launchSessionId = String(launch.detail?.sessionId || "").trim();
+        if (launchSessionId) {
+          selectedSessionId.value = launchSessionId;
+          navigateTo("chat", {
+            params: { sessionId: launchSessionId },
+            replace: true,
+            skipGuard: true,
+          });
+        } else {
+          navigateTo("chat", { replace: true, skipGuard: true });
+        }
+      }
+      await new Promise((resolve) => setTimeout(resolve, 60));
+      if (cancelled) return;
+      globalThis.dispatchEvent?.(
+        new CustomEvent("ve:open-voice-mode", { detail: launch.detail }),
+      );
+    };
+
+    start()
+      .catch(() => {})
+      .finally(() => {
+        scrubVoiceLaunchQuery();
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  useEffect(() => {
     const el = mainRef.current;
     if (!el) return;
     const handleScroll = () => {
@@ -1567,7 +1927,7 @@ function App() {
   useEffect(() => {
     const el = mainRef.current;
     if (!el) return;
-    const swipeTabs = TAB_CONFIG.filter((t) => t.id !== "settings");
+    const swipeTabs = TAB_CONFIG.filter((t) => t.id !== "settings" && !t.parent);
     let startX = 0;
     let startY = 0;
     let startTime = 0;
@@ -1628,14 +1988,23 @@ function App() {
   }, []);
 
   const CurrentTab = TAB_COMPONENTS[activeTab.value] || DashboardTab;
-  const isChatOrAgents = activeTab.value === "chat" || activeTab.value === "agents";
-  const showSessionRail = isDesktop && isChatOrAgents;
+  const isChatOrAgents = activeTab.value === "chat" || activeTab.value === "agents" || activeTab.value === "fleet-sessions";
+  const isChat = activeTab.value === "chat";
+  const showSessionRail = isDesktop && isChat;
   const showInspector = isDesktop && isChatOrAgents;
-  const showBottomNav = !isDesktop && !isTablet;
-
-  // On tablet: prefer drawer controls over bottom-nav to avoid dual navigation
+  const showBottomNav = !isDesktop;
+  const railSessionType = "primary";
   const showDrawerToggles = isTablet;
   const showInspectorToggle = isTablet && isChatOrAgents;
+  const showRestoreFloatingCall =
+    isChat &&
+    !followWindowMode &&
+    isFloatingCallStateFresh(floatingCallState) &&
+    typeof globalThis?.veDesktop?.follow?.restore === "function";
+  const floatingCallLabel =
+    String(floatingCallState?.call || "").trim().toLowerCase() === "video"
+      ? "Restore floating video call"
+      : "Restore floating voice call";
 
   const shellStyle = isDesktop
     ? {
@@ -1743,6 +2112,7 @@ function App() {
             collapsed=${railCollapsed}
             onCollapse=${collapseRail}
             onExpand=${expandRail}
+            sessionType=${railSessionType}
           />`
         : null}
       <div class="app-main">
@@ -1767,7 +2137,7 @@ function App() {
             onRefresh=${() => refreshTab(activeTab.value)}
             disabled=${activeTab.value === "chat"}
           >
-            <main class=${`main-content${showBottomNav ? " compact" : ""}`} ref=${mainRef}>
+            <main class=${`main-content${showBottomNav && isCompactNav ? " compact" : ""}`} ref=${mainRef}>
               <${TabErrorBoundary} key=${activeTab.value} tabName=${activeTab.value}>
                 <${CurrentTab} />
               <//>
@@ -1797,7 +2167,7 @@ function App() {
     </div>
     ${showBottomNav
       ? html`<${BottomNav}
-          compact=${true}
+          compact=${isCompactNav}
           moreOpen=${isMoreOpen}
           onToggleMore=${toggleMore}
           onNavigate=${handleNavigate}
@@ -1813,10 +2183,70 @@ function App() {
       open=${isBotOpen}
       onClose=${closeBot}
     />
+    ${showRestoreFloatingCall
+      ? html`
+          <button
+            class="btn btn-primary floating-call-restore"
+            title=${floatingCallLabel}
+            onClick=${async () => {
+              try {
+                const result = await globalThis.veDesktop.follow.restore();
+                if (!result?.ok) {
+                  const nextFloatingState = { active: false, call: floatingCallState?.call };
+                  setFloatingCallState(nextFloatingState);
+                  writeFloatingCallState(nextFloatingState);
+                  showToast("No floating call window is active.", "info");
+                }
+              } catch {
+                showToast("Could not restore floating call window.", "error");
+              }
+            }}
+          >
+            ${resolveIcon("phone")}
+            ${String(floatingCallState?.call || "").trim().toLowerCase() === "video"
+              ? " Restore Video Call"
+              : " Restore Voice Call"}
+          </button>
+        `
+      : null}
+    <${VoiceOverlay}
+      visible=${voiceOverlayOpen}
+      onClose=${() => setVoiceOverlayOpen(false)}
+      onDismiss=${() => {
+        if (followWindowMode && globalThis?.veDesktop?.follow?.hide) {
+          globalThis.veDesktop.follow.hide().catch(() => {});
+          return;
+        }
+        setVoiceOverlayOpen(false);
+      }}
+      tier=${voiceTier}
+      sessionId=${voiceSessionId}
+      executor=${voiceExecutor}
+      mode=${voiceAgentMode}
+      model=${voiceModel}
+      callType=${voiceCallType}
+      initialVisionSource=${voiceInitialVisionSource}
+      compact=${followWindowMode}
+    />
   `;
 }
 
 /* ─── Mount ─── */
-const mountApp = () => preactRender(html`<${App} />`, document.getElementById("app"));
-globalThis.__veRemountApp = mountApp;
+const mountRoot = () => document.getElementById("app");
+const mountApp = () => {
+  const root = mountRoot();
+  if (!root) return;
+  preactRender(html`<${App} />`, root);
+};
+const remountApp = () => {
+  const root = mountRoot();
+  if (!root) return;
+  try {
+    preactRender(null, root);
+  } catch {
+    root.replaceChildren();
+  }
+  preactRender(html`<${App} />`, root);
+};
+globalThis.__veRemountApp = remountApp;
 mountApp();

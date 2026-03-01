@@ -588,7 +588,7 @@ export class ReviewAgent {
         .join("\n");
 
       const message = [
-        `🔍 Review: changes requested`,
+        `:search: Review: changes requested`,
         `Task: ${taskId}`,
         `Summary: ${result.summary}`,
         result.issues.length ? `\nIssues:\n${issueList}` : "",

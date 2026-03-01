@@ -99,8 +99,9 @@ export function DiffViewer({ sessionId }) {
     let active = true;
     setLoading(true);
     setError(null);
+    const safeSessionId = encodeURIComponent(sessionId);
 
-    apiFetch(`/api/sessions/${sessionId}/diff`, { _silent: true })
+    apiFetch(`/api/sessions/${safeSessionId}/diff`, { _silent: true })
       .then((res) => {
         if (!active) return;
         setDiffData(res?.diff || null);
@@ -118,7 +119,8 @@ export function DiffViewer({ sessionId }) {
   const handleRetry = useCallback(() => {
     setError(null);
     setLoading(true);
-    apiFetch(`/api/sessions/${sessionId}/diff`, { _silent: true })
+    const safeSessionId = encodeURIComponent(sessionId);
+    apiFetch(`/api/sessions/${safeSessionId}/diff`, { _silent: true })
       .then((res) => setDiffData(res?.diff || null))
       .catch(() => setError("unavailable"))
       .finally(() => setLoading(false));
@@ -127,7 +129,7 @@ export function DiffViewer({ sessionId }) {
   if (!sessionId) {
     return html`
       <div class="diff-viewer diff-empty">
-        <div class="session-empty-icon">${resolveIcon("📝")}</div>
+        <div class="session-empty-icon">${resolveIcon(":edit:")}</div>
         <div class="session-empty-text">Select a session to view diffs</div>
       </div>
     `;
@@ -145,7 +147,7 @@ export function DiffViewer({ sessionId }) {
     return html`
       <div class="diff-viewer">
         <div class="session-empty">
-          <div class="session-empty-icon">${resolveIcon("📝")}</div>
+          <div class="session-empty-icon">${resolveIcon(":edit:")}</div>
           <div class="session-empty-text">Diff not available</div>
           <button class="btn btn-primary btn-sm" onClick=${handleRetry}>
             Retry
@@ -181,7 +183,7 @@ export function DiffViewer({ sessionId }) {
             )
           : html`
               <div class="session-empty">
-                <div class="session-empty-icon">✨</div>
+                <div class="session-empty-icon">${resolveIcon(":star:")}</div>
                 <div class="session-empty-text">No changes yet</div>
               </div>
             `}

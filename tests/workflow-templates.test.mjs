@@ -7,9 +7,20 @@ import {
   TEMPLATE_CATEGORIES,
   getTemplate,
   listTemplates,
+  listWorkflowSetupProfiles,
+  getWorkflowSetupProfile,
+  resolveWorkflowTemplateIds,
+  applyWorkflowTemplateState,
+  updateWorkflowFromTemplate,
+  reconcileInstalledTemplates,
   installTemplate,
+  installTemplateSet,
 } from "../workflow-templates.mjs";
-import { WorkflowEngine } from "../workflow-engine.mjs";
+import {
+  WorkflowEngine,
+  getNodeType,
+  registerNodeType,
+} from "../workflow-engine.mjs";
 
 // ── Helpers ─────────────────────────────────────────────────────────────────
 
@@ -24,6 +35,165 @@ function makeTmpEngine() {
     services: {},
   });
   return engine;
+}
+
+function collectStrings(value, out = []) {
+  if (typeof value === "string") {
+    out.push(value);
+    return out;
+  }
+  if (Array.isArray(value)) {
+    for (const entry of value) collectStrings(entry, out);
+    return out;
+  }
+  if (value && typeof value === "object") {
+    for (const entry of Object.values(value)) collectStrings(entry, out);
+  }
+  return out;
+}
+
+function ensureExperimentalWorkflowNodeTypesRegistered() {
+  const registerIfMissing = (type, handler) => {
+    if (getNodeType(type)) return;
+    registerNodeType(type, handler);
+  };
+
+  registerIfMissing("meeting.start", {
+    describe: () => "Start a meeting session",
+    schema: {
+      type: "object",
+      properties: {
+        title: { type: "string" },
+        executor: { type: "string" },
+        wakePhrase: { type: "string" },
+      },
+    },
+    async execute(node, ctx) {
+      return {
+        success: true,
+        sessionId: `meeting-${ctx.id}`,
+        title: ctx.resolve(node.config?.title || ""),
+        executor: ctx.resolve(node.config?.executor || ""),
+        wakePhrase: ctx.resolve(node.config?.wakePhrase || ""),
+      };
+    },
+  });
+
+  registerIfMissing("meeting.send", {
+    describe: () => "Send a meeting message",
+    schema: {
+      type: "object",
+      properties: {
+        message: { type: "string" },
+        role: { type: "string" },
+      },
+    },
+    async execute(node, ctx) {
+      return {
+        success: true,
+        message: ctx.resolve(node.config?.message || ""),
+        role: ctx.resolve(node.config?.role || "system"),
+      };
+    },
+  });
+
+  registerIfMissing("meeting.transcript", {
+    describe: () => "Capture meeting transcript",
+    schema: {
+      type: "object",
+      properties: {
+        format: { type: "string" },
+      },
+    },
+    async execute(node, ctx) {
+      const format = ctx.resolve(node.config?.format || "markdown");
+      return {
+        success: true,
+        format,
+        transcript: "bosun wake transcript summary with actionable planning outcomes",
+      };
+    },
+  });
+
+  registerIfMissing("meeting.vision", {
+    describe: () => "Analyze meeting frame",
+    schema: {
+      type: "object",
+      properties: {
+        frameDataUrl: { type: "string" },
+        source: { type: "string" },
+      },
+    },
+    async execute(node, ctx) {
+      return {
+        success: true,
+        analyzed: Boolean(ctx.resolve(node.config?.frameDataUrl || "")),
+        summary: "Vision summary mock",
+      };
+    },
+  });
+
+  registerIfMissing("meeting.finalize", {
+    describe: () => "Finalize meeting session",
+    schema: {
+      type: "object",
+      properties: {
+        status: { type: "string" },
+      },
+    },
+    async execute(node, ctx) {
+      return {
+        success: true,
+        status: ctx.resolve(node.config?.status || "completed"),
+      };
+    },
+  });
+
+  registerIfMissing("trigger.meeting.wake_phrase", {
+    describe: () => "Wake phrase trigger",
+    schema: {
+      type: "object",
+      properties: {
+        wakePhrase: { type: "string" },
+        text: { type: "string" },
+      },
+    },
+    async execute(node, ctx) {
+      const phrase = String(ctx.resolve(node.config?.wakePhrase || "")).toLowerCase();
+      const text = String(ctx.resolve(node.config?.text || "")).toLowerCase();
+      return {
+        triggered: Boolean(phrase) && text.includes(phrase),
+      };
+    },
+  });
+
+  registerIfMissing("action.execute_workflow", {
+    describe: () => "Execute a child workflow",
+    schema: {
+      type: "object",
+      properties: {
+        workflowId: { type: "string" },
+        mode: { type: "string" },
+        input: { type: "object" },
+        inheritContext: { type: "boolean" },
+        includeKeys: { type: "array" },
+        outputVariable: { type: "string" },
+        failOnChildError: { type: "boolean" },
+      },
+    },
+    async execute(node, ctx) {
+      const workflowId = String(ctx.resolve(node.config?.workflowId || "")).trim();
+      if (!workflowId) {
+        return { success: false, status: "failed", error: "workflowId is required" };
+      }
+      return {
+        success: true,
+        status: node.config?.mode === "dispatch" ? "dispatched" : "completed",
+        workflowId,
+        runId: `child-${ctx.id}`,
+      };
+    },
+  });
 }
 
 // ── Template Structural Validation ──────────────────────────────────────────
@@ -103,6 +273,25 @@ describe("workflow-templates", () => {
     }
   });
 
+  it("every template variable is referenced by node/edge config", () => {
+    for (const t of WORKFLOW_TEMPLATES) {
+      const keys = Object.keys(t.variables || {});
+      if (keys.length === 0) continue;
+      const strings = collectStrings({ nodes: t.nodes, edges: t.edges });
+      for (const key of keys) {
+        const used = strings.some((text) =>
+          text.includes(`{{${key}}}`) ||
+          text.includes(`$data?.${key}`) ||
+          text.includes(`$data.${key}`),
+        );
+        expect(
+          used,
+          `${t.id}: variable "${key}" is never referenced in node/edge config`,
+        ).toBe(true);
+      }
+    }
+  });
+
   it("no orphaned nodes (every non-trigger connects via edges)", () => {
     for (const t of WORKFLOW_TEMPLATES) {
       const connected = new Set();
@@ -116,6 +305,76 @@ describe("workflow-templates", () => {
         expect(connected.has(n.id), `${t.id}: node "${n.id}" is orphaned (not in any edge)`).toBe(true);
       }
     }
+  });
+
+  it("task planner template materializes planner output before success notification", () => {
+    const planner = getTemplate("template-task-planner");
+    expect(planner).toBeDefined();
+
+    expect(planner.variables?.taskCount).toBe(5);
+    expect(planner.variables?.prompt).toBe("");
+    expect(typeof planner.variables?.plannerContext).toBe("string");
+
+    const trigger = planner.nodes.find((n) => n.id === "trigger");
+    expect(trigger?.config?.threshold).toBe("{{minTodoCount}}");
+
+    const runPlanner = planner.nodes.find((n) => n.id === "run-planner");
+    expect(runPlanner?.config?.taskCount).toBe("{{taskCount}}");
+    expect(runPlanner?.config?.context).toBe("{{plannerContext}}");
+    expect(runPlanner?.config?.prompt).toBe("{{prompt}}");
+
+    const materialize = planner.nodes.find((n) => n.id === "materialize-tasks");
+    expect(materialize).toBeDefined();
+    expect(materialize.type).toBe("action.materialize_planner_tasks");
+    expect(materialize.config?.failOnZero).toBe(true);
+    expect(materialize.config?.maxTasks).toBe("{{taskCount}}");
+
+    const edgeToMaterialize = planner.edges.find(
+      (e) => e.source === "run-planner" && e.target === "materialize-tasks",
+    );
+    const edgeToCheck = planner.edges.find(
+      (e) => e.source === "materialize-tasks" && e.target === "check-result",
+    );
+    expect(edgeToMaterialize).toBeDefined();
+    expect(edgeToCheck).toBeDefined();
+  });
+
+  it("meeting subworkflow chain template includes meeting and child workflow nodes", () => {
+    const template = getTemplate("template-meeting-subworkflow-chain");
+    expect(template).toBeDefined();
+
+    expect(template.variables?.sessionTitle).toBe("Sprint Planning Sync");
+    expect(template.variables?.meetingExecutor).toBe("codex");
+    expect(template.variables?.wakePhrase).toBe("bosun wake");
+    expect(template.variables?.childWorkflowId).toBe("template-task-planner");
+
+    const startNode = template.nodes.find((n) => n.id === "meeting-start");
+    const visionNode = template.nodes.find((n) => n.id === "meeting-vision");
+    const transcriptNode = template.nodes.find((n) => n.id === "meeting-transcript");
+    const wakeTriggerNode = template.nodes.find((n) => n.id === "wake-phrase-trigger");
+    const chainNode = template.nodes.find((n) => n.id === "execute-child-workflow");
+    const finalizeNode = template.nodes.find((n) => n.id === "meeting-finalize");
+    const guardNode = template.nodes.find((n) => n.id === "guard-transcript");
+
+    expect(startNode?.type).toBe("meeting.start");
+    expect(visionNode?.type).toBe("meeting.vision");
+    expect(transcriptNode?.type).toBe("meeting.transcript");
+    expect(wakeTriggerNode?.type).toBe("trigger.meeting.wake_phrase");
+    expect(chainNode?.type).toBe("action.execute_workflow");
+    expect(finalizeNode?.type).toBe("meeting.finalize");
+    expect(guardNode?.type).toBe("condition.expression");
+    expect(chainNode?.config?.workflowId).toBe("{{childWorkflowId}}");
+    expect(chainNode?.config?.mode).toBe("sync");
+    expect(chainNode?.config?.failOnChildError).toBe(false);
+
+    const guardToChain = template.edges.find(
+      (e) => e.source === "guard-transcript" && e.target === "execute-child-workflow",
+    );
+    const guardToNotify = template.edges.find(
+      (e) => e.source === "guard-transcript" && e.target === "notify-guard-failed",
+    );
+    expect(guardToChain).toBeDefined();
+    expect(guardToNotify).toBeDefined();
   });
 });
 
@@ -167,12 +426,18 @@ describe("template API functions", () => {
       "template-workspace-hygiene",
       "template-task-finalization-guard",
       "template-task-repair-worktree",
-      "template-pr-conflict-resolver",
+      "template-task-status-transition-manager",
+      // template-pr-conflict-resolver deliberately excluded — superseded by
+      // template-bosun-pr-watchdog which owns conflict detection, CI checks,
+      // diff-safety review, and merge in one consolidated workflow.
       "template-agent-session-monitor",
       "template-release-pipeline",
       "template-backend-agent",
       "template-incident-response",
       "template-dependency-audit",
+      "template-task-archiver",
+      "template-sdk-conflict-resolver",
+      "template-sync-engine",
     ];
     for (const id of expectedRecommended) {
       const item = list.find((t) => t.id === id);
@@ -184,6 +449,9 @@ describe("template API functions", () => {
     const result = installTemplate("template-error-recovery", engine);
     expect(result.id).not.toBe("template-error-recovery");
     expect(result.metadata.installedFrom).toBe("template-error-recovery");
+    expect(result.metadata.templateState).toBeDefined();
+    expect(result.metadata.templateState.isCustomized).toBe(false);
+    expect(result.metadata.templateState.updateAvailable).toBe(false);
     expect(result.nodes.length).toBeGreaterThan(0);
 
     // Verify it was saved to the engine
@@ -203,6 +471,143 @@ describe("template API functions", () => {
 
   it("installTemplate throws for unknown template", () => {
     expect(() => installTemplate("template-nope", engine)).toThrow(/not found/);
+  });
+});
+
+describe("template drift + update behavior", () => {
+  beforeEach(() => { makeTmpEngine(); });
+  afterEach(() => {
+    try { rmSync(tmpDir, { recursive: true, force: true }); } catch { /* ok */ }
+  });
+
+  it("marks workflow as customized when fingerprint drifts", () => {
+    const installed = installTemplate("template-error-recovery", engine);
+    const wf = engine.get(installed.id);
+    wf.variables.customNote = "edited";
+    applyWorkflowTemplateState(wf);
+
+    expect(wf.metadata.templateState.isCustomized).toBe(true);
+    expect(wf.metadata.templateState.updateAvailable).toBe(false);
+  });
+
+  it("auto-updates unmodified workflows when template version drift is detected", () => {
+    const installed = installTemplate("template-error-recovery", engine);
+    const wf = engine.get(installed.id);
+    wf.metadata.templateState.installedTemplateFingerprint = "0000-outdated";
+    wf.metadata.templateState.installedTemplateVersion = "0000-outdated";
+    wf.metadata.templateState.updateAvailable = true;
+    engine.save(wf);
+
+    const result = reconcileInstalledTemplates(engine, { autoUpdateUnmodified: true });
+    expect(result.autoUpdated).toBe(1);
+
+    const refreshed = engine.get(installed.id);
+    expect(refreshed.metadata.templateState.updateAvailable).toBe(false);
+    expect(refreshed.metadata.templateState.isCustomized).toBe(false);
+  });
+
+  it("does not auto-update customized workflows with updates available", () => {
+    const installed = installTemplate("template-error-recovery", engine);
+    const wf = engine.get(installed.id);
+    wf.variables.customNote = "edited";
+    applyWorkflowTemplateState(wf);
+    wf.metadata.templateState.installedTemplateFingerprint = "0000-outdated";
+    wf.metadata.templateState.installedTemplateVersion = "0000-outdated";
+    wf.metadata.templateState.updateAvailable = true;
+    engine.save(wf);
+
+    const result = reconcileInstalledTemplates(engine, { autoUpdateUnmodified: true });
+    expect(result.autoUpdated).toBe(0);
+    expect(result.customized.some((entry) => entry.workflowId === wf.id)).toBe(true);
+    expect(result.updateAvailable.some((entry) => entry.workflowId === wf.id)).toBe(true);
+  });
+
+  it("supports copy update mode for customized workflows", () => {
+    const installed = installTemplate("template-error-recovery", engine);
+    const wf = engine.get(installed.id);
+    wf.variables.customNote = "edited";
+    applyWorkflowTemplateState(wf);
+    engine.save(wf);
+
+    const copied = updateWorkflowFromTemplate(engine, wf.id, { mode: "copy" });
+    expect(copied.id).not.toBe(wf.id);
+    expect(copied.name).toContain("(Updated)");
+    expect(copied.metadata.templateState.updateAvailable).toBe(false);
+    expect(copied.metadata.templateState.isCustomized).toBe(false);
+  });
+});
+
+describe("workflow setup profiles", () => {
+  it("exposes built-in setup profiles with template selections", () => {
+    const profiles = listWorkflowSetupProfiles();
+    const ids = profiles.map((profile) => profile.id);
+    expect(ids).toContain("manual");
+    expect(ids).toContain("balanced");
+    expect(ids).toContain("autonomous");
+    for (const profile of profiles) {
+      expect(Array.isArray(profile.templateIds)).toBe(true);
+      expect(profile.templateIds.length).toBeGreaterThan(0);
+      expect(typeof profile.workflowAutomationEnabled).toBe("boolean");
+    }
+    const autonomous = profiles.find((profile) => profile.id === "autonomous");
+    expect(autonomous?.templateIds).toContain("template-bosun-pr-watchdog");
+    expect(autonomous?.templateIds).not.toContain("template-pr-conflict-resolver");
+  });
+
+  it("returns balanced profile as fallback", () => {
+    const profile = getWorkflowSetupProfile("nope");
+    expect(profile.id).toBe("balanced");
+    expect(Array.isArray(profile.templateIds)).toBe(true);
+    expect(profile.templateIds.length).toBeGreaterThan(0);
+  });
+
+  it("resolves explicit template lists and filters unknown IDs", () => {
+    const resolved = resolveWorkflowTemplateIds({
+      profileId: "manual",
+      templateIds: [
+        "template-task-planner",
+        "template-nope",
+        "template-task-planner",
+        "template-error-recovery",
+      ],
+    });
+    expect(resolved).toEqual([
+      "template-task-planner",
+      "template-error-recovery",
+    ]);
+  });
+});
+
+describe("installTemplateSet", () => {
+  beforeEach(() => { makeTmpEngine(); });
+  afterEach(() => {
+    try { rmSync(tmpDir, { recursive: true, force: true }); } catch { /* ok */ }
+  });
+
+  it("installs only the requested templates and skips duplicates", () => {
+    const result = installTemplateSet(engine, [
+      "template-error-recovery",
+      "template-task-planner",
+      "template-nope",
+    ]);
+    // error-recovery auto-installs task-repair-worktree (grouped flow).
+    // installTemplateSet sees the child as already installed → skips it.
+    // So installed=2 (error-recovery, task-planner), skipped=1 (task-repair-worktree), errors=1.
+    expect(result.installed.length).toBe(2);
+    expect(result.skipped.length).toBe(1);
+    expect(result.errors.length).toBe(1);
+    expect(result.errors[0].id).toBe("template-nope");
+    // Verify all 3 valid templates are actually present in the engine
+    const all = engine.list();
+    expect(all.length).toBe(3);
+
+    const second = installTemplateSet(engine, [
+      "template-error-recovery",
+      "template-task-planner",
+    ]);
+    expect(second.installed.length).toBe(0);
+    // error-recovery expands to include task-repair-worktree, so 3 skipped
+    expect(second.skipped.length).toBe(3);
   });
 });
 
@@ -249,23 +654,30 @@ describe("health check template reliability behavior", () => {
 });
 
 describe("github template CLI compatibility", () => {
-  it("uses supported gh pr checks fields for merge strategy and conflict resolver", () => {
+  it("uses supported gh pr checks fields for merge strategy", () => {
     const mergeTemplate = getTemplate("template-pr-merge-strategy");
-    const resolverTemplate = getTemplate("template-pr-conflict-resolver");
     expect(mergeTemplate).toBeDefined();
-    expect(resolverTemplate).toBeDefined();
 
     const checkCi = mergeTemplate.nodes.find((n) => n.id === "check-ci");
-    const verifyCi = resolverTemplate.nodes.find((n) => n.id === "verify-ci");
-
     expect(checkCi?.config?.command).toContain("gh pr checks");
     expect(checkCi?.config?.command).toContain("--json name,state");
     expect(checkCi?.config?.command).not.toContain("conclusion");
+  });
 
-    expect(verifyCi?.config?.command).toContain("gh pr checks");
-    expect(verifyCi?.config?.command).toContain("--json name,state");
-    expect(verifyCi?.config?.command).not.toContain("conclusion");
-    expect(verifyCi?.config?.command).not.toMatch(/\|\s*head\b/);
+  it("conflict resolver is superseded by watchdog and defers merge to it", () => {
+    const resolverTemplate = getTemplate("template-pr-conflict-resolver");
+    expect(resolverTemplate).toBeDefined();
+    // Conflict resolver is no longer recommended — Bosun PR Watchdog supersedes it.
+    expect(resolverTemplate.recommended).toBeFalsy();
+    expect(resolverTemplate.enabled).toBe(false);
+    // Must filter to bosun-attached PRs only — never touch external PRs.
+    const listNode = resolverTemplate.nodes.find((n) => n.id === "list-prs");
+    expect(listNode?.config?.command).toContain("--label bosun-attached");
+    // Must NOT contain a direct merge call — merge is deferred to watchdog.
+    const hasMergeCall = resolverTemplate.nodes.some(
+      (n) => typeof n.config?.command === "string" && n.config.command.includes("gh pr merge")
+    );
+    expect(hasMergeCall).toBe(false);
   });
 
   it("merge strategy CI gate treats unsupported/malformed output as not passed", () => {
@@ -294,6 +706,18 @@ describe("github template CLI compatibility", () => {
     }), {});
     expect(allPassing).toBe(true);
   });
+
+  it("PR watchdog fetch-and-classify inline script has no // line comments (would break single-line eval)", () => {
+    const watchdogTemplate = getTemplate("template-bosun-pr-watchdog");
+    expect(watchdogTemplate).toBeDefined();
+    const fetchNode = watchdogTemplate.nodes.find((n) => n.id === "fetch-and-classify");
+    expect(fetchNode).toBeDefined();
+    const cmd = fetchNode.config?.command || "";
+    // The script is joined into a single line for `node -e "..."`.
+    // Any `//` line comment would comment out all subsequent code on that line,
+    // causing SyntaxError: Unexpected end of input.
+    expect(cmd).not.toMatch(/\/\/(?!\*)/); // no `//` comments
+  });
 });
 
 // ── Dry-Run Execution ───────────────────────────────────────────────────────
@@ -307,6 +731,7 @@ describe("template dry-run execution", () => {
   beforeEach(async () => {
     // Side-effect import registers built-in workflow node types once per test process.
     await import("../workflow-nodes.mjs");
+    ensureExperimentalWorkflowNodeTypesRegistered();
   });
 
   for (const template of WORKFLOW_TEMPLATES) {
@@ -329,7 +754,7 @@ describe("template replaces metadata", () => {
     const withReplaces = WORKFLOW_TEMPLATES.filter(
       (t) => t.metadata?.replaces?.module
     );
-    expect(withReplaces.length).toBeGreaterThanOrEqual(11);
+    expect(withReplaces.length).toBeGreaterThanOrEqual(14);
 
     for (const t of withReplaces) {
       const r = t.metadata.replaces;

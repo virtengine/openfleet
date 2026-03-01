@@ -1,5 +1,9 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
+import { mkdtemp, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { resolve } from "node:path";
 import { setKanbanBackend } from "../kanban-adapter.mjs";
+import { configureTaskStore, addTask, getTask } from "../task-store.mjs";
 
 // Force VK backend so fetchVk() doesn't short-circuit when config says "github"
 process.env.KANBAN_BACKEND = "vk";
@@ -19,6 +23,7 @@ const monitor = await import("../monitor.mjs");
 const {
   fetchVk,
   updateTaskStatus,
+  reconcileTaskStatuses,
   getTaskAgeMs,
   safeRecoverTask,
   recoverySkipCache,
@@ -746,5 +751,44 @@ describe("safeRecoverTask + recoverySkipCache", () => {
     expect(entry).toBeDefined();
     expect(entry.timestamp).toBeGreaterThanOrEqual(before);
     expect(entry.timestamp).toBeLessThanOrEqual(Date.now());
+  });
+});
+
+describe("reconcileTaskStatuses", () => {
+  let tempStoreRoot = null;
+
+  beforeEach(async () => {
+    setKanbanBackend("internal");
+    mockFetch.mockClear();
+    recoverySkipCache.clear();
+    tempStoreRoot = await mkdtemp(resolve(tmpdir(), "monitor-reconcile-"));
+    configureTaskStore({ baseDir: tempStoreRoot });
+  });
+
+  afterEach(async () => {
+    if (tempStoreRoot) {
+      await rm(tempStoreRoot, { recursive: true, force: true });
+      tempStoreRoot = null;
+    }
+  });
+
+  it("recovers stale inreview tasks with no attempt/PR back to todo", async () => {
+    const staleAt = new Date(Date.now() - 4 * 60 * 60 * 1000).toISOString();
+    const taskId = "stale-review-no-pr";
+    addTask({
+      id: taskId,
+      title: "Stale Review Task",
+      description: "Task is stuck in review without an attempt/PR",
+      status: "inreview",
+      updated_at: staleAt,
+      created_at: staleAt,
+    });
+
+    expect(getTask(taskId)?.status).toBe("inreview");
+
+    const result = await reconcileTaskStatuses("test-stale-inreview");
+
+    expect(result?.movedTodo).toBeGreaterThanOrEqual(1);
+    expect(getTask(taskId)?.status).toBe("todo");
   });
 });

@@ -31,6 +31,9 @@ import {
   executorData,
   configData,
   showToast,
+  pendingChanges,
+  setPendingChange,
+  clearPendingChange,
 } from "../modules/state.js";
 import {
   Card,
@@ -55,8 +58,53 @@ import {
   SENSITIVE_KEYS,
 } from "../modules/settings-schema.js";
 
+const SETTINGS_EXTERNAL_EDITORS = new Map();
+
+function registerSettingsExternalEditor(editorId, editorOps) {
+  const key = String(editorId || "").trim();
+  if (!key || !editorOps || typeof editorOps !== "object") {
+    return () => {};
+  }
+  SETTINGS_EXTERNAL_EDITORS.set(key, editorOps);
+  return () => {
+    const current = SETTINGS_EXTERNAL_EDITORS.get(key);
+    if (current === editorOps) SETTINGS_EXTERNAL_EDITORS.delete(key);
+  };
+}
+
+async function runSettingsExternalEditorAction(action) {
+  const mode = action === "discard" ? "discard" : "save";
+  const errors = [];
+  for (const [key, ops] of SETTINGS_EXTERNAL_EDITORS.entries()) {
+    const isDirty = Boolean(ops?.isDirty?.());
+    if (!isDirty) continue;
+    const fn = mode === "discard" ? ops?.discard : ops?.save;
+    if (typeof fn !== "function") continue;
+    try {
+      await fn();
+    } catch (err) {
+      const message = err?.message || "Action failed";
+      errors.push(`${key}: ${message}`);
+    }
+  }
+  if (errors.length > 0) {
+    throw new Error(errors.join(" | "));
+  }
+}
+
 /* ─── Scoped Styles ─── */
 const SETTINGS_STYLES = `
+/* Category navigation */
+.settings-category-mobile {
+  display: none;
+  margin-bottom: 10px;
+}
+.settings-category-mobile-label {
+  display: block;
+  font-size: 12px;
+  color: var(--text-tertiary, #8a8a8a);
+  margin: 0 0 6px 2px;
+}
 /* Category pill tabs — horizontal scrollable row */
 .settings-category-tabs {
   display: flex;
@@ -109,9 +157,9 @@ const SETTINGS_STYLES = `
   flex-wrap: wrap;
   row-gap: 8px;
   padding: 10px 16px;
-  min-width: 240px;
+  min-width: min(240px, calc(100vw - 24px));
   max-width: 480px;
-  width: auto;
+  width: min(480px, calc(100vw - 24px));
   background: var(--glass-bg, rgba(30,30,46,0.95));
   backdrop-filter: blur(20px);
   -webkit-backdrop-filter: blur(20px);
@@ -301,6 +349,10 @@ const SETTINGS_STYLES = `
 .setting-input-wrap select {
   appearance: auto;
 }
+.setting-input-wrap select option {
+  background: #ffffff;
+  color: #111827;
+}
 .setting-unit {
   font-size: 12px;
   color: var(--text-tertiary, #666);
@@ -338,6 +390,10 @@ const SETTINGS_STYLES = `
   color: var(--accent, #5a7cff);
 }
 .settings-banner-text { flex: 1; }
+.settings-banner code {
+  overflow-wrap: anywhere;
+  word-break: break-word;
+}
 /* Diff display for confirm dialog */
 .settings-diff {
   max-height: 300px;
@@ -386,6 +442,18 @@ const SETTINGS_STYLES = `
   width: 100%;
   box-sizing: border-box;
   padding-bottom: 80px;
+  overflow-x: clip;
+}
+
+.setting-row .segmented-control {
+  display: flex;
+  width: 100%;
+  flex-wrap: wrap;
+  margin-bottom: 0;
+}
+.setting-row .segmented-btn {
+  flex: 1 1 96px;
+  min-width: 0;
 }
 
 body.settings-save-open .main-content {
@@ -452,6 +520,78 @@ body.settings-save-open .main-content {
   font-size: 11px;
   color: var(--text-tertiary, #666);
   text-align: center;
+}
+
+@media (max-width: 900px) {
+  .settings-category-mobile {
+    display: block;
+  }
+  .settings-category-tabs {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 8px;
+    overflow-x: visible;
+    padding: 4px 0 8px;
+  }
+  .settings-category-tab {
+    width: 100%;
+    border-radius: 12px;
+    min-height: 42px;
+    padding: 10px 12px;
+    justify-content: flex-start;
+    white-space: normal;
+    line-height: 1.25;
+  }
+}
+
+@media (max-width: 700px) {
+  .settings-save-bar {
+    left: 12px;
+    right: 12px;
+    width: auto;
+    max-width: none;
+    transform: none;
+    padding: 10px 12px;
+  }
+  @keyframes slideUp {
+    from { transform: translateY(20px); opacity: 0; }
+    to   { transform: translateY(0);    opacity: 1; }
+  }
+  .settings-save-bar .save-bar-actions {
+    width: 100%;
+    justify-content: flex-end;
+  }
+  .setting-input-wrap {
+    flex-direction: column;
+    align-items: stretch;
+    gap: 6px;
+  }
+  .setting-input-wrap input[type="text"],
+  .setting-input-wrap input[type="number"],
+  .setting-input-wrap input[type="password"],
+  .setting-input-wrap textarea,
+  .setting-input-wrap select {
+    width: 100%;
+    flex: 1 1 auto;
+  }
+  .setting-unit {
+    align-self: flex-end;
+  }
+  .setting-help-tooltip {
+    left: 0;
+    transform: none;
+    min-width: 0;
+    max-width: min(92vw, 360px);
+  }
+}
+
+@media (max-width: 640px) {
+  .settings-category-tabs {
+    display: none;
+  }
+  .setting-row .segmented-btn {
+    flex: 1 1 calc(50% - 4px);
+  }
 }
 `;
 
@@ -582,6 +722,8 @@ function ServerConfigMode() {
   const [errors, setErrors] = useState({});
   /* Secret visibility: Set of keys currently unmasked */
   const [visibleSecrets, setVisibleSecrets] = useState({});
+  /* Custom-select open state: key -> true while editing custom value */
+  const [customSelectMode, setCustomSelectMode] = useState({});
   /* Help tooltips: key of currently shown tooltip */
   const [activeTooltip, setActiveTooltip] = useState(null);
 
@@ -693,6 +835,12 @@ function ServerConfigMode() {
   const changeCount = useMemo(() => Object.keys(edits).length, [edits]);
 
   useEffect(() => {
+    const key = "settings-server";
+    setPendingChange(key, changeCount > 0);
+    return () => clearPendingChange(key);
+  }, [changeCount]);
+
+  useEffect(() => {
     if (typeof document === "undefined") return undefined;
     const className = "settings-save-open";
     document.body.classList.toggle(className, changeCount > 0);
@@ -744,6 +892,7 @@ function ServerConfigMode() {
     haptic("medium");
     setEdits({});
     setErrors({});
+    setCustomSelectMode({});
     showToast("Changes discarded", "info");
   }, []);
 
@@ -918,27 +1067,61 @@ function ServerConfigMode() {
 
         case "select": {
           const opts = def.options || [];
-          if (opts.length <= 4) {
+          const allowsCustom = opts.includes("custom");
+          const presetOpts = allowsCustom ? opts.filter((o) => o !== "custom") : opts;
+          const currentValue =
+            value || (def.defaultVal != null ? String(def.defaultVal) : "");
+          const isCustomValue =
+            allowsCustom &&
+            currentValue !== "" &&
+            !presetOpts.includes(currentValue);
+          const customMode = Boolean(customSelectMode[def.key] || isCustomValue);
+
+          if (presetOpts.length <= 4 && !allowsCustom) {
             // SegmentedControl for ≤4 options
             control = html`
               <${SegmentedControl}
-                options=${opts.map((o) => ({ value: o, label: o }))}
-                value=${value || (def.defaultVal != null ? String(def.defaultVal) : "")}
+                options=${presetOpts.map((o) => ({ value: o, label: o }))}
+                value=${currentValue}
                 onChange=${(v) => handleChange(def.key, v)}
               />
             `;
           } else {
-            // Dropdown for >4 options
+            // Dropdown for >4 options, and for any custom-enabled setting.
             control = html`
               <div class="setting-input-wrap">
                 <select
-                  value=${value || (def.defaultVal != null ? String(def.defaultVal) : "")}
-                  onChange=${(e) => handleChange(def.key, e.target.value)}
+                  value=${customMode ? "__custom__" : currentValue}
+                  onChange=${(e) => {
+                    const nextValue = String(e.target.value || "");
+                    if (nextValue === "__custom__") {
+                      setCustomSelectMode((prev) => ({ ...prev, [def.key]: true }));
+                      if (!isCustomValue) handleChange(def.key, "");
+                      return;
+                    }
+                    setCustomSelectMode((prev) => ({ ...prev, [def.key]: false }));
+                    handleChange(def.key, nextValue);
+                  }}
+                  onInput=${(e) => {
+                    const nextValue = String(e.target.value || "");
+                    if (nextValue === "__custom__") return;
+                    setCustomSelectMode((prev) => ({ ...prev, [def.key]: false }));
+                    handleChange(def.key, nextValue);
+                  }}
                 >
-                  ${opts.map(
+                  ${presetOpts.map(
                     (o) => html`<option key=${o} value=${o}>${o}</option>`,
                   )}
+                  ${allowsCustom ? html`<option value="__custom__">custom...</option>` : null}
                 </select>
+                ${allowsCustom && customMode ? html`
+                  <input
+                    type="text"
+                    value=${String(isCustomValue ? currentValue : (value || ""))}
+                    placeholder="Enter custom value..."
+                    onInput=${(e) => handleChange(def.key, e.target.value)}
+                  />
+                ` : null}
               </div>
             `;
           }
@@ -964,7 +1147,7 @@ function ServerConfigMode() {
                 type="button"
                 title=${secretVisible ? "Hide" : "Show"}
               >
-                ${resolveIcon(secretVisible ? "🙈" : "👁")}
+                ${resolveIcon(secretVisible ? ":eyeOff:" : ":eye:")}
               </button>
             </div>
           `;
@@ -1040,11 +1223,11 @@ function ServerConfigMode() {
           </div>
           <div class="setting-row-key">${def.key}</div>
           ${control}
-          ${error && html`<div class="setting-validation-error">⚠ ${error}</div>`}
+          ${error && html`<div class="setting-validation-error">${iconText(`:alert: ${error}`)}</div>`}
         </div>
       `;
     },
-    [getValue, isModified, isDefault, errors, visibleSecrets, activeTooltip, handleChange, toggleSecret, showTooltipFor],
+    [getValue, isModified, isDefault, errors, visibleSecrets, activeTooltip, handleChange, toggleSecret, showTooltipFor, customSelectMode],
   );
 
   /* ═══════════════════════════════════════════════
@@ -1059,7 +1242,7 @@ function ServerConfigMode() {
     ${loadError &&
     html`
       <div class="settings-banner settings-banner-error">
-        <span>⚠️</span>
+        <span>${resolveIcon(":alert:")}</span>
         <span class="settings-banner-text">
           <strong>Backend Unreachable</strong> — ${loadError}
         </span>
@@ -1071,7 +1254,7 @@ function ServerConfigMode() {
     !loadError &&
     html`
       <div class="settings-banner settings-banner-warn">
-        <span>${resolveIcon("🧠")}</span>
+        <span>${resolveIcon(":cpu:")}</span>
         <span class="settings-banner-text">Connection lost — reconnecting…</span>
       </div>
     `}
@@ -1079,7 +1262,7 @@ function ServerConfigMode() {
     ${configSync &&
     html`
       <div class="settings-banner ${configSync.skipped?.length ? "settings-banner-warn" : "settings-banner-info"}">
-        <span>${resolveIcon("💾")}</span>
+        <span>${resolveIcon(":save:")}</span>
         <span class="settings-banner-text">
           ${configSync.skipped?.length
             ? `Saved ${configSync.total} settings; synced ${configSync.updated} to config file.`
@@ -1100,7 +1283,7 @@ function ServerConfigMode() {
     !loadError &&
     html`
       <div class="settings-banner settings-banner-info">
-        <span>${resolveIcon("🧭")}</span>
+        <span>${resolveIcon(":compass:")}</span>
         <span class="settings-banner-text">
           Settings are saved to <code>${serverMeta.envPath}</code> and synced to <code>${serverMeta.configPath}</code> for supported keys.
         </span>
@@ -1143,7 +1326,7 @@ function ServerConfigMode() {
         if (filteredSettings.length === 0) {
           return html`
             <div class="settings-empty-search">
-              <div class="settings-empty-search-icon">${resolveIcon("🔍")}</div>
+              <div class="settings-empty-search-icon">${resolveIcon(":search:")}</div>
               <div>No settings match "<strong>${searchQuery}</strong>"</div>
               <div class="meta-text mt-sm">Try a different search term</div>
             </div>
@@ -1164,6 +1347,21 @@ function ServerConfigMode() {
       const activeCat = CATEGORIES.find((c) => c.id === activeCategory);
 
       return html`
+        <div class="settings-category-mobile">
+          <label class="settings-category-mobile-label">Category</label>
+          <div class="setting-input-wrap">
+            <select
+              value=${activeCategory}
+              onChange=${(e) => {
+                setActiveCategory(e.target.value);
+                haptic("light");
+              }}
+            >
+              ${CATEGORIES.map((cat) => html`<option key=${cat.id} value=${cat.id}>${cat.label}</option>`)}
+            </select>
+          </div>
+        </div>
+
         <!-- Category tabs -->
         <div class="settings-category-tabs">
           ${CATEGORIES.map(
@@ -1189,6 +1387,21 @@ function ServerConfigMode() {
 
         <!-- GitHub Device Flow login card -->
         ${activeCategory === "github" && html`<${GitHubDeviceFlowCard} config=${serverData} />`}
+
+        <!-- Voice Endpoints card-based editor (synced with /setup) -->
+        ${activeCategory === "voice" && html`<${VoiceEndpointsEditor} />`}
+
+        <!-- Voice Providers editor (routing order with endpoint linking) -->
+        ${activeCategory === "voice" && html`<${VoiceProvidersEditor} />`}
+
+        <!-- OpenAI Codex OAuth login card (voice category) -->
+        ${activeCategory === "voice" && html`<${OpenAICodexLoginCard} />`}
+
+        <!-- Claude OAuth login card (voice category) -->
+        ${activeCategory === "voice" && html`<${ClaudeLoginCard} />`}
+
+        <!-- Google Gemini OAuth login card (voice category) -->
+        ${activeCategory === "voice" && html`<${GeminiLoginCard} />`}
 
         <!-- Settings list for active category -->
         ${catDefs.length === 0
@@ -1263,7 +1476,7 @@ function ServerConfigMode() {
           ${hasRestartSetting &&
           html`
             <div class="settings-banner settings-banner-warn" style="margin-top:8px">
-              <span>${resolveIcon("🔄")}</span>
+              <span>${resolveIcon(":refresh:")}</span>
               <span class="settings-banner-text">
                 Some changes require a restart. The server will auto-reload (~2 seconds).
               </span>
@@ -1280,6 +1493,59 @@ function ServerConfigMode() {
     `}
   `;
 }
+
+/* ── Inline CSS vars to override Telegram's applyTgTheme() inline styles ──
+ * telegram.js sets --bg-primary, --accent etc. as element.style, which beats
+ * any CSS rule (including [data-theme] selectors).  We must use setProperty()
+ * too when applying a named theme, and restore the Telegram values on "system".
+ */
+const THEME_INLINE_VARS = {
+  dark: {
+    "--bg-primary": "#1f1e1c", "--bg-secondary": "#262522", "--bg-card": "#2b2a27",
+    "--text-primary": "#e8e5de", "--text-secondary": "#b5b0a6", "--text-hint": "#908b81",
+    "--accent": "#da7756", "--accent-text": "#1e1d1a",
+  },
+  "dark-blue": {
+    "--bg-primary": "#0b0f14", "--bg-secondary": "#131a24", "--bg-card": "#131a24",
+    "--text-primary": "#f1f5f9", "--text-secondary": "#94a3b8", "--text-hint": "#64748b",
+    "--accent": "#4cc9f0", "--accent-text": "#000000",
+  },
+  midnight: {
+    "--bg-primary": "#0d1117", "--bg-secondary": "#161b22", "--bg-card": "#21262d",
+    "--text-primary": "#e6edf3", "--text-secondary": "#8b949e", "--text-hint": "#6e7681",
+    "--accent": "#7c3aed", "--accent-text": "#ffffff",
+  },
+  dracula: {
+    "--bg-primary": "#282a36", "--bg-secondary": "#21222c", "--bg-card": "#313342",
+    "--text-primary": "#f8f8f2", "--text-secondary": "#9da5c8", "--text-hint": "#6272a4",
+    "--accent": "#ff79c6", "--accent-text": "#282a36",
+  },
+  nord: {
+    "--bg-primary": "#2e3440", "--bg-secondary": "#272c38", "--bg-card": "#3b4252",
+    "--text-primary": "#eceff4", "--text-secondary": "#d8dee9", "--text-hint": "#9ba8be",
+    "--accent": "#88c0d0", "--accent-text": "#2e3440",
+  },
+  monokai: {
+    "--bg-primary": "#272822", "--bg-secondary": "#1e1f1c", "--bg-card": "#32332c",
+    "--text-primary": "#f8f8f2", "--text-secondary": "#a59f85", "--text-hint": "#75715e",
+    "--accent": "#a6e22e", "--accent-text": "#1e1f1c",
+  },
+  "github-dark": {
+    "--bg-primary": "#0d1117", "--bg-secondary": "#161b22", "--bg-card": "#21262d",
+    "--text-primary": "#e6edf3", "--text-secondary": "#8b949e", "--text-hint": "#6e7681",
+    "--accent": "#58a6ff", "--accent-text": "#0d1117",
+  },
+  ayu: {
+    "--bg-primary": "#0a0e14", "--bg-secondary": "#0d1017", "--bg-card": "#131721",
+    "--text-primary": "#bfbdb6", "--text-secondary": "#565b66", "--text-hint": "#494f5c",
+    "--accent": "#ff8f40", "--accent-text": "#0a0e14",
+  },
+  dawn: {
+    "--bg-primary": "#fdf6e3", "--bg-secondary": "#eee8d5", "--bg-card": "#ffffff",
+    "--text-primary": "#657b83", "--text-secondary": "#839496", "--text-hint": "#93a1a1",
+    "--accent": "#b58900", "--accent-text": "#ffffff",
+  },
+};
 
 /* ═══════════════════════════════════════════════════════════════
  *  AppPreferencesMode — existing client-side preferences
@@ -1315,10 +1581,27 @@ function AppPreferencesMode() {
 
   /* Apply colour theme to the document */
   function applyColorTheme(theme) {
+    const root = document.documentElement;
+    const tgVarKeys = ["--bg-primary","--bg-secondary","--bg-card","--text-primary","--text-secondary","--text-hint","--accent","--accent-text"];
     if (!theme || theme === "system") {
-      document.documentElement.removeAttribute("data-theme");
+      root.removeAttribute("data-theme");
+      // Restore Telegram-supplied inline vars (or clear ours if no Telegram context)
+      const tp = globalThis.Telegram?.WebApp?.themeParams;
+      if (tp) {
+        if (tp.bg_color)            root.style.setProperty("--bg-primary", tp.bg_color);
+        if (tp.secondary_bg_color)  { root.style.setProperty("--bg-secondary", tp.secondary_bg_color); root.style.setProperty("--bg-card", tp.secondary_bg_color); }
+        if (tp.text_color)          root.style.setProperty("--text-primary", tp.text_color);
+        if (tp.hint_color)          { root.style.setProperty("--text-secondary", tp.hint_color); root.style.setProperty("--text-hint", tp.hint_color); }
+        if (tp.button_color)        root.style.setProperty("--accent", tp.button_color);
+        if (tp.button_text_color)   root.style.setProperty("--accent-text", tp.button_text_color);
+      } else {
+        tgVarKeys.forEach(k => root.style.removeProperty(k));
+      }
     } else {
-      document.documentElement.setAttribute("data-theme", theme);
+      root.setAttribute("data-theme", theme);
+      // Also set as inline styles to beat telegram.js's element.style values
+      const vars = THEME_INLINE_VARS[theme];
+      if (vars) Object.entries(vars).forEach(([k, v]) => root.style.setProperty(k, v));
     }
   }
 
@@ -1475,7 +1758,7 @@ function AppPreferencesMode() {
 
 
     <!-- ─── Account ─── -->
-    <${Collapsible} title=${iconText("👤 Account")} defaultOpen=${true}>
+    <${Collapsible} title=${iconText(":users: Account")} defaultOpen=${true}>
       <${Card}>
         <div class="settings-row">
           ${user?.photo_url &&
@@ -1489,7 +1772,7 @@ function AppPreferencesMode() {
           `}
           <div>
             <div style="font-weight:600;font-size:15px">
-              ${user?.first_name || "Unknown"} ${user?.last_name || ""}
+              ${user?.first_name || "Local"} ${user?.last_name || ""}
             </div>
             ${user?.username &&
             html`<div class="meta-text">@${user.username}</div>`}
@@ -1500,7 +1783,7 @@ function AppPreferencesMode() {
     <//>
 
     <!-- ─── Appearance ─── -->
-    <${Collapsible} title=${iconText("🎨 Appearance")} defaultOpen=${false}>
+    <${Collapsible} title=${iconText(":palette: Appearance")} defaultOpen=${false}>
       <${Card}>
         <div class="card-subtitle mb-sm">Color Theme</div>
         <div class="theme-picker-grid">
@@ -1550,7 +1833,7 @@ function AppPreferencesMode() {
     <//>
 
     <!-- ─── Notifications ─── -->
-    <${Collapsible} title=${iconText("🔔 Notifications")} defaultOpen=${false}>
+    <${Collapsible} title=${iconText(":bell: Notifications")} defaultOpen=${false}>
       <${Card}>
         <${ListItem}
           title="Real-time Updates"
@@ -1589,7 +1872,7 @@ function AppPreferencesMode() {
     <//>
 
     <!-- ─── Data & Storage ─── -->
-    <${Collapsible} title=${iconText("💾 Data & Storage")} defaultOpen=${false}>
+    <${Collapsible} title=${iconText(":save: Data & Storage")} defaultOpen=${false}>
       <${Card}>
         <${ListItem}
           title="WebSocket"
@@ -1610,7 +1893,7 @@ function AppPreferencesMode() {
           subtitle="Remove all stored preferences"
           trailing=${html`
             <button class="btn btn-ghost btn-sm" onClick=${handleClearCache}>
-              ${iconText("🗑 Clear")}
+              ${iconText(":trash: Clear")}
             </button>
           `}
         />
@@ -1618,7 +1901,7 @@ function AppPreferencesMode() {
     <//>
 
     <!-- ─── Executor Defaults ─── -->
-    <${Collapsible} title="⚙️ Executor Defaults" defaultOpen=${false}>
+    <${Collapsible} title=${iconText(":settings: Executor Defaults")} defaultOpen=${false}>
       <${Card}>
         <div class="card-subtitle mb-sm">Default Max Parallel</div>
         <div class="range-row mb-md">
@@ -1665,7 +1948,7 @@ function AppPreferencesMode() {
     <//>
 
     <!-- ─── Advanced ─── -->
-    <${Collapsible} title=${iconText("🔧 Advanced")} defaultOpen=${false}>
+    <${Collapsible} title=${iconText(":settings: Advanced")} defaultOpen=${false}>
       <${Card}>
         <${ListItem}
           title="Debug Mode"
@@ -1716,7 +1999,7 @@ function AppPreferencesMode() {
     <//>
 
     <!-- ─── About ─── -->
-    <${Collapsible} title="ℹ️ About" defaultOpen=${false}>
+    <${Collapsible} title=${iconText(":help: About")} defaultOpen=${false}>
       <${Card}>
         <div style="text-align:center;padding:12px 0">
           <div style="font-size:18px;font-weight:700;margin-bottom:4px">
@@ -1763,6 +2046,851 @@ function AppPreferencesMode() {
     <//>
   `;
 }
+
+/* ═══════════════════════════════════════════════════════════════
+ *  VoiceEndpointsEditor — card-based multi-endpoint voice config
+ *  Mirrors the setup.html voice endpoints UI exactly.
+ * ═══════════════════════════════════════════════════════════════ */
+function VoiceEndpointsEditor() {
+  const [endpoints, setEndpoints] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [saving, setSaving] = useState(false);
+  const [dirty, setDirty] = useState(false);
+  const [loadError, setLoadError] = useState(null);
+  const [testResults, setTestResults] = useState({});
+  const [oauthStatus, setOauthStatus] = useState({ openai: {}, claude: {}, gemini: {} });
+  const [customModelMode, setCustomModelMode] = useState({});
+
+  const getDefaultEndpointUrl = useCallback((provider, authSource = "apiKey") => {
+    const p = String(provider || "").toLowerCase();
+    if (p === "openai") return "https://api.openai.com";
+    if (p === "claude") return "https://api.anthropic.com";
+    if (p === "gemini") return "https://generativelanguage.googleapis.com";
+    return "";
+  }, []);
+
+  const isEndpointEditable = useCallback((provider) => {
+    const p = String(provider || "").toLowerCase();
+    return p === "azure" || p === "custom";
+  }, []);
+
+  const endpointModelOptions = useMemo(() => {
+    return [
+      "gpt-audio-1.5",
+      "gpt-realtime-1.5",
+      "gpt-4o-realtime-preview-2024-12-17",
+      "claude-sonnet-4.6",
+      "claude-haiku-4.5",
+      "gemini-2.5-pro",
+      "gemini-2.5-flash",
+      "gemini-3.0-flash",
+      "gemini-3.1-pro",
+    ];
+  }, []);
+
+  const normalizeEp = useCallback((ep = {}, idx = 0) => ({
+    _id: ep._id ?? `ep-${idx}-${Date.now()}`,
+    name: String(ep.name || `endpoint-${idx + 1}`),
+    provider: ["azure", "openai", "claude", "gemini", "custom"].includes(ep.provider) ? ep.provider : "azure",
+    endpoint: (() => {
+      const p = ["azure", "openai", "claude", "gemini", "custom"].includes(ep.provider) ? ep.provider : "azure";
+      const raw = String(ep.endpoint || "");
+      return (p === "azure" || p === "custom") ? raw : (raw || getDefaultEndpointUrl(p, ep.authSource));
+    })(),
+    deployment: String(ep.deployment || ""),
+    model: String(ep.model || ""),
+    visionModel: String(ep.visionModel || ""),
+    apiKey: String(ep.apiKey || ""),
+    voiceId: String(ep.voiceId || ""),
+    role: ["primary", "backup"].includes(ep.role) ? ep.role : "primary",
+    weight: Number(ep.weight) > 0 ? Number(ep.weight) : 1,
+    enabled: ep.enabled !== false,
+    authSource: ["apiKey", "oauth"].includes(ep.authSource) ? ep.authSource : "apiKey",
+  }), [getDefaultEndpointUrl]);
+
+  // Fetch OAuth status for all providers
+  const fetchOAuthStatuses = useCallback(async () => {
+    for (const provider of ["openai", "claude", "gemini"]) {
+      try {
+        const res = await apiFetch(`/api/voice/auth/${provider}/status`);
+        if (res.ok) {
+          setOauthStatus((prev) => ({ ...prev, [provider]: { status: res.status || "idle", hasToken: !!res.hasToken } }));
+        }
+      } catch { /* best-effort */ }
+    }
+  }, []);
+
+  // Test endpoint connection
+  const testEndpointConnection = useCallback(async (ep) => {
+    const key = ep._id;
+    setTestResults((prev) => ({ ...prev, [key]: { testing: true } }));
+    try {
+      const res = await apiFetch("/api/voice/endpoints/test", {
+        method: "POST",
+        body: JSON.stringify({ provider: ep.provider, apiKey: ep.apiKey, endpoint: ep.endpoint, deployment: ep.deployment, model: ep.model, authSource: ep.authSource }),
+      });
+      if (res.ok) {
+        setTestResults((prev) => ({ ...prev, [key]: { testing: false, result: "success", latencyMs: res.latencyMs } }));
+        haptic("success");
+      } else {
+        setTestResults((prev) => ({ ...prev, [key]: { testing: false, result: "error", error: res.error || "Connection failed" } }));
+        haptic("heavy");
+      }
+    } catch (err) {
+      setTestResults((prev) => ({ ...prev, [key]: { testing: false, result: "error", error: err.message || "Network error" } }));
+      haptic("heavy");
+    }
+  }, []);
+
+  useEffect(() => {
+    (async () => {
+      try {
+        const res = await apiFetch("/api/voice/endpoints");
+        const eps = Array.isArray(res?.voiceEndpoints) ? res.voiceEndpoints : [];
+        setEndpoints(eps.map((ep, i) => normalizeEp(ep, i)));
+      } catch (err) {
+        setLoadError(err.message || "Failed to load voice endpoints");
+      } finally {
+        setLoading(false);
+      }
+    })();
+    fetchOAuthStatuses();
+  }, [normalizeEp, fetchOAuthStatuses]);
+
+  useEffect(() => {
+    const key = "settings-voice-endpoints";
+    setPendingChange(key, dirty);
+    return () => clearPendingChange(key);
+  }, [dirty]);
+
+  const addEndpoint = useCallback(() => {
+    setEndpoints((prev) => {
+      const next = [
+        ...prev,
+        normalizeEp(
+          { provider: "azure", role: prev.length === 0 ? "primary" : "backup" },
+          prev.length,
+        ),
+      ];
+      setDirty(true);
+      return next;
+    });
+  }, [normalizeEp]);
+
+  const removeEndpoint = useCallback((id) => {
+    setEndpoints((prev) => {
+      setDirty(true);
+      return prev.filter((ep) => ep._id !== id);
+    });
+  }, []);
+
+  const updateEndpoint = useCallback((id, field, value) => {
+    setEndpoints((prev) => {
+      setDirty(true);
+      return prev.map((ep) =>
+        ep._id === id
+          ? (() => {
+              const next = { ...ep, [field]: field === "weight" ? (Number(value) || 1) : value };
+              if (field === "provider") {
+                if (!isEndpointEditable(next.provider)) {
+                  next.endpoint = getDefaultEndpointUrl(next.provider, next.authSource);
+                }
+                if (next.provider !== "azure") next.deployment = "";
+                if (next.provider === "custom" && !next.model) {
+                  next.model = endpointModelOptions[0] || "gpt-audio-1.5";
+                }
+              }
+              if (field === "authSource" && !isEndpointEditable(next.provider)) {
+                next.endpoint = getDefaultEndpointUrl(next.provider, next.authSource);
+              }
+              return next;
+            })()
+          : ep,
+      );
+    });
+  }, [endpointModelOptions, getDefaultEndpointUrl, isEndpointEditable]);
+
+  const handleSave = useCallback(async () => {
+    setSaving(true);
+    try {
+      const payload = endpoints.map(({ _id, ...ep }) => ep);
+      await apiFetch("/api/voice/endpoints", {
+        method: "POST",
+        body: JSON.stringify({ voiceEndpoints: payload }),
+      });
+      setDirty(false);
+      showToast("Voice endpoints saved", "success");
+      haptic("medium");
+    } catch (err) {
+      showToast(`Save failed: ${err.message}`, "error");
+      haptic("heavy");
+    } finally {
+      setSaving(false);
+    }
+  }, [endpoints]);
+
+  if (loading) return html`<${SkeletonCard} height="80px" />`;
+
+  return html`
+    <${Card}>
+      <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:12px">
+        <div>
+          <strong>Voice Endpoints</strong>
+          <div class="meta-text" style="margin-top:2px">
+            Named endpoints with per-credential failover. Primary is tried first; backups on failure.
+          </div>
+        </div>
+        ${dirty && html`
+          <button
+            class=${`btn btn-primary btn-sm ${saving ? "btn-loading" : ""}`}
+            onClick=${handleSave}
+            disabled=${saving}
+          >
+            ${saving ? html`<${Spinner} size=${14} /> Saving…` : "Save"}
+          </button>
+        `}
+      </div>
+      ${loadError && html`
+        <div class="settings-banner settings-banner-warn" style="margin-bottom:10px">${loadError}</div>
+      `}
+      ${endpoints.map((ep) => html`
+        <div key=${ep._id} style="border:1px solid var(--border-color,rgba(255,255,255,0.1));border-radius:8px;padding:12px;margin-bottom:10px">
+          <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:10px">
+            <input
+              type="text"
+              value=${ep.name}
+              placeholder="Endpoint name"
+              style="font-weight:600;background:transparent;border:none;border-bottom:1px solid var(--border-color,rgba(255,255,255,0.15));color:inherit;width:100%;font-size:14px;padding:2px 0;outline:none"
+              onInput=${(e) => updateEndpoint(ep._id, "name", e.target.value)}
+            />
+            <button
+              class="btn btn-sm"
+              style="margin-left:8px;white-space:nowrap;opacity:0.7;flex-shrink:0"
+              onClick=${() => removeEndpoint(ep._id)}
+            >Remove</button>
+          </div>
+          <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px">
+            <div>
+              <div class="setting-row-label">Provider</div>
+              <select value=${ep.provider} onChange=${(e) => updateEndpoint(ep._id, "provider", e.target.value)}>
+                <option value="azure">Azure OpenAI</option>
+                <option value="openai">OpenAI</option>
+                <option value="claude">Claude (Anthropic)</option>
+                <option value="gemini">Google Gemini</option>
+                <option value="custom">Custom Endpoint</option>
+              </select>
+            </div>
+            <div>
+              <div class="setting-row-label">Role</div>
+              <select value=${ep.role} onChange=${(e) => updateEndpoint(ep._id, "role", e.target.value)}>
+                <option value="primary">Primary</option>
+                <option value="backup">Backup</option>
+              </select>
+            </div>
+            <div>
+              <div class="setting-row-label">Weight</div>
+              <input type="number" value=${ep.weight} min="1" max="10" style="width:70px"
+                onInput=${(e) => updateEndpoint(ep._id, "weight", e.target.value)} />
+            </div>
+            <div style="display:flex;align-items:center;padding-top:16px">
+              <${Toggle} checked=${ep.enabled} onChange=${(v) => updateEndpoint(ep._id, "enabled", v)} label="Enabled" />
+            </div>
+            ${["openai","claude","gemini"].includes(ep.provider) && html`
+              <div style="grid-column:1/-1">
+                <div class="setting-row-label">Auth Method</div>
+                <select value=${ep.authSource || "apiKey"} onChange=${(e) => updateEndpoint(ep._id, "authSource", e.target.value)}>
+                  <option value="apiKey">API Key</option>
+                  <option value="oauth">OAuth (Connected Account)</option>
+                </select>
+                ${ep.authSource === "oauth" && oauthStatus[ep.provider]?.status === "connected" && html`
+                  <div class="meta-text" style="margin-top:3px;color:var(--color-success,#22c55e)">✓ Connected — will use your ${ep.provider === "openai" ? "OpenAI" : ep.provider === "claude" ? "Claude" : "Gemini"} account.</div>
+                `}
+                ${ep.authSource === "oauth" && oauthStatus[ep.provider]?.status !== "connected" && html`
+                  <div class="meta-text" style="margin-top:3px;color:var(--color-warning,#f59e0b)">⚠ Not connected. Sign in via Connected Accounts above to use OAuth.</div>
+                `}
+              </div>
+            `}
+            <div style=${`grid-column:1/-1${ep.authSource === "oauth" && ["openai","claude","gemini"].includes(ep.provider) ? ";display:none" : ""}`}>
+              <div class="setting-row-label">${ep.provider === "azure" ? "API Key" : "API Key (manual)"}</div>
+              <input type="password" value=${ep.apiKey}
+                placeholder="API key for this endpoint"
+                onInput=${(e) => updateEndpoint(ep._id, "apiKey", e.target.value)} />
+            </div>
+            ${ep.provider === "azure" && html`
+              <div style="grid-column:1/-1">
+                <div class="setting-row-label">Azure Endpoint URL</div>
+                <input type="text" value=${ep.endpoint} placeholder="https://your-resource.openai.azure.com"
+                  onInput=${(e) => updateEndpoint(ep._id, "endpoint", e.target.value)} />
+              </div>
+              <div style="grid-column:1/-1">
+                <div class="setting-row-label">Audio Model (Realtime)</div>
+                <input type="text" value=${ep.deployment} placeholder="gpt-realtime-1.5"
+                  onInput=${(e) => updateEndpoint(ep._id, "deployment", e.target.value)} />
+                <div class="meta-text" style="margin-top:3px">
+                  GA models (gpt-realtime-1.5, gpt-realtime) use /openai/v1/ paths automatically.
+                  Preview models (gpt-4o-realtime-preview) use legacy paths.
+                </div>
+              </div>
+            `}
+            ${ep.provider === "custom" && html`
+              <div style="grid-column:1/-1">
+                <div class="setting-row-label">Endpoint URL</div>
+                <input type="text" value=${ep.endpoint} placeholder="https://your-custom-endpoint.example.com"
+                  onInput=${(e) => updateEndpoint(ep._id, "endpoint", e.target.value)} />
+              </div>
+              <div style="grid-column:1/-1">
+                <div class="setting-row-label">Model</div>
+                ${(() => {
+                  const known = endpointModelOptions;
+                  const isCustom = Boolean(customModelMode[ep._id]) || (ep.model && !known.includes(ep.model));
+                  return html`
+                    <select
+                      value=${isCustom ? "__custom__" : (ep.model || (known[0] || ""))}
+                      onChange=${(e) => {
+                        const next = String(e.target.value || "");
+                        if (next === "__custom__") {
+                          setCustomModelMode((prev) => ({ ...prev, [ep._id]: true }));
+                          updateEndpoint(ep._id, "model", known.includes(ep.model) ? "" : ep.model);
+                          return;
+                        }
+                        setCustomModelMode((prev) => ({ ...prev, [ep._id]: false }));
+                        updateEndpoint(ep._id, "model", next);
+                      }}
+                    >
+                      ${known.map((m) => html`<option value=${m}>${m}</option>`)}
+                      <option value="__custom__">custom...</option>
+                    </select>
+                    ${isCustom && html`
+                      <input
+                        type="text"
+                        value=${ep.model || ""}
+                        placeholder="Enter custom model slug..."
+                        onInput=${(e) => updateEndpoint(ep._id, "model", e.target.value)}
+                        style="margin-top:6px"
+                      />
+                    `}
+                  `;
+                })()}
+              </div>
+            `}
+            ${!isEndpointEditable(ep.provider) && html`
+              <div style="grid-column:1/-1">
+                <div class="setting-row-label">Endpoint URL</div>
+                <input
+                  type="text"
+                  value=${getDefaultEndpointUrl(ep.provider, ep.authSource)}
+                  readonly
+                  disabled
+                />
+                <div class="meta-text" style="margin-top:3px">
+                  Auto-derived from provider and auth method. Use Azure or Custom to override.
+                </div>
+              </div>
+            `}
+            ${ep.provider === "openai" && html`
+              <div style="grid-column:1/-1">
+                <div class="setting-row-label">Audio Model (Realtime)</div>
+                <input type="text" value=${ep.model} placeholder="gpt-4o-realtime-preview"
+                  onInput=${(e) => updateEndpoint(ep._id, "model", e.target.value)} />
+              </div>
+            `}
+            ${ep.provider === "claude" && html`
+              <div style="grid-column:1/-1">
+                <div class="setting-row-label">Model</div>
+                <input type="text" value=${ep.model} placeholder="claude-sonnet-4.6"
+                  onInput=${(e) => updateEndpoint(ep._id, "model", e.target.value)} />
+              </div>
+            `}
+            ${ep.provider === "gemini" && html`
+              <div style="grid-column:1/-1">
+                <div class="setting-row-label">Model</div>
+                <input type="text" value=${ep.model} placeholder="gemini-2.0-flash"
+                  onInput=${(e) => updateEndpoint(ep._id, "model", e.target.value)} />
+              </div>
+            `}
+            <div style="grid-column:1/-1">
+              <div class="setting-row-label">Vision Model</div>
+              <input type="text" value=${ep.visionModel}
+                placeholder=${ep.provider === "azure" ? "gpt-4o" : ep.provider === "claude" ? "claude-sonnet-4.6" : ep.provider === "gemini" ? "gemini-3.0-flash" : "gpt-4o"}
+                onInput=${(e) => updateEndpoint(ep._id, "visionModel", e.target.value)} />
+              <div class="meta-text" style="margin-top:3px">Model used for screenshot / image analysis tasks.</div>
+            </div>
+          </div>
+          <!-- Test Connection -->
+          <div style="display:flex;align-items:center;gap:10px;margin-top:8px">
+            <button class="btn btn-sm"
+              disabled=${!!(testResults[ep._id]?.testing)}
+              onClick=${() => testEndpointConnection(ep)}
+              style="min-width:130px">
+              ${testResults[ep._id]?.testing ? html`<${Spinner} size=${12} /> Testing…` : "Test Connection"}
+            </button>
+            ${testResults[ep._id]?.result === "success" && html`
+              <span style="color:var(--color-success,#22c55e);font-size:12px;font-weight:600">
+                ✓ Connected${testResults[ep._id].latencyMs != null ? ` (${testResults[ep._id].latencyMs}ms)` : ""}
+              </span>
+            `}
+            ${testResults[ep._id]?.result === "error" && html`
+              <span style="color:var(--color-error,#ef4444);font-size:12px;font-weight:600">
+                ✗ ${testResults[ep._id].error}
+              </span>
+            `}
+          </div>
+        </div>
+      `)}
+      <button class="btn btn-sm" onClick=${addEndpoint} style="margin-top:2px">+ Add Endpoint</button>
+      ${endpoints.length === 0 && !loadError && html`
+        <div class="meta-text" style="margin-top:8px">
+          No endpoints configured. Add one above, or use the legacy env vars below as fallback.
+        </div>
+      `}
+    <//>
+  `;
+}
+
+/* ═══════════════════════════════════════════════════════════════
+ *  VoiceProvidersEditor — provider routing (priority order) with
+ *  endpoint linking, model/vision dropdowns, voice persona.
+ *  Mirrors setup.html's provider card UI.
+ * ═══════════════════════════════════════════════════════════════ */
+const VOICE_PROVIDER_MODEL_DEFAULTS = {
+  openai: { model: "gpt-audio-1.5", visionModel: "gpt-4.1-nano", models: ["gpt-audio-1.5", "gpt-realtime-1.5", "gpt-4o-realtime-preview-2024-12-17"], visionModels: ["gpt-4.1-nano", "gpt-4.1-mini", "gpt-4.1"] },
+  azure: { model: "gpt-audio-1.5", visionModel: "gpt-4.1-nano", models: ["gpt-audio-1.5", "gpt-realtime-1.5", "gpt-4o-realtime-preview"], visionModels: ["gpt-4.1-nano", "gpt-4.1-mini", "gpt-4.1"] },
+  claude: { model: "claude-sonnet-4.6", visionModel: "claude-sonnet-4.6", models: ["claude-sonnet-4.6", "claude-haiku-4.5"], visionModels: ["claude-sonnet-4.6", "claude-haiku-4.5"] },
+  gemini: { model: "gemini-3.1-pro", visionModel: "gemini-3.0-flash", models: ["gemini-2.5-pro", "gemini-2.5-flash", "gemini-2.0-flash", "gemini-3.0-flash", "gemini-3.1-pro"], visionModels: ["gemini-2.5-flash", "gemini-2.5-pro", "gemini-2.0-flash", "gemini-3.0-flash", "gemini-3.1-pro"] },
+  fallback: { model: "", visionModel: "", models: [], visionModels: [] },
+};
+const _getProviderDefaults = (provider) =>
+  VOICE_PROVIDER_MODEL_DEFAULTS[String(provider || "fallback").toLowerCase()] || VOICE_PROVIDER_MODEL_DEFAULTS.fallback;
+
+function VoiceProvidersEditor() {
+  const [providers, setProviders] = useState([]);
+  const [endpoints, setEndpoints] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [saving, setSaving] = useState(false);
+  const [dirty, setDirty] = useState(false);
+  const [loadError, setLoadError] = useState(null);
+
+  const normalizeProvider = useCallback((entry = {}) => {
+    const allowedProviders = ["openai", "azure", "claude", "gemini", "fallback"];
+    const provider = String(entry.provider || "fallback").trim().toLowerCase();
+    const normalizedProvider = allowedProviders.includes(provider) ? provider : "fallback";
+    const defaults_ = _getProviderDefaults(normalizedProvider);
+    return {
+      _id: entry._id || `prov_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
+      id: entry.id || Date.now() + Math.random(),
+      provider: normalizedProvider,
+      model: String(entry.model ?? defaults_.model ?? "").trim(),
+      visionModel: String(entry.visionModel ?? defaults_.visionModel ?? "").trim(),
+      voiceId: String(entry.voiceId ?? "alloy").trim() || "alloy",
+      azureDeployment: String(entry.azureDeployment ?? (normalizedProvider === "azure" ? "gpt-audio-1.5" : "")).trim(),
+      endpointId: String(entry.endpointId ?? "").trim(),
+    };
+  }, []);
+
+  useEffect(() => {
+    (async () => {
+      try {
+        const [provRes, epRes] = await Promise.all([
+          apiFetch("/api/voice/providers"),
+          apiFetch("/api/voice/endpoints"),
+        ]);
+        const provs = Array.isArray(provRes?.providers) ? provRes.providers : [];
+        setProviders(provs.map((p) => normalizeProvider(p)));
+        const eps = Array.isArray(epRes?.voiceEndpoints) ? epRes.voiceEndpoints : [];
+        setEndpoints(eps);
+      } catch (err) {
+        setLoadError(err.message || "Failed to load voice providers");
+      } finally {
+        setLoading(false);
+      }
+    })();
+  }, [normalizeProvider]);
+
+  useEffect(() => {
+    const key = "settings-voice-providers";
+    setPendingChange(key, dirty);
+    return () => clearPendingChange(key);
+  }, [dirty]);
+
+  const addProvider = useCallback(() => {
+    if (providers.length >= 5) return;
+    setProviders((prev) => [...prev, normalizeProvider({})]);
+    setDirty(true);
+    haptic("light");
+  }, [providers.length, normalizeProvider]);
+
+  const removeProvider = useCallback((_id) => {
+    setProviders((prev) => prev.filter((p) => p._id !== _id));
+    setDirty(true);
+    haptic("light");
+  }, []);
+
+  const updateProvider = useCallback((_id, field, value) => {
+    setProviders((prev) => prev.map((p) => {
+      if (p._id !== _id) return p;
+      const updated = { ...p, [field]: value };
+      // When provider type changes, reset model/vision to defaults
+      if (field === "provider") {
+        const defaults_ = _getProviderDefaults(value);
+        updated.model = defaults_.model;
+        updated.visionModel = defaults_.visionModel;
+        updated.endpointId = ""; // clear linked endpoint
+        if (value === "azure") updated.azureDeployment = "gpt-audio-1.5";
+        else updated.azureDeployment = "";
+      }
+      return updated;
+    }));
+    setDirty(true);
+  }, []);
+
+  const saveProviders = useCallback(async () => {
+    setSaving(true);
+    try {
+      const payload = providers.map(({ _id, ...rest }) => rest);
+      const res = await apiFetch("/api/voice/providers", {
+        method: "POST",
+        body: JSON.stringify({ providers: payload }),
+      });
+      if (!res.ok) throw new Error(res.error || "Save failed");
+      haptic("success");
+      setDirty(false);
+    } catch (err) {
+      haptic("heavy");
+      setLoadError(err.message || "Save failed");
+      setTimeout(() => setLoadError(null), 4000);
+    } finally {
+      setSaving(false);
+    }
+  }, [providers]);
+
+  if (loading) return html`<${Card} title="Voice Providers"><${Spinner} /> Loading…<//>`;
+  if (loadError && providers.length === 0) return html`<${Card} title="Voice Providers"><div class="meta-text" style="color:var(--color-error)">${loadError}</div><//>`;
+
+  return html`
+    <${Card} title="Voice Providers (Priority Order)"
+      badge=${dirty ? html`<${Badge} variant="warning">Unsaved<//>` : null}
+      actions=${dirty ? html`
+        <button class="btn btn-sm btn-primary" onClick=${saveProviders} disabled=${saving}>
+          ${saving ? html`<${Spinner} size=${12} /> Saving…` : "Save Providers"}
+        </button>
+      ` : null}>
+      <div class="meta-text" style="margin-bottom:10px">
+        Configure up to 5 providers in priority order. Bosun tries them in sequence during voice sessions.
+      </div>
+      ${loadError && html`<div class="meta-text" style="color:var(--color-error);margin-bottom:8px">${loadError}</div>`}
+      ${providers.map((prov, idx) => {
+        const defaults_ = _getProviderDefaults(prov.provider);
+        const knownModels = defaults_.models || [];
+        const knownVisionModels = defaults_.visionModels || [];
+        const isCustomModel = knownModels.length > 0 && !knownModels.includes(prov.model);
+        const isCustomVision = knownVisionModels.length > 0 && !knownVisionModels.includes(prov.visionModel);
+        const matchingEps = endpoints.filter((ep) => ep.provider === prov.provider && ep.enabled !== false);
+        return html`
+        <div style="border:1px solid var(--border-primary);border-radius:var(--radius-sm);padding:12px;margin-bottom:10px">
+          <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px">
+            <strong>Provider ${idx + 1}</strong>
+            <button class="btn btn-sm" style="color:var(--color-error);font-size:11px"
+              onClick=${() => removeProvider(prov._id)}
+              disabled=${providers.length <= 1}>Remove</button>
+          </div>
+          <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px">
+            <div>
+              <div class="setting-row-label">Provider Type</div>
+              <select value=${prov.provider}
+                onChange=${(e) => updateProvider(prov._id, "provider", e.target.value)}>
+                <option value="openai">OpenAI Realtime</option>
+                <option value="azure">Azure OpenAI Realtime</option>
+                <option value="claude">Claude</option>
+                <option value="gemini">Gemini</option>
+                <option value="fallback">Browser Fallback</option>
+              </select>
+            </div>
+            ${prov.provider !== "fallback" && html`
+              <div>
+                <div class="setting-row-label">Endpoint</div>
+                ${matchingEps.length === 0 ? html`
+                  <select disabled>
+                    <option>— No ${prov.provider} endpoints —</option>
+                  </select>
+                  <div class="meta-text" style="color:var(--color-warning,#eab308);font-size:11px;margin-top:2px">
+                    Configure a matching endpoint above first.
+                  </div>
+                ` : html`
+                  <select value=${prov.endpointId || ""}
+                    onChange=${(e) => updateProvider(prov._id, "endpointId", e.target.value)}>
+                    <option value="">— Select endpoint —</option>
+                    ${matchingEps.map((ep) => html`<option value=${ep.id}>${ep.name || ep.id}</option>`)}
+                  </select>
+                `}
+              </div>
+            `}
+            <div>
+              <div class="setting-row-label">Model</div>
+              <select value=${isCustomModel ? "custom" : prov.model}
+                onChange=${(e) => {
+                  if (e.target.value === "custom") {
+                    updateProvider(prov._id, "model", prov.model && !knownModels.includes(prov.model) ? prov.model : "");
+                  } else {
+                    updateProvider(prov._id, "model", e.target.value);
+                  }
+                }}>
+                ${knownModels.map((m) => html`<option value=${m}>${m}</option>`)}
+                <option value="custom">custom…</option>
+              </select>
+              ${isCustomModel && html`
+                <input type="text" value=${prov.model}
+                  onInput=${(e) => updateProvider(prov._id, "model", e.target.value)}
+                  placeholder="Custom model slug…"
+                  style="margin-top:4px" />
+              `}
+              ${knownModels.length === 0 && html`
+                <input type="text" value=${prov.model}
+                  onInput=${(e) => updateProvider(prov._id, "model", e.target.value)}
+                  placeholder="Provider model"
+                  style="margin-top:4px" />
+              `}
+            </div>
+            <div>
+              <div class="setting-row-label">Vision Model</div>
+              <select value=${isCustomVision ? "custom" : prov.visionModel}
+                onChange=${(e) => {
+                  if (e.target.value === "custom") {
+                    updateProvider(prov._id, "visionModel", prov.visionModel && !knownVisionModels.includes(prov.visionModel) ? prov.visionModel : "");
+                  } else {
+                    updateProvider(prov._id, "visionModel", e.target.value);
+                  }
+                }}>
+                ${knownVisionModels.map((m) => html`<option value=${m}>${m}</option>`)}
+                <option value="custom">custom…</option>
+              </select>
+              ${isCustomVision && html`
+                <input type="text" value=${prov.visionModel}
+                  onInput=${(e) => updateProvider(prov._id, "visionModel", e.target.value)}
+                  placeholder="Custom vision model slug…"
+                  style="margin-top:4px" />
+              `}
+              ${knownVisionModels.length === 0 && html`
+                <input type="text" value=${prov.visionModel}
+                  onInput=${(e) => updateProvider(prov._id, "visionModel", e.target.value)}
+                  placeholder="Provider vision model"
+                  style="margin-top:4px" />
+              `}
+            </div>
+            <div>
+              <div class="setting-row-label">Voice Persona</div>
+              <select value=${prov.voiceId}
+                onChange=${(e) => updateProvider(prov._id, "voiceId", e.target.value)}>
+                ${["alloy", "ash", "ballad", "coral", "echo", "fable", "nova", "onyx", "sage", "shimmer", "verse"].map(
+                  (v) => html`<option value=${v}>${v}</option>`
+                )}
+              </select>
+            </div>
+            ${prov.provider === "azure" && html`
+              <div>
+                <div class="setting-row-label">Azure Deployment</div>
+                <input type="text" value=${prov.azureDeployment || ""}
+                  onInput=${(e) => updateProvider(prov._id, "azureDeployment", e.target.value)}
+                  placeholder="gpt-audio-1.5" />
+              </div>
+            `}
+          </div>
+        </div>
+      `})}
+      <button class="btn btn-sm" onClick=${addProvider} disabled=${providers.length >= 5}
+        style="margin-top:2px">+ Add Provider</button>
+      ${providers.length === 0 && html`
+        <div class="meta-text" style="margin-top:8px">
+          No providers configured. Add one above to set up voice routing.
+        </div>
+      `}
+    <//>
+  `;
+}
+
+/* ═══════════════════════════════════════════════════════════════
+ *  _OAuthLoginCard — shared PKCE OAuth login card factory.
+ *  Instantiated as OpenAICodexLoginCard, ClaudeLoginCard, GeminiLoginCard.
+ * ═══════════════════════════════════════════════════════════════ */
+function _OAuthLoginCard({ displayName, emoji, statusRoute, loginRoute, cancelRoute, logoutRoute, description, successMsg, signOutMsg }) {
+  const [phase, setPhase] = useState("idle");
+  const [authUrl, setAuthUrl] = useState("");
+  const [error, setError] = useState("");
+  const pollRef = useRef(null);
+
+  useEffect(() => {
+    (async () => {
+      try {
+        const res = await apiFetch(statusRoute);
+        if (res.ok) setPhase(res.status === "connected" ? "connected" : "idle");
+      } catch { /* non-fatal */ }
+    })();
+    return () => { if (pollRef.current) clearTimeout(pollRef.current); };
+  }, [statusRoute]);
+
+  async function startLogin() {
+    setPhase("pending"); setError("");
+    try {
+      const res = await apiFetch(loginRoute, { method: "POST" });
+      if (!res.ok) throw new Error(res.error || "Failed to start login");
+      setAuthUrl(res.authUrl || "");
+      beginPolling();
+    } catch (err) { setError(err.message); setPhase("error"); }
+  }
+
+  function beginPolling() {
+    if (pollRef.current) clearTimeout(pollRef.current);
+    async function tick() {
+      try {
+        const res = await apiFetch(statusRoute);
+        if (!res.ok) { pollRef.current = setTimeout(tick, 2000); return; }
+        if (res.status === "complete" || res.status === "connected") {
+          pollRef.current = null; setPhase("complete");
+          haptic("success"); showToast(successMsg, "success"); return;
+        }
+        if (res.status === "error") {
+          pollRef.current = null;
+          setError(res.result?.error || "Login failed"); setPhase("error"); return;
+        }
+        pollRef.current = setTimeout(tick, 2000);
+      } catch { pollRef.current = setTimeout(tick, 3000); }
+    }
+    pollRef.current = setTimeout(tick, 2000);
+  }
+
+  async function handleLogout() {
+    try {
+      await apiFetch(logoutRoute, { method: "POST" });
+      setPhase("idle"); setAuthUrl("");
+      haptic("medium"); showToast(signOutMsg, "info");
+    } catch (err) { showToast(`Logout failed: ${err.message}`, "error"); }
+  }
+
+  async function handleCancel() {
+    if (pollRef.current) { clearTimeout(pollRef.current); pollRef.current = null; }
+    try { await apiFetch(cancelRoute, { method: "POST" }); } catch { /* ignore */ }
+    setPhase("idle"); setAuthUrl("");
+  }
+
+  if (phase === "connected" || phase === "complete") {
+    return html`
+      <${Card}>
+        <div style="display:flex;align-items:center;gap:10px;padding:4px 0">
+          <span style="font-size:22px">${emoji}</span>
+          <div style="flex:1;min-width:0">
+            <div style="font-size:13px;font-weight:600;color:var(--text-primary)">${displayName} Connected</div>
+            <div style="font-size:12px;color:var(--text-secondary);margin-top:2px">Signed in via OAuth. Token used for API access.</div>
+          </div>
+          <button class="btn btn-sm btn-secondary" onClick=${handleLogout}>Sign out</button>
+        </div>
+      <//>
+    `;
+  }
+
+  if (phase === "pending") {
+    return html`
+      <${Card}>
+        <div style="text-align:center;padding:12px 0">
+          <div style="font-size:12px;color:var(--text-secondary);margin-bottom:12px">
+            A browser window should have opened. If not, open the link below:
+          </div>
+          ${authUrl && html`
+            <button onClick=${() => { try { window.open(authUrl, "_blank"); } catch {} }}
+              style="font-size:12px;word-break:break-all;cursor:pointer;
+                background:var(--surface-1);border:1px solid var(--border-color,rgba(255,255,255,0.1));
+                border-radius:6px;padding:8px 12px;color:var(--accent);text-decoration:underline;
+                max-width:100%;text-align:left"
+            >${authUrl}</button>
+          `}
+          <div style="font-size:12px;color:var(--text-hint);margin-top:12px;display:flex;align-items:center;justify-content:center;gap:6px">
+            <span class="spinner" style="width:14px;height:14px;border:2px solid var(--border);border-top-color:var(--accent);border-radius:50%"></span>
+            Waiting for you to sign in…
+          </div>
+          <button class="btn btn-sm" style="margin-top:12px;opacity:0.7" onClick=${handleCancel}>Cancel</button>
+        </div>
+      <//>
+    `;
+  }
+
+  if (phase === "error") {
+    return html`
+      <${Card}>
+        <div style="text-align:center;padding:10px 0">
+          <div style="font-size:13px;color:var(--color-error,#f87171);margin-bottom:10px">${error}</div>
+          <button class="btn btn-sm btn-primary" onClick=${startLogin}>Try again</button>
+        </div>
+      <//>
+    `;
+  }
+
+  // idle
+  return html`
+    <${Card}>
+      <div style="text-align:center;padding:16px 0">
+        <div style="font-size:32px;margin-bottom:8px">${emoji}</div>
+        <div style="font-size:15px;font-weight:600;margin-bottom:4px;color:var(--text-primary)">Sign in with ${displayName}</div>
+        <div style="font-size:12px;color:var(--text-secondary);margin-bottom:16px;max-width:300px;margin-inline:auto;line-height:1.6">${description}</div>
+        <button class="btn btn-primary" onClick=${startLogin} style="min-width:220px">Sign in with ${displayName}</button>
+      </div>
+    <//>
+  `;
+}
+
+/* ═══════════════════════════════════════════════════════════════
+ *  OpenAICodexLoginCard — "Sign in with OpenAI" (ChatGPT/Codex accounts)
+ *  Uses OAuth 2.0 PKCE flow via auth.openai.com — same flow as the
+ *  official Codex CLI and the ChatGPT desktop app.
+ *
+ *  Allows ChatGPT Plus/Pro/Team subscribers to authenticate without
+ *  needing to create an API key.
+ * ═══════════════════════════════════════════════════════════════ */
+function OpenAICodexLoginCard() {
+  return html`<${_OAuthLoginCard}
+    displayName="OpenAI"
+    emoji="🤖"
+    statusRoute="/api/voice/auth/openai/status"
+    loginRoute="/api/voice/auth/openai/login"
+    cancelRoute="/api/voice/auth/openai/cancel"
+    logoutRoute="/api/voice/auth/openai/logout"
+    description="Use your ChatGPT Plus, Pro, or Team subscription to access OpenAI Realtime Audio without managing API keys. Uses the same OAuth flow as the Codex CLI."
+    successMsg="Signed in with OpenAI!"
+    signOutMsg="Signed out from OpenAI"
+  />`;
+}
+
+/* ═══════════════════════════════════════════════════════════════
+ *  ClaudeLoginCard — OAuth PKCE for Anthropic Claude
+ * ═══════════════════════════════════════════════════════════════ */
+function ClaudeLoginCard() {
+  return html`<${_OAuthLoginCard}
+    displayName="Claude"
+    emoji="🧠"
+    statusRoute="/api/voice/auth/claude/status"
+    loginRoute="/api/voice/auth/claude/login"
+    cancelRoute="/api/voice/auth/claude/cancel"
+    logoutRoute="/api/voice/auth/claude/logout"
+    description="Sign in with your Claude.ai account to use Claude models for vision and analysis tasks. Uses the same OAuth PKCE flow as the official Claude desktop app."
+    successMsg="Signed in with Claude!"
+    signOutMsg="Signed out from Claude"
+  />`;
+}
+
+/* ═══════════════════════════════════════════════════════════════
+ *  GeminiLoginCard — OAuth PKCE for Google Gemini
+ * ═══════════════════════════════════════════════════════════════ */
+function GeminiLoginCard() {
+  return html`<${_OAuthLoginCard}
+    displayName="Google Gemini"
+    emoji="✨"
+    statusRoute="/api/voice/auth/gemini/status"
+    loginRoute="/api/voice/auth/gemini/login"
+    cancelRoute="/api/voice/auth/gemini/cancel"
+    logoutRoute="/api/voice/auth/gemini/logout"
+    description="Sign in with your Google account to access Gemini models for vision and multimodal tasks. Uses Google OAuth with offline access for persistent refresh tokens."
+    successMsg="Signed in with Google Gemini!"
+    signOutMsg="Signed out from Google Gemini"
+  />`;
+}
+
 
 /* ═══════════════════════════════════════════════════════════════
  *  GitHubDeviceFlowCard — "Sign in with GitHub" (like VS Code / Roo Code)
@@ -1880,7 +3008,7 @@ function GitHubDeviceFlowCard({ config }) {
     return html`
       <${Card}>
         <div style="display:flex;align-items:center;gap:10px;padding:4px 0">
-          <span style="font-size:20px">${resolveIcon("🐙")}</span>
+          <span style="font-size:20px">${resolveIcon(":git:")}</span>
           <div style="flex:1;min-width:0">
             <div style="font-size:13px;font-weight:600;color:var(--text-primary)">GitHub Connected</div>
             <div style="font-size:12px;color:var(--text-secondary)">Token is configured. Re-authenticate below if needed.</div>
@@ -1898,7 +3026,7 @@ function GitHubDeviceFlowCard({ config }) {
     return html`
       <${Card}>
         <div style="text-align:center;padding:12px 0">
-          <div style="font-size:32px;margin-bottom:8px">${resolveIcon("✅")}</div>
+          <div style="font-size:32px;margin-bottom:8px">${resolveIcon(":check:")}</div>
           <div style="font-size:15px;font-weight:600;color:var(--text-primary)">Signed in as ${ghUser}</div>
           <div style="font-size:12px;color:var(--text-secondary);margin-top:4px">GitHub token saved to .env</div>
         </div>
@@ -1938,7 +3066,7 @@ function GitHubDeviceFlowCard({ config }) {
     return html`
       <${Card}>
         <div style="text-align:center;padding:12px 0">
-          <div style="font-size:24px;margin-bottom:8px">⚠️</div>
+          <div style="font-size:24px;margin-bottom:8px">${resolveIcon(":alert:")}</div>
           <div style="font-size:13px;color:var(--color-error);margin-bottom:12px">${error}</div>
           <button class="btn btn-sm btn-primary" onClick=${startFlow}>Try Again</button>
         </div>
@@ -1950,7 +3078,7 @@ function GitHubDeviceFlowCard({ config }) {
   return html`
     <${Card}>
       <div style="text-align:center;padding:16px 0">
-        <div style="font-size:32px;margin-bottom:8px">${resolveIcon("🐙")}</div>
+        <div style="font-size:32px;margin-bottom:8px">${resolveIcon(":git:")}</div>
         <div style="font-size:15px;font-weight:600;margin-bottom:4px;color:var(--text-primary)">
           Sign in with GitHub
         </div>

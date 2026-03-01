@@ -204,7 +204,10 @@
       background-position: right 12px center;
       padding-right: 36px;
     }
-    select option { background: var(--bg-secondary); color: var(--text-primary); }
+    select option { background: #ffffff; color: #111827; }
+    /* Force dark color-scheme on select so native OS dropdown overlay renders
+       dark text on dark background (fixes white-on-white on Windows/Chrome). */
+    select { color-scheme: dark; }
     textarea { resize: vertical; min-height: 80px; }
     .hint { font-size: 0.73rem; color: var(--text-dim); margin-top: 4px; }
     .field-error { font-size: 0.73rem; color: var(--error); margin-top: 4px; }
@@ -212,6 +215,74 @@
       display: flex; gap: 8px; margin-top: 8px;
     }
     .custom-input-row input { flex: 1; }
+    .label-with-help {
+      display: inline-flex !important;
+      align-items: center;
+      gap: 6px;
+      flex-wrap: wrap;
+    }
+    .help-tip {
+      position: relative;
+      display: inline-flex;
+      align-items: center;
+      vertical-align: middle;
+    }
+    .help-tip-btn {
+      width: 17px;
+      height: 17px;
+      border-radius: 999px;
+      border: 1px solid var(--border-primary);
+      background: rgba(99, 102, 241, 0.12);
+      color: var(--accent-light);
+      font-size: 0.68rem;
+      font-weight: 700;
+      line-height: 1;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      padding: 0;
+      cursor: help;
+      user-select: none;
+    }
+    .help-tip-btn:hover { border-color: var(--accent); }
+    .help-tip-btn:focus-visible {
+      outline: none;
+      box-shadow: 0 0 0 3px var(--accent-glow);
+      border-color: var(--accent);
+    }
+    .help-popover {
+      position: absolute;
+      top: calc(100% + 6px);
+      right: 0;
+      width: min(320px, 84vw);
+      padding: 10px 12px;
+      border-radius: var(--radius-sm);
+      border: 1px solid var(--border-primary);
+      background: rgba(9, 13, 22, 0.98);
+      color: var(--text-secondary);
+      font-size: 0.74rem;
+      line-height: 1.5;
+      box-shadow: 0 10px 24px rgba(0, 0, 0, 0.42);
+      opacity: 0;
+      transform: translateY(4px);
+      pointer-events: none;
+      transition: opacity var(--transition), transform var(--transition);
+      z-index: 20;
+      white-space: normal;
+    }
+    .help-tip.open .help-popover,
+    .help-tip:hover .help-popover,
+    .help-tip:focus-within .help-popover {
+      opacity: 1;
+      transform: translateY(0);
+      pointer-events: auto;
+    }
+    .help-popover strong {
+      color: var(--text-primary);
+      font-weight: 600;
+      display: block;
+      margin-top: 6px;
+    }
 
     /* ── Checkmark / Status Badges ───────────────────────────────────── */
     .prereq-list { list-style: none; }
@@ -344,6 +415,28 @@
     .success-banner h2 { color: var(--success); margin-bottom: 8px; }
     .success-banner p { color: var(--text-secondary); font-size: 0.9rem; }
 
+    /* ── Inline icon helpers (shared with iconText output) ───────────── */
+    .icon-text {
+      display: inline-flex;
+      align-items: center;
+      gap: 0.35em;
+      flex-wrap: wrap;
+    }
+    .icon-inline {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      width: 1em;
+      height: 1em;
+      line-height: 1;
+      vertical-align: middle;
+    }
+    .icon-inline svg {
+      width: 1em;
+      height: 1em;
+      display: block;
+    }
+
     /* ── Profile Cards ───────────────────────────────────────────────── */
     .profile-cards {
       display: grid; grid-template-columns: 1fr 1fr; gap: 12px;
@@ -359,6 +452,99 @@
     .profile-card .icon { font-size: 1.5rem; margin-bottom: 8px; }
     .profile-card h4 { font-size: 0.9rem; margin-bottom: 4px; }
     .profile-card p { font-size: 0.73rem; color: var(--text-dim); line-height: 1.4; }
+
+    /* ── Workflow Setup ─────────────────────────────────────────────── */
+    .workflow-profile-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+      gap: 10px;
+      margin-bottom: 14px;
+    }
+    .workflow-profile-card {
+      border: 1px solid var(--border-primary);
+      border-radius: var(--radius-sm);
+      background: var(--bg-input);
+      padding: 12px;
+      cursor: pointer;
+      transition: all var(--transition);
+    }
+    .workflow-profile-card:hover { border-color: var(--text-dim); background: var(--bg-hover); }
+    .workflow-profile-card.selected {
+      border-color: var(--accent);
+      box-shadow: 0 0 0 1px var(--accent-glow);
+      background: rgba(99,102,241,.08);
+    }
+    .workflow-profile-title {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 8px;
+      margin-bottom: 6px;
+      font-size: 0.82rem;
+      font-weight: 600;
+    }
+    .workflow-profile-reco {
+      font-size: 0.68rem;
+      color: var(--text-dim);
+      line-height: 1.4;
+    }
+    .workflow-template-list {
+      max-height: 420px;
+      overflow: auto;
+      border: 1px solid var(--border-primary);
+      border-radius: var(--radius-sm);
+      background: var(--bg-input);
+      padding: 8px;
+    }
+    .workflow-template-row {
+      display: grid;
+      grid-template-columns: auto 1fr;
+      gap: 10px;
+      padding: 10px;
+      border-radius: var(--radius-sm);
+      border: 1px solid transparent;
+      transition: border-color var(--transition), background var(--transition);
+      margin-bottom: 6px;
+      background: rgba(255,255,255,0.01);
+    }
+    .workflow-template-row:last-child { margin-bottom: 0; }
+    .workflow-template-row:hover { border-color: var(--border-primary); background: rgba(255,255,255,0.02); }
+    .workflow-template-row.selected { border-color: rgba(34,197,94,.35); background: rgba(34,197,94,.06); }
+    .workflow-template-checkbox {
+      margin-top: 2px;
+      width: 16px;
+      height: 16px;
+      accent-color: var(--accent);
+      cursor: pointer;
+    }
+    .workflow-template-title {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      flex-wrap: wrap;
+      font-size: 0.8rem;
+      font-weight: 600;
+      margin-bottom: 4px;
+    }
+    .workflow-chip {
+      display: inline-flex;
+      align-items: center;
+      border: 1px solid var(--border-primary);
+      border-radius: 999px;
+      padding: 2px 7px;
+      font-size: 0.66rem;
+      color: var(--text-dim);
+    }
+    .workflow-chip.recommended {
+      color: #86efac;
+      border-color: rgba(34,197,94,.35);
+      background: rgba(34,197,94,.1);
+    }
+    .workflow-template-desc {
+      font-size: 0.72rem;
+      color: var(--text-secondary);
+      line-height: 1.45;
+    }
 
     /* ── Loading Spinner ─────────────────────────────────────────────── */
     .spinner {
@@ -376,6 +562,10 @@
       .executor-grid { grid-template-columns: 1fr; }
       .profile-cards { grid-template-columns: 1fr; }
       .progress-step .step-label { display: none; }
+      .help-popover {
+        right: auto;
+        left: -8px;
+      }
     }
   </style>
 </head>
@@ -396,13 +586,15 @@
 import { h, render } from "preact";
 import { useState, useEffect, useRef } from "preact/hooks";
 import htm from "htm";
+import { iconText } from "./modules/icon-utils.js";
 
 const html = htm.bind(h);
 
 // ── API helpers ──────────────────────────────────────────────────────────────
+const apiBase = "/api/setup";
 
 const api = (path, opts) =>
-  fetch(`/api/setup/${path}`, {
+  fetch(`${apiBase}/${path}`, {
     headers: { "Content-Type": "application/json" },
     ...opts,
   }).then((r) => r.json());
@@ -413,15 +605,38 @@ const apiPost = (path, body) => api(path, { method: "POST", body: JSON.stringify
 // ── Steps definition ─────────────────────────────────────────────────────────
 
 const STEPS = [
-  { id: "prerequisites", label: "Prerequisites", icon: "✅" },
-  { id: "profile", label: "Profile", icon: "👤" },
-  { id: "executors", label: "AI Executors", icon: "🤖" },
-  { id: "repos", label: "Repositories", icon: "📁" },
-  { id: "kanban", label: "Task Mgmt", icon: "📋" },
-  { id: "notifications", label: "Notifications", icon: "🔔" },
-  { id: "advanced", label: "Advanced", icon: "⚙️" },
-  { id: "review", label: "Review", icon: "🚀" },
+  { id: "prerequisites", label: "Prerequisites", icon: ":check:" },
+  { id: "profile", label: "Profile", icon: ":user:" },
+  { id: "executors", label: "AI Executors", icon: ":bot:" },
+  { id: "repos", label: "Repositories", icon: ":folder:" },
+  { id: "kanban", label: "Task Mgmt", icon: ":clipboard:" },
+  { id: "workflows", label: "Workflows", icon: ":compass:" },
+  { id: "notifications", label: "Notifications", icon: ":bell:" },
+  { id: "advanced", label: "Advanced", icon: ":settings:" },
+  { id: "review", label: "Review", icon: ":rocket:" },
 ];
+
+const HELP_TEXT = {
+  bosunHome: "Main Bosun data root. Keep it outside git repos. Best practice: use a stable path like ~/bosun.",
+  workspacesDir: "Where Bosun creates per-project worktrees and shared dev config. Best practice: keep this on fast local disk with enough free space.",
+  projectName: "Human-readable project label used in UI, notifications, and workspace naming. Best practice: keep it short and stable.",
+  repoSlug: "Default GitHub repository (owner/repo) used for PR automation and project sync. Best practice: set this even if you add multiple repos later.",
+  executorType: "Defines which SDK/runtime handles tasks (Codex, Copilot, Claude, etc.). Best practice: keep one primary and add backups only for failover or cost control.",
+  authMode: "OAuth reuses your local login session; API key stores credentials in BOSUN_HOME .env. Best practice: prefer OAuth unless you need custom endpoints or account separation.",
+  executorModel: "Default model for this executor. Best practice: use a strong model for primary and a cheaper/faster model for backups.",
+  executorWeight: "Relative routing share when task distribution is weighted. Example: weights 100 and 50 route about 67% / 33%. Weight is ignored in primary-only mode.",
+  maxParallel: "Maximum concurrent task attempts across enabled executors. Best practice: start with 2-4 and increase only after stable runs.",
+  maxRetries: "Retry count before giving up on a failed task attempt. Best practice: 2-3 catches transient failures without creating loops.",
+  failoverStrategy: "How Bosun chooses the next executor after failures or when rotating. Weighted-random uses weights; round-robin ignores weights.",
+  executorMode: "Internal runs agents locally; VK uses remote VirtKanban; Hybrid combines both. Best practice: use Internal unless you already operate VK.",
+  taskDistribution: "How new tasks are assigned: weighted, round-robin, or primary-only. Best practice: choose weighted when using different executor capacities.",
+  voiceProviders: "Ordered provider chain for live voice. Bosun tries top to bottom. Best practice: place most reliable/lowest latency provider first.",
+  turnDetection: "How speech turn boundaries are detected. Best practice: use server_vad for most calls; semantic_vad for longer conversational pauses.",
+  fallbackMode: "Fallback path when provider setup fails. browser keeps local fallback available; disabled requires cloud voice endpoints only.",
+  delegateExecutor: "Executor used for deeper reasoning/tool work during voice sessions. Best practice: point to your most reliable task executor.",
+  voiceEndpointRole: "Primary endpoints are preferred first; backup endpoints are used when primaries fail.",
+  voiceEndpointWeight: "Weighted share among endpoints of the same role/provider. Example: 300 and 100 routes about 75% / 25% before failover.",
+};
 
 // ── SelectWithCustom component ───────────────────────────────────────────────
 
@@ -484,6 +699,55 @@ function SelectWithCustom({ options, value, onChange, placeholder }) {
   `;
 }
 
+// ── Collapsible Section (module scope — stable identity across re-renders) ──
+// Defining this inside App() would create a new function reference on every
+// state update, causing Preact to unmount/remount the component and lose
+// its open/closed state + input focus.
+function Section({ id, title, defaultOpen, children }) {
+  const [open, setOpen] = useState(!!defaultOpen);
+  return html`
+    <div style="border:1px solid var(--border-primary);border-radius:var(--radius-sm);margin-bottom:10px;overflow:hidden">
+      <div style="display:flex;align-items:center;justify-content:space-between;padding:12px 16px;cursor:pointer;background:var(--bg-input);user-select:none"
+        onclick=${() => setOpen((v) => !v)}>
+        <span style="font-weight:600;font-size:0.88rem">${iconText(title)}</span>
+        <span style="color:var(--text-dim);font-size:0.8rem">${open ? "▲" : "▼"}</span>
+      </div>
+      ${open && html`<div style="padding:16px">${children}</div>`}
+    </div>
+  `;
+}
+
+function HelpTip({ text }) {
+  const [open, setOpen] = useState(false);
+  const closeSoon = () => setTimeout(() => setOpen(false), 120);
+  return html`
+    <span class=${`help-tip ${open ? "open" : ""}`}>
+      <button
+        type="button"
+        class="help-tip-btn"
+        aria-label="Field help"
+        title="Field help"
+        onclick=${(e) => {
+          e.preventDefault();
+          e.stopPropagation();
+          setOpen((v) => !v);
+        }}
+        onblur=${closeSoon}
+      >?</button>
+      <span class="help-popover" role="tooltip">${text}</span>
+    </span>
+  `;
+}
+
+function labelWithHelp(labelNode, helpText, extraClass = "") {
+  return html`
+    <label class=${`label-with-help ${extraClass}`.trim()}>
+      <span>${labelNode}</span>
+      <${HelpTip} text=${helpText} />
+    </label>
+  `;
+}
+
 // ── Main App ─────────────────────────────────────────────────────────────────
 
 function App() {
@@ -500,6 +764,8 @@ function App() {
   const [executorTypes, setExecutorTypes] = useState([]);
   const [kanbanBackends, setKanbanBackends] = useState([]);
   const [status, setStatus] = useState(null);
+  const [workflowTemplates, setWorkflowTemplates] = useState([]);
+  const [workflowProfiles, setWorkflowProfiles] = useState([]);
 
   // Config state
   const [profile, setProfile] = useState("standard");
@@ -541,6 +807,15 @@ function App() {
   const [internalReplenishMin, setInternalReplenishMin] = useState(1);
   const [internalReplenishMax, setInternalReplenishMax] = useState(2);
   const [workflowAutomationEnabled, setWorkflowAutomationEnabled] = useState(true);
+  const [workflowProfile, setWorkflowProfile] = useState("balanced");
+  const [workflowDefaultTemplates, setWorkflowDefaultTemplates] = useState([]);
+  const [workflowAutoInstall, setWorkflowAutoInstall] = useState(true);
+  const [workflowNodeMaxRetries, setWorkflowNodeMaxRetries] = useState(3);
+  const [workflowNodeTimeoutMs, setWorkflowNodeTimeoutMs] = useState(600000);
+  const [workflowRunStuckThresholdMs, setWorkflowRunStuckThresholdMs] = useState(300000);
+  const [workflowMaxPersistedRuns, setWorkflowMaxPersistedRuns] = useState(200);
+  const [workflowMaxConcurrentBranches, setWorkflowMaxConcurrentBranches] = useState(8);
+  const CURRENT_WORKFLOW_PROFILE_ID = "current-installed";
   // Kanban
   const [kanbanSyncPolicy, setKanbanSyncPolicy] = useState("internal-primary");
   // Multi-workspace
@@ -575,6 +850,364 @@ function App() {
   const [whatsappEnabled, setWhatsappEnabled] = useState(false);
   const [telegramIntervalMin, setTelegramIntervalMin] = useState(10);
   const [orchestratorScript, setOrchestratorScript] = useState("");
+  // Sentinel / watchdog
+  const [sentinelAutoStart, setSentinelAutoStart] = useState(false);
+  const [sentinelStrict, setSentinelStrict] = useState(false);
+  const [sentinelAutoRestartMonitor, setSentinelAutoRestartMonitor] = useState(true);
+  const [sentinelCrashLoopThreshold, setSentinelCrashLoopThreshold] = useState(3);
+  const [sentinelCrashLoopWindowMin, setSentinelCrashLoopWindowMin] = useState(5);
+  const [sentinelRepairAgentEnabled, setSentinelRepairAgentEnabled] = useState(false);
+  const [sentinelRepairTimeoutMin, setSentinelRepairTimeoutMin] = useState(15);
+  // Daemon restart policy
+  const [daemonRestartDelayMs, setDaemonRestartDelayMs] = useState(10000);
+  const [daemonMaxRestarts, setDaemonMaxRestarts] = useState(0);
+  const [daemonMaxInstantRestarts, setDaemonMaxInstantRestarts] = useState(3);
+  const [daemonInstantCrashWindowMs, setDaemonInstantCrashWindowMs] = useState(15000);
+  // Launch / startup
+  const [autoStartEnabled, setAutoStartEnabled] = useState(false);
+  const [desktopShortcutEnabled, setDesktopShortcutEnabled] = useState(false);
+  const [startupInstalling, setStartupInstalling] = useState(false);
+  const [shortcutInstalling, setShortcutInstalling] = useState(false);
+  // Voice assistant
+  const [voiceEnabled, setVoiceEnabled] = useState(true);
+  const [voiceProvider, setVoiceProvider] = useState("auto");
+  const [voiceModel, setVoiceModel] = useState("gpt-realtime-1.5");
+  const [voiceVisionModel, setVoiceVisionModel] = useState("gpt-4.1-nano");
+  const [voiceId, setVoiceId] = useState("alloy");
+  const [voiceTurnDetection, setVoiceTurnDetection] = useState("server_vad");
+  const [voiceFallbackMode, setVoiceFallbackMode] = useState("browser");
+  const [voiceDelegateExecutor, setVoiceDelegateExecutor] = useState("codex-sdk");
+  const [openaiRealtimeApiKey, setOpenaiRealtimeApiKey] = useState("");
+  const [azureOpenaiRealtimeEndpoint, setAzureOpenaiRealtimeEndpoint] = useState("");
+  const [azureOpenaiRealtimeApiKey, setAzureOpenaiRealtimeApiKey] = useState("");
+  const [azureOpenaiRealtimeDeployment, setAzureOpenaiRealtimeDeployment] = useState("gpt-realtime-1.5");
+  // Multi-endpoint voice config — each entry has its own credentials for failover
+  const [voiceEndpoints, setVoiceEndpoints] = useState([]);
+  const [voiceProviders, setVoiceProviders] = useState([
+    {
+      id: Date.now(),
+      provider: voiceProvider,
+      model: voiceModel,
+      visionModel: voiceVisionModel,
+      voiceId,
+      azureDeployment: azureOpenaiRealtimeDeployment,
+    },
+  ]);
+  // OAuth connected accounts state — { openai, claude, gemini } each with { status, hasToken, loading }
+  const [oauthAccounts, setOauthAccounts] = useState({
+    openai: { status: "idle", hasToken: false, loading: false },
+    claude: { status: "idle", hasToken: false, loading: false },
+    gemini: { status: "idle", hasToken: false, loading: false },
+  });
+
+  const fetchOAuthStatus = async (provider) => {
+    try {
+      const d = await apiGet("voice/auth/" + provider + "/status");
+      if (d.ok) {
+        setOauthAccounts((prev) => ({ ...prev, [provider]: { ...prev[provider], status: d.status || "idle", hasToken: !!d.hasToken, loading: false } }));
+      }
+    } catch { /* best-effort */ }
+  };
+
+  const fetchAllOAuthStatus = () => {
+    fetchOAuthStatus("openai");
+    fetchOAuthStatus("claude");
+    fetchOAuthStatus("gemini");
+  };
+
+  const startOAuthLogin = async (provider) => {
+    setOauthAccounts((prev) => ({ ...prev, [provider]: { ...prev[provider], loading: true } }));
+    try {
+      const d = await apiPost("voice/auth/" + provider + "/login");
+      if (d.ok && d.authUrl) {
+        window.open(d.authUrl, "_blank", "noopener");
+        setOauthAccounts((prev) => ({ ...prev, [provider]: { ...prev[provider], status: "pending", loading: false } }));
+        // Poll for completion
+        const poll = setInterval(async () => {
+          try {
+            const pd = await apiGet("voice/auth/" + provider + "/status");
+            if (pd.ok && (pd.status === "connected" || pd.status === "complete" || pd.hasToken)) {
+              setOauthAccounts((prev) => ({ ...prev, [provider]: { status: "connected", hasToken: true, loading: false } }));
+              clearInterval(poll);
+            } else if (pd.status === "error" || pd.status === "idle") {
+              setOauthAccounts((prev) => ({ ...prev, [provider]: { status: pd.status, hasToken: false, loading: false } }));
+              clearInterval(poll);
+            }
+          } catch { /* keep polling */ }
+        }, 2000);
+        // Stop after 5 minutes
+        setTimeout(() => clearInterval(poll), 300000);
+      } else {
+        setOauthAccounts((prev) => ({ ...prev, [provider]: { ...prev[provider], loading: false } }));
+      }
+    } catch {
+      setOauthAccounts((prev) => ({ ...prev, [provider]: { ...prev[provider], loading: false } }));
+    }
+  };
+
+  const doOAuthLogout = async (provider) => {
+    setOauthAccounts((prev) => ({ ...prev, [provider]: { ...prev[provider], loading: true } }));
+    try {
+      await apiPost("voice/auth/" + provider + "/logout");
+      setOauthAccounts((prev) => ({ ...prev, [provider]: { status: "idle", hasToken: false, loading: false } }));
+    } catch {
+      setOauthAccounts((prev) => ({ ...prev, [provider]: { ...prev[provider], loading: false } }));
+    }
+  };
+
+  const cancelOAuthLogin = async (provider) => {
+    setOauthAccounts((prev) => ({ ...prev, [provider]: { ...prev[provider], loading: true } }));
+    try {
+      await apiPost("voice/auth/" + provider + "/cancel");
+    } catch { /* best-effort */ }
+    setOauthAccounts((prev) => ({ ...prev, [provider]: { status: "idle", hasToken: false, loading: false } }));
+  };
+
+  // Endpoint test connection state — {[endpointId]: { testing, result, error, latencyMs }}
+  const [endpointTestResults, setEndpointTestResults] = useState({});
+  const [endpointCustomModelRows, setEndpointCustomModelRows] = useState({});
+
+  const getDefaultVoiceEndpointUrl = (provider, authSource = "apiKey") => {
+    const p = String(provider || "").toLowerCase();
+    if (p === "openai") return "https://api.openai.com";
+    if (p === "claude") return "https://api.anthropic.com";
+    if (p === "gemini") return "https://generativelanguage.googleapis.com";
+    return "";
+  };
+
+  const isEndpointUrlEditable = (provider) =>
+    ["azure", "custom"].includes(String(provider || "").toLowerCase());
+
+  const testEndpointConnection = async (ep) => {
+    const key = ep.id;
+    setEndpointTestResults((prev) => ({ ...prev, [key]: { testing: true, result: null, error: null } }));
+    try {
+      const d = await apiPost("voice/endpoints/test", { provider: ep.provider, apiKey: ep.apiKey, endpoint: ep.endpoint, deployment: ep.deployment, model: ep.model, authSource: ep.authSource });
+      if (d.ok) {
+        setEndpointTestResults((prev) => ({ ...prev, [key]: { testing: false, result: "success", error: null, latencyMs: d.latencyMs } }));
+      } else {
+        setEndpointTestResults((prev) => ({ ...prev, [key]: { testing: false, result: "error", error: d.error || "Connection failed" } }));
+      }
+    } catch (err) {
+      setEndpointTestResults((prev) => ({ ...prev, [key]: { testing: false, result: "error", error: err.message || "Network error" } }));
+    }
+  };
+
+  const VOICE_PROVIDER_MODEL_DEFAULTS = {
+    openai: { model: "gpt-realtime-1.5", visionModel: "gpt-4.1-nano", models: ["gpt-realtime-1.5", "gpt-audio-1.5", "gpt-4o-realtime-preview-2024-12-17"], visionModels: ["gpt-4.1-nano", "gpt-4.1-mini", "gpt-4.1"] },
+    azure: { model: "gpt-realtime-1.5", visionModel: "gpt-4.1-nano", models: ["gpt-realtime-1.5", "gpt-4o-realtime-preview"], visionModels: ["gpt-4.1-nano", "gpt-4.1-mini", "gpt-4.1"] },
+    claude: { model: "claude-sonnet-4.6", visionModel: "claude-sonnet-4.6", models: ["claude-sonnet-4.6", "claude-haiku-4.5"], visionModels: ["claude-sonnet-4.6", "claude-haiku-4.5"] },
+    gemini: { model: "gemini-3.1-pro", visionModel: "gemini-3.0-flash", models: ["gemini-2.5-pro", "gemini-2.5-flash", "gemini-2.0-flash", "gemini-3.0-flash", "gemini-3.1-pro"], visionModels: ["gemini-2.5-flash", "gemini-2.5-pro", "gemini-2.0-flash", "gemini-3.0-flash", "gemini-3.1-pro"] },
+    fallback: { model: "", visionModel: "", models: [], visionModels: [] },
+  };
+
+  const getVoiceProviderModelDefaults = (provider) =>
+    VOICE_PROVIDER_MODEL_DEFAULTS[String(provider || "fallback").toLowerCase()] || VOICE_PROVIDER_MODEL_DEFAULTS.fallback;
+  const ALL_ENDPOINT_MODEL_OPTIONS = Array.from(
+    new Set(
+      Object.values(VOICE_PROVIDER_MODEL_DEFAULTS)
+        .flatMap((entry) => Array.isArray(entry?.models) ? entry.models : [])
+        .filter(Boolean),
+    ),
+  );
+
+  const normalizeVoiceProviderEntry = (entry = {}, fallback = {}) => {
+    const allowedProviders = ["openai", "azure", "claude", "gemini", "fallback"];
+    const provider = String(entry.provider || fallback.provider || "fallback").trim().toLowerCase();
+    const normalizedProvider = allowedProviders.includes(provider) ? provider : "fallback";
+    const defaults_ = getVoiceProviderModelDefaults(normalizedProvider);
+    const model = String(entry.model ?? fallback.model ?? defaults_.model ?? "").trim();
+    const visionModel = String(entry.visionModel ?? fallback.visionModel ?? defaults_.visionModel ?? "").trim();
+    const normalizedVoiceId = String(entry.voiceId ?? fallback.voiceId ?? "alloy").trim() || "alloy";
+    const normalizedAzureDeployment = String(
+      entry.azureDeployment ??
+      fallback.azureDeployment ??
+      (normalizedProvider === "azure" ? "gpt-realtime-1.5" : ""),
+    ).trim();
+    return {
+      id: entry.id || Date.now() + Math.random(),
+      provider: normalizedProvider,
+      model,
+      visionModel,
+      voiceId: normalizedVoiceId,
+      azureDeployment: normalizedAzureDeployment,
+      endpointId: String(entry.endpointId ?? fallback.endpointId ?? "").trim(),
+    };
+  };
+
+  const normalizeVoiceProviders = (providers, fallback = {}) => {
+    const normalized = (Array.isArray(providers) ? providers : [])
+      .slice(0, 5)
+      .map((provider_) => normalizeVoiceProviderEntry(provider_, fallback));
+    if (normalized.length > 0) return normalized;
+    return [normalizeVoiceProviderEntry({}, fallback)];
+  };
+
+  const updateVoiceProviderRow = (idx, field, value) => {
+    setVoiceProviders((prev) => {
+      const list = normalizeVoiceProviders(prev);
+      const target = list[idx];
+      if (!target) return list;
+      if (field === "provider") {
+        const nextProvider = String(value || "fallback").trim().toLowerCase();
+        const defaults_ = getVoiceProviderModelDefaults(nextProvider);
+        list[idx] = normalizeVoiceProviderEntry({
+          ...target,
+          provider: nextProvider,
+          model: defaults_.model,
+          visionModel: defaults_.visionModel,
+          azureDeployment:
+            nextProvider === "azure"
+              ? String(target.azureDeployment || "gpt-realtime-1.5")
+              : "",
+          endpointId: "",
+        });
+        return list;
+      }
+      list[idx] = normalizeVoiceProviderEntry({ ...target, [field]: value });
+      return list;
+    });
+  };
+
+  const addVoiceProviderRow = () => {
+    setVoiceProviders((prev) => {
+      const list = normalizeVoiceProviders(prev);
+      if (list.length >= 5) return list;
+      const first = list[0] || normalizeVoiceProviderEntry();
+      return [
+        ...list,
+        normalizeVoiceProviderEntry({
+          provider: "fallback",
+          voiceId: first.voiceId || "alloy",
+        }),
+      ];
+    });
+  };
+
+  const removeVoiceProviderRow = (idx) => {
+    setVoiceProviders((prev) => {
+      const list = normalizeVoiceProviders(prev);
+      if (list.length <= 1) return list;
+      const next = list.filter((_, i) => i !== idx);
+      return next.length > 0 ? next : list;
+    });
+  };
+
+  const normalizeVoiceEndpoint = (ep = {}) => {
+    const provider = ["azure", "openai", "claude", "gemini", "custom"].includes(String(ep.provider || "").toLowerCase())
+      ? String(ep.provider).toLowerCase()
+      : "azure";
+    const authSource = ["apiKey", "oauth"].includes(String(ep.authSource || "")) ? String(ep.authSource) : "apiKey";
+    const userEndpoint = String(ep.endpoint || "").trim();
+    const endpoint = isEndpointUrlEditable(provider)
+      ? userEndpoint
+      : (userEndpoint || getDefaultVoiceEndpointUrl(provider, authSource));
+    const defaultModel = provider === "custom"
+      ? (ALL_ENDPOINT_MODEL_OPTIONS[0] || "gpt-realtime-1.5")
+      : (getVoiceProviderModelDefaults(provider).model || "gpt-realtime-1.5");
+    return {
+      id: ep.id || `ep-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+      name: String(ep.name || "").trim(),
+      provider,
+      endpoint,
+      deployment: String(ep.deployment || ep.azureDeployment || "").trim(),
+      apiKey: String(ep.apiKey || "").trim(),
+      model: String(ep.model || defaultModel).trim(),
+      role: ["primary", "backup"].includes(String(ep.role || "")) ? String(ep.role) : "primary",
+      weight: typeof ep.weight === "number" ? ep.weight : 100,
+      enabled: ep.enabled !== false,
+      visionModel: String(ep.visionModel || "").trim(),
+      authSource,
+    };
+  };
+
+  const addVoiceEndpoint = () => setVoiceEndpoints((prev) => [
+    ...prev,
+    normalizeVoiceEndpoint({ name: `endpoint-${prev.length + 1}`, provider: "azure", role: "backup", weight: 50, enabled: true }),
+  ]);
+
+  const removeVoiceEndpoint = (idx) => setVoiceEndpoints((prev) => prev.filter((_, i) => i !== idx));
+
+  const updateVoiceEndpoint = (idx, field, value) => setVoiceEndpoints((prev) =>
+    prev.map((ep, i) => {
+      if (i !== idx) return ep;
+      const next = { ...ep, [field]: value };
+      if (field === "provider") {
+        const nextProvider = String(value || "").toLowerCase();
+        next.model = nextProvider === "custom"
+          ? (ALL_ENDPOINT_MODEL_OPTIONS[0] || "gpt-realtime-1.5")
+          : (getVoiceProviderModelDefaults(nextProvider).model || next.model || "gpt-realtime-1.5");
+        next.endpoint = isEndpointUrlEditable(nextProvider)
+          ? String(next.endpoint || "")
+          : getDefaultVoiceEndpointUrl(nextProvider, next.authSource || "apiKey");
+        if (nextProvider !== "azure") next.deployment = "";
+      }
+      if (field === "authSource" && !isEndpointUrlEditable(next.provider)) {
+        next.endpoint = getDefaultVoiceEndpointUrl(next.provider, String(value || "apiKey"));
+      }
+      return normalizeVoiceEndpoint(next);
+    }),
+  );
+
+  const getWorkflowProfileById = (profileId, profileList = workflowProfiles) =>
+    (profileList || []).find((profile_) => profile_.id === profileId) || null;
+
+  const getWorkflowTemplateIdsForProfile = (profileId, profileList = workflowProfiles) => {
+    const profile_ = getWorkflowProfileById(profileId, profileList);
+    return Array.isArray(profile_?.templateIds) ? [...profile_.templateIds] : [];
+  };
+
+  const upsertCurrentWorkflowProfile = (templateIds, profileList = workflowProfiles) => {
+    const normalizedTemplateIds = Array.from(
+      new Set((templateIds || []).map((value) => String(value || "").trim()).filter(Boolean)),
+    );
+    const baseProfiles = Array.isArray(profileList) ? profileList : [];
+    const currentProfile = {
+      id: CURRENT_WORKFLOW_PROFILE_ID,
+      name: `Your current installed workflows (${normalizedTemplateIds.length} templates)`,
+      description: "Keeps your existing installed templates unchanged.",
+      recommendedFor: "Returning setups where you want to preserve current defaults.",
+      templateIds: normalizedTemplateIds,
+      templateCount: normalizedTemplateIds.length,
+      workflowAutomationEnabled: workflowAutomationEnabled,
+    };
+    const nextProfiles = [
+      currentProfile,
+      ...baseProfiles.filter((profile_) => profile_.id !== CURRENT_WORKFLOW_PROFILE_ID),
+    ];
+    setWorkflowProfiles(nextProfiles);
+    return nextProfiles;
+  };
+
+  const applyWorkflowProfileSelection = (profileId, profileList = workflowProfiles) => {
+    const normalized = String(profileId || "").trim().toLowerCase() || "balanced";
+    const profile_ =
+      getWorkflowProfileById(normalized, profileList) ||
+      getWorkflowProfileById("balanced", profileList);
+    const resolvedProfileId = profile_?.id || "balanced";
+    const templateIds = getWorkflowTemplateIdsForProfile(resolvedProfileId, profileList);
+    setWorkflowProfile(resolvedProfileId);
+    setWorkflowDefaultTemplates(templateIds);
+    if (profile_ && typeof profile_.workflowAutomationEnabled === "boolean") {
+      setWorkflowAutomationEnabled(profile_.workflowAutomationEnabled);
+    }
+    if (resolvedProfileId !== CURRENT_WORKFLOW_PROFILE_ID) {
+      setWorkflowAutoInstall(true);
+    }
+  };
+
+  const toggleWorkflowTemplate = (templateId, checked) => {
+    const id = String(templateId || "").trim();
+    if (!id) return;
+    setWorkflowDefaultTemplates((prev) => {
+      const current = Array.isArray(prev) ? [...prev] : [];
+      const has = current.includes(id);
+      if (checked === true && !has) return [...current, id];
+      if (checked === false && has) return current.filter((entry) => entry !== id);
+      if (checked === undefined) return has ? current.filter((entry) => entry !== id) : [...current, id];
+      return current;
+    });
+  };
 
   // ── Load initial data ──────────────────────────────────────────────────────
 
@@ -584,13 +1217,16 @@ function App() {
       apiGet("defaults"),
       apiGet("models"),
       apiGet("executors"),
+      apiGet("workflows"),
       apiGet("status"),
-    ]).then(([prereqData, defaultsData, modelsData, execData, statusData]) => {
+    ]).then(([prereqData, defaultsData, modelsData, execData, workflowData, statusData]) => {
       setPrereqs(prereqData.prerequisites);
       setDefaults(defaultsData.defaults);
       setModels(modelsData.models || {});
       setExecutorTypes(execData.executors || []);
       setKanbanBackends(execData.kanbanBackends || []);
+      setWorkflowTemplates(workflowData.templates || []);
+      setWorkflowProfiles(workflowData.profiles || []);
       setStatus(statusData);
 
       // Apply defaults
@@ -622,6 +1258,30 @@ function App() {
       }
       if (d.workflowAutomationEnabled != null) {
         setWorkflowAutomationEnabled(Boolean(d.workflowAutomationEnabled));
+      }
+      if (d.workflowProfile) {
+        applyWorkflowProfileSelection(String(d.workflowProfile), workflowData.profiles || []);
+      }
+      if (Array.isArray(d.workflowDefaultTemplates) && d.workflowDefaultTemplates.length > 0) {
+        setWorkflowDefaultTemplates(d.workflowDefaultTemplates.map((templateId) => String(templateId).trim()).filter(Boolean));
+      }
+      if (d.workflowAutoInstall != null) {
+        setWorkflowAutoInstall(Boolean(d.workflowAutoInstall));
+      }
+      if (d.workflowNodeMaxRetries != null) {
+        setWorkflowNodeMaxRetries(Number(d.workflowNodeMaxRetries) || 3);
+      }
+      if (d.workflowNodeTimeoutMs != null) {
+        setWorkflowNodeTimeoutMs(Number(d.workflowNodeTimeoutMs) || 600000);
+      }
+      if (d.workflowRunStuckThresholdMs != null) {
+        setWorkflowRunStuckThresholdMs(Number(d.workflowRunStuckThresholdMs) || 300000);
+      }
+      if (d.workflowMaxPersistedRuns != null) {
+        setWorkflowMaxPersistedRuns(Number(d.workflowMaxPersistedRuns) || 200);
+      }
+      if (d.workflowMaxConcurrentBranches != null) {
+        setWorkflowMaxConcurrentBranches(Number(d.workflowMaxConcurrentBranches) || 8);
       }
       if (d.copilotEnableAllMcpTools != null) {
         setCopilotEnableAllMcpTools(Boolean(d.copilotEnableAllMcpTools));
@@ -671,8 +1331,72 @@ function App() {
           }),
         );
       }
+      const existingWorkflowDefaults = statusData.existingConfig?.workflowDefaults || {};
+      if (existingWorkflowDefaults.profile) {
+        applyWorkflowProfileSelection(String(existingWorkflowDefaults.profile), workflowData.profiles || []);
+      }
+      if (Array.isArray(existingWorkflowDefaults.templates)) {
+        const existingTemplateIds = existingWorkflowDefaults.templates.map((templateId) => String(templateId).trim()).filter(Boolean);
+        setWorkflowDefaultTemplates(existingTemplateIds);
+        if (statusData.configured) {
+          upsertCurrentWorkflowProfile(existingTemplateIds, workflowData.profiles || []);
+          setWorkflowProfile(CURRENT_WORKFLOW_PROFILE_ID);
+        }
+      }
+      if (existingWorkflowDefaults.autoInstall != null) {
+        setWorkflowAutoInstall(Boolean(existingWorkflowDefaults.autoInstall));
+      }
+      const existingWorkflowEngine = statusData.existingConfig?.workflowEngine || {};
+      if (existingWorkflowEngine.nodeMaxRetries != null) {
+        setWorkflowNodeMaxRetries(Number(existingWorkflowEngine.nodeMaxRetries) || 3);
+      }
+      if (existingWorkflowEngine.nodeTimeoutMs != null) {
+        setWorkflowNodeTimeoutMs(Number(existingWorkflowEngine.nodeTimeoutMs) || 600000);
+      }
+      if (existingWorkflowEngine.runStuckThresholdMs != null) {
+        setWorkflowRunStuckThresholdMs(Number(existingWorkflowEngine.runStuckThresholdMs) || 300000);
+      }
+      if (existingWorkflowEngine.maxPersistedRuns != null) {
+        setWorkflowMaxPersistedRuns(Number(existingWorkflowEngine.maxPersistedRuns) || 200);
+      }
+      if (existingWorkflowEngine.maxConcurrentBranches != null) {
+        setWorkflowMaxConcurrentBranches(Number(existingWorkflowEngine.maxConcurrentBranches) || 8);
+      }
+
+      // ── Pre-fill orchestration/failover/kanban from existing JSON config ──
+      const cfg = statusData.existingConfig || {};
+      if (cfg.distribution) { setExecutorDistribution(cfg.distribution); }
+      if (cfg.executorMode) { setExecutorMode(cfg.executorMode); }
+      if (cfg.primaryAgent) { setPrimaryAgent(cfg.primaryAgent); }
+      if (cfg.projectRequirementsProfile) { setProjectRequirementsProfile(cfg.projectRequirementsProfile); }
+      if (cfg.internalReplenish) {
+        if (cfg.internalReplenish.enabled != null) { setInternalReplenishEnabled(Boolean(cfg.internalReplenish.enabled)); }
+        if (cfg.internalReplenish.minNewTasks != null) { setInternalReplenishMin(Number(cfg.internalReplenish.minNewTasks) || 1); }
+        if (cfg.internalReplenish.maxNewTasks != null) { setInternalReplenishMax(Number(cfg.internalReplenish.maxNewTasks) || 2); }
+      }
+      const cfgKanban = cfg.kanban || {};
+      if (cfgKanban.backend) { setKanbanBackend(cfgKanban.backend); }
+      if (cfgKanban.syncPolicy) { setKanbanSyncPolicy(cfgKanban.syncPolicy); }
+      const cfgFailover = cfg.failover || {};
+      if (cfgFailover.strategy) { setFailoverStrategy(cfgFailover.strategy); }
+      if (cfgFailover.maxRetries != null) { setMaxRetries(Number(cfgFailover.maxRetries) || 3); }
+      if (cfgFailover.cooldownMinutes != null) { setFailoverCooldownMinutes(Number(cfgFailover.cooldownMinutes) || 5); }
+      if (cfgFailover.disableOnConsecutiveFailures != null) { setFailoverDisableOnConsecutive(Number(cfgFailover.disableOnConsecutiveFailures) || 3); }
+
       if (d.bosunHome)       setBosunHome(d.bosunHome);
       if (d.workspacesDir)   setWorkspacesDir(d.workspacesDir);
+      if (d.voiceEnabled !== undefined) { setVoiceEnabled(d.voiceEnabled !== false); }
+      if (d.voiceProvider) { setVoiceProvider(d.voiceProvider); }
+      if (d.voiceModel) { setVoiceModel(d.voiceModel); }
+      if (d.voiceVisionModel) { setVoiceVisionModel(d.voiceVisionModel); }
+      if (d.voiceId) { setVoiceId(d.voiceId); }
+      if (d.voiceTurnDetection) { setVoiceTurnDetection(d.voiceTurnDetection); }
+      if (d.voiceFallbackMode) { setVoiceFallbackMode(d.voiceFallbackMode); }
+      if (d.voiceDelegateExecutor) { setVoiceDelegateExecutor(d.voiceDelegateExecutor); }
+      if (d.openaiRealtimeApiKey) { setOpenaiRealtimeApiKey(d.openaiRealtimeApiKey); }
+      if (d.azureOpenaiRealtimeEndpoint) { setAzureOpenaiRealtimeEndpoint(d.azureOpenaiRealtimeEndpoint); }
+      if (d.azureOpenaiRealtimeApiKey) { setAzureOpenaiRealtimeApiKey(d.azureOpenaiRealtimeApiKey); }
+      if (d.azureOpenaiRealtimeDeployment) { setAzureOpenaiRealtimeDeployment(d.azureOpenaiRealtimeDeployment); }
 
       // Pre-fill repos from existing config (slugs preferred)
       if (statusData.existingConfig?.repos?.length) {
@@ -684,6 +1408,34 @@ function App() {
       // ── Pre-fill from existing .env ──────────────────────────────────────
       const env = statusData.existingEnv || {};
       let envLoaded = false;
+      const existingVoice = statusData.existingConfig?.voice || {};
+      if (existingVoice.enabled != null) { setVoiceEnabled(existingVoice.enabled !== false); envLoaded = true; }
+      if (existingVoice.provider) { setVoiceProvider(String(existingVoice.provider)); envLoaded = true; }
+      if (existingVoice.model) { setVoiceModel(String(existingVoice.model)); envLoaded = true; }
+      if (existingVoice.visionModel) { setVoiceVisionModel(String(existingVoice.visionModel)); envLoaded = true; }
+      if (existingVoice.voiceId) { setVoiceId(String(existingVoice.voiceId)); envLoaded = true; }
+      if (existingVoice.turnDetection) { setVoiceTurnDetection(String(existingVoice.turnDetection)); envLoaded = true; }
+      if (existingVoice.fallbackMode) { setVoiceFallbackMode(String(existingVoice.fallbackMode)); envLoaded = true; }
+      if (existingVoice.delegateExecutor) { setVoiceDelegateExecutor(String(existingVoice.delegateExecutor)); envLoaded = true; }
+      if (existingVoice.openaiApiKey) { setOpenaiRealtimeApiKey(String(existingVoice.openaiApiKey)); envLoaded = true; }
+      if (existingVoice.azureEndpoint) { setAzureOpenaiRealtimeEndpoint(String(existingVoice.azureEndpoint)); envLoaded = true; }
+      if (existingVoice.azureApiKey) { setAzureOpenaiRealtimeApiKey(String(existingVoice.azureApiKey)); envLoaded = true; }
+      if (existingVoice.azureDeployment) { setAzureOpenaiRealtimeDeployment(String(existingVoice.azureDeployment)); envLoaded = true; }
+      // Load per-endpoint voice credentials
+      if (Array.isArray(existingVoice.voiceEndpoints) && existingVoice.voiceEndpoints.length > 0) {
+        setVoiceEndpoints(existingVoice.voiceEndpoints.map((ep, i) => normalizeVoiceEndpoint({ ...ep, id: Date.now() + i })));
+        envLoaded = true;
+      } else {
+        // Auto-convert legacy flat fields to endpoint cards
+        const legacyEndpoints = [];
+        if (existingVoice.azureEndpoint || existingVoice.azureApiKey) {
+          legacyEndpoints.push(normalizeVoiceEndpoint({ name: "azure-primary", provider: "azure", endpoint: existingVoice.azureEndpoint || "", deployment: existingVoice.azureDeployment || "gpt-realtime-1.5", apiKey: existingVoice.azureApiKey || "", role: "primary", weight: 100 }));
+        }
+        if (existingVoice.openaiApiKey) {
+          legacyEndpoints.push(normalizeVoiceEndpoint({ name: "openai-primary", provider: "openai", apiKey: existingVoice.openaiApiKey || "", model: existingVoice.model || "gpt-realtime-1.5", role: legacyEndpoints.length === 0 ? "primary" : "backup", weight: legacyEndpoints.length === 0 ? 100 : 50 }));
+        }
+        if (legacyEndpoints.length > 0) setVoiceEndpoints(legacyEndpoints);
+      }
       if (env.BOSUN_HOME) { setBosunHome(env.BOSUN_HOME); envLoaded = true; }
       if (env.BOSUN_WORKSPACES_DIR) { setWorkspacesDir(env.BOSUN_WORKSPACES_DIR); setWorkspacesDirCustomized(true); envLoaded = true; }
       if (env.PROJECT_NAME) { setProjectName(env.PROJECT_NAME); envLoaded = true; }
@@ -723,6 +1475,46 @@ function App() {
       if (env.INTERNAL_EXECUTOR_REPLENISH_MAX_NEW_TASKS) { setInternalReplenishMax(Number(env.INTERNAL_EXECUTOR_REPLENISH_MAX_NEW_TASKS) || 2); envLoaded = true; }
       if (env.KANBAN_SYNC_POLICY) { setKanbanSyncPolicy(env.KANBAN_SYNC_POLICY); envLoaded = true; }
       if (env.WORKFLOW_AUTOMATION_ENABLED !== undefined) { setWorkflowAutomationEnabled(env.WORKFLOW_AUTOMATION_ENABLED !== "false"); envLoaded = true; }
+      if (env.WORKFLOW_DEFAULT_PROFILE) {
+        applyWorkflowProfileSelection(env.WORKFLOW_DEFAULT_PROFILE, workflowData.profiles || []);
+        envLoaded = true;
+      }
+      if (env.WORKFLOW_DEFAULT_TEMPLATES !== undefined) {
+        const rawTemplates = String(env.WORKFLOW_DEFAULT_TEMPLATES || "").trim().toLowerCase();
+        const parsedTemplates = rawTemplates && rawTemplates !== "none"
+          ? rawTemplates.split(",").map((value) => value.trim()).filter(Boolean)
+          : [];
+        setWorkflowDefaultTemplates(parsedTemplates);
+        if (statusData.configured) {
+          upsertCurrentWorkflowProfile(parsedTemplates, workflowData.profiles || []);
+          setWorkflowProfile(CURRENT_WORKFLOW_PROFILE_ID);
+        }
+        envLoaded = true;
+      }
+      if (env.WORKFLOW_DEFAULT_AUTOINSTALL !== undefined) {
+        setWorkflowAutoInstall(env.WORKFLOW_DEFAULT_AUTOINSTALL !== "false");
+        envLoaded = true;
+      }
+      if (env.WORKFLOW_NODE_MAX_RETRIES) {
+        setWorkflowNodeMaxRetries(Number(env.WORKFLOW_NODE_MAX_RETRIES) || 3);
+        envLoaded = true;
+      }
+      if (env.WORKFLOW_NODE_TIMEOUT_MS) {
+        setWorkflowNodeTimeoutMs(Number(env.WORKFLOW_NODE_TIMEOUT_MS) || 600000);
+        envLoaded = true;
+      }
+      if (env.WORKFLOW_RUN_STUCK_THRESHOLD_MS) {
+        setWorkflowRunStuckThresholdMs(Number(env.WORKFLOW_RUN_STUCK_THRESHOLD_MS) || 300000);
+        envLoaded = true;
+      }
+      if (env.WORKFLOW_MAX_PERSISTED_RUNS) {
+        setWorkflowMaxPersistedRuns(Number(env.WORKFLOW_MAX_PERSISTED_RUNS) || 200);
+        envLoaded = true;
+      }
+      if (env.WORKFLOW_MAX_CONCURRENT_BRANCHES) {
+        setWorkflowMaxConcurrentBranches(Number(env.WORKFLOW_MAX_CONCURRENT_BRANCHES) || 8);
+        envLoaded = true;
+      }
       // Codex model profiles
       if (env.CODEX_MODEL_PROFILE) { setCodexModelProfile(env.CODEX_MODEL_PROFILE); envLoaded = true; }
       if (env.CODEX_MODEL_PROFILE_SUBAGENT) { setCodexModelProfileSubagent(env.CODEX_MODEL_PROFILE_SUBAGENT); envLoaded = true; }
@@ -752,13 +1544,77 @@ function App() {
       if (env.WHATSAPP_ENABLED) { setWhatsappEnabled(env.WHATSAPP_ENABLED === "true"); envLoaded = true; }
       if (env.TELEGRAM_INTERVAL_MIN) { setTelegramIntervalMin(Number(env.TELEGRAM_INTERVAL_MIN) || 10); envLoaded = true; }
       if (env.ORCHESTRATOR_SCRIPT) { setOrchestratorScript(env.ORCHESTRATOR_SCRIPT); envLoaded = true; }
+      // Sentinel / watchdog
+      if (env.BOSUN_SENTINEL_AUTO_START) { setSentinelAutoStart(env.BOSUN_SENTINEL_AUTO_START === "true"); envLoaded = true; }
+      if (env.BOSUN_SENTINEL_STRICT) { setSentinelStrict(env.BOSUN_SENTINEL_STRICT === "true"); envLoaded = true; }
+      if (env.SENTINEL_AUTO_RESTART_MONITOR !== undefined) { setSentinelAutoRestartMonitor(env.SENTINEL_AUTO_RESTART_MONITOR !== "false"); envLoaded = true; }
+      if (env.SENTINEL_CRASH_LOOP_THRESHOLD) { setSentinelCrashLoopThreshold(Number(env.SENTINEL_CRASH_LOOP_THRESHOLD) || 3); envLoaded = true; }
+      if (env.SENTINEL_CRASH_LOOP_WINDOW_MIN) { setSentinelCrashLoopWindowMin(Number(env.SENTINEL_CRASH_LOOP_WINDOW_MIN) || 5); envLoaded = true; }
+      if (env.SENTINEL_REPAIR_AGENT_ENABLED) { setSentinelRepairAgentEnabled(env.SENTINEL_REPAIR_AGENT_ENABLED === "true"); envLoaded = true; }
+      if (env.SENTINEL_REPAIR_TIMEOUT_MIN) { setSentinelRepairTimeoutMin(Number(env.SENTINEL_REPAIR_TIMEOUT_MIN) || 15); envLoaded = true; }
+      // Daemon restart policy
+      if (env.RESTART_DELAY_MS) { setDaemonRestartDelayMs(Number(env.RESTART_DELAY_MS) || 10000); envLoaded = true; }
+      if (env.MAX_RESTARTS) { setDaemonMaxRestarts(Number(env.MAX_RESTARTS) || 0); envLoaded = true; }
+      if (env.BOSUN_DAEMON_MAX_INSTANT_RESTARTS) { setDaemonMaxInstantRestarts(Number(env.BOSUN_DAEMON_MAX_INSTANT_RESTARTS) || 3); envLoaded = true; }
+      if (env.BOSUN_DAEMON_INSTANT_CRASH_WINDOW_MS) { setDaemonInstantCrashWindowMs(Number(env.BOSUN_DAEMON_INSTANT_CRASH_WINDOW_MS) || 15000); envLoaded = true; }
+      // Voice settings
+      if (env.VOICE_ENABLED !== undefined) { setVoiceEnabled(env.VOICE_ENABLED !== "false"); envLoaded = true; }
+      if (env.VOICE_PROVIDER) { setVoiceProvider(env.VOICE_PROVIDER); envLoaded = true; }
+      if (env.VOICE_MODEL) { setVoiceModel(env.VOICE_MODEL); envLoaded = true; }
+      if (env.VOICE_VISION_MODEL) { setVoiceVisionModel(env.VOICE_VISION_MODEL); envLoaded = true; }
+      if (env.VOICE_ID) { setVoiceId(env.VOICE_ID); envLoaded = true; }
+      if (env.VOICE_TURN_DETECTION) { setVoiceTurnDetection(env.VOICE_TURN_DETECTION); envLoaded = true; }
+      if (env.VOICE_FALLBACK_MODE) { setVoiceFallbackMode(env.VOICE_FALLBACK_MODE); envLoaded = true; }
+      if (env.VOICE_DELEGATE_EXECUTOR) { setVoiceDelegateExecutor(env.VOICE_DELEGATE_EXECUTOR); envLoaded = true; }
+      if (env.OPENAI_REALTIME_API_KEY) { setOpenaiRealtimeApiKey(env.OPENAI_REALTIME_API_KEY); envLoaded = true; }
+      if (env.AZURE_OPENAI_REALTIME_ENDPOINT) { setAzureOpenaiRealtimeEndpoint(env.AZURE_OPENAI_REALTIME_ENDPOINT); envLoaded = true; }
+      if (env.AZURE_OPENAI_REALTIME_API_KEY) { setAzureOpenaiRealtimeApiKey(env.AZURE_OPENAI_REALTIME_API_KEY); envLoaded = true; }
+      if (env.AZURE_OPENAI_REALTIME_DEPLOYMENT) { setAzureOpenaiRealtimeDeployment(env.AZURE_OPENAI_REALTIME_DEPLOYMENT); envLoaded = true; }
+      // Build voiceEndpoints from env vars if not already populated from config
+      const envEps = [];
+      if (env.AZURE_OPENAI_REALTIME_ENDPOINT || env.AZURE_OPENAI_REALTIME_API_KEY) {
+        envEps.push(normalizeVoiceEndpoint({ name: "azure-primary", provider: "azure", endpoint: env.AZURE_OPENAI_REALTIME_ENDPOINT || "", deployment: env.AZURE_OPENAI_REALTIME_DEPLOYMENT || "gpt-realtime-1.5", apiKey: env.AZURE_OPENAI_REALTIME_API_KEY || "", role: "primary", weight: 100 }));
+      }
+      if (env.OPENAI_REALTIME_API_KEY) {
+        envEps.push(normalizeVoiceEndpoint({ name: "openai-primary", provider: "openai", apiKey: env.OPENAI_REALTIME_API_KEY, model: env.VOICE_MODEL || "gpt-realtime-1.5", role: envEps.length === 0 ? "primary" : "backup", weight: envEps.length === 0 ? 100 : 50 }));
+      }
+      if (envEps.length > 0) { setVoiceEndpoints((prev) => (prev.length > 0 ? prev : envEps)); envLoaded = true; }
+      const resolvedVoiceProvider = String(env.VOICE_PROVIDER || existingVoice.provider || d.voiceProvider || voiceProvider || "openai").trim().toLowerCase();
+      const resolvedVoiceModel = String(env.VOICE_MODEL || existingVoice.model || d.voiceModel || voiceModel || "gpt-realtime-1.5").trim();
+      const resolvedVoiceVisionModel = String(env.VOICE_VISION_MODEL || existingVoice.visionModel || d.voiceVisionModel || voiceVisionModel || "gpt-4.1-nano").trim();
+      const resolvedVoiceId = String(env.VOICE_ID || existingVoice.voiceId || d.voiceId || voiceId || "alloy").trim();
+      const resolvedAzureDeployment = String(env.AZURE_OPENAI_REALTIME_DEPLOYMENT || existingVoice.azureDeployment || d.azureOpenaiRealtimeDeployment || azureOpenaiRealtimeDeployment || "gpt-realtime-1.5").trim();
+      if (Array.isArray(existingVoice.providers) && existingVoice.providers.length > 0) {
+        setVoiceProviders(
+          normalizeVoiceProviders(existingVoice.providers, {
+            provider: resolvedVoiceProvider,
+            model: resolvedVoiceModel,
+            visionModel: resolvedVoiceVisionModel,
+            voiceId: resolvedVoiceId,
+            azureDeployment: resolvedAzureDeployment,
+          }),
+        );
+      } else {
+        setVoiceProviders(
+          normalizeVoiceProviders([], {
+            provider: resolvedVoiceProvider,
+            model: resolvedVoiceModel,
+            visionModel: resolvedVoiceVisionModel,
+            voiceId: resolvedVoiceId,
+            azureDeployment: resolvedAzureDeployment,
+          }),
+        );
+      }
       // Multi-workspace: load workspaces[] from existing config
-      if (statusData.existingConfig?.workspaces?.length > 1) {
+      if (statusData.existingConfig?.workspaces?.length > 0) {
         setMultiWorkspaceEnabled(true);
         setWorkspaces(statusData.existingConfig.workspaces.map((ws) => ({
           id: ws.id || Date.now() + Math.random(),
           name: ws.name || "",
-          repos: (ws.repos || []).map((r) => r.slug || r.path || r || ""),
+          repos: (ws.repos || []).map((r) => {
+            if (typeof r === "string") return r;
+            return r.slug || r.url || r.name || r.path || "";
+          }),
         })));
         envLoaded = true;
       }
@@ -811,6 +1667,21 @@ function App() {
       }
       if (envLoaded) setLoadedFromEnv(true);
 
+      // ── Detect existing GitHub OAuth from saved auth state ────────────────
+      if (statusData.githubOAuth?.connected) {
+        setOauthStatus("received");
+        if (statusData.githubOAuth.installationIds?.length > 0) {
+          setOauthInstallationId(String(statusData.githubOAuth.installationIds[0]));
+        }
+      }
+
+      // ── Pre-fill startup/shortcut status ──────────────────────────────────
+      if (statusData.startupStatus?.installed) { setAutoStartEnabled(true); }
+      if (statusData.desktopShortcutStatus?.installed) { setDesktopShortcutEnabled(true); }
+
+      // ── Fetch OAuth connected accounts status ─────────────────────────────
+      fetchAllOAuthStatus();
+
       setLoading(false);
     }).catch((err) => {
       setError(`Failed to connect to setup server: ${err.message}`);
@@ -850,21 +1721,44 @@ function App() {
     // Poll the setup server for a pending OAuth callback that may have been
     // received on the callback-catcher (port 54317) while setup was open.
     let pollTimer;
+    let pollStopTimer;
+    let consecutivePollFailures = 0;
+    const OAUTH_STATE_POLL_MAX_MS = 300000; // 5 minutes
+    const OAUTH_STATE_POLL_MAX_FAILURES = 5;
+    const stopPolling = () => {
+      if (pollTimer) {
+        clearInterval(pollTimer);
+        pollTimer = null;
+      }
+      if (pollStopTimer) {
+        clearTimeout(pollStopTimer);
+        pollStopTimer = null;
+      }
+    };
     const poll = async () => {
       try {
         const r = await fetch("/api/setup/oauth-state");
         if (!r.ok) return;
+        consecutivePollFailures = 0;
         const data = await r.json();
         if (data?.pending) {
           setOauthStatus("received");
           if (data.installation_id) setOauthInstallationId(data.installation_id);
-          clearInterval(pollTimer);
+          stopPolling();
         }
-      } catch { /* server may not have this endpoint yet — ignore */ }
+      } catch {
+        // If the setup server is offline (e.g. wizard process stopped), avoid
+        // logging a failed network request forever.
+        consecutivePollFailures += 1;
+        if (consecutivePollFailures >= OAUTH_STATE_POLL_MAX_FAILURES) {
+          stopPolling();
+        }
+      }
     };
     pollTimer = setInterval(poll, 2000);
+    pollStopTimer = setTimeout(stopPolling, OAUTH_STATE_POLL_MAX_MS);
     poll(); // immediate first check
-    return () => clearInterval(pollTimer);
+    return stopPolling;
   }, []);
 
 
@@ -919,6 +1813,24 @@ function App() {
       };
     });
 
+  const buildRepoConfigEntry = (rawRepo, index = 0) => {
+    const value = String(rawRepo || "").trim();
+    if (!value) return null;
+    const slugMatch = value.match(/^([a-zA-Z0-9_.-]+\/[a-zA-Z0-9_.-]+)$/);
+    const slug = slugMatch ? slugMatch[1] : "";
+    const urlMatch = value.match(/^https?:\/\/github\.com\/([a-zA-Z0-9_.-]+\/[a-zA-Z0-9_.-]+)(?:\.git)?$/i);
+    const resolvedSlug = slug || (urlMatch ? urlMatch[1] : "");
+    const name = (resolvedSlug.split("/").pop() || value.split("/").pop() || `repo-${index + 1}`)
+      .replace(/\.git$/i, "")
+      .trim();
+    return {
+      name,
+      slug: resolvedSlug,
+      url: resolvedSlug ? `https://github.com/${resolvedSlug}.git` : value,
+      primary: index === 0,
+    };
+  };
+
   // ── Apply config ───────────────────────────────────────────────────────────
 
   const handleApply = async () => {
@@ -926,6 +1838,24 @@ function App() {
     setError(null);
     try {
       const filteredRepos = repos.filter((r) => r.trim());
+      const normalizedVoiceProviders = normalizeVoiceProviders(voiceProviders, {
+        provider: voiceProvider,
+        model: voiceModel,
+        visionModel: voiceVisionModel,
+        voiceId,
+        azureDeployment: azureOpenaiRealtimeDeployment,
+      });
+      const primaryVoiceProvider = normalizedVoiceProviders[0] || normalizeVoiceProviderEntry({
+        provider: voiceProvider,
+        model: voiceModel,
+        visionModel: voiceVisionModel,
+        voiceId,
+        azureDeployment: azureOpenaiRealtimeDeployment,
+      });
+      const voiceFailoverMaxAttempts = Math.max(1, Math.min(Math.max(normalizedVoiceProviders.length, voiceEndpoints.filter((ep) => ep.enabled !== false).length), 5));
+      // Derive legacy credential fields from primary endpoints for backward compat.
+      const primaryAzureEp = voiceEndpoints.find((ep) => ep.provider === "azure" && ep.enabled !== false);
+      const primaryOpenAIEp = voiceEndpoints.find((ep) => ep.provider === "openai" && ep.enabled !== false);
       const result = await apiPost("apply", {
         env: {
           bosunHome,
@@ -956,6 +1886,14 @@ function App() {
           internalReplenishMax,
           kanbanSyncPolicy,
           workflowAutomationEnabled,
+          workflowProfile,
+          workflowDefaultTemplates,
+          workflowAutoInstall,
+          workflowNodeMaxRetries,
+          workflowNodeTimeoutMs,
+          workflowRunStuckThresholdMs,
+          workflowMaxPersistedRuns,
+          workflowMaxConcurrentBranches,
           // Codex model profiles
           codexModelProfile,
           codexModelProfileSubagent,
@@ -977,6 +1915,22 @@ function App() {
           copilotEnableAskUser,
           copilotEnableAllMcpTools,
           copilotMcpConfig,
+          // Voice assistant
+          voiceEnabled,
+          voiceProvider: primaryVoiceProvider.provider || voiceProvider,
+          voiceModel: primaryVoiceProvider.model || voiceModel,
+          voiceVisionModel: primaryVoiceProvider.visionModel || voiceVisionModel,
+          voiceId: primaryVoiceProvider.voiceId || voiceId,
+          voiceTurnDetection,
+          voiceFallbackMode,
+          voiceDelegateExecutor,
+          openaiRealtimeApiKey,
+          azureOpenaiRealtimeEndpoint,
+          azureOpenaiRealtimeApiKey,
+          azureOpenaiRealtimeDeployment: primaryVoiceProvider.azureDeployment || azureOpenaiRealtimeDeployment,
+          voiceProviders: normalizedVoiceProviders,
+          voiceFailoverEnabled: true,
+          voiceFailoverMaxAttempts,
           // Infrastructure
           containerEnabled,
           containerRuntime,
@@ -985,13 +1939,28 @@ function App() {
           whatsappEnabled,
           telegramIntervalMin,
           orchestratorScript,
+          // Sentinel / watchdog
+          sentinelAutoStart,
+          sentinelStrict,
+          sentinelAutoRestartMonitor,
+          sentinelCrashLoopThreshold,
+          sentinelCrashLoopWindowMin,
+          sentinelRepairAgentEnabled,
+          sentinelRepairTimeoutMin,
+          // Daemon restart policy
+          daemonRestartDelayMs,
+          daemonMaxRestarts,
+          daemonMaxInstantRestarts,
+          daemonInstantCrashWindowMs,
         },
         configJson: {
           projectName,
           bosunHome,
           workspacesDir,
           executors: buildExecutorsConfig(),
-          repos: filteredRepos.map((r) => ({ slug: r })),
+          repos: filteredRepos
+            .map((r, idx) => buildRepoConfigEntry(r, idx))
+            .filter(Boolean),
           kanban: { backend: kanbanBackend, syncPolicy: kanbanSyncPolicy },
           failover: {
             strategy: failoverStrategy,
@@ -1008,11 +1977,45 @@ function App() {
             minNewTasks: Number(internalReplenishMin) || 1,
             maxNewTasks: Number(internalReplenishMax) || 2,
           } : { enabled: false },
+          workflowDefaults: {
+            profile: workflowProfile,
+            autoInstall: workflowAutoInstall,
+            templates: (workflowDefaultTemplates || []).filter(Boolean),
+          },
+          workflowEngine: {
+            nodeMaxRetries: Number(workflowNodeMaxRetries) || 3,
+            nodeTimeoutMs: Number(workflowNodeTimeoutMs) || 600000,
+            runStuckThresholdMs: Number(workflowRunStuckThresholdMs) || 300000,
+            maxPersistedRuns: Number(workflowMaxPersistedRuns) || 200,
+            maxConcurrentBranches: Number(workflowMaxConcurrentBranches) || 8,
+          },
+          voice: {
+            enabled: voiceEnabled !== false,
+            provider: primaryVoiceProvider.provider || voiceProvider,
+            model: primaryVoiceProvider.model || voiceModel,
+            visionModel: primaryVoiceProvider.visionModel || voiceVisionModel,
+            voiceId: primaryVoiceProvider.voiceId || voiceId,
+            turnDetection: voiceTurnDetection,
+            fallbackMode: voiceFallbackMode,
+            delegateExecutor: voiceDelegateExecutor,
+            azureDeployment: primaryAzureEp?.deployment || primaryVoiceProvider.azureDeployment || azureOpenaiRealtimeDeployment,
+            openaiApiKey: primaryOpenAIEp?.apiKey || openaiRealtimeApiKey,
+            azureEndpoint: primaryAzureEp?.endpoint || azureOpenaiRealtimeEndpoint,
+            azureApiKey: primaryAzureEp?.apiKey || azureOpenaiRealtimeApiKey,
+            providers: normalizedVoiceProviders.slice(0, 5),
+            voiceEndpoints: voiceEndpoints.filter((ep) => ep.endpoint || ep.apiKey || ep.deployment || ep.model).map((ep) => ({ id: ep.id, name: ep.name, provider: ep.provider, endpoint: ep.endpoint, deployment: ep.deployment, apiKey: ep.apiKey, model: ep.model, visionModel: ep.visionModel, role: ep.role, weight: ep.weight, enabled: ep.enabled })),
+            failover: {
+              enabled: true,
+              maxAttempts: voiceFailoverMaxAttempts,
+            },
+          },
           workspaces: multiWorkspaceEnabled
             ? workspaces.filter((ws) => ws.name.trim()).map((ws) => ({
                 id: ws.id,
                 name: ws.name,
-                repos: (ws.repos || []).filter((r) => r.trim()).map((r) => ({ slug: r })),
+                repos: (ws.repos || [])
+                  .map((r, idx) => buildRepoConfigEntry(r, idx))
+                  .filter(Boolean),
               }))
             : undefined,
         },
@@ -1062,7 +2065,7 @@ function App() {
       {
         name: `executor-${prev.length + 1}`,
         executor: "COPILOT",
-        model: "claude-sonnet-4",
+        model: "claude-sonnet-4.6",
         weight: 50,
         role: "backup",
         enabled: true,
@@ -1257,7 +2260,7 @@ function App() {
       <div class="setup-container">
         <div class="step-panel">
           <div class="success-banner">
-            <div class="icon">🎉</div>
+            <div class="icon">${iconText(":star:")}</div>
             <h2>Setup Complete!</h2>
             <p>Bosun is configured and ready to go.</p>
             <p style="margin-top:12px;font-size:0.8rem;color:var(--text-dim)">
@@ -1268,6 +2271,9 @@ function App() {
             </p>
             <p style="margin-top:16px;color:var(--text-secondary)">
               You can close this tab. Run <code style="font-family:var(--font-mono);color:var(--accent-light)">bosun</code> to start the orchestrator.
+            </p>
+            <p style="margin-top:6px;color:var(--text-dim);font-size:0.8rem">
+              To update any setting later, run <code style="font-family:var(--font-mono);color:var(--accent-light)">bosun --setup</code> again.
             </p>
           </div>
         </div>
@@ -1316,10 +2322,10 @@ function App() {
       <ul class="prereq-list">
         ${items.map((item) => {
           const statusClass = item.installed ? "ok" : item.required ? "fail" : "warn";
-          const icon = item.installed ? "✅" : item.required ? "❌" : "⚠️";
+          const icon = item.installed ? ":check:" : item.required ? ":close:" : ":alert:";
           return html`
             <li class="prereq-item ${statusClass}">
-              <span class="icon">${icon}</span>
+              <span class="icon">${iconText(icon)}</span>
               <span class="name">${item.label}${!item.required ? " (optional)" : ""}</span>
               <span class="version">${item.version || (item.installed ? "found" : "not found")}</span>
             </li>
@@ -1327,7 +2333,7 @@ function App() {
         })}
         ${prereqs.gh && !prereqs.gh.authenticated && prereqs.gh.installed ? html`
           <li class="prereq-item warn">
-            <span class="icon">⚠️</span>
+            <span class="icon">${iconText(":alert:")}</span>
             <span class="name">GitHub CLI not authenticated</span>
             <span class="version">Run: gh auth login</span>
           </li>
@@ -1349,7 +2355,7 @@ function App() {
     <p class="step-desc">Choose how you'd like to configure bosun, then set your home directory.</p>
 
     <div class="form-group">
-      <label>Bosun Home Directory <span class="required">*</span></label>
+      ${labelWithHelp(html`Bosun Home Directory <span class="required">*</span>`, HELP_TEXT.bosunHome)}
       <input type="text" value=${bosunHome}
         oninput=${(e) => setBosunHome(e.target.value)}
         placeholder="~/bosun" />
@@ -1360,7 +2366,7 @@ function App() {
       </div>
     </div>
     <div class="form-group">
-      <label>Workspaces Directory</label>
+      ${labelWithHelp("Workspaces Directory", HELP_TEXT.workspacesDir)}
       <input type="text" value=${workspacesDir}
         oninput=${(e) => { setWorkspacesDir(e.target.value); setWorkspacesDirCustomized(true); }}
         placeholder="${bosunHome}/workspaces" />
@@ -1378,23 +2384,23 @@ function App() {
 
     <div class="profile-cards">
       <div class="profile-card ${profile === "standard" ? "selected" : ""}" onclick=${() => setProfile("standard")}>
-        <div class="icon">⚡</div>
+        <div class="icon">${iconText(":zap:")}</div>
         <h4>Standard</h4>
         <p>Sensible defaults with primary & backup executors. Best for most users.</p>
       </div>
       <div class="profile-card ${profile === "advanced" ? "selected" : ""}" onclick=${() => setProfile("advanced")}>
-        <div class="icon">🔧</div>
+        <div class="icon">${iconText(":settings:")}</div>
         <h4>Advanced</h4>
         <p>Full control over executors, failover, distribution weights, and all settings.</p>
       </div>
     </div>
     <div class="form-group" style="margin-top:20px">
-      <label>Project Name <span class="required">*</span></label>
+      ${labelWithHelp(html`Project Name <span class="required">*</span>`, HELP_TEXT.projectName)}
       <input type="text" value=${projectName} oninput=${(e) => setProjectName(e.target.value)} placeholder="my-project" />
       <div class="hint">Display name for your project in bosun's UI and notifications.</div>
     </div>
     <div class="form-group">
-      <label>GitHub Repository</label>
+      ${labelWithHelp("GitHub Repository", HELP_TEXT.repoSlug)}
       <input type="text" value=${repoSlug} oninput=${(e) => setRepoSlug(e.target.value)} placeholder="owner/repo" />
       <div class="hint">Optional. Used for PR automation, status checks, and GitHub project sync.</div>
     </div>
@@ -1413,7 +2419,7 @@ function App() {
     <p class="step-desc">Configure which AI coding agents bosun will use. You can add multiple executors with weighted distribution.</p>
 
     <div style="background:rgba(99,102,241,.08);border:1px solid rgba(99,102,241,.25);border-radius:var(--radius-sm);padding:12px 16px;margin-bottom:16px;font-size:0.8rem;line-height:1.6">
-      <strong>🔐 No API key required in most cases.</strong>
+      <strong>${iconText(":lock: No API key required in most cases.")}</strong>
       GitHub Copilot, Codex CLI, and Claude Code all support OAuth — just run
       <code style="font-family:var(--font-mono);color:var(--accent-light)">gh auth login</code>,
       <code style="font-family:var(--font-mono);color:var(--accent-light)">codex auth login</code>, or
@@ -1433,10 +2439,11 @@ function App() {
           ? configuredModelOptions
           : getModelsForExecutor(ex.executor);
       const authMode = ex.authMode || "oauth";
+      const executorHeading = `${ex.enabled === false ? ":dot:" : ex.role === "primary" ? ":dot:" : ":dot:"} Executor ${i + 1}: ${ex.name}`;
       return html`
       <div class="executor-card">
         <div class="executor-card-header">
-          <h4>${ex.enabled === false ? "⚫" : ex.role === "primary" ? "🟢" : "🔵"} Executor ${i + 1}: ${ex.name}</h4>
+          <h4>${iconText(executorHeading)}</h4>
           ${executors.length > 1 && html`
             <button class="btn btn-sm btn-danger" onclick=${() => removeExecutor(i)}>Remove</button>
           `}
@@ -1465,7 +2472,7 @@ function App() {
             <div class="hint">Disabled executors stay in config but are excluded from routing and chat picker lists.</div>
           </div>
           <div class="form-group">
-            <label>Executor Type</label>
+            ${labelWithHelp("Executor Type", HELP_TEXT.executorType)}
             <${SelectWithCustom}
               options=${executorTypes}
               value=${ex.executor}
@@ -1473,7 +2480,7 @@ function App() {
             />
           </div>
           <div class="form-group">
-            <label>Authentication</label>
+            ${labelWithHelp("Authentication", HELP_TEXT.authMode)}
             <select value=${authMode} onchange=${(e) => updateExecutor(i, "authMode", e.target.value)}>
               <option value="oauth">Use existing auth (OAuth / login session)</option>
               <option value="api-key">API Key</option>
@@ -1521,7 +2528,7 @@ function App() {
                     return html`
                       <div class="connection-card">
                         <div class="connection-card-header">
-                          <span class="connection-label">${isPrimary ? "⭐ Primary" : `☁ Profile ${ci + 1}`}: ${conn.name || (isPrimary ? "default" : "(unnamed)")}</span>
+                          <span class="connection-label">${iconText(`${isPrimary ? ":star: Primary" : `:globe: Profile ${ci + 1}`}: ${conn.name || (isPrimary ? "default" : "(unnamed)")}`)}</span>
                           <button class="btn btn-sm btn-danger"
                             onclick=${() => removeConnection(i, ci)}>✕ Remove</button>
                         </div>
@@ -1579,8 +2586,9 @@ function App() {
             }
           })()}
           <div class="form-group">
-            <label style="display:flex;align-items:center;justify-content:space-between">
+            <label class="label-with-help" style="display:flex;align-items:center;justify-content:space-between">
               <span>Model</span>
+              <${HelpTip} text=${HELP_TEXT.executorModel} />
               ${ex.executor !== "COPILOT" && html`
                 <button class="btn btn-sm" style="padding:3px 8px;font-size:0.72rem"
                   onclick=${() => probeExecutorModels(i)}
@@ -1605,7 +2613,7 @@ function App() {
             `}
           </div>
           <div class="form-group">
-            <label>Weight</label>
+            ${labelWithHelp("Weight", HELP_TEXT.executorWeight)}
             <input type="number" value=${ex.weight} min="1" max="100"
               oninput=${(e) => updateExecutor(i, "weight", Number(e.target.value) || 50)} />
             <div class="hint">Distribution weight (higher = more tasks)</div>
@@ -1619,21 +2627,24 @@ function App() {
       </div>
     `}
     <button class="btn btn-sm" onclick=${addExecutor} style="margin-bottom:12px">+ Add Executor</button>
+    <div class="hint" style="margin-bottom:12px">
+      Enabled executors: ${executors.filter((ex) => ex.enabled !== false).length} / ${executors.length}
+    </div>
     ${profile === "advanced" && html`
       <div class="executor-grid" style="margin-top:12px">
         <div class="form-group">
-          <label>Max Parallel</label>
+          ${labelWithHelp("Max Parallel", HELP_TEXT.maxParallel)}
           <input type="number" value=${maxParallel} min="1" max="20"
             oninput=${(e) => setMaxParallel(Number(e.target.value) || 4)} />
           <div class="hint">Simultaneous execution slots</div>
         </div>
         <div class="form-group">
-          <label>Max Retries</label>
+          ${labelWithHelp("Max Retries", HELP_TEXT.maxRetries)}
           <input type="number" value=${maxRetries} min="0" max="10"
             oninput=${(e) => setMaxRetries(Number(e.target.value) || 3)} />
         </div>
         <div class="form-group">
-          <label>Failover Strategy</label>
+          ${labelWithHelp("Failover Strategy", HELP_TEXT.failoverStrategy)}
           <select value=${failoverStrategy} onchange=${(e) => setFailoverStrategy(e.target.value)}>
             <option value="next-in-line">Next in Line</option>
             <option value="round-robin">Round Robin</option>
@@ -1665,7 +2676,7 @@ function App() {
 
       ${!multiWorkspaceEnabled && html`
         <div style="background:var(--bg-input);border:1px solid var(--border-primary);border-radius:var(--radius-sm);padding:10px 14px;margin-bottom:16px;font-size:0.78rem;color:var(--text-secondary)">
-          📁 Repos will be cloned into:
+          ${iconText(":folder: Repos will be cloned into:")}
           <code style="font-family:var(--font-mono);color:var(--accent-light);margin-left:4px">${cloneRoot}/${"<repo-name>"}</code>
         </div>
       `}
@@ -1807,7 +2818,122 @@ function App() {
     </div>
   `;
 
-  // ── Step 5: Notifications ──────────────────────────────────────────────────
+  // ── Step 5: Workflows ──────────────────────────────────────────────────────
+
+  const StepWorkflows = () => {
+    const profileCards = workflowProfiles || [];
+    const templates = [...(workflowTemplates || [])].sort((a, b) => {
+      const categoryOrderA = Number(a?.categoryOrder || 99);
+      const categoryOrderB = Number(b?.categoryOrder || 99);
+      if (categoryOrderA !== categoryOrderB) return categoryOrderA - categoryOrderB;
+      return String(a?.name || "").localeCompare(String(b?.name || ""));
+    });
+    const selectedSet = new Set((workflowDefaultTemplates || []).map((id) => String(id)));
+    const selectedCount = selectedSet.size;
+
+    const applyProfileTemplates = (profileId) => {
+      applyWorkflowProfileSelection(profileId, profileCards);
+    };
+
+    const selectRecommendedOnly = () => {
+      const recommended = templates
+        .filter((template) => template.recommended === true)
+        .map((template) => template.id);
+      setWorkflowDefaultTemplates(recommended);
+      setWorkflowProfile("balanced");
+      setWorkflowAutoInstall(true);
+    };
+
+    const clearTemplateSelection = () => {
+      setWorkflowDefaultTemplates([]);
+      setWorkflowProfile("manual");
+    };
+
+    return html`
+      <h2>Workflow Defaults</h2>
+      <p class="step-desc">
+        Pick which workflows Bosun should auto-install and enable by default. Choose a setup profile, then fine-tune the exact templates.
+      </p>
+
+      <div style="background:rgba(99,102,241,.08);border:1px solid rgba(99,102,241,.25);border-radius:var(--radius-sm);padding:12px 16px;margin-bottom:14px;font-size:0.79rem;line-height:1.55">
+        <strong>Tip:</strong> You can run <code style="font-family:var(--font-mono);color:var(--accent-light)">bosun --setup</code> anytime to update workflow defaults, executors, and advanced settings.
+      </div>
+
+      <div class="workflow-profile-grid">
+        ${profileCards.map((profile_) => html`
+          <div
+            class="workflow-profile-card ${workflowProfile === profile_.id ? "selected" : ""}"
+            onclick=${() => applyProfileTemplates(profile_.id)}
+          >
+            <div class="workflow-profile-title">
+              <span>${profile_.name}</span>
+              <span class="workflow-chip">${profile_.templateCount || profile_?.templateIds?.length || 0} templates</span>
+            </div>
+            <div class="workflow-profile-reco">${profile_.description}</div>
+            <div class="workflow-profile-reco" style="margin-top:6px;color:var(--text-dim)">
+              Recommended for: ${profile_.recommendedFor}
+            </div>
+          </div>
+        `)}
+      </div>
+
+      <div class="form-group" style="margin-bottom:10px">
+        <label style="display:flex;align-items:center;gap:8px;cursor:pointer;user-select:none">
+          <input type="checkbox" checked=${workflowAutoInstall}
+            onchange=${(e) => setWorkflowAutoInstall(e.target.checked)}
+            style="width:auto;padding:0;margin:0;accent-color:var(--accent);cursor:pointer" />
+          Auto-install selected workflow templates on startup
+        </label>
+        <div class="hint">If disabled, templates stay available in the Workflows tab but won’t be installed automatically.</div>
+      </div>
+
+      <div style="display:flex;align-items:center;justify-content:space-between;gap:8px;margin-bottom:8px;flex-wrap:wrap">
+        <div class="hint">Selected templates: <strong>${selectedCount}</strong> / ${templates.length}</div>
+        <div style="display:flex;gap:6px;flex-wrap:wrap">
+          <button class="btn btn-sm" onclick=${() => applyProfileTemplates(workflowProfile || "balanced")}>Apply Profile Defaults</button>
+          <button class="btn btn-sm" onclick=${selectRecommendedOnly}>Use Recommended Only</button>
+          <button class="btn btn-sm btn-danger" onclick=${clearTemplateSelection}>Clear Selection</button>
+        </div>
+      </div>
+
+      <div class="workflow-template-list">
+        ${templates.map((template) => {
+          const checked = selectedSet.has(String(template.id));
+          return html`
+            <label class="workflow-template-row ${checked ? "selected" : ""}">
+              <input
+                class="workflow-template-checkbox"
+                type="checkbox"
+                checked=${checked}
+                onchange=${(e) => toggleWorkflowTemplate(template.id, e.target.checked)}
+              />
+              <div>
+                <div class="workflow-template-title">
+                  <span>${template.name}</span>
+                  ${template.recommended ? html`<span class="workflow-chip recommended">recommended</span>` : null}
+                  ${template.categoryLabel ? html`<span class="workflow-chip">${template.categoryLabel}</span>` : null}
+                </div>
+                <div class="workflow-template-desc">${template.description}</div>
+              </div>
+            </label>
+          `;
+        })}
+      </div>
+
+      ${workflowAutoInstall && selectedCount === 0 && html`
+        <div class="hint" style="margin-top:10px;color:var(--warning)">
+          No templates selected. Bosun can still run, but workflow automation won’t perform any default actions.
+        </div>
+      `}
+
+      <div class="nav-buttons">
+        <button class="btn" onclick=${goPrev}>← Back</button>
+        <button class="btn btn-primary" onclick=${goNext}>Continue →</button>
+      </div>
+    `;
+  };
+
+  // ── Step 6: Notifications ──────────────────────────────────────────────────
 
   const StepNotifications = () => html`
     <h2>Notifications</h2>
@@ -1816,12 +2942,13 @@ function App() {
     ${/* ── GitHub App installation callout ── */ ""}
     <div style="background:rgba(56,139,253,.07);border:1px solid rgba(56,139,253,.25);border-radius:var(--radius-sm);padding:14px 16px;margin-bottom:20px">
       <div style="display:flex;align-items:flex-start;gap:10px">
-        <span style="font-size:1.3em;line-height:1.2;flex-shrink:0">📦</span>
+        <span style="font-size:1.3em;line-height:1.2;flex-shrink:0">${iconText(":box:")}</span>
         <div style="flex:1;min-width:0">
           <div style="font-weight:600;font-size:0.9rem;color:var(--accent-light);margin-bottom:4px">GitHub App — Bosun[VE]</div>
           ${oauthStatus === "received"
             ? html`<div style="color:#4ade80;font-size:0.82rem">
-                ✅ GitHub App authorized!
+                ${iconText(":check: GitHub App authorized!")}
+                ${status?.githubOAuth?.user ? html` as <strong>${status.githubOAuth.user}</strong>` : ""}
                 ${oauthInstallationId ? html` (Installation <code style="font-family:var(--font-mono)">${oauthInstallationId}</code>)` : null}
               </div>`
             : html`<div style="font-size:0.82rem;color:var(--text-secondary);line-height:1.5">
@@ -1831,7 +2958,7 @@ function App() {
                 <div style="margin-top:8px;display:flex;align-items:center;gap:8px;flex-wrap:wrap">
                   <a href="https://github.com/apps/bosun-ve" target="_blank" rel="noopener"
                      style="display:inline-flex;align-items:center;gap:6px;padding:6px 12px;background:var(--accent);color:#fff;border-radius:5px;font-size:0.8rem;font-weight:600;text-decoration:none">
-                    🔗 Install from GitHub Marketplace
+                    ${iconText(":link: Install from GitHub Marketplace")}
                   </a>
                   <span style="font-size:0.75rem;color:var(--text-dim)">
                     <span class="spinner" style="width:10px;height:10px;border-width:2px;vertical-align:middle;margin-right:4px"></span>
@@ -1872,49 +2999,35 @@ function App() {
     </div>
   `;
 
-  // ── Step 6: Advanced Settings ──────────────────────────────────────────────
+  // ── Step 7: Advanced Settings ──────────────────────────────────────────────
 
   const StepAdvanced = () => {
-    // Section is rendered as a real Preact component (`<${Section}/>`) so its
-    // useState call is properly isolated to its own fiber — safe to use here.
-    function Section({ id, title, defaultOpen, children }) {
-      const [open, setOpen] = useState(!!defaultOpen);
-      return html`
-        <div style="border:1px solid var(--border-primary);border-radius:var(--radius-sm);margin-bottom:10px;overflow:hidden">
-          <div style="display:flex;align-items:center;justify-content:space-between;padding:12px 16px;cursor:pointer;background:var(--bg-input);user-select:none"
-            onclick=${() => setOpen((v) => !v)}>
-            <span style="font-weight:600;font-size:0.88rem">${title}</span>
-            <span style="color:var(--text-dim);font-size:0.8rem">${open ? "▲" : "▼"}</span>
-          </div>
-          ${open && html`<div style="padding:16px">${children}</div>`}
-        </div>
-      `;
-    }
-
     return html`
       <h2>Advanced Settings</h2>
       <p class="step-desc">Fine-tune execution, model profiles, and infrastructure. Defaults are sensible — only change what you need.</p>
 
-      <${Section} title="⚡ Execution & Distribution" defaultOpen=${true}>
+      <${Section} title=":zap: Execution & Distribution" defaultOpen=${true}>
         <div class="form-group">
-          <label>Executor Mode</label>
+          ${labelWithHelp("Executor Mode", HELP_TEXT.executorMode)}
           <select value=${executorMode} onchange=${(e) => setExecutorMode(e.target.value)}>
             <option value="internal">Internal — bosun manages agents directly</option>
             <option value="vk">VirtKanban (VK) — remote agent server</option>
             <option value="hybrid">Hybrid — internal + remote fallback</option>
           </select>
+          <div class="hint">Use <strong>Internal</strong> for local-first reliability. Choose VK/Hybrid only if you already run a remote VK service.</div>
         </div>
         <div class="form-group">
-          <label>Task Distribution</label>
+          ${labelWithHelp("Task Distribution", HELP_TEXT.taskDistribution)}
           <select value=${executorDistribution} onchange=${(e) => setExecutorDistribution(e.target.value)}>
             <option value="weighted">Weighted — tasks assigned by executor weight</option>
             <option value="round-robin">Round Robin — rotate evenly</option>
             <option value="primary-only">Primary Only — always use the first executor</option>
           </select>
+          <div class="hint"><strong>Weighted</strong> uses each executor Weight value. <strong>Round Robin</strong> ignores weights. <strong>Primary Only</strong> sends all tasks to executor 1.</div>
         </div>
         <div class="executor-grid">
           <div class="form-group">
-            <label>Max Parallel Tasks</label>
+            ${labelWithHelp("Max Parallel Tasks", HELP_TEXT.maxParallel)}
             <input type="number" value=${maxParallel} min="1" max="32"
               oninput=${(e) => setMaxParallel(Number(e.target.value) || 4)} />
             <div class="hint">Simultaneous agent slots</div>
@@ -1973,36 +3086,90 @@ function App() {
         `}
       <//>
 
-      <${Section} title="🔀 Failover">
+      <${Section} title=":git: Failover">
         <div class="form-group">
-          <label>Failover Strategy</label>
+          ${labelWithHelp("Failover Strategy", HELP_TEXT.failoverStrategy)}
           <select value=${failoverStrategy} onchange=${(e) => setFailoverStrategy(e.target.value)}>
             <option value="next-in-line">Next in Line</option>
             <option value="round-robin">Round Robin</option>
             <option value="weighted-random">Weighted Random</option>
             <option value="random">Random</option>
           </select>
+          <div class="hint"><strong>Next in Line</strong> is deterministic and easiest to debug. <strong>Weighted Random</strong> respects weights for load spread.</div>
         </div>
         <div class="executor-grid">
           <div class="form-group" style="margin-bottom:0">
-            <label>Max Retries</label>
+            ${labelWithHelp("Max Retries", HELP_TEXT.maxRetries)}
             <input type="number" value=${maxRetries} min="0" max="10"
               oninput=${(e) => setMaxRetries(Number(e.target.value) || 3)} />
+            <div class="hint">Recommended: <strong>2-3</strong>. Higher values can hide persistent config errors.</div>
           </div>
           <div class="form-group" style="margin-bottom:0">
             <label>Cooldown (minutes)</label>
             <input type="number" value=${failoverCooldownMinutes} min="1" max="60"
               oninput=${(e) => setFailoverCooldownMinutes(Number(e.target.value) || 5)} />
+            <div class="hint">How long an executor stays out of rotation after failing. Recommended: <strong>5-10 minutes</strong>.</div>
           </div>
           <div class="form-group" style="margin-bottom:0">
             <label>Disable after N consecutive failures</label>
             <input type="number" value=${failoverDisableOnConsecutive} min="1" max="20"
               oninput=${(e) => setFailoverDisableOnConsecutive(Number(e.target.value) || 3)} />
+            <div class="hint">Protects the fleet from hot-looping a broken executor. Recommended: <strong>3</strong>.</div>
           </div>
         </div>
       <//>
 
-      <${Section} title="🔵 Codex Settings">
+      <${Section} title=":compass: Workflow Engine">
+        <div class="executor-grid">
+          <div class="form-group">
+            <label>Default Workflow Profile</label>
+            <select value=${workflowProfile} onchange=${(e) => applyWorkflowProfileSelection(e.target.value)}>
+              ${(workflowProfiles || []).length > 0
+                ? (workflowProfiles || []).map((profile_) => html`
+                    <option value=${profile_.id}>${profile_.name}</option>
+                  `)
+                : html`<option value="balanced">Balanced</option>`}
+            </select>
+            <div class="hint">Controls which templates are selected by default in the Workflows setup step.</div>
+          </div>
+          <div class="form-group">
+            <label style="display:flex;align-items:center;gap:8px;cursor:pointer;user-select:none;margin-top:24px">
+              <input type="checkbox" checked=${workflowAutoInstall}
+                onchange=${(e) => setWorkflowAutoInstall(e.target.checked)}
+                style="width:auto;padding:0;margin:0;accent-color:var(--accent);cursor:pointer" />
+              Auto-install selected templates
+            </label>
+          </div>
+          <div class="form-group">
+            <label>Node Max Retries</label>
+            <input type="number" value=${workflowNodeMaxRetries} min="0" max="20"
+              oninput=${(e) => setWorkflowNodeMaxRetries(Number(e.target.value) || 0)} />
+            <div class="hint">Global retry fallback for workflow nodes when node-level retry is not set.</div>
+          </div>
+          <div class="form-group">
+            <label>Node Timeout (ms)</label>
+            <input type="number" value=${workflowNodeTimeoutMs} min="1000" max="21600000"
+              oninput=${(e) => setWorkflowNodeTimeoutMs(Number(e.target.value) || 600000)} />
+          </div>
+          <div class="form-group">
+            <label>Run Stuck Threshold (ms)</label>
+            <input type="number" value=${workflowRunStuckThresholdMs} min="10000" max="7200000"
+              oninput=${(e) => setWorkflowRunStuckThresholdMs(Number(e.target.value) || 300000)} />
+          </div>
+          <div class="form-group">
+            <label>Max Persisted Workflow Runs</label>
+            <input type="number" value=${workflowMaxPersistedRuns} min="20" max="5000"
+              oninput=${(e) => setWorkflowMaxPersistedRuns(Number(e.target.value) || 200)} />
+          </div>
+          <div class="form-group">
+            <label>Max Concurrent Branches</label>
+            <input type="number" value=${workflowMaxConcurrentBranches} min="1" max="64"
+              oninput=${(e) => setWorkflowMaxConcurrentBranches(Number(e.target.value) || 8)} />
+          </div>
+        </div>
+      <//>
+
+      <${Section} title=":dot: Codex Settings">
         <div class="executor-grid">
           <div class="form-group">
             <label>Active Model Profile</label>
@@ -2089,7 +3256,7 @@ function App() {
         </div>
       <//>
 
-      <${Section} title="🟣 Copilot Settings">
+      <${Section} title=":dot: Copilot Settings">
         <div class="executor-grid">
           <div class="form-group">
             <label>Max Requests per Session</label>
@@ -2149,7 +3316,443 @@ function App() {
         </div>
       <//>
 
-      <${Section} title="🏗️ Infrastructure">
+      <${Section} title=":mic: Voice Assistant">
+        <div class="form-group">
+          <label style="display:flex;align-items:center;gap:8px;cursor:pointer;user-select:none">
+            <input type="checkbox" checked=${voiceEnabled}
+              onchange=${(e) => setVoiceEnabled(e.target.checked)}
+              style="width:auto;padding:0;margin:0;accent-color:var(--accent);cursor:pointer" />
+            Enable Voice Mode in the UI
+          </label>
+          <div class="hint">Allows live voice/video calls from chat. Tier 2 browser fallback works without cloud keys.</div>
+        </div>
+        ${voiceEnabled && html`
+          <div class="form-group" style="margin-bottom:16px">
+            <label style="font-weight:600;display:block;margin-bottom:4px">Connected Accounts</label>
+            <div class="hint" style="margin-bottom:8px">Sign in with your OpenAI, Claude, or Gemini account to use OAuth tokens. Endpoints without an explicit API key will automatically use the connected account.</div>
+            <div style="display:flex;gap:10px;flex-wrap:wrap">
+              ${["openai", "claude", "gemini"].map((prov) => {
+                const acct = oauthAccounts[prov] || {};
+                const connected = acct.hasToken || acct.status === "connected" || acct.status === "complete";
+                const pending = acct.status === "pending";
+                const provLabel = prov === "openai" ? "OpenAI" : prov === "claude" ? "Claude" : "Gemini";
+                const errored = acct.status === "error";
+                const statusColor = connected ? "#22c55e" : pending ? "#f59e0b" : errored ? "#ef4444" : "var(--text-secondary)";
+                const statusText = connected ? "Connected" : pending ? "Logging in…" : errored ? "Failed" : "Not connected";
+                return html`
+                  <div style="border:1px solid var(--border);border-radius:6px;padding:10px 14px;min-width:160px;flex:1;max-width:240px">
+                    <div style="display:flex;align-items:center;gap:6px;margin-bottom:6px">
+                      <span style="font-weight:600;font-size:0.92em">${provLabel}</span>
+                      <span style="display:inline-block;width:8px;height:8px;border-radius:50%;background:${statusColor}"></span>
+                    </div>
+                    <div style="font-size:0.82em;color:${statusColor};margin-bottom:4px">${statusText}</div>
+                    ${errored && acct.result?.error && html`
+                      <div style="font-size:0.78em;color:#ef4444;margin-bottom:6px;word-break:break-word">${acct.result.error}</div>
+                    `}
+                    ${connected && html`
+                      <button class="btn btn-sm btn-danger" onclick=${() => doOAuthLogout(prov)} disabled=${acct.loading}>
+                        ${acct.loading ? "…" : "Logout"}
+                      </button>
+                    `}
+                    ${(pending || errored) && html`
+                      <div style="display:flex;gap:6px">
+                        ${errored && html`
+                          <button class="btn btn-sm" onclick=${() => startOAuthLogin(prov)} disabled=${acct.loading}>
+                            Retry
+                          </button>
+                        `}
+                        <button class="btn btn-sm" style="${errored ? '' : 'color:var(--text-secondary)'}" onclick=${() => cancelOAuthLogin(prov)} disabled=${acct.loading}>
+                          Cancel
+                        </button>
+                      </div>
+                    `}
+                    ${!connected && !pending && !errored && html`
+                      <button class="btn btn-sm" onclick=${() => startOAuthLogin(prov)} disabled=${acct.loading}>
+                        ${acct.loading ? "…" : "Sign in"}
+                      </button>
+                    `}
+                  </div>
+                `;
+              })}
+            </div>
+          </div>
+
+          <div class="form-group">
+            ${labelWithHelp("Voice Providers (priority order)", HELP_TEXT.voiceProviders)}
+            <div class="hint">Configure up to 5 providers. Bosun will try them in order.</div>
+          </div>
+          ${(voiceProviders || []).slice(0, 5).map((providerRow, idx) => html`
+            <div style="border:1px solid var(--border-primary);border-radius:var(--radius-sm);padding:12px;margin-bottom:10px">
+              <div class="executor-grid">
+                <div class="form-group">
+                  <label>Provider ${idx + 1}</label>
+                  <select value=${providerRow.provider} onchange=${(e) => updateVoiceProviderRow(idx, "provider", e.target.value)}>
+                    <option value="openai">OpenAI Realtime</option>
+                    <option value="azure">Azure OpenAI Realtime</option>
+                    <option value="claude">Claude</option>
+                    <option value="gemini">Gemini</option>
+                    <option value="fallback">Browser Fallback</option>
+                  </select>
+                </div>
+                ${providerRow.provider !== "fallback" && html`
+                  <div class="form-group">
+                    <label>Endpoint</label>
+                    ${(() => {
+                      const matchingEps = (voiceEndpoints || []).filter((ep) => ep.provider === providerRow.provider && ep.enabled !== false);
+                      if (matchingEps.length === 0) return html`
+                        <select disabled>
+                          <option>— No ${providerRow.provider} endpoints configured —</option>
+                        </select>
+                        <div class="hint" style="color:var(--warning)">Configure a matching endpoint below first.</div>
+                      `;
+                      return html`
+                        <select value=${providerRow.endpointId || ""}
+                          onchange=${(e) => updateVoiceProviderRow(idx, "endpointId", e.target.value)}>
+                          <option value="">— Select endpoint —</option>
+                          ${matchingEps.map((ep) => html`
+                            <option value=${ep.id}>${ep.name || ep.id}</option>
+                          `)}
+                        </select>
+                      `;
+                    })()}
+                  </div>
+                `}
+                <div class="form-group">
+                  <label>Model</label>
+                  ${(() => {
+                    const defaults_ = getVoiceProviderModelDefaults(providerRow.provider);
+                    const knownModels = defaults_.models || [];
+                    // isCustom is true whenever model is not in the known list (including
+                    // empty string after the user selects "custom..."). This ensures the
+                    // select stays on "custom..." and the text input remains visible.
+                    const isCustom = knownModels.length > 0 && !knownModels.includes(providerRow.model);
+                    return html`
+                      <select value=${isCustom ? "custom" : providerRow.model}
+                        onchange=${(e) => {
+                          if (e.target.value === "custom") {
+                            // Keep model as-is (or empty) — the text input will appear
+                            // immediately for the user to type into.
+                            updateVoiceProviderRow(idx, "model", providerRow.model && !knownModels.includes(providerRow.model) ? providerRow.model : "");
+                          } else {
+                            updateVoiceProviderRow(idx, "model", e.target.value);
+                          }
+                        }}>
+                        ${knownModels.map((m) => html`<option value=${m}>${m}</option>`)}
+                        <option value="custom">custom...</option>
+                      </select>
+                      ${isCustom && html`
+                        <input type="text" value=${providerRow.model}
+                          oninput=${(e) => updateVoiceProviderRow(idx, "model", e.target.value)}
+                          placeholder="Enter custom model slug..."
+                          style="margin-top:4px"
+                          autofocus
+                        />
+                      `}
+                      ${knownModels.length === 0 && html`
+                        <input type="text" value=${providerRow.model}
+                          oninput=${(e) => updateVoiceProviderRow(idx, "model", e.target.value)}
+                          placeholder="Provider model"
+                          style="margin-top:4px"
+                        />
+                      `}
+                    `;
+                  })()}
+                </div>
+                <div class="form-group">
+                  <label>Vision Model</label>
+                  ${(() => {
+                    const defaults_ = getVoiceProviderModelDefaults(providerRow.provider);
+                    const knownVisionModels = defaults_.visionModels || [];
+                    // isCustomVision is true whenever visionModel is not in the known list
+                    // (including empty string after selecting "custom...").
+                    const isCustomVision = knownVisionModels.length > 0 && !knownVisionModels.includes(providerRow.visionModel);
+                    return html`
+                      <select value=${isCustomVision ? "custom" : providerRow.visionModel}
+                        onchange=${(e) => {
+                          if (e.target.value === "custom") {
+                            updateVoiceProviderRow(idx, "visionModel", providerRow.visionModel && !knownVisionModels.includes(providerRow.visionModel) ? providerRow.visionModel : "");
+                          } else {
+                            updateVoiceProviderRow(idx, "visionModel", e.target.value);
+                          }
+                        }}>
+                        ${knownVisionModels.map((m) => html`<option value=${m}>${m}</option>`)}
+                        <option value="custom">custom...</option>
+                      </select>
+                      ${isCustomVision && html`
+                        <input type="text" value=${providerRow.visionModel}
+                          oninput=${(e) => updateVoiceProviderRow(idx, "visionModel", e.target.value)}
+                          placeholder="Enter custom vision model slug..."
+                          style="margin-top:4px"
+                          autofocus
+                        />
+                      `}
+                      ${knownVisionModels.length === 0 && html`
+                        <input type="text" value=${providerRow.visionModel}
+                          oninput=${(e) => updateVoiceProviderRow(idx, "visionModel", e.target.value)}
+                          placeholder="Provider vision model"
+                          style="margin-top:4px"
+                        />
+                      `}
+                    `;
+                  })()}
+                </div>
+                <div class="form-group">
+                  <label>Voice Persona</label>
+                  <select value=${providerRow.voiceId} onchange=${(e) => updateVoiceProviderRow(idx, "voiceId", e.target.value)}>
+                    <option value="alloy">alloy</option>
+                    <option value="ash">ash</option>
+                    <option value="ballad">ballad</option>
+                    <option value="coral">coral</option>
+                    <option value="echo">echo</option>
+                    <option value="fable">fable</option>
+                    <option value="nova">nova</option>
+                    <option value="onyx">onyx</option>
+                    <option value="sage">sage</option>
+                    <option value="shimmer">shimmer</option>
+                    <option value="verse">verse</option>
+                  </select>
+                </div>
+                ${providerRow.provider === "azure" && html`
+                  <div class="form-group">
+                    <label>Azure Deployment</label>
+                    <input
+                      type="text"
+                      value=${providerRow.azureDeployment || ""}
+                      oninput=${(e) => updateVoiceProviderRow(idx, "azureDeployment", e.target.value)}
+                      placeholder="gpt-realtime-1.5"
+                    />
+                  </div>
+                `}
+              </div>
+              <div style="display:flex;justify-content:flex-end">
+                <button
+                  class="btn btn-sm btn-danger"
+                  onclick=${() => removeVoiceProviderRow(idx)}
+                  disabled=${(voiceProviders || []).length <= 1}
+                >
+                  Remove
+                </button>
+              </div>
+            </div>
+          `)}
+          <div style="display:flex;justify-content:flex-end;margin-bottom:12px">
+            <button
+              class="btn btn-sm"
+              onclick=${addVoiceProviderRow}
+              disabled=${(voiceProviders || []).length >= 5}
+            >
+              Add Provider
+            </button>
+          </div>
+          <div class="executor-grid">
+            <div class="form-group">
+              ${labelWithHelp("Turn Detection", HELP_TEXT.turnDetection)}
+              <select value=${voiceTurnDetection} onchange=${(e) => setVoiceTurnDetection(e.target.value)}>
+                <option value="server_vad">server_vad</option>
+                <option value="semantic_vad">semantic_vad</option>
+                <option value="none">none</option>
+              </select>
+              <div class="hint"><strong>server_vad</strong> is the default for most calls. Use semantic only if users pause mid-thought frequently.</div>
+            </div>
+            <div class="form-group">
+              ${labelWithHelp("Fallback Mode", HELP_TEXT.voiceFallbackMode)}
+              <select value=${voiceFallbackMode} onchange=${(e) => setVoiceFallbackMode(e.target.value)}>
+                <option value="browser">browser</option>
+                <option value="disabled">disabled</option>
+              </select>
+              <div class="hint"><strong>browser</strong> keeps voice available when provider auth/endpoints are missing.</div>
+            </div>
+            <div class="form-group">
+              ${labelWithHelp("Delegate Executor", HELP_TEXT.delegateExecutor)}
+              <select value=${voiceDelegateExecutor} onchange=${(e) => setVoiceDelegateExecutor(e.target.value)}>
+                <option value="codex-sdk">codex-sdk</option>
+                <option value="copilot-sdk">copilot-sdk</option>
+                <option value="claude-sdk">claude-sdk</option>
+                <option value="gemini-sdk">gemini-sdk</option>
+                <option value="opencode-sdk">opencode-sdk</option>
+              </select>
+              <div class="hint">Pick the same executor family you trust for task execution to keep behavior consistent.</div>
+            </div>
+          </div>
+          <div class="form-group">
+            <label style="font-weight:600;display:block;margin-bottom:4px">Voice Endpoints</label>
+            <div class="hint" style="margin-bottom:8px">Each endpoint has its own credentials. Multiple endpoints enable automatic failover with context preservation. Primary endpoints are tried first; backup endpoints are used if the primary fails.</div>
+            ${(voiceEndpoints || []).map((ep, i) => html`
+              <div key=${ep.id} style="border:1px solid var(--border);border-radius:6px;padding:12px;margin-bottom:8px">
+                <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px">
+                  <strong style="font-size:0.9em">${ep.name || `Endpoint ${i + 1}`} · ${ep.provider}</strong>
+                  <button class="btn btn-sm btn-danger" onclick=${() => removeVoiceEndpoint(i)}>Remove</button>
+                </div>
+                <div class="executor-grid">
+                  <div class="form-group">
+                    <label>Name</label>
+                    <input type="text" value=${ep.name} oninput=${(e) => updateVoiceEndpoint(i, "name", e.target.value)} placeholder="endpoint-name" />
+                  </div>
+                  <div class="form-group">
+                    <label>Provider</label>
+                    <select value=${ep.provider} onchange=${(e) => updateVoiceEndpoint(i, "provider", e.target.value)}>
+                      <option value="azure">Azure OpenAI</option>
+                      <option value="openai">OpenAI</option>
+                      <option value="claude">Claude (Anthropic)</option>
+                      <option value="gemini">Gemini (Google)</option>
+                      <option value="custom">Custom Endpoint</option>
+                    </select>
+                  </div>
+                  <div class="form-group">
+                    ${labelWithHelp("Role", HELP_TEXT.voiceEndpointRole)}
+                    <select value=${ep.role} onchange=${(e) => updateVoiceEndpoint(i, "role", e.target.value)}>
+                      <option value="primary">Primary</option>
+                      <option value="backup">Backup</option>
+                    </select>
+                    <div class="hint">Primary handles normal traffic; backup is used on failure.</div>
+                  </div>
+                  <div class="form-group">
+                    ${labelWithHelp("Weight", HELP_TEXT.voiceEndpointWeight)}
+                    <input type="number" value=${ep.weight} min="1" max="1000" oninput=${(e) => updateVoiceEndpoint(i, "weight", Number(e.target.value) || 100)} />
+                    <div class="hint">Relative share within same role/provider. Example: 300 vs 100 gives roughly 75% vs 25%.</div>
+                  </div>
+                  ${["openai","claude","gemini"].includes(ep.provider) && html`
+                    <div class="form-group">
+                      <label>Auth Method</label>
+                      <select value=${ep.authSource || "apiKey"} onchange=${(e) => updateVoiceEndpoint(i, "authSource", e.target.value)}>
+                        <option value="apiKey">API Key</option>
+                        <option value="oauth">OAuth (Connected Account)</option>
+                      </select>
+                      ${ep.authSource === "oauth" && oauthAccounts[ep.provider]?.status === "connected" && html`
+                        <div class="hint" style="color:var(--success,#22c55e)">✓ Connected — will use your ${ep.provider === "openai" ? "OpenAI" : ep.provider === "claude" ? "Claude" : "Gemini"} account.</div>
+                      `}
+                      ${ep.authSource === "oauth" && oauthAccounts[ep.provider]?.status !== "connected" && html`
+                        <div class="hint" style="color:var(--warning,#f59e0b)">⚠ Not connected. Sign in via "Connected Accounts" above to use OAuth.</div>
+                      `}
+                    </div>
+                  `}
+                  <div class="form-group" style=${ep.authSource === "oauth" && ["openai","claude","gemini"].includes(ep.provider) ? "display:none" : ""}>
+                    <label>${ep.provider === "azure" ? "API Key" : "API Key (manual)"}</label>
+                    <input type="password" value=${ep.apiKey} oninput=${(e) => updateVoiceEndpoint(i, "apiKey", e.target.value)} placeholder="API key for this endpoint" />
+                  </div>
+                  <div class="form-group">
+                    <label style="display:flex;align-items:center;gap:8px;cursor:pointer;user-select:none">
+                      <input type="checkbox" checked=${ep.enabled} onchange=${(e) => updateVoiceEndpoint(i, "enabled", e.target.checked)} style="width:auto;padding:0;margin:0;accent-color:var(--accent);cursor:pointer" />
+                      Enabled
+                    </label>
+                  </div>
+                  ${ep.provider === "azure" && html`
+                    <div class="form-group">
+                      <label>Endpoint URL</label>
+                      <input type="text" value=${ep.endpoint} oninput=${(e) => updateVoiceEndpoint(i, "endpoint", e.target.value)} placeholder="https://&lt;resource&gt;.openai.azure.com" />
+                    </div>
+                    <div class="form-group">
+                      <label>Deployment</label>
+                      <input type="text" value=${ep.deployment} oninput=${(e) => updateVoiceEndpoint(i, "deployment", e.target.value)} placeholder="gpt-realtime-1.5" />
+                      <div class="hint">GA models (gpt-realtime-1.5, gpt-realtime) use /openai/v1/ endpoints automatically.</div>
+                    </div>
+                  `}
+                  ${ep.provider === "custom" && html`
+                    <div class="form-group">
+                      <label>Endpoint URL</label>
+                      <input
+                        type="text"
+                        value=${ep.endpoint}
+                        oninput=${(e) => updateVoiceEndpoint(i, "endpoint", e.target.value)}
+                        placeholder="https://your-custom-endpoint.example.com"
+                      />
+                    </div>
+                    <div class="form-group">
+                      <label>Model</label>
+                      ${(() => {
+                        const customModels = ALL_ENDPOINT_MODEL_OPTIONS;
+                        const isCustomModel = Boolean(endpointCustomModelRows[ep.id]) || (ep.model && !customModels.includes(ep.model));
+                        return html`
+                          <select value=${isCustomModel ? "__custom__" : ep.model}
+                            onchange=${(e) => {
+                              const nextValue = String(e.target.value || "");
+                              if (nextValue === "__custom__") {
+                                setEndpointCustomModelRows((prev) => ({ ...prev, [ep.id]: true }));
+                                updateVoiceEndpoint(i, "model", customModels.includes(ep.model) ? "" : ep.model);
+                                return;
+                              }
+                              setEndpointCustomModelRows((prev) => ({ ...prev, [ep.id]: false }));
+                              updateVoiceEndpoint(i, "model", nextValue);
+                            }}>
+                            ${customModels.map((m) => html`<option value=${m}>${m}</option>`)}
+                            <option value="__custom__">custom...</option>
+                          </select>
+                          ${isCustomModel && html`
+                            <input
+                              type="text"
+                              value=${ep.model || ""}
+                              oninput=${(e) => updateVoiceEndpoint(i, "model", e.target.value)}
+                              placeholder="Enter custom model slug..."
+                              style="margin-top:4px"
+                            />
+                          `}
+                        `;
+                      })()}
+                    </div>
+                  `}
+                  ${!isEndpointUrlEditable(ep.provider) && html`
+                    <div class="form-group">
+                      <label>Endpoint URL</label>
+                      <input
+                        type="text"
+                        value=${getDefaultVoiceEndpointUrl(ep.provider, ep.authSource)}
+                        readonly
+                        disabled
+                      />
+                      <div class="hint">Auto-derived from provider + auth method. Use Azure or Custom to override.</div>
+                    </div>
+                  `}
+                  ${ep.provider === "openai" && html`
+                    <div class="form-group">
+                      <label>Model</label>
+                      <input type="text" value=${ep.model} oninput=${(e) => updateVoiceEndpoint(i, "model", e.target.value)} placeholder="gpt-realtime-1.5" />
+                    </div>
+                  `}
+                  ${ep.provider === "claude" && html`
+                    <div class="form-group">
+                      <label>Model</label>
+                      <input type="text" value=${ep.model} oninput=${(e) => updateVoiceEndpoint(i, "model", e.target.value)} placeholder="claude-sonnet-4.6" />
+                    </div>
+                  `}
+                  ${ep.provider === "gemini" && html`
+                    <div class="form-group">
+                      <label>Model</label>
+                      <input type="text" value=${ep.model} oninput=${(e) => updateVoiceEndpoint(i, "model", e.target.value)} placeholder="gemini-2.0-flash" />
+                    </div>
+                  `}
+                  <div class="form-group">
+                    <label>Vision Model</label>
+                    <input type="text" value=${ep.visionModel || ""} oninput=${(e) => updateVoiceEndpoint(i, "visionModel", e.target.value)} placeholder="e.g. gpt-4.1-nano" />
+                    <div class="hint">Optional model for vision/image tasks on this endpoint.</div>
+                  </div>
+                </div>
+                <!-- Test Connection -->
+                <div style="display:flex;align-items:center;gap:10px;margin-top:8px">
+                  <button class="btn btn-sm"
+                    disabled=${!!(endpointTestResults[ep.id]?.testing)}
+                    onclick=${() => testEndpointConnection(ep)}
+                    style="min-width:130px">
+                    ${endpointTestResults[ep.id]?.testing ? "Testing…" : "Test Connection"}
+                  </button>
+                  ${endpointTestResults[ep.id]?.result === "success" && html`
+                    <span style="color:var(--success,#22c55e);font-size:0.85em;font-weight:600">
+                      ✓ Connected${endpointTestResults[ep.id].latencyMs != null ? ` (${endpointTestResults[ep.id].latencyMs}ms)` : ""}
+                    </span>
+                  `}
+                  ${endpointTestResults[ep.id]?.result === "error" && html`
+                    <span style="color:var(--danger,#ef4444);font-size:0.85em;font-weight:600">
+                      ✗ ${endpointTestResults[ep.id].error}
+                    </span>
+                  `}
+                </div>
+              </div>
+            `)}
+            <button class="btn btn-sm" onclick=${addVoiceEndpoint} style="margin-top:2px">+ Add Endpoint</button>
+          </div>
+        `}
+      <//>
+
+      <${Section} title=":hammer: Infrastructure">
         <div class="form-group">
           <label style="display:flex;align-items:center;gap:8px;cursor:pointer;user-select:none">
             <input type="checkbox" checked=${containerEnabled}
@@ -2206,6 +3809,157 @@ function App() {
         </div>
       <//>
 
+      <${Section} title="�️ Sentinel / Watchdog">
+        <p class="hint" style="margin-top:0;margin-bottom:16px">
+          The Sentinel continuously monitors bosun and auto-restarts it if it crashes or enters a crash loop.
+        </p>
+        <div class="form-group" style="margin-bottom:12px">
+          <label style="display:flex;align-items:center;gap:8px;cursor:pointer;user-select:none">
+            <input type="checkbox" checked=${sentinelAutoStart}
+              onchange=${(e) => setSentinelAutoStart(e.target.checked)}
+              style="width:auto;padding:0;margin:0;accent-color:var(--accent);cursor:pointer" />
+            Enable Sentinel / Watchdog
+          </label>
+          <div class="hint">Bosun will be watched by an external monitor process that restarts it on failure.</div>
+        </div>
+        <div class="form-group" style="margin-bottom:12px">
+          <label style="display:flex;align-items:center;gap:8px;cursor:pointer;user-select:none">
+            <input type="checkbox" checked=${sentinelStrict}
+              onchange=${(e) => setSentinelStrict(e.target.checked)}
+              style="width:auto;padding:0;margin:0;accent-color:var(--accent);cursor:pointer" />
+            Strict Mode
+          </label>
+          <div class="hint">In strict mode the sentinel will refuse to start bosun if it detects unsafe conditions.</div>
+        </div>
+        <div class="form-group" style="margin-bottom:12px">
+          <label style="display:flex;align-items:center;gap:8px;cursor:pointer;user-select:none">
+            <input type="checkbox" checked=${sentinelAutoRestartMonitor}
+              onchange=${(e) => setSentinelAutoRestartMonitor(e.target.checked)}
+              style="width:auto;padding:0;margin:0;accent-color:var(--accent);cursor:pointer" />
+            Auto-restart monitor on crash
+          </label>
+          <div class="hint">The monitor process itself will be restarted if it exits unexpectedly.</div>
+        </div>
+        <div class="executor-grid">
+          <div class="form-group">
+            <label>Crash Loop Threshold</label>
+            <input type="number" value=${sentinelCrashLoopThreshold} min="1" max="20"
+              oninput=${(e) => setSentinelCrashLoopThreshold(Number(e.target.value) || 3)} />
+            <div class="hint">Number of restarts within the window before a crash loop is declared.</div>
+          </div>
+          <div class="form-group">
+            <label>Crash Loop Window (minutes)</label>
+            <input type="number" value=${sentinelCrashLoopWindowMin} min="1" max="60"
+              oninput=${(e) => setSentinelCrashLoopWindowMin(Number(e.target.value) || 5)} />
+            <div class="hint">Time window in which the threshold is measured.</div>
+          </div>
+        </div>
+        <div class="form-group" style="margin-bottom:12px">
+          <label style="display:flex;align-items:center;gap:8px;cursor:pointer;user-select:none">
+            <input type="checkbox" checked=${sentinelRepairAgentEnabled}
+              onchange=${(e) => setSentinelRepairAgentEnabled(e.target.checked)}
+              style="width:auto;padding:0;margin:0;accent-color:var(--accent);cursor:pointer" />
+            Enable Repair Agent
+          </label>
+          <div class="hint">On crash loop, run an AI repair agent to attempt automatic diagnosis and fix.</div>
+        </div>
+        ${sentinelRepairAgentEnabled && html`
+          <div class="form-group">
+            <label>Repair Agent Timeout (minutes)</label>
+            <input type="number" value=${sentinelRepairTimeoutMin} min="1" max="120"
+              oninput=${(e) => setSentinelRepairTimeoutMin(Number(e.target.value) || 15)} />
+          </div>
+        `}
+      <//>
+
+      <${Section} title="🔁 Daemon Restart Policy">
+        <p class="hint" style="margin-top:0;margin-bottom:16px">
+          Controls how the bosun daemon process handles crashes and restarts.
+        </p>
+        <div class="executor-grid">
+          <div class="form-group">
+            <label>Restart Delay (ms)</label>
+            <input type="number" value=${daemonRestartDelayMs} min="0"
+              oninput=${(e) => setDaemonRestartDelayMs(Number(e.target.value) || 10000)} />
+            <div class="hint">Delay before restarting after a crash. Default: 10 000 ms.</div>
+          </div>
+          <div class="form-group">
+            <label>Max Restarts (0 = unlimited)</label>
+            <input type="number" value=${daemonMaxRestarts} min="0"
+              oninput=${(e) => setDaemonMaxRestarts(Number(e.target.value))} />
+            <div class="hint">Maximum total restarts before giving up. 0 means no limit.</div>
+          </div>
+          <div class="form-group">
+            <label>Max Instant-Crash Restarts</label>
+            <input type="number" value=${daemonMaxInstantRestarts} min="1" max="20"
+              oninput=${(e) => setDaemonMaxInstantRestarts(Number(e.target.value) || 3)} />
+            <div class="hint">Max restarts allowed within the instant-crash window before stopping.</div>
+          </div>
+          <div class="form-group">
+            <label>Instant-Crash Window (ms)</label>
+            <input type="number" value=${daemonInstantCrashWindowMs} min="1000"
+              oninput=${(e) => setDaemonInstantCrashWindowMs(Number(e.target.value) || 15000)} />
+            <div class="hint">If bosun crashes faster than this window repeatedly, it's considered an instant-crash loop. Default: 15 000 ms.</div>
+          </div>
+        </div>
+      <//>
+
+      <${Section} title="�🚀 Launch & Startup">
+        <p class="hint" style="margin-top:0;margin-bottom:16px">
+          Configure whether bosun starts automatically and whether a desktop shortcut is created.
+          ${status?.startupStatus?.methodName ? html` Platform method: <strong>${status.startupStatus.methodName}</strong>.` : ""}
+        </p>
+        <div class="form-group" style="margin-bottom:12px">
+          <label style="display:flex;align-items:center;gap:8px;cursor:pointer;user-select:none">
+            <input type="checkbox" checked=${autoStartEnabled}
+              onchange=${async (e) => {
+                const checked = e.target.checked;
+                setAutoStartEnabled(checked);
+                setStartupInstalling(true);
+                try {
+                  const r = await apiPost(checked ? "install-startup" : "remove-startup", {});
+                  if (!r.ok) { setAutoStartEnabled(!checked); setError(r.error || "Failed to toggle startup service"); }
+                } catch (err) { setAutoStartEnabled(!checked); setError(err.message); }
+                setStartupInstalling(false);
+              }}
+              disabled=${startupInstalling}
+              style="width:auto;padding:0;margin:0;accent-color:var(--accent);cursor:pointer" />
+            Start bosun automatically on login
+          </label>
+          <div class="hint">
+            ${autoStartEnabled
+              ? "Bosun will launch automatically when you log in."
+              : "Bosun will not start on login — you'll need to launch it manually."}
+            ${startupInstalling ? " (applying…)" : ""}
+          </div>
+        </div>
+        <div class="form-group" style="margin-bottom:0">
+          <label style="display:flex;align-items:center;gap:8px;cursor:pointer;user-select:none">
+            <input type="checkbox" checked=${desktopShortcutEnabled}
+              onchange=${async (e) => {
+                const checked = e.target.checked;
+                setDesktopShortcutEnabled(checked);
+                setShortcutInstalling(true);
+                try {
+                  const r = await apiPost(checked ? "install-desktop-shortcut" : "remove-desktop-shortcut", {});
+                  if (!r.ok) { setDesktopShortcutEnabled(!checked); setError(r.error || "Failed to toggle desktop shortcut"); }
+                } catch (err) { setDesktopShortcutEnabled(!checked); setError(err.message); }
+                setShortcutInstalling(false);
+              }}
+              disabled=${shortcutInstalling}
+              style="width:auto;padding:0;margin:0;accent-color:var(--accent);cursor:pointer" />
+            Create desktop / Start Menu shortcut
+          </label>
+          <div class="hint">
+            ${desktopShortcutEnabled
+              ? "A shortcut to the bosun desktop portal will be created."
+              : "No desktop shortcut will be created."}
+            ${shortcutInstalling ? " (applying…)" : ""}
+            ${status?.desktopShortcutStatus?.methodName ? html` Method: <strong>${status.desktopShortcutStatus.methodName}</strong>.` : ""}
+          </div>
+        </div>
+      <//>
+
       <div class="nav-buttons">
         <button class="btn" onclick=${goPrev}>← Back</button>
         <button class="btn btn-primary" onclick=${goNext}>Continue →</button>
@@ -2213,10 +3967,21 @@ function App() {
     `;
   };
 
-  // ── Step 7: Review & Apply ─────────────────────────────────────────────────
+  // ── Step 8: Review & Apply ─────────────────────────────────────────────────
 
   const StepReview = () => {
     const filteredRepos = repos.filter((r) => r.trim());
+    const reviewVoiceProviders = normalizeVoiceProviders(voiceProviders, {
+      provider: voiceProvider,
+      model: voiceModel,
+      visionModel: voiceVisionModel,
+      voiceId,
+      azureDeployment: azureOpenaiRealtimeDeployment,
+    });
+    const voiceProviderChainSummary = reviewVoiceProviders
+      .map((provider_) => provider_.provider)
+      .filter(Boolean)
+      .join(" -> ");
 
     return html`
       <h2>Review & Apply</h2>
@@ -2242,7 +4007,25 @@ function App() {
             <td>${filteredRepos.length > 0 ? filteredRepos.join(", ") : "—"}</td>
           </tr>
           <tr><th>Kanban Backend</th><td>${kanbanBackend}</td></tr>
+          <tr><th>Workflow Profile</th><td>${workflowProfile || "balanced"}</td></tr>
+          <tr>
+            <th>Workflow Templates</th>
+            <td>
+              ${(workflowDefaultTemplates || []).length > 0
+                ? workflowDefaultTemplates.join(", ")
+                : "none"}
+            </td>
+          </tr>
+          <tr><th>Workflow Auto-Install</th><td>${workflowAutoInstall ? "Enabled" : "Disabled"}</td></tr>
           <tr><th>Telegram</th><td>${telegramEnabled && telegramToken ? "Configured" : "Skipped"}</td></tr>
+          <tr>
+            <th>Voice</th>
+            <td>
+              ${voiceEnabled
+                ? `${voiceProviderChainSummary || voiceProvider} (${voiceFallbackMode} fallback)`
+                : "Disabled"}
+            </td>
+          </tr>
           ${profile === "advanced" ? html`
             <tr><th>Max Parallel</th><td>${maxParallel}</td></tr>
             <tr><th>Max Retries</th><td>${maxRetries}</td></tr>
@@ -2250,9 +4033,24 @@ function App() {
             <tr><th>Distribution</th><td>${executorDistribution}</td></tr>
             <tr><th>Executor Mode</th><td>${executorMode}</td></tr>
             <tr><th>Workflow Automation</th><td>${workflowAutomationEnabled ? "Enabled" : "Disabled"}</td></tr>
+            <tr><th>Workflow Node Retries</th><td>${workflowNodeMaxRetries}</td></tr>
+            <tr><th>Workflow Node Timeout (ms)</th><td>${workflowNodeTimeoutMs}</td></tr>
+            <tr><th>Workflow Stuck Threshold (ms)</th><td>${workflowRunStuckThresholdMs}</td></tr>
+            <tr><th>Workflow Run History</th><td>${workflowMaxPersistedRuns}</td></tr>
+            <tr><th>Workflow Parallel Branches</th><td>${workflowMaxConcurrentBranches}</td></tr>
+            <tr><th>Auto-Start on Login</th><td>${autoStartEnabled ? "Enabled" : "Disabled"}</td></tr>
+            <tr><th>Desktop Shortcut</th><td>${desktopShortcutEnabled ? "Installed" : "Not installed"}</td></tr>
+            <tr><th>Sentinel / Watchdog</th><td>${sentinelAutoStart ? `Enabled${sentinelStrict ? " (strict)" : ""}` : "Disabled"}</td></tr>
+            <tr><th>Crash Loop Threshold</th><td>${sentinelCrashLoopThreshold} restarts in ${sentinelCrashLoopWindowMin} min</td></tr>
+            <tr><th>Repair Agent</th><td>${sentinelRepairAgentEnabled ? `Enabled (timeout ${sentinelRepairTimeoutMin} min)` : "Disabled"}</td></tr>
+            <tr><th>Daemon Restart Delay</th><td>${daemonRestartDelayMs} ms</td></tr>
+            <tr><th>Max Restarts</th><td>${daemonMaxRestarts === 0 ? "Unlimited" : daemonMaxRestarts}</td></tr>
           ` : html`
             <tr><th>Max Parallel</th><td>${maxParallel}</td></tr>
             <tr><th>Failover Strategy</th><td>${failoverStrategy}</td></tr>
+            <tr><th>Auto-Start on Login</th><td>${autoStartEnabled ? "Enabled" : "Disabled"}</td></tr>
+            <tr><th>Desktop Shortcut</th><td>${desktopShortcutEnabled ? "Installed" : "Not installed"}</td></tr>
+            <tr><th>Sentinel / Watchdog</th><td>${sentinelAutoStart ? "Enabled" : "Disabled"}</td></tr>
           `}
         </tbody>
       </table>
@@ -2278,9 +4076,10 @@ function App() {
       case 2: return StepExecutors();
       case 3: return StepRepos();
       case 4: return StepKanban();
-      case 5: return StepNotifications();
-      case 6: return StepAdvanced();
-      case 7: return StepReview();
+      case 5: return StepWorkflows();
+      case 6: return StepNotifications();
+      case 7: return StepAdvanced();
+      case 8: return StepReview();
       default: return StepPrerequisites();
     }
   };
@@ -2304,15 +4103,16 @@ function App() {
       `}
       ${oauthStatus === "received" && html`
         <div style="background:rgba(34,197,94,.08);border:1px solid rgba(34,197,94,.35);border-radius:var(--radius-sm);padding:12px 16px;margin-bottom:16px;font-size:0.85rem;color:#4ade80;display:flex;align-items:flex-start;gap:10px">
-          <span style="font-size:1.2em;line-height:1">✅</span>
+          <span style="font-size:1.2em;line-height:1">${iconText(":check:")}</span>
           <div>
             <strong>GitHub App authorized!</strong>
+            ${status?.githubOAuth?.user ? html` as <strong>${status.githubOAuth.user}</strong>.` : ""}
             ${oauthInstallationId && html` Installation ID: <code style="font-family:var(--font-mono);font-size:0.8em;color:#86efac">${oauthInstallationId}</code>.`}
             ${" "}Complete the remaining steps to finish configuration.
           </div>
         </div>
       `}
-      <${ProgressBar} />
+      ${ProgressBar()}
       <div class="step-panel">
         ${renderStep()}
       </div>
@@ -2325,3 +4125,4 @@ render(html`<${App} />`, document.getElementById("app"));
 </body>
 <script defer src="https://cloud.umami.is/script.js" data-website-id="24c5d605-7f25-4be5-875e-25c8f3cb4059"></script>
 </html>
+

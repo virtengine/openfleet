@@ -103,7 +103,7 @@ describe("task-context", () => {
     });
 
     it("supports auto-hook install mode overrides", () => {
-      expect(shouldAutoInstallGitHooks({ env: {} })).toBe(false);
+      expect(shouldAutoInstallGitHooks({ env: {} })).toBe(true);
       expect(
         shouldAutoInstallGitHooks({
           env: { VE_TASK_ID: "task-2", VE_MANAGED: "1" },
@@ -137,4 +137,3 @@ describe("task-context", () => {
     });
   });
 });
-

@@ -139,6 +139,37 @@ export const notificationPrefs = signal({
   notifyCompletion: true,
 });
 
+// ── Global unsaved-change registry
+export const pendingChanges = signal({});
+export const hasPendingChanges = signal(false);
+
+function syncPendingFlag(next) {
+  hasPendingChanges.value = Object.keys(next || {}).length > 0;
+}
+
+export function setPendingChange(source, isDirty = true) {
+  const key = String(source || "").trim();
+  if (!key) return;
+  const current = pendingChanges.value || {};
+  const next = { ...current };
+  if (isDirty) {
+    next[key] = Date.now();
+  } else {
+    delete next[key];
+  }
+  pendingChanges.value = next;
+  syncPendingFlag(next);
+}
+
+export function clearPendingChange(source) {
+  setPendingChange(source, false);
+}
+
+export function clearAllPendingChanges() {
+  pendingChanges.value = {};
+  hasPendingChanges.value = false;
+}
+
 /* ═══════════════════════════════════════════════════════════════
  *  NOTIFICATION PREFERENCES
  * ═══════════════════════════════════════════════════════════════ */

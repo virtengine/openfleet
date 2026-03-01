@@ -73,7 +73,7 @@ function fixGitConfigCorruption(repoRoot) {
     });
     if (bareResult.stdout?.trim() === "true") {
       console.warn(
-        `${TAG} ⚠️ Detected core.bare=true on main repo — fixing git config corruption`,
+        `${TAG} :alert: Detected core.bare=true on main repo — fixing git config corruption`,
       );
       spawnSync("git", ["config", "--unset", "core.bare"], {
         cwd: repoRoot,

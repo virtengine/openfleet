@@ -16,14 +16,21 @@ import { readFile, writeFile, mkdir, readdir } from "node:fs/promises";
 import { resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { resolveAgentSdkConfig } from "./agent-sdk.mjs";
+import { loadConfig } from "./config.mjs";
 import { resolveRepoRoot } from "./repo-root.mjs";
 import { resolveCodexProfileRuntime } from "./codex-model-profiles.mjs";
+import {
+  isTransientStreamError,
+  streamRetryDelay,
+  MAX_STREAM_RETRIES,
+} from "./stream-resilience.mjs";
 
 const __dirname = resolve(fileURLToPath(new URL(".", import.meta.url)));
 
 // ── Configuration ────────────────────────────────────────────────────────────
 
 const DEFAULT_TIMEOUT_MS = 60 * 60 * 1000; // 60 min for agentic tasks (matches Azure stream timeout)
+// MAX_STREAM_RETRIES, isTransientStreamError, streamRetryDelay ← imported from ./stream-resilience.mjs
 const STATE_FILE = resolve(__dirname, "logs", "codex-shell-state.json");
 const SESSIONS_DIR = resolve(__dirname, "logs", "sessions");
 const MAX_PERSISTENT_TURNS = 50;
@@ -33,6 +40,113 @@ const MAX_PERSISTENT_TURNS = 50;
 // 180 KB is a safe ceiling; the API hard-errors around 200–400 KB payloads
 // that contain embedded content with unescaped characters.
 const MAX_PROMPT_BYTES = 180_000;
+const DEFAULT_FIRST_EVENT_TIMEOUT_MS = 120_000;
+const DEFAULT_MAX_ITEMS_PER_TURN = 600;
+const DEFAULT_MAX_ITEM_CHARS = 12_000;
+const TOOL_OUTPUT_GUARDRAIL = String.raw`
+
+[Tool Output Guardrail] Keep tool outputs compact: prefer narrow searches, bounded command output (for example head/tail), and summaries for large results instead of dumping full payloads.`;
+
+function parseBoundedNumber(value, fallback, min, max) {
+  const num = Number(value);
+  if (!Number.isFinite(num)) return fallback;
+  return Math.min(Math.max(Math.trunc(num), min), max);
+}
+
+function getInternalExecutorStreamConfig() {
+  try {
+    const cfg = loadConfig();
+    const stream = cfg?.internalExecutor?.stream;
+    return stream && typeof stream === "object" ? stream : {};
+  } catch {
+    return {};
+  }
+}
+
+function truncateText(text, maxChars) {
+  if (typeof text !== "string") return text;
+  if (!Number.isFinite(maxChars) || maxChars < 1 || text.length <= maxChars) {
+    return text;
+  }
+  const trimmed = text.slice(0, maxChars);
+  const removed = text.length - maxChars;
+  return `${trimmed}
+
+[…truncated ${removed} chars…]`;
+}
+
+function truncateItemForStorage(item, maxChars) {
+  if (!item || typeof item !== "object") return item;
+  if (!Number.isFinite(maxChars) || maxChars < 1) return item;
+
+  const next = { ...item };
+  const directStringKeys = [
+    "text",
+    "output",
+    "aggregated_output",
+    "stderr",
+    "stdout",
+    "result",
+    "message",
+  ];
+  for (const key of directStringKeys) {
+    if (typeof next[key] === "string") {
+      next[key] = truncateText(next[key], maxChars);
+    }
+  }
+
+  if (Array.isArray(next.content)) {
+    next.content = next.content.map((entry) => {
+      if (entry && typeof entry === "object" && typeof entry.text === "string") {
+        return { ...entry, text: truncateText(entry.text, maxChars) };
+      }
+      return entry;
+    });
+  }
+
+  if (next.error && typeof next.error === "object") {
+    next.error = {
+      ...next.error,
+      message: truncateText(next.error.message, maxChars),
+    };
+  }
+
+  return next;
+}
+
+function resolveCodexStreamSafety(totalTimeoutMs) {
+  const streamCfg = getInternalExecutorStreamConfig();
+  const firstEventRaw =
+    process.env.INTERNAL_EXECUTOR_STREAM_FIRST_EVENT_TIMEOUT_MS ||
+    streamCfg.firstEventTimeoutMs ||
+    DEFAULT_FIRST_EVENT_TIMEOUT_MS;
+  const maxItemsRaw =
+    process.env.INTERNAL_EXECUTOR_STREAM_MAX_ITEMS_PER_TURN ||
+    streamCfg.maxItemsPerTurn ||
+    DEFAULT_MAX_ITEMS_PER_TURN;
+  const maxItemCharsRaw =
+    process.env.INTERNAL_EXECUTOR_STREAM_MAX_ITEM_CHARS ||
+    streamCfg.maxItemChars ||
+    DEFAULT_MAX_ITEM_CHARS;
+  const configuredFirstEventMs = parseBoundedNumber(
+    firstEventRaw,
+    DEFAULT_FIRST_EVENT_TIMEOUT_MS,
+    1_000,
+    60 * 60 * 1000,
+  );
+  const budgetMs = Number(totalTimeoutMs);
+  let firstEventTimeoutMs = null;
+  if (Number.isFinite(budgetMs) && budgetMs > 2_000) {
+    const maxAllowed = Math.max(1_000, budgetMs - 1_000);
+    firstEventTimeoutMs = Math.min(configuredFirstEventMs, maxAllowed);
+  }
+
+  return {
+    firstEventTimeoutMs,
+    maxItemsPerTurn: parseBoundedNumber(maxItemsRaw, DEFAULT_MAX_ITEMS_PER_TURN, 1, 5000),
+    maxItemChars: parseBoundedNumber(maxItemCharsRaw, DEFAULT_MAX_ITEM_CHARS, 1, 250000),
+  };
+}
 
 /**
  * Strip ASCII control characters (except \n/\t) that corrupt JSON serialization,
@@ -63,6 +177,7 @@ function sanitizeAndTruncatePrompt(text) {
   return truncated + `\n\n[...prompt truncated — ${removedBytes} bytes removed to stay within API limits]`;
 }
 const REPO_ROOT = resolveRepoRoot();
+const DEFAULT_WORKING_DIRECTORY = REPO_ROOT;
 
 // ── State ────────────────────────────────────────────────────────────────────
 
@@ -73,6 +188,8 @@ let activeThreadId = null; // Thread ID for resume
 let activeTurn = null; // Whether a turn is in-flight
 let turnCount = 0; // Number of turns in this thread
 let currentSessionId = null; // Active session identifier
+let activeWorkingDirectory = DEFAULT_WORKING_DIRECTORY; // Session/thread cwd
+let threadNeedsPriming = false; // True when a fresh thread needs the system prompt on next turn
 let codexRuntimeCaps = {
   hasSteeringApi: false,
   steeringMethod: null,
@@ -83,6 +200,20 @@ let agentSdk = resolveAgentSdkConfig();
 
 function timestamp() {
   return new Date().toISOString();
+}
+
+function normalizeWorkingDirectory(input) {
+  const raw = String(input || "").trim();
+  if (!raw) return null;
+  try {
+    return resolve(raw);
+  } catch {
+    return null;
+  }
+}
+
+function getWorkingDirectory() {
+  return normalizeWorkingDirectory(activeWorkingDirectory) || DEFAULT_WORKING_DIRECTORY;
 }
 
 function resolveCodexTransport() {
@@ -135,13 +266,17 @@ async function loadState() {
     activeThreadId = data.threadId || null;
     turnCount = data.turnCount || 0;
     currentSessionId = data.currentSessionId || null;
+    activeWorkingDirectory =
+      normalizeWorkingDirectory(data.workingDirectory) ||
+      DEFAULT_WORKING_DIRECTORY;
     console.log(
-      `[codex-shell] loaded state: threadId=${activeThreadId}, turns=${turnCount}, session=${currentSessionId}`,
+      `[codex-shell] loaded state: threadId=${activeThreadId}, turns=${turnCount}, session=${currentSessionId}, cwd=${getWorkingDirectory()}`,
     );
   } catch {
     activeThreadId = null;
     turnCount = 0;
     currentSessionId = null;
+    activeWorkingDirectory = DEFAULT_WORKING_DIRECTORY;
   }
 }
 
@@ -155,6 +290,7 @@ async function saveState() {
           threadId: activeThreadId,
           turnCount,
           currentSessionId,
+          workingDirectory: getWorkingDirectory(),
           updatedAt: timestamp(),
         },
         null,
@@ -196,6 +332,7 @@ async function saveCurrentSession() {
   await saveSessionData(currentSessionId, {
     threadId: activeThreadId,
     turnCount,
+    workingDirectory: getWorkingDirectory(),
     createdAt: (await loadSessionData(currentSessionId))?.createdAt || timestamp(),
     lastActiveAt: timestamp(),
   });
@@ -210,12 +347,16 @@ async function loadSession(sessionId) {
     turnCount = data.turnCount || 0;
     activeThread = null; // will be re-created/resumed via getThread()
     currentSessionId = sessionId;
-    console.log(`[codex-shell] loaded session ${sessionId}: threadId=${activeThreadId}, turns=${turnCount}`);
+    activeWorkingDirectory =
+      normalizeWorkingDirectory(data.workingDirectory) ||
+      DEFAULT_WORKING_DIRECTORY;
+    console.log(`[codex-shell] loaded session ${sessionId}: threadId=${activeThreadId}, turns=${turnCount}, cwd=${getWorkingDirectory()}`);
   } else {
     activeThread = null;
     activeThreadId = null;
     turnCount = 0;
     currentSessionId = sessionId;
+    activeWorkingDirectory = DEFAULT_WORKING_DIRECTORY;
     console.log(`[codex-shell] created new session ${sessionId}`);
   }
   await saveState();
@@ -251,9 +392,8 @@ Key files:
   AGENTS.md — Repo guide for agents
 `;
 
-const THREAD_OPTIONS = {
+const THREAD_BASE_OPTIONS = {
   sandboxMode: process.env.CODEX_SANDBOX || "workspace-write",
-  workingDirectory: REPO_ROOT,
   skipGitRepoCheck: true,
   webSearchMode: "live",
   approvalPolicy: "never",
@@ -262,6 +402,13 @@ const THREAD_OPTIONS = {
   // codex-config.mjs ensureFeatureFlags() handles this during setup.
 };
 
+function buildThreadOptions() {
+  return {
+    ...THREAD_BASE_OPTIONS,
+    workingDirectory: getWorkingDirectory(),
+  };
+}
+
 /**
  * Get or create a thread.
  * Uses fresh-thread mode by default to avoid context bloat.
@@ -269,6 +416,7 @@ const THREAD_OPTIONS = {
  */
 async function getThread() {
   if (activeThread) return activeThread;
+  const threadOptions = buildThreadOptions();
 
   const { env: resolvedEnv } = resolveCodexProfileRuntime(process.env);
   Object.assign(process.env, resolvedEnv);
@@ -276,8 +424,21 @@ async function getThread() {
   if (!codexInstance) {
     const Cls = await loadCodexSdk();
     if (!Cls) throw new Error("Codex SDK not available");
-    // Pass feature overrides via --config so they apply even if config.toml
-    // hasn't been patched by codex-config.mjs yet.
+
+    // Inject stream resilience settings via --config overrides so they apply
+    // even if config.toml hasn't been patched by codex-config.mjs yet.
+    // This is the most reliable path for Azure/Foundry deployments where
+    // dropped SSE streams ("response.failed") are the dominant failure mode.
+    const providerName = resolvedEnv.OPENAI_BASE_URL?.toLowerCase().includes(".openai.azure.com")
+      ? "azure"
+      : "openai";
+    const STREAM_IDLE_TIMEOUT_MS = 3_600_000; // 60 min — matches Azure max stream lifetime
+    const streamProviderOverrides = {
+      stream_idle_timeout_ms: STREAM_IDLE_TIMEOUT_MS,
+      stream_max_retries: 15,
+      request_max_retries: 6,
+    };
+
     codexInstance = new Cls({
       config: {
         features: {
@@ -287,8 +448,13 @@ async function getThread() {
           undo: true,
           steer: true,
         },
+        model_providers: {
+          [providerName]: streamProviderOverrides,
+        },
       },
     });
+
+    console.log(`[codex-shell] created Codex instance (provider=${providerName}, stream_idle_timeout=${STREAM_IDLE_TIMEOUT_MS}ms, stream_max_retries=${streamProviderOverrides.stream_max_retries})`);
   }
 
   const transport = resolveCodexTransport();
@@ -299,7 +465,7 @@ async function getThread() {
       try {
         activeThread = codexInstance.resumeThread(
           activeThreadId,
-          THREAD_OPTIONS,
+          threadOptions,
         );
         if (activeThread) {
           detectThreadCapabilities(activeThread);
@@ -327,22 +493,20 @@ async function getThread() {
     activeThreadId = null;
   }
 
-  // Start a new thread with the system prompt as the first turn
-  activeThread = codexInstance.startThread(THREAD_OPTIONS);
+  // Start a new thread — defer the system prompt to the first user message so
+  // the priming turn is STREAMED (runStreamed) instead of blocking (run).
+  // This eliminates the 2-5 minute silent delay the chat UI suffered because
+  // the old `thread.run(SYSTEM_PROMPT)` call produced zero streaming events.
+  activeThread = codexInstance.startThread(threadOptions);
   detectThreadCapabilities(activeThread);
+  threadNeedsPriming = true;
 
-  // Prime the thread with the system prompt so subsequent turns have context
-  try {
-    await activeThread.run(SYSTEM_PROMPT);
-    // Capture the thread ID from the prime turn
-    if (activeThread.id) {
-      activeThreadId = activeThread.id;
-      await saveState();
-      console.log(`[codex-shell] new thread started: ${activeThreadId}`);
-    }
-  } catch (err) {
-    console.warn(`[codex-shell] prime turn failed: ${err.message}`);
-    // Thread is still usable even if prime fails
+  if (activeThread.id) {
+    activeThreadId = activeThread.id;
+    await saveState();
+    console.log(`[codex-shell] new thread started: ${activeThreadId} (priming deferred to first user turn, cwd=${threadOptions.workingDirectory})`);
+  } else {
+    console.log(`[codex-shell] new thread started (priming deferred to first user turn, cwd=${threadOptions.workingDirectory})`);
   }
 
   return activeThread;
@@ -375,25 +539,25 @@ function formatEvent(event) {
       const item = event.item;
       switch (item.type) {
         case "command_execution":
-          return `⚡ Running: \`${item.command}\``;
+          return `:zap: Running: \`${item.command}\``;
         case "file_change":
           return null; // wait for completed
         case "mcp_tool_call":
-          return `🔌 MCP [${item.server}]: ${item.tool}`;
+          return `:plug: MCP [${item.server}]: ${item.tool}`;
         case "reasoning":
-          return item.text ? `💭 ${item.text.slice(0, 300)}` : null;
+          return item.text ? `:u1f4ad: ${item.text.slice(0, 300)}` : null;
         case "agent_message":
           return null; // wait for completed for full text
         case "todo_list":
           if (item.items && item.items.length > 0) {
             const todoLines = item.items.map(
-              (t) => `  ${t.completed ? "✅" : "⬜"} ${t.text}`,
+              (t) => `  ${t.completed ? ":check:" : ":dot:"} ${t.text}`,
             );
-            return `📋 Plan:\n${todoLines.join("\n")}`;
+            return `:clipboard: Plan:\n${todoLines.join("\n")}`;
           }
           return null;
         case "web_search":
-          return `🔍 Searching: ${item.query}`;
+          return `:search: Searching: ${item.query}`;
         default:
           return null;
       }
@@ -403,7 +567,7 @@ function formatEvent(event) {
       const item = event.item;
       switch (item.type) {
         case "command_execution": {
-          const status = item.exit_code === 0 ? "✅" : "❌";
+          const status = item.exit_code === 0 ? ":check:" : ":close:";
           const output = item.aggregated_output
             ? `\n${item.aggregated_output.slice(-500)}`
             : "";
@@ -413,16 +577,16 @@ function formatEvent(event) {
           if (item.changes && item.changes.length > 0) {
             const fileLines = item.changes.map(
               (c) =>
-                `  ${c.kind === "add" ? "➕" : c.kind === "delete" ? "🗑️" : "✏️"} ${c.path}`,
+                `  ${c.kind === "add" ? ":plus:" : c.kind === "delete" ? ":trash:" : ":edit:"} ${c.path}`,
             );
-            return `📁 Files changed:\n${fileLines.join("\n")}`;
+            return `:folder: Files changed:\n${fileLines.join("\n")}`;
           }
           return null;
         }
         case "agent_message":
           return item.text || null;
         case "mcp_tool_call": {
-          const status = item.status === "completed" ? "✅" : "❌";
+          const status = item.status === "completed" ? ":check:" : ":close:";
           const resultInfo = item.error
             ? `Error: ${item.error.message}`
             : "done";
@@ -431,9 +595,9 @@ function formatEvent(event) {
         case "todo_list": {
           if (item.items && item.items.length > 0) {
             const todoLines = item.items.map(
-              (t) => `  ${t.completed ? "✅" : "⬜"} ${t.text}`,
+              (t) => `  ${t.completed ? ":check:" : ":dot:"} ${t.text}`,
             );
-            return `📋 Updated plan:\n${todoLines.join("\n")}`;
+            return `:clipboard: Updated plan:\n${todoLines.join("\n")}`;
           }
           return null;
         }
@@ -446,13 +610,13 @@ function formatEvent(event) {
       const item = event.item;
       // Stream partial reasoning and command output
       if (item.type === "reasoning" && item.text) {
-        return `💭 ${item.text.slice(0, 300)}`;
+        return `:u1f4ad: ${item.text.slice(0, 300)}`;
       }
       if (item.type === "todo_list" && item.items) {
         const todoLines = item.items.map(
-          (t) => `  ${t.completed ? "✅" : "⬜"} ${t.text}`,
+          (t) => `  ${t.completed ? ":check:" : ":dot:"} ${t.text}`,
         );
-        return `📋 Plan update:\n${todoLines.join("\n")}`;
+        return `:clipboard: Plan update:\n${todoLines.join("\n")}`;
       }
       return null;
     }
@@ -460,9 +624,9 @@ function formatEvent(event) {
     case "turn.completed":
       return null; // handled by caller
     case "turn.failed":
-      return `❌ Turn failed: ${event.error?.message || "unknown error"}`;
+      return `:close: Turn failed: ${event.error?.message || "unknown error"}`;
     case "error":
-      return `❌ Error: ${event.message}`;
+      return `:close: Error: ${event.message}`;
     default:
       return null;
   }
@@ -513,12 +677,14 @@ export async function execCodexPrompt(userMessage, options = {}) {
     abortController = null,
     persistent = false,
     sessionId = null,
+    mode = null,
+    cwd = null,
   } = options;
 
   agentSdk = resolveAgentSdkConfig({ reload: true });
   if (agentSdk.primary !== "codex") {
     return {
-      finalResponse: `❌ Agent SDK set to "${agentSdk.primary}" — Codex SDK disabled.`,
+      finalResponse: `:close: Agent SDK set to "${agentSdk.primary}" — Codex SDK disabled.`,
       items: [],
       usage: null,
     };
@@ -527,7 +693,7 @@ export async function execCodexPrompt(userMessage, options = {}) {
   if (activeTurn) {
     return {
       finalResponse:
-        "⏳ Agent is still executing a previous task. Please wait.",
+        ":clock: Agent is still executing a previous task. Please wait.",
       items: [],
       usage: null,
     };
@@ -536,9 +702,14 @@ export async function execCodexPrompt(userMessage, options = {}) {
   activeTurn = true;
 
   try {
+    const streamSafety = resolveCodexStreamSafety(timeoutMs);
+    const requestedWorkingDirectory = normalizeWorkingDirectory(cwd);
+
     if (!persistent) {
       // Task executor path — keep existing fresh-thread behavior
       activeThread = null;
+      activeWorkingDirectory =
+        requestedWorkingDirectory || DEFAULT_WORKING_DIRECTORY;
     } else if (sessionId && sessionId !== currentSessionId) {
       // Switching to a different persistent session
       await loadSession(sessionId);
@@ -554,44 +725,123 @@ export async function execCodexPrompt(userMessage, options = {}) {
     }
     // else: persistent && same session && under limit → reuse activeThread
 
-    for (let attempt = 0; attempt < 2; attempt += 1) {
+    if (
+      requestedWorkingDirectory &&
+      requestedWorkingDirectory !== getWorkingDirectory()
+    ) {
+      activeWorkingDirectory = requestedWorkingDirectory;
+      activeThread = null;
+      activeThreadId = null;
+      turnCount = 0;
+      threadNeedsPriming = false;
+      await saveState();
+      if (persistent && currentSessionId) {
+        await saveCurrentSession();
+      }
+      console.log(
+        `[codex-shell] switched working directory to ${requestedWorkingDirectory} for session ${currentSessionId || "(ephemeral)"}`,
+      );
+    }
+
+    // ── Mode detection ───────────────────────────────────────────────────
+    // "ask" mode should be lightweight — no heavy executor framing that
+    // instructs the agent to run commands and read files.  The mode is
+    // either passed explicitly or detected from the MODE prefix that
+    // primary-agent.mjs prepends.
+    const isAskMode =
+      mode === "ask" || /^\[MODE:\s*ask\]/i.test(userMessage);
+
+    // Build the user prompt with optional status context (built once, reused across retries)
+    let prompt = userMessage;
+    if (statusData && !isAskMode) {
+      const statusSnippet = JSON.stringify(statusData, null, 2).slice(0, 2000);
+      prompt = `[Orchestrator Status]\n\`\`\`json\n${statusSnippet}\n\`\`\`\n\n# YOUR TASK — EXECUTE NOW\n\n${userMessage}\n\n---\nDo NOT respond with "Ready" or ask what to do. EXECUTE this task. Read files, run commands, produce detailed output.${TOOL_OUTPUT_GUARDRAIL}`;
+    } else if (isAskMode) {
+      // Ask mode — pass through without executor framing.  The mode
+      // prefix from primary-agent already tells the model to be brief.
+      prompt = userMessage;
+    } else {
+      prompt = `${userMessage}\n\n\n# YOUR TASK — EXECUTE NOW\n\n\n---\nDo NOT respond with "Ready" or ask what to do. EXECUTE this task. Read files, run commands, produce detailed output & complete the user's request E2E.${TOOL_OUTPUT_GUARDRAIL}`;
+    }
+    // Sanitize & size-guard once — prevents invalid_request_error from oversized
+    // bodies (BytePositionInLine > 80 000) or unescaped control characters.
+    let safePrompt = sanitizeAndTruncatePrompt(prompt);
+
+    let threadResetDone = false;
+
+    for (let attempt = 0; attempt < MAX_STREAM_RETRIES; attempt += 1) {
       const thread = await getThread();
 
-      // Build the user prompt with optional status context
-      let prompt = userMessage;
-      if (statusData) {
-        const statusSnippet = JSON.stringify(statusData, null, 2).slice(
-          0,
-          2000,
+      // If the thread is freshly created (or was just reset in a recovery path),
+      // prepend the system prompt so the agent gets its identity/context on the
+      // FIRST streamed turn.  Previously this was done via a blocking
+      // `thread.run(SYSTEM_PROMPT)` call inside `getThread()`, which produced
+      // zero streaming events and caused the chat UI to appear frozen for
+      // 2-5+ minutes.  Checking threadNeedsPriming INSIDE the retry loop
+      // ensures a freshly-reset thread still receives the primer.
+      let attemptPrompt = safePrompt;
+      if (threadNeedsPriming) {
+        // Ask mode gets a lightweight primer — no heavy executor directives
+        // that contradict the "don't use tools" instruction.
+        const primer = isAskMode
+          ? "You are a helpful AI assistant deployed inside the bosun orchestrator. " +
+            "Answer the user's questions concisely. Only use tools when explicitly asked to."
+          : SYSTEM_PROMPT;
+        attemptPrompt = sanitizeAndTruncatePrompt(
+          primer + "\n\n---\n\n" + prompt,
         );
-        prompt = `[Orchestrator Status]\n\`\`\`json\n${statusSnippet}\n\`\`\`\n\n# YOUR TASK — EXECUTE NOW\n\n${userMessage}\n\n---\nDo NOT respond with "Ready" or ask what to do. EXECUTE this task. Read files, run commands, produce detailed output.`;
-      } else {
-        prompt = `${userMessage}\n\n\n# YOUR TASK — EXECUTE NOW\n\n\n---\nDo NOT respond with "Ready" or ask what to do. EXECUTE this task. Read files, run commands, produce detailed output & complete the user's request E2E.`;
+        threadNeedsPriming = false;
       }
 
-      // Set up timeout
+      // Each attempt gets a fresh AbortController tied to the same timeout budget.
+      // We intentionally do NOT share the same controller across retries: if the
+      // first attempt times out the signal is already aborted and the retry would
+      // immediately fail.  The total wall-clock budget is still bounded by the
+      // outer timeoutMs passed in.
       const controller = abortController || new AbortController();
       const timer = setTimeout(() => controller.abort("timeout"), timeoutMs);
 
       try {
-        // Sanitize & size-guard before sending — prevents invalid_request_error
-        // from oversized bodies (BytePositionInLine > 80 000) or control chars.
-        const safePrompt = sanitizeAndTruncatePrompt(prompt);
-
         // Use runStreamed for real-time event streaming
-        const streamedTurn = await thread.runStreamed(safePrompt, {
+        const streamedTurn = await thread.runStreamed(attemptPrompt, {
           signal: controller.signal,
         });
 
         let finalResponse = "";
         const allItems = [];
+        let turnFailedErr = null;
+        let firstEventTimer = null;
+        let eventCount = 0;
+        let droppedItems = 0;
 
         // Process events from the async generator
+        if (streamSafety.firstEventTimeoutMs) {
+          firstEventTimer = setTimeout(() => {
+            if (eventCount > 0 || controller.signal.aborted) return;
+            controller.abort("first_event_timeout");
+          }, streamSafety.firstEventTimeoutMs);
+          if (typeof firstEventTimer.unref === "function") {
+            firstEventTimer.unref();
+          }
+        }
+
         for await (const event of streamedTurn.events) {
+          eventCount += 1;
+          if (firstEventTimer) {
+            clearTimeout(firstEventTimer);
+            firstEventTimer = null;
+          }
           // Capture thread ID on first turn
           if (event.type === "thread.started" && event.thread_id) {
             activeThreadId = event.thread_id;
             await saveState();
+          }
+
+          // turn.failed is emitted by the SDK when the server signals response.failed.
+          // Convert it into a retriable error so the retry loop can back off & retry.
+          if (event.type === "turn.failed") {
+            const detail = event.error?.message || "response.failed";
+            turnFailedErr = new Error(`stream disconnected before completion: ${detail}`);
           }
 
           // Format and emit event
@@ -612,7 +862,13 @@ export async function execCodexPrompt(userMessage, options = {}) {
 
           // Collect items
           if (event.type === "item.completed") {
-            allItems.push(event.item);
+            if (allItems.length < streamSafety.maxItemsPerTurn) {
+              allItems.push(
+                truncateItemForStorage(event.item, streamSafety.maxItemChars),
+              );
+            } else {
+              droppedItems += 1;
+            }
             if (event.item.type === "agent_message" && event.item.text) {
               finalResponse += event.item.text + "\n";
             }
@@ -628,6 +884,22 @@ export async function execCodexPrompt(userMessage, options = {}) {
           }
         }
 
+        if (firstEventTimer) {
+          clearTimeout(firstEventTimer);
+          firstEventTimer = null;
+        }
+
+        if (droppedItems > 0) {
+          allItems.push({
+            type: "stream_notice",
+            text: `Dropped ${droppedItems} completed items to stay within INTERNAL_EXECUTOR_STREAM_MAX_ITEMS_PER_TURN=${streamSafety.maxItemsPerTurn}.`,
+          });
+        }
+
+        // If a turn.failed event was seen during the stream, treat it as a
+        // transient stream error so the retry loop handles it correctly.
+        if (turnFailedErr) throw turnFailedErr;
+
         clearTimeout(timer);
 
         return {
@@ -638,26 +910,59 @@ export async function execCodexPrompt(userMessage, options = {}) {
         };
       } catch (err) {
         clearTimeout(timer);
+
         if (err.name === "AbortError") {
           const reason = controller.signal.reason;
-          const msg =
-            reason === "user_stop"
-              ? "🛑 Agent stopped by user."
-              : `⏱️ Agent timed out after ${timeoutMs / 1000}s`;
-          return { finalResponse: msg, items: [], usage: null };
+          if (reason === "first_event_timeout") {
+            err = new Error(
+              `stream disconnected before completion: no stream events within ${streamSafety.firstEventTimeoutMs}ms`,
+            );
+          } else {
+            const msg =
+              reason === "user_stop"
+                ? ":close: Agent stopped by user."
+                : `:clock: Agent timed out after ${timeoutMs / 1000}s`;
+            return { finalResponse: msg, items: [], usage: null };
+          }
         }
-        if (attempt === 0 && isRecoverableThreadError(err)) {
+
+        // ── Thread corruption errors: reset thread & retry once ──────────────
+        if (!threadResetDone && isRecoverableThreadError(err)) {
           console.warn(
             `[codex-shell] recoverable thread error: ${err.message || err} — resetting thread`,
           );
           await resetThread();
-          continue;
+          threadResetDone = true;
+          continue; // retry without counting against stream-retry budget
         }
+
+        // ── Transient stream/network errors: backoff & retry ─────────────────
+        if (isTransientStreamError(err)) {
+          const attemptsLeft = MAX_STREAM_RETRIES - 1 - attempt;
+          if (attemptsLeft > 0) {
+            const delay = streamRetryDelay(attempt);
+            console.warn(
+              `[codex-shell] transient stream error (attempt ${attempt + 1}/${MAX_STREAM_RETRIES}): ${err.message || err} — retrying in ${Math.round(delay)}ms`,
+            );
+            await new Promise((r) => setTimeout(r, delay));
+            continue;
+          }
+          // Exhausted all retries
+          console.error(
+            `[codex-shell] stream disconnection not resolved after ${MAX_STREAM_RETRIES} attempts — giving up`,
+          );
+          return {
+            finalResponse: `:close: Stream disconnected after ${MAX_STREAM_RETRIES} retries: ${err.message}`,
+            items: [],
+            usage: null,
+          };
+        }
+
         throw err;
       }
     }
     return {
-      finalResponse: "❌ Agent failed after retry.",
+      finalResponse: ":close: Agent failed after all retry attempts.",
       items: [],
       usage: null,
     };
@@ -729,6 +1034,8 @@ export async function resetThread() {
   turnCount = 0;
   activeTurn = null;
   currentSessionId = null;
+  activeWorkingDirectory = DEFAULT_WORKING_DIRECTORY;
+  threadNeedsPriming = false;
   await saveState();
   console.log("[codex-shell] thread reset");
 }

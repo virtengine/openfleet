@@ -1341,6 +1341,7 @@ export function ensureCodexConfig({
     profileProvidersAdded: [],
     timeoutsFixed: [],
     retriesAdded: [],
+    trustedProjectsAdded: [],
     noChanges: true,
   };
 
@@ -1546,6 +1547,18 @@ export function ensureCodexConfig({
     writeCodexConfig(toml);
   }
 
+  // Keep project-level .codex/config.toml files active by trusting the
+  // current execution roots in the global user config. Without this, Codex CLI
+  // warns that project config is disabled and ignores repo-scoped settings.
+  const trustPaths = [repoRoot, ...additionalRoots]
+    .map((p) => String(p || "").trim())
+    .filter(Boolean)
+    .filter((p) => isAbsolute(p));
+  if (trustPaths.length > 0) {
+    const trustResult = ensureTrustedProjects(trustPaths, { dryRun });
+    result.trustedProjectsAdded = trustResult.added;
+  }
+
   return result;
 }
 
@@ -1556,46 +1569,46 @@ export function ensureCodexConfig({
  */
 export function printConfigSummary(result, log = console.log) {
   if (result.noChanges) {
-    log("  ✅ Codex CLI config is already up to date");
+    log("  :check: Codex CLI config is already up to date");
     log(`     ${result.path}`);
     return;
   }
 
   if (result.created) {
-    log("  📝 Created new Codex CLI config");
+    log("  :edit: Created new Codex CLI config");
   }
 
   if (result.vkAdded) {
-    log("  ✅ Added Vibe-Kanban MCP server to Codex config");
+    log("  :check: Added Vibe-Kanban MCP server to Codex config");
   }
 
   if (result.vkRemoved) {
-    log("  🗑️  Removed Vibe-Kanban MCP server from global config (workspace-scoped only)");
+    log("  :trash:  Removed Vibe-Kanban MCP server from global config (workspace-scoped only)");
   }
 
   if (result.vkEnvUpdated) {
-    log("  ✅ Updated Vibe-Kanban MCP environment variables");
+    log("  :check: Updated Vibe-Kanban MCP environment variables");
   }
 
   if (result.agentSdkAdded) {
-    log("  ✅ Added agent SDK selection block");
+    log("  :check: Added agent SDK selection block");
   }
 
   if (result.featuresAdded && result.featuresAdded.length > 0) {
     const key = result.featuresAdded.length <= 5
       ? result.featuresAdded.join(", ")
       : `${result.featuresAdded.length} feature flags`;
-    log(`  ✅ Added feature flags: ${key}`);
+    log(`  :check: Added feature flags: ${key}`);
   }
 
   if (result.sandboxAdded) {
-    log("  ✅ Added sandbox permissions (disk-full-write-access)");
+    log("  :check: Added sandbox permissions (disk-full-write-access)");
   }
 
   if (result.sandboxWorkspaceAdded) {
-    log("  ✅ Added sandbox workspace-write defaults");
+    log("  :check: Added sandbox workspace-write defaults");
   } else if (result.sandboxWorkspaceUpdated) {
-    log("  ✅ Updated sandbox workspace-write defaults");
+    log("  :check: Updated sandbox workspace-write defaults");
   }
 
   if (result.sandboxWorkspaceRootsAdded && result.sandboxWorkspaceRootsAdded.length > 0) {
@@ -1606,7 +1619,7 @@ export function printConfigSummary(result, log = console.log) {
 
   if (result.sandboxStaleRootsRemoved && result.sandboxStaleRootsRemoved.length > 0) {
     log(
-      `  🗑️  Pruned ${result.sandboxStaleRootsRemoved.length} stale writable root(s) that no longer exist`,
+      `  :trash:  Pruned ${result.sandboxStaleRootsRemoved.length} stale writable root(s) that no longer exist`,
     );
     for (const r of result.sandboxStaleRootsRemoved) {
       log(`     - ${r}`);
@@ -1614,7 +1627,7 @@ export function printConfigSummary(result, log = console.log) {
   }
 
   if (result.shellEnvAdded) {
-    log("  ✅ Added shell environment policy (inherit=all)");
+    log("  :check: Added shell environment policy (inherit=all)");
   }
 
   if (result.agentMaxThreads) {
@@ -1624,22 +1637,22 @@ export function printConfigSummary(result, log = console.log) {
         : String(result.agentMaxThreads.from);
     const toLabel = String(result.agentMaxThreads.to);
     const note = result.agentMaxThreads.explicit ? " (env override)" : "";
-    log(`  ✅ Set agents.max_threads: ${fromLabel} → ${toLabel}${note}`);
+    log(`  :check: Set agents.max_threads: ${fromLabel} → ${toLabel}${note}`);
   } else if (result.agentMaxThreadsSkipped) {
     log(
-      `  ⚠ Skipped agents.max_threads (invalid value: ${result.agentMaxThreadsSkipped})`,
+      `  :alert: Skipped agents.max_threads (invalid value: ${result.agentMaxThreadsSkipped})`,
     );
   }
 
   if (result.commonMcpAdded) {
     log(
-      "  ✅ Added common MCP servers (context7, sequential-thinking, playwright, microsoft-docs)",
+      "  :check: Added common MCP servers (context7, sequential-thinking, playwright, microsoft-docs)",
     );
   }
 
   if (result.profileProvidersAdded && result.profileProvidersAdded.length > 0) {
     log(
-      `  ✅ Added model provider sections: ${result.profileProvidersAdded.join(", ")}`,
+      `  :check: Added model provider sections: ${result.profileProvidersAdded.join(", ")}`,
     );
   }
 
@@ -1648,12 +1661,12 @@ export function printConfigSummary(result, log = console.log) {
       t.from === null ? "not set" : `${(t.from / 1000).toFixed(0)}s`;
     const toLabel = `${(t.to / 1000 / 60).toFixed(0)} min`;
     log(
-      `  ✅ Set stream_idle_timeout_ms on [${t.provider}]: ${fromLabel} → ${toLabel}`,
+      `  :check: Set stream_idle_timeout_ms on [${t.provider}]: ${fromLabel} → ${toLabel}`,
     );
   }
 
   for (const p of result.retriesAdded) {
-    log(`  ✅ Added retry settings to [${p}]`);
+    log(`  :check: Added retry settings to [${p}]`);
   }
 
   log(`     Config: ${result.path}`);
@@ -1677,6 +1690,39 @@ function tomlEscapeStr(s) {
  */
 function formatTomlArrayEscaped(values) {
   return `[${values.map((v) => `"${tomlEscapeStr(v)}"`).join(", ")}]`;
+}
+
+function toWindowsNamespacePath(pathValue) {
+  if (process.platform !== "win32") return null;
+  const value = String(pathValue || "").trim();
+  if (!value) return null;
+  if (value.startsWith("\\\\?\\")) return value;
+  if (/^[a-zA-Z]:\\/.test(value)) return `\\\\?\\${value}`;
+  return null;
+}
+
+function normalizeTrustedPathForCompare(pathValue) {
+  const raw = String(pathValue || "").trim();
+  if (!raw) return "";
+  if (process.platform === "win32") {
+    let normalized = raw.replace(/\//g, "\\");
+    if (normalized.startsWith("\\\\?\\UNC\\")) {
+      normalized = `\\\\${normalized.slice(8)}`;
+    } else if (normalized.startsWith("\\\\?\\")) {
+      normalized = normalized.slice(4);
+    }
+    normalized = normalized.replace(/[\\/]+$/, "");
+    return normalized.toLowerCase();
+  }
+  return resolve(raw).replace(/\/+$/, "");
+}
+
+function buildTrustedPathVariants(pathValue) {
+  const base = resolve(pathValue);
+  const variants = [base];
+  const namespaced = toWindowsNamespacePath(base);
+  if (namespaced && namespaced !== base) variants.push(namespaced);
+  return variants;
 }
 
 /**
@@ -1710,7 +1756,7 @@ function parseTomlArrayLiteralEscaped(raw) {
  *
  * Codex refuses to load a per-project .codex/config.toml unless the project
  * directory appears in this list — producing warnings like:
- *   "⚠ Project config.toml files are disabled … add <dir> as a trusted project"
+ *   ":alert: Project config.toml files are disabled … add <dir> as a trusted project"
  *
  * Paths are stored as-is (forward or back slashes preserved) with proper TOML
  * escaping so Windows paths survive round-trips through the file.
@@ -1721,7 +1767,9 @@ function parseTomlArrayLiteralEscaped(raw) {
  */
 export function ensureTrustedProjects(paths, { dryRun = false } = {}) {
   const result = { added: [], already: [], path: CONFIG_PATH };
-  const desired = (paths || []).map((p) => resolve(p)).filter(Boolean);
+  const desired = (paths || [])
+    .flatMap((p) => buildTrustedPathVariants(p))
+    .filter(Boolean);
   if (desired.length === 0) return result;
 
   let toml = readCodexConfig() || "";
@@ -1729,13 +1777,19 @@ export function ensureTrustedProjects(paths, { dryRun = false } = {}) {
   // Parse existing trusted_projects (multi-line arrays may span lines)
   const existingMatch = toml.match(/^trusted_projects\s*=\s*(\[[^\]]*\])/m);
   const existing = existingMatch ? parseTomlArrayLiteralEscaped(existingMatch[1]) : [];
+  const existingNormalized = new Set(
+    existing.map((p) => normalizeTrustedPathForCompare(p)).filter(Boolean),
+  );
 
   let changed = false;
   for (const p of desired) {
-    if (existing.includes(p)) {
+    const normalized = normalizeTrustedPathForCompare(p);
+    if (!normalized) continue;
+    if (existingNormalized.has(normalized)) {
       result.already.push(p);
     } else {
       existing.push(p);
+      existingNormalized.add(normalized);
       result.added.push(p);
       changed = true;
     }

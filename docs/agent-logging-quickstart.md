@@ -3,13 +3,13 @@
 ## What This System Does
 
 Captures **all agent work** into structured logs and enables:
-- ✅ Real-time error loop detection
-- ✅ Stuck agent detection
-- ✅ Cost anomaly alerts
-- ✅ Offline analytics for task planning improvements
-- ✅ Executor performance comparison
-- ✅ Common error clustering
-- ✅ Error correlation by size, executor, and complexity
+- :check: Real-time error loop detection
+- :check: Stuck agent detection
+- :check: Cost anomaly alerts
+- :check: Offline analytics for task planning improvements
+- :check: Executor performance comparison
+- :check: Common error clustering
+- :check: Error correlation by size, executor, and complexity
 
 ## Architecture Quick View
 
@@ -156,10 +156,10 @@ setInterval(async () => {
 }, 5000); // Poll every 5s
 
 async function handleAgentAlert(alert) {
-  console.error(`[monitor] 🚨 Alert: ${alert.type} - ${alert.attempt_id}`);
+  console.error(`[monitor] :alert: Alert: ${alert.type} - ${alert.attempt_id}`);
 
   // Send Telegram notification
-  const emoji = alert.severity === 'high' ? '❌' : alert.severity === 'medium' ? '⚠️' : 'ℹ️';
+  const emoji = alert.severity === 'high' ? ':close:' : alert.severity === 'medium' ? ':alert:' : ':help:';
   await notify(
     `${emoji} ${alert.type.replace(/_/g, ' ').toUpperCase()}\n` +
     `Attempt: ${alert.attempt_id}\n` +
@@ -320,7 +320,7 @@ Root Cause Categories:
   dependency: 2
   api_key: 1
 
-💡 Planning Improvements:
+:lightbulb: Planning Improvements:
   - Missing dependency setup in task description
   - Missing environment setup instructions
 ```
@@ -424,7 +424,7 @@ node scripts/bosun/analyze-agent-work.mjs --error-correlation --days 30 --top 5 
 Once running, you'll get Telegram alerts like:
 
 ```
-⚠️ ERROR LOOP DETECTED
+:alert: ERROR LOOP DETECTED
 Attempt: ve-a1b2-implement-auth
 Executor: CODEX
 Error: git_push_failed (4 occurrences in 10 min)
@@ -432,7 +432,7 @@ Recommendation: trigger_ai_autofix
 ```
 
 ```
-ℹ️ COST ANOMALY
+:help: COST ANOMALY
 Attempt: ve-c3d4-complex-refactor
 Executor: CODEX
 Cost: $1.23 (threshold: $1.00)
@@ -458,12 +458,12 @@ ls -t .cache/agent-work-logs/agent-sessions/*.jsonl | tail -n +101 | xargs rm -f
 
 ## Next Steps
 
-### Phase 1 (Week 1) - Data Capture ✅
+### Phase 1 (Week 1) - Data Capture :check:
 - [x] Basic logging module
 - [x] Integration points in orchestrator
 - [x] Log file structure
 
-### Phase 2 (Week 2) - Live Analysis ✅
+### Phase 2 (Week 2) - Live Analysis :check:
 - [x] Stream analyzer
 - [x] Pattern detection (error loops, tool loops)
 - [x] Alert system

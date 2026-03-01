@@ -13,7 +13,7 @@ const html = htm.bind(h);
  *   viewBox="0 0 24 24" fill="none" stroke="currentColor"
  *   stroke-width="2" stroke-linecap="round" stroke-linejoin="round"
  *
- * Small inline icons additionally set width="16" height="16".
+ * Icon size is controlled exclusively by CSS (.icon-inline svg sets width/height).
  */
 export const ICONS = {
   /* ── Brand ── */
@@ -100,6 +100,19 @@ export const ICONS = {
     <rect x="6" y="10" width="3" height="9" />
     <rect x="11" y="6" width="3" height="13" />
     <rect x="16" y="13" width="3" height="6" />
+  </svg>`,
+
+  book: html`<svg
+    viewBox="0 0 24 24"
+    fill="none"
+    stroke="currentColor"
+    stroke-width="2"
+    stroke-linecap="round"
+    stroke-linejoin="round"
+  >
+    <path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20" />
+    <path d="M4 4.5A2.5 2.5 0 0 1 6.5 7H20" />
+    <path d="M6.5 4.5H20V20H6.5A2.5 2.5 0 0 1 4 17.5V6.5A2.5 2.5 0 0 1 6.5 4.5Z" />
   </svg>`,
 
   /* ── Status / Feedback ── */
@@ -296,18 +309,6 @@ export const ICONS = {
     <path d="M10 18l-3-10" />
   </svg>`,
 
-  book: html`<svg
-    viewBox="0 0 24 24"
-    fill="none"
-    stroke="currentColor"
-    stroke-width="2"
-    stroke-linecap="round"
-    stroke-linejoin="round"
-  >
-    <path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20" />
-    <path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z" />
-  </svg>`,
-
   /* ── Terminal / Code ── */
   terminal: html`<svg
     viewBox="0 0 24 24"
@@ -355,8 +356,6 @@ export const ICONS = {
     stroke-width="2"
     stroke-linecap="round"
     stroke-linejoin="round"
-    width="16"
-    height="16"
   >
     <polyline points="6 9 12 15 18 9" />
   </svg>`,
@@ -368,8 +367,6 @@ export const ICONS = {
     stroke-width="2"
     stroke-linecap="round"
     stroke-linejoin="round"
-    width="16"
-    height="16"
   >
     <line x1="22" y1="2" x2="11" y2="13" />
     <polygon points="22 2 15 22 11 13 2 9 22 2" />
@@ -382,8 +379,6 @@ export const ICONS = {
     stroke-width="2"
     stroke-linecap="round"
     stroke-linejoin="round"
-    width="16"
-    height="16"
   >
     <polyline points="23 4 23 10 17 10" />
     <path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10" />
@@ -396,8 +391,6 @@ export const ICONS = {
     stroke-width="2"
     stroke-linecap="round"
     stroke-linejoin="round"
-    width="16"
-    height="16"
   >
     <circle cx="11" cy="11" r="8" />
     <line x1="21" y1="21" x2="16.65" y2="16.65" />
@@ -410,8 +403,6 @@ export const ICONS = {
     stroke-width="2"
     stroke-linecap="round"
     stroke-linejoin="round"
-    width="16"
-    height="16"
   >
     <rect x="9" y="9" width="13" height="13" rx="2" ry="2" />
     <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" />
@@ -424,8 +415,6 @@ export const ICONS = {
     stroke-width="2"
     stroke-linecap="round"
     stroke-linejoin="round"
-    width="16"
-    height="16"
   >
     <polyline points="3 6 5 6 21 6" />
     <path
@@ -442,8 +431,6 @@ export const ICONS = {
     stroke-width="2"
     stroke-linecap="round"
     stroke-linejoin="round"
-    width="16"
-    height="16"
   >
     <path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7" />
     <path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z" />
@@ -456,8 +443,6 @@ export const ICONS = {
     stroke-width="2"
     stroke-linecap="round"
     stroke-linejoin="round"
-    width="16"
-    height="16"
   >
     <path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z" />
     <circle cx="12" cy="12" r="3" />
@@ -470,8 +455,6 @@ export const ICONS = {
     stroke-width="2"
     stroke-linecap="round"
     stroke-linejoin="round"
-    width="16"
-    height="16"
   >
     <path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71" />
     <path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71" />
@@ -484,8 +467,6 @@ export const ICONS = {
     stroke-width="2"
     stroke-linecap="round"
     stroke-linejoin="round"
-    width="16"
-    height="16"
   >
     <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" />
     <polyline points="7 10 12 15 17 10" />
@@ -499,8 +480,6 @@ export const ICONS = {
     stroke-width="2"
     stroke-linecap="round"
     stroke-linejoin="round"
-    width="16"
-    height="16"
   >
     <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" />
     <polyline points="17 8 12 3 7 8" />
@@ -514,8 +493,6 @@ export const ICONS = {
     stroke-width="2"
     stroke-linecap="round"
     stroke-linejoin="round"
-    width="16"
-    height="16"
   >
     <path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2" />
     <circle cx="9" cy="7" r="4" />
@@ -530,8 +507,6 @@ export const ICONS = {
     stroke-width="2"
     stroke-linecap="round"
     stroke-linejoin="round"
-    width="16"
-    height="16"
   >
     <path
       d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"
@@ -1073,3 +1048,4 @@ export const ICONS = {
     <polygon points="16 8 14 14 8 16 10 10 16 8" />
   </svg>`,
 };
+

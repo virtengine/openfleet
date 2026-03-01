@@ -11,6 +11,11 @@ import { resolve } from "node:path";
 import { homedir } from "node:os";
 import { fileURLToPath } from "node:url";
 import { resolveRepoRoot } from "./repo-root.mjs";
+import {
+  isTransientStreamError,
+  streamRetryDelay,
+  MAX_STREAM_RETRIES,
+} from "./stream-resilience.mjs";
 
 const __dirname = resolve(fileURLToPath(new URL(".", import.meta.url)));
 
@@ -100,27 +105,27 @@ function formatEvent(event) {
     event.type === "item.started" &&
     event.item?.type === "command_execution"
   ) {
-    return `⚡ Running: \`${event.item.command}\``;
+    return `:zap: Running: \`${event.item.command}\``;
   }
   if (
     event.type === "item.completed" &&
     event.item?.type === "command_execution"
   ) {
-    const status = event.item.exit_code === 0 ? "✅" : "❌";
+    const status = event.item.exit_code === 0 ? ":check:" : ":close:";
     return `${status} Command done: \`${event.item.command}\``;
   }
   if (event.type === "item.started" && event.item?.type === "mcp_tool_call") {
-    return `🔌 MCP [${event.item.server}/${event.item.tool}]`;
+    return `:plug: MCP [${event.item.server}/${event.item.tool}]`;
   }
   if (event.type === "item.completed" && event.item?.type === "mcp_tool_call") {
-    const status = event.item.status === "completed" ? "✅" : "❌";
+    const status = event.item.status === "completed" ? ":check:" : ":close:";
     return `${status} MCP [${event.item.server}/${event.item.tool}]`;
   }
   if (event.type === "item.started" && event.item?.type === "web_search") {
-    return `🔍 Searching: ${event.item.query || ""}`;
+    return `:search: Searching: ${event.item.query || ""}`;
   }
   if (event.type === "item.updated" && event.item?.type === "reasoning") {
-    return event.item.text ? `💭 ${event.item.text.slice(0, 300)}` : null;
+    return event.item.text ? `:u1f4ad: ${event.item.text.slice(0, 300)}` : null;
   }
   return null;
 }
@@ -439,7 +444,23 @@ function extractTaskHeading(msg) {
   return heading || 'Execute Task';
 }
 
-function buildPrompt(userMessage, statusData) {
+function buildPrompt(userMessage, statusData, { mode = null } = {}) {
+  // ── Mode detection ────────────────────────────────────────────────────
+  // "ask" mode should be lightweight — no heavy executor framing that
+  // instructs the agent to run commands and read files.
+  const isAskMode =
+    mode === "ask" || /^\[MODE:\s*ask\]/i.test(userMessage);
+
+  if (isAskMode) {
+    // Ask mode — pass through without executor framing.  The [MODE: ask]
+    // prefix from primary-agent already tells the model to be brief.
+    if (statusData) {
+      const statusSnippet = JSON.stringify(statusData, null, 2).slice(0, 2000);
+      return `[Orchestrator Status]\n\`\`\`json\n${statusSnippet}\n\`\`\`\n\n${userMessage}`;
+    }
+    return userMessage;
+  }
+
   const title = extractTaskHeading(userMessage);
   if (!statusData) {
     return `# ${title}\n\n${userMessage}\n\n---\nDo NOT respond with "Ready" or ask what to do. EXECUTE this task. Read files, run commands, produce detailed output.`;
@@ -469,12 +490,13 @@ export async function execClaudePrompt(userMessage, options = {}) {
     timeoutMs = DEFAULT_TIMEOUT_MS,
     sendRawEvents = false,
     abortController = null,
+    mode = null,
   } = options;
 
-  if (activeTurn) {
+  if (activeTurn && !options._holdActiveTurn) {
     return {
       finalResponse:
-        "⏳ Agent is still executing a previous task. Please wait.",
+        ":clock: Agent is still executing a previous task. Please wait.",
       items: [],
       usage: null,
     };
@@ -483,13 +505,15 @@ export async function execClaudePrompt(userMessage, options = {}) {
   const query = await loadClaudeSdk();
   if (!query) {
     return {
-      finalResponse: "❌ Claude SDK not available.",
+      finalResponse: ":close: Claude SDK not available.",
       items: [],
       usage: null,
     };
   }
 
-  activeTurn = true;
+  if (!options._holdActiveTurn) activeTurn = true;
+  /** Sentinel: true while a retry call is pending so finally skips cleanup. */
+  let _retryPending = false;
   toolUseById.clear();
 
   const transport = resolveClaudeTransport();
@@ -537,7 +561,7 @@ export async function execClaudePrompt(userMessage, options = {}) {
   try {
     const queue = createMessageQueue();
     activeQueue = queue;
-    queue.push(makeUserMessage(buildPrompt(userMessage, statusData)));
+    queue.push(makeUserMessage(buildPrompt(userMessage, statusData, { mode })));
 
     const optionsPayload = buildOptions();
 
@@ -639,21 +663,52 @@ export async function execClaudePrompt(userMessage, options = {}) {
       const reason = abortReason || controller.signal.reason;
       const msg =
         reason === "user_stop"
-          ? "🛑 Agent stopped by user."
-          : `⏱️ Agent timed out after ${timeoutMs / 1000}s`;
+          ? ":close: Agent stopped by user."
+          : `:clock: Agent timed out after ${timeoutMs / 1000}s`;
       return { finalResponse: msg, items: [], usage: null };
+    }
+    // ── Transient stream retry ──────────────────────────────────────────────────
+    // Network/stream blips are safe to retry without resetting session state.
+    // _retryPending keeps the finally block from releasing activeTurn early.
+    if (isTransientStreamError(err)) {
+      const retryAttempt = (options._streamRetryAttempt || 0) + 1;
+      if (retryAttempt < MAX_STREAM_RETRIES) {
+        if (activeQueue) activeQueue.close();
+        activeQueue = null;
+        activeQuery = null;
+        toolUseById.clear();
+        const delay = streamRetryDelay(retryAttempt - 1);
+        console.warn(
+          `[claude-shell] transient stream error (attempt ${retryAttempt}/${MAX_STREAM_RETRIES}): ${err.message || err} — retrying in ${Math.round(delay)}ms`,
+        );
+        _retryPending = true; // prevent outer finally from releasing activeTurn
+        await new Promise((r) => setTimeout(r, delay));
+        // _retryPending stays true through the return so outer finally skips cleanup
+        return execClaudePrompt(userMessage, {
+          ...options,
+          _streamRetryAttempt: retryAttempt,
+          _holdActiveTurn: true, // skip activeTurn guard in recursive call
+        });
+      }
+      console.error(
+        `[claude-shell] stream disconnection not resolved after ${MAX_STREAM_RETRIES} attempts`,
+      );
     }
     const message = err?.message || String(err || "unknown error");
     return {
-      finalResponse: `❌ Claude agent failed: ${message}`,
+      finalResponse: `:close: Claude agent failed: ${message}`,
       items: [],
       usage: null,
     };
   } finally {
-    if (activeQueue) activeQueue.close();
-    activeQueue = null;
-    activeQuery = null;
-    activeTurn = false;
+    // Only the outermost invocation (or the final retry) cleans up.
+    // When _retryPending is true, the recursive retry call owns the activeTurn lock.
+    if (!_retryPending) {
+      if (activeQueue) activeQueue.close();
+      activeQueue = null;
+      activeQuery = null;
+      activeTurn = false;
+    }
   }
 }
 

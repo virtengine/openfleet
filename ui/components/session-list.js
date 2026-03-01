@@ -17,6 +17,11 @@ export const sessionsData = signal([]);
 export const selectedSessionId = signal(null);
 export const sessionMessages = signal([]);
 export const sessionsError = signal(null);
+/** Pagination metadata from the last loadSessionMessages call */
+export const sessionPagination = signal(null);
+
+const DEFAULT_SESSION_PAGE_SIZE = 50;
+const MAX_SESSION_PAGE_SIZE = 200;
 
 let _wsListenerReady = false;
 
@@ -42,20 +47,39 @@ export async function loadSessions(filter = {}) {
   }
 }
 
-export async function loadSessionMessages(id) {
+export async function loadSessionMessages(id, opts = {}) {
   try {
-    const url = sessionPath(id);
+    let url = sessionPath(id);
     if (!url) return { ok: false, error: "invalid" };
+    const requestedLimit = opts.limit != null ? Number(opts.limit) : DEFAULT_SESSION_PAGE_SIZE;
+    const limit =
+      Number.isFinite(requestedLimit) && requestedLimit > 0
+        ? Math.min(Math.floor(requestedLimit), MAX_SESSION_PAGE_SIZE)
+        : DEFAULT_SESSION_PAGE_SIZE;
+    const params = new URLSearchParams();
+    params.set("limit", String(limit));
+    if (opts.offset != null) params.set("offset", String(opts.offset));
+    const qs = params.toString();
+    if (qs) url += `?${qs}`;
     const res = await apiFetch(url, { _silent: true });
     if (res?.session) {
       const normalized = dedupeMessages(res.session.messages || []);
-      sessionMessages.value = normalized;
-      return { ok: true, messages: normalized };
+      if (opts.prepend && sessionMessages.value?.length) {
+        // Prepend older messages (loading history on scroll up)
+        const merged = dedupeMessages([...normalized, ...sessionMessages.value]);
+        sessionMessages.value = merged;
+      } else {
+        sessionMessages.value = normalized;
+      }
+      sessionPagination.value = res.pagination || null;
+      return { ok: true, messages: normalized, pagination: res.pagination || null };
     }
     sessionMessages.value = [];
+    sessionPagination.value = null;
     return { ok: false, error: "empty" };
   } catch {
     sessionMessages.value = [];
+    sessionPagination.value = null;
     return { ok: false, error: "unavailable" };
   }
 }
@@ -67,36 +91,153 @@ function normalizePreview(content) {
   return text.slice(0, 100);
 }
 
+function canonicalMessageKind(msg) {
+  const role = String(msg?.role || "").trim().toLowerCase();
+  const type = String(msg?.type || "").trim().toLowerCase();
+  if (
+    role === "assistant" ||
+    type === "agent_message" ||
+    type === "assistant" ||
+    type === "assistant_message"
+  ) {
+    return "assistant";
+  }
+  if (role === "user" || type === "user") return "user";
+  if (type === "tool_call") return "tool_call";
+  if (type === "tool_result" || type === "tool_output") return "tool_result";
+  if (type === "error" || type === "stream_error") return "error";
+  if (role === "system" || type === "system") return "system";
+  return `${role || "unknown"}:${type || "message"}`;
+}
+
+function messageBody(msg) {
+  const value = msg?.content ?? msg?.text ?? "";
+  return String(value || "").trim();
+}
+
+function isLifecycleSystemMessage(msg) {
+  if (canonicalMessageKind(msg) !== "system") return false;
+  const lifecycle = String(msg?.meta?.lifecycle || "").trim().toLowerCase();
+  if (lifecycle) return true;
+  const content = messageBody(msg).toLowerCase();
+  if (!content) return true;
+  return (
+    content === "turn completed" ||
+    content === "session completed" ||
+    content === "agent is composing a response..." ||
+    content === "agent is composing a response…" ||
+    content.startsWith("message_stop") ||
+    content.startsWith("message_delta")
+  );
+}
+
+function reconnectFingerprint(content) {
+  const text = String(content || "").trim();
+  if (!text) return "";
+  const lower = text.toLowerCase();
+  if (!lower.includes("stream disconnected")) return "";
+  return lower
+    .replace(/reconnecting\.\.\.\s*\d+\s*\/\s*\d+/g, "reconnecting... n/n")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function isDecorativeLine(text) {
+  const compact = String(text || "").replace(/\s+/g, "");
+  if (!compact) return true;
+  if (/^[\-=_*`~.·•]+$/.test(compact)) return true;
+  if (/^[\u2500-\u257f]+$/u.test(compact)) return true;
+  return false;
+}
+
 function dedupeMessages(messages) {
   const list = Array.isArray(messages) ? messages : [];
   const out = [];
   const seenExact = new Set();
+  const recentAssistantContentTs = new Map();
+  const reconnectIndexByFingerprint = new Map();
   for (const msg of list) {
     if (!msg) continue;
-    const role = String(msg.role || "");
-    const type = String(msg.type || "");
-    const content = String(msg.content || msg.text || "").trim();
+    const kind = canonicalMessageKind(msg);
+    const content = messageBody(msg);
+    if (!content && kind !== "user") continue;
+    if (isLifecycleSystemMessage(msg)) continue;
+    if (kind === "system" && isDecorativeLine(content)) continue;
+    if (
+      kind === "assistant" &&
+      content.length <= 2 &&
+      !/[a-z0-9]/i.test(content)
+    ) {
+      continue;
+    }
     const ts = Date.parse(msg.timestamp || 0) || 0;
-    const exactKey = `${role}|${type}|${content}|${ts}`;
+    const exactKey = `${kind}|${content}|${ts}`;
     if (seenExact.has(exactKey)) continue;
+    const reconnectKey = kind === "error" ? reconnectFingerprint(content) : "";
+    const normalizedMsg =
+      reconnectKey && !msg.id ? { ...msg, id: `reconnect:${reconnectKey}` } : msg;
+    if (reconnectKey) {
+      const existingIndex = reconnectIndexByFingerprint.get(reconnectKey);
+      if (Number.isInteger(existingIndex) && existingIndex >= 0 && existingIndex < out.length) {
+        const existing = out[existingIndex];
+        out[existingIndex] = existing?.id
+          ? { ...normalizedMsg, id: existing.id }
+          : normalizedMsg;
+        seenExact.add(exactKey);
+        continue;
+      }
+    }
+    if (kind === "assistant" && content) {
+      while (out.length > 0 && isLifecycleSystemMessage(out[out.length - 1])) {
+        out.pop();
+      }
+      const lastAssistant = out[out.length - 1];
+      if (lastAssistant && canonicalMessageKind(lastAssistant) === "assistant") {
+        const lastTs = Date.parse(lastAssistant.timestamp || 0) || 0;
+        const withinStreamingWindow =
+          ts > 0 && lastTs > 0 ? Math.abs(ts - lastTs) <= 120000 : true;
+        if (withinStreamingWindow) {
+          out[out.length - 1] = lastAssistant?.id
+            ? { ...normalizedMsg, id: lastAssistant.id }
+            : normalizedMsg;
+          recentAssistantContentTs.set(content, ts);
+          seenExact.add(exactKey);
+          continue;
+        }
+      }
+      const prevAssistantTs = recentAssistantContentTs.get(content);
+      if (prevAssistantTs !== undefined) {
+        const withinAssistantWindow =
+          ts > 0 && prevAssistantTs > 0
+            ? Math.abs(ts - prevAssistantTs) <= 5000
+            : true;
+        if (withinAssistantWindow) continue;
+      }
+    }
     const last = out[out.length - 1];
     if (last) {
-      const lastRole = String(last.role || "");
-      const lastType = String(last.type || "");
+      const lastKind = canonicalMessageKind(last);
       const lastContent = String(last.content || last.text || "").trim();
       const lastTs = Date.parse(last.timestamp || 0) || 0;
+      const withinDuplicateWindow =
+        ts > 0 && lastTs > 0 ? Math.abs(ts - lastTs) <= 5000 : true;
       if (
         content &&
-        lastRole === role &&
-        lastType === type &&
+        lastKind === kind &&
         lastContent === content &&
-        Math.abs(ts - lastTs) <= 5000
+        withinDuplicateWindow
       ) {
         continue;
       }
     }
     seenExact.add(exactKey);
-    out.push(msg);
+    out.push(normalizedMsg);
+    if (reconnectKey) {
+      reconnectIndexByFingerprint.set(reconnectKey, out.length - 1);
+    }
+    if (kind === "assistant" && content) {
+      recentAssistantContentTs.set(content, ts);
+    }
   }
   return out;
 }
@@ -272,6 +413,32 @@ const STATUS_COLOR_MAP = {
   archived: "var(--text-hint)",
 };
 
+const SESSION_VIEW_FILTER = Object.freeze({
+  all: "all",
+  active: "active",
+  historic: "historic",
+});
+
+function normalizeSessionViewFilter(value) {
+  const normalized = String(value || "").trim().toLowerCase();
+  if (normalized === SESSION_VIEW_FILTER.active) return SESSION_VIEW_FILTER.active;
+  if (normalized === SESSION_VIEW_FILTER.historic) return SESSION_VIEW_FILTER.historic;
+  return SESSION_VIEW_FILTER.all;
+}
+
+function getSessionStatusKey(session) {
+  return String(session?.status || "idle").trim().toLowerCase();
+}
+
+function isActiveSession(session) {
+  const status = getSessionStatusKey(session);
+  return status === "active" || status === "running";
+}
+
+function isHistoricSession(session) {
+  return !isActiveSession(session);
+}
+
 /* ─── Swipeable Session Item ─── */
 function SwipeableSessionItem({
   session: s,
@@ -382,7 +549,7 @@ function SwipeableSessionItem({
                 onClick=${handleResume}
                 title="Unarchive"
               >
-                <span class="session-action-icon">↩</span>
+                <span class="session-action-icon">${resolveIcon(":workflow:")}</span>
                 <span class="session-action-label">Restore</span>
               </button>
             `
@@ -392,7 +559,7 @@ function SwipeableSessionItem({
                 onClick=${handleArchive}
                 title="Archive session"
               >
-                <span class="session-action-icon">${resolveIcon("📦")}</span>
+                <span class="session-action-icon">${resolveIcon(":box:")}</span>
                 <span class="session-action-label">Archive</span>
               </button>
             `}
@@ -401,7 +568,7 @@ function SwipeableSessionItem({
           onClick=${handleDelete}
           title=${confirmDelete ? "Confirm delete" : "Delete session"}
         >
-          <span class="session-action-icon">${resolveIcon(confirmDelete ? "⚠️" : "🗑")}</span>
+          <span class="session-action-icon">${resolveIcon(confirmDelete ? ":alert:" : ":trash:")}</span>
           <span class="session-action-label">${confirmDelete ? "Sure?" : "Delete"}</span>
         </button>
       </div>
@@ -498,6 +665,8 @@ export function SessionList({
   onSelect,
   showArchived = true,
   onToggleArchived,
+  sessionView = SESSION_VIEW_FILTER.all,
+  onSessionViewChange,
   defaultType = null,
   renamingSessionId = null,
   onStartRename,
@@ -506,9 +675,36 @@ export function SessionList({
 }) {
   const [search, setSearch] = useState("");
   const [revealedActions, setRevealedActions] = useState(null);
+  const [uncontrolledSessionView, setUncontrolledSessionView] = useState(
+    normalizeSessionViewFilter(sessionView),
+  );
   const allSessions = sessionsData.value || [];
   const error = sessionsError.value;
   const hasSearch = search.trim().length > 0;
+  const resolvedSessionView =
+    typeof onSessionViewChange === "function"
+      ? normalizeSessionViewFilter(sessionView)
+      : uncontrolledSessionView;
+
+  useEffect(() => {
+    if (typeof onSessionViewChange === "function") return;
+    const normalized = normalizeSessionViewFilter(sessionView);
+    if (normalized !== uncontrolledSessionView) {
+      setUncontrolledSessionView(normalized);
+    }
+  }, [onSessionViewChange, sessionView, uncontrolledSessionView]);
+
+  const setSessionView = useCallback(
+    (nextFilter) => {
+      const normalized = normalizeSessionViewFilter(nextFilter);
+      if (typeof onSessionViewChange === "function") {
+        onSessionViewChange(normalized);
+      } else {
+        setUncontrolledSessionView(normalized);
+      }
+    },
+    [onSessionViewChange],
+  );
 
   // Filter by defaultType to exclude ghost sessions (e.g. task sessions in Chat tab)
   const typeFiltered = defaultType
@@ -525,30 +721,39 @@ export function SessionList({
       })
     : allSessions;
 
-  const base = showArchived
+  const archivedFiltered = showArchived
     ? typeFiltered
-    : typeFiltered.filter((s) => s.status !== "archived");
+    : typeFiltered.filter((s) => getSessionStatusKey(s) !== "archived");
+
+  const viewFiltered = archivedFiltered.filter((s) => {
+    if (resolvedSessionView === SESSION_VIEW_FILTER.active) {
+      return isActiveSession(s);
+    }
+    if (resolvedSessionView === SESSION_VIEW_FILTER.historic) {
+      return isHistoricSession(s);
+    }
+    return true;
+  });
 
   const filtered = search
-    ? base.filter(
+    ? viewFiltered.filter(
         (s) =>
           (s.title || "").toLowerCase().includes(search.toLowerCase()) ||
           (s.taskId || "").toLowerCase().includes(search.toLowerCase()),
       )
-    : base;
+    : viewFiltered;
 
-  const active = filtered.filter(
-    (s) => s.status === "active" || s.status === "running",
-  );
-  const archived = filtered.filter((s) => s.status === "archived");
+  const active = filtered.filter((s) => isActiveSession(s));
+  const archived = filtered.filter((s) => getSessionStatusKey(s) === "archived");
   const recent = filtered.filter(
     (s) =>
-      s.status !== "active" &&
-      s.status !== "running" &&
-      s.status !== "archived",
+      !isActiveSession(s) && getSessionStatusKey(s) !== "archived",
   );
 
-  const archivedCount = typeFiltered.filter((s) => s.status === "archived").length;
+  const archivedCount = typeFiltered.filter((s) => getSessionStatusKey(s) === "archived").length;
+  const allCount = archivedFiltered.length;
+  const activeCount = archivedFiltered.filter((s) => isActiveSession(s)).length;
+  const historicCount = archivedFiltered.filter((s) => isHistoricSession(s)).length;
 
   const handleSelect = useCallback(
     (id) => {
@@ -563,6 +768,13 @@ export function SessionList({
     sessionsError.value = null;
     loadSessions(_lastLoadFilter);
   }, []);
+
+  const handleCreateSession = useCallback(() => {
+    if (resolvedSessionView === SESSION_VIEW_FILTER.historic) {
+      setSessionView(SESSION_VIEW_FILTER.all);
+    }
+    createSession(defaultType ? { type: defaultType } : {});
+  }, [defaultType, resolvedSessionView, setSessionView]);
 
   const handleArchive = useCallback(async (id) => {
     setRevealedActions(null);
@@ -584,6 +796,21 @@ export function SessionList({
     if (e.target.closest(".session-item-wrapper")) return;
     setRevealedActions(null);
   }, []);
+
+  const emptyTitle = hasSearch
+    ? "No matching sessions"
+    : resolvedSessionView === SESSION_VIEW_FILTER.active
+      ? "No active sessions"
+      : resolvedSessionView === SESSION_VIEW_FILTER.historic
+        ? "No historic sessions"
+        : "No sessions yet";
+  const emptyHint = hasSearch
+    ? "Try a different keyword or clear the search."
+    : resolvedSessionView === SESSION_VIEW_FILTER.active
+      ? "Start a new session or switch to All."
+      : resolvedSessionView === SESSION_VIEW_FILTER.historic
+        ? "Historic sessions appear after they finish."
+        : "Create a session to get started.";
 
   /* ── Render session items ── */
   function renderSessionItem(s) {
@@ -613,7 +840,7 @@ export function SessionList({
           <span class="session-list-title">Sessions</span>
         </div>
         <div class="session-empty">
-          <div class="session-empty-icon">${resolveIcon("📡")}</div>
+          <div class="session-empty-icon">${resolveIcon(":server:")}</div>
           <div class="session-empty-text">Sessions not available</div>
           <button class="btn btn-primary btn-sm" onClick=${handleRetry}>
             Retry
@@ -642,8 +869,7 @@ export function SessionList({
           `}
           <button
             class="btn btn-primary btn-sm"
-            onClick=${() =>
-              createSession(defaultType ? { type: defaultType } : {})}
+            onClick=${handleCreateSession}
           >
             + New
           </button>
@@ -657,6 +883,27 @@ export function SessionList({
           value=${search}
           onInput=${(e) => setSearch(e.target.value)}
         />
+      </div>
+
+      <div style="display:flex;gap:6px;flex-wrap:wrap;padding:0 10px 8px;">
+        <button
+          class="btn btn-sm ${resolvedSessionView === SESSION_VIEW_FILTER.all ? "btn-primary" : "btn-ghost"}"
+          onClick=${() => setSessionView(SESSION_VIEW_FILTER.all)}
+        >
+          All (${allCount})
+        </button>
+        <button
+          class="btn btn-sm ${resolvedSessionView === SESSION_VIEW_FILTER.active ? "btn-primary" : "btn-ghost"}"
+          onClick=${() => setSessionView(SESSION_VIEW_FILTER.active)}
+        >
+          Active (${activeCount})
+        </button>
+        <button
+          class="btn btn-sm ${resolvedSessionView === SESSION_VIEW_FILTER.historic ? "btn-primary" : "btn-ghost"}"
+          onClick=${() => setSessionView(SESSION_VIEW_FILTER.historic)}
+        >
+          Historic (${historicCount})
+        </button>
       </div>
 
       <div class="session-list-scroll">
@@ -678,20 +925,17 @@ export function SessionList({
         ${filtered.length === 0 &&
         html`
           <div class="session-empty">
-            <div class="session-empty-icon">${resolveIcon("💬")}</div>
+            <div class="session-empty-icon">${resolveIcon(":chat:")}</div>
             <div class="session-empty-text">
-              ${hasSearch ? "No matching sessions" : "No sessions yet"}
+              ${emptyTitle}
               <div class="session-empty-subtext">
-                ${hasSearch
-                  ? "Try a different keyword or clear the search."
-                  : "Create a session to get started."}
+                ${emptyHint}
               </div>
             </div>
             <div class="session-empty-actions">
               <button
                 class="btn btn-primary btn-sm"
-                onClick=${() =>
-                  createSession(defaultType ? { type: defaultType } : {})}
+                onClick=${handleCreateSession}
               >
                 + New Session
               </button>

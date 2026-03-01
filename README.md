@@ -3,7 +3,7 @@
 </p>
 <h1 align="center">bosun</h1>
 
-Bosun is a production-grade supervisor for AI coding agents. It routes tasks across executors, automates PR lifecycles, and keeps operators in control through Telegram, the Mini App dashboard, and optional WhatsApp notifications.
+Bosun is a production-grade control plane for an autonomous software engineer. It plans and routes work across executors, automates PR lifecycles, and keeps operators in control through Telegram, the Mini App dashboard, and optional WhatsApp notifications.
 
 <p align="center">
   <a href="https://bosun.engineer">Website</a> · <a href="https://bosun.engineer/docs/">Docs</a> · <a href="https://github.com/virtengine/bosun?tab=readme-ov-file#bosun">GitHub</a> · <a href="https://www.npmjs.com/package/bosun">npm</a> · <a href="https://github.com/virtengine/bosun/issues">Issues</a>
@@ -44,13 +44,70 @@ Requires:
 
 ---
 
+## Permanent Mini App Hostname + Fallback Auth
+
+Bosun defaults the Mini App tunnel to **named** mode so the Telegram URL can stay stable (`<user>.<base-domain>`), with quick tunnels only as explicit fallback.
+
+Required Cloudflare settings:
+
+- `CLOUDFLARE_TUNNEL_NAME`
+- `CLOUDFLARE_TUNNEL_CREDENTIALS`
+- `CLOUDFLARE_BASE_DOMAIN` (for example `bosun.det.io`)
+- `CLOUDFLARE_ZONE_ID`
+- `CLOUDFLARE_API_TOKEN` (Zone DNS edit scope for the target zone)
+
+Useful optional settings:
+
+- `CLOUDFLARE_TUNNEL_HOSTNAME` (explicit hostname override)
+- `CLOUDFLARE_USERNAME_HOSTNAME_POLICY=per-user-fixed`
+- `TELEGRAM_UI_ALLOW_QUICK_TUNNEL_FALLBACK=false`
+
+Fallback admin auth (secondary path) is available and stores only Argon2id hash + salt, never plaintext. Use:
+
+- `POST /api/auth/fallback/set` to set/rotate
+- `POST /api/auth/fallback/rotate` as explicit rotate alias
+- `POST /api/auth/fallback/reset` to clear
+- `POST /api/auth/fallback/login` to mint normal `ve_session` cookie
+
+---
+
 ## What Bosun does
 
-- Routes work across Codex, Copilot, and Claude executors
+- Routes work across Codex, Copilot, Claude, and OpenCode executors
 - Automates retries, failover, and PR lifecycle management
+- Auto-labels attached PRs with `bosun-needs-fix` when CI fails (`Build + Tests`)
+- Merges passing PRs automatically through the **Bosun PR Watchdog** with a mandatory review gate (prevents destructive merges)
+- Persists workflow runs to disk and auto-resumes on restart
 - Monitors runs and recovers from stalled or broken states
 - Provides Telegram control and a Mini App dashboard
 - Integrates with GitHub, Jira, and Vibe-Kanban boards
+
+## Autonomous Engineer Workflow Capabilities
+
+Bosun workflows provide a professional, end-to-end execution loop for autonomous delivery:
+
+- Trigger intake: consume issues, comments, schedules, and webhook events
+- Planning and decomposition: convert goals into scoped tasks with execution context
+- Routed execution: dispatch tasks to the best executor profile with retries and failover
+- Quality gates: enforce test/build/review checks before merge decisions
+- Recovery and escalation: auto-heal stalled runs, then escalate with clear operator signals
+
+Setup profiles for default workflow behavior:
+
+- Manual Dispatch: human-directed flow with guardrails and review automations
+- Balanced (Recommended): daily default with PR quality gates and targeted self-healing
+- Autonomous: expanded end-to-end automation for planning, recovery, and maintenance
+
+### Executor quick-start
+
+| Executor          | `primaryAgent` value | Key env vars                                                                          |
+| ----------------- | -------------------- | ------------------------------------------------------------------------------------- |
+| Codex (OpenAI)    | `codex-sdk`          | `OPENAI_API_KEY`                                                                      |
+| Copilot (VS Code) | `copilot-sdk`        | VS Code session                                                                       |
+| Claude            | `claude-sdk`         | `ANTHROPIC_API_KEY`                                                                   |
+| OpenCode          | `opencode-sdk`       | `OPENCODE_MODEL` (e.g. `anthropic/claude-opus-4-5`), `OPENCODE_PORT` (default `4096`) |
+
+Set `primaryAgent` in `.bosun/bosun.config.json` or choose an executor preset during `bosun --setup`.
 
 ---
 

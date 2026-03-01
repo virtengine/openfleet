@@ -20,7 +20,16 @@
  *   "activeWorkspace": "virtengine"
  */
 
-import { existsSync, mkdirSync, readFileSync, writeFileSync, rmSync, readdirSync, statSync } from "node:fs";
+import {
+  existsSync,
+  mkdirSync,
+  readFileSync,
+  writeFileSync,
+  rmSync,
+  readdirSync,
+  statSync,
+  renameSync,
+} from "node:fs";
 import { resolve, basename, join } from "node:path";
 import { createRequire } from "node:module";
 
@@ -133,6 +142,150 @@ function extractSlug(url) {
   return "";
 }
 
+function extractGithubSlug(url) {
+  const raw = String(url || "").trim();
+  if (!raw) return "";
+  if (!/github\.com[:/]/i.test(raw)) return "";
+  return extractSlug(raw);
+}
+
+function resolveRepoUrl(repo) {
+  return repo.url || (repo.slug ? `https://github.com/${repo.slug.replace(/\.git$/i, "")}.git` : "");
+}
+
+function normalizeWorkspaceRepoEntry(repo, index = 0) {
+  const raw =
+    typeof repo === "string"
+      ? { slug: repo }
+      : (repo && typeof repo === "object" ? repo : null);
+  if (!raw) return null;
+  const slug = String(raw.slug || extractGithubSlug(raw.url) || "").trim();
+  const url = String(raw.url || resolveRepoUrl({ slug }) || "").trim();
+  const name = String(raw.name || raw.id || extractRepoName(slug || url || raw.path || ""))
+    .trim()
+    .replace(/\.git$/i, "");
+  if (!name && !slug && !url) return null;
+  return {
+    name: name || `repo-${index + 1}`,
+    slug,
+    url,
+    primary: raw.primary === true || index === 0,
+  };
+}
+
+function normalizeWorkspaceEntry(workspace, index = 0) {
+  if (!workspace || typeof workspace !== "object") return null;
+  const fallbackId = `workspace-${index + 1}`;
+  const id = normalizeId(workspace.id || workspace.name || fallbackId);
+  if (!id) return null;
+  const repos = Array.isArray(workspace.repos)
+    ? workspace.repos
+        .map((repo, repoIndex) => normalizeWorkspaceRepoEntry(repo, repoIndex))
+        .filter(Boolean)
+    : [];
+  let activeRepo = String(workspace.activeRepo || "").trim();
+  if (!activeRepo && repos[0]?.name) activeRepo = repos[0].name;
+  if (activeRepo && !repos.some((repo) => repo.name === activeRepo)) {
+    activeRepo = repos[0]?.name || "";
+  }
+  return {
+    ...workspace,
+    id,
+    name: String(workspace.name || workspace.id || id).trim() || id,
+    repos,
+    createdAt: workspace.createdAt || new Date().toISOString(),
+    activeRepo: activeRepo || null,
+  };
+}
+
+function normalizeWorkspaceList(workspaces) {
+  if (!Array.isArray(workspaces)) return [];
+  const deduped = new Map();
+  for (let i = 0; i < workspaces.length; i += 1) {
+    const normalized = normalizeWorkspaceEntry(workspaces[i], i);
+    if (!normalized) continue;
+    const existing = deduped.get(normalized.id);
+    if (!existing) {
+      deduped.set(normalized.id, normalized);
+      continue;
+    }
+    const mergedRepos = [...existing.repos];
+    const existingRepoNames = new Set(existing.repos.map((repo) => repo.name));
+    for (const repo of normalized.repos) {
+      if (existingRepoNames.has(repo.name)) continue;
+      existingRepoNames.add(repo.name);
+      mergedRepos.push(repo);
+    }
+    deduped.set(normalized.id, {
+      ...existing,
+      ...normalized,
+      repos: mergedRepos,
+      activeRepo:
+        normalized.activeRepo ||
+        existing.activeRepo ||
+        mergedRepos[0]?.name ||
+        null,
+    });
+  }
+  return [...deduped.values()];
+}
+
+function makeNonGitBackupPath(repoPath) {
+  const stamp = new Date().toISOString().replace(/[:.]/g, "-");
+  let candidate = `${repoPath}.non-git-backup-${stamp}`;
+  let idx = 1;
+  while (existsSync(candidate)) {
+    candidate = `${repoPath}.non-git-backup-${stamp}-${idx}`;
+    idx += 1;
+  }
+  return candidate;
+}
+
+function cloneIntoExistingRepoPath(childProcess, repoUrl, repoPath) {
+  return childProcess.spawnSync("git", ["clone", repoUrl, "."], {
+    encoding: "utf8",
+    timeout: 300000,
+    stdio: ["pipe", "pipe", "pipe"],
+    cwd: repoPath,
+  });
+}
+
+function recoverNonGitWorkspaceRepo(childProcess, repoPath, repoUrl, repoName) {
+  const backupPath = makeNonGitBackupPath(repoPath);
+  console.log(
+    TAG,
+    `Recovering non-git workspace directory for ${repoName}: moving ${repoPath} to ${backupPath}`,
+  );
+  renameSync(repoPath, backupPath);
+  mkdirSync(repoPath, { recursive: true });
+
+  const clone = cloneIntoExistingRepoPath(childProcess, repoUrl, repoPath);
+  if (clone.status === 0) {
+    console.log(TAG, `Recovered ${repoName} by recloning into ${repoPath}`);
+    return { success: true, backupPath };
+  }
+
+  try {
+    rmSync(repoPath, { recursive: true, force: true });
+    renameSync(backupPath, repoPath);
+  } catch (restoreErr) {
+    const restoreDetails = String(restoreErr?.message || restoreErr || "unknown restore error");
+    return {
+      success: false,
+      error: `git clone failed (${repoUrl}): ${
+        String(clone.stderr || clone.stdout || clone.error?.message || "unknown error")
+      } (restore failed: ${restoreDetails})`,
+    };
+  }
+
+  return {
+    success: false,
+    error: `git clone failed (${repoUrl}): ${
+      String(clone.stderr || clone.stdout || clone.error?.message || "unknown error")
+    } (original directory restored)`,
+  };
+}
+
 // ── Config Management ────────────────────────────────────────────────────────
 
 const CONFIG_FILE = "bosun.config.json";
@@ -155,7 +308,7 @@ function saveBosunConfig(configDir, config) {
 
 function getWorkspacesFromConfig(configDir) {
   const config = loadBosunConfig(configDir);
-  return Array.isArray(config.workspaces) ? config.workspaces : [];
+  return normalizeWorkspaceList(config.workspaces);
 }
 
 function saveWorkspacesToConfig(configDir, workspaces, activeWorkspace) {
@@ -479,9 +632,7 @@ export function pullWorkspaceRepos(configDir, workspaceId) {
   for (const repo of ws.repos || []) {
     const repoPath = resolve(ws.path, repo.name);
     if (!existsSync(repoPath)) {
-      const repoUrl =
-        repo.url ||
-        (repo.slug ? `https://github.com/${repo.slug.replace(/\.git$/i, "")}.git` : "");
+      const repoUrl = resolveRepoUrl(repo);
       if (!repoUrl) {
         results.push({
           name: repo.name,
@@ -535,23 +686,31 @@ export function pullWorkspaceRepos(configDir, workspaceId) {
       try {
         const contents = existsSync(repoPath) ? readdirSync(repoPath) : [];
         const isEmpty = contents.length === 0;
-        const repoUrl =
-          repo.url ||
-          (repo.slug ? `https://github.com/${repo.slug.replace(/\.git$/i, "")}.git` : "");
+        const repoUrl = resolveRepoUrl(repo);
         if (isEmpty && repoUrl) {
           console.log(TAG, `Cloning ${repoUrl} into existing empty directory ${repoPath}...`);
-          const clone = childProcess.spawnSync("git", ["clone", repoUrl, "."], {
-            encoding: "utf8",
-            timeout: 300000,
-            stdio: ["pipe", "pipe", "pipe"],
-            cwd: repoPath,
-          });
+          const clone = cloneIntoExistingRepoPath(childProcess, repoUrl, repoPath);
           if (clone.status !== 0) {
             const stderr = String(clone.stderr || clone.stdout || "");
             results.push({
               name: repo.name,
               success: false,
               error: `git clone failed (${repoUrl}): ${stderr || clone.error?.message || "unknown error"}`,
+            });
+            continue;
+          }
+        } else if (repoUrl) {
+          const recovered = recoverNonGitWorkspaceRepo(
+            childProcess,
+            repoPath,
+            repoUrl,
+            repo.name,
+          );
+          if (!recovered.success) {
+            results.push({
+              name: repo.name,
+              success: false,
+              error: recovered.error || "Failed to recover non-git workspace repository",
             });
             continue;
           }
@@ -581,7 +740,14 @@ export function pullWorkspaceRepos(configDir, workspaceId) {
       });
       results.push({ name: repo.name, success: true });
     } catch (err) {
-      results.push({ name: repo.name, success: false, error: err.message });
+      const details = String(err?.stderr || err?.stdout || err?.message || err || "")
+        .replace(/\s+/g, " ")
+        .trim();
+      results.push({
+        name: repo.name,
+        success: false,
+        error: details || "git pull --rebase failed",
+      });
     }
   }
   return results;

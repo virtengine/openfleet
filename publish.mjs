@@ -225,7 +225,7 @@ function main() {
     if (status === 0 && !dryRun) {
       console.log(
         "\n[publish]  :\n" +
-        "  npm deprecate openfleet@'*' \"⚠️ openfleet has been renamed to bosun. Install the latest: npm install -g bosun\"\n",
+        "  npm deprecate openfleet@'*' \":alert: openfleet has been renamed to bosun. Install the latest: npm install -g bosun\"\n",
       );
     }
     process.exit(status);

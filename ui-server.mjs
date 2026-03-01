@@ -1,17 +1,27 @@
 import { execSync, spawn, spawnSync } from "node:child_process";
-import { createHmac, randomBytes, timingSafeEqual, X509Certificate } from "node:crypto";
+import * as nodeCrypto from "node:crypto";
 import { existsSync, mkdirSync, readFileSync, chmodSync, createWriteStream, createReadStream, writeFileSync, unlinkSync, watchFile, unwatchFile } from "node:fs";
 import { open, readFile, readdir, stat, writeFile } from "node:fs/promises";
 import { createServer } from "node:http";
 import { get as httpsGet } from "node:https";
 import { createServer as createHttpsServer } from "node:https";
-import { networkInterfaces, homedir } from "node:os";
+import { networkInterfaces, homedir, userInfo as getOsUserInfo } from "node:os";
 import { connect as netConnect } from "node:net";
 import { resolve, extname, dirname, basename, relative } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { createRequire } from "node:module";
 import { arch as osArch, platform as osPlatform } from "node:os";
 import Ajv2020 from "ajv/dist/2020.js";
+
+const {
+  createHash,
+  createHmac,
+  randomBytes,
+  timingSafeEqual,
+  X509Certificate,
+  argon2: nodeArgon2,
+} = nodeCrypto;
+const argon2 = typeof nodeArgon2 === "function" ? nodeArgon2 : null;
 
 function getLocalLanIp() {
   const nets = networkInterfaces();
@@ -32,10 +42,12 @@ import {
   markTaskIgnored,
   unmarkTaskIgnored,
 } from "./kanban-adapter.mjs";
+import { getAllTasks as getAllInternalTasks } from "./task-store.mjs";
 import {
   getActiveThreads,
   launchEphemeralThread,
   launchOrResumeThread,
+  execWithRetry,
   invalidateThread,
 } from "./agent-pool.mjs";
 import { resolveAgentPrompts } from "./agent-prompts.mjs";
@@ -128,10 +140,73 @@ import {
 
 const __dirname = resolve(fileURLToPath(new URL(".", import.meta.url)));
 const repoRoot = resolveRepoRoot();
-const uiRootPreferred = resolve(__dirname, "site", "ui");
-const uiRootFallback = resolve(__dirname, "ui");
+const uiRootPreferred = resolve(__dirname, "ui");
+const uiRootFallback = resolve(__dirname, "site", "ui");
 const uiRoot = existsSync(uiRootPreferred) ? uiRootPreferred : uiRootFallback;
 let libraryInitAttempted = false;
+const MAX_VISION_FRAME_BYTES = Math.max(
+  128_000,
+  Number.parseInt(process.env.VISION_FRAME_MAX_BYTES || "", 10) || 2_000_000,
+);
+const DEFAULT_VISION_ANALYSIS_INTERVAL_MS = Math.min(
+  30_000,
+  Math.max(
+    500,
+    Number.parseInt(process.env.VISION_ANALYSIS_INTERVAL_MS || "", 10) || 1500,
+  ),
+);
+const _visionSessionState = new Map();
+
+function getVisionSessionState(sessionId) {
+  const key = String(sessionId || "").trim();
+  if (!key) return null;
+  if (!_visionSessionState.has(key)) {
+    _visionSessionState.set(key, {
+      lastFrameHash: null,
+      lastReceiptAt: 0,
+      lastAnalyzedHash: null,
+      lastAnalyzedAt: 0,
+      lastSummary: "",
+      inFlight: null,
+    });
+  }
+  return _visionSessionState.get(key);
+}
+
+function sanitizeVisionSource(value) {
+  const raw = String(value || "").trim().toLowerCase();
+  if (raw === "camera") return "camera";
+  if (raw === "screen" || raw === "display") return "screen";
+  return "screen";
+}
+
+function normalizeVisionInterval(rawValue) {
+  const parsed = Number.parseInt(String(rawValue || ""), 10);
+  if (!Number.isFinite(parsed)) return DEFAULT_VISION_ANALYSIS_INTERVAL_MS;
+  return Math.min(30_000, Math.max(300, parsed));
+}
+
+function parseVisionFrameDataUrl(dataUrl) {
+  const raw = String(dataUrl || "").trim();
+  const match = raw.match(/^data:(image\/(?:jpeg|jpg|png|webp));base64,([A-Za-z0-9+/=]+)$/i);
+  if (!match) {
+    return { ok: false, error: "frameDataUrl must be a base64 image data URL (jpeg/png/webp)" };
+  }
+  const mimeType = String(match[1] || "").toLowerCase();
+  const base64Data = String(match[2] || "");
+  const approxBytes = Math.floor((base64Data.length * 3) / 4);
+  if (approxBytes <= 0) {
+    return { ok: false, error: "frameDataUrl was empty" };
+  }
+  if (approxBytes > MAX_VISION_FRAME_BYTES) {
+    return {
+      ok: false,
+      statusCode: 413,
+      error: `frameDataUrl too large (${approxBytes} bytes > ${MAX_VISION_FRAME_BYTES} bytes limit)`,
+    };
+  }
+  return { ok: true, mimeType, base64Data, approxBytes, raw };
+}
 
 function ensureLibraryInitialized() {
   if (libraryInitAttempted) return;
@@ -160,6 +235,87 @@ let _wfRecommendedInstalled = false;
 let _wfInitPromise = null;
 let _wfInitDone = false;
 let _wfLoadedBase = null;
+let workflowEventDedupWindowMs = (() => {
+  const parsed = Number.parseInt(process.env.WORKFLOW_EVENT_DEDUP_WINDOW_MS || "15000", 10);
+  if (!Number.isFinite(parsed) || parsed <= 0) return 15_000;
+  return Math.min(300_000, Math.max(250, parsed));
+})();
+const workflowEventDedup = new Map();
+
+function parseBooleanEnv(rawValue, fallback = false) {
+  if (rawValue === undefined || rawValue === null || String(rawValue).trim() === "") {
+    return fallback;
+  }
+  const normalized = String(rawValue).trim().toLowerCase();
+  if (["1", "true", "yes", "on", "y"].includes(normalized)) return true;
+  if (["0", "false", "no", "off", "n"].includes(normalized)) return false;
+  return fallback;
+}
+
+function parseTemplateIdList(rawValue) {
+  return String(rawValue || "")
+    .split(",")
+    .map((value) => value.trim())
+    .filter(Boolean);
+}
+
+function resolveWorkflowBootstrapSelection(templatesModule) {
+  const autoInstallEnabled = parseBooleanEnv(
+    process.env.WORKFLOW_DEFAULT_AUTOINSTALL,
+    true,
+  );
+  if (!autoInstallEnabled) {
+    return {
+      enabled: false,
+      source: "disabled",
+      profileId: null,
+      templateIds: [],
+    };
+  }
+
+  const hasTemplateEnv = Object.prototype.hasOwnProperty.call(
+    process.env,
+    "WORKFLOW_DEFAULT_TEMPLATES",
+  );
+  const rawTemplateEnv = String(process.env.WORKFLOW_DEFAULT_TEMPLATES || "").trim();
+  if (hasTemplateEnv) {
+    const lowered = rawTemplateEnv.toLowerCase();
+    if (!rawTemplateEnv || ["none", "off", "disabled", "false"].includes(lowered)) {
+      return {
+        enabled: true,
+        source: "custom:none",
+        profileId: null,
+        templateIds: [],
+      };
+    }
+    return {
+      enabled: true,
+      source: "custom:list",
+      profileId: null,
+      templateIds: parseTemplateIdList(rawTemplateEnv),
+    };
+  }
+
+  const profileId = String(
+    process.env.WORKFLOW_DEFAULT_PROFILE || "balanced",
+  ).trim().toLowerCase();
+
+  if (typeof templatesModule?.resolveWorkflowTemplateIds === "function") {
+    return {
+      enabled: true,
+      source: "profile",
+      profileId,
+      templateIds: templatesModule.resolveWorkflowTemplateIds({ profileId }),
+    };
+  }
+
+  return {
+    enabled: true,
+    source: "recommended",
+    profileId: null,
+    templateIds: [],
+  };
+}
 
 async function getWorkflowEngineModule() {
   if (_wfEngine) return _wfEngine;
@@ -238,6 +394,7 @@ async function getWorkflowEngineModule() {
         const agentPoolService = {
           launchEphemeralThread,
           launchOrResumeThread,
+          execWithRetry,
           async continueSession(sessionId, prompt, opts = {}) {
             const timeout = Number(opts.timeout) || 60 * 60 * 1000;
             const cwd = opts.cwd || process.cwd();
@@ -269,31 +426,97 @@ async function getWorkflowEngineModule() {
           console.warn("[workflows] prompt resolver failed:", err.message);
         }
 
+        let meetingService = null;
+        try {
+          const { createMeetingWorkflowService } = await import("./meeting-workflow-service.mjs");
+          meetingService = createMeetingWorkflowService();
+        } catch (err) {
+          console.warn("[workflows] meeting service unavailable:", err.message);
+        }
+
         const services = {
           telegram: telegramService,
           agentPool: agentPoolService,
           kanban: kanbanService,
+          meeting: meetingService,
           prompts: promptBundle?.prompts || null,
         };
         _wfEngine.getWorkflowEngine({ services });
         _wfServicesReady = true;
+
+        // Resume any runs that were interrupted by a previous shutdown.
+        // This must happen AFTER services are wired so node executors work.
+        const engine = _wfEngine.getWorkflowEngine();
+        if (typeof engine.resumeInterruptedRuns === "function") {
+          engine.resumeInterruptedRuns().catch((err) => {
+            console.warn("[workflows] Failed to resume interrupted runs:", err.message);
+          });
+        }
       } catch (err) {
         console.warn("[workflows] services setup failed (engine still usable):", err.message);
       }
     }
 
-    if (!_wfRecommendedInstalled && _wfTemplates?.installRecommendedTemplates) {
+    if (!_wfRecommendedInstalled && _wfTemplates) {
       try {
         const engine = _wfEngine.getWorkflowEngine();
-        const result = _wfTemplates.installRecommendedTemplates(engine);
+        const selection = resolveWorkflowBootstrapSelection(_wfTemplates);
+        let result = { installed: [], skipped: [], errors: [] };
+
+        if (selection.enabled) {
+          if (
+            Array.isArray(selection.templateIds) &&
+            selection.templateIds.length > 0 &&
+            typeof _wfTemplates.installTemplateSet === "function"
+          ) {
+            result = _wfTemplates.installTemplateSet(engine, selection.templateIds);
+          } else if (
+            selection.source === "recommended" &&
+            typeof _wfTemplates.installRecommendedTemplates === "function"
+          ) {
+            result = _wfTemplates.installRecommendedTemplates(engine);
+          }
+        }
+
         if (result.installed.length) {
-          console.log(`[workflows] Installed ${result.installed.length} recommended templates`);
+          const suffix = selection.profileId ? ` (profile: ${selection.profileId})` : "";
+          console.log(
+            `[workflows] Installed ${result.installed.length} default workflow templates${suffix}`,
+          );
+        } else if (!selection.enabled) {
+          console.log("[workflows] Default template auto-install disabled by WORKFLOW_DEFAULT_AUTOINSTALL=false");
+        } else if (
+          selection.source.startsWith("custom:") &&
+          selection.templateIds.length === 0
+        ) {
+          console.log("[workflows] Default template selection is empty (custom:none)");
         }
         if (result.errors.length) {
-          console.warn("[workflows] Recommended template install errors:", result.errors);
+          console.warn("[workflows] Default template install errors:", result.errors);
+        }
+        if (typeof _wfTemplates.reconcileInstalledTemplates === "function") {
+          const reconcile = _wfTemplates.reconcileInstalledTemplates(engine, {
+            autoUpdateUnmodified: true,
+          });
+          if (reconcile.autoUpdated > 0) {
+            console.log(
+              `[workflows] Auto-updated ${reconcile.autoUpdated} unmodified template workflow(s) to latest`,
+            );
+          }
+          if (reconcile.customized.length > 0) {
+            const pending = reconcile.customized.filter((entry) => entry.updateAvailable).length;
+            if (pending > 0) {
+              console.log(
+                `[workflows] ${pending} customized template workflow(s) have updates available`,
+              );
+            }
+          }
+          if (reconcile.errors.length > 0) {
+            console.warn("[workflows] Template reconcile errors:", reconcile.errors);
+          }
         }
       } catch (err) {
-        console.warn("[workflows] Recommended template install failed:", err.message);
+        console.warn("[workflows] Default template install failed:", err.message);
       } finally {
         _wfRecommendedInstalled = true;
       }
@@ -308,6 +531,113 @@ async function getWorkflowEngineModule() {
   }
 
   return _wfEngine;
+}
+
+function allowWorkflowEvent(dedupKey, windowMs = workflowEventDedupWindowMs) {
+  if (!dedupKey) return true;
+  const now = Date.now();
+  const lastSeen = workflowEventDedup.get(dedupKey) || 0;
+  if (now - lastSeen < windowMs) {
+    return false;
+  }
+  workflowEventDedup.set(dedupKey, now);
+  if (workflowEventDedup.size > 1000) {
+    const cutoff = now - windowMs * 2;
+    for (const [key, ts] of workflowEventDedup.entries()) {
+      if (ts < cutoff) workflowEventDedup.delete(key);
+    }
+  }
+  return true;
+}
+
+function buildWorkflowEventPayload(eventType, eventData = {}, triggerSource = "ui-event") {
+  const payload = eventData && typeof eventData === "object"
+    ? { ...eventData }
+    : {};
+  payload.eventType = eventType;
+  if (String(eventType || "").startsWith("pr.")) {
+    const prEvent = String(eventType).slice(3).trim();
+    if (prEvent) payload.prEvent = prEvent;
+  }
+  payload._triggerSource = triggerSource;
+  payload._triggerEventType = eventType;
+  payload._triggeredAt = new Date().toISOString();
+  return payload;
+}
+
+async function dispatchWorkflowEvent(eventType, eventData = {}, opts = {}) {
+  try {
+    if (!parseBooleanEnv(process.env.WORKFLOW_AUTOMATION_ENABLED, true)) {
+      return false;
+    }
+
+    const dedupKey = String(opts?.dedupKey || "").trim();
+    if (dedupKey && !allowWorkflowEvent(dedupKey)) {
+      return false;
+    }
+
+    const wfMod = await getWorkflowEngineModule();
+    if (!wfMod?.getWorkflowEngine) return false;
+
+    const engine = wfMod.getWorkflowEngine();
+    if (!engine?.evaluateTriggers || !engine?.execute) return false;
+
+    const payload = buildWorkflowEventPayload(eventType, eventData, "ui-server");
+    let triggered = [];
+    try {
+      triggered = await engine.evaluateTriggers(eventType, payload);
+    } catch (err) {
+      console.warn(
+        `[workflows] trigger evaluation failed for ${eventType}: ${err?.message || err}`,
+      );
+      return false;
+    }
+
+    if (!Array.isArray(triggered) || triggered.length === 0) {
+      return false;
+    }
+
+    for (const match of triggered) {
+      const workflowId = String(match?.workflowId || "").trim();
+      if (!workflowId) continue;
+
+      const runPayload = {
+        ...payload,
+        _triggeredBy: match?.triggeredBy || null,
+      };
+
+      Promise.resolve()
+        .then(() => engine.execute(workflowId, runPayload))
+        .then((ctx) => {
+          const runStatus =
+            Array.isArray(ctx?.errors) && ctx.errors.length > 0
+              ? "failed"
+              : "completed";
+          console.log(
+            `[workflows] auto-run ${runStatus} workflow=${workflowId} runId=${ctx?.id || "unknown"} event=${eventType}`,
+          );
+        })
+        .catch((err) => {
+          console.warn(
+            `[workflows] auto-run failed workflow=${workflowId} event=${eventType}: ${err?.message || err}`,
+          );
+        });
+    }
+
+    console.log(
+      `[workflows] event "${eventType}" triggered ${triggered.length} workflow run(s)`,
+    );
+    return true;
+  } catch (err) {
+    console.warn(`[workflows] dispatchWorkflowEvent error for ${eventType}: ${err?.message || err}`);
+    return false;
+  }
+}
+
+function queueWorkflowEvent(eventType, eventData = {}, opts = {}) {
+  dispatchWorkflowEvent(eventType, eventData, opts).catch((err) => {
+    console.warn(`[workflows] queueWorkflowEvent failure for ${eventType}: ${err?.message || err}`);
+  });
 }
 
 // ── Vendor module map ─────────────────────────────────────────────────────────
@@ -933,6 +1263,85 @@ async function applySharedStateToTasks(tasks) {
   });
 }
 
+function normalizeCandidatePath(input) {
+  if (!input) return "";
+  const raw = String(input).trim();
+  if (!raw) return "";
+  try {
+    return resolve(raw);
+  } catch {
+    return "";
+  }
+}
+
+function pickWorkspaceRepoDir(workspace) {
+  if (!workspace || typeof workspace !== "object") return "";
+  const repos = Array.isArray(workspace.repos) ? workspace.repos : [];
+  const activeRepoName = String(workspace.activeRepo || "").trim();
+  const selectedRepo =
+    (activeRepoName
+      ? repos.find((repo) => String(repo?.name || "").trim() === activeRepoName)
+      : null) ||
+    repos.find((repo) => repo?.primary) ||
+    repos[0] ||
+    null;
+
+  const candidates = [];
+  const selectedRepoPath = normalizeCandidatePath(selectedRepo?.path);
+  if (selectedRepoPath) candidates.push(selectedRepoPath);
+  const workspacePath = normalizeCandidatePath(workspace.path);
+  if (workspacePath && selectedRepo?.name) {
+    const joined = normalizeCandidatePath(resolve(workspacePath, String(selectedRepo.name)));
+    if (joined) candidates.push(joined);
+  }
+  if (workspacePath) candidates.push(workspacePath);
+
+  for (const candidate of candidates) {
+    if (!candidate || !existsSync(candidate)) continue;
+    if (existsSync(resolve(candidate, ".git"))) return candidate;
+  }
+  for (const candidate of candidates) {
+    if (candidate && existsSync(candidate)) return candidate;
+  }
+  return "";
+}
+
+function resolveActiveWorkspaceExecutionContext() {
+  const fallback = { workspaceId: "", workspaceDir: repoRoot };
+  const configDir = resolveUiConfigDir();
+  if (!configDir) return fallback;
+
+  const listed = listManagedWorkspaces(configDir, { repoRoot });
+  const active = getActiveManagedWorkspace(configDir);
+  const activeId = String(active?.id || "").trim();
+  const workspace =
+    (activeId
+      ? listed.find((entry) => String(entry?.id || "") === activeId)
+      : null) ||
+    active ||
+    listed[0] ||
+    null;
+  if (!workspace) return fallback;
+
+  const workspaceId = String(workspace.id || "").trim();
+  const workspaceDir = pickWorkspaceRepoDir(workspace) || fallback.workspaceDir;
+  return {
+    workspaceId,
+    workspaceDir,
+  };
+}
+
+function resolveSessionWorkspaceDir(session = null) {
+  const metadata =
+    session && typeof session.metadata === "object" && session.metadata
+      ? session.metadata
+      : null;
+  const explicit = normalizeCandidatePath(metadata?.workspaceDir);
+  if (explicit && existsSync(explicit)) return explicit;
+  const context = resolveActiveWorkspaceExecutionContext();
+  return context.workspaceDir || repoRoot;
+}
+
 function normalizeWorktreePath(input) {
   if (!input) return "";
   try {
@@ -1024,6 +1433,16 @@ const INTERNAL_EXECUTOR_MAP = {
   POLL_MS: ["internalExecutor", "pollIntervalMs"],
   REVIEW_AGENT_ENABLED: ["internalExecutor", "reviewAgentEnabled"],
   REPLENISH_ENABLED: ["internalExecutor", "backlogReplenishment", "enabled"],
+  STREAM_MAX_RETRIES: ["internalExecutor", "stream", "maxRetries"],
+  STREAM_RETRY_BASE_MS: ["internalExecutor", "stream", "retryBaseMs"],
+  STREAM_RETRY_MAX_MS: ["internalExecutor", "stream", "retryMaxMs"],
+  STREAM_FIRST_EVENT_TIMEOUT_MS: [
+    "internalExecutor",
+    "stream",
+    "firstEventTimeoutMs",
+  ],
+  STREAM_MAX_ITEMS_PER_TURN: ["internalExecutor", "stream", "maxItemsPerTurn"],
+  STREAM_MAX_ITEM_CHARS: ["internalExecutor", "stream", "maxItemChars"],
 };
 const CONFIG_PATH_OVERRIDES = {
   EXECUTOR_MODE: ["internalExecutor", "mode"],
@@ -1191,9 +1610,13 @@ function unsetConfigPathValue(obj, pathParts) {
   }
 }
 
+const DEFAULT_TELEGRAM_UI_PORT = 3080;
+
 // Read port lazily — .env may not be loaded at module import time
 function getDefaultPort() {
-  return Number(process.env.TELEGRAM_UI_PORT || "0") || 0;
+  const raw = Number(process.env.TELEGRAM_UI_PORT || "");
+  if (Number.isFinite(raw) && raw > 0) return raw;
+  return DEFAULT_TELEGRAM_UI_PORT;
 }
 const DEFAULT_HOST = process.env.TELEGRAM_UI_HOST || "0.0.0.0";
 // Lazy evaluation — .env may not be loaded yet when this module is first imported
@@ -1253,6 +1676,28 @@ const logStreamers = new Map();
 let uiDeps = {};
 
 /**
+ * Resolve the execPrimaryPrompt function. Prefers the injected dependency,
+ * falls back to importing directly from primary-agent.mjs so the chat
+ * agent works even when the UI server starts standalone.
+ */
+let _fallbackExecPrimaryPrompt = null;
+async function resolveExecPrimaryPrompt() {
+  if (typeof uiDeps.execPrimaryPrompt === "function") return uiDeps.execPrimaryPrompt;
+  if (_fallbackExecPrimaryPrompt) return _fallbackExecPrimaryPrompt;
+  try {
+    const mod = await import("./primary-agent.mjs");
+    if (typeof mod.execPrimaryPrompt === "function") {
+      _fallbackExecPrimaryPrompt = mod.execPrimaryPrompt;
+      console.log("[ui-server] loaded execPrimaryPrompt fallback from primary-agent.mjs");
+      return _fallbackExecPrimaryPrompt;
+    }
+  } catch (err) {
+    console.warn("[ui-server] failed to load execPrimaryPrompt fallback:", err.message);
+  }
+  return null;
+}
+
+/**
  * Resolve the bosun config directory. Falls back through:
  *   1. uiDeps.configDir (injected at server start)
  *   2. BOSUN_DIR env var
@@ -1304,6 +1749,26 @@ function getAutoOpenCooldownMs() {
   const raw = Number(process.env.BOSUN_UI_AUTO_OPEN_COOLDOWN_MS || "");
   if (!Number.isFinite(raw) || raw <= 0) return DEFAULT_AUTO_OPEN_COOLDOWN_MS;
   return Math.max(60_000, Math.trunc(raw));
+}
+
+function getBrowserOpenMode() {
+  const mode = String(process.env.BOSUN_UI_BROWSER_OPEN_MODE || "manual")
+    .trim()
+    .toLowerCase();
+  if (mode === "auto") return "auto";
+  return "manual";
+}
+
+function shouldAutoOpenBrowser() {
+  const autoOpenRequested = parseBooleanEnv(
+    process.env.BOSUN_UI_AUTO_OPEN_BROWSER,
+    false,
+  );
+  return getBrowserOpenMode() === "auto" && autoOpenRequested;
+}
+
+function shouldLogTokenizedBrowserUrl() {
+  return parseBooleanEnv(process.env.BOSUN_UI_LOG_TOKENIZED_BROWSER_URL, false);
 }
 
 function isPidRunning(pid) {
@@ -1576,6 +2041,314 @@ function persistLastUiPort(port) {
   }
 }
 
+const FALLBACK_AUTH_STATE_FILE = "ui-fallback-auth.json";
+const FALLBACK_AUTH_ALGORITHM = "argon2id";
+const FALLBACK_AUTH_SALT_BYTES = 16;
+const FALLBACK_AUTH_TAG_LENGTH = 32;
+const FALLBACK_AUTH_MEMORY_KIB = 64 * 1024;
+const FALLBACK_AUTH_PASSES = 3;
+const FALLBACK_AUTH_PARALLELISM = 1;
+const FALLBACK_AUTH_MIN_PASSWORD_LENGTH = 10;
+const FALLBACK_AUTH_MIN_PIN_LENGTH = 6;
+
+let fallbackAuthRecordCache = null;
+const fallbackAuthRateLimitByIp = new Map();
+let fallbackAuthGlobalWindow = { windowStart: 0, count: 0 };
+const fallbackAuthRuntime = {
+  failedAttempts: 0,
+  lockoutUntil: 0,
+  transientCooldownUntil: 0,
+  lastFailureAt: 0,
+  lastSuccessAt: 0,
+};
+
+function getFallbackAuthConfig() {
+  const enabled = parseBooleanEnv(
+    process.env.TELEGRAM_UI_FALLBACK_AUTH_ENABLED,
+    true,
+  );
+  const perIpPerMin = Math.max(
+    1,
+    Number(process.env.TELEGRAM_UI_FALLBACK_AUTH_RATE_LIMIT_IP_PER_MIN || "10"),
+  );
+  const globalPerMin = Math.max(
+    1,
+    Number(process.env.TELEGRAM_UI_FALLBACK_AUTH_RATE_LIMIT_GLOBAL_PER_MIN || "60"),
+  );
+  const maxFailures = Math.max(
+    1,
+    Number(process.env.TELEGRAM_UI_FALLBACK_AUTH_MAX_FAILURES || "5"),
+  );
+  const lockoutMs = Math.max(
+    10_000,
+    Number(process.env.TELEGRAM_UI_FALLBACK_AUTH_LOCKOUT_MS || "600000"),
+  );
+  const transientCooldownMs = Math.max(
+    1000,
+    Number(process.env.TELEGRAM_UI_FALLBACK_AUTH_TRANSIENT_COOLDOWN_MS || "5000"),
+  );
+  const rotateDays = Math.max(
+    1,
+    Number(process.env.TELEGRAM_UI_FALLBACK_AUTH_ROTATE_DAYS || "30"),
+  );
+  return {
+    enabled,
+    perIpPerMin,
+    globalPerMin,
+    maxFailures,
+    lockoutMs,
+    transientCooldownMs,
+    rotateDays,
+  };
+}
+
+function getFallbackAuthStatePath() {
+  return resolveUiCachePath(FALLBACK_AUTH_STATE_FILE);
+}
+
+function readFallbackAuthRecord() {
+  if (fallbackAuthRecordCache && typeof fallbackAuthRecordCache === "object") {
+    return fallbackAuthRecordCache;
+  }
+  try {
+    const statePath = getFallbackAuthStatePath();
+    if (!existsSync(statePath)) return null;
+    const parsed = JSON.parse(readFileSync(statePath, "utf8"));
+    if (!parsed || typeof parsed !== "object") return null;
+    if (
+      typeof parsed.hash !== "string"
+      || typeof parsed.salt !== "string"
+      || parsed.algorithm !== FALLBACK_AUTH_ALGORITHM
+    ) {
+      return null;
+    }
+    fallbackAuthRecordCache = parsed;
+    return parsed;
+  } catch {
+    return null;
+  }
+}
+
+function writeFallbackAuthRecord(record) {
+  fallbackAuthRecordCache = record;
+  try {
+    const statePath = getFallbackAuthStatePath();
+    writeFileSync(statePath, JSON.stringify(record, null, 2), "utf8");
+  } catch {
+    // best effort
+  }
+}
+
+function clearFallbackAuthRecord() {
+  fallbackAuthRecordCache = null;
+  try {
+    const statePath = getFallbackAuthStatePath();
+    if (existsSync(statePath)) unlinkSync(statePath);
+  } catch {
+    // best effort
+  }
+}
+
+function isFallbackSecretStrong(secret) {
+  const normalized = String(secret || "").trim();
+  if (!normalized) return false;
+  if (/^\d+$/.test(normalized)) {
+    return normalized.length >= FALLBACK_AUTH_MIN_PIN_LENGTH;
+  }
+  return normalized.length >= FALLBACK_AUTH_MIN_PASSWORD_LENGTH;
+}
+
+async function deriveFallbackAuthHash(secret, saltBuffer) {
+  return new Promise((resolveHash, rejectHash) => {
+    argon2(
+      FALLBACK_AUTH_ALGORITHM,
+      {
+        message: Buffer.from(String(secret || ""), "utf8"),
+        nonce: saltBuffer,
+        parallelism: FALLBACK_AUTH_PARALLELISM,
+        tagLength: FALLBACK_AUTH_TAG_LENGTH,
+        memory: FALLBACK_AUTH_MEMORY_KIB,
+        passes: FALLBACK_AUTH_PASSES,
+      },
+      (err, hash) => {
+        if (err) return rejectHash(err);
+        resolveHash(hash);
+      },
+    );
+  });
+}
+
+async function setFallbackAuthSecret(secret, { actor = "api" } = {}) {
+  if (!isFallbackSecretStrong(secret)) {
+    throw new Error(
+      `Fallback secret must be >= ${FALLBACK_AUTH_MIN_PIN_LENGTH} digits (PIN) or >= ${FALLBACK_AUTH_MIN_PASSWORD_LENGTH} chars (password)`,
+    );
+  }
+  const salt = randomBytes(FALLBACK_AUTH_SALT_BYTES);
+  const hash = await deriveFallbackAuthHash(secret, salt);
+  const existing = readFallbackAuthRecord();
+  const now = Date.now();
+  writeFallbackAuthRecord({
+    version: 1,
+    algorithm: FALLBACK_AUTH_ALGORITHM,
+    hash: hash.toString("base64"),
+    salt: salt.toString("base64"),
+    tagLength: FALLBACK_AUTH_TAG_LENGTH,
+    memoryKiB: FALLBACK_AUTH_MEMORY_KIB,
+    passes: FALLBACK_AUTH_PASSES,
+    parallelism: FALLBACK_AUTH_PARALLELISM,
+    createdAt: Number(existing?.createdAt || now),
+    updatedAt: now,
+    rotatedAt: now,
+    updatedBy: String(actor || "api"),
+  });
+  fallbackAuthRuntime.failedAttempts = 0;
+  fallbackAuthRuntime.lockoutUntil = 0;
+  fallbackAuthRuntime.transientCooldownUntil = 0;
+}
+
+function resetFallbackAuthSecret() {
+  clearFallbackAuthRecord();
+  fallbackAuthRuntime.failedAttempts = 0;
+  fallbackAuthRuntime.lockoutUntil = 0;
+  fallbackAuthRuntime.transientCooldownUntil = 0;
+}
+
+function getRequestIp(req) {
+  return String(
+    req?.headers?.["x-forwarded-for"]
+    || req?.socket?.remoteAddress
+    || "unknown",
+  ).split(",")[0].trim().toLowerCase();
+}
+
+function consumeFallbackRateLimits(req, config) {
+  const now = Date.now();
+  const windowMs = 60_000;
+  const ip = getRequestIp(req);
+
+  const globalBucket = fallbackAuthGlobalWindow;
+  if (!globalBucket.windowStart || now - globalBucket.windowStart > windowMs) {
+    fallbackAuthGlobalWindow = { windowStart: now, count: 0 };
+  }
+  fallbackAuthGlobalWindow.count += 1;
+  if (fallbackAuthGlobalWindow.count > config.globalPerMin) {
+    return { ok: false, reason: "global_rate_limited" };
+  }
+
+  let bucket = fallbackAuthRateLimitByIp.get(ip);
+  if (!bucket || now - bucket.windowStart > windowMs) {
+    bucket = { windowStart: now, count: 0 };
+    fallbackAuthRateLimitByIp.set(ip, bucket);
+  }
+  bucket.count += 1;
+  if (bucket.count > config.perIpPerMin) {
+    return { ok: false, reason: "ip_rate_limited" };
+  }
+  return { ok: true };
+}
+
+async function verifyFallbackAuthSecret(secret) {
+  const record = readFallbackAuthRecord();
+  if (!record?.hash || !record?.salt) return false;
+  const storedHash = Buffer.from(String(record.hash || ""), "base64");
+  const salt = Buffer.from(String(record.salt || ""), "base64");
+  const derived = await deriveFallbackAuthHash(secret, salt);
+  if (derived.length !== storedHash.length) return false;
+  return timingSafeEqual(derived, storedHash);
+}
+
+async function attemptFallbackAuth(req, secret) {
+  const cfg = getFallbackAuthConfig();
+  const now = Date.now();
+  if (!cfg.enabled) return { ok: false, reason: "disabled" };
+  if (isAllowUnsafe()) return { ok: false, reason: "unsafe_mode_enabled" };
+  if (!readFallbackAuthRecord()) return { ok: false, reason: "missing_credential" };
+
+  if (fallbackAuthRuntime.transientCooldownUntil > now) {
+    return { ok: false, reason: "transient_cooldown" };
+  }
+  if (fallbackAuthRuntime.lockoutUntil > now) {
+    return { ok: false, reason: "locked" };
+  }
+  const rateCheck = consumeFallbackRateLimits(req, cfg);
+  if (!rateCheck.ok) return { ok: false, reason: rateCheck.reason };
+
+  try {
+    const valid = await verifyFallbackAuthSecret(secret);
+    if (valid) {
+      fallbackAuthRuntime.failedAttempts = 0;
+      fallbackAuthRuntime.lockoutUntil = 0;
+      fallbackAuthRuntime.lastSuccessAt = now;
+      ensureSessionToken();
+      return { ok: true, reason: "success" };
+    }
+  } catch {
+    fallbackAuthRuntime.transientCooldownUntil = now + cfg.transientCooldownMs;
+    return { ok: false, reason: "transient_verify_error" };
+  }
+
+  fallbackAuthRuntime.failedAttempts += 1;
+  fallbackAuthRuntime.lastFailureAt = now;
+  if (fallbackAuthRuntime.failedAttempts >= cfg.maxFailures) {
+    fallbackAuthRuntime.lockoutUntil = now + cfg.lockoutMs;
+    fallbackAuthRuntime.failedAttempts = 0;
+  }
+  return { ok: false, reason: "invalid_secret" };
+}
+
+function getFallbackAuthStatus() {
+  const cfg = getFallbackAuthConfig();
+  const record = readFallbackAuthRecord();
+  const now = Date.now();
+  const rotationDueAt = record?.updatedAt
+    ? Number(record.updatedAt) + cfg.rotateDays * 24 * 60 * 60 * 1000
+    : 0;
+  const rotationDue = rotationDueAt > 0 && now >= rotationDueAt;
+  const locked = fallbackAuthRuntime.lockoutUntil > now;
+  const remediation = [];
+  if (!record) remediation.push("missing_credential");
+  if (!cfg.enabled) remediation.push("disabled_by_env");
+  if (isAllowUnsafe()) remediation.push("unsafe_mode_enabled");
+  if (locked) remediation.push("locked_temporarily");
+  if (rotationDue) remediation.push("rotation_due");
+  return {
+    configured: Boolean(record?.hash),
+    enabled: cfg.enabled,
+    active: cfg.enabled && Boolean(record?.hash) && !isAllowUnsafe(),
+    locked,
+    lockoutUntil: locked ? fallbackAuthRuntime.lockoutUntil : 0,
+    transientCooldownUntil:
+      fallbackAuthRuntime.transientCooldownUntil > now
+        ? fallbackAuthRuntime.transientCooldownUntil
+        : 0,
+    rotationDue,
+    rotationDueAt,
+    rotateDays: cfg.rotateDays,
+    updatedAt: Number(record?.updatedAt || 0) || 0,
+    updatedBy: String(record?.updatedBy || ""),
+    rateLimits: {
+      perIpPerMin: cfg.perIpPerMin,
+      globalPerMin: cfg.globalPerMin,
+      maxFailures: cfg.maxFailures,
+      lockoutMs: cfg.lockoutMs,
+    },
+    remediation,
+  };
+}
+
+setInterval(() => {
+  const now = Date.now();
+  for (const [ip, bucket] of fallbackAuthRateLimitByIp) {
+    if (now - bucket.windowStart > 120_000) {
+      fallbackAuthRateLimitByIp.delete(ip);
+    }
+  }
+  if (now - fallbackAuthGlobalWindow.windowStart > 120_000) {
+    fallbackAuthGlobalWindow = { windowStart: 0, count: 0 };
+  }
+}, 300_000).unref();
+
 const projectSyncWebhookMetrics = {
   received: 0,
   processed: 0,
@@ -1604,10 +2377,18 @@ const SETTINGS_KNOWN_KEYS = [
   "TELEGRAM_HISTORY_RETENTION_DAYS",
   "PROJECT_NAME", "TELEGRAM_MINIAPP_ENABLED", "TELEGRAM_UI_PORT", "TELEGRAM_UI_HOST",
   "TELEGRAM_UI_PUBLIC_HOST", "TELEGRAM_UI_BASE_URL", "TELEGRAM_UI_ALLOW_UNSAFE",
-  "TELEGRAM_UI_AUTH_MAX_AGE_SEC", "TELEGRAM_UI_TUNNEL",
+  "TELEGRAM_UI_AUTH_MAX_AGE_SEC", "TELEGRAM_UI_TUNNEL", "TELEGRAM_UI_ALLOW_QUICK_TUNNEL_FALLBACK",
+  "TELEGRAM_UI_FALLBACK_AUTH_ENABLED", "TELEGRAM_UI_FALLBACK_AUTH_RATE_LIMIT_IP_PER_MIN",
+  "TELEGRAM_UI_FALLBACK_AUTH_RATE_LIMIT_GLOBAL_PER_MIN", "TELEGRAM_UI_FALLBACK_AUTH_MAX_FAILURES",
+  "TELEGRAM_UI_FALLBACK_AUTH_LOCKOUT_MS", "TELEGRAM_UI_FALLBACK_AUTH_ROTATE_DAYS",
+  "TELEGRAM_UI_FALLBACK_AUTH_TRANSIENT_COOLDOWN_MS",
   "EXECUTOR_MODE", "INTERNAL_EXECUTOR_PARALLEL", "INTERNAL_EXECUTOR_SDK",
   "INTERNAL_EXECUTOR_TIMEOUT_MS", "INTERNAL_EXECUTOR_MAX_RETRIES", "INTERNAL_EXECUTOR_POLL_MS",
   "INTERNAL_EXECUTOR_REVIEW_AGENT_ENABLED", "INTERNAL_EXECUTOR_REPLENISH_ENABLED",
+  "INTERNAL_EXECUTOR_STREAM_MAX_RETRIES", "INTERNAL_EXECUTOR_STREAM_RETRY_BASE_MS",
+  "INTERNAL_EXECUTOR_STREAM_RETRY_MAX_MS", "INTERNAL_EXECUTOR_STREAM_FIRST_EVENT_TIMEOUT_MS",
+  "INTERNAL_EXECUTOR_STREAM_MAX_ITEMS_PER_TURN", "INTERNAL_EXECUTOR_STREAM_MAX_ITEM_CHARS",
+  "CODEX_SDK_DISABLED", "COPILOT_SDK_DISABLED", "CLAUDE_SDK_DISABLED",
   "PRIMARY_AGENT", "EXECUTORS", "EXECUTOR_DISTRIBUTION", "FAILOVER_STRATEGY",
   "COMPLEXITY_ROUTING_ENABLED", "PROJECT_REQUIREMENTS_PROFILE",
   "OPENAI_API_KEY", "AZURE_OPENAI_API_KEY", "CODEX_MODEL",
@@ -1630,7 +2411,10 @@ const SETTINGS_KNOWN_KEYS = [
   "GITHUB_PROJECT_SYNC_ALERT_FAILURE_THRESHOLD", "GITHUB_PROJECT_SYNC_RATE_LIMIT_ALERT_THRESHOLD",
   "VK_TARGET_BRANCH", "CODEX_ANALYZE_MERGE_STRATEGY", "DEPENDABOT_AUTO_MERGE",
   "GH_RECONCILE_ENABLED",
-  "CLOUDFLARE_TUNNEL_NAME", "CLOUDFLARE_TUNNEL_CREDENTIALS",
+  "CLOUDFLARE_TUNNEL_NAME", "CLOUDFLARE_TUNNEL_CREDENTIALS", "CLOUDFLARE_BASE_DOMAIN",
+  "CLOUDFLARE_TUNNEL_HOSTNAME", "CLOUDFLARE_USERNAME_HOSTNAME_POLICY",
+  "CLOUDFLARE_ZONE_ID", "CLOUDFLARE_API_TOKEN", "CLOUDFLARE_DNS_SYNC_ENABLED",
+  "CLOUDFLARE_DNS_MAX_RETRIES", "CLOUDFLARE_DNS_RETRY_BASE_MS",
   "TELEGRAM_PRESENCE_INTERVAL_SEC", "TELEGRAM_PRESENCE_DISABLED",
   "VE_INSTANCE_LABEL", "VE_COORDINATOR_ELIGIBLE", "VE_COORDINATOR_PRIORITY",
   "FLEET_ENABLED", "FLEET_BUFFER_MULTIPLIER", "FLEET_SYNC_INTERVAL_MS",
@@ -1661,11 +2445,16 @@ const SETTINGS_SENSITIVE_KEYS = new Set([
   "OPENAI_API_KEY", "AZURE_OPENAI_API_KEY", "CODEX_MODEL_PROFILE_XL_API_KEY", "CODEX_MODEL_PROFILE_M_API_KEY",
   "ANTHROPIC_API_KEY", "COPILOT_CLI_TOKEN", "GITHUB_PROJECT_WEBHOOK_SECRET",
   "BOSUN_GITHUB_CLIENT_SECRET", "BOSUN_GITHUB_WEBHOOK_SECRET", "BOSUN_GITHUB_USER_TOKEN",
-  "CLOUDFLARE_TUNNEL_CREDENTIALS",
+  "CLOUDFLARE_TUNNEL_CREDENTIALS", "CLOUDFLARE_API_TOKEN",
 ]);
 
-const SETTINGS_KNOWN_SET = new Set(SETTINGS_KNOWN_KEYS);
+const SETTINGS_SCHEMA_KEYS = SETTINGS_SCHEMA
+  .map((def) => String(def?.key || "").trim())
+  .filter((key) => key && !key.startsWith("_"));
+const SETTINGS_KNOWN_SET = new Set([...SETTINGS_KNOWN_KEYS, ...SETTINGS_SCHEMA_KEYS]);
+const SETTINGS_EFFECTIVE_KEYS = Array.from(SETTINGS_KNOWN_SET);
 let _settingsLastUpdateTime = 0;
+const ASYNC_UI_COMMAND_BASES = new Set(["/plan"]);
 
 function hasSettingValue(value) {
   return value !== undefined && value !== null && value !== "";
@@ -1715,7 +2504,7 @@ function buildSettingsResponseData() {
   );
   const { configData } = readConfigDocument();
 
-  for (const key of SETTINGS_KNOWN_KEYS) {
+  for (const key of SETTINGS_EFFECTIVE_KEYS) {
     const def = defsByKey.get(key);
     let rawValue = process.env[key];
     let source = hasSettingValue(rawValue) ? "env" : "unset";
@@ -1751,7 +2540,7 @@ function buildSettingsResponseData() {
     }
 
     const displayValue = toSettingsDisplayValue(def, rawValue);
-    if (SETTINGS_SENSITIVE_KEYS.has(key)) {
+    if (SETTINGS_SENSITIVE_KEYS.has(key) || def?.sensitive) {
       data[key] = displayValue ? "••••••" : "";
     } else {
       data[key] = displayValue;
@@ -1927,8 +2716,31 @@ function validateConfigSchemaChanges(changes) {
 
 // ── Simple rate limiter for mutation endpoints ──
 const _rateLimitMap = new Map();
-function checkRateLimit(req, maxPerMin = 30) {
-  const key = req.headers["x-telegram-initdata"] || req.socket?.remoteAddress || "unknown";
+function getMutationRateLimitPerMin(authResult = null) {
+  const standardRaw = Number(process.env.BOSUN_UI_RATE_LIMIT_PER_MIN || "30");
+  const standard = Number.isFinite(standardRaw) && standardRaw > 0 ? standardRaw : 30;
+  if (!authResult?.ok) return standard;
+  // Owner/admin-controlled contexts should be less constrained:
+  // - desktop-api-key: local Electron owner session
+  // - fallback: explicit local secret auth
+  // - unsafe: auth disabled for trusted local environment
+  if (
+    authResult.source === "desktop-api-key"
+    || authResult.source === "fallback"
+    || authResult.source === "unsafe"
+  ) {
+    const privilegedRaw = Number(process.env.BOSUN_UI_RATE_LIMIT_PRIVILEGED_PER_MIN || "300");
+    return Number.isFinite(privilegedRaw) && privilegedRaw > 0 ? privilegedRaw : 300;
+  }
+  return standard;
+}
+
+function checkRateLimit(req, maxPerMin = 30, scope = "global") {
+  const keyParts = [
+    scope,
+    req.headers["x-telegram-initdata"] || req.socket?.remoteAddress || "unknown",
+  ];
+  const key = keyParts.join(":");
   const now = Date.now();
   let bucket = _rateLimitMap.get(key);
   if (!bucket || now - bucket.windowStart > 60000) {
@@ -1956,13 +2768,16 @@ export function getSessionToken() {
 }
 
 // ── Auto-TLS self-signed certificate generation ──────────────────────
-const TLS_CACHE_DIR = resolve(__dirname, ".cache", "tls");
-const TLS_CERT_PATH = resolve(TLS_CACHE_DIR, "server.crt");
-const TLS_KEY_PATH = resolve(TLS_CACHE_DIR, "server.key");
 function isTlsDisabled() {
   return ["1", "true", "yes"].includes(
     String(process.env.TELEGRAM_UI_TLS_DISABLE || "").toLowerCase(),
   );
+}
+
+function resolveUiSubCachePath(...segments) {
+  const path = resolve(resolveUiConfigDir(), ".cache", ...segments);
+  try { mkdirSync(dirname(path), { recursive: true }); } catch { /* best effort */ }
+  return path;
 }
 
 /**
@@ -2007,20 +2822,23 @@ function findOpenssl() {
  */
 function ensureSelfSignedCert() {
   try {
-    if (!existsSync(TLS_CACHE_DIR)) {
-      mkdirSync(TLS_CACHE_DIR, { recursive: true });
+    const tlsDir = dirname(resolveUiSubCachePath("tls", ".keep"));
+    const tlsCertPath = resolve(tlsDir, "server.crt");
+    const tlsKeyPath = resolve(tlsDir, "server.key");
+    if (!existsSync(tlsDir)) {
+      mkdirSync(tlsDir, { recursive: true });
     }
 
     // Reuse existing cert if still valid
-    if (existsSync(TLS_CERT_PATH) && existsSync(TLS_KEY_PATH)) {
+    if (existsSync(tlsCertPath) && existsSync(tlsKeyPath)) {
       try {
-        const certPem = readFileSync(TLS_CERT_PATH, "utf8");
+        const certPem = readFileSync(tlsCertPath, "utf8");
         const cert = new X509Certificate(certPem);
         const notAfter = new Date(cert.validTo);
         if (notAfter > new Date(Date.now() + 7 * 24 * 60 * 60 * 1000)) {
           return {
-            key: readFileSync(TLS_KEY_PATH),
-            cert: readFileSync(TLS_CERT_PATH),
+            key: readFileSync(tlsKeyPath),
+            cert: readFileSync(tlsCertPath),
           };
         }
       } catch {
@@ -2034,7 +2852,7 @@ function ensureSelfSignedCert() {
     const subjectAltName = `DNS:localhost,IP:127.0.0.1,IP:${lanIp}`;
     execSync(
       `"${opensslBin}" req -x509 -newkey ec -pkeyopt ec_paramgen_curve:prime256v1 ` +
-        `-keyout "${TLS_KEY_PATH}" -out "${TLS_CERT_PATH}" ` +
+        `-keyout "${tlsKeyPath}" -out "${tlsCertPath}" ` +
         `-days 825 -nodes -batch ` +
         `-subj "/CN=bosun" ` +
         `-addext "subjectAltName=${subjectAltName}"`,
@@ -2045,8 +2863,8 @@ function ensureSelfSignedCert() {
       `[telegram-ui] auto-generated self-signed TLS cert (SAN: ${subjectAltName})`,
     );
     return {
-      key: readFileSync(TLS_KEY_PATH),
-      cert: readFileSync(TLS_CERT_PATH),
+      key: readFileSync(tlsKeyPath),
+      cert: readFileSync(tlsCertPath),
     };
   } catch (err) {
     const hint = osPlatform() === "win32"
@@ -2214,34 +3032,470 @@ export async function openFirewallPort(port) {
 
 // ── Cloudflared tunnel for trusted TLS ──────────────────────────────
 
+const TUNNEL_MODE_NAMED = "named";
+const TUNNEL_MODE_QUICK = "quick";
+const TUNNEL_MODE_DISABLED = "disabled";
+const DEFAULT_TUNNEL_MODE = TUNNEL_MODE_NAMED;
+const DEFAULT_CLOUDFLARE_DNS_RETRY_MAX = 3;
+const DEFAULT_CLOUDFLARE_DNS_RETRY_BASE_MS = 750;
+const RESERVED_HOSTNAME_LABELS = new Set([
+  "www",
+  "api",
+  "admin",
+  "root",
+  "mail",
+  "ftp",
+  "smtp",
+  "autodiscover",
+  "localhost",
+]);
+
 let tunnelUrl = null;
 let tunnelProcess = null;
+let tunnelPublicHostname = "";
+let tunnelRuntimeState = {
+  mode: TUNNEL_MODE_DISABLED,
+  tunnelName: "",
+  tunnelId: "",
+  hostname: "",
+  dnsAction: "none",
+  dnsStatus: "not_configured",
+  fallbackToQuick: false,
+  lastError: "",
+};
+let quickTunnelRestartTimer = null;
+let quickTunnelRestartAttempts = 0;
+let quickTunnelRestartSuppressed = false;
 
-/** Return the tunnel URL (e.g. https://xxx.trycloudflare.com) or null. */
+/** Return the active tunnel URL (named or quick) or null. */
 export function getTunnelUrl() {
   return tunnelUrl;
+}
+
+export function getTunnelStatus() {
+  return {
+    mode: tunnelRuntimeState.mode,
+    tunnelName: tunnelRuntimeState.tunnelName || null,
+    tunnelId: tunnelRuntimeState.tunnelId || null,
+    hostname: tunnelRuntimeState.hostname || tunnelPublicHostname || null,
+    publicUrl: tunnelUrl || null,
+    dns: {
+      status: tunnelRuntimeState.dnsStatus || "unknown",
+      action: tunnelRuntimeState.dnsAction || "none",
+    },
+    fallbackToQuick: Boolean(tunnelRuntimeState.fallbackToQuick),
+    active: Boolean(tunnelProcess && tunnelUrl),
+    lastError: tunnelRuntimeState.lastError || null,
+  };
 }
 
 let _tunnelReadyCallbacks = [];
 
 /** Register a callback to be called whenever the tunnel URL changes. */
 export function onTunnelUrlChange(cb) {
-  if (typeof cb === 'function') _tunnelReadyCallbacks.push(cb);
+  if (typeof cb === "function") _tunnelReadyCallbacks.push(cb);
+}
+
+function setTunnelRuntimeState(next = {}) {
+  tunnelRuntimeState = {
+    ...tunnelRuntimeState,
+    ...next,
+  };
+}
+
+export function normalizeTunnelMode(rawValue) {
+  const value = String(rawValue || "").trim().toLowerCase();
+  if (!value) return DEFAULT_TUNNEL_MODE;
+  if (["disabled", "off", "false", "0"].includes(value)) return TUNNEL_MODE_DISABLED;
+  if (["quick", "quick-tunnel", "ephemeral", "trycloudflare"].includes(value)) {
+    return TUNNEL_MODE_QUICK;
+  }
+  if (["cloudflared", "auto", "named", "permanent"].includes(value)) {
+    return TUNNEL_MODE_NAMED;
+  }
+  return DEFAULT_TUNNEL_MODE;
+}
+
+function parseBooleanEnvValue(rawValue, fallback = false) {
+  if (rawValue === undefined || rawValue === null || String(rawValue).trim() === "") {
+    return fallback;
+  }
+  const normalized = String(rawValue).trim().toLowerCase();
+  if (["1", "true", "yes", "on"].includes(normalized)) return true;
+  if (["0", "false", "no", "off"].includes(normalized)) return false;
+  return fallback;
+}
+
+function parseBoundedInt(rawValue, fallback, { min = 1, max = Number.MAX_SAFE_INTEGER } = {}) {
+  const parsed = Number(rawValue);
+  if (!Number.isFinite(parsed)) return fallback;
+  return Math.min(max, Math.max(min, Math.trunc(parsed)));
+}
+
+function normalizeDomainName(rawValue) {
+  const value = String(rawValue || "").trim().toLowerCase();
+  if (!value) return "";
+  const withoutScheme = value.replace(/^https?:\/\//, "");
+  const withoutPath = withoutScheme.split("/")[0].replace(/:\d+$/, "");
+  return withoutPath.replace(/\.+$/, "");
+}
+
+export function sanitizeHostnameLabel(rawValue, fallback = "operator") {
+  const normalized = String(rawValue || "")
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9-]+/g, "-")
+    .replace(/-+/g, "-")
+    .replace(/^-+/, "")
+    .replace(/-+$/, "");
+  if (!normalized) return fallback;
+  return normalized.slice(0, 63).replace(/-+$/, "") || fallback;
+}
+
+function getTunnelIdentity() {
+  const candidates = [
+    process.env.CLOUDFLARE_TUNNEL_USERNAME,
+    process.env.CLOUDFLARE_HOSTNAME_USER,
+    process.env.BOSUN_OPERATOR_ID,
+    process.env.USERNAME,
+    process.env.USER,
+  ];
+  for (const value of candidates) {
+    const trimmed = String(value || "").trim();
+    if (trimmed) return trimmed;
+  }
+  try {
+    const info = getOsUserInfo();
+    if (info?.username) return info.username;
+  } catch {
+    // best effort
+  }
+  return "operator";
+}
+
+const HOSTNAME_MAP_FILE = "cloudflare-hostname-map.json";
+let _hostnameMapCache = null;
+
+function readHostnameMapStore() {
+  if (_hostnameMapCache && typeof _hostnameMapCache === "object") {
+    return _hostnameMapCache;
+  }
+  const fallback = { version: 1, domains: {} };
+  try {
+    const mapPath = resolveUiCachePath(HOSTNAME_MAP_FILE);
+    if (!existsSync(mapPath)) {
+      _hostnameMapCache = fallback;
+      return fallback;
+    }
+    const parsed = JSON.parse(readFileSync(mapPath, "utf8"));
+    if (!parsed || typeof parsed !== "object") {
+      _hostnameMapCache = fallback;
+      return fallback;
+    }
+    if (!parsed.domains || typeof parsed.domains !== "object") {
+      parsed.domains = {};
+    }
+    _hostnameMapCache = parsed;
+    return parsed;
+  } catch {
+    _hostnameMapCache = fallback;
+    return fallback;
+  }
+}
+
+function writeHostnameMapStore(data) {
+  try {
+    const mapPath = resolveUiCachePath(HOSTNAME_MAP_FILE);
+    writeFileSync(mapPath, JSON.stringify(data, null, 2), "utf8");
+  } catch {
+    // best effort
+  }
+}
+
+function getDomainMap(store, baseDomain) {
+  const normalizedBaseDomain = normalizeDomainName(baseDomain);
+  if (!normalizedBaseDomain) {
+    return { normalizedBaseDomain: "", map: { byIdentity: {}, byLabel: {} } };
+  }
+  if (!store.domains[normalizedBaseDomain] || typeof store.domains[normalizedBaseDomain] !== "object") {
+    store.domains[normalizedBaseDomain] = {
+      byIdentity: {},
+      byLabel: {},
+    };
+  }
+  const domainMap = store.domains[normalizedBaseDomain];
+  if (!domainMap.byIdentity || typeof domainMap.byIdentity !== "object") {
+    domainMap.byIdentity = {};
+  }
+  if (!domainMap.byLabel || typeof domainMap.byLabel !== "object") {
+    domainMap.byLabel = {};
+  }
+  return { normalizedBaseDomain, map: domainMap };
+}
+
+function allocateStableHostnameLabel(domainMap, identity, preferredLabel) {
+  const normalizedIdentity = String(identity || "").trim().toLowerCase();
+  const existing = String(domainMap.byIdentity?.[normalizedIdentity] || "").trim().toLowerCase();
+  if (existing && domainMap.byLabel?.[existing] === normalizedIdentity) {
+    return existing;
+  }
+
+  const safeBaseLabel = sanitizeHostnameLabel(preferredLabel, "operator");
+  let baseLabel = RESERVED_HOSTNAME_LABELS.has(safeBaseLabel)
+    ? `${safeBaseLabel}-user`
+    : safeBaseLabel;
+  baseLabel = sanitizeHostnameLabel(baseLabel, "operator");
+  let candidate = baseLabel;
+  let suffix = 1;
+
+  while (true) {
+    const owner = String(domainMap.byLabel?.[candidate] || "").trim().toLowerCase();
+    const reserved = RESERVED_HOSTNAME_LABELS.has(candidate);
+    if ((!owner || owner === normalizedIdentity) && !reserved) {
+      domainMap.byLabel[candidate] = normalizedIdentity;
+      domainMap.byIdentity[normalizedIdentity] = candidate;
+      return candidate;
+    }
+    suffix += 1;
+    candidate = sanitizeHostnameLabel(`${baseLabel}-${suffix}`, baseLabel);
+  }
+}
+
+export function resolveDeterministicTunnelHostname({
+  baseDomain,
+  explicitHostname,
+  username,
+  policy,
+} = {}) {
+  const normalizedBaseDomain = normalizeDomainName(
+    baseDomain || process.env.CLOUDFLARE_BASE_DOMAIN || process.env.CF_BASE_DOMAIN,
+  );
+  const explicit = normalizeDomainName(
+    explicitHostname || process.env.CLOUDFLARE_TUNNEL_HOSTNAME || process.env.CF_TUNNEL_HOSTNAME,
+  );
+  if (explicit) {
+    return {
+      hostname: explicit,
+      baseDomain: explicit.split(".").slice(1).join("."),
+      label: explicit.split(".")[0] || "operator",
+      identity: "",
+      policy: "explicit",
+      source: "explicit",
+    };
+  }
+  if (!normalizedBaseDomain) {
+    throw new Error(
+      "Missing CLOUDFLARE_BASE_DOMAIN (or CLOUDFLARE_TUNNEL_HOSTNAME) for named tunnel hostname resolution",
+    );
+  }
+  const resolvedPolicy = String(
+    policy || process.env.CLOUDFLARE_USERNAME_HOSTNAME_POLICY || "per-user-fixed",
+  )
+    .trim()
+    .toLowerCase();
+  const perUserFixed = resolvedPolicy !== "fixed";
+  const identityRaw = username || getTunnelIdentity();
+  const identity = sanitizeHostnameLabel(identityRaw, "operator");
+
+  if (!perUserFixed) {
+    const fixedLabel = sanitizeHostnameLabel(
+      process.env.CLOUDFLARE_FIXED_HOST_LABEL || process.env.CF_FIXED_HOST_LABEL || "bosun",
+      "bosun",
+    );
+    const label = RESERVED_HOSTNAME_LABELS.has(fixedLabel)
+      ? sanitizeHostnameLabel(`${fixedLabel}-app`, "bosun")
+      : fixedLabel;
+    return {
+      hostname: `${label}.${normalizedBaseDomain}`,
+      baseDomain: normalizedBaseDomain,
+      label,
+      identity,
+      policy: "fixed",
+      source: "fixed",
+    };
+  }
+
+  const store = readHostnameMapStore();
+  const { map } = getDomainMap(store, normalizedBaseDomain);
+  const label = allocateStableHostnameLabel(map, identity, identity);
+  writeHostnameMapStore(store);
+  return {
+    hostname: `${label}.${normalizedBaseDomain}`,
+    baseDomain: normalizedBaseDomain,
+    label,
+    identity,
+    policy: "per-user-fixed",
+    source: "map",
+  };
 }
 
 function _notifyTunnelChange(url) {
   for (const cb of _tunnelReadyCallbacks) {
-    try { cb(url); } catch (err) {
+    try {
+      cb(url);
+    } catch (err) {
       console.warn(`[telegram-ui] tunnel change callback error: ${err.message}`);
     }
   }
 }
 
+function getCloudflareApiConfig() {
+  const token = String(
+    process.env.CLOUDFLARE_API_TOKEN || process.env.CF_API_TOKEN || "",
+  ).trim();
+  const zoneId = String(
+    process.env.CLOUDFLARE_ZONE_ID || process.env.CF_ZONE_ID || "",
+  ).trim();
+  const enabled = parseBooleanEnvValue(process.env.CLOUDFLARE_DNS_SYNC_ENABLED, true);
+  return {
+    enabled,
+    token,
+    zoneId,
+    baseUrl: "https://api.cloudflare.com/client/v4",
+  };
+}
+
+function getCloudflareDnsRetryConfig() {
+  const maxRetries = parseBoundedInt(
+    process.env.CLOUDFLARE_DNS_MAX_RETRIES,
+    DEFAULT_CLOUDFLARE_DNS_RETRY_MAX,
+    { min: 1, max: 8 },
+  );
+  const retryBaseMs = parseBoundedInt(
+    process.env.CLOUDFLARE_DNS_RETRY_BASE_MS,
+    DEFAULT_CLOUDFLARE_DNS_RETRY_BASE_MS,
+    { min: 100, max: 5000 },
+  );
+  return { maxRetries, retryBaseMs };
+}
+
+async function sleep(ms) {
+  await new Promise((resolveSleep) => setTimeout(resolveSleep, ms));
+}
+
+async function cloudflareApiRequest(api, path, { method = "GET", body = undefined } = {}) {
+  const { maxRetries, retryBaseMs } = getCloudflareDnsRetryConfig();
+  if (!api?.token || !api?.zoneId) {
+    throw new Error("Cloudflare API token/zone not configured");
+  }
+  let lastError = null;
+  for (let attempt = 1; attempt <= maxRetries; attempt += 1) {
+    try {
+      const res = await fetch(`${api.baseUrl}${path}`, {
+        method,
+        headers: {
+          Authorization: `Bearer ${api.token}`,
+          "Content-Type": "application/json",
+        },
+        body: body ? JSON.stringify(body) : undefined,
+      });
+      const payload = await res.json().catch(() => ({}));
+      if (!res.ok || payload?.success === false) {
+        const errMessage = Array.isArray(payload?.errors)
+          ? payload.errors.map((entry) => entry?.message).filter(Boolean).join("; ")
+          : `${res.status} ${res.statusText || ""}`.trim();
+        const err = new Error(`Cloudflare API ${method} ${path} failed: ${errMessage}`);
+        err.status = res.status;
+        throw err;
+      }
+      return payload;
+    } catch (err) {
+      lastError = err;
+      const status = Number(err?.status || 0);
+      const retryable = status === 429 || status >= 500 || status === 0;
+      if (!retryable || attempt >= maxRetries) break;
+      const backoff = retryBaseMs * 2 ** (attempt - 1);
+      const jitter = Math.floor(Math.random() * Math.min(500, Math.max(100, backoff / 3)));
+      await sleep(backoff + jitter);
+    }
+  }
+  throw lastError || new Error(`Cloudflare API ${method} ${path} failed`);
+}
+
+export async function ensureCloudflareDnsCname({
+  hostname,
+  target,
+  proxied = true,
+  api = getCloudflareApiConfig(),
+} = {}) {
+  const normalizedHostname = normalizeDomainName(hostname);
+  const normalizedTarget = normalizeDomainName(target);
+  if (!normalizedHostname || !normalizedTarget) {
+    throw new Error("Missing hostname/target for Cloudflare DNS sync");
+  }
+  if (!api?.enabled) {
+    return { ok: true, changed: false, action: "disabled" };
+  }
+  if (!api.token || !api.zoneId) {
+    return { ok: false, changed: false, action: "missing_credentials" };
+  }
+
+  const query = `/zones/${encodeURIComponent(api.zoneId)}/dns_records?type=CNAME&name=${encodeURIComponent(normalizedHostname)}&per_page=100`;
+  const listed = await cloudflareApiRequest(api, query, { method: "GET" });
+  const records = Array.isArray(listed?.result) ? listed.result : [];
+  const existing = records.find(
+    (record) => String(record?.type || "").toUpperCase() === "CNAME"
+      && String(record?.name || "").toLowerCase() === normalizedHostname,
+  );
+  const payload = {
+    type: "CNAME",
+    name: normalizedHostname,
+    content: normalizedTarget,
+    proxied: Boolean(proxied),
+    ttl: 1,
+  };
+
+  if (existing) {
+    const sameTarget = String(existing.content || "").toLowerCase() === normalizedTarget;
+    const sameProxy = Boolean(existing.proxied) === Boolean(payload.proxied);
+    if (sameTarget && sameProxy) {
+      return { ok: true, changed: false, action: "noop", id: existing.id };
+    }
+    const updated = await cloudflareApiRequest(
+      api,
+      `/zones/${encodeURIComponent(api.zoneId)}/dns_records/${encodeURIComponent(existing.id)}`,
+      { method: "PUT", body: payload },
+    );
+    return {
+      ok: true,
+      changed: true,
+      action: "updated",
+      id: updated?.result?.id || existing.id,
+    };
+  }
+
+  const created = await cloudflareApiRequest(
+    api,
+    `/zones/${encodeURIComponent(api.zoneId)}/dns_records`,
+    { method: "POST", body: payload },
+  );
+  return {
+    ok: true,
+    changed: true,
+    action: "created",
+    id: created?.result?.id || null,
+  };
+}
+
+function getTunnelStartupConfig() {
+  return {
+    mode: normalizeTunnelMode(process.env.TELEGRAM_UI_TUNNEL || DEFAULT_TUNNEL_MODE),
+    namedTunnel: String(
+      process.env.CLOUDFLARE_TUNNEL_NAME || process.env.CF_TUNNEL_NAME || "",
+    ).trim(),
+    credentialsPath: String(
+      process.env.CLOUDFLARE_TUNNEL_CREDENTIALS || process.env.CF_TUNNEL_CREDENTIALS || "",
+    ).trim(),
+    allowQuickFallback: parseBooleanEnvValue(
+      process.env.TELEGRAM_UI_ALLOW_QUICK_TUNNEL_FALLBACK,
+      false,
+    ),
+  };
+}
+
 // ── Cloudflared binary auto-download ─────────────────────────────────
 
-const CF_CACHE_DIR = resolve(__dirname, ".cache", "bin");
 const CF_BIN_NAME = osPlatform() === "win32" ? "cloudflared.exe" : "cloudflared";
-const CF_CACHED_PATH = resolve(CF_CACHE_DIR, CF_BIN_NAME);
 
 /**
  * Get the cloudflared download URL for the current platform+arch.
@@ -2298,6 +3552,8 @@ function downloadFile(url, destPath, maxRedirects = 5) {
  * If not found anywhere and mode=auto, auto-downloads to .cache/bin/.
  */
 async function findCloudflared() {
+  const cfCacheDir = dirname(resolveUiSubCachePath("bin", ".keep"));
+  const cfCachedPath = resolve(cfCacheDir, CF_BIN_NAME);
   // 1. Check system PATH
   try {
     const cmd = osPlatform() === "win32"
@@ -2308,8 +3564,8 @@ async function findCloudflared() {
   } catch { /* not on PATH */ }
 
   // 2. Check cached binary
-  if (existsSync(CF_CACHED_PATH)) {
-    return CF_CACHED_PATH;
+  if (existsSync(cfCachedPath)) {
+    return cfCachedPath;
   }
 
   // 3. Auto-download
@@ -2321,15 +3577,15 @@ async function findCloudflared() {
 
   console.log("[telegram-ui] cloudflared not found — auto-downloading...");
   try {
-    mkdirSync(CF_CACHE_DIR, { recursive: true });
-    await downloadFile(dlUrl, CF_CACHED_PATH);
+    mkdirSync(cfCacheDir, { recursive: true });
+    await downloadFile(dlUrl, cfCachedPath);
     if (osPlatform() !== "win32") {
-      chmodSync(CF_CACHED_PATH, 0o755);
+      chmodSync(cfCachedPath, 0o755);
       // Small delay to ensure OS fully releases file locks after chmod
       await new Promise((r) => setTimeout(r, 100));
     }
-    console.log(`[telegram-ui] cloudflared downloaded to ${CF_CACHED_PATH}`);
-    return CF_CACHED_PATH;
+    console.log(`[telegram-ui] cloudflared downloaded to ${cfCachedPath}`);
+    return cfCachedPath;
   } catch (err) {
     console.warn(`[telegram-ui] cloudflared auto-download failed: ${err.message}`);
     return null;
@@ -2339,24 +3595,27 @@ async function findCloudflared() {
 /**
  * Start a cloudflared tunnel for the given local URL.
  *
- * Two modes:
- * 1. **Quick tunnel** (default): Free, no account, random *.trycloudflare.com domain.
- *    Pros: Zero setup. Cons: URL changes on each restart.
- * 2. **Named tunnel**: Persistent custom domain (e.g., myapp.example.com).
- *    Pros: Stable URL, custom domain. Cons: Requires cloudflare account + tunnel setup.
- *
- * Named tunnel setup:
- *   1. Create a tunnel: `cloudflared tunnel create <name>`
- *   2. Create DNS record: `cloudflared tunnel route dns <name> <subdomain.yourdomain.com>`
- *   3. Set env vars:
- *      - CLOUDFLARE_TUNNEL_NAME=<name>
- *      - CLOUDFLARE_TUNNEL_CREDENTIALS=/path/to/<tunnel-id>.json
+ * Modes:
+ * - named (default): persistent per-user hostname + DNS orchestration
+ * - quick: random trycloudflare hostname (explicit fallback mode)
+ * - disabled: no tunnel
  *
  * Returns the assigned public URL or null on failure.
  */
 async function startTunnel(localPort) {
-  const tunnelMode = (process.env.TELEGRAM_UI_TUNNEL || "auto").toLowerCase();
-  if (tunnelMode === "disabled" || tunnelMode === "off" || tunnelMode === "0") {
+  const tunnelCfg = getTunnelStartupConfig();
+  setTunnelRuntimeState({
+    mode: tunnelCfg.mode,
+    tunnelName: tunnelCfg.namedTunnel || "",
+    tunnelId: "",
+    hostname: "",
+    dnsAction: "none",
+    dnsStatus: "not_configured",
+    fallbackToQuick: false,
+    lastError: "",
+  });
+
+  if (tunnelCfg.mode === TUNNEL_MODE_DISABLED) {
     console.log("[telegram-ui] tunnel disabled via TELEGRAM_UI_TUNNEL=disabled");
     return null;
   }
@@ -2364,7 +3623,7 @@ async function startTunnel(localPort) {
   // ── SECURITY: Block tunnel when auth is disabled ─────────────────────
   if (isAllowUnsafe()) {
     console.error(
-      "[telegram-ui] ⛔ REFUSING to start Cloudflare tunnel — TELEGRAM_UI_ALLOW_UNSAFE=true\n" +
+      "[telegram-ui] :ban: REFUSING to start Cloudflare tunnel — TELEGRAM_UI_ALLOW_UNSAFE=true\n" +
       "  A public tunnel with no authentication lets ANYONE on the internet\n" +
       "  control your agents, read secrets, and execute commands.\n" +
       "\n" +
@@ -2379,26 +3638,39 @@ async function startTunnel(localPort) {
 
   const cfBin = await findCloudflared();
   if (!cfBin) {
-    if (tunnelMode === "auto") {
-      console.log(
-        "[telegram-ui] cloudflared unavailable — Telegram Mini App will use self-signed cert (may be rejected by Telegram webview).",
-      );
-      return null;
-    }
-    console.warn("[telegram-ui] cloudflared not found but TELEGRAM_UI_TUNNEL=cloudflared requested");
+    setTunnelRuntimeState({ lastError: "cloudflared_not_found" });
+    console.warn("[telegram-ui] cloudflared unavailable; tunnel not started");
     return null;
   }
 
-  // Check for named tunnel configuration (persistent URL)
-  const namedTunnel = process.env.CLOUDFLARE_TUNNEL_NAME || process.env.CF_TUNNEL_NAME;
-  const tunnelCreds = process.env.CLOUDFLARE_TUNNEL_CREDENTIALS || process.env.CF_TUNNEL_CREDENTIALS;
-
-  if (namedTunnel && tunnelCreds) {
-    return startNamedTunnel(cfBin, namedTunnel, tunnelCreds, localPort);
+  if (tunnelCfg.mode === TUNNEL_MODE_QUICK) {
+    return startQuickTunnel(cfBin, localPort);
   }
 
-  // Fall back to quick tunnel (random URL, no persistence)
-  return startQuickTunnel(cfBin, localPort);
+  const namedTunnelResult = await startNamedTunnel(
+    cfBin,
+    {
+      tunnelName: tunnelCfg.namedTunnel,
+      credentialsPath: tunnelCfg.credentialsPath,
+    },
+    localPort,
+  );
+  if (namedTunnelResult) return namedTunnelResult;
+
+  if (tunnelCfg.allowQuickFallback) {
+    console.warn("[telegram-ui] named tunnel failed; falling back to quick tunnel (explicitly allowed)");
+    setTunnelRuntimeState({
+      fallbackToQuick: true,
+      mode: TUNNEL_MODE_QUICK,
+    });
+    return startQuickTunnel(cfBin, localPort);
+  }
+
+  setTunnelRuntimeState({
+    fallbackToQuick: false,
+    lastError: tunnelRuntimeState.lastError || "named_tunnel_failed",
+  });
+  return null;
 }
 
 /**
@@ -2406,7 +3678,7 @@ async function startTunnel(localPort) {
  * Returns the child process or throws after max retries.
  */
 function spawnCloudflared(cfBin, args, maxRetries = 3) {
-  for (let attempt = 1; attempt <= maxRetries; attempt++) {
+  for (let attempt = 1; attempt <= maxRetries; attempt += 1) {
     try {
       return spawn(cfBin, args, {
         stdio: ["ignore", "pipe", "pipe"],
@@ -2429,26 +3701,110 @@ function spawnCloudflared(cfBin, args, maxRetries = 3) {
 
 /**
  * Start a cloudflared **named tunnel** with persistent URL.
- * Requires: cloudflared tunnel create + DNS setup.
+ * Requires tunnel credentials + DNS hostname (explicit or deterministic per-user mapping).
  */
-async function startNamedTunnel(cfBin, tunnelName, credentialsPath, localPort) {
-  if (!existsSync(credentialsPath)) {
-    console.warn(`[telegram-ui] named tunnel credentials not found: ${credentialsPath}`);
-    console.warn("[telegram-ui] falling back to quick tunnel (random URL)");
-    return startQuickTunnel(cfBin, localPort);
+function parseNamedTunnelCredentials(credentialsPath) {
+  if (!existsSync(credentialsPath)) return null;
+  try {
+    const parsed = JSON.parse(readFileSync(credentialsPath, "utf8"));
+    const tunnelId = String(parsed?.TunnelID || parsed?.tunnel_id || "").trim();
+    if (!tunnelId) return null;
+    return {
+      tunnelId,
+      credentialsPath,
+    };
+  } catch {
+    return null;
+  }
+}
+
+async function startNamedTunnel(cfBin, { tunnelName, credentialsPath }, localPort) {
+  const normalizedTunnelName = String(tunnelName || "").trim();
+  const normalizedCredsPath = String(credentialsPath || "").trim();
+  if (!normalizedTunnelName || !normalizedCredsPath) {
+    setTunnelRuntimeState({
+      lastError: "missing_named_tunnel_config",
+      mode: TUNNEL_MODE_NAMED,
+    });
+    console.warn(
+      "[telegram-ui] named tunnel requires CLOUDFLARE_TUNNEL_NAME + CLOUDFLARE_TUNNEL_CREDENTIALS.\n" +
+      "[telegram-ui] Run \"bosun --setup\" and choose \"Named tunnel\" to configure Cloudflare credentials,\n" +
+      "[telegram-ui] or set TELEGRAM_UI_TUNNEL=quick for an ephemeral trycloudflare.com URL.",
+    );
+    return null;
+  }
+
+  const parsedCreds = parseNamedTunnelCredentials(normalizedCredsPath);
+  if (!parsedCreds) {
+    setTunnelRuntimeState({
+      lastError: "invalid_named_tunnel_credentials",
+      mode: TUNNEL_MODE_NAMED,
+      tunnelName: normalizedTunnelName,
+    });
+    console.warn(
+      `[telegram-ui] named tunnel credentials not found or invalid: ${normalizedCredsPath}\n` +
+      `[telegram-ui] Ensure the path is correct and the file exists.\n` +
+      `[telegram-ui] Re-run "bosun --setup" to reconfigure Cloudflare tunnel credentials.`,
+    );
+    return null;
+  }
+
+  let hostnameInfo;
+  try {
+    hostnameInfo = resolveDeterministicTunnelHostname();
+  } catch (err) {
+    setTunnelRuntimeState({
+      lastError: "hostname_resolution_failed",
+      mode: TUNNEL_MODE_NAMED,
+      tunnelName: normalizedTunnelName,
+      tunnelId: parsedCreds.tunnelId,
+    });
+    console.warn(`[telegram-ui] named tunnel hostname resolution failed: ${err.message}`);
+    return null;
+  }
+
+  const dnsTarget = `${parsedCreds.tunnelId}.cfargotunnel.com`;
+  const cfApi = getCloudflareApiConfig();
+  let dnsSync = { ok: false, changed: false, action: "missing_credentials" };
+  try {
+    dnsSync = await ensureCloudflareDnsCname({
+      hostname: hostnameInfo.hostname,
+      target: dnsTarget,
+      proxied: true,
+      api: cfApi,
+    });
+    if (dnsSync.ok) {
+      console.log(
+        `[telegram-ui] cloudflare DNS ${dnsSync.action}: ${hostnameInfo.hostname} -> ${dnsTarget}`,
+      );
+    } else if (dnsSync.action === "missing_credentials") {
+      console.warn(
+        "[telegram-ui] Cloudflare DNS sync skipped (missing CLOUDFLARE_API_TOKEN/CLOUDFLARE_ZONE_ID)",
+      );
+    }
+  } catch (err) {
+    setTunnelRuntimeState({
+      lastError: "dns_sync_failed",
+      mode: TUNNEL_MODE_NAMED,
+      tunnelName: normalizedTunnelName,
+      tunnelId: parsedCreds.tunnelId,
+      hostname: hostnameInfo.hostname,
+      dnsAction: "error",
+      dnsStatus: "error",
+    });
+    console.warn(`[telegram-ui] Cloudflare DNS sync failed: ${err.message}`);
+    return null;
   }
 
   // Named tunnels require config file with ingress rules.
-  // We'll create a temporary config on the fly.
-  const configPath = resolve(__dirname, ".cache", "cloudflared-config.yml");
-  mkdirSync(dirname(configPath), { recursive: true });
-
+  const configPath = resolveUiCachePath("cloudflared-config.yml");
+  const credsPathYaml = normalizedCredsPath.replace(/\\/g, "/");
   const configYaml = `
-tunnel: ${tunnelName}
-credentials-file: ${credentialsPath}
+tunnel: ${normalizedTunnelName}
+credentials-file: ${credsPathYaml}
 
 ingress:
-  - hostname: "*"
+  - hostname: "${hostnameInfo.hostname}"
     service: https://localhost:${localPort}
     originRequest:
       noTLSVerify: true
@@ -2457,41 +3813,51 @@ ingress:
 
   writeFileSync(configPath, configYaml, "utf8");
 
-  // Read the tunnel ID from credentials to construct the public URL
-  let publicUrl = null;
-  try {
-    const creds = JSON.parse(readFileSync(credentialsPath, "utf8"));
-    const tunnelId = creds.TunnelID || creds.tunnel_id;
-    if (tunnelId) {
-      publicUrl = `https://${tunnelId}.cfargotunnel.com`;
-    }
-  } catch (err) {
-    console.warn(`[telegram-ui] failed to parse tunnel credentials: ${err.message}`);
-  }
-
   return new Promise((resolvePromise) => {
     const args = ["tunnel", "--config", configPath, "run"];
-    console.log(`[telegram-ui] starting named tunnel: ${tunnelName} → https://localhost:${localPort}`);
+    const publicUrl = `https://${hostnameInfo.hostname}`;
+    console.log(
+      `[telegram-ui] starting named tunnel: ${normalizedTunnelName} -> ${publicUrl} -> https://localhost:${localPort}`,
+    );
 
     let child;
     try {
       child = spawnCloudflared(cfBin, args);
     } catch (err) {
+      setTunnelRuntimeState({
+        lastError: "named_tunnel_spawn_failed",
+        mode: TUNNEL_MODE_NAMED,
+        tunnelName: normalizedTunnelName,
+        tunnelId: parsedCreds.tunnelId,
+        hostname: hostnameInfo.hostname,
+      });
       console.warn(`[telegram-ui] named tunnel spawn failed: ${err.message}`);
       return resolvePromise(null);
     }
 
     let resolved = false;
     let output = "";
-    // Named tunnels emit "Connection <UUID> registered" when ready
-    const readyPattern = /Connection [a-f0-9-]+ registered/;
+    // Named tunnels emit "Connection <UUID> registered" (or "Registered tunnel connection")
+    const readyPattern = /Connection [a-f0-9-]+ registered|Registered tunnel connection/i;
+    const namedTunnelTimeoutMs = parseBoundedInt(
+      process.env.TELEGRAM_UI_NAMED_TUNNEL_TIMEOUT_MS,
+      60_000,
+      { min: 10_000, max: 300_000 },
+    );
     const timeout = setTimeout(() => {
       if (!resolved) {
         resolved = true;
-        console.warn("[telegram-ui] named tunnel timed out after 60s");
+        setTunnelRuntimeState({
+          lastError: "named_tunnel_timeout",
+          mode: TUNNEL_MODE_NAMED,
+          tunnelName: normalizedTunnelName,
+          tunnelId: parsedCreds.tunnelId,
+          hostname: hostnameInfo.hostname,
+        });
+        console.warn(`[telegram-ui] named tunnel timed out after ${namedTunnelTimeoutMs}ms`);
         resolvePromise(null);
       }
-    }, 60_000);
+    }, namedTunnelTimeoutMs);
 
     function parseOutput(chunk) {
       output += chunk;
@@ -2499,9 +3865,21 @@ ingress:
         resolved = true;
         clearTimeout(timeout);
         tunnelUrl = publicUrl;
+        tunnelPublicHostname = hostnameInfo.hostname;
         tunnelProcess = child;
+        quickTunnelRestartAttempts = 0;
+        setTunnelRuntimeState({
+          mode: TUNNEL_MODE_NAMED,
+          tunnelName: normalizedTunnelName,
+          tunnelId: parsedCreds.tunnelId,
+          hostname: hostnameInfo.hostname,
+          dnsAction: dnsSync.action || "none",
+          dnsStatus: dnsSync.ok ? "ok" : "not_configured",
+          fallbackToQuick: false,
+          lastError: "",
+        });
         _notifyTunnelChange(publicUrl);
-        console.log(`[telegram-ui] named tunnel active: ${publicUrl || tunnelName}`);
+        console.log(`[telegram-ui] named tunnel active: ${publicUrl}`);
         resolvePromise(publicUrl);
       }
     }
@@ -2513,6 +3891,13 @@ ingress:
       if (!resolved) {
         resolved = true;
         clearTimeout(timeout);
+        setTunnelRuntimeState({
+          lastError: "named_tunnel_runtime_error",
+          mode: TUNNEL_MODE_NAMED,
+          tunnelName: normalizedTunnelName,
+          tunnelId: parsedCreds.tunnelId,
+          hostname: hostnameInfo.hostname,
+        });
         console.warn(`[telegram-ui] named tunnel failed: ${err.message}`);
         resolvePromise(null);
       }
@@ -2521,12 +3906,24 @@ ingress:
     child.on("exit", (code) => {
       tunnelProcess = null;
       tunnelUrl = null;
+      tunnelPublicHostname = "";
+      _notifyTunnelChange(null);
       if (!resolved) {
         resolved = true;
         clearTimeout(timeout);
+        setTunnelRuntimeState({
+          lastError: "named_tunnel_exited_early",
+          mode: TUNNEL_MODE_NAMED,
+          tunnelName: normalizedTunnelName,
+          tunnelId: parsedCreds.tunnelId,
+          hostname: hostnameInfo.hostname,
+        });
         console.warn(`[telegram-ui] named tunnel exited with code ${code}`);
         resolvePromise(null);
       } else if (code !== 0 && code !== null) {
+        setTunnelRuntimeState({
+          lastError: "named_tunnel_exited",
+        });
         console.warn(`[telegram-ui] named tunnel exited (code ${code})`);
       }
     });
@@ -2537,26 +3934,88 @@ ingress:
  * Start a cloudflared **quick tunnel** (random *.trycloudflare.com URL).
  * Quick tunnels are free, require no account, but the URL changes on each restart.
  */
+function clearQuickTunnelRestartTimer() {
+  if (quickTunnelRestartTimer) {
+    clearTimeout(quickTunnelRestartTimer);
+    quickTunnelRestartTimer = null;
+  }
+}
+
+function getQuickTunnelRestartConfig() {
+  const maxAttempts = parseBoundedInt(
+    process.env.TELEGRAM_UI_QUICK_TUNNEL_RESTART_MAX_ATTEMPTS,
+    6,
+    { min: 1, max: 50 },
+  );
+  const baseDelayMs = parseBoundedInt(
+    process.env.TELEGRAM_UI_QUICK_TUNNEL_RESTART_BASE_DELAY_MS
+      || process.env.TELEGRAM_UI_QUICK_TUNNEL_RESTART_BASE_MS,
+    5000,
+    { min: 250, max: 60_000 },
+  );
+  const maxDelayMs = parseBoundedInt(
+    process.env.TELEGRAM_UI_QUICK_TUNNEL_RESTART_MAX_DELAY_MS,
+    120_000,
+    { min: 1000, max: 900_000 },
+  );
+  return { maxAttempts, baseDelayMs, maxDelayMs };
+}
+
+function scheduleQuickTunnelRestart(cfBin, localPort) {
+  if (quickTunnelRestartSuppressed) return;
+  const cfg = getQuickTunnelRestartConfig();
+  if (quickTunnelRestartAttempts >= cfg.maxAttempts) {
+    console.warn(
+      `[telegram-ui] quick tunnel restart exhausted after ${quickTunnelRestartAttempts} attempts (max ${cfg.maxAttempts})`,
+    );
+    return;
+  }
+  quickTunnelRestartAttempts += 1;
+  const backoff = Math.min(cfg.maxDelayMs, cfg.baseDelayMs * 2 ** (quickTunnelRestartAttempts - 1));
+  const jitter = Math.floor(Math.random() * Math.max(200, Math.floor(backoff * 0.2)));
+  const restartDelayMs = Math.min(cfg.maxDelayMs, backoff + jitter);
+  clearQuickTunnelRestartTimer();
+  console.warn(
+    `[telegram-ui] quick tunnel restart scheduled (${quickTunnelRestartAttempts}/${cfg.maxAttempts}) in ${restartDelayMs}ms`,
+  );
+  quickTunnelRestartTimer = setTimeout(() => {
+    startQuickTunnel(cfBin, localPort).catch((err) => {
+      console.warn(`[telegram-ui] quick tunnel restart failed: ${err.message}`);
+    });
+  }, restartDelayMs);
+  quickTunnelRestartTimer.unref?.();
+}
+
 async function startQuickTunnel(cfBin, localPort) {
+  quickTunnelRestartSuppressed = false;
+  clearQuickTunnelRestartTimer();
   return new Promise((resolvePromise) => {
     const localUrl = `https://localhost:${localPort}`;
     const args = ["tunnel", "--url", localUrl, "--no-autoupdate", "--no-tls-verify"];
-    console.log(`[telegram-ui] starting quick tunnel → ${localUrl}`);
+    console.log(`[telegram-ui] starting quick tunnel -> ${localUrl}`);
 
     let child;
     try {
       child = spawnCloudflared(cfBin, args);
     } catch (err) {
+      setTunnelRuntimeState({
+        mode: TUNNEL_MODE_QUICK,
+        lastError: "quick_tunnel_spawn_failed",
+      });
       console.warn(`[telegram-ui] quick tunnel spawn failed: ${err.message}`);
       return resolvePromise(null);
     }
 
     let resolved = false;
     let output = "";
-    const urlPattern = /https:\/\/[a-z0-9-]+\.trycloudflare\.com/;
+    const urlPattern = /https:\/\/[a-z0-9-]+\.trycloudflare\.com/i;
     const timeout = setTimeout(() => {
       if (!resolved) {
         resolved = true;
+        setTunnelRuntimeState({
+          mode: TUNNEL_MODE_QUICK,
+          lastError: "quick_tunnel_timeout",
+        });
         console.warn("[telegram-ui] quick tunnel timed out after 30s");
         resolvePromise(null);
       }
@@ -2568,9 +4027,21 @@ async function startQuickTunnel(cfBin, localPort) {
       if (match && !resolved) {
         resolved = true;
         clearTimeout(timeout);
-        tunnelUrl = match[0];
+        tunnelUrl = String(match[0]).toLowerCase();
+        tunnelPublicHostname = "";
         tunnelProcess = child;
-        _notifyTunnelChange(match[0]);
+        quickTunnelRestartAttempts = 0;
+        setTunnelRuntimeState({
+          mode: TUNNEL_MODE_QUICK,
+          tunnelName: "",
+          tunnelId: "",
+          hostname: "",
+          dnsAction: "none",
+          dnsStatus: "disabled",
+          fallbackToQuick: true,
+          lastError: "",
+        });
+        _notifyTunnelChange(tunnelUrl);
         console.log(`[telegram-ui] quick tunnel active: ${tunnelUrl}`);
         resolvePromise(tunnelUrl);
       }
@@ -2583,6 +4054,10 @@ async function startQuickTunnel(cfBin, localPort) {
       if (!resolved) {
         resolved = true;
         clearTimeout(timeout);
+        setTunnelRuntimeState({
+          mode: TUNNEL_MODE_QUICK,
+          lastError: "quick_tunnel_runtime_error",
+        });
         console.warn(`[telegram-ui] quick tunnel failed: ${err.message}`);
         resolvePromise(null);
       }
@@ -2591,13 +4066,24 @@ async function startQuickTunnel(cfBin, localPort) {
     child.on("exit", (code) => {
       tunnelProcess = null;
       tunnelUrl = null;
+      tunnelPublicHostname = "";
+      _notifyTunnelChange(null);
       if (!resolved) {
         resolved = true;
         clearTimeout(timeout);
+        setTunnelRuntimeState({
+          mode: TUNNEL_MODE_QUICK,
+          lastError: "quick_tunnel_exited_early",
+        });
         console.warn(`[telegram-ui] quick tunnel exited with code ${code}`);
         resolvePromise(null);
       } else if (code !== 0 && code !== null) {
+        setTunnelRuntimeState({
+          mode: TUNNEL_MODE_QUICK,
+          lastError: "quick_tunnel_exited",
+        });
         console.warn(`[telegram-ui] quick tunnel exited (code ${code})`);
+        scheduleQuickTunnelRestart(cfBin, localPort);
       }
     });
   });
@@ -2605,13 +4091,29 @@ async function startQuickTunnel(cfBin, localPort) {
 
 /** Stop the tunnel if running. */
 export function stopTunnel() {
+  quickTunnelRestartSuppressed = true;
+  clearQuickTunnelRestartTimer();
   if (tunnelProcess) {
     try {
       tunnelProcess.kill("SIGTERM");
-    } catch { /* ignore */ }
+    } catch {
+      /* ignore */
+    }
     tunnelProcess = null;
     tunnelUrl = null;
+    tunnelPublicHostname = "";
+    _notifyTunnelChange(null);
   }
+  setTunnelRuntimeState({
+    mode: TUNNEL_MODE_DISABLED,
+    tunnelName: "",
+    tunnelId: "",
+    hostname: "",
+    dnsAction: "none",
+    dnsStatus: "not_configured",
+    fallbackToQuick: false,
+    lastError: "",
+  });
 }
 
 export function injectUiDependencies(deps = {}) {
@@ -2692,6 +4194,82 @@ function textResponse(res, statusCode, body, contentType = "text/plain") {
   res.end(body);
 }
 
+function normalizeTaskStatusKey(status) {
+  return String(status || "")
+    .trim()
+    .toLowerCase()
+    .replace(/[\s_-]+/g, "");
+}
+
+function shouldRestartTaskAfterStatusUpdate(previousStatus, nextStatus) {
+  const prev = normalizeTaskStatusKey(previousStatus);
+  const next = normalizeTaskStatusKey(nextStatus);
+  return prev === "inreview" && next === "inprogress";
+}
+
+async function maybeRestartTaskOnReopen({
+  taskId,
+  previousStatus,
+  nextStatus,
+  updatedTask,
+  adapter,
+  executor,
+}) {
+  if (!taskId) {
+    return { attempted: false, started: false, reason: "missing_task_id" };
+  }
+  if (!shouldRestartTaskAfterStatusUpdate(previousStatus, nextStatus)) {
+    return { attempted: false, started: false, reason: "transition_not_eligible" };
+  }
+  if (!executor) {
+    return { attempted: true, started: false, reason: "executor_unavailable" };
+  }
+
+  const status = executor.getStatus?.() || {};
+  const activeSlots = Array.isArray(status?.slots) ? status.slots : [];
+  const alreadyRunning = activeSlots.some(
+    (slot) => String(slot?.taskId || "").trim() === String(taskId).trim(),
+  );
+  if (alreadyRunning) {
+    return { attempted: true, started: false, reason: "already_running" };
+  }
+
+  const maxParallel = Number(status?.maxParallel || 0);
+  const activeCount = Number(status?.activeSlots || activeSlots.length || 0);
+  const hasFreeSlot = maxParallel <= 0 || activeCount < maxParallel;
+  if (!hasFreeSlot) {
+    return { attempted: true, started: false, reason: "no_free_slots" };
+  }
+
+  let taskToRun = updatedTask && typeof updatedTask === "object" ? updatedTask : null;
+  if (!taskToRun?.id && typeof adapter?.getTask === "function") {
+    try {
+      taskToRun = await adapter.getTask(taskId);
+    } catch (err) {
+      return {
+        attempted: true,
+        started: false,
+        reason: "task_lookup_failed",
+        error: err?.message || String(err),
+      };
+    }
+  }
+  if (!taskToRun) {
+    return { attempted: true, started: false, reason: "task_not_found" };
+  }
+
+  executor.executeTask(taskToRun, {
+    force: true,
+    recoveredFromInProgress: true,
+  }).catch((error) => {
+    console.warn(
+      `[telegram-ui] failed to restart reopened task ${taskId}: ${error.message}`,
+    );
+  });
+
+  return { attempted: true, started: true, reason: "restarted" };
+}
+
 function parseInitData(initData) {
   const params = new URLSearchParams(initData);
   const data = {};
@@ -2754,25 +4332,100 @@ function checkSessionToken(req) {
   return false;
 }
 
-function requireAuth(req) {
-  if (isAllowUnsafe()) return true;
-  // Session token (browser access)
-  if (checkSessionToken(req)) return true;
-  // Telegram initData HMAC
-  const initData =
+/**
+ * Check whether the request carries a valid desktop API key.
+ *
+ * The Electron main process sets BOSUN_DESKTOP_API_KEY in process.env before
+ * starting (or connecting to) the UI server. When that env var is present any
+ * request bearing the matching Bearer token is treated as fully authenticated —
+ * no session cookie or Telegram initData required.
+ *
+ * This allows the desktop app to connect to a separately-running daemon server
+ * without needing to share the TTL-based session token.
+ */
+function checkDesktopApiKey(req) {
+  const expected = (process.env.BOSUN_DESKTOP_API_KEY || "").trim();
+  if (!expected) return false;
+  const authHeader = req.headers.authorization || "";
+  if (!authHeader.startsWith("Bearer ")) return false;
+  const provided = authHeader.slice(7).trim();
+  if (!provided) return false;
+  try {
+    const a = Buffer.from(provided);
+    const b = Buffer.from(expected);
+    if (a.length !== b.length) return false;
+    return timingSafeEqual(a, b);
+  } catch {
+    return false;
+  }
+}
+
+function getTelegramInitData(req, url = null) {
+  return String(
     req.headers["x-telegram-initdata"] ||
     req.headers["x-telegram-init-data"] ||
     req.headers["x-telegram-init"] ||
     req.headers["x-telegram-webapp"] ||
     req.headers["x-telegram-webapp-data"] ||
-    "";
+    url?.searchParams?.get("initData") ||
+    "",
+  );
+}
+
+function buildSessionCookieHeader() {
+  const secure = uiServerTls ? "; Secure" : "";
+  const token = ensureSessionToken();
+  return `ve_session=${token}; HttpOnly; SameSite=Lax; Path=/; Max-Age=86400${secure}`;
+}
+
+function getHeaderString(value) {
+  if (Array.isArray(value)) return String(value[0] || "");
+  return String(value || "");
+}
+
+async function requireAuth(req) {
+  if (isAllowUnsafe()) return { ok: true, source: "unsafe", issueSessionCookie: false };
+  // Desktop Electron API key — non-expiring, set via BOSUN_DESKTOP_API_KEY env
+  if (checkDesktopApiKey(req)) return { ok: true, source: "desktop-api-key", issueSessionCookie: false };
+  // Session token (browser access)
+  if (checkSessionToken(req)) return { ok: true, source: "session", issueSessionCookie: false };
+  // Telegram initData HMAC
+  const initData = getTelegramInitData(req);
   const token = process.env.TELEGRAM_BOT_TOKEN || "";
-  if (!initData) return false;
-  return validateInitData(String(initData), token);
+  if (initData && validateInitData(initData, token)) {
+    return { ok: true, source: "telegram", issueSessionCookie: false };
+  }
+  // Fallback auth header is only evaluated after session + Telegram auth fails.
+  const fallbackSecret = getHeaderString(
+    req.headers["x-bosun-fallback-auth"] || req.headers["x-admin-fallback-auth"],
+  ).trim();
+  if (fallbackSecret) {
+    const result = await attemptFallbackAuth(req, fallbackSecret);
+    if (result.ok) {
+      return { ok: true, source: "fallback", issueSessionCookie: true };
+    }
+  }
+  return { ok: false, source: "unauthorized", issueSessionCookie: false };
 }
 
 function requireWsAuth(req, url) {
   if (isAllowUnsafe()) return true;
+  // Desktop Electron API key (query param: desktopKey=...)
+  const desktopKey = (process.env.BOSUN_DESKTOP_API_KEY || "").trim();
+  if (desktopKey) {
+    const qDesktopKey = url.searchParams.get("desktopKey") || "";
+    if (qDesktopKey) {
+      try {
+        const a = Buffer.from(qDesktopKey);
+        const b = Buffer.from(desktopKey);
+        if (a.length === b.length && timingSafeEqual(a, b)) return true;
+      } catch {
+        /* ignore */
+      }
+    }
+    // Also accept via Authorization header (for WS upgrade requests that support it)
+    if (checkDesktopApiKey(req)) return true;
+  }
   // Session token (query param or cookie)
   if (checkSessionToken(req)) return true;
   if (sessionToken) {
@@ -2784,12 +4437,7 @@ function requireWsAuth(req, url) {
     }
   }
   // Telegram initData HMAC
-  const initData =
-    req.headers["x-telegram-initdata"] ||
-    req.headers["x-telegram-init-data"] ||
-    req.headers["x-telegram-init"] ||
-    url.searchParams.get("initData") ||
-    "";
+  const initData = getTelegramInitData(req, url);
   const token = process.env.TELEGRAM_BOT_TOKEN || "";
   if (!initData) return false;
   return validateInitData(String(initData), token);
@@ -3032,14 +4680,6 @@ function stopWsHeartbeat() {
     clearInterval(wsHeartbeatTimer);
     wsHeartbeatTimer = null;
   }
-}
-
-function parseBooleanEnv(value, fallback = false) {
-  if (value === undefined || value === null || value === "") return fallback;
-  const raw = String(value).trim().toLowerCase();
-  if (["1", "true", "yes", "on"].includes(raw)) return true;
-  if (["0", "false", "no", "off"].includes(raw)) return false;
-  return fallback;
 }
 
 function getGitHubWebhookPath() {
@@ -4030,30 +5670,75 @@ async function ensurePresenceLoaded() {
 }
 
 async function handleApi(req, res, url) {
+  const path = url.pathname;
   if (req.method === "OPTIONS") {
     res.writeHead(204, {
       "Access-Control-Allow-Origin": "*",
       "Access-Control-Allow-Methods": "GET,POST,OPTIONS",
-      "Access-Control-Allow-Headers": "Content-Type,X-Telegram-InitData",
+      "Access-Control-Allow-Headers": "Content-Type,X-Telegram-InitData,X-Bosun-Fallback-Auth",
     });
     res.end();
     return;
   }
 
-  if (!requireAuth(req)) {
-    jsonResponse(res, 401, {
-      ok: false,
-      error: "Unauthorized. Telegram init data missing or invalid.",
+  if (path === "/api/auth/fallback/status" && req.method === "GET") {
+    jsonResponse(res, 200, {
+      ok: true,
+      data: {
+        fallbackAuth: getFallbackAuthStatus(),
+        tunnel: getTunnelStatus(),
+      },
     });
     return;
   }
 
-  if (req.method === "POST" && !checkRateLimit(req, 30)) {
-    jsonResponse(res, 429, { ok: false, error: "Rate limit exceeded. Try again later." });
+  if (path === "/api/auth/fallback/login" && req.method === "POST") {
+    try {
+      const body = await readJsonBody(req);
+      const secret = String(body?.secret || body?.password || body?.pin || "").trim();
+      const attempt = await attemptFallbackAuth(req, secret);
+      if (!attempt.ok) {
+        jsonResponse(res, 401, {
+          ok: false,
+          error: "Authentication failed.",
+        });
+        return;
+      }
+      res.setHeader("Set-Cookie", buildSessionCookieHeader());
+      jsonResponse(res, 200, {
+        ok: true,
+        tokenIssued: true,
+        auth: "fallback",
+      });
+    } catch {
+      jsonResponse(res, 401, {
+        ok: false,
+        error: "Authentication failed.",
+      });
+    }
     return;
   }
 
-  const path = url.pathname;
+  const authResult = await requireAuth(req);
+  if (!authResult?.ok) {
+    jsonResponse(res, 401, {
+      ok: false,
+      error: "Unauthorized.",
+    });
+    return;
+  }
+  if (authResult.issueSessionCookie) {
+    res.setHeader("Set-Cookie", buildSessionCookieHeader());
+  }
+
+  if (req.method === "POST") {
+    const maxPerMin = getMutationRateLimitPerMin(authResult);
+    const rateScope = `post:${authResult?.source || "unknown"}`;
+    if (!checkRateLimit(req, maxPerMin, rateScope)) {
+      jsonResponse(res, 429, { ok: false, error: "Rate limit exceeded. Try again later." });
+      return;
+    }
+  }
   if (path.startsWith("/api/attachments/") && req.method === "GET") {
     const rel = decodeURIComponent(path.slice("/api/attachments/".length));
     const root = ATTACHMENTS_ROOT;
@@ -4083,6 +5768,44 @@ async function handleApi(req, res, url) {
   if (path === "/api/status") {
     const data = await readStatusSnapshot();
     jsonResponse(res, 200, { ok: true, data });
+    return;
+  }
+
+  if (
+    (path === "/api/auth/fallback/set" || path === "/api/auth/fallback/rotate")
+    && req.method === "POST"
+  ) {
+    try {
+      const body = await readJsonBody(req);
+      const secret = String(body?.secret || body?.password || body?.pin || "").trim();
+      const confirm = String(body?.confirm || "").trim();
+      if (!secret || (confirm && confirm !== secret)) {
+        jsonResponse(res, 400, {
+          ok: false,
+          error: "Invalid fallback credential payload.",
+        });
+        return;
+      }
+      await setFallbackAuthSecret(secret, { actor: "api" });
+      jsonResponse(res, 200, {
+        ok: true,
+        data: getFallbackAuthStatus(),
+      });
+    } catch (err) {
+      jsonResponse(res, 400, {
+        ok: false,
+        error: err?.message || "Failed to set fallback credential.",
+      });
+    }
+    return;
+  }
+
+  if (path === "/api/auth/fallback/reset" && req.method === "POST") {
+    resetFallbackAuthSecret();
+    jsonResponse(res, 200, {
+      ok: true,
+      data: getFallbackAuthStatus(),
+    });
     return;
   }
 
@@ -4482,6 +6205,9 @@ async function handleApi(req, res, url) {
         return;
       }
       const adapter = getKanbanAdapter();
+      const previousTask = typeof adapter.getTask === "function"
+        ? await adapter.getTask(taskId).catch(() => null)
+        : null;
       const tagsProvided = body && Object.prototype.hasOwnProperty.call(body, "tags");
       const tags = tagsProvided ? normalizeTagsInput(body?.tags) : undefined;
       const draftProvided = body && Object.prototype.hasOwnProperty.call(body, "draft");
@@ -4524,12 +6250,27 @@ async function handleApi(req, res, url) {
         typeof adapter.updateTask === "function"
           ? await adapter.updateTask(taskId, patch)
           : await adapter.updateTaskStatus(taskId, patch.status);
-      jsonResponse(res, 200, { ok: true, data: updated });
+      const executor = uiDeps.getInternalExecutor?.() || null;
+      const restart = await maybeRestartTaskOnReopen({
+        taskId,
+        previousStatus: previousTask?.status || null,
+        nextStatus: updated?.status || patch.status || null,
+        updatedTask: updated,
+        adapter,
+        executor,
+      });
+      jsonResponse(res, 200, { ok: true, data: updated, restart });
       broadcastUiEvent(["tasks", "overview"], "invalidate", {
         reason: "task-updated",
         taskId,
         status: updated?.status || patch.status || null,
       });
+      if (restart?.started) {
+        broadcastUiEvent(["tasks", "overview", "executor", "agents"], "invalidate", {
+          reason: "task-restarted",
+          taskId,
+        });
+      }
     } catch (err) {
       jsonResponse(res, 500, { ok: false, error: err.message });
     }
@@ -4545,6 +6286,9 @@ async function handleApi(req, res, url) {
         return;
       }
       const adapter = getKanbanAdapter();
+      const previousTask = typeof adapter.getTask === "function"
+        ? await adapter.getTask(taskId).catch(() => null)
+        : null;
       const tagsProvided = body && Object.prototype.hasOwnProperty.call(body, "tags");
       const tags = tagsProvided ? normalizeTagsInput(body?.tags) : undefined;
       const draftProvided = body && Object.prototype.hasOwnProperty.call(body, "draft");
@@ -4587,12 +6331,27 @@ async function handleApi(req, res, url) {
         typeof adapter.updateTask === "function"
           ? await adapter.updateTask(taskId, patch)
           : await adapter.updateTaskStatus(taskId, patch.status);
-      jsonResponse(res, 200, { ok: true, data: updated });
+      const executor = uiDeps.getInternalExecutor?.() || null;
+      const restart = await maybeRestartTaskOnReopen({
+        taskId,
+        previousStatus: previousTask?.status || null,
+        nextStatus: updated?.status || patch.status || null,
+        updatedTask: updated,
+        adapter,
+        executor,
+      });
+      jsonResponse(res, 200, { ok: true, data: updated, restart });
       broadcastUiEvent(["tasks", "overview"], "invalidate", {
         reason: "task-edited",
         taskId,
         status: updated?.status || patch.status || null,
       });
+      if (restart?.started) {
+        broadcastUiEvent(["tasks", "overview", "executor", "agents"], "invalidate", {
+          reason: "task-restarted",
+          taskId,
+        });
+      }
     } catch (err) {
       jsonResponse(res, 500, { ok: false, error: err.message });
     }
@@ -4959,13 +6718,17 @@ async function handleApi(req, res, url) {
       const configDir = resolveUiConfigDir();
       if (req.method === "POST") {
         const body = await readJsonBody(req);
-        const wsId = body?.workspaceId || body?.id;
+        const wsId = String(body?.workspaceId || body?.id || "").trim();
         if (!wsId) {
           jsonResponse(res, 400, { ok: false, error: "workspaceId required" });
           return;
         }
         setActiveManagedWorkspace(configDir, wsId);
-        jsonResponse(res, 200, { ok: true, activeId: wsId });
+        const active = getActiveManagedWorkspace(configDir);
+        jsonResponse(res, 200, {
+          ok: true,
+          activeId: String(active?.id || wsId),
+        });
         broadcastUiEvent(["workspaces", "tasks", "overview"], "invalidate", {
           reason: "workspace-switched",
           workspaceId: wsId,
@@ -5987,6 +7750,9 @@ async function handleApi(req, res, url) {
       const wfMod = await getWorkflowEngine();
       if (!wfMod) { jsonResponse(res, 503, { ok: false, error: "Workflow engine not available" }); return; }
       const engine = wfMod.getWorkflowEngine();
+      if (typeof _wfTemplates?.applyWorkflowTemplateState === "function") {
+        _wfTemplates.applyWorkflowTemplateState(body);
+      }
       const saved = await engine.save(body);
       jsonResponse(res, 200, { ok: true, workflow: saved });
     } catch (err) {
@@ -6017,6 +7783,65 @@ async function handleApi(req, res, url) {
       const engine = wfMod.getWorkflowEngine();
       const wf = await tplMod.installTemplate(body.templateId, engine, body.overrides);
       jsonResponse(res, 200, { ok: true, workflow: wf });
+    } catch (err) {
+      jsonResponse(res, 500, { ok: false, error: err.message });
+    }
+    return;
+  }
+
+  if (path === "/api/workflows/template-updates") {
+    try {
+      const wfMod = await getWorkflowEngine();
+      if (!wfMod) { jsonResponse(res, 503, { ok: false, error: "Workflow engine not available" }); return; }
+      const engine = wfMod.getWorkflowEngine();
+      if (typeof _wfTemplates?.reconcileInstalledTemplates === "function") {
+        _wfTemplates.reconcileInstalledTemplates(engine, {
+          autoUpdateUnmodified: true,
+        });
+      }
+      const updates = engine
+        .list()
+        .map((wf) => {
+          const state = wf.metadata?.templateState || null;
+          if (!state?.templateId) return null;
+          return {
+            workflowId: wf.id,
+            workflowName: wf.name,
+            templateId: state.templateId,
+            templateName: state.templateName || state.templateId,
+            updateAvailable: state.updateAvailable === true,
+            isCustomized: state.isCustomized === true,
+            templateVersion: state.templateVersion || null,
+            installedTemplateVersion: state.installedTemplateVersion || null,
+          };
+        })
+        .filter(Boolean);
+      jsonResponse(res, 200, { ok: true, updates });
+    } catch (err) {
+      jsonResponse(res, 500, { ok: false, error: err.message });
+    }
+    return;
+  }
+
+  if (path.startsWith("/api/workflows/") && path.endsWith("/template-update")) {
+    try {
+      const wfMod = await getWorkflowEngine();
+      if (!wfMod) { jsonResponse(res, 503, { ok: false, error: "Workflow engine not available" }); return; }
+      const engine = wfMod.getWorkflowEngine();
+      const workflowId = decodeURIComponent(path.split("/")[3] || "");
+      if (!workflowId) {
+        jsonResponse(res, 400, { ok: false, error: "Missing workflow id" });
+        return;
+      }
+      const body = await readJsonBody(req).catch(() => ({}));
+      const mode = String(body?.mode || "replace").toLowerCase();
+      const force = body?.force === true;
+      if (typeof _wfTemplates?.updateWorkflowFromTemplate !== "function") {
+        jsonResponse(res, 503, { ok: false, error: "Template update service unavailable" });
+        return;
+      }
+      const workflow = _wfTemplates.updateWorkflowFromTemplate(engine, workflowId, { mode, force });
+      jsonResponse(res, 200, { ok: true, workflow });
     } catch (err) {
       jsonResponse(res, 500, { ok: false, error: err.message });
     }
@@ -6062,11 +7887,68 @@ async function handleApi(req, res, url) {
       const wfMod = await getWorkflowEngine();
       if (!wfMod) { jsonResponse(res, 503, { ok: false, error: "Workflow engine not available" }); return; }
       const engine = wfMod.getWorkflowEngine();
-      const runId = decodeURIComponent(path.replace("/api/workflows/runs/", "")).trim();
+      const subPath = path.replace("/api/workflows/runs/", "");
+      const segments = subPath.split("/").map(decodeURIComponent);
+      const runId = (segments[0] || "").trim();
+      const action = (segments[1] || "").trim();
+
       if (!runId) {
         jsonResponse(res, 400, { ok: false, error: "runId is required" });
         return;
       }
+
+      // ── POST /api/workflows/runs/:id/retry ──────────────────────────
+      // Manual retry endpoint. Accepts { mode: "from_failed" | "from_scratch" }.
+      // If mode is omitted, returns available retry options so the UI can
+      // present a choice to the user.
+      if (action === "retry" && req.method === "POST") {
+        const run = engine.getRunDetail ? engine.getRunDetail(runId) : null;
+        if (!run) {
+          jsonResponse(res, 404, { ok: false, error: "Workflow run not found" });
+          return;
+        }
+        if (run.status !== "failed") {
+          jsonResponse(res, 400, { ok: false, error: `Run status is "${run.status}" — only failed runs can be retried` });
+          return;
+        }
+        const body = await readJsonBody(req);
+        const mode = body?.mode;
+        if (!mode) {
+          // No mode specified — return available retry options so the UI can
+          // present a picker (from scratch vs from failed step).
+          const failedNodes = [];
+          const nodeStatuses = run.detail?.nodeStatuses || {};
+          for (const [nodeId, status] of Object.entries(nodeStatuses)) {
+            if (status === "failed") failedNodes.push(nodeId);
+          }
+          jsonResponse(res, 200, {
+            ok: true,
+            runId,
+            status: run.status,
+            options: [
+              { mode: "from_failed", label: "Retry from last failed step", failedNodes },
+              { mode: "from_scratch", label: "Retry from scratch" },
+            ],
+          });
+          return;
+        }
+        if (mode !== "from_failed" && mode !== "from_scratch") {
+          jsonResponse(res, 400, { ok: false, error: `Invalid mode "${mode}". Use "from_failed" or "from_scratch".` });
+          return;
+        }
+        const result = await engine.retryRun(runId, { mode });
+        const retryStatus = result.ctx?.errors?.length > 0 ? "failed" : "completed";
+        jsonResponse(res, 200, {
+          ok: true,
+          retryRunId: result.retryRunId,
+          originalRunId: result.originalRunId,
+          mode: result.mode,
+          status: retryStatus,
+        });
+        return;
+      }
+
+      // ── GET /api/workflows/runs/:id ─────────────────────────────────
       const run = engine.getRunDetail ? engine.getRunDetail(runId) : null;
       if (!run) {
         jsonResponse(res, 404, { ok: false, error: "Workflow run not found" });
@@ -6164,6 +8046,27 @@ async function handleApi(req, res, url) {
     return;
   }
 
+  if (path === "/api/health-stats") {
+    const SIX_HOURS_MS = 6 * 60 * 60 * 1000;
+    const cutoff = new Date(Date.now() - SIX_HOURS_MS).toISOString();
+    let successRuns = 0;
+    let failedRuns = 0;
+    try {
+      const tasks = getAllInternalTasks();
+      for (const task of tasks) {
+        for (const entry of (task.statusHistory || [])) {
+          if (entry.timestamp < cutoff) continue;
+          if (entry.status === "done") successRuns++;
+          else if (entry.status === "error") failedRuns++;
+        }
+      }
+    } catch { /* task store not loaded or unavailable */ }
+    const total = successRuns + failedRuns;
+    const failRate = total > 0 ? failedRuns / total : 0;
+    jsonResponse(res, 200, { ok: true, successRuns, failedRuns, total, failRate, windowHours: 6 });
+    return;
+  }
+
   if (path === "/api/config") {
     const regionEnv = (process.env.EXECUTOR_REGIONS || "").trim();
     const regions = regionEnv ? regionEnv.split(",").map((r) => r.trim()).filter(Boolean) : ["auto"];
@@ -6191,6 +8094,8 @@ async function handleApi(req, res, url) {
       sdk: process.env.EXECUTOR_SDK || "auto",
       kanbanBackend: runtimeKanbanBackend,
       regions,
+      tunnel: getTunnelStatus(),
+      fallbackAuth: getFallbackAuthStatus(),
     });
     return;
   }
@@ -6249,6 +8154,8 @@ async function handleApi(req, res, url) {
           configExists,
           configSchemaPath: CONFIG_SCHEMA_PATH,
           configSchemaLoaded: Boolean(configSchema),
+          tunnel: getTunnelStatus(),
+          fallbackAuth: getFallbackAuthStatus(),
         },
       });
     } catch (err) {
@@ -6336,6 +8243,8 @@ async function handleApi(req, res, url) {
         updatedConfig: configUpdate.updated || [],
         configPath: configUpdate.path || null,
         configDir,
+        tunnel: getTunnelStatus(),
+        fallbackAuth: getFallbackAuthStatus(),
       });
     } catch (err) {
       jsonResponse(res, 500, { ok: false, error: err.message });
@@ -6395,10 +8304,13 @@ async function handleApi(req, res, url) {
     const webhookSecretSet = Boolean(process.env.BOSUN_GITHUB_WEBHOOK_SECRET);
     const appWebhookPath = getAppWebhookPath();
 
-    // Build public URLs from tunnel URL if available, else from request host
-    const host = req.headers["x-forwarded-host"] || req.headers.host || "localhost";
-    const proto = uiServerTls || req.headers["x-forwarded-proto"] === "https" ? "https" : "http";
-    const baseUrl = `${proto}://${host}`;
+    // Build public URLs from tunnel URL if available, else from request host.
+    let baseUrl = String(getTunnelUrl() || "").replace(/\/+$/, "");
+    if (!baseUrl) {
+      const host = req.headers["x-forwarded-host"] || req.headers.host || "localhost";
+      const proto = uiServerTls || req.headers["x-forwarded-proto"] === "https" ? "https" : "http";
+      baseUrl = `${proto}://${host}`;
+    }
 
     jsonResponse(res, 200, {
       ok: true,
@@ -6472,8 +8384,44 @@ async function handleApi(req, res, url) {
       }
       const handler = uiDeps.handleUiCommand;
       if (typeof handler === "function") {
-        const result = await handler(command);
-        jsonResponse(res, 200, { ok: true, data: result || null, command });
+        if (ASYNC_UI_COMMAND_BASES.has(cmdBase)) {
+          setImmediate(() => {
+            let pending;
+            try {
+              pending = Promise.resolve(handler(command));
+            } catch (err) {
+              console.warn(`[ui] async command failed (${command}): ${err?.message || err}`);
+              broadcastUiEvent(["overview", "executor", "tasks"], "invalidate", {
+                reason: "command-failed",
+                command,
+              });
+              return;
+            }
+            pending
+              .then(() => {
+                broadcastUiEvent(["overview", "executor", "tasks"], "invalidate", {
+                  reason: "command-executed",
+                  command,
+                });
+              })
+              .catch((err) => {
+                console.warn(`[ui] async command failed (${command}): ${err?.message || err}`);
+                broadcastUiEvent(["overview", "executor", "tasks"], "invalidate", {
+                  reason: "command-failed",
+                  command,
+                });
+              });
+          });
+          jsonResponse(res, 202, {
+            ok: true,
+            queued: true,
+            command,
+            message: "Command accepted and running in background.",
+          });
+        } else {
+          const result = await handler(command);
+          jsonResponse(res, 200, { ok: true, data: result || null, command });
+        }
       } else {
         // No command handler wired — acknowledge and broadcast refresh
         jsonResponse(res, 200, {
@@ -6484,7 +8432,7 @@ async function handleApi(req, res, url) {
         });
       }
       broadcastUiEvent(["overview", "executor", "tasks"], "invalidate", {
-        reason: "command-executed",
+        reason: ASYNC_UI_COMMAND_BASES.has(cmdBase) ? "command-queued" : "command-executed",
         command,
       });
     } catch (err) {
@@ -6718,9 +8666,28 @@ async function handleApi(req, res, url) {
       }
       const args = (body?.args || "").trim();
       const adapter = (body?.adapter || "").trim() || undefined;
-      const result = await execSdkCommand(command, args, adapter);
+      const requestedSessionId = String(body?.sessionId || "").trim();
+      const tracker = getSessionTracker();
+      const commandSession = requestedSessionId
+        ? tracker.getSessionById(requestedSessionId)
+        : null;
+      const commandCwd = resolveSessionWorkspaceDir(commandSession);
+      const runSdkCommand =
+        typeof uiDeps.execSdkCommand === "function"
+          ? uiDeps.execSdkCommand
+          : execSdkCommand;
+      const result = await runSdkCommand(command, args, adapter, {
+        cwd: commandCwd,
+        sessionId: requestedSessionId || undefined,
+      });
       const parsed = typeof result === "string" ? result : JSON.stringify(result);
-      jsonResponse(res, 200, { ok: true, result: parsed, command, adapter: adapter || getPrimaryAgentName() });
+      jsonResponse(res, 200, {
+        ok: true,
+        result: parsed,
+        command,
+        adapter: adapter || getPrimaryAgentName(),
+        sessionId: requestedSessionId || null,
+      });
       broadcastUiEvent(["agents", "sessions"], "invalidate", {
         reason: "sdk-command-executed",
         command,
@@ -6887,6 +8854,13 @@ async function handleApi(req, res, url) {
       const body = await readJsonBody(req);
       const type = body?.type || "manual";
       const id = `${type}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+      const workspaceContext = resolveActiveWorkspaceExecutionContext();
+      const requestedWorkspaceId = String(body?.workspaceId || "").trim();
+      const requestedWorkspaceDir = normalizeCandidatePath(body?.workspaceDir);
+      const resolvedWorkspaceId =
+        requestedWorkspaceId || workspaceContext.workspaceId;
+      const resolvedWorkspaceDir =
+        requestedWorkspaceDir || workspaceContext.workspaceDir || repoRoot;
       const tracker = getSessionTracker();
       const session = tracker.createSession({
         id,
@@ -6896,6 +8870,8 @@ async function handleApi(req, res, url) {
           agent: body?.agent || getPrimaryAgentName(),
           mode: body?.mode || getAgentMode(),
           model: body?.model || undefined,
+          ...(resolvedWorkspaceId ? { workspaceId: resolvedWorkspaceId } : {}),
+          ...(resolvedWorkspaceDir ? { workspaceDir: resolvedWorkspaceDir } : {}),
         },
       });
       jsonResponse(res, 200, { ok: true, session: { id: session.id, type: session.type, status: session.status, metadata: session.metadata } });
@@ -6920,7 +8896,33 @@ async function handleApi(req, res, url) {
           jsonResponse(res, 404, { ok: false, error: "Session not found" });
           return;
         }
-        jsonResponse(res, 200, { ok: true, session });
+        // Support ?limit=N&offset=N for message pagination.
+        // Default to a bounded tail window so large sessions don't crash the UI.
+        const reqUrl = new URL(req.url, `http://${req.headers.host || "localhost"}`);
+        const limitParam = reqUrl.searchParams.get("limit");
+        const offsetParam = reqUrl.searchParams.get("offset");
+        const fullParam = String(reqUrl.searchParams.get("full") || "").toLowerCase();
+        const wantsFull =
+          fullParam === "1" || fullParam === "true" || fullParam === "yes";
+        if (wantsFull) {
+          jsonResponse(res, 200, { ok: true, session });
+        } else {
+          const parsedLimit = Number(limitParam);
+          const limit = Number.isFinite(parsedLimit) && parsedLimit > 0
+            ? Math.max(1, Math.min(Math.floor(parsedLimit), 200))
+            : 20;
+          const allMessages = session.messages || [];
+          const total = allMessages.length;
+          const offset = offsetParam != null
+            ? Math.max(0, Math.min(Number(offsetParam) || 0, total))
+            : Math.max(0, total - limit);
+          const sliced = allMessages.slice(offset, offset + limit);
+          jsonResponse(res, 200, {
+            ok: true,
+            session: { ...session, messages: sliced },
+            pagination: { total, offset, limit, hasMore: offset > 0 },
+          });
+        }
       } catch (err) {
         jsonResponse(res, 500, { ok: false, error: err.message });
       }
@@ -6992,6 +8994,10 @@ async function handleApi(req, res, url) {
           jsonResponse(res, 400, { ok: false, error: `Session is ${session.status}` });
           return;
         }
+        // Re-activate completed/failed sessions when user sends a new message
+        if (session.status === "completed" || session.status === "failed") {
+          tracker.updateSessionStatus(sessionId, "active");
+        }
         const body = await readJsonBody(req);
         const content = body?.content;
         const attachments = Array.isArray(body?.attachments) ? body.attachments : [];
@@ -7009,12 +9015,45 @@ async function handleApi(req, res, url) {
         const messageModel = body?.model || undefined;
 
         // Forward to primary agent if applicable (exec records user + assistant events)
-        const exec = session.type === "primary" ? uiDeps.execPrimaryPrompt : null;
+        let exec = session.type === "primary" ? uiDeps.execPrimaryPrompt : null;
+        // Fallback: resolve execPrimaryPrompt from primary-agent.mjs if not injected
+        if (!exec && session.type === "primary") {
+          exec = await resolveExecPrimaryPrompt();
+        }
         if (exec) {
+          const sessionWorkspaceDir = resolveSessionWorkspaceDir(session);
           // Don't record user event here — execPrimaryPrompt records it
           // Respond immediately so the UI doesn't block on agent execution
           jsonResponse(res, 200, { ok: true, messageId });
           broadcastUiEvent(["sessions"], "invalidate", { reason: "session-message", sessionId });
+
+          // Build an onEvent callback so intermediate SDK events (thinking,
+          // tool calls, code edits, etc.) are streamed to the UI in real-time
+          // via the existing session-tracker → WebSocket listener pipeline.
+          // Without this, chat/telegram dispatches only show the final
+          // user+assistant pair instead of the full thought stream that Flows
+          // clients see.
+          const streamOnEvent = (err, event) => {
+            // The adapters call onEvent(err, event) or onEvent(event).
+            // Normalise both calling conventions.
+            const ev = event || err;
+            if (!ev) return;
+            try {
+              if (typeof ev === "string") {
+                tracker.recordEvent(sessionId, {
+                  role: "system",
+                  type: "system",
+                  content: ev,
+                  timestamp: new Date().toISOString(),
+                });
+              } else {
+                tracker.recordEvent(sessionId, ev);
+              }
+            } catch {
+              /* best-effort — never crash the agent loop */
+            }
+          };
+
           // Fire-and-forget: run agent asynchronously so the request handler
           // doesn't block and the agent doesn't appear "busy" to subsequent
           // messages from chat, telegram, portal, or any other source.
@@ -7023,9 +9062,16 @@ async function handleApi(req, res, url) {
             sessionType: "primary",
             mode: messageMode,
             model: messageModel,
+            cwd: sessionWorkspaceDir,
+            persistent: true,
+            sendRawEvents: true,
             attachments,
             attachmentsAppended,
+            onEvent: streamOnEvent,
           }).then(() => {
+            // Mark session as completed once the agent finishes — prevents
+            // sessions from staying "active" forever and causing session bloat.
+            tracker.updateSessionStatus(sessionId, "completed");
             broadcastUiEvent(["sessions"], "invalidate", { reason: "agent-response", sessionId });
           }).catch((execErr) => {
             // Record error as system message so user sees feedback
@@ -7035,19 +9081,64 @@ async function handleApi(req, res, url) {
               content: `Agent error: ${execErr.message || "Unknown error"}`,
               timestamp: new Date().toISOString(),
             });
+            tracker.updateSessionStatus(sessionId, "failed");
             broadcastUiEvent(["sessions"], "invalidate", { reason: "agent-error", sessionId });
           });
         } else {
-          // No agent — record user event and acknowledge
+          // No agent available — record user event and notify user
           tracker.recordEvent(sessionId, {
             role: "user",
             content: messageContent,
             attachments,
             timestamp: new Date().toISOString(),
           });
-          jsonResponse(res, 200, { ok: true, messageId });
+          tracker.recordEvent(sessionId, {
+            role: "system",
+            type: "error",
+            content: ":alert: No agent is available to process this message. The primary agent may not be initialized — try restarting bosun or check the Logs tab for details.",
+            timestamp: new Date().toISOString(),
+          });
+          jsonResponse(res, 200, { ok: true, messageId, warning: "no_agent_available" });
           broadcastUiEvent(["sessions"], "invalidate", { reason: "session-message", sessionId });
         }
+      } catch (err) {
+        jsonResponse(res, 500, { ok: false, error: err.message });
+      }
+      return;
+    }
+
+    if (action === "message/edit" && req.method === "POST") {
+      try {
+        const tracker = getSessionTracker();
+        const session = tracker.getSessionById(sessionId);
+        if (!session) {
+          jsonResponse(res, 404, { ok: false, error: "Session not found" });
+          return;
+        }
+        const body = await readJsonBody(req);
+        const content = String(body?.content || "").trim();
+        if (!content) {
+          jsonResponse(res, 400, { ok: false, error: "content is required" });
+          return;
+        }
+
+        const edited = tracker.editUserMessage(sessionId, {
+          messageId: body?.messageId,
+          timestamp: body?.timestamp,
+          previousContent: body?.previousContent,
+          content,
+        });
+        if (!edited?.ok) {
+          const status = edited?.error === "Message not found" ? 404 : 400;
+          jsonResponse(res, status, { ok: false, error: edited?.error || "edit failed" });
+          return;
+        }
+
+        jsonResponse(res, 200, { ok: true, message: edited.message });
+        broadcastUiEvent(["sessions"], "invalidate", {
+          reason: "session-message-edited",
+          sessionId,
+        });
       } catch (err) {
         jsonResponse(res, 500, { ok: false, error: err.message });
       }
@@ -7169,16 +9260,882 @@ async function handleApi(req, res, url) {
     }
   }
 
+  // ── Voice API Routes ──────────────────────────────────────────────────────
+
+  // GET /api/voice/providers — read voice.providers from bosun.config.json
+  if (path === "/api/voice/providers" && req.method === "GET") {
+    try {
+      const { configData } = readConfigDocument();
+      const providers = Array.isArray(configData?.voice?.providers)
+        ? configData.voice.providers
+        : [];
+      jsonResponse(res, 200, { ok: true, providers });
+    } catch (err) {
+      jsonResponse(res, 500, { ok: false, error: err.message });
+    }
+    return;
+  }
+
+  // POST /api/voice/providers — save voice.providers to bosun.config.json
+  if (path === "/api/voice/providers" && req.method === "POST") {
+    try {
+      const body = await readJsonBody(req);
+      const { providers } = body || {};
+      if (!Array.isArray(providers)) {
+        jsonResponse(res, 400, { ok: false, error: "providers array required" });
+        return;
+      }
+      const allowedProviders = ["openai", "azure", "claude", "gemini", "fallback"];
+      const cleaned = providers.slice(0, 5).map((p) => {
+        const out = {};
+        if (p.provider && allowedProviders.includes(String(p.provider))) out.provider = String(p.provider);
+        if (p.model) out.model = String(p.model);
+        if (p.visionModel) out.visionModel = String(p.visionModel);
+        if (p.voiceId) out.voiceId = String(p.voiceId);
+        if (p.azureDeployment) out.azureDeployment = String(p.azureDeployment);
+        if (p.endpointId) out.endpointId = String(p.endpointId);
+        return out;
+      });
+      const { configPath, configData } = readConfigDocument();
+      configData.voice = { ...(configData.voice || {}), providers: cleaned };
+      writeFileSync(configPath, JSON.stringify(configData, null, 2) + "\n", "utf8");
+      broadcastUiEvent(["settings", "overview"], "invalidate", {
+        reason: "voice-providers-updated",
+      });
+      jsonResponse(res, 200, { ok: true, configPath, count: cleaned.length });
+    } catch (err) {
+      jsonResponse(res, 500, { ok: false, error: err.message });
+    }
+    return;
+  }
+
+  // GET /api/voice/endpoints — read voice.voiceEndpoints from bosun.config.json
+  if (path === "/api/voice/endpoints" && req.method === "GET") {
+    try {
+      const { configData } = readConfigDocument();
+      const voiceEndpoints = Array.isArray(configData?.voice?.voiceEndpoints)
+        ? configData.voice.voiceEndpoints
+        : [];
+      jsonResponse(res, 200, { ok: true, voiceEndpoints });
+    } catch (err) {
+      jsonResponse(res, 500, { ok: false, error: err.message });
+    }
+    return;
+  }
+
+  // POST /api/voice/endpoints — save voice.voiceEndpoints to bosun.config.json
+  if (path === "/api/voice/endpoints" && req.method === "POST") {
+    try {
+      const body = await readJsonBody(req);
+      const { voiceEndpoints } = body || {};
+      if (!Array.isArray(voiceEndpoints)) {
+        jsonResponse(res, 400, { ok: false, error: "voiceEndpoints array required" });
+        return;
+      }
+      // Strip client-only _id fields and sanitize
+      const cleaned = voiceEndpoints.map(({ _id, ...ep }) => {
+        const out = {};
+        if (ep.id) out.id = String(ep.id);
+        if (ep.name) out.name = String(ep.name);
+        if (ep.provider) out.provider = String(ep.provider);
+        if (ep.endpoint) out.endpoint = String(ep.endpoint);
+        if (ep.deployment) out.deployment = String(ep.deployment);
+        if (ep.model) out.model = String(ep.model);
+        if (ep.visionModel) out.visionModel = String(ep.visionModel);
+        if (ep.apiKey) out.apiKey = String(ep.apiKey);
+        if (ep.authSource) out.authSource = ["apiKey", "oauth"].includes(ep.authSource) ? ep.authSource : "apiKey";
+        if (ep.voiceId) out.voiceId = String(ep.voiceId);
+        if (ep.role) out.role = String(ep.role);
+        if (ep.weight != null) out.weight = Number(ep.weight) || 1;
+        if (ep.enabled != null) out.enabled = ep.enabled !== false;
+        return out;
+      });
+      const { configPath, configData } = readConfigDocument();
+      configData.voice = { ...(configData.voice || {}), voiceEndpoints: cleaned };
+      writeFileSync(configPath, JSON.stringify(configData, null, 2) + "\n", "utf8");
+      broadcastUiEvent(["settings", "overview"], "invalidate", {
+        reason: "voice-endpoints-updated",
+      });
+      jsonResponse(res, 200, { ok: true, configPath, count: cleaned.length });
+    } catch (err) {
+      jsonResponse(res, 500, { ok: false, error: err.message });
+    }
+    return;
+  }
+
+  // POST /api/voice/endpoints/test — quick connectivity check for a single endpoint
+  if (path === "/api/voice/endpoints/test" && req.method === "POST") {
+    try {
+      const body = await readJsonBody(req);
+      const { provider, apiKey, endpoint: azureEndpoint, deployment, model, authSource } = body || {};
+      if (!provider) {
+        jsonResponse(res, 400, { ok: false, error: "provider is required" });
+        return;
+      }
+      const useOAuth = authSource === "oauth";
+      const start = Date.now();
+      const controller = new AbortController();
+      const timer = setTimeout(() => controller.abort(), 10_000);
+
+      try {
+        let testUrl;
+        const headers = {};
+        if (provider === "openai") {
+          testUrl = "https://api.openai.com/v1/models";
+          if (apiKey && !useOAuth) headers["Authorization"] = `Bearer ${apiKey}`;
+          else {
+            // Try OAuth token if no API key
+            try {
+              const { getOpenAILoginStatus } = await import("./voice-auth-manager.mjs");
+              const st = getOpenAILoginStatus();
+              if (st.hasToken && st.accessToken) headers["Authorization"] = `Bearer ${st.accessToken}`;
+            } catch (_) { /* no oauth available */ }
+          }
+          if (!headers["Authorization"]) {
+            jsonResponse(res, 400, { ok: false, error: "No API key or OAuth token available" });
+            return;
+          }
+        } else if (provider === "azure") {
+          if (!azureEndpoint) {
+            jsonResponse(res, 400, { ok: false, error: "Azure endpoint URL is required" });
+            return;
+          }
+          // Strip path suffix so users can paste full URLs without double-path 404s.
+          let base = azureEndpoint.replace(/\/+$/, "");
+          try { const u = new URL(base); base = `${u.protocol}//${u.host}`; } catch { /* keep as-is */ }
+          // Single-deployment GET only requires Cognitive Services User role.
+          // Use the GA api-version (2024-10-21) for broad compatibility across
+          // classic Azure OpenAI and Azure AI Foundry resources.
+          const dep = String(deployment || "").trim();
+          testUrl = dep
+            ? `${base}/openai/deployments/${encodeURIComponent(dep)}?api-version=2024-10-21`
+            : `${base}/openai/models?api-version=2024-10-21`;
+          if (apiKey) headers["api-key"] = apiKey;
+          else {
+            jsonResponse(res, 400, { ok: false, error: "Azure API key is required" });
+            return;
+          }
+        } else if (provider === "claude") {
+          testUrl = "https://api.anthropic.com/v1/models";
+          headers["anthropic-version"] = "2023-06-01";
+          if (apiKey && !useOAuth) headers["x-api-key"] = apiKey;
+          else {
+            try {
+              const { getClaudeLoginStatus } = await import("./voice-auth-manager.mjs");
+              const st = getClaudeLoginStatus();
+              if (st.hasToken && st.accessToken) headers["x-api-key"] = st.accessToken;
+            } catch (_) { /* no oauth available */ }
+          }
+          if (!headers["x-api-key"]) {
+            jsonResponse(res, 400, { ok: false, error: "No API key or OAuth token available" });
+            return;
+          }
+        } else if (provider === "gemini") {
+          let k = (apiKey && !useOAuth) ? apiKey : null;
+          if (!k) {
+            try {
+              const { getGeminiLoginStatus } = await import("./voice-auth-manager.mjs");
+              const st = getGeminiLoginStatus();
+              if (st.hasToken && st.accessToken) k = st.accessToken;
+            } catch (_) { /* no oauth available */ }
+          }
+          if (!k) {
+            jsonResponse(res, 400, { ok: false, error: "No API key or OAuth token available" });
+            return;
+          }
+          testUrl = `https://generativelanguage.googleapis.com/v1beta/models?key=${encodeURIComponent(k)}`;
+        } else if (provider === "custom") {
+          const base = String(azureEndpoint || "").trim().replace(/\/+$/, "");
+          if (!base) {
+            jsonResponse(res, 400, { ok: false, error: "Custom endpoint URL is required" });
+            return;
+          }
+          const bearer = String(apiKey || "").trim();
+          if (!bearer) {
+            jsonResponse(res, 400, { ok: false, error: "API key is required for custom endpoints" });
+            return;
+          }
+          testUrl = `${base}/v1/models`;
+          headers.Authorization = `Bearer ${bearer}`;
+        } else {
+          jsonResponse(res, 400, { ok: false, error: `Unknown provider: ${provider}` });
+          return;
+        }
+
+        const resp = await fetch(testUrl, { headers, signal: controller.signal });
+        clearTimeout(timer);
+        const latencyMs = Date.now() - start;
+        if (resp.ok || resp.status === 200) {
+          // Single-deployment GET: a 200 means both key and deployment are valid.
+          jsonResponse(res, 200, { ok: true, latencyMs });
+        } else {
+          const text = await resp.text().catch(() => "");
+          let errMsg = `HTTP ${resp.status}`;
+          try { const j = JSON.parse(text); errMsg = j.error?.message || j.error || errMsg; } catch (_) { /* ignore */ }
+          // Friendly message when the deployment name itself is not found (key is fine)
+          if (resp.status === 404 && deployment) {
+            errMsg = `Deployment "${deployment}" not found — check deployment name in Azure AI Foundry`;
+          }
+          jsonResponse(res, 200, { ok: false, error: errMsg, latencyMs });
+        }
+      } catch (fetchErr) {
+        clearTimeout(timer);
+        const latencyMs = Date.now() - start;
+        const msg = fetchErr.name === "AbortError" ? "Timeout (10s)" : (fetchErr.message || "Connection failed");
+        jsonResponse(res, 200, { ok: false, error: msg, latencyMs });
+      }
+    } catch (err) {
+      jsonResponse(res, 500, { ok: false, error: err.message });
+    }
+    return;
+  }
+
+  // ── OpenAI Codex OAuth routes ─────────────────────────────────────────────
+
+  // GET /api/voice/auth/openai/status — token presence + pending login state
+  if (path === "/api/voice/auth/openai/status" && req.method === "GET") {
+    try {
+      const { getOpenAILoginStatus } = await import("./voice-auth-manager.mjs");
+      jsonResponse(res, 200, { ok: true, ...getOpenAILoginStatus() });
+    } catch (err) {
+      jsonResponse(res, 500, { ok: false, error: err.message });
+    }
+    return;
+  }
+
+  // POST /api/voice/auth/openai/login — start PKCE login, open browser
+  if (path === "/api/voice/auth/openai/login" && req.method === "POST") {
+    try {
+      const { startOpenAICodexLogin } = await import("./voice-auth-manager.mjs");
+      const { authUrl } = startOpenAICodexLogin();
+      jsonResponse(res, 200, { ok: true, authUrl });
+    } catch (err) {
+      jsonResponse(res, 500, { ok: false, error: err.message });
+    }
+    return;
+  }
+
+  // POST /api/voice/auth/openai/cancel — cancel pending login
+  if (path === "/api/voice/auth/openai/cancel" && req.method === "POST") {
+    try {
+      const { cancelOpenAILogin } = await import("./voice-auth-manager.mjs");
+      cancelOpenAILogin();
+      jsonResponse(res, 200, { ok: true });
+    } catch (err) {
+      jsonResponse(res, 500, { ok: false, error: err.message });
+    }
+    return;
+  }
+
+  // POST /api/voice/auth/openai/logout — remove stored token
+  if (path === "/api/voice/auth/openai/logout" && req.method === "POST") {
+    try {
+      const { logoutOpenAI } = await import("./voice-auth-manager.mjs");
+      const result = logoutOpenAI();
+      broadcastUiEvent(["settings", "voice"], "invalidate", {
+        reason: "openai-oauth-logout",
+      });
+      jsonResponse(res, 200, { ok: true, ...result });
+    } catch (err) {
+      jsonResponse(res, 500, { ok: false, error: err.message });
+    }
+    return;
+  }
+
+  // POST /api/voice/auth/openai/refresh — exchange refresh_token for new access_token
+  if (path === "/api/voice/auth/openai/refresh" && req.method === "POST") {
+    try {
+      const { refreshOpenAICodexToken } = await import("./voice-auth-manager.mjs");
+      await refreshOpenAICodexToken();
+      jsonResponse(res, 200, { ok: true });
+    } catch (err) {
+      jsonResponse(res, 500, { ok: false, error: err.message });
+    }
+    return;
+  }
+
+  // ── Claude OAuth routes ────────────────────────────────────────────────────
+
+  if (path === "/api/voice/auth/claude/status" && req.method === "GET") {
+    try {
+      const { getClaudeLoginStatus } = await import("./voice-auth-manager.mjs");
+      jsonResponse(res, 200, { ok: true, ...getClaudeLoginStatus() });
+    } catch (err) { jsonResponse(res, 500, { ok: false, error: err.message }); }
+    return;
+  }
+
+  if (path === "/api/voice/auth/claude/login" && req.method === "POST") {
+    try {
+      const { startClaudeLogin } = await import("./voice-auth-manager.mjs");
+      const { authUrl } = startClaudeLogin();
+      jsonResponse(res, 200, { ok: true, authUrl });
+    } catch (err) { jsonResponse(res, 500, { ok: false, error: err.message }); }
+    return;
+  }
+
+  if (path === "/api/voice/auth/claude/cancel" && req.method === "POST") {
+    try {
+      const { cancelClaudeLogin } = await import("./voice-auth-manager.mjs");
+      cancelClaudeLogin();
+      jsonResponse(res, 200, { ok: true });
+    } catch (err) { jsonResponse(res, 500, { ok: false, error: err.message }); }
+    return;
+  }
+
+  if (path === "/api/voice/auth/claude/logout" && req.method === "POST") {
+    try {
+      const { logoutClaude } = await import("./voice-auth-manager.mjs");
+      const result = logoutClaude();
+      broadcastUiEvent(["settings", "voice"], "invalidate", { reason: "claude-oauth-logout" });
+      jsonResponse(res, 200, { ok: true, ...result });
+    } catch (err) { jsonResponse(res, 500, { ok: false, error: err.message }); }
+    return;
+  }
+
+  if (path === "/api/voice/auth/claude/refresh" && req.method === "POST") {
+    try {
+      const { refreshClaudeToken } = await import("./voice-auth-manager.mjs");
+      await refreshClaudeToken();
+      jsonResponse(res, 200, { ok: true });
+    } catch (err) { jsonResponse(res, 500, { ok: false, error: err.message }); }
+    return;
+  }
+
+  // ── Google Gemini OAuth routes ─────────────────────────────────────────────
+
+  if (path === "/api/voice/auth/gemini/status" && req.method === "GET") {
+    try {
+      const { getGeminiLoginStatus } = await import("./voice-auth-manager.mjs");
+      jsonResponse(res, 200, { ok: true, ...getGeminiLoginStatus() });
+    } catch (err) { jsonResponse(res, 500, { ok: false, error: err.message }); }
+    return;
+  }
+
+  if (path === "/api/voice/auth/gemini/login" && req.method === "POST") {
+    try {
+      const { startGeminiLogin } = await import("./voice-auth-manager.mjs");
+      const { authUrl } = startGeminiLogin();
+      jsonResponse(res, 200, { ok: true, authUrl });
+    } catch (err) { jsonResponse(res, 500, { ok: false, error: err.message }); }
+    return;
+  }
+
+  if (path === "/api/voice/auth/gemini/cancel" && req.method === "POST") {
+    try {
+      const { cancelGeminiLogin } = await import("./voice-auth-manager.mjs");
+      cancelGeminiLogin();
+      jsonResponse(res, 200, { ok: true });
+    } catch (err) { jsonResponse(res, 500, { ok: false, error: err.message }); }
+    return;
+  }
+
+  if (path === "/api/voice/auth/gemini/logout" && req.method === "POST") {
+    try {
+      const { logoutGemini } = await import("./voice-auth-manager.mjs");
+      const result = logoutGemini();
+      broadcastUiEvent(["settings", "voice"], "invalidate", { reason: "gemini-oauth-logout" });
+      jsonResponse(res, 200, { ok: true, ...result });
+    } catch (err) { jsonResponse(res, 500, { ok: false, error: err.message }); }
+    return;
+  }
+
+  if (path === "/api/voice/auth/gemini/refresh" && req.method === "POST") {
+    try {
+      const { refreshGeminiToken } = await import("./voice-auth-manager.mjs");
+      await refreshGeminiToken();
+      jsonResponse(res, 200, { ok: true });
+    } catch (err) { jsonResponse(res, 500, { ok: false, error: err.message }); }
+    return;
+  }
+
+  // GET /api/voice/sdk-config — SDK-first configuration for client
+  if (path === "/api/voice/sdk-config" && req.method === "GET") {
+    try {
+      const { getVoiceConfig } = await import("./voice-relay.mjs");
+      const { getClientSdkConfig } = await import("./voice-agents-sdk.mjs");
+      const voiceConfig = getVoiceConfig();
+      const sdkConfig = await getClientSdkConfig(voiceConfig);
+      jsonResponse(res, 200, sdkConfig);
+    } catch (err) {
+      jsonResponse(res, 200, {
+        useSdk: false,
+        provider: "fallback",
+        fallbackReason: err.message,
+        tier: 2,
+      });
+    }
+    return;
+  }
+
+  // GET /api/voice/config
+  if (path === "/api/voice/config" && req.method === "GET") {
+    try {
+      const { isVoiceAvailable, getVoiceConfig, getRealtimeConnectionInfo } = await import("./voice-relay.mjs");
+      const availability = isVoiceAvailable();
+      const config = getVoiceConfig();
+      const connectionInfo = availability.tier === 1 ? getRealtimeConnectionInfo() : null;
+
+      jsonResponse(res, 200, {
+        available: availability.available,
+        tier: availability.tier,
+        provider: availability.provider,
+        providerChain: config.providerChainWithFallbacks || [config.provider],
+        reason: availability.reason || "",
+        voiceId: config.voiceId,
+        turnDetection: config.turnDetection,
+        model: config.model,
+        visionModel: config.visionModel,
+        vision: {
+          enabled: true,
+          frameMaxBytes: MAX_VISION_FRAME_BYTES,
+          defaultIntervalMs: DEFAULT_VISION_ANALYSIS_INTERVAL_MS,
+        },
+        fallbackMode: config.fallbackMode,
+        failover: config.failover || null,
+        diagnostics: Array.isArray(config.diagnostics) ? config.diagnostics : [],
+        connectionInfo,
+      });
+    } catch (err) {
+      jsonResponse(res, 500, { error: err.message });
+    }
+    return;
+  }
+
+  // POST /api/voice/token
+  if (path === "/api/voice/token" && req.method === "POST") {
+    try {
+      const body = await readJsonBody(req).catch(() => ({}));
+      const callContext = {
+        sessionId: String(body?.sessionId || "").trim() || undefined,
+        executor: String(body?.executor || "").trim() || undefined,
+        mode: String(body?.mode || "").trim() || undefined,
+        model: String(body?.model || "").trim() || undefined,
+      };
+      const { createEphemeralToken, getVoiceToolDefinitions, getVoiceConfig } = await import("./voice-relay.mjs");
+      const delegateOnly =
+        body?.delegateOnly === true ||
+        (body?.delegateOnly !== false && Boolean(callContext.sessionId));
+      const tools = await getVoiceToolDefinitions({ delegateOnly });
+      const tokenData = await createEphemeralToken(tools, callContext);
+
+      // When client requests sdkMode, include extra fields for @openai/agents SDK
+      if (body?.sdkMode === true) {
+        const voiceCfg = getVoiceConfig();
+        tokenData.instructions = voiceCfg.instructions || undefined;
+        tokenData.tools = tools;
+        if (tokenData.provider === "azure") {
+          tokenData.azureEndpoint = voiceCfg.azureEndpoint || undefined;
+          tokenData.azureDeployment = voiceCfg.azureDeployment || undefined;
+        }
+      }
+
+      jsonResponse(res, 200, tokenData);
+    } catch (err) {
+      jsonResponse(res, 500, { error: err.message });
+    }
+    return;
+  }
+
+  // POST /api/voice/audio/respond
+  // Single-turn audio response transport for OpenAI gpt-audio-* models.
+  if (path === "/api/voice/audio/respond" && req.method === "POST") {
+    try {
+      const body = await readJsonBody(req);
+      const inputText = String(body?.inputText || body?.text || "").trim();
+      if (!inputText) {
+        jsonResponse(res, 400, { ok: false, error: "inputText required" });
+        return;
+      }
+      const context = {
+        sessionId: String(body?.sessionId || "").trim() || undefined,
+        executor: String(body?.executor || "").trim() || undefined,
+        mode: String(body?.mode || "").trim() || undefined,
+        model: String(body?.model || "").trim() || undefined,
+      };
+      const options = {
+        voiceId: String(body?.voiceId || "").trim() || undefined,
+        model: String(body?.model || "").trim() || undefined,
+      };
+      const { generateOpenAIAudioResponse } = await import("./voice-relay.mjs");
+      const result = await generateOpenAIAudioResponse(inputText, context, options);
+      jsonResponse(res, 200, { ok: true, ...result });
+    } catch (err) {
+      jsonResponse(res, 500, { ok: false, error: err.message });
+    }
+    return;
+  }
+
+  // POST /api/voice/tool
+  if (path === "/api/voice/tool" && req.method === "POST") {
+    try {
+      const body = await readJsonBody(req);
+      const {
+        toolName,
+        args,
+        sessionId: voiceSessionId,
+        executor,
+        mode,
+        model,
+      } = body || {};
+      const normalizedToolName = String(toolName || "").trim();
+      if (!normalizedToolName) {
+        jsonResponse(res, 400, { error: "toolName required" });
+        return;
+      }
+      const { executeVoiceTool } = await import("./voice-relay.mjs");
+      const context = {
+        sessionId: String(voiceSessionId || "").trim() || undefined,
+        executor: String(executor || "").trim() || undefined,
+        mode: String(mode || "").trim() || undefined,
+        model: String(model || "").trim() || undefined,
+      };
+      if (context.sessionId) {
+        // Session-bound calls are validated against the allowed tool set
+        const { getSessionAllowedTools } = await import("./voice-relay.mjs");
+        const allowed = getSessionAllowedTools();
+        if (!allowed.has(normalizedToolName)) {
+          jsonResponse(res, 400, {
+            error: `Tool "${normalizedToolName}" is not allowed for session-bound calls`,
+          });
+          return;
+        }
+      }
+      const result = await executeVoiceTool(normalizedToolName, args || {}, context);
+
+      jsonResponse(res, 200, result);
+    } catch (err) {
+      jsonResponse(res, 500, { error: err.message });
+    }
+    return;
+  }
+
+  // POST /api/voice/transcript
+  if (path === "/api/voice/transcript" && req.method === "POST") {
+    try {
+      const body = await readJsonBody(req);
+      const sessionId = String(body?.sessionId || "").trim();
+      const role = String(body?.role || "").trim().toLowerCase();
+      const content = String(body?.content || "").trim();
+      if (!sessionId) {
+        jsonResponse(res, 400, { ok: false, error: "sessionId required" });
+        return;
+      }
+      if (!["user", "assistant", "system"].includes(role)) {
+        jsonResponse(res, 400, { ok: false, error: "role must be user|assistant|system" });
+        return;
+      }
+      if (!content) {
+        jsonResponse(res, 400, { ok: false, error: "content required" });
+        return;
+      }
+
+      const tracker = getSessionTracker();
+      let session = tracker.getSessionById(sessionId);
+      if (!session) {
+        session = tracker.createSession({
+          id: sessionId,
+          type: "primary",
+          metadata: {
+            agent: String(body?.executor || getPrimaryAgentName() || ""),
+            mode: String(body?.mode || getAgentMode() || ""),
+            model: String(body?.model || "").trim() || undefined,
+          },
+        });
+      }
+
+      tracker.recordEvent(session.id || sessionId, {
+        role,
+        type: "voice_transcript",
+        content,
+        timestamp: new Date().toISOString(),
+        meta: {
+          source: "voice",
+          provider: String(body?.provider || "").trim() || undefined,
+          eventType: String(body?.eventType || "").trim() || undefined,
+        },
+      });
+
+      const provider = String(body?.provider || "").trim() || null;
+      const transcriptEventType = String(body?.eventType || "").trim().toLowerCase() || null;
+      const executor = String(body?.executor || "").trim() || null;
+      const mode = String(body?.mode || "").trim() || null;
+      const model = String(body?.model || "").trim() || null;
+      const normalizedSessionId = String(session.id || sessionId).trim();
+      const contentHash = createHash("sha1")
+        .update(`${role}:${content}`)
+        .digest("hex")
+        .slice(0, 16);
+      const workflowPayload = {
+        sessionId: normalizedSessionId,
+        meetingSessionId: normalizedSessionId,
+        role,
+        content,
+        source: "voice",
+        provider,
+        transcriptEventType,
+        executor,
+        mode,
+        model,
+      };
+
+      queueWorkflowEvent(
+        "meeting.transcript",
+        workflowPayload,
+        {
+          dedupKey: `workflow-event:meeting.transcript:${normalizedSessionId}:${role}:${contentHash}`,
+        },
+      );
+      if (transcriptEventType === "wake_phrase" || transcriptEventType === "wake-phrase") {
+        queueWorkflowEvent(
+          "meeting.wake_phrase",
+          workflowPayload,
+          {
+            dedupKey: `workflow-event:meeting.wake_phrase:${normalizedSessionId}:${role}:${contentHash}`,
+          },
+        );
+      }
+
+      jsonResponse(res, 200, { ok: true });
+    } catch (err) {
+      jsonResponse(res, 500, { ok: false, error: err.message });
+    }
+    return;
+  }
+
+  // POST /api/vision/frame
+  if (path === "/api/vision/frame" && req.method === "POST") {
+    try {
+      const body = await readJsonBody(req);
+      const sessionId = String(body?.sessionId || "").trim();
+      const source = sanitizeVisionSource(body?.source);
+      const frame = parseVisionFrameDataUrl(body?.frameDataUrl);
+      const forceAnalyze = body?.forceAnalyze === true;
+      const minIntervalMs = normalizeVisionInterval(body?.minIntervalMs);
+      const width = Number.isFinite(Number(body?.width)) ? Number(body.width) : null;
+      const height = Number.isFinite(Number(body?.height)) ? Number(body.height) : null;
+
+      if (!sessionId) {
+        jsonResponse(res, 400, { ok: false, error: "sessionId required" });
+        return;
+      }
+      if (!frame.ok) {
+        jsonResponse(res, frame.statusCode || 400, { ok: false, error: frame.error });
+        return;
+      }
+
+      const state = getVisionSessionState(sessionId);
+      if (!state) {
+        jsonResponse(res, 400, { ok: false, error: "Invalid sessionId" });
+        return;
+      }
+
+      const frameHash = createHash("sha1").update(frame.base64Data).digest("hex");
+      const now = Date.now();
+
+      state.lastFrameHash = frameHash;
+      state.lastReceiptAt = now;
+
+      if (!forceAnalyze && state.inFlight) {
+        jsonResponse(res, 202, {
+          ok: true,
+          analyzed: false,
+          skipped: true,
+          reason: "analysis_in_progress",
+          summary: state.lastSummary || undefined,
+        });
+        return;
+      }
+
+      if (!forceAnalyze && frameHash === state.lastAnalyzedHash) {
+        jsonResponse(res, 200, {
+          ok: true,
+          analyzed: false,
+          skipped: true,
+          reason: "duplicate_frame",
+          summary: state.lastSummary || undefined,
+        });
+        return;
+      }
+
+      if (!forceAnalyze && now - state.lastAnalyzedAt < minIntervalMs) {
+        jsonResponse(res, 202, {
+          ok: true,
+          analyzed: false,
+          skipped: true,
+          reason: "throttled",
+          summary: state.lastSummary || undefined,
+        });
+        return;
+      }
+
+      const callContext = {
+        sessionId,
+        executor: String(body?.executor || "").trim() || undefined,
+        mode: String(body?.mode || "").trim() || undefined,
+        model: String(body?.model || "").trim() || undefined,
+      };
+      const prompt = String(body?.prompt || "").trim() || undefined;
+      const model = String(body?.visionModel || "").trim() || undefined;
+
+      const { analyzeVisionFrame } = await import("./voice-relay.mjs");
+      const pending = analyzeVisionFrame(frame.raw, {
+        source,
+        context: callContext,
+        prompt,
+        model,
+      });
+      state.inFlight = pending;
+      let analysis;
+      try {
+        analysis = await pending;
+      } finally {
+        if (state.inFlight === pending) {
+          state.inFlight = null;
+        }
+      }
+
+      const tracker = getSessionTracker();
+      let session = tracker.getSessionById(sessionId);
+      if (!session) {
+        session = tracker.createSession({
+          id: sessionId,
+          type: "primary",
+          metadata: {
+            agent: String(body?.executor || getPrimaryAgentName() || ""),
+            mode: String(body?.mode || getAgentMode() || ""),
+            model: String(body?.model || "").trim() || undefined,
+          },
+        });
+      }
+
+      const dimension = width && height ? ` (${width}x${height})` : "";
+      tracker.recordEvent(session.id || sessionId, {
+        role: "system",
+        content: `[Vision ${source}${dimension}] ${analysis.summary}`,
+        timestamp: new Date().toISOString(),
+      });
+
+      state.lastAnalyzedHash = frameHash;
+      state.lastAnalyzedAt = Date.now();
+      state.lastSummary = String(analysis.summary || "").trim();
+
+      jsonResponse(res, 200, {
+        ok: true,
+        analyzed: true,
+        summary: state.lastSummary,
+        provider: analysis.provider || null,
+        model: analysis.model || null,
+        frameHash,
+      });
+    } catch (err) {
+      jsonResponse(res, 500, { ok: false, error: err.message });
+    }
+    return;
+  }
+
+  // POST /api/voice/dispatch — Execute a voice action intent (direct JavaScript, no MCP)
+  if (path === "/api/voice/dispatch" && req.method === "POST") {
+    try {
+      const body = await readJsonBody(req);
+      const action = String(body?.action || "").trim();
+      if (!action) {
+        jsonResponse(res, 400, { ok: false, error: "action is required" });
+        return;
+      }
+      const context = {
+        sessionId: String(body?.sessionId || "").trim() || undefined,
+        executor: String(body?.executor || "").trim() || undefined,
+        mode: String(body?.mode || "").trim() || undefined,
+        model: String(body?.model || "").trim() || undefined,
+      };
+      const { dispatchVoiceActionIntent } = await import("./voice-relay.mjs");
+      const result = await dispatchVoiceActionIntent(
+        { action, params: body?.params || {}, id: body?.id || undefined },
+        context,
+      );
+      jsonResponse(res, 200, result);
+    } catch (err) {
+      jsonResponse(res, 500, { ok: false, error: err.message });
+    }
+    return;
+  }
+
+  // POST /api/voice/dispatch-batch — Execute multiple voice action intents
+  if (path === "/api/voice/dispatch-batch" && req.method === "POST") {
+    try {
+      const body = await readJsonBody(req);
+      const intents = Array.isArray(body?.actions) ? body.actions : [];
+      if (!intents.length) {
+        jsonResponse(res, 400, { ok: false, error: "actions array is required" });
+        return;
+      }
+      const context = {
+        sessionId: String(body?.sessionId || "").trim() || undefined,
+        executor: String(body?.executor || "").trim() || undefined,
+        mode: String(body?.mode || "").trim() || undefined,
+        model: String(body?.model || "").trim() || undefined,
+      };
+      const { dispatchVoiceActionIntents } = await import("./voice-relay.mjs");
+      const results = await dispatchVoiceActionIntents(intents, context);
+      jsonResponse(res, 200, { ok: true, results });
+    } catch (err) {
+      jsonResponse(res, 500, { ok: false, error: err.message });
+    }
+    return;
+  }
+
+  // GET /api/voice/actions — List all available voice actions
+  if (path === "/api/voice/actions" && req.method === "GET") {
+    try {
+      const { listVoiceActions } = await import("./voice-relay.mjs");
+      const actions = await listVoiceActions();
+      jsonResponse(res, 200, { ok: true, actions });
+    } catch (err) {
+      jsonResponse(res, 500, { ok: false, error: err.message });
+    }
+    return;
+  }
+
+  // GET /api/voice/prompt — Get the full voice agent prompt with action manifest
+  if (path === "/api/voice/prompt" && req.method === "GET") {
+    try {
+      const compact = url.searchParams?.get("compact") === "true";
+      const { buildVoiceAgentPrompt } = await import("./voice-relay.mjs");
+      const prompt = await buildVoiceAgentPrompt({ compact });
+      jsonResponse(res, 200, { ok: true, prompt });
+    } catch (err) {
+      jsonResponse(res, 500, { ok: false, error: err.message });
+    }
+    return;
+  }
+
+  // GET /api/voice/action-manifest — Get the action manifest for prompt injection
+  if (path === "/api/voice/action-manifest" && req.method === "GET") {
+    try {
+      const { getVoiceActionManifest } = await import("./voice-relay.mjs");
+      const manifest = await getVoiceActionManifest();
+      jsonResponse(res, 200, { ok: true, manifest });
+    } catch (err) {
+      jsonResponse(res, 500, { ok: false, error: err.message });
+    }
+    return;
+  }
+
   jsonResponse(res, 404, { ok: false, error: "Unknown API endpoint" });
 }
 
 async function handleStatic(req, res, url) {
-  if (!requireAuth(req)) {
+  const authResult = await requireAuth(req);
+  if (!authResult?.ok) {
     textResponse(res, 401, "Unauthorized");
     return;
   }
+  if (authResult.issueSessionCookie) {
+    res.setHeader("Set-Cookie", buildSessionCookieHeader());
+  }
 
-  const pathname = url.pathname === "/" ? "/index.html" : url.pathname;
+  const rawPathname = String(url.pathname || "/").trim() || "/";
+  const pathname = rawPathname === "/" ? "/index.html" : rawPathname;
   const filePath = resolve(uiRoot, `.${pathname}`);
 
   if (!filePath.startsWith(uiRoot)) {
@@ -7187,6 +10144,28 @@ async function handleStatic(req, res, url) {
   }
 
   if (!existsSync(filePath)) {
+    // SPA fallback: deep links like /tasks/123 must load index.html so the
+    // client router can resolve the route after refresh.
+    const looksLikeFile = /\.[a-z0-9]+$/i.test(pathname);
+    const hasTemplateBraces = pathname.includes("{{") || pathname.includes("}}");
+    if (!looksLikeFile || hasTemplateBraces) {
+      const indexPath = resolve(uiRoot, "index.html");
+      if (existsSync(indexPath)) {
+        try {
+          const data = await readFile(indexPath);
+          res.writeHead(200, {
+            "Content-Type": "text/html; charset=utf-8",
+            "Access-Control-Allow-Origin": "*",
+            "Cache-Control": "no-store",
+          });
+          res.end(data);
+          return;
+        } catch (err) {
+          textResponse(res, 500, `Failed to load /index.html: ${err.message}`);
+          return;
+        }
+      }
+    }
     textResponse(res, 404, "Not Found");
     return;
   }
@@ -7226,18 +10205,27 @@ export async function startTelegramUiServer(options = {}) {
     process.env.BOSUN_UI_ALLOW_EPHEMERAL_PORT === "1" ||
     isTestRun;
   const persistedPort = readLastUiPort();
+  const shouldReusePersistedPort =
+    options.port == null &&
+    configuredPort === 0 &&
+    allowEphemeralPort &&
+    persistedPort > 0;
   const port =
-    configuredPort === 0 && allowEphemeralPort && persistedPort > 0
+    shouldReusePersistedPort
       ? persistedPort
       : configuredPort;
+  const hasExplicitEnvPort =
+    Number.isFinite(Number(process.env.TELEGRAM_UI_PORT || "")) &&
+    Number(process.env.TELEGRAM_UI_PORT || "") > 0;
   const portSource =
-    configuredPort === 0 && allowEphemeralPort && persistedPort > 0
+    shouldReusePersistedPort
       ? "cache.ui-last-port"
       : options.port != null
       ? "options.port"
-      : process.env.TELEGRAM_UI_PORT
+      : hasExplicitEnvPort
         ? "env.TELEGRAM_UI_PORT"
-        : "default(0)";
+        : `default(${DEFAULT_TELEGRAM_UI_PORT})`;
+  const usingFallbackDefaultPort = portSource.startsWith("default(");
 
   if (!Number.isFinite(port) || port < 0) {
     console.warn(
@@ -7253,13 +10241,10 @@ export async function startTelegramUiServer(options = {}) {
     return null;
   }
 
-  const autoOpenEnabled = ["1", "true", "yes", "on"].includes(
-    String(process.env.BOSUN_UI_AUTO_OPEN_BROWSER || "")
-      .trim()
-      .toLowerCase(),
-  );
+  const browserOpenMode = getBrowserOpenMode();
+  const autoOpenEnabled = shouldAutoOpenBrowser();
   console.log(
-    `[telegram-ui] startup config: port=${port} source=${portSource} autoOpen=${autoOpenEnabled ? "enabled" : "disabled"}`,
+    `[telegram-ui] startup config: port=${port} source=${portSource} browserOpenMode=${browserOpenMode} autoOpen=${autoOpenEnabled ? "enabled" : "disabled"}`,
   );
 
   if (!skipInstanceLock) {
@@ -7296,13 +10281,50 @@ export async function startTelegramUiServer(options = {}) {
       const provided = Buffer.from(qToken);
       const expected = Buffer.from(sessionToken);
       if (provided.length === expected.length && timingSafeEqual(provided, expected)) {
-        const secure = uiServerTls ? "; Secure" : "";
+        const cleanUrl = new URL(url.toString());
+        cleanUrl.searchParams.delete("token");
+        const redirectPath =
+          cleanUrl.pathname +
+          (cleanUrl.searchParams.toString()
+            ? `?${cleanUrl.searchParams.toString()}`
+            : "");
         res.writeHead(302, {
-          "Set-Cookie": `ve_session=${sessionToken}; HttpOnly; SameSite=Lax; Path=/; Max-Age=86400${secure}`,
-          Location: url.pathname || "/",
+          "Set-Cookie": buildSessionCookieHeader(),
+          Location: redirectPath || "/",
         });
         res.end();
         return;
+      }
+    }
+
+    // Desktop API key exchange: ?desktopKey=<key> → set session cookie and redirect to clean URL
+    // Used by the Electron desktop app to bootstrap authenticated WebView sessions
+    // without depending on the TTL-based session token.
+    const qDesktopKey = url.searchParams.get("desktopKey");
+    if (qDesktopKey) {
+      const expectedDesktopKey = (process.env.BOSUN_DESKTOP_API_KEY || "").trim();
+      if (expectedDesktopKey) {
+        try {
+          const a = Buffer.from(qDesktopKey);
+          const b = Buffer.from(expectedDesktopKey);
+          if (a.length === b.length && timingSafeEqual(a, b)) {
+            const cleanUrl = new URL(url.toString());
+            cleanUrl.searchParams.delete("desktopKey");
+            const redirectPath =
+              cleanUrl.pathname +
+              (cleanUrl.searchParams.toString()
+                ? `?${cleanUrl.searchParams.toString()}`
+                : "");
+            res.writeHead(302, {
+              "Set-Cookie": buildSessionCookieHeader(),
+              Location: redirectPath || "/",
+            });
+            res.end();
+            return;
+          }
+        } catch {
+          /* malformed key — fall through to normal auth */
+        }
       }
     }
 
@@ -7353,6 +10375,14 @@ export async function startTelegramUiServer(options = {}) {
       return;
     }
 
+    // /demo and /ui/demo are convenience aliases for /demo.html (the self-contained mock UI demo)
+    if (url.pathname === "/demo" || url.pathname === "/ui/demo") {
+      const qs = url.search || "";
+      res.writeHead(302, { Location: `/demo.html${qs}` });
+      res.end();
+      return;
+    }
+
     // Telegram initData exchange: ?tgWebAppData=... or ?initData=... → set session cookie and redirect
     const initDataQuery =
       url.searchParams.get("tgWebAppData") ||
@@ -7365,14 +10395,13 @@ export async function startTelegramUiServer(options = {}) {
     ) {
       const token = process.env.TELEGRAM_BOT_TOKEN || "";
       if (validateInitData(String(initDataQuery), token)) {
-        const secure = uiServerTls ? "; Secure" : "";
         const cleanUrl = new URL(url.toString());
         cleanUrl.searchParams.delete("tgWebAppData");
         cleanUrl.searchParams.delete("initData");
         const redirectPath =
           cleanUrl.pathname + (cleanUrl.searchParams.toString() ? `?${cleanUrl.searchParams.toString()}` : "");
         res.writeHead(302, {
-          "Set-Cookie": `ve_session=${sessionToken}; HttpOnly; SameSite=Lax; Path=/; Max-Age=86400${secure}`,
+          "Set-Cookie": buildSessionCookieHeader(),
           Location: redirectPath || "/",
         });
         res.end();
@@ -7438,6 +10467,102 @@ export async function startTelegramUiServer(options = {}) {
             startLogStream(socket, logType, query);
           } else if (message?.type === "unsubscribe-logs") {
             stopLogStream(socket);
+          } else if (message?.type === "voice-tool-call") {
+            // Voice tool call via WebSocket
+            const {
+              toolName,
+              args,
+              callId,
+              sessionId: voiceSessionId,
+              executor,
+              mode,
+              model,
+            } = message;
+            const normalizedToolName = String(toolName || "").trim();
+            if (!normalizedToolName) {
+              sendWsMessage(socket, {
+                type: "voice-tool-result",
+                callId,
+                error: "toolName required",
+                ts: Date.now(),
+              });
+              return;
+            }
+            const normalizedSessionId = String(voiceSessionId || "").trim() || undefined;
+            if (normalizedSessionId) {
+              // Validate tool is in the allowed set for session-bound calls
+              import("./voice-relay.mjs").then((relay) => {
+                const allowed = relay.getSessionAllowedTools();
+                if (!allowed.has(normalizedToolName)) {
+                  sendWsMessage(socket, {
+                    type: "voice-tool-result",
+                    callId,
+                    error: `Tool "${normalizedToolName}" is not allowed for session-bound calls`,
+                    ts: Date.now(),
+                  });
+                  return;
+                }
+                // Tool is allowed — execute it
+                relay.executeVoiceTool(normalizedToolName, args || {}, {
+                  sessionId: normalizedSessionId,
+                  executor: String(executor || "").trim() || undefined,
+                  mode: String(mode || "").trim() || undefined,
+                  model: String(model || "").trim() || undefined,
+                }).then((result) => {
+                  sendWsMessage(socket, {
+                    type: "voice-tool-result",
+                    callId,
+                    ...result,
+                    ts: Date.now(),
+                  });
+                }).catch((err) => {
+                  sendWsMessage(socket, {
+                    type: "voice-tool-result",
+                    callId,
+                    error: err.message,
+                    ts: Date.now(),
+                  });
+                });
+              }).catch((err) => {
+                sendWsMessage(socket, {
+                  type: "voice-tool-result",
+                  callId,
+                  error: "Session-bound tool validation failed",
+                  ts: Date.now(),
+                });
+              });
+              return;
+            }
+            import("./voice-relay.mjs").then(async (relay) => {
+              try {
+                const result = await relay.executeVoiceTool(normalizedToolName, args || {}, {
+                  sessionId: normalizedSessionId,
+                  executor: String(executor || "").trim() || undefined,
+                  mode: String(mode || "").trim() || undefined,
+                  model: String(model || "").trim() || undefined,
+                });
+                sendWsMessage(socket, {
+                  type: "voice-tool-result",
+                  callId,
+                  ...result,
+                  ts: Date.now(),
+                });
+              } catch (err) {
+                sendWsMessage(socket, {
+                  type: "voice-tool-result",
+                  callId,
+                  error: err.message,
+                  ts: Date.now(),
+                });
+              }
+            }).catch(err => {
+              sendWsMessage(socket, {
+                type: "voice-tool-result",
+                callId,
+                error: err.message,
+                ts: Date.now(),
+              });
+            });
           }
         } catch {
           // Ignore malformed websocket payloads
@@ -7483,12 +10608,53 @@ export async function startTelegramUiServer(options = {}) {
     // Reuse a recent session token when possible so browser sessions survive restarts.
     ensureSessionToken();
 
-    await new Promise((resolveReady, rejectReady) => {
-      uiServer.once("error", rejectReady);
-      uiServer.listen(port, options.host || DEFAULT_HOST, () => {
-        resolveReady();
+    const host = options.host || DEFAULT_HOST;
+    const maxPortFallbackAttempts = usingFallbackDefaultPort ? 20 : 0;
+    const listenOnce = (targetPort) =>
+      new Promise((resolveReady, rejectReady) => {
+        const onError = (err) => {
+          uiServer.off("listening", onListening);
+          rejectReady(err);
+        };
+        const onListening = () => {
+          uiServer.off("error", onError);
+          resolveReady();
+        };
+        uiServer.once("error", onError);
+        uiServer.once("listening", onListening);
+        uiServer.listen(targetPort, host);
       });
-    });
+    let listenPort = port;
+    for (let attempt = 0; ; attempt += 1) {
+      try {
+        await listenOnce(listenPort);
+        break;
+      } catch (err) {
+        const isAddrInUse = err?.code === "EADDRINUSE";
+        const canRetryPortIncrement =
+          isAddrInUse &&
+          attempt < maxPortFallbackAttempts &&
+          listenPort > 0;
+        if (canRetryPortIncrement) {
+          const nextPort = listenPort + 1;
+          console.warn(
+            `[telegram-ui] port ${listenPort} in use; retrying on ${nextPort} (attempt ${attempt + 1}/${maxPortFallbackAttempts})`,
+          );
+          listenPort = nextPort;
+          continue;
+        }
+
+        const code = String(err?.code || "").toUpperCase();
+        const canRetryWithEphemeral =
+          allowEphemeralPort && listenPort > 0 && (code === "EADDRINUSE" || code === "EACCES");
+        if (!canRetryWithEphemeral) throw err;
+        console.warn(
+          `[telegram-ui] failed to bind ${host}:${listenPort} (${code || "unknown"}); retrying with ephemeral port`,
+        );
+        await listenOnce(0);
+        break;
+      }
+    }
   } catch (err) {
     releaseUiInstanceLock();
     throw err;
@@ -7498,12 +10664,18 @@ export async function startTelegramUiServer(options = {}) {
   const lanIp = getLocalLanIp();
   const host = publicHost || lanIp;
   const actualPort = uiServer.address().port;
+  const isLocalOrPrivateHost = (value) => {
+    const normalized = String(value || "").trim().toLowerCase();
+    return normalized.startsWith("192.")
+      || normalized.startsWith("10.")
+      || normalized.startsWith("172.")
+      || normalized.startsWith("127.")
+      || normalized === "localhost"
+      || normalized === "::1";
+  };
   const protocol = uiServerTls
     ? "https"
-    : publicHost &&
-        !publicHost.startsWith("192.") &&
-        !publicHost.startsWith("10.") &&
-        !publicHost.startsWith("172.")
+    : publicHost && !isLocalOrPrivateHost(publicHost)
       ? "https"
       : "http";
   uiServerUrl = `${protocol}://${host}:${actualPort}`;
@@ -7523,24 +10695,30 @@ export async function startTelegramUiServer(options = {}) {
 
   // ── SECURITY: Warn loudly when auth is disabled ──────────────────────
   if (isAllowUnsafe()) {
-    const tunnelMode = (process.env.TELEGRAM_UI_TUNNEL || "auto").toLowerCase();
-    const tunnelActive = tunnelMode !== "disabled" && tunnelMode !== "off" && tunnelMode !== "0";
+    const tunnelMode = normalizeTunnelMode(process.env.TELEGRAM_UI_TUNNEL || DEFAULT_TUNNEL_MODE);
+    const tunnelActive = tunnelMode !== TUNNEL_MODE_DISABLED;
     const border = "═".repeat(68);
     console.warn(`\n╔${border}╗`);
-    console.warn(`║ ⛔  DANGER: TELEGRAM_UI_ALLOW_UNSAFE=true — ALL AUTH IS DISABLED   ║`);
+    console.warn(`║ :ban:  DANGER: TELEGRAM_UI_ALLOW_UNSAFE=true — ALL AUTH IS DISABLED   ║`);
     console.warn(`║                                                                    ║`);
     console.warn(`║  Anyone with your URL can control agents, read secrets, and        ║`);
     console.warn(`║  execute arbitrary commands on this machine.                        ║`);
     if (tunnelActive) {
       console.warn(`║                                                                    ║`);
-      console.warn(`║  🔴  TUNNEL IS ACTIVE — your UI is exposed to the PUBLIC INTERNET  ║`);
+      console.warn(`║  :dot:  TUNNEL IS ACTIVE — your UI is exposed to the PUBLIC INTERNET  ║`);
       console.warn(`║  This means ANYONE can discover your URL and take control.         ║`);
       console.warn(`║  Set TELEGRAM_UI_TUNNEL=disabled or TELEGRAM_UI_ALLOW_UNSAFE=false ║`);
     }
     console.warn(`╚${border}╝\n`);
   }
   console.log(`[telegram-ui] LAN access: ${protocol}://${lanIp}:${actualPort}`);
-  console.log(`[telegram-ui] Browser access: ${protocol}://${lanIp}:${actualPort}/?token=${sessionToken}`);
+  if (shouldLogTokenizedBrowserUrl()) {
+    console.log(`[telegram-ui] Browser access: ${protocol}://${lanIp}:${actualPort}/?token=${sessionToken}`);
+  } else {
+    console.log(
+      `[telegram-ui] Browser access: ${protocol}://${lanIp}:${actualPort} (token hidden; set BOSUN_UI_LOG_TOKENIZED_BROWSER_URL=1 for debug)`,
+    );
+  }
 
   // Auto-open browser:
   //  - skip in desktop/Electron mode (BOSUN_DESKTOP=1)
@@ -7591,7 +10769,7 @@ export async function startTelegramUiServer(options = {}) {
   if (firewallState) {
     if (firewallState.blocked) {
       console.warn(
-        `[telegram-ui] ⚠️  Port ${actualPort}/tcp appears BLOCKED by ${firewallState.firewall} for LAN access.`,
+        `[telegram-ui] :alert:  Port ${actualPort}/tcp appears BLOCKED by ${firewallState.firewall} for LAN access.`,
       );
       console.warn(
         `[telegram-ui] To fix, run: ${firewallState.allowCmd}`,
@@ -7607,7 +10785,7 @@ export async function startTelegramUiServer(options = {}) {
       console.log(`[telegram-ui] Telegram Mini App URL: ${tUrl}`);
       if (firewallState?.blocked) {
         console.log(
-          `[telegram-ui] ℹ️  Tunnel active — Telegram Mini App works regardless of firewall. ` +
+          `[telegram-ui] :help:  Tunnel active — Telegram Mini App works regardless of firewall. ` +
           `LAN browser access still requires port ${actualPort}/tcp to be open.`,
         );
       }

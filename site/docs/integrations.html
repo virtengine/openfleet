@@ -9,49 +9,48 @@
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600;700&display=swap" rel="stylesheet" />
   <link rel="stylesheet" href="../css/main.css" />
   <link rel="stylesheet" href="../css/docs.css" />
-  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='0.9em' font-size='80'>⚡</text></svg>" />
+  <link rel="icon" type="image/png" href="../favicon.png" />
 </head>
 <body>
 
   <div class="docs-sidebar-backdrop"></div>
-  <button class="docs-sidebar-toggle" aria-label="Toggle sidebar">☰</button>
+  <button class="docs-sidebar-toggle" aria-label="Toggle sidebar">&#9776;</button>
 
   <div class="docs-layout">
     <aside class="docs-sidebar">
       <a href="../" class="sidebar-brand">
-        <div class="sidebar-brand__icon">⚡</div>
+        <img src="../logo.svg" alt="Bosun" class="sidebar-brand__logo" width="28" height="28" />
         Bosun
       </a>
       <div class="sidebar-version-info">
-        <span class="sidebar-version" id="current-version">Current Version: v0.33.2</span>
-        <span class="sidebar-version">Docs Last Updated: v0.33.2</span>
+        <span class="sidebar-version" id="current-version">Current Version: v0.36.1</span>
+        <span class="sidebar-version">Docs Last Updated: v0.36.1</span>
       </div>
       <div class="docs-search">
-        <span class="docs-search__icon">🔍</span>
         <input class="docs-search__input" type="text" placeholder="Search docs..." />
       </div>
       <div class="sidebar-section">
         <div class="sidebar-section__title">Getting Started</div>
         <ul class="sidebar-nav">
-          <li><a href="./"><span class="nav-icon">📖</span> Overview</a></li>
-          <li><a href="getting-started.html"><span class="nav-icon">🚀</span> Quick Start</a></li>
-          <li><a href="configuration.html"><span class="nav-icon">⚙️</span> Configuration</a></li>
+          <li><a href="./">Overview</a></li>
+          <li><a href="getting-started.html">Quick Start</a></li>
+          <li><a href="configuration.html">Configuration</a></li>
         </ul>
       </div>
       <div class="sidebar-section">
         <div class="sidebar-section__title">Reference</div>
         <ul class="sidebar-nav">
-          <li><a href="cli-reference.html"><span class="nav-icon">💻</span> CLI Reference</a></li>
-          <li><a href="architecture.html"><span class="nav-icon">🏗️</span> Architecture</a></li>
-          <li><a href="integrations.html" class="active"><span class="nav-icon">🔗</span> Integrations</a></li>
+          <li><a href="cli-reference.html">CLI Reference</a></li>
+          <li><a href="architecture.html">Architecture</a></li>
+          <li><a href="integrations.html" class="active">Integrations</a></li>
         </ul>
       </div>
       <div class="sidebar-section">
         <div class="sidebar-section__title">Links</div>
         <ul class="sidebar-nav">
-          <li><a href="https://github.com/virtengine/virtengine/tree/main/scripts/bosun?tab=readme-ov-file#bosun" target="_blank" rel="noopener"><span class="nav-icon">🐙</span> GitHub</a></li>
-          <li><a href="https://www.npmjs.com/package/bosun" target="_blank"><span class="nav-icon">📦</span> npm</a></li>
-          <li><a href="../"><span class="nav-icon">🏠</span> Home</a></li>
+          <li><a href="https://github.com/virtengine/bosun" target="_blank" rel="noopener">GitHub</a></li>
+          <li><a href="https://www.npmjs.com/package/bosun" target="_blank">npm</a></li>
+          <li><a href="../">Home</a></li>
         </ul>
       </div>
     </aside>
@@ -274,9 +273,11 @@ TELEGRAM_UI_BASE_URL=https://fleet.yourdomain.com</code></pre>
       </div>
     </main>
   </div>
-  <script src="../js/analytics-config.js"></script>
+  <script src="../js/docs.js"></script>
+    <script src="../js/analytics-config.js"></script>
   <script src="../js/analytics.js"></script>
 
   <script src="../js/main.js"></script>
 </body>
 </html>
+

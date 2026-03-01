@@ -282,7 +282,9 @@ import {
 const msg = buildCommitMessage("feat: add thing", "Extended description");
 // → Includes trailer automatically when running in Bosun task context
 
-const forced = buildCommitMessage("feat: add thing", "Extended description", { addBosunCredit: true });
+const forced = buildCommitMessage("feat: add thing", "Extended description", {
+  addBosunCredit: true,
+});
 // → Always includes trailer (independent of task context)
 
 const prBody = appendBosunPrCredit("My PR description");
@@ -313,13 +315,13 @@ timers).
 log spam, memory leaks, and race conditions.
 
 ```javascript
-// ❌ BAD — _engine resets to undefined on every request
+// BAD — _engine resets to undefined on every request
 export function handleApi(req, res) {
   let _engine;
   if (!_engine) _engine = await loadEngine(); // runs EVERY time
 }
 
-// ✅ GOOD — _engine persists across calls
+// GOOD — _engine persists across calls
 let _engine;
 export function handleApi(req, res) {
   if (!_engine) _engine = await loadEngine(); // runs ONCE
@@ -332,10 +334,10 @@ export function handleApi(req, res) {
 `.catch()`. Since Node.js 15+, unhandled promise rejections crash the process.
 
 ```javascript
-// ❌ BAD — if dispatchEvent throws → unhandled rejection → exit code 1
+// BAD — if dispatchEvent throws → unhandled rejection → exit code 1
 void dispatchEvent(data);
 
-// ✅ GOOD
+// GOOD
 await dispatchEvent(data); // preferred
 dispatchEvent(data).catch((err) => log.warn(err)); // fire-and-forget OK
 ```
@@ -361,6 +363,52 @@ Any function called from a hot path (HTTP handler, event loop, timer, setInterva
 - Dynamic `import()` results must be cached at module scope.
 - Respect feature flags — never force-enable or inline-override config values.
 - Guard optional subsystem calls with null/undefined checks.
+
+### UI Form / Modal Save Guard (Portal + Mini App)
+
+For any editable UI form, especially inside modals, use the same save UX pattern as Settings:
+
+- Show explicit dirty state with count text: `You have unsaved changes (X)`.
+- Provide explicit save/discard actions via shared save controls (for example `SaveDiscardBar`).
+- Register pending form state with `setPendingChange(...)` and clear on unmount.
+- Modal close (X button, backdrop click, Escape, swipe dismiss, Back button) must be guarded when dirty.
+- Guarded close must offer: `Save & Close`, `Discard & Close`, and `Cancel`.
+- If an async operation is active (for example AI rewrite/improve), surface that context in the close warning (`activeOperationLabel`) so users know close may drop in-flight results.
+- Never silently close a dirty modal due to outside click or shortcut keys.
+
+### Git Hook Safety — HARD BLOCK
+
+**`git push --no-verify` and `git commit --no-verify` are permanently prohibited.**
+
+The pre-push hook is **diff-based**: it only runs the test files for source modules
+you actually changed, so it completes in seconds. There is never a legitimate
+reason to bypass it.
+
+Violations will be reverted automatically by CI and counted as a trust signal
+against the issuing agent.
+
+**Enforcement layers:**
+
+1. **`bin/git` wrapper** — intercepts `--no-verify` before Git sees it.
+   Activate by putting `./bin` first in PATH (add to shell profile):
+
+   ```bash
+   export PATH="$PWD/bin:$PATH"   # run from bosun/ directory
+   ```
+
+   Windows CMD/PowerShell: `bin\git.cmd` is auto-discovered when `bin\` is in PATH.
+
+2. **CI gate** — GitHub Actions runs the full test suite on every push regardless of
+   hooks. A bypassed push will fail CI and receive the `bosun-needs-fix` label.
+
+3. **This rule** — treat any agent that emits `--no-verify` as misbehaving. Raise a
+   new task to revert its commit if it lands.
+
+**If a hook check is genuinely slow or broken, the correct fix is:**
+
+- `npm run syntax:check` fast-fails on parse errors in ~2 s
+- The diff-based hook only runs tests for changed modules
+- Fix the failing test or improve the test setup — do NOT skip the hook
 
 ## Testing
 

@@ -375,10 +375,10 @@ The scope is the **module or area** affected:
 
 ## Common Mistakes to Avoid
 
-- ❌ \`git commit -m "fix stuff"\` — too vague
-- ❌ \`git commit -m "WIP: not done yet"\` — commit only complete, testable units
-- ❌ \`git commit -am "…"\` — stages all tracked changes indiscriminately
-- ✅ \`git add src/auth/login.ts && git commit -m "fix(auth): handle empty token gracefully"\`
+- :close: \`git commit -m "fix stuff"\` — too vague
+- :close: \`git commit -m "WIP: not done yet"\` — commit only complete, testable units
+- :close: \`git commit -am "…"\` — stages all tracked changes indiscriminately
+- :check: \`git add src/auth/login.ts && git commit -m "fix(auth): handle empty token gracefully"\`
 `,
   },
   {

@@ -18,6 +18,7 @@ import {
   scheduleRefresh,
 } from "../modules/state.js";
 import { ICONS } from "../modules/icons.js";
+import { iconText } from "../modules/icon-utils.js";
 import { cloneValue, truncate } from "../modules/utils.js";
 import { Card, Badge, SkeletonCard, Spinner } from "../components/shared.js";
 import { SegmentedControl, Collapsible } from "../components/forms.js";
@@ -843,7 +844,7 @@ export function ControlTab() {
                     sendCmd(planFocus ? `/plan ${n} ${planFocus}` : `/plan ${n}`);
                   }}
                 >
-                  📋 Plan
+                  ${iconText(":clipboard: Plan")}
                 </button>
               </div>
             </div>
@@ -913,7 +914,7 @@ export function ControlTab() {
                 style="flex:1"
               />
               <button class="btn btn-secondary btn-sm" onClick=${handleQuickCmd}>
-                ▶ Run
+                ${iconText(":play: Run")}
               </button>
             </div>
             ${quickCmdFeedback && html`

@@ -229,6 +229,9 @@ function WorkflowCanvas({ workflow, onSave }) {
   const [zoom, setZoom] = useState(1);
   const [pan, setPan] = useState({ x: 0, y: 0 });
   const [contextMenu, setContextMenu] = useState(null);
+  const nodeLongPressTimerRef = useRef(null);
+  const nodeLongPressStateRef = useRef(null);
+  const suppressMouseUntilRef = useRef(0);
 
   useEffect(() => {
     setNodes(workflow?.nodes || []);
@@ -239,6 +242,8 @@ function WorkflowCanvas({ workflow, onSave }) {
   const NODE_W = 220;
   const NODE_H = 60;
   const PORT_R = 8;
+  const NODE_LONG_PRESS_MS = 3000;
+  const NODE_LONG_PRESS_CANCEL_PX = 14;
 
   const toCanvas = useCallback((clientX, clientY) => {
     const rect = canvasRef.current?.getBoundingClientRect();
@@ -301,7 +306,24 @@ function WorkflowCanvas({ workflow, onSave }) {
 
   // ── Node interaction ──────────────────────────────────────
 
+  const clearNodeLongPress = useCallback(() => {
+    if (nodeLongPressTimerRef.current) {
+      clearTimeout(nodeLongPressTimerRef.current);
+      nodeLongPressTimerRef.current = null;
+    }
+    nodeLongPressStateRef.current = null;
+  }, []);
+
   const onNodeMouseDown = useCallback((nodeId, e) => {
+    if (Date.now() < suppressMouseUntilRef.current) {
+      e.preventDefault();
+      e.stopPropagation();
+      return;
+    }
+    if (e.button !== 0) {
+      e.stopPropagation();
+      return;
+    }
     e.stopPropagation();
     selectedNodeId.value = nodeId;
     setContextMenu(null);
@@ -323,9 +345,63 @@ function WorkflowCanvas({ workflow, onSave }) {
   const onNodeContextMenu = useCallback((nodeId, e) => {
     e.preventDefault();
     e.stopPropagation();
+    clearNodeLongPress();
     selectedNodeId.value = nodeId;
     setContextMenu({ x: e.clientX, y: e.clientY, nodeId });
-  }, []);
+  }, [clearNodeLongPress]);
+
+  const onNodeTouchStart = useCallback((nodeId, e) => {
+    if (!e.touches || e.touches.length !== 1) {
+      clearNodeLongPress();
+      return;
+    }
+    const touch = e.touches[0];
+    selectedNodeId.value = nodeId;
+    setContextMenu(null);
+    nodeLongPressStateRef.current = {
+      nodeId,
+      startX: touch.clientX,
+      startY: touch.clientY,
+      x: touch.clientX,
+      y: touch.clientY,
+    };
+    if (nodeLongPressTimerRef.current) clearTimeout(nodeLongPressTimerRef.current);
+    nodeLongPressTimerRef.current = setTimeout(() => {
+      const state = nodeLongPressStateRef.current;
+      if (!state || state.nodeId !== nodeId) return;
+      suppressMouseUntilRef.current = Date.now() + 450;
+      selectedNodeId.value = nodeId;
+      setContextMenu({ x: state.x, y: state.y, nodeId });
+      haptic("light");
+      nodeLongPressTimerRef.current = null;
+      nodeLongPressStateRef.current = null;
+    }, NODE_LONG_PRESS_MS);
+  }, [clearNodeLongPress]);
+
+  const onNodeTouchMove = useCallback((e) => {
+    const state = nodeLongPressStateRef.current;
+    const touch = e.touches?.[0];
+    if (!state || !touch) return;
+    const dx = touch.clientX - state.startX;
+    const dy = touch.clientY - state.startY;
+    if (Math.abs(dx) > NODE_LONG_PRESS_CANCEL_PX || Math.abs(dy) > NODE_LONG_PRESS_CANCEL_PX) {
+      clearNodeLongPress();
+      return;
+    }
+    nodeLongPressStateRef.current = {
+      ...state,
+      x: touch.clientX,
+      y: touch.clientY,
+    };
+  }, [clearNodeLongPress]);
+
+  const onNodeTouchEnd = useCallback(() => {
+    clearNodeLongPress();
+  }, [clearNodeLongPress]);
+
+  const onNodeTouchCancel = useCallback(() => {
+    clearNodeLongPress();
+  }, [clearNodeLongPress]);
 
   // ── Port / connection interaction ─────────────────────────
 
@@ -418,7 +494,27 @@ function WorkflowCanvas({ workflow, onSave }) {
   }, [workflow, nodes, edges]);
 
   // cleanup
-  useEffect(() => () => { if (saveTimer.current) clearTimeout(saveTimer.current); }, []);
+  useEffect(() => () => {
+    if (saveTimer.current) clearTimeout(saveTimer.current);
+    clearNodeLongPress();
+  }, [clearNodeLongPress]);
+
+  useEffect(() => {
+    if (!contextMenu || typeof document === "undefined") return undefined;
+    const handlePointerDown = (event) => {
+      if (event.target?.closest?.(".wf-context-menu")) return;
+      setContextMenu(null);
+    };
+    const handleKeyDown = (event) => {
+      if (event.key === "Escape") setContextMenu(null);
+    };
+    document.addEventListener("pointerdown", handlePointerDown);
+    document.addEventListener("keydown", handleKeyDown);
+    return () => {
+      document.removeEventListener("pointerdown", handlePointerDown);
+      document.removeEventListener("keydown", handleKeyDown);
+    };
+  }, [contextMenu]);
 
   // ── Render helpers ────────────────────────────────────────
 
@@ -592,6 +688,10 @@ function WorkflowCanvas({ workflow, onSave }) {
                 onMouseDown=${(e) => onNodeMouseDown(node.id, e)}
                 onDblClick=${() => onNodeDoubleClick(node.id)}
                 onContextMenu=${(e) => onNodeContextMenu(node.id, e)}
+                onTouchStart=${(e) => onNodeTouchStart(node.id, e)}
+                onTouchMove=${onNodeTouchMove}
+                onTouchEnd=${onNodeTouchEnd}
+                onTouchCancel=${onNodeTouchCancel}
                 style="cursor: grab;"
                 filter=${isSelected ? "url(#node-glow)" : "url(#node-shadow)"}
               >

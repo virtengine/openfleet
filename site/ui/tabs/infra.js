@@ -9,6 +9,7 @@ const html = htm.bind(h);
 
 import { haptic, showConfirm } from "../modules/telegram.js";
 import { apiFetch } from "../modules/api.js";
+import { iconText, resolveIcon } from "../modules/icon-utils.js";
 import {
   worktreeData,
   sharedWorkspaces,
@@ -418,10 +419,10 @@ export function InfraTab() {
             onKeyDown=${(e) => e.key === "Enter" && handleCreateWorkspace()}
           />
           <button class="btn btn-primary btn-sm" onClick=${handleCreateWorkspace}>
-            ➕ Create
+            ${iconText(":plus: Create")}
           </button>
           <button class="btn btn-secondary btn-sm" onClick=${handleScanDisk}>
-            🔄 Scan
+            ${iconText(":refresh: Scan")}
           </button>
         </div>
 
@@ -447,13 +448,13 @@ export function InfraTab() {
                     class="btn btn-secondary btn-sm"
                     onClick=${() => handlePullWorkspace(ws.id)}
                   >
-                    ⬇️ Pull
+                    ${iconText(":download: Pull")}
                   </button>
                   <button
                     class="btn btn-danger btn-sm"
                     onClick=${() => handleDeleteWorkspace(ws.id)}
                   >
-                    🗑
+                    ${resolveIcon(":trash:")}
                   </button>
                 </div>
               </div>
@@ -471,12 +472,12 @@ export function InfraTab() {
                         class="flex-between"
                         style="padding:4px 0;border-bottom:1px solid rgba(255,255,255,0.05)"
                       >
-                        <span class="meta-text">📁 ${repoName}</span>
+                        <span class="meta-text">${iconText(`:folder: ${repoName}`)}</span>
                         <button
                           class="btn btn-ghost btn-sm"
                           onClick=${() => handleRemoveRepo(ws.id, repoName)}
                         >
-                          ✕
+                          ${resolveIcon("✕")}
                         </button>
                       </div>
                     `;
@@ -500,7 +501,7 @@ export function InfraTab() {
                   class="btn btn-secondary btn-sm"
                   onClick=${() => handleAddRepo(ws.id, addRepoWs === ws.id ? addRepoUrl : "")}
                 >
-                  📥 Clone
+                  ${iconText(":download: Clone")}
                 </button>
               </div>
             </div>
@@ -543,7 +544,7 @@ export function InfraTab() {
             Release
           </button>
           <button class="btn btn-danger btn-sm" onClick=${handlePrune}>
-            🗑 Prune
+            ${iconText(":trash: Prune")}
           </button>
         </div>
 
@@ -720,7 +721,7 @@ export function InfraTab() {
                   class="btn btn-primary btn-sm"
                   onClick=${() => handleClaim(ws.id)}
                 >
-                  🔒 Claim
+                  ${iconText(":lock: Claim")}
                 </button>
                 <button
                   class="btn btn-secondary btn-sm"
@@ -732,7 +733,7 @@ export function InfraTab() {
                   class="btn btn-ghost btn-sm"
                   onClick=${() => handleSharedRelease(ws.id)}
                 >
-                  🔓 Release
+                  ${iconText(":unlock: Release")}
                 </button>
               </div>
             </div>
@@ -748,7 +749,7 @@ export function InfraTab() {
       <${Card}>
         <!-- Coordinator info -->
         <div class="task-card mb-md">
-          <div class="task-card-title">🎯 Coordinator</div>
+          <div class="task-card-title">${iconText(":target: Coordinator")}</div>
           <div class="meta-text">
             ${coordinator?.instance_label || coordinator?.instance_id || "none"}
             · Priority ${coordinator?.coordinator_priority ?? "—"}

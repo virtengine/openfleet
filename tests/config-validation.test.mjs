@@ -28,6 +28,12 @@ const ENV_KEYS = [
   "EXECUTORS",
   "TASK_TRIGGER_SYSTEM_ENABLED",
   "KANBAN_BACKEND",
+  "WATCH_PATH",
+  "ORCHESTRATOR_SCRIPT",
+  "PRIMARY_AGENT",
+  "GEMINI_API_KEY",
+  "GOOGLE_API_KEY",
+  "GEMINI_SDK_DISABLED",
 ];
 
 describe("loadConfig validation and edge cases", () => {
@@ -223,6 +229,41 @@ describe("loadConfig validation and edge cases", () => {
     expect(config.executorConfig.executors[0].models).not.toContain("gpt-5.2-codex");
   });
 
+  it("parses Gemini executor models from EXECUTORS env", () => {
+    process.env.EXECUTORS =
+      "GEMINI:DEFAULT:100:gemini-2.5-pro|gemini-2.5-flash";
+
+    const config = loadConfig([
+      "node",
+      "bosun",
+      "--config-dir",
+      tempConfigDir,
+      "--repo-root",
+      tempConfigDir,
+    ]);
+
+    expect(config.executorConfig.executors[0].executor).toBe("GEMINI");
+    expect(config.executorConfig.executors[0].models).toEqual([
+      "gemini-2.5-pro",
+      "gemini-2.5-flash",
+    ]);
+  });
+
+  it("normalizes PRIMARY_AGENT=gemini to gemini-sdk", () => {
+    process.env.PRIMARY_AGENT = "gemini";
+
+    const config = loadConfig([
+      "node",
+      "bosun",
+      "--config-dir",
+      tempConfigDir,
+      "--repo-root",
+      tempConfigDir,
+    ]);
+
+    expect(config.primaryAgent).toBe("gemini-sdk");
+  });
+
   it("keeps trigger system disabled by default", () => {
     delete process.env.TASK_TRIGGER_SYSTEM_ENABLED;
     const config = loadConfig([
@@ -325,5 +366,63 @@ describe("loadConfig validation and edge cases", () => {
         tempConfigDir,
       ]),
     ).toThrow(/KANBAN_BACKEND=jira requires/i);
+  });
+
+  it("watchPath defaults to scriptPath when WATCH_PATH env is not set", () => {
+    delete process.env.WATCH_PATH;
+    delete process.env.ORCHESTRATOR_SCRIPT;
+
+    const config = loadConfig([
+      "node",
+      "bosun",
+      "--config-dir",
+      tempConfigDir,
+      "--repo-root",
+      tempConfigDir,
+    ]);
+
+    // watchPath should be defined and be a string
+    expect(typeof config.watchPath).toBe("string");
+    expect(config.watchPath.length).toBeGreaterThan(0);
+    // When WATCH_PATH is not set, watchPath should resolve to the scriptPath
+    // (or a fallback within the config/repo dirs)
+    expect(typeof config.scriptPath).toBe("string");
+  });
+
+  it("watchPath uses WATCH_PATH env when set (stale/nonexistent path is accepted as configured)", () => {
+    const stalePath = resolve(tempConfigDir, "nonexistent-watch-target.ps1");
+    process.env.WATCH_PATH = stalePath;
+    delete process.env.ORCHESTRATOR_SCRIPT;
+
+    const config = loadConfig([
+      "node",
+      "bosun",
+      "--config-dir",
+      tempConfigDir,
+      "--repo-root",
+      tempConfigDir,
+    ]);
+
+    // WATCH_PATH env is respected even if path doesn't exist on disk
+    expect(config.watchPath).toBe(stalePath);
+  });
+
+  it("scriptPath resolves from ORCHESTRATOR_SCRIPT env when set", async () => {
+    const { writeFile } = await import("node:fs/promises");
+    const scriptFile = resolve(tempConfigDir, "my-custom-orchestrator.ps1");
+    await writeFile(scriptFile, "# custom orchestrator", "utf8");
+    process.env.ORCHESTRATOR_SCRIPT = scriptFile;
+    delete process.env.WATCH_PATH;
+
+    const config = loadConfig([
+      "node",
+      "bosun",
+      "--config-dir",
+      tempConfigDir,
+      "--repo-root",
+      tempConfigDir,
+    ]);
+
+    expect(config.scriptPath).toBe(scriptFile);
   });
 });

@@ -387,7 +387,7 @@ export class AgentEventBus {
       if (this._sendTelegram) {
         const task = this._resolveTask(taskId);
         const title = task?.title || taskId;
-        this._sendTelegram(`🛑 Task blocked: "${title}" (source: ${source})`);
+        this._sendTelegram(`:close: Task blocked: "${title}" (source: ${source})`);
       }
     }
   }
@@ -401,7 +401,7 @@ export class AgentEventBus {
       reason: reason || "manual",
     });
     if (this._sendTelegram) {
-      this._sendTelegram(`⏸️ Executor paused: ${reason || "manual"}`);
+      this._sendTelegram(`:pause: Executor paused: ${reason || "manual"}`);
     }
   }
 
@@ -662,7 +662,7 @@ export class AgentEventBus {
           const task = this._resolveTask(taskId);
           const title = task?.title || taskId;
           this._sendTelegram(
-            `🛑 Auto-blocked: "${title}" — ${recovery?.reason || "too many errors"}`,
+            `:close: Auto-blocked: "${title}" — ${recovery?.reason || "too many errors"}`,
           );
         }
         console.log(
@@ -694,7 +694,7 @@ export class AgentEventBus {
         });
         if (this._sendTelegram) {
           this._sendTelegram(
-            `⏸️ Executor auto-paused: ${recovery?.reason || "rate limit flood"}`,
+            `:pause: Executor auto-paused: ${recovery?.reason || "rate limit flood"}`,
           );
         }
         console.log(`${TAG} executor paused: ${recovery?.reason}`);
@@ -710,7 +710,7 @@ export class AgentEventBus {
           const task = this._resolveTask(taskId);
           const title = task?.title || taskId;
           this._sendTelegram(
-            `⚠️ "${title}" needs manual review: ${recovery?.reason || "repeated errors"}`,
+            `:alert: "${title}" needs manual review: ${recovery?.reason || "repeated errors"}`,
           );
         }
         break;

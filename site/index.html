@@ -3,16 +3,16 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>Bosun — Autonomous AI Fleet Supervisor</title>
-  <meta name="description" content="Bosun is the open-source control plane for AI coding agents. Route tasks, manage executors, automate PRs, and ship code autonomously." />
+  <title>Bosun — Autonomous Engineer Control Plane</title>
+  <meta name="description" content="Bosun is the open-source control plane for your autonomous engineer. Plan work, route execution, enforce quality gates, and ship with operator-grade control." />
   <meta name="theme-color" content="#0a0b12" />
   <meta name="robots" content="index, follow" />
   <meta name="keywords" content="Bosun, VirtEngine, autonomous coding agents, AI orchestration, developer automation, task routing, PR automation, fleet supervisor" />
   <link rel="canonical" href="https://bosun.engineer/" />
 
   <!-- Open Graph -->
-  <meta property="og:title" content="Bosun — Autonomous AI Fleet Supervisor" />
-  <meta property="og:description" content="The open-source control plane for AI coding agents. Ship code autonomously." />
+  <meta property="og:title" content="Bosun — Autonomous Engineer Control Plane" />
+  <meta property="og:description" content="The open-source control plane for your autonomous engineer. Plan, execute, recover, and ship with confidence." />
   <meta property="og:type" content="website" />
   <meta property="og:url" content="https://bosun.engineer/" />
   <meta property="og:site_name" content="Bosun" />
@@ -25,8 +25,8 @@
 
   <!-- Twitter Card -->
   <meta name="twitter:card" content="summary_large_image" />
-  <meta name="twitter:title" content="Bosun — Autonomous AI Fleet Supervisor" />
-  <meta name="twitter:description" content="Route tasks, manage executors, automate PRs, and ship code autonomously." />
+  <meta name="twitter:title" content="Bosun — Autonomous Engineering" />
+  <meta name="twitter:description" content="Autonomously Engineer your projects with Bosun's powerful Workflow Manager." />
   <meta name="twitter:image" content="https://bosun.engineer/social-card.png" />
 
   <!-- Structured Data -->
@@ -37,7 +37,7 @@
     "name": "Bosun",
     "applicationCategory": "DeveloperApplication",
     "operatingSystem": "Linux, macOS, Windows",
-    "description": "Open-source control plane for autonomous AI coding agents.",
+    "description": "Open-source control plane for an autonomous engineering system.",
     "url": "https://bosun.engineer/",
     "image": "https://bosun.engineer/social-card.png",
     "publisher": {
@@ -75,10 +75,11 @@
         Bosun
       </a>
 
-      <button class="nav__toggle" aria-label="Toggle menu">☰</button>
+      <button class="nav__toggle" aria-label="Toggle menu">:menu:</button>
 
       <ul class="nav__links">
         <li><a href="#features">Features</a></li>
+        <li><a href="#workflows">Workflows</a></li>
         <li><a href="#architecture">Architecture</a></li>
         <li><a href="#integrations">Integrations</a></li>
         <li><a href="docs/">Docs</a></li>
@@ -108,7 +109,7 @@
           <span class="hero__badge-text"><span data-version>v0.0.0</span> · Live</span>
         </a>
         <h1 class="hero__headline">
-          Your AI Fleet,<br>
+          Your Autonomous Engineer,<br>
           <span class="hero__headline-accent"><span id="hero-typed"></span></span><span class="typed-cursor" id="typed-cursor">|</span>
         </h1>
         <div class="hero__install hero__install--center">
@@ -171,6 +172,7 @@
               class="desktop-demo-window__iframe"
               loading="lazy"
               title="Bosun MiniApp Demo — Desktop"
+              allowfullscreen
             ></iframe>
           </div>
         </div>
@@ -229,6 +231,7 @@
                   class="miniapp-demo-window__iframe"
                   loading="lazy"
                   title="Bosun MiniApp Demo — Mobile"
+                  allowfullscreen
                 ></iframe>
               </div>
             </div>
@@ -416,6 +419,93 @@
             Interactive setup generates a complete .env with documentation.
             Recommended mode for quick starts, Advanced mode for full control.
           </p>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ═══ Workflow Capabilities ═════════════════════════════════════════ -->
+  <section id="workflows">
+    <div class="container">
+      <div class="section-header reveal">
+        <span class="section-header__label">Workflows</span>
+        <h2 class="section-header__title">Operator-grade <span class="gradient-text">workflow automation</span></h2>
+        <p class="section-header__desc">
+          Bosun templates are not toy automations. They coordinate planning, execution, review, recovery, and merge
+          with explicit controls so your autonomous engineer can run at speed without losing safety.
+        </p>
+      </div>
+
+      <div class="workflow-capability-grid">
+        <article class="workflow-capability-card reveal reveal--delay-1">
+          <h3 class="workflow-capability-card__title">Decisioned PR Gates</h3>
+          <p class="workflow-capability-card__desc">
+            Multi-step merge strategy with CI awareness, review requirements, and explicit merge/no-merge outcomes.
+          </p>
+          <ul class="workflow-capability-card__list">
+            <li>CI status + review checks</li>
+            <li>Conflict-aware branch policy</li>
+            <li>Automated pass/fail labeling</li>
+          </ul>
+        </article>
+
+        <article class="workflow-capability-card reveal reveal--delay-2">
+          <h3 class="workflow-capability-card__title">Autonomous Planning Loop</h3>
+          <p class="workflow-capability-card__desc">
+            Structured planning workflows break work into tasks, attach context, and dispatch to the right executor.
+          </p>
+          <ul class="workflow-capability-card__list">
+            <li>Task decomposition</li>
+            <li>Executor-aware routing</li>
+            <li>Context + prompt templating</li>
+          </ul>
+        </article>
+
+        <article class="workflow-capability-card reveal reveal--delay-3">
+          <h3 class="workflow-capability-card__title">Self-Healing Recovery Paths</h3>
+          <p class="workflow-capability-card__desc">
+            Recovery templates capture stalled runs, retry with policy, and escalate only when automation cannot recover safely.
+          </p>
+          <ul class="workflow-capability-card__list">
+            <li>Retry and cooldown policies</li>
+            <li>Stuck-run detection</li>
+            <li>Escalation + alert hooks</li>
+          </ul>
+        </article>
+      </div>
+
+      <div class="workflow-lifecycle reveal">
+        <div class="workflow-lifecycle__header">Lifecycle Blueprint</div>
+        <div class="workflow-lifecycle__flow">
+          <div class="workflow-stage">
+            <div class="workflow-stage__kicker">Stage 1</div>
+            <div class="workflow-stage__title">Trigger Intake</div>
+            <div class="workflow-stage__meta">Issue · Comment · Schedule · Webhook</div>
+          </div>
+          <div class="workflow-stage__arrow">→</div>
+          <div class="workflow-stage">
+            <div class="workflow-stage__kicker">Stage 2</div>
+            <div class="workflow-stage__title">Plan + Scope</div>
+            <div class="workflow-stage__meta">Classify work · Select template · Build context</div>
+          </div>
+          <div class="workflow-stage__arrow">→</div>
+          <div class="workflow-stage">
+            <div class="workflow-stage__kicker">Stage 3</div>
+            <div class="workflow-stage__title">Execute + Validate</div>
+            <div class="workflow-stage__meta">Agent run · Tests · Build · Quality hooks</div>
+          </div>
+          <div class="workflow-stage__arrow">→</div>
+          <div class="workflow-stage">
+            <div class="workflow-stage__kicker">Stage 4</div>
+            <div class="workflow-stage__title">Review + Merge</div>
+            <div class="workflow-stage__meta">PR policy · Approval gates · Merge decision</div>
+          </div>
+          <div class="workflow-stage__arrow">→</div>
+          <div class="workflow-stage">
+            <div class="workflow-stage__kicker">Stage 5</div>
+            <div class="workflow-stage__title">Observe + Recover</div>
+            <div class="workflow-stage__meta">Telemetry · Auto-heal · Operator alerts</div>
+          </div>
         </div>
       </div>
     </div>

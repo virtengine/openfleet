@@ -18,7 +18,7 @@ import {
   scheduleRefresh,
 } from "../modules/state.js";
 import { ICONS } from "../modules/icons.js";
-import { iconText } from "../modules/icon-utils.js";
+import { iconText as iconTextUtil } from "../modules/icon-utils.js";
 import { cloneValue, truncate } from "../modules/utils.js";
 import { Card, Badge, SkeletonCard, Spinner } from "../components/shared.js";
 import { SegmentedControl, Collapsible } from "../components/forms.js";
@@ -45,6 +45,18 @@ const CMD_REGISTRY = [
 const CAT_COLORS = {
   System: '#6366f1', Tasks: '#f59e0b', Logs: '#10b981',
   Git: '#f97316', Agent: '#8b5cf6', Shell: '#64748b',
+};
+
+// Defensive wrapper: keep Control tab rendering even if icon helper is unavailable
+// in an older/cached bundle state.
+const iconText = (text, options) => {
+  try {
+    if (typeof iconTextUtil === "function") return iconTextUtil(text, options);
+  } catch {
+    /* graceful fallback below */
+  }
+  if (text == null) return "";
+  return String(text);
 };
 
 /* ─── Persistent history key & limits ─── */
@@ -844,7 +856,7 @@ export function ControlTab() {
                     sendCmd(planFocus ? `/plan ${n} ${planFocus}` : `/plan ${n}`);
                   }}
                 >
-                  ${iconText("📋 Plan")}
+                  ${iconText(":clipboard: Plan")}
                 </button>
               </div>
             </div>
@@ -853,29 +865,11 @@ export function ControlTab() {
 
         <${Card} className="routing-card">
           <${Collapsible} title="Routing" defaultOpen=${!isCompact}>
-            <div class="meta-text mb-sm">Quick runtime overrides for executor routing and region. Persistent defaults live in Settings.</div>
+            <div class="meta-text mb-sm">Runtime region override only. SDK and kanban backend changes now live in Settings to avoid accidental disruptive switches.</div>
             <div class="card-subtitle">SDK</div>
-            <${SegmentedControl}
-              options=${[
-                { value: "codex", label: "Codex" },
-                { value: "copilot", label: "Copilot" },
-                { value: "claude", label: "Claude" },
-                { value: "auto", label: "Auto" },
-              ]}
-              value=${config?.sdk || "auto"}
-              onChange=${(v) => updateConfig("sdk", v)}
-            />
-            <div class="card-subtitle mt-sm">Kanban</div>
-            <${SegmentedControl}
-              options=${[
-                { value: "internal", label: "Internal" },
-                { value: "vk", label: "VK" },
-                { value: "github", label: "GitHub" },
-                { value: "jira", label: "Jira" },
-              ]}
-              value=${config?.kanbanBackend || "internal"}
-              onChange=${(v) => updateConfig("kanban", v)}
-            />
+            <div class="meta-text mb-sm">Current: ${String(config?.sdk || "auto").toUpperCase()}</div>
+            <div class="card-subtitle">Kanban</div>
+            <div class="meta-text mb-sm">Current: ${config?.kanbanBackend || "internal"}</div>
             ${regions.length > 1 && html`
               <div class="card-subtitle mt-sm">Region</div>
               <${SegmentedControl}
@@ -884,6 +878,18 @@ export function ControlTab() {
                 onChange=${(v) => updateConfig("region", v)}
               />
             `}
+            ${regions.length <= 1 && html`
+              <div class="card-subtitle mt-sm">Region</div>
+              <div class="meta-text mb-sm">Current: ${regions[0] || "auto"}</div>
+            `}
+            <button
+              class="btn btn-ghost btn-sm mt-sm"
+              onClick=${() => {
+                import("../modules/router.js").then(({ navigateTo }) => navigateTo("settings"));
+              }}
+            >
+              Open Settings
+            </button>
           <//>
         <//>
 
@@ -915,7 +921,7 @@ export function ControlTab() {
                 style="flex:1"
               />
               <button class="btn btn-secondary btn-sm" onClick=${handleQuickCmd}>
-                ${iconText("▶ Run")}
+                ${iconText(":play: Run")}
               </button>
             </div>
             ${quickCmdFeedback && html`

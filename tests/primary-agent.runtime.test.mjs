@@ -31,6 +31,12 @@ const mockIsClaudeBusy = vi.hoisted(() => vi.fn(() => false));
 const mockGetClaudeSessionInfo = vi.hoisted(() => vi.fn(() => ({ isBusy: false })));
 const mockResetClaudeSession = vi.hoisted(() => vi.fn(async () => {}));
 const mockInitClaudeShell = vi.hoisted(() => vi.fn(async () => true));
+const mockExecGeminiPrompt = vi.hoisted(() => vi.fn(async () => ({ finalResponse: "gemini-ok", items: [] })));
+const mockSteerGeminiPrompt = vi.hoisted(() => vi.fn(async () => ({ ok: true })));
+const mockIsGeminiBusy = vi.hoisted(() => vi.fn(() => false));
+const mockGetGeminiSessionInfo = vi.hoisted(() => vi.fn(() => ({ isBusy: false })));
+const mockResetGeminiSession = vi.hoisted(() => vi.fn(async () => {}));
+const mockInitGeminiShell = vi.hoisted(() => vi.fn(async () => true));
 const mockExecPooledPrompt = vi.hoisted(() => vi.fn(async () => ({ finalResponse: "pooled-ok", items: [] })));
 
 vi.mock("../config.mjs", () => ({
@@ -88,6 +94,32 @@ vi.mock("../claude-shell.mjs", () => ({
   initClaudeShell: mockInitClaudeShell,
 }));
 
+vi.mock("../gemini-shell.mjs", () => ({
+  execGeminiPrompt: mockExecGeminiPrompt,
+  steerGeminiPrompt: mockSteerGeminiPrompt,
+  isGeminiBusy: mockIsGeminiBusy,
+  getSessionInfo: mockGetGeminiSessionInfo,
+  resetSession: mockResetGeminiSession,
+  initGeminiShell: mockInitGeminiShell,
+  getActiveSessionId: vi.fn(() => null),
+  listSessions: vi.fn(async () => []),
+  switchSession: vi.fn(async () => {}),
+  createSession: vi.fn(async (id) => ({ id })),
+}));
+
+vi.mock("../opencode-shell.mjs", () => ({
+  execOpencodePrompt: vi.fn(async () => ({ finalResponse: "opencode stub", items: [], usage: null })),
+  steerOpencodePrompt: vi.fn(async () => ({ ok: true, mode: "abort" })),
+  isOpencodeBusy: vi.fn(() => false),
+  getSessionInfo: vi.fn(() => ({ turnCount: 0, isActive: false, isBusy: false, sessionCount: 0, namedSessionId: null })),
+  resetSession: vi.fn(async () => {}),
+  initOpencodeShell: vi.fn(async () => {}),
+  getActiveSessionId: vi.fn(() => null),
+  listSessions: vi.fn(async () => []),
+  switchSession: vi.fn(async () => {}),
+  createSession: vi.fn(async (id) => ({ id, serverSessionId: null })),
+}));
+
 vi.mock("../agent-pool.mjs", () => ({
   execPooledPrompt: mockExecPooledPrompt,
 }));
@@ -100,6 +132,8 @@ describe("primary-agent runtime safeguards", () => {
     delete process.env.CODEX_SDK_DISABLED;
     delete process.env.COPILOT_SDK_DISABLED;
     delete process.env.CLAUDE_SDK_DISABLED;
+    delete process.env.GEMINI_SDK_DISABLED;
+    delete process.env.OPENCODE_SDK_DISABLED;
     mockIsCodexBusy.mockReturnValue(false);
     mockGetThreadInfo.mockReturnValue({
       sessionId: "active-codex-session",
@@ -213,5 +247,30 @@ describe("primary-agent runtime safeguards", () => {
     expect(switched.ok).toBe(true);
     expect(primaryAgent.getPrimaryAgentName()).toBe("copilot-sdk");
     expect(primaryAgent.getPrimaryAgentSelection()).toBe("copilot-claude");
+  });
+
+  it("maps GEMINI executor profiles to gemini-sdk adapter", async () => {
+    mockConfigState.current = {
+      primaryAgent: "codex-sdk",
+      executorConfig: {
+        executors: [
+          {
+            name: "gemini-default",
+            executor: "GEMINI",
+            variant: "DEFAULT",
+            enabled: true,
+            models: ["gemini-2.5-pro"],
+          },
+        ],
+      },
+    };
+
+    vi.resetModules();
+    const primaryAgent = await import("../primary-agent.mjs");
+    const switched = await primaryAgent.switchPrimaryAgent("gemini-default");
+
+    expect(switched.ok).toBe(true);
+    expect(primaryAgent.getPrimaryAgentName()).toBe("gemini-sdk");
+    expect(primaryAgent.getPrimaryAgentSelection()).toBe("gemini-default");
   });
 });

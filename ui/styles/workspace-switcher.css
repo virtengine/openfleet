@@ -77,6 +77,11 @@
   font-size: 14px;
   opacity: 0.7;
 }
+.ws-switcher-icon svg {
+  width: 14px;
+  height: 14px;
+  display: block;
+}
 
 .ws-switcher-name {
   overflow: hidden;
@@ -442,6 +447,11 @@
 .ws-manager-repo-star {
   color: #f59e0b;
   font-size: 11px;
+}
+.ws-manager-repo-star svg {
+  width: 11px;
+  height: 11px;
+  display: block;
 }
 
 .ws-manager-repo-status {

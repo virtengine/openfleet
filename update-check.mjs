@@ -31,6 +31,15 @@ const AUTO_UPDATE_FAILURE_LIMIT =
   Number(process.env.BOSUN_AUTO_UPDATE_FAILURE_LIMIT) || 3;
 const AUTO_UPDATE_DISABLE_WINDOW_MS =
   Number(process.env.BOSUN_AUTO_UPDATE_DISABLE_WINDOW_MS) || 24 * 60 * 60 * 1000;
+const AUTO_UPDATE_RUNTIME_SETTLE_MAX_WAIT_MS = Math.max(
+  0,
+  Number(process.env.BOSUN_AUTO_UPDATE_RUNTIME_SETTLE_MAX_WAIT_MS || "20000") ||
+    20000,
+);
+const AUTO_UPDATE_RUNTIME_SETTLE_RETRY_MS = Math.max(
+  100,
+  Number(process.env.BOSUN_AUTO_UPDATE_RUNTIME_SETTLE_RETRY_MS || "500") || 500,
+);
 const STARTUP_CHECK_INTERVAL_MS = 60 * 60 * 1000; // 1 hour (startup notice)
 const AUTO_UPDATE_INTERVAL_MS = 10 * 60 * 1000; // 10 minutes (polling loop)
 const NPM_LAUNCH_ERROR_CODES = new Set([
@@ -319,7 +328,7 @@ function buildDisableNotice(state) {
   const hours = Math.round(AUTO_UPDATE_DISABLE_WINDOW_MS / (60 * 60 * 1000));
   const reason = state?.lastFailureReason || "unknown";
   return [
-    `[auto-update] ⛔ Disabled for ${hours}h after ${state?.failureCount || 0} failures (last: ${reason}).`,
+    `[auto-update] :ban: Disabled for ${hours}h after ${state?.failureCount || 0} failures (last: ${reason}).`,
     "Recovery: set BOSUN_SKIP_AUTO_UPDATE=1 or delete .cache/auto-update-state.json then restart.",
   ].join(' ');
 }
@@ -417,8 +426,8 @@ export async function forceUpdate(currentVersion) {
   let latest = await fetchLatestVersion();
 
   if (!latest) {
-    console.log("  ⚠️  Could not reach npm registry.");
-    console.log("  ℹ️  This can happen if:");
+    console.log("  :alert:  Could not reach npm registry.");
+    console.log("  :help:  This can happen if:");
     console.log("     • You're offline or behind a firewall");
     console.log("     • The npm registry is temporarily unavailable");
     console.log("     • The package hasn't been published yet");
@@ -427,18 +436,18 @@ export async function forceUpdate(currentVersion) {
     await new Promise(r => setTimeout(r, 3000));
     latest = await fetchLatestVersion();
     if (!latest) {
-      console.log("  ❌ Still unable to reach registry. Try manually:");
+      console.log("  :close: Still unable to reach registry. Try manually:");
       console.log(`     npm install -g ${PKG_NAME}@latest\n`);
       return;
     }
   }
 
   if (!isNewer(latest, currentVersion)) {
-    console.log(`  ✅ Already up to date (v${currentVersion})\n`);
+    console.log(`  :check: Already up to date (v${currentVersion})\n`);
     return;
   }
 
-  console.log(`  📦 Update available: v${currentVersion} → v${latest}\n`);
+  console.log(`  :box: Update available: v${currentVersion} → v${latest}\n`);
 
   const confirmed = await promptConfirm("  Install update now? [Y/n]: ");
 
@@ -455,10 +464,10 @@ export async function forceUpdate(currentVersion) {
       timeout: 120000,
     });
     console.log(
-      `\n  ✅ Updated to v${latest}. Restart bosun to use the new version.\n`,
+      `\n  :check: Updated to v${latest}. Restart bosun to use the new version.\n`,
     );
   } catch (err) {
-    console.error(`\n  ❌ Update failed: ${err.message}`);
+    console.error(`\n  :close: Update failed: ${err.message}`);
     console.error(`  Try manually: npm install -g ${PKG_NAME}@latest\n`);
   }
 }
@@ -480,6 +489,38 @@ export function getCurrentVersion() {
   }
 }
 
+function getRequiredRuntimeFiles() {
+  const required = [resolve(__dirname, "monitor.mjs")];
+  const copilotDir = resolve(__dirname, "node_modules", "@github", "copilot");
+  if (process.platform === "win32" && existsSync(copilotDir)) {
+    required.push(resolve(copilotDir, "conpty_console_list_agent.js"));
+  }
+  return required;
+}
+
+function listMissingRuntimeFiles() {
+  return getRequiredRuntimeFiles().filter((entry) => !existsSync(entry));
+}
+
+async function waitForRuntimeFilesToSettle() {
+  const startedAt = Date.now();
+  let missing = listMissingRuntimeFiles();
+  while (
+    missing.length > 0 &&
+    Date.now() - startedAt < AUTO_UPDATE_RUNTIME_SETTLE_MAX_WAIT_MS
+  ) {
+    await new Promise((resolveDelay) => {
+      setTimeout(resolveDelay, AUTO_UPDATE_RUNTIME_SETTLE_RETRY_MS);
+    });
+    missing = listMissingRuntimeFiles();
+  }
+  return {
+    ready: missing.length === 0,
+    missing,
+    waitedMs: Date.now() - startedAt,
+  };
+}
+
 // ── Auto-update polling loop ─────────────────────────────────────────────────
 
 let autoUpdateTimer = null;
@@ -487,6 +528,12 @@ let autoUpdateRunning = false;
 let parentPid = null;
 let parentCheckInterval = null;
 let cleanupHandlersRegistered = false;
+
+function isSuppressedStreamNoiseError(err) {
+  const msg = String(err?.message || err || "");
+  if (!msg) return false;
+  return msg.includes("setRawMode EIO") || msg.includes("read EIO");
+}
 
 /**
  * Start a background polling loop that checks for updates every `intervalMs`
@@ -606,7 +653,7 @@ export function startAutoUpdateLoop(opts = {}) {
       }
 
       // ── Update detected! ──────────────────────────────────────────────
-      const msg = `[auto-update] 🔄 Update detected: v${currentVersion} → v${latest}. Installing...`;
+      const msg = `[auto-update] :refresh: Update detected: v${currentVersion} → v${latest}. Installing...`;
       console.log(msg);
       await safeNotify(msg);
 
@@ -616,7 +663,7 @@ export function startAutoUpdateLoop(opts = {}) {
           stdio: ["pipe", "pipe", "pipe"],
         });
       } catch (installErr) {
-        const errMsg = `[auto-update] ❌ Install failed: ${installErr.message || installErr}`;
+        const errMsg = `[auto-update] :close: Install failed: ${installErr.message || installErr}`;
         console.error(errMsg);
         await safeNotify(errMsg);
 
@@ -638,7 +685,7 @@ export function startAutoUpdateLoop(opts = {}) {
       // Verify the install actually changed the on-disk version
       const newVersion = getCurrentVersion();
       if (!isNewer(newVersion, currentVersion) && newVersion !== latest) {
-        const errMsg = `[auto-update] ⚠️ Install ran but version unchanged (${newVersion}). Skipping restart.`;
+        const errMsg = `[auto-update] :alert: Install ran but version unchanged (${newVersion}). Skipping restart.`;
         console.warn(errMsg);
         await safeNotify(errMsg);
         return;
@@ -647,9 +694,22 @@ export function startAutoUpdateLoop(opts = {}) {
       await writeCache({ lastCheck: Date.now(), latestVersion: latest });
       await resetAutoUpdateState();
 
-      const successMsg = `[auto-update] ✅ Updated to v${latest}. Restarting...`;
+      const successMsg = `[auto-update] :check: Updated to v${latest}. Restarting...`;
       console.log(successMsg);
       await safeNotify(successMsg);
+
+      const runtimeStatus = await waitForRuntimeFilesToSettle();
+      if (!runtimeStatus.ready) {
+        const errMsg = `[auto-update] :alert: Runtime files not ready after update; skipping restart this cycle. Missing: ${runtimeStatus.missing.join(", ")}`;
+        console.warn(errMsg);
+        await safeNotify(errMsg);
+        return;
+      }
+      if (runtimeStatus.waitedMs >= AUTO_UPDATE_RUNTIME_SETTLE_RETRY_MS) {
+        console.log(
+          `[auto-update] runtime settled after ${Math.round(runtimeStatus.waitedMs / 1000)}s`,
+        );
+      }
 
       // Give Telegram a moment to deliver the notification
       await new Promise((r) => setTimeout(r, 2000));
@@ -746,17 +806,17 @@ function registerCleanupHandlers() {
     stopAutoUpdateLoop();
   });
 
-  // Handle uncaught exceptions (last resort)
-  const originalUncaughtException = process.listeners("uncaughtException");
+  // Handle uncaught exceptions (last resort). Do not manually re-emit previous
+  // listeners: Node invokes all uncaughtException handlers automatically.
   process.on("uncaughtException", (err) => {
+    if (isSuppressedStreamNoiseError(err)) {
+      console.log(
+        `[auto-update] suppressed stream noise (uncaughtException): ${err?.message || err}`,
+      );
+      return;
+    }
     console.error(`[auto-update] Uncaught exception, cleaning up:`, err);
     stopAutoUpdateLoop();
-    // Re-emit for other handlers
-    if (originalUncaughtException.length > 0) {
-      for (const handler of originalUncaughtException) {
-        handler(err);
-      }
-    }
   });
 }
 
@@ -775,22 +835,44 @@ function printUpdateNotice(current, latest) {
 
 function promptConfirm(question) {
   return new Promise((res) => {
+    let settled = false;
+    const settle = (value) => {
+      if (settled) return;
+      settled = true;
+      res(Boolean(value));
+    };
     const rl = createInterface({
       input: process.stdin,
       output: process.stdout,
-      terminal: process.stdin.isTTY && process.stdout.isTTY,
+      // Keep readline out of raw-mode transitions; they can throw EIO during
+      // terminal teardown in daemonized/non-interactive contexts.
+      terminal: false,
+    });
+    rl.on("error", (err) => {
+      if (isSuppressedStreamNoiseError(err)) {
+        console.log(
+          `[auto-update] suppressed stream noise (readline): ${err?.message || err}`,
+        );
+        settle(false);
+        return;
+      }
+      console.warn(`[auto-update] prompt failed: ${err?.message || err}`);
+      settle(false);
     });
     rl.question(question, (answer) => {
       try {
         rl.close();
       } catch (err) {
-        const msg = err?.message || String(err || "");
-        if (!msg.includes("setRawMode EIO")) {
-          throw err;
+        if (isSuppressedStreamNoiseError(err)) {
+          console.log(
+            `[auto-update] suppressed stream noise (readline close): ${err?.message || err}`,
+          );
+        } else {
+          console.warn(`[auto-update] prompt close failed: ${err?.message || err}`);
         }
       }
       const a = answer.trim().toLowerCase();
-      res(!a || a === "y" || a === "yes");
+      settle(!a || a === "y" || a === "yes");
     });
   });
 }

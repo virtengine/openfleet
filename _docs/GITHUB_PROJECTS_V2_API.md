@@ -787,9 +787,9 @@ gh project item-list 3 --owner virtengine --format json | jq '.[] | select(.cont
    ```
 2. Set environment variables to match your option names:
    ```bash
-   GITHUB_PROJECT_STATUS_TODO="📋 Backlog"
-   GITHUB_PROJECT_STATUS_INPROGRESS="🚀 In Progress"
-   GITHUB_PROJECT_STATUS_DONE="✅ Done"
+   GITHUB_PROJECT_STATUS_TODO=":clipboard: Backlog"
+   GITHUB_PROJECT_STATUS_INPROGRESS=":rocket: In Progress"
+   GITHUB_PROJECT_STATUS_DONE=":check: Done"
    ```
 
 ---
@@ -1040,9 +1040,9 @@ async syncStatusToProject(issueNumber, projectNumber, status) {
 
 This guide provides the complete API patterns needed for full GitHub Projects v2 integration:
 
-✅ **Current**: Issues linked to projects  
-🔨 **Phase 1**: Read tasks from project boards  
-🔨 **Phase 2**: Sync status bidirectionally  
-💡 **Phase 3**: Custom fields, iterations, advanced features
+:check: **Current**: Issues linked to projects  
+:hammer: **Phase 1**: Read tasks from project boards  
+:hammer: **Phase 2**: Sync status bidirectionally  
+:lightbulb: **Phase 3**: Custom fields, iterations, advanced features
 
 Implementation maintains backward compatibility and requires no changes for users who don't enable `GITHUB_PROJECT_MODE=kanban`.

@@ -446,7 +446,7 @@ async function runRepairAgent(triggerReason, details = "") {
     await sendTelegram(
       telegramChatId,
       [
-        "🧰 Crash-loop detected. Launching repair agent.",
+        ":settings: Crash-loop detected. Launching repair agent.",
         `Trigger: ${triggerReason}`,
         details ? `Context: ${details}` : "",
       ]
@@ -483,7 +483,7 @@ async function runRepairAgent(triggerReason, details = "") {
     await sendTelegram(
       telegramChatId,
       [
-        `✅ Repair agent completed via ${agentInfo.adapter}.`,
+        `:check: Repair agent completed via ${agentInfo.adapter}.`,
         "",
         summary.slice(0, 3500),
       ].join("\n"),
@@ -492,7 +492,7 @@ async function runRepairAgent(triggerReason, details = "") {
   } catch (err) {
     await sendTelegram(
       telegramChatId,
-      `❌ Repair agent failed: ${err?.message || err}`,
+      `:close: Repair agent failed: ${err?.message || err}`,
     );
     return false;
   } finally {
@@ -510,7 +510,7 @@ async function runPrimaryAgentFallback(chatId, text, command) {
     const agentInfo = getPrimaryAgentInfo();
     await sendTelegram(
       chatId,
-      `🤖 bosun is down. Running via sentinel fallback (${agentInfo.adapter})...`,
+      `:bot: bosun is down. Running via sentinel fallback (${agentInfo.adapter})...`,
     );
 
     const prompt = [
@@ -536,7 +536,7 @@ async function runPrimaryAgentFallback(chatId, text, command) {
   } catch (err) {
     await sendTelegram(
       chatId,
-      `❌ Sentinel fallback failed: ${err?.message || err}`,
+      `:close: Sentinel fallback failed: ${err?.message || err}`,
     );
     return false;
   }
@@ -556,7 +556,7 @@ async function attemptMonitorRecovery(triggerReason) {
     await sendTelegram(
       telegramChatId,
       [
-        "⚠️ Monitor crash-loop detected.",
+        ":alert: Monitor crash-loop detected.",
         `Window: ${Math.round(sentinelConfig.crashLoopWindowMs / 60000)}m | threshold: ${sentinelConfig.crashLoopThreshold}`,
         `Monitor-monitor: ${mmHealth.ok ? "healthy" : "degraded"} (${mmHealth.reason})`,
         "Attempting autonomous repair before restart.",
@@ -575,12 +575,12 @@ async function attemptMonitorRecovery(triggerReason) {
     const pidSuffix = pid ? ` (PID ${pid})` : "";
     await sendTelegram(
       telegramChatId,
-      `✅ bosun recovered${pidSuffix}.`,
+      `:check: bosun recovered${pidSuffix}.`,
     );
   } catch (err) {
     await sendTelegram(
       telegramChatId,
-      `❌ bosun auto-restart failed: ${err?.message || err}`,
+      `:close: bosun auto-restart failed: ${err?.message || err}`,
     );
   }
 }
@@ -1013,14 +1013,14 @@ async function handleStandaloneCommand(chatId, command, fullText) {
  */
 async function handlePing(chatId) {
   const monPid = readAlivePid(MONITOR_PID_FILE);
-  const monStatus = monPid ? `✅ running (PID ${monPid})` : "❌ not running";
+  const monStatus = monPid ? `:check: running (PID ${monPid})` : ":close: not running";
   const uptime = formatUptime(Date.now() - new Date(startedAt).getTime());
   await sendTelegram(
     chatId,
     [
-      "🏓 *Pong!*",
+      ":target: *Pong!*",
       "",
-      `Sentinel: ✅ alive (${uptime})`,
+      `Sentinel: :check: alive (${uptime})`,
       `Mode: ${mode}`,
       `Monitor: ${monStatus}`,
       `Host: \`${os.hostname()}\``,
@@ -1038,14 +1038,14 @@ async function handleStatus(chatId) {
     if (!existsSync(STATUS_FILE)) {
       await sendTelegram(
         chatId,
-        "📊 No status file found. bosun may not have run yet.",
+        ":chart: No status file found. bosun may not have run yet.",
       );
       return;
     }
     const raw = await readFile(STATUS_FILE, "utf8");
     const data = JSON.parse(raw);
 
-    const lines = ["📊 *Orchestrator Status*", ""];
+    const lines = [":chart: *Orchestrator Status*", ""];
 
     if (data.executor_mode) lines.push(`Mode: \`${data.executor_mode}\``);
     if (data.active_slots) lines.push(`Slots: \`${data.active_slots}\``);
@@ -1074,7 +1074,7 @@ async function handleStatus(chatId) {
 
     await sendTelegram(chatId, lines.join("\n"), { parseMode: "Markdown" });
   } catch (err) {
-    await sendTelegram(chatId, `❌ Error reading status: ${err.message}`);
+    await sendTelegram(chatId, `:close: Error reading status: ${err.message}`);
   }
 }
 
@@ -1085,7 +1085,7 @@ async function handleStatus(chatId) {
 async function handleSentinelInfo(chatId) {
   const status = getSentinelStatus();
   const lines = [
-    "🛡️ *Telegram Sentinel*",
+    ":shield: *Telegram Sentinel*",
     "",
     `PID: \`${process.pid}\``,
     `Mode: ${status.mode}`,
@@ -1112,22 +1112,22 @@ async function handleStartMonitor(chatId) {
   if (monPid) {
     await sendTelegram(
       chatId,
-      `✅ bosun is already running (PID ${monPid}).`,
+      `:check: bosun is already running (PID ${monPid}).`,
     );
     return;
   }
-  await sendTelegram(chatId, "🚀 Starting bosun...");
+  await sendTelegram(chatId, ":rocket: Starting bosun...");
   try {
     await ensureMonitorRunning("manual /start command");
     const pid = readAlivePid(MONITOR_PID_FILE);
     await sendTelegram(
       chatId,
-      `✅ bosun started${pid ? ` (PID ${pid})` : ""}.`,
+      `:check: bosun started${pid ? ` (PID ${pid})` : ""}.`,
     );
   } catch (err) {
     await sendTelegram(
       chatId,
-      `❌ Failed to start bosun: ${err.message}`,
+      `:close: Failed to start bosun: ${err.message}`,
     );
   }
 }
@@ -1139,10 +1139,10 @@ async function handleStartMonitor(chatId) {
 async function handleStopMonitor(chatId) {
   const monPid = readAlivePid(MONITOR_PID_FILE);
   if (!monPid) {
-    await sendTelegram(chatId, "ℹ️ bosun is not running.");
+    await sendTelegram(chatId, ":help: bosun is not running.");
     return;
   }
-  await sendTelegram(chatId, `🛑 Stopping bosun (PID ${monPid})...`);
+  await sendTelegram(chatId, `:close: Stopping bosun (PID ${monPid})...`);
   try {
     process.kill(monPid, "SIGTERM");
     // Wait for process to die
@@ -1162,13 +1162,13 @@ async function handleStopMonitor(chatId) {
       }
     }
     removePidFile(MONITOR_PID_FILE);
-    await sendTelegram(chatId, "✅ bosun stopped.");
+    await sendTelegram(chatId, ":check: bosun stopped.");
     monitorManualStopUntil = Date.now() + sentinelConfig.manualStopHoldMs;
     saveRecoveryState();
     // Transition to standalone mode after stopping monitor
     await transitionToStandalone("monitor manually stopped");
   } catch (err) {
-    await sendTelegram(chatId, `❌ Error stopping monitor: ${err.message}`);
+    await sendTelegram(chatId, `:close: Error stopping monitor: ${err.message}`);
   }
 }
 
@@ -1181,7 +1181,7 @@ async function handleHelp(chatId) {
   const monStatus = monPid ? "running" : "stopped";
 
   const lines = [
-    "🛡️ *Sentinel Commands* (always available)",
+    ":shield: *Sentinel Commands* (always available)",
     "",
     "/ping — Check sentinel + monitor liveness",
     "/status — Show cached orchestrator status",
@@ -1232,7 +1232,7 @@ async function handleMonitorCommand(chatId, text, command) {
     return;
   }
 
-  await sendTelegram(chatId, "⏳ Starting bosun in the background...");
+  await sendTelegram(chatId, ":clock: Starting bosun in the background...");
 
   try {
     await ensureMonitorRunning(`command: ${command}`);
@@ -1247,7 +1247,7 @@ async function handleMonitorCommand(chatId, text, command) {
     if (!fallbackHandled) {
       await sendTelegram(
         chatId,
-        `❌ Failed to start bosun: ${err.message}\n\nYour command was not processed.`,
+        `:close: Failed to start bosun: ${err.message}\n\nYour command was not processed.`,
       );
     }
     // Clear the failed commands
@@ -1559,7 +1559,7 @@ async function healthCheck() {
       await sendTelegram(
         telegramChatId,
         [
-          `🔥 ${tag} bosun crashed`,
+          `:zap: ${tag} bosun crashed`,
           "",
           `Host: \`${host}\``,
           `Time: ${new Date().toISOString()}`,
@@ -1747,7 +1747,7 @@ export async function startSentinel(options = {}) {
     // Attempt crash notification
     sendTelegram(
       telegramChatId,
-      `🛡️❌ Sentinel crashed: ${err.message}\nHost: \`${os.hostname()}\``,
+      `:shield::close: Sentinel crashed: ${err.message}\nHost: \`${os.hostname()}\``,
       { parseMode: "Markdown" },
     ).catch(() => {});
     stopSentinel();

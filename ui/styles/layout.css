@@ -120,14 +120,15 @@
 
 .header-status {
   display: flex;
-  flex-direction: column;
-  align-items: flex-end;
-  gap: 2px;
+  flex-direction: row;
+  align-items: center;
+  gap: 8px;
 }
 
 .header-freshness {
   font-size: 11px;
   opacity: 0.6;
+  white-space: nowrap;
 }
 
 /* ─── Connection Pill ─── */
@@ -185,7 +186,10 @@
   overflow-y: auto;
   overflow-x: hidden;
   scrollbar-gutter: stable;
-  padding: 12px calc(12px + var(--safe-right)) calc(var(--nav-height, 56px) + var(--safe-bottom, 0px) + 16px) calc(12px + var(--safe-left));
+  width: 100%;
+  max-width: none;
+  margin: 0;
+  padding: 14px calc(14px + var(--safe-right)) calc(var(--nav-height, 56px) + var(--safe-bottom, 0px) + 16px) calc(14px + var(--safe-left));
   -webkit-overflow-scrolling: touch;
   scroll-behavior: smooth;
   touch-action: pan-y;
@@ -197,9 +201,9 @@
    Reduces side/top padding so content gets more vertical space.
    Bottom padding is kept via the base rule to clear the fixed nav. */
 .main-content.compact {
-  padding-top: 8px;
-  padding-left: calc(8px + var(--safe-left));
-  padding-right: calc(8px + var(--safe-right));
+  padding-top: 10px;
+  padding-left: calc(10px + var(--safe-left));
+  padding-right: calc(10px + var(--safe-right));
 }
 
 .modal-open .main-content {
@@ -591,14 +595,10 @@
 
 @media (min-width: 768px) {
   .main-content {
-    max-width: 960px;
-    width: 100%;
-    margin-left: auto;
-    margin-right: auto;
-    padding-top: 24px;
-    padding-right: calc(24px + var(--safe-right));
+    padding-top: 20px;
+    padding-right: calc(20px + var(--safe-right));
     padding-bottom: 0;
-    padding-left: calc(24px + var(--safe-left));
+    padding-left: calc(20px + var(--safe-left));
   }
 
   .app-header {
@@ -772,8 +772,8 @@
   }
 
   .main-content {
-    padding: 20px 24px 0;
-    padding-bottom: 0;
+    padding: 20px 24px 32px;
+    padding-bottom: 32px;
     max-width: var(--content-max);
     margin: 0 auto;
     overflow-y: auto;
@@ -852,7 +852,7 @@
   top: 0;
   bottom: 0;
   z-index: 910;
-  width: min(420px, 88vw);
+  width: min(320px, 85vw);
   background: var(--bg-secondary);
   border: 1px solid var(--border);
   box-shadow: var(--shadow-lg, 0 10px 40px rgba(0, 0, 0, 0.3));
@@ -1685,5 +1685,38 @@ body.is-resizing * {
   /* ── Collapsed full-rail: hide normal list ── */
   .session-rail.session-rail--collapsed > :not(.rail-header):not(.rail-dots):not(.rail-icon-footer) {
     display: none !important;
+  }
+}
+
+/* ─── Reduced Motion ─── */
+/* Respect the user's OS-level preference to reduce motion. */
+@media (prefers-reduced-motion: reduce) {
+  /* Disable decorative entrance/exit animations */
+  .main-content > *,
+  .bottom-nav,
+  .drawer,
+  .nav-item.active::before {
+    animation: none !important;
+  }
+
+  /* Silence the continuous pulsing connection indicator */
+  .connection-dot,
+  .connection-pill.connected .connection-dot::after {
+    animation: none !important;
+  }
+
+  /* Make the sidebar / rail collapse transitions instant */
+  .sidebar,
+  .session-rail {
+    transition: none !important;
+  }
+
+  /* Shorten all interactive transitions (buttons, nav, cards) to near-instant */
+  .nav-item,
+  .nav-item svg,
+  .more-menu-item,
+  .sidebar-nav-item,
+  .connection-pill {
+    transition-duration: 50ms !important;
   }
 }

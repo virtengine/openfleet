@@ -58,6 +58,25 @@ describe("telegram-bot inline keyboards", () => {
       expect(botSource).toContain('"/container"');
       expect(botSource).toContain("cmdContainer");
     });
+
+    it("should include /call and /videocall commands", async () => {
+      const fs = await import("node:fs");
+      const path = await import("node:path");
+      const { fileURLToPath } = await import("node:url");
+
+      const __dirname = path.resolve(
+        fileURLToPath(new URL(".", import.meta.url)),
+      );
+      const botSource = fs.readFileSync(
+        path.resolve(__dirname, "..", "telegram-bot.mjs"),
+        "utf8",
+      );
+
+      expect(botSource).toContain('"/call"');
+      expect(botSource).toContain("cmdCall");
+      expect(botSource).toContain('"/videocall"');
+      expect(botSource).toContain("cmdVideoCall");
+    });
   });
 
   describe("FAST_COMMANDS includes new commands", () => {
@@ -82,6 +101,28 @@ describe("telegram-bot inline keyboards", () => {
       const fastContent = fastMatch[1];
       expect(fastContent).toContain("/whatsapp");
       expect(fastContent).toContain("/container");
+    });
+
+    it("should include /call and /videocall in FAST_COMMANDS", async () => {
+      const fs = await import("node:fs");
+      const path = await import("node:path");
+      const { fileURLToPath } = await import("node:url");
+
+      const __dirname = path.resolve(
+        fileURLToPath(new URL(".", import.meta.url)),
+      );
+      const botSource = fs.readFileSync(
+        path.resolve(__dirname, "..", "telegram-bot.mjs"),
+        "utf8",
+      );
+
+      const fastMatch = botSource.match(
+        /const FAST_COMMANDS = new Set\(\[([\s\S]*?)\]\)/,
+      );
+      expect(fastMatch).toBeTruthy();
+      const fastContent = fastMatch[1];
+      expect(fastContent).toContain("/call");
+      expect(fastContent).toContain("/videocall");
     });
   });
 

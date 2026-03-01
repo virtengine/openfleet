@@ -811,7 +811,7 @@ export function getTotalFleetSlots() {
 export function formatFleetSummary() {
   const fp = fleetState.repoFingerprint;
   const lines = [
-    `🛰️ Fleet Status: ${fleetState.mode.toUpperCase()}`,
+    `:server: Fleet Status: ${fleetState.mode.toUpperCase()}`,
     `Repo: ${fp?.normalized || "unknown"} (${fp?.hash?.slice(0, 8) || "no fingerprint"})`,
     `Coordinator: ${fleetState.isCoordinator ? "THIS INSTANCE" : "remote"}`,
     `Fleet size: ${fleetState.fleetSize} workstation(s)`,
@@ -825,7 +825,7 @@ export function formatFleetSummary() {
       const label = peer.instance_label || peer.instance_id;
       const slots = peer.max_parallel ?? "?";
       const host = peer.host || "unknown";
-      const coordTag = peer.is_coordinator ? " ⭐" : "";
+      const coordTag = peer.is_coordinator ? " :star:" : "";
       lines.push(`  • ${label}${coordTag} — ${host} (${slots} slots)`);
     }
   }

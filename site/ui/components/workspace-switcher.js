@@ -11,6 +11,7 @@ import htm from "htm";
 import { apiFetch } from "../modules/api.js";
 import { haptic } from "../modules/telegram.js";
 import { Modal } from "./shared.js";
+import { iconText, resolveIcon } from "../modules/icon-utils.js";
 
 const html = htm.bind(h);
 
@@ -168,17 +169,17 @@ function RepoRow({ repo, workspaceId }) {
   return html`
     <div class="ws-manager-repo-row">
       <span class="ws-manager-repo-name ${repo.exists ? "" : "missing"}">
-        ${repo.primary ? html`<span class="ws-manager-repo-star" title="Primary">★</span>` : null}
+        ${repo.primary ? html`<span class="ws-manager-repo-star" title="Primary">${resolveIcon("star")}</span>` : null}
         ${repo.name}
       </span>
       <span class="ws-manager-repo-status ${repo.exists ? "ok" : "err"}">
-        ${repo.exists ? "✓" : "✗ missing"}
+        ${repo.exists ? resolveIcon("✓") : iconText("✗ missing")}
       </span>
       <button
         class="ws-manager-btn ghost sm icon-btn"
         title="Remove repo"
         onClick=${() => { haptic("light"); setConfirming(true); }}
-      >✕</button>
+      >${resolveIcon("✕")}</button>
     </div>
   `;
 }
@@ -311,12 +312,12 @@ function WorkspaceCard({ ws }) {
             onClick=${handlePull}
             disabled=${pulling}
             title="Pull all repos"
-          >${pulling ? html`<${Spinner} /> Pulling` : "⟳ Pull"}</button>
+          >${pulling ? html`<${Spinner} /> Pulling` : iconText(":refresh: Pull")}</button>
           <button
             class="ws-manager-btn ghost sm danger-text"
             onClick=${() => { haptic("light"); setDelConfirm(true); }}
             title="Delete workspace"
-          >🗑</button>
+          >${resolveIcon(":trash:")}</button>
         </div>
       </div>
 
@@ -424,7 +425,7 @@ export function WorkspaceManager({ open, onClose }) {
           onClick=${handleScan}
           disabled=${scanning}
           title="Scan disk for workspaces"
-        >${scanning ? "Scanning…" : "🔍 Scan Disk"}</button>
+        >${scanning ? "Scanning…" : iconText(":search: Scan Disk")}</button>
       </div>
 
       ${loading && !wsList.length
@@ -480,7 +481,7 @@ export function WorkspaceSwitcher() {
           onClick=${() => { haptic("medium"); setManagerOpen(true); }}
           title="Set up a workspace"
         >
-          <span class="ws-switcher-icon">⬡</span>
+          <span class="ws-switcher-icon">${resolveIcon("settings")}</span>
           <span class="ws-switcher-name">Set up workspace</span>
         </button>
         <${WorkspaceManager}
@@ -502,7 +503,7 @@ export function WorkspaceSwitcher() {
           <option key=${ws.id} value=${ws.id}>${ws.name || ws.id}</option>
         `)}
         <option disabled>──────────</option>
-        <option value="__manage__">⚙ Manage Workspaces</option>
+        <option value="__manage__">Manage Workspaces</option>
       </select>
 
       <${WorkspaceManager}

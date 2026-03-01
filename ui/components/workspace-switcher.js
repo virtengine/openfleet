@@ -48,12 +48,15 @@ export async function switchWorkspace(wsId) {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ workspaceId: wsId }),
     });
-    if (res?.ok) {
-      activeWorkspaceId.value = wsId;
-      await loadWorkspaces();
+    if (!res?.ok) {
+      throw new Error(res?.error || "Failed to switch workspace");
     }
+    activeWorkspaceId.value = String(res.activeId || wsId);
+    await loadWorkspaces();
+    return true;
   } catch (err) {
     console.warn("[workspace-switcher] Failed to switch workspace:", err);
+    return false;
   }
 }
 
@@ -169,7 +172,7 @@ function RepoRow({ repo, workspaceId }) {
   return html`
     <div class="ws-manager-repo-row">
       <span class="ws-manager-repo-name ${repo.exists ? "" : "missing"}">
-        ${repo.primary ? html`<span class="ws-manager-repo-star" title="Primary">★</span>` : null}
+        ${repo.primary ? html`<span class="ws-manager-repo-star" title="Primary">${resolveIcon("star")}</span>` : null}
         ${repo.name}
       </span>
       <span class="ws-manager-repo-status ${repo.exists ? "ok" : "err"}">
@@ -312,12 +315,12 @@ function WorkspaceCard({ ws }) {
             onClick=${handlePull}
             disabled=${pulling}
             title="Pull all repos"
-          >${pulling ? html`<${Spinner} /> Pulling` : "⟳ Pull"}</button>
+          >${pulling ? html`<${Spinner} /> Pulling` : iconText(":refresh: Pull")}</button>
           <button
             class="ws-manager-btn ghost sm danger-text"
             onClick=${() => { haptic("light"); setDelConfirm(true); }}
             title="Delete workspace"
-          >${resolveIcon("🗑")}</button>
+          >${resolveIcon(":trash:")}</button>
         </div>
       </div>
 
@@ -425,7 +428,7 @@ export function WorkspaceManager({ open, onClose }) {
           onClick=${handleScan}
           disabled=${scanning}
           title="Scan disk for workspaces"
-        >${scanning ? "Scanning…" : iconText("🔍 Scan Disk")}</button>
+        >${scanning ? "Scanning…" : iconText(":search: Scan Disk")}</button>
       </div>
 
       ${loading && !wsList.length
@@ -452,6 +455,7 @@ export function WorkspaceManager({ open, onClose }) {
 // ─── Main component: native <select> dropdown + manage trigger ─────
 export function WorkspaceSwitcher() {
   const [managerOpen, setManagerOpen] = useState(false);
+  const [switchingId, setSwitchingId] = useState(null);
 
   useEffect(() => {
     loadWorkspaces();
@@ -460,7 +464,7 @@ export function WorkspaceSwitcher() {
   const wsList = workspaces.value;
   const currentId = activeWorkspaceId.value;
 
-  const handleChange = async (e) => {
+  const handleSelection = async (e) => {
     const wsId = e.target.value;
     if (wsId === "__manage__") {
       e.target.value = currentId || "";
@@ -469,8 +473,14 @@ export function WorkspaceSwitcher() {
       return;
     }
     if (!wsId || wsId === currentId) return;
+    if (switchingId && switchingId === wsId) return;
     haptic("light");
-    await switchWorkspace(wsId);
+    setSwitchingId(wsId);
+    try {
+      await switchWorkspace(wsId);
+    } finally {
+      setSwitchingId(null);
+    }
   };
 
   if (!wsList.length && !workspacesLoading.value) {
@@ -481,7 +491,7 @@ export function WorkspaceSwitcher() {
           onClick=${() => { haptic("medium"); setManagerOpen(true); }}
           title="Set up a workspace"
         >
-          <span class="ws-switcher-icon">⬡</span>
+          <span class="ws-switcher-icon">${resolveIcon("settings")}</span>
           <span class="ws-switcher-name">Set up workspace</span>
         </button>
         <${WorkspaceManager}
@@ -497,13 +507,15 @@ export function WorkspaceSwitcher() {
       <select
         class="ws-native-select"
         value=${currentId || ""}
-        onChange=${handleChange}
+        onChange=${handleSelection}
+        onInput=${handleSelection}
+        disabled=${Boolean(switchingId)}
       >
         ${wsList.map((ws) => html`
           <option key=${ws.id} value=${ws.id}>${ws.name || ws.id}</option>
         `)}
         <option disabled>──────────</option>
-        <option value="__manage__">⚙ Manage Workspaces</option>
+        <option value="__manage__">Manage Workspaces</option>
       </select>
 
       <${WorkspaceManager}

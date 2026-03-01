@@ -31,7 +31,7 @@ export const BUILD_DEPLOY_TEMPLATE = {
   nodes: [
     node("trigger", "trigger.event", "On PR Merged", {
       eventType: "pr.merged",
-      filter: "$event.branch === 'main'",
+      filter: "$event.branch === '{{deployBranch}}'",
     }, { x: 400, y: 50 }),
 
     node("build", "validation.build", "Build", {
@@ -52,7 +52,7 @@ export const BUILD_DEPLOY_TEMPLATE = {
     }, { x: 400, y: 570 }),
 
     node("notify", "notify.telegram", "Notify Deploy", {
-      message: "🚀 Deployment to production completed for {{branch}}",
+      message: ":rocket: Deployment to production completed for {{branch}}",
     }, { x: 400, y: 700 }),
   ],
   edges: [
@@ -149,6 +149,10 @@ Commit the result with message "docs: update changelog for vX.Y.Z".`,
       expression: "$ctx.getNodeOutput('test')?.passed === true",
     }, { x: 400, y: 830, outputs: ["yes", "no"] }),
 
+    node("should-publish", "condition.expression", "Publish To npm?", {
+      expression: "Boolean($data?.publishToNpm)",
+    }, { x: 250, y: 1030, outputs: ["yes", "no"] }),
+
     node("commit-tag", "action.git_operations", "Commit & Tag", {
       operations: [
         { op: "add", paths: ["."] },
@@ -159,7 +163,7 @@ Commit the result with message "docs: update changelog for vX.Y.Z".`,
     }, { x: 250, y: 960 }),
 
     node("publish-npm", "action.run_command", "Publish to npm", {
-      command: "npm publish --access public",
+      command: "if [ \"{{dryRun}}\" = \"true\" ]; then echo 'Dry run: skipping npm publish'; else npm publish --access public; fi",
       continueOnError: true,
     }, { x: 250, y: 1090 }),
 
@@ -169,11 +173,11 @@ Commit the result with message "docs: update changelog for vX.Y.Z".`,
     }, { x: 250, y: 1220 }),
 
     node("notify-success", "notify.telegram", "Notify: Released", {
-      message: "📦 **Release published!**\n\nVersion: v{{version}}\nnpm + GitHub release created.",
+      message: ":box: **Release published!**\n\nVersion: v{{version}}\nnpm + GitHub release created.",
     }, { x: 250, y: 1350 }),
 
     node("notify-failure", "notify.telegram", "Notify: Release Failed", {
-      message: "❌ **Release pipeline failed** at test stage.\n\nVersion bump was {{bumpType}} but tests did not pass. Manual intervention required.",
+      message: ":close: **Release pipeline failed** at test stage.\n\nVersion bump was {{bumpType}} but tests did not pass. Manual intervention required.",
     }, { x: 600, y: 960 }),
   ],
   edges: [
@@ -186,7 +190,9 @@ Commit the result with message "docs: update changelog for vX.Y.Z".`,
     edge("test", "test-passed"),
     edge("test-passed", "commit-tag", { condition: "$output?.result === true", port: "yes" }),
     edge("test-passed", "notify-failure", { condition: "$output?.result !== true", port: "no" }),
-    edge("commit-tag", "publish-npm"),
+    edge("commit-tag", "should-publish"),
+    edge("should-publish", "publish-npm", { condition: "$output?.result === true", port: "yes" }),
+    edge("should-publish", "create-gh-release", { condition: "$output?.result !== true", port: "no" }),
     edge("publish-npm", "create-gh-release"),
     edge("create-gh-release", "notify-success"),
   ],
@@ -269,7 +275,7 @@ export const CANARY_DEPLOY_TEMPLATE = {
     }, { x: 100, y: 960 }),
 
     node("notify-success", "notify.telegram", "Deploy Succeeded", {
-      message: "✅ **Canary deploy promoted to production** successfully.",
+      message: ":check: **Canary deploy promoted to production** successfully.",
     }, { x: 100, y: 1090 }),
 
     node("rollback", "action.run_command", "Rollback", {
@@ -278,11 +284,11 @@ export const CANARY_DEPLOY_TEMPLATE = {
     }, { x: 550, y: 700 }),
 
     node("notify-rollback", "notify.telegram", "Deploy Rolled Back", {
-      message: "🔄 **Canary deploy rolled back.**\n\nSmoke tests or staging deploy failed. Production unchanged.",
+      message: ":refresh: **Canary deploy rolled back.**\n\nSmoke tests or staging deploy failed. Production unchanged.",
     }, { x: 550, y: 830 }),
 
     node("notify-staging-fail", "notify.telegram", "Staging Failed", {
-      message: "❌ **Staging deploy failed.** Not proceeding to canary phase.",
+      message: ":close: **Staging deploy failed.** Not proceeding to canary phase.",
     }, { x: 600, y: 440 }),
   ],
   edges: [

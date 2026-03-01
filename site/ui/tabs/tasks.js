@@ -366,7 +366,7 @@ export function StartTaskModal({
             onClick=${handleStart}
             disabled=${starting || !resolvedTaskId}
           >
-            ${starting ? "Starting…" : "▶ Start Task"}
+            ${starting ? "Starting…" : iconText(":play: Start Task")}
           </button>
         </div>
       </div>
@@ -875,7 +875,7 @@ export function TaskProgressModal({ task, onClose }) {
       <div class="tp-hero">
         <div class="tp-pulse-dot"></div>
         <div class="tp-hero-title">
-          <div class="tp-hero-status-label">${iconText("⚡ Active — Agent Working")}</div>
+          <div class="tp-hero-status-label">${iconText(":zap: Active — Agent Working")}</div>
         </div>
         <${Badge} status="inprogress" text="running" />
       </div>
@@ -924,7 +924,7 @@ export function TaskProgressModal({ task, onClose }) {
                        font-weight:${active ? "600" : "400"};"
               >
                 <span style="font-size:14px;flex-shrink:0;">
-                  ${done ? resolveIcon("✅") : active ? resolveIcon("🔄") : ICONS.dot}
+                  ${done ? resolveIcon(":check:") : active ? resolveIcon(":refresh:") : ICONS.dot}
                 </span>
                 <span>${step.label}</span>
                 ${active && html`
@@ -956,11 +956,11 @@ export function TaskProgressModal({ task, onClose }) {
           class="btn btn-ghost btn-sm"
           onClick=${() => { haptic(); sendCommandToChat("/steer " + task.id); onClose(); }}
           title="Guide the agent mid-task"
-        >${iconText("💬 Steer")}</button>
+        >${iconText(":chat: Steer")}</button>
         <button
           class="btn btn-ghost btn-sm"
           onClick=${() => { haptic(); sendCommandToChat("/logs " + task.id); onClose(); }}
-        >${iconText("📄 Logs")}</button>
+        >${iconText(":file: Logs")}</button>
         <button class="btn btn-secondary btn-sm" onClick=${handleMarkReview}>
           → Move to Review
         </button>
@@ -1085,7 +1085,7 @@ export function TaskReviewModal({ task, onClose, onStart }) {
     >
       
       <div class="tr-hero">
-        <span class="tr-review-icon">${resolveIcon("🔍")}</span>
+        <span class="tr-review-icon">${resolveIcon(":search:")}</span>
         <div class="tr-hero-title">
           <div class="tr-hero-status-label">In Review</div>
           ${prNumber && html`
@@ -1094,7 +1094,7 @@ export function TaskReviewModal({ task, onClose, onStart }) {
               href="#"
               onClick=${(e) => { e.preventDefault(); haptic(); sendCommandToChat("/diff " + branchLabel); onClose(); }}
             >
-              PR #${prNumber} · View diff ↗
+              ${iconText(`PR #${prNumber} · View diff :arrowRight:`)}
             </a>
           `}
           ${!prNumber && html`<span style="font-size:12px;color:var(--text-hint);">No PR yet</span>`}
@@ -1141,12 +1141,12 @@ export function TaskReviewModal({ task, onClose, onStart }) {
       
       <div class="tr-section">
         <div class="tr-section-title">
-          Checks ${allPass ? iconText("— ✅ All passing") : ""}
+          Checks ${allPass ? iconText("— :check: All passing") : ""}
         </div>
         <div class="tr-checks-row">
           ${checks.map((c) => html`
             <div class="tr-check-item ${c.status}" key=${c.label}>
-              ${resolveIcon(c.status === "pass" ? "✅" : c.status === "fail" ? "❌" : "⏳")}
+              ${resolveIcon(c.status === "pass" ? ":check:" : c.status === "fail" ? ":close:" : ":clock:")}
               ${c.label}
             </div>
           `)}
@@ -1175,7 +1175,7 @@ export function TaskReviewModal({ task, onClose, onStart }) {
                 <div class="task-attachment-item" key=${att.id || `${name}-${index}`}>
                   ${isImage && url
                     ? html`<img class="task-attachment-thumb" src=${url} alt=${name} />`
-                    : html`<span class="task-attachment-icon">${resolveIcon("📎")}</span>`}
+                    : html`<span class="task-attachment-icon">${resolveIcon(":link:")}</span>`}
                   <div class="task-attachment-meta">
                     ${url
                       ? html`<a class="task-attachment-name" href=${url} target="_blank" rel="noopener">${name}</a>`
@@ -1200,17 +1200,17 @@ export function TaskReviewModal({ task, onClose, onStart }) {
           title="Mark as merged / done"
         >${iconText("✓ Mark Done")}</button>
         <button class="btn btn-secondary btn-sm" onClick=${handleReopen}>
-          ↩ Reopen as Active
+          ${iconText(":workflow: Reopen as Active")}
         </button>
         <button
           class="btn btn-ghost btn-sm"
           onClick=${() => { haptic(); sendCommandToChat("/logs " + task.id); onClose(); }}
-        >${iconText("📄 Logs")}</button>
+        >${iconText(":file: Logs")}</button>
         ${prNumber && html`
           <button
             class="btn btn-ghost btn-sm"
             onClick=${() => { haptic(); sendCommandToChat("/diff " + branchLabel); onClose(); }}
-          >${iconText("🔎 Diff")}</button>
+          >${iconText(":search: Diff")}</button>
         `}
         <button
           class="btn btn-ghost btn-sm"
@@ -1540,7 +1540,7 @@ export function TaskDetailModal({ task, onClose, onStart }) {
         html`
           <div class="task-modal-actions">
             <button class="btn btn-primary btn-sm" onClick=${handleStart}>
-              ▶ Dispatch Task
+              ${iconText(":play: Dispatch Task")}
             </button>
           </div>
         `}
@@ -1616,7 +1616,7 @@ export function TaskDetailModal({ task, onClose, onStart }) {
                   <div class="task-attachment-item" key=${att.id || `${name}-${index}`}>
                     ${isImage && url
                       ? html`<img class="task-attachment-thumb" src=${url} alt=${name} />`
-                      : html`<span class="task-attachment-icon">${resolveIcon("📎")}</span>`}
+                      : html`<span class="task-attachment-icon">${resolveIcon(":link:")}</span>`}
                     <div class="task-attachment-meta">
                       ${url
                         ? html`<a class="task-attachment-name" href=${url} target="_blank" rel="noopener">${name}</a>`
@@ -1673,8 +1673,8 @@ export function TaskDetailModal({ task, onClose, onStart }) {
           title="Use AI to expand and improve this task description"
         >
           ${rewriting
-            ? html`<span style="display:inline-block;animation:spin 0.8s linear infinite">${resolveIcon("⏳")}</span> Improving…`
-            : html`${iconText("✨ Improve with AI")}`
+            ? html`<span style="display:inline-block;animation:spin 0.8s linear infinite">${resolveIcon(":clock:")}</span> Improving…`
+            : html`${iconText(":star: Improve with AI")}`
           }
         </button>
         <input
@@ -1836,7 +1836,7 @@ export function TaskDetailModal({ task, onClose, onStart }) {
             onClick=${handleSave}
             disabled=${saving}
           >
-            ${saving ? "Saving…" : iconText("💾 Save")}
+            ${saving ? "Saving…" : iconText(":save: Save")}
           </button>
           <button
             class="btn btn-ghost btn-sm"
@@ -1871,7 +1871,7 @@ export function TaskDetailModal({ task, onClose, onStart }) {
               sendCommandToChat("/logs " + task.id);
             }}
           >
-            ${iconText("📄 View Agent Logs")}
+            ${iconText(":file: View Agent Logs")}
           </button>
         `}
       </div>
@@ -2436,7 +2436,7 @@ export function TasksTab() {
     return html`
       <div class="flex-between mb-sm" style="padding:0 4px">
         <div class="view-toggle">
-          <button class="view-toggle-btn ${!isKanban ? 'active' : ''}" onClick=${() => { viewMode.value = 'list'; haptic(); }}>${iconText("☰ List")}</button>
+          <button class="view-toggle-btn ${!isKanban ? 'active' : ''}" onClick=${() => { viewMode.value = 'list'; haptic(); }}>${iconText(":menu: List")}</button>
           <button class="view-toggle-btn ${isKanban ? 'active' : ''}" onClick=${() => { viewMode.value = 'kanban'; haptic(); }}>▦ Board</button>
         </div>
         <div style="display:flex;gap:8px;align-items:center;">
@@ -2446,7 +2446,7 @@ export function TasksTab() {
               haptic();
               setShowTemplates(true);
             }}
-          >${iconText("⚡ Templates")}</button>
+          >${iconText(":zap: Templates")}</button>
           <button
             class="btn btn-ghost btn-sm"
             onClick=${toggleCompletedFilter}
@@ -2510,7 +2510,7 @@ export function TasksTab() {
 
   const viewToggle = html`
     <div class="view-toggle">
-      <button class="view-toggle-btn ${!isKanban ? 'active' : ''}" onClick=${() => { viewMode.value = 'list'; haptic(); }}>${iconText("☰ List")}</button>
+      <button class="view-toggle-btn ${!isKanban ? 'active' : ''}" onClick=${() => { viewMode.value = 'list'; haptic(); }}>${iconText(":menu: List")}</button>
       <button class="view-toggle-btn ${isKanban ? 'active' : ''}" onClick=${() => { viewMode.value = 'kanban'; haptic(); }}>▦ Board</button>
     </div>
   `;
@@ -2547,16 +2547,16 @@ export function TasksTab() {
             class="actions-dropdown-item"
             onClick=${() => { setActionsOpen(false); setStartAnyOpen(true); }}
           >
-            ${iconText("▶ Start Task")}
+            ${iconText(":play: Start Task")}
           </button>
           <button
             class="actions-dropdown-item"
             onClick=${() => { setActionsOpen(false); setShowTemplates(true); }}
           >
-            ${iconText("⚡ Trigger Templates")}
+            ${iconText(":zap: Trigger Templates")}
           </button>
-          <button class="actions-dropdown-item" onClick=${handleExportCSV}>${iconText("📊 Export CSV")}</button>
-          <button class="actions-dropdown-item" onClick=${handleExportJSON}>${iconText("📋 Export JSON")}</button>
+          <button class="actions-dropdown-item" onClick=${handleExportCSV}>${iconText(":chart: Export CSV")}</button>
+          <button class="actions-dropdown-item" onClick=${handleExportJSON}>${iconText(":clipboard: Export JSON")}</button>
         </div>
       `}
     </div>
@@ -2601,7 +2601,7 @@ export function TasksTab() {
                       setStartAnyOpen(true);
                     }}
                   >
-                    ▶ Start Task
+                    ${iconText(":play: Start Task")}
                   </button>
                   ${actionsMenu}
                 `}
@@ -2778,7 +2778,7 @@ export function TasksTab() {
           <span class="snapshot-lbl">${m.label}</span>
         </button>
       `)}
-      <span class="snapshot-view-tag">${iconText(isKanban ? "⬛ Board" : "☰ List")}</span>
+      <span class="snapshot-view-tag">${iconText(isKanban ? ":dot: Board" : ":menu: List")}</span>
     </div>
 
     <style>
@@ -3006,6 +3006,7 @@ function CreateTaskModalInline({ onClose }) {
   const [rewriting, setRewriting] = useState(false);
   const [workspaceId, setWorkspaceId] = useState(activeWorkspaceId.value || "");
   const [repository, setRepository] = useState("");
+  const [repositories, setRepositories] = useState([]);
   const [showAdvanced, setShowAdvanced] = useState(false);
 
   const handleRewrite = async () => {
@@ -3051,13 +3052,29 @@ function CreateTaskModalInline({ onClose }) {
   useEffect(() => {
     if (!repositoryOptions.length) {
       if (repository) setRepository("");
+      if (repositories.length) setRepositories([]);
       return;
     }
     if (!repositoryOptions.some((repo) => repo?.slug === repository)) {
       const primary = repositoryOptions.find((repo) => repo?.primary);
-      setRepository(primary?.slug || repositoryOptions[0]?.slug || "");
+      const defaultSlug = primary?.slug || repositoryOptions[0]?.slug || "";
+      setRepository(defaultSlug);
+      setRepositories(defaultSlug ? [defaultSlug] : []);
     }
   }, [workspaceId, repositoryOptions.length]);
+
+  const toggleRepo = (slug) => {
+    setRepositories((prev) =>
+      prev.includes(slug) ? prev.filter((s) => s !== slug) : [...prev, slug],
+    );
+    setRepository((prev) => {
+      if (repositories.includes(slug)) {
+        const next = repositories.filter((s) => s !== slug);
+        return next[0] || "";
+      }
+      return prev || slug;
+    });
+  };
 
   const handleSubmit = async () => {
     if (!title.trim()) {
@@ -3067,6 +3084,7 @@ function CreateTaskModalInline({ onClose }) {
     setSubmitting(true);
     haptic("medium");
     const tags = normalizeTagInput(tagsInput);
+    const effectiveRepos = repositories.length > 0 ? repositories : (repository ? [repository] : []);
     try {
       await apiFetch("/api/tasks/create", {
         method: "POST",
@@ -3079,7 +3097,8 @@ function CreateTaskModalInline({ onClose }) {
           draft,
           status: draft ? "draft" : "todo",
           workspace: workspaceId || undefined,
-          repository: repository || undefined,
+          repository: effectiveRepos[0] || undefined,
+          repositories: effectiveRepos.length > 1 ? effectiveRepos : undefined,
         }),
       });
       showToast("Task created", "success");
@@ -3185,8 +3204,8 @@ function CreateTaskModalInline({ onClose }) {
           title="Use AI to expand and improve this task description"
         >
           ${rewriting
-            ? html`<span class="spin-icon" style="display:inline-block;animation:spin 0.8s linear infinite">${resolveIcon("⏳")}</span> Improving…`
-            : html`${iconText("✨ Improve with AI")}`
+            ? html`<span class="spin-icon" style="display:inline-block;animation:spin 0.8s linear infinite">${resolveIcon(":clock:")}</span> Improving…`
+            : html`${iconText(":star: Improve with AI")}`
           }
         </button>
 
@@ -3215,21 +3234,30 @@ function CreateTaskModalInline({ onClose }) {
                 (ws) => html`<option value=${ws.id}>${ws.name || ws.id}</option>`,
               )}
             </select>
-            <select
-              class="input"
-              value=${repository}
-              onChange=${(e) => setRepository(e.target.value)}
-              disabled=${!repositoryOptions.length}
-            >
-              <option value="">
-                ${repositoryOptions.length ? "Auto repo" : "No repos"}
-              </option>
-              ${repositoryOptions.map(
-                (repo) =>
-                  html`<option value=${repo.slug}>${repo.name}${repo.primary ? " (Primary)" : ""}</option>`,
-              )}
-            </select>
           </div>
+          ${repositoryOptions.length > 0 && html`
+            <div class="repo-select-group">
+              ${repositoryOptions.length === 1
+                ? html`<div class="repo-auto-label">
+                    Repo: <strong>${repositoryOptions[0].name}</strong>
+                    ${repositoryOptions[0].primary ? " (Primary)" : ""}
+                  </div>`
+                : html`<div class="repo-checkboxes">
+                    <span class="repo-checkboxes-label">Repositories</span>
+                    ${repositoryOptions.map((repo) => html`
+                      <label class="repo-checkbox-item">
+                        <input
+                          type="checkbox"
+                          checked=${repositories.includes(repo.slug)}
+                          onChange=${() => toggleRepo(repo.slug)}
+                        />
+                        ${repo.name}${repo.primary ? " (Primary)" : ""}
+                      </label>
+                    `)}
+                  </div>`
+              }
+            </div>
+          `}
         `}
 
         <!-- Tags -->
@@ -3252,7 +3280,7 @@ function CreateTaskModalInline({ onClose }) {
           onClick=${() => setShowAdvanced(!showAdvanced)}
           type="button"
         >
-          <span style="display:inline-block;transition:transform 0.15s;transform:rotate(${showAdvanced ? 90 : 0}deg)">▶</span>
+          <span style="display:inline-block;transition:transform 0.15s;transform:rotate(${showAdvanced ? 90 : 0}deg)">${resolveIcon(":play:")}</span>
           Advanced${hasAdvanced && !showAdvanced ? " •" : ""}
         </button>
 

@@ -414,7 +414,7 @@ describe("task-assessment", () => {
       expect(onTelegram).toHaveBeenCalledTimes(1);
       const msg = onTelegram.mock.calls[0][0];
       expect(msg).toContain("merge");
-      expect(msg).toContain("✅");
+      expect(msg).toContain(":check:");
     });
 
     it("extracts waitSeconds from decision", async () => {

@@ -178,7 +178,7 @@ export function shouldAutoInstallGitHooks(options = {}) {
     options.mode ??
       env.BOSUN_AUTO_GIT_HOOKS_MODE ??
       env.BOSUN_GIT_HOOKS_MODE,
-    MODE_TASK,
+    MODE_ALWAYS,
   );
   if (mode === MODE_OFF) return false;
   if (mode === MODE_ALWAYS) return true;
@@ -197,4 +197,3 @@ export function shouldRunAgentHookBridge(env = process.env) {
   if (isEnvFlagEnabled(env.BOSUN_HOOKS_FORCE, false)) return true;
   return hasBosunTaskContext(env);
 }
-

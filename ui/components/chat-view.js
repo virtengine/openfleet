@@ -16,6 +16,7 @@ import {
   loadSessionMessages,
   loadSessions,
   sessionsData,
+  sessionPagination,
 } from "./session-list.js";
 import {
   pendingMessages,
@@ -46,6 +47,9 @@ const AUTO_ACTION_LABELS = {
 
 const SCROLL_BOTTOM_TOLERANCE_PX = 6;
 const SCROLL_BOTTOM_RATIO = 0.995;
+const CHAT_PAGE_SIZE = 50;
+const SCROLL_TOP_TRIGGER_PX = 24;
+const SCROLL_TOP_REARM_PX = 80;
 
 function formatAutoAction(event) {
   if (!event) return null;
@@ -184,7 +188,7 @@ const CodeBlock = memo(function CodeBlock({ code }) {
   return html`
     <div class="chat-code-block">
       <button class="chat-code-copy" onClick=${handleCopy}>
-        ${resolveIcon(copied ? "✓" : "📋")}
+        ${resolveIcon(copied ? "✓" : ":clipboard:")}
       </button>
       <pre><code>${code}</code></pre>
     </div>
@@ -227,6 +231,31 @@ function isTraceEventMessage(msg) {
     return true;
   }
   return (msg.role || "").toLowerCase() === "system";
+}
+
+function isModelResponseMessage(msg) {
+  if (!msg) return false;
+  const role = String(msg.role || "").toLowerCase();
+  const type = String(msg.type || "").toLowerCase();
+  if (role === "assistant") return true;
+  if (
+    type === "agent_message" ||
+    type === "assistant" ||
+    type === "assistant_message"
+  ) {
+    return true;
+  }
+  if (role) return false;
+  if (!msg.content) return false;
+  return ![
+    "tool_call",
+    "tool_result",
+    "tool_output",
+    "error",
+    "stream_error",
+    "system",
+    "user",
+  ].includes(type);
 }
 
 function messageText(msg) {
@@ -282,6 +311,16 @@ function formatMessageLine(msg) {
   return `[${timestamp}] ${String(kind).toUpperCase()}: ${content}`;
 }
 
+function messageIdentity(msg) {
+  if (!msg) return "";
+  return String(
+    msg.id ||
+      msg.messageId ||
+      msg.timestamp ||
+      `${msg.role || msg.type || "message"}:${String(msg.content || "").slice(0, 80)}`,
+  );
+}
+
 function AttachmentList({ attachments }) {
   const list = Array.isArray(attachments) ? attachments.filter(Boolean) : [];
   if (!list.length) return null;
@@ -298,7 +337,7 @@ function AttachmentList({ attachments }) {
           <div class="chat-attachment-item" key=${att.id || `${name}-${index}`}>
             ${isImage && url
               ? html`<img class="chat-attachment-thumb" src=${url} alt=${name} />`
-              : html`<span class="chat-attachment-icon">${resolveIcon("📎")}</span>`}
+              : html`<span class="chat-attachment-icon">${resolveIcon(":link:")}</span>`}
             <div class="chat-attachment-meta">
               ${url
                 ? html`<a class="chat-attachment-name" href=${url} target="_blank" rel="noopener">${name}</a>`
@@ -315,7 +354,17 @@ function AttachmentList({ attachments }) {
 }
 
 /* ─── Memoized ChatBubble — only re-renders if msg identity changes ─── */
-const ChatBubble = memo(function ChatBubble({ msg }) {
+const ChatBubble = memo(function ChatBubble({
+  msg,
+  isFinalModelResponse = false,
+  canEdit = false,
+  isEditing = false,
+  editingText = "",
+  onEditStart = null,
+  onEditInput = null,
+  onEditSave = null,
+  onEditCancel = null,
+}) {
   const isTool = msg.type === "tool_call" || msg.type === "tool_result";
   const isError = msg.type === "error" || msg.type === "stream_error";
   const contentText = messageText(msg);
@@ -334,8 +383,10 @@ const ChatBubble = memo(function ChatBubble({ msg }) {
     isTool
       ? msg.type === "tool_call" ? "TOOL CALL" : "TOOL RESULT"
       : isError ? "ERROR" : null;
+  const showModelResponseLabel =
+    isFinalModelResponse && !isTool && !isError && role !== "user" && role !== "system";
   return html`
-    <div class="chat-bubble ${bubbleClass}">
+    <div class="chat-bubble ${bubbleClass} ${showModelResponseLabel ? "chat-bubble-final" : ""}">
       ${role === "system" && !isTool
         ? html`
             <div class="chat-system-text">
@@ -344,17 +395,57 @@ const ChatBubble = memo(function ChatBubble({ msg }) {
           `
         : html`
             ${label ? html`<div class="chat-bubble-label">${label}</div>` : null}
+            ${showModelResponseLabel
+              ? html`<div class="chat-bubble-label chat-bubble-label-final">MODEL RESPONSE</div>`
+              : null}
             <div class="chat-bubble-content">
-              <${MessageContent} text=${contentText} />
-              <${AttachmentList} attachments=${msg.attachments} />
+              ${isEditing
+                ? html`
+                    <div class="chat-edit-block">
+                      <textarea
+                        class="chat-edit-textarea"
+                        value=${editingText}
+                        onInput=${(e) => onEditInput?.(e.target.value)}
+                        rows="3"
+                      />
+                      <div class="chat-edit-actions">
+                        <button class="btn btn-ghost btn-xs" onClick=${onEditCancel}>Cancel</button>
+                        <button
+                          class="btn btn-primary btn-xs"
+                          disabled=${!String(editingText || "").trim()}
+                          onClick=${onEditSave}
+                        >
+                          Save
+                        </button>
+                      </div>
+                    </div>
+                  `
+                : html`
+                    <${MessageContent} text=${contentText} />
+                    <${AttachmentList} attachments=${msg.attachments} />
+                  `}
             </div>
             <div class="chat-bubble-time">
               ${msg.timestamp ? formatRelative(msg.timestamp) : ""}
+              ${msg.edited ? " · edited" : ""}
+              ${role === "user" && canEdit && !isEditing
+                ? html`
+                    <button class="chat-edit-btn" onClick=${() => onEditStart?.(msg)}>
+                      Edit
+                    </button>
+                  `
+                : null}
             </div>
           `}
     </div>
   `;
-}, (prev, next) => prev.msg === next.msg);
+}, (prev, next) =>
+  prev.msg === next.msg &&
+  prev.isFinalModelResponse === next.isFinalModelResponse &&
+  prev.canEdit === next.canEdit &&
+  prev.isEditing === next.isEditing &&
+  prev.editingText === next.editingText,
+);
 
 const TraceEvent = memo(function TraceEvent({ msg }) {
   const info = describeTraceMessage(msg);
@@ -362,24 +453,104 @@ const TraceEvent = memo(function TraceEvent({ msg }) {
   const lineCount = text ? text.split(/\r?\n/).length : 0;
   const hasBody = text.length > 0 && (lineCount > 1 || text.length > 220);
   const longBody = lineCount > 12 || text.length > 1200;
+  const [expanded, setExpanded] = useState(() => info.kind === "error");
+
+  useEffect(() => {
+    setExpanded(info.kind === "error");
+  }, [msg]);
 
   return html`
-    <div class="chat-trace-item ${info.kind}">
-      <div class="chat-trace-head">
+    <div class="chat-trace-item ${info.kind} ${expanded ? "expanded" : ""}">
+      <button
+        class="chat-trace-head chat-trace-head-toggle"
+        type="button"
+        onClick=${() => hasBody && setExpanded((prev) => !prev)}
+        disabled=${!hasBody}
+      >
         <span class="chat-trace-tag ${info.kind}">${info.tag}</span>
         <span class="chat-trace-title">${info.title}</span>
         <span class="chat-trace-time">
           ${msg.timestamp ? formatRelative(msg.timestamp) : ""}
         </span>
-      </div>
+        ${hasBody && html`<span class="chat-trace-chevron">${expanded ? "▾" : "▸"}</span>`}
+      </button>
       ${hasBody && html`
-        <div class="chat-trace-content ${longBody ? "chat-trace-content-scroll" : ""}">
-          <${MessageContent} text=${text} />
+        <div class="chat-trace-content-wrap ${expanded ? "expanded" : ""}">
+          <div class="chat-trace-content ${longBody ? "chat-trace-content-scroll" : ""}">
+            <${MessageContent} text=${text} />
+          </div>
         </div>
       `}
     </div>
   `;
 }, (prev, next) => prev.msg === next.msg);
+
+/* ─── ThinkingGroup — collapses consecutive trace events into one row ─── */
+const ThinkingGroup = memo(function ThinkingGroup({ msgs, isLatest = false, isAgentActive = false }) {
+  const hasErrors = msgs.some((m) => m.type === "error" || m.type === "stream_error");
+  // Track whether user has manually toggled this group
+  const userToggledRef = useRef(false);
+  const [expanded, setExpanded] = useState(() => hasErrors || (isLatest && isAgentActive));
+
+  // Auto-close when this group is no longer the latest active group
+  useEffect(() => {
+    if (userToggledRef.current) return;
+    if (isLatest && isAgentActive) {
+      setExpanded(true);
+    } else if (!isLatest) {
+      setExpanded(false);
+    }
+  }, [isLatest, isAgentActive]);
+
+  // Always expand on errors
+  useEffect(() => {
+    if (hasErrors) setExpanded(true);
+  }, [msgs.length, hasErrors]);
+
+  // Reset user-toggle when group identity changes
+  useEffect(() => {
+    userToggledRef.current = false;
+  }, [msgs]);
+
+  const handleToggle = useCallback(() => {
+    userToggledRef.current = true;
+    setExpanded((p) => !p);
+  }, []);
+
+  const toolCount = msgs.filter((m) => m.type === "tool_call").length;
+  const stepCount = msgs.filter((m) => {
+    const t = (m.type || "").toLowerCase();
+    return !["tool_call", "tool_result", "tool_output", "error", "stream_error"].includes(t);
+  }).length;
+
+  const parts = [];
+  if (toolCount) parts.push(`${toolCount} tool call${toolCount !== 1 ? "s" : ""}`);
+  if (stepCount) parts.push(`${stepCount} step${stepCount !== 1 ? "s" : ""}`);
+  const label = parts.join(", ") || `${msgs.length} step${msgs.length !== 1 ? "s" : ""}`;
+
+  return html`
+    <div class="thinking-group ${expanded ? "expanded" : ""} ${hasErrors ? "has-errors" : ""} ${isLatest && isAgentActive ? "thinking-group-active" : ""}">
+      <button class="thinking-group-head" type="button" onClick=${handleToggle}>
+        <span class="thinking-group-badge">
+          ${isLatest && isAgentActive
+            ? iconText(":cpu: Working…")
+            : iconText(":cpu: Thinking")}
+        </span>
+        <span class="thinking-group-label">${label}</span>
+        <span class="thinking-group-chevron">${expanded ? "▾" : "▸"}</span>
+      </button>
+      <div class="thinking-group-body-wrap ${expanded ? "expanded" : ""}">
+        <div class="thinking-group-body">
+          ${msgs.map((m, idx) => html`<${TraceEvent} key=${m.id || m.timestamp || idx} msg=${m} />`)}
+        </div>
+      </div>
+    </div>
+  `;
+}, (prev, next) =>
+  prev.msgs === next.msgs &&
+  prev.isLatest === next.isLatest &&
+  prev.isAgentActive === next.isAgentActive,
+);
 
 /* ─── Chat View component ─── */
 
@@ -391,19 +562,24 @@ export function ChatView({ sessionId, readOnly = false, embedded = false }) {
   const [paused, setPaused] = useState(false);
   const [autoScroll, setAutoScroll] = useState(true);
   const [unreadCount, setUnreadCount] = useState(0);
-  const [visibleCount, setVisibleCount] = useState(200);
+  const [visibleCount, setVisibleCount] = useState(CHAT_PAGE_SIZE);
   const [showStreamMeta, setShowStreamMeta] = useState(false);
   const [pendingAttachments, setPendingAttachments] = useState([]);
   const [uploadingAttachments, setUploadingAttachments] = useState(false);
+  const [dragActive, setDragActive] = useState(false);
+  const [loadingOlder, setLoadingOlder] = useState(false);
   const [filters, setFilters] = useState({
     tool: false,
     result: false,
     error: false,
   });
+  const [editingMsgRef, setEditingMsgRef] = useState(null);
+  const [editingText, setEditingText] = useState("");
   const messagesRef = useRef(null);
   const inputRef = useRef(null);
   const fileInputRef = useRef(null);
   const lastMessageCount = useRef(0);
+  const topLoadArmedRef = useRef(true);
   const filterKey = `${filters.tool}-${filters.result}-${filters.error}`;
 
   const isScrollPinnedToBottom = useCallback((el) => {
@@ -472,12 +648,37 @@ export function ChatView({ sessionId, readOnly = false, embedded = false }) {
     return messages.filter((msg) => activeFilters.includes(categorizeMessage(msg)));
   }, [messages, activeFilters]);
 
-  const visibleMessages = useMemo(() => {
-    if (filteredMessages.length <= visibleCount) return filteredMessages;
-    return filteredMessages.slice(-visibleCount);
-  }, [filteredMessages, visibleCount]);
+  const latestModelMessageKey = useMemo(() => {
+    const latest =
+      filteredMessages
+        .slice()
+        .reverse()
+        .find((msg) => isModelResponseMessage(msg)) || null;
+    return messageIdentity(latest);
+  }, [filteredMessages]);
 
-  const hasMoreMessages = filteredMessages.length > visibleCount;
+  // Count only real (non-trace) messages toward the visible limit so trace
+  // events don't consume the page budget.
+  const realMessageCount = useMemo(
+    () => filteredMessages.filter((msg) => !isTraceEventMessage(msg)).length,
+    [filteredMessages],
+  );
+
+  const visibleMessages = useMemo(() => {
+    if (realMessageCount <= visibleCount) return filteredMessages;
+    // Walk backwards counting only real messages; include all trace events
+    // that fall between them so groups stay intact.
+    let realCount = 0;
+    for (let i = filteredMessages.length - 1; i >= 0; i--) {
+      if (!isTraceEventMessage(filteredMessages[i])) {
+        realCount++;
+        if (realCount >= visibleCount) return filteredMessages.slice(i);
+      }
+    }
+    return filteredMessages;
+  }, [filteredMessages, visibleCount, realMessageCount]);
+
+  const hasMoreMessages = realMessageCount > visibleCount;
 
   const streamActivityKey = useMemo(() => {
     if (filteredMessages.length === 0) return "empty";
@@ -533,23 +734,86 @@ export function ChatView({ sessionId, readOnly = false, embedded = false }) {
   }
 
   const renderItems = useMemo(() => {
-    return visibleMessages.map((msg, index) => {
-      const baseKey = msg.id || msg.timestamp || `msg-${index}`;
-      const trace = isTraceEventMessage(msg);
-      return {
-        kind: trace ? "trace" : "message",
-        key: `${trace ? "trace" : "message"}-${baseKey}-${index}`,
-        msg,
-      };
-    });
+    const items = [];
+    let i = 0;
+    while (i < visibleMessages.length) {
+      const msg = visibleMessages[i];
+      if (isTraceEventMessage(msg)) {
+        // Collect consecutive trace events; discard completely empty ones.
+        const group = [];
+        let groupKey = null;
+        while (i < visibleMessages.length && isTraceEventMessage(visibleMessages[i])) {
+          const m = visibleMessages[i];
+          if (messageText(m).trim()) {
+            group.push(m);
+            if (!groupKey) groupKey = m.id || m.timestamp || `trace-${i}`;
+          }
+          i++;
+        }
+        if (group.length > 0) {
+          items.push({ kind: "thinking-group", key: `thinking-group-${groupKey}`, msgs: group });
+        }
+      } else {
+        const baseKey = msg.id || msg.timestamp || `msg-${i}`;
+        items.push({
+          kind: "message",
+          key: `message-${baseKey}-${i}`,
+          messageKey: messageIdentity(msg),
+          msg,
+        });
+        i++;
+      }
+    }
+    // Mark the last thinking-group as "latest" for auto-expand/collapse
+    for (let j = items.length - 1; j >= 0; j--) {
+      if (items[j].kind === "thinking-group") {
+        items[j].isLatest = true;
+        break;
+      }
+    }
+    return items;
   }, [visibleMessages]);
 
   const refreshMessages = useCallback(async () => {
     if (!sessionId) return;
     setLoading(true);
-    const res = await loadSessionMessages(sessionId).finally(() => setLoading(false));
+    const res = await loadSessionMessages(sessionId, { limit: CHAT_PAGE_SIZE }).finally(() => setLoading(false));
     setLoadError(res?.ok ? null : res?.error || "unavailable");
   }, [sessionId]);
+
+  /** Reveal older messages from local cache, or fetch another page if needed. */
+  const revealOlderMessages = useCallback(async ({ preserveScroll = false } = {}) => {
+    if (hasMoreMessages) {
+      setVisibleCount((prev) => prev + CHAT_PAGE_SIZE);
+      return;
+    }
+    if (!sessionId || loadingOlder) return;
+    const pag = sessionPagination.value;
+    if (!pag || !pag.hasMore) return;
+    const el = messagesRef.current;
+    const prevScrollHeight = preserveScroll && el ? el.scrollHeight : 0;
+    const prevScrollTop = preserveScroll && el ? el.scrollTop : 0;
+    setLoadingOlder(true);
+    const newOffset = Math.max(0, pag.offset - CHAT_PAGE_SIZE);
+    const limit = pag.offset - newOffset;
+    if (limit <= 0) { setLoadingOlder(false); return; }
+    const res = await loadSessionMessages(sessionId, {
+      limit,
+      offset: newOffset,
+      prepend: true,
+    }).finally(() => setLoadingOlder(false));
+    if (res?.ok) {
+      setVisibleCount((prev) => prev + limit);
+      if (preserveScroll && el) {
+        requestAnimationFrame(() => {
+          const delta = Math.max(0, el.scrollHeight - prevScrollHeight);
+          el.scrollTop = prevScrollTop + delta;
+        });
+      }
+    } else {
+      setLoadError(res?.error || "unavailable");
+    }
+  }, [sessionId, loadingOlder, hasMoreMessages]);
 
   /* Load messages on mount; WS push via initSessionWsListener handles real-time */
   useEffect(() => {
@@ -560,7 +824,7 @@ export function ChatView({ sessionId, readOnly = false, embedded = false }) {
       if (!active) return;
       if (!paused) {
         setLoading(true);
-        loadSessionMessages(sessionId).then((res) => {
+        loadSessionMessages(sessionId, { limit: CHAT_PAGE_SIZE }).then((res) => {
           if (active) setLoadError(res?.ok ? null : res?.error || "unavailable");
         }).finally(() => {
           if (active) setLoading(false);
@@ -573,7 +837,7 @@ export function ChatView({ sessionId, readOnly = false, embedded = false }) {
     // Fallback: poll slowly as safety net (30s) - WS does the heavy lifting
     const interval = setInterval(() => {
       if (active && !paused) {
-        loadSessionMessages(sessionId).then((res) => {
+        loadSessionMessages(sessionId, { limit: CHAT_PAGE_SIZE }).then((res) => {
           if (active && res?.ok === false) setLoadError(res?.error || "unavailable");
         });
       }
@@ -609,14 +873,17 @@ export function ChatView({ sessionId, readOnly = false, embedded = false }) {
 
   /* Reset visible window when session or filters change */
   useEffect(() => {
-    setVisibleCount(200);
+    setVisibleCount(CHAT_PAGE_SIZE);
     setUnreadCount(0);
     setAutoScroll(true);
+    topLoadArmedRef.current = true;
   }, [sessionId, filterKey]);
 
   useEffect(() => {
     setPendingAttachments([]);
     setUploadingAttachments(false);
+    setEditingMsgRef(null);
+    setEditingText("");
   }, [sessionId]);
 
   /* Track scroll position to decide auto-scroll + unread */
@@ -627,10 +894,18 @@ export function ChatView({ sessionId, readOnly = false, embedded = false }) {
       const pinnedToBottom = isScrollPinnedToBottom(el);
       setAutoScroll(pinnedToBottom);
       if (pinnedToBottom) setUnreadCount(0);
+      if (el.scrollTop <= SCROLL_TOP_TRIGGER_PX) {
+        if (topLoadArmedRef.current) {
+          topLoadArmedRef.current = false;
+          revealOlderMessages({ preserveScroll: true }).catch(() => {});
+        }
+      } else if (el.scrollTop >= SCROLL_TOP_REARM_PX) {
+        topLoadArmedRef.current = true;
+      }
     };
     el.addEventListener("scroll", onScroll, { passive: true });
     return () => el.removeEventListener("scroll", onScroll);
-  }, [sessionId, isScrollPinnedToBottom]);
+  }, [sessionId, isScrollPinnedToBottom, revealOlderMessages]);
 
   /* Auto-scroll to bottom when new messages arrive */
   useEffect(() => {
@@ -693,9 +968,81 @@ export function ChatView({ sessionId, readOnly = false, embedded = false }) {
     }
   }, [uploadAttachments]);
 
+  const handleDragOver = useCallback((e) => {
+    if (readOnly) return;
+    e.preventDefault();
+    if (!dragActive) setDragActive(true);
+  }, [readOnly, dragActive]);
+
+  const handleDragLeave = useCallback(() => {
+    if (dragActive) setDragActive(false);
+  }, [dragActive]);
+
+  const handleDrop = useCallback((e) => {
+    if (readOnly) return;
+    e.preventDefault();
+    setDragActive(false);
+    const files = e.dataTransfer?.files;
+    if (files && files.length) {
+      uploadAttachments(files);
+    }
+  }, [readOnly, uploadAttachments]);
+
   const removeAttachment = useCallback((index) => {
     setPendingAttachments((prev) => prev.filter((_, i) => i !== index));
   }, []);
+
+  const handleStartEdit = useCallback((msg) => {
+    setEditingMsgRef(msg || null);
+    setEditingText(messageText(msg));
+  }, []);
+
+  const handleCancelEdit = useCallback(() => {
+    setEditingMsgRef(null);
+    setEditingText("");
+  }, []);
+
+  const handleSaveEdit = useCallback(async () => {
+    if (!sessionId || !editingMsgRef) return;
+    const next = String(editingText || "").trim();
+    if (!next) return;
+
+    const previousContent = messageText(editingMsgRef);
+    if (next === previousContent) {
+      setEditingMsgRef(null);
+      setEditingText("");
+      return;
+    }
+
+    const editedAt = new Date().toISOString();
+    sessionMessages.value = (sessionMessages.value || []).map((msg) =>
+      msg === editingMsgRef
+        ? { ...msg, content: next, edited: true, editedAt }
+        : msg,
+    );
+
+    setEditingMsgRef(null);
+    setEditingText("");
+
+    try {
+      await apiFetch(`/api/sessions/${safeSessionId}/message/edit`, {
+        method: "POST",
+        body: JSON.stringify({
+          messageId: editingMsgRef?.id,
+          timestamp: editingMsgRef?.timestamp,
+          previousContent,
+          content: next,
+        }),
+      });
+      const res = await loadSessionMessages(sessionId);
+      setLoadError(res?.ok ? null : res?.error || "unavailable");
+      showToast("Message updated", "success");
+    } catch {
+      const res = await loadSessionMessages(sessionId);
+      setLoadError(res?.ok ? null : res?.error || "unavailable");
+      showToast("Failed to update message", "error");
+    }
+  }, [sessionId, editingMsgRef, editingText]);
 
   const handleSend = useCallback(async () => {
     const text = input.trim();
@@ -722,7 +1069,7 @@ export function ChatView({ sessionId, readOnly = false, embedded = false }) {
           attachments: pendingAttachments,
         }),
       });
-      const res = await loadSessionMessages(sessionId);
+      const res = await loadSessionMessages(sessionId, { limit: CHAT_PAGE_SIZE });
       setLoadError(res?.ok ? null : res?.error || "unavailable");
     } catch {
       showToast("Failed to send message", "error");
@@ -739,7 +1086,7 @@ export function ChatView({ sessionId, readOnly = false, embedded = false }) {
         "success",
       );
       await loadSessions();
-      const res = await loadSessionMessages(sessionId);
+      const res = await loadSessionMessages(sessionId, { limit: CHAT_PAGE_SIZE });
       setLoadError(res?.ok ? null : res?.error || "unavailable");
     } catch {
       showToast("Failed to resume session", "error");
@@ -751,7 +1098,7 @@ export function ChatView({ sessionId, readOnly = false, embedded = false }) {
       await apiFetch(`/api/sessions/${safeSessionId}/archive`, { method: "POST" });
       showToast("Session archived", "success");
       await loadSessions();
-      const res = await loadSessionMessages(sessionId);
+      const res = await loadSessionMessages(sessionId, { limit: CHAT_PAGE_SIZE });
       setLoadError(res?.ok ? null : res?.error || "unavailable");
     } catch {
       showToast("Failed to archive session", "error");
@@ -824,7 +1171,7 @@ export function ChatView({ sessionId, readOnly = false, embedded = false }) {
   if (!sessionId) {
     return html`
       <div class="chat-view chat-empty-state">
-        <div class="session-empty-icon">${resolveIcon("💬")}</div>
+        <div class="session-empty-icon">${resolveIcon(":chat:")}</div>
         <div class="session-empty-text">
           Select a session to view the live stream.
           <div class="session-empty-subtext">Create a new session or pick one on the left.</div>
@@ -900,19 +1247,19 @@ export function ChatView({ sessionId, readOnly = false, embedded = false }) {
         </div>
         <div class="chat-toolbar-actions">
           <button class="btn btn-ghost btn-sm" onClick=${refreshMessages}>
-            ${iconText("🔄 Refresh")}
+            ${iconText(":refresh: Refresh")}
           </button>
           <button
             class="btn btn-ghost btn-sm"
             onClick=${() => setPaused((prev) => !prev)}
           >
-            ${paused ? "▶ Resume" : "⏸ Pause"}
+            ${iconText(paused ? ":play: Resume" : ":pause: Pause")}
           </button>
           <button class="btn btn-ghost btn-sm" onClick=${handleCopyStream}>
-            ${iconText("📋 Copy")}
+            ${iconText(":clipboard: Copy")}
           </button>
           <button class="btn btn-ghost btn-sm" onClick=${handleExportStream}>
-            ⬇️ Export
+            ${iconText(":download: Export")}
           </button>
         </div>
       </div>
@@ -992,16 +1339,17 @@ export function ChatView({ sessionId, readOnly = false, embedded = false }) {
       `}
 
       <div class="chat-messages" ref=${messagesRef}>
-        ${hasMoreMessages && html`
+        ${(hasMoreMessages || sessionPagination.value?.hasMore) && html`
           <div class="chat-load-earlier">
             <button
               class="btn btn-ghost btn-sm"
-              onClick=${() => setVisibleCount((prev) => prev + 200)}
+              disabled=${loadingOlder}
+              onClick=${() => revealOlderMessages()}
             >
-              Load earlier messages
+              ${loadingOlder ? "Loading…" : "Load older messages"}
             </button>
             <span class="chat-load-count">
-              Showing ${visibleMessages.length} of ${filteredMessages.length}
+              Showing ${visibleMessages.length} of ${sessionPagination.value?.total || filteredMessages.length}
             </span>
           </div>
         `}
@@ -1017,8 +1365,8 @@ export function ChatView({ sessionId, readOnly = false, embedded = false }) {
           <div class="chat-loading">Loading messages…</div>
         `}
         ${!loading && messages.length === 0 && html`
-          <div class="chat-empty-state-inline">
-            <div class="session-empty-icon">${resolveIcon("🛰")}</div>
+          <div class="chat-empty-state-inline chat-empty-state-inline--no-box">
+            <div class="session-empty-icon">${resolveIcon(":server:")}</div>
             <div class="session-empty-text">
               No messages yet.
               <div class="session-empty-subtext">
@@ -1029,7 +1377,7 @@ export function ChatView({ sessionId, readOnly = false, embedded = false }) {
         `}
         ${messages.length > 0 && filteredMessages.length === 0 && html`
           <div class="chat-empty-state-inline">
-            <div class="session-empty-icon">${resolveIcon("🧰")}</div>
+            <div class="session-empty-icon">${resolveIcon(":settings:")}</div>
             <div class="session-empty-text">
               No messages match these filters.
               <div class="session-empty-subtext">Try clearing filters or wait for new tool events.</div>
@@ -1039,9 +1387,18 @@ export function ChatView({ sessionId, readOnly = false, embedded = false }) {
             </button>
           </div>
         `}
-        ${renderItems.map((item) => item.kind === "trace"
-          ? html`<${TraceEvent} key=${item.key} msg=${item.msg} />`
-          : html`<${ChatBubble} key=${item.key} msg=${item.msg} />`
+        ${renderItems.map((item) => item.kind === "thinking-group"
+          ? html`<${ThinkingGroup}
+              key=${item.key}
+              msgs=${item.msgs}
+              isLatest=${!!item.isLatest}
+              isAgentActive=${statusState !== "idle" && statusState !== "paused"}
+            />`
+          : html`<${ChatBubble}
+              key=${item.key}
+              msg=${item.msg}
+              isFinalModelResponse=${item.messageKey === latestModelMessageKey}
+            />`
         )}
 
         ${/* Pending messages (optimistic rendering) — use .peek() to avoid
@@ -1060,7 +1417,7 @@ export function ChatView({ sessionId, readOnly = false, embedded = false }) {
                   ${pm.status === "sending"
                     ? "Sending…"
                     : pm.status === "uncertain"
-                      ? html`<span class="chat-pending-warn">⚠ Uncertain</span>
+                      ? html`<span class="chat-pending-warn">${iconText(":alert: Uncertain")}</span>
                               <button class="btn btn-ghost btn-xs chat-retry-btn"
                                 onClick=${() => retryPendingMessage(pm.tempId)}>↻ Retry</button>`
                       : pm.status === "failed"
@@ -1105,7 +1462,7 @@ export function ChatView({ sessionId, readOnly = false, embedded = false }) {
         ${!isActive && session?.status &&
         html`
           <button class="btn btn-primary btn-sm chat-resume-btn" onClick=${handleResume}>
-            ▶ ${resumeLabel}
+            ${iconText(`:play: ${resumeLabel}`)}
           </button>
         `}
         ${pendingAttachments.length > 0 && html`
@@ -1118,7 +1475,7 @@ export function ChatView({ sessionId, readOnly = false, embedded = false }) {
                   class="btn btn-ghost btn-xs chat-attachment-remove"
                   onClick=${() => removeAttachment(index)}
                   title="Remove attachment"
-                >✕</button>
+                >${resolveIcon("✕")}</button>
               </div>
             `)}
             ${uploadingAttachments && html`
@@ -1140,17 +1497,20 @@ export function ChatView({ sessionId, readOnly = false, embedded = false }) {
             disabled=${uploadingAttachments}
             title="Attach file"
           >
-            ${resolveIcon("📎")}
+            ${resolveIcon(":link:")}
           </button>
           <textarea
             ref=${inputRef}
-            class="input chat-input"
+            class="input chat-input ${dragActive ? "chat-input-drag" : ""}"
             placeholder="Send a message…"
             rows="1"
             value=${input}
             onInput=${handleInput}
             onKeyDown=${handleKeyDown}
             onPaste=${handlePaste}
+            onDragOver=${handleDragOver}
+            onDragLeave=${handleDragLeave}
+            onDrop=${handleDrop}
           />
           <button
             class="btn btn-primary chat-send-btn"

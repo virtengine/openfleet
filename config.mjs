@@ -54,6 +54,65 @@ function isPathInside(parent, child) {
   return rel === "" || (!rel.startsWith("..") && !isAbsolute(rel));
 }
 
+/**
+ * Returns true if the given directory appears to be the root of the bosun npm module
+ * (i.e. contains a package.json with `"name": "bosun"` or the bosun main entry point).
+ * @param {string} dirPath
+ * @returns {boolean}
+ */
+function isBosunModuleRoot(dirPath) {
+  if (!dirPath) return false;
+  const pkgPath = resolve(dirPath, "package.json");
+  if (!existsSync(pkgPath)) return false;
+  try {
+    const pkg = JSON.parse(readFileSync(pkgPath, "utf8"));
+    return pkg.name === "bosun" || pkg.name === "@virtengine/bosun";
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Detect the bosun module root starting from the current file's directory,
+ * walking up until a package.json with name "bosun" (or "@virtengine/bosun") is found.
+ * Returns the module root path or __dirname as fallback.
+ * @returns {string}
+ */
+function detectBosunModuleRoot() {
+  let dir = __dirname;
+  for (let i = 0; i < 6; i++) {
+    if (isBosunModuleRoot(dir)) return dir;
+    const parent = resolve(dir, "..");
+    if (parent === dir) break;
+    dir = parent;
+  }
+  return __dirname;
+}
+
+/**
+ * Resolve the watch path with smart fallback logic.
+ *
+ * Priority:
+ *  1. configuredWatchPath — if it exists on disk, use it as-is.
+ *  2. scriptPath — if configuredWatchPath is missing/nonexistent.
+ *  3. repoRoot or configDir — last resort.
+ *
+ * @param {{ configuredWatchPath?: string, scriptPath?: string, repoRoot?: string, configDir?: string }} opts
+ * @returns {string}
+ */
+function resolveDefaultWatchPath({ configuredWatchPath, scriptPath, repoRoot: root, configDir } = {}) {
+  if (configuredWatchPath && existsSync(configuredWatchPath)) {
+    return configuredWatchPath;
+  }
+  if (scriptPath && existsSync(scriptPath)) {
+    return scriptPath;
+  }
+  // Fall back — return scriptPath regardless (caller specified it as configured)
+  if (scriptPath) return scriptPath;
+  if (configuredWatchPath) return configuredWatchPath;
+  return root || configDir || __dirname;
+}
+
 function isWslInteropRuntime() {
   return Boolean(
     process.env.WSL_DISTRO_NAME ||
@@ -659,7 +718,23 @@ function detectRepoRoot() {
     // bosun installed standalone, not in a repo
   }
 
-  // 4. Check bosun config for workspace repos
+  // 4. Module root detection — when bosun is installed as a standalone npm package,
+  //    use the module root directory as a stable base for config resolution.
+  const moduleRoot = detectBosunModuleRoot();
+  if (moduleRoot && moduleRoot !== process.cwd()) {
+    try {
+      const gitRoot = execSync("git rev-parse --show-toplevel", {
+        encoding: "utf8",
+        cwd: moduleRoot,
+        stdio: ["pipe", "pipe", "ignore"],
+      }).trim();
+      if (gitRoot) return gitRoot;
+    } catch {
+      // module root is not inside a git repo
+    }
+  }
+
+  // 5. Check bosun config for workspace repos
   const configDirs = getConfigSearchDirs();
   let fallbackRepo = null;
   for (const cfgName of CONFIG_FILES) {
@@ -681,7 +756,7 @@ function detectRepoRoot() {
   }
   if (fallbackRepo) return fallbackRepo;
 
-  // 5. Final fallback — warn and return cwd.  This is unlikely to be a valid
+  // 6. Final fallback — warn and return cwd.
   // git repo (e.g. when the daemon spawns with cwd=homedir), but returning
   // null would crash downstream callers like resolve(repoRoot).  The warning
   // helps diagnose "not a git repository" errors from child processes.
@@ -782,6 +857,10 @@ function normalizePrimaryAgent(value) {
     return "copilot-sdk";
   if (["claude", "claude-sdk", "claude_code", "claude-code"].includes(raw))
     return "claude-sdk";
+  if (["gemini", "gemini-sdk", "google-gemini"].includes(raw))
+    return "gemini-sdk";
+  if (["opencode", "opencode-sdk", "open-code"].includes(raw))
+    return "opencode-sdk";
   return raw;
 }
 
@@ -1191,19 +1270,28 @@ function loadWorkspaceRepoConfig(configDir, configData = {}, activeWorkspace = "
 
   return targetWorkspace.repos
     .map((repo, index) => {
-      if (!repo || typeof repo !== "object") return null;
-      const name = String(repo.name || repo.id || "").trim();
+      const rawRepo =
+        typeof repo === "string"
+          ? { slug: repo }
+          : (repo && typeof repo === "object" ? repo : null);
+      if (!rawRepo) return null;
+      const slug = String(rawRepo.slug || "").trim();
+      const name = String(rawRepo.name || rawRepo.id || slug.split("/").pop() || "")
+        .trim()
+        .replace(/\.git$/i, "");
       if (!name) return null;
       const repoPath = resolve(workspacePath, name);
       return {
         name,
         id: normalizeKey(name),
         path: repoPath,
-        slug: String(repo.slug || "").trim(),
-        url: String(repo.url || "").trim(),
+        slug,
+        url:
+          String(rawRepo.url || "").trim() ||
+          (slug ? `https://github.com/${slug}.git` : ""),
         workspace: String(targetWorkspace.id || "").trim(),
         primary:
-          repo.primary === true ||
+          rawRepo.primary === true ||
           (activeRepoName && normalizeKey(name) === activeRepoName) ||
           (!activeRepoName && index === 0),
       };
@@ -1533,14 +1621,22 @@ export function loadConfig(argv = process.argv, options = {}) {
       ? codexEnabled
       : primaryAgent === "copilot-sdk"
         ? !isEnvEnabled(process.env.COPILOT_SDK_DISABLED, false)
-        : !isEnvEnabled(process.env.CLAUDE_SDK_DISABLED, false);
+        : primaryAgent === "claude-sdk"
+          ? !isEnvEnabled(process.env.CLAUDE_SDK_DISABLED, false)
+          : primaryAgent === "gemini-sdk"
+            ? !isEnvEnabled(process.env.GEMINI_SDK_DISABLED, false)
+            : primaryAgent === "opencode-sdk"
+              ? !isEnvEnabled(process.env.OPENCODE_SDK_DISABLED, false)
+              : false;
 
   // agentPoolEnabled: true when ANY agent SDK is available for pooled operations
   // This decouples pooled prompt execution from specific SDK selection
   const agentPoolEnabled =
     !isEnvEnabled(process.env.CODEX_SDK_DISABLED, false) ||
     !isEnvEnabled(process.env.COPILOT_SDK_DISABLED, false) ||
-    !isEnvEnabled(process.env.CLAUDE_SDK_DISABLED, false);
+    !isEnvEnabled(process.env.CLAUDE_SDK_DISABLED, false) ||
+    !isEnvEnabled(process.env.GEMINI_SDK_DISABLED, false) ||
+    !isEnvEnabled(process.env.OPENCODE_SDK_DISABLED, false);
 
   // ── Internal Executor ────────────────────────────────────
   // Allows the monitor to run tasks via agent-pool directly instead of
@@ -1799,6 +1895,38 @@ export function loadConfig(argv = process.argv, options = {}) {
       requirePriority: isEnvEnabled(
         process.env.INTERNAL_EXECUTOR_REPLENISH_REQUIRE_PRIORITY,
         internalExecutorConfig.backlogReplenishment?.requirePriority !== false,
+      ),
+    },
+    stream: {
+      maxRetries: Number(
+        process.env.INTERNAL_EXECUTOR_STREAM_MAX_RETRIES ||
+          internalExecutorConfig.stream?.maxRetries ||
+          5,
+      ),
+      retryBaseMs: Number(
+        process.env.INTERNAL_EXECUTOR_STREAM_RETRY_BASE_MS ||
+          internalExecutorConfig.stream?.retryBaseMs ||
+          2000,
+      ),
+      retryMaxMs: Number(
+        process.env.INTERNAL_EXECUTOR_STREAM_RETRY_MAX_MS ||
+          internalExecutorConfig.stream?.retryMaxMs ||
+          32000,
+      ),
+      firstEventTimeoutMs: Number(
+        process.env.INTERNAL_EXECUTOR_STREAM_FIRST_EVENT_TIMEOUT_MS ||
+          internalExecutorConfig.stream?.firstEventTimeoutMs ||
+          120000,
+      ),
+      maxItemsPerTurn: Number(
+        process.env.INTERNAL_EXECUTOR_STREAM_MAX_ITEMS_PER_TURN ||
+          internalExecutorConfig.stream?.maxItemsPerTurn ||
+          600,
+      ),
+      maxItemChars: Number(
+        process.env.INTERNAL_EXECUTOR_STREAM_MAX_ITEM_CHARS ||
+          internalExecutorConfig.stream?.maxItemChars ||
+          12000,
       ),
     },
     projectRequirements,
@@ -2125,6 +2253,9 @@ export function loadConfig(argv = process.argv, options = {}) {
     githubProjectSync,
     jira,
     projectRequirements,
+
+    // Voice assistant
+    voice: Object.freeze(configData.voice || {}),
 
     // Merge Strategy
     codexAnalyzeMergeStrategy:

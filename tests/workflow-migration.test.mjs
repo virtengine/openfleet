@@ -35,7 +35,7 @@ describe("MigrationMode", () => {
   });
 });
 
-// ── Template ↔ Module Mapping ───────────────────────────────────────────────
+// ── Template :workflow: Module Mapping ───────────────────────────────────────────────
 
 describe("TEMPLATE_MODULE_MAP", () => {
   it("maps template IDs to module filenames", () => {
@@ -46,12 +46,18 @@ describe("TEMPLATE_MODULE_MAP", () => {
     expect(TEMPLATE_MODULE_MAP["template-stale-pr-reaper"]).toBe("workspace-reaper.mjs");
     expect(TEMPLATE_MODULE_MAP["template-agent-session-monitor"]).toBe("session-tracker.mjs");
     expect(TEMPLATE_MODULE_MAP["template-nightly-report"]).toBe("telegram-sentinel.mjs");
+    expect(TEMPLATE_MODULE_MAP["template-task-archiver"]).toBe("task-archiver.mjs");
+    expect(TEMPLATE_MODULE_MAP["template-sdk-conflict-resolver"]).toBe("sdk-conflict-resolver.mjs");
+    expect(TEMPLATE_MODULE_MAP["template-sync-engine"]).toBe("sync-engine.mjs");
   });
 
   it("reverse map works correctly", () => {
     expect(MODULE_TEMPLATE_MAP["anomaly-detector.mjs"]).toBe("template-anomaly-watchdog");
     expect(MODULE_TEMPLATE_MAP["maintenance.mjs"]).toBe("template-workspace-hygiene");
     expect(MODULE_TEMPLATE_MAP["pr-cleanup-daemon.mjs"]).toBe("template-pr-conflict-resolver");
+    expect(MODULE_TEMPLATE_MAP["task-archiver.mjs"]).toBe("template-task-archiver");
+    expect(MODULE_TEMPLATE_MAP["sdk-conflict-resolver.mjs"]).toBe("template-sdk-conflict-resolver");
+    expect(MODULE_TEMPLATE_MAP["sync-engine.mjs"]).toBe("template-sync-engine");
   });
 
   it("is frozen", () => {

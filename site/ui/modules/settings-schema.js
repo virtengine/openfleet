@@ -22,17 +22,18 @@
  */
 
 export const CATEGORIES = [
-  { id: "telegram",  label: "Telegram Bot",        icon: "📱", description: "Bot token, chat, polling, and notification settings" },
-  { id: "miniapp",   label: "Mini App / UI",        icon: "🖥️", description: "Web UI server, port, auth, and tunnel settings" },
-  { id: "executor",  label: "Executor / AI",        icon: "🧠", description: "Agent execution, SDK selection, parallelism, and timeouts" },
-  { id: "kanban",    label: "Kanban / Tasks",        icon: "📋", description: "Task backend, sync, labels, and project mapping" },
-  { id: "github",    label: "GitHub / Git",          icon: "🐙", description: "Repository, auth, PR, merge, and reconciliation settings" },
-  { id: "network",   label: "Network / Tunnel",      icon: "🌐", description: "Cloudflare tunnel, presence, and multi-instance coordination" },
-  { id: "security",  label: "Security / Sandbox",    icon: "🛡️", description: "Sandbox mode, container isolation, and permissions" },
-  { id: "sentinel",  label: "Sentinel / Reliability", icon: "🔗", description: "Auto-restart, crash recovery, and repair agent settings" },
-  { id: "hooks",     label: "Agent Hooks",           icon: "🪝", description: "Pre-push, pre-commit, and lifecycle hook configuration" },
-  { id: "logging",   label: "Logging / Monitoring",  icon: "📊", description: "Work logs, error thresholds, cost tracking, and retention" },
-  { id: "advanced",  label: "Advanced",              icon: "🔧", description: "Daemon, dev mode, paths, and low-level tuning" },
+  { id: "telegram",  label: "Telegram Bot",         icon: "phone", description: "Bot token, chat, polling, and notification settings" },
+  { id: "miniapp",   label: "Mini App / UI",        icon: "monitor", description: "Web UI server, port, auth, and tunnel settings" },
+  { id: "executor",  label: "Executor / AI",        icon: "cpu", description: "Agent execution, SDK selection, parallelism, and timeouts" },
+  { id: "voice",     label: "Voice Assistant",       icon: "headphones", description: "Real-time voice mode, provider keys, model, and voice settings" },
+  { id: "kanban",    label: "Kanban / Tasks",       icon: "clipboard", description: "Task backend, sync, labels, and project mapping" },
+  { id: "github",    label: "GitHub / Git",         icon: "git", description: "Repository, auth, PR, merge, and reconciliation settings" },
+  { id: "network",   label: "Network / Tunnel",     icon: "globe", description: "Cloudflare tunnel, presence, and multi-instance coordination" },
+  { id: "security",  label: "Security / Sandbox",   icon: "shield", description: "Sandbox mode, container isolation, and permissions" },
+  { id: "sentinel",  label: "Sentinel / Reliability", icon: "link", description: "Auto-restart, crash recovery, and repair agent settings" },
+  { id: "hooks",     label: "Agent Hooks",          icon: "link", description: "Pre-push, pre-commit, and lifecycle hook configuration" },
+  { id: "logging",   label: "Logging / Monitoring", icon: "chart", description: "Work logs, error thresholds, cost tracking, and retention" },
+  { id: "advanced",  label: "Advanced",             icon: "settings", description: "Daemon, dev mode, paths, and low-level tuning" },
 ];
 
 /** @type {SettingDef[]} */
@@ -62,21 +63,34 @@ export const SETTINGS_SCHEMA = [
   { key: "TELEGRAM_UI_HOST",               label: "Bind Host",                  category: "miniapp", type: "string",  defaultVal: "0.0.0.0", description: "Network interface to bind. Use 127.0.0.1 for local-only access.", restart: true },
   { key: "TELEGRAM_UI_PUBLIC_HOST",        label: "Public Host",                category: "miniapp", type: "string",  description: "Public hostname if behind a reverse proxy. Auto-detected if not set." },
   { key: "TELEGRAM_UI_BASE_URL",           label: "Base URL Override",          category: "miniapp", type: "string",  description: "Full public URL (e.g., https://my-domain.com). Takes precedence over auto-detection.", validate: "^https?://" },
-  { key: "TELEGRAM_UI_ALLOW_UNSAFE",       label: "⛔ Allow Unsafe (No Auth)",  category: "miniapp", type: "boolean", defaultVal: false, description: "⛔ DANGER: Disables ALL authentication. Anyone with your URL can control agents, read secrets, and execute code on your machine. Combined with a tunnel, this exposes your machine to the ENTIRE INTERNET. Only enable for localhost-only debugging with tunnel DISABLED.", restart: true, danger: true },
-  { key: "_UNSAFE_TUNNEL_WARNING",          label: "",                            category: "miniapp", type: "info",    description: "🔴 WARNING: If 'Allow Unsafe' is ON and 'Tunnel Mode' is not disabled, your UI is publicly accessible with ZERO authentication. This is a critical security risk." },
+  { key: "TELEGRAM_UI_ALLOW_UNSAFE",       label: "Allow Unsafe (No Auth)",      category: "miniapp", type: "boolean", defaultVal: false, description: "DANGER: Disables ALL authentication. Anyone with your URL can control agents, read secrets, and execute code on your machine. Combined with a tunnel, this exposes your machine to the ENTIRE INTERNET. Only enable for localhost-only debugging with tunnel DISABLED.", restart: true, danger: true },
+  { key: "_UNSAFE_TUNNEL_WARNING",          label: "",                            category: "miniapp", type: "info",    description: "WARNING: If 'Allow Unsafe' is ON and 'Tunnel Mode' is not disabled, your UI is publicly accessible with ZERO authentication. This is a critical security risk." },
   { key: "TELEGRAM_UI_AUTH_MAX_AGE_SEC",   label: "Auth Token Max Age",         category: "miniapp", type: "number",  defaultVal: 86400, min: 300, max: 604800, unit: "sec", description: "Maximum age for Telegram initData tokens before they expire." },
-  { key: "TELEGRAM_UI_TUNNEL",             label: "Tunnel Mode",                category: "miniapp", type: "select",  defaultVal: "auto", options: ["auto", "cloudflared", "disabled"], description: "Cloudflare tunnel mode. 'auto' starts tunnel if cloudflared is available.", restart: true },
+  { key: "TELEGRAM_UI_TUNNEL",             label: "Tunnel Mode",                category: "miniapp", type: "select",  defaultVal: "named", options: ["named", "quick", "auto", "cloudflared", "disabled"], description: "Cloudflare tunnel mode. 'named' is default and uses persistent hostname + DNS sync. 'quick' is explicit fallback.", restart: true },
+  { key: "TELEGRAM_UI_ALLOW_QUICK_TUNNEL_FALLBACK", label: "Allow Quick Fallback", category: "miniapp", type: "boolean", defaultVal: false, description: "When named tunnel startup fails, allow fallback to random trycloudflare hostname.", restart: true, advanced: true },
+  { key: "TELEGRAM_UI_FALLBACK_AUTH_ENABLED", label: "Enable Fallback Auth", category: "miniapp", type: "boolean", defaultVal: true, description: "Enable admin fallback PIN/password auth for recovering access when Telegram/session token auth is unavailable.", restart: false },
+  { key: "TELEGRAM_UI_FALLBACK_AUTH_RATE_LIMIT_IP_PER_MIN", label: "Fallback Per-IP Limit", category: "miniapp", type: "number", defaultVal: 10, min: 1, max: 200, unit: "req/min", description: "Per-IP rate limit for fallback auth attempts.", advanced: true },
+  { key: "TELEGRAM_UI_FALLBACK_AUTH_RATE_LIMIT_GLOBAL_PER_MIN", label: "Fallback Global Limit", category: "miniapp", type: "number", defaultVal: 60, min: 1, max: 500, unit: "req/min", description: "Global rate limit for fallback auth attempts.", advanced: true },
+  { key: "TELEGRAM_UI_FALLBACK_AUTH_MAX_FAILURES", label: "Fallback Max Failures", category: "miniapp", type: "number", defaultVal: 5, min: 1, max: 50, description: "Failed fallback auth attempts before temporary lockout.", advanced: true },
+  { key: "TELEGRAM_UI_FALLBACK_AUTH_LOCKOUT_MS", label: "Fallback Lockout", category: "miniapp", type: "number", defaultVal: 600000, min: 10000, max: 86400000, unit: "ms", description: "Temporary lockout duration after too many failed fallback auth attempts.", advanced: true },
+  { key: "TELEGRAM_UI_FALLBACK_AUTH_ROTATE_DAYS", label: "Fallback Rotate Days", category: "miniapp", type: "number", defaultVal: 30, min: 1, max: 365, unit: "days", description: "Rotation target for fallback auth credential.", advanced: true },
+  { key: "TELEGRAM_UI_FALLBACK_AUTH_TRANSIENT_COOLDOWN_MS", label: "Fallback Cooldown", category: "miniapp", type: "number", defaultVal: 5000, min: 1000, max: 60000, unit: "ms", description: "Cooldown when fallback auth backend returns transient errors.", advanced: true },
 
   // ── Executor / AI ──────────────────────────────────────────
   { key: "EXECUTOR_MODE",                  label: "Executor Mode",              category: "executor", type: "select", defaultVal: "internal", options: ["vk", "internal", "hybrid"], description: "Task execution mode. 'internal' uses built-in agent pool, 'vk' delegates to Vibe-Kanban, 'hybrid' uses both.", restart: true },
   { key: "INTERNAL_EXECUTOR_PARALLEL",     label: "Max Parallel Agents",        category: "executor", type: "number", defaultVal: 3, min: 1, max: 20, description: "Maximum number of concurrent agent execution slots." },
-  { key: "INTERNAL_EXECUTOR_SDK",          label: "Default SDK",                category: "executor", type: "select", defaultVal: "auto", options: ["auto", "codex", "copilot", "claude"], description: "Default AI SDK for task execution. 'auto' selects based on availability and task complexity." },
+  { key: "INTERNAL_EXECUTOR_SDK",          label: "Default SDK",                category: "executor", type: "select", defaultVal: "auto", options: ["auto", "codex", "copilot", "claude", "gemini", "opencode"], description: "Default AI SDK for task execution. 'auto' selects based on availability and task complexity." },
   { key: "INTERNAL_EXECUTOR_TIMEOUT_MS",   label: "Task Timeout",               category: "executor", type: "number", defaultVal: 5400000, min: 60000, max: 14400000, unit: "ms", description: "Maximum time a single task execution can run (default: 90 min)." },
   { key: "INTERNAL_EXECUTOR_MAX_RETRIES",  label: "Max Retries",                category: "executor", type: "number", defaultVal: 2, min: 0, max: 10, description: "Number of automatic retries per task before marking as failed." },
   { key: "INTERNAL_EXECUTOR_POLL_MS",      label: "Poll Interval",              category: "executor", type: "number", defaultVal: 30000, min: 5000, max: 300000, unit: "ms", description: "How often the executor polls the kanban board for new tasks.", advanced: true },
   { key: "INTERNAL_EXECUTOR_REVIEW_AGENT_ENABLED", label: "PR Review Agent",    category: "executor", type: "boolean", defaultVal: true, description: "Enable automatic PR review handoff after task completion." },
   { key: "INTERNAL_EXECUTOR_REPLENISH_ENABLED", label: "Auto Replenish Backlog", category: "executor", type: "boolean", defaultVal: false, description: "Automatically generate new tasks when backlog is low." },
-  { key: "PRIMARY_AGENT",                  label: "Primary Agent SDK",          category: "executor", type: "select", defaultVal: "codex-sdk", options: ["codex-sdk", "copilot-sdk", "claude-sdk"], description: "Which AI SDK handles primary agent sessions and chat commands." },
+  { key: "PRIMARY_AGENT",                  label: "Primary Agent SDK",          category: "executor", type: "select", defaultVal: "codex-sdk", options: ["codex-sdk", "copilot-sdk", "claude-sdk", "gemini-sdk", "opencode-sdk"], description: "Which AI SDK handles primary agent sessions and chat commands." },
+  { key: "CODEX_SDK_DISABLED",             label: "Disable Codex SDK",          category: "executor", type: "boolean", defaultVal: false, description: "When true, Codex SDK is unavailable for chat and will not appear in the executor picker.", restart: true },
+  { key: "COPILOT_SDK_DISABLED",           label: "Disable Copilot SDK",        category: "executor", type: "boolean", defaultVal: false, description: "When true, Copilot SDK is unavailable for chat and will not appear in the executor picker.", restart: true },
+  { key: "CLAUDE_SDK_DISABLED",            label: "Disable Claude SDK",         category: "executor", type: "boolean", defaultVal: false, description: "When true, Claude SDK is unavailable for chat and will not appear in the executor picker.", restart: true },
+  { key: "GEMINI_SDK_DISABLED",            label: "Disable Gemini SDK",         category: "executor", type: "boolean", defaultVal: false, description: "When true, Gemini SDK is unavailable for chat and will not appear in the executor picker.", restart: true },
+  { key: "OPENCODE_SDK_DISABLED",          label: "Disable OpenCode SDK",       category: "executor", type: "boolean", defaultVal: false, description: "When true, OpenCode SDK is unavailable for chat and will not appear in the executor picker.", restart: true },
   { key: "EXECUTORS",                      label: "Executor Distribution",      category: "executor", type: "string", defaultVal: "CODEX:DEFAULT:100", description: "Weighted executor configuration. Format: TYPE:VARIANT:WEIGHT[:MODEL|MODEL],... (e.g., CODEX:DEFAULT:70:gpt-5.2-codex|gpt-5.1-codex-mini,COPILOT:CLAUDE_OPUS_4_6:30:claude-opus-4.6)", validate: "^[A-Z_]+:[A-Z_]+:\\d+" },
   { key: "EXECUTOR_DISTRIBUTION",          label: "Distribution Strategy",      category: "executor", type: "select", defaultVal: "weighted", options: ["weighted", "round-robin", "primary-only"], description: "How tasks are distributed across configured executors.", advanced: true },
   { key: "FAILOVER_STRATEGY",              label: "Failover Strategy",          category: "executor", type: "select", defaultVal: "next-in-line", options: ["next-in-line", "weighted-random", "round-robin"], description: "Strategy for selecting next executor when the primary fails.", advanced: true },
@@ -100,8 +114,27 @@ export const SETTINGS_SCHEMA = [
   { key: "CODEX_SUBAGENT_MODEL",           label: "Subagent Model",             category: "executor", type: "string", defaultVal: "gpt-5.1-codex-mini", description: "Preferred lightweight model for delegated/subagent work." },
   { key: "ANTHROPIC_API_KEY",              label: "Anthropic API Key",          category: "executor", type: "secret", sensitive: true, description: "Anthropic API key for Claude SDK. Required if using Claude executor." },
   { key: "CLAUDE_MODEL",                   label: "Claude Model",               category: "executor", type: "string", defaultVal: "claude-opus-4-6", description: "Model for Claude SDK. E.g., claude-opus-4-6, claude-sonnet-4-5." },
+  { key: "GEMINI_API_KEY",                 label: "Gemini API Key",             category: "executor", type: "secret", sensitive: true, description: "Google AI Studio key for Gemini SDK (alternative: GOOGLE_API_KEY)." },
+  { key: "GOOGLE_API_KEY",                 label: "Google API Key",             category: "executor", type: "secret", sensitive: true, description: "Alternative key env used by Gemini SDK." },
+  { key: "GEMINI_MODEL",                   label: "Gemini Model",               category: "executor", type: "string", defaultVal: "gemini-2.5-pro", description: "Model for Gemini SDK sessions (for example gemini-2.5-pro)." },
+  { key: "GEMINI_TRANSPORT",               label: "Gemini Transport",           category: "executor", type: "select", defaultVal: "auto", options: ["auto", "sdk", "cli"], description: "Gemini adapter transport. 'auto' uses SDK then falls back to CLI." },
+  { key: "OPENCODE_MODEL",                 label: "OpenCode Model",             category: "executor", type: "string", defaultVal: "gpt-5.2-codex", description: "Model override passed to OpenCode sessions." },
   { key: "COPILOT_MODEL",                  label: "Copilot Model",              category: "executor", type: "string", defaultVal: "gpt-5", description: "Model for Copilot SDK sessions." },
   { key: "COPILOT_CLI_TOKEN",              label: "Copilot CLI Token",          category: "executor", type: "secret", sensitive: true, description: "Auth token for Copilot CLI remote mode." },
+
+  // ── Voice Assistant ──────────────────────────────────────────
+  { key: "VOICE_ENABLED",                  label: "Enable Voice Mode",          category: "voice", type: "boolean", defaultVal: true, description: "Enable the real-time voice assistant in the chat UI." },
+  { key: "VOICE_PROVIDER",                 label: "Voice Provider",             category: "voice", type: "select", defaultVal: "auto", options: ["auto", "openai", "azure", "claude", "gemini", "fallback"], description: "Voice API provider. 'auto' selects based on available keys. 'fallback' uses browser speech APIs." },
+  { key: "VOICE_MODEL",                    label: "Voice Model",                category: "voice", type: "select", defaultVal: "gpt-audio-1.5", options: ["gpt-audio-1.5", "gpt-realtime-1.5", "gpt-4o-realtime-preview-2024-12-17", "gemini-2.5-pro", "gemini-2.5-flash", "claude-3-7-sonnet-latest", "custom"], description: "Audio model for voice sessions. Select 'custom' to enter a model slug manually." },
+  { key: "VOICE_VISION_MODEL",             label: "Vision Model",               category: "voice", type: "select", defaultVal: "gpt-4.1-nano", options: ["gpt-4.1-nano", "gpt-4.1-mini", "gpt-4.1", "gemini-2.5-flash", "gemini-2.5-pro", "claude-3-7-sonnet-latest", "custom"], description: "Vision model for live screen/camera understanding. Select 'custom' to enter a model slug manually." },
+  { key: "OPENAI_REALTIME_API_KEY",        label: "OpenAI Realtime Key",        category: "voice", type: "secret", sensitive: true, description: "Dedicated API key for voice. Falls back to OPENAI_API_KEY if not set." },
+  { key: "AZURE_OPENAI_REALTIME_ENDPOINT", label: "Azure Realtime Endpoint",    category: "voice", type: "string", description: "Azure OpenAI endpoint for Realtime API (e.g., https://myresource.openai.azure.com).", validate: "^$|^https?://" },
+  { key: "AZURE_OPENAI_REALTIME_API_KEY",  label: "Azure Realtime Key",         category: "voice", type: "secret", sensitive: true, description: "Azure OpenAI API key for Realtime API. Falls back to AZURE_OPENAI_API_KEY if not set." },
+  { key: "AZURE_OPENAI_REALTIME_DEPLOYMENT", label: "Azure Deployment",         category: "voice", type: "select", defaultVal: "gpt-audio-1.5", options: ["gpt-audio-1.5", "gpt-realtime-1.5", "gpt-4o-realtime-preview", "custom"], description: "Azure deployment name for the Realtime model. Select 'custom' to enter manually." },
+  { key: "VOICE_ID",                       label: "Voice",                      category: "voice", type: "select", defaultVal: "alloy", options: ["alloy", "ash", "ballad", "coral", "echo", "fable", "onyx", "nova", "sage", "shimmer", "verse"], description: "Voice personality for text-to-speech output." },
+  { key: "VOICE_TURN_DETECTION",           label: "Turn Detection",             category: "voice", type: "select", defaultVal: "server_vad", options: ["server_vad", "semantic_vad", "none"], description: "How the model detects when you stop speaking. 'semantic_vad' is more intelligent but higher latency." },
+  { key: "VOICE_DELEGATE_EXECUTOR",        label: "Delegate Executor",          category: "voice", type: "select", defaultVal: "codex-sdk", options: ["codex-sdk", "copilot-sdk", "claude-sdk", "gemini-sdk", "opencode-sdk"], description: "Which agent executor voice tool calls delegate to for complex tasks." },
+  { key: "VOICE_FALLBACK_MODE",            label: "Fallback Mode",              category: "voice", type: "select", defaultVal: "browser", options: ["browser", "disabled"], description: "When Tier 1 (Realtime API) is unavailable, use browser speech APIs as fallback." },
 
   // ── Kanban / Tasks ─────────────────────────────────────────
   { key: "KANBAN_BACKEND",                 label: "Kanban Backend",             category: "kanban", type: "select", defaultVal: "internal", options: ["internal", "vk", "github", "jira"], description: "Task management backend. 'internal' uses built-in store, 'github' syncs with GitHub Issues/Projects." },
@@ -131,6 +164,12 @@ export const SETTINGS_SCHEMA = [
 
   // ── GitHub / Git ─────────────────────────────────────────
   { key: "GITHUB_TOKEN",                   label: "GitHub Token",               category: "github", type: "secret", sensitive: true, description: "Personal access token or fine-grained token for GitHub API. Required for GitHub kanban backend." },
+  { key: "BOSUN_GITHUB_CLIENT_ID",         label: "GitHub OAuth Client ID",     category: "github", type: "string", description: "OAuth client ID used for GitHub device flow sign-in in the Bosun portal." },
+  { key: "BOSUN_GITHUB_CLIENT_SECRET",     label: "GitHub OAuth Client Secret", category: "github", type: "secret", sensitive: true, description: "OAuth client secret used for GitHub web callback exchange.", advanced: true },
+  { key: "BOSUN_GITHUB_APP_ID",            label: "GitHub App ID",              category: "github", type: "string", description: "Numeric Bosun GitHub App ID used for installation token auth.", advanced: true },
+  { key: "BOSUN_GITHUB_PRIVATE_KEY_PATH",  label: "GitHub App Private Key",     category: "github", type: "string", description: "Absolute path to the Bosun GitHub App .pem private key.", advanced: true },
+  { key: "BOSUN_GITHUB_WEBHOOK_SECRET",    label: "GitHub App Webhook Secret",  category: "github", type: "secret", sensitive: true, description: "Webhook HMAC secret for validating GitHub App webhook deliveries.", advanced: true },
+  { key: "BOSUN_GITHUB_USER_TOKEN",        label: "GitHub User Token Override", category: "github", type: "secret", sensitive: true, description: "Optional direct OAuth user token override (skips auth-state lookup).", advanced: true },
   { key: "GITHUB_REPOSITORY",              label: "Repository",                 category: "github", type: "string", description: "GitHub repository in owner/repo format. Auto-detected from git remote if not set.", validate: "^[\\w.-]+/[\\w.-]+$" },
   { key: "GITHUB_PROJECT_MODE",            label: "Project Mode",               category: "github", type: "select", defaultVal: "issues", options: ["issues", "kanban"], description: "Use GitHub Issues directly, or GitHub Projects v2 kanban board." },
   { key: "GITHUB_PROJECT_NUMBER",          label: "Project Number",             category: "github", type: "number", min: 1, description: "GitHub Projects v2 number. Required when project mode is 'kanban'." },
@@ -149,6 +188,14 @@ export const SETTINGS_SCHEMA = [
   // ── Network / Tunnel ──────────────────────────────────────
   { key: "CLOUDFLARE_TUNNEL_NAME",         label: "Tunnel Name",                category: "network", type: "string", description: "Named Cloudflare tunnel for persistent URL. Leave empty for random quick tunnel." },
   { key: "CLOUDFLARE_TUNNEL_CREDENTIALS",  label: "Tunnel Credentials",         category: "network", type: "secret", sensitive: true, description: "Path to Cloudflare tunnel credentials JSON file." },
+  { key: "CLOUDFLARE_BASE_DOMAIN",         label: "Base Domain",                category: "network", type: "string", description: "Base domain for deterministic per-user hostnames (for example bosun.det.io)." },
+  { key: "CLOUDFLARE_TUNNEL_HOSTNAME",     label: "Explicit Hostname",          category: "network", type: "string", description: "Optional explicit hostname override (for example jon.bosun.det.io)." },
+  { key: "CLOUDFLARE_USERNAME_HOSTNAME_POLICY", label: "Hostname Policy",       category: "network", type: "select", defaultVal: "per-user-fixed", options: ["per-user-fixed", "fixed"], description: "per-user-fixed creates stable hostname per workstation user. fixed uses shared CLOUDFLARE_FIXED_HOST_LABEL.", advanced: true },
+  { key: "CLOUDFLARE_ZONE_ID",             label: "Zone ID",                    category: "network", type: "string", description: "Cloudflare zone ID used by DNS orchestration API client.", advanced: true },
+  { key: "CLOUDFLARE_API_TOKEN",           label: "API Token",                  category: "network", type: "secret", sensitive: true, description: "Cloudflare API token scoped to Zone DNS edit for the configured zone.", advanced: true },
+  { key: "CLOUDFLARE_DNS_SYNC_ENABLED",    label: "DNS Sync Enabled",           category: "network", type: "boolean", defaultVal: true, description: "Enable idempotent Cloudflare DNS create/verify/update for the named tunnel hostname.", advanced: true },
+  { key: "CLOUDFLARE_DNS_MAX_RETRIES",     label: "DNS Retry Count",            category: "network", type: "number", defaultVal: 3, min: 1, max: 8, description: "Retry attempts for Cloudflare DNS API operations.", advanced: true },
+  { key: "CLOUDFLARE_DNS_RETRY_BASE_MS",   label: "DNS Retry Base",             category: "network", type: "number", defaultVal: 750, min: 100, max: 5000, unit: "ms", description: "Base delay for Cloudflare DNS API retry backoff.", advanced: true },
   { key: "TELEGRAM_PRESENCE_INTERVAL_SEC", label: "Presence Interval",          category: "network", type: "number", defaultVal: 60, min: 10, max: 600, unit: "sec", description: "How often this instance announces its presence to the coordinator." },
   { key: "TELEGRAM_PRESENCE_DISABLED",     label: "Disable Presence",           category: "network", type: "boolean", defaultVal: false, description: "Disable multi-instance presence entirely." },
   { key: "VE_INSTANCE_LABEL",              label: "Instance Label",             category: "network", type: "string", description: "Human-friendly name for this instance in multi-instance setups." },
@@ -260,8 +307,11 @@ export function validateSetting(def, value) {
         return { valid: false, error: "Must be true or false" };
       return { valid: true };
     case "select":
-      if (def.options && !def.options.includes(String(value)))
+      if (def.options && !def.options.includes(String(value))) {
+        // Allow arbitrary values when the schema includes "custom" as an option
+        if (def.options.includes("custom")) return { valid: true };
         return { valid: false, error: `Must be one of: ${def.options.join(", ")}` };
+      }
       return { valid: true };
     default:
       if (def.validate) {

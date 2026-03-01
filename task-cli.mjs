@@ -658,7 +658,7 @@ async function cliPlan(args) {
         console.log(`    ${t.id?.slice(0, 8)} ${t.title}`);
       }
     } else {
-      console.log("  ⚠ Planner ran but no new tasks were created.");
+      console.log("  :alert: Planner ran but no new tasks were created.");
     }
     console.log("");
   } catch (err) {

@@ -552,7 +552,7 @@ describe("formatPresenceSummary", () => {
 
     const result = formatPresenceSummary({ nowMs: now, ttlMs: 5000 });
 
-    expect(result).toContain("🛰️ Bosun Presence");
+    expect(result).toContain(":server: Bosun Presence");
     expect(result).toContain("Primary Worker");
     expect(result).toContain("inst-2");
     expect(result).toContain("coordinator");
@@ -628,7 +628,7 @@ describe("formatCoordinatorSummary", () => {
 
     const result = formatCoordinatorSummary({ nowMs: now, ttlMs: 5000 });
 
-    expect(result).toContain("⭐ Coordinator");
+    expect(result).toContain(":star: Coordinator");
     expect(result).toContain("Instance: Main Coordinator");
     expect(result).toContain("Role: coordinator");
     expect(result).toContain("Host: coord-server");
@@ -668,7 +668,7 @@ describe("formatCoordinatorSummary", () => {
 
     const result = formatCoordinatorSummary({ nowMs: now, ttlMs: 5000 });
 
-    expect(result).toContain("⭐ Coordinator");
+    expect(result).toContain(":star: Coordinator");
     expect(result).toContain("Instance: minimal-coord");
     expect(result).toContain("Host: unknown");
   });

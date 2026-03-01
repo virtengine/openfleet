@@ -552,6 +552,24 @@ describe("kanban-adapter github backend", () => {
     expect(execFileMock).not.toHaveBeenCalled();
   });
 
+  it("caches missing GitHub issues and avoids repeated fetch/log spam", async () => {
+    const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
+    mockGhError(new Error("Not Found (HTTP 404)"));
+
+    const adapter = getKanbanAdapter();
+    const first = await adapter.getTask("759");
+    const second = await adapter.getTask("759");
+
+    expect(first.id).toBe("759");
+    expect(first.meta?.externalMissing).toBe(true);
+    expect(first.meta?.externalMissingReason).toBe("issue_not_found");
+    expect(second.meta?.externalMissing).toBe(true);
+    expect(execFileMock).toHaveBeenCalledTimes(1);
+    expect(warnSpy).not.toHaveBeenCalled();
+
+    warnSpy.mockRestore();
+  });
+
   it("addComment returns false when gh CLI fails", async () => {
     execFileMock.mockImplementationOnce((_cmd, _args, _opts, cb) => {
       cb(new Error("network error"), { stdout: "", stderr: "" });

@@ -19,7 +19,7 @@ function logInfo(msg) {
 }
 
 function logWarn(msg) {
-  console.warn(`  ⚠ ${msg}`);
+  console.warn(`  :alert: ${msg}`);
 }
 
 function logError(msg) {
