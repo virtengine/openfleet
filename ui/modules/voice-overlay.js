@@ -576,6 +576,80 @@ function shouldSuppressMeetingMessage(msg, role, text, hasAttachments = false) {
   return false;
 }
 
+function parseMeetingTimestampMs(value) {
+  const raw = String(value || "").trim();
+  if (!raw) return null;
+  const millis = new Date(raw).getTime();
+  return Number.isFinite(millis) ? millis : null;
+}
+
+function isLikelyFragmentMessage(message) {
+  if (!message || message.role !== "assistant") return false;
+  if (Array.isArray(message.attachments) && message.attachments.length > 0) {
+    return false;
+  }
+  const content = String(message.content || "").trim();
+  if (!content) return false;
+  if (content.length > 32) return false;
+  if (/^[\[{(]/.test(content)) return false;
+  const words = content.split(/\s+/).filter(Boolean);
+  if (words.length > 4) return false;
+  if (/[.!?…:]$/.test(content)) return false;
+  return true;
+}
+
+function mergeFragmentContent(baseContent, nextContent) {
+  const left = String(baseContent || "").trimEnd();
+  const right = String(nextContent || "").trimStart();
+  if (!left) return right;
+  if (!right) return left;
+
+  if (/^[,.;:!?)}\]]/.test(right)) {
+    return `${left}${right}`;
+  }
+  if (/^[-–—]/.test(right) || /[-–—]$/.test(left)) {
+    return `${left}${right}`;
+  }
+  return `${left} ${right}`;
+}
+
+function mergeFragmentedMeetingFeedMessages(items) {
+  const merged = [];
+  for (const item of items) {
+    const prev = merged.length > 0 ? merged[merged.length - 1] : null;
+    if (!prev) {
+      merged.push(item);
+      continue;
+    }
+
+    const timeDelta =
+      Number.isFinite(prev.timestampMs) && Number.isFinite(item.timestampMs)
+        ? Math.abs(item.timestampMs - prev.timestampMs)
+        : null;
+    const shouldMerge =
+      prev.role === "assistant"
+      && item.role === "assistant"
+      && isLikelyFragmentMessage(prev)
+      && isLikelyFragmentMessage(item)
+      && (timeDelta == null || timeDelta <= 120000);
+
+    if (!shouldMerge) {
+      merged.push(item);
+      continue;
+    }
+
+    const nextContent = mergeFragmentContent(prev.content, item.content);
+    merged[merged.length - 1] = {
+      ...prev,
+      id: `${prev.id}:${item.id}`,
+      content: nextContent,
+      timeLabel: item.timeLabel || prev.timeLabel,
+      timestampMs: item.timestampMs ?? prev.timestampMs,
+    };
+  }
+  return merged;
+}
+
 // ── Voice Overlay Component ─────────────────────────────────────────────────
 
 /**
@@ -1206,10 +1280,12 @@ export function VoiceOverlay({
         content: normalizedText,
         attachments,
         timeLabel,
+        timestampMs: parseMeetingTimestampMs(msg?.timestamp),
       });
     }
-    if (!isCompactFollowMode) return items;
-    return items.slice(-120);
+    const merged = mergeFragmentedMeetingFeedMessages(items);
+    if (!isCompactFollowMode) return merged;
+    return merged.slice(-120);
   })();
   const showMeetingChat = Boolean(sessionId) && (chatOpen || isCompactFollowMode);
   const liveTranscriptText = String(transcript || "").trim();
