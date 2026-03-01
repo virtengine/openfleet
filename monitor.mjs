@@ -967,10 +967,6 @@ let {
   vkSpawnEnabled,
   vkEnsureIntervalMs,
   kanban: kanbanConfig,
-  plannerPerCapitaThreshold,
-  plannerIdleSlotThreshold,
-  plannerDedupMs,
-  plannerMode: configPlannerMode,
   triggerSystem: configTriggerSystem,
   agentPrompts,
   executorConfig: configExecutorConfig,
@@ -1010,7 +1006,6 @@ const telegramWeeklyReportDays = parseEnvInteger(
 
 let watchPath = resolve(configWatchPath);
 let codexEnabled = config.codexEnabled;
-let plannerMode = configPlannerMode; // "codex-sdk" | "kanban" | "disabled"
 let triggerSystemConfig =
   configTriggerSystem && typeof configTriggerSystem === "object"
     ? configTriggerSystem
@@ -1373,7 +1368,6 @@ function isBenignWorkspaceSyncFailure(errorText) {
   }
 }
 
-console.log(`[monitor] task planner mode: ${plannerMode}`);
 console.log(`[monitor] kanban backend: ${kanbanBackend}`);
 if (config?.kanbanSource) {
   const src = config.kanbanSource;
@@ -1548,7 +1542,6 @@ const shellAnsi = {
 };
 const shellPromptText = shellAnsi.cyan("[agent]") + " > ";
 const shellInfoPrefix = shellAnsi.dim("[shell]") + " ";
-console.log(`[monitor] task planner mode: ${plannerMode}`);
 
 function shellWriteRaw(chunk) {
   try {
@@ -1944,23 +1937,11 @@ function tripCircuitBreaker(failureCount) {
 }
 
 let allCompleteNotified = false;
-let backlogLowNotified = false;
-let idleAgentsNotified = false;
-let plannerTriggered = false;
 const monitorStateCacheDir = resolve(repoRoot, ".bosun", ".cache");
-const plannerStatePath = resolve(
+const triggerStatePath = resolve(
   monitorStateCacheDir,
-  "task-planner-state.json",
+  "trigger-template-state.json",
 );
-const taskPlannerStatus = {
-  enabled: isDevMode(),
-  intervalMs: Math.max(
-    5 * 60_000,
-    Number(process.env.DEVMODE_TASK_PLANNER_STATUS_INTERVAL_MS || "1800000"),
-  ),
-  timer: null,
-  lastStatusAt: 0,
-};
 
 // ── Telegram history ring buffer ────────────────────────────────────────────
 // Stores the last N sent messages for context enrichment (fed to autofix prompts)
@@ -2086,7 +2067,6 @@ function restartSelf(reason) {
       ),
     );
   }
-  stopTaskPlannerStatusLoop();
   stopAutoUpdateLoop();
   stopAgentAlertTailer();
   stopAgentWorkAnalyzer();
@@ -4803,71 +4783,6 @@ function parseTaskTimestamp(value) {
   if (!raw) return null;
   const ts = Date.parse(raw);
   return Number.isFinite(ts) ? ts : null;
-}
-
-function isPlannerTaskData(task) {
-  if (!task) return false;
-  const title = String(task.title || "").toLowerCase();
-  const desc = String(task.description || task.body || "").toLowerCase();
-  if (title.includes("plan next tasks") || title.includes("plan next phase")) {
-    return true;
-  }
-  if (title.includes("task planner")) {
-    return true;
-  }
-  return (
-    desc.includes("task planner — auto-created by bosun") ||
-    desc.includes("task planner - auto-created by bosun")
-  );
-}
-
-async function verifyPlannerTaskCompletion(taskData, attemptInfo) {
-  const projectId =
-    taskData?.project_id ||
-    taskData?.projectId ||
-    attemptInfo?.project_id ||
-    attemptInfo?.projectId ||
-    (await findVkProjectId());
-  if (!projectId) {
-    return { completed: false, reason: "project_not_found" };
-  }
-  const tasksRes = await fetchVk(`/api/tasks?project_id=${projectId}`);
-  const tasks = Array.isArray(tasksRes?.data)
-    ? tasksRes.data
-    : Array.isArray(tasksRes?.tasks)
-      ? tasksRes.tasks
-      : Array.isArray(tasksRes)
-        ? tasksRes
-        : [];
-  const sinceMs =
-    parseTaskTimestamp(taskData) ||
-    parseTaskTimestamp(attemptInfo) ||
-    Date.now();
-  const candidates = tasks.filter((t) => {
-    if (!t || t.id === taskData?.id) return false;
-    if (isPlannerTaskData(t)) return false;
-    const createdMs = parseTaskTimestamp(t);
-    return createdMs && createdMs > sinceMs;
-  });
-  const backlogCandidates = candidates.filter((t) => {
-    if (!t?.status) return true;
-    const status = String(t.status).toLowerCase();
-    return (
-      status === "todo" || status === "inprogress" || status === "inreview"
-    );
-  });
-  const finalCandidates =
-    backlogCandidates.length > 0 ? backlogCandidates : candidates;
-  return {
-    completed: finalCandidates.length > 0,
-    createdCount: finalCandidates.length,
-    projectId,
-    sinceMs,
-    sampleTitles: finalCandidates
-      .slice(0, 3)
-      .map((t) => t.title || t.id)
-      .filter(Boolean),
-  };
 }
 
 /**
@@ -8438,39 +8353,6 @@ async function smartPRFlow(attemptId, shortId, status) {
           await archiveAttempt(attemptId);
           return;
         }
-        if (isPlannerTaskData(taskData)) {
-          const verify = await verifyPlannerTaskCompletion(
-            taskData,
-            attemptInfo,
-          );
-          if (verify.completed) {
-            console.log(
-              `[monitor] ${tag}: planner task verified (${verify.createdCount} new task(s)) — marking done`,
-            );
-            void updateTaskStatus(attemptInfo.task_id, "done");
-            await archiveAttempt(attemptId);
-            if (telegramToken && telegramChatId) {
-              const suffix = verify.sampleTitles?.length
-                ? ` Examples: ${verify.sampleTitles.join(", ")}`
-                : "";
-              void sendTelegramMessage(
-                `:check: Task planner verified: ${verify.createdCount} new task(s) detected.${suffix}`,
-              );
-            }
-            return;
-          }
-          console.warn(
-            `[monitor] ${tag}: planner task incomplete — no new backlog tasks detected`,
-          );
-          void updateTaskStatus(attemptInfo.task_id, "todo");
-          await archiveAttempt(attemptId);
-          if (telegramToken && telegramChatId) {
-            void sendTelegramMessage(
-              ":alert: Task planner incomplete: no new backlog tasks detected. Returned to todo.",
-            );
-          }
-          return;
-        }
       } catch {
         /* best effort */
       }
@@ -9240,43 +9122,6 @@ async function readStatusSummary() {
   }
 }
 
-async function readPlannerState() {
-  try {
-    const raw = await readFile(plannerStatePath, "utf8");
-    return JSON.parse(raw);
-  } catch {
-    return null;
-  }
-}
-
-async function writePlannerState(nextState) {
-  await mkdir(monitorStateCacheDir, { recursive: true });
-  await writeFile(plannerStatePath, JSON.stringify(nextState, null, 2), "utf8");
-}
-
-async function updatePlannerState(patch) {
-  const current = (await readPlannerState()) || {};
-  const merged = { ...current, ...patch };
-  await writePlannerState(merged);
-  return merged;
-}
-
-function isPlannerDeduped(state, now) {
-  if (!state || !state.last_triggered_at) {
-    return false;
-  }
-  // Only dedup if the last run was successful — failed/skipped runs
-  // should not block subsequent attempts
-  if (!state.last_success_at) {
-    return false;
-  }
-  const last = Date.parse(state.last_success_at);
-  if (!Number.isFinite(last)) {
-    return false;
-  }
-  return now - last < plannerDedupMs;
-}
-
 function truncateText(value, maxChars = 1200) {
   const text = String(value || "");
   if (text.length <= maxChars) return text;
@@ -9323,51 +9168,6 @@ function readRecentGitCommits(limit = 12) {
   }
 }
 
-async function buildPlannerRuntimeContext(reason, details, numTasks) {
-  const status = (await readStatusData()) || {};
-  const counts = status.counts || {};
-  const backlogRemaining = Number(status.backlog_remaining || 0);
-  const running = Number(counts.running || 0);
-  const review = Number(counts.review || 0);
-  const error = Number(counts.error || 0);
-  const manualReview = Number(counts.manual_review || 0);
-  const maxParallel = Math.max(1, getMaxParallelFromArgs(scriptArgs) || 1);
-  const backlogPerSlot = Number((backlogRemaining / maxParallel).toFixed(2));
-  const idleSlots = Math.max(0, maxParallel - running);
-  const recentCompleted = formatRecentStatusItems(
-    status.completed_tasks,
-    "completed_at",
-    8,
-  );
-  const recentSubmitted = formatRecentStatusItems(
-    status.submitted_tasks,
-    "submitted_at",
-    8,
-  );
-  const recentCommits = readRecentGitCommits(15);
-  const plannerState = (await readPlannerState()) || {};
-
-  return {
-    reason: reason || "manual",
-    numTasks,
-    counts: {
-      backlogRemaining,
-      running,
-      review,
-      error,
-      manualReview,
-      maxParallel,
-      backlogPerSlot,
-      idleSlots,
-    },
-    recentCompleted,
-    recentSubmitted,
-    recentCommits,
-    triggerDetails: details || null,
-    plannerState,
-  };
-}
-
 /**
  * Extract a conventional-commit scope from a task title and return the
  * corresponding module branch ref (e.g. "origin/veid").
@@ -9389,416 +9189,9 @@ function extractModuleBaseBranchFromTitle(title) {
   return `${prefix}${scope}`;
 }
 
-function buildPlannerTaskDescription({
-  plannerPrompt,
-  reason,
-  numTasks,
-  runtimeContext,
-  userPrompt,
-}) {
-  return [
-    "## Task Planner — Auto-created by bosun",
-    "",
-    `**Trigger reason:** ${reason || "manual"}`,
-    `**Requested task count:** ${numTasks}`,
-    ...(userPrompt
-      ? [
-          "",
-          "### User Planning Prompt",
-          "",
-          userPrompt,
-        ]
-      : []),
-    "",
-    "### Planner Prompt (Injected by bosun)",
-    "",
-    plannerPrompt,
-    "",
-    "### Runtime Context Snapshot",
-    "",
-    `- Backlog remaining: ${runtimeContext.counts.backlogRemaining}`,
-    `- Running: ${runtimeContext.counts.running}`,
-    `- In review: ${runtimeContext.counts.review}`,
-    `- Errors: ${runtimeContext.counts.error}`,
-    `- Manual review: ${runtimeContext.counts.manualReview}`,
-    `- Max parallel slots: ${runtimeContext.counts.maxParallel}`,
-    `- Backlog per slot: ${runtimeContext.counts.backlogPerSlot}`,
-    `- Idle slots: ${runtimeContext.counts.idleSlots}`,
-    "",
-    "Recent completed tasks:",
-    ...(runtimeContext.recentCompleted.length
-      ? runtimeContext.recentCompleted
-      : ["- (none recorded)"]),
-    "",
-    "Recently submitted tasks:",
-    ...(runtimeContext.recentSubmitted.length
-      ? runtimeContext.recentSubmitted
-      : ["- (none recorded)"]),
-    "",
-    "Recent commits:",
-    ...(runtimeContext.recentCommits.length
-      ? runtimeContext.recentCommits.map((line) => `- ${line}`)
-      : ["- (git log unavailable)"]),
-    "",
-    "Trigger details (JSON):",
-    "```json",
-    safeJsonBlock(runtimeContext.triggerDetails),
-    "```",
-    "",
-    "Previous planner state (JSON):",
-    "```json",
-    safeJsonBlock(runtimeContext.plannerState),
-    "```",
-    "",
-    "### Execution Rules",
-    "",
-    `1. Create at least ${numTasks} backlog tasks unless constrained by duplicate/overlap safeguards.`,
-    "2. Ensure each task title starts with one size label: [xs], [s], [m], [l], [xl], [xxl].",
-    "3. Every task description must include: problem, implementation steps, acceptance criteria, and verification plan.",
-    "4. Prioritize reliability and unblockers first when errors/review backlog is elevated.",
-    "5. Avoid duplicates with existing todo/inprogress/review tasks and open PRs.",
-    "6. Prefer task sets that can run in parallel with minimal file overlap.",
-    "7. **Module branch routing (important):** When a task's title follows conventional commit format",
-    "   `feat(module):` or `fix(module):`, ALWAYS set `base_branch` to `origin/<module>` in the JSON.",
-    "   This enables parallel branch-per-module execution where all work for a module accumulates on",
-    "   its dedicated branch and integrates upstream changes continuously.",
-    "   Examples: `feat(veid):` → `origin/veid`, `fix(market):` → `origin/market`.",
-    "   Do NOT set base_branch for cross-cutting tasks that modify many modules.",
-    "8. If a task should target a non-default epic/base branch for other reasons, include `base_branch` in the JSON task object.",
-    "9. Output MUST be exactly one fenced ```json code block with shape { \"tasks\": [...] } and no surrounding prose.",
-    "10. Each task object must include title, description, implementation_steps, acceptance_criteria, verification.",
-    "11. Do not output placeholder tasks. If uncertain, reduce scope but keep tasks executable.",].join("\n");
-}
-
-function normalizePlannerTitleForComparison(title) {
-  return String(title || "")
-    .toLowerCase()
-    .replace(/^\[[^\]]+\]\s*/, "")
-    .replace(/\s+/g, " ")
-    .trim();
-}
-
-function normalizePlannerTaskTitle(title, fallbackSize = "m") {
-  const trimmed = String(title || "").trim();
-  if (!trimmed) return null;
-  const hasSizePrefix = /^\[(xs|s|m|l|xl|xxl)\]\s+/i.test(trimmed);
-  if (hasSizePrefix) return trimmed;
-  return `[${fallbackSize}] ${trimmed}`;
-}
-
-function formatPlannerTaskDescription(task) {
-  const summary = String(task.description || task.summary || "").trim();
-  const implementationSteps = Array.isArray(task.implementation_steps)
-    ? task.implementation_steps
-    : Array.isArray(task.implementationSteps)
-      ? task.implementationSteps
-      : [];
-  const acceptanceCriteria = Array.isArray(task.acceptance_criteria)
-    ? task.acceptance_criteria
-    : Array.isArray(task.acceptanceCriteria)
-      ? task.acceptanceCriteria
-      : [];
-  const verificationPlan = Array.isArray(task.verification)
-    ? task.verification
-    : Array.isArray(task.verification_plan)
-      ? task.verification_plan
-      : Array.isArray(task.verificationPlan)
-        ? task.verificationPlan
-        : [];
-
-  const lines = [];
-  if (summary) {
-    lines.push(summary, "");
-  }
-  if (implementationSteps.length > 0) {
-    lines.push("## Implementation Steps", "");
-    for (const step of implementationSteps) {
-      lines.push(`- ${String(step || "").trim()}`);
-    }
-    lines.push("");
-  }
-  if (acceptanceCriteria.length > 0) {
-    lines.push("## Acceptance Criteria", "");
-    for (const criterion of acceptanceCriteria) {
-      lines.push(`- ${String(criterion || "").trim()}`);
-    }
-    lines.push("");
-  }
-  if (verificationPlan.length > 0) {
-    lines.push("## Verification", "");
-    for (const verificationStep of verificationPlan) {
-      lines.push(`- ${String(verificationStep || "").trim()}`);
-    }
-  }
-
-  const description = lines.join("\n").trim();
-  return description || "Planned by bosun task planner.";
-}
-
-function resolvePlannerTaskBaseBranch(task) {
-  if (!task) return null;
-  const directFields = [
-    "base_branch",
-    "baseBranch",
-    "target_branch",
-    "targetBranch",
-    "upstream_branch",
-    "upstreamBranch",
-    "upstream",
-    "base",
-    "target",
-  ];
-  for (const field of directFields) {
-    if (task[field]) return normalizeBranchName(task[field]);
-  }
-  if (task.metadata) {
-    for (const field of directFields) {
-      if (task.metadata[field]) return normalizeBranchName(task.metadata[field]);
-    }
-  }
-  if (task.meta) {
-    for (const field of directFields) {
-      if (task.meta[field]) return normalizeBranchName(task.meta[field]);
-    }
-  }
-  return null;
-}
-
-function parsePlannerTaskCollection(parsedValue) {
-  if (Array.isArray(parsedValue)) return parsedValue;
-  if (Array.isArray(parsedValue?.tasks)) return parsedValue.tasks;
-  if (Array.isArray(parsedValue?.backlog)) return parsedValue.backlog;
-  return [];
-}
-
-function extractPlannerTasksFromOutput(output, maxTasks) {
-  const text = String(output || "");
-  const candidates = [];
-  const fencedJsonPattern = /```json[^\n]*\n([\s\S]*?)```/gi;
-  let match = fencedJsonPattern.exec(text);
-  while (match) {
-    const candidate = String(match[1] || "").trim();
-    if (candidate) candidates.push(candidate);
-    match = fencedJsonPattern.exec(text);
-  }
-  const trimmed = text.trim();
-  if (trimmed.startsWith("{") || trimmed.startsWith("[")) {
-    candidates.push(trimmed);
-  }
-
-  const normalized = [];
-  const seenTitles = new Set();
-  const cap = Number.isFinite(maxTasks) && maxTasks > 0 ? maxTasks : Infinity;
-
-  for (const candidate of candidates) {
-    let parsed;
-    try {
-      parsed = JSON.parse(candidate);
-    } catch {
-      continue;
-    }
-    const tasks = parsePlannerTaskCollection(parsed);
-    if (!Array.isArray(tasks) || tasks.length === 0) continue;
-    for (const task of tasks) {
-      const title = normalizePlannerTaskTitle(task?.title, "m");
-      if (!title) continue;
-      const dedupKey = normalizePlannerTitleForComparison(title);
-      if (!dedupKey || seenTitles.has(dedupKey)) continue;
-      seenTitles.add(dedupKey);
-      normalized.push({
-        title,
-        description: formatPlannerTaskDescription(task),
-        baseBranch: resolvePlannerTaskBaseBranch(task),
-      });
-      if (normalized.length >= cap) return normalized;
-    }
-  }
-
-  return normalized;
-}
-
-async function materializePlannerTasksToKanban(tasks) {
-  const existingOpenTasks = getInternalTasksByStatus("todo");
-  const existingTitles = new Set(
-    (Array.isArray(existingOpenTasks) ? existingOpenTasks : [])
-      .map((task) => normalizePlannerTitleForComparison(task?.title))
-      .filter(Boolean),
-  );
-
-  const created = [];
-  const skipped = [];
-
-  for (const task of tasks) {
-    const dedupKey = normalizePlannerTitleForComparison(task.title);
-    if (!dedupKey) {
-      skipped.push({ title: task.title || "", reason: "invalid_title" });
-      continue;
-    }
-    if (existingTitles.has(dedupKey)) {
-      skipped.push({ title: task.title, reason: "duplicate_title" });
-      continue;
-    }
-    const baseBranch = task.baseBranch || task.base_branch || extractModuleBaseBranchFromTitle(task.title);
-    const executionOverride =
-      task.execution && typeof task.execution === "object" ? task.execution : {};
-    const plannerMeta = {
-      source: "task-planner",
-      plannerMode: "codex-sdk",
-      kind: "planned-task",
-      externalSyncPending: true,
-      createdAt: new Date().toISOString(),
-    };
-    const createdTask = addInternalTask({
-      id: randomUUID(),
-      title: task.title,
-      description: task.description,
-      status: "todo",
-      projectId: process.env.INTERNAL_EXECUTOR_PROJECT_ID || "internal",
-      ...(baseBranch ? { baseBranch } : {}),
-      syncDirty: true,
-      meta: {
-        planner: plannerMeta,
-        execution: {
-          sdk:
-            executionOverride.sdk && executionOverride.sdk !== "auto"
-              ? String(executionOverride.sdk).trim()
-              : undefined,
-          model:
-            executionOverride.model && executionOverride.model !== "auto"
-              ? String(executionOverride.model).trim()
-              : undefined,
-        },
-        ...(baseBranch ? { base_branch: baseBranch, baseBranch } : {}),
-      },
-    });
-    if (createdTask?.id) {
-      created.push({ id: createdTask.id, title: task.title });
-      existingTitles.add(dedupKey);
-    } else {
-      skipped.push({ title: task.title, reason: "create_failed" });
-    }
-  }
-
-  return { created, skipped };
-}
-
-function buildTaskPlannerStatusText(plannerState, reason = "interval") {
-  const now = Date.now();
-  const lastTriggered = plannerState?.last_triggered_at
-    ? formatElapsedMs(now - Date.parse(plannerState.last_triggered_at))
-    : "never";
-  const lastSuccess = plannerState?.last_success_at
-    ? formatElapsedMs(now - Date.parse(plannerState.last_success_at))
-    : "never";
-  return [
-    ":clipboard: Codex-Task-Planner Update",
-    `- Reason: ${reason}`,
-    `- Planner mode: ${plannerMode}`,
-    `- Trigger in progress: ${plannerTriggered ? "yes" : "no"}`,
-    `- Last triggered: ${lastTriggered}`,
-    `- Last success: ${lastSuccess}`,
-    `- Last trigger reason: ${plannerState?.last_trigger_reason || "n/a"}`,
-    `- Last trigger mode: ${plannerState?.last_trigger_mode || "n/a"}`,
-    plannerState?.last_error
-      ? `- Last error: ${truncateText(plannerState.last_error, 180)}`
-      : "- Last error: none",
-  ].join("\n");
-}
-
-async function publishTaskPlannerStatus(reason = "interval") {
-  if (!taskPlannerStatus.enabled || plannerMode === "disabled") return;
-  if (!telegramToken || !telegramChatId) return;
-  const state = (await readPlannerState()) || {};
-  const text = buildTaskPlannerStatusText(state, reason);
-  taskPlannerStatus.lastStatusAt = Date.now();
-  await sendTelegramMessage(text, {
-    dedupKey: `task-planner-status-${reason}-${plannerMode}`,
-    exactDedup: true,
-    skipDedup: reason === "interval",
-  });
-}
-
-function stopTaskPlannerStatusLoop() {
-  if (taskPlannerStatus.timer) {
-    clearInterval(taskPlannerStatus.timer);
-    taskPlannerStatus.timer = null;
-  }
-}
-
-function startTaskPlannerStatusLoop() {
-  stopTaskPlannerStatusLoop();
-  if (isWorkflowReplacingModule("monitor.mjs")) {
-    console.log("[monitor] skipping legacy task planner status loop — handled by workflow");
-    return;
-  }
-  taskPlannerStatus.enabled = isDevMode();
-  taskPlannerStatus.intervalMs = Math.max(
-    5 * 60_000,
-    Number(process.env.DEVMODE_TASK_PLANNER_STATUS_INTERVAL_MS || "1800000"),
-  );
-  if (!taskPlannerStatus.enabled || plannerMode === "disabled") return;
-  taskPlannerStatus.timer = setInterval(() => {
-    if (shuttingDown) return;
-    runDetached("task-planner-status:interval", () =>
-      publishTaskPlannerStatus("interval"),
-    );
-  }, taskPlannerStatus.intervalMs);
-  setTimeout(() => {
-    if (shuttingDown) return;
-    runDetached("task-planner-status:startup", () =>
-      publishTaskPlannerStatus("startup"),
-    );
-  }, 25_000);
-}
-
 // GitHub reconciler hooks are currently optional; keep shutdown/reload calls safe.
 function restartGitHubReconciler() {}
 function stopGitHubReconciler() {}
-
-async function maybeTriggerTaskPlanner(reason, details, options = {}) {
-  if (isWorkflowReplacingModule("monitor.mjs")) {
-    console.log("[monitor] skipping legacy task planner trigger — handled by workflow");
-    return;
-  }
-  if (internalTaskExecutor?.isPaused?.()) {
-    console.log("[monitor] task planner skipped: executor paused");
-    return;
-  }
-  if (plannerMode === "disabled") {
-    console.log(`[monitor] task planner skipped: mode=disabled`);
-    return;
-  }
-  if (plannerMode === "codex-sdk" && !codexEnabled) {
-    console.log(
-      `[monitor] task planner skipped: codex-sdk mode but Codex disabled`,
-    );
-    return;
-  }
-  if (plannerTriggered) {
-    console.log(`[monitor] task planner skipped: already running`);
-    return;
-  }
-  const now = Date.now();
-  const state = await readPlannerState();
-  if (isPlannerDeduped(state, now)) {
-    const lastAt = state?.last_triggered_at || "unknown";
-    console.log(
-      `[monitor] task planner skipped: deduped (last triggered ${lastAt})`,
-    );
-    return;
-  }
-  try {
-    const result = await triggerTaskPlanner(reason, details, options);
-    console.log(
-      `[monitor] task planner result: ${result?.status || "unknown"} (${reason})`,
-    );
-  } catch (err) {
-    // Auto-triggered planner failures are non-fatal — already logged/notified by triggerTaskPlanner
-    console.warn(
-      `[monitor] auto-triggered planner failed: ${err.message || err}`,
-    );
-  }
-}
 
 async function sendTelegramMessage(text, options = {}) {
   const targetChatId = options.chatId ?? telegramChatId;
@@ -9832,7 +9225,7 @@ async function sendTelegramMessage(text, options = {}) {
   // happens to contain words like "error" or "failed".
   // Orchestrator periodic updates contain counter labels like "Failed: 0" and
   // "error=0" which should NOT trigger error classification.
-  // Status updates (planner) contain "Last error: none" which
+  // Status updates contain "Last error: none" which
   // is informational, not an actual error.
   const isPositive =
     textLower.includes(":check:") ||
@@ -10533,7 +9926,6 @@ async function checkStatusMilestones() {
   };
 
   await evaluateTriggerTemplates(triggerContext);
-  const triggerSystemEnabled = Boolean(triggerSystemConfig?.enabled);
 
   // Fleet-aware backlog depth check: if fleet is active, check if we need
   // more tasks to keep all workstations busy
@@ -10544,17 +9936,7 @@ async function checkStatusMilestones() {
       bufferMultiplier: fleetConfig?.bufferMultiplier || 3,
     });
     if (depth.shouldGenerate && depth.deficit > 0) {
-      // Only coordinator triggers planner to avoid duplicates
-      if (isFleetCoordinator() && triggerSystemEnabled) {
-        await maybeTriggerTaskPlanner("fleet-deficit", {
-          backlogRemaining,
-          targetDepth: depth.targetDepth,
-          deficit: depth.deficit,
-          fleetSize: fleet.fleetSize,
-          totalSlots: fleet.totalSlots,
-          formula: depth.formula,
-        });
-      }
+      // Fleet deficit detected — trigger templates handle this now
     }
 
     // Maintenance mode detection
@@ -10584,77 +9966,7 @@ async function checkStatusMilestones() {
     await sendTelegramMessage(
       "All tasks completed. Orchestrator backlog is empty.",
     );
-    if (triggerSystemEnabled) {
-      await maybeTriggerTaskPlanner("backlog-empty", {
-        backlogRemaining,
-        backlogPerCapita,
-        running,
-        review,
-        error,
-        idleSlots,
-        maxParallel,
-      });
-    }
     return;
-  }
-
-  // Planner triggers: reset notification flags each cycle so we can
-  // re-trigger if conditions persist and dedup window has passed.
-  // The dedup state file prevents rapid re-triggering (default 6h).
-  const plannerConditionsMet =
-    backlogRemaining > 0 &&
-    Number.isFinite(backlogPerCapita) &&
-    backlogPerCapita < plannerPerCapitaThreshold;
-  const idleConditionsMet = idleSlots >= plannerIdleSlotThreshold;
-
-  if (plannerConditionsMet) {
-    if (!backlogLowNotified) {
-      backlogLowNotified = true;
-      await sendTelegramMessage(
-        `Backlog per-capita low: ${backlogRemaining} tasks for ${maxParallel} slots (${backlogPerCapita.toFixed(
-          2,
-        )} per slot). Triggering task planner.`,
-      );
-    }
-    if (triggerSystemEnabled) {
-      await maybeTriggerTaskPlanner("backlog-per-capita", {
-        backlogRemaining,
-        backlogPerCapita,
-        running,
-        review,
-        error,
-        idleSlots,
-        maxParallel,
-        threshold: plannerPerCapitaThreshold,
-      });
-    }
-    return;
-  } else {
-    // Conditions no longer met — reset so we re-notify next time
-    backlogLowNotified = false;
-  }
-
-  if (idleConditionsMet) {
-    if (!idleAgentsNotified) {
-      idleAgentsNotified = true;
-      await sendTelegramMessage(
-        `Agents idle: ${idleSlots} slot(s) available (running ${running}/${maxParallel}). Triggering task planner.`,
-      );
-    }
-    if (triggerSystemEnabled) {
-      await maybeTriggerTaskPlanner("idle-slots", {
-        backlogRemaining,
-        backlogPerCapita,
-        running,
-        review,
-        error,
-        idleSlots,
-        maxParallel,
-        threshold: plannerIdleSlotThreshold,
-      });
-    }
-  } else {
-    idleAgentsNotified = false;
   }
 }
 
@@ -10682,8 +9994,26 @@ function getTriggerTemplateState(state, templateId) {
   return map[templateId] || null;
 }
 
+async function readTriggerState() {
+  try {
+    const raw = await readFile(triggerStatePath, "utf8");
+    return JSON.parse(raw);
+  } catch {
+    return {};
+  }
+}
+
+async function writeTriggerState(state) {
+  try {
+    await mkdir(dirname(triggerStatePath), { recursive: true });
+    await writeFile(triggerStatePath, JSON.stringify(state, null, 2));
+  } catch {
+    /* best effort */
+  }
+}
+
 async function updateTriggerTemplateState(templateId, patch) {
-  const current = (await readPlannerState()) || {};
+  const current = (await readTriggerState()) || {};
   const templates =
     current.trigger_templates && typeof current.trigger_templates === "object"
       ? { ...current.trigger_templates }
@@ -10692,7 +10022,7 @@ async function updateTriggerTemplateState(templateId, patch) {
     ...(templates[templateId] || {}),
     ...patch,
   };
-  await writePlannerState({
+  await writeTriggerState({
     ...current,
     trigger_templates: templates,
   });
@@ -10703,7 +10033,7 @@ function resolveTemplateMinIntervalMs(template) {
   if (Number.isFinite(minIntervalMinutes) && minIntervalMinutes > 0) {
     return minIntervalMinutes * 60 * 1000;
   }
-  return plannerDedupMs;
+  return 6 * 60 * 60 * 1000; // 6 hour default
 }
 
 function evaluateTemplateCondition(condition, context, lastSuccessMs) {
@@ -10729,7 +10059,7 @@ async function evaluateTriggerTemplates(context) {
   const templates = Array.isArray(system.templates) ? system.templates : [];
   if (templates.length === 0) return;
 
-  const state = (await readPlannerState()) || {};
+  const state = (await readTriggerState()) || {};
 
   for (const template of templates) {
     if (!template || template.enabled !== true) continue;
@@ -10775,35 +10105,15 @@ async function evaluateTriggerTemplates(context) {
       const modelOverride =
         String(templateConfig.model || defaultModel || "auto").trim();
 
-      if (action === "task-planner") {
-        await maybeTriggerTaskPlanner(`trigger:${templateId}`, {
-          templateId,
-          ...context,
-        }, {
-          preferredMode:
-            templateConfig.plannerMode === "kanban" ||
-            templateConfig.plannerMode === "codex-sdk"
-              ? templateConfig.plannerMode
-              : undefined,
-          taskCount: Number(templateConfig.defaultTaskCount || 0) || undefined,
-          executorSdk:
-            executorOverride && executorOverride !== "auto"
-              ? executorOverride
-              : undefined,
-          model:
-            modelOverride && modelOverride !== "auto"
-              ? modelOverride
-              : undefined,
-        });
-      } else if (action === "create-task") {
+      if (action === "create-task") {
         const title = String(templateConfig.title || "").trim();
         if (!title) continue;
-        const dedup = normalizePlannerTitleForComparison(title);
+        const dedup = title.toLowerCase().replace(/[^a-z0-9]+/g, " ").trim();
         const existing = [
           ...(getInternalTasksByStatus("todo") || []),
           ...(getInternalTasksByStatus("inprogress") || []),
           ...(getInternalTasksByStatus("inreview") || []),
-        ].some((task) => normalizePlannerTitleForComparison(task?.title) === dedup);
+        ].some((task) => String(task?.title || "").toLowerCase().replace(/[^a-z0-9]+/g, " ").trim() === dedup);
         if (!existing) {
           addInternalTask({
             id: randomUUID(),
@@ -10850,455 +10160,6 @@ async function evaluateTriggerTemplates(context) {
       );
     }
   }
-}
-
-async function triggerTaskPlanner(
-  reason,
-  details,
-  {
-    taskCount,
-    userPrompt,
-    notify = true,
-    preferredMode,
-    allowCodexWhenDisabled = false,
-    executorSdk,
-    model,
-  } = {},
-) {
-  if (internalTaskExecutor?.isPaused?.()) {
-    return { status: "skipped", reason: "executor_paused" };
-  }
-  if (plannerMode === "disabled") {
-    return { status: "skipped", reason: "planner_disabled" };
-  }
-  if (plannerTriggered) {
-    return { status: "skipped", reason: "planner_busy" };
-  }
-
-  const requestedMode =
-    preferredMode === "kanban" || preferredMode === "codex-sdk"
-      ? preferredMode
-      : null;
-  const effectiveMode = requestedMode || plannerMode;
-
-  plannerTriggered = true;
-  await updatePlannerState({
-    last_triggered_at: new Date().toISOString(),
-    last_trigger_reason: reason || "manual",
-    last_trigger_details: details || null,
-    last_trigger_mode: effectiveMode,
-  });
-
-  try {
-    let result;
-    if (effectiveMode === "kanban") {
-      try {
-        result = await triggerTaskPlannerViaKanban(reason, details, {
-          taskCount,
-          userPrompt,
-          notify,
-          executorSdk,
-          model,
-        });
-      } catch (kanbanErr) {
-        const message = kanbanErr?.message || String(kanbanErr || "");
-        const backend = getActiveKanbanBackend();
-        const fallbackEligible =
-          codexEnabled &&
-          [
-            "cannot reach",
-            "no project found",
-            "gh cli failed",
-            "vk api",
-            "network error",
-          ].some((token) => message.toLowerCase().includes(token));
-
-        if (!fallbackEligible) {
-          throw kanbanErr;
-        }
-
-        console.warn(
-          `[monitor] task planner kanban path failed on backend=${backend}; falling back to codex-sdk: ${message}`,
-        );
-        if (notify) {
-          await sendTelegramMessage(
-            `:alert: Task planner kanban path failed on ${backend}; using codex fallback.\nReason: ${message}`,
-          );
-        }
-        result = await triggerTaskPlannerViaCodex(reason, details, {
-          taskCount,
-          userPrompt,
-          notify,
-          allowWhenDisabled: allowCodexWhenDisabled,
-          executorSdk,
-          model,
-        });
-      }
-    } else if (effectiveMode === "codex-sdk") {
-      try {
-        result = await triggerTaskPlannerViaCodex(reason, details, {
-          taskCount,
-          userPrompt,
-          notify,
-          allowWhenDisabled: allowCodexWhenDisabled,
-          executorSdk,
-          model,
-        });
-      } catch (codexErr) {
-        const codexMessage = codexErr?.message || String(codexErr || "");
-        const allowKanbanFallback =
-          requestedMode === "codex-sdk" && plannerMode === "kanban";
-
-        if (!allowKanbanFallback) {
-          throw codexErr;
-        }
-
-        console.warn(
-          `[monitor] task planner codex path failed; falling back to kanban planner mode: ${codexMessage}`,
-        );
-        if (notify) {
-          await sendTelegramMessage(
-            `:alert: Task planner codex path failed; trying kanban fallback.\nReason: ${codexMessage}`,
-          );
-        }
-
-        result = await triggerTaskPlannerViaKanban(reason, details, {
-          taskCount,
-          userPrompt,
-          notify,
-          executorSdk,
-          model,
-        });
-      }
-    } else {
-      throw new Error(`Unknown planner mode: ${effectiveMode}`);
-    }
-    runDetached("task-planner-status:trigger-success", () =>
-      publishTaskPlannerStatus("trigger-success"),
-    );
-    return result;
-  } catch (err) {
-    const message = err && err.message ? err.message : String(err);
-    await updatePlannerState({
-      last_error: message,
-      last_failure_at: new Date().toISOString(),
-      last_failure_reason: reason || "manual",
-    });
-    if (notify) {
-      await sendTelegramMessage(
-        `Task planner run failed (${effectiveMode}): ${message}`,
-      );
-    }
-    runDetached("task-planner-status:trigger-failed", () =>
-      publishTaskPlannerStatus("trigger-failed"),
-    );
-    throw err; // re-throw so callers (e.g. /plan command) know it failed
-  } finally {
-    plannerTriggered = false;
-  }
-}
-
-/**
- * Trigger the task planner by creating a kanban task — a real agent will
- * pick it up and plan the next phase of work.
- */
-async function triggerTaskPlannerViaKanban(
-  reason,
-  details,
-  { taskCount, userPrompt, notify = true, executorSdk, model } = {},
-) {
-  const defaultPlannerTaskCount = Number(
-    process.env.TASK_PLANNER_DEFAULT_COUNT || "30",
-  );
-  const numTasks =
-    taskCount && Number.isFinite(taskCount) && taskCount > 0
-      ? taskCount
-      : defaultPlannerTaskCount;
-  const plannerPrompt = agentPrompts.planner;
-  const plannerTaskSizeLabel = String(
-    process.env.TASK_PLANNER_TASK_SIZE_LABEL || "m",
-  ).toLowerCase();
-  const runtimeContext = await buildPlannerRuntimeContext(
-    reason,
-    details,
-    numTasks,
-  );
-
-  const desiredTitle = userPrompt
-    ? `[${plannerTaskSizeLabel}] Plan next tasks (${reason || "backlog-empty"}) — ${userPrompt.slice(0, 60)}${userPrompt.length > 60 ? "…" : ""}`
-    : `[${plannerTaskSizeLabel}] Plan next tasks (${reason || "backlog-empty"})`;
-  const desiredDescription = buildPlannerTaskDescription({
-    plannerPrompt,
-    reason,
-    numTasks,
-    runtimeContext,
-    userPrompt,
-  });
-
-  // Check for existing planner tasks to avoid duplicates
-  // Only block on TODO tasks whose title matches the exact format we create
-  const existingTasks = getInternalTasksByStatus("todo");
-  const existingPlanner = (
-    Array.isArray(existingTasks) ? existingTasks : []
-  ).find((t) => {
-    // Double-check status client-side
-    if (t.status && t.status !== "todo") return false;
-    const title = String(t.title || "").toLowerCase();
-    const normalizedTitle = title.replace(/^\[[^\]]+\]\s*/, "").trim();
-    // Only match the exact title format we create: "Plan next tasks (...)"
-    return (
-      normalizedTitle.startsWith("plan next tasks") ||
-      normalizedTitle.startsWith("plan next phase")
-    );
-  });
-  if (existingPlanner) {
-    console.log(
-      `[monitor] task planner task already exists in backlog — skipping: "${existingPlanner.title}" (${existingPlanner.id})`,
-    );
-    // Best-effort: keep backlog task aligned with current requirements
-    // Update description if the backend supports it, so the agent gets fresh context
-    try {
-      await updateKanbanTask(existingPlanner.id, {
-        description: desiredDescription,
-      });
-      console.log(
-        `[monitor] updated description of existing planner task: "${existingPlanner.title}" (${existingPlanner.id})`,
-      );
-    } catch (updateErr) {
-      // Not all backends support partial description updates — log and continue
-      console.log(
-        `[monitor] could not update existing planner task description (${updateErr.message || updateErr}) — skipping`,
-      );
-    }
-
-    const taskUrl = null;
-    if (notify) {
-      const suffix = taskUrl ? `\n${taskUrl}` : "";
-      await sendTelegramMessage(
-        `:clipboard: Task planner skipped — existing planning task found.${suffix}`,
-      );
-    }
-    await updatePlannerState({
-      last_success_at: new Date().toISOString(),
-      last_success_reason: reason || "manual",
-      last_error: null,
-      last_result: "existing_planner_task",
-    });
-    return {
-      status: "skipped",
-      reason: "existing_planner_task",
-      taskId: existingPlanner.id,
-      taskTitle: existingPlanner.title,
-      taskUrl,
-      projectId: process.env.INTERNAL_EXECUTOR_PROJECT_ID || "internal",
-    };
-  }
-
-  const taskData = {
-    title: desiredTitle,
-    description: desiredDescription,
-    status: "todo",
-  };
-
-  const createdTask = addInternalTask({
-    id: randomUUID(),
-    title: taskData.title,
-    description: taskData.description,
-    status: "todo",
-    projectId: process.env.INTERNAL_EXECUTOR_PROJECT_ID || "internal",
-    syncDirty: true,
-    meta: {
-      planner: {
-        source: "task-planner",
-        plannerMode: "kanban",
-        kind: "planner-request",
-        triggerReason: reason || "manual",
-        externalSyncPending: true,
-        createdAt: new Date().toISOString(),
-      },
-      execution: {
-        sdk:
-          executorSdk && executorSdk !== "auto" ? String(executorSdk).trim() : undefined,
-        model: model && model !== "auto" ? String(model).trim() : undefined,
-      },
-    },
-  });
-
-  if (createdTask && createdTask.id) {
-    console.log(`[monitor] task planner task created: ${createdTask.id}`);
-    await updatePlannerState({
-      last_success_at: new Date().toISOString(),
-      last_success_reason: reason || "manual",
-      last_error: null,
-      last_result: "kanban_task_created",
-    });
-    const createdId = createdTask.id;
-    const createdUrl = null;
-    if (notify) {
-      const suffix = createdUrl ? `\n${createdUrl}` : "";
-      await sendTelegramMessage(
-        `:clipboard: Task planner: created task for next phase planning (${reason}).${suffix}`,
-      );
-    }
-    return {
-      status: "created",
-      taskId: createdId,
-      taskTitle: taskData.title,
-      taskUrl: createdUrl,
-      projectId: process.env.INTERNAL_EXECUTOR_PROJECT_ID || "internal",
-    };
-  }
-  throw new Error("Task creation failed");
-}
-
-/**
- * Trigger the task planner via Codex SDK — runs the planner prompt directly
- * in an in-process Codex thread.
- */
-async function triggerTaskPlannerViaCodex(
-  reason,
-  details,
-  {
-    taskCount,
-    userPrompt,
-    notify = true,
-    allowWhenDisabled = false,
-    executorSdk,
-    model,
-  } = {},
-) {
-  if (!codexEnabled && !allowWhenDisabled) {
-    throw new Error(
-      "Codex SDK disabled — use TASK_PLANNER_MODE=kanban instead",
-    );
-  }
-  notifyCodexTrigger("task planner run");
-  if (!CodexClient) {
-    CodexClient = await loadCodexSdk();
-  }
-  if (!CodexClient) {
-    throw new Error("Codex SDK not available");
-  }
-  const numTasks =
-    taskCount && Number.isFinite(taskCount) && taskCount > 0
-      ? taskCount
-      : Number(process.env.TASK_PLANNER_DEFAULT_COUNT || "30");
-  const runtimeContext = await buildPlannerRuntimeContext(
-    reason,
-    details,
-    numTasks,
-  );
-  const agentPrompt = agentPrompts.planner;
-  const codexOpts = buildCodexSdkOptionsForMonitor();
-  const codex = new CodexClient(codexOpts);
-  const threadOpts = { skipGitRepoCheck: true, workingDirectory: repoRoot, approvalPolicy: "never" };
-  console.log(`[monitor] task planner codex: cwd=${process.cwd()}, workingDir=${repoRoot}, skipGitRepoCheck=true`);
-  const thread = codex.startThread(threadOpts);
-  const prompt = [
-    agentPrompt,
-    "",
-    "## Execution Context",
-    `- Trigger reason: ${reason || "manual"}`,
-    `- Requested task count: ${numTasks}`,
-    ...(userPrompt
-      ? [
-          "",
-          "## User Planning Prompt",
-          "",
-          userPrompt,
-          "",
-          "Incorporate the above user prompt into any relevant planning decisions.",
-        ]
-      : []),
-    "",
-    "Context JSON:",
-    "```json",
-    safeJsonBlock(runtimeContext),
-    "```",
-    "",
-    "Produce the planning output now. Do not call any external task APIs.",
-    "Return a strict JSON code block with the tasks payload required by the prompt.",
-  ].join("\n");
-  const result = await thread.run(prompt);
-  const outPath = resolve(logDir, `task-planner-${nowStamp()}.md`);
-  const output = formatCodexResult(result);
-  await writeFile(outPath, output, "utf8");
-  const parsedTasks = extractPlannerTasksFromOutput(output, numTasks);
-  if (parsedTasks.length === 0) {
-    throw new Error(
-      "Task planner output did not contain parseable JSON tasks; expected a fenced ```json block with a tasks array",
-    );
-  }
-
-  const plannerArtifactDir = resolve(repoRoot, ".bosun", ".cache");
-  await mkdir(plannerArtifactDir, { recursive: true });
-  const artifactPath = resolve(
-    plannerArtifactDir,
-    `task-planner-${nowStamp()}.tasks.json`,
-  );
-  await writeFile(
-    artifactPath,
-    JSON.stringify(
-      {
-        generated_at: new Date().toISOString(),
-        trigger_reason: reason || "manual",
-        requested_task_count: numTasks,
-        parsed_task_count: parsedTasks.length,
-        tasks: parsedTasks,
-      },
-      null,
-      2,
-    ),
-    "utf8",
-  );
-
-  const { created, skipped } = await materializePlannerTasksToKanban(
-    parsedTasks.map((task) => ({
-      ...task,
-      execution: {
-        sdk:
-          executorSdk && executorSdk !== "auto"
-            ? String(executorSdk).trim()
-            : undefined,
-        model: model && model !== "auto" ? String(model).trim() : undefined,
-      },
-    })),
-  );
-
-  if (created.length === 0) {
-    throw new Error(
-      `Task planner parsed ${parsedTasks.length} tasks but created 0 tasks after dedup/materialization`,
-    );
-  }
-
-  console.log(`[monitor] task planner output saved: ${outPath}`);
-  console.log(
-    `[monitor] task planner artifact saved: ${artifactPath} (parsed=${parsedTasks.length}, created=${created.length}, skipped=${skipped.length})`,
-  );
-  await updatePlannerState({
-    last_success_at: new Date().toISOString(),
-    last_success_reason: reason || "manual",
-    last_error: null,
-    last_result: `codex_planner_completed:${created.length}`,
-  });
-  if (notify) {
-    await sendTelegramMessage(
-      `:clipboard: Task planner run completed (${reason || "manual"}). Created ${created.length}/${parsedTasks.length} tasks.${
-        skipped.length > 0
-          ? ` Skipped ${skipped.length} duplicates/failed.`
-          : ""
-      }\nOutput: ${outPath}\nArtifact: ${artifactPath}`,
-    );
-  }
-  return {
-    status: "completed",
-    outputPath: outPath,
-    artifactPath,
-    projectId: process.env.INTERNAL_EXECUTOR_PROJECT_ID || "internal",
-    parsedTaskCount: parsedTasks.length,
-    createdTaskCount: created.length,
-    skippedTaskCount: skipped.length,
-  };
 }
 
 async function ensureLogDir() {
@@ -11724,20 +10585,8 @@ async function handleExit(code, signal, logPath) {
       logText.includes("All tasks completed");
 
     if (isEmptyBacklog) {
-      if (triggerSystemConfig?.enabled) {
-        console.log(
-          "[monitor] clean exit with empty backlog — triggering task planner",
-        );
-        await maybeTriggerTaskPlanner("backlog-empty-exit", {
-          reason: "Orchestrator exited cleanly with empty backlog",
-        });
-      }
-      // Wait before restarting so the planner has time to create tasks
-      const plannerWaitMs = 2 * 60 * 1000; // 2 minutes
-      console.log(
-        `[monitor] waiting ${plannerWaitMs / 1000}s for planner before restart`,
-      );
-      setTimeout(startProcess, plannerWaitMs);
+      console.log("[monitor] clean exit with empty backlog — restarting");
+      setTimeout(startProcess, 5000);
       return;
     }
 
@@ -12210,7 +11059,6 @@ async function startProcess() {
           void sendTelegramMessage(
             "All tasks completed. Orchestrator backlog is empty.",
           );
-          void triggerTaskPlanner();
         }
       }
     }
@@ -12428,7 +11276,6 @@ function selfRestartForSourceChange(
       ),
     );
   }
-  stopTaskPlannerStatusLoop();
   stopAutoUpdateLoop();
   stopAgentAlertTailer();
   stopAgentWorkAnalyzer();
@@ -12848,10 +11695,6 @@ function applyConfig(nextConfig, options = {}) {
     );
   }
   executorMode = nextConfig.executorMode || getExecutorMode();
-  plannerPerCapitaThreshold = nextConfig.plannerPerCapitaThreshold;
-  plannerIdleSlotThreshold = nextConfig.plannerIdleSlotThreshold;
-  plannerDedupMs = nextConfig.plannerDedupMs;
-  plannerMode = nextConfig.plannerMode || "codex-sdk";
   workflowAutomationEnabled = parseEnvBoolean(
     process.env.WORKFLOW_AUTOMATION_ENABLED,
     workflowAutomationEnabled,
@@ -12979,12 +11822,6 @@ function applyConfig(nextConfig, options = {}) {
     shellState.rl.close();
   }
 
-  if (plannerMode !== "disabled") {
-    startTaskPlannerStatusLoop();
-  } else {
-    stopTaskPlannerStatusLoop();
-  }
-
   const nextArgs = scriptArgs?.join(" ") || "";
   const scriptChanged = prevScriptPath !== scriptPath || prevArgs !== nextArgs;
   if (restartIfChanged && scriptChanged) {
@@ -13016,7 +11853,6 @@ async function reloadConfig(reason) {
 process.on("SIGINT", async () => {
   shuttingDown = true;
   stopWorkspaceSyncTimers();
-  stopTaskPlannerStatusLoop();
   if (vkLogStream) {
     vkLogStream.stop();
     vkLogStream = null;
@@ -13067,7 +11903,6 @@ process.on("SIGINT", async () => {
 process.on("exit", () => {
   shuttingDown = true;
   stopWorkspaceSyncTimers();
-  stopTaskPlannerStatusLoop();
   stopAgentAlertTailer();
   stopAgentWorkAnalyzer();
   if (vkLogStream) {
@@ -13081,7 +11916,6 @@ process.on("exit", () => {
 process.on("SIGTERM", async () => {
   shuttingDown = true;
   stopWorkspaceSyncTimers();
-  stopTaskPlannerStatusLoop();
   if (vkLogStream) {
     vkLogStream.stop();
     vkLogStream = null;
@@ -13678,7 +12512,7 @@ try {
   configureTaskStore({
     storePath: resolve(monitorStateCacheDir, "kanban-state.json"),
   });
-  console.log(`[monitor] planner state path: ${plannerStatePath}`);
+  console.log(`[monitor] trigger state path: ${triggerStatePath}`);
   console.log(`[monitor] task store path: ${getStorePath()}`);
   loadTaskStore();
   console.log("[monitor] internal task store loaded");
@@ -14299,7 +13133,6 @@ void restoreLiveDigest()
 // ── Start agent work analyzer and alert tailer ─────────────────────────────
 startAgentWorkAnalyzer();
 startAgentAlertTailer();
-startTaskPlannerStatusLoop();
 
 // ── Two-way Telegram :workflow: primary agent ────────────────────────────────────────
 injectMonitorFunctions({
@@ -14315,7 +13148,6 @@ injectMonitorFunctions({
   attemptFreshSessionRetry,
   buildRetryPrompt,
   getActiveAttemptInfo,
-  triggerTaskPlanner,
   reconcileTaskStatuses,
   getAnomalyReport: () => getAnomalyStatusReport(),
   getInternalExecutor: () => internalTaskExecutor,
@@ -14471,7 +13303,6 @@ export {
   appendKnowledgeEntry,
   buildKnowledgeEntry,
   formatKnowledgeSummary,
-  extractPlannerTasksFromOutput,
   formatCodexResult,
   // Container runner re-exports
   getContainerStatus,
