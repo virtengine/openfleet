@@ -2122,6 +2122,12 @@ function VoiceEndpointsEditor() {
     fetchOAuthStatuses();
   }, [normalizeEp, fetchOAuthStatuses]);
 
+  useEffect(() => {
+    const key = "settings-voice-endpoints";
+    setPendingChange(key, dirty);
+    return () => clearPendingChange(key);
+  }, [dirty]);
+
   const addEndpoint = useCallback(() => {
     setEndpoints((prev) => {
       const next = [
@@ -2464,6 +2470,12 @@ function VoiceProvidersEditor() {
       }
     })();
   }, [normalizeProvider]);
+
+  useEffect(() => {
+    const key = "settings-voice-providers";
+    setPendingChange(key, dirty);
+    return () => clearPendingChange(key);
+  }, [dirty]);
 
   const addProvider = useCallback(() => {
     if (providers.length >= 5) return;
@@ -3081,14 +3093,3 @@ export function SettingsTab() {
     </div>
   `;
 }
-  useEffect(() => {
-    const key = "settings-voice-endpoints";
-    setPendingChange(key, dirty);
-    return () => clearPendingChange(key);
-  }, [dirty]);
-
-  useEffect(() => {
-    const key = "settings-voice-providers";
-    setPendingChange(key, dirty);
-    return () => clearPendingChange(key);
-  }, [dirty]);
