@@ -1361,6 +1361,30 @@
 
 .thinking-group-body-wrap.expanded .thinking-group-body {
   padding: 6px;
+  max-height: min(50vh, 480px);
+  overflow-y: auto;
+  overflow-x: hidden;
+  overscroll-behavior: contain;
+  -webkit-overflow-scrolling: touch;
+  scrollbar-width: thin;
+  scrollbar-color: rgba(255, 255, 255, 0.12) transparent;
+}
+
+.thinking-group-body-wrap.expanded .thinking-group-body::-webkit-scrollbar {
+  width: 6px;
+}
+
+.thinking-group-body-wrap.expanded .thinking-group-body::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.thinking-group-body-wrap.expanded .thinking-group-body::-webkit-scrollbar-thumb {
+  background: rgba(255, 255, 255, 0.12);
+  border-radius: 3px;
+}
+
+.thinking-group-body-wrap.expanded .thinking-group-body::-webkit-scrollbar-thumb:hover {
+  background: rgba(255, 255, 255, 0.2);
 }
 
 /* ─── Active (processing) thinking group ─── */
