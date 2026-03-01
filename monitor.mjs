@@ -9751,6 +9751,10 @@ function startTaskPlannerStatusLoop() {
   }, 25_000);
 }
 
+// GitHub reconciler hooks are currently optional; keep shutdown/reload calls safe.
+function restartGitHubReconciler() {}
+function stopGitHubReconciler() {}
+
 async function maybeTriggerTaskPlanner(reason, details, options = {}) {
   if (isWorkflowReplacingModule("monitor.mjs")) {
     console.log("[monitor] skipping legacy task planner trigger — handled by workflow");

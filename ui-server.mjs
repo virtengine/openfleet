@@ -1,5 +1,5 @@
 import { execSync, spawn, spawnSync } from "node:child_process";
-import { argon2, createHash, createHmac, randomBytes, timingSafeEqual, X509Certificate } from "node:crypto";
+import * as nodeCrypto from "node:crypto";
 import { existsSync, mkdirSync, readFileSync, chmodSync, createWriteStream, createReadStream, writeFileSync, unlinkSync, watchFile, unwatchFile } from "node:fs";
 import { open, readFile, readdir, stat, writeFile } from "node:fs/promises";
 import { createServer } from "node:http";
@@ -12,6 +12,16 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 import { createRequire } from "node:module";
 import { arch as osArch, platform as osPlatform } from "node:os";
 import Ajv2020 from "ajv/dist/2020.js";
+
+const {
+  createHash,
+  createHmac,
+  randomBytes,
+  timingSafeEqual,
+  X509Certificate,
+  argon2: nodeArgon2,
+} = nodeCrypto;
+const argon2 = typeof nodeArgon2 === "function" ? nodeArgon2 : null;
 
 function getLocalLanIp() {
   const nets = networkInterfaces();

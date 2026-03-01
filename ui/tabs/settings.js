@@ -1784,7 +1784,7 @@ function AppPreferencesMode() {
 
 
     <!-- ─── Account ─── -->
-    <${Collapsible} title=${iconText(":user: Account")} defaultOpen=${true}>
+    <${Collapsible} title=${iconText(":users: Account")} defaultOpen=${true}>
       <${Card}>
         <div class="settings-row">
           ${user?.photo_url &&
@@ -2025,7 +2025,7 @@ function AppPreferencesMode() {
     <//>
 
     <!-- ─── About ─── -->
-    <${Collapsible} title=":help: About" defaultOpen=${false}>
+    <${Collapsible} title=${iconText(":help: About")} defaultOpen=${false}>
       <${Card}>
         <div style="text-align:center;padding:12px 0">
           <div style="font-size:18px;font-weight:700;margin-bottom:4px">

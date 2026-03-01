@@ -105,8 +105,16 @@ function normalizeDispatchTaskChoices(tasks) {
   return deduped.sort((a, b) => taskSortScore(b) - taskSortScore(a));
 }
 
-function fleetSlotKey(index) {
-  return `slot-${index}`;
+function fleetSlotKey(index, slot) {
+  const taskId = String(slot?.taskId || "").trim() || "na";
+  const sessionId = String(slot?.sessionId || "").trim() || "na";
+  return `slot-${index}:${taskId}:${sessionId}`;
+}
+
+function fleetThreadKey(thread, index) {
+  const taskKey = String(thread?.taskKey || "").trim() || "na";
+  const id = String(thread?.id || "").trim() || "na";
+  return `thread-${index}:${taskKey}:${id}`;
 }
 
 /* ─── Workspace Viewer Modal ─── */
@@ -587,7 +595,7 @@ function WorkspaceViewer({ agent, onClose }) {
                   setStreamSnapshot({ events: [], fileAccess: null, capturedAt: null });
                 }
               }}>
-                ${streamPaused ? ":play: Resume" : ":pause: Pause"}
+                ${iconText(streamPaused ? ":play: Resume" : ":pause: Pause")}
               </button>
               <button
                 class="btn btn-ghost btn-sm"
@@ -1385,7 +1393,7 @@ export function AgentsTab() {
                   const st = slot ? slot.status || "busy" : "idle";
                   return html`
                     <div
-                      key=${fleetSlotKey(i)}
+                      key=${fleetSlotKey(i, slot)}
                       class="slot-cell slot-${st}"
                       title=${slot
                         ? `${slot.taskTitle || slot.taskId} (${st})`
@@ -1420,7 +1428,7 @@ export function AgentsTab() {
                 ? slots.map(
                     (slot, i) => html`
                     <div
-                      key=${slot?.taskId || slot?.sessionId || `slot-${i}`}
+                      key=${fleetSlotKey(i, slot)}
                       class="task-card fleet-agent-card ${expandedSlot === i
                         ? "task-card-expanded"
                         : ""}"
@@ -1532,8 +1540,7 @@ export function AgentsTab() {
       <//>
       </div>
 
-      <div class="fleet-span">
-        ${agents.length > 0 &&
+      ${agents.length > 0 &&
       html`
         <div class="fleet-span">
           <${Collapsible} title="Agent Threads" defaultOpen=${false}>
@@ -1542,7 +1549,7 @@ export function AgentsTab() {
                 ${agents.map(
                   (t, i) => html`
                     <${StatCard}
-                      key=${t.taskKey || t.id || `thread-${i}`}
+                      key=${fleetThreadKey(t, i)}
                       value=${t.turnCount || 0}
                       label="${truncate(t.taskKey || `Thread ${i}`, 20)} (${t.sdk ||
                       "?"})"
@@ -1810,7 +1817,7 @@ function FleetSessionsPanel({ slots, onOpenWorkspace, onForceStop }) {
             return s?.taskId === slot.taskId || s?.id === slot.taskId;
           }) ||
           null;
-        const key = String(slot?.taskId || slot?.sessionId || `slot-${index}`);
+        const key = fleetSlotKey(index, slot);
         return { key, slot, index, session };
       })
       .sort((a, b) => {

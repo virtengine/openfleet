@@ -740,8 +740,8 @@ const AGENT_SELECTOR_STYLES = `
   padding: 0 13px;
   border: none;
   border-radius: 8px 0 0 8px;
-  background: var(--tg-theme-button-color, #3b82f6);
-  color: var(--tg-theme-button-text-color, #fff);
+  background: var(--accent, var(--tg-theme-button-color, #3b82f6));
+  color: var(--accent-text, var(--tg-theme-button-text-color, #fff));
   cursor: pointer;
   font-size: 15px;
   transition: background 0.2s ease, opacity 0.2s ease;
@@ -752,7 +752,7 @@ const AGENT_SELECTOR_STYLES = `
   cursor: not-allowed;
 }
 .chat-send-main:not(:disabled):hover {
-  background: #2563eb;
+  background: var(--accent-hover, #2563eb);
 }
 .chat-send-chevron {
   display: flex;
@@ -761,10 +761,10 @@ const AGENT_SELECTOR_STYLES = `
   height: 36px;
   width: 22px;
   border: none;
-  border-left: 1px solid rgba(255,255,255,0.2);
+  border-left: 1px solid var(--border, rgba(255,255,255,0.2));
   border-radius: 0 8px 8px 0;
-  background: var(--tg-theme-button-color, #3b82f6);
-  color: rgba(255,255,255,0.85);
+  background: var(--accent, var(--tg-theme-button-color, #3b82f6));
+  color: var(--accent-text, rgba(255,255,255,0.85));
   cursor: pointer;
   font-size: 10px;
   transition: background 0.2s ease, opacity 0.2s ease;
@@ -776,8 +776,8 @@ const AGENT_SELECTOR_STYLES = `
   cursor: not-allowed;
 }
 .chat-send-chevron:not(:disabled):hover {
-  background: #2563eb;
-  color: #fff;
+  background: var(--accent-hover, #2563eb);
+  color: var(--accent-text, #fff);
 }
 
 /* ── Send Options Dropdown ── */

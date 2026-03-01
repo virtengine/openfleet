@@ -29,6 +29,15 @@ const ROUTE_TABS = new Set([
   "settings",
 ]);
 
+function getParentTab(tabId) {
+  const tab = TAB_CONFIG.find((entry) => entry.id === tabId);
+  return tab?.parent || null;
+}
+
+function hasBackTarget(tabId = activeTab.value) {
+  return tabHistory.length > 0 || Boolean(getParentTab(tabId));
+}
+
 function normalizePath(path) {
   const raw = String(path || "/").trim();
   if (!raw) return "/";
@@ -169,8 +178,8 @@ export function navigateTo(tab, opts = {}) {
     }
   } catch { /* analytics failure must never break navigation */ }
 
-  // Show Telegram BackButton when there is history
-  if (tabHistory.length > 0) {
+  // Show Telegram BackButton when there is history or a parent tab fallback.
+  if (hasBackTarget(tab)) {
     showBackButton(goBack);
   } else {
     hideBackButton();
@@ -188,13 +197,22 @@ if (typeof globalThis !== "undefined") {
  */
 export function goBack() {
   const prev = tabHistory.pop();
-  if (prev) {
+  const fallbackParent = getParentTab(activeTab.value);
+  const targetTab = prev || fallbackParent;
+  if (targetTab) {
     haptic("light");
-    activeTab.value = prev;
+    activeTab.value = targetTab;
     routeParams.value = {};
-    refreshTab(prev);
+    refreshTab(targetTab);
+    if (typeof window !== "undefined" && window.history?.replaceState) {
+      window.history.replaceState(
+        { tab: targetTab, params: {} },
+        "",
+        buildPath(targetTab, {}),
+      );
+    }
   }
-  if (tabHistory.length === 0) {
+  if (!hasBackTarget()) {
     hideBackButton();
   }
 }
@@ -262,6 +280,8 @@ if (typeof window !== "undefined") {
         skipGuard: true,
       });
     });
+    if (hasBackTarget(initial.tab)) showBackButton(goBack);
+    else hideBackButton();
   } catch {
     /* noop */
   }

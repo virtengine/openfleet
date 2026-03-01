@@ -229,7 +229,11 @@ function normalizeVoiceProviderChain(rawProviders, primaryProvider) {
   }
 
   if (primaryProvider && VALID_VOICE_PROVIDERS.has(primaryProvider)) {
-    if (!dedup.has(primaryProvider)) {
+    const existingIndex = chain.findIndex((entry) => entry.provider === primaryProvider);
+    if (existingIndex > 0) {
+      const [entry] = chain.splice(existingIndex, 1);
+      chain.unshift(entry);
+    } else if (existingIndex === -1) {
       chain.unshift({
         provider: primaryProvider,
         model: null,
@@ -653,13 +657,17 @@ export function getVoiceConfig(forceReload = false) {
   const cfg = loadConfig();
   const voice = cfg.voice || {};
 
-  // Provider priority: config > env > key autodetect.
+  // Provider priority: env > config > key autodetect.
   // "auto" resolves to azure/openai/claude/gemini/fallback based on available credentials.
   const rawProvider = String(
-    voice.provider || process.env.VOICE_PROVIDER || "auto",
+    process.env.VOICE_PROVIDER || voice.provider || "auto",
   )
     .trim()
     .toLowerCase();
+  const hasExplicitEnvProvider = Boolean(
+    process.env.VOICE_PROVIDER
+    && String(process.env.VOICE_PROVIDER).trim().toLowerCase() !== "auto",
+  );
 
   // API keys
   const openaiOAuthToken =
@@ -722,10 +730,9 @@ export function getVoiceConfig(forceReload = false) {
 
   const provider = rawProvider === "auto" ? autoProvider : rawProvider;
 
-  const providerChain = normalizeVoiceProviderChain(
-    voice.providers || process.env.VOICE_PROVIDERS || [],
-    provider,
-  );
+  const rawProviderChain = process.env.VOICE_PROVIDERS
+    || (hasExplicitEnvProvider ? [] : (voice.providers || []));
+  const providerChain = normalizeVoiceProviderChain(rawProviderChain, provider);
   const providerChainWithFallbacks = getProviderChainWithCredentialFallbacks(providerChain, {
     openaiAvailable,
     azureAvailable,
