@@ -1479,8 +1479,13 @@ async function handleVoiceEndpointTest(body) {
         return { ok: false, error: "Azure API key is required" };
       }
       const base = String(azureEndpoint).replace(/\/+$/, "");
-      // Use deployments list endpoint — works for all models regardless of GA/preview status
-      testUrl = `${base}/openai/deployments?api-version=2025-04-01-preview`;
+      // Single-deployment GET only requires Cognitive Services User role.
+      // Listing all deployments (GET /openai/deployments) requires Contributor —
+      // most restricted API keys lack this and return 403 "Missing scopes: api.model.read".
+      const dep = String(deployment || "").trim();
+      testUrl = dep
+        ? `${base}/openai/deployments/${encodeURIComponent(dep)}?api-version=2025-04-01-preview`
+        : `${base}/openai/models?api-version=2025-04-01-preview`;
       headers["api-key"] = apiKey;
     } else if (normalizedProvider === "claude") {
       testUrl = "https://api.anthropic.com/v1/models";
@@ -1539,6 +1544,10 @@ async function handleVoiceEndpointTest(body) {
       error = parsed?.error?.message || parsed?.error || error;
     } catch {
       // Keep generic HTTP status message.
+    }
+    // Friendly message when the deployment name itself is not found (key is fine)
+    if (resp.status === 404 && deployment) {
+      error = `Deployment "${deployment}" not found — check deployment name in Azure AI Foundry`;
     }
     return { ok: false, error, latencyMs };
   } catch (err) {

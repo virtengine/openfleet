@@ -9360,9 +9360,13 @@ async function handleApi(req, res, url) {
             return;
           }
           const base = azureEndpoint.replace(/\/+$/, "");
-          const dep = deployment || "gpt-4o-realtime-preview";
-          // Use the deployments list endpoint — works for all models regardless of GA/preview status
-          testUrl = `${base}/openai/deployments?api-version=2025-04-01-preview`;
+          // Single-deployment GET only requires Cognitive Services User role.
+          // Listing all deployments (GET /openai/deployments) requires Contributor —
+          // most restricted API keys lack this and return 403 "Missing scopes: api.model.read".
+          const dep = String(deployment || "").trim();
+          testUrl = dep
+            ? `${base}/openai/deployments/${encodeURIComponent(dep)}?api-version=2025-04-01-preview`
+            : `${base}/openai/models?api-version=2025-04-01-preview`;
           if (apiKey) headers["api-key"] = apiKey;
           else {
             jsonResponse(res, 400, { ok: false, error: "Azure API key is required" });
@@ -9419,24 +9423,16 @@ async function handleApi(req, res, url) {
         clearTimeout(timer);
         const latencyMs = Date.now() - start;
         if (resp.ok || resp.status === 200) {
-          // For Azure, verify the specific deployment exists in the list
-          if (provider === "azure" && deployment) {
-            try {
-              const body = await resp.json();
-              const deployments = body.data || body.value || [];
-              const found = deployments.some((d) => d.id === deployment || d.model === deployment);
-              if (!found && deployments.length > 0) {
-                const available = deployments.map((d) => d.id || d.model).filter(Boolean).join(", ");
-                jsonResponse(res, 200, { ok: false, error: `Deployment "${deployment}" not found. Available: ${available}`, latencyMs });
-                return;
-              }
-            } catch (_) { /* if we can't parse, connection still succeeded */ }
-          }
+          // Single-deployment GET: a 200 means both key and deployment are valid.
           jsonResponse(res, 200, { ok: true, latencyMs });
         } else {
           const text = await resp.text().catch(() => "");
           let errMsg = `HTTP ${resp.status}`;
           try { const j = JSON.parse(text); errMsg = j.error?.message || j.error || errMsg; } catch (_) { /* ignore */ }
+          // Friendly message when the deployment name itself is not found (key is fine)
+          if (resp.status === 404 && deployment) {
+            errMsg = `Deployment "${deployment}" not found — check deployment name in Azure AI Foundry`;
+          }
           jsonResponse(res, 200, { ok: false, error: errMsg, latencyMs });
         }
       } catch (fetchErr) {
