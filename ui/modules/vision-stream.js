@@ -29,6 +29,65 @@ let _context = {
   jpegQuality: 0.65,
 };
 
+function isLocalhostLikeHost() {
+  const host = String(globalThis?.location?.hostname || "").trim().toLowerCase();
+  return host === "localhost" || host === "127.0.0.1" || host === "::1";
+}
+
+function isSecureOrLocalhost() {
+  return Boolean(globalThis?.isSecureContext) || isLocalhostLikeHost();
+}
+
+function isLikelyEmbeddedWebView() {
+  const ua = String(globalThis?.navigator?.userAgent || "").toLowerCase();
+  return /telegram|tgweb|wv;|webview|fb_iab|instagram/.test(ua);
+}
+
+export function supportsVisionSource(source = "screen") {
+  const normalized = normalizeSource(source);
+  const mediaDevices = globalThis?.navigator?.mediaDevices;
+  if (!mediaDevices) return false;
+  if (!isSecureOrLocalhost()) return false;
+  if (normalized === "screen") return typeof mediaDevices.getDisplayMedia === "function";
+  return typeof mediaDevices.getUserMedia === "function";
+}
+
+function explainVisionStartError(err, source) {
+  const normalized = normalizeSource(source);
+  const name = String(err?.name || "").trim();
+  const message = String(err?.message || "").trim();
+  if (!isSecureOrLocalhost()) {
+    return "Screen/camera sharing requires HTTPS (or localhost). Open Bosun via secure origin.";
+  }
+  if (normalized === "screen" && isLikelyEmbeddedWebView()) {
+    return "Screen sharing is not supported in this in-app WebView. Open Bosun in desktop Chrome/Edge.";
+  }
+  if (normalized === "screen" && typeof globalThis?.navigator?.mediaDevices?.getDisplayMedia !== "function") {
+    return "Screen sharing is not supported by this browser/runtime.";
+  }
+  if (name === "NotAllowedError") {
+    return normalized === "screen"
+      ? "Screen share permission was denied."
+      : "Camera permission was denied.";
+  }
+  if (name === "NotFoundError") {
+    return normalized === "screen"
+      ? "No screen/window source was selected."
+      : "No camera device was found.";
+  }
+  if (name === "AbortError") {
+    return "Share request was cancelled before starting.";
+  }
+  if (name === "NotReadableError") {
+    return "Could not access the selected capture source (already in use or blocked by OS policy).";
+  }
+  if (name === "InvalidStateError") {
+    return "Capture could not start in the current page state. Try focusing the tab and retrying.";
+  }
+  if (message) return message;
+  return `Could not start ${normalized} sharing`;
+}
+
 function normalizeSource(source) {
   const value = String(source || "").trim().toLowerCase();
   if (value === "camera") return "camera";
@@ -173,6 +232,9 @@ export async function startVisionShare(options = {}) {
     if (!navigator?.mediaDevices) {
       throw new Error("Media devices API unavailable");
     }
+    if (!isSecureOrLocalhost()) {
+      throw new Error("Screen/camera sharing requires HTTPS (or localhost).");
+    }
 
     if (source === "screen") {
       if (typeof navigator.mediaDevices.getDisplayMedia !== "function") {
@@ -242,7 +304,7 @@ export async function startVisionShare(options = {}) {
     cleanupDomNodes();
     resetContext();
     visionShareState.value = "error";
-    visionShareError.value = err?.message || "Could not start vision share";
+    visionShareError.value = explainVisionStartError(err, source);
     throw err;
   }
 }

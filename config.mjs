@@ -506,7 +506,9 @@ function normalizeExecutorModels(executor, models, variant = "DEFAULT") {
     );
     return inferred.length > 0 ? inferred : [...known];
   }
-  return input.filter((model) => known.has(model));
+  // Preserve custom/deployment slugs in addition to known models so user-provided
+  // model routing survives normalization (for example Azure deployment names).
+  return [...new Set(input.filter(Boolean))];
 }
 
 function normalizeExecutorEntry(entry, index = 0, total = 1) {

@@ -51,6 +51,12 @@ let _usingLegacyFallback = false;
 let _sdkModuleUnavailableLogged = false;
 let _agentsRealtimeModulePromise = null;
 let _agentsRealtimeModuleSource = null;
+let _lastPersistedUserTranscript = "";
+let _lastPersistedAssistantTranscript = "";
+let _pendingUserTranscriptTimer = null;
+let _pendingAssistantTranscriptTimer = null;
+let _pendingUserTranscriptText = "";
+let _pendingAssistantTranscriptText = "";
 
 // ── Event System ────────────────────────────────────────────────────────────
 
@@ -80,6 +86,24 @@ function _normalizeCallContext(options = {}) {
     mode: String(options?.mode || "").trim() || null,
     model: String(options?.model || "").trim() || null,
   };
+}
+
+function getSdkErrorMessage(err) {
+  if (!err) return "Session error";
+  if (typeof err?.message === "string" && err.message.trim()) return err.message.trim();
+  if (typeof err?.error?.message === "string" && err.error.message.trim()) return err.error.message.trim();
+  if (typeof err?.error === "string" && err.error.trim()) return err.error.trim();
+  return "Session error";
+}
+
+function isNonFatalSdkSessionError(err) {
+  const message = getSdkErrorMessage(err);
+  if (!message) return false;
+  // Seen during transient renegotiation on some browsers even when stream remains active.
+  if (/setRemoteDescription/i.test(message) && /SessionDescription/i.test(message)) {
+    return true;
+  }
+  return false;
 }
 
 function isUsableAgentsRealtimeModule(mod) {
@@ -171,6 +195,67 @@ async function _recordTranscript(role, content, eventType = "") {
   }
 }
 
+function _resetTranscriptPersistenceState() {
+  _lastPersistedUserTranscript = "";
+  _lastPersistedAssistantTranscript = "";
+  _pendingUserTranscriptText = "";
+  _pendingAssistantTranscriptText = "";
+  if (_pendingUserTranscriptTimer) {
+    clearTimeout(_pendingUserTranscriptTimer);
+    _pendingUserTranscriptTimer = null;
+  }
+  if (_pendingAssistantTranscriptTimer) {
+    clearTimeout(_pendingAssistantTranscriptTimer);
+    _pendingAssistantTranscriptTimer = null;
+  }
+}
+
+function _persistTranscriptIfNew(role, text, eventType) {
+  const normalizedRole = String(role || "").trim().toLowerCase();
+  const value = String(text || "").trim();
+  if (!value) return;
+  if (normalizedRole === "user") {
+    if (value === _lastPersistedUserTranscript) return;
+    _lastPersistedUserTranscript = value;
+  } else if (normalizedRole === "assistant") {
+    if (value === _lastPersistedAssistantTranscript) return;
+    _lastPersistedAssistantTranscript = value;
+  }
+  _recordTranscript(normalizedRole, value, eventType);
+}
+
+function _scheduleUserTranscriptFinalize(text) {
+  const value = String(text || "").trim();
+  if (!value) return;
+  _pendingUserTranscriptText = value;
+  if (_pendingUserTranscriptTimer) clearTimeout(_pendingUserTranscriptTimer);
+  _pendingUserTranscriptTimer = setTimeout(() => {
+    _pendingUserTranscriptTimer = null;
+    const finalText = String(_pendingUserTranscriptText || "").trim();
+    if (!finalText) return;
+    sdkVoiceTranscript.value = finalText;
+    emit("transcript", { text: finalText, final: true });
+    _persistTranscriptIfNew("user", finalText, "sdk.history_updated.user.final");
+  }, 350);
+}
+
+function _scheduleAssistantTranscriptFinalize(text) {
+  const value = String(text || "").trim();
+  if (!value) return;
+  _pendingAssistantTranscriptText = value;
+  if (_pendingAssistantTranscriptTimer) clearTimeout(_pendingAssistantTranscriptTimer);
+  _pendingAssistantTranscriptTimer = setTimeout(() => {
+    _pendingAssistantTranscriptTimer = null;
+    const finalText = String(_pendingAssistantTranscriptText || "").trim();
+    if (!finalText) return;
+    sdkVoiceState.value = "thinking";
+    sdkVoiceResponse.value = finalText;
+    emit("response-complete", { text: finalText });
+    _persistTranscriptIfNew("assistant", finalText, "sdk.history_updated.assistant.final");
+    sdkVoiceState.value = "listening";
+  }, 700);
+}
+
 // ── OpenAI/Azure Agents SDK Session ─────────────────────────────────────────
 
 /**
@@ -210,12 +295,8 @@ async function startAgentsSdkSession(config, options = {}) {
   const agent = new RealtimeAgent({
     name: "Bosun Voice Agent",
     instructions: tokenData.instructions || "You are Bosun, a helpful voice assistant.",
-    tools: (tokenData.tools || []).map((t) => ({
-      type: "function",
-      name: t.name,
-      description: t.description || "",
-      parameters: t.parameters || { type: "object", properties: {} },
-      async execute(args) {
+    tools: (tokenData.tools || []).map((t) => {
+      const executeTool = async (args) => {
         // Execute tool via server
         const res = await fetch("/api/voice/tool", {
           method: "POST",
@@ -229,16 +310,57 @@ async function startAgentsSdkSession(config, options = {}) {
             model: _callContext.model || undefined,
           }),
         });
-        const result = await res.json();
-        return result.result || result.error || "No output";
-      },
-    })),
+        const result = await res.json().catch(() => ({}));
+        if (!res.ok || result?.error) {
+          const message = String(result?.error || `Tool ${t.name} failed (${res.status})`).trim();
+          throw new Error(message || `Tool ${t.name} failed`);
+        }
+        return result.result || "No output";
+      };
+      return {
+        type: "function",
+        name: t.name,
+        description: t.description || "",
+        parameters: t.parameters || { type: "object", properties: {} },
+        needsApproval() {
+          return false;
+        },
+        requiresApproval() {
+          return false;
+        },
+        execute: executeTool,
+        invoke: executeTool,
+      };
+    }),
   });
 
   // Determine model and voice
   const model = String(tokenData.model || resolvedConfig.model || "gpt-realtime-1.5").trim();
   const voiceId = String(tokenData.voiceId || resolvedConfig.voiceId || "alloy").trim();
   const turnDetection = String(resolvedConfig.turnDetection || "server_vad").trim();
+  const turnDetectionConfig = {
+    type: turnDetection,
+    ...(turnDetection === "server_vad"
+      ? {
+          threshold: 0.35,
+          prefix_padding_ms: 400,
+          silence_duration_ms: 700,
+          create_response: true,
+          interrupt_response: true,
+          createResponse: true,
+          interruptResponse: true,
+        }
+      : {}),
+    ...(turnDetection === "semantic_vad"
+      ? {
+          eagerness: "medium",
+          create_response: true,
+          interrupt_response: true,
+          createResponse: true,
+          interruptResponse: true,
+        }
+      : {}),
+  };
 
   // Create session with config
   const session = new RealtimeSession(agent, {
@@ -248,16 +370,8 @@ async function startAgentsSdkSession(config, options = {}) {
       audio: {
         input: {
           format: "pcm16",
-          transcription: { model: "gpt-4o-mini-transcribe" },
-          turnDetection: {
-            type: turnDetection,
-            ...(turnDetection === "server_vad"
-              ? { threshold: 0.5, prefix_padding_ms: 300, silence_duration_ms: 500 }
-              : {}),
-            ...(turnDetection === "semantic_vad"
-              ? { eagerness: "medium" }
-              : {}),
-          },
+          transcription: { model: "gpt-4o-transcribe" },
+          turnDetection: turnDetectionConfig,
         },
         output: {
           format: "pcm16",
@@ -281,16 +395,14 @@ async function startAgentsSdkSession(config, options = {}) {
     if (lastUserMsg) {
       const transcript = lastUserMsg.content?.map((c) => c.transcript || c.text || "").join("") || "";
       if (transcript) {
-        sdkVoiceTranscript.value = transcript;
-        emit("transcript", { text: transcript, final: true });
+        _scheduleUserTranscriptFinalize(transcript);
       }
     }
 
     if (lastAssistantMsg) {
       const response = lastAssistantMsg.content?.map((c) => c.transcript || c.text || "").join("") || "";
       if (response) {
-        sdkVoiceResponse.value = response;
-        emit("response-complete", { text: response });
+        _scheduleAssistantTranscriptFinalize(response);
       }
     }
 
@@ -298,6 +410,7 @@ async function startAgentsSdkSession(config, options = {}) {
   });
 
   session.on("audio_interrupted", () => {
+    sdkVoiceState.value = "listening";
     emit("interrupt", {});
   });
 
@@ -321,9 +434,14 @@ async function startAgentsSdkSession(config, options = {}) {
   });
 
   session.on("error", (err) => {
+    const message = getSdkErrorMessage(err);
+    if (isNonFatalSdkSessionError(err)) {
+      console.warn("[voice-client-sdk] transient session warning:", message);
+      return;
+    }
     console.error("[voice-client-sdk] session error:", err);
-    sdkVoiceError.value = err?.message || "Session error";
-    emit("error", { message: err?.message });
+    sdkVoiceError.value = message;
+    emit("error", { message });
   });
 
   session.on("guardrail_tripped", (event) => {
@@ -333,10 +451,30 @@ async function startAgentsSdkSession(config, options = {}) {
   // Connect with the token
   const connectOpts = { apiKey: tokenData.token };
 
-  if (tokenData.provider === "azure" && tokenData.azureEndpoint) {
+  const explicitRealtimeUrl = String(tokenData.url || "").trim();
+  if (explicitRealtimeUrl) {
+    // Always prefer server-resolved realtime URL so endpoint/model/api-version stay
+    // aligned with the selected voice endpoint and provider protocol.
+    connectOpts.url = explicitRealtimeUrl;
+  } else if (tokenData.provider === "azure" && tokenData.azureEndpoint) {
     const endpoint = String(tokenData.azureEndpoint).replace(/\/+$/, "");
     const deployment = tokenData.azureDeployment || "gpt-realtime-1.5";
     connectOpts.url = `${endpoint}/openai/realtime?api-version=2025-04-01-preview&deployment=${deployment}`;
+  } else if (tokenData.provider === "openai") {
+    const model = String(tokenData.model || resolvedConfig.model || "gpt-realtime-1.5").trim();
+    connectOpts.url = `https://api.openai.com/v1/realtime?model=${encodeURIComponent(model)}`;
+  }
+
+  try {
+    const safeUrl = String(connectOpts.url || "").trim();
+    const parsed = safeUrl ? new URL(safeUrl) : null;
+    const safeOrigin = parsed ? parsed.origin : "default";
+    const safePath = parsed ? parsed.pathname : "";
+    console.info(
+      `[voice-client-sdk] connecting realtime session via ${safeOrigin}${safePath} (provider=${tokenData.provider || "unknown"})`,
+    );
+  } catch {
+    // ignore URL logging issues
   }
 
   await session.connect(connectOpts);
@@ -347,7 +485,7 @@ async function startAgentsSdkSession(config, options = {}) {
 
   _session = session;
   sdkVoiceSdkActive.value = true;
-  sdkVoiceState.value = "connected";
+  sdkVoiceState.value = "listening";
   sdkVoiceProvider.value = tokenData.provider || "openai";
   _sessionStartTime = Date.now();
   sdkVoiceSessionId.value = _callContext.sessionId || `voice-sdk-${Date.now()}`;
@@ -668,6 +806,7 @@ export async function startSdkVoiceSession(options = {}) {
   sdkVoiceResponse.value = "";
   sdkVoiceToolCalls.value = [];
   _usingLegacyFallback = false;
+  _resetTranscriptPersistenceState();
 
   try {
     // 1. Fetch SDK config from server
@@ -776,6 +915,7 @@ export function stopSdkVoiceSession() {
   sdkVoiceSdkActive.value = false;
   _callContext = { sessionId: null, executor: null, mode: null, model: null };
   _usingLegacyFallback = false;
+  _resetTranscriptPersistenceState();
 
   emit("session-ended", {});
 }

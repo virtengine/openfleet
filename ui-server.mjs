@@ -137,6 +137,7 @@ import {
   listTaskAttachments,
   mergeTaskAttachments,
 } from "./task-attachments.mjs";
+import { getVisionSessionState } from "./vision-session-state.mjs";
 
 const __dirname = resolve(fileURLToPath(new URL(".", import.meta.url)));
 const repoRoot = resolveRepoRoot();
@@ -155,24 +156,6 @@ const DEFAULT_VISION_ANALYSIS_INTERVAL_MS = Math.min(
     Number.parseInt(process.env.VISION_ANALYSIS_INTERVAL_MS || "", 10) || 1500,
   ),
 );
-const _visionSessionState = new Map();
-
-function getVisionSessionState(sessionId) {
-  const key = String(sessionId || "").trim();
-  if (!key) return null;
-  if (!_visionSessionState.has(key)) {
-    _visionSessionState.set(key, {
-      lastFrameHash: null,
-      lastReceiptAt: 0,
-      lastAnalyzedHash: null,
-      lastAnalyzedAt: 0,
-      lastSummary: "",
-      inFlight: null,
-    });
-  }
-  return _visionSessionState.get(key);
-}
-
 function sanitizeVisionSource(value) {
   const raw = String(value || "").trim().toLowerCase();
   if (raw === "camera") return "camera";
@@ -9910,6 +9893,26 @@ async function handleApi(req, res, url) {
         jsonResponse(res, 400, { error: "toolName required" });
         return;
       }
+      const summarizeToolArgs = (value) => {
+        try {
+          const raw = typeof value === "string" ? value : JSON.stringify(value || {});
+          const compact = String(raw || "").replace(/\s+/g, " ").trim();
+          if (!compact) return "(no args)";
+          return compact.length > 280 ? `${compact.slice(0, 280)}...` : compact;
+        } catch {
+          return "(args unavailable)";
+        }
+      };
+      const summarizeToolResult = (value) => {
+        try {
+          const raw = typeof value === "string" ? value : JSON.stringify(value || {});
+          const compact = String(raw || "").replace(/\s+/g, " ").trim();
+          if (!compact) return "(no result)";
+          return compact.length > 1200 ? `${compact.slice(0, 1200)}...` : compact;
+        } catch {
+          return "(result unavailable)";
+        }
+      };
       const { executeVoiceTool } = await import("./voice-relay.mjs");
       const context = {
         sessionId: String(voiceSessionId || "").trim() || undefined,
@@ -9917,6 +9920,33 @@ async function handleApi(req, res, url) {
         mode: String(mode || "").trim() || undefined,
         model: String(model || "").trim() || undefined,
       };
+      let tracker = null;
+      let session = null;
+      if (context.sessionId) {
+        tracker = getSessionTracker();
+        session = tracker.getSessionById(context.sessionId);
+        if (!session) {
+          session = tracker.createSession({
+            id: context.sessionId,
+            type: "primary",
+            metadata: {
+              agent: context.executor || getPrimaryAgentName() || "",
+              mode: context.mode || getAgentMode() || "",
+              model: context.model || undefined,
+            },
+          });
+        }
+        tracker.recordEvent(session?.id || context.sessionId, {
+          role: "system",
+          content: `[Voice Action Started] ${normalizedToolName}\nArgs: ${summarizeToolArgs(args)}`,
+          timestamp: new Date().toISOString(),
+          meta: {
+            source: "voice",
+            eventType: "voice_tool_started",
+            toolName: normalizedToolName,
+          },
+        });
+      }
       if (context.sessionId) {
         // Session-bound calls are validated against the allowed tool set
         const { getSessionAllowedTools } = await import("./voice-relay.mjs");
@@ -9929,6 +9959,31 @@ async function handleApi(req, res, url) {
         }
       }
       const result = await executeVoiceTool(normalizedToolName, args || {}, context);
+      if (tracker && context.sessionId) {
+        if (result?.error) {
+          tracker.recordEvent(session?.id || context.sessionId, {
+            role: "system",
+            content: `[Voice Action Error] ${normalizedToolName}\nError: ${String(result.error || "Unknown error")}`,
+            timestamp: new Date().toISOString(),
+            meta: {
+              source: "voice",
+              eventType: "voice_tool_error",
+              toolName: normalizedToolName,
+            },
+          });
+        } else {
+          tracker.recordEvent(session?.id || context.sessionId, {
+            role: "system",
+            content: `[Voice Action Complete] ${normalizedToolName}\nSummary: ${summarizeToolResult(result?.result)}`,
+            timestamp: new Date().toISOString(),
+            meta: {
+              source: "voice",
+              eventType: "voice_tool_complete_summary",
+              toolName: normalizedToolName,
+            },
+          });
+        }
+      }
 
       jsonResponse(res, 200, result);
     } catch (err) {
@@ -10062,6 +10117,10 @@ async function handleApi(req, res, url) {
 
       state.lastFrameHash = frameHash;
       state.lastReceiptAt = now;
+      state.lastFrameDataUrl = frame.raw;
+      state.lastFrameSource = source;
+      state.lastFrameWidth = width;
+      state.lastFrameHeight = height;
 
       if (!forceAnalyze && state.inFlight) {
         jsonResponse(res, 202, {
@@ -10137,11 +10196,24 @@ async function handleApi(req, res, url) {
       }
 
       const dimension = width && height ? ` (${width}x${height})` : "";
-      tracker.recordEvent(session.id || sessionId, {
-        role: "system",
-        content: `[Vision ${source}${dimension}] ${analysis.summary}`,
-        timestamp: new Date().toISOString(),
-      });
+      const persistToChat = body?.persistToChat === true;
+      if (session?.metadata && typeof session.metadata === "object") {
+        session.metadata.latestVisionSummary = String(analysis.summary || "").trim();
+        session.metadata.latestVisionSource = source;
+        session.metadata.latestVisionAt = new Date().toISOString();
+      }
+      if (persistToChat) {
+        tracker.recordEvent(session.id || sessionId, {
+          role: "system",
+          content: `[Vision ${source}${dimension}] ${analysis.summary}`,
+          timestamp: new Date().toISOString(),
+          meta: {
+            source: "vision",
+            eventType: "vision_summary",
+            visionSource: source,
+          },
+        });
+      }
 
       state.lastAnalyzedHash = frameHash;
       state.lastAnalyzedAt = Date.now();

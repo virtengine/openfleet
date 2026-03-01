@@ -170,6 +170,25 @@ describe("loadConfig validation and edge cases", () => {
     ]);
   });
 
+  it("preserves custom/deployment model slugs from EXECUTORS env", () => {
+    process.env.EXECUTORS =
+      "CODEX:DEFAULT:100:gpt-5.2-codex|my-azure-deployment-42";
+
+    const config = loadConfig([
+      "node",
+      "bosun",
+      "--config-dir",
+      tempConfigDir,
+      "--repo-root",
+      tempConfigDir,
+    ]);
+
+    expect(config.executorConfig.executors[0].models).toEqual([
+      "gpt-5.2-codex",
+      "my-azure-deployment-42",
+    ]);
+  });
+
   it("preserves executor metadata from config file when EXECUTORS env is set", async () => {
     process.env.EXECUTORS = "CODEX:GPT51_CODEX_MINI:100";
 

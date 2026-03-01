@@ -13,15 +13,20 @@ vi.mock("../primary-agent.mjs", () => ({
 }));
 
 vi.mock("../kanban-adapter.mjs", () => ({
-  listTasks: vi.fn(async () => [{ id: "1", title: "Test Task", status: "todo" }]),
-  getTask: vi.fn(async () => ({
-    id: "1",
-    title: "Test Task",
-    status: "todo",
-    body: "desc",
+  getKanbanAdapter: vi.fn(() => ({
+    listProjects: vi.fn(async () => [{ id: "proj-1", name: "Test Project" }]),
+    listTasks: vi.fn(async () => [{ id: "1", title: "Test Task", status: "todo" }]),
+    getTask: vi.fn(async () => ({
+      id: "1",
+      title: "Test Task",
+      status: "todo",
+      body: "desc",
+    })),
+    createTask: vi.fn(async () => ({ id: "2", title: "New Task" })),
+    updateTaskStatus: vi.fn(async () => {}),
+    deleteTask: vi.fn(async () => true),
+    addComment: vi.fn(async () => true),
   })),
-  createTask: vi.fn(async () => ({ id: "2", title: "New Task" })),
-  updateTaskStatus: vi.fn(async () => {}),
 }));
 
 vi.mock("../session-tracker.mjs", () => ({
@@ -237,6 +242,15 @@ describe("voice-tools", () => {
       expect(callArgs?.[0]).toContain("Please fix the failing test");
       expect(callArgs?.[0]).toContain("Live visual context from this call");
       expect(callArgs?.[0]).toContain("[Vision screen]");
+    });
+
+    it("ask_agent_context returns quick response from pooled prompt", async () => {
+      const result = await executeToolCall("ask_agent_context", { message: "What is this repo?" });
+      expect(result.error).toBeUndefined();
+      expect(result.result).toMatch(/\{RESPONSE\}:/i);
+      expect(result.result).toMatch(/pooled agent response/i);
+      const callArgs = vi.mocked(execPooledPrompt).mock.calls.at(-1);
+      expect(callArgs?.[1]).toMatchObject({ mode: "instant" });
     });
 
     it("run_command returns acknowledgment for safe command", async () => {

@@ -225,6 +225,7 @@
     "rotate-agent-logs.sh",
     "vibe-kanban-wrapper.mjs",
     "vk-error-resolver.mjs",
+    "vision-session-state.mjs",
     "vk-log-stream.mjs",
     "voice-auth-manager.mjs",
     "voice-action-dispatcher.mjs",

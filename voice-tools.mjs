@@ -11,6 +11,58 @@ import { loadConfig } from "./config.mjs";
 import { execPrimaryPrompt, getPrimaryAgentName, setPrimaryAgent, getAgentMode, setAgentMode } from "./primary-agent.mjs";
 import { existsSync } from "node:fs";
 import { resolve as resolvePath } from "node:path";
+import { resolveAgentRepoRoot } from "./repo-root.mjs";
+import { getVisionSessionState } from "./vision-session-state.mjs";
+
+// ── Voice response shaping (inspired by claude-phone VOICE_CONTEXT pattern) ──
+
+/**
+ * Injected as a preamble into every ask_agent_context prompt so the agent
+ * returns TTS-ready responses.  The markers are identical to claude-phone's
+ * convention so responses composed by any Claude-family executor are
+ * automatically shaped for spoken delivery.
+ */
+const VOICE_CONTEXT_PREAMBLE = `[VOICE CONTEXT]
+This query comes from a voice call. Respond concisely and conversationally.
+PREFER: VOICE_RESPONSE: [your answer in 2 sentences, ≤40 words — this is what gets spoken]
+For code results or lists, summarise the key finding verbally instead of dumping raw output.
+[END VOICE CONTEXT]
+
+`;
+
+/**
+ * Extract the TTS-ready fragment from an agent response.
+ *
+ * Priority:
+ *   1. Content after a `VOICE_RESPONSE:` (or `🗣️ VOICE_RESPONSE:`) marker.
+ *   2. First non-empty sentence (≤120 words) with code fences stripped.
+ *
+ * Always returns a plain string safe for TTS without backtick escaping.
+ */
+function formatVoiceToolResult(text) {
+  const raw = String(text || "").trim();
+  if (!raw) return raw;
+
+  // 1) Honour explicit VOICE_RESPONSE: marker (claude-phone convention)
+  const markerMatch = raw.match(/(?:🗣️\s*)?VOICE_RESPONSE:\s*([^\n]+)/i);
+  if (markerMatch) {
+    return markerMatch[1].trim();
+  }
+
+  // 2) Strip markdown: code fences, inline code, bullet markers
+  const stripped = raw
+    .replace(/```[\s\S]*?```/g, "[code block]")
+    .replace(/`[^`]+`/g, (m) => m.slice(1, -1))
+    .replace(/^[#>*-]+ /gm, "")
+    .replace(/\n{2,}/g, " ")
+    .replace(/\n/g, " ")
+    .trim();
+
+  // 3) Truncate to 100 words for spoken clarity
+  const words = stripped.split(/\s+/);
+  if (words.length <= 100) return stripped;
+  return words.slice(0, 100).join(" ") + "…";
+}
 
 // ── Module-scope lazy imports ───────────────────────────────────────────────
 
@@ -82,6 +134,62 @@ async function getAgentPool() {
   return _agentPool;
 }
 
+async function resolveKanbanContext() {
+  const cfg = loadConfig();
+  const kanbanMod = await getKanban();
+  const adapter = typeof kanbanMod.getKanbanAdapter === "function"
+    ? kanbanMod.getKanbanAdapter()
+    : null;
+  if (!adapter) {
+    throw new Error("Kanban adapter is unavailable");
+  }
+  const projects = typeof adapter.listProjects === "function"
+    ? await adapter.listProjects()
+    : [];
+  const configuredProjectId = String(
+    cfg?.kanban?.projectId || process.env.KANBAN_PROJECT_ID || process.env.VK_PROJECT_ID || "",
+  ).trim() || null;
+  const discoveredProjectIds = (Array.isArray(projects) ? projects : [])
+    .map((project) => String(project?.id || project?.project_id || "").trim())
+    .filter(Boolean);
+  const projectIds = [];
+  if (configuredProjectId) {
+    projectIds.push(configuredProjectId);
+  }
+  for (const id of discoveredProjectIds) {
+    if (!projectIds.includes(id)) projectIds.push(id);
+  }
+  if (!projectIds.length) {
+    projectIds.push(null);
+  }
+  return { kanbanMod, adapter, projects, projectIds, projectId: projectIds[0] || null };
+}
+
+async function listTasksAcrossProjects(context = {}, filters = {}) {
+  const { adapter, projectIds } = await resolveKanbanContext();
+  const ids = Array.isArray(projectIds) && projectIds.length ? projectIds : [null];
+  const all = [];
+  const seen = new Set();
+  let firstErr = null;
+  for (const projectId of ids) {
+    try {
+      const tasks = await adapter.listTasks(projectId, filters);
+      for (const task of Array.isArray(tasks) ? tasks : []) {
+        const stableId = String(task?.id || task?.number || `${projectId || "default"}:${task?.title || ""}`).trim();
+        if (!stableId || seen.has(stableId)) continue;
+        seen.add(stableId);
+        all.push(task);
+      }
+    } catch (err) {
+      if (!firstErr) firstErr = err;
+    }
+  }
+  if (!all.length && firstErr) {
+    throw firstErr;
+  }
+  return all;
+}
+
 async function getLatestVisionSummary(sessionId) {
   const id = String(sessionId || "").trim();
   if (!id) return "";
@@ -90,6 +198,8 @@ async function getLatestVisionSummary(sessionId) {
     const session = tracker.getSessionById
       ? tracker.getSessionById(id)
       : (tracker.getSession ? tracker.getSession(id) : null);
+    const metaSummary = String(session?.metadata?.latestVisionSummary || "").trim();
+    if (metaSummary) return `[Vision] ${metaSummary}`;
     const messages = Array.isArray(session?.messages) ? session.messages : [];
     for (let i = messages.length - 1; i >= 0; i--) {
       const msg = messages[i];
@@ -135,6 +245,41 @@ async function resolveDelegationCwd(sessionId) {
     // best effort
   }
   return process.cwd();
+}
+
+async function resolveToolCwd(context = {}) {
+  const sessionId = String(context?.sessionId || "").trim();
+  const fromSession = await resolveDelegationCwd(sessionId);
+  if (fromSession && existsSync(fromSession)) return fromSession;
+  const repoRoot = resolveAgentRepoRoot();
+  if (repoRoot && existsSync(repoRoot)) return repoRoot;
+  return process.cwd();
+}
+
+async function getWorkspaceContextSummary(context = {}) {
+  const sessionId = String(context?.sessionId || "").trim();
+  const cwd = await resolveToolCwd(context);
+  const repoRoot = resolveAgentRepoRoot();
+  let metadata = {};
+  try {
+    const tracker = await getSessionTracker();
+    const session = tracker.getSessionById?.(sessionId) || tracker.getSession?.(sessionId) || null;
+    metadata = session?.metadata && typeof session.metadata === "object" ? session.metadata : {};
+  } catch {
+    metadata = {};
+  }
+  return {
+    sessionId: sessionId || null,
+    workspaceId: String(metadata?.workspaceId || "").trim() || null,
+    workspaceDir: String(metadata?.workspaceDir || "").trim() || null,
+    repository: String(metadata?.repository || metadata?.repo || "").trim() || null,
+    cwd,
+    repoRoot,
+  };
+}
+
+function makeBackgroundSessionId() {
+  return `voice-bg-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
 }
 
 // ── Tool Definitions (OpenAI function-calling format) ────────────────────────
@@ -232,6 +377,30 @@ const TOOL_DEFS = [
         model: {
           type: "string",
           description: "Optional model override for the delegated call.",
+        },
+      },
+      required: ["message"],
+    },
+  },
+  {
+    type: "function",
+    name: "ask_agent_context",
+    description: "Ask the coding agent a quick question in ask/instant mode and return the answer in this voice turn. Use for context, project understanding, debugging questions, and fast reasoning that needs workspace awareness.",
+    parameters: {
+      type: "object",
+      properties: {
+        message: {
+          type: "string",
+          description: "Question or instruction for the agent.",
+        },
+        mode: {
+          type: "string",
+          enum: ["ask", "instant"],
+          description: "Low-latency query mode. Default: instant",
+        },
+        model: {
+          type: "string",
+          description: "Optional model override for this quick query.",
         },
       },
       required: ["message"],
@@ -386,6 +555,27 @@ const TOOL_DEFS = [
       },
     },
   },
+  {
+    type: "function",
+    name: "get_workspace_context",
+    description: "Get current workspace and repository context for this voice/chat session.",
+    parameters: { type: "object", properties: {} },
+  },
+  {
+    type: "function",
+    name: "query_live_view",
+    description: "Analyze the latest live camera/screen frame for this session with a specific question. Use this for real visual understanding of what is currently on screen.",
+    parameters: {
+      type: "object",
+      properties: {
+        query: {
+          type: "string",
+          description: "Question about the current visual frame. Example: 'What error is shown on screen?'",
+        },
+      },
+      required: ["query"],
+    },
+  },
   // ── Monitoring ──
   {
     type: "function",
@@ -497,6 +687,37 @@ const TOOL_DEFS = [
       required: ["action"],
     },
   },
+  // ── Generic MCP Gateway ──
+  {
+    type: "function",
+    name: "invoke_mcp_tool",
+    description: "Call any MCP (Model Context Protocol) tool by name via the agent. Use for GitHub operations (create PR, list issues), kanban integrations, or any capability exposed by a configured MCP server. This is the preferred way to trigger one-shot MCP actions from voice without needing a dedicated tool wrapper.",
+    parameters: {
+      type: "object",
+      properties: {
+        tool: {
+          type: "string",
+          description: "The MCP tool name, e.g. 'create_issue', 'create_pull_request', 'list_tasks'. For GitHub tools omit the server prefix.",
+        },
+        server: {
+          type: "string",
+          description: "Optional MCP server name to disambiguate, e.g. 'github', 'linear', 'jira'. Leave empty if unambiguous.",
+        },
+        args: {
+          type: "object",
+          description: "Arguments to pass to the MCP tool as key/value pairs.",
+        },
+      },
+      required: ["tool"],
+    },
+  },
+  // ── Context Warm-up ──
+  {
+    type: "function",
+    name: "warm_codebase_context",
+    description: "Pre-load codebase context into the agent so subsequent code questions answer instantly. Call this once at the start of a voice session when you know the user will ask project-specific questions.",
+    parameters: { type: "object", properties: {} },
+  },
 ];
 
 // ── Tool Execution ──────────────────────────────────────────────────────────
@@ -533,10 +754,11 @@ export async function executeToolCall(toolName, args = {}, context = {}) {
 
 const TOOL_HANDLERS = {
   async list_tasks(args) {
-    const kanban = await getKanban();
     const status = args.status || "all";
     const limit = args.limit || 20;
-    const tasks = await kanban.listTasks({ status: status === "all" ? undefined : status });
+    const tasks = await listTasksAcrossProjects({}, {
+      status: status === "all" ? undefined : status,
+    });
     const limited = tasks.slice(0, limit);
     return limited.map(t => ({
       id: t.id || t.number,
@@ -548,8 +770,8 @@ const TOOL_HANDLERS = {
   },
 
   async get_task(args) {
-    const kanban = await getKanban();
-    const task = await kanban.getTask(args.taskId);
+    const { adapter } = await resolveKanbanContext();
+    const task = await adapter.getTask(args.taskId);
     if (!task) return `Task ${args.taskId} not found.`;
     return {
       id: task.id || task.number,
@@ -564,8 +786,8 @@ const TOOL_HANDLERS = {
   },
 
   async create_task(args) {
-    const kanban = await getKanban();
-    const result = await kanban.createTask({
+    const { adapter, projectId } = await resolveKanbanContext();
+    const result = await adapter.createTask(projectId, {
       title: args.title,
       body: args.description || "",
       priority: args.priority,
@@ -575,8 +797,8 @@ const TOOL_HANDLERS = {
   },
 
   async update_task_status(args) {
-    const kanban = await getKanban();
-    await kanban.updateTaskStatus(args.taskId, args.status);
+    const { adapter } = await resolveKanbanContext();
+    await adapter.updateTaskStatus(args.taskId, args.status);
     return `Task ${args.taskId} moved to ${args.status}.`;
   },
 
@@ -596,24 +818,58 @@ const TOOL_HANDLERS = {
       .toLowerCase();
     const mode = MODE_ALIASES[rawMode] || (VALID_AGENT_MODES.has(rawMode) ? rawMode : "instant");
     const model = String(args.model || context.model || "").trim() || undefined;
-    const sessionId = String(context.sessionId || "").trim() || `voice-delegate-${Date.now()}`;
-    const sessionType = String(context.sessionType || "").trim() || (context.sessionId ? "primary" : "voice-delegate");
-    const cwd = await resolveDelegationCwd(sessionId);
-    const visionSummary = await getLatestVisionSummary(sessionId);
+    const parentSessionId = String(context.sessionId || "").trim() || null;
+    const backgroundSessionId = makeBackgroundSessionId();
+    const sessionType = "voice-delegate";
+    const cwd = await resolveToolCwd(context);
+    const workspaceContext = await getWorkspaceContextSummary(context);
+    const visionSummary = await getLatestVisionSummary(parentSessionId || "");
     const delegateMessage = appendVisionSummary(args.message, visionSummary);
+    const shortTitle = String(args.message || "").trim().slice(0, 90) || "Voice background task";
 
     // ── Fire-and-forget: launch via execPooledPrompt (isolated, no global state mutation) ──
     const pool = await getAgentPool();
     const delegationId = `voice-deleg-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
 
-    // Record delegation start in session tracker
+    // Record delegation start in session tracker (dedicated background session + parent linkage)
     try {
       const tracker = await getSessionTracker();
-      const session = tracker.getSessionById?.(sessionId) || tracker.getSession?.(sessionId);
-      if (session && tracker.recordEvent) {
-        tracker.recordEvent(sessionId, {
+      if (tracker.createSession) {
+        tracker.createSession({
+          id: backgroundSessionId,
+          type: sessionType,
+          taskId: backgroundSessionId,
+          metadata: {
+            title: `Voice Background: ${shortTitle}`,
+            source: "voice",
+            parentSessionId,
+            workspaceId: workspaceContext.workspaceId || undefined,
+            workspaceDir: workspaceContext.workspaceDir || workspaceContext.cwd || undefined,
+            repository: workspaceContext.repository || undefined,
+            executor,
+            mode,
+            model: model || undefined,
+          },
+        });
+      }
+      if (parentSessionId && tracker.recordEvent) {
+        tracker.recordEvent(parentSessionId, {
           role: "system",
-          content: `[Voice Delegation] Agent ${executor} (${mode}) started: ${args.message}`,
+          content: `[Voice Delegation] Started background session ${backgroundSessionId} with ${executor} (${mode}): ${args.message}`,
+          timestamp: new Date().toISOString(),
+          meta: {
+            source: "voice",
+            eventType: "voice_background_started",
+            backgroundSessionId,
+            executor,
+            mode,
+          },
+        });
+      }
+      if (tracker.recordEvent) {
+        tracker.recordEvent(backgroundSessionId, {
+          role: "system",
+          content: `[Background Task Started] Delegation ${delegationId} using ${executor} (${mode}).`,
           timestamp: new Date().toISOString(),
         });
       }
@@ -629,23 +885,8 @@ const TOOL_HANDLERS = {
       cwd,
       timeoutMs: 5 * 60 * 1000,
       onEvent: (event) => {
-        // Broadcast progress to WebSocket clients via session tracker event system
-        try {
-          if (_sessionTracker?.recordEvent) {
-            const content = typeof event === "string"
-              ? event
-              : event?.text || event?.content || event?.message || "";
-            if (content) {
-              _sessionTracker.recordEvent(sessionId, {
-                role: "assistant",
-                content: String(content).slice(0, 500),
-                timestamp: new Date().toISOString(),
-              });
-            }
-          }
-        } catch {
-          // best effort progress broadcast
-        }
+        // Intentionally ignore per-token/per-step stream events here.
+        // We only publish one final summary event to avoid chat/message spam.
       },
     })
       .then(async (result) => {
@@ -659,11 +900,32 @@ const TOOL_HANDLERS = {
         try {
           const tracker = await getSessionTracker();
           if (tracker.recordEvent) {
-            tracker.recordEvent(sessionId, {
+            tracker.recordEvent(backgroundSessionId, {
               role: "assistant",
               content: truncated,
               timestamp: new Date().toISOString(),
             });
+            if (parentSessionId) {
+              const summaryText = truncated.replace(/\s+/g, " ").trim();
+              const shortSummary = summaryText.length > 600
+                ? `${summaryText.slice(0, 600)}...`
+                : summaryText;
+              tracker.recordEvent(parentSessionId, {
+                role: "system",
+                content: `{RESPONSE}: ${shortSummary}`,
+                timestamp: new Date().toISOString(),
+                meta: {
+                  source: "voice",
+                  eventType: "voice_background_summary",
+                  backgroundSessionId,
+                  executor,
+                  mode,
+                },
+              });
+            }
+          }
+          if (tracker.updateSessionStatus) {
+            tracker.updateSessionStatus(backgroundSessionId, "done");
           }
         } catch {
           // best effort
@@ -673,25 +935,136 @@ const TOOL_HANDLERS = {
         console.error(`[voice-tools] delegate_to_agent async error (${delegationId}):`, err?.message || err);
         // Record failure in session tracker
         getSessionTracker().then((tracker) => {
+          if (tracker.updateSessionStatus) {
+            tracker.updateSessionStatus(backgroundSessionId, "error");
+          }
           if (tracker.recordEvent) {
-            tracker.recordEvent(sessionId, {
+            tracker.recordEvent(backgroundSessionId, {
               role: "system",
               content: `[Voice Delegation Error] ${err?.message || "Unknown error"}`,
               timestamp: new Date().toISOString(),
             });
+            if (parentSessionId) {
+              tracker.recordEvent(parentSessionId, {
+                role: "system",
+                content: `[Voice Delegation Error] Background session ${backgroundSessionId} failed: ${err?.message || "Unknown error"}`,
+                timestamp: new Date().toISOString(),
+                meta: {
+                  source: "voice",
+                  eventType: "voice_background_error",
+                  backgroundSessionId,
+                  executor,
+                  mode,
+                },
+              });
+            }
           }
         }).catch(() => {});
       });
 
     // Return immediately — don't block the voice session
-    return `Delegation started (ID: ${delegationId}). Agent "${executor}" is working on your request in ${mode} mode. Results will appear in the chat session. You can continue talking.`;
+    return `{RESPONSE}: Delegation started in background session ${backgroundSessionId} (delegation ${delegationId}). Agent "${executor}" is working in ${mode} mode. You can continue talking; query this session later with get_session_history.`;
+  },
+
+  async ask_agent_context(args, context) {
+    const cfg = loadConfig();
+    const requestedExecutor = String(
+      context?.executor || cfg.voice?.delegateExecutor || cfg.primaryAgent || "codex-sdk",
+    )
+      .trim()
+      .toLowerCase();
+    const executor = VALID_EXECUTORS.has(requestedExecutor)
+      ? requestedExecutor
+      : (cfg.voice?.delegateExecutor || cfg.primaryAgent || "codex-sdk");
+
+    const mode = "instant";
+    const model = String(args.model || context?.model || "").trim() || undefined;
+    const sessionId = String(context?.sessionId || "").trim() || `voice-ask-${Date.now()}`;
+    const cwd = await resolveToolCwd(context);
+    const visionSummary = await getLatestVisionSummary(sessionId);
+    // Inject voice preamble so the agent returns TTS-shaped responses
+    const message = VOICE_CONTEXT_PREAMBLE + appendVisionSummary(args.message, visionSummary);
+
+    try {
+      const pool = await getAgentPool();
+      const result = await pool.execPooledPrompt(message, {
+        sdk: executor,
+        mode,
+        model,
+        cwd,
+        timeoutMs: 10_000,
+      });
+      const text = typeof result === "string"
+        ? result
+        : result?.finalResponse || result?.text || result?.message || JSON.stringify(result);
+      const trimmed = String(text || "").trim();
+      if (!trimmed) return "{RESPONSE}: Agent returned no content.";
+      const clipped = trimmed.length > 4000 ? `${trimmed.slice(0, 4000)}... (truncated)` : trimmed;
+      // Apply TTS-safe formatting (extracts VOICE_RESPONSE: marker if present)
+      return `{RESPONSE}: ${formatVoiceToolResult(clipped)}`;
+    } catch (err) {
+      // If quick mode cannot answer in time, auto-delegate to background.
+      const backgroundMsg = await TOOL_HANDLERS.delegate_to_agent(
+        {
+          message: args.message,
+          executor,
+          mode: "agent",
+          model,
+        },
+        context,
+      );
+      const cleanedBackgroundMsg = String(backgroundMsg || "")
+        .replace(/^\{RESPONSE\}:\s*/i, "")
+        .trim();
+      const reason = String(err?.message || "instant query timed out").trim();
+      return `{RESPONSE}: Quick answer unavailable (${reason}). ${cleanedBackgroundMsg}`;
+    }
+  },
+
+  async ask_agent_context_legacy_fallback(args, context) {
+    // Reserved for explicit compatibility only.
+    const model = String(args.model || context?.model || "").trim() || undefined;
+    const sessionId = String(context?.sessionId || "").trim() || `voice-ask-${Date.now()}`;
+    const cwd = await resolveToolCwd(context);
+    const visionSummary = await getLatestVisionSummary(sessionId);
+    const message = appendVisionSummary(args.message, visionSummary);
+    try {
+      const fallback = await execPrimaryPrompt(message, {
+        mode: "instant",
+        model,
+        sessionType: "voice-ask",
+        cwd,
+      });
+      const text = typeof fallback === "string"
+        ? fallback
+        : fallback?.finalResponse || fallback?.text || fallback?.message || JSON.stringify(fallback);
+      return `{RESPONSE}: ${String(text || "").trim() || "No response."}`;
+    } catch (fallbackErr) {
+      return `{RESPONSE}: Quick agent query failed: ${fallbackErr?.message || "unknown error"}`;
+    }
   },
 
   async get_agent_status() {
     const name = getPrimaryAgentName();
+    let activeSessions = [];
+    try {
+      const pool = await getAgentPool();
+      activeSessions = typeof pool.getActiveSessions === "function"
+        ? pool.getActiveSessions().slice(0, 20)
+        : [];
+    } catch {
+      activeSessions = [];
+    }
     return {
       activeAgent: name,
       status: "available",
+      activeSessions: activeSessions.length,
+      activeSessionThreads: activeSessions.map((entry) => ({
+        taskKey: entry.taskKey || null,
+        sdk: entry.sdk || null,
+        threadId: entry.threadId || null,
+        ageMs: entry.age || null,
+      })),
       message: `${name} is the active primary agent.`,
     };
   },
@@ -716,7 +1089,7 @@ const TOOL_HANDLERS = {
 
   async get_session_history(args) {
     const tracker = await getSessionTracker();
-    const session = tracker.getSession ? tracker.getSession(args.sessionId) : null;
+    const session = tracker.getSessionById?.(args.sessionId) || tracker.getSession?.(args.sessionId) || null;
     if (!session) return `Session ${args.sessionId} not found.`;
     const limit = args.limit || 20;
     const messages = (session.messages || []).slice(-limit);
@@ -727,15 +1100,17 @@ const TOOL_HANDLERS = {
     }));
   },
 
-  async get_system_status() {
+  async get_system_status(args, context) {
     const cfg = loadConfig();
     const name = getPrimaryAgentName();
+    const workspace = await getWorkspaceContextSummary(context);
     return {
       primaryAgent: name,
       kanbanBackend: cfg.kanbanBackend || cfg.kanban?.backend || "internal",
       projectName: cfg.projectName || "unknown",
       mode: cfg.mode || "generic",
       voiceEnabled: cfg.voice?.enabled !== false,
+      workspace,
     };
   },
 
@@ -796,14 +1171,15 @@ const TOOL_HANDLERS = {
     return `Config update for "${args.key}" = "${args.value}" noted. Please apply via Settings UI for persistence.`;
   },
 
-  async search_code(args) {
+  async search_code(args, context) {
     try {
       const { execSync } = await import("node:child_process");
       const pattern = args.filePattern ? `--include="${args.filePattern}"` : "";
       const limit = args.maxResults || 20;
+      const cwd = await resolveToolCwd(context);
       const result = execSync(
         `grep -rn ${pattern} "${args.query}" . --max-count=${limit} 2>/dev/null || true`,
-        { encoding: "utf8", timeout: 10_000, cwd: process.cwd() },
+        { encoding: "utf8", timeout: 10_000, cwd },
       );
       return result.trim() || `No matches found for "${args.query}".`;
     } catch {
@@ -811,11 +1187,12 @@ const TOOL_HANDLERS = {
     }
   },
 
-  async read_file_content(args) {
+  async read_file_content(args, context) {
     const { readFileSync } = await import("node:fs");
     const { resolve } = await import("node:path");
     try {
-      const fullPath = resolve(process.cwd(), args.filePath);
+      const cwd = await resolveToolCwd(context);
+      const fullPath = resolve(cwd, args.filePath);
       const content = readFileSync(fullPath, "utf8");
       const lines = content.split("\n");
       const start = (args.startLine || 1) - 1;
@@ -827,11 +1204,12 @@ const TOOL_HANDLERS = {
     }
   },
 
-  async list_directory(args) {
+  async list_directory(args, context) {
     const { readdirSync, statSync } = await import("node:fs");
     const { resolve, join } = await import("node:path");
     try {
-      const dir = resolve(process.cwd(), args.path || ".");
+      const cwd = await resolveToolCwd(context);
+      const dir = resolve(cwd, args.path || ".");
       const entries = readdirSync(dir).slice(0, 50);
       return entries.map(name => {
         try {
@@ -846,11 +1224,50 @@ const TOOL_HANDLERS = {
     }
   },
 
-  async get_recent_logs(args) {
+  async get_workspace_context(args, context) {
+    return await getWorkspaceContextSummary(context);
+  },
+
+  async query_live_view(args, context) {
+    const sessionId = String(context?.sessionId || "").trim();
+    if (!sessionId) {
+      return "{RESPONSE}: Live vision query requires an active session.";
+    }
+    const query = String(args?.query || "").trim();
+    if (!query) {
+      return "{RESPONSE}: Please provide a vision query.";
+    }
+    const state = getVisionSessionState(sessionId);
+    const frameDataUrl = String(state?.lastFrameDataUrl || "").trim();
+    if (!frameDataUrl) {
+      return "{RESPONSE}: No live frame is available yet. Start camera/screen sharing and try again.";
+    }
+    try {
+      const { analyzeVisionFrame } = await import("./voice-relay.mjs");
+      const analysis = await analyzeVisionFrame(frameDataUrl, {
+        source: String(state?.lastFrameSource || "screen").trim() || "screen",
+        context: {
+          sessionId,
+          executor: context?.executor,
+          mode: context?.mode,
+          model: context?.model,
+        },
+        prompt: query,
+      });
+      const summary = String(analysis?.summary || "").trim();
+      if (!summary) return "{RESPONSE}: Vision model returned no summary.";
+      return `{RESPONSE}: ${summary}`;
+    } catch (err) {
+      return `{RESPONSE}: Live vision query failed: ${String(err?.message || "unknown error")}`;
+    }
+  },
+
+  async get_recent_logs(args, context) {
     const { readFileSync, readdirSync, statSync } = await import("node:fs");
     const { resolve, join } = await import("node:path");
     try {
-      const logsDir = resolve(process.cwd(), "logs");
+      const cwd = await resolveToolCwd(context);
+      const logsDir = resolve(cwd, "logs");
       const type = args.type || "agent";
       const lines = args.lines || 50;
       const files = readdirSync(logsDir)
@@ -870,11 +1287,10 @@ const TOOL_HANDLERS = {
   },
 
   async search_tasks(args) {
-    const kanban = await getKanban();
     const query = String(args.query || "").trim().toLowerCase();
     if (!query) return "Search query is required.";
     const limit = args.limit || 20;
-    const tasks = await kanban.listTasks({ status: undefined });
+    const tasks = await listTasksAcrossProjects({}, { status: undefined });
     const matches = (Array.isArray(tasks) ? tasks : []).filter((t) => {
       const text = `${t.title || ""} ${t.body || t.description || ""} ${(t.labels || []).join(" ")}`.toLowerCase();
       return text.includes(query);
@@ -893,8 +1309,7 @@ const TOOL_HANDLERS = {
   },
 
   async get_task_stats() {
-    const kanban = await getKanban();
-    const tasks = await kanban.listTasks({ status: undefined });
+    const tasks = await listTasksAcrossProjects({}, { status: undefined });
     const all = Array.isArray(tasks) ? tasks : [];
     const byStatus = {};
     for (const t of all) {
@@ -912,20 +1327,20 @@ const TOOL_HANDLERS = {
   },
 
   async delete_task(args) {
-    const kanban = await getKanban();
+    const { adapter } = await resolveKanbanContext();
     const taskId = String(args.taskId || "").trim();
     if (!taskId) return "taskId is required.";
-    await kanban.deleteTask(taskId);
+    await adapter.deleteTask(taskId);
     return `Task ${taskId} deleted.`;
   },
 
   async comment_on_task(args) {
-    const kanban = await getKanban();
+    const { adapter } = await resolveKanbanContext();
     const taskId = String(args.taskId || "").trim();
     const body = String(args.body || "").trim();
     if (!taskId) return "taskId is required.";
     if (!body) return "comment body is required.";
-    await kanban.addComment(taskId, body);
+    await adapter.addComment(taskId, body);
     return `Comment added to task ${taskId}.`;
   },
 
@@ -1005,6 +1420,64 @@ const TOOL_HANDLERS = {
       return { ok: false, error: err.message };
     }
   },
+
+  /**
+   * Generic MCP gateway — routes arbitrary MCP tool calls through the agent
+   * rather than requiring a bespoke voice-tool wrapper for each MCP operation.
+   *
+   * The approach (inspired by claude-phone's structured prompting):
+   *   • Build a precise, structured prompt asking the agent to invoke the tool
+   *   • Request a short spoken confirmation as the VOICE_RESPONSE: reply
+   *   • Fall back gracefully if the agent can't find the tool
+   *
+   * This deliberately reuses `ask_agent_context` so MCP calls get the same
+   * 10 s timeout + auto-delegation path on failure.
+   */
+  async invoke_mcp_tool(args, context) {
+    const tool = String(args.tool || "").trim();
+    if (!tool) return "{RESPONSE}: tool name is required.";
+    const server = String(args.server || "").trim();
+    const mcpArgs = args.args && typeof args.args === "object" ? args.args : {};
+    const toolRef = server ? `${server} MCP server's \"${tool}\" tool` : `\"${tool}\" MCP tool`;
+    const argsJson = Object.keys(mcpArgs).length
+      ? `\n\nArguments:\n${JSON.stringify(mcpArgs, null, 2)}`
+      : "";
+    const taskPrompt = `Invoke the ${toolRef} right now.${argsJson}\n\nAfter invoking the tool, respond with:\nVOICE_RESPONSE: [1-sentence natural language confirmation of what happened]`;
+    return TOOL_HANDLERS.ask_agent_context({ message: taskPrompt, mode: "instant" }, context);
+  },
+
+  /**
+   * Pre-warm the agent with a quick repo overview so follow-up codebase
+   * questions benefit from cached context instead of a cold-start lookup.
+   *
+   * Fire-and-forget: returns immediately and loads in the background.
+   */
+  async warm_codebase_context(args, context) {
+    const cwd = await resolveToolCwd(context);
+    let topLevel = [];
+    try {
+      const { readdirSync } = await import("node:fs");
+      topLevel = readdirSync(cwd)
+        .filter((n) => !n.startsWith(".") && n !== "node_modules")
+        .slice(0, 25);
+    } catch {
+      // best effort
+    }
+    const warmPrompt = `You are being pre-loaded with workspace context for an upcoming voice session.\nTop-level items in the project: ${topLevel.join(", ") || "(unknown)"}\nBriefly orient yourself to the project structure so you can answer questions quickly.`;
+    TOOL_HANDLERS.ask_agent_context({ message: warmPrompt, mode: "instant" }, context).catch(() => {});
+    return "{RESPONSE}: Codebase context pre-loading started in the background.";
+  },
 };
 
 export { TOOL_DEFS as VOICE_TOOLS };
+
+/**
+ * Convenience export so voice-relay.mjs (and future callers) can trigger a
+ * context warm-up at voice session open without importing internal handlers.
+ *
+ * @param {object} context — voice call context ({ sessionId, executor, ... })
+ * @returns {Promise<void>}
+ */
+export async function warmCodebaseContext(context = {}) {
+  await TOOL_HANDLERS.warm_codebase_context({}, context).catch(() => {});
+}

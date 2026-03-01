@@ -26,7 +26,7 @@ const OPENAI_REALTIME_MODEL = "gpt-realtime-1.5";
 const OPENAI_AUDIO_RESPONSES_MODEL = "gpt-audio-1.5";
 const OPENAI_RESPONSES_URL = "https://api.openai.com/v1/responses";
 const OPENAI_DEFAULT_VISION_MODEL = "gpt-4.1-nano";
-const REALTIME_TRANSCRIBE_MODEL = "gpt-4o-mini-transcribe";
+const REALTIME_TRANSCRIBE_MODEL = "gpt-4o-transcribe";
 
 const AZURE_API_VERSION = "2025-04-01-preview";
 
@@ -329,7 +329,31 @@ async function buildSessionScopedInstructions(baseInstructions, callContext = {}
         ? tracker.getSessionById(context.sessionId)
         : null;
       if (session && Array.isArray(session.messages) && session.messages.length > 0) {
-        const recent = session.messages.slice(-20);
+        const shouldIncludeInVoiceHistory = (msg) => {
+          if (!msg || typeof msg !== "object") return false;
+          const msgType = String(msg.type || "").trim().toLowerCase();
+          if (msgType === "tool_call" || msgType === "tool_result") return false;
+          const meta = msg.meta && typeof msg.meta === "object" ? msg.meta : {};
+          const eventType = String(meta.eventType || "").trim().toLowerCase();
+          if (eventType.includes("tool")) return false;
+          if (eventType.includes("transcript")) return false;
+          if (eventType.startsWith("voice_background_")) return false;
+          if (eventType.startsWith("vision_")) return false;
+          const source = String(meta.source || "").trim().toLowerCase();
+          if (source === "vision") return false;
+          const role = String(msg.role || msg.type || "").trim().toLowerCase();
+          const content = String(msg.content || "").trim();
+          if (!content) return false;
+          if (role === "system") return false;
+          if (content.startsWith("[Voice Action Started]")) return false;
+          if (content.startsWith("[Voice Action Complete]")) return false;
+          if (content.startsWith("[Voice Action Error]")) return false;
+          if (content.startsWith("[Voice Delegation")) return false;
+          if (content.startsWith("[Background Task Started]")) return false;
+          if (content.startsWith("[Vision ")) return false;
+          return true;
+        };
+        const recent = session.messages.filter(shouldIncludeInVoiceHistory).slice(-20);
         const lines = recent.map((msg) => {
           const role = String(msg.role || msg.type || "unknown").toUpperCase();
           const content = String(msg.content || "").trim();
@@ -369,9 +393,14 @@ async function buildSessionScopedInstructions(baseInstructions, callContext = {}
     chatHistorySection,
     "",
     "## Guidance for Session-Bound Calls",
-    "- You have access to multiple tools. Use them directly when the user asks about tasks, sessions, system status, etc.",
-    "- For coding, debugging, file changes, or complex workspace operations, use delegate_to_agent.",
+    "- You have access to multiple tools. Use direct JS tools first for instant operational answers (tasks, sessions, status, config, files, logs).",
+    "- For visual questions about camera/screen, call query_live_view with the user's exact question.",
+    "- For questions that require project/code understanding, call ask_agent_context in mode=instant first and speak the returned answer in this turn.",
+    "- Use delegate_to_agent only for clearly long-running operations that must run in the background.",
     "  Delegation is non-blocking — you will get a confirmation immediately and results will appear in the chat session.",
+    "- Do not wait on slow agents for normal Q&A. Prefer direct tools and ask_agent_context (instant mode).",
+    "- If the user asks you to perform an action, you MUST execute at least one relevant tool call before claiming that action was done or started.",
+    "- Never say you will do something later without either calling a tool now or clearly stating why execution is blocked.",
     "- Preserve user intent when delegating. Do not paraphrase away technical detail.",
     "- Keep spoken responses concise. The user can see detailed results in the chat sidebar.",
     "- You can read chat history context to avoid asking the user to repeat themselves.",
@@ -1102,9 +1131,9 @@ async function createOpenAIEphemeralToken(cfg, toolDefinitions = [], callContext
     turn_detection: {
       type: cfg.turnDetection,
       ...(cfg.turnDetection === "server_vad" ? {
-        threshold: 0.5,
-        prefix_padding_ms: 300,
-        silence_duration_ms: 500,
+        threshold: 0.35,
+        prefix_padding_ms: 400,
+        silence_duration_ms: 700,
         create_response: true,
         interrupt_response: true,
       } : {}),
@@ -1196,9 +1225,9 @@ async function createAzureEphemeralToken(cfg, toolDefinitions = [], callContext 
     turn_detection: {
       type: cfg.turnDetection,
       ...(cfg.turnDetection === "server_vad" ? {
-        threshold: 0.5,
-        prefix_padding_ms: 300,
-        silence_duration_ms: 500,
+        threshold: 0.35,
+        prefix_padding_ms: 400,
+        silence_duration_ms: 700,
         create_response: true,
         interrupt_response: true,
       } : {}),
@@ -1362,19 +1391,31 @@ export async function executeVoiceTool(toolName, toolArgs, context = {}) {
  * These are read-only or lightweight operations that shouldn't require full agent delegation.
  */
 const VOICE_SESSION_ALLOWED_TOOLS = new Set([
+  "ask_agent_context",
+  "query_live_view",
   "delegate_to_agent",
+  "get_workspace_context",
   "list_tasks",
   "get_task",
   "get_agent_status",
+  "switch_agent",
   "list_sessions",
   "get_session_history",
   "get_system_status",
   "get_fleet_status",
   "get_pr_status",
   "get_config",
+  "set_agent_mode",
+  "search_code",
+  "read_file_content",
+  "list_directory",
+  "get_recent_logs",
+  "list_workflows",
+  "list_skills",
+  "list_prompts",
+  "run_command",
   "search_tasks",
   "get_task_stats",
-  "get_recent_logs",
   "dispatch_action",
 ]);
 
