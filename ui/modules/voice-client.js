@@ -434,14 +434,14 @@ function sendSessionUpdate(tokenData = {}) {
     sessionConfig?.turn_detection?.type ||
     sessionConfig?.audio?.input?.turnDetection?.type ||
     sessionConfig?.audio?.input?.turn_detection?.type ||
-    "server_vad";
+    "semantic_vad";
   const turnDetectionConfig = {
     type: turnDetection,
     ...(turnDetection === "server_vad"
       ? {
-          threshold: 0.35,
+          threshold: 0.7,
           prefix_padding_ms: 400,
-          silence_duration_ms: 700,
+          silence_duration_ms: 1200,
           create_response: true,
           interrupt_response: true,
         }

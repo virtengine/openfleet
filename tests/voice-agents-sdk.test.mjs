@@ -416,7 +416,7 @@ describe("voice-agents-sdk", () => {
       const config = await getClientSdkConfig({});
       expect(config.model).toBeDefined();
       expect(config.voiceId).toBe("alloy");
-      expect(config.turnDetection).toBe("server_vad");
+      expect(config.turnDetection).toBe("semantic_vad");
     });
   });
 

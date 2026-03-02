@@ -126,7 +126,7 @@ describe("voice-relay", () => {
       expect(cfg.provider).toBe("fallback");
       expect(cfg.model).toBe("gpt-realtime-1.5");
       expect(cfg.voiceId).toBe("alloy");
-      expect(cfg.turnDetection).toBe("server_vad");
+      expect(cfg.turnDetection).toBe("semantic_vad");
       expect(cfg.fallbackMode).toBe("browser");
       expect(cfg.enabled).toBe(true);
       expect(cfg.delegateExecutor).toBe("codex-sdk");
@@ -619,8 +619,12 @@ describe("voice-relay", () => {
       expect(allowed.has("list_tasks")).toBe(true);
       expect(allowed.has("get_agent_status")).toBe(true);
       expect(allowed.has("get_session_history")).toBe(true);
+      expect(allowed.has("create_workflow")).toBe(true);
+      expect(allowed.has("update_workflow_definition")).toBe(true);
+      expect(allowed.has("execute_workflow")).toBe(true);
       expect(allowed.has("list_workflow_runs")).toBe(true);
       expect(allowed.has("get_workflow_run")).toBe(true);
+      expect(allowed.has("analyze_workflow")).toBe(true);
     });
 
     it("does not include write-heavy tools", () => {

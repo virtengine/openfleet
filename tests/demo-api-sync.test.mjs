@@ -120,6 +120,8 @@ const INTENTIONALLY_SKIPPED = new Set([
   "/api/voice/sdk-config",     // Voice SDK config — server-only (checks SDK availability)
   "/api/voice/token",          // Ephemeral token creation — server-only (calls OpenAI/Azure API)
   "/api/voice/tool",           // Voice tool execution — server-only (runs real tools)
+  "/api/agents/tool",          // Agent tool execution parity endpoint — server-only (runs real tools)
+  "/api/agents/tools",         // Agent tool catalog parity endpoint — server-only (dynamic capability listing)
   "/api/voice/transcript",     // Voice transcript persistence into session history
   "/api/voice/endpoints",      // Voice endpoints config — server-only (reads/writes bosun.config.json)
   "/api/voice/endpoints/test",  // Voice endpoint connectivity test — server-only (calls provider APIs)

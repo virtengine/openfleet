@@ -102,6 +102,8 @@ function nowISO() {
  * @property {string[]} [skills]         - skill library refs to inject
  * @property {Object} [hookProfile]      - hook profile overrides
  * @property {Object} [env]              - extra env vars for the agent
+ * @property {string[]} [enabledTools]   - list of tool IDs enabled for this agent (null = all)
+ * @property {string[]} [enabledMcpServers] - list of MCP server IDs enabled for this agent
  */
 
 /**
@@ -687,6 +689,22 @@ export const BUILTIN_AGENT_PROFILES = [
     hookProfile: null,
     env: {},
     tags: ["test", "testing", "e2e", "unit", "coverage"],
+  },
+  {
+    id: "voice-agent",
+    name: "Voice Agent",
+    description: "Default voice assistant agent. Handles real-time voice sessions, tool calls, and delegate orchestration. Customize tools and MCP servers for voice interactions.",
+    titlePatterns: ["\\bvoice\\b", "\\bcall\\b", "\\bmeeting\\b", "\\bassistant\\b"],
+    scopes: ["voice", "assistant"],
+    sdk: null,
+    model: null,
+    promptOverride: null,
+    skills: [],
+    hookProfile: null,
+    env: {},
+    tags: ["voice", "assistant", "realtime", "default"],
+    enabledTools: null,
+    enabledMcpServers: [],
   },
 ];
 

@@ -852,7 +852,7 @@ export function getVoiceConfig(forceReload = false) {
   const model = String(voice.model || process.env.VOICE_MODEL || defaultModel).trim() || defaultModel;
   const voiceId = voice.voiceId || process.env.VOICE_ID || "alloy";
   const turnDetection =
-    voice.turnDetection || process.env.VOICE_TURN_DETECTION || "server_vad";
+    voice.turnDetection || process.env.VOICE_TURN_DETECTION || "semantic_vad";
   const defaultVisionModel =
     provider === "claude"
       ? CLAUDE_DEFAULT_VISION_MODEL
@@ -1132,9 +1132,9 @@ async function createOpenAIEphemeralToken(cfg, toolDefinitions = [], callContext
     turn_detection: {
       type: cfg.turnDetection,
       ...(cfg.turnDetection === "server_vad" ? {
-        threshold: 0.35,
+        threshold: 0.7,
         prefix_padding_ms: 400,
-        silence_duration_ms: 700,
+        silence_duration_ms: 1200,
         create_response: true,
         interrupt_response: true,
       } : {}),
@@ -1145,6 +1145,7 @@ async function createOpenAIEphemeralToken(cfg, toolDefinitions = [], callContext
       } : {}),
     },
     input_audio_transcription: { model: REALTIME_TRANSCRIBE_MODEL },
+    output_audio_transcription: { model: REALTIME_TRANSCRIBE_MODEL },
     tools: toolDefinitions,
   };
 
@@ -1226,9 +1227,9 @@ async function createAzureEphemeralToken(cfg, toolDefinitions = [], callContext 
     turn_detection: {
       type: cfg.turnDetection,
       ...(cfg.turnDetection === "server_vad" ? {
-        threshold: 0.35,
+        threshold: 0.7,
         prefix_padding_ms: 400,
-        silence_duration_ms: 700,
+        silence_duration_ms: 1200,
         create_response: true,
         interrupt_response: true,
       } : {}),
@@ -1239,6 +1240,7 @@ async function createAzureEphemeralToken(cfg, toolDefinitions = [], callContext 
       } : {}),
     },
     input_audio_transcription: { model: REALTIME_TRANSCRIBE_MODEL },
+    output_audio_transcription: { model: REALTIME_TRANSCRIBE_MODEL },
     tools: toolDefinitions,
   };
 
@@ -1420,9 +1422,16 @@ const VOICE_SESSION_ALLOWED_TOOLS = new Set([
   "list_directory",
   "get_recent_logs",
   "list_workflows",
+  "create_workflow",
+  "update_workflow_definition",
+  "delete_workflow",
+  "create_workflow_from_template",
+  "generate_workflow_with_agent",
   "get_workflow_definition",
+  "execute_workflow",
   "list_workflow_runs",
   "get_workflow_run",
+  "analyze_workflow",
   "retry_workflow_run",
   "list_skills",
   "list_prompts",

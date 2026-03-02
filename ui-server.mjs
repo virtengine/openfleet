@@ -72,6 +72,23 @@ import {
   getManifestPath,
 } from "./library-manager.mjs";
 import {
+  listCatalog,
+  getCatalogEntry,
+  installMcpServer,
+  uninstallMcpServer,
+  listInstalledMcpServers,
+  getInstalledMcpServer,
+} from "./mcp-registry.mjs";
+import {
+  loadToolConfig,
+  saveToolConfig,
+  getAgentToolConfig,
+  setAgentToolConfig,
+  getEffectiveTools,
+  listAvailableTools,
+  DEFAULT_BUILTIN_TOOLS,
+} from "./agent-tool-config.mjs";
+import {
   loadSharedWorkspaceRegistry,
   sweepExpiredLeases,
   getSharedAvailabilityMap,
@@ -6648,6 +6665,157 @@ async function handleApi(req, res, url) {
     return;
   }
 
+  // ── MCP Server Management API ─────────────────────────────────────────────
+
+  if (path === "/api/mcp/catalog") {
+    try {
+      const tagsRaw = (url.searchParams.get("tags") || "").trim();
+      const tags = tagsRaw ? tagsRaw.split(",").map((t) => t.trim()) : undefined;
+      const catalog = listCatalog({ tags });
+      jsonResponse(res, 200, { ok: true, data: catalog });
+    } catch (err) {
+      jsonResponse(res, 500, { ok: false, error: err.message });
+    }
+    return;
+  }
+
+  if (path === "/api/mcp/installed") {
+    try {
+      const servers = await listInstalledMcpServers(repoRoot);
+      jsonResponse(res, 200, { ok: true, data: servers });
+    } catch (err) {
+      jsonResponse(res, 500, { ok: false, error: err.message });
+    }
+    return;
+  }
+
+  if (path === "/api/mcp/install" && req.method === "POST") {
+    try {
+      const body = await readJsonBody(req);
+      if (!body?.id && !body?.serverDef) {
+        jsonResponse(res, 400, { ok: false, error: "id (catalog) or serverDef (custom) required" });
+        return;
+      }
+      const result = await installMcpServer(
+        repoRoot,
+        body.serverDef || body.id,
+        { envOverrides: body.envOverrides },
+      );
+      jsonResponse(res, 200, { ok: true, data: result });
+      broadcastUiEvent(["library"], "invalidate", { reason: "mcp-installed", id: result?.id });
+    } catch (err) {
+      jsonResponse(res, 500, { ok: false, error: err.message });
+    }
+    return;
+  }
+
+  if (path === "/api/mcp/uninstall" && req.method === "POST") {
+    try {
+      const body = await readJsonBody(req);
+      if (!body?.id) {
+        jsonResponse(res, 400, { ok: false, error: "id required" });
+        return;
+      }
+      const removed = await uninstallMcpServer(repoRoot, body.id);
+      jsonResponse(res, 200, { ok: true, removed });
+      broadcastUiEvent(["library"], "invalidate", { reason: "mcp-uninstalled", id: body.id });
+    } catch (err) {
+      jsonResponse(res, 500, { ok: false, error: err.message });
+    }
+    return;
+  }
+
+  if (path === "/api/mcp/configure" && req.method === "POST") {
+    try {
+      const body = await readJsonBody(req);
+      if (!body?.id) {
+        jsonResponse(res, 400, { ok: false, error: "id required" });
+        return;
+      }
+      const existing = await getInstalledMcpServer(repoRoot, body.id);
+      if (!existing) {
+        jsonResponse(res, 404, { ok: false, error: "MCP server not installed" });
+        return;
+      }
+      // Re-install with updated env
+      const updated = await installMcpServer(repoRoot, {
+        ...existing.serverConfig,
+        id: body.id,
+        name: existing.name,
+        description: existing.description,
+        tags: existing.tags,
+      }, { envOverrides: body.env });
+      jsonResponse(res, 200, { ok: true, data: updated });
+    } catch (err) {
+      jsonResponse(res, 500, { ok: false, error: err.message });
+    }
+    return;
+  }
+
+  // ── Agent Tool Configuration API ──────────────────────────────────────────
+
+  if (path === "/api/agent-tools/available") {
+    try {
+      const available = await listAvailableTools(repoRoot);
+      jsonResponse(res, 200, { ok: true, data: available });
+    } catch (err) {
+      jsonResponse(res, 500, { ok: false, error: err.message });
+    }
+    return;
+  }
+
+  if (path === "/api/agent-tools/config") {
+    try {
+      if (req.method === "GET") {
+        const agentId = (url.searchParams.get("agentId") || "").trim();
+        if (!agentId) {
+          // Return full config
+          const config = loadToolConfig(repoRoot);
+          jsonResponse(res, 200, { ok: true, data: config });
+          return;
+        }
+        const effective = getEffectiveTools(repoRoot, agentId);
+        jsonResponse(res, 200, { ok: true, data: effective });
+        return;
+      }
+
+      if (req.method === "POST") {
+        const body = await readJsonBody(req);
+        if (!body?.agentId) {
+          jsonResponse(res, 400, { ok: false, error: "agentId required" });
+          return;
+        }
+        const result = setAgentToolConfig(repoRoot, body.agentId, {
+          enabledTools: body.enabledTools,
+          enabledMcpServers: body.enabledMcpServers,
+          disabledBuiltinTools: body.disabledBuiltinTools,
+        });
+        jsonResponse(res, 200, { ok: true, ...result });
+        broadcastUiEvent(["library"], "invalidate", { reason: "agent-tools-updated", agentId: body.agentId });
+        return;
+      }
+
+      jsonResponse(res, 405, { ok: false, error: "method not allowed" });
+    } catch (err) {
+      jsonResponse(res, 500, { ok: false, error: err.message });
+    }
+    return;
+  }
+
+  if (path === "/api/agent-tools/defaults") {
+    try {
+      jsonResponse(res, 200, {
+        ok: true,
+        data: {
+          builtinTools: [...DEFAULT_BUILTIN_TOOLS],
+        },
+      });
+    } catch (err) {
+      jsonResponse(res, 500, { ok: false, error: err.message });
+    }
+    return;
+  }
+
   if (path === "/api/logs") {
     const lines = Math.min(
       1000,
@@ -9814,7 +9982,20 @@ async function handleApi(req, res, url) {
       const privileged = isPrivilegedVoiceContext(callContext);
       const delegateOnly =
         body?.delegateOnly === true && !privileged;
-      const tools = await getVoiceToolDefinitions({ delegateOnly, context: callContext });
+      let tools = await getVoiceToolDefinitions({ delegateOnly, context: callContext });
+
+      // Apply voice-agent tool config if present
+      try {
+        const { getAgentToolConfig } = await import("./agent-tool-config.mjs");
+        const voiceToolCfg = getAgentToolConfig(repoRoot, "voice-agent");
+        if (voiceToolCfg) {
+          const disabled = voiceToolCfg.disabledBuiltinTools || [];
+          if (disabled.length > 0 && Array.isArray(tools)) {
+            tools = tools.filter(t => !disabled.includes(String(t?.name || "")));
+          }
+        }
+      } catch { /* agent-tool-config not critical */ }
+
       const tokenData = await createEphemeralToken(tools, callContext);
 
       // When client requests sdkMode, include extra fields for @openai/agents SDK
@@ -9864,9 +10045,45 @@ async function handleApi(req, res, url) {
     return;
   }
 
-  // POST /api/voice/tool
-  if (path === "/api/voice/tool" && req.method === "POST") {
+  // GET /api/agents/tools
+  if (path === "/api/agents/tools" && req.method === "GET") {
     try {
+      const { getVoiceToolDefinitions, getAllowedVoiceTools } = await import("./voice-relay.mjs");
+      const context = {
+        sessionId: String(url.searchParams.get("sessionId") || "").trim() || undefined,
+        executor: String(url.searchParams.get("executor") || "").trim() || undefined,
+        mode: String(url.searchParams.get("mode") || "").trim() || undefined,
+        model: String(url.searchParams.get("model") || "").trim() || undefined,
+        authSource: String(authResult?.source || "").trim() || undefined,
+      };
+      const allTools = await getVoiceToolDefinitions({ delegateOnly: false, context });
+      const allowed = await getAllowedVoiceTools(context);
+      const allowedTools = allowed instanceof Set ? allowed : null;
+      const tools = allowedTools
+        ? (Array.isArray(allTools) ? allTools : []).filter((tool) => allowedTools.has(String(tool?.name || "").trim()))
+        : allTools;
+      jsonResponse(res, 200, {
+        ok: true,
+        tools: Array.isArray(tools) ? tools : [],
+        allowedTools: allowedTools ? Array.from(allowedTools.values()).sort() : null,
+        totalTools: Array.isArray(tools) ? tools.length : 0,
+      });
+    } catch (err) {
+      jsonResponse(res, 500, { ok: false, error: err.message });
+    }
+    return;
+  }
+
+  // POST /api/voice/tool
+  // POST /api/agents/tool
+  if ((path === "/api/voice/tool" || path === "/api/agents/tool") && req.method === "POST") {
+    try {
+      const isVoiceToolRoute = path === "/api/voice/tool";
+      const eventSource = isVoiceToolRoute ? "voice" : "agent";
+      const startedEventType = isVoiceToolRoute ? "voice_tool_started" : "agent_tool_started";
+      const errorEventType = isVoiceToolRoute ? "voice_tool_error" : "agent_tool_error";
+      const completeEventType = isVoiceToolRoute ? "voice_tool_complete_summary" : "agent_tool_complete_summary";
+      const eventLabel = isVoiceToolRoute ? "Voice Action" : "Agent Tool";
       const body = await readJsonBody(req);
       const {
         toolName,
@@ -9878,7 +10095,11 @@ async function handleApi(req, res, url) {
       } = body || {};
       const normalizedToolName = String(toolName || "").trim();
       if (!normalizedToolName) {
-        jsonResponse(res, 400, { error: "toolName required" });
+        if (isVoiceToolRoute) {
+          jsonResponse(res, 400, { error: "toolName required" });
+        } else {
+          jsonResponse(res, 400, { ok: false, error: "toolName required" });
+        }
         return;
       }
       const summarizeToolArgs = (value) => {
@@ -9928,11 +10149,11 @@ async function handleApi(req, res, url) {
         }
         tracker.recordEvent(session?.id || context.sessionId, {
           role: "system",
-          content: `[Voice Action Started] ${normalizedToolName}\nArgs: ${summarizeToolArgs(normalizedArgs)}`,
+          content: `[${eventLabel} Started] ${normalizedToolName}\nArgs: ${summarizeToolArgs(normalizedArgs)}`,
           timestamp: new Date().toISOString(),
           meta: {
-            source: "voice",
-            eventType: "voice_tool_started",
+            source: eventSource,
+            eventType: startedEventType,
             toolName: normalizedToolName,
           },
         });
@@ -9941,9 +10162,12 @@ async function handleApi(req, res, url) {
         // Session-bound calls are validated against the allowed tool set
         const allowed = await getAllowedVoiceTools(context);
         if (!allowed.has(normalizedToolName)) {
-          jsonResponse(res, 400, {
-            error: `Tool "${normalizedToolName}" is not allowed for session-bound calls`,
-          });
+          const deniedMessage = `Tool "${normalizedToolName}" is not allowed for session-bound calls`;
+          if (isVoiceToolRoute) {
+            jsonResponse(res, 400, { error: deniedMessage });
+          } else {
+            jsonResponse(res, 400, { ok: false, error: deniedMessage });
+          }
           return;
         }
       }
@@ -9952,31 +10176,43 @@ async function handleApi(req, res, url) {
         if (result?.error) {
           tracker.recordEvent(session?.id || context.sessionId, {
             role: "system",
-            content: `[Voice Action Error] ${normalizedToolName}\nError: ${String(result.error || "Unknown error")}`,
+            content: `[${eventLabel} Error] ${normalizedToolName}\nError: ${String(result.error || "Unknown error")}`,
             timestamp: new Date().toISOString(),
             meta: {
-              source: "voice",
-              eventType: "voice_tool_error",
+              source: eventSource,
+              eventType: errorEventType,
               toolName: normalizedToolName,
             },
           });
         } else {
           tracker.recordEvent(session?.id || context.sessionId, {
             role: "system",
-            content: `[Voice Action Complete] ${normalizedToolName}\nSummary: ${summarizeToolResult(result?.result)}`,
+            content: `[${eventLabel} Complete] ${normalizedToolName}\nSummary: ${summarizeToolResult(result?.result)}`,
             timestamp: new Date().toISOString(),
             meta: {
-              source: "voice",
-              eventType: "voice_tool_complete_summary",
+              source: eventSource,
+              eventType: completeEventType,
               toolName: normalizedToolName,
             },
           });
         }
       }
 
-      jsonResponse(res, 200, result);
+      if (isVoiceToolRoute) {
+        jsonResponse(res, 200, result);
+      } else {
+        jsonResponse(res, 200, {
+          ok: !result?.error,
+          toolName: normalizedToolName,
+          ...result,
+        });
+      }
     } catch (err) {
-      jsonResponse(res, 500, { error: err.message });
+      if (path === "/api/voice/tool") {
+        jsonResponse(res, 500, { error: err.message });
+      } else {
+        jsonResponse(res, 500, { ok: false, error: err.message });
+      }
     }
     return;
   }

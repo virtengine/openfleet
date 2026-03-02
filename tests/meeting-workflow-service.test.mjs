@@ -38,7 +38,7 @@ function createHarness(overrides = {}) {
       model: "gpt-4o-realtime-preview",
       visionModel: "gpt-4o-mini",
       voiceId: "alloy",
-      turnDetection: "server_vad",
+      turnDetection: "semantic_vad",
       fallbackMode: "browser",
       delegateExecutor: "codex-sdk",
       enabled: true,

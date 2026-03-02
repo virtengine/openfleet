@@ -246,7 +246,7 @@ function _flushPendingTranscriptBuffers() {
   }
 
   const finalUser = String(_pendingUserTranscriptText || "").trim();
-  if (finalUser) {
+  if (finalUser && ENABLE_USER_TRANSCRIPT) {
     _persistTranscriptIfNew("user", finalUser, "sdk.history_updated.user.flush");
   }
 
@@ -314,10 +314,13 @@ function _scheduleUserTranscriptFinalize(text) {
     if (ENABLE_USER_TRANSCRIPT) {
       sdkVoiceTranscript.value = finalText;
       emit("transcript", { text: finalText, final: true });
+      _persistTranscriptIfNew("user", finalText, "sdk.history_updated.user.final");
     } else {
       sdkVoiceTranscript.value = "";
+      // Skip persisting user transcript — ASR often hallucinates wrong
+      // languages from short fragments; the model still receives the raw
+      // audio correctly so nothing is lost.
     }
-    _persistTranscriptIfNew("user", finalText, "sdk.history_updated.user.final");
   }, 350);
 }
 
@@ -455,14 +458,14 @@ async function startAgentsSdkSession(config, options = {}) {
   // Determine model and voice
   const model = String(tokenData.model || resolvedConfig.model || "gpt-realtime-1.5").trim();
   const voiceId = String(tokenData.voiceId || resolvedConfig.voiceId || "alloy").trim();
-  const turnDetection = String(resolvedConfig.turnDetection || "server_vad").trim();
+  const turnDetection = String(resolvedConfig.turnDetection || "semantic_vad").trim();
   const turnDetectionConfig = {
     type: turnDetection,
     ...(turnDetection === "server_vad"
       ? {
-          threshold: 0.35,
+          threshold: 0.7,
           prefix_padding_ms: 400,
-          silence_duration_ms: 700,
+          silence_duration_ms: 1300,
           create_response: true,
           interrupt_response: true,
           createResponse: true,
@@ -494,6 +497,7 @@ async function startAgentsSdkSession(config, options = {}) {
         output: {
           format: "pcm16",
           voice: voiceId,
+          transcription: { model: "gpt-4o-transcribe" },
         },
       },
     },

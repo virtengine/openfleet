@@ -1103,6 +1103,74 @@ const EXPRESSION_PRESETS = [
 ];
 
 /* ═══════════════════════════════════════════════════════════════
+ *  Workflow Agent Library Picker
+ *  — Lets users select an agent profile from the Library
+ * ═══════════════════════════════════════════════════════════════ */
+
+function WorkflowAgentLibraryPicker({ config, onUpdate }) {
+  const [agents, setAgents] = useState([]);
+  const [loading, setLoading] = useState(false);
+  const [expanded, setExpanded] = useState(false);
+
+  const loadAgents = useCallback(async () => {
+    if (agents.length > 0) { setExpanded(e => !e); return; }
+    setLoading(true);
+    try {
+      const res = await apiFetch("/api/library?type=agent");
+      if (res.ok) {
+        const data = await res.json();
+        setAgents(data.entries || data || []);
+      }
+    } catch { /* ignore */ }
+    setLoading(false);
+    setExpanded(true);
+  }, [agents.length]);
+
+  const selectAgent = useCallback((agent) => {
+    onUpdate("agentProfileId", agent.id);
+    if (agent.content?.prompt) onUpdate("prompt", agent.content?.prompt);
+    if (agent.content?.model) onUpdate("model", agent.content.model);
+    haptic?.("light");
+    showToast(`Agent "${agent.name || agent.id}" applied`);
+  }, [onUpdate]);
+
+  const selected = config?.agentProfileId;
+
+  return html`
+    <div style="margin-top: 10px; margin-bottom: 6px;">
+      <button
+        onClick=${loadAgents}
+        style="width: 100%; padding: 7px 10px; font-size: 11px; border: 1px solid #2a3040; border-radius: 6px; background: #1a1f2e; color: #c9d1d9; cursor: pointer; display: flex; align-items: center; gap: 8px;"
+      >
+        <span class="btn-icon" style="color: #60a5fa;">${resolveIcon("users")}</span>
+        <span style="flex: 1; text-align: left; font-weight: 500;">Library Agent Profiles</span>
+        ${selected && html`<span style="font-size: 10px; background: #1e3a5f; color: #60a5fa; padding: 1px 6px; border-radius: 4px;">${selected}</span>`}
+        <span style="font-size: 10px; color: #6b7280;">${loading ? "…" : (expanded ? ICONS.chevronDown : ICONS.arrowRight)}</span>
+      </button>
+      ${expanded && html`
+        <div style="margin-top: 6px; display: flex; flex-direction: column; gap: 4px; max-height: 220px; overflow-y: auto; padding-right: 4px;">
+          ${agents.length === 0 && html`<div style="font-size: 11px; color: #6b7280; padding: 6px;">No agent profiles in library.</div>`}
+          ${agents.map(a => html`
+            <button
+              key=${a.id}
+              onClick=${() => selectAgent(a)}
+              style="padding: 6px 10px; font-size: 11px; border: 1px solid ${selected === a.id ? '#2563eb' : '#2a3040'}; border-radius: 6px; background: ${selected === a.id ? '#1e3a5f' : '#161b22'}; color: #c9d1d9; cursor: pointer; text-align: left; transition: all 0.15s;"
+            >
+              <div style="font-weight: 500; display: flex; align-items: center; gap: 6px;">
+                <span class="btn-icon" style="color: ${selected === a.id ? '#60a5fa' : '#6b7280'};">${resolveIcon("user")}</span>
+                <span>${a.name || a.id}</span>
+                ${selected === a.id && html`<span style="margin-left: auto; font-size: 9px; color: #60a5fa;">● active</span>`}
+              </div>
+              ${a.description && html`<div style="font-size: 10px; color: #6b7280; margin-top: 2px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">${a.description}</div>`}
+            </button>
+          `)}
+        </div>
+      `}
+    </div>
+  `;
+}
+
+/* ═══════════════════════════════════════════════════════════════
  *  Node Config Editor (right side panel)
  * ═══════════════════════════════════════════════════════════════ */
 
@@ -1218,6 +1286,7 @@ function NodeConfigEditor({ node, nodeTypes: types, onUpdate, onUpdateLabel, onC
             </div>
           `}
           ${(node.type === "action.run_agent") && html`
+            <${WorkflowAgentLibraryPicker} config=${config} onUpdate=${onFieldChange} />
             <div style="margin-top: 8px; padding: 6px 8px; background: #1a1f2e; border-radius: 6px; border-left: 3px solid #a78bfa;">
               <div style="font-size: 10px; color: #a78bfa; font-weight: 600; margin-bottom: 2px; display: flex; align-items: center; gap: 6px;">
                 <span class="btn-icon">${resolveIcon("lightbulb")}</span>
