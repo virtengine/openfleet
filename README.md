@@ -117,6 +117,13 @@ Set `primaryAgent` in `.bosun/bosun.config.json` or choose an executor preset du
 - Use `/report weekly` as an alias.
 - Optional scheduler knobs in `.env`: `TELEGRAM_WEEKLY_REPORT_ENABLED`, `TELEGRAM_WEEKLY_REPORT_DAY`, `TELEGRAM_WEEKLY_REPORT_HOUR` (UTC), and `TELEGRAM_WEEKLY_REPORT_DAYS`.
 
+## Daemon and sentinel startup
+
+- `bosun --daemon` starts the long-running daemon/monitor.
+- `bosun --sentinel` starts only the Telegram sentinel companion process.
+- `bosun --daemon --sentinel` starts daemon + sentinel together (recommended for unattended operation).
+- `bosun --terminate` is the clean reset command when you suspect stale/ghost processes.
+
 ## Documentation
 
 **Published docs (website):** https://bosun.engineer/docs/

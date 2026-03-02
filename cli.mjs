@@ -33,6 +33,7 @@ import {
   detectLegacySetup,
   migrateFromLegacy,
 } from "./compat.mjs";
+import { resolveRepoRoot } from "./repo-root.mjs";
 
 const MONITOR_START_MAX_WAIT_MS = Math.max(
   0,
@@ -263,19 +264,27 @@ function printConfigLocations() {
 
 // ── Daemon Mode ──────────────────────────────────────────────────────────────
 
+const runtimeRepoRoot = resolveRepoRoot();
+const runtimeCacheDir = resolve(runtimeRepoRoot, ".cache");
 // Monitor singleton lock file (owned by monitor.mjs / maintenance.mjs).
-const PID_FILE = resolve(__dirname, ".cache", "bosun.pid");
+const PID_FILE = resolve(runtimeCacheDir, "bosun.pid");
+const LEGACY_MONITOR_PID_FILE = resolve(__dirname, ".cache", "bosun.pid");
 // Daemon supervisor PID file (owned by cli.mjs --daemon-child).
-const DAEMON_PID_FILE = resolve(__dirname, ".cache", "bosun-daemon.pid");
+const DAEMON_PID_FILE = resolve(runtimeCacheDir, "bosun-daemon.pid");
+const LEGACY_DAEMON_PID_FILE = resolve(__dirname, ".cache", "bosun-daemon.pid");
 const DAEMON_LOG = resolve(__dirname, "logs", "daemon.log");
 const SENTINEL_PID_FILE = resolve(
+  runtimeCacheDir,
+  "telegram-sentinel.pid",
+);
+const SENTINEL_PID_FILE_LEGACY = resolve(
   __dirname,
   "..",
   "..",
   ".cache",
   "telegram-sentinel.pid",
 );
-const SENTINEL_PID_FILE_LEGACY = resolve(
+const SENTINEL_PID_FILE_LEGACY_ALT = resolve(
   __dirname,
   ".cache",
   "telegram-sentinel.pid",
@@ -359,6 +368,14 @@ function sleep(ms) {
   return new Promise((resolveSleep) => setTimeout(resolveSleep, ms));
 }
 
+function readSentinelPid() {
+  return (
+    readAlivePid(SENTINEL_PID_FILE) ||
+    readAlivePid(SENTINEL_PID_FILE_LEGACY) ||
+    readAlivePid(SENTINEL_PID_FILE_LEGACY_ALT)
+  );
+}
+
 async function runSentinelCli(flag) {
   return await new Promise((resolveExit) => {
     const child = spawn(process.execPath, [SENTINEL_SCRIPT_PATH, flag], {
@@ -373,8 +390,7 @@ async function runSentinelCli(flag) {
 
 async function ensureSentinelRunning(options = {}) {
   const { quiet = false } = options;
-  const existing =
-    readAlivePid(SENTINEL_PID_FILE) || readAlivePid(SENTINEL_PID_FILE_LEGACY);
+  const existing = readSentinelPid();
   if (existing) {
     if (!quiet) {
       console.log(`  telegram-sentinel already running (PID ${existing})`);
@@ -402,8 +418,7 @@ async function ensureSentinelRunning(options = {}) {
   const timeoutAt = Date.now() + 5000;
   while (Date.now() < timeoutAt) {
     await sleep(200);
-    const pid =
-      readAlivePid(SENTINEL_PID_FILE) || readAlivePid(SENTINEL_PID_FILE_LEGACY);
+    const pid = readSentinelPid();
     if (pid) {
       if (!quiet) {
         console.log(`  telegram-sentinel started (PID ${pid})`);
@@ -425,7 +440,8 @@ async function ensureSentinelRunning(options = {}) {
 }
 
 function getDaemonPid() {
-  const tracked = readAlivePid(DAEMON_PID_FILE);
+  const tracked =
+    readAlivePid(DAEMON_PID_FILE) || readAlivePid(LEGACY_DAEMON_PID_FILE);
   if (tracked) return tracked;
 
   // Legacy fallback: older versions stored daemon PID in bosun.pid
@@ -494,6 +510,7 @@ function writePidFile(pid) {
 function removePidFile() {
   try {
     if (existsSync(DAEMON_PID_FILE)) unlinkSync(DAEMON_PID_FILE);
+    if (existsSync(LEGACY_DAEMON_PID_FILE)) unlinkSync(LEGACY_DAEMON_PID_FILE);
   } catch {
     /* ok */
   }
@@ -732,9 +749,12 @@ function findAllBosunProcessPids() {
 function removeKnownPidFiles() {
   const pidFiles = [
     DAEMON_PID_FILE,
+    LEGACY_DAEMON_PID_FILE,
     PID_FILE,
+    LEGACY_MONITOR_PID_FILE,
     SENTINEL_PID_FILE,
     SENTINEL_PID_FILE_LEGACY,
+    SENTINEL_PID_FILE_LEGACY_ALT,
     resolve(__dirname, "..", ".cache", "bosun.pid"),
     resolve(process.cwd(), ".cache", "bosun.pid"),
   ];
@@ -751,8 +771,8 @@ function terminateBosun() {
   const tracked = [
     getDaemonPid(),
     readAlivePid(PID_FILE),
-    readAlivePid(SENTINEL_PID_FILE),
-    readAlivePid(SENTINEL_PID_FILE_LEGACY),
+    readAlivePid(LEGACY_MONITOR_PID_FILE),
+    readSentinelPid(),
   ].filter((pid) => Number.isFinite(pid) && pid > 0);
   const ghosts = findGhostDaemonPids();
   const scanned = findAllBosunProcessPids();
@@ -933,7 +953,7 @@ async function main() {
     args.includes("--daemon-child") ||
     process.env.BOSUN_DAEMON === "1"
   ) {
-    const existingDaemonPid = readAlivePid(DAEMON_PID_FILE);
+    const existingDaemonPid = getDaemonPid();
     if (existingDaemonPid && existingDaemonPid !== process.pid) {
       process.stdout.write(
         `[daemon] another daemon-child already owns ${DAEMON_PID_FILE} (PID ${existingDaemonPid}) — duplicate daemon-child ignored.\n`,
@@ -1006,7 +1026,7 @@ async function main() {
         : "requested by BOSUN_SENTINEL_AUTO_START";
       const strictSentinel = parseBoolEnv(
         process.env.BOSUN_SENTINEL_STRICT,
-        false,
+        sentinelExplicit,
       );
       const prefix = strictSentinel ? ":close:" : ":alert:";
       const suffix = strictSentinel
@@ -1018,6 +1038,13 @@ async function main() {
       if (strictSentinel) {
         process.exit(1);
       }
+    }
+
+    if (sentinelExplicit && !IS_DAEMON_CHILD) {
+      console.log(
+        "  Sentinel started without launching monitor (use --daemon --sentinel to run both).",
+      );
+      process.exit(0);
     }
   }
 

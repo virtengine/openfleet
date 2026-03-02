@@ -64,7 +64,9 @@ const __dirname = dirname(__filename);
 const repoRoot = resolveRepoRoot();
 const cacheDir = resolve(repoRoot, ".cache");
 
-const MONITOR_PID_FILE = resolve(__dirname, ".cache", "bosun.pid");
+const MONITOR_PID_FILE = resolve(cacheDir, "bosun.pid");
+const MONITOR_PID_FILE_LEGACY = resolve(__dirname, ".cache", "bosun.pid");
+const MONITOR_PID_FILE_CWD = resolve(process.cwd(), ".cache", "bosun.pid");
 const SENTINEL_PID_FILE = resolve(cacheDir, "telegram-sentinel.pid");
 const SENTINEL_HEARTBEAT_FILE = resolve(cacheDir, "sentinel-heartbeat.json");
 const SENTINEL_LOCK_FILE = resolve(cacheDir, "telegram-sentinel.lock");
@@ -582,7 +584,7 @@ async function attemptMonitorRecovery(triggerReason) {
 
   try {
     await ensureMonitorRunning(`sentinel recovery: ${triggerReason}`);
-    const pid = readAlivePid(MONITOR_PID_FILE);
+    const pid = readMonitorPid();
     const pidSuffix = pid ? ` (PID ${pid})` : "";
     await sendTelegram(
       telegramChatId,
@@ -678,6 +680,20 @@ function removePidFile(pidPath) {
   } catch {
     /* best effort */
   }
+}
+
+function readMonitorPid() {
+  return (
+    readAlivePid(MONITOR_PID_FILE) ||
+    readAlivePid(MONITOR_PID_FILE_LEGACY) ||
+    readAlivePid(MONITOR_PID_FILE_CWD)
+  );
+}
+
+function removeMonitorPidFiles() {
+  removePidFile(MONITOR_PID_FILE);
+  removePidFile(MONITOR_PID_FILE_LEGACY);
+  removePidFile(MONITOR_PID_FILE_CWD);
 }
 
 // ── Sentinel Lock ────────────────────────────────────────────────────────────
@@ -1042,7 +1058,7 @@ async function handleStandaloneCommand(chatId, command, fullText) {
  * @param {string} chatId
  */
 async function handlePing(chatId) {
-  const monPid = readAlivePid(MONITOR_PID_FILE);
+  const monPid = readMonitorPid();
   const monStatus = monPid ? `:check: running (PID ${monPid})` : ":close: not running";
   const uptime = formatUptime(Date.now() - new Date(startedAt).getTime());
   await sendTelegram(
@@ -1138,7 +1154,7 @@ async function handleSentinelInfo(chatId) {
  * @param {string} chatId
  */
 async function handleStartMonitor(chatId) {
-  const monPid = readAlivePid(MONITOR_PID_FILE);
+  const monPid = readMonitorPid();
   if (monPid) {
     await sendTelegram(
       chatId,
@@ -1149,7 +1165,7 @@ async function handleStartMonitor(chatId) {
   await sendTelegram(chatId, ":rocket: Starting bosun...");
   try {
     await ensureMonitorRunning("manual /start command");
-    const pid = readAlivePid(MONITOR_PID_FILE);
+    const pid = readMonitorPid();
     await sendTelegram(
       chatId,
       `:check: bosun started${pid ? ` (PID ${pid})` : ""}.`,
@@ -1167,7 +1183,7 @@ async function handleStartMonitor(chatId) {
  * @param {string} chatId
  */
 async function handleStopMonitor(chatId) {
-  const monPid = readAlivePid(MONITOR_PID_FILE);
+  const monPid = readMonitorPid();
   if (!monPid) {
     await sendTelegram(chatId, ":help: bosun is not running.");
     return;
@@ -1191,7 +1207,7 @@ async function handleStopMonitor(chatId) {
         /* best effort */
       }
     }
-    removePidFile(MONITOR_PID_FILE);
+    removeMonitorPidFiles();
     await sendTelegram(chatId, ":check: bosun stopped.");
     monitorManualStopUntil = Date.now() + sentinelConfig.manualStopHoldMs;
     saveRecoveryState();
@@ -1207,7 +1223,7 @@ async function handleStopMonitor(chatId) {
  * @param {string} chatId
  */
 async function handleHelp(chatId) {
-  const monPid = readAlivePid(MONITOR_PID_FILE);
+  const monPid = readMonitorPid();
   const monStatus = monPid ? "running" : "stopped";
 
   const lines = [
@@ -1236,7 +1252,7 @@ async function handleHelp(chatId) {
  * @param {string} command
  */
 async function handleMonitorCommand(chatId, text, command) {
-  const monPid = readAlivePid(MONITOR_PID_FILE);
+  const monPid = readMonitorPid();
   const requiresMonitor = MONITOR_REQUIRED_COMMANDS.has(command);
 
   if (monPid) {
@@ -1343,7 +1359,7 @@ export function getQueuedCommands() {
  * @returns {boolean}
  */
 export function isMonitorRunning() {
-  return readAlivePid(MONITOR_PID_FILE) !== null;
+  return readMonitorPid() !== null;
 }
 
 /**
@@ -1355,7 +1371,7 @@ export function isMonitorRunning() {
  */
 export async function ensureMonitorRunning(reason) {
   // Already running
-  if (readAlivePid(MONITOR_PID_FILE)) return;
+  if (readMonitorPid()) return;
 
   // Another call is already starting the monitor — piggyback on it
   if (monitorStartPromise) {
@@ -1443,7 +1459,7 @@ async function startAndWaitForMonitor(reason) {
   while (Date.now() < deadline) {
     await sleep(MONITOR_HEALTH_POLL_MS);
 
-    const alivePid = readAlivePid(MONITOR_PID_FILE);
+    const alivePid = readMonitorPid();
     if (alivePid) {
       log("info", `monitor is healthy (PID ${alivePid})`);
       lastMonitorStartAt = Date.now();
@@ -1605,13 +1621,13 @@ async function canStartSentinelPolling() {
  * Periodic health check for bosun. Runs every HEALTH_CHECK_INTERVAL_MS.
  */
 async function healthCheck() {
-  const monPid = readAlivePid(MONITOR_PID_FILE);
+  const monPid = readMonitorPid();
 
   if (mode === "companion") {
     if (!monPid) {
       // Monitor died while in companion mode — send crash notification and go standalone
       log("warn", "monitor process died — transitioning to standalone");
-      removePidFile(MONITOR_PID_FILE);
+      removeMonitorPidFiles();
       recordMonitorCrashEvent();
 
       const recentStartAge =
@@ -1704,7 +1720,7 @@ async function writeHeartbeat() {
     pid: process.pid,
     startedAt,
     mode,
-    monitorPid: readAlivePid(MONITOR_PID_FILE),
+    monitorPid: readMonitorPid(),
     lastCheck: new Date().toISOString(),
     commandsQueued: commandQueue.length,
     commandsProcessed,
@@ -1773,7 +1789,7 @@ export async function startSentinel(options = {}) {
   log("info", `sentinel started (PID ${process.pid})`);
 
   // Determine initial mode
-  const monPid = readAlivePid(MONITOR_PID_FILE);
+  const monPid = readMonitorPid();
   if (monPid) {
     log(
       "info",
@@ -1879,7 +1895,7 @@ export function getSentinelStatus() {
     running,
     startedAt,
     mode,
-    monitorPid: readAlivePid(MONITOR_PID_FILE),
+    monitorPid: readMonitorPid(),
     polling,
     commandsQueued: commandQueue.length,
     commandsProcessed,

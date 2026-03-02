@@ -1104,24 +1104,10 @@ export function TaskProgressModal({ task, onClose }) {
 
       
       <div class="btn-row tp-actions">
-        <button
-          class="btn btn-ghost btn-sm"
-          onClick=${() => { haptic(); sendCommandToChat("/steer " + task.id); onClose(); }}
-          title="Guide the agent mid-task"
-        >${iconText(":chat: Steer")}</button>
-        <button
-          class="btn btn-ghost btn-sm"
-          onClick=${() => { haptic(); sendCommandToChat("/logs " + task.id); onClose(); }}
-        >${iconText(":file: Logs")}</button>
-        <button class="btn btn-secondary btn-sm" onClick=${handleMarkReview}>
-          → Move to Review
-        </button>
-        <button
-          class="btn btn-ghost btn-sm"
-          style="color:var(--color-error)"
-          onClick=${handleCancel}
-          disabled=${cancelling}
-        >${cancelling ? "Cancelling…" : iconText("✕ Cancel")}</button>
+        <${Tooltip} title="Guide the agent mid-task"><${Button} variant="text" size="small" onClick=${() => { haptic(); sendCommandToChat("/steer " + task.id); onClose(); }}>${iconText(":chat: Steer")}<//><//>
+        <${Button} variant="text" size="small" onClick=${() => { haptic(); sendCommandToChat("/logs " + task.id); onClose(); }}>${iconText(":file: Logs")}<//>
+        <${Button} variant="outlined" size="small" onClick=${handleMarkReview}>→ Move to Review<//>
+        <${Button} variant="text" size="small" style=${{ color: "var(--color-error)" }} onClick=${handleCancel} disabled=${cancelling}>${cancelling ? "Cancelling…" : iconText("✕ Cancel")}<//>
       </div>
     <//>
   `;
@@ -1345,30 +1331,13 @@ export function TaskReviewModal({ task, onClose, onStart }) {
 
       
       <div class="btn-row tr-actions">
-        <button
-          class="btn btn-primary btn-sm"
-          onClick=${handleMarkDone}
-          disabled=${merging}
-          title="Mark as merged / done"
-        >${iconText("✓ Mark Done")}</button>
-        <button class="btn btn-secondary btn-sm" onClick=${handleReopen}>
-          ${iconText(":workflow: Reopen as Active")}
-        </button>
-        <button
-          class="btn btn-ghost btn-sm"
-          onClick=${() => { haptic(); sendCommandToChat("/logs " + task.id); onClose(); }}
-        >${iconText(":file: Logs")}</button>
+        <${Tooltip} title="Mark as merged / done"><${Button} variant="contained" size="small" onClick=${handleMarkDone} disabled=${merging}>${iconText("✓ Mark Done")}<//><//>
+        <${Button} variant="outlined" size="small" onClick=${handleReopen}>${iconText(":workflow: Reopen as Active")}<//>
+        <${Button} variant="text" size="small" onClick=${() => { haptic(); sendCommandToChat("/logs " + task.id); onClose(); }}>${iconText(":file: Logs")}<//>
         ${prNumber && html`
-          <button
-            class="btn btn-ghost btn-sm"
-            onClick=${() => { haptic(); sendCommandToChat("/diff " + branchLabel); onClose(); }}
-          >${iconText(":search: Diff")}</button>
+          <${Button} variant="text" size="small" onClick=${() => { haptic(); sendCommandToChat("/diff " + branchLabel); onClose(); }}>${iconText(":search: Diff")}<//>
         `}
-        <button
-          class="btn btn-ghost btn-sm"
-          style="color:var(--color-error)"
-          onClick=${handleCancel}
-        >${iconText("✕ Cancel")}</button>
+        <${Button} variant="text" size="small" style=${{ color: "var(--color-error)" }} onClick=${handleCancel}>${iconText("✕ Cancel")}<//>
       </div>
     <//>
   `;
@@ -1790,9 +1759,9 @@ export function TaskDetailModal({ task, onClose, onStart }) {
         ${canDispatch &&
         html`
           <div class="task-modal-actions">
-            <button class="btn btn-primary btn-sm" onClick=${handleStart}>
+            <${Button} variant="contained" size="small" onClick=${handleStart}>
               ${iconText(":play: Dispatch Task")}
-            </button>
+            <//>
           </div>
         `}
       </div>
@@ -1821,14 +1790,14 @@ export function TaskDetailModal({ task, onClose, onStart }) {
           <div class="task-attachments-header">
             <div class="task-attachments-title">Attachments</div>
             <div class="task-attachments-actions">
-              <button
-                class="btn btn-ghost btn-sm"
+              <${Button}
+                variant="text" size="small"
                 type="button"
                 onClick=${() => attachmentInputRef.current && attachmentInputRef.current.click()}
                 disabled=${uploadingAttachment}
               >
                 Upload
-              </button>
+              <//>
             </div>
           </div>
           <input
@@ -1886,10 +1855,9 @@ export function TaskDetailModal({ task, onClose, onStart }) {
             </div>
           </div>
         `}
-        <button
-          type="button"
-          class="btn btn-ghost btn-sm task-rewrite-btn modal-form-span"
-          style="display:flex;align-items:center;gap:6px;align-self:flex-start;font-size:12px;padding:5px 10px;opacity:${!title.trim() ? 0.45 : 1}"
+        <${Tooltip} title="Use AI to expand and improve this task description"><${Button}
+          variant="text" size="small"
+          style=${{ display: "flex", alignItems: "center", gap: "6px", alignSelf: "flex-start", fontSize: "12px", padding: "5px 10px", opacity: !title.trim() ? 0.45 : 1 }}
           disabled=${!title.trim() || rewriting || saving}
           onClick=${async () => {
             if (!title.trim() || rewriting) return;
@@ -1909,13 +1877,12 @@ export function TaskDetailModal({ task, onClose, onStart }) {
             } catch { /* toast via apiFetch */ }
             setRewriting(false);
           }}
-          title="Use AI to expand and improve this task description"
         >
           ${rewriting
             ? html`<span style="display:inline-block;animation:spin 0.8s linear infinite">${resolveIcon(":clock:")}</span> Improving…`
             : html`${iconText(":star: Improve with AI")}`
           }
-        </button>
+        <//><//> 
         <${TextField} size="small" variant="outlined" className="modal-form-span" placeholder="Base branch (optional, e.g. feature/xyz)" value=${baseBranch} onInput=${(e) => setBaseBranch(e.target.value)} fullWidth />
         <div class="input-row modal-form-span">
           <${Select}
@@ -2063,54 +2030,54 @@ export function TaskDetailModal({ task, onClose, onStart }) {
         <div class="btn-row modal-form-span">
           ${(task?.status === "error" || task?.status === "cancelled") &&
           html`
-            <button class="btn btn-primary btn-sm" onClick=${handleRetry}>
+            <${Button} variant="contained" size="small" onClick=${handleRetry}>
               ↻ Retry
-            </button>
+            <//>
           `}
-          <button
-            class="btn btn-secondary btn-sm"
+          <${Button}
+            variant="outlined" size="small"
             onClick=${() => {
               void handleSave({ closeAfterSave: true });
             }}
             disabled=${saving}
           >
             ${saving ? "Saving…" : iconText(":save: Save")}
-          </button>
-          <button
-            class="btn btn-ghost btn-sm"
+          <//>
+          <${Button}
+            variant="text" size="small"
             onClick=${() => handleStatusUpdate("inreview")}
           >
             → Review
-          </button>
-          <button
-            class="btn btn-ghost btn-sm"
+          <//>
+          <${Button}
+            variant="text" size="small"
             onClick=${() => handleStatusUpdate("done")}
           >
             ${iconText("✓ Done")}
-          </button>
+          <//>
           ${task?.status !== "cancelled" &&
           html`
-            <button
-              class="btn btn-ghost btn-sm"
-              style="color:var(--color-error)"
+            <${Button}
+              variant="text" size="small"
+              style=${{ color: "var(--color-error)" }}
               onClick=${handleCancel}
             >
               ${iconText("✕ Cancel")}
-            </button>
+            <//>
           `}
         </div>
 
         ${task?.id &&
         html`
-          <button
-            class="btn btn-ghost btn-sm modal-form-span"
+          <${Button}
+            variant="text" size="small"
             onClick=${() => {
               haptic();
               sendCommandToChat("/logs " + task.id);
             }}
           >
             ${iconText(":file: View Agent Logs")}
-          </button>
+          <//>
         `}
       </div>
     <//>
@@ -2673,24 +2640,24 @@ export function TasksTab() {
   if (tasksLoaded.value && !tasks.length && !searchVal)
     return html`
       <div class="flex-between mb-sm" style="padding:0 4px">
-        <div class="view-toggle">
-          <button class="view-toggle-btn ${!isKanban ? 'active' : ''}" onClick=${() => { viewMode.value = 'list'; haptic(); }}>${iconText(":menu: List")}</button>
-          <button class="view-toggle-btn ${isKanban ? 'active' : ''}" onClick=${() => { viewMode.value = 'kanban'; haptic(); }}>▦ Board</button>
-        </div>
+        <${ToggleButtonGroup} size="small" exclusive value=${isKanban ? 'kanban' : 'list'}>
+          <${ToggleButton} value="list" onClick=${() => { viewMode.value = 'list'; haptic(); }}>${iconText(":menu: List")}<//>
+          <${ToggleButton} value="kanban" onClick=${() => { viewMode.value = 'kanban'; haptic(); }}>▦ Board<//>
+        <//>
         <div style="display:flex;gap:8px;align-items:center;">
-          <button
-            class="btn btn-ghost btn-sm"
+          <${Button}
+            variant="text" size="small"
             onClick=${() => {
               haptic();
               setShowTemplates(true);
             }}
-          >${iconText(":zap: Templates")}</button>
-          <button
-            class="btn btn-ghost btn-sm"
+          >${iconText(":zap: Templates")}<//>
+          <${Button}
+            variant="text" size="small"
             onClick=${toggleCompletedFilter}
           >
             ${completedOnly ? "Show All" : "Show Completed"}
-          </button>
+          <//>
         </div>
       </div>
       ${hasActiveSlots &&
@@ -2728,13 +2695,13 @@ export function TasksTab() {
           }}
         />
       `}
-      <button class="fab" onClick=${() => { haptic(); setShowCreate(true); }}>${ICONS.plus}</button>
+      <${Fab} color="primary" size="small" onClick=${() => { haptic(); setShowCreate(true); }}>${ICONS.plus}<//>
       ${showCreate && html`<${CreateTaskModalInline} onClose=${() => setShowCreate(false)} />`}
     `;
 
   const filterButton = html`
-    <button
-      class="btn btn-secondary btn-sm filter-toggle ${filtersOpen ? "active" : ""}"
+    <${Button}
+      variant="outlined" size="small"
       onClick=${handleToggleFilters}
       aria-expanded=${filtersOpen}
     >
@@ -2743,19 +2710,19 @@ export function TasksTab() {
       ${activeFilterCount > 0 && html`
         <span class="filter-count">${activeFilterCount}</span>
       `}
-    </button>
+    <//>
   `;
 
   const viewToggle = html`
-    <div class="view-toggle">
-      <button class="view-toggle-btn ${!isKanban ? 'active' : ''}" onClick=${() => { viewMode.value = 'list'; haptic(); }}>${iconText(":menu: List")}</button>
-      <button class="view-toggle-btn ${isKanban ? 'active' : ''}" onClick=${() => { viewMode.value = 'kanban'; haptic(); }}>▦ Board</button>
-    </div>
+    <${ToggleButtonGroup} size="small" exclusive value=${isKanban ? 'kanban' : 'list'}>
+      <${ToggleButton} value="list" onClick=${() => { viewMode.value = 'list'; haptic(); }}>${iconText(":menu: List")}<//>
+      <${ToggleButton} value="kanban" onClick=${() => { viewMode.value = 'kanban'; haptic(); }}>▦ Board<//>
+    <//>
   `;
 
   const newButton = html`
-    <button
-      class="btn btn-primary btn-sm btn-icon-compact"
+    <${Button}
+      variant="contained" size="small"
       onClick=${() => {
         haptic();
         setShowCreate(true);
@@ -2764,13 +2731,13 @@ export function TasksTab() {
     >
       ${ICONS.plus}
       ${isCompact ? "New" : "New Task"}
-    </button>
+    <//>
   `;
 
   const actionsMenu = html`
     <div class="actions-wrap" ref=${actionsRef}>
-      <button
-        class="btn btn-ghost btn-sm actions-btn"
+      <${Button}
+        variant="text" size="small"
         onClick=${() => { setActionsOpen(!actionsOpen); haptic(); }}
         aria-haspopup="menu"
         aria-expanded=${actionsOpen}
@@ -2778,23 +2745,21 @@ export function TasksTab() {
       >
         ${ICONS.ellipsis}
         <span class="actions-label">Actions</span>
-      </button>
+      <//>
       ${actionsOpen && html`
         <div class="actions-dropdown" role="menu">
-          <button
-            class="actions-dropdown-item"
+          <${MenuItem}
             onClick=${() => { setActionsOpen(false); setStartAnyOpen(true); }}
           >
             ${iconText(":play: Start Task")}
-          </button>
-          <button
-            class="actions-dropdown-item"
+          <//>
+          <${MenuItem}
             onClick=${() => { setActionsOpen(false); setShowTemplates(true); }}
           >
             ${iconText(":zap: Trigger Templates")}
-          </button>
-          <button class="actions-dropdown-item" onClick=${handleExportCSV}>${iconText(":chart: Export CSV")}</button>
-          <button class="actions-dropdown-item" onClick=${handleExportJSON}>${iconText(":clipboard: Export JSON")}</button>
+          <//>
+          <${MenuItem} onClick=${handleExportCSV}>${iconText(":chart: Export CSV")}<//>
+          <${MenuItem} onClick=${handleExportJSON}>${iconText(":clipboard: Export JSON")}<//>
         </div>
       `}
     </div>
@@ -2832,15 +2797,15 @@ export function TasksTab() {
                   ${filterButton}
                   ${viewToggle}
                   ${newButton}
-                  <button
-                    class="btn btn-ghost btn-sm"
+                  <${Button}
+                    variant="text" size="small"
                     onClick=${() => {
                       haptic();
                       setStartAnyOpen(true);
                     }}
                   >
                     ${iconText(":play: Start Task")}
-                  </button>
+                  <//>
                   ${actionsMenu}
                 `}
           </div>
@@ -2854,13 +2819,14 @@ export function TasksTab() {
                 <div class="chip-group">
                   ${STATUS_CHIPS.map(
                     (s) => html`
-                      <button
+                      <${Chip}
                         key=${s.value}
-                        class="chip ${filterVal === s.value ? "active" : ""}"
+                        label=${s.label}
+                        variant=${filterVal === s.value ? "filled" : "outlined"}
+                        color=${filterVal === s.value ? "primary" : "default"}
+                        size="small"
                         onClick=${() => handleFilter(s.value)}
-                      >
-                        ${s.label}
-                      </button>
+                      />
                     `,
                   )}
                 </div>
@@ -2872,15 +2838,14 @@ export function TasksTab() {
                 <div class="chip-group">
                   ${PRIORITY_CHIPS.map(
                     (p) => html`
-                      <button
+                      <${Chip}
                         key=${p.value}
-                        class="chip chip-outline ${priorityVal === p.value
-                          ? "active"
-                          : ""}"
+                        label=${p.label}
+                        variant=${priorityVal === p.value ? "filled" : "outlined"}
+                        color=${priorityVal === p.value ? "primary" : "default"}
+                        size="small"
                         onClick=${() => handlePriorityFilter(p.value)}
-                      >
-                        ${p.label}
-                      </button>
+                      />
                     `,
                   )}
                 </div>
@@ -2914,21 +2879,21 @@ export function TasksTab() {
                       />
                     `
                   : html`
-                      <button
-                        class="btn btn-ghost btn-sm"
+                      <${Button}
+                        variant="text" size="small"
                         onClick=${toggleCompletedFilter}
                       >
                         ${completedOnly ? "Show All" : "Show Completed"}
-                      </button>
+                      <//>
                     `)}
                 ${hasActiveFilters &&
                 html`
-                  <button
-                    class="btn btn-ghost btn-sm"
+                  <${Button}
+                    variant="text" size="small"
                     onClick=${handleClearFilters}
                   >
                     Clear Filters
-                  </button>
+                  <//>
                 `}
               </div>
             </div>
@@ -2966,9 +2931,9 @@ export function TasksTab() {
             <span>${filterSummary}</span>
           </div>
           <div class="filter-summary-actions">
-            <button class="btn btn-ghost btn-sm" onClick=${handleClearFilters}>
+            <${Button} variant="text" size="small" onClick=${handleClearFilters}>
               Clear Filters
-            </button>
+            <//>
           </div>
         </div>
       `}
@@ -2976,41 +2941,41 @@ export function TasksTab() {
       html`
         <div class="btn-row batch-action-bar">
           <span class="pill">${selectedIds.size} selected</span>
-          <button class="btn btn-primary btn-sm" onClick=${handleBatchDone}>
+          <${Button} variant="contained" size="small" onClick=${handleBatchDone}>
             ${iconText("✓ Done All")}
-          </button>
-          <button class="btn btn-danger btn-sm" onClick=${handleBatchCancel}>
+          <//>
+          <${Button} variant="contained" color="error" size="small" onClick=${handleBatchCancel}>
             ${iconText("✕ Cancel All")}
-          </button>
-          <button
-            class="btn btn-ghost btn-sm"
+          <//>
+          <${Button}
+            variant="text" size="small"
             onClick=${() => {
               setSelectedIds(new Set());
               haptic();
             }}
           >
             Clear
-          </button>
+          <//>
         </div>
       `}
     </div>
 
     <div class="snapshot-bar">
       ${summaryMetrics.map((m) => html`
-        <button
+        <${Tooltip} title=${isKanban ? m.label : `Filter by ${m.label}`}><${Button}
           key=${m.label}
-          class="snapshot-pill snapshot-pill-btn ${!isKanban && filterVal === SNAPSHOT_STATUS_MAP[m.label] ? 'snapshot-pill-active' : ''}"
+          variant="text" size="small"
+          style=${{ textTransform: "none" }}
           onClick=${() => {
             if (isKanban) return;
             const statusVal = SNAPSHOT_STATUS_MAP[m.label];
             if (statusVal !== undefined) handleFilter(filterVal === statusVal ? 'all' : statusVal);
           }}
-          title=${isKanban ? m.label : `Filter by ${m.label}`}
         >
           <span class="snapshot-dot" style="background:${m.color};" />
           <strong class="snapshot-val">${m.value}</strong>
           <span class="snapshot-lbl">${m.label}</span>
-        </button>
+        <//><//>
       `)}
       <span class="snapshot-view-tag">${iconText(isKanban ? ":dot: Board" : ":menu: List")}</span>
     </div>
@@ -3144,33 +3109,33 @@ export function TasksTab() {
 
     ${!isKanban && html`
       <div class="pager">
-        <button
-          class="btn btn-secondary btn-sm"
+        <${Button}
+          variant="outlined" size="small"
           onClick=${handlePrev}
           disabled=${page <= 0}
         >
           ← Prev
-        </button>
+        <//>
         <span class="pager-info">Page ${page + 1} / ${totalPages}</span>
-        <button
-          class="btn btn-secondary btn-sm"
+        <${Button}
+          variant="outlined" size="small"
           onClick=${handleNext}
           disabled=${page + 1 >= totalPages}
         >
           Next →
-        </button>
+        <//>
       </div>
     `}
 
-    <button
-      class="fab"
+    <${Fab}
+      color="primary" size="small"
       onClick=${() => {
         haptic();
         setShowCreate(true);
       }}
     >
       ${ICONS.plus}
-    </button>
+    <//>
 
     ${showCreate &&
     html`
@@ -3432,16 +3397,16 @@ function CreateTaskModalInline({ onClose }) {
   const hasAdvanced = baseBranch || draft || showAdvanced;
 
   const footerContent = html`
-    <button
-      class="btn btn-primary"
-      style="width:100%"
+    <${Button}
+      variant="contained" size="small"
+      style=${{ width: "100%" }}
       onClick=${() => {
         void handleSubmit({ closeAfterSave: true });
       }}
       disabled=${submitting || rewriting}
     >
       ${submitting ? "Creating…" : iconText("✓ Create Task")}
-    </button>
+    <//>
   `;
 
   return html`
@@ -3509,19 +3474,17 @@ function CreateTaskModalInline({ onClose }) {
         </div>
 
         <!-- Rewrite / Improve button -->
-        <button
-          type="button"
-          class="btn btn-ghost btn-sm task-rewrite-btn"
-          style="display:flex;align-items:center;gap:6px;align-self:flex-start;font-size:12px;padding:5px 10px;opacity:${!title.trim() ? 0.45 : 1}"
+        <${Tooltip} title="Use AI to expand and improve this task description"><${Button}
+          variant="text" size="small"
+          style=${{ display: "flex", alignItems: "center", gap: "6px", alignSelf: "flex-start", fontSize: "12px", padding: "5px 10px", opacity: !title.trim() ? 0.45 : 1 }}
           disabled=${!title.trim() || rewriting || submitting}
           onClick=${handleRewrite}
-          title="Use AI to expand and improve this task description"
         >
           ${rewriting
             ? html`<span class="spin-icon" style="display:inline-block;animation:spin 0.8s linear infinite">${resolveIcon(":clock:")}</span> Improving…`
             : html`${iconText(":star: Improve with AI")}`
           }
-        </button>
+        <//><//>
 
         <!-- Priority — always visible, most commonly changed -->
         <${SegmentedControl}
@@ -3579,15 +3542,14 @@ function CreateTaskModalInline({ onClose }) {
         `}
 
         <!-- Advanced toggle -->
-        <button
-          class="btn btn-ghost btn-sm create-task-advanced-toggle"
-          style="text-align:left;justify-content:flex-start;gap:6px;padding:6px 0;color:var(--text-hint)"
+        <${Button}
+          variant="text" size="small"
+          style=${{ textAlign: "left", justifyContent: "flex-start", gap: "6px", padding: "6px 0", color: "var(--text-hint)" }}
           onClick=${() => setShowAdvanced(!showAdvanced)}
-          type="button"
         >
           <span style="display:inline-block;transition:transform 0.15s;transform:rotate(${showAdvanced ? 90 : 0}deg)">${resolveIcon(":play:")}</span>
           Advanced${hasAdvanced && !showAdvanced ? " •" : ""}
-        </button>
+        <//>
 
         <!-- Advanced fields: base branch + draft -->
         ${(showAdvanced || hasAdvanced) && html`

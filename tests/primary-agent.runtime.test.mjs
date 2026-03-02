@@ -171,7 +171,7 @@ describe("primary-agent runtime safeguards", () => {
     });
 
     expect(mockExecPooledPrompt).toHaveBeenCalledWith(
-      "hello",
+      expect.stringContaining("hello"),
       expect.objectContaining({ sdk: "codex" }),
     );
     expect(result.finalResponse).toBe("pooled-ok");

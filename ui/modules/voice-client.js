@@ -13,7 +13,10 @@ import {
   registerMicStream,
   stopTrackedMicStreams,
 } from "./mic-track-registry.js";
-import { shouldAutoBargeIn } from "./voice-barge-in.js";
+import {
+  shouldAutoBargeIn,
+  shouldAutoBargeInFromMicLevel,
+} from "./voice-barge-in.js";
 
 // ── State Signals ───────────────────────────────────────────────────────────
 
@@ -169,6 +172,13 @@ function _startMicLevelMonitor(stream) {
       const avg = sum / _micLevelAnalyser.buffer.length;
       const level = Math.min(1, avg / 128);
       micInputLevel.value = level;
+      if (shouldAutoBargeInFromMicLevel({
+        speaking: voiceState.value === "speaking",
+        level,
+        threshold: AUTO_BARGE_IN_MIC_LEVEL_THRESHOLD,
+      })) {
+        triggerAutoBargeIn("mic-level");
+      }
     }, 100);
   } catch {
     // AudioContext might not be available
@@ -235,6 +245,7 @@ let _autoBargeInTimer = null;
 const RECONNECT_AT_MS = 28 * 60 * 1000; // 28 minutes
 const MAX_RECONNECT_ATTEMPTS = 3;
 const AUTO_BARGE_IN_COOLDOWN_MS = 700;
+const AUTO_BARGE_IN_MIC_LEVEL_THRESHOLD = 0.08;
 const AUTO_BARGE_IN_FADE_MS = 220;
 // Noise-control default: disable user-side live ASR transcript output/persistence.
 // Assistant response text remains enabled.

@@ -22,6 +22,7 @@ import { existsSync, readFileSync, writeFileSync, mkdirSync } from "node:fs";
 import { resolve, dirname } from "node:path";
 import { execSync, spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
+import { getAgentToolConfig, getEffectiveTools } from "./agent-tool-config.mjs";
 
 const TAG = "[workflow-nodes]";
 const PORTABLE_WORKTREE_COUNT_COMMAND = "node -e \"const cp=require('node:child_process');const wt=cp.execSync('git worktree list --porcelain',{encoding:'utf8'});const count=(wt.match(/^worktree /gm)||[]).length;process.stdout.write(String(count)+'\\\\n');\"";
@@ -781,6 +782,44 @@ function buildTaskContextBlock(task) {
   return lines.join("\n");
 }
 
+function buildWorkflowAgentToolContract(rootDir, agentProfileId = "") {
+  const profileId = String(agentProfileId || "").trim();
+  const effective = profileId
+    ? getEffectiveTools(rootDir, profileId)
+    : getEffectiveTools(rootDir, "__default__");
+  const rawCfg = profileId ? getAgentToolConfig(rootDir, profileId) : null;
+  const enabledBuiltinTools = (Array.isArray(effective?.builtinTools) ? effective.builtinTools : [])
+    .filter((tool) => tool?.enabled)
+    .map((tool) => ({
+      id: String(tool?.id || "").trim(),
+      name: String(tool?.name || "").trim(),
+      description: String(tool?.description || "").trim(),
+    }))
+    .filter((tool) => tool.id);
+  const enabledMcpServers = Array.isArray(rawCfg?.enabledMcpServers)
+    ? rawCfg.enabledMcpServers.map((id) => String(id || "").trim()).filter(Boolean)
+    : [];
+  const manifest = {
+    agentProfileId: profileId || null,
+    enabledBuiltinTools,
+    enabledMcpServers,
+    toolBridge: {
+      module: "./voice-tools.mjs",
+      function: "executeToolCall(toolName, args, context)",
+      quickUse: "node -e \"import('./voice-tools.mjs').then(async m=>{const r=await m.executeToolCall('get_workspace_context', {}, {});console.log(r?.result||r);})\"",
+    },
+  };
+  return [
+    "## Tool Capability Contract",
+    "Use enabled tools by default before claiming work is blocked.",
+    "Enabled tools JSON:",
+    "```json",
+    JSON.stringify(manifest, null, 2),
+    "```",
+    "When uncertain about arguments, call get_admin_help via executeToolCall.",
+  ].join("\n");
+}
+
 // ═══════════════════════════════════════════════════════════════════════════
 //  TRIGGERS — Events that initiate a workflow
 // ═══════════════════════════════════════════════════════════════════════════
@@ -1324,9 +1363,13 @@ registerNodeType("action.run_agent", {
     const prompt = ctx.resolve(node.config?.prompt || "");
     const sdk = node.config?.sdk || "auto";
     const cwd = ctx.resolve(node.config?.cwd || ctx.data?.worktreePath || process.cwd());
+    const agentProfileId = String(
+      ctx.resolve(node.config?.agentProfile || ctx.data?.agentProfile || ""),
+    ).trim();
     const timeoutMs = node.config?.timeoutMs || 3600000;
     const includeTaskContext = node.config?.includeTaskContext !== false;
-    let finalPrompt = prompt;
+    const toolContract = buildWorkflowAgentToolContract(cwd, agentProfileId);
+    let finalPrompt = `${toolContract}\n\n${prompt}`;
     if (includeTaskContext) {
       const explicitContext =
         ctx.data?.taskContext ||

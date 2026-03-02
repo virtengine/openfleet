@@ -9,6 +9,7 @@ import { loadConfig } from "./config.mjs";
 import { ensureCodexConfig, printConfigSummary } from "./codex-config.mjs";
 import { ensureRepoConfigs, printRepoConfigSummary } from "./repo-config.mjs";
 import { resolveRepoRoot } from "./repo-root.mjs";
+import { getAgentToolConfig, getEffectiveTools } from "./agent-tool-config.mjs";
 import { getSessionTracker } from "./session-tracker.mjs";
 import { execPooledPrompt } from "./agent-pool.mjs";
 import {
@@ -155,6 +156,53 @@ function appendAttachmentsToPrompt(message, attachments) {
   if (!list.length) return { message, appended: false };
   const lines = ["", "Attachments:", ...list.map(formatAttachmentLine)];
   return { message: `${message}${lines.join("\n")}`, appended: true };
+}
+
+function buildPrimaryToolCapabilityContract(options = {}) {
+  let rootDir = "";
+  try {
+    rootDir = String(options.cwd || resolveRepoRoot() || process.cwd()).trim();
+  } catch {
+    rootDir = String(options.cwd || process.cwd()).trim();
+  }
+  const agentProfileId = String(options.agentProfileId || "").trim();
+  const toolState = agentProfileId
+    ? getEffectiveTools(rootDir, agentProfileId)
+    : getEffectiveTools(rootDir, "__default__");
+  const rawCfg = agentProfileId ? getAgentToolConfig(rootDir, agentProfileId) : null;
+  const enabledBuiltinTools = (Array.isArray(toolState?.builtinTools) ? toolState.builtinTools : [])
+    .filter((tool) => tool?.enabled)
+    .map((tool) => ({
+      id: String(tool?.id || "").trim(),
+      name: String(tool?.name || "").trim(),
+      description: String(tool?.description || "").trim(),
+    }))
+    .filter((tool) => tool.id);
+  const enabledMcpServers = Array.isArray(rawCfg?.enabledMcpServers)
+    ? rawCfg.enabledMcpServers.map((id) => String(id || "").trim()).filter(Boolean)
+    : [];
+  const manifest = {
+    agentProfileId: agentProfileId || null,
+    enabledBuiltinTools,
+    enabledMcpServers,
+    toolBridge: {
+      module: "./voice-tools.mjs",
+      function: "executeToolCall(toolName, args, context)",
+      quickUse: [
+        "node -e \"import('./voice-tools.mjs').then(async m=>{const r=await m.executeToolCall('get_workspace_context', {}, {});console.log(r?.result||r);})\"",
+        "node -e \"import('./voice-tools.mjs').then(async m=>{const r=await m.executeToolCall('list_tasks', {limit:10}, {});console.log(r?.result||r);})\"",
+      ],
+    },
+  };
+  return [
+    "## Tool Capability Contract",
+    "Use enabled tools by default. Do not claim tools are unavailable without first trying them.",
+    "Enabled tools JSON:",
+    "```json",
+    JSON.stringify(manifest, null, 2),
+    "```",
+    "When uncertain about tool inputs/outputs, call get_admin_help via executeToolCall first.",
+  ].join("\n");
 }
 
 const ADAPTERS = {
@@ -713,7 +761,9 @@ export async function execPrimaryPrompt(userMessage, options = {}) {
   const messageWithAttachments = attachments.length && !attachmentsAppended
     ? appendAttachmentsToPrompt(userMessage, attachments).message
     : userMessage;
-  const framedMessage = modePrefix ? modePrefix + messageWithAttachments : messageWithAttachments;
+  const toolContract = buildPrimaryToolCapabilityContract(options);
+  const messageWithToolContract = `${toolContract}\n\n${messageWithAttachments}`;
+  const framedMessage = modePrefix ? modePrefix + messageWithToolContract : messageWithToolContract;
 
   // Record user message (original, without mode prefix)
   tracker.recordEvent(sessionId, {

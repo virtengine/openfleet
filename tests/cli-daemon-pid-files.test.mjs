@@ -7,23 +7,29 @@ describe("cli daemon pid tracking", () => {
 
   it("uses a dedicated daemon pid file separate from monitor lock pid file", () => {
     expect(cliSource).toContain(
-      'const PID_FILE = resolve(__dirname, ".cache", "bosun.pid");',
+      "const runtimeCacheDir = resolve(runtimeRepoRoot, \".cache\");",
     );
     expect(cliSource).toContain(
-      'const DAEMON_PID_FILE = resolve(__dirname, ".cache", "bosun-daemon.pid");',
+      'const PID_FILE = resolve(runtimeCacheDir, "bosun.pid");',
+    );
+    expect(cliSource).toContain(
+      'const DAEMON_PID_FILE = resolve(runtimeCacheDir, "bosun-daemon.pid");',
     );
   });
 
   it("reads and writes daemon state via the dedicated daemon pid file", () => {
-    expect(cliSource).toContain("const tracked = readAlivePid(DAEMON_PID_FILE);");
+    expect(cliSource).toContain(
+      "readAlivePid(DAEMON_PID_FILE) || readAlivePid(LEGACY_DAEMON_PID_FILE)",
+    );
     expect(cliSource).toContain(
       "writeFileSync(DAEMON_PID_FILE, String(pid), \"utf8\");",
     );
     expect(cliSource).toContain("if (existsSync(DAEMON_PID_FILE)) unlinkSync(DAEMON_PID_FILE);");
+    expect(cliSource).toContain("if (existsSync(LEGACY_DAEMON_PID_FILE)) unlinkSync(LEGACY_DAEMON_PID_FILE);");
   });
 
   it("guards daemon-child startup with singleton ownership of daemon pid file", () => {
-    expect(cliSource).toContain("const existingDaemonPid = readAlivePid(DAEMON_PID_FILE);");
+    expect(cliSource).toContain("const existingDaemonPid = getDaemonPid();");
     expect(cliSource).toContain("duplicate daemon-child ignored");
   });
 
@@ -42,5 +48,13 @@ describe("cli daemon pid tracking", () => {
     expect(cliSource).toContain(
       "telegram-sentinel auto-start suppressed in daemon-child mode",
     );
+  });
+
+  it("treats explicit --sentinel as a standalone command unless daemon mode is requested", () => {
+    expect(cliSource).toContain("sentinelExplicit && !IS_DAEMON_CHILD");
+    expect(cliSource).toContain(
+      "Sentinel started without launching monitor (use --daemon --sentinel to run both).",
+    );
+    expect(cliSource).toContain("sentinelExplicit,");
   });
 });

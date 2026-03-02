@@ -18,4 +18,10 @@ describe("telegram-sentinel poll owner arbitration", () => {
     expect(source).toContain("TELEGRAM_POLL_CONFLICT");
     expect(source).toContain("polling = false");
   });
+
+  it("reads monitor pid from repo cache with legacy fallbacks", () => {
+    expect(source).toContain('const MONITOR_PID_FILE = resolve(cacheDir, "bosun.pid");');
+    expect(source).toContain("function readMonitorPid()");
+    expect(source).toContain("MONITOR_PID_FILE_LEGACY");
+  });
 });

@@ -236,17 +236,28 @@ const VOICE_TOOL_ID_MAP = Object.freeze({
   "search-files": ["search_code", "list_directory"],
   "read-file": ["read_file_content"],
   "edit-file": ["delegate_to_agent", "run_workspace_command"],
-  "run-command": ["run_command", "run_workspace_command"],
+  "run-command": ["run_command", "run_workspace_command", "bosun_slash_command"],
   "web-search": ["ask_agent_context"],
-  "code-search": ["search_code", "get_workspace_context"],
-  "git-operations": ["run_workspace_command", "get_pr_status"],
-  "create-task": ["create_task"],
-  "delegate-task": ["delegate_to_agent", "ask_agent_context", "poll_background_session"],
+  "code-search": ["search_code", "get_workspace_context", "warm_codebase_context"],
+  "git-operations": ["run_workspace_command", "get_pr_status", "get_workspace_context"],
+  "create-task": ["create_task", "list_tasks", "get_task", "update_task_status"],
+  "delegate-task": ["delegate_to_agent", "ask_agent_context", "poll_background_session", "set_agent_mode"],
   "fetch-url": ["run_workspace_command"],
   "list-directory": ["list_directory"],
   "grep-search": ["search_code"],
-  "task-management": ["list_tasks", "get_task", "search_tasks", "get_task_stats", "delete_task", "comment_on_task"],
-  "notifications": ["dispatch_action"],
+  "task-management": [
+    "list_tasks",
+    "get_task",
+    "create_task",
+    "update_task_status",
+    "search_tasks",
+    "get_task_stats",
+    "delete_task",
+    "comment_on_task",
+    "list_sessions",
+    "get_session_history",
+  ],
+  "notifications": ["dispatch_action", "get_system_status", "get_fleet_status"],
   "vision-analysis": ["query_live_view"],
 });
 
@@ -374,12 +385,20 @@ function applyVoiceAgentToolFilters(allTools, toolConfig = null) {
 
   const disabledNames = mapToolConfigIdsToVoiceToolNames(disabledBuiltinIds);
   const enabledNames = enabledIds ? mapToolConfigIdsToVoiceToolNames(enabledIds) : null;
+  const runtimeNames = new Set(
+    tools.map((tool) => String(tool?.name || "").trim()).filter(Boolean),
+  );
+  const hasRuntimeAllowlist = Boolean(
+    enabledIds && enabledIds.some((id) => runtimeNames.has(String(id || "").trim())),
+  );
 
   return tools.filter((tool) => {
     const name = String(tool?.name || "").trim();
     if (!name) return false;
     if (name === "invoke_mcp_tool" && enabledServers.length === 0) return false;
-    if (enabledNames && enabledNames.size > 0) {
+    // Important: only apply strict allowlisting when explicit runtime tool names
+    // were selected. Built-in tool ids alone should not hide Bosun JS tools.
+    if (enabledNames && enabledNames.size > 0 && hasRuntimeAllowlist) {
       return enabledNames.has(name);
     }
     if (disabledNames.has(name)) return false;
@@ -405,6 +424,22 @@ function buildVoiceToolCapabilityPrompt(tools = [], toolConfig = null, selectedV
     ? selectedVoiceAgent.skills.map((skill) => String(skill || "").trim()).filter(Boolean)
     : [];
   const agentName = String(selectedVoiceAgent?.name || selectedVoiceAgent?.id || "Voice Agent").trim();
+  const toolManifest = runtimeTools
+    .slice(0, 64)
+    .map((tool) => {
+      const name = String(tool?.name || "").trim();
+      if (!name) return null;
+      return {
+        name,
+        description: String(tool?.description || "").replace(/\s+/g, " ").trim(),
+        inputSchema:
+          tool?.parameters && typeof tool.parameters === "object"
+            ? tool.parameters
+            : { type: "object", properties: {} },
+      };
+    })
+    .filter(Boolean);
+  const manifestJson = JSON.stringify(toolManifest, null, 2);
 
   return [
     "",
@@ -415,6 +450,10 @@ function buildVoiceToolCapabilityPrompt(tools = [], toolConfig = null, selectedV
     toolLines.length > 0
       ? "Enabled runtime tools:\n" + toolLines.join("\n")
       : "Enabled runtime tools: none (tool calls unavailable for this profile).",
+    "Enabled runtime tools JSON (name + input schema):",
+    "```json",
+    manifestJson,
+    "```",
     enabledServers.length > 0
       ? `Enabled MCP servers (for invoke_mcp_tool): ${enabledServers.join(", ")}.`
       : "Enabled MCP servers: none.",
@@ -422,7 +461,8 @@ function buildVoiceToolCapabilityPrompt(tools = [], toolConfig = null, selectedV
       ? `Voice agent skills: ${skills.join(", ")}.`
       : "Voice agent skills: none specified.",
     "",
-    "If you need the current tool list, call get_admin_help.",
+    "When calling tools, use exact argument keys from the inputSchema JSON above.",
+    "If you need a complete tool/action reference, call get_admin_help.",
   ].join("\n");
 }
 
@@ -2029,13 +2069,14 @@ const UI_INSTANCE_LOCK_FILE = "ui-server.instance.lock.json";
 const UI_SESSION_TOKEN_FILE = "ui-session-token.json";
 const UI_LAST_PORT_FILE = "ui-last-port.json";
 const DEFAULT_AUTO_OPEN_COOLDOWN_MS = 12 * 60 * 60 * 1000; // 12h
-const DEFAULT_SESSION_TOKEN_TTL_MS = AUTH_MAX_AGE_SEC * 1000;
+const DEFAULT_SESSION_TOKEN_TTL_MS = 30 * 24 * 60 * 60 * 1000; // 30 days
 const wsClients = new Set();
 let sessionListenerAttached = false;
 /** @type {ReturnType<typeof setInterval>|null} */
 let wsHeartbeatTimer = null;
 let uiInstanceLockPath = "";
 let uiInstanceLockHeld = false;
+let _sessionTokenLastTouchedAt = 0;
 
 /* ─── Log Streaming State ─── */
 /** Map<string, { sockets: Set<WebSocket>, offset: number, pollTimer }> keyed by filePath */
@@ -2312,6 +2353,14 @@ function getSessionTokenTtlMs() {
   return Math.max(5 * 60 * 1000, Math.trunc(raw));
 }
 
+function getSessionCookieMaxAgeSec() {
+  const raw = Number(process.env.BOSUN_UI_SESSION_COOKIE_MAX_AGE_SEC || "");
+  if (Number.isFinite(raw) && raw > 0) {
+    return Math.max(60, Math.trunc(raw));
+  }
+  return Math.max(60, Math.floor(getSessionTokenTtlMs() / 1000));
+}
+
 function resolveUiCachePath(fileName) {
   const cacheDir = resolve(resolveUiConfigDir(), ".cache");
   mkdirSync(cacheDir, { recursive: true });
@@ -2358,6 +2407,15 @@ function persistSessionToken(token) {
   } catch {
     // best effort
   }
+}
+
+function touchSessionToken() {
+  if (!isValidSessionToken(sessionToken)) return;
+  const now = Date.now();
+  // Avoid churning the cache file on every static/API request.
+  if (now - _sessionTokenLastTouchedAt < 5 * 60 * 1000) return;
+  _sessionTokenLastTouchedAt = now;
+  persistSessionToken(sessionToken);
 }
 
 function ensureSessionToken() {
@@ -4689,6 +4747,7 @@ function checkSessionToken(req) {
     const provided = Buffer.from(authHeader.slice(7));
     const expected = Buffer.from(sessionToken);
     if (provided.length === expected.length && timingSafeEqual(provided, expected)) {
+      touchSessionToken();
       return true;
     }
   }
@@ -4697,7 +4756,10 @@ function checkSessionToken(req) {
   if (cookieVal) {
     const provided = Buffer.from(cookieVal);
     const expected = Buffer.from(sessionToken);
-    if (provided.length === expected.length && timingSafeEqual(provided, expected)) return true;
+    if (provided.length === expected.length && timingSafeEqual(provided, expected)) {
+      touchSessionToken();
+      return true;
+    }
   }
   return false;
 }
@@ -4746,7 +4808,8 @@ function getTelegramInitData(req, url = null) {
 function buildSessionCookieHeader() {
   const secure = uiServerTls ? "; Secure" : "";
   const token = ensureSessionToken();
-  return `ve_session=${token}; HttpOnly; SameSite=Lax; Path=/; Max-Age=86400${secure}`;
+  const maxAgeSec = getSessionCookieMaxAgeSec();
+  return `ve_session=${token}; HttpOnly; SameSite=Lax; Path=/; Max-Age=${maxAgeSec}${secure}`;
 }
 
 function getHeaderString(value) {
@@ -9703,6 +9766,7 @@ async function handleApi(req, res, url) {
         requestedWorkspaceId || workspaceContext.workspaceId;
       const resolvedWorkspaceDir =
         requestedWorkspaceDir || workspaceContext.workspaceDir || repoRoot;
+      const requestedAgentProfileId = String(body?.agentProfileId || "").trim();
       const tracker = getSessionTracker();
       const session = tracker.createSession({
         id,
@@ -9712,6 +9776,7 @@ async function handleApi(req, res, url) {
           agent: body?.agent || getPrimaryAgentName(),
           mode: body?.mode || getAgentMode(),
           model: body?.model || undefined,
+          ...(requestedAgentProfileId ? { agentProfileId: requestedAgentProfileId } : {}),
           ...(resolvedWorkspaceId ? { workspaceId: resolvedWorkspaceId } : {}),
           ...(resolvedWorkspaceDir ? { workspaceDir: resolvedWorkspaceDir } : {}),
         },
@@ -9902,6 +9967,9 @@ async function handleApi(req, res, url) {
         const messageMode = body?.mode || undefined;
         // Per-message model override (e.g. { "model": "o4-mini" })
         const messageModel = body?.model || undefined;
+        const messageAgentProfileId = String(
+          body?.agentProfileId || session?.metadata?.agentProfileId || "",
+        ).trim() || undefined;
 
         // Forward to primary agent if applicable (exec records user + assistant events)
         let exec = session.type === "primary" ? uiDeps.execPrimaryPrompt : null;
@@ -9953,6 +10021,7 @@ async function handleApi(req, res, url) {
             sessionType: "primary",
             mode: messageMode,
             model: messageModel,
+            agentProfileId: messageAgentProfileId,
             cwd: sessionWorkspaceDir,
             persistent: true,
             sendRawEvents: true,
