@@ -262,6 +262,7 @@
     "workflow-templates/planning.mjs",
     "workflow-templates/reliability.mjs",
     "workflow-templates/security.mjs",
+    "workflow-templates/task-batch.mjs",
     "workflow-templates/task-lifecycle.mjs",
     "ui/vendor/"
   ],
