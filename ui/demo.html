@@ -2945,6 +2945,72 @@
         return { ok: true, data: best };
       }
 
+      // ── MCP Servers ──
+      if (route === '/api/mcp/catalog') {
+        return { ok: true, data: [
+          { id: 'github', name: 'GitHub', description: 'GitHub MCP server', transport: 'stdio', tags: ['code', 'git'], installed: false },
+          { id: 'playwright', name: 'Playwright', description: 'Browser automation', transport: 'stdio', tags: ['testing'], installed: false },
+          { id: 'context7', name: 'Context7', description: 'Documentation lookup', transport: 'stdio', tags: ['docs'], installed: true },
+        ]};
+      }
+      if (route === '/api/mcp/installed') {
+        return { ok: true, data: [
+          { id: 'context7', name: 'Context7', description: 'Documentation lookup', transport: 'stdio', tags: ['docs'] },
+        ]};
+      }
+      if (route === '/api/mcp/install') {
+        return { ok: true, installed: { id: body?.catalogId || 'custom', name: body?.name || 'Custom MCP' } };
+      }
+      if (route === '/api/mcp/uninstall') {
+        return { ok: true };
+      }
+      if (route === '/api/mcp/configure') {
+        return { ok: true };
+      }
+
+      // ── Agent Tool Config ──
+      if (route === '/api/agent-tools/available') {
+        return { ok: true, data: {
+          builtinTools: [
+            { id: 'search-files', name: 'Search Files', description: 'Search workspace files', category: 'Built-In', default: true },
+            { id: 'read-file', name: 'Read File', description: 'Read file contents', category: 'Built-In', default: true },
+            { id: 'edit-file', name: 'Edit File', description: 'Edit workspace files', category: 'Built-In', default: true },
+            { id: 'run-command', name: 'Run Command', description: 'Execute shell commands', category: 'Built-In', default: true },
+            { id: 'web-search', name: 'Web Search', description: 'Search the web', category: 'Built-In', default: true },
+          ],
+          mcpServers: [
+            { id: 'context7', name: 'Context7', description: 'Documentation lookup', tags: ['docs'], transport: 'stdio' },
+          ],
+        }};
+      }
+      if (route === '/api/agent-tools/config') {
+        if (method === 'POST') {
+          return { ok: true };
+        }
+        const agentId = params.get('agentId');
+        return { ok: true, data: {
+          builtinTools: [
+            { id: 'search-files', name: 'Search Files', enabled: true },
+            { id: 'read-file', name: 'Read File', enabled: true },
+            { id: 'edit-file', name: 'Edit File', enabled: true },
+            { id: 'run-command', name: 'Run Command', enabled: true },
+            { id: 'web-search', name: 'Web Search', enabled: true },
+          ],
+          mcpServers: [],
+        }};
+      }
+      if (route === '/api/agent-tools/defaults') {
+        return { ok: true, data: {
+          builtinTools: [
+            { id: 'search-files', name: 'Search Files', description: 'Search workspace files', category: 'Built-In', default: true },
+            { id: 'read-file', name: 'Read File', description: 'Read file contents', category: 'Built-In', default: true },
+            { id: 'edit-file', name: 'Edit File', description: 'Edit workspace files', category: 'Built-In', default: true },
+            { id: 'run-command', name: 'Run Command', description: 'Execute shell commands', category: 'Built-In', default: true },
+            { id: 'web-search', name: 'Web Search', description: 'Search the web', category: 'Built-In', default: true },
+          ],
+        }};
+      }
+
       // ── Agents ──
       if (route === '/api/agents')
         return { data: STATE.agents };

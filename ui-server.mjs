@@ -72,6 +72,23 @@ import {
   getManifestPath,
 } from "./library-manager.mjs";
 import {
+  listCatalog,
+  getCatalogEntry,
+  installMcpServer,
+  uninstallMcpServer,
+  listInstalledMcpServers,
+  getInstalledMcpServer,
+} from "./mcp-registry.mjs";
+import {
+  loadToolConfig,
+  saveToolConfig,
+  getAgentToolConfig,
+  setAgentToolConfig,
+  getEffectiveTools,
+  listAvailableTools,
+  DEFAULT_BUILTIN_TOOLS,
+} from "./agent-tool-config.mjs";
+import {
   loadSharedWorkspaceRegistry,
   sweepExpiredLeases,
   getSharedAvailabilityMap,
@@ -6648,6 +6665,157 @@ async function handleApi(req, res, url) {
     return;
   }
 
+  // ── MCP Server Management API ─────────────────────────────────────────────
+
+  if (path === "/api/mcp/catalog") {
+    try {
+      const tagsRaw = (url.searchParams.get("tags") || "").trim();
+      const tags = tagsRaw ? tagsRaw.split(",").map((t) => t.trim()) : undefined;
+      const catalog = listCatalog({ tags });
+      jsonResponse(res, 200, { ok: true, data: catalog });
+    } catch (err) {
+      jsonResponse(res, 500, { ok: false, error: err.message });
+    }
+    return;
+  }
+
+  if (path === "/api/mcp/installed") {
+    try {
+      const servers = await listInstalledMcpServers(repoRoot);
+      jsonResponse(res, 200, { ok: true, data: servers });
+    } catch (err) {
+      jsonResponse(res, 500, { ok: false, error: err.message });
+    }
+    return;
+  }
+
+  if (path === "/api/mcp/install" && req.method === "POST") {
+    try {
+      const body = await readJsonBody(req);
+      if (!body?.id && !body?.serverDef) {
+        jsonResponse(res, 400, { ok: false, error: "id (catalog) or serverDef (custom) required" });
+        return;
+      }
+      const result = await installMcpServer(
+        repoRoot,
+        body.serverDef || body.id,
+        { envOverrides: body.envOverrides },
+      );
+      jsonResponse(res, 200, { ok: true, data: result });
+      broadcastUiEvent(["library"], "invalidate", { reason: "mcp-installed", id: result?.id });
+    } catch (err) {
+      jsonResponse(res, 500, { ok: false, error: err.message });
+    }
+    return;
+  }
+
+  if (path === "/api/mcp/uninstall" && req.method === "POST") {
+    try {
+      const body = await readJsonBody(req);
+      if (!body?.id) {
+        jsonResponse(res, 400, { ok: false, error: "id required" });
+        return;
+      }
+      const removed = await uninstallMcpServer(repoRoot, body.id);
+      jsonResponse(res, 200, { ok: true, removed });
+      broadcastUiEvent(["library"], "invalidate", { reason: "mcp-uninstalled", id: body.id });
+    } catch (err) {
+      jsonResponse(res, 500, { ok: false, error: err.message });
+    }
+    return;
+  }
+
+  if (path === "/api/mcp/configure" && req.method === "POST") {
+    try {
+      const body = await readJsonBody(req);
+      if (!body?.id) {
+        jsonResponse(res, 400, { ok: false, error: "id required" });
+        return;
+      }
+      const existing = await getInstalledMcpServer(repoRoot, body.id);
+      if (!existing) {
+        jsonResponse(res, 404, { ok: false, error: "MCP server not installed" });
+        return;
+      }
+      // Re-install with updated env
+      const updated = await installMcpServer(repoRoot, {
+        ...existing.serverConfig,
+        id: body.id,
+        name: existing.name,
+        description: existing.description,
+        tags: existing.tags,
+      }, { envOverrides: body.env });
+      jsonResponse(res, 200, { ok: true, data: updated });
+    } catch (err) {
+      jsonResponse(res, 500, { ok: false, error: err.message });
+    }
+    return;
+  }
+
+  // ── Agent Tool Configuration API ──────────────────────────────────────────
+
+  if (path === "/api/agent-tools/available") {
+    try {
+      const available = await listAvailableTools(repoRoot);
+      jsonResponse(res, 200, { ok: true, data: available });
+    } catch (err) {
+      jsonResponse(res, 500, { ok: false, error: err.message });
+    }
+    return;
+  }
+
+  if (path === "/api/agent-tools/config") {
+    try {
+      if (req.method === "GET") {
+        const agentId = (url.searchParams.get("agentId") || "").trim();
+        if (!agentId) {
+          // Return full config
+          const config = loadToolConfig(repoRoot);
+          jsonResponse(res, 200, { ok: true, data: config });
+          return;
+        }
+        const effective = getEffectiveTools(repoRoot, agentId);
+        jsonResponse(res, 200, { ok: true, data: effective });
+        return;
+      }
+
+      if (req.method === "POST") {
+        const body = await readJsonBody(req);
+        if (!body?.agentId) {
+          jsonResponse(res, 400, { ok: false, error: "agentId required" });
+          return;
+        }
+        const result = setAgentToolConfig(repoRoot, body.agentId, {
+          enabledTools: body.enabledTools,
+          enabledMcpServers: body.enabledMcpServers,
+          disabledBuiltinTools: body.disabledBuiltinTools,
+        });
+        jsonResponse(res, 200, { ok: true, ...result });
+        broadcastUiEvent(["library"], "invalidate", { reason: "agent-tools-updated", agentId: body.agentId });
+        return;
+      }
+
+      jsonResponse(res, 405, { ok: false, error: "method not allowed" });
+    } catch (err) {
+      jsonResponse(res, 500, { ok: false, error: err.message });
+    }
+    return;
+  }
+
+  if (path === "/api/agent-tools/defaults") {
+    try {
+      jsonResponse(res, 200, {
+        ok: true,
+        data: {
+          builtinTools: [...DEFAULT_BUILTIN_TOOLS],
+        },
+      });
+    } catch (err) {
+      jsonResponse(res, 500, { ok: false, error: err.message });
+    }
+    return;
+  }
+
   if (path === "/api/logs") {
     const lines = Math.min(
       1000,
@@ -9814,7 +9982,20 @@ async function handleApi(req, res, url) {
       const privileged = isPrivilegedVoiceContext(callContext);
       const delegateOnly =
         body?.delegateOnly === true && !privileged;
-      const tools = await getVoiceToolDefinitions({ delegateOnly, context: callContext });
+      let tools = await getVoiceToolDefinitions({ delegateOnly, context: callContext });
+
+      // Apply voice-agent tool config if present
+      try {
+        const { getAgentToolConfig } = await import("./agent-tool-config.mjs");
+        const voiceToolCfg = getAgentToolConfig(repoRoot, "voice-agent");
+        if (voiceToolCfg) {
+          const disabled = voiceToolCfg.disabledBuiltinTools || [];
+          if (disabled.length > 0 && Array.isArray(tools)) {
+            tools = tools.filter(t => !disabled.includes(String(t?.name || "")));
+          }
+        }
+      } catch { /* agent-tool-config not critical */ }
+
       const tokenData = await createEphemeralToken(tools, callContext);
 
       // When client requests sdkMode, include extra fields for @openai/agents SDK
