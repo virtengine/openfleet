@@ -1303,14 +1303,15 @@ async function openFollowWindow(detail = {}) {
   const win = await createFollowWindow();
   const baseUiUrl = await buildUiUrl();
   const target = buildFollowWindowUrl(baseUiUrl, detail);
+  // Append a cache-buster timestamp so every Call press produces a unique URL.
+  // Without this, a second Call press with the same parameters would match
+  // followWindowLaunchSignature and skip loadURL — leaving the follow window
+  // in its previous dead state (launch params already scrubbed, voice overlay
+  // closed, useEffect([], []) already fired and won't re-run).
+  target.searchParams.set("t", String(Date.now()));
   const signature = target.toString();
-  if (!win.webContents.getURL() || followWindowLaunchSignature !== signature) {
-    followWindowLaunchSignature = signature;
-    await win.loadURL(signature);
-    anchorFollowWindow(win);
-    setWindowVisible(win);
-    return;
-  }
+  followWindowLaunchSignature = signature;
+  await win.loadURL(signature);
   anchorFollowWindow(win);
   setWindowVisible(win);
 }

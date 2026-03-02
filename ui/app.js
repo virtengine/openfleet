@@ -2002,7 +2002,10 @@ function App() {
           navigateTo("chat", { replace: true, skipGuard: true });
         }
       }
-      await new Promise((resolve) => setTimeout(resolve, 60));
+      // Wait for UI components to mount before dispatching the voice launch
+      // event.  60 ms was too aggressive for cold-start Electron windows where
+      // JS bundles are still being parsed; 200 ms is reliably sufficient.
+      await new Promise((resolve) => setTimeout(resolve, 200));
       if (cancelled) return;
       globalThis.dispatchEvent?.(
         new CustomEvent("ve:open-voice-mode", { detail: launch.detail }),
