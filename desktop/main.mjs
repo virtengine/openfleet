@@ -89,6 +89,7 @@ let shuttingDown = false;
 let uiServerStarted = false;
 let uiOrigin = null;
 let uiApi = null;
+let desktopAuthHeaderBridgeInstalled = false;
 let runtimeConfigLoaded = false;
 /** True when the app is running as a persistent background / tray resident. */
 let trayMode = false;
@@ -152,6 +153,38 @@ function isTrustedCaptureOrigin(originLike) {
   } catch {
     return false;
   }
+}
+
+function isTrustedDesktopRequestUrl(urlLike) {
+  return isTrustedCaptureOrigin(urlLike);
+}
+
+function installDesktopAuthHeaderBridge() {
+  if (desktopAuthHeaderBridgeInstalled) return;
+  const ses = session.defaultSession;
+  if (!ses) return;
+  ses.webRequest.onBeforeSendHeaders((details, callback) => {
+    try {
+      const desktopKey = String(process.env.BOSUN_DESKTOP_API_KEY || "").trim();
+      if (!desktopKey) {
+        callback({ requestHeaders: details.requestHeaders });
+        return;
+      }
+      if (!isTrustedDesktopRequestUrl(details?.url || "")) {
+        callback({ requestHeaders: details.requestHeaders });
+        return;
+      }
+      const headers = { ...(details.requestHeaders || {}) };
+      const existingAuth = String(headers.Authorization || headers.authorization || "").trim();
+      if (!existingAuth) {
+        headers.Authorization = `Bearer ${desktopKey}`;
+      }
+      callback({ requestHeaders: headers });
+    } catch {
+      callback({ requestHeaders: details.requestHeaders });
+    }
+  });
+  desktopAuthHeaderBridgeInstalled = true;
 }
 
 function installDesktopMediaHandlers() {
@@ -1745,6 +1778,7 @@ async function bootstrap() {
       }
       callback(-3); // -3 = use Chromium default chain verification
     });
+    installDesktopAuthHeaderBridge();
     installDesktopMediaHandlers();
 
     if (process.env.ELECTRON_DISABLE_SANDBOX === "1") {

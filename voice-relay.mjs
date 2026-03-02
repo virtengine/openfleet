@@ -1145,7 +1145,6 @@ async function createOpenAIEphemeralToken(cfg, toolDefinitions = [], callContext
       } : {}),
     },
     input_audio_transcription: { model: REALTIME_TRANSCRIBE_MODEL },
-    output_audio_transcription: { model: REALTIME_TRANSCRIBE_MODEL },
     tools: toolDefinitions,
   };
 
@@ -1240,7 +1239,6 @@ async function createAzureEphemeralToken(cfg, toolDefinitions = [], callContext 
       } : {}),
     },
     input_audio_transcription: { model: REALTIME_TRANSCRIBE_MODEL },
-    output_audio_transcription: { model: REALTIME_TRANSCRIBE_MODEL },
     tools: toolDefinitions,
   };
 

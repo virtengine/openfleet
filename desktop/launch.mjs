@@ -17,6 +17,13 @@ const chromeSandbox = resolve(
 
 process.title = "bosun-desktop-launcher";
 
+function hasGuiEnvironment() {
+  if (process.platform !== "linux") return true;
+  if (process.env.DISPLAY || process.env.WAYLAND_DISPLAY) return true;
+  if (process.env.XDG_SESSION_TYPE && process.env.XDG_SESSION_TYPE !== "tty") return true;
+  return false;
+}
+
 function shouldDisableSandbox() {
   if (process.env.BOSUN_DESKTOP_DISABLE_SANDBOX === "1") return true;
   if (process.platform !== "linux") return false;
@@ -49,6 +56,17 @@ function ensureElectronInstalled() {
 }
 
 function launch() {
+  if (!hasGuiEnvironment()) {
+    console.error(
+      [
+        "[desktop] No GUI display server detected.",
+        "Cannot launch Electron portal without DISPLAY/WAYLAND.",
+        "Run Bosun in daemon/web mode instead (for example: `bosun --daemon`).",
+      ].join(" "),
+    );
+    process.exit(1);
+  }
+
   if (!ensureElectronInstalled()) {
     process.exit(1);
   }
