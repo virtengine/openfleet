@@ -470,7 +470,7 @@ function findGhostDaemonPids() {
         [
           "-NoProfile",
           "-Command",
-          "Get-CimInstance Win32_Process | Where-Object { $_.Name -eq 'node.exe' -and $_.CommandLine -match 'cli\\.mjs' -and $_.CommandLine -match '--daemon-child' } | Select-Object -ExpandProperty ProcessId",
+          "Get-CimInstance Win32_Process | Where-Object { $_.Name -match '^(node|electron)(\\.exe)?$' -and $_.CommandLine -match 'cli\\.mjs' -and $_.CommandLine -match '--daemon-child' } | Select-Object -ExpandProperty ProcessId",
         ],
         { encoding: "utf8", stdio: ["pipe", "pipe", "pipe"], timeout: 3000 },
       ).trim();
@@ -717,7 +717,7 @@ function findAllBosunProcessPids() {
         [
           "-NoProfile",
           "-Command",
-          `Get-CimInstance Win32_Process | Where-Object { $_.Name -match '^node(\\.exe)?$' -and $_.CommandLine -match '${joined.replace(/\|/g, "|")}' } | Select-Object -ExpandProperty ProcessId`,
+          `Get-CimInstance Win32_Process | Where-Object { $_.Name -match '^(node|electron)(\\.exe)?$' -and $_.CommandLine -match '${joined.replace(/\|/g, "|")}' } | Select-Object -ExpandProperty ProcessId`,
         ],
         { encoding: "utf8", stdio: ["pipe", "pipe", "pipe"], timeout: 4000 },
       ).trim();

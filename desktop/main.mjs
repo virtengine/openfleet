@@ -302,6 +302,31 @@ function resolveDesktopConfigDir() {
   return resolve(baseDir, "bosun");
 }
 
+function readDesktopApiKeyFromDisk(configDir) {
+  try {
+    const file = resolve(String(configDir || "").trim(), "desktop-api-key.json");
+    if (!existsSync(file)) return "";
+    const payload = JSON.parse(readFileSync(file, "utf8"));
+    const key = String(payload?.key || "").trim();
+    if (!key.startsWith("bosun_desktop_")) return "";
+    return key;
+  } catch {
+    return "";
+  }
+}
+
+function ensureDesktopApiKeyInEnv() {
+  const current = String(process.env.BOSUN_DESKTOP_API_KEY || "").trim();
+  const fromDisk = readDesktopApiKeyFromDisk(resolveDesktopConfigDir());
+  if (fromDisk) {
+    if (current !== fromDisk) {
+      process.env.BOSUN_DESKTOP_API_KEY = fromDisk;
+    }
+    return fromDisk;
+  }
+  return current;
+}
+
 function isProcessAlive(pid) {
   try {
     process.kill(pid, 0);
@@ -1118,12 +1143,13 @@ async function buildUiUrl() {
     uiOrigin = new URL(daemonUrl).origin;
     // Authenticate the initial WebView load against the separately-running
     // daemon using the desktop API key (set during bootstrap).
-    const desktopKey = process.env.BOSUN_DESKTOP_API_KEY;
+    const desktopKey = ensureDesktopApiKeyInEnv();
     if (desktopKey) {
       const daemonTarget = new URL(daemonUrl);
       daemonTarget.searchParams.set("desktopKey", desktopKey);
       return daemonTarget.toString();
     }
+    console.warn("[desktop] BOSUN_DESKTOP_API_KEY unavailable; daemon UI may return 401 until auth bootstrap succeeds");
     return daemonUrl;
   }
   // Daemon is not reachable — flag it so the window can show an offline banner.
@@ -1138,10 +1164,10 @@ async function buildUiUrl() {
   uiOrigin = targetUrl.origin;
   // Prefer the non-expiring desktop API key over the TTL-based session token.
   // Both result in the server setting a ve_session cookie and redirecting to /.
-  const desktopKey = process.env.BOSUN_DESKTOP_API_KEY;
-  if (desktopKey) {
-    targetUrl.searchParams.set("desktopKey", desktopKey);
-  } else {
+    const desktopKey = ensureDesktopApiKeyInEnv();
+    if (desktopKey) {
+      targetUrl.searchParams.set("desktopKey", desktopKey);
+    } else {
     const sessionToken = api.getSessionToken();
     if (sessionToken) {
       targetUrl.searchParams.set("token", sessionToken);
@@ -1812,6 +1838,7 @@ async function bootstrap() {
       process.env.BOSUN_DESKTOP_API_KEY = desktopApiKey;
     } catch (err) {
       console.warn("[desktop] could not load desktop-api-key module:", err?.message || err);
+      ensureDesktopApiKeyInEnv();
     }
 
     // Initialise shortcuts (loads user config) and register globals.

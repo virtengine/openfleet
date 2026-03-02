@@ -1,7 +1,8 @@
-import { existsSync, statSync } from "node:fs";
+import { existsSync, readFileSync, statSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { spawnSync, spawn } from "node:child_process";
+import { homedir } from "node:os";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const desktopDir = resolve(__dirname);
@@ -39,6 +40,31 @@ function shouldDisableSandbox() {
   }
 }
 
+function resolveDesktopConfigDir() {
+  if (process.env.BOSUN_HOME) return resolve(process.env.BOSUN_HOME);
+  if (process.env.BOSUN_DIR) return resolve(process.env.BOSUN_DIR);
+  const baseDir =
+    process.env.APPDATA ||
+    process.env.LOCALAPPDATA ||
+    process.env.USERPROFILE ||
+    process.env.HOME ||
+    homedir();
+  return resolve(baseDir, "bosun");
+}
+
+function readDesktopApiKeyFromDisk() {
+  try {
+    const file = resolve(resolveDesktopConfigDir(), "desktop-api-key.json");
+    if (!existsSync(file)) return "";
+    const payload = JSON.parse(readFileSync(file, "utf8"));
+    const key = String(payload?.key || "").trim();
+    if (!key.startsWith("bosun_desktop_")) return "";
+    return key;
+  } catch {
+    return "";
+  }
+}
+
 function ensureElectronInstalled() {
   if (existsSync(electronBin)) return true;
   if (process.env.BOSUN_DESKTOP_SKIP_INSTALL === "1") {
@@ -72,6 +98,9 @@ function launch() {
   }
 
   const disableSandbox = shouldDisableSandbox();
+  const envDesktopApiKey = String(process.env.BOSUN_DESKTOP_API_KEY || "").trim();
+  const diskDesktopApiKey = readDesktopApiKeyFromDisk();
+  const desktopApiKey = diskDesktopApiKey || envDesktopApiKey;
   const args = [desktopDir];
   if (disableSandbox) {
     args.push("--no-sandbox", "--disable-gpu-sandbox");
@@ -83,6 +112,7 @@ function launch() {
     env: {
       ...process.env,
       BOSUN_DESKTOP: "1",
+      ...(desktopApiKey ? { BOSUN_DESKTOP_API_KEY: desktopApiKey } : {}),
       ...(disableSandbox ? { ELECTRON_DISABLE_SANDBOX: "1" } : {}),
     },
   });

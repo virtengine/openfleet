@@ -1056,7 +1056,12 @@ const VENDOR_FILES = {
   "htm.js":                   { specifier: "htm/dist/htm.module.js",                         cdn: "https://esm.sh/htm@3.1.1" },
   "preact-signals-core.js":   { specifier: "@preact/signals-core/dist/signals-core.module.js", cdn: "https://cdn.jsdelivr.net/npm/@preact/signals-core@1.8.0/dist/signals-core.module.js" },
   "preact-signals.js":        { specifier: "@preact/signals/dist/signals.module.js",         cdn: "https://esm.sh/@preact/signals@1.3.1?deps=preact@10.25.4" },
+  "preact-jsx-runtime.js":    { specifier: "preact/jsx-runtime/dist/jsxRuntime.module.js",   cdn: "https://esm.sh/preact@10.25.4/jsx-runtime" },
   "es-module-shims.js":       { specifier: "es-module-shims/dist/es-module-shims.js",        cdn: "https://cdn.jsdelivr.net/npm/es-module-shims@1.10.0/dist/es-module-shims.min.js" },
+  // MUI / Emotion — pre-bundled by build-vendor-mui.mjs into ui/vendor/
+  "mui-material.js":          { specifier: null, cdn: "https://cdn.jsdelivr.net/npm/@mui/material@5/+esm" },
+  "emotion-react.js":         { specifier: null, cdn: "https://cdn.jsdelivr.net/npm/@emotion/react@11/+esm" },
+  "emotion-styled.js":        { specifier: null, cdn: "https://cdn.jsdelivr.net/npm/@emotion/styled@11/+esm" },
 };
 
 /**
@@ -1094,7 +1099,7 @@ async function handleVendor(req, res, url) {
   }
 
   // ── 2. node_modules resolution ──────────────────────────────────────────────
-  const localPath = resolveVendorPath(entry.specifier);
+  const localPath = entry.specifier ? resolveVendorPath(entry.specifier) : null;
   if (localPath && existsSync(localPath)) {
     try {
       const data = await readFile(localPath);
@@ -1126,7 +1131,7 @@ async function handleVendor(req, res, url) {
 const ESM_CACHE_DIR = resolve(repoRoot, ".cache", "esm-vendor");
 
 const ESM_CDN_FILES = {
-  "mui-material.js": "https://esm.sh/@mui/material@5?bundle&external=react,react-dom,react/jsx-runtime",
+  "mui-material.js": "https://esm.sh/@mui/material@5?bundle",
   "emotion-react.js": "https://esm.sh/@emotion/react@11?bundle&external=react",
   "emotion-styled.js": "https://esm.sh/@emotion/styled@11?bundle&external=react,react-dom",
 };
@@ -2157,6 +2162,10 @@ let wsHeartbeatTimer = null;
 let uiInstanceLockPath = "";
 let uiInstanceLockHeld = false;
 let _sessionTokenLastTouchedAt = 0;
+let _localRequestAddressCache = {
+  loadedAt: 0,
+  addresses: new Set(["127.0.0.1", "::1"]),
+};
 
 /* ─── Log Streaming State ─── */
 /** Map<string, { sockets: Set<WebSocket>, offset: number, pollTimer }> keyed by filePath */
@@ -4895,6 +4904,70 @@ function buildSessionCookieHeader() {
 function getHeaderString(value) {
   if (Array.isArray(value)) return String(value[0] || "");
   return String(value || "");
+}
+
+function normalizeRemoteAddress(raw) {
+  const value = String(raw || "").trim().toLowerCase();
+  if (!value) return "";
+  if (value.startsWith("::ffff:")) return value.slice(7);
+  return value;
+}
+
+function getLocalRequestAddressSet() {
+  const now = Date.now();
+  if (now - Number(_localRequestAddressCache.loadedAt || 0) < 60_000) {
+    return _localRequestAddressCache.addresses;
+  }
+  const addresses = new Set(["127.0.0.1", "::1"]);
+  try {
+    const nets = networkInterfaces();
+    for (const entries of Object.values(nets || {})) {
+      for (const info of entries || []) {
+        const addr = normalizeRemoteAddress(info?.address);
+        if (!addr) continue;
+        addresses.add(addr);
+      }
+    }
+  } catch {
+    // best effort
+  }
+  _localRequestAddressCache = { loadedAt: now, addresses };
+  return addresses;
+}
+
+function isSameMachineRequest(req) {
+  const remote = normalizeRemoteAddress(req?.socket?.remoteAddress);
+  if (!remote) return false;
+  return getLocalRequestAddressSet().has(remote);
+}
+
+function shouldAllowLocalSessionBootstrap(req, url) {
+  if (!parseBooleanEnv(process.env.BOSUN_UI_LOCAL_BOOTSTRAP, true)) return false;
+  if (isAllowUnsafe()) return false;
+  if (String(req?.method || "").toUpperCase() !== "GET") return false;
+  if (!isSameMachineRequest(req)) return false;
+  if (checkDesktopApiKey(req) || checkSessionToken(req)) return false;
+  if (url?.searchParams?.get("token")) return false;
+  if (url?.searchParams?.get("desktopKey")) return false;
+  if (url?.searchParams?.get("localBootstrap") === "1") return false;
+  return true;
+}
+
+function tryLocalSessionBootstrap(req, res, url) {
+  if (!shouldAllowLocalSessionBootstrap(req, url)) return false;
+  const redirectUrl = new URL(url.toString());
+  redirectUrl.searchParams.set("localBootstrap", "1");
+  const redirectPath =
+    redirectUrl.pathname +
+    (redirectUrl.searchParams.toString()
+      ? `?${redirectUrl.searchParams.toString()}`
+      : "");
+  res.writeHead(302, {
+    "Set-Cookie": buildSessionCookieHeader(),
+    Location: redirectPath || "/",
+  });
+  res.end();
+  return true;
 }
 
 const DESKTOP_API_KEY_FILE = "desktop-api-key.json";
@@ -11506,6 +11579,10 @@ async function handleApi(req, res, url) {
 }
 
 async function handleStatic(req, res, url) {
+  if (tryLocalSessionBootstrap(req, res, url)) {
+    return;
+  }
+
   const authResult = await requireAuth(req);
   if (!authResult?.ok) {
     textResponse(res, 401, "Unauthorized");
@@ -11516,6 +11593,18 @@ async function handleStatic(req, res, url) {
   }
 
   const rawPathname = String(url.pathname || "/").trim() || "/";
+  if (url.searchParams.get("localBootstrap") === "1") {
+    const cleanUrl = new URL(url.toString());
+    cleanUrl.searchParams.delete("localBootstrap");
+    const redirectPath =
+      cleanUrl.pathname +
+      (cleanUrl.searchParams.toString()
+        ? `?${cleanUrl.searchParams.toString()}`
+        : "");
+    res.writeHead(302, { Location: redirectPath || "/" });
+    res.end();
+    return;
+  }
   const pathname = rawPathname === "/" ? "/index.html" : rawPathname;
   const filePath = resolve(uiRoot, `.${pathname}`);
 

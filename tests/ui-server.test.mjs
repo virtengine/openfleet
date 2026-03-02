@@ -31,9 +31,11 @@ describe("ui-server mini app", () => {
     "BOSUN_UI_AUTO_OPEN_BROWSER",
     "BOSUN_UI_BROWSER_OPEN_MODE",
     "BOSUN_UI_LOG_TOKENIZED_BROWSER_URL",
+    "BOSUN_UI_LOCAL_BOOTSTRAP",
     "TELEGRAM_INTERVAL_MIN",
     "BOSUN_CONFIG_PATH",
     "BOSUN_HOME",
+    "BOSUN_DESKTOP_API_KEY",
     "KANBAN_BACKEND",
     "GITHUB_PROJECT_MODE",
     "GITHUB_PROJECT_WEBHOOK_SECRET",
@@ -123,6 +125,83 @@ describe("ui-server mini app", () => {
     expect(response.status).toBe(302);
     expect(response.headers.get("location")).toBe("/chat?launch=meeting&call=video");
     expect(response.headers.get("set-cookie") || "").toContain("ve_session=");
+  });
+
+  it("bootstraps local static requests into a session cookie", async () => {
+    process.env.TELEGRAM_UI_ALLOW_UNSAFE = "false";
+    process.env.TELEGRAM_UI_TUNNEL = "disabled";
+    process.env.BOSUN_UI_LOCAL_BOOTSTRAP = "true";
+    const mod = await import("../ui-server.mjs");
+    const server = await mod.startTelegramUiServer({
+      port: await getFreePort(),
+      host: "127.0.0.1",
+      skipInstanceLock: true,
+      skipAutoOpen: true,
+    });
+    const port = server.address().port;
+
+    const first = await fetch(`http://127.0.0.1:${port}/app.js?native=1`, {
+      redirect: "manual",
+    });
+    expect(first.status).toBe(302);
+    const cookie = first.headers.get("set-cookie") || "";
+    expect(cookie).toContain("ve_session=");
+    const location = first.headers.get("location") || "";
+    expect(location).toContain("localBootstrap=1");
+
+    const second = await fetch(`http://127.0.0.1:${port}${location}`, {
+      headers: { cookie },
+      redirect: "manual",
+    });
+    expect(second.status).toBe(302);
+    const finalLocation = second.headers.get("location") || "";
+    expect(finalLocation).toContain("/app.js?native=1");
+    expect(finalLocation).not.toContain("localBootstrap=1");
+
+    const third = await fetch(`http://127.0.0.1:${port}${finalLocation}`, {
+      headers: { cookie },
+    });
+    expect(third.status).toBe(200);
+    expect(String(third.headers.get("content-type") || "")).toContain("application/javascript");
+  });
+
+  it("prefers persisted desktop API key over stale env key during desktop bootstrap", async () => {
+    process.env.TELEGRAM_UI_ALLOW_UNSAFE = "false";
+    process.env.TELEGRAM_UI_TUNNEL = "disabled";
+    const tmpDir = mkdtempSync(join(tmpdir(), "bosun-desktop-key-"));
+    process.env.BOSUN_HOME = tmpDir;
+    process.env.BOSUN_DESKTOP_API_KEY = "bosun_desktop_stale_env_key";
+    writeFileSync(
+      join(tmpDir, "desktop-api-key.json"),
+      JSON.stringify({ key: "bosun_desktop_persisted_key" }, null, 2),
+      "utf8",
+    );
+
+    const mod = await import("../ui-server.mjs");
+    const server = await mod.startTelegramUiServer({
+      port: await getFreePort(),
+      host: "127.0.0.1",
+      skipInstanceLock: true,
+      skipAutoOpen: true,
+      dependencies: { configDir: tmpDir },
+    });
+    const port = server.address().port;
+
+    const bad = await fetch(
+      `http://127.0.0.1:${port}/?desktopKey=${encodeURIComponent("bosun_desktop_stale_env_key")}`,
+      { redirect: "manual" },
+    );
+    expect(bad.status).toBe(401);
+
+    const good = await fetch(
+      `http://127.0.0.1:${port}/?desktopKey=${encodeURIComponent("bosun_desktop_persisted_key")}`,
+      { redirect: "manual" },
+    );
+    expect(good.status).toBe(302);
+    expect(good.headers.get("set-cookie") || "").toContain("ve_session=");
+    expect(process.env.BOSUN_DESKTOP_API_KEY).toBe("bosun_desktop_persisted_key");
+
+    rmSync(tmpDir, { recursive: true, force: true });
   });
 
   it("starts with TELEGRAM_UI_PORT=0 by falling back to non-ephemeral default", async () => {
