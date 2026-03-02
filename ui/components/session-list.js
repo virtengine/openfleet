@@ -1,6 +1,7 @@
 /* ─────────────────────────────────────────────────────────────
  *  Component: Session List — ChatGPT-style sidebar for agent sessions
  *  With swipe-to-action, archive, delete, and duplicate prevention.
+ *  UI: MUI Material components (Preact + HTM, no build step)
  * ────────────────────────────────────────────────────────────── */
 import { h } from "preact";
 import { useState, useEffect, useCallback, useRef } from "preact/hooks";
@@ -9,6 +10,12 @@ import { signal, computed } from "@preact/signals";
 import { apiFetch, onWsMessage } from "../modules/api.js";
 import { formatRelative, truncate } from "../modules/utils.js";
 import { resolveIcon } from "../modules/icon-utils.js";
+import {
+  List, ListItem, ListItemButton, ListItemText, ListItemIcon,
+  ListItemSecondaryAction, Typography, Box, Stack, IconButton,
+  Chip, Divider, TextField, InputAdornment, CircularProgress,
+  Tooltip, Menu, MenuItem, Paper, Skeleton, Button, Alert,
+} from "@mui/material";
 
 const html = htm.bind(h);
 
@@ -485,6 +492,7 @@ function SwipeableSessionItem({
   const statusKey = String(s.status || "idle").toLowerCase().replace(/\s+/g, "-");
   const typeLabel = (s.type || "session").toUpperCase();
   const dotColor = STATUS_COLOR_MAP[statusKey] || "var(--text-hint)";
+  const preview = s.lastMessage && !isArchived ? truncate(s.lastMessage, 50) : "";
 
   /* ── Touch / pointer swipe handling ── */
   function onPointerDown(e) {
@@ -554,77 +562,97 @@ function SwipeableSessionItem({
   }
 
   return html`
-    <div
+    <${Box}
       key=${s.id}
+      sx=${{ position: "relative", overflow: "hidden" }}
       class="session-item-wrapper ${showActions === s.id ? "actions-revealed" : ""}"
     >
       <!-- Swipe-reveal action buttons behind the item -->
-      <div class="session-item-behind">
+      <${Stack}
+        direction="row"
+        spacing=${1}
+        sx=${{
+          position: "absolute", right: 0, top: 0, bottom: 0,
+          display: "flex", alignItems: "center", px: 0.5, zIndex: 0,
+        }}
+      >
         ${isArchived
           ? html`
-              <button
-                class="session-action-btn resume"
-                onClick=${handleResume}
-                title="Unarchive"
-              >
-                <span class="session-action-icon">${resolveIcon(":workflow:")}</span>
-                <span class="session-action-label">Restore</span>
-              </button>
+              <${Tooltip} title="Unarchive">
+                <${IconButton}
+                  size="small"
+                  color="primary"
+                  onClick=${handleResume}
+                >
+                  ${resolveIcon(":workflow:")}
+                </${IconButton}>
+              </${Tooltip}>
             `
           : html`
-              <button
-                class="session-action-btn archive"
-                onClick=${handleArchive}
-                title="Archive session"
-              >
-                <span class="session-action-icon">${resolveIcon(":box:")}</span>
-                <span class="session-action-label">Archive</span>
-              </button>
+              <${Tooltip} title="Archive session">
+                <${IconButton}
+                  size="small"
+                  color="warning"
+                  onClick=${handleArchive}
+                >
+                  ${resolveIcon(":box:")}
+                </${IconButton}>
+              </${Tooltip}>
             `}
-        <button
-          class="session-action-btn delete ${confirmDelete ? "confirm" : ""}"
-          onClick=${handleDelete}
-          title=${confirmDelete ? "Confirm delete" : "Delete session"}
-        >
-          <span class="session-action-icon">${resolveIcon(confirmDelete ? ":alert:" : ":trash:")}</span>
-          <span class="session-action-label">${confirmDelete ? "Sure?" : "Delete"}</span>
-        </button>
-      </div>
+        <${Tooltip} title=${confirmDelete ? "Confirm delete" : "Delete session"}>
+          <${IconButton}
+            size="small"
+            color=${confirmDelete ? "error" : "default"}
+            onClick=${handleDelete}
+          >
+            ${resolveIcon(confirmDelete ? ":alert:" : ":trash:")}
+          </${IconButton}>
+        </${Tooltip}>
+      </${Stack}>
 
       <!-- The actual session item (slides left on swipe) -->
-      <div
-        class="session-item ${isSelected ? "active" : ""} ${isArchived ? "archived" : ""} status-${statusKey}"
-        style="transform: translateX(${offset}px); transition: ${swiping.current ? "none" : "transform 0.2s ease"}"
-        onClick=${() => {
-          if (Math.abs(offset) > 10) return; // don't select during swipe
-          if (showActions === s.id) {
-            onToggleActions(null);
-            setOffset(0);
-            return;
-          }
-          onSelect(s.id);
+      <${Box}
+        sx=${{
+          position: "relative", zIndex: 1, bgcolor: "background.paper",
+          transform: `translateX(${offset}px)`,
+          transition: swiping.current ? "none" : "transform 0.2s ease",
         }}
         onPointerDown=${onPointerDown}
         onPointerMove=${onPointerMove}
         onPointerUp=${onPointerUp}
-        onPointerCancel=${() => {
-          swiping.current = false;
-          setOffset(0);
-        }}
+        onPointerCancel=${() => { swiping.current = false; setOffset(0); }}
         onDblClick=${(e) => {
-          if (onStartRename) {
-            e.stopPropagation();
-            onStartRename(s.id);
-          }
+          if (onStartRename) { e.stopPropagation(); onStartRename(s.id); }
         }}
       >
-        <div class="session-item-row">
-          <span class="session-item-dot" style=${`background:${dotColor}`}></span>
+        <${ListItemButton}
+          selected=${isSelected}
+          onClick=${() => {
+            if (Math.abs(offset) > 10) return;
+            if (showActions === s.id) { onToggleActions(null); setOffset(0); return; }
+            onSelect(s.id);
+          }}
+          sx=${{
+            borderRadius: 1, opacity: isArchived ? 0.6 : 1,
+            py: 0.75, px: 1.5,
+          }}
+        >
+          <${ListItemIcon} sx=${{ minWidth: 24 }}>
+            <${Box}
+              sx=${{
+                width: 8, height: 8, borderRadius: "50%",
+                bgcolor: dotColor, flexShrink: 0,
+              }}
+            />
+          </${ListItemIcon}>
           ${isRenaming && onSaveRename && onCancelRename
             ? html`
-                <input
-                  class="session-item-rename"
-                  value=${title}
+                <${TextField}
+                  size="small"
+                  variant="standard"
+                  defaultValue=${title}
+                  autoFocus
+                  fullWidth
                   onClick=${(e) => e.stopPropagation()}
                   onKeyDown=${(e) => {
                     if (e.key === "Enter") {
@@ -640,41 +668,53 @@ function SwipeableSessionItem({
                     if (v && v !== title) onSaveRename(s.id, v);
                     else onCancelRename();
                   }}
-                  ref=${(el) => {
-                    if (el) {
-                      el.focus();
-                      el.select();
-                    }
+                  inputRef=${(el) => {
+                    if (el) { el.focus(); el.select(); }
                   }}
+                  sx=${{ mr: 1 }}
                 />
               `
             : html`
-                <span class="session-item-title">${truncate(title, 32)}</span>
+                <${ListItemText}
+                  primary=${truncate(title, 32)}
+                  secondary=${preview || null}
+                  primaryTypographyProps=${{
+                    variant: "body2",
+                    fontWeight: isSelected ? 600 : 400,
+                    noWrap: true,
+                  }}
+                  secondaryTypographyProps=${{
+                    variant: "caption",
+                    noWrap: true,
+                  }}
+                />
               `}
-          <span class="session-item-type">${typeLabel}</span>
-          <span class="session-item-time">
-            ${formatRelative(s.updatedAt || s.createdAt)}
-          </span>
-          <button
-            class="session-item-menu"
-            title="Actions"
-            onClick=${(e) => {
-              e.stopPropagation();
-              if (onToggleActions) {
-                onToggleActions(s.id);
-                setOffset(-140);
-              }
-            }}
-          >
-            ⋯
-          </button>
-        </div>
-        ${s.lastMessage && !isArchived &&
-        html`
-          <div class="session-item-preview">${truncate(s.lastMessage, 50)}</div>
-        `}
-      </div>
-    </div>
+          <${Stack} direction="row" spacing=${0.5} alignItems="center" sx=${{ ml: "auto", flexShrink: 0, pl: 1 }}>
+            <${Chip}
+              label=${typeLabel}
+              size="small"
+              variant="outlined"
+              sx=${{ fontSize: "0.65rem", height: 18, "& .MuiChip-label": { px: 0.5 } }}
+            />
+            <${Typography} variant="caption" color="text.secondary" noWrap>
+              ${formatRelative(s.updatedAt || s.createdAt)}
+            </${Typography}>
+            <${Tooltip} title="Actions">
+              <${IconButton}
+                size="small"
+                onClick=${(e) => {
+                  e.stopPropagation();
+                  if (onToggleActions) { onToggleActions(s.id); setOffset(-140); }
+                }}
+                sx=${{ p: 0.25 }}
+              >
+                ⋯
+              </${IconButton}>
+            </${Tooltip}>
+          </${Stack}>
+        </${ListItemButton}>
+      </${Box}>
+    </${Box}>
   `;
 }
 
@@ -853,131 +893,187 @@ export function SessionList({
 
   if (error) {
     return html`
-      <div class="session-list">
-        <div class="session-list-header">
-          <span class="session-list-title">Sessions</span>
-        </div>
-        <div class="session-empty">
-          <div class="session-empty-icon">${resolveIcon(":server:")}</div>
-          <div class="session-empty-text">Sessions not available</div>
-          <button class="btn btn-primary btn-sm" onClick=${handleRetry}>
+      <${Paper} elevation=${0} sx=${{ height: "100%", display: "flex", flexDirection: "column" }}>
+        <${Box} sx=${{ p: 1.5, display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+          <${Typography} variant="subtitle2">Sessions</${Typography}>
+        </${Box}>
+        <${Divider} />
+        <${Box} sx=${{ flex: 1, display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", p: 3, gap: 1.5 }}>
+          <${Alert} severity="error" variant="outlined" sx=${{ mb: 1 }}>
+            Sessions not available
+          </${Alert}>
+          <${Button} variant="outlined" size="small" onClick=${handleRetry}>
             Retry
-          </button>
-        </div>
-      </div>
+          </${Button}>
+        </${Box}>
+      </${Paper}>
     `;
   }
 
   return html`
-    <div class="session-list" onClick=${handleListClick}>
-      <div class="session-list-header">
-        <span class="session-list-title">Sessions</span>
-        <div style="display:flex;gap:6px;align-items:center">
+    <${Paper}
+      elevation=${0}
+      sx=${{ height: "100%", display: "flex", flexDirection: "column", overflow: "hidden" }}
+      onClick=${handleListClick}
+    >
+      <!-- Header -->
+      <${Box} sx=${{ p: 1.5, display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+        <${Typography} variant="subtitle2">Sessions</${Typography}>
+        <${Stack} direction="row" spacing=${0.75} alignItems="center">
           ${typeof onToggleArchived === "function" &&
           archivedCount > 0 &&
           html`
-            <button
-              class="btn btn-ghost btn-sm"
+            <${Button}
+              size="small"
+              variant="text"
               onClick=${() => onToggleArchived(!showArchived)}
+              sx=${{ textTransform: "none", fontSize: "0.75rem" }}
             >
               ${showArchived
                 ? `Hide Archived (${archivedCount})`
                 : `Show Archived (${archivedCount})`}
-            </button>
+            </${Button}>
           `}
-          <button
-            class="btn btn-primary btn-sm"
+          <${Button}
+            size="small"
+            variant="outlined"
             onClick=${handleCreateSession}
+            sx=${{ textTransform: "none" }}
           >
             + New
-          </button>
-        </div>
-      </div>
+          </${Button}>
+        </${Stack}>
+      </${Box}>
 
-      <div class="session-search">
-        <input
-          class="input session-search-input"
+      <!-- Search bar -->
+      <${Box} sx=${{ px: 1.5, pb: 1 }}>
+        <${TextField}
+          size="small"
+          fullWidth
           placeholder="Search sessions…"
           value=${search}
           onInput=${(e) => setSearch(e.target.value)}
+          InputProps=${{
+            startAdornment: html`
+              <${InputAdornment} position="start">
+                <${Typography} variant="caption" sx=${{ opacity: 0.5 }}>🔍</${Typography}>
+              </${InputAdornment}>
+            `,
+          }}
+          sx=${{
+            "& .MuiInputBase-root": { height: 34, fontSize: "0.85rem" },
+          }}
         />
-      </div>
+      </${Box}>
 
-      <div style="display:flex;gap:6px;flex-wrap:wrap;padding:0 10px 8px;">
-        <button
-          class="btn btn-sm ${resolvedSessionView === SESSION_VIEW_FILTER.all ? "btn-primary" : "btn-ghost"}"
+      <!-- Filter chips -->
+      <${Stack} direction="row" spacing=${0.75} sx=${{ px: 1.5, pb: 1, flexWrap: "wrap" }}>
+        <${Chip}
+          label=${`All (${allCount})`}
+          size="small"
+          variant=${resolvedSessionView === SESSION_VIEW_FILTER.all ? "filled" : "outlined"}
+          color=${resolvedSessionView === SESSION_VIEW_FILTER.all ? "primary" : "default"}
           onClick=${() => setSessionView(SESSION_VIEW_FILTER.all)}
-        >
-          All (${allCount})
-        </button>
-        <button
-          class="btn btn-sm ${resolvedSessionView === SESSION_VIEW_FILTER.active ? "btn-primary" : "btn-ghost"}"
+          clickable
+        />
+        <${Chip}
+          label=${`Active (${activeCount})`}
+          size="small"
+          variant=${resolvedSessionView === SESSION_VIEW_FILTER.active ? "filled" : "outlined"}
+          color=${resolvedSessionView === SESSION_VIEW_FILTER.active ? "primary" : "default"}
           onClick=${() => setSessionView(SESSION_VIEW_FILTER.active)}
-        >
-          Active (${activeCount})
-        </button>
-        <button
-          class="btn btn-sm ${resolvedSessionView === SESSION_VIEW_FILTER.historic ? "btn-primary" : "btn-ghost"}"
+          clickable
+        />
+        <${Chip}
+          label=${`Historic (${historicCount})`}
+          size="small"
+          variant=${resolvedSessionView === SESSION_VIEW_FILTER.historic ? "filled" : "outlined"}
+          color=${resolvedSessionView === SESSION_VIEW_FILTER.historic ? "primary" : "default"}
           onClick=${() => setSessionView(SESSION_VIEW_FILTER.historic)}
-        >
-          Historic (${historicCount})
-        </button>
-      </div>
+          clickable
+        />
+      </${Stack}>
 
-      <div class="session-list-scroll">
-        ${active.length > 0 &&
-        html`
-          <div class="session-group-label">Active Sessions</div>
-          ${active.map(renderSessionItem)}
-        `}
-        ${recent.length > 0 &&
-        html`
-          <div class="session-group-label">Recent</div>
-          ${recent.map(renderSessionItem)}
-        `}
-        ${archived.length > 0 &&
-        html`
-          <div class="session-group-label">Archived (${archived.length})</div>
-          ${archived.map(renderSessionItem)}
-        `}
+      <${Divider} />
+
+      <!-- Session list scroll area -->
+      <${Box} sx=${{ flex: 1, overflowY: "auto", overflowX: "hidden" }}>
+        <${List} dense disablePadding>
+          ${active.length > 0 &&
+          html`
+            <${ListItem} disablePadding sx=${{ px: 1.5, pt: 1.5, pb: 0.5 }}>
+              <${Typography} variant="overline" color="text.secondary" sx=${{ fontSize: "0.65rem", letterSpacing: 1 }}>
+                Active Sessions
+              </${Typography}>
+            </${ListItem}>
+            ${active.map(renderSessionItem)}
+          `}
+          ${active.length > 0 && recent.length > 0 && html`<${Divider} sx=${{ my: 0.5 }} />`}
+          ${recent.length > 0 &&
+          html`
+            <${ListItem} disablePadding sx=${{ px: 1.5, pt: 1, pb: 0.5 }}>
+              <${Typography} variant="overline" color="text.secondary" sx=${{ fontSize: "0.65rem", letterSpacing: 1 }}>
+                Recent
+              </${Typography}>
+            </${ListItem}>
+            ${recent.map(renderSessionItem)}
+          `}
+          ${(active.length > 0 || recent.length > 0) && archived.length > 0 && html`<${Divider} sx=${{ my: 0.5 }} />`}
+          ${archived.length > 0 &&
+          html`
+            <${ListItem} disablePadding sx=${{ px: 1.5, pt: 1, pb: 0.5 }}>
+              <${Typography} variant="overline" color="text.secondary" sx=${{ fontSize: "0.65rem", letterSpacing: 1 }}>
+                Archived (${archived.length})
+              </${Typography}>
+            </${ListItem}>
+            ${archived.map(renderSessionItem)}
+          `}
+        </${List}>
+
         ${filtered.length === 0 &&
         html`
-          <div class="session-empty">
-            <div class="session-empty-icon">${resolveIcon(":chat:")}</div>
-            <div class="session-empty-text">
+          <${Box} sx=${{ display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", p: 4, gap: 1.5, textAlign: "center" }}>
+            <${Typography} variant="h5" sx=${{ opacity: 0.4 }}>${resolveIcon(":chat:")}</${Typography}>
+            <${Typography} variant="body2" color="text.secondary">
               ${emptyTitle}
-              <div class="session-empty-subtext">
-                ${emptyHint}
-              </div>
-            </div>
-            <div class="session-empty-actions">
-              <button
-                class="btn btn-primary btn-sm"
+            </${Typography}>
+            <${Typography} variant="caption" color="text.disabled">
+              ${emptyHint}
+            </${Typography}>
+            <${Stack} direction="row" spacing=${1} sx=${{ mt: 1 }}>
+              <${Button}
+                variant="outlined"
+                size="small"
                 onClick=${handleCreateSession}
+                sx=${{ textTransform: "none" }}
               >
                 + New Session
-              </button>
+              </${Button}>
               ${hasSearch &&
               html`
-                <button
-                  class="btn btn-ghost btn-sm"
+                <${Button}
+                  variant="text"
+                  size="small"
                   onClick=${() => setSearch("")}
+                  sx=${{ textTransform: "none" }}
                 >
                   Clear search
-                </button>
+                </${Button}>
               `}
-            </div>
-          </div>
+            </${Stack}>
+          </${Box}>
         `}
-      </div>
+      </${Box}>
 
       <!-- Swipe hint for mobile (shown once) -->
       ${filtered.length > 0 &&
       html`
-        <div class="session-swipe-hint">
-          ← Swipe items for actions
-        </div>
+        <${Box} sx=${{ py: 0.5, textAlign: "center" }}>
+          <${Typography} variant="caption" color="text.disabled" sx=${{ fontSize: "0.65rem" }}>
+            ← Swipe items for actions
+          </${Typography}>
+        </${Box}>
       `}
-    </div>
+    </${Paper}>
   `;
 }
