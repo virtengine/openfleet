@@ -50,7 +50,7 @@ import {
   streamRetryDelay,
   MAX_STREAM_RETRIES,
 } from "./stream-resilience.mjs";
-import { cacheAndCompressItems } from "./context-cache.mjs";
+import { compressAllItems } from "./context-cache.mjs";
 
 // Lazy-load MCP registry to avoid circular dependencies.
 // Cached at module scope per AGENTS.md hard rules.
@@ -101,7 +101,8 @@ const DEFAULT_MAX_ITEM_CHARS = 12_000;
 const TOOL_OUTPUT_GUARDRAIL = String.raw`
 
 [Tool Output Guardrail] Keep tool outputs compact: prefer narrow searches, bounded command output (for example head/tail), and summaries for large results instead of dumping full payloads.
-[Context Cache] Older tool outputs are automatically compressed and cached to disk. If you see "[…compressed — full output: bosun --tool-log <ID>]" and need the full output, run that command to retrieve it.`;
+[Context Cache] Older tool outputs are automatically compressed and cached to disk. If you see "[…compressed — full output: bosun --tool-log <ID>]" and need the full output, run that command to retrieve it.
+[Message Compression] Older agent reasoning and past user prompts are progressively compressed. Instruction-bearing content (AGENTS.md rules, system directives) is pinned and never compressed.`;
 
 function parseBoundedNumber(value, fallback, min, max) {
   const num = Number(value);
@@ -2360,11 +2361,11 @@ export async function execPooledPrompt(userMessage, options = {}) {
     };
   }
 
-  // Apply tiered context compression — cache old tool outputs to disk,
-  // replace them with compressed summaries + retrieval commands.
+  // Apply unified context compression — tool outputs, agent messages,
+  // and user prompts.  Pinned instructions are never touched.
   let compressedItems = result.items;
   try {
-    compressedItems = await cacheAndCompressItems(result.items);
+    compressedItems = await compressAllItems(result.items);
   } catch (compErr) {
     console.warn(`${TAG} context compression failed (non-fatal): ${compErr.message}`);
   }
@@ -3158,7 +3159,7 @@ export async function launchOrResumeThread(
   // Apply tiered context compression for persistent threads
   if (result.success && Array.isArray(result.items) && result.items.length > 0) {
     try {
-      const compressedItems = await cacheAndCompressItems(result.items);
+      const compressedItems = await compressAllItems(result.items);
       return { ...result, items: compressedItems, threadId: finalThreadId, resumed: false };
     } catch (compErr) {
       console.warn(`${TAG} context compression failed (non-fatal): ${compErr.message}`);

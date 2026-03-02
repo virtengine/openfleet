@@ -555,6 +555,364 @@ export async function cacheAndCompressItems(items, options = {}) {
   return result;
 }
 
+// ===========================================================================
+// MESSAGE COMPRESSION — Agent & User Text
+// ===========================================================================
+//
+// Tool outputs are already handled above.  This section compresses the
+// *other* two categories that bloat long-running sessions:
+//
+//   1. Agent "thinking" messages — verbose planning, narration, step lists.
+//      Example:  "Now let me implement the integration.  I need to:\n
+//        1. Import cacheAndCompressItems…\n  2. Apply compression…"
+//      Compressed:  "Implement context-cache integration across 5 files"
+//
+//   2. User request messages — the original prompt.  Critical for the
+//      current turn, but nearly zero value once the task is complete.
+//      Compressed:  "[User request: implement tiered context compression]"
+//
+//   3. Pinned content — instructions, AGENTS.md rules, system directives.
+//      These are NEVER compressed, regardless of age.
+//
+// All compression is deterministic (zero API cost, zero latency).
+// ---------------------------------------------------------------------------
+
+// ── Instruction-pinning keywords ──────────────────────────────────────────
+// If an item's text contains ANY of these markers (case-insensitive),
+// it is classified as "pinned" and exempt from compression.
+const PINNED_KEYWORDS = [
+  "AGENTS.md",
+  "CRITICAL",
+  "MUST NOT",
+  "MUST NEVER",
+  "NEVER use",
+  "ALWAYS use",
+  "MANDATORY",
+  "HARD RULE",
+  "## Instructions",
+  "## Rules",
+  "# AGENT DIRECTIVE",
+  "Pre-commit",
+  "Pre-push",
+  "Commit Conventions",
+  "conventional commits",
+  "--no-verify",
+  "permanently banned",
+  "Module-scope caching",
+  "Async safety",
+  "Error boundaries",
+  "Test quality",
+  "No architectural shortcuts",
+  "_pinned",
+];
+
+/** Pre-compiled regex for pinned detection (case-insensitive) */
+const PINNED_RE = new RegExp(
+  PINNED_KEYWORDS.map((k) => k.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")).join("|"),
+  "i",
+);
+
+// ── Agent message compression parameters ──────────────────────────────────
+// Age thresholds for agent messages (turns since the message was produced)
+const MSG_TIER_0_MAX_AGE = 1;   // current + previous turn: full text
+const MSG_TIER_1_MAX_AGE = 4;   // turns 2-4: moderate compression
+                                 // turns 5+:  breadcrumb only
+
+// Minimum text length to bother compressing
+const MSG_MIN_COMPRESS_CHARS = 120;
+
+// ── User message compression parameters ──────────────────────────────────
+const USER_MSG_FULL_TURNS = 1;  // only the CURRENT turn keeps the full user prompt
+const USER_MSG_BREADCRUMB_MAX = 100; // max chars for the breadcrumb summary
+
+// ---------------------------------------------------------------------------
+// Pinning Detection
+// ---------------------------------------------------------------------------
+
+/**
+ * Check if an item contains instruction/rule content that must be preserved.
+ *
+ * Detects:
+ *   - Explicit `_pinned: true` flag
+ *   - AGENTS.md content / repo rules
+ *   - System directives (CRITICAL, MUST, NEVER, etc.)
+ *   - Commit conventions, pre-push rules, etc.
+ *
+ * @param {object} item
+ * @returns {boolean}
+ */
+export function isItemPinned(item) {
+  if (!item || typeof item !== "object") return false;
+
+  // Explicit pin flag
+  if (item._pinned === true) return true;
+
+  // Check text content
+  const text = getItemText(item);
+  if (!text) return false;
+
+  return PINNED_RE.test(text);
+}
+
+// ---------------------------------------------------------------------------
+// Deterministic Agent Message Summarization
+// ---------------------------------------------------------------------------
+
+/**
+ * Extract a short action summary from verbose agent "thinking" text.
+ *
+ * Strategy (deterministic, no LLM):
+ *   1. Strip markdown formatting / numbered lists
+ *   2. Extract the first sentence (usually states the intent)
+ *   3. Truncate to ~80 chars, keeping whole words
+ *
+ * @param {string} text  The agent message text
+ * @returns {string}     Short summary (≤80 chars)
+ */
+function summarizeAgentMessage(text) {
+  if (!text || typeof text !== "string") return "";
+
+  // Strip markdown fences, bullet/number lists, extra whitespace
+  let clean = text
+    .replace(/```[\s\S]*?```/g, "[code block]")                  // code fences
+    .replace(/^\s*[-*•]\s+/gm, "")                                // bullet lists
+    .replace(/^\s*\d+[.)]\s+/gm, "")                              // numbered lists
+    .replace(/\[([^\]]*)\]\([^)]*\)/g, "$1")                      // markdown links
+    .replace(/#{1,6}\s+/g, "")                                    // headings
+    .replace(/[`*_~]+/g, "")                                      // inline formatting
+    .replace(/\n{2,}/g, ". ")                                     // paragraph breaks → period
+    .replace(/\n/g, " ")                                          // newlines → space
+    .replace(/\s{2,}/g, " ")                                      // collapse whitespace
+    .trim();
+
+  // Take only the first "sentence" (up to first period, colon, or dash boundary)
+  const sentenceEnd = clean.search(/[.!?]\s|:\s*\n|—\s/);
+  if (sentenceEnd > 10 && sentenceEnd < 100) {
+    clean = clean.slice(0, sentenceEnd + 1).trim();
+  }
+
+  // Truncate to ~80 chars at a word boundary
+  if (clean.length > 80) {
+    const cut = clean.lastIndexOf(" ", 78);
+    clean = clean.slice(0, cut > 20 ? cut : 78) + "…";
+  }
+
+  return clean || text.slice(0, 60).trim() + "…";
+}
+
+/**
+ * Extract the core intent from a user prompt.
+ *
+ * Takes the first meaningful sentence and strips formatting.
+ * Result is wrapped in [User request: …] brackets.
+ *
+ * @param {string} text  The user's prompt text
+ * @returns {string}     Bracketed summary
+ */
+function summarizeUserMessage(text) {
+  if (!text || typeof text !== "string") return "[User request]";
+
+  // Strip the TOOL_OUTPUT_GUARDRAIL suffix if present
+  const guardrailIdx = text.indexOf("[Tool Output Guardrail]");
+  const rawText = guardrailIdx > 0 ? text.slice(0, guardrailIdx).trim() : text;
+
+  // Remove code blocks and markdown
+  let clean = rawText
+    .replace(/```[\s\S]*?```/g, "")
+    .replace(/\[([^\]]*)\]\([^)]*\)/g, "$1")
+    .replace(/#{1,6}\s+/g, "")
+    .replace(/[`*_~]+/g, "")
+    .replace(/\n{2,}/g, ". ")
+    .replace(/\n/g, " ")
+    .replace(/\s{2,}/g, " ")
+    .trim();
+
+  // If there's a system prompt prepended, skip to the user's actual content
+  const directiveIdx = clean.indexOf("---");
+  if (directiveIdx > 0 && directiveIdx < clean.length - 10) {
+    clean = clean.slice(directiveIdx + 3).trim();
+  }
+
+  // Take the core intent — first substantial sentence
+  const firstPeriod = clean.search(/[.!?]\s/);
+  if (firstPeriod > 5 && firstPeriod < USER_MSG_BREADCRUMB_MAX) {
+    clean = clean.slice(0, firstPeriod + 1);
+  } else if (clean.length > USER_MSG_BREADCRUMB_MAX) {
+    const cut = clean.lastIndexOf(" ", USER_MSG_BREADCRUMB_MAX - 3);
+    clean = clean.slice(0, cut > 20 ? cut : USER_MSG_BREADCRUMB_MAX - 3) + "…";
+  }
+
+  return `[User request: ${clean}]`;
+}
+
+// ---------------------------------------------------------------------------
+// Message Classification
+// ---------------------------------------------------------------------------
+
+/**
+ * Classify an item for message compression purposes.
+ *
+ * @param {object} item
+ * @returns {"pinned"|"agent_msg"|"user_msg"|"tool_output"|"other"}
+ */
+function classifyItem(item) {
+  if (!item || typeof item !== "object") return "other";
+
+  // Check pinned first — takes priority over everything
+  if (isItemPinned(item)) return "pinned";
+
+  // Agent thinking/response messages
+  if (
+    item.type === "agent_message" ||
+    item.type === "assistant" ||
+    item.role === "assistant"
+  ) {
+    return "agent_msg";
+  }
+
+  // User messages / prompts
+  if (item.role === "user" || item.type === "user_message") {
+    return "user_msg";
+  }
+
+  // Tool outputs (handled by the tool compression system)
+  if (
+    item.type === "function_call_output" ||
+    item.type === "tool_result" ||
+    item.type === "tool_output" ||
+    item.type === "command_output"
+  ) {
+    return "tool_output";
+  }
+
+  return "other";
+}
+
+// ---------------------------------------------------------------------------
+// Unified Compression Entry Point
+// ---------------------------------------------------------------------------
+
+/**
+ * Compress ALL item types: tool outputs (existing), agent messages (new),
+ * and user messages (new).  Pinned items are never touched.
+ *
+ * This wraps `cacheAndCompressItems` (tool output compression) and adds
+ * agent + user message compression on top.
+ *
+ * @param {Array}  items       The full accumulated items array
+ * @param {object} [options]   Optional overrides
+ * @param {number} [options.fullContextTurns=3]  Turns to keep tool outputs full
+ * @returns {Promise<Array>}   Compressed items array
+ */
+export async function compressAllItems(items, options = {}) {
+  if (!Array.isArray(items) || items.length === 0) return items;
+
+  // Step 1: Apply tool output compression (existing system)
+  let result = await cacheAndCompressItems(items, options);
+
+  // Step 2: Apply message compression to agent + user messages
+  const turnItems = assignTurns(result);
+  const maxTurn = turnItems.reduce((m, t) => Math.max(m, t.turn), 0);
+
+  // Not enough turns to need message compression yet
+  if (maxTurn < 2) return result;
+
+  result = turnItems.map(({ item, turn }) => {
+    const age = maxTurn - turn;
+    const kind = classifyItem(item);
+
+    // Pinned: never compress
+    if (kind === "pinned") return item;
+
+    // Tool outputs: already compressed by cacheAndCompressItems
+    if (kind === "tool_output") return item;
+
+    // Other/unknown: pass through
+    if (kind === "other") return item;
+
+    // Agent messages: tiered compression based on age
+    if (kind === "agent_msg") {
+      return compressAgentMessage(item, age);
+    }
+
+    // User messages: compress after the current turn
+    if (kind === "user_msg") {
+      return compressUserMessage(item, age);
+    }
+
+    return item;
+  });
+
+  return result;
+}
+
+/**
+ * Apply tiered compression to an agent message item.
+ *
+ * @param {object} item  The agent_message item
+ * @param {number} age   Turns since this message
+ * @returns {object}     Possibly compressed item
+ */
+function compressAgentMessage(item, age) {
+  const text = getItemText(item);
+  if (!text || text.length < MSG_MIN_COMPRESS_CHARS) return item;
+
+  // Tier 0: full text (current + previous turn)
+  if (age <= MSG_TIER_0_MAX_AGE) return item;
+
+  // Tier 1: moderate — keep first 200 chars + summary
+  if (age <= MSG_TIER_1_MAX_AGE) {
+    const summary = summarizeAgentMessage(text);
+    const preview = text.length > 200 ? text.slice(0, 200) + "…" : text;
+    if (preview.length >= text.length - 20) return item; // not worth compressing
+    return {
+      ...item,
+      text: `${summary}\n\n[…${text.length - 200} chars of agent reasoning compressed]`,
+      _originalLength: text.length,
+      _compressed: "agent_tier1",
+    };
+  }
+
+  // Tier 2: breadcrumb only (5+ turns old)
+  const summary = summarizeAgentMessage(text);
+  return {
+    type: item.type || "agent_message",
+    text: `[Agent: ${summary}]`,
+    _originalLength: text.length,
+    _compressed: "agent_tier2",
+  };
+}
+
+/**
+ * Apply compression to a user message item.
+ *
+ * @param {object} item  The user message item
+ * @param {number} age   Turns since this message
+ * @returns {object}     Possibly compressed item
+ */
+function compressUserMessage(item, age) {
+  const text = getItemText(item);
+  if (!text || text.length < MSG_MIN_COMPRESS_CHARS) return item;
+
+  // Current turn: keep full
+  if (age <= USER_MSG_FULL_TURNS) return item;
+
+  // Strip the TOOL_OUTPUT_GUARDRAIL and system prompt before summarizing
+  // so the breadcrumb only captures the user's actual request
+  const summary = summarizeUserMessage(text);
+  return {
+    type: item.type || "user_message",
+    role: item.role,
+    text: summary,
+    _originalLength: text.length,
+    _compressed: "user_breadcrumb",
+  };
+}
+
+// ---------------------------------------------------------------------------
+// Public API — Estimations & Diagnostics
+// ---------------------------------------------------------------------------
+
 /**
  * Convenience: estimate the token savings from compression.
  *

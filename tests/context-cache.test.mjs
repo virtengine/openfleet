@@ -289,4 +289,217 @@ describe("context-cache", () => {
       expect(dir).toContain("tool-logs");
     });
   });
+
+  // ── isItemPinned ───────────────────────────────────────────────────────
+
+  describe("isItemPinned", () => {
+    it("detects explicit _pinned flag", () => {
+      const item = { type: "agent_message", text: "Some text", _pinned: true };
+      expect(contextCache.isItemPinned(item)).toBe(true);
+    });
+
+    it("detects AGENTS.md keyword", () => {
+      const item = {
+        type: "agent_message",
+        text: "Read the AGENTS.md file for instructions on how to proceed.",
+      };
+      expect(contextCache.isItemPinned(item)).toBe(true);
+    });
+
+    it("detects CRITICAL/MUST/NEVER keywords", () => {
+      expect(contextCache.isItemPinned({ text: "CRITICAL: always run tests" })).toBe(true);
+      expect(contextCache.isItemPinned({ text: "You MUST NOT skip linting" })).toBe(true);
+      expect(contextCache.isItemPinned({ text: "NEVER use --no-verify" })).toBe(true);
+    });
+
+    it("detects commit convention rules", () => {
+      expect(
+        contextCache.isItemPinned({ text: "Use conventional commits for all changes." }),
+      ).toBe(true);
+      expect(
+        contextCache.isItemPinned({ text: "Pre-push hooks must pass before pushing." }),
+      ).toBe(true);
+    });
+
+    it("returns false for ordinary agent messages", () => {
+      expect(
+        contextCache.isItemPinned({ type: "agent_message", text: "Let me implement the feature." }),
+      ).toBe(false);
+    });
+
+    it("returns false for null/undefined", () => {
+      expect(contextCache.isItemPinned(null)).toBe(false);
+      expect(contextCache.isItemPinned(undefined)).toBe(false);
+    });
+  });
+
+  // ── compressAllItems ──────────────────────────────────────────────────
+
+  describe("compressAllItems", () => {
+    // Helper: build a mixed session with tools, agent msgs, user msgs
+    function makeMixedSession(turns) {
+      const items = [];
+      for (let i = 0; i < turns; i++) {
+        // User prompt (simulating what a user would send)
+        items.push({
+          type: "user_message",
+          role: "user",
+          text: `User request turn ${i}: ${"Please implement the feature that does something useful. ".repeat(10)}`,
+        });
+        // Tool output  
+        items.push({
+          type: "function_call_output",
+          tool_name: `tool_${i}`,
+          arguments: { file: `src/file${i}.ts` },
+          output: `Output from tool ${i}: ${"x".repeat(500)}`,
+        });
+        // Agent thinking/response
+        items.push({
+          type: "agent_message",
+          text: `Now let me implement the changes for step ${i}. I need to:\n` +
+            `1. First, read the existing code\n` +
+            `2. Then modify the function\n` +
+            `3. Run the tests\n` +
+            `4. Commit the changes\n` +
+            `${"Detailed reasoning about the implementation approach. ".repeat(5)}`,
+        });
+      }
+      return items;
+    }
+
+    it("compresses agent messages from older turns", async () => {
+      const items = makeMixedSession(8);
+      const result = await contextCache.compressAllItems(items);
+
+      // Older agent messages should be compressed
+      const compressedAgentMsgs = result.filter(
+        (it) => it._compressed === "agent_tier1" || it._compressed === "agent_tier2",
+      );
+      expect(compressedAgentMsgs.length).toBeGreaterThan(0);
+    });
+
+    it("compresses user messages from older turns", async () => {
+      const items = makeMixedSession(8);
+      const result = await contextCache.compressAllItems(items);
+
+      // Older user messages should be breadcrumb-compressed
+      const compressedUserMsgs = result.filter(
+        (it) => it._compressed === "user_breadcrumb",
+      );
+      expect(compressedUserMsgs.length).toBeGreaterThan(0);
+
+      // Breadcrumbs should be wrapped in [User request: …]
+      for (const msg of compressedUserMsgs) {
+        expect(msg.text).toMatch(/^\[User request:/);
+      }
+    });
+
+    it("keeps current turn messages in full", async () => {
+      const items = makeMixedSession(8);
+      const result = await contextCache.compressAllItems(items);
+
+      // Last agent message should be untouched (age 0)
+      const lastAgentMsg = result
+        .filter((it) => it.type === "agent_message")
+        .pop();
+      expect(lastAgentMsg._compressed).toBeUndefined();
+      expect(lastAgentMsg.text).toContain("Now let me implement");
+    });
+
+    it("never compresses pinned instruction items", async () => {
+      const items = makeMixedSession(6);
+      // Insert an instruction item at the beginning
+      items.unshift({
+        type: "agent_message",
+        text: "I have read AGENTS.md and will follow the CRITICAL rules: MUST NOT skip tests, NEVER use --no-verify, always use conventional commits.",
+        _pinned: true,
+      });
+
+      const result = await contextCache.compressAllItems(items);
+
+      // Find the pinned item — should be untouched
+      const pinned = result.find((it) => it._pinned === true);
+      expect(pinned).toBeDefined();
+      expect(pinned._compressed).toBeUndefined();
+      expect(pinned.text).toContain("AGENTS.md");
+    });
+
+    it("never compresses instruction items detected by keywords", async () => {
+      const items = makeMixedSession(6);
+      // Insert instruction items without explicit _pinned flag — should be auto-detected
+      items.unshift({
+        type: "agent_message",
+        text: "## Instructions\nCRITICAL: Module-scope caching is MANDATORY. Error boundaries MUST wrap all async work.",
+      });
+
+      const result = await contextCache.compressAllItems(items);
+
+      // The instruction item should be untouched
+      const instructionItem = result.find(
+        (it) => typeof it.text === "string" && it.text.includes("## Instructions"),
+      );
+      expect(instructionItem).toBeDefined();
+      expect(instructionItem._compressed).toBeUndefined();
+    });
+
+    it("progressively compresses agent messages with age", async () => {
+      const items = makeMixedSession(12);
+      const result = await contextCache.compressAllItems(items);
+
+      // Should have both tier1 and tier2 compressions
+      const tier1 = result.filter((it) => it._compressed === "agent_tier1");
+      const tier2 = result.filter((it) => it._compressed === "agent_tier2");
+
+      // Tier 2 items should be shorter than tier 1 items
+      if (tier1.length > 0 && tier2.length > 0) {
+        const avgTier1Len =
+          tier1.reduce((s, it) => s + (it.text?.length || 0), 0) / tier1.length;
+        const avgTier2Len =
+          tier2.reduce((s, it) => s + (it.text?.length || 0), 0) / tier2.length;
+        expect(avgTier2Len).toBeLessThan(avgTier1Len);
+      }
+    });
+
+    it("user breadcrumbs preserve the role field", async () => {
+      const items = makeMixedSession(6);
+      const result = await contextCache.compressAllItems(items);
+
+      const userBreadcrumbs = result.filter(
+        (it) => it._compressed === "user_breadcrumb",
+      );
+      for (const msg of userBreadcrumbs) {
+        expect(msg.role).toBe("user");
+      }
+    });
+
+    it("does not compress short messages", async () => {
+      const items = [
+        { type: "function_call_output", tool_name: "t1", output: "x".repeat(500) },
+        { type: "agent_message", text: "OK, done." },
+        { type: "function_call_output", tool_name: "t2", output: "x".repeat(500) },
+        { type: "agent_message", text: "Short msg." },
+        { type: "function_call_output", tool_name: "t3", output: "x".repeat(500) },
+        { type: "agent_message", text: "Also short." },
+        { type: "function_call_output", tool_name: "t4", output: "x".repeat(500) },
+        { type: "agent_message", text: "Last one." },
+      ];
+      const result = await contextCache.compressAllItems(items);
+
+      // Short agent messages should not be compressed
+      const compressed = result.filter(
+        (it) => it._compressed === "agent_tier1" || it._compressed === "agent_tier2",
+      );
+      expect(compressed.length).toBe(0);
+    });
+
+    it("combines tool and message compression savings", async () => {
+      const items = makeMixedSession(10);
+      const result = await contextCache.compressAllItems(items);
+
+      const savings = contextCache.estimateSavings(items, result);
+      // Should save both from tool outputs AND messages
+      expect(savings.savedChars).toBeGreaterThan(0);
+      expect(savings.savedPct).toBeGreaterThan(0);
+    });
+  });
 });
