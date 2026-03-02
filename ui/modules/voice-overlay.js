@@ -1234,15 +1234,15 @@ export function VoiceOverlay({
   const [showMicPicker, setShowMicPicker] = useState(false);
   const [showSpeakerPicker, setShowSpeakerPicker] = useState(false);
   const [showMoreMenu, setShowMoreMenu] = useState(false);
+  const [showPeoplePanel, setShowPeoplePanel] = useState(false);
   const [showSettings, setShowSettings] = useState(false);
-  const [handRaised, setHandRaised] = useState(false);
 
   useEffect(() => { injectOverlayStyles(); }, []);
 
   // Close popups on outside click
   useEffect(() => {
     if (!visible) return;
-    const handler = () => { setShowMicPicker(false); setShowSpeakerPicker(false); setShowMoreMenu(false); };
+    const handler = () => { setShowMicPicker(false); setShowSpeakerPicker(false); setShowMoreMenu(false); setShowPeoplePanel(false); };
     document.addEventListener("click", handler);
     return () => document.removeEventListener("click", handler);
   }, [visible]);
@@ -2150,7 +2150,7 @@ export function VoiceOverlay({
             <div class="vm-btn-wrap" style="position:relative">
               <button
                 class="vm-btn"
-                onClick=${() => { setShowMoreMenu(p => !p); setShowMicPicker(false); setShowSpeakerPicker(false); }}
+                onClick=${(e) => { e.stopPropagation(); setShowMoreMenu(p => !p); setShowMicPicker(false); setShowSpeakerPicker(false); setShowPeoplePanel(false); }}
                 title="More options"
               >⋯</button>
               <span class="vm-btn-label">More</span>
@@ -2286,29 +2286,6 @@ export function VoiceOverlay({
               <span class="vm-btn-label">${visionState === "streaming" && visionSource === "screen" ? "Stop share" : "Share screen"}</span>
             </div>
 
-            <!-- Emoji reactions -->
-            <div class="vm-btn-wrap">
-              <button class="vm-btn" onClick=${() => showToast("😊", "info")} title="Send a reaction">
-                😊
-              </button>
-              <span class="vm-btn-label">React</span>
-            </div>
-
-            <!-- Hand raise -->
-            <div class="vm-btn-wrap">
-              <button
-                class=${`vm-btn${handRaised ? " active" : ""}`}
-                onClick=${() => {
-                  setHandRaised(p => !p);
-                  if (!handRaised) showToast("Hand raised ✋", "info");
-                }}
-                title=${handRaised ? "Lower hand" : "Raise hand"}
-              >
-                ✋
-              </button>
-              <span class="vm-btn-label">${handRaised ? "Lower" : "Raise"}</span>
-            </div>
-
             <!-- End call pill -->
             <div class="vm-end-pill-wrap">
               <button class="vm-end-pill" onClick=${handleClose} title="End call">
@@ -2333,11 +2310,38 @@ export function VoiceOverlay({
                 <span class="vm-btn-label">Chat</span>
               </div>
             `}
-            <div class="vm-btn-wrap">
-              <button class="vm-btn" title="Participants (coming soon)" disabled>
+            <div class="vm-btn-wrap" style="position:relative">
+              <button
+                class=${`vm-btn${showPeoplePanel ? " active" : ""}`}
+                onClick=${(e) => { e.stopPropagation(); setShowPeoplePanel(p => !p); setShowMoreMenu(false); setShowMicPicker(false); setShowSpeakerPicker(false); }}
+                title="Participants"
+              >
                 👥
               </button>
               <span class="vm-btn-label">People</span>
+              ${showPeoplePanel && html`
+                <div class="vm-more-menu" style="bottom:calc(100% + 10px);left:50%;transform:translateX(-50%);min-width:220px" onClick=${(e) => e.stopPropagation()}>
+                  <div style="padding:10px 14px 6px;font-size:12px;color:rgba(255,255,255,0.5);font-weight:600;letter-spacing:0.04em">PARTICIPANTS</div>
+                  <div class="vm-more-item" style="cursor:default;opacity:0.9">
+                    <span class="vm-more-icon">🧑</span> You
+                  </div>
+                  <div class="vm-more-item" style="cursor:default;opacity:0.9">
+                    <span class="vm-more-icon">🤖</span> AI Agent
+                  </div>
+                  <div class="vm-more-divider"></div>
+                  <button class="vm-more-item" onClick=${() => {
+                    const url = window.location.href;
+                    navigator.clipboard?.writeText(url).then(() => {
+                      showToast("Invite link copied!", "success");
+                    }).catch(() => {
+                      showToast(url, "info");
+                    });
+                    setShowPeoplePanel(false);
+                  }}>
+                    <span class="vm-more-icon">🔗</span> Copy invite link
+                  </button>
+                </div>
+              `}
             </div>
             <div class="vm-btn-wrap">
               <button class="vm-btn" onClick=${() => setShowSettings(true)} title="Settings">
