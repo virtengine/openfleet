@@ -11049,40 +11049,6 @@ export async function startTelegramBot(options = {}) {
     return;
   }
 
-  // ── 409 conflict cooldown guard ──────────────────────────────────────────
-  const conflictState = readTelegramPollConflictState();
-  if (conflictState && conflictState.untilMs > Date.now()) {
-    const remainSec = Math.ceil((conflictState.untilMs - Date.now()) / 1000);
-    console.warn(
-      `[telegram-bot] polling suppressed — 409 conflict cooldown active for ${remainSec}s` +
-      (conflictState.reason ? ` (${conflictState.reason})` : ""),
-    );
-    return;
-  }
-
-  const ownerClaim = await claimTelegramPollOwner("telegram-bot", {
-    ttlMs: TELEGRAM_POLL_OWNER_TTL_MS,
-  });
-  if (!ownerClaim?.ok) {
-    const activeOwner =
-      ownerClaim?.owner && ownerClaim.owner.owner
-        ? `${ownerClaim.owner.owner} (pid ${ownerClaim.owner.pid})`
-        : "another active poll owner";
-    console.warn(
-      `[telegram-bot] polling disabled (${activeOwner} owns getUpdates arbitration)`,
-    );
-    return;
-  }
-
-  const lockOk = await acquireTelegramPollLock("telegram-bot");
-  if (!lockOk) {
-    await releaseTelegramPollOwner("telegram-bot").catch(() => {});
-    console.warn(
-      "[telegram-bot] polling disabled (another getUpdates poller is active)",
-    );
-    return;
-  }
-
   // Initialize the primary agent context
   await initPrimaryAgent();
 
@@ -11096,7 +11062,10 @@ export async function startTelegramBot(options = {}) {
     );
   }
 
-  // Start Telegram UI server (Mini App) when configured
+  // Start Telegram UI server (Mini App) when configured.
+  // Portal startup is independent of Telegram polling state — it must always
+  // run when TELEGRAM_UI_PORT or TELEGRAM_MINIAPP_ENABLED is set, even when
+  // polling is suppressed by a 409 conflict cooldown or another poll owner.
   const miniAppEnabled = ["1", "true", "yes"].includes(
     String(process.env.TELEGRAM_MINIAPP_ENABLED || "").toLowerCase(),
   );
@@ -11221,6 +11190,43 @@ export async function startTelegramBot(options = {}) {
 
   // Start batched notification / live digest system
   await startBatchFlushLoop();
+
+  // ── Polling guards ─────────────────────────────────────────────────────
+  // These only gate Telegram getUpdates polling — the portal / UI server,
+  // presence loop, and batch flush are already running above.
+
+  const conflictState = readTelegramPollConflictState();
+  if (conflictState && conflictState.untilMs > Date.now()) {
+    const remainSec = Math.ceil((conflictState.untilMs - Date.now()) / 1000);
+    console.warn(
+      `[telegram-bot] polling suppressed — 409 conflict cooldown active for ${remainSec}s` +
+      (conflictState.reason ? ` (${conflictState.reason})` : ""),
+    );
+    return;
+  }
+
+  const ownerClaim = await claimTelegramPollOwner("telegram-bot", {
+    ttlMs: TELEGRAM_POLL_OWNER_TTL_MS,
+  });
+  if (!ownerClaim?.ok) {
+    const activeOwner =
+      ownerClaim?.owner && ownerClaim.owner.owner
+        ? `${ownerClaim.owner.owner} (pid ${ownerClaim.owner.pid})`
+        : "another active poll owner";
+    console.warn(
+      `[telegram-bot] polling disabled (${activeOwner} owns getUpdates arbitration)`,
+    );
+    return;
+  }
+
+  const lockOk = await acquireTelegramPollLock("telegram-bot");
+  if (!lockOk) {
+    await releaseTelegramPollOwner("telegram-bot").catch(() => {});
+    console.warn(
+      "[telegram-bot] polling disabled (another getUpdates poller is active)",
+    );
+    return;
+  }
 
   // Clear any pending updates that arrived while we were offline
   try {

@@ -1111,6 +1111,86 @@ async function handleVendor(req, res, url) {
   res.writeHead(302, { Location: entry.cdn, "Cache-Control": "no-store" });
   res.end();
 }
+
+// ── ESM CDN proxy / cache ─────────────────────────────────────────────────────
+// Routes MUI and Emotion imports through the local server instead of requiring
+// the browser to fetch directly from esm.sh.  The `?bundle` flag tells esm.sh
+// to inline all sub-dependencies into a single file so no further cross-origin
+// requests are needed (only bare `react`/`react-dom` remain as external
+// imports, resolved by the page's import map to preact-compat).
+//
+// Resolution:
+//   1. Local disk cache (.cache/esm-vendor/<name>)  — instant, fully offline
+//   2. Fetch from esm.sh, cache the response, and serve
+//   3. 502 if esm.sh is unreachable and no cache exists
+const ESM_CACHE_DIR = resolve(repoRoot, ".cache", "esm-vendor");
+
+const ESM_CDN_FILES = {
+  "mui-material.js": "https://esm.sh/@mui/material@5?bundle&external=react,react-dom,react/jsx-runtime",
+  "emotion-react.js": "https://esm.sh/@emotion/react@11?bundle&external=react",
+  "emotion-styled.js": "https://esm.sh/@emotion/styled@11?bundle&external=react,react-dom",
+};
+
+async function handleEsmProxy(req, res, url) {
+  const name = url.pathname.replace(/^\/esm\//, "");
+  const cdnUrl = ESM_CDN_FILES[name];
+  if (!cdnUrl) {
+    textResponse(res, 404, "Not Found");
+    return;
+  }
+
+  const headers = {
+    "Content-Type": "application/javascript; charset=utf-8",
+    "Cache-Control": "max-age=86400, stale-while-revalidate=604800",
+    "Access-Control-Allow-Origin": "*",
+  };
+
+  // ── 1. Disk cache ──────────────────────────────────────────────────────────
+  const cachePath = resolve(ESM_CACHE_DIR, name);
+  if (existsSync(cachePath)) {
+    try {
+      const data = await readFile(cachePath);
+      res.writeHead(200, { ...headers, "X-Bosun-Esm": "cached" });
+      res.end(data);
+      return;
+    } catch { /* fall through to live fetch */ }
+  }
+
+  // ── 2. Fetch from esm.sh, cache, and serve ─────────────────────────────────
+  try {
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 30_000);
+    const response = await fetch(cdnUrl, {
+      signal: controller.signal,
+      headers: { "User-Agent": "bosun-esm-proxy/1.0" },
+    });
+    clearTimeout(timeout);
+    if (!response.ok) {
+      throw new Error(`esm.sh returned HTTP ${response.status}`);
+    }
+    const body = await response.text();
+
+    // Cache to disk (best-effort, don't fail the request)
+    try {
+      mkdirSync(ESM_CACHE_DIR, { recursive: true });
+      writeFileSync(cachePath, body, "utf8");
+    } catch (cacheErr) {
+      console.warn(`[ui-server] esm cache write failed: ${cacheErr.message}`);
+    }
+
+    res.writeHead(200, { ...headers, "X-Bosun-Esm": "fetched" });
+    res.end(body);
+  } catch (err) {
+    console.warn(`[ui-server] esm proxy failed for ${name}: ${err.message}`);
+    textResponse(
+      res,
+      502,
+      `Failed to fetch ${name} from esm.sh CDN: ${err.message}. ` +
+        "Run the portal once while online to pre-cache MUI dependencies.",
+    );
+  }
+}
+
 const statusPath = resolve(repoRoot, ".cache", "ve-orchestrator-status.json");
 const logsDir = resolve(__dirname, "logs");
 const agentLogsDirCandidates = [
@@ -4841,11 +4921,9 @@ function readDesktopApiKeyFromConfig(configDir) {
 }
 
 function getExpectedDesktopApiKey() {
-  const fromEnv = String(process.env.BOSUN_DESKTOP_API_KEY || "").trim();
-  if (fromEnv) return fromEnv;
-
   const configDir = resolveUiConfigDir();
-  if (!configDir) return "";
+  const fromEnv = String(process.env.BOSUN_DESKTOP_API_KEY || "").trim();
+  if (!configDir) return fromEnv;
 
   const now = Date.now();
   if (
@@ -4862,7 +4940,15 @@ function getExpectedDesktopApiKey() {
     configDir,
     loadedAt: now,
   };
-  return keyFromFile;
+  if (keyFromFile) {
+    // Keep env aligned with the canonical persisted key to avoid stale
+    // long-running daemon state rejecting fresh desktop sessions.
+    if (fromEnv !== keyFromFile) {
+      process.env.BOSUN_DESKTOP_API_KEY = keyFromFile;
+    }
+    return keyFromFile;
+  }
+  return fromEnv;
 }
 
 async function requireAuth(req) {
@@ -11667,6 +11753,13 @@ export async function startTelegramUiServer(options = {}) {
     // Vendor files (preact, htm, signals etc.) — served from node_modules, no auth needed
     if (url.pathname.startsWith("/vendor/")) {
       await handleVendor(req, res, url);
+      return;
+    }
+
+    // ESM CDN proxy/cache (MUI, Emotion) — served through local server to avoid
+    // direct browser→CDN dependency and self-signed cert cross-origin issues
+    if (url.pathname.startsWith("/esm/")) {
+      await handleEsmProxy(req, res, url);
       return;
     }
 
