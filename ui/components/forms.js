@@ -13,6 +13,24 @@ import {
 } from "preact/hooks";
 import htm from "htm";
 
+import {
+  ToggleButton,
+  ToggleButtonGroup,
+  Accordion,
+  AccordionSummary,
+  AccordionDetails,
+  TextField,
+  InputAdornment,
+  Switch,
+  FormControlLabel,
+  Slider,
+  ButtonGroup,
+  IconButton,
+  Typography,
+  Box,
+  Button,
+} from "@mui/material";
+
 const html = htm.bind(h);
 const PTR_OPT_OUT_SELECTOR = '[data-ptr-ignore="true"], [data-disable-pull-to-refresh="true"]';
 
@@ -29,24 +47,26 @@ import { haptic } from "../modules/telegram.js";
  */
 export function SegmentedControl({ options = [], value, onChange, disabled = false }) {
   return html`
-    <div class="segmented-control ${disabled ? "disabled" : ""}">
+    <${ToggleButtonGroup}
+      value=${value}
+      exclusive
+      onChange=${(e, v) => {
+        if (v !== null) {
+          haptic("light");
+          onChange(v);
+        }
+      }}
+      size="small"
+      disabled=${disabled}
+    >
       ${options.map(
         (opt) => html`
-          <button
-            key=${opt.value}
-            class="segmented-btn ${value === opt.value ? "active" : ""}"
-            disabled=${disabled}
-            onClick=${() => {
-              if (disabled) return;
-              haptic("light");
-              onChange(opt.value);
-            }}
-          >
+          <${ToggleButton} key=${opt.value} value=${opt.value}>
             ${opt.label}
-          </button>
+          </${ToggleButton}>
         `,
       )}
-    </div>
+    </${ToggleButtonGroup}>
   `;
 }
 
@@ -62,21 +82,20 @@ export function Collapsible({ title, defaultOpen = true, children }) {
   const [open, setOpen] = useState(defaultOpen);
 
   return html`
-    <div class="collapsible">
-      <button
-        class="collapsible-header ${open ? "open" : ""}"
-        onClick=${() => {
-          haptic("light");
-          setOpen(!open);
-        }}
-      >
-        <span class="collapsible-title">${title}</span>
-        <span class="collapsible-chevron ${open ? "open" : ""}">
-          ${ICONS.chevronDown}
-        </span>
-      </button>
-      <div class="collapsible-body ${open ? "open" : ""}">${children}</div>
-    </div>
+    <${Accordion}
+      expanded=${open}
+      onChange=${() => {
+        haptic("light");
+        setOpen(!open);
+      }}
+    >
+      <${AccordionSummary} expandIcon=${ICONS.chevronDown}>
+        <${Typography}>${title}</${Typography}>
+      </${AccordionSummary}>
+      <${AccordionDetails}>
+        ${children}
+      </${AccordionDetails}>
+    </${Accordion}>
   `;
 }
 
@@ -167,7 +186,7 @@ export function PullToRefresh({ onRefresh, children, disabled = false }) {
       onTouchEnd=${handleTouchEnd}
     >
       ${!hasTouch && html`
-        <button
+        <${IconButton}
           class="ptr-desktop-refresh ${refreshing ? 'spinning' : ''}"
           onClick=${handleDesktopRefresh}
           disabled=${refreshing}
@@ -175,7 +194,7 @@ export function PullToRefresh({ onRefresh, children, disabled = false }) {
           aria-label="Refresh"
         >
           ${ICONS.refresh}
-        </button>
+        </${IconButton}>
       `}
       ${!disabled && (refreshing || pullDistance > 0) &&
       html`
@@ -216,30 +235,25 @@ export function SearchInput({
   inputRef,
 }) {
   return html`
-    <div class="search-input-wrap ${disabled ? "disabled" : ""}">
-      <span class="search-input-icon">${ICONS.search}</span>
-      <input
-        ref=${inputRef}
-        class="input search-input"
-        type="text"
-        placeholder=${placeholder}
-        value=${value}
-        onInput=${onInput}
-        disabled=${disabled}
-      />
-      ${value && !disabled
-        ? html`
-            <button
-              class="search-input-clear"
-              onClick=${() => {
-                if (onClear) onClear();
-              }}
-            >
-              ${ICONS.close}
-            </button>
-          `
-        : null}
-    </div>
+    <${TextField}
+      fullWidth
+      size="small"
+      placeholder=${placeholder}
+      value=${value}
+      onInput=${onInput}
+      disabled=${disabled}
+      inputRef=${inputRef}
+      InputProps=${{
+        startAdornment: html`<${InputAdornment} position="start">${ICONS.search}</${InputAdornment}>`,
+        endAdornment: value && !disabled
+          ? html`<${InputAdornment} position="end">
+              <${IconButton} size="small" onClick=${() => { if (onClear) onClear(); }}>
+                ${ICONS.close}
+              </${IconButton}>
+            </${InputAdornment}>`
+          : null,
+      }}
+    />
   `;
 }
 
@@ -252,19 +266,23 @@ export function SearchInput({
  * @param {{checked: boolean, onChange: (checked: boolean) => void, label?: string}} props
  */
 export function Toggle({ checked = false, onChange, label, disabled = false }) {
-  const handleClick = () => {
-    if (disabled) return;
-    haptic("light");
-    onChange(!checked);
-  };
-
   return html`
-    <div class="toggle-wrap ${disabled ? "disabled" : ""}" onClick=${handleClick}>
-      ${label ? html`<span class="toggle-label">${label}</span>` : null}
-      <div class="toggle ${checked ? "toggle-on" : ""} ${disabled ? "disabled" : ""}">
-        <div class="toggle-thumb"></div>
-      </div>
-    </div>
+    <${FormControlLabel}
+      control=${html`
+        <${Switch}
+          checked=${checked}
+          onChange=${() => {
+            if (!disabled) {
+              haptic("light");
+              onChange(!checked);
+            }
+          }}
+          disabled=${disabled}
+          size="small"
+        />
+      `}
+      label=${label || ""}
+    />
   `;
 }
 
@@ -303,26 +321,14 @@ export function Stepper({
   };
 
   return html`
-    <div class="stepper-wrap ${disabled ? "disabled" : ""}">
-      ${label ? html`<span class="stepper-label">${label}</span>` : null}
-      <div class="stepper ${disabled ? "disabled" : ""}">
-        <button
-          class="stepper-btn"
-          onClick=${decrement}
-          disabled=${disabled || value <= min}
-        >
-          −
-        </button>
-        <span class="stepper-value">${value}</span>
-        <button
-          class="stepper-btn"
-          onClick=${increment}
-          disabled=${disabled || value >= max}
-        >
-          +
-        </button>
-      </div>
-    </div>
+    <${Box} sx=${{ display: 'flex', alignItems: 'center', gap: 1 }}>
+      ${label ? html`<${Typography} variant="body2">${label}</${Typography}>` : null}
+      <${ButtonGroup} size="small" disabled=${disabled}>
+        <${Button} onClick=${decrement} disabled=${disabled || value <= min}>−</${Button}>
+        <${Button} disabled>${value}</${Button}>
+        <${Button} onClick=${increment} disabled=${disabled || value >= max}>+</${Button}>
+      </${ButtonGroup}>
+    </${Box}>
   `;
 }
 
@@ -344,25 +350,21 @@ export function SliderControl({
   suffix = "",
 }) {
   return html`
-    <div class="slider-control">
+    <${Box}>
       ${label
-        ? html`<div class="slider-control-header">
-            <span class="slider-control-label">${label}</span>
-            <span class="pill">${value}${suffix}</span>
-          </div>`
+        ? html`<${Box} sx=${{ display: 'flex', justifyContent: 'space-between', mb: 0.5 }}>
+            <${Typography} variant="body2">${label}</${Typography}>
+            <${Typography} variant="body2" color="primary">${value}${suffix}</${Typography}>
+          </${Box}>`
         : null}
-      <div class="slider-control-row">
-        <input
-          type="range"
-          class="slider-input"
-          min=${min}
-          max=${max}
-          step=${step}
-          value=${value}
-          onInput=${(e) => onChange(Number(e.target.value))}
-        />
-        ${!label ? html`<span class="pill">${value}${suffix}</span>` : null}
-      </div>
-    </div>
+      <${Slider}
+        value=${value}
+        min=${min}
+        max=${max}
+        step=${step}
+        onChange=${(e, v) => onChange(v)}
+        size="small"
+      />
+    </${Box}>
   `;
 }
