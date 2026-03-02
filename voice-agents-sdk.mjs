@@ -275,7 +275,7 @@ export async function createRealtimeSession(agent, provider, config = {}, option
   ).trim() || "alloy";
 
   const turnDetection = String(
-    options.turnDetection || config.turnDetection || "server_vad",
+    options.turnDetection || config.turnDetection || "semantic_vad",
   ).trim();
 
   const sessionConfig = {
@@ -668,7 +668,7 @@ export async function getClientSdkConfig(voiceConfig = {}) {
     tier: availability.info?.tier || 2,
     model: configuredModel,
     voiceId: voiceConfig.voiceId || "alloy",
-    turnDetection: voiceConfig.turnDetection || "server_vad",
+    turnDetection: voiceConfig.turnDetection || "semantic_vad",
     fallbackReason,
   };
 }

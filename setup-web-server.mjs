@@ -439,7 +439,7 @@ function buildStableSetupDefaults({
     voiceModel: "gpt-audio-1.5",
     voiceVisionModel: "gpt-4.1-nano",
     voiceId: "alloy",
-    voiceTurnDetection: "server_vad",
+    voiceTurnDetection: "semantic_vad",
     voiceFallbackMode: "browser",
     voiceDelegateExecutor: "codex-sdk",
     openaiRealtimeApiKey: "",
@@ -892,7 +892,7 @@ function applyNonBlockingSetupEnvDefaults(envMap, env = {}, sourceEnv = process.
       sourceEnv.VOICE_TURN_DETECTION,
     ),
     ["server_vad", "semantic_vad", "none"],
-    "server_vad",
+    "semantic_vad",
   );
   envMap.VOICE_FALLBACK_MODE = normalizeEnumValue(
     pickNonEmptyValue(

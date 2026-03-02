@@ -1955,7 +1955,7 @@ function normalizeSetupConfiguration({
   env.VOICE_TURN_DETECTION = normalizeEnum(
     env.VOICE_TURN_DETECTION,
     ["server_vad", "semantic_vad", "none"],
-    "server_vad",
+    "semantic_vad",
   );
   env.VOICE_FALLBACK_MODE = normalizeEnum(
     env.VOICE_FALLBACK_MODE,
@@ -3305,7 +3305,7 @@ async function main() {
       );
       env.VOICE_TURN_DETECTION = await prompt.ask(
         "Turn detection (server_vad|semantic_vad|none)",
-        process.env.VOICE_TURN_DETECTION || "server_vad",
+        process.env.VOICE_TURN_DETECTION || "semantic_vad",
       );
       env.VOICE_FALLBACK_MODE = await prompt.ask(
         "Fallback mode (browser|disabled)",
@@ -5659,7 +5659,7 @@ async function runNonInteractive({
   env.AZURE_OPENAI_REALTIME_DEPLOYMENT =
     process.env.AZURE_OPENAI_REALTIME_DEPLOYMENT || "gpt-realtime-1.5";
   env.VOICE_ID = process.env.VOICE_ID || "alloy";
-  env.VOICE_TURN_DETECTION = process.env.VOICE_TURN_DETECTION || "server_vad";
+  env.VOICE_TURN_DETECTION = process.env.VOICE_TURN_DETECTION || "semantic_vad";
   env.VOICE_FALLBACK_MODE = process.env.VOICE_FALLBACK_MODE || "browser";
   env.VOICE_DELEGATE_EXECUTOR =
     process.env.VOICE_DELEGATE_EXECUTOR ||

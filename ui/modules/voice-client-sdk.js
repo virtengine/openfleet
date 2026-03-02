@@ -458,14 +458,14 @@ async function startAgentsSdkSession(config, options = {}) {
   // Determine model and voice
   const model = String(tokenData.model || resolvedConfig.model || "gpt-realtime-1.5").trim();
   const voiceId = String(tokenData.voiceId || resolvedConfig.voiceId || "alloy").trim();
-  const turnDetection = String(resolvedConfig.turnDetection || "server_vad").trim();
+  const turnDetection = String(resolvedConfig.turnDetection || "semantic_vad").trim();
   const turnDetectionConfig = {
     type: turnDetection,
     ...(turnDetection === "server_vad"
       ? {
           threshold: 0.7,
           prefix_padding_ms: 400,
-          silence_duration_ms: 1200,
+          silence_duration_ms: 1300,
           create_response: true,
           interrupt_response: true,
           createResponse: true,

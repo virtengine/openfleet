@@ -126,7 +126,7 @@ describe("voice-relay", () => {
       expect(cfg.provider).toBe("fallback");
       expect(cfg.model).toBe("gpt-realtime-1.5");
       expect(cfg.voiceId).toBe("alloy");
-      expect(cfg.turnDetection).toBe("server_vad");
+      expect(cfg.turnDetection).toBe("semantic_vad");
       expect(cfg.fallbackMode).toBe("browser");
       expect(cfg.enabled).toBe(true);
       expect(cfg.delegateExecutor).toBe("codex-sdk");

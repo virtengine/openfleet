@@ -434,7 +434,7 @@ function sendSessionUpdate(tokenData = {}) {
     sessionConfig?.turn_detection?.type ||
     sessionConfig?.audio?.input?.turnDetection?.type ||
     sessionConfig?.audio?.input?.turn_detection?.type ||
-    "server_vad";
+    "semantic_vad";
   const turnDetectionConfig = {
     type: turnDetection,
     ...(turnDetection === "server_vad"

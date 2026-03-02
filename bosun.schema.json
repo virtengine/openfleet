@@ -281,7 +281,7 @@
         "turnDetection": {
           "type": "string",
           "enum": ["server_vad", "semantic_vad", "none"],
-          "default": "server_vad",
+          "default": "semantic_vad",
           "description": "Turn detection mode for voice activity detection"
         },
         "instructions": {

@@ -852,7 +852,7 @@ export function getVoiceConfig(forceReload = false) {
   const model = String(voice.model || process.env.VOICE_MODEL || defaultModel).trim() || defaultModel;
   const voiceId = voice.voiceId || process.env.VOICE_ID || "alloy";
   const turnDetection =
-    voice.turnDetection || process.env.VOICE_TURN_DETECTION || "server_vad";
+    voice.turnDetection || process.env.VOICE_TURN_DETECTION || "semantic_vad";
   const defaultVisionModel =
     provider === "claude"
       ? CLAUDE_DEFAULT_VISION_MODEL
