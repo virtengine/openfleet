@@ -17,6 +17,13 @@ import { ICONS } from "../modules/icons.js";
 import { resolveIcon } from "../modules/icon-utils.js";
 import { formatDate, formatDuration, formatRelative } from "../modules/utils.js";
 import { Card, Badge, EmptyState } from "../components/shared.js";
+import {
+  Typography, Box, Stack, Card as MuiCard, CardContent, Button, IconButton, Chip,
+  TextField, Select, MenuItem, FormControl, InputLabel, Switch,
+  FormControlLabel, Tooltip, Paper, Divider, CircularProgress, Alert,
+  Dialog, DialogTitle, DialogContent, DialogActions,
+  Tabs, Tab, Fab, Menu as MuiMenu,
+} from "@mui/material";
 
 /* ═══════════════════════════════════════════════════════════════
  *  State
@@ -954,13 +961,14 @@ function NodePalette({ nodeTypes: types, onSelect, onClose }) {
   return html`
     <div class="wf-palette" style="position: absolute; top: 52px; left: 12px; z-index: 30; width: 320px; max-height: 70vh; overflow-y: auto; background: var(--color-bg, #0d1117); border: 1px solid var(--color-border, #2a3040); border-radius: 12px; padding: 12px; box-shadow: 0 8px 32px rgba(0,0,0,0.5);">
       <div style="display: flex; align-items: center; gap: 8px; margin-bottom: 10px;">
-        <input
-          type="text"
+        <${TextField}
+          size="small"
+          variant="outlined"
           placeholder="Search nodes..."
           value=${search}
           onInput=${(e) => setSearch(e.target.value)}
-          style="flex: 1; padding: 8px 12px; border-radius: 8px; border: 1px solid var(--color-border, #2a3040); background: var(--color-bg-secondary, #1a1f2e); color: var(--color-text, white); font-size: 13px; outline: none;"
-          autofocus
+          sx=${{ flex: 1 }}
+          autoFocus
         />
         <button onClick=${onClose} class="wf-btn wf-btn-sm" style="font-size: 16px; line-height: 1;">
           <span class="icon-inline">${resolveIcon("✕")}</span>
@@ -1201,11 +1209,13 @@ function NodeConfigEditor({ node, nodeTypes: types, onUpdate, onUpdateLabel, onC
       <div style="display: flex; align-items: center; gap: 8px; margin-bottom: 12px;">
         <span class="icon-inline" style="font-size: 20px;">${resolveIcon(meta.icon) || ICONS.dot}</span>
         <div style="flex: 1;">
-          <input
-            type="text"
+          <${TextField}
+            size="small"
+            variant="standard"
             value=${node.label || ""}
             onInput=${(e) => onUpdateLabel(e.target.value)}
-            style="width: 100%; background: transparent; border: none; color: var(--color-text, white); font-size: 15px; font-weight: 600; outline: none; padding: 2px 0;"
+            fullWidth
+            InputProps=${{ disableUnderline: true, sx: { color: "var(--color-text, white)", fontSize: "15px", fontWeight: 600, padding: "2px 0" } }}
           />
           <div style="font-size: 11px; color: ${meta.color}; font-family: monospace;">${node.type}</div>
         </div>
@@ -1507,46 +1517,52 @@ function NodeConfigEditor({ node, nodeTypes: types, onUpdate, onUpdateLabel, onC
               `}
 
               ${fieldType === "boolean" ? html`
-                <label style="display: flex; align-items: center; gap: 8px; cursor: pointer;">
-                  <input
-                    type="checkbox"
+                <${FormControlLabel}
+                  control=${html`<${Switch}
                     checked=${!!value}
                     onChange=${(e) => onFieldChange(key, e.target.checked)}
-                    style="width: 16px; height: 16px;"
-                  />
-                  <span style="font-size: 13px; color: var(--color-text, white);">${value ? "Enabled" : "Disabled"}</span>
-                </label>
+                    size="small"
+                  />`}
+                  label=${value ? "Enabled" : "Disabled"}
+                />
               ` : fieldType === "number" ? html`
-                <input
+                <${TextField}
                   type="number"
+                  size="small"
+                  variant="outlined"
                   value=${value}
                   onInput=${(e) => onFieldChange(key, Number(e.target.value))}
-                  class="wf-input"
+                  fullWidth
                   placeholder=${fieldSchema.default != null ? `Default: ${fieldSchema.default}` : ""}
                 />
               ` : fieldSchema.enum ? html`
-                <select
+                <${Select}
                   value=${value}
                   onChange=${(e) => onFieldChange(key, e.target.value)}
-                  class="wf-input"
+                  size="small"
+                  fullWidth
                 >
-                  <option value="">— select —</option>
-                  ${fieldSchema.enum.map(opt => html`<option key=${opt} value=${opt}>${opt}</option>`)}
-                </select>
+                  <${MenuItem} value="">— select —</${MenuItem}>
+                  ${fieldSchema.enum.map(opt => html`<${MenuItem} key=${opt} value=${opt}>${opt}</${MenuItem}>`)}
+                </${Select}>
               ` : (typeof value === "string" && value.length > 80) || key === "prompt" || key === "expression" || key === "template" || key === "command" || key === "body" || key === "message" || key === "filter" ? html`
-                <textarea
+                <${TextField}
+                  multiline
+                  rows=${key === "prompt" ? 6 : 4}
+                  size="small"
+                  variant="outlined"
                   value=${typeof value === "object" ? JSON.stringify(value, null, 2) : value}
                   onInput=${(e) => onFieldChange(key, e.target.value)}
-                  class="wf-input wf-textarea"
-                  rows=${key === "prompt" ? "6" : "4"}
+                  fullWidth
                   placeholder=${fieldSchema.default != null ? String(fieldSchema.default) : ""}
                 />
               ` : html`
-                <input
-                  type="text"
+                <${TextField}
+                  size="small"
+                  variant="outlined"
                   value=${typeof value === "object" ? JSON.stringify(value) : value}
                   onInput=${(e) => onFieldChange(key, e.target.value)}
-                  class="wf-input"
+                  fullWidth
                   placeholder=${fieldSchema.default != null ? String(fieldSchema.default) : ""}
                 />
               `}
@@ -1565,15 +1581,14 @@ function NodeConfigEditor({ node, nodeTypes: types, onUpdate, onUpdateLabel, onC
 
       <!-- Continue on Error toggle -->
       <div style="margin-top: 16px; padding-top: 16px; border-top: 1px solid var(--color-border, #2a3040);">
-        <label style="display: flex; align-items: center; gap: 8px; cursor: pointer;">
-          <input
-            type="checkbox"
+        <${FormControlLabel}
+          control=${html`<${Switch}
             checked=${!!config.continueOnError}
             onChange=${(e) => onUpdate({ continueOnError: e.target.checked })}
-            style="width: 16px; height: 16px;"
-          />
-          <span style="font-size: 13px; color: var(--color-text, white);">Continue on Error</span>
-        </label>
+            size="small"
+          />`}
+          label="Continue on Error"
+        />
         <div style="font-size: 10px; color: var(--color-text-secondary, #6b7280); margin-top: 4px;">
           If checked, workflow continues even if this node fails
         </div>
@@ -1581,13 +1596,15 @@ function NodeConfigEditor({ node, nodeTypes: types, onUpdate, onUpdateLabel, onC
 
       <!-- Timeout -->
       <div style="margin-top: 12px;">
-        <label style="font-size: 12px; font-weight: 600; color: var(--color-text-secondary, #8b95a5);">Timeout (ms)</label>
-        <input
+        <${TextField}
           type="number"
+          size="small"
+          variant="outlined"
+          label="Timeout (ms)"
           value=${config.timeout || ""}
           onInput=${(e) => onUpdate({ timeout: Number(e.target.value) || undefined })}
           placeholder="Default: 600000"
-          class="wf-input"
+          fullWidth
         />
       </div>
 
@@ -2185,28 +2202,29 @@ function RunHistoryView() {
       </div>
 
       <div class="wf-runs-toolbar">
-        <input
-          class="wf-input"
+        <${TextField}
+          size="small"
+          variant="outlined"
           placeholder="Search workflow, run ID, trigger event..."
           value=${searchQuery}
           onInput=${(e) => setSearchQuery(e.target.value)}
         />
-        <select class="wf-input" value=${workflowFilter} onChange=${(e) => setWorkflowFilter(e.target.value)}>
-          <option value="all">All Workflows</option>
-          ${workflowOptions.map((opt) => html`<option value=${opt.id}>${opt.name}</option>`)}
-        </select>
-        <select class="wf-input" value=${statusFilter} onChange=${(e) => setStatusFilter(e.target.value)}>
-          <option value="all">All Statuses</option>
-          <option value="running">Running</option>
-          <option value="failed">Failed</option>
-          <option value="completed">Completed</option>
-        </select>
-        <select class="wf-input" value=${triggerFilter} onChange=${(e) => setTriggerFilter(e.target.value)}>
-          <option value="all">All Trigger Types</option>
-          <option value="manual">Manual</option>
-          <option value="monitor-event">Monitor Event</option>
-          <option value="event">Event</option>
-        </select>
+        <${Select} size="small" value=${workflowFilter} onChange=${(e) => setWorkflowFilter(e.target.value)}>
+          <${MenuItem} value="all">All Workflows</${MenuItem}>
+          ${workflowOptions.map((opt) => html`<${MenuItem} value=${opt.id}>${opt.name}</${MenuItem}>`)}
+        </${Select}>
+        <${Select} size="small" value=${statusFilter} onChange=${(e) => setStatusFilter(e.target.value)}>
+          <${MenuItem} value="all">All Statuses</${MenuItem}>
+          <${MenuItem} value="running">Running</${MenuItem}>
+          <${MenuItem} value="failed">Failed</${MenuItem}>
+          <${MenuItem} value="completed">Completed</${MenuItem}>
+        </${Select}>
+        <${Select} size="small" value=${triggerFilter} onChange=${(e) => setTriggerFilter(e.target.value)}>
+          <${MenuItem} value="all">All Trigger Types</${MenuItem}>
+          <${MenuItem} value="manual">Manual</${MenuItem}>
+          <${MenuItem} value="monitor-event">Monitor Event</${MenuItem}>
+          <${MenuItem} value="event">Event</${MenuItem}>
+        </${Select}>
       </div>
 
       <div class="wf-runs-filters">
