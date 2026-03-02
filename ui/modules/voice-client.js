@@ -25,6 +25,159 @@ export const isVoiceActive = computed(() =>
 );
 export const isVoiceMicMuted = signal(false);
 
+// ── Audio Device Selection ──────────────────────────────────────────────────
+
+/** @type {import("@preact/signals").Signal<MediaDeviceInfo[]>} */
+export const audioInputDevices = signal([]);
+/** @type {import("@preact/signals").Signal<MediaDeviceInfo[]>} */
+export const audioOutputDevices = signal([]);
+/** @type {import("@preact/signals").Signal<string>} selected input device ID ("" = default) */
+export const selectedAudioInput = signal("");
+/** @type {import("@preact/signals").Signal<string>} selected output device ID ("" = default) */
+export const selectedAudioOutput = signal("");
+/** @type {import("@preact/signals").Signal<number>} mic input level 0-1 */
+export const micInputLevel = signal(0);
+
+/** Audio processing preferences (persisted via voice overlay settings) */
+export const audioSettings = signal({
+  echoCancellation: true,
+  noiseSuppression: true,
+  autoGainControl: true,
+  sampleRate: 24000,
+});
+
+let _micLevelAnalyser = null;
+let _micLevelTimer = null;
+
+/**
+ * Enumerate available audio devices.
+ * Must be called after getUserMedia to get device labels.
+ */
+export async function enumerateAudioDevices() {
+  try {
+    const devices = await navigator.mediaDevices.enumerateDevices();
+    audioInputDevices.value = devices.filter(d => d.kind === "audioinput");
+    audioOutputDevices.value = devices.filter(d => d.kind === "audiooutput");
+  } catch {
+    audioInputDevices.value = [];
+    audioOutputDevices.value = [];
+  }
+}
+
+/**
+ * Switch the microphone input device mid-session.
+ * @param {string} deviceId
+ */
+export async function switchAudioInput(deviceId) {
+  selectedAudioInput.value = deviceId;
+  if (!_mediaStream) return;
+  try {
+    // Stop existing mic tracks
+    for (const track of _mediaStream.getAudioTracks()) {
+      track.stop();
+    }
+    const settings = audioSettings.value;
+    const newStream = await navigator.mediaDevices.getUserMedia({
+      audio: {
+        deviceId: deviceId ? { exact: deviceId } : undefined,
+        echoCancellation: settings.echoCancellation,
+        noiseSuppression: settings.noiseSuppression,
+        autoGainControl: settings.autoGainControl,
+        sampleRate: settings.sampleRate,
+      },
+    });
+    const newTrack = newStream.getAudioTracks()[0];
+    if (!newTrack) return;
+
+    // Replace track in the peer connection
+    if (_pc) {
+      const sender = _pc.getSenders().find(s => s.track?.kind === "audio");
+      if (sender) {
+        await sender.replaceTrack(newTrack);
+      }
+    }
+
+    // Replace in our saved reference
+    _mediaStream = newStream;
+    _startMicLevelMonitor(newStream);
+    await enumerateAudioDevices();
+  } catch (err) {
+    console.warn("[voice-client] switchAudioInput failed:", err);
+  }
+}
+
+/**
+ * Switch the audio output device (speaker/headphone).
+ * Uses HTMLMediaElement.setSinkId() — available in most modern browsers.
+ * @param {string} deviceId
+ */
+export async function switchAudioOutput(deviceId) {
+  selectedAudioOutput.value = deviceId;
+  try {
+    if (_audioElement && typeof _audioElement.setSinkId === "function") {
+      await _audioElement.setSinkId(deviceId);
+    }
+    if (_responsesAudioElement && typeof _responsesAudioElement.setSinkId === "function") {
+      await _responsesAudioElement.setSinkId(deviceId);
+    }
+  } catch (err) {
+    console.warn("[voice-client] switchAudioOutput failed:", err);
+  }
+}
+
+/**
+ * Update audio processing settings and apply to active stream.
+ * @param {Partial<typeof audioSettings.value>} updates
+ */
+export function updateAudioSettings(updates) {
+  audioSettings.value = { ...audioSettings.value, ...updates };
+  // Apply constraints to active tracks
+  if (_mediaStream) {
+    const settings = audioSettings.value;
+    for (const track of _mediaStream.getAudioTracks()) {
+      track.applyConstraints({
+        echoCancellation: settings.echoCancellation,
+        noiseSuppression: settings.noiseSuppression,
+        autoGainControl: settings.autoGainControl,
+      }).catch(() => {});
+    }
+  }
+}
+
+function _startMicLevelMonitor(stream) {
+  _stopMicLevelMonitor();
+  try {
+    const ctx = new (globalThis.AudioContext || globalThis.webkitAudioContext)();
+    const src = ctx.createMediaStreamSource(stream);
+    const analyser = ctx.createAnalyser();
+    analyser.fftSize = 256;
+    analyser.smoothingTimeConstant = 0.5;
+    src.connect(analyser);
+    _micLevelAnalyser = { ctx, analyser, buffer: new Uint8Array(analyser.frequencyBinCount) };
+    _micLevelTimer = setInterval(() => {
+      if (!_micLevelAnalyser) return;
+      _micLevelAnalyser.analyser.getByteFrequencyData(_micLevelAnalyser.buffer);
+      const sum = _micLevelAnalyser.buffer.reduce((a, v) => a + v, 0);
+      const avg = sum / _micLevelAnalyser.buffer.length;
+      micInputLevel.value = Math.min(1, avg / 128);
+    }, 100);
+  } catch {
+    // AudioContext might not be available
+  }
+}
+
+function _stopMicLevelMonitor() {
+  if (_micLevelTimer) {
+    clearInterval(_micLevelTimer);
+    _micLevelTimer = null;
+  }
+  if (_micLevelAnalyser) {
+    try { _micLevelAnalyser.ctx.close(); } catch { /* ignore */ }
+    _micLevelAnalyser = null;
+  }
+  micInputLevel.value = 0;
+}
+
 // ── Module-scope state ──────────────────────────────────────────────────────
 
 let _pc = null;               // RTCPeerConnection
@@ -546,12 +699,15 @@ export async function startVoiceSession(options = {}) {
 
     _mediaStream = await navigator.mediaDevices.getUserMedia({
       audio: {
-        echoCancellation: true,
-        noiseSuppression: true,
-        autoGainControl: true,
-        sampleRate: 24000,
+        deviceId: selectedAudioInput.value ? { exact: selectedAudioInput.value } : undefined,
+        echoCancellation: audioSettings.value.echoCancellation,
+        noiseSuppression: audioSettings.value.noiseSuppression,
+        autoGainControl: audioSettings.value.autoGainControl,
+        sampleRate: audioSettings.value.sampleRate,
       },
     });
+    await enumerateAudioDevices();
+    _startMicLevelMonitor(_mediaStream);
 
     // 3. Create RTCPeerConnection
     _pc = new RTCPeerConnection();
@@ -570,6 +726,10 @@ export async function startVoiceSession(options = {}) {
     _audioElement.autoplay = true;
     _audioElement.playsInline = true;
     _audioElement.muted = true;
+    // Apply selected output device
+    if (selectedAudioOutput.value && typeof _audioElement.setSinkId === "function") {
+      try { await _audioElement.setSinkId(selectedAudioOutput.value); } catch { /* ignore */ }
+    }
     _pc.ontrack = (event) => {
       _audioElement.srcObject = event.streams[0];
       // Unmute now that the element is already playing (avoids autoplay block)
@@ -672,6 +832,7 @@ export async function startVoiceSession(options = {}) {
 export function stopVoiceSession() {
   _explicitStop = true;
   emit("session-ending", { sessionId: voiceSessionId.value });
+  _stopMicLevelMonitor();
   cleanup();
   voiceState.value = "idle";
   voiceTranscript.value = "";

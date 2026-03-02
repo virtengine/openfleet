@@ -19,6 +19,9 @@ import {
   voiceToolCalls, voiceDuration, isVoiceMicMuted,
   startVoiceSession, stopVoiceSession, interruptResponse,
   sendTextMessage, sendImageFrame, onVoiceEvent, resumeVoiceAudio, toggleMicMute,
+  audioInputDevices, audioOutputDevices, selectedAudioInput, selectedAudioOutput,
+  micInputLevel, audioSettings,
+  enumerateAudioDevices, switchAudioInput, switchAudioOutput, updateAudioSettings,
 } from "./voice-client.js";
 import {
   sdkVoiceState, sdkVoiceTranscript, sdkVoiceResponse, sdkVoiceError,
@@ -561,6 +564,319 @@ function injectOverlayStyles() {
 }
 .voice-overlay-chat-live.user { border-color: rgba(138,180,248,0.4); }
 .voice-overlay-chat-live.assistant { border-color: rgba(129,201,149,0.4); }
+
+/* ── Device Picker Dropdown ────────────────────────────────────── */
+.vm-device-picker-anchor {
+  position: relative;
+  display: inline-flex;
+}
+.vm-device-picker {
+  position: absolute;
+  bottom: calc(100% + 8px);
+  left: 50%;
+  transform: translateX(-50%);
+  min-width: 320px;
+  max-width: 400px;
+  background: #2d2e30;
+  border: 1px solid rgba(255,255,255,0.14);
+  border-radius: 12px;
+  box-shadow: 0 12px 48px rgba(0,0,0,0.7), 0 0 0 1px rgba(255,255,255,0.06);
+  z-index: 100;
+  overflow: hidden;
+  animation: vmPickerSlideUp 0.18s ease;
+  max-height: 60vh;
+  overflow-y: auto;
+}
+@keyframes vmPickerSlideUp {
+  from { opacity: 0; transform: translateX(-50%) translateY(8px); }
+  to { opacity: 1; transform: translateX(-50%) translateY(0); }
+}
+.vm-device-picker-section {
+  padding: 6px 0;
+  border-bottom: 1px solid rgba(255,255,255,0.08);
+}
+.vm-device-picker-section:last-child { border-bottom: none; }
+.vm-device-picker-label {
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: rgba(255,255,255,0.5);
+  padding: 6px 16px 4px;
+}
+.vm-device-item {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 16px;
+  cursor: pointer;
+  transition: background 0.1s;
+  border: none;
+  background: none;
+  color: #e8eaed;
+  font-size: 13px;
+  width: 100%;
+  text-align: left;
+}
+.vm-device-item:hover { background: rgba(255,255,255,0.06); }
+.vm-device-item.active { color: #8ab4f8; }
+.vm-device-check {
+  width: 20px;
+  height: 20px;
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  font-size: 14px;
+}
+.vm-device-check.selected {
+  background: #8ab4f8;
+  color: #202124;
+}
+.vm-device-name {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.vm-device-default {
+  font-size: 11px;
+  color: rgba(255,255,255,0.45);
+  margin-top: 1px;
+}
+.vm-mic-level-bar {
+  height: 4px;
+  border-radius: 2px;
+  background: #3c4043;
+  overflow: hidden;
+  margin: 4px 16px 8px;
+}
+.vm-mic-level-fill {
+  height: 100%;
+  border-radius: 2px;
+  background: #8ab4f8;
+  transition: width 0.1s linear;
+}
+
+/* ── Settings Panel ─────────────────────────────────────────────── */
+.vm-settings-overlay {
+  position: absolute;
+  inset: 0;
+  background: rgba(0,0,0,0.6);
+  z-index: 50;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  animation: voiceOverlayFadeIn 0.15s ease;
+}
+.vm-settings-panel {
+  width: min(500px, 90vw);
+  max-height: 80vh;
+  background: #2d2e30;
+  border-radius: 16px;
+  box-shadow: 0 16px 60px rgba(0,0,0,0.6);
+  overflow-y: auto;
+  animation: vmPickerSlideUp 0.2s ease;
+}
+.vm-settings-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 16px 20px 12px;
+  border-bottom: 1px solid rgba(255,255,255,0.1);
+}
+.vm-settings-title {
+  font-size: 16px;
+  font-weight: 600;
+  color: #e8eaed;
+}
+.vm-settings-close {
+  width: 32px; height: 32px; border-radius: 50%;
+  border: none; background: rgba(255,255,255,0.08);
+  color: #e8eaed; font-size: 16px; cursor: pointer;
+  display: flex; align-items: center; justify-content: center;
+  transition: background 0.15s;
+}
+.vm-settings-close:hover { background: rgba(255,255,255,0.14); }
+.vm-settings-body { padding: 12px 20px 20px; }
+.vm-settings-section {
+  margin-bottom: 16px;
+}
+.vm-settings-section-title {
+  font-size: 13px;
+  font-weight: 600;
+  color: rgba(255,255,255,0.85);
+  margin-bottom: 8px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.vm-settings-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 8px 0;
+  gap: 12px;
+}
+.vm-settings-row-info { flex: 1; min-width: 0; }
+.vm-settings-row-label {
+  font-size: 13px;
+  color: #e8eaed;
+}
+.vm-settings-row-desc {
+  font-size: 11px;
+  color: rgba(255,255,255,0.5);
+  margin-top: 2px;
+}
+.vm-settings-toggle {
+  position: relative;
+  width: 44px;
+  height: 24px;
+  border-radius: 12px;
+  border: none;
+  background: #5f6368;
+  cursor: pointer;
+  flex-shrink: 0;
+  transition: background 0.2s;
+}
+.vm-settings-toggle.on { background: #8ab4f8; }
+.vm-settings-toggle::after {
+  content: '';
+  position: absolute;
+  top: 3px;
+  left: 3px;
+  width: 18px;
+  height: 18px;
+  border-radius: 50%;
+  background: #fff;
+  transition: transform 0.2s;
+}
+.vm-settings-toggle.on::after { transform: translateX(20px); }
+.vm-settings-select {
+  background: #3c4043;
+  border: 1px solid rgba(255,255,255,0.15);
+  border-radius: 8px;
+  color: #e8eaed;
+  padding: 6px 10px;
+  font-size: 13px;
+  min-width: 160px;
+  cursor: pointer;
+}
+.vm-settings-select:focus { outline: none; border-color: #8ab4f8; }
+
+/* ── Three-dot menu ─────────────────────────────────────────────── */
+.vm-more-menu {
+  position: absolute;
+  bottom: calc(100% + 8px);
+  right: 0;
+  min-width: 260px;
+  background: #2d2e30;
+  border: 1px solid rgba(255,255,255,0.14);
+  border-radius: 12px;
+  box-shadow: 0 12px 48px rgba(0,0,0,0.7);
+  z-index: 100;
+  overflow: hidden;
+  animation: vmPickerSlideUp 0.18s ease;
+  padding: 6px 0;
+}
+.vm-more-item {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  padding: 10px 16px;
+  cursor: pointer;
+  border: none;
+  background: none;
+  color: #e8eaed;
+  font-size: 13px;
+  width: 100%;
+  text-align: left;
+  transition: background 0.1s;
+}
+.vm-more-item:hover { background: rgba(255,255,255,0.06); }
+.vm-more-item.disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+.vm-more-icon {
+  width: 20px;
+  text-align: center;
+  font-size: 16px;
+  flex-shrink: 0;
+}
+.vm-more-divider {
+  height: 1px;
+  background: rgba(255,255,255,0.08);
+  margin: 4px 0;
+}
+
+/* ── Improved split-button for mic/speaker arrows ────────────────── */
+.vm-btn-with-arrow {
+  display: flex;
+  align-items: stretch;
+  gap: 0;
+}
+.vm-btn-arrow {
+  width: 24px;
+  height: 48px;
+  border-radius: 0 24px 24px 0;
+  border: none;
+  background: #3c4043;
+  color: rgba(255,255,255,0.7);
+  cursor: pointer;
+  font-size: 10px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-left: 1px solid rgba(255,255,255,0.08);
+  transition: background 0.15s;
+}
+.vm-btn-arrow:hover { background: #5f6368; }
+.vm-btn.has-arrow {
+  border-radius: 24px 0 0 24px;
+}
+
+/* ── Bar device chips (below buttons like Meet) ─────────────────── */
+.vm-bar-device-chips {
+  position: absolute;
+  bottom: 4px;
+  left: 0; right: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 12px;
+  padding: 0 20px;
+  z-index: 2;
+  pointer-events: none;
+}
+.vm-bar-device-chip {
+  pointer-events: auto;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  background: rgba(60,64,67,0.85);
+  border: 1px solid rgba(255,255,255,0.12);
+  border-radius: 24px;
+  padding: 4px 12px 4px 8px;
+  color: rgba(255,255,255,0.8);
+  font-size: 11px;
+  cursor: pointer;
+  transition: background 0.15s, border-color 0.15s;
+  max-width: 220px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.vm-bar-device-chip:hover {
+  background: rgba(95,99,104,0.92);
+  border-color: rgba(255,255,255,0.22);
+}
+.vm-bar-device-chip-icon {
+  font-size: 14px;
+  flex-shrink: 0;
+}
   `;
   document.head.appendChild(style);
 }
@@ -915,8 +1231,21 @@ export function VoiceOverlay({
   const sdkFallbackCleanupRef = useRef(null);
   const legacyFallbackCleanupRef = useRef(null);
   const autoFallbackTriedRef = useRef(false);
+  const [showMicPicker, setShowMicPicker] = useState(false);
+  const [showSpeakerPicker, setShowSpeakerPicker] = useState(false);
+  const [showMoreMenu, setShowMoreMenu] = useState(false);
+  const [showSettings, setShowSettings] = useState(false);
+  const [handRaised, setHandRaised] = useState(false);
 
   useEffect(() => { injectOverlayStyles(); }, []);
+
+  // Close popups on outside click
+  useEffect(() => {
+    if (!visible) return;
+    const handler = () => { setShowMicPicker(false); setShowSpeakerPicker(false); setShowMoreMenu(false); };
+    document.addEventListener("click", handler);
+    return () => document.removeEventListener("click", handler);
+  }, [visible]);
 
   // Determine effective tier: SDK takes over tier 1 when active
   const effectiveSdk = usingSdk && sdkVoiceSdkActive.value;
@@ -1816,27 +2145,119 @@ export function VoiceOverlay({
 
         <!-- Google Meet-style bottom controls bar -->
         <div class="vm-bar">
-          <!-- Left: duration -->
+          <!-- Left: three-dot menu + duration -->
           <div class="vm-bar-group left">
+            <div class="vm-btn-wrap" style="position:relative">
+              <button
+                class="vm-btn"
+                onClick=${() => { setShowMoreMenu(p => !p); setShowMicPicker(false); setShowSpeakerPicker(false); }}
+                title="More options"
+              >⋯</button>
+              <span class="vm-btn-label">More</span>
+              ${showMoreMenu && html`
+                <div class="vm-more-menu" onClick=${(e) => e.stopPropagation()}>
+                  <button class="vm-more-item" onClick=${() => { setShowSettings(true); setShowMoreMenu(false); }}>
+                    <span class="vm-more-icon">⚙️</span> Settings
+                  </button>
+                  <button class="vm-more-item" onClick=${() => { setShowMoreMenu(false); handleMinimize(); }}>
+                    <span class="vm-more-icon">🖼</span> Open picture-in-picture
+                  </button>
+                  <button class="vm-more-item" onClick=${() => {
+                    if (document.fullscreenElement) { document.exitFullscreen().catch(() => {}); }
+                    else { document.documentElement.requestFullscreen?.().catch(() => {}); }
+                    setShowMoreMenu(false);
+                  }}>
+                    <span class="vm-more-icon">${document.fullscreenElement ? "↙" : "⛶"}</span> ${document.fullscreenElement ? "Exit full screen" : "Full screen"}
+                  </button>
+                  <div class="vm-more-divider"></div>
+                  <button class="vm-more-item disabled" disabled>
+                    <span class="vm-more-icon">⏺</span> Recording unavailable
+                  </button>
+                  <div class="vm-more-divider"></div>
+                  <button class="vm-more-item" onClick=${() => {
+                    showToast("Troubleshooting: Check mic permissions and network connection", "info");
+                    setShowMoreMenu(false);
+                  }}>
+                    <span class="vm-more-icon">🔧</span> Troubleshooting & help
+                  </button>
+                </div>
+              `}
+            </div>
             ${duration > 0 && html`
-              <span style="font-size:13px;color:rgba(255,255,255,0.7);font-variant-numeric:tabular-nums">
+              <span style="font-size:13px;color:rgba(255,255,255,0.7);font-variant-numeric:tabular-nums;margin-left:8px">
                 ${formatDuration(duration)}
               </span>
             `}
           </div>
 
-          <!-- Center: mic, camera, screen, end-call pill -->
+          <!-- Center: mic (with arrow), camera, screen, emoji, hand-raise, end-call -->
           <div class="vm-bar-group center">
-            <!-- Mic toggle -->
+            <!-- Mic toggle with device picker arrow -->
             <div class="vm-btn-wrap">
-              <button
-                class=${`vm-btn${micMuted ? " muted" : ""}`}
-                onClick=${handleToggleMic}
-                title=${micMuted ? "Unmute mic" : "Mute mic"}
-              >
-                ${micMuted ? "🔇" : "🎙"}
-              </button>
+              <div class="vm-btn-with-arrow">
+                <button
+                  class=${`vm-btn has-arrow${micMuted ? " muted" : ""}`}
+                  onClick=${handleToggleMic}
+                  title=${micMuted ? "Unmute mic" : "Mute mic"}
+                >
+                  ${micMuted ? "🔇" : "🎙"}
+                </button>
+                <button
+                  class="vm-btn-arrow"
+                  onClick=${(e) => { e.stopPropagation(); setShowMicPicker(p => !p); setShowSpeakerPicker(false); setShowMoreMenu(false); }}
+                  title="Audio settings"
+                >▲</button>
+              </div>
               <span class="vm-btn-label">${micMuted ? "Unmute" : "Mute"}</span>
+              ${showMicPicker && html`
+                <div class="vm-device-picker" onClick=${(e) => e.stopPropagation()}>
+                  <div class="vm-device-picker-section">
+                    <div class="vm-device-picker-label">Microphone</div>
+                    ${audioInputDevices.value.map(d => html`
+                      <button
+                        key=${d.deviceId}
+                        class=${`vm-device-item${(selectedAudioInput.value || "") === d.deviceId || (!selectedAudioInput.value && d.deviceId === "default") ? " active" : ""}`}
+                        onClick=${() => { switchAudioInput(d.deviceId); }}
+                      >
+                        <div class=${`vm-device-check${(selectedAudioInput.value || "") === d.deviceId || (!selectedAudioInput.value && d.deviceId === "default") ? " selected" : ""}`}>
+                          ${(selectedAudioInput.value || "") === d.deviceId || (!selectedAudioInput.value && d.deviceId === "default") ? "✓" : ""}
+                        </div>
+                        <div class="vm-device-name">
+                          ${d.label || "Microphone " + d.deviceId.slice(0, 8)}
+                          ${d.deviceId === "default" ? html`<div class="vm-device-default">System default</div>` : ""}
+                        </div>
+                      </button>
+                    `)}
+                    ${audioInputDevices.value.length === 0 && html`
+                      <div style="padding:8px 16px;font-size:12px;color:rgba(255,255,255,0.45)">No microphones detected</div>
+                    `}
+                  </div>
+                  <div class="vm-mic-level-bar">
+                    <div class="vm-mic-level-fill" style=${`width:${Math.round(micInputLevel.value * 100)}%`}></div>
+                  </div>
+                  <div class="vm-device-picker-section">
+                    <div class="vm-device-picker-label">Speakers</div>
+                    ${audioOutputDevices.value.map(d => html`
+                      <button
+                        key=${d.deviceId}
+                        class=${`vm-device-item${(selectedAudioOutput.value || "") === d.deviceId || (!selectedAudioOutput.value && d.deviceId === "default") ? " active" : ""}`}
+                        onClick=${() => { switchAudioOutput(d.deviceId); }}
+                      >
+                        <div class=${`vm-device-check${(selectedAudioOutput.value || "") === d.deviceId || (!selectedAudioOutput.value && d.deviceId === "default") ? " selected" : ""}`}>
+                          ${(selectedAudioOutput.value || "") === d.deviceId || (!selectedAudioOutput.value && d.deviceId === "default") ? "✓" : ""}
+                        </div>
+                        <div class="vm-device-name">
+                          ${d.label || "Speaker " + d.deviceId.slice(0, 8)}
+                          ${d.deviceId === "default" ? html`<div class="vm-device-default">System default</div>` : ""}
+                        </div>
+                      </button>
+                    `)}
+                    ${audioOutputDevices.value.length === 0 && html`
+                      <div style="padding:8px 16px;font-size:12px;color:rgba(255,255,255,0.45)">No speakers detected</div>
+                    `}
+                  </div>
+                </div>
+              `}
             </div>
 
             <!-- Camera toggle -->
@@ -1865,6 +2286,29 @@ export function VoiceOverlay({
               <span class="vm-btn-label">${visionState === "streaming" && visionSource === "screen" ? "Stop share" : "Share screen"}</span>
             </div>
 
+            <!-- Emoji reactions -->
+            <div class="vm-btn-wrap">
+              <button class="vm-btn" onClick=${() => showToast("😊", "info")} title="Send a reaction">
+                😊
+              </button>
+              <span class="vm-btn-label">React</span>
+            </div>
+
+            <!-- Hand raise -->
+            <div class="vm-btn-wrap">
+              <button
+                class=${`vm-btn${handRaised ? " active" : ""}`}
+                onClick=${() => {
+                  setHandRaised(p => !p);
+                  if (!handRaised) showToast("Hand raised ✋", "info");
+                }}
+                title=${handRaised ? "Lower hand" : "Raise hand"}
+              >
+                ✋
+              </button>
+              <span class="vm-btn-label">${handRaised ? "Lower" : "Raise"}</span>
+            </div>
+
             <!-- End call pill -->
             <div class="vm-end-pill-wrap">
               <button class="vm-end-pill" onClick=${handleClose} title="End call">
@@ -1874,7 +2318,7 @@ export function VoiceOverlay({
             </div>
           </div>
 
-          <!-- Right: chat toggle, people -->
+          <!-- Right: chat, people, settings -->
           <div class="vm-bar-group right">
             ${!isCompactFollowMode && html`
               <div class="vm-btn-wrap">
@@ -1895,8 +2339,168 @@ export function VoiceOverlay({
               </button>
               <span class="vm-btn-label">People</span>
             </div>
+            <div class="vm-btn-wrap">
+              <button class="vm-btn" onClick=${() => setShowSettings(true)} title="Settings">
+                ⚙️
+              </button>
+              <span class="vm-btn-label">Settings</span>
+            </div>
           </div>
         </div>
+
+        <!-- Device chips bar (below main controls, like Meet) -->
+        <div class="vm-bar-device-chips">
+          <button
+            class="vm-bar-device-chip"
+            onClick=${() => { setShowMicPicker(p => !p); setShowSpeakerPicker(false); }}
+          >
+            <span class="vm-bar-device-chip-icon">🎙</span>
+            ${(() => {
+              const sel = selectedAudioInput.value;
+              const dev = audioInputDevices.value.find(d => d.deviceId === sel);
+              return dev?.label || "System default";
+            })()}
+            <span style="font-size:10px;margin-left:2px">▲</span>
+          </button>
+          <button
+            class="vm-bar-device-chip"
+            onClick=${() => { setShowSpeakerPicker(p => !p); setShowMicPicker(false); }}
+          >
+            <span class="vm-bar-device-chip-icon">🔊</span>
+            ${(() => {
+              const sel = selectedAudioOutput.value;
+              const dev = audioOutputDevices.value.find(d => d.deviceId === sel);
+              return dev?.label || "System default";
+            })()}
+            <span style="font-size:10px;margin-left:2px">▲</span>
+          </button>
+        </div>
+
+        <!-- Settings panel overlay -->
+        ${showSettings && html`
+          <div class="vm-settings-overlay" onClick=${() => setShowSettings(false)}>
+            <div class="vm-settings-panel" onClick=${(e) => e.stopPropagation()}>
+              <div class="vm-settings-header">
+                <span class="vm-settings-title">Settings</span>
+                <button class="vm-settings-close" onClick=${() => setShowSettings(false)}>✕</button>
+              </div>
+              <div class="vm-settings-body">
+                <!-- Audio section -->
+                <div class="vm-settings-section">
+                  <div class="vm-settings-section-title">🎙 Audio</div>
+
+                  <div class="vm-settings-row">
+                    <div class="vm-settings-row-info">
+                      <div class="vm-settings-row-label">Microphone</div>
+                    </div>
+                    <select
+                      class="vm-settings-select"
+                      value=${selectedAudioInput.value || ""}
+                      onChange=${(e) => switchAudioInput(e.target.value)}
+                    >
+                      ${audioInputDevices.value.map(d => html`
+                        <option key=${d.deviceId} value=${d.deviceId}>${d.label || "Mic " + d.deviceId.slice(0, 8)}</option>
+                      `)}
+                    </select>
+                  </div>
+
+                  <!-- Mic level -->
+                  <div class="vm-mic-level-bar" style="margin:0 0 8px">
+                    <div class="vm-mic-level-fill" style=${`width:${Math.round(micInputLevel.value * 100)}%`}></div>
+                  </div>
+
+                  <div class="vm-settings-row">
+                    <div class="vm-settings-row-info">
+                      <div class="vm-settings-row-label">Speakers</div>
+                    </div>
+                    <select
+                      class="vm-settings-select"
+                      value=${selectedAudioOutput.value || ""}
+                      onChange=${(e) => switchAudioOutput(e.target.value)}
+                    >
+                      ${audioOutputDevices.value.map(d => html`
+                        <option key=${d.deviceId} value=${d.deviceId}>${d.label || "Speaker " + d.deviceId.slice(0, 8)}</option>
+                      `)}
+                    </select>
+                  </div>
+                </div>
+
+                <!-- Audio processing section -->
+                <div class="vm-settings-section">
+                  <div class="vm-settings-section-title">🔧 Audio Processing</div>
+
+                  <div class="vm-settings-row">
+                    <div class="vm-settings-row-info">
+                      <div class="vm-settings-row-label">Echo cancellation</div>
+                      <div class="vm-settings-row-desc">Reduces echo from speakers being picked up by mic</div>
+                    </div>
+                    <button
+                      class=${`vm-settings-toggle${audioSettings.value.echoCancellation ? " on" : ""}`}
+                      onClick=${() => updateAudioSettings({ echoCancellation: !audioSettings.value.echoCancellation })}
+                    />
+                  </div>
+
+                  <div class="vm-settings-row">
+                    <div class="vm-settings-row-info">
+                      <div class="vm-settings-row-label">Noise suppression</div>
+                      <div class="vm-settings-row-desc">Filters background noise from microphone input</div>
+                    </div>
+                    <button
+                      class=${`vm-settings-toggle${audioSettings.value.noiseSuppression ? " on" : ""}`}
+                      onClick=${() => updateAudioSettings({ noiseSuppression: !audioSettings.value.noiseSuppression })}
+                    />
+                  </div>
+
+                  <div class="vm-settings-row">
+                    <div class="vm-settings-row-info">
+                      <div class="vm-settings-row-label">Auto gain control</div>
+                      <div class="vm-settings-row-desc">Automatically adjusts microphone volume level</div>
+                    </div>
+                    <button
+                      class=${`vm-settings-toggle${audioSettings.value.autoGainControl ? " on" : ""}`}
+                      onClick=${() => updateAudioSettings({ autoGainControl: !audioSettings.value.autoGainControl })}
+                    />
+                  </div>
+                </div>
+
+                <!-- Call info section -->
+                <div class="vm-settings-section">
+                  <div class="vm-settings-section-title">📞 Call Info</div>
+                  <div class="vm-settings-row">
+                    <div class="vm-settings-row-info">
+                      <div class="vm-settings-row-label">Session</div>
+                      <div class="vm-settings-row-desc">${sessionId || "No active session"}</div>
+                    </div>
+                  </div>
+                  <div class="vm-settings-row">
+                    <div class="vm-settings-row-info">
+                      <div class="vm-settings-row-label">Agent</div>
+                      <div class="vm-settings-row-desc">${executor || "Default"}</div>
+                    </div>
+                  </div>
+                  <div class="vm-settings-row">
+                    <div class="vm-settings-row-info">
+                      <div class="vm-settings-row-label">Model</div>
+                      <div class="vm-settings-row-desc">${model || "Default"}</div>
+                    </div>
+                  </div>
+                  <div class="vm-settings-row">
+                    <div class="vm-settings-row-info">
+                      <div class="vm-settings-row-label">Transport</div>
+                      <div class="vm-settings-row-desc">${usingSdk ? "Agents SDK" : "WebRTC Legacy"}</div>
+                    </div>
+                  </div>
+                  <div class="vm-settings-row">
+                    <div class="vm-settings-row-info">
+                      <div class="vm-settings-row-label">Duration</div>
+                      <div class="vm-settings-row-desc">${duration > 0 ? formatDuration(duration) : "Not started"}</div>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+        `}
       </div>
     `}
 
