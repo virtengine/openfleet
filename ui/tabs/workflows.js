@@ -2322,6 +2322,25 @@ export function WorkflowsTab() {
   }, []);
 
   useEffect(() => {
+    const onWorkspaceSwitched = () => {
+      activeWorkflow.value = null;
+      selectedRunId.value = null;
+      selectedRunDetail.value = null;
+      workflowRuns.value = [];
+      workflowRunsLimit.value = WORKFLOW_RUN_PAGE_SIZE;
+      viewMode.value = "list";
+      setRouteParams({}, { replace: true, skipGuard: true });
+      loadWorkflows();
+      loadTemplates();
+      loadNodeTypes();
+    };
+    window.addEventListener("ve:workspace-switched", onWorkspaceSwitched);
+    return () => {
+      window.removeEventListener("ve:workspace-switched", onWorkspaceSwitched);
+    };
+  }, []);
+
+  useEffect(() => {
     const route = routeParams.value || {};
     const workflowId = String(route.workflowId || "").trim();
     const runId = String(route.runId || "").trim();

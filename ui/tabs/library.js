@@ -1350,6 +1350,17 @@ export function LibraryTab() {
 
   useEffect(() => { loadEntries(); }, [filterType.value]);
 
+  useEffect(() => {
+    const onWorkspaceSwitched = () => {
+      setEditing(null);
+      loadEntries();
+    };
+    window.addEventListener("ve:workspace-switched", onWorkspaceSwitched);
+    return () => {
+      window.removeEventListener("ve:workspace-switched", onWorkspaceSwitched);
+    };
+  }, [loadEntries]);
+
   // Debounced search
   const searchTimer = useRef(null);
   const handleSearch = useCallback((value) => {

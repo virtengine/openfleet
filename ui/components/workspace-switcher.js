@@ -8,7 +8,7 @@ import { h } from "preact";
 import { useState, useEffect, useCallback } from "preact/hooks";
 import { signal } from "@preact/signals";
 import htm from "htm";
-import { apiFetch } from "../modules/api.js";
+import { apiFetch, onWsMessage } from "../modules/api.js";
 import { haptic } from "../modules/telegram.js";
 import { Modal } from "./shared.js";
 import { iconText, resolveIcon } from "../modules/icon-utils.js";
@@ -53,6 +53,24 @@ export async function switchWorkspace(wsId) {
     }
     activeWorkspaceId.value = String(res.activeId || wsId);
     await loadWorkspaces();
+    try {
+      globalThis.dispatchEvent?.(
+        new CustomEvent("ve:workspace-switched", {
+          detail: { workspaceId: activeWorkspaceId.value || String(wsId || "") },
+        }),
+      );
+    } catch {
+      // no-op
+    }
+    try {
+      const { refreshTab } = await import("../modules/state.js");
+      await Promise.allSettled([
+        refreshTab("tasks", { background: true, manual: false }),
+        refreshTab("dashboard", { background: true, manual: false }),
+      ]);
+    } catch {
+      // best effort
+    }
     return true;
   } catch (err) {
     console.warn("[workspace-switcher] Failed to switch workspace:", err);
@@ -459,6 +477,35 @@ export function WorkspaceSwitcher() {
 
   useEffect(() => {
     loadWorkspaces();
+  }, []);
+
+  // Keep selector state in sync when workspace is switched externally
+  // (for example via Electron menu or another client).
+  useEffect(() => {
+    const unsubscribe = onWsMessage((msg) => {
+      if (msg?.type !== "invalidate") return;
+      const channels = Array.isArray(msg.channels) ? msg.channels : [];
+      if (channels.includes("*") || channels.includes("workspaces")) {
+        loadWorkspaces().catch(() => {});
+      }
+    });
+    return unsubscribe;
+  }, []);
+
+  // Desktop fallback when WS is unavailable: refresh workspace state whenever
+  // the window regains focus/visibility.
+  useEffect(() => {
+    const sync = () => loadWorkspaces().catch(() => {});
+    const onFocus = () => sync();
+    const onVisibility = () => {
+      if (document.visibilityState === "visible") sync();
+    };
+    globalThis.addEventListener?.("focus", onFocus);
+    document.addEventListener?.("visibilitychange", onVisibility);
+    return () => {
+      globalThis.removeEventListener?.("focus", onFocus);
+      document.removeEventListener?.("visibilitychange", onVisibility);
+    };
   }, []);
 
   const wsList = workspaces.value;

@@ -939,6 +939,222 @@ describe("ui-server mini app", () => {
     rmSync(tmpDir, { recursive: true, force: true });
   });
 
+  it("scopes session listing to the active workspace by default", async () => {
+    process.env.TELEGRAM_UI_TUNNEL = "disabled";
+    const tmpDir = mkdtempSync(join(tmpdir(), "bosun-session-scope-"));
+    const configPath = join(tmpDir, "bosun.config.json");
+    const ws1Repo = join(tmpDir, "workspaces", "ws-one", "repo1");
+    const ws2Repo = join(tmpDir, "workspaces", "ws-two", "repo2");
+    mkdirSync(join(ws1Repo, ".git"), { recursive: true });
+    mkdirSync(join(ws2Repo, ".git"), { recursive: true });
+    process.env.BOSUN_CONFIG_PATH = configPath;
+    writeFileSync(
+      configPath,
+      JSON.stringify(
+        {
+          $schema: "./bosun.schema.json",
+          activeWorkspace: "ws-one",
+          workspaces: [
+            {
+              id: "ws-one",
+              name: "Workspace One",
+              activeRepo: "repo1",
+              repos: [{ name: "repo1", primary: true }],
+            },
+            {
+              id: "ws-two",
+              name: "Workspace Two",
+              activeRepo: "repo2",
+              repos: [{ name: "repo2", primary: true }],
+            },
+          ],
+        },
+        null,
+        2,
+      ) + "\n",
+      "utf8",
+    );
+
+    const mod = await import("../ui-server.mjs");
+    const server = await mod.startTelegramUiServer({
+      port: await getFreePort(),
+      host: "127.0.0.1",
+    });
+    const port = server.address().port;
+
+    const setActiveWsOne = await fetch(`http://127.0.0.1:${port}/api/workspaces/active`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ workspaceId: "ws-one" }),
+    }).then((r) => r.json());
+    expect(setActiveWsOne.ok).toBe(true);
+
+    const wsOneCreate = await fetch(`http://127.0.0.1:${port}/api/sessions/create`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ type: "workspace-scope-test", workspaceId: "ws-one" }),
+    }).then((r) => r.json());
+    expect(wsOneCreate.ok).toBe(true);
+
+    const wsTwoCreate = await fetch(`http://127.0.0.1:${port}/api/sessions/create`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ type: "workspace-scope-test", workspaceId: "ws-two" }),
+    }).then((r) => r.json());
+    expect(wsTwoCreate.ok).toBe(true);
+
+    const activeList = await fetch(
+      `http://127.0.0.1:${port}/api/sessions?type=workspace-scope-test`,
+    ).then((r) => r.json());
+    expect(activeList.ok).toBe(true);
+    expect(activeList.sessions).toHaveLength(1);
+    expect(activeList.sessions[0]?.metadata?.workspaceId).toBe("ws-one");
+
+    const allList = await fetch(
+      `http://127.0.0.1:${port}/api/sessions?type=workspace-scope-test&workspace=all`,
+    ).then((r) => r.json());
+    expect(allList.ok).toBe(true);
+    expect(allList.sessions.length).toBeGreaterThanOrEqual(2);
+
+    rmSync(tmpDir, { recursive: true, force: true });
+  });
+
+  it("scopes workflows and library data by active workspace", async () => {
+    process.env.TELEGRAM_UI_TUNNEL = "disabled";
+    const tmpDir = mkdtempSync(join(tmpdir(), "bosun-workflow-library-scope-"));
+    const configPath = join(tmpDir, "bosun.config.json");
+    const ws1Repo = join(tmpDir, "workspaces", "ws-alpha", "alpha");
+    const ws2Repo = join(tmpDir, "workspaces", "ws-beta", "beta");
+    mkdirSync(join(ws1Repo, ".git"), { recursive: true });
+    mkdirSync(join(ws2Repo, ".git"), { recursive: true });
+    process.env.BOSUN_CONFIG_PATH = configPath;
+    writeFileSync(
+      configPath,
+      JSON.stringify(
+        {
+          $schema: "./bosun.schema.json",
+          activeWorkspace: "ws-alpha",
+          workspaces: [
+            {
+              id: "ws-alpha",
+              name: "Workspace Alpha",
+              activeRepo: "alpha",
+              repos: [{ name: "alpha", primary: true }],
+            },
+            {
+              id: "ws-beta",
+              name: "Workspace Beta",
+              activeRepo: "beta",
+              repos: [{ name: "beta", primary: true }],
+            },
+          ],
+        },
+        null,
+        2,
+      ) + "\n",
+      "utf8",
+    );
+
+    const mod = await import("../ui-server.mjs");
+    const server = await mod.startTelegramUiServer({
+      port: await getFreePort(),
+      host: "127.0.0.1",
+    });
+    const port = server.address().port;
+
+    const wfOneId = `wf-ws-alpha-${Date.now()}`;
+    const wfSaveOne = await fetch(`http://127.0.0.1:${port}/api/workflows/save`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        id: wfOneId,
+        name: "Alpha Workflow",
+        description: "Workspace alpha workflow",
+        enabled: true,
+        nodes: [],
+        edges: [],
+      }),
+    }).then((r) => r.json());
+    expect(wfSaveOne.ok).toBe(true);
+
+    const libOne = await fetch(`http://127.0.0.1:${port}/api/library/entry`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        type: "prompt",
+        name: "Alpha Prompt",
+        description: "alpha only",
+        content: "# alpha",
+      }),
+    }).then((r) => r.json());
+    expect(libOne.ok).toBe(true);
+
+    const switchResponse = await fetch(`http://127.0.0.1:${port}/api/workspaces/active`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ workspaceId: "ws-beta" }),
+    });
+    const switchJson = await switchResponse.json();
+    expect(switchResponse.status).toBe(200);
+    expect(switchJson.ok).toBe(true);
+
+    const wfBetaListBefore = await fetch(`http://127.0.0.1:${port}/api/workflows`).then((r) => r.json());
+    expect(wfBetaListBefore.ok).toBe(true);
+    expect(wfBetaListBefore.workflows.some((wf) => wf.id === wfOneId)).toBe(false);
+
+    const libBetaListBefore = await fetch(`http://127.0.0.1:${port}/api/library?search=Alpha`).then((r) => r.json());
+    expect(libBetaListBefore.ok).toBe(true);
+    expect(libBetaListBefore.data).toHaveLength(0);
+
+    const wfTwoId = `wf-ws-beta-${Date.now()}`;
+    const wfSaveTwo = await fetch(`http://127.0.0.1:${port}/api/workflows/save`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        id: wfTwoId,
+        name: "Beta Workflow",
+        description: "Workspace beta workflow",
+        enabled: true,
+        nodes: [],
+        edges: [],
+      }),
+    }).then((r) => r.json());
+    expect(wfSaveTwo.ok).toBe(true);
+
+    const libTwo = await fetch(`http://127.0.0.1:${port}/api/library/entry`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        type: "prompt",
+        name: "Beta Prompt",
+        description: "beta only",
+        content: "# beta",
+      }),
+    }).then((r) => r.json());
+    expect(libTwo.ok).toBe(true);
+
+    const switchBackResponse = await fetch(`http://127.0.0.1:${port}/api/workspaces/active`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ workspaceId: "ws-alpha" }),
+    });
+    const switchBackJson = await switchBackResponse.json();
+    expect(switchBackResponse.status).toBe(200);
+    expect(switchBackJson.ok).toBe(true);
+
+    const wfAlphaList = await fetch(`http://127.0.0.1:${port}/api/workflows`).then((r) => r.json());
+    expect(wfAlphaList.ok).toBe(true);
+    expect(wfAlphaList.workflows.some((wf) => wf.id === wfOneId)).toBe(true);
+    expect(wfAlphaList.workflows.some((wf) => wf.id === wfTwoId)).toBe(false);
+
+    const libAlphaList = await fetch(`http://127.0.0.1:${port}/api/library?search=Prompt`).then((r) => r.json());
+    expect(libAlphaList.ok).toBe(true);
+    expect(libAlphaList.data.some((entry) => entry.name === "Alpha Prompt")).toBe(true);
+    expect(libAlphaList.data.some((entry) => entry.name === "Beta Prompt")).toBe(false);
+
+    rmSync(tmpDir, { recursive: true, force: true });
+  });
+
   it("exposes and executes shared bosun tools via /api/agents/tool parity endpoints", async () => {
     const mod = await import("../ui-server.mjs");
     const server = await mod.startTelegramUiServer({

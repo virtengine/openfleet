@@ -161,7 +161,7 @@ const repoRoot = resolveRepoRoot();
 const uiRootPreferred = resolve(__dirname, "ui");
 const uiRootFallback = resolve(__dirname, "site", "ui");
 const uiRoot = existsSync(uiRootPreferred) ? uiRootPreferred : uiRootFallback;
-let libraryInitAttempted = false;
+const libraryInitAttemptedRoots = new Set();
 const MAX_VISION_FRAME_BYTES = Math.max(
   128_000,
   Number.parseInt(process.env.VISION_FRAME_MAX_BYTES || "", 10) || 2_000_000,
@@ -208,21 +208,22 @@ function parseVisionFrameDataUrl(dataUrl) {
   return { ok: true, mimeType, base64Data, approxBytes, raw };
 }
 
-function ensureLibraryInitialized() {
-  if (libraryInitAttempted) return;
-  libraryInitAttempted = true;
+function ensureLibraryInitialized(rootDir = repoRoot) {
+  const normalizedRoot = normalizeCandidatePath(rootDir) || repoRoot;
+  if (libraryInitAttemptedRoots.has(normalizedRoot)) return;
+  libraryInitAttemptedRoots.add(normalizedRoot);
   try {
-    const manifestPath = getManifestPath(repoRoot);
-    const manifest = loadManifest(repoRoot);
+    const manifestPath = getManifestPath(normalizedRoot);
+    const manifest = loadManifest(normalizedRoot);
     if (!existsSync(manifestPath) || !Array.isArray(manifest?.entries) || manifest.entries.length === 0) {
-      const result = initLibrary(repoRoot);
+      const result = initLibrary(normalizedRoot);
       const count = result?.manifest?.entries?.length ?? 0;
       if (count > 0) {
-        console.log(`[ui] Library initialized (${count} entries).`);
+        console.log(`[ui] Library initialized (${count} entries) at ${normalizedRoot}.`);
       }
     }
   } catch (err) {
-    console.warn(`[ui] Library init failed: ${err.message}`);
+    console.warn(`[ui] Library init failed for ${normalizedRoot}: ${err.message}`);
   }
 }
 
@@ -231,7 +232,10 @@ let _wfEngine;
 let _wfNodes;
 let _wfTemplates;
 let _wfServicesReady = false;
+let _wfServices = null;
 let _wfRecommendedInstalled = false;
+const _wfRecommendedInstalledByWorkspace = new Set();
+const _wfEngineByWorkspace = new Map();
 let _wfInitPromise = null;
 let _wfInitDone = false;
 let _wfLoadedBase = null;
@@ -441,6 +445,7 @@ async function getWorkflowEngineModule() {
           meeting: meetingService,
           prompts: promptBundle?.prompts || null,
         };
+        _wfServices = services;
         _wfEngine.getWorkflowEngine({ services });
         _wfServicesReady = true;
 
@@ -533,6 +538,96 @@ async function getWorkflowEngineModule() {
   return _wfEngine;
 }
 
+function getWorkflowWorkspaceKey(workspaceDir = "") {
+  const normalized = normalizeCandidatePath(workspaceDir) || repoRoot;
+  if (process.platform === "win32") {
+    return normalized.toLowerCase();
+  }
+  return normalized;
+}
+
+function getWorkflowStoragePaths(workspaceDir = "") {
+  const root = normalizeCandidatePath(workspaceDir) || repoRoot;
+  return {
+    workspaceRoot: root,
+    workflowDir: resolve(root, ".bosun", "workflows"),
+    runsDir: resolve(root, ".bosun", "workflow-runs"),
+  };
+}
+
+function maybeBootstrapWorkspaceWorkflowTemplates(engine, workspaceKey, workspaceLabel) {
+  if (!engine || !_wfTemplates) return;
+  if (_wfRecommendedInstalledByWorkspace.has(workspaceKey)) return;
+  try {
+    const selection = resolveWorkflowBootstrapSelection(_wfTemplates);
+    let result = { installed: [], skipped: [], errors: [] };
+    if (selection.enabled) {
+      if (
+        Array.isArray(selection.templateIds) &&
+        selection.templateIds.length > 0 &&
+        typeof _wfTemplates.installTemplateSet === "function"
+      ) {
+        result = _wfTemplates.installTemplateSet(engine, selection.templateIds);
+      } else if (
+        selection.source === "recommended" &&
+        typeof _wfTemplates.installRecommendedTemplates === "function"
+      ) {
+        result = _wfTemplates.installRecommendedTemplates(engine);
+      }
+    }
+    if (typeof _wfTemplates.reconcileInstalledTemplates === "function") {
+      _wfTemplates.reconcileInstalledTemplates(engine, {
+        autoUpdateUnmodified: true,
+      });
+    }
+    if (result.installed.length) {
+      console.log(
+        `[workflows] Installed ${result.installed.length} default workflow templates for workspace ${workspaceLabel}`,
+      );
+    }
+  } catch (err) {
+    console.warn(
+      `[workflows] Default template install failed for workspace ${workspaceLabel}: ${err.message}`,
+    );
+  } finally {
+    _wfRecommendedInstalledByWorkspace.add(workspaceKey);
+  }
+}
+
+async function getWorkflowRequestContext(reqUrl) {
+  const workspaceContext = resolveWorkspaceContextFromRequest(reqUrl, { allowAll: false });
+  if (!workspaceContext) {
+    return { ok: false, status: 400, error: "Unknown workspace. Set a valid workspace query value." };
+  }
+  const wfMod = await getWorkflowEngineModule();
+  if (!wfMod?.WorkflowEngine) {
+    return { ok: false, status: 503, error: "Workflow engine not available" };
+  }
+  const paths = getWorkflowStoragePaths(workspaceContext.workspaceDir);
+  const workspaceKey = getWorkflowWorkspaceKey(paths.workspaceRoot);
+  let engine = _wfEngineByWorkspace.get(workspaceKey) || null;
+  if (!engine) {
+    engine = new wfMod.WorkflowEngine({
+      workflowDir: paths.workflowDir,
+      runsDir: paths.runsDir,
+      services: _wfServices || {},
+    });
+    engine.load();
+    _wfEngineByWorkspace.set(workspaceKey, engine);
+  }
+  maybeBootstrapWorkspaceWorkflowTemplates(
+    engine,
+    workspaceKey,
+    workspaceContext.workspaceId || workspaceKey,
+  );
+  return {
+    ok: true,
+    wfMod,
+    engine,
+    workspaceContext: { ...workspaceContext, workspaceDir: paths.workspaceRoot },
+  };
+}
+
 function allowWorkflowEvent(dedupKey, windowMs = workflowEventDedupWindowMs) {
   if (!dedupKey) return true;
   const now = Date.now();
@@ -576,10 +671,11 @@ async function dispatchWorkflowEvent(eventType, eventData = {}, opts = {}) {
       return false;
     }
 
-    const wfMod = await getWorkflowEngineModule();
-    if (!wfMod?.getWorkflowEngine) return false;
-
-    const engine = wfMod.getWorkflowEngine();
+    const wfCtx = await getWorkflowRequestContext(
+      new URL(`http://localhost?workspace=active`),
+    );
+    if (!wfCtx?.ok) return false;
+    const engine = wfCtx.engine;
     if (!engine?.evaluateTriggers || !engine?.execute) return false;
 
     const payload = buildWorkflowEventPayload(eventType, eventData, "ui-server");
@@ -1293,6 +1389,79 @@ function resolveActiveWorkspaceExecutionContext() {
     workspaceId,
     workspaceDir,
   };
+}
+
+function resolveWorkspaceContextById(workspaceId = "") {
+  const requestedId = String(workspaceId || "").trim().toLowerCase();
+  if (!requestedId) return resolveActiveWorkspaceExecutionContext();
+  const configDir = resolveUiConfigDir();
+  if (!configDir) return null;
+  const listed = listManagedWorkspaces(configDir, { repoRoot });
+  const workspace = listed.find(
+    (entry) => String(entry?.id || "").trim().toLowerCase() === requestedId,
+  );
+  if (!workspace) return null;
+  const id = String(workspace.id || "").trim();
+  return {
+    workspaceId: id,
+    workspaceDir: pickWorkspaceRepoDir(workspace) || repoRoot,
+  };
+}
+
+function resolveWorkspaceContextFromRequest(reqUrl, opts = {}) {
+  const allowAll = opts.allowAll !== false;
+  const workspaceRaw = String(reqUrl?.searchParams?.get("workspace") || "").trim();
+  const workspaceKey = workspaceRaw.toLowerCase();
+  if (allowAll && (workspaceKey === "all" || workspaceKey === "*")) {
+    return {
+      allWorkspaces: true,
+      workspaceId: "",
+      workspaceDir: repoRoot,
+      workspaceFilter: "",
+    };
+  }
+  if (!workspaceKey || workspaceKey === "active") {
+    const active = resolveActiveWorkspaceExecutionContext();
+    return {
+      allWorkspaces: false,
+      workspaceId: String(active.workspaceId || "").trim(),
+      workspaceDir: normalizeCandidatePath(active.workspaceDir) || repoRoot,
+      workspaceFilter: String(active.workspaceId || "").trim().toLowerCase(),
+    };
+  }
+  const explicit = resolveWorkspaceContextById(workspaceKey);
+  if (!explicit) return null;
+  return {
+    allWorkspaces: false,
+    workspaceId: String(explicit.workspaceId || "").trim(),
+    workspaceDir: normalizeCandidatePath(explicit.workspaceDir) || repoRoot,
+    workspaceFilter: String(explicit.workspaceId || "").trim().toLowerCase(),
+  };
+}
+
+function resolveSessionWorkspaceMeta(session) {
+  const metadata =
+    session && typeof session.metadata === "object" && session.metadata
+      ? session.metadata
+      : null;
+  return {
+    workspaceId: String(metadata?.workspaceId || "").trim().toLowerCase(),
+    workspaceDir: normalizeCandidatePath(metadata?.workspaceDir),
+  };
+}
+
+function sessionMatchesWorkspaceContext(session, workspaceContext) {
+  if (!session) return false;
+  if (!workspaceContext || workspaceContext.allWorkspaces) return true;
+  const sessionWorkspace = resolveSessionWorkspaceMeta(session);
+  if (sessionWorkspace.workspaceId) {
+    return sessionWorkspace.workspaceId === String(workspaceContext.workspaceFilter || "").trim().toLowerCase();
+  }
+  const activeWorkspaceDir = normalizeCandidatePath(workspaceContext.workspaceDir);
+  if (sessionWorkspace.workspaceDir && activeWorkspaceDir) {
+    return sessionWorkspace.workspaceDir === activeWorkspaceDir;
+  }
+  return !workspaceContext.workspaceFilter;
 }
 
 function resolveSessionWorkspaceDir(session = null) {
@@ -5942,7 +6111,15 @@ async function handleApi(req, res, url) {
   if (path === "/api/tasks") {
     const status = url.searchParams.get("status") || "";
     const projectId = url.searchParams.get("project") || "";
-    const workspaceFilter = (url.searchParams.get("workspace") || "").trim().toLowerCase();
+    const workspaceQueryRaw = String(url.searchParams.get("workspace") || "").trim();
+    let workspaceFilter = workspaceQueryRaw.toLowerCase();
+    if (!workspaceFilter || workspaceFilter === "active") {
+      const activeWorkspace = getActiveManagedWorkspace(resolveUiConfigDir());
+      workspaceFilter = String(activeWorkspace?.id || "").trim().toLowerCase();
+    }
+    if (workspaceFilter === "*" || workspaceFilter === "all") {
+      workspaceFilter = "";
+    }
     const repositoryFilter = (url.searchParams.get("repository") || "").trim().toLowerCase();
     const page = Math.max(0, Number(url.searchParams.get("page") || "0"));
     const pageSize = Math.min(
@@ -6545,11 +6722,17 @@ async function handleApi(req, res, url) {
 
   if (path === "/api/library") {
     try {
-      ensureLibraryInitialized();
+      const workspaceContext = resolveWorkspaceContextFromRequest(url, { allowAll: false });
+      if (!workspaceContext) {
+        jsonResponse(res, 400, { ok: false, error: "Unknown workspace" });
+        return;
+      }
+      const libraryRoot = workspaceContext.workspaceDir || repoRoot;
+      ensureLibraryInitialized(libraryRoot);
       const typeRaw = (url.searchParams.get("type") || "").trim();
       const search = (url.searchParams.get("search") || "").trim();
       const type = typeRaw && typeRaw !== "all" ? typeRaw : "";
-      const data = listEntries(repoRoot, {
+      const data = listEntries(libraryRoot, {
         type: type || undefined,
         search: search || undefined,
       });
@@ -6562,19 +6745,25 @@ async function handleApi(req, res, url) {
 
   if (path === "/api/library/entry") {
     try {
-      ensureLibraryInitialized();
+      const workspaceContext = resolveWorkspaceContextFromRequest(url, { allowAll: false });
+      if (!workspaceContext) {
+        jsonResponse(res, 400, { ok: false, error: "Unknown workspace" });
+        return;
+      }
+      const libraryRoot = workspaceContext.workspaceDir || repoRoot;
+      ensureLibraryInitialized(libraryRoot);
       if (req.method === "GET") {
         const id = (url.searchParams.get("id") || "").trim();
         if (!id) {
           jsonResponse(res, 400, { ok: false, error: "id required" });
           return;
         }
-        const entry = getEntry(repoRoot, id);
+        const entry = getEntry(libraryRoot, id);
         if (!entry) {
           jsonResponse(res, 404, { ok: false, error: "not found" });
           return;
         }
-        const content = getEntryContent(repoRoot, entry);
+        const content = getEntryContent(libraryRoot, entry);
         jsonResponse(res, 200, { ok: true, data: { ...entry, content } });
         return;
       }
@@ -6582,7 +6771,7 @@ async function handleApi(req, res, url) {
       if (req.method === "POST") {
         const body = await readJsonBody(req);
         const { content, ...entryData } = body || {};
-        const entry = upsertEntry(repoRoot, entryData, content);
+        const entry = upsertEntry(libraryRoot, entryData, content);
         jsonResponse(res, 200, { ok: true, data: entry });
         return;
       }
@@ -6594,7 +6783,7 @@ async function handleApi(req, res, url) {
           jsonResponse(res, 400, { ok: false, error: "id required" });
           return;
         }
-        const deleted = deleteEntry(repoRoot, id, { deleteFile: Boolean(body?.deleteFile) });
+        const deleted = deleteEntry(libraryRoot, id, { deleteFile: Boolean(body?.deleteFile) });
         if (!deleted) {
           jsonResponse(res, 404, { ok: false, error: "not found" });
           return;
@@ -6612,8 +6801,14 @@ async function handleApi(req, res, url) {
 
   if (path === "/api/library/scopes") {
     try {
-      ensureLibraryInitialized();
-      const result = detectScopes(repoRoot);
+      const workspaceContext = resolveWorkspaceContextFromRequest(url, { allowAll: false });
+      if (!workspaceContext) {
+        jsonResponse(res, 400, { ok: false, error: "Unknown workspace" });
+        return;
+      }
+      const libraryRoot = workspaceContext.workspaceDir || repoRoot;
+      ensureLibraryInitialized(libraryRoot);
+      const result = detectScopes(libraryRoot);
       jsonResponse(res, 200, { ok: true, data: result?.scopes || [] });
     } catch (err) {
       jsonResponse(res, 500, { ok: false, error: err.message });
@@ -6623,7 +6818,13 @@ async function handleApi(req, res, url) {
 
   if (path === "/api/library/init" && req.method === "POST") {
     try {
-      const result = initLibrary(repoRoot);
+      const workspaceContext = resolveWorkspaceContextFromRequest(url, { allowAll: false });
+      if (!workspaceContext) {
+        jsonResponse(res, 400, { ok: false, error: "Unknown workspace" });
+        return;
+      }
+      const libraryRoot = workspaceContext.workspaceDir || repoRoot;
+      const result = initLibrary(libraryRoot);
       const entriesCount = result?.manifest?.entries?.length ?? 0;
       const scaffoldedCount = result?.scaffolded?.written?.length ?? 0;
       jsonResponse(res, 200, {
@@ -6638,7 +6839,13 @@ async function handleApi(req, res, url) {
 
   if (path === "/api/library/rebuild" && req.method === "POST") {
     try {
-      const result = rebuildManifest(repoRoot);
+      const workspaceContext = resolveWorkspaceContextFromRequest(url, { allowAll: false });
+      if (!workspaceContext) {
+        jsonResponse(res, 400, { ok: false, error: "Unknown workspace" });
+        return;
+      }
+      const libraryRoot = workspaceContext.workspaceDir || repoRoot;
+      const result = rebuildManifest(libraryRoot);
       jsonResponse(res, 200, {
         ok: true,
         data: {
@@ -6655,9 +6862,15 @@ async function handleApi(req, res, url) {
 
   if (path === "/api/library/match-profile") {
     try {
-      ensureLibraryInitialized();
+      const workspaceContext = resolveWorkspaceContextFromRequest(url, { allowAll: false });
+      if (!workspaceContext) {
+        jsonResponse(res, 400, { ok: false, error: "Unknown workspace" });
+        return;
+      }
+      const libraryRoot = workspaceContext.workspaceDir || repoRoot;
+      ensureLibraryInitialized(libraryRoot);
       const title = (url.searchParams.get("title") || "").trim();
-      const match = matchAgentProfile(repoRoot, title);
+      const match = matchAgentProfile(libraryRoot, title);
       jsonResponse(res, 200, { ok: true, data: match || null });
     } catch (err) {
       jsonResponse(res, 500, { ok: false, error: err.message });
@@ -6892,7 +7105,7 @@ async function handleApi(req, res, url) {
           ok: true,
           activeId: String(active?.id || wsId),
         });
-        broadcastUiEvent(["workspaces", "tasks", "overview"], "invalidate", {
+        broadcastUiEvent(["workspaces", "tasks", "overview", "sessions", "workflows", "library"], "invalidate", {
           reason: "workspace-switched",
           workspaceId: wsId,
         });
@@ -7886,14 +8099,14 @@ async function handleApi(req, res, url) {
    *  Workflow API endpoints
    * ═══════════════════════════════════════════════════════════ */
 
-  // Use module-scope getWorkflowEngineModule() for cross-request caching.
-  const getWorkflowEngine = getWorkflowEngineModule;
-
   if (path === "/api/workflows") {
     try {
-      const wfMod = await getWorkflowEngine();
-      if (!wfMod) { jsonResponse(res, 503, { ok: false, error: "Workflow engine not available" }); return; }
-      const engine = wfMod.getWorkflowEngine();
+      const wfCtx = await getWorkflowRequestContext(url);
+      if (!wfCtx.ok) {
+        jsonResponse(res, wfCtx.status, { ok: false, error: wfCtx.error });
+        return;
+      }
+      const engine = wfCtx.engine;
       const all = engine.list();
       jsonResponse(res, 200, { ok: true, workflows: all.map(w => ({
         id: w.id, name: w.name, description: w.description, category: w.category,
@@ -7910,9 +8123,12 @@ async function handleApi(req, res, url) {
   if (path === "/api/workflows/save") {
     try {
       const body = await readJsonBody(req);
-      const wfMod = await getWorkflowEngine();
-      if (!wfMod) { jsonResponse(res, 503, { ok: false, error: "Workflow engine not available" }); return; }
-      const engine = wfMod.getWorkflowEngine();
+      const wfCtx = await getWorkflowRequestContext(url);
+      if (!wfCtx.ok) {
+        jsonResponse(res, wfCtx.status, { ok: false, error: wfCtx.error });
+        return;
+      }
+      const engine = wfCtx.engine;
       if (typeof _wfTemplates?.applyWorkflowTemplateState === "function") {
         _wfTemplates.applyWorkflowTemplateState(body);
       }
@@ -7926,8 +8142,11 @@ async function handleApi(req, res, url) {
 
   if (path === "/api/workflows/templates") {
     try {
-      const wfMod = await getWorkflowEngine();
-      if (!wfMod) { jsonResponse(res, 503, { ok: false, error: "Workflow engine not available" }); return; }
+      const wfCtx = await getWorkflowRequestContext(url);
+      if (!wfCtx.ok) {
+        jsonResponse(res, wfCtx.status, { ok: false, error: wfCtx.error });
+        return;
+      }
       const tplMod = _wfTemplates;
       const list = tplMod.listTemplates();
       jsonResponse(res, 200, { ok: true, templates: list });
@@ -7940,10 +8159,13 @@ async function handleApi(req, res, url) {
   if (path === "/api/workflows/install-template") {
     try {
       const body = await readJsonBody(req);
-      const wfMod = await getWorkflowEngine();
-      if (!wfMod) { jsonResponse(res, 503, { ok: false, error: "Workflow engine not available" }); return; }
+      const wfCtx = await getWorkflowRequestContext(url);
+      if (!wfCtx.ok) {
+        jsonResponse(res, wfCtx.status, { ok: false, error: wfCtx.error });
+        return;
+      }
       const tplMod = _wfTemplates;
-      const engine = wfMod.getWorkflowEngine();
+      const engine = wfCtx.engine;
       const wf = await tplMod.installTemplate(body.templateId, engine, body.overrides);
       jsonResponse(res, 200, { ok: true, workflow: wf });
     } catch (err) {
@@ -7954,9 +8176,12 @@ async function handleApi(req, res, url) {
 
   if (path === "/api/workflows/template-updates") {
     try {
-      const wfMod = await getWorkflowEngine();
-      if (!wfMod) { jsonResponse(res, 503, { ok: false, error: "Workflow engine not available" }); return; }
-      const engine = wfMod.getWorkflowEngine();
+      const wfCtx = await getWorkflowRequestContext(url);
+      if (!wfCtx.ok) {
+        jsonResponse(res, wfCtx.status, { ok: false, error: wfCtx.error });
+        return;
+      }
+      const engine = wfCtx.engine;
       if (typeof _wfTemplates?.reconcileInstalledTemplates === "function") {
         _wfTemplates.reconcileInstalledTemplates(engine, {
           autoUpdateUnmodified: true,
@@ -7988,9 +8213,12 @@ async function handleApi(req, res, url) {
 
   if (path.startsWith("/api/workflows/") && path.endsWith("/template-update")) {
     try {
-      const wfMod = await getWorkflowEngine();
-      if (!wfMod) { jsonResponse(res, 503, { ok: false, error: "Workflow engine not available" }); return; }
-      const engine = wfMod.getWorkflowEngine();
+      const wfCtx = await getWorkflowRequestContext(url);
+      if (!wfCtx.ok) {
+        jsonResponse(res, wfCtx.status, { ok: false, error: wfCtx.error });
+        return;
+      }
+      const engine = wfCtx.engine;
       const workflowId = decodeURIComponent(path.split("/")[3] || "");
       if (!workflowId) {
         jsonResponse(res, 400, { ok: false, error: "Missing workflow id" });
@@ -8013,8 +8241,12 @@ async function handleApi(req, res, url) {
 
   if (path === "/api/workflows/node-types") {
     try {
-      const wfMod = await getWorkflowEngine();
-      if (!wfMod) { jsonResponse(res, 503, { ok: false, error: "Workflow engine not available" }); return; }
+      const wfCtx = await getWorkflowRequestContext(url);
+      if (!wfCtx.ok) {
+        jsonResponse(res, wfCtx.status, { ok: false, error: wfCtx.error });
+        return;
+      }
+      const wfMod = wfCtx.wfMod;
       const types = wfMod.listNodeTypes();
       jsonResponse(res, 200, { ok: true, nodeTypes: types.map(nt => ({
         type: nt.type,
@@ -8030,9 +8262,12 @@ async function handleApi(req, res, url) {
 
   if (path === "/api/workflows/runs") {
     try {
-      const wfMod = await getWorkflowEngine();
-      if (!wfMod) { jsonResponse(res, 503, { ok: false, error: "Workflow engine not available" }); return; }
-      const engine = wfMod.getWorkflowEngine();
+      const wfCtx = await getWorkflowRequestContext(url);
+      if (!wfCtx.ok) {
+        jsonResponse(res, wfCtx.status, { ok: false, error: wfCtx.error });
+        return;
+      }
+      const engine = wfCtx.engine;
       const rawLimit = Number(url.searchParams.get("limit"));
       const limit = Number.isFinite(rawLimit) && rawLimit > 0
         ? Math.min(rawLimit, 500)
@@ -8047,9 +8282,12 @@ async function handleApi(req, res, url) {
 
   if (path.startsWith("/api/workflows/runs/")) {
     try {
-      const wfMod = await getWorkflowEngine();
-      if (!wfMod) { jsonResponse(res, 503, { ok: false, error: "Workflow engine not available" }); return; }
-      const engine = wfMod.getWorkflowEngine();
+      const wfCtx = await getWorkflowRequestContext(url);
+      if (!wfCtx.ok) {
+        jsonResponse(res, wfCtx.status, { ok: false, error: wfCtx.error });
+        return;
+      }
+      const engine = wfCtx.engine;
       const subPath = path.replace("/api/workflows/runs/", "");
       const segments = subPath.split("/").map(decodeURIComponent);
       const runId = (segments[0] || "").trim();
@@ -8131,9 +8369,12 @@ async function handleApi(req, res, url) {
     const action = segments[1] || "";
 
     try {
-      const wfMod = await getWorkflowEngine();
-      if (!wfMod) { jsonResponse(res, 503, { ok: false, error: "Workflow engine not available" }); return; }
-      const engine = wfMod.getWorkflowEngine();
+      const wfCtx = await getWorkflowRequestContext(url);
+      if (!wfCtx.ok) {
+        jsonResponse(res, wfCtx.status, { ok: false, error: wfCtx.error });
+        return;
+      }
+      const engine = wfCtx.engine;
 
       if (action === "execute" && req.method === "POST") {
         const body = await readJsonBody(req);
@@ -9018,11 +9259,19 @@ async function handleApi(req, res, url) {
   if (path === "/api/sessions" && req.method === "GET") {
     try {
       const tracker = getSessionTracker();
+      const workspaceContext = resolveWorkspaceContextFromRequest(url, { allowAll: true });
+      if (!workspaceContext) {
+        jsonResponse(res, 400, { ok: false, error: "Unknown workspace" });
+        return;
+      }
       let sessions = tracker.listAllSessions();
       const typeFilter = url.searchParams.get("type");
       const statusFilter = url.searchParams.get("status");
       if (typeFilter) sessions = sessions.filter((s) => s.type === typeFilter);
       if (statusFilter) sessions = sessions.filter((s) => s.status === statusFilter);
+      sessions = sessions.filter((session) =>
+        sessionMatchesWorkspaceContext(session, workspaceContext),
+      );
       jsonResponse(res, 200, { ok: true, sessions });
     } catch (err) {
       jsonResponse(res, 500, { ok: false, error: err.message });
@@ -9068,10 +9317,24 @@ async function handleApi(req, res, url) {
   if (sessionMatch) {
     const sessionId = decodeURIComponent(sessionMatch[1]);
     const action = sessionMatch[2] || null;
+    const workspaceContext = resolveWorkspaceContextFromRequest(url, { allowAll: false });
+    if (!workspaceContext) {
+      jsonResponse(res, 400, { ok: false, error: "Unknown workspace" });
+      return;
+    }
+    const tracker = getSessionTracker();
+    const getScopedSession = () => {
+      const session = tracker.getSessionById(sessionId);
+      if (!session) return null;
+      return sessionMatchesWorkspaceContext(session, workspaceContext) ? session : null;
+    };
 
     if (!action && req.method === "GET") {
       try {
-        const tracker = getSessionTracker();
+        if (!getScopedSession()) {
+          jsonResponse(res, 404, { ok: false, error: "Session not found" });
+          return;
+        }
         const session = tracker.getSessionMessages(sessionId);
         if (!session) {
           jsonResponse(res, 404, { ok: false, error: "Session not found" });
@@ -9112,8 +9375,7 @@ async function handleApi(req, res, url) {
 
     if (action === "attachments" && req.method === "POST") {
       try {
-        const tracker = getSessionTracker();
-        const session = tracker.getSessionById(sessionId);
+        const session = getScopedSession();
         if (!session) {
           jsonResponse(res, 404, { ok: false, error: "Session not found" });
           return;
@@ -9165,8 +9427,7 @@ async function handleApi(req, res, url) {
 
     if (action === "stop" && req.method === "POST") {
       try {
-        const tracker = getSessionTracker();
-        const session = tracker.getSessionById(sessionId);
+        const session = getScopedSession();
         if (!session) {
           jsonResponse(res, 404, { ok: false, error: "Session not found" });
           return;
@@ -9201,8 +9462,7 @@ async function handleApi(req, res, url) {
 
     if (action === "message" && req.method === "POST") {
       try {
-        const tracker = getSessionTracker();
-        const session = tracker.getSessionById(sessionId);
+        const session = getScopedSession();
         if (!session) {
           jsonResponse(res, 404, { ok: false, error: "Session not found" });
           return;
@@ -9356,8 +9616,7 @@ async function handleApi(req, res, url) {
 
     if (action === "message/edit" && req.method === "POST") {
       try {
-        const tracker = getSessionTracker();
-        const session = tracker.getSessionById(sessionId);
+        const session = getScopedSession();
         if (!session) {
           jsonResponse(res, 404, { ok: false, error: "Session not found" });
           return;
@@ -9394,8 +9653,7 @@ async function handleApi(req, res, url) {
 
     if (action === "archive" && req.method === "POST") {
       try {
-        const tracker = getSessionTracker();
-        const session = tracker.getSessionById(sessionId);
+        const session = getScopedSession();
         if (!session) {
           jsonResponse(res, 404, { ok: false, error: "Session not found" });
           return;
@@ -9414,8 +9672,7 @@ async function handleApi(req, res, url) {
 
     if (action === "resume" && req.method === "POST") {
       try {
-        const tracker = getSessionTracker();
-        const session = tracker.getSessionById(sessionId);
+        const session = getScopedSession();
         if (!session) {
           jsonResponse(res, 404, { ok: false, error: "Session not found" });
           return;
@@ -9431,8 +9688,7 @@ async function handleApi(req, res, url) {
 
     if (action === "delete" && req.method === "POST") {
       try {
-        const tracker = getSessionTracker();
-        const session = tracker.getSessionById(sessionId);
+        const session = getScopedSession();
         if (!session) {
           jsonResponse(res, 404, { ok: false, error: "Session not found" });
           return;
@@ -9451,8 +9707,7 @@ async function handleApi(req, res, url) {
 
     if (action === "rename" && req.method === "POST") {
       try {
-        const tracker = getSessionTracker();
-        const session = tracker.getSessionById(sessionId);
+        const session = getScopedSession();
         if (!session) {
           jsonResponse(res, 404, { ok: false, error: "Session not found" });
           return;
@@ -9474,8 +9729,7 @@ async function handleApi(req, res, url) {
 
     if (action === "diff" && req.method === "GET") {
       try {
-        const tracker = getSessionTracker();
-        const session = tracker.getSessionById(sessionId);
+        const session = getScopedSession();
         if (!session) {
           jsonResponse(res, 200, {
             ok: true,

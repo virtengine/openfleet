@@ -616,20 +616,25 @@ async function fetchWorkspaces({ force = false } = {}) {
  * @param {string} workspaceId
  */
 async function switchWorkspace(workspaceId) {
-  if (!uiOrigin || !workspaceId) return;
+  if (!uiOrigin || !workspaceId) return { ok: false, error: "workspace unavailable" };
   const body = JSON.stringify({ workspaceId });
   const data = await uiServerRequest(`${uiOrigin}/api/workspaces/active`, {
     method: "POST",
     body,
   });
-  if (data?.ok) {
-    _cachedActiveWorkspaceId = workspaceId;
-    _workspaceCacheAt = 0; // force re-fetch next time
+  if (!data?.ok) {
+    return {
+      ok: false,
+      error: String(data?.error || "workspace switch failed"),
+    };
   }
+  _cachedActiveWorkspaceId = String(data?.activeId || workspaceId);
+  _workspaceCacheAt = 0; // force re-fetch next time
   await fetchWorkspaces({ force: true });
   Menu.setApplicationMenu(buildAppMenu());
   refreshTrayMenu();
   navigateMainWindow("/");
+  return { ok: true, activeId: _cachedActiveWorkspaceId };
 }
 
 /**
@@ -1760,8 +1765,7 @@ function registerDesktopIpc() {
    */
   ipcMain.handle("bosun:workspaces:switch", async (_event, { workspaceId } = {}) => {
     if (!workspaceId) return { ok: false, error: "workspaceId required" };
-    await switchWorkspace(workspaceId);
-    return { ok: true, activeId: workspaceId };
+    return switchWorkspace(workspaceId);
   });
 }
 

@@ -334,6 +334,17 @@ export function ChatTab() {
     };
   }, []);
 
+  useEffect(() => {
+    const onWorkspaceSwitched = () => {
+      selectedSessionId.value = null;
+      loadSessions({ type: "primary" }).catch(() => {});
+    };
+    window.addEventListener("ve:workspace-switched", onWorkspaceSwitched);
+    return () => {
+      window.removeEventListener("ve:workspace-switched", onWorkspaceSwitched);
+    };
+  }, []);
+
   /* ── Track mobile viewport to avoid auto-select loops ── */
   useEffect(() => {
     const mq = globalThis.matchMedia?.("(max-width: 768px)");

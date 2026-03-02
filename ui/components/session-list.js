@@ -36,9 +36,19 @@ function sessionPath(id, action = "") {
 
 /* ─── Data loaders ─── */
 export async function loadSessions(filter = {}) {
-  _lastLoadFilter = filter;
+  const normalizedFilter = {
+    ...(filter && typeof filter === "object" ? filter : {}),
+  };
+  if (!Object.prototype.hasOwnProperty.call(normalizedFilter, "workspace")) {
+    normalizedFilter.workspace = "active";
+  }
+  _lastLoadFilter = normalizedFilter;
   try {
-    const params = new URLSearchParams(filter);
+    const params = new URLSearchParams();
+    for (const [key, value] of Object.entries(normalizedFilter)) {
+      if (value == null || value === "") continue;
+      params.set(key, String(value));
+    }
     const res = await apiFetch(`/api/sessions?${params}`, { _silent: true });
     if (res?.sessions) sessionsData.value = res.sessions;
     sessionsError.value = null;
@@ -317,11 +327,19 @@ export function initSessionWsListener() {
   if (_wsListenerReady) return;
   _wsListenerReady = true;
   onWsMessage((msg) => {
-    if (msg?.type !== "session-message") return;
-    const payload = msg.payload || {};
-    const sessionId = payload.sessionId || payload.taskId;
-    if (!sessionId) return;
-    appendSessionMessage(sessionId, payload.message, payload.session);
+    if (msg?.type === "session-message") {
+      const payload = msg.payload || {};
+      const sessionId = payload.sessionId || payload.taskId;
+      if (!sessionId) return;
+      appendSessionMessage(sessionId, payload.message, payload.session);
+      return;
+    }
+    if (msg?.type === "invalidate") {
+      const channels = Array.isArray(msg.channels) ? msg.channels : [];
+      if (channels.includes("*") || channels.includes("sessions")) {
+        loadSessions(_lastLoadFilter).catch(() => {});
+      }
+    }
   });
 }
 
