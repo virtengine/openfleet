@@ -1,0 +1,307 @@
+##############################################################################
+#  workflow-sandbox-ci.yml
+#
+#  Advanced CI/CD pipeline that GUARANTEES all workflow templates remain
+#  functional, battle-tested, and non-flaky.
+#
+#  Jobs (run in dependency order):
+#
+#  ┌─────────────────────────────────────────────────────────────────────┐
+#  │  template-integrity  — Static analysis: parse, node-types, edges   │
+#  └──────────┬──────────────────────────────────────────────────────────┘
+#             │
+#    ┌────────┴────────────────────────────────────────────────┐
+#    ▼                                    ▼                    ▼
+#  sandbox-matrix               flakiness-check         existing-e2e
+#  (Node 20/22/24 × 4 shards    (REPEAT_COUNT=3         (full npm test)
+#   running workflow-guaranteed  determinism check)
+#   in parallel)
+#    │
+#    ▼
+#  coverage-gate
+#  (merge artifacts, fail if
+#   node-type coverage < 70%)
+#
+##############################################################################
+
+name: "🧪 Workflow Sandbox CI"
+
+on:
+    push:
+        branches: ["main", "feat/**", "fix/**", "refactor/**"]
+        paths:
+            - "workflow-templates/**"
+            - "workflow-templates.mjs"
+            - "workflow-nodes.mjs"
+            - "workflow-engine.mjs"
+            - "tests/workflow-*.test.mjs"
+            - "tests/sandbox/**"
+            - ".github/workflows/workflow-sandbox-ci.yml"
+    pull_request:
+        branches: ["main"]
+        types: [opened, synchronize, reopened, ready_for_review]
+    workflow_dispatch:
+        inputs:
+            repeat_count:
+                description: "Flakiness check — times to run each template"
+                default: "3"
+                type: string
+            coverage_threshold:
+                description: "Minimum node-type coverage % required"
+                default: "70"
+                type: string
+            node_version:
+                description: "Override Node.js version (leave blank for matrix)"
+                type: string
+
+permissions:
+    contents: read
+
+##############################################################################
+#  JOB 1 — Template Integrity (fast, < 30 s)
+#  Validates template definitions WITHOUT executing them.
+##############################################################################
+
+jobs:
+    template-integrity:
+        name: "📋 Template Integrity"
+        runs-on: ubuntu-latest
+        steps:
+            - uses: actions/checkout@v4
+
+            - name: Setup Node.js 24
+              uses: actions/setup-node@v4
+              with:
+                  node-version: "24"
+                  cache: npm
+                  cache-dependency-path: package-lock.json
+
+            - name: Install dependencies
+              run: npm ci
+
+            - name: "Validate: all templates parse cleanly"
+              run: |
+                  node --input-type=module <<'EOF'
+                  import { WORKFLOW_TEMPLATES } from "./workflow-templates.mjs";
+                  console.log(`✅ Loaded ${WORKFLOW_TEMPLATES.length} templates`);
+                  if (!WORKFLOW_TEMPLATES.length) process.exit(1);
+                  EOF
+
+            - name: "Validate: all node types referenced in templates exist"
+              run: node tests/sandbox/validate-template-nodes.mjs
+
+            - name: "Validate: prepublish check (files array + imports)"
+              run: node prepublish-check.mjs
+
+            - name: "Validate: build passes"
+              run: npm run build
+
+            - name: "Validate: native call parity"
+              run: npm run check:native-call-parity
+
+    ##############################################################################
+    #  JOB 2 — Sandbox Matrix (parallelize across Node versions × shards)
+    ##############################################################################
+
+    sandbox-matrix:
+        name: "🔬 Sandbox (Node ${{ matrix.node }} · shard ${{ matrix.shard }}/${{ strategy.job-total }})"
+        needs: template-integrity
+        runs-on: ubuntu-latest
+        timeout-minutes: 15
+
+        strategy:
+            fail-fast: false
+            matrix:
+                node: ["20", "22", "24"]
+                shard: [1, 2, 3, 4]
+
+        steps:
+            - uses: actions/checkout@v4
+
+            - name: Setup Node.js ${{ matrix.node }}
+              uses: actions/setup-node@v4
+              with:
+                  node-version: ${{ matrix.node }}
+                  cache: npm
+                  cache-dependency-path: package-lock.json
+
+            - name: Install dependencies
+              run: npm ci
+
+            - name: "Run guaranteed tests (shard ${{ matrix.shard }}/4)"
+              run: |
+                  node --experimental-vm-modules node_modules/.bin/vitest run \
+                    tests/workflow-guaranteed.test.mjs \
+                    --reporter=verbose \
+                    --reporter=json \
+                    --outputFile=test-results-n${{ matrix.node }}-s${{ matrix.shard }}.json
+              env:
+                  VITEST_SHARD: ${{ matrix.shard }}
+                  VITEST_TOTAL_SHARDS: "4"
+                  REPEAT_COUNT: "1"
+
+            - name: Upload test results
+              uses: actions/upload-artifact@v4
+              if: always()
+              with:
+                  name: sandbox-results-node${{ matrix.node }}-shard${{ matrix.shard }}
+                  path: test-results-n${{ matrix.node }}-s${{ matrix.shard }}.json
+                  retention-days: 30
+
+    ##############################################################################
+    #  JOB 3 — Flakiness Detection
+    #  Runs each template 3× on Node 24 and fails if results are inconsistent.
+    ##############################################################################
+
+    flakiness-check:
+        name: "🎲 Flakiness Detection (3× per template)"
+        needs: template-integrity
+        runs-on: ubuntu-latest
+        timeout-minutes: 25
+
+        steps:
+            - uses: actions/checkout@v4
+
+            - name: Setup Node.js 24
+              uses: actions/setup-node@v4
+              with:
+                  node-version: "24"
+                  cache: npm
+                  cache-dependency-path: package-lock.json
+
+            - name: Install dependencies
+              run: npm ci
+
+            - name: "Run templates 3× each (flakiness detection)"
+              run: |
+                  node --experimental-vm-modules node_modules/.bin/vitest run \
+                    tests/workflow-guaranteed.test.mjs \
+                    --reporter=verbose
+              env:
+                  REPEAT_COUNT: ${{ github.event.inputs.repeat_count || '3' }}
+
+    ##############################################################################
+    #  JOB 4 — Existing E2E Suite (unchanged — defense-in-depth)
+    ##############################################################################
+
+    existing-e2e:
+        name: "🔁 Existing E2E Suite"
+        needs: template-integrity
+        runs-on: ubuntu-latest
+        timeout-minutes: 20
+
+        steps:
+            - uses: actions/checkout@v4
+
+            - name: Setup Node.js 24
+              uses: actions/setup-node@v4
+              with:
+                  node-version: "24"
+                  cache: npm
+                  cache-dependency-path: package-lock.json
+
+            - name: Install dependencies
+              run: npm ci
+
+            - name: Run full test suite
+              run: npm test
+              timeout-minutes: 15
+
+    ##############################################################################
+    #  JOB 5 — Node-Type Coverage Gate
+    #  Merges shard results, generates coverage report, fails if below threshold.
+    ##############################################################################
+
+    coverage-gate:
+        name: "📊 Node-Type Coverage Gate"
+        needs: sandbox-matrix
+        runs-on: ubuntu-latest
+        if: always() && needs.sandbox-matrix.result != 'cancelled'
+
+        steps:
+            - uses: actions/checkout@v4
+
+            - name: Setup Node.js 24
+              uses: actions/setup-node@v4
+              with:
+                  node-version: "24"
+                  cache: npm
+                  cache-dependency-path: package-lock.json
+
+            - name: Install dependencies
+              run: npm ci
+
+            - name: Download all sandbox artifacts
+              uses: actions/download-artifact@v4
+              with:
+                  pattern: "sandbox-results-node24-*"
+                  merge-multiple: true
+                  path: ./coverage-artifacts
+
+            - name: "Generate coverage report"
+              run: |
+                  node tests/sandbox/coverage-report.mjs \
+                    --json coverage-report.json \
+                    --threshold ${{ github.event.inputs.coverage_threshold || '70' }}
+
+            - name: Upload coverage report
+              uses: actions/upload-artifact@v4
+              if: always()
+              with:
+                  name: workflow-coverage-report
+                  path: coverage-report.json
+                  retention-days: 90
+
+            - name: Print coverage summary in job summary
+              if: always()
+              run: |
+                  echo "## Workflow Node-Type Coverage" >> $GITHUB_STEP_SUMMARY
+                  node -e "
+                    const fs = require('fs');
+                    const r = JSON.parse(fs.readFileSync('coverage-report.json','utf8'));
+                    const status = r.coveragePct >= r.threshold ? '✅' : '❌';
+                    process.stdout.write([
+                      \`${status} **${r.coveragePct}%** coverage (threshold: ${r.threshold}%)\`,
+                      \`- Exercised: ${r.hitCount} / ${r.nodeTypeCount} node types\`,
+                      \`- Templates: ${r.templateCount}\`,
+                      \`\`,
+                      r.missTypes.length ? \`### Never-exercised node types\n\` + r.missTypes.map(t => \`- \\\`\${t}\\\`\`).join('\n') : '### All registered types are exercised 🎉',
+                    ].join('\n') + '\n');
+                  " >> $GITHUB_STEP_SUMMARY
+
+    ##############################################################################
+    #  JOB 6 — Final Gate (required status check for branch protection)
+    ##############################################################################
+
+    all-clear:
+        name: "✅ All Workflow Tests Pass"
+        runs-on: ubuntu-latest
+        needs:
+            - template-integrity
+            - sandbox-matrix
+            - flakiness-check
+            - existing-e2e
+            - coverage-gate
+        if: always()
+        steps:
+            - name: Check all required jobs passed
+              run: |
+                  # Report each required job's result
+                  echo "template-integrity : ${{ needs.template-integrity.result }}"
+                  echo "sandbox-matrix     : ${{ needs.sandbox-matrix.result }}"
+                  echo "flakiness-check    : ${{ needs.flakiness-check.result }}"
+                  echo "existing-e2e       : ${{ needs.existing-e2e.result }}"
+                  echo "coverage-gate      : ${{ needs.coverage-gate.result }}"
+
+                  FAILED=0
+                  [[ "${{ needs.template-integrity.result }}" != "success" ]] && FAILED=1
+                  [[ "${{ needs.sandbox-matrix.result }}"     != "success" ]] && FAILED=1
+                  [[ "${{ needs.flakiness-check.result }}"    != "success" ]] && FAILED=1
+                  [[ "${{ needs.existing-e2e.result }}"       != "success" ]] && FAILED=1
+                  [[ "${{ needs.coverage-gate.result }}"      != "success" ]] && FAILED=1
+
+                  if [[ $FAILED -eq 1 ]]; then
+                    echo "❌ One or more required jobs failed"
+                    exit 1
+                  fi
+                  echo "✅ All workflow sandbox tests passed"

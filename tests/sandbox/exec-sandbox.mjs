@@ -307,6 +307,8 @@ export function createExecSandbox(scenario = {}) {
   }
 
   function dispatchBosun(c, lower) {
+    // doctor / config-doctor returns plain text so expression `.includes()` calls work
+    if (/doctor\b/i.test(c))               return "Config check OK\nAll systems operational\nNo errors detected\n";
     if (/task\s+list\b/i.test(c))           return jsonOut([
       { id: "TASK-1", title: "Fix login bug", status: "todo", priority: "high" },
       { id: "TASK-2", title: "Add dark mode", status: "inprogress", priority: "medium" },
