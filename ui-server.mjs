@@ -9740,7 +9740,31 @@ async function handleApi(req, res, url) {
           }
           // Friendly message when the deployment name itself is not found (key is fine)
           if (resp.status === 404 && deployment) {
-            errMsg = `Deployment "${deployment}" not found — check deployment name in Azure AI Foundry`;
+            // Try listing deployments to confirm credentials work
+            try {
+              let base2 = String(azureEndpoint || "").replace(/\/+$/, "");
+              try { const u2 = new URL(base2); base2 = `${u2.protocol}//${u2.host}`; } catch { /* keep */ }
+              const listUrl = `${base2}/openai/deployments?api-version=2024-10-21`;
+              const listCtrl = new AbortController();
+              const listTimer = setTimeout(() => listCtrl.abort(), 8_000);
+              const listResp = await fetch(listUrl, { headers, signal: listCtrl.signal });
+              clearTimeout(listTimer);
+              if (listResp.ok) {
+                let availableHint = "";
+                try {
+                  const listBody = await listResp.json();
+                  const names = (listBody?.data || []).map((d) => d?.id).filter(Boolean);
+                  if (names.length > 0) availableHint = ` Available deployments: ${names.join(", ")}`;
+                } catch { /* ignore */ }
+                errMsg = `Deployment "${deployment}" not found — check the deployment name in Azure AI Foundry.${availableHint}`;
+              } else if (listResp.status === 401 || listResp.status === 403) {
+                errMsg = `Authentication failed (HTTP ${listResp.status}) — check API key and endpoint`;
+              } else {
+                errMsg = `Deployment "${deployment}" not found (HTTP 404) — check deployment name in Azure AI Foundry`;
+              }
+            } catch {
+              errMsg = `Deployment "${deployment}" not found — check deployment name in Azure AI Foundry`;
+            }
           }
           jsonResponse(res, 200, { ok: false, error: errMsg, latencyMs });
         }

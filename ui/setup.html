@@ -3850,9 +3850,14 @@ function App() {
                       <input type="text" value=${ep.endpoint} oninput=${(e) => updateVoiceEndpoint(i, "endpoint", e.target.value)} placeholder="https://&lt;resource&gt;.openai.azure.com" />
                     </div>
                     <div class="form-group">
-                      <label>Deployment</label>
-                      <input type="text" value=${ep.deployment} oninput=${(e) => updateVoiceEndpoint(i, "deployment", e.target.value)} placeholder="gpt-realtime-1.5" />
-                      <div class="hint">Connectivity tests use the endpoint URL exactly as entered. If you provide only a host, Bosun appends the default Azure OpenAI probe route.</div>
+                      <label>Deployment Name</label>
+                      <input type="text" value=${ep.deployment} oninput=${(e) => updateVoiceEndpoint(i, "deployment", e.target.value)} placeholder="my-gpt-4o-realtime" />
+                      <div class="hint">The deployment name from Azure AI Foundry (not the model name). Find it under your resource → Deployments. Leave empty to test credentials only.</div>
+                    </div>
+                    <div class="form-group">
+                      <label>Audio Model (Realtime)</label>
+                      <input type="text" value=${ep.model} oninput=${(e) => updateVoiceEndpoint(i, "model", e.target.value)} placeholder="gpt-4o-realtime-preview" />
+                      <div class="hint">The underlying model name (e.g. gpt-4o-realtime-preview). Used at runtime.</div>
                     </div>
                   `}
                   ${ep.provider === "custom" && html`

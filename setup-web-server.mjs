@@ -1535,9 +1535,34 @@ async function handleVoiceEndpointTest(body) {
     } catch {
       // Keep generic HTTP status message.
     }
-    // Friendly message when the deployment name itself is not found (key is fine)
-    if (resp.status === 404 && deployment) {
-      error = `Deployment "${deployment}" not found — check deployment name in Azure AI Foundry`;
+    // Azure-specific: when the deployment probe 404s, try a generic list to
+    // distinguish "bad credentials / unreachable" from "deployment not found".
+    if (resp.status === 404 && normalizedProvider === "azure" && deployment) {
+      try {
+        let base = String(azureEndpoint).replace(/\/+$/, "");
+        try { const u = new URL(base); base = `${u.protocol}//${u.host}`; } catch { /* keep */ }
+        const listUrl = `${base}/openai/deployments?api-version=2024-10-21`;
+        const listCtrl = new AbortController();
+        const listTimer = setTimeout(() => listCtrl.abort(), 8_000);
+        const listResp = await fetch(listUrl, { headers, signal: listCtrl.signal });
+        clearTimeout(listTimer);
+        if (listResp.ok) {
+          // Credentials work — the deployment name is wrong
+          let availableHint = "";
+          try {
+            const listBody = await listResp.json();
+            const names = (listBody?.data || []).map((d) => d?.id).filter(Boolean);
+            if (names.length > 0) availableHint = ` Available deployments: ${names.join(", ")}`;
+          } catch { /* ignore parse errors */ }
+          error = `Deployment "${deployment}" not found — check the deployment name in Azure AI Foundry.${availableHint}`;
+        } else if (listResp.status === 401 || listResp.status === 403) {
+          error = `Authentication failed (HTTP ${listResp.status}) — check API key and endpoint`;
+        } else {
+          error = `Deployment "${deployment}" not found (HTTP 404) — check deployment name in Azure AI Foundry`;
+        }
+      } catch {
+        error = `Deployment "${deployment}" not found — check deployment name in Azure AI Foundry`;
+      }
     }
     return { ok: false, error, latencyMs };
   } catch (err) {
