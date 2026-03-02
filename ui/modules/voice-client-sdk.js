@@ -636,7 +636,21 @@ async function startAgentsSdkSession(config, options = {}) {
     // ignore URL logging issues
   }
 
-  await session.connect(connectOpts);
+  // Attempt WebRTC connection first. For Azure, if it fails (404 — WebRTC not
+  // supported), retry with the WebSocket URL so the SDK uses WS transport.
+  try {
+    await session.connect(connectOpts);
+  } catch (connectErr) {
+    const errMsg = String(connectErr?.message || "");
+    const isWebRtc404 = /404|not found|SDP/i.test(errMsg);
+    const hasWsUrl = Boolean(String(tokenData?.wsUrl || "").trim());
+    if (isWebRtc404 && hasWsUrl && tokenData.provider === "azure") {
+      console.warn("[voice-client-sdk] WebRTC connect failed (404) — retrying via Azure WebSocket");
+      await session.connect({ ...connectOpts, url: tokenData.wsUrl });
+    } else {
+      throw connectErr;
+    }
+  }
 
   if (_agentsRealtimeModuleSource) {
     console.info(`[voice-client-sdk] using OpenAI Realtime SDK from ${_agentsRealtimeModuleSource}`);

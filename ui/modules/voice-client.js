@@ -184,10 +184,19 @@ let _pc = null;               // RTCPeerConnection
 let _dc = null;               // DataChannel for events
 let _mediaStream = null;      // User mic MediaStream
 let _audioElement = null;      // <audio> for playback
-let _transport = "webrtc";     // webrtc | responses-audio
+let _transport = "webrtc";     // webrtc | websocket | responses-audio
 let _responsesTokenData = null;
 let _responsesRecognition = null;
 let _responsesAudioElement = null;
+
+// ── WebSocket transport state ───────────────────────────────────────────────
+let _ws = null;                // WebSocket for Azure Realtime
+let _wsAudioCtx = null;        // AudioContext for WebSocket PCM16 I/O
+let _wsMicProcessor = null;    // ScriptProcessorNode for mic capture
+let _wsMicSource = null;       // MediaStreamAudioSourceNode
+let _wsPlaybackQueue = [];     // Queued PCM16 Float32 chunks for playback
+let _wsPlaybackScheduled = 0;  // AudioContext time of next scheduled chunk
+let _wsPlaybackPlaying = false; // Whether audio playback loop is running
 let _responsesAbortController = null;
 let _responsesRecognitionRestartTimer = null;
 let _reconnectTimer = null;    // 28-min reconnect timer
@@ -538,6 +547,9 @@ function emit(event, data) {
 }
 
 function sendRealtimeEvent(payload) {
+  // WebSocket transport: send over WS
+  if (_transport === "websocket") return _sendWsEvent(payload);
+  // WebRTC transport: send over data channel
   if (!_dc || _dc.readyState !== "open") return false;
   try {
     _dc.send(JSON.stringify(payload));
@@ -557,9 +569,11 @@ function clearPendingResponseCreate() {
 }
 
 function scheduleManualResponseCreate(reason = "speech-stopped") {
-  if (_transport !== "webrtc") return;
+  if (_transport !== "webrtc" && _transport !== "websocket") return;
   if (_awaitingAutoResponse) return;
-  if (!_dc || _dc.readyState !== "open") return;
+  // Check appropriate channel is open
+  if (_transport === "webrtc" && (!_dc || _dc.readyState !== "open")) return;
+  if (_transport === "websocket" && (!_ws || _ws.readyState !== WebSocket.OPEN)) return;
   _awaitingAutoResponse = true;
   if (_pendingResponseCreateTimer) clearTimeout(_pendingResponseCreateTimer);
   _pendingResponseCreateTimer = setTimeout(() => {
@@ -626,6 +640,250 @@ function sendSessionUpdate(tokenData = {}) {
         : {}),
       turn_detection: turnDetectionConfig,
     },
+  });
+}
+
+// ── WebSocket Realtime Transport ─────────────────────────────────────────────
+//
+// Azure OpenAI Realtime API only supports WebSocket in many deployments
+// (WebRTC returns 404).  This transport captures mic audio as PCM16 chunks,
+// sends them over WebSocket, receives response audio as PCM16 deltas, and
+// plays them through AudioContext — giving the same real-time conversational
+// voice experience as WebRTC.
+
+/** Convert Float32 audio samples to Int16 PCM. */
+function _float32ToInt16(float32Array) {
+  const int16 = new Int16Array(float32Array.length);
+  for (let i = 0; i < float32Array.length; i++) {
+    const s = Math.max(-1, Math.min(1, float32Array[i]));
+    int16[i] = s < 0 ? s * 0x8000 : s * 0x7FFF;
+  }
+  return int16;
+}
+
+/** Convert Int16 PCM to Float32 audio samples. */
+function _int16ToFloat32(int16Array) {
+  const float32 = new Float32Array(int16Array.length);
+  for (let i = 0; i < int16Array.length; i++) {
+    float32[i] = int16Array[i] / (int16Array[i] < 0 ? 0x8000 : 0x7FFF);
+  }
+  return float32;
+}
+
+/** Encode Int16Array to base64 string (browser). */
+function _int16ToBase64(int16Array) {
+  const bytes = new Uint8Array(int16Array.buffer);
+  let binary = "";
+  for (let i = 0; i < bytes.length; i++) {
+    binary += String.fromCharCode(bytes[i]);
+  }
+  return btoa(binary);
+}
+
+/** Decode base64 string to Int16Array. */
+function _base64ToInt16(base64) {
+  const binary = atob(base64);
+  const bytes = new Uint8Array(binary.length);
+  for (let i = 0; i < binary.length; i++) {
+    bytes[i] = binary.charCodeAt(i);
+  }
+  return new Int16Array(bytes.buffer);
+}
+
+/** Send a JSON event over the WebSocket transport. */
+function _sendWsEvent(payload) {
+  if (!_ws || _ws.readyState !== WebSocket.OPEN) return false;
+  try {
+    _ws.send(JSON.stringify(payload));
+    return true;
+  } catch (err) {
+    console.warn("[voice-client] WS send failed:", err?.message || err);
+    return false;
+  }
+}
+
+/** Play queued PCM16 audio chunks via AudioContext. */
+function _scheduleWsPlayback() {
+  if (_wsPlaybackPlaying) return;
+  _wsPlaybackPlaying = true;
+
+  const drain = () => {
+    if (!_wsAudioCtx || _wsPlaybackQueue.length === 0 || _explicitStop) {
+      _wsPlaybackPlaying = false;
+      return;
+    }
+
+    const samples = _wsPlaybackQueue.shift();
+    const buffer = _wsAudioCtx.createBuffer(1, samples.length, 24000);
+    buffer.copyToChannel(samples, 0);
+    const sourceNode = _wsAudioCtx.createBufferSource();
+    sourceNode.buffer = buffer;
+
+    // Route through selected output device if supported
+    if (selectedAudioOutput.value && typeof _wsAudioCtx.setSinkId === "function") {
+      try { _wsAudioCtx.setSinkId(selectedAudioOutput.value); } catch { /* ignore */ }
+    }
+
+    sourceNode.connect(_wsAudioCtx.destination);
+
+    const now = _wsAudioCtx.currentTime;
+    const startTime = Math.max(now, _wsPlaybackScheduled);
+    sourceNode.start(startTime);
+    _wsPlaybackScheduled = startTime + buffer.duration;
+
+    sourceNode.onended = () => {
+      if (_wsPlaybackQueue.length > 0) {
+        drain();
+      } else {
+        _wsPlaybackPlaying = false;
+        if (voiceState.value === "speaking") {
+          voiceState.value = "connected";
+        }
+      }
+    };
+  };
+
+  drain();
+}
+
+/** Clean up WebSocket transport resources. */
+function _cleanupWsTransport() {
+  if (_wsMicProcessor) {
+    try { _wsMicProcessor.disconnect(); } catch { /* ignore */ }
+    _wsMicProcessor = null;
+  }
+  if (_wsMicSource) {
+    try { _wsMicSource.disconnect(); } catch { /* ignore */ }
+    _wsMicSource = null;
+  }
+  if (_ws) {
+    try { _ws.close(); } catch { /* ignore */ }
+    _ws = null;
+  }
+  if (_wsAudioCtx) {
+    try { _wsAudioCtx.close(); } catch { /* ignore */ }
+    _wsAudioCtx = null;
+  }
+  _wsPlaybackQueue = [];
+  _wsPlaybackScheduled = 0;
+  _wsPlaybackPlaying = false;
+}
+
+/**
+ * Start a WebSocket-based Realtime session.
+ * Used as fallback when Azure WebRTC SDP exchange returns 404.
+ */
+async function _startWebSocketTransport(tokenData, mediaStream) {
+  const wsUrl = String(tokenData?.wsUrl || "").trim();
+  if (!wsUrl) {
+    throw new Error("WebSocket URL not available for Azure Realtime fallback");
+  }
+
+  _transport = "websocket";
+
+  // Set up AudioContext for PCM16 I/O at 24kHz (Realtime API native rate)
+  _wsAudioCtx = new (globalThis.AudioContext || globalThis.webkitAudioContext)({
+    sampleRate: 24000,
+  });
+
+  return new Promise((resolve, reject) => {
+    _ws = new WebSocket(wsUrl);
+
+    const connectTimeout = setTimeout(() => {
+      reject(new Error("Azure Realtime WebSocket connection timed out"));
+      if (_ws) { try { _ws.close(); } catch { /* ignore */ } }
+    }, 15000);
+
+    _ws.onopen = () => {
+      clearTimeout(connectTimeout);
+
+      // Send session configuration (same as WebRTC data channel session.update)
+      sendSessionUpdate(tokenData);
+
+      // Start mic capture → PCM16 → WebSocket
+      _wsMicSource = _wsAudioCtx.createMediaStreamSource(mediaStream);
+      // ScriptProcessorNode deprecated but widely supported; buffer = 4096 samples
+      _wsMicProcessor = _wsAudioCtx.createScriptProcessor(4096, 1, 1);
+      _wsMicProcessor.onaudioprocess = (e) => {
+        if (_explicitStop || !_ws || _ws.readyState !== WebSocket.OPEN) return;
+        if (isVoiceMicMuted.value) return;
+        const float32 = e.inputBuffer.getChannelData(0);
+        const int16 = _float32ToInt16(float32);
+        const base64 = _int16ToBase64(int16);
+        _sendWsEvent({
+          type: "input_audio_buffer.append",
+          audio: base64,
+        });
+      };
+      _wsMicSource.connect(_wsMicProcessor);
+      _wsMicProcessor.connect(_wsAudioCtx.destination); // required for processing
+
+      voiceState.value = "connected";
+      voiceSessionId.value = _callContext.sessionId || `voice-ws-${Date.now()}`;
+      _sessionStartTime = Date.now();
+      startDurationTimer();
+
+      emit("connected", {
+        provider: tokenData.provider || "azure",
+        sessionId: voiceSessionId.value,
+        callContext: { ..._callContext },
+        transport: "websocket",
+      });
+
+      resolve();
+    };
+
+    _ws.onmessage = (event) => {
+      try {
+        const msg = JSON.parse(event.data);
+
+        // Handle audio deltas — play PCM16 through AudioContext
+        if (msg.type === "response.audio.delta" && msg.delta) {
+          if (voiceState.value !== "speaking") {
+            voiceState.value = "speaking";
+          }
+          const int16 = _base64ToInt16(msg.delta);
+          const float32 = _int16ToFloat32(int16);
+          _wsPlaybackQueue.push(float32);
+          _scheduleWsPlayback();
+          return;
+        }
+
+        if (msg.type === "response.audio.done") {
+          // Audio stream complete — playback will finish via onended callback
+          return;
+        }
+
+        // All other events go through the standard handler
+        handleServerEvent(msg);
+      } catch (err) {
+        console.error("[voice-client] WS message parse error:", err);
+      }
+    };
+
+    _ws.onerror = (event) => {
+      clearTimeout(connectTimeout);
+      const msg = "Azure Realtime WebSocket error";
+      console.error("[voice-client] WebSocket error:", event);
+      if (voiceState.value === "connecting") {
+        reject(new Error(msg));
+      } else {
+        voiceState.value = "error";
+        voiceError.value = msg;
+        emit("error", { message: msg });
+      }
+    };
+
+    _ws.onclose = (event) => {
+      clearTimeout(connectTimeout);
+      if (_explicitStop) return;
+      const reason = `WebSocket closed (code=${event.code})`;
+      if (voiceState.value === "connecting") {
+        reject(new Error(reason));
+      } else {
+        handleDisconnect(reason);
+      }
+    };
   });
 }
 
@@ -803,23 +1061,59 @@ export async function startVoiceSession(options = {}) {
         ? `${tokenData.azureEndpoint}/openai/realtime?api-version=2025-04-01-preview&deployment=${tokenData.azureDeployment}`
         : `https://api.openai.com/v1/realtime?model=${tokenData.model}`);
 
-    const sdpResponse = await fetch(baseUrl, {
-      method: "POST",
-      headers: {
-        Authorization: `Bearer ${tokenData.token}`,
-        "Content-Type": "application/sdp",
-      },
-      body: offer.sdp,
-    });
+    let webrtcFailed = false;
+    let webrtcFailStatus = 0;
+    try {
+      const sdpResponse = await fetch(baseUrl, {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${tokenData.token}`,
+          "Content-Type": "application/sdp",
+        },
+        body: offer.sdp,
+      });
 
-    if (!sdpResponse.ok) {
-      const errBody = await sdpResponse.text().catch(() => "");
-      const detail = errBody ? ` — ${errBody.slice(0, 300)}` : "";
-      throw new Error(`WebRTC SDP exchange failed (${sdpResponse.status})${detail}`);
+      if (!sdpResponse.ok) {
+        webrtcFailStatus = sdpResponse.status;
+        const errBody = await sdpResponse.text().catch(() => "");
+        const detail = errBody ? ` — ${errBody.slice(0, 300)}` : "";
+        // For Azure, 404 means the resource doesn't support WebRTC — try WebSocket
+        if (sdpResponse.status === 404 && tokenData.wsUrl) {
+          console.warn("[voice-client] WebRTC SDP 404 — falling back to Azure WebSocket transport");
+          webrtcFailed = true;
+        } else {
+          throw new Error(`WebRTC SDP exchange failed (${sdpResponse.status})${detail}`);
+        }
+      }
+
+      if (!webrtcFailed) {
+        const answerSdp = await sdpResponse.text();
+        await _pc.setRemoteDescription({ type: "answer", sdp: answerSdp });
+      }
+    } catch (sdpErr) {
+      if (!webrtcFailed) throw sdpErr;
     }
 
-    const answerSdp = await sdpResponse.text();
-    await _pc.setRemoteDescription({ type: "answer", sdp: answerSdp });
+    // ── WebSocket fallback for Azure when WebRTC returns 404 ────────────
+    if (webrtcFailed) {
+      // Clean up the WebRTC objects — we won't need them
+      if (_dc) { try { _dc.close(); } catch { /* ignore */ } _dc = null; }
+      if (_pc) { try { _pc.close(); } catch { /* ignore */ } _pc = null; }
+      if (_audioElement) {
+        try { _audioElement.pause(); _audioElement.srcObject = null; } catch { /* ignore */ }
+        _audioElement = null;
+      }
+
+      console.info("[voice-client] Starting Azure Realtime WebSocket transport");
+      await _startWebSocketTransport(tokenData, _mediaStream);
+
+      emit("session-started", {
+        sessionId: voiceSessionId.value,
+        callContext: { ..._callContext },
+        transport: "websocket",
+      });
+      return;
+    }
 
     emit("session-started", {
       sessionId: voiceSessionId.value,
@@ -976,7 +1270,9 @@ function handleServerEvent(event) {
       break;
 
     case "response.audio.delta":
-      // Audio is handled via WebRTC tracks, not data channel
+      // WebRTC: audio is handled via media tracks, not data channel.
+      // WebSocket: audio deltas are handled in the ws.onmessage handler
+      // before reaching handleServerEvent, so this case is a no-op.
       break;
 
     case "conversation.item.input_audio_transcription.failed":
@@ -1088,19 +1384,17 @@ async function handleToolCall(event) {
       tc.callId === callId ? { ...tc, status: "complete", result: result.result } : tc
     );
 
-    // Send result back to model via data channel
-    if (_dc && _dc.readyState === "open") {
-      _dc.send(JSON.stringify({
-        type: "conversation.item.create",
-        item: {
-          type: "function_call_output",
-          call_id: callId,
-          output: result.result || result.error || "No output",
-        },
-      }));
-      // Trigger response generation
-      _dc.send(JSON.stringify({ type: "response.create" }));
-    }
+    // Send result back to model via data channel or WebSocket
+    sendRealtimeEvent({
+      type: "conversation.item.create",
+      item: {
+        type: "function_call_output",
+        call_id: callId,
+        output: result.result || result.error || "No output",
+      },
+    });
+    // Trigger response generation
+    sendRealtimeEvent({ type: "response.create" });
 
     const stillRunning = voiceToolCalls.value.some((tc) => tc.status === "running");
     if (!stillRunning) {
@@ -1114,17 +1408,15 @@ async function handleToolCall(event) {
     emit("tool-call-error", { callId, name, error: err.message });
 
     // Send error result back
-    if (_dc && _dc.readyState === "open") {
-      _dc.send(JSON.stringify({
-        type: "conversation.item.create",
-        item: {
-          type: "function_call_output",
-          call_id: callId,
-          output: `Error: ${err.message}`,
-        },
-      }));
-      _dc.send(JSON.stringify({ type: "response.create" }));
-    }
+    sendRealtimeEvent({
+      type: "conversation.item.create",
+      item: {
+        type: "function_call_output",
+        call_id: callId,
+        output: `Error: ${err.message}`,
+      },
+    });
+    sendRealtimeEvent({ type: "response.create" });
   }
 }
 
@@ -1149,6 +1441,15 @@ export function interruptResponse() {
     emit("interrupt", {});
     return;
   }
+  // WebSocket transport: cancel response and clear playback queue
+  if (_transport === "websocket") {
+    _sendWsEvent({ type: "response.cancel" });
+    _wsPlaybackQueue = [];
+    _wsPlaybackPlaying = false;
+    voiceState.value = "listening";
+    emit("interrupt", {});
+    return;
+  }
   if (_dc && _dc.readyState === "open") {
     _dc.send(JSON.stringify({ type: "response.cancel" }));
     emit("interrupt", {});
@@ -1169,20 +1470,25 @@ export function sendTextMessage(text) {
     });
     return;
   }
-  if (!_dc || _dc.readyState !== "open") {
+  // WebRTC or WebSocket: send via the shared sendRealtimeEvent helper
+  if (_transport === "websocket" && (!_ws || _ws.readyState !== WebSocket.OPEN)) {
+    console.warn("[voice-client] Cannot send text — WebSocket not open");
+    return;
+  }
+  if (_transport === "webrtc" && (!_dc || _dc.readyState !== "open")) {
     console.warn("[voice-client] Cannot send text — data channel not open");
     return;
   }
-  _dc.send(JSON.stringify({
+  sendRealtimeEvent({
     type: "conversation.item.create",
     item: {
       type: "message",
       role: "user",
       content: [{ type: "input_text", text: inputText }],
     },
-  }));
+  });
   _recordVoiceTranscriptIfNew("user", inputText, "send_text_message");
-  _dc.send(JSON.stringify({ type: "response.create" }));
+  sendRealtimeEvent({ type: "response.create" });
 }
 
 /**
@@ -1193,14 +1499,14 @@ export function sendImageFrame(imageDataUrl, options = {}) {
   if (_transport === "responses-audio") return false;
   const imageUrl = String(imageDataUrl || "").trim();
   if (!imageUrl) return false;
-  if (!_dc || _dc.readyState !== "open") {
-    return false;
-  }
+  // WebSocket transport: use sendRealtimeEvent
+  if (_transport === "websocket" && (!_ws || _ws.readyState !== WebSocket.OPEN)) return false;
+  if (_transport === "webrtc" && (!_dc || _dc.readyState !== "open")) return false;
   const source = String(options?.source || "screen").trim() || "screen";
   const width = Number(options?.width) || undefined;
   const height = Number(options?.height) || undefined;
   try {
-    _dc.send(JSON.stringify({
+    sendRealtimeEvent({
       type: "conversation.item.create",
       item: {
         type: "message",
@@ -1219,7 +1525,7 @@ export function sendImageFrame(imageDataUrl, options = {}) {
         width,
         height,
       },
-    }));
+    });
     return true;
   } catch (err) {
     console.warn("[voice-client] failed to send realtime image frame:", err?.message || err);
@@ -1342,6 +1648,12 @@ export function toggleMicMute() {
     }
     return willBeMuted;
   }
+  // websocket transport: mic muting is handled by the onaudioprocess guard
+  if (_transport === "websocket") {
+    const willBeMuted = !isVoiceMicMuted.value;
+    isVoiceMicMuted.value = willBeMuted;
+    return willBeMuted;
+  }
   return isVoiceMicMuted.value;
 }
 
@@ -1404,6 +1716,7 @@ function cleanup() {
   _audioAutoplayWarned = false;
   isVoiceMicMuted.value = false;
   cleanupConnection();
+  _cleanupWsTransport();
 
   clearInterval(_durationTimer);
   _durationTimer = null;

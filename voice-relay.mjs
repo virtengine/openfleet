@@ -1297,6 +1297,17 @@ async function createAzureEphemeralToken(cfg, toolDefinitions = [], callContext 
   const webrtcUrl = (useGa && gaSessionSucceeded)
     ? `${resolvedEndpoint}/openai/v1/realtime?api-version=${AZURE_API_VERSION}`
     : `${resolvedEndpoint}/openai/realtime?api-version=${AZURE_API_VERSION}&deployment=${encodeURIComponent(deployment)}`;
+
+  // WebSocket fallback URL — Azure Realtime API always supports WebSocket even
+  // when WebRTC SDP is unavailable (404).  The api-key query parameter provides
+  // authentication since browsers cannot set custom headers on WebSocket.
+  const wsAuthParam = resolvedOAuthToken
+    ? `access_token=${encodeURIComponent(resolvedOAuthToken)}`
+    : `api-key=${encodeURIComponent(resolvedApiKey)}`;
+  const wsUrl = (useGa && gaSessionSucceeded)
+    ? `wss://${new URL(resolvedEndpoint).host}/openai/v1/realtime?api-version=${AZURE_API_VERSION}&${wsAuthParam}`
+    : `wss://${new URL(resolvedEndpoint).host}/openai/realtime?api-version=${AZURE_API_VERSION}&deployment=${encodeURIComponent(deployment)}&${wsAuthParam}`;
+
   return {
     token: data.client_secret?.value || data.token,
     expiresAt: data.client_secret?.expires_at || (Date.now() / 1000 + 60),
@@ -1304,6 +1315,7 @@ async function createAzureEphemeralToken(cfg, toolDefinitions = [], callContext 
     voiceId,
     provider: "azure",
     url: webrtcUrl,
+    wsUrl,
     sessionConfig,
     azureEndpoint: resolvedEndpoint,
     azureDeployment: deployment,
