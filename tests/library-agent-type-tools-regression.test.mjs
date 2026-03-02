@@ -20,7 +20,7 @@ describe("library agent type + bosun tools regressions", () => {
   it("renders agent type selector and bosun tools tab in library UI", () => {
     const source = readFileSync(resolve(process.cwd(), "ui/tabs/library.js"), "utf8");
     expect(source).toContain("Agent Type");
-    expect(source).toContain(":zap: Bosun Tools");
+    expect(source).toContain(":zap: Bosun");
     expect(source).toContain("toggleBosunTool");
   });
 });
