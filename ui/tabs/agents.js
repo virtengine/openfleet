@@ -561,24 +561,21 @@ function WorkspaceViewer({ agent, onClose }) {
               >
                 All (${counts.all})
               <//>
-              <button
-                class="chip ${streamFilter === "tool" ? "active" : ""}"
+              <${Chip} label=${`Tool (${counts.tool})`} size="small"
                 onClick=${() => setStreamFilter("tool")}
-              >
-                Tool (${counts.tool})
-              </button>
-              <button
-                class="chip ${streamFilter === "result" ? "active" : ""}"
+                color=${streamFilter === "tool" ? "primary" : "default"}
+                variant=${streamFilter === "tool" ? "filled" : "outlined"}
+              />
+              <${Chip} label=${`Result (${counts.result})`} size="small"
                 onClick=${() => setStreamFilter("result")}
-              >
-                Result (${counts.result})
-              </button>
-              <button
-                class="chip ${streamFilter === "error" ? "active" : ""}"
+                color=${streamFilter === "result" ? "primary" : "default"}
+                variant=${streamFilter === "result" ? "filled" : "outlined"}
+              />
+              <${Chip} label=${`Error (${counts.error})`} size="small"
                 onClick=${() => setStreamFilter("error")}
-              >
-                Error (${counts.error})
-              </button>
+                color=${streamFilter === "error" ? "primary" : "default"}
+                variant=${streamFilter === "error" ? "filled" : "outlined"}
+              />
             </div>
             <div class="stream-actions">
               <div class="stream-search">
@@ -590,7 +587,7 @@ function WorkspaceViewer({ agent, onClose }) {
                   onInput=${(e) => setStreamSearch(e.target.value)}
                 />
               </div>
-              <button class="btn btn-ghost btn-sm" onClick=${() => {
+              <${Button} variant="text" size="small" onClick=${() => {
                 if (!streamPaused) {
                   setStreamSnapshot({
                     events: liveToolEvents,
@@ -604,16 +601,14 @@ function WorkspaceViewer({ agent, onClose }) {
                 }
               }}>
                 ${iconText(streamPaused ? ":play: Resume" : ":pause: Pause")}
-              </button>
-              <button
-                class="btn btn-ghost btn-sm"
+              <//>
+              <${Button} variant="text" size="small"
                 onClick=${() => copyToClipboard(exportText, "Stream copied")}
                 disabled=${filteredEvents.length === 0}
               >
                 <span class="icon-inline">${ICONS.copy}</span> Copy
-              </button>
-              <button
-                class="btn btn-ghost btn-sm"
+              <//>
+              <${Button} variant="text" size="small"
                 onClick=${() => downloadText(
                   `tool-stream-${agent.taskId || agent.branch || "agent"}.txt`,
                   exportText,
@@ -621,7 +616,7 @@ function WorkspaceViewer({ agent, onClose }) {
                 disabled=${filteredEvents.length === 0}
               >
                 <span class="icon-inline">${ICONS.download}</span> Export
-              </button>
+              <//>
             </div>
           </div>
           ${streamPaused && snapshotMeta &&
@@ -629,9 +624,8 @@ function WorkspaceViewer({ agent, onClose }) {
           ${latestModelResponseText &&
             html`
               <div class="stream-final-response ${expandedModelResponse ? "expanded" : ""}">
-                <button
-                  class="stream-item-toggle stream-item-toggle-final"
-                  type="button"
+                <${Button} variant="text" size="small"
+                  className="stream-item-toggle stream-item-toggle-final"
                   onClick=${() => setExpandedModelResponse((prev) => !prev)}
                 >
                   <div class="stream-item-header">
@@ -646,7 +640,7 @@ function WorkspaceViewer({ agent, onClose }) {
                     ${toSingleLinePreview(latestModelResponseText, 260)}
                   </div>
                   <span class="stream-item-chevron">${expandedModelResponse ? "▾" : "▸"}</span>
-                </button>
+                <//>
                 <div class="stream-item-details ${expandedModelResponse ? "expanded" : ""}">
                   <div class="stream-item-details-inner">
                     <pre class="stream-item-pre">${latestModelResponseText}</pre>
@@ -670,9 +664,8 @@ function WorkspaceViewer({ agent, onClose }) {
                 const expanded = rowKey ? expandedEventItems.has(rowKey) : false;
                 return html`
                   <div class="stream-item stream-${evt.type} ${expanded ? "expanded" : ""}" key=${rowKey}>
-                    <button
-                      class="stream-item-toggle"
-                      type="button"
+                    <${Button} variant="text" size="small"
+                      className="stream-item-toggle"
                       onClick=${() => hasBody && toggleExpandedEvent(rowKey)}
                       disabled=${!hasBody}
                     >
@@ -687,7 +680,7 @@ function WorkspaceViewer({ agent, onClose }) {
                         ${evt.timestamp && html`<span class="stream-item-time">${formatRelative(evt.timestamp)}</span>`}
                       </div>
                       ${hasBody && html`<span class="stream-item-chevron">${expanded ? "▾" : "▸"}</span>`}
-                    </button>
+                    <//>
                     ${hasBody && html`
                       <div class="stream-item-details ${expanded ? "expanded" : ""}">
                         <div class="stream-item-details-inner ${bodyText.length > 1600 ? "stream-item-details-scroll" : ""}">
@@ -728,30 +721,26 @@ function WorkspaceViewer({ agent, onClose }) {
           <div class="card-title">File Access</div>
           <div class="stream-toolbar">
             <div class="chip-group stream-chips">
-              <button
-                class="chip ${fileFilter === "all" ? "active" : ""}"
+              <${Chip} label=${`All (${summaryFiles.length})`} size="small"
                 onClick=${() => setFileFilter("all")}
-              >
-                All (${summaryFiles.length})
-              </button>
-              <button
-                class="chip ${fileFilter === "read" ? "active" : ""}"
+                color=${fileFilter === "all" ? "primary" : "default"}
+                variant=${fileFilter === "all" ? "filled" : "outlined"}
+              />
+              <${Chip} label=${`Read (${counts.read})`} size="small"
                 onClick=${() => setFileFilter("read")}
-              >
-                Read (${counts.read})
-              </button>
-              <button
-                class="chip ${fileFilter === "write" ? "active" : ""}"
+                color=${fileFilter === "read" ? "primary" : "default"}
+                variant=${fileFilter === "read" ? "filled" : "outlined"}
+              />
+              <${Chip} label=${`Write (${counts.write})`} size="small"
                 onClick=${() => setFileFilter("write")}
-              >
-                Write (${counts.write})
-              </button>
-              <button
-                class="chip ${fileFilter === "other" ? "active" : ""}"
+                color=${fileFilter === "write" ? "primary" : "default"}
+                variant=${fileFilter === "write" ? "filled" : "outlined"}
+              />
+              <${Chip} label=${`Other (${counts.other})`} size="small"
                 onClick=${() => setFileFilter("other")}
-              >
-                Other (${counts.other})
-              </button>
+                color=${fileFilter === "other" ? "primary" : "default"}
+                variant=${fileFilter === "other" ? "filled" : "outlined"}
+              />
             </div>
             <div class="stream-actions">
               <div class="stream-search">
@@ -763,15 +752,13 @@ function WorkspaceViewer({ agent, onClose }) {
                   onInput=${(e) => setFileSearch(e.target.value)}
                 />
               </div>
-              <button
-                class="btn btn-ghost btn-sm"
+              <${Button} variant="text" size="small"
                 onClick=${() => copyToClipboard(exportText, "File list copied")}
                 disabled=${filteredFiles.length === 0}
               >
                 <span class="icon-inline">${ICONS.copy}</span> Copy
-              </button>
-              <button
-                class="btn btn-ghost btn-sm"
+              <//>
+              <${Button} variant="text" size="small"
                 onClick=${() => downloadText(
                   `file-access-${agent.taskId || agent.branch || "agent"}.txt`,
                   exportText,
@@ -779,7 +766,7 @@ function WorkspaceViewer({ agent, onClose }) {
                 disabled=${filteredFiles.length === 0}
               >
                 <span class="icon-inline">${ICONS.download}</span> Export
-              </button>
+              <//>
             </div>
           </div>
           <div class="meta-text">
@@ -807,9 +794,8 @@ function WorkspaceViewer({ agent, onClose }) {
                 ].join("\n");
                 return html`
                   <div class="stream-item stream-file ${expanded ? "expanded" : ""}" key=${rowKey}>
-                    <button
-                      class="stream-item-toggle"
-                      type="button"
+                    <${Button} variant="text" size="small"
+                      className="stream-item-toggle"
                       onClick=${() => toggleExpandedFile(rowKey)}
                     >
                       <div class="stream-item-header">
@@ -817,7 +803,7 @@ function WorkspaceViewer({ agent, onClose }) {
                         <span class="stream-item-title mono">${entry.path}</span>
                       </div>
                       <span class="stream-item-chevron">${expanded ? "▾" : "▸"}</span>
-                    </button>
+                    <//>
                     <div class="stream-item-details ${expanded ? "expanded" : ""}">
                       <div class="stream-item-details-inner">
                         <pre class="stream-item-pre">${details}</pre>
@@ -856,9 +842,9 @@ function WorkspaceViewer({ agent, onClose }) {
               html`<div class="meta-text mt-xs">Last Active: ${sessionInfo.lastActiveAt}</div>`}
             ${sessionInfo.preview &&
               html`<div class="meta-text mt-xs">${truncate(sessionInfo.preview, 140)}</div>`}
-            <button class="btn btn-ghost btn-sm mt-sm" onClick=${() => setActiveTab("stream")}>
+            <${Button} variant="text" size="small" className="mt-sm" onClick=${() => setActiveTab("stream")}>
               ${iconText(":chat: View Stream")}
-            </button>
+            <//>
           </div>
         `}
         ${slotInfo && html`
@@ -934,21 +920,21 @@ function WorkspaceViewer({ agent, onClose }) {
                 ${agent.branch || "?"} · Slot ${(agent.index ?? 0) + 1} · ${formatDuration(agent.startedAt)}
               </div>
             </div>
-            <button class="btn btn-ghost btn-sm" onClick=${onClose}>${resolveIcon("✕")}</button>
+            <${IconButton} size="small" onClick=${onClose}>${resolveIcon("✕")}<//>
           </div>
           <div class="session-detail-tabs workspace-tabs">
-            <button
-              class="session-detail-tab ${activeTab === "stream" ? "active" : ""}"
+            <${Button} variant="text" size="small"
+              className=${`session-detail-tab ${activeTab === "stream" ? "active" : ""}`}
               onClick=${() => setActiveTab("stream")}
-            >${iconText(":chat: Stream")}</button>
-            <button
-              class="session-detail-tab ${activeTab === "changes" ? "active" : ""}"
+            >${iconText(":chat: Stream")}<//>
+            <${Button} variant="text" size="small"
+              className=${`session-detail-tab ${activeTab === "changes" ? "active" : ""}`}
               onClick=${() => setActiveTab("changes")}
-            >${iconText(":edit: Changes")}</button>
-            <button
-              class="session-detail-tab ${activeTab === "logs" ? "active" : ""}"
+            >${iconText(":edit: Changes")}<//>
+            <${Button} variant="text" size="small"
+              className=${`session-detail-tab ${activeTab === "logs" ? "active" : ""}`}
               onClick=${() => setActiveTab("logs")}
-            >${iconText(":file: Logs")}</button>
+            >${iconText(":file: Logs")}<//>
           </div>
 
           <div class="workspace-body">
@@ -976,12 +962,11 @@ function WorkspaceViewer({ agent, onClose }) {
               onInput=${(e) => setSteerInput(e.target.value)}
               onKeyDown=${(e) => { if (e.key === "Enter") { e.preventDefault(); handleSteer(); } }}
             />
-            <button class="btn btn-primary btn-sm" onClick=${handleSteer}>${resolveIcon(":target:")}</button>
-            <button
-              class="btn btn-danger btn-sm"
+            <${Button} variant="contained" color="primary" size="small" onClick=${handleSteer}>${resolveIcon(":target:")}<//>
+            <${Button} variant="contained" color="error" size="small"
               disabled=${agent.index == null}
               onClick=${handleStop}
-            >${iconText(":ban: Stop")}</button>
+            >${iconText(":ban: Stop")}<//>
           </div>
         </div>
       </div>
@@ -1106,13 +1091,12 @@ function DispatchSection({ freeSlots, inputRef, className = "" }) {
           value=${prompt}
           onInput=${(e) => { setPrompt(e.target.value); if (e.target.value) setTaskId(""); }}
         />
-        <button
-          class="btn btn-primary"
+        <${Button} variant="contained" color="primary"
           disabled=${!canDispatch || dispatching}
           onClick=${handleDispatch}
         >
           ${dispatching ? "Dispatching…" : iconText(":rocket: Dispatch")}
-        </button>
+        <//>
       </div>
     <//>
   `;
@@ -1367,18 +1351,17 @@ export function AgentsTab() {
           </div>
 
           <div class="fleet-quick-actions">
-            <button class="btn btn-primary btn-sm" onClick=${handleFocusDispatch}>
+            <${Button} variant="contained" color="primary" size="small" onClick=${handleFocusDispatch}>
               ${iconText(":rocket: Dispatch")}
-            </button>
-            <button class="btn btn-secondary btn-sm" onClick=${handleFleetRefresh}>
+            <//>
+            <${Button} variant="outlined" size="small" onClick=${handleFleetRefresh}>
               ↻ Refresh
-            </button>
-            <button
-              class="btn btn-ghost btn-sm"
+            <//>
+            <${Button} variant="text" size="small"
               onClick=${() => navigateTo("logs")}
             >
               ${iconText(":file: Logs")}
-            </button>
+            <//>
           </div>
         <//>
       </div>
@@ -1507,36 +1490,32 @@ export function AgentsTab() {
                     `}
 
                     <div class="btn-row mt-sm">
-                      <button
-                        class="btn btn-ghost btn-sm"
+                      <${Button} variant="text" size="small"
                         onClick=${() =>
                           viewAgentLogs(
                             (slot.taskId || slot.branch || "").slice(0, 12),
                           )}
                       >
                         ${iconText(":file: Logs")}
-                      </button>
-                      <button
-                        class="btn btn-ghost btn-sm"
+                      <//>
+                      <${Button} variant="text" size="small"
                         onClick=${() =>
                           sendCommandToChat(
                             `/steer focus on ${slot.taskTitle || slot.taskId}`,
                           )}
                       >
                         ${iconText(":target: Steer")}
-                      </button>
-                      <button
-                        class="btn btn-ghost btn-sm"
+                      <//>
+                      <${Button} variant="text" size="small"
                         onClick=${() => openWorkspace(slot, i)}
                       >
                         ${iconText(":search: View")}
-                      </button>
-                      <button
-                        class="btn btn-danger btn-sm"
+                      <//>
+                      <${Button} variant="contained" color="error" size="small"
                         onClick=${() => handleForceStop({ ...slot, index: i })}
                       >
                         ${iconText(":ban: Stop")}
-                      </button>
+                      <//>
                     </div>
                   </div>
                 `,
@@ -1686,7 +1665,7 @@ function ContextViewer({ sessionId }) {
     return html`<div class="chat-view chat-empty-state">
       <div class="session-empty-icon" style="color:var(--color-error)">${resolveIcon(":alert:")}</div>
       <div class="session-empty-text">${error}</div>
-      <button class="btn btn-primary btn-sm mt-sm" onClick=${() => { setLoading(true); setError(null); fetchContext(); }}>${iconText(":refresh: Retry")}</button>
+      <${Button} variant="contained" color="primary" size="small" className="mt-sm" onClick=${() => { setLoading(true); setError(null); fetchContext(); }}>${iconText(":refresh: Retry")}<//>
     </div>`;
   }
 
@@ -1707,12 +1686,12 @@ function ContextViewer({ sessionId }) {
     <div class="chat-view" style="padding:12px; overflow-y:auto;">
       <!-- Toolbar -->
       <div style="display:flex; gap:8px; justify-content:flex-end; margin-bottom:12px;">
-        <button class="btn btn-ghost btn-sm" onClick=${() => { setLoading(true); fetchContext(); }}>
+        <${Button} variant="text" size="small" onClick=${() => { setLoading(true); fetchContext(); }}>
           <span class="icon-inline">${ICONS.refresh}</span> Refresh
-        </button>
-        <button class="btn btn-ghost btn-sm" onClick=${copyContext}>
+        <//>
+        <${Button} variant="text" size="small" onClick=${copyContext}>
           <span class="icon-inline">${ICONS.copy}</span> Copy Context
-        </button>
+        <//>
       </div>
 
       <!-- Branch & Status -->
@@ -1954,31 +1933,31 @@ function FleetSessionsPanel({ slots, onOpenWorkspace, onForceStop }) {
       <div class="fleet-fullview">
         <div class="fleet-slot-rail">
           <div class="fleet-session-scope">
-            <button
-              class="fleet-session-scope-btn ${sessionScope === "active" ? "active" : ""}"
+            <${Button} variant="text" size="small"
+              className=${`fleet-session-scope-btn ${sessionScope === "active" ? "active" : ""}`}
               onClick=${() => {
                 haptic();
                 setSessionScope("active");
               }}
             >
               Active (${entries.length})
-            </button>
-            <button
-              class="fleet-session-scope-btn ${sessionScope === "history" ? "active" : ""}"
+            <//>
+            <${Button} variant="text" size="small"
+              className=${`fleet-session-scope-btn ${sessionScope === "history" ? "active" : ""}`}
               onClick=${() => {
                 haptic();
                 setSessionScope("history");
               }}
             >
               History (${historyEntries.length})
-            </button>
+            <//>
           </div>
           ${visibleEntries.length === 0
             ? html`<div class="meta-text">${sessionScope === "history" ? "No historic sessions" : "No active slots"}</div>`
             : html`${visibleEntries.map((entry) => html`
-                <button
+                <${Button} variant="text" size="small"
                   key=${entry.key}
-                  class="fleet-slot-item ${selectedEntry?.key === entry.key ? "active" : ""} ${entry.isHistory ? "history" : ""}"
+                  className=${`fleet-slot-item ${selectedEntry?.key === entry.key ? "active" : ""} ${entry.isHistory ? "history" : ""}`}
                   onClick=${() => {
                     haptic();
                     setSelectedEntryKey(entry.key);
@@ -2005,7 +1984,7 @@ function FleetSessionsPanel({ slots, onOpenWorkspace, onForceStop }) {
                       ? ` · ${formatRelative(entry.session?.lastActiveAt || entry.session?.updatedAt || entry.session?.createdAt)}`
                       : ""}
                   </div>
-                </button>
+                <//>
               `)}`}
         </div>
         <div class="session-detail fleet-session-detail">
@@ -2035,32 +2014,32 @@ function FleetSessionsPanel({ slots, onOpenWorkspace, onForceStop }) {
                   </div>
                   ${selectedEntry.slot && html`
                     <div class="btn-row">
-                      <button class="btn btn-ghost btn-sm" onClick=${() => onOpenWorkspace(selectedEntry.slot, selectedEntry.index)}>
+                      <${Button} variant="text" size="small" onClick=${() => onOpenWorkspace(selectedEntry.slot, selectedEntry.index)}>
                         ${iconText(":search: Workspace")}
-                      </button>
-                      <button class="btn btn-danger btn-sm" onClick=${() => onForceStop({ ...selectedEntry.slot, index: selectedEntry.index })}>
+                      <//>
+                      <${Button} variant="contained" color="error" size="small" onClick=${() => onForceStop({ ...selectedEntry.slot, index: selectedEntry.index })}>
                         ${iconText(":ban: Stop")}
-                      </button>
+                      <//>
                     </div>
                   `}
                 </div>
                 <div class="session-detail-tabs">
-                  <button
-                    class="session-detail-tab ${detailTab === "stream" ? "active" : ""}"
+                  <${Button} variant="text" size="small"
+                    className=${`session-detail-tab ${detailTab === "stream" ? "active" : ""}`}
                     onClick=${() => setDetailTab("stream")}
-                  >${iconText(":chat: Stream")}</button>
-                  <button
-                    class="session-detail-tab ${detailTab === "context" ? "active" : ""}"
+                  >${iconText(":chat: Stream")}<//>
+                  <${Button} variant="text" size="small"
+                    className=${`session-detail-tab ${detailTab === "context" ? "active" : ""}`}
                     onClick=${() => setDetailTab("context")}
-                  >${iconText(":clipboard: Context")}</button>
-                  <button
-                    class="session-detail-tab ${detailTab === "diff" ? "active" : ""}"
+                  >${iconText(":clipboard: Context")}<//>
+                  <${Button} variant="text" size="small"
+                    className=${`session-detail-tab ${detailTab === "diff" ? "active" : ""}`}
                     onClick=${() => setDetailTab("diff")}
-                  >${iconText(":edit: Diff")}</button>
-                  <button
-                    class="session-detail-tab ${detailTab === "logs" ? "active" : ""}"
+                  >${iconText(":edit: Diff")}<//>
+                  <${Button} variant="text" size="small"
+                    className=${`session-detail-tab ${detailTab === "logs" ? "active" : ""}`}
                     onClick=${() => setDetailTab("logs")}
-                  >${iconText(":file: Logs")}</button>
+                  >${iconText(":file: Logs")}<//>
                 </div>
                 <div class="fleet-session-body">
                   ${detailTab === "stream"
