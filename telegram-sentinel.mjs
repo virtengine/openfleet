@@ -51,6 +51,11 @@ import {
   initPrimaryAgent,
 } from "./primary-agent.mjs";
 import { resolveRepoRoot } from "./repo-root.mjs";
+import {
+  claimTelegramPollOwner,
+  getActiveTelegramPollOwner,
+  releaseTelegramPollOwner,
+} from "./telegram-poll-owner.mjs";
 
 // ── Paths ────────────────────────────────────────────────────────────────────
 
@@ -80,6 +85,12 @@ const MAX_MESSAGE_LEN = 4000;
 const HEALTH_CHECK_INTERVAL_MS = 30_000;
 const POLL_ERROR_BACKOFF_BASE_MS = 5_000;
 const POLL_ERROR_BACKOFF_MAX_MS = 120_000;
+const POLL_OWNER_HANDOFF_CHECKS = 3;
+const POLL_OWNER_HANDOFF_DELAY_MS = 500;
+const SENTINEL_POLL_OWNER_TTL_MS = Math.max(
+  30_000,
+  Number(process.env.TELEGRAM_POLL_OWNER_TTL_MS || "120000") || 120_000,
+);
 const COMMAND_QUEUE_MAX_SIZE = 50;
 const COMMAND_QUEUE_TTL_MS = 10 * 60 * 1000; // 10 minutes
 const MONITOR_START_TIMEOUT_MS = 60_000; // 60s to wait for monitor to become healthy
@@ -866,6 +877,9 @@ async function pollUpdates() {
         "warn",
         "Telegram 409 conflict — another poller is active, backing off",
       );
+      const conflictError = new Error("getUpdates conflict: another poller is active");
+      conflictError.code = "TELEGRAM_POLL_CONFLICT";
+      throw conflictError;
     }
     throw new Error(`getUpdates failed: ${res.status} ${body}`);
   }
@@ -881,28 +895,44 @@ async function pollUpdates() {
 async function pollLoop() {
   log("info", "polling loop started");
 
-  while (running && polling && mode === "standalone") {
-    try {
-      const updates = await pollUpdates();
-      consecutivePollErrors = 0;
+  try {
+    while (running && polling && mode === "standalone") {
+      try {
+        await claimTelegramPollOwner("telegram-sentinel", {
+          ttlMs: SENTINEL_POLL_OWNER_TTL_MS,
+        });
 
-      for (const update of updates) {
-        lastUpdateId = Math.max(lastUpdateId, update.update_id);
-        await handleUpdate(update);
+        const updates = await pollUpdates();
+        consecutivePollErrors = 0;
+
+        for (const update of updates) {
+          lastUpdateId = Math.max(lastUpdateId, update.update_id);
+          await handleUpdate(update);
+        }
+      } catch (err) {
+        if (!running) break;
+        if (err?.code === "TELEGRAM_POLL_CONFLICT") {
+          polling = false;
+          await releaseSentinelPollLock();
+          await releaseTelegramPollOwner("telegram-sentinel").catch(() => {});
+          break;
+        }
+
+        consecutivePollErrors++;
+        const backoff = Math.min(
+          POLL_ERROR_BACKOFF_BASE_MS * Math.pow(2, consecutivePollErrors - 1),
+          POLL_ERROR_BACKOFF_MAX_MS,
+        );
+        log(
+          "warn",
+          `poll error (attempt ${consecutivePollErrors}): ${err.message} — retry in ${Math.round(backoff / 1000)}s`,
+        );
+        await sleep(backoff);
       }
-    } catch (err) {
-      if (!running) break;
-      consecutivePollErrors++;
-      const backoff = Math.min(
-        POLL_ERROR_BACKOFF_BASE_MS * Math.pow(2, consecutivePollErrors - 1),
-        POLL_ERROR_BACKOFF_MAX_MS,
-      );
-      log(
-        "warn",
-        `poll error (attempt ${consecutivePollErrors}): ${err.message} — retry in ${Math.round(backoff / 1000)}s`,
-      );
-      await sleep(backoff);
     }
+  } finally {
+    await releaseSentinelPollLock();
+    await releaseTelegramPollOwner("telegram-sentinel").catch(() => {});
   }
 
   log("info", "polling loop stopped");
@@ -1451,16 +1481,32 @@ async function transitionToStandalone(reason) {
   log("info", `transitioning to standalone mode: ${reason}`);
   mode = "standalone";
 
-  // Check if the main bot poll lock is held by a live process
-  const mainBotPolling = await isMainBotPolling();
-  if (mainBotPolling) {
-    log("info", "main bot is still polling — skipping sentinel poll start");
+  // Debounced handoff check to avoid racing monitor startup
+  const canStartPolling = await canStartSentinelPolling();
+  if (!canStartPolling) {
+    log(
+      "info",
+      "main bot ownership/polling still active — skipping sentinel poll start",
+    );
+    return;
+  }
+
+  const ownerClaim = await claimTelegramPollOwner("telegram-sentinel", {
+    ttlMs: SENTINEL_POLL_OWNER_TTL_MS,
+  });
+  if (!ownerClaim?.ok) {
+    const activeOwner =
+      ownerClaim?.owner && ownerClaim.owner.owner
+        ? `${ownerClaim.owner.owner} (pid ${ownerClaim.owner.pid})`
+        : "another active poll owner";
+    log("info", `sentinel poll owner claim denied — ${activeOwner}`);
     return;
   }
 
   // Acquire sentinel poll lock and start polling
   const lockAcquired = await acquireSentinelPollLock();
   if (!lockAcquired) {
+    await releaseTelegramPollOwner("telegram-sentinel").catch(() => {});
     log(
       "warn",
       "failed to acquire sentinel poll lock — another sentinel may be running",
@@ -1488,6 +1534,7 @@ async function transitionToStandalone(reason) {
   pollLoop().catch((err) => {
     log("error", `poll loop crashed: ${err.message}`);
     polling = false;
+    releaseTelegramPollOwner("telegram-sentinel").catch(() => {});
   });
 
   await writeHeartbeat();
@@ -1511,6 +1558,7 @@ async function transitionToCompanion(monitorPid) {
     }
   }
   await releaseSentinelPollLock();
+  await releaseTelegramPollOwner("telegram-sentinel").catch(() => {});
 
   await writeHeartbeat();
 }
@@ -1530,6 +1578,25 @@ async function isMainBotPolling() {
   } catch {
     return false;
   }
+}
+
+async function isMainBotOwnerActive() {
+  const activeOwner = await getActiveTelegramPollOwner().catch(() => null);
+  return Boolean(activeOwner && activeOwner.owner === "telegram-bot");
+}
+
+async function canStartSentinelPolling() {
+  for (let attempt = 0; attempt < POLL_OWNER_HANDOFF_CHECKS; attempt += 1) {
+    const [mainPolling, mainOwnerActive] = await Promise.all([
+      isMainBotPolling(),
+      isMainBotOwnerActive(),
+    ]);
+    if (mainPolling || mainOwnerActive) return false;
+    if (attempt < POLL_OWNER_HANDOFF_CHECKS - 1) {
+      await sleep(POLL_OWNER_HANDOFF_DELAY_MS);
+    }
+  }
+  return true;
 }
 
 // ── Health Monitoring ────────────────────────────────────────────────────────
@@ -1597,6 +1664,7 @@ async function healthCheck() {
           }
         }
         await releaseSentinelPollLock();
+        await releaseTelegramPollOwner("telegram-sentinel").catch(() => {});
       } else if (!mainPolling && !polling) {
         // Neither is polling — sentinel should resume
         log("info", "no poller active — resuming sentinel polling");
@@ -1787,6 +1855,7 @@ export function stopSentinel() {
 
   // Release locks and PID files
   releaseSentinelPollLock().catch(() => {});
+  releaseTelegramPollOwner("telegram-sentinel").catch(() => {});
   removePidFile(SENTINEL_PID_FILE);
 
   // Clean up heartbeat file

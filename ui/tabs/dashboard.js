@@ -55,6 +55,10 @@ import {
   SliderControl,
 } from "../components/forms.js";
 import { StartTaskModal } from "./tasks.js";
+import {
+  Button, TextField, Typography, Box, Stack, Chip, Paper,
+  IconButton, Tooltip, CircularProgress, Alert,
+} from "@mui/material";
 
 /* ─── Quick Action definitions ─── */
 const QUICK_ACTIONS = [
@@ -247,19 +251,24 @@ export function CreateTaskModal({ onClose }) {
       activeOperationLabel=${submitting ? "Task creation is in progress" : ""}
     >
       <div class="flex-col gap-md">
-        <input
-          class="input"
+        <${TextField}
+          size="small"
+          variant="outlined"
+          fullWidth
           placeholder="Task title"
           value=${title}
           onInput=${(e) => setTitle(e.target.value)}
         />
-        <textarea
-          class="input"
-          rows="4"
+        <${TextField}
+          multiline
+          rows=${4}
+          size="small"
+          fullWidth
+          variant="outlined"
           placeholder="Description (optional)"
           value=${description}
           onInput=${(e) => setDescription(e.target.value)}
-        ></textarea>
+        />
         <div class="card-subtitle">Priority</div>
         <${SegmentedControl}
           options=${[
@@ -274,15 +283,16 @@ export function CreateTaskModal({ onClose }) {
             setPriority(v);
           }}
         />
-        <button
-          class="btn btn-primary"
+        <${Button}
+          variant="contained"
+          size="small"
           onClick=${() => {
             void handleSubmit({ closeAfterSave: true });
           }}
           disabled=${submitting}
         >
           ${submitting ? "Creating…" : "Create Task"}
-        </button>
+        <//>
         <${SaveDiscardBar}
           dirty=${hasUnsaved}
           message=${`You have unsaved changes (${changeCount})`}
@@ -663,9 +673,9 @@ export function DashboardTab() {
             <div class="dashboard-welcome-desc">
               Your AI development fleet is ready. Create your first task to get started.
             </div>
-            <button class="btn btn-primary" onClick=${() => setShowCreate(true)}>
+            <${Button} variant="contained" size="small" onClick=${() => setShowCreate(true)}>
               ${iconText(":plus: Create your first task")}
-            </button>
+            <//>
           </div>
         <//>
         ${showCreate &&
@@ -747,18 +757,20 @@ export function DashboardTab() {
             <${ProgressBar} percent=${slotPct} />
           </div>
           <div class="dashboard-inline-actions">
-            <button
-              class="btn btn-secondary btn-sm dashboard-btn"
+            <${Button}
+              variant="outlined"
+              size="small"
               onClick=${handlePause}
             >
               Pause
-            </button>
-            <button
-              class="btn btn-secondary btn-sm dashboard-btn"
+            <//>
+            <${Button}
+              variant="outlined"
+              size="small"
               onClick=${handleResume}
             >
               Resume
-            </button>
+            <//>
           </div>
           ${tickerTasks.length > 0 ? html`
             <div style="margin-top:12px;padding-top:10px;border-top:1px solid var(--border)">
@@ -897,15 +909,17 @@ export function DashboardTab() {
           <div class="dashboard-actions-grid">
             ${QUICK_ACTIONS.map(
               (a) => html`
-                <button
+                <${Button}
                   key=${a.label}
-                  class="dashboard-action-btn"
-                  style="--qa-color: ${a.color}"
+                  variant="text"
+                  size="small"
+                  className="dashboard-action-btn"
+                  style=${{ '--qa-color': a.color }}
                   onClick=${(e) => handleQuickAction(a, e)}
                 >
                   <span class="dashboard-action-icon">${resolveIcon(a.icon) || a.icon}</span>
                   <span class="dashboard-action-label">${a.label}</span>
-                </button>
+                <//>
               `,
             )}
           </div>

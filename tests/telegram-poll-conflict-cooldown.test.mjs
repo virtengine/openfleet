@@ -8,6 +8,11 @@ describe("telegram poll conflict cooldown", () => {
   it("releases the poll lock on 409 conflicts", () => {
     expect(botSource).toContain("if (res.status === 409)");
     expect(botSource).toContain("releaseTelegramPollLock");
+    expect(botSource).toContain("releaseTelegramPollOwner");
+  });
+
+  it("claims Telegram poll ownership before polling starts", () => {
+    expect(botSource).toContain('claimTelegramPollOwner("telegram-bot"');
   });
 
   it("tracks fetch failure cooldown state", () => {

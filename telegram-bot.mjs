@@ -27,6 +27,10 @@ import { fileURLToPath } from "node:url";
 import { homedir } from "node:os";
 import { resolveRepoRoot } from "./repo-root.mjs";
 import {
+  claimTelegramPollOwner,
+  releaseTelegramPollOwner,
+} from "./telegram-poll-owner.mjs";
+import {
   execPrimaryPrompt,
   isPrimaryBusy,
   getPrimaryAgentInfo,
@@ -205,6 +209,10 @@ const TELEGRAM_FETCH_FAILURE_COOLDOWN_MS = 10 * 60 * 1000;
 const TELEGRAM_POLL_CONFLICT_COOLDOWN_MS = Math.max(
   60_000,
   Number(process.env.TELEGRAM_POLL_CONFLICT_COOLDOWN_MS) || 900_000,
+);
+const TELEGRAM_POLL_OWNER_TTL_MS = Math.max(
+  30_000,
+  Number(process.env.TELEGRAM_POLL_OWNER_TTL_MS || "120000") || 120_000,
 );
 let TELEGRAM_HTTP_TIMEOUT_MS = Math.max(
   2000,
@@ -2471,6 +2479,7 @@ async function pollUpdates() {
       writeTelegramPollConflictState(untilMs, `409 Conflict — cooldown until ${new Date(untilMs).toISOString()}`);
       polling = false;
       await releaseTelegramPollLock();
+      await releaseTelegramPollOwner("telegram-bot").catch(() => {});
       return [];
     }
     if (polling) await delayMs(getPollBackoffMs());
@@ -2478,6 +2487,9 @@ async function pollUpdates() {
   }
   resetPollFailureStreak();
   clearTelegramPollConflictState();
+  await claimTelegramPollOwner("telegram-bot", {
+    ttlMs: TELEGRAM_POLL_OWNER_TTL_MS,
+  }).catch(() => {});
   if (!telegramApiReachable) {
     telegramApiReachable = true;
     // API came back — register commands that were deferred at startup
@@ -11048,8 +11060,23 @@ export async function startTelegramBot(options = {}) {
     return;
   }
 
+  const ownerClaim = await claimTelegramPollOwner("telegram-bot", {
+    ttlMs: TELEGRAM_POLL_OWNER_TTL_MS,
+  });
+  if (!ownerClaim?.ok) {
+    const activeOwner =
+      ownerClaim?.owner && ownerClaim.owner.owner
+        ? `${ownerClaim.owner.owner} (pid ${ownerClaim.owner.pid})`
+        : "another active poll owner";
+    console.warn(
+      `[telegram-bot] polling disabled (${activeOwner} owns getUpdates arbitration)`,
+    );
+    return;
+  }
+
   const lockOk = await acquireTelegramPollLock("telegram-bot");
   if (!lockOk) {
+    await releaseTelegramPollOwner("telegram-bot").catch(() => {});
     console.warn(
       "[telegram-bot] polling disabled (another getUpdates poller is active)",
     );
@@ -11346,6 +11373,7 @@ export function stopTelegramBot(options = {}) {
     stopBatchFlushLoop();
   }
   safeDetach("poll-lock-release", releaseTelegramPollLock);
+  safeDetach("poll-owner-release", () => releaseTelegramPollOwner("telegram-bot"));
   stopTelegramUiServer();
   if (menuButtonRefreshTimer) {
     clearInterval(menuButtonRefreshTimer);

@@ -49,16 +49,10 @@ import {
   countChangedFields,
 } from "../modules/utils.js";
 import {
-  Card,
-  Badge,
-  StatCard,
-  SkeletonCard,
   Modal,
-  EmptyState,
-  ListItem,
   SaveDiscardBar,
 } from "../components/shared.js";
-import { SegmentedControl, SearchInput, Toggle } from "../components/forms.js";
+import { SearchInput } from "../components/forms.js";
 import { KanbanBoard } from "../components/kanban-board.js";
 import { VoiceMicButton, VoiceMicButtonInline } from "../modules/voice.js";
 import {
@@ -66,9 +60,30 @@ import {
   activeWorkspaceId,
   loadWorkspaces,
 } from "../components/workspace-switcher.js";
+import {
+  Card as MuiCard, CardContent, Typography, Box, Stack, Chip, TextField,
+  MenuItem, Button, IconButton, Tabs, Tab, Tooltip, Divider,
+  Paper, CircularProgress, Skeleton, Alert, Switch, FormControlLabel,
+  Menu as MuiMenu, Fab, Table, TableBody, TableCell, TableContainer,
+  TableHead, TableRow, TableSortLabel, ToggleButton, ToggleButtonGroup,
+} from "@mui/material";
 
 /* ─── View mode toggle ─── */
 const viewMode = signal("kanban");
+
+/* ─── Status/Priority → MUI Chip color ─── */
+function statusChipColor(status) {
+  const s = String(status || "").toLowerCase();
+  if (["inprogress", "running", "working", "active", "assigned", "started"].includes(s)) return "info";
+  if (["inreview", "review", "pr-open", "pr-review"].includes(s)) return "warning";
+  if (["done", "completed", "merged", "closed"].includes(s)) return "success";
+  if (["error", "blocked", "failed", "cancelled"].includes(s)) return "error";
+  if (s === "critical") return "error";
+  if (s === "high") return "warning";
+  if (s === "medium") return "info";
+  if (s === "warning" || s === "manual") return "warning";
+  return "default";
+}
 
 /* ─── Status chip definitions ─── */
 const STATUS_CHIPS = [
@@ -393,55 +408,60 @@ export function StartTaskModal({
     >
       ${task?.id || task?.title
         ? html`
-            <div class="meta-text mb-sm">
+            <${Typography} variant="body2" color="text.secondary" sx=${{ mb: 1 }}>
               ${task?.title || "(untitled)"} · ${task?.id || "—"}
-            </div>
-          `
+            <//>`
         : html`
-            <div class="meta-text mb-sm">
+            <${Typography} variant="body2" color="text.secondary" sx=${{ mb: 1 }}>
               Enter a task ID to manually dispatch it. Manual starts work even if automation is paused.
-            </div>
-          `}
-      <div class="modal-form-grid">
+            <//>`}
+      <${Stack} spacing=${2}>
         ${(allowTaskIdInput || !task?.id) &&
         html`
-          <div class="modal-form-field modal-form-span">
-            <div class="card-subtitle">Task ID</div>
-            <input
-              class="input"
-              placeholder="e.g. task-123"
-              value=${taskIdInput}
-              onInput=${(e) => setTaskIdInput(e.target.value)}
-            />
-          </div>
+          <${TextField}
+            label="Task ID"
+            placeholder="e.g. task-123"
+            size="small"
+            fullWidth
+            value=${taskIdInput}
+            onChange=${(e) => setTaskIdInput(e.target.value)}
+          />
         `}
-        <div class="modal-form-field">
-          <div class="card-subtitle">Executor SDK</div>
-          <select class="input" value=${sdk} onChange=${(e) => setSdk(e.target.value)}>
-            ${["auto", "codex", "copilot", "claude"].map(
-              (opt) => html`<option value=${opt}>${opt}</option>`,
-            )}
-          </select>
-        </div>
-        <div class="modal-form-field">
-          <div class="card-subtitle">Model Override (optional)</div>
-          <select class="input" value=${model} disabled=${!canModel} onChange=${(e) => setModel(e.target.value)}>
-            <option value="">Auto (default)</option>
-            ${canModel && (EXECUTOR_MODELS[sdk] || []).map(m => html`<option value=${m}>${m}</option>`)}
-          </select>
-        </div>
-        <div class="modal-form-field modal-form-span">
-          <button
-            class="btn btn-primary"
-            onClick=${() => {
-              void handleStart({ closeAfterStart: true });
-            }}
-            disabled=${starting || !resolvedTaskId}
-          >
-            ${starting ? "Starting…" : iconText(":play: Start Task")}
-          </button>
-        </div>
-      </div>
+        <${TextField}
+          select
+          label="Executor SDK"
+          size="small"
+          fullWidth
+          value=${sdk}
+          onChange=${(e) => setSdk(e.target.value)}
+        >
+          ${["auto", "codex", "copilot", "claude"].map(
+            (opt) => html`<${MenuItem} key=${opt} value=${opt}>${opt}<//>`
+          )}
+        <//>
+        <${TextField}
+          select
+          label="Model Override (optional)"
+          size="small"
+          fullWidth
+          value=${model}
+          disabled=${!canModel}
+          onChange=${(e) => setModel(e.target.value)}
+        >
+          <${MenuItem} value="">Auto (default)<//>
+          ${canModel && (EXECUTOR_MODELS[sdk] || []).map(m => html`<${MenuItem} key=${m} value=${m}>${m}<//>`)}
+        <//>
+        <${Button}
+          variant="contained"
+          fullWidth
+          onClick=${() => {
+            void handleStart({ closeAfterStart: true });
+          }}
+          disabled=${starting || !resolvedTaskId}
+        >
+          ${starting ? "Starting…" : iconText(":play: Start Task")}
+        <//>
+      <//>
       <${SaveDiscardBar}
         dirty=${hasUnsaved}
         message=${unsavedChangesMessage(changeCount)}
@@ -522,93 +542,95 @@ function TriggerTemplateCard({
   };
 
   return html`
-    <div class="card" style="margin-bottom:10px;padding:10px 12px;">
-      <div class="flex-between" style="gap:10px;align-items:flex-start;">
-        <div style="min-width:0;">
-          <div class="card-subtitle" style="font-size:13px;">${template?.name || template?.id}</div>
-          <div class="meta-text" style="font-size:11px;word-break:break-all;">${template?.id || ""}</div>
-        </div>
-        <label class="meta-text" style="display:flex;align-items:center;gap:6px;cursor:pointer;">
-          <input
-            type="checkbox"
-            checked=${template?.enabled === true}
-            disabled=${saving}
-            onChange=${(event) => onToggleEnabled(template, event.target.checked)}
-          />
-          enabled
-        </label>
-      </div>
+    <${Paper} sx=${{ mb: 1.25, p: 1.5 }}>
+      <${Stack} direction="row" justifyContent="space-between" alignItems="flex-start" spacing=${1.25}>
+        <${Box} sx=${{ minWidth: 0 }}>
+          <${Typography} variant="subtitle2" sx=${{ fontSize: 13 }}>${template?.name || template?.id}<//>
+          <${Typography} variant="caption" color="text.secondary" sx=${{ wordBreak: 'break-all' }}>${template?.id || ""}<//>
+        <//>
+        <${FormControlLabel}
+          control=${h(Switch, {
+            checked: template?.enabled === true,
+            disabled: saving,
+            onChange: (event) => onToggleEnabled(template, event.target.checked),
+            size: "small",
+          })}
+          label="enabled"
+          sx=${{ '& .MuiFormControlLabel-label': { fontSize: 12, color: 'text.secondary' } }}
+        />
+      <//>
 
-      ${template?.description && html`<div class="meta-text" style="margin-top:6px;">${template.description}</div>`}
+      ${template?.description && html`<${Typography} variant="caption" color="text.secondary" sx=${{ mt: 0.75 }}>${template.description}<//>`}
 
-      <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(130px,1fr));gap:6px;margin-top:8px;">
-        <span class="pill">spawned: ${stats.spawnedTotal || 0}</span>
-        <span class="pill">active: ${stats.activeCount || 0}</span>
-        <span class="pill">running: ${runningAgents.length}</span>
-        <span class="pill">action: ${template?.action || "create-task"}</span>
-      </div>
+      <${Stack} direction="row" flexWrap="wrap" gap=${0.75} sx=${{ mt: 1 }}>
+        <${Chip} label=${"spawned: " + (stats.spawnedTotal || 0)} size="small" variant="outlined" />
+        <${Chip} label=${"active: " + (stats.activeCount || 0)} size="small" variant="outlined" />
+        <${Chip} label=${"running: " + runningAgents.length} size="small" variant="outlined" />
+        <${Chip} label=${"action: " + (template?.action || "create-task")} size="small" variant="outlined" />
+      <//>
 
-      <div class="meta-text" style="margin-top:8px;">
+      <${Typography} variant="caption" color="text.secondary" sx=${{ mt: 1, display: 'block' }}>
         Last success: ${state?.last_success_at ? formatRelative(state.last_success_at) : "never"}
         ${state?.last_error ? ` · Last error: ${truncate(state.last_error, 100)}` : ""}
-      </div>
+      <//>
 
       ${runningAgents.length > 0 && html`
-        <div class="meta-text" style="margin-top:8px;font-weight:600;">Running agents</div>
-        <div style="display:flex;flex-direction:column;gap:4px;margin-top:4px;">
+        <${Typography} variant="caption" sx=${{ mt: 1, fontWeight: 600, display: 'block' }}>Running agents<//>
+        <${Stack} spacing=${0.5} sx=${{ mt: 0.5 }}>
           ${runningAgents.map((entry) => html`
-            <div class="meta-text" style="font-size:11px;">
+            <${Typography} variant="caption" color="text.secondary">
               ${entry.taskId} · ${entry.sdk || "auto"}${entry.model ? ` · ${entry.model}` : ""}
-            </div>
+            <//>
           `)}
-        </div>
+        <//>
       `}
 
       ${recentSpawned.length > 0 && html`
-        <div class="meta-text" style="margin-top:8px;font-weight:600;">Recent spawned tasks</div>
-        <div style="display:flex;flex-direction:column;gap:4px;margin-top:4px;">
+        <${Typography} variant="caption" sx=${{ mt: 1, fontWeight: 600, display: 'block' }}>Recent spawned tasks<//>
+        <${Stack} spacing=${0.5} sx=${{ mt: 0.5 }}>
           ${recentSpawned.map((entry) => html`
-            <div class="meta-text" style="font-size:11px;">
+            <${Typography} variant="caption" color="text.secondary">
               ${entry.id} · ${entry.status || "todo"} · ${entry.createdAt ? formatRelative(entry.createdAt) : "unknown"}
-            </div>
+            <//>
           `)}
-        </div>
+        <//>
       `}
 
       ${editing && html`
-        <div style="display:flex;flex-direction:column;gap:8px;margin-top:10px;">
-          <input class="input" value=${name} onInput=${(e) => setName(e.target.value)} placeholder="Template name" />
-          <input class="input" value=${description} onInput=${(e) => setDescription(e.target.value)} placeholder="Description" />
-          <div class="input-row">
-            <select class="input" value=${action} onChange=${(e) => setAction(e.target.value)}>
-              <option value="create-task">create-task</option>
-            </select>
-            <input
-              class="input"
+        <${Stack} spacing=${1} sx=${{ mt: 1.25 }}>
+          <${TextField} size="small" fullWidth value=${name} onChange=${(e) => setName(e.target.value)} placeholder="Template name" />
+          <${TextField} size="small" fullWidth value=${description} onChange=${(e) => setDescription(e.target.value)} placeholder="Description" />
+          <${Stack} direction="row" spacing=${1}>
+            <${TextField} select size="small" fullWidth value=${action} onChange=${(e) => setAction(e.target.value)}>
+              <${MenuItem} value="create-task">create-task<//>
+            <//>
+            <${TextField}
+              size="small"
+              fullWidth
               type="number"
-              min="1"
+              inputProps=${{ min: 1 }}
               value=${minIntervalMinutes}
-              onInput=${(e) => setMinIntervalMinutes(e.target.value)}
+              onChange=${(e) => setMinIntervalMinutes(e.target.value)}
               placeholder="Min interval (minutes)"
             />
-          </div>
-          <textarea class="input" rows="6" value=${triggerJson} onInput=${(e) => setTriggerJson(e.target.value)}></textarea>
-          <textarea class="input" rows="6" value=${configJson} onInput=${(e) => setConfigJson(e.target.value)}></textarea>
-          ${error && html`<div class="meta-text" style="color:var(--color-error);">${error}</div>`}
-        </div>
+          <//>
+          <${TextField} multiline rows=${6} fullWidth size="small" value=${triggerJson} onChange=${(e) => setTriggerJson(e.target.value)} />
+          <${TextField} multiline rows=${6} fullWidth size="small" value=${configJson} onChange=${(e) => setConfigJson(e.target.value)} />
+          ${error && html`<${Alert} severity="error" variant="outlined" sx=${{ py: 0 }}>${error}<//>`}
+        <//>
       `}
 
-      <div class="btn-row" style="margin-top:10px;">
-        <button class="btn btn-ghost btn-sm" onClick=${() => setEditing((prev) => !prev)}>
+      <${Stack} direction="row" spacing=${1} sx=${{ mt: 1.25 }}>
+        <${Button} variant="text" size="small" onClick=${() => setEditing((prev) => !prev)}>
           ${editing ? "Close Editor" : "Edit"}
-        </button>
+        <//>
         ${editing && html`
-          <button class="btn btn-primary btn-sm" disabled=${saving} onClick=${handleSave}>
+          <${Button} variant="contained" size="small" disabled=${saving} onClick=${handleSave}>
             ${saving ? "Saving…" : "Save Template"}
-          </button>
+          <//>
         `}
-      </div>
-    </div>
+      <//>
+    <//>
   `;
 }
 

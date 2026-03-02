@@ -7,6 +7,8 @@ import htm from "htm";
 
 const html = htm.bind(h);
 
+import { Typography, Box, Stack, Card, CardContent, Button, IconButton, Chip, Divider, Paper, TextField, InputAdornment, CircularProgress, Alert, Tooltip, Switch, FormControlLabel, Dialog, DialogTitle, DialogContent, DialogActions, List, ListItem, ListItemButton, ListItemText, ListItemIcon, Menu, MenuItem, Tabs, Tab, Skeleton, Badge, Avatar, LinearProgress, Grid } from "@mui/material";
+
 import { haptic, showConfirm } from "../modules/telegram.js";
 import { apiFetch, sendCommandToChat } from "../modules/api.js";
 import {
@@ -20,7 +22,6 @@ import {
 import { ICONS } from "../modules/icons.js";
 import { iconText as iconTextUtil } from "../modules/icon-utils.js";
 import { cloneValue, truncate } from "../modules/utils.js";
-import { Card, Badge, SkeletonCard, Spinner } from "../components/shared.js";
 import { SegmentedControl, Collapsible } from "../components/forms.js";
 
 /* ─── Command registry for autocomplete ─── */

@@ -9,6 +9,8 @@ import htm from "htm";
 
 const html = htm.bind(h);
 
+import { Typography, Box, Stack, Card, CardContent, Button, IconButton, Chip, Divider, Paper, TextField, InputAdornment, CircularProgress, Alert, Tooltip, Switch, FormControlLabel, Dialog, DialogTitle, DialogContent, DialogActions, List, ListItem, ListItemButton, ListItemText, ListItemIcon, Menu, MenuItem, Tabs, Tab, Skeleton, Badge, Avatar, LinearProgress, Grid } from "@mui/material";
+
 /* ─── Inner error boundary for complex sub-components ─── */
 class ChatSafeBoundary extends Component {
   constructor(props) {
@@ -25,15 +27,9 @@ class ChatSafeBoundary extends Component {
     if (this.state.error) {
       const retry = () => this.setState({ error: null });
       return html`
-        <div class="chat-error-inline" style="padding:16px;text-align:center;color:var(--text-secondary,#999);opacity:0.8;">
-          <span style="font-size:18px;">${resolveIcon("alert")}</span>
-          <span style="margin-left:8px;font-size:12px;">
-            ${this.props.label || "Component"} failed to render.
-          </span>
-          <button class="btn btn-ghost btn-xs" style="margin-left:8px;" onClick=${retry}>
-            Retry
-          </button>
-        </div>
+        <${Alert} severity="error" sx=${{ opacity: 0.8 }} action=${html`<${Button} size="small" onClick=${retry}>Retry<//>`}>
+          ${this.props.label || "Component"} failed to render.
+        <//>
       `;
     }
     return this.props.children;
@@ -152,27 +148,30 @@ function ChatWelcome({ onNewSession, onQuickCommand }) {
   ];
 
   return html`
-    <div class="chat-welcome">
-      <div class="chat-welcome-icon">${resolveIcon("bot")}</div>
-      <div class="chat-welcome-title">Welcome to Bosun</div>
-      <div class="chat-welcome-subtitle">
+    <${Box} class="chat-welcome" sx=${{ display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", height: "100%", p: 4 }}>
+      <${Avatar} sx=${{ width: 56, height: 56, mb: 2, bgcolor: "primary.main" }}>${resolveIcon("bot")}<//>
+      <${Typography} variant="h5" gutterBottom>Welcome to Bosun<//>
+      <${Typography} variant="body2" color="text.secondary" sx=${{ textAlign: "center", maxWidth: 420, mb: 3 }}>
         Select a session from the sidebar, start a new chat, or use a quick
         action below to get started.
-      </div>
-      <div class="chat-welcome-actions">
+      <//>
+      <${Stack} direction="row" spacing=${1} flexWrap="wrap" justifyContent="center">
         ${quickActions.map(
           (a) => html`
-            <button
+            <${Button}
               key=${a.label}
-              class="btn btn-ghost btn-sm chat-welcome-btn"
+              variant="outlined"
+              size="small"
+              startIcon=${resolveIcon(a.icon) || a.icon}
               onClick=${a.action}
+              sx=${{ textTransform: "none" }}
             >
-              <span>${resolveIcon(a.icon) || a.icon}</span> ${a.label}
-            </button>
+              ${a.label}
+            <//>
           `,
         )}
-      </div>
-    </div>
+      <//>
+    <//>
   `;
 }
 
@@ -185,25 +184,26 @@ function SlashMenu({ filter, onSelect, activeIndex, commands }) {
   if (matches.length === 0) return null;
 
   return html`
-    <div class="slash-menu">
-      ${matches.map(
-        (c, i) => html`
-          <div
-            key=${c.cmd}
-            class="slash-menu-item ${i === activeIndex ? "active" : ""}"
-            onMouseDown=${(e) => {
-              e.preventDefault();
-              onSelect(c.cmd);
-            }}
-          >
-            <span class="slash-menu-item-icon">${resolveIcon(c.icon) || c.icon}</span>
-            <span class="slash-menu-item-cmd">${c.cmd}</span>
-            <span class="slash-menu-item-desc">${c.desc}</span>
-            ${c.source === "sdk" && html`<span class="slash-menu-item-badge">SDK</span>`}
-          </div>
-        `,
-      )}
-    </div>
+    <${Paper} elevation=${4} class="slash-menu" sx=${{ maxHeight: 260, overflowY: "auto", borderRadius: 2, position: "absolute", bottom: "100%", left: 0, right: 0, zIndex: 10 }}>
+      <${List} dense disablePadding>
+        ${matches.map(
+          (c, i) => html`
+            <${ListItem} key=${c.cmd} disablePadding secondaryAction=${c.source === "sdk" && html`<${Chip} label="SDK" size="small" color="secondary" />`}>
+              <${ListItemButton}
+                selected=${i === activeIndex}
+                onMouseDown=${(e) => {
+                  e.preventDefault();
+                  onSelect(c.cmd);
+                }}
+              >
+                <${ListItemIcon} sx=${{ minWidth: 32 }}>${resolveIcon(c.icon) || c.icon}<//>
+                <${ListItemText} primary=${c.cmd} secondary=${c.desc} />
+              <//>
+            <//>
+          `,
+        )}
+      <//>
+    <//>
   `;
 }
 
@@ -229,9 +229,11 @@ function SessionRenameInput({ value, onSave, onCancel }) {
   }
 
   return html`
-    <input
-      ref=${inputRef}
-      class="session-item-rename"
+    <${TextField}
+      inputRef=${inputRef}
+      variant="standard"
+      size="small"
+      fullWidth
       value=${val}
       onInput=${(e) => setVal(e.target.value)}
       onKeyDown=${(e) => {
@@ -242,6 +244,7 @@ function SessionRenameInput({ value, onSave, onCancel }) {
         if (e.key === "Escape") onCancel();
       }}
       onBlur=${commit}
+      sx=${{ "& .MuiInput-input": { fontSize: "0.875rem", py: 0.5 } }}
     />
   `;
 }
@@ -1005,25 +1008,25 @@ export function ChatTab() {
   // If we hit a critical error during signal reads, show recovery UI
   if (chatError) {
     return html`
-      <div class="session-panel" style="display:flex;align-items:center;justify-content:center;height:100%;padding:24px;">
-        <div style="text-align:center;color:var(--text-secondary,#999);">
-          <div style="font-size:28px;margin-bottom:12px;">${resolveIcon("alert")}</div>
-          <div style="font-size:14px;font-weight:600;margin-bottom:8px;">Chat failed to load</div>
-          <div style="font-size:12px;opacity:0.7;margin-bottom:16px;">${chatError}</div>
-          <button class="btn btn-primary btn-sm" onClick=${() => setChatError(null)}>Retry</button>
-        </div>
-      </div>
+      <${Box} class="session-panel" sx=${{ display: "flex", alignItems: "center", justifyContent: "center", height: "100%", p: 3 }}>
+        <${Stack} alignItems="center" spacing=${1.5}>
+          <${Typography} sx=${{ fontSize: 28 }}>${resolveIcon("alert")}<//>
+          <${Typography} variant="subtitle1" fontWeight=${600}>Chat failed to load<//>
+          <${Typography} variant="caption" color="text.secondary">${chatError}<//>
+          <${Button} variant="contained" size="small" onClick=${() => setChatError(null)}>Retry<//>
+        <//>
+      <//>
     `;
   }
 
   return html`
-    <div class="session-panel">
-      <div
+    <${Box} class="session-panel">
+      <${Box}
         class="session-split ${sessionId ? 'has-active-session' : ''} ${drawerOpen ? 'drawer-open' : ''}"
         data-mobile=${isMobile ? "true" : "false"}
       >
         <!-- Left panel: Sessions sidebar -->
-        <div class="session-pane">
+        <${Box} class="session-pane">
           <${ChatSafeBoundary} label="Session List">
             <${SessionList}
               showArchived=${showArchived}
@@ -1036,69 +1039,79 @@ export function ChatTab() {
               onSelect=${handleSelectSession}
             />
           <//>
-        </div>
+        <//>
 
         <!-- Right panel: Chat area -->
-        <div class="session-detail">
+        <${Box} class="session-detail">
           ${sessionId &&
           html`
-            <div class="chat-shell-header">
-              <div class="chat-shell-inner">
+            <${Paper} elevation=${1} class="chat-shell-header" sx=${{ borderRadius: 0 }}>
+              <${Box} class="chat-shell-inner" sx=${{ display: "flex", alignItems: "center", gap: 1.5, px: 2, py: 1 }}>
                 <!-- Sessions toggle: shown on mobile always; on desktop only when rail is collapsed (CSS-controlled) -->
-                <button class="session-drawer-btn session-drawer-btn-rail" onClick=${handleShowSessions}>
-                  ${iconText(":menu: Sessions")}
-                </button>
-                <div class="chat-shell-title">
-                  <div class="chat-shell-name">${sessionTitle}</div>
-                  <div class="chat-shell-meta">${sessionMeta || "Session"}</div>
-                </div>
-                <div class="chat-shell-actions">
-                  <button
-                    class="btn btn-ghost btn-sm"
+                <${IconButton} class="session-drawer-btn session-drawer-btn-rail" onClick=${handleShowSessions} size="small">
+                  ${resolveIcon("menu")}
+                <//>
+                <${Box} class="chat-shell-title" sx=${{ flex: 1, minWidth: 0 }}>
+                  <${Typography} variant="subtitle1" noWrap fontWeight=${600}>${sessionTitle}<//>
+                  <${Typography} variant="caption" color="text.secondary" noWrap>${sessionMeta || "Session"}<//>
+                <//>
+                <${Stack} direction="row" spacing=${0.5} class="chat-shell-actions">
+                  <${Button}
+                    variant="text"
+                    size="small"
                     onClick=${() => openMeetingRoom("voice")}
                     title="Start voice meeting for this session"
+                    startIcon=${resolveIcon("phone")}
+                    sx=${{ textTransform: "none" }}
                   >
-                    <span class="btn-icon">${resolveIcon("phone")}</span>
                     Call
-                  </button>
-                  <button
-                    class="btn btn-ghost btn-sm"
+                  <//>
+                  <${Button}
+                    variant="text"
+                    size="small"
                     onClick=${() => openMeetingRoom("video")}
                     title="Start video meeting for this session"
+                    startIcon=${resolveIcon("camera")}
+                    sx=${{ textTransform: "none" }}
                   >
-                    <span class="btn-icon">${resolveIcon("camera")}</span>
                     Video
-                  </button>
+                  <//>
                   ${isDesktop &&
                   html`
-                    <button
-                      class="btn btn-ghost btn-sm"
+                    <${Button}
+                      variant="text"
+                      size="small"
                       onClick=${() => setFocusMode((prev) => !prev)}
                       title=${focusMode ? "Exit focus mode" : "Enter focus mode"}
+                      sx=${{ textTransform: "none" }}
                     >
                       ${focusMode ? "Exit Focus" : "Focus"}
-                    </button>
+                    <//>
                   `}
                   ${activeSession?.status === "archived"
                     ? html`
-                        <button
-                          class="btn btn-ghost btn-sm"
+                        <${Button}
+                          variant="text"
+                          size="small"
                           onClick=${() => resumeSession(activeSession.id)}
+                          sx=${{ textTransform: "none" }}
                         >
                           Restore
-                        </button>
+                        <//>
                       `
                     : html`
-                        <button
-                          class="btn btn-ghost btn-sm"
+                        <${Button}
+                          variant="text"
+                          size="small"
                           onClick=${() => archiveSession(activeSession.id)}
+                          sx=${{ textTransform: "none" }}
                         >
                           Archive
-                        </button>
+                        <//>
                       `}
-                </div>
-              </div>
-            </div>
+                <//>
+              <//>
+            <//>
           `}
           ${sessionId
             ? html`<${ChatSafeBoundary} label="Chat View"><${ChatView} sessionId=${sessionId} readOnly embedded /><//>`
@@ -1110,7 +1123,7 @@ export function ChatTab() {
               `}
 
           <!-- Bottom input area (always visible) -->
-          <div class="chat-input-area">
+          <${Box} class="chat-input-area">
             ${showSlashMenu &&
             html`
               <${SlashMenu}
@@ -1124,24 +1137,22 @@ export function ChatTab() {
               <${ChatInputToolbar} />
             <//>
             ${pendingAttachments.length > 0 && html`
-              <div class="chat-attachments-pending">
+              <${Stack} direction="row" spacing=${0.5} flexWrap="wrap" class="chat-attachments-pending" sx=${{ px: 1, py: 0.5 }}>
                 ${pendingAttachments.map((att, index) => html`
-                  <div class="chat-attachment-chip" key=${att.id || `${att.name}-${index}`}>
-                    <span class="chat-attachment-chip-name">${att.name || "attachment"}</span>
-                    ${att.size ? html`<span class="chat-attachment-chip-size">${formatAttachmentSize(att.size)}</span>` : ""}
-                    <button
-                      class="btn btn-ghost btn-xs chat-attachment-remove"
-                      onClick=${() => removeAttachment(index)}
-                      title="Remove attachment"
-                    >✕</button>
-                  </div>
+                  <${Chip}
+                    key=${att.id || `${att.name}-${index}`}
+                    label=${`${att.name || "attachment"}${att.size ? ` (${formatAttachmentSize(att.size)})` : ""}`}
+                    onDelete=${() => removeAttachment(index)}
+                    size="small"
+                    variant="outlined"
+                  />
                 `)}
                 ${uploadingAttachments && html`
-                  <div class="chat-attachment-uploading">Uploading...</div>
+                  <${Chip} label="Uploading..." size="small" icon=${html`<${CircularProgress} size=${14} />`} />
                 `}
-              </div>
+              <//>
             `}
-            <div class="chat-input-wrapper">
+            <${Box} class="chat-input-wrapper" sx=${{ display: "flex", alignItems: "flex-end", gap: 0.5, px: 1, py: 0.5 }}>
               <input
                 ref=${fileInputRef}
                 type="file"
@@ -1149,21 +1160,25 @@ export function ChatTab() {
                 style="display:none"
                 onChange=${handleAttachmentInput}
               />
-              <button
-                class="btn btn-ghost chat-attach-btn"
+              <${IconButton}
+                size="small"
                 disabled=${uploadingAttachments}
                 onClick=${() => fileInputRef.current?.click?.()}
                 title="Attach file"
               >
                 ${resolveIcon(":link:")}
-              </button>
-              <textarea
-                ref=${textareaRef}
-                class=${`chat-textarea${dragActive ? " chat-input-drag" : ""}`}
+              <//>
+              <${TextField}
+                inputRef=${textareaRef}
+                class=${dragActive ? "chat-input-drag" : ""}
                 placeholder=${sessionId
                   ? 'Send a message… (type "/" for commands)'
                   : 'Start a new chat or type "/" for commands'}
-                rows="1"
+                multiline
+                maxRows=${4}
+                fullWidth
+                size="small"
+                variant="outlined"
                 value=${inputValue}
                 onInput=${handleInputChange}
                 onKeyDown=${handleKeyDown}
@@ -1171,80 +1186,84 @@ export function ChatTab() {
                 onDragOver=${handleInputDragOver}
                 onDragLeave=${handleInputDragLeave}
                 onDrop=${handleInputDrop}
+                sx=${{ "& .MuiOutlinedInput-root": { borderRadius: 2 } }}
               />
               <${VoiceMicButton}
                 disabled=${sending}
                 title="Live voice mode"
               />
               ${activeAgentInfo.value?.busy && !stoppingAgent && html`
-                <button
-                  class="chat-stop-btn"
+                <${IconButton}
                   onClick=${handleStop}
                   title="Stop agent"
                   aria-label="Stop agent"
-                >⏹</button>
+                  size="small"
+                  color="error"
+                >⏹<//>
               `}
-              <div class="chat-send-group" ref=${sendMenuRef}>
-                <button
-                  class="chat-send-main"
+              <${Box} class="chat-send-group" ref=${sendMenuRef} sx=${{ display: "flex", position: "relative" }}>
+                <${IconButton}
+                  color="primary"
                   disabled=${(!inputValue.trim() && pendingAttachments.length === 0) || uploadingAttachments}
                   onClick=${activeAgentInfo.value?.busy ? handleSteerWithMessage : handleSend}
                   title=${activeAgentInfo.value?.busy ? "Steer with Message (Enter)" : "Send (Enter)"}
-                >➤</button>
-                <button
-                  class="chat-send-chevron"
+                  size="small"
+                >➤<//>
+                <${IconButton}
+                  size="small"
                   disabled=${(!inputValue.trim() && pendingAttachments.length === 0) || uploadingAttachments}
                   onClick=${(e) => { e.stopPropagation(); setShowSendMenu(v => !v); }}
                   aria-label="Send options"
                   title="Send options"
-                >▾</button>
+                >▾<//>
                 ${showSendMenu && html`
-                  <div class="chat-send-menu">
-                    <button class="chat-send-menu-item" onClick=${handleStopAndSend}>
-                      <span class="chat-send-menu-item-icon">⊳</span>
-                      <span class="chat-send-menu-item-label">Stop and Send</span>
-                    </button>
-                    <button class="chat-send-menu-item" onClick=${handleAddToQueue}>
-                      <span class="chat-send-menu-item-icon">+</span>
-                      <span class="chat-send-menu-item-label">Add to Queue</span>
-                      <span class="chat-send-menu-item-kbd">Alt+Enter</span>
-                    </button>
-                    <button class="chat-send-menu-item active" onClick=${handleSteerWithMessage}>
-                      <span class="chat-send-menu-item-icon">→</span>
-                      <span class="chat-send-menu-item-label">Steer with Message</span>
-                      <span class="chat-send-menu-item-kbd">Enter</span>
-                    </button>
-                  </div>
+                  <${Paper} elevation=${4} class="chat-send-menu" sx=${{ position: "absolute", bottom: "100%", right: 0, minWidth: 200, borderRadius: 2, overflow: "hidden", zIndex: 10 }}>
+                    <${List} dense disablePadding>
+                      <${ListItemButton} onClick=${handleStopAndSend}>
+                        <${ListItemIcon} sx=${{ minWidth: 28 }}>⊳<//>
+                        <${ListItemText} primary="Stop and Send" />
+                      <//>
+                      <${ListItemButton} onClick=${handleAddToQueue}>
+                        <${ListItemIcon} sx=${{ minWidth: 28 }}>+<//>
+                        <${ListItemText} primary="Add to Queue" secondary="Alt+Enter" />
+                      <//>
+                      <${ListItemButton} selected onClick=${handleSteerWithMessage}>
+                        <${ListItemIcon} sx=${{ minWidth: 28 }}>→<//>
+                        <${ListItemText} primary="Steer with Message" secondary="Enter" />
+                      <//>
+                    <//>
+                  <//>
                 `}
-              </div>
-            </div>
-            <div class="chat-input-hint">
-              <span>Shift+Enter for new line</span>
-              <span>Type / for commands</span>
+              <//>
+            <//>
+            <${Stack} direction="row" spacing=${1} class="chat-input-hint" sx=${{ px: 1.5, py: 0.5 }}>
+              <${Typography} variant="caption" color="text.secondary">Shift+Enter for new line<//>
+              <${Typography} variant="caption" color="text.secondary">Type / for commands<//>
               ${offlineQueueSize.peek() > 0 && html`
-                <span class="chat-offline-badge">${iconText(`:upload: ${offlineQueueSize.peek()} queued`)}</span>
+                <${Chip} label=${`${offlineQueueSize.peek()} queued`} size="small" color="warning" variant="outlined" />
               `}
               ${queueCount > 0 && html`
-                <span class="chat-offline-badge">⏳ ${queueCount} pending</span>
+                <${Chip} label=${`⏳ ${queueCount} pending`} size="small" color="info" variant="outlined" />
               `}
-            </div>
-          </div>
-        </div>
-      </div>
+            <//>
+          <//>
+        <//>
+      <//>
       ${focusMode && html`
-        <button 
+        <${IconButton}
           class="focus-exit-fab"
           onClick=${() => setFocusMode(false)}
           title="Exit focus mode"
-        >${resolveIcon("close")}</button>
+          sx=${{ position: "fixed", bottom: 16, right: 16, zIndex: 1000, bgcolor: "background.paper", boxShadow: 3 }}
+        >${resolveIcon("close")}<//>
       `}
       ${isMobile &&
       html`
-        <div
+        <${Box}
           class="session-drawer-backdrop ${drawerOpen ? "open" : ""}"
           onClick=${() => setDrawerOpen(false)}
-        ></div>
+        />
       `}
-    </div>
+    <//>
   `;
 }

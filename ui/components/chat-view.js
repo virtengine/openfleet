@@ -2,6 +2,8 @@
  *  Component: Chat View — ChatGPT-style message interface
  *  with real-time WS push, optimistic rendering, agent status
  *  tracking, and pending/retry message support.
+ *
+ *  UI layer: MUI Material (Paper, Typography, Box, etc.)
  * ────────────────────────────────────────────────────────────── */
 import { h } from "preact";
 import { memo } from "preact/compat";
@@ -11,6 +13,11 @@ import { apiFetch } from "../modules/api.js";
 import { showToast } from "../modules/state.js";
 import { formatRelative, truncate, formatBytes } from "../modules/utils.js";
 import { iconText, resolveIcon } from "../modules/icon-utils.js";
+import {
+  Paper, Typography, Box, Stack, IconButton, TextField,
+  InputAdornment, Chip, CircularProgress, Skeleton, Tooltip,
+  Divider, Avatar, Button, Collapse, Alert, Fab,
+} from "@mui/material";
 import {
   sessionMessages,
   loadSessionMessages,
@@ -186,12 +193,18 @@ const CodeBlock = memo(function CodeBlock({ code }) {
   }, [code]);
 
   return html`
-    <div class="chat-code-block">
-      <button class="chat-code-copy" onClick=${handleCopy}>
-        ${resolveIcon(copied ? "✓" : ":clipboard:")}
-      </button>
-      <pre><code>${code}</code></pre>
-    </div>
+    <${Paper} variant="outlined" sx=${{ position: 'relative', borderRadius: 1, overflow: 'auto', my: 0.5, backgroundColor: 'rgba(0,0,0,0.04)' }}>
+      <${Tooltip} title=${copied ? "Copied!" : "Copy code"} placement="left">
+        <${IconButton}
+          size="small"
+          onClick=${handleCopy}
+          sx=${{ position: 'absolute', top: 4, right: 4, opacity: 0.7, '&:hover': { opacity: 1 } }}
+        >
+          ${resolveIcon(copied ? "✓" : ":clipboard:")}
+        </${IconButton}>
+      </${Tooltip}>
+      <pre style=${{ margin: 0, padding: '12px', fontSize: '0.8125rem', lineHeight: 1.5, overflowX: 'auto' }}><code>${code}</code></pre>
+    </${Paper}>
   `;
 });
 
@@ -325,7 +338,7 @@ function AttachmentList({ attachments }) {
   const list = Array.isArray(attachments) ? attachments.filter(Boolean) : [];
   if (!list.length) return null;
   return html`
-    <div class="chat-attachment-list">
+    <${Stack} direction="row" spacing=${0.5} sx=${{ flexWrap: 'wrap', mt: 0.5 }}>
       ${list.map((att, index) => {
         const name = att.name || att.filename || att.title || "attachment";
         const size = att.size ? formatBytes(att.size) : "";
@@ -334,22 +347,22 @@ function AttachmentList({ attachments }) {
         const url = att.url || att.downloadUrl || att.filePath || att.path || "";
         const isImage = kind === "image";
         return html`
-          <div class="chat-attachment-item" key=${att.id || `${name}-${index}`}>
+          <${Paper} variant="outlined" sx=${{ display: 'flex', alignItems: 'center', gap: 0.5, p: 0.5, borderRadius: 1 }} key=${att.id || `${name}-${index}`}>
             ${isImage && url
-              ? html`<img class="chat-attachment-thumb" src=${url} alt=${name} />`
-              : html`<span class="chat-attachment-icon">${resolveIcon(":link:")}</span>`}
-            <div class="chat-attachment-meta">
+              ? html`<img style=${{ width: 32, height: 32, borderRadius: 4, objectFit: 'cover' }} src=${url} alt=${name} />`
+              : html`<${Avatar} sx=${{ width: 24, height: 24, fontSize: '0.75rem', bgcolor: 'action.selected' }}>${resolveIcon(":link:")}</${Avatar}>`}
+            <${Box} sx=${{ minWidth: 0 }}>
               ${url
-                ? html`<a class="chat-attachment-name" href=${url} target="_blank" rel="noopener">${name}</a>`
-                : html`<span class="chat-attachment-name">${name}</span>`}
-              <div class="chat-attachment-sub">
+                ? html`<${Typography} variant="caption" component="a" href=${url} target="_blank" rel="noopener" sx=${{ display: 'block', color: 'primary.main', textDecoration: 'none', '&:hover': { textDecoration: 'underline' } }}>${name}</${Typography}>`
+                : html`<${Typography} variant="caption" sx=${{ display: 'block' }}>${name}</${Typography}>`}
+              <${Typography} variant="caption" color="text.secondary" sx=${{ fontSize: '0.625rem' }}>
                 ${kind}${size ? ` · ${size}` : ""}
-              </div>
-            </div>
-          </div>
+              </${Typography}>
+            </${Box}>
+          </${Paper}>
         `;
       })}
-    </div>
+    </${Stack}>
   `;
 }
 
@@ -370,74 +383,85 @@ const ChatBubble = memo(function ChatBubble({
   const contentText = messageText(msg);
   const role = msg.role ||
     (isTool || isError ? "system" : msg.type === "system" ? "system" : "assistant");
-  const bubbleClass = isError
-    ? "error"
-    : isTool
-      ? "tool"
-      : role === "user"
-        ? "user"
-        : role === "system"
-          ? "system"
-          : "assistant";
+  const isUser = role === "user";
+  const isSystem = role === "system";
   const label =
     isTool
       ? msg.type === "tool_call" ? "TOOL CALL" : "TOOL RESULT"
       : isError ? "ERROR" : null;
   const showModelResponseLabel =
-    isFinalModelResponse && !isTool && !isError && role !== "user" && role !== "system";
+    isFinalModelResponse && !isTool && !isError && !isUser && !isSystem;
+
+  const bubbleSx = isError
+    ? { p: 1.5, borderRadius: 2, backgroundColor: 'rgba(211,47,47,0.08)', borderLeft: '3px solid', borderLeftColor: 'error.main' }
+    : isTool
+      ? { p: 1.5, borderRadius: 2, backgroundColor: 'rgba(0,0,0,0.03)', borderLeft: '3px solid', borderLeftColor: 'info.main' }
+      : isUser
+        ? { p: 1.5, borderRadius: 2, backgroundColor: 'rgba(218,119,86,0.12)', ml: 'auto', maxWidth: '85%' }
+        : isSystem
+          ? { p: 1.5, borderRadius: 2, backgroundColor: 'rgba(0,0,0,0.03)', fontStyle: 'italic' }
+          : { p: 1.5, borderRadius: 2, maxWidth: '95%' };
+
   return html`
-    <div class="chat-bubble ${bubbleClass} ${showModelResponseLabel ? "chat-bubble-final" : ""}">
-      ${role === "system" && !isTool
+    <${Paper}
+      elevation=${0}
+      sx=${{ ...bubbleSx, mb: 1, ...(showModelResponseLabel ? { borderLeft: '3px solid', borderLeftColor: 'primary.main' } : {}) }}
+    >
+      ${isSystem && !isTool
         ? html`
-            <div class="chat-system-text">
+            <${Typography} variant="body2" color="text.secondary" component="div">
               <${MessageContent} text=${contentText} />
-            </div>
+            </${Typography}>
           `
         : html`
-            ${label ? html`<div class="chat-bubble-label">${label}</div>` : null}
+            ${label ? html`<${Chip} label=${label} size="small" color=${isError ? "error" : "info"} variant="outlined" sx=${{ mb: 0.5, height: 20, fontSize: '0.6875rem' }} />` : null}
             ${showModelResponseLabel
-              ? html`<div class="chat-bubble-label chat-bubble-label-final">MODEL RESPONSE</div>`
+              ? html`<${Chip} label="MODEL RESPONSE" size="small" color="primary" variant="outlined" sx=${{ mb: 0.5, height: 20, fontSize: '0.6875rem' }} />`
               : null}
-            <div class="chat-bubble-content">
+            <${Box}>
               ${isEditing
                 ? html`
-                    <div class="chat-edit-block">
-                      <textarea
-                        class="chat-edit-textarea"
+                    <${Box} sx=${{ display: 'flex', flexDirection: 'column', gap: 1 }}>
+                      <${TextField}
+                        fullWidth
+                        multiline
+                        rows=${3}
+                        size="small"
                         value=${editingText}
                         onInput=${(e) => onEditInput?.(e.target.value)}
-                        rows="3"
+                        sx=${{ '& .MuiInputBase-root': { fontSize: '0.875rem' } }}
                       />
-                      <div class="chat-edit-actions">
-                        <button class="btn btn-ghost btn-xs" onClick=${onEditCancel}>Cancel</button>
-                        <button
-                          class="btn btn-primary btn-xs"
+                      <${Stack} direction="row" spacing=${1} justifyContent="flex-end">
+                        <${Button} size="small" variant="text" onClick=${onEditCancel}>Cancel</${Button}>
+                        <${Button}
+                          size="small"
+                          variant="contained"
                           disabled=${!String(editingText || "").trim()}
                           onClick=${onEditSave}
                         >
                           Save
-                        </button>
-                      </div>
-                    </div>
+                        </${Button}>
+                      </${Stack}>
+                    </${Box}>
                   `
                 : html`
                     <${MessageContent} text=${contentText} />
                     <${AttachmentList} attachments=${msg.attachments} />
                   `}
-            </div>
-            <div class="chat-bubble-time">
+            </${Box}>
+            <${Typography} variant="caption" color="text.secondary" sx=${{ display: 'flex', alignItems: 'center', gap: 0.5, mt: 0.5 }}>
               ${msg.timestamp ? formatRelative(msg.timestamp) : ""}
               ${msg.edited ? " · edited" : ""}
-              ${role === "user" && canEdit && !isEditing
+              ${isUser && canEdit && !isEditing
                 ? html`
-                    <button class="chat-edit-btn" onClick=${() => onEditStart?.(msg)}>
+                    <${Button} size="small" variant="text" sx=${{ minWidth: 'auto', p: 0, ml: 0.5, fontSize: '0.6875rem' }} onClick=${() => onEditStart?.(msg)}>
                       Edit
-                    </button>
+                    </${Button}>
                   `
                 : null}
-            </div>
+            </${Typography}>
           `}
-    </div>
+    </${Paper}>
   `;
 }, (prev, next) =>
   prev.msg === next.msg &&
@@ -459,29 +483,28 @@ const TraceEvent = memo(function TraceEvent({ msg }) {
     setExpanded(info.kind === "error");
   }, [msg]);
 
+  const chipColor = info.kind === "error" ? "error" : info.kind === "tool" ? "info" : "default";
+
   return html`
-    <div class="chat-trace-item ${info.kind} ${expanded ? "expanded" : ""}">
-      <button
-        class="chat-trace-head chat-trace-head-toggle"
-        type="button"
+    <${Box} sx=${{ mb: 0.5 }}>
+      <${Chip}
+        label=${`${info.tag}: ${info.title}`}
+        size="small"
+        color=${chipColor}
+        variant="outlined"
         onClick=${() => hasBody && setExpanded((prev) => !prev)}
         disabled=${!hasBody}
-      >
-        <span class="chat-trace-tag ${info.kind}">${info.tag}</span>
-        <span class="chat-trace-title">${info.title}</span>
-        <span class="chat-trace-time">
-          ${msg.timestamp ? formatRelative(msg.timestamp) : ""}
-        </span>
-        ${hasBody && html`<span class="chat-trace-chevron">${expanded ? "▾" : "▸"}</span>`}
-      </button>
-      ${hasBody && html`
-        <div class="chat-trace-content-wrap ${expanded ? "expanded" : ""}">
-          <div class="chat-trace-content ${longBody ? "chat-trace-content-scroll" : ""}">
-            <${MessageContent} text=${text} />
-          </div>
-        </div>
-      `}
-    </div>
+        icon=${hasBody ? html`<span style=${{ fontSize: '0.75rem', marginLeft: 8 }}>${expanded ? "▾" : "▸"}</span>` : null}
+        deleteIcon=${msg.timestamp ? html`<${Typography} variant="caption" color="text.secondary" sx=${{ ml: 0.5, fontSize: '0.625rem' }}>${formatRelative(msg.timestamp)}</${Typography}>` : null}
+        onDelete=${msg.timestamp ? () => {} : undefined}
+        sx=${{ maxWidth: '100%', height: 'auto', '& .MuiChip-label': { whiteSpace: 'normal', py: 0.25 }, cursor: hasBody ? 'pointer' : 'default' }}
+      />
+      <${Collapse} in=${!!(hasBody && expanded)}>
+        <${Paper} variant="outlined" sx=${{ mt: 0.5, p: 1, fontSize: '0.75rem', maxHeight: longBody ? 300 : 'none', overflow: longBody ? 'auto' : 'visible' }}>
+          <${MessageContent} text=${text} />
+        </${Paper}>
+      </${Collapse}>
+    </${Box}>
   `;
 }, (prev, next) => prev.msg === next.msg);
 
@@ -529,22 +552,44 @@ const ThinkingGroup = memo(function ThinkingGroup({ msgs, isLatest = false, isAg
   const label = parts.join(", ") || `${msgs.length} step${msgs.length !== 1 ? "s" : ""}`;
 
   return html`
-    <div class="thinking-group ${expanded ? "expanded" : ""} ${hasErrors ? "has-errors" : ""} ${isLatest && isAgentActive ? "thinking-group-active" : ""}">
-      <button class="thinking-group-head" type="button" onClick=${handleToggle}>
-        <span class="thinking-group-badge">
-          ${isLatest && isAgentActive
-            ? iconText(":cpu: Working…")
-            : iconText(":cpu: Thinking")}
-        </span>
-        <span class="thinking-group-label">${label}</span>
-        <span class="thinking-group-chevron">${expanded ? "▾" : "▸"}</span>
-      </button>
-      <div class="thinking-group-body-wrap ${expanded ? "expanded" : ""}">
-        <div class="thinking-group-body">
+    <${Paper}
+      variant="outlined"
+      sx=${{
+        mb: 1,
+        borderRadius: 2,
+        overflow: 'hidden',
+        ...(hasErrors ? { borderColor: 'error.main' } : {}),
+        ...(isLatest && isAgentActive ? { borderColor: 'primary.main', boxShadow: '0 0 0 1px rgba(25,118,210,0.2)' } : {}),
+      }}
+    >
+      <${Box}
+        onClick=${handleToggle}
+        sx=${{
+          display: 'flex', alignItems: 'center', gap: 1, px: 1.5, py: 0.75,
+          cursor: 'pointer', userSelect: 'none',
+          backgroundColor: 'rgba(0,0,0,0.02)',
+          '&:hover': { backgroundColor: 'rgba(0,0,0,0.04)' },
+        }}
+      >
+        ${isLatest && isAgentActive
+          ? html`<${CircularProgress} size=${14} thickness=${5} sx=${{ mr: 0.5 }} />`
+          : null}
+        <${Chip}
+          label=${isLatest && isAgentActive ? "Working…" : "Thinking"}
+          size="small"
+          color=${isLatest && isAgentActive ? "primary" : "default"}
+          variant=${isLatest && isAgentActive ? "filled" : "outlined"}
+          sx=${{ height: 22, fontSize: '0.6875rem' }}
+        />
+        <${Typography} variant="caption" color="text.secondary" sx=${{ flex: 1 }}>${label}</${Typography}>
+        <${Typography} variant="caption" color="text.secondary">${expanded ? "▾" : "▸"}</${Typography}>
+      </${Box}>
+      <${Collapse} in=${expanded}>
+        <${Box} sx=${{ px: 1.5, py: 1 }}>
           ${msgs.map((m, idx) => html`<${TraceEvent} key=${m.id || m.timestamp || idx} msg=${m} />`)}
-        </div>
-      </div>
-    </div>
+        </${Box}>
+      </${Collapse}>
+    </${Paper}>
   `;
 }, (prev, next) =>
   prev.msgs === next.msgs &&
@@ -1170,222 +1215,236 @@ export function ChatView({ sessionId, readOnly = false, embedded = false }) {
 
   if (!sessionId) {
     return html`
-      <div class="chat-view chat-empty-state">
-        <div class="session-empty-icon">${resolveIcon(":chat:")}</div>
-        <div class="session-empty-text">
+      <${Box} sx=${{ display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', height: '100%', gap: 2, p: 4 }}>
+        <${Typography} variant="h4" sx=${{ opacity: 0.5 }}>${resolveIcon(":chat:")}</${Typography}>
+        <${Typography} variant="body1" color="text.secondary" align="center">
           Select a session to view the live stream.
-          <div class="session-empty-subtext">Create a new session or pick one on the left.</div>
-        </div>
-      </div>
+        </${Typography}>
+        <${Typography} variant="caption" color="text.secondary" align="center">
+          Create a new session or pick one on the left.
+        </${Typography}>
+      </${Box}>
     `;
   }
 
   return html`
-    <div class="chat-view ${embedded ? 'chat-view-embedded' : ''}">
+    <${Box} sx=${{ display: 'flex', flexDirection: 'column', height: '100%', ...(embedded ? { border: 'none' } : {}) }}>
       ${!embedded && html`
-      <div class="chat-header">
-        <div class="chat-header-info">
-          <div class="chat-header-title">
+      <${Paper} elevation=${0} sx=${{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', px: 2, py: 1, borderBottom: '1px solid', borderColor: 'divider' }}>
+        <${Box}>
+          <${Typography} variant="subtitle1" sx=${{ fontWeight: 600 }}>
             ${session?.title || session?.taskId || "Session"}
-          </div>
-          <div class="chat-header-meta">
+          </${Typography}>
+          <${Typography} variant="caption" color="text.secondary">
             ${session?.type || "manual"} · ${session?.status || "unknown"}
-          </div>
-        </div>
-        <div class="chat-header-actions">
+          </${Typography}>
+        </${Box}>
+        <${Stack} direction="row" spacing=${1}>
           ${session?.status === "archived" &&
           html`
-            <button class="btn btn-primary btn-sm" onClick=${handleResume}>
+            <${Button} size="small" variant="contained" onClick=${handleResume}>
               Unarchive
-            </button>
+            </${Button}>
           `}
           ${session?.status !== "archived" &&
           html`
-            <button class="btn btn-ghost btn-sm" onClick=${handleArchive}>
+            <${Button} size="small" variant="text" onClick=${handleArchive}>
               Archive
-            </button>
+            </${Button}>
           `}
-        </div>
-      </div>
+        </${Stack}>
+      </${Paper}>
       `}
 
       ${!embedded && html`
-      <div class="chat-toolbar">
-        <div class="chat-toolbar-left">
-          <div class="chat-filter-group">
-            <button
-              class="chat-filter-chip ${activeFilters.length === 0 ? "active" : ""}"
-              onClick=${clearFilters}
-            >
-              All
-              <span class="chat-filter-count">${counts.total}</span>
-            </button>
-            <button
-              class="chat-filter-chip ${filters.tool ? "active" : ""}"
-              onClick=${() => toggleFilter("tool")}
-            >
-              Tool
-              <span class="chat-filter-count">${counts.tool}</span>
-            </button>
-            <button
-              class="chat-filter-chip ${filters.result ? "active" : ""}"
-              onClick=${() => toggleFilter("result")}
-            >
-              Result
-              <span class="chat-filter-count">${counts.result}</span>
-            </button>
-            <button
-              class="chat-filter-chip ${filters.error ? "active" : ""}"
-              onClick=${() => toggleFilter("error")}
-            >
-              Error
-              <span class="chat-filter-count">${counts.error}</span>
-            </button>
-          </div>
+      <${Box} sx=${{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', px: 2, py: 0.75, borderBottom: '1px solid', borderColor: 'divider', flexWrap: 'wrap', gap: 0.5 }}>
+        <${Stack} direction="row" spacing=${0.5} alignItems="center" sx=${{ flexWrap: 'wrap' }}>
+          <${Chip}
+            label=${html`All <${Typography} component="span" variant="caption" sx=${{ ml: 0.5, opacity: 0.7 }}>${counts.total}</${Typography}>`}
+            size="small"
+            color=${activeFilters.length === 0 ? "primary" : "default"}
+            variant=${activeFilters.length === 0 ? "filled" : "outlined"}
+            onClick=${clearFilters}
+            sx=${{ height: 26 }}
+          />
+          <${Chip}
+            label=${html`Tool <${Typography} component="span" variant="caption" sx=${{ ml: 0.5, opacity: 0.7 }}>${counts.tool}</${Typography}>`}
+            size="small"
+            color=${filters.tool ? "primary" : "default"}
+            variant=${filters.tool ? "filled" : "outlined"}
+            onClick=${() => toggleFilter("tool")}
+            sx=${{ height: 26 }}
+          />
+          <${Chip}
+            label=${html`Result <${Typography} component="span" variant="caption" sx=${{ ml: 0.5, opacity: 0.7 }}>${counts.result}</${Typography}>`}
+            size="small"
+            color=${filters.result ? "primary" : "default"}
+            variant=${filters.result ? "filled" : "outlined"}
+            onClick=${() => toggleFilter("result")}
+            sx=${{ height: 26 }}
+          />
+          <${Chip}
+            label=${html`Error <${Typography} component="span" variant="caption" sx=${{ ml: 0.5, opacity: 0.7 }}>${counts.error}</${Typography}>`}
+            size="small"
+            color=${filters.error ? "error" : "default"}
+            variant=${filters.error ? "filled" : "outlined"}
+            onClick=${() => toggleFilter("error")}
+            sx=${{ height: 26 }}
+          />
           ${paused &&
-          html`<span class="chat-paused-pill">Paused</span>`}
-        </div>
-        <div class="chat-toolbar-actions">
-          <button class="btn btn-ghost btn-sm" onClick=${refreshMessages}>
-            ${iconText(":refresh: Refresh")}
-          </button>
-          <button
-            class="btn btn-ghost btn-sm"
-            onClick=${() => setPaused((prev) => !prev)}
-          >
-            ${iconText(paused ? ":play: Resume" : ":pause: Pause")}
-          </button>
-          <button class="btn btn-ghost btn-sm" onClick=${handleCopyStream}>
-            ${iconText(":clipboard: Copy")}
-          </button>
-          <button class="btn btn-ghost btn-sm" onClick=${handleExportStream}>
-            ${iconText(":download: Export")}
-          </button>
-        </div>
-      </div>
+          html`<${Chip} label="Paused" size="small" color="warning" variant="filled" sx=${{ height: 22, fontSize: '0.6875rem' }} />`}
+        </${Stack}>
+        <${Stack} direction="row" spacing=${0.5}>
+          <${Tooltip} title="Refresh"><${IconButton} size="small" onClick=${refreshMessages}>${resolveIcon(":refresh:")}</${IconButton}></${Tooltip}>
+          <${Tooltip} title=${paused ? "Resume" : "Pause"}>
+            <${IconButton} size="small" onClick=${() => setPaused((prev) => !prev)}>
+              ${resolveIcon(paused ? ":play:" : ":pause:")}
+            </${IconButton}>
+          </${Tooltip}>
+          <${Tooltip} title="Copy stream"><${IconButton} size="small" onClick=${handleCopyStream}>${resolveIcon(":clipboard:")}</${IconButton}></${Tooltip}>
+          <${Tooltip} title="Export stream"><${IconButton} size="small" onClick=${handleExportStream}>${resolveIcon(":download:")}</${IconButton}></${Tooltip}>
+        </${Stack}>
+      </${Box}>
       `}
 
       ${embedded && html`
-        <div class="chat-stream-bar">
-          <div class="chat-stream-status">
-            <span class="chat-stream-dot ${statusState}"></span>
-            <div class="chat-stream-text">
-              <div class="chat-stream-label">Live Activity</div>
-              <div class="chat-stream-value">${statusText}</div>
-            </div>
-          </div>
-          <div class="chat-stream-actions">
-            <button class="btn btn-ghost btn-xs" onClick=${refreshMessages} title="Refresh">
+        <${Box} sx=${{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', px: 1.5, py: 0.75, borderBottom: '1px solid', borderColor: 'divider' }}>
+          <${Stack} direction="row" spacing=${1} alignItems="center">
+            <${Box} sx=${{ width: 8, height: 8, borderRadius: '50%', backgroundColor: statusState === 'idle' ? 'text.disabled' : statusState === 'paused' ? 'warning.main' : 'success.main' }} />
+            <${Box}>
+              <${Typography} variant="caption" sx=${{ fontWeight: 600, display: 'block', lineHeight: 1.2 }}>Live Activity</${Typography}>
+              <${Typography} variant="caption" color="text.secondary" sx=${{ lineHeight: 1.2 }}>${statusText}</${Typography}>
+            </${Box}>
+          </${Stack}>
+          <${Stack} direction="row" spacing=${0.5}>
+            <${Button} size="small" variant="text" onClick=${refreshMessages} sx=${{ minWidth: 'auto', fontSize: '0.6875rem' }}>
               Refresh
-            </button>
-            <button
-              class="btn btn-ghost btn-xs"
+            </${Button}>
+            <${Button}
+              size="small"
+              variant="text"
               onClick=${() => setPaused((prev) => !prev)}
-              title=${paused ? "Resume stream" : "Pause stream"}
+              sx=${{ minWidth: 'auto', fontSize: '0.6875rem' }}
             >
               ${paused ? "Resume" : "Pause"}
-            </button>
-            <button class="btn btn-ghost btn-xs" onClick=${() => setShowStreamMeta((prev) => !prev)} title="Toggle filters">
+            </${Button}>
+            <${Button} size="small" variant="text" onClick=${() => setShowStreamMeta((prev) => !prev)} sx=${{ minWidth: 'auto', fontSize: '0.6875rem' }}>
               ${showStreamMeta ? "Hide filters" : "Filters"}
-            </button>
-          </div>
-        </div>
-        <div class="chat-stream-meta ${showStreamMeta ? 'expanded' : ''}">
-          <div class="chat-stream-filters">
-            <button
-              class="chat-filter-chip ${activeFilters.length === 0 ? "active" : ""}"
-              onClick=${clearFilters}
-            >
-              All
-              <span class="chat-filter-count">${counts.total}</span>
-            </button>
-            <button
-              class="chat-filter-chip ${filters.tool ? "active" : ""}"
-              onClick=${() => toggleFilter("tool")}
-            >
-              Tool
-              <span class="chat-filter-count">${counts.tool}</span>
-            </button>
-            <button
-              class="chat-filter-chip ${filters.result ? "active" : ""}"
-              onClick=${() => toggleFilter("result")}
-            >
-              Result
-              <span class="chat-filter-count">${counts.result}</span>
-            </button>
-            <button
-              class="chat-filter-chip ${filters.error ? "active" : ""}"
-              onClick=${() => toggleFilter("error")}
-            >
-              Error
-              <span class="chat-filter-count">${counts.error}</span>
-            </button>
-          </div>
-          ${(errorCount > 0 || recentAutoActions.length > 0) && html`
-            <div class="chat-stream-events">
-              ${errorCount > 0 && html`
-                <span class="chat-stream-chip error">Errors · ${errorCount}</span>
-              `}
-              ${recentAutoActions.map((action) => html`
-                <span class="chat-stream-chip">
-                  ${action.label}
-                  ${action.task ? html`<span class="chat-stream-chip-sub">· ${action.task}</span>` : ""}
-                  <span class="chat-stream-chip-time">${formatRelative(action.ts)}</span>
-                </span>
-              `)}
-            </div>
-          `}
-        </div>
+            </${Button}>
+          </${Stack}>
+        </${Box}>
+        <${Collapse} in=${showStreamMeta}>
+          <${Box} sx=${{ px: 1.5, py: 0.75, borderBottom: '1px solid', borderColor: 'divider' }}>
+            <${Stack} direction="row" spacing=${0.5} sx=${{ flexWrap: 'wrap', mb: (errorCount > 0 || recentAutoActions.length > 0) ? 0.75 : 0 }}>
+              <${Chip}
+                label=${html`All <${Typography} component="span" variant="caption" sx=${{ ml: 0.5, opacity: 0.7 }}>${counts.total}</${Typography}>`}
+                size="small"
+                color=${activeFilters.length === 0 ? "primary" : "default"}
+                variant=${activeFilters.length === 0 ? "filled" : "outlined"}
+                onClick=${clearFilters}
+                sx=${{ height: 24 }}
+              />
+              <${Chip}
+                label=${html`Tool <${Typography} component="span" variant="caption" sx=${{ ml: 0.5, opacity: 0.7 }}>${counts.tool}</${Typography}>`}
+                size="small"
+                color=${filters.tool ? "primary" : "default"}
+                variant=${filters.tool ? "filled" : "outlined"}
+                onClick=${() => toggleFilter("tool")}
+                sx=${{ height: 24 }}
+              />
+              <${Chip}
+                label=${html`Result <${Typography} component="span" variant="caption" sx=${{ ml: 0.5, opacity: 0.7 }}>${counts.result}</${Typography}>`}
+                size="small"
+                color=${filters.result ? "primary" : "default"}
+                variant=${filters.result ? "filled" : "outlined"}
+                onClick=${() => toggleFilter("result")}
+                sx=${{ height: 24 }}
+              />
+              <${Chip}
+                label=${html`Error <${Typography} component="span" variant="caption" sx=${{ ml: 0.5, opacity: 0.7 }}>${counts.error}</${Typography}>`}
+                size="small"
+                color=${filters.error ? "error" : "default"}
+                variant=${filters.error ? "filled" : "outlined"}
+                onClick=${() => toggleFilter("error")}
+                sx=${{ height: 24 }}
+              />
+            </${Stack}>
+            ${(errorCount > 0 || recentAutoActions.length > 0) && html`
+              <${Stack} direction="row" spacing=${0.5} sx=${{ flexWrap: 'wrap' }}>
+                ${errorCount > 0 && html`
+                  <${Chip} label=${`Errors · ${errorCount}`} size="small" color="error" variant="filled" sx=${{ height: 22, fontSize: '0.625rem' }} />
+                `}
+                ${recentAutoActions.map((action) => html`
+                  <${Chip}
+                    label=${`${action.label}${action.task ? ` · ${action.task}` : ""}`}
+                    size="small"
+                    variant="outlined"
+                    deleteIcon=${action.ts ? html`<${Typography} variant="caption" sx=${{ fontSize: '0.5625rem' }}>${formatRelative(action.ts)}</${Typography}>` : null}
+                    onDelete=${action.ts ? () => {} : undefined}
+                    sx=${{ height: 22, fontSize: '0.625rem' }}
+                  />
+                `)}
+              </${Stack}>
+            `}
+          </${Box}>
+        </${Collapse}>
       `}
 
-      <div class="chat-messages" ref=${messagesRef}>
+      <${Box} ref=${messagesRef} sx=${{ flex: 1, overflow: 'auto', px: 2, py: 1 }}>
         ${(hasMoreMessages || sessionPagination.value?.hasMore) && html`
-          <div class="chat-load-earlier">
-            <button
-              class="btn btn-ghost btn-sm"
+          <${Box} sx=${{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 1, py: 1 }}>
+            <${Button}
+              size="small"
+              variant="text"
               disabled=${loadingOlder}
               onClick=${() => revealOlderMessages()}
             >
-              ${loadingOlder ? "Loading…" : "Load older messages"}
-            </button>
-            <span class="chat-load-count">
+              ${loadingOlder ? html`<${CircularProgress} size=${14} sx=${{ mr: 0.5 }} /> Loading…` : "Load older messages"}
+            </${Button}>
+            <${Typography} variant="caption" color="text.secondary">
               Showing ${visibleMessages.length} of ${sessionPagination.value?.total || filteredMessages.length}
-            </span>
-          </div>
+            </${Typography}>
+          </${Box}>
         `}
         ${loadError && !loading && html`
-          <div class="chat-error-banner">
-            <span>Stream unavailable (${loadError}).</span>
-            <button class="btn btn-ghost btn-xs" onClick=${refreshMessages}>
-              Retry
-            </button>
-          </div>
+          <${Alert} severity="error" sx=${{ mb: 1 }}
+            action=${html`<${Button} size="small" color="inherit" onClick=${refreshMessages}>Retry</${Button}>`}
+          >
+            Stream unavailable (${loadError}).
+          </${Alert}>
         `}
         ${loading && messages.length === 0 && html`
-          <div class="chat-loading">Loading messages…</div>
+          <${Box} sx=${{ display: 'flex', flexDirection: 'column', gap: 1, py: 2 }}>
+            <${Skeleton} variant="rounded" height=${60} />
+            <${Skeleton} variant="rounded" height=${40} width="60%" />
+            <${Skeleton} variant="rounded" height=${80} />
+            <${Skeleton} variant="rounded" height=${40} width="75%" />
+          </${Box}>
         `}
         ${!loading && messages.length === 0 && html`
-          <div class="chat-empty-state-inline chat-empty-state-inline--no-box">
-            <div class="session-empty-icon">${resolveIcon(":server:")}</div>
-            <div class="session-empty-text">
+          <${Box} sx=${{ display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', height: '100%', gap: 1.5, py: 4 }}>
+            <${Typography} variant="h5" sx=${{ opacity: 0.4 }}>${resolveIcon(":server:")}</${Typography}>
+            <${Typography} variant="body2" color="text.secondary" align="center">
               No messages yet.
-              <div class="session-empty-subtext">
-                ${readOnly ? "Stream will appear once the agent starts." : "Send a message to kick things off."}
-              </div>
-            </div>
-          </div>
+            </${Typography}>
+            <${Typography} variant="caption" color="text.secondary" align="center">
+              ${readOnly ? "Stream will appear once the agent starts." : "Send a message to kick things off."}
+            </${Typography}>
+          </${Box}>
         `}
         ${messages.length > 0 && filteredMessages.length === 0 && html`
-          <div class="chat-empty-state-inline">
-            <div class="session-empty-icon">${resolveIcon(":settings:")}</div>
-            <div class="session-empty-text">
+          <${Box} sx=${{ display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', height: '100%', gap: 1.5, py: 4 }}>
+            <${Typography} variant="h5" sx=${{ opacity: 0.4 }}>${resolveIcon(":settings:")}</${Typography}>
+            <${Typography} variant="body2" color="text.secondary" align="center">
               No messages match these filters.
-              <div class="session-empty-subtext">Try clearing filters or wait for new tool events.</div>
-            </div>
-            <button class="btn btn-primary btn-sm mt-sm" onClick=${clearFilters}>
+            </${Typography}>
+            <${Typography} variant="caption" color="text.secondary" align="center">
+              Try clearing filters or wait for new tool events.
+            </${Typography}>
+            <${Button} size="small" variant="contained" onClick=${clearFilters} sx=${{ mt: 0.5 }}>
               Clear Filters
-            </button>
-          </div>
+            </${Button}>
+          </${Box}>
         `}
         ${renderItems.map((item) => item.kind === "thinking-group"
           ? html`<${ThinkingGroup}
@@ -1408,43 +1467,51 @@ export function ChatView({ sessionId, readOnly = false, embedded = false }) {
           (pendingMessages.peek() || [])
             .filter((pm) => pm.sessionId === sessionId)
             .map((pm) => html`
-              <div key=${pm.tempId} class="chat-bubble user chat-pending-msg ${pm.status}">
-                <div class="chat-bubble-content">
+              <${Paper} key=${pm.tempId} elevation=${0} sx=${{
+                p: 1.5, borderRadius: 2, mb: 1, ml: 'auto', maxWidth: '85%',
+                backgroundColor: pm.status === "failed" ? 'rgba(211,47,47,0.08)' : pm.status === "uncertain" ? 'rgba(237,108,2,0.08)' : 'rgba(218,119,86,0.12)',
+                opacity: pm.status === "sending" ? 0.7 : 1,
+              }}>
+                <${Box}>
                   <${MessageContent} text=${pm.content} />
                   <${AttachmentList} attachments=${pm.attachments} />
-                </div>
-                <div class="chat-bubble-time chat-pending-status">
+                </${Box}>
+                <${Box} sx=${{ display: 'flex', alignItems: 'center', gap: 0.5, mt: 0.5 }}>
                   ${pm.status === "sending"
-                    ? "Sending…"
+                    ? html`<${CircularProgress} size=${12} /><${Typography} variant="caption" color="text.secondary">Sending…</${Typography}>`
                     : pm.status === "uncertain"
-                      ? html`<span class="chat-pending-warn">${iconText(":alert: Uncertain")}</span>
-                              <button class="btn btn-ghost btn-xs chat-retry-btn"
-                                onClick=${() => retryPendingMessage(pm.tempId)}>↻ Retry</button>`
+                      ? html`
+                          <${Alert} severity="warning" sx=${{ py: 0, '& .MuiAlert-message': { py: 0, display: 'flex', alignItems: 'center', gap: 0.5, fontSize: '0.75rem' } }}>
+                            Uncertain
+                            <${Button} size="small" variant="text" sx=${{ minWidth: 'auto', fontSize: '0.6875rem' }}
+                              onClick=${() => retryPendingMessage(pm.tempId)}>↻ Retry</${Button}>
+                          </${Alert}>`
                       : pm.status === "failed"
-                        ? html`<span class="chat-pending-err">${iconText(`✘ Failed${pm.error ? `: ${pm.error}` : ""}`)}</span>
-                                <button class="btn btn-ghost btn-xs chat-retry-btn"
-                                  onClick=${() => retryPendingMessage(pm.tempId)}>↻ Retry</button>`
+                        ? html`
+                            <${Alert} severity="error" sx=${{ py: 0, '& .MuiAlert-message': { py: 0, display: 'flex', alignItems: 'center', gap: 0.5, fontSize: '0.75rem' } }}>
+                              Failed${pm.error ? `: ${pm.error}` : ""}
+                              <${Button} size="small" variant="text" sx=${{ minWidth: 'auto', fontSize: '0.6875rem' }}
+                                onClick=${() => retryPendingMessage(pm.tempId)}>↻ Retry</${Button}>
+                            </${Alert}>`
                         : ""}
-                </div>
-              </div>
+                </${Box}>
+              </${Paper}>
             `)}
 
-        ${/* Agent status typing indicator (replaces simple 'sending' dot animation) */
+        ${/* Agent status typing indicator */
           statusState !== "idle" && statusState !== "paused" && html`
-          <div class="chat-bubble assistant chat-agent-status">
-            <div class="chat-typing">
-              <span class="chat-typing-dot"></span>
-              <span class="chat-typing-dot"></span>
-              <span class="chat-typing-dot"></span>
-            </div>
-            <div class="chat-agent-status-text">${statusText}</div>
-          </div>
+          <${Paper} elevation=${0} sx=${{ p: 1.5, borderRadius: 2, mb: 1, display: 'flex', alignItems: 'center', gap: 1, maxWidth: '60%' }}>
+            <${CircularProgress} size=${16} thickness=${5} />
+            <${Typography} variant="caption" color="text.secondary">${statusText}</${Typography}>
+          </${Paper}>
         `}
-      </div>
+      </${Box}>
       ${!autoScroll && messages.length > 0 && html`
-        <div class="chat-jump-latest">
-          <button
-            class="btn btn-primary btn-sm"
+        <${Box} sx=${{ position: 'relative' }}>
+          <${Fab}
+            size="small"
+            color="primary"
+            sx=${{ position: 'absolute', bottom: 8, right: 16, zIndex: 10 }}
             onClick=${() => {
               const el = messagesRef.current;
               if (el) el.scrollTo({ top: el.scrollHeight, behavior: "smooth" });
@@ -1452,38 +1519,53 @@ export function ChatView({ sessionId, readOnly = false, embedded = false }) {
               setUnreadCount(0);
             }}
           >
-            ↓ Jump to latest${unreadCount ? ` (${unreadCount})` : ""}
-          </button>
-        </div>
+            ${html`<span style=${{ fontSize: '1rem' }}>↓</span>`}
+          </${Fab}>
+          ${unreadCount > 0 && html`
+            <${Chip}
+              label=${`${unreadCount} new`}
+              size="small"
+              color="primary"
+              sx=${{ position: 'absolute', bottom: 48, right: 16, zIndex: 10, height: 20, fontSize: '0.625rem' }}
+            />
+          `}
+        </${Box}>
       `}
 
       ${!readOnly && html`
-      <div class="chat-input-bar">
+      <${Box} sx=${{ borderTop: '1px solid', borderColor: 'divider', px: 2, py: 1 }}>
         ${!isActive && session?.status &&
         html`
-          <button class="btn btn-primary btn-sm chat-resume-btn" onClick=${handleResume}>
-            ${iconText(`:play: ${resumeLabel}`)}
-          </button>
+          <${Alert} severity="info" sx=${{ mb: 1 }}
+            action=${html`<${Button} size="small" color="inherit" onClick=${handleResume}>${resumeLabel}</${Button}>`}
+          >
+            Session is ${session?.status}.
+          </${Alert}>
         `}
         ${pendingAttachments.length > 0 && html`
-          <div class="chat-attachments-pending">
+          <${Stack} direction="row" spacing=${0.5} sx=${{ flexWrap: 'wrap', mb: 0.75 }}>
             ${pendingAttachments.map((att, index) => html`
-              <div class="chat-attachment-chip" key=${att.id || `${att.name}-${index}`}>
-                <span class="chat-attachment-chip-name">${att.name || "attachment"}</span>
-                ${att.size ? html`<span class="chat-attachment-chip-size">${formatBytes(att.size)}</span>` : ""}
-                <button
-                  class="btn btn-ghost btn-xs chat-attachment-remove"
-                  onClick=${() => removeAttachment(index)}
-                  title="Remove attachment"
-                >${resolveIcon("✕")}</button>
-              </div>
+              <${Chip}
+                key=${att.id || `${att.name}-${index}`}
+                label=${`${att.name || "attachment"}${att.size ? ` · ${formatBytes(att.size)}` : ""}`}
+                size="small"
+                variant="outlined"
+                onDelete=${() => removeAttachment(index)}
+                sx=${{ height: 24, fontSize: '0.6875rem' }}
+              />
             `)}
             ${uploadingAttachments && html`
-              <div class="chat-attachment-uploading">Uploading...</div>
+              <${Chip}
+                icon=${html`<${CircularProgress} size=${12} />`}
+                label="Uploading..."
+                size="small"
+                variant="outlined"
+                sx=${{ height: 24, fontSize: '0.6875rem' }}
+              />
             `}
-          </div>
+          </${Stack}>
         `}
-        <div class="chat-input-row">
+        <${Stack} direction="row" spacing=${1} alignItems="flex-end">
           <input
             ref=${fileInputRef}
             type="file"
@@ -1491,19 +1573,23 @@ export function ChatView({ sessionId, readOnly = false, embedded = false }) {
             style="display:none"
             onChange=${handleAttachmentInput}
           />
-          <button
-            class="btn btn-ghost chat-attach-btn"
-            onClick=${() => fileInputRef.current && fileInputRef.current.click()}
-            disabled=${uploadingAttachments}
-            title="Attach file"
-          >
-            ${resolveIcon(":link:")}
-          </button>
-          <textarea
-            ref=${inputRef}
-            class="input chat-input ${dragActive ? "chat-input-drag" : ""}"
+          <${Tooltip} title="Attach file">
+            <${IconButton}
+              size="small"
+              onClick=${() => fileInputRef.current && fileInputRef.current.click()}
+              disabled=${uploadingAttachments}
+              sx=${{ mb: 0.5 }}
+            >
+              ${resolveIcon(":link:")}
+            </${IconButton}>
+          </${Tooltip}>
+          <${TextField}
+            inputRef=${inputRef}
+            fullWidth
+            multiline
+            maxRows=${4}
+            size="small"
             placeholder="Send a message…"
-            rows="1"
             value=${input}
             onInput=${handleInput}
             onKeyDown=${handleKeyDown}
@@ -1511,17 +1597,30 @@ export function ChatView({ sessionId, readOnly = false, embedded = false }) {
             onDragOver=${handleDragOver}
             onDragLeave=${handleDragLeave}
             onDrop=${handleDrop}
+            sx=${{
+              '& .MuiOutlinedInput-root': {
+                borderRadius: 2,
+                ...(dragActive ? { borderColor: 'primary.main', boxShadow: '0 0 0 2px rgba(25,118,210,0.2)' } : {}),
+              },
+            }}
+            InputProps=${{
+              endAdornment: html`
+                <${InputAdornment} position="end">
+                  <${IconButton}
+                    color="primary"
+                    disabled=${(!input.trim() && pendingAttachments.length === 0) || sending || uploadingAttachments}
+                    onClick=${handleSend}
+                    edge="end"
+                  >
+                    ${resolveIcon("➤")}
+                  </${IconButton}>
+                </${InputAdornment}>
+              `,
+            }}
           />
-          <button
-            class="btn btn-primary chat-send-btn"
-            disabled=${(!input.trim() && pendingAttachments.length === 0) || sending || uploadingAttachments}
-            onClick=${handleSend}
-          >
-            ${resolveIcon("➤")}
-          </button>
-        </div>
-      </div>
+        </${Stack}>
+      </${Box}>
       `}
-    </div>
+    </${Box}>
   `;
 }

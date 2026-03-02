@@ -5,6 +5,7 @@
 
 import { h } from "preact";
 import htm from "htm";
+import { LinearProgress, Box, Typography, Chip, Stack } from "@mui/material";
 
 const html = htm.bind(h);
 
@@ -85,19 +86,17 @@ export function DonutChart({ segments = [], size = 120, strokeWidth = 12 }) {
         >${total}</text>
       </svg>
     </div>
-    <div class="donut-legend">
+    <${Stack} direction="row" spacing=${1} flexWrap="wrap" justifyContent="center" sx=${{ mt: 1 }}>
       ${segments.map(
         (seg) => html`
-          <span class="donut-legend-item">
-            <span
-              class="donut-legend-swatch"
-              style="background: ${seg.color}"
-            ></span>
-            ${seg.label} (${seg.value})
-          </span>
+          <${Chip}
+            label=${`${seg.label} (${seg.value})`}
+            size="small"
+            sx=${{ backgroundColor: seg.color, color: '#fff', fontWeight: 500 }}
+          />
         `,
       )}
-    </div>
+    <//>
   `;
 }
 
@@ -125,20 +124,17 @@ export function ProgressBar({
 }) {
   const pct = Math.min(100, Math.max(0, (value / max) * 100));
   const bg = color || "var(--accent, #5b6eae)";
-  const transition = animated ? "width 0.5s ease" : "none";
 
   return html`
-    <div
-      class="progress-bar"
-      style="height:${height}px;border-radius:${height / 2}px;
-        background:var(--bg-secondary, rgba(255,255,255,0.08));overflow:hidden"
-    >
-      <div
-        class="progress-bar-fill"
-        style="width:${pct}%;height:100%;border-radius:${height / 2}px;
-          background:${bg};transition:${transition}"
-      ></div>
-    </div>
+    <${LinearProgress} variant="determinate" value=${pct} sx=${{
+      height: height, borderRadius: height / 2,
+      backgroundColor: 'var(--bg-secondary, rgba(255,255,255,0.08))',
+      '& .MuiLinearProgress-bar': {
+        borderRadius: height / 2,
+        backgroundColor: bg,
+        transition: animated ? 'transform 0.5s ease' : 'none'
+      }
+    }} />
   `;
 }
 
