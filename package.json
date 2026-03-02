@@ -246,6 +246,7 @@
     "agent-work-analyzer.mjs",
     "startup-service.mjs",
     "telegram-sentinel.mjs",
+    "telegram-poll-owner.mjs",
     "whatsapp-channel.mjs",
     "container-runner.mjs",
     "daemon-restart-policy.mjs",
