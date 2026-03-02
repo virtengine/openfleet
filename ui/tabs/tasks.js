@@ -61,7 +61,7 @@ import {
   loadWorkspaces,
 } from "../components/workspace-switcher.js";
 import {
-  Card as MuiCard, CardContent, Typography, Box, Stack, Chip, TextField,
+  Card as MuiCard, CardContent, Typography, Box, Stack, Chip, TextField, Select,
   MenuItem, Button, IconButton, Tabs, Tab, Tooltip, Divider,
   Paper, CircularProgress, Skeleton, Alert, Switch, FormControlLabel,
   Menu as MuiMenu, Fab, Table, TableBody, TableCell, TableContainer,
@@ -780,34 +780,23 @@ function TriggerTemplatesModal({ onClose }) {
               <div class="meta-text">Enable/disable the full trigger template engine.</div>
             </div>
             <label class="meta-text" style="display:flex;align-items:center;gap:6px;cursor:pointer;">
-              <input
-                type="checkbox"
-                checked=${enabled}
-                disabled=${saving}
-                onChange=${(event) => handleToggleSystem(event.target.checked)}
-              />
+              <${Switch} size="small" checked=${enabled} disabled=${saving} onChange=${(event) => handleToggleSystem(event.target.checked)} />
               ${enabled ? "enabled" : "disabled"}
             </label>
           </div>
 
           <div class="input-row" style="margin-top:10px;">
-            <select
-              class="input"
+            <${Select}
+              size="small"
               value=${defaults.executor || "auto"}
               onChange=${(e) => setDefaults({ ...defaults, executor: e.target.value })}
               disabled=${saving}
             >
               ${["auto", "codex", "copilot", "claude"].map(
-                (opt) => html`<option value=${opt}>default executor: ${opt}</option>`,
+                (opt) => html`<${MenuItem} value=${opt}>default executor: ${opt}</${MenuItem}>`,
               )}
-            </select>
-            <input
-              class="input"
-              value=${defaults.model || "auto"}
-              disabled=${saving}
-              onInput=${(e) => setDefaults({ ...defaults, model: e.target.value })}
-              placeholder="default model (auto)"
-            />
+            </${Select}>
+            <${TextField} size="small" variant="outlined" value=${defaults.model || "auto"} disabled=${saving} onInput=${(e) => setDefaults({ ...defaults, model: e.target.value })} placeholder="default model (auto)" fullWidth />
           </div>
           <div class="btn-row" style="margin-top:8px;">
             <button class="btn btn-secondary btn-sm" disabled=${saving} onClick=${handleSaveDefaults}>
@@ -1810,26 +1799,14 @@ export function TaskDetailModal({ task, onClose, onStart }) {
 
         <div class="flex-col gap-md modal-form-grid">
         <div class="input-with-mic modal-form-span">
-          <input
-            class="input"
-            placeholder="Title"
-            value=${title}
-            onInput=${(e) => setTitle(e.target.value)}
-          />
+          <${TextField} size="small" variant="outlined" placeholder="Title" value=${title} onInput=${(e) => setTitle(e.target.value)} fullWidth />
           <${VoiceMicButtonInline}
             onTranscript=${(t) => setTitle((prev) => (prev ? prev + " " + t : t))}
             disabled=${saving || rewriting}
           />
         </div>
         <div class="textarea-with-mic modal-form-span" style="position:relative">
-          <textarea
-            class="input"
-            rows="5"
-            placeholder="Description"
-            value=${description}
-            onInput=${(e) => setDescription(e.target.value)}
-            style="padding-right:36px"
-          ></textarea>
+          <${TextField} multiline rows=${5} size="small" placeholder="Description" value=${description} onInput=${(e) => setDescription(e.target.value)} style=${{ paddingRight: "36px" }} fullWidth />
           <${VoiceMicButton}
             onTranscript=${(t) => setDescription((prev) => (prev ? prev + " " + t : t))}
             disabled=${saving || rewriting}
@@ -1939,44 +1916,34 @@ export function TaskDetailModal({ task, onClose, onStart }) {
             : html`${iconText(":star: Improve with AI")}`
           }
         </button>
-        <input
-          class="input modal-form-span"
-          placeholder="Base branch (optional, e.g. feature/xyz)"
-          value=${baseBranch}
-          onInput=${(e) => setBaseBranch(e.target.value)}
-        />
+        <${TextField} size="small" variant="outlined" className="modal-form-span" placeholder="Base branch (optional, e.g. feature/xyz)" value=${baseBranch} onInput=${(e) => setBaseBranch(e.target.value)} fullWidth />
         <div class="input-row modal-form-span">
-          <select
-            class="input"
+          <${Select}
+            size="small"
             value=${workspaceId}
             onChange=${(e) => setWorkspaceId(e.target.value)}
           >
-            <option value="">Active workspace</option>
+            <${MenuItem} value="">Active workspace</${MenuItem}>
             ${workspaceOptions.map(
-              (ws) => html`<option value=${ws.id}>${ws.name || ws.id}</option>`,
+              (ws) => html`<${MenuItem} value=${ws.id}>${ws.name || ws.id}</${MenuItem}>`,
             )}
-          </select>
-          <select
-            class="input"
+          </${Select}>
+          <${Select}
+            size="small"
             value=${repository}
             onChange=${(e) => setRepository(e.target.value)}
             disabled=${!repositoryOptions.length}
           >
-            <option value="">
+            <${MenuItem} value="">
               ${repositoryOptions.length ? "Auto repository" : "No repos in workspace"}
-            </option>
+            </${MenuItem}>
             ${repositoryOptions.map(
               (repo) =>
-                html`<option value=${repo.slug}>${repo.name}${repo.primary ? " (Primary)" : ""}</option>`,
+                html`<${MenuItem} value=${repo.slug}>${repo.name}${repo.primary ? " (Primary)" : ""}</${MenuItem}>`,
             )}
-          </select>
+          </${Select}>
         </div>
-        <input
-          class="input modal-form-span"
-          placeholder="Tags (comma-separated)"
-          value=${tagsInput}
-          onInput=${(e) => setTagsInput(e.target.value)}
-        />
+        <${TextField} size="small" variant="outlined" className="modal-form-span" placeholder="Tags (comma-separated)" value=${tagsInput} onInput=${(e) => setTagsInput(e.target.value)} fullWidth />
         ${normalizeTagInput(tagsInput).length > 0 &&
         html`
           <div class="tag-row modal-form-span">
@@ -1987,8 +1954,8 @@ export function TaskDetailModal({ task, onClose, onStart }) {
         `}
 
         <div class="input-row modal-form-span">
-          <select
-            class="input"
+          <${Select}
+            size="small"
             value=${status}
             onChange=${(e) => {
               const next = e.target.value;
@@ -1998,19 +1965,19 @@ export function TaskDetailModal({ task, onClose, onStart }) {
             }}
           >
             ${["draft", "todo", "inprogress", "inreview", "done", "cancelled"].map(
-              (s) => html`<option value=${s}>${s}</option>`,
+              (s) => html`<${MenuItem} value=${s}>${s}</${MenuItem}>`,
             )}
-          </select>
-          <select
-            class="input"
+          </${Select}>
+          <${Select}
+            size="small"
             value=${priority}
             onChange=${(e) => setPriority(e.target.value)}
           >
-            <option value="">No priority</option>
+            <${MenuItem} value="">No priority</${MenuItem}>
             ${["low", "medium", "high", "critical"].map(
-              (p) => html`<option value=${p}>${p}</option>`,
+              (p) => html`<${MenuItem} value=${p}>${p}</${MenuItem}>`,
             )}
-          </select>
+          </${Select}>
         </div>
         <div class="modal-form-span">
           <${Toggle}
@@ -2031,13 +1998,7 @@ export function TaskDetailModal({ task, onClose, onStart }) {
             onChange=${handleManualToggle}
           />
         </div>
-        <input
-          class="input modal-form-span"
-          placeholder="Manual reason (optional)"
-          value=${manualReason}
-          disabled=${manualBusy}
-          onInput=${(e) => setManualReason(e.target.value)}
-        />
+        <${TextField} size="small" variant="outlined" className="modal-form-span" placeholder="Manual reason (optional)" value=${manualReason} disabled=${manualBusy} onInput=${(e) => setManualReason(e.target.value)} fullWidth />
         ${manualOverride &&
         html`
           <div class="modal-form-span">
@@ -2928,16 +2889,16 @@ export function TasksTab() {
             <div class="tasks-filter-section">
               <div class="tasks-filter-title">Sort</div>
               <div class="tasks-filter-row">
-                <select
-                  class="input input-sm"
+                <${Select}
+                  size="small"
                   value=${sortVal}
                   onChange=${handleSort}
                 >
                   ${SORT_OPTIONS.map(
                     (o) =>
-                      html`<option key=${o.value} value=${o.value}>${o.label}</option>`,
+                      html`<${MenuItem} key=${o.value} value=${o.value}>${o.label}</${MenuItem}>`,
                   )}
-                </select>
+                </${Select}>
                 <span class="pill">${visible.length} shown</span>
               </div>
             </div>
@@ -2982,11 +2943,7 @@ export function TasksTab() {
                     setSelectedIds(new Set());
                   }}
                 >
-                  <input
-                    type="checkbox"
-                    checked=${batchMode}
-                    style="accent-color:var(--accent)"
-                  />
+                  <${Switch} size="small" checked=${batchMode} />
                   Batch Select
                 </label>
               </div>
@@ -3505,8 +3462,9 @@ function CreateTaskModalInline({ onClose }) {
 
         <!-- Title — autofocus so keyboard opens immediately -->
         <div class="input-with-mic">
-          <input
-            class="input"
+          <${TextField}
+            size="small"
+            variant="outlined"
             placeholder="Task title *"
             value=${title}
             autoFocus=${true}
@@ -3517,6 +3475,7 @@ function CreateTaskModalInline({ onClose }) {
                 void handleSubmit({ closeAfterSave: true });
               }
             }}
+            fullWidth
           />
           <${VoiceMicButtonInline}
             onTranscript=${(t) => setTitle((prev) => (prev ? prev + " " + t : t))}
@@ -3526,9 +3485,10 @@ function CreateTaskModalInline({ onClose }) {
 
         <!-- Description — compact 2-row textarea -->
         <div class="textarea-with-mic" style="position:relative">
-          <textarea
-            class="input"
-            rows="2"
+          <${TextField}
+            multiline
+            rows=${2}
+            size="small"
             placeholder="What needs to be done? (optional)"
             value=${description}
             onInput=${(e) => {
@@ -3537,8 +3497,9 @@ function CreateTaskModalInline({ onClose }) {
               e.target.style.height = "auto";
               e.target.style.height = Math.min(e.target.scrollHeight, 6 * 24 + 16) + "px";
             }}
-            style="padding-right:36px"
-          ></textarea>
+            style=${{ paddingRight: "36px" }}
+            fullWidth
+          />
           <${VoiceMicButton}
             onTranscript=${(t) => setDescription((prev) => (prev ? prev + " " + t : t))}
             disabled=${submitting || rewriting}
@@ -3577,16 +3538,16 @@ function CreateTaskModalInline({ onClose }) {
         <!-- Workspace + Repo row -->
         ${workspaceOptions.length > 0 && html`
           <div class="input-row">
-            <select
-              class="input"
+            <${Select}
+              size="small"
               value=${workspaceId}
               onChange=${(e) => setWorkspaceId(e.target.value)}
             >
-              <option value="">Active workspace</option>
+              <${MenuItem} value="">Active workspace</${MenuItem}>
               ${workspaceOptions.map(
-                (ws) => html`<option value=${ws.id}>${ws.name || ws.id}</option>`,
+                (ws) => html`<${MenuItem} value=${ws.id}>${ws.name || ws.id}</${MenuItem}>`,
               )}
-            </select>
+            </${Select}>
           </div>
           ${repositoryOptions.length > 0 && html`
             <div class="repo-select-group">
@@ -3599,11 +3560,7 @@ function CreateTaskModalInline({ onClose }) {
                     <span class="repo-checkboxes-label">Repositories</span>
                     ${repositoryOptions.map((repo) => html`
                       <label class="repo-checkbox-item">
-                        <input
-                          type="checkbox"
-                          checked=${repositories.includes(repo.slug)}
-                          onChange=${() => toggleRepo(repo.slug)}
-                        />
+                        <${Switch} size="small" checked=${repositories.includes(repo.slug)} onChange=${() => toggleRepo(repo.slug)} />
                         ${repo.name}${repo.primary ? " (Primary)" : ""}
                       </label>
                     `)}
@@ -3614,12 +3571,7 @@ function CreateTaskModalInline({ onClose }) {
         `}
 
         <!-- Tags -->
-        <input
-          class="input"
-          placeholder="Tags (comma-separated, optional)"
-          value=${tagsInput}
-          onInput=${(e) => setTagsInput(e.target.value)}
-        />
+        <${TextField} size="small" variant="outlined" placeholder="Tags (comma-separated, optional)" value=${tagsInput} onInput=${(e) => setTagsInput(e.target.value)} fullWidth />
         ${parsedTags.length > 0 && html`
           <div class="tag-row">
             ${parsedTags.map((tag) => html`<span class="tag-chip">#${tag}</span>`)}
@@ -3639,12 +3591,7 @@ function CreateTaskModalInline({ onClose }) {
 
         <!-- Advanced fields: base branch + draft -->
         ${(showAdvanced || hasAdvanced) && html`
-          <input
-            class="input"
-            placeholder="Base branch (optional, e.g. main)"
-            value=${baseBranch}
-            onInput=${(e) => setBaseBranch(e.target.value)}
-          />
+          <${TextField} size="small" variant="outlined" placeholder="Base branch (optional, e.g. main)" value=${baseBranch} onInput=${(e) => setBaseBranch(e.target.value)} fullWidth />
           <${Toggle}
             label="Draft (save to backlog, don't start)"
             checked=${draft}
