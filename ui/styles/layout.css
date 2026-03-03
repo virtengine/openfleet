@@ -1413,6 +1413,10 @@ body.is-resizing * {
  ──────────────────────────────────────────────────────────────────────── */
 
 /* Vertical sidebar Tabs — fallback */
+.sidebar .MuiTab-root {
+  flex-direction: row !important;
+  gap: 8px !important;
+}
 .MuiTab-iconWrapper {
   display: flex !important;
   align-items: center !important;
@@ -1420,6 +1424,8 @@ body.is-resizing * {
   flex-shrink: 0 !important;
   width: 20px !important;
   height: 20px !important;
+  margin-bottom: 0 !important;
+  margin-right: 0 !important;
 }
 .MuiTab-iconWrapper svg {
   width: 100% !important;
