@@ -1,7 +1,8 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
+import { execSync } from "node:child_process";
 import {
   WorkflowEngine,
   WorkflowContext,
@@ -1589,6 +1590,92 @@ describe("Session chaining - action.run_agent", () => {
     expect(result.threadId).toBe("thread-existing-1");
     expect(continueSession).toHaveBeenCalledTimes(1);
     expect(execWithRetry).not.toHaveBeenCalled();
+  });
+
+  it("runs multi-candidate selector mode when candidateCount > 1 and restores selected branch", async () => {
+    const handler = getNodeType("action.run_agent");
+    expect(handler).toBeDefined();
+
+    const repoDir = mkdtempSync(join(tmpdir(), "wf-agent-candidates-"));
+    try {
+      execSync("git init", { cwd: repoDir, stdio: "ignore" });
+      execSync('git config user.email "bot@example.com"', { cwd: repoDir, stdio: "ignore" });
+      execSync('git config user.name "Bosun Bot"', { cwd: repoDir, stdio: "ignore" });
+      writeFileSync(join(repoDir, "README.md"), "base\n", "utf8");
+      execSync("git add README.md", { cwd: repoDir, stdio: "ignore" });
+      execSync('git commit -m "base"', { cwd: repoDir, stdio: "ignore" });
+      execSync("git checkout -b feature/candidate-test", { cwd: repoDir, stdio: "ignore" });
+
+      let runCount = 0;
+      const launchEphemeralThread = vi.fn().mockImplementation(async (_prompt, runCwd) => {
+        runCount += 1;
+        writeFileSync(join(runCwd, `candidate-${runCount}.txt`), `candidate-${runCount}\n`, "utf8");
+        execSync("git add .", { cwd: runCwd, stdio: "ignore" });
+        execSync(`git commit -m "candidate-${runCount}"`, { cwd: runCwd, stdio: "ignore" });
+        return {
+          success: true,
+          output:
+            runCount === 1
+              ? "candidate one output"
+              : "candidate two output with additional verification context",
+          sdk: "codex",
+          items: [],
+          threadId: `thread-${runCount}`,
+        };
+      });
+      const mockEngine = {
+        services: {
+          agentPool: {
+            launchEphemeralThread,
+          },
+        },
+      };
+
+      const ctx = new WorkflowContext({
+        worktreePath: repoDir,
+        taskId: "task-candidate-mode",
+      });
+      const node = {
+        id: "agent-candidates",
+        type: "action.run_agent",
+        config: {
+          prompt: "Fix task",
+          cwd: repoDir,
+          autoRecover: false,
+          candidateCount: 2,
+          candidateSelector: "last_success",
+        },
+      };
+      const result = await handler.execute(node, ctx, mockEngine);
+
+      expect(launchEphemeralThread).toHaveBeenCalledTimes(2);
+      expect(result.success).toBe(true);
+      expect(result.threadId).toBe("thread-2");
+      expect(result.candidateSelection).toMatchObject({
+        candidateCount: 2,
+        selector: "last_success",
+        selectedIndex: 2,
+      });
+      expect(Array.isArray(result.candidates)).toBe(true);
+      expect(result.candidates.length).toBe(2);
+
+      const currentBranch = execSync("git rev-parse --abbrev-ref HEAD", {
+        cwd: repoDir,
+        encoding: "utf8",
+      }).trim();
+      const latestCommitMessage = execSync("git log -1 --pretty=%s", {
+        cwd: repoDir,
+        encoding: "utf8",
+      }).trim();
+      expect(currentBranch).toBe("feature/candidate-test");
+      expect(latestCommitMessage).toBe("candidate-2");
+    } finally {
+      try {
+        rmSync(repoDir, { recursive: true, force: true });
+      } catch {
+        // best-effort cleanup
+      }
+    }
   });
 });
 

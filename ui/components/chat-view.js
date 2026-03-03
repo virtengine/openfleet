@@ -500,7 +500,7 @@ const TraceEvent = memo(function TraceEvent({ msg }) {
         sx=${{ maxWidth: '100%', height: 'auto', '& .MuiChip-label': { whiteSpace: 'normal', py: 0.25 }, cursor: hasBody ? 'pointer' : 'default' }}
       />
       <${Collapse} in=${!!(hasBody && expanded)}>
-        <${Paper} variant="outlined" sx=${{ mt: 0.5, p: 1, fontSize: '0.75rem', maxHeight: longBody ? 300 : 'none', overflow: longBody ? 'auto' : 'visible' }}>
+        <${Paper} variant="outlined" sx=${{ mt: 0.5, p: 1, fontSize: '0.75rem', maxHeight: 400, overflowX: 'auto', overflowY: 'auto', wordBreak: 'break-word' }}>
           <${MessageContent} text=${text} />
         </${Paper}>
       </${Collapse}>
@@ -1626,3 +1626,6 @@ export function ChatView({ sessionId, readOnly = false, embedded = false }) {
     </${Box}>
   `;
 }
+
+
+

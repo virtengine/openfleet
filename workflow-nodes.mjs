@@ -1343,6 +1343,7 @@ registerNodeType("action.run_agent", {
       prompt: { type: "string", description: "Agent prompt (supports {{variables}})" },
       sdk: { type: "string", enum: ["codex", "copilot", "claude", "auto"], default: "auto" },
       model: { type: "string", description: "Optional model override for the selected SDK" },
+      taskId: { type: "string", description: "Optional task ID used for task metadata lookup" },
       cwd: { type: "string", description: "Working directory for the agent" },
       timeoutMs: { type: "number", default: 3600000, description: "Agent timeout in ms" },
       agentProfile: { type: "string", description: "Agent profile name (e.g., 'frontend', 'backend')" },
@@ -1356,6 +1357,18 @@ registerNodeType("action.run_agent", {
       sessionRetries: { type: "number", default: 2, description: "Additional session-aware retries for execWithRetry" },
       maxContinues: { type: "number", default: 2, description: "Max idle-continue attempts for execWithRetry" },
       maxRetainedEvents: { type: "number", default: WORKFLOW_AGENT_EVENT_PREVIEW_LIMIT, description: "Maximum agent events retained in run output" },
+      candidateCount: { type: "number", default: 1, description: "Run N isolated agent candidates and select the best (N>1 enables selector mode)" },
+      candidateSelector: {
+        type: "string",
+        enum: ["score", "first_success", "last_success"],
+        default: "score",
+        description: "Candidate selection strategy when candidateCount > 1",
+      },
+      candidatePromptTemplate: {
+        type: "string",
+        description:
+          "Optional prompt suffix template for candidate mode. Supports {{candidateIndex}} and {{candidateCount}}",
+      },
     },
     required: ["prompt"],
   },
@@ -1385,188 +1398,456 @@ registerNodeType("action.run_agent", {
     // Use the engine's service injection to call agent pool
     const agentPool = engine.services?.agentPool;
     if (agentPool?.launchEphemeralThread) {
-      let streamEventCount = 0;
-      let lastStreamLog = "";
-      const streamLines = [];
-      const startedAt = Date.now();
-      const resolvedSessionId = String(
-        ctx.resolve(
-          node.config?.sessionId || ctx.data?.sessionId || ctx.data?.threadId || "",
-        ) || "",
-      ).trim();
-      const sessionId = resolvedSessionId || null;
-      const explicitTaskKey = String(ctx.resolve(node.config?.taskKey || "") || "").trim();
-      const recoveryTaskKey =
-        explicitTaskKey ||
-        sessionId ||
-        `${ctx.data?._workflowId || "workflow"}:${ctx.id}:${node.id}`;
-      const autoRecover = node.config?.autoRecover !== false;
-      const continueOnSession = node.config?.continueOnSession !== false;
-      const continuePrompt = ctx.resolve(
-        node.config?.continuePrompt ||
-        "Continue exactly where you left off. Resume execution from the last incomplete step, avoid redoing completed work, and finish the task end-to-end.",
-      );
-      const parsedSessionRetries = Number(node.config?.sessionRetries);
-      const parsedMaxContinues = Number(node.config?.maxContinues);
-      const sessionRetries = Number.isFinite(parsedSessionRetries)
-        ? Math.max(0, Math.min(10, Math.floor(parsedSessionRetries)))
-        : 2;
-      const maxContinues = Number.isFinite(parsedMaxContinues)
-        ? Math.max(0, Math.min(10, Math.floor(parsedMaxContinues)))
-        : 2;
-      const sdkOverride = sdk === "auto" ? undefined : sdk;
-      const modelOverride = node.config?.model
-        ? String(ctx.resolve(node.config.model) || "").trim() || undefined
-        : undefined;
-      const maxRetainedEvents = Number.isFinite(Number(node.config?.maxRetainedEvents))
-        ? Math.max(10, Math.min(500, Math.trunc(Number(node.config.maxRetainedEvents))))
-        : WORKFLOW_AGENT_EVENT_PREVIEW_LIMIT;
-
-      const launchExtra = {};
-      if (sessionId) launchExtra.resumeThreadId = sessionId;
-      if (sdkOverride) launchExtra.sdk = sdkOverride;
-      if (modelOverride) launchExtra.model = modelOverride;
-      launchExtra.onEvent = (event) => {
-        try {
-          const line = summarizeAgentStreamEvent(event);
-          if (!line || line === lastStreamLog) return;
-          lastStreamLog = line;
-          streamEventCount += 1;
-          if (streamLines.length >= maxRetainedEvents) {
-            streamLines.shift();
-          }
-          streamLines.push(line);
-          ctx.log(node.id, line);
-        } catch {
-          // Stream callbacks must never crash workflow execution.
-        }
+      const parseCandidateCount = (value) => {
+        const num = Number(value);
+        if (!Number.isFinite(num)) return null;
+        return Math.max(1, Math.min(12, Math.trunc(num)));
       };
-
-      const heartbeat = setInterval(() => {
-        const elapsedSec = Math.max(1, Math.round((Date.now() - startedAt) / 1000));
-        ctx.log(node.id, `Agent still running (${elapsedSec}s elapsed)`);
-      }, WORKFLOW_AGENT_HEARTBEAT_MS);
-
-      let result = null;
-      let success = false;
-
-      try {
-        // Recovery step 1: continue the existing session when available.
-        if (
-          autoRecover &&
-          continueOnSession &&
-          sessionId &&
-          typeof agentPool.continueSession === "function"
-        ) {
-          ctx.log(node.id, `Recovery: continuing existing session ${sessionId}`);
+      let configuredCandidateCount = (() => {
+        const taskMeta = ctx.data?.task?.meta || {};
+        const execution = taskMeta?.execution || {};
+        const dataExecution = ctx.data?.execution || ctx.data?.meta?.execution || {};
+        const candidates = [
+          node.config?.candidateCount,
+          ctx.data?.candidateCount,
+          ctx.data?.task?.candidateCount,
+          ctx.data?.meta?.candidateCount,
+          dataExecution?.candidateCount,
+          ctx.data?.workflow?.candidateCount,
+          execution?.candidateCount,
+          taskMeta?.candidateCount,
+          taskMeta?.swebench?.candidate_count,
+        ];
+        for (const candidate of candidates) {
+          const parsed = parseCandidateCount(candidate);
+          if (parsed && parsed > 0) return parsed;
+        }
+        return 1;
+      })();
+      if (configuredCandidateCount <= 1) {
+        const taskIdForLookup = String(
+          ctx.data?.taskId ||
+            ctx.data?.task?.id ||
+            ctx.resolve(node.config?.taskId || "") ||
+            "",
+        ).trim();
+        const kanban = engine?.services?.kanban;
+        if (taskIdForLookup && kanban && typeof kanban.getTask === "function") {
           try {
-            result = await agentPool.continueSession(sessionId, continuePrompt, {
-              timeout: timeoutMs,
-              cwd,
-              sdk: sdkOverride,
-              model: modelOverride,
-            });
-            if (result?.success) {
-              ctx.log(node.id, "Recovery: continue-session succeeded");
-            } else {
+            const task = await kanban.getTask(taskIdForLookup);
+            const taskMeta = task?.meta || {};
+            const execution = taskMeta?.execution || {};
+            const lookedUp = [
+              task?.candidateCount,
+              taskMeta?.candidateCount,
+              execution?.candidateCount,
+              taskMeta?.swebench?.candidate_count,
+            ]
+              .map((value) => parseCandidateCount(value))
+              .find((value) => Number.isFinite(value) && value > 0);
+            if (lookedUp && lookedUp > configuredCandidateCount) {
+              configuredCandidateCount = lookedUp;
+            }
+          } catch {
+            // best-effort lookup only
+          }
+        }
+      }
+      const selectorMode = String(
+        ctx.resolve(node.config?.candidateSelector || "score") || "score",
+      ).trim().toLowerCase();
+      const candidatePromptTemplate = String(
+        ctx.resolve(node.config?.candidatePromptTemplate || "") || "",
+      ).trim();
+      const runSinglePass = async (passPrompt, options = {}) => {
+        const passLabel = String(options.passLabel || "").trim();
+        const persistSession = options.persistSession !== false;
+        let streamEventCount = 0;
+        let lastStreamLog = "";
+        const streamLines = [];
+        const startedAt = Date.now();
+        const resolvedSessionId = String(
+          ctx.resolve(
+            options.sessionId ??
+              node.config?.sessionId ??
+              ctx.data?.sessionId ??
+              ctx.data?.threadId ??
+              "",
+          ) || "",
+        ).trim();
+        const sessionId = resolvedSessionId || null;
+        const explicitTaskKey = String(ctx.resolve(node.config?.taskKey || "") || "").trim();
+        const fallbackTaskKey =
+          sessionId ||
+          `${ctx.data?._workflowId || "workflow"}:${ctx.id}:${node.id}`;
+        const recoveryTaskKey = options.taskKey || explicitTaskKey || fallbackTaskKey;
+        const autoRecover = options.autoRecover ?? (node.config?.autoRecover !== false);
+        const continueOnSession =
+          options.continueOnSession ?? (node.config?.continueOnSession !== false);
+        const continuePrompt = ctx.resolve(
+          node.config?.continuePrompt ||
+            "Continue exactly where you left off. Resume execution from the last incomplete step, avoid redoing completed work, and finish the task end-to-end.",
+        );
+        const parsedSessionRetries = Number(node.config?.sessionRetries);
+        const parsedMaxContinues = Number(node.config?.maxContinues);
+        const sessionRetries = Number.isFinite(parsedSessionRetries)
+          ? Math.max(0, Math.min(10, Math.floor(parsedSessionRetries)))
+          : 2;
+        const maxContinues = Number.isFinite(parsedMaxContinues)
+          ? Math.max(0, Math.min(10, Math.floor(parsedMaxContinues)))
+          : 2;
+        const sdkOverride = sdk === "auto" ? undefined : sdk;
+        const modelOverride = node.config?.model
+          ? String(ctx.resolve(node.config.model) || "").trim() || undefined
+          : undefined;
+        const maxRetainedEvents = Number.isFinite(Number(node.config?.maxRetainedEvents))
+          ? Math.max(10, Math.min(500, Math.trunc(Number(node.config.maxRetainedEvents))))
+          : WORKFLOW_AGENT_EVENT_PREVIEW_LIMIT;
+
+        const launchExtra = {};
+        if (sessionId) launchExtra.resumeThreadId = sessionId;
+        if (sdkOverride) launchExtra.sdk = sdkOverride;
+        if (modelOverride) launchExtra.model = modelOverride;
+        launchExtra.onEvent = (event) => {
+          try {
+            const line = summarizeAgentStreamEvent(event);
+            if (!line || line === lastStreamLog) return;
+            lastStreamLog = line;
+            streamEventCount += 1;
+            if (streamLines.length >= maxRetainedEvents) {
+              streamLines.shift();
+            }
+            streamLines.push(line);
+            ctx.log(node.id, passLabel ? `${passLabel} ${line}` : line);
+          } catch {
+            // Stream callbacks must never crash workflow execution.
+          }
+        };
+
+        const heartbeat = setInterval(() => {
+          const elapsedSec = Math.max(1, Math.round((Date.now() - startedAt) / 1000));
+          ctx.log(node.id, `${passLabel || "Agent"} still running (${elapsedSec}s elapsed)`);
+        }, WORKFLOW_AGENT_HEARTBEAT_MS);
+
+        let result = null;
+        let success = false;
+        try {
+          if (
+            autoRecover &&
+            continueOnSession &&
+            sessionId &&
+            typeof agentPool.continueSession === "function"
+          ) {
+            ctx.log(node.id, `${passLabel} Recovery: continuing existing session ${sessionId}`.trim());
+            try {
+              result = await agentPool.continueSession(sessionId, continuePrompt, {
+                timeout: timeoutMs,
+                cwd,
+                sdk: sdkOverride,
+                model: modelOverride,
+              });
+              if (result?.success) {
+                ctx.log(node.id, `${passLabel} Recovery: continue-session succeeded`.trim());
+              } else {
+                ctx.log(
+                  node.id,
+                  `${passLabel} Recovery: continue-session failed (${result?.error || "unknown error"})`.trim(),
+                  "warn",
+                );
+                result = null;
+              }
+            } catch (err) {
               ctx.log(
                 node.id,
-                `Recovery: continue-session failed (${result?.error || "unknown error"})`,
+                `${passLabel} Recovery: continue-session threw (${err?.message || err})`.trim(),
                 "warn",
               );
               result = null;
             }
-          } catch (err) {
+          }
+
+          if (!result && autoRecover && typeof agentPool.execWithRetry === "function") {
             ctx.log(
               node.id,
-              `Recovery: continue-session threw (${err?.message || err})`,
-              "warn",
+              `${passLabel} Recovery: execWithRetry taskKey=${recoveryTaskKey} retries=${sessionRetries} continues=${maxContinues}`.trim(),
             );
-            result = null;
+            result = await agentPool.execWithRetry(passPrompt, {
+              taskKey: recoveryTaskKey,
+              cwd,
+              timeoutMs,
+              maxRetries: sessionRetries,
+              maxContinues,
+              sdk: sdkOverride,
+              model: modelOverride,
+            });
           }
+
+          if (!result && autoRecover && typeof agentPool.launchOrResumeThread === "function") {
+            ctx.log(node.id, `${passLabel} Recovery: launchOrResumeThread taskKey=${recoveryTaskKey}`.trim());
+            result = await agentPool.launchOrResumeThread(passPrompt, cwd, timeoutMs, {
+              taskKey: recoveryTaskKey,
+              sdk: sdkOverride,
+              model: modelOverride,
+            });
+          }
+
+          if (!result) {
+            result = await agentPool.launchEphemeralThread(passPrompt, cwd, timeoutMs, launchExtra);
+          }
+          success = result?.success === true;
+        } finally {
+          clearInterval(heartbeat);
         }
+        ctx.log(node.id, `${passLabel || "Agent"} completed: success=${success} streamEvents=${streamEventCount}`);
 
-        // Recovery step 2: session-aware retry chain (resume -> fresh -> fallback SDKs).
-        if (!result && autoRecover && typeof agentPool.execWithRetry === "function") {
-          ctx.log(
-            node.id,
-            `Recovery: execWithRetry taskKey=${recoveryTaskKey} retries=${sessionRetries} continues=${maxContinues}`,
-          );
-          result = await agentPool.execWithRetry(finalPrompt, {
-            taskKey: recoveryTaskKey,
-            cwd,
-            timeoutMs,
-            maxRetries: sessionRetries,
-            maxContinues,
-            sdk: sdkOverride,
-            model: modelOverride,
-          });
+        const threadId = result?.threadId || result?.sessionId || sessionId || null;
+        if (persistSession && threadId) {
+          ctx.data.sessionId = threadId;
+          ctx.data.threadId = threadId;
         }
+        const digest = buildAgentExecutionDigest(result, streamLines, maxRetainedEvents);
 
-        // Recovery step 3: best-effort launch/resume if execWithRetry is unavailable.
-        if (!result && autoRecover && typeof agentPool.launchOrResumeThread === "function") {
-          ctx.log(node.id, `Recovery: launchOrResumeThread taskKey=${recoveryTaskKey}`);
-          result = await agentPool.launchOrResumeThread(finalPrompt, cwd, timeoutMs, {
-            taskKey: recoveryTaskKey,
-            sdk: sdkOverride,
-            model: modelOverride,
-          });
+        if (!success) {
+          return {
+            success: false,
+            error:
+              result?.error ||
+              `Agent execution failed in node "${node.label || node.id}"`,
+            output: result?.output,
+            sdk: result?.sdk,
+            items: result?.items,
+            threadId,
+            sessionId: threadId,
+            attempts: result?.attempts,
+            continues: result?.continues,
+            resumed: result?.resumed,
+            summary: digest.summary,
+            narrative: digest.narrative,
+            thoughts: digest.thoughts,
+            stream: digest.stream,
+            itemCount: digest.itemCount,
+            omittedItemCount: digest.omittedItemCount,
+          };
         }
-
-        // Fallback: single launch (optionally resumes when session ID exists).
-        if (!result) {
-          result = await agentPool.launchEphemeralThread(finalPrompt, cwd, timeoutMs, launchExtra);
-        }
-        success = result?.success === true;
-      } finally {
-        clearInterval(heartbeat);
-      }
-      ctx.log(node.id, `Agent completed: success=${success} streamEvents=${streamEventCount}`);
-
-      // Propagate session/thread IDs for downstream chaining
-      const threadId = result?.threadId || result?.sessionId || sessionId || null;
-      if (threadId) {
-        ctx.data.sessionId = threadId;
-        ctx.data.threadId = threadId;
-      }
-      const digest = buildAgentExecutionDigest(result, streamLines, maxRetainedEvents);
-
-      if (!success) {
-        const errorMessage =
-          result?.error ||
-          `Agent execution failed in node "${node.label || node.id}"`;
-        if (node.config?.failOnError) throw new Error(errorMessage);
         return {
-          success: false,
-          error: errorMessage,
+          success: true,
           output: result?.output,
+          summary: digest.summary,
+          narrative: digest.narrative,
+          thoughts: digest.thoughts,
+          stream: digest.stream,
           sdk: result?.sdk,
-          items: result?.items,
+          items: digest.items,
+          itemCount: digest.itemCount,
+          omittedItemCount: digest.omittedItemCount,
           threadId,
           sessionId: threadId,
           attempts: result?.attempts,
           continues: result?.continues,
           resumed: result?.resumed,
         };
+      };
+
+      if (configuredCandidateCount <= 1) {
+        const singleResult = await runSinglePass(finalPrompt, { persistSession: true });
+        if (!singleResult.success && node.config?.failOnError) {
+          throw new Error(singleResult.error || "Agent execution failed");
+        }
+        return singleResult;
       }
 
-      return {
-        success: result.success,
-        output: result.output,
-        summary: digest.summary,
-        narrative: digest.narrative,
-        thoughts: digest.thoughts,
-        stream: digest.stream,
-        sdk: result.sdk,
-        items: digest.items,
-        itemCount: digest.itemCount,
-        omittedItemCount: digest.omittedItemCount,
-        threadId,
-        sessionId: threadId,
-        attempts: result?.attempts,
-        continues: result?.continues,
-        resumed: result?.resumed,
+      const repoGitReady = (() => {
+        try {
+          execSync("git rev-parse --is-inside-work-tree", {
+            cwd,
+            encoding: "utf8",
+            stdio: ["ignore", "pipe", "pipe"],
+            timeout: 5000,
+          });
+          return true;
+        } catch {
+          return false;
+        }
+      })();
+      if (!repoGitReady) {
+        ctx.log(
+          node.id,
+          `candidateCount=${configuredCandidateCount} requested but cwd is not a git repo. Falling back to single-pass.`,
+          "warn",
+        );
+        const fallbackResult = await runSinglePass(finalPrompt, { persistSession: true });
+        if (!fallbackResult.success && node.config?.failOnError) {
+          throw new Error(fallbackResult.error || "Agent execution failed");
+        }
+        return fallbackResult;
+      }
+
+      const originalSessionId = ctx.data?.sessionId || null;
+      const originalThreadId = ctx.data?.threadId || null;
+      const safeBranchPart = (value) =>
+        String(value || "")
+          .trim()
+          .toLowerCase()
+          .replace(/[^a-z0-9._/-]+/g, "-")
+          .replace(/^-+|-+$/g, "")
+          .slice(0, 40) || "candidate";
+      const currentBranch = execSync("git rev-parse --abbrev-ref HEAD", {
+        cwd,
+        encoding: "utf8",
+        stdio: ["ignore", "pipe", "pipe"],
+        timeout: 5000,
+      }).trim();
+      const baselineHead = execSync("git rev-parse HEAD", {
+        cwd,
+        encoding: "utf8",
+        stdio: ["ignore", "pipe", "pipe"],
+        timeout: 5000,
+      }).trim();
+      const batchToken = randomUUID().slice(0, 8);
+      const candidateRuns = [];
+
+      try {
+        for (let idx = 1; idx <= configuredCandidateCount; idx += 1) {
+          const candidateBranch =
+            `${safeBranchPart(currentBranch)}-cand-${idx}-${batchToken}`.slice(0, 120);
+          execSync(`git checkout -B "${candidateBranch}" "${baselineHead}"`, {
+            cwd,
+            stdio: ["ignore", "pipe", "pipe"],
+            encoding: "utf8",
+            timeout: 20000,
+          });
+          const suffix = candidatePromptTemplate
+            ? candidatePromptTemplate
+                .replace(/\{\{\s*candidateIndex\s*\}\}/g, String(idx))
+                .replace(/\{\{\s*candidateCount\s*\}\}/g, String(configuredCandidateCount))
+            : [
+                "",
+                `### Candidate Strategy ${idx}/${configuredCandidateCount}`,
+                "You are one candidate solution in a multi-candidate selection workflow.",
+                "Provide an end-to-end fix with clear verification; do not reference other candidates.",
+              ].join("\n");
+          const candidatePrompt = `${finalPrompt}\n${suffix}`;
+          ctx.log(node.id, `Candidate ${idx}/${configuredCandidateCount}: running on branch ${candidateBranch}`);
+          const run = await runSinglePass(candidatePrompt, {
+            persistSession: false,
+            autoRecover: false,
+            continueOnSession: false,
+            sessionId: null,
+            taskKey: `${ctx.data?._workflowId || "workflow"}:${ctx.id}:${node.id}:candidate:${idx}`,
+            passLabel: `[candidate ${idx}/${configuredCandidateCount}]`,
+          });
+          const postHead = execSync("git rev-parse HEAD", {
+            cwd,
+            encoding: "utf8",
+            stdio: ["ignore", "pipe", "pipe"],
+            timeout: 5000,
+          }).trim();
+          const hasCommit = Boolean(postHead && baselineHead && postHead !== baselineHead);
+          const summaryLength = String(run?.summary || run?.output || "").trim().length;
+          const scoreBase = run.success ? 100 : 0;
+          const commitBonus = hasCommit ? 20 : 0;
+          const outputBonus = Math.min(20, Math.trunc(summaryLength / 80));
+          const score = scoreBase + commitBonus + outputBonus;
+          candidateRuns.push({
+            index: idx,
+            branch: candidateBranch,
+            head: postHead,
+            hasCommit,
+            score,
+            ...run,
+          });
+        }
+      } finally {
+        if (originalSessionId) ctx.data.sessionId = originalSessionId;
+        else delete ctx.data.sessionId;
+        if (originalThreadId) ctx.data.threadId = originalThreadId;
+        else delete ctx.data.threadId;
+      }
+
+      const selector = ["score", "first_success", "last_success"].includes(selectorMode)
+        ? selectorMode
+        : "score";
+      const successfulCandidates = candidateRuns.filter((entry) => entry.success === true);
+      let selected = null;
+      if (selector === "first_success") {
+        selected = successfulCandidates[0] || candidateRuns[0] || null;
+      } else if (selector === "last_success") {
+        selected =
+          (successfulCandidates.length
+            ? successfulCandidates[successfulCandidates.length - 1]
+            : null) ||
+          candidateRuns[candidateRuns.length - 1] ||
+          null;
+      } else {
+        selected = [...candidateRuns].sort((a, b) => {
+          if ((b.score || 0) !== (a.score || 0)) return (b.score || 0) - (a.score || 0);
+          if (Boolean(b.hasCommit) !== Boolean(a.hasCommit)) return b.hasCommit ? 1 : -1;
+          return (a.index || 0) - (b.index || 0);
+        })[0] || null;
+      }
+
+      if (!selected) {
+        const err = "Candidate selection failed: no candidate results produced";
+        if (node.config?.failOnError) throw new Error(err);
+        return { success: false, error: err };
+      }
+
+      const selectedHead = selected.hasCommit ? selected.head : baselineHead;
+      execSync(`git checkout -B "${currentBranch}" "${selectedHead}"`, {
+        cwd,
+        stdio: ["ignore", "pipe", "pipe"],
+        encoding: "utf8",
+        timeout: 20000,
+      });
+      for (const candidate of candidateRuns) {
+        if (!candidate?.branch) continue;
+        try {
+          execSync(`git branch -D "${candidate.branch}"`, {
+            cwd,
+            stdio: ["ignore", "pipe", "pipe"],
+            encoding: "utf8",
+            timeout: 10000,
+          });
+        } catch {
+          // best-effort cleanup only
+        }
+      }
+
+      if (selected?.threadId) {
+        ctx.data.sessionId = selected.threadId;
+        ctx.data.threadId = selected.threadId;
+      }
+      const selectionSummary = {
+        candidateCount: configuredCandidateCount,
+        selector,
+        selectedIndex: selected.index,
+        selectedScore: selected.score,
+        successfulCandidates: successfulCandidates.length,
+        selectedHasCommit: selected.hasCommit,
       };
+      ctx.data._agentCandidateSelection = selectionSummary;
+      ctx.log(
+        node.id,
+        `Candidate selector chose #${selected.index}/${configuredCandidateCount} (strategy=${selector}, success=${successfulCandidates.length})`,
+      );
+
+      const response = {
+        ...selected,
+        candidateSelection: selectionSummary,
+        candidates: candidateRuns.map((entry) => ({
+          index: entry.index,
+          success: entry.success === true,
+          hasCommit: Boolean(entry.hasCommit),
+          score: entry.score,
+          summary: trimLogText(entry.summary || entry.output || "", 240),
+          threadId: entry.threadId || null,
+          error: entry.success ? null : trimLogText(entry.error || "", 180) || null,
+        })),
+      };
+      if (!selected.success && node.config?.failOnError) {
+        throw new Error(selected.error || "All candidates failed");
+      }
+      return response;
     }
 
     // Fallback: shell-based execution

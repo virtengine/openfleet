@@ -157,6 +157,7 @@ export const TASK_LIFECYCLE_TEMPLATE = {
     // ── Execute agent ────────────────────────────────────────────────────
     node("run-agent", "action.run_agent", "Execute Agent", {
       prompt: "{{_taskPrompt}}",
+      taskId: "{{taskId}}",
       cwd: "{{worktreePath}}",
       timeoutMs: "{{taskTimeoutMs}}",
       maxRetries: "{{maxRetries}}",
@@ -469,6 +470,7 @@ export const VE_ORCHESTRATOR_LITE_TEMPLATE = {
     // ── Run agent ────────────────────────────────────────────────────────
     node("agent", "action.run_agent", "Run Agent", {
       prompt: "{{_taskPrompt}}",
+      taskId: "{{taskId}}",
       cwd: "{{worktreePath}}",
       timeoutMs: "{{taskTimeoutMs}}",
       maxRetries: "{{maxRetries}}",

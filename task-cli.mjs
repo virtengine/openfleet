@@ -130,6 +130,24 @@ function hasFlag(args, flag) {
 export async function taskCreate(data) {
   const store = await initStore();
   const id = data.id || randomUUID();
+  const parsedCandidateCount = Number(data?.candidateCount);
+  const candidateCount = Number.isFinite(parsedCandidateCount)
+    ? Math.max(1, Math.min(12, Math.trunc(parsedCandidateCount)))
+    : null;
+  const inputMeta =
+    data?.meta && typeof data.meta === "object" && !Array.isArray(data.meta)
+      ? { ...data.meta }
+      : {};
+  const executionMeta =
+    inputMeta.execution && typeof inputMeta.execution === "object"
+      ? { ...inputMeta.execution }
+      : {};
+  if (candidateCount && candidateCount > 1) {
+    executionMeta.candidateCount = candidateCount;
+  }
+  if (Object.keys(executionMeta).length > 0) {
+    inputMeta.execution = executionMeta;
+  }
   const taskData = {
     id,
     title: data.title,
@@ -142,6 +160,8 @@ export async function taskCreate(data) {
     workspace: data.workspace || process.cwd(),
     repository: data.repository || "",
     repositories: data.repositories || [],
+    candidateCount: candidateCount && candidateCount > 1 ? candidateCount : undefined,
+    meta: inputMeta,
   };
 
   // Format description from structured fields if provided
