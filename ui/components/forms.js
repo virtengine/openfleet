@@ -9,7 +9,6 @@ import {
   useState,
   useRef,
   useCallback,
-  useEffect,
 } from "preact/hooks";
 import htm from "htm";
 
@@ -115,11 +114,12 @@ export function PullToRefresh({ onRefresh, children, disabled = false }) {
   const startYRef = useRef(0);
   const pullingRef = useRef(false);
 
-  // Detect non-touch (desktop) device
-  const [hasTouch, setHasTouch] = useState(false);
-  useEffect(() => {
-    setHasTouch('ontouchstart' in window || navigator.maxTouchPoints > 0);
-  }, []);
+  // Detect non-touch (desktop) device — initialised synchronously to avoid a
+  // first-render flash of the desktop refresh button on touch devices.
+  const [hasTouch] = useState(() => {
+    if (typeof window === 'undefined') return false;
+    return 'ontouchstart' in window || navigator.maxTouchPoints > 0;
+  });
 
   const THRESHOLD = 64;
 
