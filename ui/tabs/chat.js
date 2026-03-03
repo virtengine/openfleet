@@ -148,7 +148,7 @@ function ChatWelcome({ onNewSession, onQuickCommand }) {
   ];
 
   return html`
-    <${Box} class="chat-welcome" sx=${{ display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", height: "100%", p: 4 }}>
+    <${Box} className="chat-welcome" sx=${{ display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", height: "100%", p: 4 }}>
       <${Avatar} sx=${{ width: 56, height: 56, mb: 2, bgcolor: "primary.main" }}>${resolveIcon("bot")}<//>
       <${Typography} variant="h5" gutterBottom>Welcome to Bosun<//>
       <${Typography} variant="body2" color="text.secondary" sx=${{ textAlign: "center", maxWidth: 420, mb: 3 }}>
@@ -184,7 +184,7 @@ function SlashMenu({ filter, onSelect, activeIndex, commands }) {
   if (matches.length === 0) return null;
 
   return html`
-    <${Paper} elevation=${4} class="slash-menu" sx=${{ maxHeight: 260, overflowY: "auto", borderRadius: 2, position: "absolute", bottom: "100%", left: 0, right: 0, zIndex: 10 }}>
+    <${Paper} elevation=${4} className="slash-menu" sx=${{ maxHeight: 260, overflowY: "auto", borderRadius: 2, position: "absolute", bottom: "100%", left: 0, right: 0, zIndex: 10 }}>
       <${List} dense disablePadding>
         ${matches.map(
           (c, i) => html`
@@ -1008,7 +1008,7 @@ export function ChatTab() {
   // If we hit a critical error during signal reads, show recovery UI
   if (chatError) {
     return html`
-      <${Box} class="session-panel" sx=${{ display: "flex", alignItems: "center", justifyContent: "center", height: "100%", p: 3 }}>
+      <${Box} className="session-panel" sx=${{ display: "flex", alignItems: "center", justifyContent: "center", height: "100%", p: 3 }}>
         <${Stack} alignItems="center" spacing=${1.5}>
           <${Typography} sx=${{ fontSize: 28 }}>${resolveIcon("alert")}<//>
           <${Typography} variant="subtitle1" fontWeight=${600}>Chat failed to load<//>
@@ -1020,13 +1020,13 @@ export function ChatTab() {
   }
 
   return html`
-    <${Box} class="session-panel">
+    <${Box} className="session-panel">
       <${Box}
-        class="session-split ${sessionId ? 'has-active-session' : ''} ${drawerOpen ? 'drawer-open' : ''}"
+        className=${`session-split ${sessionId ? 'has-active-session' : ''} ${drawerOpen ? 'drawer-open' : ''}`}
         data-mobile=${isMobile ? "true" : "false"}
       >
         <!-- Left panel: Sessions sidebar -->
-        <${Box} class="session-pane">
+        <${Box} className="session-pane">
           <${ChatSafeBoundary} label="Session List">
             <${SessionList}
               showArchived=${showArchived}
@@ -1042,20 +1042,20 @@ export function ChatTab() {
         <//>
 
         <!-- Right panel: Chat area -->
-        <${Box} class="session-detail">
+        <${Box} className="session-detail">
           ${sessionId &&
           html`
-            <${Paper} elevation=${1} class="chat-shell-header" sx=${{ borderRadius: 0 }}>
-              <${Box} class="chat-shell-inner" sx=${{ display: "flex", alignItems: "center", gap: 1.5, px: 2, py: 1 }}>
+            <${Paper} elevation=${1} className="chat-shell-header" sx=${{ borderRadius: 0 }}>
+              <${Box} className="chat-shell-inner" sx=${{ display: "flex", alignItems: "center", gap: 1.5, px: 2, py: 1 }}>
                 <!-- Sessions toggle: shown on mobile always; on desktop only when rail is collapsed (CSS-controlled) -->
-                <${IconButton} class="session-drawer-btn session-drawer-btn-rail" onClick=${handleShowSessions} size="small">
+                <${IconButton} className="session-drawer-btn session-drawer-btn-rail" onClick=${handleShowSessions} size="small">
                   ${resolveIcon("menu")}
                 <//>
-                <${Box} class="chat-shell-title" sx=${{ flex: 1, minWidth: 0 }}>
+                <${Box} className="chat-shell-title" sx=${{ flex: 1, minWidth: 0 }}>
                   <${Typography} variant="subtitle1" noWrap fontWeight=${600}>${sessionTitle}<//>
                   <${Typography} variant="caption" color="text.secondary" noWrap>${sessionMeta || "Session"}<//>
                 <//>
-                <${Stack} direction="row" spacing=${0.5} class="chat-shell-actions">
+                <${Stack} direction="row" spacing=${0.5} className="chat-shell-actions">
                   <${Button}
                     variant="text"
                     size="small"
@@ -1123,7 +1123,7 @@ export function ChatTab() {
               `}
 
           <!-- Bottom input area (always visible) -->
-          <${Box} class="chat-input-area">
+          <${Box} className="chat-input-area">
             ${showSlashMenu &&
             html`
               <${SlashMenu}
@@ -1137,7 +1137,7 @@ export function ChatTab() {
               <${ChatInputToolbar} />
             <//>
             ${pendingAttachments.length > 0 && html`
-              <${Stack} direction="row" spacing=${0.5} flexWrap="wrap" class="chat-attachments-pending" sx=${{ px: 1, py: 0.5 }}>
+              <${Stack} direction="row" spacing=${0.5} flexWrap="wrap" className="chat-attachments-pending" sx=${{ px: 1, py: 0.5 }}>
                 ${pendingAttachments.map((att, index) => html`
                   <${Chip}
                     key=${att.id || `${att.name}-${index}`}
@@ -1152,7 +1152,7 @@ export function ChatTab() {
                 `}
               <//>
             `}
-            <${Box} class="chat-input-wrapper" sx=${{ display: "flex", alignItems: "flex-end", gap: 0.5, px: 1, py: 0.5 }}>
+            <${Box} className="chat-input-wrapper" sx=${{ display: "flex", alignItems: "flex-end", gap: 0.5, px: 1, py: 0.5 }}>
               <${TextField}
                 inputRef=${fileInputRef}
                 type="file"
@@ -1172,7 +1172,7 @@ export function ChatTab() {
               <//>
               <${TextField}
                 inputRef=${textareaRef}
-                class=${dragActive ? "chat-input-drag" : ""}
+                className=${dragActive ? "chat-input-drag" : ""}
                 placeholder=${sessionId
                   ? 'Send a message… (type "/" for commands)'
                   : 'Start a new chat or type "/" for commands'}
@@ -1203,7 +1203,7 @@ export function ChatTab() {
                   color="error"
                 >⏹<//>
               `}
-              <${Box} class="chat-send-group" ref=${sendMenuRef} sx=${{ display: "flex", position: "relative" }}>
+              <${Box} className="chat-send-group" ref=${sendMenuRef} sx=${{ display: "flex", position: "relative" }}>
                 <${IconButton}
                   color="primary"
                   disabled=${(!inputValue.trim() && pendingAttachments.length === 0) || uploadingAttachments}
@@ -1219,7 +1219,7 @@ export function ChatTab() {
                   title="Send options"
                 >▾<//>
                 ${showSendMenu && html`
-                  <${Paper} elevation=${4} class="chat-send-menu" sx=${{ position: "absolute", bottom: "100%", right: 0, minWidth: 200, borderRadius: 2, overflow: "hidden", zIndex: 10 }}>
+                  <${Paper} elevation=${4} className="chat-send-menu" sx=${{ position: "absolute", bottom: "100%", right: 0, minWidth: 200, borderRadius: 2, overflow: "hidden", zIndex: 10 }}>
                     <${List} dense disablePadding>
                       <${ListItemButton} onClick=${handleStopAndSend}>
                         <${ListItemIcon} sx=${{ minWidth: 28 }}>⊳<//>
@@ -1238,7 +1238,7 @@ export function ChatTab() {
                 `}
               <//>
             <//>
-            <${Stack} direction="row" spacing=${1} class="chat-input-hint" sx=${{ px: 1.5, py: 0.5 }}>
+            <${Stack} direction="row" spacing=${1} className="chat-input-hint" sx=${{ px: 1.5, py: 0.5 }}>
               <${Typography} variant="caption" color="text.secondary">Shift+Enter for new line<//>
               <${Typography} variant="caption" color="text.secondary">Type / for commands<//>
               ${offlineQueueSize.peek() > 0 && html`
@@ -1253,7 +1253,7 @@ export function ChatTab() {
       <//>
       ${focusMode && html`
         <${IconButton}
-          class="focus-exit-fab"
+          className="focus-exit-fab"
           onClick=${() => setFocusMode(false)}
           title="Exit focus mode"
           sx=${{ position: "fixed", bottom: 16, right: 16, zIndex: 1000, bgcolor: "background.paper", boxShadow: 3 }}
@@ -1262,7 +1262,7 @@ export function ChatTab() {
       ${isMobile &&
       html`
         <${Box}
-          class="session-drawer-backdrop ${drawerOpen ? "open" : ""}"
+          className=${`session-drawer-backdrop ${drawerOpen ? "open" : ""}`}
           onClick=${() => setDrawerOpen(false)}
         />
       `}

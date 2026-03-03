@@ -157,7 +157,7 @@ export function DiffViewer({ sessionId }) {
   /* ── Empty: no session selected ── */
   if (!sessionId) {
     return html`
-      <${Box} class="diff-viewer" sx=${{ display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", py: 6, gap: 1 }}>
+      <${Box} className="diff-viewer" sx=${{ display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", py: 6, gap: 1 }}>
         <${Typography} variant="h6" color="text.secondary">${resolveIcon(":edit:")}<//>
         <${Typography} variant="body2" color="text.secondary">Select a session to view diffs<//>
       <//>
@@ -167,7 +167,7 @@ export function DiffViewer({ sessionId }) {
   /* ── Loading ── */
   if (loading) {
     return html`
-      <${Box} class="diff-viewer" sx=${{ p: 2 }}>
+      <${Box} className="diff-viewer" sx=${{ p: 2 }}>
         <${Skeleton} variant="rectangular" height=${200} sx=${{ borderRadius: 1 }} />
       <//>
     `;
@@ -176,7 +176,7 @@ export function DiffViewer({ sessionId }) {
   /* ── Error ── */
   if (error) {
     return html`
-      <${Box} class="diff-viewer" sx=${{ display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", py: 6, gap: 1 }}>
+      <${Box} className="diff-viewer" sx=${{ display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", py: 6, gap: 1 }}>
         <${Typography} variant="h6" color="text.secondary">${resolveIcon(":edit:")}<//>
         <${Typography} variant="body2" color="text.secondary">Diff not available<//>
         <${Button} variant="contained" size="small" onClick=${handleRetry}>Retry<//>

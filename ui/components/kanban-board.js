@@ -585,7 +585,7 @@ function KanbanFilter({ tasks, filters, onFilterChange }) {
   }, []);
 
   return html`
-    <${Box} class="kanban-filter-bar" sx=${{ display: 'flex', alignItems: 'center', gap: 1, flexWrap: 'wrap', p: 1 }}>
+    <${Box} className="kanban-filter-bar" sx=${{ display: 'flex', alignItems: 'center', gap: 1, flexWrap: 'wrap', p: 1 }}>
       <${TextField}
         size="small"
         placeholder="Filter by keyword or field"
@@ -696,9 +696,9 @@ export function KanbanBoard({ onOpenTask }) {
   }, [filteredTasks]);
 
   return html`
-    <${Box} class="kanban-container">
+    <${Box} className="kanban-container">
       <${KanbanFilter} tasks=${allTasks} filters=${filters} onFilterChange=${setFilters} />
-      <${Box} class="kanban-board" sx=${{ display: 'flex', gap: 2, overflowX: 'auto', pb: 1 }}>
+      <${Box} className="kanban-board" sx=${{ display: 'flex', gap: 2, overflowX: 'auto', pb: 1 }}>
         ${COLUMNS.map((col) => html`
           <${KanbanColumn}
             key=${col.id}

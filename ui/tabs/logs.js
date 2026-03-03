@@ -593,7 +593,7 @@ export function LogsTab() {
         ${visibleLines.map((line, i) => {
           const lineNum = startIdx + i + 1;
           return html`<div class="log-line" key=${lineNum} style="height:${LINE_HEIGHT}px">
-            <${Typography} variant="caption" component="span" class="log-ln" sx=${{ color: "grey.500" }}>${lineNum}<//>
+            <${Typography} variant="caption" component="span" className="log-ln" sx=${{ color: "grey.500" }}>${lineNum}<//>
             <span class="log-lt">${logSearch.trim() ? highlightLine(line, logSearch, regexMode) : line}</span>
           </div>`;
         })}
