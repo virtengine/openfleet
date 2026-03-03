@@ -1218,6 +1218,7 @@ let _readStatusData = null;
 let _readStatusSummary = null;
 let _getCurrentChild = null;
 let _startProcess = null;
+let _requestFullBosunRestart = null;
 let _getVibeKanbanUrl = null;
 let _fetchVk = null;
 let _getRepoRoot = null;
@@ -1252,6 +1253,7 @@ export function injectMonitorFunctions({
   readStatusSummary,
   getCurrentChild,
   startProcess,
+  requestFullBosunRestart,
   getVibeKanbanUrl,
   fetchVk,
   getRepoRoot,
@@ -1282,6 +1284,7 @@ export function injectMonitorFunctions({
   _readStatusSummary = readStatusSummary;
   _getCurrentChild = getCurrentChild;
   _startProcess = startProcess;
+  _requestFullBosunRestart = requestFullBosunRestart || null;
   _getVibeKanbanUrl = getVibeKanbanUrl;
   _fetchVk = fetchVk;
   _getRepoRoot = getRepoRoot;
@@ -3358,7 +3361,7 @@ const COMMANDS = {
   "/log": { handler: cmdLogs, desc: "Alias for /logs" },
   "/branches": { handler: cmdBranches, desc: "Recent git branches" },
   "/diff": { handler: cmdDiff, desc: "Git diff summary (staged)" },
-  "/restart": { handler: cmdRestart, desc: "Restart orchestrator process" },
+  "/restart": { handler: cmdRestart, desc: "Full Bosun restart (all services)" },
   // Hidden — no desc so it's excluded from /help, /helpfull, and Telegram autocomplete.
   // Only surfaces in the security warning when TELEGRAM_UI_ALLOW_UNSAFE=true.
   "/disable_unsafe_access": { handler: cmdDisableUnsafeAccess },
@@ -7884,28 +7887,38 @@ async function cmdRestart(chatId, args) {
   if (!confirmFlag) {
     await sendReply(
       chatId,
-      ":alert: Restart will stop the orchestrator process and let the monitor respawn it.\nProceed?",
-      { reply_markup: buildConfirmKeyboard("cb:do_restart", "Confirm Restart") },
+      ":alert: This will perform a *full Bosun restart* — all services, agent process, and monitor will stop and restart from scratch (equivalent to Ctrl+C + relaunch).\nProceed?",
+      { reply_markup: buildConfirmKeyboard("cb:do_restart", "Confirm Full Restart") },
     );
     return;
   }
-  await sendReply(chatId, ":refresh: Restarting orchestrator process...");
-  try {
-    if (_getCurrentChild) {
-      const child = _getCurrentChild();
-      if (child && child.pid) {
-        try {
-          child.kill("SIGTERM");
-        } catch {
-          /* best effort */
+
+  if (!_requestFullBosunRestart) {
+    // Fallback: legacy agent-only restart if hook not injected (shouldn't happen)
+    await sendReply(chatId, ":alert: Full restart hook not available — falling back to agent-only restart.");
+    try {
+      if (_getCurrentChild) {
+        const child = _getCurrentChild();
+        if (child && child.pid) {
+          try { child.kill("SIGTERM"); } catch { /* best effort */ }
         }
       }
+      await sendReply(chatId, ":check: Agent restart signal sent.");
+    } catch (err) {
+      await sendReply(chatId, `:close: Restart failed: ${err.message}`);
     }
-    // The monitor's handleExit will auto-restart the process
+    return;
+  }
+
+  try {
+    // Send confirmation BEFORE triggering restart — the bot shuts down ~1.5 s later
     await sendReply(
       chatId,
-      ":check: Restart signal sent. Monitor will auto-restart the orchestrator.",
+      ":refresh: Full Bosun restart initiated. All services stopping now — will be back in a few seconds...",
     );
+    // Trigger monitor.mjs to exit with SELF_RESTART_EXIT_CODE (75).
+    // cli.mjs detects this and immediately forks a completely fresh monitor process.
+    _requestFullBosunRestart("telegram-restart-command");
   } catch (err) {
     await sendReply(chatId, `:close: Restart failed: ${err.message}`);
   }

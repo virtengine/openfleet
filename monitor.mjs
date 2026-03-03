@@ -11121,6 +11121,83 @@ function requestRestart(reason) {
   }
 }
 
+/**
+ * Perform a FULL Bosun restart triggered manually (e.g. via /restart on Telegram).
+ * This exits monitor.mjs with SELF_RESTART_EXIT_CODE (75) so cli.mjs re-forks a
+ * completely fresh monitor process — equivalent to Ctrl+C and restarting Bosun.
+ *
+ * Unlike requestRestart() which only restarts the agent child, this tears down
+ * everything: agent child, telegram bot, agent endpoint, all watchers, then exits.
+ * cli.mjs detects exit code 75 and spawns a fresh monitor.mjs from scratch.
+ *
+ * @param {string} [reason] - Label used for logging.
+ */
+function requestManualFullRestart(reason = "manual-telegram-restart") {
+  if (shuttingDown) {
+    console.log(`[monitor] full restart already in progress — ignoring duplicate request (${reason})`);
+    return;
+  }
+  shuttingDown = true;
+  console.log(`\n[monitor] FULL RESTART requested via Telegram (${reason})`);
+  console.log("[monitor] shutting down all services before re-fork...");
+
+  // Write self-restart marker so the new process suppresses duplicate startup notifications
+  try {
+    writeFileSync(
+      resolve(repoRoot, ".cache", "ve-self-restart.marker"),
+      String(Date.now()),
+    );
+  } catch {
+    /* best effort */
+  }
+
+  const shutdownPromises = [];
+
+  // Stop agent endpoint so new process can bind the port
+  if (agentEndpoint) {
+    shutdownPromises.push(
+      Promise.resolve(agentEndpoint.stop()).catch((e) =>
+        console.warn(`[monitor] endpoint stop error during full restart: ${e.message}`),
+      ),
+    );
+  }
+
+  stopAutoUpdateLoop();
+  stopAgentAlertTailer();
+  stopAgentWorkAnalyzer();
+  stopSelfWatcher();
+  stopWatcher();
+  stopEnvWatchers();
+
+  // Kill agent child
+  if (currentChild) {
+    currentChild.kill("SIGTERM");
+    setTimeout(() => {
+      if (currentChild && !currentChild.killed) {
+        currentChild.kill("SIGKILL");
+      }
+    }, 3000);
+  }
+
+  void releaseTelegramPollLock();
+  // NOTE: telegram bot is intentionally stopped AFTER this function returns so
+  // the caller (cmdRestart) can send the final confirmation message first.
+  // The 1.5 s delay below gives the bot time to flush the outbound message.
+  setTimeout(() => {
+    stopTelegramBot({ preserveDigest: true });
+    stopWhatsAppChannel();
+    if (isContainerEnabled()) {
+      void stopAllContainers().catch(() => {});
+    }
+    // Wait for async shutdowns, then exit with code 75 — cli.mjs re-forks cleanly
+    Promise.allSettled(shutdownPromises).then(() => {
+      setTimeout(() => process.exit(SELF_RESTART_EXIT_CODE), 400);
+    });
+    // Safety net: force exit after 10s even if shutdown hangs
+    setTimeout(() => process.exit(SELF_RESTART_EXIT_CODE), 10000);
+  }, 1500);
+}
+
 function stopWatcher() {
   if (watcher) {
     watcher.close();
@@ -13195,6 +13272,7 @@ injectMonitorFunctions({
   readStatusSummary,
   getCurrentChild: () => currentChild,
   startProcess,
+  requestFullBosunRestart: requestManualFullRestart,
   getVibeKanbanUrl: () => vkPublicUrl || vkEndpointUrl,
   fetchVk,
   getRepoRoot: () => repoRoot,
