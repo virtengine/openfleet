@@ -5280,7 +5280,7 @@ function isSameMachineRequest(req) {
 }
 
 function shouldAllowLocalSessionBootstrap(req, url) {
-  if (!parseBooleanEnv(process.env.BOSUN_UI_LOCAL_BOOTSTRAP, true)) return false;
+  if (!parseBooleanEnv(process.env.BOSUN_UI_LOCAL_BOOTSTRAP, false)) return false;
   if (isAllowUnsafe()) return false;
   if (String(req?.method || "").toUpperCase() !== "GET") return false;
   if (!isSameMachineRequest(req)) return false;

@@ -1428,6 +1428,7 @@ const TOOL_HANDLERS = {
       model,
       cwd,
       timeoutMs: 5 * 60_000,
+      sessionType,
     })
       .then(async (result) => {
         const text = typeof result === "string"
@@ -1515,6 +1516,7 @@ const TOOL_HANDLERS = {
         model,
         cwd,
         timeoutMs: 15_000,
+        sessionType: "voice-ask",
       });
       const text = typeof result === "string"
         ? result
@@ -2262,6 +2264,7 @@ const TOOL_HANDLERS = {
       sessionId: context?.sessionId || `voice-workflow-generate-${Date.now()}`,
       metadata: { source: "voice-workflow-generator" },
       timeoutMs: 45_000,
+      sessionType: "voice-workflow-generate",
     });
     const text = typeof result === "string"
       ? result
@@ -2717,6 +2720,7 @@ const TOOL_HANDLERS = {
         model,
         cwd,
         timeoutMs: 15_000,
+        sessionType: "voice-mcp",
       });
       const text = typeof result === "string"
         ? result

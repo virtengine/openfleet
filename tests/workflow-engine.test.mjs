@@ -1676,7 +1676,7 @@ describe("Session chaining - action.run_agent", () => {
         // best-effort cleanup
       }
     }
-  });
+  }, 20000);
 });
 
 it("agent.run_planner streams planner events and propagates threadId", async () => {

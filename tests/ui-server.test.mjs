@@ -169,6 +169,30 @@ describe("ui-server mini app", () => {
     expect(String(third.headers.get("content-type") || "")).toContain("application/javascript");
   });
 
+  it("does not auto-bootstrap local static requests when BOSUN_UI_LOCAL_BOOTSTRAP is unset", async () => {
+    process.env.TELEGRAM_UI_ALLOW_UNSAFE = "false";
+    process.env.TELEGRAM_UI_TUNNEL = "disabled";
+    delete process.env.BOSUN_UI_LOCAL_BOOTSTRAP;
+    const mod = await import("../ui-server.mjs");
+    const server = await mod.startTelegramUiServer({
+      port: await getFreePort(),
+      host: "127.0.0.1",
+      skipInstanceLock: true,
+      skipAutoOpen: true,
+    });
+    const port = server.address().port;
+
+    const response = await fetch(`http://127.0.0.1:${port}/app.js?native=1`, {
+      redirect: "manual",
+    });
+
+    expect(response.status).toBe(401);
+    const setCookie = response.headers.get("set-cookie") || "";
+    expect(setCookie).not.toContain("ve_session=");
+    const location = response.headers.get("location") || "";
+    expect(location).not.toContain("localBootstrap=1");
+  });
+
   it("prefers persisted desktop API key over stale env key during desktop bootstrap", async () => {
     process.env.TELEGRAM_UI_ALLOW_UNSAFE = "false";
     process.env.TELEGRAM_UI_TUNNEL = "disabled";

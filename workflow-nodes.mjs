@@ -1577,6 +1577,7 @@ registerNodeType("action.run_agent", {
               timeoutMs,
               maxRetries: sessionRetries,
               maxContinues,
+              sessionType: "flow",
               sdk: sdkOverride,
               model: modelOverride,
             });
@@ -1586,6 +1587,7 @@ registerNodeType("action.run_agent", {
             ctx.log(node.id, `${passLabel} Recovery: launchOrResumeThread taskKey=${recoveryTaskKey}`.trim());
             result = await agentPool.launchOrResumeThread(passPrompt, cwd, timeoutMs, {
               taskKey: recoveryTaskKey,
+              sessionType: "flow",
               sdk: sdkOverride,
               model: modelOverride,
             });

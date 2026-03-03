@@ -783,6 +783,7 @@ export async function execPrimaryPrompt(userMessage, options = {}) {
       cwd: options.cwd,
       model: options.model,
       sdk: mapAdapterToPoolSdk(activeAdapter.name),
+      sessionType,
     });
     const pooledText =
       typeof pooled === "string"
