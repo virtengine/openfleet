@@ -1467,6 +1467,9 @@ function App() {
   }, [isLoading]);
   const [isMoreOpen, setIsMoreOpen] = useState(false);
   const [voiceOverlayOpen, setVoiceOverlayOpen] = useState(false);
+  const voiceOverlayOpenRef = useRef(false);
+  // Keep ref in sync for access inside stale closures (e.g. retry loops)
+  voiceOverlayOpenRef.current = voiceOverlayOpen;
   const [voiceTier, setVoiceTier] = useState(2);
   const [voiceSessionId, setVoiceSessionId] = useState(null);
   const [voiceExecutor, setVoiceExecutor] = useState(null);
@@ -1860,39 +1863,13 @@ function App() {
           return;
         }
         const nextTier = Number(cfg?.tier) === 1 ? 1 : 2;
-        const desktopFollowApi = globalThis?.veDesktop?.follow;
-        const canOpenDesktopFollow =
-          !followWindowMode &&
-          typeof desktopFollowApi?.open === "function";
 
-        if (canOpenDesktopFollow) {
-          const followResult = await desktopFollowApi.open({
-            call: requestedCallType,
-            sessionId: currentSessionId,
-            initialVisionSource: requestedVisionSource || undefined,
-            executor: currentExecutor || undefined,
-            mode: currentMode || undefined,
-            model: currentModel || undefined,
-            voiceAgentId: currentVoiceAgentId || undefined,
-          });
-          if (followResult?.ok) {
-            const nextFloatingState = {
-              active: true,
-              call: requestedCallType,
-              sessionId: currentSessionId,
-              executor: currentExecutor,
-              mode: currentMode,
-              model: currentModel,
-              voiceAgentId: currentVoiceAgentId,
-              initialVisionSource: requestedVisionSource,
-            };
-            setFloatingCallState(nextFloatingState);
-            writeFloatingCallState(nextFloatingState);
-            setVoiceOverlayOpen(false);
-            return;
-          }
-        }
-
+        // Always open the voice overlay inline — even in Electron.
+        // The desktop follow window (always-on-top pop-out) is available
+        // via the tray menu or the "externalize" button inside the overlay.
+        // Auto-delegating to the follow window on mic-button click was
+        // fragile (required URL redirect + cold-start + retry dispatch)
+        // and frequently failed, leaving the user with no voice UI.
         setVoiceTier(nextTier);
         setVoiceOverlayOpen(true);
       } catch (err) {
@@ -2031,8 +2008,10 @@ function App() {
         if (cancelled) return;
         await new Promise((resolve) => setTimeout(resolve, delay));
         if (cancelled) return;
-        // Check if voice overlay is already open (a previous dispatch succeeded)
-        if (voiceOverlayOpen) return;
+        // Check if voice overlay is already open (a previous dispatch succeeded).
+        // Use the ref to read current state — the closure-captured useState
+        // value is stale inside this async loop.
+        if (voiceOverlayOpenRef.current) return;
         globalThis.dispatchEvent?.(
           new CustomEvent("ve:open-voice-mode", { detail: launch.detail }),
         );
