@@ -1406,6 +1406,26 @@ body.is-resizing * {
   }
 }
 
+/* ── MUI nav icon sizing ─────────────────────────────────────────────────
+   The ICONS map returns bare <svg viewBox="0 0 24 24"> with no width/height.
+   Without these rules the icons render at the browser default (300×150)
+   inside .MuiTab-iconWrapper / .MuiBottomNavigationAction-root.
+ ──────────────────────────────────────────────────────────────────────── */
+
+/* Vertical sidebar Tabs */
+.MuiTab-iconWrapper svg {
+  width: 20px;
+  height: 20px;
+  flex-shrink: 0;
+}
+
+/* Bottom Navigation */
+.MuiBottomNavigationAction-root svg {
+  width: 24px;
+  height: 24px;
+  flex-shrink: 0;
+}
+
 /* ═══════════════════════════════════════════════════════
    Sidebar: icon-only collapsed mode (VS Code style)
 ═══════════════════════════════════════════════════════ */
