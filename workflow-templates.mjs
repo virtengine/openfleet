@@ -106,6 +106,11 @@ import {
   TASK_BATCH_PR_TEMPLATE,
 } from "./workflow-templates/task-batch.mjs";
 
+// Research (iterative verification loops)
+import {
+  RESEARCH_AGENT_TEMPLATE,
+} from "./workflow-templates/research.mjs";
+
 // ── Re-export individual templates for direct import ────────────────────────
 
 export {
@@ -147,6 +152,7 @@ export {
   VE_ORCHESTRATOR_LITE_TEMPLATE,
   TASK_BATCH_PROCESSOR_TEMPLATE,
   TASK_BATCH_PR_TEMPLATE,
+  RESEARCH_AGENT_TEMPLATE,
 };
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -162,7 +168,8 @@ export const TEMPLATE_CATEGORIES = Object.freeze({
   reliability: { label: "Reliability",  icon: ":shield:", order: 5 },
   security:    { label: "Security",     icon: ":lock:", order: 6 },
   lifecycle:   { label: "Lifecycle",    icon: ":rocket:", order: 7 },
-  custom:      { label: "Custom",       icon: ":settings:", order: 8 },
+  research:    { label: "Research",     icon: ":microscope:", order: 8 },
+  custom:      { label: "Custom",       icon: ":settings:", order: 9 },
 });
 
 export const WORKFLOW_TEMPLATES = Object.freeze([
@@ -212,6 +219,8 @@ export const WORKFLOW_TEMPLATES = Object.freeze([
   // ── Task Batch (parallel dispatch) ──
   TASK_BATCH_PROCESSOR_TEMPLATE,
   TASK_BATCH_PR_TEMPLATE,
+  // ── Research (iterative verification loops) ──
+  RESEARCH_AGENT_TEMPLATE,
 ]);
 
 const _TEMPLATE_BY_ID = new Map(

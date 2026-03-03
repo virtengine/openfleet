@@ -51,7 +51,6 @@ export const RESEARCH_AGENT_TEMPLATE = {
     maxIterations: 10,
     problem: "",
     domain: "mathematics",
-    evidenceDir: ".bosun/evidence/research",
   },
   nodes: [
     // ── Entry ─────────────────────────────────────────────────────────
@@ -73,6 +72,9 @@ export const RESEARCH_AGENT_TEMPLATE = {
 
 ## Domain
 {{domain}}
+
+## Configuration
+Max verification cycles: {{maxIterations}}
 
 ## Literature Context
 {{literature-search.results}}

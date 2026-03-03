@@ -3276,6 +3276,113 @@ registerNodeType("transform.aggregate", {
   },
 });
 
+registerNodeType("transform.llm_parse", {
+  describe: () =>
+    "Parse unstructured LLM output into structured fields using regex patterns " +
+    "or keyword extraction. Essential for routing decisions based on LLM verdicts " +
+    "(e.g., PASS/FAIL/PARTIAL, correct/minor/critical).",
+  schema: {
+    type: "object",
+    properties: {
+      input: {
+        type: "string",
+        description: "Source text to parse — node ID, {{variable}}, or literal text",
+      },
+      field: {
+        type: "string",
+        default: "output",
+        description: "Field name within source node output (when input is a node ID)",
+      },
+      patterns: {
+        type: "object",
+        description:
+          "Map of field names to regex patterns. Each pattern is applied to the input; " +
+          "the first capture group (or full match) is stored under that key. " +
+          'Example: { "verdict": "\\\\b(PASS|FAIL|PARTIAL)\\\\b", "score": "score:\\\\s*(\\\\d+)" }',
+        additionalProperties: { type: "string" },
+      },
+      keywords: {
+        type: "object",
+        description:
+          "Map of field names to keyword lists. The first keyword found in the input is stored. " +
+          'Example: { "severity": ["critical", "minor", "correct"] }',
+        additionalProperties: {
+          type: "array",
+          items: { type: "string" },
+        },
+      },
+      outputPort: {
+        type: "string",
+        description:
+          "Which parsed field to use as the matchedPort for downstream routing. " +
+          "If set, the value of that parsed field becomes the output port.",
+      },
+    },
+    required: [],
+  },
+  async execute(node, ctx) {
+    // Resolve the input text
+    let text = "";
+    const inputRef = ctx.resolve(node.config?.input || "");
+    const field = node.config?.field || "output";
+
+    if (inputRef && ctx.getNodeOutput(inputRef)) {
+      // Input is a node ID — grab the specified field
+      const nodeOutput = ctx.getNodeOutput(inputRef);
+      text = String(
+        nodeOutput?.[field] ?? nodeOutput?.reviewOutput ?? nodeOutput?.text ?? JSON.stringify(nodeOutput) ?? "",
+      );
+    } else {
+      // Input is a template/literal
+      text = String(inputRef || "");
+    }
+
+    const parsed = {};
+
+    // Apply regex patterns
+    const patterns = node.config?.patterns || {};
+    for (const [key, patternStr] of Object.entries(patterns)) {
+      try {
+        const regex = new RegExp(patternStr, "i");
+        const match = text.match(regex);
+        if (match) {
+          parsed[key] = match[1] !== undefined ? match[1] : match[0];
+        } else {
+          parsed[key] = null;
+        }
+      } catch (err) {
+        ctx.log(node.id, `Pattern "${key}" error: ${err.message}`, "warn");
+        parsed[key] = null;
+      }
+    }
+
+    // Apply keyword extraction
+    const keywords = node.config?.keywords || {};
+    const lowerText = text.toLowerCase();
+    for (const [key, wordList] of Object.entries(keywords)) {
+      if (!Array.isArray(wordList)) continue;
+      const found = wordList.find((w) => lowerText.includes(String(w).toLowerCase()));
+      parsed[key] = found || null;
+    }
+
+    // Determine output port for routing
+    const portField = node.config?.outputPort || "";
+    let matchedPort = "default";
+    if (portField && parsed[portField] != null) {
+      matchedPort = String(parsed[portField]).toLowerCase().trim();
+    }
+
+    ctx.log(node.id, `Parsed: ${JSON.stringify(parsed)}, port=${matchedPort}`);
+
+    return {
+      parsed,
+      matchedPort,
+      port: matchedPort,
+      inputLength: text.length,
+    };
+  },
+});
+
 // ═══════════════════════════════════════════════════════════════════════════
 //  NOTIFY — Notifications
 // ═══════════════════════════════════════════════════════════════════════════
@@ -3983,6 +4090,142 @@ registerNodeType("loop.for_each", {
       results,
       successCount,
       failCount,
+    };
+  },
+});
+
+registerNodeType("loop.while", {
+  describe: () =>
+    "Repeat a sub-workflow until a condition evaluates to false or max iterations " +
+    "are reached. Enables convergence loops (generate→verify→revise) by executing " +
+    "a child workflow repeatedly and passing each iteration's output as input to the next.",
+  schema: {
+    type: "object",
+    properties: {
+      condition: {
+        type: "string",
+        description:
+          "JS expression evaluated AFTER each iteration. Loop continues while this is truthy. " +
+          "Access $data (accumulated state), $iteration (current 0-based index), $result (last iteration output).",
+      },
+      workflowId: { type: "string", description: "Sub-workflow to execute each iteration" },
+      maxIterations: { type: "number", default: 10, description: "Safety cap on total iterations" },
+      stateVariable: {
+        type: "string",
+        default: "loopState",
+        description: "Context key that accumulates state across iterations",
+      },
+      delayMs: { type: "number", default: 0, description: "Delay between iterations (ms)" },
+      earlyExitOn: {
+        type: "string",
+        enum: ["success", "failure", "never"],
+        default: "never",
+        description: "Stop early when sub-workflow succeeds or fails",
+      },
+    },
+    required: ["condition"],
+  },
+  async execute(node, ctx, engine) {
+    const condExpr = node.config?.condition || "false";
+    const subWorkflowId = ctx.resolve(node.config?.workflowId || "");
+    const maxIter = Math.max(1, Math.min(200, Number(node.config?.maxIterations) || 10));
+    const stateVar = node.config?.stateVariable || "loopState";
+    const delayMs = Math.max(0, Number(node.config?.delayMs) || 0);
+    const earlyExitOn = node.config?.earlyExitOn || "never";
+
+    const iterations = [];
+    let loopState = ctx.data[stateVar] || {};
+    let converged = false;
+    let lastResult = null;
+
+    for (let i = 0; i < maxIter; i++) {
+      ctx.log(node.id, `While-loop iteration ${i + 1}/${maxIter}`);
+
+      // Execute sub-workflow if specified
+      if (subWorkflowId && engine?.execute) {
+        const iterInput = {
+          ...ctx.data,
+          [stateVar]: loopState,
+          _whileIteration: i,
+          _whileMaxIterations: maxIter,
+          _previousAttempts: iterations.map((r) => r.output),
+        };
+
+        try {
+          const childCtx = await engine.execute(subWorkflowId, iterInput, { force: true });
+          const ok = !childCtx?.errors?.length;
+          const childOutputs = childCtx?.nodeOutputs
+            ? Object.fromEntries(childCtx.nodeOutputs)
+            : {};
+          lastResult = { success: ok, outputs: childOutputs, runId: childCtx?.id || null };
+
+          // Merge child outputs into loop state
+          loopState = { ...loopState, ...childOutputs, _lastSuccess: ok, _iteration: i };
+          iterations.push({ index: i, success: ok, output: childOutputs });
+
+          // Early exit
+          if (earlyExitOn === "success" && ok) {
+            ctx.log(node.id, `Early exit: sub-workflow succeeded on iteration ${i + 1}`);
+            converged = true;
+            break;
+          }
+          if (earlyExitOn === "failure" && !ok) {
+            ctx.log(node.id, `Early exit: sub-workflow failed on iteration ${i + 1}`);
+            converged = true;
+            break;
+          }
+        } catch (err) {
+          lastResult = { success: false, error: err.message };
+          iterations.push({ index: i, success: false, error: err.message });
+          loopState = { ...loopState, _lastSuccess: false, _lastError: err.message, _iteration: i };
+        }
+      } else {
+        // No sub-workflow — just evaluate condition each cycle (useful with
+        // back-edge patterns where downstream inline nodes modify context)
+        lastResult = { success: true, data: ctx.data };
+        loopState = { ...loopState, _iteration: i };
+        iterations.push({ index: i, success: true });
+      }
+
+      // Update context with accumulated state
+      ctx.data[stateVar] = loopState;
+
+      // Evaluate continue condition
+      try {
+        const fn = new Function("$data", "$iteration", "$result", "$state",
+          `return (${condExpr});`);
+        const shouldContinue = fn(ctx.data, i, lastResult, loopState);
+        if (!shouldContinue) {
+          ctx.log(node.id, `Condition false after iteration ${i + 1} — loop converged`);
+          converged = true;
+          break;
+        }
+      } catch (err) {
+        ctx.log(node.id, `Condition eval error: ${err.message} — stopping loop`, "warn");
+        converged = true;
+        break;
+      }
+
+      // Inter-iteration delay
+      if (delayMs > 0 && i < maxIter - 1) {
+        await new Promise((r) => setTimeout(r, delayMs));
+      }
+    }
+
+    const totalIterations = iterations.length;
+    const successCount = iterations.filter((r) => r.success).length;
+    ctx.log(node.id,
+      `While-loop done: ${totalIterations} iteration(s), ${successCount} succeeded, converged=${converged}`);
+
+    return {
+      converged,
+      iterations: totalIterations,
+      maxIterations: maxIter,
+      successCount,
+      failCount: totalIterations - successCount,
+      results: iterations,
+      finalState: loopState,
+      lastResult,
     };
   },
 });
@@ -5791,6 +6034,190 @@ registerNodeType("action.push_branch", {
         branch: cleanBranch,
         remote,
         error: err.message?.slice(0, 500),
+      };
+    }
+  },
+});
+
+// ═══════════════════════════════════════════════════════════════════════════
+//  WEB SEARCH — Structured web search for research workflows
+// ═══════════════════════════════════════════════════════════════════════════
+
+registerNodeType("action.web_search", {
+  describe: () =>
+    "Perform a structured web search query and return results. Useful for " +
+    "research workflows (e.g., Aletheia-style math/science agents) that need " +
+    "to navigate literature or verify claims against external sources.",
+  schema: {
+    type: "object",
+    properties: {
+      query: { type: "string", description: "Search query (supports {{variables}})" },
+      maxResults: { type: "number", default: 5, description: "Maximum results to return" },
+      engine: {
+        type: "string",
+        enum: ["mcp", "fetch", "agent"],
+        default: "fetch",
+        description:
+          "Search method: 'mcp' uses registered MCP web search tool, " +
+          "'fetch' calls a search API directly, 'agent' delegates to an agent with web access",
+      },
+      extractContent: {
+        type: "boolean",
+        default: false,
+        description: "Fetch and extract text content from result URLs",
+      },
+      apiUrl: {
+        type: "string",
+        description: "Custom search API endpoint (for fetch engine)",
+      },
+    },
+    required: ["query"],
+  },
+  async execute(node, ctx, engine) {
+    const query = ctx.resolve(node.config?.query || "");
+    const maxResults = Math.max(1, Math.min(20, Number(node.config?.maxResults) || 5));
+    const searchEngine = node.config?.engine || "fetch";
+
+    if (!query) {
+      throw new Error("action.web_search: 'query' is required");
+    }
+
+    ctx.log(node.id, `Web search (${searchEngine}): "${query}" (max ${maxResults})`);
+
+    // ── MCP-based search ────────────────────────────────────────────────
+    if (searchEngine === "mcp") {
+      try {
+        const { getMcpRegistry } = await import("./mcp-registry.mjs");
+        const registry = getMcpRegistry?.();
+        if (registry?.callTool) {
+          const result = await registry.callTool("web_search", { query, maxResults });
+          const results = Array.isArray(result) ? result : result?.results || [result];
+          return {
+            success: true,
+            engine: "mcp",
+            query,
+            resultCount: results.length,
+            results: results.slice(0, maxResults),
+          };
+        }
+      } catch (err) {
+        ctx.log(node.id, `MCP search failed: ${err.message}, falling back to fetch`, "warn");
+      }
+    }
+
+    // ── Agent-based search ──────────────────────────────────────────────
+    if (searchEngine === "agent") {
+      const agentPool = engine?.services?.agentPool;
+      if (agentPool?.launchEphemeralThread) {
+        const searchPrompt =
+          `Search the web for: "${query}"\n\n` +
+          `Return the top ${maxResults} results as a JSON array of objects with ` +
+          `fields: title, url, snippet. Return ONLY the JSON array, no other text.`;
+        const result = await agentPool.launchEphemeralThread(
+          searchPrompt, process.cwd(), 120000,
+        );
+        let parsed = [];
+        try {
+          const jsonMatch = (result.output || "").match(/\[[\s\S]*\]/);
+          if (jsonMatch) parsed = JSON.parse(jsonMatch[0]);
+        } catch { /* best-effort */ }
+        return {
+          success: true,
+          engine: "agent",
+          query,
+          resultCount: parsed.length,
+          results: parsed.slice(0, maxResults),
+          rawOutput: result.output?.slice(0, 2000),
+        };
+      }
+    }
+
+    // ── Fetch-based search (default) ────────────────────────────────────
+    try {
+      const { default: fetchFn } = await import("./fetch-runtime.mjs");
+      const fetch = fetchFn || globalThis.fetch;
+
+      // Use DuckDuckGo instant answer API (no API key required)
+      const apiUrl = node.config?.apiUrl ||
+        `https://api.duckduckgo.com/?q=${encodeURIComponent(query)}&format=json&no_html=1&skip_disambig=1`;
+
+      const response = await fetch(apiUrl, {
+        headers: { "User-Agent": "Bosun-Workflow/1.0" },
+        signal: AbortSignal.timeout(15000),
+      });
+      const data = await response.json();
+
+      const results = [];
+
+      // Parse DuckDuckGo response format
+      if (data.AbstractText) {
+        results.push({
+          title: data.Heading || query,
+          url: data.AbstractURL || "",
+          snippet: data.AbstractText,
+          source: data.AbstractSource || "DuckDuckGo",
+        });
+      }
+      for (const topic of data.RelatedTopics || []) {
+        if (results.length >= maxResults) break;
+        if (topic.Text) {
+          results.push({
+            title: topic.Text?.slice(0, 100),
+            url: topic.FirstURL || "",
+            snippet: topic.Text,
+          });
+        }
+        // Nested topics
+        for (const sub of topic.Topics || []) {
+          if (results.length >= maxResults) break;
+          if (sub.Text) {
+            results.push({
+              title: sub.Text?.slice(0, 100),
+              url: sub.FirstURL || "",
+              snippet: sub.Text,
+            });
+          }
+        }
+      }
+
+      // Extract content from URLs if requested
+      if (node.config?.extractContent && results.length > 0) {
+        for (let i = 0; i < Math.min(3, results.length); i++) {
+          if (!results[i].url) continue;
+          try {
+            const pageResp = await fetch(results[i].url, {
+              headers: { "User-Agent": "Bosun-Workflow/1.0" },
+              signal: AbortSignal.timeout(10000),
+            });
+            const html = await pageResp.text();
+            // Simple text extraction — strip tags
+            results[i].content = html
+              .replace(/<script[\s\S]*?<\/script>/gi, "")
+              .replace(/<style[\s\S]*?<\/style>/gi, "")
+              .replace(/<[^>]+>/g, " ")
+              .replace(/\s+/g, " ")
+              .trim()
+              .slice(0, 5000);
+          } catch { /* best-effort */ }
+        }
+      }
+
+      return {
+        success: results.length > 0,
+        engine: "fetch",
+        query,
+        resultCount: results.length,
+        results,
+      };
+    } catch (err) {
+      ctx.log(node.id, `Fetch search failed: ${err.message}`, "warn");
+      return {
+        success: false,
+        engine: "fetch",
+        query,
+        resultCount: 0,
+        results: [],
+        error: err.message,
       };
     }
   },
