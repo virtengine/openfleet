@@ -434,6 +434,25 @@ function buildStableSetupDefaults({
     workflowRunStuckThresholdMs: 300000,
     workflowMaxPersistedRuns: 200,
     workflowMaxConcurrentBranches: 8,
+    contextShreddingEnabled: true,
+    contextShreddingFullContextTurns: 3,
+    contextShreddingCompressToolOutputs: true,
+    contextShreddingCompressMessages: true,
+    contextShreddingTier1MaxAge: 5,
+    contextShreddingTier2MaxAge: 9,
+    contextShreddingTier1HeadChars: 2000,
+    contextShreddingTier1TailChars: 800,
+    contextShreddingTier2HeadChars: 600,
+    contextShreddingTier2TailChars: 300,
+    contextShreddingScoreHigh: 70,
+    contextShreddingScoreLow: 30,
+    contextShreddingCompressAgentMessages: true,
+    contextShreddingCompressUserMessages: true,
+    contextShreddingMsgTier0MaxAge: 1,
+    contextShreddingMsgTier1MaxAge: 4,
+    contextShreddingMsgMinCompressChars: 120,
+    contextShreddingUserMsgFullTurns: 1,
+    contextShreddingProfiles: "",
     voiceEnabled: true,
     voiceProvider: "auto",
     voiceModel: "gpt-audio-1.5",
@@ -792,6 +811,207 @@ function applyNonBlockingSetupEnvDefaults(envMap, env = {}, sourceEnv = process.
       { min: 1, max: 64 },
     ),
   );
+  envMap.CONTEXT_SHREDDING_ENABLED = toBooleanEnvString(
+    pickNonEmptyValue(
+      env.contextShreddingEnabled,
+      env.CONTEXT_SHREDDING_ENABLED,
+      envMap.CONTEXT_SHREDDING_ENABLED,
+      sourceEnv.CONTEXT_SHREDDING_ENABLED,
+    ),
+    true,
+  );
+  const contextShreddingFullContextTurns = toBoundedInt(
+    pickNonEmptyValue(
+      env.contextShreddingFullContextTurns,
+      env.CONTEXT_SHREDDING_FULL_CONTEXT_TURNS,
+      envMap.CONTEXT_SHREDDING_FULL_CONTEXT_TURNS,
+      sourceEnv.CONTEXT_SHREDDING_FULL_CONTEXT_TURNS,
+    ),
+    3,
+    { min: 1, max: 50 },
+  );
+  envMap.CONTEXT_SHREDDING_FULL_CONTEXT_TURNS = String(contextShreddingFullContextTurns);
+  envMap.CONTEXT_SHREDDING_COMPRESS_TOOL_OUTPUTS = toBooleanEnvString(
+    pickNonEmptyValue(
+      env.contextShreddingCompressToolOutputs,
+      env.CONTEXT_SHREDDING_COMPRESS_TOOL_OUTPUTS,
+      envMap.CONTEXT_SHREDDING_COMPRESS_TOOL_OUTPUTS,
+      sourceEnv.CONTEXT_SHREDDING_COMPRESS_TOOL_OUTPUTS,
+    ),
+    true,
+  );
+  envMap.CONTEXT_SHREDDING_COMPRESS_MESSAGES = toBooleanEnvString(
+    pickNonEmptyValue(
+      env.contextShreddingCompressMessages,
+      env.CONTEXT_SHREDDING_COMPRESS_MESSAGES,
+      envMap.CONTEXT_SHREDDING_COMPRESS_MESSAGES,
+      sourceEnv.CONTEXT_SHREDDING_COMPRESS_MESSAGES,
+    ),
+    true,
+  );
+  const contextShreddingTier1MaxAge = toBoundedInt(
+    pickNonEmptyValue(
+      env.contextShreddingTier1MaxAge,
+      env.CONTEXT_SHREDDING_TIER1_MAX_AGE,
+      envMap.CONTEXT_SHREDDING_TIER1_MAX_AGE,
+      sourceEnv.CONTEXT_SHREDDING_TIER1_MAX_AGE,
+    ),
+    5,
+    { min: contextShreddingFullContextTurns, max: 100 },
+  );
+  envMap.CONTEXT_SHREDDING_TIER1_MAX_AGE = String(contextShreddingTier1MaxAge);
+  const contextShreddingTier2MaxAge = toBoundedInt(
+    pickNonEmptyValue(
+      env.contextShreddingTier2MaxAge,
+      env.CONTEXT_SHREDDING_TIER2_MAX_AGE,
+      envMap.CONTEXT_SHREDDING_TIER2_MAX_AGE,
+      sourceEnv.CONTEXT_SHREDDING_TIER2_MAX_AGE,
+    ),
+    9,
+    { min: contextShreddingTier1MaxAge, max: 200 },
+  );
+  envMap.CONTEXT_SHREDDING_TIER2_MAX_AGE = String(contextShreddingTier2MaxAge);
+  envMap.CONTEXT_SHREDDING_TIER1_HEAD_CHARS = String(
+    toBoundedInt(
+      pickNonEmptyValue(
+        env.contextShreddingTier1HeadChars,
+        env.CONTEXT_SHREDDING_TIER1_HEAD_CHARS,
+        envMap.CONTEXT_SHREDDING_TIER1_HEAD_CHARS,
+        sourceEnv.CONTEXT_SHREDDING_TIER1_HEAD_CHARS,
+      ),
+      2000,
+      { min: 100, max: 20000 },
+    ),
+  );
+  envMap.CONTEXT_SHREDDING_TIER1_TAIL_CHARS = String(
+    toBoundedInt(
+      pickNonEmptyValue(
+        env.contextShreddingTier1TailChars,
+        env.CONTEXT_SHREDDING_TIER1_TAIL_CHARS,
+        envMap.CONTEXT_SHREDDING_TIER1_TAIL_CHARS,
+        sourceEnv.CONTEXT_SHREDDING_TIER1_TAIL_CHARS,
+      ),
+      800,
+      { min: 0, max: 10000 },
+    ),
+  );
+  envMap.CONTEXT_SHREDDING_TIER2_HEAD_CHARS = String(
+    toBoundedInt(
+      pickNonEmptyValue(
+        env.contextShreddingTier2HeadChars,
+        env.CONTEXT_SHREDDING_TIER2_HEAD_CHARS,
+        envMap.CONTEXT_SHREDDING_TIER2_HEAD_CHARS,
+        sourceEnv.CONTEXT_SHREDDING_TIER2_HEAD_CHARS,
+      ),
+      600,
+      { min: 50, max: 10000 },
+    ),
+  );
+  envMap.CONTEXT_SHREDDING_TIER2_TAIL_CHARS = String(
+    toBoundedInt(
+      pickNonEmptyValue(
+        env.contextShreddingTier2TailChars,
+        env.CONTEXT_SHREDDING_TIER2_TAIL_CHARS,
+        envMap.CONTEXT_SHREDDING_TIER2_TAIL_CHARS,
+        sourceEnv.CONTEXT_SHREDDING_TIER2_TAIL_CHARS,
+      ),
+      300,
+      { min: 0, max: 5000 },
+    ),
+  );
+  const contextShreddingScoreHigh = toBoundedInt(
+    pickNonEmptyValue(
+      env.contextShreddingScoreHigh,
+      env.CONTEXT_SHREDDING_SCORE_HIGH,
+      envMap.CONTEXT_SHREDDING_SCORE_HIGH,
+      sourceEnv.CONTEXT_SHREDDING_SCORE_HIGH,
+    ),
+    70,
+    { min: 1, max: 100 },
+  );
+  envMap.CONTEXT_SHREDDING_SCORE_HIGH = String(contextShreddingScoreHigh);
+  const contextShreddingScoreLow = toBoundedInt(
+    pickNonEmptyValue(
+      env.contextShreddingScoreLow,
+      env.CONTEXT_SHREDDING_SCORE_LOW,
+      envMap.CONTEXT_SHREDDING_SCORE_LOW,
+      sourceEnv.CONTEXT_SHREDDING_SCORE_LOW,
+    ),
+    30,
+    { min: 0, max: Math.max(0, contextShreddingScoreHigh - 1) },
+  );
+  envMap.CONTEXT_SHREDDING_SCORE_LOW = String(contextShreddingScoreLow);
+  envMap.CONTEXT_SHREDDING_COMPRESS_AGENT_MESSAGES = toBooleanEnvString(
+    pickNonEmptyValue(
+      env.contextShreddingCompressAgentMessages,
+      env.CONTEXT_SHREDDING_COMPRESS_AGENT_MESSAGES,
+      envMap.CONTEXT_SHREDDING_COMPRESS_AGENT_MESSAGES,
+      sourceEnv.CONTEXT_SHREDDING_COMPRESS_AGENT_MESSAGES,
+    ),
+    true,
+  );
+  envMap.CONTEXT_SHREDDING_COMPRESS_USER_MESSAGES = toBooleanEnvString(
+    pickNonEmptyValue(
+      env.contextShreddingCompressUserMessages,
+      env.CONTEXT_SHREDDING_COMPRESS_USER_MESSAGES,
+      envMap.CONTEXT_SHREDDING_COMPRESS_USER_MESSAGES,
+      sourceEnv.CONTEXT_SHREDDING_COMPRESS_USER_MESSAGES,
+    ),
+    true,
+  );
+  const contextShreddingMsgTier0MaxAge = toBoundedInt(
+    pickNonEmptyValue(
+      env.contextShreddingMsgTier0MaxAge,
+      env.CONTEXT_SHREDDING_MSG_TIER0_MAX_AGE,
+      envMap.CONTEXT_SHREDDING_MSG_TIER0_MAX_AGE,
+      sourceEnv.CONTEXT_SHREDDING_MSG_TIER0_MAX_AGE,
+    ),
+    1,
+    { min: 0, max: 20 },
+  );
+  envMap.CONTEXT_SHREDDING_MSG_TIER0_MAX_AGE = String(contextShreddingMsgTier0MaxAge);
+  const contextShreddingMsgTier1MaxAge = toBoundedInt(
+    pickNonEmptyValue(
+      env.contextShreddingMsgTier1MaxAge,
+      env.CONTEXT_SHREDDING_MSG_TIER1_MAX_AGE,
+      envMap.CONTEXT_SHREDDING_MSG_TIER1_MAX_AGE,
+      sourceEnv.CONTEXT_SHREDDING_MSG_TIER1_MAX_AGE,
+    ),
+    4,
+    { min: contextShreddingMsgTier0MaxAge, max: 50 },
+  );
+  envMap.CONTEXT_SHREDDING_MSG_TIER1_MAX_AGE = String(contextShreddingMsgTier1MaxAge);
+  envMap.CONTEXT_SHREDDING_MSG_MIN_COMPRESS_CHARS = String(
+    toBoundedInt(
+      pickNonEmptyValue(
+        env.contextShreddingMsgMinCompressChars,
+        env.CONTEXT_SHREDDING_MSG_MIN_COMPRESS_CHARS,
+        envMap.CONTEXT_SHREDDING_MSG_MIN_COMPRESS_CHARS,
+        sourceEnv.CONTEXT_SHREDDING_MSG_MIN_COMPRESS_CHARS,
+      ),
+      120,
+      { min: 0, max: 10000 },
+    ),
+  );
+  envMap.CONTEXT_SHREDDING_USER_MSG_FULL_TURNS = String(
+    toBoundedInt(
+      pickNonEmptyValue(
+        env.contextShreddingUserMsgFullTurns,
+        env.CONTEXT_SHREDDING_USER_MSG_FULL_TURNS,
+        envMap.CONTEXT_SHREDDING_USER_MSG_FULL_TURNS,
+        sourceEnv.CONTEXT_SHREDDING_USER_MSG_FULL_TURNS,
+      ),
+      1,
+      { min: 0, max: 20 },
+    ),
+  );
+  const contextShreddingProfiles =
+    env.contextShreddingProfiles
+    ?? env.CONTEXT_SHREDDING_PROFILES
+    ?? envMap.CONTEXT_SHREDDING_PROFILES
+    ?? sourceEnv.CONTEXT_SHREDDING_PROFILES
+    ?? "";
+  envMap.CONTEXT_SHREDDING_PROFILES = String(contextShreddingProfiles).trim();
   envMap.COPILOT_ENABLE_ALL_GITHUB_MCP_TOOLS = toBooleanEnvString(
     pickNonEmptyValue(
       env.copilotEnableAllMcpTools,

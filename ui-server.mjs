@@ -588,6 +588,181 @@ async function listBosunRuntimeTools(context = {}) {
   }
 }
 
+const VOICE_SIDE_EFFECT_TOOL_NAMES = new Set([
+  "delegate_to_agent",
+  "run_workspace_command",
+  "invoke_mcp_tool",
+  "bosun_slash_command",
+  "run_command",
+  "dispatch_action",
+  "create_task",
+  "update_task_status",
+  "delete_task",
+  "create_workflow",
+  "update_workflow",
+  "delete_workflow",
+  "update_config",
+  "switch_agent",
+  "set_agent_mode",
+  "retry_workflow_run",
+  "warm_codebase_context",
+]);
+
+const VOICE_SIDE_EFFECT_ALLOWED_MODES = new Set(["agent", "code", "web"]);
+const VOICE_POLICY_RATE_LIMIT_WINDOW_MS = 12_000;
+const VOICE_POLICY_MAX_CALLS_PER_WINDOW = 18;
+const VOICE_POLICY_MAX_SIDE_EFFECT_CALLS_PER_WINDOW = 4;
+const VOICE_POLICY_MAX_SESSION_TRACKERS = 500;
+const voiceToolPolicyRateCache = new Map();
+
+function isVoiceToolExplicitConfirmation(args = {}) {
+  if (!args || typeof args !== "object") return false;
+  if (args.confirm === true) return true;
+  const confirmation = String(args.confirmation || "").trim();
+  if (!confirmation) return false;
+  return /\b(yes|confirm|confirmed|confirmation|proceed|proceeding)\b/i.test(confirmation);
+}
+
+function detectVoiceToolCatalogPaste(intentText = "") {
+  const text = String(intentText || "").trim();
+  if (!text) return false;
+  const useForCount = (text.match(/use\s+for/gi) || []).length;
+  const toolLikeIdentifiers = text.match(/\b[a-z][a-z0-9]*(?:[_-][a-z0-9]+){1,}\b/g) || [];
+  const uniqueToolLikeIds = new Set(toolLikeIdentifiers.map((value) => value.toLowerCase()));
+  const lineCount = text.split(/\r?\n/).length;
+  if (text.length >= 1200 && uniqueToolLikeIds.size >= 12) return true;
+  if (useForCount >= 4 && uniqueToolLikeIds.size >= 8) return true;
+  if (lineCount >= 24 && uniqueToolLikeIds.size >= 10) return true;
+  return false;
+}
+
+function extractVoiceIntentText(args = {}) {
+  if (!args || typeof args !== "object") return "";
+  const candidates = [
+    args.intent,
+    args.intentText,
+    args.prompt,
+    args.query,
+    args.request,
+    args.instruction,
+    args.instructions,
+    args.text,
+    args.message,
+    args.description,
+    args.task,
+  ];
+  for (const candidate of candidates) {
+    const normalized = String(candidate || "").trim();
+    if (normalized) return normalized;
+  }
+  return "";
+}
+
+function pruneVoicePolicyRateCache() {
+  if (voiceToolPolicyRateCache.size <= VOICE_POLICY_MAX_SESSION_TRACKERS) return;
+  const entries = Array.from(voiceToolPolicyRateCache.entries())
+    .sort((a, b) => Number(a[1]?.updatedAt || 0) - Number(b[1]?.updatedAt || 0));
+  const toDelete = voiceToolPolicyRateCache.size - VOICE_POLICY_MAX_SESSION_TRACKERS;
+  for (let index = 0; index < toDelete; index += 1) {
+    const key = entries[index]?.[0];
+    if (!key) continue;
+    voiceToolPolicyRateCache.delete(key);
+  }
+}
+
+function evaluateVoiceToolRateLimit({ sessionKey = "", isSideEffect = false } = {}) {
+  const key = String(sessionKey || "").trim() || "anonymous";
+  const nowMs = Date.now();
+  const existing = voiceToolPolicyRateCache.get(key);
+  let state = existing;
+  if (!state || (nowMs - Number(state.windowStartedAt || 0)) >= VOICE_POLICY_RATE_LIMIT_WINDOW_MS) {
+    state = {
+      windowStartedAt: nowMs,
+      totalCalls: 0,
+      sideEffectCalls: 0,
+      updatedAt: nowMs,
+    };
+  }
+
+  state.totalCalls += 1;
+  if (isSideEffect) state.sideEffectCalls += 1;
+  state.updatedAt = nowMs;
+  voiceToolPolicyRateCache.set(key, state);
+  pruneVoicePolicyRateCache();
+
+  if (state.totalCalls > VOICE_POLICY_MAX_CALLS_PER_WINDOW) {
+    return {
+      allow: false,
+      statusCode: 429,
+      message: "Voice tool burst limit reached. Please wait a moment before sending more tool calls.",
+    };
+  }
+  if (isSideEffect && state.sideEffectCalls > VOICE_POLICY_MAX_SIDE_EFFECT_CALLS_PER_WINDOW) {
+    return {
+      allow: false,
+      statusCode: 429,
+      message: "Voice side-effect tool burst limit reached. Confirm fewer actions per turn.",
+    };
+  }
+  return { allow: true };
+}
+
+function evaluateVoiceToolPolicy({
+  toolName,
+  args,
+  context,
+  intentText,
+  transport,
+} = {}) {
+  const normalizedToolName = String(toolName || "").trim();
+  const normalizedMode = String(context?.mode || "").trim().toLowerCase();
+  const isSideEffectTool = VOICE_SIDE_EFFECT_TOOL_NAMES.has(normalizedToolName);
+  const keyParts = [
+    String(context?.sessionId || "").trim(),
+    String(context?.authSource || "").trim(),
+    String(context?.executor || "").trim(),
+    String(transport || "").trim(),
+  ].filter(Boolean);
+  const sessionKey = keyParts.join("|") || "anonymous";
+
+  const rateLimitDecision = evaluateVoiceToolRateLimit({
+    sessionKey,
+    isSideEffect: isSideEffectTool,
+  });
+  if (!rateLimitDecision.allow) return rateLimitDecision;
+
+  if (!isSideEffectTool) {
+    return { allow: true, statusCode: 200, message: "ok" };
+  }
+
+  if (!VOICE_SIDE_EFFECT_ALLOWED_MODES.has(normalizedMode)) {
+    return {
+      allow: false,
+      statusCode: 403,
+      message: `Tool "${normalizedToolName}" is side-effectful and only allowed in agent/code/web modes.`,
+    };
+  }
+
+  const normalizedIntentText = String(intentText || "").trim();
+  if (detectVoiceToolCatalogPaste(normalizedIntentText)) {
+    return {
+      allow: false,
+      statusCode: 400,
+      message: "Side-effect tool execution denied: input looks like pasted tool catalog/spec text. Provide a concise intent and explicit confirmation.",
+    };
+  }
+
+  if (!isVoiceToolExplicitConfirmation(args || {})) {
+    return {
+      allow: false,
+      statusCode: 400,
+      message: `Tool "${normalizedToolName}" requires explicit confirmation (confirm=true or confirmation=\"yes/confirm/proceed\").`,
+    };
+  }
+
+  return { allow: true, statusCode: 200, message: "ok" };
+}
+
 // ── Workflow engine lazy-loader (module-scope cache) ──────────────────────────
 let _wfEngine;
 let _wfNodes;
@@ -11677,6 +11852,32 @@ async function handleApi(req, res, url) {
           return;
         }
       }
+      const voicePolicyDecision = evaluateVoiceToolPolicy({
+        toolName: normalizedToolName,
+        args: normalizedArgs,
+        context,
+        intentText: extractVoiceIntentText(normalizedArgs),
+        transport: "http",
+      });
+      if (!voicePolicyDecision.allow) {
+        const deniedMessage = String(voicePolicyDecision.message || "Voice tool policy denied execution");
+        const deniedStatusCode = Number(voicePolicyDecision.statusCode || 403);
+        if (isVoiceToolRoute) {
+          jsonResponse(res, deniedStatusCode, {
+            error: deniedMessage,
+            statusCode: deniedStatusCode,
+            policy: "voice-tool-pre-execution",
+          });
+        } else {
+          jsonResponse(res, deniedStatusCode, {
+            ok: false,
+            error: deniedMessage,
+            statusCode: deniedStatusCode,
+            policy: "voice-tool-pre-execution",
+          });
+        }
+        return;
+      }
       const result = await executeVoiceTool(normalizedToolName, normalizedArgs, context);
       if (tracker && context.sessionId) {
         if (result?.error) {
@@ -12507,6 +12708,23 @@ export async function startTelegramUiServer(options = {}) {
                       return;
                     }
                   }
+                  const voicePolicyDecision = evaluateVoiceToolPolicy({
+                    toolName: normalizedToolName,
+                    args: normalizedArgs,
+                    context,
+                    intentText: extractVoiceIntentText(normalizedArgs),
+                    transport: "ws",
+                  });
+                  if (!voicePolicyDecision.allow) {
+                    sendWsMessage(socket, {
+                      type: "voice-tool-result",
+                      callId,
+                      error: String(voicePolicyDecision.message || "Voice tool policy denied execution"),
+                      statusCode: Number(voicePolicyDecision.statusCode || 403),
+                      ts: Date.now(),
+                    });
+                    return;
+                  }
                   // Tool is allowed — execute it
                   relay.executeVoiceTool(normalizedToolName, normalizedArgs, context).then((result) => {
                     sendWsMessage(socket, {
@@ -12566,6 +12784,23 @@ export async function startTelegramUiServer(options = {}) {
                     type: "voice-tool-result",
                     callId,
                     error: `Tool "${normalizedToolName}" is not enabled for voice agent "${activeVoiceAgentId}"`,
+                    ts: Date.now(),
+                  });
+                  return;
+                }
+                const voicePolicyDecision = evaluateVoiceToolPolicy({
+                  toolName: normalizedToolName,
+                  args: normalizedArgs,
+                  context,
+                  intentText: extractVoiceIntentText(normalizedArgs),
+                  transport: "ws",
+                });
+                if (!voicePolicyDecision.allow) {
+                  sendWsMessage(socket, {
+                    type: "voice-tool-result",
+                    callId,
+                    error: String(voicePolicyDecision.message || "Voice tool policy denied execution"),
+                    statusCode: Number(voicePolicyDecision.statusCode || 403),
                     ts: Date.now(),
                   });
                   return;

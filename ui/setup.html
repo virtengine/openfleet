@@ -944,6 +944,25 @@ function App() {
   const [workflowRunStuckThresholdMs, setWorkflowRunStuckThresholdMs] = useState(300000);
   const [workflowMaxPersistedRuns, setWorkflowMaxPersistedRuns] = useState(200);
   const [workflowMaxConcurrentBranches, setWorkflowMaxConcurrentBranches] = useState(8);
+  const [contextShreddingEnabled, setContextShreddingEnabled] = useState(true);
+  const [contextShreddingFullContextTurns, setContextShreddingFullContextTurns] = useState(3);
+  const [contextShreddingCompressToolOutputs, setContextShreddingCompressToolOutputs] = useState(true);
+  const [contextShreddingCompressMessages, setContextShreddingCompressMessages] = useState(true);
+  const [contextShreddingTier1MaxAge, setContextShreddingTier1MaxAge] = useState(5);
+  const [contextShreddingTier2MaxAge, setContextShreddingTier2MaxAge] = useState(9);
+  const [contextShreddingTier1HeadChars, setContextShreddingTier1HeadChars] = useState(2000);
+  const [contextShreddingTier1TailChars, setContextShreddingTier1TailChars] = useState(800);
+  const [contextShreddingTier2HeadChars, setContextShreddingTier2HeadChars] = useState(600);
+  const [contextShreddingTier2TailChars, setContextShreddingTier2TailChars] = useState(300);
+  const [contextShreddingScoreHigh, setContextShreddingScoreHigh] = useState(70);
+  const [contextShreddingScoreLow, setContextShreddingScoreLow] = useState(30);
+  const [contextShreddingCompressAgentMessages, setContextShreddingCompressAgentMessages] = useState(true);
+  const [contextShreddingCompressUserMessages, setContextShreddingCompressUserMessages] = useState(true);
+  const [contextShreddingMsgTier0MaxAge, setContextShreddingMsgTier0MaxAge] = useState(1);
+  const [contextShreddingMsgTier1MaxAge, setContextShreddingMsgTier1MaxAge] = useState(4);
+  const [contextShreddingMsgMinCompressChars, setContextShreddingMsgMinCompressChars] = useState(120);
+  const [contextShreddingUserMsgFullTurns, setContextShreddingUserMsgFullTurns] = useState(1);
+  const [contextShreddingProfiles, setContextShreddingProfiles] = useState("");
   const CURRENT_WORKFLOW_PROFILE_ID = "current-installed";
   // Kanban
   const [kanbanSyncPolicy, setKanbanSyncPolicy] = useState("internal-primary");
@@ -1449,6 +1468,63 @@ function App() {
       if (d.workflowMaxConcurrentBranches != null) {
         setWorkflowMaxConcurrentBranches(Number(d.workflowMaxConcurrentBranches) || 8);
       }
+      if (d.contextShreddingEnabled != null) {
+        setContextShreddingEnabled(Boolean(d.contextShreddingEnabled));
+      }
+      if (d.contextShreddingFullContextTurns != null) {
+        setContextShreddingFullContextTurns(Number(d.contextShreddingFullContextTurns) || 3);
+      }
+      if (d.contextShreddingCompressToolOutputs != null) {
+        setContextShreddingCompressToolOutputs(Boolean(d.contextShreddingCompressToolOutputs));
+      }
+      if (d.contextShreddingCompressMessages != null) {
+        setContextShreddingCompressMessages(Boolean(d.contextShreddingCompressMessages));
+      }
+      if (d.contextShreddingTier1MaxAge != null) {
+        setContextShreddingTier1MaxAge(Number(d.contextShreddingTier1MaxAge) || 5);
+      }
+      if (d.contextShreddingTier2MaxAge != null) {
+        setContextShreddingTier2MaxAge(Number(d.contextShreddingTier2MaxAge) || 9);
+      }
+      if (d.contextShreddingTier1HeadChars != null) {
+        setContextShreddingTier1HeadChars(Number(d.contextShreddingTier1HeadChars) || 2000);
+      }
+      if (d.contextShreddingTier1TailChars != null) {
+        setContextShreddingTier1TailChars(Number(d.contextShreddingTier1TailChars) || 800);
+      }
+      if (d.contextShreddingTier2HeadChars != null) {
+        setContextShreddingTier2HeadChars(Number(d.contextShreddingTier2HeadChars) || 600);
+      }
+      if (d.contextShreddingTier2TailChars != null) {
+        setContextShreddingTier2TailChars(Number(d.contextShreddingTier2TailChars) || 300);
+      }
+      if (d.contextShreddingScoreHigh != null) {
+        setContextShreddingScoreHigh(Number(d.contextShreddingScoreHigh) || 70);
+      }
+      if (d.contextShreddingScoreLow != null) {
+        setContextShreddingScoreLow(Number(d.contextShreddingScoreLow) || 30);
+      }
+      if (d.contextShreddingCompressAgentMessages != null) {
+        setContextShreddingCompressAgentMessages(Boolean(d.contextShreddingCompressAgentMessages));
+      }
+      if (d.contextShreddingCompressUserMessages != null) {
+        setContextShreddingCompressUserMessages(Boolean(d.contextShreddingCompressUserMessages));
+      }
+      if (d.contextShreddingMsgTier0MaxAge != null) {
+        setContextShreddingMsgTier0MaxAge(Number(d.contextShreddingMsgTier0MaxAge) || 1);
+      }
+      if (d.contextShreddingMsgTier1MaxAge != null) {
+        setContextShreddingMsgTier1MaxAge(Number(d.contextShreddingMsgTier1MaxAge) || 4);
+      }
+      if (d.contextShreddingMsgMinCompressChars != null) {
+        setContextShreddingMsgMinCompressChars(Number(d.contextShreddingMsgMinCompressChars) || 120);
+      }
+      if (d.contextShreddingUserMsgFullTurns != null) {
+        setContextShreddingUserMsgFullTurns(Number(d.contextShreddingUserMsgFullTurns) || 1);
+      }
+      if (d.contextShreddingProfiles != null) {
+        setContextShreddingProfiles(String(d.contextShreddingProfiles));
+      }
       if (d.copilotEnableAllMcpTools != null) {
         setCopilotEnableAllMcpTools(Boolean(d.copilotEnableAllMcpTools));
       }
@@ -1704,6 +1780,82 @@ function App() {
       }
       if (env.WORKFLOW_MAX_CONCURRENT_BRANCHES) {
         setWorkflowMaxConcurrentBranches(Number(env.WORKFLOW_MAX_CONCURRENT_BRANCHES) || 8);
+        envLoaded = true;
+      }
+      if (env.CONTEXT_SHREDDING_ENABLED !== undefined) {
+        setContextShreddingEnabled(env.CONTEXT_SHREDDING_ENABLED !== "false");
+        envLoaded = true;
+      }
+      if (env.CONTEXT_SHREDDING_FULL_CONTEXT_TURNS) {
+        setContextShreddingFullContextTurns(Number(env.CONTEXT_SHREDDING_FULL_CONTEXT_TURNS) || 3);
+        envLoaded = true;
+      }
+      if (env.CONTEXT_SHREDDING_COMPRESS_TOOL_OUTPUTS !== undefined) {
+        setContextShreddingCompressToolOutputs(env.CONTEXT_SHREDDING_COMPRESS_TOOL_OUTPUTS !== "false");
+        envLoaded = true;
+      }
+      if (env.CONTEXT_SHREDDING_COMPRESS_MESSAGES !== undefined) {
+        setContextShreddingCompressMessages(env.CONTEXT_SHREDDING_COMPRESS_MESSAGES !== "false");
+        envLoaded = true;
+      }
+      if (env.CONTEXT_SHREDDING_TIER1_MAX_AGE) {
+        setContextShreddingTier1MaxAge(Number(env.CONTEXT_SHREDDING_TIER1_MAX_AGE) || 5);
+        envLoaded = true;
+      }
+      if (env.CONTEXT_SHREDDING_TIER2_MAX_AGE) {
+        setContextShreddingTier2MaxAge(Number(env.CONTEXT_SHREDDING_TIER2_MAX_AGE) || 9);
+        envLoaded = true;
+      }
+      if (env.CONTEXT_SHREDDING_TIER1_HEAD_CHARS) {
+        setContextShreddingTier1HeadChars(Number(env.CONTEXT_SHREDDING_TIER1_HEAD_CHARS) || 2000);
+        envLoaded = true;
+      }
+      if (env.CONTEXT_SHREDDING_TIER1_TAIL_CHARS) {
+        setContextShreddingTier1TailChars(Number(env.CONTEXT_SHREDDING_TIER1_TAIL_CHARS) || 800);
+        envLoaded = true;
+      }
+      if (env.CONTEXT_SHREDDING_TIER2_HEAD_CHARS) {
+        setContextShreddingTier2HeadChars(Number(env.CONTEXT_SHREDDING_TIER2_HEAD_CHARS) || 600);
+        envLoaded = true;
+      }
+      if (env.CONTEXT_SHREDDING_TIER2_TAIL_CHARS) {
+        setContextShreddingTier2TailChars(Number(env.CONTEXT_SHREDDING_TIER2_TAIL_CHARS) || 300);
+        envLoaded = true;
+      }
+      if (env.CONTEXT_SHREDDING_SCORE_HIGH) {
+        setContextShreddingScoreHigh(Number(env.CONTEXT_SHREDDING_SCORE_HIGH) || 70);
+        envLoaded = true;
+      }
+      if (env.CONTEXT_SHREDDING_SCORE_LOW) {
+        setContextShreddingScoreLow(Number(env.CONTEXT_SHREDDING_SCORE_LOW) || 30);
+        envLoaded = true;
+      }
+      if (env.CONTEXT_SHREDDING_COMPRESS_AGENT_MESSAGES !== undefined) {
+        setContextShreddingCompressAgentMessages(env.CONTEXT_SHREDDING_COMPRESS_AGENT_MESSAGES !== "false");
+        envLoaded = true;
+      }
+      if (env.CONTEXT_SHREDDING_COMPRESS_USER_MESSAGES !== undefined) {
+        setContextShreddingCompressUserMessages(env.CONTEXT_SHREDDING_COMPRESS_USER_MESSAGES !== "false");
+        envLoaded = true;
+      }
+      if (env.CONTEXT_SHREDDING_MSG_TIER0_MAX_AGE) {
+        setContextShreddingMsgTier0MaxAge(Number(env.CONTEXT_SHREDDING_MSG_TIER0_MAX_AGE) || 1);
+        envLoaded = true;
+      }
+      if (env.CONTEXT_SHREDDING_MSG_TIER1_MAX_AGE) {
+        setContextShreddingMsgTier1MaxAge(Number(env.CONTEXT_SHREDDING_MSG_TIER1_MAX_AGE) || 4);
+        envLoaded = true;
+      }
+      if (env.CONTEXT_SHREDDING_MSG_MIN_COMPRESS_CHARS) {
+        setContextShreddingMsgMinCompressChars(Number(env.CONTEXT_SHREDDING_MSG_MIN_COMPRESS_CHARS) || 120);
+        envLoaded = true;
+      }
+      if (env.CONTEXT_SHREDDING_USER_MSG_FULL_TURNS) {
+        setContextShreddingUserMsgFullTurns(Number(env.CONTEXT_SHREDDING_USER_MSG_FULL_TURNS) || 1);
+        envLoaded = true;
+      }
+      if (env.CONTEXT_SHREDDING_PROFILES !== undefined) {
+        setContextShreddingProfiles(String(env.CONTEXT_SHREDDING_PROFILES || ""));
         envLoaded = true;
       }
       // Codex model profiles
@@ -2119,6 +2271,25 @@ function App() {
           workflowRunStuckThresholdMs,
           workflowMaxPersistedRuns,
           workflowMaxConcurrentBranches,
+          contextShreddingEnabled,
+          contextShreddingFullContextTurns,
+          contextShreddingCompressToolOutputs,
+          contextShreddingCompressMessages,
+          contextShreddingTier1MaxAge,
+          contextShreddingTier2MaxAge,
+          contextShreddingTier1HeadChars,
+          contextShreddingTier1TailChars,
+          contextShreddingTier2HeadChars,
+          contextShreddingTier2TailChars,
+          contextShreddingScoreHigh,
+          contextShreddingScoreLow,
+          contextShreddingCompressAgentMessages,
+          contextShreddingCompressUserMessages,
+          contextShreddingMsgTier0MaxAge,
+          contextShreddingMsgTier1MaxAge,
+          contextShreddingMsgMinCompressChars,
+          contextShreddingUserMsgFullTurns,
+          contextShreddingProfiles,
           // Codex model profiles
           codexModelProfile,
           codexModelProfileSubagent,
@@ -3453,6 +3624,122 @@ function App() {
         </div>
       <//>
 
+      <${Section} title=":scissors: Context Shredding">
+        <div class="form-group">
+          <label style="display:flex;align-items:center;gap:8px;cursor:pointer;user-select:none">
+            <input type="checkbox" checked=${contextShreddingEnabled}
+              onchange=${(e) => setContextShreddingEnabled(e.target.checked)}
+              style="width:auto;padding:0;margin:0;accent-color:var(--accent);cursor:pointer" />
+            Enable Context Shredding
+          </label>
+        </div>
+        <div class="executor-grid">
+          <div class="form-group">
+            <label>Full Context Turns</label>
+            <input type="number" value=${contextShreddingFullContextTurns} min="0"
+              oninput=${(e) => setContextShreddingFullContextTurns(Number(e.target.value) || 3)} />
+          </div>
+          <div class="form-group">
+            <label>Tier 1 Max Age</label>
+            <input type="number" value=${contextShreddingTier1MaxAge} min="0"
+              oninput=${(e) => setContextShreddingTier1MaxAge(Number(e.target.value) || 5)} />
+          </div>
+          <div class="form-group">
+            <label>Tier 2 Max Age</label>
+            <input type="number" value=${contextShreddingTier2MaxAge} min="0"
+              oninput=${(e) => setContextShreddingTier2MaxAge(Number(e.target.value) || 9)} />
+          </div>
+          <div class="form-group">
+            <label>Tier 1 Head Chars</label>
+            <input type="number" value=${contextShreddingTier1HeadChars} min="0"
+              oninput=${(e) => setContextShreddingTier1HeadChars(Number(e.target.value) || 2000)} />
+          </div>
+          <div class="form-group">
+            <label>Tier 1 Tail Chars</label>
+            <input type="number" value=${contextShreddingTier1TailChars} min="0"
+              oninput=${(e) => setContextShreddingTier1TailChars(Number(e.target.value) || 800)} />
+          </div>
+          <div class="form-group">
+            <label>Tier 2 Head Chars</label>
+            <input type="number" value=${contextShreddingTier2HeadChars} min="0"
+              oninput=${(e) => setContextShreddingTier2HeadChars(Number(e.target.value) || 600)} />
+          </div>
+          <div class="form-group">
+            <label>Tier 2 Tail Chars</label>
+            <input type="number" value=${contextShreddingTier2TailChars} min="0"
+              oninput=${(e) => setContextShreddingTier2TailChars(Number(e.target.value) || 300)} />
+          </div>
+          <div class="form-group">
+            <label>Score High</label>
+            <input type="number" value=${contextShreddingScoreHigh} min="0"
+              oninput=${(e) => setContextShreddingScoreHigh(Number(e.target.value) || 70)} />
+          </div>
+          <div class="form-group">
+            <label>Score Low</label>
+            <input type="number" value=${contextShreddingScoreLow} min="0"
+              oninput=${(e) => setContextShreddingScoreLow(Number(e.target.value) || 30)} />
+          </div>
+          <div class="form-group">
+            <label>Msg Tier 0 Max Age</label>
+            <input type="number" value=${contextShreddingMsgTier0MaxAge} min="0"
+              oninput=${(e) => setContextShreddingMsgTier0MaxAge(Number(e.target.value) || 1)} />
+          </div>
+          <div class="form-group">
+            <label>Msg Tier 1 Max Age</label>
+            <input type="number" value=${contextShreddingMsgTier1MaxAge} min="0"
+              oninput=${(e) => setContextShreddingMsgTier1MaxAge(Number(e.target.value) || 4)} />
+          </div>
+          <div class="form-group">
+            <label>Msg Min Compress Chars</label>
+            <input type="number" value=${contextShreddingMsgMinCompressChars} min="0"
+              oninput=${(e) => setContextShreddingMsgMinCompressChars(Number(e.target.value) || 120)} />
+          </div>
+          <div class="form-group">
+            <label>User Msg Full Turns</label>
+            <input type="number" value=${contextShreddingUserMsgFullTurns} min="0"
+              oninput=${(e) => setContextShreddingUserMsgFullTurns(Number(e.target.value) || 1)} />
+          </div>
+        </div>
+        <div class="form-group">
+          <label style="display:flex;align-items:center;gap:8px;cursor:pointer;user-select:none">
+            <input type="checkbox" checked=${contextShreddingCompressToolOutputs}
+              onchange=${(e) => setContextShreddingCompressToolOutputs(e.target.checked)}
+              style="width:auto;padding:0;margin:0;accent-color:var(--accent);cursor:pointer" />
+            Compress Tool Outputs
+          </label>
+        </div>
+        <div class="form-group">
+          <label style="display:flex;align-items:center;gap:8px;cursor:pointer;user-select:none">
+            <input type="checkbox" checked=${contextShreddingCompressMessages}
+              onchange=${(e) => setContextShreddingCompressMessages(e.target.checked)}
+              style="width:auto;padding:0;margin:0;accent-color:var(--accent);cursor:pointer" />
+            Compress Messages
+          </label>
+        </div>
+        <div class="form-group">
+          <label style="display:flex;align-items:center;gap:8px;cursor:pointer;user-select:none">
+            <input type="checkbox" checked=${contextShreddingCompressAgentMessages}
+              onchange=${(e) => setContextShreddingCompressAgentMessages(e.target.checked)}
+              style="width:auto;padding:0;margin:0;accent-color:var(--accent);cursor:pointer" />
+            Compress Agent Messages
+          </label>
+        </div>
+        <div class="form-group">
+          <label style="display:flex;align-items:center;gap:8px;cursor:pointer;user-select:none">
+            <input type="checkbox" checked=${contextShreddingCompressUserMessages}
+              onchange=${(e) => setContextShreddingCompressUserMessages(e.target.checked)}
+              style="width:auto;padding:0;margin:0;accent-color:var(--accent);cursor:pointer" />
+            Compress User Messages
+          </label>
+        </div>
+        <div class="form-group" style="margin-bottom:0">
+          <label>Profiles JSON</label>
+          <textarea value=${contextShreddingProfiles}
+            oninput=${(e) => setContextShreddingProfiles(e.target.value)}
+            placeholder='{"default": {"enabled": true}}'></textarea>
+        </div>
+      <//>
+
       <${Section} title=":dot: Codex Settings">
         <div class="executor-grid">
           <div class="form-group">
@@ -4389,6 +4676,8 @@ function App() {
             <tr><th>Workflow Stuck Threshold (ms)</th><td>${workflowRunStuckThresholdMs}</td></tr>
             <tr><th>Workflow Run History</th><td>${workflowMaxPersistedRuns}</td></tr>
             <tr><th>Workflow Parallel Branches</th><td>${workflowMaxConcurrentBranches}</td></tr>
+            <tr><th>Context Shredding</th><td>${contextShreddingEnabled ? "Enabled" : "Disabled"}</td></tr>
+            <tr><th>Shredding Tiers</th><td>full=${contextShreddingFullContextTurns}, tier1=${contextShreddingTier1MaxAge}, tier2=${contextShreddingTier2MaxAge}</td></tr>
             <tr><th>Auto-Start on Login</th><td>${autoStartEnabled ? "Enabled" : "Disabled"}</td></tr>
             <tr><th>Desktop Shortcut</th><td>${desktopShortcutEnabled ? "Installed" : "Not installed"}</td></tr>
             <tr><th>Sentinel / Watchdog</th><td>${sentinelAutoStart ? `Enabled${sentinelStrict ? " (strict)" : ""}` : "Disabled"}</td></tr>

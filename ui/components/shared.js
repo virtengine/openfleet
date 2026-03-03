@@ -550,7 +550,15 @@ export function Modal({
           <div class="modal-header">
             <div class="modal-handle"></div>
             ${title ? html`<div class="modal-title">${title}</div>` : null}
-            <${IconButton} size="small" onClick=${requestClose} aria-label="Close" sx=${{ position: 'absolute', right: 8, top: 8 }}>
+            <${IconButton}
+              className="modal-close-btn"
+              size="small"
+              onTouchStart=${(e) => e.stopPropagation()}
+              onPointerDown=${(e) => e.stopPropagation()}
+              onClick=${requestClose}
+              aria-label="Close"
+              sx=${{ position: 'absolute', right: 8, top: 8 }}
+            >
               ${ICONS.close}
             <//>
           </div>

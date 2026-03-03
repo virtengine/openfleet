@@ -795,18 +795,22 @@ function ServerConfigMode() {
 
   /* ─── Grouped settings with search + advanced filter ─── */
   const grouped = useMemo(() => getGroupedSettings(showAdvanced), [showAdvanced]);
+  const isContextShreddingSetting = useCallback((def) => {
+    const category = String(def?.category || "").toLowerCase();
+    return category === "context-shredding" || category === "context_shredding";
+  }, []);
 
   /* Filtered settings when searching */
   const filteredSettings = useMemo(() => {
     if (!searchQuery.trim()) return null; // null = not searching
     const results = [];
     for (const def of SETTINGS_SCHEMA) {
-      if (!showAdvanced && def.advanced) continue;
+      if (!showAdvanced && def.advanced && !isContextShreddingSetting(def)) continue;
       const haystack = `${def.key} ${def.label} ${def.description || ""}`;
       if (fuzzyMatch(searchQuery, haystack)) results.push(def);
     }
     return results;
-  }, [searchQuery, showAdvanced]);
+  }, [searchQuery, showAdvanced, isContextShreddingSetting]);
 
   /* ─── Value resolution: edited value → server value → empty ─── */
   const getValue = useCallback(
@@ -1382,7 +1386,9 @@ function ServerConfigMode() {
       }
 
       /* ── Category browsing mode ── */
-      const catDefs = grouped.get(activeCategory) || [];
+      const catDefs = activeCategory === "context-shredding"
+        ? SETTINGS_SCHEMA.filter((def) => isContextShreddingSetting(def))
+        : (grouped.get(activeCategory) || []);
       const activeCat = CATEGORIES.find((c) => c.id === activeCategory);
 
       return html`
@@ -2548,7 +2554,7 @@ function VoiceEndpointsEditor() {
       <${Button} variant="outlined" size="small" onClick=${addEndpoint} style="margin-top:2px">+ Add Endpoint<//>
       ${endpoints.length === 0 && !loadError && html`
         <div class="meta-text" style="margin-top:8px">
-          No endpoints configured. Add one above, or use the legacy env vars below as fallback.
+          No endpoints configured. Add one above to enable voice provider routing.
         </div>
       `}
     <//>
@@ -3235,9 +3241,23 @@ function ContextShreddingPanel({ getValue }) {
   const enabled = get("CONTEXT_SHREDDING_ENABLED") !== "false";
   const compressTools = get("CONTEXT_SHREDDING_COMPRESS_TOOL_OUTPUTS") !== "false";
   const compressMsgs = get("CONTEXT_SHREDDING_COMPRESS_MESSAGES") !== "false";
-  const tier0 = Number(get("CONTEXT_SHREDDING_FULL_CONTEXT_TURNS")) || 3;
-  const tier1 = Number(get("CONTEXT_SHREDDING_TIER1_MAX_AGE")) || 5;
-  const tier2 = Number(get("CONTEXT_SHREDDING_TIER2_MAX_AGE")) || 9;
+  const parseThreshold = (value, fallback) => {
+    const parsed = Number.parseInt(String(value ?? ""), 10);
+    return Number.isFinite(parsed) ? parsed : fallback;
+  };
+  const parsedTier0 = parseThreshold(get("CONTEXT_SHREDDING_FULL_CONTEXT_TURNS"), 3);
+  const parsedTier1 = parseThreshold(get("CONTEXT_SHREDDING_TIER1_MAX_AGE"), 5);
+  const parsedTier2 = parseThreshold(get("CONTEXT_SHREDDING_TIER2_MAX_AGE"), 9);
+
+  const tier0 = Math.max(1, parsedTier0);
+  const tier1 = Math.max(tier0, parsedTier1);
+  const tier2 = Math.max(tier1, parsedTier2);
+
+  const formatTierRange = (start, end) => {
+    if (start > end) return "none";
+    if (start === end) return `turn ${start}`;
+    return `turns ${start}–${end}`;
+  };
 
   const StatusBadge = ({ label, on }) => html`
     <${Chip}
@@ -3250,9 +3270,9 @@ function ContextShreddingPanel({ getValue }) {
   `;
 
   const tierRows = [
-    { label: "Tier 0 — Full Context", range: `turns 0–${tier0}`, color: "#4caf50", desc: "Completely uncompressed" },
-    { label: "Tier 1 — Light Compression", range: `turns ${tier0 + 1}–${tier1}`, color: "#ff9800", desc: "Head + tail truncation" },
-    { label: "Tier 2 — Moderate", range: `turns ${tier1 + 1}–${tier2}`, color: "#f44336", desc: "Heavy truncation" },
+    { label: "Tier 0 — Full Context", range: formatTierRange(0, tier0), color: "#4caf50", desc: "Completely uncompressed" },
+    { label: "Tier 1 — Light Compression", range: formatTierRange(tier0 + 1, tier1), color: "#ff9800", desc: "Head + tail truncation" },
+    { label: "Tier 2 — Moderate", range: formatTierRange(tier1 + 1, tier2), color: "#f44336", desc: "Heavy truncation" },
     { label: "Tier 3 — Skeleton", range: `turns ${tier2 + 1}+`, color: "#9e9e9e", desc: "Tool name + args only" },
   ];
 

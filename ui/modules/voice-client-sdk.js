@@ -241,6 +241,9 @@ function isNonFatalSdkSessionError(err) {
   if (lower.includes("not allowed for session-bound calls")) {
     return true;
   }
+  if (lower.includes("no active response found") || lower.includes("cancellation failed")) {
+    return true;
+  }
   if (!message) return false;
   // Seen during transient renegotiation on some browsers even when stream remains active.
   if (/setRemoteDescription/i.test(message) && /SessionDescription/i.test(message)) {
@@ -1385,12 +1388,14 @@ export function stopSdkVoiceSession() {
  */
 export function interruptSdkResponse() {
   if (_session) {
-    if (typeof _session.interrupt === "function") {
-      // @openai/agents SDK
-      _session.interrupt();
-    } else if (_session.readyState === WebSocket.OPEN) {
-      // Gemini WebSocket
-      _session.send(JSON.stringify({ type: "response.cancel" }));
+    if (_traceTurnActive) {
+      if (typeof _session.interrupt === "function") {
+        // @openai/agents SDK
+        _session.interrupt();
+      } else if (_session.readyState === WebSocket.OPEN) {
+        // Gemini WebSocket
+        _session.send(JSON.stringify({ type: "response.cancel" }));
+      }
     }
     _sdkTraceInterrupt("interrupt", { reason: "interruptSdkResponse" });
     emit("interrupt", {});

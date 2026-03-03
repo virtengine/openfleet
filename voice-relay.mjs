@@ -442,16 +442,16 @@ async function buildSessionScopedInstructions(baseInstructions, callContext = {}
     chatHistorySection,
     "",
     "## Guidance for Session-Bound Calls",
-    "- You have access to multiple tools. Use direct JS tools first for instant operational answers (tasks, sessions, status, config, files, logs).",
+    "- You have access to multiple tools. Prefer read-only/direct JS tools first for instant operational answers (tasks, sessions, status, config, files, logs).",
     "- For visual questions about camera/screen, call query_live_view with the user's exact question.",
     "- For questions that require project/code understanding, call ask_agent_context in mode=instant first and speak the returned answer in this turn.",
-    "- CRITICAL: Do NOT use delegate_to_agent for simple questions, status checks, or informational queries. delegate_to_agent is ONLY for long-running code modifications, file writes, PR creation, or multi-step workflows that genuinely need an agent.",
-    "- If you can answer a question with ask_agent_context or any direct tool, you MUST use those instead of delegate_to_agent.",
+    "- Do NOT use delegate_to_agent for simple questions, status checks, or informational queries. delegate_to_agent is for long-running code modifications, file writes, PR creation, or multi-step workflows.",
+    "- If you can answer with ask_agent_context or direct read-only tools, prefer those instead of delegation.",
     "- Delegation is non-blocking — results appear in the chat session but NOT in this voice turn. Only delegate when the user explicitly asks to 'run', 'write', 'create', 'fix', or 'implement' something.",
     "- Do not wait on slow agents for normal Q&A. Prefer direct tools and ask_agent_context (instant mode).",
-    "- If the user asks you to perform an action, you MUST execute at least one relevant tool call before claiming that action was done or started.",
-    "- After a tool call finishes, always send a short completion confirmation (for example: 'Done.'), unless you are already giving a fuller immediate answer.",
-    "- Never say you will do something later without either calling a tool now or clearly stating why execution is blocked.",
+    "- STRICT RULE: Any side-effectful tool (writes, commands, workflow execution, delegation, config/task mutations) requires explicit user confirmation in this session before execution.",
+    "- For ambiguous action requests, ask a confirmation question before running side-effectful tools.",
+    "- After a tool call finishes, send a short completion confirmation unless you are already giving a fuller immediate answer.",
     "- Preserve user intent when delegating. Do not paraphrase away technical detail.",
     "- Keep spoken responses concise. The user can see detailed results in the chat sidebar.",
     "- You can read chat history context to avoid asking the user to repeat themselves.",
@@ -1049,7 +1049,8 @@ export async function createEphemeralToken(toolDefinitions = [], callContext = {
         : null);
     if (openaiCandidate) {
       const context = sanitizeVoiceCallContext(callContext);
-      const instructions = await buildSessionScopedInstructions(cfg.instructions, context);
+      const baseInstructions = await resolveVoiceBaseInstructions(context);
+      const instructions = await buildSessionScopedInstructions(baseInstructions, context);
       const voiceId = String(openaiCandidate?.voiceId || cfg.voiceId || "alloy").trim() || "alloy";
       return {
         provider: "openai",
@@ -1135,7 +1136,8 @@ export async function generateOpenAIAudioResponse(inputText, callContext = {}, o
   }
 
   const context = sanitizeVoiceCallContext(callContext);
-  const instructions = await buildSessionScopedInstructions(cfg.instructions, context);
+  const baseInstructions = await resolveVoiceBaseInstructions(context);
+  const instructions = await buildSessionScopedInstructions(baseInstructions, context);
   const preferredModel = String(options?.model || context.model || cfg.model || OPENAI_AUDIO_RESPONSES_MODEL).trim();
   const model = isOpenAIAudioResponsesModel(preferredModel)
     ? preferredModel
@@ -1201,7 +1203,8 @@ async function createOpenAIEphemeralToken(cfg, toolDefinitions = [], callContext
   }
 
   const context = sanitizeVoiceCallContext(callContext);
-  const instructions = await buildSessionScopedInstructions(cfg.instructions, context);
+  const baseInstructions = await resolveVoiceBaseInstructions(context);
+  const instructions = await buildSessionScopedInstructions(baseInstructions, context);
   const model = normalizeOpenAIRealtimeModel(candidate?.model || cfg.model || OPENAI_REALTIME_MODEL);
   const voiceId = String(candidate?.voiceId || cfg.voiceId || "alloy").trim() || "alloy";
   // Per-endpoint transcription overrides
@@ -1283,7 +1286,8 @@ async function createAzureEphemeralToken(cfg, toolDefinitions = [], callContext 
   }
 
   const context = sanitizeVoiceCallContext(callContext);
-  const instructions = await buildSessionScopedInstructions(cfg.instructions, context);
+  const baseInstructions = await resolveVoiceBaseInstructions(context);
+  const instructions = await buildSessionScopedInstructions(baseInstructions, context);
   const deployment = normalizeAzureRealtimeDeployment(
     candidate?.azureDeployment || candidate?.model || cfg.azureDeployment || OPENAI_REALTIME_MODEL,
   );
@@ -1514,54 +1518,62 @@ export async function executeVoiceTool(toolName, toolArgs, context = {}) {
  * Base tools allowed during session-bound voice calls.
  * Owner/admin sessions get additional tools via VOICE_OWNER_EXTRA_TOOLS.
  */
-const VOICE_SESSION_ALLOWED_TOOLS = new Set([
+const VOICE_READ_ONLY_TOOLS = new Set([
   "get_admin_help",
   "ask_agent_context",
   "query_live_view",
-  "delegate_to_agent",
   "get_workspace_context",
   "list_tasks",
   "get_task",
-  "create_task",
-  "update_task_status",
-  "delete_task",
-  "comment_on_task",
   "search_tasks",
   "get_task_stats",
   "get_agent_status",
-  "switch_agent",
-  "set_agent_mode",
   "list_sessions",
   "get_session_history",
   "get_system_status",
   "get_fleet_status",
   "get_pr_status",
   "get_config",
-  "update_config",
   "search_code",
   "read_file_content",
   "list_directory",
   "get_recent_logs",
   "list_workflows",
+  "get_workflow_definition",
+  "list_workflow_runs",
+  "get_workflow_run",
+  "analyze_workflow",
+  "list_skills",
+  "list_prompts",
+  "poll_background_session",
+]);
+
+const VOICE_SIDE_EFFECT_TOOLS = new Set([
+  "delegate_to_agent",
+  "create_task",
+  "update_task_status",
+  "delete_task",
+  "comment_on_task",
+  "switch_agent",
+  "set_agent_mode",
+  "update_config",
   "create_workflow",
   "update_workflow_definition",
   "delete_workflow",
   "create_workflow_from_template",
   "generate_workflow_with_agent",
-  "get_workflow_definition",
   "execute_workflow",
-  "list_workflow_runs",
-  "get_workflow_run",
-  "analyze_workflow",
   "retry_workflow_run",
-  "list_skills",
-  "list_prompts",
   "run_command",
   "dispatch_action",
   "bosun_slash_command",
   "invoke_mcp_tool",
   "warm_codebase_context",
-  "poll_background_session",
+]);
+
+const VOICE_SESSION_ALLOWED_TOOLS = new Set([
+  ...VOICE_READ_ONLY_TOOLS,
+  ...VOICE_SIDE_EFFECT_TOOLS,
 ]);
 
 /**
@@ -1581,6 +1593,165 @@ const PRIVILEGED_VOICE_AUTH_SOURCES = new Set([
 export function isPrivilegedVoiceContext(context = {}) {
   const source = String(context?.authSource || "").trim().toLowerCase();
   return PRIVILEGED_VOICE_AUTH_SOURCES.has(source);
+}
+
+function shouldAllowVoiceSideEffectsForMode(mode) {
+  const normalized = String(mode || "").trim().toLowerCase();
+  if (!normalized) return true;
+  return normalized === "agent" || normalized === "code" || normalized === "web";
+}
+
+async function resolveVoiceLibraryRoot(callContext = {}) {
+  const context = sanitizeVoiceCallContext(callContext);
+  if (!context.sessionId) return process.cwd();
+  try {
+    const tracker = await import("./session-tracker.mjs");
+    let session = null;
+    if (typeof tracker.getSessionById === "function") {
+      session = tracker.getSessionById(context.sessionId);
+    } else if (typeof tracker.getSession === "function") {
+      session = tracker.getSession(context.sessionId);
+    }
+    const workspaceDir = String(
+      session?.workspaceDir
+      || session?.metadata?.workspaceDir
+      || "",
+    ).trim();
+    if (workspaceDir) return workspaceDir;
+  } catch {
+    // best effort
+  }
+  return process.cwd();
+}
+
+function resolveLibraryObjectEntryContent(resolveEntry, getEntryContent, rootDir, id) {
+  const resolved = resolveEntry(rootDir, id);
+  if (resolved?.content && typeof resolved.content === "object") {
+    return resolved.content;
+  }
+  if (resolved?.entry) {
+    const fallback = getEntryContent(rootDir, resolved.entry);
+    if (fallback && typeof fallback === "object") {
+      return fallback;
+    }
+  }
+  return null;
+}
+
+function resolveLibraryTextEntryContent(resolveEntry, getEntryContent, rootDir, id) {
+  const resolved = resolveEntry(rootDir, id);
+  if (typeof resolved?.content === "string" && resolved.content.trim()) {
+    return resolved.content;
+  }
+  if (resolved?.entry) {
+    const fallback = getEntryContent(rootDir, resolved.entry);
+    if (typeof fallback === "string" && fallback.trim()) {
+      return fallback;
+    }
+  }
+  return "";
+}
+
+function resolveVoiceAgentPromptOverrideTemplate(
+  rootDir,
+  voiceAgentId,
+  resolveEntry,
+  getEntryContent,
+) {
+  const id = String(voiceAgentId || "").trim();
+  if (!id) return "";
+
+  const profile = resolveLibraryObjectEntryContent(
+    resolveEntry,
+    getEntryContent,
+    rootDir,
+    id,
+  );
+  const promptOverrideId = String(profile?.promptOverride || "").trim();
+  if (!promptOverrideId) return "";
+
+  return resolveLibraryTextEntryContent(
+    resolveEntry,
+    getEntryContent,
+    rootDir,
+    promptOverrideId,
+  );
+}
+
+function resolveVoicePromptTemplateFromDefaults(
+  rootDir,
+  promptKey,
+  resolveAgentPrompts,
+  getDefaultPromptTemplate,
+) {
+  try {
+    const resolved = resolveAgentPrompts(null, rootDir, {});
+    const template = String(resolved?.prompts?.[promptKey] || "").trim();
+    if (template) return template;
+  } catch {
+    // best effort
+  }
+  return String(getDefaultPromptTemplate(promptKey) || "");
+}
+
+async function resolveVoiceBaseInstructions(callContext = {}, options = {}) {
+  const cfg = getVoiceConfig();
+  const context = sanitizeVoiceCallContext(callContext);
+  let baseInstructions = cfg.instructions || "";
+
+  if (options.customInstructions) {
+    return String(options.customInstructions);
+  }
+
+  try {
+    const [
+      {
+        resolveAgentPrompts,
+        renderPromptTemplate,
+        getDefaultPromptTemplate,
+        setLibraryResolver,
+      },
+      {
+        resolveLibraryRefs,
+        resolveEntry,
+        getEntryContent,
+      },
+    ] = await Promise.all([
+      import("./agent-prompts.mjs"),
+      import("./library-manager.mjs"),
+    ]);
+
+    const rootDir = await resolveVoiceLibraryRoot(context);
+    setLibraryResolver(resolveLibraryRefs);
+
+    const promptKey = options.compact ? "voiceAgentCompact" : "voiceAgent";
+    const overrideTemplate = resolveVoiceAgentPromptOverrideTemplate(
+      rootDir,
+      context.voiceAgentId,
+      resolveEntry,
+      getEntryContent,
+    );
+    const template = overrideTemplate || resolveVoicePromptTemplateFromDefaults(
+      rootDir,
+      promptKey,
+      resolveAgentPrompts,
+      getDefaultPromptTemplate,
+    );
+
+    if (template) {
+      const manifest = await getVoiceActionManifest();
+      const rendered = renderPromptTemplate(template, {
+        VOICE_ACTION_MANIFEST: manifest,
+      }, rootDir);
+      if (typeof rendered === "string" && rendered.trim()) {
+        baseInstructions = rendered;
+      }
+    }
+  } catch {
+    // Fall back to config instructions
+  }
+
+  return baseInstructions;
 }
 
 export function normalizeVoiceToolArgs(toolName, toolArgs) {
@@ -1691,34 +1862,29 @@ export function normalizeVoiceToolArgs(toolName, toolArgs) {
 
 export async function getAllowedVoiceTools(context = {}) {
   if (!context?.sessionId) return null;
-  if (isPrivilegedVoiceContext(context)) {
-    try {
-      const { getToolDefinitions } = await import("./voice-tools.mjs");
-      const all = getToolDefinitions();
-      return new Set(
-        (Array.isArray(all) ? all : [])
-          .map((tool) => String(tool?.name || "").trim())
-          .filter(Boolean),
-      );
-    } catch {
-      return new Set(VOICE_SESSION_ALLOWED_TOOLS);
-    }
-  }
-  return new Set(VOICE_SESSION_ALLOWED_TOOLS);
+  const mode = String(context?.mode || "").trim().toLowerCase();
+  const allowSideEffects = shouldAllowVoiceSideEffectsForMode(mode);
+  return getSessionAllowedTools({
+    isOwner: isPrivilegedVoiceContext(context),
+    allowSideEffects,
+  });
 }
 
 /**
  * Get the set of tools allowed for session-bound voice calls.
- * @param {{ isOwner?: boolean }} options
+ * @param {{ isOwner?: boolean, allowSideEffects?: boolean }} options
  * @returns {Set<string>}
  */
 export function getSessionAllowedTools(options = {}) {
-  if (options.isOwner) {
-    const merged = new Set(VOICE_SESSION_ALLOWED_TOOLS);
-    for (const t of VOICE_OWNER_EXTRA_TOOLS) merged.add(t);
-    return merged;
+  const allowSideEffects = options.allowSideEffects !== false;
+  const merged = new Set(VOICE_READ_ONLY_TOOLS);
+  if (allowSideEffects) {
+    for (const t of VOICE_SIDE_EFFECT_TOOLS) merged.add(t);
   }
-  return VOICE_SESSION_ALLOWED_TOOLS;
+  if (options.isOwner && allowSideEffects) {
+    for (const t of VOICE_OWNER_EXTRA_TOOLS) merged.add(t);
+  }
+  return merged;
 }
 
 /**
@@ -1728,10 +1894,17 @@ export async function getVoiceToolDefinitions(options = {}) {
   try {
     const { getToolDefinitions } = await import("./voice-tools.mjs");
     const allTools = getToolDefinitions();
+    const context = options?.context || {};
+    if (context?.sessionId) {
+      const allowed = await getAllowedVoiceTools(context);
+      if (allowed instanceof Set) {
+        return allTools.filter((tool) => allowed.has(tool?.name));
+      }
+    }
+
     const delegateOnly = options?.delegateOnly === true;
-    if (!delegateOnly || isPrivilegedVoiceContext(options?.context || {})) return allTools;
-    // Session-bound calls get a curated subset instead of just delegate_to_agent
-    return allTools.filter((tool) => VOICE_SESSION_ALLOWED_TOOLS.has(tool?.name));
+    if (!delegateOnly || isPrivilegedVoiceContext(context)) return allTools;
+    return allTools.filter((tool) => getSessionAllowedTools({ allowSideEffects: true }).has(tool?.name));
   } catch (err) {
     console.error("[voice-relay] failed to load voice tool definitions:", err.message);
     return [];
@@ -1870,37 +2043,9 @@ export async function listVoiceActions() {
  * @returns {Promise<string>}
  */
 export async function buildVoiceAgentPrompt(options = {}) {
-  const cfg = getVoiceConfig();
-  let baseInstructions = cfg.instructions || "";
-
-  // Try to load the customizable voice prompt from the prompt library
-  try {
-    const { resolveAgentPrompts, renderPromptTemplate, getDefaultPromptTemplate } = await import("./agent-prompts.mjs");
-    const promptKey = options.compact ? "voiceAgentCompact" : "voiceAgent";
-
-    // Try workspace prompt first, fall back to default
-    let template = "";
-    try {
-      const resolved = resolveAgentPrompts(null, process.cwd(), {});
-      template = resolved.prompts?.[promptKey] || "";
-    } catch {
-      template = getDefaultPromptTemplate(promptKey) || "";
-    }
-
-    if (template) {
-      const manifest = await getVoiceActionManifest();
-      baseInstructions = renderPromptTemplate(template, {
-        VOICE_ACTION_MANIFEST: manifest,
-      });
-    }
-  } catch {
-    // Fall back to config instructions
-  }
-
-  // Allow custom instructions override
-  if (options.customInstructions) {
-    baseInstructions = String(options.customInstructions);
-  }
-
-  return baseInstructions;
+  const context = sanitizeVoiceCallContext(options?.context || {});
+  return resolveVoiceBaseInstructions(context, {
+    compact: options.compact === true,
+    customInstructions: options.customInstructions,
+  });
 }

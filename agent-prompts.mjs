@@ -1,6 +1,7 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { resolve, isAbsolute } from "node:path";
 import { homedir } from "node:os";
+import { createHash } from "node:crypto";
 
 function toEnvSuffix(key) {
   return String(key)
@@ -1039,6 +1040,56 @@ export function getDefaultPromptTemplate(key) {
   return DEFAULT_PROMPTS[key] || "";
 }
 
+function normalizePromptContentForComparison(content) {
+  const text = String(content || "").replace(/^\uFEFF/, "");
+  const lines = text.split(/\r?\n/);
+
+  let index = 0;
+  while (
+    index < lines.length &&
+    /^<!--\s*bosun\s+(prompt|description|default-sha256)\s*:\s*.*-->\s*$/i.test(
+      lines[index],
+    )
+  ) {
+    index += 1;
+  }
+
+  if (index > 0 && index < lines.length && lines[index].trim() === "") {
+    index += 1;
+  }
+
+  return lines.slice(index).join("\n").trimEnd();
+}
+
+function computePromptSha256(content) {
+  return createHash("sha256").update(String(content || ""), "utf8").digest("hex");
+}
+
+function computeNormalizedPromptSha256(content) {
+  return computePromptSha256(normalizePromptContentForComparison(content));
+}
+
+function parsePromptRecordedDefaultHash(content) {
+  const match = String(content || "").match(
+    /<!--\s*bosun\s+default-sha256\s*:\s*([a-f0-9]{64})\s*-->/i,
+  );
+  return match ? match[1].toLowerCase() : null;
+}
+
+function buildPromptFileBody(definition, promptContent) {
+  const normalizedPrompt = normalizePromptContentForComparison(promptContent);
+  const defaultHash = computePromptSha256(normalizedPrompt);
+
+  return [
+    `<!-- bosun prompt: ${definition.key} -->`,
+    `<!-- bosun description: ${definition.description} -->`,
+    `<!-- bosun default-sha256: ${defaultHash} -->`,
+    "",
+    normalizedPrompt,
+    "",
+  ].join("\n");
+}
+
 export function renderPromptTemplate(template, values = {}, rootDir) {
   if (typeof template !== "string") return "";
   const normalized = {};
@@ -1110,13 +1161,7 @@ export function ensureAgentPromptWorkspace(repoRoot) {
     const filePath = resolve(workspaceDir, def.filename);
     if (existsSync(filePath)) continue;
 
-    const body = [
-      `<!-- bosun prompt: ${def.key} -->`,
-      `<!-- ${def.description} -->`,
-      "",
-      DEFAULT_PROMPTS[def.key] || "",
-      "",
-    ].join("\n");
+    const body = buildPromptFileBody(def, DEFAULT_PROMPTS[def.key] || "");
 
     writeFileSync(filePath, body, "utf8");
     written.push(filePath);
@@ -1125,6 +1170,148 @@ export function ensureAgentPromptWorkspace(repoRoot) {
   return {
     workspaceDir,
     written,
+  };
+}
+
+export function getPromptDefaultUpdateStatus(repoRoot) {
+  const root = resolve(repoRoot || process.cwd());
+  const workspaceDir = getDefaultPromptWorkspace(root);
+
+  const updates = AGENT_PROMPT_DEFINITIONS.map((def) => {
+    const filePath = resolve(workspaceDir, def.filename);
+    const exists = existsSync(filePath);
+    const defaultHash = computeNormalizedPromptSha256(DEFAULT_PROMPTS[def.key] || "");
+
+    if (!exists) {
+      return {
+        key: def.key,
+        filename: def.filename,
+        filePath,
+        exists: false,
+        defaultHash,
+        recordedDefaultHash: null,
+        currentHash: null,
+        updateAvailable: true,
+        needsReview: false,
+        reason: "missing",
+      };
+    }
+
+    let content = "";
+    try {
+      content = readFileSync(filePath, "utf8");
+    } catch {
+      return {
+        key: def.key,
+        filename: def.filename,
+        filePath,
+        exists: true,
+        defaultHash,
+        recordedDefaultHash: null,
+        currentHash: null,
+        updateAvailable: false,
+        needsReview: true,
+        reason: "read-failed",
+      };
+    }
+
+    const recordedDefaultHash = parsePromptRecordedDefaultHash(content);
+    const currentHash = computeNormalizedPromptSha256(content);
+
+    let updateAvailable = false;
+    let needsReview = false;
+    let reason = "up-to-date";
+
+    if (!recordedDefaultHash) {
+      reason = "no-recorded-hash";
+    } else if (recordedDefaultHash === defaultHash) {
+      if (currentHash !== defaultHash) {
+        needsReview = true;
+        reason = "modified";
+      }
+    } else if (currentHash === recordedDefaultHash) {
+      updateAvailable = true;
+      reason = "default-updated";
+    } else {
+      needsReview = true;
+      reason = "modified";
+    }
+
+    return {
+      key: def.key,
+      filename: def.filename,
+      filePath,
+      exists: true,
+      defaultHash,
+      recordedDefaultHash,
+      currentHash,
+      updateAvailable,
+      needsReview,
+      reason,
+    };
+  });
+
+  const summary = {
+    total: updates.length,
+    missing: updates.filter((entry) => !entry.exists).length,
+    upToDate: updates.filter(
+      (entry) =>
+        entry.exists &&
+        entry.currentHash === entry.defaultHash &&
+        entry.recordedDefaultHash === entry.defaultHash,
+    ).length,
+    updateAvailable: updates.filter((entry) => entry.updateAvailable).length,
+    needsReview: updates.filter((entry) => entry.needsReview).length,
+  };
+
+  return {
+    workspaceDir,
+    updates,
+    summary,
+  };
+}
+
+export function applyPromptDefaultUpdates(repoRoot, options = {}) {
+  const status = getPromptDefaultUpdateStatus(repoRoot);
+  const keysFilter = Array.isArray(options?.keys)
+    ? new Set(options.keys.map((key) => String(key)))
+    : null;
+
+  mkdirSync(status.workspaceDir, { recursive: true });
+
+  const updated = [];
+  const skipped = [];
+
+  for (const entry of status.updates) {
+    if (keysFilter && !keysFilter.has(entry.key)) {
+      skipped.push({ key: entry.key, reason: "filtered" });
+      continue;
+    }
+
+    if (!entry.updateAvailable) {
+      skipped.push({ key: entry.key, reason: entry.reason });
+      continue;
+    }
+
+    const def = AGENT_PROMPT_DEFINITIONS.find((item) => item.key === entry.key);
+    if (!def) {
+      skipped.push({ key: entry.key, reason: "definition-missing" });
+      continue;
+    }
+
+    try {
+      const body = buildPromptFileBody(def, DEFAULT_PROMPTS[def.key] || "");
+      writeFileSync(entry.filePath, body, "utf8");
+      updated.push(entry.key);
+    } catch {
+      skipped.push({ key: entry.key, reason: "write-failed" });
+    }
+  }
+
+  return {
+    workspaceDir: status.workspaceDir,
+    updated,
+    skipped,
   };
 }
 

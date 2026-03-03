@@ -1218,7 +1218,10 @@
     max-width: none;
   }
 
-  /* Desktop: nav is hidden so no bottom reserve needed for chat */
+}
+
+@media (min-width: 1200px) {
+  /* Desktop: bottom nav is hidden, so remove reserved chat bottom padding. */
   .app-shell[data-tab="chat"] .main-content {
     padding-bottom: 0;
     /* flex:1 flows height down to the session-split so the input can stick */

@@ -271,6 +271,13 @@ function _normalizeCallContext(options = {}) {
   return { sessionId, executor, mode, model, voiceAgentId };
 }
 
+function _isIgnorableNoActiveResponseError(event) {
+  const message = String(event?.error?.message || event?.message || "").trim().toLowerCase();
+  if (!message) return false;
+  return message.includes("no active response found")
+    || message.includes("cancellation failed: no active response found");
+}
+
 function _currentTraceSessionId() {
   return String(_callContext?.sessionId || voiceSessionId.value || "").trim();
 }
@@ -1494,6 +1501,9 @@ function handleServerEvent(event) {
 
     case "error":
       clearPendingResponseCreate();
+      if (_isIgnorableNoActiveResponseError(event)) {
+        break;
+      }
       console.error("[voice-client] Server error:", event.error);
       voiceError.value = event.error?.message || "Server error";
       emit("error", event.error);
@@ -1681,7 +1691,9 @@ export function interruptResponse() {
   }
   // WebSocket transport: cancel response and clear playback queue
   if (_transport === "websocket") {
-    _sendWsEvent({ type: "response.cancel" });
+    if (_traceTurnActive) {
+      _sendWsEvent({ type: "response.cancel" });
+    }
     _wsPlaybackQueue = [];
     _wsPlaybackPlaying = false;
     voiceState.value = "listening";
@@ -1690,7 +1702,9 @@ export function interruptResponse() {
     return;
   }
   if (_dc && _dc.readyState === "open") {
-    _dc.send(JSON.stringify({ type: "response.cancel" }));
+    if (_traceTurnActive) {
+      _dc.send(JSON.stringify({ type: "response.cancel" }));
+    }
     if (_audioElement) {
       try { _audioElement.volume = 1; } catch { /* ignore */ }
     }

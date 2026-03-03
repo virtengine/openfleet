@@ -2069,6 +2069,7 @@ function App() {
   useEffect(() => {
     const el = mainRef.current;
     if (!el) return;
+    if (!getTg()) return;
     const swipeTabs = TAB_CONFIG.filter((t) => t.id !== "settings" && !t.parent);
     let startX = 0;
     let startY = 0;
