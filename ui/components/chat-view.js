@@ -1285,7 +1285,10 @@ export function ChatView({ sessionId, readOnly = false, embedded = false }) {
   }
 
   return html`
-    <${Box} sx=${{ display: 'flex', flexDirection: 'column', height: '100%', ...(embedded ? { border: 'none' } : {}) }}>
+    <${Box}
+      className=${embedded ? "chat-view-embedded" : "chat-view"}
+      sx=${{ display: 'flex', flexDirection: 'column', height: '100%', minHeight: 0, minWidth: 0, ...(embedded ? { border: 'none' } : {}) }}
+    >
       ${!embedded && html`
       <${Paper} elevation=${0} sx=${{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', px: 2, py: 1, borderBottom: '1px solid', borderColor: 'divider' }}>
         <${Box}>
@@ -1447,7 +1450,7 @@ export function ChatView({ sessionId, readOnly = false, embedded = false }) {
         </${Collapse}>
       `}
 
-      <${Box} ref=${messagesRef} sx=${{ flex: 1, overflow: 'auto', px: 2, py: 1 }}>
+      <${Box} ref=${messagesRef} className="chat-messages" sx=${{ flex: 1, minHeight: 0, overflow: 'auto' }}>
         ${(hasMoreMessages || sessionPagination.value?.hasMore) && html`
           <${Box} sx=${{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 1, py: 1 }}>
             <${Button}

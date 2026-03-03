@@ -820,7 +820,7 @@
   scrollbar-color: rgba(255, 255, 255, 0.08) transparent;
   /* Extra bottom padding ensures the last message is never hidden behind
      the chat input area + its toolbar + gradient overlay. */
-  padding: 24px 24px 235px;
+  padding: 24px 24px 140px;
   display: flex;
   flex-direction: column;
   gap: 6px;
@@ -2060,7 +2060,7 @@ ul.md-list li::before {
   border: none;
   border-radius: 0;
   background: transparent;
-  padding: 20px 24px 235px;
+  padding: 20px 24px 140px;
 }
 
 /* ═══ Session Detail as flex column (messages grow, input pinned) ═══ */
@@ -2084,7 +2084,7 @@ ul.md-list li::before {
 }
 
 .app-shell[data-tab="chat"] .chat-view-embedded .chat-messages {
-  padding: 16px 20px 235px;
+  padding: 16px 20px 140px;
 }
 
 .app-shell[data-tab="chat"] .chat-input-area {
@@ -2539,7 +2539,7 @@ ul.md-list li::before {
   }
 
   .chat-messages {
-    padding: 12px 10px calc(var(--nav-height, 60px) + var(--safe-bottom, 0px) + 235px + var(--chat-keyboard-offset, 0px));
+    padding: 12px 10px calc(var(--nav-height, 60px) + var(--safe-bottom, 0px) + 140px + var(--chat-keyboard-offset, 0px));
     gap: 8px;
   }
 }
@@ -2549,6 +2549,10 @@ ul.md-list li::before {
   .chat-messages {
     padding: 24px 20px 235px;
     gap: 10px;
+  }
+
+  .chat-view-embedded .chat-messages {
+    padding: 20px 24px 235px;
   }
 
   .chat-shell-inner {
