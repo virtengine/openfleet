@@ -7,7 +7,7 @@ import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { resolve, join } from "node:path";
+import { resolve } from "node:path";
 
 import {
   BUILTIN_FLOW_TEMPLATES,
@@ -59,6 +59,7 @@ describe("manual-flows", () => {
       expect(ids).toContain("generate-skills");
       expect(ids).toContain("prepare-agents-md");
       expect(ids).toContain("codebase-health-check");
+      expect(ids).toContain("context-index-full");
     });
 
     it("every template has required structure", () => {
@@ -466,6 +467,25 @@ describe("manual-flows", () => {
 
       expect(run.status).toBe("completed");
       expect(run.result.mode).toBe("instructions");
+    });
+
+    it("executes context-index-full flow", async () => {
+      mkdirSync(resolve(testRoot, "src"), { recursive: true });
+      writeFileSync(
+        resolve(testRoot, "src", "sample.mjs"),
+        "export function hello() { return 'world'; }",
+        "utf8",
+      );
+
+      const run = await executeFlow(
+        "context-index-full",
+        { includeTests: true, maxFileBytes: 800000, useTreeSitter: false, useZoekt: false },
+        testRoot,
+      );
+
+      expect(run.status).toBe("completed");
+      expect(run.result.mode).toBe("indexed");
+      expect(run.result.indexedFiles).toBeGreaterThan(0);
     });
   });
 });

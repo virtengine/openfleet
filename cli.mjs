@@ -81,6 +81,11 @@ function showHelp() {
     --where                     Show the resolved bosun config directory
     --doctor                    Validate bosun .env/config setup
     --tool-log <ID|list|prune>  Retrieve/list/prune cached tool outputs
+    --context-index [mode]      Run context index workflow (run|status|search)
+    --context-index-query <text> Query text for context index search mode
+    --context-index-limit <n>   Max results for context index search (default: 25)
+    --context-index-task-type <type> Task scope for search (auto|ci-cd|frontend|backend|infra|docs|security)
+    --context-index-no-fallback Disable global fallback when scoped search is weak
     --help                      Show this help
     --version                   Show version
     --portal, --desktop         Launch the Bosun desktop portal (Electron)
@@ -970,6 +975,70 @@ async function main() {
       item?.result || item?.message || JSON.stringify(item, null, 2);
     console.log(output);
     process.exit(0);
+  }
+
+  if (args.includes("--context-index")) {
+    const modeRaw = (getArgValue("--context-index") || "run").toLowerCase();
+    const validModes = new Set(["run", "status", "search"]);
+    if (!validModes.has(modeRaw)) {
+      console.error(`Invalid --context-index mode: ${modeRaw}`);
+      console.error("Valid modes: run, status, search");
+      process.exit(1);
+    }
+
+    try {
+      const {
+        runContextIndex,
+        searchContextIndex,
+        getContextIndexStatus,
+      } = await import("./context-indexer.mjs");
+
+      if (modeRaw === "run") {
+        const result = await runContextIndex({ rootDir: runtimeRepoRoot });
+        console.log(
+          `Context index complete: files=${result.indexedFiles}, changed=${result.changedFiles}, removed=${result.removedFiles}, symbols=${result.symbolCount}`,
+        );
+        if (result.zoekt) {
+          const zoektState = result.zoekt.success ? "ok" : "not-ready";
+          console.log(`Zoekt: ${zoektState}${result.zoekt.message ? ` (${result.zoekt.message})` : ""}`);
+        }
+        process.exit(0);
+      }
+
+      if (modeRaw === "status") {
+        const status = await getContextIndexStatus({ rootDir: runtimeRepoRoot });
+        console.log(JSON.stringify(status, null, 2));
+        process.exit(0);
+      }
+
+      const query = getArgValue("--context-index-query");
+      if (!query) {
+        console.error("--context-index-query is required when --context-index=search");
+        process.exit(1);
+      }
+
+      const limitRaw = getArgValue("--context-index-limit");
+      const parsedLimit = Number(limitRaw || 25);
+      const limit = Number.isFinite(parsedLimit) && parsedLimit > 0
+        ? Math.floor(parsedLimit)
+        : 25;
+
+      const taskType = getArgValue("--context-index-task-type") || "auto";
+      const fallbackToGlobal = !args.includes("--context-index-no-fallback");
+
+      const results = await searchContextIndex(query, {
+        rootDir: runtimeRepoRoot,
+        limit,
+        taskType,
+        fallbackToGlobal,
+        includeMeta: true,
+      });
+      console.log(JSON.stringify(results, null, 2));
+      process.exit(0);
+    } catch (error) {
+      console.error(`Context index command failed: ${error?.message || String(error)}`);
+      process.exit(1);
+    }
   }
 
   // Handle sentinel controls

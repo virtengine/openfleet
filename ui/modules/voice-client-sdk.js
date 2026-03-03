@@ -75,6 +75,11 @@ let _assistantBaselineBeforeToolAck = "";
 const _sdkCapturedMicStreams = new Set();
 let _lastAutoBargeInAt = 0;
 const AUTO_BARGE_IN_COOLDOWN_MS = 700;
+let _traceTurnCounter = 0;
+let _traceCurrentTurnId = null;
+let _traceTurnActive = false;
+let _traceLlmFirstTokenMarked = false;
+let _traceTtsFirstAudioMarked = false;
 // Set to true by stopSdkVoiceSession() so that any in-flight getUserMedia
 // call in startAgentsSdkSession / startGeminiMicCapture releases the track
 // immediately instead of leaving the browser mic indicator active.
@@ -117,6 +122,91 @@ function maybeAutoInterruptSdkResponse(reason = "speech-started") {
   sdkVoiceState.value = "listening";
   emit("auto-barge-in", { reason });
   return true;
+}
+
+function _currentTraceSessionId() {
+  return String(_callContext?.sessionId || sdkVoiceSessionId.value || "").trim();
+}
+
+function _recordSdkTraceEvent(eventType, extra = {}) {
+  const sessionId = _currentTraceSessionId();
+  const normalizedEventType = String(eventType || "").trim();
+  if (!sessionId || !normalizedEventType) return;
+  const payload = {
+    sessionId,
+    turnId: String(extra?.turnId || _traceCurrentTurnId || "").trim() || null,
+    eventType: normalizedEventType,
+    source: "voice-client-sdk",
+    provider: String(extra?.provider || sdkVoiceProvider.value || "").trim() || undefined,
+    transport: String(extra?.transport || "sdk").trim() || "sdk",
+    reason: String(extra?.reason || "").trim() || undefined,
+    role: String(extra?.role || "").trim() || undefined,
+    timestamp: new Date().toISOString(),
+    meta: extra?.meta && typeof extra.meta === "object" ? extra.meta : undefined,
+  };
+  fetch("/api/voice/trace", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload),
+  }).catch((err) => {
+    console.warn("[voice-client-sdk] trace persistence failed:", err?.message || err);
+  });
+}
+
+function _sdkTraceBeginTurn(eventType, extra = {}) {
+  if (_traceTurnActive && _traceCurrentTurnId) return;
+  _traceTurnCounter += 1;
+  _traceCurrentTurnId = `${_currentTraceSessionId() || "voice"}-turn-${Date.now()}-${_traceTurnCounter}`;
+  _traceTurnActive = true;
+  _traceLlmFirstTokenMarked = false;
+  _traceTtsFirstAudioMarked = false;
+  _recordSdkTraceEvent(eventType, {
+    ...extra,
+    turnId: _traceCurrentTurnId,
+  });
+}
+
+function _sdkTraceMarkLlmFirstToken(eventType, extra = {}) {
+  if (!_traceTurnActive || !_traceCurrentTurnId || _traceLlmFirstTokenMarked) return;
+  _traceLlmFirstTokenMarked = true;
+  _recordSdkTraceEvent(eventType, {
+    ...extra,
+    turnId: _traceCurrentTurnId,
+  });
+}
+
+function _sdkTraceMarkTtsFirstAudio(eventType, extra = {}) {
+  if (!_traceTurnActive || !_traceCurrentTurnId || _traceTtsFirstAudioMarked) return;
+  _traceTtsFirstAudioMarked = true;
+  _recordSdkTraceEvent(eventType, {
+    ...extra,
+    turnId: _traceCurrentTurnId,
+  });
+}
+
+function _sdkTraceEndTurn(eventType, extra = {}) {
+  if (!_traceTurnActive || !_traceCurrentTurnId) return;
+  _recordSdkTraceEvent(eventType, {
+    ...extra,
+    turnId: _traceCurrentTurnId,
+  });
+  _traceTurnActive = false;
+  _traceCurrentTurnId = null;
+  _traceLlmFirstTokenMarked = false;
+  _traceTtsFirstAudioMarked = false;
+}
+
+function _sdkTraceInterrupt(eventType, extra = {}) {
+  _recordSdkTraceEvent(eventType, {
+    ...extra,
+    turnId: _traceCurrentTurnId,
+  });
+  if (_traceTurnActive) {
+    _sdkTraceEndTurn("turn_end", {
+      reason: "interrupted",
+      ...extra,
+    });
+  }
 }
 
 function _normalizeCallContext(options = {}) {
@@ -275,6 +365,11 @@ function _resetTranscriptPersistenceState() {
   }
   _awaitingToolCompletionAck = false;
   _assistantBaselineBeforeToolAck = "";
+  _traceTurnCounter = 0;
+  _traceCurrentTurnId = null;
+  _traceTurnActive = false;
+  _traceLlmFirstTokenMarked = false;
+  _traceTtsFirstAudioMarked = false;
 }
 
 function _flushPendingTranscriptBuffers() {
@@ -376,10 +471,13 @@ function _scheduleAssistantTranscriptFinalize(text) {
     const finalText = String(_pendingAssistantTranscriptText || "").trim();
     if (!finalText) return;
     sdkVoiceState.value = "thinking";
+    _sdkTraceMarkLlmFirstToken("llm_first_token", { reason: "assistant_transcript.final" });
+    _sdkTraceMarkTtsFirstAudio("tts_first_audio", { reason: "assistant_transcript.final" });
     sdkVoiceResponse.value = finalText;
     emit("response-complete", { text: finalText });
     _persistTranscriptIfNew("assistant", finalText, "sdk.history_updated.assistant.final");
     _markAssistantToolResponseObserved(finalText);
+    _sdkTraceEndTurn("turn_end", { reason: "assistant_transcript.final" });
     sdkVoiceState.value = "listening";
   }, 700);
 }
@@ -577,6 +675,7 @@ async function startAgentsSdkSession(config, options = {}) {
     if (lastAssistantMsg) {
       const response = lastAssistantMsg.content?.map((c) => c.transcript || c.text || "").join("") || "";
       if (response) {
+        _sdkTraceMarkLlmFirstToken("llm_first_token", { reason: "history_updated.assistant" });
         _markAssistantToolResponseObserved(response);
         _scheduleAssistantTranscriptFinalize(response);
       }
@@ -586,11 +685,13 @@ async function startAgentsSdkSession(config, options = {}) {
   });
 
   session.on("audio_interrupted", () => {
+    _sdkTraceInterrupt("interrupt", { reason: "audio_interrupted" });
     sdkVoiceState.value = "listening";
     emit("interrupt", {});
   });
 
   session.on("speech_started", () => {
+    _sdkTraceBeginTurn("turn_start", { reason: "speech_started" });
     maybeAutoInterruptSdkResponse("speech-started");
     emit("speech-started", {});
   });
@@ -1000,10 +1101,12 @@ function handleGeminiServerEvent(msg) {
       break;
 
     case "transcript.assistant":
+      _sdkTraceMarkLlmFirstToken("llm_first_token", { reason: "gemini.transcript.assistant" });
       sdkVoiceResponse.value = msg.text || "";
       emit("response-complete", { text: msg.text });
       _persistTranscriptIfNew("assistant", msg.text, "gemini.assistant_transcript");
       _markAssistantToolResponseObserved(msg.text || "");
+      _sdkTraceEndTurn("turn_end", { reason: "gemini.transcript.assistant" });
       break;
 
     case "audio.delta":
@@ -1017,6 +1120,7 @@ function handleGeminiServerEvent(msg) {
       break;
 
     case "speech_started":
+      _sdkTraceBeginTurn("turn_start", { reason: "gemini.speech_started", transport: "websocket" });
       maybeAutoInterruptSdkResponse("speech-started");
       sdkVoiceState.value = "listening";
       emit("speech-started", {});
@@ -1092,6 +1196,7 @@ async function handleGeminiToolCall(msg) {
 function playGeminiAudio(data) {
   // Use Web Audio API to play PCM audio from Gemini
   try {
+    _sdkTraceMarkTtsFirstAudio("tts_first_audio", { reason: "gemini.audio.delta", transport: "websocket" });
     if (typeof AudioContext !== "undefined" || typeof webkitAudioContext !== "undefined") {
       const AudioCtx = globalThis.AudioContext || globalThis.webkitAudioContext;
       if (!playGeminiAudio._ctx) {
@@ -1267,6 +1372,9 @@ export function stopSdkVoiceSession() {
     voiceAgentId: null,
   };
   _usingLegacyFallback = false;
+  if (_traceTurnActive) {
+    _sdkTraceEndTurn("turn_end", { reason: "session_ended" });
+  }
   _resetTranscriptPersistenceState();
 
   emit("session-ended", {});
@@ -1284,6 +1392,7 @@ export function interruptSdkResponse() {
       // Gemini WebSocket
       _session.send(JSON.stringify({ type: "response.cancel" }));
     }
+    _sdkTraceInterrupt("interrupt", { reason: "interruptSdkResponse" });
     emit("interrupt", {});
   }
 }

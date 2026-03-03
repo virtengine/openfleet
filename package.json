@@ -71,7 +71,8 @@
     "./task-cli": "./task-cli.mjs",
     "./github-auth-manager": "./github-auth-manager.mjs",
     "./git-commit-helpers": "./git-commit-helpers.mjs",
-    "./opencode-shell": "./opencode-shell.mjs"
+    "./opencode-shell": "./opencode-shell.mjs",
+    "./context-indexer": "./context-indexer.mjs"
   },
   "bin": {
     "bosun": "cli.mjs",
@@ -154,6 +155,7 @@
     "config-doctor.mjs",
     "conflict-resolver.mjs",
     "context-cache.mjs",
+    "context-indexer.mjs",
     "context-shredding-config.mjs",
     "copilot-shell.mjs",
     "gemini-shell.mjs",

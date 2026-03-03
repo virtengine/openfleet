@@ -5,7 +5,7 @@
 // executor function. Runs are persisted to .bosun/manual-flows/runs/.
 
 import { existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync, unlinkSync } from "node:fs";
-import { dirname, resolve, basename, join } from "node:path";
+import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const __filename = fileURLToPath(import.meta.url);
@@ -283,6 +283,47 @@ export const BUILTIN_FLOW_TEMPLATES = [
           { label: "Both", value: "both" },
         ],
         required: true,
+      },
+    ],
+  },
+  {
+    id: "context-index-full",
+    name: "Context Index (Full)",
+    description:
+      "Build a Bosun-native context index (SQLite + optional tree-sitter + optional Zoekt) and generate agent-first index artifacts.",
+    icon: "database",
+    category: "audit",
+    tags: ["context", "index", "sqlite", "agents"],
+    builtin: true,
+    version: "1.0.0",
+    fields: [
+      {
+        id: "includeTests",
+        label: "Include Tests",
+        type: "toggle",
+        defaultValue: true,
+        helpText: "Include test/spec files in the context index.",
+      },
+      {
+        id: "maxFileBytes",
+        label: "Max File Size (bytes)",
+        type: "number",
+        defaultValue: 800000,
+        helpText: "Skip files larger than this size when indexing.",
+      },
+      {
+        id: "useTreeSitter",
+        label: "Use tree-sitter",
+        type: "toggle",
+        defaultValue: true,
+        helpText: "Use tree-sitter tags for symbol extraction when available.",
+      },
+      {
+        id: "useZoekt",
+        label: "Use Zoekt",
+        type: "toggle",
+        defaultValue: true,
+        helpText: "Build an optional Zoekt index when zoekt-index is installed.",
       },
     ],
   },
@@ -623,6 +664,9 @@ export async function executeFlow(templateId, formValues, rootDir, context = {})
       case "codebase-health-check":
         result = await executeHealthCheck(run.formValues, rootDir, context);
         break;
+      case "context-index-full":
+        result = await executeContextIndexFull(run.formValues, rootDir, context);
+        break;
       case "research-agent":
         result = await executeResearchAgent(run.formValues, rootDir, context);
         break;
@@ -652,7 +696,6 @@ async function executeAnnotationAudit(formValues, rootDir, context) {
     skipGenerated = true,
     phases = "all",
     dryRun = false,
-    commitMessage = "",
   } = formValues;
 
   // Parse extensions
@@ -882,6 +925,21 @@ async function executeHealthCheck(formValues, rootDir, context) {
     checks: formValues.checks || "all",
     targetDir: formValues.targetDir || "(entire repo)",
     instructions: "Create a health check task to analyze: dead code, deps, circular imports, coverage gaps.",
+  };
+}
+
+async function executeContextIndexFull(formValues, rootDir, _context = {}) {
+  const { runContextIndex } = await import("./context-indexer.mjs");
+  const result = await runContextIndex({
+    rootDir,
+    includeTests: formValues.includeTests !== false,
+    maxFileBytes: Number(formValues.maxFileBytes || 800000),
+    useTreeSitter: formValues.useTreeSitter !== false,
+    useZoekt: formValues.useZoekt !== false,
+  });
+  return {
+    ...result,
+    mode: "indexed",
   };
 }
 

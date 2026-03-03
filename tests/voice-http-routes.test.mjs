@@ -176,6 +176,55 @@ describe("ui-server voice + vision routes", () => {
     }
   });
 
+  it("stores and returns voice turn trace events", async () => {
+    const { port } = await startServer();
+    const sessionId = `primary-voice-trace-${Date.now()}`;
+
+    const events = [
+      { eventType: "turn_start", turnId: "turn-1", source: "voice-client", transport: "webrtc" },
+      { eventType: "llm_first_token", turnId: "turn-1", source: "voice-client", transport: "webrtc" },
+      { eventType: "tts_first_audio", turnId: "turn-1", source: "voice-client", transport: "webrtc" },
+      { eventType: "turn_end", turnId: "turn-1", source: "voice-client", transport: "webrtc" },
+    ];
+
+    const ingestRes = await fetch(`http://127.0.0.1:${port}/api/voice/trace`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        sessionId,
+        provider: "mock-provider",
+        events,
+      }),
+    });
+    const ingestJson = await ingestRes.json();
+    expect(ingestRes.status).toBe(200);
+    expect(ingestJson.ok).toBe(true);
+    expect(ingestJson.stored).toBe(events.length);
+    expect(String(ingestJson?.latest?.eventType || "")).toBe("turn_end");
+
+    const listRes = await fetch(`http://127.0.0.1:${port}/api/voice/trace?sessionId=${encodeURIComponent(sessionId)}&limit=10`);
+    const listJson = await listRes.json();
+    expect(listRes.status).toBe(200);
+    expect(listJson.ok).toBe(true);
+    expect(Array.isArray(listJson.events)).toBe(true);
+    expect(listJson.events.length).toBeGreaterThanOrEqual(events.length);
+    expect(listJson.events[0]).toMatchObject({
+      sessionId,
+      eventType: "turn_end",
+      turnId: "turn-1",
+    });
+
+    const latestRes = await fetch(`http://127.0.0.1:${port}/api/voice/trace?sessionId=${encodeURIComponent(sessionId)}&latest=1`);
+    const latestJson = await latestRes.json();
+    expect(latestRes.status).toBe(200);
+    expect(latestJson.ok).toBe(true);
+    expect(latestJson.latest).toMatchObject({
+      sessionId,
+      eventType: "turn_end",
+      turnId: "turn-1",
+    });
+  });
+
   it("ingests a vision frame, analyzes once, and deduplicates repeated frames", async () => {
     const { port } = await startServer();
     const sessionId = `primary-vision-http-${Date.now()}`;

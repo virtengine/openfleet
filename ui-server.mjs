@@ -174,6 +174,110 @@ const DEFAULT_VISION_ANALYSIS_INTERVAL_MS = Math.min(
     Number.parseInt(process.env.VISION_ANALYSIS_INTERVAL_MS || "", 10) || 1500,
   ),
 );
+const VOICE_TRACE_MAX_EVENTS_PER_SESSION = Math.max(
+  50,
+  Number.parseInt(process.env.BOSUN_VOICE_TRACE_MAX_EVENTS_PER_SESSION || "", 10) || 250,
+);
+const VOICE_TRACE_MAX_SESSIONS = Math.max(
+  10,
+  Number.parseInt(process.env.BOSUN_VOICE_TRACE_MAX_SESSIONS || "", 10) || 200,
+);
+const VOICE_TRACE_MAX_QUERY_LIMIT = 500;
+const voiceTraceStore = new Map();
+let voiceTraceSequence = 0;
+
+function parseVoiceTraceLimit(rawLimit, fallback = 50) {
+  const parsed = Number.parseInt(String(rawLimit || "").trim(), 10);
+  if (!Number.isFinite(parsed)) return fallback;
+  return Math.min(VOICE_TRACE_MAX_QUERY_LIMIT, Math.max(1, parsed));
+}
+
+function pruneVoiceTraceSessions() {
+  while (voiceTraceStore.size > VOICE_TRACE_MAX_SESSIONS) {
+    let oldestSessionId = null;
+    let oldestUpdatedAt = Number.POSITIVE_INFINITY;
+    for (const [sessionId, state] of voiceTraceStore.entries()) {
+      const updatedAt = Number(state?.updatedAt || 0);
+      if (updatedAt < oldestUpdatedAt) {
+        oldestUpdatedAt = updatedAt;
+        oldestSessionId = sessionId;
+      }
+    }
+    if (!oldestSessionId) break;
+    voiceTraceStore.delete(oldestSessionId);
+  }
+}
+
+function appendVoiceTraceEvent(rawEvent = {}) {
+  const sessionId = String(rawEvent?.sessionId || "").trim();
+  const eventType = String(rawEvent?.eventType || rawEvent?.type || "").trim();
+  if (!sessionId || !eventType) return null;
+
+  const nowMs = Date.now();
+  voiceTraceSequence += 1;
+  const traceEvent = {
+    id: `${sessionId}:${nowMs}:${randomBytes(4).toString("hex")}`,
+    sessionId,
+    turnId: String(rawEvent?.turnId || "").trim() || null,
+    eventType,
+    transport: String(rawEvent?.transport || "").trim() || null,
+    provider: String(rawEvent?.provider || "").trim() || null,
+    role: String(rawEvent?.role || "").trim() || null,
+    source: String(rawEvent?.source || "voice-client").trim() || "voice-client",
+    reason: String(rawEvent?.reason || "").trim() || null,
+    timestamp: String(rawEvent?.timestamp || "").trim() || new Date(nowMs).toISOString(),
+    recordedAt: nowMs,
+    sequence: voiceTraceSequence,
+    meta: rawEvent?.meta && typeof rawEvent.meta === "object" ? rawEvent.meta : null,
+  };
+
+  const existing = voiceTraceStore.get(sessionId) || {
+    sessionId,
+    updatedAt: 0,
+    events: [],
+  };
+  existing.events.push(traceEvent);
+  if (existing.events.length > VOICE_TRACE_MAX_EVENTS_PER_SESSION) {
+    existing.events.splice(0, existing.events.length - VOICE_TRACE_MAX_EVENTS_PER_SESSION);
+  }
+  existing.updatedAt = nowMs;
+  voiceTraceStore.set(sessionId, existing);
+  pruneVoiceTraceSessions();
+  return traceEvent;
+}
+
+function queryVoiceTraceEvents({ sessionId = "", limit = 50, latestOnly = false } = {}) {
+  const normalizedSessionId = String(sessionId || "").trim();
+  const normalizedLimit = parseVoiceTraceLimit(limit, latestOnly ? 1 : 50);
+
+  let events = [];
+  if (normalizedSessionId) {
+    const state = voiceTraceStore.get(normalizedSessionId);
+    events = Array.isArray(state?.events) ? [...state.events] : [];
+  } else {
+    for (const state of voiceTraceStore.values()) {
+      if (!Array.isArray(state?.events)) continue;
+      events.push(...state.events);
+    }
+  }
+
+  events.sort((a, b) => {
+    const byRecordedAt = Number(b?.recordedAt || 0) - Number(a?.recordedAt || 0);
+    if (byRecordedAt !== 0) return byRecordedAt;
+    return Number(b?.sequence || 0) - Number(a?.sequence || 0);
+  });
+  if (latestOnly) {
+    return {
+      latest: events[0] || null,
+      total: events.length,
+    };
+  }
+  return {
+    events: events.slice(0, normalizedLimit),
+    total: events.length,
+  };
+}
+
 function sanitizeVisionSource(value) {
   const raw = String(value || "").trim().toLowerCase();
   if (raw === "camera") return "camera";
@@ -11201,6 +11305,71 @@ async function handleApi(req, res, url) {
       });
     } catch (err) {
       jsonResponse(res, 500, { error: err.message });
+    }
+    return;
+  }
+
+  // POST /api/voice/trace
+  if (path === "/api/voice/trace" && req.method === "POST") {
+    try {
+      const body = await readJsonBody(req).catch(() => ({}));
+      const inputEvents = Array.isArray(body?.events)
+        ? body.events
+        : [body];
+      const storedEvents = [];
+
+      for (const rawEvent of inputEvents) {
+        if (!rawEvent || typeof rawEvent !== "object") continue;
+        const merged = {
+          ...rawEvent,
+          sessionId: String(rawEvent?.sessionId || body?.sessionId || "").trim(),
+          source: String(rawEvent?.source || body?.source || "voice-client").trim() || "voice-client",
+          provider: String(rawEvent?.provider || body?.provider || "").trim() || undefined,
+          transport: String(rawEvent?.transport || body?.transport || "").trim() || undefined,
+        };
+        const appended = appendVoiceTraceEvent(merged);
+        if (appended) storedEvents.push(appended);
+      }
+
+      if (storedEvents.length === 0) {
+        jsonResponse(res, 400, { ok: false, error: "No valid trace events supplied" });
+        return;
+      }
+
+      jsonResponse(res, 200, {
+        ok: true,
+        stored: storedEvents.length,
+        latest: storedEvents[storedEvents.length - 1] || null,
+      });
+    } catch (err) {
+      jsonResponse(res, 500, { ok: false, error: err.message });
+    }
+    return;
+  }
+
+  // GET /api/voice/trace
+  if (path === "/api/voice/trace" && req.method === "GET") {
+    try {
+      const sessionId = String(url.searchParams.get("sessionId") || "").trim();
+      const latestOnly = ["1", "true", "yes"].includes(String(url.searchParams.get("latest") || "").trim().toLowerCase());
+      const limit = parseVoiceTraceLimit(url.searchParams.get("limit"), latestOnly ? 1 : 50);
+      const result = queryVoiceTraceEvents({ sessionId, limit, latestOnly });
+      if (latestOnly) {
+        jsonResponse(res, 200, {
+          ok: true,
+          latest: result.latest || null,
+          total: Number(result.total || 0),
+        });
+        return;
+      }
+
+      jsonResponse(res, 200, {
+        ok: true,
+        events: Array.isArray(result.events) ? result.events : [],
+        total: Number(result.total || 0),
+      });
+    } catch (err) {
+      jsonResponse(res, 500, { ok: false, error: err.message });
     }
     return;
   }
