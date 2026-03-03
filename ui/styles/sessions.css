@@ -180,6 +180,13 @@
   flex-shrink: 0;
 }
 
+/* Hide the in-chat header on tablet/desktop; mobile keeps it for drawer/nav. */
+@media (min-width: 769px) {
+  .chat-shell-header {
+    display: none;
+  }
+}
+
 .chat-shell-inner {
   display: flex;
   align-items: center;
