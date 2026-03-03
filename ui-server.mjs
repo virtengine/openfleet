@@ -549,12 +549,13 @@ function buildVoiceToolCapabilityPrompt(tools = [], toolConfig = null, selectedV
     "",
     "## Active Voice Agent Capability Contract",
     `Agent profile: ${agentName}.`,
-    "You can execute tools directly in this voice session. Do not claim you cannot use tools or must rely on chat-only help.",
-    "When the user asks for action or facts, call the most relevant tool first, then report results briefly.",
+    "You have FULL tool-calling capability in this voice session. You MUST use tools when the user asks for information or actions.",
+    "IMPORTANT: Do NOT respond conversationally when a tool call would answer the question. Call the tool FIRST, then speak the result.",
+    "When the user asks about tasks, status, agents, code, or any operational question — call the relevant tool immediately.",
     toolLines.length > 0
-      ? "Enabled runtime tools:\n" + toolLines.join("\n")
-      : "Enabled runtime tools: none (tool calls unavailable for this profile).",
-    "Enabled runtime tools JSON (name + input schema):",
+      ? "Available tools (call these by name):\n" + toolLines.join("\n")
+      : "Available tools: none (tool calls unavailable for this profile).",
+    "Available tools JSON (name + input schema):",
     "```json",
     manifestJson,
     "```",
@@ -565,8 +566,14 @@ function buildVoiceToolCapabilityPrompt(tools = [], toolConfig = null, selectedV
       ? `Voice agent skills: ${skills.join(", ")}.`
       : "Voice agent skills: none specified.",
     "",
-    "When calling tools, use exact argument keys from the inputSchema JSON above.",
-    "If you need a complete tool/action reference, call get_admin_help.",
+    "TOOL USAGE RULES:",
+    "1. When calling tools, use exact argument keys from the inputSchema JSON above.",
+    "2. For questions about tasks, status, projects → call list_tasks or get_task.",
+    "3. For code questions or codebase queries → call ask_agent_context with mode=instant.",
+    "4. For running commands → call run_workspace_command.",
+    "5. For delegating coding work → call delegate_to_agent with a specific message.",
+    "6. Never say 'I cannot do that' if a matching tool exists — use it.",
+    "7. If you need a complete tool/action reference, call get_admin_help.",
   ].join("\n");
 }
 
@@ -6830,11 +6837,23 @@ async function handleApi(req, res, url) {
   }
 
   if (req.method === "POST") {
-    const maxPerMin = getMutationRateLimitPerMin(authResult);
-    const rateScope = `post:${authResult?.source || "unknown"}`;
-    if (!checkRateLimit(req, maxPerMin, rateScope)) {
-      jsonResponse(res, 429, { ok: false, error: "Rate limit exceeded. Try again later." });
-      return;
+    // Voice telemetry endpoints (trace, transcript) fire rapidly during active
+    // calls and must not be throttled by the standard mutation rate limiter.
+    const isVoiceTelemetry =
+      path === "/api/voice/trace" || path === "/api/voice/transcript";
+    if (isVoiceTelemetry) {
+      const voiceTelemetryLimit = isPrivilegedAuthSource(authResult?.source) ? 600 : 120;
+      if (!checkRateLimit(req, voiceTelemetryLimit, `voice-telemetry:${authResult?.source || "unknown"}`)) {
+        jsonResponse(res, 429, { ok: false, error: "Rate limit exceeded. Try again later." });
+        return;
+      }
+    } else {
+      const maxPerMin = getMutationRateLimitPerMin(authResult);
+      const rateScope = `post:${authResult?.source || "unknown"}`;
+      if (!checkRateLimit(req, maxPerMin, rateScope)) {
+        jsonResponse(res, 429, { ok: false, error: "Rate limit exceeded. Try again later." });
+        return;
+      }
     }
   }
   if (path.startsWith("/api/attachments/") && req.method === "GET") {

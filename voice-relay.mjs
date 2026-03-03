@@ -1349,9 +1349,13 @@ async function createAzureEphemeralToken(cfg, toolDefinitions = [], callContext 
     body: JSON.stringify(sessionConfig),
   });
 
+  // Track whether the GA path was used (not the fallback preview path).
+  let usedGaPath = useGa;
+
   // Azure AI Foundry "Global Standard" deployments may 404 on the GA path.
   // Automatically fall back to the preview path before giving up.
   if (!response.ok && response.status === 404 && useGa) {
+    usedGaPath = false;
     const previewConfig = { ...sessionConfig };
     delete previewConfig.type; // preview path does not accept type: "realtime"
     response = await fetch(previewUrl, {
@@ -1368,8 +1372,8 @@ async function createAzureEphemeralToken(cfg, toolDefinitions = [], callContext 
 
   const data = await response.json();
   // WebRTC URL diverges from /sessions URL: GA uses /openai/v1/realtime, preview uses /openai/realtime.
-  // If the GA session was created via fallback to preview, use preview WebRTC URL too.
-  const gaSessionSucceeded = useGa && response.url?.includes("/v1/realtime");
+  // Use a boolean flag instead of response.url (which may be unavailable in some runtimes).
+  const gaSessionSucceeded = usedGaPath;
   const webrtcUrl = (useGa && gaSessionSucceeded)
     ? `${resolvedEndpoint}/openai/v1/realtime?api-version=${AZURE_API_VERSION}`
     : `${resolvedEndpoint}/openai/realtime?api-version=${AZURE_API_VERSION}&deployment=${encodeURIComponent(deployment)}`;

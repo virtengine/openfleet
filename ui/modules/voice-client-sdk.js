@@ -260,6 +260,11 @@ function isNonFatalSdkSessionError(err) {
   return false;
 }
 
+function isAzureGaRealtimeDeployment(deployment) {
+  const normalized = String(deployment || "").trim().toLowerCase();
+  return normalized.startsWith("gpt-realtime") && !normalized.startsWith("gpt-4o-realtime");
+}
+
 function isUsableAgentsRealtimeModule(mod) {
   return Boolean(mod && mod.RealtimeAgent && mod.RealtimeSession);
 }
@@ -561,13 +566,14 @@ async function startAgentsSdkSession(config, options = {}) {
           const message = String(result?.error || `Tool ${t.name} failed (${res.status})`).trim();
           throw new Error(message || `Tool ${t.name} failed`);
         }
-        return result.result || "No output";
+        // SDK expects string results — ensure we always return a string.
+        const output = result.result ?? result.output ?? "Done";
+        return typeof output === "string" ? output : JSON.stringify(output);
       };
 
-      // The @openai/agents SDK calls tool.invoke(runContext, inputString, details)
-      // where runContext is a RunContext object (contains context.history) and
-      // inputString is the raw JSON string of tool arguments from the model.
-      const invokeTool = async (_runContext, inputStr) => {
+      // The @openai/agents SDK calls invokeFunctionTool → tool.invoke(runContext, input, details)
+      // where input is the raw JSON string of tool arguments from the model.
+      const invokeTool = async (_runContext, inputStr, _details) => {
         let args = {};
         if (typeof inputStr === "string") {
           try { args = JSON.parse(inputStr || "{}"); } catch { args = {}; }
@@ -588,10 +594,8 @@ async function startAgentsSdkSession(config, options = {}) {
         name: t.name,
         description: t.description || "",
         parameters: t.parameters || { type: "object", properties: {} },
-        needsApproval() {
-          return false;
-        },
-        requiresApproval() {
+        // SDK calls: await tool.needsApproval(context, parsedArgs, callId)
+        async needsApproval() {
           return false;
         },
         execute: executeTool,
@@ -639,6 +643,8 @@ async function startAgentsSdkSession(config, options = {}) {
     model,
     config: {
       outputModalities: ["text", "audio"],
+      // Explicitly set toolChoice so the model proactively uses tools when appropriate.
+      toolChoice: "auto",
       audio: {
         input: {
           format: "pcm16",
@@ -693,15 +699,27 @@ async function startAgentsSdkSession(config, options = {}) {
     emit("interrupt", {});
   });
 
-  session.on("speech_started", () => {
-    _sdkTraceBeginTurn("turn_start", { reason: "speech_started" });
-    maybeAutoInterruptSdkResponse("speech-started");
-    emit("speech-started", {});
+  // The SDK emits raw API events via "transport_event" — use it to detect user speech.
+  // "speech_started" is NOT a session-level event in @openai/agents SDK.
+  session.on("transport_event", (event) => {
+    const eventType = event?.type || "";
+    if (eventType === "input_audio_buffer.speech_started") {
+      _sdkTraceBeginTurn("turn_start", { reason: "speech_started" });
+      maybeAutoInterruptSdkResponse("speech-started");
+      emit("speech-started", {});
+    }
   });
 
-  session.on("tool_call_start", (event) => {
-    const callId = event?.callId || event?.call_id || `tc-${Date.now()}`;
-    const name = event?.name || event?.toolName || "unknown";
+  // ── Tool call events ──
+  // The @openai/agents SDK emits "agent_tool_start" and "agent_tool_end"
+  // (NOT "tool_call_start"/"tool_call_done"/"tool_call_error").
+  // Signature: (context, agent, tool, { toolCall }) for start,
+  //            (context, agent, tool, result, { toolCall }) for end.
+  session.on("agent_tool_start", (_ctx, _agent, tool, details) => {
+    const toolCall = details?.toolCall || {};
+    const callId = toolCall?.callId || toolCall?.call_id || `tc-${Date.now()}`;
+    const name = tool?.name || toolCall?.name || "unknown";
+    console.info(`[voice-client-sdk] tool call started: ${name} (${callId})`);
     sdkVoiceToolCalls.value = [
       ...sdkVoiceToolCalls.value,
       { callId, name, status: "running" },
@@ -710,8 +728,13 @@ async function startAgentsSdkSession(config, options = {}) {
     emit("tool-call-start", { callId, name });
   });
 
-  session.on("tool_call_done", (event) => {
-    const callId = event?.callId || event?.call_id;
+  session.on("agent_tool_end", (_ctx, _agent, tool, result, details) => {
+    const toolCall = details?.toolCall || {};
+    const callId = toolCall?.callId || toolCall?.call_id;
+    const resultPreview = typeof result === "string"
+      ? result.slice(0, 120) + (result.length > 120 ? "..." : "")
+      : "(non-string result)";
+    console.info(`[voice-client-sdk] tool call done: ${tool?.name} (${callId}) → ${resultPreview}`);
     sdkVoiceToolCalls.value = sdkVoiceToolCalls.value.map((tc) =>
       tc.callId === callId ? { ...tc, status: "complete" } : tc
     );
@@ -723,26 +746,30 @@ async function startAgentsSdkSession(config, options = {}) {
     if (!stillRunning) {
       _markToolCompletionPending();
     }
-    emit("tool-call-complete", { callId });
-  });
-
-  session.on("tool_call_error", (event) => {
-    const callId = event?.callId || event?.call_id;
-    const errMsg = String(event?.error?.message || event?.message || "Tool failed");
-    sdkVoiceToolCalls.value = sdkVoiceToolCalls.value.map((tc) =>
-      tc.callId === callId ? { ...tc, status: "error", error: errMsg } : tc
-    );
-    const stillRunning = sdkVoiceToolCalls.value.some((tc) => tc.status === "running");
-    if (!stillRunning && sdkVoiceState.value === "thinking") {
-      sdkVoiceState.value = "listening";
-    }
-    emit("tool-call-error", { callId, error: errMsg });
+    emit("tool-call-complete", { callId, name: tool?.name, result });
   });
 
   session.on("error", (err) => {
     const message = getSdkErrorMessage(err);
     if (isNonFatalSdkSessionError(err)) {
       console.warn("[voice-client-sdk] transient session warning:", message);
+      return;
+    }
+    // If we have running tool calls and get an error, mark them as failed.
+    // The SDK throws errors from tool invocation into the session error stream.
+    const runningTools = sdkVoiceToolCalls.value.filter((tc) => tc.status === "running");
+    if (runningTools.length > 0 && /tool|function/i.test(message)) {
+      sdkVoiceToolCalls.value = sdkVoiceToolCalls.value.map((tc) =>
+        tc.status === "running" ? { ...tc, status: "error", error: message } : tc
+      );
+      const stillRunning = sdkVoiceToolCalls.value.some((tc) => tc.status === "running");
+      if (!stillRunning && sdkVoiceState.value === "thinking") {
+        sdkVoiceState.value = "listening";
+      }
+      for (const tc of runningTools) {
+        emit("tool-call-error", { callId: tc.callId, name: tc.name, error: message });
+      }
+      // Don't propagate tool errors as fatal session errors
       return;
     }
     const currentState = String(sdkVoiceState.value || "").toLowerCase();
@@ -770,8 +797,10 @@ async function startAgentsSdkSession(config, options = {}) {
     connectOpts.url = explicitRealtimeUrl;
   } else if (tokenData.provider === "azure" && tokenData.azureEndpoint) {
     const endpoint = String(tokenData.azureEndpoint).replace(/\/+$/, "");
-    const deployment = tokenData.azureDeployment || "gpt-realtime-1.5";
-    connectOpts.url = `${endpoint}/openai/realtime?api-version=2025-04-01-preview&deployment=${deployment}`;
+    const deployment = String(tokenData.azureDeployment || tokenData.model || "gpt-realtime-1.5").trim();
+    connectOpts.url = isAzureGaRealtimeDeployment(deployment)
+      ? `${endpoint}/openai/v1/realtime?model=${encodeURIComponent(deployment)}`
+      : `${endpoint}/openai/realtime?api-version=2025-04-01-preview&deployment=${encodeURIComponent(deployment)}`;
   } else if (tokenData.provider === "openai") {
     const model = String(tokenData.model || resolvedConfig.model || "gpt-realtime-1.5").trim();
     connectOpts.url = `https://api.openai.com/v1/realtime?model=${encodeURIComponent(model)}`;
@@ -789,20 +818,30 @@ async function startAgentsSdkSession(config, options = {}) {
     // ignore URL logging issues
   }
 
-  // Attempt WebRTC connection first. For Azure, if it fails (404 — WebRTC not
-  // supported), retry with the WebSocket URL so the SDK uses WS transport.
+  // Attempt WebRTC connection first. For Azure 404 failures, signal legacy
+  // fallback so voice-client.js can use native browser WebSocket transport.
   // Wrap getUserMedia during connect so we can always stop SDK-owned mic tracks
   // on teardown, even if the SDK keeps hidden stream references.
   await _withGetUserMediaCapture(async () => {
+    const connectUrl = String(connectOpts.url || "").trim();
+    if (/^wss:/i.test(connectUrl)) {
+      const fallbackErr = new Error("Azure SDK connect requires WebRTC URL; fallback to legacy websocket transport");
+      fallbackErr.code = "AZURE_SDK_WSS_URL_UNSUPPORTED";
+      fallbackErr.fallbackToLegacy = true;
+      throw fallbackErr;
+    }
+
     try {
       await session.connect(connectOpts);
     } catch (connectErr) {
       const errMsg = String(connectErr?.message || "");
       const isWebRtc404 = /404|not found|SDP/i.test(errMsg);
-      const hasWsUrl = Boolean(String(tokenData?.wsUrl || "").trim());
-      if (isWebRtc404 && hasWsUrl && tokenData.provider === "azure") {
-        console.warn("[voice-client-sdk] WebRTC connect failed (404) — retrying via Azure WebSocket");
-        await session.connect({ ...connectOpts, url: tokenData.wsUrl });
+      if (tokenData.provider === "azure" && isWebRtc404) {
+        const fallbackErr = new Error("Azure WebRTC unavailable (404); fallback to legacy websocket transport");
+        fallbackErr.code = "AZURE_WEBRTC_404_FALLBACK";
+        fallbackErr.fallbackToLegacy = true;
+        fallbackErr.cause = connectErr;
+        throw fallbackErr;
       } else {
         throw connectErr;
       }
@@ -1286,6 +1325,9 @@ export async function startSdkVoiceSession(options = {}) {
       /SDK module unavailable in browser/i.test(reason) ||
       /Failed to resolve module specifier '@openai\/agents\/realtime'/i.test(reason) ||
       /Cannot find module '@openai\/agents\/realtime'/i.test(reason);
+    const expectedAzureFallback =
+      err?.code === "AZURE_WEBRTC_404_FALLBACK"
+      || err?.code === "AZURE_SDK_WSS_URL_UNSUPPORTED";
     if (expectedModuleMissing) {
       if (!_sdkModuleUnavailableLogged) {
         console.warn(
@@ -1293,6 +1335,8 @@ export async function startSdkVoiceSession(options = {}) {
         );
         _sdkModuleUnavailableLogged = true;
       }
+    } else if (expectedAzureFallback) {
+      console.warn("[voice-client-sdk] Azure SDK WebRTC unavailable; using legacy voice websocket transport.");
     } else {
       console.error("[voice-client-sdk] SDK session failed, signaling fallback:", err);
     }
@@ -1388,16 +1432,19 @@ export function stopSdkVoiceSession() {
  */
 export function interruptSdkResponse() {
   if (_session) {
-    if (_traceTurnActive) {
-      if (typeof _session.interrupt === "function") {
-        // @openai/agents SDK
-        _session.interrupt();
-      } else if (_session.readyState === WebSocket.OPEN) {
-        // Gemini WebSocket
-        _session.send(JSON.stringify({ type: "response.cancel" }));
-      }
+    // Always attempt to interrupt — don't gate on _traceTurnActive because
+    // the agent may be speaking audio even when turn tracking wasn't started.
+    if (typeof _session.interrupt === "function") {
+      // @openai/agents SDK
+      try { _session.interrupt(); } catch { /* best effort */ }
+    } else if (typeof _session.cancelResponse === "function") {
+      try { _session.cancelResponse(); } catch { /* best effort */ }
+    } else if (_session.readyState === WebSocket.OPEN) {
+      // Gemini WebSocket
+      _session.send(JSON.stringify({ type: "response.cancel" }));
     }
     _sdkTraceInterrupt("interrupt", { reason: "interruptSdkResponse" });
+    sdkVoiceState.value = "listening";
     emit("interrupt", {});
   }
 }

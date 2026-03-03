@@ -8,7 +8,7 @@ describe("voice tool capability injection regressions", () => {
     expect(source).toContain("buildVoiceToolCapabilityPrompt");
     expect(source).toContain("voiceToolCapabilityPrompt: capabilityPrompt");
     expect(source).toContain("tokenData.instructions = [voiceCfg.instructions || \"\", capabilityPrompt]");
-    expect(source).toContain("Enabled runtime tools JSON (name + input schema):");
+    expect(source).toContain("Available tools JSON (name + input schema):");
   });
 
   it("keeps voice built-in tool id mapping aligned to runtime tools", () => {

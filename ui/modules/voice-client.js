@@ -258,6 +258,10 @@ const ENABLE_USER_TRANSCRIPT = false;
 let _reconnectAttempts = 0;
 let _pendingResponseCreateTimer = null;
 let _awaitingAutoResponse = false;
+// When WebRTC returns 404 and we fall back to WebSocket, remember that so
+// reconnects skip the WebRTC SDP exchange and go straight to WebSocket.
+let _webrtcUnavailableForProvider = false;
+let _lastTokenData = null; // cached tokenData for reconnect short-circuiting
 const SpeechRecognition = typeof globalThis !== "undefined"
   ? (globalThis.SpeechRecognition || globalThis.webkitSpeechRecognition)
   : null;
@@ -1082,6 +1086,7 @@ export async function startVoiceSession(options = {}) {
       throw new Error(err.error || `Token fetch failed (${tokenRes.status})`);
     }
     const tokenData = await tokenRes.json();
+    _lastTokenData = tokenData;
     if (_isResponsesAudioTransport(tokenData)) {
       await _startResponsesAudioSession(tokenData);
       emit("session-started", {
@@ -1091,6 +1096,46 @@ export async function startVoiceSession(options = {}) {
       });
       return;
     }
+
+    // If WebRTC was previously unavailable (404) and we have a WebSocket URL,
+    // skip the WebRTC SDP exchange entirely and go straight to WebSocket.
+    // This avoids redundant 404 errors on every reconnect.
+    if (_webrtcUnavailableForProvider && tokenData.wsUrl) {
+      console.info("[voice-client] Skipping WebRTC (previously unavailable) — using WebSocket directly");
+      // Still need mic
+      const mediaDevices = navigator?.mediaDevices;
+      if (!mediaDevices?.getUserMedia) {
+        throw new Error("Microphone API unavailable in this browser/runtime.");
+      }
+      _mediaStream = await navigator.mediaDevices.getUserMedia({
+        audio: {
+          deviceId: selectedAudioInput.value ? { exact: selectedAudioInput.value } : undefined,
+          echoCancellation: audioSettings.value.echoCancellation,
+          noiseSuppression: audioSettings.value.noiseSuppression,
+          autoGainControl: audioSettings.value.autoGainControl,
+          sampleRate: audioSettings.value.sampleRate,
+        },
+      });
+      registerMicStream(_mediaStream);
+      if (_explicitStop) {
+        for (const track of _mediaStream.getTracks()) {
+          try { track.stop(); } catch { /* ignore */ }
+        }
+        _mediaStream = null;
+        throw new Error("voice session was stopped during microphone acquisition");
+      }
+      await enumerateAudioDevices();
+      _startMicLevelMonitor(_mediaStream);
+      await _startWebSocketTransport(tokenData, _mediaStream);
+      startReconnectTimer();
+      emit("session-started", {
+        sessionId: voiceSessionId.value,
+        callContext: { ..._callContext },
+        transport: "websocket",
+      });
+      return;
+    }
+
     _transport = "webrtc";
 
     // 2. Get microphone
@@ -1240,6 +1285,7 @@ export async function startVoiceSession(options = {}) {
         if (sdpResponse.status === 404 && tokenData.wsUrl) {
           console.warn("[voice-client] WebRTC SDP 404 — falling back to Azure WebSocket transport");
           webrtcFailed = true;
+          _webrtcUnavailableForProvider = true;
         } else {
           throw new Error(`WebRTC SDP exchange failed (${sdpResponse.status})${detail}`);
         }
@@ -1302,6 +1348,8 @@ export function stopVoiceSession() {
   voiceSessionId.value = null;
   voiceBoundSessionId.value = null;
   voiceDuration.value = 0;
+  _webrtcUnavailableForProvider = false;
+  _lastTokenData = null;
   _callContext = {
     sessionId: null,
     executor: null,
@@ -1691,9 +1739,9 @@ export function interruptResponse() {
   }
   // WebSocket transport: cancel response and clear playback queue
   if (_transport === "websocket") {
-    if (_traceTurnActive) {
-      _sendWsEvent({ type: "response.cancel" });
-    }
+    // Always send response.cancel when WebSocket is open — even if no turn
+    // is tracked, the server may still be streaming audio.
+    _sendWsEvent({ type: "response.cancel" });
     _wsPlaybackQueue = [];
     _wsPlaybackPlaying = false;
     voiceState.value = "listening";
@@ -1702,9 +1750,8 @@ export function interruptResponse() {
     return;
   }
   if (_dc && _dc.readyState === "open") {
-    if (_traceTurnActive) {
-      _dc.send(JSON.stringify({ type: "response.cancel" }));
-    }
+    // Always send response.cancel for WebRTC — don't gate on _traceTurnActive
+    _dc.send(JSON.stringify({ type: "response.cancel" }));
     if (_audioElement) {
       try { _audioElement.volume = 1; } catch { /* ignore */ }
     }
