@@ -301,6 +301,24 @@ export function createExecSandbox(scenario = {}) {
 
   function dispatchNode(c) {
     // Inline node -e scripts (worktree count etc.)
+    if (/workflow-orphan-worktree-recovery\\.mjs/i.test(c)) {
+      return JSON.stringify({
+        success: true,
+        scanned: 1,
+        recovered: 1,
+        skipped: 0,
+        failed: 0,
+        items: [
+          {
+            taskId: "TASK-1",
+            branch: "ve/task-1-fix",
+            prUrl: "https://github.com/virtengine/bosun/pull/999",
+            prNumber: 999,
+          },
+        ],
+        errors: [],
+      });
+    }
     if (/worktree list/.test(c))  return "1\n";
     if (/worktree prune/.test(c)) return "1\n";
     return "0\n";

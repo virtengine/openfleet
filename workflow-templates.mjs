@@ -10,7 +10,7 @@
  *   workflow-templates/agents.mjs     — Frontend Agent, Review Agent, Custom Agent, Session Monitor, Backend Agent, Meeting Orchestrator + Subworkflow Chain
  *   workflow-templates/planning.mjs   — Task Planner, Task Replenish, Nightly Report, Sprint Retrospective
  *   workflow-templates/ci-cd.mjs      — Build & Deploy, Release Pipeline, Canary Deploy
- *   workflow-templates/reliability.mjs — Error Recovery, Anomaly Watchdog, Workspace Hygiene, Health Check, Task Finalization Guard, Task Repair Worktree, Incident Response, Task Archiver, Sync Engine
+ *   workflow-templates/reliability.mjs — Error Recovery, Anomaly Watchdog, Workspace Hygiene, Health Check, Task Finalization Guard, Task Repair Worktree, Task Orphan Worktree Recovery, Incident Response, Task Archiver, Sync Engine
  *   workflow-templates/security.mjs   — Dependency Audit, Secret Scanner
  *
  * To add a new template:
@@ -82,6 +82,7 @@ import {
   HEALTH_CHECK_TEMPLATE,
   TASK_FINALIZATION_GUARD_TEMPLATE,
   TASK_REPAIR_WORKTREE_TEMPLATE,
+  TASK_ORPHAN_WORKTREE_RECOVERY_TEMPLATE,
   TASK_STATUS_TRANSITION_MANAGER_TEMPLATE,
   INCIDENT_RESPONSE_TEMPLATE,
   TASK_ARCHIVER_TEMPLATE,
@@ -142,6 +143,7 @@ export {
   HEALTH_CHECK_TEMPLATE,
   TASK_FINALIZATION_GUARD_TEMPLATE,
   TASK_REPAIR_WORKTREE_TEMPLATE,
+  TASK_ORPHAN_WORKTREE_RECOVERY_TEMPLATE,
   TASK_STATUS_TRANSITION_MANAGER_TEMPLATE,
   INCIDENT_RESPONSE_TEMPLATE,
   TASK_ARCHIVER_TEMPLATE,
@@ -206,6 +208,7 @@ export const WORKFLOW_TEMPLATES = Object.freeze([
   HEALTH_CHECK_TEMPLATE,
   TASK_FINALIZATION_GUARD_TEMPLATE,
   TASK_REPAIR_WORKTREE_TEMPLATE,
+  TASK_ORPHAN_WORKTREE_RECOVERY_TEMPLATE,
   TASK_STATUS_TRANSITION_MANAGER_TEMPLATE,
   INCIDENT_RESPONSE_TEMPLATE,
   TASK_ARCHIVER_TEMPLATE,

@@ -225,6 +225,7 @@ function injectOverlayStyles() {
   bottom: 0; left: 0; right: 0;
   display: flex;
   align-items: center;
+  gap: 10px;
   padding: 0 20px 20px;
   min-height: 88px;
   background: linear-gradient(to top, rgba(0,0,0,0.65) 0%, transparent 100%);
@@ -235,6 +236,7 @@ function injectOverlayStyles() {
   align-items: center;
   gap: 4px;
   flex: 1;
+  min-width: 0;
 }
 .vm-bar-group.center { justify-content: center; gap: 8px; }
 .vm-bar-group.right { justify-content: flex-end; }
@@ -245,6 +247,9 @@ function injectOverlayStyles() {
   flex-direction: column;
   align-items: center;
   gap: 5px;
+}
+.vm-menu-anchor {
+  position: relative;
 }
 .vm-btn {
   width: 48px;
@@ -271,6 +276,19 @@ function injectOverlayStyles() {
   font-size: 10px; color: rgba(255,255,255,0.65);
   user-select: none; white-space: nowrap;
 }
+.vm-duration-chip {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 12px;
+  color: rgba(255,255,255,0.78);
+  font-variant-numeric: tabular-nums;
+  border-radius: 999px;
+  border: 1px solid rgba(255,255,255,0.18);
+  background: rgba(60,64,67,0.72);
+  padding: 6px 12px;
+  line-height: 1;
+}
 
 /* End-call pill — the red rounded rect like Meet */
 .vm-end-pill {
@@ -278,8 +296,10 @@ function injectOverlayStyles() {
   padding: 0 24px;
   border-radius: 999px;
   border: none;
+  appearance: none;
   background: #ea4335;
   color: #fff;
+  font-weight: 600;
   font-size: 22px;
   cursor: pointer;
   display: flex;
@@ -535,12 +555,158 @@ function injectOverlayStyles() {
   .vm-end-pill { height: 44px; padding: 0 18px; font-size: 20px; }
   .vm-bar { padding: 0 12px 16px; }
 }
+@media (max-width: 760px) {
+  .voice-overlay-main {
+    padding: 64px 10px 172px;
+    gap: 8px;
+  }
+  .vm-topbar {
+    padding: 12px 12px;
+  }
+  .vm-topbar-bound {
+    max-width: 36vw;
+  }
+  .vm-bar {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+    grid-template-areas:
+      "center center"
+      "left right";
+    align-items: end;
+    gap: 8px 12px;
+    padding: 8px 10px calc(10px + env(safe-area-inset-bottom));
+    min-height: 148px;
+    background: linear-gradient(to top, rgba(0,0,0,0.9) 0%, rgba(0,0,0,0.4) 66%, transparent 100%);
+    border-top: 1px solid rgba(255,255,255,0.08);
+    backdrop-filter: blur(14px);
+    -webkit-backdrop-filter: blur(14px);
+  }
+  .vm-bar-group {
+    flex: 0 0 auto;
+    width: 100%;
+    min-width: 0;
+  }
+  .vm-bar-group.left {
+    grid-area: left;
+    justify-content: flex-start;
+    gap: 10px;
+  }
+  .vm-bar-group.center {
+    grid-area: center;
+    justify-content: center;
+    gap: 10px;
+    background: rgba(32,33,36,0.72);
+    border: 1px solid rgba(255,255,255,0.14);
+    border-radius: 999px;
+    padding: 9px 8px;
+  }
+  .vm-bar-group.right {
+    grid-area: right;
+    justify-content: flex-end;
+    gap: 8px;
+  }
+  .vm-btn-wrap,
+  .vm-end-pill-wrap {
+    gap: 4px;
+    min-width: 50px;
+  }
+  .vm-btn {
+    width: 50px;
+    height: 50px;
+    font-size: 18px;
+    box-shadow: 0 6px 18px rgba(0,0,0,0.35);
+  }
+  .vm-btn.has-arrow {
+    border-radius: 25px 0 0 25px;
+  }
+  .vm-btn-arrow {
+    height: 50px;
+    width: 26px;
+    border-radius: 0 25px 25px 0;
+  }
+  .vm-end-pill {
+    height: 50px;
+    padding: 0 18px;
+    font-size: 20px;
+  }
+  .vm-btn-label,
+  .vm-end-pill-label {
+    font-size: 9px;
+    color: rgba(255,255,255,0.72);
+  }
+  .vm-duration-chip {
+    font-size: 11px;
+    padding: 5px 10px;
+  }
+  .vm-bar-device-chips {
+    display: none;
+  }
+  .vm-more-menu,
+  .vm-device-picker {
+    position: fixed !important;
+    left: 10px !important;
+    right: 10px !important;
+    top: auto !important;
+    bottom: calc(154px + env(safe-area-inset-bottom)) !important;
+    width: auto !important;
+    min-width: 0 !important;
+    max-width: none !important;
+    max-height: 56vh;
+    transform: none !important;
+    overflow-y: auto;
+  }
+}
 @media (max-width: 580px) {
-  .vm-btn-label { display: none; }
-  .vm-end-pill-label { display: none; }
-  .vm-bar { padding: 0 8px 14px; }
-  .vm-btn { width: 40px; height: 40px; font-size: 16px; }
-  .vm-end-pill { height: 40px; padding: 0 14px; font-size: 18px; }
+  .voice-overlay-main {
+    padding: 60px 8px 166px;
+  }
+  .vm-topbar {
+    padding: 10px 10px;
+  }
+  .vm-topbar-back-text,
+  .vm-topbar-bound {
+    display: none;
+  }
+  .vm-btn-label,
+  .vm-end-pill-label {
+    display: none;
+  }
+  .vm-btn-wrap,
+  .vm-end-pill-wrap {
+    min-width: 44px;
+  }
+  .vm-btn {
+    width: 44px;
+    height: 44px;
+    font-size: 16px;
+  }
+  .vm-btn.has-arrow {
+    border-radius: 22px 0 0 22px;
+  }
+  .vm-btn-arrow {
+    width: 22px;
+    height: 44px;
+    border-radius: 0 22px 22px 0;
+  }
+  .vm-end-pill {
+    height: 44px;
+    padding: 0 14px;
+    font-size: 18px;
+  }
+  .vm-bar-group.left {
+    gap: 8px;
+  }
+  .vm-bar-group.center {
+    gap: 8px;
+    padding: 8px 6px;
+  }
+  .vm-bar-group.right {
+    gap: 6px;
+  }
+  .vm-more-menu,
+  .vm-device-picker {
+    bottom: calc(146px + env(safe-area-inset-bottom)) !important;
+  }
 }
 
 /* ── Compact / follow-feed mode ───────────────────────────────────── */
@@ -593,8 +759,8 @@ function injectOverlayStyles() {
   overflow-y: auto;
 }
 @keyframes vmPickerSlideUp {
-  from { opacity: 0; transform: translateX(-50%) translateY(8px); }
-  to { opacity: 1; transform: translateX(-50%) translateY(0); }
+  from { opacity: 0; }
+  to { opacity: 1; }
 }
 .vm-device-picker-section {
   padding: 6px 0;
@@ -776,7 +942,8 @@ function injectOverlayStyles() {
   position: absolute;
   bottom: calc(100% + 8px);
   right: 0;
-  min-width: 260px;
+  min-width: 220px;
+  max-width: min(360px, calc(100vw - 20px));
   background: #2d2e30;
   border: 1px solid rgba(255,255,255,0.14);
   border-radius: 12px;
@@ -785,6 +952,19 @@ function injectOverlayStyles() {
   overflow: hidden;
   animation: vmPickerSlideUp 0.18s ease;
   padding: 6px 0;
+}
+.vm-more-menu-align-left {
+  left: 0;
+  right: auto;
+}
+.vm-more-menu-align-right {
+  left: auto;
+  right: 0;
+}
+.vm-more-menu-align-center {
+  left: 50%;
+  right: auto;
+  transform: translateX(-50%);
 }
 .vm-more-item {
   display: flex;
@@ -2302,15 +2482,16 @@ export function VoiceOverlay({
         <div class="vm-bar">
           <!-- Left: three-dot menu + duration -->
           <div class="vm-bar-group left">
-            <div class="vm-btn-wrap" style="position:relative">
+            <div class="vm-btn-wrap vm-menu-anchor">
               <${IconButton}
                 size="small"
+                class="vm-btn"
                 onClick=${(e) => { e.stopPropagation(); setShowMoreMenu(p => !p); setShowMicPicker(false); setShowSpeakerPicker(false); setShowPeoplePanel(false); }}
                 title="More options"
               >⋯<//>
               <span class="vm-btn-label">More</span>
               ${showMoreMenu && html`
-                <div class="vm-more-menu" onClick=${(e) => e.stopPropagation()}>
+                <div class="vm-more-menu vm-more-menu-align-left" onClick=${(e) => e.stopPropagation()}>
                   <${MenuItem} onClick=${() => { setShowSettings(true); setShowMoreMenu(false); }}>
                     <span class="vm-more-icon">⚙️</span> Settings
                   <//>
@@ -2339,7 +2520,7 @@ export function VoiceOverlay({
               `}
             </div>
             ${duration > 0 && html`
-              <span style="font-size:13px;color:rgba(255,255,255,0.7);font-variant-numeric:tabular-nums;margin-left:8px">
+              <span class="vm-duration-chip">
                 ${formatDuration(duration)}
               </span>
             `}
@@ -2447,9 +2628,9 @@ export function VoiceOverlay({
 
             <!-- End call pill -->
             <div class="vm-end-pill-wrap">
-              <${Button} variant="contained" color="error" size="small" onClick=${handleClose} title="End call">
+              <button type="button" class="vm-end-pill" onClick=${handleClose} title="End call" aria-label="End call">
                 📵
-              <//>
+              </button>
               <span class="vm-end-pill-label">End call</span>
             </div>
           </div>
@@ -2470,7 +2651,7 @@ export function VoiceOverlay({
                 <span class="vm-btn-label">Chat</span>
               </div>
             `}
-            <div class="vm-btn-wrap" style="position:relative">
+            <div class="vm-btn-wrap vm-menu-anchor">
               <${IconButton}
                 size="small"
                 class=${`vm-btn${showPeoplePanel ? " active" : ""}`}
@@ -2481,7 +2662,7 @@ export function VoiceOverlay({
               <//>
               <span class="vm-btn-label">People</span>
               ${showPeoplePanel && html`
-                <div class="vm-more-menu" style="bottom:calc(100% + 10px);left:50%;transform:translateX(-50%);min-width:220px" onClick=${(e) => e.stopPropagation()}>
+                <div class="vm-more-menu vm-more-menu-align-right" onClick=${(e) => e.stopPropagation()}>
                   <div style="padding:10px 14px 6px;font-size:12px;color:rgba(255,255,255,0.5);font-weight:600;letter-spacing:0.04em">PARTICIPANTS</div>
                   <div class="vm-more-item" style="cursor:default;opacity:0.9">
                     <span class="vm-more-icon">🧑</span> You
@@ -2518,7 +2699,7 @@ export function VoiceOverlay({
               `}
             </div>
             <div class="vm-btn-wrap">
-              <${IconButton} size="small" onClick=${() => setShowSettings(true)} title="Settings">
+              <${IconButton} size="small" class="vm-btn" onClick=${() => setShowSettings(true)} title="Settings">
                 ⚙️
               <//>
               <span class="vm-btn-label">Settings</span>

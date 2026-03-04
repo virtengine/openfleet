@@ -152,6 +152,9 @@ export const TASK_LIFECYCLE_TEMPLATE = {
       worktreePath: "{{worktreePath}}",
       repoRoot: "{{repoRoot}}",
       repoSlug: "{{repoSlug}}",
+      workspace: "{{workspace}}",
+      repository: "{{repository}}",
+      repositories: "{{repositories}}",
     }, { x: 200, y: 1350 }),
 
     // ── Execute agent ────────────────────────────────────────────────────
@@ -472,6 +475,9 @@ export const VE_ORCHESTRATOR_LITE_TEMPLATE = {
       taskDescription: "{{taskDescription}}",
       worktreePath: "{{worktreePath}}",
       repoRoot: "{{repoRoot}}",
+      workspace: "{{workspace}}",
+      repository: "{{repository}}",
+      repositories: "{{repositories}}",
     }, { x: 300, y: 1220 }),
 
     // ── Run agent ────────────────────────────────────────────────────────

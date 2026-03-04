@@ -1710,8 +1710,8 @@ describe("Session chaining - action.run_agent", () => {
     const repoDir = mkdtempSync(join(tmpdir(), "wf-agent-candidates-"));
     try {
       execSync("git init", { cwd: repoDir, stdio: "ignore" });
-      execSync('git config user.email "bot@example.com"', { cwd: repoDir, stdio: "ignore" });
-      execSync('git config user.name "Bosun Bot"', { cwd: repoDir, stdio: "ignore" });
+      execSync('git config --local user.email "bot@example.com"', { cwd: repoDir, stdio: "ignore" });
+      execSync('git config --local user.name "Bosun Bot"', { cwd: repoDir, stdio: "ignore" });
       writeFileSync(join(repoDir, "README.md"), "base\n", "utf8");
       execSync("git add README.md", { cwd: repoDir, stdio: "ignore" });
       execSync('git commit -m "base"', { cwd: repoDir, stdio: "ignore" });

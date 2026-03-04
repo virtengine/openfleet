@@ -313,6 +313,47 @@ describe("action.build_task_prompt", () => {
     // Should have autonomous agent instructions
     expect(result.prompt).toContain("commit");
   });
+
+  it("renders workspace scope contract from explicit repo metadata", async () => {
+    const nt = getNodeType("action.build_task_prompt");
+    const ctx = makeCtx({});
+    const node = makeNode("action.build_task_prompt", {
+      taskId: "T3",
+      taskTitle: "Repo boundaries",
+      taskDescription: "Respect scoped repos",
+      worktreePath: "/tmp/wt-repo",
+      workspace: "virtengine-gh",
+      repository: "virtengine/bosun",
+      repositories: ["virtengine/bosun", "virtengine/virtengine"],
+    });
+    const result = await nt.execute(node, ctx);
+    expect(result.prompt).toContain("## Workspace Scope Contract");
+    expect(result.prompt).toContain("**Workspace:** virtengine-gh");
+    expect(result.prompt).toContain("**Primary Repository:** virtengine/bosun");
+    expect(result.prompt).toContain("virtengine/virtengine");
+    expect(result.prompt).toContain("blocked: cross-repo dependency");
+  });
+
+  it("falls back to task payload scope metadata when config is not provided", async () => {
+    const nt = getNodeType("action.build_task_prompt");
+    const ctx = makeCtx({
+      task: {
+        workspace: "workspace-a",
+        repository: "org/primary",
+        repositories: ["org/primary", "org/shared-lib"],
+      },
+    });
+    const node = makeNode("action.build_task_prompt", {
+      taskId: "T4",
+      taskTitle: "Fallback scope",
+      taskDescription: "Use task payload scope",
+      worktreePath: "/tmp/wt-fallback",
+    });
+    const result = await nt.execute(node, ctx);
+    expect(result.prompt).toContain("**Workspace:** workspace-a");
+    expect(result.prompt).toContain("**Primary Repository:** org/primary");
+    expect(result.prompt).toContain("org/shared-lib");
+  });
 });
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -325,8 +366,8 @@ describe("action.detect_new_commits", () => {
   beforeEach(() => {
     gitDir = mkdtempSync(join(tmpdir(), "wf-detect-commits-"));
     execSync("git init", { cwd: gitDir, stdio: "ignore" });
-    execSync("git config user.email test@test.com", { cwd: gitDir, stdio: "ignore" });
-    execSync("git config user.name Test", { cwd: gitDir, stdio: "ignore" });
+    execSync("git config --local user.email test@test.com", { cwd: gitDir, stdio: "ignore" });
+    execSync("git config --local user.name Test", { cwd: gitDir, stdio: "ignore" });
     writeFileSync(join(gitDir, "README.md"), "init");
     execSync("git add . && git commit -m init", { cwd: gitDir, stdio: "ignore" });
   });
@@ -589,6 +630,15 @@ describe("template-task-lifecycle", () => {
     expect(edge).toBeDefined();
   });
 
+  it("passes repository scope metadata into build-prompt node", () => {
+    const t = getTemplate("template-task-lifecycle");
+    const buildPrompt = t.nodes.find((n) => n.id === "build-prompt");
+    expect(buildPrompt).toBeDefined();
+    expect(buildPrompt.config.workspace).toBe("{{workspace}}");
+    expect(buildPrompt.config.repository).toBe("{{repository}}");
+    expect(buildPrompt.config.repositories).toBe("{{repositories}}");
+  });
+
   it("all outcome paths converge to release-worktree → release-claim → release-slot", () => {
     const t = getTemplate("template-task-lifecycle");
     // outcomes → join-outcomes
@@ -727,6 +777,15 @@ describe("template-ve-orchestrator-lite", () => {
     const t = getTemplate("template-ve-orchestrator-lite");
     const ids = t.nodes.map((n) => n.id);
     expect(ids).toContain("record-head");
+  });
+
+  it("passes repository scope metadata into prompt node", () => {
+    const t = getTemplate("template-ve-orchestrator-lite");
+    const promptNode = t.nodes.find((n) => n.id === "prompt");
+    expect(promptNode).toBeDefined();
+    expect(promptNode.config.workspace).toBe("{{workspace}}");
+    expect(promptNode.config.repository).toBe("{{repository}}");
+    expect(promptNode.config.repositories).toBe("{{repositories}}");
   });
 
   it("all edges reference valid node IDs", () => {

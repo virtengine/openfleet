@@ -298,6 +298,7 @@ export const TEMPLATE_FIXTURES = {
   "template-health-check":                { scenario: scenarios.greenPR(93),      inputVars: {} },
   "template-task-finalization-guard":     { scenario: scenarios.greenPR(95),      inputVars: { taskId: "TASK-5", prNumber: 95, worktreePath: "/tmp/wt/task-5", branch: "feat/task-5", baseBranch: "main" } },
   "template-task-repair-worktree":        { scenario: scenarios.greenPR(96),      inputVars: { taskId: "TASK-6", worktreePath: "/tmp/wt/task-6", branch: "feat/task-6" } },
+  "template-task-orphan-worktree-recovery": { scenario: scenarios.greenPR(96),    inputVars: { repoRoot: "/workspace", baseBranch: "origin/main", maxRecoverPerSweep: 5 } },
   "template-task-status-transition-manager": { scenario: scenarios.kanbanState(), inputVars: { taskId: "TASK-1", toStatus: "inprogress" } },
   "template-incident-response":           { scenario: scenarios.greenPR(97),      inputVars: { incidentId: "INC-001", severity: "high" } },
   "template-task-archiver":               { scenario: scenarios.kanbanState(),     inputVars: {} },

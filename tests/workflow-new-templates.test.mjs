@@ -345,6 +345,42 @@ describe("template-sync-engine", () => {
 });
 
 // ═══════════════════════════════════════════════════════════════════════════
+//  Task Orphan Worktree Recovery Template
+// ═══════════════════════════════════════════════════════════════════════════
+
+describe("template-task-orphan-worktree-recovery", () => {
+  beforeEach(() => { makeTmpEngine(); });
+  afterEach(() => {
+    try { rmSync(tmpDir, { recursive: true, force: true }); } catch { /* ok */ }
+  });
+
+  it("exists and has workflow-owned replacement metadata", () => {
+    const t = getTemplate("template-task-orphan-worktree-recovery");
+    expect(t).toBeDefined();
+    expect(t.name).toBe("Task Orphan Worktree Recovery");
+    expect(t.category).toBe("reliability");
+    expect(t.trigger).toBe("trigger.schedule");
+    expect(t.metadata?.replaces?.module).toBe("task-executor.mjs");
+    expect(t.metadata?.replaces?.functions).toContain("_recoverOrphanedWorktrees");
+  });
+
+  it("runs recovery command via tools/workflow-orphan-worktree-recovery.mjs", () => {
+    const t = getTemplate("template-task-orphan-worktree-recovery");
+    const recoverNode = t.nodes.find((n) => n.id === "recover");
+    expect(recoverNode).toBeDefined();
+    expect(recoverNode.type).toBe("action.run_command");
+    expect(recoverNode.config.command).toContain("tools/workflow-orphan-worktree-recovery.mjs");
+  });
+
+  it("installs and round-trips through engine", () => {
+    const result = installTemplate("template-task-orphan-worktree-recovery", engine);
+    expect(result.metadata.installedFrom).toBe("template-task-orphan-worktree-recovery");
+    const stored = engine.get(result.id);
+    expect(stored.name).toBe("Task Orphan Worktree Recovery");
+  });
+});
+
+// ═══════════════════════════════════════════════════════════════════════════
 //  Workflow Chaining Tests
 // ═══════════════════════════════════════════════════════════════════════════
 

@@ -1,6 +1,6 @@
 import { execSync, spawn, spawnSync } from "node:child_process";
 import * as nodeCrypto from "node:crypto";
-import { existsSync, mkdirSync, readFileSync, chmodSync, createWriteStream, createReadStream, writeFileSync, unlinkSync, watchFile, unwatchFile } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, chmodSync, createWriteStream, createReadStream, writeFileSync, unlinkSync, watchFile, unwatchFile, readdirSync } from "node:fs";
 import { open, readFile, readdir, stat, writeFile } from "node:fs/promises";
 import { createServer } from "node:http";
 import { get as httpsGet } from "node:https";
@@ -71,6 +71,7 @@ import {
   loadManifest,
   getManifestPath,
   scaffoldAgentProfiles,
+  getBosunHomeDir,
 } from "./library-manager.mjs";
 import {
   listCatalog,
@@ -320,20 +321,174 @@ function ensureLibraryInitialized(rootDir = repoRoot) {
   try {
     const manifestPath = getManifestPath(normalizedRoot);
     const manifest = loadManifest(normalizedRoot);
+    let rebuilt = false;
     if (!existsSync(manifestPath) || !Array.isArray(manifest?.entries) || manifest.entries.length === 0) {
       const result = initLibrary(normalizedRoot);
       const count = result?.manifest?.entries?.length ?? 0;
       if (count > 0) {
         console.log(`[ui] Library initialized (${count} entries) at ${normalizedRoot}.`);
       }
+      rebuilt = true;
     }
-    const scaffoldResult = scaffoldAgentProfiles(normalizedRoot);
-    if (Array.isArray(scaffoldResult?.written) && scaffoldResult.written.length > 0) {
-      rebuildManifest(normalizedRoot);
+    if (!rebuilt) {
+      const scaffoldResult = scaffoldAgentProfiles(normalizedRoot);
+      if (Array.isArray(scaffoldResult?.written) && scaffoldResult.written.length > 0) {
+        rebuildManifest(normalizedRoot);
+        rebuilt = true;
+      }
+    }
+    if (!rebuilt) {
+      const latestManifest = loadManifest(normalizedRoot);
+      if (libraryManifestHasFilesystemDrift(normalizedRoot, latestManifest)) {
+        const rebuiltManifest = rebuildManifest(normalizedRoot);
+        const count = rebuiltManifest?.entries?.length ?? 0;
+        console.log(`[ui] Library manifest auto-synced (${count} entries) at ${normalizedRoot}.`);
+      }
     }
   } catch (err) {
     console.warn(`[ui] Library init failed for ${normalizedRoot}: ${err.message}`);
   }
+}
+
+const LIBRARY_FILE_LAYOUT = Object.freeze([
+  { type: "prompt", dir: ".bosun/agents", ext: ".md" },
+  { type: "skill", dir: ".bosun/skills", ext: ".md" },
+  { type: "agent", dir: ".bosun/profiles", ext: ".json" },
+  { type: "mcp", dir: ".bosun/mcp-servers", ext: ".json" },
+]);
+
+function listLibraryFilesByType(rootDir, relDir, ext) {
+  const dir = resolve(rootDir, relDir);
+  if (!existsSync(dir)) return [];
+  try {
+    return readdirSync(dir)
+      .filter((name) => typeof name === "string" && name.endsWith(ext));
+  } catch {
+    return [];
+  }
+}
+
+function libraryManifestHasFilesystemDrift(rootDir, manifest) {
+  const entries = Array.isArray(manifest?.entries) ? manifest.entries : [];
+  for (const layout of LIBRARY_FILE_LAYOUT) {
+    const manifestFiles = new Set(
+      entries
+        .filter((entry) => entry?.type === layout.type)
+        .map((entry) => String(entry?.filename || "").trim())
+        .filter(Boolean),
+    );
+    const diskFiles = listLibraryFilesByType(rootDir, layout.dir, layout.ext);
+    if (diskFiles.length !== manifestFiles.size) return true;
+    for (const name of diskFiles) {
+      if (!manifestFiles.has(name)) return true;
+    }
+  }
+  return false;
+}
+
+const LIBRARY_STORAGE_SCOPES = Object.freeze(["repo", "workspace", "global"]);
+
+function normalizeLibraryStorageScope(value, fallback = "repo") {
+  const raw = String(value || "").trim().toLowerCase();
+  if (LIBRARY_STORAGE_SCOPES.includes(raw)) return raw;
+  return fallback;
+}
+
+function resolveGlobalLibraryRootDir() {
+  const fromLibHome = normalizeCandidatePath(getBosunHomeDir());
+  if (fromLibHome) return fromLibHome;
+  const fromUiConfig = normalizeCandidatePath(resolveUiConfigDir());
+  if (fromUiConfig) return fromUiConfig;
+  return repoRoot;
+}
+
+function dedupeLibraryRoots(roots = []) {
+  const seen = new Set();
+  const deduped = [];
+  for (const rootInfo of roots) {
+    const rootDir = normalizeCandidatePath(rootInfo?.rootDir);
+    if (!rootDir || seen.has(rootDir)) continue;
+    seen.add(rootDir);
+    deduped.push({
+      scope: normalizeLibraryStorageScope(rootInfo?.scope, "repo"),
+      rootDir,
+    });
+  }
+  return deduped;
+}
+
+function resolveLibraryRootsForContext(workspaceContext = null) {
+  const repoLibraryRoot = normalizeCandidatePath(workspaceContext?.workspaceDir) || repoRoot;
+  const workspaceLibraryRoot = normalizeCandidatePath(workspaceContext?.workspaceRoot);
+  const globalLibraryRoot = resolveGlobalLibraryRootDir();
+  return dedupeLibraryRoots([
+    { scope: "repo", rootDir: repoLibraryRoot },
+    { scope: "workspace", rootDir: workspaceLibraryRoot },
+    { scope: "global", rootDir: globalLibraryRoot },
+  ]);
+}
+
+function ensureLibraryRootsInitialized(roots = []) {
+  for (const rootInfo of roots) {
+    ensureLibraryInitialized(rootInfo.rootDir);
+  }
+}
+
+function orderLibraryRootsForLookup(roots, preferredScope = "") {
+  const normalizedPreferred = normalizeLibraryStorageScope(preferredScope, "");
+  if (!normalizedPreferred) return roots;
+  const preferred = roots.find((rootInfo) => rootInfo.scope === normalizedPreferred);
+  if (!preferred) return roots;
+  return [preferred, ...roots.filter((rootInfo) => rootInfo !== preferred)];
+}
+
+function listLibraryEntriesAcrossRoots(workspaceContext, filters = {}) {
+  const roots = resolveLibraryRootsForContext(workspaceContext);
+  ensureLibraryRootsInitialized(roots);
+  const seenIds = new Set();
+  const entries = [];
+  for (const rootInfo of roots) {
+    const rootEntries = listEntries(rootInfo.rootDir, filters) || [];
+    for (const entry of rootEntries) {
+      const id = String(entry?.id || "").trim();
+      if (!id || seenIds.has(id)) continue;
+      seenIds.add(id);
+      entries.push({
+        entry,
+        rootInfo,
+      });
+    }
+  }
+  return { entries, roots };
+}
+
+function resolveLibraryEntryAcrossRoots(workspaceContext, id, opts = {}) {
+  const normalizedId = String(id || "").trim();
+  if (!normalizedId) return null;
+  const roots = resolveLibraryRootsForContext(workspaceContext);
+  ensureLibraryRootsInitialized(roots);
+  const orderedRoots = orderLibraryRootsForLookup(
+    roots,
+    opts.preferredScope || opts.storageScope || "",
+  );
+  for (const rootInfo of orderedRoots) {
+    const entry = getEntry(rootInfo.rootDir, normalizedId);
+    if (!entry) continue;
+    return { entry, rootInfo };
+  }
+  return null;
+}
+
+function resolveLibraryTargetRoot(workspaceContext, storageScope = "", existing = null) {
+  if (existing?.rootInfo?.rootDir) return existing.rootInfo;
+  const roots = resolveLibraryRootsForContext(workspaceContext);
+  ensureLibraryRootsInitialized(roots);
+  const normalizedScope = normalizeLibraryStorageScope(storageScope, "");
+  if (normalizedScope) {
+    const matchingRoot = roots.find((rootInfo) => rootInfo.scope === normalizedScope);
+    if (matchingRoot) return matchingRoot;
+  }
+  return roots[0] || { scope: "repo", rootDir: repoRoot };
 }
 
 const VOICE_TOOL_ID_MAP = Object.freeze({
@@ -432,17 +587,20 @@ function resolveVoiceLibraryRoot(callContext = {}) {
 
 function listVoiceAgentProfiles(rootDir = repoRoot) {
   const libraryRoot = rootDir || repoRoot;
-  ensureLibraryInitialized(libraryRoot);
-  const entries = listEntries(libraryRoot, { type: "agent" }) || [];
+  const resolved = listLibraryEntriesAcrossRoots(
+    { workspaceDir: libraryRoot, workspaceRoot: libraryRoot },
+    { type: "agent" },
+  );
   const profiles = [];
-  for (const entry of entries) {
-    const profile = getEntryContent(libraryRoot, entry);
+  for (const { entry, rootInfo } of resolved.entries) {
+    const profile = getEntryContent(rootInfo.rootDir, entry);
     if (!isVoiceAgentProfileEntry(entry, profile)) continue;
     profiles.push({
       id: entry.id,
       name: entry.name || entry.id,
       description: entry.description || "",
       tags: Array.isArray(entry.tags) ? entry.tags : [],
+      storageScope: rootInfo.scope,
       model: String(profile?.model || "").trim() || null,
       voicePersona: String(profile?.voicePersona || "").trim() || "neutral",
       voiceInstructions: String(profile?.voiceInstructions || "").trim() || "",
@@ -2074,7 +2232,7 @@ function pickWorkspaceRepoDir(workspace) {
 }
 
 function resolveActiveWorkspaceExecutionContext() {
-  const fallback = { workspaceId: "", workspaceDir: repoRoot };
+  const fallback = { workspaceId: "", workspaceDir: repoRoot, workspaceRoot: repoRoot };
   const configDir = resolveUiConfigDir();
   if (!configDir) return fallback;
 
@@ -2092,9 +2250,11 @@ function resolveActiveWorkspaceExecutionContext() {
 
   const workspaceId = String(workspace.id || "").trim();
   const workspaceDir = pickWorkspaceRepoDir(workspace) || fallback.workspaceDir;
+  const workspaceRoot = normalizeCandidatePath(workspace.path) || workspaceDir || fallback.workspaceRoot;
   return {
     workspaceId,
     workspaceDir,
+    workspaceRoot,
   };
 }
 
@@ -2109,9 +2269,12 @@ function resolveWorkspaceContextById(workspaceId = "") {
   );
   if (!workspace) return null;
   const id = String(workspace.id || "").trim();
+  const workspaceDir = pickWorkspaceRepoDir(workspace) || repoRoot;
+  const workspaceRoot = normalizeCandidatePath(workspace.path) || workspaceDir || repoRoot;
   return {
     workspaceId: id,
-    workspaceDir: pickWorkspaceRepoDir(workspace) || repoRoot,
+    workspaceDir,
+    workspaceRoot,
   };
 }
 
@@ -2133,6 +2296,7 @@ function resolveWorkspaceContextFromRequest(reqUrl, opts = {}) {
       allWorkspaces: false,
       workspaceId: String(active.workspaceId || "").trim(),
       workspaceDir: normalizeCandidatePath(active.workspaceDir) || repoRoot,
+      workspaceRoot: normalizeCandidatePath(active.workspaceRoot) || normalizeCandidatePath(active.workspaceDir) || repoRoot,
       workspaceFilter: String(active.workspaceId || "").trim().toLowerCase(),
     };
   }
@@ -2142,6 +2306,7 @@ function resolveWorkspaceContextFromRequest(reqUrl, opts = {}) {
     allWorkspaces: false,
     workspaceId: String(explicit.workspaceId || "").trim(),
     workspaceDir: normalizeCandidatePath(explicit.workspaceDir) || repoRoot,
+    workspaceRoot: normalizeCandidatePath(explicit.workspaceRoot) || normalizeCandidatePath(explicit.workspaceDir) || repoRoot,
     workspaceFilter: String(explicit.workspaceId || "").trim().toLowerCase(),
   };
 }
@@ -6613,6 +6778,52 @@ function summarizeTelemetry(metrics, days) {
   };
 }
 
+const SHREDDING_AGENT_TYPE_LABELS = Object.freeze({
+  "codex-sdk": "codex",
+  "copilot-sdk": "copilot",
+  "claude-sdk": "claude",
+});
+
+function normalizeShreddingAgentType(rawType) {
+  const normalized = String(rawType || "").trim().toLowerCase();
+  if (!normalized) return "unspecified";
+  if (SHREDDING_AGENT_TYPE_LABELS[normalized]) {
+    return SHREDDING_AGENT_TYPE_LABELS[normalized];
+  }
+  return normalized;
+}
+
+function numberOrZero(value) {
+  const parsed = Number(value);
+  return Number.isFinite(parsed) ? parsed : 0;
+}
+
+function isLikelySyntheticShreddingEvent(event) {
+  if (!event || typeof event !== "object") return false;
+  const hasContextIds = Boolean(
+    String(event.attemptId || "").trim() || String(event.taskId || "").trim(),
+  );
+  const originalChars = numberOrZero(event.originalChars);
+  const compressedChars = numberOrZero(event.compressedChars);
+  const savedChars = numberOrZero(event.savedChars);
+  const savedPct = numberOrZero(event.savedPct);
+  const normalizedAgent = normalizeShreddingAgentType(event.agentType);
+  const looksLikeFixturePayload =
+    originalChars === 100
+    && compressedChars === 50
+    && savedChars === 50
+    && savedPct === 50;
+  const fixtureAgentLabel = normalizedAgent === "first" || normalizedAgent === "latest";
+  return !hasContextIds && (looksLikeFixturePayload || fixtureAgentLabel);
+}
+
+function isEffectiveShreddingEvent(event) {
+  const originalChars = numberOrZero(event?.originalChars);
+  const compressedChars = numberOrZero(event?.compressedChars);
+  const savedChars = numberOrZero(event?.savedChars);
+  return savedChars > 0 && originalChars > compressedChars;
+}
+
 // ── Usage Analytics ─────────────────────────────────────────────────────────
 
 /**
@@ -7671,21 +7882,23 @@ async function handleApi(req, res, url) {
         jsonResponse(res, 400, { ok: false, error: "Unknown workspace" });
         return;
       }
-      const libraryRoot = workspaceContext.workspaceDir || repoRoot;
-      ensureLibraryInitialized(libraryRoot);
       const typeRaw = (url.searchParams.get("type") || "").trim();
       const agentTypeRaw = String(url.searchParams.get("agentType") || "").trim().toLowerCase();
       const search = (url.searchParams.get("search") || "").trim();
       const type = typeRaw && typeRaw !== "all" ? typeRaw : "";
-      let data = listEntries(libraryRoot, {
+      const resolved = listLibraryEntriesAcrossRoots(workspaceContext, {
         type: type || undefined,
         search: search || undefined,
       });
-      data = data.map((entry) => {
-        if (entry?.type !== "agent") return entry;
-        const profile = getEntryContent(libraryRoot, entry);
-        return {
+      let data = resolved.entries.map(({ entry, rootInfo }) => {
+        const base = {
           ...entry,
+          storageScope: rootInfo.scope,
+        };
+        if (entry?.type !== "agent") return base;
+        const profile = getEntryContent(rootInfo.rootDir, entry);
+        return {
+          ...base,
           agentType: resolveAgentProfileType(entry, profile),
         };
       });
@@ -7708,45 +7921,73 @@ async function handleApi(req, res, url) {
         jsonResponse(res, 400, { ok: false, error: "Unknown workspace" });
         return;
       }
-      const libraryRoot = workspaceContext.workspaceDir || repoRoot;
-      ensureLibraryInitialized(libraryRoot);
       if (req.method === "GET") {
         const id = (url.searchParams.get("id") || "").trim();
+        const preferredScope = normalizeLibraryStorageScope(url.searchParams.get("source"), "");
         if (!id) {
           jsonResponse(res, 400, { ok: false, error: "id required" });
           return;
         }
-        const entry = getEntry(libraryRoot, id);
-        if (!entry) {
+        const resolved = resolveLibraryEntryAcrossRoots(workspaceContext, id, { preferredScope });
+        if (!resolved) {
           jsonResponse(res, 404, { ok: false, error: "not found" });
           return;
         }
-        const content = getEntryContent(libraryRoot, entry);
-        jsonResponse(res, 200, { ok: true, data: { ...entry, content } });
+        const content = getEntryContent(resolved.rootInfo.rootDir, resolved.entry);
+        jsonResponse(res, 200, {
+          ok: true,
+          data: {
+            ...resolved.entry,
+            storageScope: resolved.rootInfo.scope,
+            content,
+          },
+        });
         return;
       }
 
       if (req.method === "POST") {
         const body = await readJsonBody(req);
-        const { content, ...entryData } = body || {};
-        const entry = upsertEntry(libraryRoot, entryData, content);
-        jsonResponse(res, 200, { ok: true, data: entry });
+        const { content, storageScope, source, ...entryData } = body || {};
+        const preferredScope = normalizeLibraryStorageScope(storageScope || source, "");
+        const existing = entryData?.id
+          ? resolveLibraryEntryAcrossRoots(workspaceContext, entryData.id, { preferredScope })
+          : null;
+        const targetRoot = resolveLibraryTargetRoot(workspaceContext, preferredScope, existing);
+        const entry = upsertEntry(targetRoot.rootDir, entryData, content);
+        jsonResponse(res, 200, {
+          ok: true,
+          data: {
+            ...entry,
+            storageScope: targetRoot.scope,
+          },
+        });
         return;
       }
 
       if (req.method === "DELETE") {
         const body = await readJsonBody(req);
         const id = body?.id;
+        const preferredScope = normalizeLibraryStorageScope(body?.storageScope || body?.source, "");
         if (!id) {
           jsonResponse(res, 400, { ok: false, error: "id required" });
           return;
         }
-        const deleted = deleteEntry(libraryRoot, id, { deleteFile: Boolean(body?.deleteFile) });
+        const resolved = resolveLibraryEntryAcrossRoots(workspaceContext, id, { preferredScope });
+        if (!resolved) {
+          jsonResponse(res, 404, { ok: false, error: "not found" });
+          return;
+        }
+        const deleted = deleteEntry(resolved.rootInfo.rootDir, id, {
+          deleteFile: Boolean(body?.deleteFile),
+        });
         if (!deleted) {
           jsonResponse(res, 404, { ok: false, error: "not found" });
           return;
         }
-        jsonResponse(res, 200, { ok: true });
+        jsonResponse(res, 200, {
+          ok: true,
+          data: { storageScope: resolved.rootInfo.scope },
+        });
         return;
       }
 
@@ -7781,13 +8022,29 @@ async function handleApi(req, res, url) {
         jsonResponse(res, 400, { ok: false, error: "Unknown workspace" });
         return;
       }
-      const libraryRoot = workspaceContext.workspaceDir || repoRoot;
-      const result = initLibrary(libraryRoot);
-      const entriesCount = result?.manifest?.entries?.length ?? 0;
-      const scaffoldedCount = result?.scaffolded?.written?.length ?? 0;
+      const requestedScope = normalizeLibraryStorageScope(url.searchParams.get("scope"), "");
+      const roots = resolveLibraryRootsForContext(workspaceContext);
+      const selectedRoots = requestedScope
+        ? roots.filter((rootInfo) => rootInfo.scope === requestedScope)
+        : roots;
+      if (selectedRoots.length === 0) {
+        jsonResponse(res, 400, { ok: false, error: "No matching library scope to initialize" });
+        return;
+      }
+      const byScope = [];
+      let entriesCount = 0;
+      let scaffoldedCount = 0;
+      for (const rootInfo of selectedRoots) {
+        const result = initLibrary(rootInfo.rootDir);
+        const count = result?.manifest?.entries?.length ?? 0;
+        const scaffolded = result?.scaffolded?.written?.length ?? 0;
+        byScope.push({ scope: rootInfo.scope, entries: count, scaffolded });
+        entriesCount += count;
+        scaffoldedCount += scaffolded;
+      }
       jsonResponse(res, 200, {
         ok: true,
-        data: { entries: entriesCount, scaffolded: scaffoldedCount },
+        data: { entries: entriesCount, scaffolded: scaffoldedCount, byScope },
       });
     } catch (err) {
       jsonResponse(res, 500, { ok: false, error: err.message });
@@ -7802,14 +8059,36 @@ async function handleApi(req, res, url) {
         jsonResponse(res, 400, { ok: false, error: "Unknown workspace" });
         return;
       }
-      const libraryRoot = workspaceContext.workspaceDir || repoRoot;
-      const result = rebuildManifest(libraryRoot);
+      const requestedScope = normalizeLibraryStorageScope(url.searchParams.get("scope"), "");
+      const roots = resolveLibraryRootsForContext(workspaceContext);
+      const selectedRoots = requestedScope
+        ? roots.filter((rootInfo) => rootInfo.scope === requestedScope)
+        : roots;
+      if (selectedRoots.length === 0) {
+        jsonResponse(res, 400, { ok: false, error: "No matching library scope to rebuild" });
+        return;
+      }
+      const byScope = [];
+      let totalCount = 0;
+      let totalAdded = 0;
+      let totalRemoved = 0;
+      for (const rootInfo of selectedRoots) {
+        const result = rebuildManifest(rootInfo.rootDir);
+        const count = result?.entries?.length ?? 0;
+        const added = result?.added ?? 0;
+        const removed = result?.removed ?? 0;
+        byScope.push({ scope: rootInfo.scope, count, added, removed });
+        totalCount += count;
+        totalAdded += added;
+        totalRemoved += removed;
+      }
       jsonResponse(res, 200, {
         ok: true,
         data: {
-          count: result?.entries?.length ?? 0,
-          added: result?.added ?? 0,
-          removed: result?.removed ?? 0,
+          count: totalCount,
+          added: totalAdded,
+          removed: totalRemoved,
+          byScope,
         },
       });
     } catch (err) {
@@ -7825,10 +8104,17 @@ async function handleApi(req, res, url) {
         jsonResponse(res, 400, { ok: false, error: "Unknown workspace" });
         return;
       }
-      const libraryRoot = workspaceContext.workspaceDir || repoRoot;
-      ensureLibraryInitialized(libraryRoot);
       const title = (url.searchParams.get("title") || "").trim();
-      const match = matchAgentProfile(libraryRoot, title);
+      const roots = resolveLibraryRootsForContext(workspaceContext);
+      ensureLibraryRootsInitialized(roots);
+      let match = null;
+      for (const rootInfo of roots) {
+        const candidate = matchAgentProfile(rootInfo.rootDir, title);
+        if (!candidate) continue;
+        if (!match || Number(candidate.score || 0) > Number(match.score || 0)) {
+          match = { ...candidate, storageScope: rootInfo.scope };
+        }
+      }
       jsonResponse(res, 200, { ok: true, data: match || null });
     } catch (err) {
       jsonResponse(res, 500, { ok: false, error: err.message });
@@ -8522,12 +8808,32 @@ async function handleApi(req, res, url) {
   if (path === "/api/telemetry/shredding") {
     try {
       const days = Number(url.searchParams.get("days") || "30");
+      const includeSynthetic = /^(1|true|yes)$/i.test(String(url.searchParams.get("includeSynthetic") || "").trim());
+      const includeNoop = /^(1|true|yes)$/i.test(String(url.searchParams.get("includeNoop") || "").trim());
       const shreddingPath = resolve(
         resolveAgentWorkLogDir(),
         "shredding-stats.jsonl",
       );
       const raw = await readJsonlTail(shreddingPath, 10_000);
-      const events = raw.filter((e) => withinDays(e, days));
+      const inWindow = raw.filter((e) => withinDays(e, days));
+      let excludedSynthetic = 0;
+      let excludedNoop = 0;
+      const events = [];
+      for (const entry of inWindow) {
+        const normalizedEntry = {
+          ...entry,
+          agentType: normalizeShreddingAgentType(entry?.agentType),
+        };
+        if (!includeSynthetic && isLikelySyntheticShreddingEvent(normalizedEntry)) {
+          excludedSynthetic++;
+          continue;
+        }
+        if (!includeNoop && !isEffectiveShreddingEvent(normalizedEntry)) {
+          excludedNoop++;
+          continue;
+        }
+        events.push(normalizedEntry);
+      }
 
       // Aggregate totals
       let totalEvents = events.length;
@@ -8537,6 +8843,7 @@ async function handleApi(req, res, url) {
       const dailySaved = {};
       const dailyCounts = {};
       const agentCounts = {};
+      let unknownAttribution = 0;
 
       for (const e of events) {
         totalOriginalChars  += e.originalChars  || 0;
@@ -8547,7 +8854,8 @@ async function handleApi(req, res, url) {
           dailySaved[day]  = (dailySaved[day]  || 0) + (e.savedChars || 0);
           dailyCounts[day] = (dailyCounts[day] || 0) + 1;
         }
-        const agent = e.agentType || "unknown";
+        const agent = normalizeShreddingAgentType(e.agentType);
+        if (agent === "unspecified") unknownAttribution++;
         agentCounts[agent] = (agentCounts[agent] || 0) + 1;
       }
 
@@ -8568,7 +8876,7 @@ async function handleApi(req, res, url) {
         savedPct:       e.savedPct        || 0,
         originalChars:  e.originalChars   || 0,
         compressedChars: e.compressedChars || 0,
-        agentType:      e.agentType       || null,
+        agentType:      normalizeShreddingAgentType(e.agentType),
         attemptId:      e.attemptId       || null,
       }));
 
@@ -8585,6 +8893,14 @@ async function handleApi(req, res, url) {
           dailyCounts,
           topAgents,
           recentEvents,
+          diagnostics: {
+            rawEvents: inWindow.length,
+            excludedSynthetic,
+            excludedNoop,
+            unknownAttribution,
+            includeSynthetic,
+            includeNoop,
+          },
         },
       });
     } catch (err) {

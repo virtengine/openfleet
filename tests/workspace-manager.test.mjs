@@ -65,11 +65,11 @@ function createSeededBareRemote(baseDir, name = "remote-repo") {
   const seedPath = join(baseDir, `${name}-seed`);
   execSync(`git init --bare "${barePath}"`, { stdio: ["ignore", "ignore", "ignore"] });
   execSync(`git clone "${barePath}" "${seedPath}"`, { stdio: ["ignore", "ignore", "ignore"] });
-  execSync('git config user.email "bosun-tests@example.com"', {
+  execSync('git config --local user.email "bosun-tests@example.com"', {
     cwd: seedPath,
     stdio: ["ignore", "ignore", "ignore"],
   });
-  execSync('git config user.name "Bosun Tests"', {
+  execSync('git config --local user.name "Bosun Tests"', {
     cwd: seedPath,
     stdio: ["ignore", "ignore", "ignore"],
   });

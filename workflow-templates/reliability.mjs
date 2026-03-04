@@ -8,6 +8,7 @@
  *   - Health Check
  *   - Task Finalization Guard (recommended)
  *   - Task Repair Worktree (recommended)
+ *   - Task Orphan Worktree Recovery (recommended)
  *   - Task Status Transition Manager
  *   - Incident Response (recommended)
  *   - Task Archiver (recommended)
@@ -705,6 +706,103 @@ export const TASK_REPAIR_WORKTREE_TEMPLATE = {
       description:
         "Introduces a dedicated automated repair workflow that takes over " +
         "when task execution or finalization fails.",
+    },
+  },
+};
+
+// ═══════════════════════════════════════════════════════════════════════════
+//  Task Orphan Worktree Recovery
+// ═══════════════════════════════════════════════════════════════════════════
+
+resetLayout();
+
+export const TASK_ORPHAN_WORKTREE_RECOVERY_TEMPLATE = {
+  id: "template-task-orphan-worktree-recovery",
+  name: "Task Orphan Worktree Recovery",
+  description:
+    "Scheduled workflow-owned recovery for orphaned task worktrees. " +
+    "Scans .cache/worktrees for abandoned task branches, auto-commits pending " +
+    "changes, pushes recoverable branches, records PR handoff, and updates " +
+    "task status to inreview when successful.",
+  category: "reliability",
+  enabled: true,
+  recommended: true,
+  trigger: "trigger.schedule",
+  variables: {
+    intervalMs: 1800000,
+    baseBranch: "origin/main",
+    maxRecoverPerSweep: 20,
+  },
+  nodes: [
+    node("trigger", "trigger.schedule", "Scheduled Recovery Sweep", {
+      intervalMs: "{{intervalMs}}",
+      cron: "*/30 * * * *",
+    }, { x: 420, y: 50 }),
+
+    node("recover", "action.run_command", "Recover Orphan Worktrees", {
+      command:
+        "node tools/workflow-orphan-worktree-recovery.mjs " +
+        "--base \"{{baseBranch}}\" " +
+        "--max \"{{maxRecoverPerSweep}}\"",
+      failOnError: false,
+    }, { x: 420, y: 190 }),
+
+    node("parse-recovery", "transform.json_parse", "Parse Recovery Summary", {
+      input: "recover",
+      field: "output",
+    }, { x: 420, y: 330 }),
+
+    node("parse-ok", "condition.expression", "Recovery Summary Valid?", {
+      expression: "$ctx.getNodeOutput('parse-recovery')?.success === true",
+    }, { x: 420, y: 470, outputs: ["yes", "no"] }),
+
+    node("has-recovered", "condition.expression", "Recovered Branches?", {
+      expression: "Number($ctx.getNodeOutput('parse-recovery')?.data?.recovered || 0) > 0",
+    }, { x: 420, y: 610, outputs: ["yes", "no"] }),
+
+    node("log-recovered", "notify.log", "Log Recovery Success", {
+      message:
+        "Orphan recovery: recovered={{parse-recovery.data.recovered}} " +
+        "skipped={{parse-recovery.data.skipped}} failed={{parse-recovery.data.failed}}",
+      level: "info",
+    }, { x: 250, y: 760 }),
+
+    node("log-idle", "notify.log", "Log No Work", {
+      message:
+        "Orphan recovery: no recoverable orphaned worktrees found " +
+        "(scanned={{parse-recovery.data.scanned}}, skipped={{parse-recovery.data.skipped}}).",
+      level: "debug",
+    }, { x: 560, y: 760 }),
+
+    node("log-parse-failed", "notify.log", "Log Recovery Parse Failure", {
+      message:
+        "Orphan recovery workflow produced invalid JSON output. " +
+        "Check tools/workflow-orphan-worktree-recovery.mjs execution logs.",
+      level: "warn",
+    }, { x: 760, y: 610 }),
+  ],
+  edges: [
+    edge("trigger", "recover"),
+    edge("recover", "parse-recovery"),
+    edge("parse-recovery", "parse-ok"),
+    edge("parse-ok", "has-recovered", { condition: "$output?.result === true", port: "yes" }),
+    edge("parse-ok", "log-parse-failed", { condition: "$output?.result !== true", port: "no" }),
+    edge("has-recovered", "log-recovered", { condition: "$output?.result === true", port: "yes" }),
+    edge("has-recovered", "log-idle", { condition: "$output?.result !== true", port: "no" }),
+  ],
+  metadata: {
+    author: "bosun",
+    version: 1,
+    createdAt: "2026-03-04T00:00:00Z",
+    templateVersion: "1.0.0",
+    tags: ["orphan", "recovery", "worktree", "lifecycle", "reliability"],
+    replaces: {
+      module: "task-executor.mjs",
+      functions: ["_recoverOrphanedWorktrees"],
+      calledFrom: ["task-executor.mjs:start"],
+      description:
+        "Moves orphaned worktree recovery out of the legacy task-executor " +
+        "startup path and into a dedicated scheduled workflow.",
     },
   },
 };

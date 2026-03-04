@@ -6025,6 +6025,14 @@ registerNodeType("action.build_task_prompt", {
       worktreePath: { type: "string" },
       repoRoot: { type: "string" },
       repoSlug: { type: "string" },
+      workspace: { type: "string" },
+      repository: { type: "string" },
+      repositories: {
+        anyOf: [
+          { type: "array", items: { type: "string" } },
+          { type: "string" },
+        ],
+      },
       retryReason: { type: "string", description: "Reason for retry (if retrying)" },
       includeAgentsMd: { type: "boolean", default: true },
       includeComments: { type: "boolean", default: true },
@@ -6046,6 +6054,80 @@ registerNodeType("action.build_task_prompt", {
     const includeAgentsMd = node.config?.includeAgentsMd !== false;
     const includeStatusEndpoint = node.config?.includeStatusEndpoint !== false;
     const customTemplate = cfgOrCtx(node, ctx, "promptTemplate");
+    const taskPayload =
+      ctx.data?.task && typeof ctx.data.task === "object"
+        ? ctx.data.task
+        : null;
+    const taskMeta =
+      taskPayload?.meta && typeof taskPayload.meta === "object"
+        ? taskPayload.meta
+        : null;
+
+    const normalizeString = (value) => {
+      if (value == null) return "";
+      return String(value).trim();
+    };
+    const pickFirstString = (...values) => {
+      for (const value of values) {
+        const normalized = normalizeString(value);
+        if (normalized) return normalized;
+      }
+      return "";
+    };
+    const appendUniqueString = (store, seen, value) => {
+      const normalized = normalizeString(value);
+      if (!normalized) return;
+      const key = normalized.toLowerCase();
+      if (seen.has(key)) return;
+      seen.add(key);
+      store.push(normalized);
+    };
+    const normalizeStringArray = (...values) => {
+      const out = [];
+      const seen = new Set();
+      for (const value of values) {
+        if (Array.isArray(value)) {
+          for (const item of value) appendUniqueString(out, seen, item);
+          continue;
+        }
+        if (typeof value === "string") {
+          if (value.includes(",")) {
+            for (const item of value.split(",")) appendUniqueString(out, seen, item);
+          } else {
+            appendUniqueString(out, seen, value);
+          }
+          continue;
+        }
+      }
+      return out;
+    };
+    const resolvePromptValue = (key) => {
+      if (Object.prototype.hasOwnProperty.call(node.config || {}, key)) {
+        const resolved = ctx.resolve(node.config[key]);
+        if (resolved != null && resolved !== "") return resolved;
+      }
+      const ctxValue = ctx.data?.[key];
+      if (ctxValue != null && ctxValue !== "") return ctxValue;
+      return null;
+    };
+    const workspace = pickFirstString(
+      resolvePromptValue("workspace"),
+      taskPayload?.workspace,
+      taskMeta?.workspace,
+    );
+    const repository = pickFirstString(
+      resolvePromptValue("repository"),
+      taskPayload?.repository,
+      taskPayload?.repo,
+      taskMeta?.repository,
+    );
+    const repositories = normalizeStringArray(
+      resolvePromptValue("repositories"),
+      taskPayload?.repositories,
+      taskMeta?.repositories,
+    );
+    const primaryRepository = pickFirstString(repository, repoSlug);
+    const allowedRepositories = normalizeStringArray(repositories, primaryRepository);
 
     if (customTemplate) {
       ctx.data._taskPrompt = customTemplate;
@@ -6084,6 +6166,31 @@ registerNodeType("action.build_task_prompt", {
     if (repoSlug) envLines.push(`- **Repository:** ${repoSlug}`);
     if (repoRoot) envLines.push(`- **Repo Root:** ${repoRoot}`);
     if (envLines.length) parts.push(envLines.join("\n"));
+    parts.push("");
+
+    // Workspace and repository scope guardrails.
+    parts.push("## Workspace Scope Contract");
+    if (workspace) parts.push(`- **Workspace:** ${workspace}`);
+    if (primaryRepository) parts.push(`- **Primary Repository:** ${primaryRepository}`);
+    if (allowedRepositories.length > 0) {
+      parts.push("- **Allowed Repositories:**");
+      for (const allowedRepo of allowedRepositories) {
+        parts.push(`  - ${allowedRepo}`);
+      }
+    } else {
+      parts.push("- **Allowed Repositories:** (not declared)");
+    }
+    if (worktreePath) parts.push(`- **Write Scope Root:** ${worktreePath}`);
+    parts.push("");
+    parts.push("Hard boundaries:");
+    if (worktreePath) {
+      parts.push(`1. Modify files only inside \`${worktreePath}\`.`);
+    } else {
+      parts.push("1. Modify files only inside the active repository working directory.");
+    }
+    parts.push("2. Modify code only in the allowed repositories listed above.");
+    parts.push("3. If required work depends on an unlisted repository, stop and report `blocked: cross-repo dependency`.");
+    parts.push("4. In completion notes, list every repository you touched and why.");
     parts.push("");
 
     // AGENTS.md + copilot-instructions.md
@@ -6128,11 +6235,12 @@ registerNodeType("action.build_task_prompt", {
     parts.push(
       "1. Read and understand the task description above.\n" +
       "2. Follow the project instructions in AGENTS.md.\n" +
-      "3. Implement the required changes.\n" +
-      "4. Ensure tests pass and build is clean with 0 warnings.\n" +
-      "5. Commit your changes using conventional commits.\n" +
-      "6. Never ask for user input — you are autonomous.\n" +
-      "7. Use all available tools to verify your work.",
+      "3. Respect the Workspace Scope Contract and never cross repository boundaries.\n" +
+      "4. Implement the required changes.\n" +
+      "5. Ensure tests pass and build is clean with 0 warnings.\n" +
+      "6. Commit your changes using conventional commits.\n" +
+      "7. Never ask for user input — you are autonomous.\n" +
+      "8. Use all available tools to verify your work.",
     );
     parts.push("");
 
