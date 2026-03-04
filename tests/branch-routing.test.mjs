@@ -391,7 +391,7 @@ describe("quickAssess", () => {
 // ── VALID_ACTIONS ────────────────────────────────────────────────────────────
 
 describe("VALID_ACTIONS", () => {
-  it("contains all 8 expected actions", () => {
+  it("contains all 11 expected actions", () => {
     const expected = [
       "merge",
       "reprompt_same",
@@ -400,9 +400,12 @@ describe("VALID_ACTIONS", () => {
       "wait",
       "manual_review",
       "close_and_replan",
+      "accept_with_debt",
+      "split_task",
+      "escalate_to_replan",
       "noop",
     ];
-    expect(VALID_ACTIONS.size).toBe(8);
+    expect(VALID_ACTIONS.size).toBe(11);
     for (const action of expected) {
       expect(VALID_ACTIONS.has(action)).toBe(true);
     }

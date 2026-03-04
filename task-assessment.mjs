@@ -29,6 +29,9 @@ const VALID_ACTIONS = new Set([
   "wait", // Wait N seconds then re-assess
   "manual_review", // Escalate to human
   "close_and_replan", // Close PR, move task back to todo for replanning
+  "accept_with_debt", // Accept partial outcome and record explicit debt items
+  "split_task", // Split oversized/failing scope into actionable child tasks
+  "escalate_to_replan", // Escalate the task back to planner/replan lane
   "noop", // No action needed
 ]);
 
@@ -76,6 +79,8 @@ const ASSESSMENT_COOLDOWN_MS = 5 * 60 * 1000; // 5 min per task
  * @property {string}  [reason]   - Explanation for the decision
  * @property {number}  [waitSeconds] - For "wait" action
  * @property {string}  [agentType]   - Preferred agent for new_attempt ("codex" | "copilot")
+ * @property {Array<{type?: string, severity?: string, description?: string, criterion?: string}>} [debtItems]
+ * @property {Array<{title: string, description?: string, acceptance_criteria?: string[], priority?: string, tags?: string[]}>} [splitTasks]
  * @property {string}  rawOutput  - Raw SDK output for audit
  */
 
@@ -228,7 +233,19 @@ Choose ONE action based on the trigger "${ctx.trigger}":
    Use when: Approach is fundamentally wrong, task needs rethinking.
    Generate: \`{ "action": "close_and_replan", "reason": "..." }\`
 
-8. **noop** — No action needed.
+8. **accept_with_debt** — Mark task as acceptable but incomplete.
+   Use when: Core objective is met but explicit gaps remain that should be tracked.
+   Generate: \`{ "action": "accept_with_debt", "reason": "...", "debtItems": [{"type":"missing_functionality","severity":"medium","description":"..."}] }\`
+
+9. **split_task** — Split into smaller sub-tasks and re-queue.
+   Use when: Scope is too broad or repeated failures indicate decomposition is needed.
+   Generate: \`{ "action": "split_task", "reason": "...", "splitTasks": [{"title":"...", "description":"...", "acceptance_criteria":["..."], "priority":"medium", "tags":["split"]}] }\`
+
+10. **escalate_to_replan** — Escalate to planning lane for DAG-level changes.
+   Use when: Local retries are exhausted and task needs a larger plan revision.
+   Generate: \`{ "action": "escalate_to_replan", "reason": "..." }\`
+
+11. **noop** — No action needed.
    Generate: \`{ "action": "noop", "reason": "..." }\`
 
 ### CRITICAL Rules for Prompt Generation
@@ -290,6 +307,66 @@ function extractDecisionJson(raw) {
   }
 
   return null;
+}
+
+function normalizeDebtItems(rawDebtItems) {
+  if (!Array.isArray(rawDebtItems)) return [];
+  return rawDebtItems
+    .map((item) => {
+      if (!item || typeof item !== "object") return null;
+      const type = String(item.type || "").trim();
+      const severity = String(item.severity || "").trim().toLowerCase();
+      const description = String(
+        item.description || item.detail || item.message || "",
+      ).trim();
+      const criterion = String(item.criterion || "").trim();
+      if (!type && !description && !criterion) return null;
+      return {
+        type: type || "unspecified",
+        severity:
+          ["critical", "high", "medium", "low"].includes(severity)
+            ? severity
+            : "medium",
+        description,
+        criterion,
+      };
+    })
+    .filter(Boolean);
+}
+
+function normalizeSplitTasks(rawSplitTasks) {
+  if (!Array.isArray(rawSplitTasks)) return [];
+  return rawSplitTasks
+    .map((task) => {
+      if (!task || typeof task !== "object") return null;
+      const title = String(task.title || task.name || "").trim();
+      if (!title) return null;
+      const description = String(task.description || "").trim();
+      const priority = String(task.priority || "").trim().toLowerCase();
+      const tags = Array.isArray(task.tags)
+        ? task.tags
+          .map((tag) => String(tag || "").trim())
+          .filter(Boolean)
+        : [];
+      const acceptanceCriteriaRaw =
+        task.acceptance_criteria || task.acceptanceCriteria;
+      const acceptance_criteria = Array.isArray(acceptanceCriteriaRaw)
+        ? acceptanceCriteriaRaw
+          .map((criterion) => String(criterion || "").trim())
+          .filter(Boolean)
+        : [];
+      return {
+        title,
+        description,
+        acceptance_criteria,
+        priority:
+          ["critical", "high", "medium", "low"].includes(priority)
+            ? priority
+            : undefined,
+        tags,
+      };
+    })
+    .filter(Boolean);
 }
 
 // ── Main assessment function ────────────────────────────────────────────────
@@ -361,6 +438,8 @@ export async function assessTask(ctx, opts) {
       reason: decision.reason || undefined,
       waitSeconds: decision.waitSeconds || decision.seconds || undefined,
       agentType: decision.agentType || undefined,
+      debtItems: normalizeDebtItems(decision.debtItems || decision.debt_items),
+      splitTasks: normalizeSplitTasks(decision.splitTasks || decision.subTasks || decision.sub_tasks),
       rawOutput: rawStr,
     };
 
@@ -378,6 +457,9 @@ export async function assessTask(ctx, opts) {
           wait: ":clock:",
           manual_review: ":eye:",
           close_and_replan: ":ban:",
+          accept_with_debt: ":memo:",
+          split_task: ":split:",
+          escalate_to_replan: ":warning:",
           noop: ":dot:",
         }[decision.action] || ":help:";
       opts.onTelegram(

@@ -99,6 +99,10 @@ import { RestartController } from "./restart-controller.mjs";
 
 import { assessTask, quickAssess } from "./task-assessment.mjs";
 import {
+  normalizeDebtItems as normalizeAssessmentDebtItems,
+  recordTaskDebt,
+} from "./task-debt-ledger.mjs";
+import {
   getBosunCoAuthorTrailer,
   shouldAddBosunCoAuthor,
 } from "./git-commit-helpers.mjs";
@@ -6887,6 +6891,146 @@ async function runTaskAssessment(ctx) {
   }
 }
 
+function summarizeDebtItemsForMessage(debtItems) {
+  if (!Array.isArray(debtItems) || debtItems.length === 0) return "none";
+  const preview = debtItems
+    .slice(0, 3)
+    .map((item) => {
+      const severity = String(item?.severity || "medium")
+        .trim()
+        .toLowerCase();
+      const text = String(
+        item?.description || item?.criterion || item?.type || "debt item",
+      ).trim();
+      return `[${severity}] ${text}`;
+    })
+    .join("; ");
+  const remaining = debtItems.length - 3;
+  if (remaining > 0) return `${preview}; +${remaining} more`;
+  return preview;
+}
+
+async function sendAssessmentTelegram(tag, message) {
+  try {
+    await sendTelegramMessage(message);
+  } catch (err) {
+    console.warn(`[${tag}] telegram send failed: ${err?.message || err}`);
+  }
+}
+
+function normalizeSplitTasksFromDecision(rawSplitTasks) {
+  if (!Array.isArray(rawSplitTasks)) return [];
+  return rawSplitTasks
+    .map((task) => {
+      if (!task || typeof task !== "object") return null;
+      const title = String(task.title || task.name || "").trim();
+      if (!title) return null;
+      const description = String(task.description || "").trim();
+      const priority = String(task.priority || "").trim().toLowerCase();
+      const tags = Array.isArray(task.tags)
+        ? task.tags.map((tag) => String(tag || "").trim()).filter(Boolean)
+        : [];
+      const acceptanceCriteriaRaw =
+        task.acceptance_criteria || task.acceptanceCriteria;
+      const acceptanceCriteria = Array.isArray(acceptanceCriteriaRaw)
+        ? acceptanceCriteriaRaw
+          .map((criterion) => String(criterion || "").trim())
+          .filter(Boolean)
+        : [];
+      return {
+        title,
+        description,
+        priority:
+          ["critical", "high", "medium", "low"].includes(priority)
+            ? priority
+            : undefined,
+        tags,
+        acceptanceCriteria,
+      };
+    })
+    .filter(Boolean);
+}
+
+async function createAssessmentSplitTasks(ctx, splitTasks) {
+  const backend = getActiveKanbanBackend();
+  const normalizedTasks = normalizeSplitTasksFromDecision(splitTasks).slice(0, 10);
+  if (normalizedTasks.length === 0) {
+    return { created: [], failed: [], backend, projectId: "" };
+  }
+
+  let projectId = "";
+  if (backend === "vk") {
+    projectId = await findVkProjectId();
+  } else {
+    projectId = getConfiguredKanbanProjectId(backend) || "";
+  }
+
+  if (!projectId && backend !== "internal") {
+    return {
+      created: [],
+      failed: normalizedTasks.map((task) => ({
+        title: task.title,
+        error: `No project configured for backend ${backend}`,
+      })),
+      backend,
+      projectId,
+    };
+  }
+
+  const parentTitle = String(ctx?.taskTitle || "").trim();
+  const parentTaskId = String(ctx?.taskId || "").trim();
+  const created = [];
+  const failed = [];
+
+  for (const task of normalizedTasks) {
+    const sections = [];
+    if (task.description) sections.push(task.description);
+    if (task.acceptanceCriteria.length > 0) {
+      sections.push(
+        [
+          "## Acceptance Criteria",
+          ...task.acceptanceCriteria.map((criterion) => `- ${criterion}`),
+        ].join("\n"),
+      );
+    }
+    if (parentTaskId || parentTitle) {
+      sections.push(
+        [
+          "## Parent Context",
+          parentTaskId ? `- Parent Task ID: ${parentTaskId}` : "",
+          parentTitle ? `- Parent Task: ${parentTitle}` : "",
+          "- Created by assessment split_task decision.",
+        ]
+          .filter(Boolean)
+          .join("\n"),
+      );
+    }
+
+    const payload = {
+      title: task.title,
+      description: sections.filter(Boolean).join("\n\n").trim(),
+      status: "todo",
+      priority: task.priority,
+      tags: [...new Set(["assessment-split", ...task.tags])],
+    };
+
+    try {
+      const createdTask = await createKanbanTask(projectId, payload);
+      created.push({
+        id: createdTask?.id || null,
+        title: task.title,
+      });
+    } catch (err) {
+      failed.push({
+        title: task.title,
+        error: err?.message || String(err),
+      });
+    }
+  }
+
+  return { created, failed, backend, projectId };
+}
+
 /**
  * Act on an assessment decision — execute the recommended action.
  *
@@ -6970,6 +7114,101 @@ async function actOnAssessment(ctx, decision) {
       }
       void sendTelegramMessage(
         `:ban: Assessment: closing and replanning "${ctx.taskTitle}" — ${decision.reason || ""}`,
+      );
+      break;
+
+    case "accept_with_debt": {
+      console.log(`[${tag}] → accept with debt`);
+      const debtItems = normalizeAssessmentDebtItems(
+        decision.debtItems,
+        decision.reason || "Task accepted with explicit debt",
+      );
+      let ledgerPath = "";
+      try {
+        const recorded = recordTaskDebt(
+          {
+            taskId: ctx.taskId,
+            taskTitle: ctx.taskTitle,
+            attemptId: ctx.attemptId,
+            trigger: ctx.trigger,
+            action: "accept_with_debt",
+            reason: decision.reason || "",
+            debtItems,
+            metadata: {
+              shortId: ctx.shortId || "",
+              branch: ctx.branch || "",
+              upstreamBranch: ctx.upstreamBranch || "",
+              agentType: ctx.agentType || "",
+            },
+          },
+          { baseDir: repoRoot },
+        );
+        ledgerPath = recorded.ledgerPath;
+      } catch (err) {
+        console.warn(
+          `[${tag}] failed to record debt ledger entry: ${err?.message || err}`,
+        );
+      }
+      if (ctx.taskId) {
+        await updateTaskStatus(ctx.taskId, "inreview", {
+          workflowData: {
+            assessmentAction: "accept_with_debt",
+            debtCount: debtItems.length,
+          },
+        });
+      }
+      await sendAssessmentTelegram(
+        tag,
+        `:memo: Assessment: accepted "${ctx.taskTitle}" with debt (${debtItems.length} item(s)). ` +
+          `Summary: ${summarizeDebtItemsForMessage(debtItems)}.` +
+          (ledgerPath ? `\nLedger: ${ledgerPath}` : ""),
+      );
+      break;
+    }
+
+    case "split_task": {
+      console.log(`[${tag}] → split task`);
+      const splitTasks = normalizeSplitTasksFromDecision(decision.splitTasks);
+      if (splitTasks.length === 0) {
+        console.warn(`[${tag}] split_task selected without split tasks payload`);
+        await sendAssessmentTelegram(
+          tag,
+          `:warning: Assessment requested split for "${ctx.taskTitle}" but no split tasks were provided.`,
+        );
+        break;
+      }
+      const result = await createAssessmentSplitTasks(ctx, splitTasks);
+      if (ctx.taskId) {
+        await updateTaskStatus(ctx.taskId, "todo", {
+          workflowData: {
+            assessmentAction: "split_task",
+            createdChildren: result.created.length,
+            failedChildren: result.failed.length,
+          },
+        });
+      }
+      await sendAssessmentTelegram(
+        tag,
+        `:split: Assessment: split "${ctx.taskTitle}" into ${result.created.length}/${splitTasks.length} task(s)` +
+          (result.failed.length
+            ? ` (${result.failed.length} failed: ${result.failed.map((f) => f.title).join(", ")})`
+            : ""),
+      );
+      break;
+    }
+
+    case "escalate_to_replan":
+      console.log(`[${tag}] → escalate to replan`);
+      if (ctx.taskId) {
+        await updateTaskStatus(ctx.taskId, "todo", {
+          workflowData: {
+            assessmentAction: "escalate_to_replan",
+          },
+        });
+      }
+      await sendAssessmentTelegram(
+        tag,
+        `:warning: Assessment: escalated "${ctx.taskTitle}" to replan lane — ${decision.reason || ""}`,
       );
       break;
 

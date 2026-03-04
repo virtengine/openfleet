@@ -212,6 +212,7 @@
     "sync-engine.mjs",
     "task-archiver.mjs",
     "task-assessment.mjs",
+    "task-debt-ledger.mjs",
     "task-cli.mjs",
     "task-complexity.mjs",
     "task-claims.mjs",

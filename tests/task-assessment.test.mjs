@@ -24,6 +24,9 @@ describe("task-assessment", () => {
       expect(VALID_ACTIONS.has("wait")).toBe(true);
       expect(VALID_ACTIONS.has("manual_review")).toBe(true);
       expect(VALID_ACTIONS.has("close_and_replan")).toBe(true);
+      expect(VALID_ACTIONS.has("accept_with_debt")).toBe(true);
+      expect(VALID_ACTIONS.has("split_task")).toBe(true);
+      expect(VALID_ACTIONS.has("escalate_to_replan")).toBe(true);
       expect(VALID_ACTIONS.has("noop")).toBe(true);
     });
 
@@ -454,6 +457,65 @@ describe("task-assessment", () => {
 
       expect(result.action).toBe("new_attempt");
       expect(result.agentType).toBe("copilot");
+    });
+
+    it("extracts normalized debtItems from accept_with_debt decisions", async () => {
+      const execCodex = vi.fn().mockResolvedValue({
+        finalResponse:
+          '{"action":"accept_with_debt","reason":"core flow fixed, edge cases deferred","debtItems":[{"type":"missing_functionality","severity":"high","description":"Add timeout fallback path"},{"criterion":"Load test coverage for retry lane"}]}',
+      });
+
+      const result = await assessTask(
+        {
+          taskId: "task-008",
+          taskTitle: "Debt extract",
+          trigger: "agent_completed",
+          shortId: "task-008",
+        },
+        { execCodex, logDir: null },
+      );
+
+      expect(result.action).toBe("accept_with_debt");
+      expect(Array.isArray(result.debtItems)).toBe(true);
+      expect(result.debtItems.length).toBe(2);
+      expect(result.debtItems[0]).toMatchObject({
+        type: "missing_functionality",
+        severity: "high",
+      });
+      expect(result.debtItems[1]).toMatchObject({
+        severity: "medium",
+      });
+    });
+
+    it("extracts normalized splitTasks from split_task decisions", async () => {
+      const execCodex = vi.fn().mockResolvedValue({
+        finalResponse:
+          '{"action":"split_task","reason":"scope too broad","splitTasks":[{"title":"Implement parser core","description":"Create parser skeleton","acceptance_criteria":["Handles empty input"],"priority":"high","tags":["parser"]},{"name":"Add integration tests","acceptanceCriteria":["Covers parse success + failure"]}]}',
+      });
+
+      const result = await assessTask(
+        {
+          taskId: "task-009",
+          taskTitle: "Split extract",
+          trigger: "agent_failed",
+          shortId: "task-009",
+        },
+        { execCodex, logDir: null },
+      );
+
+      expect(result.action).toBe("split_task");
+      expect(Array.isArray(result.splitTasks)).toBe(true);
+      expect(result.splitTasks.length).toBe(2);
+      expect(result.splitTasks[0]).toMatchObject({
+        title: "Implement parser core",
+        priority: "high",
+      });
+      expect(result.splitTasks[1]).toMatchObject({
+        title: "Add integration tests",
+      });
+      expect(result.splitTasks[1].acceptance_criteria).toEqual([
+        "Covers parse success + failure",
+      ]);
     });
   });
 });
