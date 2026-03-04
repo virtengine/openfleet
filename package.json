@@ -1,6 +1,6 @@
 {
   "name": "bosun",
-  "version": "0.38.2",
+  "version": "0.38.10",
   "description": "Bosun Autonomous Engineering — manages AI agent executors with failover, extremely powerful workflow builder, and a massive amount of included defaulte workflow templates for autonomous engineering, creates PRs via Vibe-Kanban API, and sends Telegram notifications. Supports N executors with weighted distribution, multi-repo projects, and auto-setup.",
   "type": "module",
   "license": "Apache 2.0",
@@ -270,6 +270,7 @@
     "workflow-templates/_helpers.mjs",
     "workflow-templates/agents.mjs",
     "workflow-templates/ci-cd.mjs",
+    "workflow-templates/coverage.mjs",
     "workflow-templates/github.mjs",
     "workflow-templates/planning.mjs",
     "workflow-templates/reliability.mjs",
