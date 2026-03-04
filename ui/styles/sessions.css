@@ -1747,6 +1747,18 @@ ul.md-list li::before {
   background: var(--bg-card);
 }
 
+.diff-status-chip {
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--color-inreview);
+  border: 1px solid rgba(245, 158, 11, 0.35);
+  border-radius: 999px;
+  padding: 2px 8px;
+  background: rgba(245, 158, 11, 0.1);
+}
+
 .diff-stat-add {
   color: var(--color-done);
   font-weight: 600;
