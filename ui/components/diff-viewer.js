@@ -6,6 +6,7 @@ import { useState, useEffect, useCallback } from "preact/hooks";
 import htm from "htm";
 import { apiFetch } from "../modules/api.js";
 import { resolveIcon } from "../modules/icon-utils.js";
+import { buildSessionApiPath } from "../modules/session-api.js";
 import {
   Accordion,
   AccordionSummary,
@@ -20,6 +21,10 @@ import {
 } from "@mui/material";
 
 const html = htm.bind(h);
+
+function buildDiffApiPath(sessionId, workspace = "active") {
+  return buildSessionApiPath(sessionId, "diff", { workspace }) || "";
+}
 
 /* ─── File type icons ─── */
 const EXT_ICONS = {
@@ -117,7 +122,7 @@ function DiffFile({ file }) {
 }
 
 /* ─── DiffViewer component ─── */
-export function DiffViewer({ sessionId }) {
+export function DiffViewer({ sessionId, workspace = "active", activitySummary = null }) {
   const [diffData, setDiffData] = useState(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState(null);
@@ -127,9 +132,15 @@ export function DiffViewer({ sessionId }) {
     let active = true;
     setLoading(true);
     setError(null);
-    const safeSessionId = encodeURIComponent(sessionId);
+    const diffPath = buildDiffApiPath(sessionId, workspace);
+    if (!diffPath) {
+      setDiffData(null);
+      setLoading(false);
+      setError("unavailable");
+      return () => { active = false; };
+    }
 
-    apiFetch(`/api/sessions/${safeSessionId}/diff`, { _silent: true })
+    apiFetch(diffPath, { _silent: true })
       .then((res) => {
         if (!active) return;
         setDiffData(res?.diff || null);
@@ -142,17 +153,22 @@ export function DiffViewer({ sessionId }) {
       });
 
     return () => { active = false; };
-  }, [sessionId]);
+  }, [sessionId, workspace]);
 
   const handleRetry = useCallback(() => {
     setError(null);
     setLoading(true);
-    const safeSessionId = encodeURIComponent(sessionId);
-    apiFetch(`/api/sessions/${safeSessionId}/diff`, { _silent: true })
+    const diffPath = buildDiffApiPath(sessionId, workspace);
+    if (!diffPath) {
+      setLoading(false);
+      setError("unavailable");
+      return;
+    }
+    apiFetch(diffPath, { _silent: true })
       .then((res) => setDiffData(res?.diff || null))
       .catch(() => setError("unavailable"))
       .finally(() => setLoading(false));
-  }, [sessionId]);
+  }, [sessionId, workspace]);
 
   /* ── Empty: no session selected ── */
   if (!sessionId) {
@@ -184,24 +200,41 @@ export function DiffViewer({ sessionId }) {
     `;
   }
 
-  const files = diffData?.files || [];
-  const totalAdditions = files.reduce(
+  const files = Array.isArray(diffData?.files) ? diffData.files : [];
+  const fallbackFiles = Array.isArray(activitySummary?.files)
+    ? activitySummary.files
+    : [];
+  const usingActivityFallback = files.length === 0 && fallbackFiles.length > 0;
+  const renderedFiles = usingActivityFallback
+    ? fallbackFiles.map((entry) => ({
+        filename: entry.path,
+        status: "modified",
+        additions: Number(entry.edits || 0),
+        deletions: 0,
+        patch: "",
+      }))
+    : files;
+  const totalAdditions = renderedFiles.reduce(
     (n, f) => n + (f.additions ?? 0),
     0,
   );
-  const totalDeletions = files.reduce(
+  const totalDeletions = renderedFiles.reduce(
     (n, f) => n + (f.deletions ?? 0),
     0,
   );
 
   return html`
     <div class="diff-viewer">
-      ${files.length > 0 && html`
+      ${renderedFiles.length > 0 && html`
         <${Paper} variant="outlined" sx=${{ mb: 2, px: 2, py: 1 }}>
           <${Stack} direction="row" spacing=${1} alignItems="center">
             <${Typography} variant="body2">
-              ${files.length} file${files.length !== 1 ? "s" : ""} changed
+              ${renderedFiles.length} file${renderedFiles.length !== 1 ? "s" : ""}
+              ${usingActivityFallback ? " touched" : " changed"}
             <//>
+            ${usingActivityFallback && html`
+              <${Chip} label="activity fallback" size="small" color="warning" variant="outlined" />
+            `}
             ${totalAdditions > 0 && html`
               <${Chip} label=${`+${totalAdditions}`} size="small" color="success" variant="outlined" />
             `}
@@ -212,8 +245,8 @@ export function DiffViewer({ sessionId }) {
         <//>
       `}
       <div class="diff-file-list">
-        ${files.length > 0
-          ? files.map(
+        ${renderedFiles.length > 0
+          ? renderedFiles.map(
               (f) => html`<${DiffFile} key=${f.filename} file=${f} />`,
             )
           : html`
