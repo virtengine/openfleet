@@ -2850,15 +2850,6 @@ class TaskExecutor {
     }
   }
 
-  /**
-   * Legacy orphaned-worktree recovery is now workflow-owned.
-   * See template-task-orphan-worktree-recovery.
-   * @returns {Promise<void>}
-   */
-  async _recoverOrphanedWorktrees() {
-    return undefined;
-  }
-
   _requiresKanbanProjectId() {
     try {
       const backend = String(getKanbanBackendName() || "")

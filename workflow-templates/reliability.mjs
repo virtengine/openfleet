@@ -742,7 +742,6 @@ export const TASK_ORPHAN_WORKTREE_RECOVERY_TEMPLATE = {
     node("recover", "action.run_command", "Recover Orphan Worktrees", {
       command:
         "node tools/workflow-orphan-worktree-recovery.mjs " +
-        "--repo-root \"{{repoRoot}}\" " +
         "--base \"{{baseBranch}}\" " +
         "--max \"{{maxRecoverPerSweep}}\"",
       failOnError: false,

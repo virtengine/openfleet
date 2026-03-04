@@ -476,6 +476,7 @@ describe("template API functions", () => {
       "template-workspace-hygiene",
       "template-task-finalization-guard",
       "template-task-repair-worktree",
+      "template-task-orphan-worktree-recovery",
       "template-task-status-transition-manager",
       // template-pr-conflict-resolver deliberately excluded — superseded by
       // template-bosun-pr-watchdog which owns conflict detection, CI checks,
