@@ -34,12 +34,12 @@ export const RESOURCE_TYPES = Object.freeze(["prompt", "agent", "skill", "mcp", 
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
-function getBosunHome() {
-  return (
-    process.env.BOSUN_HOME ||
-    process.env.BOSUN_DIR ||
-    resolve(homedir(), ".bosun")
-  );
+export function getBosunHomeDir() {
+  const explicit = process.env.BOSUN_HOME || process.env.BOSUN_DIR;
+  if (explicit) return resolve(String(explicit));
+  const modernDefault = resolve(homedir(), "bosun");
+  if (existsSync(modernDefault)) return modernDefault;
+  return resolve(homedir(), ".bosun");
 }
 
 function ensureDir(dir) {
@@ -111,7 +111,7 @@ function nowISO() {
  * Get the manifest path for a workspace (or global).
  */
 export function getManifestPath(rootDir) {
-  return resolve(rootDir || getBosunHome(), ".bosun", LIBRARY_MANIFEST);
+  return resolve(rootDir || getBosunHomeDir(), ".bosun", LIBRARY_MANIFEST);
 }
 
 /**
@@ -139,7 +139,7 @@ export function saveManifest(rootDir, manifest) {
 // ── CRUD operations ──────────────────────────────────────────────────────────
 
 function dirForType(rootDir, type) {
-  const root = rootDir || getBosunHome();
+  const root = rootDir || getBosunHomeDir();
   switch (type) {
     case "prompt": return resolve(root, PROMPT_DIR);
     case "skill":  return resolve(root, SKILL_DIR);
@@ -613,7 +613,7 @@ export function resolveEntry(workspaceRoot, id) {
   }
 
   // 2. Check global
-  const globalRoot = getBosunHome();
+  const globalRoot = getBosunHomeDir();
   if (globalRoot !== workspaceRoot) {
     const entry = getEntry(globalRoot, id);
     if (entry) {

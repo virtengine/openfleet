@@ -303,6 +303,7 @@ function ShreddingPanel({ period }) {
     dailyCounts = {},
     topAgents = [],
     recentEvents = [],
+    diagnostics = {},
   } = data;
 
   const sparkValues = sortedDates.map((d) => dailySaved[d] || 0);
@@ -333,6 +334,17 @@ function ShreddingPanel({ period }) {
               ? `${(totalOriginalChars / 1_000).toFixed(1)} K`
               : String(totalOriginalChars)} />
       <//>
+
+      ${(diagnostics?.excludedSynthetic || diagnostics?.excludedNoop || diagnostics?.unknownAttribution)
+        ? html`
+          <${Alert} severity="info" sx=${{ mb: 2 }}>
+            Showing effective shredding events only.
+            ${diagnostics?.excludedSynthetic ? ` Filtered synthetic/test events: ${diagnostics.excludedSynthetic}.` : ""}
+            ${diagnostics?.excludedNoop ? ` Filtered no-op events: ${diagnostics.excludedNoop}.` : ""}
+            ${diagnostics?.unknownAttribution ? ` Unattributed events in view: ${diagnostics.unknownAttribution}.` : ""}
+          <//>
+        `
+        : null}
 
       <!-- Trend row: daily savings sparkline + by-agent bar -->
       <${Stack} direction=${{ xs: "column", md: "row" }} spacing=${2} sx=${{ mb: 2 }}>

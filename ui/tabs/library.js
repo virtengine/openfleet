@@ -276,8 +276,11 @@ async function fetchEntries(type) {
   return res?.data || [];
 }
 
-async function fetchEntry(id) {
-  const res = await apiFetch(`/api/library/entry?id=${encodeURIComponent(id)}`);
+async function fetchEntry(id, sourceScope = "") {
+  const params = new URLSearchParams({ id: String(id || "") });
+  const normalizedScope = String(sourceScope || "").trim().toLowerCase();
+  if (normalizedScope) params.set("source", normalizedScope);
+  const res = await apiFetch(`/api/library/entry?${params.toString()}`);
   return res?.data || null;
 }
 
@@ -290,11 +293,16 @@ async function saveEntry(data) {
   return res;
 }
 
-async function removeEntry(id, deleteFile = false) {
+async function removeEntry(id, deleteFile = false, sourceScope = "") {
+  const normalizedScope = String(sourceScope || "").trim().toLowerCase();
   return apiFetch("/api/library/entry", {
     method: "DELETE",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ id, deleteFile }),
+    body: JSON.stringify({
+      id,
+      deleteFile,
+      ...(normalizedScope ? { source: normalizedScope } : {}),
+    }),
   });
 }
 
@@ -388,6 +396,8 @@ async function fetchBuiltinToolDefaults() {
 const TYPE_ICONS = { prompt: ":edit:", agent: ":bot:", skill: ":cpu:", mcp: ":plug:" };
 const TYPE_LABELS = { prompt: "Prompt", agent: "Agent Profile", skill: "Skill", mcp: "MCP Server" };
 const TYPE_COLORS = { prompt: "#58a6ff", agent: "#af7bff", skill: "#3fb950", mcp: "#f59e0b" };
+const STORAGE_SCOPE_LABELS = { repo: "Repo", workspace: "Workspace", global: "Global" };
+const STORAGE_SCOPE_COLORS = { repo: "info", workspace: "warning", global: "default" };
 const AGENT_TYPE_OPTIONS = Object.freeze([
   { value: "voice", label: "Voice" },
   { value: "task", label: "Task" },
@@ -398,6 +408,12 @@ function normalizeAgentType(rawType) {
   const value = String(rawType || "").trim().toLowerCase();
   if (value === "voice" || value === "task" || value === "chat") return value;
   return "task";
+}
+
+function normalizeStorageScope(rawScope, fallback = "repo") {
+  const value = String(rawScope || "").trim().toLowerCase();
+  if (value === "repo" || value === "workspace" || value === "global") return value;
+  return fallback;
 }
 
 function inferAgentTypeFromEntry(entry, parsedContent) {
@@ -419,6 +435,7 @@ const AUDIO_AGENT_TEMPLATES = Object.freeze({
     name: "Voice Agent (Female)",
     description: "Conversational voice specialist with concise guidance and call-friendly pacing.",
     tags: "voice,audio-agent,female,realtime",
+    storageScope: "global",
     scope: "global",
     content: JSON.stringify({
       name: "Voice Agent (Female)",
@@ -439,6 +456,7 @@ const AUDIO_AGENT_TEMPLATES = Object.freeze({
     name: "Voice Agent (Male)",
     description: "Operational voice specialist focused on diagnostics and execution.",
     tags: "voice,audio-agent,male,realtime",
+    storageScope: "global",
     scope: "global",
     content: JSON.stringify({
       name: "Voice Agent (Male)",
@@ -532,6 +550,13 @@ function LibraryCard({ entry, onSelect }) {
           <${Typography} variant="body2" color="text.secondary" sx=${{ mb: 1, WebkitLineClamp: 2, WebkitBoxOrient: "vertical", display: "-webkit-box", overflow: "hidden", fontSize: "0.82em" }}>${entry.description}<//>
         `}
         <${Stack} direction="row" spacing=${0.5} flexWrap="wrap" alignItems="center">
+          <${Chip}
+            label=${STORAGE_SCOPE_LABELS[normalizeStorageScope(entry.storageScope, "repo")] || "Repo"}
+            size="small"
+            variant="outlined"
+            color=${STORAGE_SCOPE_COLORS[normalizeStorageScope(entry.storageScope, "repo")] || "default"}
+            sx=${{ fontSize: "0.74em" }}
+          />
           ${entry.type === "agent" && entry.agentType && html`
             <${Chip} label=${String(entry.agentType).toUpperCase()} size="small" variant="outlined" sx=${{ fontSize: "0.75em" }} />
           `}
@@ -558,6 +583,7 @@ function EntryEditor({ entry, onClose, onSaved, onDeleted }) {
     description: entry?.description || "",
     tags: (entry?.tags || []).join(", "),
     scope: entry?.scope || "global",
+    storageScope: normalizeStorageScope(entry?.storageScope, "repo"),
     agentType: inferAgentTypeFromEntry(entry, null),
     content: typeof entry?.content === "string" ? entry.content : "",
   };
@@ -579,6 +605,7 @@ function EntryEditor({ entry, onClose, onSaved, onDeleted }) {
       description: entry?.description || "",
       tags: (entry?.tags || []).join(", "),
       scope: entry?.scope || "global",
+      storageScope: normalizeStorageScope(entry?.storageScope, "repo"),
       agentType: inferAgentTypeFromEntry(entry, null),
       content: "",
     };
@@ -593,7 +620,7 @@ function EntryEditor({ entry, onClose, onSaved, onDeleted }) {
     let cancelled = false;
     (async () => {
       try {
-        const detail = await fetchEntry(entry.id);
+        const detail = await fetchEntry(entry.id, entry.storageScope);
         if (cancelled) return;
         let contentStr = detail?.content ?? "";
         if (typeof contentStr === "object") contentStr = JSON.stringify(contentStr, null, 2);
@@ -602,6 +629,7 @@ function EntryEditor({ entry, onClose, onSaved, onDeleted }) {
           const next = {
             ...f,
             content: contentStr,
+            storageScope: normalizeStorageScope(detail?.storageScope || f.storageScope, "repo"),
             agentType: inferAgentTypeFromEntry(detail || entry, parsed),
           };
           setBaseline(next);
@@ -661,6 +689,7 @@ function EntryEditor({ entry, onClose, onSaved, onDeleted }) {
         description: form.description.trim(),
         tags,
         scope: form.scope,
+        storageScope: normalizeStorageScope(form.storageScope, "repo"),
         content,
       });
       if (res?.ok) {
@@ -687,7 +716,11 @@ function EntryEditor({ entry, onClose, onSaved, onDeleted }) {
   const handleDelete = useCallback(async () => {
     setLoading(true);
     try {
-      const res = await removeEntry(entry.id, true);
+      const res = await removeEntry(
+        entry.id,
+        true,
+        normalizeStorageScope(form.storageScope || entry?.storageScope, "repo"),
+      );
       if (res?.ok) {
         showToast("Deleted", "success");
         onDeleted?.();
@@ -698,7 +731,7 @@ function EntryEditor({ entry, onClose, onSaved, onDeleted }) {
       showToast(err.message, "error");
     }
     setLoading(false);
-  }, [entry?.id, onDeleted]);
+  }, [entry?.id, entry?.storageScope, form.storageScope, onDeleted]);
 
   const contentPlaceholder = form.type === "prompt"
     ? "# Prompt Title\n\nYour prompt content here...\n\nUse {{VARIABLE_NAME}} for template variables."
@@ -744,6 +777,14 @@ function EntryEditor({ entry, onClose, onSaved, onDeleted }) {
         <${TextField} size="small" fullWidth label="Name" value=${form.name} onInput=${updateField("name")} placeholder="e.g. Task Executor, UI Agent, Background Tasks" />
         <${TextField} size="small" fullWidth label="Description" value=${form.description} onInput=${updateField("description")} placeholder="Brief one-line summary" />
         <${TextField} size="small" fullWidth label="Tags (comma-separated)" value=${form.tags} onInput=${updateField("tags")} placeholder="e.g. frontend, ui, react" />
+        <${FormControl} fullWidth size="small">
+          <${InputLabel}>Storage Location<//>
+          <${Select} value=${normalizeStorageScope(form.storageScope, "repo")} onChange=${updateField("storageScope")} label="Storage Location">
+            <${MenuItem} value="repo">Repo<//>
+            <${MenuItem} value="workspace">Workspace<//>
+            <${MenuItem} value="global">Global<//>
+          <//>
+        <//>
         <${FormControl} fullWidth size="small">
           <${InputLabel}>Scope<//>
           <${Select} value=${form.scope} onChange=${updateField("scope")} label="Scope">
