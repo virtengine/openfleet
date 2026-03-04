@@ -536,6 +536,8 @@ export class SessionTracker {
         title: s.taskTitle || s.title || null,
         type: s.type || "task",
         status: s.status,
+        workspaceId: String(s?.metadata?.workspaceId || "").trim() || null,
+        workspaceDir: String(s?.metadata?.workspaceDir || "").trim() || null,
         turnCount: s.turnCount || 0,
         createdAt: s.createdAt || new Date(s.startedAt).toISOString(),
         lastActiveAt: s.lastActiveAt || new Date(s.lastActivityAt).toISOString(),

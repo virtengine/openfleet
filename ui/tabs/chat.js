@@ -50,6 +50,7 @@ import {
 import { routeParams, setRouteParams } from "../modules/router.js";
 import { ChatView } from "../components/chat-view.js";
 import { apiFetch } from "../modules/api.js";
+import { buildSessionApiPath, resolveSessionWorkspaceHint } from "../modules/session-api.js";
 import { showToast } from "../modules/state.js";
 import { VoiceMicButton, requestVoiceModeOpen } from "../modules/voice.js";
 import { iconText, resolveIcon } from "../modules/icon-utils.js";
@@ -135,6 +136,19 @@ function formatAttachmentSize(size) {
   if (raw >= 1024 * 1024) return `${(raw / (1024 * 1024)).toFixed(1)} MB`;
   if (raw >= 1024) return `${Math.round(raw / 1024)} KB`;
   return `${raw} B`;
+}
+
+/** Keep unsent attachments per-session so switching chats doesn't discard uploads. */
+const pendingAttachmentsBySessionId = new Map();
+
+function hasDragFiles(event) {
+  const types = event?.dataTransfer?.types;
+  if (!types) return false;
+  try {
+    return Array.from(types).includes("Files");
+  } catch {
+    return false;
+  }
 }
 
 /* ─── Welcome screen (no session selected) ─── */

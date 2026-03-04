@@ -2161,6 +2161,12 @@ function sessionMatchesWorkspaceContext(session, workspaceContext) {
   if (!session) return false;
   if (!workspaceContext || workspaceContext.allWorkspaces) return true;
   const sessionWorkspace = resolveSessionWorkspaceMeta(session);
+  const hasWorkspaceMeta =
+    Boolean(sessionWorkspace.workspaceId) || Boolean(sessionWorkspace.workspaceDir);
+  if (!hasWorkspaceMeta) {
+    // Backward compatibility for sessions created before workspace metadata existed.
+    return true;
+  }
   if (sessionWorkspace.workspaceId) {
     return sessionWorkspace.workspaceId === String(workspaceContext.workspaceFilter || "").trim().toLowerCase();
   }
@@ -10635,7 +10641,9 @@ async function handleApi(req, res, url) {
   if (sessionMatch) {
     const sessionId = decodeURIComponent(sessionMatch[1]);
     const action = sessionMatch[2] || null;
-    const workspaceContext = resolveWorkspaceContextFromRequest(url, { allowAll: false });
+    // Session-specific routes should support workspace=all so the UI can open
+    // historical sessions while browsing cross-workspace lists.
+    const workspaceContext = resolveWorkspaceContextFromRequest(url, { allowAll: true });
     if (!workspaceContext) {
       jsonResponse(res, 400, { ok: false, error: "Unknown workspace" });
       return;

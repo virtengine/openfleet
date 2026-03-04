@@ -8,6 +8,7 @@ import { useState, useEffect, useCallback, useRef } from "preact/hooks";
 import htm from "htm";
 import { signal, computed } from "@preact/signals";
 import { apiFetch, onWsMessage } from "../modules/api.js";
+import { buildSessionApiPath, resolveSessionWorkspaceHint } from "../modules/session-api.js";
 import { formatRelative, truncate } from "../modules/utils.js";
 import { resolveIcon } from "../modules/icon-utils.js";
 import {
@@ -36,9 +37,12 @@ let _wsListenerReady = false;
 let _lastLoadFilter = {};
 
 function sessionPath(id, action = "") {
-  const safeId = encodeURIComponent(String(id || "").trim());
-  if (!safeId) return "";
-  return action ? `/api/sessions/${safeId}/${action}` : `/api/sessions/${safeId}`;
+  const session = (sessionsData.peek() || []).find((entry) => entry?.id === id) || null;
+  const workspace = resolveSessionWorkspaceHint(
+    session,
+    String(_lastLoadFilter?.workspace || "").trim() || "active",
+  );
+  return buildSessionApiPath(id, action, { workspace });
 }
 
 /* ─── Data loaders ─── */
@@ -66,18 +70,30 @@ export async function loadSessions(filter = {}) {
 
 export async function loadSessionMessages(id, opts = {}) {
   try {
-    let url = sessionPath(id);
-    if (!url) return { ok: false, error: "invalid" };
+    const baseUrl = sessionPath(id);
+    if (!baseUrl) return { ok: false, error: "invalid" };
     const requestedLimit = opts.limit != null ? Number(opts.limit) : DEFAULT_SESSION_PAGE_SIZE;
     const limit =
       Number.isFinite(requestedLimit) && requestedLimit > 0
         ? Math.min(Math.floor(requestedLimit), MAX_SESSION_PAGE_SIZE)
         : DEFAULT_SESSION_PAGE_SIZE;
-    const params = new URLSearchParams();
-    params.set("limit", String(limit));
-    if (opts.offset != null) params.set("offset", String(opts.offset));
-    const qs = params.toString();
-    if (qs) url += `?${qs}`;
+    const url = (() => {
+      try {
+        const parsed = new URL(baseUrl, globalThis.location?.origin || "http://localhost");
+        parsed.searchParams.set("limit", String(limit));
+        if (opts.offset != null) {
+          parsed.searchParams.set("offset", String(opts.offset));
+        }
+        return `${parsed.pathname}${parsed.search}`;
+      } catch {
+        const join = baseUrl.includes("?") ? "&" : "?";
+        const parts = [`limit=${encodeURIComponent(String(limit))}`];
+        if (opts.offset != null) {
+          parts.push(`offset=${encodeURIComponent(String(opts.offset))}`);
+        }
+        return `${baseUrl}${join}${parts.join("&")}`;
+      }
+    })();
     const res = await apiFetch(url, { _silent: true });
     if (res?.session) {
       const normalized = dedupeMessages(res.session.messages || []);

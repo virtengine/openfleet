@@ -10,6 +10,7 @@ import { memo } from "preact/compat";
 import { useState, useEffect, useLayoutEffect, useRef, useCallback, useMemo } from "preact/hooks";
 import htm from "htm";
 import { apiFetch } from "../modules/api.js";
+import { buildSessionApiPath, resolveSessionWorkspaceHint } from "../modules/session-api.js";
 import { showToast } from "../modules/state.js";
 import { formatRelative, truncate, formatBytes } from "../modules/utils.js";
 import { iconText, resolveIcon } from "../modules/icon-utils.js";
@@ -721,7 +722,14 @@ export function ChatView({ sessionId, readOnly = false, embedded = false }) {
     session?.status === "active" || session?.status === "running";
   const resumeLabel =
     session?.status === "archived" ? "Unarchive" : "Resume Session";
-  const safeSessionId = sessionId ? encodeURIComponent(sessionId) : "";
+  const sessionWorkspace = resolveSessionWorkspaceHint(session, "active");
+  const sessionPath = useCallback(
+    (action = "") =>
+      buildSessionApiPath(sessionId, action, {
+        workspace: sessionWorkspace,
+      }),
+    [sessionId, sessionWorkspace],
+  );
 
   /* Memoize the filter key list so filteredMessages memoization works properly.
      Previously a new array was created every render, breaking useMemo deps. */
@@ -1038,7 +1046,12 @@ export function ChatView({ sessionId, readOnly = false, embedded = false }) {
       for (const file of list) {
         form.append("file", file, file.name || "attachment");
       }
-      const res = await apiFetch(`/api/sessions/${safeSessionId}/attachments`, {
+      const attachmentsPath = sessionPath("attachments");
+      if (!attachmentsPath) {
+        showToast("Attachment upload failed", "error");
+        return;
+      }
+      const res = await apiFetch(attachmentsPath, {
         method: "POST",
         body: form,
       });
@@ -1052,7 +1065,7 @@ export function ChatView({ sessionId, readOnly = false, embedded = false }) {
     } finally {
       setUploadingAttachments(false);
     }
-  }, [sessionId, uploadingAttachments]);
+  }, [sessionId, uploadingAttachments, sessionPath]);
 
   const handleAttachmentInput = useCallback((e) => {
     const files = e.target?.files;
@@ -1127,7 +1140,9 @@ export function ChatView({ sessionId, readOnly = false, embedded = false }) {
     setEditingText("");
 
     try {
-      await apiFetch(`/api/sessions/${safeSessionId}/message/edit`, {
+      const editPath = sessionPath("message/edit");
+      if (!editPath) throw new Error("Session path unavailable");
+      await apiFetch(editPath, {
         method: "POST",
         body: JSON.stringify({
           messageId: editingMsgRef?.id,
@@ -1144,7 +1159,7 @@ export function ChatView({ sessionId, readOnly = false, embedded = false }) {
       setLoadError(res?.ok ? null : res?.error || "unavailable");
       showToast("Failed to update message", "error");
     }
-  }, [sessionId, editingMsgRef, editingText]);
+  }, [sessionId, editingMsgRef, editingText, sessionPath]);
 
   const handleSend = useCallback(async () => {
     const text = input.trim();
@@ -1164,7 +1179,9 @@ export function ChatView({ sessionId, readOnly = false, embedded = false }) {
     setSending(true);
 
     try {
-      await apiFetch(`/api/sessions/${safeSessionId}/message`, {
+      const messagePath = sessionPath("message");
+      if (!messagePath) throw new Error("Session path unavailable");
+      await apiFetch(messagePath, {
         method: "POST",
         body: JSON.stringify({
           content: text,
@@ -1178,11 +1195,13 @@ export function ChatView({ sessionId, readOnly = false, embedded = false }) {
     } finally {
       setSending(false);
     }
-  }, [input, sending, sessionId, pendingAttachments, readOnly, uploadingAttachments]);
+  }, [input, sending, sessionId, pendingAttachments, readOnly, uploadingAttachments, sessionPath]);
 
   const handleResume = useCallback(async () => {
     try {
-      await apiFetch(`/api/sessions/${safeSessionId}/resume`, { method: "POST" });
+      const resumePath = sessionPath("resume");
+      if (!resumePath) throw new Error("Session path unavailable");
+      await apiFetch(resumePath, { method: "POST" });
       showToast(
         session?.status === "archived" ? "Session unarchived" : "Session resumed",
         "success",
@@ -1193,11 +1212,13 @@ export function ChatView({ sessionId, readOnly = false, embedded = false }) {
     } catch {
       showToast("Failed to resume session", "error");
     }
-  }, [sessionId]);
+  }, [sessionId, session?.status, sessionPath]);
 
   const handleArchive = useCallback(async () => {
     try {
-      await apiFetch(`/api/sessions/${safeSessionId}/archive`, { method: "POST" });
+      const archivePath = sessionPath("archive");
+      if (!archivePath) throw new Error("Session path unavailable");
+      await apiFetch(archivePath, { method: "POST" });
       showToast("Session archived", "success");
       await loadSessions();
       const res = await loadSessionMessages(sessionId, { limit: CHAT_PAGE_SIZE });
@@ -1205,7 +1226,7 @@ export function ChatView({ sessionId, readOnly = false, embedded = false }) {
     } catch {
       showToast("Failed to archive session", "error");
     }
-  }, [sessionId]);
+  }, [sessionId, sessionPath]);
 
   const handleKeyDown = useCallback(
     (e) => {
@@ -1686,6 +1707,4 @@ export function ChatView({ sessionId, readOnly = false, embedded = false }) {
     </${Box}>
   `;
 }
-
-
 

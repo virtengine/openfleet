@@ -1129,6 +1129,16 @@ describe("ui-server mini app", () => {
     ).then((r) => r.json());
     expect(allList.ok).toBe(true);
     expect(allList.sessions.length).toBeGreaterThanOrEqual(2);
+    const wsTwoSessionId = wsTwoCreate?.session?.id;
+    expect(typeof wsTwoSessionId).toBe("string");
+
+    const allScopedSession = await fetch(
+      `http://127.0.0.1:${port}/api/sessions/${encodeURIComponent(wsTwoSessionId)}?workspace=all&limit=10`,
+    );
+    expect(allScopedSession.status).toBe(200);
+    const allScopedSessionBody = await allScopedSession.json();
+    expect(allScopedSessionBody.ok).toBe(true);
+    expect(allScopedSessionBody.session?.id).toBe(wsTwoSessionId);
 
     rmSync(tmpDir, { recursive: true, force: true });
   }, 20000);
