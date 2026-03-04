@@ -65,8 +65,8 @@ describe("codebase-annotation-audit skill", () => {
 
     // Key sections
     expect(skill.content).toContain("Annotation Format");
-    expect(skill.content).toContain("CLAUDE:SUMMARY");
-    expect(skill.content).toContain("CLAUDE:WARN");
+    expect(skill.content).toContain("BOSUN:SUMMARY");
+    expect(skill.content).toContain("BOSUN:WARN");
     expect(skill.content).toContain("6-Phase Audit");
     expect(skill.content).toContain("Phase 1");
     expect(skill.content).toContain("Inventory");
@@ -95,7 +95,7 @@ describe("codebase-annotation-audit skill", () => {
 
     const content = readFileSync(filePath, "utf8");
     expect(content).toContain("Codebase Annotation Audit");
-    expect(content).toContain("CLAUDE:SUMMARY");
+    expect(content).toContain("BOSUN:SUMMARY");
   });
 
   // ── Index & Discovery ───────────────────────────────────────────────────
@@ -129,7 +129,7 @@ describe("codebase-annotation-audit skill", () => {
 
     const auditSkill = matched.find((s) => s.filename === "codebase-annotation-audit.md");
     expect(auditSkill).toBeTruthy();
-    expect(auditSkill.content).toContain("CLAUDE:SUMMARY");
+    expect(auditSkill.content).toContain("BOSUN:SUMMARY");
   });
 
   it("is matched by findRelevantSkills for documentation tasks", () => {
