@@ -589,6 +589,24 @@ async function attemptMonitorRecovery(triggerReason) {
     return;
   }
 
+  // If the monitor is already running, nothing to recover
+  if (readMonitorPid()) {
+    log("info", `monitor is already running — suppressing recovery (${triggerReason})`);
+    return;
+  }
+
+  // If a daemon-child is alive it manages its own restart loop internally;
+  // spawning a competing daemon from the sentinel causes immediate PID/port
+  // conflicts and the "bosun process died during startup" crash loop.
+  const liveDaemonPid = readDaemonPid();
+  if (liveDaemonPid) {
+    log(
+      "info",
+      `daemon-child (PID ${liveDaemonPid}) is alive — suppressing sentinel recovery to avoid competing restart (${triggerReason})`,
+    );
+    return;
+  }
+
   // ── Circuit breaker: stop retrying after consecutive failures ──
   if (recoveryCircuitOpen) {
     const elapsed = Date.now() - recoveryCircuitOpenedAt;
@@ -1457,6 +1475,14 @@ export async function ensureMonitorRunning(reason) {
   // Already running
   if (readMonitorPid()) return;
 
+  // A live daemon-child is already managing monitor startup — don't spawn a
+  // competing one. The daemon's own restart loop will surface the monitor PID
+  // once it is healthy.
+  if (readDaemonPid()) {
+    log("info", `daemon-child already alive — skipping spawn (reason: ${reason})`);
+    return;
+  }
+
   // Another call is already starting the monitor — piggyback on it
   if (monitorStartPromise) {
     log("info", `waiting for in-progress monitor start (reason: ${reason})`);
@@ -1746,7 +1772,16 @@ async function healthCheck() {
 
   if (mode === "companion") {
     if (!monPid) {
-      // Monitor died while in companion mode — send crash notification and go standalone
+      // Monitor died while in companion mode — send crash notification and go standalone.
+      // Before acting, verify the daemon-child isn't mid-restart (PID files can lag).
+      const daemonStillAlive = readDaemonPid();
+      if (daemonStillAlive) {
+        log(
+          "info",
+          `monitor PID gone but daemon-child (PID ${daemonStillAlive}) is alive — waiting for daemon-managed restart`,
+        );
+        return;
+      }
       log("warn", "monitor process died — transitioning to standalone");
       removeMonitorPidFiles();
       recordMonitorCrashEvent();
