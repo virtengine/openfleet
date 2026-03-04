@@ -13,11 +13,11 @@ import {
 } from "electron";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { execFileSync, spawn } from "node:child_process";
 import { request as httpRequest } from "node:http";
 import { request as httpsRequest } from "node:https";
-import { homedir } from "node:os";
+import { homedir, tmpdir } from "node:os";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
@@ -921,9 +921,8 @@ function buildAppMenu() {
         },
         { type: /** @type {const} */ ("separator") },
         {
-          label: "Check for Updates",
-          enabled: app.isPackaged,
-          click: () => maybeAutoUpdate().catch(() => {}),
+          label: "Check for Updates\u2026",
+          click: () => checkForUpdateDesktop().catch(() => {}),
         },
       ],
     },
@@ -1200,12 +1199,36 @@ async function createMainWindow() {
   });
 
   mainWindow.on("close", (event) => {
-    // User close should not quit the app; minimize to taskbar/dock.
+    // Programmatic quit — let it through.
     if (shuttingDown) return;
     event.preventDefault();
     if (mainWindow?.isMinimized()) return;
-    mainWindow?.setSkipTaskbar(false);
-    mainWindow?.minimize();
+
+    // Show an exit dialog so the user can choose what to do.
+    dialog
+      .showMessageBox(mainWindow, {
+        type: "question",
+        title: "Close Bosun",
+        message: "What would you like to do?",
+        buttons: ["Hide to Taskbar", "Exit Bosun", "Cancel"],
+        defaultId: 0,
+        cancelId: 2,
+        noLink: true,
+      })
+      .then(({ response }) => {
+        if (response === 0) {
+          // Hide to taskbar / system tray
+          mainWindow?.hide();
+          if (trayMode && process.platform === "darwin") {
+            app.dock?.hide();
+          }
+        } else if (response === 1) {
+          // Full exit
+          void shutdown("user_exit");
+        }
+        // response === 2 → Cancel — do nothing
+      })
+      .catch(() => {});
   });
 
   mainWindow.on("closed", () => {
@@ -1473,6 +1496,10 @@ function refreshTrayMenu() {
     },
     { type: /** @type {const} */ ("separator") },
 
+    {
+      label: "Check for Updates\u2026",
+      click: () => checkForUpdateDesktop().catch(() => {}),
+    },
     {
       label: "Restart to Apply Update",
       enabled: app.isPackaged,
@@ -1897,18 +1924,337 @@ async function bootstrap() {
 }
 
 async function maybeAutoUpdate() {
-  if (!app.isPackaged) return;
-  if (process.env.BOSUN_DESKTOP_AUTO_UPDATE !== "1") return;
-  try {
-    const { autoUpdater } = await import("electron-updater");
-    const feedUrl = process.env.BOSUN_DESKTOP_UPDATE_URL;
-    if (feedUrl) {
-      autoUpdater.setFeedURL({ url: feedUrl });
+  // Packaged Electron builds use electron-updater (Squirrel / NSIS).
+  if (app.isPackaged && process.env.BOSUN_DESKTOP_AUTO_UPDATE === "1") {
+    try {
+      const { autoUpdater } = await import("electron-updater");
+      const feedUrl = process.env.BOSUN_DESKTOP_UPDATE_URL;
+      if (feedUrl) {
+        autoUpdater.setFeedURL({ url: feedUrl });
+      }
+      autoUpdater.autoDownload = true;
+      autoUpdater.checkForUpdatesAndNotify().catch(() => {});
+    } catch (err) {
+      console.warn("[desktop] auto-update unavailable", err?.message || err);
     }
-    autoUpdater.autoDownload = true;
-    autoUpdater.checkForUpdatesAndNotify().catch(() => {});
+    return;
+  }
+
+  // For dev / npm-global installs: silent background check on launch.
+  // Just logs — no dialogs. The user can trigger interactive flow from the menu.
+  try {
+    const currentVersion = readCurrentBosunVersion();
+    const latest = await fetchLatestVersionFromRegistry();
+    if (latest && isNewerVersion(latest, currentVersion)) {
+      console.log(
+        `[desktop] Update available: v${currentVersion} → v${latest}. ` +
+        `Use Bosun → Check for Updates to install.`,
+      );
+    }
+  } catch {
+    // silent — never block startup
+  }
+}
+
+// ── Desktop Update Helpers ────────────────────────────────────────────────────
+
+/**
+ * Read the current bosun version from the on-disk package.json.
+ * Works in both packaged and dev setups.
+ */
+function readCurrentBosunVersion() {
+  try {
+    const pkg = JSON.parse(
+      readFileSync(resolveBosunRuntimePath("package.json"), "utf8"),
+    );
+    return pkg.version || "0.0.0";
+  } catch {
+    return "0.0.0";
+  }
+}
+
+/** Simple semver comparison (major.minor.patch). */
+function isNewerVersion(remote, local) {
+  const parse = (v) => {
+    const parts = String(v).replace(/^v/, "").split(".").map(Number);
+    return { major: parts[0] || 0, minor: parts[1] || 0, patch: parts[2] || 0 };
+  };
+  const r = parse(remote);
+  const l = parse(local);
+  if (r.major !== l.major) return r.major > l.major;
+  if (r.minor !== l.minor) return r.minor > l.minor;
+  return r.patch > l.patch;
+}
+
+/**
+ * Fetch the latest published version of `bosun` from the npm registry.
+ * Uses raw https to avoid undici handle leaks on Windows.
+ */
+function fetchLatestVersionFromRegistry() {
+  return new Promise((res) => {
+    const req = httpsRequest(
+      "https://registry.npmjs.org/bosun/latest",
+      { headers: { Accept: "application/json" }, timeout: 10_000 },
+      (response) => {
+        if (response.statusCode < 200 || response.statusCode >= 300) {
+          response.resume();
+          return res(null);
+        }
+        let body = "";
+        response.setEncoding("utf8");
+        response.on("data", (chunk) => { body += chunk; });
+        response.on("end", () => {
+          try { res(JSON.parse(body).version || null); } catch { res(null); }
+        });
+      },
+    );
+    req.on("error", () => res(null));
+    req.on("timeout", () => { req.destroy(); res(null); });
+    req.end();
+  });
+}
+
+/**
+ * Interactive "Check for Updates" flow for the desktop app.
+ * Fetches the latest version from npm, shows a dialog, and — if the user
+ * confirms — spawns a resilient updater script that survives EBUSY locks.
+ */
+async function checkForUpdateDesktop() {
+  const parentWin = mainWindow && !mainWindow.isDestroyed() ? mainWindow : null;
+
+  const currentVersion = readCurrentBosunVersion();
+
+  let latestVersion;
+  try {
+    latestVersion = await fetchLatestVersionFromRegistry();
+  } catch {
+    latestVersion = null;
+  }
+
+  if (!latestVersion) {
+    await dialog.showMessageBox(parentWin, {
+      type: "warning",
+      title: "Check for Updates",
+      message: "Could not reach the npm registry.",
+      detail:
+        "Make sure you are connected to the internet and try again.\n\n" +
+        "You can also update manually:\n  npm install -g bosun@latest",
+      buttons: ["OK"],
+    });
+    return;
+  }
+
+  if (!isNewerVersion(latestVersion, currentVersion)) {
+    await dialog.showMessageBox(parentWin, {
+      type: "info",
+      title: "Check for Updates",
+      message: "Bosun is up to date!",
+      detail: `Current version: v${currentVersion}\nLatest version:  v${latestVersion}`,
+      buttons: ["OK"],
+    });
+    return;
+  }
+
+  // Update is available — ask the user whether to install.
+  const { response } = await dialog.showMessageBox(parentWin, {
+    type: "info",
+    title: "Update Available",
+    message: `A new version of Bosun is available!`,
+    detail:
+      `Current version: v${currentVersion}\n` +
+      `New version:     v${latestVersion}\n\n` +
+      "Bosun will close, install the update, and relaunch automatically.\n" +
+      "The update typically takes 10–30 seconds.",
+    buttons: ["Install Update & Restart", "Later"],
+    defaultId: 0,
+    cancelId: 1,
+  });
+
+  if (response !== 0) return;
+
+  // Spawn a detached updater script that waits for the app to exit,
+  // retries npm install (surviving EBUSY), and relaunches.
+  try {
+    spawnResilientUpdater(latestVersion);
+    // Brief pause so the updater process is established before we quit.
+    await new Promise((r) => setTimeout(r, 500));
+    void shutdown("update_install");
   } catch (err) {
-    console.warn("[desktop] auto-update unavailable", err?.message || err);
+    await dialog.showMessageBox(parentWin, {
+      type: "error",
+      title: "Update Failed",
+      message: "Could not start the update process.",
+      detail:
+        `${err?.message || err}\n\n` +
+        "You can update manually by running:\n  npm install -g bosun@latest",
+      buttons: ["OK"],
+    });
+  }
+}
+
+/**
+ * Spawn a detached OS-native script that:
+ *   1. Waits for the Bosun desktop process to fully exit.
+ *   2. Retries `npm install -g bosun@<version>` with exponential back-off
+ *      to survive EBUSY / file-lock errors on Windows.
+ *   3. Attempts to relaunch Bosun desktop after a successful install.
+ *   4. Self-deletes the temp script.
+ */
+function spawnResilientUpdater(version) {
+  const safeVersion = String(version).replaceAll(/[^0-9.a-zA-Z-]/g, "");
+  const scriptId = `bosun-update-${Date.now()}`;
+
+  if (process.platform === "win32") {
+    const scriptPath = resolve(tmpdir(), `${scriptId}.ps1`);
+    // Resolve the bosun CLI so we can relaunch after install.
+    const bosunCliPath = resolveBosunRuntimePath("cli.mjs").replaceAll("\\", "\\\\");
+    const nodeExePath = process.execPath.replaceAll("\\", "\\\\");
+    const script = [
+      `# Bosun Desktop Auto-Updater — generated ${new Date().toISOString()}`,
+      `$ErrorActionPreference = 'Stop'`,
+      `$parentPid = ${process.pid}`,
+      ``,
+      `# ── Wait for the desktop process to exit ──────────────────────`,
+      `$maxWait = 30`,
+      `$waited = 0`,
+      `while ($waited -lt $maxWait) {`,
+      `    try {`,
+      `        Get-Process -Id $parentPid -ErrorAction Stop | Out-Null`,
+      `        Start-Sleep -Seconds 1`,
+      `        $waited++`,
+      `    } catch {`,
+      `        break`,
+      `    }`,
+      `}`,
+      ``,
+      `# ── Retry npm install with exponential back-off ───────────────`,
+      `$maxRetries = 6`,
+      `$delay = 2`,
+      `$success = $false`,
+      ``,
+      `for ($i = 1; $i -le $maxRetries; $i++) {`,
+      `    Write-Host "[bosun-updater] Attempt $i / $maxRetries ..."`,
+      `    try {`,
+      `        $output = & npm install -g bosun@${safeVersion} 2>&1 | Out-String`,
+      `        if ($LASTEXITCODE -eq 0) {`,
+      `            Write-Host "[bosun-updater] Success!"`,
+      `            $success = $true`,
+      `            break`,
+      `        }`,
+      `        Write-Host $output`,
+      `    } catch {`,
+      `        Write-Host "[bosun-updater] Error: $_"`,
+      `    }`,
+      `    if ($i -lt $maxRetries) {`,
+      `        Write-Host "[bosun-updater] Retrying in $delay seconds ..."`,
+      `        Start-Sleep -Seconds $delay`,
+      `        $delay = [math]::Min($delay * 2, 30)`,
+      `    }`,
+      `}`,
+      ``,
+      `# ── Last-resort: --force ──────────────────────────────────────`,
+      `if (-not $success) {`,
+      `    Write-Host "[bosun-updater] Trying with --force ..."`,
+      `    try {`,
+      `        & npm install -g bosun@${safeVersion} --force 2>&1 | Out-String`,
+      `        if ($LASTEXITCODE -eq 0) { $success = $true }`,
+      `    } catch {`,
+      `        Write-Host "[bosun-updater] Force install also failed: $_"`,
+      `    }`,
+      `}`,
+      ``,
+      `# ── Relaunch Bosun desktop ────────────────────────────────────`,
+      `if ($success) {`,
+      `    Write-Host "[bosun-updater] Relaunching Bosun desktop ..."`,
+      `    try {`,
+      `        Start-Process -FilePath "bosun" -ArgumentList "--desktop" -WindowStyle Hidden`,
+      `    } catch {`,
+      `        # Fallback: launch via node directly`,
+      `        try {`,
+      `            Start-Process -FilePath "${nodeExePath}" -ArgumentList "${bosunCliPath}", "--desktop" -WindowStyle Hidden`,
+      `        } catch {`,
+      `            Write-Host "[bosun-updater] Could not relaunch: $_"`,
+      `        }`,
+      `    }`,
+      `} else {`,
+      `    Write-Host "[bosun-updater] Update failed. Please run manually: npm install -g bosun@latest"`,
+      `}`,
+      ``,
+      `# ── Clean up ─────────────────────────────────────────────────`,
+      `Start-Sleep -Seconds 2`,
+      `Remove-Item -Path $MyInvocation.MyCommand.Path -Force -ErrorAction SilentlyContinue`,
+    ].join("\n");
+
+    writeFileSync(scriptPath, script, "utf8");
+
+    const child = spawn(
+      "powershell.exe",
+      ["-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-File", scriptPath],
+      { detached: true, stdio: "ignore", windowsHide: false },
+    );
+    child.unref();
+    console.log(`[desktop] spawned updater script: ${scriptPath} (pid ${child.pid})`);
+  } else {
+    // ── macOS / Linux ─────────────────────────────────────────────────
+    const scriptPath = resolve(tmpdir(), `${scriptId}.sh`);
+    const script = [
+      `#!/usr/bin/env bash`,
+      `# Bosun Desktop Auto-Updater — generated ${new Date().toISOString()}`,
+      `set -e`,
+      `PARENT_PID=${process.pid}`,
+      `MAX_WAIT=30`,
+      `WAITED=0`,
+      ``,
+      `# Wait for parent to exit`,
+      `while [ $WAITED -lt $MAX_WAIT ]; do`,
+      `    if kill -0 $PARENT_PID 2>/dev/null; then`,
+      `        sleep 1`,
+      `        WAITED=$((WAITED + 1))`,
+      `    else`,
+      `        break`,
+      `    fi`,
+      `done`,
+      ``,
+      `# Retry npm install with back-off`,
+      `MAX_RETRIES=6`,
+      `DELAY=2`,
+      `SUCCESS=0`,
+      `for i in $(seq 1 $MAX_RETRIES); do`,
+      `    echo "[bosun-updater] Attempt $i / $MAX_RETRIES ..."`,
+      `    if npm install -g bosun@${safeVersion} 2>&1; then`,
+      `        SUCCESS=1`,
+      `        break`,
+      `    fi`,
+      `    echo "[bosun-updater] Retrying in \${DELAY}s ..."`,
+      `    sleep $DELAY`,
+      `    DELAY=$((DELAY * 2))`,
+      `    [ $DELAY -gt 30 ] && DELAY=30`,
+      `done`,
+      ``,
+      `# Last resort: --force`,
+      `if [ $SUCCESS -eq 0 ]; then`,
+      `    echo "[bosun-updater] Trying with --force ..."`,
+      `    npm install -g bosun@${safeVersion} --force 2>&1 && SUCCESS=1 || true`,
+      `fi`,
+      ``,
+      `# Relaunch`,
+      `if [ $SUCCESS -eq 1 ]; then`,
+      `    echo "[bosun-updater] Relaunching Bosun desktop ..."`,
+      `    nohup bosun --desktop </dev/null >/dev/null 2>&1 &`,
+      `fi`,
+      ``,
+      `# Clean up`,
+      `rm -f "$0"`,
+    ].join("\n");
+
+    writeFileSync(scriptPath, script, { encoding: "utf8", mode: 0o755 });
+
+    const child = spawn("bash", [scriptPath], {
+      detached: true,
+      stdio: "ignore",
+    });
+    child.unref();
+    console.log(`[desktop] spawned updater script: ${scriptPath} (pid ${child.pid})`);
   }
 }
 
