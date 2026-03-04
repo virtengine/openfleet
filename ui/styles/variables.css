@@ -164,7 +164,7 @@
 
 /* Light theme - Telegram sets --tg-color-scheme */
 @media (prefers-color-scheme: light) {
-  :root:not([data-theme="dark"]) {
+  :root[data-theme-lock="system"]:not([data-theme]) {
     --bg-primary: var(--tg-theme-bg-color, #f4f7fb);
     --bg-secondary: var(--tg-theme-secondary-bg-color, #ffffff);
     --bg-card: var(--tg-theme-section-bg-color, #ffffff);

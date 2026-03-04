@@ -1027,7 +1027,7 @@ function InspectorPanel({ onResizeStart, onResizeReset, showResizer }) {
               <div class="inspector-kv"><span>Status</span><strong>${status}</strong></div>
               <div class="inspector-kv"><span>Type</span><strong>${type}</strong></div>
               <div class="inspector-kv"><span>Last Active</span><strong>${lastActiveLabel}</strong></div>
-              <div class="inspector-kv"><span>Preview</span><strong>${preview}</strong></div>
+              <div class="inspector-kv inspector-kv-preview"><span>Preview</span><strong class="inspector-preview-value" title=${preview}>${preview}</strong></div>
             `
           : html`<div class="inspector-empty">Select a session to see context.</div>`}
       </div>

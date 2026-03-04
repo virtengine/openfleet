@@ -926,10 +926,11 @@ async function getWorkflowEngineModule() {
         const telegramChatId = process.env.TELEGRAM_CHAT_ID;
         const telegramService = telegramToken
           ? {
-              async sendMessage(chatId, text) {
+              async sendMessage(chatId, text, options = {}) {
                 const target = chatId || telegramChatId;
                 if (!target) return;
                 try {
+                  const parseMode = String(options?.parseMode || "").trim() || "HTML";
                   await fetch(
                     `https://api.telegram.org/bot${telegramToken}/sendMessage`,
                     {
@@ -938,7 +939,8 @@ async function getWorkflowEngineModule() {
                       body: JSON.stringify({
                         chat_id: target,
                         text: String(text || ""),
-                        parse_mode: "HTML",
+                        parse_mode: parseMode,
+                        disable_notification: Boolean(options?.silent),
                       }),
                     }
                   );

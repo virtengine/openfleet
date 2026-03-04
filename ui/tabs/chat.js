@@ -38,6 +38,7 @@ class ChatSafeBoundary extends Component {
 
 import {
   SessionList,
+  SESSION_VIEW_FILTER,
   loadSessions,
   selectedSessionId,
   sessionsData,
@@ -263,6 +264,7 @@ export function ChatTab() {
   }
 
   const [showArchived, setShowArchived] = useState(false);
+  const [sessionView, setSessionView] = useState(SESSION_VIEW_FILTER.all);
   const [inputValue, setInputValue] = useState("");
   const [pendingAttachments, setPendingAttachments] = useState([]);
   const [uploadingAttachments, setUploadingAttachments] = useState(false);
@@ -305,6 +307,22 @@ export function ChatTab() {
   const [stoppingAgent, setStoppingAgent] = useState(false);
   const routeSessionId = String(routeParams.value?.sessionId || "").trim();
 
+  const getWorkspaceScopeForView = useCallback((view) => {
+    const normalized = String(view || "").toLowerCase();
+    if (normalized === SESSION_VIEW_FILTER.active) return "active";
+    return "all";
+  }, []);
+
+  const refreshPrimarySessions = useCallback(
+    async (view = sessionView) => {
+      await loadSessions({
+        type: "primary",
+        workspace: getWorkspaceScopeForView(view),
+      });
+    },
+    [getWorkspaceScopeForView, sessionView],
+  );
+
   /* ── Load sessions + agents on mount ── */
   useEffect(() => {
     let mounted = true;
@@ -313,7 +331,7 @@ export function ChatTab() {
     // Loading them sequentially gives each render time to settle.
     (async () => {
       try {
-        await loadSessions({ type: "primary" });
+        await refreshPrimarySessions();
       } catch { /* handled internally */ }
       if (!mounted) return;
       // Small delay before loading agents to let session render settle
@@ -324,7 +342,7 @@ export function ChatTab() {
       } catch { /* handled internally */ }
     })();
     const interval = setInterval(() => {
-      if (mounted) loadSessions({ type: "primary" });
+      if (mounted) refreshPrimarySessions();
     }, 5000);
     // Refresh agent list less frequently
     const agentInterval = setInterval(() => {
@@ -335,18 +353,18 @@ export function ChatTab() {
       clearInterval(interval);
       clearInterval(agentInterval);
     };
-  }, []);
+  }, [refreshPrimarySessions]);
 
   useEffect(() => {
     const onWorkspaceSwitched = () => {
       selectedSessionId.value = null;
-      loadSessions({ type: "primary" }).catch(() => {});
+      refreshPrimarySessions().catch(() => {});
     };
     window.addEventListener("ve:workspace-switched", onWorkspaceSwitched);
     return () => {
       window.removeEventListener("ve:workspace-switched", onWorkspaceSwitched);
     };
-  }, []);
+  }, [refreshPrimarySessions]);
 
   /* ── Track mobile viewport to avoid auto-select loops ── */
   useEffect(() => {
@@ -837,7 +855,7 @@ export function ChatTab() {
           method: "POST",
           body: JSON.stringify({ title: newTitle }),
         });
-      loadSessions();
+      refreshPrimarySessions();
       showToast("Session renamed", "success");
     } catch {
       showToast("Failed to rename session", "error");
@@ -1031,6 +1049,11 @@ export function ChatTab() {
             <${SessionList}
               showArchived=${showArchived}
               onToggleArchived=${setShowArchived}
+              sessionView=${sessionView}
+              onSessionViewChange=${(nextView) => {
+                setSessionView(nextView);
+                refreshPrimarySessions(nextView).catch(() => {});
+              }}
               defaultType="primary"
               renamingSessionId=${renamingSessionId}
               onStartRename=${(sid) => setRenamingSessionId(sid)}

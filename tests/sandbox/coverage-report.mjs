@@ -148,7 +148,11 @@ function makeMinimalServices() {
 // We monkey-patch each registered node type's execute() for the duration of the run.
 // This way ANY node type call is recorded, even deeply nested ones.
 const nodeTypeCoverage = new Map(); // type → Set<templateId>
-const allRegisteredTypes = listNodeTypes ? listNodeTypes() : [];
+const allRegisteredTypes = [...new Set(
+  (listNodeTypes ? listNodeTypes() : [])
+    .map((entry) => (typeof entry === "string" ? entry : entry?.type))
+    .filter((type) => typeof type === "string" && type.length > 0),
+)];
 
 for (const type of allRegisteredTypes) {
   nodeTypeCoverage.set(type, new Set());

@@ -1079,6 +1079,26 @@ describe("kanban-adapter internal backend", () => {
     expect(deleted).toBe(true);
     expect(removeTask(created.id)).toBe(false);
   });
+
+  it("recovers title/description from legacy malformed planner payloads", async () => {
+    const adapter = getKanbanAdapter();
+    addTask({
+      id: "legacy-malformed-1",
+      title: "Untitled task",
+      status: "todo",
+      projectId: {
+        title: "feat(legacy): recovered title",
+        description: "Recovered description",
+        status: "todo",
+      },
+    });
+
+    const task = await adapter.getTask("legacy-malformed-1");
+    expect(task).toBeTruthy();
+    expect(task.title).toBe("feat(legacy): recovered title");
+    expect(task.description).toBe("Recovered description");
+    expect(task.projectId).toBe("internal");
+  });
 });
 
 

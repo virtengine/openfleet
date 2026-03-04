@@ -38,7 +38,12 @@
   <script>
     try {
       var t = JSON.parse(localStorage.getItem('ve_settings_colorTheme'));
-      if (t === 'light' || t === 'dark') document.documentElement.setAttribute('data-theme', t);
+      if (typeof t === 'string' && t && t !== 'system') {
+        document.documentElement.setAttribute('data-theme', t);
+        document.documentElement.setAttribute('data-theme-lock', 'custom');
+      } else {
+        document.documentElement.setAttribute('data-theme-lock', 'system');
+      }
     } catch(e) {}
   </script>
   <!-- Import map: ensures all modules share a single Preact instance.

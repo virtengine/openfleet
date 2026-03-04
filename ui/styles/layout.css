@@ -1175,6 +1175,26 @@
 .inspector-kv strong {
   color: var(--text-bright);
   font-weight: 600;
+  min-width: 0;
+  max-width: 64%;
+  text-align: right;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.inspector-kv.inspector-kv-preview {
+  align-items: flex-start;
+}
+
+.inspector-kv.inspector-kv-preview .inspector-preview-value {
+  max-width: 64%;
+  text-align: left;
+  white-space: normal;
+  overflow: hidden;
+  display: -webkit-box;
+  -webkit-line-clamp: 3;
+  -webkit-box-orient: vertical;
 }
 
 .inspector-empty {

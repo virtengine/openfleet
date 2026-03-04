@@ -473,36 +473,37 @@ body.settings-save-open .main-content {
 /* Theme picker grid */
 .theme-picker-grid {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(80px, 1fr));
-  gap: 12px;
+  grid-template-columns: repeat(auto-fit, minmax(108px, 1fr));
+  gap: 10px;
   margin-bottom: 16px;
 }
 .theme-swatch {
   display: flex;
   flex-direction: column;
   align-items: center;
-  gap: 8px;
-  padding: 12px 8px;
-  border-radius: 10px;
-  border: 2px solid transparent;
-  background: transparent;
+  gap: 6px;
+  padding: 10px 8px;
+  border-radius: 12px;
+  border: 1px solid var(--border, rgba(255,255,255,0.12));
+  background: color-mix(in srgb, var(--bg-card, #222) 86%, transparent);
   cursor: pointer;
-  transition: all 0.2s ease;
+  transition: transform 0.16s ease, border-color 0.2s ease, box-shadow 0.2s ease, background 0.2s ease;
   font-family: inherit;
 }
 .theme-swatch:hover {
-  border-color: var(--border, rgba(255,255,255,0.15));
-  background: rgba(255, 255, 255, 0.02);
+  transform: translateY(-1px);
+  border-color: color-mix(in srgb, var(--accent, #da7756) 42%, var(--border, rgba(255,255,255,0.2)));
+  background: color-mix(in srgb, var(--bg-card, #222) 92%, var(--accent, #da7756) 8%);
 }
 .theme-swatch.active {
-  border-color: var(--accent, #5b6eae);
-  background: rgba(91, 110, 174, 0.08);
-  box-shadow: 0 0 12px rgba(91, 110, 174, 0.2);
+  border-color: var(--accent, #da7756);
+  background: color-mix(in srgb, var(--accent, #da7756) 14%, var(--bg-card, #222));
+  box-shadow: 0 0 0 1px color-mix(in srgb, var(--accent, #da7756) 45%, transparent), 0 8px 20px rgba(0,0,0,0.2);
 }
 .theme-swatch-preview {
   display: flex;
   width: 100%;
-  height: 50px;
+  height: 46px;
   gap: 3px;
   border-radius: 6px;
   overflow: hidden;
@@ -526,6 +527,13 @@ body.settings-save-open .main-content {
   font-size: 11px;
   color: var(--text-tertiary, #666);
   text-align: center;
+}
+.theme-swatch-state {
+  font-size: 10px;
+  line-height: 1;
+  color: var(--accent, #da7756);
+  font-weight: 600;
+  min-height: 10px;
 }
 
 @media (max-width: 900px) {
@@ -1598,6 +1606,9 @@ const THEME_INLINE_VARS = {
   },
 };
 
+const THEME_STORAGE_KEY = "ve_settings_colorTheme";
+const THEME_LOCK_ATTR = "data-theme-lock";
+
 /* ═══════════════════════════════════════════════════════════════
  *  AppPreferencesMode — existing client-side preferences
  * ═══════════════════════════════════════════════════════════════ */
@@ -1636,6 +1647,7 @@ function AppPreferencesMode() {
     const tgVarKeys = ["--bg-primary","--bg-secondary","--bg-card","--text-primary","--text-secondary","--text-hint","--accent","--accent-text"];
     if (!theme || theme === "system") {
       root.removeAttribute("data-theme");
+      root.setAttribute(THEME_LOCK_ATTR, "system");
       // Restore Telegram-supplied inline vars (or clear ours if no Telegram context)
       const tp = globalThis.Telegram?.WebApp?.themeParams;
       if (tp) {
@@ -1650,9 +1662,20 @@ function AppPreferencesMode() {
       }
     } else {
       root.setAttribute("data-theme", theme);
+      root.setAttribute(THEME_LOCK_ATTR, "custom");
       // Also set as inline styles to beat telegram.js's element.style values
       const vars = THEME_INLINE_VARS[theme];
-      if (vars) Object.entries(vars).forEach(([k, v]) => root.style.setProperty(k, v));
+      if (vars) {
+        Object.entries(vars).forEach(([k, v]) => root.style.setProperty(k, v));
+      } else {
+        tgVarKeys.forEach((k) => root.style.removeProperty(k));
+      }
+    }
+
+    try {
+      localStorage.setItem(THEME_STORAGE_KEY, JSON.stringify(theme || "system"));
+    } catch {
+      /* ignore storage errors */
     }
   }
 
@@ -1754,6 +1777,7 @@ function AppPreferencesMode() {
     haptic("medium");
     const keys = [
       "fontSize",
+      "colorTheme",
       "notifyUpdates",
       "notifyErrors",
       "notifyComplete",
@@ -1773,6 +1797,7 @@ function AppPreferencesMode() {
     haptic("heavy");
     const keys = [
       "fontSize",
+      "colorTheme",
       "notifyUpdates",
       "notifyErrors",
       "notifyComplete",
@@ -1790,6 +1815,9 @@ function AppPreferencesMode() {
     setDefaultMaxParallel(4);
     setDefaultSdk("auto");
     setDefaultRegion("auto");
+    setColorTheme("system");
+    document.documentElement.removeAttribute("data-theme");
+    document.documentElement.setAttribute(THEME_LOCK_ATTR, "system");
     document.documentElement.style.removeProperty("--base-font-size");
     document.documentElement.style.removeProperty("font-size");
     showToast("Settings reset", "success");
@@ -1864,13 +1892,14 @@ function AppPreferencesMode() {
               </div>
               <div class="swatch-label">${theme.label}</div>
               <div class="swatch-desc">${theme.desc}</div>
+              <div class="theme-swatch-state">${colorTheme === theme.id ? "Selected" : ""}</div>
             <//>
           `)}
         </div>
         <div class="meta-text mt-sm mb-md" style="font-size: 11px;">
           ${colorTheme === "system"
             ? html`Follows your ${tg ? "Telegram" : "OS"} theme automatically.`
-            : html`Using <strong>${colorTheme}</strong> theme.`}
+            : html`Using <strong>${colorTheme}</strong> theme. Saved app theme overrides Telegram/browser palette mixing.`}
         </div>
         <div class="card-subtitle mb-sm">Font Size</div>
         <${SegmentedControl}

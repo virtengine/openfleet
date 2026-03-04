@@ -46,7 +46,7 @@ export const TASK_PLANNER_TEMPLATE = {
     }, { x: 400, y: 180 }),
 
     node("log-start", "notify.log", "Log Planner Start", {
-      message: "Task planner triggered: {{todoCount}} tasks remaining (threshold: {{minTodoCount}})",
+      message: "Task planner triggered: {{trigger.todoCount}} tasks remaining (threshold: {{minTodoCount}})",
       level: "info",
     }, { x: 400, y: 310 }),
 
@@ -55,12 +55,16 @@ export const TASK_PLANNER_TEMPLATE = {
       context: "{{plannerContext}}",
       prompt: "{{prompt}}",
       dedup: true,
+      timeoutMs: 960000,
+      agentTimeoutMs: 900000,
+      maxRetries: 0,
+      retryable: false,
     }, { x: 400, y: 440 }),
 
     node("materialize-tasks", "action.materialize_planner_tasks", "Create Tasks", {
       plannerNodeId: "run-planner",
       maxTasks: "{{taskCount}}",
-      status: "todo",
+      status: "draft",
       dedup: true,
       failOnZero: true,
       minCreated: 1,
@@ -159,6 +163,10 @@ export const TASK_REPLENISH_TEMPLATE = {
       taskCount: "{{taskCount}}",
       context: "{{plannerContext}}",
       prompt: "{{prompt}}",
+      timeoutMs: 960000,
+      agentTimeoutMs: 900000,
+      maxRetries: 0,
+      retryable: false,
     }, { x: 400, y: 440 }),
 
     node("materialize-tasks", "action.materialize_planner_tasks", "Create Tasks", {

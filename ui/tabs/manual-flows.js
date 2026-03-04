@@ -12,9 +12,9 @@ const html = htm.bind(h);
 import { haptic } from "../modules/telegram.js";
 import { apiFetch } from "../modules/api.js";
 import { showToast } from "../modules/state.js";
+import { formatDate, formatDuration, formatRelative } from "../modules/utils.js";
 import { ICONS } from "../modules/icons.js";
 import { resolveIcon } from "../modules/icon-utils.js";
-import { formatRelative } from "../modules/utils.js";
 import {
   Typography, Box, Stack, Card, CardContent, Button, IconButton, Chip,
   TextField, Select, MenuItem, FormControl, InputLabel, Switch,
@@ -44,6 +44,50 @@ const wfLaunching = signal(false);
 const wfLaunchResult = signal(null);
 const wfSearchQuery = signal("");
 const wfSelectedCategory = signal("all");
+const wfManualRuns = signal([]);
+const selectedWfRunId = signal(null);
+const selectedWfRunDetail = signal(null);
+const wfManualRunsLoading = signal(false);
+
+const MANUAL_WORKFLOW_RUN_PAGE_SIZE = 100;
+
+function isManualWorkflowRun(run) {
+  const triggerSource = String(run?.triggerSource || "manual").trim().toLowerCase();
+  return triggerSource === "manual" || triggerSource === "ui-event";
+}
+
+async function loadManualWorkflowRuns(limit = MANUAL_WORKFLOW_RUN_PAGE_SIZE) {
+  const safeLimit = Number.isFinite(Number(limit)) && Number(limit) > 0
+    ? Math.min(Math.floor(Number(limit)), 300)
+    : MANUAL_WORKFLOW_RUN_PAGE_SIZE;
+  wfManualRunsLoading.value = true;
+  try {
+    const data = await apiFetch(`/api/workflows/runs?limit=${safeLimit}`);
+    const runs = Array.isArray(data?.runs) ? data.runs : [];
+    wfManualRuns.value = runs.filter((run) => isManualWorkflowRun(run));
+  } catch (err) {
+    console.error("[manual-flows] Failed to load manual workflow runs:", err);
+    wfManualRuns.value = [];
+  } finally {
+    wfManualRunsLoading.value = false;
+  }
+}
+
+async function loadManualWorkflowRunDetail(runId) {
+  const safeRunId = String(runId || "").trim();
+  if (!safeRunId) return null;
+  try {
+    const data = await apiFetch(`/api/workflows/runs/${encodeURIComponent(safeRunId)}`);
+    if (data?.run) {
+      selectedWfRunId.value = safeRunId;
+      selectedWfRunDetail.value = data.run;
+      return data.run;
+    }
+  } catch (err) {
+    console.error("[manual-flows] Failed to load run detail:", err);
+  }
+  return null;
+}
 
 /* ═══════════════════════════════════════════════════════════════
  *  API Helpers
@@ -790,6 +834,98 @@ function buildVariableDescriptor(variable) {
   };
 }
 
+function getRunStatusBadgeStyles(status) {
+  if (status === "completed") return { bg: "#10b98130", color: "#10b981" };
+  if (status === "failed") return { bg: "#ef444430", color: "#ef4444" };
+  if (status === "running") return { bg: "#3b82f630", color: "#60a5fa" };
+  return { bg: "#6b728030", color: "#9ca3af" };
+}
+
+function getRunActivityAt(run) {
+  const lastLogAt = Number(run?.lastLogAt);
+  const lastProgressAt = Number(run?.lastProgressAt);
+  const startedAt = Number(run?.startedAt);
+  const candidates = [lastLogAt, lastProgressAt, startedAt].filter((value) => Number.isFinite(value) && value > 0);
+  return candidates.length > 0 ? Math.max(...candidates) : null;
+}
+
+function getNodeStatusRank(status) {
+  if (status === "running") return 0;
+  if (status === "failed") return 1;
+  if (status === "waiting") return 2;
+  if (status === "pending") return 3;
+  if (status === "completed") return 4;
+  if (status === "skipped") return 5;
+  return 6;
+}
+
+function buildNodeStatusesFromRunDetail(run) {
+  const detail = run?.detail || {};
+  const statuses = { ...(detail?.nodeStatuses || {}) };
+  const statusEvents = Array.isArray(detail?.nodeStatusEvents) ? detail.nodeStatusEvents : [];
+  const logs = Array.isArray(detail?.logs) ? detail.logs : [];
+
+  for (const event of statusEvents) {
+    const nodeId = String(event?.nodeId || "").trim();
+    const status = String(event?.status || "").trim();
+    if (!nodeId || !status) continue;
+    statuses[nodeId] = status;
+  }
+
+  if (Object.keys(statuses).length === 0) {
+    const fallbackStatus = run?.status === "failed"
+      ? "failed"
+      : run?.status === "completed"
+        ? "completed"
+        : "running";
+    for (const entry of logs) {
+      const nodeId = String(entry?.nodeId || "").trim();
+      if (!nodeId || statuses[nodeId]) continue;
+      statuses[nodeId] = fallbackStatus;
+    }
+  }
+
+  return statuses;
+}
+
+function safePrettyJson(value) {
+  try {
+    const json = JSON.stringify(value, null, 2);
+    const maxChars = 100000;
+    if (json.length <= maxChars) return json;
+    const omitted = json.length - maxChars;
+    return `${json.slice(0, maxChars)}\n\n… [truncated ${omitted} chars]`;
+  } catch {
+    return String(value ?? "");
+  }
+}
+
+async function resolveManualRunForDispatch(result) {
+  const workflowId = String(result?.workflowId || "").trim();
+  if (!workflowId) return null;
+  const dispatchedAt = Date.parse(result?.dispatchedAt || "") || Date.now();
+
+  for (let attempt = 0; attempt < 8; attempt += 1) {
+    try {
+      await loadManualWorkflowRuns(Math.max(MANUAL_WORKFLOW_RUN_PAGE_SIZE, 150));
+      const candidates = (wfManualRuns.value || [])
+        .filter((run) => String(run?.workflowId || "").trim() === workflowId)
+        .filter((run) => {
+          const startedAt = Number(run?.startedAt || 0);
+          if (!Number.isFinite(startedAt) || startedAt <= 0) return true;
+          return startedAt >= dispatchedAt - 5 * 60 * 1000;
+        })
+        .sort((a, b) => Number(b?.startedAt || 0) - Number(a?.startedAt || 0));
+      const match = candidates[0] || null;
+      if (match?.runId) return match;
+    } catch {
+      // ignore and retry
+    }
+    await new Promise((resolve) => setTimeout(resolve, 800));
+  }
+  return null;
+}
+
 /**
  * Workflow template card for the launcher grid.
  */
@@ -970,7 +1106,17 @@ function WfLaunchForm({ template, onBack }) {
     if (!canLaunch) return;
     haptic();
     const payload = buildLaunchPayload();
-    await launchWorkflowTemplate(template.id, payload);
+    const launchResult = await launchWorkflowTemplate(template.id, payload);
+    if (launchResult?.accepted) {
+      const matchedRun = await resolveManualRunForDispatch(launchResult);
+      if (matchedRun?.runId) {
+        wfLaunchResult.value = {
+          ...wfLaunchResult.value,
+          runId: matchedRun.runId,
+          startedAt: matchedRun.startedAt,
+        };
+      }
+    }
   }, [buildLaunchPayload, canLaunch, template.id]);
 
   const handleReset = useCallback(() => {
@@ -981,6 +1127,19 @@ function WfLaunchForm({ template, onBack }) {
     setFormValues(defaults);
     setLaunchMode(requiredVars.length > 0 ? "quick" : "advanced");
   }, [descriptors, requiredVars.length]);
+
+  const handleOpenRunHistory = useCallback(async (runId = null) => {
+    activeTab.value = 1;
+    viewMode.value = "wf-runs";
+    await loadManualWorkflowRuns(Math.max(MANUAL_WORKFLOW_RUN_PAGE_SIZE, 150));
+    const safeRunId = String(runId || "").trim();
+    if (safeRunId) {
+      await loadManualWorkflowRunDetail(safeRunId);
+    } else {
+      selectedWfRunId.value = null;
+      selectedWfRunDetail.value = null;
+    }
+  }, []);
 
   return html`
     <div>
@@ -1204,12 +1363,23 @@ function WfLaunchForm({ template, onBack }) {
               <${Stack} spacing=${0.5}>
                 <${Typography} variant="body2"><strong>Template:</strong> ${wfLaunchResult.value.templateName}</${Typography}>
                 <${Typography} variant="body2"><strong>Workflow ID:</strong> <code>${wfLaunchResult.value.workflowId}</code></${Typography}>
+                <${Typography} variant="body2"><strong>Run ID:</strong> <code>${wfLaunchResult.value.runId || "resolving..."}</code></${Typography}>
                 <${Typography} variant="body2"><strong>Mode:</strong> ${wfLaunchResult.value.mode}</${Typography}>
                 ${wfLaunchResult.value.dispatchedAt && html`
                   <${Typography} variant="caption" color="text.secondary">
                     Dispatched at ${new Date(wfLaunchResult.value.dispatchedAt).toLocaleString()}
                   </${Typography}>
                 `}
+              </${Stack}>
+              <${Stack} direction="row" spacing=${1} sx=${{ mt: 1.25 }}>
+                <${Button}
+                  variant="outlined"
+                  size="small"
+                  onClick=${() => handleOpenRunHistory(wfLaunchResult.value.runId)}
+                  sx=${{ textTransform: "none" }}
+                >
+                  ${wfLaunchResult.value.runId ? "Open this run" : "Open manual run history"}
+                </${Button}>
               </${Stack}>
               ${wfLaunchResult.value.variables && html`
                 <${Divider} sx=${{ my: 1.5 }} />
@@ -1494,6 +1664,245 @@ function WfLauncherView() {
   `;
 }
 
+function ManualWorkflowRunHistoryView({ onBack }) {
+  const runs = wfManualRuns.value || [];
+  const selectedRun = selectedWfRunDetail.value;
+  const [searchQuery, setSearchQuery] = useState("");
+  const [statusFilter, setStatusFilter] = useState("all");
+  const [nowTick, setNowTick] = useState(Date.now());
+
+  useEffect(() => {
+    loadManualWorkflowRuns(Math.max(MANUAL_WORKFLOW_RUN_PAGE_SIZE, 150)).catch(() => {});
+  }, []);
+
+  useEffect(() => {
+    const timer = setInterval(() => setNowTick(Date.now()), 1000);
+    return () => clearInterval(timer);
+  }, []);
+
+  useEffect(() => {
+    const hasRunning = runs.some((run) => run?.status === "running");
+    const pollMs = hasRunning ? 3000 : 15000;
+    let cancelled = false;
+
+    const poll = async () => {
+      if (cancelled) return;
+      await loadManualWorkflowRuns(Math.max(MANUAL_WORKFLOW_RUN_PAGE_SIZE, 150)).catch(() => {});
+      if (!cancelled && selectedWfRunId.value && selectedWfRunDetail.value?.status === "running") {
+        await loadManualWorkflowRunDetail(selectedWfRunId.value).catch(() => {});
+      }
+    };
+
+    const timer = setInterval(poll, pollMs);
+    return () => {
+      cancelled = true;
+      clearInterval(timer);
+    };
+  }, [runs, selectedWfRunId.value, selectedWfRunDetail.value?.status]);
+
+  const filteredRuns = useMemo(() => {
+    const query = String(searchQuery || "").trim().toLowerCase();
+    return runs.filter((run) => {
+      const runStatus = String(run?.status || "unknown").toLowerCase();
+      const workflowName = String(run?.workflowName || run?.workflowId || "").toLowerCase();
+      const runId = String(run?.runId || "").toLowerCase();
+      if (statusFilter !== "all" && runStatus !== statusFilter) return false;
+      if (!query) return true;
+      return workflowName.includes(query) || runId.includes(query);
+    });
+  }, [runs, searchQuery, statusFilter]);
+
+  if (selectedRun) {
+    const logs = Array.isArray(selectedRun?.detail?.logs) ? selectedRun.detail.logs : [];
+    const errors = Array.isArray(selectedRun?.detail?.errors) ? selectedRun.detail.errors : [];
+    const nodeStatuses = buildNodeStatusesFromRunDetail(selectedRun);
+    const nodeOutputs = selectedRun?.detail?.nodeOutputs || {};
+    const nodeIds = Object.keys(nodeStatuses).sort((a, b) => {
+      const rankDiff = getNodeStatusRank(nodeStatuses[a]) - getNodeStatusRank(nodeStatuses[b]);
+      if (rankDiff !== 0) return rankDiff;
+      return String(a).localeCompare(String(b));
+    });
+    const statusStyles = getRunStatusBadgeStyles(selectedRun.status);
+    const finishedAt = selectedRun.status === "running" ? null : selectedRun.endedAt;
+    const liveDuration = selectedRun.status === "running" && selectedRun.startedAt
+      ? Math.max(0, nowTick - selectedRun.startedAt)
+      : selectedRun.duration;
+    const lastActivityAt = getRunActivityAt(selectedRun);
+    const staleMs = selectedRun.status === "running" && lastActivityAt
+      ? Math.max(0, nowTick - lastActivityAt)
+      : 0;
+
+    return html`
+      <div>
+        <${Button}
+          variant="text"
+          size="small"
+          onClick=${() => {
+            selectedWfRunId.value = null;
+            selectedWfRunDetail.value = null;
+          }}
+          sx=${{ mb: 2, textTransform: "none" }}
+          startIcon=${html`<span class="icon-inline">${resolveIcon("chevron-left")}</span>`}
+        >
+          Back to Manual Run History
+        </${Button}>
+
+        <${Paper} variant="outlined" sx=${{ p: 2.25, borderLeft: `4px solid ${statusStyles.color}` }}>
+          <${Stack} direction="row" spacing=${1} alignItems="center" sx=${{ mb: 1 }}>
+            <${Typography} variant="subtitle1" fontWeight=${700}>
+              ${selectedRun.workflowName || selectedRun.workflowId || "Workflow Run"}
+            </${Typography}>
+            <${Chip} label=${selectedRun.status || "unknown"} size="small" sx=${{ background: statusStyles.bg, color: statusStyles.color }} />
+          </${Stack}>
+          <${Stack} spacing=${0.4} sx=${{ fontSize: "0.86rem" }}>
+            <${Typography} variant="body2"><strong>Workflow ID:</strong> <code>${selectedRun.workflowId || "—"}</code></${Typography}>
+            <${Typography} variant="body2"><strong>Run ID:</strong> <code>${selectedRun.runId || "—"}</code></${Typography}>
+            <${Typography} variant="body2"><strong>Started:</strong> ${formatDate(selectedRun.startedAt)} (${formatRelative(selectedRun.startedAt)})</${Typography}>
+            <${Typography} variant="body2"><strong>Finished:</strong> ${finishedAt ? formatDate(finishedAt) : "Running"}</${Typography}>
+            <${Typography} variant="body2"><strong>Duration:</strong> ${formatDuration(liveDuration)}</${Typography}>
+            <${Typography} variant="body2"><strong>Last Activity:</strong> ${lastActivityAt ? `${formatDate(lastActivityAt)} (${formatRelative(lastActivityAt)})` : "—"}</${Typography}>
+            ${selectedRun.status === "running" && html`<${Typography} variant="body2"><strong>No Progress For:</strong> ${formatDuration(staleMs)}</${Typography}>`}
+            <${Typography} variant="body2"><strong>Nodes:</strong> ${selectedRun.nodeCount || 0} · <strong>Logs:</strong> ${selectedRun.logCount || logs.length} · <strong>Errors:</strong> ${selectedRun.errorCount || errors.length}</${Typography}>
+            <${Typography} variant="body2"><strong>Active Nodes:</strong> ${selectedRun.activeNodeCount || 0}</${Typography}>
+          </${Stack}>
+        </${Paper}>
+
+        <${Paper} variant="outlined" sx=${{ p: 2, mt: 1.5 }}>
+          <${Typography} variant="subtitle2" sx=${{ mb: 1 }}>Node Execution</${Typography}>
+          ${nodeIds.length === 0 && html`<${Typography} variant="caption" color="text.secondary">No node execution data recorded.</${Typography}>`}
+          <${Stack} spacing=${0.75}>
+            ${nodeIds.map((nodeId) => {
+              const nodeStatus = nodeStatuses[nodeId];
+              const nodeStatusStyles = getRunStatusBadgeStyles(nodeStatus);
+              return html`
+                <${Stack} key=${nodeId} direction="row" spacing=${1} alignItems="center">
+                  <code style="font-size:12px;">${nodeId}</code>
+                  <${Chip} label=${nodeStatus || "unknown"} size="small" sx=${{ height: 20, fontSize: "10px", background: nodeStatusStyles.bg, color: nodeStatusStyles.color }} />
+                </${Stack}>
+              `;
+            })}
+          </${Stack}>
+        </${Paper}>
+
+        <${Paper} variant="outlined" sx=${{ p: 2, mt: 1.5 }}>
+          <${Typography} variant="subtitle2" sx=${{ mb: 1 }}>Run Logs (${logs.length})</${Typography}>
+          <pre style="white-space:pre-wrap;word-break:break-word;font-size:11px;color:#c9d1d9;background:#111827;border-radius:6px;padding:8px;max-height:320px;overflow:auto;">${safePrettyJson(logs)}</pre>
+        </${Paper}>
+
+        <${Paper} variant="outlined" sx=${{ p: 2, mt: 1.5 }}>
+          <${Typography} variant="subtitle2" sx=${{ mb: 1 }}>Errors (${errors.length})</${Typography}>
+          <pre style="white-space:pre-wrap;word-break:break-word;font-size:11px;color:#fca5a5;background:#111827;border-radius:6px;padding:8px;max-height:220px;overflow:auto;">${safePrettyJson(errors)}</pre>
+        </${Paper}>
+
+        <${Paper} variant="outlined" sx=${{ p: 2, mt: 1.5 }}>
+          <${Typography} variant="subtitle2" sx=${{ mb: 1 }}>Node Outputs</${Typography}>
+          <pre style="white-space:pre-wrap;word-break:break-word;font-size:11px;color:#c9d1d9;background:#111827;border-radius:6px;padding:8px;max-height:280px;overflow:auto;">${safePrettyJson(nodeOutputs)}</pre>
+        </${Paper}>
+      </div>
+    `;
+  }
+
+  return html`
+    <div>
+      <${Button}
+        variant="text"
+        size="small"
+        onClick=${onBack}
+        sx=${{ mb: 2, textTransform: "none" }}
+        startIcon=${html`<span class="icon-inline">${resolveIcon("chevron-left")}</span>`}
+      >
+        Back to Workflows
+      </${Button}>
+
+      <${Typography} variant="h6" fontWeight=${700} sx=${{ mb: 2 }}>
+        Manual Workflow Run History
+      </${Typography}>
+
+      <${Typography} variant="body2" color="text.secondary" sx=${{ mb: 1.5 }}>
+        Shows manually launched workflow runs only. Automated monitor/scheduled runs are excluded.
+      </${Typography}>
+
+      <${Stack} direction="row" spacing=${1} sx=${{ mb: 1.5, flexWrap: "wrap" }}>
+        <${TextField}
+          size="small"
+          value=${searchQuery}
+          onInput=${(e) => setSearchQuery(e.target.value)}
+          placeholder="Search run ID or workflow..."
+          sx=${{ minWidth: 220 }}
+        />
+        <${Select} size="small" value=${statusFilter} onChange=${(e) => setStatusFilter(e.target.value)}>
+          <${MenuItem} value="all">All statuses</${MenuItem}>
+          <${MenuItem} value="running">Running</${MenuItem}>
+          <${MenuItem} value="failed">Failed</${MenuItem}>
+          <${MenuItem} value="completed">Completed</${MenuItem}>
+        </${Select}>
+        <${Button} variant="outlined" size="small" onClick=${() => loadManualWorkflowRuns(Math.max(MANUAL_WORKFLOW_RUN_PAGE_SIZE, 150))} sx=${{ textTransform: "none" }}>
+          Refresh
+        </${Button}>
+      </${Stack}>
+
+      ${wfManualRunsLoading.value && filteredRuns.length === 0 && html`
+        <${Paper} variant="outlined" sx=${{ p: 2 }}>
+          <${Typography} variant="body2" color="text.secondary">Loading manual workflow runs...</${Typography}>
+        </${Paper}>
+      `}
+
+      ${!wfManualRunsLoading.value && filteredRuns.length === 0 && html`
+        <${Paper} variant="outlined" sx=${{ p: 2.5, textAlign: "center" }}>
+          <${Typography} variant="body2" color="text.secondary">No manual workflow runs found.</${Typography}>
+        </${Paper}>
+      `}
+
+      <${Stack} spacing=${1}>
+        ${filteredRuns.map((run) => {
+          const styles = getRunStatusBadgeStyles(run.status);
+          const activityAt = getRunActivityAt(run);
+          const liveDuration = run.status === "running" && run.startedAt
+            ? Math.max(0, nowTick - run.startedAt)
+            : run.duration;
+          return html`
+            <${Button}
+              key=${run.runId}
+              variant="text"
+              onClick=${() => loadManualWorkflowRunDetail(run.runId)}
+              sx=${{
+                textTransform: "none",
+                justifyContent: "flex-start",
+                p: 1.25,
+                border: "1px solid",
+                borderColor: "divider",
+                borderRadius: 1.5,
+                background: "background.paper",
+              }}
+            >
+              <${Box} sx=${{ textAlign: "left", width: "100%" }}>
+                <${Stack} direction="row" spacing=${1} alignItems="center" sx=${{ mb: 0.3 }}>
+                  <${Typography} variant="body2" fontWeight=${600} sx=${{ flex: 1, minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                    ${run.workflowName || run.workflowId || "Workflow"}
+                  </${Typography}>
+                  <${Chip} label=${run.status || "unknown"} size="small" sx=${{ background: styles.bg, color: styles.color, height: 20, fontSize: "10px" }} />
+                </${Stack}>
+                <${Typography} variant="caption" color="text.secondary" sx=${{ display: "block" }}>
+                  Workflow: ${run.workflowId || "—"}
+                </${Typography}>
+                <${Typography} variant="caption" color="text.secondary" sx=${{ display: "block" }}>
+                  Run: ${run.runId || "—"}
+                </${Typography}>
+                <${Typography} variant="caption" color="text.secondary" sx=${{ display: "block" }}>
+                  Started ${formatDate(run.startedAt)} (${formatRelative(run.startedAt)}) · Duration ${formatDuration(liveDuration)}
+                </${Typography}>
+                <${Typography} variant="caption" color="text.secondary" sx=${{ display: "block" }}>
+                  Last activity ${activityAt ? formatRelative(activityAt) : "—"} · Nodes ${run.nodeCount || 0} · Logs ${run.logCount || 0} · Errors ${run.errorCount || 0}
+                </${Typography}>
+              </${Box}>
+            </${Button}>
+          `;
+        })}
+      </${Stack}>
+    </div>
+  `;
+}
+
 /* ═══════════════════════════════════════════════════════════════
  *  Main Tab Export
  * ═══════════════════════════════════════════════════════════════ */
@@ -1553,6 +1962,8 @@ export function ManualFlowsTab() {
     selectedWfTemplate.value = null;
     activeRun.value = null;
     wfLaunchResult.value = null;
+    selectedWfRunId.value = null;
+    selectedWfRunDetail.value = null;
     haptic();
   }, []);
 
@@ -1584,6 +1995,16 @@ export function ManualFlowsTab() {
         }}
       />`;
     }
+    // Manual workflow run history
+    if (mode === "wf-runs") {
+      return html`<${ManualWorkflowRunHistoryView}
+        onBack=${() => {
+          viewMode.value = "wf-launcher";
+          selectedWfRunId.value = null;
+          selectedWfRunDetail.value = null;
+        }}
+      />`;
+    }
     // Workflow launcher grid
     if (mode === "wf-launcher" || tab === 1) {
       return html`<${WfLauncherView} />`;
@@ -1595,49 +2016,91 @@ export function ManualFlowsTab() {
   return html`
     <div style="padding: 12px; max-width: 1200px; margin: 0 auto;">
       <!-- Tab switcher: Manual Flows vs Workflow Launcher -->
-      ${mode !== "form" && mode !== "runs" && mode !== "wf-form" && html`
-        <${Stack} direction="row" alignItems="center" spacing=${2} sx=${{ mb: 3 }}>
-          <${Typography} variant="h5" fontWeight=${700} sx=${{ flex: 0 }}>
-            ${tab === 0 ? "Manual Flows" : "Workflow Launcher"}
-          </${Typography}>
+      ${mode !== "form" && mode !== "runs" && mode !== "wf-form" && mode !== "wf-runs" && html`
+        <${Paper} elevation=${0} sx=${{ mb: 2, p: 1.25, border: "1px solid", borderColor: "divider", borderRadius: 2, backgroundColor: "background.paper" }}>
+          <${Stack} direction="row" alignItems="center" spacing=${1.5}>
+            <${Typography} variant="subtitle1" fontWeight=${700} sx=${{ flexShrink: 0 }}>
+              ${tab === 0 ? "Manual Flows" : "Workflow Launcher"}
+            </${Typography}>
 
-          <${Tabs}
-            value=${tab}
-            onChange=${handleTabChange}
-            sx=${{
-              minHeight: 36,
-              "& .MuiTab-root": { minHeight: 36, py: 0, textTransform: "none", fontSize: "0.85rem" },
-              "& .MuiTabs-indicator": { height: 2 },
-            }}
-          >
-            <${Tab} label="Manual Flows"
-              icon=${html`<span class="icon-inline" style="font-size: 14px; margin-right: 4px">${resolveIcon("play")}</span>`}
-              iconPosition="start" />
-            <${Tab}
-              label=${html`
-                <${Stack} direction="row" alignItems="center" spacing=${0.5}>
-                  <span>Workflow Launcher</span>
-                  <${Chip} label=${(wfTemplates.value || []).length} size="small"
-                    sx=${{ fontSize: "10px", height: "18px", minWidth: "24px" }} />
-                </${Stack}>
-              `}
-              icon=${html`<span class="icon-inline" style="font-size: 14px; margin-right: 4px">${resolveIcon("rocket")}</span>`}
-              iconPosition="start" />
-          </${Tabs}>
-
-          <div style="flex: 1;" />
-
-          ${tab === 0 && html`
-            <${Button}
-              variant="outlined" size="small"
-              onClick=${() => { viewMode.value = "runs"; haptic(); }}
-              startIcon=${html`<span class="icon-inline">${resolveIcon("chart")}</span>`}
-              sx=${{ textTransform: "none" }}
+            <${Tabs}
+              value=${tab}
+              onChange=${handleTabChange}
+              sx=${{
+                minHeight: 34,
+                "& .MuiTab-root": {
+                  minHeight: 34,
+                  px: 1.25,
+                  py: 0,
+                  textTransform: "none",
+                  fontSize: "0.8rem",
+                  color: "text.secondary",
+                },
+                "& .MuiTab-root.Mui-selected": { color: "text.primary", fontWeight: 600 },
+                "& .MuiTabs-indicator": { height: 2.5, borderRadius: 2, backgroundColor: "var(--accent)" },
+              }}
             >
-              Run History
-            </${Button}>
-          `}
-        </${Stack}>
+              <${Tab}
+                label="Manual Flows"
+                icon=${html`<span class="icon-inline" style="font-size: 14px; margin-right: 2px">${resolveIcon("play")}</span>`}
+                iconPosition="start"
+              />
+              <${Tab}
+                label=${html`
+                  <${Stack} direction="row" alignItems="center" spacing=${0.5}>
+                    <span>Workflow Launcher</span>
+                    <${Chip}
+                      label=${(wfTemplates.value || []).length}
+                      size="small"
+                      color="default"
+                      sx=${{
+                        fontSize: "10px",
+                        height: "18px",
+                        minWidth: "24px",
+                        borderRadius: 999,
+                        backgroundColor: "rgba(218,119,86,0.18)",
+                      }}
+                    />
+                  </${Stack}>
+                `}
+                icon=${html`<span class="icon-inline" style="font-size: 14px; margin-right: 2px">${resolveIcon("rocket")}</span>`}
+                iconPosition="start"
+              />
+            </${Tabs}>
+
+            <div style="flex: 1;" />
+
+            ${tab === 0 && html`
+              <${Button}
+                variant="outlined"
+                size="small"
+                onClick=${() => { viewMode.value = "runs"; haptic(); }}
+                startIcon=${html`<span class="icon-inline">${resolveIcon("chart")}</span>`}
+                sx=${{ textTransform: "none", borderRadius: 999 }}
+              >
+                Run History
+              </${Button}>
+            `}
+
+            ${tab === 1 && html`
+              <${Button}
+                variant="outlined"
+                size="small"
+                onClick=${() => {
+                  viewMode.value = "wf-runs";
+                  selectedWfRunId.value = null;
+                  selectedWfRunDetail.value = null;
+                  loadManualWorkflowRuns(Math.max(MANUAL_WORKFLOW_RUN_PAGE_SIZE, 150)).catch(() => {});
+                  haptic();
+                }}
+                startIcon=${html`<span class="icon-inline">${resolveIcon("chart")}</span>`}
+                sx=${{ textTransform: "none", borderRadius: 999 }}
+              >
+                Manual Run History
+              </${Button}>
+            `}
+          </${Stack}>
+        </${Paper}>
       `}
 
       ${renderContent()}

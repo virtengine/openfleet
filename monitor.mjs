@@ -503,11 +503,13 @@ async function ensureWorkflowAutomationEngine() {
       const telegramService =
         telegramToken && telegramChatId
           ? {
-              async sendMessage(chatId, text) {
+              async sendMessage(chatId, text, options = {}) {
                 const target = chatId || telegramChatId;
                 if (!target) return;
                 await sendTelegramMessage(String(text || ""), {
                   chatId: String(target),
+                  silent: Boolean(options?.silent),
+                  parseMode: options?.parseMode || undefined,
                 });
               },
             }

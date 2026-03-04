@@ -61,6 +61,60 @@ function simplifyPathLabel(filePath) {
   return parts[0] || normalized;
 }
 
+const WORKFLOW_TELEGRAM_ICON_MAP = Object.freeze({
+  check: "✅",
+  close: "❌",
+  alert: "⚠️",
+  warning: "⚠️",
+  help: "❓",
+  info: "ℹ️",
+  dot: "•",
+  folder: "📁",
+  refresh: "🔄",
+  lock: "🔒",
+  unlock: "🔓",
+  play: "▶️",
+  pause: "⏸️",
+  stop: "⏹️",
+  rocket: "🚀",
+  gear: "⚙️",
+  wrench: "🔧",
+  search: "🔍",
+  clipboard: "📋",
+  chart: "📊",
+  hourglass: "⏳",
+  fire: "🔥",
+  bug: "🐛",
+  sparkles: "✨",
+});
+
+function decodeWorkflowUnicodeIconToken(name) {
+  const raw = String(name || "").trim().toLowerCase();
+  if (!raw) return "";
+  const normalized = raw.startsWith("u") ? raw.slice(1) : raw;
+  if (!/^[0-9a-f]{4,6}$/.test(normalized)) return "";
+  try {
+    return String.fromCodePoint(parseInt(normalized, 16));
+  } catch {
+    return "";
+  }
+}
+
+function normalizeWorkflowTelegramText(value) {
+  const text = String(value || "");
+  if (!text) return "";
+  return text.replace(/:([a-zA-Z0-9_+-]{2,}):/g, (token, iconName) => {
+    const key = String(iconName || "").trim().toLowerCase();
+    if (!key) return token;
+    const squashed = key.replace(/[-+]/g, "");
+    const glyph = WORKFLOW_TELEGRAM_ICON_MAP[key]
+      || WORKFLOW_TELEGRAM_ICON_MAP[squashed]
+      || decodeWorkflowUnicodeIconToken(key)
+      || decodeWorkflowUnicodeIconToken(squashed);
+    return glyph || token;
+  });
+}
+
 function parsePathListingLine(line) {
   const raw = String(line || "").trim();
   if (!raw) return null;
@@ -208,13 +262,9 @@ async function createKanbanTaskWithProject(kanban, taskData = {}, projectIdValue
     payload.projectId = resolvedProjectId;
   }
 
-  if (kanban.createTask.length >= 2) {
-    const taskPayload = { ...payload };
-    delete taskPayload.projectId;
-    return kanban.createTask(resolvedProjectId, taskPayload);
-  }
-
-  return kanban.createTask(payload);
+  const taskPayload = { ...payload };
+  delete taskPayload.projectId;
+  return kanban.createTask(resolvedProjectId, taskPayload);
 }
 
 function summarizeAssistantMessageData(data = {}) {
@@ -3416,18 +3466,23 @@ registerNodeType("notify.telegram", {
       message: { type: "string", description: "Message text (supports {{variables}} and Markdown)" },
       chatId: { type: "string", description: "Chat ID (uses default if empty)" },
       silent: { type: "boolean", default: false },
+      parseMode: { type: "string", enum: ["Markdown", "MarkdownV2", "HTML"], description: "Optional Telegram parse mode" },
     },
     required: ["message"],
   },
   async execute(node, ctx, engine) {
-    const message = ctx.resolve(node.config?.message || "");
+    const message = normalizeWorkflowTelegramText(ctx.resolve(node.config?.message || ""));
     const telegram = engine.services?.telegram;
+    const options = {
+      silent: node.config?.silent,
+      parseMode: node.config?.parseMode || undefined,
+    };
 
     if (telegram?.sendMessage) {
       await telegram.sendMessage(
         node.config?.chatId || undefined,
         message,
-        { silent: node.config?.silent }
+        options,
       );
       return { sent: true, message };
     }
@@ -3621,6 +3676,19 @@ function normalizePlannerTaskForCreation(task, index) {
   appendList("Verification", task.verification);
 
   const baseBranch = String(task.base_branch || "").trim();
+  const workspace = String(task.workspace || "").trim();
+  const repository = String(task.repository || task.repo || "").trim();
+  const repositories = Array.isArray(task.repositories)
+    ? task.repositories.map((entry) => String(entry || "").trim()).filter(Boolean)
+    : [];
+  const priority = String(task.priority || "").trim().toLowerCase();
+  const tags = Array.isArray(task.tags || task.labels)
+    ? (task.tags || task.labels)
+      .map((entry) => String(entry || "").trim())
+      .filter(Boolean)
+    : [];
+  const requestedStatus = String(task.status || "").trim().toLowerCase();
+  const draft = Boolean(task.draft || requestedStatus === "draft");
   if (baseBranch) {
     lines.push("", `Base branch: \`${baseBranch}\``);
   }
@@ -3630,6 +3698,13 @@ function normalizePlannerTaskForCreation(task, index) {
     description: lines.join("\n").trim(),
     index,
     baseBranch: baseBranch || null,
+    workspace: workspace || null,
+    repository: repository || null,
+    repositories,
+    priority: ["low", "medium", "high", "critical"].includes(priority) ? priority : null,
+    tags,
+    draft,
+    requestedStatus: requestedStatus || null,
   };
 }
 
@@ -3731,6 +3806,17 @@ registerNodeType("action.materialize_planner_tasks", {
         description: task.description,
         status,
       };
+      if (task.priority) payload.priority = task.priority;
+      if (task.workspace) payload.workspace = task.workspace;
+      if (task.repository) payload.repository = task.repository;
+      if (Array.isArray(task.repositories) && task.repositories.length > 0) {
+        payload.repositories = task.repositories;
+      }
+      if (Array.isArray(task.tags) && task.tags.length > 0) payload.tags = task.tags;
+      if (task.baseBranch) payload.baseBranch = task.baseBranch;
+      if (task.draft || String(status || "").trim().toLowerCase() === "draft") {
+        payload.draft = true;
+      }
       if (projectId) payload.projectId = projectId;
       const createdTask = await createKanbanTaskWithProject(kanban, payload, projectId);
       created.push({
@@ -3776,6 +3862,10 @@ registerNodeType("agent.run_planner", {
       outputVariable: { type: "string", description: "Optional context key to store planner output text" },
       projectId: { type: "string" },
       dedup: { type: "boolean", default: true },
+      timeoutMs: { type: "number", default: 960000, description: "Node timeout in ms (recommended >= agentTimeoutMs)" },
+      agentTimeoutMs: { type: "number", default: 900000, description: "Planner agent execution timeout in ms" },
+      maxRetries: { type: "number", default: 0, description: "Retry attempts for planner node" },
+      retryable: { type: "boolean", default: false, description: "Whether planner node should auto-retry on failure" },
       maxRetainedEvents: { type: "number", default: WORKFLOW_AGENT_EVENT_PREVIEW_LIMIT, description: "Maximum planner events retained in run output" },
     },
   },
@@ -3784,6 +3874,15 @@ registerNodeType("agent.run_planner", {
     const context = ctx.resolve(node.config?.context || "");
     const explicitPrompt = ctx.resolve(node.config?.prompt || "");
     const outputVariable = ctx.resolve(node.config?.outputVariable || "");
+    const configuredNodeTimeout = Number(ctx.resolve(node.config?.timeoutMs || node.config?.timeout || 0));
+    const configuredAgentTimeout = Number(ctx.resolve(node.config?.agentTimeoutMs || 0));
+
+    let agentTimeoutMs = Number.isFinite(configuredAgentTimeout) && configuredAgentTimeout > 0
+      ? Math.max(10000, Math.trunc(configuredAgentTimeout))
+      : 9 * 60 * 1000;
+    if (!(Number.isFinite(configuredAgentTimeout) && configuredAgentTimeout > 0) && Number.isFinite(configuredNodeTimeout) && configuredNodeTimeout > 15000) {
+      agentTimeoutMs = Math.max(10000, Math.trunc(configuredNodeTimeout) - 5000);
+    }
 
     ctx.log(node.id, `Running planner for ${count} tasks`);
 
@@ -3798,7 +3897,8 @@ registerNodeType("agent.run_planner", {
       `Generate exactly ${count} new tasks.\n` +
       (context ? `${context}\n\n` : "\n") +
       `Your response MUST be a single fenced JSON block with shape { "tasks": [...] }.\n` +
-      `Do NOT include any text, commentary, or prose outside the JSON block.\n` +
+      `Do NOT include status updates, analysis notes, tool commentary, questions, or prose outside the JSON block.\n` +
+      `Do NOT reference or use legacy ve-kanban integration commands or scripts.\n` +
       `The downstream system will parse your output as JSON — any extra text will cause task creation to fail.`;
     const basePrompt = explicitPrompt || plannerPrompt || "";
     const promptText = basePrompt
@@ -3844,7 +3944,7 @@ registerNodeType("agent.run_planner", {
         result = await agentPool.launchEphemeralThread(
           promptText,
           process.cwd(),
-          15 * 60 * 1000,
+          agentTimeoutMs,
           launchExtra,
         );
       } finally {

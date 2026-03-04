@@ -100,6 +100,15 @@ describe("WorkflowContext", () => {
     expect(ctx.resolve(42)).toBe(42); // Non-strings pass through
   });
 
+  it("resolve() interpolates node outputs with hyphenated node IDs", () => {
+    const ctx = new WorkflowContext();
+    ctx.setNodeOutput("materialize-tasks", { createdCount: 3, skippedCount: 2 });
+    expect(
+      ctx.resolve("Created {{materialize-tasks.createdCount}} tasks (skipped {{materialize-tasks.skippedCount}})."),
+    ).toBe("Created 3 tasks (skipped 2).");
+    expect(ctx.resolve("{{materialize-tasks.createdCount}}")).toBe(3);
+  });
+
   it("resolve() preserves raw value types for exact placeholders", () => {
     const ctx = new WorkflowContext({
       maxRetries: 3,
@@ -1909,6 +1918,62 @@ it("action.materialize_planner_tasks fails when all parsed tasks are skipped and
   );
   expect(listTasks).toHaveBeenCalledTimes(1);
   expect(createTask).not.toHaveBeenCalled();
+});
+
+it("action.materialize_planner_tasks passes two args to createTask even with default-param adapters", async () => {
+  const handler = getNodeType("action.materialize_planner_tasks");
+  expect(handler).toBeDefined();
+
+  const ctx = new WorkflowContext({});
+  ctx.setNodeOutput("run-planner", {
+    output: [
+      "```json",
+      "{",
+      '  "tasks": [',
+      '    { "title": "[m] fix(materialize): preserve payload", "description": "A", "workspace": "virtengine-gh", "repository": "virtengine/virtengine" }',
+      "  ]",
+      "}",
+      "```",
+    ].join("\n"),
+  });
+
+  const createTask = vi.fn(async function createTaskAdapter(projectId, taskData = {}) {
+    if (typeof taskData?.title !== "string" || !taskData.title.trim()) {
+      throw new Error("missing title payload");
+    }
+    return { id: "task-regression-1" };
+  });
+  const mockEngine = {
+    services: {
+      kanban: {
+        createTask,
+      },
+    },
+  };
+
+  const node = {
+    id: "materialize",
+    type: "action.materialize_planner_tasks",
+    config: {
+      plannerNodeId: "run-planner",
+      status: "draft",
+      failOnZero: true,
+      dedup: false,
+      minCreated: 1,
+    },
+  };
+
+  const result = await handler.execute(node, ctx, mockEngine);
+  expect(result.success).toBe(true);
+  expect(result.createdCount).toBe(1);
+  expect(createTask).toHaveBeenCalledTimes(1);
+  expect(createTask).toHaveBeenCalledWith("", expect.objectContaining({
+    title: "[m] fix(materialize): preserve payload",
+    workspace: "virtengine-gh",
+    repository: "virtengine/virtengine",
+    status: "draft",
+    draft: true,
+  }));
 });
 
 it("action.materialize_planner_tasks fails loudly when planner output has no parseable tasks", async () => {

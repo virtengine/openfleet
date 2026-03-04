@@ -337,13 +337,13 @@ export class WorkflowContext {
 
     // If template is exactly one placeholder, preserve raw value type.
     // This allows numbers/booleans/objects to flow into node configs.
-    const exactMatch = template.match(/^\{\{(\w[\w.]*)\}\}$/);
+    const exactMatch = template.match(/^\{\{([A-Za-z0-9_][A-Za-z0-9_.-]*)\}\}$/);
     if (exactMatch) {
       const raw = resolvePathValue(exactMatch[1]);
       return raw != null ? raw : template;
     }
 
-    return template.replace(/\{\{(\w[\w.]*)\}\}/g, (match, path) => {
+    return template.replace(/\{\{([A-Za-z0-9_][A-Za-z0-9_.-]*)\}\}/g, (match, path) => {
       const value = resolvePathValue(path);
       return value != null ? String(value) : match;
     });

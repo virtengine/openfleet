@@ -701,8 +701,32 @@ class InternalAdapter {
 
   _normalizeTask(task) {
     if (!task) return null;
+    const embeddedPayload =
+      task.projectId && typeof task.projectId === "object" && !Array.isArray(task.projectId)
+        ? task.projectId
+        : null;
+    const hasEmbeddedTitle = String(embeddedPayload?.title || "").trim().length > 0;
+    const title = String(task.title || "").trim();
+    const recoveredTitle =
+      hasEmbeddedTitle && (!title || title.toLowerCase() === "untitled task")
+        ? String(embeddedPayload.title || "").trim()
+        : title;
+    const description =
+      hasEmbeddedTitle && !String(task.description || "").trim()
+        ? String(embeddedPayload?.description || "").trim()
+        : String(task.description || "").trim();
+    const resolvedProjectId =
+      typeof task.projectId === "string" && task.projectId.trim()
+        ? task.projectId
+        : "internal";
+    const recoveredStatus = String(embeddedPayload?.status || "").trim();
     const tags = normalizeTags(task.tags || task.meta?.tags || []);
-    const draft = Boolean(task.draft || task.meta?.draft || task.status === "draft");
+    const draft = Boolean(
+      task.draft ||
+        task.meta?.draft ||
+        task.status === "draft" ||
+        recoveredStatus === "draft",
+    );
     const labelBag = []
       .concat(Array.isArray(task.labels) ? task.labels : [])
       .concat(Array.isArray(task.tags) ? task.tags : [])
@@ -730,14 +754,14 @@ class InternalAdapter {
     );
     return {
       id: String(task.id || ""),
-      title: task.title || "",
-      description: task.description || "",
-      status: normaliseStatus(task.status),
+      title: recoveredTitle || "",
+      description,
+      status: normaliseStatus(task.status || recoveredStatus),
       assignee: task.assignee || null,
       priority: task.priority || null,
       tags,
       draft,
-      projectId: task.projectId || "internal",
+      projectId: resolvedProjectId,
       workspace: task.workspace || task.meta?.workspace || null,
       repository: task.repository || task.meta?.repository || null,
       repositories:
