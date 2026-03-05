@@ -129,6 +129,14 @@ import {
   MCP_ITERATIVE_RESEARCH_TEMPLATE,
 } from "./workflow-templates/mcp-integration.mjs";
 
+// Bosun Native (built-in tools, sub-workflows, internal functions)
+import {
+  BOSUN_TOOL_PIPELINE_TEMPLATE,
+  WORKFLOW_COMPOSITION_TEMPLATE,
+  MCP_TO_BOSUN_BRIDGE_TEMPLATE,
+  GIT_HEALTH_PIPELINE_TEMPLATE,
+} from "./workflow-templates/bosun-native.mjs";
+
 // ── Re-export individual templates for direct import ────────────────────────
 
 export {
@@ -181,6 +189,10 @@ export {
   MCP_GITHUB_PR_MONITOR_TEMPLATE,
   MCP_CROSS_SERVER_PIPELINE_TEMPLATE,
   MCP_ITERATIVE_RESEARCH_TEMPLATE,
+  BOSUN_TOOL_PIPELINE_TEMPLATE,
+  WORKFLOW_COMPOSITION_TEMPLATE,
+  MCP_TO_BOSUN_BRIDGE_TEMPLATE,
+  GIT_HEALTH_PIPELINE_TEMPLATE,
 };
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -263,6 +275,11 @@ export const WORKFLOW_TEMPLATES = Object.freeze([
   MCP_GITHUB_PR_MONITOR_TEMPLATE,
   MCP_CROSS_SERVER_PIPELINE_TEMPLATE,
   MCP_ITERATIVE_RESEARCH_TEMPLATE,
+  // ── Bosun Native (tools, sub-workflows, functions) ──
+  BOSUN_TOOL_PIPELINE_TEMPLATE,
+  WORKFLOW_COMPOSITION_TEMPLATE,
+  MCP_TO_BOSUN_BRIDGE_TEMPLATE,
+  GIT_HEALTH_PIPELINE_TEMPLATE,
 ]);
 
 const _TEMPLATE_BY_ID = new Map(
