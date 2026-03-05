@@ -6,6 +6,7 @@ import {
   readdirSync,
   readFileSync,
   renameSync,
+  statSync,
   unlinkSync,
   watch,
   writeFileSync,
@@ -1656,6 +1657,7 @@ let watcherDebounce = null;
 let watchFileName = null;
 let envWatchers = [];
 let envWatcherDebounce = null;
+let envPathMtimes = new Map();
 
 // ── Self-restart: exit code 75 signals cli.mjs to re-fork with fresh ESM cache
 const SELF_RESTART_EXIT_CODE = 75;
@@ -10917,6 +10919,7 @@ function stopEnvWatchers() {
   }
   envWatchers = [];
   envWatcherDebounce = null;
+  envPathMtimes = new Map();
 }
 
 function scheduleEnvReload(reason) {
@@ -10945,11 +10948,32 @@ function startEnvWatchers() {
     }
     dirMap.get(dir).add(file);
   }
+  // Snapshot initial mtimes so we can detect real writes vs. spurious
+  // read-only access events (antivirus, Windows Search Indexer, etc.)
+  for (const envPath of envPaths) {
+    try {
+      envPathMtimes.set(envPath, statSync(envPath).mtimeMs);
+    } catch {
+      envPathMtimes.set(envPath, 0);
+    }
+  }
   for (const [dir, files] of dirMap.entries()) {
     try {
       const w = watch(dir, { persistent: true }, (_event, filename) => {
         if (!filename) return;
         if (!files.has(filename)) return;
+        // Resolve the full path to compare against the known mtime snapshot
+        const fullPath = resolve(dir, filename);
+        let newMtime = 0;
+        try {
+          newMtime = statSync(fullPath).mtimeMs;
+        } catch {
+          // file removed — still a real change
+          newMtime = -1;
+        }
+        const prevMtime = envPathMtimes.get(fullPath) ?? envPathMtimes.get(filename) ?? null;
+        if (prevMtime !== null && newMtime === prevMtime) return; // no actual write
+        envPathMtimes.set(fullPath, newMtime);
         scheduleEnvReload(`env:${filename}`);
       });
       envWatchers.push(w);
