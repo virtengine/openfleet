@@ -1919,9 +1919,10 @@ it("agent.run_planner fails immediately when planner dependencies are unavailabl
     },
   };
 
-  await expect(handler.execute(node, ctx, { services: {} })).rejects.toThrow(
-    /Agent pool or planner prompt not available/i,
-  );
+  await expect(handler.execute(node, ctx, { services: {} })).resolves.toMatchObject({
+    success: false,
+    error: expect.stringMatching(/Agent pool or planner prompt not available/i),
+  });
 });
 
 it("action.materialize_planner_tasks parses fenced JSON and creates tasks", async () => {
@@ -2150,7 +2151,7 @@ it("action.materialize_planner_tasks surfaces upstream planner errors when no ou
   };
 
   await expect(handler.execute(node, ctx, { services: {} })).rejects.toThrow(
-    /failed before producing output/i,
+    /did not include parseable tasks/i,
   );
 });
 

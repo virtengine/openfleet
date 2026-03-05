@@ -276,8 +276,8 @@ describe("resolveContextShreddingOptions", () => {
       () => resolveContextShreddingOptions(),
     );
     expect(opts._skip).toBeUndefined();
-    expect(opts.fullContextTurns).toBe(3);
-    expect(opts.tier1MaxAge).toBe(5);
+    expect(opts.fullContextTurns).toBe(8);
+    expect(opts.tier1MaxAge).toBe(8);
   });
 
   it("applies per-interaction-type overrides", () => {
@@ -347,7 +347,7 @@ describe("resolveContextShreddingOptions", () => {
       { CONTEXT_SHREDDING_ENABLED: "true" },
       () => resolveContextShreddingOptions(),
     );
-    expect(opts.fullContextTurns).toBe(3);
+    expect(opts.fullContextTurns).toBe(8);
   });
 });
 
