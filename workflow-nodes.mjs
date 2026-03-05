@@ -5148,7 +5148,10 @@ registerNodeType("action.invoke_workflow", {
       throw new Error("action.invoke_workflow: workflow engine is not available");
     }
     if (typeof engine.get === "function" && !engine.get(workflowId)) {
-      throw new Error(`action.invoke_workflow: workflow "${workflowId}" not found`);
+      const notFoundMsg = `action.invoke_workflow: workflow "${workflowId}" not found`;
+      if (failOnError) throw new Error(notFoundMsg);
+      ctx.log(node.id, notFoundMsg, "warn");
+      return { success: false, error: notFoundMsg, workflowId, mode, matchedPort: "error", port: "error" };
     }
 
     // Build child input from config + optional context piping

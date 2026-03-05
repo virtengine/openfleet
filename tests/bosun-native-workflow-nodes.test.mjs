@@ -234,13 +234,27 @@ describe("action.invoke_workflow", () => {
     await expect(handler.execute(node, ctx, null)).rejects.toThrow(/engine.*not available/i);
   });
 
-  it("throws when workflow not found", async () => {
+  it("soft-fails when workflow not found and failOnError is false (default)", async () => {
     const handler = getNodeType("action.invoke_workflow");
     const ctx = new WorkflowContext({});
     const node = {
       id: "t1",
       type: "action.invoke_workflow",
       config: { workflowId: "nonexistent-wf" },
+    };
+    const result = await handler.execute(node, ctx, engine);
+    expect(result.success).toBe(false);
+    expect(result.error).toMatch(/not found/i);
+    expect(result.port).toBe("error");
+  });
+
+  it("throws when workflow not found and failOnError is true", async () => {
+    const handler = getNodeType("action.invoke_workflow");
+    const ctx = new WorkflowContext({});
+    const node = {
+      id: "t1",
+      type: "action.invoke_workflow",
+      config: { workflowId: "nonexistent-wf", failOnError: true },
     };
     await expect(handler.execute(node, ctx, engine)).rejects.toThrow(/not found/i);
   });

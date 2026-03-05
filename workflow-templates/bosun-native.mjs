@@ -119,7 +119,7 @@ export const WORKFLOW_COMPOSITION_TEMPLATE = {
     "a child workflow, extracts specific output fields, and forwards them to " +
     "downstream nodes. Supports both sync and dispatch modes.",
   variables: {
-    childWorkflowId: "",
+    childWorkflowId: "template-health-check",
     inputPayload: "{}",
   },
   nodes: [
@@ -293,7 +293,7 @@ export const GIT_HEALTH_PIPELINE_TEMPLATE = {
     "and dispatches a cleanup workflow if issues are found. Full Bosun-native " +
     "orchestration pattern.",
   variables: {
-    cleanupWorkflow: "",
+    cleanupWorkflow: "template-health-check",
     churnThreshold: "10",
   },
   nodes: [

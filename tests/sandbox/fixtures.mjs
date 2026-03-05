@@ -316,4 +316,12 @@ export const TEMPLATE_FIXTURES = {
   "template-mcp-research-probe":         { scenario: scenarios.kanbanState(),     inputVars: { query: "express.js middleware", mcpServer: "_test_mcp_", researchTool: "resolve-library-id", prBranch: "research/mcp-test", prBaseBranch: "main" } },
   "template-agent-execution-pipeline":   { scenario: scenarios.greenPR(201),      inputVars: { taskId: "TASK-10", taskTitle: "Coverage test task", taskDescription: "Implement coverage improvements.", branch: "feat/pipeline-test", baseBranch: "origin/main", worktreePath: "/tmp/wt-pipeline-test", sessionId: "session-coverage-1", defaultSdk: "auto", finalizationWorkflow: "template-health-check" } },
   "template-flow-control-suite":         { scenario: scenarios.kanbanState(),     inputVars: { subWorkflowId: "template-health-check", maxLoopIterations: 1 } },
+  "template-workflow-composition":       { scenario: scenarios.kanbanState(),     inputVars: { childWorkflowId: "template-health-check", inputPayload: "{}" } },
+  "template-git-health-pipeline":        { scenario: scenarios.kanbanState(),     inputVars: { cleanupWorkflow: "template-health-check", churnThreshold: "10" } },
+  "template-bosun-tool-pipeline":        { scenario: scenarios.kanbanState(),     inputVars: { targetTool: "list-todos", toolArgs: "" } },
+  "template-mcp-to-bosun-bridge":        { scenario: scenarios.kanbanState(),     inputVars: { mcpServer: "github", mcpTool: "list_pull_requests", mcpInput: "{}", processingWorkflow: "" } },
+  "template-mcp-iterative-research":     { scenario: scenarios.kanbanState(),     inputVars: { topics: '["node.js best practices"]', mcpServer: "context7", mcpTool: "resolve-library-id" } },
+  "template-mcp-tool-chain":             { scenario: scenarios.kanbanState(),     inputVars: { mcpServer: "github", toolName: "list_pull_requests", toolInput: "{}" } },
+  "template-mcp-github-pr-monitor":      { scenario: scenarios.kanbanState(),     inputVars: { owner: "virtengine", repo: "bosun", checkInterval: "*/30 * * * *", prThreshold: "5" } },
+  "template-mcp-cross-server-pipeline":  { scenario: scenarios.kanbanState(),     inputVars: { githubOwner: "virtengine", githubRepo: "bosun" } },
 };
