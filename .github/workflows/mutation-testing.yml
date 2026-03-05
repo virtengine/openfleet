@@ -1,0 +1,201 @@
+##############################################################################
+#  mutation-testing.yml
+#
+#  Manual-dispatch workflow that runs Stryker mutation testing against the
+#  Bosun test suite.  Produces an actionable report that surfaces:
+#
+#    • Surviving mutants  → concrete lines where tests are blind
+#    • Per-file scores    → ranked weakest-first
+#    • Improvement plan   → auto-generated suggestions
+#
+#  Modes:
+#    full        – mutate every production file (most thorough)
+#    incremental – only re-test mutants in files changed since last run
+#    scoped      – mutate only files matching a user-supplied glob
+#
+#  Run time: ~15-45 min depending on mode and module count.
+##############################################################################
+
+name: "Mutation Testing"
+
+on:
+    workflow_dispatch:
+        inputs:
+            mode:
+                description: "Mutation scope"
+                required: true
+                type: choice
+                default: "incremental"
+                options:
+                    - full
+                    - incremental
+                    - scoped
+            scope_glob:
+                description: "Glob for scoped mode (e.g. 'config*.mjs')"
+                required: false
+                default: ""
+            concurrency:
+                description: "Parallel mutant runners (1–8)"
+                required: false
+                type: number
+                default: 4
+            break_threshold:
+                description: "Fail if mutation score < this % (0 = never fail)"
+                required: false
+                type: number
+                default: 0
+            include_tests:
+                description: "Also mutate test helpers (setup.mjs, fixtures)"
+                required: false
+                type: boolean
+                default: false
+
+permissions:
+    contents: read
+
+jobs:
+    # ─────────────────────────────────────────────────────────────────────────
+    #  Phase 1 — Baseline: make sure tests pass unmutated
+    # ─────────────────────────────────────────────────────────────────────────
+    baseline:
+        name: "Baseline (unmutated tests)"
+        runs-on: ubuntu-latest
+        steps:
+            - uses: actions/checkout@v4
+              with:
+                  fetch-depth: 0 # full history for incremental diff
+
+            - uses: actions/setup-node@v4
+              with:
+                  node-version: "24"
+                  cache: npm
+                  cache-dependency-path: package-lock.json
+
+            - run: npm ci
+
+            - name: Run baseline tests
+              run: npm test
+
+    # ─────────────────────────────────────────────────────────────────────────
+    #  Phase 2 — Stryker mutation run
+    # ─────────────────────────────────────────────────────────────────────────
+    mutate:
+        name: "Stryker – ${{ inputs.mode }}"
+        needs: baseline
+        runs-on: ubuntu-latest
+        timeout-minutes: 120
+        steps:
+            - uses: actions/checkout@v4
+              with:
+                  fetch-depth: 0
+
+            - uses: actions/setup-node@v4
+              with:
+                  node-version: "24"
+                  cache: npm
+                  cache-dependency-path: package-lock.json
+
+            - run: npm ci
+
+            - name: Install Stryker
+              run: |
+                  npm install --no-save \
+                    @stryker-mutator/core \
+                    @stryker-mutator/vitest-runner
+
+            # Restore incremental cache (speeds up repeat runs)
+            - name: Restore incremental cache
+              if: inputs.mode == 'incremental'
+              uses: actions/cache@v4
+              with:
+                  path: .stryker-cache
+                  key: stryker-incremental-${{ github.sha }}
+                  restore-keys: stryker-incremental-
+
+            # Build the Stryker CLI flags based on inputs
+            - name: Prepare Stryker flags
+              id: flags
+              run: |
+                  FLAGS=""
+
+                  # Mode
+                  if [ "${{ inputs.mode }}" = "incremental" ]; then
+                    FLAGS="$FLAGS --incremental"
+                  fi
+
+                  # Scoped glob override
+                  if [ "${{ inputs.mode }}" = "scoped" ] && [ -n "${{ inputs.scope_glob }}" ]; then
+                    FLAGS="$FLAGS --mutate '${{ inputs.scope_glob }}'"
+                  fi
+
+                  # Concurrency
+                  FLAGS="$FLAGS --concurrency ${{ inputs.concurrency }}"
+
+                  # Break threshold
+                  if [ "${{ inputs.break_threshold }}" -gt 0 ] 2>/dev/null; then
+                    FLAGS="$FLAGS --thresholds.break ${{ inputs.break_threshold }}"
+                  fi
+
+                  echo "stryker_flags=$FLAGS" >> "$GITHUB_OUTPUT"
+
+            - name: Run Stryker
+              run: |
+                  npx stryker run ${{ steps.flags.outputs.stryker_flags }}
+              env:
+                  FORCE_COLOR: "1"
+                  NODE_OPTIONS: "--max-old-space-size=4096"
+
+            # ── Phase 3 — Parse & summarise ────────────────────────────────────
+            - name: Generate mutation report
+              if: always()
+              run: node scripts/mutation-report.mjs
+
+            - name: Post job summary
+              if: always()
+              run: |
+                  if [ -f reports/mutation/summary.md ]; then
+                    cat reports/mutation/summary.md >> "$GITHUB_STEP_SUMMARY"
+                  else
+                    echo "⚠️ No mutation summary generated." >> "$GITHUB_STEP_SUMMARY"
+                  fi
+
+            # ── Artifacts ──────────────────────────────────────────────────────
+            - name: Upload HTML report
+              if: always()
+              uses: actions/upload-artifact@v4
+              with:
+                  name: mutation-report-html
+                  path: reports/mutation/index.html
+                  retention-days: 30
+
+            - name: Upload JSON report
+              if: always()
+              uses: actions/upload-artifact@v4
+              with:
+                  name: mutation-report-json
+                  path: reports/mutation/mutation-report.json
+                  retention-days: 30
+
+            - name: Upload summary
+              if: always()
+              uses: actions/upload-artifact@v4
+              with:
+                  name: mutation-report-summary
+                  path: reports/mutation/summary.md
+                  retention-days: 30
+
+            - name: Upload survivors detail
+              if: always()
+              uses: actions/upload-artifact@v4
+              with:
+                  name: mutation-survivors
+                  path: reports/mutation/survivors.json
+                  retention-days: 30
+
+            # Save incremental cache for next run
+            - name: Save incremental cache
+              if: inputs.mode == 'incremental' && always()
+              uses: actions/cache/save@v4
+              with:
+                  path: .stryker-cache
+                  key: stryker-incremental-${{ github.sha }}

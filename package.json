@@ -127,7 +127,11 @@
     "vendor:sync": "node vendor-sync.mjs",
     "bench:swebench:import": "node bench/swebench/bosun-swebench.mjs import",
     "bench:swebench:export": "node bench/swebench/bosun-swebench.mjs export",
-    "bench:swebench:eval": "node bench/swebench/bosun-swebench.mjs eval"
+    "bench:swebench:eval": "node bench/swebench/bosun-swebench.mjs eval",
+    "mutate": "npx stryker run",
+    "mutate:incremental": "npx stryker run --incremental",
+    "mutate:report": "node scripts/mutation-report.mjs",
+    "mutate:scoped": "npx stryker run --mutate"
   },
   "files": [
     ".env.example",

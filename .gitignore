@@ -56,3 +56,8 @@ test-results/
 .coverage-*.json
 .vitest-run*.txt
 
+# Stryker mutation testing
+.stryker-tmp/
+.stryker-cache/
+reports/mutation/
+
