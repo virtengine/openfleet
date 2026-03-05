@@ -468,8 +468,21 @@ export async function forceUpdate(currentVersion) {
     );
     return true; // update was installed
   } catch (err) {
-    console.error(`\n  :close: Update failed: ${err.message}`);
-    console.error(`  Try manually: npm install -g ${PKG_NAME}@latest\n`);
+    const msg = err.message || "";
+    const isEBusy = msg.includes("EBUSY") || msg.includes("resource busy") || msg.includes("errno -4082");
+    console.error(`\n  :close: Update failed: ${msg}`);
+    if (isEBusy) {
+      console.error(
+        "\n  :lock: The bosun installation directory is locked by a running process.",
+      );
+      console.error("  This is usually the Bosun Desktop (Electron) app.");
+      console.error(
+        "  Close the desktop portal window and run: bosun --terminate",
+      );
+      console.error("  Then retry: bosun --update\n");
+    } else {
+      console.error(`  Try manually: npm install -g ${PKG_NAME}@latest\n`);
+    }
     return false;
   }
 }

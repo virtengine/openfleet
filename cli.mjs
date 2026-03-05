@@ -723,6 +723,11 @@ function findAllBosunProcessPids() {
     "telegram-bot.mjs",
     "telegram-sentinel.mjs",
     "ui-server.mjs",
+    // Desktop portal: electron processes launched via desktop/launch.mjs
+    // These hold DLLs from the global install dir and must be killed before
+    // npm can rename/replace the package during an update.
+    "desktop/launch.mjs",
+    "desktop/main.mjs",
   ];
   const joined = patterns.join("|");
   if (process.platform === "win32") {
