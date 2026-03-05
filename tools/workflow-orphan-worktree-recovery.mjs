@@ -284,7 +284,7 @@ function taskTitleFromBranch(branch, taskIdPrefix) {
 
 async function loadStatusUpdater() {
   try {
-    const mod = await import("../kanban-adapter.mjs");
+    const mod = await import("../kanban/kanban-adapter.mjs");
     if (typeof mod.updateTaskStatus === "function") return mod.updateTaskStatus;
   } catch {
     // Optional in recovery mode.

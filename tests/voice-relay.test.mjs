@@ -2,20 +2,20 @@ import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 
 // ── Mock external boundaries ────────────────────────────────────────────────
 
-vi.mock("../config.mjs", () => ({
+vi.mock("../config/config.mjs", () => ({
   loadConfig: vi.fn(() => ({
     voice: {},
     primaryAgent: "codex-sdk",
   })),
 }));
 
-vi.mock("../primary-agent.mjs", () => ({
+vi.mock("../agent/primary-agent.mjs", () => ({
   execPrimaryPrompt: vi.fn(async () => "mock response"),
   getPrimaryAgentName: vi.fn(() => "codex-sdk"),
   setPrimaryAgent: vi.fn(),
 }));
 
-vi.mock("../voice-tools.mjs", () => ({
+vi.mock("../voice/voice-tools.mjs", () => ({
   executeToolCall: vi.fn(async (name) => ({ result: `mock result for ${name}` })),
   getToolDefinitions: vi.fn(() => [
     { type: "function", name: "list_tasks" },
@@ -24,7 +24,7 @@ vi.mock("../voice-tools.mjs", () => ({
 }));
 
 // Prevent real OAuth tokens on disk from leaking into tests
-vi.mock("../voice-auth-manager.mjs", () => ({
+vi.mock("../voice/voice-auth-manager.mjs", () => ({
   resolveVoiceOAuthToken: vi.fn(() => null),
   saveVoiceOAuthToken: vi.fn(),
   getOpenAILoginStatus: vi.fn(() => ({ status: "idle", hasToken: false })),
@@ -32,7 +32,7 @@ vi.mock("../voice-auth-manager.mjs", () => ({
   getGeminiLoginStatus: vi.fn(() => ({ status: "idle", hasToken: false })),
 }));
 
-vi.mock("../session-tracker.mjs", () => ({
+vi.mock("../infra/session-tracker.mjs", () => ({
   getSessionById: vi.fn(() => null),
   getSession: vi.fn(() => null),
   recordEvent: vi.fn(),
@@ -60,8 +60,8 @@ afterEach(() => {
 
 // ── Lazy import (after mocks are set up) ─────────────────────────────────────
 
-const { loadConfig } = await import("../config.mjs");
-const { resolveVoiceOAuthToken } = await import("../voice-auth-manager.mjs");
+const { loadConfig } = await import("../config/config.mjs");
+const { resolveVoiceOAuthToken } = await import("../voice/voice-auth-manager.mjs");
 const {
   getVoiceConfig,
   isVoiceAvailable,
@@ -71,7 +71,7 @@ const {
   executeVoiceTool,
   getRealtimeConnectionInfo,
   analyzeVisionFrame,
-} = await import("../voice-relay.mjs");
+} = await import("../voice/voice-relay.mjs");
 
 // ── Tests ────────────────────────────────────────────────────────────────────
 

@@ -6,7 +6,7 @@ import {
   normalizeTelegramUiPort,
   normalizeWorkspaceConfigList,
   resolveSetupWorkspaceAndRepoConfig,
-} from "../setup-web-server.mjs";
+} from "../server/setup-web-server.mjs";
 
 describe("setup web server telegram defaults", () => {
   it("normalizes UI port values with a safe fallback", () => {

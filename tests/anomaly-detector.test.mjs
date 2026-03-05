@@ -4,7 +4,7 @@ import {
   AnomalyType,
   Severity,
   createAnomalyDetector,
-} from "../anomaly-detector.mjs";
+} from "../infra/anomaly-detector.mjs";
 
 // Helper to make a detector with captured anomalies
 function makeDetector(opts = {}) {

@@ -2,9 +2,9 @@ import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { describe, expect, it, vi } from "vitest";
 
-const monitorSource = readFileSync(resolve(process.cwd(), "monitor.mjs"), "utf8");
+const monitorSource = readFileSync(resolve(process.cwd(), "infra/monitor.mjs"), "utf8");
 const maintenanceSource = readFileSync(
-  resolve(process.cwd(), "maintenance.mjs"),
+  resolve(process.cwd(), "infra/maintenance.mjs"),
   "utf8",
 );
 const cliSource = readFileSync(resolve(process.cwd(), "cli.mjs"), "utf8");

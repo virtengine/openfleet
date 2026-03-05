@@ -14,9 +14,9 @@
  * Exit 0 on pass, exit 1 on any violation (prints a structured report).
  */
 
-import { WORKFLOW_TEMPLATES } from "../../workflow-templates.mjs";
-import { getNodeType } from "../../workflow-engine.mjs";
-import "../../workflow-nodes.mjs"; // ensure all node types are registered
+import { WORKFLOW_TEMPLATES } from "../../workflow/workflow-templates.mjs";
+import { getNodeType } from "../../workflow/workflow-engine.mjs";
+import "../../workflow/workflow-nodes.mjs"; // ensure all node types are registered
 
 // ──────────────────────────────────────────────────────────────────────────
 //  Known dynamic inputs — variables that workflows receive at runtime

@@ -19,7 +19,7 @@ describe("telegram-bot inline keyboards", () => {
         fileURLToPath(new URL(".", import.meta.url)),
       );
       const botSource = fs.readFileSync(
-        path.resolve(__dirname, "..", "telegram-bot.mjs"),
+        path.resolve(__dirname, "..", "telegram", "telegram-bot.mjs"),
         "utf8",
       );
 
@@ -46,7 +46,7 @@ describe("telegram-bot inline keyboards", () => {
         fileURLToPath(new URL(".", import.meta.url)),
       );
       const botSource = fs.readFileSync(
-        path.resolve(__dirname, "..", "telegram-bot.mjs"),
+        path.resolve(__dirname, "..", "telegram", "telegram-bot.mjs"),
         "utf8",
       );
 
@@ -68,7 +68,7 @@ describe("telegram-bot inline keyboards", () => {
         fileURLToPath(new URL(".", import.meta.url)),
       );
       const botSource = fs.readFileSync(
-        path.resolve(__dirname, "..", "telegram-bot.mjs"),
+        path.resolve(__dirname, "..", "telegram", "telegram-bot.mjs"),
         "utf8",
       );
 
@@ -89,7 +89,7 @@ describe("telegram-bot inline keyboards", () => {
         fileURLToPath(new URL(".", import.meta.url)),
       );
       const botSource = fs.readFileSync(
-        path.resolve(__dirname, "..", "telegram-bot.mjs"),
+        path.resolve(__dirname, "..", "telegram", "telegram-bot.mjs"),
         "utf8",
       );
 
@@ -112,7 +112,7 @@ describe("telegram-bot inline keyboards", () => {
         fileURLToPath(new URL(".", import.meta.url)),
       );
       const botSource = fs.readFileSync(
-        path.resolve(__dirname, "..", "telegram-bot.mjs"),
+        path.resolve(__dirname, "..", "telegram", "telegram-bot.mjs"),
         "utf8",
       );
 
@@ -136,7 +136,7 @@ describe("telegram-bot inline keyboards", () => {
         fileURLToPath(new URL(".", import.meta.url)),
       );
       const botSource = fs.readFileSync(
-        path.resolve(__dirname, "..", "telegram-bot.mjs"),
+        path.resolve(__dirname, "..", "telegram", "telegram-bot.mjs"),
         "utf8",
       );
 
@@ -157,7 +157,7 @@ describe("telegram-bot inline keyboards", () => {
         fileURLToPath(new URL(".", import.meta.url)),
       );
       const botSource = fs.readFileSync(
-        path.resolve(__dirname, "..", "telegram-bot.mjs"),
+        path.resolve(__dirname, "..", "telegram", "telegram-bot.mjs"),
         "utf8",
       );
 

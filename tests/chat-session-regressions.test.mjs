@@ -25,7 +25,7 @@ describe("chat session regressions", () => {
   });
 
   it("exposes workspace metadata in session summaries for UI routing", () => {
-    const source = read("session-tracker.mjs");
+    const source = read("infra/session-tracker.mjs");
     expect(source).toContain("workspaceId: String(s?.metadata?.workspaceId || \"\").trim() || null");
     expect(source).toContain("workspaceDir: String(s?.metadata?.workspaceDir || \"\").trim() || null");
   });

@@ -1,10 +1,10 @@
 import { describe, expect, it, vi } from "vitest";
-import { createReviewAgent, ReviewAgent } from "../review-agent.mjs";
+import { createReviewAgent, ReviewAgent } from "../agent/review-agent.mjs";
 
 /* eslint-disable no-unused-vars */
 
 // Mock execWithRetry to avoid real SDK calls
-vi.mock("../agent-pool.mjs", () => ({
+vi.mock("../agent/agent-pool.mjs", () => ({
   execWithRetry: vi.fn().mockResolvedValue({
     output: '{"verdict": "approved", "issues": [], "summary": "LGTM"}',
     success: true,
@@ -13,7 +13,7 @@ vi.mock("../agent-pool.mjs", () => ({
 }));
 
 // Mock diff-stats to avoid real git calls
-vi.mock("../diff-stats.mjs", () => ({
+vi.mock("../git/diff-stats.mjs", () => ({
   collectDiffStats: vi.fn().mockReturnValue({
     files: [{ file: "test.mjs", additions: 10, deletions: 5, binary: false }],
     totalFiles: 1,

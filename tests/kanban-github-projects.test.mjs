@@ -7,12 +7,12 @@ vi.mock("node:child_process", () => ({
   execFile: execFileMock,
 }));
 
-vi.mock("../config.mjs", () => ({
+vi.mock("../config/config.mjs", () => ({
   loadConfig: loadConfigMock,
 }));
 
 const { getKanbanAdapter, setKanbanBackend } =
-  await import("../kanban-adapter.mjs");
+  await import("../kanban/kanban-adapter.mjs");
 
 /**
  * Helper to mock a gh CLI call. `stdout` will be returned; pass an object

@@ -3,7 +3,7 @@ import { resolve } from "node:path";
 import { describe, expect, it } from "vitest";
 
 describe("monitor self-restart defer hard caps", () => {
-  const monitorSource = readFileSync(resolve(process.cwd(), "monitor.mjs"), "utf8");
+  const monitorSource = readFileSync(resolve(process.cwd(), "infra/monitor.mjs"), "utf8");
 
   it("defaults SELF_RESTART_DEFER_HARD_CAP to 6", () => {
     expect(monitorSource).toContain('process.env.SELF_RESTART_DEFER_HARD_CAP || "6"');

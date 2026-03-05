@@ -71,12 +71,12 @@ describe("ui-server mini app", () => {
     process.env.GITHUB_PROJECT_SYNC_ALERT_FAILURE_THRESHOLD = "2";
     process.env.KANBAN_BACKEND = "internal";
 
-    const { setKanbanBackend } = await import("../kanban-adapter.mjs");
+    const { setKanbanBackend } = await import("../kanban/kanban-adapter.mjs");
     setKanbanBackend("internal");
   });
 
   afterEach(async () => {
-    const mod = await import("../ui-server.mjs");
+    const mod = await import("../server/ui-server.mjs");
     mod.stopTelegramUiServer();
     for (const key of ENV_KEYS) {
       if (envSnapshot[key] === undefined) delete process.env[key];
@@ -94,7 +94,7 @@ describe("ui-server mini app", () => {
   }
 
   it("exports mini app server helpers", async () => {
-    const mod = await import("../ui-server.mjs");
+    const mod = await import("../server/ui-server.mjs");
     expect(typeof mod.startTelegramUiServer).toBe("function");
     expect(typeof mod.stopTelegramUiServer).toBe("function");
     expect(typeof mod.getTelegramUiUrl).toBe("function");
@@ -103,7 +103,7 @@ describe("ui-server mini app", () => {
   });
 
   it("getLocalLanIp returns a string", async () => {
-    const mod = await import("../ui-server.mjs");
+    const mod = await import("../server/ui-server.mjs");
     const ip = mod.getLocalLanIp();
     expect(typeof ip).toBe("string");
     expect(ip.length).toBeGreaterThan(0);
@@ -111,7 +111,7 @@ describe("ui-server mini app", () => {
 
   it("preserves launch query params when exchanging session token", async () => {
     process.env.TELEGRAM_UI_TUNNEL = "disabled";
-    const mod = await import("../ui-server.mjs");
+    const mod = await import("../server/ui-server.mjs");
     const server = await mod.startTelegramUiServer({
       port: await getFreePort(),
       host: "127.0.0.1",
@@ -135,7 +135,7 @@ describe("ui-server mini app", () => {
     process.env.TELEGRAM_UI_ALLOW_UNSAFE = "false";
     process.env.TELEGRAM_UI_TUNNEL = "disabled";
     process.env.BOSUN_UI_LOCAL_BOOTSTRAP = "true";
-    const mod = await import("../ui-server.mjs");
+    const mod = await import("../server/ui-server.mjs");
     const server = await mod.startTelegramUiServer({
       port: await getFreePort(),
       host: "127.0.0.1",
@@ -173,7 +173,7 @@ describe("ui-server mini app", () => {
     process.env.TELEGRAM_UI_ALLOW_UNSAFE = "false";
     process.env.TELEGRAM_UI_TUNNEL = "disabled";
     delete process.env.BOSUN_UI_LOCAL_BOOTSTRAP;
-    const mod = await import("../ui-server.mjs");
+    const mod = await import("../server/ui-server.mjs");
     const server = await mod.startTelegramUiServer({
       port: await getFreePort(),
       host: "127.0.0.1",
@@ -205,7 +205,7 @@ describe("ui-server mini app", () => {
       "utf8",
     );
 
-    const mod = await import("../ui-server.mjs");
+    const mod = await import("../server/ui-server.mjs");
     const server = await mod.startTelegramUiServer({
       port: await getFreePort(),
       host: "127.0.0.1",
@@ -236,7 +236,7 @@ describe("ui-server mini app", () => {
     process.env.TELEGRAM_UI_PORT = "0";
     process.env.BOSUN_UI_ALLOW_EPHEMERAL_PORT = "0";
     process.env.TELEGRAM_UI_TUNNEL = "disabled";
-    const mod = await import("../ui-server.mjs");
+    const mod = await import("../server/ui-server.mjs");
     const server = await mod.startTelegramUiServer({
       host: "127.0.0.1",
       skipInstanceLock: true,
@@ -250,7 +250,7 @@ describe("ui-server mini app", () => {
   it("uses http URL for local publicHost when TLS is disabled", async () => {
     process.env.TELEGRAM_UI_TLS_DISABLE = "true";
     process.env.TELEGRAM_UI_TUNNEL = "disabled";
-    const mod = await import("../ui-server.mjs");
+    const mod = await import("../server/ui-server.mjs");
     const server = await mod.startTelegramUiServer({
       port: await getFreePort(),
       host: "127.0.0.1",
@@ -271,7 +271,7 @@ describe("ui-server mini app", () => {
 
     const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
     try {
-      const mod = await import("../ui-server.mjs");
+      const mod = await import("../server/ui-server.mjs");
       const server = await mod.startTelegramUiServer({
         port: await getFreePort(),
         host: "127.0.0.1",
@@ -296,7 +296,7 @@ describe("ui-server mini app", () => {
 
     const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
     try {
-      const mod = await import("../ui-server.mjs");
+      const mod = await import("../server/ui-server.mjs");
       const server = await mod.startTelegramUiServer({
         port: await getFreePort(),
         host: "127.0.0.1",
@@ -327,7 +327,7 @@ describe("ui-server mini app", () => {
       "utf8",
     );
 
-    const mod = await import("../ui-server.mjs");
+    const mod = await import("../server/ui-server.mjs");
     const server = await mod.startTelegramUiServer({
       port: await getFreePort(),
       host: "127.0.0.1",
@@ -348,7 +348,7 @@ describe("ui-server mini app", () => {
 
   it("reflects runtime kanban backend switches via config update", async () => {
     process.env.KANBAN_BACKEND = "github";
-    const mod = await import("../ui-server.mjs");
+    const mod = await import("../server/ui-server.mjs");
     const server = await mod.startTelegramUiServer({
       port: await getFreePort(),
       host: "127.0.0.1",
@@ -385,7 +385,7 @@ describe("ui-server mini app", () => {
   });
 
   it("accepts signed project webhook and triggers task sync", async () => {
-    const mod = await import("../ui-server.mjs");
+    const mod = await import("../server/ui-server.mjs");
     const syncTask = vi.fn().mockResolvedValue(undefined);
     const server = await mod.startTelegramUiServer({
       port: await getFreePort(),
@@ -434,7 +434,7 @@ describe("ui-server mini app", () => {
   });
 
   it("rejects webhook with invalid signature", async () => {
-    const mod = await import("../ui-server.mjs");
+    const mod = await import("../server/ui-server.mjs");
     const syncTask = vi.fn().mockResolvedValue(undefined);
     const server = await mod.startTelegramUiServer({
       port: await getFreePort(),
@@ -475,7 +475,7 @@ describe("ui-server mini app", () => {
   });
 
   it("triggers alert hook after repeated webhook sync failures", async () => {
-    const mod = await import("../ui-server.mjs");
+    const mod = await import("../server/ui-server.mjs");
     const onProjectSyncAlert = vi.fn();
     const syncTask = vi.fn().mockRejectedValue(new Error("sync failed"));
     const server = await mod.startTelegramUiServer({
@@ -523,7 +523,7 @@ describe("ui-server mini app", () => {
   });
 
   it("returns schema field errors for invalid hook targets", async () => {
-    const mod = await import("../ui-server.mjs");
+    const mod = await import("../server/ui-server.mjs");
     const server = await mod.startTelegramUiServer({
       port: await getFreePort(),
       host: "127.0.0.1",
@@ -547,7 +547,7 @@ describe("ui-server mini app", () => {
   });
 
   it("writes supported settings into config file", async () => {
-    const mod = await import("../ui-server.mjs");
+    const mod = await import("../server/ui-server.mjs");
     const tmpDir = mkdtempSync(join(tmpdir(), "bosun-config-"));
     const configPath = join(tmpDir, "bosun.config.json");
     process.env.BOSUN_CONFIG_PATH = configPath;
@@ -630,7 +630,7 @@ describe("ui-server mini app", () => {
   });
 
   it("does not sync unsupported settings into config file", async () => {
-    const mod = await import("../ui-server.mjs");
+    const mod = await import("../server/ui-server.mjs");
     const tmpDir = mkdtempSync(join(tmpdir(), "bosun-config-"));
     const configPath = join(tmpDir, "bosun.config.json");
     process.env.BOSUN_CONFIG_PATH = configPath;
@@ -668,7 +668,7 @@ describe("ui-server mini app", () => {
   });
 
   it("returns trigger template payload with history/stat fields", async () => {
-    const mod = await import("../ui-server.mjs");
+    const mod = await import("../server/ui-server.mjs");
     const tmpDir = mkdtempSync(join(tmpdir(), "bosun-trigger-config-"));
     const configPath = join(tmpDir, "bosun.config.json");
     process.env.BOSUN_CONFIG_PATH = configPath;
@@ -719,7 +719,7 @@ describe("ui-server mini app", () => {
   }, 15000);
 
   it("persists trigger template updates to config", async () => {
-    const mod = await import("../ui-server.mjs");
+    const mod = await import("../server/ui-server.mjs");
     const tmpDir = mkdtempSync(join(tmpdir(), "bosun-trigger-config-"));
     const configPath = join(tmpDir, "bosun.config.json");
     process.env.BOSUN_CONFIG_PATH = configPath;
@@ -786,7 +786,7 @@ describe("ui-server mini app", () => {
   }, 15000);
 
   it("queues /plan commands in background to avoid request timeouts", async () => {
-    const mod = await import("../ui-server.mjs");
+    const mod = await import("../server/ui-server.mjs");
     let resolveCommand;
     const pendingCommand = new Promise((resolve) => {
       resolveCommand = resolve;
@@ -851,7 +851,7 @@ describe("ui-server mini app", () => {
       finalResponse: "ok",
       items: [],
     });
-    const mod = await import("../ui-server.mjs");
+    const mod = await import("../server/ui-server.mjs");
     const server = await mod.startTelegramUiServer({
       port: await getFreePort(),
       host: "127.0.0.1",
@@ -913,7 +913,7 @@ describe("ui-server mini app", () => {
       });
     });
 
-    const mod = await import("../ui-server.mjs");
+    const mod = await import("../server/ui-server.mjs");
     const server = await mod.startTelegramUiServer({
       port: await getFreePort(),
       host: "127.0.0.1",
@@ -1008,7 +1008,7 @@ describe("ui-server mini app", () => {
     );
 
     const execSdkCommand = vi.fn().mockResolvedValue("sdk-ok");
-    const mod = await import("../ui-server.mjs");
+    const mod = await import("../server/ui-server.mjs");
     const server = await mod.startTelegramUiServer({
       port: await getFreePort(),
       host: "127.0.0.1",
@@ -1082,7 +1082,7 @@ describe("ui-server mini app", () => {
       "utf8",
     );
 
-    const mod = await import("../ui-server.mjs");
+    const mod = await import("../server/ui-server.mjs");
     const server = await mod.startTelegramUiServer({
       port: await getFreePort(),
       host: "127.0.0.1",
@@ -1179,7 +1179,7 @@ describe("ui-server mini app", () => {
       "utf8",
     );
 
-    const mod = await import("../ui-server.mjs");
+    const mod = await import("../server/ui-server.mjs");
     const server = await mod.startTelegramUiServer({
       port: await getFreePort(),
       host: "127.0.0.1",
@@ -1280,7 +1280,7 @@ describe("ui-server mini app", () => {
   });
 
   it("exposes and executes shared bosun tools via /api/agents/tool parity endpoints", async () => {
-    const mod = await import("../ui-server.mjs");
+    const mod = await import("../server/ui-server.mjs");
     const server = await mod.startTelegramUiServer({
       port: await getFreePort(),
       host: "127.0.0.1",

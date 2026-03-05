@@ -3,7 +3,7 @@ import { resolve } from "node:path";
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 
-const source = readFileSync(resolve(process.cwd(), "monitor.mjs"), "utf8");
+const source = readFileSync(resolve(process.cwd(), "infra/monitor.mjs"), "utf8");
 
 describe("monitor agent alerts startup tail", () => {
   it("supports AGENT_ALERTS_REPLAY_STARTUP env var to enable historical replay", () => {

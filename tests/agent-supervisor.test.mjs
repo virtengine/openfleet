@@ -4,7 +4,7 @@ import {
   createAgentSupervisor,
   SITUATION,
   INTERVENTION,
-} from "../agent-supervisor.mjs";
+} from "../agent/agent-supervisor.mjs";
 
 describe("agent-supervisor", () => {
   /** @type {AgentSupervisor} */

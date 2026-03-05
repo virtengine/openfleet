@@ -5,7 +5,7 @@ import { resolve } from "node:path";
 describe("telegram mini app realtime wiring", () => {
   it("ui-server exposes websocket upgrade and task edit APIs", () => {
     const source = readFileSync(
-      resolve(process.cwd(), "ui-server.mjs"),
+      resolve(process.cwd(), "server/ui-server.mjs"),
       "utf8",
     );
     expect(source).toContain("WebSocketServer");

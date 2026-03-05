@@ -3,7 +3,7 @@ import { resolve } from "node:path";
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 
-const source = readFileSync(resolve(process.cwd(), "agent-pool.mjs"), "utf8");
+const source = readFileSync(resolve(process.cwd(), "agent/agent-pool.mjs"), "utf8");
 
 describe("agent-pool node warning suppression", () => {
   it("defines applyNodeWarningSuppressionEnv function", () => {

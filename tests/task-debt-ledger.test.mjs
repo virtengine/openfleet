@@ -7,7 +7,7 @@ import {
   normalizeDebtItems,
   recordTaskDebt,
   readTaskDebtEntries,
-} from "../task-debt-ledger.mjs";
+} from "../task/task-debt-ledger.mjs";
 
 function makeTempDir(prefix) {
   return mkdtempSync(join(tmpdir(), prefix));

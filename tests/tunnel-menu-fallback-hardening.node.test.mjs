@@ -3,8 +3,8 @@ import { resolve } from "node:path";
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 
-const uiServerSource = readFileSync(resolve(process.cwd(), "ui-server.mjs"), "utf8");
-const telegramBotSource = readFileSync(resolve(process.cwd(), "telegram-bot.mjs"), "utf8");
+const uiServerSource = readFileSync(resolve(process.cwd(), "server/ui-server.mjs"), "utf8");
+const telegramBotSource = readFileSync(resolve(process.cwd(), "telegram/telegram-bot.mjs"), "utf8");
 
 describe("ui-server tunnel fallback hardening", () => {
   it("defaults tunnel mode to named and supports explicit quick fallback opt-in", () => {

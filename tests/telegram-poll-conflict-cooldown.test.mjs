@@ -3,7 +3,7 @@ import { resolve } from "node:path";
 import { describe, it, expect } from "vitest";
 
 describe("telegram poll conflict cooldown", () => {
-  const botSource = readFileSync(resolve(process.cwd(), "telegram-bot.mjs"), "utf8");
+  const botSource = readFileSync(resolve(process.cwd(), "telegram/telegram-bot.mjs"), "utf8");
 
   it("releases the poll lock on 409 conflicts", () => {
     expect(botSource).toContain("if (res.status === 409)");

@@ -43,7 +43,7 @@ import {
   MAX_WORKTREE_AGE_MS,
   COPILOT_WORKTREE_MAX_AGE_MS,
   GIT_ENV,
-} from "../worktree-manager.mjs";
+} from "../workspace/worktree-manager.mjs";
 
 // ── Helpers ─────────────────────────────────────────────────────────────────
 

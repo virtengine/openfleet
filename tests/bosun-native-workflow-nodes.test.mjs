@@ -18,11 +18,11 @@ import {
   WorkflowEngine,
   WorkflowContext,
   NodeStatus,
-} from "../workflow-engine.mjs";
+} from "../workflow/workflow-engine.mjs";
 import {
   registerNodeType,
   getNodeType,
-} from "../workflow-nodes.mjs";
+} from "../workflow/workflow-nodes.mjs";
 
 // ── Helpers ─────────────────────────────────────────────────────────────────
 
@@ -933,7 +933,7 @@ describe("Bosun native templates", () => {
   });
 
   it("all templates are registered in WORKFLOW_TEMPLATES", async () => {
-    const { WORKFLOW_TEMPLATES } = await import("../workflow-templates.mjs");
+    const { WORKFLOW_TEMPLATES } = await import("../workflow/workflow-templates.mjs");
     const ids = WORKFLOW_TEMPLATES.map((t) => t.id);
     expect(ids).toContain("template-bosun-tool-pipeline");
     expect(ids).toContain("template-workflow-composition");

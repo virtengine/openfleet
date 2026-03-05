@@ -3,7 +3,7 @@ import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import test from "node:test";
 
-const src = readFileSync(resolve(process.cwd(), "monitor.mjs"), "utf8");
+const src = readFileSync(resolve(process.cwd(), "infra/monitor.mjs"), "utf8");
 
 test("monitor prompt tail sanitizes benign sqlite/trace/dirty-diverged noise", () => {
   assert.match(src, /const benignMonitorTailPatterns = \[/);

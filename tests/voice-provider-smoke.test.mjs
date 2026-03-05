@@ -5,7 +5,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 // Prevent disk-cached OAuth tokens in ~/.bosun/voice-auth-state.json from
 // leaking in and making azureAvailable=true regardless of what env vars the
 // test sets.
-vi.mock("../voice-auth-manager.mjs", () => ({
+vi.mock("../voice/voice-auth-manager.mjs", () => ({
   resolveVoiceOAuthToken: vi.fn(() => null),
   hasVoiceOAuthToken: vi.fn(() => false),
   saveVoiceOAuthToken: vi.fn(),
@@ -155,7 +155,7 @@ function outboundFetchMockForScenario(scenario) {
 }
 
 async function startServer() {
-  uiServerModule = await import("../ui-server.mjs");
+  uiServerModule = await import("../server/ui-server.mjs");
   const server = await uiServerModule.startTelegramUiServer({
     host: "127.0.0.1",
     port: 0,
@@ -207,7 +207,7 @@ afterEach(async () => {
 
   // Reset session tracker singleton so smoke-test sessions don't leak
   // into subsequent tests or persist to disk.
-  const { _resetSingleton } = await import("../session-tracker.mjs");
+  const { _resetSingleton } = await import("../infra/session-tracker.mjs");
   _resetSingleton({ persistDir: null });
 
   for (const key of ENV_KEYS) {
@@ -225,7 +225,7 @@ describe("voice provider smoke matrix", () => {
 
       const outboundUrls = outboundFetchMockForScenario(scenario);
       const { port } = await startServer();
-      const voiceRelay = await import("../voice-relay.mjs");
+      const voiceRelay = await import("../voice/voice-relay.mjs");
       voiceRelay.getVoiceConfig(true);
 
       const configRes = await _realFetch(`http://127.0.0.1:${port}/api/voice/config`);

@@ -3,7 +3,7 @@ import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import test from "node:test";
 
-const src = readFileSync(resolve(process.cwd(), "agent-work-analyzer.mjs"), "utf8");
+const src = readFileSync(resolve(process.cwd(), "agent/agent-work-analyzer.mjs"), "utf8");
 
 test("failed-session alerts use task-scoped cooldown key and 1h cooldown floor", () => {
   assert.match(src, /const FAILED_SESSION_ALERT_MIN_COOLDOWN_MS = 60 \* 60 \* 1000/);

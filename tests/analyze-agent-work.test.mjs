@@ -8,7 +8,7 @@ import {
   buildErrorCorrelationSummary,
   filterRecordsByWindow,
   normalizeErrorFingerprint,
-} from "../analyze-agent-work-helpers.mjs";
+} from "../agent/analyze-agent-work-helpers.mjs";
 
 const FIXTURE_DIR = resolve(process.cwd(), "tests/fixtures/analyze-agent-work");
 const metrics = JSON.parse(

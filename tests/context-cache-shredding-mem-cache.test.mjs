@@ -11,7 +11,7 @@ describe("context-cache – shredding telemetry + tool-log mem cache", () => {
 
   beforeEach(async () => {
     vi.resetModules();
-    cc = await import("../context-cache.mjs");
+    cc = await import("../workspace/context-cache.mjs");
     // Start each test with a clean ring buffer and mem cache
     cc.clearShreddingStats();
     cc.evictToolLogMemCache({ all: true });

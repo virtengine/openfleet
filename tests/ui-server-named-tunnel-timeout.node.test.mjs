@@ -3,7 +3,7 @@ import { resolve } from "node:path";
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 
-const source = readFileSync(resolve(process.cwd(), "ui-server.mjs"), "utf8");
+const source = readFileSync(resolve(process.cwd(), "server/ui-server.mjs"), "utf8");
 
 describe("ui-server named tunnel timeout", () => {
   it("defines a timeout for named tunnel startup", () => {

@@ -4,11 +4,11 @@ import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 
 const codexSource = readFileSync(
-  resolve(process.cwd(), "codex-shell.mjs"),
+  resolve(process.cwd(), "shell/codex-shell.mjs"),
   "utf8",
 );
 const copilotSource = readFileSync(
-  resolve(process.cwd(), "copilot-shell.mjs"),
+  resolve(process.cwd(), "shell/copilot-shell.mjs"),
   "utf8",
 );
 

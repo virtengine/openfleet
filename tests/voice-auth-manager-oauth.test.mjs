@@ -89,7 +89,7 @@ describe("voice-auth-manager OAuth", () => {
     _fetchMock.mockReset();
     // Force a fresh import each time by resetting vitest module cache
     vi.resetModules();
-    mod = await import("../voice-auth-manager.mjs");
+    mod = await import("../voice/voice-auth-manager.mjs");
   });
 
   afterEach(() => {
@@ -136,7 +136,7 @@ describe("voice-auth-manager OAuth", () => {
     try {
       process.env.BOSUN_OPENAI_OAUTH_SCOPES = "openid offline_access";
       vi.resetModules();
-      const localMod = await import("../voice-auth-manager.mjs");
+      const localMod = await import("../voice/voice-auth-manager.mjs");
       const { authUrl } = localMod.startOpenAICodexLogin();
       const params = new URLSearchParams(new URL(authUrl).search);
       const scope = params.get("scope") || "";
@@ -148,7 +148,7 @@ describe("voice-auth-manager OAuth", () => {
       if (prevOverride == null) delete process.env.BOSUN_OPENAI_OAUTH_SCOPES;
       else process.env.BOSUN_OPENAI_OAUTH_SCOPES = prevOverride;
       vi.resetModules();
-      mod = await import("../voice-auth-manager.mjs");
+      mod = await import("../voice/voice-auth-manager.mjs");
     }
   });
 
@@ -159,7 +159,7 @@ describe("voice-auth-manager OAuth", () => {
       process.env.BOSUN_GEMINI_OAUTH_CLIENT_ID = "undefined";
       process.env.BOSUN_CLAUDE_OAUTH_CLIENT_ID = "undefined";
       vi.resetModules();
-      const reloaded = await import("../voice-auth-manager.mjs");
+      const reloaded = await import("../voice/voice-auth-manager.mjs");
 
       // Gemini has no hardcoded fallback — must set BOSUN_GEMINI_OAUTH_CLIENT_ID
       expect(() => reloaded.startGeminiLogin()).toThrow(/client_id is missing/);
@@ -173,7 +173,7 @@ describe("voice-auth-manager OAuth", () => {
       if (prevClaude === undefined) delete process.env.BOSUN_CLAUDE_OAUTH_CLIENT_ID;
       else process.env.BOSUN_CLAUDE_OAUTH_CLIENT_ID = prevClaude;
       vi.resetModules();
-      mod = await import("../voice-auth-manager.mjs");
+      mod = await import("../voice/voice-auth-manager.mjs");
     }
   });
 
@@ -428,7 +428,7 @@ describe("voice-auth-manager Claude OAuth", () => {
     _mockServer.on.mockClear();
     _fetchMock.mockReset();
     vi.resetModules();
-    mod = await import("../voice-auth-manager.mjs");
+    mod = await import("../voice/voice-auth-manager.mjs");
   });
 
   afterEach(() => {
@@ -531,7 +531,7 @@ describe("voice-auth-manager Gemini OAuth", () => {
     process.env.BOSUN_GEMINI_OAUTH_CLIENT_ID = FAKE_GEMINI_CLIENT_ID;
     process.env.BOSUN_GEMINI_OAUTH_CLIENT_SECRET = FAKE_GEMINI_CLIENT_SECRET;
     vi.resetModules();
-    mod = await import("../voice-auth-manager.mjs");
+    mod = await import("../voice/voice-auth-manager.mjs");
   });
 
   afterEach(() => {

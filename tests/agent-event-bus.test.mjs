@@ -3,7 +3,7 @@ import {
   AgentEventBus,
   createAgentEventBus,
   AGENT_EVENT,
-} from "../agent-event-bus.mjs";
+} from "../agent/agent-event-bus.mjs";
 
 describe("agent-event-bus", () => {
   /** @type {AgentEventBus} */

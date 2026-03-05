@@ -10,22 +10,22 @@ vi.mock("@openai/codex-sdk", () => ({
   },
 }));
 
-vi.mock("../agent-sdk.mjs", () => ({
+vi.mock("../agent/agent-sdk.mjs", () => ({
   resolveAgentSdkConfig: vi.fn(() => ({
     primary: "codex",
     capabilities: { steering: true },
   })),
 }));
 
-vi.mock("../repo-root.mjs", () => ({
+vi.mock("../config/repo-root.mjs", () => ({
   resolveRepoRoot: vi.fn(() => process.cwd()),
 }));
 
-vi.mock("../codex-model-profiles.mjs", () => ({
+vi.mock("../shell/codex-model-profiles.mjs", () => ({
   resolveCodexProfileRuntime: vi.fn(() => ({ env: {} })),
 }));
 
-vi.mock("../config.mjs", () => ({
+vi.mock("../config/config.mjs", () => ({
   loadConfig: vi.fn(() => ({
     internalExecutor: {
       stream: {
@@ -43,7 +43,7 @@ vi.mock("../config.mjs", () => ({
   })),
 }));
 
-vi.mock("../stream-resilience.mjs", () => ({
+vi.mock("../infra/stream-resilience.mjs", () => ({
   MAX_STREAM_RETRIES: 2,
   streamRetryDelay: () => 0,
   isTransientStreamError: (err) =>
@@ -60,7 +60,7 @@ vi.mock("node:fs/promises", () => ({
 const {
   execCodexPrompt,
   resetThread,
-} = await import("../codex-shell.mjs");
+} = await import("../shell/codex-shell.mjs");
 
 const ENV_KEYS = [
   "INTERNAL_EXECUTOR_STREAM_FIRST_EVENT_TIMEOUT_MS",

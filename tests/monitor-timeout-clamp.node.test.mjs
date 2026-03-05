@@ -4,7 +4,7 @@ import { resolve } from "node:path";
 import test from "node:test";
 import vm from "node:vm";
 
-const src = readFileSync(resolve(process.cwd(), "monitor.mjs"), "utf8");
+const src = readFileSync(resolve(process.cwd(), "infra/monitor.mjs"), "utf8");
 
 function extractFunction(name) {
   const signature = `function ${name}(`;

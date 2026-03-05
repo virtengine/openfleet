@@ -18,7 +18,7 @@ import {
   promoteToGlobal,
   recordToolUsage,
   registerCustomTool,
-} from "../agent-custom-tools.mjs";
+} from "../agent/agent-custom-tools.mjs";
 
 // ---------------------------------------------------------------------------
 // Fixture helpers

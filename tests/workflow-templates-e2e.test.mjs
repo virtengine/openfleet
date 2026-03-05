@@ -62,12 +62,12 @@ import {
   getTemplate,
   installTemplate,
   installTemplateSet,
-} from "../workflow-templates.mjs";
+} from "../workflow/workflow-templates.mjs";
 import {
   WorkflowEngine,
   registerNodeType,
   getNodeType,
-} from "../workflow-engine.mjs";
+} from "../workflow/workflow-engine.mjs";
 
 // ═══════════════════════════════════════════════════════════════════════════
 //  Mock Service Layer
@@ -414,7 +414,7 @@ function ensureExperimentalNodeTypes() {
 describe("workflow-templates E2E execution", () => {
   beforeAll(async () => {
     // Register all built-in node types
-    await import("../workflow-nodes.mjs");
+    await import("../workflow/workflow-nodes.mjs");
     ensureExperimentalNodeTypes();
   });
 
@@ -1177,7 +1177,7 @@ describe("workflow-templates E2E execution", () => {
     });
 
     it("every template has exactly one category and it exists", async () => {
-      const { TEMPLATE_CATEGORIES } = await import("../workflow-templates.mjs");
+      const { TEMPLATE_CATEGORIES } = await import("../workflow/workflow-templates.mjs");
       for (const template of WORKFLOW_TEMPLATES) {
         expect(template.category).toBeDefined();
         expect(TEMPLATE_CATEGORIES[template.category], `Unknown category "${template.category}" for ${template.id}`).toBeDefined();
@@ -1219,7 +1219,7 @@ describe("workflow-templates E2E execution", () => {
     });
 
     it("getTemplateGroup returns full transitive group", async () => {
-      const { getTemplateGroup } = await import("../workflow-templates.mjs");
+      const { getTemplateGroup } = await import("../workflow/workflow-templates.mjs");
       for (const { parent, child } of KNOWN_GROUPS) {
         const group = getTemplateGroup(parent);
         expect(group, `getTemplateGroup("${parent}") returned null`).not.toBeNull();
@@ -1230,7 +1230,7 @@ describe("workflow-templates E2E execution", () => {
     });
 
     it("expandTemplateGroups adds missing group members", async () => {
-      const { expandTemplateGroups } = await import("../workflow-templates.mjs");
+      const { expandTemplateGroups } = await import("../workflow/workflow-templates.mjs");
       // Requesting only the parent should auto-expand to include children
       const expanded = expandTemplateGroups(["template-error-recovery"]);
       expect(expanded).toContain("template-error-recovery");
@@ -1278,12 +1278,12 @@ describe("workflow-templates E2E execution", () => {
     });
 
     it("getTemplateGroup returns null for unknown template", async () => {
-      const { getTemplateGroup } = await import("../workflow-templates.mjs");
+      const { getTemplateGroup } = await import("../workflow/workflow-templates.mjs");
       expect(getTemplateGroup("nonexistent-template")).toBeNull();
     });
 
     it("templates without requiredTemplates have singleton groups", async () => {
-      const { getTemplateGroup } = await import("../workflow-templates.mjs");
+      const { getTemplateGroup } = await import("../workflow/workflow-templates.mjs");
       const group = getTemplateGroup("template-health-check");
       expect(group.members).toEqual(["template-health-check"]);
     });

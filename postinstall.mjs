@@ -25,7 +25,7 @@ import { fileURLToPath } from "node:url";
 import { tmpdir } from "node:os";
 import https from "node:https";
 import { pipeline } from "node:stream/promises";
-import { shouldAutoInstallGitHooks } from "./task-context.mjs";
+import { shouldAutoInstallGitHooks } from "./task/task-context.mjs";
 
 const isWin = process.platform === "win32";
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -403,7 +403,7 @@ async function main() {
   // Sync vendor files into ui/vendor/ so the UI works fully offline.
   // Non-blocking — a missing vendor file just falls back to node_modules or CDN.
   try {
-    const { syncVendorFiles } = await import("./vendor-sync.mjs");
+    const { syncVendorFiles } = await import("./tools/vendor-sync.mjs");
     const { ok, results } = await syncVendorFiles({ silent: true });
     const synced = results.filter((r) => r.source).length;
     if (ok) {

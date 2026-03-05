@@ -2,7 +2,7 @@ import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { resolve } from "node:path";
-import { loadConfig } from "../config.mjs";
+import { loadConfig } from "../config/config.mjs";
 
 const ENV_KEYS = [
   "TELEGRAM_INTERVAL_MIN",

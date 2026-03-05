@@ -3,7 +3,7 @@ import { resolve } from "node:path";
 import { describe, it, expect } from "vitest";
 
 describe("telegram async safety", () => {
-  const botSource = readFileSync(resolve(process.cwd(), "telegram-bot.mjs"), "utf8");
+  const botSource = readFileSync(resolve(process.cwd(), "telegram/telegram-bot.mjs"), "utf8");
 
   it("adds a tagged safeDetach helper", () => {
     expect(botSource).toContain("function safeDetach");

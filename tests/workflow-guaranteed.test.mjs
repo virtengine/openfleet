@@ -103,7 +103,7 @@ vi.setConfig({ testTimeout: 90_000 });
 //  VITEST_SHARD=1  VITEST_TOTAL_SHARDS=4  → run first ¼ of templates
 // ══════════════════════════════════════════════════════════════════════════
 
-import { WORKFLOW_TEMPLATES, getTemplate } from "../workflow-templates.mjs";
+import { WORKFLOW_TEMPLATES, getTemplate } from "../workflow/workflow-templates.mjs";
 
 function getShardedTemplates() {
   const shard  = Number(process.env.VITEST_SHARD ?? "0");
@@ -140,7 +140,7 @@ function setupHarness(templateId, varOverrides = {}) {
 // ══════════════════════════════════════════════════════════════════════════
 
 beforeAll(async () => {
-  await import("../workflow-nodes.mjs");
+  await import("../workflow/workflow-nodes.mjs");
   ensureExperimentalNodeTypes();
 });
 

@@ -14,7 +14,7 @@ import {
   recordResolutionAttempt,
   formatDirtyTaskSummary,
   DIRTY_TASK_DEFAULTS,
-} from "../conflict-resolver.mjs";
+} from "../git/conflict-resolver.mjs";
 
 // ── getDirtyTasks ────────────────────────────────────────────────────────────
 

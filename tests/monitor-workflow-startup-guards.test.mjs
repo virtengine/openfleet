@@ -3,7 +3,7 @@ import { resolve } from "node:path";
 import { describe, expect, it } from "vitest";
 
 describe("monitor workflow startup guards", () => {
-  const monitorSource = readFileSync(resolve(process.cwd(), "monitor.mjs"), "utf8");
+  const monitorSource = readFileSync(resolve(process.cwd(), "infra/monitor.mjs"), "utf8");
 
   it("initializes workflow automation before runtime subsystems in non-test mode", () => {
     expect(monitorSource).toContain("if (!isMonitorTestRuntime) {");

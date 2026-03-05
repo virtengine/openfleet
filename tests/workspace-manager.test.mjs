@@ -16,7 +16,7 @@ import {
   listWorkspaces,
   mergeDetectedWorkspaces,
   pullWorkspaceRepos,
-} from "../workspace-manager.mjs";
+} from "../workspace/workspace-manager.mjs";
 
 const cleanupDirs = [];
 

@@ -4,7 +4,7 @@ import { resolve } from "node:path";
 
 describe("ui vendor fallback regressions", () => {
   it("keeps MUI/emotion fallback entries while routing requests through local /esm proxy", () => {
-    const source = readFileSync(resolve(process.cwd(), "ui-server.mjs"), "utf8");
+    const source = readFileSync(resolve(process.cwd(), "server/ui-server.mjs"), "utf8");
     expect(source).toContain('"mui-material.js":          { specifier: null, cdn:');
     expect(source).toContain('"emotion-react.js":         { specifier: null, cdn:');
     expect(source).toContain('"emotion-styled.js":        { specifier: null, cdn:');

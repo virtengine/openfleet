@@ -30,7 +30,7 @@ function makeTempDir(prefix = "task-store-test-") {
 
 async function loadTaskStoreModule() {
   await vi.resetModules();
-  return import("../task-store.mjs");
+  return import("../task/task-store.mjs");
 }
 
 afterEach(async () => {

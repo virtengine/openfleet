@@ -20,10 +20,10 @@ const mockKanban = vi.hoisted(() => ({
   updateTaskStatus: vi.fn(() => Promise.resolve({})),
 }));
 
-vi.mock("../task-store.mjs", () => mockTaskStore);
-vi.mock("../kanban-adapter.mjs", () => mockKanban);
+vi.mock("../task/task-store.mjs", () => mockTaskStore);
+vi.mock("../kanban/kanban-adapter.mjs", () => mockKanban);
 
-const { SyncEngine } = await import("../sync-engine.mjs");
+const { SyncEngine } = await import("../infra/sync-engine.mjs");
 
 const ORIGINAL_SYNC_POLICY = process.env.KANBAN_SYNC_POLICY;
 

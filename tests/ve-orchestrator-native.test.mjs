@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { parseOrchestratorArgs } from "../ve-orchestrator.mjs";
+import { parseOrchestratorArgs } from "../kanban/ve-orchestrator.mjs";
 
 describe("ve-orchestrator native args", () => {
   it("parses PowerShell-compatible flags", () => {

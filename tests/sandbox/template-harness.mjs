@@ -23,8 +23,8 @@ import {
   WorkflowEngine,
   registerNodeType,
   getNodeType,
-} from "../../workflow-engine.mjs";
-import { installTemplate, installTemplateSet, WORKFLOW_TEMPLATES } from "../../workflow-templates.mjs";
+} from "../../workflow/workflow-engine.mjs";
+import { installTemplate, installTemplateSet, WORKFLOW_TEMPLATES } from "../../workflow/workflow-templates.mjs";
 import { createExecSandbox } from "./exec-sandbox.mjs";
 
 // All template IDs — installed together so sub-workflow chains (action.execute_workflow) always resolve.

@@ -21,7 +21,7 @@ import {
   ARCHIVE_AGE_HOURS,
   ARCHIVE_RETENTION_DAYS,
   DEFAULT_MAX_ARCHIVE,
-} from "../task-archiver.mjs";
+} from "../task/task-archiver.mjs";
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
 

@@ -24,7 +24,7 @@ import {
   SKILL_DIR,
   PROFILE_DIR,
   resolveEntry,
-} from "../library-manager.mjs";
+} from "../infra/library-manager.mjs";
 
 // ── Helpers ─────────────────────────────────────────────────────────────────
 
@@ -513,7 +513,7 @@ describe("renderPromptTemplate with library resolver", () => {
   afterEach(() => cleanup());
 
   it("setLibraryResolver + renderPromptTemplate resolves namespaced refs", async () => {
-    const { renderPromptTemplate, setLibraryResolver } = await import("../agent-prompts.mjs");
+    const { renderPromptTemplate, setLibraryResolver } = await import("../agent/agent-prompts.mjs");
 
     upsertEntry(tmpDir, { type: "prompt", name: "Injected" }, "injected content");
 
@@ -532,7 +532,7 @@ describe("renderPromptTemplate with library resolver", () => {
   });
 
   it("renderPromptTemplate still works without resolver", async () => {
-    const { renderPromptTemplate, setLibraryResolver } = await import("../agent-prompts.mjs");
+    const { renderPromptTemplate, setLibraryResolver } = await import("../agent/agent-prompts.mjs");
     setLibraryResolver(null);
 
     const result = renderPromptTemplate("Hello {{NAME}}", { NAME: "World" });

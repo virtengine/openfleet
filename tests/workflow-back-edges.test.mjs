@@ -12,12 +12,12 @@ import {
   WorkflowEngine,
   WorkflowContext,
   NodeStatus,
-} from "../workflow-engine.mjs";
+} from "../workflow/workflow-engine.mjs";
 import {
   registerNodeType,
   getNodeType,
-} from "../workflow-nodes.mjs";
-import { WORKFLOW_TEMPLATES, TEMPLATE_CATEGORIES } from "../workflow-templates.mjs";
+} from "../workflow/workflow-nodes.mjs";
+import { WORKFLOW_TEMPLATES, TEMPLATE_CATEGORIES } from "../workflow/workflow-templates.mjs";
 
 // ── Helpers ─────────────────────────────────────────────────────────────────
 
