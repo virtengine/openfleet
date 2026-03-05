@@ -12076,10 +12076,24 @@ async function handleApi(req, res, url) {
       // When client requests sdkMode, include extra fields for @openai/agents SDK
       if (body?.sdkMode === true) {
         const voiceCfg = getVoiceConfig();
-        tokenData.instructions = [voiceCfg.instructions || "", capabilityPrompt]
-          .filter(Boolean)
-          .join("\n\n")
-          .trim() || undefined;
+        // Use the full resolved instructions from the ephemeral token session
+        // config (which includes the complete voice prompt template, action
+        // manifest, session context, chat history, and tool-usage guidance).
+        // For Responses Audio transport, createEphemeralToken sets
+        // tokenData.instructions directly (no sessionConfig).
+        // Fall back to config-level instructions + capability prompt only
+        // when neither is available.
+        const resolvedInstructions = String(
+          tokenData.sessionConfig?.instructions
+            || tokenData.instructions
+            || "",
+        ).trim();
+        tokenData.instructions = resolvedInstructions
+          || [voiceCfg.instructions || "", capabilityPrompt]
+            .filter(Boolean)
+            .join("\n\n")
+            .trim()
+          || undefined;
         if (selectedVoiceAgent?.voiceInstructions) {
           tokenData.instructions = `${tokenData.instructions || ""}\n\n${selectedVoiceAgent.voiceInstructions}`.trim();
         }

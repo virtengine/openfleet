@@ -142,13 +142,14 @@ function showHelp() {
 
   TASK MANAGEMENT
     task list [--status s] [--json]  List tasks with optional filters
-    task create <json|flags>    Create a new task from JSON or flags
+    task create <json|flags>    Create a new task (flags or inline JSON)
     task get <id> [--json]      Show task details by ID (prefix match)
     task update <id> <patch>    Update task fields (JSON or flags)
     task delete <id>            Delete a task
     task stats [--json]         Show aggregate task statistics
-    task import <file.json>     Bulk import tasks from JSON
-    task plan [--count N]       Trigger AI task planner
+    task import <file.json>     Bulk import tasks from JSON file
+
+    Run 'bosun task --help' for complete task CLI documentation and examples.
 
   VIBE-KANBAN
     --no-vk-spawn               Don't auto-spawn Vibe-Kanban
@@ -693,15 +694,23 @@ function daemonStatus() {
   if (pid) {
     console.log(`  bosun daemon is running (PID ${pid})`);
   } else {
-    // Check for ghost processes (alive but no PID file)
+    // Check for ghost daemon-child processes (alive but no PID file)
     const ghosts = findGhostDaemonPids();
     if (ghosts.length > 0) {
       console.log(`  :alert:  bosun daemon is NOT tracked (no PID file), but ${ghosts.length} ghost process(es) found: ${ghosts.join(", ")}`);
       console.log(`  The daemon is likely running but its PID file was lost.`);
       console.log(`  Run --stop-daemon to clean up, then --daemon to restart.`);
     } else {
-      console.log("  bosun daemon is not running.");
-      removePidFile();
+      // Broader scan: portal, monitor, ui-server, etc. (non-daemon bosun processes)
+      const allPids = findAllBosunProcessPids();
+      if (allPids.length > 0) {
+        console.log(`  bosun daemon is not running in daemon mode, but ${allPids.length} bosun process(es) are active (PID ${allPids.join(", ")}).`);
+        console.log(`  Bosun may be running in portal or monitor mode (not as a background daemon).`);
+        console.log(`  Use 'bosun --stop' to terminate all processes, or 'bosun --daemon' to start the daemon.`);
+      } else {
+        console.log("  bosun daemon is not running.");
+        removePidFile();
+      }
     }
   }
   process.exit(0);
@@ -830,6 +839,16 @@ async function main() {
   // Apply legacy CODEX_MONITOR_* → BOSUN_* env aliases before any config ops
   applyAllCompatibility();
 
+  // Handle 'task' subcommand FIRST — before --help, so that
+  // `bosun task --help` and `bosun task create --help` route to task-specific help
+  // rather than the main bosun help page.
+  if (args[0] === "task" || args.includes("--task")) {
+    const { runTaskCli } = await import("./task-cli.mjs");
+    const taskArgs = args[0] === "task" ? args.slice(1) : args.slice(args.indexOf("--task") + 1);
+    await runTaskCli(taskArgs);
+    process.exit(0);
+  }
+
   // Handle --help
   if (args.includes("--help") || args.includes("-h")) {
     showHelp();
@@ -900,15 +919,6 @@ async function main() {
       process.exit(code ?? 0);
     });
     return;
-  }
-
-  // Handle 'task' subcommand — must come before flag-based routing
-  if (args[0] === "task" || args.includes("--task")) {
-    const { runTaskCli } = await import("./task-cli.mjs");
-    // Pass everything after "task" to the task CLI
-    const taskArgs = args[0] === "task" ? args.slice(1) : args.slice(args.indexOf("--task") + 1);
-    await runTaskCli(taskArgs);
-    process.exit(0);
   }
 
   // Handle --doctor
@@ -1223,7 +1233,48 @@ async function main() {
   // Handle --update (force update)
   if (args.includes("--update")) {
     const { forceUpdate } = await import("./update-check.mjs");
-    await forceUpdate(VERSION);
+    const updated = await forceUpdate(VERSION);
+    if (updated) {
+      // If a daemon or other bosun process is running, restart it so it picks
+      // up the new version automatically — no manual restart needed.
+      const daemonPid = getDaemonPid();
+      const ghostPids = findGhostDaemonPids();
+      const daemonPids = daemonPid
+        ? [daemonPid]
+        : ghostPids.length > 0
+          ? ghostPids
+          : [];
+      if (daemonPids.length > 0) {
+        console.log(
+          `  Daemon running (PID ${daemonPids.join(", ")}). Stopping for restart...`,
+        );
+        for (const p of daemonPids) {
+          try {
+            process.kill(p, "SIGTERM");
+          } catch {
+            /* already dead */
+          }
+        }
+        // Wait up to 4 s for graceful exit
+        const deadline = Date.now() + 4000;
+        let alive = daemonPids.filter((p) => isProcessAlive(p));
+        while (alive.length > 0 && Date.now() < deadline) {
+          Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 200);
+          alive = alive.filter((p) => isProcessAlive(p));
+        }
+        for (const p of alive) {
+          try {
+            process.kill(p, "SIGKILL");
+          } catch {
+            /* ok */
+          }
+        }
+        removePidFile();
+        console.log("  Restarting daemon with updated version...");
+        startDaemon(); // spawns new daemon-child and calls process.exit(0)
+        return; // unreachable — startDaemon exits
+      }
+    }
     process.exit(0);
   }
 

@@ -7,7 +7,8 @@ describe("voice tool capability injection regressions", () => {
     const source = readFileSync(resolve(process.cwd(), "ui-server.mjs"), "utf8");
     expect(source).toContain("buildVoiceToolCapabilityPrompt");
     expect(source).toContain("voiceToolCapabilityPrompt: capabilityPrompt");
-    expect(source).toContain("tokenData.instructions = [voiceCfg.instructions || \"\", capabilityPrompt]");
+    // SDK mode should use full resolved instructions from createEphemeralToken
+    expect(source).toContain("tokenData.sessionConfig?.instructions");
     expect(source).toContain("Available tools JSON (name + input schema):");
   });
 

@@ -378,6 +378,12 @@ export async function runTaskCli(args) {
   const subcommand = args[0];
   const subArgs = args.slice(1);
 
+  // Top-level help: `bosun task --help`, `bosun task -h`, `bosun task help`, or bare `bosun task`
+  if (!subcommand || subcommand === '--help' || subcommand === '-h' || subcommand === 'help') {
+    showTaskHelp();
+    process.exit(0);
+  }
+
   switch (subcommand) {
     case "list":
     case "ls":
@@ -412,6 +418,30 @@ export async function runTaskCli(args) {
 // ── CLI Subcommands ───────────────────────────────────────────────────────────
 
 async function cliList(args) {
+  if (hasFlag(args, '--help') || hasFlag(args, '-h')) {
+    console.log(`
+  bosun task list — List tasks with optional filters
+
+  USAGE
+    bosun task list [options]
+
+  OPTIONS
+    --status <s>      Filter: draft|todo|inprogress|inreview|done|blocked
+    --priority <p>    Filter: low|medium|high|critical
+    --tag <tag>       Filter by tag
+    --search <text>   Full-text search in title/description
+    --limit <n>       Max results to return
+    --json            Output as JSON array
+
+  EXAMPLES
+    bosun task list
+    bosun task list --status todo
+    bosun task list --priority high --json
+    bosun task list --tag ui --limit 10
+    bosun task list --search 'retry queue'
+`);
+    return;
+  }
   const filters = {};
   const status = getArgValue(args, "--status");
   const priority = getArgValue(args, "--priority");
@@ -451,6 +481,11 @@ async function cliList(args) {
 }
 
 async function cliCreate(args) {
+  if (hasFlag(args, '--help') || hasFlag(args, '-h')) {
+    showCreateHelp();
+    return;
+  }
+
   let data;
 
   // Check if first positional arg (not a flag value) is a JSON string.
@@ -506,6 +541,20 @@ async function cliCreate(args) {
       workspace: getArgValue(args, "--workspace") || process.cwd(),
       repository: getArgValue(args, "--repository") || getArgValue(args, "--repo") || "",
     };
+    // Collect repeatable structured-section flags
+    const steps = [], acceptance = [], verification = [];
+    for (let i = 0; i < args.length; i++) {
+      if ((args[i] === '--step' || args[i] === '--implementation-step') && args[i + 1] && !args[i + 1].startsWith('--')) {
+        steps.push(args[++i]);
+      } else if ((args[i] === '--ac' || args[i] === '--acceptance') && args[i + 1] && !args[i + 1].startsWith('--')) {
+        acceptance.push(args[++i]);
+      } else if ((args[i] === '--verify' || args[i] === '--verification') && args[i + 1] && !args[i + 1].startsWith('--')) {
+        verification.push(args[++i]);
+      }
+    }
+    if (steps.length) data.implementation_steps = steps;
+    if (acceptance.length) data.acceptance_criteria = acceptance;
+    if (verification.length) data.verification = verification;
   }
 
   try {
@@ -538,6 +587,25 @@ async function cliCreate(args) {
 }
 
 async function cliGet(args) {
+  if (hasFlag(args, '--help') || hasFlag(args, '-h')) {
+    console.log(`
+  bosun task get — Show task details by ID
+
+  USAGE
+    bosun task get <id> [--json]
+
+  ARGUMENTS
+    <id>    Task ID or prefix (minimum 4 chars)
+
+  OPTIONS
+    --json  Output as JSON
+
+  EXAMPLES
+    bosun task get abc123
+    bosun task get b500 --json
+`);
+    return;
+  }
   const id = args.find((a) => !a.startsWith("--"));
   if (!id) {
     console.error("  Error: task ID required. Usage: bosun task get <id>");
@@ -580,6 +648,35 @@ async function cliGet(args) {
 }
 
 async function cliUpdate(args) {
+  if (hasFlag(args, '--help') || hasFlag(args, '-h')) {
+    console.log(`
+  bosun task update — Update task fields by ID
+
+  USAGE
+    bosun task update <id> [flags]
+    bosun task update <id> '<json-patch>'
+
+  ARGUMENTS
+    <id>           Task ID or prefix
+
+  FLAGS
+    --status <s>   New status: draft|todo|inprogress|inreview|done|blocked
+    --priority <p> New priority: low|medium|high|critical
+    --title <t>    New title
+    --description, --desc <d>  New description
+    --tags <t>     Replace tags (comma-separated)
+    --branch <b>   Change base branch
+    --draft        Mark as draft
+    --undraft      Remove draft flag
+    --json         Output updated task as JSON
+
+  EXAMPLES
+    bosun task update abc123 --status todo
+    bosun task update abc123 --priority critical --tags 'ui,urgent'
+    bosun task update abc123 '{"status":"inprogress","priority":"high"}'
+`);
+    return;
+  }
   const id = args.find((a) => !a.startsWith("--"));
   if (!id) {
     console.error("  Error: task ID required. Usage: bosun task update <id> [--status todo] [--priority high]");
@@ -639,6 +736,19 @@ async function cliUpdate(args) {
 }
 
 async function cliDelete(args) {
+  if (hasFlag(args, '--help') || hasFlag(args, '-h')) {
+    console.log(`
+  bosun task delete — Delete a task by ID
+
+  USAGE
+    bosun task delete <id>
+
+  EXAMPLES
+    bosun task delete abc123
+    bosun task delete b500
+`);
+    return;
+  }
   const id = args.find((a) => !a.startsWith("--"));
   if (!id) {
     console.error("  Error: task ID required. Usage: bosun task delete <id>");
@@ -679,6 +789,38 @@ async function cliStats(args) {
 }
 
 async function cliImport(args) {
+  if (hasFlag(args, '--help') || hasFlag(args, '-h')) {
+    console.log(`
+  bosun task import — Bulk import tasks from a JSON file
+
+  USAGE
+    bosun task import <file.json>
+
+  FILE FORMAT
+    JSON file must contain an array at top level, or under a "tasks" key.
+    Each task object supports all fields including structured sections:
+
+    {
+      "tasks": [
+        {
+          "title": "feat(ui): Add tabular numerals",
+          "description": "Optional free-text description",
+          "priority": "high",
+          "status": "todo",
+          "tags": ["ui", "css"],
+          "implementation_steps": ["Edit variables.css", "Test in portal"],
+          "acceptance_criteria": ["Numbers align in tables across all tabs"],
+          "verification": ["Visual check in agents tab with live data"]
+        }
+      ]
+    }
+
+  EXAMPLES
+    bosun task import ./backlog.json
+    bosun task import ./tasks/sprint-1.json
+`);
+    return;
+  }
   const filePath = args.find((a) => !a.startsWith("--"));
   if (!filePath) {
     console.error("  Error: file path required. Usage: bosun task import <path.json>");
@@ -708,67 +850,145 @@ async function cliImport(args) {
 
 // ── Help ──────────────────────────────────────────────────────────────────────
 
+function showCreateHelp() {
+  console.log(`
+  bosun task create — Create a new task
+
+  USAGE
+    bosun task create --title "..." [flags]
+    bosun task create '<json-object>'
+    bosun task create '<json-array>'    (bulk create — all tasks at once)
+
+  FLAGS
+    --title <t>                 Task title (required when using flags)
+    --description, --desc <d>   Task description (single-line inline)
+    --status <s>                Initial status (default: draft)
+                                  draft|todo|inprogress|inreview|done|blocked
+    --priority <p>              Priority (default: medium)
+                                  low|medium|high|critical
+    --tags <t>                  Comma-separated tags  e.g. "ui,css,fix"
+    --branch <b>                Target base branch (default: main)
+    --workspace <w>             Workspace directory path
+    --repo <r>                  Repository identifier  e.g. "org/repo"
+    --stdin                     Read description from stdin (pipe-friendly)
+    --desc-file <path>          Read description from file (supports multiline markdown)
+    --step <text>               Add an implementation step (repeatable)
+    --ac <text>                 Add an acceptance criterion (repeatable)
+    --verify <text>             Add a verification step (repeatable)
+    --json                      Output created task as JSON
+
+  JSON OBJECT FIELDS
+    title, description, status, priority, tags[],
+    baseBranch, workspace, repository,
+    implementation_steps[], acceptance_criteria[], verification[]
+
+  EXAMPLES
+
+    # Simple
+    bosun task create --title "feat(ui): Add tabular numerals" --priority high --tags "ui,css"
+
+    # With structured sections (repeatable flags)
+    bosun task create \\
+      --title "feat(dashboard): Live/Offline connection badge" \\
+      --priority medium --status todo --tags "ui,ux" \\
+      --step "Add badge component to portal header" \\
+      --step "Listen for WebSocket connect/disconnect events" \\
+      --ac "Badge shows green dot when connected" \\
+      --ac "Badge shows grey dot when disconnected or reconnecting" \\
+      --verify "Open portal, kill server, confirm badge changes state"
+
+    # Multiline description from a file
+    bosun task create --title "refactor(css): CSS vars audit" --desc-file ./tasks/css-audit.md
+
+    # Pipe description from stdin
+    echo "Fix retry backoff to use exponential intervals" | \\
+      bosun task create --title "fix(retry): exponential backoff" --stdin
+
+    # Inline JSON with structured sections
+    bosun task create '{
+      "title": "feat(dashboard): retry queue section",
+      "priority": "high",
+      "status": "todo",
+      "tags": ["ui", "dashboard"],
+      "implementation_steps": ["Add RetryQueue component", "Wire to /api/status"],
+      "acceptance_criteria": ["Shows issue ID, attempt #, due-at, last error"],
+      "verification": ["Trigger a failing task, confirm it appears in retry queue"]
+    }'
+
+    # Bulk create from JSON array
+    bosun task create '[{"title":"Task A","priority":"high"},{"title":"Task B"}]'
+
+    # Bulk import from file (best for many tasks)
+    bosun task import ./backlog.json
+`);
+}
+
 function showTaskHelp() {
   console.log(`
   bosun task — Task management CLI
 
   SUBCOMMANDS
-    list, ls          List tasks with optional filters
-    create, add       Create a new task (JSON string or flags)
-    get, show         Show task details by ID (supports prefix match)
-    update, edit      Update task fields by ID
-    delete, rm        Delete a task by ID
-    plan              (removed — use workflow templates instead)
-    stats             Show aggregate task statistics
-    import            Bulk import tasks from a JSON file
+    list, ls    List tasks                  bosun task list --help
+    create, add Create a new task           bosun task create --help
+    get, show   Show task details           bosun task get --help
+    update, edit Update task fields         bosun task update --help
+    delete, rm  Delete a task              bosun task delete --help
+    stats       Aggregate statistics        bosun task stats --json
+    import      Bulk import from JSON file  bosun task import --help
 
-  LIST OPTIONS
-    --status <s>      Filter by status (draft|todo|inprogress|inreview|done|blocked)
-    --priority <p>    Filter by priority (low|medium|high|critical)
-    --tag <tag>       Filter by tag
-    --search <text>   Full-text search in title/description
-    --limit <n>       Max results
-    --json            Output as JSON
+  QUICK REFERENCE
 
-  CREATE OPTIONS
-    bosun task create '{"title": "...", "description": "...", "priority": "high"}'
-    bosun task create --title "..." --desc "..." --priority high --tags "ui,fix" --branch main
-    --title <t>       Task title (required unless using JSON)
-    --description, --desc <d>  Task description
-    --priority <p>    Priority: low|medium|high|critical (default: medium)
-    --status <s>      Initial status (default: draft)
-    --tags <t>        Comma-separated tags
-    --branch <b>      Target branch (default: main)
-    --workspace <w>   Workspace path
-    --repo <r>        Repository identifier
-    --stdin           Read description from stdin
-    --json            Output created task as JSON
+    # Create (flag-based)
+    bosun task create --title "feat(ui): Add tabular numerals" --priority high --tags "ui,css" --status todo
 
-  UPDATE OPTIONS
-    bosun task update <id> --status todo --priority high
-    bosun task update <id> '{"status": "todo", "priority": "high"}'
-    --status <s>      New status
-    --priority <p>    New priority
-    --title <t>       New title
-    --tags <t>        Replace tags (comma-separated)
-    --branch <b>      Change base branch
-    --draft           Mark as draft
-    --undraft         Remove draft flag
-    --json            Output updated task as JSON
+    # Create with structured steps, acceptance criteria, and verification
+    bosun task create \\
+      --title "feat(dashboard): retry queue section" \\
+      --priority high --status todo --tags "ui,dashboard" \\
+      --step "Add RetryQueueSection component to dashboard" \\
+      --step "Poll /api/status retrying[] array every 2s" \\
+      --step "Add empty state for when queue is empty" \\
+      --ac "Shows issue ID, attempt #, due-at time, and last error per row" \\
+      --ac "Disappears / shows empty state when retry queue empties" \\
+      --verify "Trigger a failing task, confirm it appears with correct fields"
 
-  IMPORT FORMAT
-    JSON file must contain an array at top level or under "tasks" key:
-    { "tasks": [{ "title": "...", "description": "..." }, ...] }
+    # Create (inline JSON — supports all fields)
+    bosun task create '{"title":"...","priority":"high","tags":["ui"],"implementation_steps":["..."],"acceptance_criteria":["..."]}'
 
-  EXAMPLES
-    bosun task list --status todo --json
-    bosun task create --title "[s] fix(cli): Resolve exit code handling" --priority high
-    bosun task create '{"title":"[m] feat(ui): Add dark mode","tags":["ui","theme"]}'
-    bosun task get abc123
-    bosun task update abc123 --status todo --priority critical
-    bosun task delete abc123
-    bosun task stats
+    # Create (bulk from JSON array)
+    bosun task create '[{"title":"Task A"},{"title":"Task B","priority":"high"}]'
+
+    # Bulk import from file (recommended for 3+ tasks)
     bosun task import ./backlog.json
+
+    # List and filter
+    bosun task list --status todo --priority high
+    bosun task list --tag ui --json
+
+    # Update
+    bosun task update <id> --status inprogress
+    bosun task update <id> --priority critical --tags "urgent,ui"
+
+  STATUS VALUES
+    draft · todo · inprogress · inreview · done · blocked
+
+  PRIORITY VALUES
+    low · medium · high · critical
+
+  IMPORT FILE FORMAT  (bosun task import ./backlog.json)
+    {
+      "tasks": [
+        {
+          "title": "feat(ui): Add tabular numerals",
+          "priority": "high",
+          "status": "todo",
+          "tags": ["ui", "css"],
+          "implementation_steps": ["Edit variables.css", "Verify in portal"],
+          "acceptance_criteria": ["Numeric columns align correctly"],
+          "verification": ["Visual check in agents tab"]
+        }
+      ]
+    }
 `);
 }
 

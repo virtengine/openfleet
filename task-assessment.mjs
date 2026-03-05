@@ -279,34 +279,176 @@ RESPOND WITH ONLY THE JSON OBJECT.`);
 function extractDecisionJson(raw) {
   if (!raw || typeof raw !== "string") return null;
 
-  try {
-    const parsed = JSON.parse(raw.trim());
-    if (parsed && typeof parsed.action === "string") return parsed;
-  } catch {
-    /* not pure JSON */
-  }
+  const seenStrings = new Set();
 
-  const fenceMatch = raw.match(/```(?:json)?\s*\n?([\s\S]*?)\n?```/);
-  if (fenceMatch) {
+  const hasAction = (value) =>
+    value &&
+    typeof value === "object" &&
+    typeof value.action === "string";
+
+  const tryParseJson = (text) => {
+    if (typeof text !== "string") return null;
+    const trimmed = text.trim();
+    if (!trimmed) return null;
     try {
-      const parsed = JSON.parse(fenceMatch[1].trim());
-      if (parsed && typeof parsed.action === "string") return parsed;
+      return JSON.parse(trimmed);
     } catch {
-      /* bad JSON in fence */
+      return null;
     }
-  }
+  };
 
-  const braceMatch = raw.match(/\{[\s\S]*?"action"\s*:\s*"[^"]+?"[\s\S]*?\}/);
-  if (braceMatch) {
-    try {
-      const parsed = JSON.parse(braceMatch[0]);
-      if (parsed && typeof parsed.action === "string") return parsed;
-    } catch {
-      /* partial match */
+  const collectJsonObjectCandidates = (text) => {
+    if (typeof text !== "string") return [];
+    const candidates = [];
+    for (let start = text.indexOf("{"); start !== -1; start = text.indexOf("{", start + 1)) {
+      let depth = 0;
+      let inString = false;
+      let escaped = false;
+      for (let i = start; i < text.length; i += 1) {
+        const ch = text[i];
+        if (inString) {
+          if (escaped) {
+            escaped = false;
+            continue;
+          }
+          if (ch === "\\") {
+            escaped = true;
+            continue;
+          }
+          if (ch === "\"") {
+            inString = false;
+          }
+          continue;
+        }
+        if (ch === "\"") {
+          inString = true;
+          continue;
+        }
+        if (ch === "{") {
+          depth += 1;
+          continue;
+        }
+        if (ch === "}") {
+          depth -= 1;
+          if (depth === 0) {
+            candidates.push(text.slice(start, i + 1));
+            break;
+          }
+        }
+      }
     }
-  }
+    return candidates;
+  };
 
-  return null;
+  const buildEnvelopeCandidates = (value) => {
+    const candidates = [];
+    if (value == null) return candidates;
+    if (typeof value === "string") {
+      const trimmed = value.trim();
+      if (trimmed) candidates.push(trimmed);
+      return candidates;
+    }
+    if (Array.isArray(value)) {
+      for (const entry of value) {
+        candidates.push(...buildEnvelopeCandidates(entry));
+      }
+      return candidates;
+    }
+    if (typeof value === "object") {
+      const nestedKeys = [
+        "finalResponse",
+        "output",
+        "text",
+        "message",
+        "content",
+        "response",
+        "result",
+        "data",
+        "value",
+      ];
+      for (const key of nestedKeys) {
+        if (Object.prototype.hasOwnProperty.call(value, key)) {
+          candidates.push(...buildEnvelopeCandidates(value[key]));
+        }
+      }
+      if (Array.isArray(value.items)) {
+        for (const item of value.items) {
+          if (!item || typeof item !== "object") continue;
+          if (typeof item.text === "string") candidates.push(item.text);
+          if (typeof item.content === "string") candidates.push(item.content);
+          if (typeof item.message === "string") candidates.push(item.message);
+          if (Array.isArray(item.content)) {
+            for (const part of item.content) {
+              if (!part || typeof part !== "object") continue;
+              if (typeof part.text === "string") candidates.push(part.text);
+              if (typeof part.content === "string") candidates.push(part.content);
+              if (typeof part.value === "string") candidates.push(part.value);
+            }
+          }
+        }
+      }
+    }
+    return candidates;
+  };
+
+  const inspect = (value) => {
+    if (value == null) return null;
+    if (hasAction(value)) return value;
+
+    if (Array.isArray(value)) {
+      for (const item of value) {
+        const parsed = inspect(item);
+        if (parsed) return parsed;
+      }
+      return null;
+    }
+
+    if (typeof value === "object") {
+      const candidates = buildEnvelopeCandidates(value);
+      for (const candidate of candidates) {
+        const parsed = inspect(candidate);
+        if (parsed) return parsed;
+      }
+      return null;
+    }
+
+    if (typeof value === "string") {
+      const trimmed = value.trim();
+      if (!trimmed || seenStrings.has(trimmed)) return null;
+      seenStrings.add(trimmed);
+
+      const directParsed = tryParseJson(trimmed);
+      if (directParsed) {
+        const decision = inspect(directParsed);
+        if (decision) return decision;
+      }
+
+      const fenceRegex = /```(?:json)?\s*\n?([\s\S]*?)\n?```/gi;
+      for (const match of trimmed.matchAll(fenceRegex)) {
+        const fenced = (match[1] || "").trim();
+        if (!fenced || seenStrings.has(fenced)) continue;
+        seenStrings.add(fenced);
+        const parsedFence = tryParseJson(fenced);
+        if (parsedFence) {
+          const decision = inspect(parsedFence);
+          if (decision) return decision;
+        }
+      }
+
+      for (const candidate of collectJsonObjectCandidates(trimmed)) {
+        if (!candidate || seenStrings.has(candidate)) continue;
+        seenStrings.add(candidate);
+        const parsedCandidate = tryParseJson(candidate);
+        if (parsedCandidate) {
+          const decision = inspect(parsedCandidate);
+          if (decision) return decision;
+        }
+      }
+    }
+    return null;
+  };
+
+  return inspect(raw);
 }
 
 function normalizeDebtItems(rawDebtItems) {

@@ -466,9 +466,11 @@ export async function forceUpdate(currentVersion) {
     console.log(
       `\n  :check: Updated to v${latest}. Restart bosun to use the new version.\n`,
     );
+    return true; // update was installed
   } catch (err) {
     console.error(`\n  :close: Update failed: ${err.message}`);
     console.error(`  Try manually: npm install -g ${PKG_NAME}@latest\n`);
+    return false;
   }
 }
 

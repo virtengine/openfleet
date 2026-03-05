@@ -4830,6 +4830,777 @@ registerNodeType("action.bosun_cli", {
   },
 });
 
+// ═══════════════════════════════════════════════════════════════════════════
+//  BOSUN NATIVE TOOLS — Invoke Bosun's built-in/custom tools and workflows
+//  from within workflow nodes. These nodes enable:
+//    1. Programmatic tool invocation with structured I/O (action.bosun_tool)
+//    2. Lightweight sub-workflow invocation with data piping (action.invoke_workflow)
+//    3. Direct Bosun function calls (action.bosun_function)
+//
+//  Design: Every node produces structured output that can be piped via
+//  {{nodeId.field}} templates to downstream nodes. Output extraction,
+//  variable storage, and port-based routing are supported across all nodes.
+// ═══════════════════════════════════════════════════════════════════════════
+
+/** Module-scope lazy caches for Bosun tool imports (per AGENTS.md rules). */
+let _customToolsMod = null;
+async function getCustomToolsMod() {
+  if (!_customToolsMod) {
+    _customToolsMod = await import("./agent-custom-tools.mjs");
+  }
+  return _customToolsMod;
+}
+
+let _kanbanMod = null;
+async function getKanbanMod() {
+  if (!_kanbanMod) {
+    _kanbanMod = await import("./kanban-adapter.mjs");
+  }
+  return _kanbanMod;
+}
+
+// ── action.bosun_tool ─────────────────────────────────────────────────────
+// Invoke any Bosun built-in or custom tool programmatically with structured
+// input/output. Unlike action.bosun_cli (which shells out), this executes
+// the tool script directly in-process and returns parsed, structured data.
+
+registerNodeType("action.bosun_tool", {
+  describe: () =>
+    "Invoke a Bosun built-in or custom tool programmatically. Returns " +
+    "structured output that downstream workflow nodes can consume via " +
+    "{{nodeId.field}} templates. Supports field extraction, output mapping, " +
+    "and port-based routing for conditional branching.",
+  schema: {
+    type: "object",
+    properties: {
+      toolId: {
+        type: "string",
+        description:
+          "ID of the Bosun tool to invoke (e.g. 'list-todos', 'test-file-pairs', " +
+          "'git-hot-files', 'imports-graph', 'dead-exports-scan', or any custom tool ID)",
+      },
+      args: {
+        type: "array",
+        items: { type: "string" },
+        description: "CLI arguments passed to the tool script. Supports {{variable}} interpolation.",
+      },
+      env: {
+        type: "object",
+        description: "Environment variables to pass to the tool process",
+        additionalProperties: { type: "string" },
+      },
+      cwd: {
+        type: "string",
+        description: "Working directory for tool execution (default: workspace root)",
+      },
+      timeoutMs: {
+        type: "number",
+        default: 60000,
+        description: "Maximum execution time in milliseconds",
+      },
+      parseJson: {
+        type: "boolean",
+        default: true,
+        description: "Automatically parse JSON output into structured data",
+      },
+      extract: {
+        type: "object",
+        description:
+          "Structured data extraction config — extract specific fields from " +
+          "tool output for downstream piping (same schema as action.mcp_tool_call).",
+        properties: {
+          root: { type: "string", description: "Root path to start extraction from" },
+          fields: {
+            type: "object",
+            description: "Map of outputKey → sourcePath (dot-path, wildcard, JSON pointer)",
+            additionalProperties: { type: "string" },
+          },
+          defaults: { type: "object", additionalProperties: true },
+          types: { type: "object", additionalProperties: { type: "string" } },
+        },
+      },
+      outputMap: {
+        type: "object",
+        description: "Rename/reshape output fields for downstream nodes",
+        additionalProperties: true,
+      },
+      outputVariable: {
+        type: "string",
+        description: "Variable name to store result in ctx.data",
+      },
+      portConfig: {
+        type: "object",
+        description: "Output port routing based on tool result (for conditional branching)",
+        properties: {
+          field: { type: "string", description: "Field to use as port selector (default: 'success')" },
+          map: { type: "object", additionalProperties: { type: "string" } },
+          default: { type: "string", description: "Default port (default: 'default')" },
+        },
+      },
+    },
+    required: ["toolId"],
+  },
+  async execute(node, ctx) {
+    const toolId = ctx.resolve(node.config?.toolId || "");
+    if (!toolId) throw new Error("action.bosun_tool: 'toolId' is required");
+
+    const rootDir = ctx.data?.worktreePath || ctx.data?.repoRoot || process.cwd();
+    const cwd = ctx.resolve(node.config?.cwd || "") || rootDir;
+    const timeoutMs = node.config?.timeoutMs || 60000;
+
+    // Resolve args with template interpolation
+    const rawArgs = Array.isArray(node.config?.args) ? node.config.args : [];
+    const resolvedArgs = rawArgs.map((a) => String(ctx.resolve(a) ?? ""));
+
+    // Resolve environment variables
+    const envOverrides = {};
+    if (node.config?.env && typeof node.config.env === "object") {
+      for (const [key, value] of Object.entries(node.config.env)) {
+        envOverrides[key] = String(ctx.resolve(value) ?? "");
+      }
+    }
+
+    ctx.log(node.id, `Invoking Bosun tool: ${toolId} ${resolvedArgs.join(" ")}`.trim());
+
+    const toolsMod = await getCustomToolsMod();
+
+    // Verify tool exists
+    const toolInfo = toolsMod.getCustomTool(rootDir, toolId);
+    if (!toolInfo) {
+      ctx.log(node.id, `Tool "${toolId}" not found`, "error");
+      const errResult = {
+        success: false,
+        error: `Tool "${toolId}" not found. Available tools: ${toolsMod.listCustomTools(rootDir).map((t) => t.id).join(", ")}`,
+        toolId,
+        matchedPort: "error",
+        port: "error",
+      };
+      if (node.config?.outputVariable) ctx.data[node.config.outputVariable] = errResult;
+      return errResult;
+    }
+
+    // Execute tool
+    let toolResult;
+    try {
+      toolResult = await toolsMod.invokeCustomTool(rootDir, toolId, resolvedArgs, {
+        timeout: timeoutMs,
+        cwd,
+        env: envOverrides,
+      });
+    } catch (err) {
+      ctx.log(node.id, `Tool execution failed: ${err.message}`, "error");
+      const errResult = {
+        success: false,
+        error: err.message,
+        toolId,
+        matchedPort: "error",
+        port: "error",
+      };
+      if (node.config?.outputVariable) ctx.data[node.config.outputVariable] = errResult;
+      return errResult;
+    }
+
+    // Parse output
+    const exitSuccess = toolResult.exitCode === 0;
+    let data = toolResult.stdout?.trim() || "";
+    if (node.config?.parseJson !== false && data) {
+      try { data = JSON.parse(data); } catch { /* keep as string */ }
+    }
+
+    let output = {
+      success: exitSuccess,
+      toolId,
+      exitCode: toolResult.exitCode,
+      data,
+      stdout: toolResult.stdout,
+      stderr: toolResult.stderr,
+      toolTitle: toolInfo.entry?.title || toolId,
+      toolCategory: toolInfo.entry?.category || "unknown",
+    };
+
+    // ── Structured data extraction (same pattern as MCP tool call) ──
+    if (node.config?.extract && exitSuccess) {
+      const adapter = await getMcpAdapter();
+      const sourceData = typeof data === "object" && data !== null ? data : { text: data };
+      const extracted = adapter.extractMcpOutput(sourceData, node.config.extract);
+      output = { ...output, extracted, ...extracted };
+      ctx.log(node.id, `Extracted ${Object.keys(extracted).length} field(s)`);
+    }
+
+    // ── Output mapping ──
+    if (node.config?.outputMap && exitSuccess) {
+      const adapter = await getMcpAdapter();
+      const mapped = adapter.mapOutputFields(output, node.config.outputMap, ctx);
+      output = { ...output, mapped, ...mapped };
+      ctx.log(node.id, `Mapped ${Object.keys(mapped).length} field(s)`);
+    }
+
+    // ── Port-based routing ──
+    if (node.config?.portConfig) {
+      const adapter = await getMcpAdapter();
+      const port = adapter.resolveOutputPort(output, node.config.portConfig);
+      output.matchedPort = port;
+      output.port = port;
+    } else {
+      output.matchedPort = exitSuccess ? "default" : "error";
+      output.port = exitSuccess ? "default" : "error";
+    }
+
+    // Store in ctx.data if requested
+    if (node.config?.outputVariable) {
+      ctx.data[node.config.outputVariable] = output;
+    }
+
+    if (exitSuccess) {
+      ctx.log(node.id, `Tool "${toolId}" completed (exit ${toolResult.exitCode})`);
+    } else {
+      ctx.log(node.id, `Tool "${toolId}" failed (exit ${toolResult.exitCode}): ${toolResult.stderr?.slice(0, 200)}`, "warn");
+    }
+
+    return output;
+  },
+});
+
+// ── action.invoke_workflow ────────────────────────────────────────────────
+// Lightweight sub-workflow invocation with automatic output forwarding.
+// While action.execute_workflow is comprehensive, this node provides
+// simpler ergonomics for the common case of "run workflow X and pipe
+// its output to the next node".
+
+registerNodeType("action.invoke_workflow", {
+  describe: () =>
+    "Invoke another workflow and pipe its output to downstream nodes. " +
+    "Simpler than action.execute_workflow — designed for workflow-to-workflow " +
+    "data piping. Automatically forwards the child workflow's final node " +
+    "outputs as structured data accessible via {{nodeId.field}} templates.",
+  schema: {
+    type: "object",
+    properties: {
+      workflowId: {
+        type: "string",
+        description: "ID of the workflow to invoke (supports {{variable}} templates)",
+      },
+      input: {
+        type: "object",
+        description: "Input data passed to the child workflow (supports {{variable}} templates)",
+        additionalProperties: true,
+      },
+      mode: {
+        type: "string",
+        enum: ["sync", "dispatch"],
+        default: "sync",
+        description: "sync: wait for result; dispatch: fire-and-forget",
+      },
+      forwardFields: {
+        type: "array",
+        items: { type: "string" },
+        description:
+          "List of field names to extract from the child workflow's output " +
+          "and promote to this node's top-level output. By default, all " +
+          "child output fields are forwarded.",
+      },
+      outputVariable: {
+        type: "string",
+        description: "Variable name to store the full invocation result in ctx.data",
+      },
+      timeout: {
+        type: "number",
+        default: 300000,
+        description: "Maximum wait time for sync mode (ms)",
+      },
+      failOnError: {
+        type: "boolean",
+        default: false,
+        description: "Throw (fail this node) if the child workflow has errors. Default: false (soft fail).",
+      },
+      pipeContext: {
+        type: "boolean",
+        default: false,
+        description: "Pass all current context data as input to the child workflow",
+      },
+      extractFromNodes: {
+        type: "array",
+        items: { type: "string" },
+        description:
+          "List of node IDs in the child workflow whose outputs should be " +
+          "extracted and forwarded. If empty, the last completed node's output " +
+          "is forwarded.",
+      },
+    },
+    required: ["workflowId"],
+  },
+  async execute(node, ctx, engine) {
+    const workflowId = String(ctx.resolve(node.config?.workflowId || "") || "").trim();
+    const mode = String(ctx.resolve(node.config?.mode || "sync") || "sync").trim().toLowerCase();
+    const failOnError = parseBooleanSetting(
+      resolveWorkflowNodeValue(node.config?.failOnError ?? false, ctx),
+      false,
+    );
+    const pipeContext = parseBooleanSetting(
+      resolveWorkflowNodeValue(node.config?.pipeContext ?? false, ctx),
+      false,
+    );
+
+    if (!workflowId) {
+      throw new Error("action.invoke_workflow: 'workflowId' is required");
+    }
+    if (!engine || typeof engine.execute !== "function") {
+      throw new Error("action.invoke_workflow: workflow engine is not available");
+    }
+    if (typeof engine.get === "function" && !engine.get(workflowId)) {
+      const notFoundMsg = `action.invoke_workflow: workflow "${workflowId}" not found`;
+      if (failOnError) throw new Error(notFoundMsg);
+      ctx.log(node.id, notFoundMsg, "warn");
+      return { success: false, error: notFoundMsg, workflowId, mode, matchedPort: "error", port: "error" };
+    }
+
+    // Build child input from config + optional context piping
+    const resolvedInput = resolveWorkflowNodeValue(node.config?.input ?? {}, ctx);
+    const childInput = {
+      ...(pipeContext ? { ...ctx.data } : {}),
+      ...(typeof resolvedInput === "object" && resolvedInput !== null ? resolvedInput : {}),
+      _parentWorkflowId: ctx.data?._workflowId || "",
+      _workflowStack: normalizeWorkflowStack(ctx.data?._workflowStack),
+    };
+    const parentId = String(ctx.data?._workflowId || "").trim();
+    if (parentId && childInput._workflowStack[childInput._workflowStack.length - 1] !== parentId) {
+      childInput._workflowStack.push(parentId);
+    }
+    childInput._workflowStack.push(workflowId);
+
+    // ── Dispatch mode ──
+    if (mode === "dispatch") {
+      ctx.log(node.id, `Dispatching workflow "${workflowId}" (fire-and-forget)`);
+      const promise = engine.execute(workflowId, childInput);
+      promise.catch((err) => {
+        ctx.log(node.id, `Dispatched workflow "${workflowId}" failed: ${err.message}`, "error");
+      });
+      const output = {
+        success: true,
+        dispatched: true,
+        workflowId,
+        mode: "dispatch",
+        matchedPort: "default",
+        port: "default",
+      };
+      if (node.config?.outputVariable) ctx.data[node.config.outputVariable] = output;
+      return output;
+    }
+
+    // ── Sync mode — execute and harvest output ──
+    ctx.log(node.id, `Invoking workflow "${workflowId}" (sync)`);
+
+    let childCtx;
+    const timeoutMs = node.config?.timeout || 300000;
+    try {
+      childCtx = await Promise.race([
+        engine.execute(workflowId, childInput),
+        new Promise((_, reject) =>
+          setTimeout(() => reject(new Error(`Workflow "${workflowId}" timed out after ${timeoutMs}ms`)), timeoutMs),
+        ),
+      ]);
+    } catch (err) {
+      ctx.log(node.id, `Workflow "${workflowId}" failed: ${err.message}`, "error");
+      if (failOnError) throw err;
+      return {
+        success: false,
+        error: err.message,
+        workflowId,
+        mode: "sync",
+        matchedPort: "error",
+        port: "error",
+      };
+    }
+
+    const childErrors = Array.isArray(childCtx?.errors) ? childCtx.errors : [];
+    const hasErrors = childErrors.length > 0;
+
+    // ── Extract outputs from child workflow ──
+    const forwardedData = {};
+    const extractFromNodes = Array.isArray(node.config?.extractFromNodes) ? node.config.extractFromNodes : [];
+
+    if (childCtx?.nodeOutputs) {
+      if (extractFromNodes.length > 0) {
+        // Extract from specific named nodes
+        for (const nodeId of extractFromNodes) {
+          const nodeOut = childCtx.getNodeOutput(nodeId);
+          if (nodeOut != null) {
+            forwardedData[nodeId] = nodeOut;
+            // Also flatten scalar fields to top-level
+            if (typeof nodeOut === "object" && nodeOut !== null && !Array.isArray(nodeOut)) {
+              Object.assign(forwardedData, nodeOut);
+            }
+          }
+        }
+      } else {
+        // Forward all node outputs (last one wins for field name conflicts)
+        for (const [nodeId, nodeOut] of childCtx.nodeOutputs) {
+          if (typeof nodeOut === "object" && nodeOut !== null && !Array.isArray(nodeOut)) {
+            Object.assign(forwardedData, nodeOut);
+          }
+        }
+      }
+    }
+
+    // Apply forwardFields filter if specified
+    const forwardFields = Array.isArray(node.config?.forwardFields) ? node.config.forwardFields : [];
+    let filteredData;
+    if (forwardFields.length > 0) {
+      filteredData = {};
+      for (const field of forwardFields) {
+        if (Object.prototype.hasOwnProperty.call(forwardedData, field)) {
+          filteredData[field] = forwardedData[field];
+        }
+      }
+    } else {
+      filteredData = forwardedData;
+    }
+
+    const output = {
+      success: !hasErrors,
+      workflowId,
+      mode: "sync",
+      runId: childCtx?.id || null,
+      errorCount: childErrors.length,
+      errors: childErrors.map((e) => ({
+        nodeId: e?.nodeId || null,
+        error: String(e?.error || "unknown"),
+      })),
+      childData: childCtx?.data || {},
+      ...filteredData,
+      matchedPort: hasErrors ? "error" : "default",
+      port: hasErrors ? "error" : "default",
+    };
+
+    if (node.config?.outputVariable) {
+      ctx.data[node.config.outputVariable] = output;
+    }
+
+    if (hasErrors) {
+      ctx.log(node.id, `Workflow "${workflowId}" completed with ${childErrors.length} error(s)`, "warn");
+      if (failOnError) {
+        const reason = childErrors[0]?.error || "child workflow failed";
+        throw new Error(`action.invoke_workflow: "${workflowId}" failed: ${reason}`);
+      }
+    } else {
+      ctx.log(node.id, `Workflow "${workflowId}" completed (${Object.keys(filteredData).length} field(s) forwarded)`);
+    }
+
+    return output;
+  },
+});
+
+// ── action.bosun_function ─────────────────────────────────────────────────
+// Invoke an internal Bosun module function directly. This is the most
+// powerful integration point — it allows workflows to call any registered
+// Bosun capability (task operations, git operations, tool discovery, etc.)
+// with structured input/output.
+
+/**
+ * Registry of callable Bosun functions.
+ * Each entry: { module, fn, description, params }
+ * Modules are lazy-imported to keep startup lean.
+ */
+const BOSUN_FUNCTION_REGISTRY = Object.freeze({
+  // ── Tool operations ──
+  "tools.list": {
+    description: "List all available Bosun tools (built-in + custom + global)",
+    params: ["rootDir"],
+    async invoke(args, ctx) {
+      const mod = await getCustomToolsMod();
+      const rootDir = args.rootDir || ctx.data?.worktreePath || ctx.data?.repoRoot || process.cwd();
+      return mod.listCustomTools(rootDir, { includeBuiltins: true });
+    },
+  },
+  "tools.get": {
+    description: "Get details of a specific Bosun tool by ID",
+    params: ["rootDir", "toolId"],
+    async invoke(args, ctx) {
+      const mod = await getCustomToolsMod();
+      const rootDir = args.rootDir || ctx.data?.worktreePath || ctx.data?.repoRoot || process.cwd();
+      const result = mod.getCustomTool(rootDir, args.toolId);
+      if (!result) return { found: false, toolId: args.toolId };
+      return { found: true, ...result.entry };
+    },
+  },
+  "tools.builtin": {
+    description: "List all built-in tool definitions",
+    params: [],
+    async invoke() {
+      const mod = await getCustomToolsMod();
+      return mod.listBuiltinTools();
+    },
+  },
+  // ── Task operations ──
+  "tasks.list": {
+    description: "List tasks from the kanban board",
+    params: ["status", "limit"],
+    async invoke(args, ctx, engine) {
+      const kanban = engine?.services?.kanban;
+      if (!kanban || typeof kanban.listTasks !== "function") {
+        throw new Error("Kanban service not available");
+      }
+      const opts = {};
+      if (args.status) opts.status = args.status;
+      if (args.limit) opts.limit = Number(args.limit);
+      return kanban.listTasks(opts);
+    },
+  },
+  "tasks.get": {
+    description: "Get a specific task by ID",
+    params: ["taskId"],
+    async invoke(args, ctx, engine) {
+      const kanban = engine?.services?.kanban;
+      if (!kanban || typeof kanban.getTask !== "function") {
+        throw new Error("Kanban service not available");
+      }
+      return kanban.getTask(args.taskId);
+    },
+  },
+  "tasks.create": {
+    description: "Create a new task",
+    params: ["title", "description", "priority", "labels"],
+    async invoke(args, ctx, engine) {
+      const kanban = engine?.services?.kanban;
+      if (!kanban || typeof kanban.createTask !== "function") {
+        throw new Error("Kanban service not available");
+      }
+      return kanban.createTask({
+        title: args.title,
+        description: args.description || "",
+        priority: args.priority || "medium",
+        labels: Array.isArray(args.labels) ? args.labels : [],
+      });
+    },
+  },
+  "tasks.update": {
+    description: "Update a task's status or fields",
+    params: ["taskId", "status", "fields"],
+    async invoke(args, ctx, engine) {
+      const kanban = engine?.services?.kanban;
+      if (!kanban || typeof kanban.updateTask !== "function") {
+        throw new Error("Kanban service not available");
+      }
+      const update = {};
+      if (args.status) update.status = args.status;
+      if (args.fields && typeof args.fields === "object") Object.assign(update, args.fields);
+      return kanban.updateTask(args.taskId, update);
+    },
+  },
+  // ── Git operations ──
+  "git.status": {
+    description: "Get git status of the working directory",
+    params: ["cwd"],
+    async invoke(args, ctx) {
+      const cwd = args.cwd || ctx.data?.worktreePath || ctx.data?.repoRoot || process.cwd();
+      try {
+        const output = execSync("git status --porcelain", { encoding: "utf8", cwd, timeout: 15000, stdio: "pipe" });
+        const lines = output.trim().split("\n").filter(Boolean);
+        return {
+          clean: lines.length === 0,
+          changedFiles: lines.length,
+          files: lines.map((l) => ({ status: l.slice(0, 2).trim(), path: l.slice(3) })),
+        };
+      } catch (err) {
+        return { clean: false, error: err.message, changedFiles: -1, files: [] };
+      }
+    },
+  },
+  "git.log": {
+    description: "Get recent git log entries",
+    params: ["cwd", "count", "format"],
+    async invoke(args, ctx) {
+      const cwd = args.cwd || ctx.data?.worktreePath || ctx.data?.repoRoot || process.cwd();
+      const count = Math.min(Math.max(1, Number(args.count) || 10), 100);
+      try {
+        const output = execSync(
+          `git log --oneline -${count} --format="%H|%an|%ai|%s"`,
+          { encoding: "utf8", cwd, timeout: 15000, stdio: "pipe" },
+        );
+        const commits = output.trim().split("\n").filter(Boolean).map((line) => {
+          const [hash, author, date, ...rest] = line.split("|");
+          return { hash, author, date, message: rest.join("|") };
+        });
+        return { commits, count: commits.length };
+      } catch (err) {
+        return { commits: [], count: 0, error: err.message };
+      }
+    },
+  },
+  "git.branch": {
+    description: "Get current branch name and list branches",
+    params: ["cwd"],
+    async invoke(args, ctx) {
+      const cwd = args.cwd || ctx.data?.worktreePath || ctx.data?.repoRoot || process.cwd();
+      try {
+        const current = execSync("git branch --show-current", { encoding: "utf8", cwd, timeout: 15000, stdio: "pipe" }).trim();
+        const allBranches = execSync("git branch --list --format='%(refname:short)'", { encoding: "utf8", cwd, timeout: 15000, stdio: "pipe" })
+          .trim().split("\n").filter(Boolean);
+        return { current, branches: allBranches, branchCount: allBranches.length };
+      } catch (err) {
+        return { current: "", branches: [], branchCount: 0, error: err.message };
+      }
+    },
+  },
+  // ── Workflow operations ──
+  "workflows.list": {
+    description: "List all registered workflows",
+    params: [],
+    async invoke(args, ctx, engine) {
+      if (!engine || typeof engine.list !== "function") {
+        throw new Error("Workflow engine not available");
+      }
+      const workflows = engine.list();
+      return workflows.map((w) => ({
+        id: w.id,
+        name: w.name,
+        enabled: w.enabled !== false,
+        category: w.category || "custom",
+        nodeCount: (w.nodes || []).length,
+        edgeCount: (w.edges || []).length,
+      }));
+    },
+  },
+  "workflows.get": {
+    description: "Get a workflow definition by ID",
+    params: ["workflowId"],
+    async invoke(args, ctx, engine) {
+      if (!engine || typeof engine.get !== "function") {
+        throw new Error("Workflow engine not available");
+      }
+      return engine.get(args.workflowId) || null;
+    },
+  },
+  // ── Config operations ──
+  "config.show": {
+    description: "Show current Bosun configuration",
+    params: ["rootDir"],
+    async invoke(args, ctx) {
+      const rootDir = args.rootDir || ctx.data?.worktreePath || ctx.data?.repoRoot || process.cwd();
+      try {
+        const configPath = resolve(rootDir, ".bosun", "bosun.config.json");
+        if (!existsSync(configPath)) return { exists: false, config: {} };
+        return { exists: true, config: JSON.parse(readFileSync(configPath, "utf8")) };
+      } catch (err) {
+        return { exists: false, error: err.message, config: {} };
+      }
+    },
+  },
+});
+
+registerNodeType("action.bosun_function", {
+  describe: () =>
+    "Invoke an internal Bosun function directly (tasks, git, tools, workflows, config). " +
+    "Returns structured output that downstream nodes can consume. More powerful " +
+    "than action.bosun_cli — no subprocess overhead, direct structured data.",
+  schema: {
+    type: "object",
+    properties: {
+      function: {
+        type: "string",
+        enum: Object.keys(BOSUN_FUNCTION_REGISTRY),
+        description: "Function to invoke. Available: " + Object.keys(BOSUN_FUNCTION_REGISTRY).join(", "),
+      },
+      args: {
+        type: "object",
+        description: "Arguments for the function (varies per function). Supports {{variable}} interpolation.",
+        additionalProperties: true,
+      },
+      outputVariable: {
+        type: "string",
+        description: "Variable name to store the result in ctx.data",
+      },
+      extract: {
+        type: "object",
+        description: "Structured data extraction config (same as action.mcp_tool_call)",
+        properties: {
+          root: { type: "string" },
+          fields: { type: "object", additionalProperties: { type: "string" } },
+          defaults: { type: "object", additionalProperties: true },
+          types: { type: "object", additionalProperties: { type: "string" } },
+        },
+      },
+      outputMap: {
+        type: "object",
+        description: "Rename/reshape output fields for downstream nodes",
+        additionalProperties: true,
+      },
+    },
+    required: ["function"],
+  },
+  async execute(node, ctx, engine) {
+    const fnName = ctx.resolve(node.config?.function || "");
+    if (!fnName) throw new Error("action.bosun_function: 'function' is required");
+
+    const fnDef = BOSUN_FUNCTION_REGISTRY[fnName];
+    if (!fnDef) {
+      throw new Error(
+        `action.bosun_function: unknown function "${fnName}". ` +
+        `Available: ${Object.keys(BOSUN_FUNCTION_REGISTRY).join(", ")}`,
+      );
+    }
+
+    // Resolve args with template interpolation
+    const rawArgs = node.config?.args || {};
+    const resolvedArgs = {};
+    for (const [key, value] of Object.entries(rawArgs)) {
+      resolvedArgs[key] = typeof value === "string" ? ctx.resolve(value) : resolveWorkflowNodeValue(value, ctx);
+    }
+
+    ctx.log(node.id, `Calling bosun.${fnName}(${JSON.stringify(resolvedArgs).slice(0, 200)})`);
+
+    let result;
+    try {
+      result = await fnDef.invoke(resolvedArgs, ctx, engine);
+    } catch (err) {
+      ctx.log(node.id, `bosun.${fnName} failed: ${err.message}`, "error");
+      return {
+        success: false,
+        function: fnName,
+        error: err.message,
+        matchedPort: "error",
+        port: "error",
+      };
+    }
+
+    let output = {
+      success: true,
+      function: fnName,
+      data: result,
+      matchedPort: "default",
+      port: "default",
+    };
+
+    // Promote data fields to top-level for {{nodeId.field}} access
+    if (result && typeof result === "object" && !Array.isArray(result)) {
+      Object.assign(output, result);
+    }
+
+    // ── Structured data extraction ──
+    if (node.config?.extract) {
+      const adapter = await getMcpAdapter();
+      const sourceData = typeof result === "object" && result !== null ? result : { data: result };
+      const extracted = adapter.extractMcpOutput(sourceData, node.config.extract);
+      output = { ...output, extracted, ...extracted };
+      ctx.log(node.id, `Extracted ${Object.keys(extracted).length} field(s)`);
+    }
+
+    // ── Output mapping ──
+    if (node.config?.outputMap) {
+      const adapter = await getMcpAdapter();
+      const mapped = adapter.mapOutputFields(output, node.config.outputMap, ctx);
+      output = { ...output, mapped, ...mapped };
+    }
+
+    if (node.config?.outputVariable) {
+      ctx.data[node.config.outputVariable] = output;
+    }
+
+    ctx.log(node.id, `bosun.${fnName} completed`);
+    return output;
+  },
+});
+
 registerNodeType("action.handle_rate_limit", {
   describe: () => "Intelligently handle API rate limits with exponential backoff and provider rotation",
   schema: {
@@ -5196,8 +5967,81 @@ async function mcpUrlRequest(url, method, params, timeoutMs = 30000) {
   }
 }
 
+// ── Lazy-import MCP workflow adapter — cached at module scope per AGENTS.md rules.
+let _mcpAdapter = null;
+async function getMcpAdapter() {
+  if (!_mcpAdapter) {
+    _mcpAdapter = await import("./mcp-workflow-adapter.mjs");
+  }
+  return _mcpAdapter;
+}
+
+/**
+ * Internal helper: execute a single MCP tool call and return structured output.
+ * Shared by action.mcp_tool_call and action.mcp_pipeline.
+ */
+async function _executeMcpToolCall(serverId, toolName, input, timeoutMs, ctx) {
+  const registry = await getMcpRegistry();
+  const rootDir = ctx.data?.worktreePath || ctx.data?.repoRoot || process.cwd();
+  const resolved = await registry.resolveMcpServersForAgent(rootDir, [serverId]);
+
+  if (!resolved || !resolved.length) {
+    return {
+      success: false,
+      error: `MCP server "${serverId}" not found. Install it first via the library.`,
+      server: serverId,
+      tool: toolName,
+      data: null,
+      text: "",
+    };
+  }
+
+  const server = resolved[0];
+
+  // Resolve any {{variable}} references in tool input
+  const resolvedInput = {};
+  for (const [key, value] of Object.entries(input || {})) {
+    resolvedInput[key] = typeof value === "string" ? ctx.resolve(value) : value;
+  }
+
+  let result;
+  if (server.transport === "url" && server.url) {
+    result = await mcpUrlRequest(server.url, "tools/call", {
+      name: toolName,
+      arguments: resolvedInput,
+    }, timeoutMs);
+  } else if (server.command) {
+    result = await mcpStdioRequest(server, "tools/call", {
+      name: toolName,
+      arguments: resolvedInput,
+    }, timeoutMs);
+  } else {
+    throw new Error(`MCP server "${serverId}" has no command or url configured`);
+  }
+
+  // Parse MCP content blocks into structured data using the adapter
+  const adapter = await getMcpAdapter();
+  const parsed = adapter.parseMcpContent(result);
+
+  return {
+    success: !parsed.isError,
+    server: serverId,
+    tool: toolName,
+    data: parsed.data,
+    text: parsed.text,
+    contentType: parsed.contentType,
+    isError: parsed.isError,
+    images: parsed.images,
+    resources: parsed.resources,
+    result: result?.content || result,
+  };
+}
+
 registerNodeType("action.mcp_tool_call", {
-  describe: () => "Call a tool on an installed MCP server from the library",
+  describe: () =>
+    "Call a tool on an installed MCP server with structured output extraction. " +
+    "Supports field extraction, output mapping, type coercion, and port-based " +
+    "routing — enabling MCP tools to be first-class workflow data sources.",
   schema: {
     type: "object",
     properties: {
@@ -5211,7 +6055,7 @@ registerNodeType("action.mcp_tool_call", {
       },
       input: {
         type: "object",
-        description: "Tool input arguments (server-specific)",
+        description: "Tool input arguments (server-specific). Supports {{variable}} interpolation.",
         additionalProperties: true,
       },
       timeoutMs: {
@@ -5221,7 +6065,59 @@ registerNodeType("action.mcp_tool_call", {
       },
       outputVariable: {
         type: "string",
-        description: "Variable name to store the result in ctx.data",
+        description: "Variable name to store the full result in ctx.data",
+      },
+      extract: {
+        type: "object",
+        description:
+          "Structured data extraction config. Extract specific fields from the " +
+          "MCP tool output into a clean typed object for downstream piping.",
+        properties: {
+          root: {
+            type: "string",
+            description: "Root path to start extraction from (e.g. 'data' or 'data.items')",
+          },
+          fields: {
+            type: "object",
+            description:
+              "Map of outputKey → sourcePath. Supports dot-paths ('items[0].title'), " +
+              "JSON pointers ('/data/items/0'), and array wildcards ('items[*].name').",
+            additionalProperties: { type: "string" },
+          },
+          defaults: {
+            type: "object",
+            description: "Default values for fields that are missing or null",
+            additionalProperties: true,
+          },
+          types: {
+            type: "object",
+            description: "Type coercion map: fieldName → 'string'|'number'|'boolean'|'array'|'integer'|'json'",
+            additionalProperties: { type: "string" },
+          },
+        },
+      },
+      outputMap: {
+        type: "object",
+        description:
+          "Rename/reshape output fields for downstream nodes. " +
+          "Map of newFieldName → sourcePath (string) or spec object with " +
+          "_literal, _template, _from+_transform, _concat.",
+        additionalProperties: true,
+      },
+      portConfig: {
+        type: "object",
+        description:
+          "Configure output port routing based on tool result. " +
+          "Enables conditional workflow branching.",
+        properties: {
+          field: { type: "string", description: "Field to use as port selector (default: 'success')" },
+          map: {
+            type: "object",
+            description: "Map field values to port names (e.g. {'true': 'default', 'false': 'error'})",
+            additionalProperties: { type: "string" },
+          },
+          default: { type: "string", description: "Default port name (default: 'default')" },
+        },
       },
     },
     required: ["server", "tool"],
@@ -5229,7 +6125,6 @@ registerNodeType("action.mcp_tool_call", {
   async execute(node, ctx) {
     const serverId = ctx.resolve(node.config?.server || "");
     const toolName = ctx.resolve(node.config?.tool || "");
-    const input = node.config?.input || {};
     const timeoutMs = node.config?.timeoutMs || 30000;
 
     if (!serverId) throw new Error("action.mcp_tool_call: 'server' is required");
@@ -5237,49 +6132,9 @@ registerNodeType("action.mcp_tool_call", {
 
     ctx.log(node.id, `MCP tool call: ${serverId}/${toolName}`);
 
-    // Resolve the MCP server from the library/catalog
-    const registry = await getMcpRegistry();
-    const rootDir = ctx.data?.worktreePath || ctx.data?.repoRoot || process.cwd();
-    const resolved = await registry.resolveMcpServersForAgent(rootDir, [serverId]);
-
-    if (!resolved || !resolved.length) {
-      ctx.log(node.id, `MCP server "${serverId}" not found — skipping tool call`);
-      return {
-        success: false,
-        error: `action.mcp_tool_call: MCP server "${serverId}" not found. Install it first via the library: installMcpServer("${serverId}")`,
-        server: serverId,
-        tool: toolName,
-      };
-    }
-
-    const server = resolved[0];
-    ctx.log(node.id, `Resolved server: ${server.name} (${server.transport})`);
-
-    // Resolve any {{variable}} references in tool input
-    const resolvedInput = {};
-    for (const [key, value] of Object.entries(input)) {
-      resolvedInput[key] = typeof value === "string" ? ctx.resolve(value) : value;
-    }
-
-    let result;
+    let rawOutput;
     try {
-      if (server.transport === "url" && server.url) {
-        // URL-based MCP server — direct HTTP JSON-RPC
-        result = await mcpUrlRequest(server.url, "tools/call", {
-          name: toolName,
-          arguments: resolvedInput,
-        }, timeoutMs);
-      } else if (server.command) {
-        // Stdio-based MCP server — spawn process and communicate via JSON-RPC
-        result = await mcpStdioRequest(server, "tools/call", {
-          name: toolName,
-          arguments: resolvedInput,
-        }, timeoutMs);
-      } else {
-        throw new Error(
-          `MCP server "${serverId}" has no command or url configured`,
-        );
-      }
+      rawOutput = await _executeMcpToolCall(serverId, toolName, node.config?.input, timeoutMs, ctx);
     } catch (err) {
       ctx.log(node.id, `MCP tool call failed: ${err.message}`);
       return {
@@ -5287,42 +6142,57 @@ registerNodeType("action.mcp_tool_call", {
         error: err.message,
         server: serverId,
         tool: toolName,
+        matchedPort: "error",
+        port: "error",
       };
     }
 
-    ctx.log(node.id, `MCP tool call completed successfully`);
+    if (!rawOutput.success) {
+      ctx.log(node.id, `MCP tool returned error: ${rawOutput.error || "unknown"}`);
+    } else {
+      ctx.log(node.id, `MCP tool call completed (${rawOutput.contentType})`);
+    }
 
-    // Extract content from MCP tool call result
-    const content = result?.content || result;
-    const textContent = Array.isArray(content)
-      ? content
-          .filter((c) => c.type === "text")
-          .map((c) => c.text)
-          .join("\n")
-      : typeof content === "string"
-        ? content
-        : JSON.stringify(content);
+    // ── Structured data extraction ──
+    const adapter = await getMcpAdapter();
+    let extracted = rawOutput;
 
-    const output = {
-      success: true,
-      server: serverId,
-      tool: toolName,
-      result: content,
-      text: textContent,
-      isError: result?.isError || false,
-    };
+    if (node.config?.extract) {
+      const sourceData = rawOutput.data ?? rawOutput;
+      const extractedFields = adapter.extractMcpOutput(sourceData, node.config.extract);
+      extracted = { ...rawOutput, extracted: extractedFields };
+      // Also merge extracted fields to top-level for easy {{nodeId.fieldName}} access
+      Object.assign(extracted, extractedFields);
+      ctx.log(node.id, `Extracted ${Object.keys(extractedFields).length} field(s)`);
+    }
+
+    // ── Output mapping ──
+    if (node.config?.outputMap) {
+      const mappedFields = adapter.mapOutputFields(extracted, node.config.outputMap, ctx);
+      extracted = { ...extracted, mapped: mappedFields };
+      // Merge mapped fields to top-level
+      Object.assign(extracted, mappedFields);
+      ctx.log(node.id, `Mapped ${Object.keys(mappedFields).length} field(s)`);
+    }
+
+    // ── Port-based routing ──
+    const port = adapter.resolveOutputPort(extracted, node.config?.portConfig);
+    extracted.matchedPort = port;
+    extracted.port = port;
 
     // Store in ctx.data if outputVariable is set
     if (node.config?.outputVariable) {
-      ctx.data[node.config.outputVariable] = output;
+      ctx.data[node.config.outputVariable] = extracted;
     }
 
-    return output;
+    return extracted;
   },
 });
 
 registerNodeType("action.mcp_list_tools", {
-  describe: () => "List available tools on an installed MCP server",
+  describe: () =>
+    "List available tools on an installed MCP server, including their input " +
+    "schemas. Useful for dynamic tool discovery and auto-wiring in pipelines.",
   schema: {
     type: "object",
     properties: {
@@ -5338,6 +6208,11 @@ registerNodeType("action.mcp_list_tools", {
       outputVariable: {
         type: "string",
         description: "Variable name to store the tool list in ctx.data",
+      },
+      includeSchemas: {
+        type: "boolean",
+        default: true,
+        description: "Include input schemas for each tool (for auto-wiring)",
       },
     },
     required: ["server"],
@@ -5356,7 +6231,7 @@ registerNodeType("action.mcp_list_tools", {
 
     if (!resolved || !resolved.length) {
       ctx.log(node.id, `MCP server "${serverId}" not found — skipping list-tools`);
-      return { success: false, error: `action.mcp_list_tools: MCP server "${serverId}" not found`, server: serverId, tools: [] };
+      return { success: false, error: `MCP server "${serverId}" not found`, server: serverId, tools: [], toolNames: [] };
     }
 
     const server = resolved[0];
@@ -5372,17 +6247,353 @@ registerNodeType("action.mcp_list_tools", {
       }
     } catch (err) {
       ctx.log(node.id, `Failed to list tools: ${err.message}`);
-      return { success: false, error: err.message, server: serverId, tools: [] };
+      return { success: false, error: err.message, server: serverId, tools: [], toolNames: [] };
     }
 
     const tools = result?.tools || [];
-    ctx.log(node.id, `Found ${tools.length} tool(s) on ${serverId}`);
+    const toolNames = tools.map((t) => t.name);
+    ctx.log(node.id, `Found ${tools.length} tool(s): ${toolNames.slice(0, 10).join(", ")}${tools.length > 10 ? "..." : ""}`);
 
-    const output = { success: true, server: serverId, tools };
+    // Build tool catalog with schemas for auto-wiring
+    const catalog = tools.map((t) => ({
+      name: t.name,
+      description: t.description || "",
+      inputSchema: node.config?.includeSchemas !== false ? (t.inputSchema || null) : null,
+      // Extract required params for pipeline auto-wiring
+      requiredParams: t.inputSchema?.required || [],
+      paramNames: t.inputSchema?.properties ? Object.keys(t.inputSchema.properties) : [],
+    }));
+
+    const output = { success: true, server: serverId, tools: catalog, toolNames, toolCount: tools.length };
     if (node.config?.outputVariable) {
       ctx.data[node.config.outputVariable] = output;
     }
     return output;
+  },
+});
+
+// ── action.mcp_pipeline — Chain multiple MCP tool calls with data piping ──
+
+registerNodeType("action.mcp_pipeline", {
+  describe: () =>
+    "Execute a chain of MCP tool calls in sequence, piping structured output " +
+    "from each step to the next. Each step can extract specific fields from " +
+    "the previous step's output and use them as input arguments for the next " +
+    "tool call. Supports cross-server pipelines (e.g. GitHub → Slack).",
+  schema: {
+    type: "object",
+    properties: {
+      steps: {
+        type: "array",
+        description:
+          "Ordered list of MCP tool invocations. Each step receives the " +
+          "previous step's output and can reference it via inputMap.",
+        items: {
+          type: "object",
+          properties: {
+            id: { type: "string", description: "Unique step identifier" },
+            server: { type: "string", description: "MCP server ID" },
+            tool: { type: "string", description: "Tool name on that server" },
+            input: {
+              type: "object",
+              description: "Static input arguments (supports {{variable}} templates)",
+              additionalProperties: true,
+            },
+            inputMap: {
+              type: "object",
+              description:
+                "Map previous step output → this step's input params. " +
+                "Keys are input parameter names, values are paths into " +
+                "the previous step's output (e.g. 'data.items[0].owner').",
+              additionalProperties: true,
+            },
+            extract: {
+              type: "object",
+              description: "Field extraction config (same as action.mcp_tool_call extract)",
+            },
+            outputMap: {
+              type: "object",
+              description: "Rename/reshape this step's output before piping to next step",
+              additionalProperties: true,
+            },
+            condition: {
+              type: "string",
+              description:
+                "Expression that must be truthy to execute this step. " +
+                "Use {{prev.fieldName}} to reference previous step output.",
+            },
+            continueOnError: {
+              type: "boolean",
+              default: false,
+              description: "Continue pipeline execution even if this step fails",
+            },
+            timeoutMs: { type: "number", default: 30000 },
+          },
+          required: ["server", "tool"],
+        },
+      },
+      outputVariable: {
+        type: "string",
+        description: "Variable name to store the final pipeline result in ctx.data",
+      },
+      stopOnFirstError: {
+        type: "boolean",
+        default: true,
+        description: "Stop pipeline execution on first step failure",
+      },
+    },
+    required: ["steps"],
+  },
+  async execute(node, ctx) {
+    const adapter = await getMcpAdapter();
+    const pipelineSpec = adapter.createPipelineSpec(node.config?.steps || []);
+
+    if (!pipelineSpec.valid) {
+      const errorMsg = `Pipeline validation failed: ${pipelineSpec.errors.join("; ")}`;
+      ctx.log(node.id, errorMsg, "error");
+      return { success: false, error: errorMsg, steps: [], stepCount: 0 };
+    }
+
+    const stopOnFirstError = node.config?.stopOnFirstError !== false;
+    const steps = pipelineSpec.steps;
+    const stepResults = [];
+    let prevOutput = {};   // Output from previous step — available for piping
+    let allSuccess = true;
+
+    ctx.log(node.id, `Executing MCP pipeline: ${steps.length} step(s)`);
+
+    for (let i = 0; i < steps.length; i++) {
+      const step = steps[i];
+      const stepTag = `[${step.id}] ${step.server}/${step.tool}`;
+
+      // ── Condition check ──
+      if (step.condition) {
+        // Inject previous output into context for condition evaluation
+        const condCtx = { ...ctx.data, prev: prevOutput };
+        const condValue = ctx.resolve(step.condition);
+        // Evaluate simple truthy check
+        if (!condValue || condValue === "false" || condValue === "0" || condValue === step.condition) {
+          ctx.log(node.id, `${stepTag}: condition not met, skipping`);
+          stepResults.push({
+            id: step.id,
+            server: step.server,
+            tool: step.tool,
+            success: true,
+            skipped: true,
+            reason: "condition_not_met",
+          });
+          continue;
+        }
+      }
+
+      // ── Build input from pipeline wiring ──
+      let stepInput = {};
+
+      // Start with static input (supports {{variable}} templates)
+      if (step.input && typeof step.input === "object") {
+        for (const [key, value] of Object.entries(step.input)) {
+          stepInput[key] = typeof value === "string" ? ctx.resolve(value) : value;
+        }
+      }
+
+      // Overlay piped input from previous step
+      if (step.inputMap && typeof step.inputMap === "object") {
+        const pipedInput = adapter.buildPipelineInput(prevOutput, step.inputMap, ctx);
+        Object.assign(stepInput, pipedInput);
+      }
+
+      // ── Execute tool call ──
+      ctx.log(node.id, `${stepTag}: executing (step ${i + 1}/${steps.length})`);
+      let stepOutput;
+
+      try {
+        stepOutput = await _executeMcpToolCall(
+          ctx.resolve(step.server),
+          ctx.resolve(step.tool),
+          stepInput,
+          step.timeoutMs,
+          ctx,
+        );
+      } catch (err) {
+        ctx.log(node.id, `${stepTag}: failed — ${err.message}`, "error");
+        stepOutput = {
+          success: false,
+          error: err.message,
+          server: step.server,
+          tool: step.tool,
+        };
+      }
+
+      // ── Extract structured fields ──
+      if (step.extract && stepOutput.success) {
+        const sourceData = stepOutput.data ?? stepOutput;
+        const extractedFields = adapter.extractMcpOutput(sourceData, step.extract);
+        stepOutput = { ...stepOutput, extracted: extractedFields };
+        Object.assign(stepOutput, extractedFields);
+      }
+
+      // ── Output mapping ──
+      if (step.outputMap && stepOutput.success) {
+        const mappedFields = adapter.mapOutputFields(stepOutput, step.outputMap, ctx);
+        stepOutput = { ...stepOutput, mapped: mappedFields };
+        Object.assign(stepOutput, mappedFields);
+      }
+
+      // Store step output in context for template resolution
+      ctx.data[`_mcp_pipeline_${step.id}`] = stepOutput;
+      prevOutput = stepOutput;
+
+      stepResults.push({
+        id: step.id,
+        server: step.server,
+        tool: step.tool,
+        success: stepOutput.success,
+        skipped: false,
+        output: stepOutput,
+      });
+
+      if (!stepOutput.success) {
+        allSuccess = false;
+        ctx.log(node.id, `${stepTag}: step failed`, "warn");
+        if (stopOnFirstError && !step.continueOnError) {
+          ctx.log(node.id, `Pipeline halted at step ${step.id}`, "error");
+          break;
+        }
+      } else {
+        ctx.log(node.id, `${stepTag}: completed`);
+      }
+    }
+
+    const completedSteps = stepResults.filter((s) => !s.skipped && s.success).length;
+    const failedSteps = stepResults.filter((s) => !s.skipped && !s.success).length;
+    const skippedSteps = stepResults.filter((s) => s.skipped).length;
+
+    ctx.log(
+      node.id,
+      `Pipeline done: ${completedSteps} succeeded, ${failedSteps} failed, ${skippedSteps} skipped`,
+    );
+
+    const output = {
+      success: allSuccess,
+      stepCount: steps.length,
+      completedSteps,
+      failedSteps,
+      skippedSteps,
+      steps: stepResults,
+      // Final step's output is piped as the pipeline's top-level output
+      finalOutput: prevOutput,
+      // Promote final step's data fields to top-level for easy {{nodeId.field}} access
+      ...(prevOutput?.data && typeof prevOutput.data === "object" ? prevOutput.data : {}),
+      matchedPort: allSuccess ? "default" : "error",
+      port: allSuccess ? "default" : "error",
+    };
+
+    if (node.config?.outputVariable) {
+      ctx.data[node.config.outputVariable] = output;
+    }
+
+    return output;
+  },
+});
+
+// ── transform.mcp_extract — Extract structured data from any MCP output ──
+
+registerNodeType("transform.mcp_extract", {
+  describe: () =>
+    "Extract and reshape structured data from an upstream MCP tool call or " +
+    "any node output. Supports dot-path fields, JSON pointers, array wildcards, " +
+    "type coercion, default values, and output mapping. Essential for piping " +
+    "specific data points between MCP tool calls in a workflow.",
+  schema: {
+    type: "object",
+    properties: {
+      source: {
+        type: "string",
+        description: "Source node ID to extract from (e.g. 'mcp-github-prs')",
+      },
+      sourceField: {
+        type: "string",
+        default: "data",
+        description: "Field within the source node's output to extract from",
+      },
+      root: {
+        type: "string",
+        description: "Root path within the source data (narrows extraction scope)",
+      },
+      fields: {
+        type: "object",
+        description:
+          "Map of outputKey → sourcePath (dot-path, JSON pointer, or wildcard). " +
+          "Example: { 'prTitles': 'items[*].title', 'firstAuthor': 'items[0].user.login' }",
+        additionalProperties: { type: "string" },
+      },
+      defaults: {
+        type: "object",
+        description: "Default values for missing fields",
+        additionalProperties: true,
+      },
+      types: {
+        type: "object",
+        description: "Type coercion: fieldName → 'string'|'number'|'boolean'|'array'|'integer'|'json'",
+        additionalProperties: { type: "string" },
+      },
+      outputMap: {
+        type: "object",
+        description: "Additional output mapping/reshaping after extraction",
+        additionalProperties: true,
+      },
+      outputVariable: {
+        type: "string",
+        description: "Variable name to store extracted data in ctx.data",
+      },
+    },
+    required: ["source", "fields"],
+  },
+  async execute(node, ctx) {
+    const sourceNodeId = ctx.resolve(node.config?.source || "");
+    const sourceField = node.config?.sourceField || "data";
+
+    if (!sourceNodeId) throw new Error("transform.mcp_extract: 'source' node ID is required");
+
+    const sourceOutput = ctx.getNodeOutput(sourceNodeId);
+    if (!sourceOutput) {
+      ctx.log(node.id, `Source node "${sourceNodeId}" has no output — using empty object`);
+      return { success: false, error: `No output from node "${sourceNodeId}"`, extracted: {} };
+    }
+
+    // Get the specific field from the source output
+    const adapter = await getMcpAdapter();
+    let sourceData = sourceField ? adapter.getByPath(sourceOutput, sourceField) : sourceOutput;
+
+    // Fall back to full output if field doesn't exist
+    if (sourceData === undefined) {
+      sourceData = sourceOutput;
+    }
+
+    // Extract fields
+    const extractConfig = {
+      root: node.config?.root,
+      fields: node.config?.fields || {},
+      defaults: node.config?.defaults || {},
+      types: node.config?.types || {},
+    };
+
+    const extracted = adapter.extractMcpOutput(sourceData, extractConfig);
+    ctx.log(node.id, `Extracted ${Object.keys(extracted).length} field(s) from "${sourceNodeId}"`);
+
+    // Optional output mapping
+    let finalOutput = { success: true, extracted, ...extracted };
+
+    if (node.config?.outputMap) {
+      const mapped = adapter.mapOutputFields(finalOutput, node.config.outputMap, ctx);
+      finalOutput = { ...finalOutput, mapped, ...mapped };
+    }
+
+    if (node.config?.outputVariable) {
+      ctx.data[node.config.outputVariable] = finalOutput;
+    }
+
+    return finalOutput;
   },
 });
 
