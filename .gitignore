@@ -50,3 +50,9 @@ __e2e-verbose.txt
 playwright-screenshots/
 playwright-report/
 test-results/
+
+# Coverage/test output artifacts
+.coverage-*.txt
+.coverage-*.json
+.vitest-run*.txt
+

@@ -112,6 +112,15 @@ import {
   RESEARCH_AGENT_TEMPLATE,
 } from "./workflow-templates/research.mjs";
 
+// Coverage (node-type coverage templates)
+import {
+  WEBHOOK_TASK_ROUTER_TEMPLATE,
+  SCHEDULED_MAINTENANCE_TEMPLATE,
+  MCP_RESEARCH_PROBE_TEMPLATE,
+  AGENT_EXECUTION_PIPELINE_TEMPLATE,
+  FLOW_CONTROL_SUITE_TEMPLATE,
+} from "./workflow-templates/coverage.mjs";
+
 // ── Re-export individual templates for direct import ────────────────────────
 
 export {
@@ -155,6 +164,11 @@ export {
   TASK_BATCH_PROCESSOR_TEMPLATE,
   TASK_BATCH_PR_TEMPLATE,
   RESEARCH_AGENT_TEMPLATE,
+  WEBHOOK_TASK_ROUTER_TEMPLATE,
+  SCHEDULED_MAINTENANCE_TEMPLATE,
+  MCP_RESEARCH_PROBE_TEMPLATE,
+  AGENT_EXECUTION_PIPELINE_TEMPLATE,
+  FLOW_CONTROL_SUITE_TEMPLATE,
 };
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -171,7 +185,8 @@ export const TEMPLATE_CATEGORIES = Object.freeze({
   security:    { label: "Security",     icon: ":lock:", order: 6 },
   lifecycle:   { label: "Lifecycle",    icon: ":rocket:", order: 7 },
   research:    { label: "Research",     icon: ":microscope:", order: 8 },
-  custom:      { label: "Custom",       icon: ":settings:", order: 9 },
+  coverage:    { label: "Coverage",     icon: ":chart:", order: 9 },
+  custom:      { label: "Custom",       icon: ":settings:", order: 10 },
 });
 
 export const WORKFLOW_TEMPLATES = Object.freeze([
@@ -224,6 +239,12 @@ export const WORKFLOW_TEMPLATES = Object.freeze([
   TASK_BATCH_PR_TEMPLATE,
   // ── Research (iterative verification loops) ──
   RESEARCH_AGENT_TEMPLATE,
+  // ── Coverage (node-type coverage) ──
+  WEBHOOK_TASK_ROUTER_TEMPLATE,
+  SCHEDULED_MAINTENANCE_TEMPLATE,
+  MCP_RESEARCH_PROBE_TEMPLATE,
+  AGENT_EXECUTION_PIPELINE_TEMPLATE,
+  FLOW_CONTROL_SUITE_TEMPLATE,
 ]);
 
 const _TEMPLATE_BY_ID = new Map(

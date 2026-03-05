@@ -24,6 +24,9 @@ import {
   streamRetryDelay,
   MAX_STREAM_RETRIES,
 } from "./stream-resilience.mjs";
+import {
+  discoverProviders,
+} from "./opencode-providers.mjs";
 
 const __dirname = resolve(fileURLToPath(new URL(".", import.meta.url)));
 
@@ -67,15 +70,39 @@ function envFlagEnabled(value) {
 
 /**
  * Parse "provider/modelId" or just "modelId" into { providerID, modelID }.
+ * Accepts optional executor-level overrides that take highest priority.
+ *
+ * Priority:
+ *   1. executorOverrides.provider + executorOverrides.model (from bosun.config.json executor entry)
+ *   2. OPENCODE_PROVIDER_ID + OPENCODE_MODEL_ID env vars
+ *   3. OPENCODE_MODEL env var (may contain "provider/model" format)
+ *   4. null → let OpenCode use its configured default
  */
-function resolveModelConfig() {
+function resolveModelConfig(executorOverrides = null) {
+  // 1. Executor-level overrides (from per-executor providerConfig in bosun.config.json)
+  if (executorOverrides) {
+    const overrideModel = String(executorOverrides.model || "").trim();
+    const overrideProvider = String(executorOverrides.provider || "").trim();
+    if (overrideModel) {
+      // Model may be "provider/model" format
+      const slashIdx = overrideModel.indexOf("/");
+      if (slashIdx > 0) {
+        return {
+          providerID: overrideModel.slice(0, slashIdx),
+          modelID: overrideModel.slice(slashIdx + 1),
+        };
+      }
+      return { providerID: overrideProvider || null, modelID: overrideModel };
+    }
+  }
+
+  // 2. Explicit separate env overrides
   const raw = String(
     process.env.OPENCODE_MODEL ||
     process.env.OPENCODE_MODEL_ID ||
     "",
   ).trim();
 
-  // Explicit separate overrides win
   const explicitProvider = String(process.env.OPENCODE_PROVIDER_ID || "").trim();
   const explicitModel = String(process.env.OPENCODE_MODEL_ID || "").trim();
   if (explicitProvider && explicitModel) {
@@ -133,8 +160,10 @@ async function loadOpencodeSDK() {
  *
  * createOpencode() starts a local Go server and returns { client, server }.
  * createOpencodeClient() attaches to an already-running server.
+ *
+ * @param {object} [executorOverrides] - Per-executor provider config from bosun.config.json
  */
-async function ensureServerStarted() {
+async function ensureServerStarted(executorOverrides = null) {
   if (_serverReady && _client) return true;
 
   const sdk = await loadOpencodeSDK();
@@ -148,17 +177,27 @@ async function ensureServerStarted() {
     return false;
   }
 
-  const port = resolvePort();
+  // Per-executor port override takes priority
+  const port = executorOverrides?.port || resolvePort();
 
   // Build optional config overrides
   const configOverride = {};
-  const modelCfg = resolveModelConfig();
+  const modelCfg = resolveModelConfig(executorOverrides);
   if (modelCfg?.modelID) {
     // OpenCode config accepts: { model: "provider/modelId" }
     const fullModel = modelCfg.providerID
       ? `${modelCfg.providerID}/${modelCfg.modelID}`
       : modelCfg.modelID;
     configOverride.model = fullModel;
+  }
+
+  // Pass provider-specific API key if provided in executor config
+  if (executorOverrides?.apiKey) {
+    configOverride.apiKey = executorOverrides.apiKey;
+  }
+  // Pass provider-specific base URL if provided
+  if (executorOverrides?.baseUrl) {
+    configOverride.baseUrl = executorOverrides.baseUrl;
   }
 
   try {
@@ -467,6 +506,8 @@ function sanitizeAndTruncatePrompt(text) {
  * @param {string}  [options.sessionId]       - Named session identifier
  * @param {boolean} [options.sendRawEvents]   - Also pass raw event object to onEvent
  * @param {AbortController} [options.abortController] - External abort signal
+ * @param {object}  [options.providerConfig]  - Per-executor provider config from bosun.config.json
+ * @param {string}  [options.provider]        - Provider name for this executor
  * @returns {Promise<{finalResponse: string, items: Array, usage: null}>}
  */
 export async function execOpencodePrompt(userMessage, options = {}) {
@@ -479,7 +520,14 @@ export async function execOpencodePrompt(userMessage, options = {}) {
     sendRawEvents = false,
     abortController = null,
     mode = null,
+    providerConfig = null,
+    provider = null,
   } = options;
+
+  // Build executor-level overrides from provider config
+  const executorOverrides = providerConfig
+    ? { ...providerConfig, provider: provider || providerConfig.provider || null }
+    : null;
 
   // Re-read config in case it changed hot
   agentSdk = resolveAgentSdkConfig({ reload: true });
@@ -510,7 +558,7 @@ export async function execOpencodePrompt(userMessage, options = {}) {
   activeTurn = true;
 
   try {
-    const started = await ensureServerStarted();
+    const started = await ensureServerStarted(executorOverrides);
     if (!started) {
       return {
         finalResponse: ":close: OpenCode server could not be started. Check that the opencode binary is on PATH.",
@@ -562,8 +610,8 @@ export async function execOpencodePrompt(userMessage, options = {}) {
     }
     const safePrompt = sanitizeAndTruncatePrompt(prompt);
 
-    // Resolve model config
-    const modelCfg = resolveModelConfig();
+    // Resolve model config (executor overrides take priority over env vars)
+    const modelCfg = resolveModelConfig(executorOverrides);
     const promptBody = {
       parts: [{ type: "text", text: safePrompt }],
     };
@@ -892,3 +940,23 @@ export async function initOpencodeShell() {
     );
   }
 }
+
+// ── Provider Discovery (delegates to opencode-providers.mjs) ───────────────
+
+/**
+ * Discover live providers from the OpenCode server or CLI.
+ * Passes the existing SDK client if one is available.
+ */
+export async function discoverOpencodeProviders(opts = {}) {
+  return discoverProviders({ ...opts, client: _client || undefined });
+}
+
+/**
+ * Get connected (credential-configured) providers.
+ */
+export {
+  getConnectedProviders,
+  getProviderModels,
+  isProviderConnected,
+  invalidateCache as invalidateProviderCache,
+} from "./opencode-providers.mjs";

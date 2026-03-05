@@ -1264,6 +1264,67 @@ registerNodeType("trigger.scheduled_once", {
   },
 });
 
+registerNodeType("trigger.workflow_call", {
+  describe: () =>
+    "Fires when this workflow is invoked by another workflow via action.execute_workflow. " +
+    "Defines expected input parameters that callers should provide.",
+  schema: {
+    type: "object",
+    properties: {
+      inputs: {
+        type: "object",
+        description:
+          "Declares expected input parameters. Keys are variable names, " +
+          "values are objects with { type, description, required, default }.",
+        additionalProperties: {
+          type: "object",
+          properties: {
+            type: { type: "string", enum: ["string", "number", "boolean", "object", "array"] },
+            description: { type: "string" },
+            required: { type: "boolean", default: false },
+            default: { description: "Default value when caller does not supply this input" },
+          },
+        },
+      },
+    },
+  },
+  async execute(node, ctx) {
+    // Validate required inputs from _triggerVars or context data
+    const inputDefs = node.config?.inputs || {};
+    const callerVars = ctx.data?._triggerVars || ctx.data || {};
+    const missing = [];
+    const resolved = {};
+
+    for (const [key, def] of Object.entries(inputDefs)) {
+      const value = callerVars[key] ?? ctx.data?.[key] ?? def?.default;
+      if (def?.required && (value === undefined || value === null || value === "")) {
+        missing.push(key);
+      }
+      resolved[key] = value;
+      // Inject resolved input into context data for downstream nodes
+      ctx.data[key] = value;
+    }
+
+    if (missing.length > 0) {
+      ctx.log(node.id, `Missing required inputs: ${missing.join(", ")}`, "warn");
+      return {
+        triggered: true,
+        valid: false,
+        missing,
+        reason: `Missing required inputs: ${missing.join(", ")}`,
+      };
+    }
+
+    ctx.log(node.id, `Workflow call trigger: ${Object.keys(resolved).length} input(s) resolved`);
+    return {
+      triggered: true,
+      valid: true,
+      inputs: resolved,
+      calledBy: ctx.data?._workflowStack?.slice(-2, -1)?.[0] || null,
+    };
+  },
+});
+
 // ═══════════════════════════════════════════════════════════════════════════
 //  CONDITIONS — Branching / routing logic
 // ═══════════════════════════════════════════════════════════════════════════
@@ -1986,6 +2047,19 @@ registerNodeType("action.execute_workflow", {
         description: "Input payload passed to the child workflow",
         additionalProperties: true,
       },
+      triggerVars: {
+        type: "object",
+        description:
+          "Custom variables forwarded as _triggerVars to the child workflow. " +
+          "These are validated by the child's trigger.workflow_call node.",
+        additionalProperties: true,
+      },
+      targetRepo: {
+        type: "string",
+        description:
+          "Override the target repo for the child workflow. When omitted, " +
+          "inherits the parent workflow's _targetRepo (if any).",
+      },
       inheritContext: {
         type: "boolean",
         default: false,
@@ -2098,6 +2172,23 @@ registerNodeType("action.execute_workflow", {
       ...configuredInput,
       _workflowStack: [...workflowStack, workflowId],
     };
+
+    // Forward _triggerVars — explicit config takes precedence over inherited
+    const triggerVarsConfig = resolveWorkflowNodeValue(node.config?.triggerVars ?? null, ctx);
+    const parentTriggerVars = sourceData._triggerVars || {};
+    if (triggerVarsConfig && typeof triggerVarsConfig === "object") {
+      childInput._triggerVars = { ...parentTriggerVars, ...triggerVarsConfig };
+    } else if (inheritContext && Object.keys(parentTriggerVars).length > 0) {
+      childInput._triggerVars = parentTriggerVars;
+    }
+
+    // Forward _targetRepo — explicit config overrides parent
+    const targetRepoConfig = String(ctx.resolve(node.config?.targetRepo || "") || "").trim();
+    if (targetRepoConfig) {
+      childInput._targetRepo = targetRepoConfig;
+    } else if (sourceData._targetRepo && !childInput._targetRepo) {
+      childInput._targetRepo = sourceData._targetRepo;
+    }
 
     if (mode === "dispatch") {
       ctx.log(node.id, `Dispatching workflow "${workflowId}"`);
@@ -5152,10 +5243,13 @@ registerNodeType("action.mcp_tool_call", {
     const resolved = await registry.resolveMcpServersForAgent(rootDir, [serverId]);
 
     if (!resolved || !resolved.length) {
-      throw new Error(
-        `action.mcp_tool_call: MCP server "${serverId}" not found. ` +
-        `Install it first via the library: installMcpServer("${serverId}")`,
-      );
+      ctx.log(node.id, `MCP server "${serverId}" not found — skipping tool call`);
+      return {
+        success: false,
+        error: `action.mcp_tool_call: MCP server "${serverId}" not found. Install it first via the library: installMcpServer("${serverId}")`,
+        server: serverId,
+        tool: toolName,
+      };
     }
 
     const server = resolved[0];
@@ -5261,7 +5355,8 @@ registerNodeType("action.mcp_list_tools", {
     const resolved = await registry.resolveMcpServersForAgent(rootDir, [serverId]);
 
     if (!resolved || !resolved.length) {
-      throw new Error(`action.mcp_list_tools: MCP server "${serverId}" not found`);
+      ctx.log(node.id, `MCP server "${serverId}" not found — skipping list-tools`);
+      return { success: false, error: `action.mcp_list_tools: MCP server "${serverId}" not found`, server: serverId, tools: [] };
     }
 
     const server = resolved[0];

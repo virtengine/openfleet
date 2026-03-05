@@ -147,6 +147,13 @@ export const MODEL_ALIASES = Object.freeze({
   "gemini-1.5-pro": { executor: "GEMINI", variant: "GEMINI_1_5_PRO" },
   "gemini-1.5-flash": { executor: "GEMINI", variant: "GEMINI_1_5_FLASH" },
   "opencode-default": { executor: "OPENCODE", variant: "DEFAULT" },
+  // OpenCode provider aliases — these are convenience shortcuts.
+  // Actual provider/model lists are discovered dynamically via opencode-providers.mjs.
+  // Format: "opencode-{providerID}" → routes to OPENCODE executor with that provider variant.
+  "opencode-anthropic": { executor: "OPENCODE", variant: "ANTHROPIC" },
+  "opencode-openai": { executor: "OPENCODE", variant: "OPENAI" },
+  "opencode-deepinfra": { executor: "OPENCODE", variant: "DEEPINFRA" },
+  "opencode-ollama": { executor: "OPENCODE", variant: "OLLAMA" },
 });
 
 export const EXECUTOR_MODEL_REGISTRY = Object.freeze({
@@ -182,14 +189,18 @@ export const EXECUTOR_MODEL_REGISTRY = Object.freeze({
     "gemini-1.5-flash",
   ]),
   opencode: Object.freeze([
+    // Base models available through OpenCode's default provider
     "gpt-5.3-codex",
     "gpt-5.2-codex",
     "gpt-5.1-codex",
     "gpt-5.1-codex-mini",
     "claude-opus-4.6",
     "claude-sonnet-4.6",
+    "claude-sonnet-4.5",
     "gemini-2.5-pro",
     "gemini-2.5-flash",
+    // Provider-routed models are discovered dynamically via opencode-providers.mjs
+    // Users can specify any "provider/model" format in their executor config
   ]),
 });
 

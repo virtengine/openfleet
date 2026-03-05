@@ -677,7 +677,7 @@ function Header() {
   const connColor = connColorMap[connClass] || "error";
   const userLabel = user ? `@${user.username || user.first_name}` : "";
   return html`
-    <${AppBar} position="sticky" sx=${{zIndex: 10}} className="app-header">
+    <${AppBar} position="static" elevation=${0} sx=${{zIndex: 10, flexShrink: 0}} className="app-header">
       <${Toolbar} variant="dense">
         <img src=${logoSrc} alt="Bosun" style=${{height: 24, width: 24, marginRight: 4}} data-logo-fallback-index="0" onError=${handleAppLogoLoadError} />
         <${Typography} variant="h6" sx=${{ml: 1, flexGrow: 0}}>Bosun</${Typography}>

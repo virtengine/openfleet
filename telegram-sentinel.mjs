@@ -126,6 +126,9 @@ let monitorCrashEvents = [];
 let lastRepairAt = 0;
 let lastMonitorStartAt = 0;
 let monitorManualStopUntil = 0;
+let consecutiveRecoveryFailures = 0;
+let recoveryCircuitOpen = false;
+let recoveryCircuitOpenedAt = 0;
 
 const sentinelConfig = {
   autoRestartMonitor: true,
@@ -141,6 +144,10 @@ const sentinelConfig = {
   manualStopHoldMs: 10 * 60 * 1000,
   monitorMonitorCheckEnabled: true,
   monitorMonitorMaxAgeMs: 20 * 60 * 1000,
+  // Circuit breaker: stop auto-restart after this many consecutive failures
+  maxConsecutiveRecoveryFailures: 5,
+  // How long the circuit breaker stays open before allowing one retry
+  recoveryCircuitCooldownMs: 30 * 60 * 1000,
 };
 
 // ── Environment ──────────────────────────────────────────────────────────────
@@ -305,6 +312,19 @@ function initEnv() {
       1,
       240,
     ) * 60_000;
+  sentinelConfig.maxConsecutiveRecoveryFailures = parseNumber(
+    getEnvValue(fileVars, "SENTINEL_MAX_CONSECUTIVE_RECOVERY_FAILURES", "5"),
+    5,
+    2,
+    50,
+  );
+  sentinelConfig.recoveryCircuitCooldownMs =
+    parseNumber(
+      getEnvValue(fileVars, "SENTINEL_RECOVERY_CIRCUIT_COOLDOWN_MIN", "30"),
+      30,
+      5,
+      240,
+    ) * 60_000;
 }
 
 function pruneTimestamps(values, now = Date.now()) {
@@ -399,7 +419,10 @@ async function assessMonitorMonitorHealth() {
     const status = JSON.parse(statusRaw || "{}");
     const mm = status?.monitor_monitor || status?.monitorMonitor || null;
     if (!mm || typeof mm !== "object") {
-      return { ok: false, reason: "monitor-monitor section unavailable" };
+      // If the monitor-monitor section was never written, the feature is
+      // simply not configured. Treat this as healthy to avoid false-positive
+      // crash-loop repair triggers.
+      return { ok: true, reason: "monitor-monitor not configured" };
     }
     if (mm.enabled === false) {
       return { ok: true, reason: "monitor-monitor disabled in status" };
@@ -566,6 +589,39 @@ async function attemptMonitorRecovery(triggerReason) {
     return;
   }
 
+  // If the monitor is already running, nothing to recover
+  if (readMonitorPid()) {
+    log("info", `monitor is already running — suppressing recovery (${triggerReason})`);
+    return;
+  }
+
+  // If a daemon-child is alive it manages its own restart loop internally;
+  // spawning a competing daemon from the sentinel causes immediate PID/port
+  // conflicts and the "bosun process died during startup" crash loop.
+  const liveDaemonPid = readDaemonPid();
+  if (liveDaemonPid) {
+    log(
+      "info",
+      `daemon-child (PID ${liveDaemonPid}) is alive — suppressing sentinel recovery to avoid competing restart (${triggerReason})`,
+    );
+    return;
+  }
+
+  // ── Circuit breaker: stop retrying after consecutive failures ──
+  if (recoveryCircuitOpen) {
+    const elapsed = Date.now() - recoveryCircuitOpenedAt;
+    if (elapsed < sentinelConfig.recoveryCircuitCooldownMs) {
+      log(
+        "info",
+        `recovery circuit breaker open — ${Math.round((sentinelConfig.recoveryCircuitCooldownMs - elapsed) / 60000)}m until next retry`,
+      );
+      return;
+    }
+    // Cooldown expired — allow one retry (half-open)
+    log("info", "recovery circuit breaker half-open — allowing one retry");
+    recoveryCircuitOpen = false;
+  }
+
   const loopDetected = isCrashLoopDetected();
   if (loopDetected) {
     const mmHealth = await assessMonitorMonitorHealth();
@@ -575,14 +631,21 @@ async function attemptMonitorRecovery(triggerReason) {
         ":alert: Monitor crash-loop detected.",
         `Window: ${Math.round(sentinelConfig.crashLoopWindowMs / 60000)}m | threshold: ${sentinelConfig.crashLoopThreshold}`,
         `Monitor-monitor: ${mmHealth.ok ? "healthy" : "degraded"} (${mmHealth.reason})`,
+        `Consecutive failures: ${consecutiveRecoveryFailures}/${sentinelConfig.maxConsecutiveRecoveryFailures}`,
         "Attempting autonomous repair before restart.",
       ].join("\n"),
     );
     await runRepairAgent(triggerReason, mmHealth.reason);
   }
 
-  if (sentinelConfig.restartBackoffMs > 0) {
-    await sleep(sentinelConfig.restartBackoffMs);
+  // Exponential backoff: base * 2^(failures-1), capped at 5 minutes
+  const backoffMs = Math.min(
+    sentinelConfig.restartBackoffMs * Math.pow(2, consecutiveRecoveryFailures),
+    5 * 60 * 1000,
+  );
+  if (backoffMs > 0) {
+    log("info", `restart backoff: ${Math.round(backoffMs / 1000)}s`);
+    await sleep(backoffMs);
   }
 
   try {
@@ -593,11 +656,35 @@ async function attemptMonitorRecovery(triggerReason) {
       telegramChatId,
       `:check: bosun recovered${pidSuffix}.`,
     );
+    // Recovery succeeded — reset circuit breaker state
+    consecutiveRecoveryFailures = 0;
+    recoveryCircuitOpen = false;
+    recoveryCircuitOpenedAt = 0;
   } catch (err) {
-    await sendTelegram(
-      telegramChatId,
-      `:close: bosun auto-restart failed: ${err?.message || err}`,
-    );
+    consecutiveRecoveryFailures += 1;
+    if (consecutiveRecoveryFailures >= sentinelConfig.maxConsecutiveRecoveryFailures) {
+      recoveryCircuitOpen = true;
+      recoveryCircuitOpenedAt = Date.now();
+      const cooldownMin = Math.round(sentinelConfig.recoveryCircuitCooldownMs / 60000);
+      await sendTelegram(
+        telegramChatId,
+        [
+          `:close: bosun auto-restart failed ${consecutiveRecoveryFailures} times consecutively.`,
+          `Circuit breaker OPEN — auto-restart paused for ${cooldownMin}m.`,
+          `Use /start to manually restart, or wait for cooldown.`,
+          `Last error: ${err?.message || err}`,
+        ].join("\n"),
+      );
+      log(
+        "error",
+        `recovery circuit breaker opened after ${consecutiveRecoveryFailures} consecutive failures`,
+      );
+    } else {
+      await sendTelegram(
+        telegramChatId,
+        `:close: bosun auto-restart failed: ${err?.message || err}`,
+      );
+    }
   }
 }
 
@@ -1173,6 +1260,10 @@ async function handleStartMonitor(chatId) {
     );
     return;
   }
+  // Manual start resets the circuit breaker
+  consecutiveRecoveryFailures = 0;
+  recoveryCircuitOpen = false;
+  recoveryCircuitOpenedAt = 0;
   await sendTelegram(chatId, ":rocket: Starting bosun...");
   try {
     await ensureMonitorRunning("manual /start command");
@@ -1384,6 +1475,14 @@ export async function ensureMonitorRunning(reason) {
   // Already running
   if (readMonitorPid()) return;
 
+  // A live daemon-child is already managing monitor startup — don't spawn a
+  // competing one. The daemon's own restart loop will surface the monitor PID
+  // once it is healthy.
+  if (readDaemonPid()) {
+    log("info", `daemon-child already alive — skipping spawn (reason: ${reason})`);
+    return;
+  }
+
   // Another call is already starting the monitor — piggyback on it
   if (monitorStartPromise) {
     log("info", `waiting for in-progress monitor start (reason: ${reason})`);
@@ -1437,6 +1536,26 @@ async function startAndWaitForMonitor(reason) {
   }
 
   // Start cli.mjs as a detached daemon child
+  // Propagate BOSUN_DIR and REPO_ROOT so the spawned child can find config
+  // and resolve the repo root correctly (matching startDaemon() in cli.mjs).
+  const spawnEnv = { ...process.env, BOSUN_DAEMON: "1" };
+  if (!spawnEnv.BOSUN_DIR) {
+    // Derive config dir from __dirname (bosun module root) or standard locations
+    const possibleConfigDirs = [
+      process.env.APPDATA ? resolve(process.env.APPDATA, "bosun") : null,
+      process.env.USERPROFILE ? resolve(process.env.USERPROFILE, "bosun") : null,
+      process.env.HOME ? resolve(process.env.HOME, "bosun") : null,
+    ].filter(Boolean);
+    for (const dir of possibleConfigDirs) {
+      if (existsSync(dir)) {
+        spawnEnv.BOSUN_DIR = dir;
+        break;
+      }
+    }
+  }
+  if (!spawnEnv.REPO_ROOT && repoRoot) {
+    spawnEnv.REPO_ROOT = repoRoot;
+  }
   const child = spawn(
     process.execPath,
     [
@@ -1447,7 +1566,7 @@ async function startAndWaitForMonitor(reason) {
     {
       detached: true,
       stdio: "ignore",
-      env: { ...process.env, BOSUN_DAEMON: "1" },
+      env: spawnEnv,
       cwd: repoRoot,
     },
   );
@@ -1587,6 +1706,11 @@ async function transitionToCompanion(monitorPid) {
   log("info", `transitioning to companion mode (monitor PID ${monitorPid})`);
   mode = "companion";
 
+  // Monitor is healthy — reset circuit breaker state
+  consecutiveRecoveryFailures = 0;
+  recoveryCircuitOpen = false;
+  recoveryCircuitOpenedAt = 0;
+
   // Stop polling if active
   polling = false;
   if (pollAbort) {
@@ -1648,7 +1772,16 @@ async function healthCheck() {
 
   if (mode === "companion") {
     if (!monPid) {
-      // Monitor died while in companion mode — send crash notification and go standalone
+      // Monitor died while in companion mode — send crash notification and go standalone.
+      // Before acting, verify the daemon-child isn't mid-restart (PID files can lag).
+      const daemonStillAlive = readDaemonPid();
+      if (daemonStillAlive) {
+        log(
+          "info",
+          `monitor PID gone but daemon-child (PID ${daemonStillAlive}) is alive — waiting for daemon-managed restart`,
+        );
+        return;
+      }
       log("warn", "monitor process died — transitioning to standalone");
       removeMonitorPidFiles();
       recordMonitorCrashEvent();
@@ -1711,7 +1844,17 @@ async function healthCheck() {
       }
 
       if (sentinelConfig.autoRestartMonitor && !monitorStartPromise) {
-        await attemptMonitorRecovery("monitor not running during standalone health check");
+        // If a daemon-child process is still alive, it manages its own monitor
+        // restart loop. Don't spawn a competing daemon-child from sentinel.
+        const daemonPid = readDaemonPid();
+        if (daemonPid) {
+          log(
+            "info",
+            `daemon-child (PID ${daemonPid}) is alive and managing monitor restart — skipping sentinel recovery`,
+          );
+        } else {
+          await attemptMonitorRecovery("monitor not running during standalone health check");
+        }
       }
     }
   }

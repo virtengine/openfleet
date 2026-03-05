@@ -246,6 +246,16 @@ export class WorkflowContext {
     this.retryAttempts = new Map();
   }
 
+  /** Target repo for multi-repo workspaces (convenience accessor) */
+  get targetRepo() {
+    return this.data._targetRepo || "";
+  }
+
+  /** Trigger variables passed from a caller workflow or manual dispatch */
+  get triggerVars() {
+    return this.data._triggerVars || {};
+  }
+
   /** Get current retry count for a node */
   getRetryCount(nodeId) {
     return this.retryAttempts.get(nodeId) || 0;
@@ -1740,6 +1750,8 @@ export class WorkflowEngine extends EventEmitter {
       detail?.data?._triggerSource ||
       (triggerEvent ? "event" : "manual");
     const triggeredBy = detail?.data?._triggeredBy || null;
+    const targetRepo = detail?.data?._targetRepo || null;
+    const triggerVars = detail?.data?._triggerVars || null;
 
     return {
       runId,
@@ -1764,6 +1776,8 @@ export class WorkflowEngine extends EventEmitter {
       triggerEvent,
       triggerSource,
       triggeredBy,
+      targetRepo,
+      triggerVars,
     };
   }
 

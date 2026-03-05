@@ -54,6 +54,9 @@ const executeDialogVars = signal({});          // editable variable overrides
 const executeDialogLaunching = signal(false);
 const executeDialogResult = signal(null);      // { ok, error?, ... }
 const executeDialogMode = signal("quick");     // "quick" | "advanced"
+const executeDialogRepos = signal([]);         // workspace repos for target-repo selector
+const executeDialogTargetRepo = signal("");    // selected target repo name
+const executeDialogWaitSync = signal(false);   // wait for completion toggle
 
 function returnToWorkflowList() {
   selectedNodeId.value = null;
@@ -132,10 +135,20 @@ async function deleteWorkflow(id) {
 
 async function executeWorkflow(id, customVars = {}) {
   try {
+    const payload = { dispatch: true, ...customVars };
+    // Thread _targetRepo into the execution input if set
+    if (customVars._targetRepo) {
+      payload._targetRepo = customVars._targetRepo;
+    }
+    // Support waitForCompletion override
+    if (customVars.waitForCompletion === true) {
+      payload.dispatch = false;
+      payload.waitForCompletion = true;
+    }
     const data = await apiFetch(`/api/workflows/${id}/execute`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ dispatch: true, ...customVars }),
+      body: JSON.stringify(payload),
     });
     showToast("Workflow dispatched", "success");
     setTimeout(() => {
@@ -150,10 +163,14 @@ async function executeWorkflow(id, customVars = {}) {
 /**
  * Open the Execute Dialog for a workflow — fetches its full definition,
  * reads its variables, and shows a form that lets users customize before launch.
+ * Also fetches workspace repos so users can target a specific repo.
  */
 async function openExecuteDialog(workflowId) {
   try {
-    const detail = await apiFetch(`/api/workflows/${workflowId}`);
+    const [detail, reposData] = await Promise.all([
+      apiFetch(`/api/workflows/${workflowId}`),
+      apiFetch("/api/workspaces/active/repos").catch(() => null),
+    ]);
     const wf = detail?.workflow;
     if (!wf) { showToast("Workflow not found", "error"); return; }
     executeDialogWorkflow.value = wf;
@@ -161,6 +178,15 @@ async function openExecuteDialog(workflowId) {
     executeDialogVars.value = vars;
     executeDialogResult.value = null;
     executeDialogLaunching.value = false;
+    executeDialogWaitSync.value = false;
+
+    // Extract repos from active workspace
+    const repos = Array.isArray(reposData?.repos) ? reposData.repos : [];
+    executeDialogRepos.value = repos;
+    // Pre-select primary repo or first repo
+    const primary = repos.find((r) => r.primary);
+    executeDialogTargetRepo.value = primary?.name || repos[0]?.name || "";
+
     const requiredCount = Object.values(vars).filter((v) => v === "" || v == null).length;
     executeDialogMode.value = requiredCount > 0 ? "quick" : "advanced";
     executeDialogOpen.value = true;
@@ -176,6 +202,9 @@ function closeExecuteDialog() {
   executeDialogResult.value = null;
   executeDialogLaunching.value = false;
   executeDialogMode.value = "quick";
+  executeDialogRepos.value = [];
+  executeDialogTargetRepo.value = "";
+  executeDialogWaitSync.value = false;
 }
 
 async function launchFromDialog() {
@@ -203,7 +232,11 @@ async function launchFromDialog() {
       }
       payload[key] = val;
     }
-    const data = await executeWorkflow(wf.id, payload);
+    const data = await executeWorkflow(wf.id, {
+      ...payload,
+      _targetRepo: executeDialogTargetRepo.value || undefined,
+      waitForCompletion: executeDialogWaitSync.value || undefined,
+    });
     executeDialogResult.value = { ok: true, ...data };
     setTimeout(() => closeExecuteDialog(), 1200);
   } catch (err) {
@@ -498,6 +531,38 @@ function ExecuteWorkflowDialog() {
           <//>
         `}
 
+        ${/* ── Target Repository Selector ── */ ""}
+        ${executeDialogRepos.value.length > 1 && html`
+          <${FormControl} fullWidth size="small" sx=${{ mb: 2 }}>
+            <${InputLabel}>Target Repository</${InputLabel}>
+            <${Select}
+              value=${executeDialogTargetRepo.value || ""}
+              label="Target Repository"
+              onChange=${(e) => { executeDialogTargetRepo.value = e.target.value; }}
+            >
+              ${executeDialogRepos.value.map((repo) => html`
+                <${MenuItem} key=${repo.name} value=${repo.name}>
+                  <${Stack} direction="row" alignItems="center" spacing=${1}>
+                    <span>${repo.name}</span>
+                    ${repo.primary && html`<${Chip} label="primary" size="small" sx=${{ height: 18, fontSize: "10px" }} />`}
+                  </${Stack}>
+                </${MenuItem}>
+              `)}
+            </${Select}>
+            <${Typography} variant="caption" sx=${{ color: "text.secondary", mt: 0.5, ml: 1.5 }}>
+              Which repository in this workspace should this workflow target.
+            </${Typography}>
+          </${FormControl}>
+        `}
+        ${executeDialogRepos.value.length === 1 && html`
+          <${Chip}
+            label=${`Repo: ${executeDialogRepos.value[0]?.name || "default"}`}
+            size="small"
+            variant="outlined"
+            sx=${{ mb: 2, fontSize: "11px" }}
+          />
+        `}
+
         ${!hasVars && html`
           <${Alert} severity="info" sx=${{ mb: 2 }}>
             This workflow has no configurable variables. It will run with defaults.
@@ -580,6 +645,20 @@ function ExecuteWorkflowDialog() {
             <//>
           <//>
         `}
+
+        <${Divider} sx=${{ my: 2 }} />
+        <${Typography} variant="caption" color="text.secondary" sx=${{ display: "block", mb: 1 }}>
+          Runtime execution options
+        </${Typography}>
+        <${FormControlLabel}
+          control=${html`<${Switch}
+            checked=${!!executeDialogWaitSync.value}
+            onChange=${(e) => { executeDialogWaitSync.value = e.target.checked; }}
+            size="small"
+          />`}
+          label="Wait for completion (sync mode)"
+          sx=${{ mb: 1 }}
+        />
 
         ${result?.ok && html`
           <${Alert} severity="success" sx=${{ mt: 2 }}>Workflow dispatched successfully!<//>
@@ -769,27 +848,48 @@ function WorkflowCanvas({ workflow, onSave }) {
   const [pan, setPan] = useState({ x: 0, y: 0 });
   const [contextMenu, setContextMenu] = useState(null);
   const [spacePanning, setSpacePanning] = useState(false);
+  const [selectedNodeIds, setSelectedNodeIds] = useState(new Set());
+  const [marquee, setMarquee] = useState(null); // { x, y, w, h } in canvas coords
+  const marqueeStartRef = useRef(null); // canvas pos where marquee drag started
+  const multiDragRef = useRef({}); // { [nodeId]: { x, y } } start positions
+  // Keep a ref to selectedNodeIds so keyDown handler (closure) can read current value
+  const selectedNodeIdsRef = useRef(selectedNodeIds);
+  useEffect(() => { selectedNodeIdsRef.current = selectedNodeIds; }, [selectedNodeIds]);
 
   useEffect(() => {
     setNodes(workflow?.nodes || []);
     setEdges(workflow?.edges || []);
+    setSelectedNodeIds(new Set());
+    selectedNodeId.value = null;
   }, [workflow?.id, workflow?.nodes?.length, workflow?.edges?.length]);
 
   useEffect(() => {
     const onKeyDown = (e) => {
-      if (e.code !== "Space") return;
       const target = e.target;
-      if (
-        target &&
-        (target.tagName === "INPUT" ||
-          target.tagName === "TEXTAREA" ||
-          target.tagName === "SELECT" ||
-          target.isContentEditable)
-      ) {
+      const inInput = target && (
+        target.tagName === "INPUT" ||
+        target.tagName === "TEXTAREA" ||
+        target.tagName === "SELECT" ||
+        target.isContentEditable
+      );
+      if (e.code === "Space") {
+        if (inInput) return;
+        e.preventDefault();
+        setSpacePanning(true);
         return;
       }
-      e.preventDefault();
-      setSpacePanning(true);
+      // Delete / Backspace — remove all selected nodes
+      if ((e.key === "Delete" || e.key === "Backspace") && !inInput) {
+        const ids = selectedNodeIdsRef.current;
+        if (ids.size > 0) {
+          e.preventDefault();
+          setNodes(prev => prev.filter(n => !ids.has(n.id)));
+          setEdges(prev => prev.filter(ed => !ids.has(ed.source) && !ids.has(ed.target)));
+          setSelectedNodeIds(new Set());
+          selectedNodeId.value = null;
+          setEditingNode(null);
+        }
+      }
     };
     const onKeyUp = (e) => {
       if (e.code !== "Space") return;
@@ -832,19 +932,32 @@ function WorkflowCanvas({ workflow, onSave }) {
       setPan({ x: clientX - panStart.x, y: clientY - panStart.y });
       return;
     }
+    if (marqueeStartRef.current) {
+      const start = marqueeStartRef.current;
+      setMarquee({
+        x: Math.min(start.x, canvasPos.x),
+        y: Math.min(start.y, canvasPos.y),
+        w: Math.abs(canvasPos.x - start.x),
+        h: Math.abs(canvasPos.y - start.y),
+      });
+      return;
+    }
     if (dragState) {
+      const newPrimaryX = canvasPos.x - dragState.offsetX;
+      const newPrimaryY = canvasPos.y - dragState.offsetY;
+      const deltaX = newPrimaryX - dragState.startX;
+      const deltaY = newPrimaryY - dragState.startY;
       setNodes((prev) =>
-        prev.map((n) =>
-          n.id === dragState.nodeId
-            ? {
-                ...n,
-                position: {
-                  x: canvasPos.x - dragState.offsetX,
-                  y: canvasPos.y - dragState.offsetY,
-                },
-              }
-            : n,
-        ),
+        prev.map((n) => {
+          if (n.id === dragState.nodeId) {
+            return { ...n, position: { x: newPrimaryX, y: newPrimaryY } };
+          }
+          const startPos = multiDragRef.current[n.id];
+          if (startPos !== undefined) {
+            return { ...n, position: { x: startPos.x + deltaX, y: startPos.y + deltaY } };
+          }
+          return n;
+        }),
       );
     }
   }, [toCanvas, panStart, dragState]);
@@ -855,13 +968,19 @@ function WorkflowCanvas({ workflow, onSave }) {
       setPanStart({ x: e.clientX - pan.x, y: e.clientY - pan.y });
       e.preventDefault();
     } else if (e.button === 0 && e.target === canvasRef.current?.querySelector(".canvas-bg")) {
-      // Click on background = deselect
-      selectedNodeId.value = null;
-      selectedEdgeId.value = null;
+      // Click/drag on background: start marquee selection
+      if (!e.shiftKey) {
+        selectedNodeId.value = null;
+        selectedEdgeId.value = null;
+        setSelectedNodeIds(new Set());
+      }
       setEditingNode(null);
       setContextMenu(null);
+      const canvasPos = toCanvas(e.clientX, e.clientY);
+      marqueeStartRef.current = canvasPos;
+      setMarquee({ x: canvasPos.x, y: canvasPos.y, w: 0, h: 0 });
     }
-  }, [pan, spacePanning]);
+  }, [pan, spacePanning, toCanvas]);
 
   const onMouseMove = useCallback((e) => {
     movePointer(e.clientX, e.clientY);
@@ -871,12 +990,32 @@ function WorkflowCanvas({ workflow, onSave }) {
     if (panStart) setPanStart(null);
     if (dragState) {
       setDragState(null);
+      multiDragRef.current = {};
       autoSave();
     }
     if (connecting) {
       setConnecting(null);
     }
-  }, [panStart, dragState, connecting]);
+    if (marqueeStartRef.current) {
+      const m = marquee;
+      if (m && m.w > 4 && m.h > 4) {
+        const ids = new Set();
+        for (const node of nodes) {
+          const nx = node.position?.x || 0;
+          const ny = node.position?.y || 0;
+          if (nx + NODE_W > m.x && nx < m.x + m.w && ny + NODE_H > m.y && ny < m.y + m.h) {
+            ids.add(node.id);
+          }
+        }
+        if (ids.size > 0) {
+          setSelectedNodeIds(ids);
+          selectedNodeId.value = [...ids][0];
+        }
+      }
+      marqueeStartRef.current = null;
+      setMarquee(null);
+    }
+  }, [panStart, dragState, connecting, marquee, nodes]);
 
   const onPointerDown = useCallback((e) => {
     if (e.pointerType !== "touch" && e.pointerType !== "pen") return;
@@ -909,6 +1048,7 @@ function WorkflowCanvas({ workflow, onSave }) {
     if (panStart) setPanStart(null);
     if (dragState) {
       setDragState(null);
+      multiDragRef.current = {};
       autoSave();
     }
     if (connecting) {
@@ -927,31 +1067,60 @@ function WorkflowCanvas({ workflow, onSave }) {
 
   const onNodeMouseDown = useCallback((nodeId, e) => {
     e.stopPropagation();
-    selectedNodeId.value = nodeId;
+    let newSelectedIds;
+    if (e.shiftKey) {
+      // Shift-click: toggle node in/out of selection
+      newSelectedIds = new Set(selectedNodeIds);
+      if (newSelectedIds.has(nodeId)) newSelectedIds.delete(nodeId);
+      else newSelectedIds.add(nodeId);
+      setSelectedNodeIds(newSelectedIds);
+      selectedNodeId.value = nodeId;
+    } else if (selectedNodeIds.has(nodeId) && selectedNodeIds.size > 1) {
+      // Clicking a node already in multi-selection: keep all selected, drag all
+      newSelectedIds = selectedNodeIds;
+    } else {
+      // Normal click: single-select
+      newSelectedIds = new Set([nodeId]);
+      setSelectedNodeIds(newSelectedIds);
+      selectedNodeId.value = nodeId;
+    }
     setContextMenu(null);
     const canvasPos = toCanvas(e.clientX, e.clientY);
     const node = nodes.find(n => n.id === nodeId);
     if (node) {
+      // Store start positions for all nodes in the drag group
+      multiDragRef.current = {};
+      for (const id of newSelectedIds) {
+        const nd = nodes.find(n2 => n2.id === id);
+        if (nd) multiDragRef.current[id] = { x: nd.position?.x || 0, y: nd.position?.y || 0 };
+      }
       setDragState({
         nodeId,
         offsetX: canvasPos.x - (node.position?.x || 0),
         offsetY: canvasPos.y - (node.position?.y || 0),
+        startX: node.position?.x || 0,
+        startY: node.position?.y || 0,
       });
     }
-  }, [nodes, toCanvas]);
+  }, [nodes, toCanvas, selectedNodeIds]);
 
   const onNodePointerDown = useCallback((nodeId, e) => {
     if (e.pointerType !== "touch" && e.pointerType !== "pen") return;
     e.stopPropagation();
+    const newSelectedIds = new Set([nodeId]);
+    setSelectedNodeIds(newSelectedIds);
     selectedNodeId.value = nodeId;
     setContextMenu(null);
     const canvasPos = toCanvas(e.clientX, e.clientY);
     const node = nodes.find((n) => n.id === nodeId);
     if (node) {
+      multiDragRef.current = { [nodeId]: { x: node.position?.x || 0, y: node.position?.y || 0 } };
       setDragState({
         nodeId,
         offsetX: canvasPos.x - (node.position?.x || 0),
         offsetY: canvasPos.y - (node.position?.y || 0),
+        startX: node.position?.x || 0,
+        startY: node.position?.y || 0,
       });
     }
     try {
@@ -1037,6 +1206,7 @@ function WorkflowCanvas({ workflow, onSave }) {
     setNodes(prev => prev.filter(n => n.id !== nodeId));
     setEdges(prev => prev.filter(e => e.source !== nodeId && e.target !== nodeId));
     if (selectedNodeId.value === nodeId) selectedNodeId.value = null;
+    setSelectedNodeIds(prev => { const s = new Set(prev); s.delete(nodeId); return s; });
     setEditingNode(null);
     setContextMenu(null);
     autoSave();
@@ -1157,6 +1327,11 @@ function WorkflowCanvas({ workflow, onSave }) {
           ${workflow?.enabled === false ? "Resume" : "Pause"}
         <//>
         <div style="flex:1;"></div>
+        ${selectedNodeIds.size > 1 && html`
+          <span class="wf-badge" style="font-size: 11px; background: #3b82f640; color: #60a5fa; border: 1px solid #3b82f660;">
+            ${selectedNodeIds.size} nodes selected · Del to delete
+          </span>
+        `}
         <span class="wf-badge" style="font-size: 11px; opacity: 0.7;">
           ${nodes.length} nodes · ${edges.length} edges · Zoom: ${Math.round(zoom * 100)}%
         </span>
@@ -1180,7 +1355,7 @@ function WorkflowCanvas({ workflow, onSave }) {
       <!-- SVG Canvas -->
       <svg
         ref=${canvasRef}
-        style="position: absolute; inset: 0; width: 100%; height: 100%; touch-action: none; user-select: none; -webkit-user-select: none; cursor: ${panStart ? 'grabbing' : dragState ? 'move' : spacePanning ? 'grab' : 'default'};"
+        style="position: absolute; inset: 0; width: 100%; height: 100%; touch-action: none; user-select: none; -webkit-user-select: none; cursor: ${panStart ? 'grabbing' : dragState ? 'move' : spacePanning ? 'grab' : marqueeStartRef.current ? 'crosshair' : 'default'};"
         onMouseDown=${onMouseDown}
         onMouseMove=${onMouseMove}
         onMouseUp=${onMouseUp}
@@ -1278,7 +1453,7 @@ function WorkflowCanvas({ workflow, onSave }) {
           <!-- Nodes -->
           ${nodes.map(node => {
             const meta = getNodeMeta(node.type);
-            const isSelected = selectedNodeId.value === node.id;
+            const isSelected = selectedNodeIds.has(node.id);
             const x = node.position?.x || 0;
             const y = node.position?.y || 0;
             return html`
@@ -1358,6 +1533,21 @@ function WorkflowCanvas({ workflow, onSave }) {
               </g>
             `;
           })}
+
+          <!-- Marquee selection box -->
+          ${marquee && html`
+            <rect
+              x=${marquee.x}
+              y=${marquee.y}
+              width=${marquee.w}
+              height=${marquee.h}
+              fill="rgba(59, 130, 246, 0.08)"
+              stroke="#3b82f6"
+              stroke-width=${1.5 / zoom}
+              stroke-dasharray="${5 / zoom},${3 / zoom}"
+              style="pointer-events: none;"
+            />
+          `}
         </g>
       </svg>
 

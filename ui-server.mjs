@@ -1382,6 +1382,17 @@ function buildWorkflowEventPayload(eventType, eventData = {}, triggerSource = "u
   payload._triggerSource = triggerSource;
   payload._triggerEventType = eventType;
   payload._triggeredAt = new Date().toISOString();
+
+  // Preserve _targetRepo if provided in event data
+  if (eventData?._targetRepo) {
+    payload._targetRepo = String(eventData._targetRepo).trim();
+  }
+
+  // Preserve _triggerVars for custom trigger variable passing
+  if (eventData?._triggerVars && typeof eventData._triggerVars === "object") {
+    payload._triggerVars = eventData._triggerVars;
+  }
+
   return payload;
 }
 
@@ -8386,6 +8397,28 @@ async function handleApi(req, res, url) {
         const active = getActiveManagedWorkspace(configDir);
         jsonResponse(res, 200, { ok: true, data: active });
       }
+    } catch (err) {
+      jsonResponse(res, 500, { ok: false, error: err.message });
+    }
+    return;
+  }
+
+  if (path === "/api/workspaces/active/repos") {
+    try {
+      const configDir = resolveUiConfigDir();
+      const active = getActiveManagedWorkspace(configDir);
+      if (!active) {
+        jsonResponse(res, 200, { ok: true, repos: [] });
+        return;
+      }
+      const repos = Array.isArray(active.repos)
+        ? active.repos.map((r) => ({
+            name: r.name || r.path || "",
+            path: r.path || "",
+            primary: Boolean(r.primary),
+          }))
+        : [];
+      jsonResponse(res, 200, { ok: true, repos });
     } catch (err) {
       jsonResponse(res, 500, { ok: false, error: err.message });
     }

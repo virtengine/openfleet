@@ -888,7 +888,37 @@
         },
         "weight": { "type": "number" },
         "role": { "type": "string" },
-        "enabled": { "type": "boolean" }
+        "enabled": { "type": "boolean" },
+        "provider": {
+          "type": "string",
+          "description": "AI provider for this executor (e.g. anthropic, openai, ollama, nebius, scaleway, deepinfra, qiniu, cloudflare, xiaomi, synthetic, perplexity)"
+        },
+        "providerConfig": {
+          "type": "object",
+          "description": "Provider-specific configuration for this executor",
+          "properties": {
+            "apiKey": {
+              "type": "string",
+              "description": "API key for this provider (overrides env)"
+            },
+            "baseUrl": {
+              "type": "string",
+              "description": "API base URL for this provider"
+            },
+            "model": {
+              "type": "string",
+              "description": "Model ID to use with this provider (e.g. claude-sonnet-4-20250514)"
+            },
+            "port": {
+              "type": "number",
+              "description": "Port for local server (OpenCode)"
+            },
+            "timeoutMs": {
+              "type": "number",
+              "description": "Request timeout in milliseconds"
+            }
+          }
+        }
       }
     },
     "failover": {

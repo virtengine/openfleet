@@ -253,9 +253,9 @@ const CATEGORY_META = {
 
 // ── Workflow template category colors ──
 const WF_CATEGORY_META = {
-  github:      { label: "GitHub",       icon: "git-branch",  color: "#6e5494", bg: "#6e549415" },
-  agents:      { label: "Agents",       icon: "robot",       color: "#3b82f6", bg: "#3b82f615" },
-  planning:    { label: "Planning",     icon: "calendar",    color: "#10b981", bg: "#10b98115" },
+  github:      { label: "GitHub",       icon: "git",         color: "#6e5494", bg: "#6e549415" },
+  agents:      { label: "Agents",       icon: "bot",         color: "#3b82f6", bg: "#3b82f615" },
+  planning:    { label: "Planning",     icon: "clipboard",   color: "#10b981", bg: "#10b98115" },
   cicd:        { label: "CI/CD",        icon: "rocket",      color: "#f59e0b", bg: "#f59e0b15" },
   reliability: { label: "Reliability",  icon: "shield",      color: "#ef4444", bg: "#ef444415" },
   security:    { label: "Security",     icon: "lock",        color: "#dc2626", bg: "#dc262615" },
@@ -1797,6 +1797,20 @@ function WfLaunchForm({ template, onBack }) {
   const [executionOptions, setExecutionOptions] = useState({ waitForCompletion: false });
   const [payloadOverride, setPayloadOverride] = useState("");
   const [payloadOverrideDirty, setPayloadOverrideDirty] = useState(false);
+  const [workspaceRepos, setWorkspaceRepos] = useState([]);
+  const [targetRepo, setTargetRepo] = useState("");
+  const [triggerVars, setTriggerVars] = useState([]);
+  const [showTriggerVars, setShowTriggerVars] = useState(false);
+
+  // Fetch workspace repos on mount
+  useEffect(() => {
+    apiFetch("/api/workspaces/active/repos").then((data) => {
+      const repos = Array.isArray(data?.repos) ? data.repos : [];
+      setWorkspaceRepos(repos);
+      const primary = repos.find((r) => r.primary);
+      setTargetRepo(primary?.name || repos[0]?.name || "");
+    }).catch(() => {});
+  }, []);
 
   const catMeta = WF_CATEGORY_META[template.category] || WF_CATEGORY_META.custom;
 
@@ -1883,11 +1897,19 @@ function WfLaunchForm({ template, onBack }) {
     } catch {
       variables = {};
     }
+    if (targetRepo) variables._targetRepo = targetRepo;
+    // Build _triggerVars from key-value pairs
+    const tvObj = {};
+    for (const { key, value } of triggerVars) {
+      const k = String(key || "").trim();
+      if (k) tvObj[k] = value;
+    }
+    if (Object.keys(tvObj).length > 0) variables._triggerVars = tvObj;
     return {
       variables,
       waitForCompletion: executionOptions.waitForCompletion === true,
     };
-  }, [buildLaunchPayload, executionOptions.waitForCompletion]);
+  }, [buildLaunchPayload, executionOptions.waitForCompletion, targetRepo, triggerVars]);
 
   useEffect(() => {
     if (payloadOverrideDirty) return;
@@ -1916,8 +1938,18 @@ function WfLaunchForm({ template, onBack }) {
     if (!canLaunch) return;
     if (payloadOverrideError) return;
     haptic();
+    // Build trigger vars object
+    const tvObj = {};
+    for (const { key, value } of triggerVars) {
+      const k = String(key || "").trim();
+      if (k) tvObj[k] = value;
+    }
     let launchRequest = {
-      variables: buildLaunchPayload(),
+      variables: {
+        ...buildLaunchPayload(),
+        ...(targetRepo ? { _targetRepo: targetRepo } : {}),
+        ...(Object.keys(tvObj).length > 0 ? { _triggerVars: tvObj } : {}),
+      },
       waitForCompletion: executionOptions.waitForCompletion === true,
     };
 
@@ -1952,7 +1984,7 @@ function WfLaunchForm({ template, onBack }) {
         };
       }
     }
-  }, [buildLaunchPayload, canLaunch, executionOptions.waitForCompletion, launchMode, payloadOverride, payloadOverrideError, template.id]);
+  }, [buildLaunchPayload, canLaunch, executionOptions.waitForCompletion, launchMode, payloadOverride, payloadOverrideError, template.id, targetRepo, triggerVars]);
 
   const handleReset = useCallback(() => {
     const defaults = {};
@@ -1963,7 +1995,12 @@ function WfLaunchForm({ template, onBack }) {
     setLaunchMode(requiredVars.length > 0 ? "quick" : "advanced");
     setExecutionOptions({ waitForCompletion: false });
     setPayloadOverrideDirty(false);
-  }, [descriptors, requiredVars.length]);
+    // Reset target repo to primary
+    const primary = workspaceRepos.find((r) => r.primary);
+    setTargetRepo(primary?.name || workspaceRepos[0]?.name || "");
+    setTriggerVars([]);
+    setShowTriggerVars(false);
+  }, [descriptors, requiredVars.length, workspaceRepos]);
 
   const handleOpenRunHistory = useCallback(async (runId = null) => {
     activeTab.value = 1;
@@ -2046,6 +2083,104 @@ function WfLaunchForm({ template, onBack }) {
             This workflow has no configurable parameters. It will run with its default configuration.
           </${Alert}>
         `}
+
+        ${/* ── Target Repository Selector ── */ ""}
+        ${workspaceRepos.length > 1 && html`
+          <${FormControl} fullWidth size="small" sx=${{ mb: 2 }}>
+            <${InputLabel}>Target Repository</${InputLabel}>
+            <${Select}
+              value=${targetRepo || ""}
+              label="Target Repository"
+              onChange=${(e) => { setTargetRepo(e.target.value); setPayloadOverrideDirty(false); }}
+            >
+              ${workspaceRepos.map((repo) => html`
+                <${MenuItem} key=${repo.name} value=${repo.name}>
+                  <${Stack} direction="row" alignItems="center" spacing=${1}>
+                    <span>${repo.name}</span>
+                    ${repo.primary && html`<${Chip} label="primary" size="small" sx=${{ height: 18, fontSize: "10px" }} />`}
+                  </${Stack}>
+                </${MenuItem}>
+              `)}
+            </${Select}>
+            <${Typography} variant="caption" sx=${{ color: "text.secondary", mt: 0.5, ml: 1.5 }}>
+              Which repository in this workspace should this workflow target.
+            </${Typography}>
+          </${FormControl}>
+        `}
+        ${workspaceRepos.length === 1 && html`
+          <${Chip}
+            label=${`Repo: ${workspaceRepos[0]?.name || "default"}`}
+            size="small"
+            variant="outlined"
+            sx=${{ mb: 2, fontSize: "11px" }}
+          />
+        `}
+
+        ${/* ── Custom Trigger Variables ── */ ""}
+        <${Box} sx=${{ mb: 2 }}>
+          <${Button}
+            size="small" variant="text"
+            onClick=${() => {
+              setShowTriggerVars(!showTriggerVars);
+              if (!showTriggerVars && triggerVars.length === 0) {
+                setTriggerVars([{ key: "", value: "" }]);
+              }
+            }}
+            sx=${{ textTransform: "none", fontSize: "0.75rem", color: "text.secondary" }}
+            startIcon=${html`<span style="font-size: 14px">${showTriggerVars ? "▾" : "▸"}</span>`}
+          >
+            Custom Trigger Variables${triggerVars.filter(v => v.key.trim()).length > 0 ? ` (${triggerVars.filter(v => v.key.trim()).length})` : ""}
+          </${Button}>
+          ${showTriggerVars && html`
+            <${Paper} variant="outlined" sx=${{ p: 1.5, mt: 0.5 }}>
+              <${Typography} variant="caption" sx=${{ color: "text.secondary", mb: 1, display: "block" }}>
+                Pass custom key-value pairs to this workflow via _triggerVars. Useful when this workflow's trigger expects specific inputs.
+              </${Typography}>
+              ${triggerVars.map((tv, idx) => html`
+                <${Stack} key=${idx} direction="row" spacing=${1} sx=${{ mb: 1 }}>
+                  <${TextField}
+                    size="small" label="Key" value=${tv.key}
+                    onChange=${(e) => {
+                      const next = [...triggerVars];
+                      next[idx] = { ...next[idx], key: e.target.value };
+                      setTriggerVars(next);
+                      setPayloadOverrideDirty(false);
+                    }}
+                    sx=${{ flex: 1 }}
+                  />
+                  <${TextField}
+                    size="small" label="Value" value=${tv.value}
+                    onChange=${(e) => {
+                      const next = [...triggerVars];
+                      next[idx] = { ...next[idx], value: e.target.value };
+                      setTriggerVars(next);
+                      setPayloadOverrideDirty(false);
+                    }}
+                    sx=${{ flex: 2 }}
+                  />
+                  <${IconButton}
+                    size="small"
+                    onClick=${() => {
+                      const next = triggerVars.filter((_, i) => i !== idx);
+                      setTriggerVars(next);
+                      setPayloadOverrideDirty(false);
+                    }}
+                    sx=${{ color: "text.secondary" }}
+                  >
+                    <span style="font-size: 16px">${resolveIcon("close")}</span>
+                  </${IconButton}>
+                </${Stack}>
+              `)}
+              <${Button}
+                size="small" variant="outlined"
+                onClick=${() => { setTriggerVars([...triggerVars, { key: "", value: "" }]); }}
+                sx=${{ textTransform: "none", fontSize: "0.75rem" }}
+              >
+                + Add Variable
+              </${Button}>
+            </${Paper}>
+          `}
+        </${Box}>
 
         ${vars.length > 0 && html`
           <${Tabs}

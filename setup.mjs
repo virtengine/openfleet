@@ -48,6 +48,12 @@ import { initLibrary } from "./library-manager.mjs";
 import { detectLegacySetup, applyAllCompatibility } from "./compat.mjs";
 import { DEFAULT_MODEL_PROFILES } from "./task-complexity.mjs";
 import { pullWorkspaceRepos, listWorkspaces } from "./workspace-manager.mjs";
+import {
+  discoverProviders,
+  formatProvidersForMenu,
+  formatModelsForMenu,
+  buildExecutorEntry,
+} from "./opencode-providers.mjs";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
@@ -1643,6 +1649,10 @@ const EXECUTOR_PRESETS = {
       role: "backup",
     },
   ],
+  // OpenCode provider-specific presets are built dynamically via opencode-providers.mjs.
+  // The "opencode-choose-provider" preset key in Step 4 triggers live provider discovery.
+  // Users can also manually create provider executors in bosun.config.json:
+  //   { "executor": "OPENCODE", "provider": "anthropic", "providerConfig": { "model": "anthropic/claude-sonnet-4-20250514" } }
   triple: [
     {
       name: "copilot-claude",
@@ -2826,8 +2836,9 @@ async function main() {
           "Claude only (direct API)",
           "Gemini only (direct SDK + CLI fallback)",
           "Gemini + Codex (60/40 split)",
-          "OpenCode only (local OpenCode server)",
+          "OpenCode only (auto — uses OpenCode default provider)",
           "OpenCode + Codex (60/40 split)",
+          "OpenCode (choose provider) — pick from 100+ providers",
           "Triple (Copilot Claude 40%, Codex 35%, Copilot GPT 25%)",
           "Custom — I'll define my own executors",
         ]
@@ -2838,8 +2849,9 @@ async function main() {
           "Claude only (direct API)",
           "Gemini only (direct SDK + CLI fallback)",
           "Gemini + Codex (60/40 split)",
-          "OpenCode only (local OpenCode server)",
+          "OpenCode only (auto — uses OpenCode default provider)",
           "OpenCode + Codex (60/40 split)",
+          "OpenCode (choose provider) — pick from 100+ providers",
           "Triple (Copilot Claude 40%, Codex 35%, Copilot GPT 25%)",
         ];
 
@@ -2859,6 +2871,7 @@ async function main() {
           "gemini-codex",
           "opencode-only",
           "opencode-codex",
+          "opencode-choose-provider",
           "triple",
           "custom",
         ]
@@ -2871,6 +2884,7 @@ async function main() {
           "gemini-codex",
           "opencode-only",
           "opencode-codex",
+          "opencode-choose-provider",
           "triple",
         ];
     const presetKey = presetNames[presetIdx] || "codex-only";
@@ -2921,6 +2935,118 @@ async function main() {
           console.log();
         }
         execIdx++;
+      }
+    } else if (presetKey === "opencode-choose-provider") {
+      // Dynamic provider selection — discover from OpenCode
+      console.log(chalk.dim("\n  Discovering OpenCode providers...\n"));
+      let snapshot = null;
+      try {
+        snapshot = await discoverProviders({ force: true });
+      } catch (err) {
+        console.warn(chalk.yellow(`  Could not query OpenCode: ${err.message}`));
+      }
+
+      if (snapshot && snapshot.providers.length > 0) {
+        const connectedProviders = snapshot.connected || [];
+        const allProviders = snapshot.providers;
+
+        if (connectedProviders.length > 0) {
+          console.log(chalk.green(`  ✓ ${connectedProviders.length} connected: `) +
+            connectedProviders.map((p) => p.id).join(", "));
+        }
+        console.log(chalk.dim(`  ${allProviders.length} total providers available\n`));
+
+        // Ask: single provider or multi-provider rotation
+        const modeIdx = await prompt.choose(
+          "How many OpenCode providers?",
+          [
+            "Single provider — one provider for all tasks",
+            "Multi-provider rotation — distribute across providers by weight",
+          ],
+          0,
+        );
+
+        if (modeIdx === 0) {
+          // Single provider
+          const providerMenuItems = formatProvidersForMenu(allProviders);
+          const providerIdx = await prompt.choose(
+            "Select provider:",
+            providerMenuItems,
+            connectedProviders.length > 0
+              ? allProviders.findIndex((p) => p.id === connectedProviders[0].id)
+              : 0,
+          );
+          const sp = allProviders[providerIdx];
+          let modelFullId = `${sp.id}/`;
+
+          if (sp.models.length > 0) {
+            const modelMenuItems = formatModelsForMenu(sp.models);
+            const displayModels = modelMenuItems.length > 20
+              ? [...modelMenuItems.slice(0, 20), `... ${modelMenuItems.length - 20} more (manual input)`]
+              : modelMenuItems;
+            const mIdx = await prompt.choose(`Model from ${sp.name}:`, displayModels, 0);
+            modelFullId = mIdx < sp.models.length
+              ? sp.models[mIdx].fullId
+              : await prompt.ask(`Model ID (${sp.id}/model-name)`, modelFullId);
+          } else {
+            modelFullId = await prompt.ask(`Model ID (${sp.id}/model-name)`, modelFullId);
+          }
+
+          configJson.executors = [
+            buildExecutorEntry(sp.id, modelFullId, { weight: 100 }),
+          ];
+          configJson.executors[0].role = "primary";
+          configJson.executors[0].enabled = true;
+        } else {
+          // Multi-provider rotation
+          configJson.executors = [];
+          const roles = ["primary", "backup", "tertiary"];
+          let addMore = true;
+          let idx = 0;
+
+          while (addMore) {
+            const providerMenuItems = formatProvidersForMenu(allProviders);
+            const providerIdx = await prompt.choose(
+              `Provider for executor #${idx + 1}:`,
+              providerMenuItems,
+              0,
+            );
+            const sp = allProviders[providerIdx];
+            let modelFullId = `${sp.id}/`;
+
+            if (sp.models.length > 0) {
+              const modelMenuItems = formatModelsForMenu(sp.models);
+              const displayModels = modelMenuItems.length > 15
+                ? [...modelMenuItems.slice(0, 15), `... ${modelMenuItems.length - 15} more`]
+                : modelMenuItems;
+              const mIdx = await prompt.choose(`Model from ${sp.name}:`, displayModels, 0);
+              modelFullId = mIdx < sp.models.length
+                ? sp.models[mIdx].fullId
+                : await prompt.ask(`Model ID (${sp.id}/model-name)`, modelFullId);
+            } else {
+              modelFullId = await prompt.ask(`Model ID (${sp.id}/model-name)`, modelFullId);
+            }
+
+            const weight = toPositiveInt(
+              await prompt.ask(`Weight for ${sp.id}`, "100"),
+              100,
+            );
+
+            const entry = buildExecutorEntry(sp.id, modelFullId, { weight });
+            entry.role = roles[idx] || `executor-${idx + 1}`;
+            entry.enabled = true;
+            configJson.executors.push(entry);
+            info(`Added: ${modelFullId} (weight ${weight})`);
+
+            idx++;
+            addMore = await prompt.confirm("Add another provider?", false);
+          }
+        }
+      } else {
+        // Fallback: no providers discovered, use default opencode-only preset
+        console.log(chalk.yellow("  Could not discover providers. Using default OpenCode config."));
+        console.log(chalk.dim("  Tip: Install opencode and run 'opencode auth login' to add providers.\n"));
+        configJson.executors = EXECUTOR_PRESETS["opencode-only"];
       }
     } else {
       configJson.executors = EXECUTOR_PRESETS[presetKey];
@@ -3242,27 +3368,213 @@ async function main() {
       info("Gemini SDK not in executor preset — skipping Gemini configuration.");
     }
 
-    // ── 5e. OpenCode local server ─────────────────────────
+    // ── 5e. OpenCode Provider Configuration ─────────────────────────
     if (needsOpencodeSdk) {
-      console.log(chalk.bold("\n  OpenCode SDK") + chalk.dim(" (uses local opencode server)\n"));
+      console.log(chalk.bold("\n  OpenCode SDK") + chalk.dim(" (dynamic provider discovery)\n"));
+
+      // Basic OpenCode settings
       env.OPENCODE_PORT = String(
         toPositiveInt(
           env.OPENCODE_PORT || process.env.OPENCODE_PORT || "4096",
           4096,
         ),
       );
-      env.OPENCODE_MODEL =
-        env.OPENCODE_MODEL ||
-        process.env.OPENCODE_MODEL ||
-        "gpt-5.2-codex";
       env.OPENCODE_TIMEOUT_MS = String(
         toPositiveInt(
           env.OPENCODE_TIMEOUT_MS || process.env.OPENCODE_TIMEOUT_MS || "3600000",
           3600000,
         ),
       );
+
+      // Discover providers from OpenCode (live query)
+      let snapshot = null;
+      try {
+        info("Querying OpenCode for available providers...");
+        snapshot = await discoverProviders({ force: true });
+      } catch (err) {
+        console.warn(chalk.yellow(`  Could not query OpenCode providers: ${err.message}`));
+      }
+
+      if (snapshot && snapshot.providers.length > 0) {
+        // Show connected vs all providers
+        const connectedProviders = snapshot.connected || [];
+        const allProviders = snapshot.providers;
+
+        if (connectedProviders.length > 0) {
+          console.log(chalk.green(`  ✓ ${connectedProviders.length} connected provider(s): `) +
+            connectedProviders.map((p) => p.id).join(", "));
+        }
+        console.log(chalk.dim(`  ${allProviders.length} total provider(s) available in OpenCode\n`));
+
+        // Ask user how they want to configure OpenCode providers
+        const configModeIdx = await prompt.choose(
+          "OpenCode provider configuration:",
+          [
+            "Auto — use OpenCode defaults (recommended for single-provider)",
+            "Select provider — choose one provider for this executor",
+            "Multi-provider — configure multiple OpenCode executors with different providers",
+            "Manual — set OPENCODE_MODEL env var directly",
+          ],
+          0,
+        );
+
+        if (configModeIdx === 0) {
+          // Auto mode — let OpenCode use its configured default
+          info("OpenCode will use its configured default provider and model.");
+          env.OPENCODE_MODEL = "";
+
+        } else if (configModeIdx === 1) {
+          // Select a single provider
+          const providerMenuItems = formatProvidersForMenu(allProviders);
+          const providerIdx = await prompt.choose(
+            "Select OpenCode provider:",
+            providerMenuItems,
+            connectedProviders.length > 0
+              ? allProviders.findIndex((p) => p.id === connectedProviders[0].id)
+              : 0,
+          );
+          const selectedProvider = allProviders[providerIdx];
+
+          if (selectedProvider && selectedProvider.models.length > 0) {
+            // Let user pick a model from the selected provider
+            const modelMenuItems = formatModelsForMenu(selectedProvider.models);
+            const modelIdx = await prompt.choose(
+              `Select model from ${selectedProvider.name}:`,
+              modelMenuItems.length > 20
+                ? [...modelMenuItems.slice(0, 20), `... and ${modelMenuItems.length - 20} more (type model name manually)`]
+                : modelMenuItems,
+              0,
+            );
+
+            if (modelIdx < selectedProvider.models.length) {
+              const selectedModel = selectedProvider.models[modelIdx];
+              env.OPENCODE_MODEL = selectedModel.fullId;
+              env.OPENCODE_PROVIDER_ID = selectedProvider.id;
+              info(`Selected: ${selectedModel.fullId}`);
+
+              // Update executor entry with provider info
+              if (configJson.executors) {
+                for (const ex of configJson.executors) {
+                  if (ex.executor === "OPENCODE" && !ex.provider) {
+                    ex.provider = selectedProvider.id;
+                    ex.providerConfig = { model: selectedModel.fullId };
+                  }
+                }
+              }
+            } else {
+              // User selected "more" — ask for manual model input
+              const manualModel = await prompt.ask(
+                `Model ID (format: ${selectedProvider.id}/model-name)`,
+                `${selectedProvider.id}/`,
+              );
+              env.OPENCODE_MODEL = manualModel;
+              env.OPENCODE_PROVIDER_ID = selectedProvider.id;
+            }
+          } else if (selectedProvider) {
+            // Provider has no models listed — manual input
+            const manualModel = await prompt.ask(
+              `Model ID for ${selectedProvider.name} (format: provider/model)`,
+              `${selectedProvider.id}/`,
+            );
+            env.OPENCODE_MODEL = manualModel;
+            env.OPENCODE_PROVIDER_ID = selectedProvider.id;
+          }
+
+          // Check if provider is connected, offer auth guidance
+          if (selectedProvider && !selectedProvider.connected) {
+            console.log(chalk.yellow(`\n  ⚠ ${selectedProvider.name} is not connected yet.`));
+            const authMethods = selectedProvider.authMethods || [];
+            if (authMethods.length > 0) {
+              console.log(chalk.dim("  Available auth methods:"));
+              for (const m of authMethods) {
+                console.log(chalk.dim(`    - ${m.label} (${m.type})`));
+              }
+            }
+            console.log(chalk.dim("  Run: opencode auth login    to add credentials\n"));
+          }
+
+        } else if (configModeIdx === 2) {
+          // Multi-provider mode — build multiple OpenCode executors
+          console.log(chalk.dim("\n  Configure multiple OpenCode executors, each with a different provider.\n"));
+          const multiExecutors = [];
+          let addMore = true;
+
+          while (addMore) {
+            const providerMenuItems = formatProvidersForMenu(allProviders);
+            const providerIdx = await prompt.choose(
+              `Provider for executor #${multiExecutors.length + 1}:`,
+              providerMenuItems,
+              0,
+            );
+            const selectedProvider = allProviders[providerIdx];
+
+            let selectedModelFullId = `${selectedProvider.id}/`;
+            if (selectedProvider.models.length > 0) {
+              const modelMenuItems = formatModelsForMenu(selectedProvider.models);
+              const displayModels = modelMenuItems.length > 15
+                ? [...modelMenuItems.slice(0, 15), `... and ${modelMenuItems.length - 15} more`]
+                : modelMenuItems;
+              const modelIdx = await prompt.choose(
+                `Model from ${selectedProvider.name}:`,
+                displayModels,
+                0,
+              );
+              if (modelIdx < selectedProvider.models.length) {
+                selectedModelFullId = selectedProvider.models[modelIdx].fullId;
+              } else {
+                selectedModelFullId = await prompt.ask(
+                  `Model ID (format: ${selectedProvider.id}/model-name)`,
+                  selectedModelFullId,
+                );
+              }
+            } else {
+              selectedModelFullId = await prompt.ask(
+                `Model ID (format: ${selectedProvider.id}/model-name)`,
+                selectedModelFullId,
+              );
+            }
+
+            const weight = toPositiveInt(
+              await prompt.ask(`Weight for ${selectedProvider.id}`, "100"),
+              100,
+            );
+
+            multiExecutors.push(
+              buildExecutorEntry(selectedProvider.id, selectedModelFullId, { weight }),
+            );
+            info(`Added: ${selectedModelFullId} (weight ${weight})`);
+
+            addMore = await prompt.confirm("Add another OpenCode provider?", false);
+          }
+
+          if (multiExecutors.length > 0) {
+            // Replace OpenCode executors in config
+            configJson.executors = (configJson.executors || [])
+              .filter((e) => e.executor !== "OPENCODE")
+              .concat(multiExecutors);
+            info(`Configured ${multiExecutors.length} OpenCode executor(s)`);
+          }
+
+        } else {
+          // Manual mode
+          env.OPENCODE_MODEL = await prompt.ask(
+            "OPENCODE_MODEL (provider/model format, e.g. anthropic/claude-sonnet-4-20250514)",
+            env.OPENCODE_MODEL || process.env.OPENCODE_MODEL || "",
+          );
+        }
+      } else {
+        // No providers discovered — fall back to manual config
+        console.log(chalk.yellow("  Could not discover OpenCode providers (is opencode installed?).\n"));
+        console.log(chalk.dim("  Tip: Install opencode, then run 'opencode auth login' to add providers.\n"));
+        env.OPENCODE_MODEL = await prompt.ask(
+          "OPENCODE_MODEL (provider/model format, or blank for default)",
+          env.OPENCODE_MODEL || process.env.OPENCODE_MODEL || "",
+        );
+      }
+
       info(
-        `OpenCode defaults: OPENCODE_PORT=${env.OPENCODE_PORT}, OPENCODE_MODEL=${env.OPENCODE_MODEL}, OPENCODE_TIMEOUT_MS=${env.OPENCODE_TIMEOUT_MS}`,
+        `OpenCode config: port=${env.OPENCODE_PORT}, timeout=${env.OPENCODE_TIMEOUT_MS}ms` +
+        (env.OPENCODE_MODEL ? `, model=${env.OPENCODE_MODEL}` : ", model=auto"),
       );
     } else {
       info("OpenCode SDK not in executor preset — skipping OpenCode configuration.");

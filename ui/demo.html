@@ -3231,6 +3231,10 @@
         const active = STATE.managedWorkspaces.find(w => w.id === STATE.activeWorkspaceId) || null;
         return { ok: true, data: active };
       }
+      if (route === '/api/workspaces/active/repos') {
+        const active = STATE.managedWorkspaces.find(w => w.id === STATE.activeWorkspaceId) || null;
+        return { ok: true, repos: active?.repos || [] };
+      }
       if (route === '/api/workspaces/create') {
         const name = body?.name || 'new-workspace';
         const ws = { id: 'ws-' + Math.random().toString(36).slice(2, 7), name, path: '/home/demo/repos/' + name, active: false, repos: [], createdAt: Date.now() };

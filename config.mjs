@@ -530,6 +530,12 @@ function normalizeExecutorEntry(entry, index = 0, total = 1) {
     entry.codexProfile || entry.modelProfile || "",
   ).trim();
 
+  // Provider configuration for the executor (e.g. opencode with specific provider)
+  const provider = String(entry.provider || "").trim() || null;
+  const providerConfig = entry.providerConfig && typeof entry.providerConfig === "object"
+    ? { ...entry.providerConfig }
+    : null;
+
   return {
     name,
     executor: executorType,
@@ -539,6 +545,8 @@ function normalizeExecutorEntry(entry, index = 0, total = 1) {
     enabled: entry.enabled !== false,
     models,
     codexProfile,
+    provider,
+    providerConfig,
   };
 }
 
