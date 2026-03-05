@@ -1080,8 +1080,8 @@ async function getWorkflowEngineModule() {
 
     if (!_wfServicesReady) {
       try {
-        const telegramToken = process.env.TELEGRAM_BOT_TOKEN;
-        const telegramChatId = process.env.TELEGRAM_CHAT_ID;
+        const telegramToken = getSettingValue("TELEGRAM_BOT_TOKEN");
+        const telegramChatId = getSettingValue("TELEGRAM_CHAT_ID");
         const telegramService = telegramToken
           ? {
               async sendMessage(chatId, text, options = {}) {
@@ -3499,7 +3499,76 @@ const SETTINGS_SCHEMA_KEYS = SETTINGS_SCHEMA
 const SETTINGS_KNOWN_SET = new Set([...SETTINGS_KNOWN_KEYS, ...SETTINGS_SCHEMA_KEYS]);
 const SETTINGS_EFFECTIVE_KEYS = Array.from(SETTINGS_KNOWN_SET);
 let _settingsLastUpdateTime = 0;
+/** @type {Map<string, number>} per-user timestamp of last settings update */
+const _settingsRateLimitByUser = new Map();
+/** @type {number} restart attempt count in recent window */
+let _restartAttemptCount = 0;
+/** @type {number} timestamp of last restart attempt */
+let _lastRestartAttempt = 0;
+const MAX_RESTART_ATTEMPTS = 3;
+const RESTART_CIRCUIT_BREAKER_WINDOW_MS = 60000;
+
+/** 
+ * In-memory secure store for sensitive runtime values.
+ * Settings are persisted to .env/config files, but sensitive values
+ * are NOT stored in process.env to prevent visibility in /proc/<pid>/environ.
+ * @type {Map<string, string>}
+ */
+const _secureSensitiveStore = new Map();
+const SENSITIVE_KEYS_SET = new Set([
+  "TELEGRAM_BOT_TOKEN", "TELEGRAM_CHAT_ID",
+  "OPENAI_API_KEY", "ANTHROPIC_API_KEY", "GOOGLE_API_KEY", "GEMINI_API_KEY",
+  "AZURE_OPENAI_API_KEY", "COPILOT_CLI_TOKEN",
+  "GITHUB_PAT", "BOSUN_GITHUB_USER_TOKEN", "GH_TOKEN",
+]);
+
+/**
+ * Get a setting value - sensitive values from in-memory store, non-sensitive from process.env
+ * @param {string} key
+ * @returns {string|undefined}
+ */
+function getSettingValue(key) {
+  if (SENSITIVE_KEYS_SET.has(key)) {
+    return _secureSensitiveStore.get(key);
+  }
+  return process.env[key];
+}
+
+/**
+ * Set a setting value - sensitive values to in-memory store, non-sensitive to process.env
+ * @param {string} key
+ * @param {string} value
+ */
+function setSettingValue(key, value) {
+  if (SENSITIVE_KEYS_SET.has(key)) {
+    _secureSensitiveStore.set(key, value);
+  } else {
+    process.env[key] = value;
+  }
+}
+
+/**
+ * Initialize secure store with sensitive values from process.env on startup.
+ * Migrates values from process.env to in-memory store to prevent /proc/<pid>/environ exposure.
+ */
+function initSecureSensitiveStore() {
+  for (const key of SENSITIVE_KEYS_SET) {
+    const value = process.env[key];
+    if (value) {
+      _secureSensitiveStore.set(key, value);
+    }
+  }
+}
+
 const ASYNC_UI_COMMAND_BASES = new Set(["/plan"]);
+
+/**
+ * Override: Only store non-sensitive values in process.env
+ * Sensitive values must be retrieved via getSettingValue()
+ */
+export function getApiToken(key) {
+  return getSettingValue(key) || process.env[key];
+}
 
 function hasSettingValue(value) {
   return value !== undefined && value !== null && value !== "";
@@ -5561,7 +5630,7 @@ async function requireAuth(req) {
   if (checkSessionToken(req)) return { ok: true, source: "session", issueSessionCookie: false };
   // Telegram initData HMAC
   const initData = getTelegramInitData(req);
-  const token = process.env.TELEGRAM_BOT_TOKEN || "";
+  const token = getSettingValue("TELEGRAM_BOT_TOKEN") || "";
   if (initData && validateInitData(initData, token)) {
     return { ok: true, source: "telegram", issueSessionCookie: false };
   }
@@ -5608,7 +5677,7 @@ function resolveWsAuthSource(req, url) {
   }
   // Telegram initData HMAC
   const initData = getTelegramInitData(req, url);
-  const token = process.env.TELEGRAM_BOT_TOKEN || "";
+  const token = getSettingValue("TELEGRAM_BOT_TOKEN") || "";
   if (!initData) return "";
   return validateInitData(String(initData), token) ? "telegram" : "";
 }
@@ -10246,11 +10315,25 @@ async function handleApi(req, res, url) {
         jsonResponse(res, 400, { ok: false, error: "changes object is required" });
         return;
       }
-      // Rate limit: 2 seconds between settings updates
+      // Rate limit: 2 seconds between settings updates per user
       const now = Date.now();
-      if (now - _settingsLastUpdateTime < 2000) {
-        jsonResponse(res, 429, { ok: false, error: "Settings update rate limited. Wait 2 seconds." });
+      const userId = req.telegramUserId || req.headers["x-user-id"] || "anonymous";
+      const lastUpdate = _settingsRateLimitByUser.get(userId) || 0;
+      if (now - lastUpdate < 2000) {
+        const retryAfter = Math.ceil((2000 - (now - lastUpdate)) / 1000);
+        jsonResponse(res, 429, { 
+          ok: false, 
+          error: `Settings update rate limited. Wait ${retryAfter}s.`,
+          retryAfter
+        });
         return;
+      }
+      _settingsRateLimitByUser.set(userId, now);
+      // Periodic cleanup of stale entries to prevent unbounded growth
+      if (_settingsRateLimitByUser.size > 100) {
+        for (const [uid, ts] of _settingsRateLimitByUser) {
+          if (now - ts > 60000) _settingsRateLimitByUser.delete(uid);
+        }
       }
       const unknownKeys = Object.keys(changes).filter(k => !SETTINGS_KNOWN_SET.has(k));
       if (unknownKeys.length > 0) {
@@ -10289,11 +10372,11 @@ async function handleApi(req, res, url) {
           return;
         }
       }
-      // Apply to process.env
+      // Apply to in-memory store (sensitive keys) or process.env (non-sensitive)
       const strChanges = {};
       for (const [key, value] of Object.entries(changes)) {
         const strVal = String(value);
-        process.env[key] = strVal;
+        setSettingValue(key, strVal);
         strChanges[key] = strVal;
       }
       if (Object.prototype.hasOwnProperty.call(strChanges, "KANBAN_BACKEND")) {
@@ -10305,11 +10388,52 @@ async function handleApi(req, res, url) {
           console.warn(`[settings] failed to switch kanban backend: ${err.message}`);
         }
       }
-      // Write to .env file
-      const updated = updateEnvFile(strChanges);
-      const configUpdate = updateConfigFile(changes);
+      // Write to .env file with error handling
+      let updated;
+      try {
+        updated = updateEnvFile(strChanges);
+      } catch (envErr) {
+        console.error(`[settings] .env write failed: ${envErr.message}`);
+        jsonResponse(res, 500, { 
+          ok: false, 
+          error: "Failed to persist settings to .env file",
+          details: envErr.message,
+          hint: "Check .env file permissions or disk space"
+        });
+        return;
+      }
+      let configUpdate;
+      try {
+        configUpdate = updateConfigFile(changes);
+      } catch (cfgErr) {
+        console.error(`[settings] config file write failed: ${cfgErr.message}`);
+        jsonResponse(res, 500, { 
+          ok: false, 
+          error: "Failed to persist settings to bosun.config.json",
+          details: cfgErr.message
+        });
+        return;
+      }
       const configDir = configUpdate.path ? dirname(configUpdate.path) : null;
-      _settingsLastUpdateTime = now;
+      
+      // Check restart circuit breaker before broadcasting invalidate event
+      const restartNow = Date.now();
+      if (restartNow - _lastRestartAttempt < RESTART_CIRCUIT_BREAKER_WINDOW_MS) {
+        _restartAttemptCount++;
+        if (_restartAttemptCount >= MAX_RESTART_ATTEMPTS) {
+          console.error(`[ui-server] Circuit breaker OPEN: ${_restartAttemptCount} restart attempts in ${RESTART_CIRCUIT_BREAKER_WINDOW_MS}ms`);
+          jsonResponse(res, 500, {
+            ok: false,
+            error: "Restart circuit breaker triggered. Too many rapid settings changes.",
+            hint: "Manual restart required: stop the server, wait 1 minute, then restart."
+          });
+          return;
+        }
+      } else {
+        _restartAttemptCount = 0;
+      }
+      _lastRestartAttempt = restartNow;
+      
       broadcastUiEvent(["settings", "overview"], "invalidate", { reason: "settings-updated", keys: updated });
       jsonResponse(res, 200, {
         ok: true,
@@ -10319,6 +10443,66 @@ async function handleApi(req, res, url) {
         configDir,
         tunnel: getTunnelStatus(),
         fallbackAuth: getFallbackAuthStatus(),
+      });
+    } catch (err) {
+      jsonResponse(res, 500, { ok: false, error: err.message });
+    }
+    return;
+  }
+
+  if (path === "/api/telegram/chat-id") {
+    try {
+      const body = await readJsonBody(req);
+      const token = body?.token || getSettingValue("TELEGRAM_BOT_TOKEN");
+      if (!token) {
+        jsonResponse(res, 400, { ok: false, error: "TELEGRAM_BOT_TOKEN is required" });
+        return;
+      }
+      const url = `https://api.telegram.org/bot${token}/getUpdates`;
+      const response = await fetch(url);
+      if (!response.ok) {
+        const text = await response.text();
+        jsonResponse(res, response.status, { 
+          ok: false, 
+          error: `Telegram API error: ${response.status} ${text}` 
+        });
+        return;
+      }
+      const data = await response.json();
+      if (!data.result || data.result.length === 0) {
+        jsonResponse(res, 200, {
+          ok: true,
+          chats: [],
+          message: "No updates found. Send a message to the bot first, then try again.",
+        });
+        return;
+      }
+      const chats = new Map();
+      for (const update of data.result) {
+        const message = update.message || update.channel_post || update.edited_message;
+        if (!message || !message.chat) continue;
+        const chat = message.chat;
+        if (!chats.has(chat.id)) {
+          chats.set(chat.id, {
+            id: chat.id,
+            type: chat.type,
+            title: chat.title || "",
+            username: chat.username || "",
+          });
+        }
+      }
+      if (chats.size === 0) {
+        jsonResponse(res, 200, {
+          ok: true,
+          chats: [],
+          message: "No chat IDs found in updates. Send a message to the bot first.",
+        });
+        return;
+      }
+      jsonResponse(res, 200, {
+        ok: true,
+        chats: Array.from(chats.values()),
+        message: null,
       });
     } catch (err) {
       jsonResponse(res, 500, { ok: false, error: err.message });
@@ -13007,7 +13191,7 @@ export async function startTelegramUiServer(options = {}) {
       sessionToken &&
       req.method === "GET"
     ) {
-      const token = process.env.TELEGRAM_BOT_TOKEN || "";
+      const token = getSettingValue("TELEGRAM_BOT_TOKEN") || "";
       if (validateInitData(String(initDataQuery), token)) {
         const cleanUrl = new URL(url.toString());
         cleanUrl.searchParams.delete("tgWebAppData");
@@ -13328,6 +13512,9 @@ export async function startTelegramUiServer(options = {}) {
         wsServer.emit("connection", ws, req);
       });
     });
+
+    // Initialize secure store with sensitive values from startup environment
+    initSecureSensitiveStore();
 
     // Reuse a recent session token when possible so browser sessions survive restarts.
     ensureSessionToken();

@@ -11481,6 +11481,8 @@ export function getDigestSnapshot() {
 // ── Periodic status file writer ─────────────────────────────────
 // Called by monitor to keep the status file in sync with live executor state
 let _statusWriterTimer = null;
+let _lastStatusWriteErrorTime = 0;
+let _consecutiveWriteErrors = 0;
 
 export function startStatusFileWriter(intervalMs = 30000) {
   if (_statusWriterTimer) return;
@@ -11551,9 +11553,50 @@ export function startStatusFileWriter(intervalMs = 30000) {
       data.counts.manual_review = 0;
 
       const { writeFile } = await import("node:fs/promises");
-      await writeFile(statusPath, JSON.stringify(data, null, 2));
+      const tempPath = `${statusPath}.tmp`;
+      // Use atomic write: write to temp file, then rename
+      await writeFile(tempPath, JSON.stringify(data, null, 2), {
+        encoding: "utf8",
+        mode: 0o644,
+      });
+      // Atomic rename
+      const { rename } = await import("node:fs/promises");
+      await rename(tempPath, statusPath);
+      // Reset error counter on success
+      _consecutiveWriteErrors = 0;
     } catch (err) {
-      console.warn("[telegram-bot] Status file write error:", err.message);
+      _consecutiveWriteErrors++;
+      const now = Date.now();
+      // Throttle error logging: only log once per minute, or on first error
+      const shouldLog =
+        _consecutiveWriteErrors === 1 ||
+        now - _lastStatusWriteErrorTime > 60000;
+      if (shouldLog) {
+        const errCode = err.code || "UNKNOWN";
+        let hint = "";
+        if (errCode === "EPERM" || errCode === "EACCES") {
+          hint =
+            " (file may be locked by another process or antivirus — will retry)";
+        } else if (errCode === "EBUSY") {
+          hint = " (file is busy — will retry)";
+        }
+        console.warn(
+          `[telegram-bot] Status file write error: ${err.message}${hint}`,
+        );
+        if (_consecutiveWriteErrors > 1) {
+          console.warn(
+            `[telegram-bot] (${_consecutiveWriteErrors} consecutive failures, throttling logs)`,
+          );
+        }
+        _lastStatusWriteErrorTime = now;
+      }
+      // If errors persist for >10 attempts, stop trying temporarily
+      if (_consecutiveWriteErrors >= 10) {
+        console.warn(
+          "[telegram-bot] Status file writer disabled after 10 consecutive failures. Restart bosun to re-enable.",
+        );
+        stopStatusFileWriter();
+      }
     }
   }, intervalMs);
 

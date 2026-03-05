@@ -42,6 +42,7 @@ body {
   flex-direction: column;
   position: relative;
   z-index: 1;
+  isolation: isolate;
 }
 
 /* Remove body glow pseudo-elements — they cause visual noise */

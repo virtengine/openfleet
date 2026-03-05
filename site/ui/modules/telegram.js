@@ -312,6 +312,72 @@ export async function cloudStorageRemove(key) {
   });
 }
 
+/**
+ * Unified storage accessor with priority: CloudStorage > localStorage > default
+ * Automatically syncs to localStorage after reading from CloudStorage for offline access.
+ * @param {string} key
+ * @returns {Promise<any>} Parsed value or null
+ */
+export async function getSettingValueUnified(key) {
+  // Priority 1: CloudStorage (authoritative)
+  try {
+    const cloudVal = await cloudStorageGet(key);
+    if (cloudVal != null) {
+      // Migrate to localStorage for offline access
+      try {
+        localStorage.setItem(`ve_settings_${key}`, cloudVal);
+      } catch { /* quota exceeded */ }
+      try { return JSON.parse(cloudVal); }
+      catch { return cloudVal; }
+    }
+  } catch (err) {
+    console.warn(`[storage] CloudStorage.get(${key}) failed:`, err.message);
+  }
+  
+  // Priority 2: localStorage (fallback)
+  try {
+    const localVal = localStorage.getItem(`ve_settings_${key}`);
+    if (localVal != null) {
+      try { return JSON.parse(localVal); }
+      catch { return localVal; }
+    }
+  } catch { /* corrupted or quota exceeded */ }
+  
+  return null;
+}
+
+/**
+ * Unified storage setter - writes to both CloudStorage and localStorage.
+ * Returns object with status of both operations.
+ * @param {string} key
+ * @param {any} value
+ * @returns {Promise<{cloud: string, local: string}>} 'ok'|'error' for each
+ */
+export async function setSettingValueUnified(key, value) {
+  const jsonVal = typeof value === 'string' ? value : JSON.stringify(value);
+  const results = { cloud: 'pending', local: 'pending' };
+  
+  // Write to CloudStorage (primary)
+  try {
+    const success = await cloudStorageSet(key, jsonVal);
+    results.cloud = success ? 'ok' : 'error';
+  } catch (err) {
+    console.warn(`[storage] CloudStorage.set(${key}) failed:`, err.message);
+    results.cloud = 'error';
+  }
+  
+  // Write to localStorage (fallback) - always attempt even if CloudStorage failed
+  try {
+    localStorage.setItem(`ve_settings_${key}`, jsonVal);
+    results.local = 'ok';
+  } catch (err) {
+    console.warn(`[storage] localStorage.set(${key}) failed:`, err.message);
+    results.local = 'error';
+  }
+  
+  return results;
+}
+
 /* ─── Auth / User ─── */
 
 /** Get the raw initData string for server-side validation. */

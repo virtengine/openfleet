@@ -255,6 +255,86 @@ export function exportAsCSV(headers, rows, filename) {
   for (const row of rows) {
     lines.push(row.map(csvEscape).join(","));
   }
+  const csv = "\\uFEFF" + lines.join("\\n");
+  downloadFile(csv, filename, "text/csv;charset=utf-8");
+}
+
+/* ─── Virtual Scrolling Utilities ─── */
+
+/**
+ * Calculate visible range for virtual scrolling.
+ * Given a container height, item height, and scroll position,
+ * determine which items should be rendered.
+ * @param {{containerHeight: number, itemHeight: number, scrollTop: number, totalItems: number, overscan?: number}} opts
+ * @returns {{startIndex: number, endIndex: number, offsetY: number}}
+ */
+export function calculateVisibleRange(opts) {
+  const {
+    containerHeight,
+    itemHeight,
+    scrollTop,
+    totalItems,
+    overscan = 5, // Render N items outside viewport for smooth scrolling
+  } = opts;
+
+  const startIndex = Math.max(0, Math.floor(scrollTop / itemHeight) - overscan);
+  const endIndex = Math.min(
+    totalItems,
+    Math.ceil((scrollTop + containerHeight) / itemHeight) + overscan
+  );
+  const offsetY = startIndex * itemHeight;
+
+  return { startIndex, endIndex, offsetY };
+}
+
+/**
+ * Memoized renderer for list items — prevents re-renders when item data unchanged.
+ * @param {{items: Array, renderItem: (item, index) => any, keyExtractor?: (item, index) => string}} opts
+ * @returns {Array} rendered items with keys stable
+ */
+export function memoizeListRender(opts) {
+  const { items, renderItem, keyExtractor = (item, idx) => idx } = opts;
+  const memo = new Map();
+
+  return items.map((item, idx) => {
+    const key = String(keyExtractor(item, idx));
+    if (!memo.has(key)) {
+      memo.set(key, renderItem(item, idx));
+    }
+    return memo.get(key);
+  });
+}
+
+/* ─── Subscription Management ─── */
+
+/**
+ * Create a subscription holder that cleans up all subscriptions on unmount.
+ * Use: const unsubs = useSubscriptions(); unsubs.add(() => signal.subscribe(...))
+ * @returns {{add: (fn: () => void) => void, unsubscribeAll: () => void}}
+ */
+export function createSubscriptionHolder() {
+  const subscriptions = [];
+  return {
+    add(unsubscribeFn) {
+      if (typeof unsubscribeFn === "function") {
+        subscriptions.push(unsubscribeFn);
+      }
+    },
+    unsubscribeAll() {
+      subscriptions.forEach((unsub) => {
+        try {
+          unsub();
+        } catch {
+          // ignore cleanup errors
+        }
+      });
+      subscriptions.length = 0;
+    },
+  };
+}
+  for (const row of rows) {
+    lines.push(row.map(csvEscape).join(","));
+  }
   const csv = "\uFEFF" + lines.join("\r\n");
   downloadFile(csv, filename, "text/csv");
 }

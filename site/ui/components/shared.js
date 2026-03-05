@@ -560,6 +560,92 @@ export function Divider({ label }) {
  * ═══════════════════════════════════════════════ */
 
 /**
+ * Simple avatar component.
+ * @param {{src?: string, alt?: string, name?: string, size?: number}} props
+ */
+export function Avatar({ src, alt, name, size = 32 }) {
+  const initials = (name || "?")
+    .split(" ")
+    .map((word) => word[0])
+    .join("")
+    .toUpperCase()
+    .slice(0, 2);
+
+  return html`
+    <div
+      class="avatar"
+      style=${`width: ${size}px; height: ${size}px; font-size: ${Math.max(10, size / 2.5)}px`}
+    >
+      ${src ? html`<img src=${src} alt=${alt || name} />` : html`<span>${initials}</span>`}
+    </div>
+  `;
+}
+
+/* ═══════════════════════════════════════════════
+ *  ErrorBoundary
+ * ═══════════════════════════════════════════════ */
+
+/**
+ * Error boundary component — catches render errors in child component tree.
+ * Shows fallback UI when error occurs instead of white-screening the app.
+ * @param {{children: any, fallback?: any, onError?: (err: Error) => void}} props
+ */
+export class ErrorBoundary extends h.Component {
+  constructor(props) {
+    super(props);
+    this.state = { hasError: false, error: null };
+  }
+
+  static getDerivedStateFromError(err) {
+    return { hasError: true, error: err };
+  }
+
+  componentDidCatch(err, errorInfo) {
+    console.error("[ErrorBoundary]", err, errorInfo);
+    if (this.props.onError) {
+      try {
+        this.props.onError(err);
+      } catch {
+        // ignore callback errors
+      }
+    }
+  }
+
+  render() {
+    if (this.state.hasError) {
+      const message = this.state.error?.message || "Something went wrong";
+      return this.props.fallback
+        ? this.props.fallback(this.state.error, () => this.setState({ hasError: false, error: null }))
+        : html`
+            <div style=${{
+              padding: "16px",
+              borderRadius: "8px",
+              background: "rgba(231,76,60,0.12)",
+              border: "1px solid rgba(231,76,60,0.25)",
+              color: "#e74c3c",
+              fontSize: "13px",
+            }}>
+              <div style=${{ fontWeight: "600", marginBottom: "4px" }}>
+                ⚠️ Component Error
+              </div>
+              <div style=${{ opacity: 0.8, fontSize: "12px", maxHeight: "60px", overflow: "auto" }}>
+                ${message}
+              </div>
+              <button
+                class="btn btn-sm"
+                onClick=${() => this.setState({ hasError: false, error: null })}
+                style=${{ marginTop: "8px", padding: "4px 8px", fontSize: "11px" }}
+              >
+                Retry
+              </button>
+            </div>
+          `;
+    }
+    return this.props.children;
+  }
+}
+
+/**
  * Circle avatar with initials fallback.
  * @param {{name?: string, size?: number, src?: string}} props
  */

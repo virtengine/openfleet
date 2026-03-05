@@ -1615,7 +1615,9 @@ setPrimaryAgent(primaryAgentName);
 let preflightEnabled = configPreflightEnabled;
 let preflightRetryMs = configPreflightRetryMs;
 if (primaryAgentReady) {
-  void initPrimaryAgent(primaryAgentName);
+  initPrimaryAgent(primaryAgentName).catch((err) => {
+    console.error("[monitor] Failed to init primary agent:", err);
+  });
 }
 
 // Merge strategy: now handled by PR_MERGE_STRATEGY workflow template
@@ -2320,7 +2322,11 @@ async function handleMonitorFailure(reason, err) {
     // Ensure we retry after safe-mode window if still running.
     if (!shuttingDown) {
       setTimeout(() => {
-        if (!shuttingDown) void startProcess();
+        if (!shuttingDown) {
+          startProcess().catch((err) => {
+            console.error("[monitor] Failed to restart process:", err);
+          });
+        }
       }, pauseMs + 1000);
     }
     return;
@@ -2643,7 +2649,9 @@ function triggerLoopFix(errorLine, repeatCount) {
 
   const telegramFn =
     telegramToken && telegramChatId
-      ? (msg) => void sendTelegramMessage(msg)
+      ? (msg) => sendTelegramMessage(msg).catch((err) => {
+          console.error("[monitor] Failed to send Telegram message:", err);
+        })
       : null;
 
   // Fire-and-forget: never block the stdout pipeline
@@ -2838,7 +2846,9 @@ function notifyCodexTrigger(context) {
   if (!telegramToken || !telegramChatId) {
     return;
   }
-  void sendTelegramMessage(`Codex triggered: ${context}`);
+  sendTelegramMessage(`Codex triggered: ${context}`).catch((err) => {
+    console.error("[monitor] Failed to send Codex trigger notification:", err);
+  });
 }
 
 async function runCodexRecovery(reason) {
@@ -3062,9 +3072,11 @@ function scheduleVibeKanbanRestart() {
       `[monitor] vibe-kanban exceeded ${vkMaxRestarts} restarts, giving up`,
     );
     if (telegramToken && telegramChatId) {
-      void sendTelegramMessage(
+      sendTelegramMessage(
         `Vibe-kanban exceeded ${vkMaxRestarts} restart attempts. Manual intervention required.`,
-      );
+      ).catch((err) => {
+        console.error("[monitor] Failed to send VK restart notification:", err);
+      });
     }
     return;
   }
@@ -3167,7 +3179,9 @@ function restartVibeKanbanProcess() {
       /* best effort */
     }
   } else {
-    void startVibeKanbanProcess();
+    startVibeKanbanProcess().catch((err) => {
+      console.error("[monitor] Failed to start VK process:", err);
+    });
   }
 }
 
@@ -3382,7 +3396,9 @@ function ensureVkLogStream() {
   }
 
   // Discover any active sessions immediately and keep polling for new sessions
-  void refreshVkSessionStreams("startup");
+  refreshVkSessionStreams("startup").catch((err) => {
+    console.error("[monitor] Failed to refresh VK session streams on startup:", err);
+  });
   ensureVkSessionDiscoveryLoop();
 }
 
@@ -3390,7 +3406,9 @@ function ensureVkSessionDiscoveryLoop() {
   if (vkSessionDiscoveryTimer) return;
   if (!Number.isFinite(vkEnsureIntervalMs) || vkEnsureIntervalMs <= 0) return;
   vkSessionDiscoveryTimer = setInterval(() => {
-    void refreshVkSessionStreams("periodic");
+    refreshVkSessionStreams("periodic").catch((err) => {
+      console.error("[monitor] Failed to refresh VK session streams periodically:", err);
+    });
   }, vkEnsureIntervalMs);
 }
 
@@ -3572,7 +3590,9 @@ async function triggerVibeKanbanRecovery(reason) {
     const notice = codexEnabled
       ? `Codex recovery triggered: vibe-kanban unreachable. Attempting restart. (${link})`
       : `Vibe-kanban recovery triggered (Codex disabled). Attempting restart. (${link})`;
-    void sendTelegramMessage(notice, { parseMode: "HTML" });
+    sendTelegramMessage(notice, { parseMode: "HTML" }).catch((err) => {
+      console.error("[monitor] Failed to send VK recovery notification:", err);
+    });
   }
   await runCodexRecovery(reason || "vibe-kanban unreachable");
   restartVibeKanbanProcess();
@@ -7599,7 +7619,9 @@ async function smartPRFlow(attemptId, shortId, status) {
           pendingMergeStrategyByTask.delete(
             String(attemptInfo.task_id || "").trim(),
           );
-          void updateTaskStatus(attemptInfo.task_id, "done");
+          updateTaskStatus(attemptInfo.task_id, "done").catch((err) => {
+            console.error(`[monitor] Failed to update task status to done: ${err.message}`);
+          });
         }
         await archiveAttempt(attemptId);
         saveMergedTaskCache();
@@ -7629,7 +7651,9 @@ async function smartPRFlow(attemptId, shortId, status) {
           console.log(
             `[monitor] ${tag}: task description indicates already completed — archiving`,
           );
-          void updateTaskStatus(attemptInfo.task_id, "done");
+          updateTaskStatus(attemptInfo.task_id, "done").catch((err) => {
+            console.error(`[monitor] Failed to update task status to done: ${err.message}`);
+          });
           await archiveAttempt(attemptId);
           return;
         }
@@ -8090,7 +8114,9 @@ async function resolveAndTriggerSmartPR(shortId, status) {
           pendingMergeStrategyByTask.delete(
             String(resolvedAttempt.task_id || "").trim(),
           );
-          void updateTaskStatus(resolvedAttempt.task_id, "done");
+          updateTaskStatus(resolvedAttempt.task_id, "done").catch((err) => {
+            console.error(`[monitor] Failed to update task status to done: ${err.message}`);
+          });
         }
         await archiveAttempt(resolvedAttempt.id || shortId);
         saveMergedTaskCache();
@@ -8125,7 +8151,9 @@ const errorQueue = [];
 function queueErrorMessage(line) {
   errorQueue.push(stripAnsi(line));
   if (errorQueue.length >= 3) {
-    void flushErrorQueue();
+    flushErrorQueue().catch((err) => {
+      console.error("[monitor] Failed to flush error queue:", err);
+    });
   }
 }
 
@@ -9054,13 +9082,17 @@ function startTelegramCommandListener() {
   if (telegramCommandPolling) {
     return;
   }
-  void acquireTelegramPollLock("monitor").then((ok) => {
+  acquireTelegramPollLock("monitor").then((ok) => {
     if (!ok) {
       telegramCommandEnabled = false;
       return;
     }
     telegramCommandPolling = true;
-    void pollTelegramCommands();
+    pollTelegramCommands().catch((err) => {
+      console.error("[monitor] Failed to poll Telegram commands:", err);
+    });
+  }).catch((err) => {
+    console.error("[monitor] Failed to acquire Telegram poll lock:", err);
   });
 }
 
@@ -10439,7 +10471,9 @@ function requestManualFullRestart(reason = "manual-telegram-restart") {
     }, 3000);
   }
 
-  void releaseTelegramPollLock();
+  releaseTelegramPollLock().catch((err) => {
+    console.error("[monitor] Failed to release poll lock during restart:", err);
+  });
   // NOTE: telegram bot is intentionally stopped AFTER this function returns so
   // the caller (cmdRestart) can send the final confirmation message first.
   // The 1.5 s delay below gives the bot time to flush the outbound message.
@@ -10447,7 +10481,9 @@ function requestManualFullRestart(reason = "manual-telegram-restart") {
     stopTelegramBot({ preserveDigest: true });
     stopWhatsAppChannel();
     if (isContainerEnabled()) {
-      void stopAllContainers().catch(() => {});
+      stopAllContainers().catch((err) => {
+        console.error("[monitor] Failed to stop containers during restart:", err);
+      });
     }
     // Wait for async shutdowns, then exit with code 75 — cli.mjs re-forks cleanly
     Promise.allSettled(shutdownPromises).then(() => {
@@ -11205,8 +11241,12 @@ process.on("SIGINT", async () => {
   if (currentChild) {
     currentChild.kill("SIGTERM");
   }
-  void workspaceMonitor.shutdown();
-  void releaseTelegramPollLock();
+  workspaceMonitor.shutdown().catch((err) => {
+    console.error("[monitor] Failed to shutdown workspace monitor:", err);
+  });
+  releaseTelegramPollLock().catch((err) => {
+    console.error("[monitor] Failed to release poll lock during SIGINT:", err);
+  });
   stopWhatsAppChannel();
   if (agentSupervisor) {
     agentSupervisor.stop();
@@ -11243,8 +11283,12 @@ process.on("exit", () => {
     vkLogStream.stop();
     vkLogStream = null;
   }
-  void workspaceMonitor.shutdown();
-  void releaseTelegramPollLock();
+  workspaceMonitor.shutdown().catch((err) => {
+    console.error("[monitor] Failed to shutdown workspace monitor on uncaught exception:", err);
+  });
+  releaseTelegramPollLock().catch((err) => {
+    console.error("[monitor] Failed to release poll lock on uncaught exception:", err);
+  });
 });
 
 process.on("SIGTERM", async () => {
@@ -11265,8 +11309,12 @@ process.on("SIGTERM", async () => {
   if (currentChild) {
     currentChild.kill("SIGTERM");
   }
-  void workspaceMonitor.shutdown();
-  void releaseTelegramPollLock();
+  workspaceMonitor.shutdown().catch((err) => {
+    console.error("[monitor] Failed to shutdown workspace monitor on SIGTERM:", err);
+  });
+  releaseTelegramPollLock().catch((err) => {
+    console.error("[monitor] Failed to release poll lock on SIGTERM:", err);
+  });
   stopTelegramBot();
   stopWhatsAppChannel();
   if (agentSupervisor) {
@@ -11761,8 +11809,10 @@ if (isVkSpawnAllowed()) {
 // When VK is externally managed (not spawned by monitor), still connect the
 // log stream so agent logs are captured to .cache/agent-logs/.
 if (isVkRuntimeRequired() && !isVkSpawnAllowed() && vkEndpointUrl) {
-  void isVibeKanbanOnline().then((online) => {
+  isVibeKanbanOnline().then((online) => {
     if (online) ensureVkLogStream();
+  }).catch((err) => {
+    console.error("[monitor] Failed to check VK online status:", err);
   });
 }
 if (
@@ -11788,13 +11838,15 @@ if (
     }
   }, vkEnsureIntervalMs);
 }
-void ensureCodexSdkReady().then(() => {
+ensureCodexSdkReady().then(() => {
   if (!codexEnabled) {
     const reason = codexDisabledReason || "disabled";
     console.warn(`[monitor] Codex disabled: ${reason}`);
   } else {
     console.log("[monitor] Codex enabled.");
   }
+}).catch((err) => {
+  console.error("[monitor] Failed to ensure Codex SDK ready:", err);
 });
 
 // ── Log complexity routing matrix at startup ──────────────────────────────────
@@ -11839,10 +11891,14 @@ try {
     }
     if (cleaned > 0) {
       statusData.updated_at = new Date().toISOString();
-      writeFileSync(statusPath, JSON.stringify(statusData, null, 2), "utf8");
-      console.log(
-        `[monitor] cleaned ${cleaned} stale attempts from status file`,
-      );
+      try {
+        writeFileSync(statusPath, JSON.stringify(statusData, null, 2), "utf8");
+        console.log(
+          `[monitor] cleaned ${cleaned} stale attempts from status file`,
+        );
+      } catch (writeErr) {
+        console.warn(`[monitor] status file write failed: ${writeErr.message}`);
+      }
     }
   }
 } catch (err) {

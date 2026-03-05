@@ -309,3 +309,40 @@ export function iconText(text, { className = "" } = {}) {
 
   return html`<span class="icon-text ${className}">${parts}</span>`;
 }
+
+/* ─── Memoized Icon Rendering ─── */
+
+/** Cache for resolved icons — prevents redundant lookups */
+const _iconCache = new Map();
+
+/**
+ * Get icon with memoization for repeated lookups.
+ * @param {string} icon
+ * @returns {any}
+ */
+export function getIconMemoized(icon) {
+  const key = String(icon);
+  if (_iconCache.has(key)) {
+    return _iconCache.get(key);
+  }
+  const result = resolveIcon(icon);
+  _iconCache.set(key, result);
+  return result;
+}
+
+/**
+ * Render iconText with memoization for performance.
+ * @param {string} text
+ * @param {{className?: string, memo?: boolean}} opts
+ * @returns {any}
+ */
+export function iconTextMemoized(text, opts = {}) {
+  if (!opts.memo) return iconText(text, opts);
+  const key = `${text}:${opts.className || ""}`;
+  if (_iconCache.has(key)) {
+    return _iconCache.get(key);
+  }
+  const result = iconText(text, opts);
+  _iconCache.set(key, result);
+  return result;
+}

@@ -52,11 +52,16 @@
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+  text-align: left;
+  flex: 1;
 }
 
 .telemetry-count {
   font-weight: 600;
   color: var(--text-primary);
+  white-space: nowrap;
+  flex-shrink: 0;
+  text-align: right;
 }
 
 @media (max-width: 960px) {
@@ -90,6 +95,8 @@
   color: var(--text-primary);
   line-height: 1.35;
   position: relative;
+  overflow-wrap: break-word;
+  word-break: break-word;
 }
 
 .card-subtitle {
@@ -99,6 +106,9 @@
   color: var(--text-secondary);
   line-height: 1.4;
   position: relative;
+  overflow-wrap: break-word;
+  word-break: break-word;
+  text-align: left;
 }
 
 /* ─── Stat Cards ─── */
@@ -202,6 +212,11 @@
   position: relative;
   overflow: hidden;
   transition: border-color var(--transition-fast), box-shadow var(--transition-fast), background var(--transition-fast);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  min-width: 0;
 }
 
 .stat-card:hover {
@@ -226,6 +241,10 @@
   text-transform: uppercase;
   letter-spacing: 0.06em;
   position: relative;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 100%;
 }
 
 .stat-trend {
@@ -246,6 +265,9 @@
   line-height: 1.2;
   white-space: nowrap;
   border: 1px solid transparent;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 100%;
 }
 
 .badge-todo {
@@ -353,6 +375,10 @@
   min-height: 32px;
   display: inline-flex;
   align-items: center;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 100%;
 }
 
 .chip:active {
@@ -393,6 +419,10 @@
   background: rgba(59, 130, 246, 0.15);
   color: #60a5fa;
   border: 1px solid rgba(59, 130, 246, 0.3);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 100%;
 }
 
 /* ─── Buttons ─── */
@@ -414,6 +444,10 @@
   -webkit-tap-highlight-color: transparent;
   position: relative;
   overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  min-width: 0;
+  max-width: 100%;
 }
 
 .btn-icon-compact {
@@ -527,6 +561,12 @@
   display: flex;
   flex-wrap: wrap;
   gap: 8px;
+  align-items: center;
+}
+
+.btn-row > .btn {
+  flex: 0 1 auto;
+  min-width: 0;
 }
 
 /* ─── Inputs ─── */
@@ -543,6 +583,8 @@
   min-height: 44px;
   transition: border-color 0.2s ease, box-shadow 0.2s ease;
   outline: none;
+  text-align: left;
+  vertical-align: middle;
 }
 
 .input:focus {
@@ -592,6 +634,8 @@ select.input {
   text-transform: uppercase;
   letter-spacing: 0.08em;
   margin-bottom: 6px;
+  display: block;
+  text-align: left;
 }
 
 .form-hint {
@@ -664,12 +708,18 @@ select.input {
   font-size: 14px;
   font-weight: 600;
   line-height: 1.3;
+  overflow-wrap: break-word;
+  word-break: break-word;
+  text-align: left;
 }
 
 .task-card-meta {
   font-size: 12px;
   color: var(--text-secondary);
   line-height: 1.4;
+  overflow-wrap: break-word;
+  word-break: break-word;
+  text-align: left;
 }
 
 .task-card-badges {
@@ -707,9 +757,17 @@ select.input {
 }
 
 .task-card-actions {
+  display: flex;
   align-items: center;
   justify-content: flex-start;
   gap: 8px;
+  flex-wrap: wrap;
+}
+
+.task-card-actions .btn {
+  flex: 0 1 auto;
+  min-width: 0;
+  white-space: nowrap;
 }
 
 @media (max-width: 640px) {
@@ -732,7 +790,8 @@ select.input {
 
   .task-card-actions .btn {
     flex: 1 1 calc(50% - 6px);
-    min-width: 120px;
+    min-width: 90px;
+    max-width: 100%;
     justify-content: center;
   }
 }
@@ -911,6 +970,10 @@ select.input {
   cursor: pointer;
   transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1);
   min-height: 32px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  min-width: 0;
 }
 
 .segmented-btn:focus-visible {
@@ -990,6 +1053,7 @@ select.input {
   justify-content: center;
   animation: fadeIn 0.2s ease;
   overscroll-behavior: contain;
+  isolation: isolate;
 }
 
 .app-shell .modal-overlay {
@@ -1042,16 +1106,20 @@ select.input {
   display: flex;
   flex-direction: column;
   gap: 12px;
+  text-align: left;
 }
 
 .modal-form-field {
   display: flex;
   flex-direction: column;
   gap: 6px;
+  text-align: left;
+  min-width: 0;
 }
 
 .modal-form-span {
   width: 100%;
+  min-width: 0;
 }
 
 .modal-handle {
@@ -1067,6 +1135,13 @@ select.input {
   font-weight: 700;
   margin-bottom: 16px;
   letter-spacing: -0.02em;
+  line-height: 1.3;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  word-break: break-word;
 }
 
 /* ─── Modal header with close button ─── */
@@ -1109,6 +1184,15 @@ select.input {
   gap: 8px;
 }
 
+.modal-footer .btn-row {
+  flex-wrap: nowrap;
+}
+
+.modal-footer .btn {
+  flex: 1 1 0;
+  min-width: 0;
+}
+
 .modal-header .modal-handle {
   margin-bottom: 12px;
 }
@@ -1117,6 +1201,12 @@ select.input {
   width: 100%;
   padding-right: 36px;
   text-align: left;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  word-break: break-word;
 }
 
 .modal-close-btn {
@@ -1175,6 +1265,9 @@ select.input {
   align-items: center;
   gap: 8px;
   max-width: 100%;
+  word-break: break-word;
+  overflow-wrap: break-word;
+  text-align: left;
 }
 
 .toast-success {
@@ -1231,6 +1324,9 @@ select.input {
   font-size: 15px;
   font-weight: 600;
   -webkit-tap-highlight-color: transparent;
+  text-align: left;
+  gap: 8px;
+  min-width: 0;
 }
 
 .collapsible-header svg {
@@ -1270,6 +1366,10 @@ select.input {
   background: var(--bg-secondary);
   color: var(--text-secondary);
   border: 1px solid var(--border);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 100%;
 }
 
 /* ─── Pull to Refresh ─── */

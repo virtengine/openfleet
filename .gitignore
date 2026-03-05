@@ -46,13 +46,7 @@ tests/__e2e-out.txt
 tests/__e2e-results.txt
 __e2e-verbose.txt
 .codex/config.toml
-
 playwright-screenshots/
 playwright-report/
 test-results/
-
-# Coverage/test output artifacts
-.coverage-*.txt
-.coverage-*.json
-.vitest-run*.txt
-
+.github/agents/se-gitops-ci-specialist.md

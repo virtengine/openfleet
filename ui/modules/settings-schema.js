@@ -40,7 +40,7 @@ export const CATEGORIES = [
 /** @type {SettingDef[]} */
 export const SETTINGS_SCHEMA = [
   // ── Telegram Bot ──────────────────────────────────────────────
-  { key: "TELEGRAM_BOT_TOKEN",              label: "Bot Token",                  category: "telegram", type: "secret",  sensitive: true, description: "Token from @BotFather. Required for all Telegram features.", restart: true },
+  { key: "TELEGRAM_BOT_TOKEN",              label: "Bot Token",                  category: "telegram", type: "secret",  sensitive: true, description: "Token from @BotFather. Required for all Telegram features. Changes take effect immediately.", restart: false },
   { key: "TELEGRAM_CHAT_ID",               label: "Chat ID",                    category: "telegram", type: "secret",  sensitive: true, description: "Primary chat/group ID for status messages and commands." },
   { key: "TELEGRAM_ALLOWED_CHAT_IDS",      label: "Allowed Chat IDs",           category: "telegram", type: "string",  description: "Comma-separated list of chat IDs allowed to send commands. Leave empty to allow all.", validate: "^[0-9,\\-\\s]*$" },
   { key: "TELEGRAM_INTERVAL_MIN",          label: "Status Interval",            category: "telegram", type: "number",  defaultVal: 10, min: 1, max: 1440, unit: "min", description: "Minutes between automatic status summary messages." },

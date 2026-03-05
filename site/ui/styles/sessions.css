@@ -443,6 +443,8 @@
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
+  text-align: left;
+  min-width: 0;
 }
 
 .session-item-type {

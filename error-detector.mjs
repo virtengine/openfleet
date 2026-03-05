@@ -51,7 +51,7 @@ export const TOKEN_OVERFLOW_PATTERNS = [
   /maximum.*number.*tokens/i,                      // Generic
 ];
 
-const API_ERROR_PATTERNS = [
+export const API_ERROR_PATTERNS = [
   /ECONNREFUSED|ETIMEDOUT|ENOTFOUND/i,
   /500 Internal Server Error/i,
   /502 Bad Gateway|503 Service Unavailable|504 Gateway Timeout/i,
@@ -78,7 +78,7 @@ export const REQUEST_ERROR_PATTERNS = [
   /is invalid after a property name.*Expected a ':'/i,
 ];
 
-const SESSION_EXPIRED_PATTERNS = [
+export const SESSION_EXPIRED_PATTERNS = [
   /session.*expired|invalid.*session/i,
   /thread.*not.*found|conversation.*not.*found/i,
   /token.*expired|invalid.*token/i,
@@ -124,7 +124,7 @@ export const CODEX_SANDBOX_PATTERNS = [
   /namespace.*error|unshare.*fail/i,
 ];
 
-const BUILD_FAILURE_PATTERNS = [
+export const BUILD_FAILURE_PATTERNS = [
   /go build.*failed|compilation error/i,
   /FAIL\s+\S+/m,
   /golangci-lint.*error/i,
@@ -132,7 +132,7 @@ const BUILD_FAILURE_PATTERNS = [
   /npm ERR|pnpm.*error/i,
 ];
 
-const GIT_CONFLICT_PATTERNS = [
+export const GIT_CONFLICT_PATTERNS = [
   /merge conflict|CONFLICT.*Merge/i,
   /rebase.*conflict/i,
   /cannot.*merge|unable to merge/i,

@@ -21,9 +21,9 @@
  */
 
 import { createInterface } from "node:readline";
-import { existsSync, readFileSync, writeFileSync, mkdirSync, rmSync } from "node:fs";
-import { homedir } from "node:os";
-import { resolve, dirname, basename, relative, isAbsolute } from "node:path";
+import { existsSync, readFileSync, writeFileSync, mkdirSync, rmSync, copyFileSync } from "node:fs";
+import { homedir, platform } from "node:os";
+import { resolve, dirname, basename, relative, isAbsolute, join } from "node:path";
 import { execSync } from "node:child_process";
 import { execFileSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
@@ -2439,6 +2439,97 @@ echo "Cleanup complete."
 `;
 }
 
+// ── Font Installation ───────────────────────────────────────────────────────
+
+async function installSystemFonts() {
+  const fontDir = resolve(__dirname, "site", "fonts");
+  const fontFiles = ["Sora-Regular.ttf", "Sora-SemiBold.ttf", "Sora-Bold.ttf"];
+
+  // Check if fonts exist in the repo
+  const hasFonts = fontFiles.every((f) => existsSync(resolve(fontDir, f)));
+  if (!hasFonts) {
+    return { success: false, reason: "fonts_not_found", count: 0 };
+  }
+
+  const platformKey = platform();
+  let targetDir = null;
+  let installed = 0;
+  let skipped = 0;
+
+  try {
+    if (platformKey === "win32") {
+      // Windows: Use user-specific fonts folder (no admin needed)
+      // Modern Windows 10/11 user fonts folder
+      const userId = process.env.USERNAME || "";
+      if (userId) {
+        targetDir = join(
+          process.env.APPDATA || "",
+          "..\\Local\\Microsoft\\Windows\\Fonts",
+        );
+      }
+
+      // Fallback to system folder (may fail)
+      if (!targetDir) {
+        targetDir = "C:\\Windows\\Fonts";
+      }
+    } else if (platformKey === "darwin") {
+      // macOS: Use ~/Library/Fonts/
+      targetDir = join(homedir(), "Library", "Fonts");
+    } else if (platformKey === "linux") {
+      // Linux: Use ~/.local/share/fonts/
+      targetDir = join(homedir(), ".local", "share", "fonts");
+    }
+
+    if (!targetDir) {
+      return { success: false, reason: "platform_unsupported", count: 0 };
+    }
+
+    // Create target directory if it doesn't exist
+    if (!existsSync(targetDir)) {
+      try {
+        mkdirSync(targetDir, { recursive: true });
+      } catch (err) {
+        // May fail on Windows if we lack perms, continue anyway
+      }
+    }
+
+    // Copy each font file
+    for (const fontFile of fontFiles) {
+      const sourcePath = resolve(fontDir, fontFile);
+      const destPath = resolve(targetDir, fontFile);
+
+      try {
+        // Skip if already installed
+        if (existsSync(destPath)) {
+          skipped++;
+          continue;
+        }
+
+        copyFileSync(sourcePath, destPath);
+        installed++;
+      } catch (err) {
+        // Non-blocking: continue with other fonts
+        continue;
+      }
+    }
+
+    const total = installed + skipped;
+    return {
+      success: total > 0,
+      reason: installed > 0 ? "installed" : "skipped_all",
+      count: installed,
+      skipped,
+      targetDir,
+    };
+  } catch (err) {
+    return {
+      success: false,
+      reason: err.message || "unknown",
+      count: 0,
+    };
+  }
+}
+
 // ── Main Setup Flow ──────────────────────────────────────────────────────────
 
 async function main() {
@@ -2555,6 +2646,27 @@ async function main() {
   if (!hasNode) {
     console.error("\n  Node.js 18+ is required. Aborting.\n");
     process.exit(1);
+  }
+
+  // Install system fonts (non-blocking, doesn't affect setup flow)
+  try {
+    const fontResult = await installSystemFonts();
+    if (fontResult.success && fontResult.count > 0) {
+      check(
+        `System fonts (Sora) installed`,
+        true,
+        `${fontResult.count} fonts → ${fontResult.targetDir}`,
+      );
+    } else if (fontResult.skipped > 0) {
+      check(
+        `System fonts (Sora) already installed`,
+        true,
+        `${fontResult.skipped} fonts in system directory`,
+      );
+    }
+    // If fonts fail to install, don't block setup — it's optional
+  } catch (err) {
+    // Silently skip on error
   }
 
   const envCandidates = [resolve(configDir, ".env"), resolve(repoRoot, ".env")];

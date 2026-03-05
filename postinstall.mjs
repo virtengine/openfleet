@@ -19,10 +19,11 @@ import {
   rmSync,
   chmodSync,
   mkdtempSync,
+  copyFileSync,
 } from "node:fs";
-import { dirname, resolve } from "node:path";
+import { dirname, resolve, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { tmpdir } from "node:os";
+import { tmpdir, homedir, platform } from "node:os";
 import https from "node:https";
 import { pipeline } from "node:stream/promises";
 import { shouldAutoInstallGitHooks } from "./task-context.mjs";
@@ -185,6 +186,102 @@ async function installBundledPwsh(platform, arch) {
     /* best effort */
   }
   return { version, path: BUNDLED_PWSH_PATH };
+}
+
+// ── Font Installation ───────────────────────────────────────────────────────
+
+async function installFonts() {
+  const fontDir = resolve(__dirname, "site", "fonts");
+  const fontFiles = ["Sora-Regular.ttf", "Sora-SemiBold.ttf", "Sora-Bold.ttf"];
+  
+  // Check if fonts exist in the repo
+  const hasFonts = fontFiles.every((f) => existsSync(resolve(fontDir, f)));
+  if (!hasFonts) {
+    return { success: false, reason: "fonts_not_found", count: 0 };
+  }
+
+  const platformKey = process.platform;
+  let targetDir = null;
+  let installed = 0;
+  let skipped = 0;
+
+  try {
+    if (platformKey === "win32") {
+      // Windows: Use user-specific fonts folder (no admin needed)
+      // Fallback path for modern Windows 10/11
+      const userId = process.env.USERNAME || "";
+      if (userId) {
+        targetDir = join(
+          process.env.APPDATA || "",
+          "..\\Local\\Microsoft\\Windows\\Fonts",
+        );
+      }
+
+      // If that doesn't work, try direct System32 fonts (may fail)
+      if (!targetDir) {
+        targetDir = "C:\\Windows\\Fonts";
+      }
+    } else if (platformKey === "darwin") {
+      // macOS: Use ~/Library/Fonts/
+      targetDir = join(homedir(), "Library", "Fonts");
+    } else if (platformKey === "linux") {
+      // Linux: Use ~/.local/share/fonts/
+      targetDir = join(homedir(), ".local", "share", "fonts");
+    }
+
+    if (!targetDir) {
+      return { success: false, reason: "platform_unsupported", count: 0 };
+    }
+
+    // Create target directory if it doesn't exist
+    if (!existsSync(targetDir)) {
+      try {
+        mkdirSync(targetDir, { recursive: true });
+      } catch (err) {
+        // May fail on Windows if directory doesn't exist and we lack perms
+        // Continue anyway and try to copy
+      }
+    }
+
+    // Copy each font file
+    for (const fontFile of fontFiles) {
+      const sourcePath = resolve(fontDir, fontFile);
+      const destPath = resolve(targetDir, fontFile);
+
+      try {
+        // Skip if already installed
+        if (existsSync(destPath)) {
+          skipped++;
+          continue;
+        }
+
+        copyFileSync(sourcePath, destPath);
+        installed++;
+      } catch (err) {
+        // Non-blocking: if copy fails, continue with other fonts
+        // Common failure: EPERM on Windows Fonts directory
+        if (platformKey === "win32" && targetDir.includes("System32")) {
+          // Already logged that admin may be needed below
+          continue;
+        }
+      }
+    }
+
+    const total = installed + skipped;
+    return {
+      success: total > 0,
+      reason: installed > 0 ? "installed" : "skipped_all",
+      count: installed,
+      skipped,
+      targetDir,
+    };
+  } catch (err) {
+    return {
+      success: false,
+      reason: err.message || "unknown",
+      count: 0,
+    };
+  }
 }
 
 // ── Dependency checks ────────────────────────────────────────────────────────
@@ -362,6 +459,41 @@ async function main() {
         );
         console.log("     npm -C scripts/bosun/desktop install");
       }
+    }
+  }
+
+  // Font installation — optional, non-blocking
+  const isFontInstallEnabled = parseBoolEnv(
+    process.env.BOSUN_SKIP_FONT_INSTALL,
+    true,
+  );
+  if (isFontInstallEnabled) {
+    console.log("");
+    console.log("  ▸ Installing system fonts (Sora)...");
+    try {
+      const fontResult = await installFonts();
+      if (fontResult.success && fontResult.count > 0) {
+        console.log(
+          `  :check: System fonts installed (${fontResult.count} fonts → ${fontResult.targetDir})`,
+        );
+      } else if (fontResult.skipped > 0) {
+        console.log(
+          `  :check: System fonts already installed (${fontResult.skipped} fonts)`,
+        );
+      } else if (fontResult.reason === "fonts_not_found") {
+        console.log(
+          "  :alert:  Font files not found in site/fonts/ — skipping",
+        );
+      } else if (
+        fontResult.reason === "platform_unsupported" ||
+        fontResult.reason === "unknown"
+      ) {
+        console.log(
+          "  :alert:  Font installation skipped (platform or unknown issue)",
+        );
+      }
+    } catch (err) {
+      console.log(`  :alert:  Font installation error: ${err.message}`);
     }
   }
 

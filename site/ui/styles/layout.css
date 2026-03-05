@@ -77,6 +77,9 @@
   letter-spacing: -0.02em;
   color: var(--text-bright);
   white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  min-width: 0;
 }
 
 .app-header-subtitle {
@@ -84,6 +87,9 @@
   font-weight: 500;
   color: var(--text-secondary);
   white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  min-width: 0;
 }
 
 .app-header-hint {
@@ -98,6 +104,10 @@
   border: 1px solid var(--border);
   background: var(--bg-card);
   color: var(--text-secondary);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 120px;
 }
 
 .header-actions {
@@ -129,6 +139,9 @@
   font-size: 11px;
   opacity: 0.6;
   white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 100px;
 }
 
 /* ─── Connection Pill ─── */
@@ -143,6 +156,10 @@
   background: var(--bg-card);
   border: 1px solid var(--border);
   transition: color var(--transition-fast), border-color var(--transition-fast);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 150px;
 }
 
 .connection-pill.connected {
@@ -222,6 +239,7 @@
 
 .tab-panel.active {
   display: block;
+  isolation: isolate;
 }
 
 /* Staggered card entrance */
@@ -344,6 +362,11 @@
 .nav-label {
   line-height: 1;
   pointer-events: none;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 72px;
+  text-align: center;
 }
 
 /* ─── More Menu (Modal Sheet) ─── */
@@ -377,11 +400,17 @@
   display: flex;
   flex-direction: column;
   align-items: center;
+  justify-content: center;
   gap: 6px;
   min-height: 68px;
   font-size: 11px;
   font-weight: 600;
   transition: transform var(--transition-fast), border-color var(--transition-fast), color var(--transition-fast), background var(--transition-fast);
+  text-align: center;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  min-width: 0;
 }
 
 .more-menu-item.active {

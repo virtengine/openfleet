@@ -593,8 +593,32 @@ function ServerConfigMode() {
   /* Save flow */
   const [saving, setSaving] = useState(false);
   const [confirmOpen, setConfirmOpen] = useState(false);
+  /* Telegram Chat ID discovery */
+  const [fetchingChatId, setFetchingChatId] = useState(false);
+  const [discoveredChats, setDiscoveredChats] = useState(null);
+  const [chatIdModalOpen, setChatIdModalOpen] = useState(false);
 
   const tooltipTimer = useRef(null);
+  const unsubscribers = useRef([]);
+
+  /* ─── Register pending changes on mount/unmount ─── */
+  useEffect(() => {
+    const { setPendingChange } = require("../modules/state.js");
+    if (changeCount > 0) {
+      setPendingChange("settings", true);
+    } else {
+      setPendingChange("settings", false);
+    }
+    return () => {
+      // Cleanup: remove pending flag when component unmounts
+      setPendingChange("settings", false);
+      // Also unsubscribe any lingering signal subscriptions
+      unsubscribers.current.forEach((unsub) => {
+        if (typeof unsub === "function") unsub();
+      });
+      unsubscribers.current = [];
+    };
+  }, [changeCount]);
 
   /* ─── Load server settings on mount ─── */
   const fetchSettings = useCallback(async () => {
@@ -761,11 +785,22 @@ function ServerConfigMode() {
   const handleConfirmSave = useCallback(async () => {
     setConfirmOpen(false);
     setSaving(true);
+    const saveTimeoutMs = 30000; // 30 second timeout
+    const timeoutHandle = setTimeout(() => {
+      setSaving(false);
+      showToast("Settings save timed out. Please try again.", "error");
+      haptic("heavy");
+    }, saveTimeoutMs);
+    
+    // Add schema version bump if config version changed
+    const changes = { ...edits };
+    if (serverMeta && typeof changes === "object" && Object.keys(changes).length > 0) {
+      // Auto-version bump for tracking schema migrations
+      const currentVersion = serverMeta._schemaVersion || 1;
+      changes._schemaVersion = String(currentVersion + 1);
+    }
+    
     try {
-      const changes = {};
-      for (const [key, value] of Object.entries(edits)) {
-        changes[key] = value;
-      }
       let res;
       try {
         res = await apiFetch("/api/settings/update", {
@@ -839,6 +874,7 @@ function ServerConfigMode() {
       showToast(`Save failed: ${message}`, "error");
       haptic("heavy");
     } finally {
+      clearTimeout(timeoutHandle);
       setSaving(false);
     }
   }, [edits, hasRestartSetting, serverMeta]);
@@ -863,6 +899,45 @@ function ServerConfigMode() {
       return next;
     });
   }, []);
+
+  /* ─── Fetch Telegram Chat ID ─── */
+  const handleFetchChatId = useCallback(async () => {
+    const botToken = getValue("TELEGRAM_BOT_TOKEN");
+    if (!botToken) {
+      showToast("Enter TELEGRAM_BOT_TOKEN first", "error");
+      return;
+    }
+    setFetchingChatId(true);
+    setDiscoveredChats(null);
+    try {
+      const res = await apiFetch("/api/telegram/chat-id", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ token: botToken }),
+      });
+      if (!res.ok) {
+        throw new Error(res.error || "Failed to fetch chat ID");
+      }
+      if (res.chats && res.chats.length > 0) {
+        setDiscoveredChats(res.chats);
+        setChatIdModalOpen(true);
+      } else {
+        showToast(res.message || "No chats found. Send a message to the bot first.", "info");
+      }
+    } catch (err) {
+      showToast(`Failed to fetch chat ID: ${err.message}`, "error");
+    } finally {
+      setFetchingChatId(false);
+    }
+  }, [getValue]);
+
+  const handleSelectChatId = useCallback((chatId) => {
+    handleChange("TELEGRAM_CHAT_ID", String(chatId));
+    setChatIdModalOpen(false);
+    setDiscoveredChats(null);
+    showToast("Chat ID imported successfully", "success");
+    haptic("success");
+  }, [handleChange]);
 
   /* ─── Build the diff for the confirm dialog ─── */
   const diffEntries = useMemo(() => {
@@ -950,6 +1025,8 @@ function ServerConfigMode() {
         }
 
         case "secret": {
+          const isTelegramChatId = def.key === "TELEGRAM_CHAT_ID";
+          const hasBotToken = serverData?.TELEGRAM_BOT_TOKEN || edits.TELEGRAM_BOT_TOKEN;
           control = html`
             <div class="setting-input-wrap">
               <input
@@ -970,6 +1047,23 @@ function ServerConfigMode() {
               >
                 ${resolveIcon(secretVisible ? ":eyeOff:" : ":eye:")}
               </button>
+              ${isTelegramChatId && html`
+                <button
+                  class="btn btn-sm btn-primary"
+                  style="margin-left:8px"
+                  onClick=${(e) => {
+                    e.preventDefault();
+                    e.stopPropagation();
+                    handleFetchChatId();
+                  }}
+                  disabled=${!hasBotToken || fetchingChatId}
+                  title=${!hasBotToken ? "Enter TELEGRAM_BOT_TOKEN first" : "Fetch Chat ID from bot"}
+                  type="button"
+                >
+                  ${fetchingChatId ? html`<${Spinner} size=${12} />` : resolveIcon(":download:")}
+                  ${fetchingChatId ? " Fetching..." : " Get Chat ID"}
+                </button>
+              `}
             </div>
           `;
           break;
@@ -1048,7 +1142,7 @@ function ServerConfigMode() {
         </div>
       `;
     },
-    [getValue, isModified, isDefault, errors, visibleSecrets, activeTooltip, handleChange, toggleSecret, showTooltipFor],
+    [getValue, isModified, isDefault, errors, visibleSecrets, activeTooltip, handleChange, toggleSecret, showTooltipFor, fetchingChatId, handleFetchChatId, serverData, edits],
   );
 
   /* ═══════════════════════════════════════════════
@@ -1277,6 +1371,48 @@ function ServerConfigMode() {
             <button class="btn btn-ghost" onClick=${handleCancelSave}>Cancel</button>
             <button class="btn btn-primary" onClick=${handleConfirmSave} disabled=${saving}>
               ${saving ? html`<${Spinner} size=${14} /> Saving…` : "Confirm & Save"}
+            </button>
+          </div>
+        </div>
+      <//>
+    `}
+
+    <!-- Chat ID Discovery Modal -->
+    ${chatIdModalOpen && discoveredChats &&
+    html`
+      <${Modal} title="Select Telegram Chat" open=${true} onClose=${() => setChatIdModalOpen(false)}>
+        <div style="padding:4px 0">
+          <div class="meta-text mb-sm">
+            Found ${discoveredChats.length} chat${discoveredChats.length !== 1 ? "s" : ""}. Select one to import:
+          </div>
+          <div style="display:flex;flex-direction:column;gap:8px;margin-top:12px">
+            ${discoveredChats.map((chat) => html`
+              <button
+                key=${chat.id}
+                class="btn btn-ghost"
+                style="justify-content:flex-start;text-align:left;padding:12px;height:auto"
+                onClick=${() => handleSelectChatId(chat.id)}
+              >
+                <div style="display:flex;flex-direction:column;gap:4px;width:100%">
+                  <div style="display:flex;justify-content:space-between;align-items:center">
+                    <strong>${chat.title || chat.username || "Private Chat"}</strong>
+                    <${Badge} text=${chat.type} status="info" className="badge-sm" />
+                  </div>
+                  <div style="font-size:13px;color:var(--text-secondary);font-family:var(--font-mono,'monospace')">
+                    ID: ${chat.id}
+                  </div>
+                  ${chat.username && html`
+                    <div style="font-size:12px;color:var(--text-hint)">
+                      @${chat.username}
+                    </div>
+                  `}
+                </div>
+              </button>
+            `)}
+          </div>
+          <div class="btn-row mt-md" style="justify-content:flex-end">
+            <button class="btn btn-ghost" onClick=${() => setChatIdModalOpen(false)}>
+              Cancel
             </button>
           </div>
         </div>

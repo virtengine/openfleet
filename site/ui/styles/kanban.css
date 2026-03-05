@@ -401,6 +401,9 @@ body.kanban-dragging .kanban-card {
   -webkit-line-clamp: 2;
   -webkit-box-orient: vertical;
   overflow: hidden;
+  overflow-wrap: break-word;
+  word-break: break-word;
+  text-align: left;
 }
 
 .kanban-card-desc {
@@ -411,6 +414,7 @@ body.kanban-dragging .kanban-card {
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
+  text-align: left;
 }
 
 .kanban-card-base {
@@ -439,6 +443,8 @@ body.kanban-dragging .kanban-card {
   font-size: 12px;
   color: var(--text-secondary);
   line-height: 1.4;
+  text-align: left;
+  flex-wrap: wrap;
 }
 
 .kanban-card-priority {
@@ -452,6 +458,10 @@ body.kanban-dragging .kanban-card {
   opacity: 0.6;
   font-family: monospace;
   font-size: 11px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 120px;
 }
 
 .kanban-empty-col {
