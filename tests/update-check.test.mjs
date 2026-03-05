@@ -3,7 +3,7 @@ import {
   startAutoUpdateLoop,
   stopAutoUpdateLoop,
   __autoUpdateTestHooks,
-} from "../update-check.mjs";
+} from "../infra/update-check.mjs";
 
 const {
   recordAutoUpdateFailure,

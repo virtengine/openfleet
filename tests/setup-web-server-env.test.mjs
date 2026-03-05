@@ -6,7 +6,7 @@ import {
   normalizeTelegramUiPort,
   normalizeWorkspaceConfigList,
   resolveSetupWorkspaceAndRepoConfig,
-} from "../setup-web-server.mjs";
+} from "../server/setup-web-server.mjs";
 
 describe("setup web server telegram defaults", () => {
   it("normalizes UI port values with a safe fallback", () => {
@@ -29,8 +29,9 @@ describe("setup web server telegram defaults", () => {
     expect(envMap.TELEGRAM_BOT_TOKEN).toBe("123456:abc-token");
     expect(envMap.TELEGRAM_MINIAPP_ENABLED).toBe("true");
     expect(envMap.TELEGRAM_UI_PORT).toBe("3080");
-    expect(envMap.TELEGRAM_UI_TUNNEL).toBe("named");
-    expect(envMap.TELEGRAM_UI_ALLOW_QUICK_TUNNEL_FALLBACK).toBe("false");
+    // No named-tunnel credentials → default is "quick" (safe out-of-the-box)
+    expect(envMap.TELEGRAM_UI_TUNNEL).toBe("quick");
+    expect(envMap.TELEGRAM_UI_ALLOW_QUICK_TUNNEL_FALLBACK).toBe("true");
     expect(envMap.TELEGRAM_UI_FALLBACK_AUTH_ENABLED).toBe("true");
     expect(envMap.CLOUDFLARE_USERNAME_HOSTNAME_POLICY).toBe("per-user-fixed");
     expect(envMap.TELEGRAM_UI_ALLOW_UNSAFE).toBe("false");
@@ -62,6 +63,35 @@ describe("setup web server telegram defaults", () => {
 
     expect(applied).toBe(false);
     expect(envMap).toEqual({});
+  });
+
+  it("defaults to named tunnel when CLOUDFLARE_TUNNEL_NAME + CREDENTIALS are present in sourceEnv", () => {
+    const envMap = {};
+    applyTelegramMiniAppSetupEnv(
+      envMap,
+      { telegramToken: "123456:abc-token" },
+      {
+        CLOUDFLARE_TUNNEL_NAME: "my-tunnel",
+        CLOUDFLARE_TUNNEL_CREDENTIALS: "/home/user/.cloudflared/abc.json",
+      },
+    );
+
+    expect(envMap.TELEGRAM_UI_TUNNEL).toBe("named");
+  });
+
+  it("defaults to named tunnel when CLOUDFLARE credentials are in the env input", () => {
+    const envMap = {};
+    applyTelegramMiniAppSetupEnv(
+      envMap,
+      {
+        telegramToken: "123456:abc-token",
+        CLOUDFLARE_TUNNEL_NAME: "prod-tunnel",
+        CLOUDFLARE_TUNNEL_CREDENTIALS: "~/.cloudflared/prod.json",
+      },
+      {},
+    );
+
+    expect(envMap.TELEGRAM_UI_TUNNEL).toBe("named");
   });
 });
 
@@ -101,13 +131,16 @@ describe("setup web server non-blocking env defaults", () => {
       CODEX_SANDBOX: "workspace-write",
       VOICE_ENABLED: "true",
       VOICE_PROVIDER: "auto",
-      VOICE_MODEL: "gpt-4o-realtime-preview-2024-12-17",
-      VOICE_VISION_MODEL: "gpt-4.1-mini",
+      VOICE_MODEL: "gpt-audio-1.5",
+      VOICE_VISION_MODEL: "gpt-4.1-nano",
       VOICE_ID: "alloy",
-      VOICE_TURN_DETECTION: "server_vad",
+      VOICE_TURN_DETECTION: "semantic_vad",
       VOICE_FALLBACK_MODE: "browser",
       VOICE_DELEGATE_EXECUTOR: "codex-sdk",
-      AZURE_OPENAI_REALTIME_DEPLOYMENT: "gpt-4o-realtime-preview",
+      VOICE_TRANSCRIPTION_ENABLED: "true",
+      VOICE_TRANSCRIPTION_MODEL: "gpt-4o-transcribe",
+      VOICE_AZURE_TRANSCRIPTION_ENABLED: "false",
+      AZURE_OPENAI_REALTIME_DEPLOYMENT: "gpt-audio-1.5",
       CONTAINER_ENABLED: "false",
       CONTAINER_RUNTIME: "auto",
       WHATSAPP_ENABLED: "false",
@@ -159,6 +192,9 @@ describe("setup web server non-blocking env defaults", () => {
         voiceTurnDetection: "magic",
         voiceFallbackMode: "later",
         voiceDelegateExecutor: "sidecar-sdk",
+        voiceTranscriptionEnabled: "maybe",
+        voiceTranscriptionModel: "   ",
+        voiceAzureTranscriptionEnabled: "maybe",
         azureOpenaiRealtimeDeployment: "",
         containerEnabled: "sometimes",
         containerRuntime: "runc",
@@ -202,13 +238,16 @@ describe("setup web server non-blocking env defaults", () => {
       CODEX_SANDBOX: "workspace-write",
       VOICE_ENABLED: "true",
       VOICE_PROVIDER: "auto",
-      VOICE_MODEL: "gpt-4o-realtime-preview-2024-12-17",
-      VOICE_VISION_MODEL: "gpt-4.1-mini",
+      VOICE_MODEL: "gpt-audio-1.5",
+      VOICE_VISION_MODEL: "gpt-4.1-nano",
       VOICE_ID: "alloy",
-      VOICE_TURN_DETECTION: "server_vad",
+      VOICE_TURN_DETECTION: "semantic_vad",
       VOICE_FALLBACK_MODE: "browser",
       VOICE_DELEGATE_EXECUTOR: "codex-sdk",
-      AZURE_OPENAI_REALTIME_DEPLOYMENT: "gpt-4o-realtime-preview",
+      VOICE_TRANSCRIPTION_ENABLED: "true",
+      VOICE_TRANSCRIPTION_MODEL: "gpt-4o-transcribe",
+      VOICE_AZURE_TRANSCRIPTION_ENABLED: "false",
+      AZURE_OPENAI_REALTIME_DEPLOYMENT: "gpt-audio-1.5",
       CONTAINER_ENABLED: "false",
       CONTAINER_RUNTIME: "auto",
       WHATSAPP_ENABLED: "false",
@@ -264,6 +303,9 @@ describe("setup web server non-blocking env defaults", () => {
         voiceTurnDetection: "semantic_vad",
         voiceFallbackMode: "disabled",
         voiceDelegateExecutor: "copilot-sdk",
+        voiceTranscriptionEnabled: false,
+        voiceTranscriptionModel: "whisper-1",
+        voiceAzureTranscriptionEnabled: true,
         openaiRealtimeApiKey: "openai-realtime-key",
         azureOpenaiRealtimeEndpoint: "https://voice.azure.openai.com",
         azureOpenaiRealtimeApiKey: "azure-realtime-key",
@@ -316,6 +358,9 @@ describe("setup web server non-blocking env defaults", () => {
       VOICE_TURN_DETECTION: "semantic_vad",
       VOICE_FALLBACK_MODE: "disabled",
       VOICE_DELEGATE_EXECUTOR: "copilot-sdk",
+      VOICE_TRANSCRIPTION_ENABLED: "false",
+      VOICE_TRANSCRIPTION_MODEL: "whisper-1",
+      VOICE_AZURE_TRANSCRIPTION_ENABLED: "true",
       OPENAI_REALTIME_API_KEY: "openai-realtime-key",
       AZURE_OPENAI_REALTIME_ENDPOINT: "https://voice.azure.openai.com",
       AZURE_OPENAI_REALTIME_API_KEY: "azure-realtime-key",

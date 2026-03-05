@@ -18,7 +18,7 @@ import { resolve } from "node:path";
 import { describe, it } from "node:test";
 
 const src = readFileSync(
-  resolve(process.cwd(), "telegram-bot.mjs"),
+  resolve(process.cwd(), "telegram/telegram-bot.mjs"),
   "utf8",
 );
 
@@ -161,13 +161,17 @@ describe("pollUpdates — 409 conflict handling", () => {
     );
   });
 
-  it("sets polling = false on 409", () => {
+  it("marks poll ownership as lost on 409 (without stopping poll loop)", () => {
     const idx409 = src.indexOf("res.status === 409");
     assert.ok(idx409 !== -1, "should check for 409");
-    const snippet = src.slice(idx409, idx409 + 300);
+    const snippet = src.slice(idx409, idx409 + 500);
     assert.ok(
-      snippet.includes("polling = false"),
-      "should set polling = false on 409",
+      snippet.includes("pollLockLostAtMs = Date.now()"),
+      "should mark poll ownership as lost on 409",
+    );
+    assert.ok(
+      !snippet.includes("polling = false"),
+      "should not permanently disable polling on 409",
     );
   });
 
@@ -187,31 +191,16 @@ describe("pollUpdates — 409 conflict handling", () => {
       /clearTelegramPollConflictState\s*\(\s*\)/,
       "should clear conflict state on successful response",
     );
-    // clearTelegramPollConflictState should be called in the successful poll path.
-    // Find the call site (last occurrence, after the function definition).
-    let lastClearIdx = -1;
-    let pos = 0;
-    while (true) {
-      const idx = src.indexOf("clearTelegramPollConflictState()", pos);
-      if (idx === -1) break;
-      lastClearIdx = idx;
-      pos = idx + 1;
-    }
-    // Find the last occurrence of resetPollFailureStreak (the call in pollUpdates)
-    let lastSuccessIdx = -1;
-    pos = 0;
-    while (true) {
-      const idx = src.indexOf("resetPollFailureStreak", pos);
-      if (idx === -1) break;
-      lastSuccessIdx = idx;
-      pos = idx + 1;
-    }
-    assert.ok(lastClearIdx !== -1, "clearTelegramPollConflictState() call should exist");
-    assert.ok(lastSuccessIdx !== -1, "resetPollFailureStreak should exist");
-    // clearTelegramPollConflictState should be called just after resetPollFailureStreak
+    const pollUpdatesIdx = src.indexOf("async function pollUpdates");
+    assert.ok(pollUpdatesIdx !== -1, "pollUpdates should exist");
+    const pollUpdatesSlice = src.slice(pollUpdatesIdx, pollUpdatesIdx + 2500);
+    const successIdx = pollUpdatesSlice.indexOf("resetPollFailureStreak");
+    const clearIdx = pollUpdatesSlice.indexOf("clearTelegramPollConflictState()");
+    assert.ok(successIdx !== -1, "resetPollFailureStreak should exist in pollUpdates");
+    assert.ok(clearIdx !== -1, "clearTelegramPollConflictState() should exist in pollUpdates");
     assert.ok(
-      lastClearIdx > lastSuccessIdx && lastClearIdx - lastSuccessIdx < 200,
-      `clearTelegramPollConflictState (at ${lastClearIdx}) should appear just after resetPollFailureStreak (at ${lastSuccessIdx})`,
+      clearIdx > successIdx && clearIdx - successIdx < 300,
+      "clearTelegramPollConflictState should appear shortly after resetPollFailureStreak in pollUpdates",
     );
   });
 });
@@ -220,19 +209,16 @@ describe("pollUpdates — 409 conflict handling", () => {
 
 describe("startTelegramBot — 409 cooldown startup guard", () => {
   it("reads conflict state at startup", () => {
-    const startFuncIdx = src.indexOf("export async function startTelegramBot");
-    assert.ok(startFuncIdx !== -1, "startTelegramBot should be defined");
-    const startupSlice = src.slice(startFuncIdx, startFuncIdx + 1500);
     assert.ok(
-      startupSlice.includes("readTelegramPollConflictState"),
-      "startTelegramBot should call readTelegramPollConflictState at startup",
+      src.includes("const conflictState = readTelegramPollConflictState();"),
+      "startup flow should read persisted conflict state",
     );
   });
 
   it("returns early when conflict cooldown is still active (untilMs > Date.now())", () => {
     const startFuncIdx = src.indexOf("export async function startTelegramBot");
     assert.ok(startFuncIdx !== -1, "startTelegramBot should be defined");
-    const startupSlice = src.slice(startFuncIdx, startFuncIdx + 1500);
+    const startupSlice = src.slice(startFuncIdx, startFuncIdx + 5000);
     assert.ok(
       startupSlice.includes("untilMs") || startupSlice.includes("Date.now"),
       "should compare untilMs with Date.now() to decide early return",
@@ -241,7 +227,7 @@ describe("startTelegramBot — 409 cooldown startup guard", () => {
 
   it("logs a warning and returns when conflict cooldown is active", () => {
     const startFuncIdx = src.indexOf("export async function startTelegramBot");
-    const startupSlice = src.slice(startFuncIdx, startFuncIdx + 1500);
+    const startupSlice = src.slice(startFuncIdx, startFuncIdx + 5000);
     const hasWarning =
       startupSlice.includes("console.warn") &&
       (startupSlice.includes("conflict") ||

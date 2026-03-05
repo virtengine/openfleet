@@ -59,8 +59,9 @@ describe("setup env output", () => {
     expect(configured).toBe(true);
     expect(env.TELEGRAM_MINIAPP_ENABLED).toBe("true");
     expect(env.TELEGRAM_UI_PORT).toBe("3080");
-    expect(env.TELEGRAM_UI_TUNNEL).toBe("named");
-    expect(env.TELEGRAM_UI_ALLOW_QUICK_TUNNEL_FALLBACK).toBe("false");
+    // No named-tunnel credentials → default is "quick" (safe out-of-the-box)
+    expect(env.TELEGRAM_UI_TUNNEL).toBe("quick");
+    expect(env.TELEGRAM_UI_ALLOW_QUICK_TUNNEL_FALLBACK).toBe("true");
     expect(env.TELEGRAM_UI_FALLBACK_AUTH_ENABLED).toBe("true");
     expect(env.CLOUDFLARE_USERNAME_HOSTNAME_POLICY).toBe("per-user-fixed");
     expect(env.TELEGRAM_UI_ALLOW_UNSAFE).toBe("false");
@@ -80,6 +81,32 @@ describe("setup env output", () => {
     expect(env.TELEGRAM_UI_PORT).toBe("4410");
     expect(env.TELEGRAM_UI_TUNNEL).toBe("cloudflared");
     expect(env.TELEGRAM_UI_ALLOW_UNSAFE).toBe("true");
+  });
+
+  it("defaults to named tunnel when CLOUDFLARE_TUNNEL_NAME + CLOUDFLARE_TUNNEL_CREDENTIALS are present", () => {
+    const env = {
+      TELEGRAM_BOT_TOKEN: "123456:abc-token",
+    };
+    const sourceEnv = {
+      CLOUDFLARE_TUNNEL_NAME: "my-tunnel",
+      CLOUDFLARE_TUNNEL_CREDENTIALS: "/home/user/.cloudflared/abc.json",
+    };
+
+    applyTelegramMiniAppDefaults(env, sourceEnv);
+    expect(env.TELEGRAM_UI_TUNNEL).toBe("named");
+    // With credentials present, quick fallback should still be "true" unless explicitly disabled
+    expect(env.TELEGRAM_UI_ALLOW_QUICK_TUNNEL_FALLBACK).toBe("true");
+  });
+
+  it("defaults to named tunnel when credentials are in env (not sourceEnv)", () => {
+    const env = {
+      TELEGRAM_BOT_TOKEN: "123456:abc-token",
+      CLOUDFLARE_TUNNEL_NAME: "prod-tunnel",
+      CLOUDFLARE_TUNNEL_CREDENTIALS: "~/.cloudflared/prod.json",
+    };
+
+    applyTelegramMiniAppDefaults(env, {});
+    expect(env.TELEGRAM_UI_TUNNEL).toBe("named");
   });
 });
 

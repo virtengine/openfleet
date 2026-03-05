@@ -19,7 +19,7 @@ import {
   registerBuiltinHooks,
   loadHooks,
   resetHooks,
-} from "../agent-hooks.mjs";
+} from "../agent/agent-hooks.mjs";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const fixtureDir = resolve(__dirname, "..", ".cache", "test-hooks");

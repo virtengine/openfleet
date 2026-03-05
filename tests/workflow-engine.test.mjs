@@ -1,7 +1,8 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
+import { execSync } from "node:child_process";
 import {
   WorkflowEngine,
   WorkflowContext,
@@ -9,11 +10,11 @@ import {
   WorkflowStatus,
   getWorkflowEngine,
   resetWorkflowEngine,
-} from "../workflow-engine.mjs";
+} from "../workflow/workflow-engine.mjs";
 import {
   registerNodeType,
   getNodeType,
-} from "../workflow-nodes.mjs";
+} from "../workflow/workflow-nodes.mjs";
 
 // ── Helpers ─────────────────────────────────────────────────────────────────
 
@@ -99,6 +100,15 @@ describe("WorkflowContext", () => {
     expect(ctx.resolve("Count: {{step1.count}}")).toBe("Count: 5");
     expect(ctx.resolve("{{missing}}")).toBe("{{missing}}");
     expect(ctx.resolve(42)).toBe(42); // Non-strings pass through
+  });
+
+  it("resolve() interpolates node outputs with hyphenated node IDs", () => {
+    const ctx = new WorkflowContext();
+    ctx.setNodeOutput("materialize-tasks", { createdCount: 3, skippedCount: 2 });
+    expect(
+      ctx.resolve("Created {{materialize-tasks.createdCount}} tasks (skipped {{materialize-tasks.skippedCount}})."),
+    ).toBe("Created 3 tasks (skipped 2).");
+    expect(ctx.resolve("{{materialize-tasks.createdCount}}")).toBe(3);
   });
 
   it("resolve() preserves raw value types for exact placeholders", () => {
@@ -727,6 +737,108 @@ describe("New node types", () => {
     expect(result.gateOpened).toBe(true);
     expect(result.waited).toBe(50);
   });
+
+  it("flow.join reports joined=true when all listed sources are completed/skipped", async () => {
+    const handler = getNodeType("flow.join");
+    expect(handler).toBeDefined();
+
+    const ctx = new WorkflowContext({});
+    ctx.setNodeStatus("branch-a", NodeStatus.COMPLETED);
+    ctx.setNodeStatus("branch-b", NodeStatus.SKIPPED);
+    const node = {
+      id: "join-1",
+      type: "flow.join",
+      config: {
+        mode: "all",
+        sourceNodeIds: ["branch-a", "branch-b"],
+      },
+    };
+    const result = await handler.execute(node, ctx);
+    expect(result.joined).toBe(true);
+    expect(result.arrivedCount).toBe(2);
+    expect(result.pendingSources).toEqual([]);
+  });
+
+  it("flow.end returns explicit terminal signal", async () => {
+    const handler = getNodeType("flow.end");
+    expect(handler).toBeDefined();
+
+    const ctx = new WorkflowContext({ taskId: "TASK-1" });
+    const node = {
+      id: "end-1",
+      type: "flow.end",
+      config: {
+        status: "failed",
+        message: "Stop now",
+        output: { taskId: "{{taskId}}" },
+      },
+    };
+    const result = await handler.execute(node, ctx);
+    expect(result._workflowEnd).toBe(true);
+    expect(result.status).toBe("failed");
+    expect(result.output).toEqual({ taskId: "TASK-1" });
+  });
+
+  it("flow.universal and flow.universial dispatch to child workflows", async () => {
+    const canonical = getNodeType("flow.universal");
+    const typoAlias = getNodeType("flow.universial");
+    expect(canonical).toBeDefined();
+    expect(typoAlias).toBeDefined();
+
+    const ctx = new WorkflowContext({ _workflowId: "parent-wf", taskId: "TASK-42" });
+    const mockEngine = {
+      execute: vi.fn(async () => new WorkflowContext({ ok: true })),
+      get: vi.fn(() => ({ id: "template-task-archiver" })),
+    };
+
+    const node = {
+      id: "universal-1",
+      type: "flow.universial",
+      config: {
+        workflowId: "template-task-archiver",
+        mode: "sync",
+        inheritContext: true,
+      },
+    };
+
+    const result = await typoAlias.execute(node, ctx, mockEngine);
+    expect(result.success).toBe(true);
+    expect(result.mode).toBe("sync");
+    expect(result.workflowId).toBe("template-task-archiver");
+    expect(mockEngine.execute).toHaveBeenCalledWith(
+      "template-task-archiver",
+      expect.objectContaining({
+        taskId: "TASK-42",
+        _workflowStack: ["parent-wf", "template-task-archiver"],
+      }),
+    );
+    expect(canonical).toBe(typoAlias);
+  });
+
+  it("flow.end hard-stops remaining nodes and marks run as failed", async () => {
+    const testEngine = makeTmpEngine();
+    const wf = makeSimpleWorkflow(
+      [
+        { id: "trigger", type: "trigger.manual", label: "Start", config: {} },
+        { id: "end-fail", type: "flow.end", label: "End", config: { status: "failed", message: "fail fast" } },
+        { id: "after-end", type: "notify.log", label: "Should Skip", config: { message: "must not run" } },
+      ],
+      [
+        { id: "e1", source: "trigger", target: "end-fail" },
+        { id: "e2", source: "end-fail", target: "after-end" },
+      ],
+      { id: "wf-end-hard-stop", name: "WF End Hard Stop" },
+    );
+
+    testEngine.save(wf);
+    const ctx = await testEngine.execute(wf.id, {});
+    expect(ctx.getNodeStatus("end-fail")).toBe(NodeStatus.COMPLETED);
+    expect(ctx.getNodeStatus("after-end")).toBe(NodeStatus.SKIPPED);
+    expect(ctx.data._workflowTerminalStatus).toBe(WorkflowStatus.FAILED);
+
+    const detail = testEngine.getRunDetail(ctx.id);
+    expect(detail?.status).toBe(WorkflowStatus.FAILED);
+  });
 });
 
 describe("action.execute_workflow", () => {
@@ -1227,6 +1339,58 @@ describe("WorkflowEngine trigger evaluation", () => {
     });
     expect(nonMeetingHits).toHaveLength(0);
   });
+
+  it("evaluateScheduleTriggers fires workflows whose interval has elapsed", () => {
+    const wf = makeSimpleWorkflow(
+      [
+        {
+          id: "sched-trigger",
+          type: "trigger.schedule",
+          label: "Every 5min",
+          config: { intervalMs: 300000 },
+        },
+        {
+          id: "act",
+          type: "action.set_variable",
+          label: "Set",
+          config: { key: "ran", value: "yes" },
+        },
+      ],
+      [{ source: "sched-trigger", target: "act" }],
+      { id: "sched-wf", name: "Scheduled Workflow" },
+    );
+    engine.save(wf);
+
+    // No previous runs → should trigger
+    const hits = engine.evaluateScheduleTriggers();
+    expect(hits).toHaveLength(1);
+    expect(hits[0]).toMatchObject({
+      workflowId: "sched-wf",
+      triggeredBy: "sched-trigger",
+    });
+  });
+
+  it("evaluateScheduleTriggers skips disabled workflows", () => {
+    const wf = {
+      id: "sched-disabled",
+      name: "Disabled Sched",
+      enabled: false,
+      nodes: [
+        {
+          id: "sched-trigger",
+          type: "trigger.schedule",
+          label: "Every 5min",
+          config: { intervalMs: 300000 },
+        },
+      ],
+      edges: [],
+      variables: {},
+    };
+    engine.save(wf);
+
+    const hits = engine.evaluateScheduleTriggers();
+    expect(hits.some((h) => h.workflowId === "sched-disabled")).toBe(false);
+  });
 });
 
 describe("Session chaining - action.run_agent", () => {
@@ -1540,6 +1704,92 @@ describe("Session chaining - action.run_agent", () => {
     expect(continueSession).toHaveBeenCalledTimes(1);
     expect(execWithRetry).not.toHaveBeenCalled();
   });
+
+  it("runs multi-candidate selector mode when candidateCount > 1 and restores selected branch", async () => {
+    const handler = getNodeType("action.run_agent");
+    expect(handler).toBeDefined();
+
+    const repoDir = mkdtempSync(join(tmpdir(), "wf-agent-candidates-"));
+    try {
+      execSync("git init", { cwd: repoDir, stdio: "ignore" });
+      execSync('git config --local user.email "bot@example.com"', { cwd: repoDir, stdio: "ignore" });
+      execSync('git config --local user.name "Bosun Bot"', { cwd: repoDir, stdio: "ignore" });
+      writeFileSync(join(repoDir, "README.md"), "base\n", "utf8");
+      execSync("git add README.md", { cwd: repoDir, stdio: "ignore" });
+      execSync('git commit -m "base"', { cwd: repoDir, stdio: "ignore" });
+      execSync("git checkout -b feature/candidate-test", { cwd: repoDir, stdio: "ignore" });
+
+      let runCount = 0;
+      const launchEphemeralThread = vi.fn().mockImplementation(async (_prompt, runCwd) => {
+        runCount += 1;
+        writeFileSync(join(runCwd, `candidate-${runCount}.txt`), `candidate-${runCount}\n`, "utf8");
+        execSync("git add .", { cwd: runCwd, stdio: "ignore" });
+        execSync(`git commit -m "candidate-${runCount}"`, { cwd: runCwd, stdio: "ignore" });
+        return {
+          success: true,
+          output:
+            runCount === 1
+              ? "candidate one output"
+              : "candidate two output with additional verification context",
+          sdk: "codex",
+          items: [],
+          threadId: `thread-${runCount}`,
+        };
+      });
+      const mockEngine = {
+        services: {
+          agentPool: {
+            launchEphemeralThread,
+          },
+        },
+      };
+
+      const ctx = new WorkflowContext({
+        worktreePath: repoDir,
+        taskId: "task-candidate-mode",
+      });
+      const node = {
+        id: "agent-candidates",
+        type: "action.run_agent",
+        config: {
+          prompt: "Fix task",
+          cwd: repoDir,
+          autoRecover: false,
+          candidateCount: 2,
+          candidateSelector: "last_success",
+        },
+      };
+      const result = await handler.execute(node, ctx, mockEngine);
+
+      expect(launchEphemeralThread).toHaveBeenCalledTimes(2);
+      expect(result.success).toBe(true);
+      expect(result.threadId).toBe("thread-2");
+      expect(result.candidateSelection).toMatchObject({
+        candidateCount: 2,
+        selector: "last_success",
+        selectedIndex: 2,
+      });
+      expect(Array.isArray(result.candidates)).toBe(true);
+      expect(result.candidates.length).toBe(2);
+
+      const currentBranch = execSync("git rev-parse --abbrev-ref HEAD", {
+        cwd: repoDir,
+        encoding: "utf8",
+      }).trim();
+      const latestCommitMessage = execSync("git log -1 --pretty=%s", {
+        cwd: repoDir,
+        encoding: "utf8",
+      }).trim();
+      expect(currentBranch).toBe("feature/candidate-test");
+      expect(latestCommitMessage).toBe("candidate-2");
+    } finally {
+      try {
+        rmSync(repoDir, { recursive: true, force: true });
+      } catch {
+        // best-effort cleanup
+      }
+    }
+  }, 20000);
 });
 
 it("agent.run_planner streams planner events and propagates threadId", async () => {
@@ -1792,6 +2042,62 @@ it("action.materialize_planner_tasks fails when all parsed tasks are skipped and
   expect(createTask).not.toHaveBeenCalled();
 });
 
+it("action.materialize_planner_tasks passes two args to createTask even with default-param adapters", async () => {
+  const handler = getNodeType("action.materialize_planner_tasks");
+  expect(handler).toBeDefined();
+
+  const ctx = new WorkflowContext({});
+  ctx.setNodeOutput("run-planner", {
+    output: [
+      "```json",
+      "{",
+      '  "tasks": [',
+      '    { "title": "[m] fix(materialize): preserve payload", "description": "A", "workspace": "virtengine-gh", "repository": "virtengine/virtengine" }',
+      "  ]",
+      "}",
+      "```",
+    ].join("\n"),
+  });
+
+  const createTask = vi.fn(async function createTaskAdapter(projectId, taskData = {}) {
+    if (typeof taskData?.title !== "string" || !taskData.title.trim()) {
+      throw new Error("missing title payload");
+    }
+    return { id: "task-regression-1" };
+  });
+  const mockEngine = {
+    services: {
+      kanban: {
+        createTask,
+      },
+    },
+  };
+
+  const node = {
+    id: "materialize",
+    type: "action.materialize_planner_tasks",
+    config: {
+      plannerNodeId: "run-planner",
+      status: "draft",
+      failOnZero: true,
+      dedup: false,
+      minCreated: 1,
+    },
+  };
+
+  const result = await handler.execute(node, ctx, mockEngine);
+  expect(result.success).toBe(true);
+  expect(result.createdCount).toBe(1);
+  expect(createTask).toHaveBeenCalledTimes(1);
+  expect(createTask).toHaveBeenCalledWith("", expect.objectContaining({
+    title: "[m] fix(materialize): preserve payload",
+    workspace: "virtengine-gh",
+    repository: "virtengine/virtengine",
+    status: "draft",
+    draft: true,
+  }));
+});
+
 it("action.materialize_planner_tasks fails loudly when planner output has no parseable tasks", async () => {
   const handler = getNodeType("action.materialize_planner_tasks");
   expect(handler).toBeDefined();
@@ -1884,7 +2190,7 @@ describe("WorkflowEngine singleton services", () => {
 
 describe("Anomaly → Workflow bridge", () => {
   it("wrapAnomalyCallback fires workflow triggers", async () => {
-    const { wrapAnomalyCallback, setWorkflowEngine } = await import("../anomaly-detector.mjs");
+    const { wrapAnomalyCallback, setWorkflowEngine } = await import("../infra/anomaly-detector.mjs");
 
     const mockEvaluate = vi.fn();
     setWorkflowEngine({ evaluateTriggers: mockEvaluate });
@@ -1930,7 +2236,7 @@ describe("Template dedup on install", () => {
   });
 
   it("rejects installing a template that is already installed", async () => {
-    const { installTemplate } = await import("../workflow-templates.mjs");
+    const { installTemplate } = await import("../workflow/workflow-templates.mjs");
 
     // Install once - should succeed
     const wf = installTemplate("template-pr-merge-strategy", engine);
@@ -2076,5 +2382,94 @@ describe("WorkflowEngine - timeout timer cleanup", () => {
     const result = await engine.execute(wf.id, {});
     expect(result.errors.length).toBeGreaterThan(0);
     expect(String(result.errors[0]?.error || "")).toContain("timed out after 1000ms");
+  });
+});
+
+// ── Concurrency & Scalability ──────────────────────────────────────────────
+
+describe("Concurrency limiter", () => {
+  beforeEach(() => {
+    engine = makeTmpEngine();
+    engine.load();
+  });
+
+  afterEach(() => {
+    if (tmpDir) rmSync(tmpDir, { recursive: true, force: true });
+  });
+
+  it("getConcurrencyStats returns defaults", () => {
+    const stats = engine.getConcurrencyStats();
+    expect(stats.activeRuns).toBe(0);
+    expect(stats.queuedRuns).toBe(0);
+    expect(stats.maxConcurrentRuns).toBeGreaterThanOrEqual(1);
+    expect(stats.maxConcurrentBranches).toBeGreaterThanOrEqual(1);
+  });
+
+  it("tracks activeRuns count during execution", async () => {
+    let capturedStats = null;
+    if (!getNodeType("test.capture_stats")) {
+      registerNodeType("test.capture_stats", {
+        describe: () => "Capture concurrency stats during execution",
+        schema: { type: "object", properties: {} },
+        async execute(_node, _ctx) {
+          capturedStats = engine.getConcurrencyStats();
+          return { captured: true };
+        },
+      });
+    }
+
+    const wf = makeSimpleWorkflow(
+      [
+        { id: "trigger", type: "trigger.manual", label: "Start", config: {} },
+        { id: "stats", type: "test.capture_stats", label: "Stats", config: {} },
+      ],
+      [{ id: "e1", source: "trigger", target: "stats" }]
+    );
+
+    engine.save(wf);
+    await engine.execute(wf.id, {});
+    expect(capturedStats).toBeDefined();
+    expect(capturedStats.activeRuns).toBe(1);
+  });
+
+  it("concurrent runs track correctly", async () => {
+    let maxSeen = 0;
+    if (!getNodeType("test.concurrent_track")) {
+      registerNodeType("test.concurrent_track", {
+        describe: () => "Track concurrent runs",
+        schema: { type: "object", properties: {} },
+        async execute(_node, _ctx) {
+          const stats = engine.getConcurrencyStats();
+          if (stats.activeRuns > maxSeen) maxSeen = stats.activeRuns;
+          // Small delay to overlap with other runs
+          await new Promise((r) => setTimeout(r, 50));
+          return { ok: true };
+        },
+      });
+    }
+
+    const wfs = [];
+    for (let i = 0; i < 4; i++) {
+      const wf = makeSimpleWorkflow(
+        [
+          { id: "trigger", type: "trigger.manual", label: "Start", config: {} },
+          { id: "track", type: "test.concurrent_track", label: "Track", config: {} },
+        ],
+        [{ id: "e1", source: "trigger", target: "track" }],
+        { id: `concurrent-wf-${i}` }
+      );
+      engine.save(wf);
+      wfs.push(wf);
+    }
+
+    // Launch all 4 concurrently
+    const results = await Promise.all(wfs.map((wf) => engine.execute(wf.id, {})));
+    for (const r of results) {
+      expect(r.errors).toEqual([]);
+    }
+    // At some point, multiple runs should have been active simultaneously
+    expect(maxSeen).toBeGreaterThanOrEqual(2);
+    // After all complete, slots should be released
+    expect(engine.getConcurrencyStats().activeRuns).toBe(0);
   });
 });

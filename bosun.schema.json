@@ -33,12 +33,28 @@
     "watchEnabled": { "type": "boolean" },
     "echoLogs": { "type": "boolean" },
     "autoFixEnabled": { "type": "boolean" },
+    "workflowFirst": {
+      "type": "boolean",
+      "default": false,
+      "description": "When true, all modules start in WORKFLOW mode by default. The task executor lifecycle is fully delegated to workflow templates (workflowOwnsTaskLifecycle). Bosun acts as a thin shell around the workflow engine."
+    },
+    "workflowOwnsTaskLifecycle": {
+      "type": "boolean",
+      "default": false,
+      "description": "Delegate task finalization and recovery to workflow automation instead of the legacy TaskExecutor. Automatically set to true when workflowFirst is enabled."
+    },
     "interactiveShellEnabled": { "type": "boolean" },
     "shellEnabled": { "type": "boolean" },
     "codexEnabled": { "type": "boolean" },
     "primaryAgent": {
       "type": "string",
-      "enum": ["codex-sdk", "copilot-sdk", "claude-sdk", "gemini-sdk", "opencode-sdk"]
+      "enum": [
+        "codex-sdk",
+        "copilot-sdk",
+        "claude-sdk",
+        "gemini-sdk",
+        "opencode-sdk"
+      ]
     },
     "telegramUiTunnel": {
       "type": "string",
@@ -147,6 +163,52 @@
           "default": "auto",
           "description": "Voice provider: openai/azure (Tier 1 realtime), claude/gemini (Tier 2 voice + provider vision), fallback (browser STT/TTS), auto (detect from env)"
         },
+        "providers": {
+          "type": "array",
+          "description": "Ordered provider candidates for voice routing/failover. First match with credentials is used.",
+          "items": {
+            "anyOf": [
+              {
+                "type": "string",
+                "enum": ["openai", "azure", "claude", "gemini", "fallback"]
+              },
+              {
+                "type": "object",
+                "additionalProperties": false,
+                "properties": {
+                  "provider": {
+                    "type": "string",
+                    "enum": ["openai", "azure", "claude", "gemini", "fallback"]
+                  },
+                  "model": { "type": "string" },
+                  "visionModel": { "type": "string" },
+                  "voiceId": {
+                    "type": "string",
+                    "enum": [
+                      "alloy",
+                      "ash",
+                      "ballad",
+                      "coral",
+                      "echo",
+                      "fable",
+                      "onyx",
+                      "nova",
+                      "sage",
+                      "shimmer",
+                      "verse"
+                    ]
+                  },
+                  "azureDeployment": { "type": "string" },
+                  "endpointId": {
+                    "type": "string",
+                    "description": "ID of the voice endpoint to use for this provider slot"
+                  }
+                },
+                "required": ["provider"]
+              }
+            ]
+          }
+        },
         "model": {
           "type": "string",
           "default": "gpt-4o-realtime-preview-2024-12-17",
@@ -161,9 +223,17 @@
           "type": "string",
           "description": "OpenAI API key for Realtime API (overrides OPENAI_API_KEY env)"
         },
+        "openaiAccessToken": {
+          "type": "string",
+          "description": "OpenAI OAuth access token for voice (OAuth preferred over API key when present)"
+        },
         "azureApiKey": {
           "type": "string",
           "description": "Azure OpenAI API key for Realtime API"
+        },
+        "azureAccessToken": {
+          "type": "string",
+          "description": "Azure OAuth/AAD access token for voice realtime"
         },
         "azureEndpoint": {
           "type": "string",
@@ -178,20 +248,40 @@
           "type": "string",
           "description": "Anthropic API key for Claude voice/vision provider mode"
         },
+        "claudeAccessToken": {
+          "type": "string",
+          "description": "Claude OAuth access token for voice provider mode"
+        },
         "geminiApiKey": {
           "type": "string",
           "description": "Gemini API key for Gemini voice/vision provider mode"
         },
+        "geminiAccessToken": {
+          "type": "string",
+          "description": "Gemini OAuth access token for voice provider mode"
+        },
         "voiceId": {
           "type": "string",
-          "enum": ["alloy", "ash", "ballad", "coral", "echo", "fable", "onyx", "nova", "sage", "shimmer", "verse"],
+          "enum": [
+            "alloy",
+            "ash",
+            "ballad",
+            "coral",
+            "echo",
+            "fable",
+            "onyx",
+            "nova",
+            "sage",
+            "shimmer",
+            "verse"
+          ],
           "default": "alloy",
           "description": "Voice ID for TTS output"
         },
         "turnDetection": {
           "type": "string",
           "enum": ["server_vad", "semantic_vad", "none"],
-          "default": "server_vad",
+          "default": "semantic_vad",
           "description": "Turn detection mode for voice activity detection"
         },
         "instructions": {
@@ -204,9 +294,84 @@
           "default": "browser",
           "description": "Fallback when Realtime API unavailable: browser (Web Speech API) or disabled"
         },
+        "failover": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "enabled": {
+              "type": "boolean",
+              "default": true,
+              "description": "Enable automatic realtime failover across configured voice providers"
+            },
+            "maxAttempts": {
+              "type": "number",
+              "default": 2,
+              "description": "Maximum realtime provider attempts per voice session token request"
+            }
+          }
+        },
+        "voiceEndpoints": {
+          "type": "array",
+          "description": "Named realtime voice endpoints, each with its own credentials. Multiple endpoints enable automatic failover with context preservation.",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["provider"],
+            "properties": {
+              "id": {
+                "type": "string",
+                "description": "Unique identifier for this endpoint"
+              },
+              "name": {
+                "type": "string",
+                "description": "Friendly label for this endpoint"
+              },
+              "provider": {
+                "type": "string",
+                "enum": ["azure", "openai", "claude", "gemini"],
+                "description": "Provider type"
+              },
+              "endpoint": {
+                "type": "string",
+                "description": "Azure OpenAI endpoint URL (required for azure)"
+              },
+              "deployment": {
+                "type": "string",
+                "description": "Azure deployment name (required for azure)"
+              },
+              "apiKey": {
+                "type": "string",
+                "description": "API key for this endpoint"
+              },
+              "model": {
+                "type": "string",
+                "description": "Model name (for openai provider)"
+              },
+              "voiceId": { "type": "string" },
+              "visionModel": { "type": "string" },
+              "role": {
+                "type": "string",
+                "enum": ["primary", "backup"],
+                "default": "primary"
+              },
+              "weight": {
+                "type": "number",
+                "default": 100,
+                "description": "Priority weight — higher = tried first"
+              },
+              "enabled": { "type": "boolean", "default": true }
+            }
+          }
+        },
         "delegateExecutor": {
           "type": "string",
-          "enum": ["codex-sdk", "copilot-sdk", "claude-sdk", "gemini-sdk", "opencode-sdk"],
+          "enum": [
+            "codex-sdk",
+            "copilot-sdk",
+            "claude-sdk",
+            "gemini-sdk",
+            "opencode-sdk"
+          ],
           "description": "Which executor to use for delegate_to_agent calls. Defaults to primaryAgent."
         }
       }
@@ -723,7 +888,37 @@
         },
         "weight": { "type": "number" },
         "role": { "type": "string" },
-        "enabled": { "type": "boolean" }
+        "enabled": { "type": "boolean" },
+        "provider": {
+          "type": "string",
+          "description": "AI provider for this executor (e.g. anthropic, openai, ollama, nebius, scaleway, deepinfra, qiniu, cloudflare, xiaomi, synthetic, perplexity)"
+        },
+        "providerConfig": {
+          "type": "object",
+          "description": "Provider-specific configuration for this executor",
+          "properties": {
+            "apiKey": {
+              "type": "string",
+              "description": "API key for this provider (overrides env)"
+            },
+            "baseUrl": {
+              "type": "string",
+              "description": "API base URL for this provider"
+            },
+            "model": {
+              "type": "string",
+              "description": "Model ID to use with this provider (e.g. claude-sonnet-4-20250514)"
+            },
+            "port": {
+              "type": "number",
+              "description": "Port for local server (OpenCode)"
+            },
+            "timeoutMs": {
+              "type": "number",
+              "description": "Request timeout in milliseconds"
+            }
+          }
+        }
       }
     },
     "failover": {
@@ -858,6 +1053,163 @@
           "type": "boolean",
           "default": true,
           "description": "Automatically install defaultServers from catalog if not already installed"
+        }
+      }
+    },
+    "contextShredding": {
+      "type": "object",
+      "description": "Context Shredding — configurable tiered compression of agent context windows. Reduces token usage while preserving what matters.",
+      "additionalProperties": false,
+      "properties": {
+        "enabled": {
+          "type": "boolean",
+          "default": true,
+          "description": "Master switch for context shredding. When false, agents receive full history every turn."
+        },
+        "fullContextTurns": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 20,
+          "default": 3,
+          "description": "Number of most-recent turns to keep completely uncompressed (Tier 0)."
+        },
+        "tier1MaxAge": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 50,
+          "default": 5,
+          "description": "Turns threshold for Tier 1 (light) compression."
+        },
+        "tier2MaxAge": {
+          "type": "integer",
+          "minimum": 2,
+          "maximum": 100,
+          "default": 9,
+          "description": "Turns threshold for Tier 2 (moderate) compression. Items older enter Tier 3 (skeleton)."
+        },
+        "tier1HeadChars": {
+          "type": "integer",
+          "minimum": 100,
+          "maximum": 10000,
+          "default": 2000,
+          "description": "Maximum characters kept from the start of a tool output in Tier 1 compression."
+        },
+        "tier1TailChars": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 5000,
+          "default": 800,
+          "description": "Maximum characters kept from the end of a tool output in Tier 1 compression."
+        },
+        "tier2HeadChars": {
+          "type": "integer",
+          "minimum": 50,
+          "maximum": 5000,
+          "default": 600,
+          "description": "Maximum characters kept from the start of a tool output in Tier 2 compression."
+        },
+        "tier2TailChars": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 2000,
+          "default": 300,
+          "description": "Maximum characters kept from the end of a tool output in Tier 2 compression."
+        },
+        "scoreHighThreshold": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 100,
+          "default": 70,
+          "description": "Items scored >= this value are protected from compression (tier shifted down)."
+        },
+        "scoreLowThreshold": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 99,
+          "default": 30,
+          "description": "Items scored < this value are compressed more aggressively."
+        },
+        "compressToolOutputs": {
+          "type": "boolean",
+          "default": true,
+          "description": "Enable tiered compression for tool call outputs."
+        },
+        "compressMessages": {
+          "type": "boolean",
+          "default": true,
+          "description": "Enable compression for agent reasoning and user prompt messages."
+        },
+        "compressAgentMessages": {
+          "type": "boolean",
+          "default": true,
+          "description": "Enable compression for verbose agent thinking/planning messages."
+        },
+        "compressUserMessages": {
+          "type": "boolean",
+          "default": true,
+          "description": "Compress old user prompt messages to a short breadcrumb. Current turn always kept full."
+        },
+        "msgTier0MaxAge": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 10,
+          "default": 1,
+          "description": "Number of most-recent turns to keep agent messages in full text."
+        },
+        "msgTier1MaxAge": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 20,
+          "default": 4,
+          "description": "Turns within which agent messages get a moderate summary. Older messages become one-line breadcrumbs."
+        },
+        "msgMinCompressChars": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 2000,
+          "default": 120,
+          "description": "Agent messages shorter than this are never compressed."
+        },
+        "userMsgFullTurns": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 10,
+          "default": 1,
+          "description": "Turns during which the full user prompt is preserved."
+        },
+        "perType": {
+          "type": "object",
+          "description": "Per-interaction-type config overrides. Keys: task, manual, primary, chat, voice, flow.",
+          "additionalProperties": { "type": "object" }
+        },
+        "perAgent": {
+          "type": "object",
+          "description": "Per-agent-SDK config overrides. Keys: codex-sdk, copilot-sdk, claude-sdk, gemini-sdk, opencode-sdk.",
+          "additionalProperties": { "type": "object" }
+        }
+      }
+    },
+    "toolLogCache": {
+      "type": "object",
+      "description": "In-memory caching of full tool log content for fast agent retrieval during active sessions. Reduces disk I/O on repeated context lookups.",
+      "additionalProperties": false,
+      "properties": {
+        "enabled": {
+          "type": "boolean",
+          "default": false,
+          "description": "When true, full tool log content is kept in-process memory for fast retrieval (avoids disk reads). Improves context retrieval speed during long agent sessions."
+        },
+        "maxSizeBytes": {
+          "type": "integer",
+          "minimum": 1048576,
+          "default": 52428800,
+          "description": "Maximum total bytes to hold in the in-memory tool-log cache (default: 50 MB). Oldest entries are evicted (LRU order) when this limit is exceeded."
+        },
+        "archiveSizeLimitBytes": {
+          "type": "integer",
+          "minimum": 10485760,
+          "default": 209715200,
+          "description": "Disk prune trigger: when the .cache/tool-logs/ directory exceeds this size, pruneToolLogCache is run automatically to reclaim space (default: 200 MB)."
         }
       }
     }

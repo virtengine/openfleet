@@ -11,7 +11,6 @@
   height: 100%;
   flex: 1;
   overflow: hidden;
-  /* Added to contain any growing children */
 }
 
 .session-pane {
@@ -20,6 +19,8 @@
   gap: var(--space-md);
   min-width: 0;
   min-height: 0;
+  overflow-y: auto;
+  overflow-x: hidden;
 }
 
 .session-detail {
@@ -29,12 +30,14 @@
   min-height: 0;
   flex: 1;
   overflow: hidden;
+  position: relative;
 }
 
 .session-split {
   position: relative;
   min-height: 0;
   flex: 1;
+  overflow: hidden;
 }
 
 .session-drawer-backdrop {
@@ -178,6 +181,13 @@
   border-bottom: 1px solid var(--border);
   background: var(--bg-primary);
   flex-shrink: 0;
+}
+
+/* Hide the in-chat header on tablet/desktop; mobile keeps it for drawer/nav. */
+@media (min-width: 769px) {
+  .chat-shell-header {
+    display: none;
+  }
 }
 
 .chat-shell-inner {
@@ -813,10 +823,12 @@
   touch-action: pan-y;
   -webkit-overflow-scrolling: touch;
   overscroll-behavior-y: contain;
-  scroll-padding-bottom: 80px;
+  scroll-padding-bottom: 120px;
   scrollbar-width: thin;
   scrollbar-color: rgba(255, 255, 255, 0.08) transparent;
-  padding: 24px 24px 48px;
+  /* Extra bottom padding ensures the last message is never hidden behind
+     the chat input area + its toolbar + gradient overlay. */
+  padding: 24px 24px 140px;
   display: flex;
   flex-direction: column;
   gap: 6px;
@@ -893,10 +905,10 @@
 .chat-empty-state-inline.chat-empty-state-inline--no-box {
   width: auto;
   max-width: 100%;
-  border: none !important;
-  border-radius: 0 !important;
-  background: transparent !important;
-  box-shadow: none !important;
+  border: none;
+  border-radius: 0;
+  background: transparent;
+  box-shadow: none;
   padding: clamp(18px, 2.8vw, 30px) var(--space-lg);
   margin-top: auto;
   margin-bottom: auto;
@@ -1337,12 +1349,72 @@
   color: var(--text-hint);
 }
 
+/* ─── Animated body wrap — uses grid-template-rows for smooth open/close ─── */
+.thinking-group-body-wrap {
+  display: grid;
+  grid-template-rows: 0fr;
+  transition: grid-template-rows 220ms ease;
+  border-top: 1px solid transparent;
+}
+
+.thinking-group-body-wrap.expanded {
+  grid-template-rows: 1fr;
+  border-top-color: var(--border);
+}
+
 .thinking-group-body {
-  border-top: 1px solid var(--border);
-  padding: 6px;
+  min-height: 0;
+  overflow: hidden;
+  padding: 0 6px;
   display: flex;
   flex-direction: column;
   gap: 2px;
+}
+
+.thinking-group-body-wrap.expanded .thinking-group-body {
+  padding: 6px;
+  max-height: min(50vh, 480px);
+  overflow-y: auto;
+  overflow-x: hidden;
+  overscroll-behavior: contain;
+  -webkit-overflow-scrolling: touch;
+  scrollbar-width: thin;
+  scrollbar-color: rgba(255, 255, 255, 0.12) transparent;
+}
+
+.thinking-group-body-wrap.expanded .thinking-group-body::-webkit-scrollbar {
+  width: 6px;
+}
+
+.thinking-group-body-wrap.expanded .thinking-group-body::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.thinking-group-body-wrap.expanded .thinking-group-body::-webkit-scrollbar-thumb {
+  background: rgba(255, 255, 255, 0.12);
+  border-radius: 3px;
+}
+
+.thinking-group-body-wrap.expanded .thinking-group-body::-webkit-scrollbar-thumb:hover {
+  background: rgba(255, 255, 255, 0.2);
+}
+
+/* ─── Active (processing) thinking group ─── */
+.thinking-group-active {
+  border-color: rgba(59, 130, 246, 0.35);
+  box-shadow: 0 0 0 1px rgba(59, 130, 246, 0.10);
+}
+
+.thinking-group-active .thinking-group-badge {
+  border-color: rgba(59, 130, 246, 0.5);
+  background: rgba(59, 130, 246, 0.14);
+  color: #93c5fd;
+  animation: thinkingPulse 1.6s ease-in-out infinite;
+}
+
+@keyframes thinkingPulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.65; }
 }
 
 /* Subtle entrance for bubbles — only the last few get the animation
@@ -1686,6 +1758,12 @@ ul.md-list li::before {
   background: color-mix(in srgb, var(--bg-card) 82%, var(--accent) 18%);
 }
 
+.chat-drop-overlay {
+  background: color-mix(in srgb, var(--bg-primary) 72%, transparent);
+  backdrop-filter: blur(2px);
+  -webkit-backdrop-filter: blur(2px);
+}
+
 .chat-send-btn {
   flex-shrink: 0;
   width: 36px;
@@ -2002,7 +2080,7 @@ ul.md-list li::before {
   border: none;
   border-radius: 0;
   background: transparent;
-  padding: 20px 24px;
+  padding: 20px 24px 140px;
 }
 
 /* ═══ Session Detail as flex column (messages grow, input pinned) ═══ */
@@ -2026,7 +2104,7 @@ ul.md-list li::before {
 }
 
 .app-shell[data-tab="chat"] .chat-view-embedded .chat-messages {
-  padding: 16px 20px 24px;
+  padding: 16px 20px 140px;
 }
 
 .app-shell[data-tab="chat"] .chat-input-area {
@@ -2404,10 +2482,10 @@ ul.md-list li::before {
 }
 
 .chat-retry-btn {
-  font-size: 11px !important;
-  padding: 1px 6px !important;
-  min-height: unset !important;
-  border: 1px solid rgba(255, 255, 255, .12) !important;
+  font-size: 11px;
+  padding: 1px 6px;
+  min-height: unset;
+  border: 1px solid rgba(255, 255, 255, .12);
 }
 
 /* ═══ Agent Status Indicator ═══ */
@@ -2484,7 +2562,7 @@ ul.md-list li::before {
   }
 
   .chat-messages {
-    padding: 12px 10px calc(var(--nav-height, 60px) + var(--safe-bottom, 0px) + 112px + var(--chat-keyboard-offset, 0px));
+    padding: 12px 10px calc(var(--nav-height, 60px) + var(--safe-bottom, 0px) + 140px + var(--chat-keyboard-offset, 0px));
     gap: 8px;
   }
 }
@@ -2492,8 +2570,12 @@ ul.md-list li::before {
 /* ═══ Desktop Chat Refinements ═══ */
 @media (min-width: 1400px) {
   .chat-messages {
-    padding: 24px 20px 48px;
+    padding: 24px 20px 235px;
     gap: 10px;
+  }
+
+  .chat-view-embedded .chat-messages {
+    padding: 20px 24px 235px;
   }
 
   .chat-shell-inner {
@@ -2539,21 +2621,22 @@ ul.md-list li::before {
   box-shadow: 0 6px 20px rgba(239, 68, 68, 0.5);
 }
 
-/* ─── Desktop: hide duplicate inner session-pane when rail is present ─── */
-@media (min-width: 1400px) {
-  .app-shell[data-has-rail="true"][data-tab="chat"] .session-pane,
-  .app-shell[data-has-rail="true"][data-tab="agents"] .session-pane {
-    display: none !important;
-  }
+/* ─── Hide duplicate inner session-pane when rail is present ───
+   data-has-rail is already gated by JS (only set on desktop ≥ 1400px),
+   so no media-query is needed — prevents the session list from rendering
+   twice (once in the rail, once inline inside ChatTab). */
+.app-shell[data-has-rail="true"][data-tab="chat"] .session-pane,
+.app-shell[data-has-rail="true"][data-tab="agents"] .session-pane {
+  display: none !important;
+}
 
-  /* Switch from 2-column grid to single-column flex so session-detail fills
-     the full width and height once session-pane is hidden. */
-  .app-shell[data-has-rail="true"][data-tab="chat"] .session-split,
-  .app-shell[data-has-rail="true"][data-tab="agents"] .session-split {
-    display: flex !important;
-    flex-direction: column;
-    min-height: 0;
-  }
+/* Switch from 2-column grid to single-column flex so session-detail fills
+   the full width and height once session-pane is hidden. */
+.app-shell[data-has-rail="true"][data-tab="chat"] .session-split,
+.app-shell[data-has-rail="true"][data-tab="agents"] .session-split {
+  display: flex !important;
+  flex-direction: column;
+  min-height: 0;
 }
 
 /* ─── Desktop: flat padding on input, no nav-height offset needed ─── */
@@ -2568,7 +2651,7 @@ ul.md-list li::before {
   }
 
   .app-shell[data-tab="chat"] .chat-view-embedded .chat-messages {
-    padding: 20px 24px 32px;
+    padding: 20px 24px 235px;
   }
 
   /* Ensure session-split fully fills the flex parent so input stays pinned */
@@ -2583,9 +2666,27 @@ ul.md-list li::before {
   }
 }
 
-/* ─── Blend chat input seamlessly with bottom navbar ─── */
+/* ─── Chat tab: main-content becomes a fixed flex container ─── 
+   Scroll is handled internally by .chat-messages, not by .main-content.
+   This prevents double-scroll and ensures the input stays pinned. */
 .app-shell[data-tab="chat"] .main-content {
   background: var(--glass-bg);
+  overflow-y: hidden;
+  display: flex;
+  flex-direction: column;
+}
+
+.app-shell[data-tab="chat"] .main-content > * {
+  flex: 1;
+  min-height: 0;
+}
+
+/* Chat input must NEVER collapse — override the flex:1 wildcard above.
+   Without this the input disappears on mobile where vertical space is tight. */
+.app-shell[data-tab="chat"] .main-content .chat-input-area,
+.app-shell[data-tab="chat"] .chat-input-area {
+  flex: 0 0 auto !important;
+  min-height: auto !important;
 }
 
 .app-shell[data-tab="chat"] .chat-input-area {
@@ -2600,8 +2701,8 @@ ul.md-list li::before {
   position: absolute;
   left: 0;
   right: 0;
-  top: -24px;
-  height: 24px;
+  top: -40px;
+  height: 40px;
   background: linear-gradient(180deg, rgba(0, 0, 0, 0), var(--glass-bg));
   pointer-events: none;
 }

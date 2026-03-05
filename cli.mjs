@@ -27,12 +27,13 @@ import {
 import { fileURLToPath } from "node:url";
 import { execFileSync, execSync, fork, spawn } from "node:child_process";
 import os from "node:os";
-import { createDaemonCrashTracker } from "./daemon-restart-policy.mjs";
+import { createDaemonCrashTracker } from "./infra/daemon-restart-policy.mjs";
 import {
   applyAllCompatibility,
   detectLegacySetup,
   migrateFromLegacy,
 } from "./compat.mjs";
+import { resolveRepoRoot } from "./config/repo-root.mjs";
 
 const MONITOR_START_MAX_WAIT_MS = Math.max(
   0,
@@ -79,6 +80,12 @@ function showHelp() {
     --setup-terminal            Run the legacy terminal setup wizard
     --where                     Show the resolved bosun config directory
     --doctor                    Validate bosun .env/config setup
+    --tool-log <ID|list|prune>  Retrieve/list/prune cached tool outputs
+    --context-index [mode]      Run context index workflow (run|status|search)
+    --context-index-query <text> Query text for context index search mode
+    --context-index-limit <n>   Max results for context index search (default: 25)
+    --context-index-task-type <type> Task scope for search (auto|ci-cd|frontend|backend|infra|docs|security)
+    --context-index-no-fallback Disable global fallback when scoped search is weak
     --help                      Show this help
     --version                   Show version
     --portal, --desktop         Launch the Bosun desktop portal (Electron)
@@ -135,13 +142,14 @@ function showHelp() {
 
   TASK MANAGEMENT
     task list [--status s] [--json]  List tasks with optional filters
-    task create <json|flags>    Create a new task from JSON or flags
+    task create <json|flags>    Create a new task (flags or inline JSON)
     task get <id> [--json]      Show task details by ID (prefix match)
     task update <id> <patch>    Update task fields (JSON or flags)
     task delete <id>            Delete a task
     task stats [--json]         Show aggregate task statistics
-    task import <file.json>     Bulk import tasks from JSON
-    task plan [--count N]       Trigger AI task planner
+    task import <file.json>     Bulk import tasks from JSON file
+
+    Run 'bosun task --help' for complete task CLI documentation and examples.
 
   VIBE-KANBAN
     --no-vk-spawn               Don't auto-spawn Vibe-Kanban
@@ -263,25 +271,33 @@ function printConfigLocations() {
 
 // ── Daemon Mode ──────────────────────────────────────────────────────────────
 
+const runtimeRepoRoot = resolveRepoRoot();
+const runtimeCacheDir = resolve(runtimeRepoRoot, ".cache");
 // Monitor singleton lock file (owned by monitor.mjs / maintenance.mjs).
-const PID_FILE = resolve(__dirname, ".cache", "bosun.pid");
+const PID_FILE = resolve(runtimeCacheDir, "bosun.pid");
+const LEGACY_MONITOR_PID_FILE = resolve(__dirname, ".cache", "bosun.pid");
 // Daemon supervisor PID file (owned by cli.mjs --daemon-child).
-const DAEMON_PID_FILE = resolve(__dirname, ".cache", "bosun-daemon.pid");
+const DAEMON_PID_FILE = resolve(runtimeCacheDir, "bosun-daemon.pid");
+const LEGACY_DAEMON_PID_FILE = resolve(__dirname, ".cache", "bosun-daemon.pid");
 const DAEMON_LOG = resolve(__dirname, "logs", "daemon.log");
 const SENTINEL_PID_FILE = resolve(
+  runtimeCacheDir,
+  "telegram-sentinel.pid",
+);
+const SENTINEL_PID_FILE_LEGACY = resolve(
   __dirname,
   "..",
   "..",
   ".cache",
   "telegram-sentinel.pid",
 );
-const SENTINEL_PID_FILE_LEGACY = resolve(
+const SENTINEL_PID_FILE_LEGACY_ALT = resolve(
   __dirname,
   ".cache",
   "telegram-sentinel.pid",
 );
 const SENTINEL_SCRIPT_PATH = fileURLToPath(
-  new URL("./telegram-sentinel.mjs", import.meta.url),
+  new URL("./telegram/telegram-sentinel.mjs", import.meta.url),
 );
 const IS_DAEMON_CHILD =
   args.includes("--daemon-child") || process.env.BOSUN_DAEMON === "1";
@@ -359,6 +375,14 @@ function sleep(ms) {
   return new Promise((resolveSleep) => setTimeout(resolveSleep, ms));
 }
 
+function readSentinelPid() {
+  return (
+    readAlivePid(SENTINEL_PID_FILE) ||
+    readAlivePid(SENTINEL_PID_FILE_LEGACY) ||
+    readAlivePid(SENTINEL_PID_FILE_LEGACY_ALT)
+  );
+}
+
 async function runSentinelCli(flag) {
   return await new Promise((resolveExit) => {
     const child = spawn(process.execPath, [SENTINEL_SCRIPT_PATH, flag], {
@@ -373,8 +397,7 @@ async function runSentinelCli(flag) {
 
 async function ensureSentinelRunning(options = {}) {
   const { quiet = false } = options;
-  const existing =
-    readAlivePid(SENTINEL_PID_FILE) || readAlivePid(SENTINEL_PID_FILE_LEGACY);
+  const existing = readSentinelPid();
   if (existing) {
     if (!quiet) {
       console.log(`  telegram-sentinel already running (PID ${existing})`);
@@ -402,8 +425,7 @@ async function ensureSentinelRunning(options = {}) {
   const timeoutAt = Date.now() + 5000;
   while (Date.now() < timeoutAt) {
     await sleep(200);
-    const pid =
-      readAlivePid(SENTINEL_PID_FILE) || readAlivePid(SENTINEL_PID_FILE_LEGACY);
+    const pid = readSentinelPid();
     if (pid) {
       if (!quiet) {
         console.log(`  telegram-sentinel started (PID ${pid})`);
@@ -425,7 +447,8 @@ async function ensureSentinelRunning(options = {}) {
 }
 
 function getDaemonPid() {
-  const tracked = readAlivePid(DAEMON_PID_FILE);
+  const tracked =
+    readAlivePid(DAEMON_PID_FILE) || readAlivePid(LEGACY_DAEMON_PID_FILE);
   if (tracked) return tracked;
 
   // Legacy fallback: older versions stored daemon PID in bosun.pid
@@ -454,7 +477,7 @@ function findGhostDaemonPids() {
         [
           "-NoProfile",
           "-Command",
-          "Get-CimInstance Win32_Process | Where-Object { $_.Name -eq 'node.exe' -and $_.CommandLine -match 'cli\\.mjs' -and $_.CommandLine -match '--daemon-child' } | Select-Object -ExpandProperty ProcessId",
+          "Get-CimInstance Win32_Process | Where-Object { $_.Name -match '^(node|electron)(\\.exe)?$' -and $_.CommandLine -match 'cli\\.mjs' -and $_.CommandLine -match '--daemon-child' } | Select-Object -ExpandProperty ProcessId",
         ],
         { encoding: "utf8", stdio: ["pipe", "pipe", "pipe"], timeout: 3000 },
       ).trim();
@@ -494,6 +517,7 @@ function writePidFile(pid) {
 function removePidFile() {
   try {
     if (existsSync(DAEMON_PID_FILE)) unlinkSync(DAEMON_PID_FILE);
+    if (existsSync(LEGACY_DAEMON_PID_FILE)) unlinkSync(LEGACY_DAEMON_PID_FILE);
   } catch {
     /* ok */
   }
@@ -670,27 +694,41 @@ function daemonStatus() {
   if (pid) {
     console.log(`  bosun daemon is running (PID ${pid})`);
   } else {
-    // Check for ghost processes (alive but no PID file)
+    // Check for ghost daemon-child processes (alive but no PID file)
     const ghosts = findGhostDaemonPids();
     if (ghosts.length > 0) {
       console.log(`  :alert:  bosun daemon is NOT tracked (no PID file), but ${ghosts.length} ghost process(es) found: ${ghosts.join(", ")}`);
       console.log(`  The daemon is likely running but its PID file was lost.`);
       console.log(`  Run --stop-daemon to clean up, then --daemon to restart.`);
     } else {
-      console.log("  bosun daemon is not running.");
-      removePidFile();
+      // Broader scan: portal, monitor, ui-server, etc. (non-daemon bosun processes)
+      const allPids = findAllBosunProcessPids();
+      if (allPids.length > 0) {
+        console.log(`  bosun daemon is not running in daemon mode, but ${allPids.length} bosun process(es) are active (PID ${allPids.join(", ")}).`);
+        console.log(`  Bosun may be running in portal or monitor mode (not as a background daemon).`);
+        console.log(`  Use 'bosun --stop' to terminate all processes, or 'bosun --daemon' to start the daemon.`);
+      } else {
+        console.log("  bosun daemon is not running.");
+        removePidFile();
+      }
     }
   }
   process.exit(0);
 }
 
 function findAllBosunProcessPids() {
+  // Match both direct script launches and global shim invocations (e.g. `bosun`,
+  // `bosun --portal`) so terminate can find non-daemon instances too.
   const patterns = [
+    "bosun",
+    "node_modules\\\\bosun",
     "cli.mjs",
     "monitor.mjs",
     "telegram-bot.mjs",
     "telegram-sentinel.mjs",
     "ui-server.mjs",
+    "--portal",
+    "--desktop",
   ];
   const joined = patterns.join("|");
   if (process.platform === "win32") {
@@ -700,7 +738,16 @@ function findAllBosunProcessPids() {
         [
           "-NoProfile",
           "-Command",
-          `Get-CimInstance Win32_Process | Where-Object { $_.Name -match '^node(\\.exe)?$' -and $_.CommandLine -match '${joined.replace(/\|/g, "|")}' } | Select-Object -ExpandProperty ProcessId`,
+          `Get-CimInstance Win32_Process | Where-Object {
+             $name = [string]$_.Name
+             $cmd = [string]$_.CommandLine
+             $exe = [string]$_.ExecutablePath
+             $pid = [int]$_.ProcessId
+             $isBosunHost = $name -match '^(node|electron|bosun)(\\.exe)?$'
+             $isBosunCmd = $cmd -match '${joined}'
+             $isBosunExe = $exe -match 'bosun'
+             $pid -ne ${process.pid} -and (($isBosunHost -and ($isBosunCmd -or $isBosunExe)) -or $isBosunCmd)
+           } | Select-Object -ExpandProperty ProcessId`,
         ],
         { encoding: "utf8", stdio: ["pipe", "pipe", "pipe"], timeout: 4000 },
       ).trim();
@@ -732,9 +779,12 @@ function findAllBosunProcessPids() {
 function removeKnownPidFiles() {
   const pidFiles = [
     DAEMON_PID_FILE,
+    LEGACY_DAEMON_PID_FILE,
     PID_FILE,
+    LEGACY_MONITOR_PID_FILE,
     SENTINEL_PID_FILE,
     SENTINEL_PID_FILE_LEGACY,
+    SENTINEL_PID_FILE_LEGACY_ALT,
     resolve(__dirname, "..", ".cache", "bosun.pid"),
     resolve(process.cwd(), ".cache", "bosun.pid"),
   ];
@@ -751,8 +801,8 @@ function terminateBosun() {
   const tracked = [
     getDaemonPid(),
     readAlivePid(PID_FILE),
-    readAlivePid(SENTINEL_PID_FILE),
-    readAlivePid(SENTINEL_PID_FILE_LEGACY),
+    readAlivePid(LEGACY_MONITOR_PID_FILE),
+    readSentinelPid(),
   ].filter((pid) => Number.isFinite(pid) && pid > 0);
   const ghosts = findGhostDaemonPids();
   const scanned = findAllBosunProcessPids();
@@ -804,6 +854,16 @@ async function main() {
   // Apply legacy CODEX_MONITOR_* → BOSUN_* env aliases before any config ops
   applyAllCompatibility();
 
+  // Handle 'task' subcommand FIRST — before --help, so that
+  // `bosun task --help` and `bosun task create --help` route to task-specific help
+  // rather than the main bosun help page.
+  if (args[0] === "task" || args.includes("--task")) {
+    const { runTaskCli } = await import("./task/task-cli.mjs");
+    const taskArgs = args[0] === "task" ? args.slice(1) : args.slice(args.indexOf("--task") + 1);
+    await runTaskCli(taskArgs);
+    process.exit(0);
+  }
+
   // Handle --help
   if (args.includes("--help") || args.includes("-h")) {
     showHelp();
@@ -825,7 +885,7 @@ async function main() {
   // Handle desktop shortcut controls
   if (args.includes("--desktop-shortcut")) {
     const { installDesktopShortcut, getDesktopShortcutMethodName } =
-      await import("./desktop-shortcut.mjs");
+      await import("./infra/desktop-shortcut.mjs");
     const result = installDesktopShortcut();
     if (result.success) {
       console.log(`  :check: Desktop shortcut installed (${result.method})`);
@@ -840,7 +900,7 @@ async function main() {
     process.exit(result.success ? 0 : 1);
   }
   if (args.includes("--desktop-shortcut-remove")) {
-    const { removeDesktopShortcut } = await import("./desktop-shortcut.mjs");
+    const { removeDesktopShortcut } = await import("./infra/desktop-shortcut.mjs");
     const result = removeDesktopShortcut();
     if (result.success) {
       console.log(`  :check: Desktop shortcut removed`);
@@ -852,7 +912,7 @@ async function main() {
     process.exit(result.success ? 0 : 1);
   }
   if (args.includes("--desktop-shortcut-status")) {
-    const { getDesktopShortcutStatus } = await import("./desktop-shortcut.mjs");
+    const { getDesktopShortcutStatus } = await import("./infra/desktop-shortcut.mjs");
     const status = getDesktopShortcutStatus();
     if (status.installed) {
       console.log(`  Desktop shortcut: installed (${status.method})`);
@@ -876,22 +936,134 @@ async function main() {
     return;
   }
 
-  // Handle 'task' subcommand — must come before flag-based routing
-  if (args[0] === "task" || args.includes("--task")) {
-    const { runTaskCli } = await import("./task-cli.mjs");
-    // Pass everything after "task" to the task CLI
-    const taskArgs = args[0] === "task" ? args.slice(1) : args.slice(args.indexOf("--task") + 1);
-    await runTaskCli(taskArgs);
-    process.exit(0);
-  }
-
   // Handle --doctor
   if (args.includes("--doctor") || args.includes("doctor")) {
     const { runConfigDoctor, formatConfigDoctorReport } =
-      await import("./config-doctor.mjs");
+      await import("./config/config-doctor.mjs");
     const result = runConfigDoctor();
     console.log(formatConfigDoctorReport(result));
     process.exit(result.ok ? 0 : 1);
+  }
+
+  // Handle --tool-log <ID> — retrieve cached tool output
+  if (args.includes("--tool-log")) {
+    const idx = args.indexOf("--tool-log");
+    const logIdArg = args[idx + 1];
+    const { retrieveToolLog, listToolLogs, pruneToolLogCache, getToolLogDir } =
+      await import("./workspace/context-cache.mjs");
+
+    if (logIdArg === "list" || logIdArg === "ls") {
+      const logs = await listToolLogs(50);
+      if (logs.length === 0) {
+        console.log("No cached tool logs found.");
+      } else {
+        console.log(`Cached tool logs (${logs.length} entries):\n`);
+        for (const entry of logs) {
+          const ts = new Date(entry.ts).toISOString().replace("T", " ").slice(0, 19);
+          console.log(`  ${entry.id}  ${ts}  ${entry.toolName}(${entry.argsPreview || ""})`);
+        }
+        console.log(`\nCache dir: ${getToolLogDir()}`);
+      }
+      process.exit(0);
+    }
+
+    if (logIdArg === "prune") {
+      const pruned = await pruneToolLogCache();
+      console.log(`Pruned ${pruned} expired cache entries.`);
+      process.exit(0);
+    }
+
+    if (!logIdArg || !/^\d+$/.test(logIdArg)) {
+      console.error("Usage: bosun --tool-log <ID>       Retrieve a cached tool output");
+      console.error("       bosun --tool-log list       List cached tool logs");
+      console.error("       bosun --tool-log prune      Remove expired cache entries");
+      process.exit(1);
+    }
+
+    const result = await retrieveToolLog(Number(logIdArg));
+    if (!result.found) {
+      console.error(result.error || `Tool log ${logIdArg} not found.`);
+      process.exit(1);
+    }
+
+    // Print the full original tool output
+    const entry = result.entry;
+    console.log(`\n── Tool Log ${entry.id} ──`);
+    console.log(`Tool:  ${entry.toolName}`);
+    console.log(`Args:  ${entry.argsPreview || "(none)"}`);
+    console.log(`Time:  ${new Date(entry.ts).toISOString()}`);
+    console.log(`${"─".repeat(60)}\n`);
+
+    const item = entry.item;
+    const output =
+      item?.text || item?.output || item?.aggregated_output ||
+      item?.result || item?.message || JSON.stringify(item, null, 2);
+    console.log(output);
+    process.exit(0);
+  }
+
+  if (args.includes("--context-index")) {
+    const modeRaw = (getArgValue("--context-index") || "run").toLowerCase();
+    const validModes = new Set(["run", "status", "search"]);
+    if (!validModes.has(modeRaw)) {
+      console.error(`Invalid --context-index mode: ${modeRaw}`);
+      console.error("Valid modes: run, status, search");
+      process.exit(1);
+    }
+
+    try {
+      const {
+        runContextIndex,
+        searchContextIndex,
+        getContextIndexStatus,
+      } = await import("./workspace/context-indexer.mjs");
+
+      if (modeRaw === "run") {
+        const result = await runContextIndex({ rootDir: runtimeRepoRoot });
+        console.log(
+          `Context index complete: files=${result.indexedFiles}, changed=${result.changedFiles}, removed=${result.removedFiles}, symbols=${result.symbolCount}`,
+        );
+        if (result.zoekt) {
+          const zoektState = result.zoekt.success ? "ok" : "not-ready";
+          console.log(`Zoekt: ${zoektState}${result.zoekt.message ? ` (${result.zoekt.message})` : ""}`);
+        }
+        process.exit(0);
+      }
+
+      if (modeRaw === "status") {
+        const status = await getContextIndexStatus({ rootDir: runtimeRepoRoot });
+        console.log(JSON.stringify(status, null, 2));
+        process.exit(0);
+      }
+
+      const query = getArgValue("--context-index-query");
+      if (!query) {
+        console.error("--context-index-query is required when --context-index=search");
+        process.exit(1);
+      }
+
+      const limitRaw = getArgValue("--context-index-limit");
+      const parsedLimit = Number(limitRaw || 25);
+      const limit = Number.isFinite(parsedLimit) && parsedLimit > 0
+        ? Math.floor(parsedLimit)
+        : 25;
+
+      const taskType = getArgValue("--context-index-task-type") || "auto";
+      const fallbackToGlobal = !args.includes("--context-index-no-fallback");
+
+      const results = await searchContextIndex(query, {
+        rootDir: runtimeRepoRoot,
+        limit,
+        taskType,
+        fallbackToGlobal,
+        includeMeta: true,
+      });
+      console.log(JSON.stringify(results, null, 2));
+      process.exit(0);
+    } catch (error) {
+      console.error(`Context index command failed: ${error?.message || String(error)}`);
+      process.exit(1);
+    }
   }
 
   // Handle sentinel controls
@@ -933,7 +1105,7 @@ async function main() {
     args.includes("--daemon-child") ||
     process.env.BOSUN_DAEMON === "1"
   ) {
-    const existingDaemonPid = readAlivePid(DAEMON_PID_FILE);
+    const existingDaemonPid = getDaemonPid();
     if (existingDaemonPid && existingDaemonPid !== process.pid) {
       process.stdout.write(
         `[daemon] another daemon-child already owns ${DAEMON_PID_FILE} (PID ${existingDaemonPid}) — duplicate daemon-child ignored.\n`,
@@ -1006,7 +1178,7 @@ async function main() {
         : "requested by BOSUN_SENTINEL_AUTO_START";
       const strictSentinel = parseBoolEnv(
         process.env.BOSUN_SENTINEL_STRICT,
-        false,
+        sentinelExplicit,
       );
       const prefix = strictSentinel ? ":close:" : ":alert:";
       const suffix = strictSentinel
@@ -1019,12 +1191,19 @@ async function main() {
         process.exit(1);
       }
     }
+
+    if (sentinelExplicit && !IS_DAEMON_CHILD) {
+      console.log(
+        "  Sentinel started without launching monitor (use --daemon --sentinel to run both).",
+      );
+      process.exit(0);
+    }
   }
 
   // Handle --enable-startup / --disable-startup / --startup-status
   if (args.includes("--enable-startup")) {
     const { installStartupService, getStartupMethodName } =
-      await import("./startup-service.mjs");
+      await import("./infra/startup-service.mjs");
     const result = await installStartupService({ daemon: true });
     if (result.success) {
       console.log(`  \u2705 Startup service installed via ${result.method}`);
@@ -1039,7 +1218,7 @@ async function main() {
     process.exit(result.success ? 0 : 1);
   }
   if (args.includes("--disable-startup")) {
-    const { removeStartupService } = await import("./startup-service.mjs");
+    const { removeStartupService } = await import("./infra/startup-service.mjs");
     const result = await removeStartupService();
     if (result.success) {
       console.log(`  \u2705 Startup service removed (${result.method})`);
@@ -1051,7 +1230,7 @@ async function main() {
     process.exit(result.success ? 0 : 1);
   }
   if (args.includes("--startup-status")) {
-    const { getStartupStatus } = await import("./startup-service.mjs");
+    const { getStartupStatus } = await import("./infra/startup-service.mjs");
     const status = getStartupStatus();
     if (status.installed) {
       console.log(`  Startup service: installed (${status.method})`);
@@ -1068,8 +1247,78 @@ async function main() {
 
   // Handle --update (force update)
   if (args.includes("--update")) {
-    const { forceUpdate } = await import("./update-check.mjs");
-    await forceUpdate(VERSION);
+    // Pre-stop any sibling Bosun processes to avoid Windows EBUSY locks during
+    // global npm install (especially portal/desktop/non-daemon instances).
+    const siblingPids = findAllBosunProcessPids().filter((pid) => pid !== process.pid);
+    if (siblingPids.length > 0) {
+      console.log(
+        `  Stopping ${siblingPids.length} running bosun process(es) before update: ${siblingPids.join(", ")}`,
+      );
+      for (const pid of siblingPids) {
+        try {
+          process.kill(pid, "SIGTERM");
+        } catch {
+          /* already dead */
+        }
+      }
+      const deadline = Date.now() + 5000;
+      let alive = siblingPids.filter((pid) => isProcessAlive(pid));
+      while (alive.length > 0 && Date.now() < deadline) {
+        Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 200);
+        alive = alive.filter((pid) => isProcessAlive(pid));
+      }
+      for (const pid of alive) {
+        try {
+          process.kill(pid, "SIGKILL");
+        } catch {
+          /* already dead */
+        }
+      }
+    }
+
+    const { forceUpdate } = await import("./infra/update-check.mjs");
+    const updated = await forceUpdate(VERSION);
+    if (updated) {
+      // If a daemon or other bosun process is running, restart it so it picks
+      // up the new version automatically — no manual restart needed.
+      const daemonPid = getDaemonPid();
+      const ghostPids = findGhostDaemonPids();
+      const daemonPids = daemonPid
+        ? [daemonPid]
+        : ghostPids.length > 0
+          ? ghostPids
+          : [];
+      if (daemonPids.length > 0) {
+        console.log(
+          `  Daemon running (PID ${daemonPids.join(", ")}). Stopping for restart...`,
+        );
+        for (const p of daemonPids) {
+          try {
+            process.kill(p, "SIGTERM");
+          } catch {
+            /* already dead */
+          }
+        }
+        // Wait up to 4 s for graceful exit
+        const deadline = Date.now() + 4000;
+        let alive = daemonPids.filter((p) => isProcessAlive(p));
+        while (alive.length > 0 && Date.now() < deadline) {
+          Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 200);
+          alive = alive.filter((p) => isProcessAlive(p));
+        }
+        for (const p of alive) {
+          try {
+            process.kill(p, "SIGKILL");
+          } catch {
+            /* ok */
+          }
+        }
+        removePidFile();
+        console.log("  Restarting daemon with updated version...");
+        startDaemon(); // spawns new daemon-child and calls process.exit(0)
+        return; // unreachable — startDaemon exits
+      }
+    }
     process.exit(0);
   }
 
@@ -1083,7 +1332,7 @@ async function main() {
 
   // Non-blocking update check (don't delay startup)
   if (!args.includes("--no-update-check")) {
-    import("./update-check.mjs")
+    import("./infra/update-check.mjs")
       .then(({ checkForUpdate }) => checkForUpdate(VERSION))
       .catch(() => {}); // silent — never block startup
   }
@@ -1100,7 +1349,7 @@ async function main() {
 
   // Handle workspace commands
   if (args.includes("--workspace-list") || args.includes("workspace-list")) {
-    const { listWorkspaces, getActiveWorkspace } = await import("./workspace-manager.mjs");
+    const { listWorkspaces, getActiveWorkspace } = await import("./workspace/workspace-manager.mjs");
     const configDirArg = getArgValue("--config-dir");
     const configDir = configDirArg || process.env.BOSUN_DIR || resolve(os.homedir(), "bosun");
     const workspaces = listWorkspaces(configDir);
@@ -1124,7 +1373,7 @@ async function main() {
   }
 
   if (args.includes("--workspace-add")) {
-    const { createWorkspace } = await import("./workspace-manager.mjs");
+    const { createWorkspace } = await import("./workspace/workspace-manager.mjs");
     const configDirArg = getArgValue("--config-dir");
     const configDir = configDirArg || process.env.BOSUN_DIR || resolve(os.homedir(), "bosun");
     const name = getArgValue("--workspace-add");
@@ -1143,7 +1392,7 @@ async function main() {
   }
 
   if (args.includes("--workspace-switch")) {
-    const { setActiveWorkspace, getWorkspace } = await import("./workspace-manager.mjs");
+    const { setActiveWorkspace, getWorkspace } = await import("./workspace/workspace-manager.mjs");
     const configDirArg = getArgValue("--config-dir");
     const configDir = configDirArg || process.env.BOSUN_DIR || resolve(os.homedir(), "bosun");
     const wsId = getArgValue("--workspace-switch");
@@ -1163,7 +1412,7 @@ async function main() {
   }
 
   if (args.includes("--workspace-add-repo")) {
-    const { addRepoToWorkspace, getActiveWorkspace, listWorkspaces } = await import("./workspace-manager.mjs");
+    const { addRepoToWorkspace, getActiveWorkspace, listWorkspaces } = await import("./workspace/workspace-manager.mjs");
     const configDirArg = getArgValue("--config-dir");
     const configDir = configDirArg || process.env.BOSUN_DIR || resolve(os.homedir(), "bosun");
     const active = getActiveWorkspace(configDir);
@@ -1192,7 +1441,7 @@ async function main() {
   // Handle --workspace-health / --verify-workspace
   if (args.includes("--workspace-health") || args.includes("--verify-workspace") || args.includes("workspace-health")) {
     const { runWorkspaceHealthCheck, formatWorkspaceHealthReport } =
-      await import("./config-doctor.mjs");
+      await import("./config/config-doctor.mjs");
     const configDirArg = getArgValue("--config-dir");
     const configDir = configDirArg || process.env.BOSUN_DIR || resolve(os.homedir(), "bosun");
     const result = runWorkspaceHealthCheck({ configDir });
@@ -1213,7 +1462,7 @@ async function main() {
   if (args.includes("--setup") || args.includes("setup")) {
     const configDirArg = getArgValue("--config-dir");
     if (configDirArg) process.env.BOSUN_DIR = configDirArg;
-    const { startSetupServer } = await import("./setup-web-server.mjs");
+    const { startSetupServer } = await import("./server/setup-web-server.mjs");
     await startSetupServer();
     // Server keeps running until setup completes
   }
@@ -1221,7 +1470,7 @@ async function main() {
   // Handle --whatsapp-auth
   if (args.includes("--whatsapp-auth") || args.includes("whatsapp-auth")) {
     const mode = args.includes("--pairing-code") ? "pairing-code" : "qr";
-    const { runWhatsAppAuth } = await import("./whatsapp-channel.mjs");
+    const { runWhatsAppAuth } = await import("./telegram/whatsapp-channel.mjs");
     await runWhatsAppAuth(mode);
     process.exit(0);
   }
@@ -1236,7 +1485,7 @@ async function main() {
         process.env.BOSUN_DIR = configDirArg;
       }
       console.log("\n  :rocket: First run detected — launching setup wizard...\n");
-      const { startSetupServer } = await import("./setup-web-server.mjs");
+      const { startSetupServer } = await import("./server/setup-web-server.mjs");
       await startSetupServer();
       console.log("\n  Setup complete! Starting bosun...\n");
     }
@@ -1535,7 +1784,7 @@ async function waitForMonitorRuntimeFiles(monitorPath) {
 function runMonitor({ restartReason = "" } = {}) {
   return new Promise((resolve, reject) => {
     const monitorPath = fileURLToPath(
-      new URL("./monitor.mjs", import.meta.url),
+      new URL("./infra/monitor.mjs", import.meta.url),
     );
     waitForMonitorRuntimeFiles(monitorPath)
       .then(({ ready, missing, waitedMs }) => {

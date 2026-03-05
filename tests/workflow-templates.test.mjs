@@ -15,12 +15,12 @@ import {
   reconcileInstalledTemplates,
   installTemplate,
   installTemplateSet,
-} from "../workflow-templates.mjs";
+} from "../workflow/workflow-templates.mjs";
 import {
   WorkflowEngine,
   getNodeType,
   registerNodeType,
-} from "../workflow-engine.mjs";
+} from "../workflow/workflow-engine.mjs";
 
 // ── Helpers ─────────────────────────────────────────────────────────────────
 
@@ -411,6 +411,56 @@ describe("template API functions", () => {
     }
   });
 
+  it("listTemplates exposes capability booleans and counts", () => {
+    const list = listTemplates();
+    const keys = ["branch", "join", "gate", "universal", "end"];
+
+    for (const item of list) {
+      expect(item.capabilities).toBeDefined();
+      expect(item.capabilityCounts).toBeDefined();
+      for (const key of keys) {
+        expect(typeof item.capabilities[key]).toBe("boolean");
+        expect(typeof item.capabilityCounts[key]).toBe("number");
+        expect(item.capabilityCounts[key]).toBeGreaterThanOrEqual(0);
+        if (!item.capabilities[key]) {
+          expect(item.capabilityCounts[key]).toBe(0);
+        }
+      }
+    }
+
+    const hasAnyCapability = list.some((item) => keys.some((key) => item.capabilities[key]));
+    expect(hasAnyCapability).toBe(true);
+  });
+
+  it("listTemplates exposes variables array with key/defaultValue/type", () => {
+    const list = listTemplates();
+    // At least some templates should have variables
+    const withVars = list.filter((t) => t.variables && t.variables.length > 0);
+    expect(withVars.length).toBeGreaterThan(0);
+
+    for (const item of withVars) {
+      for (const v of item.variables) {
+        expect(typeof v.key).toBe("string");
+        expect(v).toHaveProperty("defaultValue");
+        expect(["text", "number", "toggle"]).toContain(v.type);
+        expect(typeof v.required).toBe("boolean");
+        expect(["text", "number", "toggle", "json", "select"]).toContain(v.input);
+        expect(Array.isArray(v.options)).toBe(true);
+      }
+    }
+  });
+
+  it("listTemplates exposes trigger field from template definition", () => {
+    const list = listTemplates();
+    for (const item of list) {
+      // trigger should be present (either string/object or null)
+      expect(item).toHaveProperty("trigger");
+    }
+    // Find a template that has a trigger defined  
+    const withTrigger = list.filter((t) => t.trigger != null);
+    expect(withTrigger.length).toBeGreaterThan(0);
+  });
+
   it("recommended templates are marked correctly", () => {
     const list = listTemplates();
     const recommended = list.filter((t) => t.recommended);
@@ -426,6 +476,7 @@ describe("template API functions", () => {
       "template-workspace-hygiene",
       "template-task-finalization-guard",
       "template-task-repair-worktree",
+      "template-task-orphan-worktree-recovery",
       "template-task-status-transition-manager",
       // template-pr-conflict-resolver deliberately excluded — superseded by
       // template-bosun-pr-watchdog which owns conflict detection, CI checks,
@@ -435,6 +486,9 @@ describe("template API functions", () => {
       "template-backend-agent",
       "template-incident-response",
       "template-dependency-audit",
+      "template-task-archiver",
+      "template-sdk-conflict-resolver",
+      "template-sync-engine",
     ];
     for (const id of expectedRecommended) {
       const item = list.find((t) => t.id === id);
@@ -587,16 +641,24 @@ describe("installTemplateSet", () => {
       "template-task-planner",
       "template-nope",
     ]);
+    // error-recovery auto-installs task-repair-worktree (grouped flow).
+    // installTemplateSet sees the child as already installed → skips it.
+    // So installed=2 (error-recovery, task-planner), skipped=1 (task-repair-worktree), errors=1.
     expect(result.installed.length).toBe(2);
+    expect(result.skipped.length).toBe(1);
     expect(result.errors.length).toBe(1);
     expect(result.errors[0].id).toBe("template-nope");
+    // Verify all 3 valid templates are actually present in the engine
+    const all = engine.list();
+    expect(all.length).toBe(3);
 
     const second = installTemplateSet(engine, [
       "template-error-recovery",
       "template-task-planner",
     ]);
     expect(second.installed.length).toBe(0);
-    expect(second.skipped.length).toBe(2);
+    // error-recovery expands to include task-repair-worktree, so 3 skipped
+    expect(second.skipped.length).toBe(3);
   });
 });
 
@@ -719,7 +781,7 @@ describe("template dry-run execution", () => {
 
   beforeEach(async () => {
     // Side-effect import registers built-in workflow node types once per test process.
-    await import("../workflow-nodes.mjs");
+    await import("../workflow/workflow-nodes.mjs");
     ensureExperimentalWorkflowNodeTypesRegistered();
   });
 
@@ -743,7 +805,7 @@ describe("template replaces metadata", () => {
     const withReplaces = WORKFLOW_TEMPLATES.filter(
       (t) => t.metadata?.replaces?.module
     );
-    expect(withReplaces.length).toBeGreaterThanOrEqual(11);
+    expect(withReplaces.length).toBeGreaterThanOrEqual(14);
 
     for (const t of withReplaces) {
       const r = t.metadata.replaces;

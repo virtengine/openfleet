@@ -9,6 +9,7 @@
  *   - Release Drafter
  *   - Bosun PR Watchdog (recommended — replaces pr-cleanup-daemon.mjs)
  *   - GitHub ↔ Kanban Sync (recommended — replaces github-reconciler.mjs)
+ *   - SDK Conflict Resolver (recommended — replaces sdk-conflict-resolver.mjs)
  */
 
 import { node, edge, resetLayout } from "./_helpers.mjs";
@@ -152,6 +153,15 @@ Respond with JSON: { "action": "<choice>", "reason": "<why>", "message": "<optio
       message: "PR #{{prNumber}} merge strategy: {{decision.action}} — {{decision.reason}}",
       level: "info",
     }, { x: 400, y: 850 }),
+
+    node("end", "flow.end", "End Merge Strategy", {
+      status: "completed",
+      message: "PR merge strategy flow completed for PR #{{prNumber}}",
+      output: {
+        prNumber: "{{prNumber}}",
+        action: "{{decision.action}}",
+      },
+    }, { x: 400, y: 950 }),
   ],
   edges: [
     edge("trigger", "check-ci"),
@@ -178,6 +188,7 @@ Respond with JSON: { "action": "<choice>", "reason": "<why>", "message": "<optio
     edge("action-succeeded", "notify-complete", { condition: "$output?.result === true", port: "yes" }),
     edge("action-succeeded", "notify-action-failed", { condition: "$output?.result !== true", port: "no" }),
     edge("notify-action-failed", "notify-complete"),
+    edge("notify-complete", "end"),
   ],
   metadata: {
     author: "bosun",
@@ -243,14 +254,26 @@ export const PR_TRIAGE_TEMPLATE = {
       command: "gh pr edit {{prNumber}} --add-label \"size/L\"",
     }, { x: 650, y: 480 }),
 
-    node("detect-breaking", "action.run_agent", "Detect Breaking Changes", {
-      prompt: "Analyze the diff for PR #{{prNumber}} and determine if there are any breaking changes. Respond with JSON: { \"breaking\": true/false, \"reason\": \"...\" }",
-      timeoutMs: 300000,
+    node("detect-breaking", "condition.expression", "Detect Breaking Changes", {
+      expression:
+        "(() => {" +
+        "  const raw=$ctx.getNodeOutput('get-stats')?.output||'{}';" +
+        "  let stats={};" +
+        "  try{stats=typeof raw==='string'?JSON.parse(raw):raw;}catch{return false;}" +
+        "  const title=String(stats?.title||'').toLowerCase();" +
+        "  const body=String(stats?.body||'').toLowerCase();" +
+        "  const files=Array.isArray(stats?.files)?stats.files.map((f)=>String(f?.path||f?.filename||f||'').toLowerCase()):[];" +
+        "  const text=title+'\\n'+body;" +
+        "  const explicit=/\\bbreaking\\b|\\bbreaking change\\b|\\bmajor\\b|\\bbackward incompatible\\b/.test(text);" +
+        "  const apiTouch=files.some((f)=>f.includes('api/')||f.includes('/proto/')||f.includes('openapi')||f.includes('schema'));" +
+        "  const contractWords=/\\bremove\\b|\\brename\\b|\\bdeprecate\\b|\\bdrop\\b/.test(text);" +
+        "  return explicit || (apiTouch && contractWords);" +
+        "})()",
     }, { x: 400, y: 630 }),
 
     node("is-breaking", "condition.expression", "Breaking?", {
       expression:
-        "(() => { const raw = $ctx.getNodeOutput('detect-breaking')?.output || '{}'; try { const parsed = typeof raw === 'string' ? JSON.parse(raw) : raw; return parsed?.breaking === true; } catch { return /\"breaking\"\\s*:\\s*true/i.test(String(raw)); } })()",
+        "(() => { return $ctx.getNodeOutput('detect-breaking')?.result === true; })()",
     }, { x: 400, y: 780, outputs: ["yes", "no"] }),
 
     node("label-breaking", "action.run_command", "Label: Breaking", {
@@ -343,7 +366,7 @@ export const PR_CONFLICT_RESOLVER_TEMPLATE = {
         "  try { prs = typeof raw === 'string' ? JSON.parse(raw) : raw; } catch { return ''; }" +
         "  if (!Array.isArray(prs)) return '';" +
         "  const CONFLICT = new Set(['CONFLICTING', 'BEHIND', 'DIRTY']);" +
-        "  // Skip PRs already owned by the watchdog fix agent" +
+        "  /* Skip PRs already owned by the watchdog fix agent */" +
         "  const pr = prs.find((p) =>" +
         "    CONFLICT.has(String(p?.mergeable || '').toUpperCase()) &&" +
         "    !(p.labels || []).some((l) => l.name === 'bosun-needs-fix')" +
@@ -875,43 +898,73 @@ export const BOSUN_PR_WATCHDOG_TEMPLATE = {
         "}catch(e){return false;}})()",
     }, { x: 200, y: 530 }),
 
-    node("dispatch-fix", "action.run_agent", "Dispatch Fix Agent", {
+    node("programmatic-fix", "action.run_command", "Programmatic Fix Pass", {
+      command: [
+        "node -e \"",
+        "const {execFileSync}=require('child_process');",
+        "const raw=String(process.env.BOSUN_FETCH_AND_CLASSIFY||'');",
+        "const payload=(()=>{try{return JSON.parse(raw||'{}')}catch{return {}}})();",
+        "const ciFailures=Array.isArray(payload.ciFailures)?payload.ciFailures:[];",
+        "const conflicts=Array.isArray(payload.conflicts)?payload.conflicts:[];",
+        "const needsAgent=[];",
+        "let rerunRequested=0;",
+        "function runGh(args){return execFileSync('gh',args,{encoding:'utf8',stdio:['pipe','pipe','pipe']}).trim();}",
+        "for(const item of ciFailures){",
+        "  const repo=String(item?.repo||'').trim();",
+        "  const branch=String(item?.branch||'').trim();",
+        "  const n=String(item?.n||'').trim();",
+        "  if(!repo||!branch){needsAgent.push({repo,number:n,reason:'missing_repo_or_branch'});continue;}",
+        "  try{",
+        "    const listRaw=runGh(['run','list','--repo',repo,'--branch',branch,'--json','databaseId,conclusion,status','--limit','8']);",
+        "    const runs=(()=>{try{return JSON.parse(listRaw||'[]')}catch{return []}})();",
+        "    const failed=(Array.isArray(runs)?runs:[]).find((r)=>{",
+        "      const c=String(r?.conclusion||'').toUpperCase();",
+        "      return c==='FAILURE'||c==='ERROR'||c==='TIMED_OUT'||c==='CANCELLED';",
+        "    });",
+        "    if(failed?.databaseId){runGh(['run','rerun',String(failed.databaseId),'--repo',repo]);rerunRequested++;}",
+        "    else{needsAgent.push({repo,number:n,reason:'no_rerunnable_failed_run_found'});}",
+        "  }catch(e){needsAgent.push({repo,number:n,reason:'ci_rerun_failed',error:String(e?.message||e)});}",
+        "}",
+        "for(const item of conflicts){",
+        "  needsAgent.push({repo:String(item?.repo||'').trim(),number:String(item?.n||'').trim(),branch:String(item?.branch||'').trim(),base:String(item?.base||'').trim(),reason:'merge_conflict_requires_code_resolution'});",
+        "}",
+        "console.log(JSON.stringify({rerunRequested,ciFailureCount:ciFailures.length,conflictCount:conflicts.length,needsAgentCount:needsAgent.length,needsAgent}));",
+        "\"",
+      ].join(" "),
+      continueOnError: true,
+      failOnError: false,
+      env: {
+        BOSUN_FETCH_AND_CLASSIFY:
+          "(()=>{const r=$ctx.getNodeOutput('fetch-and-classify');return r&&r.success!==false?String(r.output||'{}'):'{}';})()",
+      },
+    }, { x: 200, y: 640 }),
+
+    node("fix-agent-needed", "condition.expression", "Needs Agent Fix?", {
+      expression:
+        "(()=>{try{" +
+        "const o=$ctx.getNodeOutput('programmatic-fix')?.output;" +
+        "return (JSON.parse(o||'{}').needsAgentCount||0)>0;" +
+        "}catch(e){return false;}})()",
+    }, { x: 200, y: 750 }),
+
+    node("dispatch-fix-agent", "action.run_agent", "Dispatch Fix Agent (Fallback)", {
       prompt:
-        "You are a Bosun PR repair agent. A watchdog workflow has identified " +
-        "bosun-attached PRs that need fixing.\n\n" +
-        "For EACH target repo, list PRs needing work. Always include --repo <owner/repo>.\n" +
-        "Example:\n" +
-        "  gh pr list --repo <owner/repo> --label bosun-needs-fix --label bosun-attached --state open \\\n" +
-        "    --json number,title,headRefName,baseRefName,mergeable,statusCheckRollup,labels,url \\\n" +
-        "    --limit 10\n\n" +
-        "For each PR returned, follow the appropriate path:\n\n" +
-        "CONFLICT (mergeable is CONFLICTING, BEHIND, or DIRTY):\n" +
-        "1. git fetch origin\n" +
-        "2. git checkout <headRefName>\n" +
-        "3. git rebase origin/<baseRefName>  (or git merge origin/<baseRefName> if rebase is too complex)\n" +
-        "4. Resolve merge conflicts, preserving the intent of both sides.\n" +
-        "5. Run the repo's build + test suite to confirm nothing is broken.\n" +
-        "6. git push --force-with-lease origin <headRefName>\n\n" +
-        "CI FAILURE (statusCheckRollup has FAILURE/ERROR/TIMED_OUT entries):\n" +
-        "1. git checkout <headRefName>\n" +
-        "2. Inspect CI logs: gh run list --repo <owner/repo> --branch <headRefName> --limit 3\n" +
-        "   Then: gh run view <run-id> --repo <owner/repo> --log-failed\n" +
-        "3. Fix the root cause (lint, type error, failing test, build error).\n" +
-        "4. Commit: fix(<scope>): <description>  (conventional commit format)\n" +
-        "5. Push the branch — CI will re-trigger automatically.\n\n" +
-        "AFTER fixing either type:\n" +
-        "- Remove the bosun-needs-fix label: gh pr edit <number> --repo <owner/repo> --remove-label bosun-needs-fix\n\n" +
+        "You are a Bosun PR repair fallback agent. A deterministic CLI fix pass has already run. " +
+        "Only work unresolved items from this JSON:\n\n" +
+        "{{$ctx.getNodeOutput('programmatic-fix')?.output}}\n\n" +
+        "For conflict items: rebase/merge branch onto base, resolve conflicts, run tests, push with --force-with-lease if needed.\n" +
+        "For CI-failure items: inspect failed logs, apply minimal fix, commit and push.\n" +
+        "After successful repair remove bosun-needs-fix label.\n\n" +
         "STRICT RULES:\n" +
-        "- Fix only what breaks CI or causes the conflict. No scope creep.\n" +
-        "- Do NOT merge, close, or approve any PR.\n" +
-        "- Do NOT touch PRs that do not have the bosun-attached label.\n" +
-        "- If a conflict cannot be resolved cleanly, leave it labeled and add a comment explaining why.",
+        "- Fix only CI/conflict issues. No scope creep.\n" +
+        "- Do NOT merge/close/approve PRs.\n" +
+        "- Do NOT touch PRs without bosun-attached.",
       sdk: "auto",
       timeoutMs: 1_800_000,
       maxRetries: 2,
       retryDelayMs: 30_000,
       continueOnError: true,
-    }, { x: 200, y: 700 }),
+    }, { x: 200, y: 860 }),
 
     // ─────────────────────────────────────────────────────────────────────────
     // STEP 2b: Review gate — MANDATORY before any merge.
@@ -926,50 +979,65 @@ export const BOSUN_PR_WATCHDOG_TEMPLATE = {
         "}catch(e){return false;}})()",
     }, { x: 600, y: 530 }),
 
-    node("dispatch-review", "action.run_agent", "Review Gate: Inspect & Merge", {
-      prompt:
-        "You are the Bosun PR merge review agent — the LAST LINE OF DEFENCE before " +
-        "any PR is merged. Your job is to inspect each merge candidate and decide " +
-        "whether it is safe to merge.\n\n" +
-        "MERGE CANDIDATES (CI passing, no conflicts, bosun-attached):\n" +
-        "  Run per target repo: gh pr list --repo <owner/repo> --label bosun-attached --state open \\\n" +
-        "    --json number,title,headRefName,isDraft,statusCheckRollup,labels,url \\\n" +
-        "    --limit {{maxPrs}}\n" +
-        "  Filter to PRs where: not isDraft, CI all-passing, no bosun-needs-fix label.\n\n" +
-        "FOR EACH CANDIDATE — before merging, run:\n" +
-        "  gh pr view <number> --repo <owner/repo> --json number,title,additions,deletions,changedFiles,body,baseRefName\n\n" +
-        "SAFETY CHECKS (ALL must pass before merging):\n\n" +
-        "1. DESTRUCTIVE DIFF CHECK:\n" +
-        "   If (deletions > additions × {{suspiciousDeletionRatio}}) AND (deletions > {{minDestructiveDeletions}}):\n" +
-        "   → This PR deletes far more than it adds — HOLD IT.\n" +
-        "   → Run: gh pr edit <number> --repo <owner/repo> --add-label {{labelNeedsReview}}\n" +
-        "   → Run: gh pr comment <number> --repo <owner/repo> --body ':alert: **Bosun Review Agent: merge held** — " +
-        "This PR deletes significantly more lines than it adds (deletions: <X>, additions: <Y>). " +
-        "A human should verify this is intentional before merging.'\n" +
-        "   → Do NOT merge this PR. Move to next candidate.\n\n" +
-        "2. DIFF SANITY CHECK (for PRs that pass the ratio check):\n" +
-        "   Run: gh pr diff <number> --repo <owner/repo> | head -200\n" +
-        "   Look for: mass file deletions, removal of entire modules/directories, " +
-        "   files changed that are unrelated to the PR description.\n" +
-        "   If something looks wrong → HOLD with bosun-needs-human-review label + comment.\n\n" +
-        "3. CI STATUS RECONFIRM:\n" +
-        "   Run: gh pr checks <number> --repo <owner/repo> --json name,state,conclusion\n" +
-        "   Ensure ALL checks have conclusion SUCCESS/SKIPPED/NEUTRAL. " +
-        "   If any are pending or failing → do NOT merge (CI may still be running).\n\n" +
-        "MERGE (only if ALL checks pass):\n" +
-        "   gh pr merge <number> --repo <owner/repo> --{{mergeMethod}} --delete-branch\n" +
-        "   Log: :check: Merged PR #<number> — <title>\n\n" +
-        "STRICT RULES:\n" +
-        "- NEVER merge if ANY safety check fails. When in doubt, HOLD.\n" +
-        "- NEVER merge PRs without the bosun-attached label.\n" +
-        "- NEVER merge draft PRs.\n" +
-        "- The bosun-needs-human-review label means a human must look at it before bosun touches it again.\n" +
-        "- After processing all candidates, output a summary: { merged: N, held: N, skipped: N }",
-      sdk: "auto",
-      timeoutMs: 1_200_000,
-      maxRetries: 1,
-      retryDelayMs: 30_000,
+    node("programmatic-review", "action.run_command", "Review Gate: Programmatic Merge", {
+      command: [
+        "node -e \"",
+        "const {execFileSync}=require('child_process');",
+        "const raw=String(process.env.BOSUN_FETCH_AND_CLASSIFY||'');",
+        "const payload=(()=>{try{return JSON.parse(raw||'{}')}catch{return {}}})();",
+        "const candidates=Array.isArray(payload.readyCandidates)?payload.readyCandidates:[];",
+        "const ratio=Number('{{suspiciousDeletionRatio}}')||3;",
+        "const minDel=Number('{{minDestructiveDeletions}}')||500;",
+        "const labelReview=String('{{labelNeedsReview}}'||'bosun-needs-human-review');",
+        "const method=String('{{mergeMethod}}'||'squash').toLowerCase();",
+        "const merged=[]; const held=[]; const skipped=[];",
+        "function gh(args){return execFileSync('gh',args,{encoding:'utf8',stdio:['pipe','pipe','pipe']}).trim();}",
+        "for(const c of candidates){",
+        "  const repo=String(c?.repo||'').trim();",
+        "  const n=String(c?.n||'').trim();",
+        "  if(!repo||!n){skipped.push({repo,number:n,reason:'missing_repo_or_pr'});continue;}",
+        "  try{",
+        "    const viewRaw=gh(['pr','view',n,'--repo',repo,'--json','number,title,additions,deletions,changedFiles,isDraft']);",
+        "    const view=(()=>{try{return JSON.parse(viewRaw||'{}')}catch{return {}}})();",
+        "    if(view?.isDraft===true){skipped.push({repo,number:n,reason:'draft'});continue;}",
+        "    const add=Number(view?.additions||0);",
+        "    const del=Number(view?.deletions||0);",
+        "    const changed=Number(view?.changedFiles||0);",
+        "    const destructive=(del>(add*ratio))&&(del>minDel);",
+        "    const tooWide=changed>250;",
+        "    if(destructive||tooWide){",
+        "      gh(['pr','edit',n,'--repo',repo,'--add-label',labelReview]);",
+        "      gh(['pr','comment',n,'--repo',repo,'--body',':warning: Bosun held this PR for human review due to suspicious diff footprint.']);",
+        "      held.push({repo,number:n,reason:destructive?'destructive_diff':'changed_files_too_large',additions:add,deletions:del,changedFiles:changed});",
+        "      continue;",
+        "    }",
+        "    const checksRaw=gh(['pr','checks',n,'--repo',repo,'--json','name,state,conclusion']);",
+        "    const checks=(()=>{try{return JSON.parse(checksRaw||'[]')}catch{return []}})();",
+        "    const bad=(Array.isArray(checks)?checks:[]).some((x)=>{",
+        "      const c=String(x?.conclusion||'').toUpperCase();",
+        "      const s=String(x?.state||'').toUpperCase();",
+        "      return ['FAILURE','ERROR','TIMED_OUT','CANCELLED'].includes(c) || ['PENDING','IN_PROGRESS','QUEUED','WAITING','REQUESTED','EXPECTED'].includes(s);",
+        "    });",
+        "    if(bad){skipped.push({repo,number:n,reason:'ci_not_green'});continue;}",
+        "    const mergeArgs=['pr','merge',n,'--repo',repo,'--delete-branch'];",
+        "    if(method==='rebase') mergeArgs.push('--rebase');",
+        "    else if(method==='merge') mergeArgs.push('--merge');",
+        "    else mergeArgs.push('--squash');",
+        "    gh(mergeArgs);",
+        "    merged.push({repo,number:n,title:String(view?.title||'')});",
+        "  }catch(e){",
+        "    held.push({repo,number:n,reason:'merge_attempt_failed',error:String(e?.message||e)});",
+        "  }",
+        "}",
+        "console.log(JSON.stringify({mergedCount:merged.length,heldCount:held.length,skippedCount:skipped.length,merged,held,skipped}));",
+        "\"",
+      ].join(" "),
       continueOnError: true,
+      failOnError: false,
+      env: {
+        BOSUN_FETCH_AND_CLASSIFY:
+          "(()=>{const r=$ctx.getNodeOutput('fetch-and-classify');return r&&r.success!==false?String(r.output||'{}'):'{}';})()",
+      },
     }, { x: 600, y: 700 }),
 
     node("notify", "notify.telegram", "Watchdog Report", {
@@ -990,31 +1058,33 @@ export const BOSUN_PR_WATCHDOG_TEMPLATE = {
     edge("has-prs",          "fix-needed",      { condition: "$output?.result === true" }),
     edge("has-prs",          "no-prs",          { condition: "$output?.result !== true" }),
     // Fix path (conflicts + CI failures)
-    edge("fix-needed",       "dispatch-fix",    { condition: "$output?.result === true" }),
+    edge("fix-needed",       "programmatic-fix",{ condition: "$output?.result === true" }),
     edge("fix-needed",       "review-needed",   { condition: "$output?.result !== true" }),
-    edge("dispatch-fix",     "review-needed"),
+    edge("programmatic-fix", "fix-agent-needed"),
+    edge("fix-agent-needed", "dispatch-fix-agent", { condition: "$output?.result === true" }),
+    edge("fix-agent-needed", "review-needed",      { condition: "$output?.result !== true" }),
+    edge("dispatch-fix-agent","review-needed"),
     // Review gate (merge candidates)
-    edge("review-needed",    "dispatch-review", { condition: "$output?.result === true" }),
+    edge("review-needed",    "programmatic-review", { condition: "$output?.result === true" }),
     edge("review-needed",    "notify",          { condition: "$output?.result !== true" }),
-    edge("dispatch-review",  "notify"),
+    edge("programmatic-review","notify"),
   ],
   metadata: {
     author: "bosun",
-    version: 3,
+    version: 4,
     createdAt: "2025-07-01T00:00:00Z",
-    templateVersion: "2.1.0",
+    templateVersion: "2.2.0",
     tags: ["github", "pr", "ci", "merge", "watchdog", "bosun-attached", "safety"],
     replaces: {
       module: "agent-hooks.mjs",
       functions: ["registerBuiltinHooks (PostPR block)"],
       calledFrom: [],
       description:
-        "v2: Consolidates PR polling into one gh pr list fetch per target repo per cycle. " +
-        "Adds mandatory review gate agent that checks diff stats (additions/deletions " +
-        "ratio) and diff content before any merge — preventing destructive PRs from " +
-        "being auto-merged. Adds conflict detection via the 'mergeable' field. " +
-        "Single fix agent handles both conflict resolution and CI failures. " +
-        "All external PRs (no bosun-attached label) are never touched.",
+        "v2.2: Consolidates PR polling into one gh pr list fetch per target repo per cycle. " +
+        "Uses deterministic-first remediation and review/merge command nodes; " +
+        "agent execution is now fallback-only for unresolved conflicts or failed " +
+        "automatic remediation attempts. All external PRs (no bosun-attached label) " +
+        "remain untouched.",
     },
   },
 };
@@ -1086,10 +1156,59 @@ export const GITHUB_KANBAN_SYNC_TEMPLATE = {
         "}catch{return false;}})()",
     }, { x: 400, y: 370 }),
 
-    node("sync-agent", "action.run_agent", "Sync PR State → Kanban", {
+    node("sync-programmatic", "action.run_command", "Sync PR State → Kanban (Programmatic)", {
+      command: [
+        "node -e \"",
+        "const {execFileSync}=require('child_process');",
+        "const fs=require('fs');",
+        "const raw=String(process.env.BOSUN_FETCH_PR_STATE||'');",
+        "const data=(()=>{try{return JSON.parse(raw||'{}')}catch{return {}}})();",
+        "const merged=Array.isArray(data.merged)?data.merged:[];",
+        "const open=Array.isArray(data.open)?data.open:[];",
+        "const updates=[]; const unresolved=[];",
+        "const taskCli=fs.existsSync('task-cli.mjs')?'task-cli.mjs':'';",
+        "if(!taskCli){",
+        "  console.log(JSON.stringify({updated:0,unresolved:[{reason:'task_cli_missing'}],needsAgent:true}));",
+        "  process.exit(0);",
+        "}",
+        "function runTask(args){return execFileSync('node',[taskCli,...args],{encoding:'utf8',stdio:['pipe','pipe','pipe']}).trim();}",
+        "for(const item of merged){",
+        "  const id=String(item?.taskId||'').trim();",
+        "  if(!id) continue;",
+        "  try{runTask(['update',id,'--status','done']);updates.push({taskId:id,status:'done'});}catch(e){unresolved.push({taskId:id,status:'done',error:String(e?.message||e)});}",
+        "}",
+        "for(const item of open){",
+        "  const id=String(item?.taskId||'').trim();",
+        "  if(!id) continue;",
+        "  try{runTask(['update',id,'--status','inreview']);updates.push({taskId:id,status:'inreview'});}catch(e){unresolved.push({taskId:id,status:'inreview',error:String(e?.message||e)});}",
+        "}",
+        "console.log(JSON.stringify({updated:updates.length,updates,unresolved,needsAgent:unresolved.length>0}));",
+        "\"",
+      ].join(" "),
+      continueOnError: true,
+      failOnError: false,
+      env: {
+        BOSUN_FETCH_PR_STATE:
+          "(()=>{const r=$ctx.getNodeOutput('fetch-pr-state');return r&&r.success!==false?String(r.output||'{}'):'{}';})()",
+      },
+    }, { x: 400, y: 530 }),
+
+    node("sync-agent-needed", "condition.expression", "Needs Agent Sync?", {
+      expression:
+        "(()=>{try{" +
+        "const raw=$ctx.getNodeOutput('sync-programmatic')?.output||'{}';" +
+        "const d=JSON.parse(raw);" +
+        "return d?.needsAgent===true || (Array.isArray(d?.unresolved)&&d.unresolved.length>0);" +
+        "}catch{return true;}})()",
+    }, { x: 400, y: 615 }),
+
+    node("sync-agent", "action.run_agent", "Sync PR State → Kanban (Fallback)", {
       prompt:
-        "You are the Bosun GitHub-Kanban sync agent. Sync the kanban board " +
-        "to match the GitHub PR state shown below.\n\n" +
+        "You are the Bosun GitHub-Kanban sync fallback agent. A deterministic sync pass already ran.\n\n" +
+        "Programmatic sync output:\n" +
+        "{{$ctx.getNodeOutput('sync-programmatic')?.output}}\n\n" +
+        "Now complete only unresolved updates.\n\n" +
+        "GitHub PR state:\n" +
         "PR state (JSON from fetch-pr-state node output):\n" +
         "{{$ctx.getNodeOutput('fetch-pr-state')?.output}}\n\n" +
         "RULES:\n" +
@@ -1106,7 +1225,7 @@ export const GITHUB_KANBAN_SYNC_TEMPLATE = {
       sdk: "auto",
       timeoutMs: 300_000,
       continueOnError: true,
-    }, { x: 400, y: 530 }),
+    }, { x: 400, y: 700 }),
 
     node("done", "notify.log", "Sync Complete", {
       message: "GitHub ↔ Kanban sync cycle complete",
@@ -1121,8 +1240,11 @@ export const GITHUB_KANBAN_SYNC_TEMPLATE = {
   edges: [
     edge("trigger", "fetch-pr-state"),
     edge("fetch-pr-state", "has-updates"),
-    edge("has-updates", "sync-agent", { condition: "$output?.result === true" }),
+    edge("has-updates", "sync-programmatic", { condition: "$output?.result === true" }),
     edge("has-updates", "skip", { condition: "$output?.result !== true" }),
+    edge("sync-programmatic", "sync-agent-needed"),
+    edge("sync-agent-needed", "sync-agent", { condition: "$output?.result === true" }),
+    edge("sync-agent-needed", "done", { condition: "$output?.result !== true" }),
     edge("sync-agent", "done"),
   ],
   metadata: {
@@ -1144,6 +1266,234 @@ export const GITHUB_KANBAN_SYNC_TEMPLATE = {
         "and updated kanban task statuses (inreview/done) every N minutes. " +
         "This template runs the same reconciliation as an auditable, configurable " +
         "workflow with an agent-driven sync step.",
+    },
+  },
+};
+
+// ═══════════════════════════════════════════════════════════════════════════
+//  SDK Conflict Resolver
+// ═══════════════════════════════════════════════════════════════════════════
+
+resetLayout();
+
+export const SDK_CONFLICT_RESOLVER_TEMPLATE = {
+  id: "template-sdk-conflict-resolver",
+  name: "SDK Conflict Resolver",
+  description:
+    "Intelligent merge-conflict resolution using SDK agents. " +
+    "Auto-resolves lockfiles and generated files mechanically, then " +
+    "launches an agent with full context to resolve semantic conflicts " +
+    "in code, configs, and imports. Verifies resolution and pushes.",
+  category: "github",
+  enabled: true,
+  recommended: true,
+  trigger: "trigger.event",
+  variables: {
+    timeoutMs: 600000,
+    cooldownMs: 1800000,
+    maxAttempts: 4,
+    baseBranch: "main",
+  },
+  nodes: [
+    node("trigger", "trigger.event", "Merge Conflict Detected", {
+      eventType: "pr.conflict_detected",
+      description: "Fires when a PR has merge conflicts that need resolution",
+    }, { x: 400, y: 50 }),
+
+    node("check-cooldown", "condition.expression", "On Cooldown?", {
+      expression:
+        "(() => { " +
+        "const last = Number($data?.lastAttemptAt || 0); " +
+        "if (!last) return false; " +
+        "return (Date.now() - last) < ($data?.cooldownMs || 1800000); " +
+        "})()",
+    }, { x: 400, y: 200, outputs: ["yes", "no"] }),
+
+    node("check-attempts", "condition.expression", "Attempts Exhausted?", {
+      expression:
+        "Number($data?.attemptCount || 0) >= Number($data?.maxAttempts || 4)",
+    }, { x: 400, y: 350, outputs: ["yes", "no"] }),
+
+    node("get-conflicts", "action.run_command", "List Conflicted Files", {
+      command: "git diff --name-only --diff-filter=U",
+      cwd: "{{worktreePath}}",
+      continueOnError: true,
+    }, { x: 400, y: 500 }),
+
+    node("classify-files", "action.set_variable", "Classify Files", {
+      key: "fileClassification",
+      value:
+        "(() => { " +
+        "const output = $ctx.getNodeOutput('get-conflicts')?.output || ''; " +
+        "const files = output.split('\\n').map(f => f.trim()).filter(Boolean); " +
+        "const auto = []; const manual = []; " +
+        "const AUTO_THEIRS = ['pnpm-lock.yaml','package-lock.json','yarn.lock','go.sum']; " +
+        "const AUTO_OURS = ['CHANGELOG.md','coverage.txt','results.txt']; " +
+        "for (const f of files) { " +
+        "  const name = f.split('/').pop(); " +
+        "  if (AUTO_THEIRS.includes(name) || name.endsWith('.lock')) auto.push({file:f,strategy:'theirs'}); " +
+        "  else if (AUTO_OURS.includes(name)) auto.push({file:f,strategy:'ours'}); " +
+        "  else manual.push(f); " +
+        "} " +
+        "return {auto, manual, total: files.length}; " +
+        "})()",
+      isExpression: true,
+    }, { x: 400, y: 650 }),
+
+    node("auto-resolve", "action.run_command", "Auto-Resolve Trivial Files", {
+      command:
+        "node -e \"" +
+        "const files = JSON.parse(process.env.AUTO_FILES || '[]'); " +
+        "const {execSync} = require('child_process'); " +
+        "let resolved = 0; " +
+        "for (const {file, strategy} of files) { " +
+        "  try { execSync('git checkout --' + strategy + ' -- ' + file, {cwd: process.env.CWD}); " +
+        "  execSync('git add ' + file, {cwd: process.env.CWD}); resolved++; } catch {} " +
+        "} " +
+        "console.log(JSON.stringify({resolved}));\" ",
+      env: {
+        AUTO_FILES: "{{fileClassification.auto}}",
+        CWD: "{{worktreePath}}",
+      },
+      continueOnError: true,
+    }, { x: 200, y: 800 }),
+
+    node("has-manual", "condition.expression", "Manual Conflicts Remain?", {
+      expression:
+        "(() => { const c = $data?.fileClassification; return c?.manual?.length > 0; })()",
+    }, { x: 400, y: 800, outputs: ["yes", "no"] }),
+
+    node("launch-agent", "action.run_agent", "SDK Agent: Resolve Conflicts", {
+      prompt:
+        "# Merge Conflict Resolution\n\n" +
+        "You are resolving merge conflicts in a git worktree.\n\n" +
+        "## Context\n" +
+        "- **Working directory**: `{{worktreePath}}`\n" +
+        "- **PR branch** (HEAD): `{{branch}}`\n" +
+        "- **Base branch** (incoming): `origin/{{baseBranch}}`\n" +
+        "- **PR**: #{{prNumber}}\n" +
+        "- **Task**: {{taskTitle}}\n\n" +
+        "## Conflicted files needing manual resolution:\n" +
+        "{{manualFiles}}\n\n" +
+        "## Instructions\n" +
+        "1. Read both sides of each conflict carefully\n" +
+        "2. Understand the INTENT of each change (feature vs upstream)\n" +
+        "3. Write a correct resolution that preserves both intents\n" +
+        "4. `git add` each resolved file\n" +
+        "5. Run `git commit --no-edit` to finalize the merge\n" +
+        "6. Do NOT use `--theirs` or `--ours` for code files\n" +
+        "7. Ensure no conflict markers (`<<<<<<<`, `=======`, `>>>>>>>`) remain",
+      sdk: "auto",
+      timeoutMs: "{{timeoutMs}}",
+      failOnError: true,
+      continueOnError: true,
+    }, { x: 200, y: 950 }),
+
+    node("verify-clean", "action.run_command", "Verify No Markers", {
+      command: "git grep -rl '^<<<<<<<\\|^=======\\|^>>>>>>>' -- . || echo CLEAN",
+      cwd: "{{worktreePath}}",
+      continueOnError: true,
+    }, { x: 200, y: 1100 }),
+
+    node("markers-clean", "condition.expression", "Markers Clean?", {
+      expression:
+        "(() => { const out = $ctx.getNodeOutput('verify-clean')?.output || ''; " +
+        "return out.trim() === 'CLEAN' || out.trim() === ''; })()",
+    }, { x: 200, y: 1250, outputs: ["yes", "no"] }),
+
+    node("push-result", "action.run_command", "Push Resolution", {
+      command: "git push origin HEAD:{{branch}}",
+      cwd: "{{worktreePath}}",
+      continueOnError: true,
+      maxRetries: 2,
+      retryDelayMs: 10000,
+    }, { x: 200, y: 1400 }),
+
+    node("commit-auto-only", "action.run_command", "Commit Auto-Only Resolution", {
+      command: "git commit --no-edit",
+      cwd: "{{worktreePath}}",
+      continueOnError: true,
+    }, { x: 600, y: 950 }),
+
+    node("push-auto", "action.run_command", "Push Auto Resolution", {
+      command: "git push origin HEAD:{{branch}}",
+      cwd: "{{worktreePath}}",
+      continueOnError: true,
+    }, { x: 600, y: 1100 }),
+
+    node("notify-resolved", "notify.log", "Conflict Resolved", {
+      message: "SDK conflict resolution succeeded for PR #{{prNumber}} on {{branch}}",
+      level: "info",
+    }, { x: 400, y: 1550 }),
+
+    node("escalate-cooldown", "notify.log", "On Cooldown", {
+      message: "SDK conflict resolution skipped — cooldown active for {{branch}}",
+      level: "warn",
+    }, { x: 700, y: 200 }),
+
+    node("escalate-exhausted", "notify.telegram", "Max Attempts Reached", {
+      message:
+        ":warning: Merge conflicts on **{{branch}}** (PR #{{prNumber}}) " +
+        "could not be resolved after {{maxAttempts}} SDK attempts. " +
+        "Manual intervention required.",
+    }, { x: 700, y: 350 }),
+
+    node("escalate-markers", "notify.telegram", "Markers Still Present", {
+      message:
+        ":alert: SDK agent resolved conflicts on **{{branch}}** but conflict " +
+        "markers remain. Manual review needed for PR #{{prNumber}}.",
+    }, { x: 500, y: 1400 }),
+
+    node("chain-merge-strategy", "action.execute_workflow", "Re-evaluate Merge", {
+      workflowId: "template-pr-merge-strategy",
+      mode: "dispatch",
+      input: "({prNumber: $data?.prNumber, branch: $data?.branch, baseBranch: $data?.baseBranch})",
+    }, { x: 200, y: 1550 }),
+  ],
+  edges: [
+    edge("trigger", "check-cooldown"),
+    edge("check-cooldown", "escalate-cooldown", { condition: "$output?.result === true", port: "yes" }),
+    edge("check-cooldown", "check-attempts", { condition: "$output?.result !== true", port: "no" }),
+    edge("check-attempts", "escalate-exhausted", { condition: "$output?.result === true", port: "yes" }),
+    edge("check-attempts", "get-conflicts", { condition: "$output?.result !== true", port: "no" }),
+    edge("get-conflicts", "classify-files"),
+    edge("classify-files", "auto-resolve"),
+    edge("auto-resolve", "has-manual"),
+    edge("has-manual", "launch-agent", { condition: "$output?.result === true", port: "yes" }),
+    edge("has-manual", "commit-auto-only", { condition: "$output?.result !== true", port: "no" }),
+    edge("launch-agent", "verify-clean"),
+    edge("verify-clean", "markers-clean"),
+    edge("markers-clean", "push-result", { condition: "$output?.result === true", port: "yes" }),
+    edge("markers-clean", "escalate-markers", { condition: "$output?.result !== true", port: "no" }),
+    edge("push-result", "chain-merge-strategy"),
+    edge("chain-merge-strategy", "notify-resolved"),
+    edge("commit-auto-only", "push-auto"),
+    edge("push-auto", "notify-resolved"),
+  ],
+  metadata: {
+    author: "bosun",
+    version: 1,
+    createdAt: "2025-06-01T00:00:00Z",
+    templateVersion: "1.0.0",
+    tags: ["github", "merge", "conflict", "sdk", "agent", "resolution"],
+    requiredTemplates: ["template-pr-merge-strategy"],
+    replaces: {
+      module: "sdk-conflict-resolver.mjs",
+      functions: [
+        "resolveConflictsWithSDK",
+        "buildSDKConflictPrompt",
+        "isSDKResolutionOnCooldown",
+        "isSDKResolutionExhausted",
+      ],
+      calledFrom: [
+        "conflict-resolver.mjs:resolveConflicts",
+        "monitor.mjs:handleMergeConflict",
+      ],
+      description:
+        "Replaces the imperative sdk-conflict-resolver.mjs with a visual " +
+        "workflow. File classification, auto-resolve, SDK agent launch, " +
+        "marker verification, and push become auditable nodes. Chains " +
+        "into PR Merge Strategy after successful resolution.",
     },
   },
 };

@@ -4,7 +4,7 @@ import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 
 const source = readFileSync(
-  resolve(process.cwd(), "agent-work-analyzer.mjs"),
+  resolve(process.cwd(), "agent/agent-work-analyzer.mjs"),
   "utf8",
 );
 

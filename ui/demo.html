@@ -42,7 +42,14 @@
       "preact/compat":           "./vendor/preact-compat.js",
       "htm":                     "./vendor/htm.js",
       "@preact/signals-core":    "./vendor/preact-signals-core.js",
-      "@preact/signals":         "./vendor/preact-signals.js"
+      "@preact/signals":         "./vendor/preact-signals.js",
+      "react":                   "./vendor/preact-compat.js",
+      "react-dom":               "./vendor/preact-compat.js",
+      "react-dom/client":        "./vendor/preact-compat.js",
+      "react/jsx-runtime":       "./vendor/preact-jsx-runtime.js",
+      "@mui/material":           "./vendor/mui-material.js",
+      "@emotion/react":          "./vendor/emotion-react.js",
+      "@emotion/styled":         "./vendor/emotion-styled.js"
     }
   }
   </script>
@@ -54,7 +61,14 @@
       "preact/compat":           "./vendor/preact-compat.js",
       "htm":                     "./vendor/htm.js",
       "@preact/signals-core":    "./vendor/preact-signals-core.js",
-      "@preact/signals":         "./vendor/preact-signals.js"
+      "@preact/signals":         "./vendor/preact-signals.js",
+      "react":                   "./vendor/preact-compat.js",
+      "react-dom":               "./vendor/preact-compat.js",
+      "react-dom/client":        "./vendor/preact-compat.js",
+      "react/jsx-runtime":       "./vendor/preact-jsx-runtime.js",
+      "@mui/material":           "./vendor/mui-material.js",
+      "@emotion/react":          "./vendor/emotion-react.js",
+      "@emotion/styled":         "./vendor/emotion-styled.js"
     }
   }
   </script>
@@ -67,7 +81,14 @@
       "preact/compat":           "https://esm.sh/preact@10.25.4/compat",
       "htm":                     "https://esm.sh/htm@3.1.1",
       "@preact/signals-core":    "https://cdn.jsdelivr.net/npm/@preact/signals-core@1.8.0/+esm",
-      "@preact/signals":         "https://esm.sh/@preact/signals@1.3.1?deps=preact@10.25.4"
+      "@preact/signals":         "https://esm.sh/@preact/signals@1.3.1?deps=preact@10.25.4",
+      "react":                   "https://esm.sh/preact@10.25.4/compat",
+      "react-dom":               "https://esm.sh/preact@10.25.4/compat",
+      "react-dom/client":        "https://esm.sh/preact@10.25.4/compat",
+      "react/jsx-runtime":       "https://esm.sh/preact@10.25.4/jsx-runtime",
+      "@mui/material":           "./vendor/mui-material.js",
+      "@emotion/react":          "./vendor/emotion-react.js",
+      "@emotion/styled":         "./vendor/emotion-styled.js"
     }
   }
   </script>
@@ -2544,6 +2565,91 @@
       }
     }
 
+    let _demoVoiceAudioBase64 = '';
+
+    function _writeAscii(view, offset, text) {
+      for (let i = 0; i < text.length; i++) {
+        view.setUint8(offset + i, text.charCodeAt(i));
+      }
+    }
+
+    function _encodePcm16WavBase64(samples, sampleRateHz = 16000) {
+      const bytesPerSample = 2;
+      const channelCount = 1;
+      const blockAlign = channelCount * bytesPerSample;
+      const byteRate = sampleRateHz * blockAlign;
+      const dataSize = samples.length * bytesPerSample;
+      const wavBuffer = new ArrayBuffer(44 + dataSize);
+      const view = new DataView(wavBuffer);
+
+      _writeAscii(view, 0, 'RIFF');
+      view.setUint32(4, 36 + dataSize, true);
+      _writeAscii(view, 8, 'WAVE');
+      _writeAscii(view, 12, 'fmt ');
+      view.setUint32(16, 16, true); // PCM header size
+      view.setUint16(20, 1, true);  // PCM format
+      view.setUint16(22, channelCount, true);
+      view.setUint32(24, sampleRateHz, true);
+      view.setUint32(28, byteRate, true);
+      view.setUint16(32, blockAlign, true);
+      view.setUint16(34, 16, true); // bits per sample
+      _writeAscii(view, 36, 'data');
+      view.setUint32(40, dataSize, true);
+
+      let offset = 44;
+      for (const sample of samples) {
+        const clamped = Math.max(-1, Math.min(1, sample));
+        const intSample = clamped < 0 ? clamped * 32768 : clamped * 32767;
+        view.setInt16(offset, intSample | 0, true);
+        offset += 2;
+      }
+
+      const bytes = new Uint8Array(wavBuffer);
+      let binary = '';
+      for (let i = 0; i < bytes.length; i++) binary += String.fromCharCode(bytes[i]);
+      return btoa(binary);
+    }
+
+    function getDemoVoiceAudioBase64() {
+      if (_demoVoiceAudioBase64) return _demoVoiceAudioBase64;
+      const sampleRateHz = 16000;
+      const durationSec = 0.55;
+      const totalSamples = Math.floor(sampleRateHz * durationSec);
+      const samples = new Float32Array(totalSamples);
+      for (let i = 0; i < totalSamples; i++) {
+        const t = i / sampleRateHz;
+        const fadeIn = Math.min(1, t / 0.04);
+        const fadeOut = Math.min(1, (durationSec - t) / 0.08);
+        const env = Math.max(0, Math.min(1, fadeIn, fadeOut));
+        samples[i] = env * (
+          0.2 * Math.sin(2 * Math.PI * 440 * t) +
+          0.1 * Math.sin(2 * Math.PI * 660 * t)
+        );
+      }
+      _demoVoiceAudioBase64 = _encodePcm16WavBase64(samples, sampleRateHz);
+      return _demoVoiceAudioBase64;
+    }
+
+    function buildDemoVoiceText(inputText) {
+      const clean = String(inputText || '').trim().replace(/\s+/g, ' ');
+      if (!clean) return 'I did not catch that. Please try again.';
+
+      const lower = clean.toLowerCase();
+      if (lower.includes('status') || lower.includes('health')) {
+        const running = STATE.tasks.filter((t) => t.status === 'inprogress').length;
+        const total = STATE.tasks.length;
+        return `System looks healthy. ${running} tasks are running out of ${total} tracked tasks.`;
+      }
+      if (lower.includes('workspace')) {
+        const name = String(STATE.currentWorkspace || 'default');
+        return `Active workspace is ${name}. I can switch context once you pick a different workspace.`;
+      }
+      if (lower.includes('help') || lower.includes('what can you do')) {
+        return 'I can summarize task status, inspect queues, and help dispatch follow-up actions in demo mode.';
+      }
+      return `Understood: ${clean}. In demo mode I am returning a simulated voice response with real playback.`;
+    }
+
     /* ── API Route Handler (comprehensive — catches ALL /api/* calls) */
     async function handleApi(path, method, body) {
       // Normalize: strip query string for route matching
@@ -2638,6 +2744,55 @@
         return { data: STATE.executors.map((e) => ({ ...e, status: e.enabled ? 'active' : 'disabled' })) };
       if (route === '/api/telemetry/alerts')
         return { data: [] };
+      if (route === '/api/analytics/usage') {
+        const daysParam = Number(params.get('days') || '30');
+        // Build mock usage analytics from demo STATE
+        const now = Date.now();
+        const dayMs = 86400000;
+        const numDays = Math.min(daysParam || 30, 30);
+        // Generate synthetic daily trend data
+        const dates = [];
+        const agentDaily = { codex: [], copilot: [], claude: [] };
+        const skillDaily = { 'background-task-execution': [], 'pr-workflow': [], 'error-recovery': [] };
+        const mcpDaily = { execute_bash: [], read_file: [], write_file: [], list_directory: [] };
+        for (let i = numDays - 1; i >= 0; i--) {
+          const d = new Date(now - i * dayMs);
+          dates.push(d.toISOString().slice(0, 10));
+          const active = (i < (numDays * 0.6)) ? 1 : 0;
+          agentDaily.codex.push(active ? Math.floor(Math.random() * 8 + 2) : 0);
+          agentDaily.copilot.push(active ? Math.floor(Math.random() * 5 + 1) : 0);
+          agentDaily.claude.push(active ? Math.floor(Math.random() * 4) : 0);
+          skillDaily['background-task-execution'].push(active ? Math.floor(Math.random() * 6 + 1) : 0);
+          skillDaily['pr-workflow'].push(active ? Math.floor(Math.random() * 4) : 0);
+          skillDaily['error-recovery'].push(active ? Math.floor(Math.random() * 3) : 0);
+          mcpDaily.execute_bash.push(active ? Math.floor(Math.random() * 12 + 2) : 0);
+          mcpDaily.read_file.push(active ? Math.floor(Math.random() * 8 + 1) : 0);
+          mcpDaily.write_file.push(active ? Math.floor(Math.random() * 6) : 0);
+          mcpDaily.list_directory.push(active ? Math.floor(Math.random() * 5) : 0);
+        }
+        const sum = (arr) => arr.reduce((a, b) => a + b, 0);
+        const agentRuns = sum(agentDaily.codex) + sum(agentDaily.copilot) + sum(agentDaily.claude);
+        const skillInvocations = Object.values(skillDaily).reduce((t, a) => t + sum(a), 0);
+        const mcpToolCalls = Object.values(mcpDaily).reduce((t, a) => t + sum(a), 0);
+        return { ok: true, data: {
+          agentRuns, skillInvocations, mcpToolCalls,
+          avgPerDay: Math.round((agentRuns + skillInvocations + mcpToolCalls) / (numDays || 1)),
+          lastActiveAt: new Date(now - 7200000).toISOString(),
+          sinceAt: new Date(now - numDays * dayMs).toISOString(),
+          topAgents: [
+            { name: 'codex', count: sum(agentDaily.codex) },
+            { name: 'copilot', count: sum(agentDaily.copilot) },
+            { name: 'claude', count: sum(agentDaily.claude) },
+          ].filter(a => a.count > 0).sort((a, b) => b.count - a.count),
+          topSkills: Object.entries(skillDaily)
+            .map(([name, v]) => ({ name, count: sum(v) }))
+            .filter(s => s.count > 0).sort((a, b) => b.count - a.count),
+          topMcpTools: Object.entries(mcpDaily)
+            .map(([name, v]) => ({ name, count: sum(v) }))
+            .filter(t => t.count > 0).sort((a, b) => b.count - a.count),
+          trend: { dates, agents: agentDaily, skills: skillDaily, mcpTools: mcpDaily },
+        }};
+      }
       if (route === '/api/executor/pause') {
         STATE.paused = true; addLog('info', 'executor', 'Executor paused');
         return { ok: true, paused: true };
@@ -2860,6 +3015,72 @@
         return { ok: true, data: best };
       }
 
+      // ── MCP Servers ──
+      if (route === '/api/mcp/catalog') {
+        return { ok: true, data: [
+          { id: 'github', name: 'GitHub', description: 'GitHub MCP server', transport: 'stdio', tags: ['code', 'git'], installed: false },
+          { id: 'playwright', name: 'Playwright', description: 'Browser automation', transport: 'stdio', tags: ['testing'], installed: false },
+          { id: 'context7', name: 'Context7', description: 'Documentation lookup', transport: 'stdio', tags: ['docs'], installed: true },
+        ]};
+      }
+      if (route === '/api/mcp/installed') {
+        return { ok: true, data: [
+          { id: 'context7', name: 'Context7', description: 'Documentation lookup', transport: 'stdio', tags: ['docs'] },
+        ]};
+      }
+      if (route === '/api/mcp/install') {
+        return { ok: true, installed: { id: body?.catalogId || 'custom', name: body?.name || 'Custom MCP' } };
+      }
+      if (route === '/api/mcp/uninstall') {
+        return { ok: true };
+      }
+      if (route === '/api/mcp/configure') {
+        return { ok: true };
+      }
+
+      // ── Agent Tool Config ──
+      if (route === '/api/agent-tools/available') {
+        return { ok: true, data: {
+          builtinTools: [
+            { id: 'search-files', name: 'Search Files', description: 'Search workspace files', category: 'Built-In', default: true },
+            { id: 'read-file', name: 'Read File', description: 'Read file contents', category: 'Built-In', default: true },
+            { id: 'edit-file', name: 'Edit File', description: 'Edit workspace files', category: 'Built-In', default: true },
+            { id: 'run-command', name: 'Run Command', description: 'Execute shell commands', category: 'Built-In', default: true },
+            { id: 'web-search', name: 'Web Search', description: 'Search the web', category: 'Built-In', default: true },
+          ],
+          mcpServers: [
+            { id: 'context7', name: 'Context7', description: 'Documentation lookup', tags: ['docs'], transport: 'stdio' },
+          ],
+        }};
+      }
+      if (route === '/api/agent-tools/config') {
+        if (method === 'POST') {
+          return { ok: true };
+        }
+        const agentId = params.get('agentId');
+        return { ok: true, data: {
+          builtinTools: [
+            { id: 'search-files', name: 'Search Files', enabled: true },
+            { id: 'read-file', name: 'Read File', enabled: true },
+            { id: 'edit-file', name: 'Edit File', enabled: true },
+            { id: 'run-command', name: 'Run Command', enabled: true },
+            { id: 'web-search', name: 'Web Search', enabled: true },
+          ],
+          mcpServers: [],
+        }};
+      }
+      if (route === '/api/agent-tools/defaults') {
+        return { ok: true, data: {
+          builtinTools: [
+            { id: 'search-files', name: 'Search Files', description: 'Search workspace files', category: 'Built-In', default: true },
+            { id: 'read-file', name: 'Read File', description: 'Read file contents', category: 'Built-In', default: true },
+            { id: 'edit-file', name: 'Edit File', description: 'Edit workspace files', category: 'Built-In', default: true },
+            { id: 'run-command', name: 'Run Command', description: 'Execute shell commands', category: 'Built-In', default: true },
+            { id: 'web-search', name: 'Web Search', description: 'Search the web', category: 'Built-In', default: true },
+          ],
+        }};
+      }
+
       // ── Agents ──
       if (route === '/api/agents')
         return { data: STATE.agents };
@@ -3009,6 +3230,10 @@
         }
         const active = STATE.managedWorkspaces.find(w => w.id === STATE.activeWorkspaceId) || null;
         return { ok: true, data: active };
+      }
+      if (route === '/api/workspaces/active/repos') {
+        const active = STATE.managedWorkspaces.find(w => w.id === STATE.activeWorkspaceId) || null;
+        return { ok: true, repos: active?.repos || [] };
       }
       if (route === '/api/workspaces/create') {
         const name = body?.name || 'new-workspace';
@@ -3304,6 +3529,12 @@
         if (ses) ses.status = 'archived';
         return { ok: true, session: ses || null };
       }
+      if (route.match(/^\/api\/sessions\/[^/]+\/stop$/)) {
+        const sid = route.split('/')[3];
+        const ses = STATE.sessions.find(s => s.id === sid);
+        const wasRunning = ses?.status === 'active';
+        return { ok: true, stopped: wasRunning };
+      }
       if (route.match(/^\/api\/sessions\/[^/]+\/missing_credentials$/)) {
         return { ok: false, changed: false, action: 'missing_credentials' };
       }
@@ -3384,6 +3615,155 @@
       // ── Project ──
       if (route === '/api/project' || route === '/api/project-summary')
         return { data: buildProjectSnapshot() };
+
+      // ── Voice ──
+      if (route === '/api/voice/agents' && method === 'GET') {
+        const fromLibrary = (STATE.libraryEntries || [])
+          .filter((entry) => {
+            if (!entry || entry.type !== 'agent') return false;
+            const id = String(entry.id || '').toLowerCase();
+            const tags = Array.isArray(entry.tags) ? entry.tags.map((t) => String(t || '').toLowerCase()) : [];
+            return id.includes('voice-agent') || tags.includes('voice') || tags.includes('audio-agent');
+          })
+          .map((entry) => ({
+            id: entry.id,
+            name: entry.name || entry.id,
+            description: entry.description || '',
+            tags: Array.isArray(entry.tags) ? entry.tags : [],
+            model: null,
+            voicePersona: String(entry.id || '').includes('female')
+              ? 'female'
+              : (String(entry.id || '').includes('male') ? 'male' : 'neutral'),
+            voiceInstructions: '',
+            skills: [],
+            promptOverride: null,
+          }));
+
+        const defaults = [
+          {
+            id: 'voice-agent-female',
+            name: 'Voice Agent (Female)',
+            description: 'Conversational voice specialist with concise guidance and call-friendly pacing.',
+            tags: ['voice', 'audio-agent', 'female', 'realtime'],
+            model: null,
+            voicePersona: 'female',
+            voiceInstructions: 'You are Nova, a concise and practical female voice agent.',
+            skills: ['concise-voice-guidance', 'conversation-memory'],
+            promptOverride: null,
+          },
+          {
+            id: 'voice-agent-male',
+            name: 'Voice Agent (Male)',
+            description: 'Operational voice specialist focused on diagnostics and execution.',
+            tags: ['voice', 'audio-agent', 'male', 'realtime'],
+            model: null,
+            voicePersona: 'male',
+            voiceInstructions: 'You are Atlas, a direct and execution-oriented male voice agent.',
+            skills: ['ops-diagnostics', 'task-execution'],
+            promptOverride: null,
+          },
+        ];
+
+        const seen = new Set();
+        const agents = [...fromLibrary, ...defaults].filter((agent) => {
+          const id = String(agent?.id || '').trim();
+          if (!id || seen.has(id)) return false;
+          seen.add(id);
+          return true;
+        });
+        return {
+          ok: true,
+          agents,
+          defaultAgentId: agents[0]?.id || 'voice-agent-female',
+        };
+      }
+
+      if (route === '/api/voice/trace' && method === 'POST') {
+        const inputEvents = Array.isArray(body?.events)
+          ? body.events
+          : [body || {}];
+        const normalized = inputEvents
+          .filter((event) => event && typeof event === 'object')
+          .map((event) => ({
+            ts: Date.now(),
+            sessionId: String(event?.sessionId || body?.sessionId || '').trim(),
+            source: String(event?.source || body?.source || 'voice-client').trim() || 'voice-client',
+            provider: String(event?.provider || body?.provider || '').trim() || null,
+            transport: String(event?.transport || body?.transport || '').trim() || null,
+            type: String(event?.type || '').trim() || null,
+            detail: event?.detail ?? null,
+          }));
+
+        if (normalized.length === 0) {
+          return { ok: false, error: 'No valid trace events supplied' };
+        }
+
+        STATE.voiceTraceEvents = Array.isArray(STATE.voiceTraceEvents) ? STATE.voiceTraceEvents : [];
+        for (const entry of normalized) STATE.voiceTraceEvents.push(entry);
+        if (STATE.voiceTraceEvents.length > 500) {
+          STATE.voiceTraceEvents = STATE.voiceTraceEvents.slice(-500);
+        }
+
+        return {
+          ok: true,
+          stored: normalized.length,
+          latest: normalized[normalized.length - 1] || null,
+        };
+      }
+
+      if (route === '/api/voice/trace' && method === 'GET') {
+        const params = new URLSearchParams(path.split('?')[1] || '');
+        const sessionId = String(params.get('sessionId') || '').trim();
+        const latestOnly = ['1', 'true', 'yes'].includes(String(params.get('latest') || '').trim().toLowerCase());
+        const requestedLimit = Number(params.get('limit'));
+        const fallbackLimit = latestOnly ? 1 : 50;
+        const limit = Number.isFinite(requestedLimit)
+          ? Math.max(1, Math.min(500, Math.trunc(requestedLimit)))
+          : fallbackLimit;
+
+        const allEvents = Array.isArray(STATE.voiceTraceEvents) ? STATE.voiceTraceEvents : [];
+        const filtered = sessionId
+          ? allEvents.filter((entry) => String(entry?.sessionId || '').trim() === sessionId)
+          : allEvents;
+        const events = filtered.slice(-limit);
+
+        if (latestOnly) {
+          return {
+            ok: true,
+            latest: events[events.length - 1] || null,
+            total: filtered.length,
+          };
+        }
+
+        return {
+          ok: true,
+          events,
+          total: filtered.length,
+        };
+      }
+
+      if (route === '/api/voice/audio/respond' && method === 'POST') {
+        const inputText = String(body?.inputText || body?.text || '').trim();
+        if (!inputText) {
+          return { ok: false, error: 'inputText required' };
+        }
+        const text = buildDemoVoiceText(inputText);
+        const provider = String(STATE.settings?.VOICE_PROVIDER || 'openai').trim() || 'openai';
+        const voiceId = String(body?.voiceId || STATE.settings?.VOICE_ID || 'alloy').trim() || 'alloy';
+        pushLiveLog('info', 'voice', `Demo voice response generated (${provider}/${voiceId})`);
+        return {
+          ok: true,
+          text,
+          audioBase64: getDemoVoiceAudioBase64(),
+          audioMimeType: 'audio/wav',
+          audioFormat: 'wav',
+          sampleRateHz: 16000,
+          provider,
+          voiceId,
+          transport: 'responses-audio',
+          latencyMs: 220 + Math.floor(Math.random() * 140),
+        };
+      }
 
       // ── Supervisor ──
       if (route === '/api/supervisor/status')

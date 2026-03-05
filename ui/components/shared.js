@@ -1,6 +1,7 @@
 /* ─────────────────────────────────────────────────────────────
  *  VirtEngine Control Center – Shared UI Components
  *  Card, Badge, StatCard, Modal, Toast, EmptyState, etc.
+ *  MUI Material edition — preserves all export signatures.
  * ────────────────────────────────────────────────────────────── */
 
 import { h } from "preact";
@@ -14,6 +15,38 @@ import {
 import htm from "htm";
 
 const html = htm.bind(h);
+
+import {
+  Card as MuiCard,
+  CardContent,
+  CardHeader,
+  Chip,
+  Avatar as MuiAvatar,
+  Divider as MuiDivider,
+  Skeleton,
+  Dialog,
+  DialogTitle,
+  DialogContent,
+  DialogActions,
+  CircularProgress,
+  LinearProgress,
+  Snackbar,
+  Alert,
+  Button,
+  Typography,
+  Paper,
+  Box,
+  Stack,
+  Tooltip,
+  List as MuiList,
+  ListItem as MuiListItem,
+  ListItemButton,
+  ListItemIcon,
+  ListItemText,
+  ListItemSecondaryAction,
+  IconButton,
+  Fade,
+} from "@mui/material";
 
 import { ICONS } from "../modules/icons.js";
 import {
@@ -29,6 +62,34 @@ import {
 } from "../modules/telegram.js";
 import { classNames } from "../modules/utils.js";
 
+/* ── helper: map status strings → MUI Chip colors ─────────── */
+
+function mapStatusToMuiColor(normalized) {
+  switch (normalized) {
+    case "done":
+      return "success";
+    case "error":
+    case "critical":
+      return "error";
+    case "inprogress":
+    case "inreview":
+    case "info":
+      return "info";
+    case "warning":
+    case "high":
+    case "medium":
+      return "warning";
+    case "draft":
+    case "todo":
+    case "cancelled":
+    case "low":
+    case "log":
+      return "default";
+    default:
+      return undefined; // signals "unknown" — use outlined variant
+  }
+}
+
 /* ═══════════════════════════════════════════════
  *  Card
  * ═══════════════════════════════════════════════ */
@@ -39,11 +100,21 @@ import { classNames } from "../modules/utils.js";
  */
 export function Card({ title, subtitle, children, className = "", onClick }) {
   return html`
-    <div class="card ${className}" onClick=${onClick}>
-      ${title ? html`<div class="card-title">${title}</div>` : null}
-      ${subtitle ? html`<div class="card-subtitle">${subtitle}</div>` : null}
-      ${children}
-    </div>
+    <${MuiCard}
+      sx=${{ cursor: onClick ? "pointer" : "default" }}
+      className=${className}
+      onClick=${onClick}
+    >
+      <${CardContent}>
+        ${title
+          ? html`<${Typography} variant="subtitle1" fontWeight=${600}>${title}</${Typography}>`
+          : null}
+        ${subtitle
+          ? html`<${Typography} variant="body2" color="text.secondary">${subtitle}</${Typography}>`
+          : null}
+        ${children}
+      </${CardContent}>
+    </${MuiCard}>
   `;
 }
 
@@ -75,10 +146,15 @@ const BADGE_STATUS_MAP = new Set([
 export function Badge({ status, text, className = "" }) {
   const label = text || status || "";
   const normalized = (status || "").toLowerCase().replace(/\s+/g, "");
-  const statusClass = BADGE_STATUS_MAP.has(normalized)
-    ? `badge-${normalized}`
-    : "";
-  return html`<span class="badge ${statusClass} ${className}">${label}</span>`;
+  const muiColor = mapStatusToMuiColor(normalized);
+
+  return html`<${Chip}
+    label=${label}
+    size="small"
+    color=${muiColor || "default"}
+    variant=${muiColor ? "filled" : "outlined"}
+    className=${className}
+  />`;
 }
 
 /* ═══════════════════════════════════════════════
@@ -90,21 +166,28 @@ export function Badge({ status, text, className = "" }) {
  * @param {{value: any, label: string, trend?: 'up'|'down', color?: string}} props
  */
 export function StatCard({ value, label, trend, color }) {
-  const valueStyle = color ? `color: ${color}` : "";
   const trendIcon =
     trend === "up"
-      ? html`<span class="stat-trend stat-trend-up">↑</span>`
+      ? html`<${Typography} component="span" sx=${{ color: "success.main", ml: 0.5 }}>↑</${Typography}>`
       : trend === "down"
-        ? html`<span class="stat-trend stat-trend-down">↓</span>`
+        ? html`<${Typography} component="span" sx=${{ color: "error.main", ml: 0.5 }}>↓</${Typography}>`
         : null;
 
   return html`
-    <div class="stat-card">
-      <div class="stat-value" style=${valueStyle}>
-        ${value ?? "—"}${trendIcon}
-      </div>
-      <div class="stat-label">${label}</div>
-    </div>
+    <${MuiCard}>
+      <${CardContent} sx=${{ textAlign: "center", py: 2 }}>
+        <${Typography}
+          variant="h4"
+          fontWeight=${700}
+          sx=${{ color: color || "text.primary" }}
+        >
+          ${value ?? "—"}${trendIcon}
+        </${Typography}>
+        <${Typography} variant="body2" color="text.secondary" sx=${{ mt: 0.5 }}>
+          ${label}
+        </${Typography}>
+      </${CardContent}>
+    </${MuiCard}>
   `;
 }
 
@@ -117,12 +200,12 @@ export function StatCard({ value, label, trend, color }) {
  * @param {{height?: string, className?: string}} props
  */
 export function SkeletonCard({ height = "80px", className = "" }) {
-  return html`
-    <div
-      class="skeleton skeleton-card ${className}"
-      style="height: ${height}"
-    ></div>
-  `;
+  return html`<${Skeleton}
+    variant="rectangular"
+    height=${height}
+    sx=${{ borderRadius: 2 }}
+    className=${className}
+  />`;
 }
 
 /* ═══════════════════════════════════════════════
@@ -131,6 +214,8 @@ export function SkeletonCard({ height = "80px", className = "" }) {
 
 /**
  * Bottom-sheet modal with drag handle, title, swipe-to-dismiss, and TG BackButton integration.
+ * Custom implementation preserved (drag/swipe too complex for MUI Dialog).
+ * Uses Fade transition and Portal from preact/compat.
  * @param {{
  * title?: string,
  * open?: boolean,
@@ -441,85 +526,91 @@ export function Modal({
     : "";
 
   const content = html`
-    <div
-      class="modal-overlay ${visible ? "modal-overlay-visible" : ""}"
-      onClick=${(e) => {
-        if (e.target === e.currentTarget) requestClose();
-      }}
-    >
+    <${Fade} in=${visible} timeout=${300}>
       <div
-        ref=${contentRef}
-        class="modal-content ${contentClassName} ${visible ? "modal-content-visible" : ""} ${dragY > 0 ? "modal-dragging" : ""}"
-        style=${dragStyle}
-        onClick=${(e) => e.stopPropagation()}
-        onTouchStart=${handleTouchStart}
-        onTouchMove=${handleTouchMove}
-        onTouchEnd=${handleTouchEnd}
-        onTouchCancel=${handleTouchCancel}
-        onPointerDown=${handlePointerDown}
-        onPointerMove=${handlePointerMove}
-        onPointerUp=${handlePointerEnd}
-        onPointerCancel=${handlePointerCancel}
+        class="modal-overlay ${visible ? "modal-overlay-visible" : ""}"
+        onClick=${(e) => {
+          if (e.target === e.currentTarget) requestClose();
+        }}
       >
-        <div class="modal-header">
-          <div class="modal-handle"></div>
-          ${title ? html`<div class="modal-title">${title}</div>` : null}
-          <button class="modal-close-btn" onClick=${requestClose} aria-label="Close">
-            ${ICONS.close}
-          </button>
+        <div
+          ref=${contentRef}
+          class="modal-content ${contentClassName} ${visible ? "modal-content-visible" : ""} ${dragY > 0 ? "modal-dragging" : ""}"
+          style=${dragStyle}
+          onClick=${(e) => e.stopPropagation()}
+          onTouchStart=${handleTouchStart}
+          onTouchMove=${handleTouchMove}
+          onTouchEnd=${handleTouchEnd}
+          onTouchCancel=${handleTouchCancel}
+          onPointerDown=${handlePointerDown}
+          onPointerMove=${handlePointerMove}
+          onPointerUp=${handlePointerEnd}
+          onPointerCancel=${handlePointerCancel}
+        >
+          <div class="modal-header">
+            <div class="modal-handle"></div>
+            ${title ? html`<div class="modal-title">${title}</div>` : null}
+            <${IconButton}
+              className="modal-close-btn"
+              size="small"
+              onTouchStart=${(e) => e.stopPropagation()}
+              onPointerDown=${(e) => e.stopPropagation()}
+              onClick=${requestClose}
+              aria-label="Close"
+              sx=${{ position: 'absolute', right: 8, top: 8 }}
+            >
+              ${ICONS.close}
+            <//>
+          </div>
+          <div class="modal-body" onTouchStart=${handleBodyTouchStart}>
+            ${children}
+          </div>
+          ${footer ? html`<div class="modal-footer">${footer}</div>` : null}
         </div>
-        <div class="modal-body" onTouchStart=${handleBodyTouchStart}>
-          ${children}
-        </div>
-        ${footer ? html`<div class="modal-footer">${footer}</div>` : null}
       </div>
-    </div>
+    </${Fade}>
   `;
+
   const guard = closePromptOpen
     ? html`
-        <div
-          class="modal-overlay modal-overlay-visible"
-          onClick=${() => {
-            if (closePromptSaving) return;
-            setClosePromptOpen(false);
+        <${Dialog}
+          open=${closePromptOpen}
+          onClose=${() => {
+            if (!closePromptSaving) setClosePromptOpen(false);
           }}
         >
-          <div class="confirm-dialog" onClick=${(e) => e.stopPropagation()}>
-            <div class="confirm-dialog-title">${guardTitle}</div>
-            <div class="confirm-dialog-message">
-              ${guardUnsavedLine ? html`<div>${guardUnsavedLine}</div>` : null}
-              ${guardActivityLine ? html`<div>${guardActivityLine}</div>` : null}
-              <div>${guardHintLine}</div>
-            </div>
-            <div class="confirm-dialog-actions">
-              <button
-                class="btn btn-secondary"
-                onClick=${() => setClosePromptOpen(false)}
-                disabled=${closePromptSaving}
-              >
-                Cancel
-              </button>
-              <button
-                class="btn btn-secondary"
-                onClick=${handleDiscardAndClose}
-                disabled=${closePromptSaving}
-              >
-                ${hasUnsaved ? "Discard & Close" : "Close Anyway"}
-              </button>
-              ${hasUnsaved
-                ? html`
-                    <button
-                      class="btn btn-primary"
-                      onClick=${handleSaveAndClose}
-                      disabled=${closePromptSaving || typeof onSaveBeforeClose !== "function"}
-                    >
-                      ${closePromptSaving ? "Saving…" : "Save & Close"}
-                    </button>
-                  `
-                : null}
-            </div>
-          </div>
-        </div>
+          <${DialogTitle}>${guardTitle}</${DialogTitle}>
+          <${DialogContent}>
+            ${guardUnsavedLine ? html`<${Typography} variant="body2" sx=${{ mb: 0.5 }}>${guardUnsavedLine}</${Typography}>` : null}
+            ${guardActivityLine ? html`<${Typography} variant="body2" sx=${{ mb: 0.5 }}>${guardActivityLine}</${Typography}>` : null}
+            <${Typography} variant="body2">${guardHintLine}</${Typography}>
+          </${DialogContent}>
+          <${DialogActions}>
+            <${Button}
+              onClick=${() => setClosePromptOpen(false)}
+              disabled=${closePromptSaving}
+            >
+              Cancel
+            </${Button}>
+            <${Button}
+              onClick=${handleDiscardAndClose}
+              disabled=${closePromptSaving}
+            >
+              ${hasUnsaved ? "Discard & Close" : "Close Anyway"}
+            </${Button}>
+            ${hasUnsaved
+              ? html`
+                  <${Button}
+                    variant="contained"
+                    onClick=${handleSaveAndClose}
+                    disabled=${closePromptSaving || typeof onSaveBeforeClose !== "function"}
+                  >
+                    ${closePromptSaving ? "Saving…" : "Save & Close"}
+                  </${Button}>
+                `
+              : null}
+          </${DialogActions}>
+        </${Dialog}>
       `
     : null;
   return createPortal(html`${content}${guard}`, document.body);
@@ -530,7 +621,7 @@ export function Modal({
  * ═══════════════════════════════════════════════ */
 
 /**
- * Confirmation dialog — tries Telegram native showConfirm first, falls back to styled modal.
+ * Confirmation dialog — tries Telegram native showConfirm first, falls back to MUI Dialog.
  * @param {{title?: string, message: string, confirmText?: string, cancelText?: string, onConfirm: () => void, onCancel: () => void, destructive?: boolean}} props
  */
 export function ConfirmDialog({
@@ -566,32 +657,25 @@ export function ConfirmDialog({
   // If Telegram native is available, render nothing (native dialog handles it)
   if (getTg()?.showConfirm) return null;
 
-  const confirmBtnStyle = destructive
-    ? "background: var(--destructive); color: #fff;"
-    : "";
-
   return html`
-    <div class="modal-overlay modal-overlay-visible" onClick=${onCancel}>
-      <div
-        class="confirm-dialog"
-        onClick=${(e) => e.stopPropagation()}
-      >
-        <div class="confirm-dialog-title">${title}</div>
-        <div class="confirm-dialog-message">${message}</div>
-        <div class="confirm-dialog-actions">
-          <button class="btn btn-secondary" onClick=${onCancel}>
-            ${cancelText}
-          </button>
-          <button
-            class="btn btn-primary ${destructive ? "btn-destructive" : ""}"
-            style=${confirmBtnStyle}
-            onClick=${onConfirm}
-          >
-            ${confirmText}
-          </button>
-        </div>
-      </div>
-    </div>
+    <${Dialog} open onClose=${onCancel}>
+      <${DialogTitle}>${title}</${DialogTitle}>
+      <${DialogContent}>
+        <${Typography} variant="body1">${message}</${Typography}>
+      </${DialogContent}>
+      <${DialogActions}>
+        <${Button} onClick=${onCancel}>
+          ${cancelText}
+        </${Button}>
+        <${Button}
+          variant="contained"
+          color=${destructive ? "error" : "primary"}
+          onClick=${onConfirm}
+        >
+          ${confirmText}
+        </${Button}>
+      </${DialogActions}>
+    </${Dialog}>
   `;
 }
 
@@ -618,14 +702,11 @@ export function confirmAction(message) {
  * ═══════════════════════════════════════════════ */
 
 /**
- * Inline SVG spinner for loading indicators.
+ * Inline spinner for loading indicators.
  * @param {{size?: number, color?: string}} props
  */
 export function Spinner({ size = 16, color = "currentColor" }) {
-  return html`<svg class="spinner" width=${size} height=${size} viewBox="0 0 24 24" fill="none" stroke=${color} stroke-width="2.5" stroke-linecap="round">
-    <circle cx="12" cy="12" r="10" opacity="0.25" />
-    <path d="M12 2a10 10 0 0 1 10 10" />
-  </svg>`;
+  return html`<${CircularProgress} size=${size} sx=${{ color }} />`;
 }
 
 /* ═══════════════════════════════════════════════
@@ -637,17 +718,32 @@ export function Spinner({ size = 16, color = "currentColor" }) {
  * @param {{loading?: boolean, onClick?: () => void, children?: any, class?: string, disabled?: boolean}} props
  */
 export function LoadingButton({ loading = false, onClick, children, class: cls = "", disabled = false, ...rest }) {
-  return html`<button
-    class=${`btn ${cls} ${loading ? "btn-loading" : ""}`}
-    onClick=${!loading && !disabled ? onClick : undefined}
+  return html`<${Button}
+    variant="contained"
     disabled=${loading || disabled}
+    onClick=${!loading && !disabled ? onClick : undefined}
+    className=${cls}
     ...${rest}
-  >${loading ? html`<${Spinner} size=${14} /> ` : ""}${children}</button>`;
+  >${loading ? html`<${CircularProgress} size=${14} sx=${{ mr: 0.5 }} />` : ""}${children}</${Button}>`;
 }
 
 /* ═══════════════════════════════════════════════
  *  Toast / ToastContainer
  * ═══════════════════════════════════════════════ */
+
+/** Map toast type strings to MUI Alert severity values */
+function mapToastSeverity(type) {
+  switch (type) {
+    case "error":
+      return "error";
+    case "warning":
+      return "warning";
+    case "success":
+      return "success";
+    default:
+      return "info";
+  }
+}
 
 /**
  * Renders all active toasts from the toasts signal.
@@ -661,23 +757,38 @@ export function ToastContainer() {
   if (!visible.length) return null;
 
   return html`
-    <div class="toast-container">
+    <${Box} sx=${{
+      position: "fixed",
+      top: 16,
+      right: 16,
+      zIndex: 9999,
+      display: "flex",
+      flexDirection: "column",
+      gap: 1,
+      maxWidth: 400,
+    }}>
       ${visible.map(
         (t) => html`
-          <div key=${t.id} class="toast toast-${t.type}">
-            <span class="toast-message">${t.message}</span>
-            <button
-              class="toast-close"
-              onClick=${() => {
+          <${Snackbar}
+            key=${t.id}
+            open
+            anchorOrigin=${{ vertical: "top", horizontal: "right" }}
+            sx=${{ position: "static", transform: "none" }}
+          >
+            <${Alert}
+              severity=${mapToastSeverity(t.type)}
+              variant="filled"
+              onClose=${() => {
                 toasts.value = toasts.value.filter((x) => x.id !== t.id);
               }}
+              sx=${{ width: "100%" }}
             >
-              ×
-            </button>
-          </div>
+              ${t.message}
+            </${Alert}>
+          </${Snackbar}>
         `,
       )}
-    </div>
+    </${Box}>
   `;
 }
 
@@ -691,23 +802,33 @@ export function ToastContainer() {
  */
 export function EmptyState({ icon, title, message, description, action }) {
   const iconSvg = icon && ICONS[icon] ? ICONS[icon] : null;
-  const displayIcon = iconSvg ? html`<div class="empty-state-icon">${iconSvg}</div>`
-    : icon ? html`<div class="empty-state-icon">${icon}</div>`
+  const displayIcon = iconSvg ? html`<${Box} sx=${{ mb: 1, "& svg": { width: 48, height: 48, opacity: 0.5 } }}>${iconSvg}</${Box}>`
+    : icon ? html`<${Box} sx=${{ mb: 1, fontSize: 48, opacity: 0.5 }}>${icon}</${Box}>`
     : null;
   const displayTitle = title || message || null;
   return html`
-    <div class="empty-state">
+    <${Box} sx=${{
+      display: "flex",
+      flexDirection: "column",
+      alignItems: "center",
+      justifyContent: "center",
+      py: 6,
+      px: 3,
+      textAlign: "center",
+    }}>
       ${displayIcon}
-      ${displayTitle ? html`<div class="empty-state-title">${displayTitle}</div>` : null}
+      ${displayTitle
+        ? html`<${Typography} variant="h6" sx=${{ mb: 1, opacity: 0.7 }}>${displayTitle}</${Typography}>`
+        : null}
       ${description
-        ? html`<div class="empty-state-description">${description}</div>`
+        ? html`<${Typography} variant="body2" color="text.secondary" sx=${{ mb: 2 }}>${description}</${Typography}>`
         : null}
       ${action
-        ? html`<button class="btn btn-primary btn-sm" onClick=${action.onClick}>
+        ? html`<${Button} variant="contained" size="small" onClick=${action.onClick}>
             ${action.label}
-          </button>`
+          </${Button}>`
         : null}
-    </div>
+    </${Box}>
   `;
 }
 
@@ -720,12 +841,8 @@ export function EmptyState({ icon, title, message, description, action }) {
  * @param {{label?: string}} props
  */
 export function Divider({ label }) {
-  if (!label) return html`<div class="divider"></div>`;
-  return html`
-    <div class="divider divider-label">
-      <span>${label}</span>
-    </div>
-  `;
+  if (!label) return html`<${MuiDivider} />`;
+  return html`<${MuiDivider} textAlign="center">${label}</${MuiDivider}>`;
 }
 
 /* ═══════════════════════════════════════════════
@@ -743,27 +860,21 @@ export function Avatar({ name = "", size = 36, src }) {
     .map((w) => w.charAt(0).toUpperCase())
     .join("");
 
-  const style = `width:${size}px;height:${size}px;border-radius:50%;overflow:hidden;
-    display:flex;align-items:center;justify-content:center;
-    background:var(--accent,#5b6eae);color:var(--accent-text,#fff);
-    font-size:${Math.round(size * 0.4)}px;font-weight:600;flex-shrink:0`;
-
-  if (src) {
-    return html`
-      <div style=${style}>
-        <img
-          src=${src}
-          alt=${name}
-          style="width:100%;height:100%;object-fit:cover"
-          onError=${(e) => {
-            e.target.style.display = "none";
-          }}
-        />
-      </div>
-    `;
-  }
-
-  return html`<div style=${style}>${initials || "?"}</div>`;
+  return html`
+    <${MuiAvatar}
+      src=${src || undefined}
+      alt=${name}
+      sx=${{
+        width: size,
+        height: size,
+        fontSize: Math.round(size * 0.4),
+        fontWeight: 600,
+        bgcolor: src ? undefined : "primary.main",
+      }}
+    >
+      ${!src ? (initials || "?") : null}
+    </${MuiAvatar}>
+  `;
 }
 
 /* ═══════════════════════════════════════════════
@@ -776,22 +887,32 @@ export function Avatar({ name = "", size = 36, src }) {
  */
 export function ListItem({ title, subtitle, trailing, onClick, icon }) {
   const iconSvg = icon && ICONS[icon] ? ICONS[icon] : null;
+
+  const inner = html`
+    ${iconSvg ? html`<${ListItemIcon} sx=${{ minWidth: 36, "& svg": { width: 20, height: 20 } }}>${iconSvg}</${ListItemIcon}>` : null}
+    <${ListItemText}
+      primary=${title}
+      secondary=${subtitle || undefined}
+    />
+    ${trailing != null
+      ? html`<${ListItemSecondaryAction}>${trailing}</${ListItemSecondaryAction}>`
+      : null}
+  `;
+
+  if (onClick) {
+    return html`
+      <${MuiListItem} disablePadding>
+        <${ListItemButton} onClick=${onClick}>
+          ${inner}
+        </${ListItemButton}>
+      </${MuiListItem}>
+    `;
+  }
+
   return html`
-    <div
-      class=${classNames("list-item", { "list-item-clickable": !!onClick })}
-      onClick=${onClick}
-    >
-      ${iconSvg ? html`<div class="list-item-icon">${iconSvg}</div>` : null}
-      <div class="list-item-body">
-        <div class="list-item-title">${title}</div>
-        ${subtitle
-          ? html`<div class="list-item-subtitle">${subtitle}</div>`
-          : null}
-      </div>
-      ${trailing != null
-        ? html`<div class="list-item-trailing">${trailing}</div>`
-        : null}
-    </div>
+    <${MuiListItem}>
+      ${inner}
+    </${MuiListItem}>
   `;
 }
 
@@ -822,24 +943,40 @@ export function SaveDiscardBar({
 }) {
   if (!dirty) return null;
   return html`
-    <div class=${classNames("ve-save-discard-bar", className)}>
-      <div class="ve-save-discard-message">${message}</div>
-      <div class="ve-save-discard-actions">
-        <button
-          class="btn btn-ghost btn-sm"
+    <${Paper}
+      elevation=${4}
+      className=${className}
+      sx=${{
+        position: "sticky",
+        bottom: 0,
+        p: 1.5,
+        display: "flex",
+        alignItems: "center",
+        justifyContent: "space-between",
+        zIndex: 10,
+        borderRadius: 2,
+      }}
+    >
+      <${Typography} variant="body2" color="text.secondary">
+        ${message}
+      </${Typography}>
+      <${Stack} direction="row" spacing=${1}>
+        <${Button}
+          size="small"
           onClick=${onDiscard}
           disabled=${disabled || saving}
         >
           ${discardLabel}
-        </button>
-        <button
-          class="btn btn-primary btn-sm"
+        </${Button}>
+        <${Button}
+          variant="contained"
+          size="small"
           onClick=${onSave}
           disabled=${disabled || saving}
         >
           ${saving ? "Saving…" : saveLabel}
-        </button>
-      </div>
-    </div>
+        </${Button}>
+      </${Stack}>
+    </${Paper}>
   `;
 }

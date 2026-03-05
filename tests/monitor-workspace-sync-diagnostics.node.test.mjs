@@ -4,7 +4,7 @@ import { resolve } from "node:path";
 import test from "node:test";
 
 test("workspace sync warnings include sample context and benign downgrade path", () => {
-  const src = readFileSync(resolve(process.cwd(), "monitor.mjs"), "utf8");
+  const src = readFileSync(resolve(process.cwd(), "infra/monitor.mjs"), "utf8");
   assert.match(src, /function isBenignWorkspaceSyncFailure\(errorText\)/);
   assert.match(src, /function shouldEmitWorkspaceSyncWarn\(key, now = Date\.now\(\)\)/);
   assert.match(src, /function clearWorkspaceSyncWarnForWorkspace\(workspaceId\)/);
@@ -62,10 +62,11 @@ test("workspace sync warnings include sample context and benign downgrade path",
 });
 
 test("workspace manager pull failure prefers stderr/stdout details", () => {
-  const src = readFileSync(resolve(process.cwd(), "workspace-manager.mjs"), "utf8");
+  const src = readFileSync(resolve(process.cwd(), "workspace/workspace-manager.mjs"), "utf8");
   assert.match(src, /const stderr = normalizeSingleLine\(err\?\.stderr \|\| ""\)/);
   assert.match(src, /const stdout = normalizeSingleLine\(err\?\.stdout \|\| ""\)/);
   assert.match(src, /const message = normalizeSingleLine\(err\?\.message \|\| err \|\| ""\)/);
+  assert.match(src, /err\?\.stderr \|\| err\?\.stdout \|\| err\?\.message/);
   assert.match(src, /git pull --rebase failed/);
   assert.match(src, /function buildGitPullFailureDetails\(err, repoPath, childProcess\)/);
   assert.match(src, /status=\$\{err\.status\}/);

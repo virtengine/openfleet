@@ -8,7 +8,11 @@
  *   - Health Check
  *   - Task Finalization Guard (recommended)
  *   - Task Repair Worktree (recommended)
+ *   - Task Orphan Worktree Recovery (recommended)
+ *   - Task Status Transition Manager
  *   - Incident Response (recommended)
+ *   - Task Archiver (recommended)
+ *   - Sync Engine (recommended)
  */
 
 import { node, edge, resetLayout } from "./_helpers.mjs";
@@ -67,6 +71,12 @@ export const ERROR_RECOVERY_TEMPLATE = {
     node("escalate", "notify.telegram", "Escalate to Human", {
       message: ":alert: Task **{{taskTitle}}** failed after {{maxRetries}} attempts. Manual intervention needed.\n\nLast error: {{lastError}}",
     }, { x: 600, y: 620 }),
+
+    node("chain-repair", "action.execute_workflow", "Trigger Repair Workflow", {
+      workflowId: "template-task-repair-worktree",
+      mode: "dispatch",
+      input: "({taskId: $data?.taskId, taskTitle: $data?.taskTitle, worktreePath: $data?.worktreePath, branch: $data?.branch, baseBranch: $data?.baseBranch, error: $data?.lastError})",
+    }, { x: 400, y: 760 }),
   ],
   edges: [
     edge("trigger", "check-retries"),
@@ -75,7 +85,8 @@ export const ERROR_RECOVERY_TEMPLATE = {
     edge("analyze-error", "retry-task"),
     edge("retry-task", "retry-succeeded"),
     edge("retry-succeeded", "notify-recovered", { condition: "$output?.result === true", port: "yes" }),
-    edge("retry-succeeded", "escalate", { condition: "$output?.result !== true", port: "no" }),
+    edge("retry-succeeded", "chain-repair", { condition: "$output?.result !== true", port: "no" }),
+    edge("chain-repair", "escalate"),
   ],
   metadata: {
     author: "bosun",
@@ -83,6 +94,7 @@ export const ERROR_RECOVERY_TEMPLATE = {
     createdAt: "2025-02-24T00:00:00Z",
     templateVersion: "1.0.0",
     tags: ["error", "recovery", "autofix"],
+    requiredTemplates: ["template-task-repair-worktree"],
     replaces: {
       module: "monitor.mjs",
       functions: ["runCodexRecovery"],
@@ -479,9 +491,35 @@ export const TASK_FINALIZATION_GUARD_TEMPLATE = {
       level: "info",
     }, { x: 240, y: 1040 }),
 
+    node("chain-archiver", "flow.universal", "Queue Archival", {
+      workflowId: "template-task-archiver",
+      mode: "dispatch",
+      input: "({taskId: $data?.taskId, taskTitle: $data?.taskTitle, completedAt: new Date().toISOString(), taskJson: JSON.stringify($data?.task || {id: $data?.taskId, title: $data?.taskTitle})})",
+    }, { x: 240, y: 1180 }),
+
+    node("end-success", "flow.end", "End Success", {
+      status: "completed",
+      message: "Task finalization guard completed successfully for {{taskId}}",
+      output: {
+        outcome: "passed",
+        taskId: "{{taskId}}",
+        taskTitle: "{{taskTitle}}",
+      },
+    }, { x: 240, y: 1310 }),
+
     node("notify-fail", "notify.telegram", "Notify Finalization Failure", {
       message: ":alert: Task finalization failed for **{{taskTitle}}** ({{taskId}}). Repair workflow handoff triggered.",
     }, { x: 540, y: 900 }),
+
+    node("end-failed", "flow.end", "End Failed", {
+      status: "failed",
+      message: "Task finalization guard failed for {{taskId}}",
+      output: {
+        outcome: "failed",
+        taskId: "{{taskId}}",
+        taskTitle: "{{taskTitle}}",
+      },
+    }, { x: 540, y: 1040 }),
   ],
   edges: [
     edge("trigger", "has-worktree"),
@@ -496,8 +534,11 @@ export const TASK_FINALIZATION_GUARD_TEMPLATE = {
     edge("create-pr-success", "mark-inreview", { condition: "$output?.result === true", port: "yes" }),
     edge("create-pr-success", "mark-todo-failed", { condition: "$output?.result !== true", port: "no" }),
     edge("mark-inreview", "notify-pass"),
+    edge("notify-pass", "chain-archiver"),
+    edge("chain-archiver", "end-success"),
     edge("mark-todo-failed", "notify-fail"),
     edge("mark-todo-missing", "notify-fail"),
+    edge("notify-fail", "end-failed"),
   ],
   metadata: {
     author: "bosun",
@@ -505,6 +546,7 @@ export const TASK_FINALIZATION_GUARD_TEMPLATE = {
     createdAt: "2026-02-26T00:00:00Z",
     templateVersion: "1.0.0",
     tags: ["finalization", "quality-gate", "prepush", "handoff", "reliability"],
+    requiredTemplates: ["template-task-archiver"],
     replaces: {
       module: "task-executor.mjs",
       functions: ["_handleTaskResult finalization gate"],
@@ -664,6 +706,103 @@ export const TASK_REPAIR_WORKTREE_TEMPLATE = {
       description:
         "Introduces a dedicated automated repair workflow that takes over " +
         "when task execution or finalization fails.",
+    },
+  },
+};
+
+// ═══════════════════════════════════════════════════════════════════════════
+//  Task Orphan Worktree Recovery
+// ═══════════════════════════════════════════════════════════════════════════
+
+resetLayout();
+
+export const TASK_ORPHAN_WORKTREE_RECOVERY_TEMPLATE = {
+  id: "template-task-orphan-worktree-recovery",
+  name: "Task Orphan Worktree Recovery",
+  description:
+    "Scheduled workflow-owned recovery for orphaned task worktrees. " +
+    "Scans .cache/worktrees for abandoned task branches, auto-commits pending " +
+    "changes, pushes recoverable branches, records PR handoff, and updates " +
+    "task status to inreview when successful.",
+  category: "reliability",
+  enabled: true,
+  recommended: true,
+  trigger: "trigger.schedule",
+  variables: {
+    intervalMs: 1800000,
+    baseBranch: "origin/main",
+    maxRecoverPerSweep: 20,
+  },
+  nodes: [
+    node("trigger", "trigger.schedule", "Scheduled Recovery Sweep", {
+      intervalMs: "{{intervalMs}}",
+      cron: "*/30 * * * *",
+    }, { x: 420, y: 50 }),
+
+    node("recover", "action.run_command", "Recover Orphan Worktrees", {
+      command:
+        "node tools/workflow-orphan-worktree-recovery.mjs " +
+        "--base \"{{baseBranch}}\" " +
+        "--max \"{{maxRecoverPerSweep}}\"",
+      failOnError: false,
+    }, { x: 420, y: 190 }),
+
+    node("parse-recovery", "transform.json_parse", "Parse Recovery Summary", {
+      input: "recover",
+      field: "output",
+    }, { x: 420, y: 330 }),
+
+    node("parse-ok", "condition.expression", "Recovery Summary Valid?", {
+      expression: "$ctx.getNodeOutput('parse-recovery')?.success === true",
+    }, { x: 420, y: 470, outputs: ["yes", "no"] }),
+
+    node("has-recovered", "condition.expression", "Recovered Branches?", {
+      expression: "Number($ctx.getNodeOutput('parse-recovery')?.data?.recovered || 0) > 0",
+    }, { x: 420, y: 610, outputs: ["yes", "no"] }),
+
+    node("log-recovered", "notify.log", "Log Recovery Success", {
+      message:
+        "Orphan recovery: recovered={{parse-recovery.data.recovered}} " +
+        "skipped={{parse-recovery.data.skipped}} failed={{parse-recovery.data.failed}}",
+      level: "info",
+    }, { x: 250, y: 760 }),
+
+    node("log-idle", "notify.log", "Log No Work", {
+      message:
+        "Orphan recovery: no recoverable orphaned worktrees found " +
+        "(scanned={{parse-recovery.data.scanned}}, skipped={{parse-recovery.data.skipped}}).",
+      level: "debug",
+    }, { x: 560, y: 760 }),
+
+    node("log-parse-failed", "notify.log", "Log Recovery Parse Failure", {
+      message:
+        "Orphan recovery workflow produced invalid JSON output. " +
+        "Check tools/workflow-orphan-worktree-recovery.mjs execution logs.",
+      level: "warn",
+    }, { x: 760, y: 610 }),
+  ],
+  edges: [
+    edge("trigger", "recover"),
+    edge("recover", "parse-recovery"),
+    edge("parse-recovery", "parse-ok"),
+    edge("parse-ok", "has-recovered", { condition: "$output?.result === true", port: "yes" }),
+    edge("parse-ok", "log-parse-failed", { condition: "$output?.result !== true", port: "no" }),
+    edge("has-recovered", "log-recovered", { condition: "$output?.result === true", port: "yes" }),
+    edge("has-recovered", "log-idle", { condition: "$output?.result !== true", port: "no" }),
+  ],
+  metadata: {
+    author: "bosun",
+    version: 1,
+    createdAt: "2026-03-04T00:00:00Z",
+    templateVersion: "1.0.0",
+    tags: ["orphan", "recovery", "worktree", "lifecycle", "reliability"],
+    replaces: {
+      module: "task-executor.mjs",
+      functions: ["_recoverOrphanedWorktrees"],
+      calledFrom: ["task-executor.mjs:start"],
+      description:
+        "Moves orphaned worktree recovery out of the legacy task-executor " +
+        "startup path and into a dedicated scheduled workflow.",
     },
   },
 };
@@ -895,6 +1034,301 @@ Be conservative — prefer safe mitigations over aggressive fixes.`,
         "Replaces reactive error handling with a structured incident response " +
         "workflow. Evidence collection, classification, task creation, and " +
         "agent assignment become explicit, auditable steps.",
+    },
+  },
+};
+
+// ═══════════════════════════════════════════════════════════════════════════
+//  Task Archiver
+// ═══════════════════════════════════════════════════════════════════════════
+
+resetLayout();
+
+export const TASK_ARCHIVER_TEMPLATE = {
+  id: "template-task-archiver",
+  name: "Task Archiver",
+  description:
+    "Automated archival of completed tasks — migrates old completed/cancelled " +
+    "tasks to local archives, cleans up agent sessions, prunes archives " +
+    "beyond retention, and optionally chains into Sprint Retrospective.",
+  category: "reliability",
+  enabled: true,
+  recommended: true,
+  trigger: "trigger.event",
+  variables: {
+    ageHours: 24,
+    maxArchivePerSweep: 50,
+    retentionDays: 90,
+    pruneEnabled: true,
+    dryRun: false,
+  },
+  nodes: [
+    node("trigger", "trigger.event", "Task Completed", {
+      eventType: "task.status_changed",
+      filter: "($event?.newStatus === 'done' || $event?.newStatus === 'cancelled')",
+    }, { x: 400, y: 50 }),
+
+    node("check-age", "condition.expression", "Old Enough to Archive?", {
+      expression:
+        "(() => { " +
+        "const completedAt = new Date($data?.completedAt || $data?.updatedAt || 0); " +
+        "if (isNaN(completedAt.getTime())) return false; " +
+        "const ageHours = (Date.now() - completedAt.getTime()) / (1000 * 60 * 60); " +
+        "return ageHours >= ($data?.ageHours || 24); " +
+        "})()",
+    }, { x: 400, y: 200, outputs: ["yes", "no"] }),
+
+    node("check-already-archived", "condition.expression", "Already Archived?", {
+      expression: "$data?.alreadyArchived === true",
+    }, { x: 400, y: 350, outputs: ["yes", "no"] }),
+
+    node("archive-to-file", "action.run_command", "Archive to Daily File", {
+      command:
+        "node -e \"" +
+        "const {archiveTaskToFile} = await import('./task-archiver.mjs'); " +
+        "const result = await archiveTaskToFile(JSON.parse(process.env.TASK_JSON)); " +
+        "console.log(JSON.stringify({success: !!result, path: result}));\" ",
+      env: { TASK_JSON: "{{taskJson}}", MAX_PER_SWEEP: "{{maxArchivePerSweep}}", DRY_RUN: "{{dryRun}}" },
+      continueOnError: true,
+    }, { x: 200, y: 500 }),
+
+    node("cleanup-sessions", "action.run_command", "Cleanup Agent Sessions", {
+      command:
+        "node -e \"" +
+        "const {cleanupAgentSessions} = await import('./task-archiver.mjs'); " +
+        "const count = await cleanupAgentSessions('{{taskId}}', '{{attemptId}}'); " +
+        "console.log(JSON.stringify({cleaned: count}));\" ",
+      continueOnError: true,
+    }, { x: 200, y: 650 }),
+
+    node("delete-from-backend", "action.run_command", "Delete from Backend", {
+      command:
+        "node -e \"" +
+        "const {deleteTaskFromVK} = await import('./task-archiver.mjs'); " +
+        "const ok = await deleteTaskFromVK(null, '{{taskId}}'); " +
+        "console.log(JSON.stringify({deleted: ok}));\" ",
+      continueOnError: true,
+    }, { x: 200, y: 800 }),
+
+    node("should-prune", "condition.expression", "Prune Old Archives?", {
+      expression: "Boolean($data?.pruneEnabled !== false)",
+    }, { x: 500, y: 800, outputs: ["yes", "no"] }),
+
+    node("prune-archives", "action.run_command", "Prune Expired Archives", {
+      command:
+        "node -e \"" +
+        "const {pruneOldArchives} = await import('./task-archiver.mjs'); " +
+        "const count = await pruneOldArchives({retentionDays: {{retentionDays}}}); " +
+        "console.log(JSON.stringify({pruned: count}));\" ",
+      continueOnError: true,
+    }, { x: 500, y: 950 }),
+
+    node("log-result", "notify.log", "Log Archive Result", {
+      message: "Task {{taskId}} archived successfully. Sessions cleaned, backend updated.",
+      level: "info",
+    }, { x: 400, y: 1100 }),
+
+    node("skip-log", "notify.log", "Skip — Not Ready", {
+      message: "Task {{taskId}} not yet old enough to archive (threshold: {{ageHours}}h)",
+      level: "debug",
+    }, { x: 600, y: 350 }),
+
+    node("already-archived-log", "notify.log", "Already Archived", {
+      message: "Task {{taskId}} was already archived — skipping",
+      level: "debug",
+    }, { x: 600, y: 500 }),
+  ],
+  edges: [
+    edge("trigger", "check-age"),
+    edge("check-age", "check-already-archived", { condition: "$output?.result === true", port: "yes" }),
+    edge("check-age", "skip-log", { condition: "$output?.result !== true", port: "no" }),
+    edge("check-already-archived", "already-archived-log", { condition: "$output?.result === true", port: "yes" }),
+    edge("check-already-archived", "archive-to-file", { condition: "$output?.result !== true", port: "no" }),
+    edge("archive-to-file", "cleanup-sessions"),
+    edge("cleanup-sessions", "delete-from-backend"),
+    edge("delete-from-backend", "should-prune"),
+    edge("should-prune", "prune-archives", { condition: "$output?.result === true", port: "yes" }),
+    edge("should-prune", "log-result", { condition: "$output?.result !== true", port: "no" }),
+    edge("prune-archives", "log-result"),
+  ],
+  metadata: {
+    author: "bosun",
+    version: 1,
+    createdAt: "2025-06-01T00:00:00Z",
+    templateVersion: "1.0.0",
+    tags: ["archive", "cleanup", "task", "maintenance", "reliability"],
+    replaces: {
+      module: "task-archiver.mjs",
+      functions: [
+        "archiveCompletedTasks",
+        "archiveTaskToFile",
+        "cleanupAgentSessions",
+        "pruneOldArchives",
+        "deleteTaskFromVK",
+      ],
+      calledFrom: [
+        "monitor.mjs:startup",
+        "monitor.mjs:safeSetInterval(archiveCompletedTasks)",
+      ],
+      description:
+        "Replaces the monolithic archiveCompletedTasks sweep with an " +
+        "event-driven workflow. Each task completion fires the archiver " +
+        "instead of a periodic cron sweep, enabling per-task auditing " +
+        "and eliminating batch-scan overhead.",
+    },
+  },
+};
+
+// ═══════════════════════════════════════════════════════════════════════════
+//  Sync Engine (Kanban ↔ Internal Task Store)
+// ═══════════════════════════════════════════════════════════════════════════
+
+resetLayout();
+
+export const SYNC_ENGINE_TEMPLATE = {
+  id: "template-sync-engine",
+  name: "Kanban Sync Engine",
+  description:
+    "Two-way synchronisation between internal task store and external " +
+    "kanban backends (VK, GitHub Issues, Jira). Pulls new/changed tasks " +
+    "from the external board, pushes internal status updates outward, " +
+    "detects conflicts, and handles rate-limit back-off.",
+  category: "reliability",
+  enabled: true,
+  recommended: true,
+  trigger: "trigger.event",
+  variables: {
+    syncPolicy: "internal-primary",
+    syncIntervalMs: 60000,
+    failureAlertThreshold: 3,
+    rateLimitAlertThreshold: 3,
+    backoffIntervalMs: 300000,
+    backoffThreshold: 5,
+  },
+  nodes: [
+    node("trigger", "trigger.event", "Sync Trigger", {
+      eventType: "sync.requested",
+      description: "Fires on task status changes, startup, or periodic heartbeat",
+      intervalMs: "{{syncIntervalMs}}",
+    }, { x: 400, y: 50 }),
+
+    node("pull-external", "action.run_command", "Pull from External", {
+      command:
+        "node -e \"" +
+        "const {createSyncEngine} = await import('./sync-engine.mjs'); " +
+        "const engine = createSyncEngine({projectId: '{{projectId}}'}); " +
+        "const result = await engine.pullFromExternal(); " +
+        "console.log(JSON.stringify(result));\" ",
+      timeoutMs: 120000,
+      continueOnError: true,
+    }, { x: 200, y: 200 }),
+
+    node("pull-ok", "condition.expression", "Pull Succeeded?", {
+      expression:
+        "(() => { const out = $ctx.getNodeOutput('pull-external'); " +
+        "return out?.success !== false && (!out?.errors || out.errors.length === 0); })()",
+    }, { x: 200, y: 380, outputs: ["yes", "no"] }),
+
+    node("push-internal", "action.run_command", "Push to External", {
+      command:
+        "node -e \"" +
+        "const {createSyncEngine} = await import('./sync-engine.mjs'); " +
+        "const engine = createSyncEngine({projectId: '{{projectId}}'}); " +
+        "const result = await engine.pushToExternal(); " +
+        "console.log(JSON.stringify(result));\" ",
+      timeoutMs: 120000,
+      continueOnError: true,
+    }, { x: 200, y: 530 }),
+
+    node("push-ok", "condition.expression", "Push Succeeded?", {
+      expression:
+        "(() => { const out = $ctx.getNodeOutput('push-internal'); " +
+        "return out?.success !== false && (!out?.errors || out.errors.length === 0); })()",
+    }, { x: 200, y: 700, outputs: ["yes", "no"] }),
+
+    node("check-rate-limit", "condition.expression", "Rate Limited?", {
+      expression:
+        "(() => { " +
+        "const pull = $ctx.getNodeOutput('pull-external'); " +
+        "const push = $ctx.getNodeOutput('push-internal'); " +
+        "const allErrors = [...(pull?.errors || []), ...(push?.errors || [])]; " +
+        "const rateLimitHits = allErrors.filter(e => /rate.limit|429|throttl/i.test(String(e))).length; " +
+        "return rateLimitHits >= ($data?.rateLimitAlertThreshold || 3); " +
+        "})()",
+    }, { x: 500, y: 700, outputs: ["yes", "no"] }),
+
+    node("handle-rate-limit", "action.handle_rate_limit", "Back-off & Retry", {
+      delayMs: "{{backoffIntervalMs}}",
+      maxRetries: "{{backoffThreshold}}",
+      reason: "External kanban rate limit hit during sync",
+    }, { x: 700, y: 700 }),
+
+    node("count-failures", "action.set_variable", "Track Consecutive Failures", {
+      key: "consecutiveFailures",
+      value:
+        "(() => { const prev = Number($data?.consecutiveFailures || 0); return prev + 1; })()",
+      isExpression: true,
+    }, { x: 500, y: 380 }),
+
+    node("should-alert", "condition.expression", "Alert Threshold?", {
+      expression: "Number($data?.consecutiveFailures || 0) >= Number($data?.failureAlertThreshold || 3)",
+    }, { x: 500, y: 530, outputs: ["yes", "no"] }),
+
+    node("alert-failures", "notify.telegram", "Sync Failure Alert", {
+      message:
+        ":warning: Kanban sync has failed **{{consecutiveFailures}}** consecutive times.\n" +
+        "Policy: {{syncPolicy}}\n" +
+        "Last errors: {{lastSyncErrors}}",
+    }, { x: 700, y: 530 }),
+
+    node("log-success", "notify.log", "Log Sync Success", {
+      message: "Kanban sync complete — pulled: {{pullCount}}, pushed: {{pushCount}}, conflicts: {{conflictCount}}",
+      level: "info",
+    }, { x: 200, y: 880 }),
+
+    node("log-partial", "notify.log", "Log Partial Sync", {
+      message: "Kanban sync partial — some operations failed. Errors: {{lastSyncErrors}}",
+      level: "warn",
+    }, { x: 500, y: 880 }),
+  ],
+  edges: [
+    edge("trigger", "pull-external"),
+    edge("pull-external", "pull-ok"),
+    edge("pull-ok", "push-internal", { condition: "$output?.result === true", port: "yes" }),
+    edge("pull-ok", "count-failures", { condition: "$output?.result !== true", port: "no" }),
+    edge("push-internal", "push-ok"),
+    edge("push-ok", "check-rate-limit", { condition: "$output?.result !== true", port: "no" }),
+    edge("push-ok", "log-success", { condition: "$output?.result === true", port: "yes" }),
+    edge("check-rate-limit", "handle-rate-limit", { condition: "$output?.result === true", port: "yes" }),
+    edge("check-rate-limit", "count-failures", { condition: "$output?.result !== true", port: "no" }),
+    edge("handle-rate-limit", "log-partial"),
+    edge("count-failures", "should-alert"),
+    edge("should-alert", "alert-failures", { condition: "$output?.result === true", port: "yes" }),
+    edge("should-alert", "log-partial", { condition: "$output?.result !== true", port: "no" }),
+    edge("alert-failures", "log-partial"),
+  ],
+  metadata: {
+    author: "bosun",
+    version: 1,
+    createdAt: "2025-06-01T00:00:00Z",
+    templateVersion: "1.0.0",
+    tags: ["sync", "kanban", "github", "vk", "jira", "bidirectional"],
+    replaces: {
+      module: "sync-engine.mjs",
+      functions: [
+        "SyncEngine.pullFromExternal",
+        "SyncEngine.pushToExternal",
+        "SyncEngine.sync",
+      ],
+      calledFrom: [
+        "monitor.mjs:initSyncEngine",
+        "sync-engine.mjs:SyncEngine.start",
+      ],
+      description:
+        "Replaces the SyncEngine class lifecycle with a workflow. " +
+        "Pull/push/rate-limit steps become visible, auditable nodes. " +
+        "Event-driven triggers replace the fixed-interval timer, and " +
+        "failure alerting is built into the flow.",
     },
   },
 };

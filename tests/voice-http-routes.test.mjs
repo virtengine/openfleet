@@ -1,6 +1,13 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-vi.mock("../voice-relay.mjs", () => ({
+const sharedEngine = {
+  evaluateTriggers: vi.fn(async () => []),
+  execute: vi.fn(async () => ({})),
+  load: vi.fn(),
+  listWorkflows: vi.fn(() => []),
+};
+
+vi.mock("../voice/voice-relay.mjs", () => ({
   analyzeVisionFrame: vi.fn(async () => ({
     summary: "Editor with a failing test output is visible.",
     provider: "mock",
@@ -8,7 +15,7 @@ vi.mock("../voice-relay.mjs", () => ({
   })),
 }));
 
-const { analyzeVisionFrame } = await import("../voice-relay.mjs");
+const { analyzeVisionFrame } = await import("../voice/voice-relay.mjs");
 
 describe("ui-server voice + vision routes", () => {
   const ENV_KEYS = [
@@ -25,7 +32,7 @@ describe("ui-server voice + vision routes", () => {
   ];
   let envSnapshot = {};
 
-  beforeEach(() => {
+  beforeEach(async () => {
     envSnapshot = Object.fromEntries(ENV_KEYS.map((key) => [key, process.env[key]]));
     process.env.TELEGRAM_UI_TLS_DISABLE = "true";
     process.env.TELEGRAM_UI_ALLOW_UNSAFE = "true";
@@ -37,11 +44,19 @@ describe("ui-server voice + vision routes", () => {
     process.env.WORKFLOW_AUTOMATION_ENABLED = "true";
     process.env.WORKFLOW_EVENT_DEDUP_WINDOW_MS = "1";
     vi.mocked(analyzeVisionFrame).mockClear();
+    // Inject the shared mock engine so dispatchWorkflowEvent uses it
+    const mod = await import("../server/ui-server.mjs");
+    const wfMock = { WorkflowEngine: vi.fn(() => sharedEngine) };
+    mod._testInjectWorkflowEngine(wfMock, sharedEngine);
   });
 
   afterEach(async () => {
-    const mod = await import("../ui-server.mjs");
+    const mod = await import("../server/ui-server.mjs");
     mod.stopTelegramUiServer();
+    // Reset session tracker singleton so test-created sessions don't leak
+    // into subsequent tests or persist to disk.
+    const { _resetSingleton } = await import("../infra/session-tracker.mjs");
+    _resetSingleton({ persistDir: null });
     for (const key of ENV_KEYS) {
       if (envSnapshot[key] === undefined) delete process.env[key];
       else process.env[key] = envSnapshot[key];
@@ -49,7 +64,7 @@ describe("ui-server voice + vision routes", () => {
   });
 
   async function startServer() {
-    const mod = await import("../ui-server.mjs");
+    const mod = await import("../server/ui-server.mjs");
     const server = await mod.startTelegramUiServer({
       host: "127.0.0.1",
       port: 0,
@@ -60,7 +75,7 @@ describe("ui-server voice + vision routes", () => {
     return { port };
   }
 
-  it("persists transcript turns into the bound session history", async () => {
+  it("persists user and assistant transcript turns into the bound session history", async () => {
     const { port } = await startServer();
     const sessionId = `primary-voice-http-${Date.now()}`;
 
@@ -79,20 +94,38 @@ describe("ui-server voice + vision routes", () => {
     expect(res.status).toBe(200);
     expect(data.ok).toBe(true);
 
-    const { getSessionById } = await import("../session-tracker.mjs");
+    const assistantRes = await fetch(`http://127.0.0.1:${port}/api/voice/transcript`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        sessionId,
+        role: "assistant",
+        content: "I checked the logs. The build failed due to lint errors.",
+        executor: "codex-sdk",
+        mode: "agent",
+      }),
+    });
+    const assistantData = await assistantRes.json();
+    expect(assistantRes.status).toBe(200);
+    expect(assistantData.ok).toBe(true);
+
+    const { getSessionById } = await import("../infra/session-tracker.mjs");
     const session = getSessionById(sessionId);
     expect(session).toBeTruthy();
-    const latest = (session?.messages || []).at(-1);
-    expect(latest?.role).toBe("user");
-    expect(latest?.content).toContain("check my build logs");
+    const messages = session?.messages || [];
+    const userTurn = messages.find((msg) => msg?.role === "user");
+    const assistantTurn = messages.find((msg) => msg?.role === "assistant");
+    expect(userTurn?.content).toContain("check my build logs");
+    expect(assistantTurn?.content).toContain("build failed due to lint errors");
   }, 20_000);
 
   it("queues workflow trigger evaluation for transcript and wake phrase events", async () => {
     const { port } = await startServer();
     const sessionId = `primary-workflow-transcript-${Date.now()}`;
-    const { getWorkflowEngine } = await import("../workflow-engine.mjs");
-    const engine = getWorkflowEngine();
-    const evaluateSpy = vi.spyOn(engine, "evaluateTriggers").mockResolvedValue([]);
+    // Use the shared mock engine that is returned by the mocked WorkflowEngine
+    // constructor (and thus used by dispatchWorkflowEvent's per-workspace engine).
+    sharedEngine.evaluateTriggers.mockClear();
+    sharedEngine.evaluateTriggers.mockResolvedValue([]);
 
     try {
       const res = await fetch(`http://127.0.0.1:${port}/api/voice/transcript`, {
@@ -111,7 +144,7 @@ describe("ui-server voice + vision routes", () => {
       expect(data.ok).toBe(true);
 
       await vi.waitFor(() => {
-        expect(evaluateSpy).toHaveBeenCalledWith(
+        expect(sharedEngine.evaluateTriggers).toHaveBeenCalledWith(
           "meeting.transcript",
           expect.objectContaining({
             sessionId,
@@ -127,7 +160,7 @@ describe("ui-server voice + vision routes", () => {
       });
 
       await vi.waitFor(() => {
-        expect(evaluateSpy).toHaveBeenCalledWith(
+        expect(sharedEngine.evaluateTriggers).toHaveBeenCalledWith(
           "meeting.wake_phrase",
           expect.objectContaining({
             sessionId,
@@ -139,8 +172,57 @@ describe("ui-server voice + vision routes", () => {
         );
       });
     } finally {
-      evaluateSpy.mockRestore();
+      sharedEngine.evaluateTriggers.mockClear();
     }
+  });
+
+  it("stores and returns voice turn trace events", async () => {
+    const { port } = await startServer();
+    const sessionId = `primary-voice-trace-${Date.now()}`;
+
+    const events = [
+      { eventType: "turn_start", turnId: "turn-1", source: "voice-client", transport: "webrtc" },
+      { eventType: "llm_first_token", turnId: "turn-1", source: "voice-client", transport: "webrtc" },
+      { eventType: "tts_first_audio", turnId: "turn-1", source: "voice-client", transport: "webrtc" },
+      { eventType: "turn_end", turnId: "turn-1", source: "voice-client", transport: "webrtc" },
+    ];
+
+    const ingestRes = await fetch(`http://127.0.0.1:${port}/api/voice/trace`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        sessionId,
+        provider: "mock-provider",
+        events,
+      }),
+    });
+    const ingestJson = await ingestRes.json();
+    expect(ingestRes.status).toBe(200);
+    expect(ingestJson.ok).toBe(true);
+    expect(ingestJson.stored).toBe(events.length);
+    expect(String(ingestJson?.latest?.eventType || "")).toBe("turn_end");
+
+    const listRes = await fetch(`http://127.0.0.1:${port}/api/voice/trace?sessionId=${encodeURIComponent(sessionId)}&limit=10`);
+    const listJson = await listRes.json();
+    expect(listRes.status).toBe(200);
+    expect(listJson.ok).toBe(true);
+    expect(Array.isArray(listJson.events)).toBe(true);
+    expect(listJson.events.length).toBeGreaterThanOrEqual(events.length);
+    expect(listJson.events[0]).toMatchObject({
+      sessionId,
+      eventType: "turn_end",
+      turnId: "turn-1",
+    });
+
+    const latestRes = await fetch(`http://127.0.0.1:${port}/api/voice/trace?sessionId=${encodeURIComponent(sessionId)}&latest=1`);
+    const latestJson = await latestRes.json();
+    expect(latestRes.status).toBe(200);
+    expect(latestJson.ok).toBe(true);
+    expect(latestJson.latest).toMatchObject({
+      sessionId,
+      eventType: "turn_end",
+      turnId: "turn-1",
+    });
   });
 
   it("ingests a vision frame, analyzes once, and deduplicates repeated frames", async () => {
@@ -157,6 +239,7 @@ describe("ui-server voice + vision routes", () => {
         frameDataUrl,
         width: 1280,
         height: 720,
+        persistToChat: true,
       }),
     });
     const firstJson = await first.json();
@@ -184,7 +267,7 @@ describe("ui-server voice + vision routes", () => {
     expect(secondJson.reason).toBe("duplicate_frame");
     expect(vi.mocked(analyzeVisionFrame)).toHaveBeenCalledTimes(1);
 
-    const { getSessionById } = await import("../session-tracker.mjs");
+    const { getSessionById } = await import("../infra/session-tracker.mjs");
     const session = getSessionById(sessionId);
     expect(session).toBeTruthy();
     const visionMessage = (session?.messages || []).find(

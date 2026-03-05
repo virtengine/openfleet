@@ -604,6 +604,21 @@ export function markUserMessageSent(adapter, sessionId) {
  */
 export function startAgentStatusTracking() {
   return onWsMessage((msg) => {
+    if (msg.type === "invalidate") {
+      const payload = msg.payload || {};
+      const reason = String(payload.reason || "").toLowerCase();
+      const sessionId = String(payload.sessionId || payload.taskId || "");
+      const isCompletionSignal =
+        reason === "agent-response" ||
+        reason === "agent-error";
+      if (isCompletionSignal) {
+        if (!sessionId || agentStatus.value.sessionId === sessionId) {
+          _setAgentState("idle", "", "");
+        }
+      }
+      return;
+    }
+
     if (msg.type !== "session-message") return;
     const payload = msg.payload;
     if (!payload) return;
@@ -614,7 +629,7 @@ export function startAgentStatusTracking() {
     const content = String(message.content || "").toLowerCase();
     const lifecycle = String(message?.meta?.lifecycle || "").toLowerCase();
     const adapter = payload.session?.type || "";
-    const sessionId = payload.sessionId || payload.taskId || payload.session?.id || "";
+    const sessionId = payload.session?.id || payload.sessionId || payload.taskId || "";
     const sessionStatus = payload.session?.status || "active";
 
     if (sessionStatus !== "active") {

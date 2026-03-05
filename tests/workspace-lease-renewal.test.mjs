@@ -9,7 +9,7 @@ import {
   renewSharedWorkspaceLease,
   claimSharedWorkspace,
   sweepExpiredLeases,
-} from "../shared-workspace-registry.mjs";
+} from "../workspace/shared-workspace-registry.mjs";
 
 let TEST_DIR = "";
 let TEST_REGISTRY_PATH = "";

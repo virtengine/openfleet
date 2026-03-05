@@ -42,13 +42,17 @@ export function node(id, type, label, config = {}, opts = {}) {
  * @returns {object} Edge definition
  */
 export function edge(source, target, opts = {}) {
-  return {
+  const e = {
     id: `${source}->${target}`,
     source,
     target,
     sourcePort: opts.port || "default",
     condition: opts.condition || undefined,
   };
+  if (opts.backEdge) e.backEdge = true;
+  if (opts.maxIterations != null) e.maxIterations = opts.maxIterations;
+  if (opts.label) e.label = opts.label;
+  return e;
 }
 
 /**

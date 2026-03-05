@@ -374,6 +374,8 @@ export const ICONS = {
 
   refresh: html`<svg
     viewBox="0 0 24 24"
+    width="24"
+    height="24"
     fill="none"
     stroke="currentColor"
     stroke-width="2"

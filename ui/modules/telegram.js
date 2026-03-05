@@ -134,6 +134,15 @@ function applyTgTheme() {
 
   const tp = tg.themeParams;
   const root = document.documentElement;
+  const explicitTheme = String(root.getAttribute("data-theme") || "").trim();
+  const themeLock = String(root.getAttribute("data-theme-lock") || "").trim();
+  const appThemeLocked = Boolean(themeLock === "custom" || (explicitTheme && explicitTheme !== "system"));
+
+  if (appThemeLocked) {
+    root.removeAttribute("data-tg-theme");
+    return;
+  }
+
   root.setAttribute("data-tg-theme", "true");
 
   if (tp.bg_color) root.style.setProperty("--bg-primary", tp.bg_color);

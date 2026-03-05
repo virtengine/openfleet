@@ -4,7 +4,7 @@ import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
-const monitorPath = resolve(__dirname, "../monitor.mjs");
+const monitorPath = resolve(__dirname, "../infra/monitor.mjs");
 const source = readFileSync(monitorPath, "utf8");
 
 function extractIsBranchMergedBlock() {
@@ -37,9 +37,9 @@ describe("monitor branch-merged guard", () => {
     );
   });
 
-  it("prunes stale merged-task cache entries for active tasks", () => {
+  it("removes legacy merged-task reconciliation in favor of workflows", () => {
     expect(source).toContain(
-      "Pruned ${prunedMergedTaskCacheCount} stale merged-task cache entr",
+      "legacy task-status reconciliation path removed — use workflows",
     );
   });
 });

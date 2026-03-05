@@ -2,6 +2,9 @@
   "$schema": "./bosun.schema.json",
   "projectName": "my-project",
   "primaryAgent": "codex-sdk",
+
+  "_comment_workflowFirst": "Set to true to run everything as workflows (task lifecycle, PR management, etc.)",
+  "workflowFirst": false,
   "kanban": {
     "backend": "vk"
   },

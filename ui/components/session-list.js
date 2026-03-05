@@ -1,14 +1,22 @@
 /* ─────────────────────────────────────────────────────────────
  *  Component: Session List — ChatGPT-style sidebar for agent sessions
  *  With swipe-to-action, archive, delete, and duplicate prevention.
+ *  UI: MUI Material components (Preact + HTM, no build step)
  * ────────────────────────────────────────────────────────────── */
 import { h } from "preact";
 import { useState, useEffect, useCallback, useRef } from "preact/hooks";
 import htm from "htm";
 import { signal, computed } from "@preact/signals";
 import { apiFetch, onWsMessage } from "../modules/api.js";
+import { buildSessionApiPath, resolveSessionWorkspaceHint } from "../modules/session-api.js";
 import { formatRelative, truncate } from "../modules/utils.js";
 import { resolveIcon } from "../modules/icon-utils.js";
+import {
+  List, ListItem, ListItemButton, ListItemText, ListItemIcon,
+  ListItemSecondaryAction, Typography, Box, Stack, IconButton,
+  Chip, Divider, TextField, InputAdornment, CircularProgress,
+  Tooltip, Menu, MenuItem, Paper, Skeleton, Button, Alert,
+} from "@mui/material";
 
 const html = htm.bind(h);
 
@@ -20,7 +28,7 @@ export const sessionsError = signal(null);
 /** Pagination metadata from the last loadSessionMessages call */
 export const sessionPagination = signal(null);
 
-const DEFAULT_SESSION_PAGE_SIZE = 20;
+const DEFAULT_SESSION_PAGE_SIZE = 50;
 const MAX_SESSION_PAGE_SIZE = 200;
 
 let _wsListenerReady = false;
@@ -29,16 +37,29 @@ let _wsListenerReady = false;
 let _lastLoadFilter = {};
 
 function sessionPath(id, action = "") {
-  const safeId = encodeURIComponent(String(id || "").trim());
-  if (!safeId) return "";
-  return action ? `/api/sessions/${safeId}/${action}` : `/api/sessions/${safeId}`;
+  const session = (sessionsData.peek() || []).find((entry) => entry?.id === id) || null;
+  const workspace = resolveSessionWorkspaceHint(
+    session,
+    String(_lastLoadFilter?.workspace || "").trim() || "active",
+  );
+  return buildSessionApiPath(id, action, { workspace });
 }
 
 /* ─── Data loaders ─── */
 export async function loadSessions(filter = {}) {
-  _lastLoadFilter = filter;
+  const normalizedFilter = {
+    ...(filter && typeof filter === "object" ? filter : {}),
+  };
+  if (!Object.prototype.hasOwnProperty.call(normalizedFilter, "workspace")) {
+    normalizedFilter.workspace = "active";
+  }
+  _lastLoadFilter = normalizedFilter;
   try {
-    const params = new URLSearchParams(filter);
+    const params = new URLSearchParams();
+    for (const [key, value] of Object.entries(normalizedFilter)) {
+      if (value == null || value === "") continue;
+      params.set(key, String(value));
+    }
     const res = await apiFetch(`/api/sessions?${params}`, { _silent: true });
     if (res?.sessions) sessionsData.value = res.sessions;
     sessionsError.value = null;
@@ -49,18 +70,30 @@ export async function loadSessions(filter = {}) {
 
 export async function loadSessionMessages(id, opts = {}) {
   try {
-    let url = sessionPath(id);
-    if (!url) return { ok: false, error: "invalid" };
+    const baseUrl = sessionPath(id);
+    if (!baseUrl) return { ok: false, error: "invalid" };
     const requestedLimit = opts.limit != null ? Number(opts.limit) : DEFAULT_SESSION_PAGE_SIZE;
     const limit =
       Number.isFinite(requestedLimit) && requestedLimit > 0
         ? Math.min(Math.floor(requestedLimit), MAX_SESSION_PAGE_SIZE)
         : DEFAULT_SESSION_PAGE_SIZE;
-    const params = new URLSearchParams();
-    params.set("limit", String(limit));
-    if (opts.offset != null) params.set("offset", String(opts.offset));
-    const qs = params.toString();
-    if (qs) url += `?${qs}`;
+    const url = (() => {
+      try {
+        const parsed = new URL(baseUrl, globalThis.location?.origin || "http://localhost");
+        parsed.searchParams.set("limit", String(limit));
+        if (opts.offset != null) {
+          parsed.searchParams.set("offset", String(opts.offset));
+        }
+        return `${parsed.pathname}${parsed.search}`;
+      } catch {
+        const join = baseUrl.includes("?") ? "&" : "?";
+        const parts = [`limit=${encodeURIComponent(String(limit))}`];
+        if (opts.offset != null) {
+          parts.push(`offset=${encodeURIComponent(String(opts.offset))}`);
+        }
+        return `${baseUrl}${join}${parts.join("&")}`;
+      }
+    })();
     const res = await apiFetch(url, { _silent: true });
     if (res?.session) {
       const normalized = dedupeMessages(res.session.messages || []);
@@ -317,11 +350,19 @@ export function initSessionWsListener() {
   if (_wsListenerReady) return;
   _wsListenerReady = true;
   onWsMessage((msg) => {
-    if (msg?.type !== "session-message") return;
-    const payload = msg.payload || {};
-    const sessionId = payload.sessionId || payload.taskId;
-    if (!sessionId) return;
-    appendSessionMessage(sessionId, payload.message, payload.session);
+    if (msg?.type === "session-message") {
+      const payload = msg.payload || {};
+      const sessionId = payload.sessionId || payload.taskId;
+      if (!sessionId) return;
+      appendSessionMessage(sessionId, payload.message, payload.session);
+      return;
+    }
+    if (msg?.type === "invalidate") {
+      const channels = Array.isArray(msg.channels) ? msg.channels : [];
+      if (channels.includes("*") || channels.includes("sessions")) {
+        loadSessions(_lastLoadFilter).catch(() => {});
+      }
+    }
   });
 }
 
@@ -413,7 +454,7 @@ const STATUS_COLOR_MAP = {
   archived: "var(--text-hint)",
 };
 
-const SESSION_VIEW_FILTER = Object.freeze({
+export const SESSION_VIEW_FILTER = Object.freeze({
   all: "all",
   active: "active",
   historic: "historic",
@@ -451,6 +492,7 @@ function SwipeableSessionItem({
   onArchive,
   onDelete,
   onResume,
+  onContextMenu,
   showActions,
   onToggleActions,
 }) {
@@ -467,6 +509,7 @@ function SwipeableSessionItem({
   const statusKey = String(s.status || "idle").toLowerCase().replace(/\s+/g, "-");
   const typeLabel = (s.type || "session").toUpperCase();
   const dotColor = STATUS_COLOR_MAP[statusKey] || "var(--text-hint)";
+  const preview = s.lastMessage && !isArchived ? truncate(s.lastMessage, 50) : "";
 
   /* ── Touch / pointer swipe handling ── */
   function onPointerDown(e) {
@@ -535,78 +578,120 @@ function SwipeableSessionItem({
     setOffset(0);
   }
 
+  function handleRename(e) {
+    e.stopPropagation();
+    if (onStartRename) onStartRename(s.id);
+    setOffset(0);
+  }
+
   return html`
-    <div
+    <${Box}
       key=${s.id}
+      sx=${{ position: "relative", overflow: "hidden" }}
       class="session-item-wrapper ${showActions === s.id ? "actions-revealed" : ""}"
     >
       <!-- Swipe-reveal action buttons behind the item -->
-      <div class="session-item-behind">
+      <${Stack}
+        direction="row"
+        spacing=${1}
+        sx=${{
+          position: "absolute", right: 0, top: 0, bottom: 0,
+          display: "flex", alignItems: "center", px: 0.5, zIndex: 0,
+        }}
+      >
         ${isArchived
           ? html`
-              <button
-                class="session-action-btn resume"
-                onClick=${handleResume}
-                title="Unarchive"
-              >
-                <span class="session-action-icon">${resolveIcon(":workflow:")}</span>
-                <span class="session-action-label">Restore</span>
-              </button>
+              <${Tooltip} title="Unarchive">
+                <${IconButton}
+                  size="small"
+                  color="primary"
+                  onClick=${handleResume}
+                >
+                  ${resolveIcon(":workflow:")}
+                </${IconButton}>
+              </${Tooltip}>
             `
           : html`
-              <button
-                class="session-action-btn archive"
-                onClick=${handleArchive}
-                title="Archive session"
-              >
-                <span class="session-action-icon">${resolveIcon(":box:")}</span>
-                <span class="session-action-label">Archive</span>
-              </button>
+              <${Tooltip} title="Edit title">
+                <${IconButton}
+                  size="small"
+                  color="default"
+                  onClick=${handleRename}
+                >
+                  ${resolveIcon(":edit:")}
+                </${IconButton}>
+              </${Tooltip}>
+              <${Tooltip} title="Archive session">
+                <${IconButton}
+                  size="small"
+                  color="warning"
+                  onClick=${handleArchive}
+                >
+                  ${resolveIcon(":box:")}
+                </${IconButton}>
+              </${Tooltip}>
             `}
-        <button
-          class="session-action-btn delete ${confirmDelete ? "confirm" : ""}"
-          onClick=${handleDelete}
-          title=${confirmDelete ? "Confirm delete" : "Delete session"}
-        >
-          <span class="session-action-icon">${resolveIcon(confirmDelete ? ":alert:" : ":trash:")}</span>
-          <span class="session-action-label">${confirmDelete ? "Sure?" : "Delete"}</span>
-        </button>
-      </div>
+        <${Tooltip} title=${confirmDelete ? "Confirm delete" : "Delete session"}>
+          <${IconButton}
+            size="small"
+            color=${confirmDelete ? "error" : "default"}
+            onClick=${handleDelete}
+          >
+            ${resolveIcon(confirmDelete ? ":alert:" : ":trash:")}
+          </${IconButton}>
+        </${Tooltip}>
+      </${Stack}>
 
       <!-- The actual session item (slides left on swipe) -->
-      <div
-        class="session-item ${isSelected ? "active" : ""} ${isArchived ? "archived" : ""} status-${statusKey}"
-        style="transform: translateX(${offset}px); transition: ${swiping.current ? "none" : "transform 0.2s ease"}"
-        onClick=${() => {
-          if (Math.abs(offset) > 10) return; // don't select during swipe
-          if (showActions === s.id) {
-            onToggleActions(null);
-            setOffset(0);
-            return;
-          }
-          onSelect(s.id);
+      <${Box}
+        sx=${{
+          position: "relative", zIndex: 1, bgcolor: "background.paper",
+          transform: `translateX(${offset}px)`,
+          transition: swiping.current ? "none" : "transform 0.2s ease",
         }}
         onPointerDown=${onPointerDown}
         onPointerMove=${onPointerMove}
         onPointerUp=${onPointerUp}
-        onPointerCancel=${() => {
-          swiping.current = false;
-          setOffset(0);
-        }}
+        onPointerCancel=${() => { swiping.current = false; setOffset(0); }}
         onDblClick=${(e) => {
-          if (onStartRename) {
-            e.stopPropagation();
-            onStartRename(s.id);
-          }
+          if (onStartRename) { e.stopPropagation(); onStartRename(s.id); }
         }}
       >
-        <div class="session-item-row">
-          <span class="session-item-dot" style=${`background:${dotColor}`}></span>
+        <${ListItemButton}
+          selected=${isSelected}
+          onClick=${() => {
+            if (Math.abs(offset) > 10) return;
+            if (showActions === s.id) { onToggleActions(null); setOffset(0); return; }
+            onSelect(s.id);
+          }}
+          onContextMenu=${(e) => {
+            if (typeof onContextMenu === "function") {
+              e.preventDefault();
+              e.stopPropagation();
+              onContextMenu(s.id, e);
+            }
+          }}
+          sx=${{
+            borderRadius: 1, opacity: isArchived ? 0.6 : 1,
+            py: 0.75, px: 1.5,
+          }}
+        >
+          <${ListItemIcon} sx=${{ minWidth: 24 }}>
+            <${Box}
+              sx=${{
+                width: 8, height: 8, borderRadius: "50%",
+                bgcolor: dotColor, flexShrink: 0,
+              }}
+            />
+          </${ListItemIcon}>
           ${isRenaming && onSaveRename && onCancelRename
             ? html`
-                <input
-                  class="session-item-rename"
-                  value=${title}
+                <${TextField}
+                  size="small"
+                  variant="standard"
+                  defaultValue=${title}
+                  autoFocus
+                  fullWidth
                   onClick=${(e) => e.stopPropagation()}
                   onKeyDown=${(e) => {
                     if (e.key === "Enter") {
@@ -622,41 +707,53 @@ function SwipeableSessionItem({
                     if (v && v !== title) onSaveRename(s.id, v);
                     else onCancelRename();
                   }}
-                  ref=${(el) => {
-                    if (el) {
-                      el.focus();
-                      el.select();
-                    }
+                  inputRef=${(el) => {
+                    if (el) { el.focus(); el.select(); }
                   }}
+                  sx=${{ mr: 1 }}
                 />
               `
             : html`
-                <span class="session-item-title">${truncate(title, 32)}</span>
+                <${ListItemText}
+                  primary=${truncate(title, 32)}
+                  secondary=${preview || null}
+                  primaryTypographyProps=${{
+                    variant: "body2",
+                    fontWeight: isSelected ? 600 : 400,
+                    noWrap: true,
+                  }}
+                  secondaryTypographyProps=${{
+                    variant: "caption",
+                    noWrap: true,
+                  }}
+                />
               `}
-          <span class="session-item-type">${typeLabel}</span>
-          <span class="session-item-time">
-            ${formatRelative(s.updatedAt || s.createdAt)}
-          </span>
-          <button
-            class="session-item-menu"
-            title="Actions"
-            onClick=${(e) => {
-              e.stopPropagation();
-              if (onToggleActions) {
-                onToggleActions(s.id);
-                setOffset(-140);
-              }
-            }}
-          >
-            ⋯
-          </button>
-        </div>
-        ${s.lastMessage && !isArchived &&
-        html`
-          <div class="session-item-preview">${truncate(s.lastMessage, 50)}</div>
-        `}
-      </div>
-    </div>
+          <${Stack} direction="row" spacing=${0.5} alignItems="center" sx=${{ ml: "auto", flexShrink: 0, pl: 1 }}>
+            <${Chip}
+              label=${typeLabel}
+              size="small"
+              variant="outlined"
+              sx=${{ fontSize: "0.65rem", height: 18, "& .MuiChip-label": { px: 0.5 } }}
+            />
+            <${Typography} variant="caption" color="text.secondary" noWrap>
+              ${formatRelative(s.updatedAt || s.createdAt)}
+            </${Typography}>
+            <${Tooltip} title="Actions">
+              <${IconButton}
+                size="small"
+                onClick=${(e) => {
+                  e.stopPropagation();
+                  if (onToggleActions) { onToggleActions(s.id); setOffset(-140); }
+                }}
+                sx=${{ p: 0.25 }}
+              >
+                ${resolveIcon(":menu:")}
+              </${IconButton}>
+            </${Tooltip}>
+          </${Stack}>
+        </${ListItemButton}>
+      </${Box}>
+    </${Box}>
   `;
 }
 
@@ -675,6 +772,7 @@ export function SessionList({
 }) {
   const [search, setSearch] = useState("");
   const [revealedActions, setRevealedActions] = useState(null);
+  const [contextMenu, setContextMenu] = useState(null);
   const [uncontrolledSessionView, setUncontrolledSessionView] = useState(
     normalizeSessionViewFilter(sessionView),
   );
@@ -759,6 +857,7 @@ export function SessionList({
     (id) => {
       selectedSessionId.value = id;
       setRevealedActions(null);
+      setContextMenu(null);
       if (onSelect) onSelect(id);
     },
     [onSelect],
@@ -778,23 +877,91 @@ export function SessionList({
 
   const handleArchive = useCallback(async (id) => {
     setRevealedActions(null);
+    setContextMenu(null);
     await archiveSession(id);
   }, []);
 
   const handleDelete = useCallback(async (id) => {
     setRevealedActions(null);
+    setContextMenu(null);
     await deleteSession(id);
   }, []);
 
   const handleResume = useCallback(async (id) => {
     setRevealedActions(null);
+    setContextMenu(null);
     await resumeSession(id);
   }, []);
+
+  const handleContextMenu = useCallback((id, event) => {
+    setRevealedActions(null);
+    setContextMenu({
+      id,
+      mouseX: event.clientX + 2,
+      mouseY: event.clientY - 6,
+    });
+  }, []);
+
+  const closeContextMenu = useCallback(() => {
+    setContextMenu(null);
+  }, []);
+
+  const handleContextAction = useCallback(async (action) => {
+    const targetId = contextMenu?.id;
+    if (!targetId) {
+      closeContextMenu();
+      return;
+    }
+    const currentSession = (sessionsData.value || []).find((item) => item.id === targetId);
+    if (action === "open") {
+      handleSelect(targetId);
+      closeContextMenu();
+      return;
+    }
+    if (action === "rename") {
+      closeContextMenu();
+      if (typeof onStartRename === "function") onStartRename(targetId);
+      return;
+    }
+    if (action === "archive") {
+      closeContextMenu();
+      if (currentSession?.status === "archived") {
+        await handleResume(targetId);
+      } else {
+        await handleArchive(targetId);
+      }
+      return;
+    }
+    if (action === "delete") {
+      closeContextMenu();
+      await handleDelete(targetId);
+      return;
+    }
+    if (action === "copy-id") {
+      closeContextMenu();
+      try {
+        await navigator.clipboard.writeText(String(targetId));
+      } catch {
+        /* ignore clipboard errors */
+      }
+      return;
+    }
+    closeContextMenu();
+  }, [
+    closeContextMenu,
+    contextMenu?.id,
+    handleArchive,
+    handleDelete,
+    handleResume,
+    handleSelect,
+    onStartRename,
+  ]);
 
   // Close revealed actions when clicking the list background
   const handleListClick = useCallback((e) => {
     if (e.target.closest(".session-item-wrapper")) return;
     setRevealedActions(null);
+    setContextMenu(null);
   }, []);
 
   const emptyTitle = hasSearch
@@ -827,6 +994,7 @@ export function SessionList({
         onArchive=${handleArchive}
         onDelete=${handleDelete}
         onResume=${handleResume}
+        onContextMenu=${handleContextMenu}
         showActions=${revealedActions}
         onToggleActions=${setRevealedActions}
       />
@@ -835,131 +1003,210 @@ export function SessionList({
 
   if (error) {
     return html`
-      <div class="session-list">
-        <div class="session-list-header">
-          <span class="session-list-title">Sessions</span>
-        </div>
-        <div class="session-empty">
-          <div class="session-empty-icon">${resolveIcon(":server:")}</div>
-          <div class="session-empty-text">Sessions not available</div>
-          <button class="btn btn-primary btn-sm" onClick=${handleRetry}>
+      <${Paper} elevation=${0} sx=${{ height: "100%", display: "flex", flexDirection: "column" }}>
+        <${Box} sx=${{ p: 1.5, display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+          <${Typography} variant="subtitle2">Sessions</${Typography}>
+        </${Box}>
+        <${Divider} />
+        <${Box} sx=${{ flex: 1, display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", p: 3, gap: 1.5 }}>
+          <${Alert} severity="error" variant="outlined" sx=${{ mb: 1 }}>
+            Sessions not available
+          </${Alert}>
+          <${Button} variant="outlined" size="small" onClick=${handleRetry}>
             Retry
-          </button>
-        </div>
-      </div>
+          </${Button}>
+        </${Box}>
+      </${Paper}>
     `;
   }
 
   return html`
-    <div class="session-list" onClick=${handleListClick}>
-      <div class="session-list-header">
-        <span class="session-list-title">Sessions</span>
-        <div style="display:flex;gap:6px;align-items:center">
+    <${Paper}
+      elevation=${0}
+      sx=${{ height: "100%", display: "flex", flexDirection: "column", overflow: "hidden" }}
+      onClick=${handleListClick}
+    >
+      <!-- Header -->
+      <${Box} sx=${{ p: 1.5, display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+        <${Typography} variant="subtitle2">Sessions</${Typography}>
+        <${Stack} direction="row" spacing=${0.75} alignItems="center">
           ${typeof onToggleArchived === "function" &&
           archivedCount > 0 &&
           html`
-            <button
-              class="btn btn-ghost btn-sm"
+            <${Button}
+              size="small"
+              variant="text"
               onClick=${() => onToggleArchived(!showArchived)}
+              sx=${{ textTransform: "none", fontSize: "0.75rem" }}
             >
               ${showArchived
                 ? `Hide Archived (${archivedCount})`
                 : `Show Archived (${archivedCount})`}
-            </button>
+            </${Button}>
           `}
-          <button
-            class="btn btn-primary btn-sm"
+          <${Button}
+            size="small"
+            variant="outlined"
             onClick=${handleCreateSession}
+            sx=${{ textTransform: "none" }}
           >
             + New
-          </button>
-        </div>
-      </div>
+          </${Button}>
+        </${Stack}>
+      </${Box}>
 
-      <div class="session-search">
-        <input
-          class="input session-search-input"
+      <!-- Search bar -->
+      <${Box} sx=${{ px: 1.5, pb: 1 }}>
+        <${TextField}
+          size="small"
+          fullWidth
           placeholder="Search sessions…"
           value=${search}
           onInput=${(e) => setSearch(e.target.value)}
+          InputProps=${{
+            startAdornment: html`
+              <${InputAdornment} position="start">
+                <${Typography} variant="caption" sx=${{ opacity: 0.5 }}>🔍</${Typography}>
+              </${InputAdornment}>
+            `,
+          }}
+          sx=${{
+            "& .MuiInputBase-root": { height: 34, fontSize: "0.85rem" },
+          }}
         />
-      </div>
+      </${Box}>
 
-      <div style="display:flex;gap:6px;flex-wrap:wrap;padding:0 10px 8px;">
-        <button
-          class="btn btn-sm ${resolvedSessionView === SESSION_VIEW_FILTER.all ? "btn-primary" : "btn-ghost"}"
+      <!-- Filter chips -->
+      <${Stack} direction="row" spacing=${0.75} sx=${{ px: 1.5, pb: 1, flexWrap: "wrap" }}>
+        <${Chip}
+          label=${`All (${allCount})`}
+          size="small"
+          variant=${resolvedSessionView === SESSION_VIEW_FILTER.all ? "filled" : "outlined"}
+          color=${resolvedSessionView === SESSION_VIEW_FILTER.all ? "primary" : "default"}
           onClick=${() => setSessionView(SESSION_VIEW_FILTER.all)}
-        >
-          All (${allCount})
-        </button>
-        <button
-          class="btn btn-sm ${resolvedSessionView === SESSION_VIEW_FILTER.active ? "btn-primary" : "btn-ghost"}"
+          clickable
+        />
+        <${Chip}
+          label=${`Active (${activeCount})`}
+          size="small"
+          variant=${resolvedSessionView === SESSION_VIEW_FILTER.active ? "filled" : "outlined"}
+          color=${resolvedSessionView === SESSION_VIEW_FILTER.active ? "primary" : "default"}
           onClick=${() => setSessionView(SESSION_VIEW_FILTER.active)}
-        >
-          Active (${activeCount})
-        </button>
-        <button
-          class="btn btn-sm ${resolvedSessionView === SESSION_VIEW_FILTER.historic ? "btn-primary" : "btn-ghost"}"
+          clickable
+        />
+        <${Chip}
+          label=${`Historic (${historicCount})`}
+          size="small"
+          variant=${resolvedSessionView === SESSION_VIEW_FILTER.historic ? "filled" : "outlined"}
+          color=${resolvedSessionView === SESSION_VIEW_FILTER.historic ? "primary" : "default"}
           onClick=${() => setSessionView(SESSION_VIEW_FILTER.historic)}
-        >
-          Historic (${historicCount})
-        </button>
-      </div>
+          clickable
+        />
+      </${Stack}>
 
-      <div class="session-list-scroll">
-        ${active.length > 0 &&
-        html`
-          <div class="session-group-label">Active Sessions</div>
-          ${active.map(renderSessionItem)}
-        `}
-        ${recent.length > 0 &&
-        html`
-          <div class="session-group-label">Recent</div>
-          ${recent.map(renderSessionItem)}
-        `}
-        ${archived.length > 0 &&
-        html`
-          <div class="session-group-label">Archived (${archived.length})</div>
-          ${archived.map(renderSessionItem)}
-        `}
+      <${Divider} />
+
+      <!-- Session list scroll area -->
+      <${Box} sx=${{ flex: 1, overflowY: "auto", overflowX: "hidden" }}>
+        <${List} dense disablePadding>
+          ${active.length > 0 &&
+          html`
+            <${ListItem} disablePadding sx=${{ px: 1.5, pt: 1.5, pb: 0.5 }}>
+              <${Typography} variant="overline" color="text.secondary" sx=${{ fontSize: "0.65rem", letterSpacing: 1 }}>
+                Active Sessions
+              </${Typography}>
+            </${ListItem}>
+            ${active.map(renderSessionItem)}
+          `}
+          ${active.length > 0 && recent.length > 0 && html`<${Divider} sx=${{ my: 0.5 }} />`}
+          ${recent.length > 0 &&
+          html`
+            <${ListItem} disablePadding sx=${{ px: 1.5, pt: 1, pb: 0.5 }}>
+              <${Typography} variant="overline" color="text.secondary" sx=${{ fontSize: "0.65rem", letterSpacing: 1 }}>
+                Recent
+              </${Typography}>
+            </${ListItem}>
+            ${recent.map(renderSessionItem)}
+          `}
+          ${(active.length > 0 || recent.length > 0) && archived.length > 0 && html`<${Divider} sx=${{ my: 0.5 }} />`}
+          ${archived.length > 0 &&
+          html`
+            <${ListItem} disablePadding sx=${{ px: 1.5, pt: 1, pb: 0.5 }}>
+              <${Typography} variant="overline" color="text.secondary" sx=${{ fontSize: "0.65rem", letterSpacing: 1 }}>
+                Archived (${archived.length})
+              </${Typography}>
+            </${ListItem}>
+            ${archived.map(renderSessionItem)}
+          `}
+        </${List}>
+
         ${filtered.length === 0 &&
         html`
-          <div class="session-empty">
-            <div class="session-empty-icon">${resolveIcon(":chat:")}</div>
-            <div class="session-empty-text">
+          <${Box} sx=${{ display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", p: 4, gap: 1.5, textAlign: "center" }}>
+            <${Typography} variant="h5" sx=${{ opacity: 0.4 }}>${resolveIcon(":chat:")}</${Typography}>
+            <${Typography} variant="body2" color="text.secondary">
               ${emptyTitle}
-              <div class="session-empty-subtext">
-                ${emptyHint}
-              </div>
-            </div>
-            <div class="session-empty-actions">
-              <button
-                class="btn btn-primary btn-sm"
+            </${Typography}>
+            <${Typography} variant="caption" color="text.disabled">
+              ${emptyHint}
+            </${Typography}>
+            <${Stack} direction="row" spacing=${1} sx=${{ mt: 1 }}>
+              <${Button}
+                variant="outlined"
+                size="small"
                 onClick=${handleCreateSession}
+                sx=${{ textTransform: "none" }}
               >
                 + New Session
-              </button>
+              </${Button}>
               ${hasSearch &&
               html`
-                <button
-                  class="btn btn-ghost btn-sm"
+                <${Button}
+                  variant="text"
+                  size="small"
                   onClick=${() => setSearch("")}
+                  sx=${{ textTransform: "none" }}
                 >
                   Clear search
-                </button>
+                </${Button}>
               `}
-            </div>
-          </div>
+            </${Stack}>
+          </${Box}>
         `}
-      </div>
+      </${Box}>
 
       <!-- Swipe hint for mobile (shown once) -->
       ${filtered.length > 0 &&
       html`
-        <div class="session-swipe-hint">
-          ← Swipe items for actions
-        </div>
+        <${Box} sx=${{ py: 0.5, textAlign: "center" }}>
+          <${Typography} variant="caption" color="text.disabled" sx=${{ fontSize: "0.65rem" }}>
+            ← Swipe items for actions
+          </${Typography}>
+        </${Box}>
       `}
-    </div>
+
+      <${Menu}
+        open=${Boolean(contextMenu)}
+        onClose=${closeContextMenu}
+        anchorReference="anchorPosition"
+        anchorPosition=${contextMenu ? { top: contextMenu.mouseY, left: contextMenu.mouseX } : undefined}
+      >
+        <${MenuItem} onClick=${() => handleContextAction("open")}>${resolveIcon(":chat:")} Open</${MenuItem}>
+        <${MenuItem} onClick=${() => handleContextAction("rename")}>${resolveIcon(":edit:")} Edit title</${MenuItem}>
+        <${MenuItem} onClick=${() => handleContextAction("archive")}>
+          ${(() => {
+            const target = (sessionsData.value || []).find((item) => item.id === contextMenu?.id);
+            return target?.status === "archived"
+              ? html`${resolveIcon(":workflow:")} Unarchive`
+              : html`${resolveIcon(":box:")} Archive`;
+          })()}
+        </${MenuItem}>
+        <${MenuItem} onClick=${() => handleContextAction("copy-id")}>${resolveIcon(":copy:")} Copy ID</${MenuItem}>
+        <${Divider} />
+        <${MenuItem} onClick=${() => handleContextAction("delete")} sx=${{ color: "error.main" }}>
+          ${resolveIcon(":trash:")} Delete
+        </${MenuItem}>
+      </${Menu}>
+    </${Paper}>
   `;
 }

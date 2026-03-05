@@ -2,18 +2,18 @@ import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { describe, expect, it } from "vitest";
 
-const source = readFileSync(resolve(process.cwd(), "maintenance.mjs"), "utf8");
+const source = readFileSync(resolve(process.cwd(), "infra/maintenance.mjs"), "utf8");
 
 // ── evaluateThrottledWarning (new pure helper export) ──────────────────────
 
 describe("maintenance evaluateThrottledWarning pure helper", () => {
   it("is exported from maintenance.mjs", async () => {
-    const mod = await import("../maintenance.mjs");
+    const mod = await import("../infra/maintenance.mjs");
     expect(typeof mod.evaluateThrottledWarning).toBe("function");
   });
 
   it("returns shouldLog:true and suppressed:0 on first call", async () => {
-    const { evaluateThrottledWarning } = await import("../maintenance.mjs");
+    const { evaluateThrottledWarning } = await import("../infra/maintenance.mjs");
     const state = new Map();
     const result = evaluateThrottledWarning(state, "key1", Date.now(), 60_000);
     expect(result.shouldLog).toBe(true);
@@ -21,7 +21,7 @@ describe("maintenance evaluateThrottledWarning pure helper", () => {
   });
 
   it("returns shouldLog:false within throttle window (suppresses duplicate)", async () => {
-    const { evaluateThrottledWarning } = await import("../maintenance.mjs");
+    const { evaluateThrottledWarning } = await import("../infra/maintenance.mjs");
     const state = new Map();
     const now = Date.now();
     evaluateThrottledWarning(state, "key2", now, 60_000);
@@ -31,7 +31,7 @@ describe("maintenance evaluateThrottledWarning pure helper", () => {
   });
 
   it("returns shouldLog:true with suppressed count after throttle window expires", async () => {
-    const { evaluateThrottledWarning } = await import("../maintenance.mjs");
+    const { evaluateThrottledWarning } = await import("../infra/maintenance.mjs");
     const state = new Map();
     const now = Date.now();
     evaluateThrottledWarning(state, "key3", now, 5_000);
@@ -44,7 +44,7 @@ describe("maintenance evaluateThrottledWarning pure helper", () => {
   });
 
   it("enforces a minimum throttle of 1 000 ms (ignores sub-1s throttleMs)", async () => {
-    const { evaluateThrottledWarning } = await import("../maintenance.mjs");
+    const { evaluateThrottledWarning } = await import("../infra/maintenance.mjs");
     const state = new Map();
     const now = Date.now();
     evaluateThrottledWarning(state, "key4", now, 1); // throttleMs < 1000
@@ -54,7 +54,7 @@ describe("maintenance evaluateThrottledWarning pure helper", () => {
   });
 
   it("isolates state per key (different keys are independent)", async () => {
-    const { evaluateThrottledWarning } = await import("../maintenance.mjs");
+    const { evaluateThrottledWarning } = await import("../infra/maintenance.mjs");
     const state = new Map();
     const now = Date.now();
     evaluateThrottledWarning(state, "keyA", now, 60_000);
@@ -71,13 +71,13 @@ describe("maintenance evaluateThrottledWarning pure helper", () => {
 
 describe("maintenance resetBranchSyncWarningStateForTests", () => {
   it("is exported from maintenance.mjs", async () => {
-    const mod = await import("../maintenance.mjs");
+    const mod = await import("../infra/maintenance.mjs");
     expect(typeof mod.resetBranchSyncWarningStateForTests).toBe("function");
   });
 
   it("calling resetBranchSyncWarningStateForTests resets the internal state so next call logs", async () => {
     const { evaluateThrottledWarning, resetBranchSyncWarningStateForTests } =
-      await import("../maintenance.mjs");
+      await import("../infra/maintenance.mjs");
     // Force a suppress
     const state = new Map();
     const now = Date.now();

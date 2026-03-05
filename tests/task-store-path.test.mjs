@@ -13,7 +13,7 @@ function makeTempDir(prefix) {
 
 async function loadTaskStoreModule() {
   await vi.resetModules();
-  return import("../task-store.mjs");
+  return import("../task/task-store.mjs");
 }
 
 afterEach(() => {

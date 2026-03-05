@@ -79,14 +79,14 @@ vi.mock("@opencode-ai/sdk", () => ({
   createOpencodeClient: (...args) => mockCreateOpencodeClient(...args),
 }));
 
-vi.mock("../agent-sdk.mjs", () => ({
+vi.mock("../agent/agent-sdk.mjs", () => ({
   resolveAgentSdkConfig: vi.fn(() => ({
     primary: "opencode",
     capabilities: { steering: true, subagents: true, vscodeTools: false },
   })),
 }));
 
-vi.mock("../repo-root.mjs", () => ({
+vi.mock("../config/repo-root.mjs", () => ({
   resolveRepoRoot: vi.fn(() => "/mock/repo"),
 }));
 
@@ -97,7 +97,7 @@ vi.mock("node:fs/promises", () => ({
 }));
 
 // Zero-delay retries so transient-retry tests don't hit real network waits
-vi.mock("../stream-resilience.mjs", () => ({
+vi.mock("../infra/stream-resilience.mjs", () => ({
   isTransientStreamError: (err) => String(err?.message || "").includes("503"),
   streamRetryDelay: () => 0,
   MAX_STREAM_RETRIES: 5,
@@ -118,7 +118,7 @@ const {
   switchSession,
   createSession,
   initOpencodeShell,
-} = await import("../opencode-shell.mjs");
+} = await import("../shell/opencode-shell.mjs");
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -157,7 +157,7 @@ describe("getSessionInfo()", () => {
 
 describe("execOpencodePrompt() — primary guard", () => {
   it("returns an error message when primary SDK is not opencode", async () => {
-    const { resolveAgentSdkConfig } = await import("../agent-sdk.mjs");
+    const { resolveAgentSdkConfig } = await import("../agent/agent-sdk.mjs");
     resolveAgentSdkConfig.mockReturnValueOnce({
       primary: "codex",
       capabilities: {},
@@ -414,7 +414,7 @@ describe("steerOpencodePrompt()", () => {
   });
 
   it("returns ok:false when SDK not opencode", async () => {
-    const { resolveAgentSdkConfig } = await import("../agent-sdk.mjs");
+    const { resolveAgentSdkConfig } = await import("../agent/agent-sdk.mjs");
     resolveAgentSdkConfig.mockReturnValueOnce({
       primary: "codex",
       capabilities: { steering: false },

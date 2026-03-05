@@ -25,7 +25,7 @@ export const CATEGORIES = [
   { id: "telegram",  label: "Telegram Bot",         icon: "phone", description: "Bot token, chat, polling, and notification settings" },
   { id: "miniapp",   label: "Mini App / UI",        icon: "monitor", description: "Web UI server, port, auth, and tunnel settings" },
   { id: "executor",  label: "Executor / AI",        icon: "cpu", description: "Agent execution, SDK selection, parallelism, and timeouts" },
-  { id: "voice",     label: "Voice Assistant",       icon: "headphones", description: "Real-time voice mode, provider keys, model, and voice settings" },
+  { id: "voice",     label: "Voice Assistant",       icon: "headphones", description: "Real-time voice endpoints, provider routing, and voice behavior settings" },
   { id: "kanban",    label: "Kanban / Tasks",       icon: "clipboard", description: "Task backend, sync, labels, and project mapping" },
   { id: "github",    label: "GitHub / Git",         icon: "git", description: "Repository, auth, PR, merge, and reconciliation settings" },
   { id: "network",   label: "Network / Tunnel",     icon: "globe", description: "Cloudflare tunnel, presence, and multi-instance coordination" },
@@ -34,6 +34,7 @@ export const CATEGORIES = [
   { id: "hooks",     label: "Agent Hooks",          icon: "link", description: "Pre-push, pre-commit, and lifecycle hook configuration" },
   { id: "logging",   label: "Logging / Monitoring", icon: "chart", description: "Work logs, error thresholds, cost tracking, and retention" },
   { id: "advanced",  label: "Advanced",             icon: "settings", description: "Daemon, dev mode, paths, and low-level tuning" },
+  { id: "context-shredding", label: "Context Shredding",   icon: "scissors", description: "Tiered context compression to reduce token usage while preserving important history" },
 ];
 
 /** @type {SettingDef[]} */
@@ -113,10 +114,10 @@ export const SETTINGS_SCHEMA = [
   { key: "CODEX_MODEL_PROFILE_M_API_KEY", label: "M API Key",                  category: "executor", type: "secret", sensitive: true, description: "Optional profile-scoped API key for M profile." },
   { key: "CODEX_SUBAGENT_MODEL",           label: "Subagent Model",             category: "executor", type: "string", defaultVal: "gpt-5.1-codex-mini", description: "Preferred lightweight model for delegated/subagent work." },
   { key: "ANTHROPIC_API_KEY",              label: "Anthropic API Key",          category: "executor", type: "secret", sensitive: true, description: "Anthropic API key for Claude SDK. Required if using Claude executor." },
-  { key: "CLAUDE_MODEL",                   label: "Claude Model",               category: "executor", type: "string", defaultVal: "claude-opus-4-6", description: "Model for Claude SDK. E.g., claude-opus-4-6, claude-sonnet-4-5." },
+  { key: "CLAUDE_MODEL",                   label: "Claude Model",               category: "executor", type: "string", defaultVal: "claude-opus-4-6", description: "Model for Claude SDK. E.g., claude-opus-4-6, claude-sonnet-4.6, claude-haiku-4.5." },
   { key: "GEMINI_API_KEY",                 label: "Gemini API Key",             category: "executor", type: "secret", sensitive: true, description: "Google AI Studio key for Gemini SDK (alternative: GOOGLE_API_KEY)." },
   { key: "GOOGLE_API_KEY",                 label: "Google API Key",             category: "executor", type: "secret", sensitive: true, description: "Alternative key env used by Gemini SDK." },
-  { key: "GEMINI_MODEL",                   label: "Gemini Model",               category: "executor", type: "string", defaultVal: "gemini-2.5-pro", description: "Model for Gemini SDK sessions (for example gemini-2.5-pro)." },
+  { key: "GEMINI_MODEL",                   label: "Gemini Model",               category: "executor", type: "string", defaultVal: "gemini-3.1-pro", description: "Model for Gemini SDK sessions (for example gemini-3.1-pro)." },
   { key: "GEMINI_TRANSPORT",               label: "Gemini Transport",           category: "executor", type: "select", defaultVal: "auto", options: ["auto", "sdk", "cli"], description: "Gemini adapter transport. 'auto' uses SDK then falls back to CLI." },
   { key: "OPENCODE_MODEL",                 label: "OpenCode Model",             category: "executor", type: "string", defaultVal: "gpt-5.2-codex", description: "Model override passed to OpenCode sessions." },
   { key: "COPILOT_MODEL",                  label: "Copilot Model",              category: "executor", type: "string", defaultVal: "gpt-5", description: "Model for Copilot SDK sessions." },
@@ -124,15 +125,10 @@ export const SETTINGS_SCHEMA = [
 
   // ── Voice Assistant ──────────────────────────────────────────
   { key: "VOICE_ENABLED",                  label: "Enable Voice Mode",          category: "voice", type: "boolean", defaultVal: true, description: "Enable the real-time voice assistant in the chat UI." },
-  { key: "VOICE_PROVIDER",                 label: "Voice Provider",             category: "voice", type: "select", defaultVal: "auto", options: ["auto", "openai", "azure", "claude", "gemini", "fallback"], description: "Voice API provider. 'auto' selects based on available keys. 'fallback' uses browser speech APIs." },
-  { key: "VOICE_MODEL",                    label: "Voice Model",                category: "voice", type: "string", defaultVal: "gpt-4o-realtime-preview-2024-12-17", description: "OpenAI Realtime model to use for voice sessions." },
-  { key: "VOICE_VISION_MODEL",             label: "Vision Model",               category: "voice", type: "string", defaultVal: "gpt-4.1-mini", description: "Vision model used for live screen/camera understanding in voice mode." },
-  { key: "OPENAI_REALTIME_API_KEY",        label: "OpenAI Realtime Key",        category: "voice", type: "secret", sensitive: true, description: "Dedicated API key for voice. Falls back to OPENAI_API_KEY if not set." },
-  { key: "AZURE_OPENAI_REALTIME_ENDPOINT", label: "Azure Realtime Endpoint",    category: "voice", type: "string", description: "Azure OpenAI endpoint for Realtime API (e.g., https://myresource.openai.azure.com).", validate: "^$|^https?://" },
-  { key: "AZURE_OPENAI_REALTIME_API_KEY",  label: "Azure Realtime Key",         category: "voice", type: "secret", sensitive: true, description: "Azure OpenAI API key for Realtime API. Falls back to AZURE_OPENAI_API_KEY if not set." },
-  { key: "AZURE_OPENAI_REALTIME_DEPLOYMENT", label: "Azure Deployment",         category: "voice", type: "string", defaultVal: "gpt-4o-realtime-preview", description: "Azure deployment name for the Realtime model." },
-  { key: "VOICE_ID",                       label: "Voice",                      category: "voice", type: "select", defaultVal: "alloy", options: ["alloy", "ash", "ballad", "coral", "echo", "fable", "onyx", "nova", "sage", "shimmer", "verse"], description: "Voice personality for text-to-speech output." },
-  { key: "VOICE_TURN_DETECTION",           label: "Turn Detection",             category: "voice", type: "select", defaultVal: "server_vad", options: ["server_vad", "semantic_vad", "none"], description: "How the model detects when you stop speaking. 'semantic_vad' is more intelligent but higher latency." },
+  { key: "VOICE_TURN_DETECTION",           label: "Turn Detection",             category: "voice", type: "select", defaultVal: "semantic_vad", options: ["server_vad", "semantic_vad", "none"], description: "How the model detects when you stop speaking. 'semantic_vad' is more intelligent but higher latency." },
+  { key: "VOICE_TRANSCRIPTION_ENABLED",    label: "Input Transcription Enabled", category: "voice", type: "boolean", defaultVal: true, description: "Enable per-turn input audio transcription for OpenAI-compatible realtime sessions." },
+  { key: "VOICE_TRANSCRIPTION_MODEL",      label: "Input Transcription Model",  category: "voice", type: "string", defaultVal: "gpt-4o-transcribe", description: "Model used for input audio transcription when transcription is enabled." },
+  { key: "VOICE_AZURE_TRANSCRIPTION_ENABLED", label: "Azure Input Transcription", category: "voice", type: "boolean", defaultVal: false, description: "Enable input transcription specifically for Azure realtime sessions. Disabled by default to avoid Azure per-item transcription failures." },
   { key: "VOICE_DELEGATE_EXECUTOR",        label: "Delegate Executor",          category: "voice", type: "select", defaultVal: "codex-sdk", options: ["codex-sdk", "copilot-sdk", "claude-sdk", "gemini-sdk", "opencode-sdk"], description: "Which agent executor voice tool calls delegate to for complex tasks." },
   { key: "VOICE_FALLBACK_MODE",            label: "Fallback Mode",              category: "voice", type: "select", defaultVal: "browser", options: ["browser", "disabled"], description: "When Tier 1 (Realtime API) is unavailable, use browser speech APIs as fallback." },
 
@@ -253,6 +249,27 @@ export const SETTINGS_SCHEMA = [
   { key: "WORKFLOW_AUTOMATION_ENABLED",    label: "Workflow Automation",        category: "advanced", type: "boolean", defaultVal: true, description: "Enable event-driven workflow auto-triggers from monitor events." },
   { key: "SHARED_STATE_STALE_THRESHOLD_MS", label: "Stale Threshold",           category: "advanced", type: "number", defaultVal: 300000, min: 60000, max: 1800000, unit: "ms", description: "Time before a heartbeat is considered stale.", advanced: true },
   { key: "VE_CI_SWEEP_EVERY",              label: "CI Sweep Interval",          category: "advanced", type: "number", defaultVal: 15, min: 1, max: 100, description: "Trigger CI sweep after every N completed tasks.", advanced: true },
+
+  // ── Context Shredding ──────────────────────────────────────────
+  { key: "CONTEXT_SHREDDING_ENABLED",                label: "Enable Context Shredding",           category: "context-shredding", type: "boolean", defaultVal: true,  description: "Master switch for context compression. When off, agents receive their full history every turn (increases cost and risk of context overflow)." },
+  { key: "CONTEXT_SHREDDING_FULL_CONTEXT_TURNS",     label: "Full Context Turns (Tier 0)",        category: "context-shredding", type: "number",  defaultVal: 3,     min: 1, max: 20,   description: "Number of most-recent turns to keep completely uncompressed. Higher values use more tokens but improve agent coherence on rapid back-and-forth." },
+  { key: "CONTEXT_SHREDDING_COMPRESS_TOOL_OUTPUTS",  label: "Compress Tool Outputs",              category: "context-shredding", type: "boolean", defaultVal: true,  description: "Enable tiered compression for tool call outputs (file reads, search results, etc.)." },
+  { key: "CONTEXT_SHREDDING_COMPRESS_MESSAGES",      label: "Compress Agent & User Messages",     category: "context-shredding", type: "boolean", defaultVal: true,  description: "Compress agent reasoning messages and user prompts as they age out. Prevents long planning monologues from occupying context permanently." },
+  { key: "CONTEXT_SHREDDING_TIER1_MAX_AGE",          label: "Tier 1 Max Age",                     category: "context-shredding", type: "number",  defaultVal: 5,     min: 1, max: 50,   unit: "turns", description: "Turns threshold for light compression (head+tail truncation). Items older than Tier 0 but within this age get light compression.", advanced: true },
+  { key: "CONTEXT_SHREDDING_TIER2_MAX_AGE",          label: "Tier 2 Max Age",                     category: "context-shredding", type: "number",  defaultVal: 9,     min: 2, max: 100,  unit: "turns", description: "Turns threshold for moderate compression. Items older than Tier 1 but within this age get heavy head+tail truncation.", advanced: true },
+  { key: "CONTEXT_SHREDDING_TIER1_HEAD_CHARS",       label: "Tier 1 Head Characters",             category: "context-shredding", type: "number",  defaultVal: 2000,  min: 100, max: 10000, unit: "chars", description: "Maximum characters to keep from the start of a tool output in Tier 1 compression.", advanced: true },
+  { key: "CONTEXT_SHREDDING_TIER1_TAIL_CHARS",       label: "Tier 1 Tail Characters",             category: "context-shredding", type: "number",  defaultVal: 800,   min: 0, max: 5000,  unit: "chars", description: "Maximum characters to keep from the end of a tool output in Tier 1 compression.", advanced: true },
+  { key: "CONTEXT_SHREDDING_TIER2_HEAD_CHARS",       label: "Tier 2 Head Characters",             category: "context-shredding", type: "number",  defaultVal: 600,   min: 50, max: 5000,  unit: "chars", description: "Maximum characters to keep from the start of a tool output in Tier 2 compression.", advanced: true },
+  { key: "CONTEXT_SHREDDING_TIER2_TAIL_CHARS",       label: "Tier 2 Tail Characters",             category: "context-shredding", type: "number",  defaultVal: 300,   min: 0, max: 2000,  unit: "chars", description: "Maximum characters to keep from the end of a tool output in Tier 2 compression.", advanced: true },
+  { key: "CONTEXT_SHREDDING_SCORE_HIGH",             label: "High-Value Score Threshold",         category: "context-shredding", type: "number",  defaultVal: 70,    min: 1, max: 100,  description: "Items scored at or above this threshold are protected from compression (tier shifted down).", advanced: true },
+  { key: "CONTEXT_SHREDDING_SCORE_LOW",              label: "Low-Value Score Threshold",          category: "context-shredding", type: "number",  defaultVal: 30,    min: 0, max: 99,   description: "Items scored below this threshold are compressed more aggressively (tier shifted up).", advanced: true },
+  { key: "CONTEXT_SHREDDING_COMPRESS_AGENT_MESSAGES", label: "Compress Agent Messages",           category: "context-shredding", type: "boolean", defaultVal: true,  description: "Compress verbose agent thinking/planning messages after they age out of the active window.", advanced: true },
+  { key: "CONTEXT_SHREDDING_COMPRESS_USER_MESSAGES", label: "Compress User Messages",             category: "context-shredding", type: "boolean", defaultVal: true,  description: "Compress old user prompt messages to a short breadcrumb. The current turn's prompt is always kept in full.", advanced: true },
+  { key: "CONTEXT_SHREDDING_MSG_TIER0_MAX_AGE",      label: "Message Full-Text Turns",            category: "context-shredding", type: "number",  defaultVal: 1,     min: 0, max: 10,   unit: "turns", description: "Number of most-recent turns to preserve agent messages in full text.", advanced: true },
+  { key: "CONTEXT_SHREDDING_MSG_TIER1_MAX_AGE",      label: "Message Summary Turns",              category: "context-shredding", type: "number",  defaultVal: 4,     min: 1, max: 20,   unit: "turns", description: "Turns within which agent messages get a moderate summary. Messages older than this become a one-line breadcrumb.", advanced: true },
+  { key: "CONTEXT_SHREDDING_MSG_MIN_COMPRESS_CHARS", label: "Min Message Chars to Compress",      category: "context-shredding", type: "number",  defaultVal: 120,   min: 0, max: 2000, unit: "chars", description: "Agent messages shorter than this are never compressed.", advanced: true },
+  { key: "CONTEXT_SHREDDING_USER_MSG_FULL_TURNS",    label: "User Message Full-Text Turns",       category: "context-shredding", type: "number",  defaultVal: 1,     min: 0, max: 10,   unit: "turns", description: "Turns during which the full user prompt is preserved. After this, only a short summary is kept.", advanced: true },
+  { key: "CONTEXT_SHREDDING_PROFILES",               label: "Per-Type Profiles (JSON)",           category: "context-shredding", type: "text",    defaultVal: "",    description: 'JSON object with per-interaction-type or per-agent-type overrides. Example: { "perType": { "voice": { "fullContextTurns": 6 } }, "perAgent": { "claude-sdk": { "tier1MaxAge": 8 } } }', advanced: true },
 ];
 
 /**
@@ -307,8 +324,11 @@ export function validateSetting(def, value) {
         return { valid: false, error: "Must be true or false" };
       return { valid: true };
     case "select":
-      if (def.options && !def.options.includes(String(value)))
+      if (def.options && !def.options.includes(String(value))) {
+        // Allow arbitrary values when the schema includes "custom" as an option
+        if (def.options.includes("custom")) return { valid: true };
         return { valid: false, error: `Must be one of: ${def.options.join(", ")}` };
+      }
       return { valid: true };
     default:
       if (def.validate) {

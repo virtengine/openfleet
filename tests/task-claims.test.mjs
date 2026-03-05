@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { resolve } from "node:path";
 
 // Mock presence.mjs before importing task-claims.mjs
-vi.mock("../presence.mjs", () => ({
+vi.mock("../infra/presence.mjs", () => ({
   getPresenceState: vi.fn(() => ({
     instance_id: "test-instance-1",
     coordinator_priority: 100,
@@ -38,7 +38,7 @@ describe("task-claims", () => {
 
   describe("initTaskClaims", () => {
     it("initializes with default settings", async () => {
-      const { initTaskClaims } = await import("../task-claims.mjs");
+      const { initTaskClaims } = await import("../task/task-claims.mjs");
       await initTaskClaims({ repoRoot: tempRoot });
       // Should not throw
     });
@@ -49,7 +49,7 @@ describe("task-claims", () => {
 
     beforeEach(async () => {
       ({ initTaskClaims, claimTask, getClaim } = await import(
-        "../task-claims.mjs"
+        "../task/task-claims.mjs"
       ));
       await initTaskClaims({ repoRoot: tempRoot });
     });
@@ -119,7 +119,7 @@ describe("task-claims", () => {
     });
 
     it("reclaims a task when existing owner is stale/offline", async () => {
-      const { listActiveInstances } = vi.mocked(await import("../presence.mjs"));
+      const { listActiveInstances } = vi.mocked(await import("../infra/presence.mjs"));
       await claimTask({
         taskId: "task-stale",
         instanceId: "instance-1",
@@ -138,7 +138,7 @@ describe("task-claims", () => {
     });
 
     it("does not reclaim when existing owner is active", async () => {
-      const { listActiveInstances } = vi.mocked(await import("../presence.mjs"));
+      const { listActiveInstances } = vi.mocked(await import("../infra/presence.mjs"));
       await claimTask({
         taskId: "task-active",
         instanceId: "instance-1",
@@ -161,7 +161,7 @@ describe("task-claims", () => {
 
     beforeEach(async () => {
       ({ initTaskClaims, claimTask, releaseTask, getClaim } = await import(
-        "../task-claims.mjs"
+        "../task/task-claims.mjs"
       ));
       await initTaskClaims({ repoRoot: tempRoot });
     });
@@ -230,7 +230,7 @@ describe("task-claims", () => {
 
     beforeEach(async () => {
       ({ initTaskClaims, claimTask, renewClaim, getClaim } = await import(
-        "../task-claims.mjs"
+        "../task/task-claims.mjs"
       ));
       await initTaskClaims({ repoRoot: tempRoot });
     });
@@ -298,7 +298,7 @@ describe("task-claims", () => {
 
     beforeEach(async () => {
       ({ initTaskClaims, claimTask, listClaims } = await import(
-        "../task-claims.mjs"
+        "../task/task-claims.mjs"
       ));
       await initTaskClaims({ repoRoot: tempRoot });
     });
@@ -325,7 +325,7 @@ describe("task-claims", () => {
     });
 
     it("excludes expired claims by default", async () => {
-      const { _test } = await import("../task-claims.mjs");
+      const { _test } = await import("../task/task-claims.mjs");
 
       await claimTask({ taskId: "task-1", instanceId: "instance-1" });
 
@@ -348,7 +348,7 @@ describe("task-claims", () => {
     });
 
     it("includes expired claims when requested", async () => {
-      const { _test } = await import("../task-claims.mjs");
+      const { _test } = await import("../task/task-claims.mjs");
 
       await claimTask({ taskId: "task-1", instanceId: "instance-1" });
 
@@ -375,7 +375,7 @@ describe("task-claims", () => {
 
     beforeEach(async () => {
       ({ initTaskClaims, claimTask, isTaskClaimed } = await import(
-        "../task-claims.mjs"
+        "../task/task-claims.mjs"
       ));
       await initTaskClaims({ repoRoot: tempRoot });
     });
@@ -393,7 +393,7 @@ describe("task-claims", () => {
     });
 
     it("returns false for expired claim", async () => {
-      const { _test } = await import("../task-claims.mjs");
+      const { _test } = await import("../task/task-claims.mjs");
 
       const registry = await _test.loadClaimsRegistry();
       registry.claims["task-1"] = {
@@ -416,7 +416,7 @@ describe("task-claims", () => {
 
     beforeEach(async () => {
       ({ initTaskClaims, claimTask, getClaimStats } = await import(
-        "../task-claims.mjs"
+        "../task/task-claims.mjs"
       ));
       await initTaskClaims({ repoRoot: tempRoot });
     });
@@ -436,7 +436,7 @@ describe("task-claims", () => {
     });
 
     it("counts expired claims separately", async () => {
-      const { _test } = await import("../task-claims.mjs");
+      const { _test } = await import("../task/task-claims.mjs");
 
       await claimTask({ taskId: "task-1", instanceId: "instance-1" });
 
@@ -463,12 +463,12 @@ describe("task-claims", () => {
     let _test;
 
     beforeEach(async () => {
-      ({ _test } = await import("../task-claims.mjs"));
+      ({ _test } = await import("../task/task-claims.mjs"));
     });
 
     it("coordinator always wins against non-coordinator", async () => {
       const { getPresenceState, selectCoordinator } = vi.mocked(
-        await import("../presence.mjs"),
+        await import("../infra/presence.mjs"),
       );
       selectCoordinator.mockReturnValue({ instance_id: "coordinator" });
 
@@ -490,7 +490,7 @@ describe("task-claims", () => {
     });
 
     it("lower priority wins when neither is coordinator", async () => {
-      const { selectCoordinator } = vi.mocked(await import("../presence.mjs"));
+      const { selectCoordinator } = vi.mocked(await import("../infra/presence.mjs"));
       selectCoordinator.mockReturnValue({ instance_id: "other" });
 
       const existing = {
@@ -511,7 +511,7 @@ describe("task-claims", () => {
     });
 
     it("earlier timestamp wins when priorities are equal", async () => {
-      const { selectCoordinator } = vi.mocked(await import("../presence.mjs"));
+      const { selectCoordinator } = vi.mocked(await import("../infra/presence.mjs"));
       selectCoordinator.mockReturnValue(null);
 
       const earlier = new Date(Date.now() - 1000).toISOString();
@@ -535,7 +535,7 @@ describe("task-claims", () => {
     });
 
     it("uses instance ID as tie-breaker", async () => {
-      const { selectCoordinator } = vi.mocked(await import("../presence.mjs"));
+      const { selectCoordinator } = vi.mocked(await import("../infra/presence.mjs"));
       selectCoordinator.mockReturnValue(null);
 
       const timestamp = new Date().toISOString();
@@ -562,7 +562,7 @@ describe("task-claims", () => {
     let _test;
 
     beforeEach(async () => {
-      ({ _test } = await import("../task-claims.mjs"));
+      ({ _test } = await import("../task/task-claims.mjs"));
     });
 
     it("removes expired claims", () => {
@@ -603,10 +603,10 @@ describe("task-claims", () => {
 
     beforeEach(async () => {
       const { getPresenceState, selectCoordinator } = vi.mocked(
-        await import("../presence.mjs"),
+        await import("../infra/presence.mjs"),
       );
 
-      ({ initTaskClaims, claimTask } = await import("../task-claims.mjs"));
+      ({ initTaskClaims, claimTask } = await import("../task/task-claims.mjs"));
       await initTaskClaims({ repoRoot: tempRoot });
 
       // Setup: instance-1 claims first
@@ -618,7 +618,7 @@ describe("task-claims", () => {
     });
 
     it("coordinator can override existing non-coordinator claim", async () => {
-      const { getPresenceState } = vi.mocked(await import("../presence.mjs"));
+      const { getPresenceState } = vi.mocked(await import("../infra/presence.mjs"));
 
       // First claim from non-coordinator
       getPresenceState.mockReturnValue({
@@ -647,7 +647,7 @@ describe("task-claims", () => {
     let _test;
 
     beforeEach(async () => {
-      ({ _test } = await import("../task-claims.mjs"));
+      ({ _test } = await import("../task/task-claims.mjs"));
     });
 
     it("retries retriable fs errors and eventually succeeds", async () => {

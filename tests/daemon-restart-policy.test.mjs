@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { createDaemonCrashTracker } from "../daemon-restart-policy.mjs";
+import { createDaemonCrashTracker } from "../infra/daemon-restart-policy.mjs";
 
 describe("daemon-restart-policy", () => {
   it("counts instant crashes within the configured window", () => {

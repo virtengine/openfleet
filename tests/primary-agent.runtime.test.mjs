@@ -39,31 +39,31 @@ const mockResetGeminiSession = vi.hoisted(() => vi.fn(async () => {}));
 const mockInitGeminiShell = vi.hoisted(() => vi.fn(async () => true));
 const mockExecPooledPrompt = vi.hoisted(() => vi.fn(async () => ({ finalResponse: "pooled-ok", items: [] })));
 
-vi.mock("../config.mjs", () => ({
+vi.mock("../config/config.mjs", () => ({
   loadConfig: () => mockConfigState.current,
 }));
 
-vi.mock("../codex-config.mjs", () => ({
+vi.mock("../shell/codex-config.mjs", () => ({
   ensureCodexConfig: mockEnsureCodexConfig,
   printConfigSummary: mockPrintConfigSummary,
 }));
 
-vi.mock("../repo-config.mjs", () => ({
+vi.mock("../config/repo-config.mjs", () => ({
   ensureRepoConfigs: mockEnsureRepoConfigs,
   printRepoConfigSummary: mockPrintRepoConfigSummary,
 }));
 
-vi.mock("../repo-root.mjs", () => ({
+vi.mock("../config/repo-root.mjs", () => ({
   resolveRepoRoot: mockResolveRepoRoot,
 }));
 
-vi.mock("../session-tracker.mjs", () => ({
+vi.mock("../infra/session-tracker.mjs", () => ({
   getSessionTracker: () => ({
     recordEvent: mockRecordEvent,
   }),
 }));
 
-vi.mock("../codex-shell.mjs", () => ({
+vi.mock("../shell/codex-shell.mjs", () => ({
   execCodexPrompt: mockExecCodexPrompt,
   steerCodexPrompt: vi.fn(async () => ({ ok: true })),
   isCodexBusy: mockIsCodexBusy,
@@ -76,7 +76,7 @@ vi.mock("../codex-shell.mjs", () => ({
   createSession: mockCreateCodexSession,
 }));
 
-vi.mock("../copilot-shell.mjs", () => ({
+vi.mock("../shell/copilot-shell.mjs", () => ({
   execCopilotPrompt: mockExecCopilotPrompt,
   steerCopilotPrompt: mockSteerCopilotPrompt,
   isCopilotBusy: mockIsCopilotBusy,
@@ -85,7 +85,7 @@ vi.mock("../copilot-shell.mjs", () => ({
   initCopilotShell: mockInitCopilotShell,
 }));
 
-vi.mock("../claude-shell.mjs", () => ({
+vi.mock("../shell/claude-shell.mjs", () => ({
   execClaudePrompt: mockExecClaudePrompt,
   steerClaudePrompt: mockSteerClaudePrompt,
   isClaudeBusy: mockIsClaudeBusy,
@@ -94,7 +94,7 @@ vi.mock("../claude-shell.mjs", () => ({
   initClaudeShell: mockInitClaudeShell,
 }));
 
-vi.mock("../gemini-shell.mjs", () => ({
+vi.mock("../shell/gemini-shell.mjs", () => ({
   execGeminiPrompt: mockExecGeminiPrompt,
   steerGeminiPrompt: mockSteerGeminiPrompt,
   isGeminiBusy: mockIsGeminiBusy,
@@ -107,7 +107,7 @@ vi.mock("../gemini-shell.mjs", () => ({
   createSession: vi.fn(async (id) => ({ id })),
 }));
 
-vi.mock("../opencode-shell.mjs", () => ({
+vi.mock("../shell/opencode-shell.mjs", () => ({
   execOpencodePrompt: vi.fn(async () => ({ finalResponse: "opencode stub", items: [], usage: null })),
   steerOpencodePrompt: vi.fn(async () => ({ ok: true, mode: "abort" })),
   isOpencodeBusy: vi.fn(() => false),
@@ -120,7 +120,7 @@ vi.mock("../opencode-shell.mjs", () => ({
   createSession: vi.fn(async (id) => ({ id, serverSessionId: null })),
 }));
 
-vi.mock("../agent-pool.mjs", () => ({
+vi.mock("../agent/agent-pool.mjs", () => ({
   execPooledPrompt: mockExecPooledPrompt,
 }));
 
@@ -144,7 +144,7 @@ describe("primary-agent runtime safeguards", () => {
 
   it("uses dryRun codex config checks at runtime by default", async () => {
     vi.resetModules();
-    const primaryAgent = await import("../primary-agent.mjs");
+    const primaryAgent = await import("../agent/primary-agent.mjs");
 
     await primaryAgent.initPrimaryAgent("codex-sdk");
 
@@ -155,7 +155,7 @@ describe("primary-agent runtime safeguards", () => {
 
   it("falls back to pooled execution when active adapter is busy on another session", async () => {
     vi.resetModules();
-    const primaryAgent = await import("../primary-agent.mjs");
+    const primaryAgent = await import("../agent/primary-agent.mjs");
     await primaryAgent.initPrimaryAgent("codex-sdk");
 
     mockIsCodexBusy.mockReturnValue(true);
@@ -171,7 +171,7 @@ describe("primary-agent runtime safeguards", () => {
     });
 
     expect(mockExecPooledPrompt).toHaveBeenCalledWith(
-      "hello",
+      expect.stringContaining("hello"),
       expect.objectContaining({ sdk: "codex" }),
     );
     expect(result.finalResponse).toBe("pooled-ok");
@@ -201,7 +201,7 @@ describe("primary-agent runtime safeguards", () => {
     };
 
     vi.resetModules();
-    const primaryAgent = await import("../primary-agent.mjs");
+    const primaryAgent = await import("../agent/primary-agent.mjs");
 
     const agents = primaryAgent.getAvailableAgents();
     const copilotClaude = agents.find((agent) => agent.id === "copilot-claude");
@@ -240,7 +240,7 @@ describe("primary-agent runtime safeguards", () => {
     };
 
     vi.resetModules();
-    const primaryAgent = await import("../primary-agent.mjs");
+    const primaryAgent = await import("../agent/primary-agent.mjs");
 
     const switched = await primaryAgent.switchPrimaryAgent("copilot-claude");
 
@@ -266,7 +266,7 @@ describe("primary-agent runtime safeguards", () => {
     };
 
     vi.resetModules();
-    const primaryAgent = await import("../primary-agent.mjs");
+    const primaryAgent = await import("../agent/primary-agent.mjs");
     const switched = await primaryAgent.switchPrimaryAgent("gemini-default");
 
     expect(switched.ok).toBe(true);

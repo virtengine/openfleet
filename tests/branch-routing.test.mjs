@@ -2,14 +2,14 @@ import { describe, it, expect, beforeEach } from "vitest";
 import {
   extractScopeFromTitle,
   resolveUpstreamFromConfig,
-} from "../monitor.mjs";
+} from "../infra/monitor.mjs";
 import {
   buildAssessmentPrompt,
   extractDecisionJson,
   quickAssess,
   VALID_ACTIONS,
   resetAssessmentDedup,
-} from "../task-assessment.mjs";
+} from "../task/task-assessment.mjs";
 
 // ── extractScopeFromTitle ────────────────────────────────────────────────────
 
@@ -154,6 +154,41 @@ describe("extractDecisionJson", () => {
     const raw = '```\n{"action":"noop","reason":"nothing"}\n```';
     const result = extractDecisionJson(raw);
     expect(result.action).toBe("noop");
+  });
+
+  it("parses action from serialized SDK envelope output field", () => {
+    const raw = JSON.stringify({
+      output: '{"action":"wait","waitSeconds":120,"reason":"ci in progress"}',
+      threadId: "abc",
+    });
+    const result = extractDecisionJson(raw);
+    expect(result).toMatchObject({ action: "wait", waitSeconds: 120 });
+  });
+
+  it("parses action from finalResponse field", () => {
+    const raw = JSON.stringify({
+      finalResponse: '{"action":"merge","reason":"all checks green"}',
+      usage: { totalTokens: 123 },
+    });
+    const result = extractDecisionJson(raw);
+    expect(result).toMatchObject({ action: "merge" });
+  });
+
+  it("parses action from nested content arrays", () => {
+    const raw = JSON.stringify({
+      items: [
+        {
+          content: [
+            { type: "output_text", text: "```json\n{\"action\":\"reprompt_same\",\"prompt\":\"fix lint\"}\n```" },
+          ],
+        },
+      ],
+    });
+    const result = extractDecisionJson(raw);
+    expect(result).toMatchObject({
+      action: "reprompt_same",
+      prompt: "fix lint",
+    });
   });
 });
 
@@ -391,7 +426,7 @@ describe("quickAssess", () => {
 // ── VALID_ACTIONS ────────────────────────────────────────────────────────────
 
 describe("VALID_ACTIONS", () => {
-  it("contains all 8 expected actions", () => {
+  it("contains all 11 expected actions", () => {
     const expected = [
       "merge",
       "reprompt_same",
@@ -400,9 +435,12 @@ describe("VALID_ACTIONS", () => {
       "wait",
       "manual_review",
       "close_and_replan",
+      "accept_with_debt",
+      "split_task",
+      "escalate_to_replan",
       "noop",
     ];
-    expect(VALID_ACTIONS.size).toBe(8);
+    expect(VALID_ACTIONS.size).toBe(11);
     for (const action of expected) {
       expect(VALID_ACTIONS.has(action)).toBe(true);
     }

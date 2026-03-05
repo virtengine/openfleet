@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { RestartController } from "../restart-controller.mjs";
+import { RestartController } from "../infra/restart-controller.mjs";
 
 describe("RestartController", () => {
   beforeEach(() => {

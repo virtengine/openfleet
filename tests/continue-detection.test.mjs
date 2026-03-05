@@ -9,7 +9,7 @@
  */
 
 import { describe, expect, it, beforeEach, vi } from "vitest";
-import { createSessionTracker } from "../session-tracker.mjs";
+import { createSessionTracker } from "../infra/session-tracker.mjs";
 
 // ── SessionTracker: getProgressStatus ─────────────────────────────────────
 

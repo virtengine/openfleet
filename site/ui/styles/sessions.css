@@ -180,6 +180,13 @@
   flex-shrink: 0;
 }
 
+/* Hide the in-chat header on tablet/desktop; mobile keeps it for drawer/nav. */
+@media (min-width: 769px) {
+  .chat-shell-header {
+    display: none;
+  }
+}
+
 .chat-shell-inner {
   display: flex;
   align-items: center;
@@ -1738,6 +1745,18 @@ ul.md-list li::before {
   color: var(--text-primary);
   border-bottom: 1px solid var(--border);
   background: var(--bg-card);
+}
+
+.diff-status-chip {
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--color-inreview);
+  border: 1px solid rgba(245, 158, 11, 0.35);
+  border-radius: 999px;
+  padding: 2px 8px;
+  background: rgba(245, 158, 11, 0.1);
 }
 
 .diff-stat-add {

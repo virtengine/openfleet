@@ -604,6 +604,21 @@ export function markUserMessageSent(adapter, sessionId) {
  */
 export function startAgentStatusTracking() {
   return onWsMessage((msg) => {
+    if (msg.type === "invalidate") {
+      const payload = msg.payload || {};
+      const reason = String(payload.reason || "").toLowerCase();
+      const sessionId = String(payload.sessionId || payload.taskId || "");
+      const isCompletionSignal =
+        reason === "agent-response" ||
+        reason === "agent-error";
+      if (isCompletionSignal) {
+        if (!sessionId || agentStatus.value.sessionId === sessionId) {
+          _setAgentState("idle", "", "");
+        }
+      }
+      return;
+    }
+
     if (msg.type !== "session-message") return;
     const payload = msg.payload;
     if (!payload) return;

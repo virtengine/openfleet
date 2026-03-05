@@ -1,7 +1,8 @@
-import { existsSync, statSync } from "node:fs";
+import { existsSync, readFileSync, statSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { spawnSync, spawn } from "node:child_process";
+import { homedir } from "node:os";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const desktopDir = resolve(__dirname);
@@ -17,6 +18,13 @@ const chromeSandbox = resolve(
 
 process.title = "bosun-desktop-launcher";
 
+function hasGuiEnvironment() {
+  if (process.platform !== "linux") return true;
+  if (process.env.DISPLAY || process.env.WAYLAND_DISPLAY) return true;
+  if (process.env.XDG_SESSION_TYPE && process.env.XDG_SESSION_TYPE !== "tty") return true;
+  return false;
+}
+
 function shouldDisableSandbox() {
   if (process.env.BOSUN_DESKTOP_DISABLE_SANDBOX === "1") return true;
   if (process.platform !== "linux") return false;
@@ -29,6 +37,31 @@ function shouldDisableSandbox() {
     return !(isRootOwned && isSetuid);
   } catch {
     return true;
+  }
+}
+
+function resolveDesktopConfigDir() {
+  if (process.env.BOSUN_HOME) return resolve(process.env.BOSUN_HOME);
+  if (process.env.BOSUN_DIR) return resolve(process.env.BOSUN_DIR);
+  const baseDir =
+    process.env.APPDATA ||
+    process.env.LOCALAPPDATA ||
+    process.env.USERPROFILE ||
+    process.env.HOME ||
+    homedir();
+  return resolve(baseDir, "bosun");
+}
+
+function readDesktopApiKeyFromDisk() {
+  try {
+    const file = resolve(resolveDesktopConfigDir(), "desktop-api-key.json");
+    if (!existsSync(file)) return "";
+    const payload = JSON.parse(readFileSync(file, "utf8"));
+    const key = String(payload?.key || "").trim();
+    if (!key.startsWith("bosun_desktop_")) return "";
+    return key;
+  } catch {
+    return "";
   }
 }
 
@@ -49,11 +82,25 @@ function ensureElectronInstalled() {
 }
 
 function launch() {
+  if (!hasGuiEnvironment()) {
+    console.error(
+      [
+        "[desktop] No GUI display server detected.",
+        "Cannot launch Electron portal without DISPLAY/WAYLAND.",
+        "Run Bosun in daemon/web mode instead (for example: `bosun --daemon`).",
+      ].join(" "),
+    );
+    process.exit(1);
+  }
+
   if (!ensureElectronInstalled()) {
     process.exit(1);
   }
 
   const disableSandbox = shouldDisableSandbox();
+  const envDesktopApiKey = String(process.env.BOSUN_DESKTOP_API_KEY || "").trim();
+  const diskDesktopApiKey = readDesktopApiKeyFromDisk();
+  const desktopApiKey = diskDesktopApiKey || envDesktopApiKey;
   const args = [desktopDir];
   if (disableSandbox) {
     args.push("--no-sandbox", "--disable-gpu-sandbox");
@@ -65,6 +112,7 @@ function launch() {
     env: {
       ...process.env,
       BOSUN_DESKTOP: "1",
+      ...(desktopApiKey ? { BOSUN_DESKTOP_API_KEY: desktopApiKey } : {}),
       ...(disableSandbox ? { ELECTRON_DISABLE_SANDBOX: "1" } : {}),
     },
   });

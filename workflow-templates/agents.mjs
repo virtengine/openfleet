@@ -963,5 +963,6 @@ export const MEETING_SUBWORKFLOW_CHAIN_TEMPLATE = {
     createdAt: "2026-02-28T00:00:00Z",
     templateVersion: "1.0.0",
     tags: ["meeting", "subworkflow", "chaining", "agents"],
+    requiredTemplates: ["template-task-planner"],
   },
 };

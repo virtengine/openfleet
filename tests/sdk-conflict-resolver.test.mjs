@@ -6,7 +6,7 @@ import {
   clearSDKResolutionState,
   getSDKResolutionSummary,
   resolveConflictsWithSDK,
-} from "../sdk-conflict-resolver.mjs";
+} from "../git/sdk-conflict-resolver.mjs";
 
 // ── classifyFile (tested indirectly through buildSDKConflictPrompt) ──────────
 

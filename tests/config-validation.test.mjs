@@ -2,7 +2,7 @@ import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { resolve } from "node:path";
-import { loadConfig } from "../config.mjs";
+import { loadConfig } from "../config/config.mjs";
 
 const ENV_KEYS = [
   "TELEGRAM_INTERVAL_MIN",
@@ -167,6 +167,25 @@ describe("loadConfig validation and edge cases", () => {
     ]);
     expect(config.executorConfig.executors[1].models).toEqual([
       "claude-opus-4.6",
+    ]);
+  });
+
+  it("preserves custom/deployment model slugs from EXECUTORS env", () => {
+    process.env.EXECUTORS =
+      "CODEX:DEFAULT:100:gpt-5.2-codex|my-azure-deployment-42";
+
+    const config = loadConfig([
+      "node",
+      "bosun",
+      "--config-dir",
+      tempConfigDir,
+      "--repo-root",
+      tempConfigDir,
+    ]);
+
+    expect(config.executorConfig.executors[0].models).toEqual([
+      "gpt-5.2-codex",
+      "my-azure-deployment-42",
     ]);
   });
 

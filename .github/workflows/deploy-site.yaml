@@ -6,7 +6,7 @@
 # GitHub Pages settings for virtengine/bosun:
 #   Settings → Pages → Source: GitHub Actions
 #
-# The CNAME file in site/ keeps bosun.virtengine.com wired up.
+# The CNAME file in site/ keeps bosun.engineer wired up.
 # NOTE: site/ui is a symlink to ../ui — resolved at deploy time.
 
 name: "Bosun: Deploy Site"
@@ -49,6 +49,6 @@ jobs:
           github_token: ${{ secrets.GITHUB_TOKEN }}
           publish_branch: gh-pages
           publish_dir: site
-          cname: bosun.virtengine.com
+          cname: bosun.engineer
           commit_message: "chore(site): deploy ${{ github.sha }}"
           force_orphan: false

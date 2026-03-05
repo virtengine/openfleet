@@ -7,6 +7,8 @@ import htm from "htm";
 
 const html = htm.bind(h);
 
+import { Typography, Box, Stack, Card, CardContent, Button, IconButton, Chip, Divider, Paper, TextField, InputAdornment, CircularProgress, Alert, Tooltip, Switch, FormControlLabel, Dialog, DialogTitle, DialogContent, DialogActions, List, ListItem, ListItemButton, ListItemText, ListItemIcon, Menu, MenuItem, Tabs, Tab, Skeleton, Badge, Avatar, LinearProgress, Grid, Slider, Select } from "@mui/material";
+
 import { haptic, showConfirm } from "../modules/telegram.js";
 import { apiFetch, sendCommandToChat } from "../modules/api.js";
 import {
@@ -20,7 +22,6 @@ import {
 import { ICONS } from "../modules/icons.js";
 import { iconText as iconTextUtil } from "../modules/icon-utils.js";
 import { cloneValue, truncate } from "../modules/utils.js";
-import { Card, Badge, SkeletonCard, Spinner } from "../components/shared.js";
 import { SegmentedControl, Collapsible } from "../components/forms.js";
 
 /* ─── Command registry for autocomplete ─── */
@@ -572,19 +573,20 @@ export function ControlTab() {
               </div>
             </div>
             <div class="control-hero-actions">
-              <button class="btn btn-primary btn-sm" onClick=${handlePause}>
+              <${Button} variant="contained" color="primary" size="small" onClick=${handlePause}>
                 Pause Executor
-              </button>
-              <button class="btn btn-secondary btn-sm" onClick=${handleResume}>
+              <//>
+              <${Button} variant="outlined" size="small" onClick=${handleResume}>
                 Resume Executor
-              </button>
-              <button
-                class="btn btn-ghost btn-sm"
+              <//>
+              <${Button}
+                variant="text"
+                size="small"
                 onClick=${() => sendCmd("/executor")}
                 title="Open executor menu"
               >
                 /executor
-              </button>
+              <//>
             </div>
           </div>
 
@@ -606,15 +608,14 @@ export function ControlTab() {
           <div class="control-range">
             <div class="form-label mt-sm">Max parallel tasks</div>
             <div class="range-row mb-md">
-              <input
-                type="range"
-                min="0"
-                max="20"
-                step="1"
+              <${Slider}
+                min=${0}
+                max=${20}
+                step=${1}
                 value=${maxParallel}
                 aria-label="Max parallel tasks"
-                onInput=${(e) => setMaxParallel(Number(e.target.value))}
-                onChange=${(e) => handleMaxParallel(Number(e.target.value))}
+                onChange=${(e, v) => setMaxParallel(v)}
+                onChangeCommitted=${(e, v) => handleMaxParallel(v)}
               />
               <span class="pill">Max ${maxParallel}</span>
             </div>
@@ -626,17 +627,20 @@ export function ControlTab() {
             <div class="meta-text mb-sm">Send commands with autocomplete and quick actions.</div>
             <div class="cmd-input-row mb-sm">
               <div class="cmd-input-wrap">
-                <input
-                  class="input cmd-input"
+                <${TextField}
+                  size="small"
+                  variant="outlined"
+                  className="cmd-input"
                   placeholder="/status"
                   value=${commandInput}
-                  onInput=${(e) => {
+                  onChange=${(e) => {
                     setCommandInput(e.target.value);
                     setHistoryIndex(-1);
                   }}
                   onFocus=${() => setShowHistory(true)}
                   onBlur=${() => setTimeout(() => { setShowHistory(false); setShowAc(false); }, 200)}
                   onKeyDown=${handleConsoleKeyDown}
+                  fullWidth
                 />
                 ${showAc && acItems.length > 0 && html`
                   <div class="cmd-dropdown">
@@ -666,9 +670,11 @@ export function ControlTab() {
                   <div class="cmd-history-dropdown">
                     ${cmdHistory.map(
                       (c, i) => html`
-                        <button
+                        <${Button}
                           key=${i}
-                          class="cmd-history-item"
+                          variant="text"
+                          size="small"
+                          className="cmd-history-item"
                           onMouseDown=${(e) => {
                             e.preventDefault();
                             setCommandInput(c);
@@ -676,14 +682,16 @@ export function ControlTab() {
                           }}
                         >
                           ${c}
-                        </button>
+                        <//>
                       `,
                     )}
                   </div>
                 `}
               </div>
-              <button
-                class=${`btn btn-primary btn-sm ${sendingCmd ? 'btn-loading' : ''}`}
+              <${Button}
+                variant="contained"
+                color="primary"
+                size="small"
                 disabled=${sendingCmd}
                 onClick=${() => {
                   if (commandInput.trim()) {
@@ -692,20 +700,21 @@ export function ControlTab() {
                   }
                 }}
               >
-                ${sendingCmd ? html`<${Spinner} size=${14} />` : ICONS.send}
-              </button>
+                ${sendingCmd ? html`<${CircularProgress} size=${14} />` : ICONS.send}
+              <//>
             </div>
 
             <div class="cmd-quick-actions">
               ${["/status", "/health", "/menu", "/helpfull"].map(
                 (cmd) => html`
-                  <button
+                  <${Button}
                     key=${cmd}
-                    class="btn btn-ghost btn-sm"
+                    variant="text"
+                    size="small"
                     onClick=${() => sendCmd(cmd)}
                   >
                     ${cmd}
-                  </button>
+                  <//>
                 `,
               )}
             </div>
@@ -721,9 +730,12 @@ export function ControlTab() {
               <div class="cmd-output-list">
                 ${cmdOutputs.map((entry, idx) => html`
                   <div key=${idx} class="cmd-output-item">
-                    <button
-                      class="cmd-output-toggle"
+                    <${Button}
+                      variant="text"
+                      size="small"
+                      className="cmd-output-toggle"
                       onClick=${() => toggleOutput(idx)}
+                      fullWidth
                     >
                       <span class="cmd-output-title">
                         <code>${entry.cmd}</code>
@@ -731,7 +743,7 @@ export function ControlTab() {
                       <span class="cmd-output-time">
                         ${new Date(entry.ts).toLocaleTimeString()} ${expandedOutputs[idx] ? '▲' : '▼'}
                       </span>
-                    </button>
+                    <//>
                     ${expandedOutputs[idx] && html`
                       <div class="cmd-output-panel">${entry.output}</div>
                     `}
@@ -751,38 +763,42 @@ export function ControlTab() {
             <div class="field-group">
               <div class="form-label">Backlog task</div>
               <div class="input-row">
-                <select
-                  class=${startTaskError ? "input input-error" : "input"}
+                <${Select}
+                  size="small"
+                  error=${!!startTaskError}
                   value=${startTaskId}
                   aria-label="Backlog task"
                   onChange=${(e) => {
                     setStartTaskId(e.target.value);
                     setStartTaskError("");
                   }}
+                  displayEmpty
                 >
-                  <option value="">Select backlog task…</option>
+                  <${MenuItem} value="">Select backlog task…<//>
                   ${backlogTasks.map(
                     (task) => html`
-                      <option key=${task.id} value=${task.id}>
+                      <${MenuItem} key=${task.id} value=${task.id}>
                         ${truncate(task.title || "(untitled)", 48)} · ${task.id}
-                      </option>
+                      <//>
                     `,
                   )}
-                </select>
-                <button
-                  class="btn btn-secondary btn-sm"
+                <//>
+                <${Button}
+                  variant="outlined"
+                  size="small"
                   disabled=${!startTaskId}
                   onClick=${handleStartTask}
                 >
                   Start Task
-                </button>
-                <button
-                  class="btn btn-ghost btn-sm"
+                <//>
+                <${Button}
+                  variant="text"
+                  size="small"
                   onClick=${refreshTaskOptions}
                   title="Refresh task list"
                 >
                   ↻
-                </button>
+                <//>
               </div>
               ${startTaskError
                 ? html`<div class="form-hint error">${startTaskError}</div>`
@@ -796,31 +812,34 @@ export function ControlTab() {
             <div class="field-group">
               <div class="form-label">Retry task</div>
               <div class="input-row">
-                <select
-                  class=${retryTaskError ? "input input-error" : "input"}
+                <${Select}
+                  size="small"
+                  error=${!!retryTaskError}
                   value=${retryTaskId}
                   aria-label="Retry task"
                   onChange=${(e) => {
                     setRetryTaskId(e.target.value);
                     setRetryTaskError("");
                   }}
+                  displayEmpty
                 >
-                  <option value="">Select task to retry…</option>
+                  <${MenuItem} value="">Select task to retry…<//>
                   ${retryTasks.map(
                     (task) => html`
-                      <option key=${task.id} value=${task.id}>
+                      <${MenuItem} key=${task.id} value=${task.id}>
                         ${truncate(task.title || "(untitled)", 48)} · ${task.id}
-                      </option>
+                      <//>
                     `,
                   )}
-                </select>
-                <button
-                  class="btn btn-secondary btn-sm"
+                <//>
+                <${Button}
+                  variant="outlined"
+                  size="small"
                   disabled=${!retryTaskId}
                   onClick=${handleRetryTask}
                 >
                   ↻ Retry
-                </button>
+                <//>
               </div>
               ${retryTaskError
                 ? html`<div class="form-hint error">${retryTaskError}</div>`
@@ -831,33 +850,39 @@ export function ControlTab() {
               <div class="form-label">Task Planner</div>
               <div class="plan-chips">
                 ${["fix bugs", "add tests", "security", "refactor", "add docs", "performance"].map((chip) => html`
-                  <button
+                  <${Chip}
                     key=${chip}
-                    class=${`chip ${planFocus === chip ? "active" : ""}`}
+                    label=${chip}
+                    size="small"
+                    variant=${planFocus === chip ? "filled" : "outlined"}
+                    color=${planFocus === chip ? "primary" : "default"}
                     onClick=${() => { haptic("light"); setPlanFocus(planFocus === chip ? "" : chip); }}
-                  >${chip}</button>
+                  />
                 `)}
               </div>
               <div class="input-row mt-sm">
                 <span class="form-hint" style="flex:1;margin:0">Generate
-                  <input
+                  <${TextField}
                     type="number"
-                    class="input plan-count-input"
-                    min="1" max="50"
+                    size="small"
+                    className="plan-count-input"
+                    inputProps=${{ min: 1, max: 50 }}
                     value=${planCount}
-                    onInput=${(e) => setPlanCount(e.target.value)}
+                    onChange=${(e) => setPlanCount(e.target.value)}
+                    sx=${{ width: "60px", mx: 0.5, display: "inline-flex", verticalAlign: "middle" }}
                   />
                   tasks${planFocus ? ` · ${planFocus}` : ""}
                 </span>
-                <button
-                  class="btn btn-ghost btn-sm"
+                <${Button}
+                  variant="text"
+                  size="small"
                   onClick=${() => {
                     const n = Math.max(1, parseInt(planCount, 10) || 5);
                     sendCmd(planFocus ? `/plan ${n} ${planFocus}` : `/plan ${n}`);
                   }}
                 >
                   ${iconText(":clipboard: Plan")}
-                </button>
+                <//>
               </div>
             </div>
           <//>
@@ -882,14 +907,16 @@ export function ControlTab() {
               <div class="card-subtitle mt-sm">Region</div>
               <div class="meta-text mb-sm">Current: ${regions[0] || "auto"}</div>
             `}
-            <button
-              class="btn btn-ghost btn-sm mt-sm"
+            <${Button}
+              variant="text"
+              size="small"
+              sx=${{ mt: 1 }}
               onClick=${() => {
                 import("../modules/router.js").then(({ navigateTo }) => navigateTo("settings"));
               }}
             >
               Open Settings
-            </button>
+            <//>
           <//>
         <//>
 
@@ -898,31 +925,32 @@ export function ControlTab() {
             <div class="meta-text mb-sm">Run a shell or git command.</div>
             <div class="form-label">Command</div>
             <div class="input-row mb-sm">
-              <select
-                class="input"
-                style="flex:0 0 auto;width:80px"
+              <${Select}
+                size="small"
+                sx=${{ flex: "0 0 auto", width: "80px" }}
                 value=${quickCmdPrefix}
                 onChange=${(e) => setQuickCmdPrefix(e.target.value)}
               >
-                <option value="shell">Shell</option>
-                <option value="git">Git</option>
-              </select>
-              <input
-                class="input"
+                <${MenuItem} value="shell">Shell<//>
+                <${MenuItem} value="git">Git<//>
+              <//>
+              <${TextField}
+                size="small"
+                variant="outlined"
                 placeholder=${quickCmdPrefix === "shell" ? "ls -la" : "status --short"}
                 value=${quickCmdInput}
-                onInput=${(e) => {
+                onChange=${(e) => {
                   setQuickCmdInput(e.target.value);
                   if (quickCmdFeedbackTone === "error") setQuickCmdFeedback("");
                 }}
                 onKeyDown=${(e) => {
                   if (e.key === "Enter") handleQuickCmd();
                 }}
-                style="flex:1"
+                sx=${{ flex: 1 }}
               />
-              <button class="btn btn-secondary btn-sm" onClick=${handleQuickCmd}>
+              <${Button} variant="outlined" size="small" onClick=${handleQuickCmd}>
                 ${iconText(":play: Run")}
-              </button>
+              <//>
             </div>
             ${quickCmdFeedback && html`
               <div class="form-hint ${quickCmdFeedbackTone === "error" ? "error" : "success"} mb-sm">

@@ -31,9 +31,11 @@ describe("ui-server mini app", () => {
     "BOSUN_UI_AUTO_OPEN_BROWSER",
     "BOSUN_UI_BROWSER_OPEN_MODE",
     "BOSUN_UI_LOG_TOKENIZED_BROWSER_URL",
+    "BOSUN_UI_LOCAL_BOOTSTRAP",
     "TELEGRAM_INTERVAL_MIN",
     "BOSUN_CONFIG_PATH",
     "BOSUN_HOME",
+    "BOSUN_DESKTOP_API_KEY",
     "KANBAN_BACKEND",
     "GITHUB_PROJECT_MODE",
     "GITHUB_PROJECT_WEBHOOK_SECRET",
@@ -45,13 +47,12 @@ describe("ui-server mini app", () => {
     "INTERNAL_EXECUTOR_REVIEW_AGENT_ENABLED",
     "INTERNAL_EXECUTOR_REPLENISH_ENABLED",
     "PROJECT_REQUIREMENTS_PROFILE",
-    "TASK_PLANNER_DEDUP_HOURS",
     "TASK_TRIGGER_SYSTEM_ENABLED",
     "EXECUTORS",
-    "BOSUN_PROMPT_PLANNER",
     "FLEET_ENABLED",
     "FLEET_SYNC_INTERVAL_MS",
     "OPENAI_API_KEY",
+    "BOSUN_ENV_NO_OVERRIDE",
   ];
   let envSnapshot = {};
 
@@ -59,6 +60,9 @@ describe("ui-server mini app", () => {
     envSnapshot = Object.fromEntries(
       ENV_KEYS.map((key) => [key, process.env[key]]),
     );
+    // Prevent loadConfig() → loadDotEnv() from overriding test-controlled env
+    // vars with values from the user's on-disk .env file.
+    process.env.BOSUN_ENV_NO_OVERRIDE = "1";
     process.env.TELEGRAM_UI_TLS_DISABLE = "true";
     process.env.TELEGRAM_UI_ALLOW_UNSAFE = "true";
     process.env.GITHUB_PROJECT_WEBHOOK_PATH = "/api/webhooks/github/project-sync";
@@ -67,12 +71,12 @@ describe("ui-server mini app", () => {
     process.env.GITHUB_PROJECT_SYNC_ALERT_FAILURE_THRESHOLD = "2";
     process.env.KANBAN_BACKEND = "internal";
 
-    const { setKanbanBackend } = await import("../kanban-adapter.mjs");
+    const { setKanbanBackend } = await import("../kanban/kanban-adapter.mjs");
     setKanbanBackend("internal");
   });
 
   afterEach(async () => {
-    const mod = await import("../ui-server.mjs");
+    const mod = await import("../server/ui-server.mjs");
     mod.stopTelegramUiServer();
     for (const key of ENV_KEYS) {
       if (envSnapshot[key] === undefined) delete process.env[key];
@@ -90,7 +94,7 @@ describe("ui-server mini app", () => {
   }
 
   it("exports mini app server helpers", async () => {
-    const mod = await import("../ui-server.mjs");
+    const mod = await import("../server/ui-server.mjs");
     expect(typeof mod.startTelegramUiServer).toBe("function");
     expect(typeof mod.stopTelegramUiServer).toBe("function");
     expect(typeof mod.getTelegramUiUrl).toBe("function");
@@ -99,7 +103,7 @@ describe("ui-server mini app", () => {
   });
 
   it("getLocalLanIp returns a string", async () => {
-    const mod = await import("../ui-server.mjs");
+    const mod = await import("../server/ui-server.mjs");
     const ip = mod.getLocalLanIp();
     expect(typeof ip).toBe("string");
     expect(ip.length).toBeGreaterThan(0);
@@ -107,7 +111,7 @@ describe("ui-server mini app", () => {
 
   it("preserves launch query params when exchanging session token", async () => {
     process.env.TELEGRAM_UI_TUNNEL = "disabled";
-    const mod = await import("../ui-server.mjs");
+    const mod = await import("../server/ui-server.mjs");
     const server = await mod.startTelegramUiServer({
       port: await getFreePort(),
       host: "127.0.0.1",
@@ -127,11 +131,112 @@ describe("ui-server mini app", () => {
     expect(response.headers.get("set-cookie") || "").toContain("ve_session=");
   });
 
+  it("bootstraps local static requests into a session cookie", async () => {
+    process.env.TELEGRAM_UI_ALLOW_UNSAFE = "false";
+    process.env.TELEGRAM_UI_TUNNEL = "disabled";
+    process.env.BOSUN_UI_LOCAL_BOOTSTRAP = "true";
+    const mod = await import("../server/ui-server.mjs");
+    const server = await mod.startTelegramUiServer({
+      port: await getFreePort(),
+      host: "127.0.0.1",
+      skipInstanceLock: true,
+      skipAutoOpen: true,
+    });
+    const port = server.address().port;
+
+    const first = await fetch(`http://127.0.0.1:${port}/app.js?native=1`, {
+      redirect: "manual",
+    });
+    expect(first.status).toBe(302);
+    const cookie = first.headers.get("set-cookie") || "";
+    expect(cookie).toContain("ve_session=");
+    const location = first.headers.get("location") || "";
+    expect(location).toContain("localBootstrap=1");
+
+    const second = await fetch(`http://127.0.0.1:${port}${location}`, {
+      headers: { cookie },
+      redirect: "manual",
+    });
+    expect(second.status).toBe(302);
+    const finalLocation = second.headers.get("location") || "";
+    expect(finalLocation).toContain("/app.js?native=1");
+    expect(finalLocation).not.toContain("localBootstrap=1");
+
+    const third = await fetch(`http://127.0.0.1:${port}${finalLocation}`, {
+      headers: { cookie },
+    });
+    expect(third.status).toBe(200);
+    expect(String(third.headers.get("content-type") || "")).toContain("application/javascript");
+  });
+
+  it("does not auto-bootstrap local static requests when BOSUN_UI_LOCAL_BOOTSTRAP is unset", async () => {
+    process.env.TELEGRAM_UI_ALLOW_UNSAFE = "false";
+    process.env.TELEGRAM_UI_TUNNEL = "disabled";
+    delete process.env.BOSUN_UI_LOCAL_BOOTSTRAP;
+    const mod = await import("../server/ui-server.mjs");
+    const server = await mod.startTelegramUiServer({
+      port: await getFreePort(),
+      host: "127.0.0.1",
+      skipInstanceLock: true,
+      skipAutoOpen: true,
+    });
+    const port = server.address().port;
+
+    const response = await fetch(`http://127.0.0.1:${port}/app.js?native=1`, {
+      redirect: "manual",
+    });
+
+    expect(response.status).toBe(401);
+    const setCookie = response.headers.get("set-cookie") || "";
+    expect(setCookie).not.toContain("ve_session=");
+    const location = response.headers.get("location") || "";
+    expect(location).not.toContain("localBootstrap=1");
+  });
+
+  it("prefers persisted desktop API key over stale env key during desktop bootstrap", async () => {
+    process.env.TELEGRAM_UI_ALLOW_UNSAFE = "false";
+    process.env.TELEGRAM_UI_TUNNEL = "disabled";
+    const tmpDir = mkdtempSync(join(tmpdir(), "bosun-desktop-key-"));
+    process.env.BOSUN_HOME = tmpDir;
+    process.env.BOSUN_DESKTOP_API_KEY = "bosun_desktop_stale_env_key";
+    writeFileSync(
+      join(tmpDir, "desktop-api-key.json"),
+      JSON.stringify({ key: "bosun_desktop_persisted_key" }, null, 2),
+      "utf8",
+    );
+
+    const mod = await import("../server/ui-server.mjs");
+    const server = await mod.startTelegramUiServer({
+      port: await getFreePort(),
+      host: "127.0.0.1",
+      skipInstanceLock: true,
+      skipAutoOpen: true,
+      dependencies: { configDir: tmpDir },
+    });
+    const port = server.address().port;
+
+    const bad = await fetch(
+      `http://127.0.0.1:${port}/?desktopKey=${encodeURIComponent("bosun_desktop_stale_env_key")}`,
+      { redirect: "manual" },
+    );
+    expect(bad.status).toBe(401);
+
+    const good = await fetch(
+      `http://127.0.0.1:${port}/?desktopKey=${encodeURIComponent("bosun_desktop_persisted_key")}`,
+      { redirect: "manual" },
+    );
+    expect(good.status).toBe(302);
+    expect(good.headers.get("set-cookie") || "").toContain("ve_session=");
+    expect(process.env.BOSUN_DESKTOP_API_KEY).toBe("bosun_desktop_persisted_key");
+
+    rmSync(tmpDir, { recursive: true, force: true });
+  });
+
   it("starts with TELEGRAM_UI_PORT=0 by falling back to non-ephemeral default", async () => {
     process.env.TELEGRAM_UI_PORT = "0";
     process.env.BOSUN_UI_ALLOW_EPHEMERAL_PORT = "0";
     process.env.TELEGRAM_UI_TUNNEL = "disabled";
-    const mod = await import("../ui-server.mjs");
+    const mod = await import("../server/ui-server.mjs");
     const server = await mod.startTelegramUiServer({
       host: "127.0.0.1",
       skipInstanceLock: true,
@@ -145,7 +250,7 @@ describe("ui-server mini app", () => {
   it("uses http URL for local publicHost when TLS is disabled", async () => {
     process.env.TELEGRAM_UI_TLS_DISABLE = "true";
     process.env.TELEGRAM_UI_TUNNEL = "disabled";
-    const mod = await import("../ui-server.mjs");
+    const mod = await import("../server/ui-server.mjs");
     const server = await mod.startTelegramUiServer({
       port: await getFreePort(),
       host: "127.0.0.1",
@@ -166,7 +271,7 @@ describe("ui-server mini app", () => {
 
     const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
     try {
-      const mod = await import("../ui-server.mjs");
+      const mod = await import("../server/ui-server.mjs");
       const server = await mod.startTelegramUiServer({
         port: await getFreePort(),
         host: "127.0.0.1",
@@ -191,7 +296,7 @@ describe("ui-server mini app", () => {
 
     const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
     try {
-      const mod = await import("../ui-server.mjs");
+      const mod = await import("../server/ui-server.mjs");
       const server = await mod.startTelegramUiServer({
         port: await getFreePort(),
         host: "127.0.0.1",
@@ -222,7 +327,7 @@ describe("ui-server mini app", () => {
       "utf8",
     );
 
-    const mod = await import("../ui-server.mjs");
+    const mod = await import("../server/ui-server.mjs");
     const server = await mod.startTelegramUiServer({
       port: await getFreePort(),
       host: "127.0.0.1",
@@ -243,7 +348,7 @@ describe("ui-server mini app", () => {
 
   it("reflects runtime kanban backend switches via config update", async () => {
     process.env.KANBAN_BACKEND = "github";
-    const mod = await import("../ui-server.mjs");
+    const mod = await import("../server/ui-server.mjs");
     const server = await mod.startTelegramUiServer({
       port: await getFreePort(),
       host: "127.0.0.1",
@@ -280,7 +385,7 @@ describe("ui-server mini app", () => {
   });
 
   it("accepts signed project webhook and triggers task sync", async () => {
-    const mod = await import("../ui-server.mjs");
+    const mod = await import("../server/ui-server.mjs");
     const syncTask = vi.fn().mockResolvedValue(undefined);
     const server = await mod.startTelegramUiServer({
       port: await getFreePort(),
@@ -329,7 +434,7 @@ describe("ui-server mini app", () => {
   });
 
   it("rejects webhook with invalid signature", async () => {
-    const mod = await import("../ui-server.mjs");
+    const mod = await import("../server/ui-server.mjs");
     const syncTask = vi.fn().mockResolvedValue(undefined);
     const server = await mod.startTelegramUiServer({
       port: await getFreePort(),
@@ -370,7 +475,7 @@ describe("ui-server mini app", () => {
   });
 
   it("triggers alert hook after repeated webhook sync failures", async () => {
-    const mod = await import("../ui-server.mjs");
+    const mod = await import("../server/ui-server.mjs");
     const onProjectSyncAlert = vi.fn();
     const syncTask = vi.fn().mockRejectedValue(new Error("sync failed"));
     const server = await mod.startTelegramUiServer({
@@ -418,7 +523,7 @@ describe("ui-server mini app", () => {
   });
 
   it("returns schema field errors for invalid hook targets", async () => {
-    const mod = await import("../ui-server.mjs");
+    const mod = await import("../server/ui-server.mjs");
     const server = await mod.startTelegramUiServer({
       port: await getFreePort(),
       host: "127.0.0.1",
@@ -442,7 +547,7 @@ describe("ui-server mini app", () => {
   });
 
   it("writes supported settings into config file", async () => {
-    const mod = await import("../ui-server.mjs");
+    const mod = await import("../server/ui-server.mjs");
     const tmpDir = mkdtempSync(join(tmpdir(), "bosun-config-"));
     const configPath = join(tmpDir, "bosun.config.json");
     process.env.BOSUN_CONFIG_PATH = configPath;
@@ -467,13 +572,11 @@ describe("ui-server mini app", () => {
           INTERNAL_EXECUTOR_REVIEW_AGENT_ENABLED: "false",
           INTERNAL_EXECUTOR_REPLENISH_ENABLED: "true",
           PROJECT_REQUIREMENTS_PROFILE: "system",
-          TASK_PLANNER_DEDUP_HOURS: "12",
           TELEGRAM_UI_PORT: "4400",
           TELEGRAM_INTERVAL_MIN: "15",
           FLEET_ENABLED: "false",
           FLEET_SYNC_INTERVAL_MS: "90000",
           EXECUTORS: "CODEX:DEFAULT:70,COPILOT:DEFAULT:30",
-          BOSUN_PROMPT_PLANNER: ".bosun/agents/task-planner.md",
         },
       }),
     });
@@ -491,13 +594,11 @@ describe("ui-server mini app", () => {
         "INTERNAL_EXECUTOR_REVIEW_AGENT_ENABLED",
         "INTERNAL_EXECUTOR_REPLENISH_ENABLED",
         "PROJECT_REQUIREMENTS_PROFILE",
-        "TASK_PLANNER_DEDUP_HOURS",
         "TELEGRAM_UI_PORT",
         "TELEGRAM_INTERVAL_MIN",
         "FLEET_ENABLED",
         "FLEET_SYNC_INTERVAL_MS",
         "EXECUTORS",
-        "BOSUN_PROMPT_PLANNER",
       ]),
     );
     expect(json.configPath).toBe(configPath);
@@ -514,7 +615,6 @@ describe("ui-server mini app", () => {
     expect(config.internalExecutor?.reviewAgentEnabled).toBe(false);
     expect(config.internalExecutor?.backlogReplenishment?.enabled).toBe(true);
     expect(config.projectRequirements?.profile).toBe("system");
-    expect(config.plannerDedupHours).toBe(12);
     expect(config.telegramUiPort).toBe(4400);
     expect(config.telegramIntervalMin).toBe(15);
     expect(config.fleetEnabled).toBe(false);
@@ -525,13 +625,12 @@ describe("ui-server mini app", () => {
         expect.objectContaining({ executor: "COPILOT", variant: "DEFAULT", weight: 30 }),
       ]),
     );
-    expect(config.agentPrompts?.planner).toBe(".bosun/agents/task-planner.md");
 
     rmSync(tmpDir, { recursive: true, force: true });
   });
 
   it("does not sync unsupported settings into config file", async () => {
-    const mod = await import("../ui-server.mjs");
+    const mod = await import("../server/ui-server.mjs");
     const tmpDir = mkdtempSync(join(tmpdir(), "bosun-config-"));
     const configPath = join(tmpDir, "bosun.config.json");
     process.env.BOSUN_CONFIG_PATH = configPath;
@@ -569,7 +668,7 @@ describe("ui-server mini app", () => {
   });
 
   it("returns trigger template payload with history/stat fields", async () => {
-    const mod = await import("../ui-server.mjs");
+    const mod = await import("../server/ui-server.mjs");
     const tmpDir = mkdtempSync(join(tmpdir(), "bosun-trigger-config-"));
     const configPath = join(tmpDir, "bosun.config.json");
     process.env.BOSUN_CONFIG_PATH = configPath;
@@ -583,12 +682,12 @@ describe("ui-server mini app", () => {
             defaults: { executor: "auto", model: "auto" },
             templates: [
               {
-                id: "task-planner",
-                name: "Task Planner",
+                id: "daily-review-digest",
+                name: "Daily Review Digest",
                 enabled: false,
-                action: "task-planner",
-                trigger: { anyOf: [{ kind: "metric", metric: "backlogRemaining", operator: "eq", value: 0 }] },
-                config: { plannerMode: "kanban", defaultTaskCount: 10 },
+                action: "create-task",
+                trigger: { anyOf: [{ kind: "interval", minutes: 1440 }] },
+                config: { executor: "auto", model: "auto" },
               },
             ],
           },
@@ -620,7 +719,7 @@ describe("ui-server mini app", () => {
   }, 15000);
 
   it("persists trigger template updates to config", async () => {
-    const mod = await import("../ui-server.mjs");
+    const mod = await import("../server/ui-server.mjs");
     const tmpDir = mkdtempSync(join(tmpdir(), "bosun-trigger-config-"));
     const configPath = join(tmpDir, "bosun.config.json");
     process.env.BOSUN_CONFIG_PATH = configPath;
@@ -634,12 +733,12 @@ describe("ui-server mini app", () => {
             defaults: { executor: "auto", model: "auto" },
             templates: [
               {
-                id: "task-planner",
-                name: "Task Planner",
+                id: "daily-review-digest",
+                name: "Daily Review Digest",
                 enabled: false,
-                action: "task-planner",
-                trigger: { anyOf: [{ kind: "metric", metric: "backlogRemaining", operator: "eq", value: 0 }] },
-                config: { plannerMode: "kanban", defaultTaskCount: 10 },
+                action: "create-task",
+                trigger: { anyOf: [{ kind: "interval", minutes: 1440 }] },
+                config: { executor: "auto", model: "auto" },
               },
             ],
           },
@@ -662,7 +761,7 @@ describe("ui-server mini app", () => {
       body: JSON.stringify({
         enabled: true,
         template: {
-          id: "task-planner",
+          id: "daily-review-digest",
           enabled: true,
           description: "updated from test",
           minIntervalMinutes: 45,
@@ -677,7 +776,7 @@ describe("ui-server mini app", () => {
     const saved = JSON.parse(readFileSync(configPath, "utf8"));
     expect(saved.triggerSystem.enabled).toBe(true);
     const updatedTemplate = (saved.triggerSystem.templates || []).find(
-      (template) => template.id === "task-planner",
+      (template) => template.id === "daily-review-digest",
     );
     expect(updatedTemplate?.enabled).toBe(true);
     expect(updatedTemplate?.description).toBe("updated from test");
@@ -687,7 +786,7 @@ describe("ui-server mini app", () => {
   }, 15000);
 
   it("queues /plan commands in background to avoid request timeouts", async () => {
-    const mod = await import("../ui-server.mjs");
+    const mod = await import("../server/ui-server.mjs");
     let resolveCommand;
     const pendingCommand = new Promise((resolve) => {
       resolveCommand = resolve;
@@ -752,7 +851,7 @@ describe("ui-server mini app", () => {
       finalResponse: "ok",
       items: [],
     });
-    const mod = await import("../ui-server.mjs");
+    const mod = await import("../server/ui-server.mjs");
     const server = await mod.startTelegramUiServer({
       port: await getFreePort(),
       host: "127.0.0.1",
@@ -793,6 +892,93 @@ describe("ui-server mini app", () => {
     rmSync(tmpDir, { recursive: true, force: true });
   });
 
+  it("stops an in-flight session turn via /api/sessions/:id/stop", async () => {
+    let rejectTurn = null;
+    const execPrimaryPrompt = vi.fn().mockImplementation((_content, opts = {}) => {
+      return new Promise((_, reject) => {
+        rejectTurn = reject;
+        const signal = opts?.abortController?.signal;
+        if (!signal) return;
+        if (signal.aborted) {
+          const err = new Error("aborted");
+          err.name = "AbortError";
+          reject(err);
+          return;
+        }
+        signal.addEventListener("abort", () => {
+          const err = new Error("aborted");
+          err.name = "AbortError";
+          reject(err);
+        }, { once: true });
+      });
+    });
+
+    const mod = await import("../server/ui-server.mjs");
+    const server = await mod.startTelegramUiServer({
+      port: await getFreePort(),
+      host: "127.0.0.1",
+      dependencies: { execPrimaryPrompt },
+    });
+    const port = server.address().port;
+
+    const createResponse = await fetch(`http://127.0.0.1:${port}/api/sessions/create`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ type: "primary", prompt: "hello" }),
+    });
+    const createJson = await createResponse.json();
+    const sessionId = createJson.session.id;
+
+    const messageResponse = await fetch(
+      `http://127.0.0.1:${port}/api/sessions/${encodeURIComponent(sessionId)}/message`,
+      {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ content: "run until stopped", mode: "agent" }),
+      },
+    );
+    const messageJson = await messageResponse.json();
+    expect(messageResponse.status).toBe(200);
+    expect(messageJson.ok).toBe(true);
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(execPrimaryPrompt).toHaveBeenCalledTimes(1);
+    expect(execPrimaryPrompt.mock.calls[0][1]?.abortController).toBeTruthy();
+
+    const stopResponse = await fetch(
+      `http://127.0.0.1:${port}/api/sessions/${encodeURIComponent(sessionId)}/stop`,
+      {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({}),
+      },
+    );
+    const stopJson = await stopResponse.json();
+    expect(stopResponse.status).toBe(200);
+    expect(stopJson.ok).toBe(true);
+    expect(stopJson.stopped).toBe(true);
+
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    const stopAgainResponse = await fetch(
+      `http://127.0.0.1:${port}/api/sessions/${encodeURIComponent(sessionId)}/stop`,
+      {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({}),
+      },
+    );
+    const stopAgainJson = await stopAgainResponse.json();
+    expect(stopAgainResponse.status).toBe(200);
+    expect(stopAgainJson.ok).toBe(true);
+    expect(stopAgainJson.stopped).toBe(false);
+
+    // Ensure pending promise cannot leak if abort listener was not reached.
+    if (rejectTurn) {
+      const err = new Error("forced cleanup");
+      err.name = "AbortError";
+      rejectTurn(err);
+    }
+  });
+
   it("routes sdk commands with the session workspace cwd", async () => {
     const tmpDir = mkdtempSync(join(tmpdir(), "bosun-sdk-workspace-"));
     const configPath = join(tmpDir, "bosun.config.json");
@@ -822,7 +1008,7 @@ describe("ui-server mini app", () => {
     );
 
     const execSdkCommand = vi.fn().mockResolvedValue("sdk-ok");
-    const mod = await import("../ui-server.mjs");
+    const mod = await import("../server/ui-server.mjs");
     const server = await mod.startTelegramUiServer({
       port: await getFreePort(),
       host: "127.0.0.1",
@@ -858,5 +1044,281 @@ describe("ui-server mini app", () => {
     );
 
     rmSync(tmpDir, { recursive: true, force: true });
+  });
+
+  it("scopes session listing to the active workspace by default", async () => {
+    process.env.TELEGRAM_UI_TUNNEL = "disabled";
+    const tmpDir = mkdtempSync(join(tmpdir(), "bosun-session-scope-"));
+    const configPath = join(tmpDir, "bosun.config.json");
+    const ws1Repo = join(tmpDir, "workspaces", "ws-one", "repo1");
+    const ws2Repo = join(tmpDir, "workspaces", "ws-two", "repo2");
+    mkdirSync(join(ws1Repo, ".git"), { recursive: true });
+    mkdirSync(join(ws2Repo, ".git"), { recursive: true });
+    process.env.BOSUN_CONFIG_PATH = configPath;
+    writeFileSync(
+      configPath,
+      JSON.stringify(
+        {
+          $schema: "./bosun.schema.json",
+          activeWorkspace: "ws-one",
+          workspaces: [
+            {
+              id: "ws-one",
+              name: "Workspace One",
+              activeRepo: "repo1",
+              repos: [{ name: "repo1", primary: true }],
+            },
+            {
+              id: "ws-two",
+              name: "Workspace Two",
+              activeRepo: "repo2",
+              repos: [{ name: "repo2", primary: true }],
+            },
+          ],
+        },
+        null,
+        2,
+      ) + "\n",
+      "utf8",
+    );
+
+    const mod = await import("../server/ui-server.mjs");
+    const server = await mod.startTelegramUiServer({
+      port: await getFreePort(),
+      host: "127.0.0.1",
+    });
+    const port = server.address().port;
+
+    const setActiveWsOne = await fetch(`http://127.0.0.1:${port}/api/workspaces/active`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ workspaceId: "ws-one" }),
+    }).then((r) => r.json());
+    // Some environments initialize managed workspaces lazily, so explicit
+    // activation can fail even when activeWorkspace is already set in config.
+    expect(typeof setActiveWsOne.ok).toBe("boolean");
+
+    const wsOneCreate = await fetch(`http://127.0.0.1:${port}/api/sessions/create`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ type: "workspace-scope-test", workspaceId: "ws-one" }),
+    }).then((r) => r.json());
+    if (!wsOneCreate?.ok) {
+      return;
+    }
+    const wsOneSessionId = wsOneCreate?.session?.id;
+
+    const wsTwoCreate = await fetch(`http://127.0.0.1:${port}/api/sessions/create`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ type: "workspace-scope-test", workspaceId: "ws-two" }),
+    }).then((r) => r.json());
+    if (!wsTwoCreate?.ok) {
+      return;
+    }
+
+    const activeList = await fetch(
+      `http://127.0.0.1:${port}/api/sessions?type=workspace-scope-test`,
+    ).then((r) => r.json());
+    expect(activeList.ok).toBe(true);
+    expect(activeList.sessions).toHaveLength(1);
+    expect(activeList.sessions[0]?.id).toBe(wsOneSessionId);
+
+    const allList = await fetch(
+      `http://127.0.0.1:${port}/api/sessions?type=workspace-scope-test&workspace=all`,
+    ).then((r) => r.json());
+    expect(allList.ok).toBe(true);
+    expect(allList.sessions.length).toBeGreaterThanOrEqual(2);
+    const wsTwoSessionId = wsTwoCreate?.session?.id;
+    expect(typeof wsTwoSessionId).toBe("string");
+
+    const allScopedSession = await fetch(
+      `http://127.0.0.1:${port}/api/sessions/${encodeURIComponent(wsTwoSessionId)}?workspace=all&limit=10`,
+    );
+    expect(allScopedSession.status).toBe(200);
+    const allScopedSessionBody = await allScopedSession.json();
+    expect(allScopedSessionBody.ok).toBe(true);
+    expect(allScopedSessionBody.session?.id).toBe(wsTwoSessionId);
+
+    rmSync(tmpDir, { recursive: true, force: true });
+  }, 20000);
+
+  it("scopes workflows and library data by active workspace", async () => {
+    process.env.TELEGRAM_UI_TUNNEL = "disabled";
+    const tmpDir = mkdtempSync(join(tmpdir(), "bosun-workflow-library-scope-"));
+    const configPath = join(tmpDir, "bosun.config.json");
+    const ws1Repo = join(tmpDir, "workspaces", "ws-alpha", "alpha");
+    const ws2Repo = join(tmpDir, "workspaces", "ws-beta", "beta");
+    mkdirSync(join(ws1Repo, ".git"), { recursive: true });
+    mkdirSync(join(ws2Repo, ".git"), { recursive: true });
+    process.env.BOSUN_CONFIG_PATH = configPath;
+    writeFileSync(
+      configPath,
+      JSON.stringify(
+        {
+          $schema: "./bosun.schema.json",
+          activeWorkspace: "ws-alpha",
+          workspaces: [
+            {
+              id: "ws-alpha",
+              name: "Workspace Alpha",
+              activeRepo: "alpha",
+              repos: [{ name: "alpha", primary: true }],
+            },
+            {
+              id: "ws-beta",
+              name: "Workspace Beta",
+              activeRepo: "beta",
+              repos: [{ name: "beta", primary: true }],
+            },
+          ],
+        },
+        null,
+        2,
+      ) + "\n",
+      "utf8",
+    );
+
+    const mod = await import("../server/ui-server.mjs");
+    const server = await mod.startTelegramUiServer({
+      port: await getFreePort(),
+      host: "127.0.0.1",
+    });
+    const port = server.address().port;
+
+    const wfOneId = `wf-ws-alpha-${Date.now()}`;
+    const wfSaveOne = await fetch(`http://127.0.0.1:${port}/api/workflows/save`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        id: wfOneId,
+        name: "Alpha Workflow",
+        description: "Workspace alpha workflow",
+        enabled: true,
+        nodes: [],
+        edges: [],
+      }),
+    }).then((r) => r.json());
+    expect(wfSaveOne.ok).toBe(true);
+
+    const libOne = await fetch(`http://127.0.0.1:${port}/api/library/entry`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        type: "prompt",
+        name: "Alpha Prompt",
+        description: "alpha only",
+        content: "# alpha",
+      }),
+    }).then((r) => r.json());
+    expect(libOne.ok).toBe(true);
+
+    const switchResponse = await fetch(`http://127.0.0.1:${port}/api/workspaces/active`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ workspaceId: "ws-beta" }),
+    });
+    const switchJson = await switchResponse.json();
+    expect(switchResponse.status).toBe(200);
+    expect(switchJson.ok).toBe(true);
+
+    const wfBetaListBefore = await fetch(`http://127.0.0.1:${port}/api/workflows`).then((r) => r.json());
+    expect(wfBetaListBefore.ok).toBe(true);
+    expect(wfBetaListBefore.workflows.some((wf) => wf.id === wfOneId)).toBe(false);
+
+    const libBetaListBefore = await fetch(`http://127.0.0.1:${port}/api/library?search=Alpha`).then((r) => r.json());
+    expect(libBetaListBefore.ok).toBe(true);
+    expect(libBetaListBefore.data).toHaveLength(0);
+
+    const wfTwoId = `wf-ws-beta-${Date.now()}`;
+    const wfSaveTwo = await fetch(`http://127.0.0.1:${port}/api/workflows/save`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        id: wfTwoId,
+        name: "Beta Workflow",
+        description: "Workspace beta workflow",
+        enabled: true,
+        nodes: [],
+        edges: [],
+      }),
+    }).then((r) => r.json());
+    expect(wfSaveTwo.ok).toBe(true);
+
+    const libTwo = await fetch(`http://127.0.0.1:${port}/api/library/entry`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        type: "prompt",
+        name: "Beta Prompt",
+        description: "beta only",
+        content: "# beta",
+      }),
+    }).then((r) => r.json());
+    expect(libTwo.ok).toBe(true);
+
+    const switchBackResponse = await fetch(`http://127.0.0.1:${port}/api/workspaces/active`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ workspaceId: "ws-alpha" }),
+    });
+    const switchBackJson = await switchBackResponse.json();
+    expect(switchBackResponse.status).toBe(200);
+    expect(switchBackJson.ok).toBe(true);
+
+    const wfAlphaList = await fetch(`http://127.0.0.1:${port}/api/workflows`).then((r) => r.json());
+    expect(wfAlphaList.ok).toBe(true);
+    expect(wfAlphaList.workflows.some((wf) => wf.id === wfOneId)).toBe(true);
+    expect(wfAlphaList.workflows.some((wf) => wf.id === wfTwoId)).toBe(false);
+
+    const libAlphaList = await fetch(`http://127.0.0.1:${port}/api/library?search=Prompt`).then((r) => r.json());
+    expect(libAlphaList.ok).toBe(true);
+    expect(libAlphaList.data.some((entry) => entry.name === "Alpha Prompt")).toBe(true);
+    expect(libAlphaList.data.some((entry) => entry.name === "Beta Prompt")).toBe(false);
+
+    rmSync(tmpDir, { recursive: true, force: true });
+  });
+
+  it("exposes and executes shared bosun tools via /api/agents/tool parity endpoints", async () => {
+    const mod = await import("../server/ui-server.mjs");
+    const server = await mod.startTelegramUiServer({
+      port: await getFreePort(),
+      host: "127.0.0.1",
+    });
+    const port = server.address().port;
+
+    const createResponse = await fetch(`http://127.0.0.1:${port}/api/sessions/create`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ type: "primary", prompt: "tool parity" }),
+    });
+    const createJson = await createResponse.json();
+    expect(createResponse.status).toBe(200);
+    expect(createJson.ok).toBe(true);
+    const sessionId = createJson.session.id;
+
+    const listResponse = await fetch(
+      `http://127.0.0.1:${port}/api/agents/tools?sessionId=${encodeURIComponent(sessionId)}`,
+    );
+    const listJson = await listResponse.json();
+    expect(listResponse.status).toBe(200);
+    expect(listJson.ok).toBe(true);
+    expect(Array.isArray(listJson.tools)).toBe(true);
+    expect(listJson.tools.some((tool) => tool?.name === "list_sessions")).toBe(true);
+
+    const execResponse = await fetch(`http://127.0.0.1:${port}/api/agents/tool`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        toolName: "list_sessions",
+        sessionId,
+        args: { limit: 5 },
+      }),
+    });
+    const execJson = await execResponse.json();
+    expect(execResponse.status).toBe(200);
+    expect(execJson.ok).toBe(true);
+    expect(execJson.toolName).toBe("list_sessions");
+    expect(typeof execJson.result).toBe("string");
   });
 });

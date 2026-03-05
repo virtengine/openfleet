@@ -11,7 +11,7 @@ import {
   DEFAULT_MODEL_PROFILES,
   COMPLETION_CONFIDENCE,
   MODEL_ALIASES,
-} from "../task-complexity.mjs";
+} from "../task/task-complexity.mjs";
 
 // ── classifyComplexity ───────────────────────────────────────────────────────
 

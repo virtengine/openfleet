@@ -70,10 +70,14 @@ const VOICE_LAUNCH_QUERY_KEYS = [
   "executor",
   "mode",
   "model",
+  "voiceAgentId",
   "vision",
   "source",
   "chat_id",
 ];
+const FLOATING_CALL_STATE_KEY = "ve-floating-call-state";
+const FLOATING_CALL_HEARTBEAT_INTERVAL_MS = 15000;
+const FLOATING_CALL_STALE_THRESHOLD_MS = FLOATING_CALL_HEARTBEAT_INTERVAL_MS * 3;
 
 function getAppLogoSource(index = 0) {
   const safeIndex = Number.isFinite(index) ? Math.trunc(index) : 0;
@@ -124,6 +128,7 @@ function parseVoiceLaunchFromUrl() {
       executor: String(params.get("executor") || "").trim() || null,
       mode: String(params.get("mode") || "").trim() || null,
       model: String(params.get("model") || "").trim() || null,
+      voiceAgentId: String(params.get("voiceAgentId") || "").trim() || null,
     },
   };
 }
@@ -141,6 +146,92 @@ function scrubVoiceLaunchQuery() {
   if (!changed) return;
   const nextPath = `${url.pathname}${url.search}${url.hash}`;
   window.history.replaceState(window.history.state, "", nextPath || "/");
+}
+
+function isFollowWindowFromUrl() {
+  if (typeof window === "undefined") return false;
+  const params = new URLSearchParams(window.location.search || "");
+  return params.get("follow") === "1";
+}
+
+function sanitizeFollowCall(value) {
+  return String(value || "").trim().toLowerCase() === "video" ? "video" : "voice";
+}
+
+function buildBrowserFollowUrl(detail = {}) {
+  if (typeof window === "undefined") return null;
+  const target = new URL(window.location.href);
+  target.searchParams.set("follow", "1");
+  target.searchParams.set("launch", "voice");
+  target.searchParams.set("call", sanitizeFollowCall(detail?.call));
+  const sessionId = String(detail?.sessionId || "").trim();
+  const executor = String(detail?.executor || "").trim();
+  const mode = String(detail?.mode || "").trim();
+  const model = String(detail?.model || "").trim();
+  const voiceAgentId = String(detail?.voiceAgentId || "").trim();
+  const vision = String(detail?.initialVisionSource || "").trim();
+  if (sessionId) target.searchParams.set("sessionId", sessionId);
+  if (executor) target.searchParams.set("executor", executor);
+  if (mode) target.searchParams.set("mode", mode);
+  if (model) target.searchParams.set("model", model);
+  if (voiceAgentId) target.searchParams.set("voiceAgentId", voiceAgentId);
+  if (vision) target.searchParams.set("vision", vision);
+  return target.toString();
+}
+
+function readFloatingCallState() {
+  if (typeof window === "undefined") return { active: false };
+  try {
+    const raw = localStorage.getItem(FLOATING_CALL_STATE_KEY);
+    if (!raw) return { active: false };
+    const parsed = JSON.parse(raw);
+    return {
+      active: parsed?.active === true,
+      call: sanitizeFollowCall(parsed?.call),
+      sessionId: String(parsed?.sessionId || "").trim() || null,
+      executor: String(parsed?.executor || "").trim() || null,
+      mode: String(parsed?.mode || "").trim() || null,
+      model: String(parsed?.model || "").trim() || null,
+      initialVisionSource: (() => {
+        const source = String(parsed?.initialVisionSource || "").trim().toLowerCase();
+        return source === "camera" || source === "screen" ? source : null;
+      })(),
+      updatedAt: Number(parsed?.updatedAt || 0) || 0,
+    };
+  } catch {
+    return { active: false };
+  }
+}
+
+function isFloatingCallStateFresh(state, now = Date.now()) {
+  if (state?.active !== true) return false;
+  const updatedAt = Number(state?.updatedAt || 0);
+  if (!Number.isFinite(updatedAt) || updatedAt <= 0) return false;
+  return now - updatedAt <= FLOATING_CALL_STALE_THRESHOLD_MS;
+}
+
+function writeFloatingCallState(nextState) {
+  if (typeof window === "undefined") return;
+  try {
+    localStorage.setItem(
+      FLOATING_CALL_STATE_KEY,
+      JSON.stringify({
+        active: nextState?.active === true,
+        call: sanitizeFollowCall(nextState?.call),
+        sessionId: String(nextState?.sessionId || "").trim() || null,
+        executor: String(nextState?.executor || "").trim() || null,
+        mode: String(nextState?.mode || "").trim() || null,
+        model: String(nextState?.model || "").trim() || null,
+        initialVisionSource: (() => {
+          const source = String(nextState?.initialVisionSource || "").trim().toLowerCase();
+          return source === "camera" || source === "screen" ? source : null;
+        })(),
+        updatedAt: Date.now(),
+      }),
+    );
+  } catch {
+    // best effort
+  }
 }
 
 /* ── Module imports ── */
@@ -180,6 +271,9 @@ import {
   TAB_CONFIG,
 } from "./modules/router.js";
 import { formatRelative } from "./modules/utils.js";
+import { buildSessionApiPath, resolveSessionWorkspaceHint } from "./modules/session-api.js";
+import { buildSessionInsights, formatCompactCount } from "./modules/session-insights.js";
+import { VeTheme, CssBaseline, AppBar, Toolbar, Tabs, Tab, Drawer, Box, IconButton, Typography, Chip, Badge, BottomNavigation, BottomNavigationAction, Tooltip, Avatar, Stack, Paper, CircularProgress, Button, Divider, Menu, MenuItem, Fab, Snackbar, Alert } from "./modules/mui.js";
 
 /* ── Component imports ── */
 import { ToastContainer, Modal } from "./components/shared.js";
@@ -217,6 +311,7 @@ import { TelemetryTab } from "./tabs/telemetry.js";
 import { SettingsTab } from "./tabs/settings.js";
 import { WorkflowsTab } from "./tabs/workflows.js";
 import { LibraryTab } from "./tabs/library.js";
+import { ManualFlowsTab } from "./tabs/manual-flows.js";
 
 /* ── Placeholder signals for connection quality (may be provided by api.js) ── */
 let wsLatency = signal(null);
@@ -416,38 +511,29 @@ function OfflineBanner() {
 
   const retryCount = backendRetryCount.value;
   const isPersistent = retryCount > 3;
-  const tone = isPersistent ? "red" : "orange";
   const title = isPersistent
     ? "Persistent connection failure"
     : "Backend Unreachable";
 
-  // Reconnect countdown drives the progress bar
   const countdown = wsReconnectIn.value;
-  const maxWait = 15; // max backoff seconds
-  const reconnectPct = countdown != null && countdown > 0
-    ? Math.round(((maxWait - Math.min(countdown, maxWait)) / maxWait) * 100)
-    : 100;
 
   return html`
-    <div class="offline-banner tone-${tone}">
-      <div class="offline-dot ${tone}"></div>
-      <div class="offline-banner-content">
-        <div class="offline-banner-title">${title}</div>
-        <div class="offline-banner-meta">${backendError.value || "Connection lost"}</div>
-        ${backendLastSeen.value
-          ? html`<div class="offline-banner-meta">Last connected: ${formatTimeAgo(backendLastSeen.value)}</div>`
-          : null}
-        <div class="offline-banner-meta">
-          ${countdown != null && countdown > 0
-            ? `Reconnecting in ${countdown}s…`
-            : `Retry attempt #${retryCount}`}
-        </div>
-        <div class="offline-reconnect-bar">
-          <div class="offline-reconnect-fill" style="width:${reconnectPct}%"></div>
-        </div>
-      </div>
-      <button class="btn btn-ghost btn-sm" onClick=${manualRetry}>Retry</button>
-    </div>
+    <${Alert}
+      severity="error"
+      variant="outlined"
+      sx=${{m: 1, mx: 2, animation: "slideDown 0.3s ease-out"}}
+      action=${html`<${Button} color="inherit" size="small" onClick=${manualRetry}>Retry</${Button}>`}
+    >
+      <strong>${title}</strong> — ${backendError.value || "Connection lost"}
+      ${backendLastSeen.value
+        ? html`<${Typography} variant="caption" display="block">Last connected: ${formatTimeAgo(backendLastSeen.value)}</${Typography}>`
+        : null}
+      <${Typography} variant="caption" display="block">
+        ${countdown != null && countdown > 0
+          ? `Reconnecting in ${countdown}s…`
+          : `Retry attempt #${retryCount}`}
+      </${Typography}>
+    </${Alert}>
   `;
 }
 
@@ -491,16 +577,16 @@ class TabErrorBoundary extends Component {
             </div>
           </div>
           <div style="display:flex;gap:8px;flex-wrap:wrap;justify-content:center;">
-            <button class="btn btn-primary btn-sm" onClick=${retry}>Retry</button>
-            <button class="btn btn-ghost btn-sm" onClick=${copyError}>Copy Error</button>
-            ${stack ? html`<button class="btn btn-ghost btn-sm" onClick=${toggleStack}>
+            <${Button} variant="contained" size="small" onClick=${retry}>Retry<//>
+            <${Button} variant="text" size="small" onClick=${copyError}>Copy Error<//>
+            ${stack ? html`<${Button} variant="text" size="small" onClick=${toggleStack}>
               ${stackToggleLabel}
-            </button>` : null}
-            <button class="btn btn-ghost btn-sm" onClick=${() => {
+            <//>` : null}
+            <${Button} variant="text" size="small" onClick=${() => {
               console.group("[ve:error-log]");
               getErrorLog().forEach((e, i) => console.log(i, e));
               console.groupEnd();
-            }}>Error Log</button>
+            }}>Error Log<//>
           </div>
           ${this.state.showStack && stack ? html`
             <div class="tab-error-stack">${stack}</div>
@@ -524,26 +610,44 @@ const TAB_COMPONENTS = {
   logs: LogsTab,
   telemetry: TelemetryTab,
   workflows: WorkflowsTab,
+  "manual-flows": ManualFlowsTab,
   library: LibraryTab,
   settings: SettingsTab,
 };
+
+function getMaxFreshnessMs(rawFreshness) {
+  if (typeof rawFreshness === "number") {
+    return Number.isFinite(rawFreshness) ? rawFreshness : null;
+  }
+  if (rawFreshness && typeof rawFreshness === "object") {
+    const vals = Object.values(rawFreshness).filter((v) => Number.isFinite(v));
+    return vals.length ? Math.max(...vals) : null;
+  }
+  return null;
+}
+
+function inferUiConnected() {
+  const freshness = getMaxFreshnessMs(dataFreshness.value);
+  // If data is refreshing successfully, prefer "connected" even when ws
+  // lags behind to avoid "Offline" + "Updated 0s ago" contradiction.
+  return (
+    connected.value ||
+    (!backendDown.value &&
+      freshness != null &&
+      Number.isFinite(freshness) &&
+      freshness <= 30_000)
+  );
+}
 
 /* ═══════════════════════════════════════════════
  *  Header
  * ═══════════════════════════════════════════════ */
 function Header() {
-  const isConn = connected.value;
+  const isConn = inferUiConnected();
   const user = getTelegramUser();
   const latency = wsLatency.value;
   const reconnect = wsReconnectIn.value;
-  const freshnessRaw = dataFreshness.value;
-  let freshness = null;
-  if (typeof freshnessRaw === "number") {
-    freshness = Number.isFinite(freshnessRaw) ? freshnessRaw : null;
-  } else if (freshnessRaw && typeof freshnessRaw === "object") {
-    const vals = Object.values(freshnessRaw).filter((v) => Number.isFinite(v));
-    freshness = vals.length ? Math.max(...vals) : null;
-  }
+  const freshness = getMaxFreshnessMs(dataFreshness.value);
 
   // Connection quality label
   let connLabel = "Offline";
@@ -568,30 +672,36 @@ function Header() {
     }
   }
 
+  const logoSrc = getAppLogoSource(0);
+  const connColorMap = { connected: "success", reconnecting: "warning" };
+  const connColor = connColorMap[connClass] || "error";
+  const userLabel = user ? `@${user.username || user.first_name}` : "";
   return html`
-    <header class="app-header">
-      <div class="app-header-left">
-        <div class="app-header-workspace">
+    <${AppBar} position="static" elevation=${0} sx=${{zIndex: 10, flexShrink: 0}} className="app-header">
+      <${Toolbar} variant="dense">
+        <img src=${logoSrc} alt="Bosun" style=${{height: 24, width: 24, marginRight: 4}} data-logo-fallback-index="0" onError=${handleAppLogoLoadError} />
+        <${Typography} variant="h6" sx=${{ml: 1, flexGrow: 0}}>Bosun</${Typography}>
+        <${Box} sx=${{ml: 2}}>
           <${WorkspaceSwitcher} />
-        </div>
-      </div>
-      <div class="app-header-right">
-        <div class="header-actions">
-          <div class="header-status">
-            <div class="connection-pill ${connClass}">
-              <span class="connection-dot"></span>
-              ${connLabel}
-            </div>
-            ${freshnessLabel
-              ? html`<div class="header-freshness">${freshnessLabel}</div>`
-              : null}
-          </div>
-          ${user
-            ? html`<div class="app-header-user">@${user.username || user.first_name}</div>`
+        </${Box}>
+        <${Box} sx=${{flexGrow: 1}} />
+        <${Stack} direction="row" spacing=${1} alignItems="center">
+          <${Chip}
+            size="small"
+            label=${connLabel}
+            color=${connColor}
+            variant="outlined"
+            sx=${{fontSize: "0.7rem"}}
+          />
+          ${freshnessLabel
+            ? html`<${Typography} variant="caption" sx=${{opacity: 0.7}}>${freshnessLabel}</${Typography}>`
             : null}
-        </div>
-      </div>
-    </header>
+          ${user
+            ? html`<${Chip} size="small" label=${userLabel} variant="outlined" />`
+            : null}
+        </${Stack}>
+      </${Toolbar}>
+    </${AppBar}>
   `;
 }
 
@@ -600,7 +710,7 @@ function Header() {
  * ═══════════════════════════════════════════════ */
 function SidebarNav({ collapsed = false, onToggle }) {
   const user = getTelegramUser();
-  const isConn = connected.value;
+  const isConn = inferUiConnected();
 
   const collapseIcon = collapsed
     ? html`<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M6 3l5 5-5 5"/></svg>`
@@ -621,67 +731,68 @@ function SidebarNav({ collapsed = false, onToggle }) {
           </div>
           ${!collapsed && html`<div class="sidebar-title">Bosun</div>`}
         </div>
-        <button
+        <${IconButton}
+          size="small"
           class="sidebar-collapse-btn"
           onClick=${onToggle}
           title=${collapsed ? "Expand sidebar" : "Collapse sidebar"}
           aria-label=${collapsed ? "Expand sidebar" : "Collapse sidebar"}
         >
           ${collapseIcon}
-        </button>
+        <//>
       </div>
       ${!collapsed && html`
         <div class="sidebar-actions">
-          <button class="btn btn-primary btn-block" onClick=${() => createSession({ type: "primary" })}>
+          <${Button} variant="contained" fullWidth onClick=${() => createSession({ type: "primary" })}>
             <span class="btn-icon">${resolveIcon(":plus:")}</span> New Session
-          </button>
-          <button class="btn btn-ghost btn-block" onClick=${() => navigateTo("tasks")}>
+          <//>
+          <${Button} variant="text" fullWidth onClick=${() => navigateTo("tasks")}>
             <span class="btn-icon">${resolveIcon(":clipboard:")}</span> View Tasks
-          </button>
+          <//>
         </div>
       `}
       ${collapsed && html`
         <div class="sidebar-actions-icon">
-          <button
+          <${IconButton}
+            size="small"
             class="sidebar-icon-action"
             onClick=${() => createSession({ type: "primary" })}
             title="New Session"
             aria-label="New Session"
-          >${resolveIcon(":plus:")}</button>
+          >${resolveIcon(":plus:")}<//>
         </div>
       `}
-      <nav class="sidebar-nav" aria-label="Main navigation">
+      <${Tabs}
+        orientation="vertical"
+        value=${Math.max(0, TAB_CONFIG.findIndex((t) => t.id === activeTab.value))}
+        onChange=${(_, idx) => {
+          const tab = TAB_CONFIG[idx];
+          if (tab) navigateTo(tab.id, { resetHistory: tab.id === "dashboard", forceRefresh: tab.id === "dashboard" && activeTab.value === "dashboard" });
+        }}
+        aria-label="Main navigation"
+        sx=${{
+          flexGrow: 1,
+          "& .MuiTab-root": { minHeight: 40, justifyContent: collapsed ? "center" : "flex-start", px: collapsed ? 1 : 2 },
+          "& .MuiTabs-indicator": { left: 0, right: "auto", width: 3, borderRadius: 2 },
+        }}
+      >
         ${TAB_CONFIG.map((tab) => {
-          const isActive = activeTab.value === tab.id;
-          const isHome = tab.id === "dashboard";
-          const isChild = !!tab.parent;
           let badge = 0;
-          if (tab.id === "tasks") {
-            badge = getActiveTaskCount();
-          } else if (tab.id === "agents") {
-            badge = getActiveAgentCount();
-          }
-          return html`
-            <button
-              key=${tab.id}
-              class="sidebar-nav-item ${isActive ? "active" : ""} ${isChild ? "sidebar-nav-child" : ""}"
-              style="position:relative"
-              aria-label=${tab.label}
-              aria-current=${isActive ? "page" : null}
-              title=${collapsed ? tab.label : undefined}
-              onClick=${() =>
-                navigateTo(tab.id, {
-                  resetHistory: isHome,
-                  forceRefresh: isHome && isActive,
-                })}
-            >
-              ${ICONS[tab.icon]}
-              ${!collapsed && html`<span>${tab.label}</span>`}
-              ${badge > 0 ? html`<span class="nav-badge" title=${tab.id === "tasks" ? "Active work items" : "Active agents"}>${badge}</span>` : null}
-            </button>
-          `;
+          if (tab.id === "tasks") badge = getActiveTaskCount();
+          else if (tab.id === "agents") badge = getActiveAgentCount();
+          const icon = badge > 0
+            ? html`<${Badge} badgeContent=${badge} color="primary" max=${99}>${ICONS[tab.icon]}</${Badge}>`
+            : ICONS[tab.icon];
+          return html`<${Tab}
+            key=${tab.id}
+            icon=${icon}
+            label=${collapsed ? undefined : tab.label}
+            iconPosition="start"
+            title=${collapsed ? tab.label : undefined}
+            sx=${{ minWidth: 0, textAlign: "left", ...(tab.parent ? { pl: collapsed ? 1 : 4, fontSize: "0.75rem" } : {}) }}
+          />`;
         })}
-      </nav>
+      </${Tabs}>
       <div class="sidebar-footer">
         <div class="sidebar-status ${isConn ? "online" : "offline"}" title=${collapsed ? (isConn ? "Connected" : "Offline") : undefined}>
           <span class="sidebar-status-dot"></span>
@@ -729,7 +840,8 @@ function SessionRail({ onResizeStart, onResizeReset, showResizer, collapsed, onC
 
     return html`
       <aside class="session-rail session-rail--collapsed" aria-label="Sessions (collapsed)">
-        <button
+        <${IconButton}
+          size="small"
           class="rail-expand-btn"
           onClick=${onExpand}
           title="Expand sessions panel"
@@ -738,7 +850,7 @@ function SessionRail({ onResizeStart, onResizeReset, showResizer, collapsed, onC
           <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" width="14" height="14">
             <path d="M6 3l5 5-5 5"/>
           </svg>
-        </button>
+        <//>
         <div class="rail-dots">
           ${dots.map((s) => html`
             <div
@@ -774,7 +886,8 @@ function SessionRail({ onResizeStart, onResizeReset, showResizer, collapsed, onC
             ${activeCount} active · ${sessions.length} total
           </div>
         </div>
-        <button
+        <${IconButton}
+          size="small"
           class="rail-collapse-btn"
           onClick=${onCollapse}
           title="Collapse sessions panel"
@@ -783,7 +896,7 @@ function SessionRail({ onResizeStart, onResizeReset, showResizer, collapsed, onC
           <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" width="14" height="14">
             <path d="M10 3l-5 5 5 5"/>
           </svg>
-        </button>
+        <//>
       </div>
       <${SessionList}
         showArchived=${showArchived}
@@ -817,33 +930,15 @@ function InspectorPanel({ onResizeStart, onResizeReset, showResizer }) {
     : "No messages yet.";
   const [smartLogs, setSmartLogs] = useState([]);
   const [logState, setLogState] = useState("idle");
+  const [insights, setInsights] = useState(null);
+  const [insightState, setInsightState] = useState("idle");
+  const workspaceHint = resolveSessionWorkspaceHint(session, "active");
   const lastActiveLabel = lastActive ? formatRelative(lastActive) : "—";
-  const apiStatusLabel = connected.value ? "Connected" : "Offline";
+  const apiStatusLabel = inferUiConnected() ? "Connected" : "Offline";
   const wsStatusLabel = wsConnected.value ? "Live" : "Closed";
   const backendLastSeenLabel = backendLastSeen.value
     ? formatRelative(backendLastSeen.value)
     : "—";
-  let smartLogsContent = html`
-    <div class="inspector-scroll">
-      ${smartLogs.map(
-        (entry, idx) => html`
-          <div key=${idx} class="inspector-log-line ${entry.level}">
-            <span class="inspector-log-level">
-              ${entry.level.toUpperCase()}
-            </span>
-            <span class="inspector-log-text">
-              ${entry.line.length > 220 ? entry.line.slice(-220) : entry.line}
-            </span>
-          </div>
-        `,
-      )}
-    </div>
-  `;
-  if (logState === "error") {
-    smartLogsContent = html`<div class="inspector-empty">Log stream unavailable.</div>`;
-  } else if (smartLogs.length === 0) {
-    smartLogsContent = html`<div class="inspector-empty">No noteworthy logs right now.</div>`;
-  }
 
   useEffect(() => {
     if (!isSessionTab) return;
@@ -906,6 +1001,78 @@ function InspectorPanel({ onResizeStart, onResizeReset, showResizer }) {
     };
   }, [isSessionTab, sessionId, session?.taskId, session?.branch, status]);
 
+  useEffect(() => {
+    if (!isSessionTab || !sessionId) {
+      setInsights(null);
+      setInsightState("idle");
+      return;
+    }
+    let active = true;
+    const fetchInsights = async () => {
+      try {
+        setInsightState("loading");
+        const fullSessionPath = buildSessionApiPath(sessionId, "", {
+          workspace: workspaceHint,
+          query: { full: "1" },
+        });
+        if (!fullSessionPath) {
+          if (active) {
+            setInsights(null);
+            setInsightState("error");
+          }
+          return;
+        }
+        const res = await apiFetch(fullSessionPath, { _silent: true });
+        if (!active) return;
+        const nextInsights = buildSessionInsights(res?.session || null);
+        setInsights(nextInsights);
+        setInsightState("ready");
+      } catch {
+        if (active) {
+          setInsights(null);
+          setInsightState("error");
+        }
+      }
+    };
+
+    fetchInsights();
+    const interval = setInterval(fetchInsights, 10000);
+    return () => {
+      active = false;
+      clearInterval(interval);
+    };
+  }, [isSessionTab, sessionId, workspaceHint]);
+
+  const insightsTotals = insights?.totals || null;
+  const insightsFileCounts = insights?.fileCounts || null;
+  const insightsTopTools = Array.isArray(insights?.topTools) ? insights.topTools : [];
+  const insightsContextBreakdown = Array.isArray(insights?.contextBreakdown)
+    ? insights.contextBreakdown
+    : [];
+  const contextWindow = insights?.contextWindow || null;
+  const tokenUsage = insights?.tokenUsage || null;
+  let smartLogsContent = html`
+    <div class="inspector-scroll">
+      ${smartLogs.map(
+        (entry, idx) => html`
+          <div key=${idx} class="inspector-log-line ${entry.level}">
+            <span class="inspector-log-level">
+              ${entry.level.toUpperCase()}
+            </span>
+            <span class="inspector-log-text">
+              ${entry.line.length > 220 ? entry.line.slice(-220) : entry.line}
+            </span>
+          </div>
+        `,
+      )}
+    </div>
+  `;
+  if (logState === "error") {
+    smartLogsContent = html`<div class="inspector-empty">Log stream unavailable.</div>`;
+  } else if (smartLogs.length === 0) {
+    smartLogsContent = html`<div class="inspector-empty">No warning/error lines in the latest logs.</div>`;
+  }
+
   return html`
     <aside class="inspector">
       <div class="inspector-section">
@@ -916,7 +1083,7 @@ function InspectorPanel({ onResizeStart, onResizeReset, showResizer }) {
               <div class="inspector-kv"><span>Status</span><strong>${status}</strong></div>
               <div class="inspector-kv"><span>Type</span><strong>${type}</strong></div>
               <div class="inspector-kv"><span>Last Active</span><strong>${lastActiveLabel}</strong></div>
-              <div class="inspector-kv"><span>Preview</span><strong>${preview}</strong></div>
+              <div class="inspector-kv inspector-kv-preview"><span>Preview</span><strong class="inspector-preview-value" title=${preview}>${preview}</strong></div>
             `
           : html`<div class="inspector-empty">Select a session to see context.</div>`}
       </div>
@@ -925,14 +1092,84 @@ function InspectorPanel({ onResizeStart, onResizeReset, showResizer }) {
         ? html`
             <div class="inspector-section inspector-scroll">
               <div class="inspector-title">Latest Diff</div>
-              <${DiffViewer} sessionId=${sessionId} />
+              <${DiffViewer}
+                sessionId=${sessionId}
+                workspace=${workspaceHint}
+                activitySummary=${insights?.activityDiff || null}
+              />
             </div>
             <div class="inspector-section">
               <div class="inspector-title">Smart Logs</div>
+              <div class="inspector-subtitle">Session Activity</div>
+              ${insightState === "error"
+                ? html`<div class="inspector-empty">Session activity tracking is unavailable.</div>`
+                : insightsTotals
+                  ? html`
+                      <div class="inspector-metrics-grid">
+                        <div class="inspector-metric"><span class="label">Tool Calls</span><strong>${formatCompactCount(insightsTotals.toolCalls)}</strong></div>
+                        <div class="inspector-metric"><span class="label">Commands</span><strong>${formatCompactCount(insightsTotals.commandExecutions)}</strong></div>
+                        <div class="inspector-metric"><span class="label">Files Edited</span><strong>${formatCompactCount(insightsFileCounts?.editedFiles || 0)}</strong></div>
+                        <div class="inspector-metric"><span class="label">Files Opened</span><strong>${formatCompactCount(insightsFileCounts?.openedFiles || 0)}</strong></div>
+                        <div class="inspector-metric"><span class="label">Messages</span><strong>${formatCompactCount(insightsTotals.messages)}</strong></div>
+                        <div class="inspector-metric"><span class="label">Errors</span><strong>${formatCompactCount(insightsTotals.errors)}</strong></div>
+                      </div>
+                      ${(contextWindow || tokenUsage) &&
+                        html`
+                          <div class="inspector-context">
+                            ${contextWindow &&
+                              html`
+                                <div class="inspector-kv"><span>Context Window</span><strong>
+                                  ${contextWindow.percent != null
+                                    ? `${contextWindow.percent}%`
+                                    : "Tracked"}
+                                </strong></div>
+                                ${(contextWindow.usedTokens || contextWindow.totalTokens) &&
+                                  html`
+                                    <div class="inspector-kv"><span>Token Fill</span><strong>
+                                      ${contextWindow.usedTokens != null ? formatCompactCount(contextWindow.usedTokens) : "—"}
+                                      ${contextWindow.totalTokens != null ? ` / ${formatCompactCount(contextWindow.totalTokens)}` : ""}
+                                    </strong></div>
+                                  `}
+                              `}
+                            ${tokenUsage &&
+                              html`
+                                <div class="inspector-kv"><span>Token Usage</span><strong>${formatCompactCount(tokenUsage.totalTokens || 0)}</strong></div>
+                                <div class="inspector-kv"><span>Input / Output</span><strong>${formatCompactCount(tokenUsage.inputTokens || 0)} / ${formatCompactCount(tokenUsage.outputTokens || 0)}</strong></div>
+                              `}
+                          </div>
+                        `}
+                      ${insightsTopTools.length > 0 &&
+                        html`
+                          <div class="inspector-pill-row">
+                            ${insightsTopTools.map(
+                              (tool) => html`
+                                <span class="inspector-pill" key=${tool.name}>
+                                  ${tool.name}: ${formatCompactCount(tool.count)}
+                                </span>
+                              `,
+                            )}
+                          </div>
+                        `}
+                      ${insightsContextBreakdown.length > 0 &&
+                        html`
+                          <div class="inspector-breakdown">
+                            ${insightsContextBreakdown.slice(0, 6).map(
+                              (row) => html`
+                                <div class="inspector-breakdown-row" key=${row.label}>
+                                  <span>${row.label}</span>
+                                  <strong>${row.percent}%</strong>
+                                </div>
+                              `,
+                            )}
+                          </div>
+                        `}
+                    `
+                  : html`<div class="inspector-empty">Tracking session metrics…</div>`}
+              <div class="inspector-subtitle">Recent Warning/Error Logs</div>
               ${smartLogsContent}
-              <button class="btn btn-ghost btn-sm" onClick=${() => navigateTo("logs")}>
+              <${Button} variant="text" size="small" onClick=${() => navigateTo("logs")}>
                 Open Logs
-              </button>
+              <//>
             </div>
           `
         : html`
@@ -962,7 +1199,7 @@ function InspectorPanel({ onResizeStart, onResizeReset, showResizer }) {
  *  Bottom Navigation
  * ═══════════════════════════════════════════════ */
 const PRIMARY_NAV_TABS = ["dashboard", "chat", "tasks", "agents"];
-const MORE_NAV_TABS = ["control", "infra", "logs", "telemetry", "library", "workflows", "settings"];
+const MORE_NAV_TABS = ["control", "infra", "logs", "telemetry", "library", "workflows", "manual-flows", "settings"];
 
 function getTabsById(ids) {
   return ids
@@ -998,45 +1235,42 @@ function BottomNav({ compact, moreOpen, onToggleMore, onNavigate }) {
   const primaryTabs = getTabsById(PRIMARY_NAV_TABS);
   const tasksBadge = getActiveTaskCount();
   const agentsBadge = getActiveAgentCount();
+  const activeIndex = primaryTabs.findIndex((t) => t.id === activeTab.value);
+  const navValue = moreOpen ? primaryTabs.length : Math.max(activeIndex, 0);
   return html`
-    <nav class=${`bottom-nav ${compact ? "compact" : ""}`}>
-      ${primaryTabs.map((tab) => {
-        const isHome = tab.id === "dashboard";
-        const isActive = activeTab.value === tab.id;
-        let badge = 0;
-        if (tab.id === "tasks") badge = tasksBadge;
-        else if (tab.id === "agents") badge = agentsBadge;
-        return html`
-          <button
-            key=${tab.id}
-            class="nav-item ${isActive ? "active" : ""}"
-            style="position:relative"
-            aria-label=${`Go to ${tab.label}`}
-            type="button"
-            onClick=${() =>
-              onNavigate(tab.id, {
-                resetHistory: isHome,
-                forceRefresh: isHome && isActive,
-              })}
-          >
-            ${ICONS[tab.icon]}
-            <span class="nav-label">${tab.label}</span>
-            ${badge > 0 ? html`<span class="nav-badge" title=${tab.id === "tasks" ? "Active work items" : "Active agents"}>${badge}</span>` : null}
-          </button>
-        `;
-      })}
-      <button
-        class="nav-item nav-item-more ${moreOpen ? "active" : ""}"
-        aria-haspopup="dialog"
-        aria-expanded=${moreOpen ? "true" : "false"}
-        aria-label=${moreOpen ? "Close more menu" : "Open more menu"}
-        type="button"
-        onClick=${onToggleMore}
+    <${Paper} sx=${{position: "fixed", bottom: 0, left: 0, right: 0, zIndex: 1200}} elevation=${3}>
+      <${BottomNavigation}
+        value=${navValue}
+        onChange=${(_, idx) => {
+          if (idx === primaryTabs.length) { onToggleMore(); return; }
+          const tab = primaryTabs[idx];
+          if (!tab) return;
+          const isHome = tab.id === "dashboard";
+          onNavigate(tab.id, { resetHistory: isHome, forceRefresh: isHome && activeTab.value === tab.id });
+        }}
+        showLabels
+        sx=${{
+          bgcolor: "background.paper",
+          borderTop: "1px solid",
+          borderColor: "divider",
+          ...(compact ? { "& .MuiBottomNavigationAction-root": { minWidth: 52, px: 0.5 } } : {}),
+        }}
       >
-        ${ICONS.ellipsis}
-        <span class="nav-label">More</span>
-      </button>
-    </nav>
+        ${primaryTabs.map((tab) => {
+          let badge = 0;
+          if (tab.id === "tasks") badge = tasksBadge;
+          else if (tab.id === "agents") badge = agentsBadge;
+          const icon = badge > 0
+            ? html`<${Badge} badgeContent=${badge} color="primary" max=${99}>${ICONS[tab.icon]}</${Badge}>`
+            : ICONS[tab.icon];
+          return html`<${BottomNavigationAction} key=${tab.id} label=${tab.label} icon=${icon} />`;
+        })}
+        <${BottomNavigationAction}
+          label="More"
+          icon=${ICONS.ellipsis}
+        />
+      </${BottomNavigation}>
+    </${Paper}>
   `;
 }
 
@@ -1053,8 +1287,9 @@ function MoreSheet({ open, onClose, onNavigate, onOpenBot }) {
               const isHome = tab.id === "dashboard";
               const isActive = activeTab.value === tab.id;
               return html`
-                <button
+                <${Button}
                   key=${tab.id}
+                  variant="text"
                   class="more-menu-item ${isActive ? "active" : ""}"
                   aria-label=${`Open ${tab.label}`}
                   onClick=${() =>
@@ -1064,7 +1299,7 @@ function MoreSheet({ open, onClose, onNavigate, onOpenBot }) {
                 >
                   <span class="more-menu-icon">${ICONS[tab.icon]}</span>
                   <span class="more-menu-label">${tab.label}</span>
-                </button>
+                <//>
               `;
             })}
           </div>
@@ -1076,8 +1311,9 @@ function MoreSheet({ open, onClose, onNavigate, onOpenBot }) {
               const isHome = tab.id === "dashboard";
               const isActive = activeTab.value === tab.id;
               return html`
-                <button
+                <${Button}
                   key=${tab.id}
+                  variant="text"
                   class="more-menu-item ${isActive ? "active" : ""}"
                   aria-label=${`Open ${tab.label}`}
                   onClick=${() =>
@@ -1087,14 +1323,15 @@ function MoreSheet({ open, onClose, onNavigate, onOpenBot }) {
                 >
                   <span class="more-menu-icon">${ICONS[tab.icon]}</span>
                   <span class="more-menu-label">${tab.label}</span>
-                </button>
+                <//>
               `;
             })}
           </div>
         </div>
         <div class="more-menu-section">
           <div class="more-menu-section-title">Quick Actions</div>
-          <button
+          <${Button}
+            variant="text"
             class="more-menu-bot-btn"
             type="button"
             aria-label="Open Bot Controls"
@@ -1106,7 +1343,7 @@ function MoreSheet({ open, onClose, onNavigate, onOpenBot }) {
               <span class="more-menu-bot-sub">Commands, executor, routing</span>
             </div>
             <span class="more-menu-bot-chevron">›</span>
-          </button>
+          <//>
         </div>
       </div>
     <//>
@@ -1260,13 +1497,13 @@ function BotControlsSheet({ open, onClose }) {
       <div class="bot-controls">
         ${navStack.length > 0 ? html`
           <div class="bot-controls-breadcrumb">
-            <button class="btn btn-ghost btn-sm" type="button" onClick=${botGoBack} aria-label="Go back">
+            <${Button} variant="text" size="small" type="button" onClick=${botGoBack} aria-label="Go back">
               ← Back
-            </button>
+            <//>
             ${navStack.length > 1 ? html`
-              <button class="btn btn-ghost btn-sm" type="button" onClick=${botGoHome} aria-label="Go to home">
+              <${Button} variant="text" size="small" type="button" onClick=${botGoHome} aria-label="Go to home">
                 ${iconText(":home: Home")}
-              </button>
+              <//>
             ` : null}
           </div>
         ` : null}
@@ -1292,15 +1529,16 @@ function BotControlsSheet({ open, onClose }) {
           ${currentDef.keyboard.map((row, ri) => html`
             <div key=${ri} class="bot-kb-row">
               ${row.map((btn, bi) => html`
-                <button
+                <${Button}
                   key=${bi}
                   type="button"
+                  variant="text"
                   class="bot-kb-btn ${btn.go ? "nav-btn" : ""}"
                   disabled=${cmdLoading}
                   onClick=${() => btn.go ? botNavigateTo(btn.go) : runBotCommand(btn.cmd)}
                 >
                   ${iconText(btn.text)}
-                </button>
+                <//>
               `)}
             </div>
           `)}
@@ -1355,14 +1593,24 @@ function App() {
   }, [isLoading]);
   const [isMoreOpen, setIsMoreOpen] = useState(false);
   const [voiceOverlayOpen, setVoiceOverlayOpen] = useState(false);
+  const voiceOverlayOpenRef = useRef(false);
+  // Keep ref in sync for access inside stale closures (e.g. retry loops)
+  voiceOverlayOpenRef.current = voiceOverlayOpen;
   const [voiceTier, setVoiceTier] = useState(2);
   const [voiceSessionId, setVoiceSessionId] = useState(null);
   const [voiceExecutor, setVoiceExecutor] = useState(null);
   const [voiceAgentMode, setVoiceAgentMode] = useState(null);
   const [voiceModel, setVoiceModel] = useState(null);
+  const [voiceAgentId, setVoiceAgentId] = useState(null);
   const [voiceCallType, setVoiceCallType] = useState("voice");
   const [voiceInitialVisionSource, setVoiceInitialVisionSource] = useState(
     null,
+  );
+  const followWindowMode = isFollowWindowFromUrl();
+  const followOverlayOpenedRef = useRef(false);
+  const externalizeInFlightRef = useRef(false);
+  const [floatingCallState, setFloatingCallState] = useState(() =>
+    readFloatingCallState(),
   );
   const resizeRef = useRef(null);
   const [isCompactNav, setIsCompactNav] = useState(() => {
@@ -1392,7 +1640,7 @@ function App() {
   const [inspectorWidth, setInspectorWidth] = useState(() => {
     if (!globalThis.window) return 320;
     const stored = Number(localStorage.getItem("ve-inspector-width"));
-    return Number.isFinite(stored) ? stored : 320;
+    return Number.isFinite(stored) && stored >= 200 ? stored : 320;
   });
   const [sidebarCollapsed, setSidebarCollapsed] = useState(() => {
     if (!globalThis.window) return false;
@@ -1701,6 +1949,9 @@ function App() {
         const currentModel =
           String(event?.detail?.model || selectedModel.value || "").trim() ||
           null;
+        const currentVoiceAgentId =
+          String(event?.detail?.voiceAgentId || voiceAgentId || "").trim() ||
+          null;
         const explicitSessionId =
           String(event?.detail?.sessionId || "").trim() || null;
         let currentSessionId =
@@ -1732,6 +1983,7 @@ function App() {
         setVoiceExecutor(currentExecutor);
         setVoiceAgentMode(currentMode);
         setVoiceModel(currentModel);
+        setVoiceAgentId(currentVoiceAgentId);
         setVoiceCallType(requestedCallType);
         setVoiceInitialVisionSource(requestedVisionSource);
 
@@ -1741,7 +1993,15 @@ function App() {
           showToast(cfg?.reason || "Voice mode is not available.", "error");
           return;
         }
-        setVoiceTier(Number(cfg?.tier) === 1 ? 1 : 2);
+        const nextTier = Number(cfg?.tier) === 1 ? 1 : 2;
+
+        // Always open the voice overlay inline — even in Electron.
+        // The desktop follow window (always-on-top pop-out) is available
+        // via the tray menu or the "externalize" button inside the overlay.
+        // Auto-delegating to the follow window on mic-button click was
+        // fragile (required URL redirect + cold-start + retry dispatch)
+        // and frequently failed, leaving the user with no voice UI.
+        setVoiceTier(nextTier);
         setVoiceOverlayOpen(true);
       } catch (err) {
         showToast(
@@ -1754,7 +2014,102 @@ function App() {
     globalThis.addEventListener?.("ve:open-voice-mode", handleOpenVoiceMode);
     return () =>
       globalThis.removeEventListener?.("ve:open-voice-mode", handleOpenVoiceMode);
+  }, [followWindowMode, voiceAgentId]);
+
+  useEffect(() => {
+    const onStorage = (event) => {
+      if (event?.key && event.key !== FLOATING_CALL_STATE_KEY) return;
+      setFloatingCallState(readFloatingCallState());
+    };
+    globalThis.addEventListener?.("storage", onStorage);
+    return () => {
+      globalThis.removeEventListener?.("storage", onStorage);
+    };
   }, []);
+
+  useEffect(() => {
+    if (!followWindowMode) return;
+    const nextFloatingState = {
+      active: Boolean(voiceOverlayOpen),
+      call: voiceCallType,
+      sessionId: voiceSessionId,
+      executor: voiceExecutor,
+      mode: voiceAgentMode,
+      model: voiceModel,
+      voiceAgentId,
+      initialVisionSource: voiceInitialVisionSource,
+    };
+    setFloatingCallState(nextFloatingState);
+    writeFloatingCallState(nextFloatingState);
+  }, [
+    followWindowMode,
+    voiceOverlayOpen,
+    voiceCallType,
+    voiceSessionId,
+    voiceExecutor,
+    voiceAgentMode,
+    voiceModel,
+    voiceAgentId,
+    voiceInitialVisionSource,
+  ]);
+
+  useEffect(() => {
+    if (!followWindowMode || !voiceOverlayOpen) return;
+    const heartbeat = globalThis.setInterval(() => {
+      const nextFloatingState = {
+        active: true,
+        call: voiceCallType,
+        sessionId: voiceSessionId,
+        executor: voiceExecutor,
+        mode: voiceAgentMode,
+        model: voiceModel,
+        voiceAgentId,
+        initialVisionSource: voiceInitialVisionSource,
+      };
+      setFloatingCallState(nextFloatingState);
+      writeFloatingCallState(nextFloatingState);
+    }, FLOATING_CALL_HEARTBEAT_INTERVAL_MS);
+    return () => globalThis.clearInterval(heartbeat);
+  }, [
+    followWindowMode,
+    voiceOverlayOpen,
+    voiceCallType,
+    voiceSessionId,
+    voiceExecutor,
+    voiceAgentMode,
+    voiceModel,
+    voiceAgentId,
+    voiceInitialVisionSource,
+  ]);
+
+  useEffect(() => {
+    if (followWindowMode || floatingCallState?.active !== true) return;
+    if (!isFloatingCallStateFresh(floatingCallState)) {
+      const cleared = { active: false, call: floatingCallState?.call };
+      setFloatingCallState(cleared);
+      writeFloatingCallState(cleared);
+      return;
+    }
+    const staleSweep = globalThis.setInterval(() => {
+      setFloatingCallState((previous) => {
+        if (!previous?.active || isFloatingCallStateFresh(previous)) return previous;
+        const cleared = { active: false, call: previous?.call };
+        writeFloatingCallState(cleared);
+        return cleared;
+      });
+    }, FLOATING_CALL_HEARTBEAT_INTERVAL_MS);
+    return () => globalThis.clearInterval(staleSweep);
+  }, [followWindowMode, floatingCallState]);
+
+  useEffect(() => {
+    if (!followWindowMode) return;
+    if (voiceOverlayOpen) {
+      followOverlayOpenedRef.current = true;
+      return;
+    }
+    if (!followOverlayOpenedRef.current) return;
+    globalThis?.veDesktop?.follow?.hide?.().catch?.(() => {});
+  }, [followWindowMode, voiceOverlayOpen]);
 
   useEffect(() => {
     const launch = parseVoiceLaunchFromUrl();
@@ -1775,11 +2130,25 @@ function App() {
           navigateTo("chat", { replace: true, skipGuard: true });
         }
       }
-      await new Promise((resolve) => setTimeout(resolve, 60));
-      if (cancelled) return;
-      globalThis.dispatchEvent?.(
-        new CustomEvent("ve:open-voice-mode", { detail: launch.detail }),
-      );
+      // Wait for UI components and the voice-mode event listener to mount.
+      // Cold-start Electron windows need more time — JS bundles are still
+      // being parsed.  We retry the dispatch up to 5 times with increasing
+      // delays to ensure the listener is registered before we give up.
+      const delays = [400, 600, 1000, 1500, 2000];
+      for (const delay of delays) {
+        if (cancelled) return;
+        await new Promise((resolve) => setTimeout(resolve, delay));
+        if (cancelled) return;
+        // Check if voice overlay is already open (a previous dispatch succeeded).
+        // Use the ref to read current state — the closure-captured useState
+        // value is stale inside this async loop.
+        if (voiceOverlayOpenRef.current) return;
+        globalThis.dispatchEvent?.(
+          new CustomEvent("ve:open-voice-mode", { detail: launch.detail }),
+        );
+        // Brief wait to let the event handler run and update state
+        await new Promise((resolve) => setTimeout(resolve, 100));
+      }
     };
 
     start()
@@ -1791,6 +2160,26 @@ function App() {
     return () => {
       cancelled = true;
     };
+  }, []);
+
+  const openBrowserFollowWindow = useCallback((detail = {}) => {
+    if (typeof globalThis?.open !== "function") {
+      return { ok: false, reason: "Browser popup API is unavailable." };
+    }
+    const followUrl = buildBrowserFollowUrl(detail);
+    if (!followUrl) {
+      return { ok: false, reason: "Could not build follow window URL." };
+    }
+    const popup = globalThis.open(
+      followUrl,
+      "bosun-voice-follow",
+      "popup=yes,width=420,height=680,resizable=yes,scrollbars=yes",
+    );
+    if (!popup) {
+      return { ok: false, reason: "Popup blocked by browser." };
+    }
+    try { popup.focus(); } catch { /* best effort */ }
+    return { ok: true };
   }, []);
 
   useEffect(() => {
@@ -1811,6 +2200,7 @@ function App() {
   useEffect(() => {
     const el = mainRef.current;
     if (!el) return;
+    if (!getTg()) return;
     const swipeTabs = TAB_CONFIG.filter((t) => t.id !== "settings" && !t.parent);
     let startX = 0;
     let startY = 0;
@@ -1880,6 +2270,18 @@ function App() {
   const railSessionType = "primary";
   const showDrawerToggles = isTablet;
   const showInspectorToggle = isTablet && isChatOrAgents;
+  const showRestoreFloatingCall =
+    isChat &&
+    !followWindowMode &&
+    isFloatingCallStateFresh(floatingCallState) &&
+    (
+      typeof globalThis?.veDesktop?.follow?.restore === "function"
+      || typeof globalThis?.open === "function"
+    );
+  const floatingCallLabel =
+    String(floatingCallState?.call || "").trim().toLowerCase() === "video"
+      ? "Restore floating video call"
+      : "Restore floating voice call";
 
   const shellStyle = isDesktop
     ? {
@@ -1920,29 +2322,33 @@ function App() {
     : "Open inspector";
   const inspectorToggleButton = showInspectorToggle
     ? html`
-        <button
-          class="btn btn-ghost btn-sm tablet-toggle"
+        <${Button}
+          variant="text"
+          size="small"
+          class="tablet-toggle"
           onClick=${toggleInspector}
           aria-label=${inspectorToggleLabel}
         >
           <span class="btn-icon">${resolveIcon("clipboard")}</span>
           Inspector
-        </button>
+        <//>
       `
     : null;
   const moreToggleButton = showDrawerToggles
     ? html`
-        <button
-          class="btn btn-ghost btn-sm tablet-toggle"
+        <${Button}
+          variant="text"
+          size="small"
+          class="tablet-toggle"
           onClick=${toggleMore}
           aria-label=${isMoreOpen ? "Close navigation menu" : "Open navigation menu"}
         >
           ⋯ Navigation
-        </button>
+        <//>
       `
     : null;
 
-  return html`
+  return html`<${VeTheme}><${CssBaseline} />
     <div class="top-loading-bar" style="width: ${loadingPct}%; opacity: ${loadingVisible ? 1 : 0}"></div>
     <div
       class="app-shell"
@@ -2020,15 +2426,18 @@ function App() {
           <//>
           ${showScrollTop &&
           html`
-            <button
-              class="scroll-top"
-              title="Back to top"
-              onClick=${() => {
-                mainRef.current?.scrollTo({ top: 0, behavior: "smooth" });
-              }}
-            >
-              Top
-            </button>
+            <${Tooltip} title="Back to top">
+              <${Fab}
+                size="small"
+                color="primary"
+                sx=${{position: "absolute", bottom: 16, right: 16}}
+                onClick=${() => {
+                  mainRef.current?.scrollTo({ top: 0, behavior: "smooth" });
+                }}
+              >
+                ↑
+              </${Fab}>
+            </${Tooltip}>
           `}
         </div>
       </div>
@@ -2058,18 +2467,147 @@ function App() {
       open=${isBotOpen}
       onClose=${closeBot}
     />
+    ${showRestoreFloatingCall
+      ? html`
+          <${Fab}
+            variant="extended"
+            color="primary"
+            size="medium"
+            sx=${{position: "fixed", bottom: 80, right: 16, zIndex: 1100}}
+            title=${floatingCallLabel}
+            onClick=${async () => {
+              try {
+                if (typeof globalThis?.veDesktop?.follow?.restore === "function") {
+                  const result = await globalThis.veDesktop.follow.restore();
+                  if (!result?.ok) {
+                    const nextFloatingState = { active: false, call: floatingCallState?.call };
+                    setFloatingCallState(nextFloatingState);
+                    writeFloatingCallState(nextFloatingState);
+                    showToast("No floating call window is active.", "info");
+                  }
+                  return;
+                }
+                const popupResult = openBrowserFollowWindow({
+                  call: floatingCallState?.call,
+                  sessionId: floatingCallState?.sessionId,
+                  initialVisionSource: floatingCallState?.initialVisionSource,
+                  executor: floatingCallState?.executor,
+                  mode: floatingCallState?.mode,
+                  model: floatingCallState?.model,
+                  voiceAgentId: floatingCallState?.voiceAgentId,
+                });
+                if (!popupResult.ok) {
+                  showToast(
+                    popupResult.reason || "Could not restore floating browser call window.",
+                    "error",
+                  );
+                }
+              } catch {
+                showToast("Could not restore floating call window.", "error");
+              }
+            }}
+          >
+            ${resolveIcon("phone")}
+            ${String(floatingCallState?.call || "").trim().toLowerCase() === "video"
+              ? " Restore Video Call"
+              : " Restore Voice Call"}
+          </${Fab}>
+        `
+      : null}
     <${VoiceOverlay}
       visible=${voiceOverlayOpen}
       onClose=${() => setVoiceOverlayOpen(false)}
+      onDismiss=${(detail = {}) => {
+        const reason = String(detail?.reason || "").trim().toLowerCase();
+        if (!followWindowMode && reason === "externalize") {
+          if (externalizeInFlightRef.current) {
+            return;
+          }
+          externalizeInFlightRef.current = true;
+          const followDetail = {
+            call: voiceCallType,
+            sessionId: voiceSessionId,
+            initialVisionSource: voiceInitialVisionSource,
+            executor: voiceExecutor,
+            mode: voiceAgentMode,
+            model: voiceModel,
+            voiceAgentId,
+          };
+          const desktopFollowApi = globalThis?.veDesktop?.follow;
+          if (typeof desktopFollowApi?.open === "function") {
+            desktopFollowApi
+              .open(followDetail)
+              .then((result) => {
+                if (!result?.ok) {
+                  showToast("Could not open floating call window.", "error");
+                  return;
+                }
+                const nextFloatingState = {
+                  active: true,
+                  call: followDetail.call,
+                  sessionId: followDetail.sessionId,
+                  executor: followDetail.executor,
+                  mode: followDetail.mode,
+                  model: followDetail.model,
+                  voiceAgentId: followDetail.voiceAgentId,
+                  initialVisionSource: followDetail.initialVisionSource,
+                };
+                setFloatingCallState(nextFloatingState);
+                writeFloatingCallState(nextFloatingState);
+                setVoiceOverlayOpen(false);
+              })
+              .catch(() => showToast("Could not open floating call window.", "error"))
+              .finally(() => {
+                externalizeInFlightRef.current = false;
+              });
+            return;
+          }
+          const popupResult = openBrowserFollowWindow(followDetail);
+          if (!popupResult.ok) {
+            showToast(
+              popupResult.reason || "Could not open floating browser call window.",
+              "error",
+            );
+            externalizeInFlightRef.current = false;
+            return;
+          }
+          const nextFloatingState = {
+            active: true,
+            call: followDetail.call,
+            sessionId: followDetail.sessionId,
+            executor: followDetail.executor,
+            mode: followDetail.mode,
+            model: followDetail.model,
+            voiceAgentId: followDetail.voiceAgentId,
+            initialVisionSource: followDetail.initialVisionSource,
+          };
+          setFloatingCallState(nextFloatingState);
+          writeFloatingCallState(nextFloatingState);
+          setVoiceOverlayOpen(false);
+          externalizeInFlightRef.current = false;
+          return;
+        }
+        externalizeInFlightRef.current = false;
+        if (followWindowMode && globalThis?.veDesktop?.follow?.hide) {
+          globalThis.veDesktop.follow.hide().catch(() => {});
+          return;
+        }
+        setVoiceOverlayOpen(false);
+      }}
       tier=${voiceTier}
       sessionId=${voiceSessionId}
       executor=${voiceExecutor}
       mode=${voiceAgentMode}
       model=${voiceModel}
+      voiceAgentId=${voiceAgentId}
+      onVoiceAgentChange=${(nextAgentId) => {
+        setVoiceAgentId(String(nextAgentId || "").trim() || null);
+      }}
       callType=${voiceCallType}
       initialVisionSource=${voiceInitialVisionSource}
+      compact=${followWindowMode}
     />
-  `;
+  </${VeTheme}>`;
 }
 
 /* ─── Mount ─── */

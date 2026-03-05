@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { parseEnvBoolean } from "../config.mjs";
+import { parseEnvBoolean } from "../config/config.mjs";
 
 describe("config boolean env parser", () => {
   it("parses true-like values", () => {

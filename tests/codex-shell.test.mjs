@@ -10,22 +10,22 @@ vi.mock("@openai/codex-sdk", () => ({
   },
 }));
 
-vi.mock("../agent-sdk.mjs", () => ({
+vi.mock("../agent/agent-sdk.mjs", () => ({
   resolveAgentSdkConfig: vi.fn(() => ({
     primary: "codex",
     capabilities: { steering: true },
   })),
 }));
 
-vi.mock("../repo-root.mjs", () => ({
+vi.mock("../config/repo-root.mjs", () => ({
   resolveRepoRoot: vi.fn(() => process.cwd()),
 }));
 
-vi.mock("../codex-model-profiles.mjs", () => ({
+vi.mock("../shell/codex-model-profiles.mjs", () => ({
   resolveCodexProfileRuntime: vi.fn(() => ({ env: {} })),
 }));
 
-vi.mock("../config.mjs", () => ({
+vi.mock("../config/config.mjs", () => ({
   loadConfig: vi.fn(() => ({
     internalExecutor: {
       stream: {
@@ -43,7 +43,7 @@ vi.mock("../config.mjs", () => ({
   })),
 }));
 
-vi.mock("../stream-resilience.mjs", () => ({
+vi.mock("../infra/stream-resilience.mjs", () => ({
   MAX_STREAM_RETRIES: 2,
   streamRetryDelay: () => 0,
   isTransientStreamError: (err) =>
@@ -60,7 +60,7 @@ vi.mock("node:fs/promises", () => ({
 const {
   execCodexPrompt,
   resetThread,
-} = await import("../codex-shell.mjs");
+} = await import("../shell/codex-shell.mjs");
 
 const ENV_KEYS = [
   "INTERNAL_EXECUTOR_STREAM_FIRST_EVENT_TIMEOUT_MS",
@@ -194,5 +194,38 @@ describe("codex-shell stream safeguards", () => {
     expect(result.items.length).toBe(2);
     expect(result.items[0].aggregated_output).toContain("…truncated");
     expect(result.items[1]).toMatchObject({ type: "stream_notice" });
+  });
+
+  it("resets thread and retries when API reports broken reasoning chain", async () => {
+    let runAttempt = 0;
+    mockStartThread.mockImplementation(() => ({
+      id: `codex-test-thread-recoverable-${Date.now()}-${Math.random()}`,
+      runStreamed: async () => {
+        runAttempt += 1;
+        if (runAttempt === 1) {
+          throw new Error(
+            "Item 'rs_test' of type 'reasoning' was provided without its required following item.",
+          );
+        }
+        return {
+          events: {
+            async *[Symbol.asyncIterator]() {
+              yield {
+                type: "item.completed",
+                item: { type: "agent_message", text: "recovered after thread reset" },
+              };
+              yield { type: "turn.completed" };
+            },
+          },
+        };
+      },
+    }));
+
+    const result = await execCodexPrompt("recover from malformed reasoning state", {
+      timeoutMs: 5000,
+    });
+
+    expect(result.finalResponse).toContain("recovered after thread reset");
+    expect(runAttempt).toBe(2);
   });
 });

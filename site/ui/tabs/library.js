@@ -175,8 +175,11 @@ async function fetchEntries(type) {
   return res?.data || [];
 }
 
-async function fetchEntry(id) {
-  const res = await apiFetch(`/api/library/entry?id=${encodeURIComponent(id)}`);
+async function fetchEntry(id, sourceScope = "") {
+  const params = new URLSearchParams({ id: String(id || "") });
+  const normalizedScope = String(sourceScope || "").trim().toLowerCase();
+  if (normalizedScope) params.set("source", normalizedScope);
+  const res = await apiFetch(`/api/library/entry?${params.toString()}`);
   return res?.data || null;
 }
 
@@ -189,11 +192,16 @@ async function saveEntry(data) {
   return res;
 }
 
-async function removeEntry(id, deleteFile = false) {
+async function removeEntry(id, deleteFile = false, sourceScope = "") {
+  const normalizedScope = String(sourceScope || "").trim().toLowerCase();
   return apiFetch("/api/library/entry", {
     method: "DELETE",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ id, deleteFile }),
+    body: JSON.stringify({
+      id,
+      deleteFile,
+      ...(normalizedScope ? { source: normalizedScope } : {}),
+    }),
   });
 }
 
@@ -223,6 +231,13 @@ async function testProfileMatch(title) {
 const TYPE_ICONS = { prompt: ":edit:", agent: ":bot:", skill: ":cpu:" };
 const TYPE_LABELS = { prompt: "Prompt", agent: "Agent Profile", skill: "Skill" };
 const TYPE_COLORS = { prompt: "#58a6ff", agent: "#af7bff", skill: "#3fb950" };
+const STORAGE_SCOPE_LABELS = { repo: "Repo", workspace: "Workspace", global: "Global" };
+
+function normalizeStorageScope(rawScope, fallback = "repo") {
+  const value = String(rawScope || "").trim().toLowerCase();
+  if (value === "repo" || value === "workspace" || value === "global") return value;
+  return fallback;
+}
 
 /* ═══════════════════════════════════════════════════════════════
  *  Sub-components
@@ -295,6 +310,7 @@ function LibraryCard({ entry, onSelect }) {
         <div class="library-card-desc">${entry.description}</div>
       `}
       <div class="library-card-meta">
+        <span class="library-card-scope">${iconText(`:round_pushpin: ${STORAGE_SCOPE_LABELS[normalizeStorageScope(entry.storageScope, "repo")] || "Repo"}`)}</span>
         ${(entry.tags || []).slice(0, 5).map((tag) => html`
           <span class="library-card-tag" key=${tag}>${tag}</span>
         `)}
@@ -317,6 +333,7 @@ function EntryEditor({ entry, onClose, onSaved, onDeleted }) {
     description: entry?.description || "",
     tags: (entry?.tags || []).join(", "),
     scope: entry?.scope || "global",
+    storageScope: normalizeStorageScope(entry?.storageScope, "repo"),
     content: "",
   });
   const [loading, setLoading] = useState(false);
@@ -329,11 +346,15 @@ function EntryEditor({ entry, onClose, onSaved, onDeleted }) {
     let cancelled = false;
     (async () => {
       try {
-        const detail = await fetchEntry(entry.id);
+        const detail = await fetchEntry(entry.id, entry.storageScope);
         if (cancelled) return;
         let contentStr = detail?.content ?? "";
         if (typeof contentStr === "object") contentStr = JSON.stringify(contentStr, null, 2);
-        setForm((f) => ({ ...f, content: contentStr }));
+        setForm((f) => ({
+          ...f,
+          content: contentStr,
+          storageScope: normalizeStorageScope(detail?.storageScope || f.storageScope, "repo"),
+        }));
       } catch { /* ignore */ }
       setLoadingContent(false);
     })();
@@ -358,6 +379,7 @@ function EntryEditor({ entry, onClose, onSaved, onDeleted }) {
         description: form.description.trim(),
         tags,
         scope: form.scope,
+        storageScope: normalizeStorageScope(form.storageScope, "repo"),
         content,
       });
       if (res?.ok) {
@@ -375,7 +397,11 @@ function EntryEditor({ entry, onClose, onSaved, onDeleted }) {
   const handleDelete = useCallback(async () => {
     setLoading(true);
     try {
-      const res = await removeEntry(entry.id, true);
+      const res = await removeEntry(
+        entry.id,
+        true,
+        normalizeStorageScope(form.storageScope || entry?.storageScope, "repo"),
+      );
       if (res?.ok) {
         showToast("Deleted", "success");
         onDeleted?.();
@@ -386,7 +412,7 @@ function EntryEditor({ entry, onClose, onSaved, onDeleted }) {
       showToast(err.message, "error");
     }
     setLoading(false);
-  }, [entry?.id, onDeleted]);
+  }, [entry?.id, entry?.storageScope, form.storageScope, onDeleted]);
 
   const contentPlaceholder = form.type === "prompt"
     ? "# Prompt Title\n\nYour prompt content here...\n\nUse {{VARIABLE_NAME}} for template variables."
@@ -437,6 +463,14 @@ function EntryEditor({ entry, onClose, onSaved, onDeleted }) {
           <select value=${form.scope} onChange=${updateField("scope")}>
             <option value="global">Global</option>
             <option value="workspace">Workspace</option>
+          </select>
+        </label>
+        <label>
+          Storage Location
+          <select value=${normalizeStorageScope(form.storageScope, "repo")} onChange=${updateField("storageScope")}>
+            <option value="repo">Repo</option>
+            <option value="workspace">Workspace</option>
+            <option value="global">Global</option>
           </select>
         </label>
         <label>
@@ -661,7 +695,7 @@ export function LibraryTab() {
   return html`
     <div class="library-root">
       <div class="library-header">
-        <h2>${iconText(":u1f4da: Library")}</h2>
+        <h2>${iconText(":book: Library")}</h2>
         <button class="library-type-pill" onClick=${handleRebuild}
           title="Rescan directories and rebuild manifest">
           ${iconText(":refresh: Rebuild")}

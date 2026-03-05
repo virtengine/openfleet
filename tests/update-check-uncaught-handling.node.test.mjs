@@ -4,7 +4,7 @@ import { resolve } from "node:path";
 import test from "node:test";
 
 test("update-check uncaughtException handler suppresses stream noise and avoids manual re-emit", () => {
-  const src = readFileSync(resolve(process.cwd(), "update-check.mjs"), "utf8");
+  const src = readFileSync(resolve(process.cwd(), "infra/update-check.mjs"), "utf8");
 
   assert.match(src, /function isSuppressedStreamNoiseError\(err\)/);
   assert.match(src, /msg\.includes\("setRawMode EIO"\)/);
@@ -17,7 +17,7 @@ test("update-check uncaughtException handler suppresses stream noise and avoids 
 });
 
 test("update-check promptConfirm avoids raw-mode and never throws on close failures", () => {
-  const src = readFileSync(resolve(process.cwd(), "update-check.mjs"), "utf8");
+  const src = readFileSync(resolve(process.cwd(), "infra/update-check.mjs"), "utf8");
 
   assert.match(src, /function promptConfirm\(question\)/);
   assert.match(src, /terminal:\s*false/);

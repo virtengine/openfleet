@@ -22,7 +22,7 @@ describe("fleet-coordinator", () => {
   describe("normalizeGitUrl", () => {
     let normalizeGitUrl;
     beforeEach(async () => {
-      ({ normalizeGitUrl } = await import("../fleet-coordinator.mjs"));
+      ({ normalizeGitUrl } = await import("../agent/fleet-coordinator.mjs"));
     });
 
     it("normalizes HTTPS URLs", () => {
@@ -64,7 +64,7 @@ describe("fleet-coordinator", () => {
   describe("computeRepoFingerprint", () => {
     let computeRepoFingerprint;
     beforeEach(async () => {
-      ({ computeRepoFingerprint } = await import("../fleet-coordinator.mjs"));
+      ({ computeRepoFingerprint } = await import("../agent/fleet-coordinator.mjs"));
     });
 
     it("returns null for null/undefined root", () => {
@@ -100,7 +100,7 @@ describe("fleet-coordinator", () => {
   describe("buildExecutionWaves", () => {
     let buildExecutionWaves;
     beforeEach(async () => {
-      ({ buildExecutionWaves } = await import("../fleet-coordinator.mjs"));
+      ({ buildExecutionWaves } = await import("../agent/fleet-coordinator.mjs"));
     });
 
     it("returns empty array for no tasks", () => {
@@ -192,7 +192,7 @@ describe("fleet-coordinator", () => {
   describe("assignTasksToWorkstations", () => {
     let assignTasksToWorkstations;
     beforeEach(async () => {
-      ({ assignTasksToWorkstations } = await import("../fleet-coordinator.mjs"));
+      ({ assignTasksToWorkstations } = await import("../agent/fleet-coordinator.mjs"));
     });
 
     it("returns empty for no peers", () => {
@@ -242,7 +242,7 @@ describe("fleet-coordinator", () => {
   describe("calculateBacklogDepth", () => {
     let calculateBacklogDepth;
     beforeEach(async () => {
-      ({ calculateBacklogDepth } = await import("../fleet-coordinator.mjs"));
+      ({ calculateBacklogDepth } = await import("../agent/fleet-coordinator.mjs"));
     });
 
     it("calculates target depth from slots and multiplier", () => {
@@ -301,7 +301,7 @@ describe("fleet-coordinator", () => {
   describe("detectMaintenanceMode", () => {
     let detectMaintenanceMode;
     beforeEach(async () => {
-      ({ detectMaintenanceMode } = await import("../fleet-coordinator.mjs"));
+      ({ detectMaintenanceMode } = await import("../agent/fleet-coordinator.mjs"));
     });
 
     it("returns maintenance mode when everything is empty", () => {
@@ -340,7 +340,7 @@ describe("fleet-coordinator", () => {
   describe("formatFleetSummary", () => {
     let formatFleetSummary;
     beforeEach(async () => {
-      ({ formatFleetSummary } = await import("../fleet-coordinator.mjs"));
+      ({ formatFleetSummary } = await import("../agent/fleet-coordinator.mjs"));
     });
 
     it("returns a non-empty summary string", () => {
@@ -371,7 +371,7 @@ describe("shared-knowledge", () => {
   describe("buildKnowledgeEntry", () => {
     let buildKnowledgeEntry;
     beforeEach(async () => {
-      ({ buildKnowledgeEntry } = await import("../shared-knowledge.mjs"));
+      ({ buildKnowledgeEntry } = await import("../workspace/shared-knowledge.mjs"));
     });
 
     it("creates an entry with all fields", () => {
@@ -415,7 +415,7 @@ describe("shared-knowledge", () => {
     let validateEntry, buildKnowledgeEntry;
     beforeEach(async () => {
       ({ validateEntry, buildKnowledgeEntry } = await import(
-        "../shared-knowledge.mjs"
+        "../workspace/shared-knowledge.mjs"
       ));
     });
 
@@ -467,7 +467,7 @@ describe("shared-knowledge", () => {
     let formatEntryAsMarkdown, buildKnowledgeEntry;
     beforeEach(async () => {
       ({ formatEntryAsMarkdown, buildKnowledgeEntry } = await import(
-        "../shared-knowledge.mjs"
+        "../workspace/shared-knowledge.mjs"
       ));
     });
 
@@ -496,7 +496,7 @@ describe("shared-knowledge", () => {
 
     beforeEach(async () => {
       ({ appendKnowledgeEntry, buildKnowledgeEntry, initSharedKnowledge } =
-        await import("../shared-knowledge.mjs"));
+        await import("../workspace/shared-knowledge.mjs"));
     });
 
     it("creates section and appends entry to new file", async () => {
@@ -533,7 +533,7 @@ describe("shared-knowledge", () => {
 
     beforeEach(async () => {
       ({ readKnowledgeEntries, initSharedKnowledge } = await import(
-        "../shared-knowledge.mjs"
+        "../workspace/shared-knowledge.mjs"
       ));
     });
 
@@ -581,7 +581,7 @@ Always use deterministic TF ops.
     let getKnowledgeState, formatKnowledgeSummary, initSharedKnowledge;
     beforeEach(async () => {
       ({ getKnowledgeState, formatKnowledgeSummary, initSharedKnowledge } =
-        await import("../shared-knowledge.mjs"));
+        await import("../workspace/shared-knowledge.mjs"));
     });
 
     it("returns current state snapshot", () => {
@@ -605,7 +605,7 @@ Always use deterministic TF ops.
   describe("publishTaskList", () => {
     let publishTaskList;
     beforeEach(async () => {
-      ({ publishTaskList } = await import("../fleet-coordinator.mjs"));
+      ({ publishTaskList } = await import("../agent/fleet-coordinator.mjs"));
     });
 
     it("writes task list JSON to fleet-tasks.json", async () => {
@@ -634,7 +634,7 @@ Always use deterministic TF ops.
   describe("readPeerTaskList", () => {
     let readPeerTaskList;
     beforeEach(async () => {
-      ({ readPeerTaskList } = await import("../fleet-coordinator.mjs"));
+      ({ readPeerTaskList } = await import("../agent/fleet-coordinator.mjs"));
     });
 
     it("reads a valid peer task list file", async () => {
@@ -672,7 +672,7 @@ Always use deterministic TF ops.
   describe("bootstrapFromPeer", () => {
     let bootstrapFromPeer;
     beforeEach(async () => {
-      ({ bootstrapFromPeer } = await import("../fleet-coordinator.mjs"));
+      ({ bootstrapFromPeer } = await import("../agent/fleet-coordinator.mjs"));
     });
 
     it("returns null when no peer lists", () => {
@@ -744,20 +744,13 @@ Always use deterministic TF ops.
     let shouldAutoGenerateTasks, resetAutoGenCooldown, markAutoGenTriggered;
     beforeEach(async () => {
       ({ shouldAutoGenerateTasks, resetAutoGenCooldown, markAutoGenTriggered } =
-        await import("../fleet-coordinator.mjs"));
+        await import("../agent/fleet-coordinator.mjs"));
       resetAutoGenCooldown();
-    });
-
-    it("returns shouldGenerate=false when planner disabled", () => {
-      const result = shouldAutoGenerateTasks({ plannerMode: "disabled" });
-      expect(result.shouldGenerate).toBe(false);
-      expect(result.mode).toBe("skip");
     });
 
     it("returns shouldGenerate=true when backlog is empty", () => {
       const result = shouldAutoGenerateTasks({
         currentBacklog: 0,
-        plannerMode: "kanban",
       });
       expect(result.shouldGenerate).toBe(true);
       expect(result.deficit).toBeGreaterThan(0);
@@ -766,7 +759,6 @@ Always use deterministic TF ops.
     it("returns needsApproval=true by default", () => {
       const result = shouldAutoGenerateTasks({
         currentBacklog: 0,
-        plannerMode: "kanban",
         requireApproval: true,
       });
       expect(result.needsApproval).toBe(true);
@@ -776,7 +768,6 @@ Always use deterministic TF ops.
     it("returns needsApproval=false when requireApproval=false", () => {
       const result = shouldAutoGenerateTasks({
         currentBacklog: 0,
-        plannerMode: "kanban",
         requireApproval: false,
       });
       expect(result.needsApproval).toBe(false);
@@ -787,7 +778,6 @@ Always use deterministic TF ops.
       markAutoGenTriggered();
       const result = shouldAutoGenerateTasks({
         currentBacklog: 0,
-        plannerMode: "kanban",
         cooldownMs: 60000,
       });
       expect(result.shouldGenerate).toBe(false);
@@ -797,7 +787,6 @@ Always use deterministic TF ops.
     it("returns shouldGenerate=false when backlog is sufficient", () => {
       const result = shouldAutoGenerateTasks({
         currentBacklog: 100,
-        plannerMode: "kanban",
       });
       expect(result.shouldGenerate).toBe(false);
       expect(result.reason).toContain("sufficient");

@@ -9,7 +9,7 @@ import {
   generateWeeklyAgentWorkReport,
   getNextWeeklyReportTime,
   shouldSendWeeklyReport,
-} from "../agent-work-report.mjs";
+} from "../agent/agent-work-report.mjs";
 
 const DAY_MS = 24 * 60 * 60 * 1000;
 
@@ -241,10 +241,10 @@ describe("agent-work-report scheduling", () => {
 
 describe("weekly report command and scheduler wiring", () => {
   const telegramBotSource = readFileSync(
-    resolve(process.cwd(), "telegram-bot.mjs"),
+    resolve(process.cwd(), "telegram/telegram-bot.mjs"),
     "utf8",
   );
-  const monitorSource = readFileSync(resolve(process.cwd(), "monitor.mjs"), "utf8");
+  const monitorSource = readFileSync(resolve(process.cwd(), "infra/monitor.mjs"), "utf8");
 
   it("registers Telegram commands for weekly reporting", () => {
     assert.match(

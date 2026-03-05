@@ -180,6 +180,8 @@ import {
   TAB_CONFIG,
 } from "./modules/router.js";
 import { formatRelative } from "./modules/utils.js";
+import { buildSessionApiPath, resolveSessionWorkspaceHint } from "./modules/session-api.js";
+import { buildSessionInsights, formatCompactCount } from "./modules/session-insights.js";
 
 /* ── Component imports ── */
 import { ToastContainer, Modal } from "./components/shared.js";
@@ -528,22 +530,39 @@ const TAB_COMPONENTS = {
   settings: SettingsTab,
 };
 
+function getMaxFreshnessMs(rawFreshness) {
+  if (typeof rawFreshness === "number") {
+    return Number.isFinite(rawFreshness) ? rawFreshness : null;
+  }
+  if (rawFreshness && typeof rawFreshness === "object") {
+    const vals = Object.values(rawFreshness).filter((v) => Number.isFinite(v));
+    return vals.length ? Math.max(...vals) : null;
+  }
+  return null;
+}
+
+function inferUiConnected() {
+  const freshness = getMaxFreshnessMs(dataFreshness.value);
+  // If data is refreshing successfully, prefer "connected" even when ws
+  // lags behind to avoid "Offline" + "Updated 0s ago" contradiction.
+  return (
+    connected.value ||
+    (!backendDown.value &&
+      freshness != null &&
+      Number.isFinite(freshness) &&
+      freshness <= 30_000)
+  );
+}
+
 /* ═══════════════════════════════════════════════
  *  Header
  * ═══════════════════════════════════════════════ */
 function Header() {
-  const isConn = connected.value;
+  const isConn = inferUiConnected();
   const user = getTelegramUser();
   const latency = wsLatency.value;
   const reconnect = wsReconnectIn.value;
-  const freshnessRaw = dataFreshness.value;
-  let freshness = null;
-  if (typeof freshnessRaw === "number") {
-    freshness = Number.isFinite(freshnessRaw) ? freshnessRaw : null;
-  } else if (freshnessRaw && typeof freshnessRaw === "object") {
-    const vals = Object.values(freshnessRaw).filter((v) => Number.isFinite(v));
-    freshness = vals.length ? Math.max(...vals) : null;
-  }
+  const freshness = getMaxFreshnessMs(dataFreshness.value);
 
   // Connection quality label
   let connLabel = "Offline";
@@ -600,7 +619,7 @@ function Header() {
  * ═══════════════════════════════════════════════ */
 function SidebarNav({ collapsed = false, onToggle }) {
   const user = getTelegramUser();
-  const isConn = connected.value;
+  const isConn = inferUiConnected();
 
   const collapseIcon = collapsed
     ? html`<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M6 3l5 5-5 5"/></svg>`
@@ -817,33 +836,15 @@ function InspectorPanel({ onResizeStart, onResizeReset, showResizer }) {
     : "No messages yet.";
   const [smartLogs, setSmartLogs] = useState([]);
   const [logState, setLogState] = useState("idle");
+  const [insights, setInsights] = useState(null);
+  const [insightState, setInsightState] = useState("idle");
+  const workspaceHint = resolveSessionWorkspaceHint(session, "active");
   const lastActiveLabel = lastActive ? formatRelative(lastActive) : "—";
-  const apiStatusLabel = connected.value ? "Connected" : "Offline";
+  const apiStatusLabel = inferUiConnected() ? "Connected" : "Offline";
   const wsStatusLabel = wsConnected.value ? "Live" : "Closed";
   const backendLastSeenLabel = backendLastSeen.value
     ? formatRelative(backendLastSeen.value)
     : "—";
-  let smartLogsContent = html`
-    <div class="inspector-scroll">
-      ${smartLogs.map(
-        (entry, idx) => html`
-          <div key=${idx} class="inspector-log-line ${entry.level}">
-            <span class="inspector-log-level">
-              ${entry.level.toUpperCase()}
-            </span>
-            <span class="inspector-log-text">
-              ${entry.line.length > 220 ? entry.line.slice(-220) : entry.line}
-            </span>
-          </div>
-        `,
-      )}
-    </div>
-  `;
-  if (logState === "error") {
-    smartLogsContent = html`<div class="inspector-empty">Log stream unavailable.</div>`;
-  } else if (smartLogs.length === 0) {
-    smartLogsContent = html`<div class="inspector-empty">No noteworthy logs right now.</div>`;
-  }
 
   useEffect(() => {
     if (!isSessionTab) return;
@@ -906,6 +907,77 @@ function InspectorPanel({ onResizeStart, onResizeReset, showResizer }) {
     };
   }, [isSessionTab, sessionId, session?.taskId, session?.branch, status]);
 
+  useEffect(() => {
+    if (!isSessionTab || !sessionId) {
+      setInsights(null);
+      setInsightState("idle");
+      return;
+    }
+    let active = true;
+    const fetchInsights = async () => {
+      try {
+        setInsightState("loading");
+        const fullSessionPath = buildSessionApiPath(sessionId, "", {
+          workspace: workspaceHint,
+          query: { full: "1" },
+        });
+        if (!fullSessionPath) {
+          if (active) {
+            setInsights(null);
+            setInsightState("error");
+          }
+          return;
+        }
+        const res = await apiFetch(fullSessionPath, { _silent: true });
+        if (!active) return;
+        setInsights(buildSessionInsights(res?.session || null));
+        setInsightState("ready");
+      } catch {
+        if (active) {
+          setInsights(null);
+          setInsightState("error");
+        }
+      }
+    };
+
+    fetchInsights();
+    const interval = setInterval(fetchInsights, 10000);
+    return () => {
+      active = false;
+      clearInterval(interval);
+    };
+  }, [isSessionTab, sessionId, workspaceHint]);
+
+  const insightsTotals = insights?.totals || null;
+  const insightsFileCounts = insights?.fileCounts || null;
+  const insightsTopTools = Array.isArray(insights?.topTools) ? insights.topTools : [];
+  const insightsContextBreakdown = Array.isArray(insights?.contextBreakdown)
+    ? insights.contextBreakdown
+    : [];
+  const contextWindow = insights?.contextWindow || null;
+  const tokenUsage = insights?.tokenUsage || null;
+  let smartLogsContent = html`
+    <div class="inspector-scroll">
+      ${smartLogs.map(
+        (entry, idx) => html`
+          <div key=${idx} class="inspector-log-line ${entry.level}">
+            <span class="inspector-log-level">
+              ${entry.level.toUpperCase()}
+            </span>
+            <span class="inspector-log-text">
+              ${entry.line.length > 220 ? entry.line.slice(-220) : entry.line}
+            </span>
+          </div>
+        `,
+      )}
+    </div>
+  `;
+  if (logState === "error") {
+    smartLogsContent = html`<div class="inspector-empty">Log stream unavailable.</div>`;
+  } else if (smartLogs.length === 0) {
+    smartLogsContent = html`<div class="inspector-empty">No warning/error lines in the latest logs.</div>`;
+  }
+
   return html`
     <aside class="inspector">
       <div class="inspector-section">
@@ -925,10 +997,80 @@ function InspectorPanel({ onResizeStart, onResizeReset, showResizer }) {
         ? html`
             <div class="inspector-section inspector-scroll">
               <div class="inspector-title">Latest Diff</div>
-              <${DiffViewer} sessionId=${sessionId} />
+              <${DiffViewer}
+                sessionId=${sessionId}
+                workspace=${workspaceHint}
+                activitySummary=${insights?.activityDiff || null}
+              />
             </div>
             <div class="inspector-section">
               <div class="inspector-title">Smart Logs</div>
+              <div class="inspector-subtitle">Session Activity</div>
+              ${insightState === "error"
+                ? html`<div class="inspector-empty">Session activity tracking is unavailable.</div>`
+                : insightsTotals
+                  ? html`
+                      <div class="inspector-metrics-grid">
+                        <div class="inspector-metric"><span class="label">Tool Calls</span><strong>${formatCompactCount(insightsTotals.toolCalls)}</strong></div>
+                        <div class="inspector-metric"><span class="label">Commands</span><strong>${formatCompactCount(insightsTotals.commandExecutions)}</strong></div>
+                        <div class="inspector-metric"><span class="label">Files Edited</span><strong>${formatCompactCount(insightsFileCounts?.editedFiles || 0)}</strong></div>
+                        <div class="inspector-metric"><span class="label">Files Opened</span><strong>${formatCompactCount(insightsFileCounts?.openedFiles || 0)}</strong></div>
+                        <div class="inspector-metric"><span class="label">Messages</span><strong>${formatCompactCount(insightsTotals.messages)}</strong></div>
+                        <div class="inspector-metric"><span class="label">Errors</span><strong>${formatCompactCount(insightsTotals.errors)}</strong></div>
+                      </div>
+                      ${(contextWindow || tokenUsage) &&
+                        html`
+                          <div class="inspector-context">
+                            ${contextWindow &&
+                              html`
+                                <div class="inspector-kv"><span>Context Window</span><strong>
+                                  ${contextWindow.percent != null
+                                    ? `${contextWindow.percent}%`
+                                    : "Tracked"}
+                                </strong></div>
+                                ${(contextWindow.usedTokens || contextWindow.totalTokens) &&
+                                  html`
+                                    <div class="inspector-kv"><span>Token Fill</span><strong>
+                                      ${contextWindow.usedTokens != null ? formatCompactCount(contextWindow.usedTokens) : "—"}
+                                      ${contextWindow.totalTokens != null ? ` / ${formatCompactCount(contextWindow.totalTokens)}` : ""}
+                                    </strong></div>
+                                  `}
+                              `}
+                            ${tokenUsage &&
+                              html`
+                                <div class="inspector-kv"><span>Token Usage</span><strong>${formatCompactCount(tokenUsage.totalTokens || 0)}</strong></div>
+                                <div class="inspector-kv"><span>Input / Output</span><strong>${formatCompactCount(tokenUsage.inputTokens || 0)} / ${formatCompactCount(tokenUsage.outputTokens || 0)}</strong></div>
+                              `}
+                          </div>
+                        `}
+                      ${insightsTopTools.length > 0 &&
+                        html`
+                          <div class="inspector-pill-row">
+                            ${insightsTopTools.map(
+                              (tool) => html`
+                                <span class="inspector-pill" key=${tool.name}>
+                                  ${tool.name}: ${formatCompactCount(tool.count)}
+                                </span>
+                              `,
+                            )}
+                          </div>
+                        `}
+                      ${insightsContextBreakdown.length > 0 &&
+                        html`
+                          <div class="inspector-breakdown">
+                            ${insightsContextBreakdown.slice(0, 6).map(
+                              (row) => html`
+                                <div class="inspector-breakdown-row" key=${row.label}>
+                                  <span>${row.label}</span>
+                                  <strong>${row.percent}%</strong>
+                                </div>
+                              `,
+                            )}
+                          </div>
+                        `}
+                    `
+                  : html`<div class="inspector-empty">Tracking session metrics…</div>`}
+              <div class="inspector-subtitle">Recent Warning/Error Logs</div>
               ${smartLogsContent}
               <button class="btn btn-ghost btn-sm" onClick=${() => navigateTo("logs")}>
                 Open Logs

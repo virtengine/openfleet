@@ -3,7 +3,7 @@ import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import test from "node:test";
 
-const source = readFileSync(resolve(process.cwd(), "maintenance.mjs"), "utf8");
+const source = readFileSync(resolve(process.cwd(), "infra/maintenance.mjs"), "utf8");
 
 test("maintenance logs benign dirty-working-tree branch sync skips at info/log level", () => {
   assert.match(

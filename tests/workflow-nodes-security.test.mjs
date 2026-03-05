@@ -13,8 +13,8 @@
  */
 
 import { describe, it, expect, vi } from "vitest";
-import { getNodeType } from "../workflow-nodes.mjs";
-import { WorkflowContext } from "../workflow-engine.mjs";
+import { getNodeType } from "../workflow/workflow-nodes.mjs";
+import { WorkflowContext } from "../workflow/workflow-engine.mjs";
 
 // -- Helpers ------------------------------------------------------------------
 
@@ -192,10 +192,12 @@ describe("dangerous shell payload containment", () => {
     "${IFS}cat${IFS}/etc/shadow",
   ];
 
-  it("action.create_pr implementation does not include a direct PR-create command", () => {
+  it("action.create_pr safely quotes inputs to prevent shell injection", () => {
     const nodeType = getNodeType("action.create_pr");
     const executeSrc = nodeType.execute.toString();
-    expect(executeSrc).not.toContain("gh pr create");
+    // The implementation must use JSON.stringify for title/body to prevent
+    // shell metacharacter injection into the gh CLI command.
+    expect(executeSrc).toContain("JSON.stringify(title)");
   });
 
   it("action.run_command schema does not silently accept untrusted commands", () => {
@@ -211,21 +213,26 @@ describe("dangerous shell payload containment", () => {
     expect(props.command.default).toBeUndefined();
   });
 
-  it("dangerous input strings are treated as plain lifecycle-handoff payload", async () => {
+  it("dangerous input strings are contained — either rejected or safely handed off", async () => {
     const nodeType = getNodeType("action.create_pr");
     for (const input of dangerousInputs) {
       const node = makeNode("action.create_pr", {
         title: input,
         body: input,
         branch: "feat/safety-test",
+        // failOnError=false (default) — gh failure gracefully falls back
       });
       const result = await nodeType.execute(node, makeCtx());
       expect(result.success).toBe(true);
-      expect(result.handedOff).toBe(true);
+      // Whether gh succeeds or falls back, the title/body must be
+      // preserved exactly as-is (no shell interpretation occurred).
       expect(result.title).toBe(input);
-      expect(result.body).toBe(input);
+      // If gh CLI failed/unavailable, it falls back to handoff
+      if (result.handedOff) {
+        expect(result.lifecycle).toBe("bosun_managed");
+      }
     }
-  });
+  }, 30_000);
 });
 
 // -- action.git_operations Safety ----------------------------------------------

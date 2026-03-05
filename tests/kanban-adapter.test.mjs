@@ -8,11 +8,11 @@ vi.mock("node:child_process", () => ({
   execFile: execFileMock,
 }));
 
-vi.mock("../config.mjs", () => ({
+vi.mock("../config/config.mjs", () => ({
   loadConfig: loadConfigMock,
 }));
 
-vi.mock("../fetch-runtime.mjs", () => ({
+vi.mock("../infra/fetch-runtime.mjs", () => ({
   fetchWithFallback: fetchWithFallbackMock,
 }));
 
@@ -31,14 +31,14 @@ const {
   persistSharedStateToIssue,
   readSharedStateFromIssue,
   markTaskIgnored,
-} = await import("../kanban-adapter.mjs");
+} = await import("../kanban/kanban-adapter.mjs");
 const {
   configureTaskStore,
   loadStore,
   addTask,
   removeTask,
   getTask,
-} = await import("../task-store.mjs");
+} = await import("../task/task-store.mjs");
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { resolve } from "node:path";
@@ -1078,6 +1078,26 @@ describe("kanban-adapter internal backend", () => {
     const deleted = await adapter.deleteTask(created.id);
     expect(deleted).toBe(true);
     expect(removeTask(created.id)).toBe(false);
+  });
+
+  it("recovers title/description from legacy malformed planner payloads", async () => {
+    const adapter = getKanbanAdapter();
+    addTask({
+      id: "legacy-malformed-1",
+      title: "Untitled task",
+      status: "todo",
+      projectId: {
+        title: "feat(legacy): recovered title",
+        description: "Recovered description",
+        status: "todo",
+      },
+    });
+
+    const task = await adapter.getTask("legacy-malformed-1");
+    expect(task).toBeTruthy();
+    expect(task.title).toBe("feat(legacy): recovered title");
+    expect(task.description).toBe("Recovered description");
+    expect(task.projectId).toBe("internal");
   });
 });
 

@@ -9,6 +9,8 @@ import htm from "htm";
 
 const html = htm.bind(h);
 
+import { Typography, Box, Stack, Card, CardContent, Button, IconButton, Chip, Divider, Paper, TextField, InputAdornment, CircularProgress, Alert, Tooltip, Switch, FormControlLabel, Dialog, DialogTitle, DialogContent, DialogActions, List, ListItem, ListItemButton, ListItemText, ListItemIcon, Menu, MenuItem, Tabs, Tab, Skeleton, Badge, Avatar, LinearProgress, Grid } from "@mui/material";
+
 /* ─── Inner error boundary for complex sub-components ─── */
 class ChatSafeBoundary extends Component {
   constructor(props) {
@@ -25,15 +27,9 @@ class ChatSafeBoundary extends Component {
     if (this.state.error) {
       const retry = () => this.setState({ error: null });
       return html`
-        <div class="chat-error-inline" style="padding:16px;text-align:center;color:var(--text-secondary,#999);opacity:0.8;">
-          <span style="font-size:18px;">${resolveIcon("alert")}</span>
-          <span style="margin-left:8px;font-size:12px;">
-            ${this.props.label || "Component"} failed to render.
-          </span>
-          <button class="btn btn-ghost btn-xs" style="margin-left:8px;" onClick=${retry}>
-            Retry
-          </button>
-        </div>
+        <${Alert} severity="error" sx=${{ opacity: 0.8 }} action=${html`<${Button} size="small" onClick=${retry}>Retry<//>`}>
+          ${this.props.label || "Component"} failed to render.
+        <//>
       `;
     }
     return this.props.children;
@@ -42,6 +38,7 @@ class ChatSafeBoundary extends Component {
 
 import {
   SessionList,
+  SESSION_VIEW_FILTER,
   loadSessions,
   selectedSessionId,
   sessionsData,
@@ -53,6 +50,7 @@ import {
 import { routeParams, setRouteParams } from "../modules/router.js";
 import { ChatView } from "../components/chat-view.js";
 import { apiFetch } from "../modules/api.js";
+import { buildSessionApiPath, resolveSessionWorkspaceHint } from "../modules/session-api.js";
 import { showToast } from "../modules/state.js";
 import { VoiceMicButton, requestVoiceModeOpen } from "../modules/voice.js";
 import { iconText, resolveIcon } from "../modules/icon-utils.js";
@@ -62,6 +60,7 @@ import {
   agentMode,
   activeAgent,
   activeAgentInfo,
+  availableAgents,
   yoloMode,
   selectedModel,
 } from "../components/agent-selector.js";
@@ -77,6 +76,7 @@ import {
 /* ─── Bosun commands (always available) ─── */
 const BOSUN_COMMANDS = [
   { cmd: "/help", desc: "Show available commands", icon: "help", source: "bosun" },
+  { cmd: "/commands", desc: "Show full command list", icon: "menu", source: "bosun" },
   { cmd: "/status", desc: "Check orchestrator status", icon: "chart", source: "bosun" },
   { cmd: "/health", desc: "Health check", icon: "heart", source: "bosun" },
   { cmd: "/logs", desc: "View recent logs", icon: "file", source: "bosun" },
@@ -92,7 +92,18 @@ const BOSUN_COMMANDS = [
   { cmd: "/kanban", desc: "Open Kanban board", icon: "pin", source: "bosun" },
   { cmd: "/deploy", desc: "Trigger deployment", icon: "rocket", source: "bosun" },
   { cmd: "/ask", desc: "Ask the assistant", icon: "chat", source: "bosun" },
+  { cmd: "/agent", desc: "Send message in agent mode", icon: "bot", source: "bosun" },
+  { cmd: "/web", desc: "Send message in web mode", icon: "globe", source: "bosun" },
+  { cmd: "/instant", desc: "Send message in instant mode", icon: "zap", source: "bosun" },
 ];
+
+const MESSAGE_MODE_COMMANDS = Object.freeze({
+  "/ask": "ask",
+  "/agent": "agent",
+  "/plan": "plan",
+  "/web": "web",
+  "/instant": "instant",
+});
 
 /* ─── SDK commands (dynamic based on active agent) ─── */
 const SDK_COMMAND_META = {
@@ -119,6 +130,28 @@ function getSlashCommands() {
   return [...BOSUN_COMMANDS, ...sdkEntries];
 }
 
+function formatAttachmentSize(size) {
+  const raw = Number(size);
+  if (!Number.isFinite(raw) || raw <= 0) return "";
+  if (raw >= 1024 * 1024) return `${(raw / (1024 * 1024)).toFixed(1)} MB`;
+  if (raw >= 1024) return `${Math.round(raw / 1024)} KB`;
+  return `${raw} B`;
+}
+
+/** Keep unsent attachments per-session so switching chats doesn't discard uploads. */
+const pendingAttachmentsBySessionId = new Map();
+const DRAFT_SESSION_KEY = "__draft__";
+
+function hasDragFiles(event) {
+  const types = event?.dataTransfer?.types;
+  if (!types) return false;
+  try {
+    return Array.from(types).includes("Files");
+  } catch {
+    return false;
+  }
+}
+
 /* ─── Welcome screen (no session selected) ─── */
 function ChatWelcome({ onNewSession, onQuickCommand }) {
   const quickActions = [
@@ -131,27 +164,30 @@ function ChatWelcome({ onNewSession, onQuickCommand }) {
   ];
 
   return html`
-    <div class="chat-welcome">
-      <div class="chat-welcome-icon">${resolveIcon("bot")}</div>
-      <div class="chat-welcome-title">Welcome to Bosun</div>
-      <div class="chat-welcome-subtitle">
+    <${Box} className="chat-welcome" sx=${{ display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", height: "100%", p: 4 }}>
+      <${Avatar} sx=${{ width: 56, height: 56, mb: 2, bgcolor: "primary.main" }}>${resolveIcon("bot")}<//>
+      <${Typography} variant="h5" gutterBottom>Welcome to Bosun<//>
+      <${Typography} variant="body2" color="text.secondary" sx=${{ textAlign: "center", maxWidth: 420, mb: 3 }}>
         Select a session from the sidebar, start a new chat, or use a quick
         action below to get started.
-      </div>
-      <div class="chat-welcome-actions">
+      <//>
+      <${Stack} direction="row" spacing=${1} flexWrap="wrap" justifyContent="center">
         ${quickActions.map(
           (a) => html`
-            <button
+            <${Button}
               key=${a.label}
-              class="btn btn-ghost btn-sm chat-welcome-btn"
+              variant="outlined"
+              size="small"
+              startIcon=${resolveIcon(a.icon) || a.icon}
               onClick=${a.action}
+              sx=${{ textTransform: "none" }}
             >
-              <span>${resolveIcon(a.icon) || a.icon}</span> ${a.label}
-            </button>
+              ${a.label}
+            <//>
           `,
         )}
-      </div>
-    </div>
+      <//>
+    <//>
   `;
 }
 
@@ -164,25 +200,26 @@ function SlashMenu({ filter, onSelect, activeIndex, commands }) {
   if (matches.length === 0) return null;
 
   return html`
-    <div class="slash-menu">
-      ${matches.map(
-        (c, i) => html`
-          <div
-            key=${c.cmd}
-            class="slash-menu-item ${i === activeIndex ? "active" : ""}"
-            onMouseDown=${(e) => {
-              e.preventDefault();
-              onSelect(c.cmd);
-            }}
-          >
-            <span class="slash-menu-item-icon">${resolveIcon(c.icon) || c.icon}</span>
-            <span class="slash-menu-item-cmd">${c.cmd}</span>
-            <span class="slash-menu-item-desc">${c.desc}</span>
-            ${c.source === "sdk" && html`<span class="slash-menu-item-badge">SDK</span>`}
-          </div>
-        `,
-      )}
-    </div>
+    <${Paper} elevation=${4} className="slash-menu" sx=${{ maxHeight: 260, overflowY: "auto", borderRadius: 2, position: "absolute", bottom: "100%", left: 0, right: 0, zIndex: 10 }}>
+      <${List} dense disablePadding>
+        ${matches.map(
+          (c, i) => html`
+            <${ListItem} key=${c.cmd} disablePadding secondaryAction=${c.source === "sdk" && html`<${Chip} label="SDK" size="small" color="secondary" />`}>
+              <${ListItemButton}
+                selected=${i === activeIndex}
+                onMouseDown=${(e) => {
+                  e.preventDefault();
+                  onSelect(c.cmd);
+                }}
+              >
+                <${ListItemIcon} sx=${{ minWidth: 32 }}>${resolveIcon(c.icon) || c.icon}<//>
+                <${ListItemText} primary=${c.cmd} secondary=${c.desc} />
+              <//>
+            <//>
+          `,
+        )}
+      <//>
+    <//>
   `;
 }
 
@@ -208,9 +245,11 @@ function SessionRenameInput({ value, onSave, onCancel }) {
   }
 
   return html`
-    <input
-      ref=${inputRef}
-      class="session-item-rename"
+    <${TextField}
+      inputRef=${inputRef}
+      variant="standard"
+      size="small"
+      fullWidth
       value=${val}
       onInput=${(e) => setVal(e.target.value)}
       onKeyDown=${(e) => {
@@ -221,6 +260,7 @@ function SessionRenameInput({ value, onSave, onCancel }) {
         if (e.key === "Escape") onCancel();
       }}
       onBlur=${commit}
+      sx=${{ "& .MuiInput-input": { fontSize: "0.875rem", py: 0.5 } }}
     />
   `;
 }
@@ -239,7 +279,11 @@ export function ChatTab() {
   }
 
   const [showArchived, setShowArchived] = useState(false);
+  const [sessionView, setSessionView] = useState(SESSION_VIEW_FILTER.all);
   const [inputValue, setInputValue] = useState("");
+  const [pendingAttachments, setPendingAttachments] = useState([]);
+  const [uploadingAttachments, setUploadingAttachments] = useState(false);
+  const [dragActive, setDragActive] = useState(false);
   const [showSlashMenu, setShowSlashMenu] = useState(false);
   const [slashFilter, setSlashFilter] = useState("");
   const [slashActiveIdx, setSlashActiveIdx] = useState(0);
@@ -270,7 +314,30 @@ export function ChatTab() {
     }
   });
   const textareaRef = useRef(null);
+  const fileInputRef = useRef(null);
+  const sendMenuRef = useRef(null);
+  const messageQueueRef = useRef([]);
+  const chatDropDepthRef = useRef(0);
+  const [showSendMenu, setShowSendMenu] = useState(false);
+  const [queueCount, setQueueCount] = useState(0);
+  const [stoppingAgent, setStoppingAgent] = useState(false);
   const routeSessionId = String(routeParams.value?.sessionId || "").trim();
+
+  const getWorkspaceScopeForView = useCallback((view) => {
+    const normalized = String(view || "").toLowerCase();
+    if (normalized === SESSION_VIEW_FILTER.active) return "active";
+    return "all";
+  }, []);
+
+  const refreshPrimarySessions = useCallback(
+    async (view = sessionView) => {
+      await loadSessions({
+        type: "primary",
+        workspace: getWorkspaceScopeForView(view),
+      });
+    },
+    [getWorkspaceScopeForView, sessionView],
+  );
 
   /* ── Load sessions + agents on mount ── */
   useEffect(() => {
@@ -280,7 +347,7 @@ export function ChatTab() {
     // Loading them sequentially gives each render time to settle.
     (async () => {
       try {
-        await loadSessions({ type: "primary" });
+        await refreshPrimarySessions();
       } catch { /* handled internally */ }
       if (!mounted) return;
       // Small delay before loading agents to let session render settle
@@ -291,7 +358,7 @@ export function ChatTab() {
       } catch { /* handled internally */ }
     })();
     const interval = setInterval(() => {
-      if (mounted) loadSessions({ type: "primary" });
+      if (mounted) refreshPrimarySessions();
     }, 5000);
     // Refresh agent list less frequently
     const agentInterval = setInterval(() => {
@@ -302,7 +369,18 @@ export function ChatTab() {
       clearInterval(interval);
       clearInterval(agentInterval);
     };
-  }, []);
+  }, [refreshPrimarySessions]);
+
+  useEffect(() => {
+    const onWorkspaceSwitched = () => {
+      selectedSessionId.value = null;
+      refreshPrimarySessions().catch(() => {});
+    };
+    window.addEventListener("ve:workspace-switched", onWorkspaceSwitched);
+    return () => {
+      window.removeEventListener("ve:workspace-switched", onWorkspaceSwitched);
+    };
+  }, [refreshPrimarySessions]);
 
   /* ── Track mobile viewport to avoid auto-select loops ── */
   useEffect(() => {
@@ -507,18 +585,26 @@ export function ChatTab() {
   }
 
   /* ── Send message or command ── */
-  async function handleSend() {
-    const content = inputValue.trim();
-    if (!content || sending) return;
+  async function handleSend(explicitContent) {
+    const content = (typeof explicitContent === "string" ? explicitContent : inputValue).trim();
+    const attachments = Array.isArray(pendingAttachments)
+      ? pendingAttachments.filter(Boolean)
+      : [];
+    if ((!content && attachments.length === 0) || sending || uploadingAttachments) return;
 
     setShowSlashMenu(false);
     setSending(true);
 
-    try {
-      if (content.startsWith("/")) {
-        const cmdBase = content.split(/\s/)[0].toLowerCase();
-        const cmdArgs = content.slice(cmdBase.length).trim();
+    const cmdBase = content.startsWith("/") ? content.split(/\s/)[0].toLowerCase() : "";
+    const cmdArgs = cmdBase ? content.slice(cmdBase.length).trim() : "";
+    const modeOverride = MESSAGE_MODE_COMMANDS[cmdBase] || null;
+    const asModeMessage = Boolean(modeOverride && cmdArgs);
+    const outboundContent = asModeMessage ? cmdArgs : content;
+    const outboundMode = modeOverride || agentMode.value;
+    let createdSessionId = "";
 
+    try {
+      if (content.startsWith("/") && !asModeMessage) {
         if (isSdkCommand(cmdBase)) {
           // Forward to agent SDK
           const resp = await apiFetch("/api/agents/sdk-command", {
@@ -562,64 +648,198 @@ export function ChatTab() {
         }
       } else if (sessionId) {
         // Send as message to current session with optimistic rendering
-        const tempId = addPendingMessage(sessionId, content);
+        const tempId = addPendingMessage(sessionId, outboundContent, attachments);
         markUserMessageSent(activeAgent.value, sessionId);
 
         // Use sendOrQueue for offline resilience
-          const sendFn = async (sid, msg) => {
-            await apiFetch(`/api/sessions/${encodeURIComponent(sid)}/message`, {
-              method: "POST",
-              body: JSON.stringify({ content: msg, mode: agentMode.value, yolo: yoloMode.peek(), model: selectedModel.value || undefined }),
-            });
-          };
+        const sendFn = async (sid, msg) => {
+          const messagePath = sessionApiPath(sid, "message");
+          if (!messagePath) {
+            throw new Error("Session path unavailable");
+          }
+          await apiFetch(messagePath, {
+            method: "POST",
+            body: JSON.stringify({
+              content: msg,
+              mode: outboundMode,
+              yolo: yoloMode.peek(),
+              model: selectedModel.value || undefined,
+              attachments,
+            }),
+          });
+        };
 
         try {
-          await sendOrQueue(sessionId, content, sendFn);
+          await sendOrQueue(sessionId, outboundContent, sendFn);
           confirmMessage(tempId);
         } catch (err) {
           rejectMessage(tempId, err.message || "Send failed");
           throw err;
         }
 
-        loadSessionMessages(sessionId, { limit: 20 });
+        loadSessionMessages(sessionId, { limit: 50 });
       } else {
         // No session — create one with current agent/mode, then send first message
         const res = await createSession({
           type: "primary",
-          prompt: content,
+          ...(outboundContent ? { prompt: outboundContent } : {}),
           agent: activeAgent.value,
-          mode: agentMode.value,
+          mode: outboundMode,
           yolo: yoloMode.peek(),
           model: selectedModel.value || undefined,
         });
         const newId = res?.session?.id;
         if (newId) {
-          const tempId = addPendingMessage(newId, content);
+          createdSessionId = String(newId);
+          const tempId = addPendingMessage(newId, outboundContent, attachments);
           markUserMessageSent(activeAgent.value, newId);
 
           try {
-            await apiFetch(`/api/sessions/${encodeURIComponent(newId)}/message`, {
+            const messagePath = sessionApiPath(newId, "message");
+            if (!messagePath) {
+              throw new Error("Session path unavailable");
+            }
+            await apiFetch(messagePath, {
               method: "POST",
-              body: JSON.stringify({ content, mode: agentMode.value, yolo: yoloMode.peek(), model: selectedModel.value || undefined }),
+              body: JSON.stringify({
+                content: outboundContent,
+                mode: outboundMode,
+                yolo: yoloMode.peek(),
+                model: selectedModel.value || undefined,
+                attachments,
+              }),
             });
             confirmMessage(tempId);
           } catch (err) {
             rejectMessage(tempId, err.message || "Send failed");
           }
 
-          loadSessionMessages(newId, { limit: 20 });
+          loadSessionMessages(newId, { limit: 50 });
         }
       }
     } catch (err) {
       showToast("Failed to send: " + (err.message || "Unknown error"), "error");
     } finally {
-      setInputValue("");
+      if (typeof explicitContent !== "string") setInputValue("");
+      setPendingAttachments([]);
+      const currentCacheKey = String(sessionId || DRAFT_SESSION_KEY);
+      pendingAttachmentsBySessionId.delete(currentCacheKey);
+      if (createdSessionId && createdSessionId !== currentCacheKey) {
+        pendingAttachmentsBySessionId.delete(createdSessionId);
+      }
+      setDragActive(false);
+      chatDropDepthRef.current = 0;
       setSending(false);
       if (textareaRef.current) {
         textareaRef.current.style.height = "auto";
       }
     }
   }
+
+  /* ── Stop agent ── */
+  async function handleStop() {
+    if (stoppingAgent) return;
+    setStoppingAgent(true);
+    try {
+      const activeId = String(activeAgent.peek() || "").trim();
+      const optimisticMarkIdle = () => {
+        if (!activeId) return;
+        const list = Array.isArray(availableAgents.peek()) ? availableAgents.peek() : [];
+        if (!list.length) return;
+        let changed = false;
+        const next = list.map((agent) => {
+          if (agent?.id !== activeId || agent?.busy === false) return agent;
+          changed = true;
+          return { ...agent, busy: false };
+        });
+        if (changed) availableAgents.value = next;
+      };
+
+      if (sessionId) {
+        const stopPath = sessionApiPath(sessionId, "stop");
+        if (!stopPath) {
+          throw new Error("Session path unavailable");
+        }
+        const stopResult = await apiFetch(stopPath, {
+          method: "POST",
+          body: JSON.stringify({}),
+        });
+        if (stopResult?.stopped) {
+          optimisticMarkIdle();
+          showToast("Stopped current agent turn", "info");
+        } else {
+          showToast("No active agent turn to stop", "info");
+          setStoppingAgent(false);
+          return;
+        }
+      } else {
+        await apiFetch("/api/command", {
+          method: "POST",
+          body: JSON.stringify({ command: "/stop" }),
+        });
+        optimisticMarkIdle();
+        showToast("Agent stopped", "info");
+      }
+
+      try { await loadAvailableAgents(); } catch { /* best effort */ }
+    } catch (err) {
+      setStoppingAgent(false);
+      showToast("Stop failed: " + (err.message || "Unknown error"), "error");
+    }
+  }
+
+  /* ── Stop then send ── */
+  async function handleStopAndSend() {
+    setShowSendMenu(false);
+    await handleStop();
+    await handleSend();
+  }
+
+  /* ── Add message to queue for delivery after current task ── */
+  function handleAddToQueue() {
+    const content = inputValue.trim();
+    if (!content) return;
+    setShowSendMenu(false);
+    messageQueueRef.current.push(content);
+    setQueueCount(messageQueueRef.current.length);
+    setInputValue("");
+    showToast(`Message queued (${messageQueueRef.current.length} pending)`, "success");
+  }
+
+  /* ── Steer with message (send to running session) ── */
+  async function handleSteerWithMessage() {
+    setShowSendMenu(false);
+    await handleSend();
+  }
+
+  /* ── Auto-send queued messages when agent becomes free ── */
+  useEffect(() => {
+    if (!sending && messageQueueRef.current.length > 0) {
+      const next = messageQueueRef.current.shift();
+      setQueueCount(messageQueueRef.current.length);
+      handleSend(next);
+    }
+  }, [sending]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  /* ── Close send menu when clicking outside ── */
+  useEffect(() => {
+    if (!showSendMenu) return;
+    function handleOutside(e) {
+      if (sendMenuRef.current && !sendMenuRef.current.contains(e.target)) {
+        setShowSendMenu(false);
+      }
+    }
+    document.addEventListener("mousedown", handleOutside);
+    return () => document.removeEventListener("mousedown", handleOutside);
+  }, [showSendMenu]);
+
+  // Clear one-shot stop UI lock as soon as the selected agent reports idle.
+  useEffect(() => {
+    if (!stoppingAgent) return;
+    if (!activeAgentInfo.value?.busy) {
+      setStoppingAgent(false);
+    }
+  }, [stoppingAgent, activeAgentInfo.value?.busy]);
 
   /* ── Keyboard handling ── */
   function handleKeyDown(e) {
@@ -650,6 +870,13 @@ export function ChatTab() {
       }
     }
 
+    // Alt+Enter = Add to Queue
+    if (e.key === "Enter" && e.altKey) {
+      e.preventDefault();
+      handleAddToQueue();
+      return;
+    }
+
     // Send on Enter (shift+enter = newline)
     if (e.key === "Enter" && !e.shiftKey) {
       e.preventDefault();
@@ -660,11 +887,15 @@ export function ChatTab() {
   /* ── Session rename ── */
   async function saveRename(sid, newTitle) {
     try {
-        await apiFetch(`/api/sessions/${encodeURIComponent(sid)}/rename`, {
-          method: "POST",
-          body: JSON.stringify({ title: newTitle }),
-        });
-      loadSessions();
+      const renamePath = sessionApiPath(sid, "rename");
+      if (!renamePath) {
+        throw new Error("Session path unavailable");
+      }
+      await apiFetch(renamePath, {
+        method: "POST",
+        body: JSON.stringify({ title: newTitle }),
+      });
+      refreshPrimarySessions();
       showToast("Session renamed", "success");
     } catch {
       showToast("Failed to rename session", "error");
@@ -740,39 +971,202 @@ export function ChatTab() {
       return null;
     }
   }, [sessionId]);
+  const resolveWorkspaceForSessionId = useCallback((targetSessionId, fallback = "active") => {
+    const safeTarget = String(targetSessionId || "").trim();
+    if (!safeTarget) return resolveSessionWorkspaceHint(activeSession, fallback);
+    const match = (sessionsData.peek() || []).find((s) => String(s?.id || "") === safeTarget) || null;
+    if (match) return resolveSessionWorkspaceHint(match, fallback);
+    if (safeTarget === String(sessionId || "").trim()) {
+      return resolveSessionWorkspaceHint(activeSession, fallback);
+    }
+    return resolveSessionWorkspaceHint(null, fallback);
+  }, [activeSession, sessionId]);
+  const sessionApiPath = useCallback((targetSessionId, action = "", fallbackWorkspace = "active") => {
+    const safeTarget = String(targetSessionId || "").trim();
+    if (!safeTarget) return "";
+    return buildSessionApiPath(safeTarget, action, {
+      workspace: resolveWorkspaceForSessionId(safeTarget, fallbackWorkspace),
+    });
+  }, [resolveWorkspaceForSessionId]);
   const sessionTitle = activeSession?.title || activeSession?.taskId || "Session";
   const sessionMeta = [activeSession?.type, activeSession?.status]
     .filter(Boolean)
     .join(" · ");
+
+  useEffect(() => {
+    const key = String(sessionId || DRAFT_SESSION_KEY);
+    const cached = pendingAttachmentsBySessionId.get(key);
+    setPendingAttachments(Array.isArray(cached) ? [...cached] : []);
+    setUploadingAttachments(false);
+    setDragActive(false);
+    chatDropDepthRef.current = 0;
+  }, [sessionId]);
+
+  useEffect(() => {
+    const key = String(sessionId || DRAFT_SESSION_KEY);
+    if (pendingAttachments.length > 0) {
+      pendingAttachmentsBySessionId.set(key, [...pendingAttachments]);
+    } else {
+      pendingAttachmentsBySessionId.delete(key);
+    }
+  }, [sessionId, pendingAttachments]);
+
+  useEffect(() => {
+    if (typeof window === "undefined") return undefined;
+    const clearDragState = () => {
+      chatDropDepthRef.current = 0;
+      setDragActive(false);
+    };
+    window.addEventListener("dragend", clearDragState);
+    window.addEventListener("drop", clearDragState);
+    return () => {
+      window.removeEventListener("dragend", clearDragState);
+      window.removeEventListener("drop", clearDragState);
+    };
+  }, []);
+
+  const uploadAttachments = useCallback(async (files) => {
+    if (uploadingAttachments) return;
+    const list = Array.from(files || []).filter(Boolean);
+    if (!list.length) return;
+    setUploadingAttachments(true);
+    try {
+      let targetSessionId = String(sessionId || "").trim();
+      if (!targetSessionId) {
+        const created = await createSession({
+          type: "primary",
+          agent: activeAgent.value || undefined,
+          mode: agentMode.value || undefined,
+          model: selectedModel.value || undefined,
+        });
+        targetSessionId = String(created?.session?.id || "").trim();
+      }
+      if (!targetSessionId) {
+        showToast("Could not create a session for attachments", "error");
+        return;
+      }
+      const form = new FormData();
+      for (const file of list) {
+        form.append("file", file, file.name || "attachment");
+      }
+      const attachmentsPath = sessionApiPath(targetSessionId, "attachments");
+      if (!attachmentsPath) {
+        showToast("Attachment upload failed", "error");
+        return;
+      }
+      const res = await apiFetch(attachmentsPath, {
+        method: "POST",
+        body: form,
+      });
+      if (Array.isArray(res?.attachments) && res.attachments.length > 0) {
+        const cacheKey = String(targetSessionId || DRAFT_SESSION_KEY);
+        setPendingAttachments((prev) => {
+          const base = prev.length > 0
+            ? prev
+            : Array.isArray(pendingAttachmentsBySessionId.get(cacheKey))
+              ? pendingAttachmentsBySessionId.get(cacheKey)
+              : [];
+          const next = [...base, ...res.attachments];
+          pendingAttachmentsBySessionId.set(cacheKey, next);
+          return next;
+        });
+      } else {
+        showToast("Attachment upload failed", "error");
+      }
+    } catch {
+      showToast("Attachment upload failed", "error");
+    } finally {
+      setUploadingAttachments(false);
+    }
+  }, [sessionId, uploadingAttachments, sessionApiPath]);
+
+  const removeAttachment = useCallback((index) => {
+    setPendingAttachments((prev) => prev.filter((_, i) => i !== index));
+  }, []);
+
+  const handleAttachmentInput = useCallback((e) => {
+    const files = e.target?.files;
+    if (files && files.length) {
+      uploadAttachments(files);
+    }
+    if (e.target) e.target.value = "";
+  }, [uploadAttachments]);
+
+  const handleInputPaste = useCallback((e) => {
+    const files = e.clipboardData?.files;
+    if (files && files.length) {
+      e.preventDefault();
+      uploadAttachments(files);
+    }
+  }, [uploadAttachments]);
+
+  const handleChatDragEnter = useCallback((e) => {
+    if (!hasDragFiles(e)) return;
+    e.preventDefault();
+    chatDropDepthRef.current += 1;
+    if (!dragActive) setDragActive(true);
+  }, [dragActive]);
+
+  const handleChatDragOver = useCallback((e) => {
+    if (!hasDragFiles(e)) return;
+    e.preventDefault();
+    if (e.dataTransfer) e.dataTransfer.dropEffect = "copy";
+    if (!dragActive) setDragActive(true);
+  }, [dragActive]);
+
+  const handleChatDragLeave = useCallback((e) => {
+    if (!dragActive) return;
+    e.preventDefault();
+    chatDropDepthRef.current = Math.max(0, chatDropDepthRef.current - 1);
+    if (chatDropDepthRef.current === 0 && dragActive) {
+      setDragActive(false);
+    }
+  }, [dragActive]);
+
+  const handleChatDrop = useCallback((e) => {
+    if (!dragActive && !hasDragFiles(e)) return;
+    e.preventDefault();
+    chatDropDepthRef.current = 0;
+    setDragActive(false);
+    const files = e.dataTransfer?.files;
+    if (files && files.length) {
+      uploadAttachments(files);
+    }
+  }, [uploadAttachments]);
 
   /* ── Render ── */
 
   // If we hit a critical error during signal reads, show recovery UI
   if (chatError) {
     return html`
-      <div class="session-panel" style="display:flex;align-items:center;justify-content:center;height:100%;padding:24px;">
-        <div style="text-align:center;color:var(--text-secondary,#999);">
-          <div style="font-size:28px;margin-bottom:12px;">${resolveIcon("alert")}</div>
-          <div style="font-size:14px;font-weight:600;margin-bottom:8px;">Chat failed to load</div>
-          <div style="font-size:12px;opacity:0.7;margin-bottom:16px;">${chatError}</div>
-          <button class="btn btn-primary btn-sm" onClick=${() => setChatError(null)}>Retry</button>
-        </div>
-      </div>
+      <${Box} className="session-panel" sx=${{ display: "flex", alignItems: "center", justifyContent: "center", height: "100%", p: 3 }}>
+        <${Stack} alignItems="center" spacing=${1.5}>
+          <${Typography} sx=${{ fontSize: 28 }}>${resolveIcon("alert")}<//>
+          <${Typography} variant="subtitle1" fontWeight=${600}>Chat failed to load<//>
+          <${Typography} variant="caption" color="text.secondary">${chatError}<//>
+          <${Button} variant="contained" size="small" onClick=${() => setChatError(null)}>Retry<//>
+        <//>
+      <//>
     `;
   }
 
   return html`
-    <div class="session-panel">
-      <div
-        class="session-split ${sessionId ? 'has-active-session' : ''} ${drawerOpen ? 'drawer-open' : ''}"
+    <${Box} className="session-panel">
+      <${Box}
+        className=${`session-split ${sessionId ? 'has-active-session' : ''} ${drawerOpen ? 'drawer-open' : ''}`}
         data-mobile=${isMobile ? "true" : "false"}
       >
         <!-- Left panel: Sessions sidebar -->
-        <div class="session-pane">
+        <${Box} className="session-pane">
           <${ChatSafeBoundary} label="Session List">
             <${SessionList}
               showArchived=${showArchived}
               onToggleArchived=${setShowArchived}
+              sessionView=${sessionView}
+              onSessionViewChange=${(nextView) => {
+                setSessionView(nextView);
+                refreshPrimarySessions(nextView).catch(() => {});
+              }}
               defaultType="primary"
               renamingSessionId=${renamingSessionId}
               onStartRename=${(sid) => setRenamingSessionId(sid)}
@@ -781,69 +1175,85 @@ export function ChatTab() {
               onSelect=${handleSelectSession}
             />
           <//>
-        </div>
+        <//>
 
         <!-- Right panel: Chat area -->
-        <div class="session-detail">
+        <${Box}
+          className="session-detail"
+          onDragEnter=${handleChatDragEnter}
+          onDragOver=${handleChatDragOver}
+          onDragLeave=${handleChatDragLeave}
+          onDrop=${handleChatDrop}
+        >
           ${sessionId &&
           html`
-            <div class="chat-shell-header">
-              <div class="chat-shell-inner">
+            <${Paper} elevation=${1} className="chat-shell-header" sx=${{ borderRadius: 0 }}>
+              <${Box} className="chat-shell-inner" sx=${{ display: "flex", alignItems: "center", gap: 1.5, px: 2, py: 1 }}>
                 <!-- Sessions toggle: shown on mobile always; on desktop only when rail is collapsed (CSS-controlled) -->
-                <button class="session-drawer-btn session-drawer-btn-rail" onClick=${handleShowSessions}>
-                  ${iconText(":menu: Sessions")}
-                </button>
-                <div class="chat-shell-title">
-                  <div class="chat-shell-name">${sessionTitle}</div>
-                  <div class="chat-shell-meta">${sessionMeta || "Session"}</div>
-                </div>
-                <div class="chat-shell-actions">
-                  <button
-                    class="btn btn-ghost btn-sm"
+                <${IconButton} className="session-drawer-btn session-drawer-btn-rail" onClick=${handleShowSessions} size="small">
+                  ${resolveIcon("menu")}
+                <//>
+                <${Box} className="chat-shell-title" sx=${{ flex: 1, minWidth: 0 }}>
+                  <${Typography} variant="subtitle1" noWrap fontWeight=${600}>${sessionTitle}<//>
+                  <${Typography} variant="caption" color="text.secondary" noWrap>${sessionMeta || "Session"}<//>
+                <//>
+                <${Stack} direction="row" spacing=${0.5} className="chat-shell-actions">
+                  <${Button}
+                    variant="text"
+                    size="small"
                     onClick=${() => openMeetingRoom("voice")}
                     title="Start voice meeting for this session"
+                    startIcon=${resolveIcon("phone")}
+                    sx=${{ textTransform: "none" }}
                   >
-                    <span class="btn-icon">${resolveIcon("phone")}</span>
                     Call
-                  </button>
-                  <button
-                    class="btn btn-ghost btn-sm"
+                  <//>
+                  <${Button}
+                    variant="text"
+                    size="small"
                     onClick=${() => openMeetingRoom("video")}
                     title="Start video meeting for this session"
+                    startIcon=${resolveIcon("camera")}
+                    sx=${{ textTransform: "none" }}
                   >
-                    <span class="btn-icon">${resolveIcon("camera")}</span>
                     Video
-                  </button>
+                  <//>
                   ${isDesktop &&
                   html`
-                    <button
-                      class="btn btn-ghost btn-sm"
+                    <${Button}
+                      variant="text"
+                      size="small"
                       onClick=${() => setFocusMode((prev) => !prev)}
                       title=${focusMode ? "Exit focus mode" : "Enter focus mode"}
+                      sx=${{ textTransform: "none" }}
                     >
                       ${focusMode ? "Exit Focus" : "Focus"}
-                    </button>
+                    <//>
                   `}
                   ${activeSession?.status === "archived"
                     ? html`
-                        <button
-                          class="btn btn-ghost btn-sm"
+                        <${Button}
+                          variant="text"
+                          size="small"
                           onClick=${() => resumeSession(activeSession.id)}
+                          sx=${{ textTransform: "none" }}
                         >
                           Restore
-                        </button>
+                        <//>
                       `
                     : html`
-                        <button
-                          class="btn btn-ghost btn-sm"
+                        <${Button}
+                          variant="text"
+                          size="small"
                           onClick=${() => archiveSession(activeSession.id)}
+                          sx=${{ textTransform: "none" }}
                         >
                           Archive
-                        </button>
+                        <//>
                       `}
-                </div>
-              </div>
-            </div>
+                <//>
+              <//>
+            <//>
           `}
           ${sessionId
             ? html`<${ChatSafeBoundary} label="Chat View"><${ChatView} sessionId=${sessionId} readOnly embedded /><//>`
@@ -855,7 +1265,7 @@ export function ChatTab() {
               `}
 
           <!-- Bottom input area (always visible) -->
-          <div class="chat-input-area">
+          <${Box} className="chat-input-area">
             ${showSlashMenu &&
             html`
               <${SlashMenu}
@@ -868,55 +1278,168 @@ export function ChatTab() {
             <${ChatSafeBoundary} label="Agent Toolbar">
               <${ChatInputToolbar} />
             <//>
-            <div class="chat-input-wrapper">
-              <textarea
-                ref=${textareaRef}
-                class="chat-textarea"
+            ${pendingAttachments.length > 0 && html`
+              <${Stack} direction="row" spacing=${0.5} flexWrap="wrap" className="chat-attachments-pending" sx=${{ px: 1, py: 0.5 }}>
+                ${pendingAttachments.map((att, index) => html`
+                  <${Chip}
+                    key=${att.id || `${att.name}-${index}`}
+                    label=${`${att.name || "attachment"}${att.size ? ` (${formatAttachmentSize(att.size)})` : ""}`}
+                    onDelete=${() => removeAttachment(index)}
+                    size="small"
+                    variant="outlined"
+                  />
+                `)}
+                ${uploadingAttachments && html`
+                  <${Chip} label="Uploading..." size="small" icon=${html`<${CircularProgress} size=${14} />`} />
+                `}
+              <//>
+            `}
+            <${Box} className="chat-input-wrapper" sx=${{ display: "flex", alignItems: "flex-end", gap: 0.5, px: 1, py: 0.5 }}>
+              <${TextField}
+                inputRef=${fileInputRef}
+                type="file"
+                size="small"
+                variant="outlined"
+                inputProps=${{ multiple: true }}
+                sx=${{ display: "none" }}
+                onChange=${handleAttachmentInput}
+              />
+              <${IconButton}
+                size="small"
+                disabled=${uploadingAttachments}
+                onClick=${() => fileInputRef.current?.click?.()}
+                title="Attach file"
+              >
+                ${resolveIcon(":link:")}
+              <//>
+              <${TextField}
+                inputRef=${textareaRef}
+                className=${dragActive ? "chat-input-drag" : ""}
                 placeholder=${sessionId
                   ? 'Send a message… (type "/" for commands)'
                   : 'Start a new chat or type "/" for commands'}
-                rows="1"
+                multiline
+                maxRows=${4}
+                fullWidth
+                size="small"
+                variant="outlined"
                 value=${inputValue}
                 onInput=${handleInputChange}
                 onKeyDown=${handleKeyDown}
+                onPaste=${handleInputPaste}
+                sx=${{ "& .MuiOutlinedInput-root": { borderRadius: 2 } }}
               />
               <${VoiceMicButton}
                 disabled=${sending}
                 title="Live voice mode"
               />
-              <button
-                class="chat-send-btn"
-                disabled=${!inputValue.trim() || sending}
-                onClick=${handleSend}
-                title="Send (Enter)"
-              >
-                ${resolveIcon(sending ? ":clock:" : "➤")}
-              </button>
-            </div>
-            <div class="chat-input-hint">
-              <span>Shift+Enter for new line</span>
-              <span>Type / for commands</span>
-              ${offlineQueueSize.peek() > 0 && html`
-                <span class="chat-offline-badge">${iconText(`:upload: ${offlineQueueSize.peek()} queued`)}</span>
+              ${activeAgentInfo.value?.busy && !stoppingAgent && html`
+                <${IconButton}
+                  onClick=${handleStop}
+                  title="Stop agent"
+                  aria-label="Stop agent"
+                  size="small"
+                  color="error"
+                >⏹<//>
               `}
-            </div>
-          </div>
-        </div>
-      </div>
+              <${Box} className="chat-send-group" ref=${sendMenuRef} sx=${{ display: "flex", position: "relative" }}>
+                <${IconButton}
+                  color="primary"
+                  disabled=${(!inputValue.trim() && pendingAttachments.length === 0) || uploadingAttachments}
+                  onClick=${activeAgentInfo.value?.busy ? handleSteerWithMessage : handleSend}
+                  title=${activeAgentInfo.value?.busy ? "Steer with Message (Enter)" : "Send (Enter)"}
+                  size="small"
+                >➤<//>
+                <${IconButton}
+                  size="small"
+                  disabled=${(!inputValue.trim() && pendingAttachments.length === 0) || uploadingAttachments}
+                  onClick=${(e) => { e.stopPropagation(); setShowSendMenu(v => !v); }}
+                  aria-label="Send options"
+                  title="Send options"
+                >▾<//>
+                ${showSendMenu && html`
+                  <${Paper} elevation=${4} className="chat-send-menu" sx=${{ position: "absolute", bottom: "100%", right: 0, minWidth: 200, borderRadius: 2, overflow: "hidden", zIndex: 10 }}>
+                    <${List} dense disablePadding>
+                      <${ListItemButton} onClick=${handleStopAndSend}>
+                        <${ListItemIcon} sx=${{ minWidth: 28 }}>⊳<//>
+                        <${ListItemText} primary="Stop and Send" />
+                      <//>
+                      <${ListItemButton} onClick=${handleAddToQueue}>
+                        <${ListItemIcon} sx=${{ minWidth: 28 }}>+<//>
+                        <${ListItemText} primary="Add to Queue" secondary="Alt+Enter" />
+                      <//>
+                      <${ListItemButton} selected onClick=${handleSteerWithMessage}>
+                        <${ListItemIcon} sx=${{ minWidth: 28 }}>→<//>
+                        <${ListItemText} primary="Steer with Message" secondary="Enter" />
+                      <//>
+                    <//>
+                  <//>
+                `}
+              <//>
+            <//>
+            <${Stack} direction="row" spacing=${1} className="chat-input-hint" sx=${{ px: 1.5, py: 0.5 }}>
+              <${Typography} variant="caption" color="text.secondary">Shift+Enter for new line<//>
+              <${Typography} variant="caption" color="text.secondary">Type / for commands<//>
+              ${offlineQueueSize.peek() > 0 && html`
+                <${Chip} label=${`${offlineQueueSize.peek()} queued`} size="small" color="warning" variant="outlined" />
+              `}
+              ${queueCount > 0 && html`
+                <${Chip} label=${`⏳ ${queueCount} pending`} size="small" color="info" variant="outlined" />
+              `}
+            <//>
+          <//>
+          ${dragActive && html`
+            <${Box}
+              className="chat-drop-overlay"
+              sx=${{
+                position: "absolute",
+                inset: 0,
+                zIndex: 25,
+                pointerEvents: "none",
+                display: "flex",
+                alignItems: "center",
+                justifyContent: "center",
+              }}
+            >
+              <${Paper}
+                elevation=${6}
+                sx=${{
+                  px: 3,
+                  py: 2,
+                  borderRadius: 2,
+                  border: "1px dashed",
+                  borderColor: "primary.main",
+                  bgcolor: "background.paper",
+                  minWidth: 240,
+                  textAlign: "center",
+                }}
+              >
+                <${Typography} variant="subtitle2" sx=${{ mb: 0.5 }}>
+                  Drop files to attach
+                <//>
+                <${Typography} variant="caption" color="text.secondary">
+                  Files can be dropped anywhere in this chat.
+                <//>
+              <//>
+            <//>
+          `}
+        <//>
+      <//>
       ${focusMode && html`
-        <button 
-          class="focus-exit-fab"
+        <${IconButton}
+          className="focus-exit-fab"
           onClick=${() => setFocusMode(false)}
           title="Exit focus mode"
-        >${resolveIcon("close")}</button>
+          sx=${{ position: "fixed", bottom: 16, right: 16, zIndex: 1000, bgcolor: "background.paper", boxShadow: 3 }}
+        >${resolveIcon("close")}<//>
       `}
       ${isMobile &&
       html`
-        <div
-          class="session-drawer-backdrop ${drawerOpen ? "open" : ""}"
+        <${Box}
+          className=${`session-drawer-backdrop ${drawerOpen ? "open" : ""}`}
           onClick=${() => setDrawerOpen(false)}
-        ></div>
+        />
       `}
-    </div>
+    <//>
   `;
 }

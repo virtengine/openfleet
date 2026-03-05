@@ -2,25 +2,41 @@ import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 
 // ── Mock external boundaries ────────────────────────────────────────────────
 
-vi.mock("../config.mjs", () => ({
+vi.mock("../config/config.mjs", () => ({
   loadConfig: vi.fn(() => ({
     voice: {},
     primaryAgent: "codex-sdk",
   })),
 }));
 
-vi.mock("../primary-agent.mjs", () => ({
+vi.mock("../agent/primary-agent.mjs", () => ({
   execPrimaryPrompt: vi.fn(async () => "mock response"),
   getPrimaryAgentName: vi.fn(() => "codex-sdk"),
   setPrimaryAgent: vi.fn(),
 }));
 
-vi.mock("../voice-tools.mjs", () => ({
+vi.mock("../voice/voice-tools.mjs", () => ({
   executeToolCall: vi.fn(async (name) => ({ result: `mock result for ${name}` })),
   getToolDefinitions: vi.fn(() => [
     { type: "function", name: "list_tasks" },
     { type: "function", name: "delegate_to_agent" },
   ]),
+}));
+
+// Prevent real OAuth tokens on disk from leaking into tests
+vi.mock("../voice/voice-auth-manager.mjs", () => ({
+  resolveVoiceOAuthToken: vi.fn(() => null),
+  saveVoiceOAuthToken: vi.fn(),
+  getOpenAILoginStatus: vi.fn(() => ({ status: "idle", hasToken: false })),
+  getClaudeLoginStatus: vi.fn(() => ({ status: "idle", hasToken: false })),
+  getGeminiLoginStatus: vi.fn(() => ({ status: "idle", hasToken: false })),
+}));
+
+vi.mock("../infra/session-tracker.mjs", () => ({
+  getSessionById: vi.fn(() => null),
+  getSession: vi.fn(() => null),
+  recordEvent: vi.fn(),
+  addSessionEventListener: vi.fn(() => () => {}),
 }));
 
 // ── Global fetch mock ────────────────────────────────────────────────────────
@@ -44,16 +60,18 @@ afterEach(() => {
 
 // ── Lazy import (after mocks are set up) ─────────────────────────────────────
 
-const { loadConfig } = await import("../config.mjs");
+const { loadConfig } = await import("../config/config.mjs");
+const { resolveVoiceOAuthToken } = await import("../voice/voice-auth-manager.mjs");
 const {
   getVoiceConfig,
   isVoiceAvailable,
   createEphemeralToken,
   getVoiceToolDefinitions,
+  getSessionAllowedTools,
   executeVoiceTool,
   getRealtimeConnectionInfo,
   analyzeVisionFrame,
-} = await import("../voice-relay.mjs");
+} = await import("../voice/voice-relay.mjs");
 
 // ── Tests ────────────────────────────────────────────────────────────────────
 
@@ -62,14 +80,18 @@ describe("voice-relay", () => {
   const envKeys = [
     "OPENAI_API_KEY",
     "OPENAI_REALTIME_API_KEY",
+    "OPENAI_OAUTH_ACCESS_TOKEN",
     "ANTHROPIC_API_KEY",
     "GEMINI_API_KEY",
     "GOOGLE_API_KEY",
+    "AZURE_OPENAI_ACCESS_TOKEN",
     "VOICE_PROVIDER",
     "VOICE_TURN_DETECTION",
+    "VOICE_PROVIDERS",
     "VOICE_MODEL",
     "VOICE_VISION_MODEL",
     "VOICE_ID",
+    "VOICE_FAILOVER_MAX_ATTEMPTS",
     "AZURE_OPENAI_REALTIME_ENDPOINT",
     "AZURE_OPENAI_API_KEY",
     "AZURE_OPENAI_REALTIME_API_KEY",
@@ -103,9 +125,9 @@ describe("voice-relay", () => {
     it("returns correct defaults when no config or env set", () => {
       const cfg = getVoiceConfig(true);
       expect(cfg.provider).toBe("fallback");
-      expect(cfg.model).toBe("gpt-4o-realtime-preview-2024-12-17");
+      expect(cfg.model).toBe("gpt-realtime-1.5");
       expect(cfg.voiceId).toBe("alloy");
-      expect(cfg.turnDetection).toBe("server_vad");
+      expect(cfg.turnDetection).toBe("semantic_vad");
       expect(cfg.fallbackMode).toBe("browser");
       expect(cfg.enabled).toBe(true);
       expect(cfg.delegateExecutor).toBe("codex-sdk");
@@ -302,7 +324,7 @@ describe("voice-relay", () => {
       expect(payload.tool_choice).toBe("auto");
     });
 
-    it("calls Azure API correctly for azure provider", async () => {
+    it("calls Azure API correctly for azure provider (preview deployment)", async () => {
       vi.mocked(loadConfig).mockReturnValue({
         voice: {
           provider: "azure",
@@ -320,8 +342,69 @@ describe("voice-relay", () => {
 
       const fetchCall = vi.mocked(globalThis.fetch).mock.calls[0];
       expect(fetchCall[0]).toContain("myresource.openai.azure.com");
-      expect(fetchCall[0]).toContain("realtime/sessions");
+      expect(fetchCall[0]).toContain("realtimeapi/sessions");
       expect(fetchCall[1].headers["api-key"]).toBe("az-key");
+      // Preview protocol must NOT include type: "realtime" (causes 400)
+      expect(JSON.parse(fetchCall[1].body).type).toBeUndefined();
+    });
+
+    it("calls Azure GA API correctly for GA model (gpt-realtime-1.5)", async () => {
+      vi.mocked(loadConfig).mockReturnValue({
+        voice: {
+          provider: "azure",
+          azureApiKey: "az-key",
+          azureEndpoint: "https://myresource.openai.azure.com",
+          azureDeployment: "gpt-realtime-1.5",
+        },
+        primaryAgent: "codex-sdk",
+      });
+      getVoiceConfig(true);
+
+      const result = await createEphemeralToken([]);
+      expect(result.token).toBe("test-token");
+      expect(result.provider).toBe("azure");
+
+      const fetchCall = vi.mocked(globalThis.fetch).mock.calls[0];
+      expect(fetchCall[0]).toContain("myresource.openai.azure.com");
+      expect(fetchCall[0]).toContain("openai/v1/realtime/sessions");
+      expect(fetchCall[0]).toContain("api-version=2025-04-01-preview");
+      expect(fetchCall[1].headers["api-key"]).toBe("az-key");
+      // GA protocol requires type: "realtime" in the session POST body
+      const body = JSON.parse(fetchCall[1].body);
+      expect(body.type).toBe("realtime");
+    });
+
+    it("uses per-endpoint credentials from voiceEndpoints config", async () => {
+      vi.mocked(loadConfig).mockReturnValue({
+        voice: {
+          provider: "azure",
+          voiceEndpoints: [
+            {
+              name: "foundry-us",
+              provider: "azure",
+              endpoint: "https://foundry.openai.azure.com",
+              deployment: "gpt-realtime-1.5",
+              apiKey: "ep-specific-key",
+              role: "primary",
+              enabled: true,
+            },
+          ],
+        },
+        primaryAgent: "codex-sdk",
+      });
+      getVoiceConfig(true);
+
+      const result = await createEphemeralToken([]);
+      expect(result.token).toBe("test-token");
+      expect(result.provider).toBe("azure");
+
+      const fetchCall = vi.mocked(globalThis.fetch).mock.calls[0];
+      expect(fetchCall[0]).toContain("foundry.openai.azure.com");
+      expect(fetchCall[0]).toContain("openai/v1/realtime/sessions");
+      expect(fetchCall[0]).toContain("api-version=2025-04-01-preview");
+      expect(fetchCall[1].headers["api-key"]).toBe("ep-specific-key");
+      // GA deployment — must have type: "realtime"
+      expect(JSON.parse(fetchCall[1].body).type).toBe("realtime");
     });
 
     it("injects call context into realtime session instructions", async () => {
@@ -352,7 +435,8 @@ describe("voice-relay", () => {
       expect(payload.instructions).toContain("Preferred executor for delegated work: claude-sdk.");
       expect(payload.instructions).toContain("Preferred delegation mode: plan.");
       expect(payload.instructions).toContain("Preferred model override: claude-opus-4.6.");
-      expect(payload.tool_choice).toEqual({ type: "function", name: "delegate_to_agent" });
+      // tool_choice is now always "auto" — the model picks the right tool
+      expect(payload.tool_choice).toBe("auto");
     });
 
     it("throws when no API key configured for openai", async () => {
@@ -362,7 +446,60 @@ describe("voice-relay", () => {
       });
       getVoiceConfig(true);
 
-      await expect(createEphemeralToken()).rejects.toThrow(/not configured/i);
+      await expect(createEphemeralToken()).rejects.toThrow(/unavailable|not configured/i);
+    });
+
+    it("prefers OpenAI OAuth token over API key when both are present", async () => {
+      vi.mocked(resolveVoiceOAuthToken).mockImplementation((provider) =>
+        provider === "openai" ? { token: "oauth-openai-token" } : null,
+      );
+      vi.mocked(loadConfig).mockReturnValue({
+        voice: { provider: "openai", openaiApiKey: "sk-test" },
+        primaryAgent: "codex-sdk",
+      });
+      getVoiceConfig(true);
+
+      await createEphemeralToken([]);
+      const fetchCall = vi.mocked(globalThis.fetch).mock.calls[0];
+      expect(fetchCall[1].headers.Authorization).toBe("Bearer oauth-openai-token");
+    });
+
+    it("fails over from OpenAI to Azure when realtime auth fails", async () => {
+      process.env.OPENAI_REALTIME_API_KEY = "sk-openai-bad";
+      process.env.AZURE_OPENAI_REALTIME_API_KEY = "az-key";
+      process.env.AZURE_OPENAI_REALTIME_ENDPOINT = "https://myresource.openai.azure.com";
+      process.env.VOICE_PROVIDERS = "openai,azure";
+      process.env.VOICE_FAILOVER_MAX_ATTEMPTS = "2";
+
+      vi.mocked(loadConfig).mockReturnValue({
+        voice: {
+          provider: "openai",
+          azureDeployment: "gpt-4o-realtime-preview",
+        },
+        primaryAgent: "codex-sdk",
+      });
+      getVoiceConfig(true);
+
+      vi.mocked(globalThis.fetch)
+        .mockResolvedValueOnce({
+          ok: false,
+          status: 401,
+          text: async () => '{"error":"invalid_api_key"}',
+        })
+        .mockResolvedValueOnce({
+          ok: true,
+          json: async () => ({
+            client_secret: { value: "azure-fallback-token", expires_at: Date.now() / 1000 + 60 },
+          }),
+          text: async () => "ok",
+        });
+
+      const result = await createEphemeralToken([]);
+      expect(result.provider).toBe("azure");
+      expect(result.token).toBe("azure-fallback-token");
+      expect(vi.mocked(globalThis.fetch)).toHaveBeenCalledTimes(2);
+      const secondCall = vi.mocked(globalThis.fetch).mock.calls[1];
+      expect(secondCall[0]).toContain("myresource.openai.azure.com");
     });
 
     it("throws for non-realtime providers", async () => {
@@ -410,16 +547,16 @@ describe("voice-relay", () => {
       const info = getRealtimeConnectionInfo();
       expect(info.provider).toBe("openai");
       expect(info.url).toContain("api.openai.com/v1/realtime");
-      expect(info.model).toBe("gpt-4o-realtime-preview-2024-12-17");
+      expect(info.model).toBe("gpt-realtime-1.5");
     });
 
-    it("returns Azure URL for azure provider", () => {
+    it("returns Azure preview URL for preview deployment", () => {
       vi.mocked(loadConfig).mockReturnValue({
         voice: {
           provider: "azure",
           azureApiKey: "az-key",
           azureEndpoint: "https://myresource.openai.azure.com",
-          azureDeployment: "my-deployment",
+          azureDeployment: "gpt-4o-realtime-preview",
         },
         primaryAgent: "codex-sdk",
       });
@@ -428,8 +565,26 @@ describe("voice-relay", () => {
       const info = getRealtimeConnectionInfo();
       expect(info.provider).toBe("azure");
       expect(info.url).toContain("myresource.openai.azure.com");
-      expect(info.url).toContain("deployment=my-deployment");
-      expect(info.model).toBe("my-deployment");
+      expect(info.url).toContain("deployment=gpt-4o-realtime-preview");
+      expect(info.model).toBe("gpt-4o-realtime-preview");
+    });
+
+    it("returns Azure GA URL for GA deployment (gpt-realtime-1.5)", () => {
+      vi.mocked(loadConfig).mockReturnValue({
+        voice: {
+          provider: "azure",
+          azureApiKey: "az-key",
+          azureEndpoint: "https://myresource.openai.azure.com",
+          azureDeployment: "gpt-realtime-1.5",
+        },
+        primaryAgent: "codex-sdk",
+      });
+      getVoiceConfig(true);
+
+      const info = getRealtimeConnectionInfo();
+      expect(info.provider).toBe("azure");
+      expect(info.url).toBe("https://myresource.openai.azure.com/openai/v1/realtime?api-version=2025-04-01-preview");
+      expect(info.model).toBe("gpt-realtime-1.5");
     });
 
     it("returns tier-2 metadata for claude provider", () => {
@@ -454,6 +609,32 @@ describe("voice-relay", () => {
     });
   });
 
+  // ── getSessionAllowedTools ───────────────────────────────────
+
+  describe("getSessionAllowedTools", () => {
+    it("returns a Set of allowed tool names", () => {
+      const allowed = getSessionAllowedTools();
+      expect(allowed).toBeInstanceOf(Set);
+      expect(allowed.has("get_admin_help")).toBe(true);
+      expect(allowed.has("delegate_to_agent")).toBe(true);
+      expect(allowed.has("list_tasks")).toBe(true);
+      expect(allowed.has("get_agent_status")).toBe(true);
+      expect(allowed.has("get_session_history")).toBe(true);
+      expect(allowed.has("create_workflow")).toBe(true);
+      expect(allowed.has("update_workflow_definition")).toBe(true);
+      expect(allowed.has("execute_workflow")).toBe(true);
+      expect(allowed.has("list_workflow_runs")).toBe(true);
+      expect(allowed.has("get_workflow_run")).toBe(true);
+      expect(allowed.has("analyze_workflow")).toBe(true);
+    });
+
+    it("does not include write-heavy tools", () => {
+      const allowed = getSessionAllowedTools();
+      // Base set excludes run_workspace_command (owner-only)
+      expect(allowed.has("run_workspace_command")).toBe(false);
+    });
+  });
+
   // ── getVoiceToolDefinitions ─────────────────────────────────
 
   describe("getVoiceToolDefinitions", () => {
@@ -464,11 +645,13 @@ describe("voice-relay", () => {
       expect(defs[0]).toHaveProperty("name");
     });
 
-    it("can filter to delegate tool only", async () => {
+    it("filters to session-allowed tools when delegateOnly is true", async () => {
       const defs = await getVoiceToolDefinitions({ delegateOnly: true });
       expect(Array.isArray(defs)).toBe(true);
-      expect(defs.length).toBe(1);
-      expect(defs[0]?.name).toBe("delegate_to_agent");
+      // The mock only has list_tasks and delegate_to_agent, both are in the allowed set
+      expect(defs.length).toBeGreaterThanOrEqual(1);
+      const names = defs.map((d) => d.name);
+      expect(names).toContain("delegate_to_agent");
     });
   });
 

@@ -154,12 +154,12 @@ vi.mock("@anthropic-ai/claude-agent-sdk", () => {
 });
 
 // Mock agent-sdk.mjs so the config.toml resolution doesn't interfere
-vi.mock("../agent-sdk.mjs", () => ({
+vi.mock("../agent/agent-sdk.mjs", () => ({
   resolveAgentSdkConfig: () => ({ primary: "", source: "test" }),
 }));
 
 // Mock config.mjs so tests don't read the real bosun.config.json
-vi.mock("../config.mjs", () => ({
+vi.mock("../config/config.mjs", () => ({
   loadConfig: () => ({}),
 }));
 
@@ -181,8 +181,6 @@ const ENV_KEYS = [
   "__MOCK_CODEX_AVAILABLE",
   "__MOCK_COPILOT_AVAILABLE",
   "__MOCK_CLAUDE_AVAILABLE",
-  "DEVMODE_MONITOR_MONITOR_TIMEOUT_MIN_MS",
-  "DEVMODE_MONITOR_MONITOR_TIMEOUT_MAX_MS",
   "COPILOT_MODEL",
   "COPILOT_SDK_MODEL",
   "GITHUB_TOKEN",
@@ -227,8 +225,6 @@ function clearSdkEnv() {
   delete process.env.__MOCK_CODEX_AVAILABLE;
   delete process.env.__MOCK_COPILOT_AVAILABLE;
   delete process.env.__MOCK_CLAUDE_AVAILABLE;
-  delete process.env.DEVMODE_MONITOR_MONITOR_TIMEOUT_MIN_MS;
-  delete process.env.DEVMODE_MONITOR_MONITOR_TIMEOUT_MAX_MS;
   delete process.env.COPILOT_MODEL;
   delete process.env.COPILOT_SDK_MODEL;
   delete process.env.GITHUB_TOKEN;
@@ -262,7 +258,7 @@ beforeEach(async () => {
   vi.resetModules();
 
   // Dynamic import to pick up mocks; then grab exports
-  const mod = await import("../agent-pool.mjs");
+  const mod = await import("../agent/agent-pool.mjs");
   getPoolSdkName = mod.getPoolSdkName;
   setPoolSdk = mod.setPoolSdk;
   resetPoolSdkCache = mod.resetPoolSdkCache;

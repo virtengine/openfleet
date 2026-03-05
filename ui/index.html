@@ -38,7 +38,12 @@
   <script>
     try {
       var t = JSON.parse(localStorage.getItem('ve_settings_colorTheme'));
-      if (t === 'light' || t === 'dark') document.documentElement.setAttribute('data-theme', t);
+      if (typeof t === 'string' && t && t !== 'system') {
+        document.documentElement.setAttribute('data-theme', t);
+        document.documentElement.setAttribute('data-theme-lock', 'custom');
+      } else {
+        document.documentElement.setAttribute('data-theme-lock', 'system');
+      }
     } catch(e) {}
   </script>
   <!-- Import map: ensures all modules share a single Preact instance.
@@ -54,7 +59,14 @@
       "preact/compat":           "/vendor/preact-compat.js",
       "htm":                     "/vendor/htm.js",
       "@preact/signals-core":    "/vendor/preact-signals-core.js",
-      "@preact/signals":         "/vendor/preact-signals.js"
+      "@preact/signals":         "/vendor/preact-signals.js",
+      "react":                   "/vendor/preact-compat.js",
+      "react-dom":               "/vendor/preact-compat.js",
+      "react-dom/client":        "/vendor/preact-compat.js",
+      "react/jsx-runtime":       "/vendor/preact-jsx-runtime.js",
+      "@mui/material":           "/vendor/mui-material.js",
+      "@emotion/react":          "/vendor/emotion-react.js",
+      "@emotion/styled":         "/vendor/emotion-styled.js"
     }
   }
   </script>
@@ -66,7 +78,14 @@
       "preact/compat":           "/vendor/preact-compat.js",
       "htm":                     "/vendor/htm.js",
       "@preact/signals-core":    "/vendor/preact-signals-core.js",
-      "@preact/signals":         "/vendor/preact-signals.js"
+      "@preact/signals":         "/vendor/preact-signals.js",
+      "react":                   "/vendor/preact-compat.js",
+      "react-dom":               "/vendor/preact-compat.js",
+      "react-dom/client":        "/vendor/preact-compat.js",
+      "react/jsx-runtime":       "/vendor/preact-jsx-runtime.js",
+      "@mui/material":           "/vendor/mui-material.js",
+      "@emotion/react":          "/vendor/emotion-react.js",
+      "@emotion/styled":         "/vendor/emotion-styled.js"
     }
   }
   </script>
@@ -78,7 +97,14 @@
       "preact/compat":           "https://cdn.jsdelivr.net/npm/preact@10.25.4/compat/+esm",
       "htm":                     "https://cdn.jsdelivr.net/npm/htm@3.1.1/+esm",
       "@preact/signals-core":    "https://cdn.jsdelivr.net/npm/@preact/signals-core@1.8.0/+esm",
-      "@preact/signals":         "https://cdn.jsdelivr.net/npm/@preact/signals@1.3.1/+esm"
+      "@preact/signals":         "https://cdn.jsdelivr.net/npm/@preact/signals@1.3.1/+esm",
+      "react":                   "https://cdn.jsdelivr.net/npm/preact@10.25.4/compat/+esm",
+      "react-dom":               "https://cdn.jsdelivr.net/npm/preact@10.25.4/compat/+esm",
+      "react-dom/client":        "https://cdn.jsdelivr.net/npm/preact@10.25.4/compat/+esm",
+      "react/jsx-runtime":       "/vendor/preact-jsx-runtime.js",
+      "@mui/material":           "/vendor/mui-material.js",
+      "@emotion/react":          "/vendor/emotion-react.js",
+      "@emotion/styled":         "/vendor/emotion-styled.js"
     }
   }
   </script>
@@ -115,13 +141,36 @@
     const bootErr = (html) => {
       if (bootEl) bootEl.innerHTML = html;
     };
-    const applyFallbackImportMap = () => {
-      const fallback = document.getElementById("importmap-fallback");
-      if (!fallback) return;
-      const script = document.createElement("script");
-      script.type = "importmap-shim";
-      script.textContent = fallback.textContent;
-      document.head.appendChild(script);
+    const formatLoadError = (err) => {
+      const msg = String(err?.message || err || "Unknown module error").slice(0, 240);
+      return msg.replace(/[<>&]/g, (ch) => (ch === "<" ? "&lt;" : ch === ">" ? "&gt;" : "&amp;"));
+    };
+    const isLikelyAuthError = (err) => {
+      const msg = String(err?.message || err || "").toLowerCase();
+      return (
+        msg.includes("auth") ||
+        msg.includes("unauthorized") ||
+        msg.includes("http 401") ||
+        msg.includes("http 403") ||
+        msg.includes("session expired")
+      );
+    };
+    const preflightModuleFetch = async (url) => {
+      const res = await fetch(url, {
+        method: "GET",
+        credentials: "include",
+        cache: "no-store",
+      });
+      if (res.status === 401 || res.status === 403) {
+        throw new Error(`Session expired or unauthorized (HTTP ${res.status}). Re-open Bosun with a fresh authenticated URL.`);
+      }
+      if (!res.ok) {
+        throw new Error(`Module preflight failed (HTTP ${res.status}).`);
+      }
+      const contentType = String(res.headers.get("content-type") || "").toLowerCase();
+      if (contentType.includes("text/html")) {
+        throw new Error("Session expired or unauthorized (received HTML instead of JavaScript module).");
+      }
     };
     const waitForShim = (timeoutMs = 1200) =>
       new Promise((resolve) => {
@@ -137,9 +186,16 @@
     const loadApp = async (bust = false) => {
       const base = new URL("/app.js", window.location.origin).toString();
       const url = bust ? `${base}?v=${Date.now()}` : base;
+       await preflightModuleFetch(url);
       if (window.importShim) {
         return window.importShim(url);
       }
+      return import(url);
+    };
+    const loadAppNative = async () => {
+      const base = new URL("/app.js", window.location.origin).toString();
+      const url = `${base}?native=${Date.now()}`;
+      await preflightModuleFetch(url);
       return import(url);
     };
     (async () => {
@@ -148,16 +204,25 @@
         await loadApp(false);
       } catch (err) {
         if (!shimReady || !window.importShim) {
-          bootErr(':alert: Failed to load app modules.<br><small style="color:#888">Try refreshing. If this persists, run <code>npm install</code> in the bosun directory.</small>');
+          const detail = formatLoadError(err);
+          if (isLikelyAuthError(err)) {
+            bootErr(`:lock: Authentication expired.<br><small style="color:#888">${detail}<br>Re-open Bosun using a fresh authenticated URL or desktop session.</small>`);
+          } else {
+            bootErr(`:alert: Failed to load app modules.<br><small style="color:#888">${detail}<br>Try refreshing. If this persists, run <code>npm install</code> in the bosun directory.</small>`);
+          }
           return;
         }
-        console.warn("[ui] Primary CDN failed, switching to fallback.", err);
-        applyFallbackImportMap();
+        console.warn("[ui] Primary CDN failed, switching to native import.", err);
         try {
-          await loadApp(true);
-        } catch (fallbackErr) {
-          console.error("[ui] Fallback CDN failed.", fallbackErr);
-          bootErr(':alert: Failed to load app modules.<br><small style="color:#888">Local vendor and CDN fallback both failed. Run <code>npm install</code> in the bosun directory or check your connection.</small>');
+          await loadAppNative();
+        } catch (nativeErr) {
+          console.error("[ui] Native import failed after primary import error.", nativeErr);
+          const detail = formatLoadError(nativeErr);
+          if (isLikelyAuthError(nativeErr)) {
+            bootErr(`:lock: Authentication expired.<br><small style="color:#888">${detail}<br>Re-open Bosun using a fresh authenticated URL or desktop session.</small>`);
+          } else {
+            bootErr(`:alert: Failed to load app modules.<br><small style="color:#888">${detail}<br>Local vendor and CDN fallback both failed. Run <code>npm install</code> in the bosun directory or check your connection.</small>`);
+          }
         }
       }
     })();

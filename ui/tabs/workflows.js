@@ -17,6 +17,13 @@ import { ICONS } from "../modules/icons.js";
 import { resolveIcon } from "../modules/icon-utils.js";
 import { formatDate, formatDuration, formatRelative } from "../modules/utils.js";
 import { Card, Badge, EmptyState } from "../components/shared.js";
+import {
+  Typography, Box, Stack, Card as MuiCard, CardContent, Button, IconButton, Chip,
+  TextField, Select, MenuItem, FormControl, InputLabel, Switch,
+  FormControlLabel, Tooltip, Paper, Divider, CircularProgress, Alert,
+  Dialog, DialogTitle, DialogContent, DialogActions,
+  Tabs, Tab, Fab, Menu as MuiMenu,
+} from "@mui/material";
 
 /* ═══════════════════════════════════════════════════════════════
  *  State
@@ -39,6 +46,17 @@ const viewMode = signal("list"); // "list" | "canvas" | "runs"
 const WORKFLOW_RUN_PAGE_SIZE = 20;
 const WORKFLOW_RUN_MAX_FETCH = 200;
 const workflowRunsLimit = signal(WORKFLOW_RUN_PAGE_SIZE);
+
+// ── Execute Dialog state ──────────────────────────────────────────────────
+const executeDialogOpen = signal(false);
+const executeDialogWorkflow = signal(null);   // full workflow def
+const executeDialogVars = signal({});          // editable variable overrides
+const executeDialogLaunching = signal(false);
+const executeDialogResult = signal(null);      // { ok, error?, ... }
+const executeDialogMode = signal("quick");     // "quick" | "advanced"
+const executeDialogRepos = signal([]);         // workspace repos for target-repo selector
+const executeDialogTargetRepo = signal("");    // selected target repo name
+const executeDialogWaitSync = signal(false);   // wait for completion toggle
 
 function returnToWorkflowList() {
   selectedNodeId.value = null;
@@ -115,12 +133,22 @@ async function deleteWorkflow(id) {
   }
 }
 
-async function executeWorkflow(id) {
+async function executeWorkflow(id, customVars = {}) {
   try {
+    const payload = { dispatch: true, ...customVars };
+    // Thread _targetRepo into the execution input if set
+    if (customVars._targetRepo) {
+      payload._targetRepo = customVars._targetRepo;
+    }
+    // Support waitForCompletion override
+    if (customVars.waitForCompletion === true) {
+      payload.dispatch = false;
+      payload.waitForCompletion = true;
+    }
     const data = await apiFetch(`/api/workflows/${id}/execute`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ dispatch: true }),
+      body: JSON.stringify(payload),
     });
     showToast("Workflow dispatched", "success");
     setTimeout(() => {
@@ -130,6 +158,530 @@ async function executeWorkflow(id) {
   } catch (err) {
     showToast("Failed to execute workflow", "error");
   }
+}
+
+/**
+ * Open the Execute Dialog for a workflow — fetches its full definition,
+ * reads its variables, and shows a form that lets users customize before launch.
+ * Also fetches workspace repos so users can target a specific repo.
+ */
+async function openExecuteDialog(workflowId) {
+  try {
+    const [detail, reposData] = await Promise.all([
+      apiFetch(`/api/workflows/${workflowId}`),
+      apiFetch("/api/workspaces/active/repos").catch(() => null),
+    ]);
+    const wf = detail?.workflow;
+    if (!wf) { showToast("Workflow not found", "error"); return; }
+    executeDialogWorkflow.value = wf;
+    const vars = wf.variables && typeof wf.variables === "object" ? { ...wf.variables } : {};
+    executeDialogVars.value = vars;
+    executeDialogResult.value = null;
+    executeDialogLaunching.value = false;
+    executeDialogWaitSync.value = false;
+
+    // Extract repos from active workspace
+    const repos = Array.isArray(reposData?.repos) ? reposData.repos : [];
+    executeDialogRepos.value = repos;
+    // Pre-select primary repo or first repo
+    const primary = repos.find((r) => r.primary);
+    executeDialogTargetRepo.value = primary?.name || repos[0]?.name || "";
+
+    const requiredCount = Object.values(vars).filter((v) => v === "" || v == null).length;
+    executeDialogMode.value = requiredCount > 0 ? "quick" : "advanced";
+    executeDialogOpen.value = true;
+  } catch (err) {
+    showToast("Failed to load workflow", "error");
+  }
+}
+
+function closeExecuteDialog() {
+  executeDialogOpen.value = false;
+  executeDialogWorkflow.value = null;
+  executeDialogVars.value = {};
+  executeDialogResult.value = null;
+  executeDialogLaunching.value = false;
+  executeDialogMode.value = "quick";
+  executeDialogRepos.value = [];
+  executeDialogTargetRepo.value = "";
+  executeDialogWaitSync.value = false;
+}
+
+async function launchFromDialog() {
+  const wf = executeDialogWorkflow.value;
+  if (!wf) return;
+  executeDialogLaunching.value = true;
+  executeDialogResult.value = null;
+  try {
+    const rawVars = executeDialogVars.value || {};
+    const payload = {};
+    for (const [key, val] of Object.entries(rawVars)) {
+      if (typeof val === "string") {
+        const trimmed = val.trim();
+        if (
+          (trimmed.startsWith("{") && trimmed.endsWith("}")) ||
+          (trimmed.startsWith("[") && trimmed.endsWith("]"))
+        ) {
+          try {
+            payload[key] = JSON.parse(trimmed);
+            continue;
+          } catch {
+            // keep as string when parsing fails; dialog validation already blocks obvious JSON errors
+          }
+        }
+      }
+      payload[key] = val;
+    }
+    const data = await executeWorkflow(wf.id, {
+      ...payload,
+      _targetRepo: executeDialogTargetRepo.value || undefined,
+      waitForCompletion: executeDialogWaitSync.value || undefined,
+    });
+    executeDialogResult.value = { ok: true, ...data };
+    setTimeout(() => closeExecuteDialog(), 1200);
+  } catch (err) {
+    executeDialogResult.value = { ok: false, error: err.message };
+  } finally {
+    executeDialogLaunching.value = false;
+  }
+}
+
+/** Convert camelCase / snake_case key to "Human Label" */
+function humanizeVarKey(key) {
+  return key
+    .replace(/([a-z])([A-Z])/g, "$1 $2")
+    .replace(/[_-]/g, " ")
+    .replace(/\b\w/g, (c) => c.toUpperCase());
+}
+
+/** Infer a short helper text for a variable key */
+function inferVarHelp(key, value) {
+  const k = key.toLowerCase();
+  if (k.includes("timeout") || k.includes("delay") || k.includes("cooldown")) return "Duration in milliseconds";
+  if (k.includes("branch")) return "Git branch name";
+  if (k.includes("url") || k.includes("endpoint")) return "URL / endpoint";
+  if (k.includes("path") || k.includes("dir")) return "File system path";
+  if (k.includes("max") || k.includes("min") || k.includes("limit") || k.includes("count")) return "Numeric limit";
+  if (k.includes("enabled") || k.includes("skip") || k.includes("force") || k.includes("dry")) return "Toggle on/off";
+  if (k.includes("problem") || k.includes("prompt") || k.includes("query") || k.includes("description")) return "Free-form text";
+  if (typeof value === "boolean") return "Toggle on/off";
+  if (typeof value === "number") return "Numeric value";
+  return "";
+}
+
+function inferVarOptions(key, value) {
+  const k = String(key || "").toLowerCase();
+  const options = [];
+  if (k.includes("executor") || k.includes("sdk")) {
+    options.push("auto", "codex", "claude", "copilot");
+  } else if (k.includes("bumptype") || k.includes("bump_type")) {
+    options.push("patch", "minor", "major");
+  }
+  if (typeof value === "string" && value.trim()) {
+    options.unshift(value.trim());
+  }
+  const deduped = [];
+  const seen = new Set();
+  for (const opt of options) {
+    const keyText = String(opt);
+    if (seen.has(keyText)) continue;
+    seen.add(keyText);
+    deduped.push({ value: opt, label: String(opt) });
+  }
+  return deduped;
+}
+
+function inferVarInputKind(key, value) {
+  if (typeof value === "boolean") return "toggle";
+  if (typeof value === "number") return "number";
+  if (Array.isArray(value) || (value && typeof value === "object")) return "json";
+  if (inferVarOptions(key, value).length > 0) return "select";
+  return "text";
+}
+
+function isLongTextVar(key, value) {
+  const k = String(key || "").toLowerCase();
+  return (
+    k.includes("prompt") ||
+    k.includes("problem") ||
+    k.includes("description") ||
+    k.includes("query") ||
+    k.includes("body") ||
+    k.includes("content") ||
+    k.includes("instructions") ||
+    (typeof value === "string" && value.length > 80)
+  );
+}
+
+function isQuickVarKey(key) {
+  const k = String(key || "").toLowerCase();
+  return (
+    k.includes("task") ||
+    k.includes("prompt") ||
+    k.includes("problem") ||
+    k.includes("message") ||
+    k.includes("query") ||
+    k.includes("executor") ||
+    k.includes("sdk") ||
+    k.includes("model") ||
+    k.includes("branch") ||
+    k.includes("title")
+  );
+}
+
+function formatVarPreview(value) {
+  if (value == null) return "empty";
+  if (typeof value === "string") {
+    const trimmed = value.trim();
+    if (!trimmed) return "empty";
+    return trimmed.length > 42 ? `${trimmed.slice(0, 42)}…` : trimmed;
+  }
+  if (typeof value === "boolean") return value ? "true" : "false";
+  if (typeof value === "number") return String(value);
+  try {
+    const json = JSON.stringify(value);
+    return json.length > 42 ? `${json.slice(0, 42)}…` : json;
+  } catch {
+    return String(value);
+  }
+}
+
+function isMissingVarValue(raw, inputKind) {
+  if (inputKind === "toggle") return false;
+  if (raw == null) return true;
+  if (typeof raw === "string") return raw.trim() === "";
+  if (Array.isArray(raw)) return raw.length === 0;
+  return false;
+}
+
+/**
+ * ExecuteWorkflowDialog — MUI Dialog that lists all workflow variables
+ * with editable fields so users can customise before launch.
+ */
+function ExecuteWorkflowDialog() {
+  const open = executeDialogOpen.value;
+  const wf = executeDialogWorkflow.value;
+  const vars = executeDialogVars.value;
+  const launching = executeDialogLaunching.value;
+  const result = executeDialogResult.value;
+  const mode = executeDialogMode.value;
+
+  if (!open || !wf) return null;
+
+  const entries = Object.entries(vars || {});
+  const hasVars = entries.length > 0;
+
+  const descriptors = entries.map(([key, value]) => {
+    const inputKind = inferVarInputKind(key, value);
+    return {
+      key,
+      value,
+      label: humanizeVarKey(key),
+      help: inferVarHelp(key, value),
+      required: value === "" || value == null,
+      inputKind,
+      options: inferVarOptions(key, value),
+      quick: isQuickVarKey(key) || value === "" || value == null,
+    };
+  });
+
+  const required = descriptors.filter((d) => d.required);
+  const optional = descriptors.filter((d) => !d.required);
+  const quickOptional = optional.filter((d) => d.quick).slice(0, 4);
+  const quickKeys = new Set([...required, ...quickOptional].map((d) => d.key));
+  const quickFields = descriptors.filter((d) => quickKeys.has(d.key));
+
+  const updateVar = (key, val) => {
+    executeDialogVars.value = { ...executeDialogVars.value, [key]: val };
+    executeDialogResult.value = null;
+  };
+
+  const resetDefaults = () => {
+    if (wf.variables) {
+      executeDialogVars.value = { ...wf.variables };
+    }
+    executeDialogMode.value = required.length > 0 ? "quick" : "advanced";
+    executeDialogResult.value = null;
+  };
+
+  const invalidJsonFields = [];
+  const missingRequiredFields = [];
+  for (const desc of descriptors) {
+    const current = vars?.[desc.key];
+    if (desc.required && isMissingVarValue(current, desc.inputKind)) {
+      missingRequiredFields.push(desc.label);
+    }
+    if (desc.inputKind === "json" && !isMissingVarValue(current, desc.inputKind)) {
+      try {
+        JSON.parse(String(current));
+      } catch {
+        invalidJsonFields.push(desc.label);
+      }
+    }
+  }
+  const canLaunch = !launching && missingRequiredFields.length === 0 && invalidJsonFields.length === 0;
+
+  const renderField = (descriptor) => {
+    const { key, value, label, help, inputKind, options, required: isRequired } = descriptor;
+    const current = vars?.[key] ?? value;
+
+    if (inputKind === "toggle") {
+      return html`
+        <${FormControlLabel}
+          key=${key}
+          control=${html`<${Switch}
+            checked=${Boolean(current)}
+            onChange=${(e) => updateVar(key, e.target.checked)}
+            size="small"
+          />`}
+          label=${html`<span>${label}${isRequired ? html` <span style="color:#f59e0b">*</span>` : ""}</span>`}
+          sx=${{ mb: 1 }}
+        />
+        ${help && html`<${Typography} variant="caption" sx=${{ color: "text.secondary", display: "block", mt: -0.5, mb: 1, ml: 5.5 }}>${help}<//>`}
+      `;
+    }
+
+    if (inputKind === "number") {
+      return html`
+        <${TextField}
+          key=${key}
+          label=${label + (isRequired ? " *" : "")}
+          type="number"
+          value=${current ?? ""}
+          onChange=${(e) => updateVar(key, e.target.value === "" ? "" : Number(e.target.value))}
+          helperText=${help}
+          size="small"
+          fullWidth
+          sx=${{ mb: 1.5 }}
+        />
+      `;
+    }
+
+    if (inputKind === "json") {
+      return html`
+        <${TextField}
+          key=${key}
+          label=${label + (isRequired ? " *" : "")}
+          value=${current ?? ""}
+          onChange=${(e) => updateVar(key, e.target.value)}
+          helperText=${help || "JSON object or array"}
+          size="small"
+          fullWidth
+          multiline
+          minRows=${3}
+          maxRows=${8}
+          sx=${{ mb: 1.5, "& .MuiInputBase-input": { fontFamily: "monospace", fontSize: "0.82rem" } }}
+        />
+      `;
+    }
+
+    if (inputKind === "select" && options.length > 0) {
+      return html`
+        <${FormControl} key=${key} fullWidth size="small" sx=${{ mb: 1.5 }}>
+          <${InputLabel}>${label + (isRequired ? " *" : "")}</${InputLabel}>
+          <${Select}
+            value=${current ?? ""}
+            label=${label + (isRequired ? " *" : "")}
+            onChange=${(e) => updateVar(key, e.target.value)}
+          >
+            ${options.map((opt) => html`<${MenuItem} key=${String(opt.value)} value=${opt.value}>${opt.label}</${MenuItem}>`)}
+          </${Select}>
+          <${Typography} variant="caption" sx=${{ color: "text.secondary", mt: 0.5, ml: 1.5 }}>
+            ${help || "Preset options"}.
+          </${Typography}>
+        </${FormControl}>
+      `;
+    }
+
+    const multiline = isLongTextVar(key, current);
+    return html`
+      <${TextField}
+        key=${key}
+        label=${label + (isRequired ? " *" : "")}
+        value=${current ?? ""}
+        onChange=${(e) => updateVar(key, e.target.value)}
+        helperText=${help}
+        size="small"
+        fullWidth
+        multiline=${multiline}
+        minRows=${multiline ? 2 : undefined}
+        maxRows=${multiline ? 6 : undefined}
+        sx=${{ mb: 1.5 }}
+      />
+    `;
+  };
+
+  return html`
+    <${Dialog}
+      open=${true}
+      onClose=${closeExecuteDialog}
+      maxWidth="md"
+      fullWidth
+      PaperProps=${{ sx: { bgcolor: 'var(--color-bg-secondary, #1a1f2e)', color: 'var(--color-text, #e8eaf0)', borderRadius: '12px' } }}
+    >
+      <${DialogTitle} sx=${{ display: 'flex', alignItems: 'center', gap: 1 }}>
+        <span style="font-size: 20px">${resolveIcon("play")}</span>
+        <span>Execute: ${wf.name}</span>
+      <//>
+
+      <${DialogContent} dividers>
+        ${wf.description && html`
+          <${Typography} variant="body2" sx=${{ color: 'text.secondary', mb: 2 }}>
+            ${wf.description}
+          <//>
+        `}
+
+        ${/* ── Target Repository Selector ── */ ""}
+        ${executeDialogRepos.value.length > 1 && html`
+          <${FormControl} fullWidth size="small" sx=${{ mb: 2 }}>
+            <${InputLabel}>Target Repository</${InputLabel}>
+            <${Select}
+              value=${executeDialogTargetRepo.value || ""}
+              label="Target Repository"
+              onChange=${(e) => { executeDialogTargetRepo.value = e.target.value; }}
+            >
+              ${executeDialogRepos.value.map((repo) => html`
+                <${MenuItem} key=${repo.name} value=${repo.name}>
+                  <${Stack} direction="row" alignItems="center" spacing=${1}>
+                    <span>${repo.name}</span>
+                    ${repo.primary && html`<${Chip} label="primary" size="small" sx=${{ height: 18, fontSize: "10px" }} />`}
+                  </${Stack}>
+                </${MenuItem}>
+              `)}
+            </${Select}>
+            <${Typography} variant="caption" sx=${{ color: "text.secondary", mt: 0.5, ml: 1.5 }}>
+              Which repository in this workspace should this workflow target.
+            </${Typography}>
+          </${FormControl}>
+        `}
+        ${executeDialogRepos.value.length === 1 && html`
+          <${Chip}
+            label=${`Repo: ${executeDialogRepos.value[0]?.name || "default"}`}
+            size="small"
+            variant="outlined"
+            sx=${{ mb: 2, fontSize: "11px" }}
+          />
+        `}
+
+        ${!hasVars && html`
+          <${Alert} severity="info" sx=${{ mb: 2 }}>
+            This workflow has no configurable variables. It will run with defaults.
+          <//>
+        `}
+
+        ${hasVars && html`
+          <${Tabs}
+            value=${mode}
+            onChange=${(_e, next) => { executeDialogMode.value = next; }}
+            variant="fullWidth"
+            sx=${{ mb: 2, minHeight: 38, "& .MuiTab-root": { minHeight: 38, textTransform: "none", fontSize: "0.8rem" } }}
+          >
+            <${Tab} value="quick" label=${`Quick (${quickFields.length})`} />
+            <${Tab} value="advanced" label=${`Advanced (${descriptors.length})`} />
+          </${Tabs}>
+        `}
+
+        ${missingRequiredFields.length > 0 && html`
+          <${Alert} severity="warning" sx=${{ mb: 1.5 }}>
+            Missing required fields: ${missingRequiredFields.join(", ")}
+          </${Alert}>
+        `}
+        ${invalidJsonFields.length > 0 && html`
+          <${Alert} severity="error" sx=${{ mb: 1.5 }}>
+            Invalid JSON in: ${invalidJsonFields.join(", ")}
+          </${Alert}>
+        `}
+
+        ${mode === "quick" && hasVars && html`
+          ${quickFields.map(renderField)}
+          ${optional.length > 0 && html`
+            <${Divider} sx=${{ my: 1.5 }} />
+            <${Typography} variant="subtitle2" sx=${{ mb: 1, fontWeight: 600 }}>
+              Optional Defaults <${Chip} label=${String(optional.length)} size="small" sx=${{ ml: 1, height: 20, fontSize: "11px" }} />
+            </${Typography}>
+            <${Box} sx=${{ display: "flex", flexWrap: "wrap", gap: 0.75 }}>
+              ${optional.map((item) => html`
+                <${Chip}
+                  key=${item.key}
+                  size="small"
+                  variant="outlined"
+                  label=${`${item.label}: ${formatVarPreview(vars[item.key])}`}
+                  sx=${{ fontSize: "10px" }}
+                />
+              `)}
+            </${Box}>
+            <${Button}
+              size="small"
+              variant="text"
+              onClick=${() => { executeDialogMode.value = "advanced"; }}
+              sx=${{ mt: 1, textTransform: "none" }}
+            >
+              Open Advanced Overrides
+            </${Button}>
+          `}
+        `}
+
+        ${mode === "advanced" && hasVars && html`
+          ${required.length > 0 && html`
+            <${Typography} variant="subtitle2" sx=${{ mb: 1, color: "#f59e0b", fontWeight: 600 }}>
+              Required Parameters
+            <//>
+            ${required.map(renderField)}
+            <${Divider} sx=${{ my: 1.5 }} />
+          `}
+
+          ${optional.length > 0 && html`
+            <${Typography} variant="subtitle2" sx=${{ mb: 1, fontWeight: 600 }}>
+              Optional Parameters <${Chip} label=${String(optional.length)} size="small" sx=${{ ml: 1, height: 20, fontSize: "11px" }} />
+            </${Typography}>
+            ${optional.map(renderField)}
+          `}
+        `}
+
+        ${hasVars && html`
+          <${Box} sx=${{ display: 'flex', justifyContent: 'flex-end', mt: 1 }}>
+            <${Button} size="small" variant="text" onClick=${resetDefaults} sx=${{ textTransform: 'none', fontSize: '12px' }}>
+              Reset to Defaults
+            <//>
+          <//>
+        `}
+
+        <${Divider} sx=${{ my: 2 }} />
+        <${Typography} variant="caption" color="text.secondary" sx=${{ display: "block", mb: 1 }}>
+          Runtime execution options
+        </${Typography}>
+        <${FormControlLabel}
+          control=${html`<${Switch}
+            checked=${!!executeDialogWaitSync.value}
+            onChange=${(e) => { executeDialogWaitSync.value = e.target.checked; }}
+            size="small"
+          />`}
+          label="Wait for completion (sync mode)"
+          sx=${{ mb: 1 }}
+        />
+
+        ${result?.ok && html`
+          <${Alert} severity="success" sx=${{ mt: 2 }}>Workflow dispatched successfully!<//>
+        `}
+        ${result && !result.ok && html`
+          <${Alert} severity="error" sx=${{ mt: 2 }}>${result.error || "Launch failed"}<//>
+        `}
+      <//>
+
+      <${DialogActions} sx=${{ px: 3, py: 2 }}>
+        <${Button} onClick=${closeExecuteDialog} sx=${{ textTransform: 'none' }}>Cancel<//>
+        <${Button}
+          variant="contained"
+          onClick=${launchFromDialog}
+          disabled=${!canLaunch}
+          startIcon=${launching ? html`<${CircularProgress} size=${16} />` : null}
+          sx=${{ textTransform: 'none' }}
+        >
+          ${launching ? "Launching…" : "Launch Workflow"}
+        <//>
+      <//>
+    <//>
+  `;
 }
 
 async function setWorkflowEnabled(id, enabled) {
@@ -296,27 +848,48 @@ function WorkflowCanvas({ workflow, onSave }) {
   const [pan, setPan] = useState({ x: 0, y: 0 });
   const [contextMenu, setContextMenu] = useState(null);
   const [spacePanning, setSpacePanning] = useState(false);
+  const [selectedNodeIds, setSelectedNodeIds] = useState(new Set());
+  const [marquee, setMarquee] = useState(null); // { x, y, w, h } in canvas coords
+  const marqueeStartRef = useRef(null); // canvas pos where marquee drag started
+  const multiDragRef = useRef({}); // { [nodeId]: { x, y } } start positions
+  // Keep a ref to selectedNodeIds so keyDown handler (closure) can read current value
+  const selectedNodeIdsRef = useRef(selectedNodeIds);
+  useEffect(() => { selectedNodeIdsRef.current = selectedNodeIds; }, [selectedNodeIds]);
 
   useEffect(() => {
     setNodes(workflow?.nodes || []);
     setEdges(workflow?.edges || []);
+    setSelectedNodeIds(new Set());
+    selectedNodeId.value = null;
   }, [workflow?.id, workflow?.nodes?.length, workflow?.edges?.length]);
 
   useEffect(() => {
     const onKeyDown = (e) => {
-      if (e.code !== "Space") return;
       const target = e.target;
-      if (
-        target &&
-        (target.tagName === "INPUT" ||
-          target.tagName === "TEXTAREA" ||
-          target.tagName === "SELECT" ||
-          target.isContentEditable)
-      ) {
+      const inInput = target && (
+        target.tagName === "INPUT" ||
+        target.tagName === "TEXTAREA" ||
+        target.tagName === "SELECT" ||
+        target.isContentEditable
+      );
+      if (e.code === "Space") {
+        if (inInput) return;
+        e.preventDefault();
+        setSpacePanning(true);
         return;
       }
-      e.preventDefault();
-      setSpacePanning(true);
+      // Delete / Backspace — remove all selected nodes
+      if ((e.key === "Delete" || e.key === "Backspace") && !inInput) {
+        const ids = selectedNodeIdsRef.current;
+        if (ids.size > 0) {
+          e.preventDefault();
+          setNodes(prev => prev.filter(n => !ids.has(n.id)));
+          setEdges(prev => prev.filter(ed => !ids.has(ed.source) && !ids.has(ed.target)));
+          setSelectedNodeIds(new Set());
+          selectedNodeId.value = null;
+          setEditingNode(null);
+        }
+      }
     };
     const onKeyUp = (e) => {
       if (e.code !== "Space") return;
@@ -359,19 +932,32 @@ function WorkflowCanvas({ workflow, onSave }) {
       setPan({ x: clientX - panStart.x, y: clientY - panStart.y });
       return;
     }
+    if (marqueeStartRef.current) {
+      const start = marqueeStartRef.current;
+      setMarquee({
+        x: Math.min(start.x, canvasPos.x),
+        y: Math.min(start.y, canvasPos.y),
+        w: Math.abs(canvasPos.x - start.x),
+        h: Math.abs(canvasPos.y - start.y),
+      });
+      return;
+    }
     if (dragState) {
+      const newPrimaryX = canvasPos.x - dragState.offsetX;
+      const newPrimaryY = canvasPos.y - dragState.offsetY;
+      const deltaX = newPrimaryX - dragState.startX;
+      const deltaY = newPrimaryY - dragState.startY;
       setNodes((prev) =>
-        prev.map((n) =>
-          n.id === dragState.nodeId
-            ? {
-                ...n,
-                position: {
-                  x: canvasPos.x - dragState.offsetX,
-                  y: canvasPos.y - dragState.offsetY,
-                },
-              }
-            : n,
-        ),
+        prev.map((n) => {
+          if (n.id === dragState.nodeId) {
+            return { ...n, position: { x: newPrimaryX, y: newPrimaryY } };
+          }
+          const startPos = multiDragRef.current[n.id];
+          if (startPos !== undefined) {
+            return { ...n, position: { x: startPos.x + deltaX, y: startPos.y + deltaY } };
+          }
+          return n;
+        }),
       );
     }
   }, [toCanvas, panStart, dragState]);
@@ -382,13 +968,19 @@ function WorkflowCanvas({ workflow, onSave }) {
       setPanStart({ x: e.clientX - pan.x, y: e.clientY - pan.y });
       e.preventDefault();
     } else if (e.button === 0 && e.target === canvasRef.current?.querySelector(".canvas-bg")) {
-      // Click on background = deselect
-      selectedNodeId.value = null;
-      selectedEdgeId.value = null;
+      // Click/drag on background: start marquee selection
+      if (!e.shiftKey) {
+        selectedNodeId.value = null;
+        selectedEdgeId.value = null;
+        setSelectedNodeIds(new Set());
+      }
       setEditingNode(null);
       setContextMenu(null);
+      const canvasPos = toCanvas(e.clientX, e.clientY);
+      marqueeStartRef.current = canvasPos;
+      setMarquee({ x: canvasPos.x, y: canvasPos.y, w: 0, h: 0 });
     }
-  }, [pan, spacePanning]);
+  }, [pan, spacePanning, toCanvas]);
 
   const onMouseMove = useCallback((e) => {
     movePointer(e.clientX, e.clientY);
@@ -398,12 +990,32 @@ function WorkflowCanvas({ workflow, onSave }) {
     if (panStart) setPanStart(null);
     if (dragState) {
       setDragState(null);
+      multiDragRef.current = {};
       autoSave();
     }
     if (connecting) {
       setConnecting(null);
     }
-  }, [panStart, dragState, connecting]);
+    if (marqueeStartRef.current) {
+      const m = marquee;
+      if (m && m.w > 4 && m.h > 4) {
+        const ids = new Set();
+        for (const node of nodes) {
+          const nx = node.position?.x || 0;
+          const ny = node.position?.y || 0;
+          if (nx + NODE_W > m.x && nx < m.x + m.w && ny + NODE_H > m.y && ny < m.y + m.h) {
+            ids.add(node.id);
+          }
+        }
+        if (ids.size > 0) {
+          setSelectedNodeIds(ids);
+          selectedNodeId.value = [...ids][0];
+        }
+      }
+      marqueeStartRef.current = null;
+      setMarquee(null);
+    }
+  }, [panStart, dragState, connecting, marquee, nodes]);
 
   const onPointerDown = useCallback((e) => {
     if (e.pointerType !== "touch" && e.pointerType !== "pen") return;
@@ -436,6 +1048,7 @@ function WorkflowCanvas({ workflow, onSave }) {
     if (panStart) setPanStart(null);
     if (dragState) {
       setDragState(null);
+      multiDragRef.current = {};
       autoSave();
     }
     if (connecting) {
@@ -454,31 +1067,60 @@ function WorkflowCanvas({ workflow, onSave }) {
 
   const onNodeMouseDown = useCallback((nodeId, e) => {
     e.stopPropagation();
-    selectedNodeId.value = nodeId;
+    let newSelectedIds;
+    if (e.shiftKey) {
+      // Shift-click: toggle node in/out of selection
+      newSelectedIds = new Set(selectedNodeIds);
+      if (newSelectedIds.has(nodeId)) newSelectedIds.delete(nodeId);
+      else newSelectedIds.add(nodeId);
+      setSelectedNodeIds(newSelectedIds);
+      selectedNodeId.value = nodeId;
+    } else if (selectedNodeIds.has(nodeId) && selectedNodeIds.size > 1) {
+      // Clicking a node already in multi-selection: keep all selected, drag all
+      newSelectedIds = selectedNodeIds;
+    } else {
+      // Normal click: single-select
+      newSelectedIds = new Set([nodeId]);
+      setSelectedNodeIds(newSelectedIds);
+      selectedNodeId.value = nodeId;
+    }
     setContextMenu(null);
     const canvasPos = toCanvas(e.clientX, e.clientY);
     const node = nodes.find(n => n.id === nodeId);
     if (node) {
+      // Store start positions for all nodes in the drag group
+      multiDragRef.current = {};
+      for (const id of newSelectedIds) {
+        const nd = nodes.find(n2 => n2.id === id);
+        if (nd) multiDragRef.current[id] = { x: nd.position?.x || 0, y: nd.position?.y || 0 };
+      }
       setDragState({
         nodeId,
         offsetX: canvasPos.x - (node.position?.x || 0),
         offsetY: canvasPos.y - (node.position?.y || 0),
+        startX: node.position?.x || 0,
+        startY: node.position?.y || 0,
       });
     }
-  }, [nodes, toCanvas]);
+  }, [nodes, toCanvas, selectedNodeIds]);
 
   const onNodePointerDown = useCallback((nodeId, e) => {
     if (e.pointerType !== "touch" && e.pointerType !== "pen") return;
     e.stopPropagation();
+    const newSelectedIds = new Set([nodeId]);
+    setSelectedNodeIds(newSelectedIds);
     selectedNodeId.value = nodeId;
     setContextMenu(null);
     const canvasPos = toCanvas(e.clientX, e.clientY);
     const node = nodes.find((n) => n.id === nodeId);
     if (node) {
+      multiDragRef.current = { [nodeId]: { x: node.position?.x || 0, y: node.position?.y || 0 } };
       setDragState({
         nodeId,
         offsetX: canvasPos.x - (node.position?.x || 0),
         offsetY: canvasPos.y - (node.position?.y || 0),
+        startX: node.position?.x || 0,
+        startY: node.position?.y || 0,
       });
     }
     try {
@@ -564,6 +1206,7 @@ function WorkflowCanvas({ workflow, onSave }) {
     setNodes(prev => prev.filter(n => n.id !== nodeId));
     setEdges(prev => prev.filter(e => e.source !== nodeId && e.target !== nodeId));
     if (selectedNodeId.value === nodeId) selectedNodeId.value = null;
+    setSelectedNodeIds(prev => { const s = new Set(prev); s.delete(nodeId); return s; });
     setEditingNode(null);
     setContextMenu(null);
     autoSave();
@@ -646,33 +1289,35 @@ function WorkflowCanvas({ workflow, onSave }) {
 
       <!-- Toolbar -->
       <div class="wf-toolbar" style="position: absolute; top: 12px; left: 12px; right: 12px; z-index: 20; display: flex; gap: 8px; align-items: center; flex-wrap: wrap;">
-        <button class="wf-btn wf-btn-ghost" onClick=${returnToWorkflowList}>
+        <${Button} variant="text" size="small" onClick=${returnToWorkflowList}>
           ← Back to Workflows
-        </button>
-        <button class="wf-btn wf-btn-primary" onClick=${() => setShowNodePalette(!showNodePalette)} style="display: flex; align-items: center; gap: 6px;">
+        <//>
+        <${Button} variant="contained" size="small" onClick=${() => setShowNodePalette(!showNodePalette)} sx=${{ display: 'flex', alignItems: 'center', gap: '6px' }}>
           <span style="font-size: 18px;">+</span> Add Node
-        </button>
-        <button class="wf-btn" onClick=${() => { if (workflow) saveWorkflow({ ...workflow, nodes, edges }); }}>
+        <//>
+        <${Button} variant="outlined" size="small" onClick=${() => { if (workflow) saveWorkflow({ ...workflow, nodes, edges }); }}>
           <span class="btn-icon">${resolveIcon("save")}</span>
           Save
-        </button>
-        <button
-          class="wf-btn"
-          style=${workflow?.enabled === false ? "opacity: 0.65;" : ""}
+        <//>
+        <${Button}
+          variant="outlined"
+          size="small"
+          sx=${workflow?.enabled === false ? { opacity: 0.65 } : {}}
           onClick=${() => {
             if (!workflow?.id) return;
             if (workflow?.enabled === false) {
               showToast("Workflow is paused. Resume it before running.", "warning");
               return;
             }
-            executeWorkflow(workflow.id);
+            openExecuteDialog(workflow.id);
           }}
         >
           <span class="btn-icon">${resolveIcon("play")}</span>
           Run
-        </button>
-        <button
-          class="wf-btn"
+        <//>
+        <${Button}
+          variant="outlined"
+          size="small"
           onClick=${() => {
             if (!workflow?.id) return;
             setWorkflowEnabled(workflow.id, workflow?.enabled === false);
@@ -680,17 +1325,22 @@ function WorkflowCanvas({ workflow, onSave }) {
         >
           <span class="btn-icon">${resolveIcon(workflow?.enabled === false ? "play" : "pause")}</span>
           ${workflow?.enabled === false ? "Resume" : "Pause"}
-        </button>
+        <//>
         <div style="flex:1;"></div>
+        ${selectedNodeIds.size > 1 && html`
+          <span class="wf-badge" style="font-size: 11px; background: #3b82f640; color: #60a5fa; border: 1px solid #3b82f660;">
+            ${selectedNodeIds.size} nodes selected · Del to delete
+          </span>
+        `}
         <span class="wf-badge" style="font-size: 11px; opacity: 0.7;">
           ${nodes.length} nodes · ${edges.length} edges · Zoom: ${Math.round(zoom * 100)}%
         </span>
         <span class="wf-badge" style="font-size: 11px; opacity: 0.75;">
           ${workflow?.enabled === false ? "Paused" : "Active"} · Pan: touch drag, Ctrl/Space + drag
         </span>
-        <button class="wf-btn wf-btn-sm" onClick=${() => setZoom(1)}>Reset Zoom</button>
-        <button class="wf-btn wf-btn-sm" onClick=${() => setPan({ x: 0, y: 0 })}>Reset Pan</button>
-        <button class="wf-btn wf-btn-sm" onClick=${returnToWorkflowList}>← Back to Workflows</button>
+        <${Button} variant="text" size="small" onClick=${() => setZoom(1)}>Reset Zoom<//>
+        <${Button} variant="text" size="small" onClick=${() => setPan({ x: 0, y: 0 })}>Reset Pan<//>
+        <${Button} variant="text" size="small" onClick=${returnToWorkflowList}>← Back to Workflows<//>
       </div>
 
       <!-- Node Palette (dropdown) -->
@@ -705,7 +1355,7 @@ function WorkflowCanvas({ workflow, onSave }) {
       <!-- SVG Canvas -->
       <svg
         ref=${canvasRef}
-        style="position: absolute; inset: 0; width: 100%; height: 100%; touch-action: none; user-select: none; -webkit-user-select: none; cursor: ${panStart ? 'grabbing' : dragState ? 'move' : spacePanning ? 'grab' : 'default'};"
+        style="position: absolute; inset: 0; width: 100%; height: 100%; touch-action: none; user-select: none; -webkit-user-select: none; cursor: ${panStart ? 'grabbing' : dragState ? 'move' : spacePanning ? 'grab' : marqueeStartRef.current ? 'crosshair' : 'default'};"
         onMouseDown=${onMouseDown}
         onMouseMove=${onMouseMove}
         onMouseUp=${onMouseUp}
@@ -803,7 +1453,7 @@ function WorkflowCanvas({ workflow, onSave }) {
           <!-- Nodes -->
           ${nodes.map(node => {
             const meta = getNodeMeta(node.type);
-            const isSelected = selectedNodeId.value === node.id;
+            const isSelected = selectedNodeIds.has(node.id);
             const x = node.position?.x || 0;
             const y = node.position?.y || 0;
             return html`
@@ -883,24 +1533,39 @@ function WorkflowCanvas({ workflow, onSave }) {
               </g>
             `;
           })}
+
+          <!-- Marquee selection box -->
+          ${marquee && html`
+            <rect
+              x=${marquee.x}
+              y=${marquee.y}
+              width=${marquee.w}
+              height=${marquee.h}
+              fill="rgba(59, 130, 246, 0.08)"
+              stroke="#3b82f6"
+              stroke-width=${1.5 / zoom}
+              stroke-dasharray="${5 / zoom},${3 / zoom}"
+              style="pointer-events: none;"
+            />
+          `}
         </g>
       </svg>
 
       <!-- Context Menu -->
       ${contextMenu && html`
         <div class="wf-context-menu" style="position: fixed; left: ${contextMenu.x}px; top: ${contextMenu.y}px; z-index: 50;">
-          <button onClick=${() => { setEditingNode(contextMenu.nodeId); setContextMenu(null); }}>
+          <${MenuItem} onClick=${() => { setEditingNode(contextMenu.nodeId); setContextMenu(null); }}>
             <span class="btn-icon">${resolveIcon("settings")}</span>
             Edit Config
-          </button>
-          <button onClick=${() => { const n = nodes.find(n => n.id === contextMenu.nodeId); if (n) { const clone = { ...n, id: `node-${Date.now()}`, position: { x: n.position.x + 40, y: n.position.y + 40 } }; setNodes(p => [...p, clone]); } setContextMenu(null); }}>
+          <//>
+          <${MenuItem} onClick=${() => { const n = nodes.find(n => n.id === contextMenu.nodeId); if (n) { const clone = { ...n, id: `node-${Date.now()}`, position: { x: n.position.x + 40, y: n.position.y + 40 } }; setNodes(p => [...p, clone]); } setContextMenu(null); }}>
             <span class="btn-icon">${resolveIcon("clipboard")}</span>
             Duplicate
-          </button>
-          <button onClick=${() => { deleteNode(contextMenu.nodeId); }} style="color: #ef4444;">
+          <//>
+          <${MenuItem} onClick=${() => { deleteNode(contextMenu.nodeId); }} sx=${{ color: '#ef4444' }}>
             <span class="btn-icon">${resolveIcon("trash")}</span>
             Delete
-          </button>
+          <//>
         </div>
       `}
 
@@ -954,17 +1619,18 @@ function NodePalette({ nodeTypes: types, onSelect, onClose }) {
   return html`
     <div class="wf-palette" style="position: absolute; top: 52px; left: 12px; z-index: 30; width: 320px; max-height: 70vh; overflow-y: auto; background: var(--color-bg, #0d1117); border: 1px solid var(--color-border, #2a3040); border-radius: 12px; padding: 12px; box-shadow: 0 8px 32px rgba(0,0,0,0.5);">
       <div style="display: flex; align-items: center; gap: 8px; margin-bottom: 10px;">
-        <input
-          type="text"
+        <${TextField}
+          size="small"
+          variant="outlined"
           placeholder="Search nodes..."
           value=${search}
           onInput=${(e) => setSearch(e.target.value)}
-          style="flex: 1; padding: 8px 12px; border-radius: 8px; border: 1px solid var(--color-border, #2a3040); background: var(--color-bg-secondary, #1a1f2e); color: var(--color-text, white); font-size: 13px; outline: none;"
-          autofocus
+          sx=${{ flex: 1 }}
+          autoFocus
         />
-        <button onClick=${onClose} class="wf-btn wf-btn-sm" style="font-size: 16px; line-height: 1;">
+        <${IconButton} size="small" onClick=${onClose} sx=${{ fontSize: '16px', lineHeight: 1 }}>
           <span class="icon-inline">${resolveIcon("✕")}</span>
-        </button>
+        <//>
       </div>
 
       ${Object.entries(filtered).map(([cat, items]) => {
@@ -981,15 +1647,16 @@ function NodePalette({ nodeTypes: types, onSelect, onClose }) {
               <span style="font-size: 10px;">${expandedCat === cat ? ICONS.chevronDown : ICONS.arrowRight}</span>
             </div>
             ${(expandedCat === cat || search.trim()) && items.map(nt => html`
-              <button
+              <${Button}
                 key=${nt.type}
                 onClick=${() => { onSelect(nt.type); haptic("light"); }}
-                class="wf-palette-item"
-                style="display: block; width: 100%; text-align: left; padding: 8px 12px 8px 28px; background: none; border: none; color: var(--color-text, white); font-size: 13px; cursor: pointer; border-radius: 6px; margin: 1px 0;"
+                variant="text"
+                size="small"
+                sx=${{ display: 'block', width: '100%', textAlign: 'left', padding: '8px 12px 8px 28px', background: 'none', border: 'none', color: 'var(--color-text, white)', fontSize: '13px', cursor: 'pointer', borderRadius: '6px', margin: '1px 0', textTransform: 'none' }}
               >
                 <div style="font-weight: 500;">${nt.type.split(".").pop()?.replace(/_/g, " ")}</div>
                 <div style="font-size: 11px; opacity: 0.6; margin-top: 2px;">${(nt.description || "").slice(0, 60)}</div>
-              </button>
+              <//>
             `)}
           </div>
         `;
@@ -1103,6 +1770,76 @@ const EXPRESSION_PRESETS = [
 ];
 
 /* ═══════════════════════════════════════════════════════════════
+ *  Workflow Agent Library Picker
+ *  — Lets users select an agent profile from the Library
+ * ═══════════════════════════════════════════════════════════════ */
+
+function WorkflowAgentLibraryPicker({ config, onUpdate }) {
+  const [agents, setAgents] = useState([]);
+  const [loading, setLoading] = useState(false);
+  const [expanded, setExpanded] = useState(false);
+
+  const loadAgents = useCallback(async () => {
+    if (agents.length > 0) { setExpanded(e => !e); return; }
+    setLoading(true);
+    try {
+      const res = await apiFetch("/api/library?type=agent&agentType=task");
+      const data = Array.isArray(res?.data) ? res.data : [];
+      setAgents(data);
+    } catch { /* ignore */ }
+    setLoading(false);
+    setExpanded(true);
+  }, [agents.length]);
+
+  const selectAgent = useCallback((agent) => {
+    onUpdate("agentProfileId", agent.id);
+    if (agent.content?.prompt) onUpdate("prompt", agent.content?.prompt);
+    if (agent.content?.model) onUpdate("model", agent.content.model);
+    haptic?.("light");
+    showToast(`Agent "${agent.name || agent.id}" applied`);
+  }, [onUpdate]);
+
+  const selected = config?.agentProfileId;
+
+  return html`
+    <div style="margin-top: 10px; margin-bottom: 6px;">
+      <${Button}
+        onClick=${loadAgents}
+        variant="outlined"
+        size="small"
+        sx=${{ width: '100%', padding: '7px 10px', fontSize: '11px', border: '1px solid #2a3040', borderRadius: '6px', background: '#1a1f2e', color: '#c9d1d9', cursor: 'pointer', display: 'flex', alignItems: 'center', gap: '8px', textTransform: 'none' }}
+      >
+        <span class="btn-icon" style="color: #60a5fa;">${resolveIcon("users")}</span>
+        <span style="flex: 1; text-align: left; font-weight: 500;">Library Agent Profiles</span>
+        ${selected && html`<span style="font-size: 10px; background: #1e3a5f; color: #60a5fa; padding: 1px 6px; border-radius: 4px;">${selected}</span>`}
+        <span style="font-size: 10px; color: #6b7280;">${loading ? "…" : (expanded ? ICONS.chevronDown : ICONS.arrowRight)}</span>
+      <//>
+      ${expanded && html`
+        <div style="margin-top: 6px; display: flex; flex-direction: column; gap: 4px; max-height: 220px; overflow-y: auto; padding-right: 4px;">
+          ${agents.length === 0 && html`<div style="font-size: 11px; color: #6b7280; padding: 6px;">No agent profiles in library.</div>`}
+          ${agents.map(a => html`
+            <${Button}
+              key=${a.id}
+              onClick=${() => selectAgent(a)}
+              variant="outlined"
+              size="small"
+              sx=${{ padding: '6px 10px', fontSize: '11px', border: '1px solid ' + (selected === a.id ? '#2563eb' : '#2a3040'), borderRadius: '6px', background: selected === a.id ? '#1e3a5f' : '#161b22', color: '#c9d1d9', cursor: 'pointer', textAlign: 'left', transition: 'all 0.15s', textTransform: 'none', display: 'block', width: '100%' }}
+            >
+              <div style="font-weight: 500; display: flex; align-items: center; gap: 6px;">
+                <span class="btn-icon" style="color: ${selected === a.id ? '#60a5fa' : '#6b7280'};">${resolveIcon("user")}</span>
+                <span>${a.name || a.id}</span>
+                ${selected === a.id && html`<span style="margin-left: auto; font-size: 9px; color: #60a5fa;">● active</span>`}
+              </div>
+              ${a.description && html`<div style="font-size: 10px; color: #6b7280; margin-top: 2px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">${a.description}</div>`}
+            <//>
+          `)}
+        </div>
+      `}
+    </div>
+  `;
+}
+
+/* ═══════════════════════════════════════════════════════════════
  *  Node Config Editor (right side panel)
  * ═══════════════════════════════════════════════════════════════ */
 
@@ -1135,17 +1872,19 @@ function NodeConfigEditor({ node, nodeTypes: types, onUpdate, onUpdateLabel, onC
       <div style="display: flex; align-items: center; gap: 8px; margin-bottom: 12px;">
         <span class="icon-inline" style="font-size: 20px;">${resolveIcon(meta.icon) || ICONS.dot}</span>
         <div style="flex: 1;">
-          <input
-            type="text"
+          <${TextField}
+            size="small"
+            variant="standard"
             value=${node.label || ""}
             onInput=${(e) => onUpdateLabel(e.target.value)}
-            style="width: 100%; background: transparent; border: none; color: var(--color-text, white); font-size: 15px; font-weight: 600; outline: none; padding: 2px 0;"
+            fullWidth
+            InputProps=${{ disableUnderline: true, sx: { color: "var(--color-text, white)", fontSize: "15px", fontWeight: 600, padding: "2px 0" } }}
           />
           <div style="font-size: 11px; color: ${meta.color}; font-family: monospace;">${node.type}</div>
         </div>
-        <button onClick=${onClose} class="wf-btn wf-btn-sm">
+        <${IconButton} size="small" onClick=${onClose}>
           <span class="icon-inline">${resolveIcon("✕")}</span>
-        </button>
+        <//>
       </div>
 
       <!-- Description -->
@@ -1171,16 +1910,17 @@ function NodeConfigEditor({ node, nodeTypes: types, onUpdate, onUpdateLabel, onC
               <div style="font-size: 10px; color: #6b7280; text-transform: uppercase; letter-spacing: 0.5px; margin-bottom: 3px; padding-left: 4px;">${group}</div>
               <div style="display: flex; flex-wrap: wrap; gap: 4px;">
                 ${items.map(p => html`
-                  <button
+                  <${Button}
                     key=${p.label}
                     onClick=${() => applyPreset({ command: p.cmd })}
-                    class="wf-preset-btn"
+                    variant="outlined"
+                    size="small"
                     title=${p.cmd}
-                    style="padding: 3px 8px; font-size: 11px; border: 1px solid #2a3040; border-radius: 6px; background: ${config.command === p.cmd ? '#1e3a5f' : '#1a1f2e'}; color: ${config.command === p.cmd ? '#60a5fa' : '#c9d1d9'}; cursor: pointer; white-space: nowrap; transition: all 0.1s;"
+                    sx=${{ padding: '3px 8px', fontSize: '11px', border: '1px solid #2a3040', borderRadius: '6px', background: config.command === p.cmd ? '#1e3a5f' : '#1a1f2e', color: config.command === p.cmd ? '#60a5fa' : '#c9d1d9', cursor: 'pointer', whiteSpace: 'nowrap', transition: 'all 0.1s', textTransform: 'none' }}
                   >
                     <span class="btn-icon">${resolveIcon(p.icon)}</span>
                     ${p.label}
-                  </button>
+                  <//>
                 `)}
               </div>
             </div>
@@ -1202,22 +1942,24 @@ function NodeConfigEditor({ node, nodeTypes: types, onUpdate, onUpdateLabel, onC
           ${presetExpanded && html`
             <div style="display: flex; flex-direction: column; gap: 3px; max-height: 200px; overflow-y: auto; padding-right: 4px;">
               ${AGENT_PROMPT_PRESETS.map(p => html`
-                <button
+                <${Button}
                   key=${p.label}
                   onClick=${() => applyPreset({ prompt: p.prompt })}
-                  class="wf-preset-btn"
-                  style="padding: 6px 10px; font-size: 11px; border: 1px solid #2a3040; border-radius: 6px; background: #1a1f2e; color: #c9d1d9; cursor: pointer; text-align: left; transition: all 0.1s; line-height: 1.3;"
+                  variant="outlined"
+                  size="small"
+                  sx=${{ padding: '6px 10px', fontSize: '11px', border: '1px solid #2a3040', borderRadius: '6px', background: '#1a1f2e', color: '#c9d1d9', cursor: 'pointer', textAlign: 'left', transition: 'all 0.1s', lineHeight: 1.3, textTransform: 'none', display: 'block', width: '100%' }}
                 >
                   <div style="font-weight: 500; display: flex; align-items: center; gap: 6px;">
                     <span class="btn-icon">${resolveIcon(p.icon)}</span>
                     <span>${p.label}</span>
                   </div>
                   <div style="font-size: 10px; color: #6b7280; margin-top: 2px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;">${p.prompt.split("\n")[0].slice(0, 60)}…</div>
-                </button>
+                <//>
               `)}
             </div>
           `}
           ${(node.type === "action.run_agent") && html`
+            <${WorkflowAgentLibraryPicker} config=${config} onUpdate=${onFieldChange} />
             <div style="margin-top: 8px; padding: 6px 8px; background: #1a1f2e; border-radius: 6px; border-left: 3px solid #a78bfa;">
               <div style="font-size: 10px; color: #a78bfa; font-weight: 600; margin-bottom: 2px; display: flex; align-items: center; gap: 6px;">
                 <span class="btn-icon">${resolveIcon("lightbulb")}</span>
@@ -1242,14 +1984,16 @@ function NodeConfigEditor({ node, nodeTypes: types, onUpdate, onUpdateLabel, onC
           </div>
           <div style="display: flex; flex-wrap: wrap; gap: 4px;">
             ${TRIGGER_EVENT_PRESETS.map(p => html`
-              <button
+              <${Button}
                 key=${p.value}
                 onClick=${() => applyPreset({ eventType: p.value })}
-                style="padding: 3px 8px; font-size: 11px; border: 1px solid #2a3040; border-radius: 6px; background: ${config.eventType === p.value ? '#0d3320' : '#1a1f2e'}; color: ${config.eventType === p.value ? '#34d399' : '#c9d1d9'}; cursor: pointer; white-space: nowrap;"
+                variant="outlined"
+                size="small"
+                sx=${{ padding: '3px 8px', fontSize: '11px', border: '1px solid #2a3040', borderRadius: '6px', background: config.eventType === p.value ? '#0d3320' : '#1a1f2e', color: config.eventType === p.value ? '#34d399' : '#c9d1d9', cursor: 'pointer', whiteSpace: 'nowrap', textTransform: 'none' }}
               >
                 <span class="btn-icon">${resolveIcon(p.icon)}</span>
                 ${p.label}
-              </button>
+              <//>
             `)}
           </div>
         </div>
@@ -1264,13 +2008,15 @@ function NodeConfigEditor({ node, nodeTypes: types, onUpdate, onUpdateLabel, onC
           </div>
           <div style="display: flex; flex-wrap: wrap; gap: 4px;">
             ${CRON_PRESETS.map(p => html`
-              <button
+              <${Button}
                 key=${p.value}
                 onClick=${() => applyPreset({ cron: p.value })}
-                style="padding: 3px 8px; font-size: 11px; border: 1px solid #2a3040; border-radius: 6px; background: ${config.cron === p.value ? '#0d3320' : '#1a1f2e'}; color: ${config.cron === p.value ? '#34d399' : '#c9d1d9'}; cursor: pointer; white-space: nowrap;"
+                variant="outlined"
+                size="small"
+                sx=${{ padding: '3px 8px', fontSize: '11px', border: '1px solid #2a3040', borderRadius: '6px', background: config.cron === p.value ? '#0d3320' : '#1a1f2e', color: config.cron === p.value ? '#34d399' : '#c9d1d9', cursor: 'pointer', whiteSpace: 'nowrap', textTransform: 'none' }}
               >
                 ${p.label}
-              </button>
+              <//>
             `)}
           </div>
         </div>
@@ -1285,13 +2031,15 @@ function NodeConfigEditor({ node, nodeTypes: types, onUpdate, onUpdateLabel, onC
           </div>
           <div style="display: flex; flex-wrap: wrap; gap: 4px;">
             ${["opened", "merged", "review_requested", "changes_requested", "approved", "closed"].map(ev => html`
-              <button
+              <${Button}
                 key=${ev}
                 onClick=${() => applyPreset({ event: ev })}
-                style="padding: 3px 8px; font-size: 11px; border: 1px solid #2a3040; border-radius: 6px; background: ${config.event === ev ? '#0d3320' : '#1a1f2e'}; color: ${config.event === ev ? '#34d399' : '#c9d1d9'}; cursor: pointer; white-space: nowrap;"
+                variant="outlined"
+                size="small"
+                sx=${{ padding: '3px 8px', fontSize: '11px', border: '1px solid #2a3040', borderRadius: '6px', background: config.event === ev ? '#0d3320' : '#1a1f2e', color: config.event === ev ? '#34d399' : '#c9d1d9', cursor: 'pointer', whiteSpace: 'nowrap', textTransform: 'none' }}
               >
                 ${ev.replace(/_/g, " ")}
-              </button>
+              <//>
             `)}
           </div>
         </div>
@@ -1306,14 +2054,16 @@ function NodeConfigEditor({ node, nodeTypes: types, onUpdate, onUpdateLabel, onC
           </div>
           <div style="display: flex; flex-direction: column; gap: 3px;">
             ${EXPRESSION_PRESETS.map(p => html`
-              <button
+              <${Button}
                 key=${p.label}
                 onClick=${() => applyPreset({ expression: p.expr })}
-                style="padding: 4px 8px; font-size: 11px; border: 1px solid #2a3040; border-radius: 6px; background: #1a1f2e; color: #c9d1d9; cursor: pointer; text-align: left;"
+                variant="outlined"
+                size="small"
+                sx=${{ padding: '4px 8px', fontSize: '11px', border: '1px solid #2a3040', borderRadius: '6px', background: '#1a1f2e', color: '#c9d1d9', cursor: 'pointer', textAlign: 'left', textTransform: 'none', display: 'block', width: '100%' }}
               >
                 <span style="font-weight: 500;">${p.label}</span>
                 <span style="font-size: 10px; color: #6b7280; margin-left: 6px; font-family: monospace;">${p.expr.slice(0, 45)}${p.expr.length > 45 ? "…" : ""}</span>
-              </button>
+              <//>
             `)}
           </div>
           <div style="margin-top: 6px; padding: 6px 8px; background: #1a1f2e; border-radius: 6px; border-left: 3px solid #f472b6;">
@@ -1357,16 +2107,18 @@ function NodeConfigEditor({ node, nodeTypes: types, onUpdate, onUpdateLabel, onC
               { label: "Needs Review", icon: "eye", msg: "PR needs manual review: {{reason}}" },
               { label: "Rate Limited", icon: "alert", msg: "Agent rate limited. Cooling down for {{cooldownSec}}s. Provider: {{provider}}" },
             ].map(p => html`
-              <button
+              <${Button}
                 key=${p.label}
                 onClick=${() => applyPreset({ message: p.msg })}
-                style="padding: 4px 8px; font-size: 11px; border: 1px solid #2a3040; border-radius: 6px; background: #1a1f2e; color: #c9d1d9; cursor: pointer; text-align: left;"
+                variant="outlined"
+                size="small"
+                sx=${{ padding: '4px 8px', fontSize: '11px', border: '1px solid #2a3040', borderRadius: '6px', background: '#1a1f2e', color: '#c9d1d9', cursor: 'pointer', textAlign: 'left', textTransform: 'none', display: 'block', width: '100%' }}
               >
                 <span style="display: inline-flex; align-items: center; gap: 6px;">
                   <span class="btn-icon">${resolveIcon(p.icon)}</span>
                   <span>${p.label}</span>
                 </span>
-              </button>
+              <//>
             `)}
           </div>
         </div>
@@ -1376,13 +2128,15 @@ function NodeConfigEditor({ node, nodeTypes: types, onUpdate, onUpdateLabel, onC
       ${node.type === "notify.log" && html`
         <div style="margin-bottom: 14px; display: flex; flex-wrap: wrap; gap: 4px;">
           ${["info", "warn", "error", "debug"].map(lv => html`
-            <button
+            <${Button}
               key=${lv}
               onClick=${() => applyPreset({ level: lv })}
-              style="padding: 3px 10px; font-size: 11px; border: 1px solid #2a3040; border-radius: 6px; background: ${config.level === lv ? '#1e293b' : '#1a1f2e'}; color: ${lv === 'error' ? '#ef4444' : lv === 'warn' ? '#f59e0b' : lv === 'debug' ? '#6b7280' : '#60a5fa'}; cursor: pointer;"
+              variant="outlined"
+              size="small"
+              sx=${{ padding: '3px 10px', fontSize: '11px', border: '1px solid #2a3040', borderRadius: '6px', background: config.level === lv ? '#1e293b' : '#1a1f2e', color: lv === 'error' ? '#ef4444' : lv === 'warn' ? '#f59e0b' : lv === 'debug' ? '#6b7280' : '#60a5fa', cursor: 'pointer', textTransform: 'none' }}
             >
               ${lv.toUpperCase()}
-            </button>
+            <//>
           `)}
         </div>
       `}
@@ -1410,13 +2164,15 @@ function NodeConfigEditor({ node, nodeTypes: types, onUpdate, onUpdateLabel, onC
                 { label: "ESLint", cmd: "npx eslint ." },
               ] : []),
             ].map(p => html`
-              <button
+              <${Button}
                 key=${p.label}
                 onClick=${() => applyPreset({ command: p.cmd, ...(p.extra || {}) })}
-                style="padding: 3px 8px; font-size: 11px; border: 1px solid #2a3040; border-radius: 6px; background: ${config.command === p.cmd ? '#0d3320' : '#1a1f2e'}; color: ${config.command === p.cmd ? '#34d399' : '#c9d1d9'}; cursor: pointer;"
+                variant="outlined"
+                size="small"
+                sx=${{ padding: '3px 8px', fontSize: '11px', border: '1px solid #2a3040', borderRadius: '6px', background: config.command === p.cmd ? '#0d3320' : '#1a1f2e', color: config.command === p.cmd ? '#34d399' : '#c9d1d9', cursor: 'pointer', textTransform: 'none' }}
               >
                 ${p.label}
-              </button>
+              <//>
             `)}
           </div>
         </div>
@@ -1440,46 +2196,52 @@ function NodeConfigEditor({ node, nodeTypes: types, onUpdate, onUpdateLabel, onC
               `}
 
               ${fieldType === "boolean" ? html`
-                <label style="display: flex; align-items: center; gap: 8px; cursor: pointer;">
-                  <input
-                    type="checkbox"
+                <${FormControlLabel}
+                  control=${html`<${Switch}
                     checked=${!!value}
                     onChange=${(e) => onFieldChange(key, e.target.checked)}
-                    style="width: 16px; height: 16px;"
-                  />
-                  <span style="font-size: 13px; color: var(--color-text, white);">${value ? "Enabled" : "Disabled"}</span>
-                </label>
+                    size="small"
+                  />`}
+                  label=${value ? "Enabled" : "Disabled"}
+                />
               ` : fieldType === "number" ? html`
-                <input
+                <${TextField}
                   type="number"
+                  size="small"
+                  variant="outlined"
                   value=${value}
                   onInput=${(e) => onFieldChange(key, Number(e.target.value))}
-                  class="wf-input"
+                  fullWidth
                   placeholder=${fieldSchema.default != null ? `Default: ${fieldSchema.default}` : ""}
                 />
               ` : fieldSchema.enum ? html`
-                <select
+                <${Select}
                   value=${value}
                   onChange=${(e) => onFieldChange(key, e.target.value)}
-                  class="wf-input"
+                  size="small"
+                  fullWidth
                 >
-                  <option value="">— select —</option>
-                  ${fieldSchema.enum.map(opt => html`<option key=${opt} value=${opt}>${opt}</option>`)}
-                </select>
+                  <${MenuItem} value="">— select —</${MenuItem}>
+                  ${fieldSchema.enum.map(opt => html`<${MenuItem} key=${opt} value=${opt}>${opt}</${MenuItem}>`)}
+                </${Select}>
               ` : (typeof value === "string" && value.length > 80) || key === "prompt" || key === "expression" || key === "template" || key === "command" || key === "body" || key === "message" || key === "filter" ? html`
-                <textarea
+                <${TextField}
+                  multiline
+                  rows=${key === "prompt" ? 6 : 4}
+                  size="small"
+                  variant="outlined"
                   value=${typeof value === "object" ? JSON.stringify(value, null, 2) : value}
                   onInput=${(e) => onFieldChange(key, e.target.value)}
-                  class="wf-input wf-textarea"
-                  rows=${key === "prompt" ? "6" : "4"}
+                  fullWidth
                   placeholder=${fieldSchema.default != null ? String(fieldSchema.default) : ""}
                 />
               ` : html`
-                <input
-                  type="text"
+                <${TextField}
+                  size="small"
+                  variant="outlined"
                   value=${typeof value === "object" ? JSON.stringify(value) : value}
                   onInput=${(e) => onFieldChange(key, e.target.value)}
-                  class="wf-input"
+                  fullWidth
                   placeholder=${fieldSchema.default != null ? String(fieldSchema.default) : ""}
                 />
               `}
@@ -1498,15 +2260,14 @@ function NodeConfigEditor({ node, nodeTypes: types, onUpdate, onUpdateLabel, onC
 
       <!-- Continue on Error toggle -->
       <div style="margin-top: 16px; padding-top: 16px; border-top: 1px solid var(--color-border, #2a3040);">
-        <label style="display: flex; align-items: center; gap: 8px; cursor: pointer;">
-          <input
-            type="checkbox"
+        <${FormControlLabel}
+          control=${html`<${Switch}
             checked=${!!config.continueOnError}
             onChange=${(e) => onUpdate({ continueOnError: e.target.checked })}
-            style="width: 16px; height: 16px;"
-          />
-          <span style="font-size: 13px; color: var(--color-text, white);">Continue on Error</span>
-        </label>
+            size="small"
+          />`}
+          label="Continue on Error"
+        />
         <div style="font-size: 10px; color: var(--color-text-secondary, #6b7280); margin-top: 4px;">
           If checked, workflow continues even if this node fails
         </div>
@@ -1514,25 +2275,28 @@ function NodeConfigEditor({ node, nodeTypes: types, onUpdate, onUpdateLabel, onC
 
       <!-- Timeout -->
       <div style="margin-top: 12px;">
-        <label style="font-size: 12px; font-weight: 600; color: var(--color-text-secondary, #8b95a5);">Timeout (ms)</label>
-        <input
+        <${TextField}
           type="number"
+          size="small"
+          variant="outlined"
+          label="Timeout (ms)"
           value=${config.timeout || ""}
           onInput=${(e) => onUpdate({ timeout: Number(e.target.value) || undefined })}
           placeholder="Default: 600000"
-          class="wf-input"
+          fullWidth
         />
       </div>
 
       <!-- Delete button -->
-      <button
+      <${Button}
         onClick=${() => { if (confirm("Delete this node?")) onDelete(); }}
-        class="wf-btn"
-        style="width: 100%; margin-top: 20px; background: #dc262620; color: #ef4444; border-color: #ef444440;"
+        variant="outlined"
+        size="small"
+        sx=${{ width: '100%', marginTop: '20px', background: '#dc262620', color: '#ef4444', borderColor: '#ef444440', textTransform: 'none' }}
       >
         <span class="btn-icon">${resolveIcon("trash")}</span>
         Delete Node
-      </button>
+      <//>
 
       <!-- Raw JSON -->
       <details style="margin-top: 16px;">
@@ -1566,9 +2330,10 @@ function WorkflowListView() {
       <!-- Header -->
       <div style="display: flex; align-items: center; gap: 12px; margin-bottom: 16px; flex-wrap: wrap;">
         <h2 style="margin: 0; font-size: 18px; font-weight: 700;">Workflows</h2>
-        <button
+        <${Button}
           type="button"
-          class="wf-btn wf-btn-primary"
+          variant="contained"
+          size="small"
           onClick=${() => {
             const newWf = {
               name: "New Workflow",
@@ -1589,11 +2354,11 @@ function WorkflowListView() {
         >
           <span class="btn-icon">${resolveIcon("plus")}</span>
           Create Workflow
-        </button>
-        <button type="button" class="wf-btn" onClick=${() => { selectedRunId.value = null; selectedRunDetail.value = null; workflowRunsLimit.value = WORKFLOW_RUN_PAGE_SIZE; viewMode.value = "runs"; loadRuns(); }}>
+        <//>
+        <${Button} type="button" variant="outlined" size="small" onClick=${() => { selectedRunId.value = null; selectedRunDetail.value = null; workflowRunsLimit.value = WORKFLOW_RUN_PAGE_SIZE; viewMode.value = "runs"; loadRuns(); }}>
           <span class="btn-icon">${resolveIcon("chart")}</span>
           Run History
-        </button>
+        <//>
       </div>
 
       <!-- Active Workflows -->
@@ -1657,9 +2422,10 @@ function WorkflowListView() {
                   <span>${wf.category || "custom"}</span>
                   <div style="flex: 1;"></div>
                   ${hasTemplateUpdate && html`
-                    <button
-                      class="wf-btn wf-btn-sm"
-                      style="font-size: 11px; border-color: #f59e0b80; color: #f59e0b;"
+                    <${Button}
+                      variant="text"
+                      size="small"
+                      sx=${{ fontSize: '11px', borderColor: '#f59e0b80', color: '#f59e0b', textTransform: 'none' }}
                       onClick=${async (e) => {
                         e.stopPropagation();
                         if (!isCustomizedTemplate) {
@@ -1684,11 +2450,12 @@ function WorkflowListView() {
                     >
                       <span class="icon-inline">${resolveIcon("refresh")}</span>
                       Update
-                    </button>
+                    <//>
                   `}
-                  <button
-                    class="wf-btn wf-btn-sm"
-                    style="font-size: 11px;"
+                  <${Button}
+                    variant="text"
+                    size="small"
+                    sx=${{ fontSize: '11px', textTransform: 'none' }}
                     onClick=${(e) => {
                       e.stopPropagation();
                       setWorkflowEnabled(wf.id, !wf.enabled);
@@ -1696,24 +2463,25 @@ function WorkflowListView() {
                   >
                     <span class="icon-inline">${resolveIcon(wf.enabled ? "pause" : "play")}</span>
                     ${wf.enabled ? "Pause" : "Resume"}
-                  </button>
-                  <button
-                    class="wf-btn wf-btn-sm"
-                    style=${`font-size: 11px; ${wf.enabled ? "" : "opacity: 0.65;"}`}
+                  <//>
+                  <${Button}
+                    variant="text"
+                    size="small"
+                    sx=${{ fontSize: '11px', textTransform: 'none', ...(wf.enabled ? {} : { opacity: 0.65 }) }}
                     onClick=${(e) => {
                       e.stopPropagation();
                       if (!wf.enabled) {
                         showToast("Workflow is paused. Resume it before running.", "warning");
                         return;
                       }
-                      executeWorkflow(wf.id);
+                      openExecuteDialog(wf.id);
                     }}
                   >
                     <span class="icon-inline">${resolveIcon("play")}</span>
-                  </button>
-                  <button class="wf-btn wf-btn-sm wf-btn-danger" style="font-size: 11px;" onClick=${(e) => { e.stopPropagation(); if (confirm("Delete " + wf.name + "?")) deleteWorkflow(wf.id); }}>
+                  <//>
+                  <${Button} variant="text" size="small" sx=${{ fontSize: '11px', color: '#ef4444', textTransform: 'none' }} onClick=${(e) => { e.stopPropagation(); if (confirm("Delete " + wf.name + "?")) deleteWorkflow(wf.id); }}>
                     <span class="icon-inline">${resolveIcon("trash")}</span>
-                  </button>
+                  <//>
                 </div>
               </div>
             `;
@@ -1734,15 +2502,15 @@ function WorkflowListView() {
             to error recovery. Install a template below or create one from scratch.
           </div>
           <div style="display: flex; gap: 8px; justify-content: center; flex-wrap: wrap;">
-            <button class="wf-btn wf-btn-primary" onClick=${() => {
+            <${Button} variant="contained" size="small" onClick=${() => {
               const newWf = { name: "New Workflow", description: "", category: "custom", enabled: true, nodes: [], edges: [], variables: {} };
               saveWorkflow(newWf).then(wf => { if (wf) { activeWorkflow.value = wf; viewMode.value = "canvas"; } });
-            }}>+ Create Blank</button>
+            }}>+ Create Blank<//>
             ${availableTemplates.length > 0 && html`
-              <button class="wf-btn" style="border-color: #f59e0b60; color: #f59e0b;" onClick=${() => installTemplate(availableTemplates[0]?.id)}>
+              <${Button} variant="outlined" size="small" sx=${{ borderColor: '#f59e0b60', color: '#f59e0b', textTransform: 'none' }} onClick=${() => installTemplate(availableTemplates[0]?.id)}>
                 <span class="btn-icon">${resolveIcon("zap")}</span>
                 Quick Install: ${availableTemplates[0]?.name}
-              </button>
+              <//>
             `}
           </div>
         </div>
@@ -1799,12 +2567,13 @@ function WorkflowListView() {
                     <div style="display: flex; gap: 8px; align-items: center;">
                       <span style="font-size: 11px; color: var(--color-text-secondary, #6b7280);">${t.nodeCount} nodes</span>
                       <div style="flex: 1;"></div>
-                      <button
-                        class="wf-btn wf-btn-primary wf-btn-sm"
+                      <${Button}
+                        variant="contained"
+                        size="small"
                         onClick=${() => installTemplate(t.id)}
                       >
                         Install →
-                      </button>
+                      <//>
                     </div>
                   </div>
                 `)}
@@ -2013,11 +2782,11 @@ function RunHistoryView() {
     return html`
       <div style="padding: 0 4px;">
         <div style="display: flex; align-items: center; gap: 12px; margin-bottom: 16px; flex-wrap: wrap;">
-          <button class="wf-btn wf-btn-sm" onClick=${() => { selectedRunId.value = null; selectedRunDetail.value = null; }}>
+          <${Button} variant="text" size="small" onClick=${() => { selectedRunId.value = null; selectedRunDetail.value = null; }}>
             ← Back to Run History
-          </button>
+          <//>
           <h2 style="margin: 0; font-size: 18px; font-weight: 700;">Run Details</h2>
-          <button class="wf-btn wf-btn-sm" onClick=${() => loadRunDetail(selectedRun.runId)}>Refresh</button>
+          <${Button} variant="text" size="small" onClick=${() => loadRunDetail(selectedRun.runId)}>Refresh<//>
         </div>
 
         <div style="background: var(--color-bg-secondary, #1a1f2e); border-radius: 10px; border: 1px solid var(--color-border, #2a3040); padding: 14px; margin-bottom: 12px;">
@@ -2097,12 +2866,13 @@ function RunHistoryView() {
   return html`
     <div style="padding: 0 4px;">
       <div style="display: flex; align-items: center; gap: 12px; margin-bottom: 16px; flex-wrap: wrap;">
-        <button class="wf-btn wf-btn-sm" onClick=${returnToWorkflowList}>← Back to Workflows</button>
+        <${Button} variant="text" size="small" onClick=${returnToWorkflowList}>← Back to Workflows<//>
         <h2 style="margin: 0; font-size: 18px; font-weight: 700;">Run History</h2>
-        <button class="wf-btn wf-btn-sm" onClick=${() => loadRuns()}>Refresh</button>
+        <${Button} variant="text" size="small" onClick=${() => loadRuns()}>Refresh<//>
         ${canLoadMoreRuns && html`
-          <button
-            class="wf-btn wf-btn-sm"
+          <${Button}
+            variant="text"
+            size="small"
             onClick=${() => {
               const nextLimit = Math.min(
                 runsLimit + WORKFLOW_RUN_PAGE_SIZE,
@@ -2112,65 +2882,62 @@ function RunHistoryView() {
             }}
           >
             Load older
-          </button>
+          <//>
         `}
         ${hasRunningRuns && html`<span class="wf-badge" style="background: #3b82f630; color: #60a5fa;">Live</span>`}
       </div>
 
       <div class="wf-runs-toolbar">
-        <input
-          class="wf-input"
+        <${TextField}
+          size="small"
+          variant="outlined"
           placeholder="Search workflow, run ID, trigger event..."
           value=${searchQuery}
           onInput=${(e) => setSearchQuery(e.target.value)}
         />
-        <select class="wf-input" value=${workflowFilter} onChange=${(e) => setWorkflowFilter(e.target.value)}>
-          <option value="all">All Workflows</option>
-          ${workflowOptions.map((opt) => html`<option value=${opt.id}>${opt.name}</option>`)}
-        </select>
-        <select class="wf-input" value=${statusFilter} onChange=${(e) => setStatusFilter(e.target.value)}>
-          <option value="all">All Statuses</option>
-          <option value="running">Running</option>
-          <option value="failed">Failed</option>
-          <option value="completed">Completed</option>
-        </select>
-        <select class="wf-input" value=${triggerFilter} onChange=${(e) => setTriggerFilter(e.target.value)}>
-          <option value="all">All Trigger Types</option>
-          <option value="manual">Manual</option>
-          <option value="monitor-event">Monitor Event</option>
-          <option value="event">Event</option>
-        </select>
+        <${Select} size="small" value=${workflowFilter} onChange=${(e) => setWorkflowFilter(e.target.value)}>
+          <${MenuItem} value="all">All Workflows</${MenuItem}>
+          ${workflowOptions.map((opt) => html`<${MenuItem} value=${opt.id}>${opt.name}</${MenuItem}>`)}
+        </${Select}>
+        <${Select} size="small" value=${statusFilter} onChange=${(e) => setStatusFilter(e.target.value)}>
+          <${MenuItem} value="all">All Statuses</${MenuItem}>
+          <${MenuItem} value="running">Running</${MenuItem}>
+          <${MenuItem} value="failed">Failed</${MenuItem}>
+          <${MenuItem} value="completed">Completed</${MenuItem}>
+        </${Select}>
+        <${Select} size="small" value=${triggerFilter} onChange=${(e) => setTriggerFilter(e.target.value)}>
+          <${MenuItem} value="all">All Trigger Types</${MenuItem}>
+          <${MenuItem} value="manual">Manual</${MenuItem}>
+          <${MenuItem} value="monitor-event">Monitor Event</${MenuItem}>
+          <${MenuItem} value="event">Event</${MenuItem}>
+        </${Select}>
       </div>
 
       <div class="wf-runs-filters">
-        <button
-          class=${`wf-chip ${statusFilter === "all" ? "active" : ""}`}
+        <${Chip}
+          label=${`All ${runCounts.all}`}
           onClick=${() => setStatusFilter("all")}
-          type="button"
-        >
-          All ${runCounts.all}
-        </button>
-        <button
-          class=${`wf-chip ${statusFilter === "running" ? "active" : ""}`}
+          variant=${statusFilter === "all" ? "filled" : "outlined"}
+          size="small"
+        />
+        <${Chip}
+          label=${`Running ${runCounts.running}`}
           onClick=${() => setStatusFilter("running")}
-          type="button"
-        >
-          Running ${runCounts.running}
-        </button>
-        <button
-          class=${`wf-chip ${statusFilter === "failed" ? "active" : ""}`}
+          variant=${statusFilter === "running" ? "filled" : "outlined"}
+          size="small"
+        />
+        <${Chip}
+          label=${`Failed ${runCounts.failed}`}
           onClick=${() => setStatusFilter("failed")}
-          type="button"
-        >
-          Failed ${runCounts.failed}
-        </button>
-        <button
-          class=${`wf-chip ${statusFilter === "completed" ? "active" : ""}`}
+          variant=${statusFilter === "failed" ? "filled" : "outlined"}
+          size="small"
+        />
+        <${Chip}
+          label=${`Completed ${runCounts.completed}`}
           onClick=${() => setStatusFilter("completed")}
-          type="button"
-        >
-          Completed ${runCounts.completed}
-        </button>
+          variant=${statusFilter === "completed" ? "filled" : "outlined"}
+          size="small"
+        />
         <span class="wf-runs-count">${filteredRuns.length} shown</span>
         <span class="wf-runs-count">${runs.length} loaded</span>
       </div>
@@ -2200,12 +2967,13 @@ function RunHistoryView() {
             ? `event:${run.triggerEvent || "unknown"}`
             : (run.triggerSource || "manual");
           return html`
-            <button
+            <${Button}
               key=${run.runId}
               type="button"
-              class="wf-card wf-run-row"
+              variant="text"
+              size="small"
               onClick=${() => loadRunDetail(run.runId)}
-              style="text-align: left; width: 100%; background: var(--color-bg-secondary, #1a1f2e); border-radius: 8px; padding: 12px; border: 1px solid ${borderColor}; display: flex; align-items: center; gap: 12px; cursor: pointer;"
+              sx=${{ textAlign: 'left', width: '100%', background: 'var(--color-bg-secondary, #1a1f2e)', borderRadius: '8px', padding: '12px', border: '1px solid ' + borderColor, display: 'flex', alignItems: 'center', gap: '12px', cursor: 'pointer', textTransform: 'none' }}
             >
               <span class="icon-inline" style="font-size: 16px;">
                 ${run.status === "completed" ? resolveIcon("check") : run.status === "failed" ? resolveIcon("close") : resolveIcon("clock")}
@@ -2233,7 +3001,7 @@ function RunHistoryView() {
                 </span>
                 ${run.isStuck && html`<span class="wf-badge" style="background: #f59e0b2f; color: #f59e0b; border-color: #f59e0b50;">stuck</span>`}
               </div>
-            </button>
+            <//>
           `;
         })}
       </div>
@@ -2250,6 +3018,25 @@ export function WorkflowsTab() {
     loadWorkflows();
     loadTemplates();
     loadNodeTypes();
+  }, []);
+
+  useEffect(() => {
+    const onWorkspaceSwitched = () => {
+      activeWorkflow.value = null;
+      selectedRunId.value = null;
+      selectedRunDetail.value = null;
+      workflowRuns.value = [];
+      workflowRunsLimit.value = WORKFLOW_RUN_PAGE_SIZE;
+      viewMode.value = "list";
+      setRouteParams({}, { replace: true, skipGuard: true });
+      loadWorkflows();
+      loadTemplates();
+      loadNodeTypes();
+    };
+    window.addEventListener("ve:workspace-switched", onWorkspaceSwitched);
+    return () => {
+      window.removeEventListener("ve:workspace-switched", onWorkspaceSwitched);
+    };
   }, []);
 
   useEffect(() => {
@@ -2468,6 +3255,7 @@ export function WorkflowsTab() {
         ? html`<${RunHistoryView} />`
         : html`<${WorkflowListView} />`
       }
+      <${ExecuteWorkflowDialog} />
     </div>
   `;
 }

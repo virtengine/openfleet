@@ -11,6 +11,7 @@ import { haptic } from "../modules/telegram.js";
 import { formatRelative, truncate, cloneValue } from "../modules/utils.js";
 import { iconText, resolveIcon } from "../modules/icon-utils.js";
 import { getAgentDisplay } from "../modules/agent-display.js";
+import { Card, CardContent, Chip, IconButton, TextField, InputAdornment, Typography, Box, Stack, Button, Menu, MenuItem, Paper, Tooltip, Badge } from "@mui/material";
 
 const html = htm.bind(h);
 
@@ -352,9 +353,18 @@ function KanbanCard({ task, onOpen }) {
   );
   const agentDisplay = hasAgent ? getAgentDisplay(task) : null;
 
+  const isDragging = dragTaskId.value === task.id || (touchDragId.value === task.id && _touchMoved);
+
   return html`
-    <div
-      class="kanban-card ${dragTaskId.value === task.id ? 'dragging' : ''} ${touchDragId.value === task.id && _touchMoved ? 'dragging' : ''}"
+    <${Card}
+      class="kanban-card ${isDragging ? 'dragging' : ''}"
+      sx=${{
+        cursor: 'pointer',
+        mb: 1,
+        opacity: isDragging ? 0.5 : 1,
+        transition: 'box-shadow 0.2s, opacity 0.2s',
+        '&:hover': { boxShadow: 3 },
+      }}
       draggable="true"
       onDragStart=${onDragStart}
       onDragEnd=${onDragEnd}
@@ -367,40 +377,41 @@ function KanbanCard({ task, onOpen }) {
         onOpen(task.id);
       }}
     >
-      <div class="kanban-card-header">
-        ${repoName && html`
-          <span class="kanban-card-repo">${repoName}</span>
+      <${CardContent} sx=${{ p: '10px !important', '&:last-child': { pb: '10px !important' } }}>
+        <${Stack} direction="row" spacing=${0.5} alignItems="center" flexWrap="wrap" sx=${{ mb: 0.5 }}>
+          ${repoName && html`
+            <${Typography} variant="caption" color="text.secondary">${repoName}</${Typography}>
+          `}
+          ${(issueNum || task.pr) && html`
+            <${Typography} variant="caption" color="text.secondary">${task.pr ? '#' + task.pr : '#' + issueNum}</${Typography}>
+          `}
+          ${priorityLabel && html`
+            <${Chip} label=${priorityLabel} size="small" sx=${{ backgroundColor: priorityColor, color: '#fff', height: 18, fontSize: '0.65rem' }} />
+          `}
+        </${Stack}>
+        <${Typography} variant="body2" fontWeight=${500}>${truncate(task.title || "(untitled)", 80)}</${Typography}>
+        ${task.description && html`
+          <${Typography} variant="caption" color="text.secondary" sx=${{ display: 'block', mt: 0.5 }}>${truncate(task.description, 72)}</${Typography}>
         `}
-        ${(issueNum || task.pr) && html`
-          <span class="kanban-card-issue">${task.pr ? `#${task.pr}` : `#${issueNum}`}</span>
+        ${baseBranch && html`
+          <${Typography} variant="caption" color="text.secondary" sx=${{ display: 'block', mt: 0.5 }}>Base: ${truncate(baseBranch, 24)}</${Typography}>
         `}
-        ${priorityLabel && html`
-          <span class="kanban-card-badge" style="background:${priorityColor}">${priorityLabel}</span>
+        ${tags.length > 0 && html`
+          <${Stack} direction="row" spacing=${0.5} flexWrap="wrap" sx=${{ mt: 0.5 }}>
+            ${tags.map((tag) => html`<${Chip} key=${tag} label=${'#' + tag} size="small" variant="outlined" sx=${{ height: 20, fontSize: '0.65rem' }} />`)}
+          </${Stack}>
         `}
-      </div>
-      <div class="kanban-card-title">${truncate(task.title || "(untitled)", 80)}</div>
-      ${task.description && html`
-        <div class="kanban-card-desc">${truncate(task.description, 72)}</div>
-      `}
-      ${baseBranch && html`
-        <div class="kanban-card-base">Base: <code>${truncate(baseBranch, 24)}</code></div>
-      `}
-      ${tags.length > 0 && html`
-        <div class="kanban-card-tags">
-          ${tags.map((tag) => html`<span class="tag-chip">#${tag}</span>`)}
-        </div>
-      `}
-      <div class="kanban-card-meta">
-        ${agentDisplay && html`
-          <span
-            class="kanban-card-assignee"
-            title=${agentDisplay.label}
-          >${agentDisplay.icon}</span>
-        `}
-        <span class="kanban-card-id">${typeof task.id === "string" ? truncate(task.id, 12) : task.id}</span>
-        ${task.created_at && html`<span>${formatRelative(task.created_at)}</span>`}
-      </div>
-    </div>
+        <${Stack} direction="row" spacing=${0.5} alignItems="center" sx=${{ mt: 0.5 }}>
+          ${agentDisplay && html`
+            <${Tooltip} title=${agentDisplay.label}>
+              <span>${agentDisplay.icon}</span>
+            </${Tooltip}>
+          `}
+          <${Typography} variant="caption" color="text.secondary">${typeof task.id === "string" ? truncate(task.id, 12) : task.id}</${Typography}>
+          ${task.created_at && html`<${Typography} variant="caption" color="text.secondary">${formatRelative(task.created_at)}</${Typography}>`}
+        </${Stack}>
+      </${CardContent}>
+    </${Card}>
   `;
 }
 
@@ -491,31 +502,28 @@ function KanbanColumn({ col, tasks, onOpen }) {
       onDragLeave=${onDragLeave}
       onDrop=${onDrop}
     >
-      <div class="kanban-column-header" style="border-bottom-color: ${col.color}">
-        <span>${col.icon}</span>
-        <span class="kanban-column-title">${col.title}</span>
-        <span class="kanban-count">${tasks.length}</span>
-        <button
-          class="kanban-add-btn"
-          onClick=${() => { setShowCreate(!showCreate); haptic(); }}
-          title="Add task to ${col.title}"
-        >+</button>
-      </div>
+      <${Box} sx=${{ display: 'flex', alignItems: 'center', gap: 1, p: 1, borderBottom: '2px solid ' + col.color }}>
+        <${Typography} variant="subtitle2">${col.icon} ${col.title}</${Typography}>
+        <${Chip} label=${tasks.length} size="small" />
+        <${IconButton} size="small" onClick=${() => { setShowCreate(!showCreate); haptic(); }} title=${"Add task to " + col.title}>+</${IconButton}>
+      </${Box}>
       <div class="kanban-cards">
         ${showCreate && html`
-          <input
-            ref=${inputRef}
-            class="kanban-inline-create"
+          <${TextField}
+            inputRef=${inputRef}
+            fullWidth
+            size="small"
             placeholder="Task title…"
             onKeyDown=${handleInlineKeyDown}
             onBlur=${() => setShowCreate(false)}
+            sx=${{ mb: 1 }}
           />
         `}
         ${tasks.length
           ? tasks.map((task) => html`
               <${KanbanCard} key=${task.id} task=${task} onOpen=${onOpen} />
             `)
-          : html`<div class="kanban-empty-col">Drop tasks here</div>`
+          : html`<${Typography} variant="body2" color="text.secondary" sx=${{ textAlign: 'center', py: 2 }}>Drop tasks here</${Typography}>`
         }
       </div>
       <div class="kanban-scroll-fade"></div>
@@ -545,95 +553,113 @@ function KanbanFilter({ tasks, filters, onFilterChange }) {
 
   const [showDropdown, setShowDropdown] = useState(null);
 
-  const toggleDropdown = useCallback((name) => {
-    setShowDropdown((prev) => (prev === name ? null : name));
-  }, []);
-
   const setFilter = useCallback((key, value) => {
     onFilterChange({ ...filters, [key]: value });
     setShowDropdown(null);
+    setAnchorEl(null);
   }, [filters, onFilterChange]);
 
   const clearAll = useCallback(() => {
     onFilterChange({ repo: "", assignee: "", priority: "", search: "" });
     setShowDropdown(null);
+    setAnchorEl(null);
   }, [onFilterChange]);
 
   const hasFilters = filters.repo || filters.assignee || filters.priority || filters.search;
 
+  const [anchorEl, setAnchorEl] = useState(null);
+
+  const handleDropdownClick = useCallback((name, event) => {
+    if (showDropdown === name) {
+      setShowDropdown(null);
+      setAnchorEl(null);
+    } else {
+      setShowDropdown(name);
+      setAnchorEl(event.currentTarget);
+    }
+  }, [showDropdown]);
+
+  const handleMenuClose = useCallback(() => {
+    setShowDropdown(null);
+    setAnchorEl(null);
+  }, []);
+
   return html`
-    <div class="kanban-filter-bar">
-      <div class="kanban-filter-search">
-        <span class="kanban-filter-icon">${resolveIcon(":search:")}</span>
-        <input
-          type="text"
-          class="kanban-filter-input"
-          placeholder="Filter by keyword or field"
-          value=${filters.search || ""}
-          onInput=${(e) => onFilterChange({ ...filters, search: e.target.value })}
-        />
-      </div>
-      <div class="kanban-filter-chips">
+    <${Box} className="kanban-filter-bar" sx=${{ display: 'flex', alignItems: 'center', gap: 1, flexWrap: 'wrap', p: 1 }}>
+      <${TextField}
+        size="small"
+        placeholder="Filter by keyword or field"
+        value=${filters.search || ""}
+        onInput=${(e) => onFilterChange({ ...filters, search: e.target.value })}
+        InputProps=${{
+          startAdornment: html`<${InputAdornment} position="start">${resolveIcon(":search:")}</${InputAdornment}>`,
+        }}
+        sx=${{ minWidth: 220 }}
+      />
+      <${Stack} direction="row" spacing=${0.5} alignItems="center" flexWrap="wrap">
         ${repos.length > 1 && html`
-          <div class="kanban-filter-dropdown-wrap">
-            <button
-              class="kanban-filter-chip ${filters.repo ? 'active' : ''}"
-              onClick=${() => toggleDropdown("repo")}
-            >
-              ${iconText(`:box: ${filters.repo || "Repository"}`)}
-            </button>
-            ${showDropdown === "repo" && html`
-              <div class="kanban-filter-dropdown">
-                <button class="kanban-filter-option ${!filters.repo ? 'selected' : ''}" onClick=${() => setFilter("repo", "")}>All repositories</button>
-                ${repos.map((r) => html`
-                  <button class="kanban-filter-option ${filters.repo === r ? 'selected' : ''}" onClick=${() => setFilter("repo", r)}>${r}</button>
-                `)}
-              </div>
-            `}
-          </div>
-        `}
-        <div class="kanban-filter-dropdown-wrap">
-          <button
-            class="kanban-filter-chip ${filters.priority ? 'active' : ''}"
-            onClick=${() => toggleDropdown("priority")}
+          <${Chip}
+            label=${iconText(':box: ' + (filters.repo || 'Repository'))}
+            variant=${filters.repo ? 'filled' : 'outlined'}
+            onClick=${(e) => handleDropdownClick("repo", e)}
+            onDelete=${filters.repo ? () => setFilter("repo", "") : undefined}
+            size="small"
+          />
+          <${Menu}
+            anchorEl=${showDropdown === "repo" ? anchorEl : null}
+            open=${showDropdown === "repo"}
+            onClose=${handleMenuClose}
           >
-            ◉ ${filters.priority ? PRIORITY_LABELS[filters.priority] || filters.priority : "Priority"}
-          </button>
-          ${showDropdown === "priority" && html`
-            <div class="kanban-filter-dropdown">
-              <button class="kanban-filter-option ${!filters.priority ? 'selected' : ''}" onClick=${() => setFilter("priority", "")}>All priorities</button>
-              ${priorities.map((p) => html`
-                <button class="kanban-filter-option ${filters.priority === p ? 'selected' : ''}" onClick=${() => setFilter("priority", p)}>
-                  <span class="kanban-card-priority" style="background:${PRIORITY_COLORS[p]}"></span>
-                  ${p.charAt(0).toUpperCase() + p.slice(1)}
-                </button>
-              `)}
-            </div>
-          `}
-        </div>
+            <${MenuItem} selected=${!filters.repo} onClick=${() => setFilter("repo", "")}>All repositories</${MenuItem}>
+            ${repos.map((r) => html`
+              <${MenuItem} key=${r} selected=${filters.repo === r} onClick=${() => setFilter("repo", r)}>${r}</${MenuItem}>
+            `)}
+          </${Menu}>
+        `}
+        <${Chip}
+          label=${'◉ ' + (filters.priority ? (PRIORITY_LABELS[filters.priority] || filters.priority) : 'Priority')}
+          variant=${filters.priority ? 'filled' : 'outlined'}
+          onClick=${(e) => handleDropdownClick("priority", e)}
+          onDelete=${filters.priority ? () => setFilter("priority", "") : undefined}
+          size="small"
+        />
+        <${Menu}
+          anchorEl=${showDropdown === "priority" ? anchorEl : null}
+          open=${showDropdown === "priority"}
+          onClose=${handleMenuClose}
+        >
+          <${MenuItem} selected=${!filters.priority} onClick=${() => setFilter("priority", "")}>All priorities</${MenuItem}>
+          ${priorities.map((p) => html`
+            <${MenuItem} key=${p} selected=${filters.priority === p} onClick=${() => setFilter("priority", p)}>
+              <${Box} component="span" sx=${{ width: 10, height: 10, borderRadius: '50%', backgroundColor: PRIORITY_COLORS[p], display: 'inline-block', mr: 1 }} />
+              ${p.charAt(0).toUpperCase() + p.slice(1)}
+            </${MenuItem}>
+          `)}
+        </${Menu}>
         ${assignees.length > 0 && html`
-          <div class="kanban-filter-dropdown-wrap">
-            <button
-              class="kanban-filter-chip ${filters.assignee ? 'active' : ''}"
-              onClick=${() => toggleDropdown("assignee")}
-            >
-              ${iconText(`:user: ${filters.assignee || "Assignee"}`)}
-            </button>
-            ${showDropdown === "assignee" && html`
-              <div class="kanban-filter-dropdown">
-                <button class="kanban-filter-option ${!filters.assignee ? 'selected' : ''}" onClick=${() => setFilter("assignee", "")}>All assignees</button>
-                ${assignees.map((a) => html`
-                  <button class="kanban-filter-option ${filters.assignee === a ? 'selected' : ''}" onClick=${() => setFilter("assignee", a)}>${a}</button>
-                `)}
-              </div>
-            `}
-          </div>
+          <${Chip}
+            label=${iconText(':user: ' + (filters.assignee || 'Assignee'))}
+            variant=${filters.assignee ? 'filled' : 'outlined'}
+            onClick=${(e) => handleDropdownClick("assignee", e)}
+            onDelete=${filters.assignee ? () => setFilter("assignee", "") : undefined}
+            size="small"
+          />
+          <${Menu}
+            anchorEl=${showDropdown === "assignee" ? anchorEl : null}
+            open=${showDropdown === "assignee"}
+            onClose=${handleMenuClose}
+          >
+            <${MenuItem} selected=${!filters.assignee} onClick=${() => setFilter("assignee", "")}>All assignees</${MenuItem}>
+            ${assignees.map((a) => html`
+              <${MenuItem} key=${a} selected=${filters.assignee === a} onClick=${() => setFilter("assignee", a)}>${a}</${MenuItem}>
+            `)}
+          </${Menu}>
         `}
         ${hasFilters && html`
-          <button class="kanban-filter-chip clear" onClick=${clearAll}>${iconText("✕ Clear")}</button>
+          <${Chip} label="✕ Clear" size="small" onClick=${clearAll} onDelete=${clearAll} />
         `}
-      </div>
-    </div>
+      </${Stack}>
+    </${Box}>
   `;
 }
 
@@ -670,9 +696,9 @@ export function KanbanBoard({ onOpenTask }) {
   }, [filteredTasks]);
 
   return html`
-    <div class="kanban-container">
+    <${Box} className="kanban-container">
       <${KanbanFilter} tasks=${allTasks} filters=${filters} onFilterChange=${setFilters} />
-      <div class="kanban-board">
+      <${Box} className="kanban-board" sx=${{ display: 'flex', gap: 2, overflowX: 'auto', pb: 1 }}>
         ${COLUMNS.map((col) => html`
           <${KanbanColumn}
             key=${col.id}
@@ -681,7 +707,7 @@ export function KanbanBoard({ onOpenTask }) {
             onOpen=${onOpenTask}
           />
         `)}
-      </div>
-    </div>
+      </${Box}>
+    </${Box}>
   `;
 }

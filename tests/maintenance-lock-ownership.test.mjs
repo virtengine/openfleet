@@ -7,7 +7,7 @@ import {
   acquireMonitorLock,
   classifyMonitorCommandLine,
   shouldAssumeMonitorForUnknownOwner,
-} from "../maintenance.mjs";
+} from "../infra/maintenance.mjs";
 
 let lockDir;
 let previousMaxListeners;

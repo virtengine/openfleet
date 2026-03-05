@@ -1,0 +1,591 @@
+{
+  "generatedAt": "2026-03-04T04:33:18.833Z",
+  "templateCount": 39,
+  "nodeTypeCount": 71,
+  "hitCount": 45,
+  "missCount": 26,
+  "coveragePct": 63,
+  "threshold": 0,
+  "hitTypes": [
+    "trigger.manual",
+    "trigger.task_low",
+    "trigger.schedule",
+    "trigger.event",
+    "trigger.meeting.wake_phrase",
+    "trigger.pr_event",
+    "trigger.task_assigned",
+    "trigger.anomaly",
+    "condition.expression",
+    "condition.switch",
+    "action.run_agent",
+    "action.run_command",
+    "meeting.start",
+    "meeting.send",
+    "meeting.transcript",
+    "meeting.vision",
+    "action.update_task_status",
+    "action.write_file",
+    "action.set_variable",
+    "validation.screenshot",
+    "validation.model_review",
+    "validation.tests",
+    "validation.build",
+    "validation.lint",
+    "transform.json_parse",
+    "transform.aggregate",
+    "transform.llm_parse",
+    "notify.log",
+    "notify.telegram",
+    "agent.select_profile",
+    "action.materialize_planner_tasks",
+    "agent.run_planner",
+    "agent.evidence_collect",
+    "loop.for_each",
+    "action.continue_session",
+    "action.bosun_cli",
+    "action.analyze_errors",
+    "action.refresh_worktree",
+    "trigger.task_available",
+    "condition.slot_available",
+    "action.allocate_slot",
+    "action.release_slot",
+    "action.claim_task",
+    "action.detect_new_commits",
+    "action.web_search"
+  ],
+  "missTypes": [
+    "trigger.webhook",
+    "trigger.scheduled_once",
+    "condition.task_has_tag",
+    "condition.file_exists",
+    "action.execute_workflow",
+    "meeting.finalize",
+    "action.create_task",
+    "action.git_operations",
+    "action.create_pr",
+    "action.read_file",
+    "action.delay",
+    "transform.template",
+    "notify.webhook_out",
+    "flow.gate",
+    "loop.while",
+    "action.restart_agent",
+    "action.handle_rate_limit",
+    "action.ask_user",
+    "action.mcp_tool_call",
+    "action.mcp_list_tools",
+    "action.release_claim",
+    "action.resolve_executor",
+    "action.acquire_worktree",
+    "action.release_worktree",
+    "action.build_task_prompt",
+    "action.push_branch"
+  ],
+  "templateResults": [
+    {
+      "id": "template-pr-merge-strategy",
+      "success": true,
+      "errors": 0
+    },
+    {
+      "id": "template-pr-triage",
+      "success": true,
+      "errors": 0
+    },
+    {
+      "id": "template-pr-conflict-resolver",
+      "success": true,
+      "errors": 0
+    },
+    {
+      "id": "template-stale-pr-reaper",
+      "success": true,
+      "errors": 0
+    },
+    {
+      "id": "template-release-drafter",
+      "success": true,
+      "errors": 0
+    },
+    {
+      "id": "template-bosun-pr-watchdog",
+      "success": true,
+      "errors": 0
+    },
+    {
+      "id": "template-github-kanban-sync",
+      "success": true,
+      "errors": 0
+    },
+    {
+      "id": "template-sdk-conflict-resolver",
+      "success": true,
+      "errors": 0
+    },
+    {
+      "id": "template-review-agent",
+      "success": true,
+      "errors": 0
+    },
+    {
+      "id": "template-frontend-agent",
+      "success": true,
+      "errors": 0
+    },
+    {
+      "id": "template-custom-agent",
+      "success": true,
+      "errors": 0
+    },
+    {
+      "id": "template-agent-session-monitor",
+      "success": true,
+      "errors": 0
+    },
+    {
+      "id": "template-backend-agent",
+      "success": true,
+      "errors": 0
+    },
+    {
+      "id": "template-voice-video-parallel-rollout",
+      "success": true,
+      "errors": 0
+    },
+    {
+      "id": "template-meeting-subworkflow-chain",
+      "success": true,
+      "errors": 0
+    },
+    {
+      "id": "template-task-planner",
+      "success": true,
+      "errors": 0
+    },
+    {
+      "id": "template-task-replenish",
+      "success": true,
+      "errors": 0
+    },
+    {
+      "id": "template-nightly-report",
+      "success": true,
+      "errors": 0
+    },
+    {
+      "id": "template-sprint-retrospective",
+      "success": true,
+      "errors": 0
+    },
+    {
+      "id": "template-build-deploy",
+      "success": true,
+      "errors": 0
+    },
+    {
+      "id": "template-release-pipeline",
+      "success": true,
+      "errors": 0
+    },
+    {
+      "id": "template-canary-deploy",
+      "success": true,
+      "errors": 0
+    },
+    {
+      "id": "template-error-recovery",
+      "success": true,
+      "errors": 0
+    },
+    {
+      "id": "template-anomaly-watchdog",
+      "success": true,
+      "errors": 0
+    },
+    {
+      "id": "template-workspace-hygiene",
+      "success": true,
+      "errors": 0
+    },
+    {
+      "id": "template-health-check",
+      "success": true,
+      "errors": 0
+    },
+    {
+      "id": "template-task-finalization-guard",
+      "success": true,
+      "errors": 0
+    },
+    {
+      "id": "template-task-repair-worktree",
+      "success": true,
+      "errors": 0
+    },
+    {
+      "id": "template-task-status-transition-manager",
+      "success": true,
+      "errors": 0
+    },
+    {
+      "id": "template-incident-response",
+      "success": true,
+      "errors": 0
+    },
+    {
+      "id": "template-task-archiver",
+      "success": true,
+      "errors": 0
+    },
+    {
+      "id": "template-sync-engine",
+      "success": true,
+      "errors": 0
+    },
+    {
+      "id": "template-dependency-audit",
+      "success": true,
+      "errors": 0
+    },
+    {
+      "id": "template-secret-scanner",
+      "success": true,
+      "errors": 0
+    },
+    {
+      "id": "template-task-lifecycle",
+      "success": true,
+      "errors": 0
+    },
+    {
+      "id": "template-ve-orchestrator-lite",
+      "success": true,
+      "errors": 0
+    },
+    {
+      "id": "template-task-batch-processor",
+      "success": true,
+      "errors": 0
+    },
+    {
+      "id": "template-task-batch-pr",
+      "success": true,
+      "errors": 0
+    },
+    {
+      "id": "template-research-agent",
+      "success": true,
+      "errors": 0
+    }
+  ],
+  "byNodeType": {
+    "trigger.manual": [
+      "template-release-drafter",
+      "template-custom-agent",
+      "template-voice-video-parallel-rollout",
+      "template-meeting-subworkflow-chain",
+      "template-release-pipeline",
+      "template-canary-deploy",
+      "template-research-agent"
+    ],
+    "trigger.task_low": [
+      "template-task-planner",
+      "template-task-replenish",
+      "template-task-batch-processor",
+      "template-task-batch-pr"
+    ],
+    "trigger.schedule": [
+      "template-pr-conflict-resolver",
+      "template-stale-pr-reaper",
+      "template-bosun-pr-watchdog",
+      "template-github-kanban-sync",
+      "template-agent-session-monitor",
+      "template-task-replenish",
+      "template-nightly-report",
+      "template-sprint-retrospective",
+      "template-workspace-hygiene",
+      "template-health-check",
+      "template-dependency-audit",
+      "template-secret-scanner"
+    ],
+    "trigger.event": [
+      "template-sdk-conflict-resolver",
+      "template-build-deploy",
+      "template-error-recovery",
+      "template-anomaly-watchdog",
+      "template-task-finalization-guard",
+      "template-task-repair-worktree",
+      "template-task-status-transition-manager",
+      "template-task-archiver",
+      "template-sync-engine"
+    ],
+    "trigger.meeting.wake_phrase": [
+      "template-meeting-subworkflow-chain"
+    ],
+    "trigger.webhook": [],
+    "trigger.pr_event": [
+      "template-pr-merge-strategy",
+      "template-pr-triage",
+      "template-review-agent"
+    ],
+    "trigger.task_assigned": [
+      "template-frontend-agent",
+      "template-backend-agent"
+    ],
+    "trigger.anomaly": [
+      "template-incident-response"
+    ],
+    "trigger.scheduled_once": [],
+    "condition.expression": [
+      "template-pr-merge-strategy",
+      "template-pr-conflict-resolver",
+      "template-stale-pr-reaper",
+      "template-bosun-pr-watchdog",
+      "template-github-kanban-sync",
+      "template-sdk-conflict-resolver",
+      "template-frontend-agent",
+      "template-custom-agent",
+      "template-agent-session-monitor",
+      "template-backend-agent",
+      "template-voice-video-parallel-rollout",
+      "template-meeting-subworkflow-chain",
+      "template-task-planner",
+      "template-task-replenish",
+      "template-sprint-retrospective",
+      "template-release-pipeline",
+      "template-canary-deploy",
+      "template-error-recovery",
+      "template-health-check",
+      "template-task-finalization-guard",
+      "template-task-repair-worktree",
+      "template-incident-response",
+      "template-task-archiver",
+      "template-sync-engine",
+      "template-dependency-audit",
+      "template-secret-scanner",
+      "template-task-lifecycle",
+      "template-ve-orchestrator-lite",
+      "template-task-batch-processor"
+    ],
+    "condition.task_has_tag": [],
+    "condition.file_exists": [],
+    "condition.switch": [
+      "template-pr-triage",
+      "template-anomaly-watchdog",
+      "template-task-status-transition-manager"
+    ],
+    "action.run_agent": [
+      "template-release-drafter",
+      "template-review-agent",
+      "template-frontend-agent",
+      "template-custom-agent",
+      "template-backend-agent",
+      "template-nightly-report",
+      "template-sprint-retrospective",
+      "template-release-pipeline",
+      "template-error-recovery",
+      "template-task-repair-worktree",
+      "template-incident-response",
+      "template-task-batch-pr",
+      "template-research-agent"
+    ],
+    "action.run_command": [
+      "template-pr-merge-strategy",
+      "template-pr-triage",
+      "template-pr-conflict-resolver",
+      "template-stale-pr-reaper",
+      "template-release-drafter",
+      "template-bosun-pr-watchdog",
+      "template-github-kanban-sync",
+      "template-sdk-conflict-resolver",
+      "template-agent-session-monitor",
+      "template-nightly-report",
+      "template-sprint-retrospective",
+      "template-build-deploy",
+      "template-release-pipeline",
+      "template-canary-deploy",
+      "template-workspace-hygiene",
+      "template-health-check",
+      "template-task-finalization-guard",
+      "template-task-repair-worktree",
+      "template-task-archiver",
+      "template-sync-engine",
+      "template-dependency-audit",
+      "template-secret-scanner",
+      "template-task-batch-pr"
+    ],
+    "action.execute_workflow": [],
+    "meeting.start": [
+      "template-meeting-subworkflow-chain"
+    ],
+    "meeting.send": [
+      "template-meeting-subworkflow-chain"
+    ],
+    "meeting.transcript": [
+      "template-meeting-subworkflow-chain"
+    ],
+    "meeting.vision": [
+      "template-meeting-subworkflow-chain"
+    ],
+    "meeting.finalize": [],
+    "action.create_task": [],
+    "action.update_task_status": [
+      "template-custom-agent",
+      "template-task-batch-pr"
+    ],
+    "action.git_operations": [],
+    "action.create_pr": [],
+    "action.write_file": [
+      "template-release-drafter"
+    ],
+    "action.read_file": [],
+    "action.set_variable": [
+      "template-pr-conflict-resolver",
+      "template-sdk-conflict-resolver",
+      "template-custom-agent",
+      "template-backend-agent",
+      "template-task-planner",
+      "template-release-pipeline"
+    ],
+    "action.delay": [],
+    "validation.screenshot": [
+      "template-frontend-agent"
+    ],
+    "validation.model_review": [
+      "template-frontend-agent"
+    ],
+    "validation.tests": [
+      "template-review-agent",
+      "template-custom-agent",
+      "template-backend-agent",
+      "template-build-deploy",
+      "template-release-pipeline"
+    ],
+    "validation.build": [
+      "template-pr-merge-strategy",
+      "template-review-agent",
+      "template-frontend-agent",
+      "template-backend-agent",
+      "template-build-deploy",
+      "template-release-pipeline",
+      "template-canary-deploy"
+    ],
+    "validation.lint": [
+      "template-frontend-agent",
+      "template-backend-agent",
+      "template-build-deploy"
+    ],
+    "transform.json_parse": [
+      "template-dependency-audit"
+    ],
+    "transform.template": [],
+    "transform.aggregate": [
+      "template-review-agent"
+    ],
+    "transform.llm_parse": [
+      "template-research-agent"
+    ],
+    "notify.log": [
+      "template-pr-conflict-resolver",
+      "template-stale-pr-reaper",
+      "template-release-drafter",
+      "template-bosun-pr-watchdog",
+      "template-frontend-agent",
+      "template-task-planner",
+      "template-task-replenish",
+      "template-sprint-retrospective",
+      "template-error-recovery",
+      "template-workspace-hygiene",
+      "template-task-status-transition-manager",
+      "template-sync-engine",
+      "template-dependency-audit",
+      "template-secret-scanner",
+      "template-task-lifecycle",
+      "template-ve-orchestrator-lite"
+    ],
+    "notify.telegram": [
+      "template-review-agent",
+      "template-frontend-agent",
+      "template-agent-session-monitor",
+      "template-backend-agent",
+      "template-voice-video-parallel-rollout",
+      "template-meeting-subworkflow-chain",
+      "template-task-planner",
+      "template-nightly-report",
+      "template-build-deploy",
+      "template-release-pipeline",
+      "template-canary-deploy",
+      "template-health-check"
+    ],
+    "notify.webhook_out": [],
+    "agent.select_profile": [
+      "template-frontend-agent"
+    ],
+    "action.materialize_planner_tasks": [
+      "template-task-planner"
+    ],
+    "agent.run_planner": [
+      "template-backend-agent",
+      "template-task-planner"
+    ],
+    "agent.evidence_collect": [
+      "template-frontend-agent",
+      "template-incident-response"
+    ],
+    "flow.gate": [],
+    "loop.for_each": [
+      "template-task-batch-pr"
+    ],
+    "loop.while": [],
+    "action.continue_session": [
+      "template-agent-session-monitor"
+    ],
+    "action.restart_agent": [],
+    "action.bosun_cli": [
+      "template-sprint-retrospective",
+      "template-health-check"
+    ],
+    "action.handle_rate_limit": [],
+    "action.ask_user": [],
+    "action.analyze_errors": [
+      "template-sprint-retrospective"
+    ],
+    "action.refresh_worktree": [
+      "template-task-repair-worktree"
+    ],
+    "action.mcp_tool_call": [],
+    "action.mcp_list_tools": [],
+    "trigger.task_available": [
+      "template-task-lifecycle",
+      "template-ve-orchestrator-lite"
+    ],
+    "condition.slot_available": [
+      "template-task-lifecycle",
+      "template-ve-orchestrator-lite"
+    ],
+    "action.allocate_slot": [
+      "template-task-lifecycle",
+      "template-ve-orchestrator-lite"
+    ],
+    "action.release_slot": [
+      "template-task-lifecycle",
+      "template-ve-orchestrator-lite"
+    ],
+    "action.claim_task": [
+      "template-task-lifecycle",
+      "template-ve-orchestrator-lite"
+    ],
+    "action.release_claim": [],
+    "action.resolve_executor": [],
+    "action.acquire_worktree": [],
+    "action.release_worktree": [],
+    "action.build_task_prompt": [],
+    "action.detect_new_commits": [
+      "template-task-batch-pr"
+    ],
+    "action.push_branch": [],
+    "action.web_search": [
+      "template-research-agent"
+    ]
+  }
+}

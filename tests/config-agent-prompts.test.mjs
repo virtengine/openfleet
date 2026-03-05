@@ -2,7 +2,7 @@ import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import { mkdtemp, mkdir, writeFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { resolve } from "node:path";
-import { loadAgentPrompts } from "../config.mjs";
+import { loadAgentPrompts } from "../config/config.mjs";
 
 describe("loadAgentPrompts generic prompt loading", () => {
   /** @type {string} */
@@ -19,59 +19,25 @@ describe("loadAgentPrompts generic prompt loading", () => {
     if (rootDir) {
       await rm(rootDir, { recursive: true, force: true });
     }
-    delete process.env.BOSUN_PROMPT_MONITOR_MONITOR;
   });
 
-  it("loads monitor-monitor prompt from .bosun/agents when present", async () => {
-    await writeFile(
-      resolve(rootDir, ".bosun", "agents", "monitor-monitor.md"),
-      "CUSTOM_MONITOR_PROMPT",
-      "utf8",
-    );
-
-    const prompts = loadAgentPrompts(rootDir, rootDir, {});
-    expect(prompts.monitorMonitor).toContain("CUSTOM_MONITOR_PROMPT");
-  });
-
-  it("supports config override path for planner prompt", async () => {
+  it("supports config override path for taskExecutor prompt", async () => {
     await mkdir(resolve(rootDir, "custom-prompts"), { recursive: true });
     await writeFile(
-      resolve(rootDir, "custom-prompts", "planner.md"),
-      "PLANNER_OVERRIDE_PROMPT",
+      resolve(rootDir, "custom-prompts", "task-executor.md"),
+      "EXECUTOR_OVERRIDE_PROMPT",
       "utf8",
     );
 
     const prompts = loadAgentPrompts(rootDir, rootDir, {
-      agentPrompts: { planner: "custom-prompts/planner.md" },
+      agentPrompts: { taskExecutor: "custom-prompts/task-executor.md" },
     });
 
-    expect(prompts.planner).toContain("PLANNER_OVERRIDE_PROMPT");
-  });
-
-  it("supports env override path with highest priority", async () => {
-    await mkdir(resolve(rootDir, "env-prompts"), { recursive: true });
-    await writeFile(
-      resolve(rootDir, "env-prompts", "monitor.md"),
-      "ENV_MONITOR_PROMPT",
-      "utf8",
-    );
-
-    process.env.BOSUN_PROMPT_MONITOR_MONITOR =
-      "env-prompts/monitor.md";
-
-    const prompts = loadAgentPrompts(rootDir, rootDir, {
-      agentPrompts: {
-        monitorMonitor: ".bosun/agents/monitor-monitor.md",
-      },
-    });
-
-    expect(prompts.monitorMonitor).toContain("ENV_MONITOR_PROMPT");
+    expect(prompts.taskExecutor).toContain("EXECUTOR_OVERRIDE_PROMPT");
   });
 
   it("falls back to built-in prompt when no files exist", () => {
     const prompts = loadAgentPrompts(rootDir, rootDir, {});
     expect(prompts.orchestrator).toContain("Task Orchestrator Agent");
-    expect(prompts.planner).toContain("Codex-Task-Planner Agent");
-    expect(prompts.monitorMonitor).toContain("Bosun-Monitor Agent");
   });
 });

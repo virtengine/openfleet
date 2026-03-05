@@ -3,7 +3,7 @@ import { resolve } from "node:path";
 import { describe, it, expect } from "vitest";
 
 describe("monitor epic PR guard rails", () => {
-  const monitorPath = resolve(process.cwd(), "monitor.mjs");
+  const monitorPath = resolve(process.cwd(), "infra/monitor.mjs");
   const source = readFileSync(monitorPath, "utf8");
 
   it("adds a git readiness preflight before epic PR creation", () => {

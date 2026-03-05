@@ -2,6 +2,7 @@
  *  VirtEngine Control Center – Agent Selector
  *  Agent mode selector, model/adapter picker, status badge
  *  Sits in the chat input toolbar area (VS Code Copilot-style)
+ *  MUI Material edition
  * ────────────────────────────────────────────────────────────── */
 
 import { h } from "preact";
@@ -21,6 +22,25 @@ import {
   staleAgentCount,
   totalErrorCount,
 } from "../modules/agent-events.js";
+import {
+  ToggleButton,
+  ToggleButtonGroup,
+  Menu,
+  MenuItem,
+  Select,
+  Switch,
+  FormControlLabel,
+  Chip,
+  Typography,
+  Box,
+  Stack,
+  IconButton,
+  Tooltip,
+  Divider,
+  ListItemIcon,
+  ListItemText,
+  Badge,
+} from "@mui/material";
 
 const html = htm.bind(h);
 
@@ -29,7 +49,7 @@ const html = htm.bind(h);
  * ═══════════════════════════════════════════════ */
 
 /** Current agent interaction mode */
-export const agentMode = signal("agent"); // "ask" | "agent" | "plan"
+export const agentMode = signal("ask"); // "ask" | "agent" | "plan" | "web" | "instant"
 
 /** Available agents loaded from API */
 export const availableAgents = signal([]); // Array<{ id, name, provider, available, busy, capabilities }>
@@ -67,6 +87,8 @@ const MODES = [
   { id: "ask", label: "Ask", icon: "chat", description: "Ask a question" },
   { id: "agent", label: "Agent", icon: "bot", description: "Autonomous agent" },
   { id: "plan", label: "Plan", icon: "clipboard", description: "Create a plan first" },
+  { id: "web", label: "Web", icon: "globe", description: "Web-style quick answers" },
+  { id: "instant", label: "Instant", icon: "zap", description: "Fast back-and-forth" },
 ];
 
 const AGENT_ICONS = {
@@ -150,336 +172,33 @@ const STATUS_CONFIG = {
  * ═══════════════════════════════════════════════ */
 
 const AGENT_SELECTOR_STYLES = `
-/* ── Agent Mode Pill Group ── */
-.agent-mode-group {
-  display: inline-flex;
-  border-radius: 8px;
-  overflow: hidden;
-  background: var(--tg-theme-secondary-bg-color, #1e1e2e);
-  border: 1px solid rgba(255,255,255,0.06);
-  flex-shrink: 0;
-}
-.agent-mode-pill {
-  display: flex;
-  align-items: center;
-  gap: 4px;
-  padding: 5px 10px;
-  font-size: 12px;
-  font-weight: 500;
-  letter-spacing: 0.01em;
-  border: none;
-  background: transparent;
-  color: var(--tg-theme-hint-color, #999);
-  cursor: pointer;
-  transition: background 0.2s ease, color 0.2s ease;
-  -webkit-tap-highlight-color: transparent;
-  white-space: nowrap;
-  line-height: 1.2;
-}
-.agent-mode-pill:hover {
-  background: rgba(255,255,255,0.05);
-  color: var(--tg-theme-text-color, #fff);
-}
-.agent-mode-pill.active {
-  background: var(--tg-theme-button-color, #3b82f6);
-  color: var(--tg-theme-button-text-color, #fff);
-}
-.agent-mode-pill .mode-icon {
-  font-size: 11px;
-  line-height: 1;
-}
-.agent-mode-pill .mode-icon svg {
-  width: 1em;
-  height: 1em;
-  display: inline-block;
-}
-
-/* ── Compact Icon Dropdown (mode + model) ── */
-.icon-dropdown-wrap {
-  position: relative;
-  flex-shrink: 0;
-}
-.icon-dropdown-btn {
-  display: flex;
-  align-items: center;
-  gap: 4px;
-  padding: 5px 8px;
-  font-size: 12px;
-  font-weight: 500;
-  border: 1px solid rgba(255,255,255,0.08);
-  border-radius: 8px;
-  background: var(--tg-theme-secondary-bg-color, #1e1e2e);
-  color: var(--tg-theme-text-color, #fff);
-  cursor: pointer;
-  transition: background 0.2s ease, border-color 0.2s ease;
-  -webkit-tap-highlight-color: transparent;
-  white-space: nowrap;
-  line-height: 1.2;
-}
-.icon-dropdown-btn:hover {
-  background: rgba(255,255,255,0.05);
-  border-color: rgba(255,255,255,0.12);
-}
-.icon-dropdown-btn.open {
-  border-color: var(--tg-theme-button-color, #3b82f6);
-}
-.icon-dropdown-btn .dd-icon {
-  font-size: 13px;
-  line-height: 1;
-}
-.icon-dropdown-btn .dd-icon svg {
-  width: 1em;
-  height: 1em;
-  display: inline-block;
-}
-.icon-dropdown-btn .dd-label {
-  max-width: 80px;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-.icon-dropdown-btn .dd-chevron {
-  font-size: 8px;
-  opacity: 0.5;
-  transition: transform 0.2s ease;
-}
-.icon-dropdown-btn.open .dd-chevron {
-  transform: rotate(180deg);
-}
-.icon-dropdown-menu {
-  position: absolute;
-  bottom: calc(100% + 6px);
-  left: 0;
-  min-width: 160px;
-  background: var(--tg-theme-bg-color, #0f0f23);
-  border: 1px solid rgba(255,255,255,0.1);
-  border-radius: 10px;
-  box-shadow: 0 8px 32px rgba(0,0,0,0.4);
-  backdrop-filter: blur(16px);
-  padding: 4px;
-  z-index: 1000;
-  animation: agentDropIn 0.15s ease-out;
-  overflow: hidden;
-}
-.icon-dropdown-item {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  padding: 7px 10px;
-  border-radius: 7px;
-  border: none;
-  background: transparent;
-  color: var(--tg-theme-text-color, #fff);
-  cursor: pointer;
-  width: 100%;
-  text-align: left;
-  transition: background 0.15s ease;
-  font-size: 12px;
-  -webkit-tap-highlight-color: transparent;
-}
-.icon-dropdown-item:hover {
-  background: rgba(255,255,255,0.06);
-}
-.icon-dropdown-item.active {
-  background: rgba(59,130,246,0.15);
-}
-.icon-dropdown-item .item-icon {
-  font-size: 14px;
-  width: 20px;
-  text-align: center;
-  flex-shrink: 0;
-}
-.icon-dropdown-item .item-icon svg {
-  width: 1em;
-  height: 1em;
-  display: inline-block;
-}
-.icon-dropdown-item .item-check {
-  margin-left: auto;
-  color: var(--tg-theme-button-color, #3b82f6);
-  font-size: 12px;
-  font-weight: 700;
-}
-
-/* ── Agent Picker Dropdown ── */
-.agent-picker-wrap {
-  position: relative;
-  flex-shrink: 0;
-}
-.agent-picker-btn {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  padding: 5px 10px;
-  font-size: 12px;
-  font-weight: 500;
-  border: 1px solid rgba(255,255,255,0.08);
-  border-radius: 8px;
-  background: var(--tg-theme-secondary-bg-color, #1e1e2e);
-  color: var(--tg-theme-text-color, #fff);
-  cursor: pointer;
-  transition: background 0.2s ease, border-color 0.2s ease;
-  -webkit-tap-highlight-color: transparent;
-  white-space: nowrap;
-  line-height: 1.2;
-}
-.agent-picker-btn:hover {
-  background: rgba(255,255,255,0.05);
-  border-color: rgba(255,255,255,0.12);
-}
-.agent-picker-btn.open {
-  border-color: var(--tg-theme-button-color, #3b82f6);
-}
-.agent-picker-btn .picker-icon {
-  font-size: 13px;
-  line-height: 1;
-}
-.agent-picker-btn .picker-icon svg {
-  width: 1em;
-  height: 1em;
-  display: inline-block;
-}
-.agent-picker-chevron {
-  font-size: 9px;
-  opacity: 0.5;
-  transition: transform 0.2s ease;
-}
-.agent-picker-btn.open .agent-picker-chevron {
-  transform: rotate(180deg);
-}
-
-/* ── Dropdown Menu ── */
-.agent-picker-dropdown {
-  position: absolute;
-  bottom: calc(100% + 6px);
-  left: 0;
-  min-width: 220px;
-  background: var(--tg-theme-bg-color, #0f0f23);
-  border: 1px solid rgba(255,255,255,0.1);
-  border-radius: 12px;
-  box-shadow: 0 8px 32px rgba(0,0,0,0.4);
-  backdrop-filter: blur(16px);
-  padding: 4px;
-  z-index: 1000;
-  animation: agentDropIn 0.15s ease-out;
-  overflow: hidden;
-}
+/* ── Animations (MUI can't inject these via sx) ── */
 @keyframes agentDropIn {
   from { opacity: 0; transform: translateY(6px) scale(0.97); }
   to   { opacity: 1; transform: translateY(0) scale(1); }
-}
-.agent-picker-item {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  padding: 8px 10px;
-  border-radius: 8px;
-  border: none;
-  background: transparent;
-  color: var(--tg-theme-text-color, #fff);
-  cursor: pointer;
-  width: 100%;
-  text-align: left;
-  transition: background 0.15s ease;
-  font-size: 13px;
-  -webkit-tap-highlight-color: transparent;
-}
-.agent-picker-item:hover {
-  background: rgba(255,255,255,0.06);
-}
-.agent-picker-item.active {
-  background: rgba(59,130,246,0.12);
-}
-.agent-picker-item-icon {
-  font-size: 18px;
-  width: 28px;
-  height: 28px;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  border-radius: 6px;
-  background: rgba(255,255,255,0.04);
-  flex-shrink: 0;
-}
-.agent-picker-item-info {
-  flex: 1;
-  min-width: 0;
-}
-.agent-picker-item-name {
-  font-weight: 500;
-  font-size: 13px;
-  line-height: 1.3;
-}
-.agent-picker-item-provider {
-  font-size: 11px;
-  color: var(--tg-theme-hint-color, #888);
-  line-height: 1.3;
-}
-.agent-picker-item-end {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  flex-shrink: 0;
-}
-.agent-picker-check {
-  color: var(--tg-theme-button-color, #3b82f6);
-  font-size: 14px;
-  font-weight: 700;
-}
-.agent-picker-status-dot {
-  width: 7px;
-  height: 7px;
-  border-radius: 50%;
-  flex-shrink: 0;
-}
-.agent-picker-status-dot.available { background: #22c55e; }
-.agent-picker-status-dot.busy      { background: #eab308; }
-.agent-picker-status-dot.offline   { background: #6b7280; }
-
-/* ── Provider badge ── */
-.agent-provider-badge {
-  display: inline-flex;
-  align-items: center;
-  padding: 1px 5px;
-  border-radius: 4px;
-  font-size: 9px;
-  font-weight: 600;
-  letter-spacing: 0.04em;
-  text-transform: uppercase;
-  color: #fff;
-  line-height: 1.4;
-}
-
-/* ── Agent Status Badge ── */
-.agent-status-badge {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  padding: 4px 8px;
-  font-size: 11px;
-  font-weight: 500;
-  color: var(--tg-theme-hint-color, #999);
-  white-space: nowrap;
-  flex-shrink: 0;
-}
-.agent-status-dot {
-  width: 7px;
-  height: 7px;
-  border-radius: 50%;
-  flex-shrink: 0;
-  transition: background 0.3s ease;
-}
-.agent-status-dot.pulse {
-  animation: agentPulse 1.4s ease-in-out infinite;
 }
 @keyframes agentPulse {
   0%, 100% { opacity: 1; transform: scale(1); }
   50%      { opacity: 0.5; transform: scale(1.35); }
 }
-.agent-status-label {
+
+/* ── Mode icon inside ToggleButton ── */
+.mode-icon {
+  font-size: 11px;
   line-height: 1;
 }
+.mode-icon svg {
+  width: 1em;
+  height: 1em;
+  display: inline-block;
+}
 
-/* ── Chat Input Toolbar ── */
+/* ── Agent status dot pulse ── */
+.agent-status-dot-pulse {
+  animation: agentPulse 1.4s ease-in-out infinite;
+}
+
+/* ── Chat Input Toolbar (scroll container) ── */
 .chat-input-toolbar {
   display: flex;
   align-items: center;
@@ -493,210 +212,164 @@ const AGENT_SELECTOR_STYLES = `
   scrollbar-width: none;
 }
 .chat-input-toolbar::-webkit-scrollbar { display: none; }
-.chat-input-toolbar-spacer {
-  flex: 1;
-  min-width: 8px;
+
+/* ── Stop Button ── */
+.chat-stop-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 36px;
+  height: 36px;
+  border-radius: 50%;
+  border: 2px solid #ef4444;
+  background: rgba(239, 68, 68, 0.12);
+  color: #ef4444;
+  cursor: pointer;
+  font-size: 14px;
+  flex-shrink: 0;
+  transition: background 0.2s ease, transform 0.1s ease;
+  -webkit-tap-highlight-color: transparent;
+  padding: 0;
+}
+.chat-stop-btn:hover {
+  background: rgba(239, 68, 68, 0.22);
+  transform: scale(1.05);
+}
+.chat-stop-btn:active {
+  transform: scale(0.95);
 }
 
-/* ── Dropdown backdrop (mobile) ── */
-.agent-picker-backdrop {
-  position: fixed;
-  inset: 0;
-  z-index: 999;
+/* ── Split Send Button Group ── */
+.chat-send-group {
+  position: relative;
+  display: flex;
+  flex-shrink: 0;
+}
+.chat-send-main {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  height: 36px;
+  padding: 0 13px;
+  border: none;
+  border-radius: 8px 0 0 8px;
+  background: var(--accent, var(--tg-theme-button-color, #3b82f6));
+  color: var(--accent-text, var(--tg-theme-button-text-color, #fff));
+  cursor: pointer;
+  font-size: 15px;
+  transition: background 0.2s ease, opacity 0.2s ease;
+  -webkit-tap-highlight-color: transparent;
+}
+.chat-send-main:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+.chat-send-main:not(:disabled):hover {
+  background: var(--accent-hover, #2563eb);
+}
+.chat-send-chevron {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  height: 36px;
+  width: 22px;
+  border: none;
+  border-left: 1px solid var(--border, rgba(255,255,255,0.2));
+  border-radius: 0 8px 8px 0;
+  background: var(--accent, var(--tg-theme-button-color, #3b82f6));
+  color: var(--accent-text, rgba(255,255,255,0.85));
+  cursor: pointer;
+  font-size: 10px;
+  transition: background 0.2s ease, opacity 0.2s ease;
+  -webkit-tap-highlight-color: transparent;
+  padding: 0;
+}
+.chat-send-chevron:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+.chat-send-chevron:not(:disabled):hover {
+  background: var(--accent-hover, #2563eb);
+  color: var(--accent-text, #fff);
+}
+
+/* ── Send Options Dropdown ── */
+.chat-send-menu {
+  position: absolute;
+  bottom: calc(100% + 6px);
+  right: 0;
+  min-width: 230px;
+  background: var(--tg-theme-bg-color, #0f0f23);
+  border: 1px solid rgba(255,255,255,0.1);
+  border-radius: 12px;
+  box-shadow: 0 8px 32px rgba(0,0,0,0.5);
+  backdrop-filter: blur(16px);
+  padding: 4px;
+  z-index: 1010;
+  animation: agentDropIn 0.15s ease-out;
+  overflow: hidden;
+}
+.chat-send-menu-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 9px 12px;
+  width: 100%;
+  border: none;
+  border-radius: 8px;
   background: transparent;
+  color: var(--tg-theme-text-color, #fff);
+  cursor: pointer;
+  font-size: 13px;
+  text-align: left;
+  transition: background 0.15s ease;
+  -webkit-tap-highlight-color: transparent;
+  line-height: 1.2;
+}
+.chat-send-menu-item:hover {
+  background: rgba(255,255,255,0.07);
+}
+.chat-send-menu-item.active {
+  background: rgba(59,130,246,0.15);
+  color: #93c5fd;
+}
+.chat-send-menu-item-icon {
+  font-size: 14px;
+  width: 18px;
+  text-align: center;
+  flex-shrink: 0;
+}
+.chat-send-menu-item-label {
+  flex: 1;
+  font-weight: 500;
+}
+.chat-send-menu-item-kbd {
+  display: inline-flex;
+  align-items: center;
+  padding: 1px 5px;
+  border-radius: 4px;
+  background: rgba(255,255,255,0.08);
+  border: 1px solid rgba(255,255,255,0.12);
+  font-size: 10px;
+  color: var(--tg-theme-hint-color, #999);
+  font-family: monospace;
+  white-space: nowrap;
+  flex-shrink: 0;
 }
 
-/* ── Responsive ── */
+/* ── Responsive tweaks ── */
 @media (max-width: 480px) {
-  .agent-mode-pill {
-    padding: 5px 8px;
-    font-size: 11px;
-  }
-  .agent-mode-pill .mode-icon {
-    display: none;
-  }
-  .icon-dropdown-btn .dd-label {
-    display: none;
-  }
-  .icon-dropdown-btn {
-    padding: 5px 6px;
-  }
-  .agent-picker-btn {
-    padding: 5px 8px;
-    font-size: 11px;
-  }
-  .agent-picker-dropdown {
-    min-width: 200px;
-    left: -4px;
-  }
   .chat-input-toolbar {
     gap: 4px;
     padding: 5px 6px;
   }
-  .agent-status-label {
-    display: none;
-  }
 }
 @media (min-width: 1200px) {
-  .agent-mode-pill {
-    padding: 6px 14px;
-    font-size: 13px;
-  }
-  .icon-dropdown-btn .dd-label {
-    max-width: 140px;
-  }
-  .agent-picker-dropdown {
-    min-width: 260px;
-  }
   .chat-input-toolbar {
     gap: 10px;
     padding: 8px 12px;
   }
 }
-
-/* ── Yolo Toggle ── */
-.yolo-toggle {
-  display: inline-flex;
-  align-items: center;
-  gap: 5px;
-  padding: 5px 10px;
-  font-size: 12px;
-  font-weight: 600;
-  border: 1px solid rgba(255, 165, 0, 0.25);
-  border-radius: 8px;
-  background: transparent;
-  color: var(--tg-theme-hint-color, #888);
-  cursor: pointer;
-  transition: background 0.2s ease, border-color 0.2s ease, color 0.2s ease, box-shadow 0.2s ease;
-  -webkit-tap-highlight-color: transparent;
-  white-space: nowrap;
-  line-height: 1.2;
-  user-select: none;
-  flex-shrink: 0;
-}
-.yolo-toggle:hover {
-  background: rgba(255, 165, 0, 0.07);
-  border-color: rgba(255, 165, 0, 0.4);
-  color: #ffb347;
-}
-.yolo-toggle.active {
-  background: rgba(255, 140, 0, 0.14);
-  border-color: rgba(255, 140, 0, 0.55);
-  color: #ffa537;
-  box-shadow: 0 0 8px rgba(255, 140, 0, 0.2);
-}
-.yolo-icon {
-  font-size: 13px;
-  line-height: 1;
-}
-.yolo-icon svg {
-  width: 13px;
-  height: 13px;
-  display: block;
-}
-.yolo-checkbox {
-  width: 13px;
-  height: 13px;
-  border-radius: 3px;
-  border: 1.5px solid currentColor;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  flex-shrink: 0;
-  transition: background 0.15s;
-}
-.yolo-toggle.active .yolo-checkbox {
-  background: #ffa537;
-  border-color: #ffa537;
-}
-.yolo-checkbox::after {
-  content: '';
-  display: none;
-}
-.yolo-toggle.active .yolo-checkbox::after {
-  content: '✓';
-  display: block;
-  font-size: 9px;
-  color: #1a1200;
-  font-weight: 800;
-  line-height: 1;
-}
-
-/* ── Native Agent Select ── */
-.agent-picker-native {
-  appearance: none;
-  -webkit-appearance: none;
-  background: var(--tg-theme-secondary-bg-color, #1e1e2e);
-  border: 1px solid rgba(255,255,255,0.08);
-  border-radius: 8px;
-  color: var(--tg-theme-text-color, #fff);
-  font-size: 12px;
-  font-weight: 500;
-  padding: 5px 22px 5px 10px;
-  cursor: pointer;
-  min-width: 100px;
-  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='10' viewBox='0 0 10 10'%3E%3Cpath fill='%23999' d='M1 3l4 4 4-4'/%3E%3C/svg%3E");
-  background-repeat: no-repeat;
-  background-position: right 6px center;
-  transition: border-color 0.2s ease;
-  flex-shrink: 0;
-}
-.agent-picker-native:hover {
-  border-color: rgba(255,255,255,0.15);
-}
-.agent-picker-native:focus {
-  outline: none;
-  border-color: var(--tg-theme-button-color, #3b82f6);
-}
-.agent-picker-native option {
-  background: #1a1a2e;
-  color: #fff;
-}
-
-/* ── Agent Picker — no executors empty state ── */
-.agent-picker-empty {
-  font-size: 12px;
-  color: var(--tg-theme-hint-color, #888);
-  padding: 5px 8px;
-  white-space: nowrap;
-  flex-shrink: 0;
-  border: 1px solid rgba(255,100,100,0.2);
-  border-radius: 8px;
-  background: rgba(255,60,60,0.06);
-}
-.agent-picker-empty a, .agent-picker-empty button {
-  color: var(--tg-theme-button-color, #3b82f6);
-  background: none;
-  border: none;
-  padding: 0;
-  font-size: inherit;
-  cursor: pointer;
-  text-decoration: underline;
-}
-
-/* ── Toolbar Select — mode & model pickers ── */
-.toolbar-select {
-  appearance: none;
-  -webkit-appearance: none;
-  background: var(--tg-theme-secondary-bg-color, #1e1e2e);
-  border: 1px solid rgba(255,255,255,0.08);
-  border-radius: 8px;
-  color: var(--tg-theme-text-color, #fff);
-  font-size: 12px;
-  font-weight: 500;
-  padding: 5px 22px 5px 10px;
-  cursor: pointer;
-  min-width: 72px;
-  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='10' viewBox='0 0 10 10'%3E%3Cpath fill='%23999' d='M1 3l4 4 4-4'/%3E%3C/svg%3E");
-  background-repeat: no-repeat;
-  background-position: right 6px center;
-  transition: border-color 0.2s ease;
-  flex-shrink: 0;
-}
-.toolbar-select:hover { border-color: rgba(255,255,255,0.15); }
-.toolbar-select:focus { outline: none; border-color: var(--tg-theme-button-color, #3b82f6); }
-.toolbar-select option { background: #1a1a2e; color: #fff; }
-.toolbar-select--wide { min-width: 110px; }
 `;
 
 let _agentStylesInjected = false;
@@ -754,10 +427,30 @@ async function switchAgent(agentId) {
   const previous = activeAgent.value;
   activeAgent.value = agentId; // optimistic
   try {
-    await apiFetch("/api/agents/switch", {
+    const result = await apiFetch("/api/agents/switch", {
       method: "POST",
       body: JSON.stringify({ agent: agentId }),
     });
+    // Sync to the agent the server *actually* selected — it may have silently
+    // fallen back (e.g. copilot-sdk → codex-sdk when Copilot CLI is unavailable).
+    const actual = result?.agent;
+    if (actual) {
+      activeAgent.value = actual;
+      if (actual !== agentId) {
+        const from = agentId.replace(/-sdk$/, "");
+        const to = actual.replace(/-sdk$/, "");
+        console.warn(`[agent-selector] Server fell back from ${agentId} → ${actual}`);
+        try {
+          globalThis.dispatchEvent(
+            new CustomEvent("ve:api-error", {
+              detail: { message: `${from} unavailable — using ${to} instead` },
+            }),
+          );
+        } catch {
+          /* non-browser env */
+        }
+      }
+    }
   } catch (err) {
     console.warn("[agent-selector] Failed to switch agent:", err);
     activeAgent.value = previous; // rollback
@@ -766,7 +459,7 @@ async function switchAgent(agentId) {
 
 /**
  * Set the agent interaction mode via API.
- * @param {"ask"|"agent"|"plan"} mode
+ * @param {"ask"|"agent"|"plan"|"web"|"instant"} mode
  */
 async function setAgentMode(mode) {
   const previous = agentMode.value;
@@ -783,37 +476,163 @@ async function setAgentMode(mode) {
 }
 
 /* ═══════════════════════════════════════════════
+ *  MUI theme overrides (dark mode + compact)
+ * ═══════════════════════════════════════════════ */
+
+const muiDarkPaper = {
+  bgcolor: "var(--tg-theme-bg-color, #0f0f23)",
+  border: "1px solid rgba(255,255,255,0.1)",
+  borderRadius: "12px",
+  boxShadow: "0 8px 32px rgba(0,0,0,0.4)",
+  backdropFilter: "blur(16px)",
+  "& .MuiMenuItem-root": {
+    fontSize: 13,
+    borderRadius: "8px",
+    mx: 0.5,
+    my: 0.25,
+  },
+};
+
+/* ═══════════════════════════════════════════════
  *  AgentModeSelector
- *  Native select: Ask | Agent | Plan
+ *  MUI ToggleButtonGroup — Ask | Agent | Plan | Web | Instant
  * ═══════════════════════════════════════════════ */
 
 export function AgentModeSelector() {
   const currentMode = agentMode.value;
+  const [isCompact, setIsCompact] = useState(() => {
+    try {
+      return globalThis.matchMedia?.("(max-width: 640px)")?.matches ?? false;
+    } catch { return false; }
+  });
 
-  const handleChange = useCallback((e) => {
-    const mode = e.target.value;
-    if (mode === agentMode.value) return;
-    haptic("light");
-    setAgentMode(mode);
+  useEffect(() => {
+    const mq = globalThis.matchMedia?.("(max-width: 640px)");
+    if (!mq) return;
+    const handler = (e) => setIsCompact(e.matches);
+    if (mq.addEventListener) mq.addEventListener("change", handler);
+    else mq.addListener(handler);
+    return () => {
+      if (mq.removeEventListener) mq.removeEventListener("change", handler);
+      else mq.removeListener(handler);
+    };
   }, []);
 
+  const handleChange = useCallback((_e, newMode) => {
+    if (!newMode) return; // enforce at-least-one selection
+    haptic("light");
+    setAgentMode(newMode);
+  }, []);
+
+  const handleSelectChange = useCallback((e) => {
+    const newMode = e.target.value;
+    if (!newMode) return;
+    haptic("light");
+    setAgentMode(newMode);
+  }, []);
+
+  // Compact: dropdown Select for small screens
+  if (isCompact) {
+    const currentModeInfo = MODES.find(m => m.id === currentMode) || MODES[0];
+    return html`
+      <${Select}
+        value=${currentMode}
+        onChange=${handleSelectChange}
+        size="small"
+        variant="outlined"
+        displayEmpty
+        renderValue=${() => html`
+          <${Box} sx=${{ display: "flex", alignItems: "center", gap: 0.5 }}>
+            <span class="mode-icon">${resolveIcon(currentModeInfo.icon)}</span>
+            <${Typography} variant="body2" sx=${{ fontSize: 12, fontWeight: 500 }}>${currentModeInfo.label}<//>
+          <//>
+        `}
+        sx=${{
+          flexShrink: 0,
+          minWidth: 90,
+          "& .MuiSelect-select": {
+            py: 0.5,
+            pl: 1,
+            pr: "24px !important",
+            fontSize: 12,
+            fontWeight: 500,
+            display: "flex",
+            alignItems: "center",
+          },
+          "& .MuiOutlinedInput-notchedOutline": {
+            borderColor: "rgba(255,255,255,0.08)",
+          },
+          "&:hover .MuiOutlinedInput-notchedOutline": {
+            borderColor: "rgba(255,255,255,0.2)",
+          },
+          "&.Mui-focused .MuiOutlinedInput-notchedOutline": {
+            borderColor: "var(--tg-theme-button-color, #3b82f6)",
+          },
+          color: "var(--tg-theme-text-color, #fff)",
+          "& .MuiSvgIcon-root": { color: "var(--tg-theme-hint-color, #999)", fontSize: 18 },
+        }}
+        MenuProps=${{ PaperProps: { sx: muiDarkPaper } }}
+      >
+        ${MODES.map((m) => html`
+          <${MenuItem} key=${m.id} value=${m.id} sx=${{ fontSize: 13 }}>
+            <${ListItemIcon} sx=${{ minWidth: "28px !important" }}>
+              <span class="mode-icon" style="font-size:14px">${resolveIcon(m.icon)}</span>
+            <//>
+            <${ListItemText}
+              primary=${m.label}
+              secondary=${m.description}
+              primaryTypographyProps=${{ fontSize: 13, fontWeight: 500 }}
+              secondaryTypographyProps=${{ fontSize: 11 }}
+            />
+          <//>
+        `)}
+      <//>
+    `;
+  }
+
+  // Default: ToggleButtonGroup for wider screens
   return html`
-    <select
-      class="toolbar-select"
+    <${ToggleButtonGroup}
       value=${currentMode}
+      exclusive
       onChange=${handleChange}
-      title="Agent interaction mode"
+      size="small"
+      sx=${{
+        flexShrink: 0,
+        "& .MuiToggleButton-root": {
+          px: 1.2,
+          py: 0.5,
+          fontSize: 12,
+          fontWeight: 500,
+          textTransform: "none",
+          color: "var(--tg-theme-hint-color, #999)",
+          borderColor: "rgba(255,255,255,0.08)",
+          "&.Mui-selected": {
+            bgcolor: "var(--tg-theme-button-color, #3b82f6)",
+            color: "var(--tg-theme-button-text-color, #fff)",
+            "&:hover": { bgcolor: "var(--tg-theme-button-color, #3b82f6)", opacity: 0.9 },
+          },
+          "&:hover": { bgcolor: "rgba(255,255,255,0.05)" },
+        },
+      }}
     >
       ${MODES.map((m) => html`
-        <option key=${m.id} value=${m.id}>${m.label}</option>
+        <${ToggleButton} key=${m.id} value=${m.id}>
+          <${Tooltip} title=${m.description} arrow>
+            <${Box} sx=${{ display: "flex", alignItems: "center", gap: 0.5 }}>
+              <span class="mode-icon">${resolveIcon(m.icon)}</span>
+              ${" "}${m.label}
+            </${Box}>
+          </${Tooltip}>
+        </${ToggleButton}>
       `)}
-    </select>
+    </${ToggleButtonGroup}>
   `;
 }
 
 /* ═══════════════════════════════════════════════
  *  ModelPicker
- *  Native select for model selection.
+ *  MUI Menu + MenuItem with checkmarks.
  *  Prefers the models array from /api/agents/available (always current),
  *  falls back to the static AGENT_MODELS registry for demo/offline mode.
  * ═══════════════════════════════════════════════ */
@@ -822,6 +641,8 @@ export function ModelPicker() {
   const current = activeAgent.value;
   const model = selectedModel.value;
   const agentInfo = activeAgentInfo.value;
+  const [anchorEl, setAnchorEl] = useState(null);
+  const open = Boolean(anchorEl);
 
   // Build model entries: prefer live API list, fall back to static registry.
   // For custom executor IDs (e.g. "copilot-claude"), derive the right static list
@@ -849,30 +670,73 @@ export function ModelPicker() {
     }
   }, [current]);
 
-  const handleChange = useCallback((e) => {
-    const value = e.target.value;
+  const handleOpen = useCallback((e) => {
+    setAnchorEl(e.currentTarget);
+  }, []);
+
+  const handleClose = useCallback(() => {
+    setAnchorEl(null);
+  }, []);
+
+  const handleSelect = useCallback((value) => {
     selectedModel.value = value;
     try { localStorage.setItem("ve-selected-model", value); } catch {}
     haptic("light");
+    setAnchorEl(null);
   }, []);
 
+  const displayLabel = model ? buildLabel(model) : "Default";
+
   return html`
-    <select
-      class="toolbar-select toolbar-select--wide"
-      value=${model}
-      onChange=${handleChange}
-      title="Model override (Default = executor decides)"
+    <${Tooltip} title="Model override (Default = executor decides)" arrow>
+      <${Chip}
+        label=${displayLabel}
+        size="small"
+        variant=${model ? "filled" : "outlined"}
+        onClick=${handleOpen}
+        onDelete=${null}
+        icon=${html`<span style="font-size:13px;line-height:1">${resolveIcon("cpu")}</span>`}
+        sx=${{
+          flexShrink: 0,
+          cursor: "pointer",
+          fontSize: 12,
+          fontWeight: 500,
+          color: "var(--tg-theme-text-color, #fff)",
+          borderColor: open ? "var(--tg-theme-button-color, #3b82f6)" : "rgba(255,255,255,0.08)",
+          bgcolor: model ? "rgba(59,130,246,0.12)" : "transparent",
+          "&:hover": { bgcolor: "rgba(255,255,255,0.06)" },
+        }}
+      />
+    </${Tooltip}>
+    <${Menu}
+      anchorEl=${anchorEl}
+      open=${open}
+      onClose=${handleClose}
+      anchorOrigin=${{ vertical: "top", horizontal: "left" }}
+      transformOrigin=${{ vertical: "bottom", horizontal: "left" }}
+      slotProps=${{ paper: { sx: muiDarkPaper } }}
     >
       ${modelEntries.map((m) => html`
-        <option key=${m.value} value=${m.value}>${m.label}</option>
+        <${MenuItem}
+          key=${m.value}
+          selected=${m.value === model}
+          onClick=${() => handleSelect(m.value)}
+          sx=${{ fontSize: 13 }}
+        >
+          ${m.value === model
+            ? html`<${ListItemIcon} sx=${{ minWidth: "28px !important" }}><${Typography} sx=${{ color: "var(--tg-theme-button-color, #3b82f6)", fontWeight: 700, fontSize: 14 }}>✓</${Typography}></${ListItemIcon}>`
+            : html`<${ListItemIcon} sx=${{ minWidth: "28px !important" }} />`
+          }
+          <${ListItemText}>${m.label}</${ListItemText}>
+        </${MenuItem}>
       `)}
-    </select>
+    </${Menu}>
   `;
 }
 
 /* ═══════════════════════════════════════════════
  *  AgentPicker
- *  Native select — only shows enabled (available) executors.
+ *  MUI Menu + MenuItem — only shows enabled (available) executors.
  *  Empty state if none configured.
  * ═══════════════════════════════════════════════ */
 
@@ -880,53 +744,126 @@ export function AgentPicker() {
   const agents = availableAgents.value;
   const current = activeAgent.value;
   const loading = agentSelectorLoading.value;
+  const [anchorEl, setAnchorEl] = useState(null);
+  const open = Boolean(anchorEl);
 
   // Only show executors that are actually enabled
   const enabledAgents = agents.filter((a) => a.available);
 
-  const handleChange = useCallback((e) => {
-    const agentId = e.target.value;
-    if (agentId === activeAgent.value) return;
+  const handleOpen = useCallback((e) => {
+    setAnchorEl(e.currentTarget);
+  }, []);
+
+  const handleClose = useCallback(() => {
+    setAnchorEl(null);
+  }, []);
+
+  const handleSelect = useCallback((agentId) => {
+    if (agentId === activeAgent.value) {
+      setAnchorEl(null);
+      return;
+    }
     haptic("medium");
     switchAgent(agentId);
     // Reset model when executor changes — ModelPicker handles the value reset
     selectedModel.value = "";
     try { localStorage.setItem("ve-selected-model", ""); } catch {}
+    setAnchorEl(null);
   }, []);
 
   // Empty state: no executors configured / all disabled
   if (!loading && enabledAgents.length === 0) {
     return html`
-      <span class="agent-picker-empty" title="No executors are enabled">
-        No executors · configure in Settings
-      </span>
+      <${Chip}
+        label="No executors · configure in Settings"
+        size="small"
+        color="error"
+        variant="outlined"
+        sx=${{ fontSize: 12, flexShrink: 0 }}
+      />
     `;
   }
 
+  const currentAgent = enabledAgents.find((a) => a.id === current);
+  const currentName = EXECUTOR_DISPLAY_NAMES[current]
+    || (currentAgent ? String(currentAgent.name || "").replace(/\s*\(busy\)\s*$/i, "").trim() : "")
+    || "Executor";
+  const providerColor = currentAgent ? (PROVIDER_COLORS[currentAgent.provider?.toLowerCase()] || "#666") : "#666";
+
   return html`
-    <select
-      class="agent-picker-native"
-      value=${current}
-      onChange=${handleChange}
-      disabled=${loading}
-      title="Select AI executor"
+    <${Tooltip} title="Select AI executor" arrow>
+      <${Chip}
+        label=${currentName}
+        size="small"
+        variant="outlined"
+        onClick=${handleOpen}
+        disabled=${loading}
+        icon=${html`<span style="font-size:13px;line-height:1">${resolveIcon(AGENT_ICONS[current] || "bot")}</span>`}
+        sx=${{
+          flexShrink: 0,
+          cursor: "pointer",
+          fontSize: 12,
+          fontWeight: 500,
+          color: "var(--tg-theme-text-color, #fff)",
+          borderColor: open ? "var(--tg-theme-button-color, #3b82f6)" : "rgba(255,255,255,0.08)",
+          "&:hover": { bgcolor: "rgba(255,255,255,0.06)" },
+        }}
+      />
+    </${Tooltip}>
+    <${Menu}
+      anchorEl=${anchorEl}
+      open=${open}
+      onClose=${handleClose}
+      anchorOrigin=${{ vertical: "top", horizontal: "left" }}
+      transformOrigin=${{ vertical: "bottom", horizontal: "left" }}
+      slotProps=${{ paper: { sx: { ...muiDarkPaper, minWidth: 220 } } }}
     >
-      ${loading && html`<option disabled value="">Loading…</option>`}
+      ${loading && html`
+        <${MenuItem} disabled>
+          <${ListItemText}>Loading…</${ListItemText}>
+        </${MenuItem}>
+      `}
       ${enabledAgents.map((agent) => {
         const rawName = EXECUTOR_DISPLAY_NAMES[agent.id] || agent.name || "";
-        const name =
-          String(rawName).replace(/\s*\(busy\)\s*$/i, "").trim() || "Executor";
+        const name = String(rawName).replace(/\s*\(busy\)\s*$/i, "").trim() || "Executor";
+        const isActive = agent.id === current;
+        const pColor = PROVIDER_COLORS[agent.provider?.toLowerCase()] || "#666";
+        const statusColor = agent.busy ? "#eab308" : agent.available ? "#22c55e" : "#6b7280";
+
         return html`
-          <option key=${agent.id} value=${agent.id}>${name}</option>
+          <${MenuItem}
+            key=${agent.id}
+            selected=${isActive}
+            onClick=${() => handleSelect(agent.id)}
+          >
+            <${ListItemIcon} sx=${{ minWidth: "36px !important" }}>
+              <${Box} sx=${{
+                width: 28, height: 28, display: "flex", alignItems: "center", justifyContent: "center",
+                borderRadius: "6px", bgcolor: "rgba(255,255,255,0.04)", fontSize: 18,
+              }}>
+                ${resolveIcon(AGENT_ICONS[agent.id] || "bot")}
+              </${Box}>
+            </${ListItemIcon}>
+            <${ListItemText}
+              primary=${name}
+              secondary=${agent.provider || ""}
+              primaryTypographyProps=${{ fontSize: 13, fontWeight: 500 }}
+              secondaryTypographyProps=${{ fontSize: 11, color: "var(--tg-theme-hint-color, #888)" }}
+            />
+            <${Stack} direction="row" spacing=${0.5} alignItems="center" sx=${{ ml: 1 }}>
+              <${Box} sx=${{ width: 7, height: 7, borderRadius: "50%", bgcolor: statusColor, flexShrink: 0 }} />
+              ${isActive && html`<${Typography} sx=${{ color: "var(--tg-theme-button-color, #3b82f6)", fontWeight: 700, fontSize: 14 }}>✓</${Typography}>`}
+            </${Stack}>
+          </${MenuItem}>
         `;
       })}
-    </select>
+    </${Menu}>
   `;
 }
 
 /* ═══════════════════════════════════════════════
  *  AgentStatusBadge
- *  Small indicator showing agent runtime state
+ *  MUI Chip showing agent runtime state
  * ═══════════════════════════════════════════════ */
 
 export function AgentStatusBadge() {
@@ -936,23 +873,72 @@ export function AgentStatusBadge() {
   const stale = staleAgentCount.value;
   const errors = totalErrorCount.value;
 
+  // Map status to MUI Chip color
+  const chipColor = status === "idle" ? "default"
+    : status === "thinking" ? "warning"
+    : status === "executing" ? "info"
+    : status === "streaming" ? "success"
+    : "default";
+
   return html`
-    <div class="agent-status-badge" title=${cfg.label}>
-      <span
-        class="agent-status-dot ${cfg.pulse ? "pulse" : ""}"
-        style="background: ${cfg.color}"
+    <${Stack} direction="row" spacing=${0.5} alignItems="center" sx=${{ flexShrink: 0 }}>
+      <${Chip}
+        label=${cfg.label}
+        size="small"
+        color=${chipColor}
+        variant=${status === "idle" ? "outlined" : "filled"}
+        icon=${html`
+          <${Box}
+            class=${cfg.pulse ? "agent-status-dot-pulse" : ""}
+            sx=${{
+              width: 7, height: 7, borderRadius: "50%",
+              bgcolor: cfg.color, flexShrink: 0,
+              transition: "background 0.3s ease",
+            }}
+          />
+        `}
+        sx=${{
+          fontSize: 11, fontWeight: 500,
+          color: "var(--tg-theme-hint-color, #999)",
+          borderColor: "rgba(255,255,255,0.08)",
+        }}
       />
-      <span class="agent-status-label">${cfg.label}</span>
-      ${alive > 0 && html`<span class="agent-count-badge" title="${alive} agent(s) active" style="background:#2ea043;color:#fff;border-radius:8px;padding:0 5px;font-size:10px;margin-left:4px;">${alive}</span>`}
-      ${stale > 0 && html`<span class="agent-count-badge" title="${stale} agent(s) stale" style="background:#d29922;color:#fff;border-radius:8px;padding:0 5px;font-size:10px;margin-left:2px;"><span class="icon-inline">${resolveIcon("alert")}</span>${stale}</span>`}
-      ${errors > 0 && html`<span class="agent-count-badge" title="${errors} error(s)" style="background:#f85149;color:#fff;border-radius:8px;padding:0 5px;font-size:10px;margin-left:2px;"><span class="icon-inline">${resolveIcon("close")}</span>${errors}</span>`}
-    </div>
+      ${alive > 0 && html`
+        <${Tooltip} title="${alive} agent(s) active" arrow>
+          <${Badge} badgeContent=${alive} color="success" sx=${{ "& .MuiBadge-badge": { fontSize: 10, minWidth: 16, height: 16 } }}>
+            <${Box} sx=${{ width: 8 }} />
+          </${Badge}>
+        </${Tooltip}>
+      `}
+      ${stale > 0 && html`
+        <${Tooltip} title="${stale} agent(s) stale" arrow>
+          <${Chip}
+            label=${stale}
+            size="small"
+            color="warning"
+            icon=${html`<span class="icon-inline" style="font-size:10px">${resolveIcon("alert")}</span>`}
+            sx=${{ fontSize: 10, height: 20 }}
+          />
+        </${Tooltip}>
+      `}
+      ${errors > 0 && html`
+        <${Tooltip} title="${errors} error(s)" arrow>
+          <${Chip}
+            label=${errors}
+            size="small"
+            color="error"
+            icon=${html`<span class="icon-inline" style="font-size:10px">${resolveIcon("close")}</span>`}
+            sx=${{ fontSize: 10, height: 20 }}
+          />
+        </${Tooltip}>
+      `}
+    </${Stack}>
   `;
 }
 
 /* ═══════════════════════════════════════════════
- *  ChatInputToolbar
- *  Combines all selectors into a single row
+ *  YoloToggle
+ *  MUI Switch + FormControlLabel
  * ═══════════════════════════════════════════════ */
 
 function YoloToggle() {
@@ -966,19 +952,51 @@ function YoloToggle() {
   }, []);
 
   return html`
-    <button
-      class="yolo-toggle ${isYolo ? 'active' : ''}"
-      onClick=${toggle}
+    <${Tooltip}
       title=${isYolo
-        ? 'Yolo ON — agent will auto-approve actions (disable to require confirmations)'
-        : 'Enable Yolo mode — agent will skip confirmation prompts'}
-      aria-pressed=${isYolo}
+        ? "Yolo ON — agent will auto-approve actions (disable to require confirmations)"
+        : "Enable Yolo mode — agent will skip confirmation prompts"}
+      arrow
     >
-      <span class="yolo-icon">${resolveIcon("zap")}</span>
-      Yolo
-    </button>
+      <${FormControlLabel}
+        control=${html`
+          <${Switch}
+            checked=${isYolo}
+            onChange=${toggle}
+            size="small"
+            sx=${{
+              "& .MuiSwitch-switchBase.Mui-checked": {
+                color: "#ffa537",
+              },
+              "& .MuiSwitch-switchBase.Mui-checked + .MuiSwitch-track": {
+                bgcolor: "rgba(255,140,0,0.55)",
+              },
+            }}
+          />
+        `}
+        label=${html`
+          <${Stack} direction="row" spacing=${0.5} alignItems="center">
+            <span style="font-size:13px;line-height:1">${resolveIcon("zap")}</span>
+            <${Typography} variant="body2" sx=${{ fontSize: 12, fontWeight: 600, color: isYolo ? "#ffa537" : "var(--tg-theme-hint-color, #888)" }}>
+              Yolo
+            </${Typography}>
+          </${Stack}>
+        `}
+        sx=${{
+          mx: 0,
+          flexShrink: 0,
+          userSelect: "none",
+          "& .MuiFormControlLabel-label": { ml: 0 },
+        }}
+      />
+    </${Tooltip}>
   `;
 }
+
+/* ═══════════════════════════════════════════════
+ *  ChatInputToolbar
+ *  Combines all selectors into a single row
+ * ═══════════════════════════════════════════════ */
 
 export function ChatInputToolbar() {
   // Inject styles on first mount
@@ -1000,7 +1018,7 @@ export function ChatInputToolbar() {
       <${AgentModeSelector} />
       <${ModelPicker} />
       <${YoloToggle} />
-      <div class="chat-input-toolbar-spacer" />
+      <${Box} sx=${{ flex: 1, minWidth: 8 }} />
       <${AgentStatusBadge} />
     </div>
   `;
