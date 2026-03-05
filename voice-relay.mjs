@@ -392,10 +392,10 @@ export function getVoiceConfig(forceReload = false) {
   const cfg = loadConfig();
   const voice = cfg.voice || {};
 
-  // Provider priority: config > env > key autodetect.
+  // Provider priority: env > config > key autodetect.
   // "auto" resolves to azure/openai/claude/gemini/fallback based on available credentials.
   const rawProvider = String(
-    voice.provider || process.env.VOICE_PROVIDER || "auto",
+    process.env.VOICE_PROVIDER || voice.provider || "auto",
   )
     .trim()
     .toLowerCase();

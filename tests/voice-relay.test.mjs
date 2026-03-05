@@ -66,6 +66,7 @@ describe("voice-relay", () => {
     "GEMINI_API_KEY",
     "GOOGLE_API_KEY",
     "VOICE_PROVIDER",
+    "VOICE_TURN_DETECTION",
     "VOICE_MODEL",
     "VOICE_VISION_MODEL",
     "VOICE_ID",
