@@ -3,7 +3,7 @@ import { resolve } from "node:path";
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 
-const source = readFileSync(resolve(process.cwd(), "monitor.mjs"), "utf8");
+const source = readFileSync(resolve(process.cwd(), "infra/monitor.mjs"), "utf8");
 
 describe("monitor workspace sync warn stale state expiry", () => {
   it("defines a stale state expiry duration of 24 hours", () => {

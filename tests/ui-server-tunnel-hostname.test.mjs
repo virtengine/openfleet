@@ -32,7 +32,7 @@ describe("ui-server tunnel hostname + DNS helpers", () => {
   });
 
   it("normalizes tunnel mode aliases with named as the default", async () => {
-    const mod = await import("../ui-server.mjs");
+    const mod = await import("../server/ui-server.mjs");
     expect(mod.normalizeTunnelMode()).toBe("named");
     expect(mod.normalizeTunnelMode("auto")).toBe("named");
     expect(mod.normalizeTunnelMode("cloudflared")).toBe("named");
@@ -41,7 +41,7 @@ describe("ui-server tunnel hostname + DNS helpers", () => {
   });
 
   it("resolves deterministic per-user hostname and protects reserved names", async () => {
-    const mod = await import("../ui-server.mjs");
+    const mod = await import("../server/ui-server.mjs");
     const first = mod.resolveDeterministicTunnelHostname({
       baseDomain: "bosun.det.io",
       username: "jon",
@@ -65,7 +65,7 @@ describe("ui-server tunnel hostname + DNS helpers", () => {
   });
 
   it("keeps Cloudflare DNS orchestration idempotent for existing matching CNAME", async () => {
-    const mod = await import("../ui-server.mjs");
+    const mod = await import("../server/ui-server.mjs");
     const fetchMock = vi
       .fn()
       .mockResolvedValueOnce({

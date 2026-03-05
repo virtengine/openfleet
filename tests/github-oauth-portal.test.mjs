@@ -45,7 +45,7 @@ const mockGetAppId = vi.hoisted(() => vi.fn().mockReturnValue(null));
 const mockSaveOAuthState = vi.hoisted(() => vi.fn());
 const mockLoadOAuthState = vi.hoisted(() => vi.fn().mockReturnValue(null));
 
-vi.mock("../github-app-auth.mjs", () => ({
+vi.mock("../github/github-app-auth.mjs", () => ({
   signAppJWT: vi.fn(() => "test-jwt"),
   getInstallationToken: vi.fn(),
   getInstallationTokenForRepo: vi.fn(),
@@ -74,7 +74,7 @@ function signBody(secret, body) {
 }
 
 async function getPortal() {
-  return await import("../github-oauth-portal.mjs");
+  return await import("../github/github-oauth-portal.mjs");
 }
 
 // ── Tests ────────────────────────────────────────────────────────────────────

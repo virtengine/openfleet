@@ -2,7 +2,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 
 // ── Mocks ───────────────────────────────────────────────────────────────────
 
-vi.mock("../kanban-adapter.mjs", () => ({
+vi.mock("../kanban/kanban-adapter.mjs", () => ({
   getKanbanAdapter: vi.fn(),
   getKanbanBackendName: vi.fn(() => "vk"),
   listTasks: vi.fn(() => []),
@@ -12,7 +12,7 @@ vi.mock("../kanban-adapter.mjs", () => ({
   addComment: vi.fn(() => Promise.resolve(true)),
 }));
 
-vi.mock("../agent-pool.mjs", () => ({
+vi.mock("../agent/agent-pool.mjs", () => ({
   launchOrResumeThread: vi.fn(),
   execWithRetry: vi.fn(() =>
     Promise.resolve({ success: true, output: "done", attempts: 1 }),
@@ -24,7 +24,7 @@ vi.mock("../agent-pool.mjs", () => ({
   ensureThreadRegistryLoaded: vi.fn(() => Promise.resolve()),
 }));
 
-vi.mock("../worktree-manager.mjs", () => {
+vi.mock("../workspace/worktree-manager.mjs", () => {
   const acquireWorktree = vi.fn(() =>
     Promise.resolve({ path: "/fake/worktree", created: true }),
   );
@@ -50,14 +50,14 @@ vi.mock("../worktree-manager.mjs", () => {
   };
 });
 
-vi.mock("../task-claims.mjs", () => ({
+vi.mock("../task/task-claims.mjs", () => ({
   initTaskClaims: vi.fn(() => Promise.resolve()),
   claimTask: vi.fn(() => Promise.resolve({ success: true, token: "claim-1" })),
   renewClaim: vi.fn(() => Promise.resolve({ success: true })),
   releaseTask: vi.fn(() => Promise.resolve({ success: true })),
 }));
 
-vi.mock("../presence.mjs", () => ({
+vi.mock("../infra/presence.mjs", () => ({
   initPresence: vi.fn(() => Promise.resolve()),
   getPresenceState: vi.fn(() => ({
     instance_id: "presence-instance-1",
@@ -65,11 +65,11 @@ vi.mock("../presence.mjs", () => ({
   })),
 }));
 
-vi.mock("../config.mjs", () => ({
+vi.mock("../config/config.mjs", () => ({
   loadConfig: vi.fn(() => ({})),
 }));
 
-vi.mock("../git-safety.mjs", () => ({
+vi.mock("../git/git-safety.mjs", () => ({
   evaluateBranchSafetyForPush: vi.fn(() => ({ safe: true })),
   normalizeBaseBranch: vi.fn((baseBranch = "main", remote = "origin") => {
     let branch = String(baseBranch || "main").trim();
@@ -105,30 +105,30 @@ import {
   loadExecutorOptionsFromConfig,
   isInternalExecutorEnabled,
   getExecutorMode,
-} from "../task-executor.mjs";
+} from "../task/task-executor.mjs";
 import {
   listTasks,
   listProjects,
   getKanbanBackendName,
   updateTaskStatus,
   addComment,
-} from "../kanban-adapter.mjs";
+} from "../kanban/kanban-adapter.mjs";
 import {
   execWithRetry,
   getPoolSdkName,
   getActiveThreads,
   ensureThreadRegistryLoaded,
   invalidateThread,
-} from "../agent-pool.mjs";
-import { acquireWorktree, releaseWorktree } from "../worktree-manager.mjs";
+} from "../agent/agent-pool.mjs";
+import { acquireWorktree, releaseWorktree } from "../workspace/worktree-manager.mjs";
 import {
   claimTask,
   renewClaim,
   releaseTask as releaseTaskClaim,
-} from "../task-claims.mjs";
-import { initPresence, getPresenceState } from "../presence.mjs";
-import { loadConfig } from "../config.mjs";
-import { evaluateBranchSafetyForPush } from "../git-safety.mjs";
+} from "../task/task-claims.mjs";
+import { initPresence, getPresenceState } from "../infra/presence.mjs";
+import { loadConfig } from "../config/config.mjs";
+import { evaluateBranchSafetyForPush } from "../git/git-safety.mjs";
 import { spawnSync } from "node:child_process";
 import { existsSync } from "node:fs";
 
@@ -825,7 +825,7 @@ describe("task-executor", () => {
         existsSync: vi.fn(() => false),
       }));
 
-      const mod = await import("../task-executor.mjs");
+      const mod = await import("../task/task-executor.mjs");
       const inst = mod.getTaskExecutor({ mode: "vk" });
       expect(inst).toBeInstanceOf(mod.TaskExecutor);
     });
@@ -864,7 +864,7 @@ describe("task-executor", () => {
         existsSync: vi.fn(() => false),
       }));
 
-      const mod = await import("../task-executor.mjs");
+      const mod = await import("../task/task-executor.mjs");
       const first = mod.getTaskExecutor({ mode: "internal" });
       const second = mod.getTaskExecutor({ mode: "hybrid" });
       expect(first).toBe(second);

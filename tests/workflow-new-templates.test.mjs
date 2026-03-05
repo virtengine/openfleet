@@ -6,12 +6,12 @@ import {
   WORKFLOW_TEMPLATES,
   getTemplate,
   installTemplate,
-} from "../workflow-templates.mjs";
+} from "../workflow/workflow-templates.mjs";
 import {
   WorkflowEngine,
   getNodeType,
   registerNodeType,
-} from "../workflow-engine.mjs";
+} from "../workflow/workflow-engine.mjs";
 
 // ── Helpers ─────────────────────────────────────────────────────────────────
 

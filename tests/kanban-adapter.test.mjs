@@ -8,11 +8,11 @@ vi.mock("node:child_process", () => ({
   execFile: execFileMock,
 }));
 
-vi.mock("../config.mjs", () => ({
+vi.mock("../config/config.mjs", () => ({
   loadConfig: loadConfigMock,
 }));
 
-vi.mock("../fetch-runtime.mjs", () => ({
+vi.mock("../infra/fetch-runtime.mjs", () => ({
   fetchWithFallback: fetchWithFallbackMock,
 }));
 
@@ -31,14 +31,14 @@ const {
   persistSharedStateToIssue,
   readSharedStateFromIssue,
   markTaskIgnored,
-} = await import("../kanban-adapter.mjs");
+} = await import("../kanban/kanban-adapter.mjs");
 const {
   configureTaskStore,
   loadStore,
   addTask,
   removeTask,
   getTask,
-} = await import("../task-store.mjs");
+} = await import("../task/task-store.mjs");
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { resolve } from "node:path";

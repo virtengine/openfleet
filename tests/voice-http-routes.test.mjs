@@ -7,7 +7,7 @@ const sharedEngine = {
   listWorkflows: vi.fn(() => []),
 };
 
-vi.mock("../voice-relay.mjs", () => ({
+vi.mock("../voice/voice-relay.mjs", () => ({
   analyzeVisionFrame: vi.fn(async () => ({
     summary: "Editor with a failing test output is visible.",
     provider: "mock",
@@ -15,7 +15,7 @@ vi.mock("../voice-relay.mjs", () => ({
   })),
 }));
 
-const { analyzeVisionFrame } = await import("../voice-relay.mjs");
+const { analyzeVisionFrame } = await import("../voice/voice-relay.mjs");
 
 describe("ui-server voice + vision routes", () => {
   const ENV_KEYS = [
@@ -45,17 +45,17 @@ describe("ui-server voice + vision routes", () => {
     process.env.WORKFLOW_EVENT_DEDUP_WINDOW_MS = "1";
     vi.mocked(analyzeVisionFrame).mockClear();
     // Inject the shared mock engine so dispatchWorkflowEvent uses it
-    const mod = await import("../ui-server.mjs");
+    const mod = await import("../server/ui-server.mjs");
     const wfMock = { WorkflowEngine: vi.fn(() => sharedEngine) };
     mod._testInjectWorkflowEngine(wfMock, sharedEngine);
   });
 
   afterEach(async () => {
-    const mod = await import("../ui-server.mjs");
+    const mod = await import("../server/ui-server.mjs");
     mod.stopTelegramUiServer();
     // Reset session tracker singleton so test-created sessions don't leak
     // into subsequent tests or persist to disk.
-    const { _resetSingleton } = await import("../session-tracker.mjs");
+    const { _resetSingleton } = await import("../infra/session-tracker.mjs");
     _resetSingleton({ persistDir: null });
     for (const key of ENV_KEYS) {
       if (envSnapshot[key] === undefined) delete process.env[key];
@@ -64,7 +64,7 @@ describe("ui-server voice + vision routes", () => {
   });
 
   async function startServer() {
-    const mod = await import("../ui-server.mjs");
+    const mod = await import("../server/ui-server.mjs");
     const server = await mod.startTelegramUiServer({
       host: "127.0.0.1",
       port: 0,
@@ -109,7 +109,7 @@ describe("ui-server voice + vision routes", () => {
     expect(assistantRes.status).toBe(200);
     expect(assistantData.ok).toBe(true);
 
-    const { getSessionById } = await import("../session-tracker.mjs");
+    const { getSessionById } = await import("../infra/session-tracker.mjs");
     const session = getSessionById(sessionId);
     expect(session).toBeTruthy();
     const messages = session?.messages || [];
@@ -267,7 +267,7 @@ describe("ui-server voice + vision routes", () => {
     expect(secondJson.reason).toBe("duplicate_frame");
     expect(vi.mocked(analyzeVisionFrame)).toHaveBeenCalledTimes(1);
 
-    const { getSessionById } = await import("../session-tracker.mjs");
+    const { getSessionById } = await import("../infra/session-tracker.mjs");
     const session = getSessionById(sessionId);
     expect(session).toBeTruthy();
     const visionMessage = (session?.messages || []).find(

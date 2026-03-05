@@ -3,7 +3,7 @@ import { resolve } from "node:path";
 import { describe, it, expect } from "vitest";
 
 describe("telegram-sentinel poll owner arbitration", () => {
-  const source = readFileSync(resolve(process.cwd(), "telegram-sentinel.mjs"), "utf8");
+  const source = readFileSync(resolve(process.cwd(), "telegram/telegram-sentinel.mjs"), "utf8");
 
   it("claims owner before starting standalone polling", () => {
     expect(source).toContain('claimTelegramPollOwner("telegram-sentinel"');

@@ -8,7 +8,7 @@ import {
   runContextIndex,
   searchContextIndex,
   getContextIndexStatus,
-} from "../context-indexer.mjs";
+} from "../workspace/context-indexer.mjs";
 
 let testRoot;
 

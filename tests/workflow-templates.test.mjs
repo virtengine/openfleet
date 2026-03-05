@@ -15,12 +15,12 @@ import {
   reconcileInstalledTemplates,
   installTemplate,
   installTemplateSet,
-} from "../workflow-templates.mjs";
+} from "../workflow/workflow-templates.mjs";
 import {
   WorkflowEngine,
   getNodeType,
   registerNodeType,
-} from "../workflow-engine.mjs";
+} from "../workflow/workflow-engine.mjs";
 
 // ── Helpers ─────────────────────────────────────────────────────────────────
 
@@ -781,7 +781,7 @@ describe("template dry-run execution", () => {
 
   beforeEach(async () => {
     // Side-effect import registers built-in workflow node types once per test process.
-    await import("../workflow-nodes.mjs");
+    await import("../workflow/workflow-nodes.mjs");
     ensureExperimentalWorkflowNodeTypesRegistered();
   });
 

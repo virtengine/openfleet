@@ -2,7 +2,7 @@ import { describe, it, expect, beforeEach, vi } from "vitest";
 
 // ── Mock external boundaries ────────────────────────────────────────────────
 
-vi.mock("../config.mjs", () => ({
+vi.mock("../config/config.mjs", () => ({
   loadConfig: vi.fn(() => ({
     voice: { enabled: true, delegateExecutor: "codex-sdk" },
     primaryAgent: "codex-sdk",
@@ -12,7 +12,7 @@ vi.mock("../config.mjs", () => ({
   })),
 }));
 
-vi.mock("../primary-agent.mjs", () => {
+vi.mock("../agent/primary-agent.mjs", () => {
   let _agent = "codex-sdk";
   let _mode = "agent";
   return {
@@ -32,7 +32,7 @@ const mockTasks = [
   { id: "task-5", number: 5, title: "Voice integration", status: "inreview", labels: ["feature", "voice"], body: "Voice agent" },
 ];
 
-vi.mock("../kanban-adapter.mjs", () => ({
+vi.mock("../kanban/kanban-adapter.mjs", () => ({
   listTasks: vi.fn(async (_projId, _filters) => mockTasks),
   getTask: vi.fn(async (id) => mockTasks.find((t) => t.id === id || String(t.number) === String(id)) || null),
   createTask: vi.fn(async (_projId, data) => ({ id: "task-new", number: 99, title: data.title, status: "todo" })),
@@ -42,7 +42,7 @@ vi.mock("../kanban-adapter.mjs", () => ({
   addComment: vi.fn(async () => {}),
 }));
 
-vi.mock("../session-tracker.mjs", () => ({
+vi.mock("../infra/session-tracker.mjs", () => ({
   listSessions: vi.fn(() => [
     { id: "sess-1", type: "primary", status: "active", lastActiveAt: "2026-03-01T00:00:00Z" },
   ]),
@@ -62,14 +62,14 @@ vi.mock("../session-tracker.mjs", () => ({
   createSession: vi.fn((opts) => ({ id: opts?.id || `sess-${Date.now()}`, type: opts?.type || "voice", status: "active" })),
 }));
 
-vi.mock("../fleet-coordinator.mjs", () => ({
+vi.mock("../agent/fleet-coordinator.mjs", () => ({
   getFleetStatus: vi.fn(() => ({ workstations: 2, healthy: true })),
 }));
 
-vi.mock("../agent-supervisor.mjs", () => ({}));
-vi.mock("../shared-state-manager.mjs", () => ({}));
+vi.mock("../agent/agent-supervisor.mjs", () => ({}));
+vi.mock("../workspace/shared-state-manager.mjs", () => ({}));
 
-vi.mock("../agent-prompts.mjs", () => ({
+vi.mock("../agent/agent-prompts.mjs", () => ({
   getAgentPromptDefinitions: vi.fn(() => [
     { key: "orchestrator", filename: "orchestrator.md", description: "Orchestrator prompt" },
     { key: "voiceAgent", filename: "voice-agent.md", description: "Voice agent prompt" },
@@ -80,13 +80,13 @@ vi.mock("../agent-prompts.mjs", () => ({
   ],
 }));
 
-vi.mock("../bosun-skills.mjs", () => ({
+vi.mock("../agent/bosun-skills.mjs", () => ({
   BUILTIN_SKILLS: [
     { filename: "test-skill.md", title: "Test Skill", tags: ["test"], scope: "global" },
   ],
 }));
 
-vi.mock("../workflow-templates.mjs", () => ({
+vi.mock("../workflow/workflow-templates.mjs", () => ({
   listTemplates: vi.fn(() => [
     { id: "wf-1", name: "Standard", description: "Standard workflow" },
   ]),
@@ -95,7 +95,7 @@ vi.mock("../workflow-templates.mjs", () => ({
   ),
 }));
 
-vi.mock("../voice-tools.mjs", () => ({
+vi.mock("../voice/voice-tools.mjs", () => ({
   executeToolCall: vi.fn(async (name, args) => ({
     result: `Tool ${name} executed with ${JSON.stringify(args)}`,
   })),
@@ -110,7 +110,7 @@ const {
   hasAction,
   getActionManifest,
   getVoiceActionPromptSection,
-} = await import("../voice-action-dispatcher.mjs");
+} = await import("../voice/voice-action-dispatcher.mjs");
 
 // ── Tests ────────────────────────────────────────────────────────────────────
 

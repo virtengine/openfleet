@@ -154,12 +154,12 @@ vi.mock("@anthropic-ai/claude-agent-sdk", () => {
 });
 
 // Mock agent-sdk.mjs so the config.toml resolution doesn't interfere
-vi.mock("../agent-sdk.mjs", () => ({
+vi.mock("../agent/agent-sdk.mjs", () => ({
   resolveAgentSdkConfig: () => ({ primary: "", source: "test" }),
 }));
 
 // Mock config.mjs so tests don't read the real bosun.config.json
-vi.mock("../config.mjs", () => ({
+vi.mock("../config/config.mjs", () => ({
   loadConfig: () => ({}),
 }));
 
@@ -258,7 +258,7 @@ beforeEach(async () => {
   vi.resetModules();
 
   // Dynamic import to pick up mocks; then grab exports
-  const mod = await import("../agent-pool.mjs");
+  const mod = await import("../agent/agent-pool.mjs");
   getPoolSdkName = mod.getPoolSdkName;
   setPoolSdk = mod.setPoolSdk;
   resetPoolSdkCache = mod.resetPoolSdkCache;

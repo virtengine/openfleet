@@ -22,16 +22,16 @@ import {
   inferOutputSchema,
   createPipelineSpec,
   resolveOutputPort,
-} from "../mcp-workflow-adapter.mjs";
+} from "../workflow/mcp-workflow-adapter.mjs";
 import {
   WorkflowEngine,
   WorkflowContext,
   NodeStatus,
-} from "../workflow-engine.mjs";
+} from "../workflow/workflow-engine.mjs";
 import {
   registerNodeType,
   getNodeType,
-} from "../workflow-nodes.mjs";
+} from "../workflow/workflow-nodes.mjs";
 
 // ═══════════════════════════════════════════════════════════════════════════
 //  parseMcpContent
@@ -867,7 +867,7 @@ describe("MCP Integration workflow templates", () => {
   let templates;
 
   beforeEach(async () => {
-    const mod = await import("../workflow-templates.mjs");
+    const mod = await import("../workflow/workflow-templates.mjs");
     templates = mod.WORKFLOW_TEMPLATES;
   });
 
@@ -913,7 +913,7 @@ describe("MCP Integration workflow templates", () => {
   });
 
   it("has MCP Integration category", () => {
-    const { TEMPLATE_CATEGORIES } = require("../workflow-templates.mjs");
+    const { TEMPLATE_CATEGORIES } = require("../workflow/workflow-templates.mjs");
     expect(TEMPLATE_CATEGORIES["mcp-integration"]).toBeDefined();
     expect(TEMPLATE_CATEGORIES["mcp-integration"].label).toBe("MCP Integration");
   });

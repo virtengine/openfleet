@@ -25,7 +25,7 @@ describe("context-cache", () => {
 
     // Fresh import for each test
     vi.resetModules();
-    contextCache = await import("../context-cache.mjs");
+    contextCache = await import("../workspace/context-cache.mjs");
   });
 
   afterEach(() => {

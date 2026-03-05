@@ -16,7 +16,7 @@ import {
   persistSharedStateToIssue,
   readSharedStateFromIssue,
   markTaskIgnored,
-} from "./kanban-adapter.mjs";
+} from "./kanban/kanban-adapter.mjs";
 
 console.log("✓ Module loaded successfully");
 

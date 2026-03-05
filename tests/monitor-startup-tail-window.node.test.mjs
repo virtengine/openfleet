@@ -3,7 +3,7 @@ import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import test from "node:test";
 
-const src = readFileSync(resolve(process.cwd(), "monitor.mjs"), "utf8");
+const src = readFileSync(resolve(process.cwd(), "infra/monitor.mjs"), "utf8");
 
 test("startup monitor-tail window is narrower than normal interval window", () => {
   assert.match(src, /function resolveMonitorMonitorStartupErrorTailWindowMs\(baseWindowMs\)/);

@@ -3,13 +3,13 @@ import { resolve } from "node:path";
 import { describe, it, expect } from "vitest";
 
 describe("async safety guards", () => {
-  const monitorSource = readFileSync(resolve(process.cwd(), "monitor.mjs"), "utf8");
+  const monitorSource = readFileSync(resolve(process.cwd(), "infra/monitor.mjs"), "utf8");
   const analyzerSource = readFileSync(
-    resolve(process.cwd(), "agent-work-analyzer.mjs"),
+    resolve(process.cwd(), "agent/agent-work-analyzer.mjs"),
     "utf8",
   );
-  const poolSource = readFileSync(resolve(process.cwd(), "agent-pool.mjs"), "utf8");
-  const updateSource = readFileSync(resolve(process.cwd(), "update-check.mjs"), "utf8");
+  const poolSource = readFileSync(resolve(process.cwd(), "agent/agent-pool.mjs"), "utf8");
+  const updateSource = readFileSync(resolve(process.cwd(), "infra/update-check.mjs"), "utf8");
 
   it("handles monitor failure promises with explicit catch guards", () => {
     expect(monitorSource).toContain(

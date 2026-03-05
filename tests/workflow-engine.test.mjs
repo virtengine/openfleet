@@ -8,11 +8,11 @@ import {
   WorkflowContext,
   NodeStatus,
   WorkflowStatus,
-} from "../workflow-engine.mjs";
+} from "../workflow/workflow-engine.mjs";
 import {
   registerNodeType,
   getNodeType,
-} from "../workflow-nodes.mjs";
+} from "../workflow/workflow-nodes.mjs";
 
 // ── Helpers ─────────────────────────────────────────────────────────────────
 
@@ -2113,7 +2113,7 @@ it("action.materialize_planner_tasks fails loudly when planner output has no par
 
 describe("Anomaly → Workflow bridge", () => {
   it("wrapAnomalyCallback fires workflow triggers", async () => {
-    const { wrapAnomalyCallback, setWorkflowEngine } = await import("../anomaly-detector.mjs");
+    const { wrapAnomalyCallback, setWorkflowEngine } = await import("../infra/anomaly-detector.mjs");
 
     const mockEvaluate = vi.fn();
     setWorkflowEngine({ evaluateTriggers: mockEvaluate });
@@ -2159,7 +2159,7 @@ describe("Template dedup on install", () => {
   });
 
   it("rejects installing a template that is already installed", async () => {
-    const { installTemplate } = await import("../workflow-templates.mjs");
+    const { installTemplate } = await import("../workflow/workflow-templates.mjs");
 
     // Install once - should succeed
     const wf = installTemplate("template-pr-merge-strategy", engine);

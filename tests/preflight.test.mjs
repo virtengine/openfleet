@@ -9,12 +9,12 @@ vi.mock("node:child_process", () => ({
   spawnSync: spawnSyncMock,
 }));
 
-vi.mock("../pwsh-runtime.mjs", () => ({
+vi.mock("../shell/pwsh-runtime.mjs", () => ({
   resolvePwshRuntime: resolvePwshRuntimeMock,
 }));
 
 const { formatPreflightReport, runPreflightChecks } = await import(
-  "../preflight.mjs"
+  "../infra/preflight.mjs"
 );
 
 const ORIGINAL_ENV = { ...process.env };

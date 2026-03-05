@@ -33,27 +33,27 @@ import {
   auditStreamTimeouts,
   ensureCodexConfig,
   printConfigSummary,
-} from "./codex-config.mjs";
+} from "./shell/codex-config.mjs";
 import {
   ensureAgentPromptWorkspace,
   getAgentPromptDefinitions,
   PROMPT_WORKSPACE_DIR,
-} from "./agent-prompts.mjs";
+} from "./agent/agent-prompts.mjs";
 import {
   buildHookScaffoldOptionsFromEnv,
   normalizeHookTargets,
   scaffoldAgentHookFiles,
-} from "./hook-profiles.mjs";
-import { initLibrary } from "./library-manager.mjs";
+} from "./agent/hook-profiles.mjs";
+import { initLibrary } from "./infra/library-manager.mjs";
 import { detectLegacySetup, applyAllCompatibility } from "./compat.mjs";
-import { DEFAULT_MODEL_PROFILES } from "./task-complexity.mjs";
-import { pullWorkspaceRepos, listWorkspaces } from "./workspace-manager.mjs";
+import { DEFAULT_MODEL_PROFILES } from "./task/task-complexity.mjs";
+import { pullWorkspaceRepos, listWorkspaces } from "./workspace/workspace-manager.mjs";
 import {
   discoverProviders,
   formatProvidersForMenu,
   formatModelsForMenu,
   buildExecutorEntry,
-} from "./opencode-providers.mjs";
+} from "./shell/opencode-providers.mjs";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
@@ -5755,12 +5755,12 @@ async function main() {
     const {
       getStartupStatus,
       getStartupMethodName,
-    } = await import("./startup-service.mjs");
+    } = await import("./infra/startup-service.mjs");
     const {
       getDesktopShortcutStatus,
       getDesktopShortcutMethodName,
       resolveElectronLauncher,
-    } = await import("./desktop-shortcut.mjs");
+    } = await import("./infra/desktop-shortcut.mjs");
 
     const currentStartup = getStartupStatus();
     const methodName = getStartupMethodName();
@@ -6301,7 +6301,7 @@ async function runNonInteractive({
     for (const ws of configJson.workspaces) {
       if (!ws.id || !ws.repos?.length) continue;
       try {
-        const { pullWorkspaceRepos } = await import("./workspace-manager.mjs");
+        const { pullWorkspaceRepos } = await import("./workspace/workspace-manager.mjs");
         const results = pullWorkspaceRepos(configDir, ws.id);
         for (const r of results) {
           if (r.success) {
@@ -6452,7 +6452,7 @@ async function writeConfigFiles({ env, configJson, repoRoot, configDir }) {
   // ── Repo-level AI configs for all workspace repos ──────
   heading("Repo-Level AI Configs");
   try {
-    const { ensureRepoConfigs, printRepoConfigSummary } = await import("./repo-config.mjs");
+    const { ensureRepoConfigs, printRepoConfigSummary } = await import("./config/repo-config.mjs");
     // Apply to the primary repo
     const repoResult = ensureRepoConfigs(repoRoot, repoConfigOptions);
     printRepoConfigSummary(repoResult, (msg) => console.log(msg));
@@ -6521,7 +6521,7 @@ async function writeConfigFiles({ env, configJson, repoRoot, configDir }) {
   if (env._DESKTOP_SHORTCUT === "1") {
     heading("Desktop Shortcut");
     try {
-      const { installDesktopShortcut } = await import("./desktop-shortcut.mjs");
+      const { installDesktopShortcut } = await import("./infra/desktop-shortcut.mjs");
       const result = installDesktopShortcut();
       if (result.success) {
         success(`Desktop shortcut installed (${result.method})`);
@@ -6540,7 +6540,7 @@ async function writeConfigFiles({ env, configJson, repoRoot, configDir }) {
   if (env._STARTUP_SERVICE === "1") {
     heading("Startup Service");
     try {
-      const { installStartupService } = await import("./startup-service.mjs");
+      const { installStartupService } = await import("./infra/startup-service.mjs");
       const result = await installStartupService({ daemon: true });
       if (result.success) {
         success(`Registered via ${result.method}`);
@@ -6582,7 +6582,7 @@ async function writeConfigFiles({ env, configJson, repoRoot, configDir }) {
       info("View logs:     bosun --logs");
       if (env._OPEN_PORTAL_AFTER_SETUP === "1") {
         const { resolveElectronLauncher: _getLauncher } =
-          await import("./desktop-shortcut.mjs");
+          await import("./infra/desktop-shortcut.mjs");
         const launcher = _getLauncher();
         if (launcher?.executable) {
           const portalChild = _spawn(

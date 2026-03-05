@@ -10,7 +10,7 @@ import {
   MODEL_ERROR_PATTERNS,
   CONTENT_POLICY_PATTERNS,
   CODEX_SANDBOX_PATTERNS,
-} from "../error-detector.mjs";
+} from "../infra/error-detector.mjs";
 
 describe("error-detector enhanced methods", () => {
   describe("analyzeMessageSequence", () => {

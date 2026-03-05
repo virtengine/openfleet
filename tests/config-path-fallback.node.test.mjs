@@ -15,7 +15,7 @@ import { tmpdir } from "node:os";
 import { resolve } from "node:path";
 import { describe, it } from "node:test";
 
-const src = readFileSync(resolve(process.cwd(), "config.mjs"), "utf8");
+const src = readFileSync(resolve(process.cwd(), "config/config.mjs"), "utf8");
 
 // ── Source structure ──────────────────────────────────────────────────────
 

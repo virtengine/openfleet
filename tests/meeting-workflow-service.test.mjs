@@ -1,6 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { createSessionTracker } from "../session-tracker.mjs";
-import { createMeetingWorkflowService } from "../meeting-workflow-service.mjs";
+import { createSessionTracker } from "../infra/session-tracker.mjs";
+import { createMeetingWorkflowService } from "../workflow/meeting-workflow-service.mjs";
 
 function createHarness(overrides = {}) {
   let nowMs = 1_700_000_000_000;

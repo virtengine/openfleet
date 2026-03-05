@@ -27,13 +27,13 @@ import {
 import { fileURLToPath } from "node:url";
 import { execFileSync, execSync, fork, spawn } from "node:child_process";
 import os from "node:os";
-import { createDaemonCrashTracker } from "./daemon-restart-policy.mjs";
+import { createDaemonCrashTracker } from "./infra/daemon-restart-policy.mjs";
 import {
   applyAllCompatibility,
   detectLegacySetup,
   migrateFromLegacy,
 } from "./compat.mjs";
-import { resolveRepoRoot } from "./repo-root.mjs";
+import { resolveRepoRoot } from "./config/repo-root.mjs";
 
 const MONITOR_START_MAX_WAIT_MS = Math.max(
   0,
@@ -843,7 +843,7 @@ async function main() {
   // `bosun task --help` and `bosun task create --help` route to task-specific help
   // rather than the main bosun help page.
   if (args[0] === "task" || args.includes("--task")) {
-    const { runTaskCli } = await import("./task-cli.mjs");
+    const { runTaskCli } = await import("./task/task-cli.mjs");
     const taskArgs = args[0] === "task" ? args.slice(1) : args.slice(args.indexOf("--task") + 1);
     await runTaskCli(taskArgs);
     process.exit(0);
@@ -870,7 +870,7 @@ async function main() {
   // Handle desktop shortcut controls
   if (args.includes("--desktop-shortcut")) {
     const { installDesktopShortcut, getDesktopShortcutMethodName } =
-      await import("./desktop-shortcut.mjs");
+      await import("./infra/desktop-shortcut.mjs");
     const result = installDesktopShortcut();
     if (result.success) {
       console.log(`  :check: Desktop shortcut installed (${result.method})`);
@@ -885,7 +885,7 @@ async function main() {
     process.exit(result.success ? 0 : 1);
   }
   if (args.includes("--desktop-shortcut-remove")) {
-    const { removeDesktopShortcut } = await import("./desktop-shortcut.mjs");
+    const { removeDesktopShortcut } = await import("./infra/desktop-shortcut.mjs");
     const result = removeDesktopShortcut();
     if (result.success) {
       console.log(`  :check: Desktop shortcut removed`);
@@ -897,7 +897,7 @@ async function main() {
     process.exit(result.success ? 0 : 1);
   }
   if (args.includes("--desktop-shortcut-status")) {
-    const { getDesktopShortcutStatus } = await import("./desktop-shortcut.mjs");
+    const { getDesktopShortcutStatus } = await import("./infra/desktop-shortcut.mjs");
     const status = getDesktopShortcutStatus();
     if (status.installed) {
       console.log(`  Desktop shortcut: installed (${status.method})`);
@@ -924,7 +924,7 @@ async function main() {
   // Handle --doctor
   if (args.includes("--doctor") || args.includes("doctor")) {
     const { runConfigDoctor, formatConfigDoctorReport } =
-      await import("./config-doctor.mjs");
+      await import("./config/config-doctor.mjs");
     const result = runConfigDoctor();
     console.log(formatConfigDoctorReport(result));
     process.exit(result.ok ? 0 : 1);
@@ -935,7 +935,7 @@ async function main() {
     const idx = args.indexOf("--tool-log");
     const logIdArg = args[idx + 1];
     const { retrieveToolLog, listToolLogs, pruneToolLogCache, getToolLogDir } =
-      await import("./context-cache.mjs");
+      await import("./workspace/context-cache.mjs");
 
     if (logIdArg === "list" || logIdArg === "ls") {
       const logs = await listToolLogs(50);
@@ -1001,7 +1001,7 @@ async function main() {
         runContextIndex,
         searchContextIndex,
         getContextIndexStatus,
-      } = await import("./context-indexer.mjs");
+      } = await import("./workspace/context-indexer.mjs");
 
       if (modeRaw === "run") {
         const result = await runContextIndex({ rootDir: runtimeRepoRoot });
@@ -1188,7 +1188,7 @@ async function main() {
   // Handle --enable-startup / --disable-startup / --startup-status
   if (args.includes("--enable-startup")) {
     const { installStartupService, getStartupMethodName } =
-      await import("./startup-service.mjs");
+      await import("./infra/startup-service.mjs");
     const result = await installStartupService({ daemon: true });
     if (result.success) {
       console.log(`  \u2705 Startup service installed via ${result.method}`);
@@ -1203,7 +1203,7 @@ async function main() {
     process.exit(result.success ? 0 : 1);
   }
   if (args.includes("--disable-startup")) {
-    const { removeStartupService } = await import("./startup-service.mjs");
+    const { removeStartupService } = await import("./infra/startup-service.mjs");
     const result = await removeStartupService();
     if (result.success) {
       console.log(`  \u2705 Startup service removed (${result.method})`);
@@ -1215,7 +1215,7 @@ async function main() {
     process.exit(result.success ? 0 : 1);
   }
   if (args.includes("--startup-status")) {
-    const { getStartupStatus } = await import("./startup-service.mjs");
+    const { getStartupStatus } = await import("./infra/startup-service.mjs");
     const status = getStartupStatus();
     if (status.installed) {
       console.log(`  Startup service: installed (${status.method})`);
@@ -1232,7 +1232,7 @@ async function main() {
 
   // Handle --update (force update)
   if (args.includes("--update")) {
-    const { forceUpdate } = await import("./update-check.mjs");
+    const { forceUpdate } = await import("./infra/update-check.mjs");
     const updated = await forceUpdate(VERSION);
     if (updated) {
       // If a daemon or other bosun process is running, restart it so it picks
@@ -1288,7 +1288,7 @@ async function main() {
 
   // Non-blocking update check (don't delay startup)
   if (!args.includes("--no-update-check")) {
-    import("./update-check.mjs")
+    import("./infra/update-check.mjs")
       .then(({ checkForUpdate }) => checkForUpdate(VERSION))
       .catch(() => {}); // silent — never block startup
   }
@@ -1305,7 +1305,7 @@ async function main() {
 
   // Handle workspace commands
   if (args.includes("--workspace-list") || args.includes("workspace-list")) {
-    const { listWorkspaces, getActiveWorkspace } = await import("./workspace-manager.mjs");
+    const { listWorkspaces, getActiveWorkspace } = await import("./workspace/workspace-manager.mjs");
     const configDirArg = getArgValue("--config-dir");
     const configDir = configDirArg || process.env.BOSUN_DIR || resolve(os.homedir(), "bosun");
     const workspaces = listWorkspaces(configDir);
@@ -1329,7 +1329,7 @@ async function main() {
   }
 
   if (args.includes("--workspace-add")) {
-    const { createWorkspace } = await import("./workspace-manager.mjs");
+    const { createWorkspace } = await import("./workspace/workspace-manager.mjs");
     const configDirArg = getArgValue("--config-dir");
     const configDir = configDirArg || process.env.BOSUN_DIR || resolve(os.homedir(), "bosun");
     const name = getArgValue("--workspace-add");
@@ -1348,7 +1348,7 @@ async function main() {
   }
 
   if (args.includes("--workspace-switch")) {
-    const { setActiveWorkspace, getWorkspace } = await import("./workspace-manager.mjs");
+    const { setActiveWorkspace, getWorkspace } = await import("./workspace/workspace-manager.mjs");
     const configDirArg = getArgValue("--config-dir");
     const configDir = configDirArg || process.env.BOSUN_DIR || resolve(os.homedir(), "bosun");
     const wsId = getArgValue("--workspace-switch");
@@ -1368,7 +1368,7 @@ async function main() {
   }
 
   if (args.includes("--workspace-add-repo")) {
-    const { addRepoToWorkspace, getActiveWorkspace, listWorkspaces } = await import("./workspace-manager.mjs");
+    const { addRepoToWorkspace, getActiveWorkspace, listWorkspaces } = await import("./workspace/workspace-manager.mjs");
     const configDirArg = getArgValue("--config-dir");
     const configDir = configDirArg || process.env.BOSUN_DIR || resolve(os.homedir(), "bosun");
     const active = getActiveWorkspace(configDir);
@@ -1397,7 +1397,7 @@ async function main() {
   // Handle --workspace-health / --verify-workspace
   if (args.includes("--workspace-health") || args.includes("--verify-workspace") || args.includes("workspace-health")) {
     const { runWorkspaceHealthCheck, formatWorkspaceHealthReport } =
-      await import("./config-doctor.mjs");
+      await import("./config/config-doctor.mjs");
     const configDirArg = getArgValue("--config-dir");
     const configDir = configDirArg || process.env.BOSUN_DIR || resolve(os.homedir(), "bosun");
     const result = runWorkspaceHealthCheck({ configDir });
@@ -1418,7 +1418,7 @@ async function main() {
   if (args.includes("--setup") || args.includes("setup")) {
     const configDirArg = getArgValue("--config-dir");
     if (configDirArg) process.env.BOSUN_DIR = configDirArg;
-    const { startSetupServer } = await import("./setup-web-server.mjs");
+    const { startSetupServer } = await import("./server/setup-web-server.mjs");
     await startSetupServer();
     // Server keeps running until setup completes
   }
@@ -1426,7 +1426,7 @@ async function main() {
   // Handle --whatsapp-auth
   if (args.includes("--whatsapp-auth") || args.includes("whatsapp-auth")) {
     const mode = args.includes("--pairing-code") ? "pairing-code" : "qr";
-    const { runWhatsAppAuth } = await import("./whatsapp-channel.mjs");
+    const { runWhatsAppAuth } = await import("./telegram/whatsapp-channel.mjs");
     await runWhatsAppAuth(mode);
     process.exit(0);
   }
@@ -1441,7 +1441,7 @@ async function main() {
         process.env.BOSUN_DIR = configDirArg;
       }
       console.log("\n  :rocket: First run detected — launching setup wizard...\n");
-      const { startSetupServer } = await import("./setup-web-server.mjs");
+      const { startSetupServer } = await import("./server/setup-web-server.mjs");
       await startSetupServer();
       console.log("\n  Setup complete! Starting bosun...\n");
     }

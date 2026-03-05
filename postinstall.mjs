@@ -25,7 +25,7 @@ import { fileURLToPath } from "node:url";
 import { tmpdir } from "node:os";
 import https from "node:https";
 import { pipeline } from "node:stream/promises";
-import { shouldAutoInstallGitHooks } from "./task-context.mjs";
+import { shouldAutoInstallGitHooks } from "./task/task-context.mjs";
 
 const isWin = process.platform === "win32";
 const __dirname = dirname(fileURLToPath(import.meta.url));

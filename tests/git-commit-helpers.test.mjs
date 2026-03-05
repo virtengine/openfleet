@@ -3,7 +3,7 @@ import {
   appendBosunCoAuthor,
   buildCommitMessage,
   shouldAddBosunCoAuthor,
-} from "../git-commit-helpers.mjs";
+} from "../git/git-commit-helpers.mjs";
 
 describe("git-commit-helpers", () => {
   it("appendBosunCoAuthor is idempotent", () => {

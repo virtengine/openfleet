@@ -8,7 +8,7 @@ import {
   shouldAddBosunCoAuthor,
   shouldAutoInstallGitHooks,
   shouldRunAgentHookBridge,
-} from "../task-context.mjs";
+} from "../task/task-context.mjs";
 
 describe("task-context", () => {
   describe("parseScopedMode", () => {

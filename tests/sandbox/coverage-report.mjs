@@ -50,8 +50,8 @@ import {
   registerNodeType,
   getNodeType,
   listNodeTypes,
-} from "../../workflow-engine.mjs";
-import { WORKFLOW_TEMPLATES, installTemplate } from "../../workflow-templates.mjs";
+} from "../../workflow/workflow-engine.mjs";
+import { WORKFLOW_TEMPLATES, installTemplate } from "../../workflow/workflow-templates.mjs";
 import "../../workflow-nodes.mjs";
 import { TEMPLATE_FIXTURES } from "./fixtures.mjs";
 

@@ -16,15 +16,15 @@ import { mkdtempSync, rmSync, writeFileSync, mkdirSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { execSync } from "node:child_process";
-import { getNodeType } from "../workflow-nodes.mjs";
+import { getNodeType } from "../workflow/workflow-nodes.mjs";
 import {
   WorkflowEngine,
   WorkflowContext,
-} from "../workflow-engine.mjs";
+} from "../workflow/workflow-engine.mjs";
 import {
   getTemplate,
   installTemplate,
-} from "../workflow-templates.mjs";
+} from "../workflow/workflow-templates.mjs";
 
 // ── Helpers ─────────────────────────────────────────────────────────────────
 

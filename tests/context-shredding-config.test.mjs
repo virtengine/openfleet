@@ -9,7 +9,7 @@ import {
   getDefaultOptions,
   CONTEXT_SHREDDING_ENV_DEFS,
   _resetConfigCache,
-} from "../context-shredding-config.mjs";
+} from "../config/context-shredding-config.mjs";
 
 // ---------------------------------------------------------------------------
 // Helpers

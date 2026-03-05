@@ -18,7 +18,7 @@ import { resolve } from "node:path";
 import { describe, it } from "node:test";
 
 const src = readFileSync(
-  resolve(process.cwd(), "telegram-bot.mjs"),
+  resolve(process.cwd(), "telegram/telegram-bot.mjs"),
   "utf8",
 );
 

@@ -22,7 +22,7 @@ let autofixPromise = null;
 
 async function loadAutofix() {
   if (!autofixPromise) {
-    autofixPromise = import("../autofix.mjs");
+    autofixPromise = import("../agent/autofix.mjs");
   }
   return await autofixPromise;
 }

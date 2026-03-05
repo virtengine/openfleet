@@ -10,7 +10,7 @@ import {
   claimTelegramPollOwner,
   getActiveTelegramPollOwner,
   releaseTelegramPollOwner,
-} from "../telegram-poll-owner.mjs";
+} from "../telegram/telegram-poll-owner.mjs";
 
 const root = mkdtempSync(resolve(tmpdir(), "bosun-poll-owner-"));
 const cacheDir = resolve(root, ".cache");

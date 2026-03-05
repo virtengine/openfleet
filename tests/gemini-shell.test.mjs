@@ -18,7 +18,7 @@ vi.mock("node:child_process", () => ({
   spawn: (...args) => mockSpawn(...args),
 }));
 
-vi.mock("../repo-root.mjs", () => ({
+vi.mock("../config/repo-root.mjs", () => ({
   resolveRepoRoot: vi.fn(() => "/mock/repo"),
 }));
 
@@ -28,7 +28,7 @@ vi.mock("node:fs/promises", () => ({
   writeFile: vi.fn().mockResolvedValue(undefined),
 }));
 
-vi.mock("../stream-resilience.mjs", () => ({
+vi.mock("../infra/stream-resilience.mjs", () => ({
   isTransientStreamError: (err) => String(err?.message || "").includes("503"),
   streamRetryDelay: () => 0,
   MAX_STREAM_RETRIES: 2,
@@ -41,7 +41,7 @@ const {
   createSession,
   listSessions,
   resetSession,
-} = await import("../gemini-shell.mjs");
+} = await import("../shell/gemini-shell.mjs");
 
 function fakeChild({ code = 0, stdout = "", stderr = "", error = null } = {}) {
   const child = new EventEmitter();

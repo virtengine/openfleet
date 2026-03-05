@@ -2,17 +2,17 @@ import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 
 // ── Mock external boundaries ────────────────────────────────────────────────
 
-vi.mock("../config.mjs", () => ({
+vi.mock("../config/config.mjs", () => ({
   loadConfig: vi.fn(() => ({ primaryAgent: "codex-sdk", voice: {} })),
 }));
 
-vi.mock("../primary-agent.mjs", () => ({
+vi.mock("../agent/primary-agent.mjs", () => ({
   execPrimaryPrompt: vi.fn(async () => "agent response"),
   getPrimaryAgentName: vi.fn(() => "codex-sdk"),
   setPrimaryAgent: vi.fn(),
 }));
 
-vi.mock("../kanban-adapter.mjs", () => ({
+vi.mock("../kanban/kanban-adapter.mjs", () => ({
   getKanbanAdapter: vi.fn(() => ({
     listProjects: vi.fn(async () => [{ id: "proj-1", name: "Test Project" }]),
     listTasks: vi.fn(async () => [{ id: "1", title: "Test Task", status: "todo" }]),
@@ -29,21 +29,21 @@ vi.mock("../kanban-adapter.mjs", () => ({
   })),
 }));
 
-vi.mock("../session-tracker.mjs", () => ({
+vi.mock("../infra/session-tracker.mjs", () => ({
   listSessions: vi.fn(() => []),
   getSession: vi.fn(() => null),
   getSessionById: vi.fn(() => null),
   recordEvent: vi.fn(),
 }));
 
-vi.mock("../fleet-coordinator.mjs", () => ({
+vi.mock("../agent/fleet-coordinator.mjs", () => ({
   getFleetStatus: vi.fn(() => ({ instances: [] })),
 }));
 
-vi.mock("../agent-supervisor.mjs", () => ({}));
-vi.mock("../shared-state-manager.mjs", () => ({}));
+vi.mock("../agent/agent-supervisor.mjs", () => ({}));
+vi.mock("../workspace/shared-state-manager.mjs", () => ({}));
 
-vi.mock("../agent-pool.mjs", () => ({
+vi.mock("../agent/agent-pool.mjs", () => ({
   execPooledPrompt: vi.fn(async () => ({
     finalResponse: "pooled agent response",
     items: [],
@@ -51,7 +51,7 @@ vi.mock("../agent-pool.mjs", () => ({
   })),
 }));
 
-vi.mock("../workflow-engine.mjs", () => ({
+vi.mock("../workflow/workflow-engine.mjs", () => ({
   getWorkflowEngine: vi.fn(() => ({
     save: vi.fn((def) => ({
       ...def,
@@ -157,7 +157,7 @@ vi.mock("../workflow-engine.mjs", () => ({
   })),
 }));
 
-vi.mock("../agent-prompts.mjs", () => ({
+vi.mock("../agent/agent-prompts.mjs", () => ({
   AGENT_PROMPT_DEFINITIONS: [
     {
       key: "orchestrator",
@@ -213,14 +213,14 @@ vi.mock("../agent-prompts.mjs", () => ({
   })),
 }));
 
-vi.mock("../vision-session-state.mjs", () => ({
+vi.mock("../voice/vision-session-state.mjs", () => ({
   getVisionSessionState: vi.fn(() => ({
     lastFrameDataUrl: "data:image/jpeg;base64,ZmFrZQ==",
     lastFrameSource: "screen",
   })),
 }));
 
-vi.mock("../voice-relay.mjs", () => ({
+vi.mock("../voice/voice-relay.mjs", () => ({
   analyzeVisionFrame: vi.fn(async () => ({
     summary: "The terminal shows a syntax error in voice-tools.mjs.",
     provider: "openai",
@@ -234,13 +234,13 @@ const {
   getToolDefinitions,
   executeToolCall,
   VOICE_TOOLS,
-} = await import("../voice-tools.mjs");
+} = await import("../voice/voice-tools.mjs");
 
-const { execPrimaryPrompt, setPrimaryAgent } = await import("../primary-agent.mjs");
-const { execPooledPrompt } = await import("../agent-pool.mjs");
-const promptDefaults = await import("../agent-prompts.mjs");
-const sessionTracker = await import("../session-tracker.mjs");
-const { analyzeVisionFrame } = await import("../voice-relay.mjs");
+const { execPrimaryPrompt, setPrimaryAgent } = await import("../agent/primary-agent.mjs");
+const { execPooledPrompt } = await import("../agent/agent-pool.mjs");
+const promptDefaults = await import("../agent/agent-prompts.mjs");
+const sessionTracker = await import("../infra/session-tracker.mjs");
+const { analyzeVisionFrame } = await import("../voice/voice-relay.mjs");
 
 // ── Tests ────────────────────────────────────────────────────────────────────
 

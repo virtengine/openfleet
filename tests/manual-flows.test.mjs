@@ -22,7 +22,7 @@ import {
   getRun,
   listRuns,
   executeFlow,
-} from "../manual-flows.mjs";
+} from "../workflow/manual-flows.mjs";
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
 

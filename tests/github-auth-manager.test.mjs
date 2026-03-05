@@ -15,7 +15,7 @@ vi.mock("node:os", () => ({
   homedir: homedirMock,
 }));
 
-vi.mock("../github-app-auth.mjs", () => ({
+vi.mock("../github/github-app-auth.mjs", () => ({
   isAppConfigured: isAppConfiguredMock,
   getInstallationTokenForRepo: getInstallationTokenForRepoMock,
 }));
@@ -24,8 +24,8 @@ vi.mock("node:child_process", () => ({
   execFileSync: execFileSyncMock,
 }));
 
-const { getGitHubToken } = await import("../github-auth-manager.mjs");
-const { isAppConfigured, getInstallationTokenForRepo } = await import("../github-app-auth.mjs");
+const { getGitHubToken } = await import("../github/github-auth-manager.mjs");
+const { isAppConfigured, getInstallationTokenForRepo } = await import("../github/github-app-auth.mjs");
 const { execFileSync } = await import("node:child_process");
 const { readFile } = await import("node:fs/promises");
 

@@ -15,7 +15,7 @@ import {
   readSharedStateFromIssue,
   markTaskIgnored,
   listTasks,
-} from "./kanban-adapter.mjs";
+} from "./kanban/kanban-adapter.mjs";
 
 // Configuration
 const WORKSTATION_ID = process.env.WORKSTATION_ID || "workstation-local";

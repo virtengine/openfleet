@@ -15,7 +15,7 @@ import {
   buildSkillsIndex,
   findRelevantSkills,
   getSkillsDir,
-} from "../bosun-skills.mjs";
+} from "../agent/bosun-skills.mjs";
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
 

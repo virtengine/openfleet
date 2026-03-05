@@ -11,7 +11,7 @@ import {
   getPromptDefaultUpdateStatus,
   getDefaultPromptWorkspace,
   PROMPT_WORKSPACE_DIR,
-} from "../agent-prompts.mjs";
+} from "../agent/agent-prompts.mjs";
 
 describe("agent-prompts workspace", () => {
   const envKeys = [

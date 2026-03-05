@@ -13,8 +13,8 @@
  */
 
 import { describe, it, expect, vi } from "vitest";
-import { getNodeType } from "../workflow-nodes.mjs";
-import { WorkflowContext } from "../workflow-engine.mjs";
+import { getNodeType } from "../workflow/workflow-nodes.mjs";
+import { WorkflowContext } from "../workflow/workflow-engine.mjs";
 
 // -- Helpers ------------------------------------------------------------------
 

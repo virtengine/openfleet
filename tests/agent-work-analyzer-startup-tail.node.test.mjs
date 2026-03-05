@@ -3,7 +3,7 @@ import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import test from "node:test";
 
-const src = readFileSync(resolve(process.cwd(), "agent-work-analyzer.mjs"), "utf8");
+const src = readFileSync(resolve(process.cwd(), "agent/agent-work-analyzer.mjs"), "utf8");
 
 test("agent-work-analyzer defaults to tailing startup log from EOF", () => {
   assert.match(src, /function parseEnvBoolean\(value, fallback = false\)/);

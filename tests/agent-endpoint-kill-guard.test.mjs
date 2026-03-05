@@ -3,7 +3,7 @@ import { resolve } from "node:path";
 import { describe, it, expect } from "vitest";
 
 describe("agent endpoint stale-pid handling", () => {
-  const source = readFileSync(resolve(process.cwd(), "agent-endpoint.mjs"), "utf8");
+  const source = readFileSync(resolve(process.cwd(), "agent/agent-endpoint.mjs"), "utf8");
 
   it("treats process-not-found taskkill output as already exited", () => {
     expect(source).toContain('detail.includes("not found")');

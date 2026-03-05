@@ -3,7 +3,7 @@ import { resolve } from "node:path";
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 
-const source = readFileSync(resolve(process.cwd(), "monitor.mjs"), "utf8");
+const source = readFileSync(resolve(process.cwd(), "infra/monitor.mjs"), "utf8");
 
 describe("monitor workspace sync slow warn", () => {
   it("supports DEVMODE_WORKSPACE_SYNC_SLOW_WARN_MS env var", () => {

@@ -2,14 +2,14 @@ import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 
 // ── Mock external boundaries ────────────────────────────────────────────────
 
-vi.mock("../config.mjs", () => ({
+vi.mock("../config/config.mjs", () => ({
   loadConfig: vi.fn(() => ({
     voice: {},
     primaryAgent: "codex-sdk",
   })),
 }));
 
-vi.mock("../voice-auth-manager.mjs", () => ({
+vi.mock("../voice/voice-auth-manager.mjs", () => ({
   resolveVoiceOAuthToken: vi.fn(() => null),
 }));
 
@@ -67,7 +67,7 @@ const {
   resolveBestVoiceSession,
   getClientSdkConfig,
   getSdkDiagnostics,
-} = await import("../voice-agents-sdk.mjs");
+} = await import("../voice/voice-agents-sdk.mjs");
 
 // ── Tests ────────────────────────────────────────────────────────────────────
 

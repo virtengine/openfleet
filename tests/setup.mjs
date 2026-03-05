@@ -1,4 +1,4 @@
-import { _resetSingleton } from "../session-tracker.mjs";
+import { _resetSingleton } from "../infra/session-tracker.mjs";
 
 // ── Isolate session tracker from disk during tests ──────────────────────────
 // The singleton defaults to persistDir = `logs/sessions/`, which means any

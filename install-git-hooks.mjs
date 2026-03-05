@@ -3,7 +3,7 @@
 import { execSync } from "node:child_process";
 import { existsSync } from "node:fs";
 import { resolve } from "node:path";
-import { isEnvFlagEnabled, shouldAutoInstallGitHooks } from "./task-context.mjs";
+import { isEnvFlagEnabled, shouldAutoInstallGitHooks } from "./task/task-context.mjs";
 
 function run(cmd) {
   execSync(cmd, { stdio: "inherit" });

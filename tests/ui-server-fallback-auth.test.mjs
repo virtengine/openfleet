@@ -34,7 +34,7 @@ describe("ui-server fallback auth", () => {
   });
 
   afterEach(async () => {
-    const mod = await import("../ui-server.mjs");
+    const mod = await import("../server/ui-server.mjs");
     mod.stopTelegramUiServer();
     for (const key of ENV_KEYS) {
       if (envSnapshot[key] === undefined) delete process.env[key];
@@ -44,7 +44,7 @@ describe("ui-server fallback auth", () => {
   });
 
   it("sets fallback credential, logs in, and reuses normal session cookie", async () => {
-    const mod = await import("../ui-server.mjs");
+    const mod = await import("../server/ui-server.mjs");
     const server = await mod.startTelegramUiServer({
       port: 0,
       host: "127.0.0.1",
@@ -88,7 +88,7 @@ describe("ui-server fallback auth", () => {
     process.env.TELEGRAM_UI_FALLBACK_AUTH_MAX_FAILURES = "2";
     process.env.TELEGRAM_UI_FALLBACK_AUTH_LOCKOUT_MS = "60000";
 
-    const mod = await import("../ui-server.mjs");
+    const mod = await import("../server/ui-server.mjs");
     const server = await mod.startTelegramUiServer({
       port: 0,
       host: "127.0.0.1",

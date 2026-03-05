@@ -2,8 +2,8 @@ import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { resolve } from "node:path";
-import { setKanbanBackend } from "../kanban-adapter.mjs";
-import { configureTaskStore, addTask, getTask } from "../task-store.mjs";
+import { setKanbanBackend } from "../kanban/kanban-adapter.mjs";
+import { configureTaskStore, addTask, getTask } from "../task/task-store.mjs";
 
 // Force VK backend so fetchVk() doesn't short-circuit when config says "github"
 process.env.KANBAN_BACKEND = "vk";
@@ -19,7 +19,7 @@ const mockConsoleError = vi
   .mockImplementation(() => {});
 
 // Import monitor once at module level
-const monitor = await import("../monitor.mjs");
+const monitor = await import("../infra/monitor.mjs");
 const {
   fetchVk,
   updateTaskStatus,

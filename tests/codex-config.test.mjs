@@ -7,7 +7,7 @@ import {
   ensureSandboxWorkspaceWrite,
   ensureTrustedProjects,
   ensureTopLevelSandboxPermissions,
-} from "../codex-config.mjs";
+} from "../shell/codex-config.mjs";
 
 describe("codex-config defaults", () => {
   it("includes expanded MCP server defaults", () => {
