@@ -235,6 +235,7 @@ import {
 } from "./kanban-adapter.mjs";
 import { resolvePromptTemplate } from "./agent-prompts.mjs";
 import { resolveCodexProfileRuntime } from "./codex-model-profiles.mjs";
+import { sanitizeMonitorTailForPrompt as sanitizeMonitorTailForPromptShared } from "./monitor-tail-sanitizer.mjs";
 const __dirname = resolve(fileURLToPath(new URL(".", import.meta.url)));
 
 // ── Anomaly signal file path (shared with ve-orchestrator.ps1) ──────────────
@@ -1353,12 +1354,16 @@ function isBenignWorkspaceSyncFailure(errorText) {
       0,
       WORKSPACE_SYNC_INITIAL_DELAY_MS + workspaceSyncInitialJitterMs,
     );
-    workspaceSyncInitialTimer = setTimeout(() => {
+    workspaceSyncInitialTimer = safeSetTimeout("workspace-sync-initial", () => {
       workspaceSyncInitialTimer = null;
       doWorkspaceSync();
     }, workspaceSyncInitialDelayEffectiveMs);
     if (workspaceSyncInitialTimer?.unref) workspaceSyncInitialTimer.unref();
-    workspaceSyncTimer = setInterval(doWorkspaceSync, WORKSPACE_SYNC_INTERVAL_MS);
+    workspaceSyncTimer = safeSetInterval(
+      "workspace-sync-cycle",
+      doWorkspaceSync,
+      WORKSPACE_SYNC_INTERVAL_MS,
+    );
     // Unref so the timer doesn't keep the process alive during shutdown
     if (workspaceSyncTimer?.unref) workspaceSyncTimer.unref();
     console.log(
@@ -1445,7 +1450,8 @@ const workspaceMonitor = new WorkspaceMonitor({
   onStuckDetected: ({ attemptId, reason, recommendation }) => {
     const msg = `:alert: Agent ${attemptId.substring(0, 8)} stuck: ${reason}\nRecommendation: ${recommendation}`;
     console.warn(`[workspace-monitor] ${msg}`);
-    void notify?.(msg, { dedupKey: `stuck-${attemptId.substring(0, 8)}` });
+    runDetached("workspace-monitor:stuck-notify", () =>
+      notify?.(msg, { dedupKey: `stuck-${attemptId.substring(0, 8)}` }));
   },
 });
 
@@ -1970,8 +1976,10 @@ let codexDisabledReason = codexEnabled
 setPrimaryAgent(primaryAgentName);
 let preflightEnabled = configPreflightEnabled;
 let preflightRetryMs = configPreflightRetryMs;
+let shuttingDown = false;
 if (primaryAgentReady) {
-  void initPrimaryAgent(primaryAgentName);
+  runDetached("primary-agent:init-startup", () =>
+    initPrimaryAgent(primaryAgentName));
 }
 
 // Merge strategy: now handled by PR_MERGE_STRATEGY workflow template
@@ -1997,7 +2005,6 @@ let preflightRetryTimer = null;
 let CodexClient = null;
 
 let restartCount = 0;
-let shuttingDown = false;
 let currentChild = null;
 let pendingRestart = false;
 let skipNextAnalyze = false;
@@ -2457,11 +2464,15 @@ function restartSelf(reason) {
       }
     }, 3000);
   }
-  void releaseTelegramPollLock();
+  runDetachedDuringShutdown("poll-lock-release:restart-self", () =>
+    releaseTelegramPollLock(),
+  );
   stopTelegramBot({ preserveDigest: true });
   stopWhatsAppChannel();
   if (isContainerEnabled()) {
-    void stopAllContainers().catch(() => {});
+    runDetachedDuringShutdown("containers-stop:restart-self", () =>
+      stopAllContainers(),
+    );
   }
   // Write self-restart marker so the new process suppresses startup notifications
   try {
@@ -2689,8 +2700,10 @@ async function handleMonitorFailure(reason, err) {
     }
     // Ensure we retry after safe-mode window if still running.
     if (!shuttingDown) {
-      setTimeout(() => {
-        if (!shuttingDown) void startProcess();
+      safeSetTimeout("monitor-failure-hard-cap-resume", () => {
+        if (!shuttingDown) {
+          runDetached("monitor-failure-hard-cap-resume", startProcess);
+        }
       }, pauseMs + 1000);
     }
     return;
@@ -2819,6 +2832,26 @@ function runDetached(label, promiseOrFn) {
   }
 }
 
+function runDetachedDuringShutdown(label, promiseOrFn) {
+  try {
+    const pending =
+      typeof promiseOrFn === "function" ? promiseOrFn() : promiseOrFn;
+    if (pending && typeof pending.then === "function") {
+      pending.catch((err) => {
+        const error = err instanceof Error ? err : new Error(formatMonitorError(err));
+        console.warn(
+          `[monitor] shutdown task failed (${label}): ${error.stack || error.message}`,
+        );
+      });
+    }
+  } catch (err) {
+    const error = err instanceof Error ? err : new Error(formatMonitorError(err));
+    console.warn(
+      `[monitor] shutdown task failed (${label}): ${error.stack || error.message}`,
+    );
+  }
+}
+
 function safeSetInterval(reason, fn, ms) {
   const normalized = Number(ms);
   const clamped = Number.isFinite(normalized) && normalized > 0
@@ -2843,6 +2876,14 @@ function safeSetTimeout(reason, fn, ms) {
     );
   }
   return setTimeout(() => runGuarded(`timeout:${reason}`, fn), clamped);
+}
+
+function scheduleStartProcess(reason, delayMs) {
+  return safeSetTimeout(reason, () => {
+    if (!shuttingDown) {
+      runDetached(`start-process:${reason}`, startProcess);
+    }
+  }, delayMs);
 }
 
 const crashLoopFixAttempts = new Map();
@@ -3432,9 +3473,9 @@ function scheduleVibeKanbanRestart() {
       `[monitor] vibe-kanban exceeded ${vkMaxRestarts} restarts, giving up`,
     );
     if (telegramToken && telegramChatId) {
-      void sendTelegramMessage(
+      runDetached("vk-runtime:restart-limit-notify", () => sendTelegramMessage(
         `Vibe-kanban exceeded ${vkMaxRestarts} restart attempts. Manual intervention required.`,
-      );
+      ));
     }
     return;
   }
@@ -3442,7 +3483,8 @@ function scheduleVibeKanbanRestart() {
   console.log(
     `[monitor] restarting vibe-kanban in ${delay}ms (attempt ${vkRestartCount}/${vkMaxRestarts})`,
   );
-  setTimeout(() => void startVibeKanbanProcess(), delay);
+  safeSetTimeout("vk-runtime:restart", () =>
+    runDetached("vk-runtime:restart", () => startVibeKanbanProcess()), delay);
 }
 
 async function canConnectTcp(host, port, timeoutMs = 1200) {
@@ -3751,8 +3793,13 @@ function ensureVkLogStream() {
     console.log("[monitor] VK error resolver initialized");
   }
 
-  // Discover any active sessions immediately and keep polling for new sessions
-  void refreshVkSessionStreams("startup");
+  // Discover any active sessions immediately and keep polling for new sessions.
+  // Explicit catch ensures unexpected regressions never surface as unhandled rejections.
+  refreshVkSessionStreams("startup").catch((err) => {
+    console.warn(
+      `[monitor] refreshVkSessionStreams(startup) unexpected rejection: ${err?.message || err}`,
+    );
+  });
   ensureVkSessionDiscoveryLoop();
 }
 
@@ -3760,7 +3807,11 @@ function ensureVkSessionDiscoveryLoop() {
   if (vkSessionDiscoveryTimer) return;
   if (!Number.isFinite(vkEnsureIntervalMs) || vkEnsureIntervalMs <= 0) return;
   vkSessionDiscoveryTimer = setInterval(() => {
-    void refreshVkSessionStreams("periodic");
+    refreshVkSessionStreams("periodic").catch((err) => {
+      console.warn(
+        `[monitor] refreshVkSessionStreams(periodic) unexpected rejection: ${err?.message || err}`,
+      );
+    });
   }, vkEnsureIntervalMs);
 }
 
@@ -10785,11 +10836,13 @@ async function pollTelegramCommands() {
       }
     }
     const delayMs = updates.length ? 0 : 1000;
-    setTimeout(pollTelegramCommands, delayMs);
+    safeSetTimeout("telegram-commands:poll-loop", () =>
+      runDetached("telegram-commands:poll-loop", pollTelegramCommands), delayMs);
   } catch (err) {
     const message = err && err.message ? err.message : String(err);
     console.warn(`[monitor] telegram command poll error: ${message}`);
-    setTimeout(pollTelegramCommands, 3000);
+    safeSetTimeout("telegram-commands:poll-error-retry", () =>
+      runDetached("telegram-commands:poll-error-retry", pollTelegramCommands), 3000);
   }
 }
 
@@ -10800,13 +10853,14 @@ function startTelegramCommandListener() {
   if (telegramCommandPolling) {
     return;
   }
-  void acquireTelegramPollLock("monitor").then((ok) => {
+  runDetached("telegram-commands:acquire-lock", async () => {
+    const ok = await acquireTelegramPollLock("monitor");
     if (!ok) {
       telegramCommandEnabled = false;
       return;
     }
     telegramCommandPolling = true;
-    void pollTelegramCommands();
+    runDetached("telegram-commands:poll", pollTelegramCommands);
   });
 }
 
@@ -12081,7 +12135,7 @@ async function handleExit(code, signal, logPath) {
       );
     }
     restartCount += 1;
-    setTimeout(startProcess, exitState.backoffMs);
+    scheduleStartProcess("handle-exit:mutex-held", exitState.backoffMs);
     return;
   }
 
@@ -12091,7 +12145,7 @@ async function handleExit(code, signal, logPath) {
       `[monitor] orchestrator killed by ${reason} — skipping autofix/analysis`,
     );
     restartCount += 1;
-    setTimeout(startProcess, restartDelayMs);
+    scheduleStartProcess("handle-exit:sigkill", restartDelayMs);
     return;
   }
 
@@ -12111,7 +12165,7 @@ async function handleExit(code, signal, logPath) {
       `[monitor] benign exit 1 detected (no errors in log, normal cycles) — restarting without autofix`,
     );
     restartCount += 1;
-    setTimeout(startProcess, restartDelayMs);
+    scheduleStartProcess("handle-exit:benign-exit-1", restartDelayMs);
     return;
   }
 
@@ -12136,7 +12190,7 @@ async function handleExit(code, signal, logPath) {
       console.log(
         `[monitor] waiting ${plannerWaitMs / 1000}s for planner before restart`,
       );
-      setTimeout(startProcess, plannerWaitMs);
+      scheduleStartProcess("handle-exit:planner-wait", plannerWaitMs);
       return;
     }
 
@@ -12145,7 +12199,7 @@ async function handleExit(code, signal, logPath) {
       `[monitor] clean exit (${reason}) — restarting without analysis`,
     );
     restartCount += 1;
-    setTimeout(startProcess, restartDelayMs);
+    scheduleStartProcess("handle-exit:clean-exit", restartDelayMs);
     return;
   }
 
@@ -12258,9 +12312,9 @@ async function handleExit(code, signal, logPath) {
           `[monitor] crash loop detected (${restartCountNow} exits in 5m). Pausing orchestrator restarts for ${pauseMin}m.`,
         );
         if (!orchestratorResumeTimer) {
-          orchestratorResumeTimer = setTimeout(() => {
+          orchestratorResumeTimer = safeSetTimeout("handle-exit:pause-resume", () => {
             orchestratorResumeTimer = null;
-            startProcess();
+            runDetached("start-process:handle-exit-pause-resume", startProcess);
           }, orchestratorPauseMs);
         }
         if (telegramToken && telegramChatId) {
@@ -12333,12 +12387,12 @@ async function handleExit(code, signal, logPath) {
     );
     const waitSec = Math.max(5, Math.round(waitMs / 1000));
     console.warn(`[monitor] restart paused; retrying in ${waitSec}s`);
-    setTimeout(startProcess, waitSec * 1000);
+    scheduleStartProcess("handle-exit:restart-paused", waitSec * 1000);
     return;
   }
 
   restartCount += 1;
-  setTimeout(startProcess, restartDelayMs);
+  scheduleStartProcess("handle-exit:default", restartDelayMs);
 }
 
 // ── Devmode Monitor-Monitor supervisor (24/7 + auto-resume + failover) ─────
@@ -12529,7 +12583,12 @@ function shouldFailoverMonitorSdk(message) {
     /codex exec exited/,
     /reading prompt from stdin/,
     /exit code 3221225786/,
+    /exit code 3221226505/,
     /exit code 1073807364/,
+    /unexpected content type/,
+    /streamable_http_client/,
+    /memory allocation .* failed/,
+    /allocation of .* bytes failed/,
     /serde error expected value/,
   ];
   return patterns.some((p) => p.test(text));
@@ -12834,6 +12893,51 @@ function refreshMonitorMonitorRuntime() {
   }
 }
 
+function snapshotMonitorMonitorRuntime() {
+  return {
+    enabled: !!monitorMonitor.enabled,
+    intervalMs: Number(monitorMonitor.intervalMs || 0),
+    statusIntervalMs: Number(monitorMonitor.statusIntervalMs || 0),
+    timeoutMs: Number(monitorMonitor.timeoutMs || 0),
+    branch: String(monitorMonitor.branch || ""),
+    sdkOrder: Array.isArray(monitorMonitor.sdkOrder)
+      ? [...monitorMonitor.sdkOrder]
+      : [],
+  };
+}
+
+function didMonitorMonitorRuntimeChange(previousRuntime) {
+  const prev = previousRuntime && typeof previousRuntime === "object"
+    ? previousRuntime
+    : {
+      enabled: false,
+      intervalMs: 0,
+      statusIntervalMs: 0,
+      timeoutMs: 0,
+      branch: "",
+      sdkOrder: [],
+    };
+  const next = snapshotMonitorMonitorRuntime();
+  if (
+    prev.enabled !== next.enabled ||
+    prev.intervalMs !== next.intervalMs ||
+    prev.statusIntervalMs !== next.statusIntervalMs ||
+    prev.timeoutMs !== next.timeoutMs ||
+    prev.branch !== next.branch
+  ) {
+    return true;
+  }
+  if (prev.sdkOrder.length !== next.sdkOrder.length) {
+    return true;
+  }
+  for (let i = 0; i < prev.sdkOrder.length; i += 1) {
+    if (prev.sdkOrder[i] !== next.sdkOrder[i]) {
+      return true;
+    }
+  }
+  return false;
+}
+
 function getMonitorMonitorStatusSnapshot() {
   const currentSdk = getCurrentMonitorSdk();
   return {
@@ -12963,63 +13067,7 @@ function filterMonitorTailByRecency(tail, { windowMs } = {}) {
 }
 
 function sanitizeMonitorTailForPrompt(tail, backend) {
-  const text = String(tail || "");
-  if (!text) return text;
-  if (String(backend || "").toLowerCase() === "vk") return text;
-
-  const fixtureTokens = [
-    "/api/tasks/999",
-    "/api/tasks/111",
-    "/api/tasks/123",
-    "/api/tasks/task-5",
-    "safeRecover: could not re-fetch status for \"Failing Task\"",
-    "Invalid JSON - Invalid JSON",
-    "plain text response",
-    "<h1>404 Not Found</h1>",
-    "<h1>502 Bad Gateway</h1>",
-    "nginx/1.18.0",
-  ];
-  const fixtureTokensLower = fixtureTokens.map((token) =>
-    String(token || "").toLowerCase(),
-  );
-  const benignMonitorTailPatterns = [
-    /ExperimentalWarning:\s+SQLite is an experimental feature/i,
-    /Use `node --trace-warnings .*` to show where the warning was created/i,
-    /local\s+'[^']+'\s+diverged\s+\(\d+↑\s+\d+↓\)\s+but has uncommitted changes\s+[—-]\s+skipping/i,
-    /workspace sync:\s+\d+\s+repo\(s\)\s+failed in\s+[^(]+$/i,
-  ];
-
-  const lines = text.split("\n");
-  const filtered = lines.filter((line) => {
-    const current = String(line || "");
-    const normalized = current
-      .replace(/^\d{4}-\d{2}-\d{2}T[0-9:.+-]+Z?\s+/, "")
-      .replace(/^\d{2}:\d{2}:\d{2}(?:\.\d+)?\s+/, "")
-      .replace(/^(?:\[[^\]]+\]\s*)+/, "")
-      .trim();
-    const currentLower = current.toLowerCase();
-    const normalizedLower = normalized.toLowerCase();
-    if (/A{40,}/.test(current)) return false;
-    if (
-      benignMonitorTailPatterns.some(
-        (pattern) => pattern.test(current) || pattern.test(normalized),
-      )
-    ) {
-      return false;
-    }
-    return !fixtureTokensLower.some(
-      (token) => currentLower.includes(token) || normalizedLower.includes(token),
-    );
-  });
-
-  if (filtered.length === lines.length) return text;
-
-  return [
-    filtered.join("\n"),
-    "[monitor] (sanitized benign tail noise for non-VK backend)",
-  ]
-    .filter(Boolean)
-    .join("\n");
+  return sanitizeMonitorTailForPromptShared(tail, backend);
 }
 
 function formatOrchestratorTailForMonitorPrompt({
@@ -13427,11 +13475,12 @@ async function runMonitorMonitorCycle({
       if (shouldFailoverMonitorSdk(errMsg)) {
         rotateMonitorSdk("prepare next cycle");
       }
-      void notify?.(
-        `:alert: Monitor-Monitor failed (${sdk}): ${String(errMsg).slice(0, 240)}`,
-        3,
-        { dedupKey: "monitor-monitor-failed" },
-      );
+      runDetached("monitor-monitor:failure-notify", () =>
+        notify?.(
+          `:alert: Monitor-Monitor failed (${sdk}): ${String(errMsg).slice(0, 240)}`,
+          3,
+          { dedupKey: "monitor-monitor-failed" },
+        ));
       try {
         await publishMonitorMonitorStatus("failure");
       } catch {
@@ -13446,11 +13495,20 @@ async function runMonitorMonitorCycle({
     monitorMonitor.lastOutcome = `exception (${sdk})`;
     monitorMonitor.lastError = errMsg;
     console.error(`[monitor-monitor] uncaught exception via ${sdk}: ${errMsg}`);
-    void notify?.(
-      `:alert: Monitor-Monitor exception (${sdk}): ${errMsg.slice(0, 240)}`,
-      3,
-      { dedupKey: "monitor-monitor-exception" },
-    );
+    runDetached("monitor-monitor:exception-notify", () =>
+      notify?.(
+        `:alert: Monitor-Monitor exception (${sdk}): ${errMsg.slice(0, 240)}`,
+        3,
+        { dedupKey: "monitor-monitor-exception" },
+      ));
+    if (shouldFailoverMonitorSdk(errMsg)) {
+      rotateMonitorSdk("prepare next cycle (exception)");
+    }
+    try {
+      await publishMonitorMonitorStatus("failure");
+    } catch {
+      /* best effort */
+    }
   } finally {
     // CRITICAL: Always reset running flag, even if runOnce throws or times out
     clearMonitorMonitorWatchdogTimer();
@@ -13627,11 +13685,12 @@ async function handleDigestSealed({ entries, text }) {
   console.log(
     `[monitor-monitor] digest trigger (${actionableEntries.length} actionable entries)`,
   );
-  void runMonitorMonitorCycle({
-    trigger: "digest",
-    entries: actionableEntries,
-    text,
-  });
+  runDetached("monitor-monitor:digest-trigger", () =>
+    runMonitorMonitorCycle({
+      trigger: "digest",
+      entries: actionableEntries,
+      text,
+    }));
 }
 
 async function startProcess() {
@@ -13665,7 +13724,7 @@ async function startProcess() {
       console.log(
         `[monitor] throttling restart — only ${Math.round(sinceLast / 1000)}s since last start, waiting ${Math.round(waitMs / 1000)}s`,
       );
-      setTimeout(startProcess, waitMs);
+      scheduleStartProcess("start-process:min-restart-delay", waitMs);
       return;
     }
   }
@@ -13679,7 +13738,7 @@ async function startProcess() {
     console.warn(
       `[monitor] orchestrator start blocked; retrying in ${waitSec}s`,
     );
-    setTimeout(startProcess, waitSec * 1000);
+    scheduleStartProcess("start-process:halted-or-safe-mode", waitSec * 1000);
     return;
   }
   if (!(await ensurePreflightReady("start"))) {
@@ -13779,7 +13838,7 @@ async function startProcess() {
             `Pausing restarts for ${pauseMin} minute(s).`,
         );
       }
-      setTimeout(startProcess, pauseMs);
+      scheduleStartProcess("start-process:pwsh-runtime-missing", pauseMs);
       return;
     }
     orchestratorCmd = pwshRuntime.command;
@@ -13893,15 +13952,18 @@ async function startProcess() {
       );
       if (noBranchMatch) {
         const shortId = noBranchMatch[2]; // 4-char prefix
-        void resolveAndTriggerSmartPR(shortId, "no-remote-branch");
+        runDetached("smart-pr:no-remote-branch", () =>
+          resolveAndTriggerSmartPR(shortId, "no-remote-branch"));
       }
       if (line.includes("ALL TASKS COMPLETE")) {
         if (!allCompleteNotified) {
           allCompleteNotified = true;
-          void sendTelegramMessage(
-            "All tasks completed. Orchestrator backlog is empty.",
-          );
-          void triggerTaskPlanner();
+          runDetached("orchestrator:all-complete-notify", () =>
+            sendTelegramMessage(
+              "All tasks completed. Orchestrator backlog is empty.",
+            ));
+          runDetached("orchestrator:all-complete-trigger-planner", () =>
+            triggerTaskPlanner());
         }
       }
     }
@@ -13926,7 +13988,7 @@ async function startProcess() {
     if (!shuttingDown) {
       const retryMs = Math.max(5_000, restartDelayMs || 0);
       safeSetTimeout("startProcess-retry", () => {
-        if (!shuttingDown) void startProcess();
+        if (!shuttingDown) runDetached("startProcess-retry", startProcess);
       }, retryMs);
     }
   }
@@ -14149,11 +14211,15 @@ function selfRestartForSourceChange(
       }
     }, 3000);
   }
-  void releaseTelegramPollLock();
+  runDetachedDuringShutdown("poll-lock-release:self-restart-source-change", () =>
+    releaseTelegramPollLock(),
+  );
   stopTelegramBot({ preserveDigest: true });
   stopWhatsAppChannel();
   if (isContainerEnabled()) {
-    void stopAllContainers().catch(() => {});
+    runDetachedDuringShutdown("containers-stop:self-restart-source-change", () =>
+      stopAllContainers(),
+    );
   }
   // Write self-restart marker so the new process suppresses startup notifications
   try {
@@ -14606,7 +14672,9 @@ function applyConfig(nextConfig, options = {}) {
       vibeKanbanStartedAt = 0;
     }
   } else if (!prevVkRuntimeRequired && nextVkRuntimeRequired) {
-    void ensureVibeKanbanRunning();
+    runDetached("vk-runtime:config-reload-enable", () =>
+      ensureVibeKanbanRunning(),
+    );
   }
 
   // ── Internal executor hot-reload ──────────────────────────────────────
@@ -14633,7 +14701,8 @@ function applyConfig(nextConfig, options = {}) {
     (primaryAgentChanged && primaryAgentReady) ||
     (!prevPrimaryAgentReady && primaryAgentReady)
   ) {
-    void initPrimaryAgent(primaryAgentName);
+    runDetached("primary-agent:init-config-reload", () =>
+      initPrimaryAgent(primaryAgentName));
   }
 
   if (prevWatchPath !== watchPath || watchEnabled === false) {
@@ -14655,14 +14724,16 @@ function applyConfig(nextConfig, options = {}) {
   startEnvWatchers();
 
   if (prevTelegramInterval !== telegramIntervalMin) {
-    void startTelegramNotifier();
+    runDetached("telegram-notifier:restart-config-reload", () =>
+      startTelegramNotifier());
   }
   if (!prevTelegramCommandEnabled && telegramCommandEnabled) {
     startTelegramCommandListener();
   }
   if (prevTelegramBotEnabled !== telegramBotEnabled) {
     if (telegramBotEnabled) {
-      void startTelegramBot(getTelegramBotStartOptions());
+      runDetached("telegram-bot:start-config-reload", () =>
+        startTelegramBot(getTelegramBotStartOptions()));
     } else {
       stopTelegramBot();
     }
@@ -14673,7 +14744,11 @@ function applyConfig(nextConfig, options = {}) {
     );
   }
   if (!prevCodexEnabled && codexEnabled) {
-    void ensureCodexSdkReady();
+    void ensureCodexSdkReady().catch((err) => {
+      console.warn(
+        `[monitor] ensureCodexSdkReady reload check failed: ${err?.message || err}`,
+      );
+    });
   }
   if (prevPreflightEnabled && !preflightEnabled && preflightRetryTimer) {
     clearTimeout(preflightRetryTimer);
@@ -14692,9 +14767,15 @@ function applyConfig(nextConfig, options = {}) {
     stopTaskPlannerStatusLoop();
   }
 
+  const previousMonitorRuntime = snapshotMonitorMonitorRuntime();
   refreshMonitorMonitorRuntime();
+  const monitorRuntimeChanged = didMonitorMonitorRuntimeChange(
+    previousMonitorRuntime,
+  );
   if (monitorMonitor.enabled) {
-    startMonitorMonitorSupervisor();
+    if (monitorRuntimeChanged || !monitorMonitor.timer || !monitorMonitor.statusTimer) {
+      startMonitorMonitorSupervisor();
+    }
   } else {
     stopMonitorMonitorSupervisor();
   }
@@ -14753,8 +14834,12 @@ process.on("SIGINT", async () => {
   if (currentChild) {
     currentChild.kill("SIGTERM");
   }
-  void workspaceMonitor.shutdown();
-  void releaseTelegramPollLock();
+  runDetachedDuringShutdown("workspace-monitor-shutdown:sigint", () =>
+    workspaceMonitor.shutdown(),
+  );
+  runDetachedDuringShutdown("poll-lock-release:sigint", () =>
+    releaseTelegramPollLock(),
+  );
   stopWhatsAppChannel();
   if (agentSupervisor) {
     agentSupervisor.stop();
@@ -14794,8 +14879,12 @@ process.on("exit", () => {
     vkLogStream.stop();
     vkLogStream = null;
   }
-  void workspaceMonitor.shutdown();
-  void releaseTelegramPollLock();
+  runDetachedDuringShutdown("workspace-monitor-shutdown:exit", () =>
+    workspaceMonitor.shutdown(),
+  );
+  runDetachedDuringShutdown("poll-lock-release:exit", () =>
+    releaseTelegramPollLock(),
+  );
 });
 
 process.on("SIGTERM", async () => {
@@ -14820,8 +14909,12 @@ process.on("SIGTERM", async () => {
   if (currentChild) {
     currentChild.kill("SIGTERM");
   }
-  void workspaceMonitor.shutdown();
-  void releaseTelegramPollLock();
+  runDetachedDuringShutdown("workspace-monitor-shutdown:sigterm", () =>
+    workspaceMonitor.shutdown(),
+  );
+  runDetachedDuringShutdown("poll-lock-release:sigterm", () =>
+    releaseTelegramPollLock(),
+  );
   stopTelegramBot();
   stopWhatsAppChannel();
   if (agentSupervisor) {
@@ -15289,13 +15382,17 @@ if (isVkRuntimeRequired()) {
   ensureAnomalyDetector();
 }
 if (isVkSpawnAllowed()) {
-  void ensureVibeKanbanRunning();
+  runDetached("vk-runtime:startup-ensure", () => ensureVibeKanbanRunning());
 }
 // When VK is externally managed (not spawned by monitor), still connect the
 // log stream so agent logs are captured to .cache/agent-logs/.
 if (isVkRuntimeRequired() && !isVkSpawnAllowed() && vkEndpointUrl) {
   void isVibeKanbanOnline().then((online) => {
     if (online) ensureVkLogStream();
+  }).catch((err) => {
+    console.warn(
+      `[monitor] failed VK online check for external runtime: ${err?.message || err}`,
+    );
   });
 }
 if (
@@ -15328,6 +15425,10 @@ void ensureCodexSdkReady().then(() => {
   } else {
     console.log("[monitor] Codex enabled.");
   }
+}).catch((err) => {
+  console.warn(
+    `[monitor] ensureCodexSdkReady startup check failed: ${err?.message || err}`,
+  );
 });
 
 // ── Log complexity routing matrix at startup ──────────────────────────────────
@@ -16076,10 +16177,11 @@ if (telegramCommandEnabled) {
 // existing digest message instead of creating a new one.
 // Chain notifier start after restore to prevent race conditions.
 // Also initialise the pinned status board (creates/restores the persistent message).
-void restoreLiveDigest()
-  .catch(() => {})
-  .then(() => startTelegramNotifier())
-  .then(() => initStatusBoard().catch(() => {}));
+runDetached("telegram-bootstrap:restore-digest-notifier-status", async () => {
+  await restoreLiveDigest().catch(() => {});
+  await startTelegramNotifier();
+  await initStatusBoard().catch(() => {});
+});
 
 // ── Start long-running devmode monitor-monitor supervisor ───────────────────
 startAgentWorkAnalyzer();
@@ -16133,7 +16235,8 @@ injectMonitorFunctions({
   },
 });
 if (telegramBotEnabled) {
-  void startTelegramBot(getTelegramBotStartOptions());
+  runDetached("telegram-bot:start-startup", () =>
+    startTelegramBot(getTelegramBotStartOptions()));
 
   // Process any commands queued by telegram-sentinel while monitor was down
   try {

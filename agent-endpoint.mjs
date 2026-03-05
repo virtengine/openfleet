@@ -41,6 +41,7 @@ const VALID_TRANSITIONS = {
 
 // Track ports where we lack permission to terminate the owning process.
 const accessDeniedPorts = new Map();
+const accessDeniedCooldownWarnAt = new Map();
 const accessDeniedCachePath = resolve(
   __dirname,
   ".cache",
@@ -82,10 +83,20 @@ function pruneAccessDeniedCache() {
   for (const [port, ts] of accessDeniedPorts.entries()) {
     if (!ts || now - ts > ACCESS_DENIED_COOLDOWN_MS) {
       accessDeniedPorts.delete(port);
+      accessDeniedCooldownWarnAt.delete(port);
       changed = true;
     }
   }
   if (changed) persistAccessDeniedCache();
+}
+
+function shouldLogAccessDeniedCooldown(port, nowMs = Date.now()) {
+  const lastWarnAt = accessDeniedCooldownWarnAt.get(port);
+  if (Number.isFinite(lastWarnAt) && nowMs - lastWarnAt < ACCESS_DENIED_COOLDOWN_MS) {
+    return false;
+  }
+  accessDeniedCooldownWarnAt.set(port, nowMs);
+  return true;
 }
 
 loadAccessDeniedCache();
@@ -264,10 +275,13 @@ export class AgentEndpoint {
         lastErr = err;
         if (err.code === "EADDRINUSE") {
           const deniedAt = accessDeniedPorts.get(port);
-          if (deniedAt && Date.now() - deniedAt < ACCESS_DENIED_COOLDOWN_MS) {
-            console.warn(
-              `${TAG} Port ${port} in use and kill blocked (access denied). Skipping retry during cooldown.`,
-            );
+          const nowMs = Date.now();
+          if (deniedAt && nowMs - deniedAt < ACCESS_DENIED_COOLDOWN_MS) {
+            if (shouldLogAccessDeniedCooldown(port, nowMs)) {
+              console.warn(
+                `${TAG} Port ${port} in use and kill blocked (access denied). Skipping retry during cooldown.`,
+              );
+            }
             continue;
           }
           console.warn(
@@ -496,6 +510,7 @@ export class AgentEndpoint {
             stderrLower.includes("operation not permitted")
           ) {
             accessDeniedPorts.set(port, Date.now());
+            accessDeniedCooldownWarnAt.delete(port);
             persistAccessDeniedCache();
           }
           console.warn(

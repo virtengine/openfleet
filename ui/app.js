@@ -1581,6 +1581,11 @@ function App() {
   }, []);
 
   useEffect(() => {
+    // Keep legacy connectivity semantics: UI "Connected/Offline" follows WS liveness.
+    connected.value = Boolean(wsConnected.value);
+  }, [wsConnected.value]);
+
+  useEffect(() => {
     setIsMoreOpen(false);
     setIsBotOpen(false);
     setSidebarDrawerOpen(false);

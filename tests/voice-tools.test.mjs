@@ -176,7 +176,7 @@ describe("voice-tools", () => {
       });
     });
 
-    it("delegate_to_agent accepts gemini-sdk executor", async () => {
+    it("delegate_to_agent coerces session-bound ask mode to agent", async () => {
       const result = await executeToolCall(
         "delegate_to_agent",
         { message: "summarize the task" },
@@ -193,7 +193,7 @@ describe("voice-tools", () => {
       expect(callArgs?.[1]).toMatchObject({
         sessionId: "primary-gemini-1",
         sessionType: "primary",
-        mode: "ask",
+        mode: "agent",
         model: "gemini-2.5-pro",
       });
     });

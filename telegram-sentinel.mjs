@@ -1723,13 +1723,11 @@ export async function startSentinel(options = {}) {
       log("error", `health check error: ${err.message}`);
     });
   }, HEALTH_CHECK_INTERVAL_MS);
-  if (healthCheckTimer.unref) healthCheckTimer.unref();
 
   // Set up periodic heartbeat writes
   heartbeatTimer = setInterval(() => {
     writeHeartbeat().catch(() => {});
   }, HEALTH_CHECK_INTERVAL_MS);
-  if (heartbeatTimer.unref) heartbeatTimer.unref();
 
   // Initial heartbeat
   await writeHeartbeat();

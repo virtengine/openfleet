@@ -3157,6 +3157,13 @@ registerNodeType("action.materialize_planner_tasks", {
     const status = String(ctx.resolve(node.config?.status || "todo")).trim() || "todo";
     const projectId = String(ctx.resolve(node.config?.projectId || "")).trim();
 
+    if (!outputText && plannerOutput?.success === false) {
+      const upstreamError = String(plannerOutput?.error || "upstream planner node failed").trim();
+      throw new Error(
+        `Planner node "${plannerNodeId}" failed before producing output: ${upstreamError}`,
+      );
+    }
+
     const parsedTasks = extractPlannerTasksFromWorkflowOutput(outputText, maxTasks);
     if (!parsedTasks.length) {
       // Log diagnostic info to help debug planner output format issues
@@ -3362,12 +3369,11 @@ registerNodeType("agent.run_planner", {
       };
     }
 
-    return {
-      success: false,
-      error: explicitPrompt
+    throw new Error(
+      explicitPrompt
         ? "Agent pool not available"
         : "Agent pool or planner prompt not available",
-    };
+    );
   },
 });
 

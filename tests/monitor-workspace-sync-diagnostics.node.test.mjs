@@ -24,7 +24,8 @@ test("workspace sync warnings include sample context and benign downgrade path",
   assert.match(src, /let workspaceSyncInFlight = false/);
   assert.match(src, /workspace sync: previous run still in progress — skipping overlap/);
   assert.match(src, /if \(shuttingDown\) return;/);
-  assert.match(src, /workspaceSyncInitialTimer = setTimeout\(\(\) =>/);
+  assert.match(src, /workspaceSyncInitialTimer = safeSetTimeout\("workspace-sync-initial", \(\) =>/);
+  assert.match(src, /workspaceSyncTimer = safeSetInterval\(\s*"workspace-sync-cycle",\s*doWorkspaceSync,\s*WORKSPACE_SYNC_INTERVAL_MS,\s*\)/);
   assert.match(src, /workspaceSyncInitialJitterMs =/);
   assert.match(src, /workspaceSyncInitialDelayEffectiveMs = Math\.max\(/);
   assert.match(src, /initial run in \$\{Math\.round\(workspaceSyncInitialDelayEffectiveMs \/ 1000\)\}s \(base=\$\{Math\.round\(WORKSPACE_SYNC_INITIAL_DELAY_MS \/ 1000\)\}s, jitter<=\$\{Math\.round\(WORKSPACE_SYNC_INITIAL_JITTER_MS \/ 1000\)\}s\)/);
@@ -62,6 +63,14 @@ test("workspace sync warnings include sample context and benign downgrade path",
 
 test("workspace manager pull failure prefers stderr/stdout details", () => {
   const src = readFileSync(resolve(process.cwd(), "workspace-manager.mjs"), "utf8");
-  assert.match(src, /err\?\.stderr \|\| err\?\.stdout \|\| err\?\.message/);
+  assert.match(src, /const stderr = normalizeSingleLine\(err\?\.stderr \|\| ""\)/);
+  assert.match(src, /const stdout = normalizeSingleLine\(err\?\.stdout \|\| ""\)/);
+  assert.match(src, /const message = normalizeSingleLine\(err\?\.message \|\| err \|\| ""\)/);
   assert.match(src, /git pull --rebase failed/);
+  assert.match(src, /function buildGitPullFailureDetails\(err, repoPath, childProcess\)/);
+  assert.match(src, /status=\$\{err\.status\}/);
+  assert.match(src, /signal=\$\{err\.signal\}/);
+  assert.match(src, /code=\$\{err\.code\}/);
+  assert.match(src, /git status --porcelain --branch/);
+  assert.match(src, /\| git status:/);
 });

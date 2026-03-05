@@ -2226,6 +2226,9 @@ ul.md-list li::before {
 .session-item-wrapper .session-item {
   position: relative;
   z-index: 1;
+  width: 100%;
+  box-sizing: border-box;
+  overflow: hidden;
   background: var(--bg-surface, var(--bg-card));
   touch-action: pan-y;
   user-select: none;

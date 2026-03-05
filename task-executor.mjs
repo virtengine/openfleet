@@ -508,6 +508,7 @@ const NO_COMMIT_STATE_FILE = resolve(
   ".cache",
   "no-commit-state.json",
 );
+const DEFAULT_PAUSE_REASON = "manual";
 const RUNTIME_STATE_FILE = resolve(
   dirname(fileURLToPath(import.meta.url)),
   ".cache",
@@ -821,6 +822,10 @@ function writeOrchestratorPauseState(paused, reason, extra = {}) {
     const payload = {
       paused: Boolean(paused),
       reason: reason ? String(reason) : null,
+      pausedAt:
+        Number.isFinite(extra.pausedAt) && extra.pausedAt > 0
+          ? new Date(extra.pausedAt).toISOString()
+          : null,
       pauseUntil: Number.isFinite(extra.pauseUntil)
         ? new Date(extra.pauseUntil).toISOString()
         : null,
@@ -2214,6 +2219,9 @@ class TaskExecutor {
           parsed.paused && parsed?.pauseReason
             ? String(parsed.pauseReason)
             : null;
+        if (this._paused && !this._pauseReason) {
+          this._pauseReason = this._pauseUntil ? "timed" : DEFAULT_PAUSE_REASON;
+        }
         if (this._pauseUntil && this._pauseUntil <= Date.now()) {
           this._paused = false;
           this._pausedAt = null;
@@ -2223,6 +2231,7 @@ class TaskExecutor {
           this._schedulePauseExpiry();
         }
         writeOrchestratorPauseState(this._paused, this._pauseReason, {
+          pausedAt: this._pausedAt,
           pauseUntil: this._pauseUntil,
           source: "runtime-restore",
         });
@@ -2580,9 +2589,11 @@ class TaskExecutor {
     if (this._paused) return false;
     this._paused = true;
     this._pausedAt = Date.now();
-    this._pauseReason = reason ? String(reason) : this._pauseReason;
+    this._pauseReason =
+      reason ? String(reason) : this._pauseReason || DEFAULT_PAUSE_REASON;
     this._saveRuntimeState();
     writeOrchestratorPauseState(true, this._pauseReason, {
+      pausedAt: this._pausedAt,
       pauseUntil: this._pauseUntil,
     });
     console.log(
@@ -2647,10 +2658,12 @@ class TaskExecutor {
       return changed;
     }
     this._pauseUntil = Date.now() + durationMs;
-    this._pauseReason = reason ? String(reason) : this._pauseReason;
+    this._pauseReason =
+      reason ? String(reason) : this._pauseReason || DEFAULT_PAUSE_REASON;
     this._schedulePauseExpiry();
     this._saveRuntimeState();
     writeOrchestratorPauseState(true, this._pauseReason, {
+      pausedAt: this._pausedAt,
       pauseUntil: this._pauseUntil,
     });
     console.log(

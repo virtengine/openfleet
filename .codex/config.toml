@@ -87,3 +87,19 @@ args = ["-y", "@playwright/mcp@latest"]
 url = "https://learn.microsoft.com/api/mcp"
 tools = ["microsoft_docs_search", "microsoft_code_sample_search"]
 
+[mcp_servers.vibe_kanban]
+startup_timeout_sec = 120
+args = [
+    "-y",
+    "vibe-kanban@latest",
+    "--mcp",
+]
+command = "npx"
+tools = ["*"]
+
+[mcp_servers.vibe_kanban.env]
+# Ensure MCP always targets the correct VK API endpoint.
+VK_BASE_URL = "http://127.0.0.1:54089"
+VK_ENDPOINT_URL = "http://127.0.0.1:54089"
+
+# ── Common MCP servers (added by bosun) ──

@@ -23,4 +23,10 @@ describe("agent endpoint stale-pid handling", () => {
     expect(source).toContain("held by non-bosun PID");
     expect(source).toContain("skipping forced kill");
   });
+
+  it("throttles access-denied cooldown warning spam per port", () => {
+    expect(source).toContain("const accessDeniedCooldownWarnAt = new Map()");
+    expect(source).toContain("function shouldLogAccessDeniedCooldown");
+    expect(source).toContain("if (shouldLogAccessDeniedCooldown(port, nowMs))");
+  });
 });

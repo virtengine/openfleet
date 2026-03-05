@@ -101,6 +101,7 @@ test("monitor-monitor startup status dedup suppresses rapid duplicate startup up
   assert.match(src, /const text = buildMonitorMonitorStatusText\(reason, statusSdk\)/);
   assert.match(src, /monitorMonitor\.lastAttemptTrigger = trigger/);
   assert.match(src, /monitorMonitor\.lastAttemptAt = Date\.now\(\)/);
+  assert.match(src, /runDetached\("monitor-monitor:digest-trigger", \(\) =>/);
   assert.match(src, /const heartbeatAt = Number\(monitorMonitor\.heartbeatAt \|\| 0\)/);
   assert.match(src, /Number\.POSITIVE_INFINITY/);
   assert.match(src, /const runStaleThresholdMs =/);
@@ -154,7 +155,29 @@ test("monitor-monitor startup status dedup suppresses rapid duplicate startup up
   assert.match(src, /status \(\$\{reason\}\) publish failed:/);
   assert.match(src, /dedupKey: `monitor-monitor-status-\$\{reason\}-\$\{statusSdk\}`/);
   assert.match(src, /status \(\$\{reason\}\) sdk=\$\{statusSdk\} failures=/);
+  assert.match(src, /runDetached\("monitor-monitor:failure-notify", \(\) =>/);
+  assert.match(src, /runDetached\("monitor-monitor:exception-notify", \(\) =>/);
+  assert.match(src, /if \(shouldFailoverMonitorSdk\(errMsg\)\) \{/);
+  assert.match(src, /rotateMonitorSdk\("prepare next cycle \(exception\)"\);/);
+  assert.match(src, /await publishMonitorMonitorStatus\("failure"\);/);
   assert.match(src, /writeStartupStatusGateTs\(now\)/);
   assert.doesNotMatch(src, /monitorMonitor\.lastStatusText === text/);
   assert.match(src, /status \(startup\) skipped \(duplicate within/);
+});
+
+test("config reload avoids monitor-monitor supervisor restart when runtime is unchanged", () => {
+  assert.match(src, /function snapshotMonitorMonitorRuntime\(\)/);
+  assert.match(src, /function didMonitorMonitorRuntimeChange\(previousRuntime\)/);
+  assert.match(src, /const previousMonitorRuntime = snapshotMonitorMonitorRuntime\(\);/);
+  assert.match(src, /const monitorRuntimeChanged = didMonitorMonitorRuntimeChange\(\s*previousMonitorRuntime,\s*\);/);
+  assert.match(src, /if \(monitorMonitor\.enabled\) \{[\s\S]*if \(monitorRuntimeChanged \|\| !monitorMonitor\.timer \|\| !monitorMonitor\.statusTimer\) \{[\s\S]*startMonitorMonitorSupervisor\(\);/);
+});
+
+test("monitor-monitor failover patterns include codex transport and allocation crashes", () => {
+  assert.match(src, /function shouldFailoverMonitorSdk\(message\)/);
+  assert.match(src, /exit code 3221226505/);
+  assert.match(src, /unexpected content type/);
+  assert.match(src, /streamable_http_client/);
+  assert.match(src, /memory allocation \.\* failed/);
+  assert.match(src, /allocation of \.\* bytes failed/);
 });

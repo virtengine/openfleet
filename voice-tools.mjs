@@ -247,6 +247,23 @@ const TOOL_DEFS = [
   },
   {
     type: "function",
+    name: "get_workspace_context",
+    description: "Get workspace context (cwd, git branch/state, and Bosun task env variables).",
+    parameters: { type: "object", properties: {} },
+  },
+  {
+    type: "function",
+    name: "get_admin_help",
+    description: "List available voice tools, or return schema details for a specific tool.",
+    parameters: {
+      type: "object",
+      properties: {
+        toolName: { type: "string", description: "Optional tool name for focused help." },
+      },
+    },
+  },
+  {
+    type: "function",
     name: "get_fleet_status",
     description: "Get fleet coordination status across workstations.",
     parameters: { type: "object", properties: {} },
@@ -450,7 +467,7 @@ const TOOL_HANDLERS = {
     const rawMode = String(args.mode || context.mode || "agent")
       .trim()
       .toLowerCase();
-    const mode =
+    let mode =
       rawMode === "code"
         ? "agent"
         : rawMode === "architect"
@@ -458,6 +475,10 @@ const TOOL_HANDLERS = {
           : VALID_AGENT_MODES.has(rawMode)
             ? rawMode
             : "agent";
+    const hasSessionBinding = Boolean(String(context.sessionId || "").trim());
+    if (hasSessionBinding && mode === "ask") {
+      mode = "agent";
+    }
     const model = String(args.model || context.model || "").trim() || undefined;
     const sessionId = String(context.sessionId || "").trim() || `voice-delegate-${Date.now()}`;
     const sessionType = String(context.sessionType || "").trim() || (context.sessionId ? "primary" : "voice-delegate");
@@ -542,6 +563,80 @@ const TOOL_HANDLERS = {
       projectName: cfg.projectName || "unknown",
       mode: cfg.mode || "generic",
       voiceEnabled: cfg.voice?.enabled !== false,
+    };
+  },
+
+  async get_workspace_context() {
+    const { execSync } = await import("node:child_process");
+    const env = process.env;
+
+    let branch = "unknown";
+    let repoRoot = process.cwd();
+    let dirtyFileCount = 0;
+
+    try {
+      branch = execSync("git rev-parse --abbrev-ref HEAD", {
+        encoding: "utf8",
+        timeout: 8_000,
+      }).trim() || branch;
+    } catch {
+      // best effort
+    }
+
+    try {
+      repoRoot = execSync("git rev-parse --show-toplevel", {
+        encoding: "utf8",
+        timeout: 8_000,
+      }).trim() || repoRoot;
+    } catch {
+      // best effort
+    }
+
+    try {
+      const status = execSync("git status --porcelain", {
+        encoding: "utf8",
+        timeout: 10_000,
+      }).trim();
+      dirtyFileCount = status ? status.split(/\r?\n/).filter(Boolean).length : 0;
+    } catch {
+      // best effort
+    }
+
+    return {
+      cwd: process.cwd(),
+      repoRoot,
+      branch,
+      dirtyFileCount,
+      bosunManaged: env.BOSUN_MANAGED === "1",
+      taskContext: {
+        taskId: env.BOSUN_TASK_ID || env.VE_TASK_ID || null,
+        title: env.BOSUN_TASK_TITLE || env.VE_TASK_TITLE || env.VK_TITLE || null,
+        branchName: env.BOSUN_BRANCH_NAME || env.VE_BRANCH_NAME || null,
+        worktreePath: env.BOSUN_WORKTREE_PATH || env.VE_WORKTREE_PATH || null,
+        sdk: env.BOSUN_SDK || env.VE_SDK || null,
+      },
+    };
+  },
+
+  async get_admin_help(args) {
+    const requested = String(args?.toolName || "").trim();
+    if (requested) {
+      const tool = TOOL_DEFS.find(def => def?.name === requested);
+      if (!tool) {
+        return {
+          error: `Unknown tool: ${requested}`,
+          availableTools: TOOL_DEFS.map(def => def.name).sort(),
+        };
+      }
+      return tool;
+    }
+
+    return {
+      toolCount: TOOL_DEFS.length,
+      availableTools: TOOL_DEFS.map(def => ({
+        name: def.name,
+        description: def.description,
+      })),
     };
   },
 

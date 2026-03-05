@@ -130,7 +130,7 @@ import { initPresence, getPresenceState } from "../presence.mjs";
 import { loadConfig } from "../config.mjs";
 import { evaluateBranchSafetyForPush } from "../git-safety.mjs";
 import { spawnSync } from "node:child_process";
-import { existsSync } from "node:fs";
+import { existsSync, readFileSync, writeFileSync } from "node:fs";
 
 // ── Helpers ─────────────────────────────────────────────────────────────────
 
@@ -317,6 +317,57 @@ describe("task-executor", () => {
       expect(status.slots[0].status).toBe("running");
       expect(status.slots[0].agentInstanceId).toBeNull();
       expect(status.slots[0].runningFor).toBeGreaterThanOrEqual(4);
+    });
+  });
+
+  describe("pause state persistence", () => {
+    it("defaults manual pause reason and writes pausedAt to orchestrator pause state", () => {
+      const ex = new TaskExecutor();
+
+      ex.pause();
+
+      const pauseWriteCall = writeFileSync.mock.calls.find(([filePath]) =>
+        String(filePath || "").includes("ve-orchestrator-pause.json"),
+      );
+      expect(pauseWriteCall).toBeDefined();
+      const pausePayload = JSON.parse(pauseWriteCall[1]);
+      expect(pausePayload.paused).toBe(true);
+      expect(pausePayload.reason).toBe("manual");
+      expect(typeof pausePayload.pausedAt).toBe("string");
+      expect(pausePayload.pausedAt).toContain("T");
+    });
+
+    it("restores legacy paused runtime state with normalized reason metadata", () => {
+      existsSync.mockImplementation((filePath) =>
+        String(filePath || "").includes("task-executor-runtime.json"),
+      );
+      readFileSync.mockReturnValue(
+        JSON.stringify({
+          paused: true,
+          pausedAt: null,
+          pauseUntil: null,
+          pauseReason: null,
+          nextAgentInstanceId: 1,
+          slots: {},
+        }),
+      );
+
+      const ex = new TaskExecutor();
+      ex._loadRuntimeState();
+      const pauseInfo = ex.getPauseInfo();
+
+      expect(pauseInfo.paused).toBe(true);
+      expect(pauseInfo.pauseReason).toBe("manual");
+      expect(typeof pauseInfo.pausedAt).toBe("number");
+
+      const pauseWriteCall = writeFileSync.mock.calls.find(([filePath]) =>
+        String(filePath || "").includes("ve-orchestrator-pause.json"),
+      );
+      expect(pauseWriteCall).toBeDefined();
+      const pausePayload = JSON.parse(pauseWriteCall[1]);
+      expect(pausePayload.source).toBe("runtime-restore");
+      expect(pausePayload.reason).toBe("manual");
+      expect(typeof pausePayload.pausedAt).toBe("string");
     });
   });
 
