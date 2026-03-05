@@ -19,6 +19,7 @@ import {
   streamRetryDelay,
   MAX_STREAM_RETRIES,
 } from "./stream-resilience.mjs";
+import { maybeCompressSessionItems } from "./context-cache.mjs";
 
 const __dirname = resolve(fileURLToPath(new URL(".", import.meta.url)));
 
@@ -863,10 +864,16 @@ export async function execCopilotPrompt(userMessage, options = {}) {
     clearTimeout(timer);
     controller.signal?.removeEventListener("abort", onAbort);
 
+    // Apply context shredding to collected items (SDK session path)
+    const compressedItems = await maybeCompressSessionItems(items, {
+      sessionType: persistent ? "primary" : "task",
+      agentType: "copilot-sdk",
+    });
+
     return {
       finalResponse:
         finalResponse.trim() || "(Agent completed with no text output)",
-      items,
+      items: compressedItems,
       usage: null,
     };
   } catch (err) {

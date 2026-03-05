@@ -16,6 +16,7 @@ import {
   streamRetryDelay,
   MAX_STREAM_RETRIES,
 } from "./stream-resilience.mjs";
+import { maybeCompressSessionItems } from "./context-cache.mjs";
 
 const __dirname = resolve(fileURLToPath(new URL(".", import.meta.url)));
 
@@ -651,10 +652,16 @@ export async function execClaudePrompt(userMessage, options = {}) {
     turnCount += 1;
     await saveState();
 
+    // Apply context shredding to collected items (SDK session path)
+    const compressedItems = await maybeCompressSessionItems(allItems, {
+      sessionType: "primary",
+      agentType: "claude-sdk",
+    });
+
     return {
       finalResponse:
         finalResponse.trim() || "(Agent completed with no text output)",
-      items: allItems,
+      items: compressedItems,
       usage: null,
     };
   } catch (err) {

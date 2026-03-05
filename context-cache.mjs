@@ -1854,3 +1854,61 @@ async function _appendShreddingEventToDisk(event) {
 export function getShreddingLogFile() {
   return SHREDDING_LOG_FILE;
 }
+
+// ---------------------------------------------------------------------------
+// High-Level Convenience — maybeCompressSessionItems
+// ---------------------------------------------------------------------------
+
+/**
+ * Convenience wrapper for SDK shell adapters and any execution path that
+ * collects an items array and wants context-shredding applied.
+ *
+ * Resolves shredding configuration for the given session/agent type, checks
+ * context usage against the configured threshold, compresses items when
+ * warranted, and records shredding stats.  Returns the (possibly compressed)
+ * items array — safe to call even when shredding is disabled.
+ *
+ * @param {Array}  items              The collected items array from the agent turn
+ * @param {object} [opts]
+ * @param {string} [opts.sessionType="primary"]  Interaction type (task, primary, chat, voice, …)
+ * @param {string} [opts.agentType=""]           Agent SDK identifier (codex-sdk, claude-sdk, …)
+ * @param {boolean} [opts.force=false]           Force compression even if below threshold
+ * @param {boolean} [opts.skip=false]            Skip compression entirely
+ * @returns {Promise<Array>}  Compressed (or unchanged) items array
+ */
+export async function maybeCompressSessionItems(
+  items,
+  { sessionType = "primary", agentType = "", force = false, skip = false } = {},
+) {
+  if (!Array.isArray(items) || items.length === 0) return items;
+  if (skip) return items;
+
+  // Lazy-import config to avoid circular dependency
+  const { resolveContextShreddingOptions } = await import(
+    "./context-shredding-config.mjs"
+  );
+
+  const shreddingOpts = resolveContextShreddingOptions(sessionType, agentType);
+  if (shreddingOpts?._skip === true && !force) return items;
+
+  const usagePct = estimateContextUsagePct(items);
+  const threshold = Number.isFinite(shreddingOpts?.contextUsageThreshold)
+    ? Number(shreddingOpts.contextUsageThreshold)
+    : 0.5;
+
+  if (!force && usagePct < threshold) return items;
+
+  shreddingOpts.contextUsagePct = usagePct;
+  const compressedItems = await compressAllItems(items, shreddingOpts);
+
+  try {
+    const savings = estimateSavings(items, compressedItems);
+    if (savings.savedChars > 0) {
+      recordShreddingEvent({ ...savings, agentType: agentType || "unknown" });
+    }
+  } catch {
+    /* non-fatal */
+  }
+
+  return compressedItems;
+}

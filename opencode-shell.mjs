@@ -27,6 +27,7 @@ import {
 import {
   discoverProviders,
 } from "./opencode-providers.mjs";
+import { maybeCompressSessionItems } from "./context-cache.mjs";
 
 const __dirname = resolve(fileURLToPath(new URL(".", import.meta.url)));
 
@@ -730,7 +731,13 @@ export async function execOpencodePrompt(userMessage, options = {}) {
           _activeServerSessionId = null;
         }
 
-        return { finalResponse, items: parts, usage: null };
+        // Apply context shredding to collected items (SDK session path)
+        const compressedParts = await maybeCompressSessionItems(parts, {
+          sessionType: persistent ? "primary" : "task",
+          agentType: "opencode-sdk",
+        });
+
+        return { finalResponse, items: compressedParts, usage: null };
       } catch (err) {
         clearTimeout(timer);
 

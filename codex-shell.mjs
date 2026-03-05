@@ -17,6 +17,7 @@ import { resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { resolveAgentSdkConfig } from "./agent-sdk.mjs";
 import { loadConfig } from "./config.mjs";
+import { maybeCompressSessionItems } from "./context-cache.mjs";
 import { resolveRepoRoot } from "./repo-root.mjs";
 import { resolveCodexProfileRuntime } from "./codex-model-profiles.mjs";
 import {
@@ -905,10 +906,16 @@ export async function execCodexPrompt(userMessage, options = {}) {
 
         clearTimeout(timer);
 
+        // Apply context shredding to collected items (SDK session path)
+        const compressedItems = await maybeCompressSessionItems(allItems, {
+          sessionType: persistent ? "primary" : "task",
+          agentType: "codex-sdk",
+        });
+
         return {
           finalResponse:
             finalResponse.trim() || "(Agent completed with no text output)",
-          items: allItems,
+          items: compressedItems,
           usage: null,
         };
       } catch (err) {

@@ -5,6 +5,13 @@
  * in agent sessions to prevent token overflow and reduce API costs while
  * preserving what matters most.
  *
+ * SCOPE:
+ *   - Agent-pool sessions (automated tasks, workflow nodes) — via agent-pool.mjs
+ *   - Primary SDK sessions (Codex, Copilot, Claude, OpenCode, Gemini shells)
+ *     — via maybeCompressSessionItems() in context-cache.mjs
+ *   - NOT applied to: direct CLI invocations of agent binaries where the CLI
+ *     process manages its own context window independently
+ *
  * This module provides:
  *   - Type enumerations for agent types, interaction types, content types
  *   - Default configuration values (matching the hard-coded defaults in context-cache.mjs)
@@ -43,12 +50,13 @@ export const AGENT_TYPES = Object.freeze([
  * Corresponds to session types tracked in session-tracker.mjs.
  */
 export const INTERACTION_TYPES = Object.freeze([
-  "task",      // Kanban task execution
-  "manual",    // Manual agent invocations
-  "primary",   // Primary agent sessions (long-running)
-  "chat",      // Chat sessions via Telegram/Web
-  "voice",     // Voice assistant sessions
-  "flow",      // Workflow/multi-step flows
+  "task",        // Kanban task execution (agent-pool)
+  "manual",      // Manual agent invocations
+  "primary",     // Primary agent SDK sessions (long-running)
+  "chat",        // Chat sessions via Telegram/Web
+  "voice",       // Voice assistant sessions
+  "flow",        // Workflow/multi-step flows
+  "sdk-session", // Direct SDK shell sessions (codex, copilot, claude, opencode, gemini)
 ]);
 
 /**
@@ -471,7 +479,7 @@ export const CONTEXT_SHREDDING_ENV_DEFS = [
     label: "Enable Context Shredding",
     type: "boolean",
     default: true,
-    description: "Master switch for context compression. When off, agents receive their full history every turn (increases cost and risk of context overflow).",
+    description: "Master switch for context compression. Applies to: agent-pool sessions (automated tasks, workflow nodes), primary SDK sessions (Codex, Copilot, Claude, OpenCode). Does NOT apply to: direct CLI invocations of agent binaries (context is managed by the CLI process itself). When off, agents receive their full history every turn (increases cost and risk of context overflow).",
   },
   {
     key: "CONTEXT_SHREDDING_USAGE_THRESHOLD",
