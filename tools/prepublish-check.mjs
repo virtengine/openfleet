@@ -16,8 +16,9 @@ import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
+const ROOT = resolve(__dirname, "..");
 const pkg = JSON.parse(
-  readFileSync(resolve(__dirname, "package.json"), "utf8"),
+  readFileSync(resolve(ROOT, "package.json"), "utf8"),
 );
 
 if (!pkg.version) {
@@ -43,7 +44,7 @@ if (duplicates.length > 0) {
 }
 
 // ── Scan all .mjs files for local imports ────────────────────────────────────
-const mjsFiles = readdirSync(__dirname).filter(
+const mjsFiles = readdirSync(ROOT).filter(
   (f) => f.endsWith(".mjs") && f !== "prepublish-check.mjs",
 );
 
@@ -54,7 +55,7 @@ for (const file of mjsFiles) {
   // Only check files that are in the files array (i.e., will be published)
   if (!filesSet.has(file)) continue;
 
-  const content = readFileSync(resolve(__dirname, file), "utf8");
+  const content = readFileSync(resolve(ROOT, file), "utf8");
   let match;
   importPattern.lastIndex = 0;
 

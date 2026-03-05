@@ -8,7 +8,7 @@ import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
-const filePath = resolve(__dirname, "task-executor.mjs");
+const filePath = resolve(__dirname, "..", "task", "task-executor.mjs");
 
 const content = readFileSync(filePath, "utf8");
 const lines = content.split("\n");

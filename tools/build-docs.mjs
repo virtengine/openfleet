@@ -16,8 +16,8 @@ import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
-const pkgPath = join(__dirname, "package.json");
-const docsDir = join(__dirname, "site", "docs");
+const pkgPath = join(__dirname, "..", "package.json");
+const docsDir = join(__dirname, "..", "site", "docs");
 
 const pkg = JSON.parse(readFileSync(pkgPath, "utf8"));
 const version = pkg.version;

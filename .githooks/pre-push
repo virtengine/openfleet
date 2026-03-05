@@ -20,7 +20,7 @@ npm run syntax:check
 # package.json "files" array.  This catches the class of bug where a new
 # file is imported but never added to the manifest, which causes publish
 # or install failures.
-node prepublish-check.mjs
+node tools/prepublish-check.mjs
 
 declare -A CHANGED_MAP=()
 RUN_ALL=false

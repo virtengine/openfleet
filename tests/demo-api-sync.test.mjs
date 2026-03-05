@@ -176,7 +176,7 @@ const INTENTIONALLY_SKIPPED_ACTIONS = new Set([
 ]);
 
 describe("demo.html :workflow: ui-server.mjs API sync", () => {
-  const serverSrc = readFile("ui-server.mjs");
+  const serverSrc = readFile("server/ui-server.mjs");
   const demoSrc = readFile("ui/demo.html");
 
   const serverRoutes = extractServerRoutes(serverSrc);

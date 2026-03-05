@@ -21,7 +21,7 @@ import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
-const SCRIPT_DIR = resolve(fileURLToPath(new URL(".", import.meta.url)));
+const SCRIPT_DIR = resolve(fileURLToPath(new URL(".", import.meta.url)), "..");
 
 function hasArg(flag) {
   return process.argv.includes(flag);

@@ -26,7 +26,7 @@ import { fileURLToPath } from "node:url";
 import https from "node:https";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
-const VENDOR_DIR = resolve(__dirname, "ui", "vendor");
+const VENDOR_DIR = resolve(__dirname, "..", "ui", "vendor");
 const _require = createRequire(import.meta.url);
 
 // ── Vendor manifest ───────────────────────────────────────────────────────────

@@ -4,7 +4,8 @@ import { fileURLToPath } from 'node:url';
 import { mkdirSync } from 'node:fs';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
-const VENDOR_DIR = resolve(__dirname, 'ui', 'vendor');
+const ROOT = resolve(__dirname, '..');
+const VENDOR_DIR = resolve(ROOT, 'ui', 'vendor');
 
 mkdirSync(VENDOR_DIR, { recursive: true });
 
@@ -36,7 +37,7 @@ const entries = [
     outfile: resolve(VENDOR_DIR, 'mui-material.js'),
     stdin: {
       contents: "export * from '@mui/material';",
-      resolveDir: __dirname,
+      resolveDir: ROOT,
       loader: 'js',
     },
   },
@@ -45,7 +46,7 @@ const entries = [
     outfile: resolve(VENDOR_DIR, 'emotion-react.js'),
     stdin: {
       contents: "export * from '@emotion/react';",
-      resolveDir: __dirname,
+      resolveDir: ROOT,
       loader: 'js',
     },
   },
@@ -54,7 +55,7 @@ const entries = [
     outfile: resolve(VENDOR_DIR, 'emotion-styled.js'),
     stdin: {
       contents: "export { default } from '@emotion/styled'; export * from '@emotion/styled';",
-      resolveDir: __dirname,
+      resolveDir: ROOT,
       loader: 'js',
     },
   },
