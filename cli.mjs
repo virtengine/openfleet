@@ -297,7 +297,7 @@ const SENTINEL_PID_FILE_LEGACY_ALT = resolve(
   "telegram-sentinel.pid",
 );
 const SENTINEL_SCRIPT_PATH = fileURLToPath(
-  new URL("./telegram-sentinel.mjs", import.meta.url),
+  new URL("./telegram/telegram-sentinel.mjs", import.meta.url),
 );
 const IS_DAEMON_CHILD =
   args.includes("--daemon-child") || process.env.BOSUN_DAEMON === "1";
@@ -717,12 +717,18 @@ function daemonStatus() {
 }
 
 function findAllBosunProcessPids() {
+  // Match both direct script launches and global shim invocations (e.g. `bosun`,
+  // `bosun --portal`) so terminate can find non-daemon instances too.
   const patterns = [
+    "bosun",
+    "node_modules\\\\bosun",
     "cli.mjs",
     "monitor.mjs",
     "telegram-bot.mjs",
     "telegram-sentinel.mjs",
     "ui-server.mjs",
+    "--portal",
+    "--desktop",
   ];
   const joined = patterns.join("|");
   if (process.platform === "win32") {
@@ -732,7 +738,16 @@ function findAllBosunProcessPids() {
         [
           "-NoProfile",
           "-Command",
-          `Get-CimInstance Win32_Process | Where-Object { $_.Name -match '^(node|electron)(\\.exe)?$' -and $_.CommandLine -match '${joined.replace(/\|/g, "|")}' } | Select-Object -ExpandProperty ProcessId`,
+          `Get-CimInstance Win32_Process | Where-Object {
+             $name = [string]$_.Name
+             $cmd = [string]$_.CommandLine
+             $exe = [string]$_.ExecutablePath
+             $pid = [int]$_.ProcessId
+             $isBosunHost = $name -match '^(node|electron|bosun)(\\.exe)?$'
+             $isBosunCmd = $cmd -match '${joined}'
+             $isBosunExe = $exe -match 'bosun'
+             $pid -ne ${process.pid} -and (($isBosunHost -and ($isBosunCmd -or $isBosunExe)) -or $isBosunCmd)
+           } | Select-Object -ExpandProperty ProcessId`,
         ],
         { encoding: "utf8", stdio: ["pipe", "pipe", "pipe"], timeout: 4000 },
       ).trim();
@@ -1232,6 +1247,35 @@ async function main() {
 
   // Handle --update (force update)
   if (args.includes("--update")) {
+    // Pre-stop any sibling Bosun processes to avoid Windows EBUSY locks during
+    // global npm install (especially portal/desktop/non-daemon instances).
+    const siblingPids = findAllBosunProcessPids().filter((pid) => pid !== process.pid);
+    if (siblingPids.length > 0) {
+      console.log(
+        `  Stopping ${siblingPids.length} running bosun process(es) before update: ${siblingPids.join(", ")}`,
+      );
+      for (const pid of siblingPids) {
+        try {
+          process.kill(pid, "SIGTERM");
+        } catch {
+          /* already dead */
+        }
+      }
+      const deadline = Date.now() + 5000;
+      let alive = siblingPids.filter((pid) => isProcessAlive(pid));
+      while (alive.length > 0 && Date.now() < deadline) {
+        Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 200);
+        alive = alive.filter((pid) => isProcessAlive(pid));
+      }
+      for (const pid of alive) {
+        try {
+          process.kill(pid, "SIGKILL");
+        } catch {
+          /* already dead */
+        }
+      }
+    }
+
     const { forceUpdate } = await import("./infra/update-check.mjs");
     const updated = await forceUpdate(VERSION);
     if (updated) {
@@ -1740,7 +1784,7 @@ async function waitForMonitorRuntimeFiles(monitorPath) {
 function runMonitor({ restartReason = "" } = {}) {
   return new Promise((resolve, reject) => {
     const monitorPath = fileURLToPath(
-      new URL("./monitor.mjs", import.meta.url),
+      new URL("./infra/monitor.mjs", import.meta.url),
     );
     waitForMonitorRuntimeFiles(monitorPath)
       .then(({ ready, missing, waitedMs }) => {
