@@ -49,4 +49,3 @@ __e2e-verbose.txt
 playwright-screenshots/
 playwright-report/
 test-results/
-.github/agents/se-gitops-ci-specialist.md
