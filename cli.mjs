@@ -297,7 +297,7 @@ const SENTINEL_PID_FILE_LEGACY_ALT = resolve(
   "telegram-sentinel.pid",
 );
 const SENTINEL_SCRIPT_PATH = fileURLToPath(
-  new URL("./telegram-sentinel.mjs", import.meta.url),
+  new URL("./telegram/telegram-sentinel.mjs", import.meta.url),
 );
 const IS_DAEMON_CHILD =
   args.includes("--daemon-child") || process.env.BOSUN_DAEMON === "1";
