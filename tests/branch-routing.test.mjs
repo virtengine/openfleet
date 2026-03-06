@@ -2,6 +2,8 @@ import { describe, it, expect, beforeEach } from "vitest";
 import {
   extractScopeFromTitle,
   resolveUpstreamFromConfig,
+  extractAcceptanceCriteriaFromTask,
+  shouldSmartPrCreatePrForAssessmentAction,
 } from "../infra/monitor.mjs";
 import {
   buildAssessmentPrompt,
@@ -106,6 +108,55 @@ describe("resolveUpstreamFromConfig", () => {
   });
 });
 
+describe("extractAcceptanceCriteriaFromTask", () => {
+  it("uses structured acceptance_criteria array when present", () => {
+    const result = extractAcceptanceCriteriaFromTask({
+      acceptance_criteria: ["first criterion", "second criterion"],
+    });
+    expect(result).toEqual(["first criterion", "second criterion"]);
+  });
+
+  it("extracts acceptance criteria bullets from description section", () => {
+    const result = extractAcceptanceCriteriaFromTask({
+      description: [
+        "Task details",
+        "",
+        "## Acceptance Criteria",
+        "- must run tests",
+        "- must update docs",
+        "",
+        "## Notes",
+        "- extra context",
+      ].join("\n"),
+    });
+    expect(result).toEqual(["must run tests", "must update docs"]);
+  });
+
+  it("deduplicates and trims criteria values", () => {
+    const result = extractAcceptanceCriteriaFromTask({
+      acceptanceCriteria: ["  Ship API  ", "ship api", "Ship UI"],
+    });
+    expect(result).toEqual(["Ship API", "Ship UI"]);
+  });
+});
+
+describe("shouldSmartPrCreatePrForAssessmentAction", () => {
+  it("allows merge and noop actions", () => {
+    expect(shouldSmartPrCreatePrForAssessmentAction("merge")).toBe(true);
+    expect(shouldSmartPrCreatePrForAssessmentAction("noop")).toBe(true);
+  });
+
+  it("blocks remediation actions", () => {
+    expect(shouldSmartPrCreatePrForAssessmentAction("reprompt_same")).toBe(
+      false,
+    );
+    expect(shouldSmartPrCreatePrForAssessmentAction("new_attempt")).toBe(false);
+    expect(shouldSmartPrCreatePrForAssessmentAction("manual_review")).toBe(
+      false,
+    );
+  });
+});
+
 // ── extractDecisionJson ──────────────────────────────────────────────────────
 
 describe("extractDecisionJson", () => {
@@ -203,6 +254,18 @@ describe("buildAssessmentPrompt", () => {
     });
     expect(prompt).toContain("rebase_failed");
     expect(prompt).toContain("Fix something");
+  });
+
+  it("includes acceptance criteria when provided", () => {
+    const prompt = buildAssessmentPrompt({
+      trigger: "agent_completed",
+      taskTitle: "Ship feature",
+      shortId: "ac123456",
+      acceptanceCriteria: ["tests pass", "docs updated"],
+    });
+    expect(prompt).toContain("Acceptance Criteria");
+    expect(prompt).toContain("tests pass");
+    expect(prompt).toContain("docs updated");
   });
 
   it("includes rebase error details when trigger is rebase_failed", () => {

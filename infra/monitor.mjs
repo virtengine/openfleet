@@ -1842,6 +1842,9 @@ let anomalyDetector = null;
 const smartPrAllowRecreateClosed = isTruthyFlag(
   process.env.VE_SMARTPR_ALLOW_RECREATE_CLOSED,
 );
+const smartPrPrePrAssessmentEnabled = !isFalsyFlag(
+  process.env.VE_SMARTPR_PRE_PR_ASSESSMENT ?? "1",
+);
 const githubToken =
   process.env.GITHUB_TOKEN ||
   process.env.GH_TOKEN ||
@@ -7004,6 +7007,68 @@ function normalizeSplitTasksFromDecision(rawSplitTasks) {
     .filter(Boolean);
 }
 
+function normalizeAcceptanceCriteriaList(rawCriteria) {
+  if (!Array.isArray(rawCriteria)) return [];
+  const dedup = new Set();
+  const criteria = [];
+  for (const value of rawCriteria) {
+    const text = String(value || "").trim();
+    if (!text) continue;
+    const key = text.toLowerCase();
+    if (dedup.has(key)) continue;
+    dedup.add(key);
+    criteria.push(text);
+  }
+  return criteria;
+}
+
+function extractAcceptanceCriteriaFromTask(task) {
+  if (!task || typeof task !== "object") return [];
+
+  const directCriteria = normalizeAcceptanceCriteriaList(
+    task.acceptance_criteria || task.acceptanceCriteria,
+  );
+  if (directCriteria.length > 0) return directCriteria;
+
+  const description = String(task.description || task.body || "").trim();
+  if (!description) return [];
+
+  const lines = description.split(/\r?\n/);
+  const sectionCriteria = [];
+  let inSection = false;
+  for (const line of lines) {
+    const trimmed = String(line || "").trim();
+    if (!inSection) {
+      if (
+        /^#{1,6}\s*acceptance criteria\b/i.test(trimmed) ||
+        /^acceptance criteria\s*:?\s*$/i.test(trimmed)
+      ) {
+        inSection = true;
+      }
+      continue;
+    }
+
+    if (/^#{1,6}\s+\S/.test(trimmed)) break;
+    if (!trimmed) continue;
+
+    const bullet = trimmed.match(/^(?:[-*]|\d+\.)\s+(.+)$/);
+    if (bullet) {
+      sectionCriteria.push(bullet[1]);
+      continue;
+    }
+    sectionCriteria.push(trimmed);
+  }
+
+  return normalizeAcceptanceCriteriaList(sectionCriteria);
+}
+
+function shouldSmartPrCreatePrForAssessmentAction(action) {
+  const normalized = String(action || "")
+    .trim()
+    .toLowerCase();
+  return normalized === "merge" || normalized === "noop";
+}
+
 async function createAssessmentSplitTasks(ctx, splitTasks) {
   const backend = getActiveKanbanBackend();
   const normalizedTasks = normalizeSplitTasksFromDecision(splitTasks).slice(0, 10);
@@ -7272,6 +7337,84 @@ async function actOnAssessment(ctx, decision) {
     default:
       console.warn(`[${tag}] unknown action: ${decision.action}`);
   }
+}
+
+async function runSmartPrPreCreationAssessment({
+  attemptId,
+  shortId,
+  status,
+  attempt,
+  taskData,
+  branchStatus,
+  targetBranch,
+}) {
+  const tag = `smartPR-assess(${shortId})`;
+  if (!smartPrPrePrAssessmentEnabled) return true;
+  if (!branchRouting?.assessWithSdk || !agentPoolEnabled) return true;
+
+  const acceptanceCriteria = extractAcceptanceCriteriaFromTask(
+    taskData || attempt || {},
+  );
+  if (acceptanceCriteria.length === 0) return true;
+
+  const assessmentCtx = {
+    taskId: attempt?.task_id || taskData?.id || "",
+    taskTitle:
+      attempt?.task_title || taskData?.title || attempt?.task_id || shortId,
+    taskDescription:
+      attempt?.task_description || taskData?.description || taskData?.body || "",
+    attemptId,
+    shortId,
+    trigger: "agent_completed",
+    branch: attempt?.branch || branchStatus?.branch || "",
+    upstreamBranch: targetBranch,
+    agentLastMessage: `smartPR preflight status=${status}`,
+    agentType: attempt?.agent_type || attempt?.agentType || "",
+    commitsAhead: branchStatus?.commits_ahead,
+    commitsBehind: branchStatus?.commits_behind,
+    diffStat: branchStatus?.diff_stats || branchStatus?.diffStat || "",
+    acceptanceCriteria,
+  };
+
+  const quickDecision = quickAssess(assessmentCtx);
+  let decision = quickDecision;
+  if (!decision) {
+    const onTelegram =
+      telegramToken && telegramChatId
+        ? (msg) =>
+            sendTelegramMessage(msg).catch((err) => {
+              console.warn(
+                `[${tag}] telegram send failed: ${err?.message || err}`,
+              );
+            })
+        : null;
+    decision = await assessTask(assessmentCtx, {
+      execCodex: execPooledPrompt,
+      timeoutMs: 5 * 60 * 1000,
+      logDir,
+      onTelegram,
+    });
+  }
+
+  if (!decision?.success) {
+    console.warn(
+      `[monitor] ${tag}: assessment failed before auto-PR; continuing with PR flow`,
+    );
+    return true;
+  }
+
+  if (shouldSmartPrCreatePrForAssessmentAction(decision.action)) {
+    console.log(
+      `[monitor] ${tag}: assessment cleared auto-PR (action=${decision.action})`,
+    );
+    return true;
+  }
+
+  console.log(
+    `[monitor] ${tag}: assessment gated auto-PR (action=${decision.action})`,
+  );
+  await actOnAssessment(assessmentCtx, decision);
+  return false;
 }
 
 // ── Smart PR creation flow ──────────────────────────────────────────────────
@@ -7936,6 +8079,22 @@ Return a short summary of what you did and any files that needed manual resoluti
     }
 
     const branchName = attempt?.branch || branchStatus?.branch || null;
+    const allowAutoPr = await runSmartPrPreCreationAssessment({
+      attemptId,
+      shortId,
+      status,
+      attempt,
+      taskData,
+      branchStatus,
+      targetBranch,
+    });
+    if (!allowAutoPr) {
+      console.log(
+        `[monitor] ${tag}: auto-PR deferred until assessment follow-up completes`,
+      );
+      return;
+    }
+
     if (attempt?.pr_number || attempt?.pr_url) {
       console.log(
         `[monitor] ${tag}: attempt already linked to PR (${attempt.pr_number || attempt.pr_url}) — skipping`,
@@ -14094,6 +14253,8 @@ export {
   AUTO_RESOLVE_LOCK_EXTENSIONS,
   extractScopeFromTitle,
   resolveUpstreamFromConfig,
+  extractAcceptanceCriteriaFromTask,
+  shouldSmartPrCreatePrForAssessmentAction,
   rebaseDownstreamTasks,
   runTaskAssessment,
   // Internal executor
