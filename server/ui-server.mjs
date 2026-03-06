@@ -983,9 +983,19 @@ function parseTemplateIdList(rawValue) {
 }
 
 function resolveWorkflowBootstrapSelection(templatesModule) {
+  let configWorkflowDefaults = {};
+  try {
+    const { configData } = readConfigDocument();
+    configWorkflowDefaults =
+      configData?.workflowDefaults && typeof configData.workflowDefaults === "object"
+        ? configData.workflowDefaults
+        : {};
+  } catch {
+    configWorkflowDefaults = {};
+  }
   const autoInstallEnabled = parseBooleanEnv(
-    process.env.WORKFLOW_DEFAULT_AUTOINSTALL,
-    true,
+    process.env.WORKFLOW_DEFAULT_AUTOINSTALL ?? configWorkflowDefaults.autoInstall,
+    configWorkflowDefaults.autoInstall ?? true,
   );
   if (!autoInstallEnabled) {
     return {
@@ -993,6 +1003,7 @@ function resolveWorkflowBootstrapSelection(templatesModule) {
       source: "disabled",
       profileId: null,
       templateIds: [],
+      overridesById: {},
     };
   }
 
@@ -1009,26 +1020,41 @@ function resolveWorkflowBootstrapSelection(templatesModule) {
         source: "custom:none",
         profileId: null,
         templateIds: [],
+        overridesById: {},
       };
     }
+    const templateIds = parseTemplateIdList(rawTemplateEnv);
     return {
       enabled: true,
       source: "custom:list",
       profileId: null,
-      templateIds: parseTemplateIdList(rawTemplateEnv),
+      templateIds,
+      overridesById: templatesModule?.normalizeTemplateOverridesById
+        ? templatesModule.normalizeTemplateOverridesById(
+            configWorkflowDefaults.templateOverridesById,
+            templateIds,
+          )
+        : {},
     };
   }
 
   const profileId = String(
-    process.env.WORKFLOW_DEFAULT_PROFILE || "balanced",
+    process.env.WORKFLOW_DEFAULT_PROFILE || configWorkflowDefaults.profile || "balanced",
   ).trim().toLowerCase();
 
   if (typeof templatesModule?.resolveWorkflowTemplateIds === "function") {
+    const templateIds = templatesModule.resolveWorkflowTemplateIds({ profileId });
     return {
       enabled: true,
       source: "profile",
       profileId,
-      templateIds: templatesModule.resolveWorkflowTemplateIds({ profileId }),
+      templateIds,
+      overridesById: templatesModule?.normalizeTemplateOverridesById
+        ? templatesModule.normalizeTemplateOverridesById(
+            configWorkflowDefaults.templateOverridesById,
+            templateIds,
+          )
+        : {},
     };
   }
 
@@ -1037,6 +1063,7 @@ function resolveWorkflowBootstrapSelection(templatesModule) {
     source: "recommended",
     profileId: null,
     templateIds: [],
+    overridesById: {},
   };
 }
 
@@ -1195,7 +1222,11 @@ async function getWorkflowEngineModule() {
             selection.templateIds.length > 0 &&
             typeof _wfTemplates.installTemplateSet === "function"
           ) {
-            result = _wfTemplates.installTemplateSet(engine, selection.templateIds);
+            result = _wfTemplates.installTemplateSet(
+              engine,
+              selection.templateIds,
+              selection.overridesById || {},
+            );
           } else if (
             selection.source === "recommended" &&
             typeof _wfTemplates.installRecommendedTemplates === "function"
@@ -1288,7 +1319,11 @@ function maybeBootstrapWorkspaceWorkflowTemplates(engine, workspaceKey, workspac
         selection.templateIds.length > 0 &&
         typeof _wfTemplates.installTemplateSet === "function"
       ) {
-        result = _wfTemplates.installTemplateSet(engine, selection.templateIds);
+        result = _wfTemplates.installTemplateSet(
+          engine,
+          selection.templateIds,
+          selection.overridesById || {},
+        );
       } else if (
         selection.source === "recommended" &&
         typeof _wfTemplates.installRecommendedTemplates === "function"

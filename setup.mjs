@@ -54,6 +54,12 @@ import {
   formatModelsForMenu,
   buildExecutorEntry,
 } from "./shell/opencode-providers.mjs";
+import {
+  listTemplates as listWorkflowTemplates,
+  listWorkflowSetupProfiles,
+  resolveWorkflowTemplateIds,
+  normalizeTemplateOverridesById,
+} from "./workflow/workflow-templates.mjs";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
@@ -1740,6 +1746,64 @@ function parseBooleanEnvValue(value, fallback = false) {
   return fallback;
 }
 
+function normalizeWorkflowTemplateIdList(rawValue, fallback = []) {
+  const source = Array.isArray(rawValue)
+    ? rawValue
+    : String(rawValue || "").split(",");
+  const validIds = new Set(listWorkflowTemplates().map((template) => String(template?.id || "").trim()).filter(Boolean));
+  const normalized = [];
+  for (const entry of source) {
+    const id = String(entry || "").trim();
+    if (!id || !validIds.has(id) || normalized.includes(id)) continue;
+    normalized.push(id);
+  }
+  return normalized.length > 0 ? normalized : [...fallback];
+}
+
+async function promptForWorkflowTemplateOverrides(prompt, templateIds = [], existingOverrides = {}) {
+  const templates = listWorkflowTemplates();
+  const templateLookup = new Map(templates.map((template) => [String(template?.id || ""), template]));
+  const normalized = {};
+
+  for (const templateId of templateIds) {
+    const template = templateLookup.get(String(templateId || ""));
+    if (!template) continue;
+    const variables = Array.isArray(template.variables) ? template.variables : [];
+    if (variables.length === 0) continue;
+
+    const configureTemplate = await prompt.confirm(
+      `Customize variables for ${template.name}?`,
+      false,
+    );
+    if (!configureTemplate) {
+      continue;
+    }
+
+    info(`Configuring ${template.name}`);
+    const nextOverrides = {};
+    for (const variable of variables) {
+      const key = String(variable?.key || "").trim();
+      if (!key) continue;
+      const existing = existingOverrides?.[templateId]?.[key];
+      const defaultValue = existing ?? variable?.defaultValue ?? "";
+      const label = `${key}${variable?.required ? " (required)" : ""}`;
+      if (variable?.type === "toggle") {
+        nextOverrides[key] = await prompt.confirm(label, Boolean(defaultValue));
+        continue;
+      }
+      const answer = await prompt.ask(label, defaultValue == null ? "" : String(defaultValue));
+      nextOverrides[key] = variable?.type === "number"
+        ? (answer === "" ? "" : Number(answer))
+        : answer;
+    }
+    if (Object.keys(nextOverrides).length > 0) {
+      normalized[templateId] = nextOverrides;
+    }
+  }
+
+  return normalizeTemplateOverridesById(normalized, templateIds);
+}
+
 function toBooleanEnvString(value, fallback = false) {
   return parseBooleanEnvValue(value, fallback) ? "true" : "false";
 }
@@ -1929,6 +1993,31 @@ function normalizeSetupConfiguration({
     env.WORKFLOW_AUTOMATION_ENABLED,
     true,
   );
+  const workflowProfile = String(
+    env.WORKFLOW_DEFAULT_PROFILE || configJson.workflowDefaults?.profile || "balanced",
+  ).trim().toLowerCase() || "balanced";
+  const fallbackWorkflowTemplateIds = resolveWorkflowTemplateIds({ profileId: workflowProfile });
+  const workflowTemplateIds = normalizeWorkflowTemplateIdList(
+    env.WORKFLOW_DEFAULT_TEMPLATES || configJson.workflowDefaults?.templates,
+    fallbackWorkflowTemplateIds,
+  );
+  env.WORKFLOW_DEFAULT_PROFILE = workflowProfile;
+  env.WORKFLOW_DEFAULT_TEMPLATES = workflowTemplateIds.length > 0
+    ? workflowTemplateIds.join(",")
+    : "none";
+  env.WORKFLOW_DEFAULT_AUTOINSTALL = toBooleanEnvString(
+    env.WORKFLOW_DEFAULT_AUTOINSTALL ?? configJson.workflowDefaults?.autoInstall,
+    true,
+  );
+  configJson.workflowDefaults = {
+    profile: workflowProfile,
+    autoInstall: parseBooleanEnvValue(env.WORKFLOW_DEFAULT_AUTOINSTALL, true),
+    templates: workflowTemplateIds,
+    templateOverridesById: normalizeTemplateOverridesById(
+      configJson.workflowDefaults?.templateOverridesById,
+      workflowTemplateIds,
+    ),
+  };
   env.EXECUTOR_MODE = normalizeEnum(
     env.EXECUTOR_MODE,
     ["internal", "vk", "hybrid"],
@@ -4345,6 +4434,49 @@ async function main() {
         profile: env.PROJECT_REQUIREMENTS_PROFILE,
         notes: env.PROJECT_REQUIREMENTS_NOTES,
       },
+    };
+
+    const workflowProfiles = listWorkflowSetupProfiles();
+    const workflowProfileIds = workflowProfiles.map((profile) => profile.id);
+    const workflowProfileLabels = workflowProfiles.map((profile) => `${profile.name} — ${profile.description}`);
+    const workflowProfileDefault = String(
+      env.WORKFLOW_DEFAULT_PROFILE || configJson.workflowDefaults?.profile || "balanced",
+    ).trim().toLowerCase() || "balanced";
+    const workflowProfileIdx = await prompt.choose(
+      "Workflow install profile:",
+      workflowProfileLabels,
+      Math.max(0, workflowProfileIds.indexOf(workflowProfileDefault)),
+    );
+    const selectedWorkflowProfile = workflowProfileIds[workflowProfileIdx] || "balanced";
+    const defaultWorkflowTemplateIds = resolveWorkflowTemplateIds({ profileId: selectedWorkflowProfile });
+    const selectedWorkflowTemplateIds = normalizeWorkflowTemplateIdList(
+      configJson.workflowDefaults?.templates,
+      defaultWorkflowTemplateIds,
+    );
+    env.WORKFLOW_DEFAULT_PROFILE = selectedWorkflowProfile;
+    env.WORKFLOW_DEFAULT_TEMPLATES = selectedWorkflowTemplateIds.length > 0
+      ? selectedWorkflowTemplateIds.join(",")
+      : "none";
+    env.WORKFLOW_DEFAULT_AUTOINSTALL = toBooleanEnvString(
+      await prompt.confirm(
+        "Auto-install selected workflow templates on startup?",
+        parseBooleanEnvValue(
+          env.WORKFLOW_DEFAULT_AUTOINSTALL ?? configJson.workflowDefaults?.autoInstall,
+          true,
+        ),
+      ),
+      true,
+    );
+    const workflowOverrides = await promptForWorkflowTemplateOverrides(
+      prompt,
+      selectedWorkflowTemplateIds,
+      configJson.workflowDefaults?.templateOverridesById || {},
+    );
+    configJson.workflowDefaults = {
+      profile: selectedWorkflowProfile,
+      autoInstall: parseBooleanEnvValue(env.WORKFLOW_DEFAULT_AUTOINSTALL, true),
+      templates: selectedWorkflowTemplateIds,
+      templateOverridesById: workflowOverrides,
     };
 
     const vkNeeded =
