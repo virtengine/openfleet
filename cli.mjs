@@ -720,7 +720,6 @@ function findAllBosunProcessPids() {
   // Match both direct script launches and global shim invocations (e.g. `bosun`,
   // `bosun --portal`) so terminate can find non-daemon instances too.
   const patterns = [
-    "bosun",
     "node_modules\\\\bosun",
     "cli.mjs",
     "monitor.mjs",
@@ -746,7 +745,7 @@ function findAllBosunProcessPids() {
              $isBosunHost = $name -match '^(node|electron|bosun)(\\.exe)?$'
              $isBosunCmd = $cmd -match '${joined}'
              $isBosunExe = $exe -match 'bosun'
-             $pid -ne ${process.pid} -and (($isBosunHost -and ($isBosunCmd -or $isBosunExe)) -or $isBosunCmd)
+             $pid -ne ${process.pid} -and $isBosunHost -and ($isBosunCmd -or $isBosunExe)
            } | Select-Object -ExpandProperty ProcessId`,
         ],
         { encoding: "utf8", stdio: ["pipe", "pipe", "pipe"], timeout: 4000 },
