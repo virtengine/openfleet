@@ -31,9 +31,9 @@ on:
     branches: ["main", "feat/**", "fix/**", "refactor/**"]
     paths:
       - "workflow-templates/**"
-      - "workflow-templates.mjs"
-      - "workflow-nodes.mjs"
-      - "workflow-engine.mjs"
+      - "workflow/workflow-templates.mjs"
+      - "workflow/workflow-nodes.mjs"
+      - "workflow/workflow-engine.mjs"
       - "tests/workflow-*.test.mjs"
       - "tests/sandbox/**"
       - ".github/workflows/workflow-sandbox-ci.yml"
@@ -82,7 +82,7 @@ jobs:
       - name: "Validate: all templates parse cleanly"
         run: |
           node --input-type=module <<'EOF'
-          import { WORKFLOW_TEMPLATES } from "./workflow-templates.mjs";
+          import { WORKFLOW_TEMPLATES } from "./workflow/workflow-templates.mjs";
           console.log(`✅ Loaded ${WORKFLOW_TEMPLATES.length} templates`);
           if (!WORKFLOW_TEMPLATES.length) process.exit(1);
           EOF
@@ -91,7 +91,7 @@ jobs:
         run: node tests/sandbox/validate-template-nodes.mjs
 
       - name: "Validate: prepublish check (files array + imports)"
-        run: node prepublish-check.mjs
+        run: node tools/prepublish-check.mjs
 
       - name: "Validate: build passes"
         run: npm run build
