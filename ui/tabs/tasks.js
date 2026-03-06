@@ -55,7 +55,11 @@ import {
   SkeletonCard,
   EmptyState
 } from "../components/shared.js";
-import { SearchInput } from "../components/forms.js";
+import {
+  SegmentedControl,
+  SearchInput,
+  Toggle as ImportedToggle,
+} from "../components/forms.js";
 import { KanbanBoard } from "../components/kanban-board.js";
 import { VoiceMicButton, VoiceMicButtonInline } from "../modules/voice.js";
 import {
@@ -73,6 +77,7 @@ import {
 
 /* ─── View mode toggle ─── */
 const viewMode = signal("kanban");
+const Toggle = typeof ImportedToggle === "function" ? ImportedToggle : () => null;
 
 /* ─── Status/Priority → MUI Chip color ─── */
 function statusChipColor(status) {

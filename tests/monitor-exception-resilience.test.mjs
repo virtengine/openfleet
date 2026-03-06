@@ -23,6 +23,22 @@ describe("monitor exception resilience guards", () => {
     expect(source).toContain('safeSetInterval("fleet-sync"');
   });
 
+  it("guards telegram bot startup fire-and-forget paths with detached error handling", () => {
+    expect(source).toContain('runDetached("primary-agent:init-startup"');
+    expect(source).toContain(
+      'runDetached("primary-agent:init-config-reload"',
+    );
+    expect(source).toContain(
+      'runDetached("telegram-notifier:restart-config-reload"',
+    );
+    expect(source).toContain('runDetached("telegram-bot:start-config-reload"');
+    expect(source).toContain('runDetached("telegram-bot:start-startup"');
+    expect(source).toContain(
+      'runDetached("telegram-bootstrap:restore-digest-notifier-status"',
+    );
+    expect(source).toContain('runDetached("workspace-monitor:stuck-notify"');
+  });
+
   it("contains top-level startProcess exception containment", () => {
     const startProcessMatch = source.match(
       /async function startProcess\(\) \{[\s\S]*?\r?\n\}\r?\n\r?\nfunction requestRestart/,
@@ -32,5 +48,41 @@ describe("monitor exception resilience guards", () => {
     expect(block).toContain("try {");
     expect(block).toContain('reportGuardedFailure("startProcess", err);');
     expect(block).toContain('safeSetTimeout("startProcess-retry"');
+  });
+
+  it("routes deferred startProcess retries through guarded scheduling", () => {
+    expect(source).toContain("function scheduleStartProcess(reason, delayMs)");
+    expect(source).toContain(
+      "runDetached(`start-process:${reason}`, startProcess);",
+    );
+    expect(source).not.toMatch(/setTimeout\(startProcess,/);
+  });
+
+  it("guards startup fire-and-forget promise chains with catch handlers", () => {
+    expect(source).toContain('runDetached("vk-runtime:config-reload-enable"');
+    expect(source).toContain('runDetached("vk-runtime:startup-ensure"');
+    expect(source).toMatch(
+      /void isVibeKanbanOnline\(\)\.then\(\(online\) => \{[\s\S]*?\}\)\.catch\(\(err\) => \{/,
+    );
+    expect(source).toMatch(
+      /void ensureCodexSdkReady\(\)\.then\(\(\) => \{[\s\S]*?\}\)\.catch\(\(err\) => \{/,
+    );
+    expect(source).toContain("void ensureCodexSdkReady().catch((err) => {");
+  });
+
+  it("guards shutdown fire-and-forget paths even when shuttingDown=true", () => {
+    expect(source).toContain("function runDetachedDuringShutdown");
+    expect(source).toContain(
+      'runDetachedDuringShutdown("poll-lock-release:sigint", () =>',
+    );
+    expect(source).toContain(
+      'runDetachedDuringShutdown("poll-lock-release:sigterm", () =>',
+    );
+    expect(source).toContain(
+      'runDetachedDuringShutdown("workspace-monitor-shutdown:exit", () =>',
+    );
+    expect(source).toContain(
+      'runDetachedDuringShutdown("containers-stop:restart-self", () =>',
+    );
   });
 });

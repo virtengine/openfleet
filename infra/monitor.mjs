@@ -235,6 +235,7 @@ import {
 } from "../kanban/kanban-adapter.mjs";
 import { resolvePromptTemplate } from "../agent/agent-prompts.mjs";
 import { resolveCodexProfileRuntime } from "../shell/codex-model-profiles.mjs";
+import { sanitizeMonitorTailForPrompt as sanitizeMonitorTailForPromptShared } from "../monitor-tail-sanitizer.mjs";
 const __dirname = resolve(fileURLToPath(new URL(".", import.meta.url)));
 
 // ── Anomaly signal file path (shared with ve-orchestrator.ps1) ──────────────
@@ -1343,12 +1344,16 @@ function isBenignWorkspaceSyncFailure(errorText) {
       0,
       WORKSPACE_SYNC_INITIAL_DELAY_MS + workspaceSyncInitialJitterMs,
     );
-    workspaceSyncInitialTimer = setTimeout(() => {
+    workspaceSyncInitialTimer = safeSetTimeout("workspace-sync-initial", () => {
       workspaceSyncInitialTimer = null;
       doWorkspaceSync();
     }, workspaceSyncInitialDelayEffectiveMs);
     if (workspaceSyncInitialTimer?.unref) workspaceSyncInitialTimer.unref();
-    workspaceSyncTimer = setInterval(doWorkspaceSync, WORKSPACE_SYNC_INTERVAL_MS);
+    workspaceSyncTimer = safeSetInterval(
+      "workspace-sync-cycle",
+      doWorkspaceSync,
+      WORKSPACE_SYNC_INTERVAL_MS,
+    );
     // Unref so the timer doesn't keep the process alive during shutdown
     if (workspaceSyncTimer?.unref) workspaceSyncTimer.unref();
     console.log(
@@ -1434,7 +1439,8 @@ const workspaceMonitor = new WorkspaceMonitor({
   onStuckDetected: ({ attemptId, reason, recommendation }) => {
     const msg = `:alert: Agent ${attemptId.substring(0, 8)} stuck: ${reason}\nRecommendation: ${recommendation}`;
     console.warn(`[workspace-monitor] ${msg}`);
-    void notify?.(msg, { dedupKey: `stuck-${attemptId.substring(0, 8)}` });
+    runDetached("workspace-monitor:stuck-notify", () =>
+      notify?.(msg, { dedupKey: `stuck-${attemptId.substring(0, 8)}` }));
   },
 });
 
@@ -1615,8 +1621,10 @@ let codexDisabledReason = codexEnabled
 setPrimaryAgent(primaryAgentName);
 let preflightEnabled = configPreflightEnabled;
 let preflightRetryMs = configPreflightRetryMs;
+let shuttingDown = false;
 if (primaryAgentReady) {
-  void initPrimaryAgent(primaryAgentName);
+  runDetached("primary-agent:init-startup", () =>
+    initPrimaryAgent(primaryAgentName));
 }
 
 // Merge strategy: now handled by PR_MERGE_STRATEGY workflow template
@@ -1642,7 +1650,6 @@ let preflightRetryTimer = null;
 let CodexClient = null;
 
 let restartCount = 0;
-let shuttingDown = false;
 let currentChild = null;
 let pendingRestart = false;
 let skipNextAnalyze = false;
@@ -1834,6 +1841,9 @@ function shouldKeepSessionForStatus(status) {
 let anomalyDetector = null;
 const smartPrAllowRecreateClosed = isTruthyFlag(
   process.env.VE_SMARTPR_ALLOW_RECREATE_CLOSED,
+);
+const smartPrPrePrAssessmentEnabled = !isFalsyFlag(
+  process.env.VE_SMARTPR_PRE_PR_ASSESSMENT ?? "1",
 );
 const githubToken =
   process.env.GITHUB_TOKEN ||
@@ -2089,11 +2099,15 @@ function restartSelf(reason) {
       }
     }, 3000);
   }
-  void releaseTelegramPollLock();
+  runDetachedDuringShutdown("poll-lock-release:restart-self", () =>
+    releaseTelegramPollLock(),
+  );
   stopTelegramBot({ preserveDigest: true });
   stopWhatsAppChannel();
   if (isContainerEnabled()) {
-    void stopAllContainers().catch(() => {});
+    runDetachedDuringShutdown("containers-stop:restart-self", () =>
+      stopAllContainers(),
+    );
   }
   // Write self-restart marker so the new process suppresses startup notifications
   try {
@@ -2321,8 +2335,10 @@ async function handleMonitorFailure(reason, err) {
     }
     // Ensure we retry after safe-mode window if still running.
     if (!shuttingDown) {
-      setTimeout(() => {
-        if (!shuttingDown) void startProcess();
+      safeSetTimeout("monitor-failure-hard-cap-resume", () => {
+        if (!shuttingDown) {
+          runDetached("monitor-failure-hard-cap-resume", startProcess);
+        }
       }, pauseMs + 1000);
     }
     return;
@@ -2451,6 +2467,26 @@ function runDetached(label, promiseOrFn) {
   }
 }
 
+function runDetachedDuringShutdown(label, promiseOrFn) {
+  try {
+    const pending =
+      typeof promiseOrFn === "function" ? promiseOrFn() : promiseOrFn;
+    if (pending && typeof pending.then === "function") {
+      pending.catch((err) => {
+        const error = err instanceof Error ? err : new Error(formatMonitorError(err));
+        console.warn(
+          `[monitor] shutdown task failed (${label}): ${error.stack || error.message}`,
+        );
+      });
+    }
+  } catch (err) {
+    const error = err instanceof Error ? err : new Error(formatMonitorError(err));
+    console.warn(
+      `[monitor] shutdown task failed (${label}): ${error.stack || error.message}`,
+    );
+  }
+}
+
 function safeSetInterval(reason, fn, ms) {
   const normalized = Number(ms);
   const clamped = Number.isFinite(normalized) && normalized > 0
@@ -2475,6 +2511,14 @@ function safeSetTimeout(reason, fn, ms) {
     );
   }
   return setTimeout(() => runGuarded(`timeout:${reason}`, fn), clamped);
+}
+
+function scheduleStartProcess(reason, delayMs) {
+  return safeSetTimeout(reason, () => {
+    if (!shuttingDown) {
+      runDetached(`start-process:${reason}`, startProcess);
+    }
+  }, delayMs);
 }
 
 const crashLoopFixAttempts = new Map();
@@ -3064,9 +3108,9 @@ function scheduleVibeKanbanRestart() {
       `[monitor] vibe-kanban exceeded ${vkMaxRestarts} restarts, giving up`,
     );
     if (telegramToken && telegramChatId) {
-      void sendTelegramMessage(
+      runDetached("vk-runtime:restart-limit-notify", () => sendTelegramMessage(
         `Vibe-kanban exceeded ${vkMaxRestarts} restart attempts. Manual intervention required.`,
-      );
+      ));
     }
     return;
   }
@@ -3074,7 +3118,8 @@ function scheduleVibeKanbanRestart() {
   console.log(
     `[monitor] restarting vibe-kanban in ${delay}ms (attempt ${vkRestartCount}/${vkMaxRestarts})`,
   );
-  setTimeout(() => void startVibeKanbanProcess(), delay);
+  safeSetTimeout("vk-runtime:restart", () =>
+    runDetached("vk-runtime:restart", () => startVibeKanbanProcess()), delay);
 }
 
 async function canConnectTcp(host, port, timeoutMs = 1200) {
@@ -3383,8 +3428,13 @@ function ensureVkLogStream() {
     console.log("[monitor] VK error resolver initialized");
   }
 
-  // Discover any active sessions immediately and keep polling for new sessions
-  void refreshVkSessionStreams("startup");
+  // Discover any active sessions immediately and keep polling for new sessions.
+  // Explicit catch ensures unexpected regressions never surface as unhandled rejections.
+  refreshVkSessionStreams("startup").catch((err) => {
+    console.warn(
+      `[monitor] refreshVkSessionStreams(startup) unexpected rejection: ${err?.message || err}`,
+    );
+  });
   ensureVkSessionDiscoveryLoop();
 }
 
@@ -3392,7 +3442,11 @@ function ensureVkSessionDiscoveryLoop() {
   if (vkSessionDiscoveryTimer) return;
   if (!Number.isFinite(vkEnsureIntervalMs) || vkEnsureIntervalMs <= 0) return;
   vkSessionDiscoveryTimer = setInterval(() => {
-    void refreshVkSessionStreams("periodic");
+    refreshVkSessionStreams("periodic").catch((err) => {
+      console.warn(
+        `[monitor] refreshVkSessionStreams(periodic) unexpected rejection: ${err?.message || err}`,
+      );
+    });
   }, vkEnsureIntervalMs);
 }
 
@@ -6953,6 +7007,68 @@ function normalizeSplitTasksFromDecision(rawSplitTasks) {
     .filter(Boolean);
 }
 
+function normalizeAcceptanceCriteriaList(rawCriteria) {
+  if (!Array.isArray(rawCriteria)) return [];
+  const dedup = new Set();
+  const criteria = [];
+  for (const value of rawCriteria) {
+    const text = String(value || "").trim();
+    if (!text) continue;
+    const key = text.toLowerCase();
+    if (dedup.has(key)) continue;
+    dedup.add(key);
+    criteria.push(text);
+  }
+  return criteria;
+}
+
+function extractAcceptanceCriteriaFromTask(task) {
+  if (!task || typeof task !== "object") return [];
+
+  const directCriteria = normalizeAcceptanceCriteriaList(
+    task.acceptance_criteria || task.acceptanceCriteria,
+  );
+  if (directCriteria.length > 0) return directCriteria;
+
+  const description = String(task.description || task.body || "").trim();
+  if (!description) return [];
+
+  const lines = description.split(/\r?\n/);
+  const sectionCriteria = [];
+  let inSection = false;
+  for (const line of lines) {
+    const trimmed = String(line || "").trim();
+    if (!inSection) {
+      if (
+        /^#{1,6}\s*acceptance criteria\b/i.test(trimmed) ||
+        /^acceptance criteria\s*:?\s*$/i.test(trimmed)
+      ) {
+        inSection = true;
+      }
+      continue;
+    }
+
+    if (/^#{1,6}\s+\S/.test(trimmed)) break;
+    if (!trimmed) continue;
+
+    const bullet = trimmed.match(/^(?:[-*]|\d+\.)\s+(.+)$/);
+    if (bullet) {
+      sectionCriteria.push(bullet[1]);
+      continue;
+    }
+    sectionCriteria.push(trimmed);
+  }
+
+  return normalizeAcceptanceCriteriaList(sectionCriteria);
+}
+
+function shouldSmartPrCreatePrForAssessmentAction(action) {
+  const normalized = String(action || "")
+    .trim()
+    .toLowerCase();
+  return normalized === "merge" || normalized === "noop";
+}
+
 async function createAssessmentSplitTasks(ctx, splitTasks) {
   const backend = getActiveKanbanBackend();
   const normalizedTasks = normalizeSplitTasksFromDecision(splitTasks).slice(0, 10);
@@ -7221,6 +7337,84 @@ async function actOnAssessment(ctx, decision) {
     default:
       console.warn(`[${tag}] unknown action: ${decision.action}`);
   }
+}
+
+async function runSmartPrPreCreationAssessment({
+  attemptId,
+  shortId,
+  status,
+  attempt,
+  taskData,
+  branchStatus,
+  targetBranch,
+}) {
+  const tag = `smartPR-assess(${shortId})`;
+  if (!smartPrPrePrAssessmentEnabled) return true;
+  if (!branchRouting?.assessWithSdk || !agentPoolEnabled) return true;
+
+  const acceptanceCriteria = extractAcceptanceCriteriaFromTask(
+    taskData || attempt || {},
+  );
+  if (acceptanceCriteria.length === 0) return true;
+
+  const assessmentCtx = {
+    taskId: attempt?.task_id || taskData?.id || "",
+    taskTitle:
+      attempt?.task_title || taskData?.title || attempt?.task_id || shortId,
+    taskDescription:
+      attempt?.task_description || taskData?.description || taskData?.body || "",
+    attemptId,
+    shortId,
+    trigger: "agent_completed",
+    branch: attempt?.branch || branchStatus?.branch || "",
+    upstreamBranch: targetBranch,
+    agentLastMessage: `smartPR preflight status=${status}`,
+    agentType: attempt?.agent_type || attempt?.agentType || "",
+    commitsAhead: branchStatus?.commits_ahead,
+    commitsBehind: branchStatus?.commits_behind,
+    diffStat: branchStatus?.diff_stats || branchStatus?.diffStat || "",
+    acceptanceCriteria,
+  };
+
+  const quickDecision = quickAssess(assessmentCtx);
+  let decision = quickDecision;
+  if (!decision) {
+    const onTelegram =
+      telegramToken && telegramChatId
+        ? (msg) =>
+            sendTelegramMessage(msg).catch((err) => {
+              console.warn(
+                `[${tag}] telegram send failed: ${err?.message || err}`,
+              );
+            })
+        : null;
+    decision = await assessTask(assessmentCtx, {
+      execCodex: execPooledPrompt,
+      timeoutMs: 5 * 60 * 1000,
+      logDir,
+      onTelegram,
+    });
+  }
+
+  if (!decision?.success) {
+    console.warn(
+      `[monitor] ${tag}: assessment failed before auto-PR; continuing with PR flow`,
+    );
+    return true;
+  }
+
+  if (shouldSmartPrCreatePrForAssessmentAction(decision.action)) {
+    console.log(
+      `[monitor] ${tag}: assessment cleared auto-PR (action=${decision.action})`,
+    );
+    return true;
+  }
+
+  console.log(
+    `[monitor] ${tag}: assessment gated auto-PR (action=${decision.action})`,
+  );
+  await actOnAssessment(assessmentCtx, decision);
+  return false;
 }
 
 // ── Smart PR creation flow ──────────────────────────────────────────────────
@@ -7885,6 +8079,22 @@ Return a short summary of what you did and any files that needed manual resoluti
     }
 
     const branchName = attempt?.branch || branchStatus?.branch || null;
+    const allowAutoPr = await runSmartPrPreCreationAssessment({
+      attemptId,
+      shortId,
+      status,
+      attempt,
+      taskData,
+      branchStatus,
+      targetBranch,
+    });
+    if (!allowAutoPr) {
+      console.log(
+        `[monitor] ${tag}: auto-PR deferred until assessment follow-up completes`,
+      );
+      return;
+    }
+
     if (attempt?.pr_number || attempt?.pr_url) {
       console.log(
         `[monitor] ${tag}: attempt already linked to PR (${attempt.pr_number || attempt.pr_url}) — skipping`,
@@ -9041,11 +9251,13 @@ async function pollTelegramCommands() {
       }
     }
     const delayMs = updates.length ? 0 : 1000;
-    setTimeout(pollTelegramCommands, delayMs);
+    safeSetTimeout("telegram-commands:poll-loop", () =>
+      runDetached("telegram-commands:poll-loop", pollTelegramCommands), delayMs);
   } catch (err) {
     const message = err && err.message ? err.message : String(err);
     console.warn(`[monitor] telegram command poll error: ${message}`);
-    setTimeout(pollTelegramCommands, 3000);
+    safeSetTimeout("telegram-commands:poll-error-retry", () =>
+      runDetached("telegram-commands:poll-error-retry", pollTelegramCommands), 3000);
   }
 }
 
@@ -9056,13 +9268,14 @@ function startTelegramCommandListener() {
   if (telegramCommandPolling) {
     return;
   }
-  void acquireTelegramPollLock("monitor").then((ok) => {
+  runDetached("telegram-commands:acquire-lock", async () => {
+    const ok = await acquireTelegramPollLock("monitor");
     if (!ok) {
       telegramCommandEnabled = false;
       return;
     }
     telegramCommandPolling = true;
-    void pollTelegramCommands();
+    runDetached("telegram-commands:poll", pollTelegramCommands);
   });
 }
 
@@ -9805,7 +10018,7 @@ async function handleExit(code, signal, logPath) {
       );
     }
     restartCount += 1;
-    setTimeout(startProcess, exitState.backoffMs);
+    scheduleStartProcess("handle-exit:mutex-held", exitState.backoffMs);
     return;
   }
 
@@ -9815,7 +10028,7 @@ async function handleExit(code, signal, logPath) {
       `[monitor] orchestrator killed by ${reason} — skipping autofix/analysis`,
     );
     restartCount += 1;
-    setTimeout(startProcess, restartDelayMs);
+    scheduleStartProcess("handle-exit:sigkill", restartDelayMs);
     return;
   }
 
@@ -9835,7 +10048,7 @@ async function handleExit(code, signal, logPath) {
       `[monitor] benign exit 1 detected (no errors in log, normal cycles) — restarting without autofix`,
     );
     restartCount += 1;
-    setTimeout(startProcess, restartDelayMs);
+    scheduleStartProcess("handle-exit:benign-exit-1", restartDelayMs);
     return;
   }
 
@@ -9847,8 +10060,20 @@ async function handleExit(code, signal, logPath) {
       logText.includes("All tasks completed");
 
     if (isEmptyBacklog) {
-      console.log("[monitor] clean exit with empty backlog — restarting");
-      setTimeout(startProcess, 5000);
+      if (triggerSystemConfig?.enabled) {
+        console.log(
+          "[monitor] clean exit with empty backlog — triggering task planner",
+        );
+        await maybeTriggerTaskPlanner("backlog-empty-exit", {
+          reason: "Orchestrator exited cleanly with empty backlog",
+        });
+      }
+      // Wait before restarting so the planner has time to create tasks
+      const plannerWaitMs = 2 * 60 * 1000; // 2 minutes
+      console.log(
+        `[monitor] waiting ${plannerWaitMs / 1000}s for planner before restart`,
+      );
+      scheduleStartProcess("handle-exit:planner-wait", plannerWaitMs);
       return;
     }
 
@@ -9857,7 +10082,7 @@ async function handleExit(code, signal, logPath) {
       `[monitor] clean exit (${reason}) — restarting without analysis`,
     );
     restartCount += 1;
-    setTimeout(startProcess, restartDelayMs);
+    scheduleStartProcess("handle-exit:clean-exit", restartDelayMs);
     return;
   }
 
@@ -9970,9 +10195,9 @@ async function handleExit(code, signal, logPath) {
           `[monitor] crash loop detected (${restartCountNow} exits in 5m). Pausing orchestrator restarts for ${pauseMin}m.`,
         );
         if (!orchestratorResumeTimer) {
-          orchestratorResumeTimer = setTimeout(() => {
+          orchestratorResumeTimer = safeSetTimeout("handle-exit:pause-resume", () => {
             orchestratorResumeTimer = null;
-            startProcess();
+            runDetached("start-process:handle-exit-pause-resume", startProcess);
           }, orchestratorPauseMs);
         }
         if (telegramToken && telegramChatId) {
@@ -10045,14 +10270,1311 @@ async function handleExit(code, signal, logPath) {
     );
     const waitSec = Math.max(5, Math.round(waitMs / 1000));
     console.warn(`[monitor] restart paused; retrying in ${waitSec}s`);
-    setTimeout(startProcess, waitSec * 1000);
+    scheduleStartProcess("handle-exit:restart-paused", waitSec * 1000);
     return;
   }
 
   restartCount += 1;
-  setTimeout(startProcess, restartDelayMs);
+  scheduleStartProcess("handle-exit:default", restartDelayMs);
 }
 
+// ── Devmode Monitor-Monitor supervisor (24/7 + auto-resume + failover) ─────
+
+function normalizeSdkName(value) {
+  const raw = String(value || "")
+    .trim()
+    .toLowerCase();
+  if (raw.startsWith("copilot")) return "copilot";
+  if (raw.startsWith("claude")) return "claude";
+  if (raw.startsWith("codex")) return "codex";
+  return raw;
+}
+
+function roleRank(role) {
+  const raw = String(role || "")
+    .trim()
+    .toLowerCase();
+  if (raw === "primary") return 0;
+  if (raw === "backup") return 1;
+  if (raw === "tertiary") return 2;
+  const match = raw.match(/^executor-(\d+)$/);
+  if (match) return 100 + Number(match[1]);
+  return 50;
+}
+
+function buildMonitorMonitorSdkOrder() {
+  const order = [];
+  const seen = new Set();
+  const add = (candidate) => {
+    const sdk = normalizeSdkName(candidate);
+    if (!["codex", "copilot", "claude"].includes(sdk)) return;
+    if (seen.has(sdk)) return;
+    seen.add(sdk);
+    order.push(sdk);
+  };
+
+  add(primaryAgentName);
+
+  const executors = Array.isArray(configExecutorConfig?.executors)
+    ? [...configExecutorConfig.executors]
+    : [];
+  executors.sort((a, b) => roleRank(a?.role) - roleRank(b?.role));
+  for (const profile of executors) {
+    add(executorToSdk(profile?.executor));
+  }
+
+  for (const sdk of getAvailableSdks()) {
+    add(sdk);
+  }
+
+  if (!order.length) {
+    add("codex");
+  }
+  return order;
+}
+
+function getCurrentMonitorSdk() {
+  if (!monitorMonitor.sdkOrder.length) {
+    monitorMonitor.sdkOrder = buildMonitorMonitorSdkOrder();
+  }
+  if (monitorMonitor.sdkIndex >= monitorMonitor.sdkOrder.length) {
+    monitorMonitor.sdkIndex = 0;
+  }
+  return monitorMonitor.sdkOrder[monitorMonitor.sdkIndex] || "codex";
+}
+
+function rotateMonitorSdk(reason = "") {
+  if (monitorMonitor.sdkOrder.length < 2) return false;
+  monitorMonitor.sdkIndex =
+    (monitorMonitor.sdkIndex + 1) % monitorMonitor.sdkOrder.length;
+  const nextSdk = getCurrentMonitorSdk();
+  console.warn(
+    `[monitor-monitor] failover -> ${nextSdk}${reason ? ` (${reason})` : ""}`,
+  );
+  return true;
+}
+
+/**
+ * Record a failure for a specific monitor-monitor SDK.
+ * After 5 failures → 15min exclusion; after 10 failures → 60min exclusion.
+ * @param {string} sdk
+ */
+function recordMonitorSdkFailure(sdk) {
+  if (!sdk) return;
+  const entry = monitorMonitor.sdkFailures.get(sdk) || {
+    count: 0,
+    excludedUntil: 0,
+  };
+  entry.count += 1;
+  if (entry.count >= 10) {
+    entry.excludedUntil = Date.now() + 60 * 60_000; // 60 min
+    console.warn(
+      `[monitor-monitor] ${sdk} excluded for 60min after ${entry.count} failures`,
+    );
+  } else if (entry.count >= 5) {
+    entry.excludedUntil = Date.now() + 15 * 60_000; // 15 min
+    console.warn(
+      `[monitor-monitor] ${sdk} excluded for 15min after ${entry.count} failures`,
+    );
+  }
+  monitorMonitor.sdkFailures.set(sdk, entry);
+  rebuildMonitorSdkOrder();
+}
+
+/**
+ * Clear failure count for a monitor-monitor SDK (on success).
+ * @param {string} sdk
+ */
+function clearMonitorSdkFailure(sdk) {
+  if (!sdk) return;
+  if (monitorMonitor.sdkFailures.has(sdk)) {
+    monitorMonitor.sdkFailures.delete(sdk);
+    rebuildMonitorSdkOrder();
+  }
+}
+
+/**
+ * Check if a monitor-monitor SDK is currently excluded.
+ * @param {string} sdk
+ * @returns {boolean}
+ */
+function isMonitorSdkExcluded(sdk) {
+  const entry = monitorMonitor.sdkFailures.get(sdk);
+  if (!entry || !entry.excludedUntil) return false;
+  if (Date.now() >= entry.excludedUntil) {
+    // Exclusion expired — clear it
+    entry.excludedUntil = 0;
+    entry.count = 0;
+    monitorMonitor.sdkFailures.set(sdk, entry);
+    console.log(`[monitor-monitor] ${sdk} exclusion expired, re-enabling`);
+    return false;
+  }
+  return true;
+}
+
+/**
+ * Rebuild the SDK order excluding currently-excluded SDKs.
+ * If all SDKs are excluded, force the primary back in.
+ */
+function rebuildMonitorSdkOrder() {
+  const original = buildMonitorMonitorSdkOrder();
+  const filtered = original.filter((sdk) => !isMonitorSdkExcluded(sdk));
+  if (filtered.length === 0) {
+    // All excluded — force primary back
+    const primary = original[0] || "codex";
+    console.warn(
+      `[monitor-monitor] all SDKs excluded, forcing ${primary} back`,
+    );
+    monitorMonitor.sdkOrder = [primary];
+  } else {
+    monitorMonitor.sdkOrder = filtered;
+  }
+  // Reset index if out of bounds
+  if (monitorMonitor.sdkIndex >= monitorMonitor.sdkOrder.length) {
+    monitorMonitor.sdkIndex = 0;
+  }
+}
+
+function shouldFailoverMonitorSdk(message) {
+  const text = String(message || "").toLowerCase();
+  if (!text) return false;
+  const patterns = [
+    /rate.?limit/,
+    /\b429\b/,
+    /too many requests/,
+    /quota/,
+    /context window/,
+    /context length/,
+    /maximum context length/,
+    /token limit/,
+    /timeout/,
+    /timed out/,
+    /deadline exceeded/,
+    /abort(?:ed|ing) due to timeout/,
+    /\b500\b/,
+    /\b502\b/,
+    /\b503\b/,
+    /\b504\b/,
+    /server error/,
+    /internal server error/,
+    /gateway timeout/,
+    /overloaded/,
+    /temporarily unavailable/,
+    /api error/,
+    /econnreset/,
+    /socket hang up/,
+    /codex exec exited/,
+    /reading prompt from stdin/,
+    /exit code 3221225786/,
+    /exit code 3221226505/,
+    /exit code 1073807364/,
+    /unexpected content type/,
+    /streamable_http_client/,
+    /memory allocation .* failed/,
+    /allocation of .* bytes failed/,
+    /serde error expected value/,
+  ];
+  return patterns.some((p) => p.test(text));
+}
+
+function formatElapsedMs(ms) {
+  if (!Number.isFinite(ms) || ms <= 0) return "just now";
+  const sec = Math.floor(ms / 1000);
+  if (sec < 60) return `${sec}s ago`;
+  const min = Math.floor(sec / 60);
+  if (min < 60) return `${min}m ago`;
+  const hr = Math.floor(min / 60);
+  const remMin = min % 60;
+  return remMin > 0 ? `${hr}h ${remMin}m ago` : `${hr}h ago`;
+}
+
+function formatDurationMs(ms) {
+  if (!Number.isFinite(ms) || ms <= 0) return "0s";
+  const sec = Math.floor(ms / 1000);
+  if (sec < 60) return `${sec}s`;
+  const min = Math.floor(sec / 60);
+  if (min < 60) return `${min}m`;
+  const hr = Math.floor(min / 60);
+  const remMin = min % 60;
+  return remMin > 0 ? `${hr}h ${remMin}m` : `${hr}h`;
+}
+
+function buildMonitorMonitorStatusText(
+  reason = "heartbeat",
+  currentSdk = getCurrentMonitorSdk(),
+) {
+  const now = Date.now();
+  const runAgeMs =
+    monitorMonitor.running && Number.isFinite(monitorMonitor.heartbeatAt)
+      ? now - monitorMonitor.heartbeatAt
+      : null;
+  const lastRun = monitorMonitor.lastRunAt
+    ? formatElapsedMs(now - monitorMonitor.lastRunAt)
+    : runAgeMs !== null
+      ? `in progress (${formatDurationMs(runAgeMs)})`
+      : "never";
+  const lastStatus = monitorMonitor.lastStatusAt
+    ? formatElapsedMs(now - monitorMonitor.lastStatusAt)
+    : "first update";
+  const lastOutcome =
+    monitorMonitor.running &&
+    String(monitorMonitor.lastOutcome || "").toLowerCase() === "not-started"
+      ? "in-progress"
+      : monitorMonitor.lastOutcome || "unknown";
+  const lastDigestLine = String(monitorMonitor.lastDigestText || "")
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .find(Boolean);
+  const lastAttemptTrigger =
+    monitorMonitor.lastAttemptTrigger || monitorMonitor.lastTrigger || "";
+  const lastAttempted =
+    monitorMonitor.lastAttemptAt && Number.isFinite(monitorMonitor.lastAttemptAt)
+      ? formatElapsedMs(now - monitorMonitor.lastAttemptAt)
+      : "never";
+  const lastSkipReason = String(monitorMonitor.lastSkipReason || "").trim();
+  const lastSkipped =
+    monitorMonitor.lastSkipAt && Number.isFinite(monitorMonitor.lastSkipAt)
+      ? formatElapsedMs(now - monitorMonitor.lastSkipAt)
+      : "never";
+  const supervisorLastStarted =
+    monitorMonitor.supervisorLastStartedAt &&
+    Number.isFinite(monitorMonitor.supervisorLastStartedAt)
+      ? formatElapsedMs(now - monitorMonitor.supervisorLastStartedAt)
+      : "never";
+  const supervisorRestartWindowMin = Math.max(
+    1,
+    Math.round(MONITOR_MONITOR_SUPERVISOR_RESTART_WARN_WINDOW_MS / 60_000),
+  );
+  const supervisorRestartCountWindow = Math.max(
+    0,
+    Number(monitorMonitor.supervisorRestartCountWindow || 0),
+  );
+  const supervisorRestartsUntilWarn = Math.max(
+    0,
+    Number(MONITOR_MONITOR_SUPERVISOR_RESTART_WARN_THRESHOLD || 0) -
+      supervisorRestartCountWindow,
+  );
+
+  const lines = [
+    ":server: Bosun-Monitor Update",
+    `- Reason: ${reason}`,
+    `- Running: ${monitorMonitor.running ? "yes" : "no"}`,
+    `- Current SDK: ${currentSdk}`,
+    `- SDK order: ${monitorMonitor.sdkOrder.join(" -> ") || "codex"}`,
+    `- Last attempt trigger: ${lastAttemptTrigger || "n/a"} (${lastAttempted})`,
+    `- Last skip: ${lastSkipReason || "none"} (${lastSkipped})`,
+    `- Skip streak: ${Math.max(0, Number(monitorMonitor.skipStreak || 0))}`,
+    `- Supervisor restarts (window ${supervisorRestartWindowMin}m): ${supervisorRestartCountWindow}`,
+    `- Supervisor restarts until warn: ${supervisorRestartsUntilWarn}`,
+    `- Supervisor starts: total=${Math.max(0, Number(monitorMonitor.supervisorStartCountTotal || 0))}, last=${supervisorLastStarted}`,
+    `- Last trigger: ${monitorMonitor.lastTrigger || "n/a"}`,
+    `- Last run: ${lastRun}`,
+    `- Previous status: ${lastStatus}`,
+    `- Consecutive failures: ${monitorMonitor.consecutiveFailures}`,
+    `- Last outcome: ${lastOutcome}`,
+  ];
+
+  if (monitorMonitor.lastError) {
+    lines.push(
+      `- Last error: ${String(monitorMonitor.lastError).slice(0, 180)}`,
+    );
+  }
+  if (lastDigestLine) {
+    lines.push(`- Latest digest: ${lastDigestLine.slice(0, 180)}`);
+  }
+  return lines.join("\n");
+}
+
+async function publishMonitorMonitorStatus(reason = "heartbeat") {
+  const now = Date.now();
+  const statusSdk = getCurrentMonitorSdk();
+  const text = buildMonitorMonitorStatusText(reason, statusSdk);
+  const persistedStartupStatusAt =
+    reason === "startup" ? readStartupStatusGateTs() : 0;
+  const latestStartupStatusAt = Math.max(
+    Number(monitorMonitor.lastStatusAt || 0),
+    Number(persistedStartupStatusAt || 0),
+  );
+  const startupStatusSeenRecently =
+    monitorMonitor.lastStatusReason === "startup" || persistedStartupStatusAt > 0;
+  if (
+    reason === "startup" &&
+    startupStatusSeenRecently &&
+    latestStartupStatusAt > 0 &&
+    Number(monitorMonitor.lastRunAt || 0) <= latestStartupStatusAt &&
+    now - latestStartupStatusAt < MONITOR_MONITOR_STARTUP_STATUS_MIN_GAP_MS
+  ) {
+    console.log(
+      `[monitor-monitor] status (startup) skipped (duplicate within ${Math.round(MONITOR_MONITOR_STARTUP_STATUS_MIN_GAP_MS / 1000)}s)`,
+    );
+    return;
+  }
+  const prevStatusAt = monitorMonitor.lastStatusAt;
+  const prevStatusReason = monitorMonitor.lastStatusReason;
+  const prevStatusText = monitorMonitor.lastStatusText;
+  monitorMonitor.lastStatusAt = now;
+  monitorMonitor.lastStatusReason = reason;
+  monitorMonitor.lastStatusText = text;
+  try {
+    if (telegramToken && telegramChatId) {
+      await sendTelegramMessage(text, {
+        dedupKey: `monitor-monitor-status-${reason}-${statusSdk}`,
+        exactDedup: true,
+        skipDedup: reason === "interval",
+      });
+    }
+    if (reason === "startup") {
+      writeStartupStatusGateTs(now);
+    }
+    console.log(
+      `[monitor-monitor] status (${reason}) sdk=${statusSdk} failures=${monitorMonitor.consecutiveFailures}`,
+    );
+  } catch (err) {
+    monitorMonitor.lastStatusAt = prevStatusAt;
+    monitorMonitor.lastStatusReason = prevStatusReason;
+    monitorMonitor.lastStatusText = prevStatusText;
+    console.warn(
+      `[monitor-monitor] status (${reason}) publish failed: ${err?.message || err}`,
+    );
+    throw err;
+  }
+}
+
+async function readLogTail(
+  filePath,
+  { maxLines = 120, maxChars = 12000 } = {},
+) {
+  try {
+    if (!existsSync(filePath)) {
+      return `(missing: ${filePath})`;
+    }
+    const raw = await readFile(filePath, "utf8");
+    const tail = raw.split(/\r?\n/).slice(-maxLines).join("\n");
+    if (tail.length <= maxChars) return tail;
+
+    // When maxChars cuts mid-line, drop the partial head fragment so monitor-
+    // monitor does not ingest stale/truncated orphan text without timestamps.
+    const sliced = tail.slice(-maxChars);
+    const firstNl = sliced.indexOf("\n");
+    if (firstNl <= 0) return sliced;
+    return sliced.slice(firstNl + 1);
+  } catch (err) {
+    return `(unable to read ${filePath}: ${err.message || err})`;
+  }
+}
+
+async function readLatestLogTail(
+  dirPath,
+  prefix,
+  { maxLines = 120, maxChars = 12000 } = {},
+) {
+  try {
+    const { readdir, stat } = await import("node:fs/promises");
+    const entries = await readdir(dirPath);
+    const candidates = entries.filter(
+      (name) => name.startsWith(prefix) && name.endsWith(".log"),
+    );
+    if (!candidates.length) return null;
+    const stats = await Promise.all(
+      candidates.map(async (name) => {
+        const path = resolve(dirPath, name);
+        const info = await stat(path);
+        return { name, path, mtimeMs: info.mtimeMs };
+      }),
+    );
+    stats.sort((a, b) => b.mtimeMs - a.mtimeMs);
+    const latest = stats[0];
+    const tail = await readLogTail(latest.path, { maxLines, maxChars });
+    return { name: latest.name, tail };
+  } catch {
+    return null;
+  }
+}
+
+function formatDigestLines(entries = []) {
+  if (!Array.isArray(entries) || entries.length === 0) {
+    return "(no digest entries)";
+  }
+  return entries
+    .slice(-40)
+    .map((entry) => {
+      const time = entry?.time || "--:--:--";
+      const emoji = entry?.emoji || "";
+      const text = entry?.text || safeStringify(entry) || "(invalid entry)";
+      return `${time} ${emoji} ${text}`.trim();
+    })
+    .join("\n");
+}
+
+function parseCsvList(value) {
+  return String(value || "")
+    .split(",")
+    .map((entry) => entry.trim())
+    .filter(Boolean);
+}
+
+function getMonitorClaudeAllowedTools() {
+  const explicit = parseCsvList(
+    process.env.DEVMODE_MONITOR_MONITOR_CLAUDE_ALLOWED_TOOLS,
+  );
+  if (explicit.length) return explicit;
+  const standard = parseCsvList(process.env.CLAUDE_ALLOWED_TOOLS);
+  if (standard.length) return standard;
+  return [
+    "Read",
+    "Write",
+    "Edit",
+    "Grep",
+    "Glob",
+    "Bash",
+    "WebSearch",
+    "Task",
+    "Skill",
+  ];
+}
+
+function refreshMonitorMonitorRuntime() {
+  const wasEnabled = monitorMonitor.enabled;
+  const previousSdk = monitorMonitor.sdkOrder[monitorMonitor.sdkIndex] || null;
+
+  monitorMonitor.enabled = isMonitorMonitorEnabled();
+  monitorMonitor.intervalMs = Math.max(
+    60_000,
+    Number(
+      process.env.DEVMODE_MONITOR_MONITOR_INTERVAL_MS ||
+        process.env.DEVMODE_AUTO_CODE_FIX_CYCLE_INTERVAL ||
+        "300000",
+    ),
+  );
+  monitorMonitor.timeoutMs = resolveMonitorMonitorTimeoutMs();
+  monitorMonitor.statusIntervalMs = Math.max(
+    5 * 60_000,
+    Number(process.env.DEVMODE_MONITOR_MONITOR_STATUS_INTERVAL_MS || "1800000"),
+  );
+  monitorMonitor.branch =
+    process.env.DEVMODE_MONITOR_MONITOR_BRANCH ||
+    process.env.DEVMODE_AUTO_CODE_FIX_BRANCH ||
+    monitorMonitor.branch ||
+    "";
+
+  monitorMonitor.sdkOrder = buildMonitorMonitorSdkOrder();
+  if (previousSdk) {
+    const idx = monitorMonitor.sdkOrder.indexOf(previousSdk);
+    monitorMonitor.sdkIndex = idx >= 0 ? idx : 0;
+  } else {
+    monitorMonitor.sdkIndex = 0;
+  }
+
+  if (wasEnabled !== monitorMonitor.enabled) {
+    if (monitorMonitor.enabled) {
+      console.log(
+        `[monitor] monitor-monitor enabled (interval ${Math.round(monitorMonitor.intervalMs / 1000)}s, status ${Math.round(monitorMonitor.statusIntervalMs / 60_000)}m, timeout ${Math.round(monitorMonitor.timeoutMs / 1000)}s)`,
+      );
+    } else {
+      console.log("[monitor] monitor-monitor disabled");
+    }
+  }
+}
+
+function snapshotMonitorMonitorRuntime() {
+  return {
+    enabled: !!monitorMonitor.enabled,
+    intervalMs: Number(monitorMonitor.intervalMs || 0),
+    statusIntervalMs: Number(monitorMonitor.statusIntervalMs || 0),
+    timeoutMs: Number(monitorMonitor.timeoutMs || 0),
+    branch: String(monitorMonitor.branch || ""),
+    sdkOrder: Array.isArray(monitorMonitor.sdkOrder)
+      ? [...monitorMonitor.sdkOrder]
+      : [],
+  };
+}
+
+function didMonitorMonitorRuntimeChange(previousRuntime) {
+  const prev = previousRuntime && typeof previousRuntime === "object"
+    ? previousRuntime
+    : {
+      enabled: false,
+      intervalMs: 0,
+      statusIntervalMs: 0,
+      timeoutMs: 0,
+      branch: "",
+      sdkOrder: [],
+    };
+  const next = snapshotMonitorMonitorRuntime();
+  if (
+    prev.enabled !== next.enabled ||
+    prev.intervalMs !== next.intervalMs ||
+    prev.statusIntervalMs !== next.statusIntervalMs ||
+    prev.timeoutMs !== next.timeoutMs ||
+    prev.branch !== next.branch
+  ) {
+    return true;
+  }
+  if (prev.sdkOrder.length !== next.sdkOrder.length) {
+    return true;
+  }
+  for (let i = 0; i < prev.sdkOrder.length; i += 1) {
+    if (prev.sdkOrder[i] !== next.sdkOrder[i]) {
+      return true;
+    }
+  }
+  return false;
+}
+
+function getMonitorMonitorStatusSnapshot() {
+  const currentSdk = getCurrentMonitorSdk();
+  return {
+    enabled: !!monitorMonitor.enabled,
+    running: !!monitorMonitor.running,
+    currentSdk,
+    sdkOrder: [...(monitorMonitor.sdkOrder || [])],
+    intervalMs: monitorMonitor.intervalMs,
+    statusIntervalMs: monitorMonitor.statusIntervalMs,
+    timeoutMs: monitorMonitor.timeoutMs,
+    lastAttemptAt: monitorMonitor.lastAttemptAt || 0,
+    lastAttemptTrigger: monitorMonitor.lastAttemptTrigger || "",
+    lastSkipAt: monitorMonitor.lastSkipAt || 0,
+    lastSkipReason: monitorMonitor.lastSkipReason || "",
+    skipStreak: monitorMonitor.skipStreak || 0,
+    lastSkipStreakWarned: monitorMonitor.lastSkipStreakWarned || 0,
+    lastSkipStreakWarnAt: monitorMonitor.lastSkipStreakWarnAt || 0,
+    supervisorRestartCountWindow:
+      monitorMonitor.supervisorRestartCountWindow || 0,
+    supervisorRestartLastWarnAt:
+      monitorMonitor.supervisorRestartLastWarnAt || 0,
+    supervisorRestartWarnWindowMs:
+      MONITOR_MONITOR_SUPERVISOR_RESTART_WARN_WINDOW_MS,
+    supervisorRestartWarnThreshold:
+      MONITOR_MONITOR_SUPERVISOR_RESTART_WARN_THRESHOLD,
+    supervisorRestartsUntilWarn: Math.max(
+      0,
+      Number(MONITOR_MONITOR_SUPERVISOR_RESTART_WARN_THRESHOLD || 0) -
+        Number(monitorMonitor.supervisorRestartCountWindow || 0),
+    ),
+    supervisorStartCountTotal: monitorMonitor.supervisorStartCountTotal || 0,
+    supervisorLastStartedAt: monitorMonitor.supervisorLastStartedAt || 0,
+    lastRunAt: monitorMonitor.lastRunAt || 0,
+    lastStatusAt: monitorMonitor.lastStatusAt || 0,
+    lastTrigger: monitorMonitor.lastTrigger || "",
+    lastOutcome: monitorMonitor.lastOutcome || "",
+    consecutiveFailures: monitorMonitor.consecutiveFailures || 0,
+    lastError: monitorMonitor.lastError || "",
+  };
+}
+
+function resolveMonitorMonitorErrorTailWindowMs() {
+  const intervalMs = Number(monitorMonitor?.intervalMs);
+  const normalizedIntervalMs =
+    Number.isFinite(intervalMs) && intervalMs > 0 ? intervalMs : 5 * 60_000;
+  const defaultWindowMs = Math.max(
+    10 * 60_000,
+    Math.min(20 * 60_000, normalizedIntervalMs * 3),
+  );
+  const raw = Number(
+    process.env.DEVMODE_MONITOR_MONITOR_ERROR_TAIL_WINDOW_MS ||
+      String(defaultWindowMs),
+  );
+  if (!Number.isFinite(raw) || raw <= 0) return defaultWindowMs;
+  return Math.max(60_000, raw);
+}
+
+function resolveMonitorMonitorStartupErrorTailWindowMs(baseWindowMs) {
+  const base = Number.isFinite(Number(baseWindowMs)) && Number(baseWindowMs) > 0
+    ? Number(baseWindowMs)
+    : resolveMonitorMonitorErrorTailWindowMs();
+  const raw = Number(
+    process.env.DEVMODE_MONITOR_MONITOR_STARTUP_ERROR_TAIL_WINDOW_MS || "120000",
+  );
+  const startupWindow = Number.isFinite(raw) && raw > 0 ? raw : 120_000;
+  return Math.max(30_000, Math.min(base, startupWindow));
+}
+
+function filterMonitorTailByRecency(tail, { windowMs } = {}) {
+  const text = String(tail || "");
+  if (!text) return text;
+
+  const parsedWindow = Number(windowMs);
+  if (!Number.isFinite(parsedWindow) || parsedWindow <= 0) return text;
+  const cutoff = Date.now() - parsedWindow;
+
+  const lines = text.split("\n");
+  const blocks = [];
+  let current = null;
+
+  const flushCurrent = () => {
+    if (!current) return;
+    blocks.push(current);
+    current = null;
+  };
+
+  for (const line of lines) {
+    const currentLine = String(line || "");
+    const tsMatch = currentLine.match(
+      /^(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?Z)\s/,
+    );
+    if (tsMatch) {
+      flushCurrent();
+      const tsMs = Date.parse(tsMatch[1]);
+      current = {
+        tsMs: Number.isFinite(tsMs) ? tsMs : null,
+        lines: [currentLine],
+      };
+      continue;
+    }
+
+    if (current) {
+      current.lines.push(currentLine);
+    } else {
+      const trimmed = currentLine.trim();
+      if (!trimmed) continue;
+
+      // Keep only explicit diagnostics as orphan blocks. Untimestamped trailing
+      // fragments are usually mid-line truncation artifacts and can surface stale
+      // noise in monitor-monitor prompts.
+      const isDiagnosticOrphan =
+        /^\(missing:/.test(trimmed) ||
+        /^\(unable to read /.test(trimmed) ||
+        /^\[fallback:/.test(trimmed);
+      if (isDiagnosticOrphan) {
+        blocks.push({ tsMs: null, lines: [currentLine] });
+      }
+    }
+  }
+  flushCurrent();
+
+  return blocks
+    .filter((block) => block.tsMs === null || block.tsMs >= cutoff)
+    .map((block) => block.lines.join("\n"))
+    .join("\n")
+    .trimEnd();
+}
+
+function sanitizeMonitorTailForPrompt(tail, backend) {
+  return sanitizeMonitorTailForPromptShared(tail, backend);
+}
+
+function formatOrchestratorTailForMonitorPrompt({
+  mode,
+  activeKanbanBackend,
+  orchestratorTail,
+}) {
+  try {
+    const resolvedMode = String(mode || "unknown").trim().toLowerCase();
+    const backendLabel = String(activeKanbanBackend || "unknown")
+      .trim()
+      .toLowerCase();
+    if (
+      mode === "internal" ||
+      mode === "disabled" ||
+      resolvedMode === "internal" ||
+      resolvedMode === "disabled" ||
+      resolvedMode === "none" ||
+      resolvedMode === "monitor-only"
+    ) {
+      return (
+        `(not applicable: executor mode "${resolvedMode}" runs without external orchestrator logs)` +
+        ` [backend=${backendLabel}]`
+      );
+    }
+
+    const tailText = String(orchestratorTail || "").trim();
+    if (tailText) return tailText;
+
+    return `(missing: orchestrator tail unavailable for mode "${resolvedMode}")`;
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    return `(missing: failed to format orchestrator tail: ${message})`;
+  }
+}
+
+async function buildMonitorMonitorPrompt({ trigger, entries, text }) {
+  const digestSnapshot = getDigestSnapshot();
+  const digestEntries =
+    Array.isArray(entries) && entries.length
+      ? entries
+      : digestSnapshot?.entries || [];
+  const latestDigestText = String(text || monitorMonitor.lastDigestText || "");
+  const actionableEntries = digestEntries.filter(
+    (entry) => Number(entry?.priority || 99) <= 3,
+  );
+  const modeHint =
+    actionableEntries.length > 0 ? "reliability-fix" : "code-analysis";
+  const currentSdk = getCurrentMonitorSdk();
+  const branchInstruction = monitorMonitor.branch
+    ? `Work on branch ${monitorMonitor.branch}. Do not create a new branch.`
+    : "Work on the current branch. Do not create a new branch.";
+
+  const activeKanbanBackend = getActiveKanbanBackend();
+  const runtimeExecutorMode = String(
+    configExecutorMode || getExecutorMode() || "internal",
+  )
+    .trim()
+    .toLowerCase();
+  const usesExternalOrchestratorLog =
+    runtimeExecutorMode !== "internal" && !isExecutorDisabled();
+  let orchestratorTail = "";
+  if (usesExternalOrchestratorLog) {
+    orchestratorTail = await readLogTail(resolve(logDir, "orchestrator-active.log"), {
+      maxLines: 140,
+      maxChars: 14000,
+    });
+    if (orchestratorTail.startsWith("(missing:")) {
+      const fallback = await readLatestLogTail(logDir, "orchestrator-", {
+        maxLines: 140,
+        maxChars: 14000,
+      });
+      if (fallback?.tail) {
+        orchestratorTail = `[fallback: ${fallback.name}]\n${fallback.tail}`;
+      } else {
+        const defaultLogDir = resolve(__dirname, "logs");
+        if (defaultLogDir !== logDir) {
+          const alt = await readLatestLogTail(defaultLogDir, "orchestrator-", {
+            maxLines: 140,
+            maxChars: 14000,
+          });
+          if (alt?.tail) {
+            orchestratorTail = `[fallback: ${alt.name}]\n${alt.tail}`;
+          }
+        }
+      }
+    }
+  }
+  orchestratorTail = formatOrchestratorTailForMonitorPrompt({
+    mode: runtimeExecutorMode,
+    activeKanbanBackend,
+    orchestratorTail,
+  });
+  const monitorTailWindowMs = resolveMonitorMonitorErrorTailWindowMs();
+  const effectiveMonitorTailWindowMs =
+    String(trigger || "").trim().toLowerCase() === "startup"
+      ? resolveMonitorMonitorStartupErrorTailWindowMs(monitorTailWindowMs)
+      : monitorTailWindowMs;
+  const rawMonitorTail = await readLogTail(resolve(logDir, "monitor-error.log"), {
+    maxLines: 120,
+    maxChars: 12000,
+  });
+  const recentMonitorTail = filterMonitorTailByRecency(rawMonitorTail, {
+    windowMs: effectiveMonitorTailWindowMs,
+  });
+  const monitorTail = sanitizeMonitorTailForPrompt(
+    recentMonitorTail,
+    activeKanbanBackend,
+  );
+  const monitorTailForPrompt =
+    String(monitorTail || "").trim() ||
+    `(no recent monitor errors in last ${Math.round(effectiveMonitorTailWindowMs / 60_000)}m)`;
+
+  const anomalyReport = getAnomalyStatusReport();
+  const monitorPrompt = agentPrompts?.monitorMonitor || "";
+  const claudeTools = getMonitorClaudeAllowedTools();
+
+  return [
+    monitorPrompt,
+    "",
+    "## Runtime Contract",
+    "- You are running under monitor.mjs in devmode.",
+    "- Fix reliability issues immediately; if smooth, perform code-analysis improvements.",
+    "- Apply fixes directly in scripts/bosun and related prompt/config files.",
+    "- Do not commit, push, or open PRs from this run.",
+    `- ${branchInstruction}`,
+    "",
+    "## Orchestrator Requirements To Enforce",
+    "- Monitor-Monitor must run continuously (24/7 in devmode).",
+    "- If this run fails due to rate limit/API/context/server errors, next SDK must be used automatically.",
+    "- Keep monitoring after each improvement; regressions must be fixed immediately.",
+    "",
+    "## Current Context",
+    `- Trigger: ${trigger}`,
+    `- Mode hint: ${modeHint}`,
+    `- Current SDK slot: ${currentSdk}`,
+    `- SDK failover order: ${monitorMonitor.sdkOrder.join(" -> ") || "codex"}`,
+    `- Consecutive monitor failures: ${monitorMonitor.consecutiveFailures}`,
+    `- Claude allowed tools: ${claudeTools.join(", ")}`,
+    "",
+    "## Live Digest (latest)",
+    latestDigestText || "(no digest text)",
+    "",
+    "## Actionable Digest Entries",
+    formatDigestLines(actionableEntries),
+    "",
+    "## Anomaly Report",
+    anomalyReport || "(none)",
+    "",
+    "## Monitor Error Log Tail",
+    monitorTailForPrompt,
+    "",
+    "## Orchestrator Log Tail",
+    orchestratorTail,
+    "",
+    "## Deliverable",
+    "1. Diagnose current reliability issues first and patch root causes.",
+    "2. If no active reliability issue exists, implement one meaningful bosun quality/reliability improvement.",
+    "3. Run focused validation commands for touched files.",
+    "4. Summarize what changed and why.",
+  ].join("\n");
+}
+
+function clearMonitorMonitorWatchdogTimer({ preserveRunning = false } = {}) {
+  if (!monitorMonitor._watchdogForceResetTimer) return;
+  if (preserveRunning && monitorMonitor.running) return;
+  clearTimeout(monitorMonitor._watchdogForceResetTimer);
+  monitorMonitor._watchdogForceResetTimer = null;
+}
+
+function recordMonitorMonitorSkip(reason = "unknown") {
+  monitorMonitor.lastSkipReason = String(reason || "unknown");
+  monitorMonitor.lastSkipAt = Date.now();
+  const skipStreak = Math.max(
+    0,
+    Number(monitorMonitor.skipStreak || 0),
+  ) + 1;
+  monitorMonitor.skipStreak = skipStreak;
+  const lastWarned = Math.max(
+    0,
+    Number(monitorMonitor.lastSkipStreakWarned || 0),
+  );
+  const now = Date.now();
+  const lastWarnAt = Math.max(
+    0,
+    Number(monitorMonitor.lastSkipStreakWarnAt || 0),
+  );
+  if (skipStreak < MONITOR_MONITOR_SKIP_STREAK_WARN_THRESHOLD) return;
+  if (
+    lastWarned > 0 &&
+    skipStreak - lastWarned < MONITOR_MONITOR_SKIP_STREAK_WARN_THRESHOLD
+  ) {
+    return;
+  }
+  if (
+    lastWarnAt > 0 &&
+    now - lastWarnAt < MONITOR_MONITOR_SKIP_STREAK_WARN_MIN_GAP_MS
+  ) {
+    return;
+  }
+  monitorMonitor.lastSkipStreakWarned = skipStreak;
+  monitorMonitor.lastSkipStreakWarnAt = now;
+  console.warn(
+    `[monitor-monitor] skip streak ${skipStreak} (reason=${monitorMonitor.lastSkipReason}) while prior run is still active`,
+  );
+}
+
+async function runMonitorMonitorCycle({
+  trigger = "interval",
+  entries = [],
+  text = "",
+} = {}) {
+  refreshMonitorMonitorRuntime();
+  if (!monitorMonitor.enabled) return;
+  monitorMonitor.lastAttemptTrigger = trigger;
+  monitorMonitor.lastAttemptAt = Date.now();
+
+  if (monitorMonitor.running) {
+    const heartbeatAt = Number(monitorMonitor.heartbeatAt || 0);
+    const runAge =
+      Number.isFinite(heartbeatAt) && heartbeatAt > 0
+        ? Date.now() - heartbeatAt
+        : Number.POSITIVE_INFINITY;
+    const runStaleThresholdMs =
+      monitorMonitor.timeoutMs + MONITOR_MONITOR_WATCHDOG_FORCE_RESET_DELAY_MS;
+    if (!monitorMonitor.abortController) {
+      if (runAge > runStaleThresholdMs) {
+        console.warn(
+          `[monitor-monitor] force-resetting stale run without abort controller after ${Math.round(runAge / 1000)}s`,
+        );
+        monitorMonitor.running = false;
+        monitorMonitor._watchdogAbortCount = 0;
+        clearMonitorMonitorWatchdogTimer();
+        monitorMonitor.consecutiveFailures += 1;
+        recordMonitorSdkFailure(getCurrentMonitorSdk());
+        monitorMonitor.lastOutcome = "force-reset (no-abort-controller)";
+        monitorMonitor.lastError = `stale running=true without abort controller after ${Math.round(runAge / 1000)}s`;
+      } else {
+        recordMonitorMonitorSkip("running-no-abort-controller");
+        return;
+      }
+    } else if (runAge > runStaleThresholdMs) {
+      const watchdogCount = (monitorMonitor._watchdogAbortCount || 0) + 1;
+      monitorMonitor._watchdogAbortCount = watchdogCount;
+      console.warn(
+        `[monitor-monitor] watchdog abort #${watchdogCount} after ${Math.round(runAge / 1000)}s (stuck run)`,
+      );
+      try {
+        monitorMonitor.abortController.abort("watchdog-timeout");
+      } catch {
+        /* best effort */
+      }
+      // After 2 consecutive watchdog aborts (abort signal didn't kill the run),
+      // force-reset the running flag so the next cycle can start fresh.
+      if (watchdogCount >= 2) {
+        console.warn(
+          `[monitor-monitor] force-resetting stuck run after ${watchdogCount} watchdog aborts`,
+        );
+        monitorMonitor.running = false;
+        monitorMonitor.abortController = null;
+        monitorMonitor._watchdogAbortCount = 0;
+        clearMonitorMonitorWatchdogTimer();
+        monitorMonitor.consecutiveFailures += 1;
+        recordMonitorSdkFailure(getCurrentMonitorSdk());
+        monitorMonitor.lastOutcome = "force-reset (watchdog)";
+        monitorMonitor.lastError = `watchdog force-reset after ${Math.round(runAge / 1000)}s`;
+        // Don't return — allow the cycle to start fresh below
+      } else {
+        // Schedule an accelerated force-reset instead of waiting for
+        // the next full interval cycle (which could be 5+ minutes away).
+        // If the abort signal actually kills the run, the scheduled callback
+        // will find monitorMonitor.running === false and no-op.
+        if (!monitorMonitor._watchdogForceResetTimer) {
+          const watchdogRunHeartbeatAt = Number(monitorMonitor.heartbeatAt || 0);
+          monitorMonitor._watchdogForceResetTimer = setTimeout(() => {
+            monitorMonitor._watchdogForceResetTimer = null;
+            if (!monitorMonitor.running) return; // Already resolved
+            // Ignore stale timer from an earlier run that already completed and
+            // got replaced by a new run before this timeout fired.
+            if (
+              watchdogRunHeartbeatAt > 0 &&
+              Number(monitorMonitor.heartbeatAt || 0) !== watchdogRunHeartbeatAt
+            ) {
+              return;
+            }
+            console.warn(
+              `[monitor-monitor] accelerated force-reset — abort signal was ignored for ${Math.round(MONITOR_MONITOR_WATCHDOG_FORCE_RESET_DELAY_MS / 1000)}s`,
+            );
+            monitorMonitor.running = false;
+            monitorMonitor.abortController = null;
+            monitorMonitor._watchdogAbortCount = 0;
+            monitorMonitor.consecutiveFailures += 1;
+            recordMonitorSdkFailure(getCurrentMonitorSdk());
+            monitorMonitor.lastOutcome = "force-reset (watchdog-accelerated)";
+            monitorMonitor.lastError = `watchdog accelerated force-reset after ${Math.round((Date.now() - monitorMonitor.heartbeatAt) / 1000)}s`;
+          }, MONITOR_MONITOR_WATCHDOG_FORCE_RESET_DELAY_MS);
+        }
+        recordMonitorMonitorSkip("running-watchdog-await");
+        return;
+      }
+    } else {
+      recordMonitorMonitorSkip("running-active");
+      return;
+    }
+  }
+
+  clearMonitorMonitorWatchdogTimer({ preserveRunning: true });
+  monitorMonitor.lastTrigger = trigger;
+  monitorMonitor.lastSkipReason = "";
+  monitorMonitor.lastSkipAt = 0;
+  monitorMonitor.skipStreak = 0;
+  monitorMonitor.lastSkipStreakWarned = 0;
+  monitorMonitor.lastSkipStreakWarnAt = 0;
+  monitorMonitor.running = true;
+  monitorMonitor.heartbeatAt = Date.now();
+  monitorMonitor._watchdogAbortCount = 0;
+  if (typeof text === "string" && text.trim()) {
+    monitorMonitor.lastDigestText = text;
+  }
+
+  let prompt = "";
+  try {
+    prompt = await buildMonitorMonitorPrompt({ trigger, entries, text });
+  } catch (err) {
+    monitorMonitor.running = false;
+    console.warn(
+      `[monitor-monitor] prompt build failed: ${err.message || err}`,
+    );
+    return;
+  }
+
+  const runOnce = async (sdk) => {
+    const abortController = new AbortController();
+    monitorMonitor.abortController = abortController;
+    return await launchOrResumeThread(
+      prompt,
+      repoRoot,
+      monitorMonitor.timeoutMs,
+      {
+        taskKey: "monitor-monitor",
+        sdk,
+        abortController,
+        claudeAllowedTools: getMonitorClaudeAllowedTools(),
+      },
+    );
+  };
+
+  const runLogDir = resolve(repoRoot, ".cache", "monitor-monitor-logs");
+  try {
+    await mkdir(runLogDir, { recursive: true });
+    const stamp = new Date().toISOString().replace(/[:.]/g, "-");
+    const sdkForLog = getCurrentMonitorSdk();
+    await writeFile(
+      resolve(
+        runLogDir,
+        `monitor-monitor-${stamp}-${trigger}-${sdkForLog}.prompt.md`,
+      ),
+      prompt,
+      "utf8",
+    );
+  } catch {
+    /* best effort */
+  }
+
+  let sdk = getCurrentMonitorSdk();
+  let result;
+  const runStartTime = Date.now();
+
+  try {
+    result = await runOnce(sdk);
+    const runDuration = Math.round((Date.now() - runStartTime) / 1000);
+
+    if (!result.success && shouldFailoverMonitorSdk(result.error)) {
+      const canRotate = rotateMonitorSdk(result.error || "retryable failure");
+      if (canRotate) {
+        sdk = getCurrentMonitorSdk();
+        const isTimeout = result.error?.includes("timeout");
+        console.warn(
+          `[monitor-monitor] retrying with ${sdk} (previous ${isTimeout ? "timeout" : "failure"} after ${runDuration}s)`,
+        );
+        result = await runOnce(sdk);
+      }
+    }
+
+    if (result.success) {
+      const totalDuration = Math.round((Date.now() - runStartTime) / 1000);
+      monitorMonitor.consecutiveFailures = 0;
+      clearMonitorSdkFailure(sdk);
+      monitorMonitor.lastOutcome = `success (${sdk})`;
+      monitorMonitor.lastError = "";
+      console.log(
+        `[monitor-monitor] cycle complete via ${sdk} in ${totalDuration}s${trigger ? ` (${trigger})` : ""}`,
+      );
+    } else {
+      const totalDuration = Math.round((Date.now() - runStartTime) / 1000);
+      monitorMonitor.consecutiveFailures += 1;
+      recordMonitorSdkFailure(sdk);
+      const errMsg = result.error || "unknown error";
+      const isTimeout = errMsg.includes("timeout");
+      monitorMonitor.lastOutcome = `failed (${sdk})`;
+      monitorMonitor.lastError = errMsg;
+      console.warn(
+        `[monitor-monitor] run failed via ${sdk} after ${totalDuration}s${isTimeout ? " [TIMEOUT]" : ""}: ${errMsg}`,
+      );
+      if (shouldFailoverMonitorSdk(errMsg)) {
+        rotateMonitorSdk("prepare next cycle");
+      }
+      runDetached("monitor-monitor:failure-notify", () =>
+        notify?.(
+          `:alert: Monitor-Monitor failed (${sdk}): ${String(errMsg).slice(0, 240)}`,
+          3,
+          { dedupKey: "monitor-monitor-failed" },
+        ));
+      try {
+        await publishMonitorMonitorStatus("failure");
+      } catch {
+        /* best effort */
+      }
+    }
+  } catch (runErr) {
+    // Uncaught exception during execution (e.g. launchOrResumeThread threw)
+    monitorMonitor.consecutiveFailures += 1;
+    recordMonitorSdkFailure(sdk);
+    const errMsg = String(runErr?.message || runErr || "unknown exception");
+    monitorMonitor.lastOutcome = `exception (${sdk})`;
+    monitorMonitor.lastError = errMsg;
+    console.error(`[monitor-monitor] uncaught exception via ${sdk}: ${errMsg}`);
+    runDetached("monitor-monitor:exception-notify", () =>
+      notify?.(
+        `:alert: Monitor-Monitor exception (${sdk}): ${errMsg.slice(0, 240)}`,
+        3,
+        { dedupKey: "monitor-monitor-exception" },
+      ));
+    if (shouldFailoverMonitorSdk(errMsg)) {
+      rotateMonitorSdk("prepare next cycle (exception)");
+    }
+    try {
+      await publishMonitorMonitorStatus("failure");
+    } catch {
+      /* best effort */
+    }
+  } finally {
+    // CRITICAL: Always reset running flag, even if runOnce throws or times out
+    clearMonitorMonitorWatchdogTimer();
+    monitorMonitor.lastRunAt = Date.now();
+    monitorMonitor.running = false;
+    monitorMonitor.abortController = null;
+  }
+}
+
+function startMonitorMonitorSupervisor() {
+  refreshMonitorMonitorRuntime();
+  if (!monitorMonitor.enabled) return;
+  const now = Date.now();
+  const restartWindowMs = Math.max(
+    60_000,
+    MONITOR_MONITOR_SUPERVISOR_RESTART_WARN_WINDOW_MS,
+  );
+  const recentStarts = Array.isArray(monitorMonitor.supervisorStartTimes)
+    ? monitorMonitor.supervisorStartTimes.filter(
+        (ts) => Number.isFinite(ts) && ts > 0 && now - ts <= restartWindowMs,
+      )
+    : [];
+  recentStarts.push(now);
+  monitorMonitor.supervisorStartTimes = recentStarts.slice(-200);
+  monitorMonitor.supervisorRestartCountWindow = recentStarts.length;
+  monitorMonitor.supervisorStartCountTotal = Math.max(
+    0,
+    Number(monitorMonitor.supervisorStartCountTotal || 0),
+  ) + 1;
+  monitorMonitor.supervisorLastStartedAt = now;
+  if (
+    recentStarts.length >= MONITOR_MONITOR_SUPERVISOR_RESTART_WARN_THRESHOLD &&
+    now - Number(monitorMonitor.supervisorRestartLastWarnAt || 0) >= restartWindowMs
+  ) {
+    monitorMonitor.supervisorRestartLastWarnAt = now;
+    console.warn(
+      `[monitor] monitor-monitor supervisor restarted ${recentStarts.length} times within ${Math.round(restartWindowMs / 60_000)}m window`,
+    );
+  }
+
+  if (monitorMonitor.timer) {
+    clearInterval(monitorMonitor.timer);
+    monitorMonitor.timer = null;
+  }
+  if (monitorMonitor.statusTimer) {
+    clearInterval(monitorMonitor.statusTimer);
+    monitorMonitor.statusTimer = null;
+  }
+  if (monitorMonitor.startupCycleTimer) {
+    clearTimeout(monitorMonitor.startupCycleTimer);
+    monitorMonitor.startupCycleTimer = null;
+  }
+  if (monitorMonitor.startupStatusTimer) {
+    clearTimeout(monitorMonitor.startupStatusTimer);
+    monitorMonitor.startupStatusTimer = null;
+  }
+  clearMonitorMonitorWatchdogTimer({ preserveRunning: true });
+
+  monitorMonitor.timer = safeSetInterval("monitor-monitor-cycle", () => {
+    if (shuttingDown) return;
+    return runMonitorMonitorCycle({ trigger: "interval" });
+  }, monitorMonitor.intervalMs);
+  monitorMonitor.statusTimer = safeSetInterval("monitor-monitor-status", () => {
+    if (shuttingDown) return;
+    return publishMonitorMonitorStatus("interval");
+  }, monitorMonitor.statusIntervalMs);
+
+  console.log(
+    `[monitor] monitor-monitor supervisor started (${Math.round(monitorMonitor.intervalMs / 1000)}s run interval, ${Math.round(monitorMonitor.statusIntervalMs / 60_000)}m status interval, sdk order: ${monitorMonitor.sdkOrder.join(" -> ")})`,
+  );
+  console.log(
+    `[monitor] monitor-monitor startup gate: status-gap=${Math.round(MONITOR_MONITOR_STARTUP_STATUS_MIN_GAP_MS / 1000)}s jitter<=${Math.round(MONITOR_MONITOR_STARTUP_JITTER_MS / 1000)}s corrupt-retain=${MONITOR_MONITOR_STARTUP_STATUS_GATE_CORRUPT_MAX_FILES}`,
+  );
+  if (MONITOR_MONITOR_WATCHDOG_FORCE_RESET_DELAY_MS >= monitorMonitor.intervalMs) {
+    console.warn(
+      `[monitor] monitor-monitor watchdog delay (${Math.round(MONITOR_MONITOR_WATCHDOG_FORCE_RESET_DELAY_MS / 1000)}s) is >= run interval (${Math.round(monitorMonitor.intervalMs / 1000)}s); accelerated force-reset may not preempt the next scheduled cycle`,
+    );
+  }
+  if (MONITOR_MONITOR_STARTUP_STATUS_DELAY_MS < MONITOR_MONITOR_STARTUP_CYCLE_DELAY_MS) {
+    console.warn(
+      `[monitor] monitor-monitor startup status delay (${Math.round(MONITOR_MONITOR_STARTUP_STATUS_DELAY_MS / 1000)}s) is below startup cycle delay (${Math.round(MONITOR_MONITOR_STARTUP_CYCLE_DELAY_MS / 1000)}s); startup status may post before first cycle begins`,
+    );
+  }
+  const startupJitterMs =
+    MONITOR_MONITOR_STARTUP_JITTER_MS > 0
+      ? Math.floor(Math.random() * (MONITOR_MONITOR_STARTUP_JITTER_MS + 1))
+      : 0;
+  const startupCycleDelayEffectiveMs = Math.max(
+    0,
+    MONITOR_MONITOR_STARTUP_CYCLE_DELAY_MS + startupJitterMs,
+  );
+  const startupStatusDelayEffectiveMs = Math.max(
+    0,
+    MONITOR_MONITOR_STARTUP_STATUS_DELAY_MS + startupJitterMs,
+  );
+  let startupStatusDelayAdjustedMs = startupStatusDelayEffectiveMs;
+  if (startupStatusDelayAdjustedMs < startupCycleDelayEffectiveMs) {
+    startupStatusDelayAdjustedMs =
+      startupCycleDelayEffectiveMs +
+      Math.max(0, MONITOR_MONITOR_STARTUP_STATUS_AFTER_CYCLE_MIN_MS);
+    console.warn(
+      `[monitor] monitor-monitor startup status delay auto-adjusted to ${Math.round(startupStatusDelayAdjustedMs / 1000)}s to follow startup cycle (${Math.round(startupCycleDelayEffectiveMs / 1000)}s)`,
+    );
+  }
+  if (startupJitterMs > 0) {
+    console.log(
+      `[monitor] monitor-monitor startup jitter applied: +${Math.round(startupJitterMs / 1000)}s (cycle=${Math.round(startupCycleDelayEffectiveMs / 1000)}s, status=${Math.round(startupStatusDelayAdjustedMs / 1000)}s)`,
+    );
+  }
+
+  monitorMonitor.startupCycleTimer = safeSetTimeout("monitor-monitor-startup-cycle", () => {
+    monitorMonitor.startupCycleTimer = null;
+    if (shuttingDown) return;
+    return runMonitorMonitorCycle({ trigger: "startup" });
+  }, startupCycleDelayEffectiveMs);
+  monitorMonitor.startupStatusTimer = safeSetTimeout("monitor-monitor-startup-status", () => {
+    monitorMonitor.startupStatusTimer = null;
+    if (shuttingDown) return;
+    return publishMonitorMonitorStatus("startup");
+  }, startupStatusDelayAdjustedMs);
+}
+
+function stopMonitorMonitorSupervisor({ preserveRunning = false } = {}) {
+  if (monitorMonitor.timer) {
+    clearInterval(monitorMonitor.timer);
+    monitorMonitor.timer = null;
+  }
+  if (monitorMonitor.statusTimer) {
+    clearInterval(monitorMonitor.statusTimer);
+    monitorMonitor.statusTimer = null;
+  }
+  if (monitorMonitor.startupCycleTimer) {
+    clearTimeout(monitorMonitor.startupCycleTimer);
+    monitorMonitor.startupCycleTimer = null;
+  }
+  if (monitorMonitor.startupStatusTimer) {
+    clearTimeout(monitorMonitor.startupStatusTimer);
+    monitorMonitor.startupStatusTimer = null;
+  }
+  clearMonitorMonitorWatchdogTimer({ preserveRunning });
+  // Only abort a running cycle if explicitly requested (hard shutdown).
+  // During self-restart, preserve the running agent so it completes its work.
+  if (!preserveRunning && monitorMonitor.abortController) {
+    try {
+      monitorMonitor.abortController.abort("monitor-shutdown");
+    } catch {
+      /* best effort */
+    }
+    monitorMonitor.abortController = null;
+  }
+  if (!preserveRunning) {
+    monitorMonitor.running = false;
+  }
+}
+
+/**
+ * Called when a Live Digest window is sealed.
+ * This provides fresh high-priority context and triggers an immediate run.
+ */
+async function handleDigestSealed({ entries, text }) {
+  if (!monitorMonitor.enabled) return;
+
+  const actionableEntries = (entries || []).filter(
+    (entry) => Number(entry?.priority || 99) <= 3,
+  );
+
+  if (!actionableEntries.length) {
+    if (typeof text === "string" && text.trim()) {
+      monitorMonitor.lastDigestText = text;
+    }
+    return;
+  }
+
+  console.log(
+    `[monitor-monitor] digest trigger (${actionableEntries.length} actionable entries)`,
+  );
+  runDetached("monitor-monitor:digest-trigger", () =>
+    runMonitorMonitorCycle({
+      trigger: "digest",
+      entries: actionableEntries,
+      text,
+    }));
+}
 
 async function startProcess() {
   try {
@@ -10085,7 +11607,7 @@ async function startProcess() {
       console.log(
         `[monitor] throttling restart — only ${Math.round(sinceLast / 1000)}s since last start, waiting ${Math.round(waitMs / 1000)}s`,
       );
-      setTimeout(startProcess, waitMs);
+      scheduleStartProcess("start-process:min-restart-delay", waitMs);
       return;
     }
   }
@@ -10099,7 +11621,7 @@ async function startProcess() {
     console.warn(
       `[monitor] orchestrator start blocked; retrying in ${waitSec}s`,
     );
-    setTimeout(startProcess, waitSec * 1000);
+    scheduleStartProcess("start-process:halted-or-safe-mode", waitSec * 1000);
     return;
   }
   if (!(await ensurePreflightReady("start"))) {
@@ -10199,7 +11721,7 @@ async function startProcess() {
             `Pausing restarts for ${pauseMin} minute(s).`,
         );
       }
-      setTimeout(startProcess, pauseMs);
+      scheduleStartProcess("start-process:pwsh-runtime-missing", pauseMs);
       return;
     }
     orchestratorCmd = pwshRuntime.command;
@@ -10313,14 +11835,18 @@ async function startProcess() {
       );
       if (noBranchMatch) {
         const shortId = noBranchMatch[2]; // 4-char prefix
-        void resolveAndTriggerSmartPR(shortId, "no-remote-branch");
+        runDetached("smart-pr:no-remote-branch", () =>
+          resolveAndTriggerSmartPR(shortId, "no-remote-branch"));
       }
       if (line.includes("ALL TASKS COMPLETE")) {
         if (!allCompleteNotified) {
           allCompleteNotified = true;
-          void sendTelegramMessage(
-            "All tasks completed. Orchestrator backlog is empty.",
-          );
+          runDetached("orchestrator:all-complete-notify", () =>
+            sendTelegramMessage(
+              "All tasks completed. Orchestrator backlog is empty.",
+            ));
+          runDetached("orchestrator:all-complete-trigger-planner", () =>
+            triggerTaskPlanner());
         }
       }
     }
@@ -10345,7 +11871,7 @@ async function startProcess() {
     if (!shuttingDown) {
       const retryMs = Math.max(5_000, restartDelayMs || 0);
       safeSetTimeout("startProcess-retry", () => {
-        if (!shuttingDown) void startProcess();
+        if (!shuttingDown) runDetached("startProcess-retry", startProcess);
       }, retryMs);
     }
   }
@@ -10629,11 +12155,15 @@ function selfRestartForSourceChange(
       }
     }, 3000);
   }
-  void releaseTelegramPollLock();
+  runDetachedDuringShutdown("poll-lock-release:self-restart-source-change", () =>
+    releaseTelegramPollLock(),
+  );
   stopTelegramBot({ preserveDigest: true });
   stopWhatsAppChannel();
   if (isContainerEnabled()) {
-    void stopAllContainers().catch(() => {});
+    runDetachedDuringShutdown("containers-stop:self-restart-source-change", () =>
+      stopAllContainers(),
+    );
   }
   // Write self-restart marker so the new process suppresses startup notifications
   try {
@@ -11103,7 +12633,9 @@ function applyConfig(nextConfig, options = {}) {
       vibeKanbanStartedAt = 0;
     }
   } else if (!prevVkRuntimeRequired && nextVkRuntimeRequired) {
-    void ensureVibeKanbanRunning();
+    runDetached("vk-runtime:config-reload-enable", () =>
+      ensureVibeKanbanRunning(),
+    );
   }
 
   // ── Internal executor hot-reload ──────────────────────────────────────
@@ -11130,7 +12662,8 @@ function applyConfig(nextConfig, options = {}) {
     (primaryAgentChanged && primaryAgentReady) ||
     (!prevPrimaryAgentReady && primaryAgentReady)
   ) {
-    void initPrimaryAgent(primaryAgentName);
+    runDetached("primary-agent:init-config-reload", () =>
+      initPrimaryAgent(primaryAgentName));
   }
 
   if (prevWatchPath !== watchPath || watchEnabled === false) {
@@ -11152,14 +12685,16 @@ function applyConfig(nextConfig, options = {}) {
   startEnvWatchers();
 
   if (prevTelegramInterval !== telegramIntervalMin) {
-    void startTelegramNotifier();
+    runDetached("telegram-notifier:restart-config-reload", () =>
+      startTelegramNotifier());
   }
   if (!prevTelegramCommandEnabled && telegramCommandEnabled) {
     startTelegramCommandListener();
   }
   if (prevTelegramBotEnabled !== telegramBotEnabled) {
     if (telegramBotEnabled) {
-      void startTelegramBot(getTelegramBotStartOptions());
+      runDetached("telegram-bot:start-config-reload", () =>
+        startTelegramBot(getTelegramBotStartOptions()));
     } else {
       stopTelegramBot();
     }
@@ -11170,7 +12705,11 @@ function applyConfig(nextConfig, options = {}) {
     );
   }
   if (!prevCodexEnabled && codexEnabled) {
-    void ensureCodexSdkReady();
+    void ensureCodexSdkReady().catch((err) => {
+      console.warn(
+        `[monitor] ensureCodexSdkReady reload check failed: ${err?.message || err}`,
+      );
+    });
   }
   if (prevPreflightEnabled && !preflightEnabled && preflightRetryTimer) {
     clearTimeout(preflightRetryTimer);
@@ -11182,6 +12721,26 @@ function applyConfig(nextConfig, options = {}) {
   } else if (!shellState.enabled && shellState.active && shellState.rl) {
     shellState.rl.close();
   }
+
+  if (plannerMode !== "disabled") {
+    startTaskPlannerStatusLoop();
+  } else {
+    stopTaskPlannerStatusLoop();
+  }
+
+  const previousMonitorRuntime = snapshotMonitorMonitorRuntime();
+  refreshMonitorMonitorRuntime();
+  const monitorRuntimeChanged = didMonitorMonitorRuntimeChange(
+    previousMonitorRuntime,
+  );
+  if (monitorMonitor.enabled) {
+    if (monitorRuntimeChanged || !monitorMonitor.timer || !monitorMonitor.statusTimer) {
+      startMonitorMonitorSupervisor();
+    }
+  } else {
+    stopMonitorMonitorSupervisor();
+  }
+  restartGitHubReconciler();
 
   const nextArgs = scriptArgs?.join(" ") || "";
   const scriptChanged = prevScriptPath !== scriptPath || prevArgs !== nextArgs;
@@ -11229,8 +12788,12 @@ process.on("SIGINT", async () => {
   if (currentChild) {
     currentChild.kill("SIGTERM");
   }
-  void workspaceMonitor.shutdown();
-  void releaseTelegramPollLock();
+  runDetachedDuringShutdown("workspace-monitor-shutdown:sigint", () =>
+    workspaceMonitor.shutdown(),
+  );
+  runDetachedDuringShutdown("poll-lock-release:sigint", () =>
+    releaseTelegramPollLock(),
+  );
   stopWhatsAppChannel();
   if (agentSupervisor) {
     agentSupervisor.stop();
@@ -11267,8 +12830,12 @@ process.on("exit", () => {
     vkLogStream.stop();
     vkLogStream = null;
   }
-  void workspaceMonitor.shutdown();
-  void releaseTelegramPollLock();
+  runDetachedDuringShutdown("workspace-monitor-shutdown:exit", () =>
+    workspaceMonitor.shutdown(),
+  );
+  runDetachedDuringShutdown("poll-lock-release:exit", () =>
+    releaseTelegramPollLock(),
+  );
 });
 
 process.on("SIGTERM", async () => {
@@ -11289,8 +12856,12 @@ process.on("SIGTERM", async () => {
   if (currentChild) {
     currentChild.kill("SIGTERM");
   }
-  void workspaceMonitor.shutdown();
-  void releaseTelegramPollLock();
+  runDetachedDuringShutdown("workspace-monitor-shutdown:sigterm", () =>
+    workspaceMonitor.shutdown(),
+  );
+  runDetachedDuringShutdown("poll-lock-release:sigterm", () =>
+    releaseTelegramPollLock(),
+  );
   stopTelegramBot();
   stopWhatsAppChannel();
   if (agentSupervisor) {
@@ -11780,13 +13351,17 @@ if (isVkRuntimeRequired()) {
   ensureAnomalyDetector();
 }
 if (isVkSpawnAllowed()) {
-  void ensureVibeKanbanRunning();
+  runDetached("vk-runtime:startup-ensure", () => ensureVibeKanbanRunning());
 }
 // When VK is externally managed (not spawned by monitor), still connect the
 // log stream so agent logs are captured to .cache/agent-logs/.
 if (isVkRuntimeRequired() && !isVkSpawnAllowed() && vkEndpointUrl) {
   void isVibeKanbanOnline().then((online) => {
     if (online) ensureVkLogStream();
+  }).catch((err) => {
+    console.warn(
+      `[monitor] failed VK online check for external runtime: ${err?.message || err}`,
+    );
   });
 }
 if (
@@ -11819,6 +13394,10 @@ void ensureCodexSdkReady().then(() => {
   } else {
     console.log("[monitor] Codex enabled.");
   }
+}).catch((err) => {
+  console.warn(
+    `[monitor] ensureCodexSdkReady startup check failed: ${err?.message || err}`,
+  );
 });
 
 // ── Log complexity routing matrix at startup ──────────────────────────────────
@@ -12514,10 +14093,11 @@ if (telegramCommandEnabled) {
 // existing digest message instead of creating a new one.
 // Chain notifier start after restore to prevent race conditions.
 // Also initialise the pinned status board (creates/restores the persistent message).
-void restoreLiveDigest()
-  .catch(() => {})
-  .then(() => startTelegramNotifier())
-  .then(() => initStatusBoard().catch(() => {}));
+runDetached("telegram-bootstrap:restore-digest-notifier-status", async () => {
+  await restoreLiveDigest().catch(() => {});
+  await startTelegramNotifier();
+  await initStatusBoard().catch(() => {});
+});
 
 // ── Start agent work analyzer and alert tailer ─────────────────────────────
 startAgentWorkAnalyzer();
@@ -12566,7 +14146,8 @@ injectMonitorFunctions({
   },
 });
 if (telegramBotEnabled) {
-  void startTelegramBot(getTelegramBotStartOptions());
+  runDetached("telegram-bot:start-startup", () =>
+    startTelegramBot(getTelegramBotStartOptions()));
 
   // Process any commands queued by telegram-sentinel while monitor was down
   try {
@@ -12672,6 +14253,8 @@ export {
   AUTO_RESOLVE_LOCK_EXTENSIONS,
   extractScopeFromTitle,
   resolveUpstreamFromConfig,
+  extractAcceptanceCriteriaFromTask,
+  shouldSmartPrCreatePrForAssessmentAction,
   rebaseDownstreamTasks,
   runTaskAssessment,
   // Internal executor

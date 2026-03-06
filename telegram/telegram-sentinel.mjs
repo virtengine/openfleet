@@ -64,6 +64,42 @@ const __dirname = dirname(__filename);
 const repoRoot = resolveRepoRoot();
 const cacheDir = resolve(repoRoot, ".cache");
 
+function resolveBosunConfigDir() {
+  if (process.env.BOSUN_DIR) return resolve(process.env.BOSUN_DIR);
+  if (process.env.APPDATA) return resolve(process.env.APPDATA, "bosun");
+  if (process.env.LOCALAPPDATA) return resolve(process.env.LOCALAPPDATA, "bosun");
+  if (process.env.USERPROFILE) return resolve(process.env.USERPROFILE, "bosun");
+  if (process.env.HOME) return resolve(process.env.HOME, "bosun");
+  return null;
+}
+
+function getWorkspaceCacheCandidates() {
+  const candidates = new Set([cacheDir]);
+
+  // Legacy/cwd cache paths used by older versions or detached launches.
+  candidates.add(resolve(__dirname, "..", ".cache"));
+  candidates.add(resolve(process.cwd(), ".cache"));
+
+  // Some daemon/sentinel launches resolve repo root through BOSUN workspace
+  // config paths (BOSUN_DIR/workspaces/<workspace>/<repo>). Include that
+  // deterministic cache location so monitor/sentinel stay in sync.
+  const bosunDir = resolveBosunConfigDir();
+  if (bosunDir) {
+    const parts = String(repoRoot).replace(/\\/g, "/").split("/").filter(Boolean);
+    const repoName = parts.at(-1);
+    const workspaceName = parts.at(-2);
+    if (repoName && workspaceName) {
+      candidates.add(
+        resolve(bosunDir, "workspaces", workspaceName, repoName, ".cache"),
+      );
+    }
+  }
+
+  return [...candidates];
+}
+
+const CACHE_CANDIDATES = getWorkspaceCacheCandidates();
+
 const MONITOR_PID_FILE = resolve(cacheDir, "bosun.pid");
 const MONITOR_PID_FILE_LEGACY = resolve(__dirname, "..", ".cache", "bosun.pid");
 const MONITOR_PID_FILE_CWD = resolve(process.cwd(), ".cache", "bosun.pid");
@@ -773,19 +809,71 @@ function removePidFile(pidPath) {
 }
 
 function readMonitorPid() {
-  return (
-    readAlivePid(MONITOR_PID_FILE) ||
-    readAlivePid(MONITOR_PID_FILE_LEGACY) ||
-    readAlivePid(MONITOR_PID_FILE_CWD)
-  );
+  const candidates = [
+    MONITOR_PID_FILE,
+    MONITOR_PID_FILE_LEGACY,
+    MONITOR_PID_FILE_CWD,
+    ...CACHE_CANDIDATES.map((dir) => resolve(dir, "bosun.pid")),
+  ];
+  for (const pidFile of new Set(candidates)) {
+    const pid = readAlivePid(pidFile);
+    if (pid) return pid;
+  }
+  return null;
 }
 
 function readDaemonPid() {
-  return (
-    readAlivePid(DAEMON_PID_FILE) ||
-    readAlivePid(DAEMON_PID_FILE_LEGACY) ||
-    readAlivePid(DAEMON_PID_FILE_CWD)
-  );
+  const candidates = [
+    DAEMON_PID_FILE,
+    DAEMON_PID_FILE_LEGACY,
+    DAEMON_PID_FILE_CWD,
+    ...CACHE_CANDIDATES.map((dir) => resolve(dir, "bosun-daemon.pid")),
+  ];
+  for (const pidFile of new Set(candidates)) {
+    const pid = readAlivePid(pidFile);
+    if (pid) return pid;
+  }
+  return null;
+}
+
+function readSentinelPid() {
+  const candidates = [
+    SENTINEL_PID_FILE,
+    ...CACHE_CANDIDATES.map((dir) => resolve(dir, "telegram-sentinel.pid")),
+  ];
+  for (const pidFile of new Set(candidates)) {
+    const pid = readAlivePid(pidFile);
+    if (pid) return pid;
+  }
+  return null;
+}
+
+function removeSentinelPidFiles() {
+  const candidates = [
+    SENTINEL_PID_FILE,
+    ...CACHE_CANDIDATES.map((dir) => resolve(dir, "telegram-sentinel.pid")),
+  ];
+  for (const pidFile of new Set(candidates)) {
+    removePidFile(pidFile);
+  }
+}
+
+function readHeartbeatSnapshot() {
+  const candidates = [
+    SENTINEL_HEARTBEAT_FILE,
+    ...CACHE_CANDIDATES.map((dir) => resolve(dir, "sentinel-heartbeat.json")),
+  ];
+  for (const hbPath of new Set(candidates)) {
+    try {
+      if (!existsSync(hbPath)) continue;
+      const raw = readFileSync(hbPath, "utf8");
+      if (!raw?.trim()) continue;
+      return JSON.parse(raw);
+    } catch {
+      /* try next */
+    }
+  }
+  return null;
 }
 
 function removeMonitorPidFiles() {
@@ -1860,7 +1948,7 @@ async function healthCheck() {
   }
 
   // Clean up stale PID files
-  const sentinelPid = readAlivePid(SENTINEL_PID_FILE);
+  const sentinelPid = readSentinelPid();
   if (sentinelPid && sentinelPid !== process.pid) {
     // Another sentinel is alive — we shouldn't be running
     log(
@@ -1938,7 +2026,7 @@ export async function startSentinel(options = {}) {
 
   // Check for existing sentinel
   if (!options.skipExistingCheck) {
-    const existingPid = readAlivePid(SENTINEL_PID_FILE);
+    const existingPid = readSentinelPid();
     if (existingPid && existingPid !== process.pid) {
       console.error(
         `${TAG} Another sentinel is already running (PID ${existingPid}). Use --stop first.`,
@@ -1950,7 +2038,7 @@ export async function startSentinel(options = {}) {
   running = true;
   startedAt = new Date().toISOString();
   loadRecoveryState();
-  writePidFile(SENTINEL_PID_FILE, process.pid);
+  writePidFile(resolve(cacheDir, "telegram-sentinel.pid"), process.pid);
 
   log("info", `sentinel started (PID ${process.pid})`);
 
@@ -1973,13 +2061,11 @@ export async function startSentinel(options = {}) {
       log("error", `health check error: ${err.message}`);
     });
   }, HEALTH_CHECK_INTERVAL_MS);
-  if (healthCheckTimer.unref) healthCheckTimer.unref();
 
   // Set up periodic heartbeat writes
   heartbeatTimer = setInterval(() => {
     writeHeartbeat().catch(() => {});
   }, HEALTH_CHECK_INTERVAL_MS);
-  if (heartbeatTimer.unref) heartbeatTimer.unref();
 
   // Initial heartbeat
   await writeHeartbeat();
@@ -2038,7 +2124,7 @@ export function stopSentinel() {
   // Release locks and PID files
   releaseSentinelPollLock().catch(() => {});
   releaseTelegramPollOwner("telegram-sentinel").catch(() => {});
-  removePidFile(SENTINEL_PID_FILE);
+  removeSentinelPidFiles();
 
   // Clean up heartbeat file
   try {
@@ -2223,10 +2309,10 @@ if (isDirectExecution) {
   }
 
   if (args.includes("--stop")) {
-    const pid = readAlivePid(SENTINEL_PID_FILE);
+    const pid = readSentinelPid();
     if (!pid) {
       console.log("  No sentinel running.");
-      removePidFile(SENTINEL_PID_FILE);
+      removeSentinelPidFiles();
       process.exit(0);
     }
     console.log(`  Stopping sentinel (PID ${pid})...`);
@@ -2247,7 +2333,7 @@ if (isDirectExecution) {
           /* ok */
         }
       }
-      removePidFile(SENTINEL_PID_FILE);
+      removeSentinelPidFiles();
       console.log("  ✓ Sentinel stopped.");
     } catch (err) {
       console.error(`  Failed: ${err.message}`);
@@ -2257,12 +2343,12 @@ if (isDirectExecution) {
   }
 
   if (args.includes("--status")) {
-    const pid = readAlivePid(SENTINEL_PID_FILE);
+    const pid = readSentinelPid();
     if (pid) {
       console.log(`  Sentinel is running (PID ${pid})`);
       try {
-        if (existsSync(SENTINEL_HEARTBEAT_FILE)) {
-          const hb = JSON.parse(readFileSync(SENTINEL_HEARTBEAT_FILE, "utf8"));
+        const hb = readHeartbeatSnapshot();
+        if (hb) {
           console.log(`  Mode: ${hb.mode}`);
           console.log(`  Monitor PID: ${hb.monitorPid || "none"}`);
           console.log(`  Last check: ${hb.lastCheck}`);
@@ -2273,7 +2359,7 @@ if (isDirectExecution) {
       }
     } else {
       console.log("  Sentinel is not running.");
-      removePidFile(SENTINEL_PID_FILE);
+      removeSentinelPidFiles();
     }
     process.exit(0);
   }

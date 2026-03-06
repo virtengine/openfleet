@@ -1348,7 +1348,7 @@
   padding-right: calc(var(--safe-right));
   /* Reserve space at the bottom for the fixed nav bar plus the on-screen
      keyboard height (--chat-keyboard-offset is set live by visualViewport). */
-  padding-bottom: calc(var(--nav-height, 60px) + var(--safe-bottom, 0px) + var(--chat-keyboard-offset, 0px));
+  padding-bottom: calc(var(--nav-height, 60px) + var(--safe-bottom, 0px) + 8px + var(--chat-keyboard-offset, 0px));
   overflow: hidden;
   display: flex;
   flex-direction: column;

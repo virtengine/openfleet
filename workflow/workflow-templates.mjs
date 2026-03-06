@@ -891,6 +891,63 @@ export function resolveWorkflowTemplateIds(opts = {}) {
   return resolveProfileTemplateIds(opts.profileId || "balanced");
 }
 
+function coerceTemplateVariableValue(rawValue, defaultValue) {
+  if (typeof defaultValue === "number") {
+    const parsed = Number(rawValue);
+    return Number.isFinite(parsed) ? parsed : defaultValue;
+  }
+  if (typeof defaultValue === "boolean") {
+    if (typeof rawValue === "boolean") return rawValue;
+    const normalized = String(rawValue || "").trim().toLowerCase();
+    if (["1", "true", "yes", "on", "y"].includes(normalized)) return true;
+    if (["0", "false", "no", "off", "n"].includes(normalized)) return false;
+    return defaultValue;
+  }
+  if (Array.isArray(defaultValue) || (defaultValue && typeof defaultValue === "object")) {
+    if (typeof rawValue === "string") {
+      try {
+        return JSON.parse(rawValue);
+      } catch {
+        return defaultValue;
+      }
+    }
+    return rawValue && typeof rawValue === "object" ? rawValue : defaultValue;
+  }
+  if (rawValue === undefined || rawValue === null) return defaultValue;
+  return String(rawValue);
+}
+
+export function normalizeTemplateOverridesById(rawOverrides = {}, allowedTemplateIds = null) {
+  const input = rawOverrides && typeof rawOverrides === "object" ? rawOverrides : {};
+  const allowed = Array.isArray(allowedTemplateIds)
+    ? new Set(allowedTemplateIds.map((value) => String(value || "").trim()).filter(Boolean))
+    : null;
+  const normalized = {};
+
+  for (const [templateId, overrides] of Object.entries(input)) {
+    const id = String(templateId || "").trim();
+    if (!id) continue;
+    if (allowed && !allowed.has(id)) continue;
+    const template = getTemplate(id);
+    if (!template) continue;
+    if (!overrides || typeof overrides !== "object" || Array.isArray(overrides)) continue;
+
+    const templateVars = template.variables && typeof template.variables === "object"
+      ? template.variables
+      : {};
+    const nextOverrides = {};
+    for (const [key, rawValue] of Object.entries(overrides)) {
+      if (!Object.prototype.hasOwnProperty.call(templateVars, key)) continue;
+      nextOverrides[key] = coerceTemplateVariableValue(rawValue, templateVars[key]);
+    }
+    if (Object.keys(nextOverrides).length > 0) {
+      normalized[id] = nextOverrides;
+    }
+  }
+
+  return normalized;
+}
+
 /**
  * List recommended templates only.
  * @returns {Array<object>}

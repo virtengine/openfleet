@@ -86,6 +86,7 @@ describe("voice-relay", () => {
     "GOOGLE_API_KEY",
     "AZURE_OPENAI_ACCESS_TOKEN",
     "VOICE_PROVIDER",
+    "VOICE_TURN_DETECTION",
     "VOICE_PROVIDERS",
     "VOICE_MODEL",
     "VOICE_VISION_MODEL",

@@ -56,4 +56,23 @@ describe("ui-server quick tunnel output buffer", () => {
       "tunnel output tail should be accessible for status reporting",
     );
   });
+
+  it("clears output tail at the start of each tunnel attempt", () => {
+    const clearsOnStart =
+      source.includes("mode: TUNNEL_MODE_QUICK") &&
+      source.includes("mode: TUNNEL_MODE_NAMED") &&
+      source.includes("outputTail: \"\"");
+    assert.ok(
+      clearsOnStart,
+      "new tunnel attempts should clear stale output tail before parsing fresh logs",
+    );
+  });
+
+  it("clears output tail when tunnel is explicitly stopped", () => {
+    assert.ok(
+      source.includes("export function stopTunnel()") &&
+      source.includes("outputTail: \"\""),
+      "stopTunnel should clear stale tunnel output tail",
+    );
+  });
 });

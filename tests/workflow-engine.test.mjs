@@ -8,6 +8,8 @@ import {
   WorkflowContext,
   NodeStatus,
   WorkflowStatus,
+  getWorkflowEngine,
+  resetWorkflowEngine,
 } from "../workflow/workflow-engine.mjs";
 import {
   registerNodeType,
@@ -1904,6 +1906,25 @@ it("agent.run_planner appends output requirements to explicit prompts and honors
   expect(sentPrompt).toContain("single fenced JSON block");
 });
 
+it("agent.run_planner fails immediately when planner dependencies are unavailable", async () => {
+  const handler = getNodeType("agent.run_planner");
+  expect(handler).toBeDefined();
+
+  const ctx = new WorkflowContext({});
+  const node = {
+    id: "planner-missing-deps",
+    type: "agent.run_planner",
+    config: {
+      taskCount: 3,
+    },
+  };
+
+  await expect(handler.execute(node, ctx, { services: {} })).resolves.toMatchObject({
+    success: false,
+    error: expect.stringMatching(/Agent pool or planner prompt not available/i),
+  });
+});
+
 it("action.materialize_planner_tasks parses fenced JSON and creates tasks", async () => {
   const handler = getNodeType("action.materialize_planner_tasks");
   expect(handler).toBeDefined();
@@ -2107,6 +2128,63 @@ it("action.materialize_planner_tasks fails loudly when planner output has no par
   await expect(handler.execute(node, ctx, mockEngine)).rejects.toThrow(
     /did not include parseable tasks/i,
   );
+});
+
+it("action.materialize_planner_tasks surfaces upstream planner errors when no output exists", async () => {
+  const handler = getNodeType("action.materialize_planner_tasks");
+  expect(handler).toBeDefined();
+
+  const ctx = new WorkflowContext({});
+  ctx.setNodeOutput("run-planner", {
+    success: false,
+    error: "Agent pool or planner prompt not available",
+    output: "",
+  });
+
+  const node = {
+    id: "materialize-upstream-error",
+    type: "action.materialize_planner_tasks",
+    config: {
+      plannerNodeId: "run-planner",
+      failOnZero: true,
+    },
+  };
+
+  await expect(handler.execute(node, ctx, { services: {} })).rejects.toThrow(
+    /did not include parseable tasks/i,
+  );
+});
+
+describe("WorkflowEngine singleton services", () => {
+  beforeEach(() => {
+    resetWorkflowEngine();
+  });
+
+  afterEach(() => {
+    resetWorkflowEngine();
+  });
+
+  it("merges injected services when getWorkflowEngine is called after initialization", () => {
+    const first = getWorkflowEngine({
+      services: {
+        kanban: { createTask: () => ({ id: "1" }) },
+      },
+    });
+    expect(first.services.kanban).toBeDefined();
+    expect(first.services.agentPool).toBeUndefined();
+
+    const second = getWorkflowEngine({
+      services: {
+        agentPool: { launchEphemeralThread: async () => ({ success: true, output: "" }) },
+        prompts: { planner: "Planner prompt" },
+      },
+    });
+
+    expect(second).toBe(first);
+    expect(second.services.kanban).toBeDefined();
+    expect(second.services.agentPool).toBeDefined();
+    expect(second.services.prompts?.planner).toBe("Planner prompt");
+  });
 });
 
 // ── Anomaly Detector Integration Tests ──────────────────────────────────────

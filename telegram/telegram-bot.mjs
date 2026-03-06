@@ -4791,22 +4791,6 @@ Object.assign(UI_SCREENS, {
     },
     keyboard: () => {
       syncUiUrlsFromServer();
-      const voiceMeetingWebAppUrl = getMeetingWebAppUrl("voice");
-      const videoMeetingWebAppUrl = getMeetingWebAppUrl("video");
-      const meetingRow = [
-        voiceMeetingWebAppUrl
-          ? {
-              text: "Voice Meeting",
-              web_app: { url: voiceMeetingWebAppUrl },
-            }
-          : uiButton("Voice Meeting", uiCmdAction("/call")),
-        videoMeetingWebAppUrl
-          ? {
-              text: "Video Meeting",
-              web_app: { url: videoMeetingWebAppUrl },
-            }
-          : uiButton("Video Meeting", uiCmdAction("/videocall")),
-      ];
       const rows = [
         // Core Operations
         [
@@ -4832,7 +4816,6 @@ Object.assign(UI_SCREENS, {
           uiButton(":file: All Commands", uiCmdAction("/helpfull")),
         ],
       ];
-      rows.unshift(meetingRow);
       if (telegramWebAppUrl) {
         rows.unshift([
           {

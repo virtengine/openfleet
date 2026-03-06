@@ -68,6 +68,7 @@ const ASSESSMENT_COOLDOWN_MS = 5 * 60 * 1000; // 5 min per task
  * @property {number}   [commitsAhead]    - Commits ahead of upstream
  * @property {number}   [commitsBehind]   - Commits behind upstream
  * @property {number}   [taskAgeHours]    - How old the task is in hours
+ * @property {string[]} [acceptanceCriteria] - Task acceptance criteria checklist
  * @property {object}   [previousDecisions] - History of past decisions for this task
  */
 
@@ -107,6 +108,17 @@ minimizing wasted compute.
   if (ctx.taskTitle) parts.push(`**Task:** ${ctx.taskTitle}`);
   if (ctx.taskDescription) {
     parts.push(`**Description:** ${ctx.taskDescription.slice(0, 3000)}`);
+  }
+  if (Array.isArray(ctx.acceptanceCriteria) && ctx.acceptanceCriteria.length) {
+    parts.push(
+      [
+        "## Acceptance Criteria",
+        ...ctx.acceptanceCriteria
+          .slice(0, 20)
+          .map((criterion) => `- ${String(criterion || "").trim()}`)
+          .filter((line) => line !== "-"),
+      ].join("\n"),
+    );
   }
   if (ctx.branch) parts.push(`**Branch:** ${ctx.branch}`);
   if (ctx.upstreamBranch)

@@ -26,6 +26,7 @@ import {
   listWorkflowSetupProfiles,
   getWorkflowSetupProfile,
   resolveWorkflowTemplateIds,
+  normalizeTemplateOverridesById,
 } from "../workflow/workflow-templates.mjs";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -191,6 +192,10 @@ function normalizeWorkflowTemplateIds(rawValue, fallback = []) {
   }
   if (normalized.length > 0) return normalized;
   return Array.isArray(fallback) ? [...fallback] : [];
+}
+
+function normalizeWorkflowTemplateOverrides(rawValue, selectedTemplateIds = []) {
+  return normalizeTemplateOverridesById(rawValue, selectedTemplateIds);
 }
 
 function normalizeWorkspaceId(value, fallback = "workspace") {
@@ -428,6 +433,7 @@ function buildStableSetupDefaults({
     workflowAutomationEnabled: true,
     workflowProfile: defaultWorkflowProfile.id,
     workflowDefaultTemplates: [...defaultWorkflowProfile.templateIds],
+    workflowTemplateOverridesById: {},
     workflowAutoInstall: true,
     workflowNodeMaxRetries: 3,
     workflowNodeTimeoutMs: 600000,
@@ -2135,6 +2141,10 @@ function handleApply(body) {
       configJson.workflowDefaults?.templates || env.workflowDefaultTemplates,
       fallbackWorkflowTemplateIds,
     );
+    const workflowTemplateOverridesById = normalizeWorkflowTemplateOverrides(
+      configJson.workflowDefaults?.templateOverridesById || env.workflowTemplateOverridesById,
+      workflowDefaultTemplateIds,
+    );
     const workflowAutoInstall = Boolean(
       configJson.workflowDefaults?.autoInstall ??
       env.workflowAutoInstall ??
@@ -2171,6 +2181,7 @@ function handleApply(body) {
       profile: workflowProfile,
       autoInstall: workflowAutoInstall,
       templates: workflowDefaultTemplateIds,
+      templateOverridesById: workflowTemplateOverridesById,
     };
     config.workflowEngine = workflowEngineConfig;
 
@@ -2863,6 +2874,7 @@ export async function startSetupServer(options = {}) {
 export {
   applyTelegramMiniAppSetupEnv,
   applyNonBlockingSetupEnvDefaults,
+  normalizeWorkflowTemplateOverrides,
   normalizeTelegramUiPort,
   normalizeRepoConfigEntry,
   normalizeWorkspaceConfigList,

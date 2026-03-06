@@ -4,6 +4,7 @@ import {
   applyTelegramMiniAppSetupEnv,
   normalizeRepoConfigEntry,
   normalizeTelegramUiPort,
+  normalizeWorkflowTemplateOverrides,
   normalizeWorkspaceConfigList,
   resolveSetupWorkspaceAndRepoConfig,
 } from "../server/setup-web-server.mjs";
@@ -148,6 +149,28 @@ describe("setup web server non-blocking env defaults", () => {
       VK_BASE_URL: "http://127.0.0.1:54089",
       VK_RECOVERY_PORT: "54089",
       ORCHESTRATOR_ARGS: "-MaxParallel 4",
+    });
+  });
+
+  it("filters workflow template overrides to selected templates and known variables", () => {
+    const normalized = normalizeWorkflowTemplateOverrides(
+      {
+        "template-anomaly-watchdog": {
+          stallThresholdMs: "900000",
+          notifyOnStall: false,
+          nope: "ignored",
+        },
+        "template-task-planner": {
+          taskLimit: "12",
+        },
+      },
+      ["template-anomaly-watchdog"],
+    );
+
+    expect(normalized).toEqual({
+      "template-anomaly-watchdog": {
+        stallThresholdMs: 900000,
+      },
     });
   });
 

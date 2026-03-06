@@ -2133,6 +2133,21 @@ export class WorkflowEngine extends EventEmitter {
 
 let _defaultEngine = null;
 
+function mergeWorkflowServices(currentServices, incomingServices) {
+  const current =
+    currentServices && typeof currentServices === "object"
+      ? { ...currentServices }
+      : {};
+  if (!incomingServices || typeof incomingServices !== "object") return current;
+
+  for (const [key, value] of Object.entries(incomingServices)) {
+    if (value === undefined) continue;
+    if (value === null && current[key] != null) continue;
+    current[key] = value;
+  }
+  return current;
+}
+
 /**
  * Get or create the default workflow engine instance.
  * @param {object} [opts]
@@ -2142,6 +2157,13 @@ export function getWorkflowEngine(opts = {}) {
   if (!_defaultEngine) {
     _defaultEngine = new WorkflowEngine(opts);
     _defaultEngine.load();
+  } else if (opts && typeof opts === "object") {
+    if (opts.services && typeof opts.services === "object") {
+      _defaultEngine.services = mergeWorkflowServices(
+        _defaultEngine.services,
+        opts.services,
+      );
+    }
   }
   return _defaultEngine;
 }

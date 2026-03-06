@@ -694,6 +694,15 @@ function parsePidFile(raw) {
   return { pid: Number(text), raw: text };
 }
 
+function formatPidFileSummary(parsed) {
+  const pid = Number(parsed?.pid);
+  if (Number.isFinite(pid) && pid > 0) return String(pid);
+  const raw = String(parsed?.raw || "").replace(/\s+/g, " ").trim();
+  if (!raw) return "unknown";
+  if (raw.length <= 80) return raw;
+  return `${raw.slice(0, 77)}...`;
+}
+
 function isCurrentProcessLockOwner(parsed) {
   if (!parsed || Number(parsed.pid) !== Number(process.pid)) return false;
   const data = parsed.data;
@@ -907,7 +916,7 @@ export function acquireMonitorLock(lockDir) {
           }
         } else {
           console.warn(
-            "[maintenance] removing stale PID file (PID " + (parsed.raw || "unknown") + " no longer alive)",
+            "[maintenance] removing stale PID file (PID " + formatPidFileSummary(parsed) + " no longer alive)",
           );
         }
       } catch {

@@ -286,6 +286,56 @@ function recoverNonGitWorkspaceRepo(childProcess, repoPath, repoUrl, repoName) {
   };
 }
 
+function normalizeSingleLine(value) {
+  return String(value || "")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function isGenericGitPullFailure(text) {
+  return /^command failed:\s*git pull --rebase$/i.test(
+    normalizeSingleLine(text),
+  );
+}
+
+function buildGitPullFailureDetails(err, repoPath, childProcess) {
+  const stderr = normalizeSingleLine(err?.stderr || "");
+  const stdout = normalizeSingleLine(err?.stdout || "");
+  const message = normalizeSingleLine(err?.message || err || "");
+  const parts = [];
+  if (Number.isFinite(err?.status)) parts.push(`status=${err.status}`);
+  if (err?.signal) parts.push(`signal=${err.signal}`);
+  if (err?.code) parts.push(`code=${err.code}`);
+
+  let details = stderr || stdout || message || "git pull --rebase failed";
+  if (!details || isGenericGitPullFailure(details)) {
+    const fallback = message && !isGenericGitPullFailure(message)
+      ? message
+      : "git pull --rebase failed";
+    details = fallback;
+    // Generic execSync failures can omit stderr; include concise repo state.
+    try {
+      const statusOut = normalizeSingleLine(
+        childProcess.execSync("git status --porcelain --branch", {
+          cwd: repoPath,
+          encoding: "utf8",
+          timeout: 10_000,
+          stdio: ["pipe", "pipe", "pipe"],
+        }),
+      );
+      if (statusOut) {
+        details = `${details} | git status: ${statusOut.slice(0, 220)}`;
+      }
+    } catch {
+      // best effort only
+    }
+  }
+  if (parts.length > 0) {
+    details = `${details} (${parts.join(", ")})`;
+  }
+  return details;
+}
+
 // ── Config Management ────────────────────────────────────────────────────────
 
 const CONFIG_FILE = "bosun.config.json";
@@ -740,9 +790,7 @@ export function pullWorkspaceRepos(configDir, workspaceId) {
       });
       results.push({ name: repo.name, success: true });
     } catch (err) {
-      const details = String(err?.stderr || err?.stdout || err?.message || err || "")
-        .replace(/\s+/g, " ")
-        .trim();
+      const details = buildGitPullFailureDetails(err, repoPath, childProcess);
       results.push({
         name: repo.name,
         success: false,

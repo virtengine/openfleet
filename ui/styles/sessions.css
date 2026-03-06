@@ -2068,6 +2068,12 @@ ul.md-list li::before {
   border-radius: 0;
   background: transparent;
   box-shadow: none;
+  /* Embedded chat lives in a flex column with a separate composer below it.
+     Do not force 100%/min-height from base .chat-view or it overflows behind
+     the composer and clips the lower part of the scrollable stream. */
+  height: auto;
+  min-height: 0;
+  flex: 1;
 }
 
 .chat-view-embedded .chat-messages {
@@ -2304,6 +2310,9 @@ ul.md-list li::before {
 .session-item-wrapper .session-item {
   position: relative;
   z-index: 1;
+  width: 100%;
+  box-sizing: border-box;
+  overflow: hidden;
   background: var(--bg-surface, var(--bg-card));
   touch-action: pan-y;
   user-select: none;
@@ -2559,7 +2568,7 @@ ul.md-list li::before {
 }
 
 /* ═══ Desktop Chat Refinements ═══ */
-@media (min-width: 1200px) {
+@media (min-width: 1400px) {
   .chat-messages {
     padding: 24px 20px 235px;
     gap: 10px;
@@ -2631,13 +2640,14 @@ ul.md-list li::before {
 }
 
 /* ─── Desktop: flat padding on input, no nav-height offset needed ─── */
-@media (min-width: 1200px) {
+@media (min-width: 1400px) {
   .app-shell[data-tab="chat"] .chat-input-area {
-    position: sticky;
-    bottom: 0;
+    /* Keep composer in normal flow on desktop.
+       Sticky here causes overlap with .chat-messages in some desktop/webviews,
+       which hides the lower portion of chat content under the input bar. */
+    position: relative;
+    bottom: auto;
     padding: 12px 16px 16px;
-    /* sticky works on desktop because .session-detail overflow:hidden is
-       replaced by flex layout — messages scroll, shell doesn't clip */
   }
 
   .app-shell[data-tab="chat"] .chat-view-embedded .chat-messages {
@@ -2716,10 +2726,15 @@ ul.md-list li::before {
 @media (max-width: 767px) {
   .app-shell[data-tab="chat"] .chat-input-area {
     padding-top: 6px;
-    /* keyboard offset still applied; decorative 12px removed to snug up to nav */
-    padding-bottom: calc(var(--chat-keyboard-offset, 0px) + var(--safe-bottom, 0px));
+    /* Keep composer clear of the floating bottom nav in mobile browsers. */
+    padding-bottom: calc(var(--chat-keyboard-offset, 0px) + var(--safe-bottom, 0px) + var(--nav-height, 56px) + 8px);
     /* round the bottom to softly continue into the floating nav */
     border-radius: 0 0 var(--radius-xl, 20px) var(--radius-xl, 20px);
+  }
+
+  :root[data-chat-keyboard-open="true"] .app-shell[data-tab="chat"] .chat-input-area {
+    /* When keyboard is open, the keyboard offset already lifts the composer. */
+    padding-bottom: calc(var(--chat-keyboard-offset, 0px) + var(--safe-bottom, 0px));
   }
 }
 

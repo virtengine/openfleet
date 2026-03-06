@@ -57,6 +57,12 @@ const executeDialogMode = signal("quick");     // "quick" | "advanced"
 const executeDialogRepos = signal([]);         // workspace repos for target-repo selector
 const executeDialogTargetRepo = signal("");    // selected target repo name
 const executeDialogWaitSync = signal(false);   // wait for completion toggle
+const installDialogOpen = signal(false);
+const installDialogTemplate = signal(null);
+const installDialogVars = signal({});
+const installDialogMode = signal("quick");
+const installDialogInstalling = signal(false);
+const installDialogResult = signal(null);
 
 function returnToWorkflowList() {
   selectedNodeId.value = null;
@@ -684,6 +690,266 @@ function ExecuteWorkflowDialog() {
   `;
 }
 
+function InstallTemplateDialog() {
+  const open = installDialogOpen.value;
+  const template = installDialogTemplate.value;
+  const vars = installDialogVars.value;
+  const installing = installDialogInstalling.value;
+  const result = installDialogResult.value;
+
+  if (!open || !template) return null;
+
+  const descriptors = (Array.isArray(template.variables) ? template.variables : []).map((variable) => {
+    const defaultValue = variable?.defaultValue;
+    const inputKind = variable?.input || inferVarInputKind(variable?.key, defaultValue);
+    const options = Array.isArray(variable?.options)
+      ? variable.options.map((entry) => (
+          entry && typeof entry === "object"
+            ? { value: entry.value, label: entry.label ?? String(entry.value) }
+            : { value: entry, label: String(entry) }
+        ))
+      : inferVarOptions(variable?.key, defaultValue);
+    return {
+      key: String(variable?.key || "").trim(),
+      label: humanizeVarKey(variable?.key || ""),
+      help: variable?.description || inferVarHelp(variable?.key, defaultValue),
+      required: variable?.required === true || defaultValue === "" || defaultValue == null,
+      inputKind,
+      options,
+      quick: variable?.required === true || isQuickVarKey(variable?.key),
+      defaultValue,
+    };
+  }).filter((entry) => entry.key);
+
+  const required = descriptors.filter((entry) => entry.required);
+  const optional = descriptors.filter((entry) => !entry.required);
+  const quickOptional = optional.filter((entry) => entry.quick).slice(0, 4);
+  const quickKeys = new Set([...required, ...quickOptional].map((entry) => entry.key));
+  const quickFields = descriptors.filter((entry) => quickKeys.has(entry.key));
+
+  const missingRequiredFields = [];
+  const invalidJsonFields = [];
+  for (const descriptor of descriptors) {
+    const current = vars?.[descriptor.key];
+    if (descriptor.required && isMissingVarValue(current, descriptor.inputKind)) {
+      missingRequiredFields.push(descriptor.label);
+    }
+    if (descriptor.inputKind === "json" && !isMissingVarValue(current, descriptor.inputKind)) {
+      try {
+        JSON.parse(String(current));
+      } catch {
+        invalidJsonFields.push(descriptor.label);
+      }
+    }
+  }
+  const canInstall = !installing && missingRequiredFields.length === 0 && invalidJsonFields.length === 0;
+
+  const updateVar = (key, value) => {
+    installDialogVars.value = { ...installDialogVars.value, [key]: value };
+    installDialogResult.value = null;
+  };
+
+  const resetDefaults = () => {
+    const defaults = {};
+    for (const descriptor of descriptors) {
+      defaults[descriptor.key] = descriptor.defaultValue ?? "";
+    }
+    installDialogVars.value = defaults;
+    installDialogMode.value = required.length > 0 ? "quick" : "advanced";
+    installDialogResult.value = null;
+  };
+
+  const renderField = (descriptor) => {
+    const current = vars?.[descriptor.key] ?? descriptor.defaultValue;
+    if (descriptor.inputKind === "toggle") {
+      return html`
+        <${FormControlLabel}
+          key=${descriptor.key}
+          control=${html`<${Switch}
+            checked=${Boolean(current)}
+            onChange=${(e) => updateVar(descriptor.key, e.target.checked)}
+            size="small"
+          />`}
+          label=${html`<span>${descriptor.label}${descriptor.required ? html` <span style="color:#f59e0b">*</span>` : ""}</span>`}
+          sx=${{ mb: 1 }}
+        />
+      `;
+    }
+    if (descriptor.inputKind === "number") {
+      return html`
+        <${TextField}
+          key=${descriptor.key}
+          label=${descriptor.label + (descriptor.required ? " *" : "")}
+          type="number"
+          value=${current ?? ""}
+          onChange=${(e) => updateVar(descriptor.key, e.target.value === "" ? "" : Number(e.target.value))}
+          helperText=${descriptor.help}
+          size="small"
+          fullWidth
+          sx=${{ mb: 1.5 }}
+        />
+      `;
+    }
+    if (descriptor.inputKind === "json") {
+      return html`
+        <${TextField}
+          key=${descriptor.key}
+          label=${descriptor.label + (descriptor.required ? " *" : "")}
+          value=${current ?? ""}
+          onChange=${(e) => updateVar(descriptor.key, e.target.value)}
+          helperText=${descriptor.help || "JSON object or array"}
+          size="small"
+          fullWidth
+          multiline
+          minRows=${3}
+          maxRows=${8}
+          sx=${{ mb: 1.5, "& .MuiInputBase-input": { fontFamily: "monospace", fontSize: "0.82rem" } }}
+        />
+      `;
+    }
+    if (descriptor.inputKind === "select" && descriptor.options.length > 0) {
+      return html`
+        <${FormControl} key=${descriptor.key} fullWidth size="small" sx=${{ mb: 1.5 }}>
+          <${InputLabel}>${descriptor.label + (descriptor.required ? " *" : "")}</${InputLabel}>
+          <${Select}
+            value=${current ?? ""}
+            label=${descriptor.label + (descriptor.required ? " *" : "")}
+            onChange=${(e) => updateVar(descriptor.key, e.target.value)}
+          >
+            ${descriptor.options.map((opt) => html`<${MenuItem} key=${String(opt.value)} value=${opt.value}>${opt.label}</${MenuItem}>`)}
+          </${Select}>
+        </${FormControl}>
+      `;
+    }
+    const multiline = isLongTextVar(descriptor.key, current);
+    return html`
+      <${TextField}
+        key=${descriptor.key}
+        label=${descriptor.label + (descriptor.required ? " *" : "")}
+        value=${current ?? ""}
+        onChange=${(e) => updateVar(descriptor.key, e.target.value)}
+        helperText=${descriptor.help}
+        size="small"
+        fullWidth
+        multiline=${multiline}
+        minRows=${multiline ? 2 : undefined}
+        maxRows=${multiline ? 6 : undefined}
+        sx=${{ mb: 1.5 }}
+      />
+    `;
+  };
+
+  const handleInstall = async () => {
+    if (!canInstall) return;
+    installDialogInstalling.value = true;
+    installDialogResult.value = null;
+    try {
+      const overrides = {};
+      for (const descriptor of descriptors) {
+        const current = installDialogVars.value?.[descriptor.key];
+        if (descriptor.inputKind === "json") {
+          if (isMissingVarValue(current, descriptor.inputKind)) continue;
+          overrides[descriptor.key] = JSON.parse(String(current));
+          continue;
+        }
+        if (descriptor.inputKind === "number") {
+          if (current === "" || current == null) continue;
+          overrides[descriptor.key] = Number(current);
+          continue;
+        }
+        if (descriptor.inputKind === "toggle") {
+          overrides[descriptor.key] = !!current;
+          continue;
+        }
+        if (current === undefined) continue;
+        overrides[descriptor.key] = current;
+      }
+      const workflow = await installTemplate(template.id, overrides);
+      if (workflow) {
+        closeInstallTemplateDialog();
+        return;
+      }
+      installDialogResult.value = { ok: false, error: "Install failed" };
+    } catch (err) {
+      installDialogResult.value = { ok: false, error: err.message || "Install failed" };
+    } finally {
+      installDialogInstalling.value = false;
+    }
+  };
+
+  return html`
+    <${Dialog}
+      open=${true}
+      onClose=${closeInstallTemplateDialog}
+      maxWidth="md"
+      fullWidth
+      PaperProps=${{ sx: { bgcolor: 'var(--color-bg-secondary, #1a1f2e)', color: 'var(--color-text, #e8eaf0)', borderRadius: '12px' } }}
+    >
+      <${DialogTitle} sx=${{ display: 'flex', alignItems: 'center', gap: 1 }}>
+        <span style="font-size: 20px">${resolveIcon("download")}</span>
+        <span>Install: ${template.name}</span>
+      <//>
+
+      <${DialogContent} dividers>
+        ${template.description && html`<${Typography} variant="body2" sx=${{ color: 'text.secondary', mb: 2 }}>${template.description}<//>`}
+        <${Alert} severity="info" sx=${{ mb: 2 }}>
+          Recommended values are prefilled. Adjust them if this workflow should be tuned for your repo during installation.
+        </${Alert}>
+
+        <${Tabs}
+          value=${installDialogMode.value}
+          onChange=${(_e, next) => { installDialogMode.value = next; }}
+          variant="fullWidth"
+          sx=${{ mb: 2, minHeight: 38, "& .MuiTab-root": { minHeight: 38, textTransform: "none", fontSize: "0.8rem" } }}
+        >
+          <${Tab} value="quick" label=${`Quick (${quickFields.length})`} />
+          <${Tab} value="advanced" label=${`Advanced (${descriptors.length})`} />
+        </${Tabs}>
+
+        ${missingRequiredFields.length > 0 && html`<${Alert} severity="warning" sx=${{ mb: 1.5 }}>Missing required fields: ${missingRequiredFields.join(", ")}</${Alert}>`}
+        ${invalidJsonFields.length > 0 && html`<${Alert} severity="error" sx=${{ mb: 1.5 }}>Invalid JSON in: ${invalidJsonFields.join(", ")}</${Alert}>`}
+
+        ${installDialogMode.value === "quick" ? html`
+          ${quickFields.map(renderField)}
+          ${optional.length > 0 && html`
+            <${Divider} sx=${{ my: 1.5 }} />
+            <${Box} sx=${{ display: "flex", flexWrap: "wrap", gap: 0.75 }}>
+              ${optional.map((item) => html`<${Chip} key=${item.key} size="small" variant="outlined" label=${`${item.label}: ${formatVarPreview(vars[item.key])}`} sx=${{ fontSize: "10px" }} />`)}
+            </${Box}>
+            <${Button} size="small" variant="text" onClick=${() => { installDialogMode.value = "advanced"; }} sx=${{ mt: 1, textTransform: "none" }}>
+              Open Advanced Overrides
+            </${Button}>
+          `}
+        ` : html`
+          ${required.length > 0 && html`${required.map(renderField)}<${Divider} sx=${{ my: 1.5 }} />`}
+          ${optional.map(renderField)}
+        `}
+
+        <${Box} sx=${{ display: 'flex', justifyContent: 'flex-end', mt: 1 }}>
+          <${Button} size="small" variant="text" onClick=${resetDefaults} sx=${{ textTransform: 'none', fontSize: '12px' }}>
+            Reset to Defaults
+          <//>
+        <//>
+
+        ${result && !result.ok && html`<${Alert} severity="error" sx=${{ mt: 2 }}>${result.error || "Install failed"}</${Alert}>`}
+      <//>
+
+      <${DialogActions} sx=${{ px: 3, py: 2 }}>
+        <${Button} onClick=${closeInstallTemplateDialog} sx=${{ textTransform: 'none' }}>Cancel<//>
+        <${Button}
+          variant="contained"
+          onClick=${handleInstall}
+          disabled=${!canInstall}
+          startIcon=${installing ? html`<${CircularProgress} size=${16} />` : null}
+          sx=${{ textTransform: 'none' }}
+        >
+          ${installing ? "Installing…" : "Install Workflow"}
+        <//>
+      <//>
+    <//>
+  `;
+}
+
 async function setWorkflowEnabled(id, enabled) {
   try {
     const detail = await apiFetch(`/api/workflows/${id}`);
@@ -721,12 +987,12 @@ async function setWorkflowEnabled(id, enabled) {
   }
 }
 
-async function installTemplate(templateId) {
+async function installTemplate(templateId, overrides = {}) {
   try {
     const data = await apiFetch("/api/workflows/install-template", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ templateId }),
+      body: JSON.stringify({ templateId, overrides }),
     });
     if (data?.workflow) {
       activeWorkflow.value = data.workflow;
@@ -734,10 +1000,46 @@ async function installTemplate(templateId) {
       showToast("Template installed", "success");
       loadWorkflows();
       setRouteParams({ workflowId: data.workflow.id }, { replace: false, skipGuard: true });
+      return data.workflow;
     }
   } catch (err) {
     showToast("Failed to install template", "error");
   }
+  return null;
+}
+
+function openInstallTemplateDialog(templateId) {
+  const template = (templates.value || []).find((entry) => String(entry?.id || "") === String(templateId || "")) || null;
+  if (!template) {
+    showToast("Template not found", "error");
+    return;
+  }
+  const variableList = Array.isArray(template.variables) ? template.variables : [];
+  if (variableList.length === 0) {
+    installTemplate(template.id).catch(() => {});
+    return;
+  }
+  const defaults = {};
+  for (const variable of variableList) {
+    const key = String(variable?.key || "").trim();
+    if (!key) continue;
+    defaults[key] = variable?.defaultValue ?? "";
+  }
+  installDialogTemplate.value = template;
+  installDialogVars.value = defaults;
+  installDialogMode.value = variableList.some((variable) => variable?.required) ? "quick" : "advanced";
+  installDialogInstalling.value = false;
+  installDialogResult.value = null;
+  installDialogOpen.value = true;
+}
+
+function closeInstallTemplateDialog() {
+  installDialogOpen.value = false;
+  installDialogTemplate.value = null;
+  installDialogVars.value = {};
+  installDialogMode.value = "quick";
+  installDialogInstalling.value = false;
+  installDialogResult.value = null;
 }
 
 async function applyTemplateUpdate(workflowId, mode = "replace", force = false) {
@@ -2507,7 +2809,7 @@ function WorkflowListView() {
               saveWorkflow(newWf).then(wf => { if (wf) { activeWorkflow.value = wf; viewMode.value = "canvas"; } });
             }}>+ Create Blank<//>
             ${availableTemplates.length > 0 && html`
-              <${Button} variant="outlined" size="small" sx=${{ borderColor: '#f59e0b60', color: '#f59e0b', textTransform: 'none' }} onClick=${() => installTemplate(availableTemplates[0]?.id)}>
+              <${Button} variant="outlined" size="small" sx=${{ borderColor: '#f59e0b60', color: '#f59e0b', textTransform: 'none' }} onClick=${() => openInstallTemplateDialog(availableTemplates[0]?.id)}>
                 <span class="btn-icon">${resolveIcon("zap")}</span>
                 Quick Install: ${availableTemplates[0]?.name}
               <//>
@@ -2570,7 +2872,7 @@ function WorkflowListView() {
                       <${Button}
                         variant="contained"
                         size="small"
-                        onClick=${() => installTemplate(t.id)}
+                        onClick=${() => openInstallTemplateDialog(t.id)}
                       >
                         Install →
                       <//>
@@ -3256,6 +3558,7 @@ export function WorkflowsTab() {
         : html`<${WorkflowListView} />`
       }
       <${ExecuteWorkflowDialog} />
+      <${InstallTemplateDialog} />
     </div>
   `;
 }

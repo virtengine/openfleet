@@ -983,9 +983,19 @@ function parseTemplateIdList(rawValue) {
 }
 
 function resolveWorkflowBootstrapSelection(templatesModule) {
+  let configWorkflowDefaults = {};
+  try {
+    const { configData } = readConfigDocument();
+    configWorkflowDefaults =
+      configData?.workflowDefaults && typeof configData.workflowDefaults === "object"
+        ? configData.workflowDefaults
+        : {};
+  } catch {
+    configWorkflowDefaults = {};
+  }
   const autoInstallEnabled = parseBooleanEnv(
-    process.env.WORKFLOW_DEFAULT_AUTOINSTALL,
-    true,
+    process.env.WORKFLOW_DEFAULT_AUTOINSTALL ?? configWorkflowDefaults.autoInstall,
+    configWorkflowDefaults.autoInstall ?? true,
   );
   if (!autoInstallEnabled) {
     return {
@@ -993,6 +1003,7 @@ function resolveWorkflowBootstrapSelection(templatesModule) {
       source: "disabled",
       profileId: null,
       templateIds: [],
+      overridesById: {},
     };
   }
 
@@ -1009,26 +1020,41 @@ function resolveWorkflowBootstrapSelection(templatesModule) {
         source: "custom:none",
         profileId: null,
         templateIds: [],
+        overridesById: {},
       };
     }
+    const templateIds = parseTemplateIdList(rawTemplateEnv);
     return {
       enabled: true,
       source: "custom:list",
       profileId: null,
-      templateIds: parseTemplateIdList(rawTemplateEnv),
+      templateIds,
+      overridesById: templatesModule?.normalizeTemplateOverridesById
+        ? templatesModule.normalizeTemplateOverridesById(
+            configWorkflowDefaults.templateOverridesById,
+            templateIds,
+          )
+        : {},
     };
   }
 
   const profileId = String(
-    process.env.WORKFLOW_DEFAULT_PROFILE || "balanced",
+    process.env.WORKFLOW_DEFAULT_PROFILE || configWorkflowDefaults.profile || "balanced",
   ).trim().toLowerCase();
 
   if (typeof templatesModule?.resolveWorkflowTemplateIds === "function") {
+    const templateIds = templatesModule.resolveWorkflowTemplateIds({ profileId });
     return {
       enabled: true,
       source: "profile",
       profileId,
-      templateIds: templatesModule.resolveWorkflowTemplateIds({ profileId }),
+      templateIds,
+      overridesById: templatesModule?.normalizeTemplateOverridesById
+        ? templatesModule.normalizeTemplateOverridesById(
+            configWorkflowDefaults.templateOverridesById,
+            templateIds,
+          )
+        : {},
     };
   }
 
@@ -1037,6 +1063,7 @@ function resolveWorkflowBootstrapSelection(templatesModule) {
     source: "recommended",
     profileId: null,
     templateIds: [],
+    overridesById: {},
   };
 }
 
@@ -1195,7 +1222,11 @@ async function getWorkflowEngineModule() {
             selection.templateIds.length > 0 &&
             typeof _wfTemplates.installTemplateSet === "function"
           ) {
-            result = _wfTemplates.installTemplateSet(engine, selection.templateIds);
+            result = _wfTemplates.installTemplateSet(
+              engine,
+              selection.templateIds,
+              selection.overridesById || {},
+            );
           } else if (
             selection.source === "recommended" &&
             typeof _wfTemplates.installRecommendedTemplates === "function"
@@ -1288,7 +1319,11 @@ function maybeBootstrapWorkspaceWorkflowTemplates(engine, workspaceKey, workspac
         selection.templateIds.length > 0 &&
         typeof _wfTemplates.installTemplateSet === "function"
       ) {
-        result = _wfTemplates.installTemplateSet(engine, selection.templateIds);
+        result = _wfTemplates.installTemplateSet(
+          engine,
+          selection.templateIds,
+          selection.overridesById || {},
+        );
       } else if (
         selection.source === "recommended" &&
         typeof _wfTemplates.installRecommendedTemplates === "function"
@@ -4084,6 +4119,7 @@ const TUNNEL_MODE_DISABLED = "disabled";
 const DEFAULT_TUNNEL_MODE = TUNNEL_MODE_NAMED;
 const DEFAULT_CLOUDFLARE_DNS_RETRY_MAX = 3;
 const DEFAULT_CLOUDFLARE_DNS_RETRY_BASE_MS = 750;
+const DEFAULT_QUICK_TUNNEL_RESTART_COOLDOWN_MS = 15 * 60 * 1000;
 const RESERVED_HOSTNAME_LABELS = new Set([
   "www",
   "api",
@@ -4108,10 +4144,12 @@ let tunnelRuntimeState = {
   dnsStatus: "not_configured",
   fallbackToQuick: false,
   lastError: "",
+  outputTail: "",
 };
 let quickTunnelRestartTimer = null;
 let quickTunnelRestartAttempts = 0;
 let quickTunnelRestartSuppressed = false;
+let tunnelStopRequested = false;
 
 /** Return the active tunnel URL (named or quick) or null. */
 export function getTunnelUrl() {
@@ -4132,6 +4170,7 @@ export function getTunnelStatus() {
     fallbackToQuick: Boolean(tunnelRuntimeState.fallbackToQuick),
     active: Boolean(tunnelProcess && tunnelUrl),
     lastError: tunnelRuntimeState.lastError || null,
+    outputTail: tunnelRuntimeState.outputTail || "",
   };
 }
 
@@ -4147,6 +4186,37 @@ function setTunnelRuntimeState(next = {}) {
     ...tunnelRuntimeState,
     ...next,
   };
+}
+
+function appendOutputTail(existing, chunk, maxBytes = 64 * 1024) {
+  const merged = `${String(existing || "")}${String(chunk || "")}`;
+  if (merged.length <= maxBytes) return merged;
+  return merged.slice(-maxBytes);
+}
+
+function formatTunnelOutputHint(rawTail, maxChars = 180) {
+  const singleLine = String(rawTail || "").replace(/\s+/g, " ").trim();
+  if (!singleLine) return "";
+  if (singleLine.length <= maxChars) return singleLine;
+  return `...${singleLine.slice(-maxChars)}`;
+}
+
+function shouldRestartForProcessExit(code, signal) {
+  if (typeof code === "number") return code !== 0;
+  const codeText = String(code ?? "").trim();
+  const parsedCode = Number.parseInt(codeText, 10);
+  if (!Number.isFinite(parsedCode) && codeText) {
+    const embeddedMatch = codeText.match(/-?\d+/);
+    if (embeddedMatch) {
+      const embeddedCode = Number.parseInt(embeddedMatch[0], 10);
+      if (Number.isFinite(embeddedCode)) return embeddedCode !== 0;
+    }
+    // Some wrappers emit non-empty textual statuses (for example "exit status 1").
+    // Treat non-zero/unknown textual codes as restartable to avoid false terminal classification.
+    if (!["0", "null", "undefined"].includes(codeText.toLowerCase())) return true;
+  }
+  if (Number.isFinite(parsedCode)) return parsedCode !== 0;
+  return typeof signal === "string" && signal.length > 0;
 }
 
 export function normalizeTunnelMode(rawValue) {
@@ -4649,6 +4719,11 @@ async function findCloudflared() {
  * Returns the assigned public URL or null on failure.
  */
 async function startTunnel(localPort) {
+  tunnelStopRequested = false;
+  // Prevent stale quick-restart timers from previous tunnel sessions from racing this startup.
+  quickTunnelRestartSuppressed = true;
+  clearQuickTunnelRestartTimer();
+  quickTunnelRestartAttempts = 0;
   const tunnelCfg = getTunnelStartupConfig();
   setTunnelRuntimeState({
     mode: tunnelCfg.mode,
@@ -4659,6 +4734,7 @@ async function startTunnel(localPort) {
     dnsStatus: "not_configured",
     fallbackToQuick: false,
     lastError: "",
+    outputTail: "",
   });
 
   if (tunnelCfg.mode === TUNNEL_MODE_DISABLED) {
@@ -4723,7 +4799,7 @@ async function startTunnel(localPort) {
  * Spawn cloudflared with ETXTBSY retry (race condition after fresh download).
  * Returns the child process or throws after max retries.
  */
-function spawnCloudflared(cfBin, args, maxRetries = 3) {
+async function spawnCloudflared(cfBin, args, maxRetries = 3) {
   for (let attempt = 1; attempt <= maxRetries; attempt += 1) {
     try {
       return spawn(cfBin, args, {
@@ -4735,8 +4811,7 @@ function spawnCloudflared(cfBin, args, maxRetries = 3) {
         // File still locked from download — wait and retry
         const delayMs = attempt * 100;
         console.warn(`[telegram-ui] spawn ETXTBSY (attempt ${attempt}/${maxRetries}) — retrying in ${delayMs}ms`);
-        // Sync sleep (rare case, acceptable here)
-        execSync(`sleep 0.${delayMs / 100}`, { stdio: "ignore" });
+        await sleep(delayMs);
         continue;
       }
       throw err;
@@ -4765,6 +4840,11 @@ function parseNamedTunnelCredentials(credentialsPath) {
 }
 
 async function startNamedTunnel(cfBin, { tunnelName, credentialsPath }, localPort) {
+  tunnelStopRequested = false;
+  setTunnelRuntimeState({
+    mode: TUNNEL_MODE_NAMED,
+    outputTail: "",
+  });
   const normalizedTunnelName = String(tunnelName || "").trim();
   const normalizedCredsPath = String(credentialsPath || "").trim();
   if (!normalizedTunnelName || !normalizedCredsPath) {
@@ -4859,29 +4939,42 @@ ingress:
 
   writeFileSync(configPath, configYaml, "utf8");
 
-  return new Promise((resolvePromise) => {
-    const args = ["tunnel", "--config", configPath, "run"];
-    const publicUrl = `https://${hostnameInfo.hostname}`;
-    console.log(
-      `[telegram-ui] starting named tunnel: ${normalizedTunnelName} -> ${publicUrl} -> https://localhost:${localPort}`,
-    );
+  const args = ["tunnel", "--config", configPath, "run"];
+  const publicUrl = `https://${hostnameInfo.hostname}`;
+  console.log(
+    `[telegram-ui] starting named tunnel: ${normalizedTunnelName} -> ${publicUrl} -> https://localhost:${localPort}`,
+  );
 
-    let child;
+  let child;
+  try {
+    child = await spawnCloudflared(cfBin, args);
+  } catch (err) {
+    setTunnelRuntimeState({
+      lastError: "named_tunnel_spawn_failed",
+      mode: TUNNEL_MODE_NAMED,
+      tunnelName: normalizedTunnelName,
+      tunnelId: parsedCreds.tunnelId,
+      hostname: hostnameInfo.hostname,
+    });
+    console.warn(`[telegram-ui] named tunnel spawn failed: ${err.message}`);
+    return null;
+  }
+  // Track startup child so stopTunnel() can terminate it even before readiness.
+  tunnelProcess = child;
+  if (tunnelStopRequested) {
     try {
-      child = spawnCloudflared(cfBin, args);
-    } catch (err) {
-      setTunnelRuntimeState({
-        lastError: "named_tunnel_spawn_failed",
-        mode: TUNNEL_MODE_NAMED,
-        tunnelName: normalizedTunnelName,
-        tunnelId: parsedCreds.tunnelId,
-        hostname: hostnameInfo.hostname,
-      });
-      console.warn(`[telegram-ui] named tunnel spawn failed: ${err.message}`);
-      return resolvePromise(null);
+      child.kill("SIGTERM");
+    } catch {
+      /* ignore */
     }
+    tunnelProcess = null;
+    return null;
+  }
+
+  return new Promise((resolvePromise) => {
 
     let resolved = false;
+    let namedTimeoutTriggeredTermination = false;
     let output = "";
     // Named tunnels emit "Connection <UUID> registered" (or "Registered tunnel connection")
     const readyPattern = /Connection [a-f0-9-]+ registered|Registered tunnel connection/i;
@@ -4901,12 +4994,20 @@ ingress:
           hostname: hostnameInfo.hostname,
         });
         console.warn(`[telegram-ui] named tunnel timed out after ${namedTunnelTimeoutMs}ms`);
+        namedTimeoutTriggeredTermination = true;
+        try {
+          child.kill("SIGTERM");
+        } catch {
+          /* ignore */
+        }
         resolvePromise(null);
       }
     }, namedTunnelTimeoutMs);
 
     function parseOutput(chunk) {
-      output += chunk;
+      if (tunnelStopRequested) return;
+      output = appendOutputTail(output, chunk);
+      setTunnelRuntimeState({ outputTail: output });
       if (readyPattern.test(output) && !resolved) {
         resolved = true;
         clearTimeout(timeout);
@@ -4937,6 +5038,10 @@ ingress:
       if (!resolved) {
         resolved = true;
         clearTimeout(timeout);
+        if (tunnelStopRequested) {
+          resolvePromise(null);
+          return;
+        }
         setTunnelRuntimeState({
           lastError: "named_tunnel_runtime_error",
           mode: TUNNEL_MODE_NAMED,
@@ -4944,16 +5049,31 @@ ingress:
           tunnelId: parsedCreds.tunnelId,
           hostname: hostnameInfo.hostname,
         });
-        console.warn(`[telegram-ui] named tunnel failed: ${err.message}`);
+        const outputHint = formatTunnelOutputHint(output);
+        console.warn(
+          `[telegram-ui] named tunnel failed: ${err.message}${outputHint ? ` (tail: ${outputHint})` : ""}`,
+        );
         resolvePromise(null);
       }
     });
 
-    child.on("exit", (code) => {
+    child.on("exit", (code, signal) => {
       tunnelProcess = null;
       tunnelUrl = null;
       tunnelPublicHostname = "";
       _notifyTunnelChange(null);
+      if (tunnelStopRequested) {
+        if (!resolved) {
+          resolved = true;
+          clearTimeout(timeout);
+          resolvePromise(null);
+        }
+        return;
+      }
+      if (namedTimeoutTriggeredTermination) {
+        namedTimeoutTriggeredTermination = false;
+        return;
+      }
       if (!resolved) {
         resolved = true;
         clearTimeout(timeout);
@@ -4964,13 +5084,19 @@ ingress:
           tunnelId: parsedCreds.tunnelId,
           hostname: hostnameInfo.hostname,
         });
-        console.warn(`[telegram-ui] named tunnel exited with code ${code}`);
+        const outputHint = formatTunnelOutputHint(output);
+        console.warn(
+          `[telegram-ui] named tunnel exited with code ${code}${signal ? ` signal ${signal}` : ""}${outputHint ? ` (tail: ${outputHint})` : ""}`,
+        );
         resolvePromise(null);
-      } else if (code !== 0 && code !== null) {
+      } else if (shouldRestartForProcessExit(code, signal)) {
         setTunnelRuntimeState({
           lastError: "named_tunnel_exited",
         });
-        console.warn(`[telegram-ui] named tunnel exited (code ${code})`);
+        const outputHint = formatTunnelOutputHint(output);
+        console.warn(
+          `[telegram-ui] named tunnel exited (code ${code}${signal ? `, signal ${signal}` : ""})${outputHint ? ` (tail: ${outputHint})` : ""}`,
+        );
       }
     });
   });
@@ -5004,16 +5130,49 @@ function getQuickTunnelRestartConfig() {
     120_000,
     { min: 1000, max: 900_000 },
   );
-  return { maxAttempts, baseDelayMs, maxDelayMs };
+  const continueAfterExhaustion = parseBooleanEnvValue(
+    process.env.TELEGRAM_UI_QUICK_TUNNEL_RESTART_FOREVER,
+    true,
+  );
+  const cooldownMs = parseBoundedInt(
+    process.env.TELEGRAM_UI_QUICK_TUNNEL_RESTART_COOLDOWN_MS,
+    DEFAULT_QUICK_TUNNEL_RESTART_COOLDOWN_MS,
+    { min: 5000, max: 24 * 60 * 60 * 1000 },
+  );
+  return { maxAttempts, baseDelayMs, maxDelayMs, continueAfterExhaustion, cooldownMs };
 }
 
 function scheduleQuickTunnelRestart(cfBin, localPort) {
   if (quickTunnelRestartSuppressed) return;
   const cfg = getQuickTunnelRestartConfig();
   if (quickTunnelRestartAttempts >= cfg.maxAttempts) {
+    if (!cfg.continueAfterExhaustion) {
+      setTunnelRuntimeState({
+        mode: TUNNEL_MODE_QUICK,
+        lastError: "quick_tunnel_restart_exhausted",
+      });
+      console.warn(
+        `[telegram-ui] quick tunnel restart exhausted after ${quickTunnelRestartAttempts} attempts (max ${cfg.maxAttempts})`,
+      );
+      return;
+    }
+    setTunnelRuntimeState({
+      mode: TUNNEL_MODE_QUICK,
+      lastError: "quick_tunnel_restart_cooldown",
+    });
+    const cooldownMs = cfg.cooldownMs;
+    quickTunnelRestartAttempts = 0;
+    clearQuickTunnelRestartTimer();
     console.warn(
-      `[telegram-ui] quick tunnel restart exhausted after ${quickTunnelRestartAttempts} attempts (max ${cfg.maxAttempts})`,
+      `[telegram-ui] quick tunnel restart exhausted after ${cfg.maxAttempts} attempts; retrying again after cooldown (${cooldownMs}ms)`,
     );
+    quickTunnelRestartTimer = setTimeout(() => {
+      if (quickTunnelRestartSuppressed || tunnelStopRequested) return;
+      startQuickTunnel(cfBin, localPort).catch((err) => {
+        console.warn(`[telegram-ui] quick tunnel restart failed after cooldown: ${err.message}`);
+      });
+    }, cooldownMs);
+    quickTunnelRestartTimer.unref?.();
     return;
   }
   quickTunnelRestartAttempts += 1;
@@ -5021,10 +5180,11 @@ function scheduleQuickTunnelRestart(cfBin, localPort) {
   const jitter = Math.floor(Math.random() * Math.max(200, Math.floor(backoff * 0.2)));
   const restartDelayMs = Math.min(cfg.maxDelayMs, backoff + jitter);
   clearQuickTunnelRestartTimer();
-  console.warn(
+  console.log(
     `[telegram-ui] quick tunnel restart scheduled (${quickTunnelRestartAttempts}/${cfg.maxAttempts}) in ${restartDelayMs}ms`,
   );
   quickTunnelRestartTimer = setTimeout(() => {
+    if (quickTunnelRestartSuppressed || tunnelStopRequested) return;
     startQuickTunnel(cfBin, localPort).catch((err) => {
       console.warn(`[telegram-ui] quick tunnel restart failed: ${err.message}`);
     });
@@ -5033,28 +5193,51 @@ function scheduleQuickTunnelRestart(cfBin, localPort) {
 }
 
 async function startQuickTunnel(cfBin, localPort) {
+  tunnelStopRequested = false;
   quickTunnelRestartSuppressed = false;
   clearQuickTunnelRestartTimer();
-  return new Promise((resolvePromise) => {
-    const localUrl = `https://localhost:${localPort}`;
-    const args = ["tunnel", "--url", localUrl, "--no-autoupdate", "--no-tls-verify"];
-    console.log(`[telegram-ui] starting quick tunnel -> ${localUrl}`);
+  setTunnelRuntimeState({
+    mode: TUNNEL_MODE_QUICK,
+    outputTail: "",
+  });
+  const localUrl = `https://localhost:${localPort}`;
+  const args = ["tunnel", "--url", localUrl, "--no-autoupdate", "--no-tls-verify"];
+  console.log(`[telegram-ui] starting quick tunnel -> ${localUrl}`);
 
-    let child;
+  let child;
+  try {
+    child = await spawnCloudflared(cfBin, args);
+  } catch (err) {
+    setTunnelRuntimeState({
+      mode: TUNNEL_MODE_QUICK,
+      lastError: "quick_tunnel_spawn_failed",
+    });
+    console.warn(`[telegram-ui] quick tunnel spawn failed: ${err.message}`);
+    scheduleQuickTunnelRestart(cfBin, localPort);
+    return null;
+  }
+  // Track startup child so stopTunnel() can terminate it even before URL discovery.
+  tunnelProcess = child;
+  if (tunnelStopRequested) {
     try {
-      child = spawnCloudflared(cfBin, args);
-    } catch (err) {
-      setTunnelRuntimeState({
-        mode: TUNNEL_MODE_QUICK,
-        lastError: "quick_tunnel_spawn_failed",
-      });
-      console.warn(`[telegram-ui] quick tunnel spawn failed: ${err.message}`);
-      return resolvePromise(null);
+      child.kill("SIGTERM");
+    } catch {
+      /* ignore */
     }
+    tunnelProcess = null;
+    return null;
+  }
 
+  return new Promise((resolvePromise) => {
     let resolved = false;
+    let restartScheduled = false;
     let output = "";
     const urlPattern = /https:\/\/[a-z0-9-]+\.trycloudflare\.com/i;
+    function scheduleRestartOnce() {
+      if (restartScheduled) return;
+      restartScheduled = true;
+      scheduleQuickTunnelRestart(cfBin, localPort);
+    }
     const timeout = setTimeout(() => {
       if (!resolved) {
         resolved = true;
@@ -5063,12 +5246,20 @@ async function startQuickTunnel(cfBin, localPort) {
           lastError: "quick_tunnel_timeout",
         });
         console.warn("[telegram-ui] quick tunnel timed out after 30s");
+        try {
+          child.kill("SIGTERM");
+        } catch {
+          /* ignore */
+        }
+        scheduleRestartOnce();
         resolvePromise(null);
       }
     }, 30_000);
 
     function parseOutput(chunk) {
-      output += chunk;
+      if (tunnelStopRequested) return;
+      output = appendOutputTail(output, chunk);
+      setTunnelRuntimeState({ outputTail: output });
       const match = output.match(urlPattern);
       if (match && !resolved) {
         resolved = true;
@@ -5100,36 +5291,66 @@ async function startQuickTunnel(cfBin, localPort) {
       if (!resolved) {
         resolved = true;
         clearTimeout(timeout);
+        if (tunnelStopRequested) {
+          resolvePromise(null);
+          return;
+        }
         setTunnelRuntimeState({
           mode: TUNNEL_MODE_QUICK,
           lastError: "quick_tunnel_runtime_error",
         });
-        console.warn(`[telegram-ui] quick tunnel failed: ${err.message}`);
+        const outputHint = formatTunnelOutputHint(output);
+        console.warn(
+          `[telegram-ui] quick tunnel failed: ${err.message}${outputHint ? ` (tail: ${outputHint})` : ""}`,
+        );
+        scheduleRestartOnce();
         resolvePromise(null);
       }
     });
 
-    child.on("exit", (code) => {
+    child.on("exit", (code, signal) => {
       tunnelProcess = null;
       tunnelUrl = null;
       tunnelPublicHostname = "";
       _notifyTunnelChange(null);
+      if (tunnelStopRequested) {
+        if (!resolved) {
+          resolved = true;
+          clearTimeout(timeout);
+          resolvePromise(null);
+        }
+        return;
+      }
+      const restartableExit = shouldRestartForProcessExit(code, signal);
       if (!resolved) {
         resolved = true;
         clearTimeout(timeout);
+        // Exiting before URL acquisition always means tunnel startup failed; retry regardless of exit code.
+        const earlyExitShouldRestart = true;
         setTunnelRuntimeState({
           mode: TUNNEL_MODE_QUICK,
-          lastError: "quick_tunnel_exited_early",
+          lastError: earlyExitShouldRestart ? "" : "quick_tunnel_exited_early",
         });
-        console.warn(`[telegram-ui] quick tunnel exited with code ${code}`);
+        const outputHint = formatTunnelOutputHint(output);
+        const earlyExitMsg = `[telegram-ui] quick tunnel exited with code ${code}${signal ? ` signal ${signal}` : ""}${earlyExitShouldRestart ? "; restart scheduled" : ""}${outputHint ? ` (tail: ${outputHint})` : ""}`;
+        if (earlyExitShouldRestart) {
+          // Expected during transient Cloudflare/network churn; avoid noisy warning loops.
+          console.log(earlyExitMsg);
+          scheduleRestartOnce();
+        } else {
+          console.warn(earlyExitMsg);
+        }
         resolvePromise(null);
-      } else if (code !== 0 && code !== null) {
+      } else if (restartableExit) {
         setTunnelRuntimeState({
           mode: TUNNEL_MODE_QUICK,
-          lastError: "quick_tunnel_exited",
+          lastError: "",
         });
-        console.warn(`[telegram-ui] quick tunnel exited (code ${code})`);
-        scheduleQuickTunnelRestart(cfBin, localPort);
+        const outputHint = formatTunnelOutputHint(output);
+        console.log(
+          `[telegram-ui] quick tunnel exited (code ${code}${signal ? `, signal ${signal}` : ""}); restart scheduled${outputHint ? ` (tail: ${outputHint})` : ""}`,
+        );
+        scheduleRestartOnce();
       }
     });
   });
@@ -5137,8 +5358,10 @@ async function startQuickTunnel(cfBin, localPort) {
 
 /** Stop the tunnel if running. */
 export function stopTunnel() {
+  tunnelStopRequested = true;
   quickTunnelRestartSuppressed = true;
   clearQuickTunnelRestartTimer();
+  quickTunnelRestartAttempts = 0;
   if (tunnelProcess) {
     try {
       tunnelProcess.kill("SIGTERM");
@@ -5159,6 +5382,7 @@ export function stopTunnel() {
     dnsStatus: "not_configured",
     fallbackToQuick: false,
     lastError: "",
+    outputTail: "",
   });
 }
 

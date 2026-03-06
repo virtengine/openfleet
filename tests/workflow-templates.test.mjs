@@ -10,6 +10,7 @@ import {
   listWorkflowSetupProfiles,
   getWorkflowSetupProfile,
   resolveWorkflowTemplateIds,
+  normalizeTemplateOverridesById,
   applyWorkflowTemplateState,
   updateWorkflowFromTemplate,
   reconcileInstalledTemplates,
@@ -626,6 +627,28 @@ describe("workflow setup profiles", () => {
       "template-task-planner",
       "template-error-recovery",
     ]);
+  });
+
+  it("normalizes template overrides by selected template ids and variable types", () => {
+    const normalized = normalizeTemplateOverridesById(
+      {
+        "template-anomaly-watchdog": {
+          stallThresholdMs: "600000",
+          notifyOnStall: "false",
+          ignored: "value",
+        },
+        "template-nope": {
+          anything: "goes",
+        },
+      },
+      ["template-anomaly-watchdog"],
+    );
+
+    expect(normalized).toEqual({
+      "template-anomaly-watchdog": {
+        stallThresholdMs: 600000,
+      },
+    });
   });
 });
 

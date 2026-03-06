@@ -938,6 +938,7 @@ function App() {
   const [workflowAutomationEnabled, setWorkflowAutomationEnabled] = useState(true);
   const [workflowProfile, setWorkflowProfile] = useState("balanced");
   const [workflowDefaultTemplates, setWorkflowDefaultTemplates] = useState([]);
+  const [workflowTemplateOverridesById, setWorkflowTemplateOverridesById] = useState({});
   const [workflowAutoInstall, setWorkflowAutoInstall] = useState(true);
   const [workflowNodeMaxRetries, setWorkflowNodeMaxRetries] = useState(3);
   const [workflowNodeTimeoutMs, setWorkflowNodeTimeoutMs] = useState(600000);
@@ -1337,6 +1338,45 @@ function App() {
   const getWorkflowProfileById = (profileId, profileList = workflowProfiles) =>
     (profileList || []).find((profile_) => profile_.id === profileId) || null;
 
+  const getWorkflowTemplateById = (templateId, templateList = workflowTemplates) =>
+    (templateList || []).find((template) => String(template?.id || "") === String(templateId || "")) || null;
+
+  const buildWorkflowTemplateDefaultOverrides = (templateId, templateList = workflowTemplates) => {
+    const template = getWorkflowTemplateById(templateId, templateList);
+    const vars = Array.isArray(template?.variables) ? template.variables : [];
+    const overrides = {};
+    for (const variable of vars) {
+      const key = String(variable?.key || "").trim();
+      if (!key) continue;
+      overrides[key] = variable?.defaultValue ?? "";
+    }
+    return overrides;
+  };
+
+  const normalizeWorkflowTemplateOverridesForSelection = (
+    selectedTemplateIds,
+    templateOverrides,
+    templateList = workflowTemplates,
+  ) => {
+    const selectedSet = new Set((selectedTemplateIds || []).map((value) => String(value || "").trim()).filter(Boolean));
+    const input = templateOverrides && typeof templateOverrides === "object" ? templateOverrides : {};
+    const normalized = {};
+    for (const templateId of selectedSet) {
+      const defaults = buildWorkflowTemplateDefaultOverrides(templateId, templateList);
+      const existing = input[templateId] && typeof input[templateId] === "object"
+        ? input[templateId]
+        : {};
+      const next = {};
+      for (const [key, defaultValue] of Object.entries(defaults)) {
+        next[key] = existing[key] ?? defaultValue;
+      }
+      if (Object.keys(next).length > 0) {
+        normalized[templateId] = next;
+      }
+    }
+    return normalized;
+  };
+
   const getWorkflowTemplateIdsForProfile = (profileId, profileList = workflowProfiles) => {
     const profile_ = getWorkflowProfileById(profileId, profileList);
     return Array.isArray(profile_?.templateIds) ? [...profile_.templateIds] : [];
@@ -1373,6 +1413,9 @@ function App() {
     const templateIds = getWorkflowTemplateIdsForProfile(resolvedProfileId, profileList);
     setWorkflowProfile(resolvedProfileId);
     setWorkflowDefaultTemplates(templateIds);
+    setWorkflowTemplateOverridesById((prev) =>
+      normalizeWorkflowTemplateOverridesForSelection(templateIds, prev, workflowTemplates),
+    );
     if (profile_ && typeof profile_.workflowAutomationEnabled === "boolean") {
       setWorkflowAutomationEnabled(profile_.workflowAutomationEnabled);
     }
@@ -1392,6 +1435,38 @@ function App() {
       if (checked === undefined) return has ? current.filter((entry) => entry !== id) : [...current, id];
       return current;
     });
+    setWorkflowTemplateOverridesById((prev) => {
+      const currentTemplates = Array.isArray(workflowDefaultTemplates) ? [...workflowDefaultTemplates] : [];
+      const has = currentTemplates.includes(id);
+      const nextTemplates = checked === true && !has
+        ? [...currentTemplates, id]
+        : checked === false && has
+          ? currentTemplates.filter((entry) => entry !== id)
+          : checked === undefined
+            ? has
+              ? currentTemplates.filter((entry) => entry !== id)
+              : [...currentTemplates, id]
+            : currentTemplates;
+      return normalizeWorkflowTemplateOverridesForSelection(nextTemplates, prev, workflowTemplates);
+    });
+  };
+
+  const updateWorkflowTemplateOverride = (templateId, variableKey, rawValue, variableType) => {
+    const id = String(templateId || "").trim();
+    const key = String(variableKey || "").trim();
+    if (!id || !key) return;
+    const nextValue = variableType === "number"
+      ? (rawValue === "" ? "" : Number(rawValue))
+      : variableType === "toggle"
+        ? Boolean(rawValue)
+        : rawValue;
+    setWorkflowTemplateOverridesById((prev) => ({
+      ...prev,
+      [id]: {
+        ...(prev[id] || buildWorkflowTemplateDefaultOverrides(id, workflowTemplates)),
+        [key]: nextValue,
+      },
+    }));
   };
 
   // ── Load initial data ──────────────────────────────────────────────────────
@@ -1449,6 +1524,13 @@ function App() {
       }
       if (Array.isArray(d.workflowDefaultTemplates) && d.workflowDefaultTemplates.length > 0) {
         setWorkflowDefaultTemplates(d.workflowDefaultTemplates.map((templateId) => String(templateId).trim()).filter(Boolean));
+        setWorkflowTemplateOverridesById(
+          normalizeWorkflowTemplateOverridesForSelection(
+            d.workflowDefaultTemplates,
+            d.workflowTemplateOverridesById,
+            workflowData.templates || [],
+          ),
+        );
       }
       if (d.workflowAutoInstall != null) {
         setWorkflowAutoInstall(Boolean(d.workflowAutoInstall));
@@ -1580,6 +1662,13 @@ function App() {
       if (Array.isArray(existingWorkflowDefaults.templates)) {
         const existingTemplateIds = existingWorkflowDefaults.templates.map((templateId) => String(templateId).trim()).filter(Boolean);
         setWorkflowDefaultTemplates(existingTemplateIds);
+        setWorkflowTemplateOverridesById(
+          normalizeWorkflowTemplateOverridesForSelection(
+            existingTemplateIds,
+            existingWorkflowDefaults.templateOverridesById,
+            workflowData.templates || [],
+          ),
+        );
         if (statusData.configured) {
           upsertCurrentWorkflowProfile(existingTemplateIds, workflowData.profiles || []);
           setWorkflowProfile(CURRENT_WORKFLOW_PROFILE_ID);
@@ -1752,6 +1841,9 @@ function App() {
           ? rawTemplates.split(",").map((value) => value.trim()).filter(Boolean)
           : [];
         setWorkflowDefaultTemplates(parsedTemplates);
+        setWorkflowTemplateOverridesById(
+          normalizeWorkflowTemplateOverridesForSelection(parsedTemplates, {}, workflowData.templates || []),
+        );
         if (statusData.configured) {
           upsertCurrentWorkflowProfile(parsedTemplates, workflowData.profiles || []);
           setWorkflowProfile(CURRENT_WORKFLOW_PROFILE_ID);
@@ -2265,6 +2357,7 @@ function App() {
           workflowAutomationEnabled,
           workflowProfile,
           workflowDefaultTemplates,
+          workflowTemplateOverridesById,
           workflowAutoInstall,
           workflowNodeMaxRetries,
           workflowNodeTimeoutMs,
@@ -2380,6 +2473,11 @@ function App() {
             profile: workflowProfile,
             autoInstall: workflowAutoInstall,
             templates: (workflowDefaultTemplates || []).filter(Boolean),
+            templateOverridesById: normalizeWorkflowTemplateOverridesForSelection(
+              workflowDefaultTemplates,
+              workflowTemplateOverridesById,
+              workflowTemplates,
+            ),
           },
           workflowEngine: {
             nodeMaxRetries: Number(workflowNodeMaxRetries) || 3,
@@ -3285,6 +3383,7 @@ function App() {
     });
     const selectedSet = new Set((workflowDefaultTemplates || []).map((id) => String(id)));
     const selectedCount = selectedSet.size;
+    const selectedTemplates = templates.filter((template) => selectedSet.has(String(template.id)));
 
     const applyProfileTemplates = (profileId) => {
       applyWorkflowProfileSelection(profileId, profileCards);
@@ -3295,12 +3394,16 @@ function App() {
         .filter((template) => template.recommended === true)
         .map((template) => template.id);
       setWorkflowDefaultTemplates(recommended);
+      setWorkflowTemplateOverridesById(
+        normalizeWorkflowTemplateOverridesForSelection(recommended, workflowTemplateOverridesById, templates),
+      );
       setWorkflowProfile("balanced");
       setWorkflowAutoInstall(true);
     };
 
     const clearTemplateSelection = () => {
       setWorkflowDefaultTemplates([]);
+      setWorkflowTemplateOverridesById({});
       setWorkflowProfile("manual");
     };
 
@@ -3374,6 +3477,71 @@ function App() {
           `;
         })}
       </div>
+
+      ${selectedTemplates.length > 0 && html`
+        <div style="margin-top:18px">
+          <h3 style="font-size:13px;font-weight:600;color:var(--text-secondary,#8b95a5);margin-bottom:10px;text-transform:uppercase;letter-spacing:0.5px;">Template Variables</h3>
+          <div class="hint" style="margin-bottom:12px">Recommended values are prefilled. You can leave them as-is and continue, or tailor them now for a better first install.</div>
+          <div style="display:grid;gap:12px;">
+            ${selectedTemplates.map((template) => {
+              const vars = Array.isArray(template.variables) ? template.variables : [];
+              if (vars.length === 0) return null;
+              return html`
+                <div key=${template.id} style="border:1px solid var(--border-primary,#2a3040);border-radius:var(--radius-sm);padding:12px 14px;background:rgba(255,255,255,0.02)">
+                  <div style="font-weight:600;margin-bottom:4px">${template.name}</div>
+                  <div class="hint" style="margin-bottom:10px">${template.description}</div>
+                  <div style="display:grid;gap:10px;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));">
+                    ${vars.map((variable) => {
+                      const currentValue = workflowTemplateOverridesById?.[template.id]?.[variable.key] ?? variable.defaultValue ?? "";
+                      const fieldType = variable.input || variable.type || "text";
+                      return html`
+                        <div key=${variable.key} class="form-group" style="margin-bottom:0">
+                          <label>${variable.key}${variable.required ? html` <span class="required">*</span>` : null}</label>
+                          ${fieldType === "select" && Array.isArray(variable.options) && variable.options.length > 0 ? html`
+                            <select
+                              value=${String(currentValue ?? "")}
+                              onchange=${(e) => updateWorkflowTemplateOverride(template.id, variable.key, e.target.value, variable.type)}
+                            >
+                              ${variable.options.map((option) => {
+                                const value = typeof option === "object" ? option.value : option;
+                                const label = typeof option === "object" ? (option.label ?? option.value) : option;
+                                return html`<option key=${String(value)} value=${String(value)}>${String(label)}</option>`;
+                              })}
+                            </select>
+                          ` : fieldType === "textarea" ? html`
+                            <textarea
+                              rows="3"
+                              value=${String(currentValue ?? "")}
+                              oninput=${(e) => updateWorkflowTemplateOverride(template.id, variable.key, e.target.value, variable.type)}
+                            ></textarea>
+                          ` : variable.type === "toggle" || fieldType === "toggle" ? html`
+                            <label style="display:flex;align-items:center;gap:8px;cursor:pointer;user-select:none">
+                              <input
+                                type="checkbox"
+                                checked=${Boolean(currentValue)}
+                                onchange=${(e) => updateWorkflowTemplateOverride(template.id, variable.key, e.target.checked, "toggle")}
+                                style="width:auto;padding:0;margin:0;accent-color:var(--accent);cursor:pointer"
+                              />
+                              Enabled
+                            </label>
+                          ` : html`
+                            <input
+                              type=${variable.type === "number" ? "number" : "text"}
+                              value=${String(currentValue ?? "")}
+                              oninput=${(e) => updateWorkflowTemplateOverride(template.id, variable.key, e.target.value, variable.type)}
+                            />
+                          `}
+                          ${variable.description ? html`<div class="hint">${variable.description}</div>` : null}
+                        </div>
+                      `;
+                    })}
+                  </div>
+                </div>
+              `;
+            })}
+          </div>
+        </div>
+      `}
 
       ${workflowAutoInstall && selectedCount === 0 && html`
         <div class="hint" style="margin-top:10px;color:var(--warning)">
