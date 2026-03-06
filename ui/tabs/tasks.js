@@ -54,7 +54,11 @@ import {
   EmptyState,
   ListItem,
 } from "../components/shared.js";
-import { SegmentedControl, SearchInput, Toggle } from "../components/forms.js";
+import {
+  SegmentedControl,
+  SearchInput,
+  Toggle as ImportedToggle,
+} from "../components/forms.js";
 import { KanbanBoard } from "../components/kanban-board.js";
 import { VoiceMicButton, VoiceMicButtonInline } from "../modules/voice.js";
 import {
@@ -65,6 +69,7 @@ import {
 
 /* ─── View mode toggle ─── */
 const viewMode = signal("kanban");
+const Toggle = typeof ImportedToggle === "function" ? ImportedToggle : () => null;
 
 /* ─── Status chip definitions ─── */
 const STATUS_CHIPS = [
