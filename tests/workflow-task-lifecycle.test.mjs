@@ -130,6 +130,47 @@ describe("trigger.task_available", () => {
     expect(result.tasks[0].id).toBe("t-server");
   });
 
+  it("binds primary task context for downstream lifecycle nodes", async () => {
+    const nt = getNodeType("trigger.task_available");
+    const listTasks = vi.fn().mockResolvedValue([
+      {
+        id: "abc-123",
+        title: "Implement dispatch fix",
+        description: "Ensure claims initialize",
+        status: "todo",
+        workspace: "C:/repo/bosun",
+        repository: "virtengine/bosun",
+        repositories: ["virtengine/bosun"],
+        baseBranch: "main",
+      },
+    ]);
+    const ctx = makeCtx({ activeSlotCount: 0 });
+    const node = makeNode("trigger.task_available", {
+      maxParallel: 1,
+      status: "todo",
+    });
+
+    const result = await nt.execute(node, ctx, {
+      services: {
+        kanban: {
+          listTasks,
+        },
+      },
+    });
+
+    expect(result.triggered).toBe(true);
+    expect(result.taskCount).toBe(1);
+    expect(result.selectedTaskId).toBe("abc-123");
+    expect(ctx.data.taskId).toBe("abc-123");
+    expect(ctx.data.taskTitle).toBe("Implement dispatch fix");
+    expect(ctx.data.taskDescription).toBe("Ensure claims initialize");
+    expect(ctx.data.repoRoot).toBe("C:/repo/bosun");
+    expect(ctx.data.workspace).toBe("C:/repo/bosun");
+    expect(ctx.data.repository).toBe("virtengine/bosun");
+    expect(ctx.data.baseBranch).toBe("main");
+    expect(ctx.data.branch.startsWith("task/abc123-")).toBe(true);
+  });
+
   it("returns blocked result when all tasks exceed repoAreaParallelLimit", async () => {
     const nt = getNodeType("trigger.task_available");
     const listTasks = vi.fn().mockResolvedValue([
@@ -438,6 +479,40 @@ describe("action.release_slot", () => {
     // Cleanup
     if (origVal === undefined) delete process.env.VE_RESTORE_TEST;
     else process.env.VE_RESTORE_TEST = origVal;
+  });
+});
+
+// ═══════════════════════════════════════════════════════════════════════════
+//  action.claim_task Tests
+// ═══════════════════════════════════════════════════════════════════════════
+
+describe("action.claim_task", () => {
+  it("initializes task-claims lazily before claiming", async () => {
+    const nt = getNodeType("action.claim_task");
+    const claims = await import("../task/task-claims.mjs");
+    const initSpy = vi.spyOn(claims, "initTaskClaims").mockResolvedValue();
+    const claimSpy = vi.spyOn(claims, "claimTask").mockResolvedValue({
+      success: true,
+      token: "claim-token-1",
+    });
+
+    try {
+      const ctx = makeCtx({ repoRoot: "/tmp/repo-root" });
+      const node = makeNode("action.claim_task", {
+        taskId: "task-1",
+        taskTitle: "Fix dispatch",
+        renewIntervalMs: 0,
+      });
+      const result = await nt.execute(node, ctx);
+
+      expect(result.success).toBe(true);
+      expect(result.claimToken).toBe("claim-token-1");
+      expect(initSpy).toHaveBeenCalled();
+      expect(claimSpy).toHaveBeenCalled();
+    } finally {
+      initSpy.mockRestore();
+      claimSpy.mockRestore();
+    }
   });
 });
 
@@ -1058,3 +1133,4 @@ describe("template-ve-orchestrator-lite", () => {
     expect(Array.isArray(t.variables.protectedBranches)).toBe(true);
   });
 });
+
