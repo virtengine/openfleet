@@ -34,6 +34,11 @@ npm run syntax:check
 # or install failures.
 node tools/prepublish-check.mjs
 
+# Prove the packed npm artifact can still start after install. This catches
+# regressions where the repo works locally but the published tarball is missing
+# a runtime file required by the CLI or main package export.
+npm run smoke:packed-cli
+
 # ── Module adjacency map ────────────────────────────────────────────────────
 # Maps source directory prefixes to glob patterns of tests that MUST run
 # when files in that directory change, even if vitest --related doesn't

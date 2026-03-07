@@ -31,6 +31,9 @@ jobs:
       - name: Prepublish check (files array + import validation)
         run: node tools/prepublish-check.mjs
 
+      - name: Packed CLI smoke test
+        run: npm run smoke:packed-cli
+
       - name: Run build
         run: npm run build
 
