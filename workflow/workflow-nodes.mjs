@@ -3819,6 +3819,38 @@ function extractPlannerTasksFromWorkflowOutput(output, maxTasks = 5) {
   return tasks;
 }
 
+function resolvePlannerMaterializationDefaults(ctx) {
+  const data =
+    ctx?.data && typeof ctx.data === "object" && !Array.isArray(ctx.data)
+      ? ctx.data
+      : {};
+  const dataMeta =
+    data.meta && typeof data.meta === "object" && !Array.isArray(data.meta)
+      ? data.meta
+      : {};
+  const workspace = String(
+    data.workspace ||
+      data.workspaceId ||
+      data._workspace ||
+      data._workspaceId ||
+      dataMeta.workspace ||
+      process.env.BOSUN_WORKSPACE ||
+      "",
+  ).trim();
+  const repository = String(
+    data.repository ||
+      data.repo ||
+      data._targetRepo ||
+      dataMeta.repository ||
+      process.env.GITHUB_REPOSITORY ||
+      "",
+  ).trim();
+  return {
+    workspace,
+    repository,
+  };
+}
+
 registerNodeType("action.materialize_planner_tasks", {
   describe: () => "Parse planner JSON output and create backlog tasks in Kanban",
   schema: {
@@ -3843,6 +3875,7 @@ registerNodeType("action.materialize_planner_tasks", {
     const dedupEnabled = node.config?.dedup !== false;
     const status = String(ctx.resolve(node.config?.status || "todo")).trim() || "todo";
     const projectId = String(ctx.resolve(node.config?.projectId || "")).trim();
+    const materializationDefaults = resolvePlannerMaterializationDefaults(ctx);
 
     const parsedTasks = extractPlannerTasksFromWorkflowOutput(outputText, maxTasks);
     if (!parsedTasks.length) {
@@ -3898,8 +3931,12 @@ registerNodeType("action.materialize_planner_tasks", {
         status,
       };
       if (task.priority) payload.priority = task.priority;
-      if (task.workspace) payload.workspace = task.workspace;
-      if (task.repository) payload.repository = task.repository;
+      if (task.workspace || materializationDefaults.workspace) {
+        payload.workspace = task.workspace || materializationDefaults.workspace;
+      }
+      if (task.repository || materializationDefaults.repository) {
+        payload.repository = task.repository || materializationDefaults.repository;
+      }
       if (Array.isArray(task.repositories) && task.repositories.length > 0) {
         payload.repositories = task.repositories;
       }
@@ -3909,6 +3946,19 @@ registerNodeType("action.materialize_planner_tasks", {
         payload.draft = true;
       }
       if (projectId) payload.projectId = projectId;
+      if (payload.workspace || payload.repository) {
+        const existingMeta =
+          payload.meta && typeof payload.meta === "object" && !Array.isArray(payload.meta)
+            ? { ...payload.meta }
+            : {};
+        if (payload.workspace && !existingMeta.workspace) {
+          existingMeta.workspace = payload.workspace;
+        }
+        if (payload.repository && !existingMeta.repository) {
+          existingMeta.repository = payload.repository;
+        }
+        payload.meta = existingMeta;
+      }
       const createdTask = await createKanbanTaskWithProject(kanban, payload, projectId);
       created.push({
         id: createdTask?.id || null,

@@ -256,6 +256,51 @@ describe("task-store concurrent save consistency", () => {
   });
 });
 
+
+describe("task-store external change visibility", () => {
+  it("reloads from disk when another process updates the store file", async () => {
+    const dir = makeTempDir("task-store-external-reload-");
+    const storeDir = join(dir, ".bosun", ".cache");
+    mkdirSync(storeDir, { recursive: true });
+    const storePath = join(storeDir, "kanban-state.json");
+
+    const ts = await loadTaskStoreModule();
+    ts.configureTaskStore({ storePath });
+    ts.loadStore();
+    ts.addTask({ id: "local-1", title: "Local task", status: "todo" });
+    await ts.waitForStoreWrites();
+
+    // Simulate an external writer (CLI/API in a separate process) replacing the store file.
+    const externallyWritten = {
+      _meta: {
+        version: 1,
+        projectId: null,
+        lastFullSync: null,
+        taskCount: 1,
+        stats: {
+          draft: 0,
+          todo: 1,
+          inprogress: 0,
+          inreview: 0,
+          done: 0,
+          blocked: 0,
+        },
+      },
+      tasks: {
+        "external-1": {
+          id: "external-1",
+          title: "External task",
+          status: "todo",
+        },
+      },
+    };
+    writeFileSync(storePath, JSON.stringify(externallyWritten, null, 2), "utf8");
+
+    const tasksAfterExternalWrite = ts.getAllTasks();
+    expect(tasksAfterExternalWrite).toHaveLength(1);
+    expect(tasksAfterExternalWrite[0].id).toBe("external-1");
+  });
+});
 // ── getStorePath / configureTaskStore contracts ────────────────────────────
 
 describe("task-store configureTaskStore contracts", () => {

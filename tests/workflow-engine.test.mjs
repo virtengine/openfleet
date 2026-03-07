@@ -2099,6 +2099,61 @@ it("action.materialize_planner_tasks passes two args to createTask even with def
   }));
 });
 
+it("action.materialize_planner_tasks applies workspace defaults from workflow context when planner output omits them", async () => {
+  const handler = getNodeType("action.materialize_planner_tasks");
+  expect(handler).toBeDefined();
+
+  const ctx = new WorkflowContext({
+    workspaceId: "workspace-alpha",
+    _targetRepo: "repo-alpha",
+  });
+  ctx.setNodeOutput("run-planner", {
+    output: [
+      "```json",
+      "{",
+      '  "tasks": [',
+      '    { "title": "[m] feat(workflow): apply defaults", "description": "A" }',
+      "  ]",
+      "}",
+      "```",
+    ].join("\n"),
+  });
+
+  const createTask = vi.fn(async () => ({ id: "task-defaults-1" }));
+  const mockEngine = {
+    services: {
+      kanban: {
+        createTask,
+      },
+    },
+  };
+
+  const node = {
+    id: "materialize",
+    type: "action.materialize_planner_tasks",
+    config: {
+      plannerNodeId: "run-planner",
+      status: "draft",
+      dedup: false,
+      failOnZero: true,
+      minCreated: 1,
+    },
+  };
+
+  const result = await handler.execute(node, ctx, mockEngine);
+  expect(result.success).toBe(true);
+  expect(result.createdCount).toBe(1);
+  expect(createTask).toHaveBeenCalledWith("", expect.objectContaining({
+    title: "[m] feat(workflow): apply defaults",
+    workspace: "workspace-alpha",
+    repository: "repo-alpha",
+    meta: expect.objectContaining({
+      workspace: "workspace-alpha",
+      repository: "repo-alpha",
+    }),
+  }));
+});
+
 it("action.materialize_planner_tasks fails loudly when planner output has no parseable tasks", async () => {
   const handler = getNodeType("action.materialize_planner_tasks");
   expect(handler).toBeDefined();

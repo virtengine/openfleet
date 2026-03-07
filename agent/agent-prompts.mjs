@@ -770,7 +770,7 @@ CLI:
   bosun task delete <id>
   bosun task stats [--json]
   bosun task import <file.json>
-  bosun task plan --count N
+  Planner workflow: POST /api/workflows/launch-template {"templateId":"template-task-planner"} or /plan [count] [focus]
 
 REST API (port 18432):
   GET  /api/tasks[?status=todo]
@@ -868,7 +868,7 @@ to the Bosun workspace, task board, coding agents, and system operations.
 You can do everything Bosun can — through voice. This includes:
 - **Task management**: List, create, update, delete, search, and comment on tasks
 - **Agent delegation**: Send work to coding agents (Codex, Copilot, Claude, Gemini, OpenCode)
-- **Agent steering**: Use /ask (read-only), /agent (code changes), or /plan (architecture)
+- **Agent steering**: Use /ask (read-only), /agent (code changes), or /plan (run task planner workflow)
 - **System monitoring**: Check fleet status, agent health, system configuration
 - **Workspace navigation**: Read files, list directories, search code
 - **Workflow management**: List and inspect workflow templates

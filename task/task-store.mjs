@@ -13,6 +13,7 @@ import {
   mkdirSync,
   renameSync,
   existsSync,
+  statSync,
   unlinkSync,
 } from "node:fs";
 
@@ -79,6 +80,8 @@ let _store = null; // { _meta: {...}, tasks: { [id]: Task } }
 let _loaded = false;
 let _writeChain = Promise.resolve(); // simple write lock
 let _didLogInitialLoad = false;
+let _lastLoadedMtimeMs = 0;
+let _lastLoadedSizeBytes = 0;
 
 export function configureTaskStore(options = {}) {
   const baseDir = options.baseDir ? resolve(options.baseDir) : null;
@@ -102,6 +105,8 @@ export function configureTaskStore(options = {}) {
     _loaded = false;
     _writeChain = Promise.resolve();
     _didLogInitialLoad = false;
+    _lastLoadedMtimeMs = 0;
+    _lastLoadedSizeBytes = 0;
   }
 
   return storePath;
@@ -229,9 +234,34 @@ function recalcStats() {
 }
 
 function ensureLoaded() {
-  if (!_loaded) {
-    loadStore();
+  if (_loaded) {
+    maybeReloadStoreFromDisk();
+    return;
   }
+  loadStore();
+}
+
+function getStoreFingerprint() {
+  if (!existsSync(storePath)) {
+    return { mtimeMs: 0, sizeBytes: 0 };
+  }
+  try {
+    const stats = statSync(storePath);
+    return {
+      mtimeMs: stats.mtimeMs || 0,
+      sizeBytes: Number.isFinite(stats.size) ? stats.size : 0,
+    };
+  } catch {
+    return { mtimeMs: 0, sizeBytes: 0 };
+  }
+}
+
+function maybeReloadStoreFromDisk() {
+  const disk = getStoreFingerprint();
+  const mtimeChanged = disk.mtimeMs > _lastLoadedMtimeMs;
+  const sizeChanged = disk.sizeBytes !== _lastLoadedSizeBytes;
+  if (!mtimeChanged && !sizeChanged) return;
+  loadStore();
 }
 
 function buildCorruptBackupPath() {
@@ -302,13 +332,20 @@ export function loadStore() {
           `Loaded ${Object.keys(_store.tasks).length} tasks from disk`,
         );
       }
+      const loadedFingerprint = getStoreFingerprint();
+      _lastLoadedMtimeMs = loadedFingerprint.mtimeMs;
+      _lastLoadedSizeBytes = loadedFingerprint.sizeBytes;
     } else {
       _store = { _meta: defaultMeta(), tasks: {} };
       console.log(TAG, "No store file found — initialised empty store");
+      _lastLoadedMtimeMs = 0;
+      _lastLoadedSizeBytes = 0;
     }
   } catch (err) {
     console.error(TAG, "Failed to load store, starting fresh:", err.message);
     _store = { _meta: defaultMeta(), tasks: {} };
+    _lastLoadedMtimeMs = 0;
+    _lastLoadedSizeBytes = 0;
   }
   _loaded = true;
 }
@@ -346,6 +383,9 @@ export function saveStore() {
             `Atomic rename failed (${renameErr?.message || renameErr}); fell back to direct write.`,
           );
         }
+        const loadedFingerprint = getStoreFingerprint();
+        _lastLoadedMtimeMs = loadedFingerprint.mtimeMs;
+        _lastLoadedSizeBytes = loadedFingerprint.sizeBytes;
       } catch (err) {
         console.error(TAG, "Failed to save store:", err.message);
       }

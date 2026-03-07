@@ -68,6 +68,9 @@ import {
   initLibrary,
   rebuildManifest,
   matchAgentProfile,
+  matchAgentProfiles,
+  listWellKnownAgentSources,
+  importAgentProfilesFromRepository,
   loadManifest,
   getManifestPath,
   scaffoldAgentProfiles,
@@ -8339,18 +8342,105 @@ async function handleApi(req, res, url) {
         jsonResponse(res, 400, { ok: false, error: "Unknown workspace" });
         return;
       }
-      const title = (url.searchParams.get("title") || "").trim();
+
+      const getCriteriaFromQuery = () => ({
+        title: (url.searchParams.get("title") || "").trim(),
+        description: (url.searchParams.get("description") || "").trim(),
+        agentType: (url.searchParams.get("agentType") || "").trim(),
+        tags: String(url.searchParams.get("tags") || "").split(",").map((t) => t.trim()).filter(Boolean),
+        changedFiles: String(url.searchParams.get("changedFiles") || "").split(",").map((t) => t.trim()).filter(Boolean),
+        topN: Number.parseInt(String(url.searchParams.get("topN") || ""), 10) || 5,
+      });
+
+      const bodyCriteria = req.method === "POST" ? await readJsonBody(req).catch(() => ({})) : null;
+      const criteria = req.method === "POST"
+        ? {
+            ...(bodyCriteria || {}),
+            topN: Number.parseInt(String(bodyCriteria?.topN || ""), 10) || 5,
+          }
+        : getCriteriaFromQuery();
+
       const roots = resolveLibraryRootsForContext(workspaceContext);
       ensureLibraryRootsInitialized(roots);
-      let match = null;
+
+      let bestResult = null;
       for (const rootInfo of roots) {
-        const candidate = matchAgentProfile(rootInfo.rootDir, title);
-        if (!candidate) continue;
-        if (!match || Number(candidate.score || 0) > Number(match.score || 0)) {
-          match = { ...candidate, storageScope: rootInfo.scope };
+        const result = matchAgentProfiles(rootInfo.rootDir, criteria, { topN: criteria?.topN || 5 });
+        if (!result?.best) continue;
+        const withScope = {
+          ...result,
+          best: { ...result.best, storageScope: rootInfo.scope },
+          candidates: (result.candidates || []).map((candidate) => ({ ...candidate, storageScope: rootInfo.scope })),
+        };
+        if (!bestResult || Number(withScope.best?.score || 0) > Number(bestResult.best?.score || 0)) {
+          bestResult = withScope;
         }
       }
-      jsonResponse(res, 200, { ok: true, data: match || null });
+
+      const verbose = req.method === "POST"
+        || ["1", "true", "yes"].includes(String(url.searchParams.get("verbose") || "").trim().toLowerCase());
+      const payload = bestResult || {
+        best: null,
+        candidates: [],
+        auto: { shouldAutoApply: false, reason: "no-match" },
+        context: {
+          title: String(criteria?.title || ""),
+          description: String(criteria?.description || ""),
+          requestedAgentType: String(criteria?.agentType || ""),
+          taskScope: null,
+          changedFilesCount: Array.isArray(criteria?.changedFiles) ? criteria.changedFiles.length : 0,
+        },
+      };
+
+      jsonResponse(res, 200, {
+        ok: true,
+        data: verbose ? payload : (payload.best || null),
+      });
+    } catch (err) {
+      jsonResponse(res, 500, { ok: false, error: err.message });
+    }
+    return;
+  }
+
+  if (path === "/api/library/sources" && req.method === "GET") {
+    try {
+      jsonResponse(res, 200, { ok: true, data: listWellKnownAgentSources() });
+    } catch (err) {
+      jsonResponse(res, 500, { ok: false, error: err.message });
+    }
+    return;
+  }
+
+  if (path === "/api/library/import" && req.method === "POST") {
+    try {
+      const workspaceContext = resolveWorkspaceContextFromRequest(url, { allowAll: false });
+      if (!workspaceContext) {
+        jsonResponse(res, 400, { ok: false, error: "Unknown workspace" });
+        return;
+      }
+      const body = await readJsonBody(req).catch(() => ({}));
+      const requestedScope = normalizeLibraryStorageScope(body?.storageScope || body?.source, "repo");
+      const targetRoot = resolveLibraryTargetRoot(workspaceContext, requestedScope, null);
+      const result = importAgentProfilesFromRepository(targetRoot.rootDir, {
+        sourceId: String(body?.sourceId || "").trim() || undefined,
+        repoUrl: String(body?.repoUrl || "").trim() || undefined,
+        branch: String(body?.branch || "").trim() || undefined,
+        maxProfiles: Number.parseInt(String(body?.maxProfiles || ""), 10) || undefined,
+        importPrompts: body?.importPrompts !== false,
+      });
+
+      broadcastUiEvent(["library"], "invalidate", {
+        reason: "library-imported",
+        sourceId: String(body?.sourceId || "custom").trim() || "custom",
+      });
+
+      jsonResponse(res, 200, {
+        ok: true,
+        data: {
+          ...result,
+          storageScope: targetRoot.scope,
+        },
+      });
     } catch (err) {
       jsonResponse(res, 500, { ok: false, error: err.message });
     }
@@ -9839,6 +9929,29 @@ async function handleApi(req, res, url) {
       // 3. Build input: merge caller-supplied variables as execution input
       const userVars = body?.variables && typeof body.variables === "object" ? body.variables : {};
       const executeInput = { ...userVars };
+      const workspaceId = String(wfCtx.workspaceContext?.workspaceId || "").trim();
+      let defaultRepository = "";
+      if (workspaceId) {
+        const configDir = resolveUiConfigDir();
+        if (configDir) {
+          const listed = listManagedWorkspaces(configDir, { repoRoot });
+          const workspace = listed.find(
+            (entry) => String(entry?.id || "").trim().toLowerCase() === workspaceId.toLowerCase(),
+          );
+          defaultRepository = String(
+            workspace?.activeRepo ||
+              workspace?.repos?.find((repo) => repo?.primary)?.name ||
+              workspace?.repos?.[0]?.name ||
+              "",
+          ).trim();
+        }
+      }
+      if (!executeInput.workspace && workspaceId) executeInput.workspace = workspaceId;
+      if (!executeInput.workspaceId && workspaceId) executeInput.workspaceId = workspaceId;
+      if (!executeInput.repository && defaultRepository) executeInput.repository = defaultRepository;
+      if (!executeInput._targetRepo && executeInput.repository) {
+        executeInput._targetRepo = executeInput.repository;
+      }
 
       // 4. Execute (dispatch by default for long-running research workflows)
       const shouldWait = body?.waitForCompletion === true;

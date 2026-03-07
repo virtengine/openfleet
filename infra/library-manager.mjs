@@ -17,7 +17,7 @@
 
 import { existsSync, readFileSync, writeFileSync, mkdirSync, readdirSync, statSync, unlinkSync, rmSync } from "node:fs";
 import { resolve, basename, join } from "node:path";
-import { execSync } from "node:child_process";
+import { execSync, spawnSync } from "node:child_process";
 import { homedir } from "node:os";
 
 // ── Constants ─────────────────────────────────────────────────────────────────
@@ -71,6 +71,61 @@ function slugify(name) {
 
 function nowISO() {
   return new Date().toISOString();
+}
+
+function toStringArray(input) {
+  if (!Array.isArray(input)) return [];
+  return input.map((item) => String(item || '').trim()).filter(Boolean);
+}
+
+function uniqueStrings(values = []) {
+  const out = [];
+  const seen = new Set();
+  for (const raw of values) {
+    const value = String(raw || '').trim();
+    if (!value) continue;
+    const key = value.toLowerCase();
+    if (seen.has(key)) continue;
+    seen.add(key);
+    out.push(value);
+  }
+  return out;
+}
+
+function keywordTokens(value, { minLength = 3 } = {}) {
+  return uniqueStrings(
+    String(value || '')
+      .toLowerCase()
+      .split(/[^a-z0-9]+/)
+      .filter((token) => token.length >= minLength),
+  );
+}
+
+function parseJsonishArray(value) {
+  if (Array.isArray(value)) return toStringArray(value);
+  const raw = String(value || '').trim();
+  if (!raw) return [];
+  try {
+    const parsed = JSON.parse(raw.replace(/'/g, '"'));
+    return Array.isArray(parsed) ? toStringArray(parsed) : [];
+  } catch {
+    return raw
+      .split(/[\s,]+/)
+      .map((v) => String(v || '').trim())
+      .filter(Boolean);
+  }
+}
+
+function extractConventionalScope(taskTitle = '') {
+  const match = String(taskTitle || '').match(
+    /(?:^\[[^\]]+\]\s*)?(?:feat|fix|docs|style|refactor|perf|test|build|ci|chore|revert)\(([^)]+)\)/i,
+  );
+  return match ? String(match[1] || '').toLowerCase().trim() : null;
+}
+
+function parseMatchEnvNumber(name, fallback) {
+  const raw = Number.parseFloat(String(process.env[name] || '').trim());
+  return Number.isFinite(raw) ? raw : fallback;
 }
 
 // ── Manifest (library.json) ──────────────────────────────────────────────────
@@ -297,59 +352,329 @@ export function listAgentProfiles(rootDir) {
  * @param {string} taskTitle
  * @returns {AgentProfile|null}
  */
-export function matchAgentProfile(rootDir, taskTitle) {
-  if (!taskTitle) return null;
+export function matchAgentProfiles(rootDir, criteria = {}, opts = {}) {
+  const title = String(criteria?.title || "").trim();
+  const description = String(criteria?.description || "").trim();
+  const requestedAgentType = String(criteria?.agentType || "").trim().toLowerCase();
+  const topN = Math.max(1, Number.parseInt(String(opts?.topN ?? criteria?.topN ?? 5), 10) || 5);
+  if (!title && !description) {
+    return {
+      best: null,
+      candidates: [],
+      auto: { shouldAutoApply: false, reason: "empty-input" },
+      context: { title: "", description: "", requestedAgentType },
+    };
+  }
+
   const profiles = listAgentProfiles(rootDir);
-  const titleLower = taskTitle.toLowerCase();
+  const taskScope = extractConventionalScope(title);
+  const textBlob = `${title}\n${description}`.trim();
+  const textBlobLower = textBlob.toLowerCase();
+  const criteriaTags = uniqueStrings([
+    ...toStringArray(criteria?.tags),
+    ...toStringArray(String(criteria?.tagsCsv || "").split(",")),
+    ...keywordTokens(textBlob, { minLength: 4 }),
+  ]).map((v) => v.toLowerCase());
+  const changedFiles = toStringArray(criteria?.changedFiles);
+  const changedHints = keywordTokens(changedFiles.join(" "), { minLength: 3 });
 
-  // Extract scope from task title using conventional commit format
-  const scopeMatch = taskTitle.match(
-    /(?:^\[[^\]]+\]\s*)?(?:feat|fix|docs|style|refactor|perf|test|build|ci|chore|revert)\(([^)]+)\)/i,
-  );
-  const taskScope = scopeMatch ? scopeMatch[1].toLowerCase().trim() : null;
-
-  let bestMatch = null;
-  let bestScore = 0;
-
+  const candidates = [];
   for (const entry of profiles) {
     const profile = entry.profile;
     if (!profile) continue;
 
-    let score = 0;
+    const profileType = String(profile?.agentType || "task").trim().toLowerCase() || "task";
+    if (requestedAgentType && profileType && requestedAgentType !== profileType) continue;
 
-    // Check title patterns (regex match)
-    const patterns = profile.titlePatterns || [];
+    let score = 0;
+    const reasons = [];
+
+    const patterns = toStringArray(profile.titlePatterns);
     for (const pattern of patterns) {
       try {
-        if (new RegExp(pattern, "i").test(taskTitle)) {
+        if (new RegExp(pattern, "i").test(textBlob)) {
           score += 10;
+          reasons.push(`pattern:${pattern}`);
           break;
         }
-      } catch { /* invalid regex – skip */ }
-    }
-
-    // Check scope match
-    const scopes = (profile.scopes || []).map((s) => s.toLowerCase());
-    if (taskScope && scopes.includes(taskScope)) {
-      score += 5;
-    }
-
-    // Check tag match against title
-    const tags = entry.tags || [];
-    for (const tag of tags) {
-      if (titleLower.includes(tag)) {
-        score += 1;
+      } catch {
+        // ignore invalid regex
       }
     }
 
-    if (score > bestScore) {
-      bestScore = score;
-      bestMatch = { ...entry, score };
+    const scopes = toStringArray(profile.scopes).map((s) => s.toLowerCase());
+    if (taskScope && scopes.includes(taskScope)) {
+      score += 6;
+      reasons.push(`scope:${taskScope}`);
     }
+
+    const profileTags = uniqueStrings([...(entry.tags || []), ...toStringArray(profile.tags)]).map((v) => v.toLowerCase());
+    const tagHits = criteriaTags.filter((tag) => profileTags.includes(tag));
+    if (tagHits.length > 0) {
+      const tagScore = Math.min(6, tagHits.length * 2);
+      score += tagScore;
+      reasons.push(`tags:${tagHits.slice(0, 4).join(",")}`);
+    }
+
+    if (profileType === "voice") {
+      const voiceHint = /\bvoice\b|\bcall\b|\brealtime\b/.test(textBlobLower);
+      if (voiceHint) {
+        score += 3;
+        reasons.push("voice-hint");
+      }
+    }
+
+    const scopeHitsFromPaths = scopes.filter((scope) =>
+      changedHints.includes(scope) || changedFiles.some((f) => String(f).toLowerCase().includes(`/${scope}/`) || String(f).toLowerCase().includes(`\\${scope}\\`)),
+    );
+    if (scopeHitsFromPaths.length > 0) {
+      const fileScore = Math.min(8, scopeHitsFromPaths.length * 2);
+      score += fileScore;
+      reasons.push(`paths:${scopeHitsFromPaths.slice(0, 4).join(",")}`);
+    }
+
+    if (score <= 0) continue;
+
+    const confidence = Math.max(0, Math.min(1, score / 24));
+    candidates.push({
+      ...entry,
+      agentType: profileType,
+      score,
+      confidence,
+      reasons,
+      matchedScope: taskScope,
+    });
   }
 
-  return bestMatch;
+  candidates.sort((a, b) => {
+    if (b.score !== a.score) return b.score - a.score;
+    return String(a.name || "").localeCompare(String(b.name || ""));
+  });
+
+  const best = candidates[0] || null;
+  const runnerUp = candidates[1] || null;
+  const minScore = parseMatchEnvNumber("BOSUN_AGENT_MATCH_AUTO_MIN_SCORE", 12);
+  const minConfidence = parseMatchEnvNumber("BOSUN_AGENT_MATCH_AUTO_MIN_CONFIDENCE", 0.72);
+  const minDelta = parseMatchEnvNumber("BOSUN_AGENT_MATCH_AUTO_MIN_DELTA", 3);
+  const shouldAutoApply = Boolean(
+    best
+      && Number(best.score || 0) >= minScore
+      && Number(best.confidence || 0) >= minConfidence
+      && (Number(best.score || 0) - Number(runnerUp?.score || 0)) >= minDelta,
+  );
+
+  return {
+    best,
+    candidates: candidates.slice(0, topN),
+    auto: {
+      shouldAutoApply,
+      reason: shouldAutoApply ? "high-confidence" : "below-threshold",
+      thresholds: { minScore, minConfidence, minDelta },
+      runnerUpScore: Number(runnerUp?.score || 0),
+    },
+    context: {
+      title,
+      description,
+      requestedAgentType,
+      taskScope,
+      changedFilesCount: changedFiles.length,
+    },
+  };
 }
+
+/**
+ * Backward-compatible single-best match helper.
+ *
+ * @param {string} rootDir
+ * @param {string} taskTitle
+ * @returns {AgentProfile|null}
+ */
+export function matchAgentProfile(rootDir, taskTitle) {
+  const result = matchAgentProfiles(rootDir, { title: taskTitle }, { topN: 1 });
+  return result.best || null;
+}
+
+export const WELL_KNOWN_AGENT_SOURCES = Object.freeze([
+  {
+    id: "microsoft-hve-core",
+    name: "Microsoft HVE Core",
+    repoUrl: "https://github.com/microsoft/hve-core.git",
+    defaultBranch: "main",
+    description: "Core HVE agent library with domain and plugin agent templates.",
+  },
+]);
+
+export function listWellKnownAgentSources() {
+  return WELL_KNOWN_AGENT_SOURCES.map((source) => ({ ...source }));
+}
+
+function parseSimpleFrontmatter(markdown = "") {
+  const text = String(markdown || "");
+  if (!text.startsWith("---\n")) return { attrs: {}, body: text };
+  const end = text.indexOf("\n---\n", 4);
+  if (end < 0) return { attrs: {}, body: text };
+  const head = text.slice(4, end).split(/\r?\n/);
+  const attrs = {};
+  for (const line of head) {
+    const m = line.match(/^([A-Za-z0-9_-]+)\s*:\s*(.*)$/);
+    if (!m) continue;
+    attrs[m[1].trim()] = String(m[2] || "").trim();
+  }
+  const body = text.slice(end + 5).trim();
+  return { attrs, body };
+}
+
+function walkFilesRecursive(rootDir) {
+  const stack = [rootDir];
+  const files = [];
+  while (stack.length > 0) {
+    const current = stack.pop();
+    let entries = [];
+    try {
+      entries = readdirSync(current, { withFileTypes: true });
+    } catch {
+      continue;
+    }
+    for (const entry of entries) {
+      const fullPath = resolve(current, entry.name);
+      if (entry.isDirectory()) {
+        if (entry.name === ".git" || entry.name === "node_modules") continue;
+        stack.push(fullPath);
+      } else if (entry.isFile()) {
+        files.push(fullPath);
+      }
+    }
+  }
+  return files;
+}
+
+function ensureUniqueId(baseId, takenIds) {
+  let id = baseId;
+  let seq = 2;
+  while (takenIds.has(id)) {
+    id = `${baseId}-${seq}`;
+    seq += 1;
+  }
+  takenIds.add(id);
+  return id;
+}
+
+export function importAgentProfilesFromRepository(rootDir, options = {}) {
+  const sourceId = String(options?.sourceId || "").trim().toLowerCase();
+  const known = WELL_KNOWN_AGENT_SOURCES.find((source) => source.id === sourceId) || null;
+  const repoUrl = String(options?.repoUrl || known?.repoUrl || "").trim();
+  if (!repoUrl) throw new Error("repoUrl or sourceId is required");
+
+  const branch = String(options?.branch || known?.defaultBranch || "main").trim() || "main";
+  const maxProfiles = Math.max(1, Math.min(500, Number.parseInt(String(options?.maxProfiles || "100"), 10) || 100));
+  const importPrompts = options?.importPrompts !== false;
+
+  const cacheRoot = ensureDir(resolve(rootDir || getBosunHomeDir(), ".bosun", ".cache", "imports"));
+  const checkoutDir = resolve(cacheRoot, `import-${Date.now()}-${Math.random().toString(16).slice(2, 8)}`);
+  ensureDir(checkoutDir);
+
+  const clone = spawnSync("git", ["clone", "--depth", "1", "--branch", branch, repoUrl, checkoutDir], {
+    encoding: "utf8",
+    stdio: ["ignore", "pipe", "pipe"],
+  });
+  if (clone.status !== 0) {
+    rmSync(checkoutDir, { recursive: true, force: true });
+    throw new Error(String(clone.stderr || clone.stdout || "git clone failed").trim());
+  }
+
+  const files = walkFilesRecursive(checkoutDir);
+  const candidates = files
+    .filter((fullPath) => /\.md$/i.test(fullPath))
+    .filter((fullPath) => /\.agent\.md$/i.test(fullPath) || /[\\/]\.github[\\/]agents[\\/]/i.test(fullPath));
+
+  const takenIds = new Set(listEntries(rootDir, { type: "agent" }).map((entry) => String(entry?.id || "").trim()).filter(Boolean));
+  const imported = [];
+
+  for (const fullPath of candidates.slice(0, maxProfiles)) {
+    const raw = readFileSync(fullPath, "utf8");
+    const { attrs, body } = parseSimpleFrontmatter(raw);
+    const relPath = fullPath.slice(checkoutDir.length + 1).replace(/\\/g, "/");
+    const fileName = basename(fullPath).replace(/\.md$/i, "");
+    const name = String(attrs.name || fileName.replace(/[-_.]+/g, " ")).trim();
+    const description = String(attrs.description || body.split(/\r?\n/).find((line) => line.trim()) || "Imported agent profile").trim();
+    const baseId = slugify(`${sourceId || "imported"}-${name}`) || slugify(fileName) || `imported-agent-${imported.length + 1}`;
+    const id = ensureUniqueId(baseId, takenIds);
+
+    const toolHints = parseJsonishArray(attrs.tools);
+    const keywords = keywordTokens(`${name} ${description} ${relPath}`, { minLength: 4 }).slice(0, 10);
+    const titlePatterns = uniqueStrings(keywords.slice(0, 6).map((token) => `\\b${token.replace(/[.*+?^${}()|[\\]\\]/g, "")}\\b`));
+    const scopes = uniqueStrings(relPath.split(/[\\/]/).map((segment) => slugify(segment))).filter((segment) => segment && segment !== "github" && segment !== "agents").slice(0, 6);
+    const promptId = `${id}-prompt`;
+
+    if (importPrompts && body) {
+      upsertEntry(rootDir, {
+        id: promptId,
+        type: "prompt",
+        name: `${name} Prompt`,
+        description: `Imported prompt from ${known?.name || repoUrl}`,
+        tags: uniqueStrings(["imported", "agent-prompt", sourceId || "external"]),
+        meta: {
+          sourceId: sourceId || null,
+          repoUrl,
+          branch,
+          relPath,
+        },
+      }, body);
+    }
+
+    const profile = {
+      id,
+      name,
+      description,
+      titlePatterns: titlePatterns.length ? titlePatterns : ["\\btask\\b"],
+      scopes,
+      sdk: null,
+      model: null,
+      promptOverride: importPrompts ? promptId : null,
+      skills: [],
+      hookProfile: null,
+      env: {},
+      enabledTools: toolHints.length ? toolHints : null,
+      enabledMcpServers: [],
+      tags: uniqueStrings(["imported", sourceId || "external", ...keywords.slice(0, 4)]),
+      agentType: /voice|audio|realtime/i.test(`${name} ${description}`) ? "voice" : "task",
+      importMeta: {
+        sourceId: sourceId || null,
+        repoUrl,
+        branch,
+        relPath,
+      },
+    };
+
+    upsertEntry(rootDir, {
+      id,
+      type: "agent",
+      name,
+      description,
+      tags: profile.tags,
+      meta: {
+        sourceId: sourceId || null,
+        repoUrl,
+        branch,
+        relPath,
+      },
+    }, profile);
+
+    imported.push({ id, name, relPath, promptId: importPrompts ? promptId : null });
+  }
+
+  rmSync(checkoutDir, { recursive: true, force: true });
+
+  return {
+    ok: true,
+    source: known ? { ...known } : { id: sourceId || "custom", repoUrl, defaultBranch: branch },
+    repoUrl,
+    branch,
+    importedCount: imported.length,
+    imported,
+  };
+}
+
 
 // ── Scope Auto-Detection ─────────────────────────────────────────────────────
 

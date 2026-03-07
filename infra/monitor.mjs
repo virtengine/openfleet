@@ -654,6 +654,148 @@ function queueWorkflowEvent(eventType, eventData = {}, opts = {}) {
   dispatchWorkflowEvent(eventType, eventData, opts).catch(() => {});
 }
 
+function resolvePlannerWorkspaceDefaults() {
+  const activeWorkspace = String(
+    config?.activeWorkspace || process.env.BOSUN_WORKSPACE || "",
+  ).trim();
+  const repositories = Array.isArray(config?.repositories)
+    ? config.repositories
+    : [];
+  const scopedRepositories = activeWorkspace
+    ? repositories.filter((repo) =>
+      String(repo?.workspace || "").trim().toLowerCase() === activeWorkspace.toLowerCase())
+    : repositories;
+  const candidateRepositories = scopedRepositories.length > 0
+    ? scopedRepositories
+    : repositories;
+  const selectedRepository =
+    candidateRepositories.find((repo) => repo?.primary) ||
+    candidateRepositories[0] ||
+    null;
+  const repository = String(
+    selectedRepository?.repository ||
+      selectedRepository?.name ||
+      repoSlug ||
+      process.env.GITHUB_REPOSITORY ||
+      "",
+  ).trim();
+  const workspace = String(
+    activeWorkspace || selectedRepository?.workspace || "",
+  ).trim();
+  return {
+    workspace,
+    repository,
+  };
+}
+
+async function triggerTaskPlanner(options = {}) {
+  try {
+    if (!workflowAutomationEnabled) {
+      return {
+        ok: false,
+        error: "workflow automation disabled",
+      };
+    }
+
+    const engine = await ensureWorkflowAutomationEngine();
+    if (!engine?.execute || !engine?.list) {
+      return {
+        ok: false,
+        error: "workflow engine not available",
+      };
+    }
+
+    const templateId = "template-task-planner";
+    const workflowTemplates = await import("../workflow/workflow-templates.mjs");
+    const template = workflowTemplates.getTemplate(templateId);
+    if (!template) {
+      return {
+        ok: false,
+        error: `workflow template not found: ${templateId}`,
+      };
+    }
+
+    let workflow = (engine.list() || []).find(
+      (entry) => entry?.metadata?.installedFrom === templateId || entry?.id === templateId,
+    );
+    if (!workflow) {
+      workflow = workflowTemplates.installTemplate(templateId, engine);
+    }
+
+    const parsedTaskCount = Number(options?.taskCount);
+    const taskCount = Number.isFinite(parsedTaskCount) && parsedTaskCount > 0
+      ? Math.max(1, Math.min(100, Math.trunc(parsedTaskCount)))
+      : null;
+    const prompt = String(options?.prompt || "").trim();
+    const reason = String(options?.reason || "manual-trigger").trim() || "manual-trigger";
+    const source = String(options?.source || "monitor").trim() || "monitor";
+    const defaults = resolvePlannerWorkspaceDefaults();
+
+    const executeInput = {
+      _plannerReason: reason,
+      _triggerSource: source,
+      ...(taskCount ? { taskCount } : {}),
+      ...(prompt ? { prompt } : {}),
+      ...(defaults.workspace ? { workspace: defaults.workspace, workspaceId: defaults.workspace } : {}),
+      ...(defaults.repository ? { repository: defaults.repository, _targetRepo: defaults.repository } : {}),
+      ...(options?.input && typeof options.input === "object" ? options.input : {}),
+    };
+
+    const result = await engine.execute(workflow.id, executeInput, { force: true });
+    const materializeOutput = result?.getNodeOutput?.("materialize-tasks") ||
+      result?.nodeOutputs?.get?.("materialize-tasks") ||
+      null;
+    const parsedCount = Number(materializeOutput?.parsedCount || 0);
+    const createdCount = Number(materializeOutput?.createdCount || 0);
+    const runFailed = Array.isArray(result?.errors) && result.errors.length > 0;
+
+    if (runFailed) {
+      return {
+        ok: false,
+        workflowId: workflow.id,
+        runId: result?.id || null,
+        parsedCount,
+        createdCount,
+        error: String(result.errors?.[0]?.error || result.errors?.[0]?.message || "workflow execution failed"),
+      };
+    }
+
+    return {
+      ok: true,
+      workflowId: workflow.id,
+      runId: result?.id || null,
+      parsedCount,
+      createdCount,
+    };
+  } catch (err) {
+    return {
+      ok: false,
+      error: String(err?.message || err),
+    };
+  }
+}
+
+async function maybeTriggerTaskPlanner(reason = "auto", metadata = {}) {
+  const result = await triggerTaskPlanner({
+    source: "monitor-auto",
+    reason,
+    input:
+      metadata && typeof metadata === "object" && !Array.isArray(metadata)
+        ? metadata
+        : {},
+  });
+  if (!result.ok) {
+    console.warn(
+      `[monitor] planner trigger skipped (${reason}): ${result.error || "unknown error"}`,
+    );
+    return false;
+  }
+  console.log(
+    `[monitor] planner trigger complete (${reason}): created ${result.createdCount} task(s) from ${result.parsedCount} parsed item(s)`,
+  );
+  return true;
+}
+
 function configureExecutorTaskStatusTransitions() {
   if (!workflowAutomationEnabled) {
     setTaskStatusTransitionHandler(null);
@@ -12722,10 +12864,10 @@ function applyConfig(nextConfig, options = {}) {
     shellState.rl.close();
   }
 
-  if (plannerMode !== "disabled") {
-    startTaskPlannerStatusLoop();
-  } else {
-    stopTaskPlannerStatusLoop();
+  if (workflowAutomationEnabled) {
+    ensureWorkflowAutomationEngine().catch((err) => {
+      console.warn(`[monitor] planner workflow init failed: ${err?.message || err}`);
+    });
   }
 
   const previousMonitorRuntime = snapshotMonitorMonitorRuntime();
@@ -14144,6 +14286,7 @@ injectMonitorFunctions({
       return [];
     }
   },
+  triggerTaskPlanner,
 });
 if (telegramBotEnabled) {
   runDetached("telegram-bot:start-startup", () =>

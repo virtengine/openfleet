@@ -3018,21 +3018,75 @@
       }
       if (route === '/api/library/match-profile') {
         ensureLibrarySeeded();
-        const title = (params.get('title') || '').toLowerCase();
+        const request = method === 'POST' ? (body || {}) : {
+          title: params.get('title') || '',
+          description: params.get('description') || '',
+          changedFiles: String(params.get('changedFiles') || '').split(',').map((v) => v.trim()).filter(Boolean),
+        };
+        const title = String(request.title || '').toLowerCase();
+        const description = String(request.description || '').toLowerCase();
+        const changed = Array.isArray(request.changedFiles) ? request.changedFiles.join(' ').toLowerCase() : '';
+        const haystack = `${title} ${description} ${changed}`;
+
         let best = null;
         let bestScore = 0;
+        const candidates = [];
         for (const entry of STATE.libraryEntries) {
           if (entry.type !== 'agent') continue;
           const tags = entry.tags || [];
           let score = 0;
-          for (const tag of tags) if (title.includes(tag)) score += 2;
-          if (title.includes(entry.id.replace(/-/g, ' '))) score += 3;
+          for (const tag of tags) if (haystack.includes(String(tag || '').toLowerCase())) score += 2;
+          if (haystack.includes(entry.id.replace(/-/g, ' '))) score += 3;
+          if (score <= 0) continue;
+          const candidate = { ...entry, score, confidence: Math.min(1, score / 12), reasons: ['demo-tags'] };
+          candidates.push(candidate);
           if (score > bestScore) {
             bestScore = score;
-            best = { ...entry, score };
+            best = candidate;
           }
         }
-        return { ok: true, data: best };
+        candidates.sort((a, b) => b.score - a.score);
+        const payload = {
+          best,
+          candidates: candidates.slice(0, 5),
+          auto: { shouldAutoApply: Boolean(best && best.score >= 6), reason: best && best.score >= 6 ? 'high-confidence' : 'below-threshold' },
+          context: {
+            title: String(request.title || ''),
+            description: String(request.description || ''),
+            requestedAgentType: String(request.agentType || ''),
+            taskScope: null,
+            changedFilesCount: Array.isArray(request.changedFiles) ? request.changedFiles.length : 0,
+          },
+        };
+        return { ok: true, data: method === 'POST' ? payload : payload.best };
+      }
+      if (route === '/api/library/sources') {
+        return {
+          ok: true,
+          data: [
+            {
+              id: 'microsoft-hve-core',
+              name: 'Microsoft HVE Core',
+              repoUrl: 'https://github.com/microsoft/hve-core.git',
+              defaultBranch: 'main',
+              description: 'Core HVE agent library with domain and plugin agent templates.',
+            },
+          ],
+        };
+      }
+      if (route === '/api/library/import') {
+        return {
+          ok: true,
+          data: {
+            importedCount: 3,
+            imported: [
+              { id: 'microsoft-hve-core-task-planner', name: 'Task Planner' },
+              { id: 'microsoft-hve-core-review', name: 'Review Agent' },
+              { id: 'microsoft-hve-core-devops', name: 'DevOps Agent' },
+            ],
+            storageScope: body?.storageScope || 'repo',
+          },
+        };
       }
 
       // ── MCP Servers ──

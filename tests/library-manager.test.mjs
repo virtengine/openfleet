@@ -1,6 +1,7 @@
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import { mkdtempSync, rmSync, existsSync, readFileSync, mkdirSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
+import { execSync } from "node:child_process";
 import { tmpdir } from "node:os";
 import {
   loadManifest,
@@ -12,6 +13,7 @@ import {
   deleteEntry,
   listAgentProfiles,
   matchAgentProfile,
+  matchAgentProfiles,
   detectScopes,
   rebuildManifest,
   initLibrary,
@@ -24,6 +26,8 @@ import {
   SKILL_DIR,
   PROFILE_DIR,
   resolveEntry,
+  listWellKnownAgentSources,
+  importAgentProfilesFromRepository,
 } from "../infra/library-manager.mjs";
 
 // ── Helpers ─────────────────────────────────────────────────────────────────
@@ -467,6 +471,96 @@ describe("resolveEntry (multi-workspace)", () => {
   });
 });
 
+
+describe("matchAgentProfiles", () => {
+  beforeEach(() => fresh());
+  afterEach(() => cleanup());
+
+  it("returns scored candidates with confidence and auto gating", () => {
+    scaffoldAgentProfiles(tmpDir);
+    rebuildManifest(tmpDir);
+
+    const result = matchAgentProfiles(tmpDir, {
+      title: "feat(ui): improve workflow canvas",
+      description: "Update ui tabs and workflow styles",
+      changedFiles: ["ui/tabs/workflows.js", "ui/styles/layout.css"],
+      topN: 3,
+    });
+
+    expect(result.best).not.toBeNull();
+    expect(Array.isArray(result.candidates)).toBe(true);
+    expect(result.candidates.length).toBeGreaterThan(0);
+    expect(typeof result.best.score).toBe("number");
+    expect(typeof result.best.confidence).toBe("number");
+    expect(Array.isArray(result.best.reasons)).toBe(true);
+    expect(typeof result.auto.shouldAutoApply).toBe("boolean");
+  });
+
+  it("can filter by requested agent type", () => {
+    scaffoldAgentProfiles(tmpDir);
+    rebuildManifest(tmpDir);
+
+    const result = matchAgentProfiles(tmpDir, {
+      title: "voice call assistant improvements",
+      agentType: "voice",
+    });
+
+    expect(result.best).not.toBeNull();
+    expect(result.best.agentType).toBe("voice");
+  });
+});
+
+describe("well-known source import", () => {
+  beforeEach(() => fresh());
+  afterEach(() => cleanup());
+
+  it("lists known agent library sources", () => {
+    const sources = listWellKnownAgentSources();
+    expect(Array.isArray(sources)).toBe(true);
+    expect(sources.length).toBeGreaterThan(0);
+    expect(sources.some((s) => s.id === "microsoft-hve-core")).toBe(true);
+  });
+
+  it("imports agent profile + prompt from a git repository", () => {
+    const srcRepo = mkdtempSync(join(tmpdir(), "lib-src-"));
+    try {
+      mkdirSync(join(srcRepo, ".github", "agents"), { recursive: true });
+      writeFileSync(
+        join(srcRepo, ".github", "agents", "TaskPlanner.agent.md"),
+        [
+          "---",
+          "name: Task Planner",
+          "description: Plans and routes engineering tasks",
+          "tools: ['search', 'edit']",
+          "---",
+          "Use this agent to break down complex tasks.",
+        ].join("\n"),
+        "utf8",
+      );
+      execSync("git init", { cwd: srcRepo, stdio: "pipe" });
+      execSync("git config user.email test@example.com", { cwd: srcRepo, stdio: "pipe" });
+      execSync("git config user.name test", { cwd: srcRepo, stdio: "pipe" });
+      execSync("git add .", { cwd: srcRepo, stdio: "pipe" });
+      execSync("git commit -m init", { cwd: srcRepo, stdio: "pipe" });
+
+      const branch = execSync("git rev-parse --abbrev-ref HEAD", { cwd: srcRepo, stdio: "pipe", encoding: "utf8" }).trim();
+      const result = importAgentProfilesFromRepository(tmpDir, {
+        repoUrl: srcRepo,
+        branch,
+        maxProfiles: 5,
+        importPrompts: true,
+      });
+
+      expect(result.importedCount).toBeGreaterThan(0);
+      const agents = listEntries(tmpDir, { type: "agent" });
+      const prompts = listEntries(tmpDir, { type: "prompt" });
+      expect(agents.length).toBeGreaterThan(0);
+      expect(prompts.length).toBeGreaterThan(0);
+    } finally {
+      rmSync(srcRepo, { recursive: true, force: true });
+    }
+  });
+});
 // ── Scope Detection ─────────────────────────────────────────────────────────
 
 describe("detectScopes", () => {
