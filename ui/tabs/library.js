@@ -11,12 +11,36 @@ const html = htm.bind(h);
 
 import { haptic } from "../modules/telegram.js";
 import { apiFetch } from "../modules/api.js";
-import { showToast, refreshTab } from "../modules/state.js";
+import {
+  showToast,
+  refreshTab,
+  setPendingChange,
+  clearPendingChange,
+} from "../modules/state.js";
 import { ICONS } from "../modules/icons.js";
 import { iconText, resolveIcon } from "../modules/icon-utils.js";
-import { formatRelative } from "../modules/utils.js";
-import { Card, Badge, EmptyState, Modal, ConfirmDialog, Spinner, ListItem } from "../components/shared.js";
+import { formatRelative, countChangedFields } from "../modules/utils.js";
+import {
+  Card as LegacyCard,
+  Badge as LegacyBadge,
+  EmptyState,
+  Modal,
+  ConfirmDialog,
+  Spinner,
+  ListItem as LegacyListItem,
+  SaveDiscardBar,
+} from "../components/shared.js";
 import { SearchInput, SegmentedControl, Toggle } from "../components/forms.js";
+import {
+  Typography, Box, Stack, Card, CardContent, CardHeader, CardActions,
+  Button, IconButton, Chip, Divider, Paper, TextField, InputAdornment,
+  CircularProgress, Alert, Tooltip, Switch, FormControlLabel, Dialog,
+  DialogTitle, DialogContent, DialogActions, List, ListItem, ListItemButton,
+  ListItemText, ListItemIcon, ListItemSecondaryAction, Menu, MenuItem,
+  Tabs, Tab, Skeleton, Badge, Grid, Table, TableBody, TableCell,
+  TableContainer, TableHead, TableRow, Accordion, AccordionSummary,
+  AccordionDetails, LinearProgress, Select, FormControl, InputLabel, Avatar,
+} from "@mui/material";
 
 /* ═══════════════════════════════════════════════════════════════
  *  Styles
@@ -139,6 +163,79 @@ const LIBRARY_STYLES = `
   .library-stat { min-width: 64px; }
   .library-stat-val { font-size: 1.3em; }
 }
+
+/* ── MCP Marketplace ────────────────────────────────── */
+.mcp-section { display: flex; flex-direction: column; gap: 12px; }
+.mcp-section-header { display: flex; align-items: center; gap: 8px; }
+.mcp-section-header h3 { margin: 0; font-size: 1em; flex: 1; }
+.mcp-catalog-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 280px), 1fr)); gap: 10px; }
+.mcp-card { background: var(--bg-card, #1a1a2e); border: 1px solid var(--border, #333);
+  border-radius: 10px; padding: 14px; display: flex; flex-direction: column; gap: 8px;
+  transition: border-color 0.15s; }
+.mcp-card:hover { border-color: var(--accent, #58a6ff); }
+.mcp-card-header { display: flex; align-items: center; gap: 10px; }
+.mcp-card-name { font-weight: 600; font-size: 0.92em; color: var(--text-primary, #eee); flex: 1; }
+.mcp-card-desc { font-size: 0.8em; color: var(--text-secondary, #aaa); line-height: 1.4; }
+.mcp-card-tags { display: flex; gap: 4px; flex-wrap: wrap; }
+.mcp-card-tag { font-size: 0.72em; padding: 2px 7px; border-radius: 8px;
+  background: rgba(88,166,255,0.1); color: var(--accent, #58a6ff); }
+.mcp-card-actions { display: flex; gap: 6px; margin-top: auto; }
+.mcp-card-actions button { padding: 5px 14px; border-radius: 7px; border: 1px solid var(--border, #333);
+  background: transparent; color: var(--text-secondary, #aaa); cursor: pointer; font-size: 0.82em;
+  transition: all 0.15s; }
+.mcp-card-actions button:hover { border-color: var(--accent, #58a6ff); color: var(--text-primary, #eee); }
+.mcp-card-actions .btn-install { background: var(--accent, #58a6ff); color: #fff; border-color: var(--accent, #58a6ff); }
+.mcp-card-actions .btn-install:hover { filter: brightness(1.1); }
+.mcp-card-actions .btn-installed { background: rgba(63,185,80,0.15); color: #3fb950; border-color: rgba(63,185,80,0.3); cursor: default; }
+.mcp-card-actions .btn-uninstall { color: #d73a49; border-color: rgba(215,58,73,0.3); }
+.mcp-card-actions .btn-uninstall:hover { background: rgba(215,58,73,0.1); }
+
+.mcp-env-editor { display: flex; flex-direction: column; gap: 6px; margin-top: 8px;
+  padding: 10px; background: var(--bg-input, #0d1117); border-radius: 8px; border: 1px solid var(--border, #333); }
+.mcp-env-row { display: flex; gap: 6px; align-items: center; }
+.mcp-env-key { font-size: 0.78em; font-family: monospace; color: var(--accent, #58a6ff); min-width: 140px; }
+.mcp-env-input { flex: 1; padding: 4px 8px; border-radius: 6px; border: 1px solid var(--border, #333);
+  background: var(--bg-card, #1a1a2e); color: var(--text-primary, #eee); font-size: 0.82em; font-family: monospace; }
+
+/* Custom MCP form */
+.mcp-custom-form { display: flex; flex-direction: column; gap: 10px; padding: 14px;
+  background: var(--bg-card, #1a1a2e); border: 1px solid var(--border, #333); border-radius: 10px; }
+.mcp-custom-form label { display: flex; flex-direction: column; gap: 3px; font-size: 0.82em;
+  color: var(--text-secondary, #aaa); }
+.mcp-custom-form input, .mcp-custom-form select { padding: 6px 10px; border-radius: 7px;
+  border: 1px solid var(--border, #333); background: var(--bg-input, #0d1117);
+  color: var(--text-primary, #eee); font-size: 0.85em; }
+
+/* ── Tool Configuration ────────────────────────────── */
+.tool-config-section { display: flex; flex-direction: column; gap: 8px; margin-top: 12px; }
+.tool-config-header { display: flex; align-items: center; gap: 8px; padding-bottom: 8px;
+  border-bottom: 1px solid var(--border, #333); }
+.tool-config-header h4 { margin: 0; font-size: 0.92em; flex: 1; color: var(--text-primary, #eee); }
+.tool-config-group { display: flex; flex-direction: column; gap: 2px; }
+.tool-config-group-label { font-size: 0.78em; color: var(--text-secondary, #aaa); text-transform: uppercase;
+  letter-spacing: 0.04em; margin: 8px 0 4px; font-weight: 600; }
+.tool-config-item { display: flex; align-items: center; gap: 10px; padding: 8px 10px;
+  border-radius: 8px; transition: background 0.1s; }
+.tool-config-item:hover { background: rgba(255,255,255,0.03); }
+.tool-config-item-icon { font-size: 1.1em; width: 24px; text-align: center; flex-shrink: 0; }
+.tool-config-item-icon svg { width: 16px; height: 16px; vertical-align: middle; }
+.tool-config-item-info { flex: 1; min-width: 0; }
+.tool-config-item-name { font-size: 0.88em; font-weight: 500; color: var(--text-primary, #eee); }
+.tool-config-item-desc { font-size: 0.76em; color: var(--text-secondary, #aaa); }
+.tool-config-toggle { flex-shrink: 0; }
+
+/* ── Agent Detail with Tools ──────────────────────── */
+.agent-tools-section { margin-top: 16px; padding-top: 14px; border-top: 1px solid var(--border, #333); }
+.agent-tools-tabs { display: flex; gap: 6px; margin-bottom: 10px; }
+.agent-tools-tab { padding: 5px 14px; border-radius: 14px; border: 1px solid var(--border, #333);
+  background: transparent; color: var(--text-secondary, #aaa); cursor: pointer; font-size: 0.82em;
+  transition: all 0.15s; }
+.agent-tools-tab:hover { border-color: var(--accent, #58a6ff); }
+.agent-tools-tab.active { background: var(--accent, #58a6ff); color: #fff; border-color: var(--accent, #58a6ff); }
+
+@media (min-width: 1000px) {
+  .mcp-catalog-grid { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+}
 `;
 
 let stylesInjected = false;
@@ -155,11 +252,15 @@ function injectStyles() {
  * ═══════════════════════════════════════════════════════════════ */
 
 const entries = signal([]);
+const allEntries = signal([]);
 const scopes = signal([]);
 const isLoading = signal(false);
 const initialized = signal(false);
-const filterType = signal("all"); // "all" | "prompt" | "agent" | "skill"
+const filterType = signal("all"); // "all" | "prompt" | "agent" | "skill" | "mcp"
 const searchQuery = signal("");
+const mcpCatalog = signal([]);
+const mcpInstalled = signal([]);
+const mcpCatalogLoaded = signal(false);
 
 /* ═══════════════════════════════════════════════════════════════
  *  API Helpers
@@ -224,14 +325,90 @@ async function testProfileMatch(title) {
   return res?.data || null;
 }
 
+/* ── MCP API Helpers ─ */
+
+async function fetchMcpCatalog() {
+  const res = await apiFetch("/api/mcp/catalog");
+  return res?.data || [];
+}
+
+async function fetchMcpInstalled() {
+  const res = await apiFetch("/api/mcp/installed");
+  return res?.data || [];
+}
+
+async function installMcp(idOrDef, envOverrides) {
+  const body = typeof idOrDef === "string"
+    ? { id: idOrDef, envOverrides }
+    : { serverDef: idOrDef, envOverrides };
+  return apiFetch("/api/mcp/install", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+}
+
+async function uninstallMcp(id) {
+  return apiFetch("/api/mcp/uninstall", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ id }),
+  });
+}
+
+async function configureMcpEnv(id, env) {
+  return apiFetch("/api/mcp/configure", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ id, env }),
+  });
+}
+
+/* ── Agent Tool Config API Helpers ─ */
+
+async function fetchAvailableTools() {
+  const res = await apiFetch("/api/agent-tools/available");
+  return res?.data || { builtinTools: [], bosunTools: [], mcpServers: [] };
+}
+
+async function fetchAgentToolConfig(agentId) {
+  const res = await apiFetch(`/api/agent-tools/config?agentId=${encodeURIComponent(agentId)}`);
+  return res?.data || { builtinTools: [], bosunTools: [], mcpServers: [], enabledTools: null };
+}
+
+async function saveAgentToolConfig(agentId, config) {
+  return apiFetch("/api/agent-tools/config", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ agentId, ...config }),
+  });
+}
+
+async function fetchBuiltinToolDefaults() {
+  const res = await apiFetch("/api/agent-tools/defaults");
+  return res?.data?.builtinTools || [];
+}
+
 /* ═══════════════════════════════════════════════════════════════
  *  Icons per type
  * ═══════════════════════════════════════════════════════════════ */
 
-const TYPE_ICONS = { prompt: ":edit:", agent: ":bot:", skill: ":cpu:" };
-const TYPE_LABELS = { prompt: "Prompt", agent: "Agent Profile", skill: "Skill" };
-const TYPE_COLORS = { prompt: "#58a6ff", agent: "#af7bff", skill: "#3fb950" };
+const TYPE_ICONS = { prompt: ":edit:", agent: ":bot:", skill: ":cpu:", mcp: ":plug:" };
+const TYPE_LABELS = { prompt: "Prompt", agent: "Agent Profile", skill: "Skill", mcp: "MCP Server" };
+const TYPE_COLORS = { prompt: "#58a6ff", agent: "#af7bff", skill: "#3fb950", mcp: "#f59e0b" };
 const STORAGE_SCOPE_LABELS = { repo: "Repo", workspace: "Workspace", global: "Global" };
+const STORAGE_SCOPE_COLORS = { repo: "info", workspace: "warning", global: "default" };
+const AGENT_TYPE_OPTIONS = Object.freeze([
+  { value: "voice", label: "Voice" },
+  { value: "task", label: "Task" },
+  { value: "chat", label: "Chat" },
+]);
+
+function normalizeAgentType(rawType) {
+  const value = String(rawType || "").trim().toLowerCase();
+  if (value === "voice" || value === "task" || value === "chat") return value;
+  return "task";
+}
 
 function normalizeStorageScope(rawScope, fallback = "repo") {
   const value = String(rawScope || "").trim().toLowerCase();
@@ -239,33 +416,95 @@ function normalizeStorageScope(rawScope, fallback = "repo") {
   return fallback;
 }
 
+function inferAgentTypeFromEntry(entry, parsedContent) {
+  const explicit = normalizeAgentType(parsedContent?.agentType);
+  if (parsedContent?.agentType) return explicit;
+  if (parsedContent?.voiceAgent === true) return "voice";
+  const id = String(entry?.id || "").trim().toLowerCase();
+  const tags = Array.isArray(entry?.tags)
+    ? entry.tags.map((tag) => String(tag || "").trim().toLowerCase())
+    : [];
+  if (id.startsWith("voice-agent")) return "voice";
+  if (tags.includes("voice") || tags.includes("audio-agent") || tags.includes("realtime")) return "voice";
+  return "task";
+}
+
+const AUDIO_AGENT_TEMPLATES = Object.freeze({
+  female: {
+    type: "agent",
+    name: "Voice Agent (Female)",
+    description: "Conversational voice specialist with concise guidance and call-friendly pacing.",
+    tags: "voice,audio-agent,female,realtime",
+    storageScope: "global",
+    scope: "global",
+    content: JSON.stringify({
+      name: "Voice Agent (Female)",
+      description: "Conversational voice specialist with concise guidance and call-friendly pacing.",
+      titlePatterns: ["\\bvoice\\b", "\\bcall\\b", "\\bmeeting\\b", "\\bassistant\\b"],
+      scopes: ["voice", "assistant"],
+      model: null,
+      promptOverride: null,
+      skills: ["concise-voice-guidance", "conversation-memory"],
+      agentType: "voice",
+      voiceAgent: true,
+      voicePersona: "female",
+      voiceInstructions: "You are Nova, a female voice agent. Be concise, warm, and practical. Use tools for facts and execution. Keep spoken responses short and clear.",
+    }, null, 2),
+  },
+  male: {
+    type: "agent",
+    name: "Voice Agent (Male)",
+    description: "Operational voice specialist focused on diagnostics and execution.",
+    tags: "voice,audio-agent,male,realtime",
+    storageScope: "global",
+    scope: "global",
+    content: JSON.stringify({
+      name: "Voice Agent (Male)",
+      description: "Operational voice specialist focused on diagnostics and execution.",
+      titlePatterns: ["\\bvoice\\b", "\\bcall\\b", "\\bmeeting\\b", "\\bassistant\\b"],
+      scopes: ["voice", "assistant"],
+      model: null,
+      promptOverride: null,
+      skills: ["ops-diagnostics", "task-execution"],
+      agentType: "voice",
+      voiceAgent: true,
+      voicePersona: "male",
+      voiceInstructions: "You are Atlas, a male voice agent. Be direct and execution-oriented. Prefer actionable status updates. Use tools proactively for diagnostics.",
+    }, null, 2),
+  },
+});
+
 /* ═══════════════════════════════════════════════════════════════
  *  Sub-components
  * ═══════════════════════════════════════════════════════════════ */
 
 function LibraryStats() {
-  const all = entries.value;
-  const counts = { prompt: 0, agent: 0, skill: 0 };
+  const all = allEntries.value;
+  const counts = { prompt: 0, agent: 0, skill: 0, mcp: 0 };
   for (const e of all) { if (counts[e.type] !== undefined) counts[e.type]++; }
   return html`
-    <div class="library-stats">
-      <div class="library-stat">
-        <div class="library-stat-val">${all.length}</div>
-        <div class="library-stat-lbl">Total</div>
-      </div>
-      <div class="library-stat">
-        <div class="library-stat-val" style="color: ${TYPE_COLORS.prompt}">${counts.prompt}</div>
-        <div class="library-stat-lbl">${iconText(`${TYPE_ICONS.prompt} Prompts`)}</div>
-      </div>
-      <div class="library-stat">
-        <div class="library-stat-val" style="color: ${TYPE_COLORS.agent}">${counts.agent}</div>
-        <div class="library-stat-lbl">${iconText(`${TYPE_ICONS.agent} Agents`)}</div>
-      </div>
-      <div class="library-stat">
-        <div class="library-stat-val" style="color: ${TYPE_COLORS.skill}">${counts.skill}</div>
-        <div class="library-stat-lbl">${iconText(`${TYPE_ICONS.skill} Skills`)}</div>
-      </div>
-    </div>
+    <${Stack} direction="row" spacing=${2} flexWrap="wrap">
+      <${Paper} variant="outlined" sx=${{ p: 1.5, textAlign: "center", minWidth: 70 }}>
+        <${Typography} variant="h5" fontWeight=${700}>${all.length}<//>
+        <${Typography} variant="caption" color="text.secondary" sx=${{ textTransform: "uppercase", letterSpacing: 0.5 }}>Total<//>
+      <//>
+      <${Paper} variant="outlined" sx=${{ p: 1.5, textAlign: "center", minWidth: 70 }}>
+        <${Typography} variant="h5" fontWeight=${700} sx=${{ color: TYPE_COLORS.prompt }}>${counts.prompt}<//>
+        <${Typography} variant="caption" color="text.secondary">${iconText(`${TYPE_ICONS.prompt} Prompts`)}<//>
+      <//>
+      <${Paper} variant="outlined" sx=${{ p: 1.5, textAlign: "center", minWidth: 70 }}>
+        <${Typography} variant="h5" fontWeight=${700} sx=${{ color: TYPE_COLORS.agent }}>${counts.agent}<//>
+        <${Typography} variant="caption" color="text.secondary">${iconText(`${TYPE_ICONS.agent} Agents`)}<//>
+      <//>
+      <${Paper} variant="outlined" sx=${{ p: 1.5, textAlign: "center", minWidth: 70 }}>
+        <${Typography} variant="h5" fontWeight=${700} sx=${{ color: TYPE_COLORS.skill }}>${counts.skill}<//>
+        <${Typography} variant="caption" color="text.secondary">${iconText(`${TYPE_ICONS.skill} Skills`)}<//>
+      <//>
+      <${Paper} variant="outlined" sx=${{ p: 1.5, textAlign: "center", minWidth: 70 }}>
+        <${Typography} variant="h5" fontWeight=${700} sx=${{ color: TYPE_COLORS.mcp }}>${counts.mcp}<//>
+        <${Typography} variant="caption" color="text.secondary">${iconText(`${TYPE_ICONS.mcp} MCP`)}<//>
+      <//>
+    <//>
   `;
 }
 
@@ -275,17 +514,21 @@ function TypePills() {
     { id: "prompt", label: `${TYPE_ICONS.prompt} Prompts` },
     { id: "agent", label: `${TYPE_ICONS.agent} Agents` },
     { id: "skill", label: `${TYPE_ICONS.skill} Skills` },
+    { id: "mcp", label: `${TYPE_ICONS.mcp} MCP Servers` },
   ];
   return html`
-    <div class="library-type-pills">
+    <${Stack} direction="row" spacing=${0.75} flexWrap="wrap">
       ${types.map((t) => html`
-        <button key=${t.id}
-          class=${`library-type-pill ${filterType.value === t.id ? "active" : ""}`}
-          onClick=${() => { filterType.value = t.id; }}>
-          ${iconText(t.label)}
-        </button>
+        <${Chip} key=${t.id}
+          label=${iconText(t.label)}
+          variant=${filterType.value === t.id ? "filled" : "outlined"}
+          color=${filterType.value === t.id ? "primary" : "default"}
+          onClick=${() => { filterType.value = t.id; }}
+          clickable
+          size="small"
+        />
       `)}
-    </div>
+    <//>
   `;
 }
 
@@ -294,31 +537,38 @@ function LibraryCard({ entry, onSelect }) {
   const typeLabel = TYPE_LABELS[entry.type] || entry.type;
   const typeColor = TYPE_COLORS[entry.type] || "#aaa";
   return html`
-    <div class="library-card" onClick=${() => onSelect(entry)}>
-      <div class="library-card-type">
-        <${Badge} text=${typeLabel} status="info"
-          className=${`badge-${entry.type}`}
-          style=${{ "--badge-color": typeColor }} />
-      </div>
-      <div class="library-card-header">
-        <span class="library-card-icon">${resolveIcon(icon) || icon}</span>
-        <div>
-          <div class="library-card-title">${entry.name}</div>
-        </div>
-      </div>
-      ${entry.description && html`
-        <div class="library-card-desc">${entry.description}</div>
-      `}
-      <div class="library-card-meta">
-        <span class="library-card-scope">${iconText(`:round_pushpin: ${STORAGE_SCOPE_LABELS[normalizeStorageScope(entry.storageScope, "repo")] || "Repo"}`)}</span>
-        ${(entry.tags || []).slice(0, 5).map((tag) => html`
-          <span class="library-card-tag" key=${tag}>${tag}</span>
-        `)}
-        ${entry.scope && entry.scope !== "global" && html`
-          <span class="library-card-scope">${iconText(`:pin: ${entry.scope}`)}</span>
+    <${Card} variant="outlined" sx=${{ cursor: "pointer", transition: "all 0.15s", "&:hover": { borderColor: "primary.main", transform: "translateY(-1px)", boxShadow: 3 }, position: "relative", bgcolor: "background.paper" }} onClick=${() => onSelect(entry)}>
+      <${CardContent}>
+        <${Box} sx=${{ position: "absolute", top: 8, right: 8 }}>
+          <${Chip} label=${typeLabel} size="small" sx=${{ bgcolor: typeColor + "22", color: typeColor, fontWeight: 500 }} />
+        <//>
+        <${Stack} direction="row" spacing=${1} alignItems="flex-start" sx=${{ mb: 1 }}>
+          <${Box} sx=${{ fontSize: "1.4em", width: 32, textAlign: "center", flexShrink: 0 }}>${resolveIcon(icon) || icon}<//>
+          <${Typography} fontWeight=${600} variant="body2" sx=${{ WebkitLineClamp: 2, WebkitBoxOrient: "vertical", display: "-webkit-box", overflow: "hidden" }}>${entry.name}<//>
+        <//>
+        ${entry.description && html`
+          <${Typography} variant="body2" color="text.secondary" sx=${{ mb: 1, WebkitLineClamp: 2, WebkitBoxOrient: "vertical", display: "-webkit-box", overflow: "hidden", fontSize: "0.82em" }}>${entry.description}<//>
         `}
-      </div>
-    </div>
+        <${Stack} direction="row" spacing=${0.5} flexWrap="wrap" alignItems="center">
+          <${Chip}
+            label=${STORAGE_SCOPE_LABELS[normalizeStorageScope(entry.storageScope, "repo")] || "Repo"}
+            size="small"
+            variant="outlined"
+            color=${STORAGE_SCOPE_COLORS[normalizeStorageScope(entry.storageScope, "repo")] || "default"}
+            sx=${{ fontSize: "0.74em" }}
+          />
+          ${entry.type === "agent" && entry.agentType && html`
+            <${Chip} label=${String(entry.agentType).toUpperCase()} size="small" variant="outlined" sx=${{ fontSize: "0.75em" }} />
+          `}
+          ${(entry.tags || []).slice(0, 5).map((tag) => html`
+            <${Chip} key=${tag} label=${tag} size="small" sx=${{ fontSize: "0.75em", bgcolor: "primary.main", color: "#fff", opacity: 0.8 }} />
+          `)}
+          ${entry.scope && entry.scope !== "global" && html`
+            <${Typography} variant="caption" color="text.secondary" sx=${{ ml: "auto !important" }}>${iconText(`:pin: ${entry.scope}`)}<//>
+          `}
+        <//>
+      <//>
+    <//>
   `;
 }
 
@@ -326,7 +576,7 @@ function LibraryCard({ entry, onSelect }) {
 
 function EntryEditor({ entry, onClose, onSaved, onDeleted }) {
   const isNew = !entry?.id;
-  const [form, setForm] = useState({
+  const initialFormSnapshot = {
     id: entry?.id || "",
     type: entry?.type || "prompt",
     name: entry?.name || "",
@@ -334,11 +584,35 @@ function EntryEditor({ entry, onClose, onSaved, onDeleted }) {
     tags: (entry?.tags || []).join(", "),
     scope: entry?.scope || "global",
     storageScope: normalizeStorageScope(entry?.storageScope, "repo"),
-    content: "",
-  });
+    agentType: inferAgentTypeFromEntry(entry, null),
+    content: typeof entry?.content === "string" ? entry.content : "",
+  };
+  const [form, setForm] = useState(initialFormSnapshot);
+  const [baseline, setBaseline] = useState(initialFormSnapshot);
   const [loading, setLoading] = useState(false);
   const [loadingContent, setLoadingContent] = useState(!isNew && !!entry?.id);
   const [confirmDelete, setConfirmDelete] = useState(false);
+  const pendingKey = useMemo(
+    () => `modal:library-entry:${entry?.id || "new"}`,
+    [entry?.id],
+  );
+
+  useEffect(() => {
+    const next = {
+      id: entry?.id || "",
+      type: entry?.type || "prompt",
+      name: entry?.name || "",
+      description: entry?.description || "",
+      tags: (entry?.tags || []).join(", "),
+      scope: entry?.scope || "global",
+      storageScope: normalizeStorageScope(entry?.storageScope, "repo"),
+      agentType: inferAgentTypeFromEntry(entry, null),
+      content: "",
+    };
+    setForm(next);
+    setBaseline(next);
+    setLoadingContent(!isNew && !!entry?.id);
+  }, [entry?.id]);
 
   // Load content for existing entries
   useEffect(() => {
@@ -350,11 +624,17 @@ function EntryEditor({ entry, onClose, onSaved, onDeleted }) {
         if (cancelled) return;
         let contentStr = detail?.content ?? "";
         if (typeof contentStr === "object") contentStr = JSON.stringify(contentStr, null, 2);
-        setForm((f) => ({
-          ...f,
-          content: contentStr,
-          storageScope: normalizeStorageScope(detail?.storageScope || f.storageScope, "repo"),
-        }));
+        const parsed = detail?.content && typeof detail.content === "object" ? detail.content : null;
+        setForm((f) => {
+          const next = {
+            ...f,
+            content: contentStr,
+            storageScope: normalizeStorageScope(detail?.storageScope || f.storageScope, "repo"),
+            agentType: inferAgentTypeFromEntry(detail || entry, parsed),
+          };
+          setBaseline(next);
+          return next;
+        });
       } catch { /* ignore */ }
       setLoadingContent(false);
     })();
@@ -362,15 +642,45 @@ function EntryEditor({ entry, onClose, onSaved, onDeleted }) {
   }, [entry?.id]);
 
   const updateField = (key) => (e) => setForm((f) => ({ ...f, [key]: e.target.value }));
+  const changeCount = useMemo(
+    () => countChangedFields(baseline, form),
+    [baseline, form],
+  );
+  const hasUnsaved = changeCount > 0;
 
-  const handleSave = useCallback(async () => {
-    if (!form.name.trim()) { showToast("Name is required", "error"); return; }
+  useEffect(() => {
+    setPendingChange(pendingKey, hasUnsaved);
+    return () => clearPendingChange(pendingKey);
+  }, [hasUnsaved, pendingKey]);
+
+  const resetToBaseline = useCallback(() => {
+    setForm(baseline);
+    showToast("Changes discarded", "info");
+  }, [baseline]);
+
+  const handleSave = useCallback(async ({ closeAfterSave = true } = {}) => {
+    if (!form.name.trim()) {
+      showToast("Name is required", "error");
+      return false;
+    }
     setLoading(true);
     try {
       const tags = form.tags.split(/[,\s]+/).map((t) => t.trim().toLowerCase()).filter(Boolean);
       let content = form.content;
       if (form.type === "agent") {
-        try { content = JSON.parse(content); } catch { /* keep as string if invalid JSON */ }
+        try {
+          content = JSON.parse(content);
+        } catch {
+          showToast("Agent profile content must be valid JSON", "error");
+          return false;
+        }
+        const agentType = normalizeAgentType(form.agentType);
+        content.agentType = agentType;
+        if (agentType === "voice") {
+          content.voiceAgent = true;
+        } else if (content.voiceAgent === true) {
+          content.voiceAgent = false;
+        }
       }
       const res = await saveEntry({
         id: form.id || undefined,
@@ -384,14 +694,23 @@ function EntryEditor({ entry, onClose, onSaved, onDeleted }) {
       });
       if (res?.ok) {
         showToast(`${TYPE_LABELS[form.type] || "Entry"} saved`, "success");
-        onSaved?.();
+        const nextBaseline = { ...form };
+        setBaseline(nextBaseline);
+        if (closeAfterSave) {
+          onSaved?.();
+          return { closed: true };
+        }
+        return true;
       } else {
         showToast(res?.error || "Save failed", "error");
+        return false;
       }
     } catch (err) {
       showToast(err.message, "error");
+      return false;
+    } finally {
+      setLoading(false);
     }
-    setLoading(false);
   }, [form, onSaved]);
 
   const handleDelete = useCallback(async () => {
@@ -426,81 +745,106 @@ function EntryEditor({ entry, onClose, onSaved, onDeleted }) {
           model: null,
           promptOverride: null,
           skills: [],
+          agentType: "task",
           tags: [],
         }, null, 2)
       : "# Skill Title\n\n## Purpose\nDescribe what this skill teaches agents.\n\n## Instructions\n...";
 
   return html`
-    <${Modal} title=${isNew ? "New Resource" : `Edit: ${entry.name}`} onClose=${onClose}>
-      <div class="library-editor">
+    <${Modal}
+      title=${isNew ? "New Resource" : `Edit: ${entry.name}`}
+      onClose=${onClose}
+      unsavedChanges=${changeCount}
+      onSaveBeforeClose=${() => handleSave({ closeAfterSave: true })}
+      onDiscardBeforeClose=${() => {
+        resetToBaseline();
+        return true;
+      }}
+      activeOperationLabel=${loading ? "Save/Delete request is still running" : ""}
+    >
+      <${Stack} spacing=${2}>
         ${isNew && html`
-          <label>
-            Type
-            <select value=${form.type} onChange=${updateField("type")}>
-              <option value="prompt">Prompt</option>
-              <option value="agent">Agent Profile</option>
-              <option value="skill">Skill</option>
-            </select>
-          </label>
+          <${FormControl} fullWidth size="small">
+            <${InputLabel}>Type<//>
+            <${Select} value=${form.type} onChange=${updateField("type")} label="Type">
+              <${MenuItem} value="prompt">Prompt<//>
+              <${MenuItem} value="agent">Agent Profile<//>
+              <${MenuItem} value="skill">Skill<//>
+              <${MenuItem} value="mcp">MCP Server<//>
+            <//>
+          <//>
         `}
-        <label>
-          Name
-          <input type="text" value=${form.name} onInput=${updateField("name")}
-            placeholder="e.g. Task Executor, UI Agent, Background Tasks" />
-        </label>
-        <label>
-          Description
-          <input type="text" value=${form.description} onInput=${updateField("description")}
-            placeholder="Brief one-line summary" />
-        </label>
-        <label>
-          Tags (comma-separated)
-          <input type="text" value=${form.tags} onInput=${updateField("tags")}
-            placeholder="e.g. frontend, ui, react" />
-        </label>
-        <label>
-          Scope
-          <select value=${form.scope} onChange=${updateField("scope")}>
-            <option value="global">Global</option>
-            <option value="workspace">Workspace</option>
-          </select>
-        </label>
-        <label>
-          Storage Location
-          <select value=${normalizeStorageScope(form.storageScope, "repo")} onChange=${updateField("storageScope")}>
-            <option value="repo">Repo</option>
-            <option value="workspace">Workspace</option>
-            <option value="global">Global</option>
-          </select>
-        </label>
-        <label>
-          Content
+        <${TextField} size="small" fullWidth label="Name" value=${form.name} onInput=${updateField("name")} placeholder="e.g. Task Executor, UI Agent, Background Tasks" />
+        <${TextField} size="small" fullWidth label="Description" value=${form.description} onInput=${updateField("description")} placeholder="Brief one-line summary" />
+        <${TextField} size="small" fullWidth label="Tags (comma-separated)" value=${form.tags} onInput=${updateField("tags")} placeholder="e.g. frontend, ui, react" />
+        <${FormControl} fullWidth size="small">
+          <${InputLabel}>Storage Location<//>
+          <${Select} value=${normalizeStorageScope(form.storageScope, "repo")} onChange=${updateField("storageScope")} label="Storage Location">
+            <${MenuItem} value="repo">Repo<//>
+            <${MenuItem} value="workspace">Workspace<//>
+            <${MenuItem} value="global">Global<//>
+          <//>
+        <//>
+        <${FormControl} fullWidth size="small">
+          <${InputLabel}>Scope<//>
+          <${Select} value=${form.scope} onChange=${updateField("scope")} label="Scope">
+            <${MenuItem} value="global">Global<//>
+            <${MenuItem} value="workspace">Workspace<//>
+          <//>
+        <//>
+        ${form.type === "agent" && html`
+          <${FormControl} fullWidth size="small">
+            <${InputLabel}>Agent Type<//>
+            <${Select} value=${normalizeAgentType(form.agentType)} onChange=${updateField("agentType")} label="Agent Type">
+              ${AGENT_TYPE_OPTIONS.map((opt) => html`<${MenuItem} key=${opt.value} value=${opt.value}>${opt.label}<//>`)}
+            <//>
+          <//>
+        `}
+        <${Box}>
+          <${Typography} variant="caption" color="text.secondary" sx=${{ mb: 0.5, display: "block" }}>Content<//>
           ${loadingContent
-            ? html`<div style="text-align:center;padding:20px;"><${Spinner} /> Loading content...</div>`
-            : html`<textarea value=${form.content} onInput=${updateField("content")}
-                placeholder=${contentPlaceholder}
-                rows="12" />`
+            ? html`<${Box} sx=${{ textAlign: "center", py: 3 }}><${CircularProgress} size=${20} /> <${Typography} variant="caption">Loading content...<//><//>`
+            : html`<${TextField} fullWidth multiline rows=${12} value=${form.content} onInput=${updateField("content")} placeholder=${contentPlaceholder} size="small" InputProps=${{ sx: { fontFamily: "'Fira Code', monospace", fontSize: "0.82em" } }} />`
           }
-        </label>
-        <div style="font-size:0.78em;color:var(--text-tertiary,#666);margin-top:-8px;">
+        <//>
+        <${Typography} variant="caption" color="text.secondary" sx=${{ mt: -1 }}>
           ${form.type === "prompt" ? "Use {{VARIABLE_NAME}} for template variables. Reference in workflows as {{prompt:name}}."
-            : form.type === "agent" ? "JSON format. Referenced in workflows as {{agent:name}}."
+          : form.type === "agent" ? "JSON format. Referenced in workflows as {{agent:name}}."
+            : form.type === "mcp" ? "MCP server configuration. Managed via the MCP Servers panel."
             : "Markdown format. Referenced in workflows as {{skill:name}}."}
-        </div>
+        <//>
 
-        <div class="library-actions">
+        ${/* ── Agent Tool Configuration Section ── */
+          !isNew && form.type === "agent" && entry?.id && html`
+            <${AgentToolConfigurator} agentId=${entry.id} agentName=${entry.name || form.name} />
+          `
+        }
+
+        <${Stack} direction="row" spacing=${1} justifyContent="flex-end" sx=${{ mt: 1 }}>
           ${!isNew && html`
-            <button class="btn-danger" onClick=${() => setConfirmDelete(true)} disabled=${loading}>
-              Delete
-            </button>
+            <${Button} color="error" onClick=${() => setConfirmDelete(true)} disabled=${loading}>Delete<//>
           `}
-          <div style="flex:1" />
-          <button class="btn-ghost" onClick=${onClose}>Cancel</button>
-          <button class="btn-primary" onClick=${handleSave} disabled=${loading}>
-            ${loading ? html`<${Spinner} size=${14} />` : (isNew ? "Create" : "Save")}
-          </button>
-        </div>
-      </div>
+          <${Box} sx=${{ flex: 1 }} />
+          <${Button} variant="outlined" onClick=${onClose}>Cancel<//>
+          <${Button}
+            variant="contained"
+            onClick=${() => { void handleSave({ closeAfterSave: true }); }}
+            disabled=${loading}
+            startIcon=${loading ? html`<${CircularProgress} size=${14} />` : null}
+          >
+            ${isNew ? "Create" : "Save"}
+          <//>
+        <//>
+        <${SaveDiscardBar}
+          dirty=${hasUnsaved}
+          message=${`You have unsaved changes (${changeCount})`}
+          saveLabel=${isNew ? "Create" : "Save Changes"}
+          discardLabel="Discard"
+          onSave=${() => { void handleSave({ closeAfterSave: false }); }}
+          onDiscard=${resetToBaseline}
+          saving=${loading}
+        />
+      <//>
       ${confirmDelete && html`
         <${ConfirmDialog}
           title="Delete resource?"
@@ -509,6 +853,593 @@ function EntryEditor({ entry, onClose, onSaved, onDeleted }) {
           onCancel=${() => setConfirmDelete(false)} />
       `}
     <//>
+  `;
+}
+
+/* ─ Agent Tool Configurator ─────────────────────────────── */
+
+function AgentToolConfigurator({ agentId, agentName }) {
+  const [toolsTab, setToolsTab] = useState("builtin"); // "builtin" | "bosun" | "mcp"
+  const [tools, setTools] = useState({ builtinTools: [], bosunTools: [], mcpServers: [], enabledTools: null });
+  const [installed, setInstalled] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [saving, setSaving] = useState(false);
+
+  const loadConfig = useCallback(async () => {
+    setLoading(true);
+    try {
+      const [effective, inst] = await Promise.all([
+        fetchAgentToolConfig(agentId),
+        fetchMcpInstalled(),
+      ]);
+      setTools(effective);
+      setInstalled(inst);
+    } catch (err) {
+      showToast("Failed to load tool config: " + err.message, "error");
+    }
+    setLoading(false);
+  }, [agentId]);
+
+  useEffect(() => { loadConfig(); }, [agentId]);
+
+  const toggleBuiltinTool = useCallback(async (toolId, enabled) => {
+    const current = tools.builtinTools || [];
+    const disabledList = current.filter((t) => !t.enabled).map((t) => t.id);
+    const newDisabled = enabled
+      ? disabledList.filter((id) => id !== toolId)
+      : [...disabledList, toolId];
+    const currentEnabledTools = Array.isArray(tools.enabledTools)
+      ? tools.enabledTools.map((id) => String(id || "").trim()).filter(Boolean)
+      : null;
+    const nextEnabledTools = currentEnabledTools
+      ? (() => {
+        const set = new Set(currentEnabledTools);
+        if (enabled) set.add(toolId);
+        else set.delete(toolId);
+        return [...set];
+      })()
+      : undefined;
+    setSaving(true);
+    try {
+      await saveAgentToolConfig(agentId, {
+        disabledBuiltinTools: newDisabled,
+        ...(nextEnabledTools !== undefined ? { enabledTools: nextEnabledTools } : {}),
+      });
+      setTools((prev) => ({
+        ...prev,
+        ...(nextEnabledTools !== undefined ? { enabledTools: nextEnabledTools } : {}),
+        builtinTools: prev.builtinTools.map((t) =>
+          t.id === toolId ? { ...t, enabled } : t
+        ),
+      }));
+    } catch (err) {
+      showToast("Failed to save: " + err.message, "error");
+    }
+    setSaving(false);
+  }, [agentId, tools]);
+
+  const toggleBosunTool = useCallback(async (toolId, enabled) => {
+    const bosunIds = (tools.bosunTools || []).map((tool) => String(tool?.id || "").trim()).filter(Boolean);
+    const bosunIdSet = new Set(bosunIds);
+    const currentEnabledTools = Array.isArray(tools.enabledTools)
+      ? tools.enabledTools.map((id) => String(id || "").trim()).filter(Boolean)
+      : [];
+    const currentSet = new Set(currentEnabledTools);
+    const hasBosunAllowlist = bosunIds.some((id) => currentSet.has(id));
+    const nextBosunSet = hasBosunAllowlist
+      ? new Set(currentEnabledTools.filter((id) => bosunIdSet.has(id)))
+      : new Set(bosunIds);
+    if (enabled) nextBosunSet.add(toolId);
+    else nextBosunSet.delete(toolId);
+    const preserved = currentEnabledTools.filter((id) => !bosunIdSet.has(id));
+    const nextEnabledTools = [...new Set([...preserved, ...nextBosunSet])];
+    setSaving(true);
+    try {
+      await saveAgentToolConfig(agentId, { enabledTools: nextEnabledTools });
+      setTools((prev) => ({
+        ...prev,
+        enabledTools: nextEnabledTools,
+      }));
+    } catch (err) {
+      showToast("Failed to save: " + err.message, "error");
+    }
+    setSaving(false);
+  }, [agentId, tools]);
+
+  const toggleMcpServer = useCallback(async (serverId, enabled) => {
+    const currentMcp = tools.mcpServers || [];
+    const newMcp = enabled
+      ? [...new Set([...currentMcp, serverId])]
+      : currentMcp.filter((id) => id !== serverId);
+    setSaving(true);
+    try {
+      await saveAgentToolConfig(agentId, { enabledMcpServers: newMcp });
+      setTools((prev) => ({ ...prev, mcpServers: newMcp }));
+    } catch (err) {
+      showToast("Failed to save: " + err.message, "error");
+    }
+    setSaving(false);
+  }, [agentId, tools]);
+
+  const enabledMcpSet = new Set(tools.mcpServers || []);
+  const bosunTools = Array.isArray(tools.bosunTools) ? tools.bosunTools : [];
+  const bosunToolIds = bosunTools.map((tool) => String(tool?.id || "").trim()).filter(Boolean);
+  const rawEnabledTools = Array.isArray(tools.enabledTools)
+    ? tools.enabledTools.map((id) => String(id || "").trim()).filter(Boolean)
+    : null;
+  const hasBosunAllowlist = Boolean(rawEnabledTools && rawEnabledTools.some((id) => bosunToolIds.includes(id)));
+  const enabledBosunSet = new Set(
+    hasBosunAllowlist
+      ? rawEnabledTools.filter((id) => bosunToolIds.includes(id))
+      : bosunToolIds,
+  );
+
+  if (loading) {
+    return html`<${Box} sx=${{ textAlign: "center", py: 2 }}>
+      <${CircularProgress} size=${16} /> <${Typography} variant="caption" sx=${{ ml: 1 }}>Loading tools...<//>
+    <//>`;
+  }
+
+  return html`
+    <${Box} sx=${{ mt: 2, pt: 2, borderTop: 1, borderColor: "divider" }}>
+      <${Stack} direction="row" alignItems="center" spacing=${1} sx=${{ mb: 1 }}>
+        <${Typography} variant="subtitle2">${iconText(":settings: Tools & MCP Servers")}<//>
+        ${saving && html`<${CircularProgress} size=${12} />`}
+      <//>
+
+      <${Tabs} value=${toolsTab} onChange=${(e, v) => setToolsTab(v)} variant="scrollable" scrollButtons="auto" sx=${{ mb: 1 }}>
+        <${Tab} value="builtin" label=${html`<${Stack} direction="row" spacing=${0.5} alignItems="center">
+          <span>${iconText(":cpu: Built-in")}</span>
+          <${Chip} label=${`${(tools.builtinTools || []).filter((t) => t.enabled).length}/${(tools.builtinTools || []).length}`} size="small" />
+        <//>`} />
+        <${Tab} value="bosun" label=${html`<${Stack} direction="row" spacing=${0.5} alignItems="center">
+          <span>${iconText(":zap: Bosun")}</span>
+          <${Chip} label=${`${enabledBosunSet.size}/${bosunTools.length}`} size="small" />
+        <//>`} />
+        <${Tab} value="mcp" label=${html`<${Stack} direction="row" spacing=${0.5} alignItems="center">
+          <span>${iconText(":plug: MCP")}</span>
+          <${Chip} label=${`${enabledMcpSet.size}/${installed.length}`} size="small" />
+        <//>`} />
+      <//>
+
+      ${toolsTab === "builtin" && html`
+        <${List} dense>
+          ${(tools.builtinTools || []).map((tool) => html`
+            <${ListItem} key=${tool.id}>
+              <${ListItemIcon} sx=${{ minWidth: 36 }}>${resolveIcon(tool.icon) || iconText(tool.icon || ":cpu:")}<//>
+              <${ListItemText} primary=${tool.name} secondary=${tool.description} primaryTypographyProps=${{ variant: "body2", fontWeight: 500 }} secondaryTypographyProps=${{ variant: "caption" }} />
+              <${Switch}
+                edge="end"
+                size="small"
+                checked=${tool.enabled}
+                onChange=${(e) => toggleBuiltinTool(tool.id, e.target.checked)}
+              />
+            <//>
+          `)}
+        <//>
+      `}
+
+      ${toolsTab === "bosun" && html`
+        <${Accordion} defaultExpanded>
+          <${AccordionSummary}>
+            <${Typography} variant="caption" sx=${{ textTransform: "uppercase", fontWeight: 600, letterSpacing: 0.5 }}>Runtime Voice Tools<//>
+          <//>
+          <${AccordionDetails}>
+            ${bosunTools.length === 0 && html`
+              <${Typography} variant="body2" color="text.secondary" sx=${{ textAlign: "center", py: 1.5 }}>
+                No Bosun runtime tools were discovered.
+              <//>
+            `}
+            <${List} dense>
+              ${bosunTools.map((tool) => html`
+                <${ListItem} key=${tool.id}>
+                  <${ListItemIcon} sx=${{ minWidth: 36 }}>${resolveIcon(":zap:") || iconText(":zap:")}<//>
+                  <${ListItemText} primary=${tool.name} secondary=${tool.description || "Bosun runtime tool"} primaryTypographyProps=${{ variant: "body2", fontWeight: 500 }} secondaryTypographyProps=${{ variant: "caption" }} />
+                  <${Switch}
+                    edge="end"
+                    size="small"
+                    checked=${enabledBosunSet.has(tool.id)}
+                    onChange=${(e) => toggleBosunTool(tool.id, e.target.checked)}
+                  />
+                <//>
+              `)}
+            <//>
+          <//>
+        <//>
+      `}
+
+      ${toolsTab === "mcp" && html`
+        <${List} dense>
+          ${installed.length === 0 && html`
+            <${Typography} variant="body2" color="text.secondary" sx=${{ textAlign: "center", py: 1.5 }}>
+              No MCP servers installed. Use the MCP Servers tab to install from the marketplace.
+            <//>
+          `}
+          ${installed.map((srv) => html`
+            <${ListItem} key=${srv.id}>
+              <${ListItemIcon} sx=${{ minWidth: 36 }}>${resolveIcon(":plug:") || iconText(":plug:")}<//>
+              <${ListItemText} primary=${srv.name} secondary=${srv.description || `Transport: ${srv.meta?.transport || "stdio"}`} primaryTypographyProps=${{ variant: "body2", fontWeight: 500 }} secondaryTypographyProps=${{ variant: "caption" }} />
+              <${Switch}
+                edge="end"
+                size="small"
+                checked=${enabledMcpSet.has(srv.id)}
+                onChange=${(e) => toggleMcpServer(srv.id, e.target.checked)}
+              />
+            <//>
+          `)}
+        <//>
+      `}
+    <//>
+  `;
+}
+
+/* ─ MCP Marketplace / Catalog ─────────────────────────────── */
+
+function McpMarketplace({ onInstalled }) {
+  const [catalog, setCatalog] = useState([]);
+  const [installed, setInstalled] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [installing, setInstalling] = useState(null);
+  const [uninstalling, setUninstalling] = useState(null);
+  const [configuring, setConfiguring] = useState(null);
+  const [envEdits, setEnvEdits] = useState({});
+  const [showCustom, setShowCustom] = useState(false);
+  const [marketplaceSearch, setMarketplaceSearch] = useState("");
+
+  const loadData = useCallback(async () => {
+    setLoading(true);
+    try {
+      const [cat, inst] = await Promise.all([
+        fetchMcpCatalog(),
+        fetchMcpInstalled(),
+      ]);
+      setCatalog(cat);
+      setInstalled(inst);
+      mcpCatalog.value = cat;
+      mcpInstalled.value = inst;
+    } catch (err) {
+      showToast("Failed to load MCP data: " + err.message, "error");
+    }
+    setLoading(false);
+  }, []);
+
+  useEffect(() => { loadData(); }, []);
+
+  const installedIds = new Set(installed.map((s) => s.id));
+
+  const handleInstall = useCallback(async (catalogId) => {
+    setInstalling(catalogId);
+    try {
+      const envVars = envEdits[catalogId] || {};
+      const res = await installMcp(catalogId, envVars);
+      if (res?.ok) {
+        showToast(`Installed ${catalogId}`, "success");
+        await loadData();
+        onInstalled?.();
+      } else {
+        showToast(res?.error || "Install failed", "error");
+      }
+    } catch (err) {
+      showToast("Install failed: " + err.message, "error");
+    }
+    setInstalling(null);
+  }, [envEdits, loadData, onInstalled]);
+
+  const handleUninstall = useCallback(async (id) => {
+    setUninstalling(id);
+    try {
+      const res = await uninstallMcp(id);
+      if (res?.ok) {
+        showToast(`Uninstalled ${id}`, "success");
+        await loadData();
+        onInstalled?.();
+      } else {
+        showToast(res?.error || "Uninstall failed", "error");
+      }
+    } catch (err) {
+      showToast("Uninstall failed: " + err.message, "error");
+    }
+    setUninstalling(null);
+  }, [loadData, onInstalled]);
+
+  const handleConfigure = useCallback(async (id) => {
+    const env = envEdits[id] || {};
+    try {
+      const res = await configureMcpEnv(id, env);
+      if (res?.ok) {
+        showToast(`Updated ${id} configuration`, "success");
+        setConfiguring(null);
+      } else {
+        showToast(res?.error || "Update failed", "error");
+      }
+    } catch (err) {
+      showToast("Update failed: " + err.message, "error");
+    }
+  }, [envEdits]);
+
+  const handleCustomInstall = useCallback(async (def) => {
+    setInstalling("custom");
+    try {
+      const res = await installMcp(def);
+      if (res?.ok) {
+        showToast(`Installed custom MCP server: ${def.name}`, "success");
+        setShowCustom(false);
+        await loadData();
+        onInstalled?.();
+      } else {
+        showToast(res?.error || "Install failed", "error");
+      }
+    } catch (err) {
+      showToast("Install failed: " + err.message, "error");
+    }
+    setInstalling(null);
+  }, [loadData, onInstalled]);
+
+  const updateEnv = useCallback((serverId, key, value) => {
+    setEnvEdits((prev) => ({
+      ...prev,
+      [serverId]: { ...(prev[serverId] || {}), [key]: value },
+    }));
+  }, []);
+
+  const filteredCatalog = useMemo(() => {
+    if (!marketplaceSearch.trim()) return catalog;
+    const q = marketplaceSearch.toLowerCase();
+    return catalog.filter(
+      (s) => s.name.toLowerCase().includes(q) ||
+        s.description.toLowerCase().includes(q) ||
+        (s.tags || []).some((t) => t.toLowerCase().includes(q)),
+    );
+  }, [catalog, marketplaceSearch]);
+
+  if (loading) {
+    return html`<div style="text-align:center;padding:40px;"><${Spinner} /> Loading MCP marketplace...</div>`;
+  }
+
+  return html`
+    <div class="mcp-section">
+      <!-- Installed section -->
+      ${installed.length > 0 && html`
+        <div class="mcp-section-header">
+          <h3>${iconText(":check: Installed")} (${installed.length})</h3>
+        </div>
+        <div class="mcp-catalog-grid">
+          ${installed.map((srv) => html`
+            <div class="mcp-card" key=${srv.id}>
+              <div class="mcp-card-header">
+                <span class="mcp-card-name">${srv.name}</span>
+                <${Badge} text="Installed" status="success" />
+              </div>
+              <div class="mcp-card-desc">${srv.description}</div>
+              <div class="mcp-card-tags">
+                ${(srv.tags || []).map((t) => html`<span class="mcp-card-tag" key=${t}>${t}</span>`)}
+              </div>
+              <div class="mcp-card-actions">
+                <${Button} variant="outlined" color="error" size="small"
+                  onClick=${() => handleUninstall(srv.id)}
+                  disabled=${uninstalling === srv.id}>
+                  ${uninstalling === srv.id ? html`<${Spinner} size=${12} />` : "Uninstall"}
+                <//>
+                <${Button} variant="outlined" size="small" onClick=${() => setConfiguring(configuring === srv.id ? null : srv.id)}>
+                  ${iconText(":settings: Configure")}
+                <//>
+              </div>
+              ${configuring === srv.id && html`
+                <div class="mcp-env-editor">
+                  <div style="font-size:0.78em;color:var(--text-secondary);margin-bottom:4px;">
+                    Environment Variables
+                  </div>
+                  ${Object.entries(srv.meta?.env || {}).map(([key, val]) => html`
+                    <div class="mcp-env-row" key=${key}>
+                      <span class="mcp-env-key">${key}</span>
+                      <${TextField} size="small" variant="outlined"
+                        type=${key.toLowerCase().includes("key") || key.toLowerCase().includes("token") || key.toLowerCase().includes("secret") ? "password" : "text"}
+                        value=${envEdits[srv.id]?.[key] ?? val}
+                        placeholder="Enter value..."
+                        onInput=${(e) => updateEnv(srv.id, key, e.target.value)} />
+                    </div>
+                  `)}
+                  ${Object.keys(srv.meta?.env || {}).length === 0 && html`
+                    <div style="font-size:0.82em;color:var(--text-tertiary,#666);">No environment variables required.</div>
+                  `}
+                  <div style="display:flex;gap:6px;justify-content:flex-end;margin-top:6px;">
+                    <${Button} variant="text" size="small" onClick=${() => setConfiguring(null)}>Cancel<//>
+                    <${Button} variant="contained" size="small" onClick=${() => handleConfigure(srv.id)}>
+                      ${iconText(":check: Save")}
+                    <//>
+                  </div>
+                </div>
+              `}
+            </div>
+          `)}
+        </div>
+      `}
+
+      <!-- Marketplace Catalog -->
+      <div class="mcp-section-header">
+        <h3>${iconText(":shopping: MCP Marketplace")}</h3>
+        <${Button} variant="outlined" size="small" onClick=${() => setShowCustom(!showCustom)}>
+          ${iconText("➕ Custom Server")}
+        <//>
+      </div>
+
+      <div style="margin-bottom:8px;">
+        <${SearchInput}
+          value=${marketplaceSearch}
+          onChange=${setMarketplaceSearch}
+          placeholder="Search marketplace (GitHub, Playwright, Exa, etc.)..." />
+      </div>
+
+      ${showCustom && html`
+        <${McpCustomInstallForm} onInstall=${handleCustomInstall} installing=${installing === "custom"} />
+      `}
+
+      <div class="mcp-catalog-grid">
+        ${filteredCatalog.map((srv) => {
+          const isInstalled = installedIds.has(srv.id);
+          const hasEnv = srv.env && Object.keys(srv.env).length > 0;
+          const isInstalling = installing === srv.id;
+          return html`
+            <div class="mcp-card" key=${srv.id}>
+              <div class="mcp-card-header">
+                <span class="mcp-card-name">${srv.name}</span>
+                ${isInstalled && html`<${Badge} text="Installed" status="success" />`}
+              </div>
+              <div class="mcp-card-desc">${srv.description}</div>
+              <div class="mcp-card-tags">
+                ${(srv.tags || []).map((t) => html`<span class="mcp-card-tag" key=${t}>${t}</span>`)}
+                <span class="mcp-card-tag" style="background:rgba(255,255,255,0.05);color:var(--text-tertiary,#666);">
+                  ${srv.transport}
+                </span>
+              </div>
+              ${hasEnv && !isInstalled && html`
+                <div class="mcp-env-editor">
+                  ${Object.entries(srv.env).map(([key, val]) => html`
+                    <div class="mcp-env-row" key=${key}>
+                      <span class="mcp-env-key">${key}</span>
+                      <${TextField} size="small" variant="outlined"
+                        type=${key.toLowerCase().includes("key") || key.toLowerCase().includes("token") || key.toLowerCase().includes("secret") ? "password" : "text"}
+                        value=${envEdits[srv.id]?.[key] ?? ""}
+                        placeholder=${val || "Enter value..."}
+                        onInput=${(e) => updateEnv(srv.id, key, e.target.value)} />
+                    </div>
+                  `)}
+                </div>
+              `}
+              ${srv.homepage && html`
+                <div style="font-size:0.75em;">
+                  <a href=${srv.homepage} target="_blank" rel="noopener"
+                    style="color:var(--accent,#58a6ff);text-decoration:none;">
+                    ${iconText(":link: Documentation")}
+                  </a>
+                </div>
+              `}
+              <div class="mcp-card-actions">
+                ${isInstalled
+                  ? html`<${Button} variant="outlined" size="small" disabled>✓ Installed<//>`
+                  : html`
+                    <${Button} variant="contained" size="small"
+                      onClick=${() => handleInstall(srv.id)}
+                      disabled=${isInstalling}>
+                      ${isInstalling ? html`<${Spinner} size=${12} />` : iconText(":download: Install")}
+                    <//>
+                  `
+                }
+              </div>
+            </div>
+          `;
+        })}
+      </div>
+
+      ${filteredCatalog.length === 0 && html`
+        <div style="text-align:center;padding:20px;color:var(--text-secondary);font-size:0.9em;">
+          ${marketplaceSearch ? "No MCP servers match your search." : "No catalog entries available."}
+        </div>
+      `}
+    </div>
+  `;
+}
+
+/* ─ Custom MCP Install Form ───────────────────────────────── */
+
+function McpCustomInstallForm({ onInstall, installing }) {
+  const [form, setForm] = useState({
+    name: "",
+    description: "",
+    transport: "stdio",
+    command: "npx",
+    args: "",
+    url: "",
+    tags: "",
+    envKeys: "",
+  });
+
+  const updateField = (key) => (e) => setForm((f) => ({ ...f, [key]: e.target.value }));
+
+  const handleSubmit = useCallback(() => {
+    if (!form.name.trim()) {
+      showToast("Server name is required", "error");
+      return;
+    }
+    const def = {
+      name: form.name.trim(),
+      description: form.description.trim(),
+      transport: form.transport,
+      tags: form.tags.split(/[,\s]+/).filter(Boolean),
+    };
+    if (form.transport === "stdio") {
+      def.command = form.command.trim() || "npx";
+      def.args = form.args.split(/\s+/).filter(Boolean);
+    } else {
+      def.url = form.url.trim();
+    }
+    // Parse env keys
+    if (form.envKeys.trim()) {
+      def.env = {};
+      for (const key of form.envKeys.split(/[,\s]+/).filter(Boolean)) {
+        def.env[key] = "";
+      }
+    }
+    onInstall(def);
+  }, [form, onInstall]);
+
+  return html`
+    <div class="mcp-custom-form">
+      <div style="font-size:0.88em;font-weight:600;color:var(--text-primary);">
+        ${iconText("➕ Install Custom MCP Server")}
+      </div>
+      <label>
+        Name *
+        <${TextField} size="small" variant="outlined" value=${form.name} onInput=${updateField("name")}
+          placeholder="e.g. My Custom Server" fullWidth />
+      </label>
+      <label>
+        Description
+        <${TextField} size="small" variant="outlined" value=${form.description} onInput=${updateField("description")}
+          placeholder="Brief description" fullWidth />
+      </label>
+      <label>
+        Transport
+        <${Select} size="small" value=${form.transport} onChange=${updateField("transport")}>
+          <${MenuItem} value="stdio">stdio (command + args)<//>
+          <${MenuItem} value="url">URL (HTTP/SSE endpoint)<//>
+        <//>
+      </label>
+      ${form.transport === "stdio" && html`
+        <label>
+          Command
+          <${TextField} size="small" variant="outlined" value=${form.command} onInput=${updateField("command")}
+            placeholder="npx" fullWidth />
+        </label>
+        <label>
+          Arguments (space-separated)
+          <${TextField} size="small" variant="outlined" value=${form.args} onInput=${updateField("args")}
+            placeholder="-y @scope/mcp-server" fullWidth />
+        </label>
+      `}
+      ${form.transport === "url" && html`
+        <label>
+          URL
+          <${TextField} size="small" variant="outlined" value=${form.url} onInput=${updateField("url")}
+            placeholder="https://example.com/mcp" fullWidth />
+        </label>
+      `}
+      <label>
+        Tags (comma-separated)
+        <${TextField} size="small" variant="outlined" value=${form.tags} onInput=${updateField("tags")}
+          placeholder="custom, tools" fullWidth />
+      </label>
+      <label>
+        Environment Variable Keys (comma-separated, values set after install)
+        <${TextField} size="small" variant="outlined" value=${form.envKeys} onInput=${updateField("envKeys")}
+          placeholder="API_KEY, SECRET_TOKEN" fullWidth />
+      </label>
+      <div class="library-actions">
+        <${Button} variant="contained" size="small" onClick=${handleSubmit} disabled=${installing}>
+          ${installing ? html`<${Spinner} size=${14} />` : iconText(":download: Install")}
+        <//>
+      </div>
+    </div>
   `;
 }
 
@@ -533,9 +1464,9 @@ function ScopeDetector() {
 
   return html`
     <div>
-      <button class="btn-ghost library-type-pill" onClick=${loadScopes} style="font-size:0.82em;">
+      <${Button} variant="text" size="small" onClick=${loadScopes} sx=${{ fontSize: "0.82em" }}>
         ${loading ? html`<${Spinner} size=${12} />` : iconText(":search: Detect Scopes")}
-      </button>
+      <//>
       ${showing && scopes.value.length > 0 && html`
         <div class="library-scopes">
           ${scopes.value.map((s) => html`
@@ -578,14 +1509,18 @@ function ProfileMatcher() {
   return html`
     <div style="margin-bottom:12px;">
       <div style="display:flex;gap:8px;align-items:center;">
-        <input type="text" placeholder="Test task title, e.g. feat(portal): add login page"
-          value=${title} onInput=${(e) => setTitle(e.target.value)}
+        <${TextField}
+          size="small"
+          variant="outlined"
+          placeholder="Test task title, e.g. feat(portal): add login page"
+          value=${title}
+          onInput=${(e) => setTitle(e.target.value)}
           onKeyDown=${(e) => e.key === "Enter" && doMatch()}
-          style="flex:1;padding:6px 10px;border-radius:8px;border:1px solid var(--border,#333);
-            background:var(--bg-input,#0d1117);color:var(--text-primary,#eee);font-size:0.85em;" />
-        <button class="library-type-pill active" onClick=${doMatch} style="font-size:0.82em;" disabled=${loading}>
+          sx=${{ flex: 1, fontSize: "0.85em" }}
+        />
+        <${Button} variant="contained" size="small" onClick=${doMatch} sx=${{ fontSize: "0.82em" }} disabled=${loading}>
           ${loading ? html`<${Spinner} size=${12} />` : iconText(":target: Match")}
-        </button>
+        <//>
       </div>
       ${match && html`
         <div class="library-profile-match" style="margin-top:8px;">
@@ -621,9 +1556,13 @@ export function LibraryTab() {
   const loadEntries = useCallback(async () => {
     setLoading(true);
     try {
-      const data = await fetchEntries(filterType.value);
-      entries.value = data;
-      initialized.value = data.length > 0;
+      const [filteredEntries, globalEntries] = await Promise.all([
+        fetchEntries(filterType.value),
+        apiFetch("/api/library").then((res) => res?.data || []),
+      ]);
+      entries.value = filteredEntries;
+      allEntries.value = globalEntries;
+      initialized.value = globalEntries.length > 0;
     } catch (err) {
       showToast("Failed to load library: " + err.message, "error");
     }
@@ -631,6 +1570,17 @@ export function LibraryTab() {
   }, []);
 
   useEffect(() => { loadEntries(); }, [filterType.value]);
+
+  useEffect(() => {
+    const onWorkspaceSwitched = () => {
+      setEditing(null);
+      loadEntries();
+    };
+    window.addEventListener("ve:workspace-switched", onWorkspaceSwitched);
+    return () => {
+      window.removeEventListener("ve:workspace-switched", onWorkspaceSwitched);
+    };
+  }, [loadEntries]);
 
   // Debounced search
   const searchTimer = useRef(null);
@@ -673,6 +1623,13 @@ export function LibraryTab() {
     setEditing(entry);
   }, []);
 
+  const handleCreateAudioAgent = useCallback((templateKey) => {
+    const template = AUDIO_AGENT_TEMPLATES[templateKey];
+    if (!template) return;
+    haptic("light");
+    setEditing({ ...template });
+  }, []);
+
   const handleSaved = useCallback(() => {
     setEditing(null);
     loadEntries();
@@ -696,20 +1653,26 @@ export function LibraryTab() {
     <div class="library-root">
       <div class="library-header">
         <h2>${iconText(":book: Library")}</h2>
-        <button class="library-type-pill" onClick=${handleRebuild}
+        <${Button} variant="outlined" size="small" onClick=${() => handleCreateAudioAgent("female")}>
+          ${iconText(":mic: New Female Audio Agent")}
+        <//>
+        <${Button} variant="outlined" size="small" onClick=${() => handleCreateAudioAgent("male")}>
+          ${iconText(":mic: New Male Audio Agent")}
+        <//>
+        <${Button} variant="outlined" size="small" onClick=${handleRebuild}
           title="Rescan directories and rebuild manifest">
           ${iconText(":refresh: Rebuild")}
-        </button>
-        <button class="library-type-pill active" onClick=${() => setEditing({})}>
+        <//>
+        <${Button} variant="contained" size="small" onClick=${() => setEditing({})}>
           ${iconText("➕ New")}
-        </button>
+        <//>
       </div>
 
       ${!initialized.value && !loading && html`
         <div class="library-init-banner">
           <p><b>Welcome to the Library!</b></p>
           <p>Initialize to scaffold built-in agent profiles and index existing prompts and skills.</p>
-          <button onClick=${handleInit}>${iconText(":rocket: Initialize Library")}</button>
+          <${Button} variant="contained" size="small" onClick=${handleInit}>${iconText(":rocket: Initialize Library")}<//>
         </div>
       `}
 
@@ -720,19 +1683,25 @@ export function LibraryTab() {
           <${SearchInput}
             value=${searchQuery.value}
             onChange=${handleSearch}
-            placeholder="Search prompts, agents, skills..." />
+            placeholder="Search prompts, agents, skills, MCP servers..." />
         </div>
         <${TypePills} />
       </div>
 
-      <${ProfileMatcher} />
-      <${ScopeDetector} />
+      ${filterType.value !== "mcp" && html`<${ProfileMatcher} />`}
+      ${filterType.value !== "mcp" && html`<${ScopeDetector} />`}
 
-      ${loading && html`
+      ${/* ── MCP Marketplace View ── */
+        filterType.value === "mcp" && html`
+          <${McpMarketplace} onInstalled=${loadEntries} />
+        `
+      }
+
+      ${filterType.value !== "mcp" && loading && html`
         <div style="text-align:center;padding:40px;"><${Spinner} /> Loading library...</div>
       `}
 
-      ${!loading && displayed.length === 0 && initialized.value && html`
+      ${filterType.value !== "mcp" && !loading && displayed.length === 0 && initialized.value && html`
         <${EmptyState}
           icon="book"
           title="No resources found"
@@ -744,7 +1713,7 @@ export function LibraryTab() {
             : { label: "➕ New Resource", onClick: () => setEditing({}) }} />
       `}
 
-      ${!loading && displayed.length > 0 && html`
+      ${filterType.value !== "mcp" && !loading && displayed.length > 0 && html`
         <div class="library-grid">
           ${displayed.map((e) => html`
             <${LibraryCard} key=${e.id} entry=${e} onSelect=${handleSelect} />

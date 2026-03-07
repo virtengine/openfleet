@@ -38,7 +38,12 @@
   <script>
     try {
       var t = JSON.parse(localStorage.getItem('ve_settings_colorTheme'));
-      if (t === 'light' || t === 'dark') document.documentElement.setAttribute('data-theme', t);
+      if (typeof t === 'string' && t && t !== 'system') {
+        document.documentElement.setAttribute('data-theme', t);
+        document.documentElement.setAttribute('data-theme-lock', 'custom');
+      } else {
+        document.documentElement.setAttribute('data-theme-lock', 'system');
+      }
     } catch(e) {}
   </script>
   <!-- Import map: ensures all modules share a single Preact instance.
@@ -54,7 +59,14 @@
       "preact/compat":           "/vendor/preact-compat.js",
       "htm":                     "/vendor/htm.js",
       "@preact/signals-core":    "/vendor/preact-signals-core.js",
-      "@preact/signals":         "/vendor/preact-signals.js"
+      "@preact/signals":         "/vendor/preact-signals.js",
+      "react":                   "/vendor/preact-compat.js",
+      "react-dom":               "/vendor/preact-compat.js",
+      "react-dom/client":        "/vendor/preact-compat.js",
+      "react/jsx-runtime":       "/vendor/preact-jsx-runtime.js",
+      "@mui/material":           "/vendor/mui-material.js",
+      "@emotion/react":          "/vendor/emotion-react.js",
+      "@emotion/styled":         "/vendor/emotion-styled.js"
     }
   }
   </script>
@@ -66,7 +78,14 @@
       "preact/compat":           "/vendor/preact-compat.js",
       "htm":                     "/vendor/htm.js",
       "@preact/signals-core":    "/vendor/preact-signals-core.js",
-      "@preact/signals":         "/vendor/preact-signals.js"
+      "@preact/signals":         "/vendor/preact-signals.js",
+      "react":                   "/vendor/preact-compat.js",
+      "react-dom":               "/vendor/preact-compat.js",
+      "react-dom/client":        "/vendor/preact-compat.js",
+      "react/jsx-runtime":       "/vendor/preact-jsx-runtime.js",
+      "@mui/material":           "/vendor/mui-material.js",
+      "@emotion/react":          "/vendor/emotion-react.js",
+      "@emotion/styled":         "/vendor/emotion-styled.js"
     }
   }
   </script>
@@ -78,7 +97,14 @@
       "preact/compat":           "https://cdn.jsdelivr.net/npm/preact@10.25.4/compat/+esm",
       "htm":                     "https://cdn.jsdelivr.net/npm/htm@3.1.1/+esm",
       "@preact/signals-core":    "https://cdn.jsdelivr.net/npm/@preact/signals-core@1.8.0/+esm",
-      "@preact/signals":         "https://cdn.jsdelivr.net/npm/@preact/signals@1.3.1/+esm"
+      "@preact/signals":         "https://cdn.jsdelivr.net/npm/@preact/signals@1.3.1/+esm",
+      "react":                   "https://cdn.jsdelivr.net/npm/preact@10.25.4/compat/+esm",
+      "react-dom":               "https://cdn.jsdelivr.net/npm/preact@10.25.4/compat/+esm",
+      "react-dom/client":        "https://cdn.jsdelivr.net/npm/preact@10.25.4/compat/+esm",
+      "react/jsx-runtime":       "/vendor/preact-jsx-runtime.js",
+      "@mui/material":           "/vendor/mui-material.js",
+      "@emotion/react":          "/vendor/emotion-react.js",
+      "@emotion/styled":         "/vendor/emotion-styled.js"
     }
   }
   </script>
@@ -160,7 +186,7 @@
     const loadApp = async (bust = false) => {
       const base = new URL("/app.js", window.location.origin).toString();
       const url = bust ? `${base}?v=${Date.now()}` : base;
-      await preflightModuleFetch(url);
+       await preflightModuleFetch(url);
       if (window.importShim) {
         return window.importShim(url);
       }

@@ -13,6 +13,14 @@ import htm from "htm";
 
 const html = htm.bind(h);
 
+import {
+  Typography, Box, Stack, Chip, Paper, TextField, InputAdornment,
+  Select, MenuItem, FormControl, InputLabel, Button, IconButton, Tooltip,
+  CircularProgress, Alert, Switch, FormControlLabel, Table, TableBody,
+  TableCell, TableContainer, TableHead, TableRow, Divider, Tabs, Tab,
+  LinearProgress, Skeleton, Card, CardContent,
+} from "@mui/material";
+
 import { haptic, showAlert, getTg, openLink } from "../modules/telegram.js";
 import { apiFetch, sendCommandToChat } from "../modules/api.js";
 import {
@@ -38,16 +46,26 @@ import { navigateTo } from "../modules/router.js";
 import { ICONS } from "../modules/icons.js";
 import { iconText } from "../modules/icon-utils.js";
 import { formatBytes } from "../modules/utils.js";
-import { Card, Badge, EmptyState, SkeletonCard, Modal } from "../components/shared.js";
+import {
+  Card as LegacyCard, Badge, EmptyState, SkeletonCard, Modal,
+} from "../components/shared.js";
 import { SearchInput } from "../components/forms.js";
 
 /* ─── Log level helpers ─── */
 const LOG_LEVELS = [
-  { value: "all", label: "All" },
-  { value: "info", label: "Info" },
-  { value: "warn", label: "Warn" },
-  { value: "error", label: "Error" },
+  { value: "all", label: "All", color: "default" },
+  { value: "info", label: "Info", color: "info" },
+  { value: "warn", label: "Warn", color: "warning" },
+  { value: "error", label: "Error", color: "error" },
 ];
+
+function levelChipColor(line) {
+  const l = (line || "").toLowerCase();
+  if (l.includes("error") || l.includes("fatal")) return "error";
+  if (l.includes("warn")) return "warning";
+  if (l.includes("debug")) return "secondary";
+  return "info";
+}
 
 function filterByLevel(text, level) {
   if (!text || level === "all") return text;
@@ -462,201 +480,250 @@ export function LogsTab() {
 
   return html`
     <style>
-      .log-line { display: flex; }
+      .log-line { display: flex; align-items: baseline; }
       .log-ln { min-width: 3.5em; text-align: right; padding-right: 8px; opacity: 0.35; user-select: none; font-size: 0.85em; }
       .log-lt { flex: 1; white-space: pre-wrap; word-break: break-all; }
       .log-hl { background: rgba(250,204,21,0.3); border-radius: 2px; padding: 0 1px; }
     </style>
     <!-- Loading skeleton -->
-    ${!logsData?.value && !agentLogFiles?.value && html`<${Card} title="Loading Logs…"><${SkeletonCard} /><//>`}
+    ${!logsData?.value && !agentLogFiles?.value && html`
+      <${Paper} elevation=${1} sx=${{ p: 2, mb: 2 }}>
+        <${Typography} variant="h6" gutterBottom>Loading Logs…<//>
+        <${Skeleton} variant="rectangular" height=${120} />
+      <//>
+    `}
 
     <!-- ── System Logs ── -->
-    <${Card} title="System Logs">
-      <div class="range-row mb-sm">
-        <input
-          type="range"
-          min="20"
-          max="800"
-          step="20"
+    <${Paper} elevation=${1} sx=${{ p: 2, mb: 2 }}>
+      <${Typography} variant="h6" gutterBottom>System Logs<//>
+
+      <!-- Line count slider -->
+      <${Stack} direction="row" alignItems="center" spacing=${1} sx=${{ mb: 1 }}>
+        <${TextField}
+          type="number" size="small" variant="outlined"
+          inputProps=${{ min: 20, max: 800, step: 20 }}
           value=${localLogLines}
           onInput=${(e) => setLocalLogLines(Number(e.target.value))}
           onChange=${(e) => handleLogLinesChange(Number(e.target.value))}
+          sx=${{ flex: 1 }}
         />
-        <span class="pill">${localLogLines} lines</span>
-      </div>
-      <div class="chip-group mb-sm">
+        <${Chip} label="${localLogLines} lines" size="small" variant="outlined" />
+      <//>
+
+      <!-- Quick-select line counts -->
+      <${Stack} direction="row" spacing=${1} sx=${{ mb: 1 }}>
         ${[50, 200, 500].map(
           (n) => html`
-            <button
+            <${Chip}
               key=${n}
-              class="chip ${(logsLines?.value ?? localLogLines) === n
-                ? "active"
-                : ""}"
+              label=${String(n)}
+              size="small"
+              color=${(logsLines?.value ?? localLogLines) === n ? "primary" : "default"}
+              variant=${(logsLines?.value ?? localLogLines) === n ? "filled" : "outlined"}
               onClick=${() => handleLogLinesChange(n)}
-            >
-              ${n}
-            </button>
+              clickable
+            />
           `,
         )}
-      </div>
-      <div class="chip-group mb-sm">
+      <//>
+
+      <!-- Log level filter chips -->
+      <${Stack} direction="row" spacing=${1} sx=${{ mb: 1.5 }}>
         ${LOG_LEVELS.map(
           (l) => html`
-            <button
+            <${Chip}
               key=${l.value}
-              class="chip chip-outline ${logLevel === l.value ? "active" : ""}"
-              onClick=${() => {
-                haptic();
-                setLogLevel(l.value);
-              }}
-            >
-              ${l.label}
-            </button>
+              label=${l.label}
+              size="small"
+              color=${logLevel === l.value ? l.color : "default"}
+              variant=${logLevel === l.value ? "filled" : "outlined"}
+              onClick=${() => { haptic(); setLogLevel(l.value); }}
+              clickable
+            />
           `,
         )}
-      </div>
-      <div class="input-row mb-sm">
-        <input
-          class="input"
+      <//>
+
+      <!-- Search / regex / auto-scroll controls -->
+      <${Stack} direction="row" spacing=${1} alignItems="center" sx=${{ mb: 1.5 }}>
+        <${TextField}
+          size="small"
+          fullWidth
           placeholder=${regexMode ? "Regex pattern…" : "Search/grep logs…"}
           value=${logSearch}
           onInput=${(e) => setLogSearch(e.target.value)}
-        />
-        <button
-          class="btn btn-ghost btn-sm"
-          style="font-family:monospace;min-width:2.2em;padding:2px 6px;${regexMode ? "background:var(--accent);color:#fff;" : ""}"
-          onClick=${() => { setRegexMode(!regexMode); haptic(); }}
-          title="Toggle regex mode"
-        >.*</button>
-        ${logSearch.trim() && matchCount > 0 && html`<span class="pill">${matchCount} matches</span>`}
-        <label
-          class="meta-text toggle-label"
-          style="white-space:nowrap"
-          onClick=${() => {
-            setAutoScroll(!autoScroll);
-            haptic();
+          InputProps=${{
+            endAdornment: logSearch.trim() && matchCount > 0
+              ? html`<${InputAdornment} position="end">
+                  <${Chip} label="${matchCount} matches" size="small" color="info" />
+                <//>` : null,
           }}
-        >
-          <input
-            type="checkbox"
+        />
+        <${Tooltip} title="Toggle regex mode">
+          <${IconButton}
+            size="small"
+            color=${regexMode ? "primary" : "default"}
+            onClick=${() => { setRegexMode(!regexMode); haptic(); }}
+            sx=${{ fontFamily: "monospace", fontWeight: "bold" }}
+          >.*<//>
+        <//>
+        <${FormControlLabel}
+          control=${html`<${Switch}
+            size="small"
             checked=${autoScroll}
-            style="accent-color:var(--accent)"
-          />
-          Auto-scroll
-        </label>
-      </div>
-      <div ref=${logRef} class="log-box" onScroll=${handleLogScroll} style="overflow-y:auto">
+            onChange=${() => { setAutoScroll(!autoScroll); haptic(); }}
+          />`}
+          label="Auto-scroll"
+          sx=${{ whiteSpace: "nowrap", ml: 0.5 }}
+        />
+      <//>
+
+      <!-- Virtualized log viewer -->
+      <${Paper}
+        variant="outlined"
+        ref=${logRef}
+        onScroll=${handleLogScroll}
+        sx=${{
+          maxHeight: 400, overflow: "auto", p: 1, mb: 1,
+          fontFamily: "monospace", fontSize: "0.82rem",
+          bgcolor: "grey.900", color: "grey.100",
+        }}
+      >
         <div style="height:${topSpacer}px"></div>
         ${visibleLines.map((line, i) => {
           const lineNum = startIdx + i + 1;
           return html`<div class="log-line" key=${lineNum} style="height:${LINE_HEIGHT}px">
-            <span class="log-ln">${lineNum}</span>
+            <${Typography} variant="caption" component="span" className="log-ln" sx=${{ color: "grey.500" }}>${lineNum}<//>
             <span class="log-lt">${logSearch.trim() ? highlightLine(line, logSearch, regexMode) : line}</span>
           </div>`;
         })}
         <div style="height:${bottomSpacer}px"></div>
-      </div>
-      <div class="btn-row mt-sm">
-        <button
-          class="btn btn-ghost btn-sm"
-          onClick=${() =>
-            sendCommandToChat(`/logs ${logsLines?.value ?? localLogLines}`)}
-        >
-          /logs to chat
-        </button>
-        <button
-          class="btn btn-ghost btn-sm"
-          onClick=${() => copyToClipboard(filteredLogText, "Logs")}
-        >
-          ${iconText(":clipboard: Copy")}
-        </button>
-        <button
-          class="btn btn-ghost btn-sm"
-          onClick=${downloadLogs}
-        >
-          ${iconText(":save: Download")}
-        </button>
-      </div>
+      <//>
+
+      <!-- Action buttons -->
+      <${Stack} direction="row" spacing=${1}>
+        <${Tooltip} title="Send logs to chat">
+          <${Button} size="small" variant="outlined"
+            onClick=${() => sendCommandToChat(`/logs ${logsLines?.value ?? localLogLines}`)}
+          >/logs to chat<//>
+        <//>
+        <${Tooltip} title="Copy logs to clipboard">
+          <${Button} size="small" variant="outlined"
+            onClick=${() => copyToClipboard(filteredLogText, "Logs")}
+          >${iconText(":clipboard: Copy")}<//>
+        <//>
+        <${Tooltip} title="Download log file">
+          <${Button} size="small" variant="outlined"
+            onClick=${downloadLogs}
+          >${iconText(":save: Download")}<//>
+        <//>
+      <//>
     <//>
 
     <!-- ── Agent Log Library ── -->
-    <${Card} title="Agent Log Library">
-      <div class="input-row mb-sm">
-        <input
-          class="input"
+    <${Paper} elevation=${1} sx=${{ p: 2, mb: 2 }}>
+      <${Typography} variant="h6" gutterBottom>Agent Log Library<//>
+      <${Stack} direction="row" spacing=${1} sx=${{ mb: 1.5 }}>
+        <${TextField}
+          size="small"
+          fullWidth
           placeholder="Search log files"
           value=${agentLogQuery?.value ?? ""}
-          onInput=${(e) => {
-            if (agentLogQuery) agentLogQuery.value = e.target.value;
-          }}
+          onInput=${(e) => { if (agentLogQuery) agentLogQuery.value = e.target.value; }}
         />
-        <button class="btn btn-secondary btn-sm" onClick=${handleAgentSearch}>
+        <${Button} size="small" variant="contained" onClick=${handleAgentSearch}>
           ${iconText(":search: Search")}
-        </button>
-      </div>
-      <div class="range-row mb-md">
-        <input
-          type="range"
-          min="50"
-          max="800"
-          step="50"
+        <//>
+      <//>
+      <${Stack} direction="row" alignItems="center" spacing=${1} sx=${{ mb: 1.5 }}>
+        <${TextField}
+          type="number" size="small" variant="outlined"
+          inputProps=${{ min: 50, max: 800, step: 50 }}
           value=${localAgentLines}
           onInput=${(e) => setLocalAgentLines(Number(e.target.value))}
           onChange=${(e) => handleAgentLinesChange(Number(e.target.value))}
+          sx=${{ flex: 1 }}
         />
-        <span class="pill">${localAgentLines} lines</span>
-      </div>
+        <${Chip} label="${localAgentLines} lines" size="small" variant="outlined" />
+      <//>
     <//>
 
     <!-- ── Log Files list ── -->
-    <${Card} title="Log Files">
+    <${Paper} elevation=${1} sx=${{ p: 2, mb: 2 }}>
+      <${Typography} variant="h6" gutterBottom>Log Files<//>
       ${(agentLogFiles?.value || []).length
-        ? (agentLogFiles.value || []).map(
-            (file) => html`
-              <div
-                key=${file.name}
-                class="task-card"
-                style="cursor:pointer"
-                onClick=${() => handleAgentOpen(file.name)}
-              >
-                <div class="task-card-header">
-                  <div>
-                    <div class="task-card-title">${file.name}</div>
-                    <div class="task-card-meta">
-                      ${formatBytes
-                        ? formatBytes(file.size)
-                        : Math.round(file.size / 1024) + "kb"}
-                      · ${formatTimestamp(file.mtime ?? file.mtimeMs ?? file.updatedAt, "time unknown")}
-                    </div>
-                  </div>
-                  <${Badge} status="log" text="log" />
-                </div>
-              </div>
-            `,
-          )
+        ? html`
+          <${TableContainer}>
+            <${Table} size="small">
+              <${TableHead}>
+                <${TableRow}>
+                  <${TableCell}>Name<//>
+                  <${TableCell}>Size<//>
+                  <${TableCell}>Modified<//>
+                  <${TableCell} align="right">Type<//>
+                </${TableRow}>
+              <//>
+              <${TableBody}>
+                ${(agentLogFiles.value || []).map(
+                  (file) => html`
+                    <${TableRow}
+                      key=${file.name}
+                      hover
+                      sx=${{ cursor: "pointer" }}
+                      onClick=${() => handleAgentOpen(file.name)}
+                    >
+                      <${TableCell}>
+                        <${Typography} variant="body2" sx=${{ fontFamily: "monospace" }}>${file.name}<//>
+                      <//>
+                      <${TableCell}>
+                        <${Typography} variant="caption">${formatBytes ? formatBytes(file.size) : Math.round(file.size / 1024) + "kb"}<//>
+                      <//>
+                      <${TableCell}>
+                        <${Typography} variant="caption">${formatTimestamp(file.mtime ?? file.mtimeMs ?? file.updatedAt, "time unknown")}<//>
+                      <//>
+                      <${TableCell} align="right">
+                        <${Chip} label="log" size="small" color="default" variant="outlined" />
+                      <//>
+                    </${TableRow}>
+                  `,
+                )}
+              <//>
+            </${Table}>
+          <//>
+        `
         : html`<${EmptyState} message="No log files found." />`}
     <//>
 
     <!-- ── Log Tail viewer ── -->
-    <${Card} title=${agentLogFile?.value || "Log Tail"}>
+    <${Paper} elevation=${1} sx=${{ p: 2, mb: 2 }}>
+      <${Typography} variant="h6" gutterBottom>${agentLogFile?.value || "Log Tail"}<//>
       ${agentLogTail?.value?.truncated &&
-      html`<span class="pill mb-sm">Tail clipped</span>`}
-      <div ref=${tailRef} class="log-box">${rawTailText}</div>
-      <div class="btn-row mt-sm">
-        <button
-          class="btn btn-ghost btn-sm"
-          onClick=${() => copyToClipboard(rawTailText, "Log tail")}
-        >
-          ${iconText(":clipboard: Copy")}
-        </button>
-      </div>
+      html`<${Chip} label="Tail clipped" size="small" color="warning" sx=${{ mb: 1 }} />`}
+      <${Paper}
+        variant="outlined"
+        ref=${tailRef}
+        sx=${{
+          maxHeight: 300, overflow: "auto", p: 1, mb: 1,
+          fontFamily: "monospace", fontSize: "0.82rem",
+          bgcolor: "grey.900", color: "grey.100",
+        }}
+      >${rawTailText}<//>
+      <${Stack} direction="row" spacing=${1}>
+        <${Tooltip} title="Copy log tail">
+          <${Button} size="small" variant="outlined"
+            onClick=${() => copyToClipboard(rawTailText, "Log tail")}
+          >${iconText(":clipboard: Copy")}<//>
+        <//>
+      <//>
     <//>
 
     <!-- ── Worktree Context ── -->
-    <${Card} title="Worktree Context">
-      <div class="input-row mb-sm">
-        <input
-          class="input"
+    <${Paper} elevation=${1} sx=${{ p: 2, mb: 2 }}>
+      <${Typography} variant="h6" gutterBottom>Worktree Context<//>
+      <${Stack} direction="row" spacing=${1} sx=${{ mb: 1.5 }}>
+        <${TextField}
+          size="small"
+          fullWidth
           placeholder="Branch fragment"
           value=${contextQuery}
           onInput=${(e) => setContextQuery(e.target.value)}
@@ -664,11 +731,18 @@ export function LogsTab() {
             if (e.key === "Enter") { e.preventDefault(); handleContextLoad(); }
           }}
         />
-        <button class="btn btn-secondary btn-sm" onClick=${handleContextLoad}>
+        <${Button} size="small" variant="contained" onClick=${handleContextLoad}>
           ${iconText(":folder: Load")}
-        </button>
-      </div>
-      <div class="log-box">
+        <//>
+      <//>
+      <${Paper}
+        variant="outlined"
+        sx=${{
+          maxHeight: 260, overflow: "auto", p: 1, mb: 1,
+          fontFamily: "monospace", fontSize: "0.82rem",
+          bgcolor: "grey.900", color: "grey.100",
+        }}
+      >
         ${agentContext?.value
           ? [
               "Worktree: " + (agentContext.value.name || "?"),
@@ -680,128 +754,131 @@ export function LogsTab() {
               agentContext.value.diffStat || "No diff stat.",
             ].join("\n")
           : "Load a worktree context to view git log/status."}
-      </div>
+      <//>
       ${agentContext?.value &&
       html`
-        <div class="btn-row mt-sm">
-          <button
-            class="btn btn-ghost btn-sm"
-            onClick=${() =>
-              copyToClipboard(
-                [
-                  agentContext.value.gitLog,
-                  agentContext.value.gitStatus,
-                  agentContext.value.diffStat,
-                ]
-                  .filter(Boolean)
-                  .join("\n\n"),
-                "Context",
-              )}
-          >
-            ${iconText(":clipboard: Copy")}
-          </button>
-        </div>
+        <${Stack} direction="row" spacing=${1}>
+          <${Tooltip} title="Copy context">
+            <${Button} size="small" variant="outlined"
+              onClick=${() =>
+                copyToClipboard(
+                  [
+                    agentContext.value.gitLog,
+                    agentContext.value.gitStatus,
+                    agentContext.value.diffStat,
+                  ]
+                    .filter(Boolean)
+                    .join("\n\n"),
+                  "Context",
+                )}
+            >${iconText(":clipboard: Copy")}<//>
+          <//>
+        <//>
       `}
     <//>
 
     <!-- ── Git Snapshot ── -->
-    <${Card} title="Git Snapshot">
-      <div class="btn-row mb-sm">
-        <button class="btn btn-secondary btn-sm" onClick=${handleGitRefresh}>
+    <${Paper} elevation=${1} sx=${{ p: 2, mb: 2 }}>
+      <${Typography} variant="h6" gutterBottom>Git Snapshot<//>
+      <${Stack} direction="row" spacing=${1} sx=${{ mb: 1.5 }}>
+        <${Button} size="small" variant="contained" onClick=${handleGitRefresh}>
           ${ICONS.refresh} Refresh
-        </button>
-        <button
-          class="btn btn-ghost btn-sm"
+        <//>
+        <${Button} size="small" variant="outlined"
           onClick=${() => sendCommandToChat("/diff")}
-        >
-          /diff
-        </button>
-        <button
-          class="btn btn-ghost btn-sm"
-          onClick=${() => copyToClipboard(gitDiff?.value || "", "Diff")}
-        >
-          ${iconText(":clipboard: Copy")}
-        </button>
-      </div>
-      <div class="log-box mb-md">
-        ${gitDiff?.value || "Clean working tree."}
-      </div>
-      <div class="card-subtitle">Recent Branches</div>
+        >/diff<//>
+        <${Tooltip} title="Copy diff">
+          <${Button} size="small" variant="outlined"
+            onClick=${() => copyToClipboard(gitDiff?.value || "", "Diff")}
+          >${iconText(":clipboard: Copy")}<//>
+        <//>
+      <//>
+      <${Paper}
+        variant="outlined"
+        sx=${{
+          maxHeight: 300, overflow: "auto", p: 1, mb: 2,
+          fontFamily: "monospace", fontSize: "0.82rem",
+          bgcolor: "grey.900", color: "grey.100",
+        }}
+      >${gitDiff?.value || "Clean working tree."}<//>
+
+      <${Typography} variant="subtitle2" sx=${{ mb: 1 }}>Recent Branches<//>
       ${(gitBranches?.value || []).length
         ? (gitBranches.value || []).map(
             (line, i) => {
               const parsed = normalizeBranchLine(line);
               return html`
-                <button
+                <${Button}
                   key=${i}
-                  class="branch-row"
+                  fullWidth
+                  variant="text"
+                  size="small"
                   onClick=${() => openBranchDetail(parsed?.name || line)}
+                  sx=${{ justifyContent: "space-between", textTransform: "none", mb: 0.5, fontFamily: "monospace" }}
                 >
-                  <span class="branch-name">${parsed?.short || line}</span>
-                  <span class="branch-raw">${parsed?.raw || line}</span>
-                </button>
+                  <span>${parsed?.short || line}</span>
+                  <${Typography} variant="caption" color="text.secondary">${parsed?.raw || line}<//>
+                <//>
               `;
             },
           )
-        : html`<div class="meta-text">No branches found. Click Refresh to re-query git.</div>`}
+        : html`<${Typography} variant="body2" color="text.secondary">No branches found. Click Refresh to re-query git.<//>`}
     <//>
 
     ${branchDetail &&
     html`
       <${Modal} title="Branch Detail" onClose=${() => setBranchDetail(null)}>
-        ${branchLoading && html`<${SkeletonCard} height="80px" />`}
-        ${branchError && html`<div class="meta-text" style="color:var(--color-error)">${branchError}</div>`}
+        ${branchLoading && html`<${LinearProgress} sx=${{ mb: 1 }} />`}
+        ${branchError && html`<${Alert} severity="error" sx=${{ mb: 1 }}>${branchError}<//>`}
         ${!branchLoading &&
         !branchError &&
         html`
-          <div class="meta-text mb-sm">
-            Branch: <span class="mono">${branchDetail.branch}</span>
-          </div>
+          <${Typography} variant="body2" sx=${{ mb: 1 }}>
+            Branch: <${Typography} component="span" sx=${{ fontFamily: "monospace" }}>${branchDetail.branch}<//>
+          <//>
           ${branchDetail.base &&
-          html`<div class="meta-text mb-sm">Base: ${branchDetail.base}</div>`}
+          html`<${Typography} variant="body2" sx=${{ mb: 1 }}>Base: ${branchDetail.base}<//>`}
           ${branchDetail.activeSlot &&
-          html`<div class="meta-text mb-sm">Active Agent: ${branchDetail.activeSlot.taskTitle || branchDetail.activeSlot.taskId}</div>`}
+          html`<${Typography} variant="body2" sx=${{ mb: 1 }}>Active Agent: ${branchDetail.activeSlot.taskTitle || branchDetail.activeSlot.taskId}<//>`}
           ${branchDetail.worktree?.path &&
-          html`<div class="meta-text mb-sm">Worktree: <span class="mono">${branchDetail.worktree.path}</span></div>`}
-          <div class="btn-row mb-sm">
+          html`<${Typography} variant="body2" sx=${{ mb: 1 }}>Worktree: <${Typography} component="span" sx=${{ fontFamily: "monospace" }}>${branchDetail.worktree.path}<//><//>`}
+          <${Stack} direction="row" spacing=${1} sx=${{ mb: 1.5 }}>
             ${(branchDetail.workspaceTarget || branchDetail.activeSlot || branchDetail.worktree) &&
-            html`<button class="btn btn-primary btn-sm" onClick=${() => openWorkspace(branchDetail)}>
+            html`<${Button} size="small" variant="contained" onClick=${() => openWorkspace(branchDetail)}>
               ${iconText(":search: Open Workspace Viewer")}
-            </button>`}
+            <//>`}
             ${branchDetail.workspaceLink?.url &&
-            html`<button
-              class="btn btn-secondary btn-sm"
+            html`<${Button} size="small" variant="outlined"
               onClick=${() => openLink(branchDetail.workspaceLink.url)}
-            >
-              ${iconText(":link: Open Workspace Link")}
-            </button>`}
-            <button
-              class="btn btn-ghost btn-sm"
-              onClick=${() => copyToClipboard(branchDetail.diffStat || "", "Diff")}
-            >${iconText(":clipboard: Copy Diff")}</button>
-          </div>
+            >${iconText(":link: Open Workspace Link")}<//>`}
+            <${Tooltip} title="Copy diff stats">
+              <${Button} size="small" variant="outlined"
+                onClick=${() => copyToClipboard(branchDetail.diffStat || "", "Diff")}
+              >${iconText(":clipboard: Copy Diff")}<//>
+            <//>
+          <//>
           ${workspaceLink &&
           html`
-            <div class="meta-text mb-sm">
+            <${Typography} variant="body2" sx=${{ mb: 1 }}>
               Workspace: ${workspaceLink.label || workspaceLink.taskTitle || workspaceLink.branch || "Active"}
               ${(workspaceLink.target?.workspacePath || workspaceLink.workspacePath)
-                ? html`<span class="mono"> · ${workspaceLink.target?.workspacePath || workspaceLink.workspacePath}</span>`
+                ? html` · <${Typography} component="span" sx=${{ fontFamily: "monospace" }}>${workspaceLink.target?.workspacePath || workspaceLink.workspacePath}<//>`
                 : ""}
-            </div>
+            <//>
           `}
           ${branchDetail.diffSummary &&
           html`
-            <div class="meta-text mb-sm">
+            <${Typography} variant="body2" sx=${{ mb: 1 }}>
               Diff: ${branchDetail.diffSummary.totalFiles || 0} files ·
-              +${branchDetail.diffSummary.totalAdditions || 0} ·
-              -${branchDetail.diffSummary.totalDeletions || 0}
-              ${branchDetail.diffSummary.binaryFiles ? `· ${branchDetail.diffSummary.binaryFiles} binary` : ""}
-            </div>
+              <${Chip} label="+${branchDetail.diffSummary.totalAdditions || 0}" size="small" color="success" sx=${{ mx: 0.5 }} />
+              <${Chip} label="-${branchDetail.diffSummary.totalDeletions || 0}" size="small" color="error" sx=${{ mx: 0.5 }} />
+              ${branchDetail.diffSummary.binaryFiles ? html` · <${Chip} label="${branchDetail.diffSummary.binaryFiles} binary" size="small" />` : ""}
+            <//>
           `}
           ${branchCommits.length > 0 &&
           html`
-            <div class="card mb-sm">
-              <div class="card-title">Commits</div>
+            <${Paper} variant="outlined" sx=${{ p: 1.5, mb: 1.5 }}>
+              <${Typography} variant="subtitle2" gutterBottom>Commits<//>
               ${branchCommits.map((cm) => {
                 const subject = cm.subject || cm.message || "";
                 const author =
@@ -811,38 +888,59 @@ export function LogsTab() {
                     : cm.authorName || cm.authorEmail || "");
                 const dateVal = cm.authorDate || cm.date || cm.time;
                 return html`
-                  <div class="meta-text" key=${cm.hash}>
-                    <span class="mono">${cm.hash}</span> ${subject}
-                    ${author ? `· ${author}` : ""}
-                    ${(() => { const dateText = formatTimestamp(dateVal, ""); return dateText ? `· ${dateText}` : ""; })()}
-                  </div>
+                  <${Typography} variant="body2" key=${cm.hash} sx=${{ mb: 0.5 }}>
+                    <${Typography} component="span" sx=${{ fontFamily: "monospace", mr: 0.5 }}>${cm.hash}<//>
+                    ${subject}
+                    ${author ? ` · ${author}` : ""}
+                    ${(() => { const dateText = formatTimestamp(dateVal, ""); return dateText ? ` · ${dateText}` : ""; })()}
+                  <//>
                 `;
               })}
-            </div>
+            <//>
           `}
-          <div class="card mb-sm">
-            <div class="card-title">Files Changed</div>
+          <${Paper} variant="outlined" sx=${{ p: 1.5, mb: 1.5 }}>
+            <${Typography} variant="subtitle2" gutterBottom>Files Changed<//>
             ${branchFileDetails.length
-              ? branchFileDetails.map(
-                  (f) => html`
-                    <div class="meta-text" key=${f.file}>
-                      <span class="mono">${f.file}</span>
-                      ${typeof f.additions === "number" &&
-                      html`<span class="pill" style="margin-left:6px">+${f.additions}</span>`}
-                      ${typeof f.deletions === "number" &&
-                      html`<span class="pill" style="margin-left:6px">-${f.deletions}</span>`}
-                      ${f.binary && html`<span class="pill" style="margin-left:6px">binary</span>`}
-                    </div>
-                  `,
-                )
-              : html`<div class="meta-text">No diff against base.</div>`}
-          </div>
+              ? html`
+                <${TableContainer}>
+                  <${Table} size="small">
+                    <${TableHead}>
+                      <${TableRow}>
+                        <${TableCell}>File<//>
+                        <${TableCell} align="right">Changes<//>
+                      </${TableRow}>
+                    <//>
+                    <${TableBody}>
+                      ${branchFileDetails.map(
+                        (f) => html`
+                          <${TableRow} key=${f.file}>
+                            <${TableCell}>
+                              <${Typography} variant="body2" sx=${{ fontFamily: "monospace" }}>${f.file}<//>
+                            <//>
+                            <${TableCell} align="right">
+                              <${Stack} direction="row" spacing=${0.5} justifyContent="flex-end">
+                                ${typeof f.additions === "number" &&
+                                html`<${Chip} label="+${f.additions}" size="small" color="success" />`}
+                                ${typeof f.deletions === "number" &&
+                                html`<${Chip} label="-${f.deletions}" size="small" color="error" />`}
+                                ${f.binary && html`<${Chip} label="binary" size="small" />`}
+                              <//>
+                            <//>
+                          </${TableRow}>
+                        `,
+                      )}
+                    <//>
+                  </${Table}>
+                <//>
+              `
+              : html`<${Typography} variant="body2" color="text.secondary">No diff against base.<//>`}
+          <//>
           ${branchDetail.diffStat &&
           html`
-            <div class="card">
-              <div class="card-title">Diff Summary</div>
+            <${Paper} variant="outlined" sx=${{ p: 1.5 }}>
+              <${Typography} variant="subtitle2" gutterBottom>Diff Summary<//>
               <pre class="workspace-diff">${branchDetail.diffStat}</pre>
-            </div>
+            <//>
           `}
         `}
       <//>

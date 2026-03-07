@@ -13,6 +13,7 @@ import { useState, useEffect, useRef, useCallback } from "preact/hooks";
 import htm from "htm";
 import { haptic } from "./telegram.js";
 import { resolveIcon } from "./icon-utils.js";
+import { IconButton } from "@mui/material";
 
 const html = htm.bind(h);
 
@@ -252,8 +253,8 @@ export function VoiceMicButton({ onTranscript, disabled = false, title, classNam
   const sizeClass = size === "sm" ? "mic-btn-sm" : "";
 
   return html`
-    <button
-      type="button"
+    <${IconButton}
+      size=${size === "sm" ? "small" : "medium"}
       class="mic-btn ${sizeClass} ${className}"
       disabled=${disabled}
       onClick=${() => {
@@ -265,7 +266,7 @@ export function VoiceMicButton({ onTranscript, disabled = false, title, classNam
       aria-pressed="false"
     >
       ${resolveIcon(":mic:")}
-    </button>
+    <//>
   `;
 }
 
@@ -277,8 +278,8 @@ export function VoiceMicButtonInline({ onTranscript, disabled = false }) {
   useEffect(() => { injectVoiceStyles(); }, []);
 
   return html`
-    <button
-      type="button"
+    <${IconButton}
+      size="small"
       class="mic-btn mic-btn-sm mic-btn-inline"
       disabled=${disabled}
       onClick=${(e) => {
@@ -291,6 +292,6 @@ export function VoiceMicButtonInline({ onTranscript, disabled = false }) {
       aria-pressed="false"
     >
       ${resolveIcon(":mic:")}
-    </button>
+    <//>
   `;
 }

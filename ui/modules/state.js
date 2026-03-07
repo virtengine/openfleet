@@ -52,6 +52,7 @@ const CACHE_TTL = {
   presence: 30000, config: 60000, projects: 60000, git: 20000,
   infra: 30000,
   telemetry: 15000,
+  analytics: 30000,
 };
 
 function _cacheKey(url) { return url; }
@@ -125,6 +126,12 @@ export const telemetrySummary = signal(null);
 export const telemetryErrors = signal([]);
 export const telemetryExecutors = signal({});
 export const telemetryAlerts = signal([]);
+
+// ── Context Shredding Telemetry
+export const shreddingTelemetry = signal(null);
+
+// ── Usage Analytics
+export const usageAnalytics = signal(null);
 
 // ── Config (routing, regions, etc.)
 export const configData = signal(null);
@@ -687,6 +694,32 @@ export async function loadTelemetryAlerts() {
   _markFresh("telemetry");
 }
 
+export async function loadShreddingTelemetry(days = 30) {
+  const url = `/api/telemetry/shredding?days=${days}`;
+  const res = await apiFetch(url, { _silent: true }).catch(() => ({ ok: false }));
+  shreddingTelemetry.value = res?.data ?? null;
+}
+
+/**
+ * Load usage analytics. Pass `days=0` for all-time data.
+ * The result is stored in the `usageAnalytics` signal.
+ *
+ * @param {number} [days=30]
+ */
+export async function loadUsageAnalytics(days = 30) {
+  const url = `/api/analytics/usage?days=${days}`;
+  // Don't use _cacheFresh here — callers pass explicit day window
+  // and the period toggle must always trigger a fresh load.
+  try {
+    const res = await apiFetch(url, { _silent: true }).catch(() => ({ ok: false }));
+    usageAnalytics.value = res?.data ?? null;
+    _cacheSet(url, usageAnalytics.value);
+    _markFresh("analytics");
+  } catch {
+    /* best effort */
+  }
+}
+
 /* ═══════════════════════════════════════════════════════════════
  *  TAB REFRESH — map tab names to their required loaders
  * ═══════════════════════════════════════════════════════════════ */
@@ -712,6 +745,7 @@ const TAB_LOADERS = {
       loadTelemetryErrors(),
       loadTelemetryExecutors(),
       loadTelemetryAlerts(),
+      loadUsageAnalytics(30),
     ]),
   settings: () => Promise.all([loadStatus(), loadConfig()]),
 };

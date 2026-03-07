@@ -23,8 +23,8 @@ import {
 import { ICONS } from "../modules/icons.js";
 import { cloneValue, formatRelative, formatBytes, downloadFile } from "../modules/utils.js";
 import {
-  Card,
-  Badge,
+  Card as LegacyCard,
+  Badge as LegacyBadge,
   StatCard,
   SkeletonCard,
   EmptyState,
@@ -36,6 +36,16 @@ import {
   activeWorkspaceId,
   loadWorkspaces as loadManagedWorkspaces,
 } from "../components/workspace-switcher.js";
+import {
+  Typography, Box, Stack, Card, CardContent, CardHeader, CardActions,
+  Button, IconButton, Chip, Divider, Paper, TextField, InputAdornment,
+  CircularProgress, Alert, Tooltip, Switch, FormControlLabel, Dialog,
+  DialogTitle, DialogContent, DialogActions, List, ListItem, ListItemButton,
+  ListItemText, ListItemIcon, ListItemSecondaryAction, Menu, MenuItem,
+  Tabs, Tab, Skeleton, Badge, Grid, Table, TableBody, TableCell,
+  TableContainer, TableHead, TableRow, Accordion, AccordionSummary,
+  AccordionDetails, LinearProgress, Select, FormControl, InputLabel, Avatar,
+} from "@mui/material";
 
 /* ─── Worktree health indicator ─── */
 function healthColor(wt) {
@@ -398,408 +408,317 @@ export function InfraTab() {
 
   /* ── Render ── */
   return html`
-    <!-- ─── Infra header with export ─── -->
-    <div class="flex-between mb-md" style="padding:0 4px">
-      <span style="font-weight:600;font-size:15px">Infrastructure</span>
-      <button class="btn btn-secondary btn-sm" style="display:inline-flex;align-items:center;gap:4px" onClick=${handleExportReport}>
-        <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/><polyline points="10 9 9 9 8 9"/></svg>
-        Export Report
-      </button>
-    </div>
-
-    <!-- ─── Managed Workspaces ─── -->
-    <${Collapsible} title="Managed Workspaces" defaultOpen=${true}>
-      <${Card}>
-        <div class="input-row mb-md">
-          <input
-            class="input"
-            placeholder="New workspace name"
-            value=${newWsName}
-            onInput=${(e) => setNewWsName(e.target.value)}
-            onKeyDown=${(e) => e.key === "Enter" && handleCreateWorkspace()}
-          />
-          <button class="btn btn-primary btn-sm" onClick=${handleCreateWorkspace}>
-            ${iconText(":plus: Create")}
-          </button>
-          <button class="btn btn-secondary btn-sm" onClick=${handleScanDisk}>
-            ${iconText(":refresh: Scan")}
-          </button>
-        </div>
-
-        ${(managedWorkspaces.value || []).map((ws) => {
-          const isActive = ws.id === activeWorkspaceId.value;
-          const repos = Array.isArray(ws.repos) ? ws.repos : [];
-          return html`
-            <div class="task-card" key=${ws.id}>
-              <div class="task-card-header">
-                <div>
-                  <div class="task-card-title" style="display:flex;align-items:center;gap:6px">
-                    <span
-                      class="health-dot"
-                      style="background:${isActive ? "var(--color-done)" : "var(--color-neutral)"}"
-                    ></span>
-                    ${ws.name || ws.id}
-                    ${isActive && html`<${Badge} status="done" text="Active" />`}
-                  </div>
-                  <div class="task-card-meta">${repos.length} repos · ID: ${ws.id}</div>
-                </div>
-                <div class="btn-row">
-                  <button
-                    class="btn btn-secondary btn-sm"
-                    onClick=${() => handlePullWorkspace(ws.id)}
-                  >
-                    ${iconText(":download: Pull")}
-                  </button>
-                  <button
-                    class="btn btn-danger btn-sm"
-                    onClick=${() => handleDeleteWorkspace(ws.id)}
-                  >
-                    ${resolveIcon(":trash:")}
-                  </button>
-                </div>
-              </div>
-
-              ${repos.length > 0 &&
-              html`
-                <div class="mt-sm">
-                  ${repos.map((repo) => {
-                    const repoName =
-                      typeof repo === "string"
-                        ? repo
-                        : repo.name || repo.url || "?";
-                    return html`
-                      <div
-                        class="flex-between"
-                        style="padding:4px 0;border-bottom:1px solid rgba(255,255,255,0.05)"
-                      >
-                        <span class="meta-text">${iconText(`:folder: ${repoName}`)}</span>
-                        <button
-                          class="btn btn-ghost btn-sm"
-                          onClick=${() => handleRemoveRepo(ws.id, repoName)}
-                        >
-                          ${resolveIcon("✕")}
-                        </button>
-                      </div>
-                    `;
-                  })}
-                </div>
-              `}
-
-              <div class="input-row mt-sm">
-                <input
-                  class="input"
-                  placeholder="Repo URL to clone"
-                  value=${addRepoWs === ws.id ? addRepoUrl : ""}
-                  onInput=${(e) => {
-                    setAddRepoWs(ws.id);
-                    setAddRepoUrl(e.target.value);
-                  }}
-                  onKeyDown=${(e) =>
-                    e.key === "Enter" && handleAddRepo(ws.id, addRepoWs === ws.id ? addRepoUrl : "")}
-                />
-                <button
-                  class="btn btn-secondary btn-sm"
-                  onClick=${() => handleAddRepo(ws.id, addRepoWs === ws.id ? addRepoUrl : "")}
-                >
-                  ${iconText(":download: Clone")}
-                </button>
-              </div>
-            </div>
-          `;
-        })}
-
-        ${!(managedWorkspaces.value || []).length &&
-        html`<${EmptyState} message="No managed workspaces. Create one or scan disk." />`}
+    <${Box} sx=${{ display: "flex", flexDirection: "column", gap: 2, p: 1 }}>
+      <!-- ─── Infra header with export ─── -->
+      <${Stack} direction="row" justifyContent="space-between" alignItems="center">
+        <${Typography} variant="h6" fontWeight=${600}>Infrastructure<//>
+        <${Button}
+          variant="outlined"
+          size="small"
+          startIcon=${html`<svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/><polyline points="10 9 9 9 8 9"/></svg>`}
+          onClick=${handleExportReport}
+        >Export Report<//>
       <//>
-    <//>
 
-    <!-- ─── Worktrees ─── -->
-    <${Collapsible} title="Worktrees" defaultOpen=${true}>
-      <${Card}>
-        <div class="stats-grid mb-md">
-          <${StatCard} value=${wStats.total ?? wts.length} label="Total" />
-          <${StatCard}
-            value=${wStats.active ?? 0}
-            label="Active"
-            color="var(--color-done)"
-          />
-          <${StatCard}
-            value=${wStats.stale ?? 0}
-            label="Stale"
-            color="var(--color-inreview)"
-          />
-        </div>
+      <!-- ─── Managed Workspaces ─── -->
+      <${Accordion} defaultExpanded>
+        <${AccordionSummary}>
+          <${Typography} fontWeight=${600}>Managed Workspaces<//>
+        <//>
+        <${AccordionDetails}>
+          <${Stack} spacing=${1.5}>
+            <${Stack} direction="row" spacing=${1}>
+              <${TextField}
+                size="small"
+                fullWidth
+                placeholder="New workspace name"
+                value=${newWsName}
+                onInput=${(e) => setNewWsName(e.target.value)}
+                onKeyDown=${(e) => e.key === "Enter" && handleCreateWorkspace()}
+              />
+              <${Button} variant="contained" size="small" onClick=${handleCreateWorkspace}>
+                ${iconText(":plus: Create")}
+              <//>
+              <${Button} variant="outlined" size="small" onClick=${handleScanDisk}>
+                ${iconText(":refresh: Scan")}
+              <//>
+            <//>
 
-        <div class="input-row mb-md">
-          <input
-            class="input"
-            placeholder="Task key or branch"
-            value=${releaseInput}
-            onInput=${(e) => setReleaseInput(e.target.value)}
-          />
-          <button
-            class="btn btn-secondary btn-sm"
-            onClick=${handleReleaseInput}
-          >
-            Release
-          </button>
-          <button class="btn btn-danger btn-sm" onClick=${handlePrune}>
-            ${iconText(":trash: Prune")}
-          </button>
-        </div>
+            ${(managedWorkspaces.value || []).map((ws) => {
+              const isActive = ws.id === activeWorkspaceId.value;
+              const repos = Array.isArray(ws.repos) ? ws.repos : [];
+              return html`
+                <${Card} key=${ws.id} variant="outlined" sx=${{ bgcolor: "background.paper" }}>
+                  <${CardContent}>
+                    <${Stack} direction="row" justifyContent="space-between" alignItems="flex-start">
+                      <${Box}>
+                        <${Stack} direction="row" spacing=${1} alignItems="center">
+                          <${Box} sx=${{ width: 8, height: 8, borderRadius: "50%", bgcolor: isActive ? "success.main" : "grey.600" }} />
+                          <${Typography} fontWeight=${600}>${ws.name || ws.id}<//>
+                          ${isActive && html`<${Chip} label="Active" color="success" size="small" />`}
+                        <//>
+                        <${Typography} variant="caption" color="text.secondary">${repos.length} repos · ID: ${ws.id}<//>
+                      <//>
+                      <${Stack} direction="row" spacing=${0.5}>
+                        <${Button} variant="outlined" size="small" onClick=${() => handlePullWorkspace(ws.id)}>
+                          ${iconText(":download: Pull")}
+                        <//>
+                        <${IconButton} size="small" color="error" onClick=${() => handleDeleteWorkspace(ws.id)}>
+                          ${resolveIcon(":trash:")}
+                        <//>
+                      <//>
+                    <//>
 
-        ${wts.map(
-          (wt, idx) => {
-            const key = wt?.path || wt?.branch || wt?.taskKey || String(idx);
-            const detail = worktreeDetails[key] || {};
-            const detailLoading = Boolean(detail?.loading);
-            const detailError = detail?.error;
-            return html`
-            <div key=${wt.branch || wt.path || idx} class="task-card">
-              <div
-                class="task-card-header"
-                style="cursor:pointer"
-                onClick=${() => {
-                  haptic();
-                  const nextOpen = expandedWt === idx ? null : idx;
-                  setExpandedWt(nextOpen);
-                  if (nextOpen === idx) {
-                    loadWorktreePeek(wt);
-                  }
-                }}
-              >
-                <div style="display:flex;align-items:center;gap:6px">
-                  <${HealthDot} wt=${wt} />
-                  <div>
-                    <div class="task-card-title">
-                      ${wt.branch || "(detached)"}
-                    </div>
-                    <div class="task-card-meta">${wt.path}</div>
-                  </div>
-                </div>
-                <${Badge}
-                  status=${wt.status || "active"}
-                  text=${wt.status || "active"}
-                />
-              </div>
-              <div class="meta-text">
-                Age
-                ${ageString(wt.age)}${wt.taskKey
-                  ? ` · ${wt.taskKey}`
-                  : ""}${wt.owner ? ` · Owner ${wt.owner}` : ""}
-              </div>
+                    ${repos.length > 0 && html`
+                      <${List} dense sx=${{ mt: 1 }}>
+                        ${repos.map((repo) => {
+                          const repoName = typeof repo === "string" ? repo : repo.name || repo.url || "?";
+                          return html`
+                            <${ListItem} key=${repoName}
+                              secondaryAction=${html`
+                                <${IconButton} edge="end" size="small" onClick=${() => handleRemoveRepo(ws.id, repoName)}>
+                                  ${resolveIcon("✕")}
+                                <//>
+                              `}
+                            >
+                              <${ListItemIcon} sx=${{ minWidth: 32 }}>${resolveIcon(":folder:")}<//>
+                              <${ListItemText} primary=${repoName} primaryTypographyProps=${{ variant: "body2" }} />
+                            <//>
+                          `;
+                        })}
+                      <//>
+                    `}
 
-              <!-- Collapsible git status section -->
-              ${expandedWt === idx &&
-              html`
-                <div class="wt-detail mt-sm">
-                  ${detailLoading &&
-                  html`<div class="meta-text">Loading worktree details…</div>`}
-                  ${detailError &&
-                  html`<div class="meta-text" style="color:var(--color-error)">${detailError}</div>`}
-                  ${detail.gitStatus &&
-                  html` <div class="log-box log-box-sm">${detail.gitStatus}</div> `}
-                  ${detail.lastCommit &&
-                  html`
-                    <div class="meta-text mt-xs">
-                      Last commit: ${truncate(detail.lastCommit, 80)}
-                    </div>
-                  `}
-                  ${detail.filesChanged != null &&
-                  html`
-                    <div class="meta-text">
-                      Files changed: ${detail.filesChanged}
-                    </div>
-                  `}
-                  ${detail.diffSummary &&
-                  html`<div class="log-box log-box-sm mt-xs">${detail.diffSummary}</div>`}
-                  ${Array.isArray(detail.recentCommits) && detail.recentCommits.length > 0 &&
-                  html`
-                    <div class="meta-text mt-xs">Recent commits:</div>
-                    <div class="log-box log-box-sm">
-                      ${detail.recentCommits.map((c) => html`<div>${c}</div>`)}
-                    </div>
-                  `}
-                  ${Array.isArray(detail.sessions) && detail.sessions.length > 0 &&
-                  html`
-                    <div class="meta-text mt-xs">Active sessions:</div>
-                    <div class="log-box log-box-sm">
-                      ${detail.sessions.map((s) => html`<div>${s.title || s.id} · ${s.type} · ${formatRelative(s.lastActiveAt)}</div>`)}
-                    </div>
-                  `}
-                </div>
-              `}
+                    <${Stack} direction="row" spacing=${1} sx=${{ mt: 1 }}>
+                      <${TextField}
+                        size="small"
+                        fullWidth
+                        placeholder="Repo URL to clone"
+                        value=${addRepoWs === ws.id ? addRepoUrl : ""}
+                        onInput=${(e) => { setAddRepoWs(ws.id); setAddRepoUrl(e.target.value); }}
+                        onKeyDown=${(e) => e.key === "Enter" && handleAddRepo(ws.id, addRepoWs === ws.id ? addRepoUrl : "")}
+                      />
+                      <${Button} variant="outlined" size="small" onClick=${() => handleAddRepo(ws.id, addRepoWs === ws.id ? addRepoUrl : "")}>
+                        ${iconText(":download: Clone")}
+                      <//>
+                    <//>
+                  <//>
+                <//>
+              `;
+            })}
 
-              <div class="btn-row mt-sm">
-                ${wt.taskKey &&
-                html`
-                  <button
-                    class="btn btn-ghost btn-sm"
-                    onClick=${() => handleRelease(wt.taskKey, "")}
+            ${!(managedWorkspaces.value || []).length && html`<${EmptyState} message="No managed workspaces. Create one or scan disk." />`}
+          <//>
+        <//>
+      <//>
+
+      <!-- ─── Worktrees ─── -->
+      <${Accordion} defaultExpanded>
+        <${AccordionSummary}>
+          <${Typography} fontWeight=${600}>Worktrees<//>
+        <//>
+        <${AccordionDetails}>
+          <${Stack} spacing=${1.5}>
+            <!-- Stats row -->
+            <${Stack} direction="row" spacing=${2}>
+              <${Paper} variant="outlined" sx=${{ p: 1.5, textAlign: "center", flex: 1 }}>
+                <${Typography} variant="h5">${wStats.total ?? wts.length}<//>
+                <${Typography} variant="caption" color="text.secondary">Total<//>
+              <//>
+              <${Paper} variant="outlined" sx=${{ p: 1.5, textAlign: "center", flex: 1 }}>
+                <${Typography} variant="h5" sx=${{ color: "success.main" }}>${wStats.active ?? 0}<//>
+                <${Typography} variant="caption" color="text.secondary">Active<//>
+              <//>
+              <${Paper} variant="outlined" sx=${{ p: 1.5, textAlign: "center", flex: 1 }}>
+                <${Typography} variant="h5" sx=${{ color: "warning.main" }}>${wStats.stale ?? 0}<//>
+                <${Typography} variant="caption" color="text.secondary">Stale<//>
+              <//>
+            <//>
+
+            <${Stack} direction="row" spacing=${1}>
+              <${TextField}
+                size="small"
+                fullWidth
+                placeholder="Task key or branch"
+                value=${releaseInput}
+                onInput=${(e) => setReleaseInput(e.target.value)}
+              />
+              <${Button} variant="outlined" size="small" onClick=${handleReleaseInput}>Release<//>
+              <${Button} variant="outlined" size="small" color="error" onClick=${handlePrune}>
+                ${iconText(":trash: Prune")}
+              <//>
+            <//>
+
+            ${wts.map((wt, idx) => {
+              const key = wt?.path || wt?.branch || wt?.taskKey || String(idx);
+              const detail = worktreeDetails[key] || {};
+              const detailLoading = Boolean(detail?.loading);
+              const detailError = detail?.error;
+              return html`
+                <${Card} key=${wt.branch || wt.path || idx} variant="outlined" sx=${{ bgcolor: "background.paper" }}>
+                  <${CardContent}
+                    sx=${{ cursor: "pointer" }}
+                    onClick=${() => {
+                      haptic();
+                      const nextOpen = expandedWt === idx ? null : idx;
+                      setExpandedWt(nextOpen);
+                      if (nextOpen === idx) loadWorktreePeek(wt);
+                    }}
                   >
-                    Release Key
-                  </button>
+                    <${Stack} direction="row" justifyContent="space-between" alignItems="center">
+                      <${Stack} direction="row" spacing=${1} alignItems="center">
+                        <${HealthDot} wt=${wt} />
+                        <${Box}>
+                          <${Typography} fontWeight=${600} variant="body2">${wt.branch || "(detached)"}<//>
+                          <${Typography} variant="caption" color="text.secondary">${wt.path}<//>
+                        <//>
+                      <//>
+                      <${Chip}
+                        label=${wt.status || "active"}
+                        size="small"
+                        color=${(wt.status === "stale" || wt.status === "error") ? "error" : "success"}
+                        variant="outlined"
+                      />
+                    <//>
+                    <${Typography} variant="caption" color="text.secondary" sx=${{ mt: 0.5, display: "block" }}>
+                      Age ${ageString(wt.age)}${wt.taskKey ? ` · ${wt.taskKey}` : ""}${wt.owner ? ` · Owner ${wt.owner}` : ""}
+                    <//>
+
+                    ${expandedWt === idx && html`
+                      <${Box} sx=${{ mt: 1 }}>
+                        ${detailLoading && html`<${CircularProgress} size=${16} /> <${Typography} variant="caption">Loading worktree details…<//>`}
+                        ${detailError && html`<${Alert} severity="error" variant="outlined" sx=${{ mt: 0.5 }}>${detailError}<//>`}
+                        ${detail.gitStatus && html`<${Paper} variant="outlined" sx=${{ p: 1, mt: 0.5, fontFamily: "monospace", fontSize: "0.8em", whiteSpace: "pre-wrap" }}>${detail.gitStatus}<//>`}
+                        ${detail.lastCommit && html`<${Typography} variant="caption" color="text.secondary" sx=${{ display: "block", mt: 0.5 }}>Last commit: ${detail.lastCommit?.slice(0, 80)}<//>`}
+                        ${detail.filesChanged != null && html`<${Typography} variant="caption" color="text.secondary" sx=${{ display: "block" }}>Files changed: ${detail.filesChanged}<//>`}
+                        ${detail.diffSummary && html`<${Paper} variant="outlined" sx=${{ p: 1, mt: 0.5, fontFamily: "monospace", fontSize: "0.8em", whiteSpace: "pre-wrap" }}>${detail.diffSummary}<//>`}
+                        ${Array.isArray(detail.recentCommits) && detail.recentCommits.length > 0 && html`
+                          <${Typography} variant="caption" color="text.secondary" sx=${{ display: "block", mt: 0.5 }}>Recent commits:<//>
+                          <${Paper} variant="outlined" sx=${{ p: 1, fontFamily: "monospace", fontSize: "0.8em" }}>
+                            ${detail.recentCommits.map((c) => html`<div>${c}</div>`)}
+                          <//>
+                        `}
+                        ${Array.isArray(detail.sessions) && detail.sessions.length > 0 && html`
+                          <${Typography} variant="caption" color="text.secondary" sx=${{ display: "block", mt: 0.5 }}>Active sessions:<//>
+                          <${Paper} variant="outlined" sx=${{ p: 1, fontFamily: "monospace", fontSize: "0.8em" }}>
+                            ${detail.sessions.map((s) => html`<div>${s.title || s.id} · ${s.type} · ${formatRelative(s.lastActiveAt)}</div>`)}
+                          <//>
+                        `}
+                      <//>
+                    `}
+                  <//>
+                  <${CardActions}>
+                    ${wt.taskKey && html`<${Button} size="small" onClick=${() => handleRelease(wt.taskKey, "")}>Release Key<//>`}
+                    ${wt.branch && html`<${Button} size="small" onClick=${() => handleRelease("", wt.branch)}>Release Branch<//>`}
+                  <//>
+                <//>
+              `;
+            })}
+            ${!wts.length && html`<${EmptyState} message="No worktrees tracked." />`}
+          <//>
+        <//>
+      <//>
+
+      <!-- ─── Shared Workspaces ─── -->
+      <${Accordion} defaultExpanded>
+        <${AccordionSummary}>
+          <${Typography} fontWeight=${600}>Shared Workspaces<//>
+        <//>
+        <${AccordionDetails}>
+          <${Stack} spacing=${1.5}>
+            <${Stack} direction="row" spacing=${0.5} flexWrap="wrap">
+              ${Object.entries(availability).map(([k, v]) => html`<${Chip} key=${k} label=${`${k}: ${v}`} size="small" variant="outlined" />`)}
+              ${!Object.keys(availability).length && html`<${Chip} label="No registry" size="small" variant="outlined" />`}
+            <//>
+
+            <${Stack} direction="row" spacing=${1}>
+              <${TextField} size="small" fullWidth placeholder="Owner" value=${sharedOwner} onInput=${(e) => setSharedOwner(e.target.value)} />
+              <${TextField} size="small" type="number" placeholder="TTL (min)" value=${sharedTtl} onInput=${(e) => setSharedTtl(e.target.value)} inputProps=${{ min: 30, step: 15 }} sx=${{ width: 120 }} />
+            <//>
+            <${TextField} size="small" fullWidth placeholder="Note (optional)" value=${sharedNote} onInput=${(e) => setSharedNote(e.target.value)} />
+
+            ${workspaces.map((ws) => {
+              const lease = ws.lease;
+              const leaseInfo = lease ? `Leased to ${lease.owner} until ${new Date(lease.lease_expires_at).toLocaleString()}` : "Available";
+              return html`
+                <${Card} key=${ws.id} variant="outlined" sx=${{ bgcolor: "background.paper" }}>
+                  <${CardContent}>
+                    <${Stack} direction="row" justifyContent="space-between" alignItems="center">
+                      <${Box}>
+                        <${Typography} fontWeight=${600}>${ws.name || ws.id}<//>
+                        <${Typography} variant="caption" color="text.secondary">${ws.provider || "provider"} · ${ws.region || "region?"}<//>
+                      <//>
+                      <${Chip}
+                        label=${ws.availability}
+                        size="small"
+                        color=${ws.availability === "available" ? "success" : ws.availability === "leased" ? "warning" : "default"}
+                        variant="outlined"
+                      />
+                    <//>
+                    <${Typography} variant="body2" color="text.secondary" sx=${{ mt: 0.5 }}>${leaseInfo}<//>
+                    ${lease?.note && html`<${Typography} variant="body2" color="text.secondary" fontStyle="italic">${lease.note}<//>`}
+                  <//>
+                  <${CardActions}>
+                    <${Button} size="small" variant="contained" onClick=${() => handleClaim(ws.id)}>${iconText(":lock: Claim")}<//>
+                    <${Button} size="small" variant="outlined" onClick=${() => handleRenew(ws.id)}>↻ Renew<//>
+                    <${Button} size="small" onClick=${() => handleSharedRelease(ws.id)}>${iconText(":unlock: Release")}<//>
+                  <//>
+                <//>
+              `;
+            })}
+            ${!workspaces.length && html`<${EmptyState} message="No shared workspaces configured." />`}
+          <//>
+        <//>
+      <//>
+
+      <!-- ─── Presence ─── -->
+      <${Accordion} defaultExpanded>
+        <${AccordionSummary}>
+          <${Typography} fontWeight=${600}>Presence<//>
+        <//>
+        <${AccordionDetails}>
+          <${Stack} spacing=${1.5}>
+            <!-- Coordinator info -->
+            <${Card} variant="outlined" sx=${{ bgcolor: "background.paper" }}>
+              <${CardContent}>
+                <${Typography} fontWeight=${600}>${iconText(":target: Coordinator")}<//>
+                <${Typography} variant="body2" color="text.secondary">
+                  ${coordinator?.instance_label || coordinator?.instance_id || "none"}
+                  · Priority ${coordinator?.coordinator_priority ?? "—"}
+                <//>
+                ${coordinator?.last_seen_at && html`
+                  <${Typography} variant="caption" color="text.secondary" sx=${{ display: "block" }}>
+                    Last seen: ${formatRelative(coordinator.last_seen_at)}
+                  <//>
                 `}
-                ${wt.branch &&
-                html`
-                  <button
-                    class="btn btn-ghost btn-sm"
-                    onClick=${() => handleRelease("", wt.branch)}
-                  >
-                    Release Branch
-                  </button>
-                `}
-              </div>
-            </div>
-          `;
-          },
-        )}
-        ${!wts.length &&
-        html`<${EmptyState} message="No worktrees tracked." />`}
-      <//>
-    <//>
+              <//>
+            <//>
 
-    <!-- ─── Shared Workspaces ─── -->
-    <${Collapsible} title="Shared Workspaces" defaultOpen=${true}>
-      <${Card}>
-        <div class="chip-group mb-sm">
-          ${Object.entries(availability).map(
-            ([k, v]) => html`<span key=${k} class="pill">${k}: ${v}</span>`,
-          )}
-          ${!Object.keys(availability).length &&
-          html`<span class="pill">No registry</span>`}
-        </div>
-
-        <div class="input-row mb-sm">
-          <input
-            class="input"
-            placeholder="Owner"
-            value=${sharedOwner}
-            onInput=${(e) => setSharedOwner(e.target.value)}
-          />
-          <input
-            class="input"
-            type="number"
-            min="30"
-            step="15"
-            placeholder="TTL (min)"
-            value=${sharedTtl}
-            onInput=${(e) => setSharedTtl(e.target.value)}
-          />
-        </div>
-        <input
-          class="input mb-md"
-          placeholder="Note (optional)"
-          value=${sharedNote}
-          onInput=${(e) => setSharedNote(e.target.value)}
-        />
-
-        ${workspaces.map((ws) => {
-          const lease = ws.lease;
-          const leaseInfo = lease
-            ? `Leased to ${lease.owner} until ${new Date(lease.lease_expires_at).toLocaleString()}`
-            : "Available";
-          return html`
-            <div key=${ws.id} class="task-card">
-              <div class="task-card-header">
-                <div>
-                  <div class="task-card-title">${ws.name || ws.id}</div>
-                  <div class="task-card-meta">
-                    ${ws.provider || "provider"} · ${ws.region || "region?"}
-                  </div>
-                </div>
-                <${Badge} status=${ws.availability} text=${ws.availability} />
-              </div>
-              <div class="meta-text">${leaseInfo}</div>
-              ${lease?.note &&
-              html`<div class="meta-text" style="font-style:italic">
-                ${lease.note}
-              </div>`}
-
-              <div class="btn-row mt-sm">
-                <button
-                  class="btn btn-primary btn-sm"
-                  onClick=${() => handleClaim(ws.id)}
-                >
-                  ${iconText(":lock: Claim")}
-                </button>
-                <button
-                  class="btn btn-secondary btn-sm"
-                  onClick=${() => handleRenew(ws.id)}
-                >
-                  ↻ Renew
-                </button>
-                <button
-                  class="btn btn-ghost btn-sm"
-                  onClick=${() => handleSharedRelease(ws.id)}
-                >
-                  ${iconText(":unlock: Release")}
-                </button>
-              </div>
-            </div>
-          `;
-        })}
-        ${!workspaces.length &&
-        html`<${EmptyState} message="No shared workspaces configured." />`}
-      <//>
-    <//>
-
-    <!-- ─── Presence ─── -->
-    <${Collapsible} title="Presence" defaultOpen=${true}>
-      <${Card}>
-        <!-- Coordinator info -->
-        <div class="task-card mb-md">
-          <div class="task-card-title">${iconText(":target: Coordinator")}</div>
-          <div class="meta-text">
-            ${coordinator?.instance_label || coordinator?.instance_id || "none"}
-            · Priority ${coordinator?.coordinator_priority ?? "—"}
-          </div>
-          ${coordinator?.last_seen_at &&
-          html`
-            <div class="meta-text">
-              Last seen: ${formatRelative(coordinator.last_seen_at)}
-            </div>
-          `}
-        </div>
-
-        <!-- Instance grid -->
-        ${instances.length
-          ? html`
-              <div class="stats-grid">
-                ${instances.map(
-                  (inst, i) => html`
-                    <div
-                      key=${i}
-                      class="stat-card"
-                      style="text-align:left;padding:10px"
-                    >
-                      <div style="display:flex;align-items:center;gap:6px">
-                        <span
-                          class="health-dot"
-                          style="background:${inst.status === "offline"
-                            ? "var(--color-error)"
-                            : "var(--color-done)"}"
-                        ></span>
-                        <span style="font-weight:600;font-size:13px">
-                          ${inst.instance_label || inst.instance_id}
-                        </span>
-                      </div>
-                      <div class="meta-text">
-                        ${inst.workspace_role || "workspace"} ·
-                        ${inst.host || "host"}
-                      </div>
-                      <div class="meta-text">
-                        Last:
-                        ${inst.last_seen_at
-                          ? formatRelative(inst.last_seen_at)
-                          : "unknown"}
-                      </div>
-                    </div>
-                  `,
-                )}
-              </div>
-            `
-          : html`<${EmptyState} message="No active instances." />`}
+            <!-- Instance grid -->
+            ${instances.length ? html`
+              <${Grid} container spacing=${1}>
+                ${instances.map((inst, i) => html`
+                  <${Grid} item xs=${12} sm=${6} md=${4} key=${i}>
+                    <${Card} variant="outlined" sx=${{ bgcolor: "background.paper" }}>
+                      <${CardContent} sx=${{ p: 1.5, "&:last-child": { pb: 1.5 } }}>
+                        <${Stack} direction="row" spacing=${1} alignItems="center">
+                          <${Box} sx=${{ width: 8, height: 8, borderRadius: "50%", bgcolor: inst.status === "offline" ? "error.main" : "success.main" }} />
+                          <${Typography} fontWeight=${600} variant="body2">${inst.instance_label || inst.instance_id}<//>
+                        <//>
+                        <${Typography} variant="caption" color="text.secondary" sx=${{ display: "block" }}>
+                          ${inst.workspace_role || "workspace"} · ${inst.host || "host"}
+                        <//>
+                        <${Typography} variant="caption" color="text.secondary" sx=${{ display: "block" }}>
+                          Last: ${inst.last_seen_at ? formatRelative(inst.last_seen_at) : "unknown"}
+                        <//>
+                      <//>
+                    <//>
+                  <//>
+                `)}
+              <//>
+            ` : html`<${EmptyState} message="No active instances." />`}
+          <//>
+        <//>
       <//>
     <//>
   `;
