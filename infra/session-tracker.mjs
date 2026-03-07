@@ -14,7 +14,7 @@
 import { existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync, unlinkSync } from "node:fs";
 import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
-import { buildSessionInsights } from "../ui/modules/session-insights.js";
+import { buildSessionInsights } from "../lib/session-insights.mjs";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const SESSIONS_DIR = resolve(__dirname, "..", "logs", "sessions");

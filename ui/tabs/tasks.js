@@ -2117,6 +2117,12 @@ export function TaskDetailModal({ task, onClose, onStart }) {
     setManualReason(getManualReason(task));
     setWorkspaceId(task?.workspace || activeWorkspaceId.value || "");
     setRepository(task?.repository || "");
+    setAssignee(toText(pickTaskField(task, ["assignee"])));
+    setAssigneesInput(normalizeTaskAssigneesInput(task));
+    setEpicId(toText(pickTaskField(task, ["epicId", "epic", "epic_id"])));
+    setStoryPoints(toText(pickTaskField(task, ["storyPoints", "points", "story_points"])));
+    setDueDate(normalizeTaskDueDateInput(task));
+    setParentTaskId(toText(pickTaskField(task, ["parentTaskId", "parentId", "parent_task_id"])));
     initialSnapshotRef.current = {
       title: nextTitle,
       description: nextDescription,
@@ -2125,6 +2131,12 @@ export function TaskDetailModal({ task, onClose, onStart }) {
       priority: nextPriority,
       tagsInput: nextTags,
       draft: nextDraft,
+      assignee: toText(pickTaskField(task, ["assignee"])),
+      assigneesInput: normalizeTaskAssigneesInput(task),
+      epicId: toText(pickTaskField(task, ["epicId", "epic", "epic_id"])),
+      storyPoints: toText(pickTaskField(task, ["storyPoints", "points", "story_points"])),
+      dueDate: normalizeTaskDueDateInput(task),
+      parentTaskId: toText(pickTaskField(task, ["parentTaskId", "parentId", "parent_task_id"])),
     };
     setBaselineVersion((v) => v + 1);
   }, [task?.id]);
@@ -3284,10 +3296,29 @@ function DagGraphSection({
         const source = layout.positions.get(sourceId);
         const target = layout.positions.get(targetId);
         if (!source || !target) return null;
-        return { source, target };
+        const kind = toText(edge?.kind || edge?.type || "depends-on", "depends-on").toLowerCase();
+        return { source, target, kind };
       })
       .filter(Boolean);
   }, [graph?.edges, layout.positions]);
+
+  const edgeKindCounts = useMemo(() => {
+    const counts = { "depends-on": 0, sequential: 0, blocks: 0 };
+    for (const edge of edges) {
+      const kind = toText(edge?.kind || "depends-on", "depends-on").toLowerCase();
+      counts[kind] = (counts[kind] || 0) + 1;
+    }
+    return counts;
+  }, [edges]);
+
+  const statusCounts = useMemo(() => {
+    const counts = new Map();
+    for (const node of sortedNodes) {
+      const key = toText(node?.status || "todo", "todo").toLowerCase();
+      counts.set(key, (counts.get(key) || 0) + 1);
+    }
+    return [...counts.entries()].sort((a, b) => b[1] - a[1]).slice(0, 4);
+  }, [sortedNodes]);
 
   if (!sortedNodes.length) {
     return html`
@@ -3316,7 +3347,7 @@ function DagGraphSection({
               <path d="M0,0 L10,4 L0,8 z" fill="var(--accent)" />
             </marker>
           </defs>
-          ${edges.map(({ source, target }, idx) => {
+          ${edges.map(({ source, target, kind }, idx) => {
             const x1 = source.x + source.width;
             const y1 = source.y + source.height / 2;
             const x2 = target.x;
@@ -3328,8 +3359,9 @@ function DagGraphSection({
                 key=${`edge-${idx}`}
                 d=${`M ${x1} ${y1} C ${c1} ${y1}, ${c2} ${y2}, ${x2} ${y2}`}
                 fill="none"
-                stroke="var(--accent)"
-                stroke-opacity="0.65"
+                stroke=${DAG_EDGE_STYLES[kind]?.color || "var(--accent)"}
+                stroke-dasharray=${DAG_EDGE_STYLES[kind]?.dash || ""}
+                stroke-opacity="0.72"
                 stroke-width="2"
                 marker-end="url(#dag-arrow)"
               />
@@ -3513,6 +3545,8 @@ export function TasksTab() {
     );
     const nextGlobalGraph = normalizeDagGraph(globalSource, "DAG of DAGs");
 
+    const sprintMetaEntry = sprintOptions.find((entry) => entry.id === resolvedSprint) || null;
+    setDagSprintOrderMode(toText(sprintMetaEntry?.sprintOrderMode || "parallel", "parallel"));
     setDagSprints(sprintOptions);
     setDagSprintGraph(nextSprintGraph);
     setDagGlobalGraph(nextGlobalGraph);
@@ -5123,6 +5157,9 @@ function CreateTaskModalInline({ onClose }) {
     <//>
   `;
 }
+
+
+
 
 
 

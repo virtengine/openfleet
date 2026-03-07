@@ -3022,7 +3022,7 @@
           },
         };
         STATE.tasks.unshift(subtask);
-        addLog('success', 'kanban', Subtask created: );
+        addLog('success', 'kanban', `Subtask created: ${subtask.title}`);
         return { ok: true, parentTaskId, data: subtask };
       }
       if (route === '/api/tasks/rewrite') {
@@ -4972,6 +4972,8 @@
   </script>
 </body>
 </html>
+
+
 
 
 
