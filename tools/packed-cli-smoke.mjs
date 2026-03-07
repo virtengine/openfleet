@@ -15,6 +15,10 @@ import { fileURLToPath } from "node:url";
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const ROOT = resolve(__dirname, "..");
 const nodeCmd = process.execPath;
+const SMOKE_TIMEOUT_MS = Math.max(
+  1000,
+  Number(process.env.BOSUN_PACKED_SMOKE_TIMEOUT_MS || "15000") || 15000,
+);
 
 function runNpm(args, options = {}) {
   return execFileSync("npm", args, {
@@ -22,6 +26,7 @@ function runNpm(args, options = {}) {
     encoding: "utf8",
     stdio: ["pipe", "pipe", "pipe"],
     shell: process.platform === "win32",
+    timeout: SMOKE_TIMEOUT_MS,
     ...options,
   });
 }
@@ -49,26 +54,50 @@ function installPackedArtifact(tarballPath, installDir) {
       encoding: "utf8",
       stdio: ["pipe", "pipe", "pipe"],
       shell: process.platform === "win32",
+      timeout: SMOKE_TIMEOUT_MS,
     },
   );
 }
 
-function assertPackedCliStarts(installDir) {
-  execFileSync(nodeCmd, [resolve(installDir, "node_modules", "bosun", "cli.mjs"), "--version"], {
-    cwd: installDir,
+function runNode(args, options = {}) {
+  return execFileSync(nodeCmd, args, {
     encoding: "utf8",
     stdio: ["pipe", "pipe", "pipe"],
+    timeout: SMOKE_TIMEOUT_MS,
+    ...options,
   });
+}
 
-  execFileSync(
-    nodeCmd,
-    ["--input-type=module", "--eval", "await import('bosun'); console.log('bosun import ok');"],
+function assertPackedCliStarts(installDir) {
+  const cliPath = resolve(installDir, "node_modules", "bosun", "cli.mjs");
+
+  const versionOutput = runNode([cliPath, "--version"], {
+    cwd: installDir,
+  });
+  if (!/\d+\.\d+\.\d+/.test(versionOutput)) {
+    throw new Error(`packed CLI --version returned unexpected output: ${JSON.stringify(versionOutput.trim())}`);
+  }
+
+  const helpOutput = runNode([cliPath, "--help"], {
+    cwd: installDir,
+  });
+  if (!helpOutput.includes("bosun v") || !helpOutput.includes("USAGE")) {
+    throw new Error("packed CLI --help did not print the expected usage text");
+  }
+
+  const configImportOutput = runNode(
+    [
+      "--input-type=module",
+      "--eval",
+      "const mod = await import('bosun/config'); console.log(typeof mod.loadConfig);",
+    ],
     {
       cwd: installDir,
-      encoding: "utf8",
-      stdio: ["pipe", "pipe", "pipe"],
     },
   );
+  if (!configImportOutput.trim().includes("function")) {
+    throw new Error("packed package export 'bosun/config' did not import successfully");
+  }
 }
 
 function main() {

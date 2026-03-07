@@ -30,15 +30,17 @@ afterEach(() => {
 });
 
 describe("prepublish-check", () => {
-  it("parses nested relative imports including parent-directory imports", () => {
+  it("parses nested relative imports including parent-directory imports", async () => {
     const source = [
       'import { a } from "./local.mjs";',
+      'import "../side-effect.mjs";',
       'export { b } from "../shared/util.mjs";',
       'const c = await import("../dynamic.mjs");',
     ].join("\n");
 
-    expect(findLocalImportSpecifiers(source)).toEqual([
+    await expect(findLocalImportSpecifiers(source)).resolves.toEqual([
       "./local.mjs",
+      "../side-effect.mjs",
       "../shared/util.mjs",
       "../dynamic.mjs",
     ]);
@@ -57,7 +59,7 @@ describe("prepublish-check", () => {
     ]);
   });
 
-  it("fails when a published module imports a non-published parent-relative file", () => {
+  it("fails when a published module imports a non-published parent-relative file", async () => {
     const root = createFixture({
       "package.json": JSON.stringify({
         name: "fixture",
@@ -71,7 +73,7 @@ describe("prepublish-check", () => {
     const pkg = JSON.parse(
       '{"name":"fixture","version":"1.0.0","files":["infra/monitor.mjs"]}',
     );
-    const result = validatePublishedLocalImports({ rootDir: root, pkg });
+    const result = await validatePublishedLocalImports({ rootDir: root, pkg });
 
     expect(result.missing).toEqual([
       {
@@ -82,7 +84,7 @@ describe("prepublish-check", () => {
     ]);
   });
 
-  it("passes when the imported file is included in the published manifest", () => {
+  it("passes when the imported file is included in the published manifest", async () => {
     const root = createFixture({
       "package.json": JSON.stringify({
         name: "fixture",
@@ -96,7 +98,7 @@ describe("prepublish-check", () => {
     const pkg = JSON.parse(
       '{"name":"fixture","version":"1.0.0","files":["infra/monitor.mjs","monitor-tail-sanitizer.mjs"]}',
     );
-    const result = validatePublishedLocalImports({ rootDir: root, pkg });
+    const result = await validatePublishedLocalImports({ rootDir: root, pkg });
 
     expect(result.missing).toEqual([]);
   });

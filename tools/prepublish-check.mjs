@@ -12,13 +12,9 @@
 import { existsSync, readFileSync, readdirSync, statSync } from "node:fs";
 import { dirname, extname, relative, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
+import { init, parse } from "es-module-lexer";
 
 const SOURCE_EXTENSIONS = new Set([".mjs", ".cjs", ".js"]);
-const BARE_LOCAL_IMPORT_PATTERN = /import\s+["']((?:\.\/|\.\.\/)[^"']+)["']/g;
-const STATIC_LOCAL_IMPORT_PATTERN =
-  /(?:import|export)\s[^\n;]*?from\s+["']((?:\.\/|\.\.\/)[^"']+)["']/g;
-const DYNAMIC_LOCAL_IMPORT_PATTERN =
-  /import\s*\(\s*["']((?:\.\/|\.\.\/)[^"']+)["']\s*\)/g;
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const ROOT = resolve(__dirname, "..");
@@ -61,33 +57,19 @@ export function expandPublishedFiles(rootDir, filesArray = []) {
   return published;
 }
 
-export function findLocalImportSpecifiers(source) {
-  const specifiers = [];
-  for (const pattern of [
-    STATIC_LOCAL_IMPORT_PATTERN,
-    BARE_LOCAL_IMPORT_PATTERN,
-    DYNAMIC_LOCAL_IMPORT_PATTERN,
-  ]) {
-    let match;
-    pattern.lastIndex = 0;
-    while ((match = pattern.exec(source)) !== null) {
-      const lineStart = source.lastIndexOf("\n", match.index) + 1;
-      const linePrefix = source.slice(lineStart, match.index).trimStart();
-      if (
-        linePrefix.startsWith("//") ||
-        linePrefix.startsWith("*") ||
-        linePrefix.startsWith("/*")
-      ) {
-        continue;
-      }
-      const specifier = match[1];
-      if (specifier) specifiers.push(specifier);
-    }
-  }
-  return specifiers;
+export async function findLocalImportSpecifiers(source) {
+  await init;
+  const [imports] = parse(source);
+  return imports
+    .map((entry) => entry.n)
+    .filter(
+      (specifier) =>
+        typeof specifier === "string" &&
+        (specifier.startsWith("./") || specifier.startsWith("../")),
+    );
 }
 
-export function validatePublishedLocalImports({ rootDir, pkg }) {
+export async function validatePublishedLocalImports({ rootDir, pkg }) {
   if (!pkg?.version) {
     return {
       duplicates: [],
@@ -108,9 +90,11 @@ export function validatePublishedLocalImports({ rootDir, pkg }) {
   for (const file of scannedFiles) {
     const absFile = resolve(rootDir, file);
     const content = readFileSync(absFile, "utf8");
-    const imports = findLocalImportSpecifiers(content);
+    const imports = await findLocalImportSpecifiers(content);
     for (const specifier of imports) {
-      const target = relative(rootDir, resolve(dirname(absFile), specifier)).replaceAll("\\", "/");
+      const absTarget = resolve(dirname(absFile), specifier);
+      if (!existsSync(absTarget)) continue;
+      const target = relative(rootDir, absTarget).replaceAll("\\", "/");
       if (!publishedFiles.has(target)) {
         missing.push({ file, imported: specifier, resolved: target });
       }
@@ -120,9 +104,9 @@ export function validatePublishedLocalImports({ rootDir, pkg }) {
   return { duplicates, missing, scannedFiles, error: null };
 }
 
-export function runPrepublishCheck(rootDir = ROOT) {
+export async function runPrepublishCheck(rootDir = ROOT) {
   const pkg = JSON.parse(readFileSync(resolve(rootDir, "package.json"), "utf8"));
-  const result = validatePublishedLocalImports({ rootDir, pkg });
+  const result = await validatePublishedLocalImports({ rootDir, pkg });
 
   if (result.error) {
     console.error(`:close: ${result.error}`);
@@ -149,5 +133,5 @@ export function runPrepublishCheck(rootDir = ROOT) {
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
-  runPrepublishCheck();
+  await runPrepublishCheck();
 }

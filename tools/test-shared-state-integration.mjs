@@ -17,7 +17,7 @@ try {
     releaseSharedState,
     shouldRetryTask,
     sweepStaleSharedStates,
-  } = await import("./workspace/shared-state-manager.mjs");
+  } = await import("../workspace/shared-state-manager.mjs");
   console.log("   ✓ All shared state manager exports available");
 } catch (err) {
   console.error("   ✗ Failed to import shared-state-manager:", err.message);
@@ -28,7 +28,7 @@ try {
 console.log("\n2. Testing task-claims.mjs with shared state...");
 try {
   const { claimTask, renewClaim, releaseTask } =
-    await import("./task/task-claims.mjs");
+    await import("../task/task-claims.mjs");
   console.log("   ✓ task-claims.mjs imports successfully");
 } catch (err) {
   console.error("   ✗ Failed to import task-claims:", err.message);
@@ -38,7 +38,7 @@ try {
 // Test 3: Import sync-engine with shared state integration
 console.log("\n3. Testing sync-engine.mjs with shared state...");
 try {
-  const { SyncEngine, createSyncEngine } = await import("./infra/sync-engine.mjs");
+  const { SyncEngine, createSyncEngine } = await import("../infra/sync-engine.mjs");
   console.log("   ✓ sync-engine.mjs imports successfully");
 } catch (err) {
   console.error("   ✗ Failed to import sync-engine:", err.message);
@@ -49,7 +49,7 @@ try {
 console.log("\n4. Testing ve-orchestrator.mjs with shared state...");
 try {
   const { parseOrchestratorArgs, runOrchestrator } =
-    await import("./kanban/ve-orchestrator.mjs");
+    await import("../kanban/ve-orchestrator.mjs");
   console.log("   ✓ ve-orchestrator.mjs imports successfully");
 } catch (err) {
   console.error("   ✗ Failed to import ve-orchestrator:", err.message);
@@ -90,7 +90,7 @@ console.log("   ✓ All environment variables have valid defaults");
 console.log("\n6. Testing basic shared state operations...");
 try {
   const { claimTaskInSharedState, releaseSharedState, getSharedState } =
-    await import("./workspace/shared-state-manager.mjs");
+    await import("../workspace/shared-state-manager.mjs");
 
   const testTaskId = `test-${randomUUID()}`;
   const testOwnerId = `test-owner-${Date.now()}`;
