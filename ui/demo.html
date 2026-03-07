@@ -2964,57 +2964,6 @@
         }
         return { ok: true, data: { nodes, edges } };
       }
-      if (route === '/api/tasks/sprints') {
-        return {
-          ok: true,
-          source: 'demo',
-          data: [{
-            id: 'sprint-demo-1',
-            name: 'Demo Sprint',
-            status: 'active',
-            taskIds: STATE.tasks.slice(0, 3).map((task) => task.id),
-            startedAt: Date.now() - 3 * 24 * 60 * 60 * 1000,
-            endsAt: Date.now() + 4 * 24 * 60 * 60 * 1000,
-          }],
-        };
-      }
-      if (route === '/api/tasks/dag') {
-        const sprintId = params.get('sprintId') || 'sprint-demo-1';
-        const sprintTasks = STATE.tasks.slice(0, 5);
-        return {
-          ok: true,
-          sprintId,
-          source: 'demo',
-          data: {
-            nodes: sprintTasks.map((task, index) => ({
-              id: task.id,
-              label: task.title,
-              status: task.status,
-              sprintId,
-              depth: index,
-            })),
-            edges: sprintTasks.slice(1).map((task, index) => ({
-              from: sprintTasks[index].id,
-              to: task.id,
-            })),
-          },
-        };
-      }
-      if (route === '/api/tasks/dag-of-dags') {
-        return {
-          ok: true,
-          source: 'demo',
-          data: {
-            nodes: [{
-              id: 'sprint-demo-1',
-              label: 'Demo Sprint',
-              status: 'active',
-              taskCount: Math.min(5, STATE.tasks.length),
-            }],
-            edges: [],
-          },
-        };
-      }
       if (route === '/api/tasks/attachments/upload') {
         const taskId = body?.taskId || body?.id || params.get('taskId');
         const t = findTask(taskId);
