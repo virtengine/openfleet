@@ -28,6 +28,7 @@ import {
   resolveEntry,
   listWellKnownAgentSources,
   importAgentProfilesFromRepository,
+  syncAutoDiscoveredLibraryEntries,
 } from "../infra/library-manager.mjs";
 
 // ── Helpers ─────────────────────────────────────────────────────────────────
@@ -561,6 +562,57 @@ describe("well-known source import", () => {
     }
   });
 });
+describe("syncAutoDiscoveredLibraryEntries", () => {
+  beforeEach(() => fresh());
+  afterEach(() => cleanup());
+
+  it("imports .github/agents TaskPlanner template as task-planner prompt entry", () => {
+    mkdirSync(join(tmpDir, ".github", "agents"), { recursive: true });
+    writeFileSync(
+      join(tmpDir, ".github", "agents", "TaskPlanner.agent.md"),
+      "# Task Planner\n\nStrict planner contract.",
+      "utf8",
+    );
+
+    const result = syncAutoDiscoveredLibraryEntries(tmpDir);
+    expect(result.promptEntriesUpserted).toBeGreaterThan(0);
+
+    const entry = getEntry(tmpDir, "task-planner");
+    expect(entry).not.toBeNull();
+    expect(entry.type).toBe("prompt");
+    const content = getEntryContent(tmpDir, entry);
+    expect(String(content || "")).toContain("Strict planner contract.");
+  });
+
+  it("imports MCP server definitions from repo .codex/config.toml", () => {
+    mkdirSync(join(tmpDir, ".codex"), { recursive: true });
+    writeFileSync(
+      join(tmpDir, ".codex", "config.toml"),
+      [
+        "[mcp_servers.github]",
+        'command = "npx"',
+        'args = ["-y", "@anthropic/mcp-github"]',
+        "",
+        "[mcp_servers.github.env]",
+        'GITHUB_TOKEN = "ghp_secret_should_not_be_copied"',
+      ].join("\n"),
+      "utf8",
+    );
+
+    const result = syncAutoDiscoveredLibraryEntries(tmpDir);
+    expect(result.mcpEntriesUpserted).toBeGreaterThan(0);
+
+    const entry = getEntry(tmpDir, "github");
+    expect(entry).not.toBeNull();
+    expect(entry.type).toBe("mcp");
+    const mcp = getEntryContent(tmpDir, entry);
+    expect(mcp.transport).toBe("stdio");
+    expect(mcp.command).toBe("npx");
+    expect(Array.isArray(mcp.args)).toBe(true);
+    expect(mcp.env).toEqual(expect.objectContaining({ GITHUB_TOKEN: "" }));
+  });
+});
+
 // ── Scope Detection ─────────────────────────────────────────────────────────
 
 describe("detectScopes", () => {
@@ -633,3 +685,4 @@ describe("renderPromptTemplate with library resolver", () => {
     expect(result).toBe("Hello World");
   });
 });
+

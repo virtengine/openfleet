@@ -502,7 +502,7 @@ function KanbanColumn({ col, tasks, onOpen }) {
       onDragLeave=${onDragLeave}
       onDrop=${onDrop}
     >
-      <${Box} sx=${{ display: 'flex', alignItems: 'center', gap: 1, p: 1, borderBottom: '2px solid ' + col.color }}>
+      <${Box} className="kanban-column-head" sx=${{ display: 'flex', alignItems: 'center', gap: 1, p: 1, borderBottom: '2px solid ' + col.color }}>
         <${Typography} variant="subtitle2">${col.icon} ${col.title}</${Typography}>
         <${Chip} label=${tasks.length} size="small" />
         <${IconButton} size="small" onClick=${() => { setShowCreate(!showCreate); haptic(); }} title=${"Add task to " + col.title}>+</${IconButton}>
@@ -711,3 +711,4 @@ export function KanbanBoard({ onOpenTask }) {
     </${Box}>
   `;
 }
+

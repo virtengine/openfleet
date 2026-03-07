@@ -16,7 +16,7 @@
  */
 
 import { existsSync, readFileSync, writeFileSync, mkdirSync, readdirSync, statSync, unlinkSync, rmSync } from "node:fs";
-import { resolve, basename, join } from "node:path";
+import { resolve, basename, join, relative } from "node:path";
 import { execSync, spawnSync } from "node:child_process";
 import { homedir } from "node:os";
 
@@ -254,7 +254,10 @@ export function getEntryContent(rootDir, entry) {
   if (!existsSync(filePath)) return null;
   try {
     const raw = readFileSync(filePath, "utf8");
-    return entry.type === "agent" ? JSON.parse(raw) : raw;
+    if (entry.type === "agent" || entry.type === "mcp" || entry.type === "custom-tool") {
+      return JSON.parse(raw);
+    }
+    return raw;
   } catch {
     return null;
   }
@@ -557,6 +560,333 @@ function ensureUniqueId(baseId, takenIds) {
   }
   takenIds.add(id);
   return id;
+}
+
+function humanizeSlug(slug) {
+  const value = String(slug || "").trim();
+  if (!value) return "";
+  return value
+    .split(/[-_\s]+/)
+    .filter(Boolean)
+    .map((segment) => segment.charAt(0).toUpperCase() + segment.slice(1))
+    .join(" ");
+}
+
+function slugifyIdentifier(value) {
+  const raw = String(value || "").trim();
+  if (!raw) return "";
+  return slugify(
+    raw
+      .replace(/([a-z0-9])([A-Z])/g, "$1-$2")
+      .replace(/[_.]+/g, "-"),
+  );
+}
+
+function parseTomlValue(rawValue) {
+  const raw = String(rawValue || "").trim();
+  if (!raw) return "";
+  if (raw.startsWith('"') && raw.endsWith('"')) return raw.slice(1, -1);
+  if (raw.startsWith("'") && raw.endsWith("'")) return raw.slice(1, -1);
+  if (raw.startsWith("[") && raw.endsWith("]")) {
+    const body = raw.slice(1, -1).trim();
+    if (!body) return [];
+    return body
+      .split(",")
+      .map((part) => String(part || "").trim())
+      .filter(Boolean)
+      .map((part) => {
+        if (
+          (part.startsWith('"') && part.endsWith('"'))
+          || (part.startsWith("'") && part.endsWith("'"))
+        ) {
+          return part.slice(1, -1);
+        }
+        return part;
+      });
+  }
+  return raw;
+}
+
+function parseMcpServersFromToml(tomlText, sourcePath = "") {
+  const servers = new Map();
+  const lines = String(tomlText || "").split(/\r?\n/);
+  let current = null;
+
+  for (const rawLine of lines) {
+    const line = String(rawLine || "").trim();
+    if (!line || line.startsWith("#")) continue;
+
+    const sectionMatch = line.match(/^\[([^\]]+)\]$/);
+    if (sectionMatch) {
+      const sectionName = String(sectionMatch[1] || "").trim();
+      const mcpMatch = sectionName.match(/^mcp_servers\.([A-Za-z0-9_-]+)(?:\.(env))?$/i);
+      if (!mcpMatch) {
+        current = null;
+        continue;
+      }
+      const rawId = String(mcpMatch[1] || "").trim();
+      if (!rawId) {
+        current = null;
+        continue;
+      }
+      if (!servers.has(rawId)) {
+        servers.set(rawId, {
+          rawId,
+          sourcePath,
+          section: "mcp_servers." + rawId,
+          main: {},
+          envKeys: new Set(),
+        });
+      }
+      current = {
+        rawId,
+        env: String(mcpMatch[2] || "").toLowerCase() === "env",
+      };
+      continue;
+    }
+
+    if (!current) continue;
+    const kv = line.match(/^([A-Za-z0-9_.-]+)\s*=\s*(.+)$/);
+    if (!kv) continue;
+
+    const key = String(kv[1] || "").trim();
+    const value = parseTomlValue(kv[2]);
+    if (!key) continue;
+
+    const target = servers.get(current.rawId);
+    if (!target) continue;
+    if (current.env) {
+      target.envKeys.add(key);
+    } else {
+      target.main[key] = value;
+    }
+  }
+
+  const normalized = [];
+  for (const record of servers.values()) {
+    const id = slugifyIdentifier(record.rawId.replace(/_/g, "-"));
+    if (!id) continue;
+
+    const url = String(record.main.url || "").trim();
+    const command = String(record.main.command || "").trim();
+    const args = toStringArray(Array.isArray(record.main.args) ? record.main.args : []);
+    const env = {};
+    for (const key of record.envKeys) {
+      env[key] = "";
+    }
+
+    if (!url && !command) continue;
+
+    normalized.push({
+      id,
+      rawId: record.rawId,
+      name: humanizeSlug(id),
+      sourcePath: record.sourcePath,
+      section: record.section,
+      transport: url ? "url" : "stdio",
+      url: url || null,
+      command: command || null,
+      args,
+      env,
+    });
+  }
+
+  return normalized;
+}
+
+function discoverLocalAgentTemplates(rootDir) {
+  const candidateDirs = uniqueStrings([
+    resolve(rootDir, ".github", "agents"),
+    resolve(rootDir, "..", ".github", "agents"),
+  ]);
+
+  const templatesById = new Map();
+  for (const dir of candidateDirs) {
+    if (!existsSync(dir)) continue;
+
+    let files = [];
+    try {
+      files = readdirSync(dir)
+        .filter((name) => /\.md$/i.test(name))
+        .sort((a, b) => a.localeCompare(b));
+    } catch {
+      continue;
+    }
+
+    for (const fileName of files) {
+      const fullPath = resolve(dir, fileName);
+      let body = "";
+      try {
+        body = String(readFileSync(fullPath, "utf8") || "");
+      } catch {
+        continue;
+      }
+      const content = body.trim();
+      if (!content) continue;
+
+      const baseName = basename(fileName, ".md").replace(/\.agent$/i, "");
+      const id = slugifyIdentifier(baseName);
+      if (!id || templatesById.has(id)) continue;
+
+      const firstHeading = content.match(/^#\s+(.+)$/m);
+      const name = firstHeading
+        ? String(firstHeading[1] || "").trim()
+        : humanizeSlug(id);
+      const descriptionLine = content
+        .split(/\r?\n/)
+        .map((line) => line.trim())
+        .find((line) => line && !line.startsWith("#"));
+
+      const relPathRaw = relative(rootDir, fullPath).replace(/\\/g, "/");
+      const relPath = relPathRaw || ".github/agents/" + fileName;
+
+      templatesById.set(id, {
+        id,
+        name: name || humanizeSlug(id),
+        description: String(descriptionLine || ("Auto-synced prompt template from " + fileName)).slice(0, 240),
+        relPath,
+        content: body,
+      });
+    }
+  }
+
+  return [...templatesById.values()];
+}
+
+function discoverMcpServersFromCodexConfig(rootDir) {
+  const candidates = uniqueStrings([
+    resolve(rootDir, ".codex", "config.toml"),
+    resolve(homedir(), ".codex", "config.toml"),
+  ]);
+  const discovered = [];
+  const seenById = new Set();
+  for (const configPath of candidates) {
+    if (!existsSync(configPath)) continue;
+    let raw = "";
+    try {
+      raw = readFileSync(configPath, "utf8");
+    } catch {
+      continue;
+    }
+    const parsed = parseMcpServersFromToml(raw, configPath);
+    for (const entry of parsed) {
+      if (!entry?.id || seenById.has(entry.id)) continue;
+      seenById.add(entry.id);
+      discovered.push(entry);
+    }
+  }
+  return discovered;
+}
+
+/**
+ * Auto-discover local prompt templates and MCP server definitions and sync
+ * them into the library manifest/filesystem.
+ */
+export function syncAutoDiscoveredLibraryEntries(rootDir) {
+  const root = rootDir || getBosunHomeDir();
+  const manifestSnapshot = loadManifest(root);
+  const existingEntries = Array.isArray(manifestSnapshot?.entries)
+    ? manifestSnapshot.entries
+    : [];
+  const existingById = new Map(
+    existingEntries
+      .map((entry) => [String(entry?.id || "").trim(), entry])
+      .filter(([id]) => Boolean(id)),
+  );
+
+  let promptEntriesUpserted = 0;
+  let mcpEntriesUpserted = 0;
+  let promptEntriesSkipped = 0;
+  let mcpEntriesSkipped = 0;
+
+  for (const template of discoverLocalAgentTemplates(root)) {
+    const existing = existingById.get(template.id);
+    const autoSyncMeta = existing?.meta?.autoSync || {};
+    const canUpdateExisting =
+      !existing
+      || (existing.type === "prompt" && (
+        String(autoSyncMeta.kind || "") === "local-agent-template"
+        || template.id === "task-planner"
+      ));
+
+    if (!canUpdateExisting) {
+      promptEntriesSkipped += 1;
+      continue;
+    }
+
+    upsertEntry(root, {
+      id: template.id,
+      type: "prompt",
+      name: template.name,
+      description: template.description,
+      tags: uniqueStrings([
+        "prompt",
+        "autodiscovered",
+        "local-agent-template",
+        template.id === "task-planner" ? "planner" : "",
+      ]),
+      meta: {
+        autoSync: {
+          kind: "local-agent-template",
+          sourcePath: template.relPath,
+          syncedAt: nowISO(),
+        },
+      },
+    }, template.content);
+    promptEntriesUpserted += 1;
+  }
+
+  for (const mcp of discoverMcpServersFromCodexConfig(root)) {
+    const existing = existingById.get(mcp.id);
+    const autoSyncMeta = existing?.meta?.autoSync || {};
+    const canUpdateExisting =
+      !existing
+      || (existing.type === "mcp" && String(autoSyncMeta.kind || "") === "codex-mcp-config");
+
+    if (!canUpdateExisting) {
+      mcpEntriesSkipped += 1;
+      continue;
+    }
+
+    const content = {
+      id: mcp.id,
+      name: mcp.name,
+      description: "Auto-discovered from " + mcp.sourcePath,
+      transport: mcp.transport,
+      command: mcp.transport === "stdio" ? mcp.command : undefined,
+      args: mcp.transport === "stdio" ? mcp.args : undefined,
+      url: mcp.transport === "url" ? mcp.url : undefined,
+      env: Object.keys(mcp.env || {}).length ? mcp.env : undefined,
+      source: "autodiscovered",
+      tags: ["autodiscovered", "codex-config", "mcp"],
+    };
+
+    upsertEntry(root, {
+      id: mcp.id,
+      type: "mcp",
+      name: mcp.name,
+      description: content.description,
+      tags: uniqueStrings(["mcp", "autodiscovered", "codex-config"]),
+      meta: {
+        autoSync: {
+          kind: "codex-mcp-config",
+          sourcePath: mcp.sourcePath,
+          section: mcp.section,
+          rawId: mcp.rawId,
+          syncedAt: nowISO(),
+        },
+      },
+    }, content);
+    mcpEntriesUpserted += 1;
+  }
+
+  return {
+    promptEntriesUpserted,
+    mcpEntriesUpserted,
+    promptEntriesSkipped,
+    mcpEntriesSkipped,
+    totalUpserted: promptEntriesUpserted + mcpEntriesUpserted,
+  };
 }
 
 export function importAgentProfilesFromRepository(rootDir, options = {}) {
@@ -1124,5 +1454,11 @@ export function scaffoldAgentProfiles(rootDir) {
 export function initLibrary(rootDir) {
   const scaffolded = scaffoldAgentProfiles(rootDir);
   const manifest = rebuildManifest(rootDir);
-  return { manifest, scaffolded };
+  const autoSynced = syncAutoDiscoveredLibraryEntries(rootDir);
+  const latestManifest = loadManifest(rootDir);
+  return {
+    manifest: latestManifest?.entries ? latestManifest : manifest,
+    scaffolded,
+    autoSynced,
+  };
 }
