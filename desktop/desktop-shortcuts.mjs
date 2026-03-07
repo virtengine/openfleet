@@ -15,7 +15,9 @@
  *  - "local"  : fires only when the app is focused (wired as menu accelerators).
  */
 
-import { globalShortcut } from "electron";
+import * as electronModule from "electron";
+const electron = electronModule?.default || electronModule;
+const { globalShortcut } = electron;
 import { existsSync, readFileSync, writeFileSync, mkdirSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 

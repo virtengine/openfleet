@@ -1,4 +1,6 @@
-import {
+import * as electronModule from "electron";
+const electron = electronModule?.default || electronModule;
+const {
   app,
   BrowserWindow,
   desktopCapturer,
@@ -10,10 +12,10 @@ import {
   globalShortcut,
   ipcMain,
   session,
-} from "electron";
+} = electron;
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
-import { existsSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { execFileSync, spawn } from "node:child_process";
 import { request as httpRequest } from "node:http";
 import { request as httpsRequest } from "node:https";
@@ -96,6 +98,40 @@ let trayMode = false;
 /** True when the main window should start hidden (background mode). */
 let startHidden = false;
 const DEFAULT_TELEGRAM_UI_PORT = 3080;
+const DESKTOP_RELEASES_URL = "https://github.com/virtengine/bosun/releases";
+const STARTUP_UPDATE_REMIND_LATER_MS = 12 * 60 * 60 * 1000;
+
+/** @type {{
+ * checking: boolean,
+ * available: boolean,
+ * downloaded: boolean,
+ * currentVersion: string,
+ * latestVersion: string,
+ * source: string,
+ * error: string,
+ * lastCheckedAt: number,
+ * installActionLabel: string,
+ * statusSummary: string,
+ * promptPending: boolean,
+ * startupPromptShownForVersion: string,
+ * }} */
+let desktopUpdateState = {
+  checking: false,
+  available: false,
+  downloaded: false,
+  currentVersion: "0.0.0",
+  latestVersion: "",
+  source: "",
+  error: "",
+  lastCheckedAt: 0,
+  installActionLabel: "Check for Updates…",
+  statusSummary: "Update status unknown",
+  promptPending: false,
+  startupPromptShownForVersion: "",
+};
+let packagedAutoUpdater = null;
+let packagedAutoUpdaterConfigured = false;
+let startupUpdatePromptInFlight = false;
 
 // ── Workspace cache (module-scope — refreshed by fetchWorkspaces) ─────────────
 /** @type {{ id: string, name: string, [key: string]: unknown }[]} */
@@ -417,6 +453,218 @@ function resolveDesktopIconPath() {
     resolve(__dirname, "..", "logo.png"),
   ];
   return candidates.find((iconPath) => existsSync(iconPath)) || null;
+}
+
+function getDesktopUpdateStatePath() {
+  return resolve(resolveDesktopConfigDir(), "desktop-update-state.json");
+}
+
+function readDesktopUpdatePrefs() {
+  try {
+    const file = getDesktopUpdateStatePath();
+    if (!existsSync(file)) return {};
+    const payload = JSON.parse(readFileSync(file, "utf8"));
+    return payload && typeof payload === "object" ? payload : {};
+  } catch {
+    return {};
+  }
+}
+
+function writeDesktopUpdatePrefs(nextPrefs) {
+  try {
+    const dir = resolveDesktopConfigDir();
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(
+      getDesktopUpdateStatePath(),
+      `${JSON.stringify(nextPrefs, null, 2)}\n`,
+      "utf8",
+    );
+  } catch (err) {
+    console.warn("[desktop] could not persist update prefs:", err?.message || err);
+  }
+}
+
+function getDesktopParentWindow() {
+  return mainWindow && !mainWindow.isDestroyed() ? mainWindow : null;
+}
+
+function computeUpdateStatusSummary(state = desktopUpdateState) {
+  if (state.checking) {
+    return `Checking for updates from ${state.source || "the update service"}…`;
+  }
+  if (state.downloaded) {
+    return `Update ready to install: v${state.latestVersion || state.currentVersion}`;
+  }
+  if (state.available) {
+    return `Update available: v${state.currentVersion} → v${state.latestVersion}`;
+  }
+  if (state.error) {
+    return `Update check failed: ${state.error}`;
+  }
+  if (state.lastCheckedAt > 0) {
+    return `Up to date at v${state.currentVersion}`;
+  }
+  return `Current version: v${state.currentVersion}`;
+}
+
+function refreshDesktopMenus() {
+  try {
+    Menu.setApplicationMenu(buildAppMenu());
+  } catch {
+    // best effort
+  }
+  refreshTrayMenu();
+}
+
+function setDesktopUpdateState(patch) {
+  desktopUpdateState = {
+    ...desktopUpdateState,
+    ...patch,
+  };
+  desktopUpdateState.currentVersion = desktopUpdateState.currentVersion || readCurrentBosunVersion();
+  desktopUpdateState.installActionLabel = desktopUpdateState.downloaded
+    ? `Install Update & Restart${desktopUpdateState.latestVersion ? ` (v${desktopUpdateState.latestVersion})` : ""}`
+    : desktopUpdateState.checking
+      ? "Checking for Updates…"
+      : desktopUpdateState.available
+        ? `Update Available: v${desktopUpdateState.latestVersion}`
+        : "Check for Updates…";
+  desktopUpdateState.statusSummary = computeUpdateStatusSummary(desktopUpdateState);
+  refreshDesktopMenus();
+}
+
+function setDesktopAboutPanelOptions() {
+  try {
+    app.setAboutPanelOptions({
+      applicationName: "Bosun Desktop",
+      applicationVersion: `v${readCurrentBosunVersion()}`,
+      version: process.versions.electron,
+      copyright: "Copyright VirtEngine",
+      website: "https://github.com/virtengine/bosun",
+      websiteLabel: "GitHub Repository",
+    });
+  } catch {
+    // best effort
+  }
+}
+
+async function showAboutDialog() {
+  const parentWin = getDesktopParentWindow();
+  const currentVersion = readCurrentBosunVersion();
+  const detailLines = [
+    `Bosun version: v${currentVersion}`,
+    `Electron: v${process.versions.electron}`,
+    `Node.js: v${process.versions.node}`,
+    desktopUpdateState.statusSummary,
+  ];
+  const buttons = [
+    desktopUpdateState.downloaded ? "Install Update & Restart" : "Check for Updates",
+    "Open Releases",
+    "Close",
+  ];
+  const { response } = await dialog.showMessageBox(parentWin, {
+    type: "info",
+    title: "About Bosun Desktop",
+    message: "Bosun Desktop",
+    detail: detailLines.join("\n"),
+    buttons,
+    defaultId: 0,
+    cancelId: 2,
+  });
+  if (response === 0) {
+    if (desktopUpdateState.downloaded) {
+      await installDownloadedPackagedUpdate();
+    } else {
+      await checkForUpdateDesktop({ interactive: true, source: "about" });
+    }
+    return;
+  }
+  if (response === 1) {
+    await shell.openExternal(DESKTOP_RELEASES_URL).catch(() => {});
+  }
+}
+
+async function installDownloadedPackagedUpdate() {
+  if (!packagedAutoUpdater || !desktopUpdateState.downloaded) return false;
+  const parentWin = getDesktopParentWindow();
+  const { response } = await dialog.showMessageBox(parentWin, {
+    type: "info",
+    title: "Install Update",
+    message: "Restart Bosun Desktop to apply the downloaded update?",
+    detail: `Ready to install: v${desktopUpdateState.latestVersion || desktopUpdateState.currentVersion}`,
+    buttons: ["Install & Restart", "Later"],
+    defaultId: 0,
+    cancelId: 1,
+  });
+  if (response !== 0) return false;
+  packagedAutoUpdater.quitAndInstall(false, true);
+  return true;
+}
+
+function shouldPromptForStartupUpdate(latestVersion) {
+  const prefs = readDesktopUpdatePrefs();
+  const deferredUntil = Number(prefs.deferUntil || 0);
+  const deferredVersion = String(prefs.version || "");
+  if (deferredVersion === latestVersion && deferredUntil > Date.now()) {
+    return false;
+  }
+  return true;
+}
+
+function markStartupUpdateDeferred(latestVersion) {
+  writeDesktopUpdatePrefs({
+    version: latestVersion,
+    deferUntil: Date.now() + STARTUP_UPDATE_REMIND_LATER_MS,
+  });
+}
+
+function clearStartupUpdateDeferral() {
+  writeDesktopUpdatePrefs({});
+}
+
+async function promptStartupUpdateAvailable(latestVersion, options = {}) {
+  if (startupUpdatePromptInFlight) return;
+  if (!latestVersion || !shouldPromptForStartupUpdate(latestVersion)) return;
+  startupUpdatePromptInFlight = true;
+  try {
+    const parentWin = getDesktopParentWindow();
+    const currentVersion = readCurrentBosunVersion();
+    const isDownloaded = Boolean(options.downloaded);
+    const buttons = isDownloaded
+      ? ["Install & Restart", "Later", "Open Releases"]
+      : ["Update Now", "Later", "Open Releases"];
+    const { response } = await dialog.showMessageBox(parentWin, {
+      type: "info",
+      title: isDownloaded ? "Update Ready" : "Update Available",
+      message: isDownloaded
+        ? "Bosun Desktop has downloaded an update."
+        : "Bosun Desktop is out of date.",
+      detail:
+        `Current version: v${currentVersion}\n` +
+        `Latest version:  v${latestVersion}\n\n` +
+        (isDownloaded
+          ? "Restart now to apply the downloaded update."
+          : "Install the update now or defer the reminder for 12 hours."),
+      buttons,
+      defaultId: 0,
+      cancelId: 1,
+    });
+    if (response === 0) {
+      clearStartupUpdateDeferral();
+      if (isDownloaded) {
+        await installDownloadedPackagedUpdate();
+      } else {
+        await checkForUpdateDesktop({ interactive: true, source: "startup" });
+      }
+    } else if (response === 2) {
+      await shell.openExternal(DESKTOP_RELEASES_URL).catch(() => {});
+      markStartupUpdateDeferred(latestVersion);
+    } else {
+      markStartupUpdateDeferred(latestVersion);
+    }
+  } finally {
+    startupUpdatePromptInFlight = false;
+  }
 }
 
 function buildLoadingPageUrl(message = "Starting Bosun...") {
@@ -756,6 +1004,7 @@ function buildAppMenu() {
   const isDev = !app.isPackaged;
 
   const openUrl = (url) => shell.openExternal(url).catch(() => {});
+  const updateActionLabel = desktopUpdateState.installActionLabel;
 
   /** @type {Electron.MenuItemConstructorOptions[]} */
   const template = [
@@ -921,8 +1170,19 @@ function buildAppMenu() {
         },
         { type: /** @type {const} */ ("separator") },
         {
-          label: "Check for Updates\u2026",
-          click: () => checkForUpdateDesktop().catch(() => {}),
+          label: updateActionLabel,
+          enabled: !desktopUpdateState.checking,
+          click: () => {
+            if (desktopUpdateState.downloaded) {
+              installDownloadedPackagedUpdate().catch(() => {});
+              return;
+            }
+            checkForUpdateDesktop({ interactive: true, source: "menu" }).catch(() => {});
+          },
+        },
+        {
+          label: "About Bosun Desktop",
+          click: () => showAboutDialog().catch(() => {}),
         },
       ],
     },
@@ -934,6 +1194,11 @@ function buildAppMenu() {
     {
       role: /** @type {const} */ ("help"),
       submenu: [
+        {
+          label: "About Bosun Desktop",
+          click: () => showAboutDialog().catch(() => {}),
+        },
+        { type: /** @type {const} */ ("separator") },
         {
           label: "Bosun Documentation",
           click: () => openUrl("https://github.com/virtengine/bosun#readme"),
@@ -1383,6 +1648,7 @@ function refreshTrayMenu() {
 
   const openUrl = (url) => shell.openExternal(url).catch(() => {});
   const isDev = !app.isPackaged;
+  const updateActionLabel = desktopUpdateState.installActionLabel;
 
   // Build workspace items from the module-scope cache
   const workspaceItems = /** @type {Electron.MenuItemConstructorOptions[]} */ ([]);
@@ -1497,16 +1763,19 @@ function refreshTrayMenu() {
     { type: /** @type {const} */ ("separator") },
 
     {
-      label: "Check for Updates\u2026",
-      click: () => checkForUpdateDesktop().catch(() => {}),
+      label: updateActionLabel,
+      enabled: !desktopUpdateState.checking,
+      click: () => {
+        if (desktopUpdateState.downloaded) {
+          installDownloadedPackagedUpdate().catch(() => {});
+          return;
+        }
+        checkForUpdateDesktop({ interactive: true, source: "tray" }).catch(() => {});
+      },
     },
     {
-      label: "Restart to Apply Update",
-      enabled: app.isPackaged,
-      click: () => {
-        app.relaunch();
-        void shutdown("tray_restart_update");
-      },
+      label: "About Bosun Desktop",
+      click: () => showAboutDialog().catch(() => {}),
     },
 
     // ── Troubleshooting ──────────────────────────────────────────────────
@@ -1871,6 +2140,11 @@ async function bootstrap() {
     // Initialise shortcuts (loads user config) and register globals.
     // Must happen before buildAppMenu() so acc() returns correct values.
     initAndRegisterShortcuts(resolveDesktopConfigDir());
+    setDesktopAboutPanelOptions();
+    setDesktopUpdateState({
+      currentVersion: readCurrentBosunVersion(),
+      source: app.isPackaged ? "desktop build" : "npm registry",
+    });
 
     Menu.setApplicationMenu(buildAppMenu());
 
@@ -1925,35 +2199,102 @@ async function bootstrap() {
 
 async function maybeAutoUpdate() {
   // Packaged Electron builds use electron-updater (Squirrel / NSIS).
-  if (app.isPackaged && process.env.BOSUN_DESKTOP_AUTO_UPDATE === "1") {
+  if (app.isPackaged && parseBoolEnv(process.env.BOSUN_DESKTOP_AUTO_UPDATE, true)) {
     try {
-      const { autoUpdater } = await import("electron-updater");
-      const feedUrl = process.env.BOSUN_DESKTOP_UPDATE_URL;
-      if (feedUrl) {
-        autoUpdater.setFeedURL({ url: feedUrl });
-      }
-      autoUpdater.autoDownload = true;
-      autoUpdater.checkForUpdatesAndNotify().catch(() => {});
+      await ensurePackagedAutoUpdater();
+      setDesktopUpdateState({
+        checking: true,
+        source: "desktop build",
+      });
+      packagedAutoUpdater.checkForUpdates().catch((err) => {
+        setDesktopUpdateState({
+          checking: false,
+          error: err?.message || "Update check failed",
+          source: "desktop build",
+        });
+      });
     } catch (err) {
       console.warn("[desktop] auto-update unavailable", err?.message || err);
+      setDesktopUpdateState({
+        checking: false,
+        error: err?.message || "Auto-update unavailable",
+        source: "desktop build",
+      });
     }
     return;
   }
 
-  // For dev / npm-global installs: silent background check on launch.
-  // Just logs — no dialogs. The user can trigger interactive flow from the menu.
   try {
-    const currentVersion = readCurrentBosunVersion();
-    const latest = await fetchLatestVersionFromRegistry();
-    if (latest && isNewerVersion(latest, currentVersion)) {
-      console.log(
-        `[desktop] Update available: v${currentVersion} → v${latest}. ` +
-        `Use Bosun → Check for Updates to install.`,
-      );
-    }
+    await checkForUpdateDesktop({ interactive: false, startup: true, source: "startup" });
   } catch {
     // silent — never block startup
   }
+}
+
+async function ensurePackagedAutoUpdater() {
+  if (packagedAutoUpdaterConfigured && packagedAutoUpdater) return packagedAutoUpdater;
+  const { autoUpdater } = await import("electron-updater");
+  const feedUrl = process.env.BOSUN_DESKTOP_UPDATE_URL;
+  if (feedUrl) {
+    autoUpdater.setFeedURL({ url: feedUrl });
+  }
+  autoUpdater.autoDownload = true;
+  if (!packagedAutoUpdaterConfigured) {
+    autoUpdater.on("checking-for-update", () => {
+      setDesktopUpdateState({
+        checking: true,
+        error: "",
+        source: "desktop build",
+      });
+    });
+    autoUpdater.on("update-available", (info) => {
+      const version = String(info?.version || "");
+      setDesktopUpdateState({
+        checking: false,
+        available: true,
+        downloaded: false,
+        latestVersion: version,
+        source: "desktop build",
+        error: "",
+        lastCheckedAt: Date.now(),
+      });
+    });
+    autoUpdater.on("update-not-available", () => {
+      clearStartupUpdateDeferral();
+      setDesktopUpdateState({
+        checking: false,
+        available: false,
+        downloaded: false,
+        latestVersion: readCurrentBosunVersion(),
+        source: "desktop build",
+        error: "",
+        lastCheckedAt: Date.now(),
+      });
+    });
+    autoUpdater.on("update-downloaded", (info) => {
+      const version = String(info?.version || desktopUpdateState.latestVersion || "");
+      setDesktopUpdateState({
+        checking: false,
+        available: true,
+        downloaded: true,
+        latestVersion: version,
+        source: "desktop build",
+        error: "",
+        lastCheckedAt: Date.now(),
+      });
+      promptStartupUpdateAvailable(version, { downloaded: true }).catch(() => {});
+    });
+    autoUpdater.on("error", (err) => {
+      setDesktopUpdateState({
+        checking: false,
+        error: err?.message || "Update check failed",
+        source: "desktop build",
+      });
+    });
+    packagedAutoUpdaterConfigured = true;
+  }
+  packagedAutoUpdater = autoUpdater;
+  return autoUpdater;
 }
 
 // ── Desktop Update Helpers ────────────────────────────────────────────────────
@@ -2019,10 +2360,78 @@ function fetchLatestVersionFromRegistry() {
  * Fetches the latest version from npm, shows a dialog, and — if the user
  * confirms — spawns a resilient updater script that survives EBUSY locks.
  */
-async function checkForUpdateDesktop() {
+async function checkForUpdateDesktop(options = {}) {
+  const { interactive = true, startup = false, source = "manual" } = options;
   const parentWin = mainWindow && !mainWindow.isDestroyed() ? mainWindow : null;
-
   const currentVersion = readCurrentBosunVersion();
+  setDesktopUpdateState({
+    checking: true,
+    currentVersion,
+    source: app.isPackaged ? "desktop build" : "npm registry",
+    error: "",
+  });
+
+  if (app.isPackaged) {
+    try {
+      const autoUpdater = await ensurePackagedAutoUpdater();
+      if (desktopUpdateState.downloaded) {
+        setDesktopUpdateState({
+          checking: false,
+          source: "desktop build",
+        });
+        if (interactive) {
+          await installDownloadedPackagedUpdate();
+        }
+        return;
+      }
+      const result = await autoUpdater.checkForUpdates();
+      const latestVersion = String(
+        result?.updateInfo?.version || desktopUpdateState.latestVersion || currentVersion,
+      );
+      if (interactive && latestVersion && isNewerVersion(latestVersion, currentVersion)) {
+        await dialog.showMessageBox(parentWin, {
+          type: "info",
+          title: "Update Available",
+          message: "Bosun Desktop found an update.",
+          detail:
+            `Current version: v${currentVersion}\n` +
+            `Latest version:  v${latestVersion}\n\n` +
+            "The update is downloading in the background. You will be prompted to restart when it is ready.",
+          buttons: ["OK"],
+        });
+      }
+      if (interactive && !result?.downloadPromise && !isNewerVersion(latestVersion, currentVersion)) {
+        await dialog.showMessageBox(parentWin, {
+          type: "info",
+          title: "Check for Updates",
+          message: "Bosun Desktop is up to date.",
+          detail: `Current version: v${currentVersion}`,
+          buttons: ["OK"],
+        });
+      }
+      if (startup && latestVersion && isNewerVersion(latestVersion, currentVersion)) {
+        await promptStartupUpdateAvailable(latestVersion, { downloaded: false });
+      }
+      return;
+    } catch (err) {
+      setDesktopUpdateState({
+        checking: false,
+        error: err?.message || "Update check failed",
+        source: "desktop build",
+      });
+      if (!interactive) return;
+      await dialog.showMessageBox(parentWin, {
+        type: "warning",
+        title: "Check for Updates",
+        message: "Automatic update check failed.",
+        detail:
+          `${err?.message || err}\n\n` +
+          `Open releases manually: ${DESKTOP_RELEASES_URL}`,
+        buttons: ["OK"],
+      });
+      return;
+    }
+  }
 
   let latestVersion;
   try {
@@ -2032,6 +2441,12 @@ async function checkForUpdateDesktop() {
   }
 
   if (!latestVersion) {
+    setDesktopUpdateState({
+      checking: false,
+      error: "Could not reach the npm registry",
+      source: "npm registry",
+    });
+    if (!interactive) return;
     await dialog.showMessageBox(parentWin, {
       type: "warning",
       title: "Check for Updates",
@@ -2045,6 +2460,18 @@ async function checkForUpdateDesktop() {
   }
 
   if (!isNewerVersion(latestVersion, currentVersion)) {
+    clearStartupUpdateDeferral();
+    setDesktopUpdateState({
+      checking: false,
+      available: false,
+      downloaded: false,
+      latestVersion,
+      currentVersion,
+      source: "npm registry",
+      error: "",
+      lastCheckedAt: Date.now(),
+    });
+    if (!interactive) return;
     await dialog.showMessageBox(parentWin, {
       type: "info",
       title: "Check for Updates",
@@ -2052,6 +2479,21 @@ async function checkForUpdateDesktop() {
       detail: `Current version: v${currentVersion}\nLatest version:  v${latestVersion}`,
       buttons: ["OK"],
     });
+    return;
+  }
+
+  setDesktopUpdateState({
+    checking: false,
+    available: true,
+    downloaded: false,
+    latestVersion,
+    currentVersion,
+    source: "npm registry",
+    error: "",
+    lastCheckedAt: Date.now(),
+  });
+  if (startup && !interactive) {
+    await promptStartupUpdateAvailable(latestVersion, { downloaded: false });
     return;
   }
 
@@ -2075,6 +2517,7 @@ async function checkForUpdateDesktop() {
   // Spawn a detached updater script that waits for the app to exit,
   // retries npm install (surviving EBUSY), and relaunches.
   try {
+    clearStartupUpdateDeferral();
     spawnResilientUpdater(latestVersion);
     // Brief pause so the updater process is established before we quit.
     await new Promise((r) => setTimeout(r, 500));
