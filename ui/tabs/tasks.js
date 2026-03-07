@@ -96,12 +96,26 @@ const DAG_GLOBAL_ENDPOINT_CANDIDATES = [
   "/api/tasks/dag/global",
   "/api/tasks/graph/global",
 ];
+const DAG_EPIC_DEPENDENCY_ENDPOINT_CANDIDATES = [
+  "/api/tasks/epic-dependencies",
+  "/api/tasks/epics/dependencies",
+  "/api/tasks/dag/epics",
+];
 const EMPTY_DAG_GRAPH = {
   title: "",
   description: "",
   nodes: [],
   edges: [],
 };
+const DAG_EDGE_STYLES = {
+  "depends-on": { color: "var(--accent)", dash: "" },
+  dependency: { color: "var(--accent)", dash: "" },
+  sequential: { color: "var(--color-warning)", dash: "7 4" },
+  sequence: { color: "var(--color-warning)", dash: "7 4" },
+  blocks: { color: "var(--color-error)", dash: "2 4" },
+};
+const DAG_MIN_ZOOM = 0.25;
+const DAG_MAX_ZOOM = 2.4;
 
 /* ─── Status/Priority → MUI Chip color ─── */
 function statusChipColor(status) {
@@ -562,6 +576,120 @@ function normalizeDagGraph(raw, fallbackTitle = "") {
   };
 }
 
+function normalizeEpicDependenciesPayload(raw) {
+  const payload = extractDagPayload(raw);
+  const rows = toArray(payload?.data || payload?.items || payload);
+  return rows
+    .map((entry) => {
+      if (!entry || typeof entry !== "object") return null;
+      const epicId = toText(entry.epicId || entry.id || entry.epic);
+      if (!epicId) return null;
+      return {
+        epicId,
+        dependencies: normalizeDependencyInput(entry.dependencies || entry.dependsOn || []),
+      };
+    })
+    .filter(Boolean);
+}
+
+function buildEpicDagGraph(tasks = [], epicDependencies = []) {
+  const epicMap = new Map();
+  const pushEpicNode = (epicId) => {
+    const id = toText(epicId);
+    if (!id) return null;
+    if (!epicMap.has(id)) {
+      epicMap.set(id, { id, title: id, taskIds: [], statusCounts: new Map(), dependencies: [] });
+    }
+    return epicMap.get(id);
+  };
+
+  for (const task of tasks || []) {
+    const epicId = toText(task?.epicId || task?.meta?.epicId);
+    if (!epicId) continue;
+    const node = pushEpicNode(epicId);
+    node.taskIds.push(task.id);
+    const status = toText(task?.status || "todo", "todo").toLowerCase();
+    node.statusCounts.set(status, (node.statusCounts.get(status) || 0) + 1);
+  }
+
+  const depMap = new Map();
+  const addEdge = (from, to, kind = "dependency") => {
+    const src = toText(from);
+    const dst = toText(to);
+    if (!src || !dst || src === dst) return;
+    pushEpicNode(src);
+    const node = pushEpicNode(dst);
+    if (node && !node.dependencies.includes(src)) node.dependencies.push(src);
+    const key = `${src}->${dst}:${kind}`;
+    if (!depMap.has(key)) depMap.set(key, { source: src, target: dst, kind });
+  };
+
+  for (const row of epicDependencies || []) {
+    for (const dep of row.dependencies || []) addEdge(dep, row.epicId, "blocks");
+  }
+
+  const taskById = new Map((tasks || []).map((task) => [String(task?.id || ""), task]));
+  for (const task of tasks || []) {
+    const targetEpic = toText(task?.epicId || task?.meta?.epicId);
+    if (!targetEpic) continue;
+    for (const depId of normalizeDependencyInput(task?.dependencyTaskIds || task?.dependsOn || task?.meta?.dependencyTaskIds || [])) {
+      const depTask = taskById.get(String(depId));
+      const sourceEpic = toText(depTask?.epicId || depTask?.meta?.epicId);
+      if (!sourceEpic || sourceEpic === targetEpic) continue;
+      addEdge(sourceEpic, targetEpic, "dependency");
+    }
+  }
+
+  const indegree = new Map();
+  const outgoing = new Map();
+  for (const epicId of epicMap.keys()) {
+    indegree.set(epicId, 0);
+    outgoing.set(epicId, []);
+  }
+  for (const edge of depMap.values()) {
+    outgoing.get(edge.source)?.push(edge.target);
+    indegree.set(edge.target, (indegree.get(edge.target) || 0) + 1);
+  }
+
+  const queue = [];
+  for (const [id, degree] of indegree.entries()) if (degree === 0) queue.push(id);
+  const level = new Map();
+  for (const id of queue) level.set(id, 0);
+  while (queue.length) {
+    const id = queue.shift();
+    const nextLevel = (level.get(id) || 0) + 1;
+    for (const dst of outgoing.get(id) || []) {
+      if (!level.has(dst) || (level.get(dst) || 0) < nextLevel) level.set(dst, nextLevel);
+      const degree = (indegree.get(dst) || 0) - 1;
+      indegree.set(dst, degree);
+      if (degree === 0) queue.push(dst);
+    }
+  }
+
+  const nodes = [...epicMap.values()].map((entry) => {
+    const statuses = [...entry.statusCounts.entries()].sort((a, b) => b[1] - a[1]);
+    const dominantStatus = statuses[0]?.[0] || "todo";
+    return {
+      id: entry.id,
+      taskId: null,
+      title: `Epic ${entry.title}`,
+      status: dominantStatus,
+      depth: level.get(entry.id) || 0,
+      order: entry.taskIds.length,
+      taskCount: entry.taskIds.length,
+      dependencies: [...entry.dependencies],
+      epicId: entry.id,
+    };
+  });
+
+  const edges = [...depMap.values()];
+  return {
+    title: "Epic Dependency DAG",
+    description: "Epic-level execution dependencies.",
+    nodes,
+    edges,
+  };
+}
 function extractGlobalDagPayload(...sources) {
   for (const source of sources) {
     const payload = extractDagPayload(source);
@@ -3229,8 +3357,18 @@ function DagGraphSection({
   description = "",
   graph = EMPTY_DAG_GRAPH,
   onOpenTask,
+  onCreateEdge,
+  allowWiring = false,
+  graphKey = "dag",
   emptyMessage = "No DAG nodes available for this view yet.",
 }) {
+  const stageRef = useRef(null);
+  const [zoom, setZoom] = useState(1);
+  const [pan, setPan] = useState({ x: 24, y: 24 });
+  const [isPanning, setIsPanning] = useState(false);
+  const [wireSourceId, setWireSourceId] = useState("");
+  const [wiringBusy, setWiringBusy] = useState(false);
+
   const sortedNodes = useMemo(() => {
     const nodes = [...(graph?.nodes || [])];
     nodes.sort((a, b) => {
@@ -3258,22 +3396,20 @@ function DagGraphSection({
       list.push(node);
       map.set(key, list);
     }
-    if (!map.size && sortedNodes.length) {
-      map.set(0, [...sortedNodes]);
-    }
+    if (!map.size && sortedNodes.length) map.set(0, [...sortedNodes]);
     return [...map.entries()].sort((a, b) => a[0] - b[0]);
   }, [sortedNodes]);
 
   const layout = useMemo(() => {
-    const nodeWidth = 220;
-    const nodeHeight = 84;
-    const colGap = 120;
+    const nodeWidth = 250;
+    const nodeHeight = 92;
+    const colGap = 130;
     const rowGap = 34;
-    const marginX = 36;
-    const marginY = 24;
+    const marginX = 40;
+    const marginY = 28;
 
     const positions = new Map();
-    let maxRows = 0;
+    let maxRows = 1;
     levels.forEach(([, nodes], colIdx) => {
       maxRows = Math.max(maxRows, nodes.length);
       nodes.forEach((node, rowIdx) => {
@@ -3283,8 +3419,8 @@ function DagGraphSection({
       });
     });
 
-    const totalWidth = Math.max(520, marginX * 2 + Math.max(1, levels.length) * nodeWidth + Math.max(0, levels.length - 1) * colGap);
-    const totalHeight = Math.max(220, marginY * 2 + Math.max(1, maxRows) * nodeHeight + Math.max(0, maxRows - 1) * rowGap);
+    const totalWidth = Math.max(720, marginX * 2 + Math.max(1, levels.length) * nodeWidth + Math.max(0, levels.length - 1) * colGap);
+    const totalHeight = Math.max(360, marginY * 2 + maxRows * nodeHeight + Math.max(0, maxRows - 1) * rowGap);
     return { positions, totalWidth, totalHeight };
   }, [levels]);
 
@@ -3304,23 +3440,101 @@ function DagGraphSection({
       .filter(Boolean);
   }, [graph?.edges, layout.positions]);
 
-  const edgeKindCounts = useMemo(() => {
-    const counts = { "depends-on": 0, sequential: 0, blocks: 0 };
-    for (const edge of edges) {
-      const kind = toText(edge?.kind || "depends-on", "depends-on").toLowerCase();
-      counts[kind] = (counts[kind] || 0) + 1;
-    }
-    return counts;
-  }, [edges]);
+  const worldBounds = useMemo(() => ({ width: layout.totalWidth, height: layout.totalHeight }), [layout]);
 
-  const statusCounts = useMemo(() => {
-    const counts = new Map();
-    for (const node of sortedNodes) {
-      const key = toText(node?.status || "todo", "todo").toLowerCase();
-      counts.set(key, (counts.get(key) || 0) + 1);
-    }
-    return [...counts.entries()].sort((a, b) => b[1] - a[1]).slice(0, 4);
+  const fitToView = useCallback(() => {
+    const el = stageRef.current;
+    if (!el) return;
+    const rect = el.getBoundingClientRect();
+    const availableWidth = Math.max(320, rect.width - 24);
+    const availableHeight = Math.max(240, rect.height - 24);
+    const scaleX = availableWidth / Math.max(1, worldBounds.width);
+    const scaleY = availableHeight / Math.max(1, worldBounds.height);
+    const nextZoom = Math.max(DAG_MIN_ZOOM, Math.min(DAG_MAX_ZOOM, Math.min(scaleX, scaleY)));
+    const nextPanX = (rect.width - worldBounds.width * nextZoom) / 2;
+    const nextPanY = (rect.height - worldBounds.height * nextZoom) / 2;
+    setZoom(nextZoom);
+    setPan({ x: nextPanX, y: nextPanY });
+  }, [worldBounds.width, worldBounds.height]);
+
+  useEffect(() => {
+    fitToView();
+  }, [fitToView, graphKey, sortedNodes.length, edges.length]);
+
+  const applyZoomAtPoint = useCallback((nextZoom, clientX, clientY) => {
+    const el = stageRef.current;
+    if (!el) return;
+    const rect = el.getBoundingClientRect();
+    const clamped = Math.max(DAG_MIN_ZOOM, Math.min(DAG_MAX_ZOOM, nextZoom));
+    const localX = clientX - rect.left;
+    const localY = clientY - rect.top;
+    const worldX = (localX - pan.x) / zoom;
+    const worldY = (localY - pan.y) / zoom;
+    setZoom(clamped);
+    setPan({ x: localX - worldX * clamped, y: localY - worldY * clamped });
+  }, [pan.x, pan.y, zoom]);
+
+  const handleWheel = useCallback((event) => {
+    event.preventDefault();
+    const delta = event.deltaY < 0 ? 1.1 : 0.9;
+    applyZoomAtPoint(zoom * delta, event.clientX, event.clientY);
+  }, [applyZoomAtPoint, zoom]);
+
+  const handlePanStart = useCallback((event) => {
+    if (event.button !== 0) return;
+    const targetEl = event.target;
+    if (targetEl?.closest?.(".dag-node")) return;
+    event.preventDefault();
+    const start = { x: event.clientX, y: event.clientY, panX: pan.x, panY: pan.y };
+    setIsPanning(true);
+    const onMove = (moveEvent) => {
+      setPan({ x: start.panX + (moveEvent.clientX - start.x), y: start.panY + (moveEvent.clientY - start.y) });
+    };
+    const onUp = () => {
+      setIsPanning(false);
+      window.removeEventListener("pointermove", onMove);
+      window.removeEventListener("pointerup", onUp);
+    };
+    window.addEventListener("pointermove", onMove);
+    window.addEventListener("pointerup", onUp);
+  }, [pan.x, pan.y]);
+
+  const nodeById = useMemo(() => {
+    const map = new Map();
+    for (const node of sortedNodes) map.set(String(node.id), node);
+    return map;
   }, [sortedNodes]);
+
+  const handleNodeClick = useCallback(async (node, event) => {
+    event?.stopPropagation?.();
+    if (allowWiring && typeof onCreateEdge === "function") {
+      const id = String(node?.id || "");
+      if (!id || wiringBusy) return;
+      if (!wireSourceId) {
+        setWireSourceId(id);
+        return;
+      }
+      if (wireSourceId === id) {
+        setWireSourceId("");
+        return;
+      }
+      const sourceNode = nodeById.get(wireSourceId) || null;
+      const targetNode = nodeById.get(id) || null;
+      if (!sourceNode || !targetNode) {
+        setWireSourceId("");
+        return;
+      }
+      setWiringBusy(true);
+      try {
+        await onCreateEdge({ sourceNode, targetNode });
+      } finally {
+        setWireSourceId("");
+        setWiringBusy(false);
+      }
+      return;
+    }
+    if (node?.taskId) onOpenTask?.(node.taskId);
+  }, [allowWiring, onCreateEdge, onOpenTask, wireSourceId, nodeById, wiringBusy]);
 
   if (!sortedNodes.length) {
     return html`
@@ -3332,90 +3546,93 @@ function DagGraphSection({
 
   return html`
     <div class="tasks-dag-section">
-      <div class="flex-between" style=${{ marginBottom: "8px", gap: "8px", flexWrap: "wrap" }}>
+      <div class="task-dag-header-row">
         <div>
           <div style=${{ fontWeight: "700" }}>${title || "Task DAG"}</div>
           ${description && html`<div class="meta-text">${description}</div>`}
+          <div class="meta-text">Drag to pan · wheel to zoom · click node to ${allowWiring ? "wire edges" : "open task"}.</div>
         </div>
-        <div class="chip-group" style=${{ gap: "6px" }}>
-          <${Chip} size="small" label=${`${sortedNodes.length} nodes`} />
-          <${Chip} size="small" label=${`${edges.length} edges`} />
-          <${Chip} size="small" label=${`depends-on ${edgeKindCounts["depends-on"] || 0}`} />
-          <${Chip} size="small" label=${`sequential ${edgeKindCounts.sequential || 0}`} />
-          <${Chip} size="small" label=${`blocks ${edgeKindCounts.blocks || 0}`} />
+        <div class="task-dag-controls">
+          <${Button} size="small" variant="outlined" onClick=${() => setZoom((z) => Math.max(DAG_MIN_ZOOM, z * 0.9))}>-</${Button}>
+          <${Button} size="small" variant="outlined" onClick=${() => setZoom((z) => Math.min(DAG_MAX_ZOOM, z * 1.1))}>+</${Button}>
+          <${Button} size="small" variant="outlined" onClick=${fitToView}>Fit</${Button}>
+          <${Button} size="small" variant="text" onClick=${() => { setZoom(1); setPan({ x: 24, y: 24 }); }}>Reset</${Button}>
+          <span class="task-dag-zoom-pill">${Math.round(zoom * 100)}%</span>
+          ${allowWiring && html`<span class="task-dag-wire-pill">${wireSourceId ? `Source: ${wireSourceId}` : wiringBusy ? "Saving edge…" : "Wiring: click source then target"}</span>`}
         </div>
       </div>
       <div class="task-dag-legend">
         <span class="task-dag-legend-item"><span class="task-dag-legend-line" style=${{ background: "var(--accent)" }}></span>depends-on</span>
         <span class="task-dag-legend-item"><span class="task-dag-legend-line task-dag-legend-line-dashed"></span>sequential</span>
         <span class="task-dag-legend-item"><span class="task-dag-legend-line task-dag-legend-line-block"></span>blocks</span>
-        ${statusCounts.map(([status, count]) => html`<span class="task-dag-status-pill">${status} ${count}</span>`)}
       </div>
-      <div class="task-dag-canvas-wrap">
-        <svg class="task-dag-canvas" viewBox=${`0 0 ${layout.totalWidth} ${layout.totalHeight}`} role="img" aria-label="Task dependency graph">
+      <div class=${`task-dag-canvas-wrap ${isPanning ? "is-panning" : ""}`} ref=${stageRef} onWheel=${handleWheel} onPointerDown=${handlePanStart}>
+        <svg class="task-dag-canvas" role="img" aria-label="Task dependency graph">
           <defs>
-            <marker id="dag-arrow" markerWidth="10" markerHeight="8" refX="10" refY="4" orient="auto">
+            <marker id=${`dag-arrow-${graphKey}`} markerWidth="10" markerHeight="8" refX="10" refY="4" orient="auto">
               <path d="M0,0 L10,4 L0,8 z" fill="var(--accent)" />
             </marker>
           </defs>
-          ${edges.map(({ source, target, kind }, idx) => {
-            const x1 = source.x + source.width;
-            const y1 = source.y + source.height / 2;
-            const x2 = target.x;
-            const y2 = target.y + target.height / 2;
-            const c1 = x1 + Math.max(40, (x2 - x1) * 0.35);
-            const c2 = x2 - Math.max(30, (x2 - x1) * 0.35);
-            return html`
-              <path
-                key=${`edge-${idx}`}
-                d=${`M ${x1} ${y1} C ${c1} ${y1}, ${c2} ${y2}, ${x2} ${y2}`}
-                fill="none"
-                stroke=${DAG_EDGE_STYLES[kind]?.color || "var(--accent)"}
-                stroke-dasharray=${DAG_EDGE_STYLES[kind]?.dash || ""}
-                stroke-opacity="0.72"
-                stroke-width="2"
-                marker-end="url(#dag-arrow)"
-              />
-            `;
-          })}
-          ${sortedNodes.map((node) => {
-            const pos = layout.positions.get(String(node.id));
-            if (!pos) return null;
-            return html`
-              <g
-                key=${node.id}
-                class="dag-node"
-                onClick=${() => {
-                  if (node.taskId) onOpenTask?.(node.taskId);
-                }}
-                style=${{ cursor: node.taskId ? "pointer" : "default" }}
-              >
-                <rect
-                  x=${pos.x}
-                  y=${pos.y}
-                  width=${pos.width}
-                  height=${pos.height}
-                  rx="14"
-                  ry="14"
-                  fill="var(--bg-surface)"
-                  stroke="var(--border)"
-                  stroke-width="1.5"
+          <g transform=${`translate(${pan.x} ${pan.y}) scale(${zoom})`}>
+            <rect x="0" y="0" width=${worldBounds.width} height=${worldBounds.height} fill="transparent" />
+            ${edges.map(({ source, target, kind }, idx) => {
+              const x1 = source.x + source.width;
+              const y1 = source.y + source.height / 2;
+              const x2 = target.x;
+              const y2 = target.y + target.height / 2;
+              const c1 = x1 + Math.max(40, (x2 - x1) * 0.35);
+              const c2 = x2 - Math.max(30, (x2 - x1) * 0.35);
+              const style = DAG_EDGE_STYLES[kind] || DAG_EDGE_STYLES["depends-on"];
+              return html`
+                <path
+                  key=${`edge-${idx}`}
+                  d=${`M ${x1} ${y1} C ${c1} ${y1}, ${c2} ${y2}, ${x2} ${y2}`}
+                  fill="none"
+                  stroke=${style.color}
+                  stroke-dasharray=${style.dash || ""}
+                  stroke-opacity="0.75"
+                  stroke-width="2"
+                  marker-end=${`url(#dag-arrow-${graphKey})`}
                 />
-                <text x=${pos.x + 12} y=${pos.y + 24} fill="var(--text-primary)" font-size="13" font-weight="700">
-                  ${truncate(node.title || "(untitled)", 32)}
-                </text>
-                <text x=${pos.x + 12} y=${pos.y + 43} fill="var(--text-muted)" font-size="11">
-                  ${truncate(node.taskId || node.id, 36)}
-                </text>
-                <text x=${pos.x + 12} y=${pos.y + 62} fill="var(--accent)" font-size="11">
-                  ${String(node.status || "todo")}
-                </text>
-                ${Number.isFinite(node.order) && html`
-                  <text x=${pos.x + pos.width - 16} y=${pos.y + 22} text-anchor="end" fill="var(--text-muted)" font-size="11">#${node.order}</text>
-                `}
-              </g>
-            `;
-          })}
+              `;
+            })}
+            ${sortedNodes.map((node) => {
+              const pos = layout.positions.get(String(node.id));
+              if (!pos) return null;
+              const selected = wireSourceId && String(node.id) === wireSourceId;
+              return html`
+                <g
+                  key=${node.id}
+                  class=${`dag-node ${selected ? "dag-node-selected" : ""}`}
+                  onPointerDown=${(event) => event.stopPropagation()}
+                  onClick=${(event) => handleNodeClick(node, event)}
+                  style=${{ cursor: allowWiring || node.taskId ? "pointer" : "default" }}
+                >
+                  <rect
+                    x=${pos.x}
+                    y=${pos.y}
+                    width=${pos.width}
+                    height=${pos.height}
+                    rx="14"
+                    ry="14"
+                    fill="var(--bg-surface)"
+                    stroke=${selected ? "var(--accent)" : "var(--border)"}
+                    stroke-width=${selected ? "2.2" : "1.5"}
+                  />
+                  <text x=${pos.x + 12} y=${pos.y + 24} fill="var(--text-primary)" font-size="13" font-weight="700">
+                    ${truncate(node.title || "(untitled)", 34)}
+                  </text>
+                  <text x=${pos.x + 12} y=${pos.y + 44} fill="var(--text-muted)" font-size="11">
+                    ${truncate(node.taskId || node.id, 38)}
+                  </text>
+                  <text x=${pos.x + 12} y=${pos.y + 64} fill="var(--accent)" font-size="11">
+                    ${String(node.status || "todo")}
+                  </text>
+                  ${Number.isFinite(node.order) && html`<text x=${pos.x + pos.width - 16} y=${pos.y + 22} text-anchor="end" fill="var(--text-muted)" font-size="11">#${node.order}</text>`}
+                </g>
+              `;
+            })}
+          </g>
         </svg>
       </div>
     </div>
@@ -3443,7 +3660,8 @@ export function TasksTab() {
   const [dagSelectedSprint, setDagSelectedSprint] = useState("all");
   const [dagSprintGraph, setDagSprintGraph] = useState(EMPTY_DAG_GRAPH);
   const [dagGlobalGraph, setDagGlobalGraph] = useState(EMPTY_DAG_GRAPH);
-  const [dagSources, setDagSources] = useState({ sprints: "", sprintGraph: "", globalGraph: "" });
+  const [dagEpicGraph, setDagEpicGraph] = useState(EMPTY_DAG_GRAPH);
+  const [dagSources, setDagSources] = useState({ sprints: "", sprintGraph: "", globalGraph: "", epicDeps: "", tasks: "" });
   const [dagSprintOrderMode, setDagSprintOrderMode] = useState("parallel");
   const [isCompact, setIsCompact] = useState(() => {
     try { return globalThis.matchMedia?.("(max-width: 768px)")?.matches ?? false; }
@@ -3542,6 +3760,8 @@ export function TasksTab() {
 
     const sprintGraphMeta = await fetchFirstAvailableDagPath(sprintGraphCandidates);
     const globalGraphMeta = await fetchFirstAvailableDagPath(globalGraphCandidates);
+    const epicDepsMeta = await fetchFirstAvailableDagPath(DAG_EPIC_DEPENDENCY_ENDPOINT_CANDIDATES);
+    const tasksMeta = await fetchFirstAvailableDagPath(["/api/tasks?limit=1000", "/api/tasks?limit=500"]);
 
     const globalSource =
       extractGlobalDagPayload(
@@ -3556,15 +3776,29 @@ export function TasksTab() {
     );
     const nextGlobalGraph = normalizeDagGraph(globalSource, "DAG of DAGs");
 
+    const allTasksPayload = extractDagPayload(tasksMeta?.payload);
+    const allTasks = Array.isArray(allTasksPayload?.data)
+      ? allTasksPayload.data
+      : Array.isArray(allTasksPayload?.tasks)
+        ? allTasksPayload.tasks
+        : Array.isArray(allTasksPayload)
+          ? allTasksPayload
+          : tasks;
+    const epicDeps = normalizeEpicDependenciesPayload(epicDepsMeta?.payload);
+    const nextEpicGraph = buildEpicDagGraph(allTasks, epicDeps);
+
     const sprintMetaEntry = sprintOptions.find((entry) => entry.id === resolvedSprint) || null;
     setDagSprintOrderMode(toText(sprintMetaEntry?.executionMode || sprintMetaEntry?.taskOrderMode || sprintMetaEntry?.sprintOrderMode || "parallel", "parallel"));
     setDagSprints(sprintOptions);
     setDagSprintGraph(nextSprintGraph);
     setDagGlobalGraph(nextGlobalGraph);
+    setDagEpicGraph(nextEpicGraph);
     setDagSources({
       sprints: sprintMeta?.path || "",
       sprintGraph: sprintGraphMeta?.path || "",
       globalGraph: globalGraphMeta?.path || "",
+      epicDeps: epicDepsMeta?.path || "",
+      tasks: tasksMeta?.path || "",
     });
 
     if (resolvedSprint !== dagSelectedSprint) {
@@ -3573,11 +3807,12 @@ export function TasksTab() {
 
     const hasAnyGraphData =
       nextSprintGraph.nodes.length > 0 ||
-      nextGlobalGraph.nodes.length > 0;
+      nextGlobalGraph.nodes.length > 0 ||
+      nextEpicGraph.nodes.length > 0;
     if (!hasAnyGraphData) {
       throw new Error("No DAG data was returned from DAG endpoints.");
     }
-  }, [dagSelectedSprint]);
+  }, [dagSelectedSprint, tasks]);
 
   useEffect(() => {
     if (!isDag) return;
@@ -3922,6 +4157,43 @@ export function TasksTab() {
       setDagError("Failed to update sprint execution mode.");
     }
   }, [dagSelectedSprint, loadDagViews]);
+  const handleCreateDagEdge = useCallback(async ({ sourceNode, targetNode, graphKind }) => {
+    const srcTaskId = toText(sourceNode?.taskId || sourceNode?.id);
+    const dstTaskId = toText(targetNode?.taskId || targetNode?.id);
+
+    if (graphKind === "epic") {
+      const srcEpic = toText(sourceNode?.epicId || sourceNode?.id);
+      const dstEpic = toText(targetNode?.epicId || targetNode?.id);
+      if (!srcEpic || !dstEpic || srcEpic === dstEpic) return;
+      const existing = normalizeDependencyInput(targetNode?.dependencies || []);
+      const dependencies = normalizeDependencyInput([...existing, srcEpic]);
+      await apiFetch("/api/tasks/epic-dependencies", {
+        method: "PUT",
+        body: JSON.stringify({ epicId: dstEpic, dependencies }),
+      });
+      showToast(`Wired epic dependency: ${srcEpic} -> ${dstEpic}`, "success");
+      await loadDagViews();
+      return;
+    }
+
+    if (!srcTaskId || !dstTaskId || srcTaskId === dstTaskId) return;
+    const existing = normalizeDependencyInput(
+      targetNode?.dependencies ||
+      targetNode?.dependencyTaskIds ||
+      [],
+    );
+    const dependencies = normalizeDependencyInput([...existing, srcTaskId]);
+    await apiFetch("/api/tasks/dependencies", {
+      method: "PUT",
+      body: JSON.stringify({
+        taskId: dstTaskId,
+        dependencies,
+      }),
+    });
+    showToast(`Wired dependency: ${srcTaskId} -> ${dstTaskId}`, "success");
+    await loadDagViews();
+  }, [loadDagViews]);
+
   const handleSprintChange = useCallback((nextSprint) => {
     const sprintId = toText(nextSprint, "all");
     if (sprintId === dagSelectedSprint) return;
@@ -4539,6 +4811,7 @@ export function TasksTab() {
         <span class="snapshot-view-tag">${iconText(":link: DAG")}</span>
         <span class="pill">Sprint nodes: ${dagSprintGraph.nodes.length}</span>
         <span class="pill">Global nodes: ${dagGlobalGraph.nodes.length}</span>
+        <span class="pill">Epic nodes: ${dagEpicGraph.nodes.length}</span>
         <span class="pill">Global edges: ${dagGlobalGraph.edges.length}</span>
       </div>
     `}
@@ -4589,15 +4862,30 @@ export function TasksTab() {
           title=${dagSprintGraph.title || (dagSelectedSprint === "all" ? "All Sprint DAG" : `Sprint ${dagSelectedSprint} DAG`)}
           description=${dagSprintGraph.description || "Task dependency order within the selected sprint."}
           graph=${dagSprintGraph}
+          graphKey="sprint"
           onOpenTask=${openDetail}
+          onCreateEdge={({ sourceNode, targetNode }) => handleCreateDagEdge({ sourceNode, targetNode, graphKind: "task" })}
+          allowWiring=${true}
           emptyMessage="No sprint DAG data available yet."
         />
         <${DagGraphSection}
           title=${dagGlobalGraph.title || "Global DAG of DAGs"}
           description=${dagGlobalGraph.description || "Cross-sprint dependency overview."}
           graph=${dagGlobalGraph}
+          graphKey="global"
           onOpenTask=${openDetail}
+          onCreateEdge={({ sourceNode, targetNode }) => handleCreateDagEdge({ sourceNode, targetNode, graphKind: "task" })}
+          allowWiring=${true}
           emptyMessage="No global DAG data available yet."
+        />
+        <${DagGraphSection}
+          title=${dagEpicGraph.title || "Epic Dependency DAG"}
+          description=${dagEpicGraph.description || "Epics and their run prerequisites."}
+          graph=${dagEpicGraph}
+          graphKey="epic"
+          onCreateEdge={({ sourceNode, targetNode }) => handleCreateDagEdge({ sourceNode, targetNode, graphKind: "epic" })}
+          allowWiring=${true}
+          emptyMessage="No epic DAG data available yet."
         />
       </div>
     `}
@@ -5168,6 +5456,8 @@ function CreateTaskModalInline({ onClose }) {
     <//>
   `;
 }
+
+
 
 
 
