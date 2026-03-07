@@ -243,6 +243,12 @@ export const veTheme = createMuiTheme({
     "0 20px 48px rgba(5,10,18,0.38)",
     ...Array(14).fill("0 20px 48px rgba(5,10,18,0.38)"),
   ],
+  // Bosun uses a custom modal sheet at z-index 10000. Keep MUI overlays above it.
+  zIndex: {
+    modal: 11000,
+    snackbar: 11050,
+    tooltip: 11100,
+  },
   components: {
     MuiCssBaseline: {
       styleOverrides: {

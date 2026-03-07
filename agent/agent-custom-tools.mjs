@@ -731,7 +731,7 @@ export function getToolsPromptBlock(rootDir, opts = {}) {
       ? "Only eagerly-loaded tools are listed below. Use the MCP discovery tools to find the rest at runtime."
       : "The following reusable helper scripts are available. Run them via",
     discoveryMode
-      ? "Use `search_tools`, then `get_tool_schema`, then `call_discovered_tool` for tools not listed here."
+      ? "Use `search`, then `get_schema`, then `execute` for tools not listed here. Use `call_discovered_tool` only for simple direct calls."
       : "`node <tool>.mjs`, `bash <tool>.sh`, or `python3 <tool>.py`.",
     "Built-in tools live in `bosun/tools/`; workspace tools in `.bosun/tools/`.",
     "",

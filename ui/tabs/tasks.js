@@ -2307,19 +2307,6 @@ export function TasksTab() {
     }
   }, [isCompact]);
 
-  useEffect(() => {
-    if (!isKanban) return undefined;
-    const handleScroll = (event) => {
-      const target = event?.target;
-      if (!target?.classList?.contains("kanban-cards")) return;
-      const remaining = target.scrollHeight - target.scrollTop - target.clientHeight;
-      if (remaining <= 140) {
-        void loadMoreKanbanTasks();
-      }
-    };
-    document.addEventListener("scroll", handleScroll, true);
-    return () => document.removeEventListener("scroll", handleScroll, true);
-  }, [isKanban, loadMoreKanbanTasks]); // kanban-scroll-autoload
 
   useEffect(() => {
     if (!actionsOpen || typeof document === "undefined") return undefined;

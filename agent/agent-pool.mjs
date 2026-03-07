@@ -2241,6 +2241,8 @@ export async function launchEphemeralThread(
           resolved = registry.wrapServersWithDiscoveryProxy(cwd, resolved, {
             enabled: mcpCfg.useDiscoveryProxy !== false,
             includeCustomTools: mcpCfg.includeCustomToolsInDiscoveryProxy !== false,
+            cacheTtlMs: mcpCfg.discoveryProxyCacheTtlMs,
+            executeTimeoutMs: mcpCfg.discoveryProxyExecuteTimeoutMs,
           });
         }
         if (resolved.length) {

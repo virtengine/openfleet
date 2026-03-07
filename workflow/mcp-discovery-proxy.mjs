@@ -5,9 +5,9 @@
  * Bosun-local discovery-first MCP wrapper inspired by the discovery flow used
  * by FastMCP Code Mode. Instead of exposing every external MCP tool schema
  * up-front, this proxy exposes three compact tools:
- *   - search_tools
- *   - get_tool_schema
- *   - call_discovered_tool
+ *   - search
+ *   - get_schema
+ *   - execute
  *
  * The proxy lazily discovers external MCP tools on demand and also folds in
  * Bosun's expanding custom tool library.
@@ -17,6 +17,7 @@ import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { spawn } from "node:child_process";
 import { fileURLToPath } from "node:url";
+import vm from "node:vm";
 import { Server } from "@modelcontextprotocol/sdk/server/index.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import {
@@ -24,13 +25,14 @@ import {
   ListToolsRequestSchema,
 } from "@modelcontextprotocol/sdk/types.js";
 import {
-  getCustomTool,
   invokeCustomTool,
   listCustomTools,
 } from "../agent/agent-custom-tools.mjs";
 
 const TAG = "[mcp-discovery-proxy]";
 const DEFAULT_TIMEOUT_MS = 30_000;
+const DEFAULT_CACHE_TTL_MS = 60_000;
+const DEFAULT_EXECUTE_TIMEOUT_MS = 10_000;
 const TOOL_KIND_MCP = "mcp";
 const TOOL_KIND_CUSTOM = "custom";
 
@@ -128,6 +130,35 @@ export function searchCatalogEntries(entries, query, limit = 10) {
       String(a.entry.canonicalId).localeCompare(String(b.entry.canonicalId)))
     .slice(0, Math.max(1, Math.trunc(limit || 10)));
   return scored.map(({ entry }) => entry);
+}
+
+function renderEntry(entry, detail = "brief") {
+  if (detail === "full") {
+    return entry;
+  }
+  if (detail === "detailed") {
+    return {
+      canonicalId: entry.canonicalId,
+      kind: entry.kind,
+      description: entry.description || "",
+      inputSchema: entry.inputSchema || { type: "object", properties: {} },
+      tags: entry.tags || [],
+      ...(entry.serverId ? { serverId: entry.serverId, toolName: entry.toolName } : {}),
+      ...(entry.toolId ? { toolId: entry.toolId, lang: entry.lang, scope: entry.scope } : {}),
+    };
+  }
+  return {
+    canonicalId: entry.canonicalId,
+    kind: entry.kind,
+    description: entry.description || "",
+    ...(entry.serverId ? { serverId: entry.serverId, toolName: entry.toolName } : {}),
+    ...(entry.toolId ? { toolId: entry.toolId } : {}),
+  };
+}
+
+function normalizeDetail(detail, fallback = "brief") {
+  const value = normalizeString(detail).toLowerCase();
+  return ["brief", "detailed", "full"].includes(value) ? value : fallback;
 }
 
 function createStdioRequest(server, method, params, timeoutMs = DEFAULT_TIMEOUT_MS) {
@@ -291,10 +322,15 @@ function createCatalogRuntime(config) {
   const rootDir = resolve(config.rootDir || process.cwd());
   const servers = Array.isArray(config.servers) ? config.servers : [];
   const toolCache = new Map();
+  const cacheTtlMs = Number(config.cacheTtlMs) || DEFAULT_CACHE_TTL_MS;
+  const executeTimeoutMs = Number(config.executeTimeoutMs) || DEFAULT_EXECUTE_TIMEOUT_MS;
   const customCatalog = buildCustomCatalog(rootDir);
 
   async function getServerTools(server) {
-    if (toolCache.has(server.id)) return toolCache.get(server.id);
+    const cached = toolCache.get(server.id);
+    if (cached && (Date.now() - cached.ts) < cacheTtlMs) {
+      return cached.tools;
+    }
     const result = await requestServer(server, "tools/list", {}, config.timeoutMs || DEFAULT_TIMEOUT_MS);
     const tools = Array.isArray(result?.tools) ? result.tools : [];
     const mapped = tools.map((tool) => ({
@@ -307,7 +343,7 @@ function createCatalogRuntime(config) {
       inputSchema: tool.inputSchema || { type: "object", properties: {} },
       tags: server.tags || [],
     }));
-    toolCache.set(server.id, mapped);
+    toolCache.set(server.id, { ts: Date.now(), tools: mapped });
     return mapped;
   }
 
@@ -317,9 +353,8 @@ function createCatalogRuntime(config) {
       results.push(...customCatalog);
     }
     if (kind === "all" || kind === TOOL_KIND_MCP) {
-      for (const server of servers) {
-        results.push(...await getServerTools(server));
-      }
+      const serverToolSets = await Promise.all(servers.map((server) => getServerTools(server)));
+      for (const set of serverToolSets) results.push(...set);
     }
     return results;
   }
@@ -369,12 +404,53 @@ function createCatalogRuntime(config) {
     };
   }
 
+  async function executeCode(source, timeoutMs = executeTimeoutMs) {
+    const trimmed = normalizeString(source);
+    if (!trimmed) throw new Error("execute: source is required");
+    const sandbox = {
+      result: undefined,
+      console: Object.freeze({
+        log: (...args) => args.map((item) => String(item)).join(" "),
+      }),
+    };
+    const callTool = async (toolId, args = {}) => {
+      const entry = await getEntry(toolId);
+      if (!entry) throw new Error(`Unknown tool: ${toolId}`);
+      const result = await callEntry(toolId, args, timeoutMs);
+      if (result.kind === TOOL_KIND_CUSTOM) {
+        return result.result;
+      }
+      if (result.result?.structuredContent != null) return result.result.structuredContent;
+      if (Array.isArray(result.result?.content)) {
+        return result.result.content
+          .map((item) => item?.text || "")
+          .filter(Boolean)
+          .join("\n");
+      }
+      return result.result;
+    };
+    const wrapped = `
+      (async () => {
+        ${source}
+      })()
+    `;
+    const context = vm.createContext({
+      ...sandbox,
+      callTool,
+    });
+    const script = new vm.Script(wrapped, {
+      filename: "bosun-discovery-proxy-execute.vm",
+    });
+    return await script.runInContext(context, { timeout: timeoutMs });
+  }
+
   return {
     rootDir,
     servers,
     getCatalogEntries,
     getEntry,
     callEntry,
+    executeCode,
   };
 }
 
@@ -394,7 +470,7 @@ async function main() {
   server.setRequestHandler(ListToolsRequestSchema, async () => ({
     tools: [
       {
-        name: "search_tools",
+        name: "search",
         description: "Search Bosun custom tools and wrapped MCP tools by keyword before loading schemas.",
         inputSchema: {
           type: "object",
@@ -406,28 +482,58 @@ async function main() {
               description: "Restrict search to wrapped MCP tools or custom tools.",
             },
             limit: { type: "number", description: "Maximum number of matches to return." },
+            detail: {
+              type: "string",
+              enum: ["brief", "detailed", "full"],
+              description: "Verbosity of returned tool metadata.",
+            },
           },
           required: ["query"],
         },
       },
       {
-        name: "get_tool_schema",
-        description: "Get the concrete schema and metadata for one discovered tool before calling it.",
+        name: "get_schema",
+        description: "Get the concrete schema and metadata for one or more discovered tools before calling them.",
         inputSchema: {
           type: "object",
           properties: {
-            toolId: { type: "string", description: "Canonical tool ID from search_tools." },
+            toolId: { type: "string", description: "Canonical tool ID from search." },
+            tools: {
+              type: "array",
+              items: { type: "string" },
+              description: "Canonical tool IDs from search.",
+            },
+            detail: {
+              type: "string",
+              enum: ["brief", "detailed", "full"],
+              description: "Verbosity of returned schema data.",
+            },
           },
-          required: ["toolId"],
+          anyOf: [
+            { required: ["toolId"] },
+            { required: ["tools"] },
+          ],
+        },
+      },
+      {
+        name: "execute",
+        description: "Execute JavaScript that calls discovered tools with await callTool(toolId, args), returning only the final result.",
+        inputSchema: {
+          type: "object",
+          properties: {
+            code: { type: "string", description: "Async JavaScript body using await callTool(toolId, args)." },
+            timeoutMs: { type: "number", description: "Optional timeout override." },
+          },
+          required: ["code"],
         },
       },
       {
         name: "call_discovered_tool",
-        description: "Invoke a discovered MCP tool or Bosun custom tool by canonical tool ID.",
+        description: "Invoke a discovered MCP tool or Bosun custom tool by canonical tool ID directly.",
         inputSchema: {
           type: "object",
           properties: {
-            toolId: { type: "string", description: "Canonical tool ID from search_tools." },
+            toolId: { type: "string", description: "Canonical tool ID from search." },
             arguments: {
               type: "object",
               description: "Arguments object for MCP tools, or { args: [] } for custom tools.",
@@ -442,29 +548,49 @@ async function main() {
 
   server.setRequestHandler(CallToolRequestSchema, async (request) => {
     const { name, arguments: args } = request.params;
-    if (name === "search_tools") {
+    if (name === "search" || name === "search_tools") {
       const kind = normalizeString(args?.kind || "all").toLowerCase() || "all";
       const limit = Number(args?.limit) || 10;
+      const detail = normalizeDetail(args?.detail, "brief");
       const entries = await runtime.getCatalogEntries(kind);
       const matches = searchCatalogEntries(entries, args?.query, limit);
+      const renderedMatches = matches.map((entry) => renderEntry(entry, detail));
       return {
         content: [{ type: "text", text: buildSearchText(matches) }],
         structuredContent: {
           query: normalizeString(args?.query),
           count: matches.length,
-          matches,
+          matches: renderedMatches,
         },
       };
     }
 
-    if (name === "get_tool_schema") {
-      const entry = await runtime.getEntry(args?.toolId);
-      if (!entry) {
-        throw new Error(`Tool not found: ${args?.toolId || ""}`);
-      }
+    if (name === "get_schema" || name === "get_tool_schema") {
+      const requested = Array.isArray(args?.tools)
+        ? args.tools.map((item) => normalizeString(item)).filter(Boolean)
+        : [];
+      if (requested.length === 0 && args?.toolId) requested.push(normalizeString(args.toolId));
+      const detail = normalizeDetail(args?.detail, "detailed");
+      const resolved = await Promise.all(requested.map((toolId) => runtime.getEntry(toolId)));
+      const entries = resolved.filter(Boolean).map((entry) => renderEntry(entry, detail));
+      if (entries.length === 0) throw new Error(`Tool not found: ${args?.toolId || requested.join(", ")}`);
       return {
-        content: [{ type: "text", text: formatTextResult(entry) }],
-        structuredContent: entry,
+        content: [{ type: "text", text: formatTextResult(entries.length === 1 ? entries[0] : entries) }],
+        structuredContent: {
+          count: entries.length,
+          tools: entries,
+        },
+      };
+    }
+
+    if (name === "execute") {
+      const result = await runtime.executeCode(
+        args?.code,
+        Number(args?.timeoutMs) || Number(config.executeTimeoutMs) || DEFAULT_EXECUTE_TIMEOUT_MS,
+      );
+      return {
+        content: [{ type: "text", text: formatTextResult(result) }],
+        structuredContent: { result },
       };
     }
 
@@ -481,7 +607,7 @@ async function main() {
       };
     }
 
-    throw new Error(`Unknown tool: ${name}`);
+      throw new Error(`Unknown tool: ${name}`);
   });
 
   const transport = new StdioServerTransport();

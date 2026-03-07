@@ -258,6 +258,8 @@ async function buildCliArgs() {
         resolved = registry.wrapServersWithDiscoveryProxy(REPO_ROOT, resolved, {
           enabled: mcpCfg.useDiscoveryProxy !== false,
           includeCustomTools: mcpCfg.includeCustomToolsInDiscoveryProxy !== false,
+          cacheTtlMs: mcpCfg.discoveryProxyCacheTtlMs,
+          executeTimeoutMs: mcpCfg.discoveryProxyExecuteTimeoutMs,
         });
       }
       if (resolved && resolved.length) {
@@ -646,6 +648,8 @@ async function mergeLibraryMcpServers(existingServers) {
       resolved = registry.wrapServersWithDiscoveryProxy(REPO_ROOT, resolved, {
         enabled: mcpCfg.useDiscoveryProxy !== false,
         includeCustomTools: mcpCfg.includeCustomToolsInDiscoveryProxy !== false,
+        cacheTtlMs: mcpCfg.discoveryProxyCacheTtlMs,
+        executeTimeoutMs: mcpCfg.discoveryProxyExecuteTimeoutMs,
       });
     }
     if (!resolved || !resolved.length) return existingServers;

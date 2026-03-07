@@ -723,7 +723,7 @@ export function KanbanBoard({ onOpenTask, hasMoreTasks = false, loadingMoreTasks
   return html`
     <${Box} className="kanban-container">
       <${KanbanFilter} tasks=${allTasks} filters=${filters} onFilterChange=${setFilters} />
-      <${Box} sx=${{ px: 1, pb: 0.5, color: "text.secondary", fontSize: 12 }}>Total tasks: ${Number.isFinite(Number(totalTasks)) ? totalTasks : allTasks.length}</${Box}>
+      <${Box} sx=${{ px: 1, pb: 0.5, color: "text.secondary", fontSize: 12 }}>Total tasks: ${Number.isFinite(Number(totalTasks)) && Number(totalTasks) > 0 ? totalTasks : allTasks.length}</${Box}>
       <${Box} className="kanban-board" sx=${{ display: 'flex', gap: 2, overflowX: 'auto', pb: 1 }}>
         ${COLUMNS.map((col) => html`
           <${KanbanColumn}

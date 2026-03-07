@@ -2660,7 +2660,22 @@ registerNodeType("action.create_task", {
         tags: node.config?.tags,
         projectId: node.config?.projectId,
       }, node.config?.projectId);
-      return { success: true, taskId: task.id, title };
+      if (task?.id) {
+        ctx.data.taskId = task.id;
+        ctx.data.activeTaskId = task.id;
+      }
+      if (task?.title || title) {
+        ctx.data.taskTitle = String(task?.title || title).trim();
+      }
+      if (task && typeof task === "object") {
+        ctx.data.task = task;
+      }
+      return {
+        success: true,
+        taskId: task?.id || null,
+        title: task?.title || title,
+        task: task || null,
+      };
     }
     return { success: false, error: "Kanban adapter not available" };
   },
@@ -2703,9 +2718,17 @@ registerNodeType("action.update_task_status", {
 
     if (kanban?.updateTaskStatus) {
       await kanban.updateTaskStatus(taskId, status, updateOptions);
+      if (taskId) {
+        ctx.data.taskId = taskId;
+        ctx.data.activeTaskId = taskId;
+      }
+      if (taskTitle) {
+        ctx.data.taskTitle = taskTitle;
+      }
       return {
         success: true,
         taskId,
+        taskTitle: taskTitle || null,
         status,
         workflowEvent: workflowEvent || null,
       };
@@ -7844,10 +7867,10 @@ registerNodeType("action.build_task_prompt", {
       "Bosun uses a compact MCP discovery layer for external MCP servers and the custom tool library.",
     );
     parts.push(
-      "Preferred flow: `search_tools` -> `get_tool_schema` -> `call_discovered_tool`.",
+      "Preferred flow: `search` -> `get_schema` -> `execute`.",
     );
     parts.push(
-      "Only eager tools are preloaded below to keep context small. Discover the rest at runtime.",
+      "Only eager tools are preloaded below to keep context small. Use `call_discovered_tool` only as a direct fallback when orchestration code is unnecessary.",
     );
     parts.push("");
 
@@ -8327,4 +8350,6 @@ registerNodeType("action.web_search", {
 // ═══════════════════════════════════════════════════════════════════════════
 
 export { registerNodeType, getNodeType, listNodeTypes } from "./workflow-engine.mjs";
+
+
 

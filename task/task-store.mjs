@@ -70,7 +70,51 @@ let storeTmpPath = storePath + ".tmp";
 const MAX_STATUS_HISTORY = 50;
 const MAX_AGENT_OUTPUT = 2000;
 const MAX_ERROR_LENGTH = 1000;
+const MAX_TASK_TIMELINE = 300;
+const MAX_TASK_COMMENTS = 200;
+const MAX_WORKFLOW_RUN_LINKS = 200;
 const ATOMIC_RENAME_FALLBACK_CODES = new Set(["EPERM", "EACCES", "EBUSY", "EXDEV"]);
+
+const TASK_TYPE_SET = new Set(["epic", "task", "subtask"]);
+const LIFECYCLE_ACTION_TARGET = Object.freeze({
+  start: "inprogress",
+  pause: "paused",
+  resume: "inprogress",
+  complete: "done",
+  cancel: "cancelled",
+  block: "blocked",
+});
+const NORMALIZED_STATE_MAP = Object.freeze({
+  draft: "backlog",
+  backlog: "backlog",
+  open: "backlog",
+  new: "backlog",
+  todo: "backlog",
+  inprogress: "inprogress",
+  "in-progress": "inprogress",
+  assigned: "inprogress",
+  working: "inprogress",
+  running: "inprogress",
+  paused: "paused",
+  inreview: "inreview",
+  "in-review": "inreview",
+  review: "inreview",
+  done: "done",
+  completed: "done",
+  cancelled: "cancelled",
+  canceled: "cancelled",
+  blocked: "blocked",
+  error: "blocked",
+});
+const ALLOWED_STATE_TRANSITIONS = Object.freeze({
+  backlog: new Set(["inprogress", "cancelled", "blocked"]),
+  inprogress: new Set(["paused", "inreview", "done", "blocked", "cancelled", "backlog"]),
+  paused: new Set(["inprogress", "cancelled", "blocked", "backlog"]),
+  inreview: new Set(["inprogress", "done", "blocked", "cancelled", "paused"]),
+  done: new Set([]),
+  cancelled: new Set([]),
+  blocked: new Set(["backlog", "inprogress", "cancelled", "paused"]),
+});
 
 // ---------------------------------------------------------------------------
 // In-memory state

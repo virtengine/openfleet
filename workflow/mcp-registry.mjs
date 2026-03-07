@@ -452,6 +452,8 @@ export function wrapServersWithDiscoveryProxy(rootDir, servers = [], options = {
     enabled = true,
     includeCustomTools = true,
     timeoutMs = 30000,
+    cacheTtlMs = 60000,
+    executeTimeoutMs = 10000,
   } = options;
 
   if (enabled === false) return servers;
@@ -472,6 +474,8 @@ export function wrapServersWithDiscoveryProxy(rootDir, servers = [], options = {
   const configPath = writeDiscoveryProxyConfig(rootDir, {
     rootDir,
     timeoutMs,
+    cacheTtlMs,
+    executeTimeoutMs,
     includeCustomTools,
     servers,
   });

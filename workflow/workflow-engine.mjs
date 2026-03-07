@@ -100,7 +100,11 @@ const CHECKPOINT_DEBOUNCE_MS = readBoundedEnvInt(
   500,
   { min: 50, max: 10000 },
 );
-const ACTIVE_RUNS_INDEX = "_active-runs.json";
+const ACTIVE_RUNS_INDEX = "_active-runs.json";const MAX_TASK_TRACE_EVENTS_PER_RUN = readBoundedEnvInt(
+  "WORKFLOW_TASK_TRACE_MAX_EVENTS",
+  250,
+  { min: 20, max: 5000 },
+);
 
 function resolveNodeTimeoutMs(node, resolvedConfig) {
   const candidates = [
@@ -397,7 +401,18 @@ export class WorkflowEngine extends EventEmitter {
     this._triggerSubscriptions = new Map();
     this._loaded = false;
     this._checkpointTimers = new Map(); // runId → debounce timer
-    this._resumingRuns = false;
+    this._resumingRuns = false;    this._taskTraceHooks = new Set();
+    if (typeof opts.onTaskWorkflowEvent === "function") {
+      this._taskTraceHooks.add(opts.onTaskWorkflowEvent);
+    }
+    if (typeof opts.taskTraceHook === "function") {
+      this._taskTraceHooks.add(opts.taskTraceHook);
+    }
+    if (Array.isArray(opts.taskTraceHooks)) {
+      for (const hook of opts.taskTraceHooks) {
+        if (typeof hook === "function") this._taskTraceHooks.add(hook);
+      }
+    }
 
     // ── Concurrency control ───────────────────────────────────────────
     this._runSlots = 0;              // current number of executing runs
@@ -406,7 +421,221 @@ export class WorkflowEngine extends EventEmitter {
     this._runIndexCacheMtime = 0;    // mtime of the cached index file
   }
 
-  // ── Lifecycle ───────────────────────────────────────────────────────────
+
+  /**
+   * Register a per-engine hook for task-linked workflow trace events.
+   * The hook is invoked only when a task context is resolved.
+   * @param {(event: object) => (void|Promise<void>)} hook
+   * @returns {() => void} unsubscribe function
+   */
+  registerTaskTraceHook(hook) {
+    if (typeof hook !== "function") return () => {};
+    this._taskTraceHooks.add(hook);
+    return () => {
+      this._taskTraceHooks.delete(hook);
+    };
+  }
+
+  _sanitizeTaskId(value) {
+    const normalized = String(value ?? "").trim();
+    return normalized || "";
+  }
+
+  _resolveTaskTraceContext(ctx, node = null, result = null) {
+    const nodeTaskIdCandidate = (() => {
+      if (!node?.config || typeof node.config !== "object") return "";
+      try {
+        const resolved = ctx.resolve(node.config.taskId || node.config.id || "");
+        return this._sanitizeTaskId(resolved);
+      } catch {
+        return "";
+      }
+    })();
+
+    const resultTaskId = this._sanitizeTaskId(
+      result?.taskId ||
+      result?.id ||
+      result?.task?.id ||
+      result?.task?.task_id,
+    );
+    const taskId = this._sanitizeTaskId(
+      ctx?.data?.taskId ||
+      ctx?.data?.activeTaskId ||
+      ctx?.data?.task?.id ||
+      ctx?.data?.task?.task_id ||
+      nodeTaskIdCandidate ||
+      resultTaskId,
+    );
+    if (!taskId) return null;
+
+    const nodeTaskTitleCandidate = (() => {
+      if (!node?.config || typeof node.config !== "object") return "";
+      try {
+        const resolved = ctx.resolve(node.config.taskTitle || node.config.title || "");
+        return String(resolved || "").trim();
+      } catch {
+        return "";
+      }
+    })();
+
+    const taskTitle = String(
+      ctx?.data?.taskTitle ||
+      ctx?.data?.task?.title ||
+      result?.taskTitle ||
+      result?.title ||
+      result?.task?.title ||
+      nodeTaskTitleCandidate ||
+      "",
+    ).trim() || null;
+
+    return {
+      taskId,
+      taskTitle,
+      branch: String(
+        ctx?.data?.branch ||
+        ctx?.data?.branchName ||
+        result?.branch ||
+        result?.branchName ||
+        "",
+      ).trim() || null,
+      prNumber: String(
+        ctx?.data?.prNumber ||
+        result?.prNumber ||
+        "",
+      ).trim() || null,
+      prUrl: String(
+        ctx?.data?.prUrl ||
+        result?.prUrl ||
+        "",
+      ).trim() || null,
+    };
+  }
+
+  _summarizeTaskTraceNodeResult(result) {
+    if (result == null) return null;
+    if (typeof result === "string") {
+      const text = result.trim();
+      return text.length > 240 ? `${text.slice(0, 239)}…` : text;
+    }
+    if (typeof result === "number" || typeof result === "boolean") {
+      return String(result);
+    }
+    if (Array.isArray(result)) {
+      return `array(${result.length})`;
+    }
+    if (typeof result === "object") {
+      if (result.error) return String(result.error);
+      if (result.message) return String(result.message);
+      if (result.output && typeof result.output === "string") {
+        const text = result.output.trim();
+        return text.length > 240 ? `${text.slice(0, 239)}…` : text;
+      }
+      const keys = Object.keys(result).filter(Boolean).slice(0, 8);
+      return keys.length ? `object{${keys.join(",")}}` : "object";
+    }
+    return null;
+  }
+
+  _appendTaskTraceToContext(ctx, event) {
+    if (!ctx?.data || typeof ctx.data !== "object") return;
+    const existing = Array.isArray(ctx.data._taskWorkflowEvents)
+      ? ctx.data._taskWorkflowEvents
+      : [];
+    existing.push(event);
+    if (existing.length > MAX_TASK_TRACE_EVENTS_PER_RUN) {
+      ctx.data._taskWorkflowEvents = existing.slice(-MAX_TASK_TRACE_EVENTS_PER_RUN);
+      return;
+    }
+    ctx.data._taskWorkflowEvents = existing;
+  }
+
+  async _dispatchTaskTrace(event) {
+    const handlers = [];
+    for (const hook of this._taskTraceHooks) {
+      if (typeof hook === "function") handlers.push(hook);
+    }
+
+    const directHandler = this.services?.onTaskWorkflowEvent;
+    if (typeof directHandler === "function") handlers.push(directHandler);
+
+    const serviceObjects = [
+      this.services?.taskTraceCollector,
+      this.services?.taskTimeline,
+      this.services?.taskEvents,
+      this.services?.taskState,
+    ].filter(Boolean);
+    const methodNames = [
+      "onTaskWorkflowEvent",
+      "collectTaskWorkflowEvent",
+      "appendWorkflowEvent",
+      "collect",
+      "append",
+      "handleEvent",
+    ];
+    for (const service of serviceObjects) {
+      for (const methodName of methodNames) {
+        const fn = service?.[methodName];
+        if (typeof fn === "function") {
+          handlers.push((payload) => fn.call(service, payload));
+          break;
+        }
+      }
+    }
+
+    for (const handler of handlers) {
+      try {
+        await handler(event);
+      } catch (err) {
+        console.warn(
+          `${TAG} task trace handler failed: ${String(err?.message || err)}`,
+        );
+      }
+    }
+  }
+
+  async _emitTaskTraceEvent(kind, {
+    ctx,
+    workflowId,
+    workflowName,
+    runId,
+    node = null,
+    result = null,
+    status = null,
+    error = null,
+    durationMs = null,
+    extra = null,
+  } = {}) {
+    const taskContext = this._resolveTaskTraceContext(ctx, node, result);
+    if (!taskContext) return null;
+
+    const nowMs = Date.now();
+    const event = {
+      eventType: String(kind || "").trim(),
+      timestamp: new Date(nowMs).toISOString(),
+      timestampMs: nowMs,
+      taskId: taskContext.taskId,
+      taskTitle: taskContext.taskTitle,
+      workflowId: workflowId || ctx?.data?._workflowId || null,
+      workflowName: workflowName || ctx?.data?._workflowName || null,
+      runId: runId || ctx?.id || null,
+      status: status || null,
+      nodeId: node?.id || null,
+      nodeType: node?.type || null,
+      nodeLabel: node?.label || null,
+      summary: this._summarizeTaskTraceNodeResult(result),
+      error: error ? String(error) : null,
+      durationMs: Number.isFinite(durationMs) ? Math.max(0, durationMs) : null,
+      branch: taskContext.branch,
+      prNumber: taskContext.prNumber,
+      prUrl: taskContext.prUrl,
+      meta: extra && typeof extra === "object" ? extra : null,
+    };
+
+    this._appendTaskTraceToContext(ctx, event);
+    this.emit("task:trace", event);
+    await this._dispatchTaskTrace(event);
+    return event;
+  }  // ── Lifecycle ───────────────────────────────────────────────────────────
 
   /** Load all workflow definitions from disk */
   load() {
@@ -627,7 +856,14 @@ export class WorkflowEngine extends EventEmitter {
     // ── Persist run immediately so it survives process restarts ──────
     this._persistActiveRunState(runId, workflowId, def.name, ctx);
 
-    this.emit("run:start", { runId, workflowId, name: def.name });
+    this.emit(""run:start"", { runId, workflowId, name: def.name });
+    await this._emitTaskTraceEvent(""workflow.run.start"", {
+      ctx,
+      runId,
+      workflowId,
+      workflowName: def.name,
+      status: WorkflowStatus.RUNNING,
+    });
 
     try {
       // Build adjacency map
@@ -644,11 +880,28 @@ export class WorkflowEngine extends EventEmitter {
 
       const status = this._resolveWorkflowStatus(ctx);
       this._activeRuns.get(runId).status = status;
-      this.emit("run:end", { runId, workflowId, status, duration: Date.now() - ctx.startedAt });
+      this.emit(""run:end"", { runId, workflowId, status, duration: Date.now() - ctx.startedAt });
+      await this._emitTaskTraceEvent(""workflow.run.end"", {
+        ctx,
+        runId,
+        workflowId,
+        workflowName: def.name,
+        status,
+        durationMs: Date.now() - ctx.startedAt,
+      });
     } catch (err) {
       ctx.error("_engine", err);
       this._activeRuns.get(runId).status = WorkflowStatus.FAILED;
-      this.emit("run:error", { runId, workflowId, error: err.message });
+      this.emit(""run:error"", { runId, workflowId, error: err.message });
+      await this._emitTaskTraceEvent(""workflow.run.error"", {
+        ctx,
+        runId,
+        workflowId,
+        workflowName: def.name,
+        status: WorkflowStatus.FAILED,
+        error: err?.message || String(err),
+        durationMs: Date.now() - ctx.startedAt,
+      });
     }
 
     // Persist final run log and remove from active-runs index
@@ -762,7 +1015,15 @@ export class WorkflowEngine extends EventEmitter {
       status: WorkflowStatus.RUNNING,
     });
     this._persistActiveRunState(retryRunId, workflowId, def.name, ctx);
-    this.emit("run:start", { runId: retryRunId, workflowId, name: def.name, retryOf: runId, mode });
+    this.emit(""run:start"", { runId: retryRunId, workflowId, name: def.name, retryOf: runId, mode });
+    await this._emitTaskTraceEvent(""workflow.run.start"", {
+      ctx,
+      runId: retryRunId,
+      workflowId,
+      workflowName: def.name,
+      status: WorkflowStatus.RUNNING,
+      extra: { retryOf: runId, mode },
+    });
 
     try {
       const adjacency = this._buildAdjacency(def);
@@ -784,6 +1045,15 @@ export class WorkflowEngine extends EventEmitter {
         duration: Date.now() - ctx.startedAt,
         retryOf: runId,
         mode,
+      });
+      await this._emitTaskTraceEvent("workflow.run.end", {
+        ctx,
+        runId: retryRunId,
+        workflowId,
+        workflowName: def.name,
+        status,
+        durationMs: Date.now() - ctx.startedAt,
+        extra: { retryOf: runId, mode },
       });
     } catch (err) {
       ctx.error("_engine", err);
@@ -1244,7 +1514,15 @@ export class WorkflowEngine extends EventEmitter {
           if (!node) return;
 
           ctx.setNodeStatus(nodeId, NodeStatus.RUNNING);
-          this.emit("node:start", { nodeId, type: node.type, label: node.label });
+          this.emit(""node:start"", { nodeId, type: node.type, label: node.label });
+          await this._emitTaskTraceEvent(""workflow.node.start"", {
+            ctx,
+            runId: ctx.id,
+            workflowId: ctx.data?._workflowId || null,
+            workflowName: ctx.data?._workflowName || null,
+            node,
+            status: NodeStatus.RUNNING,
+          });
 
           // Retry loop — uses per-node maxRetries/retryDelayMs with global fallbacks.
           const resolvedMaxRetriesRaw =
@@ -1279,7 +1557,16 @@ export class WorkflowEngine extends EventEmitter {
               ctx.setNodeOutput(nodeId, result);
               ctx.setNodeStatus(nodeId, NodeStatus.COMPLETED);
               executed.add(nodeId);
-              this.emit("node:complete", { nodeId, type: node.type });
+              this.emit(""node:complete"", { nodeId, type: node.type });
+              await this._emitTaskTraceEvent(""workflow.node.complete"", {
+                ctx,
+                runId: ctx.id,
+                workflowId: ctx.data?._workflowId || null,
+                workflowName: ctx.data?._workflowName || null,
+                node,
+                result,
+                status: NodeStatus.COMPLETED,
+              });
 
               // Checkpoint progress to disk (debounced) so the run can
               // be resumed from here if the process is interrupted.
@@ -1297,7 +1584,19 @@ export class WorkflowEngine extends EventEmitter {
           ctx.error(nodeId, lastErr);
           ctx.setNodeStatus(nodeId, NodeStatus.FAILED);
           executed.add(nodeId);
-          this.emit("node:error", { nodeId, error: lastErr.message, retries: ctx.getRetryCount(nodeId) });
+          this.emit(""node:error"", { nodeId, error: lastErr.message, retries: ctx.getRetryCount(nodeId) });
+          await this._emitTaskTraceEvent(""workflow.node.error"", {
+            ctx,
+            runId: ctx.id,
+            workflowId: ctx.data?._workflowId || null,
+            workflowName: ctx.data?._workflowName || null,
+            node,
+            status: NodeStatus.FAILED,
+            error: lastErr?.message || String(lastErr),
+            extra: {
+              retries: ctx.getRetryCount(nodeId),
+            },
+          });
 
           // Check if node has error handling config
           if (node.config?.continueOnError) {
@@ -2017,7 +2316,18 @@ export class WorkflowEngine extends EventEmitter {
       );
 
       if (!runs.length) {
-        this._resumingRuns = false;
+        this._resumingRuns = false;    this._taskTraceHooks = new Set();
+    if (typeof opts.onTaskWorkflowEvent === "function") {
+      this._taskTraceHooks.add(opts.onTaskWorkflowEvent);
+    }
+    if (typeof opts.taskTraceHook === "function") {
+      this._taskTraceHooks.add(opts.taskTraceHook);
+    }
+    if (Array.isArray(opts.taskTraceHooks)) {
+      for (const hook of opts.taskTraceHooks) {
+        if (typeof hook === "function") this._taskTraceHooks.add(hook);
+      }
+    }
         return;
       }
 
@@ -2075,7 +2385,18 @@ export class WorkflowEngine extends EventEmitter {
         }
       }
     } finally {
-      this._resumingRuns = false;
+      this._resumingRuns = false;    this._taskTraceHooks = new Set();
+    if (typeof opts.onTaskWorkflowEvent === "function") {
+      this._taskTraceHooks.add(opts.onTaskWorkflowEvent);
+    }
+    if (typeof opts.taskTraceHook === "function") {
+      this._taskTraceHooks.add(opts.taskTraceHook);
+    }
+    if (Array.isArray(opts.taskTraceHooks)) {
+      for (const hook of opts.taskTraceHooks) {
+        if (typeof hook === "function") this._taskTraceHooks.add(hook);
+      }
+    }
     }
   }
 
@@ -2180,3 +2501,14 @@ export function listWorkflows(opts) { return getWorkflowEngine(opts).list(); }
 export function getWorkflow(id, opts) { return getWorkflowEngine(opts).get(id); }
 export async function executeWorkflow(id, data, opts) { return getWorkflowEngine(opts).execute(id, data, opts); }
 export async function retryWorkflowRun(runId, retryOpts, engineOpts) { return getWorkflowEngine(engineOpts).retryRun(runId, retryOpts); }
+
+
+
+
+
+
+
+
+
+
+

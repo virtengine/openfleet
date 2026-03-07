@@ -738,7 +738,7 @@ describe("getToolsPromptBlock affinity", () => {
       eagerOnly: true,
       emitReflectHint: false,
     });
-    expect(block).toContain("search_tools");
+    expect(block).toContain("`search`, then `get_schema`, then `execute`");
     expect(block).toContain("always-on.mjs");
     expect(block).not.toContain("not-eager.mjs");
   });
