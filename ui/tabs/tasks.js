@@ -3366,6 +3366,7 @@ export function TasksTab() {
   const [dagSprintGraph, setDagSprintGraph] = useState(EMPTY_DAG_GRAPH);
   const [dagGlobalGraph, setDagGlobalGraph] = useState(EMPTY_DAG_GRAPH);
   const [dagSources, setDagSources] = useState({ sprints: "", sprintGraph: "", globalGraph: "" });
+  const [dagSprintOrderMode, setDagSprintOrderMode] = useState("parallel");
   const [isCompact, setIsCompact] = useState(() => {
     try { return globalThis.matchMedia?.("(max-width: 768px)")?.matches ?? false; }
     catch { return false; }
@@ -3821,6 +3822,26 @@ export function TasksTab() {
       /* toast via apiFetch */
     }
   }, [loadDagViews]);
+  const handleDagSprintModeChange = useCallback(async (mode) => {
+    const nextMode = toText(mode, "parallel").toLowerCase();
+    if (!dagSelectedSprint || dagSelectedSprint === "all") {
+      showToast("Select a sprint before changing execution mode", "warning");
+      return;
+    }
+    if (nextMode !== "parallel" && nextMode !== "sequential") return;
+    setDagSprintOrderMode(nextMode);
+    haptic("medium");
+    try {
+      await apiFetch(`/api/tasks/sprints/${encodeURIComponent(dagSelectedSprint)}`, {
+        method: "PATCH",
+        body: JSON.stringify({ sprintOrderMode: nextMode }),
+      });
+      showToast("Sprint execution mode updated", "success");
+      await loadDagViews();
+    } catch {
+      setDagError("Failed to update sprint execution mode.");
+    }
+  }, [dagSelectedSprint, loadDagViews]);
   const handleSprintChange = useCallback((nextSprint) => {
     const sprintId = toText(nextSprint, "all");
     if (sprintId === dagSelectedSprint) return;
@@ -5050,6 +5071,11 @@ function CreateTaskModalInline({ onClose }) {
     <//>
   `;
 }
+
+
+
+
+
 
 
 
