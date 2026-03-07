@@ -27,7 +27,7 @@ function contentTypeFor(pathname) {
 
 function toFsPath(urlPath) {
   const cleaned = decodeURIComponent((urlPath || "/").split("?")[0].split("#")[0]);
-  const requested = cleaned === "/" ? "/indexv2.html" : cleaned;
+  const requested = cleaned === "/" ? "/index.html" : cleaned;
   const candidate = normalize(resolve(SITE_ROOT, `.${requested}`));
   if (!candidate.startsWith(SITE_ROOT)) return null;
   return candidate;
@@ -283,7 +283,7 @@ describe("demo load smoke", () => {
 
   it("serves the landing page and demo page", async () => {
     const [landing, demo] = await Promise.all([
-      fetch(`${baseUrl}/indexv2.html`),
+      fetch(`${baseUrl}/index.html`),
       fetch(`${baseUrl}/ui/demo.html`),
     ]);
 
@@ -299,11 +299,11 @@ describe("demo load smoke", () => {
   });
 
   it("serves all local assets required by landing and demo entrypoints", async () => {
-    const landingHtml = await fetch(`${baseUrl}/indexv2.html`).then((r) => r.text());
+    const landingHtml = await fetch(`${baseUrl}/index.html`).then((r) => r.text());
     const demoHtml = await fetch(`${baseUrl}/ui/demo.html`).then((r) => r.text());
 
     const assets = [
-      ...extractLocalAssets(landingHtml, "indexv2.html"),
+      ...extractLocalAssets(landingHtml, "index.html"),
       ...extractLocalAssets(demoHtml, "ui/demo.html"),
     ];
 
@@ -326,11 +326,11 @@ describe("demo load smoke", () => {
   });
 
   it("has syntactically valid inline scripts and entry modules", async () => {
-    const landingHtml = await fetch(`${baseUrl}/indexv2.html`).then((r) => r.text());
+    const landingHtml = await fetch(`${baseUrl}/index.html`).then((r) => r.text());
     const demoHtml = await fetch(`${baseUrl}/ui/demo.html`).then((r) => r.text());
 
     const inlineChecks = [
-      ...extractInlineScripts(landingHtml).map((s, idx) => ({ ...s, label: `indexv2:inline:${idx}` })),
+      ...extractInlineScripts(landingHtml).map((s, idx) => ({ ...s, label: `index:inline:${idx}` })),
       ...extractInlineScripts(demoHtml).map((s, idx) => ({ ...s, label: `demo:inline:${idx}` })),
     ];
 
@@ -343,7 +343,7 @@ describe("demo load smoke", () => {
     }
 
     const moduleSrcs = [
-      ...extractModuleScriptSrc(landingHtml, "indexv2.html"),
+      ...extractModuleScriptSrc(landingHtml, "index.html"),
       ...extractModuleScriptSrc(demoHtml, "ui/demo.html"),
     ];
 

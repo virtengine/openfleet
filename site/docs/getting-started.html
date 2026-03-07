@@ -23,8 +23,8 @@
         Bosun
       </a>
       <div class="sidebar-version-info">
-        <span class="sidebar-version" id="current-version">Current Version: v0.36.1</span>
-        <span class="sidebar-version">Docs Last Updated: v0.36.1</span>
+        <span class="sidebar-version" id="current-version">Current Version: v0.39.3</span>
+        <span class="sidebar-version">Docs Last Updated: v0.39.3</span>
       </div>
       <div class="docs-search">
         <input class="docs-search__input" type="text" placeholder="Search docs..." />
@@ -49,7 +49,7 @@
         <div class="sidebar-section__title">Links</div>
         <ul class="sidebar-nav">
           <li><a href="https://github.com/virtengine/bosun" target="_blank" rel="noopener">GitHub</a></li>
-          <li><a href="https://www.npmjs.com/package/bosun" target="_blank">npm</a></li>
+          <li><a href="https://www.npmjs.com/package/bosun" target="_blank" rel="noopener">npm</a></li>
           <li><a href="../">Home</a></li>
         </ul>
       </div>
@@ -59,122 +59,116 @@
       <h1>Quick Start</h1>
 
       <p>
-        Get Bosun running in under 5 minutes. This guide covers install, setup, and your first supervised run.
+        This guide gets Bosun installed, configured, and running with the current CLI surface.
+        It assumes you want a working local operator setup first, then optional integrations after that.
       </p>
 
       <h2 id="prerequisites">Prerequisites</h2>
 
       <ul>
-        <li><strong>Node.js 18+</strong> — <a href="https://nodejs.org/" target="_blank">Download</a> (v22 recommended)</li>
-        <li><strong>git</strong> — installed and on your PATH</li>
-        <li><strong>GitHub CLI</strong> (<code>gh</code>) — <a href="https://cli.github.com/" target="_blank">Install</a> (recommended for PR operations)</li>
+        <li><strong>Node.js 18+</strong> on PATH.</li>
+        <li><strong>Git</strong> installed and working in your target repository.</li>
+        <li><strong>PowerShell 7+</strong> or <strong>Bash</strong> for the wrapper scripts Bosun may invoke.</li>
+        <li><strong>GitHub CLI</strong> recommended for repository and PR workflows.</li>
+        <li><strong>Optional:</strong> cloudflared, Docker/Podman, Telegram bot credentials, and executor API keys depending on which features you enable.</li>
       </ul>
 
       <div class="callout callout--tip">
-        <p>Run <code>gh auth status</code> to verify your GitHub CLI is authenticated before setting up Bosun.</p>
+        <p>
+          If you are evaluating Bosun for the first time, start with the default web setup flow.
+          It is the current primary onboarding path.
+        </p>
       </div>
 
-      <h2 id="install">Step 1: Install</h2>
+      <h2 id="install">Step 1: Install Bosun</h2>
 
       <pre><code>npm install -g bosun</code></pre>
 
-      <p>Verify the installation:</p>
+      <p>Verify the install:</p>
+
       <pre><code>bosun --version
-# bosun v0.36.1</code></pre>
+# bosun v0.39.3</code></pre>
 
-      <h2 id="setup">Step 2: Run Setup</h2>
+      <h2 id="setup">Step 2: Run setup</h2>
 
-      <p>Navigate to your project directory and run the setup wizard:</p>
+      <p>From the repository you want Bosun to supervise:</p>
 
-      <pre><code>cd your-project
+      <pre><code>cd your-repo
 bosun --setup</code></pre>
 
-      <p>The wizard starts with two modes:</p>
+      <p>Current setup entrypoints:</p>
 
-      <h3>Recommended Mode (default)</h3>
       <ul>
-        <li>Prompts only for important decisions</li>
-        <li>Auto-generates <code>.env</code> based on <code>.env.example</code> with inline docs</li>
-        <li>Auto-configures VS Code settings for Copilot agent defaults</li>
-        <li>Sets up proven defaults for hooks, orchestrator, and failover</li>
+        <li><code>bosun --setup</code> launches the web-based setup wizard.</li>
+        <li><code>bosun --setup-terminal</code> runs the legacy terminal wizard.</li>
+        <li><code>bosun --where</code> shows the resolved Bosun config directory.</li>
       </ul>
 
-      <h3>Advanced Mode</h3>
-      <ul>
-        <li>Full control over repository layout and failover strategy</li>
-        <li>Custom hook targets and event overrides</li>
-        <li>Explicit VK URL/port wiring</li>
-        <li>Optional channel and runtime tuning</li>
-      </ul>
+      <p>The setup flow typically asks you to choose:</p>
 
-      <h4>Key decisions in setup:</h4>
       <ol>
-        <li><strong>Project identity</strong> — name and GitHub repo</li>
-        <li><strong>Executor preset</strong> — which AI agents to use and their weights</li>
-        <li><strong>AI provider credentials</strong> — API tokens for your chosen executors</li>
-        <li><strong>Telegram</strong> — bot token and chat ID (optional but recommended)</li>
-        <li><strong>Board backend</strong> — Internal, GitHub Issues, GitHub Projects v2, or Jira</li>
-        <li><strong>Execution mode</strong> — Internal, VK, or Hybrid</li>
+        <li><strong>Project identity</strong> and repository/workspace shape.</li>
+        <li><strong>Executor defaults</strong> like Codex, Copilot, Claude, Gemini, or OpenCode.</li>
+        <li><strong>Task backend</strong> such as internal, GitHub, Jira, or Vibe-Kanban-backed flows.</li>
+        <li><strong>Control surfaces</strong> like Telegram Mini App, sentinel, and optional desktop behavior.</li>
+        <li><strong>Credentials</strong> for providers and integrations you want enabled.</li>
       </ol>
 
-      <h2 id="launch">Step 3: Launch</h2>
+      <h2 id="start">Step 3: Start Bosun</h2>
+
+      <p>Foreground run:</p>
 
       <pre><code>bosun</code></pre>
 
-      <p>That's it! Bosun connects to your configured board, initializes the agent pool, and starts the supervisor loop.</p>
+      <p>Common runtime variations:</p>
 
-      <h2 id="run-modes">Run Modes</h2>
-
-      <h3>Foreground (default)</h3>
-      <pre><code>bosun</code></pre>
-      <p>Runs in your terminal with live log output. Press <kbd>Ctrl+C</kbd> to stop.</p>
-
-      <h3>Daemon Mode</h3>
-      <pre><code># Start as background daemon
+      <pre><code># Start detached
 bosun --daemon
 
-# Check status
-bosun --daemon-status
+# Start daemon plus sentinel companion
+bosun --daemon --sentinel
 
-# Stop
-bosun --stop-daemon</code></pre>
+# Stop detached daemon
+bosun --stop-daemon
 
-      <h3>Startup Service</h3>
-      <pre><code># Auto-start on login
-bosun --enable-startup
+# Hard-stop all Bosun-related processes
+bosun --terminate</code></pre>
 
-# Check status
-bosun --startup-status
+      <h2 id="validate">Step 4: Validate the environment</h2>
 
-# Remove
-bosun --disable-startup</code></pre>
-
-      <h3>Interactive Shell</h3>
-      <pre><code>bosun --shell</code></pre>
-      <p>Opens an interactive session inside the running monitor for live debugging.</p>
-
-      <h2 id="validate">Step 4: Validate</h2>
-
-      <p>After setup, validate your configuration:</p>
       <pre><code>bosun --doctor</code></pre>
 
-      <p>This checks:</p>
+      <p>This validates your current config surface, including resolved config files and common runtime dependencies.</p>
+
+      <p>Useful follow-up checks:</p>
+
+      <pre><code>bosun --daemon-status
+bosun --sentinel-status
+bosun --workspace-list
+bosun task list --json</code></pre>
+
+      <h2 id="files">What setup writes</h2>
+
       <ul>
-        <li><code>.env</code> file presence and validity</li>
-        <li><code>bosun.config.json</code> schema compliance</li>
-        <li>GitHub CLI authentication</li>
-        <li>Telegram bot token validity</li>
-        <li>Executor pool configuration</li>
-        <li>Kanban backend reachability</li>
+        <li><code>.env</code> for environment-based settings.</li>
+        <li><code>bosun.config.json</code> for structured executor and routing config.</li>
+        <li>Workspace and profile state under the Bosun config directory shown by <code>bosun --where</code>.</li>
       </ul>
 
-      <h2 id="whats-next">What's Next?</h2>
+      <div class="callout callout--info">
+        <p>
+          The canonical environment template is <code>.env.example</code> in the repo root.
+          The canonical structured example is <code>bosun.config.example.json</code>.
+        </p>
+      </div>
+
+      <h2 id="next">What to do next</h2>
 
       <ul>
-        <li><a href="configuration.html">Configuration Reference</a> — deep dive into all settings</li>
-        <li><a href="cli-reference.html">CLI Reference</a> — every flag and command</li>
-        <li><a href="integrations.html">Integrations</a> — connect Telegram, GitHub Projects, Jira</li>
-        <li><a href="architecture.html">Architecture</a> — understand how it all fits together</li>
+        <li>Read <a href="configuration.html">Configuration</a> before turning on Mini App, Cloudflare, GitHub, or container execution.</li>
+        <li>Use <a href="cli-reference.html">CLI Reference</a> when operating Bosun day to day.</li>
+        <li>Read <a href="integrations.html">Integrations</a> before wiring Telegram, GitHub, Jira, or Cloudflare.</li>
+        <li>Read <a href="architecture.html">Architecture</a> before editing workflows, task lifecycle code, or runtime plumbing.</li>
       </ul>
 
       <div class="docs-nav-footer">
@@ -190,10 +184,8 @@ bosun --disable-startup</code></pre>
     </main>
   </div>
   <script src="../js/docs.js"></script>
-    <script src="../js/analytics-config.js"></script>
+  <script src="../js/analytics-config.js"></script>
   <script src="../js/analytics.js"></script>
-
   <script src="../js/main.js"></script>
 </body>
 </html>
-
