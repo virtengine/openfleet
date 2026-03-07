@@ -2964,6 +2964,30 @@
         }
         return { ok: true, data: { nodes, edges } };
       }
+      if (route === '/api/tasks/epic-dependencies') {
+        const map = STATE.epicDependencies && typeof STATE.epicDependencies === 'object'
+          ? STATE.epicDependencies
+          : (STATE.epicDependencies = {});
+        if (method === 'GET') {
+          const data = Object.entries(map).map(([epicId, dependencies]) => ({
+            epicId,
+            dependencies: Array.isArray(dependencies)
+              ? dependencies.map((value) => String(value || '').trim()).filter(Boolean)
+              : [],
+          }));
+          return { ok: true, source: 'demo', data };
+        }
+        if (method === 'PUT') {
+          const epicId = String(body?.epicId || body?.id || '').trim();
+          if (!epicId) return { ok: false, error: 'epicId required' };
+          const dependencies = Array.isArray(body?.dependencies)
+            ? body.dependencies.map((value) => String(value || '').trim()).filter(Boolean).filter((value) => value !== epicId)
+            : [];
+          if (dependencies.length) map[epicId] = [...new Set(dependencies)];
+          else delete map[epicId];
+          return { ok: true, source: 'demo', data: { epicId, dependencies: map[epicId] || [] } };
+        }
+      }
       if (route === '/api/tasks/attachments/upload') {
         const taskId = body?.taskId || body?.id || params.get('taskId');
         const t = findTask(taskId);
@@ -3117,7 +3141,8 @@
           data: t,
           dag: { sprintId: t.sprintId || null, sprint: { nodes: [] }, global: { nodes: [] } },
         };
-      }      if (route === '/api/tasks/retry') {
+      }
+      if (route === '/api/tasks/retry') {
         const t = findTask(body?.taskId);
         if (t) { t.status = 'todo'; t.updated = Date.now(); addLog('info', 'task-executor', `Task retried: ${t.title}`); }
         return { ok: true, data: t || null };

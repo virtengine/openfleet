@@ -6937,6 +6937,7 @@ function normalizeCanStartGuardResult(raw) {
       blockingTaskIds: [],
       missingDependencyTaskIds: [],
       blockingSprintIds: [],
+      blockingEpicIds: [],
     };
   }
   const data = raw && typeof raw === "object" ? raw : {};
@@ -6947,11 +6948,11 @@ function normalizeCanStartGuardResult(raw) {
     blockingTaskIds: Array.isArray(data.blockingTaskIds) ? data.blockingTaskIds : [],
     missingDependencyTaskIds: Array.isArray(data.missingDependencyTaskIds) ? data.missingDependencyTaskIds : [],
     blockingSprintIds: Array.isArray(data.blockingSprintIds) ? data.blockingSprintIds : [],
+    blockingEpicIds: Array.isArray(data.blockingEpicIds) ? data.blockingEpicIds : [],
     sprintOrderMode: data.sprintOrderMode || null,
     sprintTaskOrderMode: data.sprintTaskOrderMode || null,
   };
 }
-
 /** Resolve a config value, falling back to ctx.data, then defaultVal. */
 function cfgOrCtx(node, ctx, key, defaultVal = "") {
   const raw = node.config?.[key];
@@ -7153,6 +7154,7 @@ registerNodeType("trigger.task_available", {
               blockingTaskIds: guard.blockingTaskIds,
               missingDependencyTaskIds: guard.missingDependencyTaskIds,
               blockingSprintIds: guard.blockingSprintIds,
+              blockingEpicIds: guard.blockingEpicIds,
               sprintOrderMode: guard.sprintOrderMode,
               sprintTaskOrderMode: guard.sprintTaskOrderMode,
               strict: Boolean(taskNotFound && strictStartGuardMissingTask),
@@ -8502,3 +8504,4 @@ registerNodeType("action.web_search", {
 // ═══════════════════════════════════════════════════════════════════════════
 
 export { registerNodeType, getNodeType, listNodeTypes } from "./workflow-engine.mjs";
+

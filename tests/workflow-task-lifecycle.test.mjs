@@ -221,6 +221,37 @@ describe("trigger.task_available", () => {
     expect(canStartTask).toHaveBeenNthCalledWith(2, "blocked-b", { sprintOrderMode: "sequential" });
   });
 
+  it("returns start_guard_blocked for unresolved epic dependencies", async () => {
+    const nt = getNodeType("trigger.task_available");
+    const listTasks = vi.fn().mockResolvedValue([
+      { id: "epic-blocked", title: "Epic Blocked", status: "todo" },
+    ]);
+    const canStartTask = vi.fn(() => ({
+      canStart: false,
+      reason: "epic_dependencies_unresolved",
+      blockingEpicIds: ["EPIC-B"],
+      blockingTaskIds: ["epic-b-task-1"],
+    }));
+
+    const ctx = makeCtx({ activeSlotCount: 0, _services: { taskStore: { canStartTask } } });
+    const node = makeNode("trigger.task_available", {
+      maxParallel: 1,
+      status: "todo",
+      enforceStartGuards: true,
+    });
+
+    const result = await nt.execute(node, ctx, {
+      services: { kanban: { listTasks }, taskStore: { canStartTask } },
+    });
+
+    expect(result.triggered).toBe(false);
+    expect(result.reason).toBe("start_guard_blocked");
+    expect(result.blocked).toHaveLength(1);
+    expect(result.blocked[0].reason).toBe("epic_dependencies_unresolved");
+    expect(result.blocked[0].blockingEpicIds).toEqual(["EPIC-B"]);
+    expect(result.blocked[0].blockingTaskIds).toEqual(["epic-b-task-1"]);
+  });
+
   it("bypasses missing-task guard by default and emits audit event", async () => {
     const nt = getNodeType("trigger.task_available");
     const listTasks = vi.fn().mockResolvedValue([

@@ -5461,14 +5461,49 @@ select.input {
     radial-gradient(circle at 10% 20%, rgba(249, 115, 22, 0.12), transparent 40%),
     radial-gradient(circle at 85% 80%, rgba(56, 189, 248, 0.08), transparent 40%),
     var(--bg-card);
-  overflow: auto;
-  padding: 10px;
+  overflow: hidden;
+  padding: 8px;
+  min-height: 460px;
+  touch-action: none;
+  cursor: grab;
+}
+
+.task-dag-canvas-wrap.is-panning {
+  cursor: grabbing;
 }
 
 .task-dag-canvas {
   width: 100%;
   min-width: 680px;
-  height: 420px;
+  height: 460px;
+}
+
+.task-dag-header-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin-bottom: 8px;
+}
+
+.task-dag-controls {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+
+.task-dag-zoom-pill,
+.task-dag-wire-pill {
+  display: inline-flex;
+  align-items: center;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: var(--bg-card-hover);
+  padding: 3px 8px;
+  font-size: 11px;
+  color: var(--text-secondary);
 }
 
 .dag-node rect {
@@ -5478,6 +5513,11 @@ select.input {
 .dag-node:hover rect {
   stroke: var(--accent);
   filter: drop-shadow(0 6px 12px rgba(0, 0, 0, 0.35));
+}
+
+.dag-node-selected rect {
+  stroke: var(--accent);
+  filter: drop-shadow(0 0 0 2px rgba(56, 189, 248, 0.25));
 }
 
 @media (max-width: 900px) {

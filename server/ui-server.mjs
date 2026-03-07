@@ -188,6 +188,12 @@ const TASK_STORE_DEPENDENCY_EXPORTS = {
   update: ["updateTask"],
 };
 const TASK_STORE_ASSIGN_SPRINT_EXPORTS = ["assignTaskToSprint", "setTaskSprint"];
+const TASK_STORE_EPIC_DEPENDENCY_EXPORTS = Object.freeze({
+  list: ["getEpicDependencies", "listEpicDependencies"],
+  set: ["setEpicDependencies", "updateEpicDependencies"],
+  add: ["addEpicDependency"],
+  remove: ["removeEpicDependency"],
+});
 let taskStoreApi = null;
 let taskStoreApiPromise = null;
 let didLogTaskStoreLoadFailure = false;
@@ -6154,6 +6160,68 @@ async function setTaskDependenciesForApi({
   };
 }
 
+async function listEpicDependenciesForApi() {
+  const listed = await callTaskStoreFunction(TASK_STORE_EPIC_DEPENDENCY_EXPORTS.list, []);
+  if (listed.found && Array.isArray(listed.value)) {
+    return {
+      ok: true,
+      source: `task-store.${listed.found}`,
+      data: listed.value
+        .map((entry) => ({
+          epicId: String(entry?.epicId || entry?.id || "").trim(),
+          dependencies: normalizeTaskIdList(entry?.dependencies || entry?.dependsOn || []),
+        }))
+        .filter((entry) => entry.epicId),
+    };
+  }
+  return { ok: false, source: null, data: [] };
+}
+
+async function setEpicDependenciesForApi({ epicId, dependencies }) {
+  const normalizedEpicId = String(epicId || "").trim();
+  if (!normalizedEpicId) return { ok: false, status: 400, error: "epicId required" };
+  const normalizedDependencies = normalizeTaskIdList(dependencies, { exclude: normalizedEpicId });
+
+  const setResult = await callTaskStoreFunction(
+    TASK_STORE_EPIC_DEPENDENCY_EXPORTS.set,
+    [normalizedEpicId, normalizedDependencies],
+  );
+  if (setResult.found) {
+    return {
+      ok: true,
+      source: `task-store.${setResult.found}`,
+      data: {
+        epicId: normalizedEpicId,
+        dependencies: normalizeTaskIdList(setResult.value?.dependencies || normalizedDependencies),
+      },
+    };
+  }
+
+  const listed = await listEpicDependenciesForApi();
+  const current = listed.ok
+    ? normalizeTaskIdList((listed.data.find((entry) => entry.epicId === normalizedEpicId) || {}).dependencies || [])
+    : [];
+
+  const toRemove = current.filter((entry) => !normalizedDependencies.includes(entry));
+  const toAdd = normalizedDependencies.filter((entry) => !current.includes(entry));
+
+  for (const dep of toRemove) {
+    await callTaskStoreFunction(TASK_STORE_EPIC_DEPENDENCY_EXPORTS.remove, [normalizedEpicId, dep]);
+  }
+  for (const dep of toAdd) {
+    await callTaskStoreFunction(TASK_STORE_EPIC_DEPENDENCY_EXPORTS.add, [normalizedEpicId, dep]);
+  }
+
+  const refreshed = await listEpicDependenciesForApi();
+  const row = refreshed.ok
+    ? refreshed.data.find((entry) => entry.epicId === normalizedEpicId)
+    : null;
+  return {
+    ok: true,
+    source: refreshed.source || "task-store.fallback",
+    data: { epicId: normalizedEpicId, dependencies: normalizeTaskIdList(row?.dependencies || []) },
+  };
+}
 async function getTaskCommentsForApi(taskId, adapter = null) {
   const storeComments = await callTaskStoreFunction(TASK_STORE_COMMENT_EXPORTS, [taskId]);
   if (storeComments.found && Array.isArray(storeComments.value)) {
@@ -9053,6 +9121,55 @@ async function handleApi(req, res, url) {
     }
     return;
   }
+  if (path === "/api/tasks/epic-dependencies" && req.method === "GET") {
+    try {
+      const listed = await listEpicDependenciesForApi();
+      if (!listed.ok) {
+        jsonResponse(res, 501, { ok: false, error: "Epic dependency APIs are unavailable." });
+        return;
+      }
+      jsonResponse(res, 200, { ok: true, source: listed.source, data: listed.data });
+    } catch (err) {
+      jsonResponse(res, 500, { ok: false, error: err.message });
+    }
+    return;
+  }
+
+  if (path === "/api/tasks/epic-dependencies" && req.method === "PUT") {
+    try {
+      const body = await readJsonBody(req);
+      const epicId = String(body?.epicId || body?.id || "").trim();
+      const dependencies = Array.isArray(body?.dependencies)
+        ? body.dependencies
+        : Array.isArray(body?.dependsOn)
+          ? body.dependsOn
+          : [];
+      if (!epicId) {
+        jsonResponse(res, 400, { ok: false, error: "epicId required" });
+        return;
+      }
+      const updated = await setEpicDependenciesForApi({ epicId, dependencies });
+      if (!updated.ok) {
+        jsonResponse(res, updated.status || 400, { ok: false, error: updated.error || "Failed to update epic dependencies" });
+        return;
+      }
+      const globalDag = await getGlobalDagData();
+      jsonResponse(res, 200, {
+        ok: true,
+        source: updated.source,
+        data: updated.data,
+        dag: globalDag?.data || null,
+      });
+      broadcastUiEvent(["tasks", "overview"], "invalidate", {
+        reason: "epic-dependencies-updated",
+        epicId,
+      });
+    } catch (err) {
+      jsonResponse(res, 500, { ok: false, error: err.message });
+    }
+    return;
+  }
+
   if (path === "/api/tasks/start") {
     try {
       const body = await readJsonBody(req);
