@@ -373,6 +373,51 @@ function getTaskSprintOrder(task) {
   const numeric = Number(raw);
   return Number.isFinite(numeric) ? String(numeric) : "";
 }
+function pickTaskField(task, keys = []) {
+  for (const key of keys) {
+    const direct = task?.[key];
+    if (direct != null && String(direct).trim() !== "") return direct;
+    const meta = task?.meta?.[key];
+    if (meta != null && String(meta).trim() !== "") return meta;
+  }
+  return "";
+}
+
+function normalizeTaskAssigneesInput(task) {
+  const value = pickTaskField(task, ["assignees"]);
+  if (Array.isArray(value)) {
+    return value
+      .map((entry) => toText(entry?.name || entry))
+      .filter(Boolean)
+      .join(", ");
+  }
+  return toText(value);
+}
+
+function normalizeTaskDueDateInput(task) {
+  const value = toText(pickTaskField(task, ["dueDate", "due", "due_at", "dueAt"]));
+  if (!value) return "";
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return "";
+  return date.toISOString().slice(0, 10);
+}
+
+function normalizeSubtasksPayload(raw) {
+  const payload = extractDagPayload(raw);
+  const rows = toArray(payload?.subtasks || payload?.items || payload?.tasks || payload);
+  return rows
+    .map((entry) => {
+      if (!entry || typeof entry !== "object") return null;
+      return {
+        id: toText(entry.id || entry.taskId),
+        title: toText(entry.title || entry.summary || entry.name, "(untitled subtask)"),
+        status: toText(entry.status || entry.state),
+        assignee: toText(entry.assignee || entry.owner),
+        storyPoints: toText(entry.storyPoints || entry.points),
+      };
+    })
+    .filter((entry) => entry && entry.id);
+}
 
 function extractDagPayload(raw) {
   if (raw && typeof raw === "object" && "data" in raw && raw.data != null) {
@@ -931,7 +976,7 @@ export function StartTaskModal({
     <${Modal}
       title="Start Task"
       onClose=${onClose}
-      contentClassName="modal-content-wide"
+      contentClassName="modal-content-wide task-detail-modal-jira"
       unsavedChanges=${changeCount}
       onSaveBeforeClose=${() => handleStart({ closeAfterStart: true })}
       onDiscardBeforeClose=${() => {
@@ -1297,7 +1342,7 @@ function TriggerTemplatesModal({ onClose }) {
     <${Modal}
       title="Trigger Templates"
       onClose=${onClose}
-      contentClassName="modal-content-wide"
+      contentClassName="modal-content-wide task-detail-modal-jira"
       unsavedChanges=${defaultsDirtyCount}
       onSaveBeforeClose=${() => handleSaveDefaults({ closeAfterSave: true })}
       onDiscardBeforeClose=${() => {
@@ -1918,6 +1963,26 @@ export function TaskDetailModal({ task, onClose, onStart }) {
     task?.workspace || activeWorkspaceId.value || "",
   );
   const [repository, setRepository] = useState(task?.repository || "");
+  const [assignee, setAssignee] = useState(
+    toText(pickTaskField(task, ["assignee"])),
+  );
+  const [assigneesInput, setAssigneesInput] = useState(
+    normalizeTaskAssigneesInput(task),
+  );
+  const [epicId, setEpicId] = useState(
+    toText(pickTaskField(task, ["epicId", "epic", "epic_id"])),
+  );
+  const [storyPoints, setStoryPoints] = useState(
+    toText(pickTaskField(task, ["storyPoints", "points", "story_points"])),
+  );
+  const [dueDate, setDueDate] = useState(normalizeTaskDueDateInput(task));
+  const [parentTaskId, setParentTaskId] = useState(
+    toText(pickTaskField(task, ["parentTaskId", "parentId", "parent_task_id"])),
+  );
+  const [subtasks, setSubtasks] = useState([]);
+  const [subtasksLoading, setSubtasksLoading] = useState(false);
+  const [subtaskTitle, setSubtaskTitle] = useState("");
+  const [creatingSubtask, setCreatingSubtask] = useState(false);
   const attachmentInputRef = useRef(null);
   const initialSnapshotRef = useRef({
     title: sanitizeTaskText(task?.title || ""),
@@ -1927,6 +1992,12 @@ export function TaskDetailModal({ task, onClose, onStart }) {
     priority: task?.priority || "",
     tagsInput: getTaskTags(task).join(", "),
     draft: Boolean(task?.draft || task?.status === "draft"),
+    assignee: toText(pickTaskField(task, ["assignee"])),
+    assigneesInput: normalizeTaskAssigneesInput(task),
+    epicId: toText(pickTaskField(task, ["epicId", "epic", "epic_id"])),
+    storyPoints: toText(pickTaskField(task, ["storyPoints", "points", "story_points"])),
+    dueDate: normalizeTaskDueDateInput(task),
+    parentTaskId: toText(pickTaskField(task, ["parentTaskId", "parentId", "parent_task_id"])),
   });
   const pendingKey = useMemo(
     () => `modal:task-detail:${task?.id || "unknown"}`,
@@ -1975,8 +2046,28 @@ export function TaskDetailModal({ task, onClose, onStart }) {
       priority: priority || "",
       tagsInput: tagsInput || "",
       draft: Boolean(draft),
+      assignee: assignee || "",
+      assigneesInput: assigneesInput || "",
+      epicId: epicId || "",
+      storyPoints: storyPoints || "",
+      dueDate: dueDate || "",
+      parentTaskId: parentTaskId || "",
     }),
-    [baseBranch, description, draft, priority, status, tagsInput, title],
+    [
+      assignee,
+      assigneesInput,
+      baseBranch,
+      description,
+      draft,
+      dueDate,
+      epicId,
+      parentTaskId,
+      priority,
+      status,
+      storyPoints,
+      tagsInput,
+      title,
+    ],
   );
   const changeCount = useMemo(
     () => countChangedFields(initialSnapshotRef.current, editableSnapshot),
@@ -2026,6 +2117,12 @@ export function TaskDetailModal({ task, onClose, onStart }) {
     setManualReason(getManualReason(task));
     setWorkspaceId(task?.workspace || activeWorkspaceId.value || "");
     setRepository(task?.repository || "");
+    setAssignee(toText(pickTaskField(task, ["assignee"])));
+    setAssigneesInput(normalizeTaskAssigneesInput(task));
+    setEpicId(toText(pickTaskField(task, ["epicId", "epic", "epic_id"])));
+    setStoryPoints(toText(pickTaskField(task, ["storyPoints", "points", "story_points"])));
+    setDueDate(normalizeTaskDueDateInput(task));
+    setParentTaskId(toText(pickTaskField(task, ["parentTaskId", "parentId", "parent_task_id"])));
     initialSnapshotRef.current = {
       title: nextTitle,
       description: nextDescription,
@@ -2034,6 +2131,12 @@ export function TaskDetailModal({ task, onClose, onStart }) {
       priority: nextPriority,
       tagsInput: nextTags,
       draft: nextDraft,
+      assignee: toText(pickTaskField(task, ["assignee"])),
+      assigneesInput: normalizeTaskAssigneesInput(task),
+      epicId: toText(pickTaskField(task, ["epicId", "epic", "epic_id"])),
+      storyPoints: toText(pickTaskField(task, ["storyPoints", "points", "story_points"])),
+      dueDate: normalizeTaskDueDateInput(task),
+      parentTaskId: toText(pickTaskField(task, ["parentTaskId", "parentId", "parent_task_id"])),
     };
     setBaselineVersion((v) => v + 1);
   }, [task?.id]);
@@ -2074,6 +2177,12 @@ export function TaskDetailModal({ task, onClose, onStart }) {
     setPriority(base.priority || "");
     setTagsInput(base.tagsInput || "");
     setDraft(Boolean(base.draft));
+    setAssignee(base.assignee || "");
+    setAssigneesInput(base.assigneesInput || "");
+    setEpicId(base.epicId || "");
+    setStoryPoints(base.storyPoints || "");
+    setDueDate(base.dueDate || "");
+    setParentTaskId(base.parentTaskId || "");
     showToast("Changes discarded", "info");
   }, []);
 
@@ -2087,6 +2196,12 @@ export function TaskDetailModal({ task, onClose, onStart }) {
     const tags = normalizeTagInput(cleanTagsInput);
     const wantsDraft = draft || status === "draft";
     const nextStatus = wantsDraft ? "draft" : status;
+    const assigneeValue = toText(assignee);
+    const assigneesValue = normalizeDependencyInput(assigneesInput);
+    const epicValue = toText(epicId);
+    const storyPointsValue = toText(storyPoints);
+    const dueDateValue = toText(dueDate);
+    const parentTaskValue = toText(parentTaskId);
     try {
       await runOptimistic(
         () => {
@@ -2103,6 +2218,12 @@ export function TaskDetailModal({ task, onClose, onStart }) {
                   draft: wantsDraft,
                   workspace: workspaceId || null,
                   repository: repository || null,
+                  assignee: assigneeValue || null,
+                  assignees: assigneesValue,
+                  epicId: epicValue || null,
+                  storyPoints: storyPointsValue || null,
+                  dueDate: dueDateValue || null,
+                  parentTaskId: parentTaskValue || null,
                 }
               : t,
           );
@@ -2121,6 +2242,12 @@ export function TaskDetailModal({ task, onClose, onStart }) {
               draft: wantsDraft,
               workspace: workspaceId || undefined,
               repository: repository || undefined,
+              assignee: assigneeValue || undefined,
+              assignees: assigneesValue.length ? assigneesValue : undefined,
+              epicId: epicValue || undefined,
+              storyPoints: storyPointsValue || undefined,
+              dueDate: dueDateValue || undefined,
+              parentTaskId: parentTaskValue || undefined,
             }),
           });
           if (res?.data)
@@ -2144,6 +2271,12 @@ export function TaskDetailModal({ task, onClose, onStart }) {
         priority: priority || "",
         tagsInput: cleanTagsInput,
         draft: wantsDraft,
+        assignee: assigneeValue,
+        assigneesInput: assigneesValue.join(", "),
+        epicId: epicValue,
+        storyPoints: storyPointsValue,
+        dueDate: dueDateValue,
+        parentTaskId: parentTaskValue,
       };
       setBaselineVersion((v) => v + 1);
       clearPendingChange(pendingKey);
@@ -2159,7 +2292,6 @@ export function TaskDetailModal({ task, onClose, onStart }) {
       setSaving(false);
     }
   };
-
   const handleStatusUpdate = async (newStatus) => {
     haptic("medium");
     try {
@@ -2242,21 +2374,38 @@ export function TaskDetailModal({ task, onClose, onStart }) {
       return options[0].id;
     });
   }, [task?.id]);
+  const loadSubtasks = useCallback(async () => {
+    if (!task?.id) return;
+    setSubtasksLoading(true);
+    try {
+      const res = await apiFetch(`/api/tasks/subtasks?taskId=${encodeURIComponent(task.id)}`, {
+        _silent: true,
+      });
+      setSubtasks(normalizeSubtasksPayload(res));
+    } catch {
+      setSubtasks([]);
+    } finally {
+      setSubtasksLoading(false);
+    }
+  }, [task?.id]);
 
   useEffect(() => {
     let cancelled = false;
     const run = async () => {
       try {
-        await loadSprintAssignments();
+        await Promise.all([loadSprintAssignments(), loadSubtasks()]);
       } catch {
-        if (!cancelled) setSprintOptions([]);
+        if (!cancelled) {
+          setSprintOptions([]);
+          setSubtasks([]);
+        }
       }
     };
     run();
     return () => {
       cancelled = true;
     };
-  }, [loadSprintAssignments]);
+  }, [loadSprintAssignments, loadSubtasks]);
 
   const handlePostComment = async () => {
     if (!task?.id || postingComment) return;
@@ -2380,6 +2529,31 @@ export function TaskDetailModal({ task, onClose, onStart }) {
     }
   };
 
+  const handleCreateSubtask = async () => {
+    if (!task?.id || creatingSubtask) return;
+    const cleanTitle = sanitizeTaskText(subtaskTitle || "").trim();
+    if (!cleanTitle) return;
+    setCreatingSubtask(true);
+    haptic("medium");
+    try {
+      await apiFetch("/api/tasks/subtasks", {
+        method: "POST",
+        body: JSON.stringify({
+          taskId: task.id,
+          parentTaskId: task.id,
+          title: cleanTitle,
+        }),
+      });
+      setSubtaskTitle("");
+      showToast("Subtask created", "success");
+      await loadSubtasks();
+      scheduleRefresh(120);
+    } catch {
+      showToast("Failed to create subtask", "error");
+    } finally {
+      setCreatingSubtask(false);
+    }
+  };
   const handleRetry = async () => {
     haptic("medium");
     try {
@@ -2455,7 +2629,7 @@ export function TaskDetailModal({ task, onClose, onStart }) {
     <${Modal}
       title=${task?.title || "Task Detail"}
       onClose=${onClose}
-      contentClassName="modal-content-wide"
+      contentClassName="modal-content-wide task-detail-modal-jira"
       unsavedChanges=${changeCount}
       onSaveBeforeClose=${() => handleSave({ closeAfterSave: true })}
       onDiscardBeforeClose=${() => {
@@ -2464,7 +2638,7 @@ export function TaskDetailModal({ task, onClose, onStart }) {
       }}
       activeOperationLabel=${activeOperationLabel}
     >
-      <div class="task-modal-summary">
+      <div class="task-modal-summary jira-task-summary">
         <div class="task-modal-id" style="user-select:all">ID: ${task?.id}</div>
         <div class="task-modal-badges">
           <${Badge} status=${task?.status} text=${task?.status} />
@@ -2484,7 +2658,7 @@ export function TaskDetailModal({ task, onClose, onStart }) {
 
 
       <div class="modal-form-span">
-        <div class="task-comments-block" style="padding:12px;border:1px solid var(--border);border-radius:12px;background:var(--bg-surface)">
+        <div class="task-comments-block jira-panel" style="padding:12px;border:1px solid var(--border);border-radius:12px;background:var(--bg-surface)">
           <div class="task-attachments-title">Tracking Overview</div>
           <div class="task-comments-list" style="display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:10px;">
             <div class="task-comment-item">
@@ -2508,7 +2682,7 @@ export function TaskDetailModal({ task, onClose, onStart }) {
       </div>
 
       ${workflowRuns.length > 0 && html`
-        <div class="task-comments-block modal-form-span">
+        <div class="task-comments-block modal-form-span jira-panel">
           <div class="task-attachments-title">Workflow Activity</div>
           <div class="task-comments-list">
             ${workflowRuns.map((run, index) => html`
@@ -2529,7 +2703,7 @@ export function TaskDetailModal({ task, onClose, onStart }) {
       `}
 
       ${historyEntries.length > 0 && html`
-        <div class="task-comments-block modal-form-span">
+        <div class="task-comments-block modal-form-span jira-panel">
           <div class="task-attachments-title">History Timeline</div>
           <div class="task-comments-list">
             ${historyEntries.map((entry, index) => html`
@@ -2546,7 +2720,7 @@ export function TaskDetailModal({ task, onClose, onStart }) {
       `}
 
       ${relatedLinks.length > 0 && html`
-        <div class="task-comments-block modal-form-span">
+        <div class="task-comments-block modal-form-span jira-panel">
           <div class="task-attachments-title">Branch and PR Links</div>
           <div class="task-comments-list">
             ${relatedLinks.map((item, index) => html`
@@ -2561,7 +2735,7 @@ export function TaskDetailModal({ task, onClose, onStart }) {
             `)}
           </div>
         </div>
-      `}        <div class="flex-col gap-md modal-form-grid">
+      `}        <div class="flex-col gap-md modal-form-grid jira-task-layout">
         <div class="input-with-mic modal-form-span">
           <${TextField} size="small" variant="outlined" placeholder="Title" value=${title} onInput=${(e) => setTitle(e.target.value)} fullWidth />
           <${VoiceMicButtonInline}
@@ -2579,7 +2753,7 @@ export function TaskDetailModal({ task, onClose, onStart }) {
           />
         </div>
         <div
-          class="task-attachments-block modal-form-span"
+          class="task-attachments-block modal-form-span jira-panel"
           onPaste=${handleAttachmentPaste}
         >
           <div class="task-attachments-header">
@@ -2634,7 +2808,7 @@ export function TaskDetailModal({ task, onClose, onStart }) {
             </div>
           `}
         </div>
-                <div class="task-comments-block modal-form-span">
+                <div class="task-comments-block modal-form-span jira-panel">
           <div class="task-attachments-title">Comments & Updates</div>
           <div class="task-comments-list">
             ${comments.length > 0
@@ -2669,7 +2843,53 @@ export function TaskDetailModal({ task, onClose, onStart }) {
             <//>
           </div>
         </div>
-        <div class="task-comments-block modal-form-span">
+        <div class="task-comments-block modal-form-span jira-subtasks-panel">
+          <div class="task-attachments-header">
+            <div class="task-attachments-title">Subtasks</div>
+            <div class="task-attachments-actions">
+              <${Button}
+                variant="text"
+                size="small"
+                onClick=${loadSubtasks}
+                disabled=${subtasksLoading || creatingSubtask}
+              >
+                ${subtasksLoading ? "Refreshing…" : "Refresh"}
+              <//>
+            </div>
+          </div>
+          <div class="task-comment-composer" style=${{ marginTop: "8px" }}>
+            <${TextField}
+              size="small"
+              placeholder="Create subtask summary"
+              value=${subtaskTitle}
+              onInput=${(e) => setSubtaskTitle(e.target.value)}
+              fullWidth
+            />
+            <${Button}
+              variant="contained"
+              size="small"
+              disabled=${creatingSubtask || !sanitizeTaskText(subtaskTitle || "").trim()}
+              onClick=${handleCreateSubtask}
+            >
+              ${creatingSubtask ? "Creating…" : "Add"}
+            <//>
+          </div>
+          <div class="task-comments-list" style=${{ marginTop: "8px" }}>
+            ${!subtasksLoading && !subtasks.length && html`<div class="meta-text">No subtasks yet.</div>`}
+            ${subtasks.map((subtask) => html`
+              <div class="task-comment-item" key=${subtask.id}>
+                <div class="task-comment-meta">
+                  <span style="user-select:all">${subtask.id}</span>
+                  ${subtask.status ? ` · ${subtask.status}` : ""}
+                  ${subtask.storyPoints ? ` · ${subtask.storyPoints} pts` : ""}
+                </div>
+                <div class="task-comment-body">${subtask.title}</div>
+                ${subtask.assignee && html`<div class="task-comment-meta">Assignee: ${subtask.assignee}</div>`}
+              </div>
+            `)}
+          </div>
+        </div>
+        <div class="task-comments-block modal-form-span jira-panel">
           <div class="task-attachments-title">Dependencies & Sprint Wiring</div>
           <${TextField}
             multiline
@@ -2748,7 +2968,60 @@ export function TaskDetailModal({ task, onClose, onStart }) {
             : html`${iconText(":star: Improve with AI")}`
           }
         <//><//> 
-        <${TextField} size="small" variant="outlined" className="modal-form-span" placeholder="Base branch (optional, e.g. feature/xyz)" value=${baseBranch} onInput=${(e) => setBaseBranch(e.target.value)} fullWidth />
+        <${TextField} size="small" variant="outlined" className="modal-form-span" placeholder="Base branch (optional, e.g. feature/xyz)" value=${baseBranch} onInput=${(e) => setBaseBranch(e.target.value)} fullWidth />        <div class="modal-form-span jira-meta-grid">
+          <${TextField}
+            size="small"
+            variant="outlined"
+            label="Assignee"
+            value=${assignee}
+            onInput=${(e) => setAssignee(e.target.value)}
+            fullWidth
+          />
+          <${TextField}
+            size="small"
+            variant="outlined"
+            label="Assignees"
+            placeholder="alice, bob"
+            value=${assigneesInput}
+            onInput=${(e) => setAssigneesInput(e.target.value)}
+            fullWidth
+          />
+          <${TextField}
+            size="small"
+            variant="outlined"
+            label="Epic"
+            value=${epicId}
+            onInput=${(e) => setEpicId(e.target.value)}
+            fullWidth
+          />
+          <${TextField}
+            size="small"
+            variant="outlined"
+            type="number"
+            label="Story Points"
+            value=${storyPoints}
+            onInput=${(e) => setStoryPoints(e.target.value)}
+            fullWidth
+          />
+          <${TextField}
+            size="small"
+            variant="outlined"
+            type="date"
+            label="Due Date"
+            value=${dueDate}
+            onInput=${(e) => setDueDate(e.target.value)}
+            InputLabelProps=${{ shrink: true }}
+            fullWidth
+          />
+          <${TextField}
+            size="small"
+            variant="outlined"
+            label="Parent Task"
+            value=${parentTaskId}
+            onInput=${(e) => setParentTaskId(e.target.value)}
+            fullWidth
+          />
+        </div>
         <div class="input-row modal-form-span">
           <${Select}
             size="small"
@@ -3023,10 +3296,29 @@ function DagGraphSection({
         const source = layout.positions.get(sourceId);
         const target = layout.positions.get(targetId);
         if (!source || !target) return null;
-        return { source, target };
+        const kind = toText(edge?.kind || edge?.type || "depends-on", "depends-on").toLowerCase();
+        return { source, target, kind };
       })
       .filter(Boolean);
   }, [graph?.edges, layout.positions]);
+
+  const edgeKindCounts = useMemo(() => {
+    const counts = { "depends-on": 0, sequential: 0, blocks: 0 };
+    for (const edge of edges) {
+      const kind = toText(edge?.kind || "depends-on", "depends-on").toLowerCase();
+      counts[kind] = (counts[kind] || 0) + 1;
+    }
+    return counts;
+  }, [edges]);
+
+  const statusCounts = useMemo(() => {
+    const counts = new Map();
+    for (const node of sortedNodes) {
+      const key = toText(node?.status || "todo", "todo").toLowerCase();
+      counts.set(key, (counts.get(key) || 0) + 1);
+    }
+    return [...counts.entries()].sort((a, b) => b[1] - a[1]).slice(0, 4);
+  }, [sortedNodes]);
 
   if (!sortedNodes.length) {
     return html`
@@ -3046,7 +3338,16 @@ function DagGraphSection({
         <div class="chip-group" style=${{ gap: "6px" }}>
           <${Chip} size="small" label=${`${sortedNodes.length} nodes`} />
           <${Chip} size="small" label=${`${edges.length} edges`} />
+          <${Chip} size="small" label=${`depends-on ${edgeKindCounts["depends-on"] || 0}`} />
+          <${Chip} size="small" label=${`sequential ${edgeKindCounts.sequential || 0}`} />
+          <${Chip} size="small" label=${`blocks ${edgeKindCounts.blocks || 0}`} />
         </div>
+      </div>
+      <div class="task-dag-legend">
+        <span class="task-dag-legend-item"><span class="task-dag-legend-line" style=${{ background: "var(--accent)" }}></span>depends-on</span>
+        <span class="task-dag-legend-item"><span class="task-dag-legend-line task-dag-legend-line-dashed"></span>sequential</span>
+        <span class="task-dag-legend-item"><span class="task-dag-legend-line task-dag-legend-line-block"></span>blocks</span>
+        ${statusCounts.map(([status, count]) => html`<span class="task-dag-status-pill">${status} ${count}</span>`)}
       </div>
       <div class="task-dag-canvas-wrap">
         <svg class="task-dag-canvas" viewBox=${`0 0 ${layout.totalWidth} ${layout.totalHeight}`} role="img" aria-label="Task dependency graph">
@@ -3055,7 +3356,7 @@ function DagGraphSection({
               <path d="M0,0 L10,4 L0,8 z" fill="var(--accent)" />
             </marker>
           </defs>
-          ${edges.map(({ source, target }, idx) => {
+          ${edges.map(({ source, target, kind }, idx) => {
             const x1 = source.x + source.width;
             const y1 = source.y + source.height / 2;
             const x2 = target.x;
@@ -3067,8 +3368,9 @@ function DagGraphSection({
                 key=${`edge-${idx}`}
                 d=${`M ${x1} ${y1} C ${c1} ${y1}, ${c2} ${y2}, ${x2} ${y2}`}
                 fill="none"
-                stroke="var(--accent)"
-                stroke-opacity="0.65"
+                stroke=${DAG_EDGE_STYLES[kind]?.color || "var(--accent)"}
+                stroke-dasharray=${DAG_EDGE_STYLES[kind]?.dash || ""}
+                stroke-opacity="0.72"
                 stroke-width="2"
                 marker-end="url(#dag-arrow)"
               />
@@ -3140,6 +3442,7 @@ export function TasksTab() {
   const [dagSprintGraph, setDagSprintGraph] = useState(EMPTY_DAG_GRAPH);
   const [dagGlobalGraph, setDagGlobalGraph] = useState(EMPTY_DAG_GRAPH);
   const [dagSources, setDagSources] = useState({ sprints: "", sprintGraph: "", globalGraph: "" });
+  const [dagSprintOrderMode, setDagSprintOrderMode] = useState("parallel");
   const [isCompact, setIsCompact] = useState(() => {
     try { return globalThis.matchMedia?.("(max-width: 768px)")?.matches ?? false; }
     catch { return false; }
@@ -3251,6 +3554,8 @@ export function TasksTab() {
     );
     const nextGlobalGraph = normalizeDagGraph(globalSource, "DAG of DAGs");
 
+    const sprintMetaEntry = sprintOptions.find((entry) => entry.id === resolvedSprint) || null;
+    setDagSprintOrderMode(toText(sprintMetaEntry?.sprintOrderMode || "parallel", "parallel"));
     setDagSprints(sprintOptions);
     setDagSprintGraph(nextSprintGraph);
     setDagGlobalGraph(nextGlobalGraph);
@@ -3595,6 +3900,26 @@ export function TasksTab() {
       /* toast via apiFetch */
     }
   }, [loadDagViews]);
+  const handleDagSprintModeChange = useCallback(async (mode) => {
+    const nextMode = toText(mode, "parallel").toLowerCase();
+    if (!dagSelectedSprint || dagSelectedSprint === "all") {
+      showToast("Select a sprint before changing execution mode", "warning");
+      return;
+    }
+    if (nextMode !== "parallel" && nextMode !== "sequential") return;
+    setDagSprintOrderMode(nextMode);
+    haptic("medium");
+    try {
+      await apiFetch(`/api/tasks/sprints/${encodeURIComponent(dagSelectedSprint)}`, {
+        method: "PATCH",
+        body: JSON.stringify({ sprintOrderMode: nextMode }),
+      });
+      showToast("Sprint execution mode updated", "success");
+      await loadDagViews();
+    } catch {
+      setDagError("Failed to update sprint execution mode.");
+    }
+  }, [dagSelectedSprint, loadDagViews]);
   const handleSprintChange = useCallback((nextSprint) => {
     const sprintId = toText(nextSprint, "all");
     if (sprintId === dagSelectedSprint) return;
@@ -4105,7 +4430,18 @@ export function TasksTab() {
               <div class="tasks-filter-section">
                 <div class="tasks-filter-title">DAG View</div>
                 <div class="meta-text">
-                  Pick a sprint from the toolbar to switch the sprint DAG.
+                  Sprint DAG = selected sprint execution plan. Global DAG = cross-sprint dependencies.
+                </div>
+                <div class="tasks-filter-row" style=${{ marginTop: "8px" }}>
+                  <${Select}
+                    size="small"
+                    value=${dagSprintOrderMode}
+                    disabled=${dagLoading || dagSelectedSprint === "all"}
+                    onChange=${(e) => handleDagSprintModeChange(e.target.value)}
+                  >
+                    <${MenuItem} value="parallel">Mode: parallel</${MenuItem}>
+                    <${MenuItem} value="sequential">Mode: sequential</${MenuItem}>
+                  </${Select}>
                 </div>
                 <div class="tasks-filter-row" style=${{ marginTop: "8px" }}>
                   <${Button}
@@ -4123,13 +4459,19 @@ export function TasksTab() {
                     + New Sprint
                   <//>
                 </div>
+                <div class="task-dag-legend" style=${{ marginTop: "8px" }}>
+                  <span class="task-dag-legend-item"><span class="task-dag-legend-line" style=${{ background: "var(--accent)" }}></span>depends-on</span>
+                  <span class="task-dag-legend-item"><span class="task-dag-legend-line task-dag-legend-line-dashed"></span>sequential</span>
+                  <span class="task-dag-legend-item"><span class="task-dag-legend-line task-dag-legend-line-block"></span>blocks</span>
+                </div>
                 ${(dagSources.sprintGraph || dagSources.globalGraph) && html`
                   <div class="meta-text" style=${{ marginTop: "6px" }}>
                     Source: ${dagSources.sprintGraph || dagSources.globalGraph}
                   </div>
                 `}
               </div>
-            `}          </div>
+            `}
+          </div>
         </div>
       </div>
       ${isList && hasActiveFilters && (!isCompact || filtersOpen) && html`
@@ -4659,7 +5001,7 @@ function CreateTaskModalInline({ onClose }) {
     <${Modal}
       title="New Task"
       onClose=${onClose}
-      contentClassName="modal-content-wide"
+      contentClassName="modal-content-wide task-detail-modal-jira"
       footer=${footerContent}
       unsavedChanges=${changeCount}
       onSaveBeforeClose=${() => handleSubmit({ closeAfterSave: true })}
@@ -4824,3 +5166,34 @@ function CreateTaskModalInline({ onClose }) {
     <//>
   `;
 }
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+

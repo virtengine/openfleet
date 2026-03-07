@@ -3338,7 +3338,16 @@ function DagGraphSection({
         <div class="chip-group" style=${{ gap: "6px" }}>
           <${Chip} size="small" label=${`${sortedNodes.length} nodes`} />
           <${Chip} size="small" label=${`${edges.length} edges`} />
+          <${Chip} size="small" label=${`depends-on ${edgeKindCounts["depends-on"] || 0}`} />
+          <${Chip} size="small" label=${`sequential ${edgeKindCounts.sequential || 0}`} />
+          <${Chip} size="small" label=${`blocks ${edgeKindCounts.blocks || 0}`} />
         </div>
+      </div>
+      <div class="task-dag-legend">
+        <span class="task-dag-legend-item"><span class="task-dag-legend-line" style=${{ background: "var(--accent)" }}></span>depends-on</span>
+        <span class="task-dag-legend-item"><span class="task-dag-legend-line task-dag-legend-line-dashed"></span>sequential</span>
+        <span class="task-dag-legend-item"><span class="task-dag-legend-line task-dag-legend-line-block"></span>blocks</span>
+        ${statusCounts.map(([status, count]) => html`<span class="task-dag-status-pill">${status} ${count}</span>`)}
       </div>
       <div class="task-dag-canvas-wrap">
         <svg class="task-dag-canvas" viewBox=${`0 0 ${layout.totalWidth} ${layout.totalHeight}`} role="img" aria-label="Task dependency graph">
@@ -5157,6 +5166,7 @@ function CreateTaskModalInline({ onClose }) {
     <//>
   `;
 }
+
 
 
 

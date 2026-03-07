@@ -188,6 +188,7 @@
     "git/git-safety.mjs",
     "kanban/kanban-adapter.mjs",
     "lib/logger.mjs",
+    "lib/session-insights.mjs",
     "infra/library-manager.mjs",
     "infra/maintenance.mjs",
     "workflow/manual-flows.mjs",
