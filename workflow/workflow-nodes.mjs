@@ -40,6 +40,29 @@ const WORKFLOW_AGENT_EVENT_PREVIEW_LIMIT = (() => {
   return Math.max(20, Math.min(500, Math.trunc(raw)));
 })();
 
+function makeIsolatedGitEnv(extra = {}) {
+  const env = { ...process.env, ...extra };
+  for (const key of [
+    "GIT_DIR",
+    "GIT_WORK_TREE",
+    "GIT_COMMON_DIR",
+    "GIT_INDEX_FILE",
+    "GIT_OBJECT_DIRECTORY",
+    "GIT_ALTERNATE_OBJECT_DIRECTORIES",
+    "GIT_PREFIX",
+  ]) {
+    delete env[key];
+  }
+  return env;
+}
+
+function execGitSync(command, options = {}) {
+  return execSync(command, {
+    ...options,
+    env: makeIsolatedGitEnv(options.env),
+  });
+}
+
 function trimLogText(value, max = 180) {
   const text = String(value || "").replace(/\s+/g, " ").trim();
   if (!text) return "";
@@ -8104,7 +8127,7 @@ registerNodeType("action.detect_new_commits", {
     // Get current HEAD
     let postExecHead = "";
     try {
-      postExecHead = execSync("git rev-parse HEAD", {
+      postExecHead = execGitSync("git rev-parse HEAD", {
         cwd: worktreePath, encoding: "utf8", timeout: 5000,
       }).trim();
     } catch (err) {
@@ -8118,7 +8141,7 @@ registerNodeType("action.detect_new_commits", {
     let hasUnpushed = false;
     let commitCount = 0;
     try {
-      const log = execSync(`git log --oneline ${baseBranch}..HEAD`, {
+      const log = execGitSync(`git log --oneline ${baseBranch}..HEAD`, {
         cwd: worktreePath, encoding: "utf8", timeout: 10000,
         stdio: ["ignore", "pipe", "pipe"],
       }).trim();
@@ -8132,7 +8155,7 @@ registerNodeType("action.detect_new_commits", {
     let diffStats = null;
     if (hasNewCommits || hasUnpushed) {
       try {
-        const statOutput = execSync(`git diff --stat ${baseBranch}..HEAD`, {
+        const statOutput = execGitSync(`git diff --stat ${baseBranch}..HEAD`, {
           cwd: worktreePath, encoding: "utf8", timeout: 10000,
           stdio: ["ignore", "pipe", "pipe"],
         }).trim();
