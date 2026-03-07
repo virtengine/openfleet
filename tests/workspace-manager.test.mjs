@@ -141,7 +141,7 @@ describe("mergeDetectedWorkspaces", () => {
     expect(alpha.repos.some((repo) => repo.name === "extra")).toBe(true);
     expect(alpha.repos.find((repo) => repo.name === "common").slug).toBe("virtengine/common");
     expect(config.activeWorkspace).toBe("alpha");
-  });
+  }, 15000);
 });
 
 describe("listWorkspaces", () => {

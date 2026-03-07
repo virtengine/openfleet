@@ -750,10 +750,14 @@ const FAILOVER_ERROR_WINDOW_MS = Math.max(
   Number(process.env.PRIMARY_AGENT_FAILOVER_ERROR_WINDOW_MS) ||
     10 * 60 * 1000,
 );
-const PRIMARY_RECOVERY_RETRY_ATTEMPTS = Math.max(
-  0,
-  Number(process.env.PRIMARY_AGENT_RECOVERY_RETRY_ATTEMPTS) || 1,
+const _primaryRecoveryRetryEnv = Number(
+  process.env.PRIMARY_AGENT_RECOVERY_RETRY_ATTEMPTS,
 );
+const PRIMARY_RECOVERY_RETRY_ATTEMPTS = Number.isFinite(
+  _primaryRecoveryRetryEnv,
+)
+  ? Math.max(0, _primaryRecoveryRetryEnv)
+  : 1;
 
 const _adapterFailureState = new Map();
 

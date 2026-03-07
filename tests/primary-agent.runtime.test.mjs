@@ -134,6 +134,9 @@ describe("primary-agent runtime safeguards", () => {
     delete process.env.CLAUDE_SDK_DISABLED;
     delete process.env.GEMINI_SDK_DISABLED;
     delete process.env.OPENCODE_SDK_DISABLED;
+    delete process.env.PRIMARY_AGENT_RECOVERY_RETRY_ATTEMPTS;
+    delete process.env.PRIMARY_AGENT_FAILOVER_CONSECUTIVE_INFRA_ERRORS;
+    delete process.env.PRIMARY_AGENT_FAILOVER_ERROR_WINDOW_MS;
     mockIsCodexBusy.mockReturnValue(false);
     mockGetThreadInfo.mockReturnValue({
       sessionId: "active-codex-session",
@@ -306,5 +309,49 @@ describe("primary-agent runtime safeguards", () => {
     expect(switched.ok).toBe(true);
     expect(primaryAgent.getPrimaryAgentName()).toBe("gemini-sdk");
     expect(primaryAgent.getPrimaryAgentSelection()).toBe("gemini-default");
+  });
+
+  it("retries codex locally before any failover", async () => {
+    process.env.PRIMARY_AGENT_RECOVERY_RETRY_ATTEMPTS = "1";
+    process.env.PRIMARY_AGENT_FAILOVER_CONSECUTIVE_INFRA_ERRORS = "3";
+
+    mockExecCodexPrompt
+      .mockRejectedValueOnce(new Error("Codex Exec exited with code 3221225786"))
+      .mockResolvedValueOnce({ finalResponse: "codex-recovered", items: [] });
+
+    vi.resetModules();
+    const primaryAgent = await import("../agent/primary-agent.mjs");
+    await primaryAgent.initPrimaryAgent("codex-sdk");
+
+    const result = await primaryAgent.execPrimaryPrompt("hello", {
+      sessionId: "session-retry",
+    });
+
+    expect(mockExecCodexPrompt).toHaveBeenCalledTimes(2);
+    expect(mockExecCopilotPrompt).not.toHaveBeenCalled();
+    expect(result.finalResponse).toBe("codex-recovered");
+  });
+
+  it("suppresses failover until repeated infrastructure failures", async () => {
+    process.env.PRIMARY_AGENT_RECOVERY_RETRY_ATTEMPTS = "0";
+    process.env.PRIMARY_AGENT_FAILOVER_CONSECUTIVE_INFRA_ERRORS = "3";
+
+    mockExecCodexPrompt.mockRejectedValue(new Error("AGENT_TIMEOUT: codex did not respond"));
+    mockExecCopilotPrompt.mockResolvedValue({ finalResponse: "copilot-ok", items: [] });
+
+    vi.resetModules();
+    const primaryAgent = await import("../agent/primary-agent.mjs");
+    await primaryAgent.initPrimaryAgent("codex-sdk");
+
+    const first = await primaryAgent.execPrimaryPrompt("hello", { sessionId: "s1" });
+    const second = await primaryAgent.execPrimaryPrompt("hello", { sessionId: "s2" });
+
+    expect(first.finalResponse).toContain("Failover suppressed");
+    expect(second.finalResponse).toContain("Failover suppressed");
+    expect(mockExecCopilotPrompt).not.toHaveBeenCalled();
+
+    const third = await primaryAgent.execPrimaryPrompt("hello", { sessionId: "s3" });
+    expect(mockExecCopilotPrompt).toHaveBeenCalledTimes(1);
+    expect(third.finalResponse).toBe("copilot-ok");
   });
 });

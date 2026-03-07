@@ -6167,6 +6167,21 @@ async function getTaskCommentsForApi(taskId, adapter = null) {
       : [];
   return normalizeTaskComments(comments);
 }
+
+async function listAllTasksForApi(adapter = null) {
+  const fallbackAdapter = adapter || getKanbanAdapter();
+  const projectId = activeProjectId.value || "";
+  if (typeof fallbackAdapter?.listTasks === "function") {
+    try {
+      const tasks = await fallbackAdapter.listTasks(projectId, {});
+      if (Array.isArray(tasks)) return tasks;
+    } catch {
+      // Fall through to internal task-store snapshot.
+    }
+  }
+  const tasks = getAllInternalTasks();
+  return Array.isArray(tasks) ? tasks : [];
+}
 function normalizeTaskStatusKey(status) {
   return String(status || "")
     .trim()
@@ -8977,6 +8992,22 @@ async function handleApi(req, res, url) {
       const baseBranch = baseBranchProvided
         ? normalizeBranchInput(body?.baseBranch ?? body?.base_branch)
         : undefined;
+      const metadataPatch = {
+        ...(typeof body?.assignee === "string" ? { assignee: String(body.assignee).trim() } : {}),
+        ...(Array.isArray(body?.assignees)
+          ? {
+            assignees: body.assignees
+              .map((entry) => String(entry || "").trim())
+              .filter(Boolean),
+          }
+          : {}),
+        ...(body?.epicId != null ? { epicId: String(body.epicId).trim() } : {}),
+        ...(body?.parentTaskId != null ? { parentTaskId: String(body.parentTaskId).trim() } : {}),
+        ...(body?.dueDate != null ? { dueDate: String(body.dueDate).trim() } : {}),
+        ...(body?.storyPoints != null && Number.isFinite(Number(body.storyPoints))
+          ? { storyPoints: Number(body.storyPoints) }
+          : {}),
+      };
       const patch = {
         status: body?.status,
         title: body?.title,
@@ -8988,6 +9019,12 @@ async function handleApi(req, res, url) {
         ...(tagsProvided ? { tags } : {}),
         ...(draftProvided ? { draft: Boolean(body?.draft) } : {}),
         ...(baseBranchProvided ? { baseBranch } : {}),
+        ...(Object.keys(metadataPatch).length > 0
+          ? {
+            ...metadataPatch,
+            meta: metadataPatch,
+          }
+          : {}),
       };
       const hasPatch = Object.values(patch).some(
         (value) => typeof value === "string" && value.trim(),
@@ -8998,7 +9035,8 @@ async function handleApi(req, res, url) {
       const hasWorkspace = typeof patch.workspace === "string";
       const hasRepository = typeof patch.repository === "string";
       const hasRepositories = Array.isArray(patch.repositories);
-      if (!hasPatch && !hasTags && !hasDraft && !hasBaseBranch && !hasWorkspace && !hasRepository && !hasRepositories) {
+      const hasMetadataPatch = Object.keys(metadataPatch).length > 0;
+      if (!hasPatch && !hasTags && !hasDraft && !hasBaseBranch && !hasWorkspace && !hasRepository && !hasRepositories && !hasMetadataPatch) {
         jsonResponse(res, 400, {
           ok: false,
           error: "No update fields provided",
@@ -9102,6 +9140,22 @@ async function handleApi(req, res, url) {
       const baseBranch = baseBranchProvided
         ? normalizeBranchInput(body?.baseBranch ?? body?.base_branch)
         : undefined;
+      const metadataPatch = {
+        ...(typeof body?.assignee === "string" ? { assignee: String(body.assignee).trim() } : {}),
+        ...(Array.isArray(body?.assignees)
+          ? {
+            assignees: body.assignees
+              .map((entry) => String(entry || "").trim())
+              .filter(Boolean),
+          }
+          : {}),
+        ...(body?.epicId != null ? { epicId: String(body.epicId).trim() } : {}),
+        ...(body?.parentTaskId != null ? { parentTaskId: String(body.parentTaskId).trim() } : {}),
+        ...(body?.dueDate != null ? { dueDate: String(body.dueDate).trim() } : {}),
+        ...(body?.storyPoints != null && Number.isFinite(Number(body.storyPoints))
+          ? { storyPoints: Number(body.storyPoints) }
+          : {}),
+      };
       const patch = {
         title: body?.title,
         description: body?.description,
@@ -9113,6 +9167,12 @@ async function handleApi(req, res, url) {
         ...(tagsProvided ? { tags } : {}),
         ...(draftProvided ? { draft: Boolean(body?.draft) } : {}),
         ...(baseBranchProvided ? { baseBranch } : {}),
+        ...(Object.keys(metadataPatch).length > 0
+          ? {
+            ...metadataPatch,
+            meta: metadataPatch,
+          }
+          : {}),
       };
       const hasPatch = Object.values(patch).some(
         (value) => typeof value === "string" && value.trim(),
@@ -9123,7 +9183,8 @@ async function handleApi(req, res, url) {
       const hasWorkspace = typeof patch.workspace === "string";
       const hasRepository = typeof patch.repository === "string";
       const hasRepositories = Array.isArray(patch.repositories);
-      if (!hasPatch && !hasTags && !hasDraft && !hasBaseBranch && !hasWorkspace && !hasRepository && !hasRepositories) {
+      const hasMetadataPatch = Object.keys(metadataPatch).length > 0;
+      if (!hasPatch && !hasTags && !hasDraft && !hasBaseBranch && !hasWorkspace && !hasRepository && !hasRepositories && !hasMetadataPatch) {
         jsonResponse(res, 400, {
           ok: false,
           error: "No edit fields provided",
@@ -9294,6 +9355,22 @@ async function handleApi(req, res, url) {
       const repositories = Array.isArray(body?.repositories)
         ? body.repositories.filter((value) => typeof value === "string" && value.trim())
         : [];
+      const metadataFields = {
+        ...(typeof body?.assignee === "string" ? { assignee: String(body.assignee).trim() } : {}),
+        ...(Array.isArray(body?.assignees)
+          ? {
+            assignees: body.assignees
+              .map((entry) => String(entry || "").trim())
+              .filter(Boolean),
+          }
+          : {}),
+        ...(body?.epicId != null ? { epicId: String(body.epicId).trim() } : {}),
+        ...(body?.parentTaskId != null ? { parentTaskId: String(body.parentTaskId).trim() } : {}),
+        ...(body?.dueDate != null ? { dueDate: String(body.dueDate).trim() } : {}),
+        ...(body?.storyPoints != null && Number.isFinite(Number(body.storyPoints))
+          ? { storyPoints: Number(body.storyPoints) }
+          : {}),
+      };
       const taskData = {
         title: String(title).trim(),
         description: body?.description || "",
@@ -9305,6 +9382,7 @@ async function handleApi(req, res, url) {
         ...(tags.length ? { tags } : {}),
         ...(tags.length ? { labels: tags } : {}),
         ...(baseBranch ? { baseBranch } : {}),
+        ...metadataFields,
         meta: {
           ...(workspace ? { workspace } : {}),
           ...(repository ? { repository } : {}),
@@ -9312,6 +9390,7 @@ async function handleApi(req, res, url) {
           ...(tags.length ? { tags } : {}),
           ...(wantsDraft ? { draft: true } : {}),
           ...(baseBranch ? { base_branch: baseBranch, baseBranch } : {}),
+          ...metadataFields,
         },
       };
       const created = await adapter.createTask(projectId, taskData);
@@ -9319,6 +9398,71 @@ async function handleApi(req, res, url) {
       broadcastUiEvent(["tasks", "overview"], "invalidate", {
         reason: "task-created",
         taskId: created?.id || null,
+      });
+    } catch (err) {
+      jsonResponse(res, 500, { ok: false, error: err.message });
+    }
+    return;
+  }
+
+  if (path === "/api/tasks/subtasks" && req.method === "GET") {
+    try {
+      const taskId = String(url.searchParams.get("taskId") || url.searchParams.get("id") || "").trim();
+      if (!taskId) {
+        jsonResponse(res, 400, { ok: false, error: "taskId required" });
+        return;
+      }
+      const adapter = getKanbanAdapter();
+      const tasks = await listAllTasksForApi(adapter);
+      const subtasks = tasks.filter((entry) => {
+        const parent = String(entry?.parentTaskId || entry?.meta?.parentTaskId || "").trim();
+        return parent === taskId;
+      });
+      jsonResponse(res, 200, { ok: true, taskId, data: subtasks });
+    } catch (err) {
+      jsonResponse(res, 500, { ok: false, error: err.message });
+    }
+    return;
+  }
+
+  if (path === "/api/tasks/subtasks" && req.method === "POST") {
+    try {
+      const body = await readJsonBody(req);
+      const parentTaskId = String(body?.parentTaskId || body?.taskId || body?.parentId || "").trim();
+      const title = String(body?.title || "").trim();
+      if (!parentTaskId) {
+        jsonResponse(res, 400, { ok: false, error: "parentTaskId required" });
+        return;
+      }
+      if (!title) {
+        jsonResponse(res, 400, { ok: false, error: "title required" });
+        return;
+      }
+      const adapter = getKanbanAdapter();
+      const parentTask = typeof adapter.getTask === "function"
+        ? await adapter.getTask(parentTaskId).catch(() => null)
+        : null;
+      const projectId = body?.project || "";
+      const subtaskPayload = {
+        title,
+        description: body?.description || "",
+        status: body?.status || "todo",
+        priority: body?.priority || parentTask?.priority || undefined,
+        parentTaskId,
+        workspace: body?.workspace || parentTask?.workspace || parentTask?.meta?.workspace || undefined,
+        repository: body?.repository || parentTask?.repository || parentTask?.meta?.repository || undefined,
+        meta: {
+          parentTaskId,
+          workspace: body?.workspace || parentTask?.workspace || parentTask?.meta?.workspace || undefined,
+          repository: body?.repository || parentTask?.repository || parentTask?.meta?.repository || undefined,
+        },
+      };
+      const created = await adapter.createTask(projectId, subtaskPayload);
+      jsonResponse(res, 200, { ok: true, parentTaskId, data: created });
+      broadcastUiEvent(["tasks", "overview"], "invalidate", {
+        reason: "subtask-created",
+        taskId: created?.id || null,
+        parentTaskId,
       });
     } catch (err) {
       jsonResponse(res, 500, { ok: false, error: err.message });
@@ -15154,6 +15298,13 @@ export async function startTelegramUiServer(options = {}) {
   }
   if (loopbackOnly) {
     console.log(`[telegram-ui] Loopback access: ${protocol}://${host}:${actualPort}`);
+    if (shouldLogTokenizedBrowserUrl()) {
+      console.log(`[telegram-ui] Browser access: ${protocol}://${host}:${actualPort}/?token=${sessionToken}`);
+    } else {
+      console.log(
+        `[telegram-ui] Browser access: ${protocol}://${host}:${actualPort} (token hidden; set BOSUN_UI_LOG_TOKENIZED_BROWSER_URL=1 for debug)`,
+      );
+    }
   } else {
     console.log(`[telegram-ui] LAN access: ${protocol}://${lanIp}:${actualPort}`);
     if (shouldLogTokenizedBrowserUrl()) {
