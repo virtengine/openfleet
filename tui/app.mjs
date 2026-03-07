@@ -124,6 +124,9 @@ export default function App({ host, port, connectOnly, initialScreen, refreshMs 
 
 	const ScreenComponent = SCREENS[screen] || StatusScreen;
 
+	// Get the actual instance for passing to children
+	const wsBridgeInstance = typeof wsBridge === "function" ? wsBridge({ host, port }) : wsBridge;
+
 	return (
 		<Box flexDirection="column" minHeight={0}>
 			<StatusHeader
@@ -143,7 +146,7 @@ export default function App({ host, port, connectOnly, initialScreen, refreshMs 
 					stats={stats}
 					sessions={sessions}
 					tasks={tasks}
-					wsBridge={wsBridge}
+					wsBridge={wsBridgeInstance}
 					refreshMs={refreshMs}
 				/>
 			</Box>

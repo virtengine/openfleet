@@ -15,12 +15,6 @@ import { existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync, unlink
 import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 
-let addCompletedSessionRuntime;
-try {
-	const runtimeAccumulator = await import("./runtime-accumulator.mjs");
-	addCompletedSessionRuntime = runtimeAccumulator.addCompletedSession;
-} catch { /* runtime-accumulator may not be available */ }
-
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const SESSIONS_DIR = resolve(__dirname, "..", "logs", "sessions");
 
@@ -305,20 +299,23 @@ export class SessionTracker {
     session.status = status;
     this.#markDirty(taskId);
 
-    if (addCompletedSessionRuntime) {
-      try {
-        addCompletedSessionRuntime({
-          id: taskId,
-          taskId: taskId,
-          taskTitle: session.taskTitle,
-          executor: session.executor,
-          model: session.model,
-          startedAt: session.startedAt,
-          endedAt: session.endedAt,
-          status: status,
-        });
-      } catch { /* best effort */ }
-    }
+    // Lazy import to avoid top-level await issues
+    import("./runtime-accumulator.mjs")
+      .then((module) => {
+        if (module.addCompletedSession) {
+          module.addCompletedSession({
+            id: taskId,
+            taskId: taskId,
+            taskTitle: session.taskTitle,
+            executor: session.executor,
+            model: session.model,
+            startedAt: session.startedAt,
+            endedAt: session.endedAt,
+            status: status,
+          });
+        }
+      })
+      .catch(() => {});
   }
 
   /**
