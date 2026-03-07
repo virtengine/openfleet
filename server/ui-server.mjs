@@ -5770,13 +5770,18 @@ function textResponse(res, statusCode, body, contentType = "text/plain") {
   res.end(body);
 }
 
-async function callTaskStoreFunction(candidates = [], args = []) {
+async function callTaskStoreFunction(candidates = [], args = [], resolveArgs = null) {
   const api = await ensureTaskStoreApi();
   if (!api) return { found: null, value: null, available: false };
   for (const name of candidates) {
     const fn = api?.[name];
     if (typeof fn !== "function") continue;
-    return { found: name, value: await fn(...args), available: true };
+    const effectiveArgs =
+      typeof resolveArgs === "function"
+        ? resolveArgs(name, args)
+        : args;
+    const argList = Array.isArray(effectiveArgs) ? effectiveArgs : [];
+    return { found: name, value: await fn(...argList), available: true };
   }
   return { found: null, value: null, available: true };
 }
@@ -5955,11 +5960,21 @@ function resolveTaskSprintId(task = {}) {
 }
 
 async function getSprintDagData(sprintId) {
-  if (!sprintId) return null;
-  const dagResult = await callTaskStoreFunction(TASK_STORE_DAG_EXPORTS.sprint, [sprintId]);
+  const normalizedSprintId = String(sprintId || "").trim();
+  const argsByExport = {
+    getSprintDag: normalizedSprintId ? [normalizedSprintId] : [],
+    getTaskDagForSprint: normalizedSprintId ? [normalizedSprintId] : [],
+    buildSprintDag: normalizedSprintId ? [normalizedSprintId] : [],
+    buildTaskDag: normalizedSprintId ? [{ sprintId: normalizedSprintId }] : [{}],
+  };
+  const dagResult = await callTaskStoreFunction(
+    TASK_STORE_DAG_EXPORTS.sprint,
+    [],
+    (name) => argsByExport[name] || [],
+  );
   if (!dagResult.found) return null;
   return {
-    sprintId,
+    sprintId: normalizedSprintId || null,
     source: `task-store.${dagResult.found}`,
     data: dagResult.value,
   };
@@ -8405,17 +8420,22 @@ async function handleApi(req, res, url) {
 
   if (path === "/api/tasks/dag" && req.method === "GET") {
     try {
-      const sprintId = String(url.searchParams.get("sprintId") || "").trim();
-      if (!sprintId) {
-        jsonResponse(res, 400, { ok: false, error: "sprintId required" });
-        return;
-      }
-      const sprintDag = await getSprintDagData(sprintId);
+      const sprintId = String(
+        url.searchParams.get("sprintId")
+          || url.searchParams.get("sprint")
+          || "",
+      ).trim();
+      const sprintDag = await getSprintDagData(sprintId || null);
       if (!sprintDag) {
         jsonResponse(res, 501, { ok: false, error: "Sprint DAG API is unavailable." });
         return;
       }
-      jsonResponse(res, 200, { ok: true, sprintId, source: sprintDag.source, data: sprintDag.data });
+      jsonResponse(res, 200, {
+        ok: true,
+        sprintId: sprintDag.sprintId,
+        source: sprintDag.source,
+        data: sprintDag.data,
+      });
     } catch (err) {
       jsonResponse(res, 500, { ok: false, error: err.message });
     }
@@ -14898,3 +14918,6 @@ export function stopTelegramUiServer() {
 }
 
 export { getLocalLanIp };
+
+
+

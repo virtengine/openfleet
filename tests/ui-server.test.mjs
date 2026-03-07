@@ -1732,4 +1732,7 @@ describe("ui-server mini app", () => {
     expect(commentJson.ok).toBe(true);
     expect(commentJson.stored).toBe(true);
     expect(addTaskComment).toHaveBeenCalled();
-  });});
+    });
+});
+
+

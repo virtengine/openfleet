@@ -1016,9 +1016,8 @@ async function terminateBosun() {
   const restartOwnerPids = Array.from(
     new Set([...ancestorPids, ...sentinelPids, ...daemonPids, ...ghosts]),
   ).filter((pid) => pid !== process.pid);
-  const trackedPids = Array.from(
-    new Set([...restartOwnerPids, ...monitorPids]),
-  ).filter(
+  const tracked = [...restartOwnerPids, ...monitorPids];
+  const trackedPids = Array.from(new Set([...tracked, ...ghosts])).filter(
     (pid) => pid !== process.pid,
   );
   const scanned =

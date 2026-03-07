@@ -514,7 +514,15 @@ function normalizeSprintStructure(rawSprint = {}, existingSprint = null) {
   const id = normalizeSprintId(rawSprint.id || existingSprint?.id);
   if (!id) return null;
   const createdAt = String(rawSprint.createdAt || existingSprint?.createdAt || ts);
-  const updatedAt = String(rawSprint.updatedAt || ts);`n  const executionMode = resolveSprintOrderMode(`n    rawSprint.executionMode`n      ?? rawSprint.taskOrderMode`n      ?? existingSprint?.executionMode`n      ?? existingSprint?.taskOrderMode`n      ?? "parallel",`n  );`n  return {
+  const updatedAt = String(rawSprint.updatedAt || ts);
+  const executionMode = resolveSprintOrderMode(
+    rawSprint.executionMode
+      ?? rawSprint.taskOrderMode
+      ?? existingSprint?.executionMode
+      ?? existingSprint?.taskOrderMode
+      ?? "parallel",
+  );
+  return {
     id,
     name: String(rawSprint.name || existingSprint?.name || id),
     goal: rawSprint.goal != null ? String(rawSprint.goal) : existingSprint?.goal ?? null,
@@ -534,10 +542,33 @@ function normalizeSprintStructure(rawSprint = {}, existingSprint = null) {
       ? { ...rawSprint.meta }
       : existingSprint?.meta && typeof existingSprint.meta === "object"
         ? { ...existingSprint.meta }
-        : {},`n    executionMode,`n    taskOrderMode: executionMode,`n  };
+        : {},
+    executionMode,
+    taskOrderMode: executionMode,
+  };
 }
 
-function listTaskDependencyIds(task) {`n  return uniqueStringList([...(task?.dependencyTaskIds || []), ...(task?.dependsOn || [])]);`n}`n`nfunction getSprintTaskOrderSequence(sprintId) {`n  const normalizedSprintId = normalizeSprintId(sprintId);`n  if (!normalizedSprintId) return [];`n  return Object.values(_store.tasks)`n    .filter((task) => task?.sprintId === normalizedSprintId)`n    .sort(compareTaskDagOrder);`n}`n`nfunction getNextSprintTaskOrder(sprintId) {`n  const sequence = getSprintTaskOrderSequence(sprintId);`n  let maxOrder = 0;`n  for (const task of sequence) {`n    const order = normalizeSprintOrder(task?.sprintOrder);`n    if (order != null && order > maxOrder) maxOrder = order;`n  }`n  return maxOrder + 1;`n}
+function listTaskDependencyIds(task) {
+  return uniqueStringList([...(task?.dependencyTaskIds || []), ...(task?.dependsOn || [])]);
+}
+
+function getSprintTaskOrderSequence(sprintId) {
+  const normalizedSprintId = normalizeSprintId(sprintId);
+  if (!normalizedSprintId) return [];
+  return Object.values(_store.tasks)
+    .filter((task) => task?.sprintId === normalizedSprintId)
+    .sort(compareTaskDagOrder);
+}
+
+function getNextSprintTaskOrder(sprintId) {
+  const sequence = getSprintTaskOrderSequence(sprintId);
+  let maxOrder = 0;
+  for (const task of sequence) {
+    const order = normalizeSprintOrder(task?.sprintOrder);
+    if (order != null && order > maxOrder) maxOrder = order;
+  }
+  return maxOrder + 1;
+}
 
 function isTaskTerminal(task) {
   return TERMINAL_TASK_STATUSES.has(normalizeTaskStatus(task?.status));
@@ -808,10 +839,11 @@ export function upsertSprint(sprintData = {}, options = {}) {
   sprints[normalizedSprintId] = normalized;
 
   const syncTaskOrder = options.syncTaskOrder === true;
-  for (const task of Object.values(_store.tasks)) {
-    if (!task || task.sprintId !== normalizedSprintId) continue;
+  const sprintTasks = getSprintTaskOrderSequence(normalizedSprintId);
+  for (const [index, task] of sprintTasks.entries()) {
+    if (!task) continue;
     if (!syncTaskOrder && task.sprintOrder != null) continue;
-    task.sprintOrder = normalizeSprintOrder(normalized.order);
+    task.sprintOrder = index + 1;
     markTaskTouched(task, "task-sprint");
   }
 
@@ -819,6 +851,67 @@ export function upsertSprint(sprintData = {}, options = {}) {
   return { ...normalized };
 }
 
+
+export function createSprint(sprintData = {}, options = {}) {
+  return upsertSprint(sprintData, options);
+}
+
+export function updateSprint(sprintId, sprintPatch = {}, options = {}) {
+  const normalizedSprintId = normalizeSprintId(sprintId);
+  if (!normalizedSprintId) return null;
+  const existing = getSprint(normalizedSprintId);
+  if (!existing) return null;
+  const merged = {
+    ...existing,
+    ...(sprintPatch && typeof sprintPatch === "object" ? sprintPatch : {}),
+    id: normalizedSprintId,
+  };
+  return upsertSprint(merged, options);
+}
+
+export function deleteSprint(sprintId, options = {}) {
+  ensureLoaded();
+  const normalizedSprintId = normalizeSprintId(sprintId);
+  if (!normalizedSprintId) return false;
+  const sprints = ensureSprintsMap();
+  if (!sprints[normalizedSprintId]) return false;
+  delete sprints[normalizedSprintId];
+
+  const detachTasks = options.detachTasks !== false;
+  if (detachTasks) {
+    for (const task of Object.values(_store.tasks)) {
+      if (!task || task.sprintId !== normalizedSprintId) continue;
+      const previousSprintOrder = task.sprintOrder;
+      task.sprintId = null;
+      task.sprintOrder = null;
+      pushTaskTimeline(task, {
+        type: "task.sprint.removed",
+        source: options.source || "task-sprint",
+        message: `Removed from deleted sprint ${normalizedSprintId}`,
+        payload: {
+          sprintId: normalizedSprintId,
+          previousSprintOrder,
+        },
+      });
+      markTaskTouched(task, options.source || "task-sprint");
+    }
+  }
+
+  saveStore();
+  return true;
+}
+
+export function setSprintOrderMode(mode = "parallel") {
+  ensureLoaded();
+  _store._meta.sprintOrderMode = resolveSprintOrderMode(mode);
+  saveStore();
+  return _store._meta.sprintOrderMode;
+}
+
+export function getSprintOrderMode() {
+  ensureLoaded();
+  return resolveSprintOrderMode(_store._meta?.sprintOrderMode || "parallel");
+}
 // ---------------------------------------------------------------------------
 // Core CRUD
 // ---------------------------------------------------------------------------
@@ -1359,14 +1452,18 @@ export function assignTaskToSprint(taskId, sprintId, options = {}) {
 
   const previousSprintId = task.sprintId;
   const previousSprintOrder = task.sprintOrder;
-  const sprint = normalizedSprintId ? sprints[normalizedSprintId] : null;
   const explicitSprintOrder = normalizeSprintOrder(options.sprintOrder ?? options.order);
 
   task.sprintId = normalizedSprintId;
-  task.sprintOrder =
-    explicitSprintOrder != null
-      ? explicitSprintOrder
-      : normalizeSprintOrder(sprint?.order);
+  if (!normalizedSprintId) {
+    task.sprintOrder = null;
+  } else if (explicitSprintOrder != null) {
+    task.sprintOrder = explicitSprintOrder;
+  } else if (previousSprintId === normalizedSprintId && task.sprintOrder != null) {
+    task.sprintOrder = normalizeSprintOrder(task.sprintOrder);
+  } else {
+    task.sprintOrder = getNextSprintTaskOrder(normalizedSprintId);
+  }
 
   pushTaskTimeline(task, {
     type: "task.sprint.assigned",
@@ -1485,6 +1582,133 @@ export function getTaskDag(options = {}) {
   return buildTaskDagGraph(options);
 }
 
+
+export function getSprintDag(sprintId) {
+  const normalizedSprintId = normalizeSprintId(sprintId);
+  if (!normalizedSprintId) return buildTaskDagGraph({});
+  return buildTaskDagGraph({ sprintId: normalizedSprintId });
+}
+
+export function getGlobalDagOfDags() {
+  ensureLoaded();
+  const sprintMap = ensureSprintsMap();
+  const sprintNodes = new Map();
+
+  for (const sprint of listSprints()) {
+    sprintNodes.set(sprint.id, {
+      id: sprint.id,
+      label: sprint.name || sprint.id,
+      sprintId: sprint.id,
+      order: normalizeSprintOrder(sprint.order),
+      executionMode: resolveSprintOrderMode(sprint.executionMode || sprint.taskOrderMode),
+      status: sprint.status || "planned",
+      taskIds: [],
+      taskCount: 0,
+      doneCount: 0,
+      activeCount: 0,
+      blockedCount: 0,
+      completion: 0,
+    });
+  }
+
+  for (const task of Object.values(_store.tasks)) {
+    const sprintId = normalizeSprintId(task?.sprintId);
+    if (!sprintId) continue;
+    if (!sprintNodes.has(sprintId)) {
+      sprintNodes.set(sprintId, {
+        id: sprintId,
+        label: sprintId,
+        sprintId,
+        order: null,
+        executionMode: "parallel",
+        status: "active",
+        taskIds: [],
+        taskCount: 0,
+        doneCount: 0,
+        activeCount: 0,
+        blockedCount: 0,
+        completion: 0,
+      });
+    }
+    const node = sprintNodes.get(sprintId);
+    node.taskIds.push(task.id);
+    node.taskCount += 1;
+    if (isTaskTerminal(task)) node.doneCount += 1;
+    if (normalizeTaskStatus(task?.status) === "blocked") node.blockedCount += 1;
+    if (normalizeLifecycleState(task?.status) === "inprogress") node.activeCount += 1;
+  }
+
+  const edgePairs = new Map();
+  for (const task of Object.values(_store.tasks)) {
+    const targetSprintId = normalizeSprintId(task?.sprintId);
+    if (!targetSprintId) continue;
+    for (const dependencyId of listTaskDependencyIds(task)) {
+      const dependency = _store.tasks[dependencyId];
+      const sourceSprintId = normalizeSprintId(dependency?.sprintId);
+      if (!sourceSprintId || sourceSprintId === targetSprintId) continue;
+      const key = `${sourceSprintId}->${targetSprintId}`;
+      if (!edgePairs.has(key)) edgePairs.set(key, { from: sourceSprintId, to: targetSprintId, taskLinks: [] });
+      edgePairs.get(key).taskLinks.push({ fromTaskId: dependencyId, toTaskId: task.id, type: "dependency" });
+    }
+  }
+
+  const mode = resolveSprintOrderMode(_store._meta?.sprintOrderMode || "parallel");
+  if (mode === "sequential") {
+    const ordered = [...sprintNodes.values()]
+      .filter((node) => node.order != null)
+      .sort((a, b) => (a.order - b.order) || String(a.id).localeCompare(String(b.id)));
+    for (let i = 1; i < ordered.length; i += 1) {
+      const from = ordered[i - 1];
+      const to = ordered[i];
+      const key = `${from.id}->${to.id}`;
+      if (!edgePairs.has(key)) edgePairs.set(key, { from: from.id, to: to.id, taskLinks: [] });
+      edgePairs.get(key).taskLinks.push({ type: "sequence" });
+    }
+  }
+
+  const nodes = [...sprintNodes.values()]
+    .map((node) => ({
+      ...node,
+      taskIds: uniqueStringList(node.taskIds),
+      taskCount: node.taskCount,
+      completion: node.taskCount > 0 ? Math.round((node.doneCount / node.taskCount) * 1000) / 1000 : 0,
+    }))
+    .sort((a, b) => {
+      if (a.order != null && b.order != null && a.order !== b.order) return a.order - b.order;
+      if (a.order != null && b.order == null) return -1;
+      if (a.order == null && b.order != null) return 1;
+      return String(a.id).localeCompare(String(b.id));
+    });
+
+  const edges = [...edgePairs.values()]
+    .map((edge) => ({
+      from: edge.from,
+      to: edge.to,
+      linkCount: edge.taskLinks.length,
+      taskLinks: edge.taskLinks,
+    }))
+    .sort((a, b) => {
+      const fromCmp = String(a.from).localeCompare(String(b.from));
+      if (fromCmp !== 0) return fromCmp;
+      return String(a.to).localeCompare(String(b.to));
+    });
+
+  return {
+    sprintOrderMode: mode,
+    sprintCount: nodes.length,
+    edgeCount: edges.length,
+    nodes,
+    edges,
+  };
+}
+
+export function getDagOfDags() {
+  return getGlobalDagOfDags();
+}
+
+export function canStartTask(taskId, options = {}) {
+  return canTaskStart(taskId, options);
+}
 export function canTaskStart(taskId, options = {}) {
   ensureLoaded();
   const task = _store.tasks[taskId];
@@ -1537,18 +1761,54 @@ export function canTaskStart(taskId, options = {}) {
   }
 
   const blockingSprintIds = [];
-  if (sprintOrderMode === "sequential") {
+  const sprintId = normalizeSprintId(task.sprintId);
+  const sprint = sprintId ? ensureSprintsMap()[sprintId] : null;
+  const sprintTaskOrderMode = resolveSprintOrderMode(
+    sprint?.executionMode || sprint?.taskOrderMode || "parallel",
+  );
+
+  if (sprintTaskOrderMode === "sequential" && sprintId) {
     const taskSprintOrder = normalizeSprintOrder(task.sprintOrder);
     if (taskSprintOrder != null) {
-      const incompletePriorTasks = Object.values(_store.tasks).filter((candidate) => {
+      const incompleteEarlierTasks = Object.values(_store.tasks).filter((candidate) => {
         if (!candidate || candidate.id === task.id) return false;
+        if (normalizeSprintId(candidate.sprintId) !== sprintId) return false;
         const candidateOrder = normalizeSprintOrder(candidate.sprintOrder);
         if (candidateOrder == null || candidateOrder >= taskSprintOrder) return false;
         return !isTaskTerminal(candidate);
       });
+      if (incompleteEarlierTasks.length > 0) {
+        for (const candidate of incompleteEarlierTasks) {
+          blockingTaskIds.push(candidate.id);
+        }
+        return {
+          canStart: false,
+          reason: "prior_sprint_tasks_incomplete",
+          blockingTaskIds: uniqueStringList(blockingTaskIds),
+          missingDependencyTaskIds: [],
+          blockingSprintIds: [sprintId],
+          sprintOrderMode,
+          sprintTaskOrderMode,
+        };
+      }
+    }
+  }
 
-      if (incompletePriorTasks.length > 0) {
-        for (const candidate of incompletePriorTasks) {
+  if (sprintOrderMode === "sequential" && sprintId) {
+    const taskSprintOrder = normalizeSprintOrder(sprint?.order);
+    if (taskSprintOrder != null) {
+      const incompletePriorSprintTasks = Object.values(_store.tasks).filter((candidate) => {
+        if (!candidate || candidate.id === task.id) return false;
+        const candidateSprintId = normalizeSprintId(candidate.sprintId);
+        if (!candidateSprintId || candidateSprintId === sprintId) return false;
+        const candidateSprint = ensureSprintsMap()[candidateSprintId];
+        const candidateSprintOrder = normalizeSprintOrder(candidateSprint?.order);
+        if (candidateSprintOrder == null || candidateSprintOrder >= taskSprintOrder) return false;
+        return !isTaskTerminal(candidate);
+      });
+
+      if (incompletePriorSprintTasks.length > 0) {
+        for (const candidate of incompletePriorSprintTasks) {
           if (candidate.sprintId) blockingSprintIds.push(candidate.sprintId);
           blockingTaskIds.push(candidate.id);
         }
@@ -1559,6 +1819,7 @@ export function canTaskStart(taskId, options = {}) {
           missingDependencyTaskIds: [],
           blockingSprintIds: uniqueStringList(blockingSprintIds),
           sprintOrderMode,
+          sprintTaskOrderMode,
         };
       }
     }
@@ -1921,4 +2182,12 @@ export function getStaleInReviewTasks(maxAgeMs) {
     (t) => t.status === "inreview" && t.lastActivityAt < cutoff,
   );
 }
+
+
+
+
+
+
+
+
 
