@@ -23,8 +23,8 @@
         Bosun
       </a>
       <div class="sidebar-version-info">
-        <span class="sidebar-version" id="current-version">Current Version: v0.36.1</span>
-        <span class="sidebar-version">Docs Last Updated: v0.36.1</span>
+        <span class="sidebar-version" id="current-version">Current Version: v0.39.3</span>
+        <span class="sidebar-version">Docs Last Updated: v0.39.3</span>
       </div>
       <div class="docs-search">
         <input class="docs-search__input" type="text" placeholder="Search docs..." />
@@ -49,7 +49,7 @@
         <div class="sidebar-section__title">Links</div>
         <ul class="sidebar-nav">
           <li><a href="https://github.com/virtengine/bosun" target="_blank" rel="noopener">GitHub</a></li>
-          <li><a href="https://www.npmjs.com/package/bosun" target="_blank">npm</a></li>
+          <li><a href="https://www.npmjs.com/package/bosun" target="_blank" rel="noopener">npm</a></li>
           <li><a href="../">Home</a></li>
         </ul>
       </div>
@@ -59,187 +59,149 @@
       <h1>CLI Reference</h1>
 
       <p>
-        Complete reference for the <code>bosun</code> command-line interface.
-        All flags can be combined. Run <code>bosun --help</code> for a quick summary.
+        This page tracks the current Bosun CLI surface from <code>bosun --help</code>,
+        the task CLI, and the package <code>bin</code> entries shipped in the repo.
       </p>
 
-      <h2 id="commands">Core Commands</h2>
+      <h2 id="core">Core commands</h2>
+
+      <table>
+        <thead>
+          <tr><th>Command or flag</th><th>Description</th></tr>
+        </thead>
+        <tbody>
+          <tr><td><code>bosun</code></td><td>Start Bosun with the current config.</td></tr>
+          <tr><td><code>bosun --setup</code></td><td>Launch the web-based setup wizard.</td></tr>
+          <tr><td><code>bosun --setup-terminal</code></td><td>Run the legacy terminal setup wizard.</td></tr>
+          <tr><td><code>bosun --doctor</code></td><td>Validate the resolved Bosun environment and config.</td></tr>
+          <tr><td><code>bosun --where</code></td><td>Show the resolved Bosun config directory.</td></tr>
+          <tr><td><code>bosun --help</code></td><td>Show command help.</td></tr>
+          <tr><td><code>bosun --version</code></td><td>Print the installed version.</td></tr>
+        </tbody>
+      </table>
+
+      <h2 id="runtime">Runtime and service commands</h2>
 
       <table>
         <thead>
           <tr><th>Flag</th><th>Description</th></tr>
         </thead>
         <tbody>
-          <tr><td><code>bosun</code></td><td>Start supervisor in foreground mode</td></tr>
-          <tr><td><code>--setup</code></td><td>Run the interactive setup wizard</td></tr>
-          <tr><td><code>--doctor</code></td><td>Validate config (.env + JSON + env overrides)</td></tr>
-          <tr><td><code>--help</code></td><td>Show CLI help text</td></tr>
-          <tr><td><code>--version</code></td><td>Print current version</td></tr>
-          <tr><td><code>--update</code></td><td>Check for and install latest version</td></tr>
+          <tr><td><code>--daemon</code>, <code>-d</code></td><td>Run detached with a PID file.</td></tr>
+          <tr><td><code>--stop-daemon</code></td><td>Stop a running daemon.</td></tr>
+          <tr><td><code>--daemon-status</code></td><td>Check daemon status.</td></tr>
+          <tr><td><code>--terminate</code></td><td>Hard-stop Bosun monitor and companion processes.</td></tr>
+          <tr><td><code>--sentinel</code></td><td>Start telegram-sentinel in companion mode.</td></tr>
+          <tr><td><code>--sentinel-stop</code></td><td>Stop a running sentinel.</td></tr>
+          <tr><td><code>--sentinel-status</code></td><td>Show sentinel status.</td></tr>
+          <tr><td><code>--enable-startup</code></td><td>Register Bosun to auto-start on login.</td></tr>
+          <tr><td><code>--disable-startup</code></td><td>Remove the startup service.</td></tr>
+          <tr><td><code>--startup-status</code></td><td>Check startup service status.</td></tr>
         </tbody>
       </table>
 
-      <h2 id="daemon">Daemon Mode</h2>
-
-      <table>
-        <thead>
-          <tr><th>Flag</th><th>Description</th></tr>
-        </thead>
-        <tbody>
-          <tr><td><code>--daemon</code>, <code>-d</code></td><td>Run as a background daemon (detached, PID file)</td></tr>
-          <tr><td><code>--stop-daemon</code></td><td>Stop a running daemon process</td></tr>
-          <tr><td><code>--daemon-status</code></td><td>Check if daemon is running</td></tr>
-        </tbody>
-      </table>
-
-      <h3>Example</h3>
-      <pre><code># Start daemon
-bosun --daemon
-
-# Check status
+      <pre><code>bosun --daemon --sentinel
 bosun --daemon-status
-# → bosun daemon is running (PID: 12345)
+bosun --sentinel-status
+bosun --terminate</code></pre>
 
-# Stop
-bosun --stop-daemon</code></pre>
-
-      <h2 id="startup">Startup Service</h2>
+      <h2 id="workspace">Workspace commands</h2>
 
       <table>
         <thead>
           <tr><th>Flag</th><th>Description</th></tr>
         </thead>
         <tbody>
-          <tr><td><code>--enable-startup</code></td><td>Register auto-start on login</td></tr>
-          <tr><td><code>--disable-startup</code></td><td>Remove from startup services</td></tr>
-          <tr><td><code>--startup-status</code></td><td>Check if startup service is installed</td></tr>
+          <tr><td><code>--workspace-list</code></td><td>List configured workspaces.</td></tr>
+          <tr><td><code>--workspace-add &lt;name&gt;</code></td><td>Create a new workspace entry.</td></tr>
+          <tr><td><code>--workspace-switch &lt;id&gt;</code></td><td>Switch active workspace.</td></tr>
+          <tr><td><code>--workspace-add-repo</code></td><td>Add a repository to a workspace interactively.</td></tr>
+          <tr><td><code>--workspace-health</code></td><td>Run workspace health diagnostics.</td></tr>
         </tbody>
       </table>
 
-      <h2 id="orchestrator">Orchestrator Options</h2>
+      <h2 id="task">Task CLI</h2>
+
+      <p>Bosun also ships a dedicated task-management CLI surface:</p>
 
       <table>
         <thead>
-          <tr><th>Flag</th><th>Default</th><th>Description</th></tr>
+          <tr><th>Subcommand</th><th>Description</th></tr>
         </thead>
         <tbody>
-          <tr><td><code>--script &lt;path&gt;</code></td><td>auto</td><td>Path to the orchestrator script</td></tr>
-          <tr><td><code>--args "&lt;args&gt;"</code></td><td><code>-MaxParallel 6</code></td><td>Arguments passed to the orchestrator</td></tr>
-          <tr><td><code>--restart-delay &lt;ms&gt;</code></td><td><code>10000</code></td><td>Delay before restart on crash</td></tr>
-          <tr><td><code>--max-restarts &lt;n&gt;</code></td><td><code>0</code> (unlimited)</td><td>Max restarts (0 = unlimited)</td></tr>
+          <tr><td><code>bosun task list</code></td><td>List tasks with filters like status, priority, and tags.</td></tr>
+          <tr><td><code>bosun task create</code></td><td>Create tasks from flags, inline JSON, or bulk payloads.</td></tr>
+          <tr><td><code>bosun task get</code></td><td>Show one task in detail.</td></tr>
+          <tr><td><code>bosun task update</code></td><td>Patch task fields.</td></tr>
+          <tr><td><code>bosun task delete</code></td><td>Delete a task.</td></tr>
+          <tr><td><code>bosun task stats</code></td><td>Show aggregate task statistics.</td></tr>
+          <tr><td><code>bosun task import</code></td><td>Bulk-import tasks from JSON.</td></tr>
         </tbody>
       </table>
 
-      <h2 id="logging">Logging Options</h2>
+      <pre><code>bosun task list --status todo --json
+bosun task create --title "feat(ui): add retry queue" --priority high --status todo
+bosun task update &lt;id&gt; --status inprogress
+bosun task import ./backlog.json</code></pre>
 
-      <table>
-        <thead>
-          <tr><th>Flag</th><th>Description</th></tr>
-        </thead>
-        <tbody>
-          <tr><td><code>--log-dir &lt;path&gt;</code></td><td>Log file directory (default: <code>./logs</code>)</td></tr>
-          <tr><td><code>--echo-logs</code></td><td>Echo raw orchestrator output to console</td></tr>
-          <tr><td><code>--quiet</code>, <code>-q</code></td><td>Only show warnings and errors</td></tr>
-          <tr><td><code>--verbose</code>, <code>-V</code></td><td>Show debug-level messages</td></tr>
-          <tr><td><code>--trace</code></td><td>Show all messages including trace-level</td></tr>
-          <tr><td><code>--log-level &lt;level&gt;</code></td><td>Explicit level: <code>trace|debug|info|warn|error|silent</code></td></tr>
-        </tbody>
-      </table>
-
-      <h2 id="ai">AI / Agent Options</h2>
+      <h2 id="operator">Operator and debugging flags</h2>
 
       <table>
         <thead>
           <tr><th>Flag</th><th>Description</th></tr>
         </thead>
         <tbody>
-          <tr><td><code>--no-codex</code></td><td>Disable Codex SDK analysis</td></tr>
-          <tr><td><code>--no-autofix</code></td><td>Disable automatic error fixing</td></tr>
-          <tr><td><code>--primary-agent &lt;name&gt;</code></td><td>Override primary agent: <code>codex</code>, <code>copilot</code>, <code>claude</code></td></tr>
-          <tr><td><code>--shell</code>, <code>--interactive</code></td><td>Enable interactive shell mode in monitor</td></tr>
+          <tr><td><code>--tool-log &lt;ID|list|prune&gt;</code></td><td>Retrieve, list, or prune cached tool outputs.</td></tr>
+          <tr><td><code>--context-index [mode]</code></td><td>Run the context index workflow in run, status, or search mode.</td></tr>
+          <tr><td><code>--context-index-query &lt;text&gt;</code></td><td>Text query for context index search.</td></tr>
+          <tr><td><code>--context-index-limit &lt;n&gt;</code></td><td>Max context-index results.</td></tr>
+          <tr><td><code>--shell</code>, <code>--interactive</code></td><td>Enable interactive shell mode in the monitor.</td></tr>
+          <tr><td><code>--desktop</code>, <code>--portal</code></td><td>Launch the Electron desktop portal.</td></tr>
+          <tr><td><code>--desktop-shortcut</code></td><td>Create a desktop shortcut for the portal.</td></tr>
         </tbody>
       </table>
 
-      <h2 id="telegram-flags">Telegram Flags</h2>
+      <h2 id="logging">Logging and runtime tuning</h2>
 
       <table>
         <thead>
           <tr><th>Flag</th><th>Description</th></tr>
         </thead>
         <tbody>
-          <tr><td><code>--no-telegram-bot</code></td><td>Disable the interactive Telegram bot</td></tr>
-          <tr><td><code>--telegram-commands</code></td><td>Enable monitor-side Telegram polling (advanced)</td></tr>
+          <tr><td><code>--log-dir &lt;path&gt;</code></td><td>Override the log directory.</td></tr>
+          <tr><td><code>--echo-logs</code></td><td>Echo raw orchestrator output to the console.</td></tr>
+          <tr><td><code>--quiet</code>, <code>-q</code></td><td>Show only warnings and errors.</td></tr>
+          <tr><td><code>--verbose</code>, <code>-V</code></td><td>Enable debug-level terminal output.</td></tr>
+          <tr><td><code>--trace</code></td><td>Show trace-level output.</td></tr>
+          <tr><td><code>--log-level &lt;level&gt;</code></td><td>Set an explicit log level.</td></tr>
+          <tr><td><code>--script &lt;path&gt;</code></td><td>Override the orchestrator script path.</td></tr>
+          <tr><td><code>--args "&lt;args&gt;"</code></td><td>Arguments passed to the orchestrator script.</td></tr>
+          <tr><td><code>--restart-delay &lt;ms&gt;</code></td><td>Delay before restart on crash.</td></tr>
+          <tr><td><code>--max-restarts &lt;n&gt;</code></td><td>Cap restarts, where <code>0</code> means unlimited.</td></tr>
         </tbody>
       </table>
 
-      <h2 id="whatsapp">WhatsApp Flags</h2>
+      <h2 id="companion">Companion binaries</h2>
 
       <table>
         <thead>
-          <tr><th>Flag</th><th>Description</th></tr>
+          <tr><th>Binary</th><th>Description</th></tr>
         </thead>
         <tbody>
-          <tr><td><code>--whatsapp-auth</code></td><td>Run WhatsApp authentication (QR code)</td></tr>
-          <tr><td><code>--whatsapp-auth --pairing-code</code></td><td>Authenticate via pairing code instead</td></tr>
-        </tbody>
-      </table>
-
-      <h2 id="vk">Vibe-Kanban Flags</h2>
-
-      <table>
-        <thead>
-          <tr><th>Flag</th><th>Default</th><th>Description</th></tr>
-        </thead>
-        <tbody>
-          <tr><td><code>--no-vk-spawn</code></td><td>—</td><td>Don't auto-spawn Vibe-Kanban</td></tr>
-          <tr><td><code>--vk-ensure-interval &lt;ms&gt;</code></td><td><code>60000</code></td><td>VK health check interval</td></tr>
-        </tbody>
-      </table>
-
-      <h2 id="sentinel">Sentinel Flags</h2>
-
-      <table>
-        <thead>
-          <tr><th>Flag</th><th>Description</th></tr>
-        </thead>
-        <tbody>
-          <tr><td><code>--sentinel</code></td><td>Start Telegram sentinel in companion mode</td></tr>
-          <tr><td><code>--sentinel-stop</code></td><td>Stop a running sentinel</td></tr>
-          <tr><td><code>--sentinel-status</code></td><td>Check sentinel status</td></tr>
-        </tbody>
-      </table>
-
-      <h2 id="update-flags">Update Flags</h2>
-
-      <table>
-        <thead>
-          <tr><th>Flag</th><th>Description</th></tr>
-        </thead>
-        <tbody>
-          <tr><td><code>--no-update-check</code></td><td>Skip automatic update check on startup</td></tr>
-          <tr><td><code>--no-auto-update</code></td><td>Disable background auto-update polling</td></tr>
-        </tbody>
-      </table>
-
-      <h2 id="companion-tools">Companion CLI Tools</h2>
-
-      <p>Bosun also installs these companion binaries:</p>
-
-      <table>
-        <thead>
-          <tr><th>Command</th><th>Description</th></tr>
-        </thead>
-        <tbody>
-          <tr><td><code>bosun-setup</code></td><td>Direct setup wizard launcher</td></tr>
-          <tr><td><code>bosun-chat-id</code></td><td>Discover your Telegram chat ID</td></tr>
-          <tr><td><code>bosun-shared-workspaces</code></td><td>Manage shared workspace registry</td></tr>
-          <tr><td><code>vibe-kanban</code></td><td>Standalone Vibe-Kanban CLI wrapper</td></tr>
-          <tr><td><code>telegram-sentinel</code></td><td>Standalone sentinel launcher</td></tr>
+          <tr><td><code>bosun-task</code></td><td>Direct entrypoint for task CLI operations.</td></tr>
+          <tr><td><code>bosun-setup</code></td><td>Direct setup entrypoint.</td></tr>
+          <tr><td><code>bosun-chat-id</code></td><td>Discover your Telegram chat ID.</td></tr>
+          <tr><td><code>bosun-shared-workspaces</code></td><td>Manage shared workspace registry entries.</td></tr>
+          <tr><td><code>telegram-sentinel</code></td><td>Standalone sentinel launcher.</td></tr>
+          <tr><td><code>vibe-kanban</code></td><td>Standalone Vibe-Kanban wrapper.</td></tr>
         </tbody>
       </table>
 
       <div class="callout callout--info">
-        <p>Legacy aliases <code>bosun</code> and <code>bosun-setup</code> still work for backwards compatibility.</p>
+        <p>
+          Legacy <code>codex-monitor</code> aliases are still shipped for compatibility,
+          but current documentation should treat <code>bosun</code> as the canonical CLI name.
+        </p>
       </div>
 
       <div class="docs-nav-footer">
@@ -255,10 +217,8 @@ bosun --stop-daemon</code></pre>
     </main>
   </div>
   <script src="../js/docs.js"></script>
-    <script src="../js/analytics-config.js"></script>
+  <script src="../js/analytics-config.js"></script>
   <script src="../js/analytics.js"></script>
-
   <script src="../js/main.js"></script>
 </body>
 </html>
-

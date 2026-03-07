@@ -23,8 +23,8 @@
         Bosun
       </a>
       <div class="sidebar-version-info">
-        <span class="sidebar-version" id="current-version">Current Version: v0.36.1</span>
-        <span class="sidebar-version">Docs Last Updated: v0.36.1</span>
+        <span class="sidebar-version" id="current-version">Current Version: v0.39.3</span>
+        <span class="sidebar-version">Docs Last Updated: v0.39.3</span>
       </div>
       <div class="docs-search">
         <input class="docs-search__input" type="text" placeholder="Search docs..." />
@@ -49,7 +49,7 @@
         <div class="sidebar-section__title">Links</div>
         <ul class="sidebar-nav">
           <li><a href="https://github.com/virtengine/bosun" target="_blank" rel="noopener">GitHub</a></li>
-          <li><a href="https://www.npmjs.com/package/bosun" target="_blank">npm</a></li>
+          <li><a href="https://www.npmjs.com/package/bosun" target="_blank" rel="noopener">npm</a></li>
           <li><a href="../">Home</a></li>
         </ul>
       </div>
@@ -59,143 +59,109 @@
       <h1>Architecture</h1>
 
       <p>
-        Bosun is organized as a modular Node.js application with clear component boundaries.
-        Each module has a single responsibility and communicates through well-defined interfaces.
+        Bosun is now organized around a monitor runtime, workflow/task ownership layers, and operator-facing surfaces.
+        Older references to root-level files like <code>monitor.mjs</code>, <code>config.mjs</code>,
+        or legacy orchestrator filenames are no longer accurate for the current repo.
       </p>
 
-      <h2 id="high-level">High-Level Flow</h2>
-
-      <pre><code>┌──────────┐     ┌──────────────┐     ┌────────────────────┐
-│  cli.mjs │────►│  monitor.mjs │────►│  ve-orchestrator   │
-│  (entry) │     │  (supervisor)│     │  (task runner)     │
-└──────────┘     └──────┬───────┘     └─────────┬──────────┘
-                        │                       │
-                   ┌────┴────┐            ┌─────┴──────┐
-                   │ telegram │            │ ve-kanban  │
-                   │ bot.mjs  │            │ .mjs       │
-                   └─────────┘            └────────────┘</code></pre>
-
-      <ol>
-        <li><code>cli.mjs</code> loads config and routes to the appropriate handler (setup, doctor, daemon, or main start)</li>
-        <li><code>monitor.mjs</code> is the supervisor loop — orchestration, smart PR flow, maintenance, fleet sync</li>
-        <li><code>ve-orchestrator.mjs</code> handles native task execution with parallel slots, retries, and merge checks</li>
-        <li><code>ve-kanban.mjs</code> wraps VK CLI operations (list, submit, rebase, archive)</li>
-      </ol>
-
-      <h2 id="components">Component Map</h2>
+      <h2 id="layout">Top-level layout</h2>
 
       <table>
         <thead>
-          <tr><th>Component</th><th>File</th><th>Role</th></tr>
+          <tr><th>Module</th><th>Role</th></tr>
         </thead>
         <tbody>
-          <tr><td><strong>CLI Entry</strong></td><td><code>cli.mjs</code></td><td>Command routing, config loading, daemon management</td></tr>
-          <tr><td><strong>Supervisor</strong></td><td><code>monitor.mjs</code></td><td>Main loop, smart PR flow, maintenance scheduling</td></tr>
-          <tr><td><strong>Orchestrator</strong></td><td><code>ve-orchestrator.mjs</code></td><td>Task execution, parallel slots, retry logic</td></tr>
-          <tr><td><strong>VK Wrapper</strong></td><td><code>ve-kanban.mjs</code></td><td>Task board CRUD, attempt lifecycle</td></tr>
-          <tr><td><strong>Telegram Bot</strong></td><td><code>telegram-bot.mjs</code></td><td>Polling, batching, live digest, command handling</td></tr>
-          <tr><td><strong>Mini App Server</strong></td><td><code>ui-server.mjs</code></td><td>HTTP/WS server for Telegram Mini App</td></tr>
-          <tr><td><strong>Config</strong></td><td><code>config.mjs</code></td><td>Unified config loader (CLI + env + .env + JSON + defaults)</td></tr>
-          <tr><td><strong>Fleet Coordinator</strong></td><td><code>fleet-coordinator.mjs</code></td><td>Multi-workstation coordination</td></tr>
-          <tr><td><strong>Shared State</strong></td><td><code>shared-state-manager.mjs</code></td><td>Distributed task claims, heartbeats, conflict resolution</td></tr>
-          <tr><td><strong>Task Claims</strong></td><td><code>task-claims.mjs</code></td><td>Local + shared claim persistence</td></tr>
-          <tr><td><strong>Sync Engine</strong></td><td><code>sync-engine.mjs</code></td><td>Bidirectional kanban sync with shared state</td></tr>
-          <tr><td><strong>Autofix</strong></td><td><code>autofix.mjs</code></td><td>Error pattern detection, guarded auto-fix execution</td></tr>
-          <tr><td><strong>Agent Pool</strong></td><td><code>agent-pool.mjs</code></td><td>Executor management, weighted selection, failover</td></tr>
-          <tr><td><strong>Codex Shell</strong></td><td><code>codex-shell.mjs</code></td><td>Persistent Codex SDK sessions</td></tr>
-          <tr><td><strong>Copilot Shell</strong></td><td><code>copilot-shell.mjs</code></td><td>Persistent Copilot SDK sessions</td></tr>
-          <tr><td><strong>Claude Shell</strong></td><td><code>claude-shell.mjs</code></td><td>Persistent Claude SDK sessions</td></tr>
-          <tr><td><strong>Container Runner</strong></td><td><code>container-runner.mjs</code></td><td>Docker/Podman/Apple Container isolation</td></tr>
-          <tr><td><strong>Sentinel</strong></td><td><code>telegram-sentinel.mjs</code></td><td>Independent watchdog companion</td></tr>
-          <tr><td><strong>WhatsApp</strong></td><td><code>whatsapp-channel.mjs</code></td><td>Optional WhatsApp notification channel</td></tr>
+          <tr><td><code>cli.mjs</code></td><td>Main CLI entrypoint and runtime command router.</td></tr>
+          <tr><td><code>setup.mjs</code></td><td>Setup flow entrypoint.</td></tr>
+          <tr><td><code>infra/</code></td><td>Monitor loop, restart logic, maintenance, presence, sessions, runtime plumbing.</td></tr>
+          <tr><td><code>workflow/</code></td><td>Workflow engine, node implementations, adapters, and execution helpers.</td></tr>
+          <tr><td><code>workflow-templates/</code></td><td>Template library for lifecycle, review, maintenance, recovery, and orchestration flows.</td></tr>
+          <tr><td><code>task/</code></td><td>Task lifecycle, task CLI, execution ownership, claims, and archive behavior.</td></tr>
+          <tr><td><code>server/</code></td><td>Mini App backend, setup server, and related HTTP endpoints.</td></tr>
+          <tr><td><code>ui/</code></td><td>Mini App frontend and shared browser assets.</td></tr>
+          <tr><td><code>telegram/</code></td><td>Bot, sentinel, chat integration, and notification surfaces.</td></tr>
+          <tr><td><code>workspace/</code></td><td>Workspace registry, context indexing, worktree and shared-state support.</td></tr>
+          <tr><td><code>agent/</code> and <code>shell/</code></td><td>Executor integrations, prompts, hooks, transport layers, and fleet coordination.</td></tr>
+          <tr><td><code>github/</code> and <code>kanban/</code></td><td>GitHub auth/webhooks and board-adapter logic including Vibe-Kanban bridging.</td></tr>
         </tbody>
       </table>
 
-      <h2 id="execution-modes">Execution Modes</h2>
+      <h2 id="flow">Runtime flow</h2>
 
-      <h3>Internal Mode (<code>EXECUTOR_MODE=internal</code>)</h3>
-      <p>
-        Tasks run through the internal agent pool inside the monitor process.
-        The agent pool manages executor selection, weighted distribution, and failover.
-      </p>
-      <pre><code>Monitor → Agent Pool → [Copilot Shell | Codex Shell | Claude Shell]
-                            ↓
-                     Task Execution
-                            ↓
-                     Smart PR Flow → CI Check → Merge</code></pre>
+      <pre><code>cli.mjs
+  ├─ setup and validation commands
+  ├─ daemon / sentinel / desktop entrypoints
+  └─ monitor startup
 
-      <h3>VK Mode (<code>EXECUTOR_MODE=vk</code>)</h3>
-      <p>
-        Task execution is delegated to the Vibe-Kanban orchestrator scripts.
-        The monitor handles supervision and PR lifecycle.
-      </p>
+infra/monitor.mjs
+  ├─ loads resolved config
+  ├─ coordinates task and workflow execution
+  ├─ talks to task backends and integrations
+  ├─ updates operator-facing surfaces
+  └─ manages recovery, retries, and lifecycle state</code></pre>
 
-      <h3>Hybrid Mode (<code>EXECUTOR_MODE=hybrid</code>)</h3>
-      <p>
-        Combines internal and VK modes. Internal handles primary execution;
-        VK picks up overflow or specific task types.
-      </p>
-
-      <h2 id="shared-state">Shared State Model</h2>
-
-      <p>
-        Distributed task coordination across agents and workstations uses a shared state system:
-      </p>
-
-      <ul>
-        <li><strong>Owner heartbeat</strong> — Each claim has <code>ownerId</code> (workstation+agent) and <code>ownerHeartbeat</code> timestamp, renewed periodically to prove liveness</li>
-        <li><strong>Attempt tokens</strong> — Unique UUID per attempt for idempotent operations</li>
-        <li><strong>Retry/ignore flags</strong> — <code>retryCount</code> tracks attempts, <code>ignoreReason</code> marks tasks agents should skip</li>
-        <li><strong>Conflict resolution</strong> — Active heartbeat wins over stale claims (first-come-first-served if both active)</li>
-      </ul>
-
-      <h3>Claim Lifecycle</h3>
-      <pre><code>1. claimTaskInSharedState(taskId, ownerId, attemptToken)
-2. [work...] renewSharedStateHeartbeat() periodically
-3. releaseSharedState(taskId, attemptToken, 'complete'|'failed'|'abandoned')
-4. sweepStaleSharedStates() — background cleanup</code></pre>
-
-      <h2 id="smart-pr-flow">Smart PR Flow</h2>
-
-      <p>The <code>smartPRFlow</code> in <code>monitor.mjs</code> handles the full PR lifecycle:</p>
+      <p>At a high level, Bosun now operates as:</p>
 
       <ol>
-        <li><strong>Branch creation</strong> — from configured target branch</li>
-        <li><strong>PR creation</strong> — with conventional commit title and structured body</li>
-        <li><strong>CI monitoring</strong> — polls check status</li>
-        <li><strong>Auto-rebase</strong> — on merge conflicts with target</li>
-        <li><strong>Merge decision</strong> — merge when all checks pass</li>
-        <li><strong>Cleanup</strong> — archive task, prune worktree</li>
+        <li><strong>Configuration resolution</strong> from CLI, env, `.env`, and JSON config.</li>
+        <li><strong>Task and workflow intake</strong> from internal, GitHub, Jira, or other configured backends.</li>
+        <li><strong>Executor selection</strong> through agent and shell layers.</li>
+        <li><strong>Validation and lifecycle ownership</strong> through workflows, review, and merge gates.</li>
+        <li><strong>Observation and recovery</strong> through telemetry, sentinel, and maintenance loops.</li>
       </ol>
 
-      <h2 id="error-recovery">Error Recovery</h2>
+      <h2 id="workflow-first">Workflow-first ownership</h2>
 
-      <p>Bosun uses multiple layers of error recovery:</p>
+      <p>
+        Current Bosun development emphasizes workflow-first lifecycle ownership.
+        That means task execution, review, PR management, and repair paths increasingly live in reusable workflow templates
+        rather than ad hoc legacy runtime branches.
+      </p>
 
       <ul>
-        <li><strong>Autofix</strong> — Pattern matching on error signatures with guarded fix execution</li>
-        <li><strong>Circuit breakers</strong> — Prevent infinite retry loops by tracking consecutive failures</li>
-        <li><strong>Stale sweeps</strong> — Background process that reclaims abandoned tasks</li>
-        <li><strong>Daemon restart policy</strong> — Configurable crash tracking with cooldown periods</li>
-        <li><strong>Sentinel watchdog</strong> — Independent process that can restart the monitor on crash</li>
+        <li><code>workflow/</code> contains execution primitives and nodes.</li>
+        <li><code>workflow-templates/</code> contains high-level lifecycle templates.</li>
+        <li><code>task/</code> and <code>infra/</code> remain the runtime owners for persistence and orchestration around those flows.</li>
       </ul>
 
-      <h2 id="data-persistence">Data Persistence</h2>
-
-      <p>State is persisted in <code>.cache/bosun/</code>:</p>
+      <h2 id="surfaces">Operator surfaces</h2>
 
       <table>
         <thead>
-          <tr><th>File</th><th>Contents</th></tr>
+          <tr><th>Surface</th><th>Current backing modules</th></tr>
         </thead>
         <tbody>
-          <tr><td><code>shared-task-states.json</code></td><td>Distributed task claims and heartbeat state</td></tr>
-          <tr><td><code>fleet-state.json</code></td><td>Multi-workstation fleet coordination data</td></tr>
-          <tr><td><code>task-store.json</code></td><td>Internal kanban task database</td></tr>
-          <tr><td><code>workspaces.json</code></td><td>Workspace and worktree registry</td></tr>
-          <tr><td><code>sessions/</code></td><td>Agent session state and history</td></tr>
+          <tr><td><strong>CLI</strong></td><td><code>cli.mjs</code>, <code>task/task-cli.mjs</code>, related companion binaries</td></tr>
+          <tr><td><strong>Mini App</strong></td><td><code>server/ui-server.mjs</code> + <code>ui/</code></td></tr>
+          <tr><td><strong>Setup portal</strong></td><td><code>server/setup-web-server.mjs</code> + setup flow</td></tr>
+          <tr><td><strong>Telegram</strong></td><td><code>telegram/telegram-bot.mjs</code>, <code>telegram/telegram-sentinel.mjs</code></td></tr>
+          <tr><td><strong>Desktop portal</strong></td><td><code>desktop/</code> plus CLI desktop entry flags</td></tr>
+          <tr><td><strong>Voice</strong></td><td><code>voice/</code> and UI voice modules</td></tr>
         </tbody>
       </table>
+
+      <h2 id="state">Persistence and coordination</h2>
+
+      <p>Bosun persists and coordinates multiple classes of runtime state:</p>
+
+      <ul>
+        <li><strong>task state</strong> for internal task management and lifecycle transitions</li>
+        <li><strong>workflow run state</strong> for resumable workflow execution</li>
+        <li><strong>workspace and shared-workspace metadata</strong> for multi-repo operation</li>
+        <li><strong>session state</strong> for agent and operator history</li>
+        <li><strong>presence and shared coordination data</strong> for multi-instance runtime ownership</li>
+      </ul>
+
+      <h2 id="recovery">Recovery model</h2>
+
+      <p>Modern Bosun recovery is layered rather than handled by one restart loop:</p>
+
+      <ul>
+        <li><strong>monitor/runtime safeguards</strong> in <code>infra/</code></li>
+        <li><strong>workflow retries and escalation paths</strong> in templates and nodes</li>
+        <li><strong>task-state and shared-state repair behavior</strong> in task/workspace layers</li>
+        <li><strong>sentinel watchdog behavior</strong> in the Telegram companion process</li>
+      </ul>
 
       <div class="docs-nav-footer">
         <a href="cli-reference.html" class="docs-nav-link">
@@ -210,10 +176,8 @@
     </main>
   </div>
   <script src="../js/docs.js"></script>
-    <script src="../js/analytics-config.js"></script>
+  <script src="../js/analytics-config.js"></script>
   <script src="../js/analytics.js"></script>
-
   <script src="../js/main.js"></script>
 </body>
 </html>
-
