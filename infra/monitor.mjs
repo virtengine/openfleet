@@ -226,6 +226,12 @@ import { createErrorDetector } from "./error-detector.mjs";
 import { createAgentSupervisor } from "../agent/agent-supervisor.mjs";
 import { getSessionTracker } from "./session-tracker.mjs";
 import { pullWorkspaceRepos } from "../workspace/workspace-manager.mjs";
+import {
+	initRuntimeAccumulator,
+	getRuntimeStats,
+	addCompletedSession,
+	getSessionTokens,
+} from "./runtime-accumulator.mjs";
 
 import {
   getKanbanBackendName,
@@ -1220,6 +1226,13 @@ workflowAutomationEnabled = parseEnvBoolean(
     ? dedupMs
     : 15_000;
 }
+
+// Initialize runtime accumulator for persistent stats across restarts
+const runtimeStats = initRuntimeAccumulator();
+globalThis.__bosun_runtimeMs = runtimeStats.runtimeMs;
+globalThis.__bosun_totalCostUsd = runtimeStats.totalCostUsd;
+globalThis.__bosun_sessionTokens = getSessionTokens;
+
 configureExecutorTaskStatusTransitions();
 
 // Install console interceptor with log file (after config provides logDir)
