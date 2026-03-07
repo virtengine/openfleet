@@ -65,7 +65,7 @@ const GIT_ENV = {
  */
 function fixGitConfigCorruption(repoRoot) {
   try {
-    const bareResult = spawnSync("git", ["config", "--local", "core.bare"], {
+    const bareResult = spawnSync("git", ["config", "--bool", "--get", "core.bare"], {
       cwd: repoRoot,
       encoding: "utf8",
       timeout: 5000,
@@ -75,7 +75,7 @@ function fixGitConfigCorruption(repoRoot) {
       console.warn(
         `${TAG} :alert: Detected core.bare=true on main repo — fixing git config corruption`,
       );
-      spawnSync("git", ["config", "--unset", "core.bare"], {
+      spawnSync("git", ["config", "--local", "core.bare", "false"], {
         cwd: repoRoot,
         encoding: "utf8",
         timeout: 5000,

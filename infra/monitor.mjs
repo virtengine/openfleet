@@ -13509,9 +13509,10 @@ safeSetInterval("flush-error-queue", () => flushErrorQueue(), 60 * 1000);
 // Legacy periodic maintenance sweep removed (workflow-only control).
 
 // ── Workflow schedule trigger polling ───────────────────────────────────────
-// Check all installed workflows that use trigger.schedule and fire any whose
-// interval has elapsed. This makes schedule-based templates (workspace hygiene,
-// nightly reports, etc.) actually execute without hardcoded safeSetInterval calls.
+// Check all installed polling workflows (trigger.schedule, trigger.scheduled_once,
+// trigger.task_available, trigger.task_low) and fire any whose interval has elapsed.
+// This keeps scheduled and task-poll lifecycle templates executing without hardcoded
+// per-workflow timers.
 const scheduleCheckIntervalMs = 60 * 1000; // check every 60s
 safeSetInterval("workflow-schedule-check", async () => {
   try {

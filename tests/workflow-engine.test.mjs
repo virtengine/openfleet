@@ -1419,6 +1419,48 @@ describe("WorkflowEngine trigger evaluation", () => {
     });
   });
 
+  it("evaluateScheduleTriggers polls trigger.task_available workflows", () => {
+    const wf = makeSimpleWorkflow(
+      [
+        {
+          id: "task-trigger",
+          type: "trigger.task_available",
+          label: "Task Poll",
+          config: { pollIntervalMs: 30000 },
+        },
+      ],
+      [],
+      { id: "task-poll-wf", name: "Task Poll Workflow" },
+    );
+    engine.save(wf);
+
+    const hits = engine.evaluateScheduleTriggers();
+    expect(hits).toHaveLength(1);
+    expect(hits[0]).toMatchObject({
+      workflowId: "task-poll-wf",
+      triggeredBy: "task-trigger",
+    });
+  });
+
+  it("evaluateScheduleTriggers uses pollIntervalMs for trigger.task_available", async () => {
+    const wf = makeSimpleWorkflow(
+      [
+        {
+          id: "task-trigger",
+          type: "trigger.task_available",
+          label: "Task Poll",
+          config: { pollIntervalMs: 60000 },
+        },
+      ],
+      [],
+      { id: "task-poll-interval-wf", name: "Task Poll Interval Workflow" },
+    );
+    engine.save(wf);
+
+    await engine.execute("task-poll-interval-wf");
+    const hits = engine.evaluateScheduleTriggers();
+    expect(hits.some((h) => h.workflowId === "task-poll-interval-wf")).toBe(false);
+  });
   it("evaluateScheduleTriggers skips disabled workflows", () => {
     const wf = {
       id: "sched-disabled",
