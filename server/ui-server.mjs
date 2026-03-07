@@ -6178,7 +6178,13 @@ async function listAllTasksForApi(adapter = null) {
         projectId = projects?.[0]?.id || projects?.[0]?.project_id || "";
       }
       const tasks = await fallbackAdapter.listTasks(projectId, {});
-      if (Array.isArray(tasks)) return tasks;
+      if (Array.isArray(tasks) && tasks.length > 0) return tasks;
+      if (projectId) {
+        const unscopedTasks = await fallbackAdapter.listTasks("", {});
+        if (Array.isArray(unscopedTasks) && unscopedTasks.length > 0) {
+          return unscopedTasks;
+        }
+      }
     } catch {
       // Fall through to broader adapter/task-store snapshots.
     }

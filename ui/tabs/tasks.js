@@ -2159,6 +2159,12 @@ export function TaskDetailModal({ task, onClose, onStart }) {
     setPriority(base.priority || "");
     setTagsInput(base.tagsInput || "");
     setDraft(Boolean(base.draft));
+    setAssignee(base.assignee || "");
+    setAssigneesInput(base.assigneesInput || "");
+    setEpicId(base.epicId || "");
+    setStoryPoints(base.storyPoints || "");
+    setDueDate(base.dueDate || "");
+    setParentTaskId(base.parentTaskId || "");
     showToast("Changes discarded", "info");
   }, []);
 
@@ -2172,6 +2178,12 @@ export function TaskDetailModal({ task, onClose, onStart }) {
     const tags = normalizeTagInput(cleanTagsInput);
     const wantsDraft = draft || status === "draft";
     const nextStatus = wantsDraft ? "draft" : status;
+    const assigneeValue = toText(assignee);
+    const assigneesValue = normalizeDependencyInput(assigneesInput);
+    const epicValue = toText(epicId);
+    const storyPointsValue = toText(storyPoints);
+    const dueDateValue = toText(dueDate);
+    const parentTaskValue = toText(parentTaskId);
     try {
       await runOptimistic(
         () => {
@@ -2188,6 +2200,12 @@ export function TaskDetailModal({ task, onClose, onStart }) {
                   draft: wantsDraft,
                   workspace: workspaceId || null,
                   repository: repository || null,
+                  assignee: assigneeValue || null,
+                  assignees: assigneesValue,
+                  epicId: epicValue || null,
+                  storyPoints: storyPointsValue || null,
+                  dueDate: dueDateValue || null,
+                  parentTaskId: parentTaskValue || null,
                 }
               : t,
           );
@@ -2206,6 +2224,12 @@ export function TaskDetailModal({ task, onClose, onStart }) {
               draft: wantsDraft,
               workspace: workspaceId || undefined,
               repository: repository || undefined,
+              assignee: assigneeValue || undefined,
+              assignees: assigneesValue.length ? assigneesValue : undefined,
+              epicId: epicValue || undefined,
+              storyPoints: storyPointsValue || undefined,
+              dueDate: dueDateValue || undefined,
+              parentTaskId: parentTaskValue || undefined,
             }),
           });
           if (res?.data)
@@ -2229,6 +2253,12 @@ export function TaskDetailModal({ task, onClose, onStart }) {
         priority: priority || "",
         tagsInput: cleanTagsInput,
         draft: wantsDraft,
+        assignee: assigneeValue,
+        assigneesInput: assigneesValue.join(", "),
+        epicId: epicValue,
+        storyPoints: storyPointsValue,
+        dueDate: dueDateValue,
+        parentTaskId: parentTaskValue,
       };
       setBaselineVersion((v) => v + 1);
       clearPendingChange(pendingKey);
@@ -2244,7 +2274,6 @@ export function TaskDetailModal({ task, onClose, onStart }) {
       setSaving(false);
     }
   };
-
   const handleStatusUpdate = async (newStatus) => {
     haptic("medium");
     try {
@@ -4352,7 +4381,18 @@ export function TasksTab() {
               <div class="tasks-filter-section">
                 <div class="tasks-filter-title">DAG View</div>
                 <div class="meta-text">
-                  Pick a sprint from the toolbar to switch the sprint DAG.
+                  Sprint DAG = selected sprint execution plan. Global DAG = cross-sprint dependencies.
+                </div>
+                <div class="tasks-filter-row" style=${{ marginTop: "8px" }}>
+                  <${Select}
+                    size="small"
+                    value=${dagSprintOrderMode}
+                    disabled=${dagLoading || dagSelectedSprint === "all"}
+                    onChange=${(e) => handleDagSprintModeChange(e.target.value)}
+                  >
+                    <${MenuItem} value="parallel">Mode: parallel</${MenuItem}>
+                    <${MenuItem} value="sequential">Mode: sequential</${MenuItem}>
+                  </${Select}>
                 </div>
                 <div class="tasks-filter-row" style=${{ marginTop: "8px" }}>
                   <${Button}
@@ -4370,13 +4410,19 @@ export function TasksTab() {
                     + New Sprint
                   <//>
                 </div>
+                <div class="task-dag-legend" style=${{ marginTop: "8px" }}>
+                  <span class="task-dag-legend-item"><span class="task-dag-legend-line" style=${{ background: "var(--accent)" }}></span>depends-on</span>
+                  <span class="task-dag-legend-item"><span class="task-dag-legend-line task-dag-legend-line-dashed"></span>sequential</span>
+                  <span class="task-dag-legend-item"><span class="task-dag-legend-line task-dag-legend-line-block"></span>blocks</span>
+                </div>
                 ${(dagSources.sprintGraph || dagSources.globalGraph) && html`
                   <div class="meta-text" style=${{ marginTop: "6px" }}>
                     Source: ${dagSources.sprintGraph || dagSources.globalGraph}
                   </div>
                 `}
               </div>
-            `}          </div>
+            `}
+          </div>
         </div>
       </div>
       ${isList && hasActiveFilters && (!isCompact || filtersOpen) && html`
@@ -5071,6 +5117,9 @@ function CreateTaskModalInline({ onClose }) {
     <//>
   `;
 }
+
+
+
 
 
 

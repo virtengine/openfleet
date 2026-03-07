@@ -197,6 +197,10 @@ export function formatCompactCount(value) {
 }
 
 export function buildSessionInsights(fullSession = null) {
+  const persisted =
+    fullSession?.insights && typeof fullSession.insights === "object"
+      ? fullSession.insights
+      : null;
   const messages = Array.isArray(fullSession?.messages) ? fullSession.messages : [];
   const tools = new Map();
   const openedFiles = new Map();
@@ -309,7 +313,7 @@ export function buildSessionInsights(fullSession = null) {
     };
   }
 
-  return {
+  const derived = {
     totals: {
       messages: messages.length,
       toolCalls,
@@ -349,5 +353,26 @@ export function buildSessionInsights(fullSession = null) {
       totalFiles: edited.length,
     },
     generatedAt: new Date().toISOString(),
+  };
+
+  if (!persisted) return derived;
+
+  return {
+    ...derived,
+    ...persisted,
+    totals: persisted.totals || derived.totals,
+    fileCounts: persisted.fileCounts || derived.fileCounts,
+    files: persisted.files || derived.files,
+    topTools: Array.isArray(persisted.topTools) ? persisted.topTools : derived.topTools,
+    recentActions: Array.isArray(persisted.recentActions)
+      ? persisted.recentActions
+      : derived.recentActions,
+    contextWindow: persisted.contextWindow || derived.contextWindow,
+    contextBreakdown: Array.isArray(persisted.contextBreakdown)
+      ? persisted.contextBreakdown
+      : derived.contextBreakdown,
+    tokenUsage: persisted.tokenUsage || derived.tokenUsage,
+    activityDiff: persisted.activityDiff || derived.activityDiff,
+    generatedAt: persisted.generatedAt || derived.generatedAt,
   };
 }

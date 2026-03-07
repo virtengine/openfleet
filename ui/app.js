@@ -1051,6 +1051,7 @@ function InspectorPanel({ onResizeStart, onResizeReset, showResizer }) {
     : [];
   const contextWindow = insights?.contextWindow || null;
   const tokenUsage = insights?.tokenUsage || null;
+  const recentActions = Array.isArray(insights?.recentActions) ? insights.recentActions : [];
   let smartLogsContent = html`
     <div class="inspector-scroll">
       ${smartLogs.map(
@@ -1067,10 +1068,32 @@ function InspectorPanel({ onResizeStart, onResizeReset, showResizer }) {
       )}
     </div>
   `;
+  if (smartLogs.length === 0 && recentActions.length) {
+    smartLogsContent = html`
+      <div class="inspector-scroll">
+        ${recentActions.slice(0, 6).map(
+          (entry, idx) => html`
+            <div key=${idx} class="inspector-log-line ${entry.level || "info"}">
+              <span class="inspector-log-level">
+                ${String(entry.type || entry.level || "activity").replace(/_/g, " ").toUpperCase()}
+              </span>
+              <span class="inspector-log-text">
+                ${String(entry.label || "").slice(0, 220) || "Session activity recorded."}
+              </span>
+            </div>
+          `,
+        )}
+      </div>
+    `;
+  }
   if (logState === "error") {
-    smartLogsContent = html`<div class="inspector-empty">Log stream unavailable.</div>`;
+    smartLogsContent = recentActions.length
+      ? smartLogsContent
+      : html`<div class="inspector-empty">Log stream unavailable.</div>`;
   } else if (smartLogs.length === 0) {
-    smartLogsContent = html`<div class="inspector-empty">No warning/error lines in the latest logs.</div>`;
+    smartLogsContent = recentActions.length
+      ? smartLogsContent
+      : html`<div class="inspector-empty">No warning/error lines in the latest logs.</div>`;
   }
 
   return html`

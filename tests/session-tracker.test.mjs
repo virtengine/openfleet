@@ -1,3 +1,6 @@
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { describe, expect, it, beforeEach } from "vitest";
 import { createSessionTracker, SessionTracker } from "../infra/session-tracker.mjs";
 
@@ -337,6 +340,40 @@ describe("session-tracker", () => {
       expect(stats.total).toBe(2);
       expect(stats.active).toBe(1);
       expect(stats.completed).toBe(1);
+    });
+  });
+
+  describe("persisted insights", () => {
+    it("stores inspector insights on sessions and reloads them from disk", () => {
+      const persistDir = mkdtempSync(join(tmpdir(), "bosun-session-tracker-"));
+      try {
+        const persistentTracker = createSessionTracker({ maxMessages: 10, persistDir });
+        persistentTracker.createSession({ id: "chat-1", type: "primary" });
+        persistentTracker.recordEvent("chat-1", {
+          role: "system",
+          type: "system",
+          content: "Context Window\n103.2K / 272K tokens • 38%\nMessages 4.2%",
+          timestamp: "2026-03-04T01:00:00.000Z",
+        });
+        persistentTracker.recordEvent("chat-1", {
+          type: "item.completed",
+          item: { type: "function_call", name: "read_file", arguments: "ui/app.js" },
+        });
+        persistentTracker.flush();
+        persistentTracker.destroy();
+
+        const reloadedTracker = createSessionTracker({ maxMessages: 10, persistDir });
+        const session = reloadedTracker.getSessionMessages("chat-1");
+        const listed = reloadedTracker.listAllSessions().find((entry) => entry.id === "chat-1");
+
+        expect(session?.insights?.totals?.toolCalls).toBe(1);
+        expect(session?.insights?.contextWindow?.percent).toBe(38);
+        expect(listed?.insights?.contextWindow?.usedTokens).toBe(103200);
+
+        reloadedTracker.destroy();
+      } finally {
+        rmSync(persistDir, { recursive: true, force: true });
+      }
     });
   });
 });

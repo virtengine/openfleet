@@ -366,7 +366,7 @@ describe("invokeCustomTool", () => {
     );
 
     const result = await invokeCustomTool(tmpRoot, "echo-tool", [], {
-      timeout: 10000,
+      timeout: 3000,
     });
     expect(result.stdout.trim()).toBe("tool-output-ok");
     expect(result.exitCode).toBe(0);
@@ -383,7 +383,7 @@ describe("invokeCustomTool", () => {
     );
 
     const result = await invokeCustomTool(tmpRoot, "fail-tool", [], {
-      timeout: 10000,
+      timeout: 3000,
     });
     expect(result.exitCode).toBe(1);
     expect(result.stderr).toContain("oops");
@@ -743,3 +743,4 @@ describe("getToolsPromptBlock affinity", () => {
     expect(block).not.toContain("not-eager.mjs");
   });
 });
+
