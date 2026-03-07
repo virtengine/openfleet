@@ -373,6 +373,51 @@ function getTaskSprintOrder(task) {
   const numeric = Number(raw);
   return Number.isFinite(numeric) ? String(numeric) : "";
 }
+function pickTaskField(task, keys = []) {
+  for (const key of keys) {
+    const direct = task?.[key];
+    if (direct != null && String(direct).trim() !== "") return direct;
+    const meta = task?.meta?.[key];
+    if (meta != null && String(meta).trim() !== "") return meta;
+  }
+  return "";
+}
+
+function normalizeTaskAssigneesInput(task) {
+  const value = pickTaskField(task, ["assignees"]);
+  if (Array.isArray(value)) {
+    return value
+      .map((entry) => toText(entry?.name || entry))
+      .filter(Boolean)
+      .join(", ");
+  }
+  return toText(value);
+}
+
+function normalizeTaskDueDateInput(task) {
+  const value = toText(pickTaskField(task, ["dueDate", "due", "due_at", "dueAt"]));
+  if (!value) return "";
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return "";
+  return date.toISOString().slice(0, 10);
+}
+
+function normalizeSubtasksPayload(raw) {
+  const payload = extractDagPayload(raw);
+  const rows = toArray(payload?.subtasks || payload?.items || payload?.tasks || payload);
+  return rows
+    .map((entry) => {
+      if (!entry || typeof entry !== "object") return null;
+      return {
+        id: toText(entry.id || entry.taskId),
+        title: toText(entry.title || entry.summary || entry.name, "(untitled subtask)"),
+        status: toText(entry.status || entry.state),
+        assignee: toText(entry.assignee || entry.owner),
+        storyPoints: toText(entry.storyPoints || entry.points),
+      };
+    })
+    .filter((entry) => entry && entry.id);
+}
 
 function extractDagPayload(raw) {
   if (raw && typeof raw === "object" && "data" in raw && raw.data != null) {
@@ -931,7 +976,7 @@ export function StartTaskModal({
     <${Modal}
       title="Start Task"
       onClose=${onClose}
-      contentClassName="modal-content-wide"
+      contentClassName="modal-content-wide task-detail-modal-jira"
       unsavedChanges=${changeCount}
       onSaveBeforeClose=${() => handleStart({ closeAfterStart: true })}
       onDiscardBeforeClose=${() => {
@@ -1297,7 +1342,7 @@ function TriggerTemplatesModal({ onClose }) {
     <${Modal}
       title="Trigger Templates"
       onClose=${onClose}
-      contentClassName="modal-content-wide"
+      contentClassName="modal-content-wide task-detail-modal-jira"
       unsavedChanges=${defaultsDirtyCount}
       onSaveBeforeClose=${() => handleSaveDefaults({ closeAfterSave: true })}
       onDiscardBeforeClose=${() => {
@@ -1918,6 +1963,26 @@ export function TaskDetailModal({ task, onClose, onStart }) {
     task?.workspace || activeWorkspaceId.value || "",
   );
   const [repository, setRepository] = useState(task?.repository || "");
+  const [assignee, setAssignee] = useState(
+    toText(pickTaskField(task, ["assignee"])),
+  );
+  const [assigneesInput, setAssigneesInput] = useState(
+    normalizeTaskAssigneesInput(task),
+  );
+  const [epicId, setEpicId] = useState(
+    toText(pickTaskField(task, ["epicId", "epic", "epic_id"])),
+  );
+  const [storyPoints, setStoryPoints] = useState(
+    toText(pickTaskField(task, ["storyPoints", "points", "story_points"])),
+  );
+  const [dueDate, setDueDate] = useState(normalizeTaskDueDateInput(task));
+  const [parentTaskId, setParentTaskId] = useState(
+    toText(pickTaskField(task, ["parentTaskId", "parentId", "parent_task_id"])),
+  );
+  const [subtasks, setSubtasks] = useState([]);
+  const [subtasksLoading, setSubtasksLoading] = useState(false);
+  const [subtaskTitle, setSubtaskTitle] = useState("");
+  const [creatingSubtask, setCreatingSubtask] = useState(false);
   const attachmentInputRef = useRef(null);
   const initialSnapshotRef = useRef({
     title: sanitizeTaskText(task?.title || ""),
@@ -1975,8 +2040,28 @@ export function TaskDetailModal({ task, onClose, onStart }) {
       priority: priority || "",
       tagsInput: tagsInput || "",
       draft: Boolean(draft),
+      assignee: assignee || "",
+      assigneesInput: assigneesInput || "",
+      epicId: epicId || "",
+      storyPoints: storyPoints || "",
+      dueDate: dueDate || "",
+      parentTaskId: parentTaskId || "",
     }),
-    [baseBranch, description, draft, priority, status, tagsInput, title],
+    [
+      assignee,
+      assigneesInput,
+      baseBranch,
+      description,
+      draft,
+      dueDate,
+      epicId,
+      parentTaskId,
+      priority,
+      status,
+      storyPoints,
+      tagsInput,
+      title,
+    ],
   );
   const changeCount = useMemo(
     () => countChangedFields(initialSnapshotRef.current, editableSnapshot),
@@ -2242,21 +2327,38 @@ export function TaskDetailModal({ task, onClose, onStart }) {
       return options[0].id;
     });
   }, [task?.id]);
+  const loadSubtasks = useCallback(async () => {
+    if (!task?.id) return;
+    setSubtasksLoading(true);
+    try {
+      const res = await apiFetch(`/api/tasks/subtasks?taskId=${encodeURIComponent(task.id)}`, {
+        _silent: true,
+      });
+      setSubtasks(normalizeSubtasksPayload(res));
+    } catch {
+      setSubtasks([]);
+    } finally {
+      setSubtasksLoading(false);
+    }
+  }, [task?.id]);
 
   useEffect(() => {
     let cancelled = false;
     const run = async () => {
       try {
-        await loadSprintAssignments();
+        await Promise.all([loadSprintAssignments(), loadSubtasks()]);
       } catch {
-        if (!cancelled) setSprintOptions([]);
+        if (!cancelled) {
+          setSprintOptions([]);
+          setSubtasks([]);
+        }
       }
     };
     run();
     return () => {
       cancelled = true;
     };
-  }, [loadSprintAssignments]);
+  }, [loadSprintAssignments, loadSubtasks]);
 
   const handlePostComment = async () => {
     if (!task?.id || postingComment) return;
@@ -2380,6 +2482,31 @@ export function TaskDetailModal({ task, onClose, onStart }) {
     }
   };
 
+  const handleCreateSubtask = async () => {
+    if (!task?.id || creatingSubtask) return;
+    const cleanTitle = sanitizeTaskText(subtaskTitle || "").trim();
+    if (!cleanTitle) return;
+    setCreatingSubtask(true);
+    haptic("medium");
+    try {
+      await apiFetch("/api/tasks/subtasks", {
+        method: "POST",
+        body: JSON.stringify({
+          taskId: task.id,
+          parentTaskId: task.id,
+          title: cleanTitle,
+        }),
+      });
+      setSubtaskTitle("");
+      showToast("Subtask created", "success");
+      await loadSubtasks();
+      scheduleRefresh(120);
+    } catch {
+      showToast("Failed to create subtask", "error");
+    } finally {
+      setCreatingSubtask(false);
+    }
+  };
   const handleRetry = async () => {
     haptic("medium");
     try {
@@ -2455,7 +2582,7 @@ export function TaskDetailModal({ task, onClose, onStart }) {
     <${Modal}
       title=${task?.title || "Task Detail"}
       onClose=${onClose}
-      contentClassName="modal-content-wide"
+      contentClassName="modal-content-wide task-detail-modal-jira"
       unsavedChanges=${changeCount}
       onSaveBeforeClose=${() => handleSave({ closeAfterSave: true })}
       onDiscardBeforeClose=${() => {
@@ -2464,7 +2591,7 @@ export function TaskDetailModal({ task, onClose, onStart }) {
       }}
       activeOperationLabel=${activeOperationLabel}
     >
-      <div class="task-modal-summary">
+      <div class="task-modal-summary jira-task-summary">
         <div class="task-modal-id" style="user-select:all">ID: ${task?.id}</div>
         <div class="task-modal-badges">
           <${Badge} status=${task?.status} text=${task?.status} />
@@ -2561,7 +2688,7 @@ export function TaskDetailModal({ task, onClose, onStart }) {
             `)}
           </div>
         </div>
-      `}        <div class="flex-col gap-md modal-form-grid">
+      `}        <div class="flex-col gap-md modal-form-grid jira-task-layout">
         <div class="input-with-mic modal-form-span">
           <${TextField} size="small" variant="outlined" placeholder="Title" value=${title} onInput=${(e) => setTitle(e.target.value)} fullWidth />
           <${VoiceMicButtonInline}
@@ -2748,7 +2875,60 @@ export function TaskDetailModal({ task, onClose, onStart }) {
             : html`${iconText(":star: Improve with AI")}`
           }
         <//><//> 
-        <${TextField} size="small" variant="outlined" className="modal-form-span" placeholder="Base branch (optional, e.g. feature/xyz)" value=${baseBranch} onInput=${(e) => setBaseBranch(e.target.value)} fullWidth />
+        <${TextField} size="small" variant="outlined" className="modal-form-span" placeholder="Base branch (optional, e.g. feature/xyz)" value=${baseBranch} onInput=${(e) => setBaseBranch(e.target.value)} fullWidth />        <div class="modal-form-span jira-meta-grid">
+          <${TextField}
+            size="small"
+            variant="outlined"
+            label="Assignee"
+            value=${assignee}
+            onInput=${(e) => setAssignee(e.target.value)}
+            fullWidth
+          />
+          <${TextField}
+            size="small"
+            variant="outlined"
+            label="Assignees"
+            placeholder="alice, bob"
+            value=${assigneesInput}
+            onInput=${(e) => setAssigneesInput(e.target.value)}
+            fullWidth
+          />
+          <${TextField}
+            size="small"
+            variant="outlined"
+            label="Epic"
+            value=${epicId}
+            onInput=${(e) => setEpicId(e.target.value)}
+            fullWidth
+          />
+          <${TextField}
+            size="small"
+            variant="outlined"
+            type="number"
+            label="Story Points"
+            value=${storyPoints}
+            onInput=${(e) => setStoryPoints(e.target.value)}
+            fullWidth
+          />
+          <${TextField}
+            size="small"
+            variant="outlined"
+            type="date"
+            label="Due Date"
+            value=${dueDate}
+            onInput=${(e) => setDueDate(e.target.value)}
+            InputLabelProps=${{ shrink: true }}
+            fullWidth
+          />
+          <${TextField}
+            size="small"
+            variant="outlined"
+            label="Parent Task"
+            value=${parentTaskId}
+            onInput=${(e) => setParentTaskId(e.target.value)}
+            fullWidth
+          />
+        </div>
         <div class="input-row modal-form-span">
           <${Select}
             size="small"
@@ -4659,7 +4839,7 @@ function CreateTaskModalInline({ onClose }) {
     <${Modal}
       title="New Task"
       onClose=${onClose}
-      contentClassName="modal-content-wide"
+      contentClassName="modal-content-wide task-detail-modal-jira"
       footer=${footerContent}
       unsavedChanges=${changeCount}
       onSaveBeforeClose=${() => handleSubmit({ closeAfterSave: true })}
@@ -4824,3 +5004,15 @@ function CreateTaskModalInline({ onClose }) {
     <//>
   `;
 }
+
+
+
+
+
+
+
+
+
+
+
+

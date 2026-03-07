@@ -1641,13 +1641,37 @@ describe("ui-server mini app", () => {
   it("wires sprint and dag task-store APIs through ui-server endpoints", async () => {
     process.env.TELEGRAM_UI_TUNNEL = "disabled";
 
+    const sprintMap = new Map();
+    sprintMap.set("s-1", { id: "s-1", name: "Sprint 1", executionMode: "parallel" });
+
     const mod = await import("../server/ui-server.mjs");
     mod.injectUiDependencies({
       taskStoreApi: {
-        listSprints: vi.fn(() => [{ id: "s-1", name: "Sprint 1" }]),
-        createSprint: vi.fn((payload) => ({ id: payload.id || "s-2", name: payload.name || "Sprint 2" })),
-        getSprint: vi.fn((id) => ({ id, name: `Sprint ${id}` })),
-        updateSprint: vi.fn((id, payload) => ({ id, ...payload })),
+        listSprints: vi.fn(() => [...sprintMap.values()]),
+        createSprint: vi.fn((payload = {}) => {
+          const id = payload.id || "s-2";
+          const sprint = {
+            id,
+            name: payload.name || `Sprint ${id}`,
+            executionMode: payload.executionMode || payload.taskOrderMode || "parallel",
+            taskOrderMode: payload.taskOrderMode || payload.executionMode || "parallel",
+          };
+          sprintMap.set(id, sprint);
+          return sprint;
+        }),
+        getSprint: vi.fn((id) => sprintMap.get(id) || null),
+        updateSprint: vi.fn((id, payload = {}) => {
+          const current = sprintMap.get(id) || { id, name: `Sprint ${id}` };
+          const next = {
+            ...current,
+            ...payload,
+            id,
+            executionMode: payload.executionMode || payload.taskOrderMode || current.executionMode || "parallel",
+            taskOrderMode: payload.taskOrderMode || payload.executionMode || current.taskOrderMode || current.executionMode || "parallel",
+          };
+          sprintMap.set(id, next);
+          return next;
+        }),
         deleteSprint: vi.fn((id) => ({ id, deleted: true })),
         getSprintDag: vi.fn((id) => ({ sprintId: id, nodes: [{ id: "A" }], edges: [] })),
         getGlobalDagOfDags: vi.fn(() => ({ nodes: [{ id: "s-1" }], edges: [] })),
@@ -1665,18 +1689,45 @@ describe("ui-server mini app", () => {
     const sprintList = await fetch(`http://127.0.0.1:${port}/api/tasks/sprints`).then((r) => r.json());
     expect(sprintList.ok).toBe(true);
     expect(Array.isArray(sprintList.data)).toBe(true);
+    expect(sprintList.data[0].executionMode).toBe("parallel");
+
+    const invalidMode = await fetch(`http://127.0.0.1:${port}/api/tasks/sprints`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ id: "bad-mode", name: "Bad", executionMode: "random" }),
+    });
+    expect(invalidMode.status).toBe(400);
 
     const sprintCreate = await fetch(`http://127.0.0.1:${port}/api/tasks/sprints`, {
       method: "POST",
       headers: { "content-type": "application/json" },
-      body: JSON.stringify({ id: "s-2", name: "Sprint 2" }),
+      body: JSON.stringify({ id: "s-2", name: "Sprint 2", executionMode: "sequential" }),
     }).then((r) => r.json());
     expect(sprintCreate.ok).toBe(true);
     expect(sprintCreate.data.id).toBe("s-2");
+    expect(sprintCreate.data.executionMode).toBe("sequential");
+    expect(sprintCreate.data.taskOrderMode).toBe("sequential");
+
+    const sprintUpdate = await fetch(`http://127.0.0.1:${port}/api/tasks/sprints/s-2`, {
+      method: "PATCH",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ executionMode: "parallel" }),
+    }).then((r) => r.json());
+    expect(sprintUpdate.ok).toBe(true);
+    expect(sprintUpdate.data.executionMode).toBe("parallel");
+
+    const sprintGet = await fetch(`http://127.0.0.1:${port}/api/tasks/sprints/s-2`).then((r) => r.json());
+    expect(sprintGet.ok).toBe(true);
+    expect(sprintGet.data.executionMode).toBe("parallel");
 
     const sprintDag = await fetch(`http://127.0.0.1:${port}/api/tasks/dag?sprintId=s-1`).then((r) => r.json());
     expect(sprintDag.ok).toBe(true);
     expect(sprintDag.data.sprintId).toBe("s-1");
+    expect(sprintDag.sprint.executionMode).toBe("parallel");
+
+    const sprintSpecificDag = await fetch(`http://127.0.0.1:${port}/api/tasks/sprints/s-1/dag`).then((r) => r.json());
+    expect(sprintSpecificDag.ok).toBe(true);
+    expect(sprintSpecificDag.sprint.executionMode).toBe("parallel");
 
     const dagOfDags = await fetch(`http://127.0.0.1:${port}/api/tasks/dag-of-dags`).then((r) => r.json());
     expect(dagOfDags.ok).toBe(true);
@@ -1909,7 +1960,7 @@ describe("ui-server mini app", () => {
   });
 
 
-  it("persists jira-style metadata fields on create and edit", async () => {
+  it("persists jira-style metadata fields on create, update, and edit", async () => {
     process.env.TELEGRAM_UI_TUNNEL = "disabled";
 
     const mod = await import("../server/ui-server.mjs");
@@ -1928,7 +1979,6 @@ describe("ui-server mini app", () => {
         title: "jira-metadata task",
         description: "metadata",
         assignee: "alice",
-        assignees: ["alice", "bob"],
         epicId: "EPIC-123",
         storyPoints: 8,
         parentTaskId: "PARENT-1",
@@ -1938,37 +1988,105 @@ describe("ui-server mini app", () => {
 
     expect(created.ok).toBe(true);
     expect(created.data.assignee).toBe("alice");
+    expect(created.data.assignees).toEqual(["alice"]);
     expect(created.data.epicId).toBe("EPIC-123");
     expect(created.data.storyPoints).toBe(8);
     expect(created.data.parentTaskId).toBe("PARENT-1");
     expect(created.data.dueDate).toBe("2026-04-01");
+    expect(created.data.meta?.assignee).toBe("alice");
+    expect(created.data.meta?.assignees).toEqual(["alice"]);
+    expect(created.data.meta?.epicId).toBe("EPIC-123");
+    expect(created.data.meta?.storyPoints).toBe(8);
+    expect(created.data.meta?.parentTaskId).toBe("PARENT-1");
+    expect(created.data.meta?.dueDate).toBe("2026-04-01");
+
+    const updated = await fetch("http://127.0.0.1:" + port + "/api/tasks/update", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        taskId: created.data.id,
+        assignee: "charlie",
+        assignees: ["charlie", "dana"],
+        epicId: "EPIC-999",
+        storyPoints: 13,
+        parentTaskId: "PARENT-2",
+        dueDate: "2026-05-10",
+      }),
+    }).then((r) => r.json());
+
+    expect(updated.ok).toBe(true);
+    expect(updated.data.assignee).toBe("charlie");
+    expect(updated.data.assignees).toEqual(["charlie", "dana"]);
+    expect(updated.data.epicId).toBe("EPIC-999");
+    expect(updated.data.storyPoints).toBe(13);
+    expect(updated.data.parentTaskId).toBe("PARENT-2");
+    expect(updated.data.dueDate).toBe("2026-05-10");
+    expect(updated.data.meta?.assignee).toBe("charlie");
+    expect(updated.data.meta?.assignees).toEqual(["charlie", "dana"]);
+    expect(updated.data.meta?.epicId).toBe("EPIC-999");
+    expect(updated.data.meta?.storyPoints).toBe(13);
+    expect(updated.data.meta?.parentTaskId).toBe("PARENT-2");
+    expect(updated.data.meta?.dueDate).toBe("2026-05-10");
 
     const edited = await fetch("http://127.0.0.1:" + port + "/api/tasks/edit", {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({
         taskId: created.data.id,
-        assignee: "charlie",
-        assignees: ["charlie"],
-        epicId: "EPIC-999",
-        storyPoints: 13,
-        dueDate: "2026-05-10",
+        assignee: "eve",
+        assignees: ["eve"],
+        epicId: "EPIC-777",
+        storyPoints: 5,
+        parentTaskId: "PARENT-3",
+        dueDate: "2026-06-20",
       }),
     }).then((r) => r.json());
 
     expect(edited.ok).toBe(true);
-    expect(edited.data.assignee).toBe("charlie");
-    expect(Array.isArray(edited.data.assignees)).toBe(true);
-    expect(edited.data.assignees[0]).toBe("charlie");
-    expect(edited.data.epicId).toBe("EPIC-999");
-    expect(edited.data.storyPoints).toBe(13);
-    expect(edited.data.dueDate).toBe("2026-05-10");
+    expect(edited.data.assignee).toBe("eve");
+    expect(edited.data.assignees).toEqual(["eve"]);
+    expect(edited.data.epicId).toBe("EPIC-777");
+    expect(edited.data.storyPoints).toBe(5);
+    expect(edited.data.parentTaskId).toBe("PARENT-3");
+    expect(edited.data.dueDate).toBe("2026-06-20");
+    expect(edited.data.meta?.assignee).toBe("eve");
+    expect(edited.data.meta?.assignees).toEqual(["eve"]);
+    expect(edited.data.meta?.epicId).toBe("EPIC-777");
+    expect(edited.data.meta?.storyPoints).toBe(5);
+    expect(edited.data.meta?.parentTaskId).toBe("PARENT-3");
+    expect(edited.data.meta?.dueDate).toBe("2026-06-20");
   });
 
   it("creates and lists subtasks via /api/tasks/subtasks", async () => {
     process.env.TELEGRAM_UI_TUNNEL = "disabled";
 
+    const taskMap = new Map();
+    let nextId = 1;
+
     const mod = await import("../server/ui-server.mjs");
+    mod.injectUiDependencies({
+      taskStoreApi: {
+        getTask: vi.fn((taskId) => taskMap.get(taskId) || null),
+        getAllTasks: vi.fn(() => [...taskMap.values()]),
+        createTask: vi.fn((projectId, payload = {}) => {
+          const id = payload.id || `task-${nextId++}`;
+          const created = {
+            id,
+            title: payload.title || "",
+            description: payload.description || "",
+            status: payload.status || "todo",
+            ...(payload.parentTaskId ? { parentTaskId: payload.parentTaskId } : {}),
+            ...(payload.priority ? { priority: payload.priority } : {}),
+            meta: {
+              ...(payload.meta && typeof payload.meta === "object" ? payload.meta : {}),
+            },
+          };
+          taskMap.set(id, created);
+          return created;
+        }),
+      },
+    });
+
     const server = await mod.startTelegramUiServer({
       port: await getFreePort(),
       host: "127.0.0.1",
@@ -1984,6 +2102,13 @@ describe("ui-server mini app", () => {
     }).then((r) => r.json());
     expect(parent.ok).toBe(true);
 
+    const missingParent = await fetch("http://127.0.0.1:" + port + "/api/tasks/subtasks", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ parentTaskId: "missing-parent", title: "Orphan" }),
+    });
+    expect(missingParent.status).toBe(404);
+
     const subtask = await fetch("http://127.0.0.1:" + port + "/api/tasks/subtasks", {
       method: "POST",
       headers: { "content-type": "application/json" },
@@ -1997,11 +2122,21 @@ describe("ui-server mini app", () => {
     expect(subtask.parentTaskId).toBe(parent.data.id);
     expect(subtask.data.parentTaskId || subtask.data?.meta?.parentTaskId).toBe(parent.data.id);
 
-    const listed = await fetch("http://127.0.0.1:" + port + "/api/tasks/subtasks?taskId=" + encodeURIComponent(parent.data.id))
+    const listedByTaskId = await fetch("http://127.0.0.1:" + port + "/api/tasks/subtasks?taskId=" + encodeURIComponent(parent.data.id))
       .then((r) => r.json());
 
-    expect(listed.ok).toBe(true);
-    expect(Array.isArray(listed.data)).toBe(true);
-    expect(listed.data.some((entry) => String(entry?.id) === String(subtask.data.id))).toBe(true);
+    expect(listedByTaskId.ok).toBe(true);
+    expect(Array.isArray(listedByTaskId.data)).toBe(true);
+    expect(listedByTaskId.data.some((entry) => String(entry?.id) === String(subtask.data.id))).toBe(true);
+
+    const listedByParentTaskId = await fetch("http://127.0.0.1:" + port + "/api/tasks/subtasks?parentTaskId=" + encodeURIComponent(parent.data.id))
+      .then((r) => r.json());
+
+    expect(listedByParentTaskId.ok).toBe(true);
+    expect(listedByParentTaskId.taskId).toBe(parent.data.id);
+    expect(listedByParentTaskId.data.some((entry) => String(entry?.id) === String(subtask.data.id))).toBe(true);
   });
 });
+
+
+

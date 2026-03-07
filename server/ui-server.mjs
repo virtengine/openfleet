@@ -7849,16 +7849,21 @@ function normalizeAssigneesInput(input) {
 function buildTaskMetadataPatch(input = {}) {
   const topLevel = {};
   const meta = {};
+  const assigneesProvided = hasOwn(input, "assignees");
 
   if (hasOwn(input, "assignee")) {
     const assignee = normalizeOptionalStringInput(input?.assignee);
     if (assignee) {
       topLevel.assignee = assignee;
       meta.assignee = assignee;
+      if (!assigneesProvided) {
+        topLevel.assignees = [assignee];
+        meta.assignees = [assignee];
+      }
     }
   }
 
-  if (hasOwn(input, "assignees")) {
+  if (assigneesProvided) {
     const assignees = normalizeAssigneesInput(input?.assignees);
     if (assignees.length > 0) {
       topLevel.assignees = assignees;
@@ -7907,6 +7912,46 @@ function buildTaskMetadataPatch(input = {}) {
   return { topLevel, meta };
 }
 
+const SPRINT_EXECUTION_MODES = new Set(["sequential", "parallel"]);
+
+function normalizeSprintExecutionMode(input) {
+  const normalized = String(input ?? "").trim().toLowerCase();
+  return SPRINT_EXECUTION_MODES.has(normalized) ? normalized : null;
+}
+
+function normalizeSprintPayloadForApi(input = {}) {
+  if (!input || typeof input !== "object") return {};
+  const payload = { ...input };
+  const rawMode = payload.executionMode ?? payload.taskOrderMode ?? payload.mode;
+  if (rawMode != null) {
+    const mode = normalizeSprintExecutionMode(rawMode);
+    if (!mode) {
+      return { error: "executionMode must be one of: sequential, parallel" };
+    }
+    payload.executionMode = mode;
+    payload.taskOrderMode = mode;
+  }
+  return { payload };
+}
+
+function normalizeSprintResponseForApi(sprint) {
+  if (!sprint || typeof sprint !== "object") return sprint ?? null;
+  const normalized = { ...sprint };
+  const mode = normalizeSprintExecutionMode(
+    normalized.executionMode ?? normalized.taskOrderMode ?? normalized.mode,
+  );
+  if (mode) {
+    normalized.executionMode = mode;
+    normalized.taskOrderMode = mode;
+  }
+  return normalized;
+}
+
+function normalizeSprintListResponseForApi(list) {
+  if (!Array.isArray(list)) return [];
+  return list.map((entry) => normalizeSprintResponseForApi(entry));
+}
+
 function hasTaskPatchValues(patch = {}) {
   for (const value of Object.values(patch)) {
     if (typeof value === "string" && value.trim()) return true;
@@ -7916,6 +7961,24 @@ function hasTaskPatchValues(patch = {}) {
     if (value && typeof value === "object" && !Array.isArray(value) && Object.keys(value).length > 0) return true;
   }
   return false;
+}
+
+function withTaskMetadataTopLevel(task) {
+  if (!task || typeof task !== "object") return task;
+  const meta = task?.meta && typeof task.meta === "object" ? task.meta : null;
+  if (!meta) return task;
+
+  let next = task;
+  const keys = ["assignee", "assignees", "epicId", "storyPoints", "parentTaskId", "dueDate"];
+  for (const key of keys) {
+    if (meta[key] != null && next[key] !== meta[key]) {
+      next = { ...next, [key]: meta[key] };
+    }
+  }
+  if (!next.assignee && Array.isArray(next.assignees) && next.assignees.length > 0) {
+    next = { ...next, assignee: next.assignees[0] };
+  }
+  return next;
 }
 
 async function getLatestLogTail(lineCount) {
@@ -8641,7 +8704,8 @@ async function handleApi(req, res, url) {
         jsonResponse(res, 501, { ok: false, error: "Sprint APIs are unavailable." });
         return;
       }
-      jsonResponse(res, 200, { ok: true, source: `task-store.${list.found}`, data: list.value || [] });
+      const sprintList = normalizeSprintListResponseForApi(list.value || []);
+      jsonResponse(res, 200, { ok: true, source: `task-store.${list.found}`, data: sprintList });
     } catch (err) {
       jsonResponse(res, 500, { ok: false, error: err.message });
     }
@@ -8651,12 +8715,18 @@ async function handleApi(req, res, url) {
   if (path === "/api/tasks/sprints" && req.method === "POST") {
     try {
       const body = await readJsonBody(req);
-      const create = await callTaskStoreFunction(TASK_STORE_SPRINT_EXPORTS.create, [body || {}]);
+      const normalized = normalizeSprintPayloadForApi(body || {});
+      if (normalized.error) {
+        jsonResponse(res, 400, { ok: false, error: normalized.error });
+        return;
+      }
+      const create = await callTaskStoreFunction(TASK_STORE_SPRINT_EXPORTS.create, [normalized.payload || {}]);
       if (!create.found) {
         jsonResponse(res, 501, { ok: false, error: "Sprint create API is unavailable." });
         return;
       }
-      jsonResponse(res, 200, { ok: true, source: `task-store.${create.found}`, data: create.value || null });
+      const sprint = normalizeSprintResponseForApi(create.value || null);
+      jsonResponse(res, 200, { ok: true, source: `task-store.${create.found}`, data: sprint });
       broadcastUiEvent(["tasks", "overview"], "invalidate", { reason: "sprint-created" });
     } catch (err) {
       jsonResponse(res, 500, { ok: false, error: err.message });
@@ -8676,7 +8746,9 @@ async function handleApi(req, res, url) {
         jsonResponse(res, 501, { ok: false, error: "Sprint DAG API is unavailable." });
         return;
       }
-      jsonResponse(res, 200, { ok: true, sprintId, source: sprintDag.source, data: sprintDag.data });
+      const sprintResult = await callTaskStoreFunction(TASK_STORE_SPRINT_EXPORTS.get, [sprintId]);
+      const sprint = sprintResult.found ? normalizeSprintResponseForApi(sprintResult.value || null) : null;
+      jsonResponse(res, 200, { ok: true, sprintId, source: sprintDag.source, sprint, data: sprintDag.data });
     } catch (err) {
       jsonResponse(res, 500, { ok: false, error: err.message });
     }
@@ -8730,6 +8802,7 @@ async function handleApi(req, res, url) {
     }
     return;
   }
+
   if (path.startsWith("/api/tasks/sprints/") && req.method === "GET") {
     try {
       const sprintId = decodeURIComponent(path.slice("/api/tasks/sprints/".length));
@@ -8742,7 +8815,8 @@ async function handleApi(req, res, url) {
         jsonResponse(res, 501, { ok: false, error: "Sprint get API is unavailable." });
         return;
       }
-      jsonResponse(res, 200, { ok: true, source: `task-store.${getResult.found}`, data: getResult.value || null });
+      const sprint = normalizeSprintResponseForApi(getResult.value || null);
+      jsonResponse(res, 200, { ok: true, source: `task-store.${getResult.found}`, data: sprint });
     } catch (err) {
       jsonResponse(res, 500, { ok: false, error: err.message });
     }
@@ -8757,12 +8831,18 @@ async function handleApi(req, res, url) {
         jsonResponse(res, 400, { ok: false, error: "sprintId required" });
         return;
       }
-      const update = await callTaskStoreFunction(TASK_STORE_SPRINT_EXPORTS.update, [sprintId, body || {}]);
+      const normalized = normalizeSprintPayloadForApi(body || {});
+      if (normalized.error) {
+        jsonResponse(res, 400, { ok: false, error: normalized.error });
+        return;
+      }
+      const update = await callTaskStoreFunction(TASK_STORE_SPRINT_EXPORTS.update, [sprintId, normalized.payload || {}]);
       if (!update.found) {
         jsonResponse(res, 501, { ok: false, error: "Sprint update API is unavailable." });
         return;
       }
-      jsonResponse(res, 200, { ok: true, source: `task-store.${update.found}`, data: update.value || null });
+      const sprint = normalizeSprintResponseForApi(update.value || null);
+      jsonResponse(res, 200, { ok: true, source: `task-store.${update.found}`, data: sprint });
       broadcastUiEvent(["tasks", "overview"], "invalidate", { reason: "sprint-updated", sprintId });
     } catch (err) {
       jsonResponse(res, 500, { ok: false, error: err.message });
@@ -8802,10 +8882,14 @@ async function handleApi(req, res, url) {
         jsonResponse(res, 501, { ok: false, error: "Sprint DAG API is unavailable." });
         return;
       }
+      const sprint = sprintDag.sprintId
+        ? await callTaskStoreFunction(TASK_STORE_SPRINT_EXPORTS.get, [sprintDag.sprintId])
+        : { found: null, value: null };
       jsonResponse(res, 200, {
         ok: true,
         sprintId: sprintDag.sprintId,
         source: sprintDag.source,
+        sprint: sprint.found ? normalizeSprintResponseForApi(sprint.value || null) : null,
         data: sprintDag.data,
       });
     } catch (err) {
@@ -9130,10 +9214,11 @@ async function handleApi(req, res, url) {
         });
         return;
       }
-      const updated =
+      const updatedRaw =
         typeof adapter.updateTask === "function"
           ? await adapter.updateTask(taskId, patch)
           : await adapter.updateTaskStatus(taskId, patch.status);
+      const updated = withTaskMetadataTopLevel(updatedRaw);
       const nextStatus = updated?.status || patch.status || null;
       const lifecycleAction = inferLifecycleAction(
         previousTask?.status || null,
@@ -9253,10 +9338,11 @@ async function handleApi(req, res, url) {
         });
         return;
       }
-      const updated =
+      const updatedRaw =
         typeof adapter.updateTask === "function"
           ? await adapter.updateTask(taskId, patch)
           : await adapter.updateTaskStatus(taskId, patch.status);
+      const updated = withTaskMetadataTopLevel(updatedRaw);
       const nextStatus = updated?.status || patch.status || null;
       const lifecycleAction = inferLifecycleAction(
         previousTask?.status || null,
@@ -9329,7 +9415,7 @@ async function handleApi(req, res, url) {
 
   if (path === "/api/tasks/comment" && req.method === "GET") {
     try {
-      const taskId = String(url.searchParams.get("taskId") || url.searchParams.get("id") || "").trim();
+      const taskId = String(url.searchParams.get("taskId") || url.searchParams.get("id") || url.searchParams.get("parentTaskId") || "").trim();
       if (!taskId) {
         jsonResponse(res, 400, { ok: false, error: "taskId required" });
         return;
@@ -9440,7 +9526,8 @@ async function handleApi(req, res, url) {
           ...metadataFields.meta,
         },
       };
-      const created = await adapter.createTask(projectId, taskData);
+      const createdRaw = await adapter.createTask(projectId, taskData);
+      const created = withTaskMetadataTopLevel(createdRaw);
       jsonResponse(res, 200, { ok: true, data: created });
       broadcastUiEvent(["tasks", "overview"], "invalidate", {
         reason: "task-created",
@@ -9454,7 +9541,7 @@ async function handleApi(req, res, url) {
 
   if (path === "/api/tasks/subtasks" && req.method === "GET") {
     try {
-      const taskId = String(url.searchParams.get("taskId") || url.searchParams.get("id") || "").trim();
+      const taskId = String(url.searchParams.get("taskId") || url.searchParams.get("id") || url.searchParams.get("parentTaskId") || "").trim();
       if (!taskId) {
         jsonResponse(res, 400, { ok: false, error: "taskId required" });
         return;
@@ -9489,6 +9576,10 @@ async function handleApi(req, res, url) {
       const parentTask = typeof adapter.getTask === "function"
         ? await adapter.getTask(parentTaskId).catch(() => null)
         : null;
+      if (typeof adapter.getTask === "function" && !parentTask) {
+        jsonResponse(res, 404, { ok: false, error: "parent task not found" });
+        return;
+      }
       const projectId = body?.project || "";
       const metadataFields = buildTaskMetadataPatch({ ...(body || {}), parentTaskId });
       const subtaskPayload = {
@@ -9507,7 +9598,8 @@ async function handleApi(req, res, url) {
           ...metadataFields.meta,
         },
       };
-      const created = await adapter.createTask(projectId, subtaskPayload);
+      const createdRaw = await adapter.createTask(projectId, subtaskPayload);
+      const created = withTaskMetadataTopLevel(createdRaw);
       jsonResponse(res, 200, { ok: true, parentTaskId, data: created });
       broadcastUiEvent(["tasks", "overview"], "invalidate", {
         reason: "subtask-created",
@@ -15482,4 +15574,8 @@ export function stopTelegramUiServer() {
 }
 
 export { getLocalLanIp };
+
+
+
+
 
