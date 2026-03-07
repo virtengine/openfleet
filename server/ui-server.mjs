@@ -278,6 +278,7 @@ const repoRoot = resolveRepoRoot();
 const uiRootPreferred = resolve(__dirname, "..", "ui");
 const uiRootFallback = resolve(__dirname, "..", "site", "ui");
 const uiRoot = existsSync(uiRootPreferred) ? uiRootPreferred : uiRootFallback;
+const sharedLibRoot = resolve(__dirname, "..", "lib");
 const libraryInitAttemptedRoots = new Set();
 const MAX_VISION_FRAME_BYTES = Math.max(
   128_000,
@@ -14739,9 +14740,14 @@ async function handleStatic(req, res, url) {
     return;
   }
   const pathname = rawPathname === "/" ? "/index.html" : rawPathname;
-  const filePath = resolve(uiRoot, `.${pathname}`);
+  const isSharedLibRequest = pathname === "/lib" || pathname.startsWith("/lib/");
+  const staticRoot = isSharedLibRequest ? sharedLibRoot : uiRoot;
+  const staticPathname = isSharedLibRequest
+    ? pathname.slice(4) || "/"
+    : pathname;
+  const filePath = resolve(staticRoot, `.${staticPathname}`);
 
-  if (!filePath.startsWith(uiRoot)) {
+  if (!filePath.startsWith(staticRoot)) {
     textResponse(res, 403, "Forbidden");
     return;
   }

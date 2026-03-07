@@ -172,6 +172,43 @@ describe("ui-server mini app", () => {
     expect(String(third.headers.get("content-type") || "")).toContain("application/javascript");
   });
 
+  it("serves shared /lib modules after local bootstrap", async () => {
+    process.env.TELEGRAM_UI_ALLOW_UNSAFE = "false";
+    process.env.TELEGRAM_UI_TUNNEL = "disabled";
+    process.env.BOSUN_UI_LOCAL_BOOTSTRAP = "true";
+    const mod = await import("../server/ui-server.mjs");
+    const server = await mod.startTelegramUiServer({
+      port: await getFreePort(),
+      host: "127.0.0.1",
+      skipInstanceLock: true,
+      skipAutoOpen: true,
+    });
+    const port = server.address().port;
+
+    const first = await fetch(`http://127.0.0.1:${port}/lib/session-insights.mjs`, {
+      redirect: "manual",
+    });
+    expect(first.status).toBe(302);
+    const cookie = first.headers.get("set-cookie") || "";
+    expect(cookie).toContain("ve_session=");
+    const location = first.headers.get("location") || "";
+    expect(location).toContain("localBootstrap=1");
+
+    const second = await fetch(`http://127.0.0.1:${port}${location}`, {
+      headers: { cookie },
+      redirect: "manual",
+    });
+    expect(second.status).toBe(302);
+
+    const finalLocation = second.headers.get("location") || "";
+    const third = await fetch(`http://127.0.0.1:${port}${finalLocation}`, {
+      headers: { cookie },
+    });
+    expect(third.status).toBe(200);
+    expect(String(third.headers.get("content-type") || "")).toContain("application/javascript");
+    expect(await third.text()).toContain("buildSessionInsights");
+  });
+
   it("does not auto-bootstrap local static requests when BOSUN_UI_LOCAL_BOOTSTRAP is unset", async () => {
     process.env.TELEGRAM_UI_ALLOW_UNSAFE = "false";
     process.env.TELEGRAM_UI_TUNNEL = "disabled";
