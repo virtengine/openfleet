@@ -1527,4 +1527,209 @@ describe("ui-server mini app", () => {
     expect(detail.data.workflowRuns.length).toBeGreaterThan(0);
     expect(detail.data.workflowRuns.some((run) => run.workflowId === workflowId)).toBe(true);
   });
-});
+
+  it("blocks /api/tasks/start when can-start guard fails unless force override is set", async () => {
+    process.env.TELEGRAM_UI_TUNNEL = "disabled";
+    process.env.EXECUTOR_MODE = "internal";
+
+    const mod = await import("../server/ui-server.mjs");
+    const executeTask = vi.fn(async () => {});
+    const canStartTask = vi.fn(() => ({ canStart: false, reason: "dependency_blocked", blockedBy: [{ taskId: "dep-1" }] }));
+    mod.injectUiDependencies({
+      taskStoreApi: {
+        canStartTask,
+        appendTaskTimelineEvent: vi.fn(),
+        addTaskComment: vi.fn(() => ({ id: "comment-1" })),
+      },
+      getInternalExecutor: () => ({
+        getStatus: () => ({ maxParallel: 4, activeSlots: 0, slots: [] }),
+        executeTask,
+        isPaused: () => false,
+      }),
+    });
+
+    const server = await mod.startTelegramUiServer({
+      port: await getFreePort(),
+      host: "127.0.0.1",
+      skipInstanceLock: true,
+      skipAutoOpen: true,
+    });
+    const port = server.address().port;
+
+    const created = await fetch(`http://127.0.0.1:${port}/api/tasks/create`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ title: "guarded start task", description: "start guard" }),
+    }).then((r) => r.json());
+    expect(created.ok).toBe(true);
+    const taskId = created.data.id;
+
+    const blockedResp = await fetch(`http://127.0.0.1:${port}/api/tasks/start`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ taskId }),
+    });
+    const blockedJson = await blockedResp.json();
+
+    expect(blockedResp.status).toBe(409);
+    expect(blockedJson.ok).toBe(false);
+    expect(blockedJson.canStart.canStart).toBe(false);
+    expect(executeTask).not.toHaveBeenCalled();
+
+    const forcedResp = await fetch(`http://127.0.0.1:${port}/api/tasks/start`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ taskId, force: true }),
+    });
+    const forcedJson = await forcedResp.json();
+
+    expect(forcedResp.status).toBe(200);
+    expect(forcedJson.ok).toBe(true);
+    expect(forcedJson.canStart.override).toBe(true);
+    expect(executeTask).toHaveBeenCalledTimes(1);
+  });
+
+  it("reports guarded lifecycle start without dispatching execution", async () => {
+    process.env.TELEGRAM_UI_TUNNEL = "disabled";
+    process.env.EXECUTOR_MODE = "internal";
+
+    const mod = await import("../server/ui-server.mjs");
+    const executeTask = vi.fn(async () => {});
+    mod.injectUiDependencies({
+      taskStoreApi: {
+        canStartTask: vi.fn(() => ({ canStart: false, reason: "dependency_blocked" })),
+        appendTaskTimelineEvent: vi.fn(),
+      },
+      getInternalExecutor: () => ({
+        getStatus: () => ({ maxParallel: 3, activeSlots: 0, slots: [] }),
+        executeTask,
+        isPaused: () => false,
+      }),
+    });
+
+    const server = await mod.startTelegramUiServer({
+      port: await getFreePort(),
+      host: "127.0.0.1",
+      skipInstanceLock: true,
+      skipAutoOpen: true,
+    });
+    const port = server.address().port;
+
+    const created = await fetch(`http://127.0.0.1:${port}/api/tasks/create`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ title: "guarded lifecycle", description: "lifecycle guard" }),
+    }).then((r) => r.json());
+    expect(created.ok).toBe(true);
+
+    const update = await fetch(`http://127.0.0.1:${port}/api/tasks/update`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        taskId: created.data.id,
+        status: "inprogress",
+        lifecycleAction: "start",
+      }),
+    }).then((r) => r.json());
+
+    expect(update.ok).toBe(true);
+    expect(update.lifecycle.startDispatch.started).toBe(false);
+    expect(update.lifecycle.startDispatch.reason).toBe("start_guard_blocked");
+    expect(executeTask).not.toHaveBeenCalled();
+  });
+
+  it("wires sprint and dag task-store APIs through ui-server endpoints", async () => {
+    process.env.TELEGRAM_UI_TUNNEL = "disabled";
+
+    const mod = await import("../server/ui-server.mjs");
+    mod.injectUiDependencies({
+      taskStoreApi: {
+        listSprints: vi.fn(() => [{ id: "s-1", name: "Sprint 1" }]),
+        createSprint: vi.fn((payload) => ({ id: payload.id || "s-2", name: payload.name || "Sprint 2" })),
+        getSprint: vi.fn((id) => ({ id, name: `Sprint ${id}` })),
+        updateSprint: vi.fn((id, payload) => ({ id, ...payload })),
+        deleteSprint: vi.fn((id) => ({ id, deleted: true })),
+        getSprintDag: vi.fn((id) => ({ sprintId: id, nodes: [{ id: "A" }], edges: [] })),
+        getGlobalDagOfDags: vi.fn(() => ({ nodes: [{ id: "s-1" }], edges: [] })),
+      },
+    });
+
+    const server = await mod.startTelegramUiServer({
+      port: await getFreePort(),
+      host: "127.0.0.1",
+      skipInstanceLock: true,
+      skipAutoOpen: true,
+    });
+    const port = server.address().port;
+
+    const sprintList = await fetch(`http://127.0.0.1:${port}/api/tasks/sprints`).then((r) => r.json());
+    expect(sprintList.ok).toBe(true);
+    expect(Array.isArray(sprintList.data)).toBe(true);
+
+    const sprintCreate = await fetch(`http://127.0.0.1:${port}/api/tasks/sprints`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ id: "s-2", name: "Sprint 2" }),
+    }).then((r) => r.json());
+    expect(sprintCreate.ok).toBe(true);
+    expect(sprintCreate.data.id).toBe("s-2");
+
+    const sprintDag = await fetch(`http://127.0.0.1:${port}/api/tasks/dag?sprintId=s-1`).then((r) => r.json());
+    expect(sprintDag.ok).toBe(true);
+    expect(sprintDag.data.sprintId).toBe("s-1");
+
+    const dagOfDags = await fetch(`http://127.0.0.1:${port}/api/tasks/dag-of-dags`).then((r) => r.json());
+    expect(dagOfDags.ok).toBe(true);
+    expect(Array.isArray(dagOfDags.data.nodes)).toBe(true);
+  });
+
+  it("supports task comment aliases and validation through /api/tasks/comment", async () => {
+    process.env.TELEGRAM_UI_TUNNEL = "disabled";
+
+    const mod = await import("../server/ui-server.mjs");
+    const addTaskComment = vi.fn(() => ({ id: "comment-1" }));
+    mod.injectUiDependencies({
+      taskStoreApi: {
+        addTaskComment,
+        appendTaskTimelineEvent: vi.fn(),
+      },
+    });
+
+    const server = await mod.startTelegramUiServer({
+      port: await getFreePort(),
+      host: "127.0.0.1",
+      skipInstanceLock: true,
+      skipAutoOpen: true,
+    });
+    const port = server.address().port;
+
+    const created = await fetch(`http://127.0.0.1:${port}/api/tasks/create`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ title: "comment test task", description: "comment coverage" }),
+    }).then((r) => r.json());
+    expect(created.ok).toBe(true);
+
+    const missingBodyResp = await fetch(`http://127.0.0.1:${port}/api/tasks/comment`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ taskId: created.data.id }),
+    });
+    expect(missingBodyResp.status).toBe(400);
+
+    const commentResp = await fetch(`http://127.0.0.1:${port}/api/tasks/comment`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        taskId: created.data.id,
+        comment: "looks good",
+        author: "qa",
+      }),
+    });
+    const commentJson = await commentResp.json();
+
+    expect(commentResp.status).toBe(200);
+    expect(commentJson.ok).toBe(true);
+    expect(commentJson.stored).toBe(true);
+    expect(addTaskComment).toHaveBeenCalled();
+  });});

@@ -514,8 +514,7 @@ function normalizeSprintStructure(rawSprint = {}, existingSprint = null) {
   const id = normalizeSprintId(rawSprint.id || existingSprint?.id);
   if (!id) return null;
   const createdAt = String(rawSprint.createdAt || existingSprint?.createdAt || ts);
-  const updatedAt = String(rawSprint.updatedAt || ts);
-  return {
+  const updatedAt = String(rawSprint.updatedAt || ts);`n  const executionMode = resolveSprintOrderMode(`n    rawSprint.executionMode`n      ?? rawSprint.taskOrderMode`n      ?? existingSprint?.executionMode`n      ?? existingSprint?.taskOrderMode`n      ?? "parallel",`n  );`n  return {
     id,
     name: String(rawSprint.name || existingSprint?.name || id),
     goal: rawSprint.goal != null ? String(rawSprint.goal) : existingSprint?.goal ?? null,
@@ -535,13 +534,10 @@ function normalizeSprintStructure(rawSprint = {}, existingSprint = null) {
       ? { ...rawSprint.meta }
       : existingSprint?.meta && typeof existingSprint.meta === "object"
         ? { ...existingSprint.meta }
-        : {},
-  };
+        : {},`n    executionMode,`n    taskOrderMode: executionMode,`n  };
 }
 
-function listTaskDependencyIds(task) {
-  return uniqueStringList([...(task?.dependencyTaskIds || []), ...(task?.dependsOn || [])]);
-}
+function listTaskDependencyIds(task) {`n  return uniqueStringList([...(task?.dependencyTaskIds || []), ...(task?.dependsOn || [])]);`n}`n`nfunction getSprintTaskOrderSequence(sprintId) {`n  const normalizedSprintId = normalizeSprintId(sprintId);`n  if (!normalizedSprintId) return [];`n  return Object.values(_store.tasks)`n    .filter((task) => task?.sprintId === normalizedSprintId)`n    .sort(compareTaskDagOrder);`n}`n`nfunction getNextSprintTaskOrder(sprintId) {`n  const sequence = getSprintTaskOrderSequence(sprintId);`n  let maxOrder = 0;`n  for (const task of sequence) {`n    const order = normalizeSprintOrder(task?.sprintOrder);`n    if (order != null && order > maxOrder) maxOrder = order;`n  }`n  return maxOrder + 1;`n}
 
 function isTaskTerminal(task) {
   return TERMINAL_TASK_STATUSES.has(normalizeTaskStatus(task?.status));
@@ -1925,3 +1921,4 @@ export function getStaleInReviewTasks(maxAgeMs) {
     (t) => t.status === "inreview" && t.lastActivityAt < cutoff,
   );
 }
+

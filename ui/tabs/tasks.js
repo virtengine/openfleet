@@ -351,7 +351,7 @@ function normalizeSprintOptions(raw) {
   ];
   const source = candidates.find(
     (value) => Array.isArray(value) && value.length > 0,
-  ) || (Array.isArray(payload) ? payload : []);
+  ) || toArray(payload);
   return source
     .map((entry, index) => {
       if (entry == null) return null;
@@ -3792,25 +3792,36 @@ export function TasksTab() {
       `}
     </div>
 
-    <div class="snapshot-bar">
-      ${summaryMetrics.map((m) => html`
-        <${Tooltip} title=${isKanban ? m.label : `Filter by ${m.label}`}><${Button}
-          key=${m.label}
-          variant="text" size="small"
-          style=${{ textTransform: "none" }}
-          onClick=${() => {
-            if (isKanban) return;
-            const statusVal = SNAPSHOT_STATUS_MAP[m.label];
-            if (statusVal !== undefined) handleFilter(filterVal === statusVal ? 'all' : statusVal);
-          }}
-        >
-          <span class="snapshot-dot" style="background:${m.color};" />
-          <strong class="snapshot-val">${m.value}</strong>
-          <span class="snapshot-lbl">${m.label}</span>
-        <//><//>
-      `)}
-      <span class="snapshot-view-tag">${iconText(isKanban ? ":dot: Board" : ":menu: List")}</span>
-    </div>
+    ${!isDag && html`
+      <div class="snapshot-bar">
+        ${summaryMetrics.map((m) => html`
+          <${Tooltip} title=${isKanban ? m.label : `Filter by ${m.label}`}><${Button}
+            key=${m.label}
+            variant="text" size="small"
+            style=${{ textTransform: "none" }}
+            onClick=${() => {
+              if (!isList) return;
+              const statusVal = SNAPSHOT_STATUS_MAP[m.label];
+              if (statusVal !== undefined) handleFilter(filterVal === statusVal ? 'all' : statusVal);
+            }}
+          >
+            <span class="snapshot-dot" style="background:${m.color};" />
+            <strong class="snapshot-val">${m.value}</strong>
+            <span class="snapshot-lbl">${m.label}</span>
+          <//><//>
+        `)}
+        <span class="snapshot-view-tag">${iconText(isKanban ? ":dot: Board" : ":menu: List")}</span>
+      </div>
+    `}
+
+    ${isDag && html`
+      <div class="snapshot-bar">
+        <span class="snapshot-view-tag">${iconText(":link: DAG")}</span>
+        <span class="pill">Sprint nodes: ${dagSprintGraph.nodes.length}</span>
+        <span class="pill">Global nodes: ${dagGlobalGraph.nodes.length}</span>
+        <span class="pill">Global edges: ${dagGlobalGraph.edges.length}</span>
+      </div>
+    `}
 
     <style>
       .actions-btn { display:inline-flex; align-items:center; gap:4px; }
@@ -3849,6 +3860,27 @@ export function TasksTab() {
     </style>
 
     ${isKanban && html`<${KanbanBoard} onOpenTask=${openDetail} hasMoreTasks=${hasMoreKanbanPages} loadingMoreTasks=${kanbanLoadingMore} onLoadMoreTasks=${loadMoreKanbanTasks} columnTotals=${boardColumnTotals} totalTasks=${boardTotalTasks} />`}
+
+    ${isDag && html`
+      <div class="task-dag-wrap" style=${{ display: "grid", gap: "10px", marginTop: "8px" }}>
+        ${dagError && html`<${Alert} severity="warning">${dagError}</${Alert}>`}
+        ${dagLoading && html`<${Alert} severity="info">Loading DAG data…</${Alert}>`}
+        <${DagGraphSection}
+          title=${dagSprintGraph.title || (dagSelectedSprint === "all" ? "All Sprint DAG" : `Sprint ${dagSelectedSprint} DAG`)}
+          description=${dagSprintGraph.description || "Task dependency order within the selected sprint."}
+          graph=${dagSprintGraph}
+          onOpenTask=${openDetail}
+          emptyMessage="No sprint DAG data available yet."
+        />
+        <${DagGraphSection}
+          title=${dagGlobalGraph.title || "Global DAG of DAGs"}
+          description=${dagGlobalGraph.description || "Cross-sprint dependency overview."}
+          graph=${dagGlobalGraph}
+          onOpenTask=${openDetail}
+          emptyMessage="No global DAG data available yet."
+        />
+      </div>
+    `}
 
     ${isList && visible.length > 0 && html`
       <div class="task-table-wrap">
@@ -4416,6 +4448,8 @@ function CreateTaskModalInline({ onClose }) {
     <//>
   `;
 }
+
+
 
 
 

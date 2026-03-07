@@ -8650,8 +8650,6 @@ async function handleApi(req, res, url) {
       }
       const forceStart = body?.force === true || body?.forceStart === true;
       const manualOverride = body?.manualOverride === true || body?.overrideStartGuard === true;
-      const forceStart = body?.force === true || body?.forceStart === true;
-      const manualOverride = body?.manualOverride === true || body?.overrideStartGuard === true;
       const adapter = getKanbanAdapter();
       const previousTask = typeof adapter.getTask === "function"
         ? await adapter.getTask(taskId).catch(() => null)
@@ -8775,6 +8773,8 @@ async function handleApi(req, res, url) {
         jsonResponse(res, 400, { ok: false, error: "taskId required" });
         return;
       }
+      const forceStart = body?.force === true || body?.forceStart === true;
+      const manualOverride = body?.manualOverride === true || body?.overrideStartGuard === true;
       const adapter = getKanbanAdapter();
       const previousTask = typeof adapter.getTask === "function"
         ? await adapter.getTask(taskId).catch(() => null)
@@ -8907,9 +8907,15 @@ async function handleApi(req, res, url) {
       }
 
       const adapter = getKanbanAdapter();
+      const storeComment = addInternalTaskComment(taskId, {
+        body: commentBody,
+        text: commentBody,
+        author,
+        source: "ui",
+      });
       const commented = typeof adapter.addComment === "function"
         ? await adapter.addComment(taskId, commentBody)
-        : false;
+        : Boolean(storeComment);
 
       appendInternalTaskTimelineEvent(taskId, {
         type: "task.comment",
@@ -8921,7 +8927,7 @@ async function handleApi(req, res, url) {
       const task = typeof adapter.getTask === "function"
         ? await adapter.getTask(taskId).catch(() => null)
         : null;
-      jsonResponse(res, 200, { ok: true, commented, data: task });
+      jsonResponse(res, 200, { ok: true, commented, stored: Boolean(storeComment), data: task });
       broadcastUiEvent(["tasks", "overview"], "invalidate", {
         reason: "task-commented",
         taskId,
@@ -14131,6 +14137,7 @@ export async function startTelegramUiServer(options = {}) {
   if (uiServer) return uiServer;
 
   injectUiDependencies(options.dependencies || {});
+  await ensureTaskStoreApi();
 
   const rawPort = options.port ?? getDefaultPort();
   const configuredPort = Number(rawPort);
