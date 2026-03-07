@@ -1,6 +1,4 @@
-import * as electronModule from "electron";
-const electron = electronModule?.default || electronModule;
-const {
+import {
   app,
   BrowserWindow,
   desktopCapturer,
@@ -12,7 +10,7 @@ const {
   globalShortcut,
   ipcMain,
   session,
-} = electron;
+} from "electron";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
@@ -1239,7 +1237,7 @@ async function loadBosunModule(file) {
 async function loadRuntimeConfig() {
   if (runtimeConfigLoaded) return;
   try {
-    const config = await loadBosunModule("config.mjs");
+    const config = await loadBosunModule("config/config.mjs");
     if (typeof config?.loadConfig === "function") {
       config.loadConfig(["node", "desktop"], { reloadEnv: true });
     }
@@ -2129,7 +2127,7 @@ async function bootstrap() {
     // process.env so that the in-process UI server can validate it without
     // importing the module directly (avoids circular dependency).
     try {
-      const keyMod = await loadBosunModule("desktop-api-key.mjs");
+      const keyMod = await loadBosunModule("infra/desktop-api-key.mjs");
       const desktopApiKey = keyMod.ensureDesktopApiKey(resolveDesktopConfigDir());
       process.env.BOSUN_DESKTOP_API_KEY = desktopApiKey;
     } catch (err) {

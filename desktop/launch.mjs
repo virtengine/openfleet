@@ -1,13 +1,14 @@
 import { existsSync, readFileSync, statSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { spawnSync, spawn } from "node:child_process";
+import { execFileSync, spawnSync, spawn } from "node:child_process";
 import { homedir } from "node:os";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const desktopDir = resolve(__dirname);
 const binName = process.platform === "win32" ? "electron.cmd" : "electron";
 const electronBin = resolve(desktopDir, "node_modules", ".bin", binName);
+const electronWinExe = resolve(desktopDir, "node_modules", "electron", "dist", "electron.exe");
 const chromeSandbox = resolve(
   desktopDir,
   "node_modules",
@@ -18,8 +19,24 @@ const chromeSandbox = resolve(
 
 process.title = "bosun-desktop-launcher";
 
+function isWslInteropRuntime() {
+  return Boolean(process.env.WSL_DISTRO_NAME || process.env.WSL_INTEROP);
+}
+
+function toWindowsPath(path) {
+  if (!isWslInteropRuntime()) return path;
+  try {
+    return execFileSync("wslpath", ["-w", path], {
+      encoding: "utf8",
+      stdio: ["ignore", "pipe", "ignore"],
+    }).trim();
+  } catch {
+    return path;
+  }
+}
+
 function hasGuiEnvironment() {
-  if (process.platform !== "linux") return true;
+  if (process.platform !== "linux" || isWslInteropRuntime()) return true;
   if (process.env.DISPLAY || process.env.WAYLAND_DISPLAY) return true;
   if (process.env.XDG_SESSION_TYPE && process.env.XDG_SESSION_TYPE !== "tty") return true;
   return false;
@@ -66,7 +83,7 @@ function readDesktopApiKeyFromDisk() {
 }
 
 function ensureElectronInstalled() {
-  if (existsSync(electronBin)) return true;
+  if (existsSync(electronBin) || (isWslInteropRuntime() && existsSync(electronWinExe))) return true;
   if (process.env.BOSUN_DESKTOP_SKIP_INSTALL === "1") {
     console.error("[desktop] Electron not installed. Run: npm -C scripts/bosun/desktop install");
     return false;
@@ -79,6 +96,23 @@ function ensureElectronInstalled() {
     env: process.env,
   });
   return result.status === 0 && existsSync(electronBin);
+}
+
+function buildElectronLaunchSpec(args) {
+  if ((process.platform === "win32" || isWslInteropRuntime()) && existsSync(electronWinExe)) {
+    return {
+      command: electronWinExe,
+      args: args.map((arg, idx) => (idx === 0 ? toWindowsPath(arg) : arg)),
+      shell: false,
+      cwd: desktopDir,
+    };
+  }
+  return {
+    command: electronBin,
+    args,
+    shell: process.platform === "win32",
+    cwd: desktopDir,
+  };
 }
 
 function launch() {
@@ -105,12 +139,16 @@ function launch() {
   if (disableSandbox) {
     args.push("--no-sandbox", "--disable-gpu-sandbox");
   }
+  const env = { ...process.env };
+  delete env.ELECTRON_RUN_AS_NODE;
+  const launchSpec = buildElectronLaunchSpec(args);
 
-  const child = spawn(electronBin, args, {
+  const child = spawn(launchSpec.command, launchSpec.args, {
     stdio: "inherit",
-    shell: process.platform === "win32",
+    shell: launchSpec.shell,
+    cwd: launchSpec.cwd,
     env: {
-      ...process.env,
+      ...env,
       BOSUN_DESKTOP: "1",
       ...(desktopApiKey ? { BOSUN_DESKTOP_API_KEY: desktopApiKey } : {}),
       ...(disableSandbox ? { ELECTRON_DISABLE_SANDBOX: "1" } : {}),
