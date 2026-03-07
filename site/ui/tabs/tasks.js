@@ -450,6 +450,8 @@ function normalizeSprintOptions(raw) {
         label: toText(entry.label || entry.title || entry.name, id),
         status: toText(entry.status),
         goal: toText(entry.goal),
+        executionMode: toText(entry.executionMode || entry.taskOrderMode || entry.sprintOrderMode || "parallel", "parallel"),
+        taskOrderMode: toText(entry.taskOrderMode || entry.executionMode || entry.sprintOrderMode || "parallel", "parallel"),
       };
     })
     .filter(Boolean);
@@ -3555,7 +3557,7 @@ export function TasksTab() {
     const nextGlobalGraph = normalizeDagGraph(globalSource, "DAG of DAGs");
 
     const sprintMetaEntry = sprintOptions.find((entry) => entry.id === resolvedSprint) || null;
-    setDagSprintOrderMode(toText(sprintMetaEntry?.sprintOrderMode || "parallel", "parallel"));
+    setDagSprintOrderMode(toText(sprintMetaEntry?.executionMode || sprintMetaEntry?.taskOrderMode || sprintMetaEntry?.sprintOrderMode || "parallel", "parallel"));
     setDagSprints(sprintOptions);
     setDagSprintGraph(nextSprintGraph);
     setDagGlobalGraph(nextGlobalGraph);
@@ -3912,7 +3914,7 @@ export function TasksTab() {
     try {
       await apiFetch(`/api/tasks/sprints/${encodeURIComponent(dagSelectedSprint)}`, {
         method: "PATCH",
-        body: JSON.stringify({ sprintOrderMode: nextMode }),
+        body: JSON.stringify({ executionMode: nextMode, taskOrderMode: nextMode, sprintOrderMode: nextMode }),
       });
       showToast("Sprint execution mode updated", "success");
       await loadDagViews();
