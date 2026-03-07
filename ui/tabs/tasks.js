@@ -334,6 +334,46 @@ function normalizeDagDependencyList(value) {
     .filter(Boolean);
 }
 
+
+function normalizeDependencyInput(value) {
+  const source = Array.isArray(value)
+    ? value
+    : String(value || "")
+        .split(/[\n,]/)
+        .flatMap((entry) => String(entry || "").split(/\s+/));
+  const seen = new Set();
+  const out = [];
+  for (const item of source) {
+    const normalized = toText(item);
+    if (!normalized) continue;
+    if (seen.has(normalized)) continue;
+    seen.add(normalized);
+    out.push(normalized);
+  }
+  return out;
+}
+
+function getTaskDependencyIds(task) {
+  const deps = [
+    ...(Array.isArray(task?.dependencyTaskIds) ? task.dependencyTaskIds : []),
+    ...(Array.isArray(task?.dependsOn) ? task.dependsOn : []),
+    ...(Array.isArray(task?.meta?.dependencyTaskIds) ? task.meta.dependencyTaskIds : []),
+    ...(Array.isArray(task?.meta?.dependsOn) ? task.meta.dependsOn : []),
+  ];
+  return normalizeDependencyInput(deps);
+}
+
+function getTaskSprintId(task) {
+  return toText(task?.sprintId || task?.meta?.sprintId || "");
+}
+
+function getTaskSprintOrder(task) {
+  const raw = task?.sprintOrder ?? task?.meta?.sprintOrder;
+  if (raw == null || raw === "") return "";
+  const numeric = Number(raw);
+  return Number.isFinite(numeric) ? String(numeric) : "";
+}
+
 function extractDagPayload(raw) {
   if (raw && typeof raw === "object" && "data" in raw && raw.data != null) {
     return raw.data;
@@ -1853,6 +1893,17 @@ export function TaskDetailModal({ task, onClose, onStart }) {
   const [comments, setComments] = useState(
     normalizeTaskComments(task),
   );
+  const [commentDraft, setCommentDraft] = useState("");
+  const [postingComment, setPostingComment] = useState(false);
+  const [dependenciesInput, setDependenciesInput] = useState(
+    getTaskDependencyIds(task).join(", "),
+  );
+  const [savingDependencies, setSavingDependencies] = useState(false);
+  const [dependencyFeedback, setDependencyFeedback] = useState("");
+  const [sprintOptions, setSprintOptions] = useState([]);
+  const [selectedSprintId, setSelectedSprintId] = useState(getTaskSprintId(task));
+  const [sprintOrderInput, setSprintOrderInput] = useState(getTaskSprintOrder(task));
+  const [savingSprint, setSavingSprint] = useState(false);
   const [uploadingAttachment, setUploadingAttachment] = useState(false);
   const [draft, setDraft] = useState(
     Boolean(task?.draft || task?.status === "draft"),
@@ -1965,6 +2016,11 @@ export function TaskDetailModal({ task, onClose, onStart }) {
     setTagsInput(nextTags);
     setAttachments(normalizeTaskAttachments(task));
     setComments(normalizeTaskComments(task));
+    setCommentDraft("");
+    setDependenciesInput(getTaskDependencyIds(task).join(", "));
+    setDependencyFeedback("");
+    setSelectedSprintId(getTaskSprintId(task));
+    setSprintOrderInput(getTaskSprintOrder(task));
     setDraft(nextDraft);
     setManualOverride(isTaskManual(task));
     setManualReason(getManualReason(task));
@@ -2170,6 +2226,157 @@ export function TaskDetailModal({ task, onClose, onStart }) {
     if (files && files.length) {
       e.preventDefault();
       uploadAttachments(files);
+    }
+  };
+
+
+  const loadSprintAssignments = useCallback(async () => {
+    const sprintMeta = await fetchFirstAvailableDagPath(DAG_SPRINT_ENDPOINT_CANDIDATES);
+    const options = normalizeSprintOptions(sprintMeta?.payload);
+    setSprintOptions(options);
+    if (!options.length) return;
+    setSelectedSprintId((prev) => {
+      if (prev && options.some((entry) => entry.id === prev)) return prev;
+      const taskSprint = getTaskSprintId(task);
+      if (taskSprint && options.some((entry) => entry.id === taskSprint)) return taskSprint;
+      return options[0].id;
+    });
+  }, [task?.id]);
+
+  useEffect(() => {
+    let cancelled = false;
+    const run = async () => {
+      try {
+        await loadSprintAssignments();
+      } catch {
+        if (!cancelled) setSprintOptions([]);
+      }
+    };
+    run();
+    return () => {
+      cancelled = true;
+    };
+  }, [loadSprintAssignments]);
+
+  const handlePostComment = async () => {
+    if (!task?.id || postingComment) return;
+    const body = sanitizeTaskText(commentDraft || "").trim();
+    if (!body) return;
+    setPostingComment(true);
+    setDependencyFeedback("");
+    haptic("medium");
+    try {
+      const res = await apiFetch("/api/tasks/comment", {
+        method: "POST",
+        body: JSON.stringify({
+          taskId: task.id,
+          comment: body,
+          body,
+          text: body,
+        }),
+      });
+      const payload = res?.data || res || {};
+      const nextComments = normalizeTaskComments(
+        payload?.task ||
+          (Array.isArray(payload?.comments)
+            ? { comments: payload.comments }
+            : Array.isArray(payload?.data?.comments)
+              ? { comments: payload.data.comments }
+              : null),
+      );
+      if (nextComments.length) {
+        setComments(nextComments);
+      } else {
+        setComments((prev) => [
+          ...prev,
+          {
+            id: `local-${Date.now()}`,
+            author: "you",
+            createdAt: new Date().toISOString(),
+            body,
+          },
+        ]);
+      }
+      setCommentDraft("");
+      scheduleRefresh(120);
+      showToast("Comment posted", "success");
+    } catch {
+      /* toast via apiFetch */
+    } finally {
+      setPostingComment(false);
+    }
+  };
+
+  const handleSaveDependencies = async () => {
+    if (!task?.id || savingDependencies) return;
+    const dependencies = normalizeDependencyInput(dependenciesInput);
+    const payload = {
+      taskId: task.id,
+      dependencies,
+    };
+    if (selectedSprintId) payload.sprintId = selectedSprintId;
+    if (sprintOrderInput !== "") {
+      const sprintOrderNumber = Number(sprintOrderInput);
+      if (Number.isFinite(sprintOrderNumber)) {
+        payload.sprintOrder = sprintOrderNumber;
+      }
+    }
+
+    setSavingDependencies(true);
+    setDependencyFeedback("");
+    haptic("medium");
+    try {
+      const res = await apiFetch("/api/tasks/dependencies", {
+        method: "PUT",
+        body: JSON.stringify(payload),
+      });
+      const nextDeps = normalizeDependencyInput(
+        res?.data?.dependencies ||
+          res?.dependencies ||
+          res?.data?.task?.dependencyTaskIds ||
+          dependencies,
+      );
+      setDependenciesInput(nextDeps.join(", "));
+      setDependencyFeedback(nextDeps.length ? "Dependencies saved." : "Dependencies cleared.");
+      showToast("Dependencies updated", "success");
+      scheduleRefresh(120);
+    } catch {
+      setDependencyFeedback("Failed to update dependencies.");
+    } finally {
+      setSavingDependencies(false);
+    }
+  };
+
+  const handleSaveSprintAssignment = async () => {
+    if (!task?.id || savingSprint) return;
+    const sprintId = toText(selectedSprintId);
+    if (!sprintId) {
+      showToast("Select a sprint first", "warning");
+      return;
+    }
+    const sprintOrderNumber = sprintOrderInput === ""
+      ? null
+      : Number(sprintOrderInput);
+    const payload = {
+      taskId: task.id,
+      sprintOrder: Number.isFinite(sprintOrderNumber) ? sprintOrderNumber : null,
+    };
+
+    setSavingSprint(true);
+    setDependencyFeedback("");
+    haptic("medium");
+    try {
+      await apiFetch(`/api/tasks/sprints/${encodeURIComponent(sprintId)}/tasks`, {
+        method: "POST",
+        body: JSON.stringify(payload),
+      });
+      showToast("Sprint assignment updated", "success");
+      scheduleRefresh(120);
+      setDependencyFeedback("Sprint assignment saved.");
+    } catch {
+      setDependencyFeedback("Failed to save sprint assignment.");
+    } finally {
+      setSavingSprint(false);
     }
   };
 
@@ -2427,11 +2634,11 @@ export function TaskDetailModal({ task, onClose, onStart }) {
             </div>
           `}
         </div>
-        ${comments.length > 0 && html`
-          <div class="task-comments-block modal-form-span">
-            <div class="task-attachments-title">Comments</div>
-            <div class="task-comments-list">
-              ${comments.map((comment, index) => html`
+                <div class="task-comments-block modal-form-span">
+          <div class="task-attachments-title">Comments & Updates</div>
+          <div class="task-comments-list">
+            ${comments.length > 0
+              ? comments.map((comment, index) => html`
                 <div class="task-comment-item" key=${comment.id || `comment-${index}`}>
                   <div class="task-comment-meta">
                     ${comment.author ? `@${comment.author}` : "comment"}
@@ -2439,10 +2646,80 @@ export function TaskDetailModal({ task, onClose, onStart }) {
                   </div>
                   <div class="task-comment-body">${comment.body}</div>
                 </div>
-              `)}
-            </div>
+              `)
+              : html`<div class="meta-text">No comments yet. Add one below.</div>`}
           </div>
-        `}
+          <div class="task-comment-composer">
+            <${TextField}
+              multiline
+              rows=${2}
+              size="small"
+              placeholder="Add a comment or status update..."
+              value=${commentDraft}
+              onInput=${(e) => setCommentDraft(e.target.value)}
+              fullWidth
+            />
+            <${Button}
+              variant="contained"
+              size="small"
+              disabled=${postingComment || !sanitizeTaskText(commentDraft || "").trim()}
+              onClick=${handlePostComment}
+            >
+              ${postingComment ? "Posting…" : "Post Comment"}
+            <//>
+          </div>
+        </div>
+        <div class="task-comments-block modal-form-span">
+          <div class="task-attachments-title">Dependencies & Sprint Wiring</div>
+          <${TextField}
+            multiline
+            rows=${2}
+            size="small"
+            placeholder="Dependency task IDs (comma or newline separated)"
+            value=${dependenciesInput}
+            onInput=${(e) => setDependenciesInput(e.target.value)}
+            fullWidth
+          />
+          <div class="input-row" style=${{ marginTop: "8px" }}>
+            <${Select}
+              size="small"
+              value=${selectedSprintId}
+              onChange=${(e) => setSelectedSprintId(e.target.value)}
+            >
+              <${MenuItem} value="">No sprint</${MenuItem}>
+              ${sprintOptions.map((sprint) => html`
+                <${MenuItem} key=${sprint.id} value=${sprint.id}>${sprint.label}</${MenuItem}>
+              `)}
+            </${Select}>
+            <${TextField}
+              size="small"
+              type="number"
+              placeholder="Sprint order"
+              value=${sprintOrderInput}
+              onInput=${(e) => setSprintOrderInput(e.target.value)}
+              inputProps=${{ min: 1, step: 1 }}
+            />
+          </div>
+          <div class="btn-row" style=${{ marginTop: "8px" }}>
+            <${Button}
+              variant="outlined"
+              size="small"
+              disabled=${savingDependencies}
+              onClick=${handleSaveDependencies}
+            >
+              ${savingDependencies ? "Saving…" : "Save Dependencies"}
+            <//>
+            <${Button}
+              variant="outlined"
+              size="small"
+              disabled=${savingSprint || !selectedSprintId}
+              onClick=${handleSaveSprintAssignment}
+            >
+              ${savingSprint ? "Saving…" : "Save Sprint Assignment"}
+            <//>
+            ${dependencyFeedback && html`<span class="meta-text">${dependencyFeedback}</span>`}
+          </div>
+        </div>
         <${Tooltip} title="Use AI to expand and improve this task description"><${Button}
           variant="text" size="small"
           style=${{ display: "flex", alignItems: "center", gap: "6px", alignSelf: "flex-start", fontSize: "12px", padding: "5px 10px", opacity: !title.trim() ? 0.45 : 1 }}
@@ -2679,23 +2956,12 @@ function DagGraphSection({
   onOpenTask,
   emptyMessage = "No DAG nodes available for this view yet.",
 }) {
-  const nodeMap = useMemo(
-    () => new Map((graph?.nodes || []).map((node) => [String(node.id), node])),
-    [graph?.nodes],
-  );
-  const incoming = useMemo(() => {
-    const map = new Map();
-    for (const edge of graph?.edges || []) {
-      const key = String(edge?.target || "");
-      if (!key) continue;
-      map.set(key, (map.get(key) || 0) + 1);
-    }
-    return map;
-  }, [graph?.edges]);
-
   const sortedNodes = useMemo(() => {
     const nodes = [...(graph?.nodes || [])];
     nodes.sort((a, b) => {
+      const ad = Number.isFinite(a?.depth) ? Number(a.depth) : Number.MAX_SAFE_INTEGER;
+      const bd = Number.isFinite(b?.depth) ? Number(b.depth) : Number.MAX_SAFE_INTEGER;
+      if (ad !== bd) return ad - bd;
       const ao = Number.isFinite(a?.order) ? Number(a.order) : Number.MAX_SAFE_INTEGER;
       const bo = Number.isFinite(b?.order) ? Number(b.order) : Number.MAX_SAFE_INTEGER;
       if (ao !== bo) return ao - bo;
@@ -2703,6 +2969,64 @@ function DagGraphSection({
     });
     return nodes;
   }, [graph?.nodes]);
+
+  const levels = useMemo(() => {
+    const map = new Map();
+    for (const node of sortedNodes) {
+      const depth = Number.isFinite(node?.depth)
+        ? Number(node.depth)
+        : Number.isFinite(node?.order)
+          ? Number(node.order)
+          : 0;
+      const key = Math.max(0, Math.trunc(depth));
+      const list = map.get(key) || [];
+      list.push(node);
+      map.set(key, list);
+    }
+    if (!map.size && sortedNodes.length) {
+      map.set(0, [...sortedNodes]);
+    }
+    return [...map.entries()].sort((a, b) => a[0] - b[0]);
+  }, [sortedNodes]);
+
+  const layout = useMemo(() => {
+    const nodeWidth = 220;
+    const nodeHeight = 84;
+    const colGap = 120;
+    const rowGap = 34;
+    const marginX = 36;
+    const marginY = 24;
+
+    const positions = new Map();
+    let maxRows = 0;
+    levels.forEach(([, nodes], colIdx) => {
+      maxRows = Math.max(maxRows, nodes.length);
+      nodes.forEach((node, rowIdx) => {
+        const x = marginX + colIdx * (nodeWidth + colGap);
+        const y = marginY + rowIdx * (nodeHeight + rowGap);
+        positions.set(String(node.id), { x, y, width: nodeWidth, height: nodeHeight, node });
+      });
+    });
+
+    const totalWidth = Math.max(520, marginX * 2 + Math.max(1, levels.length) * nodeWidth + Math.max(0, levels.length - 1) * colGap);
+    const totalHeight = Math.max(220, marginY * 2 + Math.max(1, maxRows) * nodeHeight + Math.max(0, maxRows - 1) * rowGap);
+    return { positions, totalWidth, totalHeight };
+  }, [levels]);
+
+  const edges = useMemo(() => {
+    const raw = Array.isArray(graph?.edges) ? graph.edges : [];
+    return raw
+      .map((edge) => {
+        const sourceId = String(edge?.source || edge?.from || "").trim();
+        const targetId = String(edge?.target || edge?.to || "").trim();
+        if (!sourceId || !targetId) return null;
+        const source = layout.positions.get(sourceId);
+        const target = layout.positions.get(targetId);
+        if (!source || !target) return null;
+        return { source, target };
+      })
+      .filter(Boolean);
+  }, [graph?.edges, layout.positions]);
 
   if (!sortedNodes.length) {
     return html`
@@ -2721,52 +3045,74 @@ function DagGraphSection({
         </div>
         <div class="chip-group" style=${{ gap: "6px" }}>
           <${Chip} size="small" label=${`${sortedNodes.length} nodes`} />
-          <${Chip} size="small" label=${`${(graph?.edges || []).length} edges`} />
+          <${Chip} size="small" label=${`${edges.length} edges`} />
         </div>
       </div>
-      <div class="task-comments-list" style=${{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(260px,1fr))", gap: "10px" }}>
-        ${sortedNodes.map((node) => {
-          const deps = (node.dependencies || []).map((dep) => {
-            const depNode = nodeMap.get(String(dep));
-            return depNode?.title || dep;
-          });
-          const incomingCount = incoming.get(String(node.id)) || 0;
-          return html`
-            <${Paper} key=${node.id} variant="outlined" style=${{ padding: "10px", display: "flex", flexDirection: "column", gap: "8px" }}>
-              <div class="flex-between" style=${{ alignItems: "flex-start", gap: "8px" }}>
-                <div style=${{ minWidth: 0 }}>
-                  <div style=${{ fontWeight: "700" }}>${truncate(node.title || "(untitled)", 72)}</div>
-                  <div class="meta-text">${node.taskId || node.id}</div>
-                </div>
-                <div style=${{ display: "flex", gap: "6px", flexWrap: "wrap", justifyContent: "flex-end" }}>
-                  ${Number.isFinite(node.order) && html`<${Chip} size="small" label=${`#${node.order}`} color="primary" />`}
-                  ${node.status && html`<${Chip} size="small" label=${node.status} color=${statusChipColor(node.status)} />`}
-                  ${node.priority && html`<${Chip} size="small" label=${node.priority} color=${statusChipColor(node.priority)} />`}
-                </div>
-              </div>
-              <div class="meta-text">
-                ${incomingCount > 0 ? `${incomingCount} incoming dependency${incomingCount === 1 ? "" : "ies"}` : "No incoming dependencies"}
-              </div>
-              ${deps.length > 0 && html`
-                <div class="meta-text" style=${{ lineHeight: 1.4 }}>
-                  Depends on: ${truncate(deps.join(", "), 140)}
-                </div>
-              `}
-              <div>
-                <${Button}
-                  variant="text"
-                  size="small"
-                  disabled=${!node.taskId}
-                  onClick=${() => {
-                    if (node.taskId) onOpenTask?.(node.taskId);
-                  }}
-                >
-                  ${iconText(":eyes: Open Task Detail")}
-                <//>
-              </div>
-            <//>
-          `;
-        })}
+      <div class="task-dag-canvas-wrap">
+        <svg class="task-dag-canvas" viewBox=${`0 0 ${layout.totalWidth} ${layout.totalHeight}`} role="img" aria-label="Task dependency graph">
+          <defs>
+            <marker id="dag-arrow" markerWidth="10" markerHeight="8" refX="10" refY="4" orient="auto">
+              <path d="M0,0 L10,4 L0,8 z" fill="var(--accent)" />
+            </marker>
+          </defs>
+          ${edges.map(({ source, target }, idx) => {
+            const x1 = source.x + source.width;
+            const y1 = source.y + source.height / 2;
+            const x2 = target.x;
+            const y2 = target.y + target.height / 2;
+            const c1 = x1 + Math.max(40, (x2 - x1) * 0.35);
+            const c2 = x2 - Math.max(30, (x2 - x1) * 0.35);
+            return html`
+              <path
+                key=${`edge-${idx}`}
+                d=${`M ${x1} ${y1} C ${c1} ${y1}, ${c2} ${y2}, ${x2} ${y2}`}
+                fill="none"
+                stroke="var(--accent)"
+                stroke-opacity="0.65"
+                stroke-width="2"
+                marker-end="url(#dag-arrow)"
+              />
+            `;
+          })}
+          ${sortedNodes.map((node) => {
+            const pos = layout.positions.get(String(node.id));
+            if (!pos) return null;
+            return html`
+              <g
+                key=${node.id}
+                class="dag-node"
+                onClick=${() => {
+                  if (node.taskId) onOpenTask?.(node.taskId);
+                }}
+                style=${{ cursor: node.taskId ? "pointer" : "default" }}
+              >
+                <rect
+                  x=${pos.x}
+                  y=${pos.y}
+                  width=${pos.width}
+                  height=${pos.height}
+                  rx="14"
+                  ry="14"
+                  fill="var(--bg-surface)"
+                  stroke="var(--border)"
+                  stroke-width="1.5"
+                />
+                <text x=${pos.x + 12} y=${pos.y + 24} fill="var(--text-primary)" font-size="13" font-weight="700">
+                  ${truncate(node.title || "(untitled)", 32)}
+                </text>
+                <text x=${pos.x + 12} y=${pos.y + 43} fill="var(--text-muted)" font-size="11">
+                  ${truncate(node.taskId || node.id, 36)}
+                </text>
+                <text x=${pos.x + 12} y=${pos.y + 62} fill="var(--accent)" font-size="11">
+                  ${String(node.status || "todo")}
+                </text>
+                ${Number.isFinite(node.order) && html`
+                  <text x=${pos.x + pos.width - 16} y=${pos.y + 22} text-anchor="end" fill="var(--text-muted)" font-size="11">#${node.order}</text>
+                `}
+              </g>
+            `;
+          })}
+        </svg>
       </div>
     </div>
   `;
@@ -3226,6 +3572,29 @@ export function TasksTab() {
     }
   }, [loadDagViews]);
 
+  const handleCreateSprint = useCallback(async () => {
+    const rawName = globalThis.prompt?.("Sprint name", "Sprint " + new Date().toISOString().slice(0, 10));
+    const name = toText(rawName);
+    if (!name) return;
+    const rawId = globalThis.prompt?.("Sprint ID (optional)", name.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, ""));
+    const id = toText(rawId);
+    haptic("medium");
+    try {
+      await apiFetch("/api/tasks/sprints", {
+        method: "POST",
+        body: JSON.stringify({
+          ...(id ? { id } : {}),
+          name,
+          status: "active",
+        }),
+      });
+      showToast("Sprint created", "success");
+      await loadDagViews();
+      if (id) setDagSelectedSprint(id);
+    } catch {
+      /* toast via apiFetch */
+    }
+  }, [loadDagViews]);
   const handleSprintChange = useCallback((nextSprint) => {
     const sprintId = toText(nextSprint, "all");
     if (sprintId === dagSelectedSprint) return;
@@ -3745,6 +4114,13 @@ export function TasksTab() {
                     disabled=${dagLoading}
                   >
                     ${dagLoading ? "Refreshing…" : "Refresh DAG"}
+                  <//>
+                  <${Button}
+                    variant="text" size="small"
+                    onClick=${handleCreateSprint}
+                    disabled=${dagLoading}
+                  >
+                    + New Sprint
                   <//>
                 </div>
                 ${(dagSources.sprintGraph || dagSources.globalGraph) && html`
@@ -4448,26 +4824,3 @@ function CreateTaskModalInline({ onClose }) {
     <//>
   `;
 }
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-

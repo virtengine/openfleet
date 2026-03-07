@@ -1600,6 +1600,7 @@ function getRunStatusBadgeStyles(status) {
   if (status === "completed") return { bg: "#10b98130", color: "#10b981" };
   if (status === "failed") return { bg: "#ef444430", color: "#ef4444" };
   if (status === "running") return { bg: "#3b82f630", color: "#60a5fa" };
+  if (status === "cancelled") return { bg: "#f59e0b30", color: "#f59e0b" };
   return { bg: "#6b728030", color: "#9ca3af" };
 }
 
@@ -2708,6 +2709,7 @@ function ManualWorkflowRunHistoryView({ onBack }) {
   const [searchQuery, setSearchQuery] = useState("");
   const [statusFilter, setStatusFilter] = useState("all");
   const [nowTick, setNowTick] = useState(Date.now());
+  const [stoppingRunId, setStoppingRunId] = useState("");
 
   useEffect(() => {
     loadManualWorkflowRuns(Math.max(MANUAL_WORKFLOW_RUN_PAGE_SIZE, 150)).catch(() => {});
@@ -2738,6 +2740,31 @@ function ManualWorkflowRunHistoryView({ onBack }) {
     };
   }, [runs, selectedWfRunId.value, selectedWfRunDetail.value?.status]);
 
+  const requestStopRun = async (run) => {
+    const runId = String(run?.runId || "").trim();
+    if (!runId) return;
+    if (String(run?.status || "").toLowerCase() !== "running") {
+      showToast("Only running workflow runs can be stopped", "info");
+      return;
+    }
+    const ok = typeof window !== "undefined"
+      ? window.confirm(`Stop workflow run ${runId.slice(0, 12)}...?`)
+      : true;
+    if (!ok) return;
+
+    setStoppingRunId(runId);
+    const result = await stopWorkflowRun(runId);
+    if (result?.ok) {
+      showToast(result?.alreadyRequested ? "Stop already requested" : "Stop requested", "success");
+      await loadManualWorkflowRuns(Math.max(MANUAL_WORKFLOW_RUN_PAGE_SIZE, 150)).catch(() => {});
+      if (selectedWfRunId.value === runId) {
+        await loadManualWorkflowRunDetail(runId).catch(() => {});
+      }
+    } else {
+      showToast(`Stop failed: ${result?.error || "unknown error"}`, "error");
+    }
+    setStoppingRunId("");
+  };
   const filteredRuns = useMemo(() => {
     const query = String(searchQuery || "").trim().toLowerCase();
     return runs.filter((run) => {
@@ -2919,6 +2946,18 @@ function ManualWorkflowRunHistoryView({ onBack }) {
                     ${run.workflowName || run.workflowId || "Workflow"}
                   </${Typography}>
                   <${Chip} label=${run.status || "unknown"} size="small" sx=${{ background: styles.bg, color: styles.color, height: 20, fontSize: "10px" }} />
+                  ${run.status === "running" && html`
+                    <${Button}
+                      size="small"
+                      variant="outlined"
+                      color="error"
+                      onClick=${(e) => { e.stopPropagation(); requestStopRun(run); }}
+                      disabled=${stoppingRunId === run.runId}
+                      sx=${{ minWidth: 82, textTransform: "none", fontSize: "10px", lineHeight: 1.1, py: 0.2 }}
+                    >
+                      ${stoppingRunId === run.runId ? "Stopping..." : "Stop"}
+                    </${Button}>
+                  `}
                 </${Stack}>
                 <${Typography} variant="caption" color="text.secondary" sx=${{ display: "block" }}>
                   Workflow: ${run.workflowId || "—"}

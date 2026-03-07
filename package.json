@@ -296,7 +296,7 @@
   "dependencies": {
     "@anthropic-ai/claude-agent-sdk": "latest",
     "@github/copilot-sdk": "latest",
-    "@google/genai": "latest",
+    "@google/genai": "^1.44.0",
     "@modelcontextprotocol/sdk": "^1.26.0",
     "@openai/agents": "^0.5.2",
     "@openai/codex-sdk": "latest",
@@ -329,5 +329,8 @@
   },
   "publishConfig": {
     "access": "public"
+  },
+  "overrides": {
+    "gaxios": "7.1.4"
   }
 }

@@ -180,6 +180,14 @@ const TASK_STORE_DAG_EXPORTS = Object.freeze({
   sprint: ["getSprintDag", "getTaskDagForSprint", "buildSprintDag", "buildTaskDag"],
   global: ["getGlobalDagOfDags", "getDagOfDags", "buildGlobalDagOfDags"],
 });
+const TASK_STORE_GET_TASK_EXPORTS = ["getTaskById", "getTask"];
+const TASK_STORE_COMMENT_EXPORTS = ["getTaskComments", "listTaskComments"];
+const TASK_STORE_DEPENDENCY_EXPORTS = {
+  add: ["addTaskDependency"],
+  remove: ["removeTaskDependency"],
+  update: ["updateTask"],
+};
+const TASK_STORE_ASSIGN_SPRINT_EXPORTS = ["assignTaskToSprint", "setTaskSprint"];
 let taskStoreApi = null;
 let taskStoreApiPromise = null;
 let didLogTaskStoreLoadFailure = false;
@@ -5988,6 +5996,177 @@ async function getGlobalDagData() {
     data: dagResult.value,
   };
 }
+
+function normalizeTaskComments(comments = []) {
+  if (!Array.isArray(comments)) return [];
+  return comments
+    .map((entry, index) => {
+      const id = String(entry?.id || entry?.commentId || `comment-${index + 1}`).trim();
+      const body = String(entry?.body || entry?.text || entry?.message || "").trim();
+      if (!body) return null;
+      const author = String(entry?.author || entry?.createdBy || entry?.actor || "unknown").trim() || "unknown";
+      const createdAt = String(entry?.createdAt || entry?.timestamp || entry?.time || "").trim() || new Date(0).toISOString();
+      return {
+        id,
+        body,
+        author,
+        createdAt,
+        raw: entry,
+      };
+    })
+    .filter(Boolean);
+}
+
+async function getTaskByIdForApi(taskId, adapter = null) {
+  const result = await callTaskStoreFunction(TASK_STORE_GET_TASK_EXPORTS, [taskId]);
+  if (result.found && result.value) return result.value;
+  const fallbackAdapter = adapter || getKanbanAdapter();
+  if (typeof fallbackAdapter?.getTask === "function") {
+    return fallbackAdapter.getTask(taskId).catch(() => null);
+  }
+  return null;
+}
+
+async function buildDagSnapshotsForTask(task = null, sprintId = "") {
+  const resolvedSprintId = String(sprintId || resolveTaskSprintId(task)).trim();
+  const sprintDag = resolvedSprintId ? await getSprintDagData(resolvedSprintId) : null;
+  const globalDag = await getGlobalDagData();
+  return {
+    sprintId: resolvedSprintId || null,
+    sprint: sprintDag,
+    global: globalDag,
+  };
+}
+
+function normalizeTaskIdList(values = [], { exclude = "" } = {}) {
+  const excluded = String(exclude || "").trim();
+  const seen = new Set();
+  const list = [];
+  for (const value of Array.isArray(values) ? values : []) {
+    const id = String(value || "").trim();
+    if (!id || id === excluded || seen.has(id)) continue;
+    seen.add(id);
+    list.push(id);
+  }
+  return list;
+}
+
+async function assignTaskToSprintForApi({ taskId, sprintId, sprintOrder, adapter = null }) {
+  const resolvedSprintId = String(sprintId || "").trim();
+  if (!resolvedSprintId) {
+    return { ok: false, error: "sprintId required" };
+  }
+
+  const normalizedOrder = Number.isFinite(Number(sprintOrder)) ? Number(sprintOrder) : null;
+  const sprintPayload = {
+    id: resolvedSprintId,
+    name: resolvedSprintId,
+    status: "planned",
+  };
+  try {
+    await callTaskStoreFunction(["upsertSprint"], [sprintPayload], (name, args) => {
+      if (name === "upsertSprint") return [resolvedSprintId, sprintPayload];
+      return args;
+    });
+  } catch {
+    // Sprint bootstrap is best-effort; assignment/update fallback still runs.
+  }
+
+  const assignResult = await callTaskStoreFunction(
+    TASK_STORE_ASSIGN_SPRINT_EXPORTS,
+    [taskId, resolvedSprintId, { sprintOrder: normalizedOrder }],
+  );
+
+  await callTaskStoreFunction(TASK_STORE_DEPENDENCY_EXPORTS.update, [taskId, {
+    sprintId: resolvedSprintId,
+    sprint: resolvedSprintId,
+    ...(normalizedOrder != null ? { sprintOrder: normalizedOrder } : {}),
+  }]);
+
+  const fallbackAdapter = adapter || getKanbanAdapter();
+  const updatedTask = await getTaskByIdForApi(taskId, fallbackAdapter);
+  const dag = await buildDagSnapshotsForTask(updatedTask, resolvedSprintId);
+
+  return {
+    ok: true,
+    assignedVia: assignResult.found || null,
+    data: updatedTask,
+    dag,
+  };
+}
+
+async function setTaskDependenciesForApi({
+  taskId,
+  dependencies,
+  sprintId,
+  sprintOrder,
+  adapter = null,
+}) {
+  const fallbackAdapter = adapter || getKanbanAdapter();
+  const task = await getTaskByIdForApi(taskId, fallbackAdapter);
+  if (!task) {
+    return { ok: false, status: 404, error: "Task not found." };
+  }
+
+  const normalizedDependencies = normalizeTaskIdList(dependencies, { exclude: taskId });
+  const currentDependencies = normalizeDependencyIds(task);
+  const toAdd = normalizedDependencies.filter((depId) => !currentDependencies.includes(depId));
+  const toRemove = currentDependencies.filter((depId) => !normalizedDependencies.includes(depId));
+
+  for (const depId of toRemove) {
+    await callTaskStoreFunction(TASK_STORE_DEPENDENCY_EXPORTS.remove, [taskId, depId]);
+  }
+  for (const depId of toAdd) {
+    await callTaskStoreFunction(TASK_STORE_DEPENDENCY_EXPORTS.add, [taskId, depId]);
+  }
+
+  const normalizedSprintId = String(sprintId || "").trim();
+  const normalizedOrder = Number.isFinite(Number(sprintOrder)) ? Number(sprintOrder) : null;
+  const updatePatch = {
+    dependencyTaskIds: normalizedDependencies,
+    dependsOn: normalizedDependencies,
+    dependencies: normalizedDependencies,
+    ...(normalizedSprintId ? { sprintId: normalizedSprintId, sprint: normalizedSprintId } : {}),
+    ...(normalizedOrder != null ? { sprintOrder: normalizedOrder } : {}),
+  };
+  await callTaskStoreFunction(TASK_STORE_DEPENDENCY_EXPORTS.update, [taskId, updatePatch]);
+
+  if (normalizedSprintId) {
+    await assignTaskToSprintForApi({
+      taskId,
+      sprintId: normalizedSprintId,
+      sprintOrder: normalizedOrder,
+      adapter: fallbackAdapter,
+    });
+  }
+
+  const updatedTask = await getTaskByIdForApi(taskId, fallbackAdapter);
+  const dag = await buildDagSnapshotsForTask(updatedTask, normalizedSprintId || resolveTaskSprintId(updatedTask));
+
+  return {
+    ok: true,
+    data: updatedTask,
+    dependencies: normalizedDependencies,
+    added: toAdd,
+    removed: toRemove,
+    dag,
+  };
+}
+
+async function getTaskCommentsForApi(taskId, adapter = null) {
+  const storeComments = await callTaskStoreFunction(TASK_STORE_COMMENT_EXPORTS, [taskId]);
+  if (storeComments.found && Array.isArray(storeComments.value)) {
+    return normalizeTaskComments(storeComments.value);
+  }
+
+  const task = await getTaskByIdForApi(taskId, adapter || getKanbanAdapter());
+  const comments = Array.isArray(task?.comments)
+    ? task.comments
+    : Array.isArray(task?.meta?.comments)
+      ? task.meta.comments
+      : [];
+  return normalizeTaskComments(comments);
+}
 function normalizeTaskStatusKey(status) {
   return String(status || "")
     .trim()
@@ -8358,6 +8537,72 @@ async function handleApi(req, res, url) {
     return;
   }
 
+  if (path.startsWith("/api/tasks/sprints/") && path.endsWith("/dag") && req.method === "GET") {
+    try {
+      const sprintId = decodeURIComponent(path.slice("/api/tasks/sprints/".length, -"/dag".length));
+      if (!sprintId) {
+        jsonResponse(res, 400, { ok: false, error: "sprintId required" });
+        return;
+      }
+      const sprintDag = await getSprintDagData(sprintId);
+      if (!sprintDag) {
+        jsonResponse(res, 501, { ok: false, error: "Sprint DAG API is unavailable." });
+        return;
+      }
+      jsonResponse(res, 200, { ok: true, sprintId, source: sprintDag.source, data: sprintDag.data });
+    } catch (err) {
+      jsonResponse(res, 500, { ok: false, error: err.message });
+    }
+    return;
+  }
+
+  if (path.startsWith("/api/tasks/sprints/") && path.endsWith("/tasks") && req.method === "POST") {
+    try {
+      const sprintId = decodeURIComponent(path.slice("/api/tasks/sprints/".length, -"/tasks".length));
+      const body = await readJsonBody(req);
+      const taskId = String(body?.taskId || body?.id || "").trim();
+      if (!sprintId) {
+        jsonResponse(res, 400, { ok: false, error: "sprintId required" });
+        return;
+      }
+      if (!taskId) {
+        jsonResponse(res, 400, { ok: false, error: "taskId required" });
+        return;
+      }
+
+      const adapter = getKanbanAdapter();
+      const assigned = await assignTaskToSprintForApi({
+        taskId,
+        sprintId,
+        sprintOrder: body?.sprintOrder,
+        adapter,
+      });
+      if (!assigned.ok) {
+        jsonResponse(res, 400, { ok: false, error: assigned.error || "Unable to assign task to sprint" });
+        return;
+      }
+
+      jsonResponse(res, 200, {
+        ok: true,
+        taskId,
+        sprintId,
+        assignedVia: assigned.assignedVia,
+        data: assigned.data,
+        dag: {
+          sprint: assigned.dag?.sprint?.data || null,
+          global: assigned.dag?.global?.data || null,
+        },
+      });
+      broadcastUiEvent(["tasks", "overview"], "invalidate", {
+        reason: "task-sprint-assigned",
+        taskId,
+        sprintId,
+      });
+    } catch (err) {
+      jsonResponse(res, 500, { ok: false, error: err.message });
+    }
+    return;
+  }
   if (path.startsWith("/api/tasks/sprints/") && req.method === "GET") {
     try {
       const sprintId = decodeURIComponent(path.slice("/api/tasks/sprints/".length));
@@ -8542,6 +8787,54 @@ async function handleApi(req, res, url) {
     return;
   }
 
+  if (path === "/api/tasks/dependencies" && req.method === "PUT") {
+    try {
+      const body = await readJsonBody(req);
+      const taskId = String(body?.taskId || body?.id || "").trim();
+      const dependencies = Array.isArray(body?.dependencies) ? body.dependencies : [];
+      const sprintId = String(body?.sprintId || body?.sprint || "").trim();
+      const sprintOrder = body?.sprintOrder;
+
+      if (!taskId) {
+        jsonResponse(res, 400, { ok: false, error: "taskId required" });
+        return;
+      }
+
+      const adapter = getKanbanAdapter();
+      const result = await setTaskDependenciesForApi({
+        taskId,
+        dependencies,
+        sprintId,
+        sprintOrder,
+        adapter,
+      });
+      if (!result.ok) {
+        jsonResponse(res, result.status || 400, { ok: false, error: result.error || "Failed to set dependencies." });
+        return;
+      }
+
+      jsonResponse(res, 200, {
+        ok: true,
+        taskId,
+        dependencies: result.dependencies,
+        added: result.added,
+        removed: result.removed,
+        data: result.data,
+        dag: {
+          sprintId: result.dag?.sprintId || null,
+          sprint: result.dag?.sprint?.data || null,
+          global: result.dag?.global?.data || null,
+        },
+      });
+      broadcastUiEvent(["tasks", "overview"], "invalidate", {
+        reason: "task-dependencies-updated",
+        taskId,
+      });
+    } catch (err) {
+      jsonResponse(res, 500, { ok: false, error: err.message });
+    }
+    return;
+  }
   if (path === "/api/tasks/start") {
     try {
       const body = await readJsonBody(req);
@@ -8911,6 +9204,26 @@ async function handleApi(req, res, url) {
   }
 
 
+  if (path === "/api/tasks/comment" && req.method === "GET") {
+    try {
+      const taskId = String(url.searchParams.get("taskId") || url.searchParams.get("id") || "").trim();
+      if (!taskId) {
+        jsonResponse(res, 400, { ok: false, error: "taskId required" });
+        return;
+      }
+
+      const adapter = getKanbanAdapter();
+      const comments = await getTaskCommentsForApi(taskId, adapter);
+      jsonResponse(res, 200, {
+        ok: true,
+        taskId,
+        comments,
+      });
+    } catch (err) {
+      jsonResponse(res, 500, { ok: false, error: err.message });
+    }
+    return;
+  }
   if (path === "/api/tasks/comment" && req.method === "POST") {
     try {
       const body = await readJsonBody(req);
@@ -11170,6 +11483,34 @@ async function handleApi(req, res, url) {
         return;
       }
 
+      if (action === "stop" && req.method === "POST") {
+        if (typeof engine.cancelRun !== "function") {
+          jsonResponse(res, 501, { ok: false, error: "Workflow run cancellation is not supported by this engine." });
+          return;
+        }
+        const body = await readJsonBody(req);
+        const reason = String(body?.reason || "Run cancellation requested from UI").trim() || "Run cancellation requested from UI";
+        const result = engine.cancelRun(runId, { reason });
+        if (!result?.ok) {
+          const statusCode = String(result?.error || "").includes("not found") ? 404 : 409;
+          jsonResponse(res, statusCode, {
+            ok: false,
+            error: result?.error || "Unable to stop workflow run",
+            runId,
+            status: result?.status || null,
+          });
+          return;
+        }
+        jsonResponse(res, 200, {
+          ok: true,
+          runId,
+          status: result?.status || "running",
+          cancelRequested: true,
+          alreadyRequested: result?.alreadyRequested === true,
+          cancelRequestedAt: result?.cancelRequestedAt || Date.now(),
+        });
+        return;
+      }
       // ── POST /api/workflows/runs/:id/retry ──────────────────────────
       // Manual retry endpoint. Accepts { mode: "from_failed" | "from_scratch" }.
       // If mode is omitted, returns available retry options so the UI can
@@ -11386,7 +11727,9 @@ async function handleApi(req, res, url) {
       }
       const mf = await import("../workflow/manual-flows.mjs");
       const ctx = resolveActiveWorkspaceExecutionContext();
-      const run = await mf.executeFlow(templateId, formValues || {}, ctx.workspaceDir, {});
+      const wfCtx = await getWorkflowRequestContext(url);
+      const flowContext = wfCtx?.ok ? { engine: wfCtx.engine } : {};
+      const run = await mf.executeFlow(templateId, formValues || {}, ctx.workspaceDir, flowContext);
       jsonResponse(res, 200, { ok: true, run });
     } catch (err) {
       jsonResponse(res, 500, { ok: false, error: err.message });

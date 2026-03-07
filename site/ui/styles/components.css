@@ -5445,3 +5445,43 @@ select.input {
     transform: none !important;
   }
 }
+
+.task-comment-composer {
+  margin-top: 10px;
+  display: grid;
+  grid-template-columns: 1fr auto;
+  gap: 8px;
+  align-items: end;
+}
+
+.task-dag-canvas-wrap {
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  background:
+    radial-gradient(circle at 10% 20%, rgba(249, 115, 22, 0.12), transparent 40%),
+    radial-gradient(circle at 85% 80%, rgba(56, 189, 248, 0.08), transparent 40%),
+    var(--bg-card);
+  overflow: auto;
+  padding: 10px;
+}
+
+.task-dag-canvas {
+  width: 100%;
+  min-width: 680px;
+  height: 420px;
+}
+
+.dag-node rect {
+  transition: transform 0.15s ease, stroke 0.15s ease, filter 0.15s ease;
+}
+
+.dag-node:hover rect {
+  stroke: var(--accent);
+  filter: drop-shadow(0 6px 12px rgba(0, 0, 0, 0.35));
+}
+
+@media (max-width: 900px) {
+  .task-comment-composer {
+    grid-template-columns: 1fr;
+  }
+}

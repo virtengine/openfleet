@@ -578,8 +578,57 @@ describe("WorkflowEngine - run history details", () => {
       else process.env.WORKFLOW_RUN_STUCK_THRESHOLD_MS = prevThreshold;
     }
   });
-});
 
+  it("supports cooperative cancellation for running runs", async () => {
+    let releaseRun;
+    const blocker = new Promise((resolve) => { releaseRun = resolve; });
+    let nodeEntered;
+    const nodeStarted = new Promise((resolve) => { nodeEntered = resolve; });
+
+    registerNodeType("test.cancellable", {
+      describe: () => "Cancellable long-running node",
+      schema: { type: "object", properties: {} },
+      async execute(node, ctx) {
+        ctx.log(node.id, "entered cancellable node");
+        nodeEntered();
+        await blocker;
+        return { ok: true };
+      },
+    });
+
+    const wf = makeSimpleWorkflow(
+      [
+        { id: "trigger", type: "trigger.manual", label: "Start", config: {} },
+        { id: "wait", type: "test.cancellable", label: "Wait", config: {} },
+      ],
+      [{ id: "e1", source: "trigger", target: "wait" }],
+      { name: "Cancellable Workflow" },
+    );
+
+    engine.save(wf);
+    const runPromise = engine.execute(wf.id, {});
+    await nodeStarted;
+
+    const history = engine.getRunHistory(wf.id, 10);
+    const active = history.find((entry) => entry.status === WorkflowStatus.RUNNING);
+    expect(active).toBeTruthy();
+
+    const cancelResult = engine.cancelRun(active.runId, { reason: "test-stop" });
+    expect(cancelResult.ok).toBe(true);
+    expect(cancelResult.cancelRequested).toBe(true);
+
+    releaseRun();
+    await runPromise;
+
+    const latest = engine.getRunHistory(wf.id, 1)[0];
+    expect(latest.status).toBe(WorkflowStatus.CANCELLED);
+
+    const detail = engine.getRunDetail(latest.runId);
+    expect(detail.status).toBe(WorkflowStatus.CANCELLED);
+    expect(String(detail?.detail?.data?._workflowTerminalMessage || "")).toContain("test-stop");
+  });
+
+});
 // ── Node Type Tests ─────────────────────────────────────────────────────────
 
 describe("New node types", () => {

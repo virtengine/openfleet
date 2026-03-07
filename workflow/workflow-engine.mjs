@@ -1358,6 +1358,69 @@ export class WorkflowEngine extends EventEmitter {
     return runs;
   }
 
+  /**
+   * Request cancellation for a running workflow run.
+   * Cancellation is cooperative: currently running nodes are allowed to finish,
+   * then the DAG exits with status "cancelled" before scheduling new work.
+   */
+  cancelRun(runId, opts = {}) {
+    const normalizedRunId = basename(String(runId || "")).replace(/\.json$/i, "");
+    if (!normalizedRunId) {
+      return { ok: false, error: "runId is required" };
+    }
+
+    const active = this._activeRuns.get(normalizedRunId);
+    if (!active) {
+      const existing = this.getRunDetail(normalizedRunId);
+      if (!existing) {
+        return { ok: false, error: "Workflow run not found", runId: normalizedRunId };
+      }
+      return {
+        ok: false,
+        error: `Workflow run is not active (status=${existing.status || "unknown"})`,
+        runId: normalizedRunId,
+        status: existing.status || "unknown",
+      };
+    }
+
+    if (active.cancelRequested) {
+      return {
+        ok: true,
+        alreadyRequested: true,
+        runId: normalizedRunId,
+        status: active.status || WorkflowStatus.RUNNING,
+        cancelRequestedAt: active.cancelRequestedAt || Date.now(),
+      };
+    }
+
+    const reason = String(opts?.reason || "Run cancelled by user").trim() || "Run cancelled by user";
+    active.cancelRequested = true;
+    active.cancelRequestedAt = Date.now();
+    active.cancelReason = reason;
+    if (active.ctx?.data && typeof active.ctx.data === "object") {
+      active.ctx.data._workflowCancelRequested = true;
+      active.ctx.data._workflowCancelReason = reason;
+      active.ctx.data._workflowCancelRequestedAt = active.cancelRequestedAt;
+    }
+    this.emit("run:cancel:requested", {
+      runId: normalizedRunId,
+      workflowId: active.workflowId || null,
+      workflowName: active.workflowName || null,
+      reason,
+      requestedAt: active.cancelRequestedAt,
+    });
+    if (active.ctx) this._checkpointRun(active.ctx);
+
+    return {
+      ok: true,
+      runId: normalizedRunId,
+      status: active.status || WorkflowStatus.RUNNING,
+      cancelRequested: true,
+      cancelRequestedAt: active.cancelRequestedAt,
+      reason,
+    };
+  }
+
   /** Get full run detail for a specific runId */
   getRunDetail(runId) {
     const normalizedRunId = basename(String(runId || "")).replace(/\.json$/i, "");
@@ -1396,9 +1459,11 @@ export class WorkflowEngine extends EventEmitter {
         .toLowerCase();
       const status = terminalRaw === WorkflowStatus.FAILED || terminalRaw === "error"
         ? WorkflowStatus.FAILED
-        : (Array.isArray(detail?.errors) && detail.errors.length > 0
-            ? WorkflowStatus.FAILED
-            : WorkflowStatus.COMPLETED);
+        : (terminalRaw === WorkflowStatus.CANCELLED
+            ? WorkflowStatus.CANCELLED
+            : (Array.isArray(detail?.errors) && detail.errors.length > 0
+                ? WorkflowStatus.FAILED
+                : WorkflowStatus.COMPLETED));
       const computed = this._buildSummaryFromDetail({
         runId: normalizedRunId,
         workflowId: detail?.data?._workflowId || null,
@@ -1526,6 +1591,19 @@ export class WorkflowEngine extends EventEmitter {
     }
 
     while (ready.size > 0) {
+      const activeRun = this._activeRuns.get(ctx.id);
+      if (activeRun?.cancelRequested) {
+        ctx.data._workflowTerminalStatus = WorkflowStatus.CANCELLED;
+        ctx.data._workflowTerminalMessage = String(activeRun.cancelReason || "Run cancelled by user");
+        ctx.data._workflowTerminalAt = Date.now();
+        for (const [nid] of nodeMap) {
+          if (!executed.has(nid)) {
+            ctx.setNodeStatus(nid, NodeStatus.SKIPPED);
+            executed.add(nid);
+          }
+        }
+        return;
+      }
       // Execute ready nodes in bounded parallel batches.
       const pendingReady = Array.from(ready);
       const batch = pendingReady.slice(0, MAX_CONCURRENT_BRANCHES);
@@ -1539,6 +1617,13 @@ export class WorkflowEngine extends EventEmitter {
           if (executed.has(nodeId)) return;
           const node = nodeMap.get(nodeId);
           if (!node) return;
+
+          const activeInfo = this._activeRuns.get(ctx.id);
+          if (activeInfo?.cancelRequested) {
+            ctx.setNodeStatus(nodeId, NodeStatus.SKIPPED);
+            executed.add(nodeId);
+            return { nodeId, result: null, skipped: true };
+          }
 
           ctx.setNodeStatus(nodeId, NodeStatus.RUNNING);
           this.emit("node:start", { nodeId, type: node.type, label: node.label });
@@ -1647,6 +1732,19 @@ export class WorkflowEngine extends EventEmitter {
         }
       }
 
+      const activeAfterBatch = this._activeRuns.get(ctx.id);
+      if (activeAfterBatch?.cancelRequested) {
+        ctx.data._workflowTerminalStatus = WorkflowStatus.CANCELLED;
+        ctx.data._workflowTerminalMessage = String(activeAfterBatch.cancelReason || "Run cancelled by user");
+        ctx.data._workflowTerminalAt = Date.now();
+        for (const [nid] of nodeMap) {
+          if (!executed.has(nid)) {
+            ctx.setNodeStatus(nid, NodeStatus.SKIPPED);
+            executed.add(nid);
+          }
+        }
+        return;
+      }
       // Check for explicit terminal node requests (e.g. flow.end)
       let terminalSignal = null;
       for (const r of results) {
