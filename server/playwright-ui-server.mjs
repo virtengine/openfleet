@@ -11,6 +11,7 @@ import { fileURLToPath } from "node:url";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const uiRoot = resolve(__dirname, "..", "ui");
+const sharedLibRoot = resolve(__dirname, "..", "lib");
 const PORT = 4444;
 const ESM_CACHE_DIR = resolve(__dirname, "..", ".cache", "esm-vendor");
 
@@ -137,10 +138,16 @@ const server = createServer(async (req, res) => {
   }
 
   // Static files
-  let filePath = pathname === "/" ? resolve(uiRoot, "index.html")
-                                  : resolve(uiRoot, `.${pathname}`);
+  const servesSharedLib = pathname === "/lib" || pathname.startsWith("/lib/");
+  const staticRoot = servesSharedLib ? sharedLibRoot : uiRoot;
+  const relativePath = pathname === "/"
+    ? "index.html"
+    : servesSharedLib
+      ? pathname.slice("/lib/".length)
+      : pathname.replace(/^\//, "");
+  let filePath = resolve(staticRoot, relativePath || "index.html");
 
-  if (!filePath.startsWith(uiRoot)) {
+  if (!filePath.startsWith(staticRoot)) {
     res.writeHead(403); res.end("Forbidden"); return;
   }
 
