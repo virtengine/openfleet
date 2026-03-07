@@ -1049,6 +1049,28 @@
           },
           "description": "Environment variable overrides keyed by MCP server ID"
         },
+        "useDiscoveryProxy": {
+          "type": "boolean",
+          "default": true,
+          "description": "Wrap resolved MCP servers behind Bosun's compact search/schema/call discovery proxy to reduce tool-definition prompt overhead."
+        },
+        "includeCustomToolsInDiscoveryProxy": {
+          "type": "boolean",
+          "default": true,
+          "description": "Expose Bosun custom tools through the discovery proxy alongside external MCP servers."
+        },
+        "discoveryProxyCacheTtlMs": {
+          "type": "integer",
+          "minimum": 1000,
+          "default": 60000,
+          "description": "How long Bosun caches wrapped MCP tool catalogs inside the discovery proxy before refreshing them."
+        },
+        "discoveryProxyExecuteTimeoutMs": {
+          "type": "integer",
+          "minimum": 1000,
+          "default": 10000,
+          "description": "Default timeout for the discovery proxy execute tool, which runs short orchestration code against discovered tools."
+        },
         "autoInstallDefaults": {
           "type": "boolean",
           "default": true,

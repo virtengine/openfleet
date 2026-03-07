@@ -16,4 +16,12 @@ describe("mui module theme binding", () => {
     expect(source).toContain("<${MuiThemeProvider} theme=${veTheme}>");
     expect(source).toContain("<${MuiSvgIcon} ...${props}");
   });
+
+  it("keeps MUI overlays above the custom modal sheet", () => {
+    const source = readFileSync(resolve(process.cwd(), "ui/modules/mui.js"), "utf8");
+    expect(source).toContain("zIndex: {");
+    expect(source).toContain("modal: 11000");
+    expect(source).toContain("snackbar: 11050");
+    expect(source).toContain("tooltip: 11100");
+  });
 });

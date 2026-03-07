@@ -1906,6 +1906,44 @@ it("agent.run_planner appends output requirements to explicit prompts and honors
   expect(sentPrompt).toContain("single fenced JSON block");
 });
 
+it("agent.run_planner appends planner feedback context from workflow data", async () => {
+  const handler = getNodeType("agent.run_planner");
+  expect(handler).toBeDefined();
+
+  const ctx = new WorkflowContext({
+    _plannerFeedback: "Previous run skipped high-risk tasks in workflow area.",
+  });
+  const launchEphemeralThread = vi.fn().mockResolvedValue({
+    success: true,
+    output: '{"tasks":[]}',
+    sdk: "codex",
+    items: [],
+    threadId: "planner-thread-feedback",
+  });
+  const mockEngine = {
+    services: {
+      agentPool: {
+        launchEphemeralThread,
+      },
+      prompts: {
+        planner: "Planner prompt",
+      },
+    },
+  };
+
+  const node = {
+    id: "planner-feedback",
+    type: "agent.run_planner",
+    config: {
+      taskCount: 2,
+    },
+  };
+
+  await handler.execute(node, ctx, mockEngine);
+  const sentPrompt = String(launchEphemeralThread.mock.calls[0][0] || "");
+  expect(sentPrompt).toContain("Planner feedback context:");
+  expect(sentPrompt).toContain("Previous run skipped high-risk tasks in workflow area.");
+});
 it("agent.run_planner fails immediately when planner dependencies are unavailable", async () => {
   const handler = getNodeType("agent.run_planner");
   expect(handler).toBeDefined();
@@ -1936,7 +1974,7 @@ it("action.materialize_planner_tasks parses fenced JSON and creates tasks", asyn
       "```json",
       "{",
       '  "tasks": [',
-      '    { "title": "[m] fix(workflow): create tasks", "description": "A", "verification": ["v1"] },',
+      '    { "title": "[m] fix(workflow): create tasks", "description": "A", "acceptance_criteria": ["ac1"], "verification": ["v1"], "repo_areas": ["workflow"], "impact": 0.8, "confidence": 0.7, "risk": 0.2 },',
       '    { "title": "[m] fix(workflow): duplicate title", "description": "B" }',
       "  ]",
       "}",
@@ -1987,11 +2025,21 @@ it("action.materialize_planner_tasks parses fenced JSON and creates tasks", asyn
   });
   expect(listTasks).toHaveBeenCalledTimes(1);
   expect(createTask).toHaveBeenCalledTimes(1);
-  expect(createTask).toHaveBeenCalledWith("proj-123", {
+  expect(createTask).toHaveBeenCalledWith("proj-123", expect.objectContaining({
     title: "[m] fix(workflow): create tasks",
-    description: "A\n\n## Verification\n- v1",
+    description: "A\n\n## Acceptance Criteria\n- ac1\n\n## Verification\n- v1",
     status: "todo",
-  });
+    repo_areas: ["workflow"],
+    meta: expect.objectContaining({
+      repo_areas: ["workflow"],
+      planner: expect.objectContaining({
+        impact: 1,
+        confidence: 1,
+        risk: "low",
+        repo_areas: ["workflow"],
+      }),
+    }),
+  }));
 });
 
 it("action.materialize_planner_tasks fails when all parsed tasks are skipped and minCreated is not met", async () => {
@@ -2053,7 +2101,7 @@ it("action.materialize_planner_tasks passes two args to createTask even with def
       "```json",
       "{",
       '  "tasks": [',
-      '    { "title": "[m] fix(materialize): preserve payload", "description": "A", "workspace": "virtengine-gh", "repository": "virtengine/virtengine" }',
+      '    { "title": "[m] fix(materialize): preserve payload", "description": "A", "acceptance_criteria": ["ac"], "verification": ["verify"], "repo_areas": ["workflow"], "workspace": "virtengine-gh", "repository": "virtengine/virtengine" }',
       "  ]",
       "}",
       "```",
@@ -2096,6 +2144,61 @@ it("action.materialize_planner_tasks passes two args to createTask even with def
     repository: "virtengine/virtengine",
     status: "draft",
     draft: true,
+  }));
+});
+
+it("action.materialize_planner_tasks applies workspace defaults from workflow context when planner output omits them", async () => {
+  const handler = getNodeType("action.materialize_planner_tasks");
+  expect(handler).toBeDefined();
+
+  const ctx = new WorkflowContext({
+    workspaceId: "workspace-alpha",
+    _targetRepo: "repo-alpha",
+  });
+  ctx.setNodeOutput("run-planner", {
+    output: [
+      "```json",
+      "{",
+      '  "tasks": [',
+      '    { "title": "[m] feat(workflow): apply defaults", "description": "A", "acceptance_criteria": ["ac"], "verification": ["verify"], "repo_areas": ["workflow"] }',
+      "  ]",
+      "}",
+      "```",
+    ].join("\n"),
+  });
+
+  const createTask = vi.fn(async () => ({ id: "task-defaults-1" }));
+  const mockEngine = {
+    services: {
+      kanban: {
+        createTask,
+      },
+    },
+  };
+
+  const node = {
+    id: "materialize",
+    type: "action.materialize_planner_tasks",
+    config: {
+      plannerNodeId: "run-planner",
+      status: "draft",
+      dedup: false,
+      failOnZero: true,
+      minCreated: 1,
+    },
+  };
+
+  const result = await handler.execute(node, ctx, mockEngine);
+  expect(result.success).toBe(true);
+  expect(result.createdCount).toBe(1);
+  expect(createTask).toHaveBeenCalledWith("", expect.objectContaining({
+    title: "[m] feat(workflow): apply defaults",
+    workspace: "workspace-alpha",
+    repository: "repo-alpha",
+    meta: expect.objectContaining({
+      workspace: "workspace-alpha",
+      repository: "repo-alpha",
+    }),
   }));
 });
 
@@ -2155,6 +2258,83 @@ it("action.materialize_planner_tasks surfaces upstream planner errors when no ou
   );
 });
 
+it("action.materialize_planner_tasks enforces planner quality gates and persists planner metadata", async () => {
+  const handler = getNodeType("action.materialize_planner_tasks");
+  expect(handler).toBeDefined();
+
+  const ctx = new WorkflowContext({});
+  ctx.setNodeOutput("run-planner", {
+    output: [
+      "```json",
+      "{",
+      '  "tasks": [',
+      '    { "title": "[m] fix(workflow): missing acceptance", "description": "A", "verification": ["v1"], "repo_areas": ["workflow"], "impact": 0.9, "risk": 0.2 },',
+      '    { "title": "[m] fix(workflow): low impact", "description": "B", "acceptance_criteria": ["ac"], "verification": ["v"], "repo_areas": ["workflow"], "impact": 0.1, "risk": 0.2 },',
+      '    { "title": "[m] fix(workflow): high risk", "description": "C", "acceptance_criteria": ["ac"], "verification": ["v"], "repo_areas": ["workflow"], "impact": 0.9, "risk": 9.5 },',
+      '    { "title": "[m] fix(workflow): area saturated", "description": "D", "acceptance_criteria": ["ac"], "verification": ["v"], "repo_areas": ["workflow"], "impact": 0.9, "risk": 0.2 },',
+      '    { "title": "[m] fix(server): valid candidate", "description": "E", "acceptance_criteria": ["ac-server"], "verification": ["v-server"], "repo_areas": ["server"], "impact": 0.9, "confidence": 0.8, "risk": 0.2, "estimated_effort": "M", "why_now": "blocking incidents", "kill_criteria": ["if flaky"] }',
+      "  ]",
+      "}",
+      "```",
+    ].join("\n"),
+  });
+
+  const createTask = vi.fn(async () => ({ id: "task-quality-1" }));
+  const listTasks = vi.fn().mockResolvedValue([
+    { id: "existing-1", title: "existing workflow task", status: "todo", meta: { repo_areas: ["workflow"] } },
+  ]);
+  const mockEngine = {
+    services: {
+      kanban: {
+        createTask,
+        listTasks,
+      },
+    },
+  };
+
+  const node = {
+    id: "materialize-quality",
+    type: "action.materialize_planner_tasks",
+    config: {
+      plannerNodeId: "run-planner",
+      projectId: "proj-123",
+      failOnZero: true,
+      dedup: true,
+      minCreated: 1,
+      minImpactScore: 0.5,
+      maxRiskWithoutHuman: "medium",
+      maxConcurrentRepoAreaTasks: 1,
+    },
+  };
+
+  const result = await handler.execute(node, ctx, mockEngine);
+  expect(result.success).toBe(true);
+  expect(result.createdCount).toBe(1);
+  expect(result.skippedCount).toBe(4);
+  expect(result.skipped).toEqual(expect.arrayContaining([
+    expect.objectContaining({ title: "[m] fix(workflow): missing acceptance", reason: "missing_acceptance_criteria" }),
+    expect.objectContaining({ title: "[m] fix(workflow): low impact", reason: "below_min_impact" }),
+    expect.objectContaining({ title: "[m] fix(workflow): high risk", reason: "risk_above_threshold" }),
+    expect.objectContaining({ title: "[m] fix(workflow): area saturated", reason: "repo_area_saturated" }),
+  ]));
+  expect(createTask).toHaveBeenCalledTimes(1);
+  expect(createTask).toHaveBeenCalledWith("proj-123", expect.objectContaining({
+    title: "[m] fix(server): valid candidate",
+    repo_areas: ["server"],
+    meta: expect.objectContaining({
+      repo_areas: ["server"],
+      planner: expect.objectContaining({
+        impact: 1,
+        confidence: 1,
+        risk: "low",
+        estimated_effort: "m",
+        repo_areas: ["server"],
+        why_now: "blocking incidents",
+        kill_criteria: ["if flaky"],
+      }),
+    }),
+  }));
+});
 describe("WorkflowEngine singleton services", () => {
   beforeEach(() => {
     resetWorkflowEngine();
@@ -2472,5 +2652,188 @@ describe("Concurrency limiter", () => {
     expect(maxSeen).toBeGreaterThanOrEqual(2);
     // After all complete, slots should be released
     expect(engine.getConcurrencyStats().activeRuns).toBe(0);
+  });
+});
+
+
+describe("WorkflowEngine task traceability hooks", () => {
+  beforeEach(() => {
+    makeTmpEngine();
+  });
+
+  afterEach(() => {
+    try { rmSync(tmpDir, { recursive: true, force: true }); } catch { /* ok */ }
+  });
+
+  it("does not emit task trace events when task context is absent", async () => {
+    registerNodeType("test.trace.no_task", {
+      describe: () => "No task trace node",
+      schema: { type: "object", properties: {} },
+      async execute() {
+        return { ok: true };
+      },
+    });
+
+    const wf = makeSimpleWorkflow(
+      [
+        { id: "trigger", type: "trigger.manual", label: "Start", config: {} },
+        { id: "work", type: "test.trace.no_task", label: "Work", config: {} },
+      ],
+      [{ id: "e1", source: "trigger", target: "work" }],
+      { id: "wf-task-trace-no-task" },
+    );
+    engine.save(wf);
+
+    const collected = [];
+    const unsubscribe = engine.registerTaskTraceHook((event) => {
+      collected.push(event);
+    });
+    const emitted = [];
+    engine.on("task:trace", (event) => emitted.push(event));
+
+    const ctx = await engine.execute(wf.id, {});
+    unsubscribe();
+
+    expect(ctx.errors).toEqual([]);
+    expect(collected).toHaveLength(0);
+    expect(emitted).toHaveLength(0);
+    expect(Array.isArray(ctx.data._taskWorkflowEvents)).toBe(false);
+  });
+
+  it("collects task-linked run and node trace summaries when taskId exists", async () => {
+    registerNodeType("test.trace.with_task", {
+      describe: () => "Task trace node",
+      schema: { type: "object", properties: {} },
+      async execute() {
+        return { ok: true, message: "completed traced node" };
+      },
+    });
+
+    const wf = makeSimpleWorkflow(
+      [
+        { id: "trigger", type: "trigger.manual", label: "Start", config: {} },
+        { id: "work", type: "test.trace.with_task", label: "Work", config: {} },
+      ],
+      [{ id: "e1", source: "trigger", target: "work" }],
+      { id: "wf-task-trace-with-task" },
+    );
+    engine.save(wf);
+
+    const collected = [];
+    engine.registerTaskTraceHook((event) => {
+      collected.push(event);
+    });
+
+    const ctx = await engine.execute(wf.id, {
+      taskId: "TASK-TRACE-1",
+      taskTitle: "Trace this task",
+    });
+
+    expect(ctx.errors).toEqual([]);
+    expect(collected.length).toBeGreaterThanOrEqual(4);
+    expect(collected.every((event) => event.taskId === "TASK-TRACE-1")).toBe(true);
+    expect(collected.some((event) => event.eventType === "workflow.run.start")).toBe(true);
+    expect(collected.some((event) => event.eventType === "workflow.node.start")).toBe(true);
+    expect(collected.some((event) => event.eventType === "workflow.node.complete")).toBe(true);
+    expect(collected.some((event) => event.eventType === "workflow.run.end")).toBe(true);
+
+    expect(Array.isArray(ctx.data._taskWorkflowEvents)).toBe(true);
+    expect(ctx.data._taskWorkflowEvents.length).toBe(collected.length);
+    expect(ctx.data._taskWorkflowEvents[0].runId).toBe(ctx.id);
+  });
+
+  it("derives task context from action.create_task output for downstream traceability", async () => {
+    const createTask = vi.fn(async (_projectId, taskData) => ({
+      id: "TASK-CREATED-42",
+      title: taskData?.title || "Generated task",
+      status: taskData?.status || "todo",
+    }));
+
+    const traceEvents = [];
+    engine = makeTmpEngine({
+      kanban: { createTask },
+      onTaskWorkflowEvent: (event) => {
+        traceEvents.push(event);
+      },
+    });
+
+    const wf = makeSimpleWorkflow(
+      [
+        { id: "trigger", type: "trigger.manual", label: "Start", config: {} },
+        {
+          id: "create",
+          type: "action.create_task",
+          label: "Create task",
+          config: {
+            title: "Auto-created task",
+            description: "Created during workflow execution",
+            status: "todo",
+          },
+        },
+      ],
+      [{ id: "e1", source: "trigger", target: "create" }],
+      { id: "wf-task-trace-create-task" },
+    );
+    engine.save(wf);
+
+    const ctx = await engine.execute(wf.id, {});
+
+    expect(ctx.errors).toEqual([]);
+    expect(createTask).toHaveBeenCalledTimes(1);
+    expect(ctx.data.taskId).toBe("TASK-CREATED-42");
+    expect(ctx.data.taskTitle).toBe("Auto-created task");
+
+    const nodeComplete = traceEvents.find((event) =>
+      event.eventType === "workflow.node.complete" && event.nodeId === "create",
+    );
+    expect(nodeComplete).toBeDefined();
+    expect(nodeComplete.taskId).toBe("TASK-CREATED-42");
+    expect(nodeComplete.summary).toContain("taskId");
+
+    const runEnd = traceEvents.find((event) => event.eventType === "workflow.run.end");
+    expect(runEnd).toBeDefined();
+    expect(runEnd.taskId).toBe("TASK-CREATED-42");
+  });
+});
+
+
+describe("WorkflowEngine.getTaskTraceEvents", () => {
+  beforeEach(() => {
+    makeTmpEngine();
+  });
+
+  afterEach(() => {
+    try { rmSync(tmpDir, { recursive: true, force: true }); } catch { /* ok */ }
+  });
+
+  it("returns cloned task trace events from persisted run detail", async () => {
+    registerNodeType("test.trace.fetch_events", {
+      describe: () => "Fetch task trace events",
+      schema: { type: "object", properties: {} },
+      async execute() {
+        return { ok: true };
+      },
+    });
+
+    const wf = makeSimpleWorkflow(
+      [
+        { id: "trigger", type: "trigger.manual", label: "Start", config: {} },
+        { id: "work", type: "test.trace.fetch_events", label: "Work", config: {} },
+      ],
+      [{ id: "e1", source: "trigger", target: "work" }],
+      { id: "wf-task-trace-readback" },
+    );
+    engine.save(wf);
+
+    const ctx = await engine.execute(wf.id, { taskId: "TASK-TRACE-READBACK" });
+    const events = engine.getTaskTraceEvents(ctx.id);
+
+    expect(Array.isArray(events)).toBe(true);
+    expect(events.length).toBeGreaterThan(0);
+    expect(events.every((event) => event.taskId === "TASK-TRACE-READBACK")).toBe(true);
+
+    events[0].taskId = "mutated";
+    const reread = engine.getTaskTraceEvents(ctx.id);
+    expect(reread[0].taskId).toBe("TASK-TRACE-READBACK");
   });
 });

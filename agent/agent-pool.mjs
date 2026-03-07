@@ -2228,16 +2228,25 @@ export async function launchEphemeralThread(
       if (mcpCfg.enabled !== false) {
         const requestedIds = launchExtra.mcpServers || [];
         const defaultIds = mcpCfg.defaultServers || [];
+        const registry = await getMcpRegistry();
+        let resolved = [];
         if (requestedIds.length || defaultIds.length) {
-          const registry = await getMcpRegistry();
-          const resolved = await registry.resolveMcpServersForAgent(
+          resolved = await registry.resolveMcpServersForAgent(
             cwd,
             requestedIds,
             { defaultServers: defaultIds, catalogOverrides: mcpCfg.catalogOverrides || {} },
           );
-          if (resolved.length) {
-            launchExtra._resolvedMcpServers = resolved;
-          }
+        }
+        if (typeof registry.wrapServersWithDiscoveryProxy === "function") {
+          resolved = registry.wrapServersWithDiscoveryProxy(cwd, resolved, {
+            enabled: mcpCfg.useDiscoveryProxy !== false,
+            includeCustomTools: mcpCfg.includeCustomToolsInDiscoveryProxy !== false,
+            cacheTtlMs: mcpCfg.discoveryProxyCacheTtlMs,
+            executeTimeoutMs: mcpCfg.discoveryProxyExecuteTimeoutMs,
+          });
+        }
+        if (resolved.length) {
+          launchExtra._resolvedMcpServers = resolved;
         }
       }
       launchExtra._mcpResolved = true;

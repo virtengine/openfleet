@@ -8,7 +8,7 @@
  * Templates are split into category modules for easy extension:
  *   workflow-templates/github.mjs     — PR Merge Strategy, Triage, Conflict Resolver, Stale Reaper, Release Drafter, SDK Conflict Resolver
  *   workflow-templates/agents.mjs     — Frontend Agent, Review Agent, Custom Agent, Session Monitor, Backend Agent, Meeting Orchestrator + Subworkflow Chain
- *   workflow-templates/planning.mjs   — Task Planner, Task Replenish, Nightly Report, Sprint Retrospective
+ *   workflow-templates/planning.mjs   — Task Planner, Task Replenish, Nightly Report, Sprint Retrospective, Weekly Fitness Summary
  *   workflow-templates/ci-cd.mjs      — Build & Deploy, Release Pipeline, Canary Deploy
  *   workflow-templates/reliability.mjs — Error Recovery, Anomaly Watchdog, Workspace Hygiene, Health Check, Task Finalization Guard, Task Repair Worktree, Task Orphan Worktree Recovery, Incident Response, Task Archiver, Sync Engine
  *   workflow-templates/security.mjs   — Dependency Audit, Secret Scanner
@@ -65,6 +65,7 @@ import {
   TASK_REPLENISH_TEMPLATE,
   NIGHTLY_REPORT_TEMPLATE,
   SPRINT_RETROSPECTIVE_TEMPLATE,
+  WEEKLY_FITNESS_SUMMARY_TEMPLATE,
 } from "../workflow-templates/planning.mjs";
 
 // CI/CD
@@ -159,6 +160,7 @@ export {
   TASK_REPLENISH_TEMPLATE,
   NIGHTLY_REPORT_TEMPLATE,
   SPRINT_RETROSPECTIVE_TEMPLATE,
+  WEEKLY_FITNESS_SUMMARY_TEMPLATE,
   BUILD_DEPLOY_TEMPLATE,
   RELEASE_PIPELINE_TEMPLATE,
   CANARY_DEPLOY_TEMPLATE,
@@ -237,6 +239,7 @@ export const WORKFLOW_TEMPLATES = Object.freeze([
   TASK_REPLENISH_TEMPLATE,
   NIGHTLY_REPORT_TEMPLATE,
   SPRINT_RETROSPECTIVE_TEMPLATE,
+  WEEKLY_FITNESS_SUMMARY_TEMPLATE,
   // ── CI/CD ──
   BUILD_DEPLOY_TEMPLATE,
   RELEASE_PIPELINE_TEMPLATE,
@@ -1082,3 +1085,5 @@ export function installRecommendedTemplates(engine, overridesById = {}) {
     .map((template) => template.id);
   return installTemplateSet(engine, recommendedIds, overridesById);
 }
+
+

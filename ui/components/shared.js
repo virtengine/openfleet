@@ -340,13 +340,18 @@ export function Modal({
       document.documentElement.style.setProperty("--keyboard-height", "0px");
     };
   }, [open]);
-
   // Prevent touches on the scrollable body from triggering swipe-to-dismiss
   const handleBodyTouchStart = useCallback((e) => {
     e.stopPropagation();
   }, []);
 
+  const isDragHandleTarget = useCallback((target) => (
+    Boolean(target?.closest?.(".modal-handle, .modal-header"))
+  ), []);
+
   const handleTouchStart = useCallback((e) => {
+    if (!isDragHandleTarget(e.target)) return;
+
     // Don't intercept touches on the close button
     if (e.target.closest?.(".modal-close-btn")) return;
     const el = contentRef.current;
@@ -354,7 +359,7 @@ export function Modal({
     const rect = el.getBoundingClientRect();
     const touchY = e.touches[0].clientY;
     // Only start drag if touch is within top 60px of the modal content
-    if (touchY - rect.top > 60) return;
+    if (touchY - rect.top > 120) return;
     dragState.current = { startY: touchY, startRect: rect.top, dragging: true };
     // Disable transition during active drag
     el.style.transition = "none";
@@ -378,7 +383,7 @@ export function Modal({
     dragState.current.dragging = false;
     const el = contentRef.current;
     if (el) el.style.transition = "";
-    if (dragY > 150) {
+    if (dragY > 110) {
       haptic("light");
       requestClose();
     }
@@ -392,7 +397,8 @@ export function Modal({
     const el = contentRef.current;
     if (!el) return;
     const rect = el.getBoundingClientRect();
-    if (e.clientY - rect.top > 60) return;
+    if (!isDragHandleTarget(e.target)) return;
+    if (e.clientY - rect.top > 120) return;
     dragState.current = {
       startY: e.clientY,
       startRect: rect.top,
@@ -426,7 +432,7 @@ export function Modal({
       el.style.transition = "";
       try { el.releasePointerCapture(e.pointerId); } catch { /* no-op */ }
     }
-    if (dragY > 150) {
+    if (dragY > 110) {
       haptic("light");
       requestClose();
     }
@@ -555,9 +561,11 @@ export function Modal({
               size="small"
               onTouchStart=${(e) => e.stopPropagation()}
               onPointerDown=${(e) => e.stopPropagation()}
+              onPointerUp=${(e) => e.stopPropagation()}
+              onMouseDown=${(e) => e.stopPropagation()}
               onClick=${requestClose}
               aria-label="Close"
-              sx=${{ position: 'absolute', right: 8, top: 8 }}
+              sx=${{ position: "absolute", right: 8, top: 8, zIndex: 8, pointerEvents: "auto" }}
             >
               ${ICONS.close}
             <//>
@@ -756,12 +764,12 @@ export function ToastContainer() {
   const visible = items.filter(shouldShowToast);
   if (!visible.length) return null;
 
-  return html`
+  const content = html`
     <${Box} sx=${{
       position: "fixed",
       top: 16,
       right: 16,
-      zIndex: 9999,
+      zIndex: 13000,
       display: "flex",
       flexDirection: "column",
       gap: 1,
@@ -790,6 +798,7 @@ export function ToastContainer() {
       )}
     </${Box}>
   `;
+  return createPortal(content, document.body);
 }
 
 /* ═══════════════════════════════════════════════

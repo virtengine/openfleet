@@ -13,6 +13,7 @@ import {
   mkdirSync,
   renameSync,
   existsSync,
+  statSync,
   unlinkSync,
 } from "node:fs";
 
@@ -69,7 +70,53 @@ let storeTmpPath = storePath + ".tmp";
 const MAX_STATUS_HISTORY = 50;
 const MAX_AGENT_OUTPUT = 2000;
 const MAX_ERROR_LENGTH = 1000;
+const MAX_TASK_TIMELINE = 300;
+const MAX_TASK_COMMENTS = 200;
+const MAX_WORKFLOW_RUN_LINKS = 200;
 const ATOMIC_RENAME_FALLBACK_CODES = new Set(["EPERM", "EACCES", "EBUSY", "EXDEV"]);
+const TERMINAL_TASK_STATUSES = new Set(["done", "cancelled"]);
+const SPRINT_ORDER_MODES = new Set(["parallel", "sequential"]);
+
+const TASK_TYPE_SET = new Set(["epic", "task", "subtask"]);
+const LIFECYCLE_ACTION_TARGET = Object.freeze({
+  start: "inprogress",
+  pause: "paused",
+  resume: "inprogress",
+  complete: "done",
+  cancel: "cancelled",
+  block: "blocked",
+});
+const NORMALIZED_STATE_MAP = Object.freeze({
+  draft: "backlog",
+  backlog: "backlog",
+  open: "backlog",
+  new: "backlog",
+  todo: "backlog",
+  inprogress: "inprogress",
+  "in-progress": "inprogress",
+  assigned: "inprogress",
+  working: "inprogress",
+  running: "inprogress",
+  paused: "paused",
+  inreview: "inreview",
+  "in-review": "inreview",
+  review: "inreview",
+  done: "done",
+  completed: "done",
+  cancelled: "cancelled",
+  canceled: "cancelled",
+  blocked: "blocked",
+  error: "blocked",
+});
+const ALLOWED_STATE_TRANSITIONS = Object.freeze({
+  backlog: new Set(["inprogress", "cancelled", "blocked"]),
+  inprogress: new Set(["paused", "inreview", "done", "blocked", "cancelled", "backlog"]),
+  paused: new Set(["inprogress", "cancelled", "blocked", "backlog"]),
+  inreview: new Set(["inprogress", "done", "blocked", "cancelled", "paused"]),
+  done: new Set([]),
+  cancelled: new Set([]),
+  blocked: new Set(["backlog", "inprogress", "cancelled", "paused"]),
+});
 
 // ---------------------------------------------------------------------------
 // In-memory state
@@ -79,6 +126,8 @@ let _store = null; // { _meta: {...}, tasks: { [id]: Task } }
 let _loaded = false;
 let _writeChain = Promise.resolve(); // simple write lock
 let _didLogInitialLoad = false;
+let _lastLoadedMtimeMs = 0;
+let _lastLoadedSizeBytes = 0;
 
 export function configureTaskStore(options = {}) {
   const baseDir = options.baseDir ? resolve(options.baseDir) : null;
@@ -102,6 +151,8 @@ export function configureTaskStore(options = {}) {
     _loaded = false;
     _writeChain = Promise.resolve();
     _didLogInitialLoad = false;
+    _lastLoadedMtimeMs = 0;
+    _lastLoadedSizeBytes = 0;
   }
 
   return storePath;
@@ -142,11 +193,243 @@ function normalizeTags(raw) {
   return tags;
 }
 
+function normalizeTaskType(rawType) {
+  const value = String(rawType || "").trim().toLowerCase();
+  if (TASK_TYPE_SET.has(value)) return value;
+  return "task";
+}
+
+function normalizeSprintId(rawSprintId) {
+  const value = String(rawSprintId || "").trim();
+  return value || null;
+}
+
+function normalizeSprintOrder(rawSprintOrder) {
+  if (rawSprintOrder == null || rawSprintOrder === "") return null;
+  const numeric = Number(rawSprintOrder);
+  if (!Number.isFinite(numeric)) return null;
+  return numeric;
+}
+
+function resolveSprintOrderMode(rawMode) {
+  const mode = String(rawMode || "").trim().toLowerCase();
+  return SPRINT_ORDER_MODES.has(mode) ? mode : "parallel";
+}
+
+function normalizeTaskStatus(rawStatus) {
+  const value = String(rawStatus || "").trim().toLowerCase();
+  if (!value) return "todo";
+  if (value === "in-progress") return "inprogress";
+  if (value === "in-review") return "inreview";
+  if (value === "completed") return "done";
+  if (value === "canceled") return "cancelled";
+  return value;
+}
+
+function normalizeLifecycleState(rawStatus) {
+  const key = normalizeTaskStatus(rawStatus);
+  return NORMALIZED_STATE_MAP[key] || "backlog";
+}
+
+function uniqueStringList(raw, options = {}) {
+  const allowEmpty = options.allowEmpty === true;
+  const caseSensitive = options.caseSensitive === true;
+  const values = Array.isArray(raw)
+    ? raw
+    : String(raw || "")
+        .split(",")
+        .map((entry) => entry.trim());
+  const seen = new Set();
+  const out = [];
+  for (const entry of values) {
+    const value = String(entry || "").trim();
+    if (!value && !allowEmpty) continue;
+    const key = caseSensitive ? value : value.toLowerCase();
+    if (seen.has(key)) continue;
+    seen.add(key);
+    out.push(value);
+  }
+  return out;
+}
+
+function normalizeTaskComments(rawComments) {
+  const values = Array.isArray(rawComments) ? rawComments : [];
+  const normalized = [];
+  for (const entry of values) {
+    if (entry == null) continue;
+    const bodyRaw = typeof entry === "string"
+      ? entry
+      : entry.body || entry.text || entry.content || "";
+    const body = String(bodyRaw || "").trim();
+    if (!body) continue;
+    normalized.push({
+      id: typeof entry === "object" && entry.id ? String(entry.id) : null,
+      body,
+      author: typeof entry === "object" && entry.author != null
+        ? String(entry.author)
+        : typeof entry === "object" && entry.user != null
+          ? String(entry.user)
+          : null,
+      createdAt:
+        typeof entry === "object" && entry.createdAt
+          ? String(entry.createdAt)
+          : typeof entry === "object" && entry.created_at
+            ? String(entry.created_at)
+            : now(),
+      source: typeof entry === "object" && entry.source ? String(entry.source) : "task",
+      kind: typeof entry === "object" && entry.kind ? String(entry.kind) : "comment",
+      meta: typeof entry === "object" && entry.meta && typeof entry.meta === "object"
+        ? { ...entry.meta }
+        : {},
+    });
+  }
+  if (normalized.length <= MAX_TASK_COMMENTS) return normalized;
+  return normalized.slice(-MAX_TASK_COMMENTS);
+}
+
+function createTimelineEvent(event = {}) {
+  const ts = String(event.at || event.timestamp || now());
+  return {
+    id: String(event.id || `${Date.now()}-${Math.random().toString(16).slice(2, 10)}`),
+    at: ts,
+    type: String(event.type || "status.transition"),
+    source: String(event.source || "task-store"),
+    actor: event.actor != null ? String(event.actor) : null,
+    action: event.action != null ? String(event.action) : null,
+    status: event.status != null ? String(event.status) : null,
+    fromStatus: event.fromStatus != null ? String(event.fromStatus) : null,
+    toStatus: event.toStatus != null ? String(event.toStatus) : null,
+    message: event.message != null ? String(event.message) : null,
+    payload: event.payload && typeof event.payload === "object" ? { ...event.payload } : null,
+  };
+}
+
+function normalizeTimelineEvents(rawEvents) {
+  const values = Array.isArray(rawEvents) ? rawEvents : [];
+  const normalized = values.map((event) => createTimelineEvent(event));
+  if (normalized.length <= MAX_TASK_TIMELINE) return normalized;
+  return normalized.slice(-MAX_TASK_TIMELINE);
+}
+
+function normalizeWorkflowRunLinks(rawRuns) {
+  const values = Array.isArray(rawRuns) ? rawRuns : [];
+  const normalized = [];
+  for (const entry of values) {
+    if (!entry || typeof entry !== "object") continue;
+    const runId = String(entry.runId || entry.id || "").trim();
+    if (!runId) continue;
+    normalized.push({
+      runId,
+      workflowId: entry.workflowId != null ? String(entry.workflowId) : null,
+      nodeId: entry.nodeId != null ? String(entry.nodeId) : null,
+      status: entry.status != null ? String(entry.status) : null,
+      outcome: entry.outcome != null ? String(entry.outcome) : null,
+      startedAt: entry.startedAt != null ? String(entry.startedAt) : null,
+      endedAt: entry.endedAt != null ? String(entry.endedAt) : null,
+      summary: entry.summary != null ? String(entry.summary) : null,
+      url: entry.url != null ? String(entry.url) : null,
+      source: entry.source != null ? String(entry.source) : "workflow",
+      meta: entry.meta && typeof entry.meta === "object" ? { ...entry.meta } : {},
+    });
+  }
+  if (normalized.length <= MAX_WORKFLOW_RUN_LINKS) return normalized;
+  return normalized.slice(-MAX_WORKFLOW_RUN_LINKS);
+}
+
+function validateTaskTransition(currentStatus, nextStatus, options = {}) {
+  const fromStatus = normalizeTaskStatus(currentStatus);
+  const toStatus = normalizeTaskStatus(nextStatus);
+  const fromState = normalizeLifecycleState(fromStatus);
+  const toState = normalizeLifecycleState(toStatus);
+  if (fromStatus === toStatus) {
+    return { valid: true, fromStatus, toStatus, fromState, toState, reason: "no_change" };
+  }
+  if (options.force === true) {
+    return { valid: true, fromStatus, toStatus, fromState, toState, reason: "forced" };
+  }
+  const allowed = ALLOWED_STATE_TRANSITIONS[fromState] || new Set();
+  if (allowed.has(toState)) {
+    return { valid: true, fromStatus, toStatus, fromState, toState, reason: "allowed" };
+  }
+  return {
+    valid: false,
+    fromStatus,
+    toStatus,
+    fromState,
+    toState,
+    reason: `invalid_transition:${fromState}->${toState}`,
+  };
+}
+
+function normalizeTaskStructure(rawTask = {}) {
+  const base = defaultTask(rawTask);
+  const normalized = {
+    ...base,
+    status: normalizeTaskStatus(base.status),
+    type: normalizeTaskType(base.type),
+    epicId: base.epicId ? String(base.epicId) : null,
+    parentTaskId: base.parentTaskId ? String(base.parentTaskId) : null,
+    childTaskIds: uniqueStringList(base.childTaskIds || []),
+    dependencyTaskIds: uniqueStringList(base.dependencyTaskIds || []),
+    blockedByTaskIds: uniqueStringList(base.blockedByTaskIds || []),
+    dependsOn: uniqueStringList(base.dependsOn || base.dependencyTaskIds || []),
+    assignees: uniqueStringList(base.assignees || []),
+    watchers: uniqueStringList(base.watchers || []),
+    links: {
+      branches: uniqueStringList(base.links?.branches || []),
+      prs: uniqueStringList(base.links?.prs || []),
+      workflows: uniqueStringList(base.links?.workflows || []),
+    },
+    comments: normalizeTaskComments(
+      Array.isArray(base.comments) && base.comments.length
+        ? base.comments
+        : Array.isArray(base.meta?.comments)
+          ? base.meta.comments
+          : [],
+    ),
+    timeline: normalizeTimelineEvents(
+      Array.isArray(base.timeline)
+        ? base.timeline
+        : Array.isArray(base.meta?.timeline)
+          ? base.meta.timeline
+          : [],
+    ),
+    workflowRuns: normalizeWorkflowRunLinks(
+      Array.isArray(base.workflowRuns)
+        ? base.workflowRuns
+        : Array.isArray(base.meta?.workflowRuns)
+          ? base.meta.workflowRuns
+          : [],
+    ),
+    stateVersion: Number.isFinite(Number(base.stateVersion))
+      ? Number(base.stateVersion)
+      : 2,
+    sprintId: normalizeSprintId(base.sprintId),
+    sprintOrder: normalizeSprintOrder(base.sprintOrder),
+  };
+  if (normalized.status === "draft") {
+    normalized.draft = true;
+  }
+  return normalized;
+}
+
+function pushTaskTimeline(task, event = {}) {
+  task.timeline = normalizeTimelineEvents([...(Array.isArray(task.timeline) ? task.timeline : []), event]);
+}
+
+function markTaskTouched(task, source = "task-store") {
+  const ts = now();
+  task.updatedAt = ts;
+  task.lastActivityAt = ts;
+  task.syncDirty = source !== "external";
+}
+
 function defaultMeta() {
   return {
     version: 1,
     projectId: null,
     lastFullSync: null,
+    sprintOrderMode: "parallel",
     taskCount: 0,
     stats: {
       draft: 0,
@@ -181,6 +464,24 @@ function defaultTask(overrides = {}) {
     branchName: null,
     prNumber: null,
     prUrl: null,
+    sprintId: null,
+    sprintOrder: null,
+
+    // Task State V2 graph/state fields
+    type: "task",
+    epicId: null,
+    parentTaskId: null,
+    childTaskIds: [],
+    dependencyTaskIds: [],
+    blockedByTaskIds: [],
+    dependsOn: [],
+    assignees: [],
+    watchers: [],
+    comments: [],
+    timeline: [],
+    workflowRuns: [],
+    links: { branches: [], prs: [], workflows: [] },
+    stateVersion: 2,
 
     createdAt: ts,
     updatedAt: ts,
@@ -208,6 +509,83 @@ function defaultTask(overrides = {}) {
   };
 }
 
+function normalizeSprintStructure(rawSprint = {}, existingSprint = null) {
+  const ts = now();
+  const id = normalizeSprintId(rawSprint.id || existingSprint?.id);
+  if (!id) return null;
+  const createdAt = String(rawSprint.createdAt || existingSprint?.createdAt || ts);
+  const updatedAt = String(rawSprint.updatedAt || ts);
+  const executionMode = resolveSprintOrderMode(
+    rawSprint.executionMode
+      ?? rawSprint.taskOrderMode
+      ?? existingSprint?.executionMode
+      ?? existingSprint?.taskOrderMode
+      ?? "parallel",
+  );
+  return {
+    id,
+    name: String(rawSprint.name || existingSprint?.name || id),
+    goal: rawSprint.goal != null ? String(rawSprint.goal) : existingSprint?.goal ?? null,
+    status: String(rawSprint.status || existingSprint?.status || "planned"),
+    order: normalizeSprintOrder(rawSprint.order ?? existingSprint?.order),
+    startDate:
+      rawSprint.startDate != null
+        ? String(rawSprint.startDate)
+        : existingSprint?.startDate ?? null,
+    endDate:
+      rawSprint.endDate != null
+        ? String(rawSprint.endDate)
+        : existingSprint?.endDate ?? null,
+    createdAt,
+    updatedAt,
+    meta: rawSprint.meta && typeof rawSprint.meta === "object"
+      ? { ...rawSprint.meta }
+      : existingSprint?.meta && typeof existingSprint.meta === "object"
+        ? { ...existingSprint.meta }
+        : {},
+    executionMode,
+    taskOrderMode: executionMode,
+  };
+}
+
+function listTaskDependencyIds(task) {
+  return uniqueStringList([...(task?.dependencyTaskIds || []), ...(task?.dependsOn || [])]);
+}
+
+function getSprintTaskOrderSequence(sprintId) {
+  const normalizedSprintId = normalizeSprintId(sprintId);
+  if (!normalizedSprintId) return [];
+  return Object.values(_store.tasks)
+    .filter((task) => task?.sprintId === normalizedSprintId)
+    .sort(compareTaskDagOrder);
+}
+
+function getNextSprintTaskOrder(sprintId) {
+  const sequence = getSprintTaskOrderSequence(sprintId);
+  let maxOrder = 0;
+  for (const task of sequence) {
+    const order = normalizeSprintOrder(task?.sprintOrder);
+    if (order != null && order > maxOrder) maxOrder = order;
+  }
+  return maxOrder + 1;
+}
+
+function isTaskTerminal(task) {
+  return TERMINAL_TASK_STATUSES.has(normalizeTaskStatus(task?.status));
+}
+
+function compareTaskDagOrder(taskA, taskB) {
+  const orderA = normalizeSprintOrder(taskA?.sprintOrder);
+  const orderB = normalizeSprintOrder(taskB?.sprintOrder);
+  if (orderA != null && orderB != null && orderA !== orderB) return orderA - orderB;
+  if (orderA != null && orderB == null) return -1;
+  if (orderA == null && orderB != null) return 1;
+  const createdAtA = String(taskA?.createdAt || "");
+  const createdAtB = String(taskB?.createdAt || "");
+  if (createdAtA !== createdAtB) return createdAtA.localeCompare(createdAtB);
+  return String(taskA?.id || "").localeCompare(String(taskB?.id || ""));
+}
+
 function recalcStats() {
   const stats = {
     draft: 0,
@@ -229,9 +607,34 @@ function recalcStats() {
 }
 
 function ensureLoaded() {
-  if (!_loaded) {
-    loadStore();
+  if (_loaded) {
+    maybeReloadStoreFromDisk();
+    return;
   }
+  loadStore();
+}
+
+function getStoreFingerprint() {
+  if (!existsSync(storePath)) {
+    return { mtimeMs: 0, sizeBytes: 0 };
+  }
+  try {
+    const stats = statSync(storePath);
+    return {
+      mtimeMs: stats.mtimeMs || 0,
+      sizeBytes: Number.isFinite(stats.size) ? stats.size : 0,
+    };
+  } catch {
+    return { mtimeMs: 0, sizeBytes: 0 };
+  }
+}
+
+function maybeReloadStoreFromDisk() {
+  const disk = getStoreFingerprint();
+  const mtimeChanged = disk.mtimeMs > _lastLoadedMtimeMs;
+  const sizeChanged = disk.sizeBytes !== _lastLoadedSizeBytes;
+  if (!mtimeChanged && !sizeChanged) return;
+  loadStore();
 }
 
 function buildCorruptBackupPath() {
@@ -291,10 +694,24 @@ export function loadStore() {
         }
         throw parseErr;
       }
+      const normalizedTasks = {};
+      const sourceTasks = data && data.tasks && typeof data.tasks === "object" ? data.tasks : {};
+      for (const [taskId, taskValue] of Object.entries(sourceTasks)) {
+        const resolvedId = String(taskValue?.id || taskId || "").trim();
+        if (!resolvedId) continue;
+        normalizedTasks[resolvedId] = normalizeTaskStructure({ ...taskValue, id: resolvedId });
+      }
       _store = {
-        _meta: { ...defaultMeta(), ...(data._meta || {}) },
-        tasks: data.tasks || {},
+        _meta: { ...defaultMeta(), ...(data._meta || {}), sprintOrderMode: resolveSprintOrderMode(data && data._meta ? data._meta.sprintOrderMode : null) },
+        tasks: normalizedTasks,
+        sprints: {},
       };
+      const sourceSprints = data && data.sprints && typeof data.sprints === "object" ? data.sprints : {};
+      for (const [sprintId, sprintValue] of Object.entries(sourceSprints)) {
+        const normalizedSprint = normalizeSprintStructure({ ...sprintValue, id: sprintId }, _store.sprints[sprintId] || null);
+        if (!normalizedSprint) continue;
+        _store.sprints[normalizedSprint.id] = normalizedSprint;
+      }
       if (!_didLogInitialLoad) {
         _didLogInitialLoad = true;
         console.log(
@@ -302,13 +719,20 @@ export function loadStore() {
           `Loaded ${Object.keys(_store.tasks).length} tasks from disk`,
         );
       }
+      const loadedFingerprint = getStoreFingerprint();
+      _lastLoadedMtimeMs = loadedFingerprint.mtimeMs;
+      _lastLoadedSizeBytes = loadedFingerprint.sizeBytes;
     } else {
-      _store = { _meta: defaultMeta(), tasks: {} };
+      _store = { _meta: defaultMeta(), tasks: {}, sprints: {} };
       console.log(TAG, "No store file found — initialised empty store");
+      _lastLoadedMtimeMs = 0;
+      _lastLoadedSizeBytes = 0;
     }
   } catch (err) {
     console.error(TAG, "Failed to load store, starting fresh:", err.message);
-    _store = { _meta: defaultMeta(), tasks: {} };
+    _store = { _meta: defaultMeta(), tasks: {}, sprints: {} };
+    _lastLoadedMtimeMs = 0;
+    _lastLoadedSizeBytes = 0;
   }
   _loaded = true;
 }
@@ -346,6 +770,9 @@ export function saveStore() {
             `Atomic rename failed (${renameErr?.message || renameErr}); fell back to direct write.`,
           );
         }
+        const loadedFingerprint = getStoreFingerprint();
+        _lastLoadedMtimeMs = loadedFingerprint.mtimeMs;
+        _lastLoadedSizeBytes = loadedFingerprint.sizeBytes;
       } catch (err) {
         console.error(TAG, "Failed to save store:", err.message);
       }
@@ -374,6 +801,117 @@ export function getStorePath() {
   return storePath;
 }
 
+function ensureSprintsMap() {
+  if (!_store.sprints || typeof _store.sprints !== "object") {
+    _store.sprints = {};
+  }
+  return _store.sprints;
+}
+
+export function listSprints() {
+  ensureLoaded();
+  const sprints = Object.values(ensureSprintsMap());
+  return sprints.sort((a, b) => {
+    const orderA = normalizeSprintOrder(a?.order);
+    const orderB = normalizeSprintOrder(b?.order);
+    if (orderA != null && orderB != null && orderA !== orderB) return orderA - orderB;
+    if (orderA != null && orderB == null) return -1;
+    if (orderA == null && orderB != null) return 1;
+    return String(a?.id || "").localeCompare(String(b?.id || ""));
+  });
+}
+
+export function getSprint(sprintId) {
+  ensureLoaded();
+  const normalizedSprintId = normalizeSprintId(sprintId);
+  if (!normalizedSprintId) return null;
+  return ensureSprintsMap()[normalizedSprintId] ?? null;
+}
+
+export function upsertSprint(sprintData = {}, options = {}) {
+  ensureLoaded();
+  const sprints = ensureSprintsMap();
+  const normalizedSprintId = normalizeSprintId(sprintData.id || options.sprintId);
+  if (!normalizedSprintId) return null;
+  const existing = sprints[normalizedSprintId] || null;
+  const normalized = normalizeSprintStructure({ ...sprintData, id: normalizedSprintId }, existing);
+  if (!normalized) return null;
+  sprints[normalizedSprintId] = normalized;
+
+  const syncTaskOrder = options.syncTaskOrder === true;
+  const sprintTasks = getSprintTaskOrderSequence(normalizedSprintId);
+  for (const [index, task] of sprintTasks.entries()) {
+    if (!task) continue;
+    if (!syncTaskOrder && task.sprintOrder != null) continue;
+    task.sprintOrder = index + 1;
+    markTaskTouched(task, "task-sprint");
+  }
+
+  saveStore();
+  return { ...normalized };
+}
+
+
+export function createSprint(sprintData = {}, options = {}) {
+  return upsertSprint(sprintData, options);
+}
+
+export function updateSprint(sprintId, sprintPatch = {}, options = {}) {
+  const normalizedSprintId = normalizeSprintId(sprintId);
+  if (!normalizedSprintId) return null;
+  const existing = getSprint(normalizedSprintId);
+  if (!existing) return null;
+  const merged = {
+    ...existing,
+    ...(sprintPatch && typeof sprintPatch === "object" ? sprintPatch : {}),
+    id: normalizedSprintId,
+  };
+  return upsertSprint(merged, options);
+}
+
+export function deleteSprint(sprintId, options = {}) {
+  ensureLoaded();
+  const normalizedSprintId = normalizeSprintId(sprintId);
+  if (!normalizedSprintId) return false;
+  const sprints = ensureSprintsMap();
+  if (!sprints[normalizedSprintId]) return false;
+  delete sprints[normalizedSprintId];
+
+  const detachTasks = options.detachTasks !== false;
+  if (detachTasks) {
+    for (const task of Object.values(_store.tasks)) {
+      if (!task || task.sprintId !== normalizedSprintId) continue;
+      const previousSprintOrder = task.sprintOrder;
+      task.sprintId = null;
+      task.sprintOrder = null;
+      pushTaskTimeline(task, {
+        type: "task.sprint.removed",
+        source: options.source || "task-sprint",
+        message: `Removed from deleted sprint ${normalizedSprintId}`,
+        payload: {
+          sprintId: normalizedSprintId,
+          previousSprintOrder,
+        },
+      });
+      markTaskTouched(task, options.source || "task-sprint");
+    }
+  }
+
+  saveStore();
+  return true;
+}
+
+export function setSprintOrderMode(mode = "parallel") {
+  ensureLoaded();
+  _store._meta.sprintOrderMode = resolveSprintOrderMode(mode);
+  saveStore();
+  return _store._meta.sprintOrderMode;
+}
+
+export function getSprintOrderMode() {
+  ensureLoaded();
+  return resolveSprintOrderMode(_store._meta?.sprintOrderMode || "parallel");
+}
 // ---------------------------------------------------------------------------
 // Core CRUD
 // ---------------------------------------------------------------------------
@@ -415,39 +953,107 @@ export function updateTask(taskId, updates) {
     return null;
   }
 
-  // Apply updates (shallow merge)
-  for (const [k, v] of Object.entries(updates)) {
-    if (k === "id") continue; // never overwrite id
-    if (k === "lastAgentOutput") {
-      task[k] = truncate(v, MAX_AGENT_OUTPUT);
-    } else if (k === "lastError") {
-      task[k] = truncate(v, MAX_ERROR_LENGTH);
-    } else if (k === "tags") {
-      task[k] = normalizeTags(v);
-    } else {
-      task[k] = v;
+  const previousStatus = task.status;
+  const patch = updates && typeof updates === "object" ? updates : {};
+
+  for (const [key, value] of Object.entries(patch)) {
+    if (key === "id") continue;
+    if (key === "lastAgentOutput") {
+      task.lastAgentOutput = truncate(value, MAX_AGENT_OUTPUT);
+      continue;
     }
+    if (key === "lastError") {
+      task.lastError = truncate(value, MAX_ERROR_LENGTH);
+      continue;
+    }
+    if (key === "tags") {
+      task.tags = normalizeTags(value);
+      continue;
+    }
+    if (key === "status") {
+      task.status = normalizeTaskStatus(value);
+      continue;
+    }
+    if (key === "type") {
+      task.type = normalizeTaskType(value);
+      continue;
+    }
+    if (key === "sprintId") {
+      task.sprintId = normalizeSprintId(value);
+      continue;
+    }
+    if (key === "sprintOrder") {
+      task.sprintOrder = normalizeSprintOrder(value);
+      continue;
+    }
+    if (key === "comments") {
+      task.comments = normalizeTaskComments(value);
+      continue;
+    }
+    if (key === "timeline") {
+      task.timeline = normalizeTimelineEvents(value);
+      continue;
+    }
+    if (key === "workflowRuns") {
+      task.workflowRuns = normalizeWorkflowRunLinks(value);
+      continue;
+    }
+    if (key === "assignees" || key === "watchers" || key === "childTaskIds" || key === "dependencyTaskIds" || key === "blockedByTaskIds" || key === "dependsOn") {
+      task[key] = uniqueStringList(value);
+      continue;
+    }
+    if (key === "links") {
+      const links = value && typeof value === "object" ? value : {};
+      task.links = {
+        branches: uniqueStringList(links.branches || task.links?.branches || []),
+        prs: uniqueStringList(links.prs || task.links?.prs || []),
+        workflows: uniqueStringList(links.workflows || task.links?.workflows || []),
+      };
+      continue;
+    }
+    task[key] = value;
   }
 
-  if (typeof updates.draft === "boolean") {
-    task.draft = updates.draft;
-    if (updates.draft && task.status !== "draft") {
+  if (typeof patch.draft === "boolean") {
+    task.draft = patch.draft;
+    if (patch.draft && task.status !== "draft") {
       task.status = "draft";
-    } else if (!updates.draft && task.status === "draft") {
+    } else if (!patch.draft && task.status === "draft") {
       task.status = "todo";
     }
   }
   if (task.status === "draft") {
     task.draft = true;
-  } else if (task.draft && updates.draft == null) {
+  } else if (task.draft && patch.draft == null) {
     task.draft = false;
   }
 
-  task.updatedAt = now();
-  task.syncDirty = true;
+  const normalizedTask = normalizeTaskStructure(task);
+  _store.tasks[taskId] = normalizedTask;
+  markTaskTouched(normalizedTask, "task-store");
+
+  if (previousStatus !== normalizedTask.status) {
+    normalizedTask.statusHistory.push({
+      status: normalizedTask.status,
+      timestamp: now(),
+      source: "update",
+    });
+    if (normalizedTask.statusHistory.length > MAX_STATUS_HISTORY) {
+      normalizedTask.statusHistory = normalizedTask.statusHistory.slice(-MAX_STATUS_HISTORY);
+    }
+    pushTaskTimeline(normalizedTask, {
+      type: "status.transition",
+      source: "updateTask",
+      fromStatus: previousStatus,
+      toStatus: normalizedTask.status,
+      status: normalizedTask.status,
+      action: "update",
+      message: `Status updated ${previousStatus} -> ${normalizedTask.status}`,
+    });
+  }
 
   saveStore();
-  return { ...task };
+  return { ...normalizedTask };
 }
 
 /**
@@ -456,18 +1062,38 @@ export function updateTask(taskId, updates) {
  */
 export function addTask(taskData) {
   ensureLoaded();
-  const task = defaultTask(taskData);
+  const task = normalizeTaskStructure(defaultTask(taskData));
   if (!task.id) {
     console.error(TAG, "addTask: task must have an id");
     return null;
   }
+
   task.tags = normalizeTags(task.tags);
   task.draft = Boolean(task.draft || task.status === "draft");
   if (task.draft) task.status = "draft";
   task.lastAgentOutput = truncate(task.lastAgentOutput, MAX_AGENT_OUTPUT);
   task.lastError = truncate(task.lastError, MAX_ERROR_LENGTH);
+  pushTaskTimeline(task, {
+    type: "task.created",
+    source: "task-store",
+    status: task.status,
+    message: `Task created with status ${task.status}`,
+  });
 
   _store.tasks[task.id] = task;
+
+  if (task.parentTaskId && _store.tasks[task.parentTaskId]) {
+    const parent = _store.tasks[task.parentTaskId];
+    parent.childTaskIds = uniqueStringList([...(parent.childTaskIds || []), task.id]);
+    markTaskTouched(parent, "task-graph");
+  }
+  for (const dependencyId of task.dependencyTaskIds || []) {
+    const dependency = _store.tasks[dependencyId];
+    if (!dependency) continue;
+    dependency.blockedByTaskIds = uniqueStringList([...(dependency.blockedByTaskIds || []), task.id]);
+    markTaskTouched(dependency, "task-graph");
+  }
+
   console.log(TAG, `Added task ${task.id}: ${task.title}`);
 
   saveStore();
@@ -479,7 +1105,27 @@ export function addTask(taskData) {
  */
 export function removeTask(taskId) {
   ensureLoaded();
-  if (!_store.tasks[taskId]) return false;
+  const task = _store.tasks[taskId];
+  if (!task) return false;
+
+  for (const candidate of Object.values(_store.tasks)) {
+    if (!candidate || candidate.id === taskId) continue;
+    const beforeChildren = candidate.childTaskIds?.length || 0;
+    const beforeDeps = candidate.dependencyTaskIds?.length || 0;
+    candidate.childTaskIds = uniqueStringList((candidate.childTaskIds || []).filter((id) => id !== taskId));
+    candidate.dependencyTaskIds = uniqueStringList((candidate.dependencyTaskIds || []).filter((id) => id !== taskId));
+    candidate.dependsOn = uniqueStringList((candidate.dependsOn || []).filter((id) => id !== taskId));
+    if (beforeChildren !== candidate.childTaskIds.length || beforeDeps !== candidate.dependencyTaskIds.length) {
+      markTaskTouched(candidate, "task-store");
+      pushTaskTimeline(candidate, {
+        type: "task.graph.updated",
+        source: "task-store",
+        message: `Removed references to deleted task ${taskId}`,
+        payload: { removedTaskId: taskId },
+      });
+    }
+  }
+
   delete _store.tasks[taskId];
   console.log(TAG, `Removed task ${taskId}`);
   saveStore();
@@ -502,21 +1148,21 @@ export function setTaskStatus(taskId, status, source) {
     return null;
   }
 
-  const prev = task.status;
+  const prev = normalizeTaskStatus(task.status);
+  const next = normalizeTaskStatus(status);
   const tsNow = now();
-  task.status = status;
+  task.status = next;
   task.updatedAt = tsNow;
   task.lastActivityAt = tsNow;
 
   // No-op transition: keep activity fresh without polluting history/logs.
-  if (prev === status) {
+  if (prev === next) {
     saveStore();
     return { ...task };
   }
 
-  // Append to history (FIFO, max 50)
   task.statusHistory.push({
-    status,
+    status: next,
     timestamp: tsNow,
     source: source || "unknown",
   });
@@ -524,18 +1170,109 @@ export function setTaskStatus(taskId, status, source) {
     task.statusHistory = task.statusHistory.slice(-MAX_STATUS_HISTORY);
   }
 
-  // Mark dirty unless change came from external source
   if (source !== "external") {
     task.syncDirty = true;
   }
 
+  pushTaskTimeline(task, {
+    type: "status.transition",
+    source: source || "unknown",
+    fromStatus: prev,
+    toStatus: next,
+    status: next,
+    action: "set_status",
+    message: `Task status changed ${prev} -> ${next}`,
+  });
+
   console.log(
     TAG,
-    `Task ${taskId} status: ${prev} → ${status} (source: ${source})`,
+    `Task ${taskId} status: ${prev} → ${next} (source: ${source})`,
   );
 
   saveStore();
   return { ...task };
+}
+
+export function validateTaskStatusTransition(currentStatus, nextStatus, options = {}) {
+  return validateTaskTransition(currentStatus, nextStatus, options);
+}
+
+export function transitionTaskLifecycle(taskId, action, options = {}) {
+  ensureLoaded();
+  const task = _store.tasks[taskId];
+  if (!task) {
+    console.warn(TAG, `transitionTaskLifecycle: task ${taskId} not found`);
+    return { ok: false, error: "task_not_found", task: null };
+  }
+
+  const normalizedAction = String(action || "").trim().toLowerCase();
+  const targetStatus =
+    normalizeTaskStatus(options.targetStatus || options.status || LIFECYCLE_ACTION_TARGET[normalizedAction] || "");
+  if (!targetStatus) {
+    return { ok: false, error: "unknown_action", action: normalizedAction, task: { ...task } };
+  }
+
+  const validation = validateTaskTransition(task.status, targetStatus, options);
+  if (!validation.valid) {
+    return {
+      ok: false,
+      error: validation.reason,
+      action: normalizedAction,
+      fromStatus: validation.fromStatus,
+      toStatus: validation.toStatus,
+      task: { ...task },
+    };
+  }
+
+  const previousStatus = task.status;
+  const updated = setTaskStatus(taskId, targetStatus, options.source || "lifecycle");
+  const resolved = _store.tasks[taskId];
+  if (resolved) {
+    pushTaskTimeline(resolved, {
+      type: "lifecycle.transition",
+      source: options.source || "lifecycle",
+      action: normalizedAction || "transition",
+      fromStatus: previousStatus,
+      toStatus: targetStatus,
+      status: targetStatus,
+      message: options.reason ? String(options.reason) : `Lifecycle action ${normalizedAction || "transition"}`,
+      actor: options.actor != null ? String(options.actor) : null,
+      payload: options.payload && typeof options.payload === "object" ? options.payload : null,
+    });
+    saveStore();
+  }
+
+  return {
+    ok: true,
+    action: normalizedAction,
+    fromStatus: previousStatus,
+    toStatus: targetStatus,
+    task: updated,
+  };
+}
+
+export function startTask(taskId, options = {}) {
+  return transitionTaskLifecycle(taskId, "start", options);
+}
+
+export function pauseTask(taskId, options = {}) {
+  return transitionTaskLifecycle(taskId, "pause", options);
+}
+
+export function resumeTask(taskId, options = {}) {
+  return transitionTaskLifecycle(taskId, "resume", options);
+}
+
+export function completeTask(taskId, options = {}) {
+  return transitionTaskLifecycle(taskId, "complete", options);
+}
+
+export function cancelTask(taskId, options = {}) {
+  return transitionTaskLifecycle(taskId, "cancel", options);
+}
+
+export function blockTask(taskId, options = {}) {
+  return transitionTaskLifecycle(taskId, "block", options);
 }
 
 /**
@@ -546,6 +1283,556 @@ export function getTaskHistory(taskId) {
   const task = _store.tasks[taskId];
   if (!task) return [];
   return [...task.statusHistory];
+}
+
+export function getTaskTimeline(taskId) {
+  ensureLoaded();
+  const task = _store.tasks[taskId];
+  if (!task) return [];
+  return Array.isArray(task.timeline) ? [...task.timeline] : [];
+}
+
+export function appendTaskTimelineEvent(taskId, event = {}) {
+  ensureLoaded();
+  const task = _store.tasks[taskId];
+  if (!task) return null;
+  const normalizedEvent = createTimelineEvent(event);
+  pushTaskTimeline(task, normalizedEvent);
+  markTaskTouched(task, event?.source || "task-store");
+  saveStore();
+  return normalizedEvent;
+}
+
+export function addTaskComment(taskId, comment = {}) {
+  ensureLoaded();
+  const task = _store.tasks[taskId];
+  if (!task) return null;
+  const appended = normalizeTaskComments([comment]);
+  if (appended.length === 0) return null;
+  const nextComment = appended[0];
+  task.comments = normalizeTaskComments([...(Array.isArray(task.comments) ? task.comments : []), nextComment]);
+  pushTaskTimeline(task, {
+    type: "task.comment",
+    source: nextComment.source || "comment",
+    actor: nextComment.author,
+    message: nextComment.body,
+    payload: { commentId: nextComment.id },
+  });
+  markTaskTouched(task, nextComment.source || "comment");
+  saveStore();
+  return nextComment;
+}
+
+export function getTaskComments(taskId) {
+  ensureLoaded();
+  const task = _store.tasks[taskId];
+  if (!task) return [];
+  return normalizeTaskComments(task.comments || []);
+}
+
+export function linkTaskWorkflowRun(taskId, workflowRun = {}) {
+  ensureLoaded();
+  const task = _store.tasks[taskId];
+  if (!task) return null;
+  const normalized = normalizeWorkflowRunLinks([workflowRun]);
+  if (normalized.length === 0) return null;
+  const run = normalized[0];
+  const existing = Array.isArray(task.workflowRuns) ? task.workflowRuns : [];
+  const dedup = existing.filter((entry) => String(entry?.runId || "") !== run.runId);
+  task.workflowRuns = normalizeWorkflowRunLinks([...dedup, run]);
+  task.links = {
+    branches: uniqueStringList(task.links?.branches || []),
+    prs: uniqueStringList(task.links?.prs || []),
+    workflows: uniqueStringList([...(task.links?.workflows || []), ...(run.workflowId ? [run.workflowId] : [])]),
+  };
+  pushTaskTimeline(task, {
+    type: "workflow.run.linked",
+    source: run.source || "workflow",
+    status: run.status,
+    message: run.summary || `Linked workflow run ${run.runId}`,
+    payload: { runId: run.runId, workflowId: run.workflowId, outcome: run.outcome },
+  });
+  markTaskTouched(task, "workflow");
+  saveStore();
+  return run;
+}
+
+export function setTaskParent(taskId, parentTaskId, options = {}) {
+  ensureLoaded();
+  const task = _store.tasks[taskId];
+  if (!task) return null;
+  const parentId = String(parentTaskId || "").trim() || null;
+  if (parentId && !_store.tasks[parentId]) return null;
+
+  const previousParentId = task.parentTaskId || null;
+  if (previousParentId && _store.tasks[previousParentId]) {
+    const previousParent = _store.tasks[previousParentId];
+    previousParent.childTaskIds = uniqueStringList((previousParent.childTaskIds || []).filter((id) => id !== taskId));
+    markTaskTouched(previousParent, "task-graph");
+  }
+
+  task.parentTaskId = parentId;
+  if (parentId) {
+    const parent = _store.tasks[parentId];
+    parent.childTaskIds = uniqueStringList([...(parent.childTaskIds || []), taskId]);
+    markTaskTouched(parent, "task-graph");
+    if (task.type === "task") {
+      task.type = "subtask";
+    }
+  }
+
+  pushTaskTimeline(task, {
+    type: "task.graph.parent",
+    source: options.source || "task-graph",
+    message: parentId ? `Parent set to ${parentId}` : "Parent removed",
+    payload: { previousParentId, parentTaskId: parentId },
+  });
+  markTaskTouched(task, options.source || "task-graph");
+  saveStore();
+  return { ...task };
+}
+
+export function addTaskDependency(taskId, dependencyTaskId, options = {}) {
+  ensureLoaded();
+  const task = _store.tasks[taskId];
+  if (!task) return null;
+  const dependencyId = String(dependencyTaskId || "").trim();
+  if (!dependencyId || !_store.tasks[dependencyId] || dependencyId === taskId) return null;
+  task.dependencyTaskIds = uniqueStringList([...(task.dependencyTaskIds || []), dependencyId]);
+  task.dependsOn = uniqueStringList([...(task.dependsOn || []), dependencyId]);
+  const dependency = _store.tasks[dependencyId];
+  dependency.blockedByTaskIds = uniqueStringList([...(dependency.blockedByTaskIds || []), taskId]);
+  pushTaskTimeline(task, {
+    type: "task.graph.dependency",
+    source: options.source || "task-graph",
+    message: `Depends on ${dependencyId}`,
+    payload: { dependencyTaskId: dependencyId },
+  });
+  markTaskTouched(task, options.source || "task-graph");
+  markTaskTouched(dependency, options.source || "task-graph");
+  saveStore();
+  return { ...task };
+}
+
+export function removeTaskDependency(taskId, dependencyTaskId, options = {}) {
+  ensureLoaded();
+  const task = _store.tasks[taskId];
+  if (!task) return null;
+  const dependencyId = String(dependencyTaskId || "").trim();
+  if (!dependencyId) return { ...task };
+  task.dependencyTaskIds = uniqueStringList((task.dependencyTaskIds || []).filter((id) => id !== dependencyId));
+  task.dependsOn = uniqueStringList((task.dependsOn || []).filter((id) => id !== dependencyId));
+  const dependency = _store.tasks[dependencyId];
+  if (dependency) {
+    dependency.blockedByTaskIds = uniqueStringList((dependency.blockedByTaskIds || []).filter((id) => id !== taskId));
+    markTaskTouched(dependency, options.source || "task-graph");
+  }
+  pushTaskTimeline(task, {
+    type: "task.graph.dependency.removed",
+    source: options.source || "task-graph",
+    message: `Dependency removed ${dependencyId}`,
+    payload: { dependencyTaskId: dependencyId },
+  });
+  markTaskTouched(task, options.source || "task-graph");
+  saveStore();
+  return { ...task };
+}
+
+export function assignTaskToSprint(taskId, sprintId, options = {}) {
+  ensureLoaded();
+  const task = _store.tasks[taskId];
+  if (!task) return null;
+
+  const sprints = ensureSprintsMap();
+  const normalizedSprintId = normalizeSprintId(sprintId);
+  if (normalizedSprintId && !sprints[normalizedSprintId]) {
+    console.warn(TAG, `assignTaskToSprint: sprint ${normalizedSprintId} not found`);
+    return null;
+  }
+
+  const previousSprintId = task.sprintId;
+  const previousSprintOrder = task.sprintOrder;
+  const explicitSprintOrder = normalizeSprintOrder(options.sprintOrder ?? options.order);
+
+  task.sprintId = normalizedSprintId;
+  if (!normalizedSprintId) {
+    task.sprintOrder = null;
+  } else if (explicitSprintOrder != null) {
+    task.sprintOrder = explicitSprintOrder;
+  } else if (previousSprintId === normalizedSprintId && task.sprintOrder != null) {
+    task.sprintOrder = normalizeSprintOrder(task.sprintOrder);
+  } else {
+    task.sprintOrder = getNextSprintTaskOrder(normalizedSprintId);
+  }
+
+  pushTaskTimeline(task, {
+    type: "task.sprint.assigned",
+    source: options.source || "task-sprint",
+    message: normalizedSprintId
+      ? `Assigned to sprint ${normalizedSprintId}`
+      : "Removed from sprint",
+    payload: {
+      previousSprintId,
+      previousSprintOrder,
+      sprintId: task.sprintId,
+      sprintOrder: task.sprintOrder,
+    },
+  });
+
+  markTaskTouched(task, options.source || "task-sprint");
+  saveStore();
+  return { ...task };
+}
+
+function buildTaskDagGraph(options = {}) {
+  ensureLoaded();
+  const sprintFilter = normalizeSprintId(options.sprintId);
+  const scopedTasks = Object.values(_store.tasks)
+    .filter((task) => (sprintFilter ? task.sprintId === sprintFilter : true))
+    .sort(compareTaskDagOrder);
+
+  const nodeMap = new Map();
+  const indegree = new Map();
+  const adjacency = new Map();
+  const externalDependencyMap = {};
+  const missingDependencyMap = {};
+
+  for (const task of scopedTasks) {
+    nodeMap.set(task.id, task);
+    indegree.set(task.id, 0);
+    adjacency.set(task.id, []);
+    externalDependencyMap[task.id] = [];
+    missingDependencyMap[task.id] = [];
+  }
+
+  const edges = [];
+  for (const task of scopedTasks) {
+    const dependencyIds = listTaskDependencyIds(task);
+    for (const dependencyId of dependencyIds) {
+      if (!dependencyId || dependencyId === task.id) continue;
+      if (nodeMap.has(dependencyId)) {
+        edges.push({ from: dependencyId, to: task.id });
+        adjacency.get(dependencyId).push(task.id);
+        indegree.set(task.id, (indegree.get(task.id) || 0) + 1);
+        continue;
+      }
+      if (_store.tasks[dependencyId]) {
+        externalDependencyMap[task.id].push(dependencyId);
+      } else {
+        missingDependencyMap[task.id].push(dependencyId);
+      }
+    }
+  }
+
+  const visited = new Set();
+  const levels = [];
+  let frontier = [...indegree.entries()]
+    .filter(([, value]) => value === 0)
+    .map(([taskId]) => taskId)
+    .sort((a, b) => compareTaskDagOrder(nodeMap.get(a), nodeMap.get(b)));
+
+  while (frontier.length) {
+    const level = [];
+    const upcoming = [];
+    for (const taskId of frontier) {
+      if (visited.has(taskId)) continue;
+      visited.add(taskId);
+      level.push(taskId);
+      for (const childId of adjacency.get(taskId) || []) {
+        indegree.set(childId, (indegree.get(childId) || 0) - 1);
+        if ((indegree.get(childId) || 0) === 0) {
+          upcoming.push(childId);
+        }
+      }
+    }
+    if (level.length) {
+      levels.push(level.sort((a, b) => compareTaskDagOrder(nodeMap.get(a), nodeMap.get(b))));
+    }
+    frontier = uniqueStringList(upcoming).filter((taskId) => !visited.has(taskId));
+    frontier.sort((a, b) => compareTaskDagOrder(nodeMap.get(a), nodeMap.get(b)));
+  }
+
+  const cycleTaskIds = [...indegree.entries()]
+    .filter(([, value]) => value > 0)
+    .map(([taskId]) => taskId)
+    .sort((a, b) => compareTaskDagOrder(nodeMap.get(a), nodeMap.get(b)));
+
+  return {
+    sprintId: sprintFilter,
+    nodeCount: scopedTasks.length,
+    edgeCount: edges.length,
+    hasCycle: cycleTaskIds.length > 0,
+    cycleTaskIds,
+    levels,
+    nodes: scopedTasks.map((task) => ({
+      id: task.id,
+      title: task.title,
+      status: task.status,
+      sprintId: task.sprintId,
+      sprintOrder: task.sprintOrder,
+      dependencyTaskIds: listTaskDependencyIds(task),
+      externalDependencyTaskIds: uniqueStringList(externalDependencyMap[task.id] || []),
+      missingDependencyTaskIds: uniqueStringList(missingDependencyMap[task.id] || []),
+    })),
+    edges,
+  };
+}
+
+export function getTaskDag(options = {}) {
+  return buildTaskDagGraph(options);
+}
+
+
+export function getSprintDag(sprintId) {
+  const normalizedSprintId = normalizeSprintId(sprintId);
+  if (!normalizedSprintId) return buildTaskDagGraph({});
+  return buildTaskDagGraph({ sprintId: normalizedSprintId });
+}
+
+export function getGlobalDagOfDags() {
+  ensureLoaded();
+  const sprintMap = ensureSprintsMap();
+  const sprintNodes = new Map();
+
+  for (const sprint of listSprints()) {
+    sprintNodes.set(sprint.id, {
+      id: sprint.id,
+      label: sprint.name || sprint.id,
+      sprintId: sprint.id,
+      order: normalizeSprintOrder(sprint.order),
+      executionMode: resolveSprintOrderMode(sprint.executionMode || sprint.taskOrderMode),
+      status: sprint.status || "planned",
+      taskIds: [],
+      taskCount: 0,
+      doneCount: 0,
+      activeCount: 0,
+      blockedCount: 0,
+      completion: 0,
+    });
+  }
+
+  for (const task of Object.values(_store.tasks)) {
+    const sprintId = normalizeSprintId(task?.sprintId);
+    if (!sprintId) continue;
+    if (!sprintNodes.has(sprintId)) {
+      sprintNodes.set(sprintId, {
+        id: sprintId,
+        label: sprintId,
+        sprintId,
+        order: null,
+        executionMode: "parallel",
+        status: "active",
+        taskIds: [],
+        taskCount: 0,
+        doneCount: 0,
+        activeCount: 0,
+        blockedCount: 0,
+        completion: 0,
+      });
+    }
+    const node = sprintNodes.get(sprintId);
+    node.taskIds.push(task.id);
+    node.taskCount += 1;
+    if (isTaskTerminal(task)) node.doneCount += 1;
+    if (normalizeTaskStatus(task?.status) === "blocked") node.blockedCount += 1;
+    if (normalizeLifecycleState(task?.status) === "inprogress") node.activeCount += 1;
+  }
+
+  const edgePairs = new Map();
+  for (const task of Object.values(_store.tasks)) {
+    const targetSprintId = normalizeSprintId(task?.sprintId);
+    if (!targetSprintId) continue;
+    for (const dependencyId of listTaskDependencyIds(task)) {
+      const dependency = _store.tasks[dependencyId];
+      const sourceSprintId = normalizeSprintId(dependency?.sprintId);
+      if (!sourceSprintId || sourceSprintId === targetSprintId) continue;
+      const key = `${sourceSprintId}->${targetSprintId}`;
+      if (!edgePairs.has(key)) edgePairs.set(key, { from: sourceSprintId, to: targetSprintId, taskLinks: [] });
+      edgePairs.get(key).taskLinks.push({ fromTaskId: dependencyId, toTaskId: task.id, type: "dependency" });
+    }
+  }
+
+  const mode = resolveSprintOrderMode(_store._meta?.sprintOrderMode || "parallel");
+  if (mode === "sequential") {
+    const ordered = [...sprintNodes.values()]
+      .filter((node) => node.order != null)
+      .sort((a, b) => (a.order - b.order) || String(a.id).localeCompare(String(b.id)));
+    for (let i = 1; i < ordered.length; i += 1) {
+      const from = ordered[i - 1];
+      const to = ordered[i];
+      const key = `${from.id}->${to.id}`;
+      if (!edgePairs.has(key)) edgePairs.set(key, { from: from.id, to: to.id, taskLinks: [] });
+      edgePairs.get(key).taskLinks.push({ type: "sequence" });
+    }
+  }
+
+  const nodes = [...sprintNodes.values()]
+    .map((node) => ({
+      ...node,
+      taskIds: uniqueStringList(node.taskIds),
+      taskCount: node.taskCount,
+      completion: node.taskCount > 0 ? Math.round((node.doneCount / node.taskCount) * 1000) / 1000 : 0,
+    }))
+    .sort((a, b) => {
+      if (a.order != null && b.order != null && a.order !== b.order) return a.order - b.order;
+      if (a.order != null && b.order == null) return -1;
+      if (a.order == null && b.order != null) return 1;
+      return String(a.id).localeCompare(String(b.id));
+    });
+
+  const edges = [...edgePairs.values()]
+    .map((edge) => ({
+      from: edge.from,
+      to: edge.to,
+      linkCount: edge.taskLinks.length,
+      taskLinks: edge.taskLinks,
+    }))
+    .sort((a, b) => {
+      const fromCmp = String(a.from).localeCompare(String(b.from));
+      if (fromCmp !== 0) return fromCmp;
+      return String(a.to).localeCompare(String(b.to));
+    });
+
+  return {
+    sprintOrderMode: mode,
+    sprintCount: nodes.length,
+    edgeCount: edges.length,
+    nodes,
+    edges,
+  };
+}
+
+export function getDagOfDags() {
+  return getGlobalDagOfDags();
+}
+
+export function canStartTask(taskId, options = {}) {
+  return canTaskStart(taskId, options);
+}
+export function canTaskStart(taskId, options = {}) {
+  ensureLoaded();
+  const task = _store.tasks[taskId];
+  const sprintOrderMode = resolveSprintOrderMode(options.sprintOrderMode || _store._meta?.sprintOrderMode);
+
+  if (!task) {
+    return {
+      canStart: false,
+      reason: "task_not_found",
+      blockingTaskIds: [],
+      missingDependencyTaskIds: [],
+      blockingSprintIds: [],
+      sprintOrderMode,
+    };
+  }
+
+  if (isTaskTerminal(task)) {
+    return {
+      canStart: false,
+      reason: "task_terminal",
+      blockingTaskIds: [],
+      missingDependencyTaskIds: [],
+      blockingSprintIds: [],
+      sprintOrderMode,
+    };
+  }
+
+  const blockingTaskIds = [];
+  const missingDependencyTaskIds = [];
+  for (const dependencyId of listTaskDependencyIds(task)) {
+    const dependencyTask = _store.tasks[dependencyId];
+    if (!dependencyTask) {
+      missingDependencyTaskIds.push(dependencyId);
+      continue;
+    }
+    if (!isTaskTerminal(dependencyTask)) {
+      blockingTaskIds.push(dependencyId);
+    }
+  }
+
+  if (blockingTaskIds.length || missingDependencyTaskIds.length) {
+    return {
+      canStart: false,
+      reason: "dependencies_unresolved",
+      blockingTaskIds: uniqueStringList(blockingTaskIds),
+      missingDependencyTaskIds: uniqueStringList(missingDependencyTaskIds),
+      blockingSprintIds: [],
+      sprintOrderMode,
+    };
+  }
+
+  const blockingSprintIds = [];
+  const sprintId = normalizeSprintId(task.sprintId);
+  const sprint = sprintId ? ensureSprintsMap()[sprintId] : null;
+  const sprintTaskOrderMode = resolveSprintOrderMode(
+    sprint?.executionMode || sprint?.taskOrderMode || "parallel",
+  );
+
+  if (sprintTaskOrderMode === "sequential" && sprintId) {
+    const taskSprintOrder = normalizeSprintOrder(task.sprintOrder);
+    if (taskSprintOrder != null) {
+      const incompleteEarlierTasks = Object.values(_store.tasks).filter((candidate) => {
+        if (!candidate || candidate.id === task.id) return false;
+        if (normalizeSprintId(candidate.sprintId) !== sprintId) return false;
+        const candidateOrder = normalizeSprintOrder(candidate.sprintOrder);
+        if (candidateOrder == null || candidateOrder >= taskSprintOrder) return false;
+        return !isTaskTerminal(candidate);
+      });
+      if (incompleteEarlierTasks.length > 0) {
+        for (const candidate of incompleteEarlierTasks) {
+          blockingTaskIds.push(candidate.id);
+        }
+        return {
+          canStart: false,
+          reason: "prior_sprint_tasks_incomplete",
+          blockingTaskIds: uniqueStringList(blockingTaskIds),
+          missingDependencyTaskIds: [],
+          blockingSprintIds: [sprintId],
+          sprintOrderMode,
+          sprintTaskOrderMode,
+        };
+      }
+    }
+  }
+
+  if (sprintOrderMode === "sequential" && sprintId) {
+    const taskSprintOrder = normalizeSprintOrder(sprint?.order);
+    if (taskSprintOrder != null) {
+      const incompletePriorSprintTasks = Object.values(_store.tasks).filter((candidate) => {
+        if (!candidate || candidate.id === task.id) return false;
+        const candidateSprintId = normalizeSprintId(candidate.sprintId);
+        if (!candidateSprintId || candidateSprintId === sprintId) return false;
+        const candidateSprint = ensureSprintsMap()[candidateSprintId];
+        const candidateSprintOrder = normalizeSprintOrder(candidateSprint?.order);
+        if (candidateSprintOrder == null || candidateSprintOrder >= taskSprintOrder) return false;
+        return !isTaskTerminal(candidate);
+      });
+
+      if (incompletePriorSprintTasks.length > 0) {
+        for (const candidate of incompletePriorSprintTasks) {
+          if (candidate.sprintId) blockingSprintIds.push(candidate.sprintId);
+          blockingTaskIds.push(candidate.id);
+        }
+        return {
+          canStart: false,
+          reason: "prior_sprint_incomplete",
+          blockingTaskIds: uniqueStringList(blockingTaskIds),
+          missingDependencyTaskIds: [],
+          blockingSprintIds: uniqueStringList(blockingSprintIds),
+          sprintOrderMode,
+          sprintTaskOrderMode,
+        };
+      }
+    }
+  }
+
+  return {
+    canStart: true,
+    reason: "ok",
+    blockingTaskIds: [],
+    missingDependencyTaskIds: [],
+    blockingSprintIds: [],
+    sprintOrderMode,
+  };
 }
 
 // ---------------------------------------------------------------------------
@@ -583,6 +1870,16 @@ export function recordAgentAttempt(taskId, { output, error, hasCommits } = {}) {
   }
 
   task.syncDirty = true;
+  pushTaskTimeline(task, {
+    type: "agent.attempt",
+    source: "agent",
+    status: task.status,
+    message: error ? `Agent attempt failed: ${truncate(error, 160)}` : "Agent attempt recorded",
+    payload: {
+      hasCommits: Boolean(hasCommits),
+      attempt: task.agentAttempts,
+    },
+  });
   saveStore();
   return { ...task };
 }
@@ -750,6 +2047,8 @@ export function upsertFromExternal(externalTask) {
       externalTask.base_branch ??
       externalTask.meta?.base_branch ??
       externalTask.meta?.baseBranch;
+    const previousStatus = normalizeTaskStatus(existing.status);
+
     // Update only externally-controlled fields
     if (externalTask.title !== undefined) existing.title = externalTask.title;
     if (externalTask.description !== undefined)
@@ -770,23 +2069,21 @@ export function upsertFromExternal(externalTask) {
     if (externalTask.meta !== undefined)
       existing.meta = { ...existing.meta, ...externalTask.meta };
 
-    // Update external tracking fields
     if (externalTask.externalId !== undefined)
       existing.externalId = externalTask.externalId;
     if (externalTask.externalBackend !== undefined)
       existing.externalBackend = externalTask.externalBackend;
 
-    // Only update status if external changed it (human override)
     if (
       externalTask.status !== undefined &&
       externalTask.status !== existing.externalStatus
     ) {
       existing.externalStatus = externalTask.status;
-      // If the external status differs from our status, adopt it
-      if (externalTask.status !== existing.status) {
-        existing.status = externalTask.status;
+      const nextStatus = normalizeTaskStatus(externalTask.status);
+      if (nextStatus !== previousStatus) {
+        existing.status = nextStatus;
         existing.statusHistory.push({
-          status: externalTask.status,
+          status: nextStatus,
           timestamp: now(),
           source: "external",
         });
@@ -794,17 +2091,28 @@ export function upsertFromExternal(externalTask) {
           existing.statusHistory =
             existing.statusHistory.slice(-MAX_STATUS_HISTORY);
         }
+        pushTaskTimeline(existing, {
+          type: "status.transition",
+          source: "external",
+          fromStatus: previousStatus,
+          toStatus: nextStatus,
+          status: nextStatus,
+          action: "external_sync",
+          message: `External status sync ${previousStatus} -> ${nextStatus}`,
+        });
       }
     } else if (externalTask.status !== undefined) {
       existing.externalStatus = externalTask.status;
     }
 
-    existing.updatedAt = now();
-    existing.syncDirty = false;
-    existing.lastSyncedAt = now();
+    const normalized = normalizeTaskStructure(existing);
+    normalized.updatedAt = now();
+    normalized.syncDirty = false;
+    normalized.lastSyncedAt = now();
+    _store.tasks[normalized.id] = normalized;
 
     saveStore();
-    return { ...existing };
+    return { ...normalized };
   }
 
   // New task from external — create it
@@ -813,15 +2121,22 @@ export function upsertFromExternal(externalTask) {
     externalTask.base_branch ??
     externalTask.meta?.base_branch ??
     externalTask.meta?.baseBranch;
-  const task = defaultTask({
+  const task = normalizeTaskStructure(defaultTask({
     ...externalTask,
     ...(externalBaseBranch !== undefined ? { baseBranch: externalBaseBranch } : {}),
     externalStatus: externalTask.status || null,
+    status: normalizeTaskStatus(externalTask.status || externalTask.externalStatus || externalTask.status || "todo"),
     syncDirty: false,
     lastSyncedAt: now(),
-  });
+  }));
   task.lastAgentOutput = truncate(task.lastAgentOutput, MAX_AGENT_OUTPUT);
   task.lastError = truncate(task.lastError, MAX_ERROR_LENGTH);
+  pushTaskTimeline(task, {
+    type: "task.synced.external",
+    source: "external",
+    status: task.status,
+    message: "Task imported from external backend",
+  });
 
   _store.tasks[task.id] = task;
   console.log(TAG, `Upserted external task ${task.id}: ${task.title}`);
@@ -867,3 +2182,4 @@ export function getStaleInReviewTasks(maxAgeMs) {
     (t) => t.status === "inreview" && t.lastActivityAt < cutoff,
   );
 }
+

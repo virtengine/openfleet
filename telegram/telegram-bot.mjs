@@ -1259,6 +1259,7 @@ let _getWorkspaceMonitor = null;
 let _getMonitorMonitorStatus = null;
 let _getTaskStoreStats = null;
 let _getTasksPendingReview = null;
+let _triggerTaskPlanner = null;
 
 /**
  * Inject monitor.mjs functions so the bot can send messages and read status.
@@ -1294,6 +1295,7 @@ export function injectMonitorFunctions({
   getMonitorMonitorStatus,
   getTaskStoreStats,
   getTasksPendingReview,
+  triggerTaskPlanner,
 }) {
   refreshTelegramConfigFromEnv();
   _sendTelegramMessage = sendTelegramMessage;
@@ -1325,6 +1327,7 @@ export function injectMonitorFunctions({
   _getMonitorMonitorStatus = getMonitorMonitorStatus || null;
   _getTaskStoreStats = getTaskStoreStats || null;
   _getTasksPendingReview = getTasksPendingReview || null;
+  _triggerTaskPlanner = triggerTaskPlanner || null;
 }
 
 /**
@@ -3389,7 +3392,7 @@ const COMMANDS = {
   },
   "/plan": {
     handler: cmdPlan,
-    desc: "Task planner (now managed via workflow templates)",
+    desc: "Run task planner workflow: /plan [count] [focus]",
   },
   "/cleanup": {
     handler: cmdCleanupMerged,
@@ -3926,11 +3929,11 @@ const UI_INPUT_HANDLERS = {
     buildCommand: (input) => `/shell ${input}`,
   },
   plan_count: {
-    prompt: "Task planner is now managed via Workflow Templates. Use /workflows to manage.",
+    prompt: "Optional: number of tasks then focus text (example: 5 stabilize planner imports).",
     buildCommand: () => `/plan`,
   },
   plan_prompt: {
-    prompt: "Task planner is now managed via Workflow Templates. Use /workflows to manage.",
+    prompt: "Optional: number of tasks then focus text (example: 5 stabilize planner imports).",
     buildCommand: () => `/plan`,
   },
   starttask: {
@@ -5130,11 +5133,15 @@ Object.assign(UI_SCREENS, {
     },
   },
   plan: {
-    title: "Task Planner (Legacy)",
+    title: "Task Planner",
     parent: "tasks",
-    body: () => "Task planner is now managed via Workflow Templates.\nUse /workflows to manage planning workflows.",
+    body: () => "Run planner workflow now.\nUse /plan [count] [focus] (example: /plan 5 stabilize API retries).",
     keyboard: () =>
       buildKeyboard([
+        [
+          uiButton("Run Planner", uiCmdAction("/plan")),
+          uiButton("Set Count", uiInputAction("plan_count")),
+        ],
         uiNavRow("tasks"),
       ]),
   },
@@ -7955,11 +7962,58 @@ async function cmdRetry(chatId, args) {
   }
 }
 
-async function cmdPlan(chatId, _args) {
-  await sendReply(
-    chatId,
-    "Task planner is now managed via Workflow Templates. Use /workflows to manage.",
-  );
+async function cmdPlan(chatId, args) {
+  if (typeof _triggerTaskPlanner !== "function") {
+    await sendReply(
+      chatId,
+      ":close: Task planner trigger is not available from monitor runtime.",
+    );
+    return;
+  }
+
+  const rawArgs = String(args || "").trim();
+  let taskCount = null;
+  let prompt = "";
+  const countMatch = rawArgs.match(/^(\d+)\s*(.*)$/);
+  if (countMatch) {
+    const parsed = Number(countMatch[1]);
+    if (Number.isFinite(parsed) && parsed > 0) {
+      taskCount = Math.max(1, Math.min(100, Math.trunc(parsed)));
+    }
+    prompt = String(countMatch[2] || "").trim();
+  } else {
+    prompt = rawArgs;
+  }
+
+  const launchingMsg = taskCount
+    ? `:clipboard: Launching planner workflow for ${taskCount} task(s)...`
+    : ":clipboard: Launching planner workflow...";
+  await sendReply(chatId, launchingMsg);
+
+  try {
+    const result = await _triggerTaskPlanner({
+      source: "telegram-command",
+      reason: "manual-telegram-plan",
+      taskCount,
+      prompt,
+    });
+    if (!result?.ok) {
+      await sendReply(
+        chatId,
+        `:close: Planner run failed: ${result?.error || "unknown error"}`,
+      );
+      return;
+    }
+
+    const created = Number(result.createdCount || 0);
+    const parsed = Number(result.parsedCount || 0);
+    await sendReply(
+      chatId,
+      `:check: Planner run finished. Created ${created} task(s) from ${parsed} parsed item(s).`,
+    );
+  } catch (err) {
+    await sendReply(chatId, `:close: Planner run error: ${err?.message || err}`);
+  }
 }
 
 async function cmdCleanupMerged(chatId, args) {

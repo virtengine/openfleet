@@ -13,8 +13,8 @@
   "main": "main.mjs",
   "description": "Electron wrapper for the Bosun desktop portal",
   "scripts": {
-    "start": "electron .",
-    "start:dev": "ELECTRON_ENABLE_LOGGING=1 ELECTRON_ENABLE_STACK_DUMPING=1 electron .",
+    "start": "node launch.mjs",
+    "start:dev": "ELECTRON_ENABLE_LOGGING=1 ELECTRON_ENABLE_STACK_DUMPING=1 node launch.mjs",
     "pack": "electron-builder --dir",
     "dist": "electron-builder"
   },

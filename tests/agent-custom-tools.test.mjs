@@ -716,4 +716,30 @@ describe("getToolsPromptBlock affinity", () => {
     const block = getToolsPromptBlock(tmpRoot, { includeBuiltins: false });
     expect(block).toContain("Skills:");
   });
+
+  it("discoveryMode + eagerOnly keeps only eager tools in prompt", () => {
+    registerCustomTool(tmpRoot, makeTool({
+      id: "always-on",
+      title: "Always On",
+      description: "Auto-injected tool",
+      category: "utility",
+      autoInject: true,
+    }));
+    registerCustomTool(tmpRoot, makeTool({
+      id: "not-eager",
+      title: "Not Eager",
+      description: "Should stay discoverable only",
+      category: "utility",
+    }));
+
+    const block = getToolsPromptBlock(tmpRoot, {
+      includeBuiltins: false,
+      discoveryMode: true,
+      eagerOnly: true,
+      emitReflectHint: false,
+    });
+    expect(block).toContain("`search`, then `get_schema`, then `execute`");
+    expect(block).toContain("always-on.mjs");
+    expect(block).not.toContain("not-eager.mjs");
+  });
 });

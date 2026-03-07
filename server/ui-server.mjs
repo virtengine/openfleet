@@ -42,7 +42,7 @@ import {
   markTaskIgnored,
   unmarkTaskIgnored,
 } from "../kanban/kanban-adapter.mjs";
-import { getAllTasks as getAllInternalTasks } from "../task/task-store.mjs";
+
 import {
   getActiveThreads,
   launchEphemeralThread,
@@ -68,10 +68,14 @@ import {
   initLibrary,
   rebuildManifest,
   matchAgentProfile,
+  matchAgentProfiles,
+  listWellKnownAgentSources,
+  importAgentProfilesFromRepository,
   loadManifest,
   getManifestPath,
   scaffoldAgentProfiles,
   getBosunHomeDir,
+  syncAutoDiscoveredLibraryEntries,
 } from "../infra/library-manager.mjs";
 import {
   listCatalog,
@@ -157,6 +161,109 @@ import {
   mergeTaskAttachments,
 } from "../task/task-attachments.mjs";
 import { getVisionSessionState } from "../voice/vision-session-state.mjs";
+
+const TASK_STORE_MODULE_PATH = "../task/task-store.mjs";
+const TASK_STORE_START_GUARD_EXPORTS = [
+  "canStartTask",
+  "checkTaskCanStart",
+  "evaluateTaskCanStart",
+  "getTaskStartGuard",
+];
+const TASK_STORE_SPRINT_EXPORTS = Object.freeze({
+  list: ["listSprints", "getSprints", "listTaskSprints"],
+  create: ["createSprint", "upsertSprint", "saveSprint", "setSprint"],
+  get: ["getSprint", "readSprint"],
+  update: ["updateSprint", "upsertSprint", "saveSprint", "setSprint"],
+  remove: ["deleteSprint", "removeSprint"],
+});
+const TASK_STORE_DAG_EXPORTS = Object.freeze({
+  sprint: ["getSprintDag", "getTaskDagForSprint", "buildSprintDag", "buildTaskDag"],
+  global: ["getGlobalDagOfDags", "getDagOfDags", "buildGlobalDagOfDags"],
+});
+let taskStoreApi = null;
+let taskStoreApiPromise = null;
+let didLogTaskStoreLoadFailure = false;
+
+function resolveInjectedTaskStoreApi() {
+  if (uiDeps?.taskStoreApi && typeof uiDeps.taskStoreApi === "object") {
+    return uiDeps.taskStoreApi;
+  }
+  if (typeof uiDeps?.getTaskStoreApi === "function") {
+    try {
+      const injected = uiDeps.getTaskStoreApi();
+      if (injected && typeof injected === "object") return injected;
+    } catch {
+      // Ignore injected resolver failures and fall back to default loading.
+    }
+  }
+  return null;
+}
+
+async function ensureTaskStoreApi() {
+  const injected = resolveInjectedTaskStoreApi();
+  if (injected) return injected;
+  if (taskStoreApi) return taskStoreApi;
+  if (taskStoreApiPromise) return taskStoreApiPromise;
+  taskStoreApiPromise = import(TASK_STORE_MODULE_PATH)
+    .then((mod) => {
+      taskStoreApi = mod;
+      return mod;
+    })
+    .catch((err) => {
+      if (!didLogTaskStoreLoadFailure) {
+        didLogTaskStoreLoadFailure = true;
+        console.warn(`[ui-server] task-store unavailable: ${err?.message || err}`);
+      }
+      return null;
+    })
+    .finally(() => {
+      taskStoreApiPromise = null;
+    });
+  return taskStoreApiPromise;
+}
+
+function getTaskStoreApiSync() {
+  return resolveInjectedTaskStoreApi() || taskStoreApi;
+}
+
+function getAllInternalTasks() {
+  try {
+    const fn = getTaskStoreApiSync()?.getAllTasks;
+    return typeof fn === "function" ? fn() : [];
+  } catch {
+    return [];
+  }
+}
+
+function appendInternalTaskTimelineEvent(taskId, event = {}) {
+  const fn = getTaskStoreApiSync()?.appendTaskTimelineEvent;
+  if (typeof fn !== "function") return null;
+  try {
+    return fn(taskId, event);
+  } catch {
+    return null;
+  }
+}
+
+function linkInternalTaskWorkflowRun(taskId, workflowRun = {}) {
+  const fn = getTaskStoreApiSync()?.linkTaskWorkflowRun;
+  if (typeof fn !== "function") return null;
+  try {
+    return fn(taskId, workflowRun);
+  } catch {
+    return null;
+  }
+}
+
+function addInternalTaskComment(taskId, comment = {}) {
+  const fn = getTaskStoreApiSync()?.addTaskComment;
+  if (typeof fn !== "function") return null;
+  try {
+    return fn(taskId, comment);
+  } catch {
+    return null;
+  }
+}
 
 const __dirname = resolve(fileURLToPath(new URL(".", import.meta.url)));
 const repoRoot = resolveRepoRoot();
@@ -344,6 +451,14 @@ function ensureLibraryInitialized(rootDir = repoRoot) {
         const count = rebuiltManifest?.entries?.length ?? 0;
         console.log(`[ui] Library manifest auto-synced (${count} entries) at ${normalizedRoot}.`);
       }
+    }
+
+    const autoSynced = syncAutoDiscoveredLibraryEntries(normalizedRoot);
+    if (Number(autoSynced?.totalUpserted || 0) > 0) {
+      console.log(
+        `[ui] Library auto-discovered ${autoSynced.totalUpserted} entry(s) ` +
+          `(prompts=${autoSynced.promptEntriesUpserted || 0}, mcp=${autoSynced.mcpEntriesUpserted || 0}) at ${normalizedRoot}.`,
+      );
     }
   } catch (err) {
     console.warn(`[ui] Library init failed for ${normalizedRoot}: ${err.message}`);
@@ -944,6 +1059,7 @@ const _wfEngineByWorkspace = new Map();
 let _wfInitPromise = null;
 let _wfInitDone = false;
 let _wfLoadedBase = null;
+let _wfTaskTraceHookRegistered = false;
 
 /**
  * Test-only: inject a mock workflow engine module and pre-seed the per-workspace
@@ -1192,14 +1308,20 @@ async function getWorkflowEngineModule() {
           kanban: kanbanService,
           meeting: meetingService,
           prompts: promptBundle?.prompts || null,
+          onTaskWorkflowEvent: handleTaskWorkflowTraceEvent,
         };
         _wfServices = services;
-        _wfEngine.getWorkflowEngine({ services });
+        const engine = _wfEngine.getWorkflowEngine({ services });
+        if (!_wfTaskTraceHookRegistered && typeof engine?.registerTaskTraceHook === "function") {
+          engine.registerTaskTraceHook((event) => {
+            handleTaskWorkflowTraceEvent(event);
+          });
+          _wfTaskTraceHookRegistered = true;
+        }
         _wfServicesReady = true;
 
         // Resume any runs that were interrupted by a previous shutdown.
         // This must happen AFTER services are wired so node executors work.
-        const engine = _wfEngine.getWorkflowEngine();
         if (typeof engine.resumeInterruptedRuns === "function") {
           engine.resumeInterruptedRuns().catch((err) => {
             console.warn("[workflows] Failed to resume interrupted runs:", err.message);
@@ -1307,6 +1429,142 @@ function getWorkflowStoragePaths(workspaceDir = "") {
   };
 }
 
+
+function mapWorkflowRunOutcome(eventType, status) {
+  const normalizedType = String(eventType || "").trim().toLowerCase();
+  const normalizedStatus = String(status || "").trim().toLowerCase();
+  if (normalizedType.endsWith(".error")) return "failed";
+  if (normalizedType.endsWith(".start") || normalizedStatus === "running") return "running";
+  if (normalizedStatus) return normalizedStatus;
+  return "completed";
+}
+
+function handleTaskWorkflowTraceEvent(event = {}) {
+  const taskId = String(event?.taskId || "").trim();
+  if (!taskId) return;
+
+  const eventType = String(event?.eventType || "workflow.event").trim();
+  const summary = String(event?.summary || eventType).trim();
+
+  try {
+    appendInternalTaskTimelineEvent(taskId, {
+      type: eventType,
+      source: "workflow",
+      status: event?.status || null,
+      message: summary,
+      payload: {
+        runId: event?.runId || null,
+        workflowId: event?.workflowId || null,
+        workflowName: event?.workflowName || null,
+        nodeId: event?.nodeId || null,
+        phase: event?.phase || null,
+      },
+    });
+
+    if (String(eventType).startsWith("workflow.run.")) {
+      linkInternalTaskWorkflowRun(taskId, {
+        runId: event?.runId || null,
+        workflowId: event?.workflowId || null,
+        status: event?.status || null,
+        outcome: mapWorkflowRunOutcome(eventType, event?.status),
+        startedAt: event?.startedAt || null,
+        endedAt: event?.endedAt || null,
+        summary,
+        source: "workflow",
+        meta: {
+          workflowName: event?.workflowName || null,
+          taskTitle: event?.taskTitle || null,
+          nodeId: event?.nodeId || null,
+          phase: event?.phase || null,
+        },
+      });
+    }
+  } catch (err) {
+    console.warn(`[workflows] failed to persist task workflow trace for ${taskId}: ${err.message}`);
+  }
+}
+
+function mergeTaskWorkflowRuns(baseRuns = [], extraRuns = [], limit = 60) {
+  const merged = [];
+  const seen = new Set();
+  const push = (entry) => {
+    if (!entry || typeof entry !== "object") return;
+    const runId = String(entry.runId || "").trim();
+    const workflowId = String(entry.workflowId || "").trim();
+    const dedupKey = runId ? `run:${runId}` : `wf:${workflowId}:${entry.startedAt || entry.endedAt || ""}`;
+    if (seen.has(dedupKey)) return;
+    seen.add(dedupKey);
+    merged.push({
+      runId: runId || null,
+      workflowId: workflowId || null,
+      workflowName: entry.workflowName != null ? String(entry.workflowName) : null,
+      status: entry.status != null ? String(entry.status) : null,
+      outcome: entry.outcome != null ? String(entry.outcome) : null,
+      summary: entry.summary != null ? String(entry.summary) : null,
+      startedAt: entry.startedAt || null,
+      endedAt: entry.endedAt || null,
+      duration: Number.isFinite(Number(entry.duration)) ? Number(entry.duration) : null,
+      source: entry.source ? String(entry.source) : "workflow",
+    });
+  };
+
+  for (const run of Array.isArray(baseRuns) ? baseRuns : []) push(run);
+  for (const run of Array.isArray(extraRuns) ? extraRuns : []) push(run);
+
+  merged.sort((a, b) => {
+    const ta = Number(new Date(a.endedAt || a.startedAt || 0).getTime() || 0);
+    const tb = Number(new Date(b.endedAt || b.startedAt || 0).getTime() || 0);
+    return tb - ta;
+  });
+
+  if (Number.isFinite(limit) && limit > 0 && merged.length > limit) {
+    return merged.slice(0, limit);
+  }
+  return merged;
+}
+
+async function collectWorkflowRunsForTask(taskId, reqUrl, limit = 40) {
+  const normalizedTaskId = String(taskId || "").trim();
+  if (!normalizedTaskId) return [];
+  try {
+    const wfCtx = await getWorkflowRequestContext(reqUrl);
+    if (!wfCtx?.ok || !wfCtx.engine) return [];
+    const engine = wfCtx.engine;
+    const summaries = engine.getRunHistory ? engine.getRunHistory(null, 240) : [];
+    const out = [];
+    for (const summary of summaries) {
+      if (!summary?.runId) continue;
+      const detail = engine.getRunDetail ? engine.getRunDetail(summary.runId) : null;
+      if (!detail?.detail) continue;
+      const data = detail.detail?.data || {};
+      const primaryTaskId = String(data.taskId || data.activeTaskId || data?.task?.id || "").trim();
+      let matches = primaryTaskId === normalizedTaskId;
+      if (!matches && typeof engine.getTaskTraceEvents === "function") {
+        const traceEvents = engine.getTaskTraceEvents(summary.runId) || [];
+        matches = traceEvents.some((event) => String(event?.taskId || "").trim() === normalizedTaskId);
+      }
+      if (!matches) continue;
+      out.push({
+        runId: detail.runId,
+        workflowId: detail.workflowId,
+        workflowName: detail.workflowName,
+        status: detail.status,
+        outcome: detail.status,
+        summary: detail.status === "failed"
+          ? `Workflow run failed (${detail.workflowName || detail.workflowId || detail.runId})`
+          : `Workflow run ${detail.status || "completed"} (${detail.workflowName || detail.workflowId || detail.runId})`,
+        startedAt: detail.startedAt || null,
+        endedAt: detail.endedAt || null,
+        duration: detail.duration || null,
+        source: "workflow",
+      });
+      if (out.length >= limit) break;
+    }
+    return out;
+  } catch {
+    return [];
+  }
+}
 function maybeBootstrapWorkspaceWorkflowTemplates(engine, workspaceKey, workspaceLabel) {
   if (!engine || !_wfTemplates) return;
   if (_wfRecommendedInstalledByWorkspace.has(workspaceKey)) return;
@@ -1370,7 +1628,13 @@ async function getWorkflowRequestContext(reqUrl) {
         workflowDir: paths.workflowDir,
         runsDir: paths.runsDir,
         services: _wfServices || {},
+        onTaskWorkflowEvent: handleTaskWorkflowTraceEvent,
       });
+      if (typeof engine.registerTaskTraceHook === "function") {
+        engine.registerTaskTraceHook((event) => {
+          handleTaskWorkflowTraceEvent(event);
+        });
+      }
       engine.load();
     }
     _wfEngineByWorkspace.set(workspaceKey, engine);
@@ -2232,6 +2496,16 @@ async function applySharedStateToTasks(tasks) {
       ignoreReason: state.ignoreReason,
     };
   });
+}
+
+
+function mapTaskStatusToBoardColumn(status) {
+  const normalized = String(status || "").trim().toLowerCase();
+  if (normalized === "draft") return "draft";
+  if (["inprogress", "in-progress", "working", "active", "assigned", "running"].includes(normalized)) return "inProgress";
+  if (["inreview", "in-review", "review", "pr-open", "pr-review"].includes(normalized)) return "inReview";
+  if (["done", "completed", "closed", "merged", "cancelled"].includes(normalized)) return "done";
+  return "backlog";
 }
 
 function normalizeCandidatePath(input) {
@@ -3801,19 +4075,51 @@ function isPrivilegedAuthSource(source) {
   return normalized === "desktop-api-key" || normalized === "fallback" || normalized === "unsafe";
 }
 
+function isAuthenticatedSessionAuthSource(source) {
+  const normalized = String(source || "").trim().toLowerCase();
+  return normalized === "session" || normalized === "telegram";
+}
+
 function getMutationRateLimitPerMin(authResult = null) {
   const standardRaw = Number(process.env.BOSUN_UI_RATE_LIMIT_PER_MIN || "30");
   const standard = Number.isFinite(standardRaw) && standardRaw > 0 ? standardRaw : 30;
   if (!authResult?.ok) return standard;
+  if (isAuthenticatedSessionAuthSource(authResult.source)) {
+    const authenticatedRaw = Number(process.env.BOSUN_UI_RATE_LIMIT_AUTHENTICATED_PER_MIN || "120");
+    return Number.isFinite(authenticatedRaw) && authenticatedRaw > 0 ? authenticatedRaw : 120;
+  }
   // Owner/admin-controlled contexts should be less constrained:
   // - desktop-api-key: local Electron owner session
   // - fallback: explicit local secret auth
   // - unsafe: auth disabled for trusted local environment
   if (isPrivilegedAuthSource(authResult.source)) {
-    const privilegedRaw = Number(process.env.BOSUN_UI_RATE_LIMIT_PRIVILEGED_PER_MIN || "300");
-    return Number.isFinite(privilegedRaw) && privilegedRaw > 0 ? privilegedRaw : 300;
+    const privilegedRaw = Number(process.env.BOSUN_UI_RATE_LIMIT_PRIVILEGED_PER_MIN || "600");
+    return Number.isFinite(privilegedRaw) && privilegedRaw > 0 ? privilegedRaw : 600;
   }
   return standard;
+}
+
+function shouldHideSessionFromDefaultList(session) {
+  if (!session || typeof session !== "object") return false;
+  const metadata =
+    session.metadata && typeof session.metadata === "object"
+      ? session.metadata
+      : {};
+  if (
+    metadata.hiddenInLists === true
+    || metadata.hidden === true
+    || metadata.testSession === true
+    || String(metadata.visibility || "").trim().toLowerCase() === "hidden"
+  ) {
+    return true;
+  }
+  const identifiers = [
+    session.id,
+    session.taskId,
+    session.title,
+    session.taskTitle,
+  ];
+  return identifiers.some((value) => /^smoke(?:-vision)?-/i.test(String(value || "").trim()));
 }
 
 function checkRateLimit(req, maxPerMin = 30, scope = "global") {
@@ -5464,6 +5770,224 @@ function textResponse(res, statusCode, body, contentType = "text/plain") {
   res.end(body);
 }
 
+async function callTaskStoreFunction(candidates = [], args = [], resolveArgs = null) {
+  const api = await ensureTaskStoreApi();
+  if (!api) return { found: null, value: null, available: false };
+  for (const name of candidates) {
+    const fn = api?.[name];
+    if (typeof fn !== "function") continue;
+    const effectiveArgs =
+      typeof resolveArgs === "function"
+        ? resolveArgs(name, args)
+        : args;
+    const argList = Array.isArray(effectiveArgs) ? effectiveArgs : [];
+    return { found: name, value: await fn(...argList), available: true };
+  }
+  return { found: null, value: null, available: true };
+}
+
+function normalizeCanStartResult(result, { override = false } = {}) {
+  if (override) {
+    return {
+      available: true,
+      canStart: true,
+      override: true,
+      reason: "manual_override",
+      blockedBy: [],
+    };
+  }
+  if (typeof result === "boolean") {
+    return {
+      available: true,
+      canStart: result,
+      reason: result ? "allowed" : "blocked",
+      blockedBy: [],
+    };
+  }
+  const raw = result && typeof result === "object" ? result : {};
+  const canStart =
+    raw.canStart === true || raw.allowed === true || raw.startable === true
+      ? true
+      : raw.canStart === false || raw.allowed === false || raw.startable === false
+        ? false
+        : true;
+  const blockedByRaw = Array.isArray(raw.blockedBy)
+    ? raw.blockedBy
+    : Array.isArray(raw.blockers)
+      ? raw.blockers
+      : Array.isArray(raw.dependencies)
+        ? raw.dependencies.filter((entry) => entry && entry.ready === false)
+        : [];
+  const blockedBy = blockedByRaw
+    .map((entry) => {
+      if (typeof entry === "string") return { taskId: entry };
+      const taskId = String(entry?.taskId || entry?.id || "").trim();
+      const reason = String(entry?.reason || entry?.status || "").trim();
+      if (!taskId && !reason) return null;
+      return {
+        ...(taskId ? { taskId } : {}),
+        ...(reason ? { reason } : {}),
+      };
+    })
+    .filter(Boolean);
+  const reason = String(raw.reason || raw.message || "").trim() || (canStart ? "allowed" : "blocked");
+  return {
+    available: true,
+    canStart,
+    reason,
+    blockedBy,
+    raw,
+  };
+}
+
+function normalizeDependencyIds(task = {}) {
+  const ids = [];
+  const add = (value) => {
+    const id = String(value || "").trim();
+    if (!id || ids.includes(id)) return;
+    ids.push(id);
+  };
+  const sources = [
+    task?.dependencyTaskIds,
+    task?.dependsOn,
+    task?.dependencies,
+    task?.meta?.dependencyTaskIds,
+    task?.meta?.dependsOn,
+    task?.meta?.dependencies,
+  ];
+  for (const source of sources) {
+    if (!Array.isArray(source)) continue;
+    for (const entry of source) {
+      if (typeof entry === "string") {
+        add(entry);
+      } else if (entry && typeof entry === "object") {
+        add(entry.taskId || entry.id);
+      }
+    }
+  }
+  return ids;
+}
+
+function isTerminalTaskStatus(status) {
+  const normalized = normalizeTaskStatusKey(status);
+  return normalized === "done" || normalized === "cancelled";
+}
+
+async function evaluateTaskCanStart({
+  taskId,
+  task,
+  adapter,
+  forceStart = false,
+  manualOverride = false,
+}) {
+  const override = forceStart === true || manualOverride === true;
+  if (override) return normalizeCanStartResult(null, { override: true });
+
+  const storeGuard = await callTaskStoreFunction(TASK_STORE_START_GUARD_EXPORTS, [
+    taskId,
+    {
+      task,
+      adapter,
+      source: "ui-server",
+      actor: "ui",
+    },
+  ]);
+  if (storeGuard.found) {
+    const normalized = normalizeCanStartResult(storeGuard.value);
+    return {
+      ...normalized,
+      source: `task-store.${storeGuard.found}`,
+    };
+  }
+
+  let taskRecord = task;
+  if (!taskRecord?.id && typeof adapter?.getTask === "function") {
+    try {
+      taskRecord = await adapter.getTask(taskId);
+    } catch {
+      taskRecord = null;
+    }
+  }
+  if (!taskRecord) {
+    return {
+      available: false,
+      canStart: false,
+      reason: "task_not_found",
+      blockedBy: [],
+      source: "fallback",
+    };
+  }
+
+  const dependencyIds = normalizeDependencyIds(taskRecord);
+  const blockedBy = [];
+  for (const dependencyId of dependencyIds) {
+    if (!dependencyId || typeof adapter?.getTask !== "function") continue;
+    let dependencyTask = null;
+    try {
+      dependencyTask = await adapter.getTask(dependencyId);
+    } catch {
+      dependencyTask = null;
+    }
+    if (!dependencyTask) {
+      blockedBy.push({ taskId: dependencyId, reason: "dependency_not_found" });
+      continue;
+    }
+    if (!isTerminalTaskStatus(dependencyTask?.status)) {
+      blockedBy.push({
+        taskId: dependencyId,
+        reason: String(dependencyTask?.status || "not_ready").trim() || "not_ready",
+      });
+    }
+  }
+
+  return {
+    available: false,
+    canStart: blockedBy.length === 0,
+    reason: blockedBy.length === 0 ? "allowed" : "dependency_blocked",
+    blockedBy,
+    source: "fallback",
+  };
+}
+
+function resolveTaskSprintId(task = {}) {
+  return String(
+    task?.sprintId
+      || task?.sprint
+      || task?.meta?.sprintId
+      || task?.meta?.sprint
+      || "",
+  ).trim();
+}
+
+async function getSprintDagData(sprintId) {
+  const normalizedSprintId = String(sprintId || "").trim();
+  const argsByExport = {
+    getSprintDag: normalizedSprintId ? [normalizedSprintId] : [],
+    getTaskDagForSprint: normalizedSprintId ? [normalizedSprintId] : [],
+    buildSprintDag: normalizedSprintId ? [normalizedSprintId] : [],
+    buildTaskDag: normalizedSprintId ? [{ sprintId: normalizedSprintId }] : [{}],
+  };
+  const dagResult = await callTaskStoreFunction(
+    TASK_STORE_DAG_EXPORTS.sprint,
+    [],
+    (name) => argsByExport[name] || [],
+  );
+  if (!dagResult.found) return null;
+  return {
+    sprintId: normalizedSprintId || null,
+    source: `task-store.${dagResult.found}`,
+    data: dagResult.value,
+  };
+}
+
+async function getGlobalDagData() {
+  const dagResult = await callTaskStoreFunction(TASK_STORE_DAG_EXPORTS.global, []);
+  if (!dagResult.found) return null;
+  return {
+    source: `task-store.${dagResult.found}`,
+    data: dagResult.value,
+  };
+}
 function normalizeTaskStatusKey(status) {
   return String(status || "")
     .trim()
@@ -5484,6 +6008,8 @@ async function maybeRestartTaskOnReopen({
   updatedTask,
   adapter,
   executor,
+  forceStart = false,
+  manualOverride = false,
 }) {
   if (!taskId) {
     return { attempted: false, started: false, reason: "missing_task_id" };
@@ -5493,22 +6019,6 @@ async function maybeRestartTaskOnReopen({
   }
   if (!executor) {
     return { attempted: true, started: false, reason: "executor_unavailable" };
-  }
-
-  const status = executor.getStatus?.() || {};
-  const activeSlots = Array.isArray(status?.slots) ? status.slots : [];
-  const alreadyRunning = activeSlots.some(
-    (slot) => String(slot?.taskId || "").trim() === String(taskId).trim(),
-  );
-  if (alreadyRunning) {
-    return { attempted: true, started: false, reason: "already_running" };
-  }
-
-  const maxParallel = Number(status?.maxParallel || 0);
-  const activeCount = Number(status?.activeSlots || activeSlots.length || 0);
-  const hasFreeSlot = maxParallel <= 0 || activeCount < maxParallel;
-  if (!hasFreeSlot) {
-    return { attempted: true, started: false, reason: "no_free_slots" };
   }
 
   let taskToRun = updatedTask && typeof updatedTask === "object" ? updatedTask : null;
@@ -5528,8 +6038,40 @@ async function maybeRestartTaskOnReopen({
     return { attempted: true, started: false, reason: "task_not_found" };
   }
 
+  const canStart = await evaluateTaskCanStart({
+    taskId,
+    task: taskToRun,
+    adapter,
+    forceStart,
+    manualOverride,
+  });
+  if (!canStart.canStart) {
+    return {
+      attempted: true,
+      started: false,
+      reason: "start_guard_blocked",
+      canStart,
+    };
+  }
+
+  const status = executor.getStatus?.() || {};
+  const activeSlots = Array.isArray(status?.slots) ? status.slots : [];
+  const alreadyRunning = activeSlots.some(
+    (slot) => String(slot?.taskId || "").trim() === String(taskId).trim(),
+  );
+  if (alreadyRunning) {
+    return { attempted: true, started: false, reason: "already_running", canStart };
+  }
+
+  const maxParallel = Number(status?.maxParallel || 0);
+  const activeCount = Number(status?.activeSlots || activeSlots.length || 0);
+  const hasFreeSlot = maxParallel <= 0 || activeCount < maxParallel;
+  if (!hasFreeSlot) {
+    return { attempted: true, started: false, reason: "no_free_slots", canStart };
+  }
+
   executor.executeTask(taskToRun, {
-    force: true,
+    force: forceStart === true || manualOverride === true,
     recoveredFromInProgress: true,
   }).catch((error) => {
     console.warn(
@@ -5537,9 +6079,152 @@ async function maybeRestartTaskOnReopen({
     );
   });
 
-  return { attempted: true, started: true, reason: "restarted" };
+  return { attempted: true, started: true, reason: "restarted", canStart };
 }
 
+
+function normalizeLifecycleAction(action) {
+  const value = String(action || "").trim().toLowerCase();
+  if (value === "start" || value === "resume" || value === "pause" || value === "complete" || value === "cancel" || value === "block") {
+    return value;
+  }
+  return "update";
+}
+
+function inferLifecycleAction(previousStatus, nextStatus, requestedAction) {
+  const requested = normalizeLifecycleAction(requestedAction);
+  if (requested !== "update") return requested;
+  const prev = normalizeTaskStatusKey(previousStatus);
+  const next = normalizeTaskStatusKey(nextStatus);
+  if (next === "inprogress" && prev !== "inprogress") {
+    return prev === "todo" || prev === "backlog" || prev === "draft" ? "start" : "resume";
+  }
+  if (prev === "inprogress" && (next === "todo" || next === "backlog" || next === "draft")) {
+    return "pause";
+  }
+  if (next === "done") return "complete";
+  if (next === "cancelled") return "cancel";
+  if (next === "blocked") return "block";
+  return "update";
+}
+
+function applyInternalLifecycleTransition(taskId, action, options = {}) {
+  const normalizedAction = normalizeLifecycleAction(action);
+  const lifecycleOptions = {
+    source: options.source || "ui-server",
+    actor: options.actor || "ui",
+    reason: options.reason || null,
+    force: options.force === true,
+    payload: options.payload && typeof options.payload === "object" ? options.payload : null,
+  };
+
+  const api = getTaskStoreApiSync();
+  if (!api) return null;
+  if (normalizedAction === "start" && typeof api.startTask === "function") {
+    return api.startTask(taskId, lifecycleOptions);
+  }
+  if (normalizedAction === "resume" && typeof api.resumeTask === "function") {
+    return api.resumeTask(taskId, lifecycleOptions);
+  }
+  if (normalizedAction === "pause" && typeof api.pauseTask === "function") {
+    return api.pauseTask(taskId, lifecycleOptions);
+  }
+  if (normalizedAction === "complete" && typeof api.completeTask === "function") {
+    return api.completeTask(taskId, lifecycleOptions);
+  }
+  if (normalizedAction === "cancel" && typeof api.cancelTask === "function") {
+    return api.cancelTask(taskId, lifecycleOptions);
+  }
+  if (normalizedAction === "block" && typeof api.blockTask === "function") {
+    return api.blockTask(taskId, lifecycleOptions);
+  }
+  return null;
+}
+
+async function maybeStartTaskFromLifecycleAction({
+  taskId,
+  updatedTask,
+  adapter,
+  executor,
+  lifecycleAction,
+  sdk,
+  model,
+  forceStart = false,
+  manualOverride = false,
+}) {
+  if (!taskId) {
+    return { attempted: false, started: false, reason: "missing_task_id" };
+  }
+  if (!executor) {
+    return { attempted: false, started: false, reason: "executor_unavailable" };
+  }
+
+  const action = normalizeLifecycleAction(lifecycleAction);
+  const shouldStart = action === "start" || action === "resume";
+  if (!shouldStart) {
+    return { attempted: false, started: false, reason: "action_not_start" };
+  }
+
+  let taskToRun = updatedTask && typeof updatedTask === "object" ? updatedTask : null;
+  if (!taskToRun?.id && typeof adapter?.getTask === "function") {
+    try {
+      taskToRun = await adapter.getTask(taskId);
+    } catch {
+      taskToRun = null;
+    }
+  }
+  if (!taskToRun) {
+    return { attempted: true, started: false, reason: "task_not_found" };
+  }
+
+  const canStart = await evaluateTaskCanStart({
+    taskId,
+    task: taskToRun,
+    adapter,
+    forceStart,
+    manualOverride,
+  });
+  if (!canStart.canStart) {
+    return {
+      attempted: true,
+      started: false,
+      reason: "start_guard_blocked",
+      canStart,
+    };
+  }
+
+  const status = executor.getStatus?.() || {};
+  const activeSlots = Array.isArray(status?.slots) ? status.slots : [];
+  const alreadyRunning = activeSlots.some(
+    (slot) => String(slot?.taskId || "").trim() === String(taskId).trim(),
+  );
+  if (alreadyRunning) {
+    return { attempted: true, started: false, reason: "already_running", canStart };
+  }
+
+  const maxParallel = Number(status?.maxParallel || 0);
+  const activeCount = Number(status?.activeSlots || activeSlots.length || 0);
+  const hasFreeSlot = maxParallel <= 0 || activeCount < maxParallel;
+  if (!hasFreeSlot) {
+    return { attempted: true, started: false, reason: "no_free_slots", canStart };
+  }
+
+  executor.executeTask(taskToRun, {
+    force: forceStart === true || manualOverride === true,
+    recoveredFromInProgress: action === "resume",
+    ...(sdk ? { sdk } : {}),
+    ...(model ? { model } : {}),
+  }).catch((error) => {
+    console.warn(`[telegram-ui] failed to dispatch lifecycle start for ${taskId}: ${error.message}`);
+  });
+
+  return {
+    attempted: true,
+    started: true,
+    reason: action === "resume" ? "resumed" : "started",
+    canStart,
+  };
+}
 function parseInitData(initData) {
   const params = new URLSearchParams(initData);
   const data = {};
@@ -7510,6 +8195,8 @@ async function handleApi(req, res, url) {
     if (workspaceFilter === "*" || workspaceFilter === "all") {
       workspaceFilter = "";
     }
+    const workspaceContext = resolveWorkspaceContextFromRequest(url, { allowAll: false });
+    const workspaceDirFilter = normalizeCandidatePath(workspaceContext?.workspaceDir);
     const repositoryFilter = (url.searchParams.get("repository") || "").trim().toLowerCase();
     const page = Math.max(0, Number(url.searchParams.get("page") || "0"));
     const pageSize = Math.min(
@@ -7537,14 +8224,22 @@ async function handleApi(req, res, url) {
       );
       const search = (url.searchParams.get("search") || "").trim().toLowerCase();
       const filtered = tasks.filter((task) => {
-        const taskWorkspace = String(
+        const taskWorkspaceRaw = String(
           task.workspace || task.meta?.workspace || "",
-        ).trim().toLowerCase();
+        ).trim();
+        const taskWorkspace = taskWorkspaceRaw.toLowerCase();
         const taskRepository = String(
           task.repository || task.meta?.repository || "",
         ).trim().toLowerCase();
         if (workspaceFilter && taskWorkspace !== workspaceFilter) {
-          return false;
+          const taskWorkspacePath = normalizeCandidatePath(taskWorkspaceRaw);
+          const workspaceMatchByPath =
+            Boolean(taskWorkspacePath) &&
+            Boolean(workspaceDirFilter) &&
+            taskWorkspacePath === workspaceDirFilter;
+          if (!workspaceMatchByPath) {
+            return false;
+          }
         }
         if (repositoryFilter && taskRepository !== repositoryFilter) {
           return false;
@@ -7562,6 +8257,17 @@ async function handleApi(req, res, url) {
         return hay.includes(search);
       });
       const total = filtered.length;
+      const statusCounts = {
+        draft: 0,
+        backlog: 0,
+        inProgress: 0,
+        inReview: 0,
+        done: 0,
+      };
+      for (const task of filtered) {
+        const bucket = mapTaskStatusToBoardColumn(task?.status);
+        statusCounts[bucket] = (statusCounts[bucket] || 0) + 1;
+      }
       const start = page * pageSize;
       const slice = filtered.slice(start, start + pageSize);
       const enriched = await applySharedStateToTasks(slice);
@@ -7571,6 +8277,9 @@ async function handleApi(req, res, url) {
         page,
         pageSize,
         total,
+        totalPages: Math.max(1, Math.ceil(total / pageSize)),
+        hasMore: start + slice.length < total,
+        statusCounts,
         projectId: activeProject,
       });
     } catch (err) {
@@ -7590,13 +8299,162 @@ async function handleApi(req, res, url) {
       const adapter = getKanbanAdapter();
       const task = await adapter.getTask(taskId);
       const enriched = await applySharedStateToTasks(task ? [task] : []);
-      jsonResponse(res, 200, { ok: true, data: enriched[0] || null });
+      const detailTask = enriched[0] || null;
+      if (detailTask) {
+        const workflowRuns = await collectWorkflowRunsForTask(detailTask.id, url, 40);
+        const mergedWorkflowRuns = mergeTaskWorkflowRuns(detailTask.workflowRuns, workflowRuns, 80);
+        detailTask.workflowRuns = mergedWorkflowRuns;
+
+        const sprintId = resolveTaskSprintId(detailTask);
+        const sprintDag = sprintId ? await getSprintDagData(sprintId) : null;
+        const globalDag = await getGlobalDagData();
+
+        detailTask.meta = {
+          ...(detailTask.meta || {}),
+          workflowRuns: mergedWorkflowRuns,
+          historyCount: Array.isArray(detailTask.statusHistory) ? detailTask.statusHistory.length : 0,
+          timelineCount: Array.isArray(detailTask.timeline) ? detailTask.timeline.length : 0,
+          ...(sprintId ? { sprintId } : {}),
+          ...(sprintDag ? { sprintDag: sprintDag.data } : {}),
+          ...(globalDag ? { dagOfDags: globalDag.data } : {}),
+        };
+        if (sprintDag) detailTask.sprintDag = sprintDag.data;
+        if (globalDag) detailTask.dagOfDags = globalDag.data;
+      }
+      jsonResponse(res, 200, { ok: true, data: detailTask });
     } catch (err) {
       jsonResponse(res, 500, { ok: false, error: err.message });
     }
     return;
   }
 
+  if (path === "/api/tasks/sprints" && req.method === "GET") {
+    try {
+      const list = await callTaskStoreFunction(TASK_STORE_SPRINT_EXPORTS.list, []);
+      if (!list.found) {
+        jsonResponse(res, 501, { ok: false, error: "Sprint APIs are unavailable." });
+        return;
+      }
+      jsonResponse(res, 200, { ok: true, source: `task-store.${list.found}`, data: list.value || [] });
+    } catch (err) {
+      jsonResponse(res, 500, { ok: false, error: err.message });
+    }
+    return;
+  }
+
+  if (path === "/api/tasks/sprints" && req.method === "POST") {
+    try {
+      const body = await readJsonBody(req);
+      const create = await callTaskStoreFunction(TASK_STORE_SPRINT_EXPORTS.create, [body || {}]);
+      if (!create.found) {
+        jsonResponse(res, 501, { ok: false, error: "Sprint create API is unavailable." });
+        return;
+      }
+      jsonResponse(res, 200, { ok: true, source: `task-store.${create.found}`, data: create.value || null });
+      broadcastUiEvent(["tasks", "overview"], "invalidate", { reason: "sprint-created" });
+    } catch (err) {
+      jsonResponse(res, 500, { ok: false, error: err.message });
+    }
+    return;
+  }
+
+  if (path.startsWith("/api/tasks/sprints/") && req.method === "GET") {
+    try {
+      const sprintId = decodeURIComponent(path.slice("/api/tasks/sprints/".length));
+      if (!sprintId) {
+        jsonResponse(res, 400, { ok: false, error: "sprintId required" });
+        return;
+      }
+      const getResult = await callTaskStoreFunction(TASK_STORE_SPRINT_EXPORTS.get, [sprintId]);
+      if (!getResult.found) {
+        jsonResponse(res, 501, { ok: false, error: "Sprint get API is unavailable." });
+        return;
+      }
+      jsonResponse(res, 200, { ok: true, source: `task-store.${getResult.found}`, data: getResult.value || null });
+    } catch (err) {
+      jsonResponse(res, 500, { ok: false, error: err.message });
+    }
+    return;
+  }
+
+  if (path.startsWith("/api/tasks/sprints/") && (req.method === "PATCH" || req.method === "PUT")) {
+    try {
+      const sprintId = decodeURIComponent(path.slice("/api/tasks/sprints/".length));
+      const body = await readJsonBody(req);
+      if (!sprintId) {
+        jsonResponse(res, 400, { ok: false, error: "sprintId required" });
+        return;
+      }
+      const update = await callTaskStoreFunction(TASK_STORE_SPRINT_EXPORTS.update, [sprintId, body || {}]);
+      if (!update.found) {
+        jsonResponse(res, 501, { ok: false, error: "Sprint update API is unavailable." });
+        return;
+      }
+      jsonResponse(res, 200, { ok: true, source: `task-store.${update.found}`, data: update.value || null });
+      broadcastUiEvent(["tasks", "overview"], "invalidate", { reason: "sprint-updated", sprintId });
+    } catch (err) {
+      jsonResponse(res, 500, { ok: false, error: err.message });
+    }
+    return;
+  }
+
+  if (path.startsWith("/api/tasks/sprints/") && req.method === "DELETE") {
+    try {
+      const sprintId = decodeURIComponent(path.slice("/api/tasks/sprints/".length));
+      if (!sprintId) {
+        jsonResponse(res, 400, { ok: false, error: "sprintId required" });
+        return;
+      }
+      const removed = await callTaskStoreFunction(TASK_STORE_SPRINT_EXPORTS.remove, [sprintId]);
+      if (!removed.found) {
+        jsonResponse(res, 501, { ok: false, error: "Sprint delete API is unavailable." });
+        return;
+      }
+      jsonResponse(res, 200, { ok: true, source: `task-store.${removed.found}`, data: removed.value ?? true });
+      broadcastUiEvent(["tasks", "overview"], "invalidate", { reason: "sprint-deleted", sprintId });
+    } catch (err) {
+      jsonResponse(res, 500, { ok: false, error: err.message });
+    }
+    return;
+  }
+
+  if (path === "/api/tasks/dag" && req.method === "GET") {
+    try {
+      const sprintId = String(
+        url.searchParams.get("sprintId")
+          || url.searchParams.get("sprint")
+          || "",
+      ).trim();
+      const sprintDag = await getSprintDagData(sprintId || null);
+      if (!sprintDag) {
+        jsonResponse(res, 501, { ok: false, error: "Sprint DAG API is unavailable." });
+        return;
+      }
+      jsonResponse(res, 200, {
+        ok: true,
+        sprintId: sprintDag.sprintId,
+        source: sprintDag.source,
+        data: sprintDag.data,
+      });
+    } catch (err) {
+      jsonResponse(res, 500, { ok: false, error: err.message });
+    }
+    return;
+  }
+
+  if (path === "/api/tasks/dag-of-dags" && req.method === "GET") {
+    try {
+      const globalDag = await getGlobalDagData();
+      if (!globalDag) {
+        jsonResponse(res, 501, { ok: false, error: "Global DAG API is unavailable." });
+        return;
+      }
+      jsonResponse(res, 200, { ok: true, source: globalDag.source, data: globalDag.data });
+    } catch (err) {
+      jsonResponse(res, 500, { ok: false, error: err.message });
+    }
+    return;
+  }
   if (path === "/api/tasks/attachments/upload" && req.method === "POST") {
     try {
       const { fields, files } = await readMultipartForm(req);
@@ -7690,6 +8548,8 @@ async function handleApi(req, res, url) {
       const taskId = body?.taskId || body?.id;
       const sdk = typeof body?.sdk === "string" ? body.sdk.trim() : "";
       const model = typeof body?.model === "string" ? body.model.trim() : "";
+      const forceStart = body?.force === true || body?.forceStart === true;
+      const manualOverride = body?.manualOverride === true || body?.overrideStartGuard === true;
       if (!taskId) {
         jsonResponse(res, 400, { ok: false, error: "taskId is required" });
         return;
@@ -7710,9 +8570,44 @@ async function handleApi(req, res, url) {
         return;
       }
 
+      const canStart = await evaluateTaskCanStart({
+        taskId,
+        task,
+        adapter,
+        forceStart,
+        manualOverride,
+      });
+      if (!canStart.canStart) {
+        jsonResponse(res, 409, {
+          ok: false,
+          taskId,
+          error: "Task cannot be started",
+          canStart,
+        });
+        return;
+      }
+
       const status = executor.getStatus?.() || {};
       const freeSlots =
         (status.maxParallel || 0) - (status.activeSlots || 0);
+
+      try {
+        if (typeof adapter.updateTaskStatus === "function") {
+          await adapter.updateTaskStatus(taskId, "inprogress", { source: "api.tasks.start" });
+        } else if (typeof adapter.updateTask === "function") {
+          await adapter.updateTask(taskId, { status: "inprogress" });
+        }
+        applyInternalLifecycleTransition(taskId, "start", {
+          source: "api.tasks.start",
+          actor: "ui",
+          force: forceStart || manualOverride,
+          reason: "manual start",
+        });
+      } catch (err) {
+        console.warn(
+          `[telegram-ui] failed to mark task ${taskId} inprogress: ${err.message}`,
+        );
+      }
 
       if (freeSlots <= 0) {
         jsonResponse(res, 202, {
@@ -7721,6 +8616,7 @@ async function handleApi(req, res, url) {
           queued: true,
           started: false,
           reason: "No free slots",
+          canStart,
         });
         broadcastUiEvent(
           ["tasks", "overview", "executor", "agents"],
@@ -7732,23 +8628,11 @@ async function handleApi(req, res, url) {
         );
         return;
       }
-
-      try {
-        if (typeof adapter.updateTaskStatus === "function") {
-          await adapter.updateTaskStatus(taskId, "inprogress");
-        } else if (typeof adapter.updateTask === "function") {
-          await adapter.updateTask(taskId, { status: "inprogress" });
-        }
-      } catch (err) {
-        console.warn(
-          `[telegram-ui] failed to mark task ${taskId} inprogress: ${err.message}`,
-        );
-      }
       const wasPaused = executor.isPaused?.();
       executor.executeTask(task, {
         ...(sdk ? { sdk } : {}),
         ...(model ? { model } : {}),
-        force: true,
+        force: forceStart || manualOverride,
       }).catch((error) => {
         console.warn(
           `[telegram-ui] failed to execute task ${taskId}: ${error.message}`,
@@ -7760,6 +8644,7 @@ async function handleApi(req, res, url) {
         queued: false,
         started: true,
         wasPaused,
+        canStart,
       });
       broadcastUiEvent(
         ["tasks", "overview", "executor", "agents"],
@@ -7783,6 +8668,8 @@ async function handleApi(req, res, url) {
         jsonResponse(res, 400, { ok: false, error: "taskId required" });
         return;
       }
+      const forceStart = body?.force === true || body?.forceStart === true;
+      const manualOverride = body?.manualOverride === true || body?.overrideStartGuard === true;
       const adapter = getKanbanAdapter();
       const previousTask = typeof adapter.getTask === "function"
         ? await adapter.getTask(taskId).catch(() => null)
@@ -7829,24 +8716,66 @@ async function handleApi(req, res, url) {
         typeof adapter.updateTask === "function"
           ? await adapter.updateTask(taskId, patch)
           : await adapter.updateTaskStatus(taskId, patch.status);
+      const nextStatus = updated?.status || patch.status || null;
+      const lifecycleAction = inferLifecycleAction(
+        previousTask?.status || null,
+        nextStatus,
+        body?.lifecycleAction,
+      );
+      applyInternalLifecycleTransition(taskId, lifecycleAction, {
+        source: "api.tasks.update",
+        actor: "ui",
+        force: lifecycleAction === "start" || lifecycleAction === "resume",
+        reason: body?.reason || null,
+        payload: {
+          previousStatus: previousTask?.status || null,
+          nextStatus,
+        },
+      });
+
       const executor = uiDeps.getInternalExecutor?.() || null;
-      const restart = await maybeRestartTaskOnReopen({
+      const startDispatch = await maybeStartTaskFromLifecycleAction({
         taskId,
-        previousStatus: previousTask?.status || null,
-        nextStatus: updated?.status || patch.status || null,
         updatedTask: updated,
         adapter,
         executor,
+        lifecycleAction,
+        forceStart,
+        manualOverride,
       });
-      jsonResponse(res, 200, { ok: true, data: updated, restart });
+      if (body?.pauseExecution === true && lifecycleAction === "pause" && executor && typeof executor.abortTask === "function") {
+        executor.abortTask(taskId, "task_lifecycle_pause");
+      }
+
+      const restart = await maybeRestartTaskOnReopen({
+        taskId,
+        previousStatus: previousTask?.status || null,
+        nextStatus,
+        updatedTask: updated,
+        adapter,
+        executor,
+        forceStart,
+        manualOverride,
+      });
+      jsonResponse(res, 200, {
+        ok: true,
+        data: updated,
+        restart,
+        lifecycle: {
+          action: lifecycleAction,
+          previousStatus: previousTask?.status || null,
+          nextStatus,
+          startDispatch,
+        },
+      });
       broadcastUiEvent(["tasks", "overview"], "invalidate", {
         reason: "task-updated",
         taskId,
-        status: updated?.status || patch.status || null,
+        status: nextStatus,
       });
-      if (restart?.started) {
+      if (restart?.started || startDispatch?.started) {
         broadcastUiEvent(["tasks", "overview", "executor", "agents"], "invalidate", {
-          reason: "task-restarted",
+          reason: restart?.started ? "task-restarted" : "task-started",
           taskId,
         });
       }
@@ -7864,6 +8793,8 @@ async function handleApi(req, res, url) {
         jsonResponse(res, 400, { ok: false, error: "taskId required" });
         return;
       }
+      const forceStart = body?.force === true || body?.forceStart === true;
+      const manualOverride = body?.manualOverride === true || body?.overrideStartGuard === true;
       const adapter = getKanbanAdapter();
       const previousTask = typeof adapter.getTask === "function"
         ? await adapter.getTask(taskId).catch(() => null)
@@ -7910,24 +8841,66 @@ async function handleApi(req, res, url) {
         typeof adapter.updateTask === "function"
           ? await adapter.updateTask(taskId, patch)
           : await adapter.updateTaskStatus(taskId, patch.status);
+      const nextStatus = updated?.status || patch.status || null;
+      const lifecycleAction = inferLifecycleAction(
+        previousTask?.status || null,
+        nextStatus,
+        body?.lifecycleAction,
+      );
+      applyInternalLifecycleTransition(taskId, lifecycleAction, {
+        source: "api.tasks.edit",
+        actor: "ui",
+        force: lifecycleAction === "start" || lifecycleAction === "resume",
+        reason: body?.reason || null,
+        payload: {
+          previousStatus: previousTask?.status || null,
+          nextStatus,
+        },
+      });
+
       const executor = uiDeps.getInternalExecutor?.() || null;
-      const restart = await maybeRestartTaskOnReopen({
+      const startDispatch = await maybeStartTaskFromLifecycleAction({
         taskId,
-        previousStatus: previousTask?.status || null,
-        nextStatus: updated?.status || patch.status || null,
         updatedTask: updated,
         adapter,
         executor,
+        lifecycleAction,
+        forceStart,
+        manualOverride,
       });
-      jsonResponse(res, 200, { ok: true, data: updated, restart });
+      if (body?.pauseExecution === true && lifecycleAction === "pause" && executor && typeof executor.abortTask === "function") {
+        executor.abortTask(taskId, "task_lifecycle_pause");
+      }
+
+      const restart = await maybeRestartTaskOnReopen({
+        taskId,
+        previousStatus: previousTask?.status || null,
+        nextStatus,
+        updatedTask: updated,
+        adapter,
+        executor,
+        forceStart,
+        manualOverride,
+      });
+      jsonResponse(res, 200, {
+        ok: true,
+        data: updated,
+        restart,
+        lifecycle: {
+          action: lifecycleAction,
+          previousStatus: previousTask?.status || null,
+          nextStatus,
+          startDispatch,
+        },
+      });
       broadcastUiEvent(["tasks", "overview"], "invalidate", {
         reason: "task-edited",
         taskId,
-        status: updated?.status || patch.status || null,
+        status: nextStatus,
       });
-      if (restart?.started) {
+      if (restart?.started || startDispatch?.started) {
         broadcastUiEvent(["tasks", "overview", "executor", "agents"], "invalidate", {
-          reason: "task-restarted",
+          reason: restart?.started ? "task-restarted" : "task-started",
           taskId,
         });
       }
@@ -7937,6 +8910,53 @@ async function handleApi(req, res, url) {
     return;
   }
 
+
+  if (path === "/api/tasks/comment" && req.method === "POST") {
+    try {
+      const body = await readJsonBody(req);
+      const taskId = String(body?.taskId || body?.id || "").trim();
+      const commentBody = String(body?.body || body?.comment || body?.text || "").trim();
+      const author = String(body?.author || "ui").trim() || "ui";
+      if (!taskId) {
+        jsonResponse(res, 400, { ok: false, error: "taskId required" });
+        return;
+      }
+      if (!commentBody) {
+        jsonResponse(res, 400, { ok: false, error: "comment body required" });
+        return;
+      }
+
+      const adapter = getKanbanAdapter();
+      const storeComment = addInternalTaskComment(taskId, {
+        body: commentBody,
+        text: commentBody,
+        author,
+        source: "ui",
+      });
+      const commented = typeof adapter.addComment === "function"
+        ? await adapter.addComment(taskId, commentBody)
+        : Boolean(storeComment);
+
+      appendInternalTaskTimelineEvent(taskId, {
+        type: "task.comment",
+        source: "ui",
+        actor: author,
+        message: commentBody,
+      });
+
+      const task = typeof adapter.getTask === "function"
+        ? await adapter.getTask(taskId).catch(() => null)
+        : null;
+      jsonResponse(res, 200, { ok: true, commented, stored: Boolean(storeComment), data: task });
+      broadcastUiEvent(["tasks", "overview"], "invalidate", {
+        reason: "task-commented",
+        taskId,
+      });
+    } catch (err) {
+      jsonResponse(res, 500, { ok: false, error: err.message });
+    }
+    return;
+  }
   if (path === "/api/tasks/create") {
     try {
       const body = await readJsonBody(req);
@@ -8339,18 +9359,105 @@ async function handleApi(req, res, url) {
         jsonResponse(res, 400, { ok: false, error: "Unknown workspace" });
         return;
       }
-      const title = (url.searchParams.get("title") || "").trim();
+
+      const getCriteriaFromQuery = () => ({
+        title: (url.searchParams.get("title") || "").trim(),
+        description: (url.searchParams.get("description") || "").trim(),
+        agentType: (url.searchParams.get("agentType") || "").trim(),
+        tags: String(url.searchParams.get("tags") || "").split(",").map((t) => t.trim()).filter(Boolean),
+        changedFiles: String(url.searchParams.get("changedFiles") || "").split(",").map((t) => t.trim()).filter(Boolean),
+        topN: Number.parseInt(String(url.searchParams.get("topN") || ""), 10) || 5,
+      });
+
+      const bodyCriteria = req.method === "POST" ? await readJsonBody(req).catch(() => ({})) : null;
+      const criteria = req.method === "POST"
+        ? {
+            ...(bodyCriteria || {}),
+            topN: Number.parseInt(String(bodyCriteria?.topN || ""), 10) || 5,
+          }
+        : getCriteriaFromQuery();
+
       const roots = resolveLibraryRootsForContext(workspaceContext);
       ensureLibraryRootsInitialized(roots);
-      let match = null;
+
+      let bestResult = null;
       for (const rootInfo of roots) {
-        const candidate = matchAgentProfile(rootInfo.rootDir, title);
-        if (!candidate) continue;
-        if (!match || Number(candidate.score || 0) > Number(match.score || 0)) {
-          match = { ...candidate, storageScope: rootInfo.scope };
+        const result = matchAgentProfiles(rootInfo.rootDir, criteria, { topN: criteria?.topN || 5 });
+        if (!result?.best) continue;
+        const withScope = {
+          ...result,
+          best: { ...result.best, storageScope: rootInfo.scope },
+          candidates: (result.candidates || []).map((candidate) => ({ ...candidate, storageScope: rootInfo.scope })),
+        };
+        if (!bestResult || Number(withScope.best?.score || 0) > Number(bestResult.best?.score || 0)) {
+          bestResult = withScope;
         }
       }
-      jsonResponse(res, 200, { ok: true, data: match || null });
+
+      const verbose = req.method === "POST"
+        || ["1", "true", "yes"].includes(String(url.searchParams.get("verbose") || "").trim().toLowerCase());
+      const payload = bestResult || {
+        best: null,
+        candidates: [],
+        auto: { shouldAutoApply: false, reason: "no-match" },
+        context: {
+          title: String(criteria?.title || ""),
+          description: String(criteria?.description || ""),
+          requestedAgentType: String(criteria?.agentType || ""),
+          taskScope: null,
+          changedFilesCount: Array.isArray(criteria?.changedFiles) ? criteria.changedFiles.length : 0,
+        },
+      };
+
+      jsonResponse(res, 200, {
+        ok: true,
+        data: verbose ? payload : (payload.best || null),
+      });
+    } catch (err) {
+      jsonResponse(res, 500, { ok: false, error: err.message });
+    }
+    return;
+  }
+
+  if (path === "/api/library/sources" && req.method === "GET") {
+    try {
+      jsonResponse(res, 200, { ok: true, data: listWellKnownAgentSources() });
+    } catch (err) {
+      jsonResponse(res, 500, { ok: false, error: err.message });
+    }
+    return;
+  }
+
+  if (path === "/api/library/import" && req.method === "POST") {
+    try {
+      const workspaceContext = resolveWorkspaceContextFromRequest(url, { allowAll: false });
+      if (!workspaceContext) {
+        jsonResponse(res, 400, { ok: false, error: "Unknown workspace" });
+        return;
+      }
+      const body = await readJsonBody(req).catch(() => ({}));
+      const requestedScope = normalizeLibraryStorageScope(body?.storageScope || body?.source, "repo");
+      const targetRoot = resolveLibraryTargetRoot(workspaceContext, requestedScope, null);
+      const result = importAgentProfilesFromRepository(targetRoot.rootDir, {
+        sourceId: String(body?.sourceId || "").trim() || undefined,
+        repoUrl: String(body?.repoUrl || "").trim() || undefined,
+        branch: String(body?.branch || "").trim() || undefined,
+        maxProfiles: Number.parseInt(String(body?.maxProfiles || ""), 10) || undefined,
+        importPrompts: body?.importPrompts !== false,
+      });
+
+      broadcastUiEvent(["library"], "invalidate", {
+        reason: "library-imported",
+        sourceId: String(body?.sourceId || "custom").trim() || "custom",
+      });
+
+      jsonResponse(res, 200, {
+        ok: true,
+        data: {
+          ...result,
+          storageScope: targetRoot.scope,
+        },
+      });
     } catch (err) {
       jsonResponse(res, 500, { ok: false, error: err.message });
     }
@@ -9839,6 +10946,29 @@ async function handleApi(req, res, url) {
       // 3. Build input: merge caller-supplied variables as execution input
       const userVars = body?.variables && typeof body.variables === "object" ? body.variables : {};
       const executeInput = { ...userVars };
+      const workspaceId = String(wfCtx.workspaceContext?.workspaceId || "").trim();
+      let defaultRepository = "";
+      if (workspaceId) {
+        const configDir = resolveUiConfigDir();
+        if (configDir) {
+          const listed = listManagedWorkspaces(configDir, { repoRoot });
+          const workspace = listed.find(
+            (entry) => String(entry?.id || "").trim().toLowerCase() === workspaceId.toLowerCase(),
+          );
+          defaultRepository = String(
+            workspace?.activeRepo ||
+              workspace?.repos?.find((repo) => repo?.primary)?.name ||
+              workspace?.repos?.[0]?.name ||
+              "",
+          ).trim();
+        }
+      }
+      if (!executeInput.workspace && workspaceId) executeInput.workspace = workspaceId;
+      if (!executeInput.workspaceId && workspaceId) executeInput.workspaceId = workspaceId;
+      if (!executeInput.repository && defaultRepository) executeInput.repository = defaultRepository;
+      if (!executeInput._targetRepo && executeInput.repository) {
+        executeInput._targetRepo = executeInput.repository;
+      }
 
       // 4. Execute (dispatch by default for long-running research workflows)
       const shouldWait = body?.waitForCompletion === true;
@@ -11159,8 +12289,15 @@ async function handleApi(req, res, url) {
         return;
       }
       let sessions = tracker.listAllSessions();
+      const includeHidden = /^(1|true|yes)$/i.test(String(url.searchParams.get("includeHidden") || "").trim());
       const typeFilter = url.searchParams.get("type");
       const statusFilter = url.searchParams.get("status");
+      if (!includeHidden) {
+        sessions = sessions.filter((session) => {
+          const detailed = tracker.getSessionById(session.id) || session;
+          return !shouldHideSessionFromDefaultList(detailed);
+        });
+      }
       if (typeFilter) sessions = sessions.filter((s) => s.type === typeFilter);
       if (statusFilter) sessions = sessions.filter((s) => s.status === statusFilter);
       sessions = sessions.filter((session) => {
@@ -13020,6 +14157,7 @@ export async function startTelegramUiServer(options = {}) {
   if (uiServer) return uiServer;
 
   injectUiDependencies(options.dependencies || {});
+  await ensureTaskStoreApi();
 
   const rawPort = options.port ?? getDefaultPort();
   const configuredPort = Number(rawPort);
@@ -13780,3 +14918,4 @@ export function stopTelegramUiServer() {
 }
 
 export { getLocalLanIp };
+

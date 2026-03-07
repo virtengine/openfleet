@@ -164,8 +164,8 @@ function createMockServices() {
         // Return planner-parseable output so materialize_planner_tasks succeeds
         const plannerOutput = JSON.stringify({
           tasks: [
-            { title: "Mock task: implement feature", description: "Auto-generated placeholder task" },
-            { title: "Mock task: write tests", description: "Auto-generated placeholder task" },
+            { title: "Mock task: implement feature", description: "Auto-generated placeholder task", acceptance_criteria: ["Feature behavior is validated"], verification: ["npm test -- feature"], repo_areas: ["workflow"], impact: 0.8, confidence: 0.8, risk: 0.3 },
+            { title: "Mock task: write tests", description: "Auto-generated placeholder task", acceptance_criteria: ["Coverage improved"], verification: ["npm test -- tests"], repo_areas: ["tests"], impact: 0.7, confidence: 0.85, risk: 0.2 },
           ],
         });
         return { success: true, output: plannerOutput, sdk: "mock", threadId: `thread-${Date.now()}` };
@@ -174,8 +174,8 @@ function createMockServices() {
         record("agentPool", "execWithRetry", [prompt, opts]);
         const plannerOutput = JSON.stringify({
           tasks: [
-            { title: "Mock task: implement feature", description: "Auto-generated placeholder task" },
-            { title: "Mock task: write tests", description: "Auto-generated placeholder task" },
+            { title: "Mock task: implement feature", description: "Auto-generated placeholder task", acceptance_criteria: ["Feature behavior is validated"], verification: ["npm test -- feature"], repo_areas: ["workflow"], impact: 0.8, confidence: 0.8, risk: 0.3 },
+            { title: "Mock task: write tests", description: "Auto-generated placeholder task", acceptance_criteria: ["Coverage improved"], verification: ["npm test -- tests"], repo_areas: ["tests"], impact: 0.7, confidence: 0.85, risk: 0.2 },
           ],
         });
         return { success: true, output: plannerOutput, sdk: "mock", threadId: `thread-${Date.now()}`, attempts: 1, continues: 0 };
@@ -1289,3 +1289,4 @@ describe("workflow-templates E2E execution", () => {
     });
   });
 });
+

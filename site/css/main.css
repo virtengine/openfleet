@@ -1023,8 +1023,17 @@ section {
 
 .workflow-lifecycle__flow {
   display: grid;
-  grid-template-columns: repeat(9, minmax(0, 1fr));
-  gap: 0.7rem;
+  grid-template-columns:
+    minmax(160px, 1.25fr)
+    minmax(22px, 0.18fr)
+    minmax(160px, 1.25fr)
+    minmax(22px, 0.18fr)
+    minmax(160px, 1.25fr)
+    minmax(22px, 0.18fr)
+    minmax(160px, 1.25fr)
+    minmax(22px, 0.18fr)
+    minmax(160px, 1.25fr);
+  gap: 0.55rem;
   align-items: stretch;
 }
 
@@ -1033,8 +1042,8 @@ section {
   border: 1px solid var(--border-subtle);
   border-radius: 10px;
   background: rgba(15, 23, 36, 0.7);
-  padding: 0.8rem;
-  min-height: 132px;
+  padding: 0.9rem 1rem;
+  min-height: 138px;
 }
 
 .workflow-stage__kicker {
@@ -1061,8 +1070,9 @@ section {
   display: grid;
   place-items: center;
   color: var(--text-muted);
-  font-size: 1.1rem;
-  font-weight: 700;
+  font-size: 0.82rem;
+  font-weight: 600;
+  letter-spacing: 0.04em;
 }
 
 /* ── Terminal Section ──────────────────────────────────────────────────── */
@@ -1723,7 +1733,7 @@ body.is-miniapp-fullscreen {
 
   .workflow-stage__arrow {
     transform: rotate(90deg);
-    min-height: 24px;
+    min-height: 20px;
   }
 
   .integrations-grid {

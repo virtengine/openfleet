@@ -16,8 +16,8 @@
  */
 
 import { existsSync, readFileSync, writeFileSync, mkdirSync, readdirSync, statSync, unlinkSync, rmSync } from "node:fs";
-import { resolve, basename, join } from "node:path";
-import { execSync } from "node:child_process";
+import { resolve, basename, join, relative } from "node:path";
+import { execSync, spawnSync } from "node:child_process";
 import { homedir } from "node:os";
 
 // ── Constants ─────────────────────────────────────────────────────────────────
@@ -71,6 +71,61 @@ function slugify(name) {
 
 function nowISO() {
   return new Date().toISOString();
+}
+
+function toStringArray(input) {
+  if (!Array.isArray(input)) return [];
+  return input.map((item) => String(item || '').trim()).filter(Boolean);
+}
+
+function uniqueStrings(values = []) {
+  const out = [];
+  const seen = new Set();
+  for (const raw of values) {
+    const value = String(raw || '').trim();
+    if (!value) continue;
+    const key = value.toLowerCase();
+    if (seen.has(key)) continue;
+    seen.add(key);
+    out.push(value);
+  }
+  return out;
+}
+
+function keywordTokens(value, { minLength = 3 } = {}) {
+  return uniqueStrings(
+    String(value || '')
+      .toLowerCase()
+      .split(/[^a-z0-9]+/)
+      .filter((token) => token.length >= minLength),
+  );
+}
+
+function parseJsonishArray(value) {
+  if (Array.isArray(value)) return toStringArray(value);
+  const raw = String(value || '').trim();
+  if (!raw) return [];
+  try {
+    const parsed = JSON.parse(raw.replace(/'/g, '"'));
+    return Array.isArray(parsed) ? toStringArray(parsed) : [];
+  } catch {
+    return raw
+      .split(/[\s,]+/)
+      .map((v) => String(v || '').trim())
+      .filter(Boolean);
+  }
+}
+
+function extractConventionalScope(taskTitle = '') {
+  const match = String(taskTitle || '').match(
+    /(?:^\[[^\]]+\]\s*)?(?:feat|fix|docs|style|refactor|perf|test|build|ci|chore|revert)\(([^)]+)\)/i,
+  );
+  return match ? String(match[1] || '').toLowerCase().trim() : null;
+}
+
+function parseMatchEnvNumber(name, fallback) {
+  const raw = Number.parseFloat(String(process.env[name] || '').trim());
+  return Number.isFinite(raw) ? raw : fallback;
 }
 
 // ── Manifest (library.json) ──────────────────────────────────────────────────
@@ -199,7 +254,10 @@ export function getEntryContent(rootDir, entry) {
   if (!existsSync(filePath)) return null;
   try {
     const raw = readFileSync(filePath, "utf8");
-    return entry.type === "agent" ? JSON.parse(raw) : raw;
+    if (entry.type === "agent" || entry.type === "mcp" || entry.type === "custom-tool") {
+      return JSON.parse(raw);
+    }
+    return raw;
   } catch {
     return null;
   }
@@ -297,59 +355,656 @@ export function listAgentProfiles(rootDir) {
  * @param {string} taskTitle
  * @returns {AgentProfile|null}
  */
-export function matchAgentProfile(rootDir, taskTitle) {
-  if (!taskTitle) return null;
+export function matchAgentProfiles(rootDir, criteria = {}, opts = {}) {
+  const title = String(criteria?.title || "").trim();
+  const description = String(criteria?.description || "").trim();
+  const requestedAgentType = String(criteria?.agentType || "").trim().toLowerCase();
+  const topN = Math.max(1, Number.parseInt(String(opts?.topN ?? criteria?.topN ?? 5), 10) || 5);
+  if (!title && !description) {
+    return {
+      best: null,
+      candidates: [],
+      auto: { shouldAutoApply: false, reason: "empty-input" },
+      context: { title: "", description: "", requestedAgentType },
+    };
+  }
+
   const profiles = listAgentProfiles(rootDir);
-  const titleLower = taskTitle.toLowerCase();
+  const taskScope = extractConventionalScope(title);
+  const textBlob = `${title}\n${description}`.trim();
+  const textBlobLower = textBlob.toLowerCase();
+  const criteriaTags = uniqueStrings([
+    ...toStringArray(criteria?.tags),
+    ...toStringArray(String(criteria?.tagsCsv || "").split(",")),
+    ...keywordTokens(textBlob, { minLength: 4 }),
+  ]).map((v) => v.toLowerCase());
+  const changedFiles = toStringArray(criteria?.changedFiles);
+  const changedHints = keywordTokens(changedFiles.join(" "), { minLength: 3 });
 
-  // Extract scope from task title using conventional commit format
-  const scopeMatch = taskTitle.match(
-    /(?:^\[[^\]]+\]\s*)?(?:feat|fix|docs|style|refactor|perf|test|build|ci|chore|revert)\(([^)]+)\)/i,
-  );
-  const taskScope = scopeMatch ? scopeMatch[1].toLowerCase().trim() : null;
-
-  let bestMatch = null;
-  let bestScore = 0;
-
+  const candidates = [];
   for (const entry of profiles) {
     const profile = entry.profile;
     if (!profile) continue;
 
-    let score = 0;
+    const profileType = String(profile?.agentType || "task").trim().toLowerCase() || "task";
+    if (requestedAgentType && profileType && requestedAgentType !== profileType) continue;
 
-    // Check title patterns (regex match)
-    const patterns = profile.titlePatterns || [];
+    let score = 0;
+    const reasons = [];
+
+    const patterns = toStringArray(profile.titlePatterns);
     for (const pattern of patterns) {
       try {
-        if (new RegExp(pattern, "i").test(taskTitle)) {
+        if (new RegExp(pattern, "i").test(textBlob)) {
           score += 10;
+          reasons.push(`pattern:${pattern}`);
           break;
         }
-      } catch { /* invalid regex – skip */ }
-    }
-
-    // Check scope match
-    const scopes = (profile.scopes || []).map((s) => s.toLowerCase());
-    if (taskScope && scopes.includes(taskScope)) {
-      score += 5;
-    }
-
-    // Check tag match against title
-    const tags = entry.tags || [];
-    for (const tag of tags) {
-      if (titleLower.includes(tag)) {
-        score += 1;
+      } catch {
+        // ignore invalid regex
       }
     }
 
-    if (score > bestScore) {
-      bestScore = score;
-      bestMatch = { ...entry, score };
+    const scopes = toStringArray(profile.scopes).map((s) => s.toLowerCase());
+    if (taskScope && scopes.includes(taskScope)) {
+      score += 6;
+      reasons.push(`scope:${taskScope}`);
+    }
+
+    const profileTags = uniqueStrings([...(entry.tags || []), ...toStringArray(profile.tags)]).map((v) => v.toLowerCase());
+    const tagHits = criteriaTags.filter((tag) => profileTags.includes(tag));
+    if (tagHits.length > 0) {
+      const tagScore = Math.min(6, tagHits.length * 2);
+      score += tagScore;
+      reasons.push(`tags:${tagHits.slice(0, 4).join(",")}`);
+    }
+
+    if (profileType === "voice") {
+      const voiceHint = /\bvoice\b|\bcall\b|\brealtime\b/.test(textBlobLower);
+      if (voiceHint) {
+        score += 3;
+        reasons.push("voice-hint");
+      }
+    }
+
+    const scopeHitsFromPaths = scopes.filter((scope) =>
+      changedHints.includes(scope) || changedFiles.some((f) => String(f).toLowerCase().includes(`/${scope}/`) || String(f).toLowerCase().includes(`\\${scope}\\`)),
+    );
+    if (scopeHitsFromPaths.length > 0) {
+      const fileScore = Math.min(8, scopeHitsFromPaths.length * 2);
+      score += fileScore;
+      reasons.push(`paths:${scopeHitsFromPaths.slice(0, 4).join(",")}`);
+    }
+
+    if (score <= 0) continue;
+
+    const confidence = Math.max(0, Math.min(1, score / 24));
+    candidates.push({
+      ...entry,
+      agentType: profileType,
+      score,
+      confidence,
+      reasons,
+      matchedScope: taskScope,
+    });
+  }
+
+  candidates.sort((a, b) => {
+    if (b.score !== a.score) return b.score - a.score;
+    return String(a.name || "").localeCompare(String(b.name || ""));
+  });
+
+  const best = candidates[0] || null;
+  const runnerUp = candidates[1] || null;
+  const minScore = parseMatchEnvNumber("BOSUN_AGENT_MATCH_AUTO_MIN_SCORE", 12);
+  const minConfidence = parseMatchEnvNumber("BOSUN_AGENT_MATCH_AUTO_MIN_CONFIDENCE", 0.72);
+  const minDelta = parseMatchEnvNumber("BOSUN_AGENT_MATCH_AUTO_MIN_DELTA", 3);
+  const shouldAutoApply = Boolean(
+    best
+      && Number(best.score || 0) >= minScore
+      && Number(best.confidence || 0) >= minConfidence
+      && (Number(best.score || 0) - Number(runnerUp?.score || 0)) >= minDelta,
+  );
+
+  return {
+    best,
+    candidates: candidates.slice(0, topN),
+    auto: {
+      shouldAutoApply,
+      reason: shouldAutoApply ? "high-confidence" : "below-threshold",
+      thresholds: { minScore, minConfidence, minDelta },
+      runnerUpScore: Number(runnerUp?.score || 0),
+    },
+    context: {
+      title,
+      description,
+      requestedAgentType,
+      taskScope,
+      changedFilesCount: changedFiles.length,
+    },
+  };
+}
+
+/**
+ * Backward-compatible single-best match helper.
+ *
+ * @param {string} rootDir
+ * @param {string} taskTitle
+ * @returns {AgentProfile|null}
+ */
+export function matchAgentProfile(rootDir, taskTitle) {
+  const result = matchAgentProfiles(rootDir, { title: taskTitle }, { topN: 1 });
+  return result.best || null;
+}
+
+export const WELL_KNOWN_AGENT_SOURCES = Object.freeze([
+  {
+    id: "microsoft-hve-core",
+    name: "Microsoft HVE Core",
+    repoUrl: "https://github.com/microsoft/hve-core.git",
+    defaultBranch: "main",
+    description: "Core HVE agent library with domain and plugin agent templates.",
+  },
+]);
+
+export function listWellKnownAgentSources() {
+  return WELL_KNOWN_AGENT_SOURCES.map((source) => ({ ...source }));
+}
+
+function parseSimpleFrontmatter(markdown = "") {
+  const text = String(markdown || "");
+  if (!text.startsWith("---\n")) return { attrs: {}, body: text };
+  const end = text.indexOf("\n---\n", 4);
+  if (end < 0) return { attrs: {}, body: text };
+  const head = text.slice(4, end).split(/\r?\n/);
+  const attrs = {};
+  for (const line of head) {
+    const m = line.match(/^([A-Za-z0-9_-]+)\s*:\s*(.*)$/);
+    if (!m) continue;
+    attrs[m[1].trim()] = String(m[2] || "").trim();
+  }
+  const body = text.slice(end + 5).trim();
+  return { attrs, body };
+}
+
+function walkFilesRecursive(rootDir) {
+  const stack = [rootDir];
+  const files = [];
+  while (stack.length > 0) {
+    const current = stack.pop();
+    let entries = [];
+    try {
+      entries = readdirSync(current, { withFileTypes: true });
+    } catch {
+      continue;
+    }
+    for (const entry of entries) {
+      const fullPath = resolve(current, entry.name);
+      if (entry.isDirectory()) {
+        if (entry.name === ".git" || entry.name === "node_modules") continue;
+        stack.push(fullPath);
+      } else if (entry.isFile()) {
+        files.push(fullPath);
+      }
+    }
+  }
+  return files;
+}
+
+function ensureUniqueId(baseId, takenIds) {
+  let id = baseId;
+  let seq = 2;
+  while (takenIds.has(id)) {
+    id = `${baseId}-${seq}`;
+    seq += 1;
+  }
+  takenIds.add(id);
+  return id;
+}
+
+function humanizeSlug(slug) {
+  const value = String(slug || "").trim();
+  if (!value) return "";
+  return value
+    .split(/[-_\s]+/)
+    .filter(Boolean)
+    .map((segment) => segment.charAt(0).toUpperCase() + segment.slice(1))
+    .join(" ");
+}
+
+function slugifyIdentifier(value) {
+  const raw = String(value || "").trim();
+  if (!raw) return "";
+  return slugify(
+    raw
+      .replace(/([a-z0-9])([A-Z])/g, "$1-$2")
+      .replace(/[_.]+/g, "-"),
+  );
+}
+
+function parseTomlValue(rawValue) {
+  const raw = String(rawValue || "").trim();
+  if (!raw) return "";
+  if (raw.startsWith('"') && raw.endsWith('"')) return raw.slice(1, -1);
+  if (raw.startsWith("'") && raw.endsWith("'")) return raw.slice(1, -1);
+  if (raw.startsWith("[") && raw.endsWith("]")) {
+    const body = raw.slice(1, -1).trim();
+    if (!body) return [];
+    return body
+      .split(",")
+      .map((part) => String(part || "").trim())
+      .filter(Boolean)
+      .map((part) => {
+        if (
+          (part.startsWith('"') && part.endsWith('"'))
+          || (part.startsWith("'") && part.endsWith("'"))
+        ) {
+          return part.slice(1, -1);
+        }
+        return part;
+      });
+  }
+  return raw;
+}
+
+function parseMcpServersFromToml(tomlText, sourcePath = "") {
+  const servers = new Map();
+  const lines = String(tomlText || "").split(/\r?\n/);
+  let current = null;
+
+  for (const rawLine of lines) {
+    const line = String(rawLine || "").trim();
+    if (!line || line.startsWith("#")) continue;
+
+    const sectionMatch = line.match(/^\[([^\]]+)\]$/);
+    if (sectionMatch) {
+      const sectionName = String(sectionMatch[1] || "").trim();
+      const mcpMatch = sectionName.match(/^mcp_servers\.([A-Za-z0-9_-]+)(?:\.(env))?$/i);
+      if (!mcpMatch) {
+        current = null;
+        continue;
+      }
+      const rawId = String(mcpMatch[1] || "").trim();
+      if (!rawId) {
+        current = null;
+        continue;
+      }
+      if (!servers.has(rawId)) {
+        servers.set(rawId, {
+          rawId,
+          sourcePath,
+          section: "mcp_servers." + rawId,
+          main: {},
+          envKeys: new Set(),
+        });
+      }
+      current = {
+        rawId,
+        env: String(mcpMatch[2] || "").toLowerCase() === "env",
+      };
+      continue;
+    }
+
+    if (!current) continue;
+    const kv = line.match(/^([A-Za-z0-9_.-]+)\s*=\s*(.+)$/);
+    if (!kv) continue;
+
+    const key = String(kv[1] || "").trim();
+    const value = parseTomlValue(kv[2]);
+    if (!key) continue;
+
+    const target = servers.get(current.rawId);
+    if (!target) continue;
+    if (current.env) {
+      target.envKeys.add(key);
+    } else {
+      target.main[key] = value;
     }
   }
 
-  return bestMatch;
+  const normalized = [];
+  for (const record of servers.values()) {
+    const id = slugifyIdentifier(record.rawId.replace(/_/g, "-"));
+    if (!id) continue;
+
+    const url = String(record.main.url || "").trim();
+    const command = String(record.main.command || "").trim();
+    const args = toStringArray(Array.isArray(record.main.args) ? record.main.args : []);
+    const env = {};
+    for (const key of record.envKeys) {
+      env[key] = "";
+    }
+
+    if (!url && !command) continue;
+
+    normalized.push({
+      id,
+      rawId: record.rawId,
+      name: humanizeSlug(id),
+      sourcePath: record.sourcePath,
+      section: record.section,
+      transport: url ? "url" : "stdio",
+      url: url || null,
+      command: command || null,
+      args,
+      env,
+    });
+  }
+
+  return normalized;
 }
+
+function discoverLocalAgentTemplates(rootDir) {
+  const candidateDirs = uniqueStrings([
+    resolve(rootDir, ".github", "agents"),
+    resolve(rootDir, "..", ".github", "agents"),
+  ]);
+
+  const templatesById = new Map();
+  for (const dir of candidateDirs) {
+    if (!existsSync(dir)) continue;
+
+    let files = [];
+    try {
+      files = readdirSync(dir)
+        .filter((name) => /\.md$/i.test(name))
+        .sort((a, b) => a.localeCompare(b));
+    } catch {
+      continue;
+    }
+
+    for (const fileName of files) {
+      const fullPath = resolve(dir, fileName);
+      let body = "";
+      try {
+        body = String(readFileSync(fullPath, "utf8") || "");
+      } catch {
+        continue;
+      }
+      const content = body.trim();
+      if (!content) continue;
+
+      const baseName = basename(fileName, ".md").replace(/\.agent$/i, "");
+      const id = slugifyIdentifier(baseName);
+      if (!id || templatesById.has(id)) continue;
+
+      const firstHeading = content.match(/^#\s+(.+)$/m);
+      const name = firstHeading
+        ? String(firstHeading[1] || "").trim()
+        : humanizeSlug(id);
+      const descriptionLine = content
+        .split(/\r?\n/)
+        .map((line) => line.trim())
+        .find((line) => line && !line.startsWith("#"));
+
+      const relPathRaw = relative(rootDir, fullPath).replace(/\\/g, "/");
+      const relPath = relPathRaw || ".github/agents/" + fileName;
+
+      templatesById.set(id, {
+        id,
+        name: name || humanizeSlug(id),
+        description: String(descriptionLine || ("Auto-synced prompt template from " + fileName)).slice(0, 240),
+        relPath,
+        content: body,
+      });
+    }
+  }
+
+  return [...templatesById.values()];
+}
+
+function discoverMcpServersFromCodexConfig(rootDir) {
+  const candidates = uniqueStrings([
+    resolve(rootDir, ".codex", "config.toml"),
+    resolve(homedir(), ".codex", "config.toml"),
+  ]);
+  const discovered = [];
+  const seenById = new Set();
+  for (const configPath of candidates) {
+    if (!existsSync(configPath)) continue;
+    let raw = "";
+    try {
+      raw = readFileSync(configPath, "utf8");
+    } catch {
+      continue;
+    }
+    const parsed = parseMcpServersFromToml(raw, configPath);
+    for (const entry of parsed) {
+      if (!entry?.id || seenById.has(entry.id)) continue;
+      seenById.add(entry.id);
+      discovered.push(entry);
+    }
+  }
+  return discovered;
+}
+
+/**
+ * Auto-discover local prompt templates and MCP server definitions and sync
+ * them into the library manifest/filesystem.
+ */
+export function syncAutoDiscoveredLibraryEntries(rootDir) {
+  const root = rootDir || getBosunHomeDir();
+  const manifestSnapshot = loadManifest(root);
+  const existingEntries = Array.isArray(manifestSnapshot?.entries)
+    ? manifestSnapshot.entries
+    : [];
+  const existingById = new Map(
+    existingEntries
+      .map((entry) => [String(entry?.id || "").trim(), entry])
+      .filter(([id]) => Boolean(id)),
+  );
+
+  let promptEntriesUpserted = 0;
+  let mcpEntriesUpserted = 0;
+  let promptEntriesSkipped = 0;
+  let mcpEntriesSkipped = 0;
+
+  for (const template of discoverLocalAgentTemplates(root)) {
+    const existing = existingById.get(template.id);
+    const autoSyncMeta = existing?.meta?.autoSync || {};
+    const canUpdateExisting =
+      !existing
+      || (existing.type === "prompt" && (
+        String(autoSyncMeta.kind || "") === "local-agent-template"
+        || template.id === "task-planner"
+      ));
+
+    if (!canUpdateExisting) {
+      promptEntriesSkipped += 1;
+      continue;
+    }
+
+    upsertEntry(root, {
+      id: template.id,
+      type: "prompt",
+      name: template.name,
+      description: template.description,
+      tags: uniqueStrings([
+        "prompt",
+        "autodiscovered",
+        "local-agent-template",
+        template.id === "task-planner" ? "planner" : "",
+      ]),
+      meta: {
+        autoSync: {
+          kind: "local-agent-template",
+          sourcePath: template.relPath,
+          syncedAt: nowISO(),
+        },
+      },
+    }, template.content);
+    promptEntriesUpserted += 1;
+  }
+
+  for (const mcp of discoverMcpServersFromCodexConfig(root)) {
+    const existing = existingById.get(mcp.id);
+    const autoSyncMeta = existing?.meta?.autoSync || {};
+    const canUpdateExisting =
+      !existing
+      || (existing.type === "mcp" && String(autoSyncMeta.kind || "") === "codex-mcp-config");
+
+    if (!canUpdateExisting) {
+      mcpEntriesSkipped += 1;
+      continue;
+    }
+
+    const content = {
+      id: mcp.id,
+      name: mcp.name,
+      description: "Auto-discovered from " + mcp.sourcePath,
+      transport: mcp.transport,
+      command: mcp.transport === "stdio" ? mcp.command : undefined,
+      args: mcp.transport === "stdio" ? mcp.args : undefined,
+      url: mcp.transport === "url" ? mcp.url : undefined,
+      env: Object.keys(mcp.env || {}).length ? mcp.env : undefined,
+      source: "autodiscovered",
+      tags: ["autodiscovered", "codex-config", "mcp"],
+    };
+
+    upsertEntry(root, {
+      id: mcp.id,
+      type: "mcp",
+      name: mcp.name,
+      description: content.description,
+      tags: uniqueStrings(["mcp", "autodiscovered", "codex-config"]),
+      meta: {
+        autoSync: {
+          kind: "codex-mcp-config",
+          sourcePath: mcp.sourcePath,
+          section: mcp.section,
+          rawId: mcp.rawId,
+          syncedAt: nowISO(),
+        },
+      },
+    }, content);
+    mcpEntriesUpserted += 1;
+  }
+
+  return {
+    promptEntriesUpserted,
+    mcpEntriesUpserted,
+    promptEntriesSkipped,
+    mcpEntriesSkipped,
+    totalUpserted: promptEntriesUpserted + mcpEntriesUpserted,
+  };
+}
+
+export function importAgentProfilesFromRepository(rootDir, options = {}) {
+  const sourceId = String(options?.sourceId || "").trim().toLowerCase();
+  const known = WELL_KNOWN_AGENT_SOURCES.find((source) => source.id === sourceId) || null;
+  const repoUrl = String(options?.repoUrl || known?.repoUrl || "").trim();
+  if (!repoUrl) throw new Error("repoUrl or sourceId is required");
+
+  const branch = String(options?.branch || known?.defaultBranch || "main").trim() || "main";
+  const maxProfiles = Math.max(1, Math.min(500, Number.parseInt(String(options?.maxProfiles || "100"), 10) || 100));
+  const importPrompts = options?.importPrompts !== false;
+
+  const cacheRoot = ensureDir(resolve(rootDir || getBosunHomeDir(), ".bosun", ".cache", "imports"));
+  const checkoutDir = resolve(cacheRoot, `import-${Date.now()}-${Math.random().toString(16).slice(2, 8)}`);
+  ensureDir(checkoutDir);
+
+  const clone = spawnSync("git", ["clone", "--depth", "1", "--branch", branch, repoUrl, checkoutDir], {
+    encoding: "utf8",
+    stdio: ["ignore", "pipe", "pipe"],
+  });
+  if (clone.status !== 0) {
+    rmSync(checkoutDir, { recursive: true, force: true });
+    throw new Error(String(clone.stderr || clone.stdout || "git clone failed").trim());
+  }
+
+  const files = walkFilesRecursive(checkoutDir);
+  const candidates = files
+    .filter((fullPath) => /\.md$/i.test(fullPath))
+    .filter((fullPath) => /\.agent\.md$/i.test(fullPath) || /[\\/]\.github[\\/]agents[\\/]/i.test(fullPath));
+
+  const takenIds = new Set(listEntries(rootDir, { type: "agent" }).map((entry) => String(entry?.id || "").trim()).filter(Boolean));
+  const imported = [];
+
+  for (const fullPath of candidates.slice(0, maxProfiles)) {
+    const raw = readFileSync(fullPath, "utf8");
+    const { attrs, body } = parseSimpleFrontmatter(raw);
+    const relPath = fullPath.slice(checkoutDir.length + 1).replace(/\\/g, "/");
+    const fileName = basename(fullPath).replace(/\.md$/i, "");
+    const name = String(attrs.name || fileName.replace(/[-_.]+/g, " ")).trim();
+    const description = String(attrs.description || body.split(/\r?\n/).find((line) => line.trim()) || "Imported agent profile").trim();
+    const baseId = slugify(`${sourceId || "imported"}-${name}`) || slugify(fileName) || `imported-agent-${imported.length + 1}`;
+    const id = ensureUniqueId(baseId, takenIds);
+
+    const toolHints = parseJsonishArray(attrs.tools);
+    const keywords = keywordTokens(`${name} ${description} ${relPath}`, { minLength: 4 }).slice(0, 10);
+    const titlePatterns = uniqueStrings(keywords.slice(0, 6).map((token) => `\\b${token.replace(/[.*+?^${}()|[\\]\\]/g, "")}\\b`));
+    const scopes = uniqueStrings(relPath.split(/[\\/]/).map((segment) => slugify(segment))).filter((segment) => segment && segment !== "github" && segment !== "agents").slice(0, 6);
+    const promptId = `${id}-prompt`;
+
+    if (importPrompts && body) {
+      upsertEntry(rootDir, {
+        id: promptId,
+        type: "prompt",
+        name: `${name} Prompt`,
+        description: `Imported prompt from ${known?.name || repoUrl}`,
+        tags: uniqueStrings(["imported", "agent-prompt", sourceId || "external"]),
+        meta: {
+          sourceId: sourceId || null,
+          repoUrl,
+          branch,
+          relPath,
+        },
+      }, body);
+    }
+
+    const profile = {
+      id,
+      name,
+      description,
+      titlePatterns: titlePatterns.length ? titlePatterns : ["\\btask\\b"],
+      scopes,
+      sdk: null,
+      model: null,
+      promptOverride: importPrompts ? promptId : null,
+      skills: [],
+      hookProfile: null,
+      env: {},
+      enabledTools: toolHints.length ? toolHints : null,
+      enabledMcpServers: [],
+      tags: uniqueStrings(["imported", sourceId || "external", ...keywords.slice(0, 4)]),
+      agentType: /voice|audio|realtime/i.test(`${name} ${description}`) ? "voice" : "task",
+      importMeta: {
+        sourceId: sourceId || null,
+        repoUrl,
+        branch,
+        relPath,
+      },
+    };
+
+    upsertEntry(rootDir, {
+      id,
+      type: "agent",
+      name,
+      description,
+      tags: profile.tags,
+      meta: {
+        sourceId: sourceId || null,
+        repoUrl,
+        branch,
+        relPath,
+      },
+    }, profile);
+
+    imported.push({ id, name, relPath, promptId: importPrompts ? promptId : null });
+  }
+
+  rmSync(checkoutDir, { recursive: true, force: true });
+
+  return {
+    ok: true,
+    source: known ? { ...known } : { id: sourceId || "custom", repoUrl, defaultBranch: branch },
+    repoUrl,
+    branch,
+    importedCount: imported.length,
+    imported,
+  };
+}
+
 
 // ── Scope Auto-Detection ─────────────────────────────────────────────────────
 
@@ -799,5 +1454,11 @@ export function scaffoldAgentProfiles(rootDir) {
 export function initLibrary(rootDir) {
   const scaffolded = scaffoldAgentProfiles(rootDir);
   const manifest = rebuildManifest(rootDir);
-  return { manifest, scaffolded };
+  const autoSynced = syncAutoDiscoveredLibraryEntries(rootDir);
+  const latestManifest = loadManifest(rootDir);
+  return {
+    manifest: latestManifest?.entries ? latestManifest : manifest,
+    scaffolded,
+    autoSynced,
+  };
 }

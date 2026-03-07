@@ -256,6 +256,51 @@ describe("task-store concurrent save consistency", () => {
   });
 });
 
+
+describe("task-store external change visibility", () => {
+  it("reloads from disk when another process updates the store file", async () => {
+    const dir = makeTempDir("task-store-external-reload-");
+    const storeDir = join(dir, ".bosun", ".cache");
+    mkdirSync(storeDir, { recursive: true });
+    const storePath = join(storeDir, "kanban-state.json");
+
+    const ts = await loadTaskStoreModule();
+    ts.configureTaskStore({ storePath });
+    ts.loadStore();
+    ts.addTask({ id: "local-1", title: "Local task", status: "todo" });
+    await ts.waitForStoreWrites();
+
+    // Simulate an external writer (CLI/API in a separate process) replacing the store file.
+    const externallyWritten = {
+      _meta: {
+        version: 1,
+        projectId: null,
+        lastFullSync: null,
+        taskCount: 1,
+        stats: {
+          draft: 0,
+          todo: 1,
+          inprogress: 0,
+          inreview: 0,
+          done: 0,
+          blocked: 0,
+        },
+      },
+      tasks: {
+        "external-1": {
+          id: "external-1",
+          title: "External task",
+          status: "todo",
+        },
+      },
+    };
+    writeFileSync(storePath, JSON.stringify(externallyWritten, null, 2), "utf8");
+
+    const tasksAfterExternalWrite = ts.getAllTasks();
+    expect(tasksAfterExternalWrite).toHaveLength(1);
+    expect(tasksAfterExternalWrite[0].id).toBe("external-1");
+  });
+});
 // ── getStorePath / configureTaskStore contracts ────────────────────────────
 
 describe("task-store configureTaskStore contracts", () => {
@@ -276,5 +321,169 @@ describe("task-store configureTaskStore contracts", () => {
     const dir = makeTempDir("task-store-path-contract-");
     ts.configureTaskStore({ storePath: join(dir, "state.json") });
     expect(typeof ts.getStorePath()).toBe("string");
+  });
+});
+
+describe("task-store sprint and DAG primitives", () => {
+  it("loads legacy store files without sprints and backfills task sprint fields", async () => {
+    const dir = makeTempDir("task-store-legacy-sprints-");
+    const storePath = join(dir, "kanban-state.json");
+    const legacyStore = {
+      _meta: {
+        version: 1,
+        projectId: null,
+        lastFullSync: null,
+        taskCount: 1,
+        stats: {
+          draft: 0,
+          todo: 1,
+          inprogress: 0,
+          inreview: 0,
+          done: 0,
+          blocked: 0,
+        },
+      },
+      tasks: {
+        "legacy-1": {
+          id: "legacy-1",
+          title: "Legacy task",
+          status: "todo",
+        },
+      },
+    };
+    writeFileSync(storePath, JSON.stringify(legacyStore, null, 2), "utf8");
+
+    const ts = await loadTaskStoreModule();
+    ts.configureTaskStore({ storePath });
+    ts.loadStore();
+
+    expect(ts.listSprints()).toEqual([]);
+    expect(ts.getSprint("s-1")).toBeNull();
+    expect(ts.getTask("legacy-1")).toMatchObject({
+      sprintId: null,
+      sprintOrder: null,
+    });
+  });
+
+  it("upserts sprints, lists them by order, and assigns tasks to sprint", async () => {
+    const dir = makeTempDir("task-store-sprint-crud-");
+    const storePath = join(dir, "kanban-state.json");
+
+    const ts = await loadTaskStoreModule();
+    ts.configureTaskStore({ storePath });
+    ts.loadStore();
+
+    ts.upsertSprint({ id: "s-2", name: "Sprint 2", order: 2 });
+    ts.upsertSprint({ id: "s-1", name: "Sprint 1", order: 1 });
+
+    const ordered = ts.listSprints();
+    expect(ordered.map((s) => s.id)).toEqual(["s-1", "s-2"]);
+    expect(ts.getSprint("s-1")).toMatchObject({ id: "s-1", order: 1 });
+
+    ts.addTask({ id: "task-a", title: "Task A", status: "todo" });
+    const assigned = ts.assignTaskToSprint("task-a", "s-1");
+    expect(assigned).toMatchObject({ sprintId: "s-1", sprintOrder: 1 });
+  });
+
+  it("builds global and per-sprint DAG levels", async () => {
+    const dir = makeTempDir("task-store-dag-levels-");
+    const storePath = join(dir, "kanban-state.json");
+
+    const ts = await loadTaskStoreModule();
+    ts.configureTaskStore({ storePath });
+    ts.loadStore();
+
+    ts.upsertSprint({ id: "s-1", order: 1 });
+    ts.upsertSprint({ id: "s-2", order: 2 });
+
+    ts.addTask({ id: "a", title: "A", status: "todo" });
+    ts.addTask({ id: "b", title: "B", status: "todo" });
+    ts.addTask({ id: "c", title: "C", status: "todo" });
+    ts.addTask({ id: "d", title: "D", status: "todo" });
+
+    ts.assignTaskToSprint("a", "s-1");
+    ts.assignTaskToSprint("b", "s-1");
+    ts.assignTaskToSprint("c", "s-1");
+    ts.assignTaskToSprint("d", "s-2");
+
+    ts.addTaskDependency("b", "a");
+    ts.addTaskDependency("c", "b");
+    ts.addTaskDependency("d", "c");
+
+    const globalDag = ts.getTaskDag();
+    expect(globalDag.hasCycle).toBe(false);
+    expect(globalDag.levels).toEqual([["a"], ["b"], ["c"], ["d"]]);
+
+    const sprintDag = ts.getTaskDag({ sprintId: "s-1" });
+    expect(sprintDag.hasCycle).toBe(false);
+    expect(sprintDag.levels).toEqual([["a"], ["b"], ["c"]]);
+    expect(sprintDag.edges).toHaveLength(2);
+  });
+
+  it("detects DAG cycles", async () => {
+    const dir = makeTempDir("task-store-dag-cycle-");
+    const storePath = join(dir, "kanban-state.json");
+
+    const ts = await loadTaskStoreModule();
+    ts.configureTaskStore({ storePath });
+    ts.loadStore();
+
+    ts.addTask({ id: "x", title: "X", status: "todo" });
+    ts.addTask({ id: "y", title: "Y", status: "todo" });
+    ts.addTaskDependency("x", "y");
+    ts.addTaskDependency("y", "x");
+
+    const dag = ts.getTaskDag();
+    expect(dag.hasCycle).toBe(true);
+    expect(dag.cycleTaskIds).toEqual(["x", "y"]);
+  });
+
+  it("canTaskStart blocks on unresolved dependencies and allows after completion", async () => {
+    const dir = makeTempDir("task-store-can-start-deps-");
+    const storePath = join(dir, "kanban-state.json");
+
+    const ts = await loadTaskStoreModule();
+    ts.configureTaskStore({ storePath });
+    ts.loadStore();
+
+    ts.addTask({ id: "dep", title: "Dependency", status: "todo" });
+    ts.addTask({ id: "child", title: "Child", status: "todo" });
+    ts.addTaskDependency("child", "dep");
+
+    const blocked = ts.canTaskStart("child");
+    expect(blocked.canStart).toBe(false);
+    expect(blocked.reason).toBe("dependencies_unresolved");
+    expect(blocked.blockingTaskIds).toContain("dep");
+
+    ts.setTaskStatus("dep", "done", "test");
+    const allowed = ts.canTaskStart("child");
+    expect(allowed.canStart).toBe(true);
+    expect(allowed.reason).toBe("ok");
+  });
+
+  it("canTaskStart honors sequential sprint order mode", async () => {
+    const dir = makeTempDir("task-store-can-start-sprint-order-");
+    const storePath = join(dir, "kanban-state.json");
+
+    const ts = await loadTaskStoreModule();
+    ts.configureTaskStore({ storePath });
+    ts.loadStore();
+
+    ts.upsertSprint({ id: "s-1", order: 1 });
+    ts.upsertSprint({ id: "s-2", order: 2 });
+    ts.addTask({ id: "s1-task", title: "Sprint 1 task", status: "todo" });
+    ts.addTask({ id: "s2-task", title: "Sprint 2 task", status: "todo" });
+    ts.assignTaskToSprint("s1-task", "s-1");
+    ts.assignTaskToSprint("s2-task", "s-2");
+
+    const blocked = ts.canTaskStart("s2-task", { sprintOrderMode: "sequential" });
+    expect(blocked.canStart).toBe(false);
+    expect(blocked.reason).toBe("prior_sprint_incomplete");
+    expect(blocked.blockingTaskIds).toContain("s1-task");
+
+    ts.setTaskStatus("s1-task", "done", "test");
+    const allowed = ts.canTaskStart("s2-task", { sprintOrderMode: "sequential" });
+    expect(allowed.canStart).toBe(true);
+    expect(allowed.reason).toBe("ok");
   });
 });

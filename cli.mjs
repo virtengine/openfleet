@@ -324,6 +324,95 @@ const daemonCrashTracker = createDaemonCrashTracker({
   maxInstantCrashes: DAEMON_MAX_INSTANT_RESTARTS,
 });
 
+function uniqueResolvedPaths(paths) {
+  const seen = new Set();
+  const results = [];
+  for (const entry of paths) {
+    if (!entry) continue;
+    const normalized = resolve(entry);
+    if (seen.has(normalized)) continue;
+    seen.add(normalized);
+    results.push(normalized);
+  }
+  return results;
+}
+
+function getRuntimeCacheDirCandidates(extraCacheDirs = []) {
+  return uniqueResolvedPaths([
+    ...extraCacheDirs,
+    runtimeCacheDir,
+    process.env.BOSUN_DIR ? resolve(process.env.BOSUN_DIR, ".cache") : null,
+    resolve(__dirname, ".cache"),
+    resolve(process.cwd(), ".cache"),
+  ]);
+}
+
+async function getConfiguredRuntimeCacheDirs() {
+  try {
+    const { loadConfig } = await import("./config/config.mjs");
+    const config = loadConfig();
+    return getRuntimeCacheDirCandidates([
+      String(config?.cacheDir || "").trim() || null,
+    ]);
+  } catch {
+    return getRuntimeCacheDirCandidates();
+  }
+}
+
+function getPidFileCandidates(fileName, extraCacheDirs = []) {
+  return getRuntimeCacheDirCandidates(extraCacheDirs).map((cacheDir) =>
+    resolve(cacheDir, fileName),
+  );
+}
+
+function waitForPidsToExit(pids, timeoutMs) {
+  const deadline = Date.now() + Math.max(0, timeoutMs);
+  let alive = pids.filter((pid) => isProcessAlive(pid));
+  while (alive.length > 0 && Date.now() < deadline) {
+    Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 200);
+    alive = alive.filter((pid) => isProcessAlive(pid));
+  }
+  return alive;
+}
+
+function getSentinelRecoveryStateCandidates(extraCacheDirs = []) {
+  return getRuntimeCacheDirCandidates(extraCacheDirs).map((cacheDir) =>
+    resolve(cacheDir, "sentinel-monitor-recovery.json"),
+  );
+}
+
+function writeSentinelManualStopHold(extraCacheDirs = [], holdMs = 0) {
+  const holdUntil = Date.now() + Math.max(0, holdMs);
+  for (const stateFile of getSentinelRecoveryStateCandidates(extraCacheDirs)) {
+    try {
+      mkdirSync(dirname(stateFile), { recursive: true });
+      let existing = {};
+      if (existsSync(stateFile)) {
+        try {
+          existing = JSON.parse(readFileSync(stateFile, "utf8"));
+        } catch {
+          existing = {};
+        }
+      }
+      writeFileSync(
+        stateFile,
+        JSON.stringify(
+          {
+            ...existing,
+            monitorManualStopUntil: holdUntil,
+            updatedAt: new Date().toISOString(),
+          },
+          null,
+          2,
+        ),
+        "utf8",
+      );
+    } catch {
+      /* best effort */
+    }
+  }
+}
+
 function isProcessAlive(pid) {
   if (!Number.isFinite(pid) || pid <= 0) return false;
   try {
@@ -775,18 +864,17 @@ function findAllBosunProcessPids() {
   }
 }
 
-function removeKnownPidFiles() {
-  const pidFiles = [
-    DAEMON_PID_FILE,
+function removeKnownPidFiles(extraCacheDirs = []) {
+  const pidFiles = uniqueResolvedPaths([
+    ...getPidFileCandidates("bosun-daemon.pid", extraCacheDirs),
+    ...getMonitorPidFileCandidates(extraCacheDirs),
+    ...getPidFileCandidates("telegram-sentinel.pid", extraCacheDirs),
     LEGACY_DAEMON_PID_FILE,
-    PID_FILE,
     LEGACY_MONITOR_PID_FILE,
-    SENTINEL_PID_FILE,
     SENTINEL_PID_FILE_LEGACY,
     SENTINEL_PID_FILE_LEGACY_ALT,
     resolve(__dirname, "..", ".cache", "bosun.pid"),
-    resolve(process.cwd(), ".cache", "bosun.pid"),
-  ];
+  ]);
   for (const pidFile of pidFiles) {
     try {
       if (existsSync(pidFile)) unlinkSync(pidFile);
@@ -796,27 +884,158 @@ function removeKnownPidFiles() {
   }
 }
 
-function terminateBosun() {
-  const tracked = [
+function taskkillPid(pid, { force = false } = {}) {
+  if (process.platform !== "win32") return false;
+  try {
+    const args = ["/PID", String(pid)];
+    if (force) args.push("/F");
+    execFileSync("taskkill", args, {
+      encoding: "utf8",
+      stdio: ["ignore", "pipe", "pipe"],
+      timeout: 5000,
+      windowsHide: true,
+    });
+    return true;
+  } catch (err) {
+    const detail = String(
+      err?.stderr || err?.stdout || err?.message || "taskkill failed",
+    ).toLowerCase();
+    if (
+      detail.includes("no running instance") ||
+      detail.includes("not found") ||
+      detail.includes("not exist")
+    ) {
+      return true;
+    }
+    return false;
+  }
+}
+
+function taskkillPidsElevated(pids, { force = false } = {}) {
+  if (process.platform !== "win32" || pids.length === 0) return false;
+  try {
+    const args = [];
+    for (const pid of pids) {
+      args.push("/PID", String(pid));
+    }
+    if (force) args.push("/F");
+    const quotedArgs = args.map((arg) => `'${String(arg).replace(/'/g, "''")}'`);
+    const command =
+      "Start-Process -FilePath taskkill.exe -ArgumentList " +
+      quotedArgs.join(",") +
+      " -Verb RunAs -Wait -WindowStyle Hidden";
+    execFileSync(
+      "powershell.exe",
+      ["-NoProfile", "-Command", command],
+      {
+        encoding: "utf8",
+        stdio: ["ignore", "pipe", "pipe"],
+        timeout: 30000,
+        windowsHide: false,
+      },
+    );
+  } catch {
+    /* best effort */
+  }
+  return pids.every((pid) => !isProcessAlive(pid));
+}
+
+function findWindowsManagedAncestorPids(seedPids, maxDepth = 2) {
+  if (process.platform !== "win32" || seedPids.length === 0) return [];
+  const uniquePids = Array.from(new Set(seedPids)).filter(
+    (pid) => Number.isFinite(pid) && pid > 0 && pid !== process.pid,
+  );
+  if (uniquePids.length === 0) return [];
+  try {
+    const command = [
+      `$targets = @(${uniquePids.join(",")})`,
+      "$seen = New-Object 'System.Collections.Generic.HashSet[int]'",
+      "foreach ($target in $targets) {",
+      `  $depth = 0`,
+      "  $current = Get-CimInstance Win32_Process -Filter \"ProcessId = $target\" -ErrorAction SilentlyContinue",
+      `  while ($current -and $depth -lt ${Math.max(1, maxDepth)}) {`,
+      "    $parentPid = [int]$current.ParentProcessId",
+      "    if ($parentPid -le 0) { break }",
+      "    $parent = Get-CimInstance Win32_Process -Filter \"ProcessId = $parentPid\" -ErrorAction SilentlyContinue",
+      "    if (-not $parent) { break }",
+      "    if ([string]$parent.Name -notmatch '^(node|electron|bosun)(\\.exe)?$') { break }",
+      "    if ($seen.Add($parentPid)) { Write-Output $parentPid }",
+      "    $current = $parent",
+      "    $depth += 1",
+      "  }",
+      "}",
+    ].join("; ");
+    const out = execFileSync(
+      "powershell.exe",
+      ["-NoProfile", "-Command", command],
+      { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"], timeout: 5000 },
+    ).trim();
+    if (!out) return [];
+    return out
+      .split(/\r?\n/)
+      .map((line) => Number.parseInt(String(line).trim(), 10))
+      .filter((pid) => Number.isFinite(pid) && pid > 0 && pid !== process.pid);
+  } catch {
+    return [];
+  }
+}
+
+async function terminateBosun() {
+  const configuredCacheDirs = await getConfiguredRuntimeCacheDirs();
+  const daemonPids = [
     getDaemonPid(),
-    readAlivePid(PID_FILE),
-    readAlivePid(LEGACY_MONITOR_PID_FILE),
+    ...getPidFileCandidates("bosun-daemon.pid", configuredCacheDirs).map(
+      (pidFile) => readAlivePid(pidFile),
+    ),
+  ].filter((pid) => Number.isFinite(pid) && pid > 0);
+  const monitorPids = [
+    ...getMonitorPidFileCandidates(configuredCacheDirs).map((pidFile) =>
+      readAlivePid(pidFile),
+    ),
+  ].filter((pid) => Number.isFinite(pid) && pid > 0);
+  const sentinelPids = [
+    ...uniqueResolvedPaths([
+      ...getPidFileCandidates("telegram-sentinel.pid", configuredCacheDirs),
+      SENTINEL_PID_FILE_LEGACY,
+      SENTINEL_PID_FILE_LEGACY_ALT,
+    ]).map((pidFile) => readAlivePid(pidFile)),
     readSentinelPid(),
   ].filter((pid) => Number.isFinite(pid) && pid > 0);
+  const manualStopHoldMs =
+    Math.max(
+      0,
+      Number(process.env.SENTINEL_MANUAL_STOP_HOLD_MIN || "10") || 10,
+    ) * 60_000;
+  writeSentinelManualStopHold(configuredCacheDirs, manualStopHoldMs);
   const ghosts = findGhostDaemonPids();
-  const scanned = findAllBosunProcessPids();
-  const allPids = Array.from(new Set([...tracked, ...ghosts, ...scanned])).filter(
+  const ancestorPids = findWindowsManagedAncestorPids([
+    ...daemonPids,
+    ...monitorPids,
+    ...sentinelPids,
+  ]);
+  const restartOwnerPids = Array.from(
+    new Set([...ancestorPids, ...sentinelPids, ...daemonPids, ...ghosts]),
+  ).filter((pid) => pid !== process.pid);
+  const tracked = [...restartOwnerPids, ...monitorPids];
+  const trackedPids = Array.from(new Set([...tracked, ...ghosts])).filter(
+    (pid) => pid !== process.pid,
+  );
+  const scanned =
+    trackedPids.length === 0 && process.platform !== "win32"
+      ? findAllBosunProcessPids()
+      : [];
+  const allPids = Array.from(new Set([...trackedPids, ...scanned])).filter(
     (pid) => pid !== process.pid,
   );
   if (allPids.length === 0) {
-    removeKnownPidFiles();
+    removeKnownPidFiles(configuredCacheDirs);
     console.log("  No running bosun processes found.");
     process.exit(0);
     return;
   }
 
   console.log(`  Terminating ${allPids.length} bosun process(es): ${allPids.join(", ")}`);
-  for (const pid of allPids) {
+  for (const pid of restartOwnerPids) {
     try {
       process.kill(pid, "SIGTERM");
     } catch {
@@ -824,21 +1043,62 @@ function terminateBosun() {
     }
   }
 
-  const deadline = Date.now() + 5000;
-  let alive = allPids.filter((pid) => isProcessAlive(pid));
-  while (alive.length > 0 && Date.now() < deadline) {
-    Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 200);
-    alive = alive.filter((pid) => isProcessAlive(pid));
+  let alive = waitForPidsToExit(restartOwnerPids, 1500);
+  if (process.platform === "win32" && alive.length > 0) {
+    for (const pid of alive) {
+      taskkillPid(pid);
+    }
+    alive = waitForPidsToExit(alive, 2000);
   }
 
-  for (const pid of alive) {
+  const remainingPids = allPids.filter((pid) => !restartOwnerPids.includes(pid));
+  for (const pid of remainingPids) {
     try {
-      process.kill(pid, "SIGKILL");
+      process.kill(pid, "SIGTERM");
     } catch {
       /* already dead */
     }
   }
-  removeKnownPidFiles();
+
+  alive = waitForPidsToExit(allPids, 5000);
+
+  if (process.platform === "win32" && alive.length > 0) {
+    for (const pid of alive) {
+      taskkillPid(pid);
+    }
+    const taskkillDeadline = Date.now() + 3000;
+    while (alive.length > 0 && Date.now() < taskkillDeadline) {
+      Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 200);
+      alive = alive.filter((pid) => isProcessAlive(pid));
+    }
+    if (alive.length > 0) {
+      taskkillPidsElevated(alive, { force: false });
+      alive = waitForPidsToExit(alive, 3000);
+    }
+  }
+
+  for (const pid of alive) {
+    try {
+      if (process.platform === "win32") {
+        taskkillPid(pid, { force: true });
+      } else {
+        process.kill(pid, "SIGKILL");
+      }
+    } catch {
+      /* already dead */
+    }
+  }
+  if (alive.length > 0) {
+    if (process.platform === "win32") {
+      taskkillPidsElevated(alive, { force: true });
+    }
+    const finalDeadline = Date.now() + 3000;
+    while (alive.length > 0 && Date.now() < finalDeadline) {
+      Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 200);
+      alive = alive.filter((pid) => isProcessAlive(pid));
+    }
+  }
+  removeKnownPidFiles(configuredCacheDirs);
   const killed = allPids.length - alive.length;
   console.log(`  ✓ Terminated ${killed}/${allPids.length} process(es).`);
   if (alive.length > 0) {
@@ -1091,7 +1351,7 @@ async function main() {
     return;
   }
   if (args.includes("--terminate")) {
-    terminateBosun();
+    await terminateBosun();
     return;
   }
   if (args.includes("--daemon-status")) {
@@ -1703,15 +1963,11 @@ async function sendCrashNotification(exitCode, signal, options = {}) {
 const SELF_RESTART_EXIT_CODE = 75;
 let monitorChild = null;
 
-function getMonitorPidFileCandidates() {
-  return [
-    PID_FILE,
-    process.env.BOSUN_DIR
-      ? resolve(process.env.BOSUN_DIR, ".cache", "bosun.pid")
-      : null,
+function getMonitorPidFileCandidates(extraCacheDirs = []) {
+  return uniqueResolvedPaths([
+    ...getPidFileCandidates("bosun.pid", extraCacheDirs),
     resolve(__dirname, "..", ".cache", "bosun.pid"),
-    resolve(process.cwd(), ".cache", "bosun.pid"),
-  ].filter(Boolean);
+  ]);
 }
 
 function detectExistingMonitorLockOwner(excludePid = null) {

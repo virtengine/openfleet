@@ -311,6 +311,32 @@ describe("task-executor", () => {
     });
   });
 
+  describe("repo-area collision scheduling", () => {
+    it("enforces repoAreaParallelLimit when repo areas overlap", () => {
+      const ex = new TaskExecutor({ baseBranchParallelLimit: 0, repoAreaParallelLimit: 1 });
+      ex._activeSlots.set("active-1", {
+        taskId: "active-1",
+        repoAreas: ["infra"],
+      });
+
+      const selected = ex._selectTasksForBaseBranchLimit([
+        { id: "t1", repo_areas: ["infra"] },
+        { id: "t2", repo_areas: ["workflow"] },
+      ], 2);
+
+      expect(selected.map((task) => task.id)).toEqual(["t2"]);
+    });
+
+    it("keeps backward-compatible behavior when repoAreaParallelLimit is unset", () => {
+      const ex = new TaskExecutor({ baseBranchParallelLimit: 0 });
+      const selected = ex._selectTasksForBaseBranchLimit([
+        { id: "t1", repo_areas: ["infra"] },
+        { id: "t2", repo_areas: ["infra"] },
+      ], 2);
+      expect(selected.map((task) => task.id)).toEqual(["t1", "t2"]);
+    });
+  });
+
   describe("pause state persistence", () => {
     it("defaults manual pause reason and writes pausedAt to orchestrator pause state", () => {
       const ex = new TaskExecutor();
@@ -682,6 +708,22 @@ describe("task-executor", () => {
       expect(opts.sdk).toBe("copilot");
     });
 
+    it("reads repo area parallel limit from env and config", () => {
+      process.env.INTERNAL_EXECUTOR_REPO_AREA_PARALLEL = "3";
+      loadConfig.mockReturnValue({
+        internalExecutor: {
+          repoAreaParallelLimit: 2,
+        },
+      });
+
+      const fromEnv = loadExecutorOptionsFromConfig();
+      expect(fromEnv.repoAreaParallelLimit).toBe(3);
+
+      delete process.env.INTERNAL_EXECUTOR_REPO_AREA_PARALLEL;
+      const fromConfig = loadExecutorOptionsFromConfig();
+      expect(fromConfig.repoAreaParallelLimit).toBe(2);
+    });
+
     it("reads from config.internalExecutor", () => {
       loadConfig.mockReturnValue({
         internalExecutor: {
@@ -973,3 +1015,4 @@ describe("task-executor", () => {
   // [LEGACY TESTS REMOVED] — All execution pipeline tests have been replaced
   // by comprehensive workflow node tests in tests/workflow-task-lifecycle.test.mjs
 });
+

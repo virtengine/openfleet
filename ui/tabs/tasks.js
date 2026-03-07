@@ -27,6 +27,8 @@ import {
   tasksSearch,
   tasksSort,
   tasksTotalPages,
+  tasksTotal,
+  tasksStatusCounts,
   executorData,
   showToast,
   refreshTab,
@@ -36,6 +38,7 @@ import {
   updateTaskManualState,
   setPendingChange,
   clearPendingChange,
+  sanitizeTaskText,
 } from "../modules/state.js";
 import { ICONS } from "../modules/icons.js";
 import {
@@ -78,6 +81,27 @@ import {
 /* ─── View mode toggle ─── */
 const viewMode = signal("kanban");
 const Toggle = typeof ImportedToggle === "function" ? ImportedToggle : () => null;
+const DAG_SPRINT_ENDPOINT_CANDIDATES = [
+  "/api/tasks/sprints",
+  "/api/tasks/dag/sprints",
+  "/api/tasks/dag/index",
+];
+const DAG_GRAPH_ENDPOINT_CANDIDATES = [
+  "/api/tasks/dag",
+  "/api/tasks/graph",
+  "/api/tasks/dependencies",
+];
+const DAG_GLOBAL_ENDPOINT_CANDIDATES = [
+  "/api/tasks/dag-of-dags",
+  "/api/tasks/dag/global",
+  "/api/tasks/graph/global",
+];
+const EMPTY_DAG_GRAPH = {
+  title: "",
+  description: "",
+  nodes: [],
+  edges: [],
+};
 
 /* ─── Status/Priority → MUI Chip color ─── */
 function statusChipColor(status) {
@@ -287,6 +311,468 @@ function unsavedChangesMessage(changeCount) {
   return `You have unsaved changes (${count})`;
 }
 
+function toArray(value) {
+  if (Array.isArray(value)) return value;
+  if (value && typeof value === "object") return Object.values(value);
+  return [];
+}
+
+function toText(value, fallback = "") {
+  if (value == null) return fallback;
+  const text = String(value).trim();
+  return text || fallback;
+}
+
+function normalizeDagDependencyList(value) {
+  const raw = Array.isArray(value)
+    ? value
+    : typeof value === "string"
+      ? value.split(",")
+      : [];
+  return raw
+    .map((item) => toText(item))
+    .filter(Boolean);
+}
+
+function extractDagPayload(raw) {
+  if (raw && typeof raw === "object" && "data" in raw && raw.data != null) {
+    return raw.data;
+  }
+  return raw || {};
+}
+
+function normalizeSprintOptions(raw) {
+  const payload = extractDagPayload(raw);
+  const candidates = [
+    payload?.sprints,
+    payload?.sprintList,
+    payload?.items,
+    payload?.data?.sprints,
+  ];
+  const source = candidates.find(
+    (value) => Array.isArray(value) && value.length > 0,
+  ) || toArray(payload);
+  return source
+    .map((entry, index) => {
+      if (entry == null) return null;
+      if (typeof entry === "string") {
+        return { id: entry, label: entry, status: "", goal: "" };
+      }
+      const id = toText(entry.id || entry.slug || entry.name || `sprint-${index + 1}`);
+      if (!id) return null;
+      return {
+        id,
+        label: toText(entry.label || entry.title || entry.name, id),
+        status: toText(entry.status),
+        goal: toText(entry.goal),
+      };
+    })
+    .filter(Boolean);
+}
+
+function normalizeDagNode(node, index) {
+  const id = toText(
+    node?.id || node?.nodeId || node?.taskId || node?.key || `node-${index + 1}`,
+  );
+  const taskId = toText(node?.taskId || node?.id || node?.task?.id || "");
+  const orderRaw =
+    node?.sprintOrder ??
+    node?.sequence ??
+    node?.order ??
+    node?.position ??
+    node?.index;
+  const order = Number.isFinite(Number(orderRaw)) ? Number(orderRaw) : null;
+  return {
+    id,
+    taskId,
+    title: toText(node?.title || node?.label || node?.name || taskId || id, "(untitled)"),
+    description: toText(node?.description || node?.summary || ""),
+    status: toText(node?.status || node?.state || ""),
+    priority: toText(node?.priority),
+    sprintId: toText(node?.sprintId || node?.sprint || ""),
+    order,
+    dependencies: normalizeDagDependencyList(
+      node?.dependencies ||
+        node?.dependsOn ||
+        node?.requires ||
+        node?.prerequisites,
+    ),
+  };
+}
+
+function normalizeDagGraph(raw, fallbackTitle = "") {
+  const payload = extractDagPayload(raw);
+  const graph =
+    payload?.graph ||
+    payload?.dag ||
+    payload?.sprintDag ||
+    payload?.sprintGraph ||
+    payload?.globalDag ||
+    payload?.globalGraph ||
+    payload;
+
+  const nodeSourceCandidates = [
+    graph?.nodes,
+    graph?.tasks,
+    graph?.items,
+    payload?.nodes,
+    payload?.tasks,
+    payload?.items,
+  ];
+  const edgeSourceCandidates = [
+    graph?.edges,
+    graph?.links,
+    graph?.dependencies,
+    payload?.edges,
+    payload?.links,
+    payload?.dependencies,
+  ];
+
+  const rawNodes =
+    nodeSourceCandidates.find((value) => Array.isArray(value) && value.length > 0) || [];
+  const nodes = rawNodes.map(normalizeDagNode).filter((node) => node && node.id);
+  const idLookup = new Map();
+  for (const node of nodes) {
+    idLookup.set(node.id, node.id);
+    if (node.taskId) idLookup.set(node.taskId, node.id);
+  }
+
+  const rawEdges =
+    edgeSourceCandidates.find((value) => Array.isArray(value) && value.length > 0) || [];
+  const edges = [];
+  const seen = new Set();
+  const pushEdge = (source, target, kind = "depends-on") => {
+    const src = idLookup.get(source) || source;
+    const dst = idLookup.get(target) || target;
+    if (!src || !dst) return;
+    const key = `${src}->${dst}:${kind}`;
+    if (seen.has(key)) return;
+    seen.add(key);
+    edges.push({ source: src, target: dst, kind });
+  };
+
+  for (const edge of rawEdges) {
+    if (!edge || typeof edge !== "object") continue;
+    pushEdge(
+      toText(edge.source || edge.from || edge.parent || edge.dependsOn),
+      toText(edge.target || edge.to || edge.child || edge.taskId),
+      toText(edge.kind || edge.type || "depends-on"),
+    );
+  }
+  if (!edges.length) {
+    for (const node of nodes) {
+      for (const dep of node.dependencies) {
+        pushEdge(dep, node.id, "depends-on");
+      }
+    }
+  }
+
+  return {
+    title: toText(graph?.title || payload?.title || fallbackTitle, fallbackTitle),
+    description: toText(graph?.description || payload?.description || ""),
+    nodes,
+    edges,
+  };
+}
+
+function extractGlobalDagPayload(...sources) {
+  for (const source of sources) {
+    const payload = extractDagPayload(source);
+    if (!payload || typeof payload !== "object") continue;
+    const candidate =
+      payload?.dagOfDags ||
+      payload?.globalDag ||
+      payload?.globalGraph ||
+      payload?.overviewDag ||
+      payload?.overviewGraph;
+    if (candidate) return candidate;
+  }
+  return null;
+}
+
+function buildSprintPathCandidates(basePath, sprintId) {
+  if (!sprintId || sprintId === "all") return [basePath];
+  const encoded = encodeURIComponent(sprintId);
+  const join = basePath.includes("?") ? "&" : "?";
+  return [
+    `${basePath}${join}sprintId=${encoded}`,
+    `${basePath}${join}sprint=${encoded}`,
+    `${basePath}${join}id=${encoded}`,
+    basePath,
+  ];
+}
+
+async function fetchFirstAvailableDagPath(paths = []) {
+  const attempts = Array.from(new Set(paths)).filter(Boolean);
+  for (const path of attempts) {
+    try {
+      const payload = await apiFetch(path, { _silent: true });
+      return { path, payload };
+    } catch {
+      // Try next endpoint candidate.
+    }
+  }
+  return null;
+}
+
+function buildTaskDescriptionFallback(rawTitle, rawDescription) {
+  const title = sanitizeTaskText(rawTitle || "");
+  const description = sanitizeTaskText(rawDescription || "");
+  if (description) return description;
+  if (!title) {
+    return "No description provided yet. Add scope, key files, and acceptance checks before dispatch.";
+  }
+  return `Implementation notes for "${title}". Include scope, key files, risks, and acceptance checks before dispatch.`;
+}
+
+
+function getTaskCollectionValues(task, keys = []) {
+  const out = [];
+  const seen = new Set();
+  for (const key of keys) {
+    const value = task?.[key] ?? task?.meta?.[key];
+    if (Array.isArray(value)) {
+      for (const item of value) {
+        if (item == null) continue;
+        const marker = JSON.stringify(item);
+        if (seen.has(marker)) continue;
+        seen.add(marker);
+        out.push(item);
+      }
+      continue;
+    }
+    if (value && typeof value === "object") {
+      for (const item of Object.values(value)) {
+        if (item == null) continue;
+        const marker = JSON.stringify(item);
+        if (seen.has(marker)) continue;
+        seen.add(marker);
+        out.push(item);
+      }
+    }
+  }
+  return out;
+}
+
+function buildTaskHistoryEntries(task) {
+  const rows = getTaskCollectionValues(task, [
+    "statusHistory",
+    "history",
+    "timeline",
+    "eventLog",
+    "events",
+    "activity",
+  ]);
+  return rows
+    .map((entry) => {
+      if (entry == null) return null;
+      if (typeof entry === "string") {
+        return {
+          type: "event",
+          label: entry,
+          status: "",
+          source: "",
+          timestamp: null,
+        };
+      }
+      const status = String(entry.status || entry.to || entry.nextStatus || "").trim();
+      const fromStatus = String(entry.from || entry.previousStatus || "").trim();
+      const eventName = String(entry.event || entry.type || entry.kind || "").trim();
+      const source = String(entry.source || entry.by || entry.actor || "").trim();
+      const timestamp =
+        entry.timestamp ||
+        entry.createdAt ||
+        entry.updatedAt ||
+        entry.at ||
+        null;
+      const label = eventName || (status ? `${fromStatus ? `${fromStatus} -> ` : ""}${status}` : "Task event");
+      return {
+        type: eventName || "status",
+        label,
+        status,
+        source,
+        timestamp,
+      };
+    })
+    .filter(Boolean)
+    .sort((a, b) => {
+      const ta = a.timestamp ? new Date(a.timestamp).getTime() : 0;
+      const tb = b.timestamp ? new Date(b.timestamp).getTime() : 0;
+      return tb - ta;
+    })
+    .slice(0, 40);
+}
+
+function buildTaskWorkflowRuns(task) {
+  const rows = getTaskCollectionValues(task, [
+    "workflowRuns",
+    "workflowHistory",
+    "workflows",
+  ]);
+  return rows
+    .map((entry) => {
+      if (entry == null) return null;
+      if (typeof entry === "string") {
+        return { workflowId: entry, runId: "", status: "", result: "", timestamp: null };
+      }
+      return {
+        workflowId: String(entry.workflowId || entry.id || entry.templateId || "").trim(),
+        runId: String(entry.runId || entry.executionId || entry.attemptId || "").trim(),
+        status: String(entry.status || entry.outcome || entry.result || "").trim(),
+        result: String(entry.summary || entry.message || entry.reason || "").trim(),
+        timestamp: entry.timestamp || entry.completedAt || entry.createdAt || null,
+      };
+    })
+    .filter((entry) => entry && (entry.workflowId || entry.runId || entry.status || entry.result))
+    .sort((a, b) => {
+      const ta = a.timestamp ? new Date(a.timestamp).getTime() : 0;
+      const tb = b.timestamp ? new Date(b.timestamp).getTime() : 0;
+      return tb - ta;
+    })
+    .slice(0, 30);
+}
+
+function buildTaskRelatedLinks(task) {
+  const links = [];
+  const branch =
+    task?.branchName ||
+    task?.branch ||
+    task?.meta?.branch ||
+    task?.meta?.branchName ||
+    "";
+  const prNumber =
+    task?.prNumber ||
+    task?.pr_number ||
+    task?.meta?.prNumber ||
+    task?.meta?.pr_number ||
+    "";
+  const prUrl =
+    task?.prUrl ||
+    task?.pr_url ||
+    task?.meta?.prUrl ||
+    task?.meta?.pr_url ||
+    task?.meta?.pr?.url ||
+    "";
+  const baseBranch = getTaskBaseBranch(task);
+
+  if (branch) links.push({ kind: "Branch", value: branch, url: "" });
+  if (baseBranch) links.push({ kind: "Base", value: baseBranch, url: "" });
+  if (prNumber) links.push({ kind: "PR", value: `#${prNumber}`, url: prUrl || "" });
+  if (prUrl) links.push({ kind: "PR URL", value: prUrl, url: prUrl });
+  return links;
+}
+
+function buildTaskAgentList(task) {
+  const values = [];
+  const pushValue = (value) => {
+    const normalized = String(value || "").trim();
+    if (!normalized || values.includes(normalized)) return;
+    values.push(normalized);
+  };
+
+  pushValue(task?.assignee);
+  const assignees = task?.assignees || task?.meta?.assignees;
+  if (Array.isArray(assignees)) {
+    for (const item of assignees) {
+      if (typeof item === "string") pushValue(item);
+      else pushValue(item?.name || item?.id || item?.agentId);
+    }
+  }
+
+  pushValue(task?.meta?.execution?.sdk);
+  pushValue(task?.meta?.execution?.model);
+  pushValue(task?.meta?.executor);
+  return values;
+}
+
+async function confirmTaskLifecycleTransition(task, newStatus) {
+  const next = normalizeTaskLifecycleStatus(newStatus);
+  const prev = normalizeTaskLifecycleStatus(task?.status || "todo");
+  const action = classifyTaskLifecycleAction(prev, next);
+  const taskLabel = sanitizeTaskText(task?.title || task?.id || "this task");
+
+  if (action === "start") {
+    const ok = await showConfirm(
+      `Start ${taskLabel} now? This dispatches or resumes execution immediately.`,
+    );
+    return { ok, action, nextStatus: "inprogress" };
+  }
+
+  if (action === "pause") {
+    const ok = await showConfirm(
+      `Pause ${taskLabel} and move it back to backlog? You can resume by moving it to In Progress again.`,
+    );
+    return { ok, action, nextStatus: next === "draft" ? "draft" : "todo" };
+  }
+
+  return { ok: true, action, nextStatus: next };
+}
+
+async function applyTaskLifecycleTransition(task, requestedStatus) {
+  if (!task?.id) return { ok: false, cancelled: true, action: "noop" };
+  const decision = await confirmTaskLifecycleTransition(task, requestedStatus);
+  if (!decision.ok) return { ok: false, cancelled: true, action: decision.action };
+
+  const wantsDraft = decision.nextStatus === "draft";
+  const prevTasks = cloneValue(tasksData.value);
+  const optimisticStatus = decision.action === "start" ? "inprogress" : decision.nextStatus;
+  let apiResult = null;
+
+  await runOptimistic(
+    () => {
+      tasksData.value = tasksData.value.map((row) =>
+        row.id === task.id ? { ...row, status: optimisticStatus, draft: wantsDraft } : row,
+      );
+    },
+    async () => {
+      if (decision.action === "start") {
+        apiResult = await apiFetch("/api/tasks/start", {
+          method: "POST",
+          body: JSON.stringify({ taskId: task.id }),
+        });
+        const detail = await apiFetch(
+          `/api/tasks/detail?taskId=${encodeURIComponent(task.id)}`,
+          { _silent: true },
+        ).catch(() => null);
+        const merged = detail?.data || apiResult?.data || null;
+        if (merged) {
+          tasksData.value = tasksData.value.map((row) =>
+            row.id === task.id ? { ...row, ...merged } : row,
+          );
+        }
+        return apiResult;
+      }
+
+      apiResult = await apiFetch("/api/tasks/update", {
+        method: "POST",
+        body: JSON.stringify({
+          taskId: task.id,
+          status: decision.nextStatus,
+          draft: wantsDraft,
+          lifecycleAction: decision.action,
+          pauseExecution: decision.action === "pause",
+        }),
+      });
+      if (apiResult?.data) {
+        tasksData.value = tasksData.value.map((row) =>
+          row.id === task.id ? { ...row, ...apiResult.data } : row,
+        );
+      }
+      return apiResult;
+    },
+    () => {
+      tasksData.value = prevTasks;
+    },
+  );
+
+  return {
+    ok: true,
+    cancelled: false,
+    action: decision.action,
+    status: optimisticStatus,
+    response: apiResult,
+  };
+}
 export function StartTaskModal({
   task,
   defaultSdk = "auto",
@@ -1353,8 +1839,8 @@ export function TaskReviewModal({ task, onClose, onStart }) {
 
 /* ─── TaskDetailModal ─── */
 export function TaskDetailModal({ task, onClose, onStart }) {
-  const [title, setTitle] = useState(task?.title || "");
-  const [description, setDescription] = useState(task?.description || "");
+  const [title, setTitle] = useState(sanitizeTaskText(task?.title || ""));
+  const [description, setDescription] = useState(buildTaskDescriptionFallback(task?.title, task?.description));
   const [baseBranch, setBaseBranch] = useState(getTaskBaseBranch(task));
   const [status, setStatus] = useState(task?.status || "todo");
   const [priority, setPriority] = useState(task?.priority || "");
@@ -1372,6 +1858,7 @@ export function TaskDetailModal({ task, onClose, onStart }) {
     Boolean(task?.draft || task?.status === "draft"),
   );
   const [saving, setSaving] = useState(false);
+  const [baselineVersion, setBaselineVersion] = useState(0);
   const [rewriting, setRewriting] = useState(false);
   const [manualOverride, setManualOverride] = useState(isTaskManual(task));
   const [manualBusy, setManualBusy] = useState(false);
@@ -1382,8 +1869,8 @@ export function TaskDetailModal({ task, onClose, onStart }) {
   const [repository, setRepository] = useState(task?.repository || "");
   const attachmentInputRef = useRef(null);
   const initialSnapshotRef = useRef({
-    title: task?.title || "",
-    description: task?.description || "",
+    title: sanitizeTaskText(task?.title || ""),
+    description: buildTaskDescriptionFallback(task?.title, task?.description),
     baseBranch: getTaskBaseBranch(task),
     status: task?.status || "todo",
     priority: task?.priority || "",
@@ -1396,6 +1883,37 @@ export function TaskDetailModal({ task, onClose, onStart }) {
   );
   const activeWsId = activeWorkspaceId.value || "";
   const canDispatch = Boolean(onStart && task?.id);
+
+  const historyEntries = useMemo(() => buildTaskHistoryEntries(task), [
+    task?.id,
+    task?.status,
+    task?.statusHistory,
+    task?.history,
+    task?.timeline,
+    task?.eventLog,
+    task?.events,
+    task?.activity,
+  ]);
+  const workflowRuns = useMemo(() => buildTaskWorkflowRuns(task), [
+    task?.id,
+    task?.workflowRuns,
+    task?.workflowHistory,
+    task?.workflows,
+  ]);
+  const relatedLinks = useMemo(() => buildTaskRelatedLinks(task), [
+    task?.id,
+    task?.branch,
+    task?.branchName,
+    task?.prNumber,
+    task?.prUrl,
+    task?.meta,
+  ]);
+  const taskAgents = useMemo(() => buildTaskAgentList(task), [
+    task?.id,
+    task?.assignee,
+    task?.assignees,
+    task?.meta,
+  ]);
 
   const editableSnapshot = useMemo(
     () => ({
@@ -1411,7 +1929,7 @@ export function TaskDetailModal({ task, onClose, onStart }) {
   );
   const changeCount = useMemo(
     () => countChangedFields(initialSnapshotRef.current, editableSnapshot),
-    [editableSnapshot],
+    [baselineVersion, editableSnapshot],
   );
   const hasUnsaved = changeCount > 0;
   const activeOperationLabel = saving
@@ -1432,8 +1950,8 @@ export function TaskDetailModal({ task, onClose, onStart }) {
   const repositoryOptions = selectedWorkspace?.repos || [];
 
   useEffect(() => {
-    const nextTitle = task?.title || "";
-    const nextDescription = task?.description || "";
+    const nextTitle = sanitizeTaskText(task?.title || "");
+    const nextDescription = buildTaskDescriptionFallback(task?.title, task?.description);
     const nextBaseBranch = getTaskBaseBranch(task);
     const nextStatus = task?.status || "todo";
     const nextPriority = task?.priority || "";
@@ -1461,6 +1979,7 @@ export function TaskDetailModal({ task, onClose, onStart }) {
       tagsInput: nextTags,
       draft: nextDraft,
     };
+    setBaselineVersion((v) => v + 1);
   }, [task?.id]);
 
   useEffect(() => {
@@ -1506,7 +2025,10 @@ export function TaskDetailModal({ task, onClose, onStart }) {
     setSaving(true);
     haptic("medium");
     const prev = cloneValue(tasksData.value);
-    const tags = normalizeTagInput(tagsInput);
+    const cleanTitle = sanitizeTaskText(title).trim();
+    const cleanDescription = buildTaskDescriptionFallback(title, description);
+    const cleanTagsInput = sanitizeTaskText(tagsInput || "");
+    const tags = normalizeTagInput(cleanTagsInput);
     const wantsDraft = draft || status === "draft";
     const nextStatus = wantsDraft ? "draft" : status;
     try {
@@ -1516,8 +2038,8 @@ export function TaskDetailModal({ task, onClose, onStart }) {
             t.id === task.id
               ? {
                   ...t,
-                  title,
-                  description,
+                  title: cleanTitle,
+                  description: cleanDescription,
                   baseBranch,
                   status: nextStatus,
                   priority: priority || null,
@@ -1534,8 +2056,8 @@ export function TaskDetailModal({ task, onClose, onStart }) {
             method: "POST",
             body: JSON.stringify({
               taskId: task.id,
-              title,
-              description,
+              title: cleanTitle,
+              description: cleanDescription,
               baseBranch,
               status: nextStatus,
               priority,
@@ -1556,15 +2078,19 @@ export function TaskDetailModal({ task, onClose, onStart }) {
         },
       );
       showToast("Task saved", "success");
+      setTitle(cleanTitle);
+      setDescription(cleanDescription);
       initialSnapshotRef.current = {
-        title,
-        description,
+        title: cleanTitle,
+        description: cleanDescription,
         baseBranch,
         status: nextStatus,
         priority: priority || "",
-        tagsInput,
+        tagsInput: cleanTagsInput,
         draft: wantsDraft,
       };
+      setBaselineVersion((v) => v + 1);
+      clearPendingChange(pendingKey);
       if (closeAfterSave) {
         onClose?.();
         return { closed: true };
@@ -1580,42 +2106,18 @@ export function TaskDetailModal({ task, onClose, onStart }) {
 
   const handleStatusUpdate = async (newStatus) => {
     haptic("medium");
-    const prev = cloneValue(tasksData.value);
-    const wantsDraft = newStatus === "draft";
     try {
-      await runOptimistic(
-        () => {
-          tasksData.value = tasksData.value.map((t) =>
-            t.id === task.id
-              ? { ...t, status: newStatus, draft: wantsDraft }
-              : t,
-          );
-        },
-        async () => {
-          const res = await apiFetch("/api/tasks/update", {
-            method: "POST",
-            body: JSON.stringify({
-              taskId: task.id,
-              status: newStatus,
-              draft: wantsDraft,
-            }),
-          });
-          if (res?.data)
-            tasksData.value = tasksData.value.map((t) =>
-              t.id === task.id ? { ...t, ...res.data } : t,
-            );
-          return res;
-        },
-        () => {
-          tasksData.value = prev;
-        },
-      );
-      if (newStatus === "done" || newStatus === "cancelled") onClose();
-      else {
-        setStatus(newStatus);
-        setDraft(wantsDraft);
+      const result = await applyTaskLifecycleTransition(task, newStatus);
+      if (!result?.ok || result?.cancelled) return;
+
+      if (result.status === "done" || result.status === "cancelled") {
+        onClose();
+      } else {
+        setStatus(result.status);
+        setDraft(result.status === "draft");
       }
-      if (newStatus === "inreview") {
+
+      if (result.status === "inreview") {
         await reactivateTaskSession(task.id, {
           askFirst: true,
           title: task?.title || task?.id || "this task",
@@ -1625,7 +2127,6 @@ export function TaskDetailModal({ task, onClose, onStart }) {
       /* toast */
     }
   };
-
   const handleStart = () => {
     if (onStart) onStart(task);
   };
@@ -1774,7 +2275,86 @@ export function TaskDetailModal({ task, onClose, onStart }) {
         `}
       </div>
 
-        <div class="flex-col gap-md modal-form-grid">
+
+      <div class="modal-form-span">
+        <div class="task-comments-block" style="padding:12px;border:1px solid var(--border);border-radius:12px;background:var(--bg-surface)">
+          <div class="task-attachments-title">Tracking Overview</div>
+          <div class="task-comments-list" style="display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:10px;">
+            <div class="task-comment-item">
+              <div class="task-comment-meta">Assigned Agents</div>
+              <div class="task-comment-body">${taskAgents.length ? taskAgents.join(" · ") : "No agent assignment recorded."}</div>
+            </div>
+            <div class="task-comment-item">
+              <div class="task-comment-meta">Workflow Runs</div>
+              <div class="task-comment-body">${workflowRuns.length ? `${workflowRuns.length} linked runs` : "No workflow runs linked yet."}</div>
+            </div>
+            <div class="task-comment-item">
+              <div class="task-comment-meta">Timeline Events</div>
+              <div class="task-comment-body">${historyEntries.length ? `${historyEntries.length} recorded entries` : "No timeline history yet."}</div>
+            </div>
+            <div class="task-comment-item">
+              <div class="task-comment-meta">Branch / PR</div>
+              <div class="task-comment-body">${relatedLinks.length ? relatedLinks.map((item) => `${item.kind}: ${item.value}`).join(" · ") : "No branch or PR links recorded."}</div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      ${workflowRuns.length > 0 && html`
+        <div class="task-comments-block modal-form-span">
+          <div class="task-attachments-title">Workflow Activity</div>
+          <div class="task-comments-list">
+            ${workflowRuns.map((run, index) => html`
+              <div class="task-comment-item" key=${`workflow-${index}`}>
+                <div class="task-comment-meta">
+                  ${run.workflowId || "workflow"}
+                  ${run.runId ? ` · run ${run.runId}` : ""}
+                  ${run.timestamp ? ` · ${formatRelative(run.timestamp)}` : ""}
+                </div>
+                <div class="task-comment-body">${run.status || run.result || "No status summary"}</div>
+                ${run.result && run.status && run.result !== run.status && html`
+                  <div class="task-comment-body">${run.result}</div>
+                `}
+              </div>
+            `)}
+          </div>
+        </div>
+      `}
+
+      ${historyEntries.length > 0 && html`
+        <div class="task-comments-block modal-form-span">
+          <div class="task-attachments-title">History Timeline</div>
+          <div class="task-comments-list">
+            ${historyEntries.map((entry, index) => html`
+              <div class="task-comment-item" key=${`history-${index}`}>
+                <div class="task-comment-meta">
+                  ${entry.timestamp ? formatRelative(entry.timestamp) : "Time unknown"}
+                  ${entry.source ? ` · ${entry.source}` : ""}
+                </div>
+                <div class="task-comment-body">${entry.label}</div>
+              </div>
+            `)}
+          </div>
+        </div>
+      `}
+
+      ${relatedLinks.length > 0 && html`
+        <div class="task-comments-block modal-form-span">
+          <div class="task-attachments-title">Branch and PR Links</div>
+          <div class="task-comments-list">
+            ${relatedLinks.map((item, index) => html`
+              <div class="task-comment-item" key=${`link-${index}`}>
+                <div class="task-comment-meta">${item.kind}</div>
+                <div class="task-comment-body">
+                  ${item.url
+                    ? html`<a href=${item.url} target="_blank" rel="noopener">${item.value}</a>`
+                    : item.value}
+                </div>
+              </div>
+            `)}
+          </div>
+        </div>
+      `}        <div class="flex-col gap-md modal-form-grid">
         <div class="input-with-mic modal-form-span">
           <${TextField} size="small" variant="outlined" placeholder="Title" value=${title} onInput=${(e) => setTitle(e.target.value)} fullWidth />
           <${VoiceMicButtonInline}
@@ -2092,6 +2672,105 @@ export function TaskDetailModal({ task, onClose, onStart }) {
   `;
 }
 
+function DagGraphSection({
+  title,
+  description = "",
+  graph = EMPTY_DAG_GRAPH,
+  onOpenTask,
+  emptyMessage = "No DAG nodes available for this view yet.",
+}) {
+  const nodeMap = useMemo(
+    () => new Map((graph?.nodes || []).map((node) => [String(node.id), node])),
+    [graph?.nodes],
+  );
+  const incoming = useMemo(() => {
+    const map = new Map();
+    for (const edge of graph?.edges || []) {
+      const key = String(edge?.target || "");
+      if (!key) continue;
+      map.set(key, (map.get(key) || 0) + 1);
+    }
+    return map;
+  }, [graph?.edges]);
+
+  const sortedNodes = useMemo(() => {
+    const nodes = [...(graph?.nodes || [])];
+    nodes.sort((a, b) => {
+      const ao = Number.isFinite(a?.order) ? Number(a.order) : Number.MAX_SAFE_INTEGER;
+      const bo = Number.isFinite(b?.order) ? Number(b.order) : Number.MAX_SAFE_INTEGER;
+      if (ao !== bo) return ao - bo;
+      return String(a?.title || a?.id || "").localeCompare(String(b?.title || b?.id || ""));
+    });
+    return nodes;
+  }, [graph?.nodes]);
+
+  if (!sortedNodes.length) {
+    return html`
+      <${Paper} variant="outlined" style=${{ padding: "12px", marginBottom: "10px" }}>
+        <div class="meta-text">${emptyMessage}</div>
+      <//>
+    `;
+  }
+
+  return html`
+    <div class="tasks-dag-section">
+      <div class="flex-between" style=${{ marginBottom: "8px", gap: "8px", flexWrap: "wrap" }}>
+        <div>
+          <div style=${{ fontWeight: "700" }}>${title || "Task DAG"}</div>
+          ${description && html`<div class="meta-text">${description}</div>`}
+        </div>
+        <div class="chip-group" style=${{ gap: "6px" }}>
+          <${Chip} size="small" label=${`${sortedNodes.length} nodes`} />
+          <${Chip} size="small" label=${`${(graph?.edges || []).length} edges`} />
+        </div>
+      </div>
+      <div class="task-comments-list" style=${{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(260px,1fr))", gap: "10px" }}>
+        ${sortedNodes.map((node) => {
+          const deps = (node.dependencies || []).map((dep) => {
+            const depNode = nodeMap.get(String(dep));
+            return depNode?.title || dep;
+          });
+          const incomingCount = incoming.get(String(node.id)) || 0;
+          return html`
+            <${Paper} key=${node.id} variant="outlined" style=${{ padding: "10px", display: "flex", flexDirection: "column", gap: "8px" }}>
+              <div class="flex-between" style=${{ alignItems: "flex-start", gap: "8px" }}>
+                <div style=${{ minWidth: 0 }}>
+                  <div style=${{ fontWeight: "700" }}>${truncate(node.title || "(untitled)", 72)}</div>
+                  <div class="meta-text">${node.taskId || node.id}</div>
+                </div>
+                <div style=${{ display: "flex", gap: "6px", flexWrap: "wrap", justifyContent: "flex-end" }}>
+                  ${Number.isFinite(node.order) && html`<${Chip} size="small" label=${`#${node.order}`} color="primary" />`}
+                  ${node.status && html`<${Chip} size="small" label=${node.status} color=${statusChipColor(node.status)} />`}
+                  ${node.priority && html`<${Chip} size="small" label=${node.priority} color=${statusChipColor(node.priority)} />`}
+                </div>
+              </div>
+              <div class="meta-text">
+                ${incomingCount > 0 ? `${incomingCount} incoming dependency${incomingCount === 1 ? "" : "ies"}` : "No incoming dependencies"}
+              </div>
+              ${deps.length > 0 && html`
+                <div class="meta-text" style=${{ lineHeight: 1.4 }}>
+                  Depends on: ${truncate(deps.join(", "), 140)}
+                </div>
+              `}
+              <div>
+                <${Button}
+                  variant="text"
+                  size="small"
+                  disabled=${!node.taskId}
+                  onClick=${() => {
+                    if (node.taskId) onOpenTask?.(node.taskId);
+                  }}
+                >
+                  ${iconText(":eyes: Open Task Detail")}
+                <//>
+              </div>
+            <//>
+          `;
+        })}
+      </div>
+    </div>
+  `;
+}
 /* ─── TasksTab ─── */
 export function TasksTab() {
   const [showCreate, setShowCreate] = useState(false);
@@ -2105,8 +2784,16 @@ export function TasksTab() {
   const [actionsOpen, setActionsOpen] = useState(false);
   const [exporting, setExporting] = useState(false);
   const [filtersOpen, setFiltersOpen] = useState(false);
+  const [kanbanLoadingMore, setKanbanLoadingMore] = useState(false);
   const [listSortCol, setListSortCol] = useState("");   // active column sort in list mode
   const [listSortDir, setListSortDir] = useState("desc"); // "asc" | "desc"
+  const [dagLoading, setDagLoading] = useState(false);
+  const [dagError, setDagError] = useState("");
+  const [dagSprints, setDagSprints] = useState([]);
+  const [dagSelectedSprint, setDagSelectedSprint] = useState("all");
+  const [dagSprintGraph, setDagSprintGraph] = useState(EMPTY_DAG_GRAPH);
+  const [dagGlobalGraph, setDagGlobalGraph] = useState(EMPTY_DAG_GRAPH);
+  const [dagSources, setDagSources] = useState({ sprints: "", sprintGraph: "", globalGraph: "" });
   const [isCompact, setIsCompact] = useState(() => {
     try { return globalThis.matchMedia?.("(max-width: 768px)")?.matches ?? false; }
     catch { return false; }
@@ -2118,7 +2805,7 @@ export function TasksTab() {
     priority: tasksPriority?.value ?? "",
     sort: tasksSort?.value ?? "updated",
     page: tasksPage?.value ?? 0,
-    pageSize: tasksPageSize?.value ?? 20,
+    pageSize: tasksPageSize?.value ?? 25,
   });
 
   /* Detect desktop for keyboard shortcut hint */
@@ -2135,7 +2822,7 @@ export function TasksTab() {
   const searchVal = tasksSearch?.value ?? "";
   const sortVal = tasksSort?.value ?? "updated";
   const page = tasksPage?.value ?? 0;
-  const pageSize = tasksPageSize?.value ?? 8;
+  const pageSize = tasksPageSize?.value ?? 25;
   const totalPages = tasksTotalPages?.value ?? 1;
   const defaultSdk = executorData.value?.data?.sdk || "auto";
   const activeSlots = executorData.value?.data?.slots || [];
@@ -2168,14 +2855,107 @@ export function TasksTab() {
     filterVal && filterVal !== "done" ? filterVal : "all",
   );
   const isKanban = viewMode.value === "kanban";
+  const isDag = viewMode.value === "dag";
+  const isList = !isKanban && !isDag;
   const viewModeInitRef = useRef(false);
+  const hasMoreKanbanPages = isKanban && page + 1 < totalPages;
+  const boardColumnTotals = tasksStatusCounts?.value || { draft: 0, backlog: 0, inProgress: 0, inReview: 0, done: 0 };
+  const boardTotalTasks = Number(tasksTotal?.value || 0);
+
+  const loadMoreKanbanTasks = useCallback(async () => {
+    if (!isKanban || kanbanLoadingMore || isSearching) return;
+    if (!hasMoreKanbanPages) return;
+    setKanbanLoadingMore(true);
+    if (tasksPage) tasksPage.value = page + 1;
+    try {
+      await loadTasks({ append: true });
+    } finally {
+      setKanbanLoadingMore(false);
+    }
+  }, [hasMoreKanbanPages, isKanban, isSearching, kanbanLoadingMore, page]);
+
+  const loadDagViews = useCallback(async () => {
+    const sprintMeta = await fetchFirstAvailableDagPath(DAG_SPRINT_ENDPOINT_CANDIDATES);
+    const sprintOptions = normalizeSprintOptions(sprintMeta?.payload);
+    const resolvedSprint =
+      dagSelectedSprint !== "all" && sprintOptions.some((entry) => entry.id === dagSelectedSprint)
+        ? dagSelectedSprint
+        : sprintOptions[0]?.id || "all";
+
+    const sprintGraphCandidates = DAG_GRAPH_ENDPOINT_CANDIDATES.flatMap((basePath) =>
+      buildSprintPathCandidates(basePath, resolvedSprint),
+    );
+    const globalGraphCandidates = DAG_GLOBAL_ENDPOINT_CANDIDATES.flatMap((basePath) =>
+      buildSprintPathCandidates(basePath, resolvedSprint),
+    );
+
+    const sprintGraphMeta = await fetchFirstAvailableDagPath(sprintGraphCandidates);
+    const globalGraphMeta = await fetchFirstAvailableDagPath(globalGraphCandidates);
+
+    const globalSource =
+      extractGlobalDagPayload(
+        globalGraphMeta?.payload,
+        sprintGraphMeta?.payload,
+        sprintMeta?.payload,
+      ) || globalGraphMeta?.payload;
+
+    const nextSprintGraph = normalizeDagGraph(
+      sprintGraphMeta?.payload,
+      resolvedSprint === "all" ? "All Sprint Task DAG" : `Sprint ${resolvedSprint} DAG`,
+    );
+    const nextGlobalGraph = normalizeDagGraph(globalSource, "DAG of DAGs");
+
+    setDagSprints(sprintOptions);
+    setDagSprintGraph(nextSprintGraph);
+    setDagGlobalGraph(nextGlobalGraph);
+    setDagSources({
+      sprints: sprintMeta?.path || "",
+      sprintGraph: sprintGraphMeta?.path || "",
+      globalGraph: globalGraphMeta?.path || "",
+    });
+
+    if (resolvedSprint !== dagSelectedSprint) {
+      setDagSelectedSprint(resolvedSprint);
+    }
+
+    const hasAnyGraphData =
+      nextSprintGraph.nodes.length > 0 ||
+      nextGlobalGraph.nodes.length > 0;
+    if (!hasAnyGraphData) {
+      throw new Error("No DAG data was returned from DAG endpoints.");
+    }
+  }, [dagSelectedSprint]);
+
+  useEffect(() => {
+    if (!isDag) return;
+    let cancelled = false;
+
+    const run = async () => {
+      setDagLoading(true);
+      setDagError("");
+      try {
+        await loadDagViews();
+      } catch (error) {
+        if (!cancelled) {
+          setDagError(error?.message || "Failed to load DAG views.");
+        }
+      } finally {
+        if (!cancelled) setDagLoading(false);
+      }
+    };
+
+    run();
+    return () => {
+      cancelled = true;
+    };
+  }, [isDag, dagSelectedSprint, loadDagViews]);
 
   // Add/remove body class so kanban.css can apply height-bounded flex layout
   // to main-content, enabling per-column vertical scroll on mobile.
   useEffect(() => {
     document.body.classList.toggle("tasks-board-view", isKanban);
     return () => { document.body.classList.remove("tasks-board-view"); };
-  }, [isKanban]);
+  }, [isKanban, isList]);
 
   useEffect(() => {
     if (filterVal && filterVal !== "done") {
@@ -2200,7 +2980,7 @@ export function TasksTab() {
       page,
       pageSize,
     };
-  }, [isKanban, filterVal, priorityVal, sortVal, page, pageSize]);
+  }, [isList, filterVal, priorityVal, sortVal, page, pageSize]);
 
   useEffect(() => {
     let shouldReload = false;
@@ -2217,11 +2997,11 @@ export function TasksTab() {
         tasksPage.value = 0;
         shouldReload = true;
       }
-      if ((tasksPageSize?.value ?? 0) < 120) {
-        tasksPageSize.value = 200;
+      if ((tasksPageSize?.value ?? 0) !== 25) {
+        tasksPageSize.value = 25;
         shouldReload = true;
       }
-    } else if (listStateRef.current) {
+    } else if (isList && listStateRef.current) {
       const next = listStateRef.current;
       if (tasksFilter?.value !== (next.filter ?? "all")) {
         tasksFilter.value = next.filter ?? "all";
@@ -2245,7 +3025,7 @@ export function TasksTab() {
       }
     }
     if (shouldReload) loadTasks();
-  }, [isKanban]);
+  }, [isKanban, isList]);
 
   useEffect(() => {
     let mq;
@@ -2268,6 +3048,7 @@ export function TasksTab() {
       setActionsOpen(false);
     }
   }, [isCompact]);
+
 
   useEffect(() => {
     if (!actionsOpen || typeof document === "undefined") return undefined;
@@ -2431,6 +3212,27 @@ export function TasksTab() {
     await refreshTab("tasks");
   }, [triggerServerSearch]);
 
+  const handleRefreshDag = useCallback(async () => {
+    haptic("medium");
+    setDagLoading(true);
+    setDagError("");
+    try {
+      await loadDagViews();
+      showToast("DAG data refreshed", "success");
+    } catch (error) {
+      setDagError(error?.message || "Failed to refresh DAG views.");
+    } finally {
+      setDagLoading(false);
+    }
+  }, [loadDagViews]);
+
+  const handleSprintChange = useCallback((nextSprint) => {
+    const sprintId = toText(nextSprint, "all");
+    if (sprintId === dagSelectedSprint) return;
+    haptic();
+    setDagSelectedSprint(sprintId);
+  }, [dagSelectedSprint]);
+
   const handleToggleFilters = () => {
     haptic();
     setFiltersOpen((prev) => {
@@ -2469,43 +3271,23 @@ export function TasksTab() {
 
   const handleStatusUpdate = async (taskId, newStatus) => {
     haptic("medium");
-    const prev = cloneValue(tasks);
-    const wantsDraft = newStatus === "draft";
-    await runOptimistic(
-      () => {
-        tasksData.value = tasksData.value.map((t) =>
-          t.id === taskId
-            ? { ...t, status: newStatus, draft: wantsDraft }
-            : t,
-        );
-      },
-      async () => {
-        const res = await apiFetch("/api/tasks/update", {
-          method: "POST",
-          body: JSON.stringify({
-            taskId,
-            status: newStatus,
-            draft: wantsDraft,
-          }),
-        });
-        if (res?.data)
-          tasksData.value = tasksData.value.map((t) =>
-            t.id === taskId ? { ...t, ...res.data } : t,
-          );
-      },
-      () => {
-        tasksData.value = prev;
-      },
-    ).catch(() => {});
-    if (newStatus === "inreview") {
-      const task = (tasksData.value || []).find((t) => String(t?.id) === String(taskId));
-      await reactivateTaskSession(taskId, {
-        askFirst: true,
-        title: task?.title || taskId,
-      }).catch(() => {});
+    const currentTask = (tasksData.value || []).find((row) => String(row?.id) === String(taskId));
+    if (!currentTask) return;
+
+    try {
+      const result = await applyTaskLifecycleTransition(currentTask, newStatus);
+      if (!result?.ok || result?.cancelled) return;
+      if (result.status === "inreview") {
+        const nextTask = (tasksData.value || []).find((row) => String(row?.id) === String(taskId));
+        await reactivateTaskSession(taskId, {
+          askFirst: true,
+          title: nextTask?.title || taskId,
+        }).catch(() => {});
+      }
+    } catch {
+      /* toast */
     }
   };
-
   const startTask = async ({ taskId, sdk, model }) => {
     haptic("medium");
     let res = null;
@@ -2640,17 +3422,18 @@ export function TasksTab() {
   };
 
   /* ── Render ── */
-  const showBatchBar = !isKanban && batchMode && selectedIds.size > 0;
+  const showBatchBar = isList && batchMode && selectedIds.size > 0;
 
-  if (!tasksLoaded.value && !tasks.length && !searchVal)
+  if (!isDag && !tasksLoaded.value && !tasks.length && !searchVal)
     return html`<${Card} title="Loading Tasks…"><${SkeletonCard} /><//>`;
 
-  if (tasksLoaded.value && !tasks.length && !searchVal)
+  if (!isDag && tasksLoaded.value && !tasks.length && !searchVal)
     return html`
       <div class="flex-between mb-sm" style="padding:0 4px">
-        <${ToggleButtonGroup} size="small" exclusive value=${isKanban ? 'kanban' : 'list'}>
+        <${ToggleButtonGroup} size="small" exclusive value=${isDag ? 'dag' : (isKanban ? 'kanban' : 'list')}>
           <${ToggleButton} value="list" onClick=${() => { viewMode.value = 'list'; haptic(); }}>${iconText(":menu: List")}<//>
           <${ToggleButton} value="kanban" onClick=${() => { viewMode.value = 'kanban'; haptic(); }}>▦ Board<//>
+          <${ToggleButton} value="dag" onClick=${() => { viewMode.value = 'dag'; haptic(); }}>⛓ DAG<//>
         <//>
         <div style="display:flex;gap:8px;align-items:center;">
           <${Button}
@@ -2722,10 +3505,28 @@ export function TasksTab() {
   `;
 
   const viewToggle = html`
-    <${ToggleButtonGroup} size="small" exclusive value=${isKanban ? 'kanban' : 'list'}>
+    <${ToggleButtonGroup} size="small" exclusive value=${isDag ? 'dag' : (isKanban ? 'kanban' : 'list')}>
       <${ToggleButton} value="list" onClick=${() => { viewMode.value = 'list'; haptic(); }}>${iconText(":menu: List")}<//>
       <${ToggleButton} value="kanban" onClick=${() => { viewMode.value = 'kanban'; haptic(); }}>▦ Board<//>
+      <${ToggleButton} value="dag" onClick=${() => { viewMode.value = 'dag'; haptic(); }}>⛓ DAG<//>
     <//>
+  `;
+
+  const dagSprintPicker = isDag && html`
+    <div class="tasks-toolbar-group" style=${{ minWidth: isCompact ? "130px" : "180px" }}>
+      <${Select}
+        size="small"
+        value=${dagSelectedSprint}
+        onChange=${(event) => handleSprintChange(event.target.value)}
+        disabled=${dagLoading}
+        style=${{ minWidth: "100%" }}
+      >
+        <${MenuItem} value="all">All sprints</${MenuItem}>
+        ${dagSprints.map((sprint) => html`
+          <${MenuItem} key=${sprint.id} value=${sprint.id}>${sprint.label}</${MenuItem}>
+        `)}
+      </${Select}>
+    </div>
   `;
 
   const newButton = html`
@@ -2795,6 +3596,7 @@ export function TasksTab() {
                   <div class="tasks-toolbar-group">
                     ${filterButton}
                     ${viewToggle}
+                    ${dagSprintPicker}
                   </div>
                   <div class="tasks-toolbar-group">
                     ${newButton}
@@ -2804,6 +3606,7 @@ export function TasksTab() {
               : html`
                   ${filterButton}
                   ${viewToggle}
+                    ${dagSprintPicker}
                   ${newButton}
                   <${Button}
                     variant="text" size="small"
@@ -2821,7 +3624,7 @@ export function TasksTab() {
 
         <div class="tasks-filter-panel ${filtersOpen ? "open" : ""}">
           <div class="tasks-filter-grid">
-            ${!isKanban && html`
+            ${isList && html`
               <div class="tasks-filter-section">
                 <div class="tasks-filter-title">Status</div>
                 <div class="chip-group">
@@ -2840,7 +3643,7 @@ export function TasksTab() {
                 </div>
               </div>
             `}
-            ${!isKanban && html`
+            ${isList && html`
               <div class="tasks-filter-section">
                 <div class="tasks-filter-title">Priority</div>
                 <div class="chip-group">
@@ -2878,7 +3681,7 @@ export function TasksTab() {
             <div class="tasks-filter-section">
               <div class="tasks-filter-title">Actions</div>
               <div class="tasks-filter-row">
-                ${!isKanban && (isCompact
+                ${isList && (isCompact
                   ? html`
                       <${Toggle}
                         label="Completed only"
@@ -2905,7 +3708,7 @@ export function TasksTab() {
                 `}
               </div>
             </div>
-            ${!isKanban && html`
+            ${isList && html`
               <div class="tasks-filter-section">
                 <div class="tasks-filter-title">List Options</div>
                 <label
@@ -2929,10 +3732,31 @@ export function TasksTab() {
                 </div>
               </div>
             `}
-          </div>
+            ${isDag && html`
+              <div class="tasks-filter-section">
+                <div class="tasks-filter-title">DAG View</div>
+                <div class="meta-text">
+                  Pick a sprint from the toolbar to switch the sprint DAG.
+                </div>
+                <div class="tasks-filter-row" style=${{ marginTop: "8px" }}>
+                  <${Button}
+                    variant="text" size="small"
+                    onClick=${handleRefreshDag}
+                    disabled=${dagLoading}
+                  >
+                    ${dagLoading ? "Refreshing…" : "Refresh DAG"}
+                  <//>
+                </div>
+                ${(dagSources.sprintGraph || dagSources.globalGraph) && html`
+                  <div class="meta-text" style=${{ marginTop: "6px" }}>
+                    Source: ${dagSources.sprintGraph || dagSources.globalGraph}
+                  </div>
+                `}
+              </div>
+            `}          </div>
         </div>
       </div>
-      ${hasActiveFilters && (!isCompact || filtersOpen) && html`
+      ${isList && hasActiveFilters && (!isCompact || filtersOpen) && html`
         <div class="filter-summary">
           <div class="filter-summary-text">
             <span class="pill">Filters</span>
@@ -2968,25 +3792,36 @@ export function TasksTab() {
       `}
     </div>
 
-    <div class="snapshot-bar">
-      ${summaryMetrics.map((m) => html`
-        <${Tooltip} title=${isKanban ? m.label : `Filter by ${m.label}`}><${Button}
-          key=${m.label}
-          variant="text" size="small"
-          style=${{ textTransform: "none" }}
-          onClick=${() => {
-            if (isKanban) return;
-            const statusVal = SNAPSHOT_STATUS_MAP[m.label];
-            if (statusVal !== undefined) handleFilter(filterVal === statusVal ? 'all' : statusVal);
-          }}
-        >
-          <span class="snapshot-dot" style="background:${m.color};" />
-          <strong class="snapshot-val">${m.value}</strong>
-          <span class="snapshot-lbl">${m.label}</span>
-        <//><//>
-      `)}
-      <span class="snapshot-view-tag">${iconText(isKanban ? ":dot: Board" : ":menu: List")}</span>
-    </div>
+    ${!isDag && html`
+      <div class="snapshot-bar">
+        ${summaryMetrics.map((m) => html`
+          <${Tooltip} title=${isKanban ? m.label : `Filter by ${m.label}`}><${Button}
+            key=${m.label}
+            variant="text" size="small"
+            style=${{ textTransform: "none" }}
+            onClick=${() => {
+              if (!isList) return;
+              const statusVal = SNAPSHOT_STATUS_MAP[m.label];
+              if (statusVal !== undefined) handleFilter(filterVal === statusVal ? 'all' : statusVal);
+            }}
+          >
+            <span class="snapshot-dot" style="background:${m.color};" />
+            <strong class="snapshot-val">${m.value}</strong>
+            <span class="snapshot-lbl">${m.label}</span>
+          <//><//>
+        `)}
+        <span class="snapshot-view-tag">${iconText(isKanban ? ":dot: Board" : ":menu: List")}</span>
+      </div>
+    `}
+
+    ${isDag && html`
+      <div class="snapshot-bar">
+        <span class="snapshot-view-tag">${iconText(":link: DAG")}</span>
+        <span class="pill">Sprint nodes: ${dagSprintGraph.nodes.length}</span>
+        <span class="pill">Global nodes: ${dagGlobalGraph.nodes.length}</span>
+        <span class="pill">Global edges: ${dagGlobalGraph.edges.length}</span>
+      </div>
+    `}
 
     <style>
       .actions-btn { display:inline-flex; align-items:center; gap:4px; }
@@ -3024,9 +3859,30 @@ export function TasksTab() {
       }
     </style>
 
-    ${isKanban && html`<${KanbanBoard} onOpenTask=${openDetail} />`}
+    ${isKanban && html`<${KanbanBoard} onOpenTask=${openDetail} hasMoreTasks=${hasMoreKanbanPages} loadingMoreTasks=${kanbanLoadingMore} onLoadMoreTasks=${loadMoreKanbanTasks} columnTotals=${boardColumnTotals} totalTasks=${boardTotalTasks} />`}
 
-    ${!isKanban && visible.length > 0 && html`
+    ${isDag && html`
+      <div class="task-dag-wrap" style=${{ display: "grid", gap: "10px", marginTop: "8px" }}>
+        ${dagError && html`<${Alert} severity="warning">${dagError}</${Alert}>`}
+        ${dagLoading && html`<${Alert} severity="info">Loading DAG data…</${Alert}>`}
+        <${DagGraphSection}
+          title=${dagSprintGraph.title || (dagSelectedSprint === "all" ? "All Sprint DAG" : `Sprint ${dagSelectedSprint} DAG`)}
+          description=${dagSprintGraph.description || "Task dependency order within the selected sprint."}
+          graph=${dagSprintGraph}
+          onOpenTask=${openDetail}
+          emptyMessage="No sprint DAG data available yet."
+        />
+        <${DagGraphSection}
+          title=${dagGlobalGraph.title || "Global DAG of DAGs"}
+          description=${dagGlobalGraph.description || "Cross-sprint dependency overview."}
+          graph=${dagGlobalGraph}
+          onOpenTask=${openDetail}
+          emptyMessage="No global DAG data available yet."
+        />
+      </div>
+    `}
+
+    ${isList && visible.length > 0 && html`
       <div class="task-table-wrap">
         <table class="task-table">
           <thead>
@@ -3104,7 +3960,7 @@ export function TasksTab() {
         </table>
       </div>
     `}
-    ${!isKanban && !visible.length &&
+    ${isList && !visible.length &&
     html`
       <${EmptyState}
         message="No tasks match those filters"
@@ -3115,7 +3971,7 @@ export function TasksTab() {
       />
     `}
 
-    ${!isKanban && html`
+    ${isList && html`
       <div class="pager">
         <${Button}
           variant="outlined" size="small"
@@ -3337,14 +4193,17 @@ function CreateTaskModalInline({ onClose }) {
     }
     setSubmitting(true);
     haptic("medium");
-    const tags = normalizeTagInput(tagsInput);
+    const cleanTitle = sanitizeTaskText(title).trim();
+    const cleanDescription = buildTaskDescriptionFallback(title, description);
+    const cleanTagsInput = sanitizeTaskText(tagsInput || "");
+    const tags = normalizeTagInput(cleanTagsInput);
     const effectiveRepos = repositories.length > 0 ? repositories : (repository ? [repository] : []);
     try {
       await apiFetch("/api/tasks/create", {
         method: "POST",
         body: JSON.stringify({
-          title: title.trim(),
-          description: description.trim(),
+          title: cleanTitle,
+          description: cleanDescription,
           baseBranch: baseBranch.trim() || undefined,
           priority,
           tags,
@@ -3356,12 +4215,15 @@ function CreateTaskModalInline({ onClose }) {
         }),
       });
       showToast("Task created", "success");
+      setTitle(cleanTitle);
+      setDescription(cleanDescription);
+      setTagsInput(cleanTagsInput);
       initialSnapshotRef.current = {
-        title: title.trim(),
-        description: description.trim(),
+        title: cleanTitle,
+        description: cleanDescription,
         baseBranch: baseBranch.trim(),
         priority,
-        tagsInput,
+        tagsInput: cleanTagsInput,
         draft: Boolean(draft),
       };
       if (closeAfterSave) {
@@ -3586,3 +4448,26 @@ function CreateTaskModalInline({ onClose }) {
     <//>
   `;
 }
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+

@@ -6707,6 +6707,302 @@
       ]
     },
     {
+      "id": "template-weekly-fitness-summary",
+      "name": "Weekly Fitness Summary",
+      "description": "Weekly evaluator workflow that scores delivery fitness using throughput, regression rate, merge success, reopened tasks, and debt growth. Produces follow-up actions and can materialize them as backlog tasks.",
+      "category": "planning",
+      "categoryLabel": "Planning",
+      "categoryIcon": ":clipboard:",
+      "categoryOrder": 4,
+      "tags": [
+        "planning",
+        "weekly",
+        "fitness",
+        "evaluation",
+        "debt",
+        "throughput"
+      ],
+      "nodeCount": 10,
+      "edgeCount": 12,
+      "recommended": false,
+      "enabled": false,
+      "trigger": "trigger.schedule",
+      "variables": {
+        "scheduleCron": "0 9 * * 1",
+        "lookbackDays": 7,
+        "evaluatorFocus": "Bias toward systemic fixes that reduce regressions and execution thrash.",
+        "createFollowupTasks": true,
+        "maxFollowupTasks": 4
+      },
+      "metadata": {
+        "author": "bosun",
+        "version": 1,
+        "createdAt": "2026-03-07T00:00:00Z",
+        "templateVersion": "1.0.0",
+        "tags": [
+          "planning",
+          "weekly",
+          "fitness",
+          "evaluation",
+          "debt",
+          "throughput"
+        ],
+        "replaces": {
+          "module": "monitor.mjs",
+          "functions": [
+            "scheduleWeeklyFitnessSummary"
+          ],
+          "calledFrom": [
+            "monitor.mjs:startProcess"
+          ],
+          "description": "Adds a weekly evaluator loop that measures delivery fitness and optionally materializes improvement actions as tasks."
+        }
+      },
+      "nodes": [
+        {
+          "id": "trigger",
+          "type": "trigger.schedule",
+          "label": "Weekly Schedule",
+          "config": {
+            "intervalMs": 604800000,
+            "cron": "{{scheduleCron}}"
+          },
+          "position": {
+            "x": 420,
+            "y": 40
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "task-metrics",
+          "type": "action.bosun_cli",
+          "label": "Collect Task Metrics",
+          "config": {
+            "command": "task list --format json --since {{lookbackDays}}d",
+            "continueOnError": true
+          },
+          "position": {
+            "x": 150,
+            "y": 180
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "pr-metrics",
+          "type": "action.run_command",
+          "label": "Collect PR Metrics",
+          "config": {
+            "command": "gh pr list --state all --json number,state,mergedAt,closedAt,title --limit 200",
+            "continueOnError": true
+          },
+          "position": {
+            "x": 420,
+            "y": 180
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "debt-metrics",
+          "type": "action.run_command",
+          "label": "Collect Debt Signals",
+          "config": {
+            "command": "node -e \"const fs=require('fs');const p='.bosun/workflow-runs/task-debt-ledger.jsonl';if(!fs.existsSync(p)){console.log('[]');process.exit(0);}const lines=fs.readFileSync(p,'utf8').split(/\\r?\\n/).filter(Boolean);console.log(JSON.stringify(lines.slice(-500).map(l=>{try{return JSON.parse(l)}catch{return null}}).filter(Boolean)));\"",
+            "continueOnError": true
+          },
+          "position": {
+            "x": 690,
+            "y": 180
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "evaluate-fitness",
+          "type": "action.run_agent",
+          "label": "Evaluate Fitness",
+          "config": {
+            "prompt": "# Weekly Delivery Fitness Evaluation\n\nEvaluate the last {{lookbackDays}} days using these metrics:\n- Throughput\n- Regression rate\n- Merge success\n- Reopened tasks\n- Debt growth\n\n## Task Data\n{{taskMetrics}}\n\n## PR Data\n{{prMetrics}}\n\n## Debt Ledger Data\n{{debtMetrics}}\n\nFocus directive: {{evaluatorFocus}}\n\nReturn sections:\n1) Scorecard (0-100) with one line per metric\n2) Root-cause analysis of the largest drag\n3) Countermeasures ranked by impact/cost\n4) FOLLOW_UP_ACTION lines using format:\nFOLLOW_UP_ACTION: [title] | [description] | [repo_area] | [risk] | [effort]\n\nOnly include FOLLOW_UP_ACTION lines for changes that are worth implementing this week.",
+            "sdk": "auto",
+            "timeoutMs": 600000
+          },
+          "position": {
+            "x": 420,
+            "y": 360
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "has-followups",
+          "type": "condition.expression",
+          "label": "Follow-ups Enabled + Present",
+          "config": {
+            "expression": "($data?.createFollowupTasks === true) && (($ctx.getNodeOutput('evaluate-fitness')?.output || '').includes('FOLLOW_UP_ACTION:'))"
+          },
+          "position": {
+            "x": 420,
+            "y": 520
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "build-followup-json",
+          "type": "action.run_agent",
+          "label": "Build Follow-up Tasks JSON",
+          "config": {
+            "prompt": "Convert FOLLOW_UP_ACTION lines below into a single JSON object with shape { \"tasks\": [...] }.\n\nSource:\n{{evaluateFitness}}\n\nRules:\n- Generate at most {{maxFollowupTasks}} tasks\n- Include fields: title, description, implementation_steps, acceptance_criteria, verification, priority, tags, base_branch, impact, confidence, risk, estimated_effort, repo_areas, why_now, kill_criteria\n- Keep tasks implementation-ready and avoid duplicates\n- Return only JSON",
+            "sdk": "auto",
+            "timeoutMs": 300000
+          },
+          "position": {
+            "x": 220,
+            "y": 690
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "materialize-followups",
+          "type": "action.materialize_planner_tasks",
+          "label": "Materialize Follow-up Tasks",
+          "config": {
+            "plannerNodeId": "build-followup-json",
+            "maxTasks": "{{maxFollowupTasks}}",
+            "status": "todo",
+            "dedup": true,
+            "failOnZero": false,
+            "minCreated": 0
+          },
+          "position": {
+            "x": 220,
+            "y": 850
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "notify-summary",
+          "type": "notify.telegram",
+          "label": "Send Weekly Fitness Summary",
+          "config": {
+            "message": ":chart: Weekly fitness evaluation complete. Follow-up tasks created: {{materialize-followups.createdCount}}\n\n{{evaluateFitness}}",
+            "silent": true
+          },
+          "position": {
+            "x": 420,
+            "y": 1010
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "log-no-followups",
+          "type": "notify.log",
+          "label": "No Follow-up Tasks",
+          "config": {
+            "message": "Weekly fitness evaluation completed with no follow-up task creation.",
+            "level": "info"
+          },
+          "position": {
+            "x": 620,
+            "y": 690
+          },
+          "outputs": [
+            "default"
+          ]
+        }
+      ],
+      "edges": [
+        {
+          "id": "trigger->task-metrics",
+          "source": "trigger",
+          "target": "task-metrics",
+          "sourcePort": "default"
+        },
+        {
+          "id": "trigger->pr-metrics",
+          "source": "trigger",
+          "target": "pr-metrics",
+          "sourcePort": "default"
+        },
+        {
+          "id": "trigger->debt-metrics",
+          "source": "trigger",
+          "target": "debt-metrics",
+          "sourcePort": "default"
+        },
+        {
+          "id": "task-metrics->evaluate-fitness",
+          "source": "task-metrics",
+          "target": "evaluate-fitness",
+          "sourcePort": "default"
+        },
+        {
+          "id": "pr-metrics->evaluate-fitness",
+          "source": "pr-metrics",
+          "target": "evaluate-fitness",
+          "sourcePort": "default"
+        },
+        {
+          "id": "debt-metrics->evaluate-fitness",
+          "source": "debt-metrics",
+          "target": "evaluate-fitness",
+          "sourcePort": "default"
+        },
+        {
+          "id": "evaluate-fitness->has-followups",
+          "source": "evaluate-fitness",
+          "target": "has-followups",
+          "sourcePort": "default"
+        },
+        {
+          "id": "has-followups->build-followup-json",
+          "source": "has-followups",
+          "target": "build-followup-json",
+          "sourcePort": "default",
+          "condition": "$output?.result === true"
+        },
+        {
+          "id": "has-followups->log-no-followups",
+          "source": "has-followups",
+          "target": "log-no-followups",
+          "sourcePort": "default",
+          "condition": "$output?.result !== true"
+        },
+        {
+          "id": "build-followup-json->materialize-followups",
+          "source": "build-followup-json",
+          "target": "materialize-followups",
+          "sourcePort": "default"
+        },
+        {
+          "id": "materialize-followups->notify-summary",
+          "source": "materialize-followups",
+          "target": "notify-summary",
+          "sourcePort": "default"
+        },
+        {
+          "id": "log-no-followups->notify-summary",
+          "source": "log-no-followups",
+          "target": "notify-summary",
+          "sourcePort": "default"
+        }
+      ]
+    },
+    {
       "id": "template-anomaly-watchdog",
       "name": "Anomaly Watchdog",
       "description": "Real-time anomaly detection for agent sessions — catches death loops, stalls, token overflows, rebase spirals, and thought spinning. Automatically intervenes or escalates depending on severity.",
@@ -21667,6 +21963,278 @@
       }
     },
     {
+      "id": "wf-weekly-fitness-summary",
+      "name": "Weekly Fitness Summary",
+      "description": "Weekly evaluator workflow that scores delivery fitness using throughput, regression rate, merge success, reopened tasks, and debt growth. Produces follow-up actions and can materialize them as backlog tasks.",
+      "category": "planning",
+      "enabled": false,
+      "nodeCount": 10,
+      "trigger": "trigger.schedule",
+      "variables": {
+        "scheduleCron": "0 9 * * 1",
+        "lookbackDays": 7,
+        "evaluatorFocus": "Bias toward systemic fixes that reduce regressions and execution thrash.",
+        "createFollowupTasks": true,
+        "maxFollowupTasks": 4
+      },
+      "nodes": [
+        {
+          "id": "trigger",
+          "type": "trigger.schedule",
+          "label": "Weekly Schedule",
+          "config": {
+            "intervalMs": 604800000,
+            "cron": "{{scheduleCron}}"
+          },
+          "position": {
+            "x": 420,
+            "y": 40
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "task-metrics",
+          "type": "action.bosun_cli",
+          "label": "Collect Task Metrics",
+          "config": {
+            "command": "task list --format json --since {{lookbackDays}}d",
+            "continueOnError": true
+          },
+          "position": {
+            "x": 150,
+            "y": 180
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "pr-metrics",
+          "type": "action.run_command",
+          "label": "Collect PR Metrics",
+          "config": {
+            "command": "gh pr list --state all --json number,state,mergedAt,closedAt,title --limit 200",
+            "continueOnError": true
+          },
+          "position": {
+            "x": 420,
+            "y": 180
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "debt-metrics",
+          "type": "action.run_command",
+          "label": "Collect Debt Signals",
+          "config": {
+            "command": "node -e \"const fs=require('fs');const p='.bosun/workflow-runs/task-debt-ledger.jsonl';if(!fs.existsSync(p)){console.log('[]');process.exit(0);}const lines=fs.readFileSync(p,'utf8').split(/\\r?\\n/).filter(Boolean);console.log(JSON.stringify(lines.slice(-500).map(l=>{try{return JSON.parse(l)}catch{return null}}).filter(Boolean)));\"",
+            "continueOnError": true
+          },
+          "position": {
+            "x": 690,
+            "y": 180
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "evaluate-fitness",
+          "type": "action.run_agent",
+          "label": "Evaluate Fitness",
+          "config": {
+            "prompt": "# Weekly Delivery Fitness Evaluation\n\nEvaluate the last {{lookbackDays}} days using these metrics:\n- Throughput\n- Regression rate\n- Merge success\n- Reopened tasks\n- Debt growth\n\n## Task Data\n{{taskMetrics}}\n\n## PR Data\n{{prMetrics}}\n\n## Debt Ledger Data\n{{debtMetrics}}\n\nFocus directive: {{evaluatorFocus}}\n\nReturn sections:\n1) Scorecard (0-100) with one line per metric\n2) Root-cause analysis of the largest drag\n3) Countermeasures ranked by impact/cost\n4) FOLLOW_UP_ACTION lines using format:\nFOLLOW_UP_ACTION: [title] | [description] | [repo_area] | [risk] | [effort]\n\nOnly include FOLLOW_UP_ACTION lines for changes that are worth implementing this week.",
+            "sdk": "auto",
+            "timeoutMs": 600000
+          },
+          "position": {
+            "x": 420,
+            "y": 360
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "has-followups",
+          "type": "condition.expression",
+          "label": "Follow-ups Enabled + Present",
+          "config": {
+            "expression": "($data?.createFollowupTasks === true) && (($ctx.getNodeOutput('evaluate-fitness')?.output || '').includes('FOLLOW_UP_ACTION:'))"
+          },
+          "position": {
+            "x": 420,
+            "y": 520
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "build-followup-json",
+          "type": "action.run_agent",
+          "label": "Build Follow-up Tasks JSON",
+          "config": {
+            "prompt": "Convert FOLLOW_UP_ACTION lines below into a single JSON object with shape { \"tasks\": [...] }.\n\nSource:\n{{evaluateFitness}}\n\nRules:\n- Generate at most {{maxFollowupTasks}} tasks\n- Include fields: title, description, implementation_steps, acceptance_criteria, verification, priority, tags, base_branch, impact, confidence, risk, estimated_effort, repo_areas, why_now, kill_criteria\n- Keep tasks implementation-ready and avoid duplicates\n- Return only JSON",
+            "sdk": "auto",
+            "timeoutMs": 300000
+          },
+          "position": {
+            "x": 220,
+            "y": 690
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "materialize-followups",
+          "type": "action.materialize_planner_tasks",
+          "label": "Materialize Follow-up Tasks",
+          "config": {
+            "plannerNodeId": "build-followup-json",
+            "maxTasks": "{{maxFollowupTasks}}",
+            "status": "todo",
+            "dedup": true,
+            "failOnZero": false,
+            "minCreated": 0
+          },
+          "position": {
+            "x": 220,
+            "y": 850
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "notify-summary",
+          "type": "notify.telegram",
+          "label": "Send Weekly Fitness Summary",
+          "config": {
+            "message": ":chart: Weekly fitness evaluation complete. Follow-up tasks created: {{materialize-followups.createdCount}}\n\n{{evaluateFitness}}",
+            "silent": true
+          },
+          "position": {
+            "x": 420,
+            "y": 1010
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "log-no-followups",
+          "type": "notify.log",
+          "label": "No Follow-up Tasks",
+          "config": {
+            "message": "Weekly fitness evaluation completed with no follow-up task creation.",
+            "level": "info"
+          },
+          "position": {
+            "x": 620,
+            "y": 690
+          },
+          "outputs": [
+            "default"
+          ]
+        }
+      ],
+      "edges": [
+        {
+          "id": "trigger->task-metrics",
+          "source": "trigger",
+          "target": "task-metrics",
+          "sourcePort": "default"
+        },
+        {
+          "id": "trigger->pr-metrics",
+          "source": "trigger",
+          "target": "pr-metrics",
+          "sourcePort": "default"
+        },
+        {
+          "id": "trigger->debt-metrics",
+          "source": "trigger",
+          "target": "debt-metrics",
+          "sourcePort": "default"
+        },
+        {
+          "id": "task-metrics->evaluate-fitness",
+          "source": "task-metrics",
+          "target": "evaluate-fitness",
+          "sourcePort": "default"
+        },
+        {
+          "id": "pr-metrics->evaluate-fitness",
+          "source": "pr-metrics",
+          "target": "evaluate-fitness",
+          "sourcePort": "default"
+        },
+        {
+          "id": "debt-metrics->evaluate-fitness",
+          "source": "debt-metrics",
+          "target": "evaluate-fitness",
+          "sourcePort": "default"
+        },
+        {
+          "id": "evaluate-fitness->has-followups",
+          "source": "evaluate-fitness",
+          "target": "has-followups",
+          "sourcePort": "default"
+        },
+        {
+          "id": "has-followups->build-followup-json",
+          "source": "has-followups",
+          "target": "build-followup-json",
+          "sourcePort": "default",
+          "condition": "$output?.result === true"
+        },
+        {
+          "id": "has-followups->log-no-followups",
+          "source": "has-followups",
+          "target": "log-no-followups",
+          "sourcePort": "default",
+          "condition": "$output?.result !== true"
+        },
+        {
+          "id": "build-followup-json->materialize-followups",
+          "source": "build-followup-json",
+          "target": "materialize-followups",
+          "sourcePort": "default"
+        },
+        {
+          "id": "materialize-followups->notify-summary",
+          "source": "materialize-followups",
+          "target": "notify-summary",
+          "sourcePort": "default"
+        },
+        {
+          "id": "log-no-followups->notify-summary",
+          "source": "log-no-followups",
+          "target": "notify-summary",
+          "sourcePort": "default"
+        }
+      ],
+      "metadata": {
+        "author": "bosun-demo",
+        "createdAt": "2026-03-23T12:00:00.000Z",
+        "updatedAt": "2026-03-23T12:00:00.000Z",
+        "templateState": {
+          "templateId": "template-weekly-fitness-summary",
+          "templateName": "Weekly Fitness Summary",
+          "templateVersion": "1.0.0",
+          "installedTemplateVersion": "1.0.0",
+          "isCustomized": false,
+          "updateAvailable": false
+        }
+      }
+    },
+    {
       "id": "wf-anomaly-watchdog",
       "name": "Anomaly Watchdog",
       "description": "Real-time anomaly detection for agent sessions — catches death loops, stalls, token overflows, rebase spirals, and thought spinning. Automatically intervenes or escalates depending on severity.",
@@ -21915,8 +22483,8 @@
       ],
       "metadata": {
         "author": "bosun-demo",
-        "createdAt": "2026-03-23T12:00:00.000Z",
-        "updatedAt": "2026-03-23T12:00:00.000Z",
+        "createdAt": "2026-03-24T12:00:00.000Z",
+        "updatedAt": "2026-03-24T12:00:00.000Z",
         "templateState": {
           "templateId": "template-anomaly-watchdog",
           "templateName": "Anomaly Watchdog",
@@ -22126,8 +22694,8 @@
       ],
       "metadata": {
         "author": "bosun-demo",
-        "createdAt": "2026-03-24T12:00:00.000Z",
-        "updatedAt": "2026-03-24T12:00:00.000Z",
+        "createdAt": "2026-03-25T12:00:00.000Z",
+        "updatedAt": "2026-03-25T12:00:00.000Z",
         "templateState": {
           "templateId": "template-error-recovery",
           "templateName": "Error Recovery",
@@ -22315,8 +22883,8 @@
       ],
       "metadata": {
         "author": "bosun-demo",
-        "createdAt": "2026-03-25T12:00:00.000Z",
-        "updatedAt": "2026-03-25T12:00:00.000Z",
+        "createdAt": "2026-03-26T12:00:00.000Z",
+        "updatedAt": "2026-03-26T12:00:00.000Z",
         "templateState": {
           "templateId": "template-health-check",
           "templateName": "Health Check",
@@ -22613,8 +23181,8 @@
       ],
       "metadata": {
         "author": "bosun-demo",
-        "createdAt": "2026-03-26T12:00:00.000Z",
-        "updatedAt": "2026-03-26T12:00:00.000Z",
+        "createdAt": "2026-03-27T12:00:00.000Z",
+        "updatedAt": "2026-03-27T12:00:00.000Z",
         "templateState": {
           "templateId": "template-incident-response",
           "templateName": "Incident Response",
@@ -22935,8 +23503,8 @@
       ],
       "metadata": {
         "author": "bosun-demo",
-        "createdAt": "2026-03-27T12:00:00.000Z",
-        "updatedAt": "2026-03-27T12:00:00.000Z",
+        "createdAt": "2026-03-28T12:00:00.000Z",
+        "updatedAt": "2026-03-28T12:00:00.000Z",
         "templateState": {
           "templateId": "template-sync-engine",
           "templateName": "Kanban Sync Engine",
@@ -31677,9 +32245,9 @@
     "autofixloop": "You are a PowerShell expert fixing a loop bug in a running orchestrator script.\n\n## Problem\nThis error repeats {{REPEAT_COUNT}} times:\n\"{{ERROR_LINE}}\"\n\n{{RECENT_MESSAGES_CONTEXT}}\n\n## Instructions\n1. Main script: scripts/bosun/ve-orchestrator.ps1\n2. Find where this error is emitted.\n3. Fix loop root cause (missing state change, missing stop condition, etc).\n4. Apply minimal safe fix only.\n5. Write fix directly in file.\n",
     "monitorcrashfix": "You are debugging {{PROJECT_NAME}} bosun.\n\nThe monitor process hit an unexpected exception and needs a fix.\nInspect and fix code in bosun modules.\n\nCrash info:\n{{CRASH_INFO}}\n\nRecent log context:\n{{LOG_TAIL}}\n\nInstructions:\n1. Identify root cause.\n2. Apply minimal production-safe fix.\n3. Do not refactor unrelated code.\n",
     "monitorrestartloopfix": "You are a reliability engineer debugging a crash loop in {{PROJECT_NAME}} automation.\n\nThe orchestrator is restarting repeatedly within minutes.\nDiagnose likely root cause and apply a minimal fix.\n\nTargets (edit only if needed):\n- {{SCRIPT_PATH}}\n- bosun/monitor.mjs\n- bosun/autofix.mjs\n- bosun/maintenance.mjs\n\nRecent log excerpt:\n{{LOG_TAIL}}\n\nConstraints:\n1. Prevent rapid restart loops.\n2. Keep behavior stable and production-safe.\n3. Avoid unrelated refactors.\n4. Prefer small guardrails.\n",
-    "taskmanager": "# Bosun Task Manager Agent\n\nYou manage the backlog via CLI, REST API, or Node.js API.\n\n## Quick Reference\n\nCLI:\n  bosun task list [--status s] [--json]\n  bosun task create '{\"title\":\"...\"}' | --title \"...\" --priority high\n  bosun task get <id> [--json]\n  bosun task update <id> --status todo --priority critical\n  bosun task delete <id>\n  bosun task stats [--json]\n  bosun task import <file.json>\n  bosun task plan --count N\n\nREST API (port 18432):\n  GET  /api/tasks[?status=todo]\n  GET  /api/tasks/<id>\n  POST /api/tasks/create   {\"title\":\"...\",\"description\":\"...\",\"priority\":\"high\"}\n  POST /api/tasks/<id>/update  {\"status\":\"todo\",\"priority\":\"critical\"}\n  DELETE /api/tasks/<id>\n  GET  /api/tasks/stats\n  POST /api/tasks/import   {\"tasks\":[...]}\n\nTask title format: [size] type(scope): description\nSizes: [xs] [s] [m] [l] [xl]\nTypes: feat, fix, docs, refactor, test, chore\nStatuses: draft → todo → inprogress → inreview → done\n\nSee .bosun/agents/task-manager.md for full documentation.\n",
+    "taskmanager": "# Bosun Task Manager Agent\n\nYou manage the backlog via CLI, REST API, or Node.js API.\n\n## Quick Reference\n\nCLI:\n  bosun task list [--status s] [--json]\n  bosun task create '{\"title\":\"...\"}' | --title \"...\" --priority high\n  bosun task get <id> [--json]\n  bosun task update <id> --status todo --priority critical\n  bosun task delete <id>\n  bosun task stats [--json]\n  bosun task import <file.json>\n  Planner workflow: POST /api/workflows/launch-template {\"templateId\":\"template-task-planner\"} or /plan [count] [focus]\n\nREST API (port 18432):\n  GET  /api/tasks[?status=todo]\n  GET  /api/tasks/<id>\n  POST /api/tasks/create   {\"title\":\"...\",\"description\":\"...\",\"priority\":\"high\"}\n  POST /api/tasks/<id>/update  {\"status\":\"todo\",\"priority\":\"critical\"}\n  DELETE /api/tasks/<id>\n  GET  /api/tasks/stats\n  POST /api/tasks/import   {\"tasks\":[...]}\n\nTask title format: [size] type(scope): description\nSizes: [xs] [s] [m] [l] [xl]\nTypes: feat, fix, docs, refactor, test, chore\nStatuses: draft → todo → inprogress → inreview → done\n\nSee .bosun/agents/task-manager.md for full documentation.\n",
     "frontendagent": "# Frontend Specialist Agent\n\nYou are a **front-end development specialist** agent managed by Bosun.\n\n## Core Responsibilities\n\n1. Implement HTML, CSS, and JavaScript/TypeScript UI changes\n2. Build responsive, accessible UI components\n3. Ensure visual accuracy matching specifications\n4. Validate changes through automated testing AND visual verification\n\n## Special Skills\n\n- CSS Grid/Flexbox layout\n- Component architecture (React, Preact, Vue, Svelte, vanilla)\n- Responsive design (mobile-first)\n- Accessibility (WCAG 2.1 AA)\n- CSS animations and transitions\n- Design system adherence\n\n## CRITICAL: Evidence-Based Validation\n\nAfter completing implementation, you MUST collect visual evidence:\n\n### Screenshot Protocol\n1. Start the dev server if not already running\n2. Navigate to every page/component you modified\n3. Take screenshots at THREE viewport sizes:\n   - Desktop (1920×1080)\n   - Tablet (768×1024)\n   - Mobile (375×812)\n4. Save ALL screenshots to `.bosun/evidence/` directory\n5. Use descriptive filenames: `<page>-<viewport>-<timestamp>.png`\n6. Also screenshot any interactive states (modals, dropdowns, hover states)\n\n### Evidence Naming Convention\n```\n.bosun/evidence/\n  homepage-desktop-1234567890.png\n  homepage-tablet-1234567890.png\n  homepage-mobile-1234567890.png\n  modal-open-desktop-1234567890.png\n  dark-mode-desktop-1234567890.png\n```\n\n## Workflow\n1. Read task requirements and any linked designs/specs\n2. Load relevant skills from `.bosun/skills/`\n3. Implement frontend changes\n4. Run build: `npm run build` (zero errors AND zero warnings)\n5. Run lint: `npm run lint`\n6. Run tests: `npm test`\n7. Start dev server and collect screenshots (see protocol above)\n8. Commit with conventional format: `feat(ui): ...` or `fix(ui): ...`\n9. Push branch\n\n## IMPORTANT: Do NOT mark the task complete\nThe Bosun workflow engine handles completion verification.\nAn independent model will review your screenshots against the task\nrequirements before the task is marked as done.\n\n## Task Context\n- Task: {{TASK_TITLE}}\n- Description: {{TASK_DESCRIPTION}}\n- Branch: {{BRANCH}}\n- Working Directory: {{WORKTREE_PATH}}\n\n{{COAUTHOR_INSTRUCTION}}\n",
-    "voiceagent": "# Bosun Voice Agent\n\nYou are **Bosun**, a voice-first assistant for the VirtEngine development platform.\nYou interact with developers through real-time voice conversations and have **full access**\nto the Bosun workspace, task board, coding agents, and system operations.\n\n## Core Capabilities\n\nYou can do everything Bosun can — through voice. This includes:\n- **Task management**: List, create, update, delete, search, and comment on tasks\n- **Agent delegation**: Send work to coding agents (Codex, Copilot, Claude, Gemini, OpenCode)\n- **Agent steering**: Use /ask (read-only), /agent (code changes), or /plan (architecture)\n- **System monitoring**: Check fleet status, agent health, system configuration\n- **Workspace navigation**: Read files, list directories, search code\n- **Workflow management**: List and inspect workflow templates\n- **Skills & prompts**: Browse the knowledge base and prompt library\n\n## How Actions Work\n\nWhen the user asks you to do something, you perform it by returning a JSON action intent.\nBosun processes the action directly via JavaScript (no MCP bridge needed) and returns the result.\nYou then speak the result to the user naturally.\n\n### Action Format\n```json\n{ \"action\": \"task.list\", \"params\": { \"status\": \"todo\" } }\n```\n\n### Multiple Actions\n```json\n{ \"action\": \"batch\", \"params\": { \"actions\": [\n  { \"action\": \"task.stats\", \"params\": {} },\n  { \"action\": \"agent.status\", \"params\": {} }\n] } }\n```\n\n{{VOICE_ACTION_MANIFEST}}\n\n## Agent Delegation\n\nWhen users need code written, files modified, bugs debugged, or PRs created:\n1. Use `agent.delegate` with a detailed message\n2. Choose the right mode: \"ask\" for questions, \"agent\" for code changes, \"plan\" for architecture\n3. You can specify which executor to use, or let the default handle it\n\nExamples:\n- \"Fix the login bug\" → `{ \"action\": \"agent.code\", \"params\": { \"message\": \"Fix the login bug in auth.mjs\" } }`\n- \"How does the config system work?\" → `{ \"action\": \"agent.ask\", \"params\": { \"message\": \"Explain the config system\" } }`\n- \"Plan a refactor of the voice module\" → `{ \"action\": \"agent.plan\", \"params\": { \"message\": \"Plan refactoring voice-relay.mjs\" } }`\n\n## Conversation Style\n\n- Be **concise and conversational** — this is voice, not text.\n- Lead with the answer, then add details if needed.\n- For numbers, say them naturally: \"You have 12 tasks in the backlog.\"\n- When tasks or agents are busy, keep the user informed.\n- For long outputs (code, logs), summarize the key points vocally.\n- When delegating to an agent, let the user know: \"I'm sending that to Codex now.\"\n\n## Error Handling\n\nIf an action fails, explain what happened and suggest alternatives.\nNever show raw error objects — speak the issue naturally.\n\n## Security\n\n- Never expose API keys, tokens, or secrets in conversation.\n- Only execute safe operations via voice (reads, creates, delegates).\n- Dangerous operations (delete all tasks, force push) require explicit confirmation.\n",
+    "voiceagent": "# Bosun Voice Agent\n\nYou are **Bosun**, a voice-first assistant for the VirtEngine development platform.\nYou interact with developers through real-time voice conversations and have **full access**\nto the Bosun workspace, task board, coding agents, and system operations.\n\n## Core Capabilities\n\nYou can do everything Bosun can — through voice. This includes:\n- **Task management**: List, create, update, delete, search, and comment on tasks\n- **Agent delegation**: Send work to coding agents (Codex, Copilot, Claude, Gemini, OpenCode)\n- **Agent steering**: Use /ask (read-only), /agent (code changes), or /plan (run task planner workflow)\n- **System monitoring**: Check fleet status, agent health, system configuration\n- **Workspace navigation**: Read files, list directories, search code\n- **Workflow management**: List and inspect workflow templates\n- **Skills & prompts**: Browse the knowledge base and prompt library\n\n## How Actions Work\n\nWhen the user asks you to do something, you perform it by returning a JSON action intent.\nBosun processes the action directly via JavaScript (no MCP bridge needed) and returns the result.\nYou then speak the result to the user naturally.\n\n### Action Format\n```json\n{ \"action\": \"task.list\", \"params\": { \"status\": \"todo\" } }\n```\n\n### Multiple Actions\n```json\n{ \"action\": \"batch\", \"params\": { \"actions\": [\n  { \"action\": \"task.stats\", \"params\": {} },\n  { \"action\": \"agent.status\", \"params\": {} }\n] } }\n```\n\n{{VOICE_ACTION_MANIFEST}}\n\n## Agent Delegation\n\nWhen users need code written, files modified, bugs debugged, or PRs created:\n1. Use `agent.delegate` with a detailed message\n2. Choose the right mode: \"ask\" for questions, \"agent\" for code changes, \"plan\" for architecture\n3. You can specify which executor to use, or let the default handle it\n\nExamples:\n- \"Fix the login bug\" → `{ \"action\": \"agent.code\", \"params\": { \"message\": \"Fix the login bug in auth.mjs\" } }`\n- \"How does the config system work?\" → `{ \"action\": \"agent.ask\", \"params\": { \"message\": \"Explain the config system\" } }`\n- \"Plan a refactor of the voice module\" → `{ \"action\": \"agent.plan\", \"params\": { \"message\": \"Plan refactoring voice-relay.mjs\" } }`\n\n## Conversation Style\n\n- Be **concise and conversational** — this is voice, not text.\n- Lead with the answer, then add details if needed.\n- For numbers, say them naturally: \"You have 12 tasks in the backlog.\"\n- When tasks or agents are busy, keep the user informed.\n- For long outputs (code, logs), summarize the key points vocally.\n- When delegating to an agent, let the user know: \"I'm sending that to Codex now.\"\n\n## Error Handling\n\nIf an action fails, explain what happened and suggest alternatives.\nNever show raw error objects — speak the issue naturally.\n\n## Security\n\n- Never expose API keys, tokens, or secrets in conversation.\n- Only execute safe operations via voice (reads, creates, delegates).\n- Dangerous operations (delete all tasks, force push) require explicit confirmation.\n",
     "voiceagentcompact": "# Bosun Voice (Compact)\n\nVoice assistant for VirtEngine. Access tasks, agents, workspace.\n\nReturn JSON actions: { \"action\": \"<name>\", \"params\": { ... } }\n\n{{VOICE_ACTION_MANIFEST}}\n\nKey actions: task.list, task.create, task.stats, agent.delegate, agent.ask, agent.plan,\nsystem.status, workspace.readFile, workspace.search.\n\nBe concise. Lead with answers. Summarize long outputs.\n",
     "customtoolreflect": "## Reflect: Custom Tool Extraction\n\nBefore closing this task, reflect on the work you just completed:\n\n1. **Did you write any utility code (≥ 10 lines) that you'd write again?**\n   If yes — extract it into a persistent custom tool in `.bosun/tools/`.\n\n2. **Did you encounter a repeated analysis pattern** (grep for a specific thing,\n   parse a log format, transform a file structure)?\n   If yes — package it as a custom tool so future agents skip the re-derivation.\n\n3. **Did an existing custom tool help you?**\n   Consider whether it should be promoted to global scope (`promoteToGlobal`).\n\n4. **What category does the extracted logic fall into?**\n   analysis | testing | git | build | transform | search | validation | utility\n\nTo register a tool:\n```js\nimport { registerCustomTool } from \"./agent-custom-tools.mjs\";\nregisterCustomTool(rootDir, {\n  title: \"...\", description: \"...\", category: \"...\", lang: \"mjs\",\n  tags: [...], createdBy: agentId, taskId, script: `...`,\n});\n```\n\nOnly extract if the tool has clear reuse value. Skip one-off logic.\n",
     "customtoolscontext": "{{CUSTOM_TOOLS_BLOCK}}\n",

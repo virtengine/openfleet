@@ -23,6 +23,8 @@ import { resolve, dirname } from "node:path";
 import { execSync, spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { getAgentToolConfig, getEffectiveTools } from "../agent/agent-tool-config.mjs";
+import { getToolsPromptBlock } from "../agent/agent-custom-tools.mjs";
+import { buildRelevantSkillsPromptBlock, findRelevantSkills } from "../agent/bosun-skills.mjs";
 
 const TAG = "[workflow-nodes]";
 const PORTABLE_WORKTREE_COUNT_COMMAND = "node -e \"const cp=require('node:child_process');const wt=cp.execSync('git worktree list --porcelain',{encoding:'utf8'});const count=(wt.match(/^worktree /gm)||[]).length;process.stdout.write(String(count)+'\\\\n');\"";
@@ -249,6 +251,27 @@ function summarizeAssistantUsage(data = {}) {
   return `Usage: ${parts.join(" · ")}`;
 }
 
+function bindTaskContext(ctx, { taskId, taskTitle, task = null } = {}) {
+  if (!ctx || typeof ctx !== "object") return;
+  if (!ctx.data || typeof ctx.data !== "object") {
+    ctx.data = {};
+  }
+
+  const normalizedTaskId = String(taskId || task?.id || task?.task_id || "").trim();
+  if (normalizedTaskId) {
+    ctx.data.taskId = normalizedTaskId;
+    ctx.data.activeTaskId = normalizedTaskId;
+  }
+
+  const normalizedTaskTitle = String(taskTitle || task?.title || "").trim();
+  if (normalizedTaskTitle) {
+    ctx.data.taskTitle = normalizedTaskTitle;
+  }
+
+  if (task && typeof task === "object") {
+    ctx.data.task = task;
+  }
+}
 async function createKanbanTaskWithProject(kanban, taskData = {}, projectIdValue = "") {
   if (!kanban || typeof kanban.createTask !== "function") {
     throw new Error("Kanban adapter not available");
@@ -2658,7 +2681,17 @@ registerNodeType("action.create_task", {
         tags: node.config?.tags,
         projectId: node.config?.projectId,
       }, node.config?.projectId);
-      return { success: true, taskId: task.id, title };
+      bindTaskContext(ctx, {
+        taskId: task?.id,
+        taskTitle: task?.title || title,
+        task,
+      });
+      return {
+        success: true,
+        taskId: task?.id || null,
+        title: task?.title || title,
+        task: task || null,
+      };
     }
     return { success: false, error: "Kanban adapter not available" };
   },
@@ -2701,9 +2734,14 @@ registerNodeType("action.update_task_status", {
 
     if (kanban?.updateTaskStatus) {
       await kanban.updateTaskStatus(taskId, status, updateOptions);
+      bindTaskContext(ctx, {
+        taskId,
+        taskTitle,
+      });
       return {
         success: true,
         taskId,
+        taskTitle: taskTitle || null,
         status,
         workflowEvent: workflowEvent || null,
       };
@@ -3748,9 +3786,53 @@ function normalizePlannerTaskForCreation(task, index) {
   const title = String(task.title || "").trim();
   if (!title) return null;
 
+  const normalizeStringList = (value) => {
+    if (!Array.isArray(value)) return [];
+    return value
+      .map((entry) => String(entry || "").trim())
+      .filter(Boolean);
+  };
+  const normalizeRepoAreas = (value) => {
+    const list = normalizeStringList(value);
+    if (!list.length) return [];
+    const dedup = new Set();
+    const normalized = [];
+    for (const area of list) {
+      const key = area.toLowerCase();
+      if (dedup.has(key)) continue;
+      dedup.add(key);
+      normalized.push(area);
+    }
+    return normalized;
+  };
+  const normalizeScore = (value) => {
+    const numeric = Number(value);
+    if (!Number.isFinite(numeric)) return null;
+    return Math.max(0, Math.min(10, Math.round(numeric)));
+  };
+  const normalizeRiskLevel = (value) => {
+    const raw = String(value || "").trim().toLowerCase();
+    if (["low", "medium", "high", "critical"].includes(raw)) return raw;
+    const numeric = Number(value);
+    if (!Number.isFinite(numeric)) return null;
+    if (numeric >= 9) return "critical";
+    if (numeric >= 7) return "high";
+    if (numeric >= 4) return "medium";
+    return "low";
+  };
+
   const lines = [];
   const description = String(task.description || "").trim();
   if (description) lines.push(description);
+  const acceptanceCriteria = normalizeStringList(task.acceptance_criteria);
+  const verification = normalizeStringList(task.verification);
+  const repoAreas = normalizeRepoAreas(task.repo_areas || task.repoAreas);
+  const impact = normalizeScore(task.impact);
+  const confidence = normalizeScore(task.confidence);
+  const risk = normalizeRiskLevel(task.risk);
+  const estimatedEffort = String(task.estimated_effort || task.estimatedEffort || "").trim().toLowerCase();
+  const whyNow = String(task.why_now || task.whyNow || "").trim();
+  const killCriteria = normalizeStringList(task.kill_criteria || task.killCriteria);
 
   const appendList = (heading, values) => {
     if (!Array.isArray(values) || values.length === 0) return;
@@ -3763,8 +3845,8 @@ function normalizePlannerTaskForCreation(task, index) {
   };
 
   appendList("Implementation Steps", task.implementation_steps);
-  appendList("Acceptance Criteria", task.acceptance_criteria);
-  appendList("Verification", task.verification);
+  appendList("Acceptance Criteria", acceptanceCriteria);
+  appendList("Verification", verification);
 
   const baseBranch = String(task.base_branch || "").trim();
   const workspace = String(task.workspace || "").trim();
@@ -3796,9 +3878,17 @@ function normalizePlannerTaskForCreation(task, index) {
     tags,
     draft,
     requestedStatus: requestedStatus || null,
+    acceptanceCriteria,
+    verification,
+    repoAreas,
+    impact,
+    confidence,
+    risk,
+    estimatedEffort: estimatedEffort || null,
+    whyNow: whyNow || null,
+    killCriteria: killCriteria.length > 0 ? killCriteria : null,
   };
 }
-
 function extractPlannerTasksFromWorkflowOutput(output, maxTasks = 5) {
   const parsed = parsePlannerJsonFromText(output);
   if (!parsed || !Array.isArray(parsed.tasks)) return [];
@@ -3819,6 +3909,84 @@ function extractPlannerTasksFromWorkflowOutput(output, maxTasks = 5) {
   return tasks;
 }
 
+function resolvePlannerMaterializationDefaults(ctx) {
+  const data =
+    ctx?.data && typeof ctx.data === "object" && !Array.isArray(ctx.data)
+      ? ctx.data
+      : {};
+  const dataMeta =
+    data.meta && typeof data.meta === "object" && !Array.isArray(data.meta)
+      ? data.meta
+      : {};
+  const workspace = String(
+    data.workspace ||
+      data.workspaceId ||
+      data._workspace ||
+      data._workspaceId ||
+      dataMeta.workspace ||
+      process.env.BOSUN_WORKSPACE ||
+      "",
+  ).trim();
+  const repository = String(
+    data.repository ||
+      data.repo ||
+      data._targetRepo ||
+      dataMeta.repository ||
+      process.env.GITHUB_REPOSITORY ||
+      "",
+  ).trim();
+  return {
+    workspace,
+    repository,
+  };
+}
+
+function normalizePlannerAreaKey(value) {
+  return String(value || "").trim().toLowerCase();
+}
+
+function resolveTaskRepoAreas(task) {
+  const candidates = []
+    .concat(Array.isArray(task?.repo_areas) ? task.repo_areas : [])
+    .concat(Array.isArray(task?.repoAreas) ? task.repoAreas : [])
+    .concat(Array.isArray(task?.meta?.repo_areas) ? task.meta.repo_areas : [])
+    .concat(Array.isArray(task?.meta?.repoAreas) ? task.meta.repoAreas : [])
+    .concat(Array.isArray(task?.meta?.planner?.repo_areas) ? task.meta.planner.repo_areas : [])
+    .concat(Array.isArray(task?.meta?.planner?.repoAreas) ? task.meta.planner.repoAreas : []);
+  if (!candidates.length) return [];
+  const dedup = new Set();
+  const normalized = [];
+  for (const entry of candidates) {
+    const area = String(entry || "").trim();
+    if (!area) continue;
+    const key = normalizePlannerAreaKey(area);
+    if (!key || dedup.has(key)) continue;
+    dedup.add(key);
+    normalized.push(area);
+  }
+  return normalized;
+}
+
+function resolvePlannerFeedbackContext(value) {
+  if (value == null) return "";
+  if (typeof value === "string") return value.trim();
+  if (Array.isArray(value)) {
+    return value
+      .map((entry) => String(entry || "").trim())
+      .filter(Boolean)
+      .join("\n")
+      .trim();
+  }
+  if (typeof value === "object") {
+    try {
+      return JSON.stringify(value, null, 2).trim();
+    } catch {
+      return "";
+    }
+  }
+  return String(value).trim();
+}
+
 registerNodeType("action.materialize_planner_tasks", {
   describe: () => "Parse planner JSON output and create backlog tasks in Kanban",
   schema: {
@@ -3831,6 +3999,9 @@ registerNodeType("action.materialize_planner_tasks", {
       failOnZero: { type: "boolean", default: true, description: "Fail node when zero tasks are created" },
       minCreated: { type: "number", default: 1, description: "Minimum created tasks required for success" },
       projectId: { type: "string", description: "Optional explicit project ID for list/create operations" },
+      minImpactScore: { type: "number", default: 0, description: "Minimum planner impact score (0-10) required for creation" },
+      maxRiskWithoutHuman: { type: "string", default: "high", description: "Maximum planner risk level allowed for auto-creation" },
+      maxConcurrentRepoAreaTasks: { type: "number", default: 0, description: "Maximum concurrent backlog tasks per repo area (0 disables limit)" },
     },
   },
   async execute(node, ctx, engine) {
@@ -3843,6 +4014,10 @@ registerNodeType("action.materialize_planner_tasks", {
     const dedupEnabled = node.config?.dedup !== false;
     const status = String(ctx.resolve(node.config?.status || "todo")).trim() || "todo";
     const projectId = String(ctx.resolve(node.config?.projectId || "")).trim();
+    const minImpactScore = Number(ctx.resolve(node.config?.minImpactScore ?? 0));
+    const maxRiskWithoutHuman = String(ctx.resolve(node.config?.maxRiskWithoutHuman || "high")).trim().toLowerCase() || "high";
+    const maxConcurrentRepoAreaTasks = Number(ctx.resolve(node.config?.maxConcurrentRepoAreaTasks ?? 0));
+    const materializationDefaults = resolvePlannerMaterializationDefaults(ctx);
 
     const parsedTasks = extractPlannerTasksFromWorkflowOutput(outputText, maxTasks);
     if (!parsedTasks.length) {
@@ -3870,13 +4045,26 @@ registerNodeType("action.materialize_planner_tasks", {
     }
 
     const existingTitleSet = new Set();
-    if (dedupEnabled && kanban?.listTasks && projectId) {
+    const existingBacklogAreaCounts = new Map();
+    const shouldFetchExistingTasks =
+      Boolean(kanban?.listTasks)
+      && (dedupEnabled || (Number.isFinite(maxConcurrentRepoAreaTasks) && maxConcurrentRepoAreaTasks > 0));
+    if (shouldFetchExistingTasks) {
       try {
         const existing = await kanban.listTasks(projectId, {});
         const rows = Array.isArray(existing) ? existing : [];
         for (const row of rows) {
           const title = String(row?.title || "").trim().toLowerCase();
-          if (title) existingTitleSet.add(title);
+          if (dedupEnabled && title) existingTitleSet.add(title);
+          const rowStatus = String(row?.status || "").trim().toLowerCase();
+          const isBacklog = !["done", "completed", "closed", "cancelled", "canceled", "archived"].includes(rowStatus);
+          if (!isBacklog) continue;
+          const rowAreas = resolveTaskRepoAreas(row);
+          for (const area of rowAreas) {
+            const key = normalizePlannerAreaKey(area);
+            if (!key) continue;
+            existingBacklogAreaCounts.set(key, (existingBacklogAreaCounts.get(key) || 0) + 1);
+          }
         }
       } catch (err) {
         ctx.log(node.id, `Could not prefetch tasks for dedup: ${err.message}`, "warn");
@@ -3885,11 +4073,58 @@ registerNodeType("action.materialize_planner_tasks", {
 
     const created = [];
     const skipped = [];
+    const createdAreaCounts = new Map();
     for (const task of parsedTasks) {
       const key = task.title.toLowerCase();
       if (dedupEnabled && existingTitleSet.has(key)) {
         skipped.push({ title: task.title, reason: "duplicate_title" });
         continue;
+      }
+      if (!Array.isArray(task.acceptanceCriteria) || task.acceptanceCriteria.length === 0) {
+        skipped.push({ title: task.title, reason: "missing_acceptance_criteria" });
+        continue;
+      }
+      if (!Array.isArray(task.verification) || task.verification.length === 0) {
+        skipped.push({ title: task.title, reason: "missing_verification" });
+        continue;
+      }
+      if (!Array.isArray(task.repoAreas) || task.repoAreas.length === 0) {
+        skipped.push({ title: task.title, reason: "missing_repo_areas" });
+        continue;
+      }
+      if (Number.isFinite(minImpactScore) && Number.isFinite(task.impact) && task.impact < minImpactScore) {
+        skipped.push({ title: task.title, reason: "below_min_impact", impact: task.impact, minImpactScore });
+        continue;
+      }
+      const riskOrder = { low: 0, medium: 1, high: 2, critical: 3 };
+      const taskRiskOrder = riskOrder[String(task.risk || "").toLowerCase()];
+      const maxRiskOrder = riskOrder[String(maxRiskWithoutHuman || "").toLowerCase()];
+      if (Number.isFinite(taskRiskOrder) && Number.isFinite(maxRiskOrder) && taskRiskOrder > maxRiskOrder) {
+        skipped.push({ title: task.title, reason: "risk_above_threshold", risk: task.risk, maxRiskWithoutHuman });
+        continue;
+      }
+      if (Number.isFinite(maxConcurrentRepoAreaTasks) && maxConcurrentRepoAreaTasks > 0) {
+        let saturated = false;
+        const saturatedAreas = [];
+        for (const area of task.repoAreas) {
+          const areaKey = normalizePlannerAreaKey(area);
+          if (!areaKey) continue;
+          const existingCount = existingBacklogAreaCounts.get(areaKey) || 0;
+          const createdCount = createdAreaCounts.get(areaKey) || 0;
+          if ((existingCount + createdCount) >= maxConcurrentRepoAreaTasks) {
+            saturated = true;
+            saturatedAreas.push(area);
+          }
+        }
+        if (saturated) {
+          skipped.push({
+            title: task.title,
+            reason: "repo_area_saturated",
+            repoAreas: saturatedAreas,
+            maxConcurrentRepoAreaTasks,
+          });
+          continue;
+        }
       }
 
       const payload = {
@@ -3898,8 +4133,12 @@ registerNodeType("action.materialize_planner_tasks", {
         status,
       };
       if (task.priority) payload.priority = task.priority;
-      if (task.workspace) payload.workspace = task.workspace;
-      if (task.repository) payload.repository = task.repository;
+      if (task.workspace || materializationDefaults.workspace) {
+        payload.workspace = task.workspace || materializationDefaults.workspace;
+      }
+      if (task.repository || materializationDefaults.repository) {
+        payload.repository = task.repository || materializationDefaults.repository;
+      }
       if (Array.isArray(task.repositories) && task.repositories.length > 0) {
         payload.repositories = task.repositories;
       }
@@ -3909,11 +4148,46 @@ registerNodeType("action.materialize_planner_tasks", {
         payload.draft = true;
       }
       if (projectId) payload.projectId = projectId;
+      if (Array.isArray(task.repoAreas) && task.repoAreas.length > 0) {
+        payload.repo_areas = task.repoAreas;
+      }
+      const existingMeta =
+        payload.meta && typeof payload.meta === "object" && !Array.isArray(payload.meta)
+          ? { ...payload.meta }
+          : {};
+      if (payload.workspace && !existingMeta.workspace) {
+        existingMeta.workspace = payload.workspace;
+      }
+      if (payload.repository && !existingMeta.repository) {
+        existingMeta.repository = payload.repository;
+      }
+      if (Array.isArray(task.repoAreas) && task.repoAreas.length > 0 && !Array.isArray(existingMeta.repo_areas)) {
+        existingMeta.repo_areas = task.repoAreas;
+      }
+      existingMeta.planner = {
+        nodeId: plannerNodeId,
+        index: task.index,
+        impact: task.impact,
+        confidence: task.confidence,
+        risk: task.risk,
+        estimated_effort: task.estimatedEffort,
+        repo_areas: task.repoAreas,
+        why_now: task.whyNow,
+        kill_criteria: task.killCriteria,
+        acceptance_criteria: task.acceptanceCriteria,
+        verification: task.verification,
+      };
+      payload.meta = existingMeta;
       const createdTask = await createKanbanTaskWithProject(kanban, payload, projectId);
       created.push({
         id: createdTask?.id || null,
         title: task.title,
       });
+      for (const area of task.repoAreas) {
+        const areaKey = normalizePlannerAreaKey(area);
+        if (!areaKey) continue;
+        createdAreaCounts.set(areaKey, (createdAreaCounts.get(areaKey) || 0) + 1);
+      }
       existingTitleSet.add(key);
     }
 
@@ -3941,7 +4215,6 @@ registerNodeType("action.materialize_planner_tasks", {
     };
   },
 });
-
 registerNodeType("agent.run_planner", {
   describe: () => "Run the task planner agent to generate new backlog tasks",
   schema: {
@@ -3963,6 +4236,7 @@ registerNodeType("agent.run_planner", {
   async execute(node, ctx, engine) {
     const count = Number(ctx.resolve(node.config?.taskCount || 5)) || 5;
     const context = ctx.resolve(node.config?.context || "");
+    const plannerFeedback = resolvePlannerFeedbackContext(ctx.data?._plannerFeedback);
     const explicitPrompt = ctx.resolve(node.config?.prompt || "");
     const outputVariable = ctx.resolve(node.config?.outputVariable || "");
     const configuredNodeTimeout = Number(ctx.resolve(node.config?.timeoutMs || node.config?.timeout || 0));
@@ -3986,7 +4260,9 @@ registerNodeType("agent.run_planner", {
     const outputEnforcement =
       `\n\n## CRITICAL OUTPUT REQUIREMENT\n` +
       `Generate exactly ${count} new tasks.\n` +
-      (context ? `${context}\n\n` : "\n") +
+      ((context || plannerFeedback)
+        ? `${[context, plannerFeedback ? `Planner feedback context:\n${plannerFeedback}` : ""].filter(Boolean).join("\n\n")}\n\n`
+        : "\n") +
       `Your response MUST be a single fenced JSON block with shape { "tasks": [...] }.\n` +
       `Do NOT include status updates, analysis notes, tool commentary, questions, or prose outside the JSON block.\n` +
       `Do NOT reference or use legacy ve-kanban integration commands or scripts.\n` +
@@ -4082,7 +4358,6 @@ registerNodeType("agent.run_planner", {
     };
   },
 });
-
 registerNodeType("agent.evidence_collect", {
   describe: () => "Collect all evidence from .bosun/evidence for review",
   schema: {
@@ -6648,6 +6923,34 @@ async function ensureDiffStatsMod() {
   if (!_diffStatsMod) _diffStatsMod = await import("../git/diff-stats.mjs");
   return _diffStatsMod;
 }
+let _taskStoreMod = null;
+async function ensureTaskStoreMod() {
+  if (!_taskStoreMod) _taskStoreMod = await import("../task/task-store.mjs");
+  return _taskStoreMod;
+}
+
+function normalizeCanStartGuardResult(raw) {
+  if (typeof raw === "boolean") {
+    return {
+      canStart: raw,
+      reason: raw ? "ok" : "blocked",
+      blockingTaskIds: [],
+      missingDependencyTaskIds: [],
+      blockingSprintIds: [],
+    };
+  }
+  const data = raw && typeof raw === "object" ? raw : {};
+  const canStart = data.canStart !== false;
+  return {
+    canStart,
+    reason: String(data.reason || (canStart ? "ok" : "blocked")).trim() || (canStart ? "ok" : "blocked"),
+    blockingTaskIds: Array.isArray(data.blockingTaskIds) ? data.blockingTaskIds : [],
+    missingDependencyTaskIds: Array.isArray(data.missingDependencyTaskIds) ? data.missingDependencyTaskIds : [],
+    blockingSprintIds: Array.isArray(data.blockingSprintIds) ? data.blockingSprintIds : [],
+    sprintOrderMode: data.sprintOrderMode || null,
+    sprintTaskOrderMode: data.sprintTaskOrderMode || null,
+  };
+}
 
 /** Resolve a config value, falling back to ctx.data, then defaultVal. */
 function cfgOrCtx(node, ctx, key, defaultVal = "") {
@@ -6668,6 +6971,9 @@ const _completedWithPR = new Set();
 const MAX_NO_COMMIT_ATTEMPTS = 3;
 const NO_COMMIT_BASE_COOLDOWN_MS = 15 * 60 * 1000; // 15 min
 const NO_COMMIT_MAX_COOLDOWN_MS = 2 * 60 * 60 * 1000; // 2 hours
+const STRICT_START_GUARD_MISSING_TASK = /^(1|true|yes|on)$/i.test(
+  String(process.env.BOSUN_STRICT_START_GUARD_MISSING_TASK || "").trim(),
+);
 
 // ── trigger.task_available ──────────────────────────────────────────────────
 
@@ -6687,15 +6993,26 @@ registerNodeType("trigger.task_available", {
       filterDrafts: { type: "boolean", default: true, description: "Exclude draft tasks" },
       listRetries: { type: "number", default: 3, description: "Retries for listTasks calls" },
       listRetryDelayMs: { type: "number", default: 2000, description: "Base delay between retries" },
+      repoAreaParallelLimit: { type: "number", default: 0, description: "Per-repo-area active task cap (0 disables limit)" },
+      enforceStartGuards: { type: "boolean", default: true, description: "Filter out tasks blocked by dependency/sprint DAG start guards" },
+      sprintOrderMode: { type: "string", enum: ["parallel", "sequential"], description: "Optional global sprint-order override when evaluating guards" },
+      strictStartGuardMissingTask: { type: "boolean", default: false, description: "When true, task_not_found from start guards blocks dispatch and emits audit events" },
     },
   },
-  async execute(node, ctx) {
+  async execute(node, ctx, engine) {
     const maxParallel = node.config?.maxParallel ?? 3;
     const status = node.config?.status ?? "todo";
     const projectId = cfgOrCtx(node, ctx, "projectId") || undefined;
     const filterDrafts = node.config?.filterDrafts !== false;
     const listRetries = node.config?.listRetries ?? 3;
     const listRetryDelayMs = node.config?.listRetryDelayMs ?? 2000;
+    const repoAreaParallelLimit = Number(node.config?.repoAreaParallelLimit ?? 0);
+    const enforceStartGuards = node.config?.enforceStartGuards !== false;
+    const sprintOrderMode = String(node.config?.sprintOrderMode || "").trim().toLowerCase();
+    const strictStartGuardMissingTask =
+      typeof node.config?.strictStartGuardMissingTask === "boolean"
+        ? node.config.strictStartGuardMissingTask
+        : STRICT_START_GUARD_MISSING_TASK;
 
     // Check slot availability
     const activeSlotCount = ctx.data?.activeSlotCount ?? 0;
@@ -6774,6 +7091,103 @@ registerNodeType("trigger.task_available", {
       return { triggered: false, reason: "all_filtered", taskCount: 0 };
     }
 
+    // DAG / sprint-order guard: only dispatch tasks that can legally start.
+    let startGuardAuditEvents = [];
+    if (enforceStartGuards && tasks.length > 0) {
+      let canStartFn =
+        ctx.data?._services?.taskStore?.canStartTask
+        || engine?.services?.taskStore?.canStartTask
+        || null;
+      if (typeof canStartFn !== "function") {
+        try {
+          const taskStore = await ensureTaskStoreMod();
+          canStartFn = taskStore?.canStartTask || taskStore?.canTaskStart || null;
+        } catch {
+          canStartFn = null;
+        }
+      }
+
+      if (typeof canStartFn === "function") {
+        const allowed = [];
+        const blocked = [];
+        const auditEvents = [];
+        for (const task of tasks) {
+          const taskId = String(task?.id || task?.task_id || "").trim();
+          if (!taskId) continue;
+          let guardRaw = null;
+          try {
+            guardRaw = await canStartFn(
+              taskId,
+              sprintOrderMode === "sequential" || sprintOrderMode === "parallel"
+                ? { sprintOrderMode }
+                : {},
+            );
+          } catch (err) {
+            const event = {
+              type: "start_guard_error",
+              taskId,
+              reason: `guard_error:${err?.message || String(err)}`,
+            };
+            blocked.push({ taskId, reason: event.reason });
+            auditEvents.push(event);
+            continue;
+          }
+
+          const guard = normalizeCanStartGuardResult(guardRaw);
+          const taskNotFound = guard.reason === "task_not_found";
+          const bypassMissingTask = taskNotFound && !strictStartGuardMissingTask;
+          if (guard.canStart || bypassMissingTask) {
+            allowed.push(task);
+            if (bypassMissingTask) {
+              auditEvents.push({
+                type: "start_guard_bypass",
+                taskId,
+                reason: "task_not_found",
+                strict: false,
+              });
+            }
+          } else {
+            const blockedEntry = {
+              taskId,
+              reason: guard.reason,
+              blockingTaskIds: guard.blockingTaskIds,
+              missingDependencyTaskIds: guard.missingDependencyTaskIds,
+              blockingSprintIds: guard.blockingSprintIds,
+              sprintOrderMode: guard.sprintOrderMode,
+              sprintTaskOrderMode: guard.sprintTaskOrderMode,
+              strict: Boolean(taskNotFound && strictStartGuardMissingTask),
+            };
+            blocked.push(blockedEntry);
+            auditEvents.push({ type: "start_guard_blocked", ...blockedEntry });
+          }
+        }
+
+        tasks = allowed;
+        startGuardAuditEvents = auditEvents;
+
+        if (blocked.length > 0) {
+          const sample = blocked.slice(0, 3).map((entry) => `${entry.taskId}:${entry.reason}`).join(", ");
+          ctx.log(node.id, `Start guard filtered ${blocked.length} task(s): ${sample}`);
+        }
+        if (auditEvents.length > 0) {
+          const preview = auditEvents
+            .slice(0, 3)
+            .map((entry) => `${entry.type}:${entry.taskId}:${entry.reason}`)
+            .join(", ");
+          ctx.log(node.id, `Start guard audit events (${auditEvents.length}): ${preview}`);
+        }
+        if (tasks.length === 0) {
+          return {
+            triggered: false,
+            reason: "start_guard_blocked",
+            taskCount: 0,
+            blocked,
+            auditEvents,
+          };
+        }
+      }
+    }
+
     // Sort: fire tasks first, then by priority, then by created date
     tasks.sort((a, b) => {
       const aFire = (a.labels || []).some((l) => typeof l === "string" ? l.includes("fire") : l?.name?.includes("fire"));
@@ -6787,7 +7201,58 @@ registerNodeType("trigger.task_available", {
     });
 
     const remaining = maxParallel - activeSlotCount;
-    const toDispatch = tasks.slice(0, remaining);
+    let toDispatch = tasks.slice(0, remaining);
+    if (Number.isFinite(repoAreaParallelLimit) && repoAreaParallelLimit > 0 && toDispatch.length > 0) {
+      const activeTaskAreaCounts =
+        ctx.data?.activeTaskAreaCounts && typeof ctx.data.activeTaskAreaCounts === "object"
+          ? ctx.data.activeTaskAreaCounts
+          : {};
+      const projectedAreaCounts = new Map();
+      for (const [key, value] of Object.entries(activeTaskAreaCounts)) {
+        const areaKey = normalizePlannerAreaKey(key);
+        const count = Number(value);
+        if (!areaKey || !Number.isFinite(count) || count <= 0) continue;
+        projectedAreaCounts.set(areaKey, Math.trunc(count));
+      }
+
+      const selected = [];
+      for (const candidate of tasks) {
+        if (selected.length >= remaining) break;
+        const areas = resolveTaskRepoAreas(candidate);
+        if (!areas.length) {
+          selected.push(candidate);
+          continue;
+        }
+        let blocked = false;
+        for (const area of areas) {
+          const areaKey = normalizePlannerAreaKey(area);
+          if (!areaKey) continue;
+          const current = projectedAreaCounts.get(areaKey) || 0;
+          if (current >= repoAreaParallelLimit) {
+            blocked = true;
+            break;
+          }
+        }
+        if (blocked) continue;
+        selected.push(candidate);
+        for (const area of areas) {
+          const areaKey = normalizePlannerAreaKey(area);
+          if (!areaKey) continue;
+          projectedAreaCounts.set(areaKey, (projectedAreaCounts.get(areaKey) || 0) + 1);
+        }
+      }
+      toDispatch = selected;
+      if (toDispatch.length === 0) {
+        return {
+          triggered: false,
+          reason: "repo_area_parallel_limit",
+          taskCount: 0,
+          availableSlots: remaining,
+          repoAreaParallelLimit,
+          auditEvents: startGuardAuditEvents,
+        };
+      }
+    }
 
     ctx.log(node.id, `Found ${toDispatch.length} task(s) ready (${remaining} slot(s) free)`);
     return {
@@ -6795,10 +7260,10 @@ registerNodeType("trigger.task_available", {
       tasks: toDispatch,
       taskCount: toDispatch.length,
       availableSlots: remaining,
+      auditEvents: startGuardAuditEvents,
     };
   },
 });
-
 // ── condition.slot_available ────────────────────────────────────────────────
 
 registerNodeType("condition.slot_available", {
@@ -7434,6 +7899,8 @@ registerNodeType("action.build_task_prompt", {
     );
     const primaryRepository = pickFirstString(repository, repoSlug);
     const allowedRepositories = normalizeStringArray(repositories, primaryRepository);
+    const matchedSkills = findRelevantSkills(repoRoot, taskTitle, taskDescription || "", {});
+    const activeSkillFiles = matchedSkills.map((skill) => skill.filename);
 
     if (customTemplate) {
       ctx.data._taskPrompt = customTemplate;
@@ -7536,17 +8003,55 @@ registerNodeType("action.build_task_prompt", {
       }
     }
 
+    const relevantSkillsBlock = buildRelevantSkillsPromptBlock(
+      repoRoot,
+      taskTitle,
+      taskDescription || "",
+      {},
+    );
+    if (relevantSkillsBlock) {
+      parts.push(relevantSkillsBlock);
+      parts.push("");
+    }
+
+    parts.push("## Tool Discovery");
+    parts.push(
+      "Bosun uses a compact MCP discovery layer for external MCP servers and the custom tool library.",
+    );
+    parts.push(
+      "Preferred flow: `search` -> `get_schema` -> `execute`.",
+    );
+    parts.push(
+      "Only eager tools are preloaded below to keep context small. Use `call_discovered_tool` only as a direct fallback when orchestration code is unnecessary.",
+    );
+    parts.push("");
+
+    const eagerToolBlock = getToolsPromptBlock(repoRoot, {
+      activeSkills: activeSkillFiles,
+      includeBuiltins: true,
+      eagerOnly: true,
+      discoveryMode: true,
+      emitReflectHint: true,
+      limit: 12,
+    });
+    if (eagerToolBlock) {
+      parts.push(eagerToolBlock);
+      parts.push("");
+    }
+
     // Instructions
     parts.push("## Instructions");
     parts.push(
       "1. Read and understand the task description above.\n" +
       "2. Follow the project instructions in AGENTS.md.\n" +
       "3. Respect the Workspace Scope Contract and never cross repository boundaries.\n" +
-      "4. Implement the required changes.\n" +
-      "5. Ensure tests pass and build is clean with 0 warnings.\n" +
-      "6. Commit your changes using conventional commits.\n" +
-      "7. Never ask for user input — you are autonomous.\n" +
-      "8. Use all available tools to verify your work.",
+      "4. Load and apply the matched important skills already inlined above.\n" +
+      "5. Use the discovery MCP tools for non-eager MCP/custom tools before assuming a capability is unavailable.\n" +
+      "6. Implement the required changes.\n" +
+      "7. Ensure tests pass and build is clean with 0 warnings.\n" +
+      "8. Commit your changes using conventional commits.\n" +
+      "9. Never ask for user input — you are autonomous.\n" +
+      "10. Use all available tools to verify your work.",
     );
     parts.push("");
 

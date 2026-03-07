@@ -124,6 +124,42 @@ function resolveKanbanStorePath() {
   return resolve(repoRoot, ".bosun", ".cache", "kanban-state.json");
 }
 
+function resolveActiveWorkspaceDefaults() {
+  try {
+    const bosunHome = _deriveBosunHome();
+    if (!bosunHome) return { workspace: "", repository: "" };
+    const configPath = resolve(bosunHome, "bosun.config.json");
+    if (!existsSync(configPath)) return { workspace: "", repository: "" };
+    const cfg = JSON.parse(readFileSync(configPath, "utf8"));
+    const activeWsId = String(cfg?.activeWorkspace || "").trim();
+    const workspaces = Array.isArray(cfg?.workspaces) ? cfg.workspaces : [];
+    const workspace =
+      (activeWsId
+        ? workspaces.find((entry) => String(entry?.id || "").trim() === activeWsId)
+        : null) ||
+      workspaces[0] ||
+      null;
+    const repos = Array.isArray(workspace?.repos) ? workspace.repos : [];
+    const activeRepoName = String(workspace?.activeRepo || "").trim();
+    const selectedRepo =
+      (activeRepoName
+        ? repos.find((repo) => String(repo?.name || "").trim() === activeRepoName)
+        : null) ||
+      repos.find((repo) => repo?.primary) ||
+      repos[0] ||
+      null;
+    const repository = String(
+      selectedRepo?.slug || selectedRepo?.name || "",
+    ).trim();
+    return {
+      workspace: String(workspace?.id || activeWsId || "").trim(),
+      repository,
+    };
+  } catch {
+    return { workspace: "", repository: "" };
+  }
+}
+
 function _deriveBosunHome() {
   if (process.env.BOSUN_HOME) return process.env.BOSUN_HOME;
   if (process.env.BOSUN_DIR) return process.env.BOSUN_DIR;
@@ -201,6 +237,7 @@ export async function taskCreate(data) {
   if (Object.keys(executionMeta).length > 0) {
     inputMeta.execution = executionMeta;
   }
+  const defaults = resolveActiveWorkspaceDefaults();
   const taskData = {
     id,
     title: data.title,
@@ -210,12 +247,18 @@ export async function taskCreate(data) {
     priority: data.priority || "medium",
     tags: normalizeTags(data.tags),
     baseBranch: data.baseBranch || data.base_branch || "main",
-    workspace: data.workspace || process.cwd(),
-    repository: data.repository || "",
+    workspace: data.workspace || defaults.workspace || process.cwd(),
+    repository: data.repository || defaults.repository || "",
     repositories: data.repositories || [],
     candidateCount: candidateCount && candidateCount > 1 ? candidateCount : undefined,
     meta: inputMeta,
   };
+  if (taskData.workspace && !taskData.meta.workspace) {
+    taskData.meta.workspace = taskData.workspace;
+  }
+  if (taskData.repository && !taskData.meta.repository) {
+    taskData.meta.repository = taskData.repository;
+  }
 
   // Format description from structured fields if provided
   if (data.implementation_steps || data.acceptance_criteria || data.verification) {

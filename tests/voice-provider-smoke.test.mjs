@@ -155,6 +155,8 @@ function outboundFetchMockForScenario(scenario) {
 }
 
 async function startServer() {
+  const { _resetSingleton } = await import("../infra/session-tracker.mjs");
+  _resetSingleton({ persistDir: null });
   uiServerModule = await import("../server/ui-server.mjs");
   const server = await uiServerModule.startTelegramUiServer({
     host: "127.0.0.1",

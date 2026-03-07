@@ -2858,6 +2858,112 @@
         const t = findTask(params.get('taskId'));
         return { data: t || null };
       }
+      if (route === '/api/tasks/sprints') {
+        if (method === 'GET') {
+          const sprints = Array.isArray(STATE.taskSprints) ? STATE.taskSprints : [];
+          return { ok: true, data: sprints };
+        }
+        if (method === 'POST') {
+          const payload = body || {};
+          const id = String(payload.id || `sprint-${Date.now()}`).trim();
+          const name = String(payload.name || id).trim();
+          const order = Number.isFinite(Number(payload.order))
+            ? Number(payload.order)
+            : ((Array.isArray(STATE.taskSprints) ? STATE.taskSprints.length : 0) + 1);
+          const sprint = {
+            id,
+            name,
+            goal: payload.goal || null,
+            status: payload.status || 'planned',
+            order,
+            executionMode: payload.executionMode || payload.taskOrderMode || 'parallel',
+          };
+          if (!Array.isArray(STATE.taskSprints)) STATE.taskSprints = [];
+          const idx = STATE.taskSprints.findIndex((entry) => entry.id === id);
+          if (idx >= 0) STATE.taskSprints[idx] = sprint;
+          else STATE.taskSprints.push(sprint);
+          return { ok: true, data: sprint };
+        }
+      }
+      if (route.startsWith('/api/tasks/sprints/')) {
+        const sprintId = decodeURIComponent(route.slice('/api/tasks/sprints/'.length));
+        if (method === 'GET') {
+          const sprint = (STATE.taskSprints || []).find((entry) => entry.id === sprintId) || null;
+          return { ok: true, data: sprint };
+        }
+        if (method === 'PATCH' || method === 'PUT') {
+          if (!Array.isArray(STATE.taskSprints)) STATE.taskSprints = [];
+          const idx = STATE.taskSprints.findIndex((entry) => entry.id === sprintId);
+          if (idx < 0) return { ok: false, error: 'Sprint not found' };
+          const updated = { ...STATE.taskSprints[idx], ...(body || {}), id: sprintId };
+          STATE.taskSprints[idx] = updated;
+          return { ok: true, data: updated };
+        }
+        if (method === 'DELETE') {
+          if (!Array.isArray(STATE.taskSprints)) STATE.taskSprints = [];
+          STATE.taskSprints = STATE.taskSprints.filter((entry) => entry.id !== sprintId);
+          return { ok: true, data: true };
+        }
+      }
+      if (route === '/api/tasks/dag') {
+        const sprintId = params.get('sprintId') || params.get('sprint') || null;
+        const tasks = Array.isArray(STATE.tasks) ? STATE.tasks : [];
+        const scoped = sprintId
+          ? tasks.filter((task) => String(task.sprintId || '') === String(sprintId))
+          : tasks;
+        const edges = [];
+        for (const task of scoped) {
+          const deps = Array.isArray(task.dependencyTaskIds) ? task.dependencyTaskIds : [];
+          for (const dep of deps) {
+            if (scoped.some((candidate) => candidate.id === dep)) {
+              edges.push({ from: dep, to: task.id });
+            }
+          }
+        }
+        return {
+          ok: true,
+          sprintId,
+          data: {
+            sprintId,
+            nodes: scoped.map((task) => ({
+              id: task.id,
+              title: task.title,
+              status: task.status,
+              sprintId: task.sprintId || null,
+              sprintOrder: task.sprintOrder ?? null,
+            })),
+            edges,
+          },
+        };
+      }
+      if (route === '/api/tasks/dag-of-dags') {
+        const sprints = Array.isArray(STATE.taskSprints) ? STATE.taskSprints : [];
+        const tasks = Array.isArray(STATE.tasks) ? STATE.tasks : [];
+        const nodes = sprints.map((sprint) => ({
+          id: sprint.id,
+          label: sprint.name || sprint.id,
+          order: sprint.order ?? null,
+          taskCount: tasks.filter((task) => task.sprintId === sprint.id).length,
+        }));
+        const nodeSet = new Set(nodes.map((node) => node.id));
+        const edgeSet = new Set();
+        const edges = [];
+        for (const task of tasks) {
+          const toSprint = task.sprintId;
+          if (!toSprint || !nodeSet.has(toSprint)) continue;
+          const deps = Array.isArray(task.dependencyTaskIds) ? task.dependencyTaskIds : [];
+          for (const depId of deps) {
+            const depTask = tasks.find((candidate) => candidate.id === depId);
+            const fromSprint = depTask?.sprintId;
+            if (!fromSprint || fromSprint === toSprint || !nodeSet.has(fromSprint)) continue;
+            const key = `${fromSprint}->${toSprint}`;
+            if (edgeSet.has(key)) continue;
+            edgeSet.add(key);
+            edges.push({ from: fromSprint, to: toSprint });
+          }
+        }
+        return { ok: true, data: { nodes, edges } };
+      }
       if (route === '/api/tasks/attachments/upload') {
         const taskId = body?.taskId || body?.id || params.get('taskId');
         const t = findTask(taskId);
@@ -2925,6 +3031,25 @@
         const t = findTask(body?.taskId);
         if (t) { t.status = 'inprogress'; t.updated = Date.now(); addLog('info', 'task-executor', `Task started: ${t.title}`); }
         return { ok: true, data: t || null };
+      }
+      if (route === '/api/tasks/comment') {
+        const taskId = body?.taskId || body?.id || params.get('taskId');
+        const t = findTask(taskId);
+        if (!t) return { ok: false, error: 'Task not found' };
+        const text = String(body?.comment || body?.content || body?.text || '').trim();
+        if (!text) return { ok: false, error: 'Comment is required' };
+        const author = String(body?.author || body?.createdBy || 'demo_user');
+        const comment = {
+          id: 'comment-' + Math.random().toString(36).slice(2, 10),
+          author,
+          content: text,
+          createdAt: Date.now(),
+        };
+        const comments = Array.isArray(t.comments) ? t.comments : [];
+        t.comments = [...comments, comment];
+        t.updated = Date.now();
+        addLog('info', 'tasks', `Comment added: ${t.title}`);
+        return { ok: true, comment, comments: t.comments, data: t };
       }
       if (route === '/api/tasks/retry') {
         const t = findTask(body?.taskId);
@@ -3018,21 +3143,75 @@
       }
       if (route === '/api/library/match-profile') {
         ensureLibrarySeeded();
-        const title = (params.get('title') || '').toLowerCase();
+        const request = method === 'POST' ? (body || {}) : {
+          title: params.get('title') || '',
+          description: params.get('description') || '',
+          changedFiles: String(params.get('changedFiles') || '').split(',').map((v) => v.trim()).filter(Boolean),
+        };
+        const title = String(request.title || '').toLowerCase();
+        const description = String(request.description || '').toLowerCase();
+        const changed = Array.isArray(request.changedFiles) ? request.changedFiles.join(' ').toLowerCase() : '';
+        const haystack = `${title} ${description} ${changed}`;
+
         let best = null;
         let bestScore = 0;
+        const candidates = [];
         for (const entry of STATE.libraryEntries) {
           if (entry.type !== 'agent') continue;
           const tags = entry.tags || [];
           let score = 0;
-          for (const tag of tags) if (title.includes(tag)) score += 2;
-          if (title.includes(entry.id.replace(/-/g, ' '))) score += 3;
+          for (const tag of tags) if (haystack.includes(String(tag || '').toLowerCase())) score += 2;
+          if (haystack.includes(entry.id.replace(/-/g, ' '))) score += 3;
+          if (score <= 0) continue;
+          const candidate = { ...entry, score, confidence: Math.min(1, score / 12), reasons: ['demo-tags'] };
+          candidates.push(candidate);
           if (score > bestScore) {
             bestScore = score;
-            best = { ...entry, score };
+            best = candidate;
           }
         }
-        return { ok: true, data: best };
+        candidates.sort((a, b) => b.score - a.score);
+        const payload = {
+          best,
+          candidates: candidates.slice(0, 5),
+          auto: { shouldAutoApply: Boolean(best && best.score >= 6), reason: best && best.score >= 6 ? 'high-confidence' : 'below-threshold' },
+          context: {
+            title: String(request.title || ''),
+            description: String(request.description || ''),
+            requestedAgentType: String(request.agentType || ''),
+            taskScope: null,
+            changedFilesCount: Array.isArray(request.changedFiles) ? request.changedFiles.length : 0,
+          },
+        };
+        return { ok: true, data: method === 'POST' ? payload : payload.best };
+      }
+      if (route === '/api/library/sources') {
+        return {
+          ok: true,
+          data: [
+            {
+              id: 'microsoft-hve-core',
+              name: 'Microsoft HVE Core',
+              repoUrl: 'https://github.com/microsoft/hve-core.git',
+              defaultBranch: 'main',
+              description: 'Core HVE agent library with domain and plugin agent templates.',
+            },
+          ],
+        };
+      }
+      if (route === '/api/library/import') {
+        return {
+          ok: true,
+          data: {
+            importedCount: 3,
+            imported: [
+              { id: 'microsoft-hve-core-task-planner', name: 'Task Planner' },
+              { id: 'microsoft-hve-core-review', name: 'Review Agent' },
+              { id: 'microsoft-hve-core-devops', name: 'DevOps Agent' },
+            ],
+            storageScope: body?.storageScope || 'repo',
+          },
+        };
       }
 
       // ── MCP Servers ──
@@ -3599,6 +3778,12 @@
         return { ok: true, attachments };
       }
       if (route.match(/^\/api\/sessions\/[^/]+\/resume$/)) {
+        const sid = route.split('/')[3];
+        const ses = STATE.sessions.find(s => s.id === sid);
+        if (ses) ses.status = 'active';
+        return { ok: true, session: ses || null };
+      }
+      if (route.match(/^\/api\/sessions\/[^/]+\/start$/)) {
         const sid = route.split('/')[3];
         const ses = STATE.sessions.find(s => s.id === sid);
         if (ses) ses.status = 'active';
@@ -4654,3 +4839,4 @@
   </script>
 </body>
 </html>
+

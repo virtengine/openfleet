@@ -5,9 +5,17 @@ import { h } from "preact";
 import { useState, useCallback, useRef, useEffect, useMemo } from "preact/hooks";
 import htm from "htm";
 import { signal, computed } from "@preact/signals";
-import { tasksData, tasksLoaded, showToast, runOptimistic, loadTasks } from "../modules/state.js";
+import {
+  tasksData,
+  tasksLoaded,
+  showToast,
+  runOptimistic,
+  loadTasks,
+  normalizeTaskLifecycleStatus,
+  classifyTaskLifecycleAction,
+} from "../modules/state.js";
 import { apiFetch } from "../modules/api.js";
-import { haptic } from "../modules/telegram.js";
+import { haptic, showConfirm } from "../modules/telegram.js";
 import { formatRelative, truncate, cloneValue } from "../modules/utils.js";
 import { iconText, resolveIcon } from "../modules/icon-utils.js";
 import { getAgentDisplay } from "../modules/agent-display.js";
@@ -53,6 +61,8 @@ const PRIORITY_LABELS = {
   medium: "MED",
   low: "LOW",
 };
+
+const LOAD_MORE_THRESHOLD_PX = 140;
 
 function matchTaskId(a, b) {
   return String(a) === String(b);
@@ -177,6 +187,92 @@ function _columnFromPoint(x, y) {
   return null;
 }
 
+
+async function confirmBoardTaskTransition(task, newStatus) {
+  const prev = normalizeTaskLifecycleStatus(task?.status || "todo");
+  const next = normalizeTaskLifecycleStatus(newStatus);
+  const action = classifyTaskLifecycleAction(prev, next);
+  const taskLabel = String(task?.title || task?.id || "this task").trim();
+
+  if (action === "start") {
+    const ok = await showConfirm(
+      `Start ${taskLabel} now? This dispatches or resumes execution immediately.`,
+    );
+    return { ok, action, nextStatus: "inprogress" };
+  }
+
+  if (action === "pause") {
+    const ok = await showConfirm(
+      `Pause ${taskLabel} and move it back to backlog? You can resume by moving it to In Progress again.`,
+    );
+    return { ok, action, nextStatus: next === "draft" ? "draft" : "todo" };
+  }
+
+  return { ok: true, action, nextStatus: next };
+}
+
+async function executeBoardTransition(task, newStatus, columnLabel) {
+  if (!task?.id) return { ok: false, cancelled: true, action: "noop" };
+  const decision = await confirmBoardTaskTransition(task, newStatus);
+  if (!decision.ok) return { ok: false, cancelled: true, action: decision.action };
+
+  const taskId = task.id;
+  const wantsDraft = decision.nextStatus === "draft";
+  const optimisticStatus = decision.action === "start" ? "inprogress" : decision.nextStatus;
+  const prev = cloneValue(tasksData.value);
+
+  await runOptimistic(
+    () => {
+      tasksData.value = tasksData.value.map((t) =>
+        matchTaskId(t.id, taskId) ? { ...t, status: optimisticStatus, draft: wantsDraft } : t,
+      );
+    },
+    async () => {
+      if (decision.action === "start") {
+        const startRes = await apiFetch("/api/tasks/start", {
+          method: "POST",
+          body: JSON.stringify({ taskId }),
+        });
+        const detail = await apiFetch(
+          `/api/tasks/detail?taskId=${encodeURIComponent(taskId)}`,
+          { _silent: true },
+        ).catch(() => null);
+        const merged = detail?.data || startRes?.data || null;
+        if (merged) {
+          tasksData.value = tasksData.value.map((t) =>
+            matchTaskId(t.id, taskId) ? { ...t, ...merged } : t,
+          );
+        }
+        return startRes;
+      }
+
+      const res = await apiFetch("/api/tasks/update", {
+        method: "POST",
+        body: JSON.stringify({
+          taskId,
+          status: decision.nextStatus,
+          draft: wantsDraft,
+          lifecycleAction: decision.action,
+          pauseExecution: decision.action === "pause",
+        }),
+      });
+      if (res?.data) {
+        tasksData.value = tasksData.value.map((t) =>
+          matchTaskId(t.id, taskId) ? { ...t, ...res.data } : t,
+        );
+      }
+      return res;
+    },
+    () => {
+      tasksData.value = prev;
+    },
+  );
+
+  showToast(`Moved to ${columnLabel || "updated status"}`, "success");
+  setTimeout(() => loadTasks(), 500);
+  return { ok: true, cancelled: false, action: decision.action, status: optimisticStatus };
+}
+
 async function _handleTouchDrop(colId) {
   const taskId = touchDragId.value;
   touchDragId.value = null;
@@ -192,33 +288,8 @@ async function _handleTouchDrop(colId) {
   const col = COLUMNS.find((c) => c.id === colId);
   haptic("medium");
 
-  const prev = cloneValue(tasksData.value);
   try {
-    await runOptimistic(
-      () => {
-        tasksData.value = tasksData.value.map((t) =>
-          matchTaskId(t.id, taskId) ? { ...t, status: newStatus } : t,
-        );
-      },
-      async () => {
-        const res = await apiFetch("/api/tasks/update", {
-          method: "POST",
-          body: JSON.stringify({ taskId, status: newStatus }),
-        });
-        if (res?.data) {
-          tasksData.value = tasksData.value.map((t) =>
-            matchTaskId(t.id, taskId) ? { ...t, ...res.data } : t,
-          );
-        }
-        return res;
-      },
-      () => {
-        tasksData.value = prev;
-      },
-    );
-    showToast(`Moved to ${col ? col.title : colId}`, "success");
-    // Force refresh from server to ensure consistency
-    setTimeout(() => loadTasks(), 500);
+    await executeBoardTransition(currentTask, newStatus, col?.title || colId);
   } catch (err) {
     showToast(err?.message || "Failed to move task", "error");
   }
@@ -357,7 +428,7 @@ function KanbanCard({ task, onOpen }) {
 
   return html`
     <${Card}
-      class="kanban-card ${isDragging ? 'dragging' : ''}"
+      className=${`kanban-card ${isDragging ? "dragging" : ""}`}
       sx=${{
         cursor: 'pointer',
         mb: 1,
@@ -416,13 +487,30 @@ function KanbanCard({ task, onOpen }) {
 }
 
 /* ─── KanbanColumn ─── */
-function KanbanColumn({ col, tasks, onOpen }) {
+function KanbanColumn({
+  col,
+  tasks,
+  onOpen,
+  totalCount = 0,
+  hasMoreTasks = false,
+  loadingMoreTasks = false,
+  onLoadMoreTasks = null,
+}) {
   const [showCreate, setShowCreate] = useState(false);
   const inputRef = useRef(null);
 
   useEffect(() => {
     if (showCreate && inputRef.current) inputRef.current.focus();
   }, [showCreate]);
+
+  const onCardsScroll = useCallback((event) => {
+    const el = event?.currentTarget;
+    if (!el) return;
+    const remaining = el.scrollHeight - el.scrollTop - el.clientHeight;
+    if (remaining > LOAD_MORE_THRESHOLD_PX) return;
+    if (!hasMoreTasks || loadingMoreTasks || typeof onLoadMoreTasks !== "function") return;
+    void onLoadMoreTasks();
+  }, [hasMoreTasks, loadingMoreTasks, onLoadMoreTasks]);
 
   const onDragOver = useCallback((e) => {
     e.preventDefault();
@@ -463,10 +551,10 @@ function KanbanColumn({ col, tasks, onOpen }) {
             body: JSON.stringify({ taskId, status: newStatus }),
           });
           if (res?.data) {
-          tasksData.value = tasksData.value.map((t) =>
-            matchTaskId(t.id, taskId) ? { ...t, ...res.data } : t,
-          );
-        }
+            tasksData.value = tasksData.value.map((t) =>
+              matchTaskId(t.id, taskId) ? { ...t, ...res.data } : t,
+            );
+          }
           return res;
         },
         () => {
@@ -474,7 +562,6 @@ function KanbanColumn({ col, tasks, onOpen }) {
         },
       );
       showToast(`Moved to ${col.title}`, "success");
-      // Force refresh from server to ensure consistency
       setTimeout(() => loadTasks(), 500);
     } catch (err) {
       showToast(err?.message || "Failed to move task", "error");
@@ -493,6 +580,9 @@ function KanbanColumn({ col, tasks, onOpen }) {
   }, [col.id]);
 
   const isOver = dragOverCol.value === col.id || touchOverCol.value === col.id;
+  const countLabel = Number.isFinite(Number(totalCount)) && Number(totalCount) > 0
+    ? Number(totalCount)
+    : (hasMoreTasks ? `${tasks.length}+` : tasks.length);
 
   return html`
     <div
@@ -502,12 +592,12 @@ function KanbanColumn({ col, tasks, onOpen }) {
       onDragLeave=${onDragLeave}
       onDrop=${onDrop}
     >
-      <${Box} sx=${{ display: 'flex', alignItems: 'center', gap: 1, p: 1, borderBottom: '2px solid ' + col.color }}>
+      <${Box} className="kanban-column-head" sx=${{ display: 'flex', alignItems: 'center', gap: 1, p: 1, borderBottom: '2px solid ' + col.color }}>
         <${Typography} variant="subtitle2">${col.icon} ${col.title}</${Typography}>
-        <${Chip} label=${tasks.length} size="small" />
+        <${Chip} label=${countLabel} size="small" />
         <${IconButton} size="small" onClick=${() => { setShowCreate(!showCreate); haptic(); }} title=${"Add task to " + col.title}>+</${IconButton}>
       </${Box}>
-      <div class="kanban-cards">
+      <div class="kanban-cards" onScroll=${onCardsScroll}>
         ${showCreate && html`
           <${TextField}
             inputRef=${inputRef}
@@ -525,6 +615,10 @@ function KanbanColumn({ col, tasks, onOpen }) {
             `)
           : html`<${Typography} variant="body2" color="text.secondary" sx=${{ textAlign: 'center', py: 2 }}>Drop tasks here</${Typography}>`
         }
+        ${hasMoreTasks && html`
+          <div class="kanban-tail-sentinel"></div>
+          <div class="kanban-load-more">${loadingMoreTasks ? "Loading more tasks..." : "Scroll down to load more"}</div>
+        `}
       </div>
       <div class="kanban-scroll-fade"></div>
     </div>
@@ -664,7 +758,7 @@ function KanbanFilter({ tasks, filters, onFilterChange }) {
 }
 
 /* ─── KanbanBoard (main export) ─── */
-export function KanbanBoard({ onOpenTask }) {
+export function KanbanBoard({ onOpenTask, hasMoreTasks = false, loadingMoreTasks = false, onLoadMoreTasks = null, columnTotals = {}, totalTasks = 0 }) {
   const [filters, setFilters] = useState({ repo: "", assignee: "", priority: "", search: "" });
   const allTasks = tasksData.value || [];
 
@@ -698,12 +792,17 @@ export function KanbanBoard({ onOpenTask }) {
   return html`
     <${Box} className="kanban-container">
       <${KanbanFilter} tasks=${allTasks} filters=${filters} onFilterChange=${setFilters} />
+      <${Box} sx=${{ px: 1, pb: 0.5, color: "text.secondary", fontSize: 12 }}>Total tasks: ${Number.isFinite(Number(totalTasks)) && Number(totalTasks) > 0 ? totalTasks : allTasks.length}</${Box}>
       <${Box} className="kanban-board" sx=${{ display: 'flex', gap: 2, overflowX: 'auto', pb: 1 }}>
         ${COLUMNS.map((col) => html`
           <${KanbanColumn}
             key=${col.id}
             col=${col}
             tasks=${cols[col.id] || []}
+            totalCount=${columnTotals?.[col.id] ?? (cols[col.id] || []).length}
+            hasMoreTasks=${hasMoreTasks}
+            loadingMoreTasks=${loadingMoreTasks}
+            onLoadMoreTasks=${onLoadMoreTasks}
             onOpen=${onOpenTask}
           />
         `)}
@@ -711,3 +810,9 @@ export function KanbanBoard({ onOpenTask }) {
     </${Box}>
   `;
 }
+
+
+
+
+
+

@@ -1,6 +1,7 @@
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import { mkdtempSync, rmSync, existsSync, readFileSync, mkdirSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
+import { execSync } from "node:child_process";
 import { tmpdir } from "node:os";
 import {
   loadManifest,
@@ -12,6 +13,7 @@ import {
   deleteEntry,
   listAgentProfiles,
   matchAgentProfile,
+  matchAgentProfiles,
   detectScopes,
   rebuildManifest,
   initLibrary,
@@ -24,6 +26,9 @@ import {
   SKILL_DIR,
   PROFILE_DIR,
   resolveEntry,
+  listWellKnownAgentSources,
+  importAgentProfilesFromRepository,
+  syncAutoDiscoveredLibraryEntries,
 } from "../infra/library-manager.mjs";
 
 // ── Helpers ─────────────────────────────────────────────────────────────────
@@ -467,6 +472,147 @@ describe("resolveEntry (multi-workspace)", () => {
   });
 });
 
+
+describe("matchAgentProfiles", () => {
+  beforeEach(() => fresh());
+  afterEach(() => cleanup());
+
+  it("returns scored candidates with confidence and auto gating", () => {
+    scaffoldAgentProfiles(tmpDir);
+    rebuildManifest(tmpDir);
+
+    const result = matchAgentProfiles(tmpDir, {
+      title: "feat(ui): improve workflow canvas",
+      description: "Update ui tabs and workflow styles",
+      changedFiles: ["ui/tabs/workflows.js", "ui/styles/layout.css"],
+      topN: 3,
+    });
+
+    expect(result.best).not.toBeNull();
+    expect(Array.isArray(result.candidates)).toBe(true);
+    expect(result.candidates.length).toBeGreaterThan(0);
+    expect(typeof result.best.score).toBe("number");
+    expect(typeof result.best.confidence).toBe("number");
+    expect(Array.isArray(result.best.reasons)).toBe(true);
+    expect(typeof result.auto.shouldAutoApply).toBe("boolean");
+  });
+
+  it("can filter by requested agent type", () => {
+    scaffoldAgentProfiles(tmpDir);
+    rebuildManifest(tmpDir);
+
+    const result = matchAgentProfiles(tmpDir, {
+      title: "voice call assistant improvements",
+      agentType: "voice",
+    });
+
+    expect(result.best).not.toBeNull();
+    expect(result.best.agentType).toBe("voice");
+  });
+});
+
+describe("well-known source import", () => {
+  beforeEach(() => fresh());
+  afterEach(() => cleanup());
+
+  it("lists known agent library sources", () => {
+    const sources = listWellKnownAgentSources();
+    expect(Array.isArray(sources)).toBe(true);
+    expect(sources.length).toBeGreaterThan(0);
+    expect(sources.some((s) => s.id === "microsoft-hve-core")).toBe(true);
+  });
+
+  it("imports agent profile + prompt from a git repository", () => {
+    const srcRepo = mkdtempSync(join(tmpdir(), "lib-src-"));
+    try {
+      mkdirSync(join(srcRepo, ".github", "agents"), { recursive: true });
+      writeFileSync(
+        join(srcRepo, ".github", "agents", "TaskPlanner.agent.md"),
+        [
+          "---",
+          "name: Task Planner",
+          "description: Plans and routes engineering tasks",
+          "tools: ['search', 'edit']",
+          "---",
+          "Use this agent to break down complex tasks.",
+        ].join("\n"),
+        "utf8",
+      );
+      execSync("git init", { cwd: srcRepo, stdio: "pipe" });
+      execSync("git config user.email test@example.com", { cwd: srcRepo, stdio: "pipe" });
+      execSync("git config user.name test", { cwd: srcRepo, stdio: "pipe" });
+      execSync("git add .", { cwd: srcRepo, stdio: "pipe" });
+      execSync("git commit -m init", { cwd: srcRepo, stdio: "pipe" });
+
+      const branch = execSync("git rev-parse --abbrev-ref HEAD", { cwd: srcRepo, stdio: "pipe", encoding: "utf8" }).trim();
+      const result = importAgentProfilesFromRepository(tmpDir, {
+        repoUrl: srcRepo,
+        branch,
+        maxProfiles: 5,
+        importPrompts: true,
+      });
+
+      expect(result.importedCount).toBeGreaterThan(0);
+      const agents = listEntries(tmpDir, { type: "agent" });
+      const prompts = listEntries(tmpDir, { type: "prompt" });
+      expect(agents.length).toBeGreaterThan(0);
+      expect(prompts.length).toBeGreaterThan(0);
+    } finally {
+      rmSync(srcRepo, { recursive: true, force: true });
+    }
+  });
+});
+describe("syncAutoDiscoveredLibraryEntries", () => {
+  beforeEach(() => fresh());
+  afterEach(() => cleanup());
+
+  it("imports .github/agents TaskPlanner template as task-planner prompt entry", () => {
+    mkdirSync(join(tmpDir, ".github", "agents"), { recursive: true });
+    writeFileSync(
+      join(tmpDir, ".github", "agents", "TaskPlanner.agent.md"),
+      "# Task Planner\n\nStrict planner contract.",
+      "utf8",
+    );
+
+    const result = syncAutoDiscoveredLibraryEntries(tmpDir);
+    expect(result.promptEntriesUpserted).toBeGreaterThan(0);
+
+    const entry = getEntry(tmpDir, "task-planner");
+    expect(entry).not.toBeNull();
+    expect(entry.type).toBe("prompt");
+    const content = getEntryContent(tmpDir, entry);
+    expect(String(content || "")).toContain("Strict planner contract.");
+  });
+
+  it("imports MCP server definitions from repo .codex/config.toml", () => {
+    mkdirSync(join(tmpDir, ".codex"), { recursive: true });
+    writeFileSync(
+      join(tmpDir, ".codex", "config.toml"),
+      [
+        "[mcp_servers.github]",
+        'command = "npx"',
+        'args = ["-y", "@anthropic/mcp-github"]',
+        "",
+        "[mcp_servers.github.env]",
+        'GITHUB_TOKEN = "ghp_secret_should_not_be_copied"',
+      ].join("\n"),
+      "utf8",
+    );
+
+    const result = syncAutoDiscoveredLibraryEntries(tmpDir);
+    expect(result.mcpEntriesUpserted).toBeGreaterThan(0);
+
+    const entry = getEntry(tmpDir, "github");
+    expect(entry).not.toBeNull();
+    expect(entry.type).toBe("mcp");
+    const mcp = getEntryContent(tmpDir, entry);
+    expect(mcp.transport).toBe("stdio");
+    expect(mcp.command).toBe("npx");
+    expect(Array.isArray(mcp.args)).toBe(true);
+    expect(mcp.env).toEqual(expect.objectContaining({ GITHUB_TOKEN: "" }));
+  });
+});
+
 // ── Scope Detection ─────────────────────────────────────────────────────────
 
 describe("detectScopes", () => {
@@ -539,3 +685,4 @@ describe("renderPromptTemplate with library resolver", () => {
     expect(result).toBe("Hello World");
   });
 });
+
