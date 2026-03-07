@@ -2611,7 +2611,7 @@ export function TaskDetailModal({ task, onClose, onStart }) {
 
 
       <div class="modal-form-span">
-        <div class="task-comments-block" style="padding:12px;border:1px solid var(--border);border-radius:12px;background:var(--bg-surface)">
+        <div class="task-comments-block jira-panel" style="padding:12px;border:1px solid var(--border);border-radius:12px;background:var(--bg-surface)">
           <div class="task-attachments-title">Tracking Overview</div>
           <div class="task-comments-list" style="display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:10px;">
             <div class="task-comment-item">
@@ -2635,7 +2635,7 @@ export function TaskDetailModal({ task, onClose, onStart }) {
       </div>
 
       ${workflowRuns.length > 0 && html`
-        <div class="task-comments-block modal-form-span">
+        <div class="task-comments-block modal-form-span jira-panel">
           <div class="task-attachments-title">Workflow Activity</div>
           <div class="task-comments-list">
             ${workflowRuns.map((run, index) => html`
@@ -2656,7 +2656,7 @@ export function TaskDetailModal({ task, onClose, onStart }) {
       `}
 
       ${historyEntries.length > 0 && html`
-        <div class="task-comments-block modal-form-span">
+        <div class="task-comments-block modal-form-span jira-panel">
           <div class="task-attachments-title">History Timeline</div>
           <div class="task-comments-list">
             ${historyEntries.map((entry, index) => html`
@@ -2673,7 +2673,7 @@ export function TaskDetailModal({ task, onClose, onStart }) {
       `}
 
       ${relatedLinks.length > 0 && html`
-        <div class="task-comments-block modal-form-span">
+        <div class="task-comments-block modal-form-span jira-panel">
           <div class="task-attachments-title">Branch and PR Links</div>
           <div class="task-comments-list">
             ${relatedLinks.map((item, index) => html`
@@ -2706,7 +2706,7 @@ export function TaskDetailModal({ task, onClose, onStart }) {
           />
         </div>
         <div
-          class="task-attachments-block modal-form-span"
+          class="task-attachments-block modal-form-span jira-panel"
           onPaste=${handleAttachmentPaste}
         >
           <div class="task-attachments-header">
@@ -2761,7 +2761,7 @@ export function TaskDetailModal({ task, onClose, onStart }) {
             </div>
           `}
         </div>
-                <div class="task-comments-block modal-form-span">
+                <div class="task-comments-block modal-form-span jira-panel">
           <div class="task-attachments-title">Comments & Updates</div>
           <div class="task-comments-list">
             ${comments.length > 0
@@ -2796,7 +2796,53 @@ export function TaskDetailModal({ task, onClose, onStart }) {
             <//>
           </div>
         </div>
-        <div class="task-comments-block modal-form-span">
+        <div class="task-comments-block modal-form-span jira-subtasks-panel">
+          <div class="task-attachments-header">
+            <div class="task-attachments-title">Subtasks</div>
+            <div class="task-attachments-actions">
+              <${Button}
+                variant="text"
+                size="small"
+                onClick=${loadSubtasks}
+                disabled=${subtasksLoading || creatingSubtask}
+              >
+                ${subtasksLoading ? "Refreshing…" : "Refresh"}
+              <//>
+            </div>
+          </div>
+          <div class="task-comment-composer" style=${{ marginTop: "8px" }}>
+            <${TextField}
+              size="small"
+              placeholder="Create subtask summary"
+              value=${subtaskTitle}
+              onInput=${(e) => setSubtaskTitle(e.target.value)}
+              fullWidth
+            />
+            <${Button}
+              variant="contained"
+              size="small"
+              disabled=${creatingSubtask || !sanitizeTaskText(subtaskTitle || "").trim()}
+              onClick=${handleCreateSubtask}
+            >
+              ${creatingSubtask ? "Creating…" : "Add"}
+            <//>
+          </div>
+          <div class="task-comments-list" style=${{ marginTop: "8px" }}>
+            ${!subtasksLoading && !subtasks.length && html`<div class="meta-text">No subtasks yet.</div>`}
+            ${subtasks.map((subtask) => html`
+              <div class="task-comment-item" key=${subtask.id}>
+                <div class="task-comment-meta">
+                  <span style="user-select:all">${subtask.id}</span>
+                  ${subtask.status ? ` · ${subtask.status}` : ""}
+                  ${subtask.storyPoints ? ` · ${subtask.storyPoints} pts` : ""}
+                </div>
+                <div class="task-comment-body">${subtask.title}</div>
+                ${subtask.assignee && html`<div class="task-comment-meta">Assignee: ${subtask.assignee}</div>`}
+              </div>
+            `)}
+          </div>
+        </div>
+        <div class="task-comments-block modal-form-span jira-panel">
           <div class="task-attachments-title">Dependencies & Sprint Wiring</div>
           <${TextField}
             multiline
@@ -5004,6 +5050,11 @@ function CreateTaskModalInline({ onClose }) {
     <//>
   `;
 }
+
+
+
+
+
 
 
 
