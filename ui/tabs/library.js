@@ -320,9 +320,26 @@ async function doRebuild() {
   return apiFetch("/api/library/rebuild", { method: "POST" });
 }
 
-async function testProfileMatch(title) {
-  const res = await apiFetch(`/api/library/match-profile?title=${encodeURIComponent(title)}`);
-  return res?.data || null;
+async function testProfileMatch(criteria = {}) {
+  const res = await apiFetch(`/api/library/match-profile?verbose=1`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(criteria || {}),
+  });
+  return res?.data || { best: null, candidates: [], auto: { shouldAutoApply: false } };
+}
+
+async function fetchLibrarySources() {
+  const res = await apiFetch("/api/library/sources");
+  return res?.data || [];
+}
+
+async function importLibrarySource(payload = {}) {
+  return apiFetch("/api/library/import", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload || {}),
+  });
 }
 
 /* ── MCP API Helpers ─ */
@@ -1491,54 +1508,147 @@ function ScopeDetector() {
 
 function ProfileMatcher() {
   const [title, setTitle] = useState("");
-  const [match, setMatch] = useState(null);
+  const [description, setDescription] = useState("");
+  const [changedFiles, setChangedFiles] = useState("");
+  const [result, setResult] = useState(null);
   const [loading, setLoading] = useState(false);
 
   const doMatch = useCallback(async () => {
-    if (!title.trim()) return;
+    if (!title.trim() && !description.trim()) return;
     setLoading(true);
     try {
-      const result = await testProfileMatch(title.trim());
-      setMatch(result);
+      const response = await testProfileMatch({
+        title: title.trim(),
+        description: description.trim(),
+        changedFiles: changedFiles.split(",").map((v) => v.trim()).filter(Boolean),
+        topN: 5,
+      });
+      setResult(response || null);
     } catch (err) {
-      showToast("Match failed: " + err.message, "error");
+      showToast(`Profile match failed: ${err.message}`, "error");
     }
     setLoading(false);
-  }, [title]);
+  }, [title, description, changedFiles]);
+
+  const best = result?.best || null;
+  const candidates = Array.isArray(result?.candidates) ? result.candidates : [];
+  const auto = result?.auto || { shouldAutoApply: false, reason: "no-match" };
 
   return html`
-    <div style="margin-bottom:12px;">
-      <div style="display:flex;gap:8px;align-items:center;">
-        <${TextField}
-          size="small"
-          variant="outlined"
-          placeholder="Test task title, e.g. feat(portal): add login page"
-          value=${title}
-          onInput=${(e) => setTitle(e.target.value)}
-          onKeyDown=${(e) => e.key === "Enter" && doMatch()}
-          sx=${{ flex: 1, fontSize: "0.85em" }}
-        />
-        <${Button} variant="contained" size="small" onClick=${doMatch} sx=${{ fontSize: "0.82em" }} disabled=${loading}>
-          ${loading ? html`<${Spinner} size=${12} />` : iconText(":target: Match")}
+    <div>
+      <label style="display:block;font-size:0.82em;color:var(--text-secondary);">Task Title</label>
+      <input type="text" value=${title} onInput=${(e) => setTitle(e.currentTarget.value)}
+        placeholder="feat(ui): improve onboarding flow"
+        style="width:100%;padding:8px;border-radius:8px;border:1px solid var(--border,#333);background:var(--bg-input,#0d1117);color:var(--text-primary,#eee);" />
+      <label style="display:block;font-size:0.82em;color:var(--text-secondary);margin-top:8px;">Task Description (optional)</label>
+      <textarea value=${description} onInput=${(e) => setDescription(e.currentTarget.value)}
+        placeholder="Short summary to improve matching confidence"
+        style="width:100%;min-height:68px;padding:8px;border-radius:8px;border:1px solid var(--border,#333);background:var(--bg-input,#0d1117);color:var(--text-primary,#eee);resize:vertical;"></textarea>
+      <label style="display:block;font-size:0.82em;color:var(--text-secondary);margin-top:8px;">Changed Paths (optional, comma-separated)</label>
+      <input type="text" value=${changedFiles} onInput=${(e) => setChangedFiles(e.currentTarget.value)}
+        placeholder="ui/tabs/library.js, server/ui-server.mjs"
+        style="width:100%;padding:8px;border-radius:8px;border:1px solid var(--border,#333);background:var(--bg-input,#0d1117);color:var(--text-primary,#eee);" />
+      <div class="library-actions">
+        <${Button} variant="outlined" size="small" onClick=${doMatch} disabled=${loading || (!title.trim() && !description.trim())}>
+          ${loading ? html`<${Spinner} size=${14} />` : iconText(":mag: Match Agent")}
         <//>
       </div>
-      ${match && html`
+      ${best && html`
         <div class="library-profile-match" style="margin-top:8px;">
           <div class="library-profile-match-label">Best match:</div>
           <div>
-            <span class="library-profile-match-name">${iconText(`${TYPE_ICONS.agent} ${match.name}`)}</span>
-            <span class="library-profile-match-score">score: ${match.score}</span>
+            <span class="library-profile-match-name">${iconText(`${TYPE_ICONS.agent} ${best.name}`)}</span>
+            <span class="library-profile-match-score">score: ${best.score} | confidence: ${Math.round(Number(best.confidence || 0) * 100)}%</span>
           </div>
-          ${match.description && html`
-            <div style="font-size:0.8em;color:var(--text-secondary);margin-top:4px;">${match.description}</div>
+          <div style="font-size:0.8em;color:var(--text-secondary);margin-top:4px;">auto-trigger: ${auto.shouldAutoApply ? "eligible" : "not eligible"} (${auto.reason || "n/a"})</div>
+          ${best.description && html`
+            <div style="font-size:0.8em;color:var(--text-secondary);margin-top:4px;">${best.description}</div>
+          `}
+          ${Array.isArray(best.reasons) && best.reasons.length > 0 && html`
+            <div style="font-size:0.78em;color:var(--text-secondary);margin-top:4px;">reasons: ${best.reasons.join(", ")}</div>
+          `}
+          ${candidates.length > 1 && html`
+            <div style="font-size:0.78em;color:var(--text-secondary);margin-top:6px;">alternatives: ${candidates.slice(1, 4).map((c) => `${c.name} (${c.score})`).join(" | ")}</div>
           `}
         </div>
       `}
-      ${match === null && title.trim() && !loading && html`
+      ${!best && result && html`
         <div style="font-size:0.82em;color:var(--text-secondary);margin-top:8px;">
-          No matching agent profile. Create one to auto-match this task type.
+          No matching agent profile. Import or create one to improve routing coverage.
         </div>
       `}
+    </div>
+  `;
+}
+
+function AgentLibraryImporter({ onImported }) {
+  const [sources, setSources] = useState([]);
+  const [sourceId, setSourceId] = useState("microsoft-hve-core");
+  const [repoUrl, setRepoUrl] = useState("");
+  const [branch, setBranch] = useState("main");
+  const [maxProfiles, setMaxProfiles] = useState("80");
+  const [loading, setLoading] = useState(false);
+
+  useEffect(() => {
+    let alive = true;
+    fetchLibrarySources()
+      .then((data) => {
+        if (!alive) return;
+        setSources(Array.isArray(data) ? data : []);
+      })
+      .catch(() => {});
+    return () => { alive = false; };
+  }, []);
+
+  const doImport = useCallback(async () => {
+    setLoading(true);
+    try {
+      const payload = {
+        sourceId: sourceId || undefined,
+        repoUrl: repoUrl.trim() || undefined,
+        branch: branch.trim() || undefined,
+        maxProfiles: Number.parseInt(String(maxProfiles || ""), 10) || undefined,
+        importPrompts: true,
+      };
+      const res = await importLibrarySource(payload);
+      if (!res?.ok) throw new Error(res?.error || "Import failed");
+      const count = Number(res?.data?.importedCount || 0);
+      showToast(`Imported ${count} profiles`, "success");
+      if (typeof onImported === "function") onImported();
+    } catch (err) {
+      showToast(`Import failed: ${err.message}`, "error");
+    }
+    setLoading(false);
+  }, [sourceId, repoUrl, branch, maxProfiles, onImported]);
+
+  return html`
+    <div style="margin-top:10px;padding:10px;border:1px solid var(--border,#333);border-radius:10px;">
+      <div style="font-size:0.9em;font-weight:600;margin-bottom:6px;">${iconText(":package: Import Agent Library")}</div>
+      <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:8px;">
+        <label style="display:flex;flex-direction:column;gap:4px;font-size:0.82em;color:var(--text-secondary);">
+          Source
+          <select value=${sourceId} onChange=${(e) => setSourceId(e.currentTarget.value)}>
+            ${(sources.length ? sources : [{ id: "microsoft-hve-core", name: "Microsoft HVE Core" }]).map((s) => html`<option key=${s.id} value=${s.id}>${s.name}</option>`)}
+          </select>
+        </label>
+        <label style="display:flex;flex-direction:column;gap:4px;font-size:0.82em;color:var(--text-secondary);">
+          Branch
+          <input value=${branch} onInput=${(e) => setBranch(e.currentTarget.value)} placeholder="main" />
+        </label>
+        <label style="display:flex;flex-direction:column;gap:4px;font-size:0.82em;color:var(--text-secondary);">
+          Max Profiles
+          <input value=${maxProfiles} onInput=${(e) => setMaxProfiles(e.currentTarget.value)} placeholder="80" />
+        </label>
+      </div>
+      <label style="display:flex;flex-direction:column;gap:4px;font-size:0.82em;color:var(--text-secondary);margin-top:8px;">
+        Custom Repo URL (optional)
+        <input value=${repoUrl} onInput=${(e) => setRepoUrl(e.currentTarget.value)} placeholder="https://github.com/org/repo.git" />
+      </label>
+      <div class="library-actions">
+        <${Button} variant="outlined" size="small" onClick=${doImport} disabled=${loading}>
+          ${loading ? html`<${Spinner} size=${14} />` : iconText(":download: Import")}
+        <//>
+      </div>
     </div>
   `;
 }
@@ -1689,6 +1799,7 @@ export function LibraryTab() {
       </div>
 
       ${filterType.value !== "mcp" && html`<${ProfileMatcher} />`}
+      ${filterType.value !== "mcp" && html`<${AgentLibraryImporter} onImported=${loadEntries} />`}
       ${filterType.value !== "mcp" && html`<${ScopeDetector} />`}
 
       ${/* ── MCP Marketplace View ── */
