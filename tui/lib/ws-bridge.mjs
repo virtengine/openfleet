@@ -165,13 +165,22 @@ class TuiWsBridge {
 }
 
 let _instance = null;
+let _lastHost = null;
+let _lastPort = null;
 
 function createWsBridge({ host, port }) {
 	_instance = new TuiWsBridge({ host, port });
+	_lastHost = host;
+	_lastPort = port;
 	return _instance;
 }
 
 function wsBridge({ host, port }) {
+	// If host/port changed, create new instance
+	if (_instance && (host !== _lastHost || port !== _lastPort)) {
+		_instance.disconnect();
+		return createWsBridge({ host, port });
+	}
 	if (!_instance) {
 		return createWsBridge({ host, port });
 	}
