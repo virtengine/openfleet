@@ -1530,7 +1530,7 @@ function inferOptionsFromKey(key, defaultValue) {
   } else if (k.includes("bumptype") || k.includes("bump_type")) {
     values.push("patch", "minor", "major");
   }
-  if (typeof defaultValue === "string" && defaultValue.trim()) {
+  if (values.length > 0 && typeof defaultValue === "string" && defaultValue.trim()) {
     values.unshift(defaultValue.trim());
   }
   return normalizeOptions(values);
@@ -1802,6 +1802,21 @@ function WfLaunchForm({ template, onBack }) {
   const [targetRepo, setTargetRepo] = useState("");
   const [triggerVars, setTriggerVars] = useState([]);
   const [showTriggerVars, setShowTriggerVars] = useState(false);
+  useEffect(() => {
+    const defaults = {};
+    for (const desc of descriptors) {
+      defaults[desc.key] = desc.defaultFieldValue;
+    }
+    setFormValues(defaults);
+    setLaunchMode(requiredVars.length > 0 ? "quick" : "advanced");
+    setExpanded(descriptors.length <= 5);
+    setExecutionOptions({ waitForCompletion: false });
+    setPayloadOverride("");
+    setPayloadOverrideDirty(false);
+    setTriggerVars([]);
+    setShowTriggerVars(false);
+    wfLaunchResult.value = null;
+  }, [template?.id]);
 
   // Fetch workspace repos on mount
   useEffect(() => {
@@ -3049,6 +3064,7 @@ export function ManualFlowsTab() {
     // Manual flow form
     if (mode === "form" && selectedTemplate.value) {
       return html`<${FlowFormView}
+        key=${selectedTemplate.value.id}
         template=${selectedTemplate.value}
         onBack=${() => {
           viewMode.value = "templates";
@@ -3065,6 +3081,7 @@ export function ManualFlowsTab() {
     // Workflow launch form
     if (mode === "wf-form" && selectedWfTemplate.value) {
       return html`<${WfLaunchForm}
+        key=${selectedWfTemplate.value.id}
         template=${selectedWfTemplate.value}
         onBack=${() => {
           viewMode.value = "wf-launcher";

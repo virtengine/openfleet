@@ -7,11 +7,12 @@
  * as the primary executor.
  */
 
-import { existsSync, readFileSync, appendFileSync, mkdirSync } from "node:fs";
+import { existsSync, readFileSync, appendFileSync, mkdirSync, copyFileSync } from "node:fs";
 import { readFile, writeFile, mkdir } from "node:fs/promises";
-import { resolve } from "node:path";
+import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { execSync } from "node:child_process";
+import { createRequire } from "node:module";
 import { resolveRepoRoot } from "../config/repo-root.mjs";
 import { loadConfig } from "../config/config.mjs";
 import { getGitHubToken } from "../github/github-auth-manager.mjs";
@@ -23,6 +24,7 @@ import {
 import { maybeCompressSessionItems } from "../workspace/context-cache.mjs";
 
 const __dirname = resolve(fileURLToPath(new URL(".", import.meta.url)));
+const require = createRequire(import.meta.url);
 
 // Lazy-import MCP registry — cached at module scope per AGENTS.md rules.
 let _mcpRegistry = null;
@@ -349,6 +351,33 @@ function buildSessionHooks() {
 }
 
 // ── SDK Loading ──────────────────────────────────────────────────────────────
+
+let _attemptedJsonRpcNodeCompatPatch = false;
+
+function ensureJsonRpcNodeCompatShim() {
+  if (_attemptedJsonRpcNodeCompatPatch) return false;
+  _attemptedJsonRpcNodeCompatPatch = true;
+
+  try {
+    const packageJsonPath = require.resolve("vscode-jsonrpc/package.json");
+    const packageDir = dirname(packageJsonPath);
+    const extensionlessNodePath = resolve(packageDir, "node");
+    const nodeJsPath = resolve(packageDir, "node.js");
+    if (existsSync(extensionlessNodePath) || !existsSync(nodeJsPath)) {
+      return false;
+    }
+    copyFileSync(nodeJsPath, extensionlessNodePath);
+    console.log(
+      `[copilot-shell] applied vscode-jsonrpc compatibility shim: ${extensionlessNodePath}`,
+    );
+    return true;
+  } catch (err) {
+    console.warn(
+      `[copilot-shell] unable to apply vscode-jsonrpc compatibility shim: ${err?.message || err}`,
+    );
+    return false;
+  }
+}
 
 async function loadCopilotSdk() {
   if (CopilotClientClass) return CopilotClientClass;
