@@ -1808,7 +1808,8 @@ function WfLaunchForm({ template, onBack }) {
       defaults[desc.key] = desc.defaultFieldValue;
     }
     setFormValues(defaults);
-    setLaunchMode(requiredVars.length > 0 ? "quick" : "advanced");
+    const requiredCount = descriptors.filter((item) => item.required).length;
+    setLaunchMode(requiredCount > 0 ? "quick" : "advanced");
     setExpanded(descriptors.length <= 5);
     setExecutionOptions({ waitForCompletion: false });
     setPayloadOverride("");
@@ -2008,7 +2009,8 @@ function WfLaunchForm({ template, onBack }) {
       defaults[desc.key] = desc.defaultFieldValue;
     }
     setFormValues(defaults);
-    setLaunchMode(requiredVars.length > 0 ? "quick" : "advanced");
+    const requiredCount = descriptors.filter((item) => item.required).length;
+    setLaunchMode(requiredCount > 0 ? "quick" : "advanced");
     setExecutionOptions({ waitForCompletion: false });
     setPayloadOverrideDirty(false);
     // Reset target repo to primary

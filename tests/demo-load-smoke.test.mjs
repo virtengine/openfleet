@@ -1,7 +1,6 @@
 import { createServer } from "node:http";
 import { readFileSync, statSync, existsSync } from "node:fs";
 import { resolve, extname, normalize } from "node:path";
-import { spawnSync } from "node:child_process";
 import vm from "node:vm";
 import { beforeAll, afterAll, describe, expect, it } from "vitest";
 
@@ -356,24 +355,31 @@ describe("demo load smoke", () => {
     }
   });
 
-  it("miniapp local module graph has valid imports/exports and syntax", () => {
+  it("miniapp local module graph has valid imports/exports and syntax", async () => {
     const entry = resolve(SITE_ROOT, "ui/app.js");
     const queue = [entry];
     const visited = new Set();
     const importErrors = [];
     const syntaxErrors = [];
+    const sourceCache = new Map();
+    const exportCache = new Map();
 
     while (queue.length > 0) {
       const file = queue.shift();
       if (!file || visited.has(file)) continue;
       visited.add(file);
 
-      const check = spawnSync(process.execPath, ["--check", file], { encoding: "utf8" });
-      if (check.status !== 0) {
-        syntaxErrors.push(`${file}: ${(check.stderr || check.stdout || "syntax check failed").trim()}`);
+      let source = sourceCache.get(file);
+      if (source == null) {
+        source = readFileSync(file, "utf8");
+        sourceCache.set(file, source);
       }
-
-      const source = readFileSync(file, "utf8");
+      try {
+        await parseAsModule(source, `module:${file}`);
+      } catch (err) {
+        syntaxErrors.push(`${file}: ${String(err?.message || err || "syntax check failed").trim()}`);
+        continue;
+      }
       const imports = listStaticImports(source);
 
       for (const imp of imports) {
@@ -388,8 +394,16 @@ describe("demo load smoke", () => {
         const parsed = parseImportClause(imp.clause);
         if (parsed.named.length === 0 && !parsed.hasDefault) continue;
 
-        const targetSource = readFileSync(target, "utf8");
-        const exportsInfo = parseExports(targetSource);
+        let targetSource = sourceCache.get(target);
+        if (targetSource == null) {
+          targetSource = readFileSync(target, "utf8");
+          sourceCache.set(target, targetSource);
+        }
+        let exportsInfo = exportCache.get(target);
+        if (!exportsInfo) {
+          exportsInfo = parseExports(targetSource);
+          exportCache.set(target, exportsInfo);
+        }
 
         if (parsed.hasDefault && !exportsInfo.hasDefault) {
           importErrors.push(`${file} -> ${imp.specifier}: missing default export in ${target}`);

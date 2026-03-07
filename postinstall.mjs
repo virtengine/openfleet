@@ -19,10 +19,12 @@ import {
   rmSync,
   chmodSync,
   mkdtempSync,
+  copyFileSync,
 } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { tmpdir } from "node:os";
+import { createRequire } from "node:module";
 import https from "node:https";
 import { pipeline } from "node:stream/promises";
 import { shouldAutoInstallGitHooks } from "./task/task-context.mjs";
@@ -32,6 +34,7 @@ const __dirname = dirname(fileURLToPath(import.meta.url));
 const BUNDLED_PWSH_DIR = resolve(__dirname, ".cache", "bosun", "pwsh");
 const BUNDLED_PWSH_PATH = resolve(BUNDLED_PWSH_DIR, "pwsh");
 const FALLBACK_PWSH_VERSION = "7.4.6";
+const require = createRequire(import.meta.url);
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -64,6 +67,22 @@ function parseBoolEnv(value, fallback) {
   if (["1", "true", "yes", "on"].includes(normalized)) return true;
   if (["0", "false", "no", "off"].includes(normalized)) return false;
   return fallback;
+}
+
+function ensureJsonRpcNodeCompatShim() {
+  try {
+    const packageJsonPath = require.resolve("vscode-jsonrpc/package.json");
+    const packageDir = dirname(packageJsonPath);
+    const extensionlessNodePath = resolve(packageDir, "node");
+    const nodeJsPath = resolve(packageDir, "node.js");
+    if (existsSync(extensionlessNodePath) || !existsSync(nodeJsPath)) {
+      return { patched: false, reason: "not-needed" };
+    }
+    copyFileSync(nodeJsPath, extensionlessNodePath);
+    return { patched: true, path: extensionlessNodePath };
+  } catch (err) {
+    return { patched: false, reason: err?.message || String(err) };
+  }
 }
 
 function bundledPwshExists() {
@@ -336,6 +355,11 @@ async function main() {
   console.log(`  :check: @anthropic-ai/claude-agent-sdk (bundled)`);
   console.log(`  :check: @github/copilot-sdk (bundled)`);
   console.log(`  :check: @anthropic-ai/claude-agent-sdk (bundled)`);
+
+  const jsonRpcShim = ensureJsonRpcNodeCompatShim();
+  if (jsonRpcShim.patched) {
+    console.log(`  :check: Copilot compatibility shim applied (${jsonRpcShim.path})`);
+  }
 
   // Desktop dependencies (Electron) — optional but recommended for instant launch
   const desktopDir = resolve(__dirname, "desktop");

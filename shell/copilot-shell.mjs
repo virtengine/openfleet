@@ -385,6 +385,9 @@ async function loadCopilotSdk() {
     console.warn("[copilot-shell] SDK disabled via COPILOT_SDK_DISABLED");
     return null;
   }
+
+  ensureJsonRpcNodeCompatShim();
+
   try {
     const mod = await import("@github/copilot-sdk");
     CopilotClientClass =
@@ -395,7 +398,26 @@ async function loadCopilotSdk() {
     console.log("[copilot-shell] SDK loaded successfully");
     return CopilotClientClass;
   } catch (err) {
-    console.error(`[copilot-shell] failed to load SDK: ${err.message}`);
+    const message = String(err?.message || err || "");
+    if (
+      message.includes("vscode-jsonrpc/node") &&
+      ensureJsonRpcNodeCompatShim()
+    ) {
+      try {
+        const mod = await import("@github/copilot-sdk");
+        CopilotClientClass =
+          mod.CopilotClient || mod.default?.CopilotClient || null;
+        if (!CopilotClientClass) {
+          throw new Error("CopilotClient export not found");
+        }
+        console.log("[copilot-shell] SDK loaded successfully");
+        return CopilotClientClass;
+      } catch (retryErr) {
+        console.error(`[copilot-shell] failed to load SDK: ${retryErr.message}`);
+        return null;
+      }
+    }
+    console.error(`[copilot-shell] failed to load SDK: ${message}`);
     return null;
   }
 }

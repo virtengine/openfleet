@@ -15090,8 +15090,20 @@ export async function startTelegramUiServer(options = {}) {
   }
 
   const publicHost = options.publicHost || process.env.TELEGRAM_UI_PUBLIC_HOST;
-  const lanIp = getLocalLanIp();
-  const host = publicHost || lanIp;
+  const boundHost = String(
+    options.host || process.env.TELEGRAM_UI_HOST || DEFAULT_HOST,
+  ).trim() || DEFAULT_HOST;
+  const isLoopbackHost = (value) => {
+    const normalized = String(value || "").trim().toLowerCase();
+    return (
+      normalized === "127.0.0.1" ||
+      normalized === "localhost" ||
+      normalized === "::1"
+    );
+  };
+  const loopbackOnly = !publicHost && isLoopbackHost(boundHost);
+  const lanIp = loopbackOnly ? "" : getLocalLanIp();
+  const host = publicHost || (loopbackOnly ? boundHost : (lanIp || boundHost));
   const actualPort = uiServer.address().port;
   const isLocalOrPrivateHost = (value) => {
     const normalized = String(value || "").trim().toLowerCase();
@@ -15140,13 +15152,17 @@ export async function startTelegramUiServer(options = {}) {
     }
     console.warn(`╚${border}╝\n`);
   }
-  console.log(`[telegram-ui] LAN access: ${protocol}://${lanIp}:${actualPort}`);
-  if (shouldLogTokenizedBrowserUrl()) {
-    console.log(`[telegram-ui] Browser access: ${protocol}://${lanIp}:${actualPort}/?token=${sessionToken}`);
+  if (loopbackOnly) {
+    console.log(`[telegram-ui] Loopback access: ${protocol}://${host}:${actualPort}`);
   } else {
-    console.log(
-      `[telegram-ui] Browser access: ${protocol}://${lanIp}:${actualPort} (token hidden; set BOSUN_UI_LOG_TOKENIZED_BROWSER_URL=1 for debug)`,
-    );
+    console.log(`[telegram-ui] LAN access: ${protocol}://${lanIp}:${actualPort}`);
+    if (shouldLogTokenizedBrowserUrl()) {
+      console.log(`[telegram-ui] Browser access: ${protocol}://${lanIp}:${actualPort}/?token=${sessionToken}`);
+    } else {
+      console.log(
+        `[telegram-ui] Browser access: ${protocol}://${lanIp}:${actualPort} (token hidden; set BOSUN_UI_LOG_TOKENIZED_BROWSER_URL=1 for debug)`,
+      );
+    }
   }
 
   // Auto-open browser:
@@ -15193,18 +15209,22 @@ export async function startTelegramUiServer(options = {}) {
     } catch { /* ignore auto-open failure */ }
   }
 
-  // Check firewall rules for the UI port
-  firewallState = await checkFirewall(actualPort);
-  if (firewallState) {
-    if (firewallState.blocked) {
-      console.warn(
-        `[telegram-ui] :alert:  Port ${actualPort}/tcp appears BLOCKED by ${firewallState.firewall} for LAN access.`,
-      );
-      console.warn(
-        `[telegram-ui] To fix, run: ${firewallState.allowCmd}`,
-      );
-    } else {
-      console.log(`[telegram-ui] Firewall (${firewallState.firewall}): port ${actualPort}/tcp is allowed`);
+  if (loopbackOnly) {
+    firewallState = null;
+  } else {
+    // Skip firewall probing for localhost-only servers to avoid a slow LAN self-connect.
+    firewallState = await checkFirewall(actualPort);
+    if (firewallState) {
+      if (firewallState.blocked) {
+        console.warn(
+          `[telegram-ui] :alert:  Port ${actualPort}/tcp appears BLOCKED by ${firewallState.firewall} for LAN access.`,
+        );
+        console.warn(
+          `[telegram-ui] To fix, run: ${firewallState.allowCmd}`,
+        );
+      } else {
+        console.log(`[telegram-ui] Firewall (${firewallState.firewall}): port ${actualPort}/tcp is allowed`);
+      }
     }
   }
 
