@@ -2926,6 +2926,25 @@
         if (t) { t.status = 'inprogress'; t.updated = Date.now(); addLog('info', 'task-executor', `Task started: ${t.title}`); }
         return { ok: true, data: t || null };
       }
+      if (route === '/api/tasks/comment') {
+        const taskId = body?.taskId || body?.id || params.get('taskId');
+        const t = findTask(taskId);
+        if (!t) return { ok: false, error: 'Task not found' };
+        const text = String(body?.comment || body?.content || body?.text || '').trim();
+        if (!text) return { ok: false, error: 'Comment is required' };
+        const author = String(body?.author || body?.createdBy || 'demo_user');
+        const comment = {
+          id: 'comment-' + Math.random().toString(36).slice(2, 10),
+          author,
+          content: text,
+          createdAt: Date.now(),
+        };
+        const comments = Array.isArray(t.comments) ? t.comments : [];
+        t.comments = [...comments, comment];
+        t.updated = Date.now();
+        addLog('info', 'tasks', `Comment added: ${t.title}`);
+        return { ok: true, comment, comments: t.comments, data: t };
+      }
       if (route === '/api/tasks/retry') {
         const t = findTask(body?.taskId);
         if (t) { t.status = 'todo'; t.updated = Date.now(); addLog('info', 'task-executor', `Task retried: ${t.title}`); }
@@ -3653,6 +3672,12 @@
         return { ok: true, attachments };
       }
       if (route.match(/^\/api\/sessions\/[^/]+\/resume$/)) {
+        const sid = route.split('/')[3];
+        const ses = STATE.sessions.find(s => s.id === sid);
+        if (ses) ses.status = 'active';
+        return { ok: true, session: ses || null };
+      }
+      if (route.match(/^\/api\/sessions\/[^/]+\/start$/)) {
         const sid = route.split('/')[3];
         const ses = STATE.sessions.find(s => s.id === sid);
         if (ses) ses.status = 'active';

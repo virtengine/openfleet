@@ -81,6 +81,27 @@ import {
 /* ─── View mode toggle ─── */
 const viewMode = signal("kanban");
 const Toggle = typeof ImportedToggle === "function" ? ImportedToggle : () => null;
+const DAG_SPRINT_ENDPOINT_CANDIDATES = [
+  "/api/tasks/sprints",
+  "/api/tasks/dag/sprints",
+  "/api/tasks/dag/index",
+];
+const DAG_GRAPH_ENDPOINT_CANDIDATES = [
+  "/api/tasks/dag",
+  "/api/tasks/graph",
+  "/api/tasks/dependencies",
+];
+const DAG_GLOBAL_ENDPOINT_CANDIDATES = [
+  "/api/tasks/dag-of-dags",
+  "/api/tasks/dag/global",
+  "/api/tasks/graph/global",
+];
+const EMPTY_DAG_GRAPH = {
+  title: "",
+  description: "",
+  nodes: [],
+  edges: [],
+};
 
 /* ─── Status/Priority → MUI Chip color ─── */
 function statusChipColor(status) {
@@ -288,6 +309,210 @@ function isImageAttachment(att) {
 function unsavedChangesMessage(changeCount) {
   const count = Math.max(0, Number(changeCount || 0));
   return `You have unsaved changes (${count})`;
+}
+
+function toArray(value) {
+  if (Array.isArray(value)) return value;
+  if (value && typeof value === "object") return Object.values(value);
+  return [];
+}
+
+function toText(value, fallback = "") {
+  if (value == null) return fallback;
+  const text = String(value).trim();
+  return text || fallback;
+}
+
+function normalizeDagDependencyList(value) {
+  const raw = Array.isArray(value)
+    ? value
+    : typeof value === "string"
+      ? value.split(",")
+      : [];
+  return raw
+    .map((item) => toText(item))
+    .filter(Boolean);
+}
+
+function extractDagPayload(raw) {
+  if (raw && typeof raw === "object" && "data" in raw && raw.data != null) {
+    return raw.data;
+  }
+  return raw || {};
+}
+
+function normalizeSprintOptions(raw) {
+  const payload = extractDagPayload(raw);
+  const candidates = [
+    payload?.sprints,
+    payload?.sprintList,
+    payload?.items,
+    payload?.data?.sprints,
+  ];
+  const source = candidates.find(
+    (value) => Array.isArray(value) && value.length > 0,
+  ) || (Array.isArray(payload) ? payload : []);
+  return source
+    .map((entry, index) => {
+      if (entry == null) return null;
+      if (typeof entry === "string") {
+        return { id: entry, label: entry, status: "", goal: "" };
+      }
+      const id = toText(entry.id || entry.slug || entry.name || `sprint-${index + 1}`);
+      if (!id) return null;
+      return {
+        id,
+        label: toText(entry.label || entry.title || entry.name, id),
+        status: toText(entry.status),
+        goal: toText(entry.goal),
+      };
+    })
+    .filter(Boolean);
+}
+
+function normalizeDagNode(node, index) {
+  const id = toText(
+    node?.id || node?.nodeId || node?.taskId || node?.key || `node-${index + 1}`,
+  );
+  const taskId = toText(node?.taskId || node?.id || node?.task?.id || "");
+  const orderRaw =
+    node?.sprintOrder ??
+    node?.sequence ??
+    node?.order ??
+    node?.position ??
+    node?.index;
+  const order = Number.isFinite(Number(orderRaw)) ? Number(orderRaw) : null;
+  return {
+    id,
+    taskId,
+    title: toText(node?.title || node?.label || node?.name || taskId || id, "(untitled)"),
+    description: toText(node?.description || node?.summary || ""),
+    status: toText(node?.status || node?.state || ""),
+    priority: toText(node?.priority),
+    sprintId: toText(node?.sprintId || node?.sprint || ""),
+    order,
+    dependencies: normalizeDagDependencyList(
+      node?.dependencies ||
+        node?.dependsOn ||
+        node?.requires ||
+        node?.prerequisites,
+    ),
+  };
+}
+
+function normalizeDagGraph(raw, fallbackTitle = "") {
+  const payload = extractDagPayload(raw);
+  const graph =
+    payload?.graph ||
+    payload?.dag ||
+    payload?.sprintDag ||
+    payload?.sprintGraph ||
+    payload?.globalDag ||
+    payload?.globalGraph ||
+    payload;
+
+  const nodeSourceCandidates = [
+    graph?.nodes,
+    graph?.tasks,
+    graph?.items,
+    payload?.nodes,
+    payload?.tasks,
+    payload?.items,
+  ];
+  const edgeSourceCandidates = [
+    graph?.edges,
+    graph?.links,
+    graph?.dependencies,
+    payload?.edges,
+    payload?.links,
+    payload?.dependencies,
+  ];
+
+  const rawNodes =
+    nodeSourceCandidates.find((value) => Array.isArray(value) && value.length > 0) || [];
+  const nodes = rawNodes.map(normalizeDagNode).filter((node) => node && node.id);
+  const idLookup = new Map();
+  for (const node of nodes) {
+    idLookup.set(node.id, node.id);
+    if (node.taskId) idLookup.set(node.taskId, node.id);
+  }
+
+  const rawEdges =
+    edgeSourceCandidates.find((value) => Array.isArray(value) && value.length > 0) || [];
+  const edges = [];
+  const seen = new Set();
+  const pushEdge = (source, target, kind = "depends-on") => {
+    const src = idLookup.get(source) || source;
+    const dst = idLookup.get(target) || target;
+    if (!src || !dst) return;
+    const key = `${src}->${dst}:${kind}`;
+    if (seen.has(key)) return;
+    seen.add(key);
+    edges.push({ source: src, target: dst, kind });
+  };
+
+  for (const edge of rawEdges) {
+    if (!edge || typeof edge !== "object") continue;
+    pushEdge(
+      toText(edge.source || edge.from || edge.parent || edge.dependsOn),
+      toText(edge.target || edge.to || edge.child || edge.taskId),
+      toText(edge.kind || edge.type || "depends-on"),
+    );
+  }
+  if (!edges.length) {
+    for (const node of nodes) {
+      for (const dep of node.dependencies) {
+        pushEdge(dep, node.id, "depends-on");
+      }
+    }
+  }
+
+  return {
+    title: toText(graph?.title || payload?.title || fallbackTitle, fallbackTitle),
+    description: toText(graph?.description || payload?.description || ""),
+    nodes,
+    edges,
+  };
+}
+
+function extractGlobalDagPayload(...sources) {
+  for (const source of sources) {
+    const payload = extractDagPayload(source);
+    if (!payload || typeof payload !== "object") continue;
+    const candidate =
+      payload?.dagOfDags ||
+      payload?.globalDag ||
+      payload?.globalGraph ||
+      payload?.overviewDag ||
+      payload?.overviewGraph;
+    if (candidate) return candidate;
+  }
+  return null;
+}
+
+function buildSprintPathCandidates(basePath, sprintId) {
+  if (!sprintId || sprintId === "all") return [basePath];
+  const encoded = encodeURIComponent(sprintId);
+  const join = basePath.includes("?") ? "&" : "?";
+  return [
+    `${basePath}${join}sprintId=${encoded}`,
+    `${basePath}${join}sprint=${encoded}`,
+    `${basePath}${join}id=${encoded}`,
+    basePath,
+  ];
+}
+
+async function fetchFirstAvailableDagPath(paths = []) {
+  const attempts = Array.from(new Set(paths)).filter(Boolean);
+  for (const path of attempts) {
+    try {
+      const payload = await apiFetch(path, { _silent: true });
+      return { path, payload };
+    } catch {
+      // Try next endpoint candidate.
+    }
+  }
+  return null;
 }
 
 function buildTaskDescriptionFallback(rawTitle, rawDescription) {
@@ -2447,6 +2672,105 @@ export function TaskDetailModal({ task, onClose, onStart }) {
   `;
 }
 
+function DagGraphSection({
+  title,
+  description = "",
+  graph = EMPTY_DAG_GRAPH,
+  onOpenTask,
+  emptyMessage = "No DAG nodes available for this view yet.",
+}) {
+  const nodeMap = useMemo(
+    () => new Map((graph?.nodes || []).map((node) => [String(node.id), node])),
+    [graph?.nodes],
+  );
+  const incoming = useMemo(() => {
+    const map = new Map();
+    for (const edge of graph?.edges || []) {
+      const key = String(edge?.target || "");
+      if (!key) continue;
+      map.set(key, (map.get(key) || 0) + 1);
+    }
+    return map;
+  }, [graph?.edges]);
+
+  const sortedNodes = useMemo(() => {
+    const nodes = [...(graph?.nodes || [])];
+    nodes.sort((a, b) => {
+      const ao = Number.isFinite(a?.order) ? Number(a.order) : Number.MAX_SAFE_INTEGER;
+      const bo = Number.isFinite(b?.order) ? Number(b.order) : Number.MAX_SAFE_INTEGER;
+      if (ao !== bo) return ao - bo;
+      return String(a?.title || a?.id || "").localeCompare(String(b?.title || b?.id || ""));
+    });
+    return nodes;
+  }, [graph?.nodes]);
+
+  if (!sortedNodes.length) {
+    return html`
+      <${Paper} variant="outlined" style=${{ padding: "12px", marginBottom: "10px" }}>
+        <div class="meta-text">${emptyMessage}</div>
+      <//>
+    `;
+  }
+
+  return html`
+    <div class="tasks-dag-section">
+      <div class="flex-between" style=${{ marginBottom: "8px", gap: "8px", flexWrap: "wrap" }}>
+        <div>
+          <div style=${{ fontWeight: "700" }}>${title || "Task DAG"}</div>
+          ${description && html`<div class="meta-text">${description}</div>`}
+        </div>
+        <div class="chip-group" style=${{ gap: "6px" }}>
+          <${Chip} size="small" label=${`${sortedNodes.length} nodes`} />
+          <${Chip} size="small" label=${`${(graph?.edges || []).length} edges`} />
+        </div>
+      </div>
+      <div class="task-comments-list" style=${{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(260px,1fr))", gap: "10px" }}>
+        ${sortedNodes.map((node) => {
+          const deps = (node.dependencies || []).map((dep) => {
+            const depNode = nodeMap.get(String(dep));
+            return depNode?.title || dep;
+          });
+          const incomingCount = incoming.get(String(node.id)) || 0;
+          return html`
+            <${Paper} key=${node.id} variant="outlined" style=${{ padding: "10px", display: "flex", flexDirection: "column", gap: "8px" }}>
+              <div class="flex-between" style=${{ alignItems: "flex-start", gap: "8px" }}>
+                <div style=${{ minWidth: 0 }}>
+                  <div style=${{ fontWeight: "700" }}>${truncate(node.title || "(untitled)", 72)}</div>
+                  <div class="meta-text">${node.taskId || node.id}</div>
+                </div>
+                <div style=${{ display: "flex", gap: "6px", flexWrap: "wrap", justifyContent: "flex-end" }}>
+                  ${Number.isFinite(node.order) && html`<${Chip} size="small" label=${`#${node.order}`} color="primary" />`}
+                  ${node.status && html`<${Chip} size="small" label=${node.status} color=${statusChipColor(node.status)} />`}
+                  ${node.priority && html`<${Chip} size="small" label=${node.priority} color=${statusChipColor(node.priority)} />`}
+                </div>
+              </div>
+              <div class="meta-text">
+                ${incomingCount > 0 ? `${incomingCount} incoming dependency${incomingCount === 1 ? "" : "ies"}` : "No incoming dependencies"}
+              </div>
+              ${deps.length > 0 && html`
+                <div class="meta-text" style=${{ lineHeight: 1.4 }}>
+                  Depends on: ${truncate(deps.join(", "), 140)}
+                </div>
+              `}
+              <div>
+                <${Button}
+                  variant="text"
+                  size="small"
+                  disabled=${!node.taskId}
+                  onClick=${() => {
+                    if (node.taskId) onOpenTask?.(node.taskId);
+                  }}
+                >
+                  ${iconText(":eyes: Open Task Detail")}
+                <//>
+              </div>
+            <//>
+          `;
+        })}
+      </div>
+    </div>
+  `;
+}
 /* ─── TasksTab ─── */
 export function TasksTab() {
   const [showCreate, setShowCreate] = useState(false);
@@ -2463,6 +2787,13 @@ export function TasksTab() {
   const [kanbanLoadingMore, setKanbanLoadingMore] = useState(false);
   const [listSortCol, setListSortCol] = useState("");   // active column sort in list mode
   const [listSortDir, setListSortDir] = useState("desc"); // "asc" | "desc"
+  const [dagLoading, setDagLoading] = useState(false);
+  const [dagError, setDagError] = useState("");
+  const [dagSprints, setDagSprints] = useState([]);
+  const [dagSelectedSprint, setDagSelectedSprint] = useState("all");
+  const [dagSprintGraph, setDagSprintGraph] = useState(EMPTY_DAG_GRAPH);
+  const [dagGlobalGraph, setDagGlobalGraph] = useState(EMPTY_DAG_GRAPH);
+  const [dagSources, setDagSources] = useState({ sprints: "", sprintGraph: "", globalGraph: "" });
   const [isCompact, setIsCompact] = useState(() => {
     try { return globalThis.matchMedia?.("(max-width: 768px)")?.matches ?? false; }
     catch { return false; }
@@ -2524,6 +2855,8 @@ export function TasksTab() {
     filterVal && filterVal !== "done" ? filterVal : "all",
   );
   const isKanban = viewMode.value === "kanban";
+  const isDag = viewMode.value === "dag";
+  const isList = !isKanban && !isDag;
   const viewModeInitRef = useRef(false);
   const hasMoreKanbanPages = isKanban && page + 1 < totalPages;
   const boardColumnTotals = tasksStatusCounts?.value || { draft: 0, backlog: 0, inProgress: 0, inReview: 0, done: 0 };
@@ -2541,12 +2874,88 @@ export function TasksTab() {
     }
   }, [hasMoreKanbanPages, isKanban, isSearching, kanbanLoadingMore, page]);
 
+  const loadDagViews = useCallback(async () => {
+    const sprintMeta = await fetchFirstAvailableDagPath(DAG_SPRINT_ENDPOINT_CANDIDATES);
+    const sprintOptions = normalizeSprintOptions(sprintMeta?.payload);
+    const resolvedSprint =
+      dagSelectedSprint !== "all" && sprintOptions.some((entry) => entry.id === dagSelectedSprint)
+        ? dagSelectedSprint
+        : sprintOptions[0]?.id || "all";
+
+    const sprintGraphCandidates = DAG_GRAPH_ENDPOINT_CANDIDATES.flatMap((basePath) =>
+      buildSprintPathCandidates(basePath, resolvedSprint),
+    );
+    const globalGraphCandidates = DAG_GLOBAL_ENDPOINT_CANDIDATES.flatMap((basePath) =>
+      buildSprintPathCandidates(basePath, resolvedSprint),
+    );
+
+    const sprintGraphMeta = await fetchFirstAvailableDagPath(sprintGraphCandidates);
+    const globalGraphMeta = await fetchFirstAvailableDagPath(globalGraphCandidates);
+
+    const globalSource =
+      extractGlobalDagPayload(
+        globalGraphMeta?.payload,
+        sprintGraphMeta?.payload,
+        sprintMeta?.payload,
+      ) || globalGraphMeta?.payload;
+
+    const nextSprintGraph = normalizeDagGraph(
+      sprintGraphMeta?.payload,
+      resolvedSprint === "all" ? "All Sprint Task DAG" : `Sprint ${resolvedSprint} DAG`,
+    );
+    const nextGlobalGraph = normalizeDagGraph(globalSource, "DAG of DAGs");
+
+    setDagSprints(sprintOptions);
+    setDagSprintGraph(nextSprintGraph);
+    setDagGlobalGraph(nextGlobalGraph);
+    setDagSources({
+      sprints: sprintMeta?.path || "",
+      sprintGraph: sprintGraphMeta?.path || "",
+      globalGraph: globalGraphMeta?.path || "",
+    });
+
+    if (resolvedSprint !== dagSelectedSprint) {
+      setDagSelectedSprint(resolvedSprint);
+    }
+
+    const hasAnyGraphData =
+      nextSprintGraph.nodes.length > 0 ||
+      nextGlobalGraph.nodes.length > 0;
+    if (!hasAnyGraphData) {
+      throw new Error("No DAG data was returned from DAG endpoints.");
+    }
+  }, [dagSelectedSprint]);
+
+  useEffect(() => {
+    if (!isDag) return;
+    let cancelled = false;
+
+    const run = async () => {
+      setDagLoading(true);
+      setDagError("");
+      try {
+        await loadDagViews();
+      } catch (error) {
+        if (!cancelled) {
+          setDagError(error?.message || "Failed to load DAG views.");
+        }
+      } finally {
+        if (!cancelled) setDagLoading(false);
+      }
+    };
+
+    run();
+    return () => {
+      cancelled = true;
+    };
+  }, [isDag, dagSelectedSprint, loadDagViews]);
+
   // Add/remove body class so kanban.css can apply height-bounded flex layout
   // to main-content, enabling per-column vertical scroll on mobile.
   useEffect(() => {
     document.body.classList.toggle("tasks-board-view", isKanban);
     return () => { document.body.classList.remove("tasks-board-view"); };
-  }, [isKanban]);
+  }, [isKanban, isList]);
 
   useEffect(() => {
     if (filterVal && filterVal !== "done") {
@@ -2571,7 +2980,7 @@ export function TasksTab() {
       page,
       pageSize,
     };
-  }, [isKanban, filterVal, priorityVal, sortVal, page, pageSize]);
+  }, [isList, filterVal, priorityVal, sortVal, page, pageSize]);
 
   useEffect(() => {
     let shouldReload = false;
@@ -2592,7 +3001,7 @@ export function TasksTab() {
         tasksPageSize.value = 25;
         shouldReload = true;
       }
-    } else if (listStateRef.current) {
+    } else if (isList && listStateRef.current) {
       const next = listStateRef.current;
       if (tasksFilter?.value !== (next.filter ?? "all")) {
         tasksFilter.value = next.filter ?? "all";
@@ -2616,7 +3025,7 @@ export function TasksTab() {
       }
     }
     if (shouldReload) loadTasks();
-  }, [isKanban]);
+  }, [isKanban, isList]);
 
   useEffect(() => {
     let mq;
@@ -2802,6 +3211,27 @@ export function TasksTab() {
     setIsSearching(false);
     await refreshTab("tasks");
   }, [triggerServerSearch]);
+
+  const handleRefreshDag = useCallback(async () => {
+    haptic("medium");
+    setDagLoading(true);
+    setDagError("");
+    try {
+      await loadDagViews();
+      showToast("DAG data refreshed", "success");
+    } catch (error) {
+      setDagError(error?.message || "Failed to refresh DAG views.");
+    } finally {
+      setDagLoading(false);
+    }
+  }, [loadDagViews]);
+
+  const handleSprintChange = useCallback((nextSprint) => {
+    const sprintId = toText(nextSprint, "all");
+    if (sprintId === dagSelectedSprint) return;
+    haptic();
+    setDagSelectedSprint(sprintId);
+  }, [dagSelectedSprint]);
 
   const handleToggleFilters = () => {
     haptic();
@@ -2992,17 +3422,18 @@ export function TasksTab() {
   };
 
   /* ── Render ── */
-  const showBatchBar = !isKanban && batchMode && selectedIds.size > 0;
+  const showBatchBar = isList && batchMode && selectedIds.size > 0;
 
-  if (!tasksLoaded.value && !tasks.length && !searchVal)
+  if (!isDag && !tasksLoaded.value && !tasks.length && !searchVal)
     return html`<${Card} title="Loading Tasks…"><${SkeletonCard} /><//>`;
 
-  if (tasksLoaded.value && !tasks.length && !searchVal)
+  if (!isDag && tasksLoaded.value && !tasks.length && !searchVal)
     return html`
       <div class="flex-between mb-sm" style="padding:0 4px">
-        <${ToggleButtonGroup} size="small" exclusive value=${isKanban ? 'kanban' : 'list'}>
+        <${ToggleButtonGroup} size="small" exclusive value=${isDag ? 'dag' : (isKanban ? 'kanban' : 'list')}>
           <${ToggleButton} value="list" onClick=${() => { viewMode.value = 'list'; haptic(); }}>${iconText(":menu: List")}<//>
           <${ToggleButton} value="kanban" onClick=${() => { viewMode.value = 'kanban'; haptic(); }}>▦ Board<//>
+          <${ToggleButton} value="dag" onClick=${() => { viewMode.value = 'dag'; haptic(); }}>⛓ DAG<//>
         <//>
         <div style="display:flex;gap:8px;align-items:center;">
           <${Button}
@@ -3074,10 +3505,28 @@ export function TasksTab() {
   `;
 
   const viewToggle = html`
-    <${ToggleButtonGroup} size="small" exclusive value=${isKanban ? 'kanban' : 'list'}>
+    <${ToggleButtonGroup} size="small" exclusive value=${isDag ? 'dag' : (isKanban ? 'kanban' : 'list')}>
       <${ToggleButton} value="list" onClick=${() => { viewMode.value = 'list'; haptic(); }}>${iconText(":menu: List")}<//>
       <${ToggleButton} value="kanban" onClick=${() => { viewMode.value = 'kanban'; haptic(); }}>▦ Board<//>
+      <${ToggleButton} value="dag" onClick=${() => { viewMode.value = 'dag'; haptic(); }}>⛓ DAG<//>
     <//>
+  `;
+
+  const dagSprintPicker = isDag && html`
+    <div class="tasks-toolbar-group" style=${{ minWidth: isCompact ? "130px" : "180px" }}>
+      <${Select}
+        size="small"
+        value=${dagSelectedSprint}
+        onChange=${(event) => handleSprintChange(event.target.value)}
+        disabled=${dagLoading}
+        style=${{ minWidth: "100%" }}
+      >
+        <${MenuItem} value="all">All sprints</${MenuItem}>
+        ${dagSprints.map((sprint) => html`
+          <${MenuItem} key=${sprint.id} value=${sprint.id}>${sprint.label}</${MenuItem}>
+        `)}
+      </${Select}>
+    </div>
   `;
 
   const newButton = html`
@@ -3147,6 +3596,7 @@ export function TasksTab() {
                   <div class="tasks-toolbar-group">
                     ${filterButton}
                     ${viewToggle}
+                    ${dagSprintPicker}
                   </div>
                   <div class="tasks-toolbar-group">
                     ${newButton}
@@ -3156,6 +3606,7 @@ export function TasksTab() {
               : html`
                   ${filterButton}
                   ${viewToggle}
+                    ${dagSprintPicker}
                   ${newButton}
                   <${Button}
                     variant="text" size="small"
@@ -3173,7 +3624,7 @@ export function TasksTab() {
 
         <div class="tasks-filter-panel ${filtersOpen ? "open" : ""}">
           <div class="tasks-filter-grid">
-            ${!isKanban && html`
+            ${isList && html`
               <div class="tasks-filter-section">
                 <div class="tasks-filter-title">Status</div>
                 <div class="chip-group">
@@ -3192,7 +3643,7 @@ export function TasksTab() {
                 </div>
               </div>
             `}
-            ${!isKanban && html`
+            ${isList && html`
               <div class="tasks-filter-section">
                 <div class="tasks-filter-title">Priority</div>
                 <div class="chip-group">
@@ -3230,7 +3681,7 @@ export function TasksTab() {
             <div class="tasks-filter-section">
               <div class="tasks-filter-title">Actions</div>
               <div class="tasks-filter-row">
-                ${!isKanban && (isCompact
+                ${isList && (isCompact
                   ? html`
                       <${Toggle}
                         label="Completed only"
@@ -3257,7 +3708,7 @@ export function TasksTab() {
                 `}
               </div>
             </div>
-            ${!isKanban && html`
+            ${isList && html`
               <div class="tasks-filter-section">
                 <div class="tasks-filter-title">List Options</div>
                 <label
@@ -3281,10 +3732,31 @@ export function TasksTab() {
                 </div>
               </div>
             `}
-          </div>
+            ${isDag && html`
+              <div class="tasks-filter-section">
+                <div class="tasks-filter-title">DAG View</div>
+                <div class="meta-text">
+                  Pick a sprint from the toolbar to switch the sprint DAG.
+                </div>
+                <div class="tasks-filter-row" style=${{ marginTop: "8px" }}>
+                  <${Button}
+                    variant="text" size="small"
+                    onClick=${handleRefreshDag}
+                    disabled=${dagLoading}
+                  >
+                    ${dagLoading ? "Refreshing…" : "Refresh DAG"}
+                  <//>
+                </div>
+                ${(dagSources.sprintGraph || dagSources.globalGraph) && html`
+                  <div class="meta-text" style=${{ marginTop: "6px" }}>
+                    Source: ${dagSources.sprintGraph || dagSources.globalGraph}
+                  </div>
+                `}
+              </div>
+            `}          </div>
         </div>
       </div>
-      ${hasActiveFilters && (!isCompact || filtersOpen) && html`
+      ${isList && hasActiveFilters && (!isCompact || filtersOpen) && html`
         <div class="filter-summary">
           <div class="filter-summary-text">
             <span class="pill">Filters</span>
@@ -3378,7 +3850,7 @@ export function TasksTab() {
 
     ${isKanban && html`<${KanbanBoard} onOpenTask=${openDetail} hasMoreTasks=${hasMoreKanbanPages} loadingMoreTasks=${kanbanLoadingMore} onLoadMoreTasks=${loadMoreKanbanTasks} columnTotals=${boardColumnTotals} totalTasks=${boardTotalTasks} />`}
 
-    ${!isKanban && visible.length > 0 && html`
+    ${isList && visible.length > 0 && html`
       <div class="task-table-wrap">
         <table class="task-table">
           <thead>
@@ -3456,7 +3928,7 @@ export function TasksTab() {
         </table>
       </div>
     `}
-    ${!isKanban && !visible.length &&
+    ${isList && !visible.length &&
     html`
       <${EmptyState}
         message="No tasks match those filters"
@@ -3467,7 +3939,7 @@ export function TasksTab() {
       />
     `}
 
-    ${!isKanban && html`
+    ${isList && html`
       <div class="pager">
         <${Button}
           variant="outlined" size="small"
@@ -3944,5 +4416,24 @@ function CreateTaskModalInline({ onClose }) {
     <//>
   `;
 }
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 

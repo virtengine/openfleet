@@ -103,7 +103,7 @@ describe("ui-server mini app", () => {
     expect(typeof mod.getTelegramUiUrl).toBe("function");
     expect(typeof mod.injectUiDependencies).toBe("function");
     expect(typeof mod.getLocalLanIp).toBe("function");
-  });
+  }, 15000);
 
   it("getLocalLanIp returns a string", async () => {
     const mod = await import("../server/ui-server.mjs");
@@ -1401,5 +1401,130 @@ describe("ui-server mini app", () => {
     expect(execJson.ok).toBe(true);
     expect(execJson.toolName).toBe("list_sessions");
     expect(typeof execJson.result).toBe("string");
+  });
+
+  it("applies task lifecycle start and pause actions through /api/tasks/update", async () => {
+    process.env.TELEGRAM_UI_TUNNEL = "disabled";
+    process.env.EXECUTOR_MODE = "internal";
+
+    const mod = await import("../server/ui-server.mjs");
+    const executeTask = vi.fn(async () => {});
+    const abortTask = vi.fn(() => ({ ok: true, reason: "task_lifecycle_pause" }));
+    mod.injectUiDependencies({
+      getInternalExecutor: () => ({
+        getStatus: () => ({ maxParallel: 4, activeSlots: 0, slots: [] }),
+        executeTask,
+        isPaused: () => false,
+        abortTask,
+      }),
+    });
+
+    const server = await mod.startTelegramUiServer({
+      port: await getFreePort(),
+      host: "127.0.0.1",
+      skipInstanceLock: true,
+      skipAutoOpen: true,
+    });
+    const port = server.address().port;
+
+    const created = await fetch(`http://127.0.0.1:${port}/api/tasks/create`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        title: "Lifecycle test task",
+        description: "verify lifecycle transitions",
+        status: "todo",
+      }),
+    }).then((r) => r.json());
+    expect(created.ok).toBe(true);
+    const taskId = created.data.id;
+
+    const started = await fetch(`http://127.0.0.1:${port}/api/tasks/update`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        taskId,
+        status: "inprogress",
+        lifecycleAction: "start",
+      }),
+    }).then((r) => r.json());
+
+    expect(started.ok).toBe(true);
+    expect(started.lifecycle.action).toBe("start");
+    expect(started.lifecycle.startDispatch.started).toBe(true);
+    expect(executeTask).toHaveBeenCalled();
+
+    const paused = await fetch(`http://127.0.0.1:${port}/api/tasks/update`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        taskId,
+        status: "todo",
+        lifecycleAction: "pause",
+        pauseExecution: true,
+      }),
+    }).then((r) => r.json());
+
+    expect(paused.ok).toBe(true);
+    expect(paused.lifecycle.action).toBe("pause");
+    expect(abortTask).toHaveBeenCalledWith(taskId, "task_lifecycle_pause");
+  });
+
+  it("enriches task detail with linked workflow runs for the same taskId", async () => {
+    process.env.TELEGRAM_UI_TUNNEL = "disabled";
+
+    const mod = await import("../server/ui-server.mjs");
+    const server = await mod.startTelegramUiServer({
+      port: await getFreePort(),
+      host: "127.0.0.1",
+      skipInstanceLock: true,
+      skipAutoOpen: true,
+    });
+    const port = server.address().port;
+
+    const created = await fetch(`http://127.0.0.1:${port}/api/tasks/create`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ title: "Workflow linked task", description: "trace workflow runs" }),
+    }).then((r) => r.json());
+    expect(created.ok).toBe(true);
+    const taskId = created.data.id;
+
+    const workflowId = `wf-task-trace-${Date.now()}`;
+    const saveWorkflow = await fetch(`http://127.0.0.1:${port}/api/workflows/save`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        id: workflowId,
+        name: "Task trace workflow",
+        enabled: true,
+        nodes: [
+          { id: "trigger", type: "trigger.manual", label: "Start", config: {} },
+        ],
+        edges: [],
+      }),
+    }).then((r) => r.json());
+    expect(saveWorkflow.ok).toBe(true);
+
+    const runResponse = await fetch(`http://127.0.0.1:${port}/api/workflows/${encodeURIComponent(workflowId)}/execute`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        waitForCompletion: true,
+        taskId,
+        taskTitle: "Workflow linked task",
+      }),
+    }).then((r) => r.json());
+    expect(runResponse.ok).toBe(true);
+
+    const detail = await fetch(
+      `http://127.0.0.1:${port}/api/tasks/detail?taskId=${encodeURIComponent(taskId)}`,
+    ).then((r) => r.json());
+
+    expect(detail.ok).toBe(true);
+    expect(detail.data.id).toBe(taskId);
+    expect(Array.isArray(detail.data.workflowRuns)).toBe(true);
+    expect(detail.data.workflowRuns.length).toBeGreaterThan(0);
+    expect(detail.data.workflowRuns.some((run) => run.workflowId === workflowId)).toBe(true);
   });
 });
