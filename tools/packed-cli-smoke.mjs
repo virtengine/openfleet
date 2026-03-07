@@ -20,6 +20,10 @@ const SMOKE_TIMEOUT_MS = Math.max(
   1000,
   Number(process.env.BOSUN_PACKED_SMOKE_TIMEOUT_MS || "15000") || 15000,
 );
+const NPM_TIMEOUT_MS = Math.max(
+  SMOKE_TIMEOUT_MS,
+  Number(process.env.BOSUN_PACKED_SMOKE_NPM_TIMEOUT_MS || "120000") || 120000,
+);
 const nodeBinDir = dirname(nodeCmd);
 
 function resolveNpmCliPath() {
@@ -44,7 +48,7 @@ function runNpm(args, options = {}) {
     cwd,
     encoding: "utf8",
     stdio: ["pipe", "pipe", "pipe"],
-    timeout: SMOKE_TIMEOUT_MS,
+    timeout: NPM_TIMEOUT_MS,
     ...options,
   });
 }

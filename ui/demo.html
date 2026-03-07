@@ -493,7 +493,7 @@
     const SESSION_MESSAGES = {
       'ses-001': [
         makeMsg('system', 'Session started for bosun-7 (feat(site): redesign landing page).', now - 2 * hr, 'system'),
-        makeMsg('assistant', 'Scanning landing page layout — indexv2.html, demo.html, and CSS modules.', now - 110 * min),
+        makeMsg('assistant', 'Scanning landing page layout — index.html, demo.html, and CSS modules.', now - 110 * min),
         makeMsg('assistant', 'Found the demo tabs implementation. Refactoring for mobile viewport detection.', now - 80 * min),
         makeMsg('assistant', 'Added helm SVG hero section and responsive breakpoints. Running tests.', now - 40 * min),
         makeMsg('assistant', 'CI queued on PR #17. Awaiting checks.', now - 18 * min),
@@ -640,7 +640,7 @@
       'ses-001': {
         files: [
           {
-            filename: 'bosun/site/indexv2.html',
+            filename: 'bosun/site/index.html',
             status: 'modified',
             additions: 86,
             deletions: 23,
@@ -4379,7 +4379,7 @@
       tasks_blocked: () => '<strong>:ban: Blocked</strong><br/><br/>No blocked tasks.',
       tasks_done: () => tasksByStatus('Done', ['done']),
 
-      agentlogs_escrow: () => `<strong>:folder: Agent Logs — docs/bosun-improvement-plan</strong><br/><br/><pre>[09:12] Starting session for bosun PR #17\n[09:14] Reading site/indexv2.html\n[09:18] Refactoring demo tabs for mobile\n[09:24] Added helm SVG hero\n[09:30] CI queued on PR #17</pre>`,
+      agentlogs_escrow: () => `<strong>:folder: Agent Logs — docs/bosun-improvement-plan</strong><br/><br/><pre>[09:12] Starting session for bosun PR #17\n[09:14] Reading site/index.html\n[09:18] Refactoring demo tabs for mobile\n[09:24] Added helm SVG hero\n[09:30] CI queued on PR #17</pre>`,
       agentlogs_hpc: () => `<strong>:folder: Agent Logs — ve/760-market-order-expiry</strong><br/><br/><pre>[10:05] Starting session...\n[10:06] Reading x/market/keeper/order.go\n[10:10] Implementing auto-expiry TTL\n[10:15] Writing order_test.go...</pre>`,
       agentlogs_docs: () => `<strong>:folder: Agent Logs — bs/12-error-correlation</strong><br/><br/><pre>[Queued — not yet started]</pre>`,
 
