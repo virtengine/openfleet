@@ -4,7 +4,7 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>Documentation — Bosun</title>
-  <meta name="description" content="Bosun documentation — getting started, configuration, CLI reference, architecture, and integrations." />
+  <meta name="description" content="Bosun documentation — current overview, setup, configuration, CLI, architecture, and integrations." />
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600;700&display=swap" rel="stylesheet" />
@@ -18,15 +18,14 @@
   <button class="docs-sidebar-toggle" aria-label="Toggle sidebar">&#9776;</button>
 
   <div class="docs-layout">
-    <!-- ═══ Sidebar ═══════════════════════════════════════════════════ -->
     <aside class="docs-sidebar">
       <a href="../" class="sidebar-brand">
         <img src="../logo.svg" alt="Bosun" class="sidebar-brand__logo" width="28" height="28" />
         Bosun
       </a>
       <div class="sidebar-version-info">
-        <span class="sidebar-version" id="current-version">Current Version: v0.36.1</span>
-        <span class="sidebar-version">Docs Last Updated: v0.36.1</span>
+        <span class="sidebar-version" id="current-version">Current Version: v0.39.3</span>
+        <span class="sidebar-version">Docs Last Updated: v0.39.3</span>
       </div>
 
       <div class="docs-search">
@@ -61,120 +60,109 @@
       </div>
     </aside>
 
-    <!-- ═══ Content ═══════════════════════════════════════════════════ -->
     <main class="docs-content">
       <h1>Bosun Documentation</h1>
 
       <p>
-        <strong>Bosun</strong> is an open-source autonomous supervisor for AI coding workflows.
-        It watches task execution, routes work across agent executors (Copilot, Codex, Claude),
-        handles retries/failover, automates PR lifecycle, and keeps you in control through
-        Telegram, WhatsApp, and a full-featured control center.
+        <strong>Bosun</strong> is a control plane for autonomous software engineering. It routes work across
+        executor backends, manages task and workflow lifecycles, enforces quality gates around pull requests,
+        and keeps operators in control through Telegram, the Mini App, and optional desktop and voice surfaces.
       </p>
 
       <div class="callout callout--info">
-        <p>New to Bosun? Start with the <a href="getting-started.html">Quick Start guide</a> — it takes less than 5 minutes.</p>
+        <p>
+          These docs are static pages published from the repo. For repo-level deep dives, also see
+          <code>README.md</code>, <code>docs/</code>, and <code>_docs/</code> in
+          <a href="https://github.com/virtengine/bosun" target="_blank" rel="noopener">virtengine/bosun</a>.
+        </p>
       </div>
 
-      <h2>Why Bosun?</h2>
+      <h2>What Bosun does</h2>
 
-      <p>AI coding agents are fast, but unattended loops are expensive:</p>
       <ul>
-        <li><strong>Silent failures</strong> — agents crash with no notification</li>
-        <li><strong>Repeated retries</strong> — same error looping without progress</li>
-        <li><strong>Stale worktrees</strong> — merge drift and orphaned branches</li>
-        <li><strong>Disconnected notifications</strong> — no visibility into what's happening</li>
-      </ul>
-      <p>
-        Bosun is the <strong>control plane</strong> that keeps delivery moving: task routing,
-        monitored orchestration, conflict/PR lifecycle automation, and live bot control.
-      </p>
-
-      <h2>What's New in 0.36</h2>
-      <ul>
-        <li><strong>GitHub Projects v2 Integration:</strong> Full read/write support for GitHub Projects v2, including status sync and custom field mapping.</li>
-        <li><strong>Enhanced Security:</strong> Issue trust guard to prevent prompt injection attacks.</li>
-        <li><strong>Library Management:</strong> New Library tab for managing prompts, agent profiles, and skills.</li>
-        <li><strong>Task Attachments:</strong> Support for task and session uploads.</li>
-        <li><strong>Workspace Isolation:</strong> Agents now use the workspace repo root instead of the developer repo.</li>
-        <li><strong>UI & Setup Improvements:</strong> Web UI parity with terminal wizard, redesigned landing page, and visual polish across the dashboard.</li>
-        <li><strong>Advanced Configuration:</strong> Support for multiple API connection profiles per executor and enhanced Jira configuration parity.</li>
+        <li><strong>Routes execution</strong> across Codex, Copilot, Claude, Gemini, and OpenCode integrations.</li>
+        <li><strong>Owns workflow lifecycles</strong> for planning, execution, validation, PR review, and recovery.</li>
+        <li><strong>Persists state</strong> for tasks, sessions, shared workspaces, and workflow runs.</li>
+        <li><strong>Operates safely</strong> with retries, watchdogs, review gates, trust checks, and recovery tooling.</li>
+        <li><strong>Exposes control surfaces</strong> through CLI, Telegram, Mini App, desktop, and optional voice mode.</li>
       </ul>
 
-      <h2>Core Capabilities</h2>
+      <h2>Current platform shape</h2>
 
       <table>
         <thead>
           <tr>
-            <th>Capability</th>
-            <th>Description</th>
+            <th>Area</th>
+            <th>Current repo surface</th>
           </tr>
         </thead>
         <tbody>
           <tr>
-            <td><strong>Multi-Executor Routing</strong></td>
-            <td>Weighted distribution across Copilot, Codex, and Claude with automatic failover</td>
+            <td><strong>Entry points</strong></td>
+            <td><code>cli.mjs</code>, <code>setup.mjs</code>, <code>task/task-cli.mjs</code></td>
           </tr>
           <tr>
-            <td><strong>Smart PR Flow</strong></td>
-            <td>Creates PRs, monitors CI, auto-rebases, merges on green</td>
+            <td><strong>Runtime</strong></td>
+            <td><code>infra/</code>, <code>workflow/</code>, <code>workflow-templates/</code>, <code>task/</code></td>
           </tr>
           <tr>
-            <td><strong>Self-Healing</strong></td>
-            <td>Autofix patterns, circuit breakers, heartbeat-based stale recovery</td>
+            <td><strong>Interfaces</strong></td>
+            <td><code>server/</code>, <code>ui/</code>, <code>telegram/</code>, <code>desktop/</code>, <code>voice/</code></td>
           </tr>
           <tr>
-            <td><strong>Task Boards</strong></td>
-            <td>Internal board + GitHub Issues + GitHub Projects v2 + Jira adapters</td>
+            <td><strong>Integrations</strong></td>
+            <td><code>github/</code>, <code>kanban/</code>, <code>shell/</code>, <code>workspace/</code></td>
           </tr>
           <tr>
-            <td><strong>Telegram Control</strong></td>
-            <td>30+ bot commands, Mini App with 7 tabs, sentinel watchdog</td>
-          </tr>
-          <tr>
-            <td><strong>Multi-Agent Coordination</strong></td>
-            <td>Shared state, atomic claims, heartbeat liveness, stale sweeps</td>
-          </tr>
-          <tr>
-            <td><strong>Container Isolation</strong></td>
-            <td>Docker, Podman, and Apple Container support with concurrent limits</td>
+            <td><strong>Published docs</strong></td>
+            <td><code>site/docs/</code> with supporting source material in <code>docs/</code> and <code>_docs/</code></td>
           </tr>
         </tbody>
       </table>
 
-      <h2>Documentation Guide</h2>
+      <h2>Start here</h2>
 
-      <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(250px, 1fr)); gap: 1rem; margin: 1rem 0;">
-        <div style="background: var(--bg-card); border: 1px solid var(--border-subtle); border-radius: 12px; padding: 1.25rem;">
-          <h4 style="margin-top: 0;"><a href="getting-started.html">Quick Start</a></h4>
-          <p style="font-size: 0.85rem; margin: 0;">Install, configure, and launch your first fleet in under 5 minutes.</p>
+      <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(240px,1fr));gap:1rem;margin:1rem 0;">
+        <div style="background:var(--bg-card);border:1px solid var(--border-subtle);border-radius:12px;padding:1.25rem;">
+          <h3 style="margin-top:0;"><a href="getting-started.html">Quick Start</a></h3>
+          <p style="margin-bottom:0;">Install Bosun, run setup, validate the environment, and launch the monitor.</p>
         </div>
-        <div style="background: var(--bg-card); border: 1px solid var(--border-subtle); border-radius: 12px; padding: 1.25rem;">
-          <h4 style="margin-top: 0;"><a href="configuration.html">Configuration</a></h4>
-          <p style="font-size: 0.85rem; margin: 0;">Complete reference for .env, JSON config, executors, and env var overrides.</p>
+        <div style="background:var(--bg-card);border:1px solid var(--border-subtle);border-radius:12px;padding:1.25rem;">
+          <h3 style="margin-top:0;"><a href="configuration.html">Configuration</a></h3>
+          <p style="margin-bottom:0;">Understand load order, `.env`, JSON config, executor settings, and integration knobs.</p>
         </div>
-        <div style="background: var(--bg-card); border: 1px solid var(--border-subtle); border-radius: 12px; padding: 1.25rem;">
-          <h4 style="margin-top: 0;"><a href="cli-reference.html">CLI Reference</a></h4>
-          <p style="font-size: 0.85rem; margin: 0;">Every flag, command, and option documented with examples.</p>
+        <div style="background:var(--bg-card);border:1px solid var(--border-subtle);border-radius:12px;padding:1.25rem;">
+          <h3 style="margin-top:0;"><a href="cli-reference.html">CLI Reference</a></h3>
+          <p style="margin-bottom:0;">See the current command surface for runtime, tasks, workspaces, and companion tools.</p>
         </div>
-        <div style="background: var(--bg-card); border: 1px solid var(--border-subtle); border-radius: 12px; padding: 1.25rem;">
-          <h4 style="margin-top: 0;"><a href="architecture.html">Architecture</a></h4>
-          <p style="font-size: 0.85rem; margin: 0;">How the supervisor, orchestrator, and agents fit together.</p>
+        <div style="background:var(--bg-card);border:1px solid var(--border-subtle);border-radius:12px;padding:1.25rem;">
+          <h3 style="margin-top:0;"><a href="architecture.html">Architecture</a></h3>
+          <p style="margin-bottom:0;">Map the current module layout and how monitor, workflows, UI, and integrations connect.</p>
         </div>
-        <div style="background: var(--bg-card); border: 1px solid var(--border-subtle); border-radius: 12px; padding: 1.25rem;">
-          <h4 style="margin-top: 0;"><a href="integrations.html">Integrations</a></h4>
-          <p style="font-size: 0.85rem; margin: 0;">GitHub, Telegram, Jira, WhatsApp, Docker, Cloudflare — all covered.</p>
+        <div style="background:var(--bg-card);border:1px solid var(--border-subtle);border-radius:12px;padding:1.25rem;">
+          <h3 style="margin-top:0;"><a href="integrations.html">Integrations</a></h3>
+          <p style="margin-bottom:0;">GitHub, Telegram, Jira, Cloudflare tunnels, containers, voice, and executor providers.</p>
         </div>
       </div>
+
+      <h2>Recommended reading order</h2>
+
+      <ol>
+        <li>Start with <a href="getting-started.html">Quick Start</a> if you are installing or evaluating Bosun.</li>
+        <li>Use <a href="configuration.html">Configuration</a> to shape the runtime around your repos, executors, and channels.</li>
+        <li>Keep <a href="cli-reference.html">CLI Reference</a> open when operating Bosun from a terminal or automation.</li>
+        <li>Read <a href="architecture.html">Architecture</a> before changing workflows, server behavior, or runtime ownership.</li>
+        <li>Use <a href="integrations.html">Integrations</a> when wiring GitHub, Telegram, Jira, Cloudflare, or container execution.</li>
+      </ol>
 
       <h2>Requirements</h2>
 
       <ul>
-        <li><strong>Node.js</strong> 18+ (22 recommended)</li>
-        <li><strong>git</strong> installed and on PATH</li>
-        <li><strong>GitHub CLI</strong> (<code>gh</code>) — recommended for PR operations</li>
-        <li><strong>OS:</strong> Linux, macOS, and Windows fully supported</li>
-        <li><strong>Shell:</strong> Bash for <code>.sh</code> wrappers, PowerShell (<code>pwsh</code>) for <code>.ps1</code> wrappers</li>
+        <li><strong>Node.js 18+</strong> with current development generally targeting modern Node 20/22+ environments.</li>
+        <li><strong>Git</strong> on PATH.</li>
+        <li><strong>PowerShell 7+</strong> or <strong>Bash</strong> depending on your wrapper and host environment.</li>
+        <li><strong>GitHub CLI</strong> recommended for repository and PR workflows.</li>
+        <li><strong>Optional extras</strong> like cloudflared, Docker/Podman, and Telegram credentials depending on which surfaces you enable.</li>
       </ul>
 
       <div class="docs-nav-footer">
@@ -186,11 +174,10 @@
       </div>
     </main>
   </div>
-  <script src="../js/docs.js"></script>
-    <script src="../js/analytics-config.js"></script>
-  <script src="../js/analytics.js"></script>
 
+  <script src="../js/docs.js"></script>
+  <script src="../js/analytics-config.js"></script>
+  <script src="../js/analytics.js"></script>
   <script src="../js/main.js"></script>
 </body>
 </html>
-
