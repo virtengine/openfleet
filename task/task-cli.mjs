@@ -28,6 +28,7 @@
  */
 
 import { resolve, dirname } from "node:path";
+import { homedir } from "node:os";
 import { fileURLToPath } from "node:url";
 import { readFileSync, existsSync, statSync } from "node:fs";
 import { randomUUID } from "node:crypto";
@@ -66,17 +67,69 @@ async function initStore() {
     _taskStoreModule = await import("./task-store.mjs");
   }
   if (!_storeReady) {
-    // Resolve the true repo root: walk up from cwd looking for a .git directory
-    // (not a .git file, which indicates a submodule/worktree). This ensures we
-    // use the top-level repo's .bosun/.cache/ store, not a submodule's.
-    const repoRoot = findTrueRepoRoot(process.cwd()) || process.cwd();
-    _taskStoreModule.configureTaskStore({
-      storePath: resolve(repoRoot, ".bosun", ".cache", "kanban-state.json"),
-    });
+    const storePath = resolveKanbanStorePath();
+    _taskStoreModule.configureTaskStore({ storePath });
     _taskStoreModule.loadStore();
     _storeReady = true;
   }
   return _taskStoreModule;
+}
+
+/**
+ * Resolve the kanban store path with priority:
+ *   1. BOSUN_STORE_PATH env var (explicit override)
+ *   2. Active workspace store derived from global bosun.config.json
+ *   3. Repo root walked from CWD (legacy fallback)
+ */
+function resolveKanbanStorePath() {
+  if (process.env.BOSUN_STORE_PATH) return process.env.BOSUN_STORE_PATH;
+
+  try {
+    const bosunHome = _deriveBosunHome();
+    if (bosunHome) {
+      const configPath = resolve(bosunHome, "bosun.config.json");
+      if (existsSync(configPath)) {
+        const cfg = JSON.parse(readFileSync(configPath, "utf8"));
+        const workspacesDir = cfg.workspacesDir || resolve(bosunHome, "workspaces");
+        const activeWs = cfg.activeWorkspace;
+        if (activeWs && workspacesDir) {
+          const ws = (cfg.workspaces || []).find((w) => w.id === activeWs);
+          const primaryRepoName =
+            ws?.activeRepo ||
+            (cfg.repos || []).find((r) => r.primary)?.name;
+          if (primaryRepoName) {
+            const wsStorePath = resolve(
+              workspacesDir,
+              activeWs,
+              primaryRepoName,
+              ".bosun",
+              ".cache",
+              "kanban-state.json",
+            );
+            // Use this path if the containing directory already exists
+            // (daemon has initialised the workspace) or we can create it
+            const wsStoreDir = dirname(wsStorePath);
+            if (existsSync(wsStoreDir) || existsSync(dirname(wsStoreDir))) {
+              return wsStorePath;
+            }
+          }
+        }
+      }
+    }
+  } catch {
+    // fall through to legacy CWD-based resolution
+  }
+
+  const repoRoot = findTrueRepoRoot(process.cwd()) || process.cwd();
+  return resolve(repoRoot, ".bosun", ".cache", "kanban-state.json");
+}
+
+function _deriveBosunHome() {
+  if (process.env.BOSUN_HOME) return process.env.BOSUN_HOME;
+  if (process.env.BOSUN_DIR) return process.env.BOSUN_DIR;
+  // Windows: %APPDATA%/bosun, Unix: ~/.bosun
+  if (process.env.APPDATA) return resolve(process.env.APPDATA, "bosun");
+  return resolve(homedir(), ".bosun");
 }
 
 /**

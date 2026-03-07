@@ -93,6 +93,9 @@ jobs:
       - name: "Validate: prepublish check (files array + imports)"
         run: node tools/prepublish-check.mjs
 
+      - name: "Validate: packed CLI smoke test"
+        run: npm run smoke:packed-cli
+
       - name: "Validate: build passes"
         run: npm run build
 
