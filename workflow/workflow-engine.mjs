@@ -2442,18 +2442,6 @@ export class WorkflowEngine extends EventEmitter {
 
       if (!runs.length) {
         this._resumingRuns = false;
-    this._taskTraceHooks = new Set();
-    if (typeof opts.onTaskWorkflowEvent === "function") {
-      this._taskTraceHooks.add(opts.onTaskWorkflowEvent);
-    }
-    if (typeof opts.taskTraceHook === "function") {
-      this._taskTraceHooks.add(opts.taskTraceHook);
-    }
-    if (Array.isArray(opts.taskTraceHooks)) {
-      for (const hook of opts.taskTraceHooks) {
-        if (typeof hook === "function") this._taskTraceHooks.add(hook);
-      }
-    }
         return;
       }
 
@@ -2512,18 +2500,6 @@ export class WorkflowEngine extends EventEmitter {
       }
     } finally {
       this._resumingRuns = false;
-    this._taskTraceHooks = new Set();
-    if (typeof opts.onTaskWorkflowEvent === "function") {
-      this._taskTraceHooks.add(opts.onTaskWorkflowEvent);
-    }
-    if (typeof opts.taskTraceHook === "function") {
-      this._taskTraceHooks.add(opts.taskTraceHook);
-    }
-    if (Array.isArray(opts.taskTraceHooks)) {
-      for (const hook of opts.taskTraceHooks) {
-        if (typeof hook === "function") this._taskTraceHooks.add(hook);
-      }
-    }
     }
   }
 
