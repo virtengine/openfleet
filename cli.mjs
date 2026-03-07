@@ -864,6 +864,46 @@ function findAllBosunProcessPids() {
   }
 }
 
+function getRunningDaemonPids() {
+  const trackedDaemonPid = getDaemonPid();
+  if (trackedDaemonPid) return [trackedDaemonPid];
+  const ghostPids = findGhostDaemonPids();
+  return ghostPids.length > 0 ? ghostPids : [];
+}
+
+function stopBosunProcesses(
+  pids,
+  { reason = null, timeoutMs = 5000 } = {},
+) {
+  const targets = Array.from(
+    new Set(
+      (Array.isArray(pids) ? pids : []).filter(
+        (pid) => Number.isFinite(pid) && pid > 0 && pid !== process.pid,
+      ),
+    ),
+  );
+  if (targets.length === 0) return [];
+  if (reason) {
+    console.log(`  ${reason}: ${targets.join(", ")}`);
+  }
+  for (const pid of targets) {
+    try {
+      process.kill(pid, "SIGTERM");
+    } catch {
+      /* already dead */
+    }
+  }
+  const alive = waitForPidsToExit(targets, timeoutMs);
+  for (const pid of alive) {
+    try {
+      process.kill(pid, "SIGKILL");
+    } catch {
+      /* already dead */
+    }
+  }
+  return targets;
+}
+
 function removeKnownPidFiles(extraCacheDirs = []) {
   const pidFiles = uniqueResolvedPaths([
     ...getPidFileCandidates("bosun-daemon.pid", extraCacheDirs),
@@ -1506,78 +1546,57 @@ async function main() {
 
   // Handle --update (force update)
   if (args.includes("--update")) {
-    // Pre-stop any sibling Bosun processes to avoid Windows EBUSY locks during
-    // global npm install (especially portal/desktop/non-daemon instances).
-    const siblingPids = findAllBosunProcessPids().filter((pid) => pid !== process.pid);
-    if (siblingPids.length > 0) {
+    const runningDaemonPids = getRunningDaemonPids();
+    const shouldRestartDaemon = runningDaemonPids.length > 0;
+    const runningSiblingPids = findAllBosunProcessPids().filter(
+      (pid) => pid !== process.pid,
+    );
+    const runningNonDaemonPids = runningSiblingPids.filter(
+      (pid) => !runningDaemonPids.includes(pid),
+    );
+    if (shouldRestartDaemon) {
       console.log(
-        `  Stopping ${siblingPids.length} running bosun process(es) before update: ${siblingPids.join(", ")}`,
+        "  Note: a successful update will restart the bosun daemon automatically.",
       );
-      for (const pid of siblingPids) {
-        try {
-          process.kill(pid, "SIGTERM");
-        } catch {
-          /* already dead */
-        }
-      }
-      const deadline = Date.now() + 5000;
-      let alive = siblingPids.filter((pid) => isProcessAlive(pid));
-      while (alive.length > 0 && Date.now() < deadline) {
-        Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 200);
-        alive = alive.filter((pid) => isProcessAlive(pid));
-      }
-      for (const pid of alive) {
-        try {
-          process.kill(pid, "SIGKILL");
-        } catch {
-          /* already dead */
-        }
-      }
+    }
+    if (runningNonDaemonPids.length > 0) {
+      console.log(
+        `  Note: ${runningNonDaemonPids.length} other running bosun process(es) will be stopped after a successful update.`,
+      );
     }
 
     const { forceUpdate } = await import("./infra/update-check.mjs");
     const updated = await forceUpdate(VERSION);
-    if (updated) {
-      // If a daemon or other bosun process is running, restart it so it picks
-      // up the new version automatically — no manual restart needed.
-      const daemonPid = getDaemonPid();
-      const ghostPids = findGhostDaemonPids();
-      const daemonPids = daemonPid
-        ? [daemonPid]
-        : ghostPids.length > 0
-          ? ghostPids
-          : [];
-      if (daemonPids.length > 0) {
-        console.log(
-          `  Daemon running (PID ${daemonPids.join(", ")}). Stopping for restart...`,
-        );
-        for (const p of daemonPids) {
-          try {
-            process.kill(p, "SIGTERM");
-          } catch {
-            /* already dead */
-          }
-        }
-        // Wait up to 4 s for graceful exit
-        const deadline = Date.now() + 4000;
-        let alive = daemonPids.filter((p) => isProcessAlive(p));
-        while (alive.length > 0 && Date.now() < deadline) {
-          Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 200);
-          alive = alive.filter((p) => isProcessAlive(p));
-        }
-        for (const p of alive) {
-          try {
-            process.kill(p, "SIGKILL");
-          } catch {
-            /* ok */
-          }
-        }
-        removePidFile();
-        console.log("  Restarting daemon with updated version...");
-        startDaemon(); // spawns new daemon-child and calls process.exit(0)
-        return; // unreachable — startDaemon exits
-      }
+    if (!updated) {
+      process.exit(0);
     }
+
+    // Only stop sibling processes once npm has actually installed the update.
+    const daemonPids = getRunningDaemonPids();
+    const siblingPids = Array.from(
+      new Set([
+        ...findAllBosunProcessPids().filter((pid) => pid !== process.pid),
+        ...daemonPids,
+      ]),
+    );
+    stopBosunProcesses(siblingPids, {
+      reason: `Stopping ${siblingPids.length} running bosun process(es) to finish update`,
+      timeoutMs: 5000,
+    });
+
+    if (shouldRestartDaemon) {
+      if (daemonPids.length > 0) {
+        removePidFile();
+      }
+      console.log("  Restarting daemon with updated version...");
+      startDaemon(); // spawns new daemon-child and calls process.exit(0)
+      return; // unreachable — startDaemon exits
+    }
+
+    if (siblingPids.length > 0) {
+      console.log("  Restart stopped bosun sessions manually if you still need them.");
+    }
+    console.log("  Restart bosun to use the new version.\n");
     process.exit(0);
   }
 
