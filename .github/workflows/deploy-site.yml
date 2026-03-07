@@ -8,7 +8,7 @@ on:
       - "_docs/**"
       - "docs/**"
       - "package.json"
-      - "build-docs.mjs"
+      - "tools/build-docs.mjs"
   workflow_dispatch:
 
 permissions:
@@ -37,7 +37,7 @@ jobs:
           node-version: "20"
 
       - name: Inject version into docs
-        run: node build-docs.mjs
+        run: node tools/build-docs.mjs
 
       - name: Setup Pages
         uses: actions/configure-pages@v4
