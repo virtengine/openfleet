@@ -2984,6 +2984,46 @@
         const t = { id, title: body?.title || 'New task', status: 'todo', priority: body?.priority || 'medium', assignee: null, branch: null, pr: null, created: Date.now(), updated: Date.now() };
         STATE.tasks.unshift(t); addLog('success', 'kanban', `Task created: ${t.title}`);
         return { ok: true, data: t };
+      }      if (route === '/api/tasks/subtasks') {
+        if (method === 'GET') {
+          const taskId = String(params.get('taskId') || params.get('id') || params.get('parentTaskId') || '').trim();
+          if (!taskId) return { ok: false, error: 'taskId required' };
+          const subtasks = STATE.tasks.filter((entry) => {
+            const parentId = String(entry?.parentTaskId || entry?.meta?.parentTaskId || '').trim();
+            return parentId === taskId;
+          });
+          return { ok: true, taskId, data: subtasks };
+        }
+        const parentTaskId = String(body?.parentTaskId || body?.taskId || body?.parentId || '').trim();
+        const title = String(body?.title || '').trim();
+        if (!parentTaskId) return { ok: false, error: 'parentTaskId required' };
+        if (!title) return { ok: false, error: 'title required' };
+        const parentTask = findTask(parentTaskId);
+        if (!parentTask) return { ok: false, error: 'parent task not found' };
+        const createdAt = Date.now();
+        const subtask = {
+          id: 've-sub-' + Math.random().toString(36).slice(2, 8),
+          title,
+          description: String(body?.description || ''),
+          status: String(body?.status || 'todo'),
+          priority: body?.priority || 'medium',
+          assignee: body?.assignee || null,
+          assignees: Array.isArray(body?.assignees)
+            ? body.assignees.filter(Boolean)
+            : body?.assignee
+              ? [body.assignee]
+              : [],
+          parentTaskId,
+          created: createdAt,
+          updated: createdAt,
+          meta: {
+            ...(body?.meta && typeof body.meta === 'object' ? body.meta : {}),
+            parentTaskId,
+          },
+        };
+        STATE.tasks.unshift(subtask);
+        addLog('success', 'kanban', Subtask created: );
+        return { ok: true, parentTaskId, data: subtask };
       }
       if (route === '/api/tasks/rewrite') {
         const origTitle = String(body?.title || '').trim();
@@ -4932,4 +4972,6 @@
   </script>
 </body>
 </html>
+
+
 

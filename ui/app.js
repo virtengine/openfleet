@@ -1075,7 +1075,7 @@ function InspectorPanel({ onResizeStart, onResizeReset, showResizer }) {
           (entry, idx) => html`
             <div key=${idx} class="inspector-log-line ${entry.level || "info"}">
               <span class="inspector-log-level">
-                ${String(entry.type || entry.level || "activity").replace(/_/g, " ").toUpperCase()}
+                ${String(entry.type || entry.level || "activity").replaceAll("_", " ").toUpperCase()}
               </span>
               <span class="inspector-log-text">
                 ${String(entry.label || "").slice(0, 220) || "Session activity recorded."}

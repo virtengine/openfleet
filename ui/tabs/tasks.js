@@ -1992,6 +1992,12 @@ export function TaskDetailModal({ task, onClose, onStart }) {
     priority: task?.priority || "",
     tagsInput: getTaskTags(task).join(", "),
     draft: Boolean(task?.draft || task?.status === "draft"),
+    assignee: toText(pickTaskField(task, ["assignee"])),
+    assigneesInput: normalizeTaskAssigneesInput(task),
+    epicId: toText(pickTaskField(task, ["epicId", "epic", "epic_id"])),
+    storyPoints: toText(pickTaskField(task, ["storyPoints", "points", "story_points"])),
+    dueDate: normalizeTaskDueDateInput(task),
+    parentTaskId: toText(pickTaskField(task, ["parentTaskId", "parentId", "parent_task_id"])),
   });
   const pendingKey = useMemo(
     () => `modal:task-detail:${task?.id || "unknown"}`,
@@ -5117,6 +5123,7 @@ function CreateTaskModalInline({ onClose }) {
     <//>
   `;
 }
+
 
 
 

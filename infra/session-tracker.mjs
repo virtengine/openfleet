@@ -855,7 +855,10 @@ export class SessionTracker {
   #refreshDerivedState(session) {
     if (!session) return;
     try {
-      session.insights = buildSessionInsights(session);
+      session.insights = buildSessionInsights({
+        ...session,
+        insights: null,
+      });
     } catch {
       // Inspector insights are best-effort only.
     }
