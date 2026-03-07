@@ -39,6 +39,7 @@ function detectRepoRoot() {
     return execSync("git rev-parse --show-toplevel", {
       encoding: "utf8",
       stdio: ["pipe", "pipe", "ignore"],
+      timeout: 1500,
     }).trim();
   } catch {
     return process.cwd();
@@ -144,8 +145,12 @@ function mergeNoOverride(base, extra) {
 function commandExists(command) {
   try {
     const checker = process.platform === "win32" ? "where" : "which";
-    spawnSync(checker, [command], { stdio: "ignore" });
-    return true;
+    const result = spawnSync(checker, [command], {
+      stdio: "ignore",
+      timeout: 1500,
+      windowsHide: true,
+    });
+    return result.status === 0;
   } catch {
     return false;
   }
@@ -982,3 +987,5 @@ export function formatWorkspaceHealthReport(result) {
 
   return lines.join("\n");
 }
+
+

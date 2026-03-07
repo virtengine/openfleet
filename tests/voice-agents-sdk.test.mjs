@@ -167,7 +167,7 @@ describe("voice-agents-sdk", () => {
 
   describe("createOpenAIRealtimeAgent", () => {
     it("creates a RealtimeAgent with default instructions", async () => {
-      const result = await createOpenAIRealtimeAgent();
+      const result = await createOpenAIRealtimeAgent({ enrichInstructions: false });
       expect(result).not.toBeNull();
       expect(result.agent).toBeDefined();
       expect(result.provider).toBe("openai");
@@ -184,6 +184,7 @@ describe("voice-agents-sdk", () => {
         name: "Custom Agent",
         instructions: "Custom instructions",
         tools,
+        enrichInstructions: false,
       });
       expect(result.agent).toBeDefined();
       expect(mockRealtimeAgent).toHaveBeenCalledWith(

@@ -744,6 +744,16 @@ class InternalAdapter {
       ? task.meta.comments
       : [];
     const normalizedComments = normalizeCommentList(rawComments);
+    const assignee = normalizeTaskStringField(resolveTaskField(task, "assignee"));
+    const assignees = normalizeTaskStringList(
+      resolveTaskField(task, "assignees", assignee ? [assignee] : []),
+    );
+    const epicId = normalizeTaskStringField(resolveTaskField(task, "epicId"));
+    const storyPoints = normalizeTaskNumericField(resolveTaskField(task, "storyPoints"));
+    const parentTaskId = normalizeTaskStringField(
+      resolveTaskField(task, "parentTaskId"),
+    );
+    const dueDate = normalizeTaskStringField(resolveTaskField(task, "dueDate"));
     const existingAttachments = []
       .concat(Array.isArray(task.attachments) ? task.attachments : [])
       .concat(Array.isArray(task.meta?.attachments) ? task.meta.attachments : []);
@@ -757,7 +767,12 @@ class InternalAdapter {
       title: recoveredTitle || "",
       description,
       status: normaliseStatus(task.status || recoveredStatus),
-      assignee: task.assignee || null,
+      assignee: assignee || assignees[0] || null,
+      assignees,
+      epicId,
+      storyPoints,
+      parentTaskId,
+      dueDate,
       priority: task.priority || null,
       tags,
       draft,
@@ -862,6 +877,20 @@ class InternalAdapter {
     if (typeof patch.workspace === "string") updates.workspace = patch.workspace;
     if (typeof patch.repository === "string") updates.repository = patch.repository;
     if (Array.isArray(patch.repositories)) updates.repositories = patch.repositories;
+    const assigneeProvided = hasOwnField(patch, "assignee");
+    const assigneesProvided = hasOwnField(patch, "assignees");
+    const assignee = normalizeTaskStringField(patch.assignee ?? patch.meta?.assignee);
+    const assignees = normalizeTaskStringList(
+      assigneesProvided
+        ? patch.assignees
+        : patch.meta?.assignees ?? (assignee ? [assignee] : []),
+    );
+    const epicId = normalizeTaskStringField(patch.epicId ?? patch.meta?.epicId);
+    const storyPoints = normalizeTaskNumericField(patch.storyPoints ?? patch.meta?.storyPoints);
+    const parentTaskId = normalizeTaskStringField(
+      patch.parentTaskId ?? patch.meta?.parentTaskId,
+    );
+    const dueDate = normalizeTaskStringField(patch.dueDate ?? patch.meta?.dueDate);
     if (Array.isArray(patch.tags) || Array.isArray(patch.labels) || typeof patch.tags === "string") {
       updates.tags = normalizeTags(patch.tags ?? patch.labels);
     }
@@ -875,10 +904,32 @@ class InternalAdapter {
     if (baseBranch) {
       updates.baseBranch = baseBranch;
     }
+    if (assigneeProvided || assignee || assignees.length > 0) {
+      updates.assignee = assignee || assignees[0] || null;
+      updates.assignees = assignees.length > 0 ? assignees : assignee ? [assignee] : [];
+    }
+    if (hasOwnField(patch, "epicId") || epicId) updates.epicId = epicId;
+    if (hasOwnField(patch, "storyPoints") || storyPoints != null) {
+      updates.storyPoints = storyPoints;
+    }
+    if (hasOwnField(patch, "parentTaskId") || parentTaskId) {
+      updates.parentTaskId = parentTaskId;
+    }
+    if (hasOwnField(patch, "dueDate") || dueDate) updates.dueDate = dueDate;
     if (patch.meta && typeof patch.meta === "object") {
       updates.meta = {
         ...(current?.meta || {}),
         ...patch.meta,
+        ...((assigneeProvided || assignee || assignees.length > 0)
+          ? {
+            assignee: assignee || assignees[0] || null,
+            assignees: assignees.length > 0 ? assignees : assignee ? [assignee] : [],
+          }
+          : {}),
+        ...((hasOwnField(patch, "epicId") || epicId) ? { epicId } : {}),
+        ...((hasOwnField(patch, "storyPoints") || storyPoints != null) ? { storyPoints } : {}),
+        ...((hasOwnField(patch, "parentTaskId") || parentTaskId) ? { parentTaskId } : {}),
+        ...((hasOwnField(patch, "dueDate") || dueDate) ? { dueDate } : {}),
         ...(typeof patch.workspace === "string" ? { workspace: patch.workspace } : {}),
         ...(typeof patch.repository === "string" ? { repository: patch.repository } : {}),
         ...(Array.isArray(patch.repositories) ? { repositories: patch.repositories } : {}),
@@ -903,12 +954,29 @@ class InternalAdapter {
     const tags = normalizeTags(taskData.tags || taskData.labels || []);
     const draft = Boolean(taskData.draft || taskData.status === "draft");
     const baseBranch = resolveBaseBranchInput(taskData);
+    const assignee = normalizeTaskStringField(taskData.assignee ?? taskData.meta?.assignee);
+    const assignees = normalizeTaskStringList(
+      taskData.assignees ?? taskData.meta?.assignees ?? (assignee ? [assignee] : []),
+    );
+    const epicId = normalizeTaskStringField(taskData.epicId ?? taskData.meta?.epicId);
+    const storyPoints = normalizeTaskNumericField(
+      taskData.storyPoints ?? taskData.meta?.storyPoints,
+    );
+    const parentTaskId = normalizeTaskStringField(
+      taskData.parentTaskId ?? taskData.meta?.parentTaskId,
+    );
+    const dueDate = normalizeTaskStringField(taskData.dueDate ?? taskData.meta?.dueDate);
     const created = addInternalTask({
       id,
       title: taskData.title || "Untitled task",
       description: taskData.description || "",
       status: draft ? "draft" : normaliseStatus(taskData.status || "todo"),
-      assignee: taskData.assignee || null,
+      assignee: assignee || assignees[0] || null,
+      assignees,
+      epicId,
+      storyPoints,
+      parentTaskId,
+      dueDate,
       priority: taskData.priority || null,
       tags,
       draft,
@@ -932,6 +1000,16 @@ class InternalAdapter {
       baseBranch,
       meta: {
         ...(taskData.meta || {}),
+        ...((assignee || assignees.length > 0)
+          ? {
+            assignee: assignee || assignees[0] || null,
+            assignees: assignees.length > 0 ? assignees : assignee ? [assignee] : [],
+          }
+          : {}),
+        ...(epicId ? { epicId } : {}),
+        ...(storyPoints != null ? { storyPoints } : {}),
+        ...(parentTaskId ? { parentTaskId } : {}),
+        ...(dueDate ? { dueDate } : {}),
         ...(taskData.workspace ? { workspace: taskData.workspace } : {}),
         ...(taskData.repository || taskData.repo
           ? { repository: taskData.repository || taskData.repo }
@@ -1002,6 +1080,43 @@ function normalizeLabels(raw) {
 
 function normalizeTags(raw) {
   return normalizeLabels(raw);
+}
+
+function hasOwnField(value, key) {
+  return Object.prototype.hasOwnProperty.call(value || {}, key);
+}
+
+function normalizeTaskStringField(value) {
+  const normalized = String(value || "").trim();
+  return normalized || null;
+}
+
+function normalizeTaskStringList(value) {
+  const values = Array.isArray(value)
+    ? value
+    : typeof value === "string"
+      ? value.split(",")
+      : [];
+  const seen = new Set();
+  const normalized = [];
+  for (const entry of values) {
+    const next = normalizeTaskStringField(entry?.login || entry?.name || entry);
+    if (!next || seen.has(next)) continue;
+    seen.add(next);
+    normalized.push(next);
+  }
+  return normalized;
+}
+
+function normalizeTaskNumericField(value) {
+  const numeric = Number(value);
+  return Number.isFinite(numeric) ? numeric : null;
+}
+
+function resolveTaskField(task, key, fallback = null) {
+  if (task?.[key] != null) return task[key];
+  if (task?.meta?.[key] != null) return task.meta[key];
+  return fallback;
 }
 
 function looksLikeKanbanEntity(value) {

@@ -2985,6 +2985,47 @@
         STATE.tasks.unshift(t); addLog('success', 'kanban', `Task created: ${t.title}`);
         return { ok: true, data: t };
       }
+      if (route === '/api/tasks/subtasks') {
+        if (method === 'GET') {
+          const taskId = String(params.get('taskId') || params.get('id') || params.get('parentTaskId') || '').trim();
+          if (!taskId) return { ok: false, error: 'taskId required' };
+          const subtasks = STATE.tasks.filter((entry) => {
+            const parentId = String(entry?.parentTaskId || entry?.meta?.parentTaskId || '').trim();
+            return parentId === taskId;
+          });
+          return { ok: true, taskId, data: subtasks };
+        }
+        const parentTaskId = String(body?.parentTaskId || body?.taskId || body?.parentId || '').trim();
+        const title = String(body?.title || '').trim();
+        if (!parentTaskId) return { ok: false, error: 'parentTaskId required' };
+        if (!title) return { ok: false, error: 'title required' };
+        const parentTask = findTask(parentTaskId);
+        if (!parentTask) return { ok: false, error: 'parent task not found' };
+        const createdAt = Date.now();
+        const subtask = {
+          id: 've-sub-' + Math.random().toString(36).slice(2, 8),
+          title,
+          description: String(body?.description || ''),
+          status: String(body?.status || 'todo'),
+          priority: body?.priority || 'medium',
+          assignee: body?.assignee || null,
+          assignees: Array.isArray(body?.assignees)
+            ? body.assignees.filter(Boolean)
+            : body?.assignee
+              ? [body.assignee]
+              : [],
+          parentTaskId,
+          created: createdAt,
+          updated: createdAt,
+          meta: {
+            ...(body?.meta && typeof body.meta === 'object' ? body.meta : {}),
+            parentTaskId,
+          },
+        };
+        STATE.tasks.unshift(subtask);
+        addLog('success', 'kanban', `Subtask created: ${subtask.title}`);
+        return { ok: true, parentTaskId, data: subtask };
+      }
       if (route === '/api/tasks/rewrite') {
         const origTitle = String(body?.title || '').trim();
         const origDesc = String(body?.description || '').trim();
@@ -3051,7 +3092,32 @@
         addLog('info', 'tasks', `Comment added: ${t.title}`);
         return { ok: true, comment, comments: t.comments, data: t };
       }
-      if (route === '/api/tasks/retry') {
+      if (route === '/api/tasks/dependencies') {
+        const taskId = body?.taskId || body?.id;
+        const t = findTask(taskId);
+        if (!t) return { ok: false, error: 'Task not found' };
+        const dependencies = Array.isArray(body?.dependencies)
+          ? body.dependencies.map((value) => String(value || '').trim()).filter(Boolean)
+          : [];
+        t.dependencies = dependencies;
+        t.dependencyTaskIds = dependencies;
+        t.dependsOn = dependencies;
+        if (body?.sprintId) t.sprintId = String(body.sprintId);
+        if (body?.sprintOrder != null && Number.isFinite(Number(body.sprintOrder))) {
+          t.sprintOrder = Number(body.sprintOrder);
+        }
+        t.updated = Date.now();
+        addLog('info', 'tasks', `Dependencies updated: ${t.title}`);
+        return {
+          ok: true,
+          taskId: t.id,
+          dependencies,
+          added: dependencies,
+          removed: [],
+          data: t,
+          dag: { sprintId: t.sprintId || null, sprint: { nodes: [] }, global: { nodes: [] } },
+        };
+      }      if (route === '/api/tasks/retry') {
         const t = findTask(body?.taskId);
         if (t) { t.status = 'todo'; t.updated = Date.now(); addLog('info', 'task-executor', `Task retried: ${t.title}`); }
         return { ok: true, data: t || null };
@@ -3941,6 +4007,74 @@
           ok: true,
           agents,
           defaultAgentId: agents[0]?.id || 'voice-agent-female',
+        };
+      }
+
+      if (route === '/api/voice/config' && method === 'GET') {
+        const provider = String(STATE.settings?.VOICE_PROVIDER || 'openai').trim() || 'openai';
+        const model = String(STATE.settings?.VOICE_MODEL || 'gpt-audio-1.5').trim() || 'gpt-audio-1.5';
+        const voiceId = String(STATE.settings?.VOICE_ID || 'alloy').trim() || 'alloy';
+        return {
+          ok: true,
+          available: true,
+          tier: 1,
+          provider,
+          model,
+          voiceId,
+          reason: null,
+        };
+      }
+
+      if (route === '/api/voice/sdk-config' && method === 'GET') {
+        const provider = String(STATE.settings?.VOICE_PROVIDER || 'openai').trim() || 'openai';
+        return {
+          ok: true,
+          useSdk: false,
+          provider,
+          fallbackReason: 'Demo mode forces legacy voice transport',
+        };
+      }
+
+      if (route === '/api/voice/token' && method === 'POST') {
+        const provider = String(STATE.settings?.VOICE_PROVIDER || 'openai').trim() || 'openai';
+        const model = String(STATE.settings?.VOICE_MODEL || 'gpt-audio-1.5').trim() || 'gpt-audio-1.5';
+        const voiceId = String(body?.voiceId || STATE.settings?.VOICE_ID || 'alloy').trim() || 'alloy';
+        return {
+          ok: true,
+          provider,
+          model,
+          voiceId,
+          transport: 'responses-audio',
+          sessionConfig: {
+            voice: voiceId,
+          },
+          instructions: 'You are Bosun Demo Voice. Keep replies concise and practical.',
+          tools: [],
+        };
+      }
+
+      if (route === '/api/voice/transcript' && method === 'POST') {
+        return {
+          ok: true,
+          persisted: true,
+        };
+      }
+
+      if (route === '/api/voice/tool' && method === 'POST') {
+        const toolName = String(body?.toolName || '').trim() || 'unknown_tool';
+        const args = body?.args && typeof body.args === 'object' ? body.args : {};
+        const rawMessage =
+          typeof args?.message === 'string'
+            ? args.message
+            : (typeof args?.query === 'string' ? args.query : '');
+        const message = String(rawMessage || '').trim();
+        const text = message
+          ? buildDemoVoiceText(message)
+          : `Demo mode executed ${toolName}.`;
+        return {
+          ok: true,
+          result: text,
+          toolName,
         };
       }
 

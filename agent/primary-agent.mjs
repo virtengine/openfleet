@@ -741,6 +741,114 @@ const FALLBACK_ORDER = [
   "opencode-sdk",
 ];
 
+const FAILOVER_CONSECUTIVE_INFRA_ERRORS = Math.max(
+  1,
+  Number(process.env.PRIMARY_AGENT_FAILOVER_CONSECUTIVE_INFRA_ERRORS) || 3,
+);
+const FAILOVER_ERROR_WINDOW_MS = Math.max(
+  10_000,
+  Number(process.env.PRIMARY_AGENT_FAILOVER_ERROR_WINDOW_MS) ||
+    10 * 60 * 1000,
+);
+const _primaryRecoveryRetryEnv = Number(
+  process.env.PRIMARY_AGENT_RECOVERY_RETRY_ATTEMPTS,
+);
+const PRIMARY_RECOVERY_RETRY_ATTEMPTS = Number.isFinite(
+  _primaryRecoveryRetryEnv,
+)
+  ? Math.max(0, _primaryRecoveryRetryEnv)
+  : 1;
+
+const _adapterFailureState = new Map();
+
+function adapterErrorText(err) {
+  const message = String(err?.message || err || "");
+  const code = String(err?.code || "");
+  return `${code} ${message}`.trim();
+}
+
+function isSessionScopedAdapterError(err) {
+  const text = adapterErrorText(err).toLowerCase();
+  if (!text) return false;
+  return (
+    /\b(session|thread|conversation|context)\b.*\b(not found|expired|invalid|closed|corrupt)\b/.test(
+      text,
+    ) ||
+    /\bfailed to resume session\b/.test(text) ||
+    /\bsession does not exist\b/.test(text)
+  );
+}
+
+function isInfrastructureAdapterError(err) {
+  const text = adapterErrorText(err).toLowerCase();
+  if (!text) return false;
+  return (
+    /\bagent_timeout\b/.test(text) ||
+    /\bcodex exec exited with code\b/.test(text) ||
+    /\btransport channel closed\b/.test(text) ||
+    /\bstream disconnected\b/.test(text) ||
+    /\brate limit|too many requests|429\b/.test(text) ||
+    /\bservice unavailable|temporarily unavailable|overloaded\b/.test(text) ||
+    /\bcannot find module\b/.test(text) ||
+    /\bsdk not available|failed to load sdk\b/.test(text) ||
+    /\beconnreset|econnrefused|etimedout|network error\b/.test(text) ||
+    /\bsegfault|crash|killed\b/.test(text)
+  );
+}
+
+function clearAdapterFailureState(adapterName) {
+  if (!adapterName) return;
+  _adapterFailureState.delete(adapterName);
+}
+
+function noteAdapterFailure(adapterName, err) {
+  const now = Date.now();
+  const infrastructure = isInfrastructureAdapterError(err);
+  const previous = _adapterFailureState.get(adapterName) || {
+    streak: 0,
+    lastAt: 0,
+    lastError: "",
+    infrastructure: false,
+  };
+
+  const next = {
+    streak: 0,
+    lastAt: now,
+    lastError: adapterErrorText(err),
+    infrastructure,
+  };
+
+  if (infrastructure) {
+    const withinWindow =
+      now - Number(previous.lastAt || 0) <= FAILOVER_ERROR_WINDOW_MS;
+    next.streak =
+      withinWindow && previous.infrastructure ? previous.streak + 1 : 1;
+  }
+
+  _adapterFailureState.set(adapterName, next);
+  return {
+    ...next,
+    allowFailover:
+      infrastructure && next.streak >= FAILOVER_CONSECUTIVE_INFRA_ERRORS,
+  };
+}
+
+async function recoverAdapterSession(adapter, adapterName) {
+  if (!adapter) return;
+  if (typeof adapter.reset === "function") {
+    try {
+      await adapter.reset();
+    } catch (err) {
+      console.warn(
+        `[primary-agent] recovery reset failed for ${adapterName}: ${err?.message || err}`,
+      );
+    }
+  }
+  if (typeof adapter.init === "function") {
+    await adapter.init();
+  }
+}
+
 function mapAdapterToPoolSdk(adapterName) {
   const normalized = String(adapterName || "").trim().toLowerCase();
   if (normalized === "copilot-sdk") return "copilot";
@@ -875,8 +983,12 @@ export async function execPrimaryPrompt(userMessage, options = {}) {
   }
 
   let lastError = null;
+  const maxAdaptersToTry = Math.min(
+    adaptersToTry.length,
+    maxFailoverAttempts + 1,
+  );
 
-  for (let attempt = 0; attempt < Math.min(adaptersToTry.length, maxFailoverAttempts + 1); attempt++) {
+  for (let attempt = 0; attempt < maxAdaptersToTry; attempt++) {
     const adapterName = adaptersToTry[attempt];
     const adapter = ADAPTERS[adapterName];
     if (!adapter) continue;
@@ -950,16 +1062,96 @@ export async function execPrimaryPrompt(userMessage, options = {}) {
           });
         }
       }
+      clearAdapterFailureState(adapterName);
       return result;
     } catch (err) {
       lastError = err;
       const isTimeout = err.message?.startsWith("AGENT_TIMEOUT");
+      const isPrimaryAttempt = attempt === 0;
       console.error(
         `[primary-agent] ${isTimeout ? ":clock: Timeout" : ":close: Error"} with ${adapterName}: ${err.message}`,
       );
 
+      if (
+        isPrimaryAttempt &&
+        PRIMARY_RECOVERY_RETRY_ATTEMPTS > 0 &&
+        (isSessionScopedAdapterError(err) || isInfrastructureAdapterError(err))
+      ) {
+        for (let retry = 1; retry <= PRIMARY_RECOVERY_RETRY_ATTEMPTS; retry++) {
+          try {
+            console.warn(
+              `[primary-agent] :arrows_counterclockwise: recovering ${adapterName} session (${retry}/${PRIMARY_RECOVERY_RETRY_ATTEMPTS})`,
+            );
+            tracker.recordEvent(sessionId, {
+              role: "system",
+              type: "recovery",
+              content: `:arrows_counterclockwise: Recovering ${adapterName} session (${retry}/${PRIMARY_RECOVERY_RETRY_ATTEMPTS}) before any failover.`,
+              timestamp: new Date().toISOString(),
+            });
+            await recoverAdapterSession(adapter, adapterName);
+            const timeoutAbort = new AbortController();
+            if (options.abortController?.signal) {
+              const callerSignal = options.abortController.signal;
+              if (callerSignal.aborted) {
+                timeoutAbort.abort(callerSignal.reason);
+              } else {
+                callerSignal.addEventListener("abort", () => {
+                  timeoutAbort.abort(callerSignal.reason || "user_stop");
+                }, { once: true });
+              }
+            }
+            const retryResult = await withTimeout(
+              adapter.exec(framedMessage, { ...options, sessionId, abortController: timeoutAbort }),
+              timeoutMs,
+              `${adapterName}.exec.retry`,
+              timeoutAbort,
+            );
+            const retryText = typeof retryResult === "string"
+              ? retryResult
+              : retryResult.finalResponse || retryResult.text || retryResult.message || JSON.stringify(retryResult);
+            tracker.recordEvent(sessionId, {
+              role: "assistant",
+              content: retryText,
+              timestamp: new Date().toISOString(),
+              _sessionType: sessionType,
+            });
+            clearAdapterFailureState(adapterName);
+            return retryResult;
+          } catch (retryErr) {
+            lastError = retryErr;
+            console.error(
+              `[primary-agent] :close: recovery attempt ${retry}/${PRIMARY_RECOVERY_RETRY_ATTEMPTS} failed for ${adapterName}: ${retryErr?.message || retryErr}`,
+            );
+          }
+        }
+      }
+
+      const failureState = noteAdapterFailure(adapterName, lastError);
+      const shouldBlockPrimaryFailover =
+        isPrimaryAttempt && !failureState.allowFailover;
+
+      if (shouldBlockPrimaryFailover) {
+        const waitReason = failureState.infrastructure
+          ? `holding failover until ${FAILOVER_CONSECUTIVE_INFRA_ERRORS} consecutive infrastructure failures (${failureState.streak}/${FAILOVER_CONSECUTIVE_INFRA_ERRORS})`
+          : "error classified as session-scoped/non-infrastructure";
+        console.warn(
+          `[primary-agent] failover suppressed for ${adapterName}: ${waitReason}`,
+        );
+        tracker.recordEvent(sessionId, {
+          role: "system",
+          type: "error",
+          content: `:warning: ${adapterName} error: ${lastError?.message || "unknown error"}. Failover suppressed (${waitReason}).`,
+          timestamp: new Date().toISOString(),
+        });
+        return {
+          finalResponse: `:warning: ${adapterName} error: ${lastError?.message || "unknown error"}. Failover suppressed (${waitReason}).`,
+          items: [],
+          usage: null,
+        };
+      }
+
       // If this is the last adapter, report to user
-      if (attempt >= Math.min(adaptersToTry.length, maxFailoverAttempts + 1) - 1) {
+      if (attempt >= maxAdaptersToTry - 1) {
         tracker.recordEvent(sessionId, {
           role: "system",
           type: "error",

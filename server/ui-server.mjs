@@ -180,6 +180,14 @@ const TASK_STORE_DAG_EXPORTS = Object.freeze({
   sprint: ["getSprintDag", "getTaskDagForSprint", "buildSprintDag", "buildTaskDag"],
   global: ["getGlobalDagOfDags", "getDagOfDags", "buildGlobalDagOfDags"],
 });
+const TASK_STORE_GET_TASK_EXPORTS = ["getTaskById", "getTask"];
+const TASK_STORE_COMMENT_EXPORTS = ["getTaskComments", "listTaskComments"];
+const TASK_STORE_DEPENDENCY_EXPORTS = {
+  add: ["addTaskDependency"],
+  remove: ["removeTaskDependency"],
+  update: ["updateTask"],
+};
+const TASK_STORE_ASSIGN_SPRINT_EXPORTS = ["assignTaskToSprint", "setTaskSprint"];
 let taskStoreApi = null;
 let taskStoreApiPromise = null;
 let didLogTaskStoreLoadFailure = false;
@@ -5988,6 +5996,210 @@ async function getGlobalDagData() {
     data: dagResult.value,
   };
 }
+
+function normalizeTaskComments(comments = []) {
+  if (!Array.isArray(comments)) return [];
+  return comments
+    .map((entry, index) => {
+      const id = String(entry?.id || entry?.commentId || `comment-${index + 1}`).trim();
+      const body = String(entry?.body || entry?.text || entry?.message || "").trim();
+      if (!body) return null;
+      const author = String(entry?.author || entry?.createdBy || entry?.actor || "unknown").trim() || "unknown";
+      const createdAt = String(entry?.createdAt || entry?.timestamp || entry?.time || "").trim() || new Date(0).toISOString();
+      return {
+        id,
+        body,
+        author,
+        createdAt,
+        raw: entry,
+      };
+    })
+    .filter(Boolean);
+}
+
+async function getTaskByIdForApi(taskId, adapter = null) {
+  const result = await callTaskStoreFunction(TASK_STORE_GET_TASK_EXPORTS, [taskId]);
+  if (result.found && result.value) return result.value;
+  const fallbackAdapter = adapter || getKanbanAdapter();
+  if (typeof fallbackAdapter?.getTask === "function") {
+    return fallbackAdapter.getTask(taskId).catch(() => null);
+  }
+  return null;
+}
+
+async function buildDagSnapshotsForTask(task = null, sprintId = "") {
+  const resolvedSprintId = String(sprintId || resolveTaskSprintId(task)).trim();
+  const sprintDag = resolvedSprintId ? await getSprintDagData(resolvedSprintId) : null;
+  const globalDag = await getGlobalDagData();
+  return {
+    sprintId: resolvedSprintId || null,
+    sprint: sprintDag,
+    global: globalDag,
+  };
+}
+
+function normalizeTaskIdList(values = [], { exclude = "" } = {}) {
+  const excluded = String(exclude || "").trim();
+  const seen = new Set();
+  const list = [];
+  for (const value of Array.isArray(values) ? values : []) {
+    const id = String(value || "").trim();
+    if (!id || id === excluded || seen.has(id)) continue;
+    seen.add(id);
+    list.push(id);
+  }
+  return list;
+}
+
+async function assignTaskToSprintForApi({ taskId, sprintId, sprintOrder, adapter = null }) {
+  const resolvedSprintId = String(sprintId || "").trim();
+  if (!resolvedSprintId) {
+    return { ok: false, error: "sprintId required" };
+  }
+
+  const normalizedOrder = Number.isFinite(Number(sprintOrder)) ? Number(sprintOrder) : null;
+  const sprintPayload = {
+    id: resolvedSprintId,
+    name: resolvedSprintId,
+    status: "planned",
+  };
+  try {
+    await callTaskStoreFunction(["upsertSprint"], [sprintPayload], (name, args) => {
+      if (name === "upsertSprint") return [resolvedSprintId, sprintPayload];
+      return args;
+    });
+  } catch {
+    // Sprint bootstrap is best-effort; assignment/update fallback still runs.
+  }
+
+  const assignResult = await callTaskStoreFunction(
+    TASK_STORE_ASSIGN_SPRINT_EXPORTS,
+    [taskId, resolvedSprintId, { sprintOrder: normalizedOrder }],
+  );
+
+  await callTaskStoreFunction(TASK_STORE_DEPENDENCY_EXPORTS.update, [taskId, {
+    sprintId: resolvedSprintId,
+    sprint: resolvedSprintId,
+    ...(normalizedOrder != null ? { sprintOrder: normalizedOrder } : {}),
+  }]);
+
+  const fallbackAdapter = adapter || getKanbanAdapter();
+  const updatedTask = await getTaskByIdForApi(taskId, fallbackAdapter);
+  const dag = await buildDagSnapshotsForTask(updatedTask, resolvedSprintId);
+
+  return {
+    ok: true,
+    assignedVia: assignResult.found || null,
+    data: updatedTask,
+    dag,
+  };
+}
+
+async function setTaskDependenciesForApi({
+  taskId,
+  dependencies,
+  sprintId,
+  sprintOrder,
+  adapter = null,
+}) {
+  const fallbackAdapter = adapter || getKanbanAdapter();
+  const task = await getTaskByIdForApi(taskId, fallbackAdapter);
+  if (!task) {
+    return { ok: false, status: 404, error: "Task not found." };
+  }
+
+  const normalizedDependencies = normalizeTaskIdList(dependencies, { exclude: taskId });
+  const currentDependencies = normalizeDependencyIds(task);
+  const toAdd = normalizedDependencies.filter((depId) => !currentDependencies.includes(depId));
+  const toRemove = currentDependencies.filter((depId) => !normalizedDependencies.includes(depId));
+
+  for (const depId of toRemove) {
+    await callTaskStoreFunction(TASK_STORE_DEPENDENCY_EXPORTS.remove, [taskId, depId]);
+  }
+  for (const depId of toAdd) {
+    await callTaskStoreFunction(TASK_STORE_DEPENDENCY_EXPORTS.add, [taskId, depId]);
+  }
+
+  const normalizedSprintId = String(sprintId || "").trim();
+  const normalizedOrder = Number.isFinite(Number(sprintOrder)) ? Number(sprintOrder) : null;
+  const updatePatch = {
+    dependencyTaskIds: normalizedDependencies,
+    dependsOn: normalizedDependencies,
+    dependencies: normalizedDependencies,
+    ...(normalizedSprintId ? { sprintId: normalizedSprintId, sprint: normalizedSprintId } : {}),
+    ...(normalizedOrder != null ? { sprintOrder: normalizedOrder } : {}),
+  };
+  await callTaskStoreFunction(TASK_STORE_DEPENDENCY_EXPORTS.update, [taskId, updatePatch]);
+
+  if (normalizedSprintId) {
+    await assignTaskToSprintForApi({
+      taskId,
+      sprintId: normalizedSprintId,
+      sprintOrder: normalizedOrder,
+      adapter: fallbackAdapter,
+    });
+  }
+
+  const updatedTask = await getTaskByIdForApi(taskId, fallbackAdapter);
+  const dag = await buildDagSnapshotsForTask(updatedTask, normalizedSprintId || resolveTaskSprintId(updatedTask));
+
+  return {
+    ok: true,
+    data: updatedTask,
+    dependencies: normalizedDependencies,
+    added: toAdd,
+    removed: toRemove,
+    dag,
+  };
+}
+
+async function getTaskCommentsForApi(taskId, adapter = null) {
+  const storeComments = await callTaskStoreFunction(TASK_STORE_COMMENT_EXPORTS, [taskId]);
+  if (storeComments.found && Array.isArray(storeComments.value)) {
+    return normalizeTaskComments(storeComments.value);
+  }
+
+  const task = await getTaskByIdForApi(taskId, adapter || getKanbanAdapter());
+  const comments = Array.isArray(task?.comments)
+    ? task.comments
+    : Array.isArray(task?.meta?.comments)
+      ? task.meta.comments
+      : [];
+  return normalizeTaskComments(comments);
+}
+
+async function listAllTasksForApi(adapter = null) {
+  const fallbackAdapter = adapter || getKanbanAdapter();
+  if (typeof fallbackAdapter?.listTasks === "function") {
+    try {
+      let projectId = activeProjectId.value || "";
+      if (!projectId && typeof fallbackAdapter?.listProjects === "function") {
+        const projects = await fallbackAdapter.listProjects();
+        projectId = projects?.[0]?.id || projects?.[0]?.project_id || "";
+      }
+      const tasks = await fallbackAdapter.listTasks(projectId, {});
+      if (Array.isArray(tasks) && tasks.length > 0) return tasks;
+      if (projectId) {
+        const unscopedTasks = await fallbackAdapter.listTasks("", {});
+        if (Array.isArray(unscopedTasks) && unscopedTasks.length > 0) {
+          return unscopedTasks;
+        }
+      }
+    } catch {
+      // Fall through to broader adapter/task-store snapshots.
+    }
+  }
+  if (typeof fallbackAdapter?.getAllTasks === "function") {
+    try {
+      const tasks = await fallbackAdapter.getAllTasks();
+      if (Array.isArray(tasks)) return tasks;
+    } catch {
+      // Fall through to internal task-store snapshot.
+    }
+  }
+  const tasks = getAllInternalTasks();
+  return Array.isArray(tasks) ? tasks : [];
+}
 function normalizeTaskStatusKey(status) {
   return String(status || "")
     .trim()
@@ -7612,6 +7824,169 @@ function normalizeBranchInput(input) {
   return trimmed ? trimmed : null;
 }
 
+function hasOwn(obj, key) {
+  return Boolean(obj) && Object.prototype.hasOwnProperty.call(obj, key);
+}
+
+function normalizeOptionalStringInput(input) {
+  const trimmed = String(input ?? "").trim();
+  return trimmed || null;
+}
+
+function normalizeAssigneesInput(input) {
+  if (!input) return [];
+  const values = Array.isArray(input)
+    ? input
+    : String(input || "")
+        .split(",")
+        .map((entry) => entry.trim())
+        .filter(Boolean);
+  const seen = new Set();
+  const assignees = [];
+  for (const value of values) {
+    const normalized = String(value || "").trim();
+    if (!normalized || seen.has(normalized)) continue;
+    seen.add(normalized);
+    assignees.push(normalized);
+  }
+  return assignees;
+}
+
+function buildTaskMetadataPatch(input = {}) {
+  const topLevel = {};
+  const meta = {};
+  const assigneesProvided = hasOwn(input, "assignees");
+
+  if (hasOwn(input, "assignee")) {
+    const assignee = normalizeOptionalStringInput(input?.assignee);
+    if (assignee) {
+      topLevel.assignee = assignee;
+      meta.assignee = assignee;
+      if (!assigneesProvided) {
+        topLevel.assignees = [assignee];
+        meta.assignees = [assignee];
+      }
+    }
+  }
+
+  if (assigneesProvided) {
+    const assignees = normalizeAssigneesInput(input?.assignees);
+    if (assignees.length > 0) {
+      topLevel.assignees = assignees;
+      meta.assignees = assignees;
+      if (!hasOwn(topLevel, "assignee")) {
+        topLevel.assignee = assignees[0];
+      }
+      if (!hasOwn(meta, "assignee")) {
+        meta.assignee = assignees[0];
+      }
+    }
+  }
+
+  if (hasOwn(input, "epicId")) {
+    const epicId = normalizeOptionalStringInput(input?.epicId);
+    if (epicId) {
+      topLevel.epicId = epicId;
+      meta.epicId = epicId;
+    }
+  }
+
+  if (hasOwn(input, "storyPoints")) {
+    const numeric = Number(input?.storyPoints);
+    if (Number.isFinite(numeric)) {
+      topLevel.storyPoints = numeric;
+      meta.storyPoints = numeric;
+    }
+  }
+
+  if (hasOwn(input, "parentTaskId")) {
+    const parentTaskId = normalizeOptionalStringInput(input?.parentTaskId);
+    if (parentTaskId) {
+      topLevel.parentTaskId = parentTaskId;
+      meta.parentTaskId = parentTaskId;
+    }
+  }
+
+  if (hasOwn(input, "dueDate")) {
+    const dueDate = normalizeOptionalStringInput(input?.dueDate);
+    if (dueDate) {
+      topLevel.dueDate = dueDate;
+      meta.dueDate = dueDate;
+    }
+  }
+
+  return { topLevel, meta };
+}
+
+const SPRINT_EXECUTION_MODES = new Set(["sequential", "parallel"]);
+
+function normalizeSprintExecutionMode(input) {
+  const normalized = String(input ?? "").trim().toLowerCase();
+  return SPRINT_EXECUTION_MODES.has(normalized) ? normalized : null;
+}
+
+function normalizeSprintPayloadForApi(input = {}) {
+  if (!input || typeof input !== "object") return {};
+  const payload = { ...input };
+  const rawMode = payload.executionMode ?? payload.taskOrderMode ?? payload.mode;
+  if (rawMode != null) {
+    const mode = normalizeSprintExecutionMode(rawMode);
+    if (!mode) {
+      return { error: "executionMode must be one of: sequential, parallel" };
+    }
+    payload.executionMode = mode;
+    payload.taskOrderMode = mode;
+  }
+  return { payload };
+}
+
+function normalizeSprintResponseForApi(sprint) {
+  if (!sprint || typeof sprint !== "object") return sprint ?? null;
+  const normalized = { ...sprint };
+  const mode = normalizeSprintExecutionMode(
+    normalized.executionMode ?? normalized.taskOrderMode ?? normalized.mode,
+  );
+  if (mode) {
+    normalized.executionMode = mode;
+    normalized.taskOrderMode = mode;
+  }
+  return normalized;
+}
+
+function normalizeSprintListResponseForApi(list) {
+  if (!Array.isArray(list)) return [];
+  return list.map((entry) => normalizeSprintResponseForApi(entry));
+}
+
+function hasTaskPatchValues(patch = {}) {
+  for (const value of Object.values(patch)) {
+    if (typeof value === "string" && value.trim()) return true;
+    if (typeof value === "number" && Number.isFinite(value)) return true;
+    if (typeof value === "boolean") return true;
+    if (Array.isArray(value) && value.length > 0) return true;
+    if (value && typeof value === "object" && !Array.isArray(value) && Object.keys(value).length > 0) return true;
+  }
+  return false;
+}
+
+function withTaskMetadataTopLevel(task) {
+  if (!task || typeof task !== "object") return task;
+  const meta = task?.meta && typeof task.meta === "object" ? task.meta : null;
+  if (!meta) return task;
+
+  let next = task;
+  const keys = ["assignee", "assignees", "epicId", "storyPoints", "parentTaskId", "dueDate"];
+  for (const key of keys) {
+    if (meta[key] != null && next[key] !== meta[key]) {
+      next = { ...next, [key]: meta[key] };
+    }
+  }
+  if (!next.assignee && Array.isArray(next.assignees) && next.assignees.length > 0) {
+    next = { ...next, assignee: next.assignees[0] };
+  }
+  return next;
+}
+
 async function getLatestLogTail(lineCount) {
   const logPath = await resolvePreferredSystemLogPath();
   if (!logPath) return { file: null, lines: [] };
@@ -8335,7 +8710,8 @@ async function handleApi(req, res, url) {
         jsonResponse(res, 501, { ok: false, error: "Sprint APIs are unavailable." });
         return;
       }
-      jsonResponse(res, 200, { ok: true, source: `task-store.${list.found}`, data: list.value || [] });
+      const sprintList = normalizeSprintListResponseForApi(list.value || []);
+      jsonResponse(res, 200, { ok: true, source: `task-store.${list.found}`, data: sprintList });
     } catch (err) {
       jsonResponse(res, 500, { ok: false, error: err.message });
     }
@@ -8345,13 +8721,88 @@ async function handleApi(req, res, url) {
   if (path === "/api/tasks/sprints" && req.method === "POST") {
     try {
       const body = await readJsonBody(req);
-      const create = await callTaskStoreFunction(TASK_STORE_SPRINT_EXPORTS.create, [body || {}]);
+      const normalized = normalizeSprintPayloadForApi(body || {});
+      if (normalized.error) {
+        jsonResponse(res, 400, { ok: false, error: normalized.error });
+        return;
+      }
+      const create = await callTaskStoreFunction(TASK_STORE_SPRINT_EXPORTS.create, [normalized.payload || {}]);
       if (!create.found) {
         jsonResponse(res, 501, { ok: false, error: "Sprint create API is unavailable." });
         return;
       }
-      jsonResponse(res, 200, { ok: true, source: `task-store.${create.found}`, data: create.value || null });
+      const sprint = normalizeSprintResponseForApi(create.value || null);
+      jsonResponse(res, 200, { ok: true, source: `task-store.${create.found}`, data: sprint });
       broadcastUiEvent(["tasks", "overview"], "invalidate", { reason: "sprint-created" });
+    } catch (err) {
+      jsonResponse(res, 500, { ok: false, error: err.message });
+    }
+    return;
+  }
+
+  if (path.startsWith("/api/tasks/sprints/") && path.endsWith("/dag") && req.method === "GET") {
+    try {
+      const sprintId = decodeURIComponent(path.slice("/api/tasks/sprints/".length, -"/dag".length));
+      if (!sprintId) {
+        jsonResponse(res, 400, { ok: false, error: "sprintId required" });
+        return;
+      }
+      const sprintDag = await getSprintDagData(sprintId);
+      if (!sprintDag) {
+        jsonResponse(res, 501, { ok: false, error: "Sprint DAG API is unavailable." });
+        return;
+      }
+      const sprintResult = await callTaskStoreFunction(TASK_STORE_SPRINT_EXPORTS.get, [sprintId]);
+      const sprint = sprintResult.found ? normalizeSprintResponseForApi(sprintResult.value || null) : null;
+      jsonResponse(res, 200, { ok: true, sprintId, source: sprintDag.source, sprint, data: sprintDag.data });
+    } catch (err) {
+      jsonResponse(res, 500, { ok: false, error: err.message });
+    }
+    return;
+  }
+
+  if (path.startsWith("/api/tasks/sprints/") && path.endsWith("/tasks") && req.method === "POST") {
+    try {
+      const sprintId = decodeURIComponent(path.slice("/api/tasks/sprints/".length, -"/tasks".length));
+      const body = await readJsonBody(req);
+      const taskId = String(body?.taskId || body?.id || "").trim();
+      if (!sprintId) {
+        jsonResponse(res, 400, { ok: false, error: "sprintId required" });
+        return;
+      }
+      if (!taskId) {
+        jsonResponse(res, 400, { ok: false, error: "taskId required" });
+        return;
+      }
+
+      const adapter = getKanbanAdapter();
+      const assigned = await assignTaskToSprintForApi({
+        taskId,
+        sprintId,
+        sprintOrder: body?.sprintOrder,
+        adapter,
+      });
+      if (!assigned.ok) {
+        jsonResponse(res, 400, { ok: false, error: assigned.error || "Unable to assign task to sprint" });
+        return;
+      }
+
+      jsonResponse(res, 200, {
+        ok: true,
+        taskId,
+        sprintId,
+        assignedVia: assigned.assignedVia,
+        data: assigned.data,
+        dag: {
+          sprint: assigned.dag?.sprint?.data || null,
+          global: assigned.dag?.global?.data || null,
+        },
+      });
+      broadcastUiEvent(["tasks", "overview"], "invalidate", {
+        reason: "task-sprint-assigned",
+        taskId,
+        sprintId,
+      });
     } catch (err) {
       jsonResponse(res, 500, { ok: false, error: err.message });
     }
@@ -8370,7 +8821,8 @@ async function handleApi(req, res, url) {
         jsonResponse(res, 501, { ok: false, error: "Sprint get API is unavailable." });
         return;
       }
-      jsonResponse(res, 200, { ok: true, source: `task-store.${getResult.found}`, data: getResult.value || null });
+      const sprint = normalizeSprintResponseForApi(getResult.value || null);
+      jsonResponse(res, 200, { ok: true, source: `task-store.${getResult.found}`, data: sprint });
     } catch (err) {
       jsonResponse(res, 500, { ok: false, error: err.message });
     }
@@ -8385,12 +8837,18 @@ async function handleApi(req, res, url) {
         jsonResponse(res, 400, { ok: false, error: "sprintId required" });
         return;
       }
-      const update = await callTaskStoreFunction(TASK_STORE_SPRINT_EXPORTS.update, [sprintId, body || {}]);
+      const normalized = normalizeSprintPayloadForApi(body || {});
+      if (normalized.error) {
+        jsonResponse(res, 400, { ok: false, error: normalized.error });
+        return;
+      }
+      const update = await callTaskStoreFunction(TASK_STORE_SPRINT_EXPORTS.update, [sprintId, normalized.payload || {}]);
       if (!update.found) {
         jsonResponse(res, 501, { ok: false, error: "Sprint update API is unavailable." });
         return;
       }
-      jsonResponse(res, 200, { ok: true, source: `task-store.${update.found}`, data: update.value || null });
+      const sprint = normalizeSprintResponseForApi(update.value || null);
+      jsonResponse(res, 200, { ok: true, source: `task-store.${update.found}`, data: sprint });
       broadcastUiEvent(["tasks", "overview"], "invalidate", { reason: "sprint-updated", sprintId });
     } catch (err) {
       jsonResponse(res, 500, { ok: false, error: err.message });
@@ -8430,10 +8888,14 @@ async function handleApi(req, res, url) {
         jsonResponse(res, 501, { ok: false, error: "Sprint DAG API is unavailable." });
         return;
       }
+      const sprint = sprintDag.sprintId
+        ? await callTaskStoreFunction(TASK_STORE_SPRINT_EXPORTS.get, [sprintDag.sprintId])
+        : { found: null, value: null };
       jsonResponse(res, 200, {
         ok: true,
         sprintId: sprintDag.sprintId,
         source: sprintDag.source,
+        sprint: sprint.found ? normalizeSprintResponseForApi(sprint.value || null) : null,
         data: sprintDag.data,
       });
     } catch (err) {
@@ -8542,6 +9004,54 @@ async function handleApi(req, res, url) {
     return;
   }
 
+  if (path === "/api/tasks/dependencies" && req.method === "PUT") {
+    try {
+      const body = await readJsonBody(req);
+      const taskId = String(body?.taskId || body?.id || "").trim();
+      const dependencies = Array.isArray(body?.dependencies) ? body.dependencies : [];
+      const sprintId = String(body?.sprintId || body?.sprint || "").trim();
+      const sprintOrder = body?.sprintOrder;
+
+      if (!taskId) {
+        jsonResponse(res, 400, { ok: false, error: "taskId required" });
+        return;
+      }
+
+      const adapter = getKanbanAdapter();
+      const result = await setTaskDependenciesForApi({
+        taskId,
+        dependencies,
+        sprintId,
+        sprintOrder,
+        adapter,
+      });
+      if (!result.ok) {
+        jsonResponse(res, result.status || 400, { ok: false, error: result.error || "Failed to set dependencies." });
+        return;
+      }
+
+      jsonResponse(res, 200, {
+        ok: true,
+        taskId,
+        dependencies: result.dependencies,
+        added: result.added,
+        removed: result.removed,
+        data: result.data,
+        dag: {
+          sprintId: result.dag?.sprintId || null,
+          sprint: result.dag?.sprint?.data || null,
+          global: result.dag?.global?.data || null,
+        },
+      });
+      broadcastUiEvent(["tasks", "overview"], "invalidate", {
+        reason: "task-dependencies-updated",
+        taskId,
+      });
+    } catch (err) {
+      jsonResponse(res, 500, { ok: false, error: err.message });
+    }
+    return;
+  }
   if (path === "/api/tasks/start") {
     try {
       const body = await readJsonBody(req);
@@ -8674,16 +9184,14 @@ async function handleApi(req, res, url) {
       const previousTask = typeof adapter.getTask === "function"
         ? await adapter.getTask(taskId).catch(() => null)
         : null;
-      const tagsProvided = body && Object.prototype.hasOwnProperty.call(body, "tags");
+      const tagsProvided = hasOwn(body, "tags");
       const tags = tagsProvided ? normalizeTagsInput(body?.tags) : undefined;
-      const draftProvided = body && Object.prototype.hasOwnProperty.call(body, "draft");
-      const baseBranchProvided =
-        body &&
-        (Object.prototype.hasOwnProperty.call(body, "baseBranch") ||
-          Object.prototype.hasOwnProperty.call(body, "base_branch"));
+      const draftProvided = hasOwn(body, "draft");
+      const baseBranchProvided = hasOwn(body, "baseBranch") || hasOwn(body, "base_branch");
       const baseBranch = baseBranchProvided
         ? normalizeBranchInput(body?.baseBranch ?? body?.base_branch)
         : undefined;
+      const metadataPatch = buildTaskMetadataPatch(body || {});
       const patch = {
         status: body?.status,
         title: body?.title,
@@ -8695,27 +9203,28 @@ async function handleApi(req, res, url) {
         ...(tagsProvided ? { tags } : {}),
         ...(draftProvided ? { draft: Boolean(body?.draft) } : {}),
         ...(baseBranchProvided ? { baseBranch } : {}),
+        ...metadataPatch.topLevel,
+        ...(Object.keys(metadataPatch.meta).length > 0
+          ? {
+            meta: {
+              ...(previousTask?.meta && typeof previousTask.meta === "object" ? previousTask.meta : {}),
+              ...metadataPatch.meta,
+            },
+          }
+          : {}),
       };
-      const hasPatch = Object.values(patch).some(
-        (value) => typeof value === "string" && value.trim(),
-      );
-      const hasTags = Array.isArray(patch.tags);
-      const hasDraft = typeof patch.draft === "boolean";
-      const hasBaseBranch = baseBranchProvided;
-      const hasWorkspace = typeof patch.workspace === "string";
-      const hasRepository = typeof patch.repository === "string";
-      const hasRepositories = Array.isArray(patch.repositories);
-      if (!hasPatch && !hasTags && !hasDraft && !hasBaseBranch && !hasWorkspace && !hasRepository && !hasRepositories) {
+      if (!hasTaskPatchValues(patch) && !baseBranchProvided && !draftProvided && !tagsProvided) {
         jsonResponse(res, 400, {
           ok: false,
           error: "No update fields provided",
         });
         return;
       }
-      const updated =
+      const updatedRaw =
         typeof adapter.updateTask === "function"
           ? await adapter.updateTask(taskId, patch)
           : await adapter.updateTaskStatus(taskId, patch.status);
+      const updated = withTaskMetadataTopLevel(updatedRaw);
       const nextStatus = updated?.status || patch.status || null;
       const lifecycleAction = inferLifecycleAction(
         previousTask?.status || null,
@@ -8799,16 +9308,14 @@ async function handleApi(req, res, url) {
       const previousTask = typeof adapter.getTask === "function"
         ? await adapter.getTask(taskId).catch(() => null)
         : null;
-      const tagsProvided = body && Object.prototype.hasOwnProperty.call(body, "tags");
+      const tagsProvided = hasOwn(body, "tags");
       const tags = tagsProvided ? normalizeTagsInput(body?.tags) : undefined;
-      const draftProvided = body && Object.prototype.hasOwnProperty.call(body, "draft");
-      const baseBranchProvided =
-        body &&
-        (Object.prototype.hasOwnProperty.call(body, "baseBranch") ||
-          Object.prototype.hasOwnProperty.call(body, "base_branch"));
+      const draftProvided = hasOwn(body, "draft");
+      const baseBranchProvided = hasOwn(body, "baseBranch") || hasOwn(body, "base_branch");
       const baseBranch = baseBranchProvided
         ? normalizeBranchInput(body?.baseBranch ?? body?.base_branch)
         : undefined;
+      const metadataPatch = buildTaskMetadataPatch(body || {});
       const patch = {
         title: body?.title,
         description: body?.description,
@@ -8820,27 +9327,28 @@ async function handleApi(req, res, url) {
         ...(tagsProvided ? { tags } : {}),
         ...(draftProvided ? { draft: Boolean(body?.draft) } : {}),
         ...(baseBranchProvided ? { baseBranch } : {}),
+        ...metadataPatch.topLevel,
+        ...(Object.keys(metadataPatch.meta).length > 0
+          ? {
+            meta: {
+              ...(previousTask?.meta && typeof previousTask.meta === "object" ? previousTask.meta : {}),
+              ...metadataPatch.meta,
+            },
+          }
+          : {}),
       };
-      const hasPatch = Object.values(patch).some(
-        (value) => typeof value === "string" && value.trim(),
-      );
-      const hasTags = Array.isArray(patch.tags);
-      const hasDraft = typeof patch.draft === "boolean";
-      const hasBaseBranch = baseBranchProvided;
-      const hasWorkspace = typeof patch.workspace === "string";
-      const hasRepository = typeof patch.repository === "string";
-      const hasRepositories = Array.isArray(patch.repositories);
-      if (!hasPatch && !hasTags && !hasDraft && !hasBaseBranch && !hasWorkspace && !hasRepository && !hasRepositories) {
+      if (!hasTaskPatchValues(patch) && !baseBranchProvided && !draftProvided && !tagsProvided) {
         jsonResponse(res, 400, {
           ok: false,
           error: "No edit fields provided",
         });
         return;
       }
-      const updated =
+      const updatedRaw =
         typeof adapter.updateTask === "function"
           ? await adapter.updateTask(taskId, patch)
           : await adapter.updateTaskStatus(taskId, patch.status);
+      const updated = withTaskMetadataTopLevel(updatedRaw);
       const nextStatus = updated?.status || patch.status || null;
       const lifecycleAction = inferLifecycleAction(
         previousTask?.status || null,
@@ -8911,6 +9419,26 @@ async function handleApi(req, res, url) {
   }
 
 
+  if (path === "/api/tasks/comment" && req.method === "GET") {
+    try {
+      const taskId = String(url.searchParams.get("taskId") || url.searchParams.get("id") || url.searchParams.get("parentTaskId") || "").trim();
+      if (!taskId) {
+        jsonResponse(res, 400, { ok: false, error: "taskId required" });
+        return;
+      }
+
+      const adapter = getKanbanAdapter();
+      const comments = await getTaskCommentsForApi(taskId, adapter);
+      jsonResponse(res, 200, {
+        ok: true,
+        taskId,
+        comments,
+      });
+    } catch (err) {
+      jsonResponse(res, 500, { ok: false, error: err.message });
+    }
+    return;
+  }
   if (path === "/api/tasks/comment" && req.method === "POST") {
     try {
       const body = await readJsonBody(req);
@@ -8981,6 +9509,7 @@ async function handleApi(req, res, url) {
       const repositories = Array.isArray(body?.repositories)
         ? body.repositories.filter((value) => typeof value === "string" && value.trim())
         : [];
+      const metadataFields = buildTaskMetadataPatch(body || {});
       const taskData = {
         title: String(title).trim(),
         description: body?.description || "",
@@ -8992,6 +9521,7 @@ async function handleApi(req, res, url) {
         ...(tags.length ? { tags } : {}),
         ...(tags.length ? { labels: tags } : {}),
         ...(baseBranch ? { baseBranch } : {}),
+        ...metadataFields.topLevel,
         meta: {
           ...(workspace ? { workspace } : {}),
           ...(repository ? { repository } : {}),
@@ -8999,13 +9529,88 @@ async function handleApi(req, res, url) {
           ...(tags.length ? { tags } : {}),
           ...(wantsDraft ? { draft: true } : {}),
           ...(baseBranch ? { base_branch: baseBranch, baseBranch } : {}),
+          ...metadataFields.meta,
         },
       };
-      const created = await adapter.createTask(projectId, taskData);
+      const createdRaw = await adapter.createTask(projectId, taskData);
+      const created = withTaskMetadataTopLevel(createdRaw);
       jsonResponse(res, 200, { ok: true, data: created });
       broadcastUiEvent(["tasks", "overview"], "invalidate", {
         reason: "task-created",
         taskId: created?.id || null,
+      });
+    } catch (err) {
+      jsonResponse(res, 500, { ok: false, error: err.message });
+    }
+    return;
+  }
+
+  if (path === "/api/tasks/subtasks" && req.method === "GET") {
+    try {
+      const taskId = String(url.searchParams.get("taskId") || url.searchParams.get("id") || url.searchParams.get("parentTaskId") || "").trim();
+      if (!taskId) {
+        jsonResponse(res, 400, { ok: false, error: "taskId required" });
+        return;
+      }
+      const adapter = getKanbanAdapter();
+      const tasks = await listAllTasksForApi(adapter);
+      const subtasks = tasks.filter((entry) => {
+        const parent = String(entry?.parentTaskId || entry?.meta?.parentTaskId || "").trim();
+        return parent === taskId;
+      });
+      jsonResponse(res, 200, { ok: true, taskId, data: subtasks });
+    } catch (err) {
+      jsonResponse(res, 500, { ok: false, error: err.message });
+    }
+    return;
+  }
+
+  if (path === "/api/tasks/subtasks" && req.method === "POST") {
+    try {
+      const body = await readJsonBody(req);
+      const parentTaskId = String(body?.parentTaskId || body?.taskId || body?.parentId || "").trim();
+      const title = String(body?.title || "").trim();
+      if (!parentTaskId) {
+        jsonResponse(res, 400, { ok: false, error: "parentTaskId required" });
+        return;
+      }
+      if (!title) {
+        jsonResponse(res, 400, { ok: false, error: "title required" });
+        return;
+      }
+      const adapter = getKanbanAdapter();
+      const parentTask = typeof adapter.getTask === "function"
+        ? await adapter.getTask(parentTaskId).catch(() => null)
+        : null;
+      if (typeof adapter.getTask === "function" && !parentTask) {
+        jsonResponse(res, 404, { ok: false, error: "parent task not found" });
+        return;
+      }
+      const projectId = body?.project || "";
+      const metadataFields = buildTaskMetadataPatch({ ...(body || {}), parentTaskId });
+      const subtaskPayload = {
+        title,
+        description: body?.description || "",
+        status: body?.status || "todo",
+        priority: body?.priority || parentTask?.priority || undefined,
+        parentTaskId,
+        workspace: body?.workspace || parentTask?.workspace || parentTask?.meta?.workspace || undefined,
+        repository: body?.repository || parentTask?.repository || parentTask?.meta?.repository || undefined,
+        ...metadataFields.topLevel,
+        meta: {
+          parentTaskId,
+          workspace: body?.workspace || parentTask?.workspace || parentTask?.meta?.workspace || undefined,
+          repository: body?.repository || parentTask?.repository || parentTask?.meta?.repository || undefined,
+          ...metadataFields.meta,
+        },
+      };
+      const createdRaw = await adapter.createTask(projectId, subtaskPayload);
+      const created = withTaskMetadataTopLevel(createdRaw);
+      jsonResponse(res, 200, { ok: true, parentTaskId, data: created });
+      broadcastUiEvent(["tasks", "overview"], "invalidate", {
+        reason: "subtask-created",
+        taskId: created?.id || null,
+        parentTaskId,
       });
     } catch (err) {
       jsonResponse(res, 500, { ok: false, error: err.message });
@@ -11170,6 +11775,34 @@ async function handleApi(req, res, url) {
         return;
       }
 
+      if (action === "stop" && req.method === "POST") {
+        if (typeof engine.cancelRun !== "function") {
+          jsonResponse(res, 501, { ok: false, error: "Workflow run cancellation is not supported by this engine." });
+          return;
+        }
+        const body = await readJsonBody(req);
+        const reason = String(body?.reason || "Run cancellation requested from UI").trim() || "Run cancellation requested from UI";
+        const result = engine.cancelRun(runId, { reason });
+        if (!result?.ok) {
+          const statusCode = String(result?.error || "").includes("not found") ? 404 : 409;
+          jsonResponse(res, statusCode, {
+            ok: false,
+            error: result?.error || "Unable to stop workflow run",
+            runId,
+            status: result?.status || null,
+          });
+          return;
+        }
+        jsonResponse(res, 200, {
+          ok: true,
+          runId,
+          status: result?.status || "running",
+          cancelRequested: true,
+          alreadyRequested: result?.alreadyRequested === true,
+          cancelRequestedAt: result?.cancelRequestedAt || Date.now(),
+        });
+        return;
+      }
       // ── POST /api/workflows/runs/:id/retry ──────────────────────────
       // Manual retry endpoint. Accepts { mode: "from_failed" | "from_scratch" }.
       // If mode is omitted, returns available retry options so the UI can
@@ -11386,7 +12019,9 @@ async function handleApi(req, res, url) {
       }
       const mf = await import("../workflow/manual-flows.mjs");
       const ctx = resolveActiveWorkspaceExecutionContext();
-      const run = await mf.executeFlow(templateId, formValues || {}, ctx.workspaceDir, {});
+      const wfCtx = await getWorkflowRequestContext(url);
+      const flowContext = wfCtx?.ok ? { engine: wfCtx.engine } : {};
+      const run = await mf.executeFlow(templateId, formValues || {}, ctx.workspaceDir, flowContext);
       jsonResponse(res, 200, { ok: true, run });
     } catch (err) {
       jsonResponse(res, 500, { ok: false, error: err.message });
@@ -14747,8 +15382,20 @@ export async function startTelegramUiServer(options = {}) {
   }
 
   const publicHost = options.publicHost || process.env.TELEGRAM_UI_PUBLIC_HOST;
-  const lanIp = getLocalLanIp();
-  const host = publicHost || lanIp;
+  const boundHost = String(
+    options.host || process.env.TELEGRAM_UI_HOST || DEFAULT_HOST,
+  ).trim() || DEFAULT_HOST;
+  const isLoopbackHost = (value) => {
+    const normalized = String(value || "").trim().toLowerCase();
+    return (
+      normalized === "127.0.0.1" ||
+      normalized === "localhost" ||
+      normalized === "::1"
+    );
+  };
+  const loopbackOnly = !publicHost && isLoopbackHost(boundHost);
+  const lanIp = loopbackOnly ? "" : getLocalLanIp();
+  const host = publicHost || (loopbackOnly ? boundHost : (lanIp || boundHost));
   const actualPort = uiServer.address().port;
   const isLocalOrPrivateHost = (value) => {
     const normalized = String(value || "").trim().toLowerCase();
@@ -14797,13 +15444,24 @@ export async function startTelegramUiServer(options = {}) {
     }
     console.warn(`╚${border}╝\n`);
   }
-  console.log(`[telegram-ui] LAN access: ${protocol}://${lanIp}:${actualPort}`);
-  if (shouldLogTokenizedBrowserUrl()) {
-    console.log(`[telegram-ui] Browser access: ${protocol}://${lanIp}:${actualPort}/?token=${sessionToken}`);
+  if (loopbackOnly) {
+    console.log(`[telegram-ui] Loopback access: ${protocol}://${host}:${actualPort}`);
+    if (shouldLogTokenizedBrowserUrl()) {
+      console.log(`[telegram-ui] Browser access: ${protocol}://${host}:${actualPort}/?token=${sessionToken}`);
+    } else {
+      console.log(
+        `[telegram-ui] Browser access: ${protocol}://${host}:${actualPort} (token hidden; set BOSUN_UI_LOG_TOKENIZED_BROWSER_URL=1 for debug)`,
+      );
+    }
   } else {
-    console.log(
-      `[telegram-ui] Browser access: ${protocol}://${lanIp}:${actualPort} (token hidden; set BOSUN_UI_LOG_TOKENIZED_BROWSER_URL=1 for debug)`,
-    );
+    console.log(`[telegram-ui] LAN access: ${protocol}://${lanIp}:${actualPort}`);
+    if (shouldLogTokenizedBrowserUrl()) {
+      console.log(`[telegram-ui] Browser access: ${protocol}://${lanIp}:${actualPort}/?token=${sessionToken}`);
+    } else {
+      console.log(
+        `[telegram-ui] Browser access: ${protocol}://${lanIp}:${actualPort} (token hidden; set BOSUN_UI_LOG_TOKENIZED_BROWSER_URL=1 for debug)`,
+      );
+    }
   }
 
   // Auto-open browser:
@@ -14850,18 +15508,22 @@ export async function startTelegramUiServer(options = {}) {
     } catch { /* ignore auto-open failure */ }
   }
 
-  // Check firewall rules for the UI port
-  firewallState = await checkFirewall(actualPort);
-  if (firewallState) {
-    if (firewallState.blocked) {
-      console.warn(
-        `[telegram-ui] :alert:  Port ${actualPort}/tcp appears BLOCKED by ${firewallState.firewall} for LAN access.`,
-      );
-      console.warn(
-        `[telegram-ui] To fix, run: ${firewallState.allowCmd}`,
-      );
-    } else {
-      console.log(`[telegram-ui] Firewall (${firewallState.firewall}): port ${actualPort}/tcp is allowed`);
+  if (loopbackOnly) {
+    firewallState = null;
+  } else {
+    // Skip firewall probing for localhost-only servers to avoid a slow LAN self-connect.
+    firewallState = await checkFirewall(actualPort);
+    if (firewallState) {
+      if (firewallState.blocked) {
+        console.warn(
+          `[telegram-ui] :alert:  Port ${actualPort}/tcp appears BLOCKED by ${firewallState.firewall} for LAN access.`,
+        );
+        console.warn(
+          `[telegram-ui] To fix, run: ${firewallState.allowCmd}`,
+        );
+      } else {
+        console.log(`[telegram-ui] Firewall (${firewallState.firewall}): port ${actualPort}/tcp is allowed`);
+      }
     }
   }
 
@@ -14918,4 +15580,8 @@ export function stopTelegramUiServer() {
 }
 
 export { getLocalLanIp };
+
+
+
+
 

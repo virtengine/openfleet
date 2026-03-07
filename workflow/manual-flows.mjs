@@ -1300,6 +1300,101 @@ async function executeContextIndexFull(formValues, rootDir, _context = {}) {
   };
 }
 
+async function executeResearchAgent(formValues, rootDir, context = {}) {
+  const problem = String(formValues?.problem || "").trim();
+  if (!problem) {
+    throw new Error("Research problem is required.");
+  }
+
+  const domain = String(formValues?.domain || "computer-science").trim() || "computer-science";
+  const maxIterationsRaw = Number(formValues?.maxIterations);
+  const maxIterations = Number.isFinite(maxIterationsRaw)
+    ? Math.min(50, Math.max(1, Math.floor(maxIterationsRaw)))
+    : 10;
+  const searchLiterature = formValues?.searchLiterature !== false;
+  const executionMode = String(formValues?.executionMode || "workflow").trim().toLowerCase();
+
+  if (executionMode === "task") {
+    const taskDescription =
+      `Run iterative research for the following problem:\n\n` +
+      `${problem}\n\n` +
+      `Domain: ${domain}\n` +
+      `Max iterations: ${maxIterations}\n` +
+      `Search literature first: ${searchLiterature}\n\n` +
+      `Use a generate -> verify -> revise loop. If verification identifies critical flaws, ` +
+      `regenerate from a fundamentally different approach.`;
+    if (context.taskManager && typeof context.taskManager.createTask === "function") {
+      const task = await context.taskManager.createTask({
+        title: `research: iterative agent (${domain})`,
+        description: taskDescription,
+        priority: "high",
+        labels: ["research", "verification-loop", "aletheia"],
+      });
+      return {
+        mode: "task-dispatched",
+        taskId: task.id || task._id,
+        problem,
+        domain,
+        maxIterations,
+        searchLiterature,
+      };
+    }
+    return {
+      mode: "instructions",
+      problem,
+      domain,
+      maxIterations,
+      searchLiterature,
+      instructions: "Task manager unavailable. Create a high-priority research task using the provided configuration.",
+    };
+  }
+
+  const engine = context.engine;
+  if (!engine || typeof engine.execute !== "function") {
+    return {
+      mode: "instructions",
+      problem,
+      domain,
+      maxIterations,
+      searchLiterature,
+      instructions:
+        "Workflow execution mode requires an active workflow engine. Retry from the Workflows launcher or switch to Task mode.",
+    };
+  }
+
+  const { installTemplate } = await import("./workflow-templates.mjs");
+  const templateId = "template-research-agent";
+  if (!engine.get(templateId)) {
+    installTemplate(templateId, engine);
+  }
+
+  const input = {
+    problem,
+    domain,
+    maxIterations,
+    searchLiterature,
+    _previousFeedback: "",
+    triggerSource: "manual",
+  };
+
+  Promise.resolve()
+    .then(() => engine.execute(templateId, input, { force: true, triggerSource: "manual" }))
+    .catch((err) => {
+      console.error(`[manual-flows] research-agent dispatch failed: ${err.message}`);
+    });
+
+  return {
+    mode: "workflow-dispatched",
+    accepted: true,
+    workflowId: templateId,
+    problem,
+    domain,
+    maxIterations,
+    searchLiterature,
+    triggerSource: "manual",
+  };
+}
+
 /** Executor for user-created custom templates. */
 async function executeCustomFlow(template, formValues, rootDir, context) {
   const templateValues = {

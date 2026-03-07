@@ -6,7 +6,7 @@
 import { h } from "preact";
 import { useState, useEffect, useCallback, useRef } from "preact/hooks";
 import htm from "htm";
-import { signal, computed } from "@preact/signals";
+import { signal, computed, effect } from "@preact/signals";
 import { apiFetch, onWsMessage } from "../modules/api.js";
 import { buildSessionApiPath, resolveSessionWorkspaceHint } from "../modules/session-api.js";
 import { formatRelative, truncate } from "../modules/utils.js";
@@ -19,14 +19,39 @@ import {
 } from "@mui/material";
 
 const html = htm.bind(h);
+const SELECTED_SESSION_STORAGE_KEY = "ve-selected-session-id";
+
+function readPersistedSelectedSessionId() {
+  if (typeof localStorage === "undefined") return null;
+  try {
+    const value = String(localStorage.getItem(SELECTED_SESSION_STORAGE_KEY) || "").trim();
+    return value || null;
+  } catch {
+    return null;
+  }
+}
 
 /* ─── Signals ─── */
 export const sessionsData = signal([]);
-export const selectedSessionId = signal(null);
+export const selectedSessionId = signal(readPersistedSelectedSessionId());
 export const sessionMessages = signal([]);
 export const sessionsError = signal(null);
 /** Pagination metadata from the last loadSessionMessages call */
 export const sessionPagination = signal(null);
+
+effect(() => {
+  const sessionId = selectedSessionId.value ? String(selectedSessionId.value).trim() : "";
+  if (typeof localStorage === "undefined") return;
+  try {
+    if (sessionId) {
+      localStorage.setItem(SELECTED_SESSION_STORAGE_KEY, sessionId);
+    } else {
+      localStorage.removeItem(SELECTED_SESSION_STORAGE_KEY);
+    }
+  } catch {
+    // localStorage may be unavailable in some embeds.
+  }
+});
 
 const DEFAULT_SESSION_PAGE_SIZE = 50;
 const MAX_SESSION_PAGE_SIZE = 200;
@@ -61,7 +86,15 @@ export async function loadSessions(filter = {}) {
       params.set(key, String(value));
     }
     const res = await apiFetch(`/api/sessions?${params}`, { _silent: true });
-    if (res?.sessions) sessionsData.value = res.sessions;
+    if (res?.sessions) {
+      sessionsData.value = res.sessions;
+      const sessionIds = new Set(
+        res.sessions.map((session) => String(session?.id || "")).filter(Boolean),
+      );
+      if (selectedSessionId.value && !sessionIds.has(String(selectedSessionId.value))) {
+        selectedSessionId.value = null;
+      }
+    }
     sessionsError.value = null;
   } catch {
     sessionsError.value = "unavailable";

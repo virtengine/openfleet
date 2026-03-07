@@ -14,6 +14,7 @@
 import { existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync, unlinkSync } from "node:fs";
 import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
+import { buildSessionInsights } from "../lib/session-insights.mjs";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const SESSIONS_DIR = resolve(__dirname, "..", "logs", "sessions");
@@ -184,6 +185,7 @@ export class SessionTracker {
       status: "active",
       lastActivityAt: Date.now(),
       metadata: {},
+      insights: buildSessionInsights({ messages: [] }),
     });
     this.#markDirty(taskId);
   }
@@ -235,6 +237,7 @@ export class SessionTracker {
       if (Number.isFinite(maxMessages) && maxMessages > 0) {
         while (session.messages.length > maxMessages) session.messages.shift();
       }
+      this.#refreshDerivedState(session);
       this.#markDirty(taskId);
       emitSessionEvent(session, msg);
       return;
@@ -266,6 +269,7 @@ export class SessionTracker {
       if (Number.isFinite(maxMessages) && maxMessages > 0) {
         while (session.messages.length > maxMessages) session.messages.shift();
       }
+      this.#refreshDerivedState(session);
       this.#markDirty(taskId);
       emitSessionEvent(session, msg);
       return;
@@ -282,6 +286,7 @@ export class SessionTracker {
     if (Number.isFinite(maxMessages) && maxMessages > 0) {
       while (session.messages.length > maxMessages) session.messages.shift();
     }
+    this.#refreshDerivedState(session);
     this.#markDirty(taskId);
     emitSessionEvent(session, msg);
   }
@@ -297,6 +302,7 @@ export class SessionTracker {
 
     session.endedAt = Date.now();
     session.status = status;
+    this.#refreshDerivedState(session);
     this.#markDirty(taskId);
   }
 
@@ -521,6 +527,7 @@ export class SessionTracker {
       lastActivityAt: Date.now(),
       metadata,
       maxMessages: resolvedMax,
+      insights: buildSessionInsights({ messages: [] }),
     };
     this.#sessions.set(id, session);
     this.#markDirty(id);
@@ -549,6 +556,7 @@ export class SessionTracker {
         lastActiveAt: s.lastActiveAt || new Date(s.lastActivityAt).toISOString(),
         preview: this.#lastMessagePreview(s),
         lastMessage: this.#lastMessagePreview(s),
+        insights: s.insights || null,
       });
     }
     list.sort((a, b) => (b.lastActiveAt || "").localeCompare(a.lastActiveAt || ""));
@@ -587,6 +595,7 @@ export class SessionTracker {
     if (status === "completed" || status === "archived") {
       session.endedAt = Date.now();
     }
+    this.#refreshDerivedState(session);
     this.#markDirty(sessionId);
   }
 
@@ -665,6 +674,7 @@ export class SessionTracker {
     target.editedAt = new Date().toISOString();
     session.lastActivityAt = Date.now();
     session.lastActiveAt = new Date().toISOString();
+    this.#refreshDerivedState(session);
     this.#markDirty(sessionId);
 
     return { ok: true, message: { ...target }, index: idx };
@@ -766,6 +776,7 @@ export class SessionTracker {
         status,
         lastActivityAt: lastActive || Date.now(),
         metadata: data.metadata || {},
+        insights: data.insights || buildSessionInsights({ messages: data.messages || [] }),
       });
     }
   }
@@ -817,6 +828,7 @@ export class SessionTracker {
       if (idleMs > this.#idleThresholdMs) {
         session.status = "completed";
         session.endedAt = now;
+        this.#refreshDerivedState(session);
         this.#markDirty(id);
         reaped++;
       }
@@ -837,6 +849,18 @@ export class SessionTracker {
   #markDirty(sessionId) {
     if (this.#persistDir) {
       this.#dirty.add(sessionId);
+    }
+  }
+
+  #refreshDerivedState(session) {
+    if (!session) return;
+    try {
+      session.insights = buildSessionInsights({
+        ...session,
+        insights: null,
+      });
+    } catch {
+      // Inspector insights are best-effort only.
     }
   }
 
@@ -872,6 +896,7 @@ export class SessionTracker {
           turnCount: session.turnCount || 0,
           messages: session.messages || [],
           metadata: session.metadata || {},
+          insights: session.insights || null,
         };
         writeFileSync(filePath, JSON.stringify(data, null, 2));
       } catch (err) {
@@ -946,6 +971,7 @@ export class SessionTracker {
           turnCount: data.turnCount || 0,
           lastActivityAt: lastActive || Date.now(),
           metadata: data.metadata || {},
+          insights: data.insights || buildSessionInsights({ messages: data.messages || [] }),
         });
       }
     } catch {

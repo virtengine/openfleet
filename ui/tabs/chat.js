@@ -138,9 +138,74 @@ function formatAttachmentSize(size) {
   return `${raw} B`;
 }
 
-/** Keep unsent attachments per-session so switching chats doesn't discard uploads. */
+/** Keep unsent drafts/attachments per-session so switching chats does not discard them. */
 const pendingAttachmentsBySessionId = new Map();
+const pendingDraftTextBySessionId = new Map();
 const DRAFT_SESSION_KEY = "__draft__";
+const CHAT_DRAFT_STORAGE_KEY = "ve-chat-drafts-v1";
+const CHAT_DRAFT_ATTACHMENTS_STORAGE_KEY = "ve-chat-draft-attachments-v1";
+
+function persistDraftTextCache() {
+  if (typeof localStorage === "undefined") return;
+  try {
+    const serialized = {};
+    for (const [key, value] of pendingDraftTextBySessionId.entries()) {
+      const text = String(value || "");
+      if (!text.trim()) continue;
+      serialized[key] = text;
+    }
+    localStorage.setItem(CHAT_DRAFT_STORAGE_KEY, JSON.stringify(serialized));
+  } catch {
+    // Ignore storage errors.
+  }
+}
+
+function persistDraftAttachmentCache() {
+  if (typeof localStorage === "undefined") return;
+  try {
+    const serialized = {};
+    for (const [key, items] of pendingAttachmentsBySessionId.entries()) {
+      if (!Array.isArray(items) || items.length === 0) continue;
+      serialized[key] = items.slice(0, 20);
+    }
+    localStorage.setItem(CHAT_DRAFT_ATTACHMENTS_STORAGE_KEY, JSON.stringify(serialized));
+  } catch {
+    // Ignore storage errors.
+  }
+}
+
+(function hydrateDraftCaches() {
+  if (typeof localStorage === "undefined") return;
+  try {
+    const rawDrafts = localStorage.getItem(CHAT_DRAFT_STORAGE_KEY);
+    if (rawDrafts) {
+      const parsed = JSON.parse(rawDrafts);
+      if (parsed && typeof parsed === "object") {
+        for (const [key, value] of Object.entries(parsed)) {
+          const text = String(value || "");
+          if (!text.trim()) continue;
+          pendingDraftTextBySessionId.set(String(key), text);
+        }
+      }
+    }
+  } catch {
+    // Ignore malformed cache.
+  }
+  try {
+    const rawAttachments = localStorage.getItem(CHAT_DRAFT_ATTACHMENTS_STORAGE_KEY);
+    if (rawAttachments) {
+      const parsed = JSON.parse(rawAttachments);
+      if (parsed && typeof parsed === "object") {
+        for (const [key, value] of Object.entries(parsed)) {
+          if (!Array.isArray(value) || value.length === 0) continue;
+          pendingAttachmentsBySessionId.set(String(key), value.filter(Boolean).slice(0, 20));
+        }
+      }
+    }
+  } catch {
+    // Ignore malformed cache.
+  }
+})();
 
 function hasDragFiles(event) {
   const types = event?.dataTransfer?.types;
@@ -723,10 +788,14 @@ export function ChatTab() {
       if (typeof explicitContent !== "string") setInputValue("");
       setPendingAttachments([]);
       const currentCacheKey = String(sessionId || DRAFT_SESSION_KEY);
+      pendingDraftTextBySessionId.delete(currentCacheKey);
       pendingAttachmentsBySessionId.delete(currentCacheKey);
       if (createdSessionId && createdSessionId !== currentCacheKey) {
+        pendingDraftTextBySessionId.delete(createdSessionId);
         pendingAttachmentsBySessionId.delete(createdSessionId);
       }
+      persistDraftTextCache();
+      persistDraftAttachmentCache();
       setDragActive(false);
       chatDropDepthRef.current = 0;
       setSending(false);
@@ -995,12 +1064,25 @@ export function ChatTab() {
 
   useEffect(() => {
     const key = String(sessionId || DRAFT_SESSION_KEY);
-    const cached = pendingAttachmentsBySessionId.get(key);
-    setPendingAttachments(Array.isArray(cached) ? [...cached] : []);
+    const cachedAttachments = pendingAttachmentsBySessionId.get(key);
+    const cachedDraft = pendingDraftTextBySessionId.get(key);
+    setPendingAttachments(Array.isArray(cachedAttachments) ? [...cachedAttachments] : []);
+    setInputValue(typeof cachedDraft === "string" ? cachedDraft : "");
     setUploadingAttachments(false);
     setDragActive(false);
     chatDropDepthRef.current = 0;
   }, [sessionId]);
+
+  useEffect(() => {
+    const key = String(sessionId || DRAFT_SESSION_KEY);
+    const text = String(inputValue || "");
+    if (text.trim()) {
+      pendingDraftTextBySessionId.set(key, text);
+    } else {
+      pendingDraftTextBySessionId.delete(key);
+    }
+    persistDraftTextCache();
+  }, [sessionId, inputValue]);
 
   useEffect(() => {
     const key = String(sessionId || DRAFT_SESSION_KEY);
@@ -1009,6 +1091,7 @@ export function ChatTab() {
     } else {
       pendingAttachmentsBySessionId.delete(key);
     }
+    persistDraftAttachmentCache();
   }, [sessionId, pendingAttachments]);
 
   useEffect(() => {

@@ -73,4 +73,53 @@ describe("session-insights", () => {
     expect(insights.contextBreakdown.length).toBeGreaterThan(0);
     expect(insights.tokenUsage.totalTokens).toBe(1500);
   });
+
+  it("prefers persisted backend insights when available", () => {
+    const session = {
+      insights: {
+        totals: {
+          messages: 24,
+          toolCalls: 8,
+          toolResults: 4,
+          errors: 1,
+          userMessages: 3,
+          assistantMessages: 5,
+          systemMessages: 2,
+          commandExecutions: 2,
+          uniqueTools: 4,
+        },
+        fileCounts: {
+          openedFiles: 7,
+          editedFiles: 3,
+          referencedFiles: 9,
+          openOps: 7,
+          editOps: 3,
+        },
+        recentActions: [{ type: "tool_call", label: "apply_patch", level: "info" }],
+        contextWindow: { usedTokens: 120000, totalTokens: 272000, percent: 44.1 },
+        contextBreakdown: [{ label: "Messages", percent: 12.4 }],
+        tokenUsage: { inputTokens: 900, outputTokens: 100, totalTokens: 1000 },
+        activityDiff: {
+          files: [{ path: "src/ui/app.js", edits: 2, lastTs: "2026-03-04T01:00:00.000Z" }],
+          totalFiles: 1,
+        },
+        generatedAt: "2026-03-04T01:00:00.000Z",
+      },
+      messages: [
+        {
+          type: "tool_call",
+          content: "read_file(src/ui/app.js)",
+          meta: { toolName: "read_file" },
+          timestamp: "2026-03-04T01:00:00.000Z",
+        },
+      ],
+    };
+
+    const insights = buildSessionInsights(session);
+    expect(insights.totals.toolCalls).toBe(8);
+    expect(insights.fileCounts.editedFiles).toBe(3);
+    expect(insights.contextWindow.percent).toBe(44.1);
+    expect(insights.recentActions).toHaveLength(1);
+    expect(insights.activityDiff.totalFiles).toBe(1);
+  });
 });

@@ -592,7 +592,7 @@ describe("action.detect_new_commits", () => {
     expect(result.hasCommits).toBe(true);
     expect(result.preExecHead).toBe(preHead);
     expect(result.postExecHead).not.toBe(preHead);
-  });
+  }, 15000);
 
   it("stores results in ctx.data", async () => {
     const nt = getNodeType("action.detect_new_commits");

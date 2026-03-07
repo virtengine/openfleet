@@ -1,7 +1,9 @@
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, beforeAll, describe, expect, it, vi } from "vitest";
+
+let uiServerModule;
 
 describe("ui-server tunnel hostname + DNS helpers", () => {
   const ENV_KEYS = [
@@ -12,6 +14,10 @@ describe("ui-server tunnel hostname + DNS helpers", () => {
   ];
   let envSnapshot = {};
   let tempDir = "";
+
+  beforeAll(async () => {
+    uiServerModule = await import("../server/ui-server.mjs");
+  }, 15000);
 
   beforeEach(() => {
     envSnapshot = Object.fromEntries(ENV_KEYS.map((key) => [key, process.env[key]]));
@@ -31,23 +37,21 @@ describe("ui-server tunnel hostname + DNS helpers", () => {
     vi.restoreAllMocks();
   });
 
-  it("normalizes tunnel mode aliases with named as the default", async () => {
-    const mod = await import("../server/ui-server.mjs");
-    expect(mod.normalizeTunnelMode()).toBe("named");
-    expect(mod.normalizeTunnelMode("auto")).toBe("named");
-    expect(mod.normalizeTunnelMode("cloudflared")).toBe("named");
-    expect(mod.normalizeTunnelMode("quick")).toBe("quick");
-    expect(mod.normalizeTunnelMode("disabled")).toBe("disabled");
+  it("normalizes tunnel mode aliases with named as the default", () => {
+    expect(uiServerModule.normalizeTunnelMode()).toBe("named");
+    expect(uiServerModule.normalizeTunnelMode("auto")).toBe("named");
+    expect(uiServerModule.normalizeTunnelMode("cloudflared")).toBe("named");
+    expect(uiServerModule.normalizeTunnelMode("quick")).toBe("quick");
+    expect(uiServerModule.normalizeTunnelMode("disabled")).toBe("disabled");
   });
 
-  it("resolves deterministic per-user hostname and protects reserved names", async () => {
-    const mod = await import("../server/ui-server.mjs");
-    const first = mod.resolveDeterministicTunnelHostname({
+  it("resolves deterministic per-user hostname and protects reserved names", () => {
+    const first = uiServerModule.resolveDeterministicTunnelHostname({
       baseDomain: "bosun.det.io",
       username: "jon",
       policy: "per-user-fixed",
     });
-    const second = mod.resolveDeterministicTunnelHostname({
+    const second = uiServerModule.resolveDeterministicTunnelHostname({
       baseDomain: "bosun.det.io",
       username: "jon",
       policy: "per-user-fixed",
@@ -55,7 +59,7 @@ describe("ui-server tunnel hostname + DNS helpers", () => {
     expect(first.hostname).toBe("jon.bosun.det.io");
     expect(second.hostname).toBe("jon.bosun.det.io");
 
-    const reserved = mod.resolveDeterministicTunnelHostname({
+    const reserved = uiServerModule.resolveDeterministicTunnelHostname({
       baseDomain: "bosun.det.io",
       username: "admin",
       policy: "per-user-fixed",
@@ -65,7 +69,6 @@ describe("ui-server tunnel hostname + DNS helpers", () => {
   });
 
   it("keeps Cloudflare DNS orchestration idempotent for existing matching CNAME", async () => {
-    const mod = await import("../server/ui-server.mjs");
     const fetchMock = vi
       .fn()
       .mockResolvedValueOnce({
@@ -85,7 +88,7 @@ describe("ui-server tunnel hostname + DNS helpers", () => {
       });
 
     vi.stubGlobal("fetch", fetchMock);
-    const result = await mod.ensureCloudflareDnsCname({
+    const result = await uiServerModule.ensureCloudflareDnsCname({
       hostname: "jon.bosun.det.io",
       target: "abc.cfargotunnel.com",
       proxied: true,

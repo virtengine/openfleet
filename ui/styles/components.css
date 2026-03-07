@@ -5445,3 +5445,135 @@ select.input {
     transform: none !important;
   }
 }
+
+.task-comment-composer {
+  margin-top: 10px;
+  display: grid;
+  grid-template-columns: 1fr auto;
+  gap: 8px;
+  align-items: end;
+}
+
+.task-dag-canvas-wrap {
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  background:
+    radial-gradient(circle at 10% 20%, rgba(249, 115, 22, 0.12), transparent 40%),
+    radial-gradient(circle at 85% 80%, rgba(56, 189, 248, 0.08), transparent 40%),
+    var(--bg-card);
+  overflow: auto;
+  padding: 10px;
+}
+
+.task-dag-canvas {
+  width: 100%;
+  min-width: 680px;
+  height: 420px;
+}
+
+.dag-node rect {
+  transition: transform 0.15s ease, stroke 0.15s ease, filter 0.15s ease;
+}
+
+.dag-node:hover rect {
+  stroke: var(--accent);
+  filter: drop-shadow(0 6px 12px rgba(0, 0, 0, 0.35));
+}
+
+@media (max-width: 900px) {
+  .task-comment-composer {
+    grid-template-columns: 1fr;
+  }
+}
+
+/* Jira-style Task Detail */
+.task-detail-modal-jira .modal-body {
+  max-height: min(82vh, calc(var(--viewport-height, 100dvh) - 140px));
+}
+
+.jira-task-summary {
+  border-bottom: 1px solid var(--border);
+  padding-bottom: 10px;
+  margin-bottom: 10px;
+}
+
+.jira-task-layout {
+  display: grid;
+  grid-template-columns: minmax(0, 1.6fr) minmax(260px, 1fr);
+  gap: 10px;
+}
+
+.jira-panel {
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: var(--bg-card);
+  padding: 10px;
+}
+
+.jira-panel-title {
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--text-hint);
+  margin-bottom: 8px;
+}
+
+.jira-meta-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.task-dag-legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+  margin-bottom: 8px;
+}
+
+.task-dag-legend-item {
+  display: inline-flex;
+  gap: 6px;
+  align-items: center;
+  font-size: 11px;
+  color: var(--text-secondary);
+}
+
+.task-dag-legend-line {
+  width: 18px;
+  height: 2px;
+  border-radius: 2px;
+  background: var(--accent);
+}
+
+.task-dag-legend-line-dashed {
+  background: linear-gradient(to right, var(--color-warning) 60%, transparent 40%);
+  background-size: 6px 2px;
+}
+
+.task-dag-legend-line-block {
+  background: linear-gradient(to right, var(--color-error) 45%, transparent 45%);
+  background-size: 4px 2px;
+}
+
+.task-dag-status-pill {
+  display: inline-flex;
+  padding: 2px 8px;
+  border-radius: 999px;
+  border: 1px solid var(--border);
+  background: var(--bg-card-hover);
+  font-size: 11px;
+  color: var(--text-secondary);
+}
+
+@media (max-width: 980px) {
+  .jira-task-layout {
+    grid-template-columns: 1fr;
+  }
+
+  .jira-meta-grid {
+    grid-template-columns: 1fr;
+  }
+}

@@ -937,6 +937,7 @@ export function detectWorkspaces(configDir) {
           const remote = childProcess.execSync("git remote get-url origin", {
             cwd: subPath,
             encoding: "utf8",
+            timeout: 3000,
             stdio: ["pipe", "pipe", "ignore"],
           }).trim();
           slug = extractSlug(remote);

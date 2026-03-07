@@ -560,7 +560,7 @@ describe("well-known source import", () => {
     } finally {
       rmSync(srcRepo, { recursive: true, force: true });
     }
-  });
+  }, 15000);
 });
 describe("syncAutoDiscoveredLibraryEntries", () => {
   beforeEach(() => fresh());

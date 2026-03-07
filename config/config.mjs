@@ -658,6 +658,12 @@ function detectRepoSlug(repoRoot = "") {
 }
 
 function detectRepoRoot() {
+  const gitExecOptions = {
+    encoding: "utf8",
+    stdio: ["pipe", "pipe", "ignore"],
+    timeout: 3000,
+  };
+
   // 1. Explicit env var
   if (process.env.REPO_ROOT) {
     const envRoot = resolve(process.env.REPO_ROOT);
@@ -667,8 +673,7 @@ function detectRepoRoot() {
   // 2. Try git from cwd
   try {
     const gitRoot = execSync("git rev-parse --show-toplevel", {
-      encoding: "utf8",
-      stdio: ["pipe", "pipe", "ignore"],
+      ...gitExecOptions,
     }).trim();
     if (gitRoot) return gitRoot;
   } catch {
@@ -678,9 +683,8 @@ function detectRepoRoot() {
   // 3. Bosun package directory may be inside a repo (common: scripts/bosun/ within a project)
   try {
     const gitRoot = execSync("git rev-parse --show-toplevel", {
-      encoding: "utf8",
       cwd: __dirname,
-      stdio: ["pipe", "pipe", "ignore"],
+      ...gitExecOptions,
     }).trim();
     if (gitRoot) return gitRoot;
   } catch {
@@ -693,9 +697,8 @@ function detectRepoRoot() {
   if (moduleRoot && moduleRoot !== process.cwd()) {
     try {
       const gitRoot = execSync("git rev-parse --show-toplevel", {
-        encoding: "utf8",
         cwd: moduleRoot,
-        stdio: ["pipe", "pipe", "ignore"],
+        ...gitExecOptions,
       }).trim();
       if (gitRoot) return gitRoot;
     } catch {
@@ -1285,19 +1288,26 @@ export function loadConfig(argv = process.argv, options = {}) {
 
   const { reloadEnv = false } = options;
   const cli = parseArgs(argv);
+  const repoRootOverride = cli["repo-root"] || process.env.REPO_ROOT || "";
+  const normalizedRepoRootOverride = repoRootOverride
+    ? resolve(repoRootOverride)
+    : "";
+  let detectedRepoRoot = "";
+  const getFallbackRepoRoot = () => {
+    if (normalizedRepoRootOverride) return normalizedRepoRootOverride;
+    if (!detectedRepoRoot) detectedRepoRoot = detectRepoRoot();
+    return detectedRepoRoot;
+  };
 
-  const repoRootForConfig = detectRepoRoot();
   // Determine config directory (where bosun stores its config)
   const configDir =
     cli["config-dir"] ||
     process.env.BOSUN_DIR ||
-    resolveConfigDir(repoRootForConfig);
+    resolveConfigDir(normalizedRepoRootOverride);
 
   const configFile = loadConfigFile(configDir);
   let configData = configFile.data || {};
   const configFileHadInvalidJson = configFile.error === "invalid-json";
-
-  const repoRootOverride = cli["repo-root"] || process.env.REPO_ROOT || "";
 
   // Load workspace configuration
   const workspacesDir = resolve(configDir, "workspaces");
@@ -1340,7 +1350,8 @@ export function loadConfig(argv = process.argv, options = {}) {
   // over REPO_ROOT (env); REPO_ROOT becomes "developer root" for config only.
   const selectedRepoPath = selectedRepository?.path || "";
   const selectedRepoHasGit = selectedRepoPath && existsSync(resolve(selectedRepoPath, ".git"));
-  let repoRoot = (selectedRepoHasGit ? selectedRepoPath : null) || repoRootOverride || detectRepoRoot();
+  let repoRoot =
+    (selectedRepoHasGit ? selectedRepoPath : null) || getFallbackRepoRoot();
 
   // Resolve agent execution root (workspace-aware, separate from developer root)
   const agentRepoRoot = resolveAgentRepoRoot();
@@ -1405,7 +1416,7 @@ export function loadConfig(argv = process.argv, options = {}) {
   {
     const selPath = selectedRepository?.path || "";
     const selHasGit = selPath && existsSync(resolve(selPath, ".git"));
-    repoRoot = (selHasGit ? selPath : null) || repoRootOverride || detectRepoRoot();
+    repoRoot = (selHasGit ? selPath : null) || getFallbackRepoRoot();
   }
 
   if (resolve(repoRoot) !== resolve(initialRepoRoot)) {
