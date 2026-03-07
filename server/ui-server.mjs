@@ -6583,6 +6583,16 @@ async function collectUiStats() {
   const freeMem = os.freemem();
   const usedMem = totalMem - freeMem;
 
+  // Try to read status from the monitor's status file first
+  let orchestratorStatus = null;
+  const statusPath = resolve(repoRoot, ".cache", "ve-orchestrator-status.json");
+  try {
+    if (existsSync(statusPath)) {
+      const raw = await readFile(statusPath, "utf8");
+      orchestratorStatus = JSON.parse(raw);
+    }
+  } catch { /* best effort */ }
+
   let taskStats = {
     total: 0,
     active: 0,
@@ -6590,20 +6600,34 @@ async function collectUiStats() {
     failed: 0,
     queued: 0,
   };
-  try {
-    const taskStoreModule = await import("../task/task-store.mjs").catch(() => ({}));
-    const getStats = taskStoreModule?.getStats;
-    if (typeof getStats === "function") {
-      const stats = getStats();
-      taskStats = {
-        total: stats?.total || 0,
-        active: (stats?.inprogress || 0) + (stats?.todo || 0),
-        completed: stats?.done || 0,
-        failed: stats?.failed || 0,
-        queued: stats?.todo || 0,
-      };
-    }
-  } catch { /* best effort */ }
+  
+  // Use orchestrator status if available, otherwise try task store
+  if (orchestratorStatus?.counts) {
+    taskStats = {
+      total: (orchestratorStatus.counts.todo || 0) + (orchestratorStatus.counts.inprogress || 0) + 
+             (orchestratorStatus.counts.done || 0) + (orchestratorStatus.counts.inreview || 0) +
+             (orchestratorStatus.counts.blocked || 0),
+      active: orchestratorStatus.counts.inprogress || 0,
+      completed: orchestratorStatus.counts.done || 0,
+      failed: orchestratorStatus.counts.error || 0,
+      queued: orchestratorStatus.counts.todo || 0,
+    };
+  } else {
+    try {
+      const taskStoreModule = await import("../task/task-store.mjs").catch(() => ({}));
+      const getStats = taskStoreModule?.getStats;
+      if (typeof getStats === "function") {
+        const stats = getStats();
+        taskStats = {
+          total: stats?.total || 0,
+          active: (stats?.inprogress || 0) + (stats?.todo || 0),
+          completed: stats?.done || 0,
+          failed: stats?.failed || 0,
+          queued: stats?.todo || 0,
+        };
+      }
+    } catch { /* best effort */ }
+  }
 
   let sessionStats = {
     total: 0,
@@ -6611,15 +6635,27 @@ async function collectUiStats() {
     completed: 0,
     failed: 0,
   };
-  try {
-    const activeThreads = getActiveThreads?.() || [];
+
+  // Use orchestrator status for session/attempt info
+  if (orchestratorStatus?.attempts) {
+    const attempts = Object.values(orchestratorStatus.attempts);
     sessionStats = {
-      total: activeThreads.length,
-      active: activeThreads.filter((t) => t.status === "active").length,
-      completed: activeThreads.filter((t) => t.status === "completed").length,
-      failed: activeThreads.filter((t) => t.status === "failed").length,
+      total: attempts.length,
+      active: attempts.filter((a) => a.status === "running" || a.status === "active").length,
+      completed: attempts.filter((a) => a.status === "done" || a.status === "completed").length,
+      failed: attempts.filter((a) => a.status === "failed" || a.status === "error").length,
     };
-  } catch { /* best effort */ }
+  } else if (typeof getActiveThreads === "function") {
+    try {
+      const activeThreads = getActiveThreads() || [];
+      sessionStats = {
+        total: activeThreads.length,
+        active: activeThreads.filter((t) => t.status === "active").length,
+        completed: activeThreads.filter((t) => t.status === "completed").length,
+        failed: activeThreads.filter((t) => t.status === "failed").length,
+      };
+    } catch { /* best effort */ }
+  }
 
   return {
     uptimeMs: process.uptime() * 1000,
@@ -6634,6 +6670,8 @@ async function collectUiStats() {
     completedTasks: taskStats.completed,
     failedTasks: taskStats.failed,
     queuedTasks: taskStats.queued,
+    activeSlots: orchestratorStatus?.active_slots || "0/0",
+    executorMode: orchestratorStatus?.executor_mode || "unknown",
     retryQueue: globalThis.__bosun_setRetryQueueData ? _retryQueue : { count: 0, items: [] },
     workflows: {
       active: globalThis.__bosun_activeWorkflows || [],
