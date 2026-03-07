@@ -2,6 +2,7 @@
 
 import { execFileSync } from "node:child_process";
 import {
+  existsSync,
   mkdtempSync,
   mkdirSync,
   readFileSync,
@@ -19,13 +20,30 @@ const SMOKE_TIMEOUT_MS = Math.max(
   1000,
   Number(process.env.BOSUN_PACKED_SMOKE_TIMEOUT_MS || "15000") || 15000,
 );
+const nodeBinDir = dirname(nodeCmd);
+
+function resolveNpmCliPath() {
+  const candidates = [
+    process.env.npm_execpath,
+    resolve(nodeBinDir, "node_modules", "npm", "bin", "npm-cli.js"),
+    resolve(nodeBinDir, "..", "lib", "node_modules", "npm", "bin", "npm-cli.js"),
+  ].filter(Boolean);
+
+  for (const candidate of candidates) {
+    if (existsSync(candidate)) return candidate;
+  }
+
+  throw new Error("Unable to locate npm-cli.js for packed smoke test");
+}
+
+const npmCliPath = resolveNpmCliPath();
 
 function runNpm(args, options = {}) {
-  return execFileSync("npm", args, {
-    cwd: ROOT,
+  const cwd = options.cwd || ROOT;
+  return execFileSync(nodeCmd, [npmCliPath, ...args], {
+    cwd,
     encoding: "utf8",
     stdio: ["pipe", "pipe", "pipe"],
-    shell: process.platform === "win32",
     timeout: SMOKE_TIMEOUT_MS,
     ...options,
   });
@@ -46,17 +64,9 @@ function installPackedArtifact(tarballPath, installDir) {
     resolve(installDir, "package.json"),
     JSON.stringify({ name: "bosun-packed-smoke", private: true, type: "module" }, null, 2),
   );
-  execFileSync(
-    "npm",
-    ["install", "--ignore-scripts", "--no-package-lock", tarballPath],
-    {
-      cwd: installDir,
-      encoding: "utf8",
-      stdio: ["pipe", "pipe", "pipe"],
-      shell: process.platform === "win32",
-      timeout: SMOKE_TIMEOUT_MS,
-    },
-  );
+  runNpm(["install", "--ignore-scripts", "--no-package-lock", tarballPath], {
+    cwd: installDir,
+  });
 }
 
 function runNode(args, options = {}) {
@@ -100,6 +110,20 @@ function assertPackedCliStarts(installDir) {
   }
 }
 
+function safeRemove(targetPath, label) {
+  if (!targetPath) return;
+  try {
+    rmSync(targetPath, {
+      recursive: true,
+      force: true,
+      maxRetries: 10,
+      retryDelay: 200,
+    });
+  } catch (error) {
+    console.warn(`[smoke] warning: failed to clean ${label}: ${error.message}`);
+  }
+}
+
 function main() {
   const tempRoot = mkdtempSync(resolve(tmpdir(), "bosun-packed-smoke-"));
   const installDir = resolve(tempRoot, "install");
@@ -116,10 +140,8 @@ function main() {
       `[smoke] packed CLI ok: ${manifest.name}@${manifest.version}`,
     );
   } finally {
-    if (tarballPath) {
-      rmSync(tarballPath, { force: true });
-    }
-    rmSync(tempRoot, { recursive: true, force: true });
+    safeRemove(tarballPath, "packed tarball");
+    safeRemove(tempRoot, "temporary smoke workspace");
   }
 }
 
