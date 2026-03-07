@@ -715,3 +715,15 @@ body.tasks-board-view .kanban-container {
   letter-spacing: 0.01em;
 }
 
+
+.kanban-card {
+  min-height: 76px;
+}
+
+.kanban-card .MuiCardContent-root {
+  display: block;
+}
+
+.kanban-card .MuiTypography-root {
+  color: var(--text-primary);
+}

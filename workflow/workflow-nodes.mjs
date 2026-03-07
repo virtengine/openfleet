@@ -23,6 +23,8 @@ import { resolve, dirname } from "node:path";
 import { execSync, spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { getAgentToolConfig, getEffectiveTools } from "../agent/agent-tool-config.mjs";
+import { getToolsPromptBlock } from "../agent/agent-custom-tools.mjs";
+import { buildRelevantSkillsPromptBlock, findRelevantSkills } from "../agent/bosun-skills.mjs";
 
 const TAG = "[workflow-nodes]";
 const PORTABLE_WORKTREE_COUNT_COMMAND = "node -e \"const cp=require('node:child_process');const wt=cp.execSync('git worktree list --porcelain',{encoding:'utf8'});const count=(wt.match(/^worktree /gm)||[]).length;process.stdout.write(String(count)+'\\\\n');\"";
@@ -7722,6 +7724,8 @@ registerNodeType("action.build_task_prompt", {
     );
     const primaryRepository = pickFirstString(repository, repoSlug);
     const allowedRepositories = normalizeStringArray(repositories, primaryRepository);
+    const matchedSkills = findRelevantSkills(repoRoot, taskTitle, taskDescription || "", {});
+    const activeSkillFiles = matchedSkills.map((skill) => skill.filename);
 
     if (customTemplate) {
       ctx.data._taskPrompt = customTemplate;
@@ -7824,17 +7828,55 @@ registerNodeType("action.build_task_prompt", {
       }
     }
 
+    const relevantSkillsBlock = buildRelevantSkillsPromptBlock(
+      repoRoot,
+      taskTitle,
+      taskDescription || "",
+      {},
+    );
+    if (relevantSkillsBlock) {
+      parts.push(relevantSkillsBlock);
+      parts.push("");
+    }
+
+    parts.push("## Tool Discovery");
+    parts.push(
+      "Bosun uses a compact MCP discovery layer for external MCP servers and the custom tool library.",
+    );
+    parts.push(
+      "Preferred flow: `search_tools` -> `get_tool_schema` -> `call_discovered_tool`.",
+    );
+    parts.push(
+      "Only eager tools are preloaded below to keep context small. Discover the rest at runtime.",
+    );
+    parts.push("");
+
+    const eagerToolBlock = getToolsPromptBlock(repoRoot, {
+      activeSkills: activeSkillFiles,
+      includeBuiltins: true,
+      eagerOnly: true,
+      discoveryMode: true,
+      emitReflectHint: true,
+      limit: 12,
+    });
+    if (eagerToolBlock) {
+      parts.push(eagerToolBlock);
+      parts.push("");
+    }
+
     // Instructions
     parts.push("## Instructions");
     parts.push(
       "1. Read and understand the task description above.\n" +
       "2. Follow the project instructions in AGENTS.md.\n" +
       "3. Respect the Workspace Scope Contract and never cross repository boundaries.\n" +
-      "4. Implement the required changes.\n" +
-      "5. Ensure tests pass and build is clean with 0 warnings.\n" +
-      "6. Commit your changes using conventional commits.\n" +
-      "7. Never ask for user input — you are autonomous.\n" +
-      "8. Use all available tools to verify your work.",
+      "4. Load and apply the matched important skills already inlined above.\n" +
+      "5. Use the discovery MCP tools for non-eager MCP/custom tools before assuming a capability is unavailable.\n" +
+      "6. Implement the required changes.\n" +
+      "7. Ensure tests pass and build is clean with 0 warnings.\n" +
+      "8. Commit your changes using conventional commits.\n" +
+      "9. Never ask for user input — you are autonomous.\n" +
+      "10. Use all available tools to verify your work.",
     );
     parts.push("");
 

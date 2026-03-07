@@ -13,6 +13,7 @@ import { resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { execSync } from "node:child_process";
 import { resolveRepoRoot } from "../config/repo-root.mjs";
+import { loadConfig } from "../config/config.mjs";
 import { getGitHubToken } from "../github/github-auth-manager.mjs";
 import {
   isTransientStreamError,
@@ -58,6 +59,17 @@ function envFlagEnabled(value) {
     .trim()
     .toLowerCase();
   return ["1", "true", "yes", "on", "y"].includes(raw);
+}
+
+function getMcpRuntimeConfig() {
+  try {
+    const cfg = loadConfig();
+    return cfg?.mcpServers && typeof cfg.mcpServers === "object"
+      ? cfg.mcpServers
+      : {};
+  } catch {
+    return {};
+  }
 }
 
 function resolveCopilotTransport() {
@@ -238,15 +250,20 @@ async function buildCliArgs() {
   if (!mcpConfigPath) {
     try {
       const registry = await getMcpRegistry();
+      const mcpCfg = getMcpRuntimeConfig();
       const installed = await registry.listInstalledMcpServers(REPO_ROOT);
-      if (installed && installed.length) {
-        const ids = installed.map((e) => e.id);
-        const resolved = await registry.resolveMcpServersForAgent(REPO_ROOT, ids);
-        if (resolved && resolved.length) {
-          const tmpPath = registry.writeTempCopilotMcpConfig(REPO_ROOT, resolved);
-          args.push("--additional-mcp-config", tmpPath);
-          console.log(`[copilot-shell] injected ${resolved.length} library MCP server(s) via CLI args`);
-        }
+      const ids = installed && installed.length ? installed.map((e) => e.id) : [];
+      let resolved = await registry.resolveMcpServersForAgent(REPO_ROOT, ids);
+      if (typeof registry.wrapServersWithDiscoveryProxy === "function") {
+        resolved = registry.wrapServersWithDiscoveryProxy(REPO_ROOT, resolved, {
+          enabled: mcpCfg.useDiscoveryProxy !== false,
+          includeCustomTools: mcpCfg.includeCustomToolsInDiscoveryProxy !== false,
+        });
+      }
+      if (resolved && resolved.length) {
+        const tmpPath = registry.writeTempCopilotMcpConfig(REPO_ROOT, resolved);
+        args.push("--additional-mcp-config", tmpPath);
+        console.log(`[copilot-shell] injected ${resolved.length} library MCP server(s) via CLI args`);
       }
     } catch (err) {
       console.warn(`[copilot-shell] failed to inject library MCP servers into CLI args: ${err.message}`);
@@ -619,12 +636,18 @@ function loadMcpServers(profile = null) {
 async function mergeLibraryMcpServers(existingServers) {
   try {
     const registry = await getMcpRegistry();
+    const mcpCfg = getMcpRuntimeConfig();
     const installed = await registry.listInstalledMcpServers(REPO_ROOT);
-    if (!installed || !installed.length) return existingServers;
+    const installedIds = installed && installed.length ? installed.map((e) => e.id) : [];
 
     // Resolve all installed servers into full configs
-    const installedIds = installed.map((e) => e.id);
-    const resolved = await registry.resolveMcpServersForAgent(REPO_ROOT, installedIds);
+    let resolved = await registry.resolveMcpServersForAgent(REPO_ROOT, installedIds);
+    if (typeof registry.wrapServersWithDiscoveryProxy === "function") {
+      resolved = registry.wrapServersWithDiscoveryProxy(REPO_ROOT, resolved, {
+        enabled: mcpCfg.useDiscoveryProxy !== false,
+        includeCustomTools: mcpCfg.includeCustomToolsInDiscoveryProxy !== false,
+      });
+    }
     if (!resolved || !resolved.length) return existingServers;
 
     // Convert to Copilot mcpServers format: { [id]: { command, args, env? } | { url } }

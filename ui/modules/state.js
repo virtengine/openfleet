@@ -150,6 +150,8 @@ export const tasksPriority = signal("all");
 export const tasksSearch = signal("");
 export const tasksSort = signal("updated");
 export const tasksTotalPages = signal(1);
+export const tasksTotal = signal(0);
+export const tasksStatusCounts = signal({ draft: 0, backlog: 0, inProgress: 0, inReview: 0, done: 0 });
 const TASK_IGNORE_LABEL = "codex:ignore";
 const TASK_TEXT_REPLACEMENTS = [
   [/\u00D4\u00C7\u00F6/g, "-"],
@@ -514,6 +516,14 @@ export async function loadTasks(options = {}) {
   tasksTotalPages.value =
     res.totalPages ||
     Math.max(1, Math.ceil((res.total || 0) / tasksPageSize.value));
+  tasksTotal.value = Math.max(0, Number(res.total || 0));
+  tasksStatusCounts.value = {
+    draft: Number(res?.statusCounts?.draft || 0),
+    backlog: Number(res?.statusCounts?.backlog || 0),
+    inProgress: Number(res?.statusCounts?.inProgress || 0),
+    inReview: Number(res?.statusCounts?.inReview || 0),
+    done: Number(res?.statusCounts?.done || 0),
+  };
   tasksLoaded.value = true;
   _cacheSet(`/api/tasks?${params}`, { data: tasksData.value, totalPages: tasksTotalPages.value });
   _markFresh("tasks");

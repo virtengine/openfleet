@@ -2246,6 +2246,16 @@ async function applySharedStateToTasks(tasks) {
   });
 }
 
+
+function mapTaskStatusToBoardColumn(status) {
+  const normalized = String(status || "").trim().toLowerCase();
+  if (normalized === "draft") return "draft";
+  if (["inprogress", "in-progress", "working", "active", "assigned", "running"].includes(normalized)) return "inProgress";
+  if (["inreview", "in-review", "review", "pr-open", "pr-review"].includes(normalized)) return "inReview";
+  if (["done", "completed", "closed", "merged", "cancelled"].includes(normalized)) return "done";
+  return "backlog";
+}
+
 function normalizeCandidatePath(input) {
   if (!input) return "";
   const raw = String(input).trim();
@@ -7584,6 +7594,17 @@ async function handleApi(req, res, url) {
         return hay.includes(search);
       });
       const total = filtered.length;
+      const statusCounts = {
+        draft: 0,
+        backlog: 0,
+        inProgress: 0,
+        inReview: 0,
+        done: 0,
+      };
+      for (const task of filtered) {
+        const bucket = mapTaskStatusToBoardColumn(task?.status);
+        statusCounts[bucket] = (statusCounts[bucket] || 0) + 1;
+      }
       const start = page * pageSize;
       const slice = filtered.slice(start, start + pageSize);
       const enriched = await applySharedStateToTasks(slice);
@@ -7593,6 +7614,9 @@ async function handleApi(req, res, url) {
         page,
         pageSize,
         total,
+        totalPages: Math.max(1, Math.ceil(total / pageSize)),
+        hasMore: start + slice.length < total,
+        statusCounts,
         projectId: activeProject,
       });
     } catch (err) {

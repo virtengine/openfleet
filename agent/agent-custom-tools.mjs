@@ -677,7 +677,7 @@ export async function promoteToGlobal(rootDir, toolId) {
  * and reflect on whether to create new tools.
  *
  * @param {string} rootDir
- * @param {{ limit?: number, category?: string, tags?: string[], emitReflectHint?: boolean, activeSkills?: string[], agentType?: string, template?: string, includeBuiltins?: boolean }} [opts]
+ * @param {{ limit?: number, category?: string, tags?: string[], emitReflectHint?: boolean, activeSkills?: string[], agentType?: string, template?: string, includeBuiltins?: boolean, eagerOnly?: boolean, discoveryMode?: boolean }} [opts]
  * @returns {string}
  */
 export function getToolsPromptBlock(rootDir, opts = {}) {
@@ -691,6 +691,8 @@ export function getToolsPromptBlock(rootDir, opts = {}) {
     agentType,
     template,
     includeBuiltins = true,
+    eagerOnly = false,
+    discoveryMode = false,
   } = opts;
 
   let tools;
@@ -712,11 +714,25 @@ export function getToolsPromptBlock(rootDir, opts = {}) {
     tools = listCustomTools(rootDir, { category, tags, includeBuiltins }).slice(0, limit);
   }
 
+  if (eagerOnly) {
+    tools = tools.filter((tool) => {
+      if (tool.autoInject) return true;
+      if (activeSkills?.length > 0 && tool.skills?.length > 0) {
+        return activeSkills.some((skill) => tool.skills.includes(skill));
+      }
+      return false;
+    });
+  }
+
   const lines = [
     "## Custom Tools Library",
     "",
-    "The following reusable helper scripts are available. Run them via",
-    "`node <tool>.mjs`, `bash <tool>.sh`, or `python3 <tool>.py`.",
+    discoveryMode
+      ? "Only eagerly-loaded tools are listed below. Use the MCP discovery tools to find the rest at runtime."
+      : "The following reusable helper scripts are available. Run them via",
+    discoveryMode
+      ? "Use `search_tools`, then `get_tool_schema`, then `call_discovered_tool` for tools not listed here."
+      : "`node <tool>.mjs`, `bash <tool>.sh`, or `python3 <tool>.py`.",
     "Built-in tools live in `bosun/tools/`; workspace tools in `.bosun/tools/`.",
     "",
   ];

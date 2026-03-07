@@ -62,6 +62,7 @@ function emitSkillInvokeEvent(skillName, skillTitle, opts = {}) {
  *   filename  – the .md file written into skills/
  *   title     – short human-readable name
  *   tags      – array of lowercase tags agents use to match skills to tasks
+ *   important – eagerly inline this skill into agent context when matched
  *   scope     – "global" | "bosun" (bosun-specific internals)
  *   content   – the full Markdown skill text
  */
@@ -70,6 +71,7 @@ export const BUILTIN_SKILLS = [
     filename: "background-task-execution.md",
     title: "Background Task Execution",
     tags: ["background", "task", "reliability", "heartbeat", "stall", "completion"],
+    important: true,
     scope: "global",
     content: `# Skill: Background Task Execution
 
@@ -147,6 +149,7 @@ Your worktree path is provided via \`BOSUN_WORKTREE_PATH\`. Stay inside it.
     filename: "pr-workflow.md",
     title: "Pull Request Workflow",
     tags: ["pr", "pull-request", "github", "review", "ci", "merge"],
+    important: true,
     scope: "global",
     content: `# Skill: Pull Request Workflow
 
@@ -209,6 +212,7 @@ gh run list --limit 5  # recent workflow runs
     filename: "error-recovery.md",
     title: "Error Recovery Patterns",
     tags: ["error", "recovery", "retry", "debug", "failure"],
+    important: true,
     scope: "global",
     content: `# Skill: Error Recovery Patterns
 
@@ -1079,6 +1083,35 @@ export function buildSkillsIndex(skillsDir) {
     /* directory may not exist yet */
   }
 
+  function extractSkillFileMetadata(filePath) {
+    let content = "";
+    try {
+      content = readFileSync(filePath, "utf8");
+    } catch {
+      return { title: "", tags: [], important: false };
+    }
+
+    let title = "";
+    let tags = [];
+    let important = false;
+
+    const tagMatch = /<!--\s*tags:\s*(.+?)\s*-->/i.exec(content);
+    if (tagMatch) {
+      tags = tagMatch[1].split(/[,\s]+/).map((t) => t.trim().toLowerCase()).filter(Boolean);
+    }
+
+    const importantMatch = /<!--\s*(?:important|eager)\s*:\s*(true|false|yes|no|on|off|1|0)\s*-->/i.exec(content);
+    if (importantMatch) {
+      const raw = String(importantMatch[1] || "").trim().toLowerCase();
+      important = raw === "true" || raw === "yes" || raw === "on" || raw === "1";
+    }
+
+    const h1 = /^#\s+(?:Skill: )?(.+)/m.exec(content);
+    if (h1) title = h1[1].trim();
+
+    return { title, tags, important };
+  }
+
   for (const filename of files.toSorted((a, b) => a.localeCompare(b))) {
     const filePath = resolve(skillsDir, filename);
     let stat;
@@ -1087,31 +1120,26 @@ export function buildSkillsIndex(skillsDir) {
     const builtin = builtinByFilename[filename];
     let title = basename(filename, ".md").replaceAll("-", " ").replaceAll(/\b\w/g, (c) => c.toUpperCase());
     let tags = [];
+    let important = false;
     let scope = "global";
 
     if (builtin) {
       title = builtin.title;
       tags = builtin.tags;
+      important = builtin.important === true;
       scope = builtin.scope;
     } else {
-      // Try to extract tags from the first `<!--tags: ... -->` comment or a
-      // "## Tags" / "## Tags:" section in the skill file.
-      try {
-        const content = readFileSync(filePath, "utf8");
-        const tagMatch = /<!--\s*tags:\s*(.+?)\s*-->/i.exec(content);
-        if (tagMatch) {
-          tags = tagMatch[1].split(/[,\s]+/).map((t) => t.trim().toLowerCase()).filter(Boolean);
-        } else {
-          const h1 = /^#\s+(?:Skill: )?(.+)/m.exec(content);
-          if (h1) title = h1[1].trim();
-        }
-      } catch { /* ignore read errors */ }
+      const metadata = extractSkillFileMetadata(filePath);
+      if (metadata.title) title = metadata.title;
+      tags = metadata.tags;
+      important = metadata.important;
     }
 
     entries.push({
       filename,
       title,
       tags,
+      important,
       scope,
       updatedAt: stat.mtime.toISOString(),
     });
@@ -1212,12 +1240,12 @@ export function findRelevantSkills(bosunHome, taskTitle, taskDescription = "", o
     .filter(({ tags }) =>
       tags.some((tag) => searchText.includes(tag)),
     )
-    .map(({ filename, title, tags }) => {
+    .map(({ filename, title, tags, important }) => {
       let content = "";
       try {
         content = readFileSync(resolve(skillsDir, filename), "utf8");
       } catch { /* skip unreadable files */ }
-      return { filename, title, tags, content };
+      return { filename, title, tags, important: important === true, content };
     })
     .filter(({ content }) => !!content);
 
@@ -1228,4 +1256,45 @@ export function findRelevantSkills(bosunHome, taskTitle, taskDescription = "", o
   }
 
   return matched;
+}
+
+export function buildRelevantSkillsPromptBlock(bosunHome, taskTitle, taskDescription = "", opts = {}) {
+  const {
+    maxListed = 8,
+    includeMatchedSummary = true,
+  } = opts;
+  const matched = findRelevantSkills(bosunHome, taskTitle, taskDescription, opts);
+  if (!matched.length) return "";
+
+  const importantMatches = matched.filter((skill) => skill.important);
+  const summaryMatches = matched.slice(0, Math.max(1, maxListed));
+  const lines = ["## Skills Context", ""];
+
+  if (importantMatches.length > 0) {
+    lines.push(
+      "These matched skills are marked important, so their contents are loaded directly below.",
+      "",
+    );
+    for (const skill of importantMatches) {
+      lines.push(`### Skill: ${skill.title} (\`${skill.filename}\`)`);
+      lines.push(skill.content.trim());
+      lines.push("");
+    }
+  }
+
+  if (includeMatchedSummary) {
+    lines.push("Matched skill files:");
+    for (const skill of summaryMatches) {
+      const tags = Array.isArray(skill.tags) && skill.tags.length > 0
+        ? ` — tags: ${skill.tags.join(", ")}`
+        : "";
+      const importantLabel = skill.important ? " [important]" : "";
+      lines.push(`- \`${skill.filename}\` — ${skill.title}${importantLabel}${tags}`);
+    }
+    lines.push("");
+    lines.push("Load non-important matched skills on demand if you need their details.");
+    lines.push("");
+  }
+
+  return lines.join("\n").trim();
 }

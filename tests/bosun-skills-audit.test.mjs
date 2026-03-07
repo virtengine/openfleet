@@ -13,6 +13,7 @@ import {
   BUILTIN_SKILLS,
   scaffoldSkills,
   buildSkillsIndex,
+  buildRelevantSkillsPromptBlock,
   findRelevantSkills,
   getSkillsDir,
 } from "../agent/bosun-skills.mjs";
@@ -151,5 +152,53 @@ describe("codebase-annotation-audit skill", () => {
     const auditSkill = matched.find((s) => s.filename === "codebase-annotation-audit.md");
     // Should not match — audit tags are not in this title
     expect(auditSkill).toBeFalsy();
+  });
+
+  it("indexes user-defined important skills from metadata comments", () => {
+    const skillsDir = getSkillsDir(testHome);
+    mkdirSync(skillsDir, { recursive: true });
+    writeFileSync(
+      resolve(skillsDir, "critical-path.md"),
+      [
+        "<!-- tags: critical deploy incident -->",
+        "<!-- important: true -->",
+        "# Skill: Critical Path",
+        "",
+        "Handle deploy incidents carefully.",
+      ].join("\n"),
+      "utf8",
+    );
+    const indexPath = buildSkillsIndex(skillsDir);
+    const index = JSON.parse(readFileSync(indexPath, "utf8"));
+    const entry = index.skills.find((skill) => skill.filename === "critical-path.md");
+    expect(entry).toBeTruthy();
+    expect(entry.important).toBe(true);
+    expect(entry.tags).toContain("incident");
+  });
+
+  it("inlines matched important skills in the prompt block", () => {
+    const skillsDir = getSkillsDir(testHome);
+    mkdirSync(skillsDir, { recursive: true });
+    writeFileSync(
+      resolve(skillsDir, "critical-path.md"),
+      [
+        "<!-- tags: critical deploy incident -->",
+        "<!-- important: true -->",
+        "# Skill: Critical Path",
+        "",
+        "Handle deploy incidents carefully.",
+      ].join("\n"),
+      "utf8",
+    );
+    buildSkillsIndex(skillsDir);
+
+    const block = buildRelevantSkillsPromptBlock(
+      testHome,
+      "critical deploy incident",
+      "investigate production deploy",
+    );
+    expect(block).toContain("Critical Path");
+    expect(block).toContain("Handle deploy incidents carefully.");
+    expect(block).toContain("[important]");
   });
 });

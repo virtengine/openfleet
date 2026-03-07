@@ -54,6 +54,8 @@ const PRIORITY_LABELS = {
   low: "LOW",
 };
 
+const LOAD_MORE_THRESHOLD_PX = 140;
+
 function matchTaskId(a, b) {
   return String(a) === String(b);
 }
@@ -357,7 +359,7 @@ function KanbanCard({ task, onOpen }) {
 
   return html`
     <${Card}
-      class="kanban-card ${isDragging ? 'dragging' : ''}"
+      className=${`kanban-card ${isDragging ? "dragging" : ""}`}
       sx=${{
         cursor: 'pointer',
         mb: 1,
@@ -416,13 +418,30 @@ function KanbanCard({ task, onOpen }) {
 }
 
 /* ─── KanbanColumn ─── */
-function KanbanColumn({ col, tasks, onOpen }) {
+function KanbanColumn({
+  col,
+  tasks,
+  onOpen,
+  totalCount = 0,
+  hasMoreTasks = false,
+  loadingMoreTasks = false,
+  onLoadMoreTasks = null,
+}) {
   const [showCreate, setShowCreate] = useState(false);
   const inputRef = useRef(null);
 
   useEffect(() => {
     if (showCreate && inputRef.current) inputRef.current.focus();
   }, [showCreate]);
+
+  const onCardsScroll = useCallback((event) => {
+    const el = event?.currentTarget;
+    if (!el) return;
+    const remaining = el.scrollHeight - el.scrollTop - el.clientHeight;
+    if (remaining > LOAD_MORE_THRESHOLD_PX) return;
+    if (!hasMoreTasks || loadingMoreTasks || typeof onLoadMoreTasks !== "function") return;
+    void onLoadMoreTasks();
+  }, [hasMoreTasks, loadingMoreTasks, onLoadMoreTasks]);
 
   const onDragOver = useCallback((e) => {
     e.preventDefault();
@@ -463,10 +482,10 @@ function KanbanColumn({ col, tasks, onOpen }) {
             body: JSON.stringify({ taskId, status: newStatus }),
           });
           if (res?.data) {
-          tasksData.value = tasksData.value.map((t) =>
-            matchTaskId(t.id, taskId) ? { ...t, ...res.data } : t,
-          );
-        }
+            tasksData.value = tasksData.value.map((t) =>
+              matchTaskId(t.id, taskId) ? { ...t, ...res.data } : t,
+            );
+          }
           return res;
         },
         () => {
@@ -474,7 +493,6 @@ function KanbanColumn({ col, tasks, onOpen }) {
         },
       );
       showToast(`Moved to ${col.title}`, "success");
-      // Force refresh from server to ensure consistency
       setTimeout(() => loadTasks(), 500);
     } catch (err) {
       showToast(err?.message || "Failed to move task", "error");
@@ -493,6 +511,9 @@ function KanbanColumn({ col, tasks, onOpen }) {
   }, [col.id]);
 
   const isOver = dragOverCol.value === col.id || touchOverCol.value === col.id;
+  const countLabel = Number.isFinite(Number(totalCount)) && Number(totalCount) > 0
+    ? Number(totalCount)
+    : (hasMoreTasks ? `${tasks.length}+` : tasks.length);
 
   return html`
     <div
@@ -504,10 +525,10 @@ function KanbanColumn({ col, tasks, onOpen }) {
     >
       <${Box} className="kanban-column-head" sx=${{ display: 'flex', alignItems: 'center', gap: 1, p: 1, borderBottom: '2px solid ' + col.color }}>
         <${Typography} variant="subtitle2">${col.icon} ${col.title}</${Typography}>
-        <${Chip} label=${tasks.length} size="small" />
+        <${Chip} label=${countLabel} size="small" />
         <${IconButton} size="small" onClick=${() => { setShowCreate(!showCreate); haptic(); }} title=${"Add task to " + col.title}>+</${IconButton}>
       </${Box}>
-      <div class="kanban-cards">
+      <div class="kanban-cards" onScroll=${onCardsScroll}>
         ${showCreate && html`
           <${TextField}
             inputRef=${inputRef}
@@ -525,6 +546,10 @@ function KanbanColumn({ col, tasks, onOpen }) {
             `)
           : html`<${Typography} variant="body2" color="text.secondary" sx=${{ textAlign: 'center', py: 2 }}>Drop tasks here</${Typography}>`
         }
+        ${hasMoreTasks && html`
+          <div class="kanban-tail-sentinel"></div>
+          <div class="kanban-load-more">${loadingMoreTasks ? "Loading more tasks..." : "Scroll down to load more"}</div>
+        `}
       </div>
       <div class="kanban-scroll-fade"></div>
     </div>
@@ -664,7 +689,7 @@ function KanbanFilter({ tasks, filters, onFilterChange }) {
 }
 
 /* ─── KanbanBoard (main export) ─── */
-export function KanbanBoard({ onOpenTask }) {
+export function KanbanBoard({ onOpenTask, hasMoreTasks = false, loadingMoreTasks = false, onLoadMoreTasks = null, columnTotals = {}, totalTasks = 0 }) {
   const [filters, setFilters] = useState({ repo: "", assignee: "", priority: "", search: "" });
   const allTasks = tasksData.value || [];
 
@@ -698,12 +723,17 @@ export function KanbanBoard({ onOpenTask }) {
   return html`
     <${Box} className="kanban-container">
       <${KanbanFilter} tasks=${allTasks} filters=${filters} onFilterChange=${setFilters} />
+      <${Box} sx=${{ px: 1, pb: 0.5, color: "text.secondary", fontSize: 12 }}>Total tasks: ${Number.isFinite(Number(totalTasks)) ? totalTasks : allTasks.length}</${Box}>
       <${Box} className="kanban-board" sx=${{ display: 'flex', gap: 2, overflowX: 'auto', pb: 1 }}>
         ${COLUMNS.map((col) => html`
           <${KanbanColumn}
             key=${col.id}
             col=${col}
             tasks=${cols[col.id] || []}
+            totalCount=${columnTotals?.[col.id] ?? (cols[col.id] || []).length}
+            hasMoreTasks=${hasMoreTasks}
+            loadingMoreTasks=${loadingMoreTasks}
+            onLoadMoreTasks=${onLoadMoreTasks}
             onOpen=${onOpenTask}
           />
         `)}
@@ -711,4 +741,9 @@ export function KanbanBoard({ onOpenTask }) {
     </${Box}>
   `;
 }
+
+
+
+
+
 

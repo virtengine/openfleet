@@ -17,14 +17,17 @@
  *   listInstalledMcpServers() — all installed MCP servers
  *   getInstalledMcpServer()   — single installed server by ID
  *   resolveMcpServersForAgent() — resolve IDs to full configs for SDK injection
+ *   wrapServersWithDiscoveryProxy() — collapse many servers into one discovery proxy
  *   buildCodexMcpToml()       — convert configs → Codex TOML blocks
  *   buildCopilotMcpJson()     — convert configs → Copilot MCP JSON
  *   buildClaudeMcpEnv()       — convert configs → Claude MCP env format
  */
 
-import { resolve, join } from "node:path";
+import { resolve, join, dirname } from "node:path";
 import { existsSync, writeFileSync, mkdirSync, readFileSync } from "node:fs";
 import { randomUUID } from "node:crypto";
+import { fileURLToPath } from "node:url";
+import { listCustomTools } from "../agent/agent-custom-tools.mjs";
 
 // Lazy-import library manager to avoid circular dependency at module load.
 // Cached at module scope per AGENTS.md hard rules.
@@ -39,6 +42,9 @@ async function getLibManager() {
 // ── Constants ─────────────────────────────────────────────────────────────────
 
 const TAG = "[mcp-registry]";
+const __dirname = dirname(fileURLToPath(import.meta.url));
+const DISCOVERY_PROXY_SCRIPT = resolve(__dirname, "mcp-discovery-proxy.mjs");
+const DISCOVERY_PROXY_ID = "bosun-discovery-proxy";
 
 /**
  * Curated catalog of popular, reliable MCP servers.
@@ -431,6 +437,62 @@ export async function resolveMcpServersForAgent(rootDir, mcpServerIds = [], opti
   }
 
   return resolved;
+}
+
+function writeDiscoveryProxyConfig(rootDir, payload) {
+  const dir = resolve(rootDir, ".bosun", ".tmp");
+  mkdirSync(dir, { recursive: true });
+  const filePath = resolve(dir, `mcp-discovery-proxy-${Date.now()}-${randomUUID().slice(0, 8)}.json`);
+  writeFileSync(filePath, JSON.stringify(payload, null, 2), "utf8");
+  return filePath;
+}
+
+export function wrapServersWithDiscoveryProxy(rootDir, servers = [], options = {}) {
+  const {
+    enabled = true,
+    includeCustomTools = true,
+    timeoutMs = 30000,
+  } = options;
+
+  if (enabled === false) return servers;
+  if (Array.isArray(servers) && servers.some((server) => server?.id === DISCOVERY_PROXY_ID)) {
+    return servers;
+  }
+
+  const discoveredCustomTools = includeCustomTools
+    ? listCustomTools(rootDir, { includeGlobal: true, includeBuiltins: true })
+    : [];
+  const hasCustomTools = discoveredCustomTools.length > 0;
+  const hasWrappedServers = Array.isArray(servers) && servers.length > 0;
+
+  if (!hasWrappedServers && !hasCustomTools) {
+    return servers;
+  }
+
+  const configPath = writeDiscoveryProxyConfig(rootDir, {
+    rootDir,
+    timeoutMs,
+    includeCustomTools,
+    servers,
+  });
+
+  return [
+    {
+      id: DISCOVERY_PROXY_ID,
+      name: "Bosun Discovery Proxy",
+      transport: "stdio",
+      command: process.execPath,
+      args: [DISCOVERY_PROXY_SCRIPT, configPath],
+      env: {
+        BOSUN_DISCOVERY_PROXY_CONFIG_PATH: configPath,
+      },
+      tags: ["bosun", "discovery", "proxy"],
+      meta: {
+        wrappedServerIds: servers.map((server) => server.id),
+        customToolCount: discoveredCustomTools.length,
+      },
+    },
+  ];
 }
 
 // ── SDK-Specific Format Builders ──────────────────────────────────────────────

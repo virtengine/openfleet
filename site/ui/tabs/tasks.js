@@ -27,6 +27,8 @@ import {
   tasksSearch,
   tasksSort,
   tasksTotalPages,
+  tasksTotal,
+  tasksStatusCounts,
   executorData,
   showToast,
   refreshTab,
@@ -2191,6 +2193,8 @@ export function TasksTab() {
   const isKanban = viewMode.value === "kanban";
   const viewModeInitRef = useRef(false);
   const hasMoreKanbanPages = isKanban && page + 1 < totalPages;
+  const boardColumnTotals = tasksStatusCounts?.value || { draft: 0, backlog: 0, inProgress: 0, inReview: 0, done: 0 };
+  const boardTotalTasks = Number(tasksTotal?.value || 0);
 
   const loadMoreKanbanTasks = useCallback(async () => {
     if (!isKanban || kanbanLoadingMore || isSearching) return;
@@ -3072,7 +3076,7 @@ export function TasksTab() {
       }
     </style>
 
-    ${isKanban && html`<${KanbanBoard} onOpenTask=${openDetail} hasMoreTasks=${hasMoreKanbanPages} loadingMoreTasks=${kanbanLoadingMore} onLoadMoreTasks=${loadMoreKanbanTasks} />`}
+    ${isKanban && html`<${KanbanBoard} onOpenTask=${openDetail} hasMoreTasks=${hasMoreKanbanPages} loadingMoreTasks=${kanbanLoadingMore} onLoadMoreTasks=${loadMoreKanbanTasks} columnTotals=${boardColumnTotals} totalTasks=${boardTotalTasks} />`}
 
     ${!isKanban && visible.length > 0 && html`
       <div class="task-table-wrap">
@@ -3640,3 +3644,5 @@ function CreateTaskModalInline({ onClose }) {
     <//>
   `;
 }
+
+

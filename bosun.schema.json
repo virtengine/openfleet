@@ -1049,6 +1049,16 @@
           },
           "description": "Environment variable overrides keyed by MCP server ID"
         },
+        "useDiscoveryProxy": {
+          "type": "boolean",
+          "default": true,
+          "description": "Wrap resolved MCP servers behind Bosun's compact search/schema/call discovery proxy to reduce tool-definition prompt overhead."
+        },
+        "includeCustomToolsInDiscoveryProxy": {
+          "type": "boolean",
+          "default": true,
+          "description": "Expose Bosun custom tools through the discovery proxy alongside external MCP servers."
+        },
         "autoInstallDefaults": {
           "type": "boolean",
           "default": true,
