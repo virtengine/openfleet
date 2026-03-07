@@ -157,8 +157,134 @@ describe("trigger.task_available", () => {
     expect(result.reason).toBe("repo_area_parallel_limit");
     expect(result.taskCount).toBe(0);
   });
+
+  it("filters out DAG-blocked tasks via canStartTask guard", async () => {
+    const nt = getNodeType("trigger.task_available");
+    const listTasks = vi.fn().mockResolvedValue([
+      { id: "blocked-task", title: "Blocked", status: "todo" },
+      { id: "ready-task", title: "Ready", status: "todo" },
+    ]);
+    const canStartTask = vi.fn((taskId) =>
+      taskId === "blocked-task"
+        ? { canStart: false, reason: "dependencies_unresolved", blockingTaskIds: ["dep-1"] }
+        : { canStart: true, reason: "ok" },
+    );
+
+    const ctx = makeCtx({ activeSlotCount: 0, _services: { taskStore: { canStartTask } } });
+    const node = makeNode("trigger.task_available", {
+      maxParallel: 3,
+      status: "todo",
+      enforceStartGuards: true,
+    });
+
+    const result = await nt.execute(node, ctx, {
+      services: { kanban: { listTasks }, taskStore: { canStartTask } },
+    });
+
+    expect(result.triggered).toBe(true);
+    expect(result.taskCount).toBe(1);
+    expect(result.tasks[0].id).toBe("ready-task");
+    expect(canStartTask).toHaveBeenCalledTimes(2);
+  });
+
+  it("returns start_guard_blocked when all candidate tasks are blocked", async () => {
+    const nt = getNodeType("trigger.task_available");
+    const listTasks = vi.fn().mockResolvedValue([
+      { id: "blocked-a", title: "Blocked A", status: "todo" },
+      { id: "blocked-b", title: "Blocked B", status: "todo" },
+    ]);
+    const canStartTask = vi.fn(() => ({
+      canStart: false,
+      reason: "prior_sprint_tasks_incomplete",
+      blockingTaskIds: ["earlier-task"],
+      blockingSprintIds: ["sprint-1"],
+    }));
+
+    const ctx = makeCtx({ activeSlotCount: 0, _services: { taskStore: { canStartTask } } });
+    const node = makeNode("trigger.task_available", {
+      maxParallel: 2,
+      status: "todo",
+      enforceStartGuards: true,
+      sprintOrderMode: "sequential",
+    });
+
+    const result = await nt.execute(node, ctx, {
+      services: { kanban: { listTasks }, taskStore: { canStartTask } },
+    });
+
+    expect(result.triggered).toBe(false);
+    expect(result.reason).toBe("start_guard_blocked");
+    expect(Array.isArray(result.blocked)).toBe(true);
+    expect(result.blocked.length).toBe(2);
+    expect(canStartTask).toHaveBeenCalledTimes(2);
+    expect(canStartTask).toHaveBeenNthCalledWith(1, "blocked-a", { sprintOrderMode: "sequential" });
+    expect(canStartTask).toHaveBeenNthCalledWith(2, "blocked-b", { sprintOrderMode: "sequential" });
+  });
+
+  it("bypasses missing-task guard by default and emits audit event", async () => {
+    const nt = getNodeType("trigger.task_available");
+    const listTasks = vi.fn().mockResolvedValue([
+      { id: "missing-task", title: "Missing", status: "todo" },
+    ]);
+    const canStartTask = vi.fn(() => ({
+      canStart: false,
+      reason: "task_not_found",
+    }));
+
+    const ctx = makeCtx({ activeSlotCount: 0, _services: { taskStore: { canStartTask } } });
+    const node = makeNode("trigger.task_available", {
+      maxParallel: 1,
+      status: "todo",
+      enforceStartGuards: true,
+    });
+
+    const result = await nt.execute(node, ctx, {
+      services: { kanban: { listTasks }, taskStore: { canStartTask } },
+    });
+
+    expect(result.triggered).toBe(true);
+    expect(result.taskCount).toBe(1);
+    expect(result.tasks[0].id).toBe("missing-task");
+    expect(result.auditEvents).toHaveLength(1);
+    expect(result.auditEvents[0].type).toBe("start_guard_bypass");
+    expect(result.auditEvents[0].reason).toBe("task_not_found");
+    expect(result.auditEvents[0].strict).toBe(false);
+  });
+
+  it("supports strict missing-task guard policy with audit events", async () => {
+    const nt = getNodeType("trigger.task_available");
+    const listTasks = vi.fn().mockResolvedValue([
+      { id: "missing-task", title: "Missing", status: "todo" },
+    ]);
+    const canStartTask = vi.fn(() => ({
+      canStart: false,
+      reason: "task_not_found",
+    }));
+
+    const ctx = makeCtx({ activeSlotCount: 0, _services: { taskStore: { canStartTask } } });
+    const node = makeNode("trigger.task_available", {
+      maxParallel: 1,
+      status: "todo",
+      enforceStartGuards: true,
+      strictStartGuardMissingTask: true,
+    });
+
+    const result = await nt.execute(node, ctx, {
+      services: { kanban: { listTasks }, taskStore: { canStartTask } },
+    });
+
+    expect(result.triggered).toBe(false);
+    expect(result.reason).toBe("start_guard_blocked");
+    expect(result.blocked).toHaveLength(1);
+    expect(result.blocked[0].reason).toBe("task_not_found");
+    expect(result.blocked[0].strict).toBe(true);
+    expect(result.auditEvents).toHaveLength(1);
+    expect(result.auditEvents[0].type).toBe("start_guard_blocked");
+    expect(result.auditEvents[0].reason).toBe("task_not_found");
+    expect(result.auditEvents[0].strict).toBe(true);
+  });
 });
-// ═══════════════════════════════════════════════════════════════════════════
+
 //  condition.slot_available Tests
 // ═══════════════════════════════════════════════════════════════════════════
 

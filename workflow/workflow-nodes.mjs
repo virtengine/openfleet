@@ -6923,6 +6923,34 @@ async function ensureDiffStatsMod() {
   if (!_diffStatsMod) _diffStatsMod = await import("../git/diff-stats.mjs");
   return _diffStatsMod;
 }
+let _taskStoreMod = null;
+async function ensureTaskStoreMod() {
+  if (!_taskStoreMod) _taskStoreMod = await import("../task/task-store.mjs");
+  return _taskStoreMod;
+}
+
+function normalizeCanStartGuardResult(raw) {
+  if (typeof raw === "boolean") {
+    return {
+      canStart: raw,
+      reason: raw ? "ok" : "blocked",
+      blockingTaskIds: [],
+      missingDependencyTaskIds: [],
+      blockingSprintIds: [],
+    };
+  }
+  const data = raw && typeof raw === "object" ? raw : {};
+  const canStart = data.canStart !== false;
+  return {
+    canStart,
+    reason: String(data.reason || (canStart ? "ok" : "blocked")).trim() || (canStart ? "ok" : "blocked"),
+    blockingTaskIds: Array.isArray(data.blockingTaskIds) ? data.blockingTaskIds : [],
+    missingDependencyTaskIds: Array.isArray(data.missingDependencyTaskIds) ? data.missingDependencyTaskIds : [],
+    blockingSprintIds: Array.isArray(data.blockingSprintIds) ? data.blockingSprintIds : [],
+    sprintOrderMode: data.sprintOrderMode || null,
+    sprintTaskOrderMode: data.sprintTaskOrderMode || null,
+  };
+}
 
 /** Resolve a config value, falling back to ctx.data, then defaultVal. */
 function cfgOrCtx(node, ctx, key, defaultVal = "") {
@@ -6943,6 +6971,9 @@ const _completedWithPR = new Set();
 const MAX_NO_COMMIT_ATTEMPTS = 3;
 const NO_COMMIT_BASE_COOLDOWN_MS = 15 * 60 * 1000; // 15 min
 const NO_COMMIT_MAX_COOLDOWN_MS = 2 * 60 * 60 * 1000; // 2 hours
+const STRICT_START_GUARD_MISSING_TASK = /^(1|true|yes|on)$/i.test(
+  String(process.env.BOSUN_STRICT_START_GUARD_MISSING_TASK || "").trim(),
+);
 
 // ── trigger.task_available ──────────────────────────────────────────────────
 
@@ -6963,6 +6994,9 @@ registerNodeType("trigger.task_available", {
       listRetries: { type: "number", default: 3, description: "Retries for listTasks calls" },
       listRetryDelayMs: { type: "number", default: 2000, description: "Base delay between retries" },
       repoAreaParallelLimit: { type: "number", default: 0, description: "Per-repo-area active task cap (0 disables limit)" },
+      enforceStartGuards: { type: "boolean", default: true, description: "Filter out tasks blocked by dependency/sprint DAG start guards" },
+      sprintOrderMode: { type: "string", enum: ["parallel", "sequential"], description: "Optional global sprint-order override when evaluating guards" },
+      strictStartGuardMissingTask: { type: "boolean", default: false, description: "When true, task_not_found from start guards blocks dispatch and emits audit events" },
     },
   },
   async execute(node, ctx, engine) {
@@ -6973,6 +7007,12 @@ registerNodeType("trigger.task_available", {
     const listRetries = node.config?.listRetries ?? 3;
     const listRetryDelayMs = node.config?.listRetryDelayMs ?? 2000;
     const repoAreaParallelLimit = Number(node.config?.repoAreaParallelLimit ?? 0);
+    const enforceStartGuards = node.config?.enforceStartGuards !== false;
+    const sprintOrderMode = String(node.config?.sprintOrderMode || "").trim().toLowerCase();
+    const strictStartGuardMissingTask =
+      typeof node.config?.strictStartGuardMissingTask === "boolean"
+        ? node.config.strictStartGuardMissingTask
+        : STRICT_START_GUARD_MISSING_TASK;
 
     // Check slot availability
     const activeSlotCount = ctx.data?.activeSlotCount ?? 0;
@@ -7051,6 +7091,103 @@ registerNodeType("trigger.task_available", {
       return { triggered: false, reason: "all_filtered", taskCount: 0 };
     }
 
+    // DAG / sprint-order guard: only dispatch tasks that can legally start.
+    let startGuardAuditEvents = [];
+    if (enforceStartGuards && tasks.length > 0) {
+      let canStartFn =
+        ctx.data?._services?.taskStore?.canStartTask
+        || engine?.services?.taskStore?.canStartTask
+        || null;
+      if (typeof canStartFn !== "function") {
+        try {
+          const taskStore = await ensureTaskStoreMod();
+          canStartFn = taskStore?.canStartTask || taskStore?.canTaskStart || null;
+        } catch {
+          canStartFn = null;
+        }
+      }
+
+      if (typeof canStartFn === "function") {
+        const allowed = [];
+        const blocked = [];
+        const auditEvents = [];
+        for (const task of tasks) {
+          const taskId = String(task?.id || task?.task_id || "").trim();
+          if (!taskId) continue;
+          let guardRaw = null;
+          try {
+            guardRaw = await canStartFn(
+              taskId,
+              sprintOrderMode === "sequential" || sprintOrderMode === "parallel"
+                ? { sprintOrderMode }
+                : {},
+            );
+          } catch (err) {
+            const event = {
+              type: "start_guard_error",
+              taskId,
+              reason: `guard_error:${err?.message || String(err)}`,
+            };
+            blocked.push({ taskId, reason: event.reason });
+            auditEvents.push(event);
+            continue;
+          }
+
+          const guard = normalizeCanStartGuardResult(guardRaw);
+          const taskNotFound = guard.reason === "task_not_found";
+          const bypassMissingTask = taskNotFound && !strictStartGuardMissingTask;
+          if (guard.canStart || bypassMissingTask) {
+            allowed.push(task);
+            if (bypassMissingTask) {
+              auditEvents.push({
+                type: "start_guard_bypass",
+                taskId,
+                reason: "task_not_found",
+                strict: false,
+              });
+            }
+          } else {
+            const blockedEntry = {
+              taskId,
+              reason: guard.reason,
+              blockingTaskIds: guard.blockingTaskIds,
+              missingDependencyTaskIds: guard.missingDependencyTaskIds,
+              blockingSprintIds: guard.blockingSprintIds,
+              sprintOrderMode: guard.sprintOrderMode,
+              sprintTaskOrderMode: guard.sprintTaskOrderMode,
+              strict: Boolean(taskNotFound && strictStartGuardMissingTask),
+            };
+            blocked.push(blockedEntry);
+            auditEvents.push({ type: "start_guard_blocked", ...blockedEntry });
+          }
+        }
+
+        tasks = allowed;
+        startGuardAuditEvents = auditEvents;
+
+        if (blocked.length > 0) {
+          const sample = blocked.slice(0, 3).map((entry) => `${entry.taskId}:${entry.reason}`).join(", ");
+          ctx.log(node.id, `Start guard filtered ${blocked.length} task(s): ${sample}`);
+        }
+        if (auditEvents.length > 0) {
+          const preview = auditEvents
+            .slice(0, 3)
+            .map((entry) => `${entry.type}:${entry.taskId}:${entry.reason}`)
+            .join(", ");
+          ctx.log(node.id, `Start guard audit events (${auditEvents.length}): ${preview}`);
+        }
+        if (tasks.length === 0) {
+          return {
+            triggered: false,
+            reason: "start_guard_blocked",
+            taskCount: 0,
+            blocked,
+            auditEvents,
+          };
+        }
+      }
+    }
+
     // Sort: fire tasks first, then by priority, then by created date
     tasks.sort((a, b) => {
       const aFire = (a.labels || []).some((l) => typeof l === "string" ? l.includes("fire") : l?.name?.includes("fire"));
@@ -7112,6 +7249,7 @@ registerNodeType("trigger.task_available", {
           taskCount: 0,
           availableSlots: remaining,
           repoAreaParallelLimit,
+          auditEvents: startGuardAuditEvents,
         };
       }
     }
@@ -7122,6 +7260,7 @@ registerNodeType("trigger.task_available", {
       tasks: toDispatch,
       taskCount: toDispatch.length,
       availableSlots: remaining,
+      auditEvents: startGuardAuditEvents,
     };
   },
 });
@@ -8363,4 +8502,3 @@ registerNodeType("action.web_search", {
 // ═══════════════════════════════════════════════════════════════════════════
 
 export { registerNodeType, getNodeType, listNodeTypes } from "./workflow-engine.mjs";
-
