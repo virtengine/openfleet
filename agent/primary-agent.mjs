@@ -158,6 +158,59 @@ function appendAttachmentsToPrompt(message, attachments) {
   return { message: `${message}${lines.join("\n")}`, appended: true };
 }
 
+function summarizeContextCompressionItems(items) {
+  if (!Array.isArray(items) || items.length === 0) return null;
+
+  const counts = {
+    agent: 0,
+    user: 0,
+    tool: 0,
+    other: 0,
+  };
+
+  for (const item of items) {
+    if (!item || typeof item !== "object") continue;
+    const compressedTag = String(item._compressed || "").trim().toLowerCase();
+    const text = String(item.text || item.output || item.aggregated_output || "").toLowerCase();
+    const hasToolPlaceholder =
+      Boolean(item._cachedLogId)
+      || text.includes("full output: bosun --tool-log")
+      || text.includes(" chars compressed");
+
+    if (compressedTag.startsWith("agent_")) {
+      counts.agent += 1;
+      continue;
+    }
+    if (compressedTag === "user_breadcrumb") {
+      counts.user += 1;
+      continue;
+    }
+    if (hasToolPlaceholder) {
+      counts.tool += 1;
+      continue;
+    }
+    if (compressedTag) counts.other += 1;
+  }
+
+  const total = counts.agent + counts.user + counts.tool + counts.other;
+  if (total === 0) return null;
+
+  const detailParts = [];
+  if (counts.agent) detailParts.push(`${counts.agent} agent message${counts.agent === 1 ? "" : "s"}`);
+  if (counts.user) detailParts.push(`${counts.user} user prompt${counts.user === 1 ? "" : "s"}`);
+  if (counts.tool) detailParts.push(`${counts.tool} tool output${counts.tool === 1 ? "" : "s"}`);
+  if (counts.other) detailParts.push(`${counts.other} other item${counts.other === 1 ? "" : "s"}`);
+
+  return {
+    total,
+    counts,
+    detail: detailParts.join(", "),
+    content:
+      `Context summarized for continuation: ${total} older item${total === 1 ? "" : "s"} compressed (${detailParts.join(", ")}). ` +
+      `Session history in this view is unchanged.`,
+  };
+}
+
 function buildPrimaryToolCapabilityContract(options = {}) {
   let rootDir = "";
   try {
@@ -795,6 +848,18 @@ export async function execPrimaryPrompt(userMessage, options = {}) {
       timestamp: new Date().toISOString(),
       _sessionType: sessionType,
     });
+    const compressionSummary = summarizeContextCompressionItems(pooled?.items);
+    if (compressionSummary) {
+      tracker.recordEvent(sessionId, {
+        role: "system",
+        type: "system",
+        content: compressionSummary.content,
+        timestamp: new Date().toISOString(),
+        meta: {
+          contextCompression: compressionSummary,
+        },
+      });
+    }
     return pooled;
   }
 
@@ -872,6 +937,18 @@ export async function execPrimaryPrompt(userMessage, options = {}) {
           timestamp: new Date().toISOString(),
           _sessionType: sessionType,
         });
+        const compressionSummary = summarizeContextCompressionItems(result?.items);
+        if (compressionSummary) {
+          tracker.recordEvent(sessionId, {
+            role: "system",
+            type: "system",
+            content: compressionSummary.content,
+            timestamp: new Date().toISOString(),
+            meta: {
+              contextCompression: compressionSummary,
+            },
+          });
+        }
       }
       return result;
     } catch (err) {

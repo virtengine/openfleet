@@ -191,6 +191,218 @@ function normalizeTags(raw) {
   return tags;
 }
 
+function normalizeTaskType(rawType) {
+  const value = String(rawType || "").trim().toLowerCase();
+  if (TASK_TYPE_SET.has(value)) return value;
+  return "task";
+}
+
+function normalizeTaskStatus(rawStatus) {
+  const value = String(rawStatus || "").trim().toLowerCase();
+  if (!value) return "todo";
+  if (value === "in-progress") return "inprogress";
+  if (value === "in-review") return "inreview";
+  if (value === "completed") return "done";
+  if (value === "canceled") return "cancelled";
+  return value;
+}
+
+function normalizeLifecycleState(rawStatus) {
+  const key = normalizeTaskStatus(rawStatus);
+  return NORMALIZED_STATE_MAP[key] || "backlog";
+}
+
+function uniqueStringList(raw, options = {}) {
+  const allowEmpty = options.allowEmpty === true;
+  const caseSensitive = options.caseSensitive === true;
+  const values = Array.isArray(raw)
+    ? raw
+    : String(raw || "")
+        .split(",")
+        .map((entry) => entry.trim());
+  const seen = new Set();
+  const out = [];
+  for (const entry of values) {
+    const value = String(entry || "").trim();
+    if (!value && !allowEmpty) continue;
+    const key = caseSensitive ? value : value.toLowerCase();
+    if (seen.has(key)) continue;
+    seen.add(key);
+    out.push(value);
+  }
+  return out;
+}
+
+function normalizeTaskComments(rawComments) {
+  const values = Array.isArray(rawComments) ? rawComments : [];
+  const normalized = [];
+  for (const entry of values) {
+    if (entry == null) continue;
+    const bodyRaw = typeof entry === "string"
+      ? entry
+      : entry.body || entry.text || entry.content || "";
+    const body = String(bodyRaw || "").trim();
+    if (!body) continue;
+    normalized.push({
+      id: typeof entry === "object" && entry.id ? String(entry.id) : null,
+      body,
+      author: typeof entry === "object" && entry.author != null
+        ? String(entry.author)
+        : typeof entry === "object" && entry.user != null
+          ? String(entry.user)
+          : null,
+      createdAt:
+        typeof entry === "object" && entry.createdAt
+          ? String(entry.createdAt)
+          : typeof entry === "object" && entry.created_at
+            ? String(entry.created_at)
+            : now(),
+      source: typeof entry === "object" && entry.source ? String(entry.source) : "task",
+      kind: typeof entry === "object" && entry.kind ? String(entry.kind) : "comment",
+      meta: typeof entry === "object" && entry.meta && typeof entry.meta === "object"
+        ? { ...entry.meta }
+        : {},
+    });
+  }
+  if (normalized.length <= MAX_TASK_COMMENTS) return normalized;
+  return normalized.slice(-MAX_TASK_COMMENTS);
+}
+
+function createTimelineEvent(event = {}) {
+  const ts = String(event.at || event.timestamp || now());
+  return {
+    id: String(event.id || `${Date.now()}-${Math.random().toString(16).slice(2, 10)}`),
+    at: ts,
+    type: String(event.type || "status.transition"),
+    source: String(event.source || "task-store"),
+    actor: event.actor != null ? String(event.actor) : null,
+    action: event.action != null ? String(event.action) : null,
+    status: event.status != null ? String(event.status) : null,
+    fromStatus: event.fromStatus != null ? String(event.fromStatus) : null,
+    toStatus: event.toStatus != null ? String(event.toStatus) : null,
+    message: event.message != null ? String(event.message) : null,
+    payload: event.payload && typeof event.payload === "object" ? { ...event.payload } : null,
+  };
+}
+
+function normalizeTimelineEvents(rawEvents) {
+  const values = Array.isArray(rawEvents) ? rawEvents : [];
+  const normalized = values.map((event) => createTimelineEvent(event));
+  if (normalized.length <= MAX_TASK_TIMELINE) return normalized;
+  return normalized.slice(-MAX_TASK_TIMELINE);
+}
+
+function normalizeWorkflowRunLinks(rawRuns) {
+  const values = Array.isArray(rawRuns) ? rawRuns : [];
+  const normalized = [];
+  for (const entry of values) {
+    if (!entry || typeof entry !== "object") continue;
+    const runId = String(entry.runId || entry.id || "").trim();
+    if (!runId) continue;
+    normalized.push({
+      runId,
+      workflowId: entry.workflowId != null ? String(entry.workflowId) : null,
+      nodeId: entry.nodeId != null ? String(entry.nodeId) : null,
+      status: entry.status != null ? String(entry.status) : null,
+      outcome: entry.outcome != null ? String(entry.outcome) : null,
+      startedAt: entry.startedAt != null ? String(entry.startedAt) : null,
+      endedAt: entry.endedAt != null ? String(entry.endedAt) : null,
+      summary: entry.summary != null ? String(entry.summary) : null,
+      url: entry.url != null ? String(entry.url) : null,
+      source: entry.source != null ? String(entry.source) : "workflow",
+      meta: entry.meta && typeof entry.meta === "object" ? { ...entry.meta } : {},
+    });
+  }
+  if (normalized.length <= MAX_WORKFLOW_RUN_LINKS) return normalized;
+  return normalized.slice(-MAX_WORKFLOW_RUN_LINKS);
+}
+
+function validateTaskTransition(currentStatus, nextStatus, options = {}) {
+  const fromStatus = normalizeTaskStatus(currentStatus);
+  const toStatus = normalizeTaskStatus(nextStatus);
+  const fromState = normalizeLifecycleState(fromStatus);
+  const toState = normalizeLifecycleState(toStatus);
+  if (fromStatus === toStatus) {
+    return { valid: true, fromStatus, toStatus, fromState, toState, reason: "no_change" };
+  }
+  if (options.force === true) {
+    return { valid: true, fromStatus, toStatus, fromState, toState, reason: "forced" };
+  }
+  const allowed = ALLOWED_STATE_TRANSITIONS[fromState] || new Set();
+  if (allowed.has(toState)) {
+    return { valid: true, fromStatus, toStatus, fromState, toState, reason: "allowed" };
+  }
+  return {
+    valid: false,
+    fromStatus,
+    toStatus,
+    fromState,
+    toState,
+    reason: `invalid_transition:${fromState}->${toState}`,
+  };
+}
+
+function normalizeTaskStructure(rawTask = {}) {
+  const base = defaultTask(rawTask);
+  const normalized = {
+    ...base,
+    status: normalizeTaskStatus(base.status),
+    type: normalizeTaskType(base.type),
+    epicId: base.epicId ? String(base.epicId) : null,
+    parentTaskId: base.parentTaskId ? String(base.parentTaskId) : null,
+    childTaskIds: uniqueStringList(base.childTaskIds || []),
+    dependencyTaskIds: uniqueStringList(base.dependencyTaskIds || []),
+    blockedByTaskIds: uniqueStringList(base.blockedByTaskIds || []),
+    dependsOn: uniqueStringList(base.dependsOn || base.dependencyTaskIds || []),
+    assignees: uniqueStringList(base.assignees || []),
+    watchers: uniqueStringList(base.watchers || []),
+    links: {
+      branches: uniqueStringList(base.links?.branches || []),
+      prs: uniqueStringList(base.links?.prs || []),
+      workflows: uniqueStringList(base.links?.workflows || []),
+    },
+    comments: normalizeTaskComments(
+      Array.isArray(base.comments) && base.comments.length
+        ? base.comments
+        : Array.isArray(base.meta?.comments)
+          ? base.meta.comments
+          : [],
+    ),
+    timeline: normalizeTimelineEvents(
+      Array.isArray(base.timeline)
+        ? base.timeline
+        : Array.isArray(base.meta?.timeline)
+          ? base.meta.timeline
+          : [],
+    ),
+    workflowRuns: normalizeWorkflowRunLinks(
+      Array.isArray(base.workflowRuns)
+        ? base.workflowRuns
+        : Array.isArray(base.meta?.workflowRuns)
+          ? base.meta.workflowRuns
+          : [],
+    ),
+    stateVersion: Number.isFinite(Number(base.stateVersion))
+      ? Number(base.stateVersion)
+      : 2,
+  };
+  if (normalized.status === "draft") {
+    normalized.draft = true;
+  }
+  return normalized;
+}
+
+function pushTaskTimeline(task, event = {}) {
+  task.timeline = normalizeTimelineEvents([...(Array.isArray(task.timeline) ? task.timeline : []), event]);
+}
+
+function markTaskTouched(task, source = "task-store") {
+  const ts = now();
+  task.updatedAt = ts;
+  task.lastActivityAt = ts;
+  task.syncDirty = source !== "external";
+}
+
 function defaultMeta() {
   return {
     version: 1,
@@ -230,6 +442,22 @@ function defaultTask(overrides = {}) {
     branchName: null,
     prNumber: null,
     prUrl: null,
+
+    // Task State V2 graph/state fields
+    type: "task",
+    epicId: null,
+    parentTaskId: null,
+    childTaskIds: [],
+    dependencyTaskIds: [],
+    blockedByTaskIds: [],
+    dependsOn: [],
+    assignees: [],
+    watchers: [],
+    comments: [],
+    timeline: [],
+    workflowRuns: [],
+    links: { branches: [], prs: [], workflows: [] },
+    stateVersion: 2,
 
     createdAt: ts,
     updatedAt: ts,
@@ -365,9 +593,16 @@ export function loadStore() {
         }
         throw parseErr;
       }
+      const normalizedTasks = {};
+      const sourceTasks = data && data.tasks && typeof data.tasks === "object" ? data.tasks : {};
+      for (const [taskId, taskValue] of Object.entries(sourceTasks)) {
+        const resolvedId = String(taskValue?.id || taskId || "").trim();
+        if (!resolvedId) continue;
+        normalizedTasks[resolvedId] = normalizeTaskStructure({ ...taskValue, id: resolvedId });
+      }
       _store = {
         _meta: { ...defaultMeta(), ...(data._meta || {}) },
-        tasks: data.tasks || {},
+        tasks: normalizedTasks,
       };
       if (!_didLogInitialLoad) {
         _didLogInitialLoad = true;
@@ -499,39 +734,99 @@ export function updateTask(taskId, updates) {
     return null;
   }
 
-  // Apply updates (shallow merge)
-  for (const [k, v] of Object.entries(updates)) {
-    if (k === "id") continue; // never overwrite id
-    if (k === "lastAgentOutput") {
-      task[k] = truncate(v, MAX_AGENT_OUTPUT);
-    } else if (k === "lastError") {
-      task[k] = truncate(v, MAX_ERROR_LENGTH);
-    } else if (k === "tags") {
-      task[k] = normalizeTags(v);
-    } else {
-      task[k] = v;
+  const previousStatus = task.status;
+  const patch = updates && typeof updates === "object" ? updates : {};
+
+  for (const [key, value] of Object.entries(patch)) {
+    if (key === "id") continue;
+    if (key === "lastAgentOutput") {
+      task.lastAgentOutput = truncate(value, MAX_AGENT_OUTPUT);
+      continue;
     }
+    if (key === "lastError") {
+      task.lastError = truncate(value, MAX_ERROR_LENGTH);
+      continue;
+    }
+    if (key === "tags") {
+      task.tags = normalizeTags(value);
+      continue;
+    }
+    if (key === "status") {
+      task.status = normalizeTaskStatus(value);
+      continue;
+    }
+    if (key === "type") {
+      task.type = normalizeTaskType(value);
+      continue;
+    }
+    if (key === "comments") {
+      task.comments = normalizeTaskComments(value);
+      continue;
+    }
+    if (key === "timeline") {
+      task.timeline = normalizeTimelineEvents(value);
+      continue;
+    }
+    if (key === "workflowRuns") {
+      task.workflowRuns = normalizeWorkflowRunLinks(value);
+      continue;
+    }
+    if (key === "assignees" || key === "watchers" || key === "childTaskIds" || key === "dependencyTaskIds" || key === "blockedByTaskIds" || key === "dependsOn") {
+      task[key] = uniqueStringList(value);
+      continue;
+    }
+    if (key === "links") {
+      const links = value && typeof value === "object" ? value : {};
+      task.links = {
+        branches: uniqueStringList(links.branches || task.links?.branches || []),
+        prs: uniqueStringList(links.prs || task.links?.prs || []),
+        workflows: uniqueStringList(links.workflows || task.links?.workflows || []),
+      };
+      continue;
+    }
+    task[key] = value;
   }
 
-  if (typeof updates.draft === "boolean") {
-    task.draft = updates.draft;
-    if (updates.draft && task.status !== "draft") {
+  if (typeof patch.draft === "boolean") {
+    task.draft = patch.draft;
+    if (patch.draft && task.status !== "draft") {
       task.status = "draft";
-    } else if (!updates.draft && task.status === "draft") {
+    } else if (!patch.draft && task.status === "draft") {
       task.status = "todo";
     }
   }
   if (task.status === "draft") {
     task.draft = true;
-  } else if (task.draft && updates.draft == null) {
+  } else if (task.draft && patch.draft == null) {
     task.draft = false;
   }
 
-  task.updatedAt = now();
-  task.syncDirty = true;
+  const normalizedTask = normalizeTaskStructure(task);
+  _store.tasks[taskId] = normalizedTask;
+  markTaskTouched(normalizedTask, "task-store");
+
+  if (previousStatus !== normalizedTask.status) {
+    normalizedTask.statusHistory.push({
+      status: normalizedTask.status,
+      timestamp: now(),
+      source: "update",
+    });
+    if (normalizedTask.statusHistory.length > MAX_STATUS_HISTORY) {
+      normalizedTask.statusHistory = normalizedTask.statusHistory.slice(-MAX_STATUS_HISTORY);
+    }
+    pushTaskTimeline(normalizedTask, {
+      type: "status.transition",
+      source: "updateTask",
+      fromStatus: previousStatus,
+      toStatus: normalizedTask.status,
+      status: normalizedTask.status,
+      action: "update",
+      message: `Status updated ${previousStatus} -> ${normalizedTask.status}`,
+    });
+  }
 
   saveStore();
-  return { ...task };
+  return { ...normalizedTask };
 }
 
 /**
@@ -540,18 +835,38 @@ export function updateTask(taskId, updates) {
  */
 export function addTask(taskData) {
   ensureLoaded();
-  const task = defaultTask(taskData);
+  const task = normalizeTaskStructure(defaultTask(taskData));
   if (!task.id) {
     console.error(TAG, "addTask: task must have an id");
     return null;
   }
+
   task.tags = normalizeTags(task.tags);
   task.draft = Boolean(task.draft || task.status === "draft");
   if (task.draft) task.status = "draft";
   task.lastAgentOutput = truncate(task.lastAgentOutput, MAX_AGENT_OUTPUT);
   task.lastError = truncate(task.lastError, MAX_ERROR_LENGTH);
+  pushTaskTimeline(task, {
+    type: "task.created",
+    source: "task-store",
+    status: task.status,
+    message: `Task created with status ${task.status}`,
+  });
 
   _store.tasks[task.id] = task;
+
+  if (task.parentTaskId && _store.tasks[task.parentTaskId]) {
+    const parent = _store.tasks[task.parentTaskId];
+    parent.childTaskIds = uniqueStringList([...(parent.childTaskIds || []), task.id]);
+    markTaskTouched(parent, "task-graph");
+  }
+  for (const dependencyId of task.dependencyTaskIds || []) {
+    const dependency = _store.tasks[dependencyId];
+    if (!dependency) continue;
+    dependency.blockedByTaskIds = uniqueStringList([...(dependency.blockedByTaskIds || []), task.id]);
+    markTaskTouched(dependency, "task-graph");
+  }
+
   console.log(TAG, `Added task ${task.id}: ${task.title}`);
 
   saveStore();
@@ -563,7 +878,27 @@ export function addTask(taskData) {
  */
 export function removeTask(taskId) {
   ensureLoaded();
-  if (!_store.tasks[taskId]) return false;
+  const task = _store.tasks[taskId];
+  if (!task) return false;
+
+  for (const candidate of Object.values(_store.tasks)) {
+    if (!candidate || candidate.id === taskId) continue;
+    const beforeChildren = candidate.childTaskIds?.length || 0;
+    const beforeDeps = candidate.dependencyTaskIds?.length || 0;
+    candidate.childTaskIds = uniqueStringList((candidate.childTaskIds || []).filter((id) => id !== taskId));
+    candidate.dependencyTaskIds = uniqueStringList((candidate.dependencyTaskIds || []).filter((id) => id !== taskId));
+    candidate.dependsOn = uniqueStringList((candidate.dependsOn || []).filter((id) => id !== taskId));
+    if (beforeChildren !== candidate.childTaskIds.length || beforeDeps !== candidate.dependencyTaskIds.length) {
+      markTaskTouched(candidate, "task-store");
+      pushTaskTimeline(candidate, {
+        type: "task.graph.updated",
+        source: "task-store",
+        message: `Removed references to deleted task ${taskId}`,
+        payload: { removedTaskId: taskId },
+      });
+    }
+  }
+
   delete _store.tasks[taskId];
   console.log(TAG, `Removed task ${taskId}`);
   saveStore();
@@ -586,21 +921,21 @@ export function setTaskStatus(taskId, status, source) {
     return null;
   }
 
-  const prev = task.status;
+  const prev = normalizeTaskStatus(task.status);
+  const next = normalizeTaskStatus(status);
   const tsNow = now();
-  task.status = status;
+  task.status = next;
   task.updatedAt = tsNow;
   task.lastActivityAt = tsNow;
 
   // No-op transition: keep activity fresh without polluting history/logs.
-  if (prev === status) {
+  if (prev === next) {
     saveStore();
     return { ...task };
   }
 
-  // Append to history (FIFO, max 50)
   task.statusHistory.push({
-    status,
+    status: next,
     timestamp: tsNow,
     source: source || "unknown",
   });
@@ -608,18 +943,109 @@ export function setTaskStatus(taskId, status, source) {
     task.statusHistory = task.statusHistory.slice(-MAX_STATUS_HISTORY);
   }
 
-  // Mark dirty unless change came from external source
   if (source !== "external") {
     task.syncDirty = true;
   }
 
+  pushTaskTimeline(task, {
+    type: "status.transition",
+    source: source || "unknown",
+    fromStatus: prev,
+    toStatus: next,
+    status: next,
+    action: "set_status",
+    message: `Task status changed ${prev} -> ${next}`,
+  });
+
   console.log(
     TAG,
-    `Task ${taskId} status: ${prev} → ${status} (source: ${source})`,
+    `Task ${taskId} status: ${prev} → ${next} (source: ${source})`,
   );
 
   saveStore();
   return { ...task };
+}
+
+export function validateTaskStatusTransition(currentStatus, nextStatus, options = {}) {
+  return validateTaskTransition(currentStatus, nextStatus, options);
+}
+
+export function transitionTaskLifecycle(taskId, action, options = {}) {
+  ensureLoaded();
+  const task = _store.tasks[taskId];
+  if (!task) {
+    console.warn(TAG, `transitionTaskLifecycle: task ${taskId} not found`);
+    return { ok: false, error: "task_not_found", task: null };
+  }
+
+  const normalizedAction = String(action || "").trim().toLowerCase();
+  const targetStatus =
+    normalizeTaskStatus(options.targetStatus || options.status || LIFECYCLE_ACTION_TARGET[normalizedAction] || "");
+  if (!targetStatus) {
+    return { ok: false, error: "unknown_action", action: normalizedAction, task: { ...task } };
+  }
+
+  const validation = validateTaskTransition(task.status, targetStatus, options);
+  if (!validation.valid) {
+    return {
+      ok: false,
+      error: validation.reason,
+      action: normalizedAction,
+      fromStatus: validation.fromStatus,
+      toStatus: validation.toStatus,
+      task: { ...task },
+    };
+  }
+
+  const previousStatus = task.status;
+  const updated = setTaskStatus(taskId, targetStatus, options.source || "lifecycle");
+  const resolved = _store.tasks[taskId];
+  if (resolved) {
+    pushTaskTimeline(resolved, {
+      type: "lifecycle.transition",
+      source: options.source || "lifecycle",
+      action: normalizedAction || "transition",
+      fromStatus: previousStatus,
+      toStatus: targetStatus,
+      status: targetStatus,
+      message: options.reason ? String(options.reason) : `Lifecycle action ${normalizedAction || "transition"}`,
+      actor: options.actor != null ? String(options.actor) : null,
+      payload: options.payload && typeof options.payload === "object" ? options.payload : null,
+    });
+    saveStore();
+  }
+
+  return {
+    ok: true,
+    action: normalizedAction,
+    fromStatus: previousStatus,
+    toStatus: targetStatus,
+    task: updated,
+  };
+}
+
+export function startTask(taskId, options = {}) {
+  return transitionTaskLifecycle(taskId, "start", options);
+}
+
+export function pauseTask(taskId, options = {}) {
+  return transitionTaskLifecycle(taskId, "pause", options);
+}
+
+export function resumeTask(taskId, options = {}) {
+  return transitionTaskLifecycle(taskId, "resume", options);
+}
+
+export function completeTask(taskId, options = {}) {
+  return transitionTaskLifecycle(taskId, "complete", options);
+}
+
+export function cancelTask(taskId, options = {}) {
+  return transitionTaskLifecycle(taskId, "cancel", options);
+}
+
+export function blockTask(taskId, options = {}) {
+  return transitionTaskLifecycle(taskId, "block", options);
 }
 
 /**
@@ -630,6 +1056,159 @@ export function getTaskHistory(taskId) {
   const task = _store.tasks[taskId];
   if (!task) return [];
   return [...task.statusHistory];
+}
+
+export function getTaskTimeline(taskId) {
+  ensureLoaded();
+  const task = _store.tasks[taskId];
+  if (!task) return [];
+  return Array.isArray(task.timeline) ? [...task.timeline] : [];
+}
+
+export function appendTaskTimelineEvent(taskId, event = {}) {
+  ensureLoaded();
+  const task = _store.tasks[taskId];
+  if (!task) return null;
+  const normalizedEvent = createTimelineEvent(event);
+  pushTaskTimeline(task, normalizedEvent);
+  markTaskTouched(task, event?.source || "task-store");
+  saveStore();
+  return normalizedEvent;
+}
+
+export function addTaskComment(taskId, comment = {}) {
+  ensureLoaded();
+  const task = _store.tasks[taskId];
+  if (!task) return null;
+  const appended = normalizeTaskComments([comment]);
+  if (appended.length === 0) return null;
+  const nextComment = appended[0];
+  task.comments = normalizeTaskComments([...(Array.isArray(task.comments) ? task.comments : []), nextComment]);
+  pushTaskTimeline(task, {
+    type: "task.comment",
+    source: nextComment.source || "comment",
+    actor: nextComment.author,
+    message: nextComment.body,
+    payload: { commentId: nextComment.id },
+  });
+  markTaskTouched(task, nextComment.source || "comment");
+  saveStore();
+  return nextComment;
+}
+
+export function getTaskComments(taskId) {
+  ensureLoaded();
+  const task = _store.tasks[taskId];
+  if (!task) return [];
+  return normalizeTaskComments(task.comments || []);
+}
+
+export function linkTaskWorkflowRun(taskId, workflowRun = {}) {
+  ensureLoaded();
+  const task = _store.tasks[taskId];
+  if (!task) return null;
+  const normalized = normalizeWorkflowRunLinks([workflowRun]);
+  if (normalized.length === 0) return null;
+  const run = normalized[0];
+  const existing = Array.isArray(task.workflowRuns) ? task.workflowRuns : [];
+  const dedup = existing.filter((entry) => String(entry?.runId || "") !== run.runId);
+  task.workflowRuns = normalizeWorkflowRunLinks([...dedup, run]);
+  task.links = {
+    branches: uniqueStringList(task.links?.branches || []),
+    prs: uniqueStringList(task.links?.prs || []),
+    workflows: uniqueStringList([...(task.links?.workflows || []), ...(run.workflowId ? [run.workflowId] : [])]),
+  };
+  pushTaskTimeline(task, {
+    type: "workflow.run.linked",
+    source: run.source || "workflow",
+    status: run.status,
+    message: run.summary || `Linked workflow run ${run.runId}`,
+    payload: { runId: run.runId, workflowId: run.workflowId, outcome: run.outcome },
+  });
+  markTaskTouched(task, "workflow");
+  saveStore();
+  return run;
+}
+
+export function setTaskParent(taskId, parentTaskId, options = {}) {
+  ensureLoaded();
+  const task = _store.tasks[taskId];
+  if (!task) return null;
+  const parentId = String(parentTaskId || "").trim() || null;
+  if (parentId && !_store.tasks[parentId]) return null;
+
+  const previousParentId = task.parentTaskId || null;
+  if (previousParentId && _store.tasks[previousParentId]) {
+    const previousParent = _store.tasks[previousParentId];
+    previousParent.childTaskIds = uniqueStringList((previousParent.childTaskIds || []).filter((id) => id !== taskId));
+    markTaskTouched(previousParent, "task-graph");
+  }
+
+  task.parentTaskId = parentId;
+  if (parentId) {
+    const parent = _store.tasks[parentId];
+    parent.childTaskIds = uniqueStringList([...(parent.childTaskIds || []), taskId]);
+    markTaskTouched(parent, "task-graph");
+    if (task.type === "task") {
+      task.type = "subtask";
+    }
+  }
+
+  pushTaskTimeline(task, {
+    type: "task.graph.parent",
+    source: options.source || "task-graph",
+    message: parentId ? `Parent set to ${parentId}` : "Parent removed",
+    payload: { previousParentId, parentTaskId: parentId },
+  });
+  markTaskTouched(task, options.source || "task-graph");
+  saveStore();
+  return { ...task };
+}
+
+export function addTaskDependency(taskId, dependencyTaskId, options = {}) {
+  ensureLoaded();
+  const task = _store.tasks[taskId];
+  if (!task) return null;
+  const dependencyId = String(dependencyTaskId || "").trim();
+  if (!dependencyId || !_store.tasks[dependencyId] || dependencyId === taskId) return null;
+  task.dependencyTaskIds = uniqueStringList([...(task.dependencyTaskIds || []), dependencyId]);
+  task.dependsOn = uniqueStringList([...(task.dependsOn || []), dependencyId]);
+  const dependency = _store.tasks[dependencyId];
+  dependency.blockedByTaskIds = uniqueStringList([...(dependency.blockedByTaskIds || []), taskId]);
+  pushTaskTimeline(task, {
+    type: "task.graph.dependency",
+    source: options.source || "task-graph",
+    message: `Depends on ${dependencyId}`,
+    payload: { dependencyTaskId: dependencyId },
+  });
+  markTaskTouched(task, options.source || "task-graph");
+  markTaskTouched(dependency, options.source || "task-graph");
+  saveStore();
+  return { ...task };
+}
+
+export function removeTaskDependency(taskId, dependencyTaskId, options = {}) {
+  ensureLoaded();
+  const task = _store.tasks[taskId];
+  if (!task) return null;
+  const dependencyId = String(dependencyTaskId || "").trim();
+  if (!dependencyId) return { ...task };
+  task.dependencyTaskIds = uniqueStringList((task.dependencyTaskIds || []).filter((id) => id !== dependencyId));
+  task.dependsOn = uniqueStringList((task.dependsOn || []).filter((id) => id !== dependencyId));
+  const dependency = _store.tasks[dependencyId];
+  if (dependency) {
+    dependency.blockedByTaskIds = uniqueStringList((dependency.blockedByTaskIds || []).filter((id) => id !== taskId));
+    markTaskTouched(dependency, options.source || "task-graph");
+  }
+  pushTaskTimeline(task, {
+    type: "task.graph.dependency.removed",
+    source: options.source || "task-graph",
+    message: `Dependency removed ${dependencyId}`,
+    payload: { dependencyTaskId: dependencyId },
+  });
+  markTaskTouched(task, options.source || "task-graph");
+  saveStore();
+  return { ...task };
 }
 
 // ---------------------------------------------------------------------------
@@ -667,6 +1246,16 @@ export function recordAgentAttempt(taskId, { output, error, hasCommits } = {}) {
   }
 
   task.syncDirty = true;
+  pushTaskTimeline(task, {
+    type: "agent.attempt",
+    source: "agent",
+    status: task.status,
+    message: error ? `Agent attempt failed: ${truncate(error, 160)}` : "Agent attempt recorded",
+    payload: {
+      hasCommits: Boolean(hasCommits),
+      attempt: task.agentAttempts,
+    },
+  });
   saveStore();
   return { ...task };
 }
@@ -834,6 +1423,8 @@ export function upsertFromExternal(externalTask) {
       externalTask.base_branch ??
       externalTask.meta?.base_branch ??
       externalTask.meta?.baseBranch;
+    const previousStatus = normalizeTaskStatus(existing.status);
+
     // Update only externally-controlled fields
     if (externalTask.title !== undefined) existing.title = externalTask.title;
     if (externalTask.description !== undefined)
@@ -854,23 +1445,21 @@ export function upsertFromExternal(externalTask) {
     if (externalTask.meta !== undefined)
       existing.meta = { ...existing.meta, ...externalTask.meta };
 
-    // Update external tracking fields
     if (externalTask.externalId !== undefined)
       existing.externalId = externalTask.externalId;
     if (externalTask.externalBackend !== undefined)
       existing.externalBackend = externalTask.externalBackend;
 
-    // Only update status if external changed it (human override)
     if (
       externalTask.status !== undefined &&
       externalTask.status !== existing.externalStatus
     ) {
       existing.externalStatus = externalTask.status;
-      // If the external status differs from our status, adopt it
-      if (externalTask.status !== existing.status) {
-        existing.status = externalTask.status;
+      const nextStatus = normalizeTaskStatus(externalTask.status);
+      if (nextStatus !== previousStatus) {
+        existing.status = nextStatus;
         existing.statusHistory.push({
-          status: externalTask.status,
+          status: nextStatus,
           timestamp: now(),
           source: "external",
         });
@@ -878,17 +1467,28 @@ export function upsertFromExternal(externalTask) {
           existing.statusHistory =
             existing.statusHistory.slice(-MAX_STATUS_HISTORY);
         }
+        pushTaskTimeline(existing, {
+          type: "status.transition",
+          source: "external",
+          fromStatus: previousStatus,
+          toStatus: nextStatus,
+          status: nextStatus,
+          action: "external_sync",
+          message: `External status sync ${previousStatus} -> ${nextStatus}`,
+        });
       }
     } else if (externalTask.status !== undefined) {
       existing.externalStatus = externalTask.status;
     }
 
-    existing.updatedAt = now();
-    existing.syncDirty = false;
-    existing.lastSyncedAt = now();
+    const normalized = normalizeTaskStructure(existing);
+    normalized.updatedAt = now();
+    normalized.syncDirty = false;
+    normalized.lastSyncedAt = now();
+    _store.tasks[normalized.id] = normalized;
 
     saveStore();
-    return { ...existing };
+    return { ...normalized };
   }
 
   // New task from external — create it
@@ -897,15 +1497,22 @@ export function upsertFromExternal(externalTask) {
     externalTask.base_branch ??
     externalTask.meta?.base_branch ??
     externalTask.meta?.baseBranch;
-  const task = defaultTask({
+  const task = normalizeTaskStructure(defaultTask({
     ...externalTask,
     ...(externalBaseBranch !== undefined ? { baseBranch: externalBaseBranch } : {}),
     externalStatus: externalTask.status || null,
+    status: normalizeTaskStatus(externalTask.status || externalTask.externalStatus || externalTask.status || "todo"),
     syncDirty: false,
     lastSyncedAt: now(),
-  });
+  }));
   task.lastAgentOutput = truncate(task.lastAgentOutput, MAX_AGENT_OUTPUT);
   task.lastError = truncate(task.lastError, MAX_ERROR_LENGTH);
+  pushTaskTimeline(task, {
+    type: "task.synced.external",
+    source: "external",
+    status: task.status,
+    message: "Task imported from external backend",
+  });
 
   _store.tasks[task.id] = task;
   console.log(TAG, `Upserted external task ${task.id}: ${task.title}`);

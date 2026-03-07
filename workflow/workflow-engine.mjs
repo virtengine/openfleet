@@ -401,7 +401,8 @@ export class WorkflowEngine extends EventEmitter {
     this._triggerSubscriptions = new Map();
     this._loaded = false;
     this._checkpointTimers = new Map(); // runId → debounce timer
-    this._resumingRuns = false;    this._taskTraceHooks = new Set();
+    this._resumingRuns = false;
+    this._taskTraceHooks = new Set();
     if (typeof opts.onTaskWorkflowEvent === "function") {
       this._taskTraceHooks.add(opts.onTaskWorkflowEvent);
     }
@@ -635,7 +636,9 @@ export class WorkflowEngine extends EventEmitter {
     this.emit("task:trace", event);
     await this._dispatchTaskTrace(event);
     return event;
-  }  // ── Lifecycle ───────────────────────────────────────────────────────────
+  }
+
+  // ── Lifecycle ───────────────────────────────────────────────────────────
 
   /** Load all workflow definitions from disk */
   load() {
@@ -856,8 +859,8 @@ export class WorkflowEngine extends EventEmitter {
     // ── Persist run immediately so it survives process restarts ──────
     this._persistActiveRunState(runId, workflowId, def.name, ctx);
 
-    this.emit(""run:start"", { runId, workflowId, name: def.name });
-    await this._emitTaskTraceEvent(""workflow.run.start"", {
+    this.emit("run:start", { runId, workflowId, name: def.name });
+    await this._emitTaskTraceEvent("workflow.run.start", {
       ctx,
       runId,
       workflowId,
@@ -880,8 +883,8 @@ export class WorkflowEngine extends EventEmitter {
 
       const status = this._resolveWorkflowStatus(ctx);
       this._activeRuns.get(runId).status = status;
-      this.emit(""run:end"", { runId, workflowId, status, duration: Date.now() - ctx.startedAt });
-      await this._emitTaskTraceEvent(""workflow.run.end"", {
+      this.emit("run:end", { runId, workflowId, status, duration: Date.now() - ctx.startedAt });
+      await this._emitTaskTraceEvent("workflow.run.end", {
         ctx,
         runId,
         workflowId,
@@ -892,8 +895,8 @@ export class WorkflowEngine extends EventEmitter {
     } catch (err) {
       ctx.error("_engine", err);
       this._activeRuns.get(runId).status = WorkflowStatus.FAILED;
-      this.emit(""run:error"", { runId, workflowId, error: err.message });
-      await this._emitTaskTraceEvent(""workflow.run.error"", {
+      this.emit("run:error", { runId, workflowId, error: err.message });
+      await this._emitTaskTraceEvent("workflow.run.error", {
         ctx,
         runId,
         workflowId,
@@ -1015,8 +1018,8 @@ export class WorkflowEngine extends EventEmitter {
       status: WorkflowStatus.RUNNING,
     });
     this._persistActiveRunState(retryRunId, workflowId, def.name, ctx);
-    this.emit(""run:start"", { runId: retryRunId, workflowId, name: def.name, retryOf: runId, mode });
-    await this._emitTaskTraceEvent(""workflow.run.start"", {
+    this.emit("run:start", { runId: retryRunId, workflowId, name: def.name, retryOf: runId, mode });
+    await this._emitTaskTraceEvent("workflow.run.start", {
       ctx,
       runId: retryRunId,
       workflowId,
@@ -1059,6 +1062,16 @@ export class WorkflowEngine extends EventEmitter {
       ctx.error("_engine", err);
       this._activeRuns.get(retryRunId).status = WorkflowStatus.FAILED;
       this.emit("run:error", { runId: retryRunId, workflowId, error: err.message, retryOf: runId });
+      await this._emitTaskTraceEvent("workflow.run.error", {
+        ctx,
+        runId: retryRunId,
+        workflowId,
+        workflowName: def.name,
+        status: WorkflowStatus.FAILED,
+        error: err?.message || String(err),
+        durationMs: Date.now() - ctx.startedAt,
+        extra: { retryOf: runId, mode },
+      });
     }
 
     this._persistRun(retryRunId, workflowId, ctx);
@@ -1399,7 +1412,21 @@ export class WorkflowEngine extends EventEmitter {
     }
   }
 
-  // ── Internal DAG Execution ────────────────────────────────────────────
+
+  /**
+   * Get task-linked workflow trace events for a run.
+   * Returns [] when run is unknown or has no task trace data.
+   *
+   * @param {string} runId
+   * @returns {Array<object>}
+   */
+  getTaskTraceEvents(runId) {
+    const detail = this.getRunDetail(runId)?.detail;
+    const events = Array.isArray(detail?.data?._taskWorkflowEvents)
+      ? detail.data._taskWorkflowEvents
+      : [];
+    return events.map((event) => ({ ...event }));
+  }  // ── Internal DAG Execution ────────────────────────────────────────────
 
   _buildAdjacency(def) {
     const adj = new Map();
@@ -1514,8 +1541,8 @@ export class WorkflowEngine extends EventEmitter {
           if (!node) return;
 
           ctx.setNodeStatus(nodeId, NodeStatus.RUNNING);
-          this.emit(""node:start"", { nodeId, type: node.type, label: node.label });
-          await this._emitTaskTraceEvent(""workflow.node.start"", {
+          this.emit("node:start", { nodeId, type: node.type, label: node.label });
+          await this._emitTaskTraceEvent("workflow.node.start", {
             ctx,
             runId: ctx.id,
             workflowId: ctx.data?._workflowId || null,
@@ -1557,8 +1584,8 @@ export class WorkflowEngine extends EventEmitter {
               ctx.setNodeOutput(nodeId, result);
               ctx.setNodeStatus(nodeId, NodeStatus.COMPLETED);
               executed.add(nodeId);
-              this.emit(""node:complete"", { nodeId, type: node.type });
-              await this._emitTaskTraceEvent(""workflow.node.complete"", {
+              this.emit("node:complete", { nodeId, type: node.type });
+              await this._emitTaskTraceEvent("workflow.node.complete", {
                 ctx,
                 runId: ctx.id,
                 workflowId: ctx.data?._workflowId || null,
@@ -1584,8 +1611,8 @@ export class WorkflowEngine extends EventEmitter {
           ctx.error(nodeId, lastErr);
           ctx.setNodeStatus(nodeId, NodeStatus.FAILED);
           executed.add(nodeId);
-          this.emit(""node:error"", { nodeId, error: lastErr.message, retries: ctx.getRetryCount(nodeId) });
-          await this._emitTaskTraceEvent(""workflow.node.error"", {
+          this.emit("node:error", { nodeId, error: lastErr.message, retries: ctx.getRetryCount(nodeId) });
+          await this._emitTaskTraceEvent("workflow.node.error", {
             ctx,
             runId: ctx.id,
             workflowId: ctx.data?._workflowId || null,
@@ -2316,7 +2343,8 @@ export class WorkflowEngine extends EventEmitter {
       );
 
       if (!runs.length) {
-        this._resumingRuns = false;    this._taskTraceHooks = new Set();
+        this._resumingRuns = false;
+    this._taskTraceHooks = new Set();
     if (typeof opts.onTaskWorkflowEvent === "function") {
       this._taskTraceHooks.add(opts.onTaskWorkflowEvent);
     }
@@ -2385,7 +2413,8 @@ export class WorkflowEngine extends EventEmitter {
         }
       }
     } finally {
-      this._resumingRuns = false;    this._taskTraceHooks = new Set();
+      this._resumingRuns = false;
+    this._taskTraceHooks = new Set();
     if (typeof opts.onTaskWorkflowEvent === "function") {
       this._taskTraceHooks.add(opts.onTaskWorkflowEvent);
     }
@@ -2501,14 +2530,5 @@ export function listWorkflows(opts) { return getWorkflowEngine(opts).list(); }
 export function getWorkflow(id, opts) { return getWorkflowEngine(opts).get(id); }
 export async function executeWorkflow(id, data, opts) { return getWorkflowEngine(opts).execute(id, data, opts); }
 export async function retryWorkflowRun(runId, retryOpts, engineOpts) { return getWorkflowEngine(engineOpts).retryRun(runId, retryOpts); }
-
-
-
-
-
-
-
-
-
 
 

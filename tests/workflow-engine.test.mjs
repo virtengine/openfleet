@@ -2655,3 +2655,185 @@ describe("Concurrency limiter", () => {
   });
 });
 
+
+describe("WorkflowEngine task traceability hooks", () => {
+  beforeEach(() => {
+    makeTmpEngine();
+  });
+
+  afterEach(() => {
+    try { rmSync(tmpDir, { recursive: true, force: true }); } catch { /* ok */ }
+  });
+
+  it("does not emit task trace events when task context is absent", async () => {
+    registerNodeType("test.trace.no_task", {
+      describe: () => "No task trace node",
+      schema: { type: "object", properties: {} },
+      async execute() {
+        return { ok: true };
+      },
+    });
+
+    const wf = makeSimpleWorkflow(
+      [
+        { id: "trigger", type: "trigger.manual", label: "Start", config: {} },
+        { id: "work", type: "test.trace.no_task", label: "Work", config: {} },
+      ],
+      [{ id: "e1", source: "trigger", target: "work" }],
+      { id: "wf-task-trace-no-task" },
+    );
+    engine.save(wf);
+
+    const collected = [];
+    const unsubscribe = engine.registerTaskTraceHook((event) => {
+      collected.push(event);
+    });
+    const emitted = [];
+    engine.on("task:trace", (event) => emitted.push(event));
+
+    const ctx = await engine.execute(wf.id, {});
+    unsubscribe();
+
+    expect(ctx.errors).toEqual([]);
+    expect(collected).toHaveLength(0);
+    expect(emitted).toHaveLength(0);
+    expect(Array.isArray(ctx.data._taskWorkflowEvents)).toBe(false);
+  });
+
+  it("collects task-linked run and node trace summaries when taskId exists", async () => {
+    registerNodeType("test.trace.with_task", {
+      describe: () => "Task trace node",
+      schema: { type: "object", properties: {} },
+      async execute() {
+        return { ok: true, message: "completed traced node" };
+      },
+    });
+
+    const wf = makeSimpleWorkflow(
+      [
+        { id: "trigger", type: "trigger.manual", label: "Start", config: {} },
+        { id: "work", type: "test.trace.with_task", label: "Work", config: {} },
+      ],
+      [{ id: "e1", source: "trigger", target: "work" }],
+      { id: "wf-task-trace-with-task" },
+    );
+    engine.save(wf);
+
+    const collected = [];
+    engine.registerTaskTraceHook((event) => {
+      collected.push(event);
+    });
+
+    const ctx = await engine.execute(wf.id, {
+      taskId: "TASK-TRACE-1",
+      taskTitle: "Trace this task",
+    });
+
+    expect(ctx.errors).toEqual([]);
+    expect(collected.length).toBeGreaterThanOrEqual(4);
+    expect(collected.every((event) => event.taskId === "TASK-TRACE-1")).toBe(true);
+    expect(collected.some((event) => event.eventType === "workflow.run.start")).toBe(true);
+    expect(collected.some((event) => event.eventType === "workflow.node.start")).toBe(true);
+    expect(collected.some((event) => event.eventType === "workflow.node.complete")).toBe(true);
+    expect(collected.some((event) => event.eventType === "workflow.run.end")).toBe(true);
+
+    expect(Array.isArray(ctx.data._taskWorkflowEvents)).toBe(true);
+    expect(ctx.data._taskWorkflowEvents.length).toBe(collected.length);
+    expect(ctx.data._taskWorkflowEvents[0].runId).toBe(ctx.id);
+  });
+
+  it("derives task context from action.create_task output for downstream traceability", async () => {
+    const createTask = vi.fn(async (_projectId, taskData) => ({
+      id: "TASK-CREATED-42",
+      title: taskData?.title || "Generated task",
+      status: taskData?.status || "todo",
+    }));
+
+    const traceEvents = [];
+    engine = makeTmpEngine({
+      kanban: { createTask },
+      onTaskWorkflowEvent: (event) => {
+        traceEvents.push(event);
+      },
+    });
+
+    const wf = makeSimpleWorkflow(
+      [
+        { id: "trigger", type: "trigger.manual", label: "Start", config: {} },
+        {
+          id: "create",
+          type: "action.create_task",
+          label: "Create task",
+          config: {
+            title: "Auto-created task",
+            description: "Created during workflow execution",
+            status: "todo",
+          },
+        },
+      ],
+      [{ id: "e1", source: "trigger", target: "create" }],
+      { id: "wf-task-trace-create-task" },
+    );
+    engine.save(wf);
+
+    const ctx = await engine.execute(wf.id, {});
+
+    expect(ctx.errors).toEqual([]);
+    expect(createTask).toHaveBeenCalledTimes(1);
+    expect(ctx.data.taskId).toBe("TASK-CREATED-42");
+    expect(ctx.data.taskTitle).toBe("Auto-created task");
+
+    const nodeComplete = traceEvents.find((event) =>
+      event.eventType === "workflow.node.complete" && event.nodeId === "create",
+    );
+    expect(nodeComplete).toBeDefined();
+    expect(nodeComplete.taskId).toBe("TASK-CREATED-42");
+    expect(nodeComplete.summary).toContain("taskId");
+
+    const runEnd = traceEvents.find((event) => event.eventType === "workflow.run.end");
+    expect(runEnd).toBeDefined();
+    expect(runEnd.taskId).toBe("TASK-CREATED-42");
+  });
+});
+
+
+describe("WorkflowEngine.getTaskTraceEvents", () => {
+  beforeEach(() => {
+    makeTmpEngine();
+  });
+
+  afterEach(() => {
+    try { rmSync(tmpDir, { recursive: true, force: true }); } catch { /* ok */ }
+  });
+
+  it("returns cloned task trace events from persisted run detail", async () => {
+    registerNodeType("test.trace.fetch_events", {
+      describe: () => "Fetch task trace events",
+      schema: { type: "object", properties: {} },
+      async execute() {
+        return { ok: true };
+      },
+    });
+
+    const wf = makeSimpleWorkflow(
+      [
+        { id: "trigger", type: "trigger.manual", label: "Start", config: {} },
+        { id: "work", type: "test.trace.fetch_events", label: "Work", config: {} },
+      ],
+      [{ id: "e1", source: "trigger", target: "work" }],
+      { id: "wf-task-trace-readback" },
+    );
+    engine.save(wf);
+
+    const ctx = await engine.execute(wf.id, { taskId: "TASK-TRACE-READBACK" });
+    const events = engine.getTaskTraceEvents(ctx.id);
+
+    expect(Array.isArray(events)).toBe(true);
+    expect(events.length).toBeGreaterThan(0);
+    expect(events.every((event) => event.taskId === "TASK-TRACE-READBACK")).toBe(true);
+
+    events[0].taskId = "mutated";
+    const reread = engine.getTaskTraceEvents(ctx.id);
+    expect(reread[0].taskId).toBe("TASK-TRACE-READBACK");
+  });
+});

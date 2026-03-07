@@ -425,6 +425,7 @@ function AttachmentList({ attachments }) {
 /* ─── Memoized ChatBubble — only re-renders if msg identity changes ─── */
 const ChatBubble = memo(function ChatBubble({
   msg,
+  embedded = false,
   isFinalModelResponse = false,
   canEdit = false,
   isEditing = false,
@@ -446,10 +447,14 @@ const ChatBubble = memo(function ChatBubble({
       ? msg.type === "tool_call" ? "TOOL CALL" : "TOOL RESULT"
       : isError ? "ERROR" : null;
   const showModelResponseLabel =
-    isFinalModelResponse && !isTool && !isError && !isUser && !isSystem;
+    !embedded && isFinalModelResponse && !isTool && !isError && !isUser && !isSystem;
+  const contextCompression = msg?.meta?.contextCompression || msg?.meta?.compression || null;
+  const showContextCompressionLabel = Boolean(contextCompression);
 
   const bubbleSx = isError
     ? { p: 1.5, borderRadius: 2, backgroundColor: 'rgba(211,47,47,0.08)', borderLeft: '3px solid', borderLeftColor: 'error.main' }
+    : showContextCompressionLabel
+      ? { p: 1.5, borderRadius: 2, backgroundColor: 'rgba(255,193,7,0.10)', borderLeft: '3px solid', borderLeftColor: 'warning.main' }
     : isTool
       ? { p: 1.5, borderRadius: 2, backgroundColor: 'rgba(0,0,0,0.03)', borderLeft: '3px solid', borderLeftColor: 'info.main' }
       : isUser
@@ -471,6 +476,9 @@ const ChatBubble = memo(function ChatBubble({
           `
         : html`
             ${label ? html`<${Chip} label=${label} size="small" color=${isError ? "error" : "info"} variant="outlined" sx=${{ mb: 0.5, height: 20, fontSize: '0.6875rem' }} />` : null}
+            ${showContextCompressionLabel
+              ? html`<${Chip} label="CONTEXT SUMMARIZED" size="small" color="warning" variant="outlined" sx=${{ mb: 0.5, mr: 0.5, height: 20, fontSize: '0.6875rem' }} />`
+              : null}
             ${showModelResponseLabel
               ? html`<${Chip} label="MODEL RESPONSE" size="small" color="primary" variant="outlined" sx=${{ mb: 0.5, height: 20, fontSize: '0.6875rem' }} />`
               : null}
@@ -523,6 +531,7 @@ const ChatBubble = memo(function ChatBubble({
   `;
 }, (prev, next) =>
   prev.msg === next.msg &&
+  prev.embedded === next.embedded &&
   prev.isFinalModelResponse === next.isFinalModelResponse &&
   prev.canEdit === next.canEdit &&
   prev.isEditing === next.isEditing &&
@@ -1395,7 +1404,7 @@ export function ChatView({ sessionId, readOnly = false, embedded = false }) {
           <${Stack} direction="row" spacing=${1} alignItems="center">
             <${Box} sx=${{ width: 8, height: 8, borderRadius: '50%', backgroundColor: statusState === 'idle' ? 'text.disabled' : statusState === 'paused' ? 'warning.main' : 'success.main' }} />
             <${Box}>
-              <${Typography} variant="caption" sx=${{ fontWeight: 600, display: 'block', lineHeight: 1.2 }}>Live Activity</${Typography}>
+              <${Typography} variant="caption" sx=${{ fontWeight: 600, display: 'block', lineHeight: 1.2 }}>Status</${Typography}>
               <${Typography} variant="caption" color="text.secondary" sx=${{ lineHeight: 1.2 }}>${statusText}</${Typography}>
             </${Box}>
           </${Stack}>
@@ -1539,6 +1548,7 @@ export function ChatView({ sessionId, readOnly = false, embedded = false }) {
           : html`<${ChatBubble}
               key=${item.key}
               msg=${item.msg}
+              embedded=${embedded}
               isFinalModelResponse=${item.messageKey === latestModelMessageKey}
             />`
         )}

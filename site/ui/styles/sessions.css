@@ -2752,3 +2752,9 @@ ul.md-list li::before {
 .app-shell[data-rail-collapsed="true"] .session-drawer-btn-rail {
   display: inline-flex;
 }
+
+
+.chat-messages > * {
+  flex-shrink: 0;
+}
+

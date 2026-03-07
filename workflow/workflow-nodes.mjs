@@ -251,6 +251,27 @@ function summarizeAssistantUsage(data = {}) {
   return `Usage: ${parts.join(" · ")}`;
 }
 
+function bindTaskContext(ctx, { taskId, taskTitle, task = null } = {}) {
+  if (!ctx || typeof ctx !== "object") return;
+  if (!ctx.data || typeof ctx.data !== "object") {
+    ctx.data = {};
+  }
+
+  const normalizedTaskId = String(taskId || task?.id || task?.task_id || "").trim();
+  if (normalizedTaskId) {
+    ctx.data.taskId = normalizedTaskId;
+    ctx.data.activeTaskId = normalizedTaskId;
+  }
+
+  const normalizedTaskTitle = String(taskTitle || task?.title || "").trim();
+  if (normalizedTaskTitle) {
+    ctx.data.taskTitle = normalizedTaskTitle;
+  }
+
+  if (task && typeof task === "object") {
+    ctx.data.task = task;
+  }
+}
 async function createKanbanTaskWithProject(kanban, taskData = {}, projectIdValue = "") {
   if (!kanban || typeof kanban.createTask !== "function") {
     throw new Error("Kanban adapter not available");
@@ -2660,16 +2681,11 @@ registerNodeType("action.create_task", {
         tags: node.config?.tags,
         projectId: node.config?.projectId,
       }, node.config?.projectId);
-      if (task?.id) {
-        ctx.data.taskId = task.id;
-        ctx.data.activeTaskId = task.id;
-      }
-      if (task?.title || title) {
-        ctx.data.taskTitle = String(task?.title || title).trim();
-      }
-      if (task && typeof task === "object") {
-        ctx.data.task = task;
-      }
+      bindTaskContext(ctx, {
+        taskId: task?.id,
+        taskTitle: task?.title || title,
+        task,
+      });
       return {
         success: true,
         taskId: task?.id || null,
@@ -2718,13 +2734,10 @@ registerNodeType("action.update_task_status", {
 
     if (kanban?.updateTaskStatus) {
       await kanban.updateTaskStatus(taskId, status, updateOptions);
-      if (taskId) {
-        ctx.data.taskId = taskId;
-        ctx.data.activeTaskId = taskId;
-      }
-      if (taskTitle) {
-        ctx.data.taskTitle = taskTitle;
-      }
+      bindTaskContext(ctx, {
+        taskId,
+        taskTitle,
+      });
       return {
         success: true,
         taskId,
@@ -8350,6 +8363,4 @@ registerNodeType("action.web_search", {
 // ═══════════════════════════════════════════════════════════════════════════
 
 export { registerNodeType, getNodeType, listNodeTypes } from "./workflow-engine.mjs";
-
-
 

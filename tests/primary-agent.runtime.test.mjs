@@ -177,6 +177,40 @@ describe("primary-agent runtime safeguards", () => {
     expect(result.finalResponse).toBe("pooled-ok");
   });
 
+  it("records a context compression marker when returned items were summarized", async () => {
+    mockExecCodexPrompt.mockResolvedValueOnce({
+      finalResponse: "done",
+      items: [
+        { type: "agent_message", text: "summary", _compressed: "agent_tier1", _originalLength: 300 },
+        { type: "tool_output", text: "tool placeholder", _cachedLogId: "tool-log-1" },
+      ],
+    });
+
+    vi.resetModules();
+    const primaryAgent = await import("../agent/primary-agent.mjs");
+    await primaryAgent.initPrimaryAgent("codex-sdk");
+
+    await primaryAgent.execPrimaryPrompt("hello", { sessionId: "session-1" });
+
+    expect(mockRecordEvent).toHaveBeenCalledWith(
+      "session-1",
+      expect.objectContaining({
+        role: "system",
+        type: "system",
+        content: expect.stringContaining("Context summarized for continuation"),
+        meta: expect.objectContaining({
+          contextCompression: expect.objectContaining({
+            total: 2,
+            counts: expect.objectContaining({
+              agent: 1,
+              tool: 1,
+            }),
+          }),
+        }),
+      }),
+    );
+  });
+
   it("surfaces configured executor profiles with model allow-lists and enabled flags", async () => {
     mockConfigState.current = {
       primaryAgent: "codex-sdk",

@@ -764,7 +764,7 @@ export function ToastContainer() {
   const visible = items.filter(shouldShowToast);
   if (!visible.length) return null;
 
-  return html`
+  const content = html`
     <${Box} sx=${{
       position: "fixed",
       top: 16,
@@ -798,6 +798,7 @@ export function ToastContainer() {
       )}
     </${Box}>
   `;
+  return createPortal(content, document.body);
 }
 
 /* ═══════════════════════════════════════════════

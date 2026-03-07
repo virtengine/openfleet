@@ -254,6 +254,12 @@ export class SessionTracker {
           event.meta && typeof event.meta === "object"
             ? { ...event.meta }
             : undefined,
+        _compressed: event._compressed || undefined,
+        _originalLength:
+          Number.isFinite(Number(event._originalLength))
+            ? Number(event._originalLength)
+            : undefined,
+        _cachedLogId: event._cachedLogId || undefined,
       };
       session.turnCount++;
       session.messages.push(msg);
@@ -1008,6 +1014,18 @@ export class SessionTracker {
           type: "agent_message",
           content: item.text.slice(0, MAX_MESSAGE_CHARS),
           timestamp: ts,
+          meta: item._compressed || item._cachedLogId
+            ? {
+                compression: {
+                  kind: item._compressed || (item._cachedLogId ? "tool_cache" : "compressed"),
+                  originalLength:
+                    Number.isFinite(Number(item._originalLength))
+                      ? Number(item._originalLength)
+                      : undefined,
+                  cachedLogId: item._cachedLogId || undefined,
+                },
+              }
+            : undefined,
         };
       }
 
@@ -1025,6 +1043,18 @@ export class SessionTracker {
           type: "tool_result",
           content: (item.output || "").slice(0, MAX_MESSAGE_CHARS),
           timestamp: ts,
+          meta: item._cachedLogId || item._compressed
+            ? {
+                compression: {
+                  kind: item._compressed || (item._cachedLogId ? "tool_cache" : "compressed"),
+                  originalLength:
+                    Number.isFinite(Number(item._originalLength))
+                      ? Number(item._originalLength)
+                      : undefined,
+                  cachedLogId: item._cachedLogId || undefined,
+                },
+              }
+            : undefined,
         };
       }
 

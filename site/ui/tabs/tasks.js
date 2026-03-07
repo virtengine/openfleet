@@ -300,6 +300,254 @@ function buildTaskDescriptionFallback(rawTitle, rawDescription) {
   return `Implementation notes for "${title}". Include scope, key files, risks, and acceptance checks before dispatch.`;
 }
 
+
+function getTaskCollectionValues(task, keys = []) {
+  const out = [];
+  const seen = new Set();
+  for (const key of keys) {
+    const value = task?.[key] ?? task?.meta?.[key];
+    if (Array.isArray(value)) {
+      for (const item of value) {
+        if (item == null) continue;
+        const marker = JSON.stringify(item);
+        if (seen.has(marker)) continue;
+        seen.add(marker);
+        out.push(item);
+      }
+      continue;
+    }
+    if (value && typeof value === "object") {
+      for (const item of Object.values(value)) {
+        if (item == null) continue;
+        const marker = JSON.stringify(item);
+        if (seen.has(marker)) continue;
+        seen.add(marker);
+        out.push(item);
+      }
+    }
+  }
+  return out;
+}
+
+function buildTaskHistoryEntries(task) {
+  const rows = getTaskCollectionValues(task, [
+    "statusHistory",
+    "history",
+    "timeline",
+    "eventLog",
+    "events",
+    "activity",
+  ]);
+  return rows
+    .map((entry) => {
+      if (entry == null) return null;
+      if (typeof entry === "string") {
+        return {
+          type: "event",
+          label: entry,
+          status: "",
+          source: "",
+          timestamp: null,
+        };
+      }
+      const status = String(entry.status || entry.to || entry.nextStatus || "").trim();
+      const fromStatus = String(entry.from || entry.previousStatus || "").trim();
+      const eventName = String(entry.event || entry.type || entry.kind || "").trim();
+      const source = String(entry.source || entry.by || entry.actor || "").trim();
+      const timestamp =
+        entry.timestamp ||
+        entry.createdAt ||
+        entry.updatedAt ||
+        entry.at ||
+        null;
+      const label = eventName || (status ? `${fromStatus ? `${fromStatus} -> ` : ""}${status}` : "Task event");
+      return {
+        type: eventName || "status",
+        label,
+        status,
+        source,
+        timestamp,
+      };
+    })
+    .filter(Boolean)
+    .sort((a, b) => {
+      const ta = a.timestamp ? new Date(a.timestamp).getTime() : 0;
+      const tb = b.timestamp ? new Date(b.timestamp).getTime() : 0;
+      return tb - ta;
+    })
+    .slice(0, 40);
+}
+
+function buildTaskWorkflowRuns(task) {
+  const rows = getTaskCollectionValues(task, [
+    "workflowRuns",
+    "workflowHistory",
+    "workflows",
+  ]);
+  return rows
+    .map((entry) => {
+      if (entry == null) return null;
+      if (typeof entry === "string") {
+        return { workflowId: entry, runId: "", status: "", result: "", timestamp: null };
+      }
+      return {
+        workflowId: String(entry.workflowId || entry.id || entry.templateId || "").trim(),
+        runId: String(entry.runId || entry.executionId || entry.attemptId || "").trim(),
+        status: String(entry.status || entry.outcome || entry.result || "").trim(),
+        result: String(entry.summary || entry.message || entry.reason || "").trim(),
+        timestamp: entry.timestamp || entry.completedAt || entry.createdAt || null,
+      };
+    })
+    .filter((entry) => entry && (entry.workflowId || entry.runId || entry.status || entry.result))
+    .sort((a, b) => {
+      const ta = a.timestamp ? new Date(a.timestamp).getTime() : 0;
+      const tb = b.timestamp ? new Date(b.timestamp).getTime() : 0;
+      return tb - ta;
+    })
+    .slice(0, 30);
+}
+
+function buildTaskRelatedLinks(task) {
+  const links = [];
+  const branch =
+    task?.branchName ||
+    task?.branch ||
+    task?.meta?.branch ||
+    task?.meta?.branchName ||
+    "";
+  const prNumber =
+    task?.prNumber ||
+    task?.pr_number ||
+    task?.meta?.prNumber ||
+    task?.meta?.pr_number ||
+    "";
+  const prUrl =
+    task?.prUrl ||
+    task?.pr_url ||
+    task?.meta?.prUrl ||
+    task?.meta?.pr_url ||
+    task?.meta?.pr?.url ||
+    "";
+  const baseBranch = getTaskBaseBranch(task);
+
+  if (branch) links.push({ kind: "Branch", value: branch, url: "" });
+  if (baseBranch) links.push({ kind: "Base", value: baseBranch, url: "" });
+  if (prNumber) links.push({ kind: "PR", value: `#${prNumber}`, url: prUrl || "" });
+  if (prUrl) links.push({ kind: "PR URL", value: prUrl, url: prUrl });
+  return links;
+}
+
+function buildTaskAgentList(task) {
+  const values = [];
+  const pushValue = (value) => {
+    const normalized = String(value || "").trim();
+    if (!normalized || values.includes(normalized)) return;
+    values.push(normalized);
+  };
+
+  pushValue(task?.assignee);
+  const assignees = task?.assignees || task?.meta?.assignees;
+  if (Array.isArray(assignees)) {
+    for (const item of assignees) {
+      if (typeof item === "string") pushValue(item);
+      else pushValue(item?.name || item?.id || item?.agentId);
+    }
+  }
+
+  pushValue(task?.meta?.execution?.sdk);
+  pushValue(task?.meta?.execution?.model);
+  pushValue(task?.meta?.executor);
+  return values;
+}
+
+async function confirmTaskLifecycleTransition(task, newStatus) {
+  const next = normalizeTaskLifecycleStatus(newStatus);
+  const prev = normalizeTaskLifecycleStatus(task?.status || "todo");
+  const action = classifyTaskLifecycleAction(prev, next);
+  const taskLabel = sanitizeTaskText(task?.title || task?.id || "this task");
+
+  if (action === "start") {
+    const ok = await showConfirm(
+      `Start ${taskLabel} now? This dispatches or resumes execution immediately.`,
+    );
+    return { ok, action, nextStatus: "inprogress" };
+  }
+
+  if (action === "pause") {
+    const ok = await showConfirm(
+      `Pause ${taskLabel} and move it back to backlog? You can resume by moving it to In Progress again.`,
+    );
+    return { ok, action, nextStatus: next === "draft" ? "draft" : "todo" };
+  }
+
+  return { ok: true, action, nextStatus: next };
+}
+
+async function applyTaskLifecycleTransition(task, requestedStatus) {
+  if (!task?.id) return { ok: false, cancelled: true, action: "noop" };
+  const decision = await confirmTaskLifecycleTransition(task, requestedStatus);
+  if (!decision.ok) return { ok: false, cancelled: true, action: decision.action };
+
+  const wantsDraft = decision.nextStatus === "draft";
+  const prevTasks = cloneValue(tasksData.value);
+  const optimisticStatus = decision.action === "start" ? "inprogress" : decision.nextStatus;
+  let apiResult = null;
+
+  await runOptimistic(
+    () => {
+      tasksData.value = tasksData.value.map((row) =>
+        row.id === task.id ? { ...row, status: optimisticStatus, draft: wantsDraft } : row,
+      );
+    },
+    async () => {
+      if (decision.action === "start") {
+        apiResult = await apiFetch("/api/tasks/start", {
+          method: "POST",
+          body: JSON.stringify({ taskId: task.id }),
+        });
+        const detail = await apiFetch(
+          `/api/tasks/detail?taskId=${encodeURIComponent(task.id)}`,
+          { _silent: true },
+        ).catch(() => null);
+        const merged = detail?.data || apiResult?.data || null;
+        if (merged) {
+          tasksData.value = tasksData.value.map((row) =>
+            row.id === task.id ? { ...row, ...merged } : row,
+          );
+        }
+        return apiResult;
+      }
+
+      apiResult = await apiFetch("/api/tasks/update", {
+        method: "POST",
+        body: JSON.stringify({
+          taskId: task.id,
+          status: decision.nextStatus,
+          draft: wantsDraft,
+          lifecycleAction: decision.action,
+          pauseExecution: decision.action === "pause",
+        }),
+      });
+      if (apiResult?.data) {
+        tasksData.value = tasksData.value.map((row) =>
+          row.id === task.id ? { ...row, ...apiResult.data } : row,
+        );
+      }
+      return apiResult;
+    },
+    () => {
+      tasksData.value = prevTasks;
+    },
+  );
+
+  return {
+    ok: true,
+    cancelled: false,
+    action: decision.action,
+    status: optimisticStatus,
+    response: apiResult,
+  };
+}
 export function StartTaskModal({
   task,
   defaultSdk = "auto",
@@ -1411,6 +1659,37 @@ export function TaskDetailModal({ task, onClose, onStart }) {
   const activeWsId = activeWorkspaceId.value || "";
   const canDispatch = Boolean(onStart && task?.id);
 
+  const historyEntries = useMemo(() => buildTaskHistoryEntries(task), [
+    task?.id,
+    task?.status,
+    task?.statusHistory,
+    task?.history,
+    task?.timeline,
+    task?.eventLog,
+    task?.events,
+    task?.activity,
+  ]);
+  const workflowRuns = useMemo(() => buildTaskWorkflowRuns(task), [
+    task?.id,
+    task?.workflowRuns,
+    task?.workflowHistory,
+    task?.workflows,
+  ]);
+  const relatedLinks = useMemo(() => buildTaskRelatedLinks(task), [
+    task?.id,
+    task?.branch,
+    task?.branchName,
+    task?.prNumber,
+    task?.prUrl,
+    task?.meta,
+  ]);
+  const taskAgents = useMemo(() => buildTaskAgentList(task), [
+    task?.id,
+    task?.assignee,
+    task?.assignees,
+    task?.meta,
+  ]);
+
   const editableSnapshot = useMemo(
     () => ({
       title: title || "",
@@ -1602,42 +1881,18 @@ export function TaskDetailModal({ task, onClose, onStart }) {
 
   const handleStatusUpdate = async (newStatus) => {
     haptic("medium");
-    const prev = cloneValue(tasksData.value);
-    const wantsDraft = newStatus === "draft";
     try {
-      await runOptimistic(
-        () => {
-          tasksData.value = tasksData.value.map((t) =>
-            t.id === task.id
-              ? { ...t, status: newStatus, draft: wantsDraft }
-              : t,
-          );
-        },
-        async () => {
-          const res = await apiFetch("/api/tasks/update", {
-            method: "POST",
-            body: JSON.stringify({
-              taskId: task.id,
-              status: newStatus,
-              draft: wantsDraft,
-            }),
-          });
-          if (res?.data)
-            tasksData.value = tasksData.value.map((t) =>
-              t.id === task.id ? { ...t, ...res.data } : t,
-            );
-          return res;
-        },
-        () => {
-          tasksData.value = prev;
-        },
-      );
-      if (newStatus === "done" || newStatus === "cancelled") onClose();
-      else {
-        setStatus(newStatus);
-        setDraft(wantsDraft);
+      const result = await applyTaskLifecycleTransition(task, newStatus);
+      if (!result?.ok || result?.cancelled) return;
+
+      if (result.status === "done" || result.status === "cancelled") {
+        onClose();
+      } else {
+        setStatus(result.status);
+        setDraft(result.status === "draft");
       }
-      if (newStatus === "inreview") {
+
+      if (result.status === "inreview") {
         await reactivateTaskSession(task.id, {
           askFirst: true,
           title: task?.title || task?.id || "this task",
@@ -1647,7 +1902,6 @@ export function TaskDetailModal({ task, onClose, onStart }) {
       /* toast */
     }
   };
-
   const handleStart = () => {
     if (onStart) onStart(task);
   };
@@ -1796,7 +2050,86 @@ export function TaskDetailModal({ task, onClose, onStart }) {
         `}
       </div>
 
-        <div class="flex-col gap-md modal-form-grid">
+
+      <div class="modal-form-span">
+        <div class="task-comments-block" style="padding:12px;border:1px solid var(--border);border-radius:12px;background:var(--bg-surface)">
+          <div class="task-attachments-title">Tracking Overview</div>
+          <div class="task-comments-list" style="display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:10px;">
+            <div class="task-comment-item">
+              <div class="task-comment-meta">Assigned Agents</div>
+              <div class="task-comment-body">${taskAgents.length ? taskAgents.join(" · ") : "No agent assignment recorded."}</div>
+            </div>
+            <div class="task-comment-item">
+              <div class="task-comment-meta">Workflow Runs</div>
+              <div class="task-comment-body">${workflowRuns.length ? `${workflowRuns.length} linked runs` : "No workflow runs linked yet."}</div>
+            </div>
+            <div class="task-comment-item">
+              <div class="task-comment-meta">Timeline Events</div>
+              <div class="task-comment-body">${historyEntries.length ? `${historyEntries.length} recorded entries` : "No timeline history yet."}</div>
+            </div>
+            <div class="task-comment-item">
+              <div class="task-comment-meta">Branch / PR</div>
+              <div class="task-comment-body">${relatedLinks.length ? relatedLinks.map((item) => `${item.kind}: ${item.value}`).join(" · ") : "No branch or PR links recorded."}</div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      ${workflowRuns.length > 0 && html`
+        <div class="task-comments-block modal-form-span">
+          <div class="task-attachments-title">Workflow Activity</div>
+          <div class="task-comments-list">
+            ${workflowRuns.map((run, index) => html`
+              <div class="task-comment-item" key=${`workflow-${index}`}>
+                <div class="task-comment-meta">
+                  ${run.workflowId || "workflow"}
+                  ${run.runId ? ` · run ${run.runId}` : ""}
+                  ${run.timestamp ? ` · ${formatRelative(run.timestamp)}` : ""}
+                </div>
+                <div class="task-comment-body">${run.status || run.result || "No status summary"}</div>
+                ${run.result && run.status && run.result !== run.status && html`
+                  <div class="task-comment-body">${run.result}</div>
+                `}
+              </div>
+            `)}
+          </div>
+        </div>
+      `}
+
+      ${historyEntries.length > 0 && html`
+        <div class="task-comments-block modal-form-span">
+          <div class="task-attachments-title">History Timeline</div>
+          <div class="task-comments-list">
+            ${historyEntries.map((entry, index) => html`
+              <div class="task-comment-item" key=${`history-${index}`}>
+                <div class="task-comment-meta">
+                  ${entry.timestamp ? formatRelative(entry.timestamp) : "Time unknown"}
+                  ${entry.source ? ` · ${entry.source}` : ""}
+                </div>
+                <div class="task-comment-body">${entry.label}</div>
+              </div>
+            `)}
+          </div>
+        </div>
+      `}
+
+      ${relatedLinks.length > 0 && html`
+        <div class="task-comments-block modal-form-span">
+          <div class="task-attachments-title">Branch and PR Links</div>
+          <div class="task-comments-list">
+            ${relatedLinks.map((item, index) => html`
+              <div class="task-comment-item" key=${`link-${index}`}>
+                <div class="task-comment-meta">${item.kind}</div>
+                <div class="task-comment-body">
+                  ${item.url
+                    ? html`<a href=${item.url} target="_blank" rel="noopener">${item.value}</a>`
+                    : item.value}
+                </div>
+              </div>
+            `)}
+          </div>
+        </div>
+      `}        <div class="flex-col gap-md modal-form-grid">
         <div class="input-with-mic modal-form-span">
           <${TextField} size="small" variant="outlined" placeholder="Title" value=${title} onInput=${(e) => setTitle(e.target.value)} fullWidth />
           <${VoiceMicButtonInline}
@@ -2307,19 +2640,6 @@ export function TasksTab() {
     }
   }, [isCompact]);
 
-  useEffect(() => {
-    if (!isKanban) return undefined;
-    const handleScroll = (event) => {
-      const target = event?.target;
-      if (!target?.classList?.contains("kanban-cards")) return;
-      const remaining = target.scrollHeight - target.scrollTop - target.clientHeight;
-      if (remaining <= 140) {
-        void loadMoreKanbanTasks();
-      }
-    };
-    document.addEventListener("scroll", handleScroll, true);
-    return () => document.removeEventListener("scroll", handleScroll, true);
-  }, [isKanban, loadMoreKanbanTasks]); // kanban-scroll-autoload
 
   useEffect(() => {
     if (!actionsOpen || typeof document === "undefined") return undefined;
@@ -2521,43 +2841,23 @@ export function TasksTab() {
 
   const handleStatusUpdate = async (taskId, newStatus) => {
     haptic("medium");
-    const prev = cloneValue(tasks);
-    const wantsDraft = newStatus === "draft";
-    await runOptimistic(
-      () => {
-        tasksData.value = tasksData.value.map((t) =>
-          t.id === taskId
-            ? { ...t, status: newStatus, draft: wantsDraft }
-            : t,
-        );
-      },
-      async () => {
-        const res = await apiFetch("/api/tasks/update", {
-          method: "POST",
-          body: JSON.stringify({
-            taskId,
-            status: newStatus,
-            draft: wantsDraft,
-          }),
-        });
-        if (res?.data)
-          tasksData.value = tasksData.value.map((t) =>
-            t.id === taskId ? { ...t, ...res.data } : t,
-          );
-      },
-      () => {
-        tasksData.value = prev;
-      },
-    ).catch(() => {});
-    if (newStatus === "inreview") {
-      const task = (tasksData.value || []).find((t) => String(t?.id) === String(taskId));
-      await reactivateTaskSession(taskId, {
-        askFirst: true,
-        title: task?.title || taskId,
-      }).catch(() => {});
+    const currentTask = (tasksData.value || []).find((row) => String(row?.id) === String(taskId));
+    if (!currentTask) return;
+
+    try {
+      const result = await applyTaskLifecycleTransition(currentTask, newStatus);
+      if (!result?.ok || result?.cancelled) return;
+      if (result.status === "inreview") {
+        const nextTask = (tasksData.value || []).find((row) => String(row?.id) === String(taskId));
+        await reactivateTaskSession(taskId, {
+          askFirst: true,
+          title: nextTask?.title || taskId,
+        }).catch(() => {});
+      }
+    } catch {
+      /* toast */
     }
   };
-
   const startTask = async ({ taskId, sdk, model }) => {
     haptic("medium");
     let res = null;

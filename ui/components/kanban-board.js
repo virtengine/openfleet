@@ -5,9 +5,17 @@ import { h } from "preact";
 import { useState, useCallback, useRef, useEffect, useMemo } from "preact/hooks";
 import htm from "htm";
 import { signal, computed } from "@preact/signals";
-import { tasksData, tasksLoaded, showToast, runOptimistic, loadTasks } from "../modules/state.js";
+import {
+  tasksData,
+  tasksLoaded,
+  showToast,
+  runOptimistic,
+  loadTasks,
+  normalizeTaskLifecycleStatus,
+  classifyTaskLifecycleAction,
+} from "../modules/state.js";
 import { apiFetch } from "../modules/api.js";
-import { haptic } from "../modules/telegram.js";
+import { haptic, showConfirm } from "../modules/telegram.js";
 import { formatRelative, truncate, cloneValue } from "../modules/utils.js";
 import { iconText, resolveIcon } from "../modules/icon-utils.js";
 import { getAgentDisplay } from "../modules/agent-display.js";
@@ -179,6 +187,92 @@ function _columnFromPoint(x, y) {
   return null;
 }
 
+
+async function confirmBoardTaskTransition(task, newStatus) {
+  const prev = normalizeTaskLifecycleStatus(task?.status || "todo");
+  const next = normalizeTaskLifecycleStatus(newStatus);
+  const action = classifyTaskLifecycleAction(prev, next);
+  const taskLabel = String(task?.title || task?.id || "this task").trim();
+
+  if (action === "start") {
+    const ok = await showConfirm(
+      `Start ${taskLabel} now? This dispatches or resumes execution immediately.`,
+    );
+    return { ok, action, nextStatus: "inprogress" };
+  }
+
+  if (action === "pause") {
+    const ok = await showConfirm(
+      `Pause ${taskLabel} and move it back to backlog? You can resume by moving it to In Progress again.`,
+    );
+    return { ok, action, nextStatus: next === "draft" ? "draft" : "todo" };
+  }
+
+  return { ok: true, action, nextStatus: next };
+}
+
+async function executeBoardTransition(task, newStatus, columnLabel) {
+  if (!task?.id) return { ok: false, cancelled: true, action: "noop" };
+  const decision = await confirmBoardTaskTransition(task, newStatus);
+  if (!decision.ok) return { ok: false, cancelled: true, action: decision.action };
+
+  const taskId = task.id;
+  const wantsDraft = decision.nextStatus === "draft";
+  const optimisticStatus = decision.action === "start" ? "inprogress" : decision.nextStatus;
+  const prev = cloneValue(tasksData.value);
+
+  await runOptimistic(
+    () => {
+      tasksData.value = tasksData.value.map((t) =>
+        matchTaskId(t.id, taskId) ? { ...t, status: optimisticStatus, draft: wantsDraft } : t,
+      );
+    },
+    async () => {
+      if (decision.action === "start") {
+        const startRes = await apiFetch("/api/tasks/start", {
+          method: "POST",
+          body: JSON.stringify({ taskId }),
+        });
+        const detail = await apiFetch(
+          `/api/tasks/detail?taskId=${encodeURIComponent(taskId)}`,
+          { _silent: true },
+        ).catch(() => null);
+        const merged = detail?.data || startRes?.data || null;
+        if (merged) {
+          tasksData.value = tasksData.value.map((t) =>
+            matchTaskId(t.id, taskId) ? { ...t, ...merged } : t,
+          );
+        }
+        return startRes;
+      }
+
+      const res = await apiFetch("/api/tasks/update", {
+        method: "POST",
+        body: JSON.stringify({
+          taskId,
+          status: decision.nextStatus,
+          draft: wantsDraft,
+          lifecycleAction: decision.action,
+          pauseExecution: decision.action === "pause",
+        }),
+      });
+      if (res?.data) {
+        tasksData.value = tasksData.value.map((t) =>
+          matchTaskId(t.id, taskId) ? { ...t, ...res.data } : t,
+        );
+      }
+      return res;
+    },
+    () => {
+      tasksData.value = prev;
+    },
+  );
+
+  showToast(`Moved to ${columnLabel || "updated status"}`, "success");
+  setTimeout(() => loadTasks(), 500);
+  return { ok: true, cancelled: false, action: decision.action, status: optimisticStatus };
+}
+
 async function _handleTouchDrop(colId) {
   const taskId = touchDragId.value;
   touchDragId.value = null;
@@ -194,33 +288,8 @@ async function _handleTouchDrop(colId) {
   const col = COLUMNS.find((c) => c.id === colId);
   haptic("medium");
 
-  const prev = cloneValue(tasksData.value);
   try {
-    await runOptimistic(
-      () => {
-        tasksData.value = tasksData.value.map((t) =>
-          matchTaskId(t.id, taskId) ? { ...t, status: newStatus } : t,
-        );
-      },
-      async () => {
-        const res = await apiFetch("/api/tasks/update", {
-          method: "POST",
-          body: JSON.stringify({ taskId, status: newStatus }),
-        });
-        if (res?.data) {
-          tasksData.value = tasksData.value.map((t) =>
-            matchTaskId(t.id, taskId) ? { ...t, ...res.data } : t,
-          );
-        }
-        return res;
-      },
-      () => {
-        tasksData.value = prev;
-      },
-    );
-    showToast(`Moved to ${col ? col.title : colId}`, "success");
-    // Force refresh from server to ensure consistency
-    setTimeout(() => loadTasks(), 500);
+    await executeBoardTransition(currentTask, newStatus, col?.title || colId);
   } catch (err) {
     showToast(err?.message || "Failed to move task", "error");
   }

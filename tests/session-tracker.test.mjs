@@ -63,6 +63,28 @@ describe("session-tracker", () => {
       expect(messages[0].content).toContain("fix the bug");
     });
 
+    it("preserves compression metadata on normalized Codex agent messages", () => {
+      tracker.startSession("task-1", "Test");
+      tracker.recordEvent("task-1", {
+        type: "item.completed",
+        item: {
+          type: "agent_message",
+          text: "Condensed summary",
+          _compressed: "agent_tier1",
+          _originalLength: 420,
+        },
+      });
+
+      const messages = tracker.getLastMessages("task-1");
+      expect(messages).toHaveLength(1);
+      expect(messages[0].meta?.compression).toEqual(
+        expect.objectContaining({
+          kind: "agent_tier1",
+          originalLength: 420,
+        }),
+      );
+    });
+
     it("records Codex function_call events", () => {
       tracker.startSession("task-1", "Test");
       tracker.recordEvent("task-1", {

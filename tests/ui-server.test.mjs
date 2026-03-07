@@ -32,6 +32,9 @@ describe("ui-server mini app", () => {
     "BOSUN_UI_BROWSER_OPEN_MODE",
     "BOSUN_UI_LOG_TOKENIZED_BROWSER_URL",
     "BOSUN_UI_LOCAL_BOOTSTRAP",
+    "BOSUN_UI_RATE_LIMIT_PER_MIN",
+    "BOSUN_UI_RATE_LIMIT_AUTHENTICATED_PER_MIN",
+    "BOSUN_UI_RATE_LIMIT_PRIVILEGED_PER_MIN",
     "TELEGRAM_INTERVAL_MIN",
     "BOSUN_CONFIG_PATH",
     "BOSUN_HOME",
@@ -1142,6 +1145,84 @@ describe("ui-server mini app", () => {
 
     rmSync(tmpDir, { recursive: true, force: true });
   }, 20000);
+
+  it("hides leaked smoke sessions from the default session list", async () => {
+    process.env.TELEGRAM_UI_TUNNEL = "disabled";
+    const mod = await import("../server/ui-server.mjs");
+    const { _resetSingleton, getSessionTracker } = await import("../infra/session-tracker.mjs");
+    _resetSingleton({ persistDir: null });
+    const server = await mod.startTelegramUiServer({
+      port: await getFreePort(),
+      host: "127.0.0.1",
+      skipInstanceLock: true,
+      skipAutoOpen: true,
+    });
+    const port = server.address().port;
+    const tracker = getSessionTracker();
+    tracker.createSession({
+      id: "smoke-openai-legacy",
+      type: "primary",
+      metadata: { title: "smoke-openai-legacy" },
+    });
+    tracker.createSession({
+      id: "manual-visible-session",
+      type: "primary",
+      metadata: { title: "Visible Session" },
+    });
+
+    const listRes = await fetch(`http://127.0.0.1:${port}/api/sessions`);
+    const listJson = await listRes.json();
+    expect(listRes.status).toBe(200);
+    expect(listJson.ok).toBe(true);
+    expect(listJson.sessions.some((session) => session.id === "smoke-openai-legacy")).toBe(false);
+    expect(listJson.sessions.some((session) => session.id === "manual-visible-session")).toBe(true);
+
+    const hiddenListRes = await fetch(`http://127.0.0.1:${port}/api/sessions?includeHidden=1`);
+    const hiddenListJson = await hiddenListRes.json();
+    expect(hiddenListRes.status).toBe(200);
+    expect(hiddenListJson.ok).toBe(true);
+    expect(hiddenListJson.sessions.some((session) => session.id === "smoke-openai-legacy")).toBe(true);
+  });
+
+  it("uses the higher authenticated session rate limit for session-token requests", async () => {
+    process.env.TELEGRAM_UI_ALLOW_UNSAFE = "false";
+    process.env.TELEGRAM_UI_TUNNEL = "disabled";
+    process.env.BOSUN_UI_RATE_LIMIT_PER_MIN = "2";
+    process.env.BOSUN_UI_RATE_LIMIT_AUTHENTICATED_PER_MIN = "4";
+
+    const mod = await import("../server/ui-server.mjs");
+    const server = await mod.startTelegramUiServer({
+      port: await getFreePort(),
+      host: "127.0.0.1",
+      skipInstanceLock: true,
+      skipAutoOpen: true,
+    });
+    const port = server.address().port;
+    const token = mod.getSessionToken();
+    expect(token).toBeTruthy();
+
+    const headers = {
+      "content-type": "application/json",
+      authorization: `Bearer ${token}`,
+    };
+    const makeRequest = (type) => fetch(`http://127.0.0.1:${port}/api/sessions/create`, {
+      method: "POST",
+      headers,
+      body: JSON.stringify({ type }),
+    });
+
+    const first = await makeRequest("authed-rate-1");
+    const second = await makeRequest("authed-rate-2");
+    const third = await makeRequest("authed-rate-3");
+    const fourth = await makeRequest("authed-rate-4");
+    const fifth = await makeRequest("authed-rate-5");
+
+    expect(first.status).toBe(200);
+    expect(second.status).toBe(200);
+    expect(third.status).toBe(200);
+    expect(fourth.status).toBe(200);
+    expect(fifth.status).toBe(429);
+  });
 
   it("scopes workflows and library data by active workspace", async () => {
     process.env.TELEGRAM_UI_TUNNEL = "disabled";

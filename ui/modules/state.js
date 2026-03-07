@@ -168,6 +168,46 @@ const TASK_TEXT_REPLACEMENTS = [
   [/\u00E2\u20AC\u00A6/g, "..."],
   [/\u00C2/g, " "],
 ];
+const TASK_LIFECYCLE_IN_PROGRESS = new Set([
+  "inprogress",
+  "in-progress",
+  "working",
+  "active",
+  "assigned",
+  "running",
+]);
+
+const TASK_LIFECYCLE_BACKLOG = new Set([
+  "todo",
+  "backlog",
+  "open",
+  "new",
+  "draft",
+]);
+
+export function normalizeTaskLifecycleStatus(status) {
+  const raw = String(status || "").trim().toLowerCase();
+  if (!raw) return "todo";
+  if (TASK_LIFECYCLE_IN_PROGRESS.has(raw)) return "inprogress";
+  if (raw === "inreview" || raw === "in-review" || raw === "review")
+    return "inreview";
+  if (raw === "done" || raw === "completed" || raw === "merged" || raw === "closed")
+    return "done";
+  if (raw === "cancelled" || raw === "canceled") return "cancelled";
+  if (raw === "blocked") return "blocked";
+  if (TASK_LIFECYCLE_BACKLOG.has(raw)) return raw === "draft" ? "draft" : "todo";
+  return raw;
+}
+
+export function classifyTaskLifecycleAction(currentStatus, nextStatus) {
+  const prev = normalizeTaskLifecycleStatus(currentStatus);
+  const next = normalizeTaskLifecycleStatus(nextStatus);
+  if (prev === next) return "noop";
+  if (next === "inprogress" && prev !== "inprogress") return "start";
+  if (prev === "inprogress" && (next === "todo" || next === "draft"))
+    return "pause";
+  return "update";
+}
 
 
 // ── Agents

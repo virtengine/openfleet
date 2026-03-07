@@ -42,7 +42,17 @@ import {
   markTaskIgnored,
   unmarkTaskIgnored,
 } from "../kanban/kanban-adapter.mjs";
-import { getAllTasks as getAllInternalTasks } from "../task/task-store.mjs";
+import {
+  getAllTasks as getAllInternalTasks,
+  appendTaskTimelineEvent as appendInternalTaskTimelineEvent,
+  linkTaskWorkflowRun as linkInternalTaskWorkflowRun,
+  startTask as startInternalTaskLifecycle,
+  pauseTask as pauseInternalTaskLifecycle,
+  resumeTask as resumeInternalTaskLifecycle,
+  completeTask as completeInternalTaskLifecycle,
+  cancelTask as cancelInternalTaskLifecycle,
+  blockTask as blockInternalTaskLifecycle,
+} from "../task/task-store.mjs";
 import {
   getActiveThreads,
   launchEphemeralThread,
@@ -955,7 +965,7 @@ const _wfRecommendedInstalledByWorkspace = new Set();
 const _wfEngineByWorkspace = new Map();
 let _wfInitPromise = null;
 let _wfInitDone = false;
-let _wfLoadedBase = null;
+let _wfLoadedBase = null;`r`nlet _wfTaskTraceHookRegistered = false;
 
 /**
  * Test-only: inject a mock workflow engine module and pre-seed the per-workspace
@@ -1204,14 +1214,20 @@ async function getWorkflowEngineModule() {
           kanban: kanbanService,
           meeting: meetingService,
           prompts: promptBundle?.prompts || null,
+          onTaskWorkflowEvent: handleTaskWorkflowTraceEvent,
         };
         _wfServices = services;
-        _wfEngine.getWorkflowEngine({ services });
+        const engine = _wfEngine.getWorkflowEngine({ services });
+        if (!_wfTaskTraceHookRegistered && typeof engine?.registerTaskTraceHook === "function") {
+          engine.registerTaskTraceHook((event) => {
+            handleTaskWorkflowTraceEvent(event);
+          });
+          _wfTaskTraceHookRegistered = true;
+        }
         _wfServicesReady = true;
 
         // Resume any runs that were interrupted by a previous shutdown.
         // This must happen AFTER services are wired so node executors work.
-        const engine = _wfEngine.getWorkflowEngine();
         if (typeof engine.resumeInterruptedRuns === "function") {
           engine.resumeInterruptedRuns().catch((err) => {
             console.warn("[workflows] Failed to resume interrupted runs:", err.message);
@@ -1319,6 +1335,142 @@ function getWorkflowStoragePaths(workspaceDir = "") {
   };
 }
 
+
+function mapWorkflowRunOutcome(eventType, status) {
+  const normalizedType = String(eventType || "").trim().toLowerCase();
+  const normalizedStatus = String(status || "").trim().toLowerCase();
+  if (normalizedType.endsWith(".error")) return "failed";
+  if (normalizedType.endsWith(".start") || normalizedStatus === "running") return "running";
+  if (normalizedStatus) return normalizedStatus;
+  return "completed";
+}
+
+function handleTaskWorkflowTraceEvent(event = {}) {
+  const taskId = String(event?.taskId || "").trim();
+  if (!taskId) return;
+
+  const eventType = String(event?.eventType || "workflow.event").trim();
+  const summary = String(event?.summary || eventType).trim();
+
+  try {
+    appendInternalTaskTimelineEvent(taskId, {
+      type: eventType,
+      source: "workflow",
+      status: event?.status || null,
+      message: summary,
+      payload: {
+        runId: event?.runId || null,
+        workflowId: event?.workflowId || null,
+        workflowName: event?.workflowName || null,
+        nodeId: event?.nodeId || null,
+        phase: event?.phase || null,
+      },
+    });
+
+    if (String(eventType).startsWith("workflow.run.")) {
+      linkInternalTaskWorkflowRun(taskId, {
+        runId: event?.runId || null,
+        workflowId: event?.workflowId || null,
+        status: event?.status || null,
+        outcome: mapWorkflowRunOutcome(eventType, event?.status),
+        startedAt: event?.startedAt || null,
+        endedAt: event?.endedAt || null,
+        summary,
+        source: "workflow",
+        meta: {
+          workflowName: event?.workflowName || null,
+          taskTitle: event?.taskTitle || null,
+          nodeId: event?.nodeId || null,
+          phase: event?.phase || null,
+        },
+      });
+    }
+  } catch (err) {
+    console.warn(`[workflows] failed to persist task workflow trace for ${taskId}: ${err.message}`);
+  }
+}
+
+function mergeTaskWorkflowRuns(baseRuns = [], extraRuns = [], limit = 60) {
+  const merged = [];
+  const seen = new Set();
+  const push = (entry) => {
+    if (!entry || typeof entry !== "object") return;
+    const runId = String(entry.runId || "").trim();
+    const workflowId = String(entry.workflowId || "").trim();
+    const dedupKey = runId ? `run:${runId}` : `wf:${workflowId}:${entry.startedAt || entry.endedAt || ""}`;
+    if (seen.has(dedupKey)) return;
+    seen.add(dedupKey);
+    merged.push({
+      runId: runId || null,
+      workflowId: workflowId || null,
+      workflowName: entry.workflowName != null ? String(entry.workflowName) : null,
+      status: entry.status != null ? String(entry.status) : null,
+      outcome: entry.outcome != null ? String(entry.outcome) : null,
+      summary: entry.summary != null ? String(entry.summary) : null,
+      startedAt: entry.startedAt || null,
+      endedAt: entry.endedAt || null,
+      duration: Number.isFinite(Number(entry.duration)) ? Number(entry.duration) : null,
+      source: entry.source ? String(entry.source) : "workflow",
+    });
+  };
+
+  for (const run of Array.isArray(baseRuns) ? baseRuns : []) push(run);
+  for (const run of Array.isArray(extraRuns) ? extraRuns : []) push(run);
+
+  merged.sort((a, b) => {
+    const ta = Number(new Date(a.endedAt || a.startedAt || 0).getTime() || 0);
+    const tb = Number(new Date(b.endedAt || b.startedAt || 0).getTime() || 0);
+    return tb - ta;
+  });
+
+  if (Number.isFinite(limit) && limit > 0 && merged.length > limit) {
+    return merged.slice(0, limit);
+  }
+  return merged;
+}
+
+async function collectWorkflowRunsForTask(taskId, reqUrl, limit = 40) {
+  const normalizedTaskId = String(taskId || "").trim();
+  if (!normalizedTaskId) return [];
+  try {
+    const wfCtx = await getWorkflowRequestContext(reqUrl);
+    if (!wfCtx?.ok || !wfCtx.engine) return [];
+    const engine = wfCtx.engine;
+    const summaries = engine.getRunHistory ? engine.getRunHistory(null, 240) : [];
+    const out = [];
+    for (const summary of summaries) {
+      if (!summary?.runId) continue;
+      const detail = engine.getRunDetail ? engine.getRunDetail(summary.runId) : null;
+      if (!detail?.detail) continue;
+      const data = detail.detail?.data || {};
+      const primaryTaskId = String(data.taskId || data.activeTaskId || data?.task?.id || "").trim();
+      let matches = primaryTaskId === normalizedTaskId;
+      if (!matches && typeof engine.getTaskTraceEvents === "function") {
+        const traceEvents = engine.getTaskTraceEvents(summary.runId) || [];
+        matches = traceEvents.some((event) => String(event?.taskId || "").trim() === normalizedTaskId);
+      }
+      if (!matches) continue;
+      out.push({
+        runId: detail.runId,
+        workflowId: detail.workflowId,
+        workflowName: detail.workflowName,
+        status: detail.status,
+        outcome: detail.status,
+        summary: detail.status === "failed"
+          ? `Workflow run failed (${detail.workflowName || detail.workflowId || detail.runId})`
+          : `Workflow run ${detail.status || "completed"} (${detail.workflowName || detail.workflowId || detail.runId})`,
+        startedAt: detail.startedAt || null,
+        endedAt: detail.endedAt || null,
+        duration: detail.duration || null,
+        source: "workflow",
+      });
+      if (out.length >= limit) break;
+    }
+    return out;
+  } catch {
+    return [];
+  }
+}
 function maybeBootstrapWorkspaceWorkflowTemplates(engine, workspaceKey, workspaceLabel) {
   if (!engine || !_wfTemplates) return;
   if (_wfRecommendedInstalledByWorkspace.has(workspaceKey)) return;
@@ -1382,7 +1534,13 @@ async function getWorkflowRequestContext(reqUrl) {
         workflowDir: paths.workflowDir,
         runsDir: paths.runsDir,
         services: _wfServices || {},
+        onTaskWorkflowEvent: handleTaskWorkflowTraceEvent,
       });
+      if (typeof engine.registerTaskTraceHook === "function") {
+        engine.registerTaskTraceHook((event) => {
+          handleTaskWorkflowTraceEvent(event);
+        });
+      }
       engine.load();
     }
     _wfEngineByWorkspace.set(workspaceKey, engine);
@@ -3823,19 +3981,51 @@ function isPrivilegedAuthSource(source) {
   return normalized === "desktop-api-key" || normalized === "fallback" || normalized === "unsafe";
 }
 
+function isAuthenticatedSessionAuthSource(source) {
+  const normalized = String(source || "").trim().toLowerCase();
+  return normalized === "session" || normalized === "telegram";
+}
+
 function getMutationRateLimitPerMin(authResult = null) {
   const standardRaw = Number(process.env.BOSUN_UI_RATE_LIMIT_PER_MIN || "30");
   const standard = Number.isFinite(standardRaw) && standardRaw > 0 ? standardRaw : 30;
   if (!authResult?.ok) return standard;
+  if (isAuthenticatedSessionAuthSource(authResult.source)) {
+    const authenticatedRaw = Number(process.env.BOSUN_UI_RATE_LIMIT_AUTHENTICATED_PER_MIN || "120");
+    return Number.isFinite(authenticatedRaw) && authenticatedRaw > 0 ? authenticatedRaw : 120;
+  }
   // Owner/admin-controlled contexts should be less constrained:
   // - desktop-api-key: local Electron owner session
   // - fallback: explicit local secret auth
   // - unsafe: auth disabled for trusted local environment
   if (isPrivilegedAuthSource(authResult.source)) {
-    const privilegedRaw = Number(process.env.BOSUN_UI_RATE_LIMIT_PRIVILEGED_PER_MIN || "300");
-    return Number.isFinite(privilegedRaw) && privilegedRaw > 0 ? privilegedRaw : 300;
+    const privilegedRaw = Number(process.env.BOSUN_UI_RATE_LIMIT_PRIVILEGED_PER_MIN || "600");
+    return Number.isFinite(privilegedRaw) && privilegedRaw > 0 ? privilegedRaw : 600;
   }
   return standard;
+}
+
+function shouldHideSessionFromDefaultList(session) {
+  if (!session || typeof session !== "object") return false;
+  const metadata =
+    session.metadata && typeof session.metadata === "object"
+      ? session.metadata
+      : {};
+  if (
+    metadata.hiddenInLists === true
+    || metadata.hidden === true
+    || metadata.testSession === true
+    || String(metadata.visibility || "").trim().toLowerCase() === "hidden"
+  ) {
+    return true;
+  }
+  const identifiers = [
+    session.id,
+    session.taskId,
+    session.title,
+    session.taskTitle,
+  ];
+  return identifiers.some((value) => /^smoke(?:-vision)?-/i.test(String(value || "").trim()));
 }
 
 function checkRateLimit(req, maxPerMin = 30, scope = "global") {
@@ -5562,6 +5752,112 @@ async function maybeRestartTaskOnReopen({
   return { attempted: true, started: true, reason: "restarted" };
 }
 
+
+function normalizeLifecycleAction(action) {
+  const value = String(action || "").trim().toLowerCase();
+  if (value === "start" || value === "resume" || value === "pause" || value === "complete" || value === "cancel" || value === "block") {
+    return value;
+  }
+  return "update";
+}
+
+function inferLifecycleAction(previousStatus, nextStatus, requestedAction) {
+  const requested = normalizeLifecycleAction(requestedAction);
+  if (requested !== "update") return requested;
+  const prev = normalizeTaskStatusKey(previousStatus);
+  const next = normalizeTaskStatusKey(nextStatus);
+  if (next === "inprogress" && prev !== "inprogress") {
+    return prev === "todo" || prev === "backlog" || prev === "draft" ? "start" : "resume";
+  }
+  if (prev === "inprogress" && (next === "todo" || next === "backlog" || next === "draft")) {
+    return "pause";
+  }
+  if (next === "done") return "complete";
+  if (next === "cancelled") return "cancel";
+  if (next === "blocked") return "block";
+  return "update";
+}
+
+function applyInternalLifecycleTransition(taskId, action, options = {}) {
+  const normalizedAction = normalizeLifecycleAction(action);
+  const lifecycleOptions = {
+    source: options.source || "ui-server",
+    actor: options.actor || "ui",
+    reason: options.reason || null,
+    force: options.force === true,
+    payload: options.payload && typeof options.payload === "object" ? options.payload : null,
+  };
+
+  if (normalizedAction === "start") return startInternalTaskLifecycle(taskId, lifecycleOptions);
+  if (normalizedAction === "resume") return resumeInternalTaskLifecycle(taskId, lifecycleOptions);
+  if (normalizedAction === "pause") return pauseInternalTaskLifecycle(taskId, lifecycleOptions);
+  if (normalizedAction === "complete") return completeInternalTaskLifecycle(taskId, lifecycleOptions);
+  if (normalizedAction === "cancel") return cancelInternalTaskLifecycle(taskId, lifecycleOptions);
+  if (normalizedAction === "block") return blockInternalTaskLifecycle(taskId, lifecycleOptions);
+  return null;
+}
+
+async function maybeStartTaskFromLifecycleAction({
+  taskId,
+  updatedTask,
+  adapter,
+  executor,
+  lifecycleAction,
+  sdk,
+  model,
+}) {
+  if (!taskId) {
+    return { attempted: false, started: false, reason: "missing_task_id" };
+  }
+  if (!executor) {
+    return { attempted: false, started: false, reason: "executor_unavailable" };
+  }
+
+  const action = normalizeLifecycleAction(lifecycleAction);
+  const shouldStart = action === "start" || action === "resume";
+  if (!shouldStart) {
+    return { attempted: false, started: false, reason: "action_not_start" };
+  }
+
+  const status = executor.getStatus?.() || {};
+  const activeSlots = Array.isArray(status?.slots) ? status.slots : [];
+  const alreadyRunning = activeSlots.some(
+    (slot) => String(slot?.taskId || "").trim() === String(taskId).trim(),
+  );
+  if (alreadyRunning) {
+    return { attempted: true, started: false, reason: "already_running" };
+  }
+
+  const maxParallel = Number(status?.maxParallel || 0);
+  const activeCount = Number(status?.activeSlots || activeSlots.length || 0);
+  const hasFreeSlot = maxParallel <= 0 || activeCount < maxParallel;
+  if (!hasFreeSlot) {
+    return { attempted: true, started: false, reason: "no_free_slots" };
+  }
+
+  let taskToRun = updatedTask && typeof updatedTask === "object" ? updatedTask : null;
+  if (!taskToRun?.id && typeof adapter?.getTask === "function") {
+    try {
+      taskToRun = await adapter.getTask(taskId);
+    } catch {
+      taskToRun = null;
+    }
+  }
+  if (!taskToRun) {
+    return { attempted: true, started: false, reason: "task_not_found" };
+  }
+
+  executor.executeTask(taskToRun, {
+    force: true,
+    recoveredFromInProgress: action === "resume",
+    ...(sdk ? { sdk } : {}),
+    ...(model ? { model } : {}),
+  }).catch((error) => {
+    console.warn(`[telegram-ui] failed to dispatch lifecycle start for ${taskId}: ${error.message}`);
+  });
+
+  return { attempted: true, started: true, reason: action === "resume" ? "resumed" : "started" };
+}
 function parseInitData(initData) {
   const params = new URLSearchParams(initData);
   const data = {};
@@ -11315,8 +11611,15 @@ async function handleApi(req, res, url) {
         return;
       }
       let sessions = tracker.listAllSessions();
+      const includeHidden = /^(1|true|yes)$/i.test(String(url.searchParams.get("includeHidden") || "").trim());
       const typeFilter = url.searchParams.get("type");
       const statusFilter = url.searchParams.get("status");
+      if (!includeHidden) {
+        sessions = sessions.filter((session) => {
+          const detailed = tracker.getSessionById(session.id) || session;
+          return !shouldHideSessionFromDefaultList(detailed);
+        });
+      }
       if (typeFilter) sessions = sessions.filter((s) => s.type === typeFilter);
       if (statusFilter) sessions = sessions.filter((s) => s.status === statusFilter);
       sessions = sessions.filter((session) => {
