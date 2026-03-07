@@ -638,13 +638,13 @@ body.kanban-dragging .kanban-card {
  * ═══════════════════════════════════════════════ */
 
 body.tasks-board-view .main-content {
-  overflow: hidden !important;
-  display: flex !important;
+  overflow: hidden;
+  display: flex;
   flex-direction: column;
   min-height: 0;
   /* Remove vertical padding — kanban-board manages its own bottom clearance */
-  padding-top: 0 !important;
-  padding-bottom: 0 !important;
+  padding-top: 0;
+  padding-bottom: 0;
 }
 
 /* Toolbar stays fixed-height; no longer needs position:sticky since the

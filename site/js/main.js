@@ -53,17 +53,32 @@
   const toggle = document.querySelector('.nav__toggle');
   const links = document.querySelector('.nav__links');
   if (toggle && links) {
+    const syncMobileNavState = () => {
+      const isOpen = links.classList.contains('nav__links--open');
+      toggle.textContent = isOpen ? '✕' : ':menu:';
+      toggle.setAttribute('aria-expanded', isOpen ? 'true' : 'false');
+      document.body.classList.toggle('nav-menu-open', isOpen);
+      if (nav) nav.classList.toggle('nav--menu-open', isOpen);
+    };
+
     toggle.addEventListener('click', () => {
       links.classList.toggle('nav__links--open');
-      toggle.textContent = links.classList.contains('nav__links--open') ? '✕' : ':menu:';
+      syncMobileNavState();
     });
     // Close on link click
     links.querySelectorAll('a').forEach((a) => {
       a.addEventListener('click', () => {
         links.classList.remove('nav__links--open');
-        toggle.textContent = ':menu:';
+        syncMobileNavState();
       });
     });
+    window.addEventListener('resize', () => {
+      if (window.innerWidth > 768 && links.classList.contains('nav__links--open')) {
+        links.classList.remove('nav__links--open');
+        syncMobileNavState();
+      }
+    });
+    syncMobileNavState();
   }
 
   /* ── Navigation click tracking ─────────────────────────────────────── */

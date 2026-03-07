@@ -2136,6 +2136,7 @@ function ControlTab() {
       <div class="card-subtitle mt-sm">Kanban</div>
       <${SegmentedControl}
         options=${[
+          { value: "internal", label: "Internal" },
           { value: "vk", label: "VK" },
           { value: "github", label: "GitHub" },
           { value: "jira", label: "Jira" },

@@ -695,6 +695,7 @@
     gap: var(--shell-gap);
     padding: var(--shell-gap);
     height: var(--viewport-stable-height);
+    overflow: hidden;
   }
 
   .app-shell[data-has-rail="false"] {
@@ -703,12 +704,12 @@
   }
 
   .app-shell[data-has-inspector="true"] {
-    grid-template-columns: var(--sidebar-width) var(--rail-width) minmax(0, 1fr) var(--inspector-width);
+    grid-template-columns: var(--sidebar-width) var(--rail-width) minmax(0, 1fr) max(200px, var(--inspector-width));
     grid-template-areas: "sidebar rail main inspector";
   }
 
   .app-shell[data-has-rail="false"][data-has-inspector="true"] {
-    grid-template-columns: var(--sidebar-width) minmax(0, 1fr) var(--inspector-width);
+    grid-template-columns: var(--sidebar-width) minmax(0, 1fr) max(200px, var(--inspector-width));
     grid-template-areas: "sidebar main inspector";
   }
 
@@ -723,6 +724,8 @@
     gap: 14px;
     box-shadow: var(--shadow-sm);
     min-width: 0;
+    position: relative;
+    z-index: 20;
   }
 
   .session-rail {
@@ -756,6 +759,7 @@
     padding: 12px;
     gap: 12px;
     min-height: 0;
+    min-width: 200px;
     box-shadow: var(--shadow-sm);
     overflow-y: auto;
     overflow-x: hidden;
@@ -1173,6 +1177,26 @@
 .inspector-kv strong {
   color: var(--text-bright);
   font-weight: 600;
+  min-width: 0;
+  max-width: 64%;
+  text-align: right;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.inspector-kv.inspector-kv-preview {
+  align-items: flex-start;
+}
+
+.inspector-kv.inspector-kv-preview .inspector-preview-value {
+  max-width: 64%;
+  text-align: left;
+  white-space: normal;
+  overflow: hidden;
+  display: -webkit-box;
+  -webkit-line-clamp: 3;
+  -webkit-box-orient: vertical;
 }
 
 .inspector-empty {
@@ -1324,15 +1348,26 @@
   padding-right: calc(var(--safe-right));
   /* Reserve space at the bottom for the fixed nav bar plus the on-screen
      keyboard height (--chat-keyboard-offset is set live by visualViewport). */
-  padding-bottom: calc(var(--nav-height, 60px) + var(--safe-bottom, 0px) + var(--chat-keyboard-offset, 0px));
+  padding-bottom: calc(var(--nav-height, 60px) + var(--safe-bottom, 0px) + 8px + var(--chat-keyboard-offset, 0px));
   overflow: hidden;
   display: flex;
   flex-direction: column;
   min-height: 0;
 }
 
+.app-shell[data-tab="fleet-sessions"] .main-content {
+  max-width: none;
+}
+
 .app-shell[data-tab="chat"] .main-content > * {
   min-height: 0;
+}
+
+/* Prevent chat-input-area from collapsing on mobile — it must stay visible
+   above the bottom-nav, even when vertical space is tight. */
+.app-shell[data-tab="chat"] .main-content .chat-input-area {
+  flex: 0 0 auto;
+  min-height: auto;
 }
 
 @media (max-width: 768px) {
@@ -1485,6 +1520,50 @@ body.is-resizing * {
     max-height: 260px;
     overflow-y: auto;
   }
+}
+
+/* ── MUI nav icon sizing ─────────────────────────────────────────────────
+   The ICONS map returns bare <svg viewBox="0 0 24 24"> with no width/height.
+   Primary fix is in the MUI theme (mui.js styleOverrides); these rules are
+   fallback for any edge cases where theme styles aren't injected yet.
+ ──────────────────────────────────────────────────────────────────────── */
+
+/* Vertical sidebar Tabs — fallback */
+.sidebar .MuiTab-root {
+  flex-direction: row !important;
+  gap: 8px !important;
+  color: var(--text-primary) !important;
+  opacity: 0.95 !important;
+}
+
+.sidebar .MuiTab-root.Mui-selected {
+  color: var(--accent) !important;
+  opacity: 1 !important;
+}
+
+.sidebar .MuiTab-root:hover {
+  opacity: 1 !important;
+}
+.MuiTab-iconWrapper {
+  display: flex !important;
+  align-items: center !important;
+  justify-content: center !important;
+  flex-shrink: 0 !important;
+  width: 20px !important;
+  height: 20px !important;
+  margin-bottom: 0 !important;
+  margin-right: 0 !important;
+}
+.MuiTab-iconWrapper svg {
+  width: 100% !important;
+  height: 100% !important;
+}
+
+/* Bottom Navigation — fallback */
+.MuiBottomNavigationAction-root svg {
+  width: 24px !important;
+  height: 24px !important;
+  flex-shrink: 0 !important;
 }
 
 /* ═══════════════════════════════════════════════════════

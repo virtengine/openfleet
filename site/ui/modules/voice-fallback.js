@@ -17,6 +17,7 @@ let _recognition = null;
 let _synthesis = null;
 let _sessionId = null;
 let _isSpeaking = false;
+let _restartListeningTimer = null;
 let _callContext = {
   executor: null,
   mode: null,
@@ -81,18 +82,27 @@ export function startFallbackSession(sessionId, options = {}) {
  * Stop the fallback session.
  */
 export function stopFallbackSession() {
+  if (_restartListeningTimer) {
+    clearTimeout(_restartListeningTimer);
+    _restartListeningTimer = null;
+  }
+  _sessionId = null;
   stopListening();
   stopSpeaking();
   fallbackState.value = "idle";
   fallbackTranscript.value = "";
   fallbackResponse.value = "";
-  _sessionId = null;
   _callContext = { executor: null, mode: null, model: null };
 }
 
 function startListening() {
+  if (!_sessionId) return;
   if (!SpeechRecognition) return;
 
+  if (_restartListeningTimer) {
+    clearTimeout(_restartListeningTimer);
+    _restartListeningTimer = null;
+  }
   stopListening();
 
   _recognition = new SpeechRecognition();
@@ -122,7 +132,11 @@ function startListening() {
   _recognition.onerror = (event) => {
     if (event.error === "no-speech") {
       // Restart listening silently
-      setTimeout(() => startListening(), 500);
+      if (!_sessionId) return;
+      _restartListeningTimer = setTimeout(() => {
+        _restartListeningTimer = null;
+        startListening();
+      }, 500);
       return;
     }
     if (event.error === "aborted") return;
@@ -133,7 +147,10 @@ function startListening() {
   _recognition.onend = () => {
     // Auto-restart if still in active session and not processing
     if (_sessionId && fallbackState.value === "listening") {
-      setTimeout(() => startListening(), 300);
+      _restartListeningTimer = setTimeout(() => {
+        _restartListeningTimer = null;
+        startListening();
+      }, 300);
     }
   };
 
@@ -166,7 +183,7 @@ async function processUserInput(text) {
         toolName: "delegate_to_agent",
         args: {
           message: text,
-          mode: _callContext.mode || "ask",
+          mode: _callContext.mode || "instant",
           executor: _callContext.executor || undefined,
           model: _callContext.model || undefined,
         },
@@ -235,12 +252,17 @@ function speak(text) {
       fallbackState.value = "idle";
       resolve();
       // Resume listening after speaking
-      setTimeout(() => startListening(), 300);
+      if (_sessionId) {
+        _restartListeningTimer = setTimeout(() => {
+          _restartListeningTimer = null;
+          startListening();
+        }, 300);
+      }
     };
     utterance.onerror = () => {
       _isSpeaking = false;
       resolve();
-      startListening();
+      if (_sessionId) startListening();
     };
 
     _synthesis.speak(utterance);

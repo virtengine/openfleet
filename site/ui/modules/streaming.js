@@ -629,7 +629,7 @@ export function startAgentStatusTracking() {
     const content = String(message.content || "").toLowerCase();
     const lifecycle = String(message?.meta?.lifecycle || "").toLowerCase();
     const adapter = payload.session?.type || "";
-    const sessionId = payload.sessionId || payload.taskId || payload.session?.id || "";
+    const sessionId = payload.session?.id || payload.sessionId || payload.taskId || "";
     const sessionStatus = payload.session?.status || "active";
 
     if (sessionStatus !== "active") {

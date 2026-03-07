@@ -34,6 +34,8 @@ import {
   scheduleRefresh,
   loadTasks,
   updateTaskManualState,
+  setPendingChange,
+  clearPendingChange,
 } from "../modules/state.js";
 import { ICONS } from "../modules/icons.js";
 import {
@@ -44,15 +46,14 @@ import {
   debounce,
   exportAsCSV,
   exportAsJSON,
+  countChangedFields,
 } from "../modules/utils.js";
 import {
-  Card,
-  Badge,
-  StatCard,
-  SkeletonCard,
   Modal,
-  EmptyState,
-  ListItem,
+  SaveDiscardBar,
+  Card,
+  SkeletonCard,
+  EmptyState
 } from "../components/shared.js";
 import {
   SegmentedControl,
@@ -66,10 +67,31 @@ import {
   activeWorkspaceId,
   loadWorkspaces,
 } from "../components/workspace-switcher.js";
+import {
+  Card as MuiCard, CardContent, Typography, Box, Stack, Chip, TextField, Select,
+  MenuItem, Button, IconButton, Tabs, Tab, Tooltip, Divider,
+  Paper, CircularProgress, Skeleton, Alert, Switch, FormControlLabel,
+  Menu as MuiMenu, Fab, Table, TableBody, TableCell, TableContainer,
+  TableHead, TableRow, TableSortLabel, ToggleButton, ToggleButtonGroup, Badge,
+} from "@mui/material";
 
 /* ─── View mode toggle ─── */
 const viewMode = signal("kanban");
 const Toggle = typeof ImportedToggle === "function" ? ImportedToggle : () => null;
+
+/* ─── Status/Priority → MUI Chip color ─── */
+function statusChipColor(status) {
+  const s = String(status || "").toLowerCase();
+  if (["inprogress", "running", "working", "active", "assigned", "started"].includes(s)) return "info";
+  if (["inreview", "review", "pr-open", "pr-review"].includes(s)) return "warning";
+  if (["done", "completed", "merged", "closed"].includes(s)) return "success";
+  if (["error", "blocked", "failed", "cancelled"].includes(s)) return "error";
+  if (s === "critical") return "error";
+  if (s === "high") return "warning";
+  if (s === "medium") return "info";
+  if (s === "warning" || s === "manual") return "warning";
+  return "default";
+}
 
 /* ─── Status chip definitions ─── */
 const STATUS_CHIPS = [
@@ -260,6 +282,11 @@ function isImageAttachment(att) {
   return /\.(png|jpe?g|gif|webp|bmp|svg)$/.test(name);
 }
 
+function unsavedChangesMessage(changeCount) {
+  const count = Math.max(0, Number(changeCount || 0));
+  return `You have unsaved changes (${count})`;
+}
+
 export function StartTaskModal({
   task,
   defaultSdk = "auto",
@@ -271,14 +298,27 @@ export function StartTaskModal({
   const [model, setModel] = useState("");
   const [taskIdInput, setTaskIdInput] = useState(task?.id || "");
   const [starting, setStarting] = useState(false);
+  const initialSnapshotRef = useRef({
+    sdk: defaultSdk || "auto",
+    model: "",
+    taskIdInput: task?.id || "",
+  });
+  const pendingKey = useMemo(
+    () => `modal:start-task:${task?.id || "manual"}`,
+    [task?.id],
+  );
 
   useEffect(() => {
-    setSdk(defaultSdk || "auto");
-  }, [defaultSdk]);
-
-  useEffect(() => {
-    setTaskIdInput(task?.id || "");
-  }, [task?.id, task?.meta?.codex?.isIgnored, task?.meta?.labels]);
+    const next = {
+      sdk: defaultSdk || "auto",
+      model: "",
+      taskIdInput: task?.id || "",
+    };
+    initialSnapshotRef.current = next;
+    setSdk(next.sdk);
+    setModel(next.model);
+    setTaskIdInput(next.taskIdInput);
+  }, [defaultSdk, task?.id, task?.meta?.codex?.isIgnored, task?.meta?.labels]);
 
   const canModel = sdk && sdk !== "auto";
 
@@ -303,12 +343,38 @@ export function StartTaskModal({
   };
 
   const resolvedTaskId = (task?.id || taskIdInput || "").trim();
+  const currentSnapshot = useMemo(
+    () => ({
+      sdk: sdk || "auto",
+      model: model || "",
+      taskIdInput: taskIdInput || "",
+    }),
+    [model, sdk, taskIdInput],
+  );
+  const changeCount = useMemo(
+    () => countChangedFields(initialSnapshotRef.current, currentSnapshot),
+    [currentSnapshot],
+  );
+  const hasUnsaved = changeCount > 0;
 
-  const handleStart = async () => {
+  useEffect(() => {
+    setPendingChange(pendingKey, hasUnsaved);
+    return () => clearPendingChange(pendingKey);
+  }, [hasUnsaved, pendingKey]);
+
+  const resetToInitial = useCallback(() => {
+    const base = initialSnapshotRef.current || {};
+    setSdk(base.sdk || "auto");
+    setModel(base.model || "");
+    setTaskIdInput(base.taskIdInput || "");
+    showToast("Changes discarded", "info");
+  }, []);
+
+  const handleStart = async ({ closeAfterStart = true } = {}) => {
     if (starting) return;
     if (!resolvedTaskId) {
       showToast("Task ID is required", "error");
-      return;
+      return false;
     }
     setStarting(true);
     try {
@@ -317,64 +383,104 @@ export function StartTaskModal({
         sdk: sdk && sdk !== "auto" ? sdk : undefined,
         model: model.trim() ? model.trim() : undefined,
       });
-      onClose();
+      initialSnapshotRef.current = {
+        sdk: sdk || "auto",
+        model: model || "",
+        taskIdInput: taskIdInput || "",
+      };
+      if (closeAfterStart) {
+        onClose?.();
+        return { closed: true };
+      }
+      return true;
     } catch {
       /* toast via apiFetch */
+      return false;
+    } finally {
+      setStarting(false);
     }
-    setStarting(false);
   };
 
   return html`
-    <${Modal} title="Start Task" onClose=${onClose} contentClassName="modal-content-wide">
+    <${Modal}
+      title="Start Task"
+      onClose=${onClose}
+      contentClassName="modal-content-wide"
+      unsavedChanges=${changeCount}
+      onSaveBeforeClose=${() => handleStart({ closeAfterStart: true })}
+      onDiscardBeforeClose=${() => {
+        resetToInitial();
+        return true;
+      }}
+      activeOperationLabel=${starting ? "Task dispatch is still running" : ""}
+    >
       ${task?.id || task?.title
         ? html`
-            <div class="meta-text mb-sm">
+            <${Typography} variant="body2" color="text.secondary" sx=${{ mb: 1 }}>
               ${task?.title || "(untitled)"} · ${task?.id || "—"}
-            </div>
-          `
+            <//>`
         : html`
-            <div class="meta-text mb-sm">
+            <${Typography} variant="body2" color="text.secondary" sx=${{ mb: 1 }}>
               Enter a task ID to manually dispatch it. Manual starts work even if automation is paused.
-            </div>
-          `}
-      <div class="modal-form-grid">
+            <//>`}
+      <${Stack} spacing=${2}>
         ${(allowTaskIdInput || !task?.id) &&
         html`
-          <div class="modal-form-field modal-form-span">
-            <div class="card-subtitle">Task ID</div>
-            <input
-              class="input"
-              placeholder="e.g. task-123"
-              value=${taskIdInput}
-              onInput=${(e) => setTaskIdInput(e.target.value)}
-            />
-          </div>
+          <${TextField}
+            label="Task ID"
+            placeholder="e.g. task-123"
+            size="small"
+            fullWidth
+            value=${taskIdInput}
+            onChange=${(e) => setTaskIdInput(e.target.value)}
+          />
         `}
-        <div class="modal-form-field">
-          <div class="card-subtitle">Executor SDK</div>
-          <select class="input" value=${sdk} onChange=${(e) => setSdk(e.target.value)}>
-            ${["auto", "codex", "copilot", "claude"].map(
-              (opt) => html`<option value=${opt}>${opt}</option>`,
-            )}
-          </select>
-        </div>
-        <div class="modal-form-field">
-          <div class="card-subtitle">Model Override (optional)</div>
-          <select class="input" value=${model} disabled=${!canModel} onChange=${(e) => setModel(e.target.value)}>
-            <option value="">Auto (default)</option>
-            ${canModel && (EXECUTOR_MODELS[sdk] || []).map(m => html`<option value=${m}>${m}</option>`)}
-          </select>
-        </div>
-        <div class="modal-form-field modal-form-span">
-          <button
-            class="btn btn-primary"
-            onClick=${handleStart}
-            disabled=${starting || !resolvedTaskId}
-          >
-            ${starting ? "Starting…" : iconText(":play: Start Task")}
-          </button>
-        </div>
-      </div>
+        <${TextField}
+          select
+          label="Executor SDK"
+          size="small"
+          fullWidth
+          value=${sdk}
+          onChange=${(e) => setSdk(e.target.value)}
+        >
+          ${["auto", "codex", "copilot", "claude"].map(
+            (opt) => html`<${MenuItem} key=${opt} value=${opt}>${opt}<//>`
+          )}
+        <//>
+        <${TextField}
+          select
+          label="Model Override (optional)"
+          size="small"
+          fullWidth
+          value=${model}
+          disabled=${!canModel}
+          onChange=${(e) => setModel(e.target.value)}
+        >
+          <${MenuItem} value="">Auto (default)<//>
+          ${canModel && (EXECUTOR_MODELS[sdk] || []).map(m => html`<${MenuItem} key=${m} value=${m}>${m}<//>`)}
+        <//>
+        <${Button}
+          variant="contained"
+          fullWidth
+          onClick=${() => {
+            void handleStart({ closeAfterStart: true });
+          }}
+          disabled=${starting || !resolvedTaskId}
+        >
+          ${starting ? "Starting…" : iconText(":play: Start Task")}
+        <//>
+      <//>
+      <${SaveDiscardBar}
+        dirty=${hasUnsaved}
+        message=${unsavedChangesMessage(changeCount)}
+        saveLabel="Start Task"
+        discardLabel="Discard"
+        onSave=${() => {
+          void handleStart({ closeAfterStart: false });
+        }}
+        onDiscard=${resetToInitial}
+        saving=${starting}
+      />
     <//>
   `;
 }
@@ -389,7 +495,7 @@ function TriggerTemplateCard({
   const [error, setError] = useState("");
   const [name, setName] = useState(template?.name || "");
   const [description, setDescription] = useState(template?.description || "");
-  const [action, setAction] = useState(template?.action || "task-planner");
+  const [action, setAction] = useState(template?.action || "create-task");
   const [minIntervalMinutes, setMinIntervalMinutes] = useState(
     template?.minIntervalMinutes || "",
   );
@@ -403,7 +509,7 @@ function TriggerTemplateCard({
   useEffect(() => {
     setName(template?.name || "");
     setDescription(template?.description || "");
-    setAction(template?.action || "task-planner");
+    setAction(template?.action || "create-task");
     setMinIntervalMinutes(template?.minIntervalMinutes || "");
     setTriggerJson(JSON.stringify(template?.trigger || { anyOf: [] }, null, 2));
     setConfigJson(JSON.stringify(template?.config || {}, null, 2));
@@ -444,94 +550,95 @@ function TriggerTemplateCard({
   };
 
   return html`
-    <div class="card" style="margin-bottom:10px;padding:10px 12px;">
-      <div class="flex-between" style="gap:10px;align-items:flex-start;">
-        <div style="min-width:0;">
-          <div class="card-subtitle" style="font-size:13px;">${template?.name || template?.id}</div>
-          <div class="meta-text" style="font-size:11px;word-break:break-all;">${template?.id || ""}</div>
-        </div>
-        <label class="meta-text" style="display:flex;align-items:center;gap:6px;cursor:pointer;">
-          <input
-            type="checkbox"
-            checked=${template?.enabled === true}
-            disabled=${saving}
-            onChange=${(event) => onToggleEnabled(template, event.target.checked)}
-          />
-          enabled
-        </label>
-      </div>
+    <${Paper} sx=${{ mb: 1.25, p: 1.5 }}>
+      <${Stack} direction="row" justifyContent="space-between" alignItems="flex-start" spacing=${1.25}>
+        <${Box} sx=${{ minWidth: 0 }}>
+          <${Typography} variant="subtitle2" sx=${{ fontSize: 13 }}>${template?.name || template?.id}<//>
+          <${Typography} variant="caption" color="text.secondary" sx=${{ wordBreak: 'break-all' }}>${template?.id || ""}<//>
+        <//>
+        <${FormControlLabel}
+          control=${h(Switch, {
+            checked: template?.enabled === true,
+            disabled: saving,
+            onChange: (event) => onToggleEnabled(template, event.target.checked),
+            size: "small",
+          })}
+          label="enabled"
+          sx=${{ '& .MuiFormControlLabel-label': { fontSize: 12, color: 'text.secondary' } }}
+        />
+      <//>
 
-      ${template?.description && html`<div class="meta-text" style="margin-top:6px;">${template.description}</div>`}
+      ${template?.description && html`<${Typography} variant="caption" color="text.secondary" sx=${{ mt: 0.75 }}>${template.description}<//>`}
 
-      <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(130px,1fr));gap:6px;margin-top:8px;">
-        <span class="pill">spawned: ${stats.spawnedTotal || 0}</span>
-        <span class="pill">active: ${stats.activeCount || 0}</span>
-        <span class="pill">running: ${runningAgents.length}</span>
-        <span class="pill">action: ${template?.action || "task-planner"}</span>
-      </div>
+      <${Stack} direction="row" flexWrap="wrap" gap=${0.75} sx=${{ mt: 1 }}>
+        <${Chip} label=${"spawned: " + (stats.spawnedTotal || 0)} size="small" variant="outlined" />
+        <${Chip} label=${"active: " + (stats.activeCount || 0)} size="small" variant="outlined" />
+        <${Chip} label=${"running: " + runningAgents.length} size="small" variant="outlined" />
+        <${Chip} label=${"action: " + (template?.action || "create-task")} size="small" variant="outlined" />
+      <//>
 
-      <div class="meta-text" style="margin-top:8px;">
+      <${Typography} variant="caption" color="text.secondary" sx=${{ mt: 1, display: 'block' }}>
         Last success: ${state?.last_success_at ? formatRelative(state.last_success_at) : "never"}
         ${state?.last_error ? ` · Last error: ${truncate(state.last_error, 100)}` : ""}
-      </div>
+      <//>
 
       ${runningAgents.length > 0 && html`
-        <div class="meta-text" style="margin-top:8px;font-weight:600;">Running agents</div>
-        <div style="display:flex;flex-direction:column;gap:4px;margin-top:4px;">
+        <${Typography} variant="caption" sx=${{ mt: 1, fontWeight: 600, display: 'block' }}>Running agents<//>
+        <${Stack} spacing=${0.5} sx=${{ mt: 0.5 }}>
           ${runningAgents.map((entry) => html`
-            <div class="meta-text" style="font-size:11px;">
+            <${Typography} variant="caption" color="text.secondary">
               ${entry.taskId} · ${entry.sdk || "auto"}${entry.model ? ` · ${entry.model}` : ""}
-            </div>
+            <//>
           `)}
-        </div>
+        <//>
       `}
 
       ${recentSpawned.length > 0 && html`
-        <div class="meta-text" style="margin-top:8px;font-weight:600;">Recent spawned tasks</div>
-        <div style="display:flex;flex-direction:column;gap:4px;margin-top:4px;">
+        <${Typography} variant="caption" sx=${{ mt: 1, fontWeight: 600, display: 'block' }}>Recent spawned tasks<//>
+        <${Stack} spacing=${0.5} sx=${{ mt: 0.5 }}>
           ${recentSpawned.map((entry) => html`
-            <div class="meta-text" style="font-size:11px;">
+            <${Typography} variant="caption" color="text.secondary">
               ${entry.id} · ${entry.status || "todo"} · ${entry.createdAt ? formatRelative(entry.createdAt) : "unknown"}
-            </div>
+            <//>
           `)}
-        </div>
+        <//>
       `}
 
       ${editing && html`
-        <div style="display:flex;flex-direction:column;gap:8px;margin-top:10px;">
-          <input class="input" value=${name} onInput=${(e) => setName(e.target.value)} placeholder="Template name" />
-          <input class="input" value=${description} onInput=${(e) => setDescription(e.target.value)} placeholder="Description" />
-          <div class="input-row">
-            <select class="input" value=${action} onChange=${(e) => setAction(e.target.value)}>
-              <option value="task-planner">task-planner</option>
-              <option value="create-task">create-task</option>
-            </select>
-            <input
-              class="input"
+        <${Stack} spacing=${1} sx=${{ mt: 1.25 }}>
+          <${TextField} size="small" fullWidth value=${name} onChange=${(e) => setName(e.target.value)} placeholder="Template name" />
+          <${TextField} size="small" fullWidth value=${description} onChange=${(e) => setDescription(e.target.value)} placeholder="Description" />
+          <${Stack} direction="row" spacing=${1}>
+            <${TextField} select size="small" fullWidth value=${action} onChange=${(e) => setAction(e.target.value)}>
+              <${MenuItem} value="create-task">create-task<//>
+            <//>
+            <${TextField}
+              size="small"
+              fullWidth
               type="number"
-              min="1"
+              inputProps=${{ min: 1 }}
               value=${minIntervalMinutes}
-              onInput=${(e) => setMinIntervalMinutes(e.target.value)}
+              onChange=${(e) => setMinIntervalMinutes(e.target.value)}
               placeholder="Min interval (minutes)"
             />
-          </div>
-          <textarea class="input" rows="6" value=${triggerJson} onInput=${(e) => setTriggerJson(e.target.value)}></textarea>
-          <textarea class="input" rows="6" value=${configJson} onInput=${(e) => setConfigJson(e.target.value)}></textarea>
-          ${error && html`<div class="meta-text" style="color:var(--color-error);">${error}</div>`}
-        </div>
+          <//>
+          <${TextField} multiline rows=${6} fullWidth size="small" value=${triggerJson} onChange=${(e) => setTriggerJson(e.target.value)} />
+          <${TextField} multiline rows=${6} fullWidth size="small" value=${configJson} onChange=${(e) => setConfigJson(e.target.value)} />
+          ${error && html`<${Alert} severity="error" variant="outlined" sx=${{ py: 0 }}>${error}<//>`}
+        <//>
       `}
 
-      <div class="btn-row" style="margin-top:10px;">
-        <button class="btn btn-ghost btn-sm" onClick=${() => setEditing((prev) => !prev)}>
+      <${Stack} direction="row" spacing=${1} sx=${{ mt: 1.25 }}>
+        <${Button} variant="text" size="small" onClick=${() => setEditing((prev) => !prev)}>
           ${editing ? "Close Editor" : "Edit"}
-        </button>
+        <//>
         ${editing && html`
-          <button class="btn btn-primary btn-sm" disabled=${saving} onClick=${handleSave}>
+          <${Button} variant="contained" size="small" disabled=${saving} onClick=${handleSave}>
             ${saving ? "Saving…" : "Save Template"}
-          </button>
+          <//>
         `}
-      </div>
-    </div>
+      <//>
+    <//>
   `;
 }
 
@@ -542,7 +649,22 @@ function TriggerTemplatesModal({ onClose }) {
   const [enabled, setEnabled] = useState(false);
   const [defaults, setDefaults] = useState({ executor: "auto", model: "auto" });
   const [templates, setTemplates] = useState([]);
-  const [planner, setPlanner] = useState({});
+
+  const defaultsBaselineRef = useRef({ executor: "auto", model: "auto" });
+  const pendingKey = "modal:trigger-templates";
+
+  const defaultsSnapshot = useMemo(
+    () => ({
+      executor: String(defaults?.executor || "auto"),
+      model: String(defaults?.model || "auto"),
+    }),
+    [defaults],
+  );
+  const defaultsDirtyCount = useMemo(
+    () => countChangedFields(defaultsBaselineRef.current, defaultsSnapshot),
+    [defaultsSnapshot],
+  );
+  const hasUnsavedDefaults = defaultsDirtyCount > 0;
 
   const loadTemplates = useCallback(async () => {
     setLoading(true);
@@ -551,13 +673,16 @@ function TriggerTemplatesModal({ onClose }) {
       const res = await apiFetch("/api/triggers/templates", { _silent: true });
       const data = res?.data || {};
       setEnabled(data.enabled === true);
-      setDefaults(
+      const normalizedDefaults =
         data.defaults && typeof data.defaults === "object"
           ? data.defaults
-          : { executor: "auto", model: "auto" },
-      );
+          : { executor: "auto", model: "auto" };
+      defaultsBaselineRef.current = {
+        executor: String(normalizedDefaults.executor || "auto"),
+        model: String(normalizedDefaults.model || "auto"),
+      };
+      setDefaults(normalizedDefaults);
       setTemplates(Array.isArray(data.templates) ? data.templates : []);
-      setPlanner(data.planner || {});
     } catch (err) {
       setError(err?.message || "Failed to load templates");
     }
@@ -567,6 +692,11 @@ function TriggerTemplatesModal({ onClose }) {
   useEffect(() => {
     loadTemplates();
   }, []);
+
+  useEffect(() => {
+    setPendingChange(pendingKey, hasUnsavedDefaults);
+    return () => clearPendingChange(pendingKey);
+  }, [hasUnsavedDefaults]);
 
   const persistUpdate = async (payload) => {
     setSaving(true);
@@ -578,13 +708,16 @@ function TriggerTemplatesModal({ onClose }) {
       });
       const data = res?.data || {};
       setEnabled(data.enabled === true);
-      setDefaults(
+      const normalizedDefaults =
         data.defaults && typeof data.defaults === "object"
           ? data.defaults
-          : { executor: "auto", model: "auto" },
-      );
+          : { executor: "auto", model: "auto" };
+      defaultsBaselineRef.current = {
+        executor: String(normalizedDefaults.executor || "auto"),
+        model: String(normalizedDefaults.model || "auto"),
+      };
+      setDefaults(normalizedDefaults);
       setTemplates(Array.isArray(data.templates) ? data.templates : []);
-      setPlanner(data.planner || {});
       showToast("Template settings updated", "success");
       scheduleRefresh(200);
     } catch (err) {
@@ -604,9 +737,27 @@ function TriggerTemplatesModal({ onClose }) {
     }
   };
 
-  const handleSaveDefaults = async () => {
-    await persistUpdate({ defaults });
+  const handleSaveDefaults = async ({ closeAfterSave = false } = {}) => {
+    try {
+      await persistUpdate({ defaults });
+      if (closeAfterSave) {
+        onClose?.();
+        return { closed: true };
+      }
+      return true;
+    } catch {
+      return false;
+    }
   };
+
+  const handleDiscardDefaults = useCallback(() => {
+    const base = defaultsBaselineRef.current || { executor: "auto", model: "auto" };
+    setDefaults({
+      executor: base.executor || "auto",
+      model: base.model || "auto",
+    });
+    showToast("Changes discarded", "info");
+  }, []);
 
   const handleToggleTemplate = async (template, nextEnabled) => {
     await persistUpdate({ template: { ...template, enabled: nextEnabled } });
@@ -621,6 +772,13 @@ function TriggerTemplatesModal({ onClose }) {
       title="Trigger Templates"
       onClose=${onClose}
       contentClassName="modal-content-wide"
+      unsavedChanges=${defaultsDirtyCount}
+      onSaveBeforeClose=${() => handleSaveDefaults({ closeAfterSave: true })}
+      onDiscardBeforeClose=${() => {
+        handleDiscardDefaults();
+        return true;
+      }}
+      activeOperationLabel=${saving ? "Template update request is still running" : ""}
     >
       <div class="flex-col" style="gap:10px;">
         <div class="card" style="padding:10px 12px;">
@@ -630,48 +788,34 @@ function TriggerTemplatesModal({ onClose }) {
               <div class="meta-text">Enable/disable the full trigger template engine.</div>
             </div>
             <label class="meta-text" style="display:flex;align-items:center;gap:6px;cursor:pointer;">
-              <input
-                type="checkbox"
-                checked=${enabled}
-                disabled=${saving}
-                onChange=${(event) => handleToggleSystem(event.target.checked)}
-              />
+              <${Switch} size="small" checked=${enabled} disabled=${saving} onChange=${(event) => handleToggleSystem(event.target.checked)} />
               ${enabled ? "enabled" : "disabled"}
             </label>
           </div>
 
           <div class="input-row" style="margin-top:10px;">
-            <select
-              class="input"
+            <${Select}
+              size="small"
               value=${defaults.executor || "auto"}
               onChange=${(e) => setDefaults({ ...defaults, executor: e.target.value })}
               disabled=${saving}
             >
               ${["auto", "codex", "copilot", "claude"].map(
-                (opt) => html`<option value=${opt}>default executor: ${opt}</option>`,
+                (opt) => html`<${MenuItem} value=${opt}>default executor: ${opt}</${MenuItem}>`,
               )}
-            </select>
-            <input
-              class="input"
-              value=${defaults.model || "auto"}
-              disabled=${saving}
-              onInput=${(e) => setDefaults({ ...defaults, model: e.target.value })}
-              placeholder="default model (auto)"
-            />
+            </${Select}>
+            <${TextField} size="small" variant="outlined" value=${defaults.model || "auto"} disabled=${saving} onInput=${(e) => setDefaults({ ...defaults, model: e.target.value })} placeholder="default model (auto)" fullWidth />
           </div>
           <div class="btn-row" style="margin-top:8px;">
-            <button class="btn btn-secondary btn-sm" disabled=${saving} onClick=${handleSaveDefaults}>
+            <${Button} variant="outlined" size="small" disabled=${saving} onClick=${handleSaveDefaults}>
               Save Defaults
-            </button>
-            <button class="btn btn-ghost btn-sm" disabled=${loading || saving} onClick=${loadTemplates}>
+            <//>
+            <${Button} variant="text" size="small" disabled=${loading || saving} onClick=${loadTemplates}>
               Refresh
-            </button>
+            <//>
           </div>
 
-          <div class="meta-text" style="margin-top:8px;">
-            Planner last success: ${planner?.lastSuccessAt ? formatRelative(planner.lastSuccessAt) : "never"}
-            ${planner?.lastError ? ` · Last error: ${truncate(planner.lastError, 120)}` : ""}
-          </div>
+
         </div>
 
         ${error && html`<div class="meta-text" style="color:var(--color-error);">${error}</div>`}
@@ -694,6 +838,17 @@ function TriggerTemplatesModal({ onClose }) {
             onSaveTemplate=${handleSaveTemplate}
           />
         `)}
+        <${SaveDiscardBar}
+          dirty=${hasUnsavedDefaults}
+          message=${unsavedChangesMessage(defaultsDirtyCount)}
+          saveLabel="Save Defaults"
+          discardLabel="Discard"
+          onSave=${() => {
+            void handleSaveDefaults({ closeAfterSave: false });
+          }}
+          onDiscard=${handleDiscardDefaults}
+          saving=${saving}
+        />
       </div>
     <//>
   `;
@@ -957,24 +1112,10 @@ export function TaskProgressModal({ task, onClose }) {
 
       
       <div class="btn-row tp-actions">
-        <button
-          class="btn btn-ghost btn-sm"
-          onClick=${() => { haptic(); sendCommandToChat("/steer " + task.id); onClose(); }}
-          title="Guide the agent mid-task"
-        >${iconText(":chat: Steer")}</button>
-        <button
-          class="btn btn-ghost btn-sm"
-          onClick=${() => { haptic(); sendCommandToChat("/logs " + task.id); onClose(); }}
-        >${iconText(":file: Logs")}</button>
-        <button class="btn btn-secondary btn-sm" onClick=${handleMarkReview}>
-          → Move to Review
-        </button>
-        <button
-          class="btn btn-ghost btn-sm"
-          style="color:var(--color-error)"
-          onClick=${handleCancel}
-          disabled=${cancelling}
-        >${cancelling ? "Cancelling…" : iconText("✕ Cancel")}</button>
+        <${Tooltip} title="Guide the agent mid-task"><${Button} variant="text" size="small" onClick=${() => { haptic(); sendCommandToChat("/steer " + task.id); onClose(); }}>${iconText(":chat: Steer")}<//><//>
+        <${Button} variant="text" size="small" onClick=${() => { haptic(); sendCommandToChat("/logs " + task.id); onClose(); }}>${iconText(":file: Logs")}<//>
+        <${Button} variant="outlined" size="small" onClick=${handleMarkReview}>→ Move to Review<//>
+        <${Button} variant="text" size="small" style=${{ color: "var(--color-error)" }} onClick=${handleCancel} disabled=${cancelling}>${cancelling ? "Cancelling…" : iconText("✕ Cancel")}<//>
       </div>
     <//>
   `;
@@ -1198,30 +1339,13 @@ export function TaskReviewModal({ task, onClose, onStart }) {
 
       
       <div class="btn-row tr-actions">
-        <button
-          class="btn btn-primary btn-sm"
-          onClick=${handleMarkDone}
-          disabled=${merging}
-          title="Mark as merged / done"
-        >${iconText("✓ Mark Done")}</button>
-        <button class="btn btn-secondary btn-sm" onClick=${handleReopen}>
-          ${iconText(":workflow: Reopen as Active")}
-        </button>
-        <button
-          class="btn btn-ghost btn-sm"
-          onClick=${() => { haptic(); sendCommandToChat("/logs " + task.id); onClose(); }}
-        >${iconText(":file: Logs")}</button>
+        <${Tooltip} title="Mark as merged / done"><${Button} variant="contained" size="small" onClick=${handleMarkDone} disabled=${merging}>${iconText("✓ Mark Done")}<//><//>
+        <${Button} variant="outlined" size="small" onClick=${handleReopen}>${iconText(":workflow: Reopen as Active")}<//>
+        <${Button} variant="text" size="small" onClick=${() => { haptic(); sendCommandToChat("/logs " + task.id); onClose(); }}>${iconText(":file: Logs")}<//>
         ${prNumber && html`
-          <button
-            class="btn btn-ghost btn-sm"
-            onClick=${() => { haptic(); sendCommandToChat("/diff " + branchLabel); onClose(); }}
-          >${iconText(":search: Diff")}</button>
+          <${Button} variant="text" size="small" onClick=${() => { haptic(); sendCommandToChat("/diff " + branchLabel); onClose(); }}>${iconText(":search: Diff")}<//>
         `}
-        <button
-          class="btn btn-ghost btn-sm"
-          style="color:var(--color-error)"
-          onClick=${handleCancel}
-        >${iconText("✕ Cancel")}</button>
+        <${Button} variant="text" size="small" style=${{ color: "var(--color-error)" }} onClick=${handleCancel}>${iconText("✕ Cancel")}<//>
       </div>
     <//>
   `;
@@ -1257,8 +1381,48 @@ export function TaskDetailModal({ task, onClose, onStart }) {
   );
   const [repository, setRepository] = useState(task?.repository || "");
   const attachmentInputRef = useRef(null);
+  const initialSnapshotRef = useRef({
+    title: task?.title || "",
+    description: task?.description || "",
+    baseBranch: getTaskBaseBranch(task),
+    status: task?.status || "todo",
+    priority: task?.priority || "",
+    tagsInput: getTaskTags(task).join(", "),
+    draft: Boolean(task?.draft || task?.status === "draft"),
+  });
+  const pendingKey = useMemo(
+    () => `modal:task-detail:${task?.id || "unknown"}`,
+    [task?.id],
+  );
   const activeWsId = activeWorkspaceId.value || "";
   const canDispatch = Boolean(onStart && task?.id);
+
+  const editableSnapshot = useMemo(
+    () => ({
+      title: title || "",
+      description: description || "",
+      baseBranch: baseBranch || "",
+      status: status || "todo",
+      priority: priority || "",
+      tagsInput: tagsInput || "",
+      draft: Boolean(draft),
+    }),
+    [baseBranch, description, draft, priority, status, tagsInput, title],
+  );
+  const changeCount = useMemo(
+    () => countChangedFields(initialSnapshotRef.current, editableSnapshot),
+    [editableSnapshot],
+  );
+  const hasUnsaved = changeCount > 0;
+  const activeOperationLabel = saving
+    ? "Task save is in progress"
+    : rewriting
+      ? "Improve with AI is still running"
+      : uploadingAttachment
+        ? "Attachment upload is still running"
+        : manualBusy
+          ? "Manual takeover update is in progress"
+          : "";
 
   const workspaceOptions = managedWorkspaces.value || [];
   const selectedWorkspace = useMemo(
@@ -1268,19 +1432,35 @@ export function TaskDetailModal({ task, onClose, onStart }) {
   const repositoryOptions = selectedWorkspace?.repos || [];
 
   useEffect(() => {
-    setTitle(task?.title || "");
-    setDescription(task?.description || "");
-    setBaseBranch(getTaskBaseBranch(task));
-    setStatus(task?.status || "todo");
-    setPriority(task?.priority || "");
-    setTagsInput(getTaskTags(task).join(", "));
+    const nextTitle = task?.title || "";
+    const nextDescription = task?.description || "";
+    const nextBaseBranch = getTaskBaseBranch(task);
+    const nextStatus = task?.status || "todo";
+    const nextPriority = task?.priority || "";
+    const nextTags = getTaskTags(task).join(", ");
+    const nextDraft = Boolean(task?.draft || task?.status === "draft");
+    setTitle(nextTitle);
+    setDescription(nextDescription);
+    setBaseBranch(nextBaseBranch);
+    setStatus(nextStatus);
+    setPriority(nextPriority);
+    setTagsInput(nextTags);
     setAttachments(normalizeTaskAttachments(task));
     setComments(normalizeTaskComments(task));
-    setDraft(Boolean(task?.draft || task?.status === "draft"));
+    setDraft(nextDraft);
     setManualOverride(isTaskManual(task));
     setManualReason(getManualReason(task));
     setWorkspaceId(task?.workspace || activeWorkspaceId.value || "");
     setRepository(task?.repository || "");
+    initialSnapshotRef.current = {
+      title: nextTitle,
+      description: nextDescription,
+      baseBranch: nextBaseBranch,
+      status: nextStatus,
+      priority: nextPriority,
+      tagsInput: nextTags,
+      draft: nextDraft,
+    };
   }, [task?.id]);
 
   useEffect(() => {
@@ -1305,7 +1485,24 @@ export function TaskDetailModal({ task, onClose, onStart }) {
     }
   }, [workspaceId, repositoryOptions.length]);
 
-  const handleSave = async () => {
+  useEffect(() => {
+    setPendingChange(pendingKey, hasUnsaved);
+    return () => clearPendingChange(pendingKey);
+  }, [hasUnsaved, pendingKey]);
+
+  const handleDiscardChanges = useCallback(() => {
+    const base = initialSnapshotRef.current || {};
+    setTitle(base.title || "");
+    setDescription(base.description || "");
+    setBaseBranch(base.baseBranch || "");
+    setStatus(base.status || "todo");
+    setPriority(base.priority || "");
+    setTagsInput(base.tagsInput || "");
+    setDraft(Boolean(base.draft));
+    showToast("Changes discarded", "info");
+  }, []);
+
+  const handleSave = async ({ closeAfterSave = true } = {}) => {
     setSaving(true);
     haptic("medium");
     const prev = cloneValue(tasksData.value);
@@ -1359,11 +1556,26 @@ export function TaskDetailModal({ task, onClose, onStart }) {
         },
       );
       showToast("Task saved", "success");
-      onClose();
+      initialSnapshotRef.current = {
+        title,
+        description,
+        baseBranch,
+        status: nextStatus,
+        priority: priority || "",
+        tagsInput,
+        draft: wantsDraft,
+      };
+      if (closeAfterSave) {
+        onClose?.();
+        return { closed: true };
+      }
+      return true;
     } catch {
       /* toast via apiFetch */
+      return false;
+    } finally {
+      setSaving(false);
     }
-    setSaving(false);
   };
 
   const handleStatusUpdate = async (newStatus) => {
@@ -1532,7 +1744,18 @@ export function TaskDetailModal({ task, onClose, onStart }) {
   };
 
   return html`
-    <${Modal} title=${task?.title || "Task Detail"} onClose=${onClose} contentClassName="modal-content-wide">
+    <${Modal}
+      title=${task?.title || "Task Detail"}
+      onClose=${onClose}
+      contentClassName="modal-content-wide"
+      unsavedChanges=${changeCount}
+      onSaveBeforeClose=${() => handleSave({ closeAfterSave: true })}
+      onDiscardBeforeClose=${() => {
+        handleDiscardChanges();
+        return true;
+      }}
+      activeOperationLabel=${activeOperationLabel}
+    >
       <div class="task-modal-summary">
         <div class="task-modal-id" style="user-select:all">ID: ${task?.id}</div>
         <div class="task-modal-badges">
@@ -1544,35 +1767,23 @@ export function TaskDetailModal({ task, onClose, onStart }) {
         ${canDispatch &&
         html`
           <div class="task-modal-actions">
-            <button class="btn btn-primary btn-sm" onClick=${handleStart}>
+            <${Button} variant="contained" size="small" onClick=${handleStart}>
               ${iconText(":play: Dispatch Task")}
-            </button>
+            <//>
           </div>
         `}
       </div>
 
         <div class="flex-col gap-md modal-form-grid">
         <div class="input-with-mic modal-form-span">
-          <input
-            class="input"
-            placeholder="Title"
-            value=${title}
-            onInput=${(e) => setTitle(e.target.value)}
-          />
+          <${TextField} size="small" variant="outlined" placeholder="Title" value=${title} onInput=${(e) => setTitle(e.target.value)} fullWidth />
           <${VoiceMicButtonInline}
             onTranscript=${(t) => setTitle((prev) => (prev ? prev + " " + t : t))}
             disabled=${saving || rewriting}
           />
         </div>
         <div class="textarea-with-mic modal-form-span" style="position:relative">
-          <textarea
-            class="input"
-            rows="5"
-            placeholder="Description"
-            value=${description}
-            onInput=${(e) => setDescription(e.target.value)}
-            style="padding-right:36px"
-          ></textarea>
+          <${TextField} multiline rows=${5} size="small" placeholder="Description" value=${description} onInput=${(e) => setDescription(e.target.value)} style=${{ paddingRight: "36px" }} fullWidth />
           <${VoiceMicButton}
             onTranscript=${(t) => setDescription((prev) => (prev ? prev + " " + t : t))}
             disabled=${saving || rewriting}
@@ -1587,14 +1798,14 @@ export function TaskDetailModal({ task, onClose, onStart }) {
           <div class="task-attachments-header">
             <div class="task-attachments-title">Attachments</div>
             <div class="task-attachments-actions">
-              <button
-                class="btn btn-ghost btn-sm"
+              <${Button}
+                variant="text" size="small"
                 type="button"
                 onClick=${() => attachmentInputRef.current && attachmentInputRef.current.click()}
                 disabled=${uploadingAttachment}
               >
                 Upload
-              </button>
+              <//>
             </div>
           </div>
           <input
@@ -1652,10 +1863,9 @@ export function TaskDetailModal({ task, onClose, onStart }) {
             </div>
           </div>
         `}
-        <button
-          type="button"
-          class="btn btn-ghost btn-sm task-rewrite-btn modal-form-span"
-          style="display:flex;align-items:center;gap:6px;align-self:flex-start;font-size:12px;padding:5px 10px;opacity:${!title.trim() ? 0.45 : 1}"
+        <${Tooltip} title="Use AI to expand and improve this task description"><${Button}
+          variant="text" size="small"
+          style=${{ display: "flex", alignItems: "center", gap: "6px", alignSelf: "flex-start", fontSize: "12px", padding: "5px 10px", opacity: !title.trim() ? 0.45 : 1 }}
           disabled=${!title.trim() || rewriting || saving}
           onClick=${async () => {
             if (!title.trim() || rewriting) return;
@@ -1675,51 +1885,40 @@ export function TaskDetailModal({ task, onClose, onStart }) {
             } catch { /* toast via apiFetch */ }
             setRewriting(false);
           }}
-          title="Use AI to expand and improve this task description"
         >
           ${rewriting
             ? html`<span style="display:inline-block;animation:spin 0.8s linear infinite">${resolveIcon(":clock:")}</span> Improving…`
             : html`${iconText(":star: Improve with AI")}`
           }
-        </button>
-        <input
-          class="input modal-form-span"
-          placeholder="Base branch (optional, e.g. feature/xyz)"
-          value=${baseBranch}
-          onInput=${(e) => setBaseBranch(e.target.value)}
-        />
+        <//><//> 
+        <${TextField} size="small" variant="outlined" className="modal-form-span" placeholder="Base branch (optional, e.g. feature/xyz)" value=${baseBranch} onInput=${(e) => setBaseBranch(e.target.value)} fullWidth />
         <div class="input-row modal-form-span">
-          <select
-            class="input"
+          <${Select}
+            size="small"
             value=${workspaceId}
             onChange=${(e) => setWorkspaceId(e.target.value)}
           >
-            <option value="">Active workspace</option>
+            <${MenuItem} value="">Active workspace</${MenuItem}>
             ${workspaceOptions.map(
-              (ws) => html`<option value=${ws.id}>${ws.name || ws.id}</option>`,
+              (ws) => html`<${MenuItem} value=${ws.id}>${ws.name || ws.id}</${MenuItem}>`,
             )}
-          </select>
-          <select
-            class="input"
+          </${Select}>
+          <${Select}
+            size="small"
             value=${repository}
             onChange=${(e) => setRepository(e.target.value)}
             disabled=${!repositoryOptions.length}
           >
-            <option value="">
+            <${MenuItem} value="">
               ${repositoryOptions.length ? "Auto repository" : "No repos in workspace"}
-            </option>
+            </${MenuItem}>
             ${repositoryOptions.map(
               (repo) =>
-                html`<option value=${repo.slug}>${repo.name}${repo.primary ? " (Primary)" : ""}</option>`,
+                html`<${MenuItem} value=${repo.slug}>${repo.name}${repo.primary ? " (Primary)" : ""}</${MenuItem}>`,
             )}
-          </select>
+          </${Select}>
         </div>
-        <input
-          class="input modal-form-span"
-          placeholder="Tags (comma-separated)"
-          value=${tagsInput}
-          onInput=${(e) => setTagsInput(e.target.value)}
-        />
+        <${TextField} size="small" variant="outlined" className="modal-form-span" placeholder="Tags (comma-separated)" value=${tagsInput} onInput=${(e) => setTagsInput(e.target.value)} fullWidth />
         ${normalizeTagInput(tagsInput).length > 0 &&
         html`
           <div class="tag-row modal-form-span">
@@ -1730,8 +1929,8 @@ export function TaskDetailModal({ task, onClose, onStart }) {
         `}
 
         <div class="input-row modal-form-span">
-          <select
-            class="input"
+          <${Select}
+            size="small"
             value=${status}
             onChange=${(e) => {
               const next = e.target.value;
@@ -1741,19 +1940,19 @@ export function TaskDetailModal({ task, onClose, onStart }) {
             }}
           >
             ${["draft", "todo", "inprogress", "inreview", "done", "cancelled"].map(
-              (s) => html`<option value=${s}>${s}</option>`,
+              (s) => html`<${MenuItem} value=${s}>${s}</${MenuItem}>`,
             )}
-          </select>
-          <select
-            class="input"
+          </${Select}>
+          <${Select}
+            size="small"
             value=${priority}
             onChange=${(e) => setPriority(e.target.value)}
           >
-            <option value="">No priority</option>
+            <${MenuItem} value="">No priority</${MenuItem}>
             ${["low", "medium", "high", "critical"].map(
-              (p) => html`<option value=${p}>${p}</option>`,
+              (p) => html`<${MenuItem} value=${p}>${p}</${MenuItem}>`,
             )}
-          </select>
+          </${Select}>
         </div>
         <div class="modal-form-span">
           <${Toggle}
@@ -1774,13 +1973,7 @@ export function TaskDetailModal({ task, onClose, onStart }) {
             onChange=${handleManualToggle}
           />
         </div>
-        <input
-          class="input modal-form-span"
-          placeholder="Manual reason (optional)"
-          value=${manualReason}
-          disabled=${manualBusy}
-          onInput=${(e) => setManualReason(e.target.value)}
-        />
+        <${TextField} size="small" variant="outlined" className="modal-form-span" placeholder="Manual reason (optional)" value=${manualReason} disabled=${manualBusy} onInput=${(e) => setManualReason(e.target.value)} fullWidth />
         ${manualOverride &&
         html`
           <div class="modal-form-span">
@@ -1829,55 +2022,70 @@ export function TaskDetailModal({ task, onClose, onStart }) {
           </div>
         `}
 
+        <${SaveDiscardBar}
+          dirty=${hasUnsaved}
+          message=${unsavedChangesMessage(changeCount)}
+          saveLabel="Save Changes"
+          discardLabel="Discard"
+          onSave=${() => {
+            void handleSave({ closeAfterSave: false });
+          }}
+          onDiscard=${handleDiscardChanges}
+          saving=${saving}
+          disabled=${Boolean(activeOperationLabel && !saving)}
+        />
+
         <div class="btn-row modal-form-span">
           ${(task?.status === "error" || task?.status === "cancelled") &&
           html`
-            <button class="btn btn-primary btn-sm" onClick=${handleRetry}>
+            <${Button} variant="contained" size="small" onClick=${handleRetry}>
               ↻ Retry
-            </button>
+            <//>
           `}
-          <button
-            class="btn btn-secondary btn-sm"
-            onClick=${handleSave}
+          <${Button}
+            variant="outlined" size="small"
+            onClick=${() => {
+              void handleSave({ closeAfterSave: true });
+            }}
             disabled=${saving}
           >
             ${saving ? "Saving…" : iconText(":save: Save")}
-          </button>
-          <button
-            class="btn btn-ghost btn-sm"
+          <//>
+          <${Button}
+            variant="text" size="small"
             onClick=${() => handleStatusUpdate("inreview")}
           >
             → Review
-          </button>
-          <button
-            class="btn btn-ghost btn-sm"
+          <//>
+          <${Button}
+            variant="text" size="small"
             onClick=${() => handleStatusUpdate("done")}
           >
             ${iconText("✓ Done")}
-          </button>
+          <//>
           ${task?.status !== "cancelled" &&
           html`
-            <button
-              class="btn btn-ghost btn-sm"
-              style="color:var(--color-error)"
+            <${Button}
+              variant="text" size="small"
+              style=${{ color: "var(--color-error)" }}
               onClick=${handleCancel}
             >
               ${iconText("✕ Cancel")}
-            </button>
+            <//>
           `}
         </div>
 
         ${task?.id &&
         html`
-          <button
-            class="btn btn-ghost btn-sm modal-form-span"
+          <${Button}
+            variant="text" size="small"
             onClick=${() => {
               haptic();
               sendCommandToChat("/logs " + task.id);
             }}
           >
             ${iconText(":file: View Agent Logs")}
-          </button>
+          <//>
         `}
       </div>
     <//>
@@ -2440,24 +2648,24 @@ export function TasksTab() {
   if (tasksLoaded.value && !tasks.length && !searchVal)
     return html`
       <div class="flex-between mb-sm" style="padding:0 4px">
-        <div class="view-toggle">
-          <button class="view-toggle-btn ${!isKanban ? 'active' : ''}" onClick=${() => { viewMode.value = 'list'; haptic(); }}>${iconText(":menu: List")}</button>
-          <button class="view-toggle-btn ${isKanban ? 'active' : ''}" onClick=${() => { viewMode.value = 'kanban'; haptic(); }}>▦ Board</button>
-        </div>
+        <${ToggleButtonGroup} size="small" exclusive value=${isKanban ? 'kanban' : 'list'}>
+          <${ToggleButton} value="list" onClick=${() => { viewMode.value = 'list'; haptic(); }}>${iconText(":menu: List")}<//>
+          <${ToggleButton} value="kanban" onClick=${() => { viewMode.value = 'kanban'; haptic(); }}>▦ Board<//>
+        <//>
         <div style="display:flex;gap:8px;align-items:center;">
-          <button
-            class="btn btn-ghost btn-sm"
+          <${Button}
+            variant="text" size="small"
             onClick=${() => {
               haptic();
               setShowTemplates(true);
             }}
-          >${iconText(":zap: Templates")}</button>
-          <button
-            class="btn btn-ghost btn-sm"
+          >${iconText(":zap: Templates")}<//>
+          <${Button}
+            variant="text" size="small"
             onClick=${toggleCompletedFilter}
           >
             ${completedOnly ? "Show All" : "Show Completed"}
-          </button>
+          <//>
         </div>
       </div>
       ${hasActiveSlots &&
@@ -2495,13 +2703,13 @@ export function TasksTab() {
           }}
         />
       `}
-      <button class="fab" onClick=${() => { haptic(); setShowCreate(true); }}>${ICONS.plus}</button>
+      <${Fab} color="primary" size="small" onClick=${() => { haptic(); setShowCreate(true); }}>${ICONS.plus}<//>
       ${showCreate && html`<${CreateTaskModalInline} onClose=${() => setShowCreate(false)} />`}
     `;
 
   const filterButton = html`
-    <button
-      class="btn btn-secondary btn-sm filter-toggle ${filtersOpen ? "active" : ""}"
+    <${Button}
+      variant="outlined" size="small"
       onClick=${handleToggleFilters}
       aria-expanded=${filtersOpen}
     >
@@ -2510,19 +2718,19 @@ export function TasksTab() {
       ${activeFilterCount > 0 && html`
         <span class="filter-count">${activeFilterCount}</span>
       `}
-    </button>
+    <//>
   `;
 
   const viewToggle = html`
-    <div class="view-toggle">
-      <button class="view-toggle-btn ${!isKanban ? 'active' : ''}" onClick=${() => { viewMode.value = 'list'; haptic(); }}>${iconText(":menu: List")}</button>
-      <button class="view-toggle-btn ${isKanban ? 'active' : ''}" onClick=${() => { viewMode.value = 'kanban'; haptic(); }}>▦ Board</button>
-    </div>
+    <${ToggleButtonGroup} size="small" exclusive value=${isKanban ? 'kanban' : 'list'}>
+      <${ToggleButton} value="list" onClick=${() => { viewMode.value = 'list'; haptic(); }}>${iconText(":menu: List")}<//>
+      <${ToggleButton} value="kanban" onClick=${() => { viewMode.value = 'kanban'; haptic(); }}>▦ Board<//>
+    <//>
   `;
 
   const newButton = html`
-    <button
-      class="btn btn-primary btn-sm btn-icon-compact"
+    <${Button}
+      variant="contained" size="small"
       onClick=${() => {
         haptic();
         setShowCreate(true);
@@ -2531,13 +2739,13 @@ export function TasksTab() {
     >
       ${ICONS.plus}
       ${isCompact ? "New" : "New Task"}
-    </button>
+    <//>
   `;
 
   const actionsMenu = html`
     <div class="actions-wrap" ref=${actionsRef}>
-      <button
-        class="btn btn-ghost btn-sm actions-btn"
+      <${Button}
+        variant="text" size="small"
         onClick=${() => { setActionsOpen(!actionsOpen); haptic(); }}
         aria-haspopup="menu"
         aria-expanded=${actionsOpen}
@@ -2545,23 +2753,21 @@ export function TasksTab() {
       >
         ${ICONS.ellipsis}
         <span class="actions-label">Actions</span>
-      </button>
+      <//>
       ${actionsOpen && html`
         <div class="actions-dropdown" role="menu">
-          <button
-            class="actions-dropdown-item"
+          <${MenuItem}
             onClick=${() => { setActionsOpen(false); setStartAnyOpen(true); }}
           >
             ${iconText(":play: Start Task")}
-          </button>
-          <button
-            class="actions-dropdown-item"
+          <//>
+          <${MenuItem}
             onClick=${() => { setActionsOpen(false); setShowTemplates(true); }}
           >
             ${iconText(":zap: Trigger Templates")}
-          </button>
-          <button class="actions-dropdown-item" onClick=${handleExportCSV}>${iconText(":chart: Export CSV")}</button>
-          <button class="actions-dropdown-item" onClick=${handleExportJSON}>${iconText(":clipboard: Export JSON")}</button>
+          <//>
+          <${MenuItem} onClick=${handleExportCSV}>${iconText(":chart: Export CSV")}<//>
+          <${MenuItem} onClick=${handleExportJSON}>${iconText(":clipboard: Export JSON")}<//>
         </div>
       `}
     </div>
@@ -2599,15 +2805,15 @@ export function TasksTab() {
                   ${filterButton}
                   ${viewToggle}
                   ${newButton}
-                  <button
-                    class="btn btn-ghost btn-sm"
+                  <${Button}
+                    variant="text" size="small"
                     onClick=${() => {
                       haptic();
                       setStartAnyOpen(true);
                     }}
                   >
                     ${iconText(":play: Start Task")}
-                  </button>
+                  <//>
                   ${actionsMenu}
                 `}
           </div>
@@ -2621,13 +2827,14 @@ export function TasksTab() {
                 <div class="chip-group">
                   ${STATUS_CHIPS.map(
                     (s) => html`
-                      <button
+                      <${Chip}
                         key=${s.value}
-                        class="chip ${filterVal === s.value ? "active" : ""}"
+                        label=${s.label}
+                        variant=${filterVal === s.value ? "filled" : "outlined"}
+                        color=${filterVal === s.value ? "primary" : "default"}
+                        size="small"
                         onClick=${() => handleFilter(s.value)}
-                      >
-                        ${s.label}
-                      </button>
+                      />
                     `,
                   )}
                 </div>
@@ -2639,15 +2846,14 @@ export function TasksTab() {
                 <div class="chip-group">
                   ${PRIORITY_CHIPS.map(
                     (p) => html`
-                      <button
+                      <${Chip}
                         key=${p.value}
-                        class="chip chip-outline ${priorityVal === p.value
-                          ? "active"
-                          : ""}"
+                        label=${p.label}
+                        variant=${priorityVal === p.value ? "filled" : "outlined"}
+                        color=${priorityVal === p.value ? "primary" : "default"}
+                        size="small"
                         onClick=${() => handlePriorityFilter(p.value)}
-                      >
-                        ${p.label}
-                      </button>
+                      />
                     `,
                   )}
                 </div>
@@ -2656,16 +2862,16 @@ export function TasksTab() {
             <div class="tasks-filter-section">
               <div class="tasks-filter-title">Sort</div>
               <div class="tasks-filter-row">
-                <select
-                  class="input input-sm"
+                <${Select}
+                  size="small"
                   value=${sortVal}
                   onChange=${handleSort}
                 >
                   ${SORT_OPTIONS.map(
                     (o) =>
-                      html`<option key=${o.value} value=${o.value}>${o.label}</option>`,
+                      html`<${MenuItem} key=${o.value} value=${o.value}>${o.label}</${MenuItem}>`,
                   )}
-                </select>
+                </${Select}>
                 <span class="pill">${visible.length} shown</span>
               </div>
             </div>
@@ -2681,21 +2887,21 @@ export function TasksTab() {
                       />
                     `
                   : html`
-                      <button
-                        class="btn btn-ghost btn-sm"
+                      <${Button}
+                        variant="text" size="small"
                         onClick=${toggleCompletedFilter}
                       >
                         ${completedOnly ? "Show All" : "Show Completed"}
-                      </button>
+                      <//>
                     `)}
                 ${hasActiveFilters &&
                 html`
-                  <button
-                    class="btn btn-ghost btn-sm"
+                  <${Button}
+                    variant="text" size="small"
                     onClick=${handleClearFilters}
                   >
                     Clear Filters
-                  </button>
+                  <//>
                 `}
               </div>
             </div>
@@ -2710,11 +2916,7 @@ export function TasksTab() {
                     setSelectedIds(new Set());
                   }}
                 >
-                  <input
-                    type="checkbox"
-                    checked=${batchMode}
-                    style="accent-color:var(--accent)"
-                  />
+                  <${Switch} size="small" checked=${batchMode} />
                   Batch Select
                 </label>
               </div>
@@ -2737,9 +2939,9 @@ export function TasksTab() {
             <span>${filterSummary}</span>
           </div>
           <div class="filter-summary-actions">
-            <button class="btn btn-ghost btn-sm" onClick=${handleClearFilters}>
+            <${Button} variant="text" size="small" onClick=${handleClearFilters}>
               Clear Filters
-            </button>
+            <//>
           </div>
         </div>
       `}
@@ -2747,41 +2949,41 @@ export function TasksTab() {
       html`
         <div class="btn-row batch-action-bar">
           <span class="pill">${selectedIds.size} selected</span>
-          <button class="btn btn-primary btn-sm" onClick=${handleBatchDone}>
+          <${Button} variant="contained" size="small" onClick=${handleBatchDone}>
             ${iconText("✓ Done All")}
-          </button>
-          <button class="btn btn-danger btn-sm" onClick=${handleBatchCancel}>
+          <//>
+          <${Button} variant="contained" color="error" size="small" onClick=${handleBatchCancel}>
             ${iconText("✕ Cancel All")}
-          </button>
-          <button
-            class="btn btn-ghost btn-sm"
+          <//>
+          <${Button}
+            variant="text" size="small"
             onClick=${() => {
               setSelectedIds(new Set());
               haptic();
             }}
           >
             Clear
-          </button>
+          <//>
         </div>
       `}
     </div>
 
     <div class="snapshot-bar">
       ${summaryMetrics.map((m) => html`
-        <button
+        <${Tooltip} title=${isKanban ? m.label : `Filter by ${m.label}`}><${Button}
           key=${m.label}
-          class="snapshot-pill snapshot-pill-btn ${!isKanban && filterVal === SNAPSHOT_STATUS_MAP[m.label] ? 'snapshot-pill-active' : ''}"
+          variant="text" size="small"
+          style=${{ textTransform: "none" }}
           onClick=${() => {
             if (isKanban) return;
             const statusVal = SNAPSHOT_STATUS_MAP[m.label];
             if (statusVal !== undefined) handleFilter(filterVal === statusVal ? 'all' : statusVal);
           }}
-          title=${isKanban ? m.label : `Filter by ${m.label}`}
         >
           <span class="snapshot-dot" style="background:${m.color};" />
           <strong class="snapshot-val">${m.value}</strong>
           <span class="snapshot-lbl">${m.label}</span>
-        </button>
+        <//><//>
       `)}
       <span class="snapshot-view-tag">${iconText(isKanban ? ":dot: Board" : ":menu: List")}</span>
     </div>
@@ -2915,33 +3117,33 @@ export function TasksTab() {
 
     ${!isKanban && html`
       <div class="pager">
-        <button
-          class="btn btn-secondary btn-sm"
+        <${Button}
+          variant="outlined" size="small"
           onClick=${handlePrev}
           disabled=${page <= 0}
         >
           ← Prev
-        </button>
+        <//>
         <span class="pager-info">Page ${page + 1} / ${totalPages}</span>
-        <button
-          class="btn btn-secondary btn-sm"
+        <${Button}
+          variant="outlined" size="small"
           onClick=${handleNext}
           disabled=${page + 1 >= totalPages}
         >
           Next →
-        </button>
+        <//>
       </div>
     `}
 
-    <button
-      class="fab"
+    <${Fab}
+      color="primary" size="small"
       onClick=${() => {
         haptic();
         setShowCreate(true);
       }}
     >
       ${ICONS.plus}
-    </button>
+    <//>
 
     ${showCreate &&
     html`
@@ -3013,6 +3215,15 @@ function CreateTaskModalInline({ onClose }) {
   const [repository, setRepository] = useState("");
   const [repositories, setRepositories] = useState([]);
   const [showAdvanced, setShowAdvanced] = useState(false);
+  const initialSnapshotRef = useRef({
+    title: "",
+    description: "",
+    baseBranch: "",
+    priority: "medium",
+    tagsInput: "",
+    draft: false,
+  });
+  const pendingKey = "modal:create-task-inline";
 
   const handleRewrite = async () => {
     if (!title.trim() || rewriting) return;
@@ -3068,10 +3279,44 @@ function CreateTaskModalInline({ onClose }) {
     }
   }, [workspaceId, repositoryOptions.length]);
 
+  const unsavedSnapshot = useMemo(
+    () => ({
+      title: title || "",
+      description: description || "",
+      baseBranch: baseBranch || "",
+      priority: priority || "medium",
+      tagsInput: tagsInput || "",
+      draft: Boolean(draft),
+    }),
+    [baseBranch, description, draft, priority, tagsInput, title],
+  );
+  const changeCount = useMemo(
+    () => countChangedFields(initialSnapshotRef.current, unsavedSnapshot),
+    [unsavedSnapshot],
+  );
+  const hasUnsaved = changeCount > 0;
+
+  useEffect(() => {
+    setPendingChange(pendingKey, hasUnsaved);
+    return () => clearPendingChange(pendingKey);
+  }, [hasUnsaved]);
+
+  const resetToInitial = useCallback(() => {
+    const base = initialSnapshotRef.current || {};
+    setTitle(base.title || "");
+    setDescription(base.description || "");
+    setBaseBranch(base.baseBranch || "");
+    setPriority(base.priority || "medium");
+    setTagsInput(base.tagsInput || "");
+    setDraft(Boolean(base.draft));
+    showToast("Changes discarded", "info");
+  }, []);
+
   const toggleRepo = (slug) => {
     setRepositories((prev) =>
       prev.includes(slug) ? prev.filter((s) => s !== slug) : [...prev, slug],
     );
+    // Keep single-repo compat: repository = first selected
     setRepository((prev) => {
       if (repositories.includes(slug)) {
         const next = repositories.filter((s) => s !== slug);
@@ -3081,10 +3326,14 @@ function CreateTaskModalInline({ onClose }) {
     });
   };
 
-  const handleSubmit = async () => {
+  const handleSubmit = async ({ closeAfterSave = true } = {}) => {
+    if (rewriting) {
+      showToast("Wait for AI improvement to finish before saving.", "warning");
+      return false;
+    }
     if (!title.trim()) {
       showToast("Title is required", "error");
-      return;
+      return false;
     }
     setSubmitting(true);
     haptic("medium");
@@ -3107,12 +3356,25 @@ function CreateTaskModalInline({ onClose }) {
         }),
       });
       showToast("Task created", "success");
-      onClose();
+      initialSnapshotRef.current = {
+        title: title.trim(),
+        description: description.trim(),
+        baseBranch: baseBranch.trim(),
+        priority,
+        tagsInput,
+        draft: Boolean(draft),
+      };
+      if (closeAfterSave) {
+        onClose?.();
+      }
       await loadTasks();
+      return closeAfterSave ? { closed: true } : true;
     } catch {
       /* toast */
+      return false;
+    } finally {
+      setSubmitting(false);
     }
-    setSubmitting(false);
   };
 
   useEffect(() => {
@@ -3133,22 +3395,26 @@ function CreateTaskModalInline({ onClose }) {
     priority,
     tagsInput,
     draft,
+    rewriting,
     workspaceId,
     repository,
+    repositories,
   ]);
 
   const parsedTags = normalizeTagInput(tagsInput);
   const hasAdvanced = baseBranch || draft || showAdvanced;
 
   const footerContent = html`
-    <button
-      class="btn btn-primary"
-      style="width:100%"
-      onClick=${handleSubmit}
-      disabled=${submitting}
+    <${Button}
+      variant="contained" size="small"
+      style=${{ width: "100%" }}
+      onClick=${() => {
+        void handleSubmit({ closeAfterSave: true });
+      }}
+      disabled=${submitting || rewriting}
     >
       ${submitting ? "Creating…" : iconText("✓ Create Task")}
-    </button>
+    <//>
   `;
 
   return html`
@@ -3157,18 +3423,32 @@ function CreateTaskModalInline({ onClose }) {
       onClose=${onClose}
       contentClassName="modal-content-wide"
       footer=${footerContent}
+      unsavedChanges=${changeCount}
+      onSaveBeforeClose=${() => handleSubmit({ closeAfterSave: true })}
+      onDiscardBeforeClose=${() => {
+        resetToInitial();
+        return true;
+      }}
+      activeOperationLabel=${rewriting ? "Improve with AI is still running" : ""}
     >
       <div class="flex-col create-task-form">
 
         <!-- Title — autofocus so keyboard opens immediately -->
         <div class="input-with-mic">
-          <input
-            class="input"
+          <${TextField}
+            size="small"
+            variant="outlined"
             placeholder="Task title *"
             value=${title}
             autoFocus=${true}
             onInput=${(e) => setTitle(e.target.value)}
-            onKeyDown=${(e) => e.key === "Enter" && !e.shiftKey && handleSubmit()}
+            onKeyDown=${(e) => {
+              if (e.key === "Enter" && !e.shiftKey) {
+                e.preventDefault();
+                void handleSubmit({ closeAfterSave: true });
+              }
+            }}
+            fullWidth
           />
           <${VoiceMicButtonInline}
             onTranscript=${(t) => setTitle((prev) => (prev ? prev + " " + t : t))}
@@ -3178,9 +3458,10 @@ function CreateTaskModalInline({ onClose }) {
 
         <!-- Description — compact 2-row textarea -->
         <div class="textarea-with-mic" style="position:relative">
-          <textarea
-            class="input"
-            rows="2"
+          <${TextField}
+            multiline
+            rows=${2}
+            size="small"
             placeholder="What needs to be done? (optional)"
             value=${description}
             onInput=${(e) => {
@@ -3189,8 +3470,9 @@ function CreateTaskModalInline({ onClose }) {
               e.target.style.height = "auto";
               e.target.style.height = Math.min(e.target.scrollHeight, 6 * 24 + 16) + "px";
             }}
-            style="padding-right:36px"
-          ></textarea>
+            style=${{ paddingRight: "36px" }}
+            fullWidth
+          />
           <${VoiceMicButton}
             onTranscript=${(t) => setDescription((prev) => (prev ? prev + " " + t : t))}
             disabled=${submitting || rewriting}
@@ -3200,19 +3482,17 @@ function CreateTaskModalInline({ onClose }) {
         </div>
 
         <!-- Rewrite / Improve button -->
-        <button
-          type="button"
-          class="btn btn-ghost btn-sm task-rewrite-btn"
-          style="display:flex;align-items:center;gap:6px;align-self:flex-start;font-size:12px;padding:5px 10px;opacity:${!title.trim() ? 0.45 : 1}"
+        <${Tooltip} title="Use AI to expand and improve this task description"><${Button}
+          variant="text" size="small"
+          style=${{ display: "flex", alignItems: "center", gap: "6px", alignSelf: "flex-start", fontSize: "12px", padding: "5px 10px", opacity: !title.trim() ? 0.45 : 1 }}
           disabled=${!title.trim() || rewriting || submitting}
           onClick=${handleRewrite}
-          title="Use AI to expand and improve this task description"
         >
           ${rewriting
             ? html`<span class="spin-icon" style="display:inline-block;animation:spin 0.8s linear infinite">${resolveIcon(":clock:")}</span> Improving…`
             : html`${iconText(":star: Improve with AI")}`
           }
-        </button>
+        <//><//>
 
         <!-- Priority — always visible, most commonly changed -->
         <${SegmentedControl}
@@ -3229,16 +3509,16 @@ function CreateTaskModalInline({ onClose }) {
         <!-- Workspace + Repo row -->
         ${workspaceOptions.length > 0 && html`
           <div class="input-row">
-            <select
-              class="input"
+            <${Select}
+              size="small"
               value=${workspaceId}
               onChange=${(e) => setWorkspaceId(e.target.value)}
             >
-              <option value="">Active workspace</option>
+              <${MenuItem} value="">Active workspace</${MenuItem}>
               ${workspaceOptions.map(
-                (ws) => html`<option value=${ws.id}>${ws.name || ws.id}</option>`,
+                (ws) => html`<${MenuItem} value=${ws.id}>${ws.name || ws.id}</${MenuItem}>`,
               )}
-            </select>
+            </${Select}>
           </div>
           ${repositoryOptions.length > 0 && html`
             <div class="repo-select-group">
@@ -3251,11 +3531,7 @@ function CreateTaskModalInline({ onClose }) {
                     <span class="repo-checkboxes-label">Repositories</span>
                     ${repositoryOptions.map((repo) => html`
                       <label class="repo-checkbox-item">
-                        <input
-                          type="checkbox"
-                          checked=${repositories.includes(repo.slug)}
-                          onChange=${() => toggleRepo(repo.slug)}
-                        />
+                        <${Switch} size="small" checked=${repositories.includes(repo.slug)} onChange=${() => toggleRepo(repo.slug)} />
                         ${repo.name}${repo.primary ? " (Primary)" : ""}
                       </label>
                     `)}
@@ -3266,12 +3542,7 @@ function CreateTaskModalInline({ onClose }) {
         `}
 
         <!-- Tags -->
-        <input
-          class="input"
-          placeholder="Tags (comma-separated, optional)"
-          value=${tagsInput}
-          onInput=${(e) => setTagsInput(e.target.value)}
-        />
+        <${TextField} size="small" variant="outlined" placeholder="Tags (comma-separated, optional)" value=${tagsInput} onInput=${(e) => setTagsInput(e.target.value)} fullWidth />
         ${parsedTags.length > 0 && html`
           <div class="tag-row">
             ${parsedTags.map((tag) => html`<span class="tag-chip">#${tag}</span>`)}
@@ -3279,30 +3550,37 @@ function CreateTaskModalInline({ onClose }) {
         `}
 
         <!-- Advanced toggle -->
-        <button
-          class="btn btn-ghost btn-sm create-task-advanced-toggle"
-          style="text-align:left;justify-content:flex-start;gap:6px;padding:6px 0;color:var(--text-hint)"
+        <${Button}
+          variant="text" size="small"
+          style=${{ textAlign: "left", justifyContent: "flex-start", gap: "6px", padding: "6px 0", color: "var(--text-hint)" }}
           onClick=${() => setShowAdvanced(!showAdvanced)}
-          type="button"
         >
           <span style="display:inline-block;transition:transform 0.15s;transform:rotate(${showAdvanced ? 90 : 0}deg)">${resolveIcon(":play:")}</span>
           Advanced${hasAdvanced && !showAdvanced ? " •" : ""}
-        </button>
+        <//>
 
         <!-- Advanced fields: base branch + draft -->
         ${(showAdvanced || hasAdvanced) && html`
-          <input
-            class="input"
-            placeholder="Base branch (optional, e.g. main)"
-            value=${baseBranch}
-            onInput=${(e) => setBaseBranch(e.target.value)}
-          />
+          <${TextField} size="small" variant="outlined" placeholder="Base branch (optional, e.g. main)" value=${baseBranch} onInput=${(e) => setBaseBranch(e.target.value)} fullWidth />
           <${Toggle}
             label="Draft (save to backlog, don't start)"
             checked=${draft}
             onChange=${(next) => setDraft(next)}
           />
         `}
+
+        <${SaveDiscardBar}
+          dirty=${hasUnsaved}
+          message=${unsavedChangesMessage(changeCount)}
+          saveLabel="Create Task"
+          discardLabel="Discard"
+          onSave=${() => {
+            void handleSubmit({ closeAfterSave: false });
+          }}
+          onDiscard=${resetToInitial}
+          saving=${submitting}
+          disabled=${rewriting}
+        />
 
       </div>
     <//>
