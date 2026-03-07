@@ -152,6 +152,19 @@ export const tasksSort = signal("updated");
 export const tasksTotalPages = signal(1);
 export const tasksTotal = signal(0);
 export const tasksStatusCounts = signal({ draft: 0, backlog: 0, inProgress: 0, inReview: 0, done: 0 });
+
+// ── Retry Queue
+export const retryQueueData = signal({ count: 0, items: [] });
+export const retryQueueLoaded = signal(false);
+
+export async function loadRetryQueue() {
+  const res = await apiFetch("/api/retry-queue", { _silent: true }).catch(() => ({ ok: false, items: [], count: 0 }));
+  if (res?.ok) {
+    retryQueueData.value = { count: res.count || 0, items: res.items || [] };
+  }
+  retryQueueLoaded.value = true;
+}
+
 const TASK_IGNORE_LABEL = "codex:ignore";
 const TASK_TEXT_REPLACEMENTS = [
   [/\u00D4\u00C7\u00F6/g, "-"],

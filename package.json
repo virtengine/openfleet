@@ -82,6 +82,7 @@
     "bosun-setup": "setup.mjs",
     "bosun-chat-id": "telegram/get-telegram-chat-id.mjs",
     "bosun-shared-workspaces": "workspace/shared-workspace-cli.mjs",
+    "bosun-tui": "bosun-tui.mjs",
     "codex-monitor": "cli.mjs",
     "codex-monitor-setup": "setup.mjs",
     "codex-monitor-chat-id": "telegram/get-telegram-chat-id.mjs",
@@ -267,6 +268,8 @@
     "agent/agent-supervisor.mjs",
     "agent/agent-work-analyzer.mjs",
     "infra/startup-service.mjs",
+    "infra/runtime-accumulator.mjs",
+    "infra/tracing.mjs",
     "telegram/telegram-sentinel.mjs",
     "telegram/telegram-poll-owner.mjs",
     "telegram/whatsapp-channel.mjs",
@@ -278,6 +281,8 @@
     "workflow/workflow-migration.mjs",
     "workflow/workflow-nodes.mjs",
     "workflow/workflow-templates.mjs",
+    "workflow/workflow-contract.mjs",
+    "workflow/pipeline.mjs",
     "workflow-templates/_helpers.mjs",
     "workflow-templates/agents.mjs",
     "workflow-templates/ci-cd.mjs",
@@ -290,7 +295,10 @@
     "workflow-templates/security.mjs",
     "workflow-templates/task-batch.mjs",
     "workflow-templates/task-lifecycle.mjs",
+    "workflow-templates/issue-continuation.mjs",
     "workflow-templates/bosun-native.mjs",
+    "bosun-tui.mjs",
+    "tui/",
     "tools/",
     "ui/vendor/"
   ],
@@ -313,7 +321,9 @@
     "preact": "10.25.4",
     "qrcode-terminal": "^0.12.0",
     "vibe-kanban": "latest",
-    "ws": "^8.19.0"
+    "ws": "^8.19.0",
+    "ink": "^5.0.0",
+    "ink-text-input": "^5.0.0"
   },
   "devDependencies": {
     "@emotion/react": "^11.14.0",
