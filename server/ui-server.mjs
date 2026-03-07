@@ -6170,10 +6170,22 @@ async function getTaskCommentsForApi(taskId, adapter = null) {
 
 async function listAllTasksForApi(adapter = null) {
   const fallbackAdapter = adapter || getKanbanAdapter();
-  const projectId = activeProjectId.value || "";
   if (typeof fallbackAdapter?.listTasks === "function") {
     try {
+      let projectId = activeProjectId.value || "";
+      if (!projectId && typeof fallbackAdapter?.listProjects === "function") {
+        const projects = await fallbackAdapter.listProjects();
+        projectId = projects?.[0]?.id || projects?.[0]?.project_id || "";
+      }
       const tasks = await fallbackAdapter.listTasks(projectId, {});
+      if (Array.isArray(tasks)) return tasks;
+    } catch {
+      // Fall through to broader adapter/task-store snapshots.
+    }
+  }
+  if (typeof fallbackAdapter?.getAllTasks === "function") {
+    try {
+      const tasks = await fallbackAdapter.getAllTasks();
       if (Array.isArray(tasks)) return tasks;
     } catch {
       // Fall through to internal task-store snapshot.
@@ -7806,6 +7818,106 @@ function normalizeBranchInput(input) {
   return trimmed ? trimmed : null;
 }
 
+function hasOwn(obj, key) {
+  return Boolean(obj) && Object.prototype.hasOwnProperty.call(obj, key);
+}
+
+function normalizeOptionalStringInput(input) {
+  const trimmed = String(input ?? "").trim();
+  return trimmed || null;
+}
+
+function normalizeAssigneesInput(input) {
+  if (!input) return [];
+  const values = Array.isArray(input)
+    ? input
+    : String(input || "")
+        .split(",")
+        .map((entry) => entry.trim())
+        .filter(Boolean);
+  const seen = new Set();
+  const assignees = [];
+  for (const value of values) {
+    const normalized = String(value || "").trim();
+    if (!normalized || seen.has(normalized)) continue;
+    seen.add(normalized);
+    assignees.push(normalized);
+  }
+  return assignees;
+}
+
+function buildTaskMetadataPatch(input = {}) {
+  const topLevel = {};
+  const meta = {};
+
+  if (hasOwn(input, "assignee")) {
+    const assignee = normalizeOptionalStringInput(input?.assignee);
+    if (assignee) {
+      topLevel.assignee = assignee;
+      meta.assignee = assignee;
+    }
+  }
+
+  if (hasOwn(input, "assignees")) {
+    const assignees = normalizeAssigneesInput(input?.assignees);
+    if (assignees.length > 0) {
+      topLevel.assignees = assignees;
+      meta.assignees = assignees;
+      if (!hasOwn(topLevel, "assignee")) {
+        topLevel.assignee = assignees[0];
+      }
+      if (!hasOwn(meta, "assignee")) {
+        meta.assignee = assignees[0];
+      }
+    }
+  }
+
+  if (hasOwn(input, "epicId")) {
+    const epicId = normalizeOptionalStringInput(input?.epicId);
+    if (epicId) {
+      topLevel.epicId = epicId;
+      meta.epicId = epicId;
+    }
+  }
+
+  if (hasOwn(input, "storyPoints")) {
+    const numeric = Number(input?.storyPoints);
+    if (Number.isFinite(numeric)) {
+      topLevel.storyPoints = numeric;
+      meta.storyPoints = numeric;
+    }
+  }
+
+  if (hasOwn(input, "parentTaskId")) {
+    const parentTaskId = normalizeOptionalStringInput(input?.parentTaskId);
+    if (parentTaskId) {
+      topLevel.parentTaskId = parentTaskId;
+      meta.parentTaskId = parentTaskId;
+    }
+  }
+
+  if (hasOwn(input, "dueDate")) {
+    const dueDate = normalizeOptionalStringInput(input?.dueDate);
+    if (dueDate) {
+      topLevel.dueDate = dueDate;
+      meta.dueDate = dueDate;
+    }
+  }
+
+  return { topLevel, meta };
+}
+
+function hasTaskPatchValues(patch = {}) {
+  for (const value of Object.values(patch)) {
+    if (typeof value === "string" && value.trim()) return true;
+    if (typeof value === "number" && Number.isFinite(value)) return true;
+    if (typeof value === "boolean") return true;
+    if (Array.isArray(value) && value.length > 0) return true;
+    if (value && typeof value === "object" && !Array.isArray(value) && Object.keys(value).length > 0) return true;
+  }
+  return false;
+}
+
 async function getLatestLogTail(lineCount) {
   const logPath = await resolvePreferredSystemLogPath();
   if (!logPath) return { file: null, lines: [] };
@@ -8982,32 +9094,14 @@ async function handleApi(req, res, url) {
       const previousTask = typeof adapter.getTask === "function"
         ? await adapter.getTask(taskId).catch(() => null)
         : null;
-      const tagsProvided = body && Object.prototype.hasOwnProperty.call(body, "tags");
+      const tagsProvided = hasOwn(body, "tags");
       const tags = tagsProvided ? normalizeTagsInput(body?.tags) : undefined;
-      const draftProvided = body && Object.prototype.hasOwnProperty.call(body, "draft");
-      const baseBranchProvided =
-        body &&
-        (Object.prototype.hasOwnProperty.call(body, "baseBranch") ||
-          Object.prototype.hasOwnProperty.call(body, "base_branch"));
+      const draftProvided = hasOwn(body, "draft");
+      const baseBranchProvided = hasOwn(body, "baseBranch") || hasOwn(body, "base_branch");
       const baseBranch = baseBranchProvided
         ? normalizeBranchInput(body?.baseBranch ?? body?.base_branch)
         : undefined;
-      const metadataPatch = {
-        ...(typeof body?.assignee === "string" ? { assignee: String(body.assignee).trim() } : {}),
-        ...(Array.isArray(body?.assignees)
-          ? {
-            assignees: body.assignees
-              .map((entry) => String(entry || "").trim())
-              .filter(Boolean),
-          }
-          : {}),
-        ...(body?.epicId != null ? { epicId: String(body.epicId).trim() } : {}),
-        ...(body?.parentTaskId != null ? { parentTaskId: String(body.parentTaskId).trim() } : {}),
-        ...(body?.dueDate != null ? { dueDate: String(body.dueDate).trim() } : {}),
-        ...(body?.storyPoints != null && Number.isFinite(Number(body.storyPoints))
-          ? { storyPoints: Number(body.storyPoints) }
-          : {}),
-      };
+      const metadataPatch = buildTaskMetadataPatch(body || {});
       const patch = {
         status: body?.status,
         title: body?.title,
@@ -9019,24 +9113,17 @@ async function handleApi(req, res, url) {
         ...(tagsProvided ? { tags } : {}),
         ...(draftProvided ? { draft: Boolean(body?.draft) } : {}),
         ...(baseBranchProvided ? { baseBranch } : {}),
-        ...(Object.keys(metadataPatch).length > 0
+        ...metadataPatch.topLevel,
+        ...(Object.keys(metadataPatch.meta).length > 0
           ? {
-            ...metadataPatch,
-            meta: metadataPatch,
+            meta: {
+              ...(previousTask?.meta && typeof previousTask.meta === "object" ? previousTask.meta : {}),
+              ...metadataPatch.meta,
+            },
           }
           : {}),
       };
-      const hasPatch = Object.values(patch).some(
-        (value) => typeof value === "string" && value.trim(),
-      );
-      const hasTags = Array.isArray(patch.tags);
-      const hasDraft = typeof patch.draft === "boolean";
-      const hasBaseBranch = baseBranchProvided;
-      const hasWorkspace = typeof patch.workspace === "string";
-      const hasRepository = typeof patch.repository === "string";
-      const hasRepositories = Array.isArray(patch.repositories);
-      const hasMetadataPatch = Object.keys(metadataPatch).length > 0;
-      if (!hasPatch && !hasTags && !hasDraft && !hasBaseBranch && !hasWorkspace && !hasRepository && !hasRepositories && !hasMetadataPatch) {
+      if (!hasTaskPatchValues(patch) && !baseBranchProvided && !draftProvided && !tagsProvided) {
         jsonResponse(res, 400, {
           ok: false,
           error: "No update fields provided",
@@ -9130,32 +9217,14 @@ async function handleApi(req, res, url) {
       const previousTask = typeof adapter.getTask === "function"
         ? await adapter.getTask(taskId).catch(() => null)
         : null;
-      const tagsProvided = body && Object.prototype.hasOwnProperty.call(body, "tags");
+      const tagsProvided = hasOwn(body, "tags");
       const tags = tagsProvided ? normalizeTagsInput(body?.tags) : undefined;
-      const draftProvided = body && Object.prototype.hasOwnProperty.call(body, "draft");
-      const baseBranchProvided =
-        body &&
-        (Object.prototype.hasOwnProperty.call(body, "baseBranch") ||
-          Object.prototype.hasOwnProperty.call(body, "base_branch"));
+      const draftProvided = hasOwn(body, "draft");
+      const baseBranchProvided = hasOwn(body, "baseBranch") || hasOwn(body, "base_branch");
       const baseBranch = baseBranchProvided
         ? normalizeBranchInput(body?.baseBranch ?? body?.base_branch)
         : undefined;
-      const metadataPatch = {
-        ...(typeof body?.assignee === "string" ? { assignee: String(body.assignee).trim() } : {}),
-        ...(Array.isArray(body?.assignees)
-          ? {
-            assignees: body.assignees
-              .map((entry) => String(entry || "").trim())
-              .filter(Boolean),
-          }
-          : {}),
-        ...(body?.epicId != null ? { epicId: String(body.epicId).trim() } : {}),
-        ...(body?.parentTaskId != null ? { parentTaskId: String(body.parentTaskId).trim() } : {}),
-        ...(body?.dueDate != null ? { dueDate: String(body.dueDate).trim() } : {}),
-        ...(body?.storyPoints != null && Number.isFinite(Number(body.storyPoints))
-          ? { storyPoints: Number(body.storyPoints) }
-          : {}),
-      };
+      const metadataPatch = buildTaskMetadataPatch(body || {});
       const patch = {
         title: body?.title,
         description: body?.description,
@@ -9167,24 +9236,17 @@ async function handleApi(req, res, url) {
         ...(tagsProvided ? { tags } : {}),
         ...(draftProvided ? { draft: Boolean(body?.draft) } : {}),
         ...(baseBranchProvided ? { baseBranch } : {}),
-        ...(Object.keys(metadataPatch).length > 0
+        ...metadataPatch.topLevel,
+        ...(Object.keys(metadataPatch.meta).length > 0
           ? {
-            ...metadataPatch,
-            meta: metadataPatch,
+            meta: {
+              ...(previousTask?.meta && typeof previousTask.meta === "object" ? previousTask.meta : {}),
+              ...metadataPatch.meta,
+            },
           }
           : {}),
       };
-      const hasPatch = Object.values(patch).some(
-        (value) => typeof value === "string" && value.trim(),
-      );
-      const hasTags = Array.isArray(patch.tags);
-      const hasDraft = typeof patch.draft === "boolean";
-      const hasBaseBranch = baseBranchProvided;
-      const hasWorkspace = typeof patch.workspace === "string";
-      const hasRepository = typeof patch.repository === "string";
-      const hasRepositories = Array.isArray(patch.repositories);
-      const hasMetadataPatch = Object.keys(metadataPatch).length > 0;
-      if (!hasPatch && !hasTags && !hasDraft && !hasBaseBranch && !hasWorkspace && !hasRepository && !hasRepositories && !hasMetadataPatch) {
+      if (!hasTaskPatchValues(patch) && !baseBranchProvided && !draftProvided && !tagsProvided) {
         jsonResponse(res, 400, {
           ok: false,
           error: "No edit fields provided",
@@ -9355,22 +9417,7 @@ async function handleApi(req, res, url) {
       const repositories = Array.isArray(body?.repositories)
         ? body.repositories.filter((value) => typeof value === "string" && value.trim())
         : [];
-      const metadataFields = {
-        ...(typeof body?.assignee === "string" ? { assignee: String(body.assignee).trim() } : {}),
-        ...(Array.isArray(body?.assignees)
-          ? {
-            assignees: body.assignees
-              .map((entry) => String(entry || "").trim())
-              .filter(Boolean),
-          }
-          : {}),
-        ...(body?.epicId != null ? { epicId: String(body.epicId).trim() } : {}),
-        ...(body?.parentTaskId != null ? { parentTaskId: String(body.parentTaskId).trim() } : {}),
-        ...(body?.dueDate != null ? { dueDate: String(body.dueDate).trim() } : {}),
-        ...(body?.storyPoints != null && Number.isFinite(Number(body.storyPoints))
-          ? { storyPoints: Number(body.storyPoints) }
-          : {}),
-      };
+      const metadataFields = buildTaskMetadataPatch(body || {});
       const taskData = {
         title: String(title).trim(),
         description: body?.description || "",
@@ -9382,7 +9429,7 @@ async function handleApi(req, res, url) {
         ...(tags.length ? { tags } : {}),
         ...(tags.length ? { labels: tags } : {}),
         ...(baseBranch ? { baseBranch } : {}),
-        ...metadataFields,
+        ...metadataFields.topLevel,
         meta: {
           ...(workspace ? { workspace } : {}),
           ...(repository ? { repository } : {}),
@@ -9390,7 +9437,7 @@ async function handleApi(req, res, url) {
           ...(tags.length ? { tags } : {}),
           ...(wantsDraft ? { draft: true } : {}),
           ...(baseBranch ? { base_branch: baseBranch, baseBranch } : {}),
-          ...metadataFields,
+          ...metadataFields.meta,
         },
       };
       const created = await adapter.createTask(projectId, taskData);
@@ -9443,6 +9490,7 @@ async function handleApi(req, res, url) {
         ? await adapter.getTask(parentTaskId).catch(() => null)
         : null;
       const projectId = body?.project || "";
+      const metadataFields = buildTaskMetadataPatch({ ...(body || {}), parentTaskId });
       const subtaskPayload = {
         title,
         description: body?.description || "",
@@ -9451,10 +9499,12 @@ async function handleApi(req, res, url) {
         parentTaskId,
         workspace: body?.workspace || parentTask?.workspace || parentTask?.meta?.workspace || undefined,
         repository: body?.repository || parentTask?.repository || parentTask?.meta?.repository || undefined,
+        ...metadataFields.topLevel,
         meta: {
           parentTaskId,
           workspace: body?.workspace || parentTask?.workspace || parentTask?.meta?.workspace || undefined,
           repository: body?.repository || parentTask?.repository || parentTask?.meta?.repository || undefined,
+          ...metadataFields.meta,
         },
       };
       const created = await adapter.createTask(projectId, subtaskPayload);

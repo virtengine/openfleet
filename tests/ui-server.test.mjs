@@ -1907,4 +1907,101 @@ describe("ui-server mini app", () => {
     expect(sprintDagJson.sprintId).toBe("sprint-b");
     expect(Array.isArray(sprintDagJson.data.nodes)).toBe(true);
   });
+
+
+  it("persists jira-style metadata fields on create and edit", async () => {
+    process.env.TELEGRAM_UI_TUNNEL = "disabled";
+
+    const mod = await import("../server/ui-server.mjs");
+    const server = await mod.startTelegramUiServer({
+      port: await getFreePort(),
+      host: "127.0.0.1",
+      skipInstanceLock: true,
+      skipAutoOpen: true,
+    });
+    const port = server.address().port;
+
+    const created = await fetch("http://127.0.0.1:" + port + "/api/tasks/create", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        title: "jira-metadata task",
+        description: "metadata",
+        assignee: "alice",
+        assignees: ["alice", "bob"],
+        epicId: "EPIC-123",
+        storyPoints: 8,
+        parentTaskId: "PARENT-1",
+        dueDate: "2026-04-01",
+      }),
+    }).then((r) => r.json());
+
+    expect(created.ok).toBe(true);
+    expect(created.data.assignee).toBe("alice");
+    expect(created.data.epicId).toBe("EPIC-123");
+    expect(created.data.storyPoints).toBe(8);
+    expect(created.data.parentTaskId).toBe("PARENT-1");
+    expect(created.data.dueDate).toBe("2026-04-01");
+
+    const edited = await fetch("http://127.0.0.1:" + port + "/api/tasks/edit", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        taskId: created.data.id,
+        assignee: "charlie",
+        assignees: ["charlie"],
+        epicId: "EPIC-999",
+        storyPoints: 13,
+        dueDate: "2026-05-10",
+      }),
+    }).then((r) => r.json());
+
+    expect(edited.ok).toBe(true);
+    expect(edited.data.assignee).toBe("charlie");
+    expect(Array.isArray(edited.data.assignees)).toBe(true);
+    expect(edited.data.assignees[0]).toBe("charlie");
+    expect(edited.data.epicId).toBe("EPIC-999");
+    expect(edited.data.storyPoints).toBe(13);
+    expect(edited.data.dueDate).toBe("2026-05-10");
+  });
+
+  it("creates and lists subtasks via /api/tasks/subtasks", async () => {
+    process.env.TELEGRAM_UI_TUNNEL = "disabled";
+
+    const mod = await import("../server/ui-server.mjs");
+    const server = await mod.startTelegramUiServer({
+      port: await getFreePort(),
+      host: "127.0.0.1",
+      skipInstanceLock: true,
+      skipAutoOpen: true,
+    });
+    const port = server.address().port;
+
+    const parent = await fetch("http://127.0.0.1:" + port + "/api/tasks/create", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ title: "Parent task", description: "parent" }),
+    }).then((r) => r.json());
+    expect(parent.ok).toBe(true);
+
+    const subtask = await fetch("http://127.0.0.1:" + port + "/api/tasks/subtasks", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        parentTaskId: parent.data.id,
+        title: "Child task",
+      }),
+    }).then((r) => r.json());
+
+    expect(subtask.ok).toBe(true);
+    expect(subtask.parentTaskId).toBe(parent.data.id);
+    expect(subtask.data.parentTaskId || subtask.data?.meta?.parentTaskId).toBe(parent.data.id);
+
+    const listed = await fetch("http://127.0.0.1:" + port + "/api/tasks/subtasks?taskId=" + encodeURIComponent(parent.data.id))
+      .then((r) => r.json());
+
+    expect(listed.ok).toBe(true);
+    expect(Array.isArray(listed.data)).toBe(true);
+    expect(listed.data.some((entry) => String(entry?.id) === String(subtask.data.id))).toBe(true);
+  });
 });
