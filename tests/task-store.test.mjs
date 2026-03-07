@@ -486,4 +486,29 @@ describe("task-store sprint and DAG primitives", () => {
     expect(allowed.canStart).toBe(true);
     expect(allowed.reason).toBe("ok");
   });
+
+  it("canTaskStart blocks on unresolved epic dependencies", async () => {
+    const dir = makeTempDir("task-store-can-start-epic-deps-");
+    const storePath = join(dir, "kanban-state.json");
+
+    const ts = await loadTaskStoreModule();
+    ts.configureTaskStore({ storePath });
+    ts.loadStore();
+
+    ts.addTask({ id: "epic-b-task-1", title: "Epic B task", status: "todo", epicId: "EPIC-B" });
+    ts.addTask({ id: "epic-a-task-1", title: "Epic A task", status: "todo", epicId: "EPIC-A" });
+    ts.setEpicDependencies("EPIC-A", ["EPIC-B"]);
+
+    const blocked = ts.canTaskStart("epic-a-task-1");
+    expect(blocked.canStart).toBe(false);
+    expect(blocked.reason).toBe("epic_dependencies_unresolved");
+    expect(blocked.blockingEpicIds).toEqual(["EPIC-B"]);
+    expect(blocked.blockingTaskIds).toContain("epic-b-task-1");
+
+    ts.setTaskStatus("epic-b-task-1", "done", "test");
+    const allowed = ts.canTaskStart("epic-a-task-1");
+    expect(allowed.canStart).toBe(true);
+    expect(allowed.reason).toBe("ok");
+  });
 });
+
