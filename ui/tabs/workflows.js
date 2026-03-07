@@ -63,6 +63,13 @@ const installDialogVars = signal({});
 const installDialogMode = signal("quick");
 const installDialogInstalling = signal(false);
 const installDialogResult = signal(null);
+function cloneVars(input) {
+  if (!input || typeof input !== "object") return {};
+  try {
+    if (typeof structuredClone === "function") return structuredClone(input);
+  } catch {}
+  return JSON.parse(JSON.stringify(input));
+}
 
 function returnToWorkflowList() {
   selectedNodeId.value = null;
@@ -180,7 +187,7 @@ async function openExecuteDialog(workflowId) {
     const wf = detail?.workflow;
     if (!wf) { showToast("Workflow not found", "error"); return; }
     executeDialogWorkflow.value = wf;
-    const vars = wf.variables && typeof wf.variables === "object" ? { ...wf.variables } : {};
+    const vars = cloneVars(wf.variables);
     executeDialogVars.value = vars;
     executeDialogResult.value = null;
     executeDialogLaunching.value = false;
@@ -283,7 +290,8 @@ function inferVarOptions(key, value) {
   } else if (k.includes("bumptype") || k.includes("bump_type")) {
     options.push("patch", "minor", "major");
   }
-  if (typeof value === "string" && value.trim()) {
+  // Keep typed value only when this field already has known preset options.
+  if (options.length > 0 && typeof value === "string" && value.trim()) {
     options.unshift(value.trim());
   }
   const deduped = [];
@@ -404,7 +412,7 @@ function ExecuteWorkflowDialog() {
 
   const resetDefaults = () => {
     if (wf.variables) {
-      executeDialogVars.value = { ...wf.variables };
+      executeDialogVars.value = cloneVars(wf.variables);
     }
     executeDialogMode.value = required.length > 0 ? "quick" : "advanced";
     executeDialogResult.value = null;
@@ -1023,7 +1031,7 @@ function openInstallTemplateDialog(templateId) {
   for (const variable of variableList) {
     const key = String(variable?.key || "").trim();
     if (!key) continue;
-    defaults[key] = variable?.defaultValue ?? "";
+    defaults[key] = cloneVars(variable?.defaultValue ?? "");
   }
   installDialogTemplate.value = template;
   installDialogVars.value = defaults;
