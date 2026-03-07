@@ -1864,6 +1864,7 @@ async function commentOnIssue(task, commentBody) {
  * @property {string}   mode            - "internal" | "vk" | "hybrid"
  * @property {number}   maxParallel     - Max concurrent agent slots (default: 3)
  * @property {number}   baseBranchParallelLimit - Max concurrent tasks per base branch (0 = unlimited)
+ * @property {number}   repoAreaParallelLimit - Max concurrent tasks per repo area (0 = unlimited)
  * @property {number}   pollIntervalMs  - How often to check for tasks (default: 30000)
  * @property {string}   sdk             - SDK preference: "codex" | "copilot" | "claude" | "auto"
  * @property {number}   taskTimeoutMs   - Timeout per task execution (default: 90 * 60 * 1000)
@@ -1913,6 +1914,7 @@ class TaskExecutor {
       mode: "internal",
       maxParallel: 3,
       baseBranchParallelLimit: 0,
+      repoAreaParallelLimit: 0,
       pollIntervalMs: 30_000,
       sdk: "auto",
       taskTimeoutMs: 6 * 60 * 60 * 1000, // 6 hours — stream-based watchdog handles real issues
@@ -1940,6 +1942,12 @@ class TaskExecutor {
     this.maxParallel = merged.maxParallel;
     this.baseBranchParallelLimit = clampInt(
       merged.baseBranchParallelLimit,
+      0,
+      1000,
+      0,
+    );
+    this.repoAreaParallelLimit = clampInt(
+      merged.repoAreaParallelLimit,
       0,
       1000,
       0,
@@ -2128,7 +2136,7 @@ class TaskExecutor {
     });
 
     console.log(
-      `${TAG} initialized (mode=${this.mode}, maxParallel=${this.maxParallel}, baseBranchParallelLimit=${this.baseBranchParallelLimit}, sdk=${this.sdk})`,
+      `${TAG} initialized (mode=${this.mode}, maxParallel=${this.maxParallel}, baseBranchParallelLimit=${this.baseBranchParallelLimit}, repoAreaParallelLimit=${this.repoAreaParallelLimit}, sdk=${this.sdk})`,
     );
   }
 
@@ -3150,6 +3158,7 @@ class TaskExecutor {
       mode: this.mode,
       maxParallel: this.maxParallel,
       baseBranchParallelLimit: this.baseBranchParallelLimit,
+      repoAreaParallelLimit: this.repoAreaParallelLimit,
       sdk: this.sdk === "auto" ? getPoolSdkName() : this.sdk,
       activeSlots: this._activeSlots.size,
       slots: Array.from(this._activeSlots.values()).map((s) => ({
@@ -3383,31 +3392,99 @@ class TaskExecutor {
     return counts;
   }
 
+
+  _extractTaskRepoAreas(task) {
+    const values = [];
+    const pushValues = (input) => {
+      if (!input) return;
+      if (Array.isArray(input)) {
+        for (const entry of input) pushValues(entry);
+        return;
+      }
+      const normalized = String(input || "").trim().toLowerCase();
+      if (!normalized) return;
+      values.push(normalized);
+    };
+
+    pushValues(task?.repo_areas);
+    pushValues(task?.repoAreas);
+    pushValues(task?.meta?.repo_areas);
+    pushValues(task?.meta?.repoAreas);
+    pushValues(task?.task?.repo_areas);
+    pushValues(task?.task?.repoAreas);
+    pushValues(task?.task?.meta?.repo_areas);
+    pushValues(task?.task?.meta?.repoAreas);
+
+    return [...new Set(values)].slice(0, 10);
+  }
+
+  _buildActiveRepoAreaCounts() {
+    const counts = new Map();
+    for (const slot of this._activeSlots.values()) {
+      const areas = this._extractTaskRepoAreas(slot);
+      for (const area of areas) {
+        counts.set(area, (counts.get(area) || 0) + 1);
+      }
+    }
+    return counts;
+  }
   _selectTasksForBaseBranchLimit(candidates, remaining) {
     if (!Array.isArray(candidates) || candidates.length === 0) return [];
     if (!Number.isFinite(remaining) || remaining <= 0) return [];
-    const limit = Number(this.baseBranchParallelLimit || 0);
-    if (!Number.isFinite(limit) || limit <= 0) {
+
+    const baseBranchLimit = Number(this.baseBranchParallelLimit || 0);
+    const repoAreaLimit = Number(this.repoAreaParallelLimit || 0);
+    const enforceBaseBranch = Number.isFinite(baseBranchLimit) && baseBranchLimit > 0;
+    const enforceRepoArea = Number.isFinite(repoAreaLimit) && repoAreaLimit > 0;
+    if (!enforceBaseBranch && !enforceRepoArea) {
       return candidates.slice(0, remaining);
     }
 
-    const counts = this._buildActiveBaseBranchCounts();
+    const baseBranchCounts = enforceBaseBranch
+      ? this._buildActiveBaseBranchCounts()
+      : new Map();
+    const repoAreaCounts = enforceRepoArea
+      ? this._buildActiveRepoAreaCounts()
+      : new Map();
+
     const selected = [];
     for (const task of candidates) {
       if (selected.length >= remaining) break;
-      const key = this._resolveTaskBaseBranchKey(task);
-      if (!key) {
-        selected.push(task);
-        continue;
+
+      if (enforceBaseBranch) {
+        const key = this._resolveTaskBaseBranchKey(task);
+        if (key) {
+          const current = baseBranchCounts.get(key) || 0;
+          if (current >= baseBranchLimit) continue;
+          baseBranchCounts.set(key, current + 1);
+        }
       }
-      const current = counts.get(key) || 0;
-      if (current >= limit) continue;
-      counts.set(key, current + 1);
+
+      if (enforceRepoArea) {
+        const areas = this._extractTaskRepoAreas(task);
+        if (
+          areas.length > 0 &&
+          areas.some((area) => (repoAreaCounts.get(area) || 0) >= repoAreaLimit)
+        ) {
+          if (enforceBaseBranch) {
+            const key = this._resolveTaskBaseBranchKey(task);
+            if (key) {
+              const current = baseBranchCounts.get(key) || 0;
+              baseBranchCounts.set(key, Math.max(0, current - 1));
+            }
+          }
+          continue;
+        }
+        for (const area of areas) {
+          repoAreaCounts.set(area, (repoAreaCounts.get(area) || 0) + 1);
+        }
+      }
+
       selected.push(task);
     }
+
     return selected;
   }
-
   _isBaseBranchLimitReached(task) {
     const limit = Number(this.baseBranchParallelLimit || 0);
     if (!Number.isFinite(limit) || limit <= 0) return false;
@@ -3886,6 +3963,11 @@ export function loadExecutorOptionsFromConfig() {
         configExec.baseBranchParallelLimit ||
         0,
     ),
+    repoAreaParallelLimit: Number(
+      process.env.INTERNAL_EXECUTOR_REPO_AREA_PARALLEL ||
+        configExec.repoAreaParallelLimit ||
+        0,
+    ),
     pollIntervalMs: Number(
       process.env.INTERNAL_EXECUTOR_POLL_MS ||
         configExec.pollIntervalMs ||
@@ -4036,3 +4118,5 @@ export function isExecutorDisabled() {
 
 export { TaskExecutor };
 export default TaskExecutor;
+
+

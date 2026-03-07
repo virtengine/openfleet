@@ -3748,9 +3748,53 @@ function normalizePlannerTaskForCreation(task, index) {
   const title = String(task.title || "").trim();
   if (!title) return null;
 
+  const normalizeStringList = (value) => {
+    if (!Array.isArray(value)) return [];
+    return value
+      .map((entry) => String(entry || "").trim())
+      .filter(Boolean);
+  };
+  const normalizeRepoAreas = (value) => {
+    const list = normalizeStringList(value);
+    if (!list.length) return [];
+    const dedup = new Set();
+    const normalized = [];
+    for (const area of list) {
+      const key = area.toLowerCase();
+      if (dedup.has(key)) continue;
+      dedup.add(key);
+      normalized.push(area);
+    }
+    return normalized;
+  };
+  const normalizeScore = (value) => {
+    const numeric = Number(value);
+    if (!Number.isFinite(numeric)) return null;
+    return Math.max(0, Math.min(10, Math.round(numeric)));
+  };
+  const normalizeRiskLevel = (value) => {
+    const raw = String(value || "").trim().toLowerCase();
+    if (["low", "medium", "high", "critical"].includes(raw)) return raw;
+    const numeric = Number(value);
+    if (!Number.isFinite(numeric)) return null;
+    if (numeric >= 9) return "critical";
+    if (numeric >= 7) return "high";
+    if (numeric >= 4) return "medium";
+    return "low";
+  };
+
   const lines = [];
   const description = String(task.description || "").trim();
   if (description) lines.push(description);
+  const acceptanceCriteria = normalizeStringList(task.acceptance_criteria);
+  const verification = normalizeStringList(task.verification);
+  const repoAreas = normalizeRepoAreas(task.repo_areas || task.repoAreas);
+  const impact = normalizeScore(task.impact);
+  const confidence = normalizeScore(task.confidence);
+  const risk = normalizeRiskLevel(task.risk);
+  const estimatedEffort = String(task.estimated_effort || task.estimatedEffort || "").trim().toLowerCase();
+  const whyNow = String(task.why_now || task.whyNow || "").trim();
+  const killCriteria = normalizeStringList(task.kill_criteria || task.killCriteria);
 
   const appendList = (heading, values) => {
     if (!Array.isArray(values) || values.length === 0) return;
@@ -3763,8 +3807,8 @@ function normalizePlannerTaskForCreation(task, index) {
   };
 
   appendList("Implementation Steps", task.implementation_steps);
-  appendList("Acceptance Criteria", task.acceptance_criteria);
-  appendList("Verification", task.verification);
+  appendList("Acceptance Criteria", acceptanceCriteria);
+  appendList("Verification", verification);
 
   const baseBranch = String(task.base_branch || "").trim();
   const workspace = String(task.workspace || "").trim();
@@ -3796,9 +3840,17 @@ function normalizePlannerTaskForCreation(task, index) {
     tags,
     draft,
     requestedStatus: requestedStatus || null,
+    acceptanceCriteria,
+    verification,
+    repoAreas,
+    impact,
+    confidence,
+    risk,
+    estimatedEffort: estimatedEffort || null,
+    whyNow: whyNow || null,
+    killCriteria: killCriteria.length > 0 ? killCriteria : null,
   };
 }
-
 function extractPlannerTasksFromWorkflowOutput(output, maxTasks = 5) {
   const parsed = parsePlannerJsonFromText(output);
   if (!parsed || !Array.isArray(parsed.tasks)) return [];
@@ -3851,6 +3903,52 @@ function resolvePlannerMaterializationDefaults(ctx) {
   };
 }
 
+function normalizePlannerAreaKey(value) {
+  return String(value || "").trim().toLowerCase();
+}
+
+function resolveTaskRepoAreas(task) {
+  const candidates = []
+    .concat(Array.isArray(task?.repo_areas) ? task.repo_areas : [])
+    .concat(Array.isArray(task?.repoAreas) ? task.repoAreas : [])
+    .concat(Array.isArray(task?.meta?.repo_areas) ? task.meta.repo_areas : [])
+    .concat(Array.isArray(task?.meta?.repoAreas) ? task.meta.repoAreas : [])
+    .concat(Array.isArray(task?.meta?.planner?.repo_areas) ? task.meta.planner.repo_areas : [])
+    .concat(Array.isArray(task?.meta?.planner?.repoAreas) ? task.meta.planner.repoAreas : []);
+  if (!candidates.length) return [];
+  const dedup = new Set();
+  const normalized = [];
+  for (const entry of candidates) {
+    const area = String(entry || "").trim();
+    if (!area) continue;
+    const key = normalizePlannerAreaKey(area);
+    if (!key || dedup.has(key)) continue;
+    dedup.add(key);
+    normalized.push(area);
+  }
+  return normalized;
+}
+
+function resolvePlannerFeedbackContext(value) {
+  if (value == null) return "";
+  if (typeof value === "string") return value.trim();
+  if (Array.isArray(value)) {
+    return value
+      .map((entry) => String(entry || "").trim())
+      .filter(Boolean)
+      .join("\n")
+      .trim();
+  }
+  if (typeof value === "object") {
+    try {
+      return JSON.stringify(value, null, 2).trim();
+    } catch {
+      return "";
+    }
+  }
+  return String(value).trim();
+}
+
 registerNodeType("action.materialize_planner_tasks", {
   describe: () => "Parse planner JSON output and create backlog tasks in Kanban",
   schema: {
@@ -3863,6 +3961,9 @@ registerNodeType("action.materialize_planner_tasks", {
       failOnZero: { type: "boolean", default: true, description: "Fail node when zero tasks are created" },
       minCreated: { type: "number", default: 1, description: "Minimum created tasks required for success" },
       projectId: { type: "string", description: "Optional explicit project ID for list/create operations" },
+      minImpactScore: { type: "number", default: 0, description: "Minimum planner impact score (0-10) required for creation" },
+      maxRiskWithoutHuman: { type: "string", default: "high", description: "Maximum planner risk level allowed for auto-creation" },
+      maxConcurrentRepoAreaTasks: { type: "number", default: 0, description: "Maximum concurrent backlog tasks per repo area (0 disables limit)" },
     },
   },
   async execute(node, ctx, engine) {
@@ -3875,6 +3976,9 @@ registerNodeType("action.materialize_planner_tasks", {
     const dedupEnabled = node.config?.dedup !== false;
     const status = String(ctx.resolve(node.config?.status || "todo")).trim() || "todo";
     const projectId = String(ctx.resolve(node.config?.projectId || "")).trim();
+    const minImpactScore = Number(ctx.resolve(node.config?.minImpactScore ?? 0));
+    const maxRiskWithoutHuman = String(ctx.resolve(node.config?.maxRiskWithoutHuman || "high")).trim().toLowerCase() || "high";
+    const maxConcurrentRepoAreaTasks = Number(ctx.resolve(node.config?.maxConcurrentRepoAreaTasks ?? 0));
     const materializationDefaults = resolvePlannerMaterializationDefaults(ctx);
 
     const parsedTasks = extractPlannerTasksFromWorkflowOutput(outputText, maxTasks);
@@ -3903,13 +4007,26 @@ registerNodeType("action.materialize_planner_tasks", {
     }
 
     const existingTitleSet = new Set();
-    if (dedupEnabled && kanban?.listTasks && projectId) {
+    const existingBacklogAreaCounts = new Map();
+    const shouldFetchExistingTasks =
+      Boolean(kanban?.listTasks)
+      && (dedupEnabled || (Number.isFinite(maxConcurrentRepoAreaTasks) && maxConcurrentRepoAreaTasks > 0));
+    if (shouldFetchExistingTasks) {
       try {
         const existing = await kanban.listTasks(projectId, {});
         const rows = Array.isArray(existing) ? existing : [];
         for (const row of rows) {
           const title = String(row?.title || "").trim().toLowerCase();
-          if (title) existingTitleSet.add(title);
+          if (dedupEnabled && title) existingTitleSet.add(title);
+          const rowStatus = String(row?.status || "").trim().toLowerCase();
+          const isBacklog = !["done", "completed", "closed", "cancelled", "canceled", "archived"].includes(rowStatus);
+          if (!isBacklog) continue;
+          const rowAreas = resolveTaskRepoAreas(row);
+          for (const area of rowAreas) {
+            const key = normalizePlannerAreaKey(area);
+            if (!key) continue;
+            existingBacklogAreaCounts.set(key, (existingBacklogAreaCounts.get(key) || 0) + 1);
+          }
         }
       } catch (err) {
         ctx.log(node.id, `Could not prefetch tasks for dedup: ${err.message}`, "warn");
@@ -3918,11 +4035,58 @@ registerNodeType("action.materialize_planner_tasks", {
 
     const created = [];
     const skipped = [];
+    const createdAreaCounts = new Map();
     for (const task of parsedTasks) {
       const key = task.title.toLowerCase();
       if (dedupEnabled && existingTitleSet.has(key)) {
         skipped.push({ title: task.title, reason: "duplicate_title" });
         continue;
+      }
+      if (!Array.isArray(task.acceptanceCriteria) || task.acceptanceCriteria.length === 0) {
+        skipped.push({ title: task.title, reason: "missing_acceptance_criteria" });
+        continue;
+      }
+      if (!Array.isArray(task.verification) || task.verification.length === 0) {
+        skipped.push({ title: task.title, reason: "missing_verification" });
+        continue;
+      }
+      if (!Array.isArray(task.repoAreas) || task.repoAreas.length === 0) {
+        skipped.push({ title: task.title, reason: "missing_repo_areas" });
+        continue;
+      }
+      if (Number.isFinite(minImpactScore) && Number.isFinite(task.impact) && task.impact < minImpactScore) {
+        skipped.push({ title: task.title, reason: "below_min_impact", impact: task.impact, minImpactScore });
+        continue;
+      }
+      const riskOrder = { low: 0, medium: 1, high: 2, critical: 3 };
+      const taskRiskOrder = riskOrder[String(task.risk || "").toLowerCase()];
+      const maxRiskOrder = riskOrder[String(maxRiskWithoutHuman || "").toLowerCase()];
+      if (Number.isFinite(taskRiskOrder) && Number.isFinite(maxRiskOrder) && taskRiskOrder > maxRiskOrder) {
+        skipped.push({ title: task.title, reason: "risk_above_threshold", risk: task.risk, maxRiskWithoutHuman });
+        continue;
+      }
+      if (Number.isFinite(maxConcurrentRepoAreaTasks) && maxConcurrentRepoAreaTasks > 0) {
+        let saturated = false;
+        const saturatedAreas = [];
+        for (const area of task.repoAreas) {
+          const areaKey = normalizePlannerAreaKey(area);
+          if (!areaKey) continue;
+          const existingCount = existingBacklogAreaCounts.get(areaKey) || 0;
+          const createdCount = createdAreaCounts.get(areaKey) || 0;
+          if ((existingCount + createdCount) >= maxConcurrentRepoAreaTasks) {
+            saturated = true;
+            saturatedAreas.push(area);
+          }
+        }
+        if (saturated) {
+          skipped.push({
+            title: task.title,
+            reason: "repo_area_saturated",
+            repoAreas: saturatedAreas,
+            maxConcurrentRepoAreaTasks,
+          });
+          continue;
+        }
       }
 
       const payload = {
@@ -3946,24 +4110,46 @@ registerNodeType("action.materialize_planner_tasks", {
         payload.draft = true;
       }
       if (projectId) payload.projectId = projectId;
-      if (payload.workspace || payload.repository) {
-        const existingMeta =
-          payload.meta && typeof payload.meta === "object" && !Array.isArray(payload.meta)
-            ? { ...payload.meta }
-            : {};
-        if (payload.workspace && !existingMeta.workspace) {
-          existingMeta.workspace = payload.workspace;
-        }
-        if (payload.repository && !existingMeta.repository) {
-          existingMeta.repository = payload.repository;
-        }
-        payload.meta = existingMeta;
+      if (Array.isArray(task.repoAreas) && task.repoAreas.length > 0) {
+        payload.repo_areas = task.repoAreas;
       }
+      const existingMeta =
+        payload.meta && typeof payload.meta === "object" && !Array.isArray(payload.meta)
+          ? { ...payload.meta }
+          : {};
+      if (payload.workspace && !existingMeta.workspace) {
+        existingMeta.workspace = payload.workspace;
+      }
+      if (payload.repository && !existingMeta.repository) {
+        existingMeta.repository = payload.repository;
+      }
+      if (Array.isArray(task.repoAreas) && task.repoAreas.length > 0 && !Array.isArray(existingMeta.repo_areas)) {
+        existingMeta.repo_areas = task.repoAreas;
+      }
+      existingMeta.planner = {
+        nodeId: plannerNodeId,
+        index: task.index,
+        impact: task.impact,
+        confidence: task.confidence,
+        risk: task.risk,
+        estimated_effort: task.estimatedEffort,
+        repo_areas: task.repoAreas,
+        why_now: task.whyNow,
+        kill_criteria: task.killCriteria,
+        acceptance_criteria: task.acceptanceCriteria,
+        verification: task.verification,
+      };
+      payload.meta = existingMeta;
       const createdTask = await createKanbanTaskWithProject(kanban, payload, projectId);
       created.push({
         id: createdTask?.id || null,
         title: task.title,
       });
+      for (const area of task.repoAreas) {
+        const areaKey = normalizePlannerAreaKey(area);
+        if (!areaKey) continue;
+        createdAreaCounts.set(areaKey, (createdAreaCounts.get(areaKey) || 0) + 1);
+      }
       existingTitleSet.add(key);
     }
 
@@ -3991,7 +4177,6 @@ registerNodeType("action.materialize_planner_tasks", {
     };
   },
 });
-
 registerNodeType("agent.run_planner", {
   describe: () => "Run the task planner agent to generate new backlog tasks",
   schema: {
@@ -4013,6 +4198,7 @@ registerNodeType("agent.run_planner", {
   async execute(node, ctx, engine) {
     const count = Number(ctx.resolve(node.config?.taskCount || 5)) || 5;
     const context = ctx.resolve(node.config?.context || "");
+    const plannerFeedback = resolvePlannerFeedbackContext(ctx.data?._plannerFeedback);
     const explicitPrompt = ctx.resolve(node.config?.prompt || "");
     const outputVariable = ctx.resolve(node.config?.outputVariable || "");
     const configuredNodeTimeout = Number(ctx.resolve(node.config?.timeoutMs || node.config?.timeout || 0));
@@ -4036,7 +4222,9 @@ registerNodeType("agent.run_planner", {
     const outputEnforcement =
       `\n\n## CRITICAL OUTPUT REQUIREMENT\n` +
       `Generate exactly ${count} new tasks.\n` +
-      (context ? `${context}\n\n` : "\n") +
+      ((context || plannerFeedback)
+        ? `${[context, plannerFeedback ? `Planner feedback context:\n${plannerFeedback}` : ""].filter(Boolean).join("\n\n")}\n\n`
+        : "\n") +
       `Your response MUST be a single fenced JSON block with shape { "tasks": [...] }.\n` +
       `Do NOT include status updates, analysis notes, tool commentary, questions, or prose outside the JSON block.\n` +
       `Do NOT reference or use legacy ve-kanban integration commands or scripts.\n` +
@@ -4132,7 +4320,6 @@ registerNodeType("agent.run_planner", {
     };
   },
 });
-
 registerNodeType("agent.evidence_collect", {
   describe: () => "Collect all evidence from .bosun/evidence for review",
   schema: {
@@ -6737,15 +6924,17 @@ registerNodeType("trigger.task_available", {
       filterDrafts: { type: "boolean", default: true, description: "Exclude draft tasks" },
       listRetries: { type: "number", default: 3, description: "Retries for listTasks calls" },
       listRetryDelayMs: { type: "number", default: 2000, description: "Base delay between retries" },
+      repoAreaParallelLimit: { type: "number", default: 0, description: "Per-repo-area active task cap (0 disables limit)" },
     },
   },
-  async execute(node, ctx) {
+  async execute(node, ctx, engine) {
     const maxParallel = node.config?.maxParallel ?? 3;
     const status = node.config?.status ?? "todo";
     const projectId = cfgOrCtx(node, ctx, "projectId") || undefined;
     const filterDrafts = node.config?.filterDrafts !== false;
     const listRetries = node.config?.listRetries ?? 3;
     const listRetryDelayMs = node.config?.listRetryDelayMs ?? 2000;
+    const repoAreaParallelLimit = Number(node.config?.repoAreaParallelLimit ?? 0);
 
     // Check slot availability
     const activeSlotCount = ctx.data?.activeSlotCount ?? 0;
@@ -6837,7 +7026,57 @@ registerNodeType("trigger.task_available", {
     });
 
     const remaining = maxParallel - activeSlotCount;
-    const toDispatch = tasks.slice(0, remaining);
+    let toDispatch = tasks.slice(0, remaining);
+    if (Number.isFinite(repoAreaParallelLimit) && repoAreaParallelLimit > 0 && toDispatch.length > 0) {
+      const activeTaskAreaCounts =
+        ctx.data?.activeTaskAreaCounts && typeof ctx.data.activeTaskAreaCounts === "object"
+          ? ctx.data.activeTaskAreaCounts
+          : {};
+      const projectedAreaCounts = new Map();
+      for (const [key, value] of Object.entries(activeTaskAreaCounts)) {
+        const areaKey = normalizePlannerAreaKey(key);
+        const count = Number(value);
+        if (!areaKey || !Number.isFinite(count) || count <= 0) continue;
+        projectedAreaCounts.set(areaKey, Math.trunc(count));
+      }
+
+      const selected = [];
+      for (const candidate of tasks) {
+        if (selected.length >= remaining) break;
+        const areas = resolveTaskRepoAreas(candidate);
+        if (!areas.length) {
+          selected.push(candidate);
+          continue;
+        }
+        let blocked = false;
+        for (const area of areas) {
+          const areaKey = normalizePlannerAreaKey(area);
+          if (!areaKey) continue;
+          const current = projectedAreaCounts.get(areaKey) || 0;
+          if (current >= repoAreaParallelLimit) {
+            blocked = true;
+            break;
+          }
+        }
+        if (blocked) continue;
+        selected.push(candidate);
+        for (const area of areas) {
+          const areaKey = normalizePlannerAreaKey(area);
+          if (!areaKey) continue;
+          projectedAreaCounts.set(areaKey, (projectedAreaCounts.get(areaKey) || 0) + 1);
+        }
+      }
+      toDispatch = selected;
+      if (toDispatch.length === 0) {
+        return {
+          triggered: false,
+          reason: "repo_area_parallel_limit",
+          taskCount: 0,
+          availableSlots: remaining,
+          repoAreaParallelLimit,
+        };
+      }
+    }
 
     ctx.log(node.id, `Found ${toDispatch.length} task(s) ready (${remaining} slot(s) free)`);
     return {
@@ -6848,7 +7087,6 @@ registerNodeType("trigger.task_available", {
     };
   },
 });
-
 // ── condition.slot_available ────────────────────────────────────────────────
 
 registerNodeType("condition.slot_available", {
@@ -8047,3 +8285,4 @@ registerNodeType("action.web_search", {
 // ═══════════════════════════════════════════════════════════════════════════
 
 export { registerNodeType, getNodeType, listNodeTypes } from "./workflow-engine.mjs";
+

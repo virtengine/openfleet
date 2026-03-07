@@ -36,6 +36,7 @@ import {
   updateTaskManualState,
   setPendingChange,
   clearPendingChange,
+  sanitizeTaskText,
 } from "../modules/state.js";
 import { ICONS } from "../modules/icons.js";
 import {
@@ -285,6 +286,16 @@ function isImageAttachment(att) {
 function unsavedChangesMessage(changeCount) {
   const count = Math.max(0, Number(changeCount || 0));
   return `You have unsaved changes (${count})`;
+}
+
+function buildTaskDescriptionFallback(rawTitle, rawDescription) {
+  const title = sanitizeTaskText(rawTitle || "");
+  const description = sanitizeTaskText(rawDescription || "");
+  if (description) return description;
+  if (!title) {
+    return "No description provided yet. Add scope, key files, and acceptance checks before dispatch.";
+  }
+  return `Implementation notes for "${title}". Include scope, key files, risks, and acceptance checks before dispatch.`;
 }
 
 export function StartTaskModal({
@@ -1353,8 +1364,8 @@ export function TaskReviewModal({ task, onClose, onStart }) {
 
 /* ─── TaskDetailModal ─── */
 export function TaskDetailModal({ task, onClose, onStart }) {
-  const [title, setTitle] = useState(task?.title || "");
-  const [description, setDescription] = useState(task?.description || "");
+  const [title, setTitle] = useState(sanitizeTaskText(task?.title || ""));
+  const [description, setDescription] = useState(buildTaskDescriptionFallback(task?.title, task?.description));
   const [baseBranch, setBaseBranch] = useState(getTaskBaseBranch(task));
   const [status, setStatus] = useState(task?.status || "todo");
   const [priority, setPriority] = useState(task?.priority || "");
@@ -1372,6 +1383,7 @@ export function TaskDetailModal({ task, onClose, onStart }) {
     Boolean(task?.draft || task?.status === "draft"),
   );
   const [saving, setSaving] = useState(false);
+  const [baselineVersion, setBaselineVersion] = useState(0);
   const [rewriting, setRewriting] = useState(false);
   const [manualOverride, setManualOverride] = useState(isTaskManual(task));
   const [manualBusy, setManualBusy] = useState(false);
@@ -1382,8 +1394,8 @@ export function TaskDetailModal({ task, onClose, onStart }) {
   const [repository, setRepository] = useState(task?.repository || "");
   const attachmentInputRef = useRef(null);
   const initialSnapshotRef = useRef({
-    title: task?.title || "",
-    description: task?.description || "",
+    title: sanitizeTaskText(task?.title || ""),
+    description: buildTaskDescriptionFallback(task?.title, task?.description),
     baseBranch: getTaskBaseBranch(task),
     status: task?.status || "todo",
     priority: task?.priority || "",
@@ -1411,7 +1423,7 @@ export function TaskDetailModal({ task, onClose, onStart }) {
   );
   const changeCount = useMemo(
     () => countChangedFields(initialSnapshotRef.current, editableSnapshot),
-    [editableSnapshot],
+    [baselineVersion, editableSnapshot],
   );
   const hasUnsaved = changeCount > 0;
   const activeOperationLabel = saving
@@ -1432,8 +1444,8 @@ export function TaskDetailModal({ task, onClose, onStart }) {
   const repositoryOptions = selectedWorkspace?.repos || [];
 
   useEffect(() => {
-    const nextTitle = task?.title || "";
-    const nextDescription = task?.description || "";
+    const nextTitle = sanitizeTaskText(task?.title || "");
+    const nextDescription = buildTaskDescriptionFallback(task?.title, task?.description);
     const nextBaseBranch = getTaskBaseBranch(task);
     const nextStatus = task?.status || "todo";
     const nextPriority = task?.priority || "";
@@ -1461,6 +1473,7 @@ export function TaskDetailModal({ task, onClose, onStart }) {
       tagsInput: nextTags,
       draft: nextDraft,
     };
+    setBaselineVersion((v) => v + 1);
   }, [task?.id]);
 
   useEffect(() => {
@@ -1506,7 +1519,10 @@ export function TaskDetailModal({ task, onClose, onStart }) {
     setSaving(true);
     haptic("medium");
     const prev = cloneValue(tasksData.value);
-    const tags = normalizeTagInput(tagsInput);
+    const cleanTitle = sanitizeTaskText(title).trim();
+    const cleanDescription = buildTaskDescriptionFallback(title, description);
+    const cleanTagsInput = sanitizeTaskText(tagsInput || "");
+    const tags = normalizeTagInput(cleanTagsInput);
     const wantsDraft = draft || status === "draft";
     const nextStatus = wantsDraft ? "draft" : status;
     try {
@@ -1516,8 +1532,8 @@ export function TaskDetailModal({ task, onClose, onStart }) {
             t.id === task.id
               ? {
                   ...t,
-                  title,
-                  description,
+                  title: cleanTitle,
+                  description: cleanDescription,
                   baseBranch,
                   status: nextStatus,
                   priority: priority || null,
@@ -1534,8 +1550,8 @@ export function TaskDetailModal({ task, onClose, onStart }) {
             method: "POST",
             body: JSON.stringify({
               taskId: task.id,
-              title,
-              description,
+              title: cleanTitle,
+              description: cleanDescription,
               baseBranch,
               status: nextStatus,
               priority,
@@ -1556,15 +1572,19 @@ export function TaskDetailModal({ task, onClose, onStart }) {
         },
       );
       showToast("Task saved", "success");
+      setTitle(cleanTitle);
+      setDescription(cleanDescription);
       initialSnapshotRef.current = {
-        title,
-        description,
+        title: cleanTitle,
+        description: cleanDescription,
         baseBranch,
         status: nextStatus,
         priority: priority || "",
-        tagsInput,
+        tagsInput: cleanTagsInput,
         draft: wantsDraft,
       };
+      setBaselineVersion((v) => v + 1);
+      clearPendingChange(pendingKey);
       if (closeAfterSave) {
         onClose?.();
         return { closed: true };
@@ -2105,6 +2125,7 @@ export function TasksTab() {
   const [actionsOpen, setActionsOpen] = useState(false);
   const [exporting, setExporting] = useState(false);
   const [filtersOpen, setFiltersOpen] = useState(false);
+  const [kanbanLoadingMore, setKanbanLoadingMore] = useState(false);
   const [listSortCol, setListSortCol] = useState("");   // active column sort in list mode
   const [listSortDir, setListSortDir] = useState("desc"); // "asc" | "desc"
   const [isCompact, setIsCompact] = useState(() => {
@@ -2118,7 +2139,7 @@ export function TasksTab() {
     priority: tasksPriority?.value ?? "",
     sort: tasksSort?.value ?? "updated",
     page: tasksPage?.value ?? 0,
-    pageSize: tasksPageSize?.value ?? 20,
+    pageSize: tasksPageSize?.value ?? 25,
   });
 
   /* Detect desktop for keyboard shortcut hint */
@@ -2135,7 +2156,7 @@ export function TasksTab() {
   const searchVal = tasksSearch?.value ?? "";
   const sortVal = tasksSort?.value ?? "updated";
   const page = tasksPage?.value ?? 0;
-  const pageSize = tasksPageSize?.value ?? 8;
+  const pageSize = tasksPageSize?.value ?? 25;
   const totalPages = tasksTotalPages?.value ?? 1;
   const defaultSdk = executorData.value?.data?.sdk || "auto";
   const activeSlots = executorData.value?.data?.slots || [];
@@ -2169,6 +2190,19 @@ export function TasksTab() {
   );
   const isKanban = viewMode.value === "kanban";
   const viewModeInitRef = useRef(false);
+  const hasMoreKanbanPages = isKanban && page + 1 < totalPages;
+
+  const loadMoreKanbanTasks = useCallback(async () => {
+    if (!isKanban || kanbanLoadingMore || isSearching) return;
+    if (!hasMoreKanbanPages) return;
+    setKanbanLoadingMore(true);
+    if (tasksPage) tasksPage.value = page + 1;
+    try {
+      await loadTasks({ append: true });
+    } finally {
+      setKanbanLoadingMore(false);
+    }
+  }, [hasMoreKanbanPages, isKanban, isSearching, kanbanLoadingMore, page]);
 
   // Add/remove body class so kanban.css can apply height-bounded flex layout
   // to main-content, enabling per-column vertical scroll on mobile.
@@ -2217,8 +2251,8 @@ export function TasksTab() {
         tasksPage.value = 0;
         shouldReload = true;
       }
-      if ((tasksPageSize?.value ?? 0) < 120) {
-        tasksPageSize.value = 200;
+      if ((tasksPageSize?.value ?? 0) !== 25) {
+        tasksPageSize.value = 25;
         shouldReload = true;
       }
     } else if (listStateRef.current) {
@@ -2268,6 +2302,20 @@ export function TasksTab() {
       setActionsOpen(false);
     }
   }, [isCompact]);
+
+  useEffect(() => {
+    if (!isKanban) return undefined;
+    const handleScroll = (event) => {
+      const target = event?.target;
+      if (!target?.classList?.contains("kanban-cards")) return;
+      const remaining = target.scrollHeight - target.scrollTop - target.clientHeight;
+      if (remaining <= 140) {
+        void loadMoreKanbanTasks();
+      }
+    };
+    document.addEventListener("scroll", handleScroll, true);
+    return () => document.removeEventListener("scroll", handleScroll, true);
+  }, [isKanban, loadMoreKanbanTasks]); // kanban-scroll-autoload
 
   useEffect(() => {
     if (!actionsOpen || typeof document === "undefined") return undefined;
@@ -3024,7 +3072,7 @@ export function TasksTab() {
       }
     </style>
 
-    ${isKanban && html`<${KanbanBoard} onOpenTask=${openDetail} />`}
+    ${isKanban && html`<${KanbanBoard} onOpenTask=${openDetail} hasMoreTasks=${hasMoreKanbanPages} loadingMoreTasks=${kanbanLoadingMore} onLoadMoreTasks=${loadMoreKanbanTasks} />`}
 
     ${!isKanban && visible.length > 0 && html`
       <div class="task-table-wrap">
@@ -3337,14 +3385,17 @@ function CreateTaskModalInline({ onClose }) {
     }
     setSubmitting(true);
     haptic("medium");
-    const tags = normalizeTagInput(tagsInput);
+    const cleanTitle = sanitizeTaskText(title).trim();
+    const cleanDescription = buildTaskDescriptionFallback(title, description);
+    const cleanTagsInput = sanitizeTaskText(tagsInput || "");
+    const tags = normalizeTagInput(cleanTagsInput);
     const effectiveRepos = repositories.length > 0 ? repositories : (repository ? [repository] : []);
     try {
       await apiFetch("/api/tasks/create", {
         method: "POST",
         body: JSON.stringify({
-          title: title.trim(),
-          description: description.trim(),
+          title: cleanTitle,
+          description: cleanDescription,
           baseBranch: baseBranch.trim() || undefined,
           priority,
           tags,
@@ -3356,12 +3407,15 @@ function CreateTaskModalInline({ onClose }) {
         }),
       });
       showToast("Task created", "success");
+      setTitle(cleanTitle);
+      setDescription(cleanDescription);
+      setTagsInput(cleanTagsInput);
       initialSnapshotRef.current = {
-        title: title.trim(),
-        description: description.trim(),
+        title: cleanTitle,
+        description: cleanDescription,
         baseBranch: baseBranch.trim(),
         priority,
-        tagsInput,
+        tagsInput: cleanTagsInput,
         draft: Boolean(draft),
       };
       if (closeAfterSave) {

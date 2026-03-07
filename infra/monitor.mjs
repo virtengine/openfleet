@@ -102,6 +102,7 @@ import { assessTask, quickAssess } from "../task/task-assessment.mjs";
 import {
   normalizeDebtItems as normalizeAssessmentDebtItems,
   recordTaskDebt,
+  readTaskDebtEntries,
 } from "../task/task-debt-ledger.mjs";
 import {
   getBosunCoAuthorTrailer,
@@ -118,6 +119,7 @@ import {
   parsePrNumberFromUrl,
 } from "../utils.mjs";
 import { fetchWithFallback } from "./fetch-runtime.mjs";
+import { resolveEntry, syncAutoDiscoveredLibraryEntries } from "./library-manager.mjs";
 import {
   initFleet,
   refreshFleet,
@@ -529,12 +531,26 @@ async function ensureWorkflowAutomationEngine() {
         console.warn(`[workflows] meeting service unavailable: ${err?.message || err}`);
       }
 
+      const plannerPromptInfo = resolvePlannerPromptFallback();
+      const promptServices =
+        agentPrompts && typeof agentPrompts === "object"
+          ? { ...agentPrompts }
+          : {};
+      if (!normalizePromptBody(promptServices.planner) && plannerPromptInfo.prompt) {
+        promptServices.planner = plannerPromptInfo.prompt;
+      }
+      if (normalizePromptBody(promptServices.planner)) {
+        console.log(
+          `[workflows] planner prompt source: ${plannerPromptInfo.source} (${plannerPromptInfo.details})`,
+        );
+      }
+
       const services = {
         telegram: telegramService,
         kanban: kanbanService,
         agentPool: agentPoolService,
         meeting: meetingService,
-        prompts: agentPrompts || null,
+        prompts: Object.keys(promptServices).length > 0 ? promptServices : null,
         anomalyDetector: anomalyDetector || null,
       };
 
@@ -654,6 +670,191 @@ function queueWorkflowEvent(eventType, eventData = {}, opts = {}) {
   dispatchWorkflowEvent(eventType, eventData, opts).catch(() => {});
 }
 
+function normalizePromptBody(value) {
+  return typeof value === "string" ? value.trim() : "";
+}
+
+function resolvePlannerPromptFallback() {
+  const explicitPlannerPrompt = normalizePromptBody(agentPrompts?.planner);
+  if (explicitPlannerPrompt) {
+    return {
+      prompt: explicitPlannerPrompt,
+      source: "config",
+      details: "agentPrompts.planner",
+    };
+  }
+
+  const workspaceRoot = String(repoRoot || process.cwd()).trim() || process.cwd();
+  try {
+    syncAutoDiscoveredLibraryEntries(workspaceRoot);
+  } catch {
+    // best effort
+  }
+  try {
+    const resolved = resolveEntry(workspaceRoot, "task-planner");
+    const promptFromLibrary = normalizePromptBody(resolved?.content);
+    if (promptFromLibrary) {
+      return {
+        prompt: promptFromLibrary,
+        source: `library:${resolved?.source || "workspace"}`,
+        details: "entry id task-planner",
+      };
+    }
+  } catch {
+    // best effort
+  }
+
+  const promptPath = resolve(workspaceRoot, ".bosun", "agents", "task-planner.md");
+  try {
+    if (existsSync(promptPath)) {
+      const promptFromFile = normalizePromptBody(readFileSync(promptPath, "utf8"));
+      if (promptFromFile) {
+        return {
+          prompt: promptFromFile,
+          source: "file",
+          details: promptPath,
+        };
+      }
+    }
+  } catch {
+    // best effort
+  }
+
+  return {
+    prompt: "",
+    source: "none",
+    details: "not found",
+  };
+}
+
+function buildPlannerFeedback() {
+  const tasks = Array.isArray(getAllInternalTasks?.()) ? getAllInternalTasks() : [];
+  const statusCounts = {
+    todo: 0,
+    inprogress: 0,
+    inreview: 0,
+    blocked: 0,
+    done: 0,
+    other: 0,
+  };
+  const blockedReasonCounts = new Map();
+  const hotTasks = [];
+  let attemptedCount = 0;
+  let noCommitCount = 0;
+
+  for (const task of tasks) {
+    const status = String(task?.status || "").trim().toLowerCase();
+    if (Object.prototype.hasOwnProperty.call(statusCounts, status)) {
+      statusCounts[status] += 1;
+    } else {
+      statusCounts.other += 1;
+    }
+
+    const agentAttempts = Number(task?.agentAttempts || 0);
+    const consecutiveNoCommits = Number(task?.consecutiveNoCommits || 0);
+    const blockedReason = String(task?.blockedReason || "").trim();
+    if (agentAttempts > 0) attemptedCount += 1;
+    if (consecutiveNoCommits > 0) noCommitCount += 1;
+    if (blockedReason) {
+      blockedReasonCounts.set(
+        blockedReason,
+        (blockedReasonCounts.get(blockedReason) || 0) + 1,
+      );
+    }
+
+    if (
+      agentAttempts > 0 ||
+      consecutiveNoCommits > 0 ||
+      blockedReason ||
+      status === "blocked"
+    ) {
+      hotTasks.push({
+        taskId: String(task?.id || "").trim(),
+        title: String(task?.title || "").trim(),
+        status: status || null,
+        agentAttempts: agentAttempts || 0,
+        consecutiveNoCommits: consecutiveNoCommits || 0,
+        blockedReason: blockedReason || null,
+      });
+    }
+  }
+
+  hotTasks.sort((a, b) => {
+    if ((b.consecutiveNoCommits || 0) !== (a.consecutiveNoCommits || 0)) {
+      return (b.consecutiveNoCommits || 0) - (a.consecutiveNoCommits || 0);
+    }
+    if ((b.agentAttempts || 0) !== (a.agentAttempts || 0)) {
+      return (b.agentAttempts || 0) - (a.agentAttempts || 0);
+    }
+    return String(a.taskId || "").localeCompare(String(b.taskId || ""));
+  });
+
+  let debtEntries = [];
+  try {
+    debtEntries = readTaskDebtEntries({ baseDir: repoRoot, limit: 300 });
+  } catch {
+    debtEntries = [];
+  }
+
+  const now = Date.now();
+  const recentWindowMs = 7 * 24 * 60 * 60 * 1000;
+  const recentDebtEntries = debtEntries.filter((entry) => {
+    const ts = Date.parse(String(entry?.recordedAt || ""));
+    return Number.isFinite(ts) && now - ts <= recentWindowMs;
+  });
+  const debtSeverityCounts = { critical: 0, high: 0, medium: 0, low: 0 };
+  for (const entry of recentDebtEntries) {
+    for (const item of Array.isArray(entry?.debtItems) ? entry.debtItems : []) {
+      const severity = String(item?.severity || "").trim().toLowerCase();
+      if (Object.prototype.hasOwnProperty.call(debtSeverityCounts, severity)) {
+        debtSeverityCounts[severity] += 1;
+      }
+    }
+  }
+
+  const blockedTop = [...blockedReasonCounts.entries()]
+    .sort((a, b) => b[1] - a[1])
+    .slice(0, 5)
+    .map(([reason, count]) => ({ reason, count }));
+  const hotTaskSignals = hotTasks.slice(0, 10);
+
+  const summaryParts = [
+    `tasks=${tasks.length}`,
+    `todo=${statusCounts.todo}`,
+    `inprogress=${statusCounts.inprogress}`,
+    `inreview=${statusCounts.inreview}`,
+    `blocked=${statusCounts.blocked}`,
+    `attempted=${attemptedCount}`,
+    `noCommitHot=${noCommitCount}`,
+    `debtRecent7d=${recentDebtEntries.length}`,
+    `debtCriticalHigh=${debtSeverityCounts.critical + debtSeverityCounts.high}`,
+  ];
+  const blockedSummary = blockedTop.length > 0
+    ? blockedTop.map((item) => `${item.reason}(${item.count})`).join(", ")
+    : "none";
+  const feedbackSummary =
+    `Planner feedback: ${summaryParts.join(", ")}. ` +
+    `Top blocked reasons: ${blockedSummary}.`;
+
+  return {
+    generatedAt: new Date().toISOString(),
+    summary: feedbackSummary,
+    taskStore: {
+      taskCount: tasks.length,
+      statusCounts,
+      attemptedCount,
+      noCommitCount,
+      blockedReasons: blockedTop,
+      hotTasks: hotTaskSignals,
+    },
+    debtLedger: {
+      totalEntries: debtEntries.length,
+      recentEntries7d: recentDebtEntries.length,
+      severityCounts7d: debtSeverityCounts,
+    },
+  };
+}
+
 function resolvePlannerWorkspaceDefaults() {
   const activeWorkspace = String(
     config?.activeWorkspace || process.env.BOSUN_WORKSPACE || "",
@@ -730,10 +931,13 @@ async function triggerTaskPlanner(options = {}) {
     const reason = String(options?.reason || "manual-trigger").trim() || "manual-trigger";
     const source = String(options?.source || "monitor").trim() || "monitor";
     const defaults = resolvePlannerWorkspaceDefaults();
+    const plannerFeedback = buildPlannerFeedback();
 
     const executeInput = {
       _plannerReason: reason,
       _triggerSource: source,
+      _plannerFeedback: plannerFeedback,
+      _plannerFeedbackSummary: plannerFeedback.summary,
       ...(taskCount ? { taskCount } : {}),
       ...(prompt ? { prompt } : {}),
       ...(defaults.workspace ? { workspace: defaults.workspace, workspaceId: defaults.workspace } : {}),
@@ -14425,3 +14629,5 @@ export {
   // Workflow event bridge — for fleet/kanban modules to emit events
   queueWorkflowEvent,
 };
+
+

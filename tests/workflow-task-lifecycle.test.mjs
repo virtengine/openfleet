@@ -97,6 +97,68 @@ describe("task lifecycle node type registration", () => {
 });
 
 // ═══════════════════════════════════════════════════════════════════════════
+//  trigger.task_available Tests
+// ═══════════════════════════════════════════════════════════════════════════
+
+describe("trigger.task_available", () => {
+  it("enforces repoAreaParallelLimit using activeTaskAreaCounts and task repo areas", async () => {
+    const nt = getNodeType("trigger.task_available");
+    const listTasks = vi.fn().mockResolvedValue([
+      { id: "t-workflow", title: "workflow task", status: "todo", repo_areas: ["workflow"], createdAt: "2026-03-01T00:00:00.000Z" },
+      { id: "t-server", title: "server task", status: "todo", meta: { repo_areas: ["server"] }, createdAt: "2026-03-02T00:00:00.000Z" },
+    ]);
+    const ctx = makeCtx({
+      activeSlotCount: 0,
+      activeTaskAreaCounts: { workflow: 1 },
+    });
+    const node = makeNode("trigger.task_available", {
+      maxParallel: 2,
+      status: "todo",
+      repoAreaParallelLimit: 1,
+    });
+
+    const result = await nt.execute(node, ctx, {
+      services: {
+        kanban: {
+          listTasks,
+        },
+      },
+    });
+
+    expect(result.triggered).toBe(true);
+    expect(result.taskCount).toBe(1);
+    expect(result.tasks[0].id).toBe("t-server");
+  });
+
+  it("returns blocked result when all tasks exceed repoAreaParallelLimit", async () => {
+    const nt = getNodeType("trigger.task_available");
+    const listTasks = vi.fn().mockResolvedValue([
+      { id: "t-workflow-only", title: "workflow task", status: "todo", repo_areas: ["workflow"] },
+    ]);
+    const ctx = makeCtx({
+      activeSlotCount: 0,
+      activeTaskAreaCounts: { workflow: 1 },
+    });
+    const node = makeNode("trigger.task_available", {
+      maxParallel: 1,
+      status: "todo",
+      repoAreaParallelLimit: 1,
+    });
+
+    const result = await nt.execute(node, ctx, {
+      services: {
+        kanban: {
+          listTasks,
+        },
+      },
+    });
+
+    expect(result.triggered).toBe(false);
+    expect(result.reason).toBe("repo_area_parallel_limit");
+    expect(result.taskCount).toBe(0);
+  });
+});
+// ═══════════════════════════════════════════════════════════════════════════
 //  condition.slot_available Tests
 // ═══════════════════════════════════════════════════════════════════════════
 

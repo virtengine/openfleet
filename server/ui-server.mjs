@@ -75,6 +75,7 @@ import {
   getManifestPath,
   scaffoldAgentProfiles,
   getBosunHomeDir,
+  syncAutoDiscoveredLibraryEntries,
 } from "../infra/library-manager.mjs";
 import {
   listCatalog,
@@ -347,6 +348,14 @@ function ensureLibraryInitialized(rootDir = repoRoot) {
         const count = rebuiltManifest?.entries?.length ?? 0;
         console.log(`[ui] Library manifest auto-synced (${count} entries) at ${normalizedRoot}.`);
       }
+    }
+
+    const autoSynced = syncAutoDiscoveredLibraryEntries(normalizedRoot);
+    if (Number(autoSynced?.totalUpserted || 0) > 0) {
+      console.log(
+        `[ui] Library auto-discovered ${autoSynced.totalUpserted} entry(s) ` +
+          `(prompts=${autoSynced.promptEntriesUpserted || 0}, mcp=${autoSynced.mcpEntriesUpserted || 0}) at ${normalizedRoot}.`,
+      );
     }
   } catch (err) {
     console.warn(`[ui] Library init failed for ${normalizedRoot}: ${err.message}`);
@@ -7513,6 +7522,8 @@ async function handleApi(req, res, url) {
     if (workspaceFilter === "*" || workspaceFilter === "all") {
       workspaceFilter = "";
     }
+    const workspaceContext = resolveWorkspaceContextFromRequest(url, { allowAll: false });
+    const workspaceDirFilter = normalizeCandidatePath(workspaceContext?.workspaceDir);
     const repositoryFilter = (url.searchParams.get("repository") || "").trim().toLowerCase();
     const page = Math.max(0, Number(url.searchParams.get("page") || "0"));
     const pageSize = Math.min(
@@ -7540,14 +7551,22 @@ async function handleApi(req, res, url) {
       );
       const search = (url.searchParams.get("search") || "").trim().toLowerCase();
       const filtered = tasks.filter((task) => {
-        const taskWorkspace = String(
+        const taskWorkspaceRaw = String(
           task.workspace || task.meta?.workspace || "",
-        ).trim().toLowerCase();
+        ).trim();
+        const taskWorkspace = taskWorkspaceRaw.toLowerCase();
         const taskRepository = String(
           task.repository || task.meta?.repository || "",
         ).trim().toLowerCase();
         if (workspaceFilter && taskWorkspace !== workspaceFilter) {
-          return false;
+          const taskWorkspacePath = normalizeCandidatePath(taskWorkspaceRaw);
+          const workspaceMatchByPath =
+            Boolean(taskWorkspacePath) &&
+            Boolean(workspaceDirFilter) &&
+            taskWorkspacePath === workspaceDirFilter;
+          if (!workspaceMatchByPath) {
+            return false;
+          }
         }
         if (repositoryFilter && taskRepository !== repositoryFilter) {
           return false;

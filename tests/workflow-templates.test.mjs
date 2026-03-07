@@ -377,6 +377,35 @@ describe("workflow-templates", () => {
     expect(guardToChain).toBeDefined();
     expect(guardToNotify).toBeDefined();
   });
+
+  it("weekly fitness summary template includes evaluator metrics and follow-up materialization", () => {
+    const template = getTemplate("template-weekly-fitness-summary");
+    expect(template).toBeDefined();
+    expect(template?.category).toBe("planning");
+    expect(template?.trigger).toBe("trigger.schedule");
+
+    expect(template?.variables?.lookbackDays).toBe(7);
+    expect(template?.variables?.maxFollowupTasks).toBe(4);
+    expect(template?.variables?.createFollowupTasks).toBe(true);
+
+    const evaluateNode = template.nodes.find((n) => n.id === "evaluate-fitness");
+    expect(evaluateNode?.type).toBe("action.run_agent");
+    const prompt = String(evaluateNode?.config?.prompt || "").toLowerCase();
+    expect(prompt).toContain("throughput");
+    expect(prompt).toContain("regression rate");
+    expect(prompt).toContain("merge success");
+    expect(prompt).toContain("reopened tasks");
+    expect(prompt).toContain("debt growth");
+
+    const materializeNode = template.nodes.find((n) => n.id === "materialize-followups");
+    expect(materializeNode?.type).toBe("action.materialize_planner_tasks");
+    expect(materializeNode?.config?.maxTasks).toBe("{{maxFollowupTasks}}");
+
+    const createFlowEdge = template.edges.find(
+      (e) => e.source === "has-followups" && e.target === "build-followup-json",
+    );
+    expect(createFlowEdge).toBeDefined();
+  });
 });
 
 // ── Template API ────────────────────────────────────────────────────────────
@@ -874,3 +903,4 @@ describe("template category coverage", () => {
     }
   });
 });
+

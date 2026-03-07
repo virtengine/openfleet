@@ -105,15 +105,15 @@ function createFixtureServices(scenario) {
       launchEphemeralThread: vi.fn(async (prompt, cwd, timeout) => {
         rec("agentPool","launchEphemeralThread",[prompt,cwd,timeout]);
         return { success: true, output: JSON.stringify({ tasks: [
-          { title: "Mock task: implement feature", description: "Auto" },
-          { title: "Mock task: write tests",       description: "Auto" },
+          { title: "Mock task: implement feature", description: "Auto", acceptance_criteria: ["Feature behavior is validated"], verification: ["npm test -- feature"], repo_areas: ["workflow"], impact: 0.8, confidence: 0.8, risk: 0.3 },
+          { title: "Mock task: write tests",       description: "Auto", acceptance_criteria: ["Coverage improved"], verification: ["npm test -- tests"], repo_areas: ["tests"], impact: 0.7, confidence: 0.85, risk: 0.2 },
         ]}), sdk: "mock", threadId: `thread-${Date.now()}` };
       }),
       execWithRetry: vi.fn(async (prompt, opts) => {
         rec("agentPool","execWithRetry",[prompt,opts]);
         return { success: true, output: JSON.stringify({ tasks: [
-          { title: "Mock task: implement feature", description: "Auto" },
-          { title: "Mock task: write tests",       description: "Auto" },
+          { title: "Mock task: implement feature", description: "Auto", acceptance_criteria: ["Feature behavior is validated"], verification: ["npm test -- feature"], repo_areas: ["workflow"], impact: 0.8, confidence: 0.8, risk: 0.3 },
+          { title: "Mock task: write tests",       description: "Auto", acceptance_criteria: ["Coverage improved"], verification: ["npm test -- tests"], repo_areas: ["tests"], impact: 0.7, confidence: 0.85, risk: 0.2 },
         ]}), sdk: "mock", threadId: `thread-${Date.now()}`, attempts: 1, continues: 0 };
       }),
       launchOrResumeThread: vi.fn(async (prompt, cwd, timeout, opts) => {
@@ -322,3 +322,4 @@ export function createTemplateHarness(templateId, scenario = {}, varOverrides = 
     },
   };
 }
+

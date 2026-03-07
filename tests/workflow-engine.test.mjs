@@ -1906,6 +1906,44 @@ it("agent.run_planner appends output requirements to explicit prompts and honors
   expect(sentPrompt).toContain("single fenced JSON block");
 });
 
+it("agent.run_planner appends planner feedback context from workflow data", async () => {
+  const handler = getNodeType("agent.run_planner");
+  expect(handler).toBeDefined();
+
+  const ctx = new WorkflowContext({
+    _plannerFeedback: "Previous run skipped high-risk tasks in workflow area.",
+  });
+  const launchEphemeralThread = vi.fn().mockResolvedValue({
+    success: true,
+    output: '{"tasks":[]}',
+    sdk: "codex",
+    items: [],
+    threadId: "planner-thread-feedback",
+  });
+  const mockEngine = {
+    services: {
+      agentPool: {
+        launchEphemeralThread,
+      },
+      prompts: {
+        planner: "Planner prompt",
+      },
+    },
+  };
+
+  const node = {
+    id: "planner-feedback",
+    type: "agent.run_planner",
+    config: {
+      taskCount: 2,
+    },
+  };
+
+  await handler.execute(node, ctx, mockEngine);
+  const sentPrompt = String(launchEphemeralThread.mock.calls[0][0] || "");
+  expect(sentPrompt).toContain("Planner feedback context:");
+  expect(sentPrompt).toContain("Previous run skipped high-risk tasks in workflow area.");
+});
 it("agent.run_planner fails immediately when planner dependencies are unavailable", async () => {
   const handler = getNodeType("agent.run_planner");
   expect(handler).toBeDefined();
@@ -1936,7 +1974,7 @@ it("action.materialize_planner_tasks parses fenced JSON and creates tasks", asyn
       "```json",
       "{",
       '  "tasks": [',
-      '    { "title": "[m] fix(workflow): create tasks", "description": "A", "verification": ["v1"] },',
+      '    { "title": "[m] fix(workflow): create tasks", "description": "A", "acceptance_criteria": ["ac1"], "verification": ["v1"], "repo_areas": ["workflow"], "impact": 0.8, "confidence": 0.7, "risk": 0.2 },',
       '    { "title": "[m] fix(workflow): duplicate title", "description": "B" }',
       "  ]",
       "}",
@@ -1987,11 +2025,21 @@ it("action.materialize_planner_tasks parses fenced JSON and creates tasks", asyn
   });
   expect(listTasks).toHaveBeenCalledTimes(1);
   expect(createTask).toHaveBeenCalledTimes(1);
-  expect(createTask).toHaveBeenCalledWith("proj-123", {
+  expect(createTask).toHaveBeenCalledWith("proj-123", expect.objectContaining({
     title: "[m] fix(workflow): create tasks",
-    description: "A\n\n## Verification\n- v1",
+    description: "A\n\n## Acceptance Criteria\n- ac1\n\n## Verification\n- v1",
     status: "todo",
-  });
+    repo_areas: ["workflow"],
+    meta: expect.objectContaining({
+      repo_areas: ["workflow"],
+      planner: expect.objectContaining({
+        impact: 1,
+        confidence: 1,
+        risk: "low",
+        repo_areas: ["workflow"],
+      }),
+    }),
+  }));
 });
 
 it("action.materialize_planner_tasks fails when all parsed tasks are skipped and minCreated is not met", async () => {
@@ -2053,7 +2101,7 @@ it("action.materialize_planner_tasks passes two args to createTask even with def
       "```json",
       "{",
       '  "tasks": [',
-      '    { "title": "[m] fix(materialize): preserve payload", "description": "A", "workspace": "virtengine-gh", "repository": "virtengine/virtengine" }',
+      '    { "title": "[m] fix(materialize): preserve payload", "description": "A", "acceptance_criteria": ["ac"], "verification": ["verify"], "repo_areas": ["workflow"], "workspace": "virtengine-gh", "repository": "virtengine/virtengine" }',
       "  ]",
       "}",
       "```",
@@ -2112,7 +2160,7 @@ it("action.materialize_planner_tasks applies workspace defaults from workflow co
       "```json",
       "{",
       '  "tasks": [',
-      '    { "title": "[m] feat(workflow): apply defaults", "description": "A" }',
+      '    { "title": "[m] feat(workflow): apply defaults", "description": "A", "acceptance_criteria": ["ac"], "verification": ["verify"], "repo_areas": ["workflow"] }',
       "  ]",
       "}",
       "```",
@@ -2210,6 +2258,83 @@ it("action.materialize_planner_tasks surfaces upstream planner errors when no ou
   );
 });
 
+it("action.materialize_planner_tasks enforces planner quality gates and persists planner metadata", async () => {
+  const handler = getNodeType("action.materialize_planner_tasks");
+  expect(handler).toBeDefined();
+
+  const ctx = new WorkflowContext({});
+  ctx.setNodeOutput("run-planner", {
+    output: [
+      "```json",
+      "{",
+      '  "tasks": [',
+      '    { "title": "[m] fix(workflow): missing acceptance", "description": "A", "verification": ["v1"], "repo_areas": ["workflow"], "impact": 0.9, "risk": 0.2 },',
+      '    { "title": "[m] fix(workflow): low impact", "description": "B", "acceptance_criteria": ["ac"], "verification": ["v"], "repo_areas": ["workflow"], "impact": 0.1, "risk": 0.2 },',
+      '    { "title": "[m] fix(workflow): high risk", "description": "C", "acceptance_criteria": ["ac"], "verification": ["v"], "repo_areas": ["workflow"], "impact": 0.9, "risk": 9.5 },',
+      '    { "title": "[m] fix(workflow): area saturated", "description": "D", "acceptance_criteria": ["ac"], "verification": ["v"], "repo_areas": ["workflow"], "impact": 0.9, "risk": 0.2 },',
+      '    { "title": "[m] fix(server): valid candidate", "description": "E", "acceptance_criteria": ["ac-server"], "verification": ["v-server"], "repo_areas": ["server"], "impact": 0.9, "confidence": 0.8, "risk": 0.2, "estimated_effort": "M", "why_now": "blocking incidents", "kill_criteria": ["if flaky"] }',
+      "  ]",
+      "}",
+      "```",
+    ].join("\n"),
+  });
+
+  const createTask = vi.fn(async () => ({ id: "task-quality-1" }));
+  const listTasks = vi.fn().mockResolvedValue([
+    { id: "existing-1", title: "existing workflow task", status: "todo", meta: { repo_areas: ["workflow"] } },
+  ]);
+  const mockEngine = {
+    services: {
+      kanban: {
+        createTask,
+        listTasks,
+      },
+    },
+  };
+
+  const node = {
+    id: "materialize-quality",
+    type: "action.materialize_planner_tasks",
+    config: {
+      plannerNodeId: "run-planner",
+      projectId: "proj-123",
+      failOnZero: true,
+      dedup: true,
+      minCreated: 1,
+      minImpactScore: 0.5,
+      maxRiskWithoutHuman: "medium",
+      maxConcurrentRepoAreaTasks: 1,
+    },
+  };
+
+  const result = await handler.execute(node, ctx, mockEngine);
+  expect(result.success).toBe(true);
+  expect(result.createdCount).toBe(1);
+  expect(result.skippedCount).toBe(4);
+  expect(result.skipped).toEqual(expect.arrayContaining([
+    expect.objectContaining({ title: "[m] fix(workflow): missing acceptance", reason: "missing_acceptance_criteria" }),
+    expect.objectContaining({ title: "[m] fix(workflow): low impact", reason: "below_min_impact" }),
+    expect.objectContaining({ title: "[m] fix(workflow): high risk", reason: "risk_above_threshold" }),
+    expect.objectContaining({ title: "[m] fix(workflow): area saturated", reason: "repo_area_saturated" }),
+  ]));
+  expect(createTask).toHaveBeenCalledTimes(1);
+  expect(createTask).toHaveBeenCalledWith("proj-123", expect.objectContaining({
+    title: "[m] fix(server): valid candidate",
+    repo_areas: ["server"],
+    meta: expect.objectContaining({
+      repo_areas: ["server"],
+      planner: expect.objectContaining({
+        impact: 1,
+        confidence: 1,
+        risk: "low",
+        estimated_effort: "m",
+        repo_areas: ["server"],
+        why_now: "blocking incidents",
+        kill_criteria: ["if flaky"],
+      }),
+    }),
+  }));
+});
 describe("WorkflowEngine singleton services", () => {
   beforeEach(() => {
     resetWorkflowEngine();
@@ -2529,3 +2654,4 @@ describe("Concurrency limiter", () => {
     expect(engine.getConcurrencyStats().activeRuns).toBe(0);
   });
 });
+

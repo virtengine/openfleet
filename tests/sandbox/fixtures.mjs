@@ -289,6 +289,7 @@ export const TEMPLATE_FIXTURES = {
   "template-task-replenish":              { scenario: scenarios.kanbanState(),     inputVars: {} },
   "template-nightly-report":              { scenario: scenarios.releaseReady(),    inputVars: {} },
   "template-sprint-retrospective":         { scenario: scenarios.kanbanState(),     inputVars: { sprintNumber: 42 } },
+  "template-weekly-fitness-summary":       { scenario: scenarios.kanbanState(),     inputVars: { lookbackDays: 7, maxFollowupTasks: 3, createFollowupTasks: true } },
   "template-build-deploy":                { scenario: scenarios.cicdDeploy(),     inputVars: { branch: "main", environment: "staging" } },
   "template-release-pipeline":            { scenario: scenarios.releaseReady(),    inputVars: { tagName: "v1.1.0", releaseBranch: "main" } },
   "template-canary-deploy":               { scenario: scenarios.cicdDeploy(),     inputVars: { branch: "main", environment: "production", promotionDelayMs: 10 } },
@@ -325,3 +326,5 @@ export const TEMPLATE_FIXTURES = {
   "template-mcp-github-pr-monitor":      { scenario: scenarios.kanbanState(),     inputVars: { owner: "virtengine", repo: "bosun", checkInterval: "*/30 * * * *", prThreshold: "5" } },
   "template-mcp-cross-server-pipeline":  { scenario: scenarios.kanbanState(),     inputVars: { githubOwner: "virtengine", githubRepo: "bosun" } },
 };
+
+

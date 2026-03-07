@@ -73,6 +73,60 @@ export const dataFreshness = signal({});
 function _markFresh(group) {
   dataFreshness.value = { ...dataFreshness.value, [group]: Date.now() };
 }
+export function sanitizeTaskText(value) {
+  let text = String(value ?? "");
+  for (const [pattern, replacement] of TASK_TEXT_REPLACEMENTS) {
+    text = text.replace(pattern, replacement);
+  }
+  return text.replace(/\s{2,}/g, " ").trim();
+}
+
+function synthesizeTaskDescription(task) {
+  const title = sanitizeTaskText(task?.title || "");
+  if (!title) {
+    return "No description provided yet. Add scope, key files, and acceptance checks before dispatch.";
+  }
+  return `Implementation notes for "${title}". Include scope, key files, risks, and acceptance checks before dispatch.`;
+}
+
+function normalizeTaskForUi(task) {
+  if (!task || typeof task !== "object") return task;
+  const title = sanitizeTaskText(task.title || "");
+  const description = sanitizeTaskText(task.description || "");
+  const meta = task.meta && typeof task.meta === "object"
+    ? {
+        ...task.meta,
+        title: task.meta.title != null ? sanitizeTaskText(task.meta.title) : task.meta.title,
+        description: task.meta.description != null ? sanitizeTaskText(task.meta.description) : task.meta.description,
+      }
+    : task.meta;
+  return {
+    ...task,
+    title,
+    description: description || synthesizeTaskDescription({ ...task, title }),
+    meta,
+  };
+}
+
+function mergeTaskPages(existingTasks = [], incomingTasks = []) {
+  const indexById = new Map();
+  const merged = [];
+  for (const task of existingTasks) {
+    merged.push(task);
+    indexById.set(String(task?.id ?? merged.length - 1), merged.length - 1);
+  }
+  for (const task of incomingTasks) {
+    const key = String(task?.id ?? "");
+    if (!key || !indexById.has(key)) {
+      merged.push(task);
+      if (key) indexById.set(key, merged.length - 1);
+      continue;
+    }
+    merged[indexById.get(key)] = { ...merged[indexById.get(key)], ...task };
+  }
+  return merged;
+}
+
 
 /* ═══════════════════════════════════════════════════════════════
  *  SIGNALS — Single source of truth for UI state
@@ -90,13 +144,29 @@ export const projectSummary = signal(null);
 export const tasksLoaded = signal(false);
 export const tasksData = signal([]);
 export const tasksPage = signal(0);
-export const tasksPageSize = signal(20);
+export const tasksPageSize = signal(25);
 export const tasksFilter = signal("all");
 export const tasksPriority = signal("all");
 export const tasksSearch = signal("");
 export const tasksSort = signal("updated");
 export const tasksTotalPages = signal(1);
 const TASK_IGNORE_LABEL = "codex:ignore";
+const TASK_TEXT_REPLACEMENTS = [
+  [/\u00D4\u00C7\u00F6/g, "-"],
+  [/\u00D4\u00C7\u00A3/g, "\""],
+  [/\u00D4\u00C7\u00A5/g, "\""],
+  [/\u00D4\u00C7\u00BF/g, "'"],
+  [/\u00D4\u00C7\u2013/g, "'"],
+  [/\u00E2\u20AC\u201D/g, "-"],
+  [/\u00E2\u20AC\u201C/g, "-"],
+  [/\u00E2\u20AC\u0153/g, "\""],
+  [/\u00E2\u20AC\u009D/g, "\""],
+  [/\u00E2\u20AC\u02DC/g, "'"],
+  [/\u00E2\u20AC\u2122/g, "'"],
+  [/\u00E2\u20AC\u00A6/g, "..."],
+  [/\u00C2/g, " "],
+];
+
 
 // ── Agents
 export const agentsData = signal([]);
@@ -415,7 +485,8 @@ export async function loadExecutor() {
 }
 
 /** Load tasks with current filter/page/sort → tasksData + tasksTotalPages */
-export async function loadTasks() {
+export async function loadTasks(options = {}) {
+  const append = Boolean(options?.append);
   const params = new URLSearchParams({
     page: String(tasksPage.value),
     pageSize: String(tasksPageSize.value),
@@ -434,7 +505,12 @@ export async function loadTasks() {
       totalPages: 1,
     }),
   );
-  tasksData.value = res.data || [];
+  const nextTasks = Array.isArray(res.data)
+    ? res.data.map(normalizeTaskForUi)
+    : [];
+  tasksData.value = append
+    ? mergeTaskPages(tasksData.value || [], nextTasks)
+    : nextTasks;
   tasksTotalPages.value =
     res.totalPages ||
     Math.max(1, Math.ceil((res.total || 0) / tasksPageSize.value));

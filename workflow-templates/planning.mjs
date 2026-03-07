@@ -5,7 +5,7 @@
  *   - Task Planner (recommended)
  *   - Task Replenish (Scheduled)
  *   - Nightly Report
- *   - Sprint Retrospective
+ *   - Sprint Retrospective`r`n *   - Weekly Fitness Summary
  */
 
 import { node, edge, resetLayout } from "./_helpers.mjs";
@@ -445,3 +445,116 @@ Only create tasks if {{createImprovementTasks}} is true.`,
     },
   },
 };
+
+// ═══════════════════════════════════════════════════════════════════════════
+//  Weekly Fitness Summary
+// ═══════════════════════════════════════════════════════════════════════════
+
+resetLayout();
+
+export const WEEKLY_FITNESS_SUMMARY_TEMPLATE = {
+  id: "template-weekly-fitness-summary",
+  name: "Weekly Fitness Summary",
+  description:
+    "Weekly evaluator workflow that scores delivery fitness using throughput, " +
+    "regression rate, merge success, reopened tasks, and debt growth. " +
+    "Produces follow-up actions and can materialize them as backlog tasks.",
+  category: "planning",
+  enabled: false,
+  trigger: "trigger.schedule",
+  variables: {
+    scheduleCron: "0 9 * * 1",
+    lookbackDays: 7,
+    evaluatorFocus:
+      "Bias toward systemic fixes that reduce regressions and execution thrash.",
+    createFollowupTasks: true,
+    maxFollowupTasks: 4,
+  },
+  nodes: [
+    node("trigger", "trigger.schedule", "Weekly Schedule", {
+      intervalMs: 604800000,
+      cron: "{{scheduleCron}}",
+    }, { x: 420, y: 40 }),
+
+    node("task-metrics", "action.bosun_cli", "Collect Task Metrics", {
+      command: "task list --format json --since {{lookbackDays}}d",
+      continueOnError: true,
+    }, { x: 150, y: 180 }),
+
+    node("pr-metrics", "action.run_command", "Collect PR Metrics", {
+      command: "gh pr list --state all --json number,state,mergedAt,closedAt,title --limit 200",
+      continueOnError: true,
+    }, { x: 420, y: 180 }),
+
+    node("debt-metrics", "action.run_command", "Collect Debt Signals", {
+      command: "node -e \"const fs=require('fs');const p='.bosun/workflow-runs/task-debt-ledger.jsonl';if(!fs.existsSync(p)){console.log('[]');process.exit(0);}const lines=fs.readFileSync(p,'utf8').split(/\\r?\\n/).filter(Boolean);console.log(JSON.stringify(lines.slice(-500).map(l=>{try{return JSON.parse(l)}catch{return null}}).filter(Boolean)));\"",
+      continueOnError: true,
+    }, { x: 690, y: 180 }),
+
+    node("evaluate-fitness", "action.run_agent", "Evaluate Fitness", {
+      prompt: `# Weekly Delivery Fitness Evaluation\n\nEvaluate the last {{lookbackDays}} days using these metrics:\n- Throughput\n- Regression rate\n- Merge success\n- Reopened tasks\n- Debt growth\n\n## Task Data\n{{taskMetrics}}\n\n## PR Data\n{{prMetrics}}\n\n## Debt Ledger Data\n{{debtMetrics}}\n\nFocus directive: {{evaluatorFocus}}\n\nReturn sections:\n1) Scorecard (0-100) with one line per metric\n2) Root-cause analysis of the largest drag\n3) Countermeasures ranked by impact/cost\n4) FOLLOW_UP_ACTION lines using format:\nFOLLOW_UP_ACTION: [title] | [description] | [repo_area] | [risk] | [effort]\n\nOnly include FOLLOW_UP_ACTION lines for changes that are worth implementing this week.`,
+      sdk: "auto",
+      timeoutMs: 600000,
+    }, { x: 420, y: 360 }),
+
+    node("has-followups", "condition.expression", "Follow-ups Enabled + Present", {
+      expression: "($data?.createFollowupTasks === true) && (($ctx.getNodeOutput('evaluate-fitness')?.output || '').includes('FOLLOW_UP_ACTION:'))",
+    }, { x: 420, y: 520 }),
+
+    node("build-followup-json", "action.run_agent", "Build Follow-up Tasks JSON", {
+      prompt: `Convert FOLLOW_UP_ACTION lines below into a single JSON object with shape { \"tasks\": [...] }.\n\nSource:\n{{evaluateFitness}}\n\nRules:\n- Generate at most {{maxFollowupTasks}} tasks\n- Include fields: title, description, implementation_steps, acceptance_criteria, verification, priority, tags, base_branch, impact, confidence, risk, estimated_effort, repo_areas, why_now, kill_criteria\n- Keep tasks implementation-ready and avoid duplicates\n- Return only JSON`,
+      sdk: "auto",
+      timeoutMs: 300000,
+    }, { x: 220, y: 690 }),
+
+    node("materialize-followups", "action.materialize_planner_tasks", "Materialize Follow-up Tasks", {
+      plannerNodeId: "build-followup-json",
+      maxTasks: "{{maxFollowupTasks}}",
+      status: "todo",
+      dedup: true,
+      failOnZero: false,
+      minCreated: 0,
+    }, { x: 220, y: 850 }),
+
+    node("notify-summary", "notify.telegram", "Send Weekly Fitness Summary", {
+      message: ":chart: Weekly fitness evaluation complete. Follow-up tasks created: {{materialize-followups.createdCount}}\n\n{{evaluateFitness}}",
+      silent: true,
+    }, { x: 420, y: 1010 }),
+
+    node("log-no-followups", "notify.log", "No Follow-up Tasks", {
+      message: "Weekly fitness evaluation completed with no follow-up task creation.",
+      level: "info",
+    }, { x: 620, y: 690 }),
+  ],
+  edges: [
+    edge("trigger", "task-metrics"),
+    edge("trigger", "pr-metrics"),
+    edge("trigger", "debt-metrics"),
+    edge("task-metrics", "evaluate-fitness"),
+    edge("pr-metrics", "evaluate-fitness"),
+    edge("debt-metrics", "evaluate-fitness"),
+    edge("evaluate-fitness", "has-followups"),
+    edge("has-followups", "build-followup-json", { condition: "$output?.result === true" }),
+    edge("has-followups", "log-no-followups", { condition: "$output?.result !== true" }),
+    edge("build-followup-json", "materialize-followups"),
+    edge("materialize-followups", "notify-summary"),
+    edge("log-no-followups", "notify-summary"),
+  ],
+  metadata: {
+    author: "bosun",
+    version: 1,
+    createdAt: "2026-03-07T00:00:00Z",
+    templateVersion: "1.0.0",
+    tags: ["planning", "weekly", "fitness", "evaluation", "debt", "throughput"],
+    replaces: {
+      module: "monitor.mjs",
+      functions: ["scheduleWeeklyFitnessSummary"],
+      calledFrom: ["monitor.mjs:startProcess"],
+      description:
+        "Adds a weekly evaluator loop that measures delivery fitness and " +
+        "optionally materializes improvement actions as tasks.",
+    },
+  },
+};
+
+
