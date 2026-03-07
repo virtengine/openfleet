@@ -210,6 +210,50 @@ export function classNames(...args) {
   return classes.join(" ");
 }
 
+/**
+ * Build a stable serialized representation for change detection.
+ * Object keys are sorted to avoid order-related false positives.
+ * @param {*} value
+ * @returns {string}
+ */
+export function stableSerialize(value) {
+  if (value === undefined) return "undefined";
+  if (value === null) return "null";
+  if (typeof value === "number" && !Number.isFinite(value)) {
+    return `"${String(value)}"`;
+  }
+  if (Array.isArray(value)) {
+    return `[${value.map((item) => stableSerialize(item)).join(",")}]`;
+  }
+  if (typeof value === "object") {
+    const keys = Object.keys(value).sort();
+    return `{${keys
+      .map((key) => `${JSON.stringify(key)}:${stableSerialize(value[key])}`)
+      .join(",")}}`;
+  }
+  return JSON.stringify(value);
+}
+
+/**
+ * Count changed top-level fields between two plain objects.
+ * Values are compared using stable serialization.
+ * @param {Record<string, any>} initial
+ * @param {Record<string, any>} current
+ * @returns {number}
+ */
+export function countChangedFields(initial = {}, current = {}) {
+  const base = initial && typeof initial === "object" ? initial : {};
+  const next = current && typeof current === "object" ? current : {};
+  const keys = new Set([...Object.keys(base), ...Object.keys(next)]);
+  let changed = 0;
+  for (const key of keys) {
+    if (stableSerialize(base[key]) !== stableSerialize(next[key])) {
+      changed += 1;
+    }
+  }
+  return changed;
+}
+
 /* ─── Data Export Utilities ─── */
 
 /**

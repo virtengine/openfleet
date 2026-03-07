@@ -699,6 +699,135 @@ function SelectWithCustom({ options, value, onChange, placeholder }) {
   `;
 }
 
+function MultiModelSelector({
+  options,
+  selectedModels,
+  primaryModel,
+  onChange,
+  customPlaceholder = "Enter custom model slug...",
+}) {
+  const [customModelInput, setCustomModelInput] = useState("");
+  const normalizedOptions = Array.isArray(options)
+    ? options
+      .map((entry) => {
+        if (typeof entry === "string") {
+          return { value: entry, label: entry, recommended: false };
+        }
+        if (!entry || typeof entry !== "object") return null;
+        const value = String(entry.value || "").trim();
+        if (!value) return null;
+        return {
+          value,
+          label: String(entry.label || value),
+          recommended: Boolean(entry.recommended),
+        };
+      })
+      .filter(Boolean)
+    : [];
+  const knownSet = new Set(normalizedOptions.map((entry) => entry.value));
+  const selected = [...new Set((Array.isArray(selectedModels) ? selectedModels : [])
+    .map((model) => String(model || "").trim())
+    .filter(Boolean))];
+  const customSelected = selected.filter((model) => !knownSet.has(model));
+  const effectivePrimary = selected.includes(primaryModel) ? primaryModel : (selected[0] || "");
+
+  const updateSelection = (nextSelected, nextPrimary) => {
+    const normalizedSelected = [...new Set((Array.isArray(nextSelected) ? nextSelected : [])
+      .map((model) => String(model || "").trim())
+      .filter(Boolean))];
+    const resolvedPrimary = normalizedSelected.includes(nextPrimary)
+      ? nextPrimary
+      : (normalizedSelected[0] || "");
+    onChange({ models: normalizedSelected, primaryModel: resolvedPrimary });
+  };
+
+  const toggleModel = (model, enabled) => {
+    if (!model) return;
+    if (enabled) {
+      updateSelection([...selected, model], effectivePrimary || model);
+      return;
+    }
+    const nextSelected = selected.filter((entry) => entry !== model);
+    const nextPrimary = effectivePrimary === model ? (nextSelected[0] || "") : effectivePrimary;
+    updateSelection(nextSelected, nextPrimary);
+  };
+
+  const addCustomModel = () => {
+    const candidate = String(customModelInput || "").trim();
+    if (!candidate) return;
+    if (selected.includes(candidate)) {
+      setCustomModelInput("");
+      return;
+    }
+    updateSelection([...selected, candidate], effectivePrimary || candidate);
+    setCustomModelInput("");
+  };
+
+  return html`
+    <div class="setting-input-wrap" style="display:block">
+      <div style="font-size:12px;color:var(--text-dim);margin-bottom:6px">Primary model</div>
+      <select
+        value=${effectivePrimary}
+        onchange=${(e) => {
+          const nextPrimary = String(e.target.value || "");
+          updateSelection(selected, nextPrimary);
+        }}
+        disabled=${selected.length === 0}
+      >
+        <option value="">${selected.length === 0 ? "Select models first" : "Select primary model"}</option>
+        ${selected.map((model) => html`<option value=${model}>${model}</option>`)}
+      </select>
+      <div style="font-size:12px;color:var(--text-dim);margin:8px 0 6px">Enabled models</div>
+      <div style="display:grid;grid-template-columns:1fr;gap:6px;max-height:180px;overflow:auto;padding:8px;border:1px solid var(--border-primary);border-radius:8px;background:var(--bg-input)">
+        ${normalizedOptions.map((entry) => html`
+          <label style="display:flex;align-items:center;gap:8px;font-size:0.82rem;cursor:pointer">
+            <input
+              type="checkbox"
+              checked=${selected.includes(entry.value)}
+              onchange=${(e) => toggleModel(entry.value, e.target.checked)}
+              style="width:auto;padding:0;margin:0;accent-color:var(--accent)"
+            />
+            <span>${entry.label}${entry.recommended ? " (recommended)" : ""}</span>
+          </label>
+        `)}
+        ${normalizedOptions.length === 0 && html`
+          <div class="hint">No known models for this executor type.</div>
+        `}
+      </div>
+      <div style="display:flex;gap:6px;margin-top:8px;flex-wrap:wrap">
+        <input
+          type="text"
+          value=${customModelInput}
+          placeholder=${customPlaceholder}
+          oninput=${(e) => setCustomModelInput(e.target.value)}
+          onkeydown=${(e) => {
+            if (e.key === "Enter") {
+              e.preventDefault();
+              addCustomModel();
+            }
+          }}
+          style="flex:1 1 220px"
+        />
+        <button class="btn btn-sm" onclick=${addCustomModel}>Add custom</button>
+      </div>
+      ${customSelected.length > 0 && html`
+        <div style="margin-top:8px;display:flex;gap:6px;flex-wrap:wrap">
+          ${customSelected.map((model) => html`
+            <button
+              class="btn btn-sm btn-danger"
+              style="padding:3px 8px"
+              onclick=${() => toggleModel(model, false)}
+              title="Remove custom model"
+            >
+              ${model} ✕
+            </button>
+          `)}
+        </div>
+      `}
+    </div>
+  `;
+}
+
 // ── Collapsible Section (module scope — stable identity across re-renders) ──
 // Defining this inside App() would create a new function reference on every
 // state update, causing Preact to unmount/remount the component and lose
@@ -809,12 +938,32 @@ function App() {
   const [workflowAutomationEnabled, setWorkflowAutomationEnabled] = useState(true);
   const [workflowProfile, setWorkflowProfile] = useState("balanced");
   const [workflowDefaultTemplates, setWorkflowDefaultTemplates] = useState([]);
+  const [workflowTemplateOverridesById, setWorkflowTemplateOverridesById] = useState({});
   const [workflowAutoInstall, setWorkflowAutoInstall] = useState(true);
   const [workflowNodeMaxRetries, setWorkflowNodeMaxRetries] = useState(3);
   const [workflowNodeTimeoutMs, setWorkflowNodeTimeoutMs] = useState(600000);
   const [workflowRunStuckThresholdMs, setWorkflowRunStuckThresholdMs] = useState(300000);
   const [workflowMaxPersistedRuns, setWorkflowMaxPersistedRuns] = useState(200);
   const [workflowMaxConcurrentBranches, setWorkflowMaxConcurrentBranches] = useState(8);
+  const [contextShreddingEnabled, setContextShreddingEnabled] = useState(true);
+  const [contextShreddingFullContextTurns, setContextShreddingFullContextTurns] = useState(3);
+  const [contextShreddingCompressToolOutputs, setContextShreddingCompressToolOutputs] = useState(true);
+  const [contextShreddingCompressMessages, setContextShreddingCompressMessages] = useState(true);
+  const [contextShreddingTier1MaxAge, setContextShreddingTier1MaxAge] = useState(5);
+  const [contextShreddingTier2MaxAge, setContextShreddingTier2MaxAge] = useState(9);
+  const [contextShreddingTier1HeadChars, setContextShreddingTier1HeadChars] = useState(2000);
+  const [contextShreddingTier1TailChars, setContextShreddingTier1TailChars] = useState(800);
+  const [contextShreddingTier2HeadChars, setContextShreddingTier2HeadChars] = useState(600);
+  const [contextShreddingTier2TailChars, setContextShreddingTier2TailChars] = useState(300);
+  const [contextShreddingScoreHigh, setContextShreddingScoreHigh] = useState(70);
+  const [contextShreddingScoreLow, setContextShreddingScoreLow] = useState(30);
+  const [contextShreddingCompressAgentMessages, setContextShreddingCompressAgentMessages] = useState(true);
+  const [contextShreddingCompressUserMessages, setContextShreddingCompressUserMessages] = useState(true);
+  const [contextShreddingMsgTier0MaxAge, setContextShreddingMsgTier0MaxAge] = useState(1);
+  const [contextShreddingMsgTier1MaxAge, setContextShreddingMsgTier1MaxAge] = useState(4);
+  const [contextShreddingMsgMinCompressChars, setContextShreddingMsgMinCompressChars] = useState(120);
+  const [contextShreddingUserMsgFullTurns, setContextShreddingUserMsgFullTurns] = useState(1);
+  const [contextShreddingProfiles, setContextShreddingProfiles] = useState("");
   const CURRENT_WORKFLOW_PROFILE_ID = "current-installed";
   // Kanban
   const [kanbanSyncPolicy, setKanbanSyncPolicy] = useState("internal-primary");
@@ -877,6 +1026,9 @@ function App() {
   const [voiceTurnDetection, setVoiceTurnDetection] = useState("server_vad");
   const [voiceFallbackMode, setVoiceFallbackMode] = useState("browser");
   const [voiceDelegateExecutor, setVoiceDelegateExecutor] = useState("codex-sdk");
+  const [voiceTranscriptionEnabled, setVoiceTranscriptionEnabled] = useState(true);
+  const [voiceTranscriptionModel, setVoiceTranscriptionModel] = useState("gpt-4o-transcribe");
+  const [voiceAzureTranscriptionEnabled, setVoiceAzureTranscriptionEnabled] = useState(false);
   const [openaiRealtimeApiKey, setOpenaiRealtimeApiKey] = useState("");
   const [azureOpenaiRealtimeEndpoint, setAzureOpenaiRealtimeEndpoint] = useState("");
   const [azureOpenaiRealtimeApiKey, setAzureOpenaiRealtimeApiKey] = useState("");
@@ -904,7 +1056,17 @@ function App() {
     try {
       const d = await apiGet("voice/auth/" + provider + "/status");
       if (d.ok) {
-        setOauthAccounts((prev) => ({ ...prev, [provider]: { ...prev[provider], status: d.status || "idle", hasToken: !!d.hasToken, loading: false } }));
+        const connected = !!d.hasToken || d.status === "connected" || d.status === "complete";
+        setOauthAccounts((prev) => ({
+          ...prev,
+          [provider]: {
+            ...prev[provider],
+            status: connected ? "connected" : (d.status || "idle"),
+            hasToken: connected,
+            loading: false,
+            result: d.result || null,
+          },
+        }));
       }
     } catch { /* best-effort */ }
   };
@@ -938,10 +1100,28 @@ function App() {
         // Stop after 5 minutes
         setTimeout(() => clearInterval(poll), 300000);
       } else {
-        setOauthAccounts((prev) => ({ ...prev, [provider]: { ...prev[provider], loading: false } }));
+        setOauthAccounts((prev) => ({
+          ...prev,
+          [provider]: {
+            ...prev[provider],
+            status: "error",
+            hasToken: false,
+            loading: false,
+            result: d?.error ? { error: d.error } : prev[provider]?.result || null,
+          },
+        }));
       }
-    } catch {
-      setOauthAccounts((prev) => ({ ...prev, [provider]: { ...prev[provider], loading: false } }));
+    } catch (err) {
+      setOauthAccounts((prev) => ({
+        ...prev,
+        [provider]: {
+          ...prev[provider],
+          status: "error",
+          hasToken: false,
+          loading: false,
+          result: { error: err?.message || "OAuth start failed" },
+        },
+      }));
     }
   };
 
@@ -1105,6 +1285,9 @@ function App() {
     const defaultModel = provider === "custom"
       ? (ALL_ENDPOINT_MODEL_OPTIONS[0] || "gpt-realtime-1.5")
       : (getVoiceProviderModelDefaults(provider).model || "gpt-realtime-1.5");
+    const transcriptionEnabled = ep.transcriptionEnabled == null
+      ? provider !== "azure"
+      : ep.transcriptionEnabled !== false;
     return {
       id: ep.id || `ep-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
       name: String(ep.name || "").trim(),
@@ -1117,6 +1300,8 @@ function App() {
       weight: typeof ep.weight === "number" ? ep.weight : 100,
       enabled: ep.enabled !== false,
       visionModel: String(ep.visionModel || "").trim(),
+      transcriptionModel: String(ep.transcriptionModel || "").trim(),
+      transcriptionEnabled,
       authSource,
     };
   };
@@ -1141,6 +1326,7 @@ function App() {
           ? String(next.endpoint || "")
           : getDefaultVoiceEndpointUrl(nextProvider, next.authSource || "apiKey");
         if (nextProvider !== "azure") next.deployment = "";
+        next.transcriptionEnabled = nextProvider === "azure" ? false : true;
       }
       if (field === "authSource" && !isEndpointUrlEditable(next.provider)) {
         next.endpoint = getDefaultVoiceEndpointUrl(next.provider, String(value || "apiKey"));
@@ -1151,6 +1337,45 @@ function App() {
 
   const getWorkflowProfileById = (profileId, profileList = workflowProfiles) =>
     (profileList || []).find((profile_) => profile_.id === profileId) || null;
+
+  const getWorkflowTemplateById = (templateId, templateList = workflowTemplates) =>
+    (templateList || []).find((template) => String(template?.id || "") === String(templateId || "")) || null;
+
+  const buildWorkflowTemplateDefaultOverrides = (templateId, templateList = workflowTemplates) => {
+    const template = getWorkflowTemplateById(templateId, templateList);
+    const vars = Array.isArray(template?.variables) ? template.variables : [];
+    const overrides = {};
+    for (const variable of vars) {
+      const key = String(variable?.key || "").trim();
+      if (!key) continue;
+      overrides[key] = variable?.defaultValue ?? "";
+    }
+    return overrides;
+  };
+
+  const normalizeWorkflowTemplateOverridesForSelection = (
+    selectedTemplateIds,
+    templateOverrides,
+    templateList = workflowTemplates,
+  ) => {
+    const selectedSet = new Set((selectedTemplateIds || []).map((value) => String(value || "").trim()).filter(Boolean));
+    const input = templateOverrides && typeof templateOverrides === "object" ? templateOverrides : {};
+    const normalized = {};
+    for (const templateId of selectedSet) {
+      const defaults = buildWorkflowTemplateDefaultOverrides(templateId, templateList);
+      const existing = input[templateId] && typeof input[templateId] === "object"
+        ? input[templateId]
+        : {};
+      const next = {};
+      for (const [key, defaultValue] of Object.entries(defaults)) {
+        next[key] = existing[key] ?? defaultValue;
+      }
+      if (Object.keys(next).length > 0) {
+        normalized[templateId] = next;
+      }
+    }
+    return normalized;
+  };
 
   const getWorkflowTemplateIdsForProfile = (profileId, profileList = workflowProfiles) => {
     const profile_ = getWorkflowProfileById(profileId, profileList);
@@ -1188,6 +1413,9 @@ function App() {
     const templateIds = getWorkflowTemplateIdsForProfile(resolvedProfileId, profileList);
     setWorkflowProfile(resolvedProfileId);
     setWorkflowDefaultTemplates(templateIds);
+    setWorkflowTemplateOverridesById((prev) =>
+      normalizeWorkflowTemplateOverridesForSelection(templateIds, prev, workflowTemplates),
+    );
     if (profile_ && typeof profile_.workflowAutomationEnabled === "boolean") {
       setWorkflowAutomationEnabled(profile_.workflowAutomationEnabled);
     }
@@ -1207,6 +1435,38 @@ function App() {
       if (checked === undefined) return has ? current.filter((entry) => entry !== id) : [...current, id];
       return current;
     });
+    setWorkflowTemplateOverridesById((prev) => {
+      const currentTemplates = Array.isArray(workflowDefaultTemplates) ? [...workflowDefaultTemplates] : [];
+      const has = currentTemplates.includes(id);
+      const nextTemplates = checked === true && !has
+        ? [...currentTemplates, id]
+        : checked === false && has
+          ? currentTemplates.filter((entry) => entry !== id)
+          : checked === undefined
+            ? has
+              ? currentTemplates.filter((entry) => entry !== id)
+              : [...currentTemplates, id]
+            : currentTemplates;
+      return normalizeWorkflowTemplateOverridesForSelection(nextTemplates, prev, workflowTemplates);
+    });
+  };
+
+  const updateWorkflowTemplateOverride = (templateId, variableKey, rawValue, variableType) => {
+    const id = String(templateId || "").trim();
+    const key = String(variableKey || "").trim();
+    if (!id || !key) return;
+    const nextValue = variableType === "number"
+      ? (rawValue === "" ? "" : Number(rawValue))
+      : variableType === "toggle"
+        ? Boolean(rawValue)
+        : rawValue;
+    setWorkflowTemplateOverridesById((prev) => ({
+      ...prev,
+      [id]: {
+        ...(prev[id] || buildWorkflowTemplateDefaultOverrides(id, workflowTemplates)),
+        [key]: nextValue,
+      },
+    }));
   };
 
   // ── Load initial data ──────────────────────────────────────────────────────
@@ -1264,6 +1524,13 @@ function App() {
       }
       if (Array.isArray(d.workflowDefaultTemplates) && d.workflowDefaultTemplates.length > 0) {
         setWorkflowDefaultTemplates(d.workflowDefaultTemplates.map((templateId) => String(templateId).trim()).filter(Boolean));
+        setWorkflowTemplateOverridesById(
+          normalizeWorkflowTemplateOverridesForSelection(
+            d.workflowDefaultTemplates,
+            d.workflowTemplateOverridesById,
+            workflowData.templates || [],
+          ),
+        );
       }
       if (d.workflowAutoInstall != null) {
         setWorkflowAutoInstall(Boolean(d.workflowAutoInstall));
@@ -1282,6 +1549,63 @@ function App() {
       }
       if (d.workflowMaxConcurrentBranches != null) {
         setWorkflowMaxConcurrentBranches(Number(d.workflowMaxConcurrentBranches) || 8);
+      }
+      if (d.contextShreddingEnabled != null) {
+        setContextShreddingEnabled(Boolean(d.contextShreddingEnabled));
+      }
+      if (d.contextShreddingFullContextTurns != null) {
+        setContextShreddingFullContextTurns(Number(d.contextShreddingFullContextTurns) || 3);
+      }
+      if (d.contextShreddingCompressToolOutputs != null) {
+        setContextShreddingCompressToolOutputs(Boolean(d.contextShreddingCompressToolOutputs));
+      }
+      if (d.contextShreddingCompressMessages != null) {
+        setContextShreddingCompressMessages(Boolean(d.contextShreddingCompressMessages));
+      }
+      if (d.contextShreddingTier1MaxAge != null) {
+        setContextShreddingTier1MaxAge(Number(d.contextShreddingTier1MaxAge) || 5);
+      }
+      if (d.contextShreddingTier2MaxAge != null) {
+        setContextShreddingTier2MaxAge(Number(d.contextShreddingTier2MaxAge) || 9);
+      }
+      if (d.contextShreddingTier1HeadChars != null) {
+        setContextShreddingTier1HeadChars(Number(d.contextShreddingTier1HeadChars) || 2000);
+      }
+      if (d.contextShreddingTier1TailChars != null) {
+        setContextShreddingTier1TailChars(Number(d.contextShreddingTier1TailChars) || 800);
+      }
+      if (d.contextShreddingTier2HeadChars != null) {
+        setContextShreddingTier2HeadChars(Number(d.contextShreddingTier2HeadChars) || 600);
+      }
+      if (d.contextShreddingTier2TailChars != null) {
+        setContextShreddingTier2TailChars(Number(d.contextShreddingTier2TailChars) || 300);
+      }
+      if (d.contextShreddingScoreHigh != null) {
+        setContextShreddingScoreHigh(Number(d.contextShreddingScoreHigh) || 70);
+      }
+      if (d.contextShreddingScoreLow != null) {
+        setContextShreddingScoreLow(Number(d.contextShreddingScoreLow) || 30);
+      }
+      if (d.contextShreddingCompressAgentMessages != null) {
+        setContextShreddingCompressAgentMessages(Boolean(d.contextShreddingCompressAgentMessages));
+      }
+      if (d.contextShreddingCompressUserMessages != null) {
+        setContextShreddingCompressUserMessages(Boolean(d.contextShreddingCompressUserMessages));
+      }
+      if (d.contextShreddingMsgTier0MaxAge != null) {
+        setContextShreddingMsgTier0MaxAge(Number(d.contextShreddingMsgTier0MaxAge) || 1);
+      }
+      if (d.contextShreddingMsgTier1MaxAge != null) {
+        setContextShreddingMsgTier1MaxAge(Number(d.contextShreddingMsgTier1MaxAge) || 4);
+      }
+      if (d.contextShreddingMsgMinCompressChars != null) {
+        setContextShreddingMsgMinCompressChars(Number(d.contextShreddingMsgMinCompressChars) || 120);
+      }
+      if (d.contextShreddingUserMsgFullTurns != null) {
+        setContextShreddingUserMsgFullTurns(Number(d.contextShreddingUserMsgFullTurns) || 1);
+      }
+      if (d.contextShreddingProfiles != null) {
+        setContextShreddingProfiles(String(d.contextShreddingProfiles));
       }
       if (d.copilotEnableAllMcpTools != null) {
         setCopilotEnableAllMcpTools(Boolean(d.copilotEnableAllMcpTools));
@@ -1338,6 +1662,13 @@ function App() {
       if (Array.isArray(existingWorkflowDefaults.templates)) {
         const existingTemplateIds = existingWorkflowDefaults.templates.map((templateId) => String(templateId).trim()).filter(Boolean);
         setWorkflowDefaultTemplates(existingTemplateIds);
+        setWorkflowTemplateOverridesById(
+          normalizeWorkflowTemplateOverridesForSelection(
+            existingTemplateIds,
+            existingWorkflowDefaults.templateOverridesById,
+            workflowData.templates || [],
+          ),
+        );
         if (statusData.configured) {
           upsertCurrentWorkflowProfile(existingTemplateIds, workflowData.profiles || []);
           setWorkflowProfile(CURRENT_WORKFLOW_PROFILE_ID);
@@ -1393,6 +1724,9 @@ function App() {
       if (d.voiceTurnDetection) { setVoiceTurnDetection(d.voiceTurnDetection); }
       if (d.voiceFallbackMode) { setVoiceFallbackMode(d.voiceFallbackMode); }
       if (d.voiceDelegateExecutor) { setVoiceDelegateExecutor(d.voiceDelegateExecutor); }
+      if (d.voiceTranscriptionEnabled !== undefined) { setVoiceTranscriptionEnabled(d.voiceTranscriptionEnabled !== false); }
+      if (d.voiceTranscriptionModel) { setVoiceTranscriptionModel(d.voiceTranscriptionModel); }
+      if (d.voiceAzureTranscriptionEnabled !== undefined) { setVoiceAzureTranscriptionEnabled(d.voiceAzureTranscriptionEnabled === true); }
       if (d.openaiRealtimeApiKey) { setOpenaiRealtimeApiKey(d.openaiRealtimeApiKey); }
       if (d.azureOpenaiRealtimeEndpoint) { setAzureOpenaiRealtimeEndpoint(d.azureOpenaiRealtimeEndpoint); }
       if (d.azureOpenaiRealtimeApiKey) { setAzureOpenaiRealtimeApiKey(d.azureOpenaiRealtimeApiKey); }
@@ -1417,6 +1751,9 @@ function App() {
       if (existingVoice.turnDetection) { setVoiceTurnDetection(String(existingVoice.turnDetection)); envLoaded = true; }
       if (existingVoice.fallbackMode) { setVoiceFallbackMode(String(existingVoice.fallbackMode)); envLoaded = true; }
       if (existingVoice.delegateExecutor) { setVoiceDelegateExecutor(String(existingVoice.delegateExecutor)); envLoaded = true; }
+      if (existingVoice.transcriptionEnabled != null) { setVoiceTranscriptionEnabled(existingVoice.transcriptionEnabled !== false); envLoaded = true; }
+      if (existingVoice.transcriptionModel) { setVoiceTranscriptionModel(String(existingVoice.transcriptionModel)); envLoaded = true; }
+      if (existingVoice.azureTranscriptionEnabled != null) { setVoiceAzureTranscriptionEnabled(existingVoice.azureTranscriptionEnabled === true); envLoaded = true; }
       if (existingVoice.openaiApiKey) { setOpenaiRealtimeApiKey(String(existingVoice.openaiApiKey)); envLoaded = true; }
       if (existingVoice.azureEndpoint) { setAzureOpenaiRealtimeEndpoint(String(existingVoice.azureEndpoint)); envLoaded = true; }
       if (existingVoice.azureApiKey) { setAzureOpenaiRealtimeApiKey(String(existingVoice.azureApiKey)); envLoaded = true; }
@@ -1429,10 +1766,29 @@ function App() {
         // Auto-convert legacy flat fields to endpoint cards
         const legacyEndpoints = [];
         if (existingVoice.azureEndpoint || existingVoice.azureApiKey) {
-          legacyEndpoints.push(normalizeVoiceEndpoint({ name: "azure-primary", provider: "azure", endpoint: existingVoice.azureEndpoint || "", deployment: existingVoice.azureDeployment || "gpt-realtime-1.5", apiKey: existingVoice.azureApiKey || "", role: "primary", weight: 100 }));
+          legacyEndpoints.push(normalizeVoiceEndpoint({
+            name: "azure-primary",
+            provider: "azure",
+            endpoint: existingVoice.azureEndpoint || "",
+            deployment: existingVoice.azureDeployment || "gpt-realtime-1.5",
+            apiKey: existingVoice.azureApiKey || "",
+            role: "primary",
+            weight: 100,
+            transcriptionEnabled: existingVoice.azureTranscriptionEnabled === true,
+            transcriptionModel: existingVoice.transcriptionModel || "gpt-4o-transcribe",
+          }));
         }
         if (existingVoice.openaiApiKey) {
-          legacyEndpoints.push(normalizeVoiceEndpoint({ name: "openai-primary", provider: "openai", apiKey: existingVoice.openaiApiKey || "", model: existingVoice.model || "gpt-realtime-1.5", role: legacyEndpoints.length === 0 ? "primary" : "backup", weight: legacyEndpoints.length === 0 ? 100 : 50 }));
+          legacyEndpoints.push(normalizeVoiceEndpoint({
+            name: "openai-primary",
+            provider: "openai",
+            apiKey: existingVoice.openaiApiKey || "",
+            model: existingVoice.model || "gpt-realtime-1.5",
+            role: legacyEndpoints.length === 0 ? "primary" : "backup",
+            weight: legacyEndpoints.length === 0 ? 100 : 50,
+            transcriptionEnabled: existingVoice.transcriptionEnabled !== false,
+            transcriptionModel: existingVoice.transcriptionModel || "gpt-4o-transcribe",
+          }));
         }
         if (legacyEndpoints.length > 0) setVoiceEndpoints(legacyEndpoints);
       }
@@ -1485,6 +1841,9 @@ function App() {
           ? rawTemplates.split(",").map((value) => value.trim()).filter(Boolean)
           : [];
         setWorkflowDefaultTemplates(parsedTemplates);
+        setWorkflowTemplateOverridesById(
+          normalizeWorkflowTemplateOverridesForSelection(parsedTemplates, {}, workflowData.templates || []),
+        );
         if (statusData.configured) {
           upsertCurrentWorkflowProfile(parsedTemplates, workflowData.profiles || []);
           setWorkflowProfile(CURRENT_WORKFLOW_PROFILE_ID);
@@ -1513,6 +1872,82 @@ function App() {
       }
       if (env.WORKFLOW_MAX_CONCURRENT_BRANCHES) {
         setWorkflowMaxConcurrentBranches(Number(env.WORKFLOW_MAX_CONCURRENT_BRANCHES) || 8);
+        envLoaded = true;
+      }
+      if (env.CONTEXT_SHREDDING_ENABLED !== undefined) {
+        setContextShreddingEnabled(env.CONTEXT_SHREDDING_ENABLED !== "false");
+        envLoaded = true;
+      }
+      if (env.CONTEXT_SHREDDING_FULL_CONTEXT_TURNS) {
+        setContextShreddingFullContextTurns(Number(env.CONTEXT_SHREDDING_FULL_CONTEXT_TURNS) || 3);
+        envLoaded = true;
+      }
+      if (env.CONTEXT_SHREDDING_COMPRESS_TOOL_OUTPUTS !== undefined) {
+        setContextShreddingCompressToolOutputs(env.CONTEXT_SHREDDING_COMPRESS_TOOL_OUTPUTS !== "false");
+        envLoaded = true;
+      }
+      if (env.CONTEXT_SHREDDING_COMPRESS_MESSAGES !== undefined) {
+        setContextShreddingCompressMessages(env.CONTEXT_SHREDDING_COMPRESS_MESSAGES !== "false");
+        envLoaded = true;
+      }
+      if (env.CONTEXT_SHREDDING_TIER1_MAX_AGE) {
+        setContextShreddingTier1MaxAge(Number(env.CONTEXT_SHREDDING_TIER1_MAX_AGE) || 5);
+        envLoaded = true;
+      }
+      if (env.CONTEXT_SHREDDING_TIER2_MAX_AGE) {
+        setContextShreddingTier2MaxAge(Number(env.CONTEXT_SHREDDING_TIER2_MAX_AGE) || 9);
+        envLoaded = true;
+      }
+      if (env.CONTEXT_SHREDDING_TIER1_HEAD_CHARS) {
+        setContextShreddingTier1HeadChars(Number(env.CONTEXT_SHREDDING_TIER1_HEAD_CHARS) || 2000);
+        envLoaded = true;
+      }
+      if (env.CONTEXT_SHREDDING_TIER1_TAIL_CHARS) {
+        setContextShreddingTier1TailChars(Number(env.CONTEXT_SHREDDING_TIER1_TAIL_CHARS) || 800);
+        envLoaded = true;
+      }
+      if (env.CONTEXT_SHREDDING_TIER2_HEAD_CHARS) {
+        setContextShreddingTier2HeadChars(Number(env.CONTEXT_SHREDDING_TIER2_HEAD_CHARS) || 600);
+        envLoaded = true;
+      }
+      if (env.CONTEXT_SHREDDING_TIER2_TAIL_CHARS) {
+        setContextShreddingTier2TailChars(Number(env.CONTEXT_SHREDDING_TIER2_TAIL_CHARS) || 300);
+        envLoaded = true;
+      }
+      if (env.CONTEXT_SHREDDING_SCORE_HIGH) {
+        setContextShreddingScoreHigh(Number(env.CONTEXT_SHREDDING_SCORE_HIGH) || 70);
+        envLoaded = true;
+      }
+      if (env.CONTEXT_SHREDDING_SCORE_LOW) {
+        setContextShreddingScoreLow(Number(env.CONTEXT_SHREDDING_SCORE_LOW) || 30);
+        envLoaded = true;
+      }
+      if (env.CONTEXT_SHREDDING_COMPRESS_AGENT_MESSAGES !== undefined) {
+        setContextShreddingCompressAgentMessages(env.CONTEXT_SHREDDING_COMPRESS_AGENT_MESSAGES !== "false");
+        envLoaded = true;
+      }
+      if (env.CONTEXT_SHREDDING_COMPRESS_USER_MESSAGES !== undefined) {
+        setContextShreddingCompressUserMessages(env.CONTEXT_SHREDDING_COMPRESS_USER_MESSAGES !== "false");
+        envLoaded = true;
+      }
+      if (env.CONTEXT_SHREDDING_MSG_TIER0_MAX_AGE) {
+        setContextShreddingMsgTier0MaxAge(Number(env.CONTEXT_SHREDDING_MSG_TIER0_MAX_AGE) || 1);
+        envLoaded = true;
+      }
+      if (env.CONTEXT_SHREDDING_MSG_TIER1_MAX_AGE) {
+        setContextShreddingMsgTier1MaxAge(Number(env.CONTEXT_SHREDDING_MSG_TIER1_MAX_AGE) || 4);
+        envLoaded = true;
+      }
+      if (env.CONTEXT_SHREDDING_MSG_MIN_COMPRESS_CHARS) {
+        setContextShreddingMsgMinCompressChars(Number(env.CONTEXT_SHREDDING_MSG_MIN_COMPRESS_CHARS) || 120);
+        envLoaded = true;
+      }
+      if (env.CONTEXT_SHREDDING_USER_MSG_FULL_TURNS) {
+        setContextShreddingUserMsgFullTurns(Number(env.CONTEXT_SHREDDING_USER_MSG_FULL_TURNS) || 1);
+        envLoaded = true;
+      }
+      if (env.CONTEXT_SHREDDING_PROFILES !== undefined) {
+        setContextShreddingProfiles(String(env.CONTEXT_SHREDDING_PROFILES || ""));
         envLoaded = true;
       }
       // Codex model profiles
@@ -1566,6 +2001,9 @@ function App() {
       if (env.VOICE_TURN_DETECTION) { setVoiceTurnDetection(env.VOICE_TURN_DETECTION); envLoaded = true; }
       if (env.VOICE_FALLBACK_MODE) { setVoiceFallbackMode(env.VOICE_FALLBACK_MODE); envLoaded = true; }
       if (env.VOICE_DELEGATE_EXECUTOR) { setVoiceDelegateExecutor(env.VOICE_DELEGATE_EXECUTOR); envLoaded = true; }
+      if (env.VOICE_TRANSCRIPTION_ENABLED !== undefined) { setVoiceTranscriptionEnabled(env.VOICE_TRANSCRIPTION_ENABLED !== "false"); envLoaded = true; }
+      if (env.VOICE_TRANSCRIPTION_MODEL) { setVoiceTranscriptionModel(env.VOICE_TRANSCRIPTION_MODEL); envLoaded = true; }
+      if (env.VOICE_AZURE_TRANSCRIPTION_ENABLED !== undefined) { setVoiceAzureTranscriptionEnabled(env.VOICE_AZURE_TRANSCRIPTION_ENABLED === "true"); envLoaded = true; }
       if (env.OPENAI_REALTIME_API_KEY) { setOpenaiRealtimeApiKey(env.OPENAI_REALTIME_API_KEY); envLoaded = true; }
       if (env.AZURE_OPENAI_REALTIME_ENDPOINT) { setAzureOpenaiRealtimeEndpoint(env.AZURE_OPENAI_REALTIME_ENDPOINT); envLoaded = true; }
       if (env.AZURE_OPENAI_REALTIME_API_KEY) { setAzureOpenaiRealtimeApiKey(env.AZURE_OPENAI_REALTIME_API_KEY); envLoaded = true; }
@@ -1573,10 +2011,29 @@ function App() {
       // Build voiceEndpoints from env vars if not already populated from config
       const envEps = [];
       if (env.AZURE_OPENAI_REALTIME_ENDPOINT || env.AZURE_OPENAI_REALTIME_API_KEY) {
-        envEps.push(normalizeVoiceEndpoint({ name: "azure-primary", provider: "azure", endpoint: env.AZURE_OPENAI_REALTIME_ENDPOINT || "", deployment: env.AZURE_OPENAI_REALTIME_DEPLOYMENT || "gpt-realtime-1.5", apiKey: env.AZURE_OPENAI_REALTIME_API_KEY || "", role: "primary", weight: 100 }));
+        envEps.push(normalizeVoiceEndpoint({
+          name: "azure-primary",
+          provider: "azure",
+          endpoint: env.AZURE_OPENAI_REALTIME_ENDPOINT || "",
+          deployment: env.AZURE_OPENAI_REALTIME_DEPLOYMENT || "gpt-realtime-1.5",
+          apiKey: env.AZURE_OPENAI_REALTIME_API_KEY || "",
+          role: "primary",
+          weight: 100,
+          transcriptionEnabled: env.VOICE_AZURE_TRANSCRIPTION_ENABLED === "true",
+          transcriptionModel: env.VOICE_TRANSCRIPTION_MODEL || "gpt-4o-transcribe",
+        }));
       }
       if (env.OPENAI_REALTIME_API_KEY) {
-        envEps.push(normalizeVoiceEndpoint({ name: "openai-primary", provider: "openai", apiKey: env.OPENAI_REALTIME_API_KEY, model: env.VOICE_MODEL || "gpt-realtime-1.5", role: envEps.length === 0 ? "primary" : "backup", weight: envEps.length === 0 ? 100 : 50 }));
+        envEps.push(normalizeVoiceEndpoint({
+          name: "openai-primary",
+          provider: "openai",
+          apiKey: env.OPENAI_REALTIME_API_KEY,
+          model: env.VOICE_MODEL || "gpt-realtime-1.5",
+          role: envEps.length === 0 ? "primary" : "backup",
+          weight: envEps.length === 0 ? 100 : 50,
+          transcriptionEnabled: env.VOICE_TRANSCRIPTION_ENABLED !== "false",
+          transcriptionModel: env.VOICE_TRANSCRIPTION_MODEL || "gpt-4o-transcribe",
+        }));
       }
       if (envEps.length > 0) { setVoiceEndpoints((prev) => (prev.length > 0 ? prev : envEps)); envLoaded = true; }
       const resolvedVoiceProvider = String(env.VOICE_PROVIDER || existingVoice.provider || d.voiceProvider || voiceProvider || "openai").trim().toLowerCase();
@@ -1625,7 +2082,14 @@ function App() {
             const execType = segments[0] || "COPILOT";
             const variant = segments[1] || "DEFAULT";
             const weight = Number(segments[2]) || 50;
-            const model = variant === "DEFAULT" ? "" : variant.toLowerCase().replaceAll("_", "-");
+            const modelsFromEnv = segments
+              .slice(3)
+              .join(":")
+              .split("|")
+              .map((m) => String(m || "").trim())
+              .filter(Boolean);
+            const derivedModel = variant === "DEFAULT" ? "" : variant.toLowerCase().replaceAll("_", "-");
+            const model = modelsFromEnv[0] || derivedModel;
             const existingExecutor = statusData.existingConfig?.executors?.[idx] || {};
             // Detect if an API key was previously configured for this executor type
             const hasApiKey =
@@ -1652,7 +2116,9 @@ function App() {
               weight,
               role: existingExecutor.role || (idx === 0 ? "primary" : "backup"),
               enabled: existingExecutor.enabled !== false,
-              models: Array.isArray(existingExecutor.models) ? existingExecutor.models : [],
+              models: Array.isArray(existingExecutor.models) && existingExecutor.models.length > 0
+                ? existingExecutor.models
+                : modelsFromEnv,
               authMode: hasApiKey ? "api-key" : "oauth",
               apiKey: (execType === "CODEX" || execType === "OPENAI") ? (env.OPENAI_API_KEY || "") :
                        (execType === "CLAUDE_CODE" || execType === "ANTHROPIC") ? (env.ANTHROPIC_API_KEY || "") : "",
@@ -1778,7 +2244,8 @@ function App() {
     executors
       .filter((ex) => ex.enabled !== false)
       .map((ex) => {
-        const variant = (ex.model || "DEFAULT").toUpperCase().replaceAll("-", "_");
+        const primaryModel = String(ex.model || ex.models?.[0] || "").trim();
+        const variant = (primaryModel || "DEFAULT").toUpperCase().replaceAll("-", "_");
         return `${ex.executor}:${variant}:${ex.weight}`;
       })
       .join(",");
@@ -1791,11 +2258,13 @@ function App() {
         : ex.model
           ? [ex.model]
           : [];
-      const models = [...new Set(configuredModels.filter(Boolean))];
+      const models = [...new Set(configuredModels.map((m) => String(m || "").trim()).filter(Boolean))];
+      const primaryModel = String(ex.model || "").trim() || models[0] || "";
+      if (primaryModel && !models.includes(primaryModel)) models.unshift(primaryModel);
       return {
         name: ex.name,
         executor: ex.executor,
-        variant: (ex.model || "DEFAULT").toUpperCase().replaceAll("-", "_"),
+        variant: (primaryModel || "DEFAULT").toUpperCase().replaceAll("-", "_"),
         weight: Number(ex.weight) || 50,
         role: ex.role,
         enabled: ex.enabled !== false,
@@ -1888,12 +2357,32 @@ function App() {
           workflowAutomationEnabled,
           workflowProfile,
           workflowDefaultTemplates,
+          workflowTemplateOverridesById,
           workflowAutoInstall,
           workflowNodeMaxRetries,
           workflowNodeTimeoutMs,
           workflowRunStuckThresholdMs,
           workflowMaxPersistedRuns,
           workflowMaxConcurrentBranches,
+          contextShreddingEnabled,
+          contextShreddingFullContextTurns,
+          contextShreddingCompressToolOutputs,
+          contextShreddingCompressMessages,
+          contextShreddingTier1MaxAge,
+          contextShreddingTier2MaxAge,
+          contextShreddingTier1HeadChars,
+          contextShreddingTier1TailChars,
+          contextShreddingTier2HeadChars,
+          contextShreddingTier2TailChars,
+          contextShreddingScoreHigh,
+          contextShreddingScoreLow,
+          contextShreddingCompressAgentMessages,
+          contextShreddingCompressUserMessages,
+          contextShreddingMsgTier0MaxAge,
+          contextShreddingMsgTier1MaxAge,
+          contextShreddingMsgMinCompressChars,
+          contextShreddingUserMsgFullTurns,
+          contextShreddingProfiles,
           // Codex model profiles
           codexModelProfile,
           codexModelProfileSubagent,
@@ -1924,6 +2413,9 @@ function App() {
           voiceTurnDetection,
           voiceFallbackMode,
           voiceDelegateExecutor,
+          voiceTranscriptionEnabled,
+          voiceTranscriptionModel,
+          voiceAzureTranscriptionEnabled,
           openaiRealtimeApiKey,
           azureOpenaiRealtimeEndpoint,
           azureOpenaiRealtimeApiKey,
@@ -1981,6 +2473,11 @@ function App() {
             profile: workflowProfile,
             autoInstall: workflowAutoInstall,
             templates: (workflowDefaultTemplates || []).filter(Boolean),
+            templateOverridesById: normalizeWorkflowTemplateOverridesForSelection(
+              workflowDefaultTemplates,
+              workflowTemplateOverridesById,
+              workflowTemplates,
+            ),
           },
           workflowEngine: {
             nodeMaxRetries: Number(workflowNodeMaxRetries) || 3,
@@ -1998,12 +2495,29 @@ function App() {
             turnDetection: voiceTurnDetection,
             fallbackMode: voiceFallbackMode,
             delegateExecutor: voiceDelegateExecutor,
+            transcriptionEnabled: voiceTranscriptionEnabled !== false,
+            transcriptionModel: String(voiceTranscriptionModel || "").trim() || "gpt-4o-transcribe",
+            azureTranscriptionEnabled: voiceAzureTranscriptionEnabled === true,
             azureDeployment: primaryAzureEp?.deployment || primaryVoiceProvider.azureDeployment || azureOpenaiRealtimeDeployment,
             openaiApiKey: primaryOpenAIEp?.apiKey || openaiRealtimeApiKey,
             azureEndpoint: primaryAzureEp?.endpoint || azureOpenaiRealtimeEndpoint,
             azureApiKey: primaryAzureEp?.apiKey || azureOpenaiRealtimeApiKey,
             providers: normalizedVoiceProviders.slice(0, 5),
-            voiceEndpoints: voiceEndpoints.filter((ep) => ep.endpoint || ep.apiKey || ep.deployment || ep.model).map((ep) => ({ id: ep.id, name: ep.name, provider: ep.provider, endpoint: ep.endpoint, deployment: ep.deployment, apiKey: ep.apiKey, model: ep.model, visionModel: ep.visionModel, role: ep.role, weight: ep.weight, enabled: ep.enabled })),
+            voiceEndpoints: voiceEndpoints.filter((ep) => ep.endpoint || ep.apiKey || ep.deployment || ep.model).map((ep) => ({
+              id: ep.id,
+              name: ep.name,
+              provider: ep.provider,
+              endpoint: ep.endpoint,
+              deployment: ep.deployment,
+              apiKey: ep.apiKey,
+              model: ep.model,
+              visionModel: ep.visionModel,
+              transcriptionModel: ep.transcriptionModel,
+              transcriptionEnabled: ep.transcriptionEnabled !== false,
+              role: ep.role,
+              weight: ep.weight,
+              enabled: ep.enabled,
+            })),
             failover: {
               enabled: true,
               maxAttempts: voiceFailoverMaxAttempts,
@@ -2102,6 +2616,15 @@ function App() {
           : [];
         if (value && !models.includes(value)) models.push(value);
         updated[idx].models = models;
+      }
+      if (field === "models") {
+        const models = [...new Set((Array.isArray(value) ? value : [])
+          .map((m) => String(m || "").trim())
+          .filter(Boolean))];
+        updated[idx].models = models;
+        if (!models.includes(updated[idx].model || "")) {
+          updated[idx].model = models[0] || "";
+        }
       }
       // Auto-initialise connections when switching to api-key mode on a multi-profile executor
       if (field === "authMode" && value === "api-key") {
@@ -2430,14 +2953,38 @@ function App() {
 
     ${executors.map((ex, i) => {
       const probed = probedModels[i] || {};
-      const configuredModelOptions = Array.isArray(ex.models) && ex.models.length > 0
-        ? ex.models.map((m) => ({ value: m, label: m }))
-        : [];
-      const modelOptions = probed.models?.length
-        ? probed.models
-        : configuredModelOptions.length > 0
-          ? configuredModelOptions
-          : getModelsForExecutor(ex.executor);
+      const knownModelOptions = getModelsForExecutor(ex.executor);
+      const normalizedKnown = (knownModelOptions || [])
+        .map((entry) => {
+          if (typeof entry === "string") return { value: entry, label: entry };
+          if (!entry || typeof entry !== "object") return null;
+          const value = String(entry.value || "").trim();
+          if (!value) return null;
+          return { value, label: String(entry.label || value), recommended: Boolean(entry.recommended) };
+        })
+        .filter(Boolean);
+      const normalizedProbed = (probed.models || [])
+        .map((entry) => {
+          if (typeof entry === "string") return { value: entry, label: entry };
+          if (!entry || typeof entry !== "object") return null;
+          const value = String(entry.value || "").trim();
+          if (!value) return null;
+          return { value, label: String(entry.label || value), recommended: Boolean(entry.recommended) };
+        })
+        .filter(Boolean);
+      const configuredModelOptions = (Array.isArray(ex.models) ? ex.models : [])
+        .map((model) => {
+          const value = String(model || "").trim();
+          return value ? { value, label: value } : null;
+        })
+        .filter(Boolean);
+      const modelOptions = [];
+      const modelSeen = new Set();
+      [...normalizedProbed, ...normalizedKnown, ...configuredModelOptions].forEach((entry) => {
+        if (!entry || !entry.value || modelSeen.has(entry.value)) return;
+        modelSeen.add(entry.value);
+        modelOptions.push(entry);
+      });
       const authMode = ex.authMode || "oauth";
       const executorHeading = `${ex.enabled === false ? ":dot:" : ex.role === "primary" ? ":dot:" : ":dot:"} Executor ${i + 1}: ${ex.name}`;
       return html`
@@ -2587,7 +3134,7 @@ function App() {
           })()}
           <div class="form-group">
             <label class="label-with-help" style="display:flex;align-items:center;justify-content:space-between">
-              <span>Model</span>
+              <span>Models</span>
               <${HelpTip} text=${HELP_TEXT.executorModel} />
               ${ex.executor !== "COPILOT" && html`
                 <button class="btn btn-sm" style="padding:3px 8px;font-size:0.72rem"
@@ -2597,10 +3144,16 @@ function App() {
                 </button>
               `}
             </label>
-            <${SelectWithCustom}
+            <${MultiModelSelector}
               options=${modelOptions}
-              value=${ex.model}
-              onChange=${(v) => updateExecutor(i, "model", v)}
+              selectedModels=${Array.isArray(ex.models) && ex.models.length > 0
+                ? ex.models
+                : (ex.model ? [ex.model] : [])}
+              primaryModel=${ex.model}
+              onChange=${({ models: nextModels, primaryModel }) => {
+                updateExecutor(i, "models", nextModels);
+                updateExecutor(i, "model", primaryModel);
+              }}
             />
             ${probed.source === "live" && html`
               <div class="hint" style="color:var(--success)">✓ Live model list from API (${modelOptions.length} models)</div>
@@ -2830,6 +3383,7 @@ function App() {
     });
     const selectedSet = new Set((workflowDefaultTemplates || []).map((id) => String(id)));
     const selectedCount = selectedSet.size;
+    const selectedTemplates = templates.filter((template) => selectedSet.has(String(template.id)));
 
     const applyProfileTemplates = (profileId) => {
       applyWorkflowProfileSelection(profileId, profileCards);
@@ -2840,12 +3394,16 @@ function App() {
         .filter((template) => template.recommended === true)
         .map((template) => template.id);
       setWorkflowDefaultTemplates(recommended);
+      setWorkflowTemplateOverridesById(
+        normalizeWorkflowTemplateOverridesForSelection(recommended, workflowTemplateOverridesById, templates),
+      );
       setWorkflowProfile("balanced");
       setWorkflowAutoInstall(true);
     };
 
     const clearTemplateSelection = () => {
       setWorkflowDefaultTemplates([]);
+      setWorkflowTemplateOverridesById({});
       setWorkflowProfile("manual");
     };
 
@@ -2919,6 +3477,71 @@ function App() {
           `;
         })}
       </div>
+
+      ${selectedTemplates.length > 0 && html`
+        <div style="margin-top:18px">
+          <h3 style="font-size:13px;font-weight:600;color:var(--text-secondary,#8b95a5);margin-bottom:10px;text-transform:uppercase;letter-spacing:0.5px;">Template Variables</h3>
+          <div class="hint" style="margin-bottom:12px">Recommended values are prefilled. You can leave them as-is and continue, or tailor them now for a better first install.</div>
+          <div style="display:grid;gap:12px;">
+            ${selectedTemplates.map((template) => {
+              const vars = Array.isArray(template.variables) ? template.variables : [];
+              if (vars.length === 0) return null;
+              return html`
+                <div key=${template.id} style="border:1px solid var(--border-primary,#2a3040);border-radius:var(--radius-sm);padding:12px 14px;background:rgba(255,255,255,0.02)">
+                  <div style="font-weight:600;margin-bottom:4px">${template.name}</div>
+                  <div class="hint" style="margin-bottom:10px">${template.description}</div>
+                  <div style="display:grid;gap:10px;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));">
+                    ${vars.map((variable) => {
+                      const currentValue = workflowTemplateOverridesById?.[template.id]?.[variable.key] ?? variable.defaultValue ?? "";
+                      const fieldType = variable.input || variable.type || "text";
+                      return html`
+                        <div key=${variable.key} class="form-group" style="margin-bottom:0">
+                          <label>${variable.key}${variable.required ? html` <span class="required">*</span>` : null}</label>
+                          ${fieldType === "select" && Array.isArray(variable.options) && variable.options.length > 0 ? html`
+                            <select
+                              value=${String(currentValue ?? "")}
+                              onchange=${(e) => updateWorkflowTemplateOverride(template.id, variable.key, e.target.value, variable.type)}
+                            >
+                              ${variable.options.map((option) => {
+                                const value = typeof option === "object" ? option.value : option;
+                                const label = typeof option === "object" ? (option.label ?? option.value) : option;
+                                return html`<option key=${String(value)} value=${String(value)}>${String(label)}</option>`;
+                              })}
+                            </select>
+                          ` : fieldType === "textarea" ? html`
+                            <textarea
+                              rows="3"
+                              value=${String(currentValue ?? "")}
+                              oninput=${(e) => updateWorkflowTemplateOverride(template.id, variable.key, e.target.value, variable.type)}
+                            ></textarea>
+                          ` : variable.type === "toggle" || fieldType === "toggle" ? html`
+                            <label style="display:flex;align-items:center;gap:8px;cursor:pointer;user-select:none">
+                              <input
+                                type="checkbox"
+                                checked=${Boolean(currentValue)}
+                                onchange=${(e) => updateWorkflowTemplateOverride(template.id, variable.key, e.target.checked, "toggle")}
+                                style="width:auto;padding:0;margin:0;accent-color:var(--accent);cursor:pointer"
+                              />
+                              Enabled
+                            </label>
+                          ` : html`
+                            <input
+                              type=${variable.type === "number" ? "number" : "text"}
+                              value=${String(currentValue ?? "")}
+                              oninput=${(e) => updateWorkflowTemplateOverride(template.id, variable.key, e.target.value, variable.type)}
+                            />
+                          `}
+                          ${variable.description ? html`<div class="hint">${variable.description}</div>` : null}
+                        </div>
+                      `;
+                    })}
+                  </div>
+                </div>
+              `;
+            })}
+          </div>
+        </div>
+      `}
 
       ${workflowAutoInstall && selectedCount === 0 && html`
         <div class="hint" style="margin-top:10px;color:var(--warning)">
@@ -3166,6 +3789,122 @@ function App() {
             <input type="number" value=${workflowMaxConcurrentBranches} min="1" max="64"
               oninput=${(e) => setWorkflowMaxConcurrentBranches(Number(e.target.value) || 8)} />
           </div>
+        </div>
+      <//>
+
+      <${Section} title=":scissors: Context Shredding">
+        <div class="form-group">
+          <label style="display:flex;align-items:center;gap:8px;cursor:pointer;user-select:none">
+            <input type="checkbox" checked=${contextShreddingEnabled}
+              onchange=${(e) => setContextShreddingEnabled(e.target.checked)}
+              style="width:auto;padding:0;margin:0;accent-color:var(--accent);cursor:pointer" />
+            Enable Context Shredding
+          </label>
+        </div>
+        <div class="executor-grid">
+          <div class="form-group">
+            <label>Full Context Turns</label>
+            <input type="number" value=${contextShreddingFullContextTurns} min="0"
+              oninput=${(e) => setContextShreddingFullContextTurns(Number(e.target.value) || 3)} />
+          </div>
+          <div class="form-group">
+            <label>Tier 1 Max Age</label>
+            <input type="number" value=${contextShreddingTier1MaxAge} min="0"
+              oninput=${(e) => setContextShreddingTier1MaxAge(Number(e.target.value) || 5)} />
+          </div>
+          <div class="form-group">
+            <label>Tier 2 Max Age</label>
+            <input type="number" value=${contextShreddingTier2MaxAge} min="0"
+              oninput=${(e) => setContextShreddingTier2MaxAge(Number(e.target.value) || 9)} />
+          </div>
+          <div class="form-group">
+            <label>Tier 1 Head Chars</label>
+            <input type="number" value=${contextShreddingTier1HeadChars} min="0"
+              oninput=${(e) => setContextShreddingTier1HeadChars(Number(e.target.value) || 2000)} />
+          </div>
+          <div class="form-group">
+            <label>Tier 1 Tail Chars</label>
+            <input type="number" value=${contextShreddingTier1TailChars} min="0"
+              oninput=${(e) => setContextShreddingTier1TailChars(Number(e.target.value) || 800)} />
+          </div>
+          <div class="form-group">
+            <label>Tier 2 Head Chars</label>
+            <input type="number" value=${contextShreddingTier2HeadChars} min="0"
+              oninput=${(e) => setContextShreddingTier2HeadChars(Number(e.target.value) || 600)} />
+          </div>
+          <div class="form-group">
+            <label>Tier 2 Tail Chars</label>
+            <input type="number" value=${contextShreddingTier2TailChars} min="0"
+              oninput=${(e) => setContextShreddingTier2TailChars(Number(e.target.value) || 300)} />
+          </div>
+          <div class="form-group">
+            <label>Score High</label>
+            <input type="number" value=${contextShreddingScoreHigh} min="0"
+              oninput=${(e) => setContextShreddingScoreHigh(Number(e.target.value) || 70)} />
+          </div>
+          <div class="form-group">
+            <label>Score Low</label>
+            <input type="number" value=${contextShreddingScoreLow} min="0"
+              oninput=${(e) => setContextShreddingScoreLow(Number(e.target.value) || 30)} />
+          </div>
+          <div class="form-group">
+            <label>Msg Tier 0 Max Age</label>
+            <input type="number" value=${contextShreddingMsgTier0MaxAge} min="0"
+              oninput=${(e) => setContextShreddingMsgTier0MaxAge(Number(e.target.value) || 1)} />
+          </div>
+          <div class="form-group">
+            <label>Msg Tier 1 Max Age</label>
+            <input type="number" value=${contextShreddingMsgTier1MaxAge} min="0"
+              oninput=${(e) => setContextShreddingMsgTier1MaxAge(Number(e.target.value) || 4)} />
+          </div>
+          <div class="form-group">
+            <label>Msg Min Compress Chars</label>
+            <input type="number" value=${contextShreddingMsgMinCompressChars} min="0"
+              oninput=${(e) => setContextShreddingMsgMinCompressChars(Number(e.target.value) || 120)} />
+          </div>
+          <div class="form-group">
+            <label>User Msg Full Turns</label>
+            <input type="number" value=${contextShreddingUserMsgFullTurns} min="0"
+              oninput=${(e) => setContextShreddingUserMsgFullTurns(Number(e.target.value) || 1)} />
+          </div>
+        </div>
+        <div class="form-group">
+          <label style="display:flex;align-items:center;gap:8px;cursor:pointer;user-select:none">
+            <input type="checkbox" checked=${contextShreddingCompressToolOutputs}
+              onchange=${(e) => setContextShreddingCompressToolOutputs(e.target.checked)}
+              style="width:auto;padding:0;margin:0;accent-color:var(--accent);cursor:pointer" />
+            Compress Tool Outputs
+          </label>
+        </div>
+        <div class="form-group">
+          <label style="display:flex;align-items:center;gap:8px;cursor:pointer;user-select:none">
+            <input type="checkbox" checked=${contextShreddingCompressMessages}
+              onchange=${(e) => setContextShreddingCompressMessages(e.target.checked)}
+              style="width:auto;padding:0;margin:0;accent-color:var(--accent);cursor:pointer" />
+            Compress Messages
+          </label>
+        </div>
+        <div class="form-group">
+          <label style="display:flex;align-items:center;gap:8px;cursor:pointer;user-select:none">
+            <input type="checkbox" checked=${contextShreddingCompressAgentMessages}
+              onchange=${(e) => setContextShreddingCompressAgentMessages(e.target.checked)}
+              style="width:auto;padding:0;margin:0;accent-color:var(--accent);cursor:pointer" />
+            Compress Agent Messages
+          </label>
+        </div>
+        <div class="form-group">
+          <label style="display:flex;align-items:center;gap:8px;cursor:pointer;user-select:none">
+            <input type="checkbox" checked=${contextShreddingCompressUserMessages}
+              onchange=${(e) => setContextShreddingCompressUserMessages(e.target.checked)}
+              style="width:auto;padding:0;margin:0;accent-color:var(--accent);cursor:pointer" />
+            Compress User Messages
+          </label>
+        </div>
+        <div class="form-group" style="margin-bottom:0">
+          <label>Profiles JSON</label>
+          <textarea value=${contextShreddingProfiles}
+            oninput=${(e) => setContextShreddingProfiles(e.target.value)}
+            placeholder='{"default": {"enabled": true}}'></textarea>
         </div>
       <//>
 
@@ -3573,6 +4312,40 @@ function App() {
               </select>
               <div class="hint">Pick the same executor family you trust for task execution to keep behavior consistent.</div>
             </div>
+            <div class="form-group">
+              <label style="display:flex;align-items:center;gap:8px;cursor:pointer;user-select:none">
+                <input
+                  type="checkbox"
+                  checked=${voiceTranscriptionEnabled}
+                  onchange=${(e) => setVoiceTranscriptionEnabled(e.target.checked)}
+                  style="width:auto;padding:0;margin:0;accent-color:var(--accent);cursor:pointer"
+                />
+                Enable Input Transcription (OpenAI-compatible)
+              </label>
+              <div class="hint">Controls VOICE_TRANSCRIPTION_ENABLED for default realtime sessions.</div>
+            </div>
+            <div class="form-group">
+              <label>Transcription Model</label>
+              <input
+                type="text"
+                value=${voiceTranscriptionModel}
+                oninput=${(e) => setVoiceTranscriptionModel(e.target.value)}
+                placeholder="gpt-4o-transcribe"
+              />
+              <div class="hint">Controls VOICE_TRANSCRIPTION_MODEL for OpenAI/Azure endpoint defaults.</div>
+            </div>
+            <div class="form-group">
+              <label style="display:flex;align-items:center;gap:8px;cursor:pointer;user-select:none">
+                <input
+                  type="checkbox"
+                  checked=${voiceAzureTranscriptionEnabled}
+                  onchange=${(e) => setVoiceAzureTranscriptionEnabled(e.target.checked)}
+                  style="width:auto;padding:0;margin:0;accent-color:var(--accent);cursor:pointer"
+                />
+                Enable Azure Input Transcription
+              </label>
+              <div class="hint">Controls VOICE_AZURE_TRANSCRIPTION_ENABLED. Default is OFF to reduce Azure item-level transcription errors.</div>
+            </div>
           </div>
           <div class="form-group">
             <label style="font-weight:600;display:block;margin-bottom:4px">Voice Endpoints</label>
@@ -3618,10 +4391,10 @@ function App() {
                         <option value="apiKey">API Key</option>
                         <option value="oauth">OAuth (Connected Account)</option>
                       </select>
-                      ${ep.authSource === "oauth" && oauthAccounts[ep.provider]?.status === "connected" && html`
+                      ${ep.authSource === "oauth" && (oauthAccounts[ep.provider]?.status === "connected" || oauthAccounts[ep.provider]?.status === "complete" || oauthAccounts[ep.provider]?.hasToken) && html`
                         <div class="hint" style="color:var(--success,#22c55e)">✓ Connected — will use your ${ep.provider === "openai" ? "OpenAI" : ep.provider === "claude" ? "Claude" : "Gemini"} account.</div>
                       `}
-                      ${ep.authSource === "oauth" && oauthAccounts[ep.provider]?.status !== "connected" && html`
+                      ${ep.authSource === "oauth" && !(oauthAccounts[ep.provider]?.status === "connected" || oauthAccounts[ep.provider]?.status === "complete" || oauthAccounts[ep.provider]?.hasToken) && html`
                         <div class="hint" style="color:var(--warning,#f59e0b)">⚠ Not connected. Sign in via "Connected Accounts" above to use OAuth.</div>
                       `}
                     </div>
@@ -3642,9 +4415,14 @@ function App() {
                       <input type="text" value=${ep.endpoint} oninput=${(e) => updateVoiceEndpoint(i, "endpoint", e.target.value)} placeholder="https://&lt;resource&gt;.openai.azure.com" />
                     </div>
                     <div class="form-group">
-                      <label>Deployment</label>
-                      <input type="text" value=${ep.deployment} oninput=${(e) => updateVoiceEndpoint(i, "deployment", e.target.value)} placeholder="gpt-realtime-1.5" />
-                      <div class="hint">GA models (gpt-realtime-1.5, gpt-realtime) use /openai/v1/ endpoints automatically.</div>
+                      <label>Deployment Name</label>
+                      <input type="text" value=${ep.deployment} oninput=${(e) => updateVoiceEndpoint(i, "deployment", e.target.value)} placeholder="my-gpt-4o-realtime" />
+                      <div class="hint">The deployment name from Azure AI Foundry (not the model name). Find it under your resource → Deployments. Leave empty to test credentials only.</div>
+                    </div>
+                    <div class="form-group">
+                      <label>Audio Model (Realtime)</label>
+                      <input type="text" value=${ep.model} oninput=${(e) => updateVoiceEndpoint(i, "model", e.target.value)} placeholder="gpt-4o-realtime-preview" />
+                      <div class="hint">The underlying model name (e.g. gpt-4o-realtime-preview). Used at runtime.</div>
                     </div>
                   `}
                   ${ep.provider === "custom" && html`
@@ -3725,6 +4503,34 @@ function App() {
                     <input type="text" value=${ep.visionModel || ""} oninput=${(e) => updateVoiceEndpoint(i, "visionModel", e.target.value)} placeholder="e.g. gpt-4.1-nano" />
                     <div class="hint">Optional model for vision/image tasks on this endpoint.</div>
                   </div>
+                  ${(ep.provider === "openai" || ep.provider === "azure") && html`
+                    <div class="form-group">
+                      <label>Transcription Model</label>
+                      <input
+                        type="text"
+                        value=${ep.transcriptionModel || ""}
+                        oninput=${(e) => updateVoiceEndpoint(i, "transcriptionModel", e.target.value)}
+                        placeholder="gpt-4o-transcribe"
+                      />
+                      <div class="hint">Leave blank to use global VOICE_TRANSCRIPTION_MODEL.</div>
+                    </div>
+                    <div class="form-group">
+                      <label style="display:flex;align-items:center;gap:8px;cursor:pointer;user-select:none">
+                        <input
+                          type="checkbox"
+                          checked=${ep.transcriptionEnabled !== false}
+                          onchange=${(e) => updateVoiceEndpoint(i, "transcriptionEnabled", e.target.checked)}
+                          style="width:auto;padding:0;margin:0;accent-color:var(--accent);cursor:pointer"
+                        />
+                        Enable Input Transcription
+                      </label>
+                      <div class="hint">
+                        ${ep.provider === "azure"
+                          ? "Azure defaults to OFF unless explicitly enabled."
+                          : "OpenAI defaults to ON unless explicitly disabled."}
+                      </div>
+                    </div>
+                  `}
                 </div>
                 <!-- Test Connection -->
                 <div style="display:flex;align-items:center;gap:10px;margin-top:8px">
@@ -4038,6 +4844,8 @@ function App() {
             <tr><th>Workflow Stuck Threshold (ms)</th><td>${workflowRunStuckThresholdMs}</td></tr>
             <tr><th>Workflow Run History</th><td>${workflowMaxPersistedRuns}</td></tr>
             <tr><th>Workflow Parallel Branches</th><td>${workflowMaxConcurrentBranches}</td></tr>
+            <tr><th>Context Shredding</th><td>${contextShreddingEnabled ? "Enabled" : "Disabled"}</td></tr>
+            <tr><th>Shredding Tiers</th><td>full=${contextShreddingFullContextTurns}, tier1=${contextShreddingTier1MaxAge}, tier2=${contextShreddingTier2MaxAge}</td></tr>
             <tr><th>Auto-Start on Login</th><td>${autoStartEnabled ? "Enabled" : "Disabled"}</td></tr>
             <tr><th>Desktop Shortcut</th><td>${desktopShortcutEnabled ? "Installed" : "Not installed"}</td></tr>
             <tr><th>Sentinel / Watchdog</th><td>${sentinelAutoStart ? `Enabled${sentinelStrict ? " (strict)" : ""}` : "Disabled"}</td></tr>

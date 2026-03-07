@@ -75,9 +75,15 @@
         Bosun
       </a>
 
-      <button class="nav__toggle" aria-label="Toggle menu">:menu:</button>
+      <button
+        class="nav__toggle"
+        type="button"
+        aria-label="Toggle menu"
+        aria-expanded="false"
+        aria-controls="site-nav-links"
+      >:menu:</button>
 
-      <ul class="nav__links">
+      <ul class="nav__links" id="site-nav-links">
         <li><a href="#features">Features</a></li>
         <li><a href="#workflows">Workflows</a></li>
         <li><a href="#architecture">Architecture</a></li>

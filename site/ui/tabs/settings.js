@@ -31,6 +31,9 @@ import {
   executorData,
   configData,
   showToast,
+  pendingChanges,
+  setPendingChange,
+  clearPendingChange,
 } from "../modules/state.js";
 import {
   Card,
@@ -48,6 +51,12 @@ import {
   SearchInput,
 } from "../components/forms.js";
 import {
+  Typography, Box, Stack, Button, IconButton, Chip, TextField,
+  Select, MenuItem, FormControl, InputLabel, Switch, FormControlLabel,
+  Tooltip, Alert, Paper, Divider, CircularProgress, Dialog, DialogTitle,
+  DialogContent, DialogActions, InputAdornment, Tabs, Tab, Slider,
+} from "@mui/material";
+import {
   CATEGORIES,
   SETTINGS_SCHEMA,
   getGroupedSettings,
@@ -55,8 +64,53 @@ import {
   SENSITIVE_KEYS,
 } from "../modules/settings-schema.js";
 
+const SETTINGS_EXTERNAL_EDITORS = new Map();
+
+function registerSettingsExternalEditor(editorId, editorOps) {
+  const key = String(editorId || "").trim();
+  if (!key || !editorOps || typeof editorOps !== "object") {
+    return () => {};
+  }
+  SETTINGS_EXTERNAL_EDITORS.set(key, editorOps);
+  return () => {
+    const current = SETTINGS_EXTERNAL_EDITORS.get(key);
+    if (current === editorOps) SETTINGS_EXTERNAL_EDITORS.delete(key);
+  };
+}
+
+async function runSettingsExternalEditorAction(action) {
+  const mode = action === "discard" ? "discard" : "save";
+  const errors = [];
+  for (const [key, ops] of SETTINGS_EXTERNAL_EDITORS.entries()) {
+    const isDirty = Boolean(ops?.isDirty?.());
+    if (!isDirty) continue;
+    const fn = mode === "discard" ? ops?.discard : ops?.save;
+    if (typeof fn !== "function") continue;
+    try {
+      await fn();
+    } catch (err) {
+      const message = err?.message || "Action failed";
+      errors.push(`${key}: ${message}`);
+    }
+  }
+  if (errors.length > 0) {
+    throw new Error(errors.join(" | "));
+  }
+}
+
 /* ─── Scoped Styles ─── */
 const SETTINGS_STYLES = `
+/* Category navigation */
+.settings-category-mobile {
+  display: none;
+  margin-bottom: 10px;
+}
+.settings-category-mobile-label {
+  display: block;
+  font-size: 12px;
+  color: var(--text-tertiary, #8a8a8a);
+  margin: 0 0 6px 2px;
+}
 /* Category pill tabs — horizontal scrollable row */
 .settings-category-tabs {
   display: flex;
@@ -109,9 +163,9 @@ const SETTINGS_STYLES = `
   flex-wrap: wrap;
   row-gap: 8px;
   padding: 10px 16px;
-  min-width: 240px;
+  min-width: min(240px, calc(100vw - 24px));
   max-width: 480px;
-  width: auto;
+  width: min(480px, calc(100vw - 24px));
   background: var(--glass-bg, rgba(30,30,46,0.95));
   backdrop-filter: blur(20px);
   -webkit-backdrop-filter: blur(20px);
@@ -153,9 +207,9 @@ const SETTINGS_STYLES = `
   flex-wrap: wrap;
   margin-left: auto;
 }
-@media (min-width: 1200px) {
+@media (min-width: 1400px) {
   .settings-save-bar {
-    bottom: 16px;
+    bottom: 20px;
   }
 }
 /* Individual setting row */
@@ -301,6 +355,10 @@ const SETTINGS_STYLES = `
 .setting-input-wrap select {
   appearance: auto;
 }
+.setting-input-wrap select option {
+  background: #ffffff;
+  color: #111827;
+}
 .setting-unit {
   font-size: 12px;
   color: var(--text-tertiary, #666);
@@ -338,6 +396,10 @@ const SETTINGS_STYLES = `
   color: var(--accent, #5a7cff);
 }
 .settings-banner-text { flex: 1; }
+.settings-banner code {
+  overflow-wrap: anywhere;
+  word-break: break-word;
+}
 /* Diff display for confirm dialog */
 .settings-diff {
   max-height: 300px;
@@ -385,13 +447,25 @@ const SETTINGS_STYLES = `
   margin-right: auto;
   width: 100%;
   box-sizing: border-box;
-  padding-bottom: 80px;
+  padding-bottom: calc(var(--nav-height, 56px) + var(--safe-bottom, 0px) + 48px);
+  overflow-x: clip;
+}
+
+.setting-row .segmented-control {
+  display: flex;
+  width: 100%;
+  flex-wrap: wrap;
+  margin-bottom: 0;
+}
+.setting-row .segmented-btn {
+  flex: 1 1 96px;
+  min-width: 0;
 }
 
 body.settings-save-open .main-content {
   padding-bottom: calc(var(--nav-height) + var(--safe-bottom) + 110px);
 }
-@media (min-width: 1200px) {
+@media (min-width: 1400px) {
   body.settings-save-open .main-content {
     padding-bottom: 140px;
   }
@@ -399,36 +473,37 @@ body.settings-save-open .main-content {
 /* Theme picker grid */
 .theme-picker-grid {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(80px, 1fr));
-  gap: 12px;
+  grid-template-columns: repeat(auto-fit, minmax(108px, 1fr));
+  gap: 10px;
   margin-bottom: 16px;
 }
 .theme-swatch {
   display: flex;
   flex-direction: column;
   align-items: center;
-  gap: 8px;
-  padding: 12px 8px;
-  border-radius: 10px;
-  border: 2px solid transparent;
-  background: transparent;
+  gap: 6px;
+  padding: 10px 8px;
+  border-radius: 12px;
+  border: 1px solid var(--border, rgba(255,255,255,0.12));
+  background: color-mix(in srgb, var(--bg-card, #222) 86%, transparent);
   cursor: pointer;
-  transition: all 0.2s ease;
+  transition: transform 0.16s ease, border-color 0.2s ease, box-shadow 0.2s ease, background 0.2s ease;
   font-family: inherit;
 }
 .theme-swatch:hover {
-  border-color: var(--border, rgba(255,255,255,0.15));
-  background: rgba(255, 255, 255, 0.02);
+  transform: translateY(-1px);
+  border-color: color-mix(in srgb, var(--accent, #da7756) 42%, var(--border, rgba(255,255,255,0.2)));
+  background: color-mix(in srgb, var(--bg-card, #222) 92%, var(--accent, #da7756) 8%);
 }
 .theme-swatch.active {
-  border-color: var(--accent, #5b6eae);
-  background: rgba(91, 110, 174, 0.08);
-  box-shadow: 0 0 12px rgba(91, 110, 174, 0.2);
+  border-color: var(--accent, #da7756);
+  background: color-mix(in srgb, var(--accent, #da7756) 14%, var(--bg-card, #222));
+  box-shadow: 0 0 0 1px color-mix(in srgb, var(--accent, #da7756) 45%, transparent), 0 8px 20px rgba(0,0,0,0.2);
 }
 .theme-swatch-preview {
   display: flex;
   width: 100%;
-  height: 50px;
+  height: 46px;
   gap: 3px;
   border-radius: 6px;
   overflow: hidden;
@@ -452,6 +527,85 @@ body.settings-save-open .main-content {
   font-size: 11px;
   color: var(--text-tertiary, #666);
   text-align: center;
+}
+.theme-swatch-state {
+  font-size: 10px;
+  line-height: 1;
+  color: var(--accent, #da7756);
+  font-weight: 600;
+  min-height: 10px;
+}
+
+@media (max-width: 900px) {
+  .settings-category-mobile {
+    display: block;
+  }
+  .settings-category-tabs {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 8px;
+    overflow-x: visible;
+    padding: 4px 0 8px;
+  }
+  .settings-category-tab {
+    width: 100%;
+    border-radius: 12px;
+    min-height: 42px;
+    padding: 10px 12px;
+    justify-content: flex-start;
+    white-space: normal;
+    line-height: 1.25;
+  }
+}
+
+@media (max-width: 700px) {
+  .settings-save-bar {
+    left: 12px;
+    right: 12px;
+    width: auto;
+    max-width: none;
+    transform: none;
+    padding: 10px 12px;
+  }
+  @keyframes slideUp {
+    from { transform: translateY(20px); opacity: 0; }
+    to   { transform: translateY(0);    opacity: 1; }
+  }
+  .settings-save-bar .save-bar-actions {
+    width: 100%;
+    justify-content: flex-end;
+  }
+  .setting-input-wrap {
+    flex-direction: column;
+    align-items: stretch;
+    gap: 6px;
+  }
+  .setting-input-wrap input[type="text"],
+  .setting-input-wrap input[type="number"],
+  .setting-input-wrap input[type="password"],
+  .setting-input-wrap textarea,
+  .setting-input-wrap select {
+    width: 100%;
+    flex: 1 1 auto;
+  }
+  .setting-unit {
+    align-self: flex-end;
+  }
+  .setting-help-tooltip {
+    left: 0;
+    transform: none;
+    min-width: 0;
+    max-width: min(92vw, 360px);
+  }
+}
+
+@media (max-width: 640px) {
+  .settings-category-tabs {
+    display: none;
+  }
+  .setting-row .segmented-btn {
+    flex: 1 1 calc(50% - 4px);
+  }
 }
 `;
 
@@ -570,6 +724,7 @@ function maskValue(val) {
 function ServerConfigMode() {
   /* Data loading state */
   const [serverData, setServerData] = useState(null);     // { KEY: "value" } from API
+  const [serverSources, setServerSources] = useState(null); // { KEY: "env" | "config" | "default" | "derived" | ... }
   const [serverMeta, setServerMeta] = useState(null);     // { envPath, configPath, configDir }
   const [configSync, setConfigSync] = useState(null);     // { total, updated, skipped, configPath }
   const [loadError, setLoadError] = useState(null);
@@ -581,6 +736,8 @@ function ServerConfigMode() {
   const [errors, setErrors] = useState({});
   /* Secret visibility: Set of keys currently unmasked */
   const [visibleSecrets, setVisibleSecrets] = useState({});
+  /* Custom-select open state: key -> true while editing custom value */
+  const [customSelectMode, setCustomSelectMode] = useState({});
   /* Help tooltips: key of currently shown tooltip */
   const [activeTooltip, setActiveTooltip] = useState(null);
 
@@ -597,8 +754,10 @@ function ServerConfigMode() {
   const tooltipTimer = useRef(null);
 
   /* ─── Load server settings on mount ─── */
-  const fetchSettings = useCallback(async () => {
-    setLoading(true);
+  const fetchSettings = useCallback(async (opts = {}) => {
+    const silent = opts?.silent === true;
+    const preserveConfigSync = opts?.preserveConfigSync === true;
+    if (!silent) setLoading(true);
     setLoadError(null);
     try {
       const res = await apiFetch("/api/settings");
@@ -613,23 +772,30 @@ function ServerConfigMode() {
 
       if (isWrapped) {
         setServerData(res.data);
+        setServerSources(
+          res?.sources && typeof res.sources === "object"
+            ? res.sources
+            : null,
+        );
         setServerMeta(res.meta || null);
-        setConfigSync(null);
+        if (!preserveConfigSync) setConfigSync(null);
       } else if (isLegacyObject) {
         // Demo/legacy compatibility: /api/settings may return a plain object.
         setServerData(res);
+        setServerSources(null);
         setServerMeta(null);
-        setConfigSync(null);
+        if (!preserveConfigSync) setConfigSync(null);
       } else {
         throw new Error(res?.error || "Unexpected response format");
       }
     } catch (err) {
       setLoadError(err.message || "Failed to load settings");
       setServerData(null);
+      setServerSources(null);
       setServerMeta(null);
       setConfigSync(null);
     } finally {
-      setLoading(false);
+      if (!silent) setLoading(false);
     }
   }, []);
 
@@ -637,18 +803,22 @@ function ServerConfigMode() {
 
   /* ─── Grouped settings with search + advanced filter ─── */
   const grouped = useMemo(() => getGroupedSettings(showAdvanced), [showAdvanced]);
+  const isContextShreddingSetting = useCallback((def) => {
+    const category = String(def?.category || "").toLowerCase();
+    return category === "context-shredding" || category === "context_shredding";
+  }, []);
 
   /* Filtered settings when searching */
   const filteredSettings = useMemo(() => {
     if (!searchQuery.trim()) return null; // null = not searching
     const results = [];
     for (const def of SETTINGS_SCHEMA) {
-      if (!showAdvanced && def.advanced) continue;
+      if (!showAdvanced && def.advanced && !isContextShreddingSetting(def)) continue;
       const haystack = `${def.key} ${def.label} ${def.description || ""}`;
       if (fuzzyMatch(searchQuery, haystack)) results.push(def);
     }
     return results;
-  }, [searchQuery, showAdvanced]);
+  }, [searchQuery, showAdvanced, isContextShreddingSetting]);
 
   /* ─── Value resolution: edited value → server value → empty ─── */
   const getValue = useCallback(
@@ -663,11 +833,14 @@ function ServerConfigMode() {
   /* ─── Determine if a value matches its default ─── */
   const isDefault = useCallback(
     (def) => {
+      const source = serverSources?.[def.key];
+      if (source === "default") return true;
+      if (source && source !== "unset") return false;
       if (def.defaultVal == null) return false;
       const current = getValue(def.key);
       return current === "" || current === String(def.defaultVal);
     },
-    [getValue],
+    [getValue, serverSources],
   );
 
   /* ─── Determine if a value was modified from loaded state ─── */
@@ -677,7 +850,19 @@ function ServerConfigMode() {
   );
 
   /* Count of unsaved changes */
-  const changeCount = useMemo(() => Object.keys(edits).length, [edits]);
+  const serverChangeCount = useMemo(() => Object.keys(edits).length, [edits]);
+  const externalPendingKeys = useMemo(() => {
+    const current = pendingChanges.value || {};
+    return Object.keys(current).filter((key) => key.startsWith("settings-voice-"));
+  }, [pendingChanges.value]);
+  const externalChangeCount = externalPendingKeys.length;
+  const changeCount = serverChangeCount + externalChangeCount;
+
+  useEffect(() => {
+    const key = "settings-server";
+    setPendingChange(key, serverChangeCount > 0);
+    return () => clearPendingChange(key);
+  }, [serverChangeCount]);
 
   useEffect(() => {
     if (typeof document === "undefined") return undefined;
@@ -727,11 +912,18 @@ function ServerConfigMode() {
     [serverData],
   );
 
-  const handleDiscard = useCallback(() => {
+  const handleDiscard = useCallback(async () => {
     haptic("medium");
-    setEdits({});
-    setErrors({});
-    showToast("Changes discarded", "info");
+    try {
+      await runSettingsExternalEditorAction("discard");
+      setEdits({});
+      setErrors({});
+      setCustomSelectMode({});
+      showToast("Changes discarded", "info");
+    } catch (err) {
+      showToast(`Discard failed: ${err?.message || "Unknown error"}`, "error");
+      haptic("heavy");
+    }
   }, []);
 
   /* ─── Save flow ─── */
@@ -766,42 +958,43 @@ function ServerConfigMode() {
       for (const [key, value] of Object.entries(edits)) {
         changes[key] = value;
       }
-      let res;
-      try {
-        res = await apiFetch("/api/settings/update", {
-          method: "POST",
-          body: JSON.stringify({ changes }),
-        });
-      } catch (error_) {
-        const message = String(error_?.message || "");
-        const shouldTryLegacy =
-          /Request failed \((404|405|501)\)/.test(message)
-          || /Failed to fetch|NetworkError|Load failed/i.test(message);
+      const changeKeys = Object.keys(changes);
+      if (changeKeys.length > 0) {
+        let res;
+        try {
+          res = await apiFetch("/api/settings/update", {
+            method: "POST",
+            body: JSON.stringify({ changes }),
+          });
+        } catch (error_) {
+          const message = String(error_?.message || "");
+          const shouldTryLegacy =
+            /Request failed \((404|405|501)\)/.test(message)
+            || /Failed to fetch|NetworkError|Load failed/i.test(message);
 
-        if (!shouldTryLegacy) throw error_;
+          if (!shouldTryLegacy) throw error_;
 
-        const legacyKeyMap = {
-          INTERNAL_EXECUTOR_SDK: "sdk",
-          KANBAN_BACKEND: "kanban",
-          EXECUTOR_REGIONS: "region",
-        };
-        const entries = Object.entries(changes);
-        if (entries.length !== 1) throw error_;
+          const legacyKeyMap = {
+            INTERNAL_EXECUTOR_SDK: "sdk",
+            KANBAN_BACKEND: "kanban",
+            EXECUTOR_REGIONS: "region",
+          };
+          const entries = Object.entries(changes);
+          if (entries.length !== 1) throw error_;
 
-        const [envKey, value] = entries[0];
-        const legacyKey = legacyKeyMap[envKey];
-        if (!legacyKey) throw error_;
+          const [envKey, value] = entries[0];
+          const legacyKey = legacyKeyMap[envKey];
+          if (!legacyKey) throw error_;
 
-        res = await apiFetch("/api/config/update", {
-          method: "POST",
-          body: JSON.stringify({ key: legacyKey, value }),
-        });
-      }
-      if (res?.ok || (res && typeof res === "object" && !Array.isArray(res))) {
-        showToast("Settings saved successfully", "success");
-        haptic("medium");
+          res = await apiFetch("/api/config/update", {
+            method: "POST",
+            body: JSON.stringify({ key: legacyKey, value }),
+          });
+        }
+        if (!(res?.ok || (res && typeof res === "object" && !Array.isArray(res)))) {
+          throw new Error(res?.error || "Save failed");
+        }
         const updatedConfig = Array.isArray(res.updatedConfig) ? res.updatedConfig : Object.keys(changes);
-        const changeKeys = Object.keys(changes);
         const skipped = changeKeys.filter((key) => !updatedConfig.includes(key));
         setConfigSync({
           total: changeKeys.length,
@@ -816,14 +1009,15 @@ function ServerConfigMode() {
             configDir: res.configDir || prev?.configDir,
           }));
         }
-        // Merge changes into serverData so they appear as the new baseline
-        setServerData((prev) => ({ ...prev, ...changes }));
+        // Refresh from backend so derived/runtime-resolved values stay accurate.
+        await fetchSettings({ silent: true, preserveConfigSync: true });
         setEdits({});
-        if (hasRestartSetting) {
-          showToast("Settings take effect after auto-reload (~2 seconds)", "info");
-        }
-      } else {
-        throw new Error(res?.error || "Save failed");
+      }
+      await runSettingsExternalEditorAction("save");
+      showToast("Settings saved successfully", "success");
+      haptic("medium");
+      if (hasRestartSetting && changeKeys.length > 0) {
+        showToast("Settings take effect after auto-reload (~2 seconds)", "info");
       }
     } catch (err) {
       let parsed = null;
@@ -841,7 +1035,7 @@ function ServerConfigMode() {
     } finally {
       setSaving(false);
     }
-  }, [edits, hasRestartSetting, serverMeta]);
+  }, [edits, hasRestartSetting, serverMeta, fetchSettings]);
 
   const handleCancelSave = useCallback(() => {
     setConfirmOpen(false);
@@ -866,14 +1060,26 @@ function ServerConfigMode() {
 
   /* ─── Build the diff for the confirm dialog ─── */
   const diffEntries = useMemo(() => {
-    return Object.entries(edits).map(([key, newVal]) => {
+    const serverDiffs = Object.entries(edits).map(([key, newVal]) => {
       const def = SETTINGS_SCHEMA.find((s) => s.key === key);
       const oldVal = serverData?.[key] != null ? String(serverData[key]) : "(unset)";
       const displayOld = def?.sensitive ? maskValue(oldVal) : oldVal || "(unset)";
       const displayNew = def?.sensitive ? maskValue(newVal) : newVal || "(unset)";
       return { key, label: def?.label || key, oldVal: displayOld, newVal: displayNew };
     });
-  }, [edits, serverData]);
+    const externalDiffs = externalPendingKeys.map((key) => ({
+      key,
+      label:
+        key === "settings-voice-endpoints"
+          ? "Voice Endpoints"
+          : key === "settings-voice-providers"
+            ? "Voice Providers"
+            : key,
+      oldVal: "(unsaved)",
+      newVal: "Will be saved",
+    }));
+    return [...serverDiffs, ...externalDiffs];
+  }, [edits, serverData, externalPendingKeys]);
 
   /* ═══════════════════════════════════════════════
    *  Render a single setting control
@@ -905,44 +1111,58 @@ function ServerConfigMode() {
 
         case "select": {
           const opts = def.options || [];
-          const hasCustom = opts.includes("custom");
-          const isCustomValue = hasCustom && value && !opts.includes(value);
-          if (opts.length <= 4 && !hasCustom) {
-            // SegmentedControl for ≤4 options (never for custom-capable selects)
+          const allowsCustom = opts.includes("custom");
+          const presetOpts = allowsCustom ? opts.filter((o) => o !== "custom") : opts;
+          const currentValue =
+            value || (def.defaultVal != null ? String(def.defaultVal) : "");
+          const isCustomValue =
+            allowsCustom &&
+            currentValue !== "" &&
+            !presetOpts.includes(currentValue);
+          const customMode = Boolean(customSelectMode[def.key] || isCustomValue);
+
+          if (presetOpts.length <= 4 && !allowsCustom) {
+            // SegmentedControl for ≤4 options
             control = html`
               <${SegmentedControl}
-                options=${opts.map((o) => ({ value: o, label: o }))}
-                value=${value || (def.defaultVal != null ? String(def.defaultVal) : "")}
+                options=${presetOpts.map((o) => ({ value: o, label: o }))}
+                value=${currentValue}
                 onChange=${(v) => handleChange(def.key, v)}
               />
             `;
           } else {
-            // Dropdown for >4 options or custom-capable selects
+            // Dropdown for >4 options, and for any custom-enabled setting.
             control = html`
               <div class="setting-input-wrap">
-                <select
-                  value=${isCustomValue ? "custom" : (value || (def.defaultVal != null ? String(def.defaultVal) : ""))}
+                <${Select}
+                  size="small"
+                  value=${customMode ? "__custom__" : currentValue}
                   onChange=${(e) => {
-                    if (e.target.value === "custom") {
-                      handleChange(def.key, "");
-                    } else {
-                      handleChange(def.key, e.target.value);
+                    const nextValue = String(e.target.value || "");
+                    if (nextValue === "__custom__") {
+                      setCustomSelectMode((prev) => ({ ...prev, [def.key]: true }));
+                      if (!isCustomValue) handleChange(def.key, "");
+                      return;
                     }
+                    setCustomSelectMode((prev) => ({ ...prev, [def.key]: false }));
+                    handleChange(def.key, nextValue);
                   }}
                 >
-                  ${opts.map(
-                    (o) => html`<option key=${o} value=${o}>${o === "custom" ? "custom..." : o}</option>`,
+                  ${presetOpts.map(
+                    (o) => html`<${MenuItem} key=${o} value=${o}>${o}<//>`,
                   )}
-                </select>
-                ${(isCustomValue || (hasCustom && value === "")) && html`
-                  <input
-                    type="text"
-                    value=${value || ""}
-                    placeholder="Enter custom value…"
+                  ${allowsCustom ? html`<${MenuItem} value="__custom__">custom...<//>` : null}
+                <//>
+                ${allowsCustom && customMode ? html`
+                  <${TextField}
+                    size="small"
+                    variant="outlined"
+                    fullWidth
+                    value=${String(isCustomValue ? currentValue : (value || ""))}
+                    placeholder="Enter custom value..."
                     onInput=${(e) => handleChange(def.key, e.target.value)}
-                    style="margin-top:4px"
                   />
-                `}
+                ` : null}
               </div>
             `;
           }
@@ -952,24 +1172,26 @@ function ServerConfigMode() {
         case "secret": {
           control = html`
             <div class="setting-input-wrap">
-              <input
+              <${TextField}
                 type=${secretVisible ? "text" : "password"}
+                size="small"
+                variant="outlined"
+                fullWidth
                 value=${value}
                 placeholder="Enter value…"
                 onInput=${(e) => handleChange(def.key, e.target.value)}
               />
-              <button
-                class="setting-secret-toggle"
+              <${IconButton}
+                size="small"
                 onClick=${(e) => {
                   e.preventDefault();
                   e.stopPropagation();
                   toggleSecret(def.key);
                 }}
-                type="button"
                 title=${secretVisible ? "Hide" : "Show"}
               >
                 ${resolveIcon(secretVisible ? ":eyeOff:" : ":eye:")}
-              </button>
+              <//>
             </div>
           `;
           break;
@@ -978,12 +1200,13 @@ function ServerConfigMode() {
         case "number": {
           control = html`
             <div class="setting-input-wrap">
-              <input
+              <${TextField}
                 type="number"
+                size="small"
+                variant="outlined"
                 value=${value}
                 placeholder=${def.defaultVal != null ? String(def.defaultVal) : ""}
-                min=${def.min}
-                max=${def.max}
+                inputProps=${{ min: def.min, max: def.max }}
                 onInput=${(e) => handleChange(def.key, e.target.value)}
               />
               ${def.unit && html`<span class="setting-unit">${def.unit}</span>`}
@@ -995,11 +1218,15 @@ function ServerConfigMode() {
         case "text": {
           control = html`
             <div class="setting-input-wrap">
-              <textarea
+              <${TextField}
+                multiline
+                rows=${3}
+                size="small"
+                variant="outlined"
+                fullWidth
                 value=${value}
                 placeholder=${def.defaultVal != null ? String(def.defaultVal) : "Enter value…"}
                 onInput=${(e) => handleChange(def.key, e.target.value)}
-                rows="3"
               />
             </div>
           `;
@@ -1010,8 +1237,10 @@ function ServerConfigMode() {
           // string type
           control = html`
             <div class="setting-input-wrap">
-              <input
-                type="text"
+              <${TextField}
+                size="small"
+                variant="outlined"
+                fullWidth
                 value=${value}
                 placeholder=${def.defaultVal != null ? String(def.defaultVal) : "Enter value…"}
                 onInput=${(e) => handleChange(def.key, e.target.value)}
@@ -1029,8 +1258,9 @@ function ServerConfigMode() {
             <span class="setting-row-label">${def.label}</span>
             ${defaultMatch && !modified && html`<span class="setting-default-tag">(default)</span>`}
             ${def.restart && html`<${Badge} status="warning" text="restart" className="badge-sm" />`}
-            <button
-              class="setting-help-btn"
+            <${IconButton}
+              size="small"
+              className="setting-help-btn"
               onClick=${(e) => {
                 e.stopPropagation();
                 showTooltipFor(def.key);
@@ -1040,7 +1270,7 @@ function ServerConfigMode() {
               ?
               ${activeTooltip === def.key &&
               html`<div class="setting-help-tooltip">${def.description}</div>`}
-            </button>
+            <//>
           </div>
           <div class="setting-row-key">${def.key}</div>
           ${control}
@@ -1048,7 +1278,7 @@ function ServerConfigMode() {
         </div>
       `;
     },
-    [getValue, isModified, isDefault, errors, visibleSecrets, activeTooltip, handleChange, toggleSecret, showTooltipFor],
+    [getValue, isModified, isDefault, errors, visibleSecrets, activeTooltip, handleChange, toggleSecret, showTooltipFor, customSelectMode],
   );
 
   /* ═══════════════════════════════════════════════
@@ -1067,7 +1297,7 @@ function ServerConfigMode() {
         <span class="settings-banner-text">
           <strong>Backend Unreachable</strong> — ${loadError}
         </span>
-        <button class="btn btn-ghost btn-sm" onClick=${fetchSettings}>Retry</button>
+        <${Button} variant="text" size="small" onClick=${fetchSettings}>Retry<//>
       </div>
     `}
 
@@ -1164,17 +1394,35 @@ function ServerConfigMode() {
       }
 
       /* ── Category browsing mode ── */
-      const catDefs = grouped.get(activeCategory) || [];
+      const catDefs = activeCategory === "context-shredding"
+        ? SETTINGS_SCHEMA.filter((def) => isContextShreddingSetting(def))
+        : (grouped.get(activeCategory) || []);
       const activeCat = CATEGORIES.find((c) => c.id === activeCategory);
 
       return html`
+        <div class="settings-category-mobile">
+          <label class="settings-category-mobile-label">Category</label>
+          <div class="setting-input-wrap">
+            <${Select}
+              size="small"
+              value=${activeCategory}
+              onChange=${(e) => {
+                setActiveCategory(e.target.value);
+                haptic("light");
+              }}
+            >
+              ${CATEGORIES.map((cat) => html`<${MenuItem} key=${cat.id} value=${cat.id}>${cat.label}<//>`)}
+            <//>
+          </div>
+        </div>
+
         <!-- Category tabs -->
         <div class="settings-category-tabs">
           ${CATEGORIES.map(
             (cat) => html`
-              <button
+              <${Button}
                 key=${cat.id}
-                class="settings-category-tab ${activeCategory === cat.id ? "active" : ""}"
+                className="settings-category-tab ${activeCategory === cat.id ? "active" : ""}"
                 onClick=${() => {
                   setActiveCategory(cat.id);
                   haptic("light");
@@ -1182,7 +1430,7 @@ function ServerConfigMode() {
               >
                 <span class="settings-category-tab-icon">${resolveIcon(cat.icon) || cat.icon}</span>
                 ${cat.label}
-              </button>
+              <//>
             `,
           )}
         </div>
@@ -1193,6 +1441,24 @@ function ServerConfigMode() {
 
         <!-- GitHub Device Flow login card -->
         ${activeCategory === "github" && html`<${GitHubDeviceFlowCard} config=${serverData} />`}
+
+        <!-- Context Shredding overview panel -->
+        ${activeCategory === "context-shredding" && html`<${ContextShreddingPanel} getValue=${getValue} />`}
+
+        <!-- Voice Endpoints card-based editor (synced with /setup) -->
+        ${activeCategory === "voice" && html`<${VoiceEndpointsEditor} />`}
+
+        <!-- Voice Providers editor (routing order with endpoint linking) -->
+        ${activeCategory === "voice" && html`<${VoiceProvidersEditor} />`}
+
+        <!-- OpenAI Codex OAuth login card (voice category) -->
+        ${activeCategory === "voice" && html`<${OpenAICodexLoginCard} />`}
+
+        <!-- Claude OAuth login card (voice category) -->
+        ${activeCategory === "voice" && html`<${ClaudeLoginCard} />`}
+
+        <!-- Google Gemini OAuth login card (voice category) -->
+        ${activeCategory === "voice" && html`<${GeminiLoginCard} />`}
 
         <!-- Settings list for active category -->
         ${catDefs.length === 0
@@ -1231,16 +1497,18 @@ function ServerConfigMode() {
       </div>
       <div class="save-bar-actions">
         ${changeCount > 0 && html`
-          <button class="btn btn-ghost btn-sm" onClick=${handleDiscard}>
+          <${Button} variant="text" size="small" onClick=${handleDiscard}>
             Discard
-          </button>
-          <button
-            class=${`btn btn-primary btn-sm ${saving ? 'btn-loading' : ''}`}
+          <//>
+          <${Button}
+            variant="contained"
+            color="primary"
+            size="small"
             onClick=${handleSaveClick}
             disabled=${saving}
           >
             ${saving ? html`<${Spinner} size=${14} /> Saving…` : "Save Changes"}
-          </button>
+          <//>
         `}
       </div>
     </div>
@@ -1274,10 +1542,10 @@ function ServerConfigMode() {
             </div>
           `}
           <div class="btn-row mt-md" style="justify-content:flex-end;gap:8px">
-            <button class="btn btn-ghost" onClick=${handleCancelSave}>Cancel</button>
-            <button class="btn btn-primary" onClick=${handleConfirmSave} disabled=${saving}>
+            <${Button} variant="text" onClick=${handleCancelSave}>Cancel<//>
+            <${Button} variant="contained" color="primary" onClick=${handleConfirmSave} disabled=${saving}>
               ${saving ? html`<${Spinner} size=${14} /> Saving…` : "Confirm & Save"}
-            </button>
+            <//>
           </div>
         </div>
       <//>
@@ -1338,6 +1606,9 @@ const THEME_INLINE_VARS = {
   },
 };
 
+const THEME_STORAGE_KEY = "ve_settings_colorTheme";
+const THEME_LOCK_ATTR = "data-theme-lock";
+
 /* ═══════════════════════════════════════════════════════════════
  *  AppPreferencesMode — existing client-side preferences
  * ═══════════════════════════════════════════════════════════════ */
@@ -1376,6 +1647,7 @@ function AppPreferencesMode() {
     const tgVarKeys = ["--bg-primary","--bg-secondary","--bg-card","--text-primary","--text-secondary","--text-hint","--accent","--accent-text"];
     if (!theme || theme === "system") {
       root.removeAttribute("data-theme");
+      root.setAttribute(THEME_LOCK_ATTR, "system");
       // Restore Telegram-supplied inline vars (or clear ours if no Telegram context)
       const tp = globalThis.Telegram?.WebApp?.themeParams;
       if (tp) {
@@ -1390,9 +1662,20 @@ function AppPreferencesMode() {
       }
     } else {
       root.setAttribute("data-theme", theme);
+      root.setAttribute(THEME_LOCK_ATTR, "custom");
       // Also set as inline styles to beat telegram.js's element.style values
       const vars = THEME_INLINE_VARS[theme];
-      if (vars) Object.entries(vars).forEach(([k, v]) => root.style.setProperty(k, v));
+      if (vars) {
+        Object.entries(vars).forEach(([k, v]) => root.style.setProperty(k, v));
+      } else {
+        tgVarKeys.forEach((k) => root.style.removeProperty(k));
+      }
+    }
+
+    try {
+      localStorage.setItem(THEME_STORAGE_KEY, JSON.stringify(theme || "system"));
+    } catch {
+      /* ignore storage errors */
     }
   }
 
@@ -1494,6 +1777,7 @@ function AppPreferencesMode() {
     haptic("medium");
     const keys = [
       "fontSize",
+      "colorTheme",
       "notifyUpdates",
       "notifyErrors",
       "notifyComplete",
@@ -1513,6 +1797,7 @@ function AppPreferencesMode() {
     haptic("heavy");
     const keys = [
       "fontSize",
+      "colorTheme",
       "notifyUpdates",
       "notifyErrors",
       "notifyComplete",
@@ -1530,6 +1815,9 @@ function AppPreferencesMode() {
     setDefaultMaxParallel(4);
     setDefaultSdk("auto");
     setDefaultRegion("auto");
+    setColorTheme("system");
+    document.documentElement.removeAttribute("data-theme");
+    document.documentElement.setAttribute(THEME_LOCK_ATTR, "system");
     document.documentElement.style.removeProperty("--base-font-size");
     document.documentElement.style.removeProperty("font-size");
     showToast("Settings reset", "success");
@@ -1563,7 +1851,7 @@ function AppPreferencesMode() {
           `}
           <div>
             <div style="font-weight:600;font-size:15px">
-              ${user?.first_name || "Unknown"} ${user?.last_name || ""}
+              ${user?.first_name || "Local"} ${user?.last_name || ""}
             </div>
             ${user?.username &&
             html`<div class="meta-text">@${user.username}</div>`}
@@ -1590,8 +1878,10 @@ function AppPreferencesMode() {
             { id: "ayu", label: "Ayu", bg: "#0a0e14", accent: "#ff8f40", desc: "Orange" },
             { id: "dawn", label: "Dawn", bg: "#fdf6e3", accent: "#b58900", desc: "Light" },
           ].map((theme) => html`
-            <button
+            <${Button}
               key=${theme.id}
+              variant="text"
+              size="small"
               class="theme-swatch ${colorTheme === theme.id ? "active" : ""}"
               title=${theme.label}
               onClick=${() => handleColorTheme(theme.id)}
@@ -1602,13 +1892,14 @@ function AppPreferencesMode() {
               </div>
               <div class="swatch-label">${theme.label}</div>
               <div class="swatch-desc">${theme.desc}</div>
-            </button>
+              <div class="theme-swatch-state">${colorTheme === theme.id ? "Selected" : ""}</div>
+            <//>
           `)}
         </div>
         <div class="meta-text mt-sm mb-md" style="font-size: 11px;">
           ${colorTheme === "system"
             ? html`Follows your ${tg ? "Telegram" : "OS"} theme automatically.`
-            : html`Using <strong>${colorTheme}</strong> theme.`}
+            : html`Using <strong>${colorTheme}</strong> theme. Saved app theme overrides Telegram/browser palette mixing.`}
         </div>
         <div class="card-subtitle mb-sm">Font Size</div>
         <${SegmentedControl}
@@ -1683,9 +1974,9 @@ function AppPreferencesMode() {
           title="Clear Cache"
           subtitle="Remove all stored preferences"
           trailing=${html`
-            <button class="btn btn-ghost btn-sm" onClick=${handleClearCache}>
+            <${Button} variant="text" size="small" onClick=${handleClearCache}>
               ${iconText(":trash: Clear")}
-            </button>
+            <//>
           `}
         />
       <//>
@@ -1696,14 +1987,13 @@ function AppPreferencesMode() {
       <${Card}>
         <div class="card-subtitle mb-sm">Default Max Parallel</div>
         <div class="range-row mb-md">
-          <input
-            type="range"
-            min="1"
-            max="20"
-            step="1"
+          <${Slider}
+            min=${1}
+            max=${20}
+            step=${1}
             value=${defaultMaxParallel}
-            onInput=${(e) => setDefaultMaxParallel(Number(e.target.value))}
-            onChange=${(e) => handleDefaultMaxParallel(Number(e.target.value))}
+            onChange=${(e, v) => setDefaultMaxParallel(v)}
+            onChangeCommitted=${(e, v) => handleDefaultMaxParallel(v)}
           />
           <span class="pill">${defaultMaxParallel}</span>
         </div>
@@ -1758,15 +2048,16 @@ function AppPreferencesMode() {
             title="Raw Status JSON"
             subtitle="View raw API response data"
             trailing=${html`
-              <button
-                class="btn btn-ghost btn-sm"
+              <${Button}
+                variant="text"
+                size="small"
                 onClick=${() => {
                   setShowRawJson(!showRawJson);
                   haptic();
                 }}
               >
                 ${showRawJson ? "Hide" : "Show"}
-              </button>
+              <//>
             `}
           />
           ${showRawJson &&
@@ -1781,9 +2072,9 @@ function AppPreferencesMode() {
           title="Reset All Settings"
           subtitle="Restore defaults"
           trailing=${html`
-            <button class="btn btn-danger btn-sm" onClick=${handleReset}>
+            <${Button} variant="contained" color="error" size="small" onClick=${handleReset}>
               Reset
-            </button>
+            <//>
           `}
         />
       <//>
@@ -1804,8 +2095,9 @@ function AppPreferencesMode() {
             Built with Preact + HTM.
           </div>
           <div class="btn-row mt-md" style="justify-content:center">
-            <button
-              class="btn btn-ghost btn-sm"
+            <${Button}
+              variant="text"
+              size="small"
               onClick=${() => {
                 haptic();
                 const tg = globalThis.Telegram?.WebApp;
@@ -1819,9 +2111,10 @@ function AppPreferencesMode() {
               }}
             >
               GitHub
-            </button>
-            <button
-              class="btn btn-ghost btn-sm"
+            <//>
+            <${Button}
+              variant="text"
+              size="small"
               onClick=${() => {
                 haptic();
                 const tg = globalThis.Telegram?.WebApp;
@@ -1830,13 +2123,924 @@ function AppPreferencesMode() {
               }}
             >
               Docs
-            </button>
+            <//>
           </div>
         </div>
       <//>
     <//>
   `;
 }
+
+/* ═══════════════════════════════════════════════════════════════
+ *  VoiceEndpointsEditor — card-based multi-endpoint voice config
+ *  Mirrors the setup.html voice endpoints UI exactly.
+ * ═══════════════════════════════════════════════════════════════ */
+function VoiceEndpointsEditor() {
+  const [endpoints, setEndpoints] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [dirty, setDirty] = useState(false);
+  const [loadError, setLoadError] = useState(null);
+  const [testResults, setTestResults] = useState({});
+  const [oauthStatus, setOauthStatus] = useState({ openai: {}, claude: {}, gemini: {} });
+  const [customModelMode, setCustomModelMode] = useState({});
+  const [savedEndpoints, setSavedEndpoints] = useState([]);
+
+  const getDefaultEndpointUrl = useCallback((provider, authSource = "apiKey") => {
+    const p = String(provider || "").toLowerCase();
+    if (p === "openai") return "https://api.openai.com";
+    if (p === "claude") return "https://api.anthropic.com";
+    if (p === "gemini") return "https://generativelanguage.googleapis.com";
+    return "";
+  }, []);
+
+  const isEndpointEditable = useCallback((provider) => {
+    const p = String(provider || "").toLowerCase();
+    return p === "azure" || p === "custom";
+  }, []);
+
+  const endpointModelOptions = useMemo(() => {
+    return [
+      "gpt-audio-1.5",
+      "gpt-realtime-1.5",
+      "gpt-4o-realtime-preview-2024-12-17",
+      "claude-sonnet-4.6",
+      "claude-haiku-4.5",
+      "gemini-2.5-pro",
+      "gemini-2.5-flash",
+      "gemini-3.0-flash",
+      "gemini-3.1-pro",
+    ];
+  }, []);
+
+  const normalizeEp = useCallback((ep = {}, idx = 0) => {
+    const provider = ["azure", "openai", "claude", "gemini", "custom"].includes(ep.provider)
+      ? ep.provider
+      : "azure";
+    const transcriptionEnabled = ep.transcriptionEnabled == null
+      ? provider !== "azure"
+      : ep.transcriptionEnabled !== false;
+    return {
+      _id: ep._id ?? `ep-${idx}-${Date.now()}`,
+      name: String(ep.name || `endpoint-${idx + 1}`),
+      provider,
+    endpoint: (() => {
+      const raw = String(ep.endpoint || "");
+      return (provider === "azure" || provider === "custom")
+        ? raw
+        : (raw || getDefaultEndpointUrl(provider, ep.authSource));
+    })(),
+    deployment: String(ep.deployment || ""),
+    model: String(ep.model || ""),
+    visionModel: String(ep.visionModel || ""),
+    transcriptionModel: String(ep.transcriptionModel || ""),
+    transcriptionEnabled,
+    apiKey: String(ep.apiKey || ""),
+    voiceId: String(ep.voiceId || ""),
+    role: ["primary", "backup"].includes(ep.role) ? ep.role : "primary",
+    weight: Number(ep.weight) > 0 ? Number(ep.weight) : 1,
+    enabled: ep.enabled !== false,
+    authSource: ["apiKey", "oauth"].includes(ep.authSource) ? ep.authSource : "apiKey",
+    };
+  }, [getDefaultEndpointUrl]);
+
+  // Fetch OAuth status for all providers
+  const fetchOAuthStatuses = useCallback(async () => {
+    for (const provider of ["openai", "claude", "gemini"]) {
+      try {
+        const res = await apiFetch(`/api/voice/auth/${provider}/status`);
+        if (res.ok) {
+          const connected = !!res.hasToken || res.status === "connected" || res.status === "complete";
+          setOauthStatus((prev) => ({
+            ...prev,
+            [provider]: {
+              status: connected ? "connected" : (res.status || "idle"),
+              hasToken: connected,
+            },
+          }));
+        }
+      } catch { /* best-effort */ }
+    }
+  }, []);
+
+  // Test endpoint connection
+  const testEndpointConnection = useCallback(async (ep) => {
+    const key = ep._id;
+    setTestResults((prev) => ({ ...prev, [key]: { testing: true } }));
+    try {
+      const res = await apiFetch("/api/voice/endpoints/test", {
+        method: "POST",
+        body: JSON.stringify({ provider: ep.provider, apiKey: ep.apiKey, endpoint: ep.endpoint, deployment: ep.deployment, model: ep.model, authSource: ep.authSource }),
+      });
+      if (res.ok) {
+        setTestResults((prev) => ({ ...prev, [key]: { testing: false, result: "success", latencyMs: res.latencyMs } }));
+        haptic("success");
+      } else {
+        setTestResults((prev) => ({ ...prev, [key]: { testing: false, result: "error", error: res.error || "Connection failed" } }));
+        haptic("heavy");
+      }
+    } catch (err) {
+      setTestResults((prev) => ({ ...prev, [key]: { testing: false, result: "error", error: err.message || "Network error" } }));
+      haptic("heavy");
+    }
+  }, []);
+
+  useEffect(() => {
+    (async () => {
+      try {
+        const res = await apiFetch("/api/voice/endpoints");
+        const eps = Array.isArray(res?.voiceEndpoints) ? res.voiceEndpoints : [];
+        const normalized = eps.map((ep, i) => normalizeEp(ep, i));
+        setEndpoints(normalized);
+        setSavedEndpoints(normalized);
+        setDirty(false);
+      } catch (err) {
+        setLoadError(err.message || "Failed to load voice endpoints");
+      } finally {
+        setLoading(false);
+      }
+    })();
+    fetchOAuthStatuses();
+  }, [normalizeEp, fetchOAuthStatuses]);
+
+  useEffect(() => {
+    const key = "settings-voice-endpoints";
+    setPendingChange(key, dirty);
+    return () => clearPendingChange(key);
+  }, [dirty]);
+
+  const addEndpoint = useCallback(() => {
+    setEndpoints((prev) => {
+      const next = [
+        ...prev,
+        normalizeEp(
+          { provider: "azure", role: prev.length === 0 ? "primary" : "backup" },
+          prev.length,
+        ),
+      ];
+      setDirty(true);
+      return next;
+    });
+  }, [normalizeEp]);
+
+  const removeEndpoint = useCallback((id) => {
+    setEndpoints((prev) => {
+      setDirty(true);
+      return prev.filter((ep) => ep._id !== id);
+    });
+  }, []);
+
+  const updateEndpoint = useCallback((id, field, value) => {
+    setEndpoints((prev) => {
+      setDirty(true);
+      return prev.map((ep) =>
+        ep._id === id
+          ? (() => {
+              const next = { ...ep, [field]: field === "weight" ? (Number(value) || 1) : value };
+              if (field === "provider") {
+                if (!isEndpointEditable(next.provider)) {
+                  next.endpoint = getDefaultEndpointUrl(next.provider, next.authSource);
+                }
+                if (next.provider !== "azure") next.deployment = "";
+                if (next.provider === "custom" && !next.model) {
+                  next.model = endpointModelOptions[0] || "gpt-audio-1.5";
+                }
+              }
+              if (field === "authSource" && !isEndpointEditable(next.provider)) {
+                next.endpoint = getDefaultEndpointUrl(next.provider, next.authSource);
+              }
+              return next;
+            })()
+          : ep,
+      );
+    });
+  }, [endpointModelOptions, getDefaultEndpointUrl, isEndpointEditable]);
+
+  const handleSave = useCallback(async () => {
+    try {
+      const payload = endpoints.map(({ _id, ...ep }) => ep);
+      await apiFetch("/api/voice/endpoints", {
+        method: "POST",
+        body: JSON.stringify({ voiceEndpoints: payload }),
+      });
+      setSavedEndpoints(endpoints.map((ep) => ({ ...ep })));
+      setDirty(false);
+    } catch (err) {
+      throw new Error(err?.message || "Voice endpoints save failed");
+    }
+  }, [endpoints]);
+
+  const handleDiscard = useCallback(async () => {
+    setEndpoints(savedEndpoints.map((ep) => ({ ...ep })));
+    setCustomModelMode({});
+    setDirty(false);
+  }, [savedEndpoints]);
+
+  useEffect(() => {
+    return registerSettingsExternalEditor("settings-voice-endpoints", {
+      isDirty: () => dirty,
+      save: handleSave,
+      discard: handleDiscard,
+    });
+  }, [dirty, handleDiscard, handleSave]);
+
+  if (loading) return html`<${SkeletonCard} height="80px" />`;
+
+  return html`
+    <${Card}>
+      <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:12px">
+        <div>
+          <strong>Voice Endpoints</strong>
+          <div class="meta-text" style="margin-top:2px">
+            Named endpoints with per-credential failover. Primary is tried first; backups on failure.
+          </div>
+        </div>
+      </div>
+      ${loadError && html`
+        <div class="settings-banner settings-banner-warn" style="margin-bottom:10px">${loadError}</div>
+      `}
+      ${endpoints.map((ep) => html`
+        <div key=${ep._id} style="border:1px solid var(--border-color,rgba(255,255,255,0.1));border-radius:8px;padding:12px;margin-bottom:10px">
+          <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:10px">
+            <${TextField}
+              size="small"
+              variant="outlined"
+              value=${ep.name}
+              placeholder="Endpoint name"
+              style="font-weight:600;width:100%;font-size:14px"
+              onInput=${(e) => updateEndpoint(ep._id, "name", e.target.value)}
+              fullWidth
+            />
+            <${Button}
+              variant="outlined"
+              size="small"
+              style="margin-left:8px;white-space:nowrap;opacity:0.7;flex-shrink:0"
+              onClick=${() => removeEndpoint(ep._id)}
+            >Remove<//>
+          </div>
+          <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px">
+            <div>
+              <div class="setting-row-label">Provider</div>
+              <${Select} size="small" value=${ep.provider} onChange=${(e) => updateEndpoint(ep._id, "provider", e.target.value)} fullWidth>
+                <${MenuItem} value="azure">Azure OpenAI<//>
+                <${MenuItem} value="openai">OpenAI<//>
+                <${MenuItem} value="claude">Claude (Anthropic)<//>
+                <${MenuItem} value="gemini">Google Gemini<//>
+                <${MenuItem} value="custom">Custom Endpoint<//>
+              <//>
+            </div>
+            <div>
+              <div class="setting-row-label">Role</div>
+              <${Select} size="small" value=${ep.role} onChange=${(e) => updateEndpoint(ep._id, "role", e.target.value)} fullWidth>
+                <${MenuItem} value="primary">Primary<//>
+                <${MenuItem} value="backup">Backup<//>
+              <//>
+            </div>
+            <div>
+              <div class="setting-row-label">Weight</div>
+              <${TextField} type="number" size="small" value=${ep.weight} inputProps=${{ min: 1, max: 10 }} style="width:70px"
+                onInput=${(e) => updateEndpoint(ep._id, "weight", e.target.value)} />
+            </div>
+            <div style="display:flex;align-items:center;padding-top:16px">
+              <${Toggle} checked=${ep.enabled} onChange=${(v) => updateEndpoint(ep._id, "enabled", v)} label="Enabled" />
+            </div>
+            ${["openai","claude","gemini"].includes(ep.provider) && html`
+              <div style="grid-column:1/-1">
+                <div class="setting-row-label">Auth Method</div>
+                <${Select} size="small" value=${ep.authSource || "apiKey"} onChange=${(e) => updateEndpoint(ep._id, "authSource", e.target.value)} fullWidth>
+                  <${MenuItem} value="apiKey">API Key<//>
+                  <${MenuItem} value="oauth">OAuth (Connected Account)<//>
+                <//>
+                ${ep.authSource === "oauth" && (oauthStatus[ep.provider]?.status === "connected" || oauthStatus[ep.provider]?.status === "complete" || oauthStatus[ep.provider]?.hasToken) && html`
+                  <div class="meta-text" style="margin-top:3px;color:var(--color-success,#22c55e)">✓ Connected — will use your ${ep.provider === "openai" ? "OpenAI" : ep.provider === "claude" ? "Claude" : "Gemini"} account.</div>
+                `}
+                ${ep.authSource === "oauth" && !(oauthStatus[ep.provider]?.status === "connected" || oauthStatus[ep.provider]?.status === "complete" || oauthStatus[ep.provider]?.hasToken) && html`
+                  <div class="meta-text" style="margin-top:3px;color:var(--color-warning,#f59e0b)">⚠ Not connected. Sign in via Connected Accounts above to use OAuth.</div>
+                `}
+              </div>
+            `}
+            <div style=${`grid-column:1/-1${ep.authSource === "oauth" && ["openai","claude","gemini"].includes(ep.provider) ? ";display:none" : ""}`}>
+              <div class="setting-row-label">${ep.provider === "azure" ? "API Key" : "API Key (manual)"}</div>
+              <${TextField} type="password" size="small" value=${ep.apiKey}
+                placeholder="API key for this endpoint"
+                onInput=${(e) => updateEndpoint(ep._id, "apiKey", e.target.value)} fullWidth />
+            </div>
+            ${ep.provider === "azure" && html`
+              <div style="grid-column:1/-1">
+                <div class="setting-row-label">Azure Endpoint URL</div>
+                <${TextField} size="small" variant="outlined" value=${ep.endpoint} placeholder="https://your-resource.openai.azure.com"
+                  onInput=${(e) => updateEndpoint(ep._id, "endpoint", e.target.value)} fullWidth />
+              </div>
+              <div style="grid-column:1/-1">
+                <div class="setting-row-label">Deployment Name</div>
+                <${TextField} size="small" variant="outlined" value=${ep.deployment} placeholder="my-gpt-4o-realtime"
+                  onInput=${(e) => updateEndpoint(ep._id, "deployment", e.target.value)} fullWidth />
+                <div class="meta-text" style="margin-top:3px">
+                  The deployment name from Azure AI Foundry (not the model name).
+                  Find it under your resource → Deployments. Leave empty to test credentials only.
+                </div>
+              </div>
+              <div style="grid-column:1/-1">
+                <div class="setting-row-label">Audio Model (Realtime)</div>
+                <${TextField} size="small" variant="outlined" value=${ep.model} placeholder="gpt-4o-realtime-preview"
+                  onInput=${(e) => updateEndpoint(ep._id, "model", e.target.value)} fullWidth />
+                <div class="meta-text" style="margin-top:3px">
+                  The underlying model name (e.g. gpt-4o-realtime-preview). Used at runtime.
+                </div>
+              </div>
+            `}
+            ${ep.provider === "custom" && html`
+              <div style="grid-column:1/-1">
+                <div class="setting-row-label">Endpoint URL</div>
+                <${TextField} size="small" variant="outlined" value=${ep.endpoint} placeholder="https://your-custom-endpoint.example.com"
+                  onInput=${(e) => updateEndpoint(ep._id, "endpoint", e.target.value)} fullWidth />
+              </div>
+              <div style="grid-column:1/-1">
+                <div class="setting-row-label">Model</div>
+                ${(() => {
+                  const known = endpointModelOptions;
+                  const isCustom = Boolean(customModelMode[ep._id]) || (ep.model && !known.includes(ep.model));
+                  return html`
+                    <${Select}
+                      size="small"
+                      value=${isCustom ? "__custom__" : (ep.model || (known[0] || ""))}
+                      onChange=${(e) => {
+                        const next = String(e.target.value || "");
+                        if (next === "__custom__") {
+                          setCustomModelMode((prev) => ({ ...prev, [ep._id]: true }));
+                          updateEndpoint(ep._id, "model", known.includes(ep.model) ? "" : ep.model);
+                          return;
+                        }
+                        setCustomModelMode((prev) => ({ ...prev, [ep._id]: false }));
+                        updateEndpoint(ep._id, "model", next);
+                      }}
+                      fullWidth
+                    >
+                      ${known.map((m) => html`<${MenuItem} value=${m}>${m}<//>`)}
+                      <${MenuItem} value="__custom__">custom...<//>
+                    <//>
+                    ${isCustom && html`
+                      <${TextField}
+                        size="small"
+                        variant="outlined"
+                        value=${ep.model || ""}
+                        placeholder="Enter custom model slug..."
+                        onInput=${(e) => updateEndpoint(ep._id, "model", e.target.value)}
+                        style="margin-top:6px"
+                        fullWidth
+                      />
+                    `}
+                  `;
+                })()}
+              </div>
+            `}
+            ${!isEndpointEditable(ep.provider) && html`
+              <div style="grid-column:1/-1">
+                <div class="setting-row-label">Endpoint URL</div>
+                <${TextField}
+                  size="small"
+                  variant="outlined"
+                  value=${getDefaultEndpointUrl(ep.provider, ep.authSource)}
+                  InputProps=${{ readOnly: true }}
+                  disabled
+                  fullWidth
+                />
+                <div class="meta-text" style="margin-top:3px">
+                  Auto-derived from provider and auth method. Use Azure or Custom to override.
+                </div>
+              </div>
+            `}
+            ${ep.provider === "openai" && html`
+              <div style="grid-column:1/-1">
+                <div class="setting-row-label">Audio Model (Realtime)</div>
+                <${TextField} size="small" variant="outlined" value=${ep.model} placeholder="gpt-4o-realtime-preview"
+                  onInput=${(e) => updateEndpoint(ep._id, "model", e.target.value)} fullWidth />
+              </div>
+            `}
+            ${ep.provider === "claude" && html`
+              <div style="grid-column:1/-1">
+                <div class="setting-row-label">Model</div>
+                <${TextField} size="small" variant="outlined" value=${ep.model} placeholder="claude-sonnet-4.6"
+                  onInput=${(e) => updateEndpoint(ep._id, "model", e.target.value)} fullWidth />
+              </div>
+            `}
+            ${ep.provider === "gemini" && html`
+              <div style="grid-column:1/-1">
+                <div class="setting-row-label">Model</div>
+                <${TextField} size="small" variant="outlined" value=${ep.model} placeholder="gemini-2.0-flash"
+                  onInput=${(e) => updateEndpoint(ep._id, "model", e.target.value)} fullWidth />
+              </div>
+            `}
+            <div style="grid-column:1/-1">
+              <div class="setting-row-label">Vision Model</div>
+              <${TextField} size="small" variant="outlined" value=${ep.visionModel}
+                placeholder=${ep.provider === "azure" ? "gpt-4o" : ep.provider === "claude" ? "claude-sonnet-4.6" : ep.provider === "gemini" ? "gemini-3.0-flash" : "gpt-4o"}
+                onInput=${(e) => updateEndpoint(ep._id, "visionModel", e.target.value)} fullWidth />
+              <div class="meta-text" style="margin-top:3px">Model used for screenshot / image analysis tasks.</div>
+            </div>
+            ${(ep.provider === "openai" || ep.provider === "azure") && html`
+            <div style="grid-column:1/-1;display:grid;grid-template-columns:1fr auto;gap:8px;align-items:end">
+              <div>
+                <div class="setting-row-label">Transcription Model</div>
+                <${TextField} size="small" variant="outlined" value=${ep.transcriptionModel || ""}
+                  placeholder="gpt-4o-transcribe"
+                  onInput=${(e) => updateEndpoint(ep._id, "transcriptionModel", e.target.value)} fullWidth />
+                <div class="meta-text" style="margin-top:3px">
+                  Model used for input audio transcription. Leave blank for default (gpt-4o-transcribe).
+                  ${ep.provider === "azure" ? " Azure endpoints default transcription OFF unless enabled." : ""}
+                </div>
+              </div>
+              <div style="display:flex;align-items:center;gap:6px;padding-bottom:22px">
+                <label style="display:flex;align-items:center;gap:4px;cursor:pointer;font-size:13px">
+                  <${Switch} size="small" checked=${ep.transcriptionEnabled !== false}
+                    onChange=${(e) => updateEndpoint(ep._id, "transcriptionEnabled", e.target.checked)} />
+                  Enable
+                </label>
+              </div>
+            </div>
+            `}
+          </div>
+          <!-- Test Connection -->
+          <div style="display:flex;align-items:center;gap:10px;margin-top:8px">
+            <${Button} variant="outlined" size="small"
+              disabled=${!!(testResults[ep._id]?.testing)}
+              onClick=${() => testEndpointConnection(ep)}
+              style="min-width:130px">
+              ${testResults[ep._id]?.testing ? html`<${Spinner} size=${12} /> Testing…` : "Test Connection"}
+            <//>
+            ${testResults[ep._id]?.result === "success" && html`
+              <span style="color:var(--color-success,#22c55e);font-size:12px;font-weight:600">
+                ✓ Connected${testResults[ep._id].latencyMs != null ? ` (${testResults[ep._id].latencyMs}ms)` : ""}
+              </span>
+            `}
+            ${testResults[ep._id]?.result === "error" && html`
+              <span style="color:var(--color-error,#ef4444);font-size:12px;font-weight:600">
+                ✗ ${testResults[ep._id].error}
+              </span>
+            `}
+          </div>
+        </div>
+      `)}
+      <${Button} variant="outlined" size="small" onClick=${addEndpoint} style="margin-top:2px">+ Add Endpoint<//>
+      ${endpoints.length === 0 && !loadError && html`
+        <div class="meta-text" style="margin-top:8px">
+          No endpoints configured. Add one above to enable voice provider routing.
+        </div>
+      `}
+    <//>
+  `;
+}
+
+/* ═══════════════════════════════════════════════════════════════
+ *  VoiceProvidersEditor — provider routing (priority order) with
+ *  endpoint linking, model/vision dropdowns, voice persona.
+ *  Mirrors setup.html's provider card UI.
+ * ═══════════════════════════════════════════════════════════════ */
+const VOICE_PROVIDER_MODEL_DEFAULTS = {
+  openai: { model: "gpt-audio-1.5", visionModel: "gpt-4.1-nano", models: ["gpt-audio-1.5", "gpt-realtime-1.5", "gpt-4o-realtime-preview-2024-12-17"], visionModels: ["gpt-4.1-nano", "gpt-4.1-mini", "gpt-4.1"] },
+  azure: { model: "gpt-audio-1.5", visionModel: "gpt-4.1-nano", models: ["gpt-audio-1.5", "gpt-realtime-1.5", "gpt-4o-realtime-preview"], visionModels: ["gpt-4.1-nano", "gpt-4.1-mini", "gpt-4.1"] },
+  claude: { model: "claude-sonnet-4.6", visionModel: "claude-sonnet-4.6", models: ["claude-sonnet-4.6", "claude-haiku-4.5"], visionModels: ["claude-sonnet-4.6", "claude-haiku-4.5"] },
+  gemini: { model: "gemini-3.1-pro", visionModel: "gemini-3.0-flash", models: ["gemini-2.5-pro", "gemini-2.5-flash", "gemini-2.0-flash", "gemini-3.0-flash", "gemini-3.1-pro"], visionModels: ["gemini-2.5-flash", "gemini-2.5-pro", "gemini-2.0-flash", "gemini-3.0-flash", "gemini-3.1-pro"] },
+  fallback: { model: "", visionModel: "", models: [], visionModels: [] },
+};
+const _getProviderDefaults = (provider) =>
+  VOICE_PROVIDER_MODEL_DEFAULTS[String(provider || "fallback").toLowerCase()] || VOICE_PROVIDER_MODEL_DEFAULTS.fallback;
+
+function VoiceProvidersEditor() {
+  const [providers, setProviders] = useState([]);
+  const [endpoints, setEndpoints] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [dirty, setDirty] = useState(false);
+  const [loadError, setLoadError] = useState(null);
+  const [savedProviders, setSavedProviders] = useState([]);
+
+  const normalizeProvider = useCallback((entry = {}) => {
+    const allowedProviders = ["openai", "azure", "claude", "gemini", "fallback"];
+    const provider = String(entry.provider || "fallback").trim().toLowerCase();
+    const normalizedProvider = allowedProviders.includes(provider) ? provider : "fallback";
+    const defaults_ = _getProviderDefaults(normalizedProvider);
+    return {
+      _id: entry._id || `prov_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
+      id: entry.id || Date.now() + Math.random(),
+      provider: normalizedProvider,
+      model: String(entry.model ?? defaults_.model ?? "").trim(),
+      visionModel: String(entry.visionModel ?? defaults_.visionModel ?? "").trim(),
+      voiceId: String(entry.voiceId ?? "alloy").trim() || "alloy",
+      azureDeployment: String(entry.azureDeployment ?? (normalizedProvider === "azure" ? "gpt-audio-1.5" : "")).trim(),
+      endpointId: String(entry.endpointId ?? "").trim(),
+    };
+  }, []);
+
+  useEffect(() => {
+    (async () => {
+      try {
+        const [provRes, epRes] = await Promise.all([
+          apiFetch("/api/voice/providers"),
+          apiFetch("/api/voice/endpoints"),
+        ]);
+        const provs = Array.isArray(provRes?.providers) ? provRes.providers : [];
+        const normalizedProviders = provs.map((p) => normalizeProvider(p));
+        setProviders(normalizedProviders);
+        setSavedProviders(normalizedProviders);
+        setDirty(false);
+        const eps = Array.isArray(epRes?.voiceEndpoints) ? epRes.voiceEndpoints : [];
+        setEndpoints(eps);
+      } catch (err) {
+        setLoadError(err.message || "Failed to load voice providers");
+      } finally {
+        setLoading(false);
+      }
+    })();
+  }, [normalizeProvider]);
+
+  useEffect(() => {
+    const key = "settings-voice-providers";
+    setPendingChange(key, dirty);
+    return () => clearPendingChange(key);
+  }, [dirty]);
+
+  const addProvider = useCallback(() => {
+    if (providers.length >= 5) return;
+    setProviders((prev) => [...prev, normalizeProvider({})]);
+    setDirty(true);
+    haptic("light");
+  }, [providers.length, normalizeProvider]);
+
+  const removeProvider = useCallback((_id) => {
+    setProviders((prev) => prev.filter((p) => p._id !== _id));
+    setDirty(true);
+    haptic("light");
+  }, []);
+
+  const updateProvider = useCallback((_id, field, value) => {
+    setProviders((prev) => prev.map((p) => {
+      if (p._id !== _id) return p;
+      const updated = { ...p, [field]: value };
+      // When provider type changes, reset model/vision to defaults
+      if (field === "provider") {
+        const defaults_ = _getProviderDefaults(value);
+        updated.model = defaults_.model;
+        updated.visionModel = defaults_.visionModel;
+        updated.endpointId = ""; // clear linked endpoint
+        if (value === "azure") updated.azureDeployment = "gpt-audio-1.5";
+        else updated.azureDeployment = "";
+      }
+      return updated;
+    }));
+    setDirty(true);
+  }, []);
+
+  const saveProviders = useCallback(async () => {
+    try {
+      const payload = providers.map(({ _id, ...rest }) => rest);
+      const res = await apiFetch("/api/voice/providers", {
+        method: "POST",
+        body: JSON.stringify({ providers: payload }),
+      });
+      if (!res.ok) throw new Error(res.error || "Save failed");
+      setSavedProviders(providers.map((provider) => ({ ...provider })));
+      setDirty(false);
+    } catch (err) {
+      throw new Error(err?.message || "Voice providers save failed");
+    }
+  }, [providers]);
+
+  const discardProviders = useCallback(async () => {
+    setProviders(savedProviders.map((provider) => ({ ...provider })));
+    setDirty(false);
+    setLoadError(null);
+  }, [savedProviders]);
+
+  useEffect(() => {
+    return registerSettingsExternalEditor("settings-voice-providers", {
+      isDirty: () => dirty,
+      save: saveProviders,
+      discard: discardProviders,
+    });
+  }, [dirty, saveProviders, discardProviders]);
+
+  if (loading) return html`<${Card} title="Voice Providers"><${Spinner} /> Loading…<//>`;
+  if (loadError && providers.length === 0) return html`<${Card} title="Voice Providers"><div class="meta-text" style="color:var(--color-error)">${loadError}</div><//>`;
+
+  return html`
+    <${Card} title="Voice Providers (Priority Order)"
+      badge=${dirty ? html`<${Badge} variant="warning">Unsaved<//>` : null}>
+      <div class="meta-text" style="margin-bottom:10px">
+        Configure up to 5 providers in priority order. Bosun tries them in sequence during voice sessions.
+      </div>
+      ${loadError && html`<div class="meta-text" style="color:var(--color-error);margin-bottom:8px">${loadError}</div>`}
+      ${providers.map((prov, idx) => {
+        const defaults_ = _getProviderDefaults(prov.provider);
+        const knownModels = defaults_.models || [];
+        const knownVisionModels = defaults_.visionModels || [];
+        const isCustomModel = knownModels.length > 0 && !knownModels.includes(prov.model);
+        const isCustomVision = knownVisionModels.length > 0 && !knownVisionModels.includes(prov.visionModel);
+        const matchingEps = endpoints.filter((ep) => ep.provider === prov.provider && ep.enabled !== false);
+        return html`
+        <div style="border:1px solid var(--border-primary);border-radius:var(--radius-sm);padding:12px;margin-bottom:10px">
+          <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px">
+            <strong>Provider ${idx + 1}</strong>
+            <${Button} variant="outlined" size="small" style="color:var(--color-error);font-size:11px"
+              onClick=${() => removeProvider(prov._id)}
+              disabled=${providers.length <= 1}>Remove<//>
+          </div>
+          <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px">
+            <div>
+              <div class="setting-row-label">Provider Type</div>
+              <${Select} size="small" value=${prov.provider}
+                onChange=${(e) => updateProvider(prov._id, "provider", e.target.value)} fullWidth>
+                <${MenuItem} value="openai">OpenAI Realtime<//>
+                <${MenuItem} value="azure">Azure OpenAI Realtime<//>
+                <${MenuItem} value="claude">Claude<//>
+                <${MenuItem} value="gemini">Gemini<//>
+                <${MenuItem} value="fallback">Browser Fallback<//>
+              <//>
+            </div>
+            ${prov.provider !== "fallback" && html`
+              <div>
+                <div class="setting-row-label">Endpoint</div>
+                ${matchingEps.length === 0 ? html`
+                  <${Select} size="small" disabled fullWidth>
+                    <${MenuItem} value="">— No ${prov.provider} endpoints —<//>
+                  <//>
+                  <div class="meta-text" style="color:var(--color-warning,#eab308);font-size:11px;margin-top:2px">
+                    Configure a matching endpoint above first.
+                  </div>
+                ` : html`
+                  <${Select} size="small" value=${prov.endpointId || ""}
+                    onChange=${(e) => updateProvider(prov._id, "endpointId", e.target.value)} fullWidth>
+                    <${MenuItem} value="">— Select endpoint —<//>
+                    ${matchingEps.map((ep) => html`<${MenuItem} value=${ep.id}>${ep.name || ep.id}<//>`)}
+                  <//>
+                `}
+              </div>
+            `}
+            <div>
+              <div class="setting-row-label">Model</div>
+              <${Select} size="small" value=${isCustomModel ? "custom" : prov.model}
+                onChange=${(e) => {
+                  if (e.target.value === "custom") {
+                    updateProvider(prov._id, "model", prov.model && !knownModels.includes(prov.model) ? prov.model : "");
+                  } else {
+                    updateProvider(prov._id, "model", e.target.value);
+                  }
+                }} fullWidth>
+                ${knownModels.map((m) => html`<${MenuItem} value=${m}>${m}<//>`)}
+                <${MenuItem} value="custom">custom…<//>
+              <//>
+              ${isCustomModel && html`
+                <${TextField} size="small" variant="outlined" value=${prov.model}
+                  onInput=${(e) => updateProvider(prov._id, "model", e.target.value)}
+                  placeholder="Custom model slug…"
+                  style="margin-top:4px" fullWidth />
+              `}
+              ${knownModels.length === 0 && html`
+                <${TextField} size="small" variant="outlined" value=${prov.model}
+                  onInput=${(e) => updateProvider(prov._id, "model", e.target.value)}
+                  placeholder="Provider model"
+                  style="margin-top:4px" fullWidth />
+              `}
+            </div>
+            <div>
+              <div class="setting-row-label">Vision Model</div>
+              <${Select} size="small" value=${isCustomVision ? "custom" : prov.visionModel}
+                onChange=${(e) => {
+                  if (e.target.value === "custom") {
+                    updateProvider(prov._id, "visionModel", prov.visionModel && !knownVisionModels.includes(prov.visionModel) ? prov.visionModel : "");
+                  } else {
+                    updateProvider(prov._id, "visionModel", e.target.value);
+                  }
+                }} fullWidth>
+                ${knownVisionModels.map((m) => html`<${MenuItem} value=${m}>${m}<//>`)}
+                <${MenuItem} value="custom">custom…<//>
+              <//>
+              ${isCustomVision && html`
+                <${TextField} size="small" variant="outlined" value=${prov.visionModel}
+                  onInput=${(e) => updateProvider(prov._id, "visionModel", e.target.value)}
+                  placeholder="Custom vision model slug…"
+                  style="margin-top:4px" fullWidth />
+              `}
+              ${knownVisionModels.length === 0 && html`
+                <${TextField} size="small" variant="outlined" value=${prov.visionModel}
+                  onInput=${(e) => updateProvider(prov._id, "visionModel", e.target.value)}
+                  placeholder="Provider vision model"
+                  style="margin-top:4px" fullWidth />
+              `}
+            </div>
+            <div>
+              <div class="setting-row-label">Voice Persona</div>
+              <${Select} size="small" value=${prov.voiceId}
+                onChange=${(e) => updateProvider(prov._id, "voiceId", e.target.value)} fullWidth>
+                ${["alloy", "ash", "ballad", "coral", "echo", "fable", "nova", "onyx", "sage", "shimmer", "verse"].map(
+                  (v) => html`<${MenuItem} value=${v}>${v}<//>`
+                )}
+              <//>
+            </div>
+            ${prov.provider === "azure" && html`
+              <div>
+                <div class="setting-row-label">Azure Deployment</div>
+                <${TextField} size="small" variant="outlined" value=${prov.azureDeployment || ""}
+                  onInput=${(e) => updateProvider(prov._id, "azureDeployment", e.target.value)}
+                  placeholder="gpt-audio-1.5" fullWidth />
+              </div>
+            `}
+          </div>
+        </div>
+      `})}
+      <${Button} variant="outlined" size="small" onClick=${addProvider} disabled=${providers.length >= 5}
+        style="margin-top:2px">+ Add Provider<//>
+      ${providers.length === 0 && html`
+        <div class="meta-text" style="margin-top:8px">
+          No providers configured. Add one above to set up voice routing.
+        </div>
+      `}
+    <//>
+  `;
+}
+
+/* ═══════════════════════════════════════════════════════════════
+ *  _OAuthLoginCard — shared PKCE OAuth login card factory.
+ *  Instantiated as OpenAICodexLoginCard, ClaudeLoginCard, GeminiLoginCard.
+ * ═══════════════════════════════════════════════════════════════ */
+function _OAuthLoginCard({ displayName, emoji, statusRoute, loginRoute, cancelRoute, logoutRoute, description, successMsg, signOutMsg }) {
+  const [phase, setPhase] = useState("idle");
+  const [authUrl, setAuthUrl] = useState("");
+  const [error, setError] = useState("");
+  const pollRef = useRef(null);
+
+  useEffect(() => {
+    (async () => {
+      try {
+        const res = await apiFetch(statusRoute);
+        if (res.ok) setPhase(res.status === "connected" ? "connected" : "idle");
+      } catch { /* non-fatal */ }
+    })();
+    return () => { if (pollRef.current) clearTimeout(pollRef.current); };
+  }, [statusRoute]);
+
+  async function startLogin() {
+    setPhase("pending"); setError("");
+    try {
+      const res = await apiFetch(loginRoute, { method: "POST" });
+      if (!res.ok) throw new Error(res.error || "Failed to start login");
+      setAuthUrl(res.authUrl || "");
+      beginPolling();
+    } catch (err) { setError(err.message); setPhase("error"); }
+  }
+
+  function beginPolling() {
+    if (pollRef.current) clearTimeout(pollRef.current);
+    async function tick() {
+      try {
+        const res = await apiFetch(statusRoute);
+        if (!res.ok) { pollRef.current = setTimeout(tick, 2000); return; }
+        if (res.status === "complete" || res.status === "connected") {
+          pollRef.current = null; setPhase("complete");
+          haptic("success"); showToast(successMsg, "success"); return;
+        }
+        if (res.status === "error") {
+          pollRef.current = null;
+          setError(res.result?.error || "Login failed"); setPhase("error"); return;
+        }
+        pollRef.current = setTimeout(tick, 2000);
+      } catch { pollRef.current = setTimeout(tick, 3000); }
+    }
+    pollRef.current = setTimeout(tick, 2000);
+  }
+
+  async function handleLogout() {
+    try {
+      await apiFetch(logoutRoute, { method: "POST" });
+      setPhase("idle"); setAuthUrl("");
+      haptic("medium"); showToast(signOutMsg, "info");
+    } catch (err) { showToast(`Logout failed: ${err.message}`, "error"); }
+  }
+
+  async function handleCancel() {
+    if (pollRef.current) { clearTimeout(pollRef.current); pollRef.current = null; }
+    try { await apiFetch(cancelRoute, { method: "POST" }); } catch { /* ignore */ }
+    setPhase("idle"); setAuthUrl("");
+  }
+
+  if (phase === "connected" || phase === "complete") {
+    return html`
+      <${Card}>
+        <div style="display:flex;align-items:center;gap:10px;padding:4px 0">
+          <span style="font-size:22px">${emoji}</span>
+          <div style="flex:1;min-width:0">
+            <div style="font-size:13px;font-weight:600;color:var(--text-primary)">${displayName} Connected</div>
+            <div style="font-size:12px;color:var(--text-secondary);margin-top:2px">Signed in via OAuth. Token used for API access.</div>
+          </div>
+          <${Button} variant="outlined" size="small" onClick=${handleLogout}>Sign out<//>
+        </div>
+      <//>
+    `;
+  }
+
+  if (phase === "pending") {
+    return html`
+      <${Card}>
+        <div style="text-align:center;padding:12px 0">
+          <div style="font-size:12px;color:var(--text-secondary);margin-bottom:12px">
+            A browser window should have opened. If not, open the link below:
+          </div>
+          ${authUrl && html`
+            <${Button} variant="contained" size="small" onClick=${() => { try { window.open(authUrl, "_blank"); } catch {} }}
+              style="font-size:12px;word-break:break-all;
+                background:var(--surface-1);border:1px solid var(--border-color,rgba(255,255,255,0.1));
+                border-radius:6px;padding:8px 12px;color:var(--accent);text-decoration:underline;
+                max-width:100%;text-align:left"
+            >${authUrl}<//>
+          `}
+          <div style="font-size:12px;color:var(--text-hint);margin-top:12px;display:flex;align-items:center;justify-content:center;gap:6px">
+            <span class="spinner" style="width:14px;height:14px;border:2px solid var(--border);border-top-color:var(--accent);border-radius:50%"></span>
+            Waiting for you to sign in…
+          </div>
+          <${Button} variant="outlined" size="small" style="margin-top:12px;opacity:0.7" onClick=${handleCancel}>Cancel<//>
+        </div>
+      <//>
+    `;
+  }
+
+  if (phase === "error") {
+    return html`
+      <${Card}>
+        <div style="text-align:center;padding:10px 0">
+          <div style="font-size:13px;color:var(--color-error,#f87171);margin-bottom:10px">${error}</div>
+          <${Button} variant="contained" color="primary" size="small" onClick=${startLogin}>Try again<//>
+        </div>
+      <//>
+    `;
+  }
+
+  // idle
+  return html`
+    <${Card}>
+      <div style="text-align:center;padding:16px 0">
+        <div style="font-size:32px;margin-bottom:8px">${emoji}</div>
+        <div style="font-size:15px;font-weight:600;margin-bottom:4px;color:var(--text-primary)">Sign in with ${displayName}</div>
+        <div style="font-size:12px;color:var(--text-secondary);margin-bottom:16px;max-width:300px;margin-inline:auto;line-height:1.6">${description}</div>
+        <${Button} variant="contained" color="primary" onClick=${startLogin} style="min-width:220px">Sign in with ${displayName}<//>
+      </div>
+    <//>
+  `;
+}
+
+/* ═══════════════════════════════════════════════════════════════
+ *  OpenAICodexLoginCard — "Sign in with OpenAI" (ChatGPT/Codex accounts)
+ *  Uses OAuth 2.0 PKCE flow via auth.openai.com — same flow as the
+ *  official Codex CLI and the ChatGPT desktop app.
+ *
+ *  Allows ChatGPT Plus/Pro/Team subscribers to authenticate without
+ *  needing to create an API key.
+ * ═══════════════════════════════════════════════════════════════ */
+function OpenAICodexLoginCard() {
+  return html`<${_OAuthLoginCard}
+    displayName="OpenAI"
+    emoji="🤖"
+    statusRoute="/api/voice/auth/openai/status"
+    loginRoute="/api/voice/auth/openai/login"
+    cancelRoute="/api/voice/auth/openai/cancel"
+    logoutRoute="/api/voice/auth/openai/logout"
+    description="Use your ChatGPT Plus, Pro, or Team subscription to access OpenAI Realtime Audio without managing API keys. Uses the same OAuth flow as the Codex CLI."
+    successMsg="Signed in with OpenAI!"
+    signOutMsg="Signed out from OpenAI"
+  />`;
+}
+
+/* ═══════════════════════════════════════════════════════════════
+ *  ClaudeLoginCard — OAuth PKCE for Anthropic Claude
+ * ═══════════════════════════════════════════════════════════════ */
+function ClaudeLoginCard() {
+  return html`<${_OAuthLoginCard}
+    displayName="Claude"
+    emoji="🧠"
+    statusRoute="/api/voice/auth/claude/status"
+    loginRoute="/api/voice/auth/claude/login"
+    cancelRoute="/api/voice/auth/claude/cancel"
+    logoutRoute="/api/voice/auth/claude/logout"
+    description="Sign in with your Claude.ai account to use Claude models for vision and analysis tasks. Uses the same OAuth PKCE flow as the official Claude desktop app."
+    successMsg="Signed in with Claude!"
+    signOutMsg="Signed out from Claude"
+  />`;
+}
+
+/* ═══════════════════════════════════════════════════════════════
+ *  GeminiLoginCard — OAuth PKCE for Google Gemini
+ * ═══════════════════════════════════════════════════════════════ */
+function GeminiLoginCard() {
+  return html`<${_OAuthLoginCard}
+    displayName="Google Gemini"
+    emoji="✨"
+    statusRoute="/api/voice/auth/gemini/status"
+    loginRoute="/api/voice/auth/gemini/login"
+    cancelRoute="/api/voice/auth/gemini/cancel"
+    logoutRoute="/api/voice/auth/gemini/logout"
+    description="Sign in with your Google account to access Gemini models for vision and multimodal tasks. Uses Google OAuth with offline access for persistent refresh tokens."
+    successMsg="Signed in with Google Gemini!"
+    signOutMsg="Signed out from Google Gemini"
+  />`;
+}
+
 
 /* ═══════════════════════════════════════════════════════════════
  *  GitHubDeviceFlowCard — "Sign in with GitHub" (like VS Code / Roo Code)
@@ -1959,9 +3163,9 @@ function GitHubDeviceFlowCard({ config }) {
             <div style="font-size:13px;font-weight:600;color:var(--text-primary)">GitHub Connected</div>
             <div style="font-size:12px;color:var(--text-secondary)">Token is configured. Re-authenticate below if needed.</div>
           </div>
-          <button class="btn btn-sm btn-secondary" onClick=${startFlow}>
+          <${Button} variant="outlined" size="small" onClick=${startFlow}>
             Re-auth
-          </button>
+          <//>
         </div>
       <//>
     `;
@@ -1990,14 +3194,14 @@ function GitHubDeviceFlowCard({ config }) {
               style="color:var(--accent);font-weight:600;text-decoration:underline">${verificationUri}</a>
             and enter this code:
           </div>
-          <button onClick=${copyCode}
+          <${Button} variant="text" size="small" onClick=${copyCode}
             style="font-size:28px;font-weight:700;letter-spacing:0.15em;font-family:var(--font-mono,'SF Mono',monospace);
               padding:12px 24px;border-radius:var(--radius-md);background:var(--surface-1);
               border:2px dashed var(--accent);color:var(--text-primary);cursor:pointer;
               transition:background 0.15s ease"
             title="Click to copy">
             ${userCode}
-          </button>
+          <//>
           <div style="font-size:12px;color:var(--text-hint);margin-top:10px;display:flex;align-items:center;justify-content:center;gap:6px">
             <span class="spinner" style="width:14px;height:14px;border:2px solid var(--border);border-top-color:var(--accent);border-radius:50%"></span>
             Waiting for authorization…
@@ -2014,7 +3218,7 @@ function GitHubDeviceFlowCard({ config }) {
         <div style="text-align:center;padding:12px 0">
           <div style="font-size:24px;margin-bottom:8px">${resolveIcon(":alert:")}</div>
           <div style="font-size:13px;color:var(--color-error);margin-bottom:12px">${error}</div>
-          <button class="btn btn-sm btn-primary" onClick=${startFlow}>Try Again</button>
+          <${Button} variant="contained" color="primary" size="small" onClick=${startFlow}>Try Again<//>
         </div>
       <//>
     `;
@@ -2032,13 +3236,131 @@ function GitHubDeviceFlowCard({ config }) {
           Authorize Bosun to manage repos and issues on your behalf.
           No public URL needed — works entirely from your local machine.
         </div>
-        <button class="btn btn-primary" onClick=${startFlow}
+        <${Button} variant="contained" color="primary" onClick=${startFlow}
           disabled=${phase === "loading"}
           style="min-width:200px">
           ${phase === "loading" ? html`<${Spinner} size=${14} /> Connecting…` : "Sign in with GitHub"}
-        </button>
+        <//>
       </div>
     <//>
+  `;
+}
+
+/* ═══════════════════════════════════════════════════════════════
+ *  ContextShreddingPanel — Overview card for the context-shredding category
+ *  Shows tier ladder, active status badges, and profiles editor.
+ * ═══════════════════════════════════════════════════════════════ */
+function ContextShreddingPanel({ getValue }) {
+  const DEFAULTS = {
+    CONTEXT_SHREDDING_ENABLED: "true",
+    CONTEXT_SHREDDING_FULL_CONTEXT_TURNS: "3",
+    CONTEXT_SHREDDING_TIER1_MAX_AGE: "5",
+    CONTEXT_SHREDDING_TIER2_MAX_AGE: "9",
+    CONTEXT_SHREDDING_COMPRESS_TOOL_OUTPUTS: "true",
+    CONTEXT_SHREDDING_COMPRESS_MESSAGES: "true",
+    CONTEXT_SHREDDING_COMPRESS_AGENT_MESSAGES: "true",
+    CONTEXT_SHREDDING_COMPRESS_USER_MESSAGES: "true",
+  };
+
+  const get = (key) => {
+    const val = getValue ? getValue(key) : "";
+    return val !== "" && val != null ? val : DEFAULTS[key] ?? "";
+  };
+
+  const enabled = get("CONTEXT_SHREDDING_ENABLED") !== "false";
+  const compressTools = get("CONTEXT_SHREDDING_COMPRESS_TOOL_OUTPUTS") !== "false";
+  const compressMsgs = get("CONTEXT_SHREDDING_COMPRESS_MESSAGES") !== "false";
+  const parseThreshold = (value, fallback) => {
+    const parsed = Number.parseInt(String(value ?? ""), 10);
+    return Number.isFinite(parsed) ? parsed : fallback;
+  };
+  const parsedTier0 = parseThreshold(get("CONTEXT_SHREDDING_FULL_CONTEXT_TURNS"), 3);
+  const parsedTier1 = parseThreshold(get("CONTEXT_SHREDDING_TIER1_MAX_AGE"), 5);
+  const parsedTier2 = parseThreshold(get("CONTEXT_SHREDDING_TIER2_MAX_AGE"), 9);
+
+  const tier0 = Math.max(1, parsedTier0);
+  const tier1 = Math.max(tier0, parsedTier1);
+  const tier2 = Math.max(tier1, parsedTier2);
+
+  const formatTierRange = (start, end) => {
+    if (start > end) return "none";
+    if (start === end) return `turn ${start}`;
+    return `turns ${start}–${end}`;
+  };
+
+  const StatusBadge = ({ label, on }) => html`
+    <${Chip}
+      label=${label}
+      size="small"
+      color=${on ? "success" : "default"}
+      variant=${on ? "filled" : "outlined"}
+      style="font-size:11px;height:22px"
+    />
+  `;
+
+  const tierRows = [
+    { label: "Tier 0 — Full Context", range: formatTierRange(0, tier0), color: "#4caf50", desc: "Completely uncompressed" },
+    { label: "Tier 1 — Light Compression", range: formatTierRange(tier0 + 1, tier1), color: "#ff9800", desc: "Head + tail truncation" },
+    { label: "Tier 2 — Moderate", range: formatTierRange(tier1 + 1, tier2), color: "#f44336", desc: "Heavy truncation" },
+    { label: "Tier 3 — Skeleton", range: `turns ${tier2 + 1}+`, color: "#9e9e9e", desc: "Tool name + args only" },
+  ];
+
+  return html`
+    <div style="margin-bottom:12px">
+      <!-- Status overview -->
+      <${Paper} variant="outlined" style="padding:14px 16px;margin-bottom:12px;border-radius:10px;background:var(--bg-card,#1e1e1e)">
+        <${Typography} variant="subtitle2" style="margin-bottom:10px;font-weight:600;display:flex;align-items:center;gap:8px">
+          Context Shredding Status
+          <${StatusBadge} label=${enabled ? "ENABLED" : "DISABLED"} on=${enabled} />
+        <//>
+        ${!enabled && html`
+          <${Alert} severity="warning" style="margin-bottom:10px;font-size:12px">
+            Context Shredding is disabled. Agents will receive their full message history every turn,
+            which increases API costs and risks context overflow on long sessions.
+          <//>
+        `}
+        <${Stack} direction="row" spacing=${1} flexWrap="wrap" useFlexGap style="gap:6px">
+          <${StatusBadge} label="Tool Outputs" on=${enabled && compressTools} />
+          <${StatusBadge} label="Agent Messages" on=${enabled && compressMsgs} />
+          <${StatusBadge} label="User Prompts" on=${enabled && compressMsgs} />
+        <//>
+      <//>
+
+      <!-- Tier ladder visualization -->
+      ${enabled && compressTools && html`
+        <${Paper} variant="outlined" style="padding:14px 16px;margin-bottom:12px;border-radius:10px;background:var(--bg-card,#1e1e1e)">
+          <${Typography} variant="subtitle2" style="margin-bottom:10px;font-weight:600">
+            Tool Output Tier Ladder
+          <//>
+          <div style="display:flex;flex-direction:column;gap:6px">
+            ${tierRows.map((row) => html`
+              <div key=${row.label} style="display:flex;align-items:center;gap:10px;padding:6px 10px;border-radius:6px;border-left:3px solid ${row.color};background:color-mix(in srgb,${row.color} 8%,transparent)">
+                <div style="flex:1;min-width:0">
+                  <div style="font-size:12px;font-weight:600;color:${row.color}">${row.label}</div>
+                  <div style="font-size:11px;color:var(--text-secondary)">${row.desc}</div>
+                </div>
+                <${Chip} label=${row.range} size="small" style="font-size:11px;height:20px;background:color-mix(in srgb,${row.color} 18%,transparent);color:${row.color};border:1px solid ${row.color}" />
+              </div>
+            `)}
+          </div>
+          <${Typography} variant="caption" style="display:block;margin-top:8px;color:var(--text-secondary)">
+            High-value items (score ≥ ${get("CONTEXT_SHREDDING_SCORE_HIGH") || 70}) are shifted to a lower tier;
+            low-value items (score &lt; ${get("CONTEXT_SHREDDING_SCORE_LOW") || 30}) are compressed sooner.
+            Full outputs are always cached to disk for on-demand retrieval.
+          <//>
+        <//>
+      `}
+
+      <!-- Per-type profiles hint -->
+      <${Paper} variant="outlined" style="padding:12px 16px;border-radius:10px;background:var(--bg-card,#1e1e1e)">
+        <${Typography} variant="caption" style="color:var(--text-secondary);line-height:1.6;display:block">
+          <strong>Per-Type Profiles:</strong> Use the "Per-Type Profiles (JSON)" setting below (under Advanced)
+          to override any of these values for specific interaction types (<code>task</code>, <code>chat</code>, <code>voice</code>, <code>flow</code>)
+          or agent types (<code>codex-sdk</code>, <code>claude-sdk</code>, etc.).
+          Example: <code>{"{"}"perType": {"{"}"voice": {"{"}"fullContextTurns": 6{"}"}{"}"}{"}"}</code>
+        <//>
+      <//>
+    </div>
   `;
 }
 

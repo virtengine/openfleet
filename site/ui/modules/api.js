@@ -69,15 +69,20 @@ export function apiFetch(path, options = {}) {
 
   const silent = Boolean(options._silent);
   const trackLoadingOption = options._trackLoading;
+  const method = String(options.method || "GET").toUpperCase();
   delete options._silent;
   delete options._trackLoading;
 
   const forceLoading = trackLoadingOption === true || _loadingForceDepth > 0;
   const suppressLoading = trackLoadingOption === false || _loadingSuppressionDepth > 0;
-  const trackLoading = !suppressLoading && (forceLoading || !silent);
+  // Default behavior: only non-GET requests show global loading unless explicitly forced.
+  const defaultTrackLoading = !silent && method !== "GET";
+  const trackLoading =
+    !suppressLoading &&
+    (forceLoading || trackLoadingOption === true || defaultTrackLoading);
 
   // Deduplicate concurrent identical GETs
-  const isGet = !options.method || options.method === "GET";
+  const isGet = method === "GET";
   if (isGet && !options.body) {
     if (_inflight.has(path)) {
       return _inflight.get(path);

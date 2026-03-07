@@ -173,6 +173,7 @@
     /* Force dark theme */
     :root:not([data-theme="light"]) { color-scheme: dark; }
   </style>
+  <script src="./demo-defaults.js"></script>
 
   <!-- ═══ DEMO MOCK LAYER ═══════════════════════════════════════════════
        This script runs BEFORE the real app.js to mock:
@@ -283,6 +284,12 @@
     const min = 60000;
     const hr = 3600000;
     const day = 24 * hr;
+    const DEMO_DEFAULTS = window.__BOSUN_DEMO_DEFAULTS__ || {};
+
+    function cloneDemoData(value, fallback) {
+      if (value == null) return fallback;
+      return JSON.parse(JSON.stringify(value));
+    }
 
     /* ── Tasks: comprehensive 1-week board across TWO repos ──────── */
     const SEED_TASKS = [
@@ -1673,6 +1680,12 @@
     };
 
     /* ── Helper: find task by ID ───────────────────────────────────── */
+    STATE.workflowTemplates = cloneDemoData(DEMO_DEFAULTS.workflowTemplates, STATE.workflowTemplates);
+    STATE.workflows = cloneDemoData(DEMO_DEFAULTS.workflows, STATE.workflows);
+    STATE.workflowRuns = cloneDemoData(DEMO_DEFAULTS.workflowRuns, STATE.workflowRuns);
+    STATE.manualFlowTemplates = cloneDemoData(DEMO_DEFAULTS.manualFlowTemplates, []);
+    STATE.manualFlowRuns = [];
+
     function findTask(id) { return STATE.tasks.find(t => t.id === id); }
     function addLog(level, source, msg) {
       STATE.logs.unshift({ ts: Date.now(), level, source, msg });
@@ -1688,6 +1701,13 @@
     function ensureLibrarySeeded(force = false) {
       if (!force && STATE.libraryEntries.length) {
         return { entries: STATE.libraryEntries.length, scaffolded: 0 };
+      }
+      const seededEntries = cloneDemoData(DEMO_DEFAULTS.libraryEntries, []);
+      const seededContents = cloneDemoData(DEMO_DEFAULTS.libraryContents, {});
+      if (seededEntries.length > 0) {
+        STATE.libraryEntries = seededEntries;
+        STATE.libraryContents = seededContents;
+        return { entries: seededEntries.length, scaffolded: seededEntries.length };
       }
       const created = new Date(now - 6 * hr).toISOString();
       const updated = new Date(now - 2 * hr).toISOString();
@@ -3268,6 +3288,67 @@
       }
       if (route === '/api/workspaces/scan') {
         return { ok: true, data: STATE.managedWorkspaces, scanned: STATE.managedWorkspaces.length, added: 0, updated: 0 };
+      }
+
+      // ── Manual Flows ──
+      if (route === '/api/manual-flows/templates') {
+        return { ok: true, templates: STATE.manualFlowTemplates || [] };
+      }
+      if (route === '/api/manual-flows/templates/save') {
+        const template = {
+          ...(body || {}),
+          id: body?.id || `manual-${Math.random().toString(36).slice(2, 9)}`,
+          builtin: false,
+          version: body?.version || '1.0.0',
+          fields: Array.isArray(body?.fields) ? body.fields : [],
+          tags: Array.isArray(body?.tags) ? body.tags : [],
+        };
+        const idx = STATE.manualFlowTemplates.findIndex((item) => item.id === template.id);
+        if (idx >= 0) STATE.manualFlowTemplates[idx] = template;
+        else STATE.manualFlowTemplates.push(template);
+        return { ok: true, template };
+      }
+      if (route === '/api/manual-flows/templates/install') {
+        const template = (STATE.manualFlowTemplates || []).find((item) => item.id === body?.templateId);
+        if (!template) return { ok: false, error: 'Template not found' };
+        return { ok: true, template };
+      }
+      if (route.startsWith('/api/manual-flows/templates/')) {
+        const templateId = decodeURIComponent(route.replace('/api/manual-flows/templates/', '')).trim();
+        if (!templateId) return { ok: false, error: 'Template ID required' };
+        if (method === 'DELETE') {
+          STATE.manualFlowTemplates = (STATE.manualFlowTemplates || []).filter((item) => item.id !== templateId || item.builtin === true);
+          return { ok: true, deleted: templateId };
+        }
+      }
+      if (route === '/api/manual-flows/runs') {
+        return { ok: true, runs: STATE.manualFlowRuns || [] };
+      }
+      if (route.startsWith('/api/manual-flows/runs/')) {
+        const runId = decodeURIComponent(route.replace('/api/manual-flows/runs/', '')).trim();
+        const run = (STATE.manualFlowRuns || []).find((item) => item.id === runId);
+        return run ? { ok: true, run } : { ok: false, error: 'Run not found' };
+      }
+      if (route === '/api/manual-flows/execute') {
+        const template = (STATE.manualFlowTemplates || []).find((item) => item.id === body?.templateId);
+        if (!template) return { ok: false, error: 'Template not found' };
+        const startedAt = new Date().toISOString();
+        const run = {
+          id: `mfr-${Math.random().toString(36).slice(2, 10)}`,
+          templateId: template.id,
+          templateName: template.name,
+          formValues: body?.formValues || {},
+          status: 'completed',
+          startedAt,
+          completedAt: new Date().toISOString(),
+          result: {
+            summary: `${template.name} completed in demo mode using generated built-in defaults.`,
+            generatedFromBuiltin: template.builtin === true,
+          },
+        };
+        STATE.manualFlowRuns.unshift(run);
+        STATE.manualFlowRuns = STATE.manualFlowRuns.slice(0, 25);
+        return { ok: true, run };
       }
 
       // ── Workflows ──
