@@ -2416,32 +2416,116 @@ export class WorkflowEngine extends EventEmitter {
   _detectInterruptedRuns() {
     try {
       const activeEntries = this._readActiveRunsIndex();
-      if (!activeEntries.length) return;
-
       const interrupted = [];
-      for (const entry of activeEntries) {
-        // If it's somehow still in _activeRuns, skip it (not interrupted)
-        if (this._activeRuns.has(entry.runId)) continue;
+      const now = Date.now();
+      const runs = this._readRunIndex();
+      const runsById = new Map(
+        runs
+          .filter((run) => run?.runId)
+          .map((run) => [String(run.runId), run]),
+      );
+      const maxResumableStaleRunsRaw = Number(process.env.WORKFLOW_INTERRUPTED_RESUME_MAX_RUNS);
+      const maxResumableStaleRuns = Number.isFinite(maxResumableStaleRunsRaw)
+        ? Math.max(1, Math.min(500, Math.floor(maxResumableStaleRunsRaw)))
+        : 25;
+      let resumableStaleRunsAssigned = 0;
 
-        // Mark this run as PAUSED in the main index
-        const indexPath = resolve(this.runsDir, "index.json");
-        const runs = this._readRunIndex();
-        const idx = runs.findIndex((r) => r.runId === entry.runId);
-        if (idx >= 0) {
-          runs[idx].status = WorkflowStatus.PAUSED;
-          runs[idx].resumable = true;
-          runs[idx].interruptedAt = Date.now();
-          writeFileSync(indexPath, JSON.stringify({ runs }, null, 2), "utf8");
+      const markInterrupted = (runId, workflowId = null, workflowName = null, options = {}) => {
+        const normalizedRunId = String(runId || "").trim();
+        if (!normalizedRunId || interrupted.some((entry) => entry.runId === normalizedRunId)) return;
+        let summary = runsById.get(normalizedRunId) || null;
+        if (!summary) {
+          const detailPath = resolve(this.runsDir, `${normalizedRunId}.json`);
+          if (existsSync(detailPath)) {
+            try {
+              const detail = JSON.parse(readFileSync(detailPath, "utf8"));
+              summary = this._buildSummaryFromDetail({
+                runId: normalizedRunId,
+                workflowId: workflowId || detail?.data?._workflowId || null,
+                workflowName: workflowName || detail?.data?._workflowName || workflowId || null,
+                status: WorkflowStatus.PAUSED,
+                detail,
+              });
+              runs.push(summary);
+              runsById.set(normalizedRunId, summary);
+            } catch {
+              // best-effort hydration only
+            }
+          }
         }
-        interrupted.push(entry);
+        const wantsResumable = options?.resumable !== false;
+        const forceResumable = options?.forceResumable === true;
+        const canResume = wantsResumable && (forceResumable || resumableStaleRunsAssigned < maxResumableStaleRuns);
+        if (summary) {
+          summary.status = WorkflowStatus.PAUSED;
+          summary.resumable = canResume;
+          summary.interruptedAt = now;
+          if (!canResume) summary.resumeResult = "recovery_cap_exceeded";
+        }
+        if (canResume && !forceResumable) resumableStaleRunsAssigned += 1;
+        interrupted.push({
+          runId: normalizedRunId,
+          workflowId: workflowId || summary?.workflowId || null,
+          workflowName: workflowName || summary?.workflowName || null,
+        });
+      };
+
+      // Primary source: persisted active-runs index from the previous process.
+      for (const entry of activeEntries) {
+        const runId = String(entry?.runId || "").trim();
+        if (!runId || this._activeRuns.has(runId)) continue;
+        markInterrupted(runId, entry.workflowId, entry.workflowName, { forceResumable: true });
       }
 
-      // Clear the active-runs index — we've handled them
+      // Secondary source: index entries still marked RUNNING with no active execution.
+      for (const run of runs) {
+        const runId = String(run?.runId || "").trim();
+        if (!runId) continue;
+        if (run.status !== WorkflowStatus.RUNNING) continue;
+        if (this._activeRuns.has(runId)) continue;
+        markInterrupted(runId, run.workflowId, run.workflowName);
+      }
+
+      // Tertiary source: orphan detail files with no index entry and no end marker.
+      const detailFiles = readdirSync(this.runsDir).filter((file) =>
+        extname(file) === ".json" &&
+        file !== "index.json" &&
+        file !== ACTIVE_RUNS_INDEX,
+      );
+      for (const file of detailFiles) {
+        const runId = basename(file, ".json");
+        if (!runId || this._activeRuns.has(runId) || runsById.has(runId)) continue;
+        const detailPath = resolve(this.runsDir, file);
+        try {
+          const detail = JSON.parse(readFileSync(detailPath, "utf8"));
+          const hasRunningNode = Object.values(detail?.nodeStatuses || {}).some(
+            (status) => status === NodeStatus.RUNNING || status === NodeStatus.WAITING,
+          );
+          if (detail?.endedAt != null && !hasRunningNode) continue;
+          markInterrupted(
+            runId,
+            detail?.data?._workflowId || null,
+            detail?.data?._workflowName || null,
+          );
+        } catch {
+          // ignore malformed detail files
+        }
+      }
+
+      if (interrupted.length > 0) {
+        const indexPath = resolve(this.runsDir, "index.json");
+        if (runs.length > MAX_PERSISTED_RUNS) runs.splice(0, runs.length - MAX_PERSISTED_RUNS);
+        writeFileSync(indexPath, JSON.stringify({ runs }, null, 2), "utf8");
+      }
+
+      // Clear the active-runs index — we've handled recoverable entries.
       this._writeActiveRunsIndex([]);
 
       if (interrupted.length > 0) {
+        const sample = interrupted.slice(0, 20).map((entry) => entry.runId).join(", ");
+        const suffix = interrupted.length > 20 ? ", ..." : "";
         console.log(
-          `${TAG} Detected ${interrupted.length} interrupted run(s): ${interrupted.map((e) => e.runId).join(", ")}`,
+          `${TAG} Detected ${interrupted.length} interrupted run(s): ${sample}${suffix}`,
         );
         this.emit("runs:interrupted", { runs: interrupted });
       }
