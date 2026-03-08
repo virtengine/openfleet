@@ -840,6 +840,8 @@ describe("live tool compaction", () => {
 
     const result = await runLiveCompaction(items, {
       CONTEXT_SHREDDING_LIVE_TOOL_COMPACTION_MIN_CHARS: "1400",
+      CONTEXT_SHREDDING_LIVE_TOOL_COMPACTION_MIN_SAVINGS_PCT: "5",
+      CONTEXT_SHREDDING_LIVE_TOOL_COMPACTION_TARGET_CHARS: "900",
     });
 
     expect(result[0]._liveCompacted).toBe(true);
@@ -867,6 +869,8 @@ describe("live tool compaction", () => {
 
     const result = await runLiveCompaction(items, {
       CONTEXT_SHREDDING_LIVE_TOOL_COMPACTION_MIN_CHARS: "1400",
+      CONTEXT_SHREDDING_LIVE_TOOL_COMPACTION_MIN_SAVINGS_PCT: "5",
+      CONTEXT_SHREDDING_LIVE_TOOL_COMPACTION_TARGET_CHARS: "900",
     });
 
     expect(result[0]._liveCompacted).toBe(true);

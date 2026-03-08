@@ -452,7 +452,7 @@ const LIVE_TOOL_RETRIEVE_PLACEHOLDER = "__BOSUN_TOOL_LOG__";
 const LIVE_ERROR_REGEX = /\b(error|errors|fatal|failed|failure|panic|traceback|exception|undefined|denied|not found|enoent|eacces)\b/i;
 const LIVE_WARN_REGEX = /\b(warn|warning|deprecated)\b/i;
 const LIVE_SUMMARY_REGEX = /\b(summary|total|totals|passed|failed|skipped|collected|found|matched|changed|insertions|deletions|done in|finished|ran \d+ tests?|test suites|packages? audited|up to date|build failed|completed)\b/i;
-const LIVE_STATUS_REGEX = /^(ok|FAIL|PASS|ERROR|warning|fatal|M\s|A\s|D\s|R\s|\?\?|@@|diff --git|--- |\+\+\+ )/;
+const LIVE_STATUS_REGEX = /^(FAIL|ERROR|warning|fatal|M\s|A\s|D\s|R\s|\?\?|@@|diff --git|--- |\+\+\+ )/;
 const LIVE_STRUCTURED_FLAG_REGEX = /(^|\s)(--json|--format(?:=|\s+)json|-json\b|-o(?:=|\s+)json|--output(?:=|\s+)json|{{json\s+\.}})/i;
 const LIVE_FILE_REF_REGEX = /((?:[A-Za-z]:)?[.~/\\\w-]+(?:[\\/][^:\s]+)+(?::\d+(?::\d+)?)?)/;
 const LIVE_SHELL_WRAPPERS = new Set(["bash", "sh", "zsh", "pwsh", "powershell", "cmd"]);
@@ -578,7 +578,8 @@ function classifyLiveFamily(commandFamily, item) {
   if (["npm", "pnpm", "yarn", "node", "python", "python3", "pip", "pip3", "poetry", "composer", "bundle", "npx"].includes(cmd)) {
     return /test|build|install|lint|run|pytest|jest|vitest|mocha|ava|unittest|coverage|compile/.test(full) ? "build" : "generic";
   }
-  if (["docker", "kubectl", "journalctl", "tail", "get-content"].includes(cmd) && /logs?\b|tail\b|follow\b|-f\b/.test(full)) return "logs";
+  if (["journalctl", "tail", "get-content"].includes(cmd)) return "logs";
+  if (["docker", "kubectl"].includes(cmd) && /logs?\b|tail\b|follow\b|-f\b/.test(full)) return "logs";
   if (["docker", "kubectl", "helm", "terraform", "ansible", "ansible-playbook", "systemctl"].includes(cmd)) return "ops";
   return "generic";
 }
@@ -650,7 +651,7 @@ function pickSelectedLines(lines, family, mode) {
       selected.add(i);
     }
   }
-  if (selected.size < Math.min(maxLines, lines.length)) {
+  if (selected.size < Math.min(maxLines, lines.length) && !["search", "git", "build"].includes(family)) {
     for (let i = Math.max(0, lines.length - 6); i < lines.length && selected.size < maxLines; i += 1) {
       selected.add(i);
     }

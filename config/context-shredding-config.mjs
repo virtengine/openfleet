@@ -155,9 +155,14 @@ export const DEFAULT_SHREDDING_CONFIG = Object.freeze({
   liveToolCompactionMinRuntimeMs: 2000,
   liveToolCompactionBlockStructured: true,
   liveToolCompactionAllowCommands: [
-    "grep", "rg", "find", "git", "go", "npm", "pnpm", "yarn", "node",
-    "python", "python3", "pytest", "docker", "kubectl", "cargo", "gradle",
-    "maven", "mvn", "javac", "tsc", "jest", "vitest", "deno",
+    "grep", "rg", "find", "findstr", "select-string", "ag", "ack", "sift",
+    "fd", "where", "which", "ls", "dir", "tree", "git", "go", "npm",
+    "pnpm", "yarn", "npx", "bun", "node", "python", "python3", "pytest",
+    "pip", "pip3", "poetry", "docker", "kubectl", "helm", "terraform",
+    "ansible", "ansible-playbook", "journalctl", "tail", "get-content",
+    "cargo", "gradle", "maven", "mvn", "javac", "tsc", "jest", "vitest",
+    "deno", "make", "cmake", "bazel", "buck", "nx", "turbo", "rush",
+    "composer", "bundle",
   ],
 
   // ── Per-type overrides (empty = use base config) ─────────────
