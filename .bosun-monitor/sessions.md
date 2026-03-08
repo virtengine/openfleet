@@ -202,3 +202,18 @@ ode cli.mjs --daemon-status (with explicit local config) reports running.
   - One active long-running Task Lifecycle run remains expected; no frozen active-run pair after remediation.
 - Residual risk:
   - Task stats CLI (80 tasks) and planner trigger store can still diverge depending on which runtime store is queried; monitor in next run and consider code-level store-path unification if divergence recurs.
+
+### Session 2026-03-09T01:50:16+11:00
+- Incident: workflow/task progression stalled while daemon appeared alive; unresolved task-id template warnings were recurring.
+- Diagnosis:
+  - monitor log showed repeated `setTaskStatus: task {{task.taskId}} not found` and internal status-update failures.
+  - schedule polling needed to keep running through task lifecycle/review handoff without poisoning by unresolved IDs.
+- Fix shipped:
+  - `infra/monitor.mjs`: added `hasUnresolvedTemplateToken` and guard in `resolveTaskIdForBackend` to skip unresolved `{{...}}` IDs.
+  - tests updated: `tests/monitor-workflow-startup-guards.test.mjs`, `tests/cli-daemon-pid-files.test.mjs`.
+- Verification:
+  - full gates passed: `npm test`, `npm run build`, `npm run prepush:check`.
+  - PR #174 merged to main (`333666c0d5e1471ebbdc12d4c577dff462182d72`).
+  - post-merge source daemon restart validated with minute cadence schedule polls and fresh `todo -> inprogress` transitions.
+- Operational note:
+  - Keep using workspace-local log/state paths under `bosun/.bosun/...` for source daemon checks; old AppData logs can be stale for this mode.

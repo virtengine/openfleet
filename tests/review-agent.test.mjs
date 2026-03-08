@@ -1,4 +1,11 @@
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+
+const spawnSyncMock = vi.hoisted(() => vi.fn());
+
+vi.mock("node:child_process", () => ({
+  spawnSync: spawnSyncMock,
+}));
+
 import { createReviewAgent, ReviewAgent } from "../agent/review-agent.mjs";
 
 /* eslint-disable no-unused-vars */
@@ -35,6 +42,23 @@ describe("review-agent", () => {
       await new Promise((r) => setTimeout(r, 20));
     }
   }
+
+  beforeEach(() => {
+    spawnSyncMock.mockReset();
+    spawnSyncMock.mockImplementation((cmd, args) => {
+      if (cmd === "gh" && args?.[0] === "pr" && args?.[1] === "diff") {
+        return { status: 0, stdout: "diff --git a/file.mjs b/file.mjs\n+change\n" };
+      }
+      if (cmd === "git" && args?.[0] === "diff") {
+        return { status: 0, stdout: "diff --git a/fallback.mjs b/fallback.mjs\n+fallback\n" };
+      }
+      return { status: 1, stdout: "", stderr: "not mocked" };
+    });
+  });
+
+  afterEach(() => {
+    spawnSyncMock.mockReset();
+  });
 
   describe("ReviewAgent constructor", () => {
     it("creates instance with defaults", () => {
@@ -185,4 +209,47 @@ describe("review-agent", () => {
       await agent.stop();
     });
   });
+
+
+  describe("diff retrieval", () => {
+    it("uses prNumber-only context to fetch diff", async () => {
+      const onReviewComplete = vi.fn();
+      const agent = createReviewAgent({ onReviewComplete });
+      agent.start();
+
+      await agent.queueReview({
+        id: "task-pr-number",
+        title: "PR only",
+        prNumber: 123,
+        description: "",
+      });
+
+      await waitFor(() => onReviewComplete.mock.calls.length > 0);
+      expect(spawnSyncMock).toHaveBeenCalledWith(
+        "gh",
+        ["pr", "diff", "123"],
+        expect.objectContaining({ encoding: "utf8" }),
+      );
+      expect(onReviewComplete.mock.calls[0][1].approved).toBe(true);
+      await agent.stop();
+    });
+
+    it("skips queueing when review context is missing", async () => {
+      const onReviewComplete = vi.fn();
+      const agent = createReviewAgent({ onReviewComplete });
+      agent.start();
+
+      await agent.queueReview({
+        id: "task-no-context",
+        title: "No context",
+        description: "",
+      });
+
+      await new Promise((r) => setTimeout(r, 100));
+      expect(onReviewComplete).not.toHaveBeenCalled();
+      expect(agent.getStatus().queuedReviews).toBe(0);
+      await agent.stop();
+    });
+  });
+
 });
