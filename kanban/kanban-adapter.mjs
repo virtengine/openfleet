@@ -3501,6 +3501,10 @@ class GitHubIssuesAdapter {
   }
 
   async addProjectV2DraftIssue(projectNumber, title, body = "") {
+    const normalizedTitle = String(title || "").trim();
+    if (!normalizedTitle) {
+      throw new Error("[kanban] github createTask requires non-empty title");
+    }
     const projectId = await this.getProjectNodeId(projectNumber);
     if (!projectId) return null;
     const mutation = `
@@ -3508,7 +3512,7 @@ class GitHubIssuesAdapter {
         addProjectV2DraftIssue(
           input: {
             projectId: ${this._escapeGraphQLString(projectId)},
-            title: ${this._escapeGraphQLString(title || "New task")},
+            title: ${this._escapeGraphQLString(normalizedTitle)},
             body: ${this._escapeGraphQLString(body)}
           }
         ) {
@@ -3550,6 +3554,10 @@ class GitHubIssuesAdapter {
   }
 
   async createTask(_projectId, taskData) {
+    const normalizedTitle = String(taskData?.title || "").trim();
+    if (!normalizedTitle) {
+      throw new Error("[kanban] github createTask requires non-empty title");
+    }
     const wantsDraftCreate = Boolean(taskData?.draft || taskData?.createDraft);
     const shouldConvertDraft = Boolean(
       taskData?.convertDraft || taskData?.convertToIssue,
@@ -3563,7 +3571,7 @@ class GitHubIssuesAdapter {
     if (wantsDraftCreate && projectNumber) {
       const draftItemId = await this.addProjectV2DraftIssue(
         projectNumber,
-        taskData.title || "New task",
+        normalizedTitle,
         taskData.description || "",
       );
       if (!draftItemId) {
@@ -3572,7 +3580,7 @@ class GitHubIssuesAdapter {
       if (!shouldConvertDraft) {
         return {
           id: `draft:${draftItemId}`,
-          title: taskData.title || "New task",
+          title: normalizedTitle,
           description: taskData.description || "",
           status: requestedStatus,
           assignee: null,
@@ -3665,7 +3673,7 @@ class GitHubIssuesAdapter {
       "--repo",
       `${this._owner}/${this._repo}`,
       "--title",
-      taskData.title || "New task",
+      normalizedTitle,
       "--body",
       taskData.description || "",
     ];
