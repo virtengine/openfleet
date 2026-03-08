@@ -1507,6 +1507,63 @@ describe("ui-server mini app", () => {
     expect(abortTask).toHaveBeenCalledWith(taskId, "task_lifecycle_pause");
   });
 
+  it("queues task starts when no executor slots are free and reports truthful runtime state", async () => {
+    process.env.TELEGRAM_UI_TUNNEL = "disabled";
+    process.env.EXECUTOR_MODE = "internal";
+
+    const mod = await import("../server/ui-server.mjs");
+    const executeTask = vi.fn(async () => {});
+    mod.injectUiDependencies({
+      getInternalExecutor: () => ({
+        getStatus: () => ({ maxParallel: 1, activeSlots: 1, slots: [] }),
+        executeTask,
+        isPaused: () => false,
+      }),
+    });
+
+    const server = await mod.startTelegramUiServer({
+      port: await getFreePort(),
+      host: "127.0.0.1",
+      skipInstanceLock: true,
+      skipAutoOpen: true,
+    });
+    const port = server.address().port;
+
+    const created = await fetch(`http://127.0.0.1:${port}/api/tasks/create`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        title: "Queued lifecycle test task",
+        description: "verify truthful queued state",
+        status: "todo",
+      }),
+    }).then((r) => r.json());
+
+    expect(created.ok).toBe(true);
+    const taskId = created.data.id;
+
+    const started = await fetch(`http://127.0.0.1:${port}/api/tasks/start`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ taskId }),
+    }).then((r) => r.json());
+
+    expect(started.ok).toBe(true);
+    expect(started.queued).toBe(true);
+    expect(started.started).toBe(false);
+    expect(started.data.status).toBe("queued");
+    expect(started.data.runtimeSnapshot.state).toBe("queued");
+    expect(executeTask).not.toHaveBeenCalled();
+
+    const detail = await fetch(`http://127.0.0.1:${port}/api/tasks/detail?taskId=${encodeURIComponent(taskId)}`)
+      .then((r) => r.json());
+
+    expect(detail.ok).toBe(true);
+    expect(detail.data.status).toBe("queued");
+    expect(detail.data.runtimeSnapshot.state).toBe("queued");
+    expect(detail.data.runtimeSnapshot.isLive).toBe(false);
+  });
+
   it("enriches task detail with linked workflow runs for the same taskId", async () => {
     process.env.TELEGRAM_UI_TUNNEL = "disabled";
 

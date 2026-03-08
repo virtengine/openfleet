@@ -81,6 +81,12 @@ function fixGitConfigCorruption(repoRoot) {
         timeout: 5000,
         env: { ...process.env, ...GIT_ENV },
       });
+      spawnSync("git", ["config", "--local", "--unset-all", "core.worktree"], {
+        cwd: repoRoot,
+        encoding: "utf8",
+        timeout: 5000,
+        env: { ...process.env, ...GIT_ENV },
+      });
     }
   } catch {
     /* best-effort — don't crash on config repair */

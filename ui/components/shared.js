@@ -45,7 +45,6 @@ import {
   ListItemText,
   ListItemSecondaryAction,
   IconButton,
-  Fade,
 } from "@mui/material";
 
 import { ICONS } from "../modules/icons.js";
@@ -532,51 +531,49 @@ export function Modal({
     : "";
 
   const content = html`
-    <${Fade} in=${visible} timeout=${300}>
+    <div
+      class="modal-overlay ${visible ? "modal-overlay-visible" : ""}"
+      onClick=${(e) => {
+        if (e.target === e.currentTarget) requestClose();
+      }}
+    >
       <div
-        class="modal-overlay ${visible ? "modal-overlay-visible" : ""}"
-        onClick=${(e) => {
-          if (e.target === e.currentTarget) requestClose();
-        }}
+        ref=${contentRef}
+        class="modal-content ${contentClassName} ${visible ? "modal-content-visible" : ""} ${dragY > 0 ? "modal-dragging" : ""}"
+        style=${dragStyle}
+        onClick=${(e) => e.stopPropagation()}
+        onTouchStart=${handleTouchStart}
+        onTouchMove=${handleTouchMove}
+        onTouchEnd=${handleTouchEnd}
+        onTouchCancel=${handleTouchCancel}
+        onPointerDown=${handlePointerDown}
+        onPointerMove=${handlePointerMove}
+        onPointerUp=${handlePointerEnd}
+        onPointerCancel=${handlePointerCancel}
       >
-        <div
-          ref=${contentRef}
-          class="modal-content ${contentClassName} ${visible ? "modal-content-visible" : ""} ${dragY > 0 ? "modal-dragging" : ""}"
-          style=${dragStyle}
-          onClick=${(e) => e.stopPropagation()}
-          onTouchStart=${handleTouchStart}
-          onTouchMove=${handleTouchMove}
-          onTouchEnd=${handleTouchEnd}
-          onTouchCancel=${handleTouchCancel}
-          onPointerDown=${handlePointerDown}
-          onPointerMove=${handlePointerMove}
-          onPointerUp=${handlePointerEnd}
-          onPointerCancel=${handlePointerCancel}
-        >
-          <div class="modal-header">
-            <div class="modal-handle"></div>
-            ${title ? html`<div class="modal-title">${title}</div>` : null}
-            <${IconButton}
-              className="modal-close-btn"
-              size="small"
-              onTouchStart=${(e) => e.stopPropagation()}
-              onPointerDown=${(e) => e.stopPropagation()}
-              onPointerUp=${(e) => e.stopPropagation()}
-              onMouseDown=${(e) => e.stopPropagation()}
-              onClick=${requestClose}
-              aria-label="Close"
-              sx=${{ position: "absolute", right: 8, top: 8, zIndex: 8, pointerEvents: "auto" }}
-            >
-              ${ICONS.close}
-            <//>
-          </div>
-          <div class="modal-body" onTouchStart=${handleBodyTouchStart}>
-            ${children}
-          </div>
-          ${footer ? html`<div class="modal-footer">${footer}</div>` : null}
+        <div class="modal-header">
+          <div class="modal-handle"></div>
+          ${title ? html`<div class="modal-title">${title}</div>` : null}
+          <${IconButton}
+            className="modal-close-btn"
+            size="small"
+            onTouchStart=${(e) => e.stopPropagation()}
+            onPointerDown=${(e) => e.stopPropagation()}
+            onPointerUp=${(e) => e.stopPropagation()}
+            onMouseDown=${(e) => e.stopPropagation()}
+            onClick=${requestClose}
+            aria-label="Close"
+            sx=${{ position: "absolute", right: 8, top: 8, zIndex: 8, pointerEvents: "auto" }}
+          >
+            ${ICONS.close}
+          <//>
         </div>
+        <div class="modal-body" onTouchStart=${handleBodyTouchStart}>
+          ${children}
+        </div>
+        ${footer ? html`<div class="modal-footer">${footer}</div>` : null}
       </div>
-    </${Fade}>
+    </div>
   `;
 
   const guard = closePromptOpen

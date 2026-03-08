@@ -640,6 +640,30 @@ function Get-OrchestratorMutexName {
     return "$BaseName.$suffix"
 }
 
+function Repair-MainRepoGitConfigCorruption {
+    $repoRoot = $null
+    try {
+        $repoRoot = (Resolve-Path (Join-Path $PSScriptRoot "..")).Path
+    }
+    catch {
+        return
+    }
+    if (-not $repoRoot) {
+        return
+    }
+    try {
+        $bareValue = git -C $repoRoot config --bool --get core.bare 2>$null
+        if ($LASTEXITCODE -eq 0 -and "$bareValue".Trim().ToLowerInvariant() -eq "true") {
+            Write-Log "Detected core.bare=true on main repo; repairing git config corruption" -Level "WARN"
+            git -C $repoRoot config --local core.bare false 2>&1 | Out-Null
+            git -C $repoRoot config --local --unset-all core.worktree 2>&1 | Out-Null
+        }
+    }
+    catch {
+        Write-Log "Failed to repair main repo git config corruption: $($_.Exception.Message)" -Level "WARN"
+    }
+}
+
 function Enter-OrchestratorMutex {
     param([string]$Name = (Get-OrchestratorMutexName))
     $createdNew = $false
@@ -3274,6 +3298,7 @@ function Invoke-DirectRebaseIsolatedWorktree {
             throw "git worktree add failed: $addOut"
         }
         $addedWorktree = $true
+        Repair-MainRepoGitConfigCorruption
 
         # Hard-clean the isolated worktree to remove any stale filesystem residue.
         git -C $tempWorktreePath reset --hard HEAD 2>&1 | Out-Null

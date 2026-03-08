@@ -6529,6 +6529,19 @@ function buildTaskRuntimeSnapshot(task) {
   };
 }
 
+function withTaskRuntimeSnapshot(task) {
+  if (!task || typeof task !== "object") return task;
+  const runtimeSnapshot = buildTaskRuntimeSnapshot(task);
+  return {
+    ...task,
+    runtimeSnapshot,
+    meta: {
+      ...(task.meta || {}),
+      runtimeSnapshot,
+    },
+  };
+}
+
 async function maybeStartTaskFromLifecycleAction({
   taskId,
   updatedTask,
@@ -8822,9 +8835,10 @@ async function handleApi(req, res, url) {
       const start = page * pageSize;
       const slice = filtered.slice(start, start + pageSize);
       const enriched = await applySharedStateToTasks(slice);
+      const withRuntime = enriched.map((task) => withTaskRuntimeSnapshot(task));
       jsonResponse(res, 200, {
         ok: true,
-        data: enriched,
+        data: withRuntime,
         page,
         pageSize,
         total,
@@ -8850,7 +8864,7 @@ async function handleApi(req, res, url) {
       const adapter = getKanbanAdapter();
       const task = await adapter.getTask(taskId);
       const enriched = await applySharedStateToTasks(task ? [task] : []);
-      const detailTask = enriched[0] || null;
+      let detailTask = enriched[0] || null;
       if (detailTask) {
         const workflowRuns = await collectWorkflowRunsForTask(detailTask.id, url, 40);
         const mergedWorkflowRuns = mergeTaskWorkflowRuns(detailTask.workflowRuns, workflowRuns, 80);
@@ -8871,6 +8885,7 @@ async function handleApi(req, res, url) {
         };
         if (sprintDag) detailTask.sprintDag = sprintDag.data;
         if (globalDag) detailTask.dagOfDags = globalDag.data;
+        detailTask = withTaskRuntimeSnapshot(detailTask);
       }
       jsonResponse(res, 200, { ok: true, data: detailTask });
     } catch (err) {
@@ -9326,25 +9341,8 @@ async function handleApi(req, res, url) {
       const freeSlots =
         (status.maxParallel || 0) - (status.activeSlots || 0);
 
-      try {
-        if (typeof adapter.updateTaskStatus === "function") {
-          await adapter.updateTaskStatus(taskId, "inprogress", { source: "api.tasks.start" });
-        } else if (typeof adapter.updateTask === "function") {
-          await adapter.updateTask(taskId, { status: "inprogress" });
-        }
-        applyInternalLifecycleTransition(taskId, "start", {
-          source: "api.tasks.start",
-          actor: "ui",
-          force: forceStart || manualOverride,
-          reason: "manual start",
-        });
-      } catch (err) {
-        console.warn(
-          `[telegram-ui] failed to mark task ${taskId} inprogress: ${err.message}`,
-        );
-      }
-
       if (freeSlots <= 0) {
+        const queuedTask = await persistTaskStatusForExecution(adapter, taskId, "queued", "api.tasks.start");
         jsonResponse(res, 202, {
           ok: true,
           taskId,
@@ -9352,6 +9350,7 @@ async function handleApi(req, res, url) {
           started: false,
           reason: "No free slots",
           canStart,
+          data: withTaskRuntimeSnapshot(queuedTask || { ...task, status: "queued" }),
         });
         broadcastUiEvent(
           ["tasks", "overview", "executor", "agents"],
@@ -9477,6 +9476,17 @@ async function handleApi(req, res, url) {
         forceStart,
         manualOverride,
       });
+      const reconciled = await reconcileTaskAfterDispatchAttempt({
+        adapter,
+        taskId,
+        previousStatus: previousTask?.status || null,
+        requestedStatus: nextStatus,
+        lifecycleAction,
+        startDispatch,
+        source: "api.tasks.update",
+      });
+      const responseTask = withTaskRuntimeSnapshot(reconciled || updated);
+      const responseStatus = responseTask?.status || nextStatus;
       if (body?.pauseExecution === true && lifecycleAction === "pause" && executor && typeof executor.abortTask === "function") {
         executor.abortTask(taskId, "task_lifecycle_pause");
       }
@@ -9493,19 +9503,19 @@ async function handleApi(req, res, url) {
       });
       jsonResponse(res, 200, {
         ok: true,
-        data: updated,
+        data: responseTask,
         restart,
         lifecycle: {
           action: lifecycleAction,
           previousStatus: previousTask?.status || null,
-          nextStatus,
+          nextStatus: responseStatus,
           startDispatch,
         },
       });
       broadcastUiEvent(["tasks", "overview"], "invalidate", {
         reason: "task-updated",
         taskId,
-        status: nextStatus,
+        status: responseStatus,
       });
       if (restart?.started || startDispatch?.started) {
         broadcastUiEvent(["tasks", "overview", "executor", "agents"], "invalidate", {
@@ -9601,6 +9611,17 @@ async function handleApi(req, res, url) {
         forceStart,
         manualOverride,
       });
+      const reconciled = await reconcileTaskAfterDispatchAttempt({
+        adapter,
+        taskId,
+        previousStatus: previousTask?.status || null,
+        requestedStatus: nextStatus,
+        lifecycleAction,
+        startDispatch,
+        source: "api.tasks.edit",
+      });
+      const responseTask = withTaskRuntimeSnapshot(reconciled || updated);
+      const responseStatus = responseTask?.status || nextStatus;
       if (body?.pauseExecution === true && lifecycleAction === "pause" && executor && typeof executor.abortTask === "function") {
         executor.abortTask(taskId, "task_lifecycle_pause");
       }
@@ -9617,19 +9638,19 @@ async function handleApi(req, res, url) {
       });
       jsonResponse(res, 200, {
         ok: true,
-        data: updated,
+        data: responseTask,
         restart,
         lifecycle: {
           action: lifecycleAction,
           previousStatus: previousTask?.status || null,
-          nextStatus,
+          nextStatus: responseStatus,
           startDispatch,
         },
       });
       broadcastUiEvent(["tasks", "overview"], "invalidate", {
         reason: "task-edited",
         taskId,
-        status: nextStatus,
+        status: responseStatus,
       });
       if (restart?.started || startDispatch?.started) {
         broadcastUiEvent(["tasks", "overview", "executor", "agents"], "invalidate", {
