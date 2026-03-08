@@ -12,7 +12,7 @@
  */
 
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
-import { mkdtempSync, rmSync, writeFileSync, mkdirSync } from "node:fs";
+import { existsSync, mkdtempSync, rmSync, writeFileSync, mkdirSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { execSync } from "node:child_process";
@@ -555,6 +555,54 @@ describe("action.resolve_executor", () => {
     });
     const result = await nt.execute(node, ctx);
     expect(ctx.data.resolvedSdk).toBeDefined();
+  });
+});
+
+// ═══════════════════════════════════════════════════════════════════════════
+//  action.acquire_worktree Tests
+// ═══════════════════════════════════════════════════════════════════════════
+
+describe("action.acquire_worktree", () => {
+  let repoDir;
+
+  const gitExec = (command, options = {}) =>
+    execSync(command, {
+      env: sanitizedGitEnv(),
+      ...options,
+    });
+
+  beforeEach(() => {
+    repoDir = mkdtempSync(join(tmpdir(), "wf-acquire-worktree-"));
+    gitExec("git init", { cwd: repoDir, stdio: "ignore" });
+    gitExec("git config --local user.email test@test.com", { cwd: repoDir, stdio: "ignore" });
+    gitExec("git config --local user.name Test", { cwd: repoDir, stdio: "ignore" });
+    writeFileSync(join(repoDir, "README.md"), "init\n");
+    gitExec("git add README.md && git commit -m init", { cwd: repoDir, stdio: "ignore" });
+    gitExec("git branch -M main", { cwd: repoDir, stdio: "ignore" });
+  });
+
+  afterEach(() => {
+    try { rmSync(repoDir, { recursive: true, force: true }); } catch { /* ok */ }
+  });
+
+  it("falls back to defaultTargetBranch when baseBranch template is unresolved", async () => {
+    const nt = getNodeType("action.acquire_worktree");
+    const ctx = makeCtx({});
+    const node = makeNode("action.acquire_worktree", {
+      repoRoot: repoDir,
+      taskId: "abc123",
+      branch: "task/abc123-fallback-branch",
+      baseBranch: "{{baseBranch}}",
+      defaultTargetBranch: "main",
+      fetchTimeout: 5000,
+      worktreeTimeout: 10000,
+    });
+
+    const result = await nt.execute(node, ctx);
+    expect(result.success).toBe(true);
+    expect(result.baseBranch).toBe("main");
+    expect(result.created).toBe(true);
+    expect(existsSync(result.worktreePath)).toBe(true);
   });
 });
 
