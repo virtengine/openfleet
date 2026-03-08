@@ -7004,6 +7004,40 @@ function cfgOrCtx(node, ctx, key, defaultVal = "") {
   return defaultVal;
 }
 
+function isUnresolvedTemplateToken(value) {
+  return /{{[^{}]+}}/.test(String(value || ""));
+}
+
+function normalizeGitRefValue(value) {
+  const text = String(value ?? "").trim();
+  if (!text || isUnresolvedTemplateToken(text)) return "";
+  const lowered = text.toLowerCase();
+  if (lowered === "null" || lowered === "undefined") return "";
+  return text;
+}
+
+function pickGitRef(...candidates) {
+  for (const candidate of candidates) {
+    const normalized = normalizeGitRefValue(candidate);
+    if (normalized) return normalized;
+  }
+  return "";
+}
+
+function formatExecSyncError(err) {
+  if (!err) return "unknown error";
+  const detail = [err?.stderr, err?.stdout, err?.message]
+    .map((entry) => String(entry || "").trim())
+    .filter(Boolean)
+    .join(" | ");
+  return trimLogText(detail || String(err?.message || err), 420);
+}
+
+function isExistingBranchWorktreeError(err) {
+  const detail = formatExecSyncError(err).toLowerCase();
+  return detail.includes("already exists") || detail.includes("is already checked out");
+}
+
 /**
  * Anti-thrash state — module-scope to survive across workflow runs.
  * Mirrors TaskExecutor._noCommitCounts / _skipUntil / _completedWithPR.
@@ -7742,7 +7776,9 @@ registerNodeType("action.acquire_worktree", {
     const taskId = cfgOrCtx(node, ctx, "taskId");
     const branch = cfgOrCtx(node, ctx, "branch");
     const repoRoot = cfgOrCtx(node, ctx, "repoRoot") || process.cwd();
-    const baseBranch = cfgOrCtx(node, ctx, "baseBranch", "origin/main");
+    const baseBranchRaw = cfgOrCtx(node, ctx, "baseBranch", "origin/main");
+    const defaultTargetBranch = cfgOrCtx(node, ctx, "defaultTargetBranch", "origin/main");
+    const baseBranch = pickGitRef(baseBranchRaw, defaultTargetBranch, "origin/main", "main");
     const fetchTimeout = node.config?.fetchTimeout ?? 30000;
     const worktreeTimeout = node.config?.worktreeTimeout ?? 60000;
 
@@ -7799,15 +7835,21 @@ registerNodeType("action.acquire_worktree", {
           `git worktree add "${worktreePath}" -b "${branch}" "${baseBranch}" 2>&1`,
           { cwd: repoRoot, encoding: "utf8", timeout: worktreeTimeout },
         );
-      } catch {
-        // Branch may already exist — try checkout
+      } catch (createErr) {
+        if (!isExistingBranchWorktreeError(createErr)) {
+          throw new Error(`Worktree creation failed: ${formatExecSyncError(createErr)}`);
+        }
+        // Branch already exists — attach worktree to existing branch.
         try {
           execSync(
             `git worktree add "${worktreePath}" "${branch}" 2>&1`,
             { cwd: repoRoot, encoding: "utf8", timeout: worktreeTimeout },
           );
-        } catch (err2) {
-          throw new Error(`Worktree creation failed: ${err2.message}`);
+        } catch (reuseErr) {
+          throw new Error(
+            `Worktree creation failed: ${formatExecSyncError(createErr)}; ` +
+            `reuse failed: ${formatExecSyncError(reuseErr)}`,
+          );
         }
       }
 
