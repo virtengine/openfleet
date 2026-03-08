@@ -930,7 +930,9 @@ async function applyTaskLifecycleTransition(task, requestedStatus) {
 
   const wantsDraft = decision.nextStatus === "draft";
   const prevTasks = cloneValue(tasksData.value);
-  const optimisticStatus = decision.action === "start" ? "inprogress" : decision.nextStatus;
+  const optimisticStatus = decision.action === "start"
+    ? String(task?.status || "todo")
+    : decision.nextStatus;
   let apiResult = null;
 
   await runOptimistic(
@@ -1563,6 +1565,18 @@ function isReviewStatus(s) {
   return ["inreview", "review", "pr-open", "pr-review"].includes(String(s || ""));
 }
 
+function getTaskRuntimeSnapshot(task) {
+  return task?.runtimeSnapshot || task?.meta?.runtimeSnapshot || null;
+}
+
+function hasLiveExecutionEvidence(task) {
+  const runtime = getTaskRuntimeSnapshot(task);
+  if (runtime?.isLive === true) return true;
+  if (runtime?.state === "running") return true;
+  if (runtime?.slot?.taskId) return true;
+  return false;
+}
+
 async function reactivateTaskSession(taskId, options = {}) {
   const normalizedTaskId = String(taskId || "").trim();
   if (!normalizedTaskId) return false;
@@ -1590,39 +1604,18 @@ async function reactivateTaskSession(taskId, options = {}) {
     showToast("Agent session reactivated", "success");
   }
 
+  const nextStatus = String(res?.data?.status || (res?.queued ? "queued" : "inprogress")).trim() || "todo";
   tasksData.value = (tasksData.value || []).map((t) =>
     String(t?.id || "").trim() === normalizedTaskId
-      ? { ...t, status: "inprogress" }
+      ? {
+          ...t,
+          ...(res?.data || {}),
+          status: nextStatus,
+        }
       : t,
   );
   scheduleRefresh(150);
   return true;
-}
-
-/* ─── Derive agent steps from task title/description ─── */
-function deriveSteps(task) {
-  const t = String(task?.title || "").toLowerCase();
-  const steps = [];
-  if (/feat|add|implement|build|create/.test(t)) steps.push({ label: "Understand requirements & read context" });
-  if (/fix|bug|patch|resolve|repair/.test(t)) steps.push({ label: "Reproduce and diagnose issue" });
-  if (/refactor|restructure|cleanup|reorganize/.test(t)) steps.push({ label: "Map current code structure" });
-  if (/test|spec|coverage/.test(t)) steps.push({ label: "Write test cases" });
-  if (/docs|document|readme/.test(t)) steps.push({ label: "Draft documentation content" });
-  steps.push({ label: "Write implementation" });
-  if (!/docs|readme/.test(t)) steps.push({ label: "Run tests & fix issues" });
-  steps.push({ label: "Commit changes" });
-  steps.push({ label: "Handoff PR lifecycle to Bosun" });
-  return steps;
-}
-
-/* ─── Estimate step progress from timing ─── */
-function estimateStep(task, steps) {
-  const elapsed = task?.updated ? (Date.now() - new Date(task.updated).getTime()) : 0;
-  const totalDur = task?.created ? (Date.now() - new Date(task.created).getTime()) : 60000;
-  const pct = Math.min(0.85, totalDur > 0 ? (elapsed / totalDur) : 0);
-  // Bias: show 40-75% through to look realistic
-  const biasedPct = 0.35 + pct * 0.4;
-  return Math.max(0, Math.min(steps.length - 1, Math.floor(biasedPct * steps.length)));
 }
 
 /* ─── TaskProgressModal — live view for in-progress tasks ─── */
@@ -1672,8 +1665,7 @@ export function TaskProgressModal({ task, onClose }) {
     logEndRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [logs]);
 
-  const steps = useMemo(() => deriveSteps(liveTask || task), [liveTask?.id]);
-  const currentStep = useMemo(() => estimateStep(liveTask || task, steps), [liveTask?.updated]);
+  const runtime = getTaskRuntimeSnapshot(liveTask || task);
 
   const healthScore = health?.currentHealthScore ?? health?.averageHealthScore ?? null;
   const healthColor =
@@ -1685,6 +1677,10 @@ export function TaskProgressModal({ task, onClose }) {
   const startedRelative = liveTask?.created ? formatRelative(liveTask.created) : "—";
   const agentLabel = liveTask?.assignee || task.assignee || "Agent";
   const branchLabel = liveTask?.branch || task.branch || "—";
+  const runtimeState = runtime?.state || "pending";
+  const runtimeLabel = runtime?.statusLabel || "Live execution";
+  const activeSlots = Number(runtime?.executor?.activeSlots || 0);
+  const maxParallel = Number(runtime?.executor?.maxParallel || 0);
 
   const handleCancel = async () => {
     const ok = await showConfirm("Cancel this task?");
@@ -1736,9 +1732,9 @@ export function TaskProgressModal({ task, onClose }) {
       <div class="tp-hero">
         <div class="tp-pulse-dot"></div>
         <div class="tp-hero-title">
-          <div class="tp-hero-status-label">${iconText(":zap: Active — Agent Working")}</div>
+          <div class="tp-hero-status-label">${iconText(`:zap: ${runtimeLabel}`)}</div>
         </div>
-        <${Badge} status="inprogress" text="running" />
+        <${Badge} status="inprogress" text=${runtimeState} />
       </div>
 
       
@@ -5013,22 +5009,14 @@ export function TasksTab() {
     html`
       <${CreateTaskModalInline} onClose=${() => setShowCreate(false)} />
     `}
-    ${detailTask && isActiveStatus(detailTask.status) &&
+    ${detailTask && isActiveStatus(detailTask.status) && hasLiveExecutionEvidence(detailTask) &&
     html`
       <${TaskProgressModal}
         task=${detailTask}
         onClose=${() => setDetailTask(null)}
       />
     `}
-    ${detailTask && isReviewStatus(detailTask.status) &&
-    html`
-      <${TaskReviewModal}
-        task=${detailTask}
-        onClose=${() => setDetailTask(null)}
-        onStart=${(task) => openStartModal(task)}
-      />
-    `}
-    ${detailTask && !isActiveStatus(detailTask.status) && !isReviewStatus(detailTask.status) &&
+    ${detailTask && (!isActiveStatus(detailTask.status) || !hasLiveExecutionEvidence(detailTask)) &&
     html`
       <${TaskDetailModal}
         task=${detailTask}

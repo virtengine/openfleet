@@ -604,6 +604,34 @@ describe("action.acquire_worktree", () => {
     expect(result.created).toBe(true);
     expect(existsSync(result.worktreePath)).toBe(true);
   });
+
+  it("repairs core.bare corruption after creating a worktree", async () => {
+    const nt = getNodeType("action.acquire_worktree");
+    const ctx = makeCtx({});
+    gitExec(`git config --local core.bare true`, { cwd: repoDir, stdio: "ignore" });
+    gitExec(`git config --local core.worktree "${repoDir}"`, { cwd: repoDir, stdio: "ignore" });
+
+    const node = makeNode("action.acquire_worktree", {
+      repoRoot: repoDir,
+      taskId: "abc124",
+      branch: "task/abc124-bare-repair",
+      baseBranch: "main",
+      fetchTimeout: 5000,
+      worktreeTimeout: 10000,
+    });
+
+    const result = await nt.execute(node, ctx);
+
+    expect(result.success).toBe(true);
+    expect(
+      gitExec("git config --local --get core.bare", { cwd: repoDir, encoding: "utf8" }).trim(),
+    ).toBe("false");
+    expect(() => gitExec("git config --local --get core.worktree", {
+      cwd: repoDir,
+      encoding: "utf8",
+      stdio: "pipe",
+    })).toThrow();
+  });
 });
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -1195,6 +1223,3 @@ describe("template-ve-orchestrator-lite", () => {
     expect(Array.isArray(t.variables.protectedBranches)).toBe(true);
   });
 });
-
-
-

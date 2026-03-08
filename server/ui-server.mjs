@@ -6422,6 +6422,150 @@ function applyInternalLifecycleTransition(taskId, action, options = {}) {
   return null;
 }
 
+async function persistTaskStatusForExecution(adapter, taskId, nextStatus, source) {
+  if (!taskId || !nextStatus || !adapter) return null;
+  const normalized = String(nextStatus || "").trim();
+  if (!normalized) return null;
+  let updated = null;
+  if (typeof adapter.updateTaskStatus === "function") {
+    updated = await adapter.updateTaskStatus(taskId, normalized, { source });
+  } else if (typeof adapter.updateTask === "function") {
+    updated = await adapter.updateTask(taskId, { status: normalized });
+  }
+  return withTaskMetadataTopLevel(updated);
+}
+
+async function persistTaskExecutionMeta(adapter, taskId, executionPatch = {}) {
+  if (!taskId || !adapter || typeof adapter.updateTask !== "function") return null;
+  const current = typeof adapter.getTask === "function"
+    ? await adapter.getTask(taskId).catch(() => null)
+    : null;
+  const currentMeta = current?.meta && typeof current.meta === "object" ? current.meta : {};
+  const currentExecution = currentMeta.execution && typeof currentMeta.execution === "object"
+    ? currentMeta.execution
+    : {};
+  const nextExecution = {
+    ...currentExecution,
+    ...executionPatch,
+  };
+  if (nextExecution.queueState == null) delete nextExecution.queueState;
+  return withTaskMetadataTopLevel(await adapter.updateTask(taskId, {
+    meta: {
+      ...currentMeta,
+      execution: nextExecution,
+    },
+  }));
+}
+
+function resolveFallbackStatusAfterFailedDispatch(previousStatus, startDispatch) {
+  if (startDispatch?.reason === "no_free_slots") return "queued";
+  const previous = String(previousStatus || "").trim();
+  return previous || "todo";
+}
+
+async function reconcileTaskAfterDispatchAttempt({
+  adapter,
+  taskId,
+  previousStatus,
+  requestedStatus,
+  lifecycleAction,
+  startDispatch,
+  source,
+}) {
+  const action = normalizeLifecycleAction(lifecycleAction);
+  if (action !== "start" && action !== "resume") return null;
+  const requested = normalizeTaskStatusKey(requestedStatus);
+  if (requested !== "inprogress") return null;
+  const targetStatus = startDispatch?.started
+    ? "inprogress"
+    : resolveFallbackStatusAfterFailedDispatch(previousStatus, startDispatch);
+  return persistTaskStatusForExecution(adapter, taskId, targetStatus, source);
+}
+
+function buildTaskRuntimeSnapshot(task) {
+  const runtimeExecutor = uiDeps.getInternalExecutor?.() || null;
+  const status = runtimeExecutor?.getStatus?.() || {};
+  const activeSlots = Array.isArray(status?.slots) ? status.slots : [];
+  const taskId = String(task?.id || task?.taskId || "").trim();
+  const slot = taskId
+    ? activeSlots.find((entry) => String(entry?.taskId || entry?.task_id || "").trim() === taskId)
+    : null;
+  const normalizedStatus = normalizeTaskStatusKey(task?.status);
+  const queuedFlag = task?.meta?.execution?.queued === true
+    || normalizeTaskStatusKey(task?.meta?.execution?.queueState) === "queued";
+  if (slot) {
+    return {
+      state: "running",
+      isLive: true,
+      taskId,
+      taskStatus: task?.status || null,
+      statusLabel: "Live execution",
+      slot: {
+        taskId,
+        branch: slot?.branch || slot?.branchName || null,
+        sdk: slot?.sdk || slot?.executor || null,
+        model: slot?.model || null,
+        startedAt: slot?.startedAt || slot?.started_at || null,
+        completedCount: slot?.completedCount || 0,
+      },
+      executor: {
+        activeSlots: Number(status?.activeSlots || activeSlots.length || 0),
+        maxParallel: Number(status?.maxParallel || 0),
+        paused: runtimeExecutor?.isPaused?.() === true,
+      },
+    };
+  }
+  if (queuedFlag || normalizedStatus === "queued") {
+    return {
+      state: "queued",
+      isLive: false,
+      taskId,
+      taskStatus: task?.status || null,
+      statusLabel: "Queued for execution",
+      reason: "no_free_slots",
+    };
+  }
+  if (normalizedStatus === "inprogress") {
+    return {
+      state: "pending",
+      isLive: false,
+      taskId,
+      taskStatus: task?.status || null,
+      statusLabel: "No live execution detected",
+      reason: "no_active_executor_slot",
+    };
+  }
+  if (normalizedStatus === "inreview") {
+    return {
+      state: "review",
+      isLive: false,
+      taskId,
+      taskStatus: task?.status || null,
+      statusLabel: "Awaiting review",
+    };
+  }
+  return {
+    state: "idle",
+    isLive: false,
+    taskId,
+    taskStatus: task?.status || null,
+    statusLabel: "No active execution",
+  };
+}
+
+function withTaskRuntimeSnapshot(task) {
+  if (!task || typeof task !== "object") return task;
+  const runtimeSnapshot = buildTaskRuntimeSnapshot(task);
+  return {
+    ...task,
+    runtimeSnapshot,
+    meta: {
+      ...(task.meta || {}),
+      runtimeSnapshot,
+    },
+  };
+}
+
 async function maybeStartTaskFromLifecycleAction({
   taskId,
   updatedTask,
@@ -8676,6 +8820,12 @@ async function handleApi(req, res, url) {
           task.repository || task.meta?.repository || "",
         ).trim().toLowerCase();
         if (workspaceFilter && taskWorkspace !== workspaceFilter) {
+          // Backward compatibility: many legacy internal-store tasks predate
+          // workspace stamping and should remain visible in the active
+          // workspace board instead of being filtered out.
+          if (!taskWorkspaceRaw) {
+            return true;
+          }
           const taskWorkspacePath = normalizeCandidatePath(taskWorkspaceRaw);
           const workspaceMatchByPath =
             Boolean(taskWorkspacePath) &&
@@ -8715,9 +8865,10 @@ async function handleApi(req, res, url) {
       const start = page * pageSize;
       const slice = filtered.slice(start, start + pageSize);
       const enriched = await applySharedStateToTasks(slice);
+      const withRuntime = enriched.map((task) => withTaskRuntimeSnapshot(task));
       jsonResponse(res, 200, {
         ok: true,
-        data: enriched,
+        data: withRuntime,
         page,
         pageSize,
         total,
@@ -8743,7 +8894,7 @@ async function handleApi(req, res, url) {
       const adapter = getKanbanAdapter();
       const task = await adapter.getTask(taskId);
       const enriched = await applySharedStateToTasks(task ? [task] : []);
-      const detailTask = enriched[0] || null;
+      let detailTask = enriched[0] || null;
       if (detailTask) {
         const workflowRuns = await collectWorkflowRunsForTask(detailTask.id, url, 40);
         const mergedWorkflowRuns = mergeTaskWorkflowRuns(detailTask.workflowRuns, workflowRuns, 80);
@@ -8764,6 +8915,7 @@ async function handleApi(req, res, url) {
         };
         if (sprintDag) detailTask.sprintDag = sprintDag.data;
         if (globalDag) detailTask.dagOfDags = globalDag.data;
+        detailTask = withTaskRuntimeSnapshot(detailTask);
       }
       jsonResponse(res, 200, { ok: true, data: detailTask });
     } catch (err) {
@@ -9219,12 +9371,38 @@ async function handleApi(req, res, url) {
       const freeSlots =
         (status.maxParallel || 0) - (status.activeSlots || 0);
 
+      if (freeSlots <= 0) {
+        const queuedTask = await persistTaskExecutionMeta(adapter, taskId, {
+          queued: true,
+          queueState: "queued",
+          requestedAt: new Date().toISOString(),
+        });
+        jsonResponse(res, 202, {
+          ok: true,
+          taskId,
+          queued: true,
+          started: false,
+          reason: "No free slots",
+          canStart,
+          data: withTaskRuntimeSnapshot(queuedTask || task),
+        });
+        broadcastUiEvent(
+          ["tasks", "overview", "executor", "agents"],
+          "invalidate",
+          {
+            reason: "task-queued",
+            taskId,
+          },
+        );
+        return;
+      }
+      let startedTask = task;
       try {
-        if (typeof adapter.updateTaskStatus === "function") {
-          await adapter.updateTaskStatus(taskId, "inprogress", { source: "api.tasks.start" });
-        } else if (typeof adapter.updateTask === "function") {
-          await adapter.updateTask(taskId, { status: "inprogress" });
-        }
+        startedTask = await persistTaskStatusForExecution(adapter, taskId, "inprogress", "api.tasks.start") || task;
+        startedTask = await persistTaskExecutionMeta(adapter, taskId, {
+          queued: false,
+          queueState: null,
+        }) || startedTask;
         applyInternalLifecycleTransition(taskId, "start", {
           source: "api.tasks.start",
           actor: "ui",
@@ -9237,27 +9415,8 @@ async function handleApi(req, res, url) {
         );
       }
 
-      if (freeSlots <= 0) {
-        jsonResponse(res, 202, {
-          ok: true,
-          taskId,
-          queued: true,
-          started: false,
-          reason: "No free slots",
-          canStart,
-        });
-        broadcastUiEvent(
-          ["tasks", "overview", "executor", "agents"],
-          "invalidate",
-          {
-            reason: "task-queued",
-            taskId,
-          },
-        );
-        return;
-      }
       const wasPaused = executor.isPaused?.();
-      executor.executeTask(task, {
+      executor.executeTask(startedTask, {
         ...(sdk ? { sdk } : {}),
         ...(model ? { model } : {}),
         force: forceStart || manualOverride,
@@ -9265,6 +9424,16 @@ async function handleApi(req, res, url) {
         console.warn(
           `[telegram-ui] failed to execute task ${taskId}: ${error.message}`,
         );
+        void persistTaskStatusForExecution(
+          adapter,
+          taskId,
+          resolveFallbackStatusAfterFailedDispatch(task?.status, { started: false }),
+          "api.tasks.start.failed",
+        );
+        broadcastUiEvent(["tasks", "overview", "executor", "agents"], "invalidate", {
+          reason: "task-start-failed",
+          taskId,
+        });
       });
       jsonResponse(res, 200, {
         ok: true,
@@ -9273,6 +9442,7 @@ async function handleApi(req, res, url) {
         started: true,
         wasPaused,
         canStart,
+        data: withTaskRuntimeSnapshot(startedTask),
       });
       broadcastUiEvent(
         ["tasks", "overview", "executor", "agents"],
@@ -9370,6 +9540,17 @@ async function handleApi(req, res, url) {
         forceStart,
         manualOverride,
       });
+      const reconciled = await reconcileTaskAfterDispatchAttempt({
+        adapter,
+        taskId,
+        previousStatus: previousTask?.status || null,
+        requestedStatus: nextStatus,
+        lifecycleAction,
+        startDispatch,
+        source: "api.tasks.update",
+      });
+      const responseTask = withTaskRuntimeSnapshot(reconciled || updated);
+      const responseStatus = responseTask?.status || nextStatus;
       if (body?.pauseExecution === true && lifecycleAction === "pause" && executor && typeof executor.abortTask === "function") {
         executor.abortTask(taskId, "task_lifecycle_pause");
       }
@@ -9386,19 +9567,19 @@ async function handleApi(req, res, url) {
       });
       jsonResponse(res, 200, {
         ok: true,
-        data: updated,
+        data: responseTask,
         restart,
         lifecycle: {
           action: lifecycleAction,
           previousStatus: previousTask?.status || null,
-          nextStatus,
+          nextStatus: responseStatus,
           startDispatch,
         },
       });
       broadcastUiEvent(["tasks", "overview"], "invalidate", {
         reason: "task-updated",
         taskId,
-        status: nextStatus,
+        status: responseStatus,
       });
       if (restart?.started || startDispatch?.started) {
         broadcastUiEvent(["tasks", "overview", "executor", "agents"], "invalidate", {
@@ -9494,6 +9675,17 @@ async function handleApi(req, res, url) {
         forceStart,
         manualOverride,
       });
+      const reconciled = await reconcileTaskAfterDispatchAttempt({
+        adapter,
+        taskId,
+        previousStatus: previousTask?.status || null,
+        requestedStatus: nextStatus,
+        lifecycleAction,
+        startDispatch,
+        source: "api.tasks.edit",
+      });
+      const responseTask = withTaskRuntimeSnapshot(reconciled || updated);
+      const responseStatus = responseTask?.status || nextStatus;
       if (body?.pauseExecution === true && lifecycleAction === "pause" && executor && typeof executor.abortTask === "function") {
         executor.abortTask(taskId, "task_lifecycle_pause");
       }
@@ -9510,19 +9702,19 @@ async function handleApi(req, res, url) {
       });
       jsonResponse(res, 200, {
         ok: true,
-        data: updated,
+        data: responseTask,
         restart,
         lifecycle: {
           action: lifecycleAction,
           previousStatus: previousTask?.status || null,
-          nextStatus,
+          nextStatus: responseStatus,
           startDispatch,
         },
       });
       broadcastUiEvent(["tasks", "overview"], "invalidate", {
         reason: "task-edited",
         taskId,
-        status: nextStatus,
+        status: responseStatus,
       });
       if (restart?.started || startDispatch?.started) {
         broadcastUiEvent(["tasks", "overview", "executor", "agents"], "invalidate", {

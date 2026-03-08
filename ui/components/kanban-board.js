@@ -2,7 +2,7 @@
  *  Kanban Board Component — GitHub Projects-style task board
  * ────────────────────────────────────────────────────────────── */
 import { h } from "preact";
-import { useState, useCallback, useRef, useEffect, useMemo } from "preact/hooks";
+import { useState, useCallback, useRef, useEffect, useMemo, useLayoutEffect } from "preact/hooks";
 import htm from "htm";
 import { signal, computed } from "@preact/signals";
 import {
@@ -95,6 +95,27 @@ function getTaskBaseBranch(task) {
     task.meta?.base_branch ||
     ""
   );
+}
+
+function getTaskRuntimeSnapshot(task) {
+  return task?.runtimeSnapshot || task?.meta?.runtimeSnapshot || null;
+}
+
+function getTaskEpic(task) {
+  return String(task?.epic || task?.epicName || task?.meta?.epic || task?.meta?.epicName || "").trim();
+}
+
+function getTaskSprint(task) {
+  return String(task?.sprintName || task?.sprint || task?.meta?.sprintName || task?.meta?.sprintId || "").trim();
+}
+
+function getTaskStoryPoints(task) {
+  const value = task?.storyPoints ?? task?.story_points ?? task?.points ?? task?.meta?.storyPoints;
+  return Number.isFinite(Number(value)) && String(value).trim() !== "" ? String(value) : "";
+}
+
+function getTaskDueDate(task) {
+  return String(task?.dueDate || task?.due_date || task?.meta?.dueDate || "").trim();
 }
 
 /* ─── Derived column data ─── */
@@ -411,6 +432,11 @@ function KanbanCard({ task, onOpen }) {
   const priorityLabel = PRIORITY_LABELS[task.priority] || null;
   const tags = getTaskTags(task);
   const baseBranch = getTaskBaseBranch(task);
+  const runtime = getTaskRuntimeSnapshot(task);
+  const epic = getTaskEpic(task);
+  const sprint = getTaskSprint(task);
+  const storyPoints = getTaskStoryPoints(task);
+  const dueDate = getTaskDueDate(task);
   const repoName = task.repo || task.repository || "";
   const issueNum = task.issueNumber || task.issue_number || (typeof task.id === "string" && /^\d+$/.test(task.id) ? task.id : null);
   const hasAgent = Boolean(
@@ -459,10 +485,24 @@ function KanbanCard({ task, onOpen }) {
           ${priorityLabel && html`
             <${Chip} label=${priorityLabel} size="small" sx=${{ backgroundColor: priorityColor, color: '#fff', height: 18, fontSize: '0.65rem' }} />
           `}
+          ${runtime?.state === "running" && html`
+            <${Chip} label="LIVE" size="small" color="success" sx=${{ height: 18, fontSize: '0.65rem' }} />
+          `}
+          ${runtime?.state === "queued" && html`
+            <${Chip} label="QUEUED" size="small" color="warning" sx=${{ height: 18, fontSize: '0.65rem' }} />
+          `}
         </${Stack}>
         <${Typography} variant="body2" fontWeight=${500}>${truncate(task.title || "(untitled)", 80)}</${Typography}>
         ${task.description && html`
           <${Typography} variant="caption" color="text.secondary" sx=${{ display: 'block', mt: 0.5 }}>${truncate(task.description, 72)}</${Typography}>
+        `}
+        ${(epic || sprint || storyPoints || dueDate) && html`
+          <${Stack} direction="row" spacing=${0.5} flexWrap="wrap" sx=${{ mt: 0.75 }}>
+            ${epic && html`<${Chip} label=${`Epic: ${truncate(epic, 18)}`} size="small" variant="outlined" sx=${{ height: 20, fontSize: '0.65rem' }} />`}
+            ${sprint && html`<${Chip} label=${`Sprint: ${truncate(sprint, 18)}`} size="small" variant="outlined" sx=${{ height: 20, fontSize: '0.65rem' }} />`}
+            ${storyPoints && html`<${Chip} label=${`${storyPoints} pts`} size="small" variant="outlined" sx=${{ height: 20, fontSize: '0.65rem' }} />`}
+            ${dueDate && html`<${Chip} label=${`Due: ${truncate(dueDate, 18)}`} size="small" variant="outlined" color="warning" sx=${{ height: 20, fontSize: '0.65rem' }} />`}
+          </${Stack}>
         `}
         ${baseBranch && html`
           <${Typography} variant="caption" color="text.secondary" sx=${{ display: 'block', mt: 0.5 }}>Base: ${truncate(baseBranch, 24)}</${Typography}>
@@ -498,19 +538,80 @@ function KanbanColumn({
 }) {
   const [showCreate, setShowCreate] = useState(false);
   const inputRef = useRef(null);
+  const cardsRef = useRef(null);
+  const tailSentinelRef = useRef(null);
+  const lastAutoLoadCountRef = useRef(-1);
 
   useEffect(() => {
     if (showCreate && inputRef.current) inputRef.current.focus();
   }, [showCreate]);
+
+  const triggerLoadMore = useCallback(() => {
+    if (!hasMoreTasks || loadingMoreTasks || typeof onLoadMoreTasks !== "function") return false;
+    void onLoadMoreTasks();
+    return true;
+  }, [hasMoreTasks, loadingMoreTasks, onLoadMoreTasks]);
+
+  useEffect(() => {
+    if (!hasMoreTasks || typeof onLoadMoreTasks !== "function") {
+      lastAutoLoadCountRef.current = -1;
+      return;
+    }
+    const root = cardsRef.current;
+    const sentinel = tailSentinelRef.current;
+    if (!root || !sentinel || typeof IntersectionObserver !== "function") return;
+    const observer = new IntersectionObserver(
+      (entries) => {
+        for (const entry of entries) {
+          if (!entry.isIntersecting) continue;
+          const key = tasks.length;
+          if (lastAutoLoadCountRef.current === key || loadingMoreTasks) continue;
+          lastAutoLoadCountRef.current = key;
+          void onLoadMoreTasks();
+        }
+      },
+      {
+        root,
+        rootMargin: "0px 0px 160px 0px",
+        threshold: 0,
+      },
+    );
+    observer.observe(sentinel);
+    return () => observer.disconnect();
+  }, [hasMoreTasks, loadingMoreTasks, onLoadMoreTasks, tasks.length]);
+
+  useLayoutEffect(() => {
+    const root = cardsRef.current;
+    if (!root || !hasMoreTasks || loadingMoreTasks || typeof onLoadMoreTasks !== "function") return;
+    const remaining = root.scrollHeight - root.scrollTop - root.clientHeight;
+    const underfilled = root.scrollHeight <= root.clientHeight + LOAD_MORE_THRESHOLD_PX;
+    if (!underfilled && remaining > LOAD_MORE_THRESHOLD_PX) return;
+    const key = tasks.length;
+    if (lastAutoLoadCountRef.current === key) return;
+    lastAutoLoadCountRef.current = key;
+    void onLoadMoreTasks();
+  }, [hasMoreTasks, loadingMoreTasks, onLoadMoreTasks, tasks.length, showCreate]);
 
   const onCardsScroll = useCallback((event) => {
     const el = event?.currentTarget;
     if (!el) return;
     const remaining = el.scrollHeight - el.scrollTop - el.clientHeight;
     if (remaining > LOAD_MORE_THRESHOLD_PX) return;
-    if (!hasMoreTasks || loadingMoreTasks || typeof onLoadMoreTasks !== "function") return;
-    void onLoadMoreTasks();
-  }, [hasMoreTasks, loadingMoreTasks, onLoadMoreTasks]);
+    lastAutoLoadCountRef.current = tasks.length;
+    triggerLoadMore();
+  }, [tasks.length, triggerLoadMore]);
+
+  const onCardsWheel = useCallback((event) => {
+    const el = event?.currentTarget;
+    if (!el) return;
+    if (Math.abs(event.deltaY) < Math.abs(event.deltaX || 0)) return;
+    const canScroll = el.scrollHeight > el.clientHeight + 1;
+    if (!canScroll) return;
+    const atTop = el.scrollTop <= 0;
+    const atBottom = el.scrollTop + el.clientHeight >= el.scrollHeight - 1;
+    if ((event.deltaY < 0 && atTop) || (event.deltaY > 0 && atBottom)) return;
+    event.stopPropagation();
+  }, []);
 
   const onDragOver = useCallback((e) => {
     e.preventDefault();
@@ -597,7 +698,12 @@ function KanbanColumn({
         <${Chip} label=${countLabel} size="small" />
         <${IconButton} size="small" onClick=${() => { setShowCreate(!showCreate); haptic(); }} title=${"Add task to " + col.title}>+</${IconButton}>
       </${Box}>
-      <div class="kanban-cards" onScroll=${onCardsScroll}>
+      <div
+        ref=${cardsRef}
+        class="kanban-cards"
+        onScroll=${onCardsScroll}
+        onWheel=${onCardsWheel}
+      >
         ${showCreate && html`
           <${TextField}
             inputRef=${inputRef}
@@ -616,10 +722,23 @@ function KanbanColumn({
           : html`<${Typography} variant="body2" color="text.secondary" sx=${{ textAlign: 'center', py: 2 }}>Drop tasks here</${Typography}>`
         }
         ${hasMoreTasks && html`
-          <div class="kanban-tail-sentinel"></div>
-          <div class="kanban-load-more">${loadingMoreTasks ? "Loading more tasks..." : "Scroll down to load more"}</div>
+          <div ref=${tailSentinelRef} class="kanban-tail-sentinel"></div>
         `}
       </div>
+      ${hasMoreTasks && html`
+        <div class="kanban-column-footer">
+          <button
+            type="button"
+            class="kanban-load-more"
+            onClick=${() => triggerLoadMore()}
+            disabled=${loadingMoreTasks}
+            aria-label=${loadingMoreTasks ? `Loading more ${col.title} tasks` : `Load more ${col.title} tasks`}
+          >
+            <span class="kanban-load-more-label">${loadingMoreTasks ? "Loading more tasks..." : `Load more ${col.title}`}</span>
+            <span class="kanban-load-more-icon" aria-hidden="true">⌄</span>
+          </button>
+        </div>
+      `}
       <div class="kanban-scroll-fade"></div>
     </div>
   `;

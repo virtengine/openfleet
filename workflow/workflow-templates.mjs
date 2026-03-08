@@ -575,7 +575,7 @@ export const WORKFLOW_SETUP_PROFILES = Object.freeze({
       "template-task-batch-processor",
     ]),
   }),
-  workflowFirst: Object.freeze({
+  workflowfirst: Object.freeze({
     id: "workflowFirst",
     name: "Workflow-First (Full)",
     description:

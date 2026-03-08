@@ -1507,6 +1507,61 @@ describe("ui-server mini app", () => {
     expect(abortTask).toHaveBeenCalledWith(taskId, "task_lifecycle_pause");
   });
 
+  it("queues task starts when no executor slots are free and reports truthful runtime state", async () => {
+    process.env.TELEGRAM_UI_TUNNEL = "disabled";
+    process.env.EXECUTOR_MODE = "internal";
+
+    const mod = await import("../server/ui-server.mjs");
+    const executeTask = vi.fn(async () => {});
+    mod.injectUiDependencies({
+      getInternalExecutor: () => ({
+        getStatus: () => ({ maxParallel: 1, activeSlots: 1, slots: [] }),
+        executeTask,
+        isPaused: () => false,
+      }),
+    });
+
+    const server = await mod.startTelegramUiServer({
+      port: await getFreePort(),
+      host: "127.0.0.1",
+      skipInstanceLock: true,
+      skipAutoOpen: true,
+    });
+    const port = server.address().port;
+
+    const created = await fetch(`http://127.0.0.1:${port}/api/tasks/create`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        title: "Queued lifecycle test task",
+        description: "verify truthful queued state",
+        status: "todo",
+      }),
+    }).then((r) => r.json());
+
+    expect(created.ok).toBe(true);
+    const taskId = created.data.id;
+
+    const started = await fetch(`http://127.0.0.1:${port}/api/tasks/start`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ taskId }),
+    }).then((r) => r.json());
+
+    expect(started.ok).toBe(true);
+    expect(started.queued).toBe(true);
+    expect(started.started).toBe(false);
+    expect(started.data.runtimeSnapshot.state).toBe("queued");
+    expect(executeTask).not.toHaveBeenCalled();
+
+    const detail = await fetch(`http://127.0.0.1:${port}/api/tasks/detail?taskId=${encodeURIComponent(taskId)}`)
+      .then((r) => r.json());
+
+    expect(detail.ok).toBe(true);
+    expect(detail.data.runtimeSnapshot.state).toBe("queued");
+    expect(detail.data.runtimeSnapshot.isLive).toBe(false);
+  });
+
   it("enriches task detail with linked workflow runs for the same taskId", async () => {
     process.env.TELEGRAM_UI_TUNNEL = "disabled";
 
@@ -1915,6 +1970,66 @@ describe("ui-server mini app", () => {
         createdAt: "2026-03-08T01:00:00.000Z",
       }),
     ]);
+  });
+
+  it("keeps legacy tasks without workspace metadata in the active workspace task list", async () => {
+    process.env.TELEGRAM_UI_TUNNEL = "disabled";
+
+    const tmpDir = mkdtempSync(join(tmpdir(), "bosun-ui-task-workspace-"));
+    const configPath = join(tmpDir, "bosun.config.json");
+    const storePath = join(tmpDir, ".bosun", ".cache", "kanban-state.json");
+    writeFileSync(
+      configPath,
+      JSON.stringify({
+        $schema: "./bosun.schema.json",
+        activeWorkspace: "virtengine-gh",
+        workspaces: [
+          {
+            id: "virtengine-gh",
+            name: "virtengine-gh",
+            repos: [{ name: "bosun", primary: true }],
+            activeRepo: "bosun",
+          },
+        ],
+      }, null, 2) + "\n",
+      "utf8",
+    );
+    process.env.BOSUN_CONFIG_PATH = configPath;
+
+    const taskStore = await import("../task/task-store.mjs");
+    const originalStorePath = taskStore.getStorePath();
+    taskStore.configureTaskStore({ storePath });
+    taskStore.loadStore();
+    taskStore.addTask({ id: "legacy-no-workspace", title: "Legacy task", status: "todo" });
+    taskStore.addTask({ id: "active-workspace", title: "Active workspace task", status: "draft", workspace: "virtengine-gh" });
+    taskStore.addTask({ id: "other-workspace", title: "Other workspace task", status: "todo", workspace: "other-workspace" });
+
+    const mod = await import("../server/ui-server.mjs");
+    try {
+      const server = await mod.startTelegramUiServer({
+        port: await getFreePort(),
+        host: "127.0.0.1",
+        skipInstanceLock: true,
+        skipAutoOpen: true,
+      });
+      const port = server.address().port;
+
+      const response = await fetch(`http://127.0.0.1:${port}/api/tasks`);
+      const json = await response.json();
+
+      expect(response.status).toBe(200);
+      expect(json.ok).toBe(true);
+      expect(json.total).toBe(2);
+      expect(json.statusCounts.backlog).toBe(1);
+      expect(json.statusCounts.draft).toBe(1);
+      expect(json.data.map((task) => task.id).sort()).toEqual([
+        "active-workspace",
+        "legacy-no-workspace",
+      ]);
+    } finally {
+      taskStore.configureTaskStore({ storePath: originalStorePath });
+      rmSync(tmpDir, { recursive: true, force: true });
+    }
   });
 
   it("sets full dependencies and assigns sprint task ordering via task APIs", async () => {

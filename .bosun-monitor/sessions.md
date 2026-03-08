@@ -16,3 +16,24 @@
 - Outstanding non-fatal signals:
   - Historical stuck_agent: undefined alerts remain in old log history (no new post-restart sample in this short window).
   - watch-path fallback warning for ve-orchestrator.ps1 persists.
+
+## 2026-03-08T21:07:52+11:00
+- Context: Hourly health pass for source-run Bosun on `monitor/bosun-env-stability`.
+- Findings before action:
+  - Branch had pre-existing dirty files not touched in this run (`server/ui-server.mjs`, `tests/ui-server.test.mjs`, `ui/components/kanban-board.js`, `ui/styles/kanban.css`, `ui/tabs/tasks.js`).
+  - Runtime was active but not in daemon mode: `node cli.mjs --daemon-status` reported "not running in daemon mode, but 2 bosun process(es) are active".
+  - Runtime/config root mismatch was present again (`node cli.mjs --where` resolved to `C:\Users\jON\AppData\Roaming\bosun`).
+- Operational fix applied:
+  - Performed controlled restart from source with explicit local runtime roots:
+    - `node cli.mjs --terminate`
+    - `node cli.mjs --daemon --no-update-check --config-dir .bosun --repo-root C:\Users\jON\Documents\source\repos\virtengine-gh\bosun`
+- Post-fix validation:
+  - Daemon now healthy: `node cli.mjs --daemon-status` => running (PID 26648).
+  - Process command lines now include `--config-dir .bosun --repo-root ... --daemon-child` for both `cli.mjs` and `infra/monitor.mjs`.
+  - Runtime activity shifted to repo-local workflow index:
+    - `.bosun/workflow-runs/index.json` advancing (21:06:55 local latest).
+    - AppData index stopped advancing at pre-restart timestamp (21:02:54 local), confirming source-local takeover.
+  - Recent workflow runs continue at 1-minute cadence (Task Planner / Agent Session Monitor / Task trace workflow).
+- Current status:
+  - Source daemon mode restored and healthy with repo-local config routing.
+  - No code changes in this session; operational remediation only.

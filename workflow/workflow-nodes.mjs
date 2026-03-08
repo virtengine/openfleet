@@ -25,6 +25,7 @@ import { randomUUID } from "node:crypto";
 import { getAgentToolConfig, getEffectiveTools } from "../agent/agent-tool-config.mjs";
 import { getToolsPromptBlock } from "../agent/agent-custom-tools.mjs";
 import { buildRelevantSkillsPromptBlock, findRelevantSkills } from "../agent/bosun-skills.mjs";
+import { fixGitConfigCorruption } from "../workspace/worktree-manager.mjs";
 
 const TAG = "[workflow-nodes]";
 const PORTABLE_WORKTREE_COUNT_COMMAND = "node -e \"const cp=require('node:child_process');const wt=cp.execSync('git worktree list --porcelain',{encoding:'utf8'});const count=(wt.match(/^worktree /gm)||[]).length;process.stdout.write(String(count)+'\\\\n');\"";
@@ -7852,6 +7853,7 @@ registerNodeType("action.acquire_worktree", {
           );
         }
       }
+      fixGitConfigCorruption(repoRoot);
 
       ctx.data.worktreePath = worktreePath;
       ctx.data._worktreeCreated = true;
