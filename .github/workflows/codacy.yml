@@ -25,8 +25,12 @@ on:
 permissions:
   contents: read
 
+env:
+  CODACY_PROJECT_TOKEN: ${{ secrets.CODACY_PROJECT_TOKEN }}
+
 jobs:
   codacy-security-scan:
+    if: ${{ env.CODACY_PROJECT_TOKEN != '' }}
     permissions:
       contents: read # for actions/checkout to fetch code
       security-events: write # for github/codeql-action/upload-sarif to upload SARIF results
@@ -42,6 +46,7 @@ jobs:
       - name: Run Codacy Analysis CLI
         uses: codacy/codacy-analysis-cli-action@d840f886c4bd4edc059706d09c6a1586111c540b
         with:
+          project-token: ${{ env.CODACY_PROJECT_TOKEN }}
           verbose: true
           output: results.sarif
           format: sarif
