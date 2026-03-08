@@ -37,3 +37,25 @@
 - Current status:
   - Source daemon mode restored and healthy with repo-local config routing.
   - No code changes in this session; operational remediation only.
+
+## 2026-03-08T22:30:48+11:00
+- Context: Hourly health check for source-run Bosun on monitor/bosun-env-stability with workflow dispatch stall investigation.
+- Findings before fix:
+  - Daemon/monitor were running from source (cli.mjs + infra/monitor.mjs) with .bosun config, schedule poll alive.
+  - Runtime runs were mostly limited to Task Planner, Agent Session Monitor, and Task trace workflow; core dispatch workflows (Task Lifecycle, Task Batch Processor) were absent.
+  - Root causes:
+    1) Source bug: workflow setup profile lookup lowercased IDs but profile map key was camelCase (workflowFirst), causing fallback to alanced.
+    2) Runtime selection state lacked lifecycle templates in installed set.
+- Code fix shipped:
+  - Commit 7ca5be (ix(workflow): honor workflowFirst profile selection) merged via PR #153.
+  - Files: workflow/workflow-templates.mjs, 	ests/workflow-templates.test.mjs.
+  - Validation passed: targeted workflow test, full 
+pm test, 
+pm run build, 
+pm run prepush:check, push hook targeted suite.
+- Runtime remediation after merge:
+  - Installed workflow-first template set into local .bosun store and restarted daemon from source.
+  - Verified last run window now includes Task Lifecycle, Task Batch Processor, Task Batch → PR, and GitHub ↔ Kanban Sync alongside planner/monitor loops.
+- Current status:
+  - Daemon healthy and source-based.
+  - Workflow dispatch path restored (no longer planner-only).
