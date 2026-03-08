@@ -13344,9 +13344,8 @@
       "edgeCount": 11,
       "recommended": false,
       "enabled": true,
-      "trigger": "trigger.task_low",
+      "trigger": "trigger.task_available",
       "variables": {
-        "backlogThreshold": 3,
         "maxConcurrent": 2,
         "pollStatus": "todo",
         "maxBatchSize": 5,
@@ -13370,10 +13369,11 @@
       "nodes": [
         {
           "id": "trigger",
-          "type": "trigger.task_low",
-          "label": "Backlog Low?",
+          "type": "trigger.task_available",
+          "label": "Tasks Available?",
           "config": {
-            "threshold": "{{backlogThreshold}}",
+            "maxParallel": "{{maxConcurrent}}",
+            "pollIntervalMs": 60000,
             "status": "{{pollStatus}}"
           },
           "position": {
@@ -13653,9 +13653,8 @@
       "edgeCount": 6,
       "recommended": true,
       "enabled": true,
-      "trigger": "trigger.task_low",
+      "trigger": "trigger.task_available",
       "variables": {
-        "backlogThreshold": 3,
         "maxConcurrent": 3,
         "pollStatus": "todo",
         "maxBatchSize": 10,
@@ -13678,10 +13677,11 @@
       "nodes": [
         {
           "id": "trigger",
-          "type": "trigger.task_low",
-          "label": "Backlog Low?",
+          "type": "trigger.task_available",
+          "label": "Tasks Available?",
           "config": {
-            "threshold": "{{backlogThreshold}}",
+            "maxParallel": "{{maxConcurrent}}",
+            "pollIntervalMs": 60000,
             "status": "{{pollStatus}}"
           },
           "position": {
@@ -28166,9 +28166,8 @@
       "category": "lifecycle",
       "enabled": true,
       "nodeCount": 11,
-      "trigger": "trigger.task_low",
+      "trigger": "trigger.task_available",
       "variables": {
-        "backlogThreshold": 3,
         "maxConcurrent": 2,
         "pollStatus": "todo",
         "maxBatchSize": 5,
@@ -28179,10 +28178,11 @@
       "nodes": [
         {
           "id": "trigger",
-          "type": "trigger.task_low",
-          "label": "Backlog Low?",
+          "type": "trigger.task_available",
+          "label": "Tasks Available?",
           "config": {
-            "threshold": "{{backlogThreshold}}",
+            "maxParallel": "{{maxConcurrent}}",
+            "pollIntervalMs": 60000,
             "status": "{{pollStatus}}"
           },
           "position": {
@@ -28463,9 +28463,8 @@
       "category": "lifecycle",
       "enabled": true,
       "nodeCount": 7,
-      "trigger": "trigger.task_low",
+      "trigger": "trigger.task_available",
       "variables": {
-        "backlogThreshold": 3,
         "maxConcurrent": 3,
         "pollStatus": "todo",
         "maxBatchSize": 10,
@@ -28475,10 +28474,11 @@
       "nodes": [
         {
           "id": "trigger",
-          "type": "trigger.task_low",
-          "label": "Backlog Low?",
+          "type": "trigger.task_available",
+          "label": "Tasks Available?",
           "config": {
-            "threshold": "{{backlogThreshold}}",
+            "maxParallel": "{{maxConcurrent}}",
+            "pollIntervalMs": 60000,
             "status": "{{pollStatus}}"
           },
           "position": {
