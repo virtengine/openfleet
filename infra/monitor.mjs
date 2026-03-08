@@ -1198,6 +1198,8 @@ const isMonitorTestRuntime =
       .trim()
       .toLowerCase(),
   ) || String(process.env.NODE_ENV || "").trim().toLowerCase() === "test";
+// Shared schedule poll hook used across startup/timer sections.
+let pollWorkflowSchedulesOnce = async () => {};
 
 // ── Load unified configuration ──────────────────────────────────────────────
 let config;
@@ -13518,7 +13520,10 @@ safeSetInterval("flush-error-queue", () => flushErrorQueue(), 60 * 1000);
 // This keeps scheduled and task-poll lifecycle templates executing without hardcoded
 // per-workflow timers.
 const scheduleCheckIntervalMs = 60 * 1000; // check every 60s
-async function pollWorkflowSchedulesOnce(triggerSource = "schedule-poll", opts = {}) {
+pollWorkflowSchedulesOnce = async function pollWorkflowSchedulesOnce(
+  triggerSource = "schedule-poll",
+  opts = {},
+) {
   try {
     const engine = await ensureWorkflowAutomationEngine();
     if (!engine?.evaluateScheduleTriggers) return;
@@ -13571,7 +13576,7 @@ async function pollWorkflowSchedulesOnce(triggerSource = "schedule-poll", opts =
   } catch (err) {
     console.warn(`[workflows] schedule-check error: ${err?.message || err}`);
   }
-}
+};
 
 safeSetInterval("workflow-schedule-check", async () => {
   await pollWorkflowSchedulesOnce();
