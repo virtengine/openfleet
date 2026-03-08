@@ -109,6 +109,8 @@ const MAX_NO_COMMIT_ATTEMPTS = 3; // Stop picking up a task after N consecutive 
 const NO_COMMIT_COOLDOWN_BASE_MS = 15 * 60 * 1000; // 15 minutes base cooldown for no-commit
 const NO_COMMIT_MAX_COOLDOWN_MS = 2 * 60 * 60 * 1000;
 const CLAIM_CONFLICT_COMMENT_COOLDOWN_MS = 30 * 60 * 1000; // 30 minutes
+const REPO_AREA_SLOW_MERGE_LATENCY_MS = 4 * 60 * 60 * 1000;
+const REPO_AREA_VERY_SLOW_MERGE_LATENCY_MS = 8 * 60 * 60 * 1000;
 const FATAL_CLAIM_RENEW_ERRORS = new Set([
   "task_claimed_by_different_instance",
   "claim_token_mismatch",
@@ -242,6 +244,188 @@ function truncateUtf8Bytes(text, maxBytes = 12000) {
   }
 
   return `${best}${suffix}`;
+}
+
+function normalizeRepoAreaKey(value) {
+  return String(value || "").trim().toLowerCase();
+}
+
+function extractRepoAreasFromTaskLike(task) {
+  const values = [];
+  const pushValues = (input) => {
+    if (!input) return;
+    if (Array.isArray(input)) {
+      for (const entry of input) pushValues(entry);
+      return;
+    }
+    const normalized = normalizeRepoAreaKey(input);
+    if (!normalized) return;
+    values.push(normalized);
+  };
+
+  pushValues(task?.repo_areas);
+  pushValues(task?.repoAreas);
+  pushValues(task?.meta?.repo_areas);
+  pushValues(task?.meta?.repoAreas);
+  pushValues(task?.task?.repo_areas);
+  pushValues(task?.task?.repoAreas);
+  pushValues(task?.task?.meta?.repo_areas);
+  pushValues(task?.task?.meta?.repoAreas);
+
+  return [...new Set(values)].slice(0, 10);
+}
+
+function normalizeRepoAreaTelemetryEntry(raw = {}) {
+  const recentOutcomes = Array.isArray(raw?.recentOutcomes)
+    ? raw.recentOutcomes
+      .map((value) => Number(value))
+      .filter((value) => value === 0 || value === 1)
+      .slice(-20)
+    : [];
+  const mergeLatencySamples = Array.isArray(raw?.mergeLatencySamples)
+    ? raw.mergeLatencySamples
+      .map((value) => Number(value))
+      .filter((value) => Number.isFinite(value) && value >= 0)
+      .slice(-12)
+    : [];
+  return {
+    conflictCount: Math.max(0, Math.trunc(Number(raw?.conflictCount || 0))),
+    totalWaitMs: Math.max(0, Math.trunc(Number(raw?.totalWaitMs || 0))),
+    lastWaitMs: Math.max(0, Math.trunc(Number(raw?.lastWaitMs || 0))),
+    maxWaitMs: Math.max(0, Math.trunc(Number(raw?.maxWaitMs || 0))),
+    lastBlockedAt: Math.max(0, Math.trunc(Number(raw?.lastBlockedAt || 0))),
+    lastOutcomeAt: Math.max(0, Math.trunc(Number(raw?.lastOutcomeAt || 0))),
+    recentOutcomes,
+    mergeLatencySamples,
+  };
+}
+
+function createEmptyRepoAreaTelemetryEntry() {
+  return normalizeRepoAreaTelemetryEntry();
+}
+
+function averageNumbers(values = []) {
+  if (!Array.isArray(values) || values.length === 0) return 0;
+  const total = values.reduce((sum, value) => sum + Number(value || 0), 0);
+  return total / values.length;
+}
+
+function buildRepoAreaAdaptiveSignals(entry, baseLimit) {
+  const normalizedBase = Number(baseLimit || 0);
+  const outcomes = Array.isArray(entry?.recentOutcomes) ? entry.recentOutcomes : [];
+  const failures = outcomes.reduce((sum, value) => sum + (Number(value) > 0 ? 1 : 0), 0);
+  const samples = outcomes.length;
+  const failureRate = samples > 0 ? failures / samples : 0;
+  const mergeLatencyAvgMs = averageNumbers(entry?.mergeLatencySamples || []);
+  const adaptiveReasons = [];
+  if (samples >= 4 && failureRate >= 0.5) adaptiveReasons.push("failure_rate");
+  if (
+    (entry?.mergeLatencySamples?.length || 0) >= 3 &&
+    mergeLatencyAvgMs >= REPO_AREA_SLOW_MERGE_LATENCY_MS
+  ) {
+    adaptiveReasons.push("merge_latency");
+  }
+  const adaptivePenalty =
+    normalizedBase > 1 && adaptiveReasons.length > 0 ? 1 : 0;
+  const effectiveLimit =
+    normalizedBase > 0
+      ? Math.max(1, normalizedBase - adaptivePenalty)
+      : 0;
+  return {
+    recentSamples: samples,
+    failureRate,
+    mergeLatencyAvgMs,
+    adaptivePenalty,
+    adaptiveReasons,
+    effectiveLimit,
+    severeMergeLatency:
+      (entry?.mergeLatencySamples?.length || 0) >= 3 &&
+      mergeLatencyAvgMs >= REPO_AREA_VERY_SLOW_MERGE_LATENCY_MS,
+  };
+}
+
+function buildRepoAreaWaitingCounts(blockedTasks = new Map()) {
+  const waitingCounts = new Map();
+  for (const blocked of blockedTasks.values()) {
+    const areas = Array.isArray(blocked?.areas) ? blocked.areas : [];
+    for (const area of areas) {
+      const areaKey = normalizeRepoAreaKey(area);
+      if (!areaKey) continue;
+      waitingCounts.set(areaKey, (waitingCounts.get(areaKey) || 0) + 1);
+    }
+  }
+  return waitingCounts;
+}
+
+function buildRepoAreaLockStatusSnapshot({
+  repoAreaParallelLimit = 0,
+  activeSlots = [],
+  telemetryByArea = new Map(),
+  blockedTasks = new Map(),
+  dispatchCycles = 0,
+  totalConflicts = 0,
+} = {}) {
+  const baseLimit = Math.max(0, Math.trunc(Number(repoAreaParallelLimit || 0)));
+  const activeCounts = new Map();
+  for (const slot of activeSlots) {
+    const areas = extractRepoAreasFromTaskLike(slot);
+    for (const area of areas) {
+      activeCounts.set(area, (activeCounts.get(area) || 0) + 1);
+    }
+  }
+
+  const waitingCounts = buildRepoAreaWaitingCounts(blockedTasks);
+  const allAreas = new Set([
+    ...activeCounts.keys(),
+    ...waitingCounts.keys(),
+    ...telemetryByArea.keys(),
+  ]);
+
+  const areas = {};
+  const hotAreas = [];
+  for (const area of Array.from(allAreas).sort()) {
+    const telemetry = normalizeRepoAreaTelemetryEntry(telemetryByArea.get(area));
+    const adaptive = buildRepoAreaAdaptiveSignals(telemetry, baseLimit);
+    const snapshot = {
+      baseLimit,
+      effectiveLimit: adaptive.effectiveLimit,
+      active: activeCounts.get(area) || 0,
+      waiting: waitingCounts.get(area) || 0,
+      conflictCount: telemetry.conflictCount,
+      totalWaitMs: telemetry.totalWaitMs,
+      lastWaitMs: telemetry.lastWaitMs,
+      maxWaitMs: telemetry.maxWaitMs,
+      failureRate: adaptive.failureRate,
+      mergeLatencyAvgMs: adaptive.mergeLatencyAvgMs,
+      recentSamples: adaptive.recentSamples,
+      adaptivePenalty: adaptive.adaptivePenalty,
+      adaptiveReasons: adaptive.adaptiveReasons,
+      severeMergeLatency: adaptive.severeMergeLatency,
+      lastBlockedAt: telemetry.lastBlockedAt,
+      lastOutcomeAt: telemetry.lastOutcomeAt,
+    };
+    areas[area] = snapshot;
+    hotAreas.push({ area, ...snapshot });
+  }
+
+  hotAreas.sort((a, b) => {
+    if (b.waiting !== a.waiting) return b.waiting - a.waiting;
+    if (b.adaptivePenalty !== a.adaptivePenalty) {
+      return b.adaptivePenalty - a.adaptivePenalty;
+    }
+    if (b.conflictCount !== a.conflictCount) return b.conflictCount - a.conflictCount;
+    return a.area.localeCompare(b.area);
+  });
+
+  return {
+    enabled: baseLimit > 0,
+    baseLimit,
+    dispatchCycles: Math.max(0, Math.trunc(Number(dispatchCycles || 0))),
+    totalConflicts: Math.max(0, Math.trunc(Number(totalConflicts || 0))),
+    waitingTasks: blockedTasks.size,
+    areas,
+    hotAreas: hotAreas.slice(0, 5),
+  };
 }
 
 function isBosunStateComment(text) {
@@ -2095,6 +2279,20 @@ class TaskExecutor {
     this._noCommitCounts = new Map();
     /** @type {Map<string, number>} taskId → skip-until timestamp */
     this._skipUntil = new Map();
+    /** @type {Map<string, { conflicts: number, blockedDispatches: number, selectedDispatches: number, waitMsTotal: number, waitSamples: number, maxWaitMs: number, lastConflictAt: string|null, lastSelectedAt: string|null }>} */
+    this._repoAreaLockMetrics = new Map();
+    /** @type {Map<string, { taskId: string, area: string, startedAt: number }>} */
+    this._repoAreaPendingWaits = new Map();
+    this._repoAreaDispatchCycle = {
+      cycle: 0,
+      at: null,
+      candidateCount: 0,
+      remaining: 0,
+      selectedCount: 0,
+      blockedTasks: 0,
+      blockedByArea: {},
+      saturatedAreas: [],
+    };
 
     // Track tasks that have already been completed with a PR (prevents re-dispatch loop)
     /** @type {Set<string>} taskId set */
@@ -2119,6 +2317,16 @@ class TaskExecutor {
     /** @type {Map<string, { taskId: string, taskTitle: string, branch: string, sdk: string, model: string, attempt: number, startedAt: number, agentInstanceId: number|null, status: string, updatedAt: number }>} */
     this._slotRuntimeState = new Map();
     this._nextAgentInstanceId = 1;
+    /** @type {Map<string, ReturnType<typeof normalizeRepoAreaTelemetryEntry>>} */
+    this._repoAreaTelemetry = new Map();
+    /** @type {Map<string, { blockedAt: number, lastObservedWaitMs: number, areas: string[] }>} */
+    this._repoAreaBlockedTasks = new Map();
+    /** @type {Map<string, string[]>} */
+    this._repoAreaTaskAreas = new Map();
+    /** @type {Map<string, number>} */
+    this._repoAreaTaskStartedAt = new Map();
+    this._repoAreaDispatchCycles = 0;
+    this._repoAreaConflictCount = 0;
 
     // Repo context cache (AGENTS.md, copilot-instructions.md)
     this._contextCache = null;
@@ -2251,6 +2459,57 @@ class TaskExecutor {
         this._nextAgentInstanceId = Math.floor(nextId);
       }
 
+      this._repoAreaDispatchCycles = Math.max(
+        0,
+        Math.trunc(Number(parsed?.repoAreaDispatchCycles || 0)),
+      );
+      this._repoAreaConflictCount = Math.max(
+        0,
+        Math.trunc(Number(parsed?.repoAreaConflictCount || 0)),
+      );
+      this._repoAreaTelemetry.clear();
+      for (const [area, raw] of Object.entries(parsed?.repoAreaTelemetry || {})) {
+        const areaKey = normalizeRepoAreaKey(area);
+        if (!areaKey) continue;
+        this._repoAreaTelemetry.set(areaKey, normalizeRepoAreaTelemetryEntry(raw));
+      }
+      this._repoAreaBlockedTasks.clear();
+      for (const [taskId, raw] of Object.entries(parsed?.repoAreaBlockedTasks || {})) {
+        const key = normalizeTaskIdKey(taskId);
+        if (!key) continue;
+        const blockedAt = Math.max(0, Math.trunc(Number(raw?.blockedAt || 0)));
+        const lastObservedWaitMs = Math.max(
+          0,
+          Math.trunc(Number(raw?.lastObservedWaitMs || 0)),
+        );
+        const areas = Array.isArray(raw?.areas)
+          ? raw.areas.map((area) => normalizeRepoAreaKey(area)).filter(Boolean)
+          : [];
+        if (!blockedAt || areas.length === 0) continue;
+        this._repoAreaBlockedTasks.set(key, {
+          blockedAt,
+          lastObservedWaitMs,
+          areas: [...new Set(areas)],
+        });
+      }
+      this._repoAreaTaskAreas.clear();
+      for (const [taskId, rawAreas] of Object.entries(parsed?.repoAreaTaskAreas || {})) {
+        const key = normalizeTaskIdKey(taskId);
+        if (!key) continue;
+        const areas = Array.isArray(rawAreas)
+          ? rawAreas.map((area) => normalizeRepoAreaKey(area)).filter(Boolean)
+          : [];
+        if (areas.length === 0) continue;
+        this._repoAreaTaskAreas.set(key, [...new Set(areas)]);
+      }
+      this._repoAreaTaskStartedAt.clear();
+      for (const [taskId, rawStartedAt] of Object.entries(parsed?.repoAreaTaskStartedAt || {})) {
+        const key = normalizeTaskIdKey(taskId);
+        const startedAt = Math.max(0, Math.trunc(Number(rawStartedAt || 0)));
+        if (!key || !startedAt) continue;
+        this._repoAreaTaskStartedAt.set(key, startedAt);
+      }
+
       const slots = parsed?.slots || {};
       let restored = 0;
       for (const [taskId, entry] of Object.entries(slots)) {
@@ -2325,6 +2584,12 @@ class TaskExecutor {
             pauseUntil: this._pauseUntil,
             pauseReason: this._pauseReason,
             nextAgentInstanceId: this._nextAgentInstanceId,
+            repoAreaDispatchCycles: this._repoAreaDispatchCycles,
+            repoAreaConflictCount: this._repoAreaConflictCount,
+            repoAreaTelemetry: Object.fromEntries(this._repoAreaTelemetry),
+            repoAreaBlockedTasks: Object.fromEntries(this._repoAreaBlockedTasks),
+            repoAreaTaskAreas: Object.fromEntries(this._repoAreaTaskAreas),
+            repoAreaTaskStartedAt: Object.fromEntries(this._repoAreaTaskStartedAt),
             slots,
             savedAt: new Date().toISOString(),
           },
@@ -2360,6 +2625,132 @@ class TaskExecutor {
       updatedAt: Date.now(),
     });
     this._saveRuntimeState();
+  }
+
+  _ensureRepoAreaTelemetry(areaKey) {
+    const normalized = normalizeRepoAreaKey(areaKey);
+    if (!normalized) return null;
+    let entry = this._repoAreaTelemetry.get(normalized);
+    if (!entry) {
+      entry = createEmptyRepoAreaTelemetryEntry();
+      this._repoAreaTelemetry.set(normalized, entry);
+    }
+    return entry;
+  }
+
+  _rememberTaskRepoAreas(task, now = Date.now()) {
+    const taskId = normalizeTaskIdKey(task?.id || task?.taskId || task?.task_id);
+    if (!taskId) return [];
+    const areas = extractRepoAreasFromTaskLike(task);
+    if (areas.length > 0) {
+      this._repoAreaTaskAreas.set(taskId, areas);
+      if (!this._repoAreaTaskStartedAt.has(taskId)) {
+        this._repoAreaTaskStartedAt.set(taskId, now);
+      }
+    }
+    return areas;
+  }
+
+  _clearRepoAreaBlockedTask(taskId) {
+    const key = normalizeTaskIdKey(taskId);
+    if (!key) return;
+    this._repoAreaBlockedTasks.delete(key);
+  }
+
+  _recordRepoAreaConflict(task, blockedAreas, now = Date.now()) {
+    const taskId = normalizeTaskIdKey(task?.id || task?.taskId || task?.task_id);
+    if (!taskId || !Array.isArray(blockedAreas) || blockedAreas.length === 0) return;
+    const normalizedAreas = [...new Set(blockedAreas.map((area) => normalizeRepoAreaKey(area)).filter(Boolean))];
+    if (normalizedAreas.length === 0) return;
+    const current = this._repoAreaBlockedTasks.get(taskId) || {
+      blockedAt: now,
+      lastObservedWaitMs: 0,
+      areas: normalizedAreas,
+    };
+    current.areas = normalizedAreas;
+    const waitMs = Math.max(0, now - current.blockedAt);
+    const waitDelta = Math.max(0, waitMs - Number(current.lastObservedWaitMs || 0));
+    current.lastObservedWaitMs = waitMs;
+    this._repoAreaBlockedTasks.set(taskId, current);
+    this._repoAreaConflictCount += 1;
+    for (const areaKey of normalizedAreas) {
+      const entry = this._ensureRepoAreaTelemetry(areaKey);
+      if (!entry) continue;
+      entry.conflictCount += 1;
+      entry.totalWaitMs += waitDelta;
+      entry.lastWaitMs = waitMs;
+      entry.maxWaitMs = Math.max(entry.maxWaitMs, waitMs);
+      entry.lastBlockedAt = now;
+    }
+  }
+
+  _getEffectiveRepoAreaLimit(areaKey) {
+    const baseLimit = Number(this.repoAreaParallelLimit || 0);
+    if (!Number.isFinite(baseLimit) || baseLimit <= 0) return 0;
+    const entry = this._repoAreaTelemetry.get(normalizeRepoAreaKey(areaKey));
+    return buildRepoAreaAdaptiveSignals(entry, baseLimit).effectiveLimit;
+  }
+
+  noteRepoAreaOutcome(taskOrTaskId, outcome = {}) {
+    const taskId = normalizeTaskIdKey(
+      typeof taskOrTaskId === "string"
+        ? taskOrTaskId
+        : taskOrTaskId?.id || taskOrTaskId?.taskId || taskOrTaskId?.task_id,
+    );
+    if (!taskId) return false;
+
+    const areas =
+      typeof taskOrTaskId === "string"
+        ? this._repoAreaTaskAreas.get(taskId) || []
+        : this._rememberTaskRepoAreas(taskOrTaskId);
+    if (!Array.isArray(areas) || areas.length === 0) return false;
+
+    const now = Date.now();
+    const status = normalizeRepoAreaKey(outcome.status);
+    const isFailure =
+      outcome.failed === true ||
+      ["blocked", "failed", "error", "errored"].includes(status);
+    const isSuccess =
+      outcome.failed !== true &&
+      ["done", "inreview", "complete", "completed", "merged", "success"].includes(status);
+    let mergeLatencyMs = Number(outcome.mergeLatencyMs || 0);
+    if ((!Number.isFinite(mergeLatencyMs) || mergeLatencyMs <= 0) && isSuccess) {
+      const startedAt = Number(this._repoAreaTaskStartedAt.get(taskId) || 0);
+      if (startedAt > 0) mergeLatencyMs = Math.max(0, now - startedAt);
+    }
+
+    for (const areaKey of areas) {
+      const entry = this._ensureRepoAreaTelemetry(areaKey);
+      if (!entry) continue;
+      if (isFailure || isSuccess) {
+        entry.recentOutcomes.push(isFailure ? 1 : 0);
+        entry.recentOutcomes = entry.recentOutcomes.slice(-20);
+        entry.lastOutcomeAt = now;
+      }
+      if (Number.isFinite(mergeLatencyMs) && mergeLatencyMs > 0) {
+        entry.mergeLatencySamples.push(Math.trunc(mergeLatencyMs));
+        entry.mergeLatencySamples = entry.mergeLatencySamples.slice(-12);
+        entry.lastOutcomeAt = now;
+      }
+    }
+
+    this._clearRepoAreaBlockedTask(taskId);
+    if (isFailure || isSuccess) {
+      this._repoAreaTaskStartedAt.delete(taskId);
+    }
+    this._saveRuntimeState();
+    return true;
+  }
+
+  _buildRepoAreaLockStatus() {
+    return buildRepoAreaLockStatusSnapshot({
+      repoAreaParallelLimit: this.repoAreaParallelLimit,
+      activeSlots: Array.from(this._activeSlots.values()),
+      telemetryByArea: this._repoAreaTelemetry,
+      blockedTasks: this._repoAreaBlockedTasks,
+      dispatchCycles: this._repoAreaDispatchCycles,
+      totalConflicts: this._repoAreaConflictCount,
+    });
   }
 
   /**
@@ -3182,6 +3573,7 @@ class TaskExecutor {
       maxRetries: this.maxRetries,
       projectId: this._resolvedProjectId || this.projectId || null,
       backlogReplenishment: { ...this._backlogReplenishment },
+      repoAreaLocks: this._buildRepoAreaLockStatus(),
       projectRequirements: { ...this._projectRequirements },
     };
   }
@@ -3428,6 +3820,253 @@ class TaskExecutor {
     }
     return counts;
   }
+
+  _getRepoAreaLockMetric(area) {
+    if (!area) return null;
+    if (!this._repoAreaLockMetrics.has(area)) {
+      this._repoAreaLockMetrics.set(area, {
+        conflicts: 0,
+        blockedDispatches: 0,
+        selectedDispatches: 0,
+        waitMsTotal: 0,
+        waitSamples: 0,
+        maxWaitMs: 0,
+        lastConflictAt: null,
+        lastSelectedAt: null,
+      });
+    }
+    return this._repoAreaLockMetrics.get(area);
+  }
+
+  _makeRepoAreaWaitKey(taskId, area) {
+    const normalizedTaskId = normalizeTaskIdKey(taskId);
+    if (!normalizedTaskId || !area) return "";
+    return `${normalizedTaskId}::${area}`;
+  }
+
+  _beginRepoAreaWait(taskId, area, now = Date.now()) {
+    const key = this._makeRepoAreaWaitKey(taskId, area);
+    if (!key || this._repoAreaPendingWaits.has(key)) return;
+    this._repoAreaPendingWaits.set(key, {
+      taskId: normalizeTaskIdKey(taskId),
+      area,
+      startedAt: now,
+    });
+  }
+
+  _finalizeRepoAreaWait(taskId, area, now = Date.now()) {
+    const key = this._makeRepoAreaWaitKey(taskId, area);
+    if (!key) return 0;
+    const pending = this._repoAreaPendingWaits.get(key);
+    if (!pending) return 0;
+    this._repoAreaPendingWaits.delete(key);
+    const durationMs = Math.max(0, now - Number(pending.startedAt || now));
+    const metric = this._getRepoAreaLockMetric(area);
+    if (metric && durationMs > 0) {
+      metric.waitMsTotal += durationMs;
+      metric.waitSamples += 1;
+      metric.maxWaitMs = Math.max(metric.maxWaitMs, durationMs);
+    }
+    return durationMs;
+  }
+
+  _pruneRepoAreaPendingWaits(candidates, now = Date.now()) {
+    const candidateIds = new Set(
+      (Array.isArray(candidates) ? candidates : [])
+        .map((task) => normalizeTaskIdKey(task?.id || task?.task_id))
+        .filter(Boolean),
+    );
+    for (const pending of Array.from(this._repoAreaPendingWaits.values())) {
+      if (
+        !candidateIds.has(pending.taskId) &&
+        !this._activeSlots.has(pending.taskId)
+      ) {
+        this._finalizeRepoAreaWait(pending.taskId, pending.area, now);
+      }
+    }
+  }
+
+  _clearRepoAreaWaitsForTask(task, now = Date.now()) {
+    const taskId = normalizeTaskIdKey(task?.id || task?.task_id);
+    if (!taskId) return;
+    for (const area of this._extractTaskRepoAreas(task)) {
+      this._finalizeRepoAreaWait(taskId, area, now);
+    }
+  }
+
+  _buildActiveRepoAreaSignals(now = Date.now()) {
+    const signals = new Map();
+    for (const slot of this._activeSlots.values()) {
+      const areas = this._extractTaskRepoAreas(slot);
+      if (areas.length === 0) continue;
+      const startedAt = Number(slot?.startedAt || 0);
+      const activeAgeMs = startedAt > 0 ? Math.max(0, now - startedAt) : 0;
+      const mergeLatencyMs = Number(
+        slot?.mergeLatencyMs || slot?.mergeLatency || 0,
+      );
+      const latencySampleMs = mergeLatencyMs > 0 ? mergeLatencyMs : activeAgeMs;
+      const attempt = Number(slot?.attempt || 0);
+      const status = String(slot?.status || "").trim().toLowerCase();
+      for (const area of areas) {
+        let signal = signals.get(area);
+        if (!signal) {
+          signal = {
+            active: 0,
+            retrying: 0,
+            mergeLatencyMsTotal: 0,
+            mergeLatencySamples: 0,
+            maxMergeLatencyMs: 0,
+          };
+          signals.set(area, signal);
+        }
+        signal.active += 1;
+        if (attempt > 1 || status === "failed") {
+          signal.retrying += 1;
+        }
+        if (latencySampleMs > 0) {
+          signal.mergeLatencyMsTotal += latencySampleMs;
+          signal.mergeLatencySamples += 1;
+          signal.maxMergeLatencyMs = Math.max(
+            signal.maxMergeLatencyMs,
+            latencySampleMs,
+          );
+        }
+      }
+    }
+    return signals;
+  }
+
+  _computeRepoAreaEffectiveLimit(area, activeSignals = null) {
+    const configuredLimit = Number(this.repoAreaParallelLimit || 0);
+    if (!Number.isFinite(configuredLimit) || configuredLimit <= 0) {
+      return 0;
+    }
+    if (configuredLimit <= 1) return 1;
+
+    const signal = activeSignals?.get(area) || {
+      active: 0,
+      retrying: 0,
+      mergeLatencyMsTotal: 0,
+      mergeLatencySamples: 0,
+    };
+    const failureRate =
+      signal.active > 0 ? signal.retrying / signal.active : 0;
+    const averageMergeLatencyMs =
+      signal.mergeLatencySamples > 0
+        ? signal.mergeLatencyMsTotal / signal.mergeLatencySamples
+        : 0;
+
+    let penalty = 0;
+    if (signal.active > 0 && failureRate >= 0.5) {
+      penalty += 1;
+    }
+    if (
+      signal.active > 0 &&
+      averageMergeLatencyMs >= REPO_AREA_SLOW_MERGE_LATENCY_MS
+    ) {
+      penalty += 1;
+    }
+    if (
+      signal.active > 1 &&
+      failureRate >= 0.75 &&
+      averageMergeLatencyMs >= REPO_AREA_VERY_SLOW_MERGE_LATENCY_MS
+    ) {
+      penalty += 1;
+    }
+
+    return Math.max(
+      1,
+      configuredLimit - Math.min(configuredLimit - 1, penalty),
+    );
+  }
+
+  _buildRepoAreaLockStatus(now = Date.now()) {
+    const activeCounts = this._buildActiveRepoAreaCounts();
+    const activeSignals = this._buildActiveRepoAreaSignals(now);
+    const waitingCounts = new Map();
+    for (const pending of this._repoAreaPendingWaits.values()) {
+      waitingCounts.set(
+        pending.area,
+        (waitingCounts.get(pending.area) || 0) + 1,
+      );
+    }
+
+    const areas = new Set([
+      ...activeCounts.keys(),
+      ...activeSignals.keys(),
+      ...waitingCounts.keys(),
+      ...this._repoAreaLockMetrics.keys(),
+    ]);
+
+    const items = Array.from(areas)
+      .sort()
+      .map((area) => {
+        const metric = this._getRepoAreaLockMetric(area) || {
+          conflicts: 0,
+          blockedDispatches: 0,
+          selectedDispatches: 0,
+          waitMsTotal: 0,
+          waitSamples: 0,
+          maxWaitMs: 0,
+          lastConflictAt: null,
+          lastSelectedAt: null,
+        };
+        const signal = activeSignals.get(area) || {
+          active: 0,
+          retrying: 0,
+          mergeLatencyMsTotal: 0,
+          mergeLatencySamples: 0,
+          maxMergeLatencyMs: 0,
+        };
+        const active = activeCounts.get(area) || 0;
+        const waitingTasks = waitingCounts.get(area) || 0;
+        const activeFailureRate =
+          signal.active > 0 ? signal.retrying / signal.active : 0;
+        const averageMergeLatencyMs =
+          signal.mergeLatencySamples > 0
+            ? signal.mergeLatencyMsTotal / signal.mergeLatencySamples
+            : 0;
+
+        return {
+          area,
+          configuredLimit: Number(this.repoAreaParallelLimit || 0),
+          effectiveLimit: this._computeRepoAreaEffectiveLimit(area, activeSignals),
+          activeSlots: active,
+          waitingTasks,
+          activeFailureRate,
+          averageMergeLatencyMs,
+          maxMergeLatencyMs: signal.maxMergeLatencyMs || 0,
+          conflicts: metric.conflicts,
+          blockedDispatches: metric.blockedDispatches,
+          selectedDispatches: metric.selectedDispatches,
+          averageWaitMs:
+            metric.waitSamples > 0 ? metric.waitMsTotal / metric.waitSamples : 0,
+          maxWaitMs: metric.maxWaitMs,
+          waitSamples: metric.waitSamples,
+          lastConflictAt: metric.lastConflictAt,
+          lastSelectedAt: metric.lastSelectedAt,
+        };
+      });
+
+    return {
+      enabled: Number(this.repoAreaParallelLimit || 0) > 0,
+      configuredLimit: Number(this.repoAreaParallelLimit || 0),
+      areas: items,
+      totals: {
+        conflicts: items.reduce((sum, item) => sum + item.conflicts, 0),
+        blockedDispatches: items.reduce(
+          (sum, item) => sum + item.blockedDispatches,
+          0,
+        ),
+        waitingTasks: items.reduce((sum, item) => sum + item.waitingTasks, 0),
+      },
+      lastDispatch: {
+        ...this._repoAreaDispatchCycle,
+        blockedByArea: { ...this._repoAreaDispatchCycle.blockedByArea },
+        saturatedAreas: [...this._repoAreaDispatchCycle.saturatedAreas],
+      },
+    };
+  }
   _selectTasksForBaseBranchLimit(candidates, remaining) {
     if (!Array.isArray(candidates) || candidates.length === 0) return [];
     if (!Number.isFinite(remaining) || remaining <= 0) return [];
@@ -3440,12 +4079,29 @@ class TaskExecutor {
       return candidates.slice(0, remaining);
     }
 
+    const now = Date.now();
+    this._pruneRepoAreaPendingWaits(candidates, now);
+
     const baseBranchCounts = enforceBaseBranch
       ? this._buildActiveBaseBranchCounts()
       : new Map();
     const repoAreaCounts = enforceRepoArea
       ? this._buildActiveRepoAreaCounts()
       : new Map();
+    const activeRepoAreaSignals = enforceRepoArea
+      ? this._buildActiveRepoAreaSignals(now)
+      : new Map();
+    const effectiveRepoAreaLimits = new Map();
+    this._repoAreaDispatchCycle = {
+      cycle: Number(this._repoAreaDispatchCycle?.cycle || 0) + 1,
+      at: new Date(now).toISOString(),
+      candidateCount: candidates.length,
+      remaining,
+      selectedCount: 0,
+      blockedTasks: 0,
+      blockedByArea: {},
+      saturatedAreas: [],
+    };
 
     const selected = [];
     for (const task of candidates) {
@@ -3462,10 +4118,17 @@ class TaskExecutor {
 
       if (enforceRepoArea) {
         const areas = this._extractTaskRepoAreas(task);
-        if (
-          areas.length > 0 &&
-          areas.some((area) => (repoAreaCounts.get(area) || 0) >= repoAreaLimit)
-        ) {
+        const blockedAreas = areas.filter((area) => {
+          if (!effectiveRepoAreaLimits.has(area)) {
+            effectiveRepoAreaLimits.set(
+              area,
+              this._computeRepoAreaEffectiveLimit(area, activeRepoAreaSignals),
+            );
+          }
+          const effectiveLimit = effectiveRepoAreaLimits.get(area) || repoAreaLimit;
+          return (repoAreaCounts.get(area) || 0) >= effectiveLimit;
+        });
+        if (blockedAreas.length > 0) {
           if (enforceBaseBranch) {
             const key = this._resolveTaskBaseBranchKey(task);
             if (key) {
@@ -3473,15 +4136,38 @@ class TaskExecutor {
               baseBranchCounts.set(key, Math.max(0, current - 1));
             }
           }
+          this._repoAreaDispatchCycle.blockedTasks += 1;
+          for (const area of blockedAreas) {
+            const metric = this._getRepoAreaLockMetric(area);
+            if (metric) {
+              metric.conflicts += 1;
+              metric.blockedDispatches += 1;
+              metric.lastConflictAt = this._repoAreaDispatchCycle.at;
+            }
+            this._beginRepoAreaWait(task?.id || task?.task_id, area, now);
+            this._repoAreaDispatchCycle.blockedByArea[area] =
+              (this._repoAreaDispatchCycle.blockedByArea[area] || 0) + 1;
+          }
           continue;
         }
+        this._clearRepoAreaWaitsForTask(task, now);
         for (const area of areas) {
           repoAreaCounts.set(area, (repoAreaCounts.get(area) || 0) + 1);
+          const metric = this._getRepoAreaLockMetric(area);
+          if (metric) {
+            metric.selectedDispatches += 1;
+            metric.lastSelectedAt = this._repoAreaDispatchCycle.at;
+          }
         }
       }
 
       selected.push(task);
     }
+
+    this._repoAreaDispatchCycle.selectedCount = selected.length;
+    this._repoAreaDispatchCycle.saturatedAreas = Object.keys(
+      this._repoAreaDispatchCycle.blockedByArea,
+    ).sort();
 
     return selected;
   }
@@ -4118,5 +4804,3 @@ export function isExecutorDisabled() {
 
 export { TaskExecutor };
 export default TaskExecutor;
-
-
