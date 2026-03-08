@@ -642,6 +642,18 @@ describe("workflow setup profiles", () => {
     expect(profile.templateIds.length).toBeGreaterThan(0);
   });
 
+  it("resolves workflowFirst profile by id without falling back", () => {
+    const profile = getWorkflowSetupProfile("workflowFirst");
+    expect(profile.id).toBe("workflowFirst");
+    expect(profile.templateIds).toContain("template-task-lifecycle");
+  });
+
+  it("resolveWorkflowTemplateIds accepts workflowFirst profile id", () => {
+    const resolved = resolveWorkflowTemplateIds({ profileId: "workflowFirst" });
+    expect(resolved).toContain("template-task-lifecycle");
+    expect(resolved).toContain("template-task-batch-processor");
+  });
+
   it("resolves explicit template lists and filters unknown IDs", () => {
     const resolved = resolveWorkflowTemplateIds({
       profileId: "manual",
