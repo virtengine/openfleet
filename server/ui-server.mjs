@@ -6422,6 +6422,113 @@ function applyInternalLifecycleTransition(taskId, action, options = {}) {
   return null;
 }
 
+async function persistTaskStatusForExecution(adapter, taskId, nextStatus, source) {
+  if (!taskId || !nextStatus || !adapter) return null;
+  const normalized = String(nextStatus || "").trim();
+  if (!normalized) return null;
+  let updated = null;
+  if (typeof adapter.updateTaskStatus === "function") {
+    updated = await adapter.updateTaskStatus(taskId, normalized, { source });
+  } else if (typeof adapter.updateTask === "function") {
+    updated = await adapter.updateTask(taskId, { status: normalized });
+  }
+  return withTaskMetadataTopLevel(updated);
+}
+
+function resolveFallbackStatusAfterFailedDispatch(previousStatus, startDispatch) {
+  if (startDispatch?.reason === "no_free_slots") return "queued";
+  const previous = String(previousStatus || "").trim();
+  return previous || "todo";
+}
+
+async function reconcileTaskAfterDispatchAttempt({
+  adapter,
+  taskId,
+  previousStatus,
+  requestedStatus,
+  lifecycleAction,
+  startDispatch,
+  source,
+}) {
+  const action = normalizeLifecycleAction(lifecycleAction);
+  if (action !== "start" && action !== "resume") return null;
+  const requested = normalizeTaskStatusKey(requestedStatus);
+  if (requested !== "inprogress") return null;
+  const targetStatus = startDispatch?.started
+    ? "inprogress"
+    : resolveFallbackStatusAfterFailedDispatch(previousStatus, startDispatch);
+  return persistTaskStatusForExecution(adapter, taskId, targetStatus, source);
+}
+
+function buildTaskRuntimeSnapshot(task) {
+  const runtimeExecutor = uiDeps.getInternalExecutor?.() || null;
+  const status = runtimeExecutor?.getStatus?.() || {};
+  const activeSlots = Array.isArray(status?.slots) ? status.slots : [];
+  const taskId = String(task?.id || task?.taskId || "").trim();
+  const slot = taskId
+    ? activeSlots.find((entry) => String(entry?.taskId || entry?.task_id || "").trim() === taskId)
+    : null;
+  const normalizedStatus = normalizeTaskStatusKey(task?.status);
+  if (slot) {
+    return {
+      state: "running",
+      isLive: true,
+      taskId,
+      taskStatus: task?.status || null,
+      statusLabel: "Live execution",
+      slot: {
+        taskId,
+        branch: slot?.branch || slot?.branchName || null,
+        sdk: slot?.sdk || slot?.executor || null,
+        model: slot?.model || null,
+        startedAt: slot?.startedAt || slot?.started_at || null,
+        completedCount: slot?.completedCount || 0,
+      },
+      executor: {
+        activeSlots: Number(status?.activeSlots || activeSlots.length || 0),
+        maxParallel: Number(status?.maxParallel || 0),
+        paused: runtimeExecutor?.isPaused?.() === true,
+      },
+    };
+  }
+  if (normalizedStatus === "queued") {
+    return {
+      state: "queued",
+      isLive: false,
+      taskId,
+      taskStatus: task?.status || null,
+      statusLabel: "Queued for execution",
+      reason: "no_free_slots",
+    };
+  }
+  if (normalizedStatus === "inprogress") {
+    return {
+      state: "pending",
+      isLive: false,
+      taskId,
+      taskStatus: task?.status || null,
+      statusLabel: "No live execution detected",
+      reason: "no_active_executor_slot",
+    };
+  }
+  if (normalizedStatus === "inreview") {
+    return {
+      state: "review",
+      isLive: false,
+      taskId,
+      taskStatus: task?.status || null,
+      statusLabel: "Awaiting review",
+    };
+  }
+  return {
+    state: "idle",
+    isLive: false,
+    taskId,
+    taskStatus: task?.status || null,
+    statusLabel: "No active execution",
+  };
+}
+
 async function maybeStartTaskFromLifecycleAction({
   taskId,
   updatedTask,
