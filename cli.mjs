@@ -1629,7 +1629,7 @@ async function main() {
   if (args.includes("--workspace-list") || args.includes("workspace-list")) {
     const { listWorkspaces, getActiveWorkspace } = await import("./workspace/workspace-manager.mjs");
     const configDirArg = getArgValue("--config-dir");
-    const configDir = configDirArg || process.env.BOSUN_DIR || resolve(os.homedir(), "bosun");
+    const configDir = configDirArg || process.env.BOSUN_DIR || resolveConfigDirForCli();
     const workspaces = listWorkspaces(configDir);
     const active = getActiveWorkspace(configDir);
     if (workspaces.length === 0) {
@@ -1653,7 +1653,7 @@ async function main() {
   if (args.includes("--workspace-add")) {
     const { createWorkspace } = await import("./workspace/workspace-manager.mjs");
     const configDirArg = getArgValue("--config-dir");
-    const configDir = configDirArg || process.env.BOSUN_DIR || resolve(os.homedir(), "bosun");
+    const configDir = configDirArg || process.env.BOSUN_DIR || resolveConfigDirForCli();
     const name = getArgValue("--workspace-add");
     if (!name) {
       console.error("  Error: workspace name is required. Usage: bosun --workspace-add <name>");
@@ -1672,7 +1672,7 @@ async function main() {
   if (args.includes("--workspace-switch")) {
     const { setActiveWorkspace, getWorkspace } = await import("./workspace/workspace-manager.mjs");
     const configDirArg = getArgValue("--config-dir");
-    const configDir = configDirArg || process.env.BOSUN_DIR || resolve(os.homedir(), "bosun");
+    const configDir = configDirArg || process.env.BOSUN_DIR || resolveConfigDirForCli();
     const wsId = getArgValue("--workspace-switch");
     if (!wsId) {
       console.error("  Error: workspace ID required. Usage: bosun --workspace-switch <id>");
@@ -1692,7 +1692,7 @@ async function main() {
   if (args.includes("--workspace-add-repo")) {
     const { addRepoToWorkspace, getActiveWorkspace, listWorkspaces } = await import("./workspace/workspace-manager.mjs");
     const configDirArg = getArgValue("--config-dir");
-    const configDir = configDirArg || process.env.BOSUN_DIR || resolve(os.homedir(), "bosun");
+    const configDir = configDirArg || process.env.BOSUN_DIR || resolveConfigDirForCli();
     const active = getActiveWorkspace(configDir);
     if (!active) {
       console.error("  No active workspace. Create one first: bosun --workspace-add <name>");
@@ -1721,7 +1721,7 @@ async function main() {
     const { runWorkspaceHealthCheck, formatWorkspaceHealthReport } =
       await import("./config/config-doctor.mjs");
     const configDirArg = getArgValue("--config-dir");
-    const configDir = configDirArg || process.env.BOSUN_DIR || resolve(os.homedir(), "bosun");
+    const configDir = configDirArg || process.env.BOSUN_DIR || resolveConfigDirForCli();
     const result = runWorkspaceHealthCheck({ configDir });
     console.log(formatWorkspaceHealthReport(result));
     process.exit(result.ok ? 0 : 1);
