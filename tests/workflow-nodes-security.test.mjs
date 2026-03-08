@@ -75,12 +75,15 @@ describe("action.create_pr schema integrity", () => {
 // -- create_pr Base-Branch Resolution -----------------------------------------
 
 describe("action.create_pr base-branch resolution logic", () => {
+  const fastFailCwd = "C:/__bosun_nonexistent__/pr-test";
+
   it("uses 'base' config field as the PR base branch", async () => {
     const node = makeNode("action.create_pr", {
       title: "feat: add thing",
       base: "develop",
       baseBranch: "should-not-use-this",
       branch: "feat/add-thing",
+      cwd: fastFailCwd,
     });
     const nodeType = getNodeType("action.create_pr");
     const result = await nodeType.execute(node, makeCtx());
@@ -92,6 +95,7 @@ describe("action.create_pr base-branch resolution logic", () => {
       title: "feat: add thing",
       baseBranch: "release",
       branch: "feat/add-thing",
+      cwd: fastFailCwd,
     });
     const nodeType = getNodeType("action.create_pr");
     const result = await nodeType.execute(node, makeCtx());
@@ -102,6 +106,7 @@ describe("action.create_pr base-branch resolution logic", () => {
     const node = makeNode("action.create_pr", {
       title: "feat: add thing",
       branch: "feat/add-thing",
+      cwd: fastFailCwd,
     });
     const nodeType = getNodeType("action.create_pr");
     const result = await nodeType.execute(node, makeCtx());
