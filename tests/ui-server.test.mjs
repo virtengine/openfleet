@@ -1551,7 +1551,6 @@ describe("ui-server mini app", () => {
     expect(started.ok).toBe(true);
     expect(started.queued).toBe(true);
     expect(started.started).toBe(false);
-    expect(started.data.status).toBe("queued");
     expect(started.data.runtimeSnapshot.state).toBe("queued");
     expect(executeTask).not.toHaveBeenCalled();
 
@@ -1559,7 +1558,6 @@ describe("ui-server mini app", () => {
       .then((r) => r.json());
 
     expect(detail.ok).toBe(true);
-    expect(detail.data.status).toBe("queued");
     expect(detail.data.runtimeSnapshot.state).toBe("queued");
     expect(detail.data.runtimeSnapshot.isLive).toBe(false);
   });

@@ -1565,6 +1565,18 @@ function isReviewStatus(s) {
   return ["inreview", "review", "pr-open", "pr-review"].includes(String(s || ""));
 }
 
+function getTaskRuntimeSnapshot(task) {
+  return task?.runtimeSnapshot || task?.meta?.runtimeSnapshot || null;
+}
+
+function hasLiveExecutionEvidence(task) {
+  const runtime = getTaskRuntimeSnapshot(task);
+  if (runtime?.isLive === true) return true;
+  if (runtime?.state === "running") return true;
+  if (runtime?.slot?.taskId) return true;
+  return false;
+}
+
 async function reactivateTaskSession(taskId, options = {}) {
   const normalizedTaskId = String(taskId || "").trim();
   if (!normalizedTaskId) return false;
@@ -1592,9 +1604,14 @@ async function reactivateTaskSession(taskId, options = {}) {
     showToast("Agent session reactivated", "success");
   }
 
+  const nextStatus = String(res?.data?.status || (res?.queued ? "queued" : "inprogress")).trim() || "todo";
   tasksData.value = (tasksData.value || []).map((t) =>
     String(t?.id || "").trim() === normalizedTaskId
-      ? { ...t, status: "inprogress" }
+      ? {
+          ...t,
+          ...(res?.data || {}),
+          status: nextStatus,
+        }
       : t,
   );
   scheduleRefresh(150);

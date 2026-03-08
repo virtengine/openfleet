@@ -6435,6 +6435,28 @@ async function persistTaskStatusForExecution(adapter, taskId, nextStatus, source
   return withTaskMetadataTopLevel(updated);
 }
 
+async function persistTaskExecutionMeta(adapter, taskId, executionPatch = {}) {
+  if (!taskId || !adapter || typeof adapter.updateTask !== "function") return null;
+  const current = typeof adapter.getTask === "function"
+    ? await adapter.getTask(taskId).catch(() => null)
+    : null;
+  const currentMeta = current?.meta && typeof current.meta === "object" ? current.meta : {};
+  const currentExecution = currentMeta.execution && typeof currentMeta.execution === "object"
+    ? currentMeta.execution
+    : {};
+  const nextExecution = {
+    ...currentExecution,
+    ...executionPatch,
+  };
+  if (nextExecution.queueState == null) delete nextExecution.queueState;
+  return withTaskMetadataTopLevel(await adapter.updateTask(taskId, {
+    meta: {
+      ...currentMeta,
+      execution: nextExecution,
+    },
+  }));
+}
+
 function resolveFallbackStatusAfterFailedDispatch(previousStatus, startDispatch) {
   if (startDispatch?.reason === "no_free_slots") return "queued";
   const previous = String(previousStatus || "").trim();
@@ -6469,6 +6491,8 @@ function buildTaskRuntimeSnapshot(task) {
     ? activeSlots.find((entry) => String(entry?.taskId || entry?.task_id || "").trim() === taskId)
     : null;
   const normalizedStatus = normalizeTaskStatusKey(task?.status);
+  const queuedFlag = task?.meta?.execution?.queued === true
+    || normalizeTaskStatusKey(task?.meta?.execution?.queueState) === "queued";
   if (slot) {
     return {
       state: "running",
@@ -6491,7 +6515,7 @@ function buildTaskRuntimeSnapshot(task) {
       },
     };
   }
-  if (normalizedStatus === "queued") {
+  if (queuedFlag || normalizedStatus === "queued") {
     return {
       state: "queued",
       isLive: false,
@@ -9342,7 +9366,11 @@ async function handleApi(req, res, url) {
         (status.maxParallel || 0) - (status.activeSlots || 0);
 
       if (freeSlots <= 0) {
-        const queuedTask = await persistTaskStatusForExecution(adapter, taskId, "queued", "api.tasks.start");
+        const queuedTask = await persistTaskExecutionMeta(adapter, taskId, {
+          queued: true,
+          queueState: "queued",
+          requestedAt: new Date().toISOString(),
+        });
         jsonResponse(res, 202, {
           ok: true,
           taskId,
@@ -9350,7 +9378,7 @@ async function handleApi(req, res, url) {
           started: false,
           reason: "No free slots",
           canStart,
-          data: withTaskRuntimeSnapshot(queuedTask || { ...task, status: "queued" }),
+          data: withTaskRuntimeSnapshot(queuedTask || task),
         });
         broadcastUiEvent(
           ["tasks", "overview", "executor", "agents"],
@@ -9362,8 +9390,27 @@ async function handleApi(req, res, url) {
         );
         return;
       }
+      let startedTask = task;
+      try {
+        startedTask = await persistTaskStatusForExecution(adapter, taskId, "inprogress", "api.tasks.start") || task;
+        startedTask = await persistTaskExecutionMeta(adapter, taskId, {
+          queued: false,
+          queueState: null,
+        }) || startedTask;
+        applyInternalLifecycleTransition(taskId, "start", {
+          source: "api.tasks.start",
+          actor: "ui",
+          force: forceStart || manualOverride,
+          reason: "manual start",
+        });
+      } catch (err) {
+        console.warn(
+          `[telegram-ui] failed to mark task ${taskId} inprogress: ${err.message}`,
+        );
+      }
+
       const wasPaused = executor.isPaused?.();
-      executor.executeTask(task, {
+      executor.executeTask(startedTask, {
         ...(sdk ? { sdk } : {}),
         ...(model ? { model } : {}),
         force: forceStart || manualOverride,
@@ -9371,6 +9418,16 @@ async function handleApi(req, res, url) {
         console.warn(
           `[telegram-ui] failed to execute task ${taskId}: ${error.message}`,
         );
+        void persistTaskStatusForExecution(
+          adapter,
+          taskId,
+          resolveFallbackStatusAfterFailedDispatch(task?.status, { started: false }),
+          "api.tasks.start.failed",
+        );
+        broadcastUiEvent(["tasks", "overview", "executor", "agents"], "invalidate", {
+          reason: "task-start-failed",
+          taskId,
+        });
       });
       jsonResponse(res, 200, {
         ok: true,
@@ -9379,6 +9436,7 @@ async function handleApi(req, res, url) {
         started: true,
         wasPaused,
         canStart,
+        data: withTaskRuntimeSnapshot(startedTask),
       });
       broadcastUiEvent(
         ["tasks", "overview", "executor", "agents"],

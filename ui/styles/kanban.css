@@ -195,9 +195,11 @@ body.kanban-dragging .kanban-card {
   background: var(--bg-card);
   border-radius: var(--radius-lg, 12px);
   padding: 14px;
-  /* Use the Telegram stable viewport height, not raw 100vh which Telegram
-     overrides — prevents columns being too short or clipped on the web app */
-  max-height: calc(var(--viewport-stable-height, 100vh) - 180px);
+  /* Use the stable viewport height so each column keeps its own scroll area
+     without feeling too tall on desktop or cramped on mobile. */
+  height: clamp(360px, calc(var(--viewport-stable-height, 100vh) - 220px), 760px);
+  max-height: clamp(360px, calc(var(--viewport-stable-height, 100vh) - 220px), 760px);
+  min-height: 360px;
   position: relative;
   border: 1px solid var(--border);
   /* Limit layout recalculations to within the column — columns don't affect
@@ -289,11 +291,24 @@ body.kanban-dragging .kanban-card {
   flex-direction: column;
   gap: 8px;
   overflow-y: auto;
-  flex: 1;
-  padding: 4px;
+  overflow-x: hidden;
+  flex: 1 1 auto;
+  padding: 4px 4px 0;
   min-height: 0;
+  scrollbar-gutter: stable;
+  -webkit-overflow-scrolling: touch;
   touch-action: pan-y;
   overscroll-behavior-y: contain;
+}
+
+.kanban-column-footer {
+  position: sticky;
+  bottom: 0;
+  z-index: 2;
+  margin: 0 -14px -14px;
+  padding: 6px 14px 12px;
+  background: linear-gradient(to top, var(--bg-card) 72%, rgba(0, 0, 0, 0));
+  border-radius: 0 0 var(--radius-lg, 12px) var(--radius-lg, 12px);
 }
 
 .kanban-cards > * {
@@ -484,9 +499,9 @@ body.kanban-dragging .kanban-card {
 }
 
 .kanban-scroll-fade {
-  height: 16px;
+  height: 10px;
   flex-shrink: 0;
-  background: linear-gradient(to top, var(--bg-card), transparent);
+  background: linear-gradient(to top, rgba(0, 0, 0, 0.08), transparent);
   border-radius: 0 0 var(--radius-lg, 12px) var(--radius-lg, 12px);
   pointer-events: none;
   margin: 0 -12px -12px;
@@ -506,7 +521,8 @@ body.kanban-dragging .kanban-card {
 
   .kanban-column {
     min-width: 280px;
-    max-height: none;
+    height: clamp(420px, calc(var(--viewport-stable-height, 100vh) - 210px), 840px);
+    max-height: clamp(420px, calc(var(--viewport-stable-height, 100vh) - 210px), 840px);
   }
 }
 
@@ -523,6 +539,8 @@ body.kanban-dragging .kanban-card {
     flex: 0 0 85%;
     min-width: 260px;
     max-width: 85%;
+    height: clamp(380px, calc(var(--viewport-stable-height, 100vh) - 190px), 680px);
+    max-height: clamp(380px, calc(var(--viewport-stable-height, 100vh) - 190px), 680px);
     scroll-snap-align: start;
     scroll-snap-stop: always;
   }
@@ -539,6 +557,8 @@ body.kanban-dragging .kanban-card {
   .kanban-column {
     min-width: 86vw;
     max-width: 86vw;
+    height: clamp(360px, calc(var(--viewport-stable-height, 100vh) - 170px), 620px);
+    max-height: clamp(360px, calc(var(--viewport-stable-height, 100vh) - 170px), 620px);
     scroll-snap-align: start;
     padding: 12px;
   }
@@ -548,9 +568,12 @@ body.kanban-dragging .kanban-card {
   flex-direction: column;
   gap: 8px;
   overflow-y: auto;
-  flex: 1;
+  overflow-x: hidden;
+  flex: 1 1 auto;
   padding: 4px;
   min-height: 0;
+  scrollbar-gutter: stable;
+  -webkit-overflow-scrolling: touch;
   touch-action: pan-y;
   overscroll-behavior-y: contain;
 }
@@ -595,12 +618,39 @@ body.kanban-dragging .kanban-card {
 }
 
 .kanban-load-more {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  width: 100%;
+  min-height: 34px;
   text-align: center;
   font-size: 12px;
   color: var(--text-secondary);
-  opacity: 0.8;
-  padding: 8px 6px 12px;
+  opacity: 0.94;
+  padding: 8px 10px;
   letter-spacing: 0.01em;
+  background: rgba(255, 255, 255, 0.03);
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  cursor: pointer;
+  font-family: inherit;
+  backdrop-filter: blur(10px);
+}
+
+.kanban-load-more:hover,
+.kanban-load-more:focus-visible {
+  color: var(--text-primary);
+}
+
+.kanban-load-more:disabled {
+  cursor: progress;
+  opacity: 0.7;
+}
+
+.kanban-load-more-icon {
+  font-size: 15px;
+  line-height: 1;
 }
 
 
