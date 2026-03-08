@@ -762,8 +762,9 @@ describe("action.acquire_worktree", () => {
 
     const result = await nt.execute(node, ctx);
     expect(result.success).toBe(true);
-    expect(result.worktreePath).toMatch(/\\.bosun[\\/]worktrees[\\/]task-task123e4567-[a-f0-9]{10}$/);
-    expect(result.worktreePath).not.toContain("very-long-branch-name");
+    const normalizedPath = String(result.worktreePath || "").replace(/\\/g, "/");
+    expect(normalizedPath).toMatch(/\/\.bosun\/worktrees\/task-task123e4567-[a-f0-9]{10}$/);
+    expect(normalizedPath).not.toContain("very-long-branch-name");
   });
 
   it("enables core.longpaths before checkout", async () => {
@@ -1536,6 +1537,8 @@ describe("template-ve-orchestrator-lite", () => {
     expect(Array.isArray(t.variables.protectedBranches)).toBe(true);
   });
 });
+
+
 
 
 
