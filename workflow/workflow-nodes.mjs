@@ -2897,7 +2897,8 @@ registerNodeType("action.create_pr", {
     // Build gh pr create command
     const args = ["gh", "pr", "create"];
     args.push("--title", JSON.stringify(title));
-    if (body) args.push("--body", JSON.stringify(body));
+    // gh pr create requires either --body (empty is allowed) or --fill* in non-interactive mode.
+    args.push("--body", JSON.stringify(String(body)));
     if (base) args.push("--base", base);
     if (branch) args.push("--head", branch);
     if (draft) args.push("--draft");
@@ -8601,4 +8602,3 @@ registerNodeType("action.web_search", {
 // ═══════════════════════════════════════════════════════════════════════════
 
 export { registerNodeType, getNodeType, listNodeTypes } from "./workflow-engine.mjs";
-

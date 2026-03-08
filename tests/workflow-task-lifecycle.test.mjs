@@ -38,6 +38,14 @@ function makeNode(type, config = {}, id = "test-node") {
   return { id, type, config };
 }
 
+function sanitizedGitEnv() {
+  const env = { ...process.env };
+  delete env.GIT_DIR;
+  delete env.GIT_WORK_TREE;
+  delete env.GIT_INDEX_FILE;
+  return env;
+}
+
 let tmpDir;
 let engine;
 
@@ -657,13 +665,19 @@ describe("action.build_task_prompt", () => {
 describe("action.detect_new_commits", () => {
   let gitDir;
 
+  const gitExec = (command, options = {}) =>
+    execSync(command, {
+      env: sanitizedGitEnv(),
+      ...options,
+    });
+
   beforeEach(() => {
     gitDir = mkdtempSync(join(tmpdir(), "wf-detect-commits-"));
-    execSync("git init", { cwd: gitDir, stdio: "ignore" });
-    execSync("git config --local user.email test@test.com", { cwd: gitDir, stdio: "ignore" });
-    execSync("git config --local user.name Test", { cwd: gitDir, stdio: "ignore" });
+    gitExec("git init", { cwd: gitDir, stdio: "ignore" });
+    gitExec("git config --local user.email test@test.com", { cwd: gitDir, stdio: "ignore" });
+    gitExec("git config --local user.name Test", { cwd: gitDir, stdio: "ignore" });
     writeFileSync(join(gitDir, "README.md"), "init");
-    execSync("git add . && git commit -m init", { cwd: gitDir, stdio: "ignore" });
+    gitExec("git add . && git commit -m init", { cwd: gitDir, stdio: "ignore" });
   });
 
   afterEach(() => {
@@ -672,7 +686,7 @@ describe("action.detect_new_commits", () => {
 
   it("detects no commits when HEAD unchanged", async () => {
     const nt = getNodeType("action.detect_new_commits");
-    const head = execSync("git rev-parse HEAD", { cwd: gitDir, encoding: "utf8" }).trim();
+    const head = gitExec("git rev-parse HEAD", { cwd: gitDir, encoding: "utf8" }).trim();
     const ctx = makeCtx({ _preExecHead: head });
     const node = makeNode("action.detect_new_commits", {
       worktreePath: gitDir,
@@ -684,10 +698,10 @@ describe("action.detect_new_commits", () => {
 
   it("detects new commits when HEAD changed", async () => {
     const nt = getNodeType("action.detect_new_commits");
-    const preHead = execSync("git rev-parse HEAD", { cwd: gitDir, encoding: "utf8" }).trim();
+    const preHead = gitExec("git rev-parse HEAD", { cwd: gitDir, encoding: "utf8" }).trim();
     // Make a new commit
     writeFileSync(join(gitDir, "new.txt"), "new content");
-    execSync("git add . && git commit -m new", { cwd: gitDir, stdio: "ignore" });
+    gitExec("git add . && git commit -m new", { cwd: gitDir, stdio: "ignore" });
     const ctx = makeCtx({ _preExecHead: preHead });
     const node = makeNode("action.detect_new_commits", {
       worktreePath: gitDir,
@@ -702,7 +716,7 @@ describe("action.detect_new_commits", () => {
 
   it("stores results in ctx.data", async () => {
     const nt = getNodeType("action.detect_new_commits");
-    const head = execSync("git rev-parse HEAD", { cwd: gitDir, encoding: "utf8" }).trim();
+    const head = gitExec("git rev-parse HEAD", { cwd: gitDir, encoding: "utf8" }).trim();
     const ctx = makeCtx({ _preExecHead: head });
     const node = makeNode("action.detect_new_commits", { worktreePath: gitDir });
     await nt.execute(node, ctx);
@@ -1133,4 +1147,6 @@ describe("template-ve-orchestrator-lite", () => {
     expect(Array.isArray(t.variables.protectedBranches)).toBe(true);
   });
 });
+
+
 
