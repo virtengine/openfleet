@@ -323,7 +323,7 @@
     "vibe-kanban": "latest",
     "ws": "^8.19.0",
     "ink": "^5.0.0",
-    "ink-text-input": "^5.0.0"
+    "ink-text-input": "^6.0.0"
   },
   "devDependencies": {
     "@emotion/react": "^11.14.0",
