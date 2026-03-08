@@ -25,6 +25,7 @@ import { randomUUID } from "node:crypto";
 import { getAgentToolConfig, getEffectiveTools } from "../agent/agent-tool-config.mjs";
 import { getToolsPromptBlock } from "../agent/agent-custom-tools.mjs";
 import { buildRelevantSkillsPromptBlock, findRelevantSkills } from "../agent/bosun-skills.mjs";
+import { getSessionTracker } from "../infra/session-tracker.mjs";
 import { fixGitConfigCorruption } from "../workspace/worktree-manager.mjs";
 
 const TAG = "[workflow-nodes]";
@@ -1534,6 +1535,20 @@ registerNodeType("action.run_agent", {
     const prompt = ctx.resolve(node.config?.prompt || "");
     const sdk = node.config?.sdk || "auto";
     const cwd = ctx.resolve(node.config?.cwd || ctx.data?.worktreePath || process.cwd());
+    const trackedTaskId = String(
+      ctx.data?.taskId ||
+        ctx.data?.task?.id ||
+        ctx.data?.taskDetail?.id ||
+        ctx.resolve(node.config?.taskId || "") ||
+        "",
+    ).trim();
+    const trackedTaskTitle = String(
+      ctx.data?.task?.title ||
+        ctx.data?.taskDetail?.title ||
+        ctx.data?.taskInfo?.title ||
+        trackedTaskId ||
+        "",
+    ).trim();
     const agentProfileId = String(
       ctx.resolve(node.config?.agentProfile || ctx.data?.agentProfile || ""),
     ).trim();
@@ -1661,6 +1676,43 @@ registerNodeType("action.run_agent", {
         const maxRetainedEvents = Number.isFinite(Number(node.config?.maxRetainedEvents))
           ? Math.max(10, Math.min(500, Math.trunc(Number(node.config.maxRetainedEvents))))
           : WORKFLOW_AGENT_EVENT_PREVIEW_LIMIT;
+        const tracker = trackedTaskId ? getSessionTracker() : null;
+        const trackedSessionType = trackedTaskId ? "task" : "flow";
+
+        if (tracker && trackedTaskId) {
+          const existing = tracker.getSessionById(trackedTaskId);
+          if (!existing) {
+            tracker.createSession({
+              id: trackedTaskId,
+              type: "task",
+              taskId: trackedTaskId,
+              metadata: {
+                title: trackedTaskTitle || trackedTaskId,
+                workspaceId: String(ctx.data?.workspaceId || ctx.data?.activeWorkspace || "").trim() || undefined,
+                workspaceDir: String(cwd || "").trim() || undefined,
+                branch:
+                  String(
+                    ctx.data?.branch ||
+                      ctx.data?.task?.branchName ||
+                      ctx.data?.taskDetail?.branchName ||
+                      "",
+                  ).trim() || undefined,
+              },
+            });
+          } else {
+            tracker.updateSessionStatus(trackedTaskId, "active");
+            if (trackedTaskTitle) {
+              tracker.renameSession(trackedTaskId, trackedTaskTitle);
+            }
+          }
+          tracker.recordEvent(trackedTaskId, {
+            role: "system",
+            type: "system",
+            content: `Workflow agent run started in ${cwd}`,
+            timestamp: new Date().toISOString(),
+            _sessionType: trackedSessionType,
+          });
+        }
 
         const launchExtra = {};
         if (sessionId) launchExtra.resumeThreadId = sessionId;
@@ -1668,6 +1720,12 @@ registerNodeType("action.run_agent", {
         if (modelOverride) launchExtra.model = modelOverride;
         launchExtra.onEvent = (event) => {
           try {
+            if (tracker && trackedTaskId) {
+              tracker.recordEvent(trackedTaskId, {
+                ...(event && typeof event === "object" ? event : { content: String(event || "") }),
+                _sessionType: trackedSessionType,
+              });
+            }
             const line = summarizeAgentStreamEvent(event);
             if (!line || line === lastStreamLog) return;
             lastStreamLog = line;
@@ -1735,9 +1793,10 @@ registerNodeType("action.run_agent", {
               timeoutMs,
               maxRetries: sessionRetries,
               maxContinues,
-              sessionType: "flow",
+              sessionType: trackedSessionType,
               sdk: sdkOverride,
               model: modelOverride,
+              onEvent: launchExtra.onEvent,
             });
           }
 
@@ -1745,9 +1804,10 @@ registerNodeType("action.run_agent", {
             ctx.log(node.id, `${passLabel} Recovery: launchOrResumeThread taskKey=${recoveryTaskKey}`.trim());
             result = await agentPool.launchOrResumeThread(passPrompt, cwd, timeoutMs, {
               taskKey: recoveryTaskKey,
-              sessionType: "flow",
+              sessionType: trackedSessionType,
               sdk: sdkOverride,
               model: modelOverride,
+              onEvent: launchExtra.onEvent,
             });
           }
 
@@ -1759,6 +1819,24 @@ registerNodeType("action.run_agent", {
           clearInterval(heartbeat);
         }
         ctx.log(node.id, `${passLabel || "Agent"} completed: success=${success} streamEvents=${streamEventCount}`);
+
+        if (tracker && trackedTaskId) {
+          if (streamEventCount === 0) {
+            const fallbackContent = success
+              ? String(result?.output || result?.message || "Agent run completed.").trim()
+              : String(result?.error || "Agent run failed.").trim();
+            if (fallbackContent) {
+              tracker.recordEvent(trackedTaskId, {
+                role: success ? "assistant" : "system",
+                type: success ? "agent_message" : "error",
+                content: fallbackContent,
+                timestamp: new Date().toISOString(),
+                _sessionType: trackedSessionType,
+              });
+            }
+          }
+          tracker.endSession(trackedTaskId, success ? "completed" : "failed");
+        }
 
         const threadId = result?.threadId || result?.sessionId || sessionId || null;
         if (persistSession && threadId) {

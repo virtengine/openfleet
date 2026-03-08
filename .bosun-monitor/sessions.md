@@ -148,3 +148,20 @@ ode cli.mjs --daemon --config-dir .bosun --repo-root ...).
   - Daemon healthy, schedule runs advancing, and no new pollWorkflowSchedulesOnce is not defined entries in .bosun/logs/monitor-error.log after restart window.
 - Note:
   - Unexpected unstaged local changes appeared in package.json and package-lock.json during this run (not authored by this fix). Left untouched pending user direction.
+
+## 2026-03-09T00:11:01+11:00
+- Context: Continued incident triage for task-board disappear bug, DAG insertBefore crash, and unexpected GitHub `New task` issue creation.
+- Findings:
+  - Confirmed DAG render instability fix is staged in `ui/tabs/tasks.js` + `site/ui/tabs/tasks.js` with regression test `tests/tasks-dag-render-stability.test.mjs`.
+  - Confirmed source runtime previously processed GitHub tasks titled `New task` (e.g., task/issue 161 in workflow run `51fccc8c-0bb4-4cd9-9470-9e4b279bb46a`).
+  - Root cause for backend drift identified in config loading: explicit `--config-dir .bosun` still loaded repo-root `.env` and could override `KANBAN_BACKEND`.
+- Fix implemented (local, uncommitted at this checkpoint):
+  - `config/config.mjs`: when config-dir/BOSUN_HOME is explicit, repo-root `.env` is no longer loaded by default; opt-in override via `BOSUN_LOAD_REPO_ENV_WITH_EXPLICIT_CONFIG=1`.
+  - Added regression test: `tests/config-explicit-config-dir-env-isolation.test.mjs`.
+  - Version bumped to `0.40.7` after validation.
+- Validation:
+  - Targeted suites passed (DAG/config/ui-server).
+  - `npm test` and `npm run build` passed.
+  - `npm run prepush:check` passed once after re-run; later run failed due unrelated concurrent file edits in other modules.
+- Blocker:
+  - New unexpected concurrent modifications appeared mid-run (`ui/modules/mui.js`, `workflow-templates/task-batch.mjs`, `tests/workflow-templates.test.mjs`, plus pre-existing unrelated edits). Paused before commit/push to avoid shipping mixed changes without user direction.

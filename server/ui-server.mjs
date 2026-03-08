@@ -7060,14 +7060,13 @@ async function resolveLogPath(logType, query) {
     return resolvePreferredSystemLogPath();
   }
   if (logType === "agent") {
+    const matches = await listAgentLogFiles(query, 1);
+    if (matches.length > 0) {
+      return resolve(matches[0].source, matches[0].name);
+    }
     const agentLogsDir = await resolveAgentLogsDir();
     const files = await readdir(agentLogsDir).catch(() => []);
-    let candidates = files.filter((f) => f.endsWith(".log")).sort().reverse();
-    if (query) {
-      const q = query.toLowerCase();
-      const filtered = candidates.filter((f) => f.toLowerCase().includes(q));
-      if (filtered.length) candidates = filtered;
-    }
+    const candidates = files.filter((f) => f.endsWith(".log")).sort().reverse();
     return candidates.length ? resolve(agentLogsDir, candidates[0]) : null;
   }
   return null;
@@ -8471,11 +8470,40 @@ async function listAgentLogFiles(query = "", limit = 60) {
   const entries = [];
   const agentLogsDir = await resolveAgentLogsDir();
   const files = await readdir(agentLogsDir).catch(() => []);
+  const normalizedQuery = String(query || "").trim().toLowerCase();
+  const queryTerms = Array.from(new Set([
+    normalizedQuery,
+    ...normalizedQuery
+      .split(/[^a-z0-9]+/i)
+      .map((part) => part.trim())
+      .filter((part) => part.length >= 3),
+  ].filter(Boolean)));
+
+  const scoreAgentLogMatch = (name, lines = []) => {
+    if (!queryTerms.length) return 0;
+    const fileName = String(name || "").toLowerCase();
+    const joined = lines.join("\n").toLowerCase();
+    let score = 0;
+    for (const term of queryTerms) {
+      if (fileName.includes(term)) score += 120;
+      if (joined.includes(term)) score += 80;
+    }
+    if (joined.includes("task id:")) score += 8;
+    if (/(error|warn|failed|exception|timeout|anomal)/i.test(joined)) score += 6;
+    return score;
+  };
+
   for (const name of files) {
     if (!name.endsWith(".log")) continue;
-    if (query && !name.toLowerCase().includes(query.toLowerCase())) continue;
     try {
-      const info = await stat(resolve(agentLogsDir, name));
+      const filePath = resolve(agentLogsDir, name);
+      const info = await stat(filePath);
+      let score = 0;
+      if (queryTerms.length) {
+        const sample = await tailFile(filePath, 160, 250_000).catch(() => ({ lines: [] }));
+        score = scoreAgentLogMatch(name, sample?.lines || []);
+        if (score <= 0) continue;
+      }
       entries.push({
         name,
         source: agentLogsDir,
@@ -8483,13 +8511,113 @@ async function listAgentLogFiles(query = "", limit = 60) {
         mtime:
           info.mtime?.toISOString?.() || new Date(info.mtime).toISOString(),
         mtimeMs: info.mtimeMs,
+        score,
       });
     } catch {
       // ignore
     }
   }
-  entries.sort((a, b) => b.mtimeMs - a.mtimeMs);
+  entries.sort((a, b) => (b.score || 0) - (a.score || 0) || b.mtimeMs - a.mtimeMs);
   return entries.slice(0, limit);
+}
+
+function buildLogQueryTerms(query = "") {
+  const normalized = String(query || "").trim().toLowerCase();
+  if (!normalized) return [];
+  return Array.from(new Set([
+    normalized,
+    ...normalized
+      .split(/[^a-z0-9]+/i)
+      .map((part) => part.trim())
+      .filter((part) => part.length >= 3),
+  ].filter(Boolean)));
+}
+
+function isHighSignalLogLine(line = "") {
+  return /(error|warn|failed|exception|timeout|anomal|retry|blocked|fatal)/i.test(String(line || ""));
+}
+
+function filterRelevantLogLines(lines = [], query = "", limit = 200) {
+  const sourceLines = Array.isArray(lines)
+    ? lines.map((line) => String(line || "")).filter(Boolean)
+    : [];
+  if (!sourceLines.length) return [];
+
+  const terms = buildLogQueryTerms(query);
+  if (!terms.length) return sourceLines.slice(-limit);
+
+  const picked = new Set();
+  const addWithContext = (index, radius = 1) => {
+    for (let cursor = Math.max(0, index - radius); cursor <= Math.min(sourceLines.length - 1, index + radius); cursor += 1) {
+      picked.add(cursor);
+    }
+  };
+
+  sourceLines.forEach((line, index) => {
+    const lower = line.toLowerCase();
+    const termHit = terms.some((term) => lower.includes(term));
+    if (termHit) {
+      addWithContext(index, isHighSignalLogLine(line) ? 2 : 1);
+      return;
+    }
+    if (isHighSignalLogLine(line)) {
+      addWithContext(index, 1);
+    }
+  });
+
+  if (!picked.size) {
+    return sourceLines.slice(-limit);
+  }
+
+  const filtered = [...picked]
+    .sort((a, b) => a - b)
+    .map((index) => sourceLines[index]);
+  return filtered.slice(-limit);
+}
+
+async function resolveSessionWorktreePath(session) {
+  if (!session || typeof session !== "object") return null;
+  const directCandidates = [
+    session?.metadata?.worktreePath,
+    session?.metadata?.workspaceDir,
+    session?.metadata?.workspacePath,
+    session?.metadata?.cwd,
+  ]
+    .map((value) => String(value || "").trim())
+    .filter(Boolean);
+  for (const candidate of directCandidates) {
+    if (existsSync(candidate)) return candidate;
+  }
+
+  const branchHints = [
+    session?.metadata?.branch,
+    session?.metadata?.branchName,
+    session?.branch,
+  ]
+    .map((value) => String(value || "").trim().replace(/^refs\/heads\//, ""))
+    .filter(Boolean);
+  const taskHints = [session?.taskId, session?.id]
+    .map((value) => String(value || "").trim().toLowerCase())
+    .filter(Boolean);
+
+  try {
+    const active = await listActiveWorktrees(repoRoot);
+    const matched = (active || []).find((worktree) => {
+      const worktreePath = String(worktree?.path || "").trim();
+      const worktreeTaskKey = String(worktree?.taskKey || "").trim().toLowerCase();
+      const worktreeBranch = String(worktree?.branch || "")
+        .trim()
+        .replace(/^refs\/heads\//, "");
+      if (worktreePath && directCandidates.includes(worktreePath)) return true;
+      if (worktreeTaskKey && taskHints.includes(worktreeTaskKey)) return true;
+      return branchHints.some((hint) =>
+        hint && (worktreeBranch === hint || worktreeBranch.endsWith(`/${hint}`)),
+      );
+    });
+    return matched?.path || null;
+  } catch {
+    return null;
+  }
 }
 
 async function ensurePresenceLoaded() {
@@ -11343,8 +11471,20 @@ async function handleApi(req, res, url) {
         jsonResponse(res, 200, { ok: true, data: null });
         return;
       }
-      const tail = await tailFile(filePath, lines);
-      jsonResponse(res, 200, { ok: true, data: { file: fileName, content: tail } });
+      const tail = await tailFile(filePath, Math.max(lines * 4, 240));
+      const filteredLines = filterRelevantLogLines(tail?.lines || [], query || fileName, lines);
+      const contentLines = filteredLines.length ? filteredLines : (tail?.lines || []).slice(-lines);
+      jsonResponse(res, 200, {
+        ok: true,
+        data: {
+          file: fileName,
+          content: contentLines.join("\n"),
+          lines: contentLines,
+          mode: filteredLines.length ? "focused" : "tail",
+          totalLines: Array.isArray(tail?.lines) ? tail.lines.length : 0,
+          truncated: tail?.truncated === true,
+        },
+      });
     } catch (err) {
       jsonResponse(res, 200, { ok: true, data: null });
     }
@@ -13730,7 +13870,7 @@ async function handleApi(req, res, url) {
           });
           return;
         }
-        const worktreePath = session.metadata?.worktreePath;
+        const worktreePath = await resolveSessionWorktreePath(session);
         if (!worktreePath || !existsSync(worktreePath)) {
           jsonResponse(res, 200, { ok: true, diff: { files: [], totalFiles: 0, totalAdditions: 0, totalDeletions: 0, formatted: "(no worktree)" }, summary: "(no worktree)", commits: [] });
           return;

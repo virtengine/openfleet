@@ -3549,7 +3549,7 @@ function DagGraphSection({
       <div class="task-dag-header-row">
         <div>
           <div style=${{ fontWeight: "700" }}>${title || "Task DAG"}</div>
-          ${description && html`<div class="meta-text">${description}</div>`}
+          ${description ? html`<div class="meta-text">${description}</div>` : null}
           <div class="meta-text">Drag to pan · wheel to zoom · click node to ${allowWiring ? "wire edges" : "open task"}.</div>
         </div>
         <div class="task-dag-controls">
@@ -3558,7 +3558,9 @@ function DagGraphSection({
           <${Button} size="small" variant="outlined" onClick=${fitToView}>Fit</${Button}>
           <${Button} size="small" variant="text" onClick=${() => { setZoom(1); setPan({ x: 24, y: 24 }); }}>Reset</${Button}>
           <span class="task-dag-zoom-pill">${Math.round(zoom * 100)}%</span>
-          ${allowWiring && html`<span class="task-dag-wire-pill">${wireSourceId ? `Source: ${wireSourceId}` : wiringBusy ? "Saving edge…" : "Wiring: click source then target"}</span>`}
+          ${allowWiring
+            ? html`<span class="task-dag-wire-pill">${wireSourceId ? `Source: ${wireSourceId}` : wiringBusy ? "Saving edge…" : "Wiring: click source then target"}</span>`
+            : null}
         </div>
       </div>
       <div class="task-dag-legend">
@@ -4856,8 +4858,8 @@ export function TasksTab() {
 
     ${isDag && html`
       <div class="task-dag-wrap" style=${{ display: "grid", gap: "10px", marginTop: "8px" }}>
-        ${dagError && html`<${Alert} severity="warning">${dagError}</${Alert}>`}
-        ${dagLoading && html`<${Alert} severity="info">Loading DAG data…</${Alert}>`}
+        ${dagError ? html`<${Alert} severity="warning">${dagError}</${Alert}>` : null}
+        ${dagLoading ? html`<${Alert} severity="info">Loading DAG data…</${Alert}>` : null}
         <${DagGraphSection}
           title=${dagSprintGraph.title || (dagSelectedSprint === "all" ? "All Sprint DAG" : `Sprint ${dagSelectedSprint} DAG`)}
           description=${dagSprintGraph.description || "Task dependency order within the selected sprint."}
@@ -4867,7 +4869,7 @@ export function TasksTab() {
           onCreateEdge={({ sourceNode, targetNode }) => handleCreateDagEdge({ sourceNode, targetNode, graphKind: "task" })}
           allowWiring=${true}
           emptyMessage="No sprint DAG data available yet."
-        />
+        ><//>
         <${DagGraphSection}
           title=${dagGlobalGraph.title || "Global DAG of DAGs"}
           description=${dagGlobalGraph.description || "Cross-sprint dependency overview."}
@@ -4877,7 +4879,7 @@ export function TasksTab() {
           onCreateEdge={({ sourceNode, targetNode }) => handleCreateDagEdge({ sourceNode, targetNode, graphKind: "task" })}
           allowWiring=${true}
           emptyMessage="No global DAG data available yet."
-        />
+        ><//>
         <${DagGraphSection}
           title=${dagEpicGraph.title || "Epic Dependency DAG"}
           description=${dagEpicGraph.description || "Epics and their run prerequisites."}
@@ -4886,7 +4888,7 @@ export function TasksTab() {
           onCreateEdge={({ sourceNode, targetNode }) => handleCreateDagEdge({ sourceNode, targetNode, graphKind: "epic" })}
           allowWiring=${true}
           emptyMessage="No epic DAG data available yet."
-        />
+        ><//>
       </div>
     `}
 

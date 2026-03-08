@@ -2339,9 +2339,98 @@ describe("ui-server mini app", () => {
     expect(listedByParentTaskId.taskId).toBe(parent.data.id);
     expect(Array.isArray(listedByParentTaskId.data)).toBe(true);
   });
+
+  it("focuses agent log tails on session-specific lines", async () => {
+    process.env.TELEGRAM_UI_TUNNEL = "disabled";
+
+    const mod = await import("../server/ui-server.mjs");
+    const server = await mod.startTelegramUiServer({
+      port: await getFreePort(),
+      host: "127.0.0.1",
+      skipInstanceLock: true,
+      skipAutoOpen: true,
+    });
+    const port = server.address().port;
+
+    const logDir = join(process.cwd(), "logs", "agents");
+    mkdirSync(logDir, { recursive: true });
+    const query = `ve-log-focus-${Date.now()}`;
+    const logPath = join(logDir, `agent-${query}.log`);
+    writeFileSync(
+      logPath,
+      [
+        "[2026-03-08T12:38:40.000Z] [info] monitor: unrelated health check",
+        `[2026-03-08T12:38:41.000Z] [info] task-executor: Task ${query} moved to review`,
+        `[2026-03-08T12:38:42.000Z] [error] review-agent: [${query}] failed due to policy check`,
+        "[2026-03-08T12:38:43.000Z] [info] monitor: another unrelated line",
+      ].join("\n"),
+      "utf8",
+    );
+
+    try {
+      const payload = await fetch(
+        `http://127.0.0.1:${port}/api/agent-logs/tail?query=${encodeURIComponent(query)}&lines=6`,
+      ).then((r) => r.json());
+
+      expect(payload.ok).toBe(true);
+      expect(payload.data?.file).toBe(`agent-${query}.log`);
+      expect(payload.data?.mode).toBe("focused");
+      expect(payload.data?.content || "").toContain(query);
+      expect(payload.data?.content || "").toContain("failed due to policy check");
+    } finally {
+      rmSync(logPath, { force: true });
+    }
+  });
+
+  it("falls back to session workspaceDir for diff view", async () => {
+    process.env.TELEGRAM_UI_TUNNEL = "disabled";
+
+    const repoDir = mkdtempSync(join(tmpdir(), "bosun-session-diff-"));
+    const filePath = join(repoDir, "notes.txt");
+    const { execSync } = await import("node:child_process");
+    execSync("git init", { cwd: repoDir, stdio: "pipe" });
+    execSync("git config user.email bosun@example.com", { cwd: repoDir, stdio: "pipe" });
+    execSync("git config user.name Bosun", { cwd: repoDir, stdio: "pipe" });
+    writeFileSync(filePath, "line one\n", "utf8");
+    execSync("git add notes.txt", { cwd: repoDir, stdio: "pipe" });
+    execSync('git commit -m "init"', { cwd: repoDir, stdio: "pipe" });
+    writeFileSync(filePath, "line one\nline two\n", "utf8");
+
+    const mod = await import("../server/ui-server.mjs");
+    const server = await mod.startTelegramUiServer({
+      port: await getFreePort(),
+      host: "127.0.0.1",
+      skipInstanceLock: true,
+      skipAutoOpen: true,
+    });
+    const port = server.address().port;
+
+    try {
+      const created = await fetch(`http://127.0.0.1:${port}/api/sessions/create`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          type: "task",
+          workspaceDir: repoDir,
+          prompt: "diff fallback regression",
+        }),
+      }).then((r) => r.json());
+
+      expect(created.ok).toBe(true);
+      const sessionId = created.session?.id;
+      expect(sessionId).toBeTruthy();
+
+      const diffPayload = await fetch(
+        `http://127.0.0.1:${port}/api/sessions/${encodeURIComponent(sessionId)}/diff?workspace=all`,
+      ).then((r) => r.json());
+
+      expect(diffPayload.ok).toBe(true);
+      expect(diffPayload.diff?.totalFiles).toBeGreaterThan(0);
+      expect(Array.isArray(diffPayload.diff?.files)).toBe(true);
+      expect(diffPayload.diff.files.some((entry) => String(entry.file || entry.filename || "").includes("notes.txt"))).toBe(true);
+    } finally {
+      rmSync(repoDir, { recursive: true, force: true });
+    }
+  });
+
 });
-
-
-
-
-

@@ -10,7 +10,7 @@
  *   - TASK_BATCH_PR_TEMPLATE (batch → agent → PR shortcut)
  *
  * DAG overview:
- *   trigger.task_low
+ *   trigger.task_available
  *     → condition.expression (is coordinator or solo?)
  *       → action.run_command (list todo tasks)
  *         → loop.for_each (fan-out, maxConcurrent tasks at a time)
@@ -38,9 +38,8 @@ export const TASK_BATCH_PROCESSOR_TEMPLATE = {
   category: "lifecycle",
   enabled: true,
   recommended: true,
-  trigger: "trigger.task_low",
+  trigger: "trigger.task_available",
   variables: {
-    backlogThreshold: 3,
     maxConcurrent: 3,
     pollStatus: "todo",
     maxBatchSize: 10,
@@ -48,9 +47,10 @@ export const TASK_BATCH_PROCESSOR_TEMPLATE = {
     notifyChannel: "telegram",
   },
   nodes: [
-    // ── Trigger: Backlog drops below threshold ───────────────────────────
-    node("trigger", "trigger.task_low", "Backlog Low?", {
-      threshold: "{{backlogThreshold}}",
+    // ── Trigger: Tasks available for processing ──────────────────────────
+    node("trigger", "trigger.task_available", "Tasks Available?", {
+      maxParallel: "{{maxConcurrent}}",
+      pollIntervalMs: 60000,
       status: "{{pollStatus}}",
     }, { x: 400, y: 50 }),
 
@@ -141,9 +141,8 @@ export const TASK_BATCH_PR_TEMPLATE = {
   category: "lifecycle",
   enabled: true,
   recommended: false,
-  trigger: "trigger.task_low",
+  trigger: "trigger.task_available",
   variables: {
-    backlogThreshold: 3,
     maxConcurrent: 2,
     pollStatus: "todo",
     maxBatchSize: 5,
@@ -153,8 +152,9 @@ export const TASK_BATCH_PR_TEMPLATE = {
   },
   nodes: [
     // ── Trigger ──────────────────────────────────────────────────────────
-    node("trigger", "trigger.task_low", "Backlog Low?", {
-      threshold: "{{backlogThreshold}}",
+    node("trigger", "trigger.task_available", "Tasks Available?", {
+      maxParallel: "{{maxConcurrent}}",
+      pollIntervalMs: 60000,
       status: "{{pollStatus}}",
     }, { x: 400, y: 50 }),
 

@@ -1146,7 +1146,7 @@ export function AgentsTab() {
     let active = true;
     const refreshTaskSessions = () => {
       if (!active) return;
-      loadSessions({ type: "task" });
+      loadSessions({ type: "task", workspace: "all" });
     };
     refreshTaskSessions();
     const interval = setInterval(refreshTaskSessions, 5000);
@@ -1790,7 +1790,7 @@ function ContextViewer({ sessionId }) {
 }
 
 /* ─── Fleet Full Session View ─── */
-function FleetSessionsPanel({ slots, onOpenWorkspace, onForceStop }) {
+function FleetSessionsPanel({ slots, taskFallbackEntries = [], onOpenWorkspace, onForceStop }) {
   const [detailTab, setDetailTab] = useState("stream");
   const [sessionScope, setSessionScope] = useState("active");
   const [selectedEntryKey, setSelectedEntryKey] = useState(null);
@@ -1802,7 +1802,7 @@ function FleetSessionsPanel({ slots, onOpenWorkspace, onForceStop }) {
      underlying data actually changes – prevents infinite render loops that
      previously caused "insertBefore" DOM errors. */
   const entries = useMemo(() => {
-    return (slots || [])
+    const slotEntries = (slots || [])
       .map((slot, index) => {
         const session =
           allSessions.find((s) => s?.id && slot?.sessionId && s.id === slot.sessionId) ||
@@ -1819,7 +1819,51 @@ function FleetSessionsPanel({ slots, onOpenWorkspace, onForceStop }) {
         const bScore = new Date(b.slot?.startedAt || 0).getTime() || 0;
         return bScore - aScore;
       });
-  }, [slots, allSessions]);
+
+    const activeSessionIds = new Set(
+      slotEntries.map((entry) => String(entry?.session?.id || "").trim()).filter(Boolean),
+    );
+    const activeTaskIds = new Set(
+      slotEntries.map((entry) => String(entry?.slot?.taskId || entry?.session?.taskId || "").trim()).filter(Boolean),
+    );
+    const fallbackEntries = (taskFallbackEntries || [])
+      .filter((task) => {
+        const taskId = String(task?.id || task?.taskId || "").trim();
+        if (!taskId) return false;
+        if (activeTaskIds.has(taskId) || activeSessionIds.has(taskId)) return false;
+        return true;
+      })
+      .map((task, index) => ({
+        key: `task-${String(task?.id || task?.taskId || index).trim()}`,
+        slot: {
+          taskId: String(task?.id || task?.taskId || "").trim(),
+          taskTitle: task?.title || task?.taskTitle || "(untitled task)",
+          branch: task?.branchName || task?.branch || task?.meta?.branchName || "",
+          baseBranch: task?.baseBranch || task?.meta?.baseBranch || null,
+          status: task?.status || task?.runtimeSnapshot?.state || "idle",
+          sessionId: String(task?.id || task?.taskId || "").trim(),
+          startedAt:
+            task?.lastActivityAt ||
+            task?.updatedAt ||
+            task?.createdAt ||
+            null,
+          synthetic: true,
+        },
+        index: (slots || []).length + index,
+        session:
+          allSessions.find((session) => {
+            const sessionTaskId = String(session?.taskId || session?.id || "").trim();
+            return sessionTaskId === String(task?.id || task?.taskId || "").trim();
+          }) || null,
+        isTaskFallback: true,
+      }));
+
+    return [...slotEntries, ...fallbackEntries].sort((a, b) => {
+      const aScore = new Date(a.slot?.startedAt || a.session?.lastActiveAt || 0).getTime() || 0;
+      const bScore = new Date(b.slot?.startedAt || b.session?.lastActiveAt || 0).getTime() || 0;
+      return bScore - aScore;
+    });
+  }, [slots, allSessions, taskFallbackEntries]);
 
   const historyEntries = useMemo(() => {
     const activeSessionIds = new Set(
@@ -1985,7 +2029,9 @@ function FleetSessionsPanel({ slots, onOpenWorkspace, onForceStop }) {
                   <div class="fleet-slot-item-meta">
                     ${entry.isHistory
                       ? `Session ${entry.session?.id || "unknown"} · ${entry.session?.status || "unknown"}`
-                      : `Slot ${(entry.index ?? 0) + 1} · ${entry.slot?.taskId || "no-task-id"}`}
+                      : entry.isTaskFallback
+                        ? `Task only · ${entry.slot?.status || "unknown"} · ${entry.slot?.taskId || "no-task-id"}`
+                        : `Slot ${(entry.index ?? 0) + 1} · ${entry.slot?.taskId || "no-task-id"}`}
                     ${entry.isHistory && (entry.session?.lastActiveAt || entry.session?.updatedAt || entry.session?.createdAt)
                       ? ` · ${formatRelative(entry.session?.lastActiveAt || entry.session?.updatedAt || entry.session?.createdAt)}`
                       : ""}
@@ -2008,9 +2054,11 @@ function FleetSessionsPanel({ slots, onOpenWorkspace, onForceStop }) {
                     </div>
                     <div class="task-card-meta">
                       ${selectedEntry.slot?.taskId || selectedEntry.session?.taskId || selectedEntry.session?.id || "?"}
-                      ${selectedEntry.slot
-                        ? ` · Slot ${(selectedEntry.index ?? 0) + 1}`
-                        : ` · ${selectedEntry.session?.status || "history"}`}
+                      ${selectedEntry.isTaskFallback
+                        ? ` · ${selectedEntry.slot?.status || "task"}`
+                        : selectedEntry.slot
+                          ? ` · Slot ${(selectedEntry.index ?? 0) + 1}`
+                          : ` · ${selectedEntry.session?.status || "history"}`}
                       ${selectedEntry.slot?.branch
                         ? ` · ${selectedEntry.slot.branch}`
                         : selectedEntry.session?.branch
@@ -2018,7 +2066,7 @@ function FleetSessionsPanel({ slots, onOpenWorkspace, onForceStop }) {
                           : ""}
                     </div>
                   </div>
-                  ${selectedEntry.slot && html`
+                  ${selectedEntry.slot && !selectedEntry.isTaskFallback && html`
                     <div class="btn-row">
                       <${Button} variant="text" size="small" onClick=${() => onOpenWorkspace(selectedEntry.slot, selectedEntry.index)}>
                         ${iconText(":search: Workspace")}
@@ -2097,15 +2145,42 @@ export function FleetSessionsTab() {
   const executor = executorData.value;
   const execData = executor?.data;
   const slots = execData?.slots || [];
+  const [taskFallbackEntries, setTaskFallbackEntries] = useState([]);
 
   useEffect(() => {
     let active = true;
     const refreshTaskSessions = () => {
       if (!active) return;
-      loadSessions({ type: "task" });
+      loadSessions({ type: "task", workspace: "all" });
     };
     refreshTaskSessions();
     const interval = setInterval(refreshTaskSessions, 5000);
+    return () => {
+      active = false;
+      clearInterval(interval);
+    };
+  }, []);
+
+  useEffect(() => {
+    let active = true;
+    const loadFallbackTasks = () => {
+      if (!active) return;
+      apiFetch("/api/tasks?limit=1000", { _silent: true })
+        .then((res) => {
+          if (!active) return;
+          const rows = Array.isArray(res?.data) ? res.data : [];
+          const filtered = rows.filter((task) => {
+            const status = String(task?.status || "").trim().toLowerCase();
+            return status === "inprogress" || status === "inreview";
+          });
+          setTaskFallbackEntries(filtered);
+        })
+        .catch(() => {
+          if (active) setTaskFallbackEntries([]);
+        });
+    };
+    loadFallbackTasks();
+    const interval = setInterval(loadFallbackTasks, 5000);
     return () => {
       active = false;
       clearInterval(interval);
@@ -2143,6 +2218,7 @@ export function FleetSessionsTab() {
       <div class="fleet-span">
         <${FleetSessionsPanel}
           slots=${slots}
+          taskFallbackEntries=${taskFallbackEntries}
           onOpenWorkspace=${openWorkspace}
           onForceStop=${handleForceStop}
         />
