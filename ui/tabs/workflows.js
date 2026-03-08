@@ -16,6 +16,16 @@ import { navigateTo, routeParams, setRouteParams } from "../modules/router.js";
 import { ICONS } from "../modules/icons.js";
 import { resolveIcon } from "../modules/icon-utils.js";
 import { formatDate, formatDuration, formatRelative } from "../modules/utils.js";
+import {
+  createHistoryState,
+  getNodeSearchMetadata,
+  parseGraphSnapshot,
+  pushHistorySnapshot,
+  redoHistory,
+  searchNodeTypes,
+  serializeGraphSnapshot,
+  undoHistory,
+} from "./workflow-canvas-utils.mjs";
 import { Card, Badge, EmptyState } from "../components/shared.js";
 import {
   Typography, Box, Stack, Card as MuiCard, CardContent, Button, IconButton, Chip,
@@ -1144,7 +1154,7 @@ function stripEmoji(text) {
  *  Canvas — SVG-based Workflow Editor
  * ═══════════════════════════════════════════════════════════════ */
 
-function WorkflowCanvas({ workflow, onSave }) {
+function WorkflowCanvas({ workflow, onSave, nodeTypes: availableNodeTypes = [] }) {
   const canvasRef = useRef(null);
   const [nodes, setNodes] = useState(workflow?.nodes || []);
   const [edges, setEdges] = useState(workflow?.edges || []);
@@ -1154,24 +1164,179 @@ function WorkflowCanvas({ workflow, onSave }) {
   const [mousePos, setMousePos] = useState({ x: 0, y: 0 });
   const [editingNode, setEditingNode] = useState(null);
   const [showNodePalette, setShowNodePalette] = useState(false);
+  const [nodePaletteQuery, setNodePaletteQuery] = useState("");
+  const [paletteInsertPoint, setPaletteInsertPoint] = useState(null);
+  const [showShortcutOverlay, setShowShortcutOverlay] = useState(false);
   const [zoom, setZoom] = useState(1);
   const [pan, setPan] = useState({ x: 0, y: 0 });
   const [contextMenu, setContextMenu] = useState(null);
   const [spacePanning, setSpacePanning] = useState(false);
   const [selectedNodeIds, setSelectedNodeIds] = useState(new Set());
-  const [marquee, setMarquee] = useState(null); // { x, y, w, h } in canvas coords
-  const marqueeStartRef = useRef(null); // canvas pos where marquee drag started
-  const multiDragRef = useRef({}); // { [nodeId]: { x, y } } start positions
-  // Keep a ref to selectedNodeIds so keyDown handler (closure) can read current value
+  const [historyState, setHistoryState] = useState(() => createHistoryState(workflow?.nodes || [], workflow?.edges || []));
+  const [marquee, setMarquee] = useState(null);
+  const marqueeStartRef = useRef(null);
+  const multiDragRef = useRef({});
+  const nodesRef = useRef(nodes);
+  const edgesRef = useRef(edges);
+  const historyRef = useRef(historyState);
+  const historyTimerRef = useRef(null);
+  const historyPendingSnapshotRef = useRef(null);
+  const saveTimer = useRef(null);
   const selectedNodeIdsRef = useRef(selectedNodeIds);
   useEffect(() => { selectedNodeIdsRef.current = selectedNodeIds; }, [selectedNodeIds]);
+  useEffect(() => {
+    nodesRef.current = nodes;
+    edgesRef.current = edges;
+  }, [nodes, edges]);
 
   useEffect(() => {
-    setNodes(workflow?.nodes || []);
-    setEdges(workflow?.edges || []);
+    const nextNodes = workflow?.nodes || [];
+    const nextEdges = workflow?.edges || [];
+    if (historyTimerRef.current) clearTimeout(historyTimerRef.current);
+    historyPendingSnapshotRef.current = null;
+    nodesRef.current = nextNodes;
+    edgesRef.current = nextEdges;
+    setNodes(nextNodes);
+    setEdges(nextEdges);
+    const nextHistory = createHistoryState(nextNodes, nextEdges);
+    historyRef.current = nextHistory;
+    setHistoryState(nextHistory);
     setSelectedNodeIds(new Set());
     selectedNodeId.value = null;
+    selectedEdgeId.value = null;
+    setEditingNode(null);
+    setContextMenu(null);
+    setShowNodePalette(false);
   }, [workflow?.id, workflow?.nodes?.length, workflow?.edges?.length]);
+
+  // Canvas dimensions
+  const NODE_W = 220;
+  const NODE_H = 60;
+  const PORT_R = 8;
+
+  const toCanvas = useCallback((clientX, clientY) => {
+    const rect = canvasRef.current?.getBoundingClientRect();
+    if (!rect) return { x: 0, y: 0 };
+    return {
+      x: (clientX - rect.left - pan.x) / zoom,
+      y: (clientY - rect.top - pan.y) / zoom,
+    };
+  }, [zoom, pan]);
+
+  const setHistory = useCallback((nextHistory) => {
+    historyRef.current = nextHistory;
+    setHistoryState(nextHistory);
+  }, []);
+
+  const flushPendingHistory = useCallback(() => {
+    if (!historyPendingSnapshotRef.current) return historyRef.current;
+    if (historyTimerRef.current) clearTimeout(historyTimerRef.current);
+    historyTimerRef.current = null;
+    const snapshot = parseGraphSnapshot(historyPendingSnapshotRef.current);
+    historyPendingSnapshotRef.current = null;
+    const nextHistory = pushHistorySnapshot(historyRef.current, snapshot.nodes, snapshot.edges, 50);
+    if (nextHistory !== historyRef.current) setHistory(nextHistory);
+    return nextHistory;
+  }, [setHistory]);
+
+  const scheduleHistoryCommit = useCallback((nextNodes, nextEdges) => {
+    historyPendingSnapshotRef.current = serializeGraphSnapshot(nextNodes, nextEdges);
+    if (historyTimerRef.current) clearTimeout(historyTimerRef.current);
+    historyTimerRef.current = setTimeout(() => {
+      const snapshot = parseGraphSnapshot(historyPendingSnapshotRef.current);
+      historyPendingSnapshotRef.current = null;
+      historyTimerRef.current = null;
+      const nextHistory = pushHistorySnapshot(historyRef.current, snapshot.nodes, snapshot.edges, 50);
+      if (nextHistory !== historyRef.current) setHistory(nextHistory);
+    }, 220);
+  }, [setHistory]);
+
+  const scheduleSave = useCallback((nextNodes, nextEdges) => {
+    if (saveTimer.current) clearTimeout(saveTimer.current);
+    const snapshot = serializeGraphSnapshot(nextNodes, nextEdges);
+    saveTimer.current = setTimeout(() => {
+      if (!workflow?.id) return;
+      const latest = parseGraphSnapshot(snapshot);
+      saveWorkflow({ ...workflow, nodes: latest.nodes, edges: latest.edges });
+    }, 1500);
+  }, [workflow]);
+
+  const applyGraphChange = useCallback((updater, options = {}) => {
+    const currentNodes = nodesRef.current;
+    const currentEdges = edgesRef.current;
+    const nextGraph = updater({ nodes: currentNodes, edges: currentEdges });
+    if (!nextGraph) return null;
+    const nextNodes = nextGraph.nodes ?? currentNodes;
+    const nextEdges = nextGraph.edges ?? currentEdges;
+    if (nextNodes === currentNodes && nextEdges === currentEdges) return null;
+    nodesRef.current = nextNodes;
+    edgesRef.current = nextEdges;
+    setNodes(nextNodes);
+    setEdges(nextEdges);
+    scheduleSave(nextNodes, nextEdges);
+    if (options.history === "debounced") {
+      scheduleHistoryCommit(nextNodes, nextEdges);
+    } else if (options.history !== "skip") {
+      flushPendingHistory();
+      const nextHistory = pushHistorySnapshot(historyRef.current, nextNodes, nextEdges, 50);
+      if (nextHistory !== historyRef.current) setHistory(nextHistory);
+    }
+    return { nodes: nextNodes, edges: nextEdges };
+  }, [flushPendingHistory, scheduleHistoryCommit, scheduleSave, setHistory]);
+
+  const getDefaultInsertPoint = useCallback(() => {
+    if ((mousePos.x || mousePos.y) && Number.isFinite(mousePos.x) && Number.isFinite(mousePos.y)) {
+      return mousePos;
+    }
+    const rect = canvasRef.current?.getBoundingClientRect();
+    if (!rect) return { x: 300, y: 300 };
+    return toCanvas(rect.left + (rect.width / 2), rect.top + (rect.height / 2));
+  }, [mousePos, toCanvas]);
+
+  const openNodePalette = useCallback((point = getDefaultInsertPoint()) => {
+    setPaletteInsertPoint(point);
+    setNodePaletteQuery("");
+    setShowNodePalette(true);
+    setContextMenu(null);
+  }, [getDefaultInsertPoint]);
+
+  const closeNodePalette = useCallback(() => {
+    setShowNodePalette(false);
+    setNodePaletteQuery("");
+  }, []);
+
+  const applyHistorySnapshot = useCallback((snapshot) => {
+    const nextNodes = snapshot?.nodes || [];
+    const nextEdges = snapshot?.edges || [];
+    if (historyTimerRef.current) clearTimeout(historyTimerRef.current);
+    historyPendingSnapshotRef.current = null;
+    nodesRef.current = nextNodes;
+    edgesRef.current = nextEdges;
+    setNodes(nextNodes);
+    setEdges(nextEdges);
+    setSelectedNodeIds(new Set());
+    selectedNodeId.value = null;
+    selectedEdgeId.value = null;
+    setEditingNode(null);
+    setContextMenu(null);
+    scheduleSave(nextNodes, nextEdges);
+  }, [scheduleSave]);
+
+  const undoCanvas = useCallback(() => {
+    const readyHistory = flushPendingHistory();
+    const { history: nextHistory, snapshot } = undoHistory(readyHistory);
+    if (nextHistory === readyHistory) return;
+    setHistory(nextHistory);
+    applyHistorySnapshot(snapshot);
+  }, [applyHistorySnapshot, flushPendingHistory, setHistory]);
+
+  const redoCanvas = useCallback(() => {
+    const readyHistory = flushPendingHistory();
+    const { history: nextHistory, snapshot } = redoHistory(readyHistory, 50);
+    if (nextHistory === readyHistory) return;
+    setHistory(nextHistory);
+    applyHistorySnapshot(snapshot);
+  }, [applyHistorySnapshot, flushPendingHistory, setHistory]);
 
   useEffect(() => {
     const onKeyDown = (e) => {
@@ -1182,22 +1347,64 @@ function WorkflowCanvas({ workflow, onSave }) {
         target.tagName === "SELECT" ||
         target.isContentEditable
       );
+      const modKey = e.ctrlKey || e.metaKey;
+      const lowerKey = String(e.key || "").toLowerCase();
       if (e.code === "Space") {
         if (inInput) return;
         e.preventDefault();
         setSpacePanning(true);
         return;
       }
-      // Delete / Backspace — remove all selected nodes
+      if (!inInput && !modKey && !e.altKey && e.key === "/") {
+        e.preventDefault();
+        openNodePalette();
+        return;
+      }
+      if (!inInput && !modKey && !e.altKey && e.key === "?") {
+        e.preventDefault();
+        setShowShortcutOverlay((current) => !current);
+        return;
+      }
+      if (!inInput && modKey && !e.altKey && lowerKey === "a") {
+        e.preventDefault();
+        const ids = new Set(nodesRef.current.map((node) => node.id));
+        setSelectedNodeIds(ids);
+        selectedNodeId.value = ids.size ? [...ids][0] : null;
+        selectedEdgeId.value = null;
+        return;
+      }
+      if (!inInput && modKey && !e.altKey && lowerKey === "z") {
+        e.preventDefault();
+        if (e.shiftKey) redoCanvas();
+        else undoCanvas();
+        return;
+      }
+      if (!inInput && modKey && !e.altKey && lowerKey === "y") {
+        e.preventDefault();
+        redoCanvas();
+        return;
+      }
       if ((e.key === "Delete" || e.key === "Backspace") && !inInput) {
         const ids = selectedNodeIdsRef.current;
         if (ids.size > 0) {
           e.preventDefault();
-          setNodes(prev => prev.filter(n => !ids.has(n.id)));
-          setEdges(prev => prev.filter(ed => !ids.has(ed.source) && !ids.has(ed.target)));
+          applyGraphChange(({ nodes: currentNodes, edges: currentEdges }) => ({
+            nodes: currentNodes.filter((node) => !ids.has(node.id)),
+            edges: currentEdges.filter((edge) => !ids.has(edge.source) && !ids.has(edge.target)),
+          }));
           setSelectedNodeIds(new Set());
           selectedNodeId.value = null;
           setEditingNode(null);
+          return;
+        }
+        if (selectedEdgeId.value) {
+          e.preventDefault();
+          const edgeId = selectedEdgeId.value;
+          applyGraphChange(({ nodes: currentNodes, edges: currentEdges }) => ({
+            nodes: currentNodes,
+            edges: currentEdges.filter((edge) => edge.id !== edgeId),
+          }));
+          selectedEdgeId.value = null;
         }
       }
     };
@@ -1216,21 +1423,7 @@ function WorkflowCanvas({ workflow, onSave }) {
       window.removeEventListener("keyup", onKeyUp);
       window.removeEventListener("blur", onWindowBlur);
     };
-  }, []);
-
-  // Canvas dimensions
-  const NODE_W = 220;
-  const NODE_H = 60;
-  const PORT_R = 8;
-
-  const toCanvas = useCallback((clientX, clientY) => {
-    const rect = canvasRef.current?.getBoundingClientRect();
-    if (!rect) return { x: 0, y: 0 };
-    return {
-      x: (clientX - rect.left - pan.x) / zoom,
-      y: (clientY - rect.top - pan.y) / zoom,
-    };
-  }, [zoom, pan]);
+  }, [applyGraphChange, openNodePalette, redoCanvas, undoCanvas]);
 
   // ── Mouse events ──────────────────────────────────────────
 
@@ -1257,20 +1450,21 @@ function WorkflowCanvas({ workflow, onSave }) {
       const newPrimaryY = canvasPos.y - dragState.offsetY;
       const deltaX = newPrimaryX - dragState.startX;
       const deltaY = newPrimaryY - dragState.startY;
-      setNodes((prev) =>
-        prev.map((n) => {
-          if (n.id === dragState.nodeId) {
-            return { ...n, position: { x: newPrimaryX, y: newPrimaryY } };
+      applyGraphChange(({ nodes: currentNodes, edges: currentEdges }) => ({
+        nodes: currentNodes.map((node) => {
+          if (node.id === dragState.nodeId) {
+            return { ...node, position: { x: newPrimaryX, y: newPrimaryY } };
           }
-          const startPos = multiDragRef.current[n.id];
+          const startPos = multiDragRef.current[node.id];
           if (startPos !== undefined) {
-            return { ...n, position: { x: startPos.x + deltaX, y: startPos.y + deltaY } };
+            return { ...node, position: { x: startPos.x + deltaX, y: startPos.y + deltaY } };
           }
-          return n;
+          return node;
         }),
-      );
+        edges: currentEdges,
+      }), { history: "debounced" });
     }
-  }, [toCanvas, panStart, dragState]);
+  }, [applyGraphChange, toCanvas, panStart, dragState]);
 
   const onMouseDown = useCallback((e) => {
     if (e.button === 1 || (e.button === 0 && (e.ctrlKey || spacePanning))) {
@@ -1301,7 +1495,7 @@ function WorkflowCanvas({ workflow, onSave }) {
     if (dragState) {
       setDragState(null);
       multiDragRef.current = {};
-      autoSave();
+      flushPendingHistory();
     }
     if (connecting) {
       setConnecting(null);
@@ -1310,7 +1504,7 @@ function WorkflowCanvas({ workflow, onSave }) {
       const m = marquee;
       if (m && m.w > 4 && m.h > 4) {
         const ids = new Set();
-        for (const node of nodes) {
+        for (const node of nodesRef.current) {
           const nx = node.position?.x || 0;
           const ny = node.position?.y || 0;
           if (nx + NODE_W > m.x && nx < m.x + m.w && ny + NODE_H > m.y && ny < m.y + m.h) {
@@ -1325,7 +1519,7 @@ function WorkflowCanvas({ workflow, onSave }) {
       marqueeStartRef.current = null;
       setMarquee(null);
     }
-  }, [panStart, dragState, connecting, marquee, nodes]);
+  }, [panStart, dragState, connecting, marquee, flushPendingHistory]);
 
   const onPointerDown = useCallback((e) => {
     if (e.pointerType !== "touch" && e.pointerType !== "pen") return;
@@ -1359,13 +1553,13 @@ function WorkflowCanvas({ workflow, onSave }) {
     if (dragState) {
       setDragState(null);
       multiDragRef.current = {};
-      autoSave();
+      flushPendingHistory();
     }
     if (connecting) {
       setConnecting(null);
     }
     e.preventDefault();
-  }, [panStart, dragState, connecting]);
+  }, [panStart, dragState, connecting, flushPendingHistory]);
 
   const onWheel = useCallback((e) => {
     e.preventDefault();
@@ -1471,19 +1665,21 @@ function WorkflowCanvas({ workflow, onSave }) {
   const onInputPortMouseUp = useCallback((nodeId) => {
     if (connecting && connecting.sourceId !== nodeId) {
       const edgeId = `${connecting.sourceId}->${nodeId}`;
-      const exists = edges.some(e => e.source === connecting.sourceId && e.target === nodeId);
+      const exists = edgesRef.current.some((edge) => edge.source === connecting.sourceId && edge.target === nodeId);
       if (!exists) {
-        setEdges(prev => [...prev, {
-          id: edgeId,
-          source: connecting.sourceId,
-          target: nodeId,
-          sourcePort: "default",
-        }]);
-        autoSave();
+        applyGraphChange(({ nodes: currentNodes, edges: currentEdges }) => ({
+          nodes: currentNodes,
+          edges: [...currentEdges, {
+            id: edgeId,
+            source: connecting.sourceId,
+            target: nodeId,
+            sourcePort: "default",
+          }],
+        }));
       }
     }
     setConnecting(null);
-  }, [connecting, edges]);
+  }, [applyGraphChange, connecting]);
 
   const onInputPortPointerUp = useCallback((nodeId, e) => {
     if (e.pointerType !== "touch" && e.pointerType !== "pen") return;
@@ -1494,73 +1690,94 @@ function WorkflowCanvas({ workflow, onSave }) {
 
   // ── CRUD ──────────────────────────────────────────────────
 
-  const addNode = useCallback((type) => {
-    const id = `node-${Date.now()}`;
-    const [cat, name] = type.split(".");
-    const meta = getNodeMeta(type);
+  const addNode = useCallback((type, position = paletteInsertPoint || getDefaultInsertPoint()) => {
+    const id = `node-${Date.now()}-${Math.round(Math.random() * 1000)}`;
+    const name = type.split(".").pop();
     const newNode = {
       id,
       type,
       label: name?.replace(/_/g, " ") || type,
       config: {},
-      position: { x: mousePos.x || 300, y: mousePos.y || 300 },
+      position: position || { x: 300, y: 300 },
       outputs: ["default"],
     };
-    setNodes(prev => [...prev, newNode]);
+    applyGraphChange(({ nodes: currentNodes, edges: currentEdges }) => ({
+      nodes: [...currentNodes, newNode],
+      edges: currentEdges,
+    }));
     selectedNodeId.value = id;
-    setShowNodePalette(false);
+    selectedEdgeId.value = null;
+    setSelectedNodeIds(new Set([id]));
+    closeNodePalette();
     haptic("light");
-  }, [mousePos]);
+  }, [applyGraphChange, closeNodePalette, getDefaultInsertPoint, paletteInsertPoint]);
 
   const deleteNode = useCallback((nodeId) => {
-    setNodes(prev => prev.filter(n => n.id !== nodeId));
-    setEdges(prev => prev.filter(e => e.source !== nodeId && e.target !== nodeId));
+    applyGraphChange(({ nodes: currentNodes, edges: currentEdges }) => ({
+      nodes: currentNodes.filter((node) => node.id !== nodeId),
+      edges: currentEdges.filter((edge) => edge.source !== nodeId && edge.target !== nodeId),
+    }));
     if (selectedNodeId.value === nodeId) selectedNodeId.value = null;
-    setSelectedNodeIds(prev => { const s = new Set(prev); s.delete(nodeId); return s; });
+    setSelectedNodeIds((current) => {
+      const next = new Set(current);
+      next.delete(nodeId);
+      return next;
+    });
     setEditingNode(null);
     setContextMenu(null);
-    autoSave();
-  }, []);
+  }, [applyGraphChange]);
 
   const deleteEdge = useCallback((edgeId) => {
-    setEdges(prev => prev.filter(e => e.id !== edgeId));
+    applyGraphChange(({ nodes: currentNodes, edges: currentEdges }) => ({
+      nodes: currentNodes,
+      edges: currentEdges.filter((edge) => edge.id !== edgeId),
+    }));
     selectedEdgeId.value = null;
-    autoSave();
-  }, []);
+  }, [applyGraphChange]);
+
+  const duplicateNode = useCallback((nodeId) => {
+    const sourceNode = nodesRef.current.find((node) => node.id === nodeId);
+    if (!sourceNode) return;
+    const clone = {
+      ...sourceNode,
+      id: `node-${Date.now()}-${Math.round(Math.random() * 1000)}`,
+      position: {
+        x: (sourceNode.position?.x || 0) + 40,
+        y: (sourceNode.position?.y || 0) + 40,
+      },
+    };
+    applyGraphChange(({ nodes: currentNodes, edges: currentEdges }) => ({
+      nodes: [...currentNodes, clone],
+      edges: currentEdges,
+    }));
+    selectedNodeId.value = clone.id;
+    selectedEdgeId.value = null;
+    setSelectedNodeIds(new Set([clone.id]));
+    setContextMenu(null);
+  }, [applyGraphChange]);
 
   const updateNodeConfig = useCallback((nodeId, configPatch) => {
-    setNodes(prev => prev.map(n =>
-      n.id === nodeId ? { ...n, config: { ...n.config, ...configPatch } } : n
-    ));
-    autoSave();
-  }, []);
+    applyGraphChange(({ nodes: currentNodes, edges: currentEdges }) => ({
+      nodes: currentNodes.map((node) => (
+        node.id === nodeId ? { ...node, config: { ...node.config, ...configPatch } } : node
+      )),
+      edges: currentEdges,
+    }), { history: "debounced" });
+  }, [applyGraphChange]);
 
   const updateNodeLabel = useCallback((nodeId, label) => {
-    setNodes(prev => prev.map(n =>
-      n.id === nodeId ? { ...n, label } : n
-    ));
-    autoSave();
-  }, []);
+    applyGraphChange(({ nodes: currentNodes, edges: currentEdges }) => ({
+      nodes: currentNodes.map((node) => (
+        node.id === nodeId ? { ...node, label } : node
+      )),
+      edges: currentEdges,
+    }), { history: "debounced" });
+  }, [applyGraphChange]);
 
-  // ── Auto-save (debounced) ─────────────────────────────────
-
-  const saveTimer = useRef(null);
-  const autoSave = useCallback(() => {
+  useEffect(() => () => {
     if (saveTimer.current) clearTimeout(saveTimer.current);
-    saveTimer.current = setTimeout(() => {
-      if (!workflow?.id) return;
-      const updated = {
-        ...workflow,
-        nodes: nodes,
-        edges: edges,
-      };
-      // Use latest state
-      saveWorkflow(updated);
-    }, 1500);
-  }, [workflow, nodes, edges]);
-
-  // cleanup
-  useEffect(() => () => { if (saveTimer.current) clearTimeout(saveTimer.current); }, []);
+    if (historyTimerRef.current) clearTimeout(historyTimerRef.current);
+  }, []);
 
   // ── Render helpers ────────────────────────────────────────
 
@@ -1602,10 +1819,10 @@ function WorkflowCanvas({ workflow, onSave }) {
         <${Button} variant="text" size="small" onClick=${returnToWorkflowList}>
           ← Back to Workflows
         <//>
-        <${Button} variant="contained" size="small" onClick=${() => setShowNodePalette(!showNodePalette)} sx=${{ display: 'flex', alignItems: 'center', gap: '6px' }}>
-          <span style="font-size: 18px;">+</span> Add Node
+        <${Button} variant="contained" size="small" onClick=${() => openNodePalette()} sx=${{ display: 'flex', alignItems: 'center', gap: '6px' }}>
+          <span style="font-size: 18px;">+</span> Add Node /
         <//>
-        <${Button} variant="outlined" size="small" onClick=${() => { if (workflow) saveWorkflow({ ...workflow, nodes, edges }); }}>
+        <${Button} variant="outlined" size="small" onClick=${() => { if (workflow) saveWorkflow({ ...workflow, nodes: nodesRef.current, edges: edgesRef.current }); }}>
           <span class="btn-icon">${resolveIcon("save")}</span>
           Save
         <//>
@@ -1636,6 +1853,9 @@ function WorkflowCanvas({ workflow, onSave }) {
           <span class="btn-icon">${resolveIcon(workflow?.enabled === false ? "play" : "pause")}</span>
           ${workflow?.enabled === false ? "Resume" : "Pause"}
         <//>
+        <${Button} variant="text" size="small" disabled=${historyState.past.length === 0} onClick=${undoCanvas}>Undo<//>
+        <${Button} variant="text" size="small" disabled=${historyState.future.length === 0} onClick=${redoCanvas}>Redo<//>
+        <${Button} variant="text" size="small" onClick=${() => setShowShortcutOverlay(true)}>Shortcuts ?<//>
         <div style="flex:1;"></div>
         ${selectedNodeIds.size > 1 && html`
           <span class="wf-badge" style="font-size: 11px; background: #3b82f640; color: #60a5fa; border: 1px solid #3b82f660;">
@@ -1653,14 +1873,21 @@ function WorkflowCanvas({ workflow, onSave }) {
         <${Button} variant="text" size="small" onClick=${returnToWorkflowList}>← Back to Workflows<//>
       </div>
 
-      <!-- Node Palette (dropdown) -->
-      ${showNodePalette && html`
-        <${NodePalette}
-          nodeTypes=${nodeTypes.value}
-          onSelect=${(type) => addNode(type)}
-          onClose=${() => setShowNodePalette(false)}
-        />
-      `}
+      <${NodePalette}
+        open=${showNodePalette}
+        nodeTypes=${availableNodeTypes}
+        insertPoint=${paletteInsertPoint || getDefaultInsertPoint()}
+        query=${nodePaletteQuery}
+        onQueryChange=${setNodePaletteQuery}
+        onSelect=${(type) => addNode(type, paletteInsertPoint || getDefaultInsertPoint())}
+        onClose=${closeNodePalette}
+      />
+      <${KeyboardShortcutOverlay}
+        open=${showShortcutOverlay}
+        onClose=${() => setShowShortcutOverlay(false)}
+        canUndo=${historyState.past.length > 0}
+        canRedo=${historyState.future.length > 0}
+      />
 
       <!-- SVG Canvas -->
       <svg
@@ -1693,7 +1920,7 @@ function WorkflowCanvas({ workflow, onSave }) {
         </defs>
 
         <!-- Background grid — covers entire pannable area -->
-        <rect class="canvas-bg" x="-10000" y="-10000" width="30000" height="30000" fill="url(#grid-pattern)" />
+        <rect class="canvas-bg" x="-10000" y="-10000" width="30000" height="30000" fill="url(#grid-pattern)" onDblClick=${(e) => { e.preventDefault(); openNodePalette(toCanvas(e.clientX, e.clientY)); }} />
 
         <g transform="translate(${pan.x} ${pan.y}) scale(${zoom})">
 
@@ -1868,7 +2095,7 @@ function WorkflowCanvas({ workflow, onSave }) {
             <span class="btn-icon">${resolveIcon("settings")}</span>
             Edit Config
           <//>
-          <${MenuItem} onClick=${() => { const n = nodes.find(n => n.id === contextMenu.nodeId); if (n) { const clone = { ...n, id: `node-${Date.now()}`, position: { x: n.position.x + 40, y: n.position.y + 40 } }; setNodes(p => [...p, clone]); } setContextMenu(null); }}>
+          <${MenuItem} onClick=${() => duplicateNode(contextMenu.nodeId)}>
             <span class="btn-icon">${resolveIcon("clipboard")}</span>
             Duplicate
           <//>
@@ -1898,84 +2125,160 @@ function WorkflowCanvas({ workflow, onSave }) {
  *  Node Palette — categorized node type picker
  * ═══════════════════════════════════════════════════════════════ */
 
-function NodePalette({ nodeTypes: types, onSelect, onClose }) {
-  const [search, setSearch] = useState("");
-  const [expandedCat, setExpandedCat] = useState(null);
+function NodePalette({
+  open,
+  nodeTypes: types,
+  insertPoint,
+  query,
+  onQueryChange,
+  onSelect,
+  onClose,
+}) {
+  const [selectedIndex, setSelectedIndex] = useState(0);
 
-  const grouped = useMemo(() => {
-    const groups = {};
-    for (const nt of (types || [])) {
-      const cat = nt.category || "other";
-      if (!groups[cat]) groups[cat] = [];
-      groups[cat].push(nt);
-    }
-    return groups;
-  }, [types]);
+  const results = useMemo(() => searchNodeTypes(types || [], query, 40), [types, query]);
 
-  const filtered = useMemo(() => {
-    if (!search.trim()) return grouped;
-    const q = search.toLowerCase();
-    const result = {};
-    for (const [cat, items] of Object.entries(grouped)) {
-      const matched = items.filter(nt =>
-        nt.type.toLowerCase().includes(q) ||
-        (nt.description || "").toLowerCase().includes(q)
-      );
-      if (matched.length) result[cat] = matched;
-    }
-    return result;
-  }, [grouped, search]);
+  useEffect(() => {
+    if (!open) return;
+    setSelectedIndex(0);
+  }, [open, query]);
+
+  useEffect(() => {
+    if (selectedIndex < results.length) return;
+    setSelectedIndex(0);
+  }, [results.length, selectedIndex]);
+
+  if (!open) return null;
+
+  const selected = results[selectedIndex] || results[0] || null;
+  const submit = (item) => {
+    if (!item) return;
+    onSelect(item.type);
+  };
 
   return html`
-    <div class="wf-palette" style="position: absolute; top: 52px; left: 12px; z-index: 30; width: 320px; max-height: 70vh; overflow-y: auto; background: var(--color-bg, #0d1117); border: 1px solid var(--color-border, #2a3040); border-radius: 12px; padding: 12px; box-shadow: 0 8px 32px rgba(0,0,0,0.5);">
-      <div style="display: flex; align-items: center; gap: 8px; margin-bottom: 10px;">
+    <div
+      style="position: absolute; inset: 0; z-index: 32; background: rgba(3, 7, 18, 0.55); backdrop-filter: blur(2px);"
+      onClick=${(e) => { if (e.target === e.currentTarget) onClose(); }}
+    >
+      <div class="wf-palette" style="position: absolute; top: 72px; left: 50%; transform: translateX(-50%); width: min(760px, calc(100% - 32px)); max-height: min(70vh, 720px); overflow: hidden; background: var(--color-bg, #0d1117); border: 1px solid var(--color-border, #2a3040); border-radius: 16px; padding: 14px; box-shadow: 0 18px 48px rgba(0,0,0,0.45); display: flex; flex-direction: column; gap: 12px;">
+        <div style="display: flex; align-items: center; gap: 10px;">
+          <div style="flex: 1; min-width: 0;">
+            <div style="font-size: 14px; font-weight: 700; color: var(--color-text, white);">Insert workflow node</div>
+            <div style="font-size: 11px; opacity: 0.7; margin-top: 3px;">${types?.length || 0} node types · insert at ${Math.round(insertPoint?.x || 0)}, ${Math.round(insertPoint?.y || 0)}</div>
+          </div>
+          <${IconButton} size="small" onClick=${onClose} sx=${{ fontSize: '16px', lineHeight: 1 }}>
+            <span class="icon-inline">${resolveIcon("✕")}</span>
+          <//>
+        </div>
         <${TextField}
           size="small"
           variant="outlined"
-          placeholder="Search nodes..."
-          value=${search}
-          onInput=${(e) => setSearch(e.target.value)}
+          placeholder="Search by name, category, description, or config input..."
+          value=${query}
+          onInput=${(e) => onQueryChange(e.target.value)}
+          onKeyDown=${(e) => {
+            if (e.key === "ArrowDown") {
+              e.preventDefault();
+              setSelectedIndex((current) => results.length ? Math.min(current + 1, results.length - 1) : 0);
+              return;
+            }
+            if (e.key === "ArrowUp") {
+              e.preventDefault();
+              setSelectedIndex((current) => Math.max(current - 1, 0));
+              return;
+            }
+            if (e.key === "Enter") {
+              e.preventDefault();
+              submit(selected);
+              return;
+            }
+            if (e.key === "Escape") {
+              e.preventDefault();
+              onClose();
+            }
+          }}
           sx=${{ flex: 1 }}
           autoFocus
         />
-        <${IconButton} size="small" onClick=${onClose} sx=${{ fontSize: '16px', lineHeight: 1 }}>
-          <span class="icon-inline">${resolveIcon("✕")}</span>
-        <//>
-      </div>
-
-      ${Object.entries(filtered).map(([cat, items]) => {
-        const meta = NODE_CATEGORY_META[cat] || { color: "#6b7280", icon: "diamond", label: cat };
-        return html`
-          <div key=${cat} style="margin-bottom: 8px;">
-            <div
-              style="display: flex; align-items: center; gap: 6px; padding: 6px 8px; border-radius: 6px; cursor: pointer; color: ${meta.color}; font-weight: 600; font-size: 12px; text-transform: uppercase; letter-spacing: 0.5px;"
-              onClick=${() => setExpandedCat(expandedCat === cat ? null : cat)}
-            >
-              <span class="icon-inline">${resolveIcon(meta.icon) || ICONS.dot}</span>
-              <span>${meta.label}</span>
-              <span style="margin-left: auto; font-size: 10px; opacity: 0.5;">${items.length}</span>
-              <span style="font-size: 10px;">${expandedCat === cat ? ICONS.chevronDown : ICONS.arrowRight}</span>
-            </div>
-            ${(expandedCat === cat || search.trim()) && items.map(nt => html`
-              <${Button}
-                key=${nt.type}
-                onClick=${() => { onSelect(nt.type); haptic("light"); }}
-                variant="text"
-                size="small"
-                sx=${{ display: 'block', width: '100%', textAlign: 'left', padding: '8px 12px 8px 28px', background: 'none', border: 'none', color: 'var(--color-text, white)', fontSize: '13px', cursor: 'pointer', borderRadius: '6px', margin: '1px 0', textTransform: 'none' }}
+        <div style="display: flex; align-items: center; gap: 8px; font-size: 11px; opacity: 0.7;">
+          <span>${results.length} matches</span>
+          <span>·</span>
+          <span>↵ insert</span>
+          <span>·</span>
+          <span>↑↓ navigate</span>
+        </div>
+        <div style="display: flex; flex-direction: column; gap: 8px; overflow-y: auto; padding-right: 2px;">
+          ${results.map((item, index) => {
+            const meta = NODE_CATEGORY_META[item.category] || { color: "#6b7280", bg: "#6b728020", label: item.category };
+            const io = getNodeSearchMetadata(item);
+            const inputText = io.inputs.length
+              ? `Inputs: ${io.inputs.slice(0, 4).join(", ")}${io.inputs.length > 4 ? ` +${io.inputs.length - 4}` : ""}`
+              : "Inputs: none";
+            const outputText = `Outputs: ${io.outputs.join(", ")}`;
+            return html`
+              <button
+                key=${item.type}
+                type="button"
+                class=${`wf-node-search-item ${index === selectedIndex ? "active" : ""}`}
+                style=${`display:flex; flex-direction:column; gap:8px; width:100%; text-align:left; border:1px solid ${index === selectedIndex ? '#3b82f6aa' : 'var(--color-border, #2a3040)'}; border-radius:12px; padding:12px 14px; background:${index === selectedIndex ? 'rgba(59,130,246,0.12)' : 'var(--color-bg-secondary, #131722)'}; color:var(--color-text, white); cursor:pointer;`}
+                onMouseEnter=${() => setSelectedIndex(index)}
+                onClick=${() => submit(item)}
               >
-                <div style="font-weight: 500;">${nt.type.split(".").pop()?.replace(/_/g, " ")}</div>
-                <div style="font-size: 11px; opacity: 0.6; margin-top: 2px;">${(nt.description || "").slice(0, 60)}</div>
-              <//>
-            `)}
-          </div>
-        `;
-      })}
-
-      ${Object.keys(filtered).length === 0 && html`
-        <div style="text-align: center; padding: 20px; opacity: 0.5;">No matching nodes</div>
-      `}
+                <div style="display:flex; align-items:center; gap:8px; flex-wrap:wrap;">
+                  <span style="font-weight:700; font-size:13px;">${item.label}</span>
+                  <span style=${`display:inline-flex; align-items:center; padding:2px 8px; border-radius:999px; font-size:10px; letter-spacing:0.04em; text-transform:uppercase; color:${meta.color}; background:${meta.bg}; border:1px solid ${meta.color}33;`}>${meta.label || item.category}</span>
+                  <span style="font-size:11px; opacity:0.55;">${item.type}</span>
+                </div>
+                <div style="font-size:12px; opacity:0.78; line-height:1.4;">${item.description || "No description available."}</div>
+                <div style="display:flex; gap:10px; flex-wrap:wrap; font-size:11px; opacity:0.72;">
+                  <span>${inputText}</span>
+                  <span>${outputText}</span>
+                </div>
+              </button>
+            `;
+          })}
+          ${results.length === 0 && html`
+            <div style="text-align: center; padding: 20px; opacity: 0.6;">No matching nodes</div>
+          `}
+        </div>
+      </div>
     </div>
+  `;
+}
+
+function KeyboardShortcutOverlay({ open, onClose, canUndo, canRedo }) {
+  if (!open) return null;
+  const shortcuts = [
+    { keys: "/", description: "Open fuzzy node search" },
+    { keys: "Double-click canvas", description: "Insert a node at that position" },
+    { keys: "?", description: "Show this shortcut reference" },
+    { keys: "Ctrl/Cmd + Z", description: canUndo ? "Undo last graph change" : "Undo unavailable" },
+    { keys: "Ctrl/Cmd + Shift + Z", description: canRedo ? "Redo last undone change" : "Redo unavailable" },
+    { keys: "Ctrl/Cmd + Y", description: canRedo ? "Alternate redo shortcut" : "Alternate redo shortcut" },
+    { keys: "Delete / Backspace", description: "Delete selected node or edge" },
+    { keys: "Ctrl/Cmd + A", description: "Select all nodes" },
+    { keys: "Space + drag", description: "Pan the canvas" },
+    { keys: "Ctrl/Cmd + drag", description: "Alternate mouse panning" },
+    { keys: "Shift + click", description: "Add or remove a node from the selection" },
+  ];
+  return html`
+    <${Dialog} open=${open} onClose=${onClose} maxWidth="sm" fullWidth>
+      <${DialogTitle}>Canvas Shortcuts<//>
+      <${DialogContent} dividers>
+        <div style="display:flex; flex-direction:column; gap:10px;">
+          ${shortcuts.map((shortcut) => html`
+            <div key=${shortcut.keys} style="display:flex; align-items:flex-start; justify-content:space-between; gap:16px;">
+              <code style="font-size:12px; padding:3px 8px; border-radius:8px; background:rgba(148,163,184,0.14);">${shortcut.keys}</code>
+              <span style="font-size:13px; opacity:0.82; text-align:right;">${shortcut.description}</span>
+            </div>
+          `)}
+        </div>
+      <//>
+      <${DialogActions}>
+        <${Button} onClick=${onClose}>Close<//>
+      <//>
+    <//>
   `;
 }
 
@@ -3560,7 +3863,7 @@ export function WorkflowsTab() {
       style="padding: 8px; --color-bg: var(--bg-card); --color-bg-secondary: var(--bg-secondary); --color-border: var(--border); --color-text: var(--text-primary); --color-text-secondary: var(--text-secondary);"
     >
       ${mode === "canvas" && activeWorkflow.value
-        ? html`<${WorkflowCanvas} workflow=${activeWorkflow.value} />`
+        ? html`<${WorkflowCanvas} workflow=${activeWorkflow.value} nodeTypes=${nodeTypes.value} />`
         : mode === "runs"
         ? html`<${RunHistoryView} />`
         : html`<${WorkflowListView} />`
@@ -3570,3 +3873,9 @@ export function WorkflowsTab() {
     </div>
   `;
 }
+
+
+
+
+
+
