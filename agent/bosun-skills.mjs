@@ -765,7 +765,7 @@ await engine.process(data);
 `,
   },
   {
-    filename: "codebase-annotation-audit.md",
+    filename: "skill-codebase-audit.md",
     title: "Codebase Annotation Audit",
     tags: [
       "audit", "annotation", "documentation", "summary", "inventory",
@@ -794,12 +794,12 @@ runtime tokens and dramatically reduce exploration time.
 Use structured comment headers that agents are trained to recognize:
 
 \\\`\\\`\\\`
-// BOSUN:SUMMARY — <module-name>
+// CLAUDE:SUMMARY — <module-name>
 // <1–3 sentence summary of purpose, key types, and public API>
 \\\`\\\`\\\`
 
 \\\`\\\`\\\`
-// BOSUN:WARN — <module-name>
+// CLAUDE:WARN — <module-name>
 // <non-obvious pitfall, race condition, or constraint agents MUST know>
 \\\`\\\`\\\`
 
@@ -807,7 +807,7 @@ Use structured comment headers that agents are trained to recognize:
 - Keep each annotation to ≤ 3 lines.
 - Do NOT annotate trivial files (configs, lockfiles, generated code).
 
-## 6-Phase Audit Process
+## 6-Phase Audit
 
 ### Phase 1 — Inventory
 Enumerate every source file.  For each file record:
@@ -825,7 +825,7 @@ Output: \\\`.bosun/audit/inventory.json\\\`
 ### Phase 2 — Summaries
 For every file where \\\`has_summary === false\\\` and \\\`category !== "generated"\\\`:
 1. Read the file.
-2. Write a \\\`BOSUN:SUMMARY\\\` comment at the top.
+2. Write a \\\`CLAUDE:SUMMARY\\\` comment at the top.
 3. Stage the file.
 
 ### Phase 3 — Warnings
@@ -835,7 +835,7 @@ For every file, check for non-obvious constraints:
 - Order-dependent initialization
 - Platform-specific behavior (Windows paths, etc.)
 
-Add \\\`BOSUN:WARN\\\` comments where found.
+Add \\\`CLAUDE:WARN\\\` comments where found.
 
 ### Phase 4 — Manifest Audit
 Ensure \\\`AGENTS.md\\\` (or equivalent) at repo root is accurate:
@@ -849,8 +849,8 @@ If the file is outdated or missing sections, append corrections.
 
 ### Phase 5 — Conformity Check
 Re-scan all annotations and validate:
-- \\\`BOSUN:SUMMARY\\\` is present in every non-trivial source file.
-- \\\`BOSUN:WARN\\\` exists for files with known pitfalls.
+- \\\`CLAUDE:SUMMARY\\\` is present in every non-trivial source file.
+- \\\`CLAUDE:WARN\\\` exists for files with known pitfalls.
 - No stale annotations reference symbols/functions that no longer exist.
 
 Output: \\\`.bosun/audit/conformity-report.json\\\`
@@ -1298,3 +1298,4 @@ export function buildRelevantSkillsPromptBlock(bosunHome, taskTitle, taskDescrip
 
   return lines.join("\n").trim();
 }
+
