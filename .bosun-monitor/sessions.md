@@ -165,3 +165,20 @@ ode cli.mjs --daemon --config-dir .bosun --repo-root ...).
   - `npm run prepush:check` passed once after re-run; later run failed due unrelated concurrent file edits in other modules.
 - Blocker:
   - New unexpected concurrent modifications appeared mid-run (`ui/modules/mui.js`, `workflow-templates/task-batch.mjs`, `tests/workflow-templates.test.mjs`, plus pre-existing unrelated edits). Paused before commit/push to avoid shipping mixed changes without user direction.
+
+## 2026-03-09T00:33:14+11:00
+- Context: Hourly source-run health check on `monitor/bosun-env-stability` focused on workflow/task throughput.
+- Baseline:
+  - Branch confirmed `monitor/bosun-env-stability`; package version observed `0.40.6` at start, dirty tracked files already present (`server/ui-server.mjs`, `site/ui/tabs/tasks.js`, `tests/ui-server.test.mjs`, `ui/tabs/agents.js`, `ui/tabs/tasks.js`, `tests/tasks-dag-render-stability.test.mjs`).
+  - Source daemon processes were running with `--config-dir .bosun --repo-root ...`.
+- Findings and fixes:
+  - Detected workflow throughput regression: `Task Batch Processor` and `Task Batch -> PR` repeatedly skipped with large todo backlog due `trigger.task_low` wiring in runtime definitions.
+  - Runtime remediation applied: switched `.bosun/workflows/fcd7047d-...` and `.bosun/workflows/6d793c82-...` trigger nodes/workflow trigger to `trigger.task_available` (`Tasks Available?`, `pollIntervalMs=60000`, `maxParallel={{maxConcurrent}}`).
+  - Startup blocker found: `.bosun/.env` lacked `WORKFLOW_AUTOMATION_ENABLED=true`; source startup could come up with workflow automation disabled. Added explicit flag.
+  - Verified source startup in foreground after env fix now logs `workflows automation enabled` and executes startup schedule runs for task workflows.
+- Runtime state at end of run:
+  - Daemon and monitor active from source (`cli.mjs` PID 53752, `infra/monitor.mjs` PID 44108).
+  - `.bosun/workflow-runs/index.json` advanced to `00:31:01+11:00`.
+  - Latest runs include `Agent Session Monitor` and `Task trace workflow`; task-batch/planner runs still not recurring at 1-min cadence after the startup burst and need follow-up tuning/diagnosis.
+- Outstanding risk:
+  - Planner startup run `19e3f239-...` failed (`Agent pool or planner prompt not available` -> no materialized tasks), and autonomous throughput remains below expected PR velocity.
