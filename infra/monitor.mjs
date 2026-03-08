@@ -4907,9 +4907,13 @@ function getConfiguredKanbanProjectId(backend) {
   );
 }
 
+function hasUnresolvedTemplateToken(value) {
+  return /{{[^{}]+}}/.test(String(value || ""));
+}
+
 function resolveTaskIdForBackend(taskId, backend) {
   const rawId = String(taskId || "").trim();
-  if (!rawId) return null;
+  if (!rawId || hasUnresolvedTemplateToken(rawId)) return null;
   if (backend !== "github") return rawId;
   const directMatch = parseGitHubIssueNumber(rawId);
   if (directMatch) return directMatch;

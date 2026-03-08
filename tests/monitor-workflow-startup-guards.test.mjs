@@ -65,4 +65,9 @@ describe("monitor workflow startup guards", () => {
       "CLI command mode in source checkout",
     );
   });
+  it("guards backend task-id resolution against unresolved template tokens", () => {
+    expect(monitorSource).toContain("function hasUnresolvedTemplateToken(value)");
+    expect(monitorSource).toContain("if (!rawId || hasUnresolvedTemplateToken(rawId)) return null;");
+  });
+
 });
