@@ -1461,6 +1461,40 @@ describe("WorkflowEngine trigger evaluation", () => {
     const hits = engine.evaluateScheduleTriggers();
     expect(hits.some((h) => h.workflowId === "task-poll-interval-wf")).toBe(false);
   });
+  it("does not traverse downstream nodes when a trigger returns triggered: false", async () => {
+    registerNodeType("test.should_not_run", {
+      describe: () => "Fails if executed",
+      schema: { type: "object", properties: {} },
+      async execute() {
+        throw new Error("downstream should not execute when trigger is false");
+      },
+    });
+
+    const wf = makeSimpleWorkflow(
+      [
+        {
+          id: "low-trigger",
+          type: "trigger.task_low",
+          label: "Task Low",
+          config: { threshold: 3 },
+        },
+        {
+          id: "should-not-run",
+          type: "test.should_not_run",
+          label: "Should Not Run",
+          config: {},
+        },
+      ],
+      [{ source: "low-trigger", target: "should-not-run" }],
+      { id: "task-low-skip-wf", name: "Task Low Skip Workflow" },
+    );
+    engine.save(wf);
+
+    const run = await engine.execute("task-low-skip-wf", { todoCount: 10 });
+    expect(run.errors).toHaveLength(0);
+    expect(run.getNodeStatus("low-trigger")).toBe(NodeStatus.COMPLETED);
+    expect(run.getNodeStatus("should-not-run")).toBe(NodeStatus.SKIPPED);
+  });
   it("evaluateScheduleTriggers skips disabled workflows", () => {
     const wf = {
       id: "sched-disabled",
@@ -2928,3 +2962,4 @@ describe("WorkflowEngine.getTaskTraceEvents", () => {
     expect(reread[0].taskId).toBe("TASK-TRACE-READBACK");
   });
 });
+
