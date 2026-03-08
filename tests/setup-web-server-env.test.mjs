@@ -10,6 +10,18 @@ import {
 } from "../server/setup-web-server.mjs";
 
 describe("setup web server telegram defaults", () => {
+  it("normalizes repo URLs with repeated slashes", () => {
+    expect(
+      normalizeRepoConfigEntry({
+        url: "https://github.com///virtengine///bosun///.git",
+      }),
+    ).toMatchObject({
+      name: "bosun",
+      slug: "virtengine/bosun",
+      url: "https://github.com///virtengine///bosun///.git",
+    });
+  });
+
   it("normalizes UI port values with a safe fallback", () => {
     expect(normalizeTelegramUiPort("4400")).toBe("4400");
     expect(normalizeTelegramUiPort("0")).toBe("3080");

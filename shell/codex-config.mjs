@@ -248,7 +248,10 @@ export function ensureAgentMaxThreads(
       const endUpdated = nextUpdated === -1 ? toml.length : nextUpdated;
       const remaining = toml.substring(afterUpdated, endUpdated).trim();
       // If only whitespace or the bosun comment header remains, remove entire section
-      if (!remaining || isCommentOnlyLines(remaining)) {
+      if (!remaining || remaining.split(/\r?\n/).every((line) => {
+        const trimmed = String(line || "").trim();
+        return !trimmed || trimmed.startsWith("#");
+      })) {
         // Remove from the line before [agents] header to section end
         const lineStart = toml.lastIndexOf("\n", updatedAgentsIdx);
         const removeFrom = lineStart === -1 ? updatedAgentsIdx : lineStart;
@@ -326,23 +329,6 @@ export function hasSandboxMode(toml) {
   return /^sandbox_mode\s*=/m.test(toml);
 }
 
-function isCommentOnlyLines(value) {
-  const lines = String(value || "").split(/\r?\n/);
-  for (const line of lines) {
-    const trimmed = line.trim();
-    if (!trimmed) continue;
-    if (!trimmed.startsWith("#")) return false;
-  }
-  return true;
-}
-
-function trimTrailingPathSeparators(value, separatorChars = ["/", "\\"]) {
-  const text = String(value || "");
-  let end = text.length;
-  while (end > 0 && separatorChars.includes(text[end - 1])) end--;
-  return text.slice(0, end);
-}
-
 function stripSandboxMode(toml) {
   let next = toml.replace(
     /^\s*#\s*Sandbox mode.*(?:\r?\n)?/gim,
@@ -354,16 +340,11 @@ function stripSandboxMode(toml) {
 
 function extractSandboxModeValue(toml) {
   const lines = String(toml || "").split(/\r?\n/);
-  let raw = "";
-  for (const line of lines) {
-    const trimmed = line.trim();
-    if (!trimmed || trimmed.startsWith("#")) continue;
-    if (!trimmed.startsWith("sandbox_mode")) continue;
-    const eq = trimmed.indexOf("=");
-    if (eq === -1) continue;
-    raw = trimmed.slice(eq + 1).split("#")[0].trim();
-    break;
-  }
+  const sandboxLine = lines.find((line) => line.trimStart().startsWith("sandbox_mode"));
+  if (!sandboxLine) return "";
+  const eqIdx = sandboxLine.indexOf("=");
+  if (eqIdx === -1) return "";
+  const raw = String(sandboxLine.slice(eqIdx + 1) || "").split("#")[0].trim();
   if (!raw) return "";
   const quoted = raw.match(/^"(.*)"$/) || raw.match(/^'(.*)'$/);
   if (quoted) return quoted[1];
@@ -1742,23 +1723,28 @@ function toWindowsDrivePath(pathValue) {
 }
 
 function normalizeTrustedPathForCompare(pathValue) {
+  const trimTrailingPathSeparators = (value) => {
+    let out = String(value || "");
+    while (out.endsWith("/") || out.endsWith("\\")) out = out.slice(0, -1);
+    return out;
+  };
   const raw = String(pathValue || "").trim();
   if (!raw) return "";
   const windowsDrivePath = toWindowsDrivePath(raw);
   if (windowsDrivePath) {
-    return windowsDrivePath.replace(/[\\/]+$/, "").toLowerCase();
+    return trimTrailingPathSeparators(windowsDrivePath).toLowerCase();
   }
   if (process.platform === "win32") {
     let normalized = raw.replace(/\//g, "\\");
     if (normalized.startsWith("\\\\?\\UNC\\")) {
-      normalized = `\\\\${normalized.slice(8)}`;
+      normalized = "\\\\" + normalized.slice(8);
     } else if (normalized.startsWith("\\\\?\\")) {
       normalized = normalized.slice(4);
     }
-    normalized = normalized.replace(/[\\/]+$/, "");
+    normalized = trimTrailingPathSeparators(normalized);
     return normalized.toLowerCase();
   }
-  return trimTrailingPathSeparators(resolve(raw), ["/"]);
+  return trimTrailingPathSeparators(resolve(raw));
 }
 
 function buildTrustedPathVariants(pathValue) {

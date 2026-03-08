@@ -160,7 +160,7 @@ export function normalizeGitUrl(url) {
   s = s.replace(/\.git$/, "");
 
   // Strip trailing slashes
-  s = s.replace(/\/+$/, "");
+  while (s.endsWith("/")) s = s.slice(0, -1);
 
   return s.toLowerCase();
 }
@@ -857,3 +857,4 @@ export function formatFleetSummary() {
 
   return lines.join("\n");
 }
+

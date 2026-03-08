@@ -44,6 +44,7 @@ import { fileURLToPath } from "node:url";
 import { loadConfig } from "../config/config.mjs";
 import { resolveRepoRoot, resolveAgentRepoRoot } from "../config/repo-root.mjs";
 import { resolveCodexProfileRuntime } from "../shell/codex-model-profiles.mjs";
+import { resolveCopilotCliLaunchConfig } from "../shell/copilot-shell.mjs";
 import { getGitHubToken } from "../github/github-auth-manager.mjs";
 import {
   isTransientStreamError,
@@ -489,6 +490,10 @@ function shouldFallbackForSdkError(error) {
   if (!error) return false;
   const message = String(error).toLowerCase();
   if (!message) return false;
+  if (message.includes("protocol version mismatch")) return true;
+  if (message.includes("sdk expects version") && message.includes("server reports version")) {
+    return true;
+  }
   // SDK not installed / not found
   if (message.includes("not available")) return true;
   // Missing finish_reason (incomplete response)
@@ -808,6 +813,10 @@ function shouldApplySdkCooldown(error) {
   if (!error) return false;
   const message = String(error).toLowerCase();
   if (!message) return false;
+  if (message.includes("protocol version mismatch")) return true;
+  if (message.includes("sdk expects version") && message.includes("server reports version")) {
+    return true;
+  }
   if (message.includes("timeout")) return true;
   if (message.includes("rate limit") || message.includes("429")) return true;
   if (message.includes("service unavailable") || message.includes("503")) {
@@ -1448,22 +1457,22 @@ async function launchCopilotThread(prompt, cwd, timeoutMs, extra = {}) {
             console.warn(`${TAG} copilot MCP config write failed (non-fatal): ${mcpErr.message}`);
           }
         }
-        const cliArgs = buildPoolCopilotCliArgs(mcpConfigPath);
+        const cliLaunch = resolveCopilotCliLaunchConfig({
+          env: runtimeEnv,
+          repoRoot: REPO_ROOT,
+          cliArgs: buildPoolCopilotCliArgs(mcpConfigPath),
+        });
         clientOpts = {
           cwd,
           env: clientEnv,
-          cliArgs,
+          cliArgs: cliLaunch.cliArgs,
           useStdio: true,
         };
         if (token) {
           clientOpts.githubToken = token;
           clientOpts.token = token;
         }
-        const cliPath =
-          process.env.COPILOT_CLI_PATH ||
-          process.env.GITHUB_COPILOT_CLI_PATH ||
-          undefined;
-        if (cliPath) clientOpts.cliPath = cliPath;
+        if (cliLaunch.cliPath) clientOpts.cliPath = cliLaunch.cliPath;
       }
       client = new CopilotClientClass(clientOpts);
       await client.start();

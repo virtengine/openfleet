@@ -549,7 +549,6 @@ function parseEnvAssignmentLine(line) {
   const normalized = raw.startsWith("export ") ? raw.slice(7).trim() : raw;
   const match = normalized.match(/^([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(.*)$/);
   if (!match) return null;
-
   const key = match[1];
   let value = match[2] ?? "";
   if (
@@ -1042,52 +1041,34 @@ function parseGitHubProjectList(rawOutput) {
   return candidates;
 }
 
-function readLeadingDigits(text) {
-  let out = "";
-  for (const ch of String(text || "")) {
-    if (ch >= "0" && ch <= "9") out += ch;
-    else break;
-  }
-  return out;
-}
-
-function firstNumberInText(text) {
-  const source = String(text || "");
-  let current = "";
-  for (const ch of source) {
-    if (ch >= "0" && ch <= "9") {
-      current += ch;
-      continue;
-    }
-    if (current) return current;
-  }
-  return current;
-}
-
 function extractProjectNumberFromText(value) {
   const text = String(value || "").trim();
   if (!text) return "";
   if (/^\d+$/.test(text)) return text;
 
-  const lowered = text.toLowerCase();
-  for (const marker of ["/projects/v2/", "/projects/"]) {
-    const idx = lowered.indexOf(marker);
-    if (idx >= 0) {
-      const digits = readLeadingDigits(text.slice(idx + marker.length));
-      if (digits) return digits;
-    }
-  }
+  const lower = text.toLowerCase();
+  const scanAfter = (marker) => {
+    const idx = lower.indexOf(marker);
+    if (idx === -1) return "";
+    const tail = text.slice(idx + marker.length);
+    const match = tail.match(/\d+/);
+    return match ? match[0] : "";
+  };
 
-  if (lowered.includes("project")) {
-    const digits = firstNumberInText(text);
-    if (digits) return digits;
-  }
+  const candidates = [
+    scanAfter("/projects/"),
+    scanAfter("/projects/v2/"),
+    scanAfter("project number"),
+    scanAfter("project id"),
+    scanAfter("project"),
+    scanAfter("number"),
+  ].filter(Boolean);
 
-  if (lowered.includes("number") || lowered.includes("id")) {
-    const digits = firstNumberInText(text);
-    if (digits) return digits;
+  if (candidates.length > 0) return candidates[0];
+  if (/project/i.test(text)) {
+    const fallback = text.match(/\b(\d+)\b/);
+    if (fallback && fallback[1]) return fallback[1];
   }
-
   return "";
 }
 
@@ -2298,12 +2279,11 @@ export function buildStandardizedEnvFile(templateText, envEntries) {
   const consumed = new Set();
   const seenKeys = new Set();
   const updated = lines.flatMap((line) => {
-    const trimmed = String(line || "").trim();
-    if (!trimmed) return [line];
-    const uncommented = trimmed.startsWith("#") ? trimmed.slice(1).trimStart() : trimmed;
-    const eqIdx = uncommented.indexOf("=");
+    const trimmedLine = String(line || "").trim();
+    const noComment = trimmedLine.startsWith("#") ? trimmedLine.slice(1).trimStart() : trimmedLine;
+    const eqIdx = noComment.indexOf("=");
     if (eqIdx <= 0) return [line];
-    const key = uncommented.slice(0, eqIdx).trim();
+    const key = noComment.slice(0, eqIdx).trim();
     if (!/^[A-Z0-9_]+$/.test(key)) return [line];
     if (seenKeys.has(key)) return [];
     seenKeys.add(key);
@@ -6890,3 +6870,4 @@ if (process.argv[1] && resolve(process.argv[1]) === resolve(__filename_setup)) {
     process.exit(1);
   });
 }
+

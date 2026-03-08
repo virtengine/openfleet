@@ -71,6 +71,7 @@ import {
   matchAgentProfiles,
   resolveLibraryPlan,
   listWellKnownAgentSources,
+  probeWellKnownAgentSources,
   importAgentProfilesFromRepository,
   loadManifest,
   getManifestPath,
@@ -10554,7 +10555,17 @@ async function handleApi(req, res, url) {
 
   if (path === "/api/library/sources" && req.method === "GET") {
     try {
-      jsonResponse(res, 200, { ok: true, data: listWellKnownAgentSources() });
+      const probe = String(url.searchParams.get("probe") || "").trim().toLowerCase();
+      const refresh = String(url.searchParams.get("refresh") || "").trim().toLowerCase();
+      const sourceId = String(url.searchParams.get("sourceId") || "").trim().toLowerCase() || undefined;
+      const useProbe = probe === "1" || probe === "true" || refresh === "1" || refresh === "true";
+      const data = useProbe
+        ? await probeWellKnownAgentSources({
+          sourceId,
+          refresh: refresh === "1" || refresh === "true",
+        })
+        : listWellKnownAgentSources();
+      jsonResponse(res, 200, { ok: true, data });
     } catch (err) {
       jsonResponse(res, 500, { ok: false, error: err.message });
     }

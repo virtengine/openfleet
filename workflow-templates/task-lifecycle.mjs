@@ -202,11 +202,15 @@ export const TASK_LIFECYCLE_TEMPLATE = {
     // ── SUCCESS PATH: Create PR ──────────────────────────────────────────
     node("create-pr", "action.create_pr", "Create PR", {
       title: "{{taskTitle}}",
-      body: "Automated PR for task {{taskId}}",
+      body: "Task-ID: {{taskId}}\n\nAutomated PR for task {{taskId}}",
       base: "{{baseBranch}}",
       branch: "{{branch}}",
       cwd: "{{worktreePath}}",
     }, { x: 0, y: 2260 }),
+
+    node("pr-created", "condition.expression", "PR Linked?", {
+      expression: "Boolean($ctx.getNodeOutput('create-pr')?.prNumber || $ctx.getNodeOutput('create-pr')?.prUrl)",
+    }, { x: 0, y: 2325, outputs: ["yes", "no"] }),
 
     // ── SUCCESS PATH: Set status → inreview ──────────────────────────────
     node("set-inreview", "action.update_task_status", "Set In-Review", {
@@ -329,7 +333,9 @@ export const TASK_LIFECYCLE_TEMPLATE = {
     edge("has-commits", "push-branch", { condition: "$output?.result === true", port: "yes" }),
     edge("push-branch", "push-ok"),
     edge("push-ok", "create-pr", { condition: "$output?.result === true", port: "yes" }),
-    edge("create-pr", "set-inreview"),
+    edge("create-pr", "pr-created"),
+    edge("pr-created", "set-inreview", { condition: "$output?.result === true", port: "yes" }),
+    edge("pr-created", "set-todo-push-failed", { condition: "$output?.result !== true", port: "no" }),
     edge("set-inreview", "log-success"),
     edge("log-success", "join-outcomes"),
 
@@ -512,10 +518,15 @@ export const VE_ORCHESTRATOR_LITE_TEMPLATE = {
     // ── PR creation ──────────────────────────────────────────────────────
     node("pr", "action.create_pr", "Create PR", {
       title: "{{taskTitle}}",
+      body: "Task-ID: {{taskId}}\n\nAutomated PR for task {{taskId}}",
       base: "{{defaultTargetBranch}}",
       branch: "{{branch}}",
       cwd: "{{worktreePath}}",
     }, { x: 180, y: 1870 }),
+
+    node("pr-created", "condition.expression", "PR Linked?", {
+      expression: "Boolean($ctx.getNodeOutput('pr')?.prNumber || $ctx.getNodeOutput('pr')?.prUrl)",
+    }, { x: 180, y: 1935, outputs: ["yes", "no"] }),
 
     // ── Set inreview ─────────────────────────────────────────────────────
     node("set-inreview", "action.update_task_status", "In-Review", {
@@ -580,7 +591,9 @@ export const VE_ORCHESTRATOR_LITE_TEMPLATE = {
     // Success path
     edge("has-commits", "push", { condition: "$output?.result === true", port: "yes" }),
     edge("push", "pr"),
-    edge("pr", "set-inreview"),
+    edge("pr", "pr-created"),
+    edge("pr-created", "set-inreview", { condition: "$output?.result === true", port: "yes" }),
+    edge("pr-created", "set-todo", { condition: "$output?.result !== true", port: "no" }),
     edge("set-inreview", "join-outcomes"),
 
     // No commits path

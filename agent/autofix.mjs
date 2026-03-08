@@ -93,7 +93,6 @@ export function extractErrors(logText) {
   const atLineHeader = /^At\s+([A-Za-z]:\\[^\n:]+\.ps1):(\d+)\s+char:(\d+)/;
 
   // Pattern C: TerminatingError(X): "message"
-  const terminatingPattern = /TerminatingError\(([^)]+)\):\s*"(.+?)"/;
 
   for (let i = 0; i < lines.length; i++) {
     const line = lines[i];
@@ -147,16 +146,24 @@ export function extractErrors(logText) {
     }
 
     // ── Check Pattern C (TerminatingError) ──────────────────────────
-    let matchD = line.match(terminatingPattern);
-    if (matchD) {
-      addError({
-        errorType: "TerminatingError",
-        file: "unknown",
-        line: 0,
-        column: null,
-        message: `${matchD[1]}: ${matchD[2].trim()}`,
-        signature: `TerminatingError:${matchD[1]}`,
-      });
+    const marker = "TerminatingError(";
+    const markerPos = line.indexOf(marker);
+    if (markerPos !== -1) {
+      const typeStart = markerPos + marker.length;
+      const typeEnd = line.indexOf(")", typeStart);
+      const colonPos = typeEnd >= 0 ? line.indexOf(":", typeEnd + 1) : -1;
+      const errorType = typeEnd >= 0 ? line.slice(typeStart, typeEnd).trim() : "";
+      const detail = colonPos >= 0 ? line.slice(colonPos + 1).trim().replace(/^"|"$/g, "") : "";
+      if (errorType && detail) {
+        addError({
+          errorType: "TerminatingError",
+          file: "unknown",
+          line: 0,
+          column: null,
+          message: `${errorType}: ${detail}`,
+          signature: `TerminatingError:${errorType}`,
+        });
+      }
     }
   }
 
@@ -173,40 +180,6 @@ export function extractErrors(logText) {
  *        |          ~~~~~~
  *        | Error message here
  */
-function extractPipeContent(rawLine, marker) {
-  const line = String(rawLine || "");
-  let i = 0;
-  while (i < line.length && /\s/.test(line[i])) i++;
-  if (line[i] !== marker) return null;
-  i++;
-  while (i < line.length && /\s/.test(line[i])) i++;
-  return line.slice(i);
-}
-
-function extractNumberPipeContent(rawLine) {
-  const line = String(rawLine || "");
-  let i = 0;
-  while (i < line.length && /\s/.test(line[i])) i++;
-  let digitStart = i;
-  while (i < line.length && /[0-9]/.test(line[i])) i++;
-  if (i === digitStart) return null;
-  while (i < line.length && /\s/.test(line[i])) i++;
-  if (line[i] !== "|") return null;
-  i++;
-  while (i < line.length && /\s/.test(line[i])) i++;
-  return line.slice(i);
-}
-
-function parseErrorTypeMessage(content) {
-  const idx = String(content || "").indexOf(":");
-  if (idx <= 0) return null;
-  const type = content.slice(0, idx).trim();
-  if (!type || !/^[A-Za-z0-9_.-]+$/.test(type)) return null;
-  const message = content.slice(idx + 1).trim();
-  if (!message) return null;
-  return { type, message };
-}
-
 function parseLineBlock(lines, startIdx) {
   let codeLine = "";
   let message = "";
@@ -220,9 +193,10 @@ function parseLineBlock(lines, startIdx) {
 
   // Capture code line: " NNN |  code..."
   if (i < lines.length) {
-    const numberedCode = extractNumberPipeContent(lines[i]);
-    if (numberedCode !== null) {
-      codeLine = numberedCode.trim();
+    const raw = String(lines[i] || "");
+    const sep = raw.indexOf("|");
+    if (sep !== -1 && /^\s*\d+\s*$/.test(raw.slice(0, sep))) {
+      codeLine = raw.slice(sep + 1).trim();
       i++;
     }
   }
@@ -230,9 +204,10 @@ function parseLineBlock(lines, startIdx) {
   // Skip underline and intermediate "| ..." lines, capture last "| message" line
   let lastPipeMessage = "";
   while (i < lines.length) {
-    const piped = extractPipeContent(lines[i], "|");
-    if (piped === null) break;
-    const content = piped.trim();
+    const raw = String(lines[i] || "");
+    const sep = raw.indexOf("|");
+    if (sep === -1 || raw.slice(0, sep).trim().length > 0) break;
+    const content = raw.slice(sep + 1).trim();
     // Skip underline-only lines (~~~~) and empty lines
     if (content && !/^~+$/.test(content)) {
       lastPipeMessage = content;
@@ -262,9 +237,9 @@ function parsePlusBlock(lines, startIdx) {
 
   // First "+ " line is usually the code
   if (i < lines.length) {
-    const plusCode = extractPipeContent(lines[i], "+");
-    if (plusCode !== null) {
-      const content = plusCode.trim();
+    const raw = String(lines[i] || "").trimStart();
+    if (raw.startsWith("+")) {
+      const content = raw.slice(1).trim();
       if (!/^~+$/.test(content)) codeLine = content;
       i++;
     }
@@ -272,18 +247,22 @@ function parsePlusBlock(lines, startIdx) {
 
   // Subsequent "+ " lines — skip underlines, capture error type + message
   while (i < lines.length) {
-    const plusMatch = extractPipeContent(lines[i], "+");
-    if (plusMatch === null) break;
-    const content = plusMatch.trim();
+    const raw = String(lines[i] || "").trimStart();
+    if (!raw.startsWith("+")) break;
+    const content = raw.slice(1).trim();
     if (/^~+$/.test(content)) {
       i++;
       continue;
     }
     // Check for "ErrorType: message"
-    const errMatch = parseErrorTypeMessage(content);
-    if (errMatch) {
-      errorType = errMatch.type;
-      message = errMatch.message;
+    const colonPos = content.indexOf(":");
+    if (colonPos > 0 && colonPos < content.length - 1) {
+      const maybeType = content.slice(0, colonPos).trim();
+      const maybeMessage = content.slice(colonPos + 1).trim();
+      if (/^\w[\w.-]+$/.test(maybeType) && maybeMessage) {
+        errorType = maybeType;
+        message = maybeMessage;
+      }
     }
     i++;
   }

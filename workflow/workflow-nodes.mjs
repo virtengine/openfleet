@@ -20,8 +20,8 @@
 import { registerNodeType } from "./workflow-engine.mjs";
 import { existsSync, readFileSync, writeFileSync, mkdirSync } from "node:fs";
 import { resolve, dirname } from "node:path";
-import { execSync, spawn } from "node:child_process";
-import { randomUUID } from "node:crypto";
+import { execSync, execFileSync, spawn } from "node:child_process";
+import { createHash, randomUUID } from "node:crypto";
 import { getAgentToolConfig, getEffectiveTools } from "../agent/agent-tool-config.mjs";
 import { getToolsPromptBlock } from "../agent/agent-custom-tools.mjs";
 import { buildRelevantSkillsPromptBlock, findRelevantSkills } from "../agent/bosun-skills.mjs";
@@ -41,6 +41,7 @@ const WORKFLOW_AGENT_EVENT_PREVIEW_LIMIT = (() => {
   if (!Number.isFinite(raw)) return 80;
   return Math.max(20, Math.min(500, Math.trunc(raw)));
 })();
+const BOSUN_ATTACHED_PR_LABEL = "bosun-attached";
 
 function makeIsolatedGitEnv(extra = {}) {
   const env = { ...process.env, ...extra };
@@ -86,6 +87,28 @@ function simplifyPathLabel(filePath) {
   const parts = normalized.split("/").filter(Boolean);
   if (parts.length >= 2) return parts.slice(-2).join("/");
   return parts[0] || normalized;
+}
+
+function isManagedBosunWorktree(worktreePath, repoRoot) {
+  const resolvedWorktree = resolve(String(worktreePath || ""));
+  const managedRoot = resolve(String(repoRoot || process.cwd()), ".bosun", "worktrees");
+  return (
+    resolvedWorktree === managedRoot ||
+    resolvedWorktree.startsWith(`${managedRoot}\\`) ||
+    resolvedWorktree.startsWith(`${managedRoot}/`)
+  );
+}
+
+function deriveManagedWorktreeDirName(taskId, branch) {
+  const taskToken = String(taskId || "task")
+    .replace(/[^a-zA-Z0-9]/g, "")
+    .slice(0, 12)
+    || "task";
+  const branchHash = createHash("sha1")
+    .update(String(branch || "branch"))
+    .digest("hex")
+    .slice(0, 10);
+  return `task-${taskToken}-${branchHash}`;
 }
 
 const WORKFLOW_TELEGRAM_ICON_MAP = Object.freeze({
@@ -3016,8 +3039,62 @@ registerNodeType("action.create_pr", {
       if (Array.isArray(v)) return v.map(String).filter(Boolean);
       return String(v).split(",").map((s) => s.trim()).filter(Boolean);
     };
-    const labels = toList(ctx.resolve(node.config?.labels || ""));
+    const labels = Array.from(new Set([
+      ...toList(ctx.resolve(node.config?.labels || "")),
+      BOSUN_ATTACHED_PR_LABEL,
+    ]));
     const reviewers = toList(ctx.resolve(node.config?.reviewers || ""));
+    const execOptions = {
+      cwd,
+      encoding: "utf8",
+      timeout: 60000,
+      env: makeIsolatedGitEnv(),
+      stdio: ["pipe", "pipe", "pipe"],
+    };
+
+    const findExistingPr = () => {
+      if (!branch) return null;
+      try {
+        const existingArgs = [
+          "pr",
+          "list",
+          "--head",
+          branch,
+          "--state",
+          "open",
+          "--json",
+          "number,url,title,headRefName,baseRefName",
+        ];
+        if (base) existingArgs.push("--base", base);
+        const existingRaw = execFileSync("gh", existingArgs, execOptions).trim();
+        const existingList = existingRaw ? JSON.parse(existingRaw) : [];
+        if (!Array.isArray(existingList) || existingList.length === 0) return null;
+        const existing = existingList.find((pr) => String(pr?.headRefName || "").trim() === branch) || existingList[0];
+        const prNumber = Number.parseInt(existing?.number, 10);
+        if (!Number.isFinite(prNumber) || prNumber <= 0) return null;
+        if (labels.length) {
+          try {
+            execFileSync("gh", ["pr", "edit", String(prNumber), "--add-label", labels.join(",")], execOptions);
+          } catch {
+          }
+        }
+        return {
+          success: true,
+          existing: true,
+          prUrl: String(existing?.url || "").trim(),
+          prNumber,
+          title,
+          base: base || String(existing?.baseRefName || "").trim() || null,
+          branch: branch || String(existing?.headRefName || "").trim() || null,
+          draft,
+          labels,
+          reviewers,
+          output: String(existing?.url || `existing-pr-${prNumber}`),
+        };
+      } catch {
+        return null;
+      }
+    };
 
     // Build gh pr create command
     const args = ["gh", "pr", "create"];
@@ -3034,7 +3111,7 @@ registerNodeType("action.create_pr", {
     ctx.log(node.id, `Creating PR: ${cmd}`);
 
     try {
-      const output = execSync(cmd, { cwd, encoding: "utf8", timeout: 60000 });
+      const output = execSync(cmd, execOptions);
       const trimmed = (output || "").trim();
       // gh pr create prints the PR URL on success
       const urlMatch = trimmed.match(/https:\/\/github\.com\/[^\s]+\/pull\/(\d+)/);
@@ -3056,6 +3133,11 @@ registerNodeType("action.create_pr", {
     } catch (err) {
       const errorMsg = err?.stderr?.toString?.()?.trim() || err?.message || String(err);
       ctx.log(node.id, `PR creation failed: ${errorMsg}`);
+      const existingPr = findExistingPr();
+      if (existingPr) {
+        ctx.log(node.id, `Resolved existing PR #${existingPr.prNumber}: ${existingPr.prUrl || "(url unavailable)"}`);
+        return existingPr;
+      }
       if (failOnError) {
         return { success: false, error: errorMsg, command: cmd };
       }
@@ -7055,6 +7137,32 @@ function deriveTaskBranch(task = {}) {
   if (taskId) return `task/${taskId}-${suffix}`;
   return `task/${suffix}`;
 }
+function looksLikeFilesystemPath(value) {
+  const text = String(value || "").trim();
+  return /^[a-zA-Z]:[\\/]/.test(text) || text.startsWith("/") || text.startsWith("\\");
+}
+function resolveTaskRepositoryRoot(taskRepository, currentRepoRoot) {
+  const repository = String(taskRepository || "").trim();
+  const repoRoot = String(currentRepoRoot || "").trim();
+  if (!repository || !repoRoot) return "";
+  const repoName = repository.split("/").pop();
+  if (!repoName) return "";
+  const candidates = [
+    resolve(repoRoot, "..", repoName),
+    resolve(repoRoot, ".bosun", "workspaces", String(process.env.BOSUN_WORKSPACE || "").trim(), repoName),
+  ];
+  for (const candidate of candidates) {
+    if (!candidate || candidate.includes("workspaces/")) {
+      // keep candidate even when BOSUN_WORKSPACE is empty; resolve() will normalize it.
+    }
+    try {
+      if (existsSync(resolve(candidate, ".git"))) return candidate;
+    } catch {
+      // ignore invalid candidate
+    }
+  }
+  return "";
+}
 async function ensureTaskClaimsInitialized(ctx, claims) {
   if (typeof claims?.initTaskClaims !== "function") return;
   if (!_taskClaimsInitPromise) {
@@ -7483,7 +7591,7 @@ registerNodeType("trigger.task_available", {
       );
       if (taskWorkspace) {
         ctx.data.workspace = taskWorkspace;
-        if (!pickTaskString(ctx.data.repoRoot)) {
+        if (!pickTaskString(ctx.data.repoRoot) && looksLikeFilesystemPath(taskWorkspace)) {
           ctx.data.repoRoot = taskWorkspace;
         }
       }
@@ -7493,7 +7601,16 @@ registerNodeType("trigger.task_available", {
         primaryTask.meta?.repository,
         primaryTask.metadata?.repository,
       );
-      if (taskRepository) ctx.data.repository = taskRepository;
+      if (taskRepository) {
+        ctx.data.repository = taskRepository;
+        const resolvedRepoRoot = resolveTaskRepositoryRoot(
+          taskRepository,
+          pickTaskString(ctx.data.repoRoot, process.cwd()),
+        );
+        if (resolvedRepoRoot) {
+          ctx.data.repoRoot = resolvedRepoRoot;
+        }
+      }
       const taskRepositories = Array.isArray(primaryTask.repositories)
         ? primaryTask.repositories
         : [];
@@ -7943,6 +8060,7 @@ registerNodeType("action.acquire_worktree", {
     if (!isGit) {
       ctx.data.worktreePath = repoRoot;
       ctx.data._worktreeCreated = false;
+      ctx.data._worktreeManaged = false;
       ctx.log(node.id, `Non-git directory — using ${repoRoot} directly`);
       return { success: true, worktreePath: repoRoot, created: false, noGit: true };
     }
@@ -7962,8 +8080,20 @@ registerNodeType("action.acquire_worktree", {
 
       const worktreesDir = resolve(repoRoot, ".bosun", "worktrees");
       mkdirSync(worktreesDir, { recursive: true });
-      const sanitizedBranch = branch.replace(/[^a-zA-Z0-9._-]/g, "-");
-      const worktreePath = resolve(worktreesDir, sanitizedBranch);
+      // Keep managed worktree paths short on Windows to avoid MAX_PATH checkout failures.
+      const worktreePath = resolve(worktreesDir, deriveManagedWorktreeDirName(taskId, branch));
+
+      // Ensure long paths are enabled for this repo before checkout.
+      try {
+        execSync("git config --local core.longpaths true", {
+          cwd: repoRoot,
+          encoding: "utf8",
+          timeout: 5000,
+          stdio: ["ignore", "pipe", "pipe"],
+        });
+      } catch {
+        // Best-effort; older git builds or non-Windows hosts may ignore this.
+      }
 
       if (existsSync(worktreePath)) {
         // Reuse existing worktree — pull latest base if possible
@@ -7978,6 +8108,7 @@ registerNodeType("action.acquire_worktree", {
         }
         ctx.data.worktreePath = worktreePath;
         ctx.data._worktreeCreated = false;
+        ctx.data._worktreeManaged = true;
         ctx.log(node.id, `Reusing worktree: ${worktreePath}`);
         return { success: true, worktreePath, created: false, reused: true, branch, baseBranch };
       }
@@ -8009,6 +8140,7 @@ registerNodeType("action.acquire_worktree", {
 
       ctx.data.worktreePath = worktreePath;
       ctx.data._worktreeCreated = true;
+      ctx.data._worktreeManaged = true;
       ctx.log(node.id, `Worktree created: ${worktreePath} (branch: ${branch}, base: ${baseBranch})`);
       return { success: true, worktreePath, created: true, branch, baseBranch };
     } catch (err) {
@@ -8040,7 +8172,11 @@ registerNodeType("action.release_worktree", {
     const shouldPrune = node.config?.prune === true;
     const removeTimeout = node.config?.removeTimeout ?? 30000;
 
-    if (!worktreePath || !ctx.data?._worktreeCreated) {
+    const isManaged =
+      Boolean(ctx.data?._worktreeManaged) ||
+      isManagedBosunWorktree(worktreePath, repoRoot);
+
+    if (!worktreePath || !isManaged) {
       ctx.log(node.id, `No worktree to release for ${taskId || "(unknown)"}`);
       return { success: true, skipped: true, reason: "no_worktree" };
     }
@@ -8066,6 +8202,7 @@ registerNodeType("action.release_worktree", {
       }
 
       ctx.data._worktreeCreated = false;
+      ctx.data._worktreeManaged = false;
       ctx.log(node.id, `Worktree released: ${worktreePath}`);
       return { success: true, worktreePath, released: true };
     } catch (err) {

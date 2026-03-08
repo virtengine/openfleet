@@ -128,45 +128,32 @@ function normalizeId(value) {
     .replace(/^-|-$/g, "");
 }
 
-function stripGitSuffix(value) {
+function trimGitSuffix(value) {
   const text = String(value || "");
   return text.toLowerCase().endsWith(".git") ? text.slice(0, -4) : text;
 }
 
-function extractTailSegments(url, count) {
-  const raw = stripGitSuffix(String(url || "").trim());
-  if (!raw) return [];
-  const normalized = raw.replace(/\\/g, "/");
-  const slash = normalized.lastIndexOf("/");
-  const colon = normalized.lastIndexOf(":");
-  const split = Math.max(slash, colon);
-  let tail = split >= 0 ? normalized.slice(split + 1) : normalized;
-  if (count > 1) {
-    const before = split >= 0 ? normalized.slice(0, split) : "";
-    const secondSlash = before.lastIndexOf("/");
-    const secondColon = before.lastIndexOf(":");
-    const prevSplit = Math.max(secondSlash, secondColon);
-    if (prevSplit >= 0) {
-      tail = before.slice(prevSplit + 1) + "/" + tail;
-    }
-  }
-  return tail.split("/").filter(Boolean);
-}
-
 function extractRepoName(url) {
-  if (!url) return "";
-  const segments = extractTailSegments(url, 1);
-  if (segments.length > 0) return segments[segments.length - 1];
-  return stripGitSuffix(basename(url));
+  const raw = String(url || "").trim();
+  if (!raw) return "";
+  const normalized = raw.replace(/\\/g, "/");
+  const withoutScheme = normalized.replace(/^https?:\/\//i, "").replace(/^ssh:\/\//i, "");
+  const withoutUser = withoutScheme.replace(/^[^@]+@/, "");
+  const sshStyle = withoutUser.includes(":") ? withoutUser.replace(":", "/") : withoutUser;
+  const parts = trimGitSuffix(sshStyle).split("/").filter(Boolean);
+  return parts.length > 0 ? parts[parts.length - 1] : basename(raw).replace(/\.git$/, "");
 }
 
 function extractSlug(url) {
-  if (!url) return "";
-  const segments = extractTailSegments(url, 2);
-  if (segments.length >= 2) {
-    return segments[segments.length - 2] + "/" + segments[segments.length - 1];
-  }
-  return "";
+  const raw = String(url || "").trim();
+  if (!raw) return "";
+  const normalized = raw.replace(/\\/g, "/");
+  const withoutScheme = normalized.replace(/^https?:\/\//i, "").replace(/^ssh:\/\//i, "");
+  const withoutUser = withoutScheme.replace(/^[^@]+@/, "");
+  const sshStyle = withoutUser.includes(":") ? withoutUser.replace(":", "/") : withoutUser;
+  const parts = trimGitSuffix(sshStyle).split("/").filter(Boolean);
+  if (parts.length < 3) return "";
+  return parts[parts.length - 2] + "/" + parts[parts.length - 1];
 }
 
 function extractGithubSlug(url) {

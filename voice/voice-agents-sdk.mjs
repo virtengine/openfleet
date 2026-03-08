@@ -24,13 +24,6 @@ import { resolveVoiceOAuthToken } from "./voice-auth-manager.mjs";
 let _openaiAgentsModule = null;
 let _googleGenaiModule = null;
 
-function trimTrailingSlashes(value) {
-  const text = String(value || "");
-  let end = text.length;
-  while (end > 0 && text[end - 1] === "/") end--;
-  return text.slice(0, end);
-}
-
 async function getOpenAIAgents() {
   if (!_openaiAgentsModule) {
     try {
@@ -342,9 +335,10 @@ export async function connectRealtimeSession(sessionHandle, config = {}) {
     if (!credential) {
       throw new Error("Azure voice credential not configured");
     }
-    const endpointRaw = trimTrailingSlashes(String(config.azureEndpoint || "").trim());
-    const openAiIdx = endpointRaw.toLowerCase().indexOf("/openai");
-    const endpoint = openAiIdx >= 0 ? endpointRaw.slice(0, openAiIdx) : endpointRaw;
+    let endpoint = String(config.azureEndpoint || "").trim();
+    while (endpoint.endsWith("/")) endpoint = endpoint.slice(0, -1);
+    const openaiIdx = endpoint.toLowerCase().indexOf("/openai");
+    if (openaiIdx >= 0) endpoint = endpoint.slice(0, openaiIdx);
     const deployment = normalizeAzureRealtimeDeployment(
       config.azureDeployment || OPENAI_REALTIME_MODEL,
     );
@@ -702,3 +696,4 @@ export async function getSdkDiagnostics() {
     timestamp: new Date().toISOString(),
   };
 }
+

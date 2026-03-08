@@ -117,13 +117,13 @@ function _getFilesystemAgeMs(dirPath) {
  * @returns {string}
  */
 function sanitizeBranchName(branch) {
-  return branch
-    .replace(/^refs\/heads\//, "")
-    .replace(/\//g, "-")
-    .replace(/[^a-zA-Z0-9._-]/g, "")
-    .replace(/^\.+/, "") // no leading dots
-    .replace(/\.+$/, "") // no trailing dots
-    .slice(0, 60); // Windows MAX_PATH is 260, worktree base path ~60, leaves ~140 for this + git overhead
+  let safe = String(branch || "");
+  if (safe.startsWith("refs/heads/")) safe = safe.slice(11);
+  safe = safe.split("/").join("-");
+  safe = safe.replace(/[^a-zA-Z0-9._-]/g, "");
+  while (safe.startsWith(".")) safe = safe.slice(1);
+  while (safe.endsWith(".")) safe = safe.slice(0, -1);
+  return safe.slice(0, 60); // Windows MAX_PATH is 260, worktree base path ~60, leaves ~140 for this + git overhead
 }
 
 /**
