@@ -7840,7 +7840,7 @@ function extractScopeFromTitle(title) {
   if (openParen <= 0 || closeParen <= openParen + 1) return null;
 
   const typeSection = lowered.slice(0, openParen).trim();
-  const typeToken = typeSection.split(/s+/).pop() || "";
+  const typeToken = typeSection.split(/\s+/).pop() || "";
   const allowed = new Set(["feat", "fix", "docs", "style", "refactor", "perf", "test", "build", "ci", "chore", "revert"]);
   if (!allowed.has(typeToken)) return null;
 
