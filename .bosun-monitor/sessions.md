@@ -243,3 +243,32 @@ pm run prepush:check pass.
   - Fast-forwarded local branch to merged main commit 9f3f244.
   - Restarted source daemon with explicit local config/repo-root.
   - Scheduler cadence active and planner/batch workflows running post-restart.
+
+## 2026-03-09T03:51:47.4764341+11:00
+- Incident focus: stuck tasks with uncommitted work, PR watchdog non-action, and long-failing PRs (#132, #155, #178).
+- Verified root cause for watchdog non-trigger was already fixed on branch via commit 28e4c83 (schedule _lastRunAt overwrite removed); observed watchdog runs now entering dispatch path.
+- Found active blocker after trigger: watchdog dispatch run remains paused/running while agent pool repeatedly times out (codex/coplay 300000ms timeout cycles) and copilot resume reports missing auth; this prevents autonomous PR fix completion.
+- Local runtime evidence: inprogress backlog remained elevated with stale items (14 inprogress, multiple >2h old) and dirty PR worktrees present under .cache/worktrees (pr132/pr155 with modified files; orphaned pr66/pr73 worktree metadata).
+- Shipped CI unblock for PR #178: commit 3b0fbac (context-cache compaction stability + config allowlist updates + tests), validated with npm test, npm run build, npm run prepush:check, pushed to monitor/bosun-env-stability.
+- PR #178 checks turned green and was merged via API at 2026-03-08T16:48:07Z (merge commit ccb57cace79a28084517c2753d4d7fa5a9f69934).
+- Restarted source daemon using node cli.mjs --terminate then node cli.mjs --daemon --no-update-check --config-dir .bosun --repo-root ...; monitor/daemon processes healthy post-restart.
+- Remaining open failing PRs: #132 (Build+Templates+Coverage+All Workflow Tests) and #155 (Codacy Security Scan).
+- Noted operational anomaly after restart: unexpected local commit appeared at HEAD (3a30014 feat: Enhance library source management and probing) containing many files; branch now ahead origin by 1 and needs explicit operator decision before push.
+
+## 2026-03-09T04:07:00+11:00
+- Context: Source-start incident where monitor crashed and logs showed AppData watch path (e-orchestrator.ps1 — watching C:/Users/jON/AppData/Roaming instead).
+- Evidence:
+  - Global chain was active from npm install path (...node_modules/bosun/telegram/telegram-sentinel.mjs -> ...node_modules/bosun/cli.mjs --daemon-child -> ...node_modules/bosun/infra/monitor.mjs --daemon-child).
+  - Scheduled task VirtEngine-CodexMonitor points to global @virtengine/codex-monitor and can relaunch the AppData runtime.
+- Actions this run:
+  - Terminated global bosun chain via global cli.mjs --terminate, then terminated local chain.
+  - Started clean source daemon from repo: 
+pm run start -- --daemon (script enforces --config-dir .bosun --repo-root . --no-update-check).
+- Verification:
+  - Active runtime now source-only (C:\Users\jON\Documents\source\repos\virtengine-gh\bosun\cli.mjs --daemon-child + infra/monitor.mjs --daemon-child).
+  - No active global 
+ode_modules\\bosun processes after restart window.
+  - Source monitor advanced through schedule cycle (schedule poll triggered, schedule-run completed) and daemon remained stable (PID 62480 over >70s window).
+  - Task stats now: draft 36, todo 25, inprogress 17, inreview 0, done 2 (total 80).
+- Residual:
+  - Could not disable scheduled task due OS permission (Disable-ScheduledTask ... Access is denied); if global takeover reappears after next logon, disable/retarget that task with elevated rights.
