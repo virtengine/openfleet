@@ -44,12 +44,12 @@ describe("codebase-annotation-audit skill", () => {
   // ── Skill Registration ──────────────────────────────────────────────────
 
   it("is present in BUILTIN_SKILLS", () => {
-    const skill = BUILTIN_SKILLS.find((s) => s.filename === "codebase-annotation-audit.md");
+    const skill = BUILTIN_SKILLS.find((s) => s.filename === "skill-codebase-audit.md");
     expect(skill).toBeTruthy();
   });
 
   it("has correct metadata", () => {
-    const skill = BUILTIN_SKILLS.find((s) => s.filename === "codebase-annotation-audit.md");
+    const skill = BUILTIN_SKILLS.find((s) => s.filename === "skill-codebase-audit.md");
     expect(skill.title).toBe("Codebase Annotation Audit");
     expect(skill.scope).toBe("global");
     expect(skill.tags).toContain("audit");
@@ -60,27 +60,27 @@ describe("codebase-annotation-audit skill", () => {
   });
 
   it("has non-empty content with expected sections", () => {
-    const skill = BUILTIN_SKILLS.find((s) => s.filename === "codebase-annotation-audit.md");
+    const skill = BUILTIN_SKILLS.find((s) => s.filename === "skill-codebase-audit.md");
     expect(skill.content).toBeTruthy();
     expect(skill.content.length).toBeGreaterThan(500);
 
     // Key sections
     expect(skill.content).toContain("Annotation Format");
-    expect(skill.content).toContain("BOSUN:SUMMARY");
-    expect(skill.content).toContain("BOSUN:WARN");
+    expect(skill.content).toContain("CLAUDE:SUMMARY");
+    expect(skill.content).toContain("CLAUDE:WARN");
     expect(skill.content).toContain("6-Phase Audit");
     expect(skill.content).toContain("Phase 1");
     expect(skill.content).toContain("Inventory");
   });
 
   it("contains LEAN philosophy section", () => {
-    const skill = BUILTIN_SKILLS.find((s) => s.filename === "codebase-annotation-audit.md");
+    const skill = BUILTIN_SKILLS.find((s) => s.filename === "skill-codebase-audit.md");
     expect(skill.content).toContain("LEAN");
     expect(skill.content).toContain("documentation-only");
   });
 
   it("includes success metrics", () => {
-    const skill = BUILTIN_SKILLS.find((s) => s.filename === "codebase-annotation-audit.md");
+    const skill = BUILTIN_SKILLS.find((s) => s.filename === "skill-codebase-audit.md");
     expect(skill.content).toContain("4×");
     expect(skill.content).toContain("20%");
   });
@@ -91,12 +91,12 @@ describe("codebase-annotation-audit skill", () => {
     scaffoldSkills(testHome);
 
     const skillsDir = getSkillsDir(testHome);
-    const filePath = resolve(skillsDir, "codebase-annotation-audit.md");
+    const filePath = resolve(skillsDir, "skill-codebase-audit.md");
     expect(existsSync(filePath)).toBe(true);
 
     const content = readFileSync(filePath, "utf8");
     expect(content).toContain("Codebase Annotation Audit");
-    expect(content).toContain("BOSUN:SUMMARY");
+    expect(content).toContain("CLAUDE:SUMMARY");
   });
 
   // ── Index & Discovery ───────────────────────────────────────────────────
@@ -112,7 +112,7 @@ describe("codebase-annotation-audit skill", () => {
     const index = JSON.parse(readFileSync(indexPath, "utf8"));
     expect(Array.isArray(index.skills)).toBe(true);
 
-    const auditEntry = index.skills.find((s) => s.filename === "codebase-annotation-audit.md");
+    const auditEntry = index.skills.find((s) => s.filename === "skill-codebase-audit.md");
     expect(auditEntry).toBeTruthy();
     expect(auditEntry.title).toContain("Annotation Audit");
     expect(auditEntry.tags).toContain("audit");
@@ -128,9 +128,9 @@ describe("codebase-annotation-audit skill", () => {
     const matched = findRelevantSkills(testHome, "audit the codebase annotations");
     expect(matched.length).toBeGreaterThan(0);
 
-    const auditSkill = matched.find((s) => s.filename === "codebase-annotation-audit.md");
+    const auditSkill = matched.find((s) => s.filename === "skill-codebase-audit.md");
     expect(auditSkill).toBeTruthy();
-    expect(auditSkill.content).toContain("BOSUN:SUMMARY");
+    expect(auditSkill.content).toContain("CLAUDE:SUMMARY");
   });
 
   it("is matched by findRelevantSkills for documentation tasks", () => {
@@ -139,7 +139,7 @@ describe("codebase-annotation-audit skill", () => {
     buildSkillsIndex(skillsDir);
 
     const matched = findRelevantSkills(testHome, "documentation summary for the codebase");
-    const auditSkill = matched.find((s) => s.filename === "codebase-annotation-audit.md");
+    const auditSkill = matched.find((s) => s.filename === "skill-codebase-audit.md");
     expect(auditSkill).toBeTruthy();
   });
 
@@ -149,7 +149,7 @@ describe("codebase-annotation-audit skill", () => {
     buildSkillsIndex(skillsDir);
 
     const matched = findRelevantSkills(testHome, "fix button click handler in React component");
-    const auditSkill = matched.find((s) => s.filename === "codebase-annotation-audit.md");
+    const auditSkill = matched.find((s) => s.filename === "skill-codebase-audit.md");
     // Should not match — audit tags are not in this title
     expect(auditSkill).toBeFalsy();
   });
@@ -202,3 +202,4 @@ describe("codebase-annotation-audit skill", () => {
     expect(block).toContain("[important]");
   });
 });
+

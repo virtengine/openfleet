@@ -369,7 +369,7 @@ describe("manual-flows", () => {
       mkdirSync(resolve(testRoot, "src"), { recursive: true });
       writeFileSync(
         resolve(testRoot, "src", "index.mjs"),
-        '// BOSUN:SUMMARY — index\n// Main entry point\nexport function main() {}',
+        '// CLAUDE:SUMMARY — index\n// Main entry point\nexport function main() {}',
         "utf8",
       );
       writeFileSync(
@@ -387,7 +387,7 @@ describe("manual-flows", () => {
       expect(run.status).toBe("completed");
       expect(run.result.mode).toBe("dry-run");
       expect(run.result.filesScanned).toBe(2);
-      // index.mjs has BOSUN:SUMMARY, utils.mjs does not
+      // index.mjs has CLAUDE:SUMMARY, utils.mjs does not
       expect(run.result.filesNeedingSummary).toBe(1);
     });
 
@@ -573,3 +573,4 @@ describe("manual-flows", () => {
     });
   });
 });
+

@@ -1,4 +1,4 @@
-// BOSUN:SUMMARY — manual-flows
+// CLAUDE:SUMMARY — manual-flows
 // Backend for Manual Run Flows — one-shot templates with user-configurable forms
 // that trigger codebase-wide transformations (audit/annotate, skill generation,
 // config preparation). Each template defines form fields, validation, and an
@@ -77,7 +77,7 @@ export const BUILTIN_FLOW_TEMPLATES = [
     id: "codebase-annotation-audit",
     name: "Codebase Annotation Audit",
     description:
-      "Systematically audit & annotate the codebase with BOSUN:SUMMARY and BOSUN:WARN comments so future AI agents navigate 4× faster. Documentation-only — no code behavior changes.",
+      "Systematically audit & annotate the codebase with CLAUDE:SUMMARY and CLAUDE:WARN comments so future AI agents navigate 4× faster. Documentation-only — no code behavior changes.",
     icon: "search",
     category: "audit",
     tags: ["audit", "annotation", "documentation", "onboarding"],
@@ -138,7 +138,7 @@ export const BUILTIN_FLOW_TEMPLATES = [
         label: "Commit Message",
         type: "text",
         placeholder: "docs(audit): annotate codebase",
-        defaultValue: "docs(audit): annotate codebase with BOSUN:SUMMARY and BOSUN:WARN",
+        defaultValue: "docs(audit): annotate codebase with CLAUDE:SUMMARY and CLAUDE:WARN",
         required: false,
         helpText: "Commit message for the annotation changes. Leave empty to skip auto-commit.",
       },
@@ -1166,8 +1166,8 @@ function buildInventory(scanDir, extensions, skipGenerated, repoRoot) {
       try {
         content = readFileSync(fullPath, "utf8");
         lines = content.split("\n").length;
-        hasSummary = /BOSUN:SUMMARY/i.test(content);
-        hasWarn = /BOSUN:WARN/i.test(content);
+        hasSummary = /(?:CLAUDE|BOSUN):SUMMARY/i.test(content);
+        hasWarn = /(?:CLAUDE|BOSUN):WARN/i.test(content);
       } catch { /* unreadable */ }
 
       const ext = entry.name.includes(".") ? entry.name.slice(entry.name.lastIndexOf(".")) : "";
@@ -1207,8 +1207,8 @@ function buildAuditTaskDescription(formValues, inventory) {
 
 ### Inventory Summary
 - Total files: ${inventory.length}
-- Files needing BOSUN:SUMMARY: ${needsSummary}
-- Files needing BOSUN:WARN review: ${needsWarn}
+- Files needing CLAUDE:SUMMARY: ${needsSummary}
+- Files needing CLAUDE:WARN review: ${needsWarn}
 
 ### Instructions
 Follow the codebase-annotation-audit skill (loaded in your skills).
@@ -1483,3 +1483,4 @@ function writeRunToDisk(run, rootDir) {
   mkdirSync(dir, { recursive: true });
   writeFileSync(resolve(dir, `${run.id}.json`), JSON.stringify(run, null, 2) + "\n", "utf8");
 }
+

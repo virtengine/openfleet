@@ -76,6 +76,7 @@ function showHelp() {
     bosun [options]
 
   COMMANDS
+    audit <subcommand>          Run codebase annotation audit workflows
     --setup                     Launch the web-based setup wizard (default)
     --setup-terminal            Run the legacy terminal setup wizard
     --where                     Show the resolved bosun config directory
@@ -1223,6 +1224,12 @@ async function main() {
     process.exit(0);
   }
 
+  if (args[0] === "audit") {
+    const { runAuditCli } = await import("./lib/codebase-audit.mjs");
+    const { exitCode } = await runAuditCli(args.slice(1));
+    process.exit(exitCode ?? 0);
+  }
+
   // Handle --help
   if (args.includes("--help") || args.includes("-h")) {
     showHelp();
@@ -2284,3 +2291,4 @@ main().catch(async (err) => {
   await sendCrashNotification(1, null).catch(() => {});
   process.exit(1);
 });
+
