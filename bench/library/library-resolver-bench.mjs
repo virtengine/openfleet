@@ -11,6 +11,7 @@ import {
   rebuildAgentProfileIndex,
   loadAgentProfileIndex,
   matchAgentProfiles,
+  resolveLibraryPlan,
 } from "../../infra/library-manager.mjs";
 
 function parseIntArg(name, fallback) {
@@ -129,7 +130,17 @@ try {
       topN: 5,
     }));
 
+  const coldPlanResolve = measure("coldPlanResolve", () =>
+    resolveLibraryPlan(rootDir, {
+      title: "fix(ui): benchmark resolver regression",
+      description: "Investigate ui workflow issue and component rendering bug",
+      changedFiles: ["ui/tabs/library.js", "ui/styles/layout.css"],
+      topN: 5,
+      skillTopN: 6,
+    }));
+
   const iterations = [];
+  const planIterations = [];
   for (let index = 0; index < config.iterations; index += 1) {
     const titleDomain = index % 2 === 0 ? "ui" : "api";
     const sample = measure("warmResolve", () =>
@@ -140,6 +151,16 @@ try {
         topN: 5,
       }));
     iterations.push(sample.durationMs);
+
+    const planSample = measure("warmPlanResolve", () =>
+      resolveLibraryPlan(rootDir, {
+        title: `fix(${titleDomain}): benchmark issue-${index % Math.max(config.agents, 1)}`,
+        description: `Synthetic ${titleDomain} benchmark iteration ${index}`,
+        changedFiles: [`${titleDomain}/module-${index % 25}/file-${index}.js`],
+        topN: 5,
+        skillTopN: 6,
+      }));
+    planIterations.push(planSample.durationMs);
   }
 
   const output = {
@@ -150,6 +171,7 @@ try {
       agentIndexBuildMs: indexBuild.durationMs,
       agentIndexLoadMs: indexLoad.durationMs,
       coldResolveMs: coldResolve.durationMs,
+      coldPlanResolveMs: coldPlanResolve.durationMs,
       warmResolve: {
         iterations: config.iterations,
         p50Ms: percentile(iterations, 0.5),
@@ -158,11 +180,20 @@ try {
         minMs: iterations.length ? Number(Math.min(...iterations).toFixed(2)) : 0,
         maxMs: iterations.length ? Number(Math.max(...iterations).toFixed(2)) : 0,
       },
+      warmPlanResolve: {
+        iterations: config.iterations,
+        p50Ms: percentile(planIterations, 0.5),
+        p95Ms: percentile(planIterations, 0.95),
+        p99Ms: percentile(planIterations, 0.99),
+        minMs: planIterations.length ? Number(Math.min(...planIterations).toFixed(2)) : 0,
+        maxMs: planIterations.length ? Number(Math.max(...planIterations).toFixed(2)) : 0,
+      },
     },
     counts: {
       indexedAgents: Number(indexBuild.result?.count || 0),
       bestMatchId: coldResolve.result?.best?.id || null,
       candidateCount: Array.isArray(coldResolve.result?.candidates) ? coldResolve.result.candidates.length : 0,
+      planSkillCount: Array.isArray(coldPlanResolve.result?.plan?.skillIds) ? coldPlanResolve.result.plan.skillIds.length : 0,
     },
   };
 

@@ -963,6 +963,14 @@ function App() {
   const [contextShreddingMsgTier1MaxAge, setContextShreddingMsgTier1MaxAge] = useState(4);
   const [contextShreddingMsgMinCompressChars, setContextShreddingMsgMinCompressChars] = useState(120);
   const [contextShreddingUserMsgFullTurns, setContextShreddingUserMsgFullTurns] = useState(1);
+  const [contextShreddingLiveToolCompactionEnabled, setContextShreddingLiveToolCompactionEnabled] = useState(false);
+  const [contextShreddingLiveToolCompactionMode, setContextShreddingLiveToolCompactionMode] = useState("auto");
+  const [contextShreddingLiveToolCompactionMinChars, setContextShreddingLiveToolCompactionMinChars] = useState(4000);
+  const [contextShreddingLiveToolCompactionTargetChars, setContextShreddingLiveToolCompactionTargetChars] = useState(1800);
+  const [contextShreddingLiveToolCompactionMinSavingsPct, setContextShreddingLiveToolCompactionMinSavingsPct] = useState(15);
+  const [contextShreddingLiveToolCompactionMinRuntimeMs, setContextShreddingLiveToolCompactionMinRuntimeMs] = useState(2000);
+  const [contextShreddingLiveToolCompactionBlockStructuredOutput, setContextShreddingLiveToolCompactionBlockStructuredOutput] = useState(true);
+  const [contextShreddingLiveToolCompactionAllowCommands, setContextShreddingLiveToolCompactionAllowCommands] = useState("grep,rg,find,git,go,npm,pnpm,yarn,node,python,python3,pytest,docker,kubectl,cargo,gradle,maven,mvn,javac,tsc,jest,vitest,deno");
   const [contextShreddingProfiles, setContextShreddingProfiles] = useState("");
   const CURRENT_WORKFLOW_PROFILE_ID = "current-installed";
   // Kanban
@@ -1603,6 +1611,30 @@ function App() {
       }
       if (d.contextShreddingUserMsgFullTurns != null) {
         setContextShreddingUserMsgFullTurns(Number(d.contextShreddingUserMsgFullTurns) || 1);
+      }
+      if (d.contextShreddingLiveToolCompactionEnabled != null) {
+        setContextShreddingLiveToolCompactionEnabled(Boolean(d.contextShreddingLiveToolCompactionEnabled));
+      }
+      if (d.contextShreddingLiveToolCompactionMode != null) {
+        setContextShreddingLiveToolCompactionMode(String(d.contextShreddingLiveToolCompactionMode || "auto"));
+      }
+      if (d.contextShreddingLiveToolCompactionMinChars != null) {
+        setContextShreddingLiveToolCompactionMinChars(Number(d.contextShreddingLiveToolCompactionMinChars) || 4000);
+      }
+      if (d.contextShreddingLiveToolCompactionTargetChars != null) {
+        setContextShreddingLiveToolCompactionTargetChars(Number(d.contextShreddingLiveToolCompactionTargetChars) || 1800);
+      }
+      if (d.contextShreddingLiveToolCompactionMinSavingsPct != null) {
+        setContextShreddingLiveToolCompactionMinSavingsPct(Number(d.contextShreddingLiveToolCompactionMinSavingsPct) || 15);
+      }
+      if (d.contextShreddingLiveToolCompactionMinRuntimeMs != null) {
+        setContextShreddingLiveToolCompactionMinRuntimeMs(Number(d.contextShreddingLiveToolCompactionMinRuntimeMs) || 2000);
+      }
+      if (d.contextShreddingLiveToolCompactionBlockStructuredOutput != null) {
+        setContextShreddingLiveToolCompactionBlockStructuredOutput(Boolean(d.contextShreddingLiveToolCompactionBlockStructuredOutput));
+      }
+      if (d.contextShreddingLiveToolCompactionAllowCommands != null) {
+        setContextShreddingLiveToolCompactionAllowCommands(String(d.contextShreddingLiveToolCompactionAllowCommands));
       }
       if (d.contextShreddingProfiles != null) {
         setContextShreddingProfiles(String(d.contextShreddingProfiles));
@@ -2382,6 +2414,14 @@ function App() {
           contextShreddingMsgTier1MaxAge,
           contextShreddingMsgMinCompressChars,
           contextShreddingUserMsgFullTurns,
+          contextShreddingLiveToolCompactionEnabled,
+          contextShreddingLiveToolCompactionMode,
+          contextShreddingLiveToolCompactionMinChars,
+          contextShreddingLiveToolCompactionTargetChars,
+          contextShreddingLiveToolCompactionMinSavingsPct,
+          contextShreddingLiveToolCompactionMinRuntimeMs,
+          contextShreddingLiveToolCompactionBlockStructuredOutput,
+          contextShreddingLiveToolCompactionAllowCommands,
           contextShreddingProfiles,
           // Codex model profiles
           codexModelProfile,
@@ -3900,6 +3940,59 @@ function App() {
             Compress User Messages
           </label>
         </div>
+        <div class="form-group">
+          <label style="display:flex;align-items:center;gap:8px;cursor:pointer;user-select:none">
+            <input type="checkbox" checked=${contextShreddingLiveToolCompactionEnabled}
+              onchange=${(e) => setContextShreddingLiveToolCompactionEnabled(e.target.checked)}
+              style="width:auto;padding:0;margin:0;accent-color:var(--accent);cursor:pointer" />
+            Enable Live Tool Compaction
+          </label>
+          <div class="hint">Compact large command output before it ever lands in the active turn context.</div>
+        </div>
+        <div class="executor-grid">
+          <div class="form-group">
+            <label>Live Compaction Mode</label>
+            <select value=${contextShreddingLiveToolCompactionMode} onchange=${(e) => setContextShreddingLiveToolCompactionMode(e.target.value)}>
+              <option value="off">Off</option>
+              <option value="auto">Auto</option>
+              <option value="aggressive">Aggressive</option>
+            </select>
+          </div>
+          <div class="form-group">
+            <label>Live Min Chars</label>
+            <input type="number" value=${contextShreddingLiveToolCompactionMinChars} min="500"
+              oninput=${(e) => setContextShreddingLiveToolCompactionMinChars(Number(e.target.value) || 4000)} />
+          </div>
+          <div class="form-group">
+            <label>Live Target Chars</label>
+            <input type="number" value=${contextShreddingLiveToolCompactionTargetChars} min="200"
+              oninput=${(e) => setContextShreddingLiveToolCompactionTargetChars(Number(e.target.value) || 1800)} />
+          </div>
+          <div class="form-group">
+            <label>Live Min Savings %</label>
+            <input type="number" value=${contextShreddingLiveToolCompactionMinSavingsPct} min="0" max="95"
+              oninput=${(e) => setContextShreddingLiveToolCompactionMinSavingsPct(Number(e.target.value) || 15)} />
+          </div>
+          <div class="form-group">
+            <label>Live Min Runtime (ms)</label>
+            <input type="number" value=${contextShreddingLiveToolCompactionMinRuntimeMs} min="0"
+              oninput=${(e) => setContextShreddingLiveToolCompactionMinRuntimeMs(Number(e.target.value) || 2000)} />
+          </div>
+        </div>
+        <div class="form-group">
+          <label style="display:flex;align-items:center;gap:8px;cursor:pointer;user-select:none">
+            <input type="checkbox" checked=${contextShreddingLiveToolCompactionBlockStructuredOutput}
+              onchange=${(e) => setContextShreddingLiveToolCompactionBlockStructuredOutput(e.target.checked)}
+              style="width:auto;padding:0;margin:0;accent-color:var(--accent);cursor:pointer" />
+            Skip Structured Output
+          </label>
+        </div>
+        <div class="form-group">
+          <label>Live Compaction Allowlist</label>
+          <textarea value=${contextShreddingLiveToolCompactionAllowCommands}
+            oninput=${(e) => setContextShreddingLiveToolCompactionAllowCommands(e.target.value)}
+            placeholder='grep,rg,find,git,go,npm,pnpm,yarn,node'></textarea>
+        </div>
         <div class="form-group" style="margin-bottom:0">
           <label>Profiles JSON</label>
           <textarea value=${contextShreddingProfiles}
@@ -4846,6 +4939,7 @@ function App() {
             <tr><th>Workflow Parallel Branches</th><td>${workflowMaxConcurrentBranches}</td></tr>
             <tr><th>Context Shredding</th><td>${contextShreddingEnabled ? "Enabled" : "Disabled"}</td></tr>
             <tr><th>Shredding Tiers</th><td>full=${contextShreddingFullContextTurns}, tier1=${contextShreddingTier1MaxAge}, tier2=${contextShreddingTier2MaxAge}</td></tr>
+            <tr><th>Live Tool Compaction</th><td>${contextShreddingLiveToolCompactionEnabled ? `${contextShreddingLiveToolCompactionMode} (min ${contextShreddingLiveToolCompactionMinChars} chars)` : "Disabled"}</td></tr>
             <tr><th>Auto-Start on Login</th><td>${autoStartEnabled ? "Enabled" : "Disabled"}</td></tr>
             <tr><th>Desktop Shortcut</th><td>${desktopShortcutEnabled ? "Installed" : "Not installed"}</td></tr>
             <tr><th>Sentinel / Watchdog</th><td>${sentinelAutoStart ? `Enabled${sentinelStrict ? " (strict)" : ""}` : "Disabled"}</td></tr>
@@ -4933,4 +5027,5 @@ render(html`<${App} />`, document.getElementById("app"));
 </body>
 <script defer src="https://cloud.umami.is/script.js" data-website-id="24c5d605-7f25-4be5-875e-25c8f3cb4059"></script>
 </html>
+
 

@@ -1019,6 +1019,90 @@ function applyNonBlockingSetupEnvDefaults(envMap, env = {}, sourceEnv = process.
       { min: 0, max: 20 },
     ),
   );
+  envMap.CONTEXT_SHREDDING_LIVE_TOOL_COMPACTION_ENABLED = toBooleanEnvString(
+    pickNonEmptyValue(
+      env.contextShreddingLiveToolCompactionEnabled,
+      env.CONTEXT_SHREDDING_LIVE_TOOL_COMPACTION_ENABLED,
+      envMap.CONTEXT_SHREDDING_LIVE_TOOL_COMPACTION_ENABLED,
+      sourceEnv.CONTEXT_SHREDDING_LIVE_TOOL_COMPACTION_ENABLED,
+    ),
+    false,
+  );
+  const liveToolCompactionMode = String(
+    pickNonEmptyValue(
+      env.contextShreddingLiveToolCompactionMode,
+      env.CONTEXT_SHREDDING_LIVE_TOOL_COMPACTION_MODE,
+      envMap.CONTEXT_SHREDDING_LIVE_TOOL_COMPACTION_MODE,
+      sourceEnv.CONTEXT_SHREDDING_LIVE_TOOL_COMPACTION_MODE,
+    ) || "auto",
+  ).trim().toLowerCase();
+  envMap.CONTEXT_SHREDDING_LIVE_TOOL_COMPACTION_MODE = ["off", "auto", "aggressive"].includes(liveToolCompactionMode)
+    ? liveToolCompactionMode
+    : "auto";
+  envMap.CONTEXT_SHREDDING_LIVE_TOOL_COMPACTION_MIN_CHARS = String(
+    toBoundedInt(
+      pickNonEmptyValue(
+        env.contextShreddingLiveToolCompactionMinChars,
+        env.CONTEXT_SHREDDING_LIVE_TOOL_COMPACTION_MIN_CHARS,
+        envMap.CONTEXT_SHREDDING_LIVE_TOOL_COMPACTION_MIN_CHARS,
+        sourceEnv.CONTEXT_SHREDDING_LIVE_TOOL_COMPACTION_MIN_CHARS,
+      ),
+      4000,
+      { min: 500, max: 500000 },
+    ),
+  );
+  envMap.CONTEXT_SHREDDING_LIVE_TOOL_COMPACTION_TARGET_CHARS = String(
+    toBoundedInt(
+      pickNonEmptyValue(
+        env.contextShreddingLiveToolCompactionTargetChars,
+        env.CONTEXT_SHREDDING_LIVE_TOOL_COMPACTION_TARGET_CHARS,
+        envMap.CONTEXT_SHREDDING_LIVE_TOOL_COMPACTION_TARGET_CHARS,
+        sourceEnv.CONTEXT_SHREDDING_LIVE_TOOL_COMPACTION_TARGET_CHARS,
+      ),
+      1800,
+      { min: 200, max: 50000 },
+    ),
+  );
+  envMap.CONTEXT_SHREDDING_LIVE_TOOL_COMPACTION_MIN_SAVINGS_PCT = String(
+    toBoundedInt(
+      pickNonEmptyValue(
+        env.contextShreddingLiveToolCompactionMinSavingsPct,
+        env.CONTEXT_SHREDDING_LIVE_TOOL_COMPACTION_MIN_SAVINGS_PCT,
+        envMap.CONTEXT_SHREDDING_LIVE_TOOL_COMPACTION_MIN_SAVINGS_PCT,
+        sourceEnv.CONTEXT_SHREDDING_LIVE_TOOL_COMPACTION_MIN_SAVINGS_PCT,
+      ),
+      15,
+      { min: 0, max: 95 },
+    ),
+  );
+  envMap.CONTEXT_SHREDDING_LIVE_TOOL_COMPACTION_MIN_RUNTIME_MS = String(
+    toBoundedInt(
+      pickNonEmptyValue(
+        env.contextShreddingLiveToolCompactionMinRuntimeMs,
+        env.CONTEXT_SHREDDING_LIVE_TOOL_COMPACTION_MIN_RUNTIME_MS,
+        envMap.CONTEXT_SHREDDING_LIVE_TOOL_COMPACTION_MIN_RUNTIME_MS,
+        sourceEnv.CONTEXT_SHREDDING_LIVE_TOOL_COMPACTION_MIN_RUNTIME_MS,
+      ),
+      2000,
+      { min: 0, max: 3600000 },
+    ),
+  );
+  envMap.CONTEXT_SHREDDING_LIVE_TOOL_COMPACTION_BLOCK_STRUCTURED_OUTPUT = toBooleanEnvString(
+    pickNonEmptyValue(
+      env.contextShreddingLiveToolCompactionBlockStructuredOutput,
+      env.CONTEXT_SHREDDING_LIVE_TOOL_COMPACTION_BLOCK_STRUCTURED_OUTPUT,
+      envMap.CONTEXT_SHREDDING_LIVE_TOOL_COMPACTION_BLOCK_STRUCTURED_OUTPUT,
+      sourceEnv.CONTEXT_SHREDDING_LIVE_TOOL_COMPACTION_BLOCK_STRUCTURED_OUTPUT,
+    ),
+    true,
+  );
+  const liveToolCompactionAllowCommands =
+    env.contextShreddingLiveToolCompactionAllowCommands
+    ?? env.CONTEXT_SHREDDING_LIVE_TOOL_COMPACTION_ALLOW_COMMANDS
+    ?? envMap.CONTEXT_SHREDDING_LIVE_TOOL_COMPACTION_ALLOW_COMMANDS
+    ?? sourceEnv.CONTEXT_SHREDDING_LIVE_TOOL_COMPACTION_ALLOW_COMMANDS
+    ?? "grep,rg,find,git,go,npm,pnpm,yarn,node,python,python3,pytest,docker,kubectl,cargo,gradle,maven,mvn,javac,tsc,jest,vitest,deno";
+  envMap.CONTEXT_SHREDDING_LIVE_TOOL_COMPACTION_ALLOW_COMMANDS = String(liveToolCompactionAllowCommands).trim();
   const contextShreddingProfiles =
     env.contextShreddingProfiles
     ?? env.CONTEXT_SHREDDING_PROFILES
@@ -2897,4 +2981,5 @@ if (process.argv[1] && resolve(process.argv[1]) === resolve(__filename_setup_web
     process.exit(1);
   });
 }
+
 

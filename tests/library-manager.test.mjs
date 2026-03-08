@@ -13,7 +13,10 @@ import {
   deleteEntry,
   listAgentProfiles,
   loadAgentProfileIndex,
+  loadSkillEntryIndex,
   rebuildAgentProfileIndex,
+  rebuildSkillEntryIndex,
+  resolveLibraryPlan,
   matchAgentProfile,
   matchAgentProfiles,
   detectScopes,
@@ -34,6 +37,29 @@ import {
 } from "../infra/library-manager.mjs";
 
 // ── Helpers ─────────────────────────────────────────────────────────────────
+
+function sanitizedGitEnv(extra = {}) {
+  const env = { ...process.env, ...extra };
+  for (const key of [
+    "GIT_DIR",
+    "GIT_WORK_TREE",
+    "GIT_COMMON_DIR",
+    "GIT_INDEX_FILE",
+    "GIT_OBJECT_DIRECTORY",
+    "GIT_ALTERNATE_OBJECT_DIRECTORIES",
+    "GIT_PREFIX",
+  ]) {
+    delete env[key];
+  }
+  return env;
+}
+
+function execGit(command, options = {}) {
+  return execSync(command, {
+    ...options,
+    env: sanitizedGitEnv(options.env),
+  });
+}
 
 let tmpDir;
 
@@ -475,20 +501,27 @@ describe("resolveEntry (multi-workspace)", () => {
 });
 
 
-describe("agent profile index", () => {
+describe("compiled library indexes", () => {
   beforeEach(() => fresh());
   afterEach(() => cleanup());
 
-  it("builds a compiled agent metadata index", () => {
+  it("builds compiled agent and skill indexes", () => {
     scaffoldAgentProfiles(tmpDir);
+    upsertEntry(tmpDir, { type: "skill", name: "UI Testing", tags: ["ui", "test"] }, "# Skill: UI Testing\n\n<!-- tags: ui test -->");
     rebuildManifest(tmpDir);
 
-    const index = rebuildAgentProfileIndex(tmpDir);
-    expect(index.count).toBeGreaterThanOrEqual(5);
+    const agentIndex = rebuildAgentProfileIndex(tmpDir);
+    expect(agentIndex.count).toBeGreaterThanOrEqual(5);
 
-    const loaded = loadAgentProfileIndex(tmpDir);
-    expect(Array.isArray(loaded.profiles)).toBe(true);
-    expect(loaded.profiles.some((profile) => profile.id === "ui-agent")).toBe(true);
+    const skillIndex = rebuildSkillEntryIndex(tmpDir);
+    expect(skillIndex.count).toBeGreaterThanOrEqual(1);
+
+    const loadedAgents = loadAgentProfileIndex(tmpDir);
+    const loadedSkills = loadSkillEntryIndex(tmpDir);
+    expect(Array.isArray(loadedAgents.profiles)).toBe(true);
+    expect(Array.isArray(loadedSkills.skills)).toBe(true);
+    expect(loadedAgents.profiles.some((profile) => profile.id === "ui-agent")).toBe(true);
+    expect(loadedSkills.skills.some((skill) => skill.name === "UI Testing")).toBe(true);
   });
 
   it("matchAgentProfiles uses compiled metadata on the hot path", () => {
@@ -549,6 +582,62 @@ describe("agent profile index", () => {
     expect(loadAgentProfileIndex(tmpDir).profiles.some((profile) => profile.id === "delete-agent")).toBe(true);
     expect(deleteEntry(tmpDir, "delete-agent")).toBe(true);
     expect(loadAgentProfileIndex(tmpDir).profiles.some((profile) => profile.id === "delete-agent")).toBe(false);
+  });
+
+  it("resolves a composed library plan with prompt, skills, and tools", () => {
+    upsertEntry(tmpDir, {
+      type: "prompt",
+      id: "ui-prompt",
+      name: "UI Prompt",
+      description: "Prompt for UI tasks",
+      tags: ["ui"],
+    }, "# UI Prompt\n\nFocus on UI quality.");
+
+    upsertEntry(tmpDir, {
+      type: "skill",
+      id: "ui-testing",
+      name: "UI Testing",
+      description: "UI testing skill",
+      tags: ["ui", "test"],
+    }, "# Skill: UI Testing\n\n<!-- tags: ui test -->");
+
+    upsertEntry(tmpDir, {
+      type: "agent",
+      id: "ui-resolver-agent",
+      name: "UI Resolver Agent",
+      description: "Agent for UI resolver tests",
+      tags: ["ui"],
+    }, {
+      id: "ui-resolver-agent",
+      name: "UI Resolver Agent",
+      description: "Agent for UI resolver tests",
+      titlePatterns: ["\\bui\\b", "\\bportal\\b"],
+      scopes: ["ui"],
+      tags: ["ui"],
+      promptOverride: "ui-prompt",
+      skills: ["ui-testing"],
+      enabledTools: ["read", "edit"],
+      enabledMcpServers: ["context7"],
+      agentType: "task",
+    });
+
+    rebuildManifest(tmpDir);
+
+    const result = resolveLibraryPlan(tmpDir, {
+      title: "feat(ui): improve portal layout",
+      description: "Update ui tests and component rendering",
+      changedFiles: ["ui/tabs/library.js", "ui/tests/layout.test.mjs"],
+      topN: 5,
+      skillTopN: 4,
+    });
+
+    expect(result.best).not.toBeNull();
+    expect(result.plan).not.toBeNull();
+    expect(result.plan.agentProfileId).toBe("ui-resolver-agent");
+    expect(result.plan.prompt?.id).toBe("ui-prompt");
+    expect(result.plan.skillIds).toContain("ui-testing");
+    expect(result.plan.recommendedToolIds).toContain("read");
+    expect(result.plan.enabledMcpServers).toContain("context7");
   });
 });
 
@@ -617,13 +706,13 @@ describe("well-known source import", () => {
         ].join("\n"),
         "utf8",
       );
-      execSync("git init", { cwd: srcRepo, stdio: "pipe" });
-      execSync("git config user.email test@example.com", { cwd: srcRepo, stdio: "pipe" });
-      execSync("git config user.name test", { cwd: srcRepo, stdio: "pipe" });
-      execSync("git add .", { cwd: srcRepo, stdio: "pipe" });
-      execSync("git commit -m init", { cwd: srcRepo, stdio: "pipe" });
+      execGit("git init", { cwd: srcRepo, stdio: "pipe" });
+      execGit("git config user.email test@example.com", { cwd: srcRepo, stdio: "pipe" });
+      execGit("git config user.name test", { cwd: srcRepo, stdio: "pipe" });
+      execGit("git add .", { cwd: srcRepo, stdio: "pipe" });
+      execGit("git commit -m init", { cwd: srcRepo, stdio: "pipe" });
 
-      const branch = execSync("git rev-parse --abbrev-ref HEAD", { cwd: srcRepo, stdio: "pipe", encoding: "utf8" }).trim();
+      const branch = execGit("git rev-parse --abbrev-ref HEAD", { cwd: srcRepo, stdio: "pipe", encoding: "utf8" }).trim();
       const result = importAgentProfilesFromRepository(tmpDir, {
         repoUrl: srcRepo,
         branch,

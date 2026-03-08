@@ -4,6 +4,23 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
+function sanitizedGitEnv(extra = {}) {
+  const env = { ...process.env, ...extra };
+  for (const key of [
+    "GIT_DIR",
+    "GIT_WORK_TREE",
+    "GIT_COMMON_DIR",
+    "GIT_INDEX_FILE",
+    "GIT_OBJECT_DIRECTORY",
+    "GIT_ALTERNATE_OBJECT_DIRECTORIES",
+    "GIT_PREFIX",
+  ]) {
+    delete env[key];
+  }
+  return env;
+}
+
+
 describe("ui-server mini app", () => {
   const ENV_KEYS = [
     "TELEGRAM_UI_TLS_DISABLE",
@@ -2388,12 +2405,12 @@ describe("ui-server mini app", () => {
     const repoDir = mkdtempSync(join(tmpdir(), "bosun-session-diff-"));
     const filePath = join(repoDir, "notes.txt");
     const { execSync } = await import("node:child_process");
-    execSync("git init", { cwd: repoDir, stdio: "pipe" });
-    execSync("git config user.email bosun@example.com", { cwd: repoDir, stdio: "pipe" });
-    execSync("git config user.name Bosun", { cwd: repoDir, stdio: "pipe" });
+    execSync("git init", { cwd: repoDir, stdio: "pipe", env: sanitizedGitEnv() });
+    execSync("git config user.email bosun@example.com", { cwd: repoDir, stdio: "pipe", env: sanitizedGitEnv() });
+    execSync("git config user.name Bosun", { cwd: repoDir, stdio: "pipe", env: sanitizedGitEnv() });
     writeFileSync(filePath, "line one\n", "utf8");
-    execSync("git add notes.txt", { cwd: repoDir, stdio: "pipe" });
-    execSync('git commit -m "init"', { cwd: repoDir, stdio: "pipe" });
+    execSync("git add notes.txt", { cwd: repoDir, stdio: "pipe", env: sanitizedGitEnv() });
+    execSync('git commit -m "init"', { cwd: repoDir, stdio: "pipe", env: sanitizedGitEnv() });
     writeFileSync(filePath, "line one\nline two\n", "utf8");
 
     const mod = await import("../server/ui-server.mjs");

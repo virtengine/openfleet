@@ -61,11 +61,19 @@ function execGit(command, options = {}) {
   });
 }
 
-function sanitizedGitEnv() {
-  const env = { ...process.env };
-  delete env.GIT_DIR;
-  delete env.GIT_WORK_TREE;
-  delete env.GIT_INDEX_FILE;
+function sanitizedGitEnv(extra = {}) {
+  const env = { ...process.env, ...extra };
+  for (const key of [
+    "GIT_DIR",
+    "GIT_WORK_TREE",
+    "GIT_COMMON_DIR",
+    "GIT_INDEX_FILE",
+    "GIT_OBJECT_DIRECTORY",
+    "GIT_ALTERNATE_OBJECT_DIRECTORIES",
+    "GIT_PREFIX",
+  ]) {
+    delete env[key];
+  }
   return env;
 }
 

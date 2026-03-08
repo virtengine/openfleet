@@ -214,7 +214,10 @@ function buildIndexedSkillEntry(entry) {
 }
 
 function buildSkillSelection(rootDir, best, criteria = {}, opts = {}) {
-  const indexedSkills = listIndexedSkillEntries(rootDir);
+  const skillIndex = loadSkillEntryIndex(rootDir);
+  const indexedSkills = Array.isArray(skillIndex?.skills) ? skillIndex.skills : [];
+  const tokenMap = skillIndex?.tokenMap || {};
+  const indexedById = new Map(indexedSkills.map((entry) => [entry.id, entry]));
   const profileSkillIds = toStringArray(best?.profile?.skills);
   const textBlob = [criteria?.title, criteria?.description].filter(Boolean).join("\n");
   const criteriaTags = uniqueStrings([
@@ -223,9 +226,19 @@ function buildSkillSelection(rootDir, best, criteria = {}, opts = {}) {
     ...keywordTokens(toStringArray(criteria?.changedFiles).join(" "), { minLength: 3 }),
   ]).map((value) => value.toLowerCase());
 
+  const candidateIds = new Set(profileSkillIds);
+  for (const tag of criteriaTags) {
+    const ids = Array.isArray(tokenMap?.[tag]) ? tokenMap[tag] : [];
+    if (ids.length > 128) continue;
+    for (const id of ids) candidateIds.add(id);
+  }
+
   const scored = [];
   const profileSkillSet = new Set(profileSkillIds.map((value) => value.toLowerCase()));
-  for (const skill of indexedSkills) {
+  const candidateEntries = candidateIds.size > 0
+    ? [...candidateIds].map((id) => indexedById.get(id)).filter(Boolean)
+    : [];
+  for (const skill of candidateEntries) {
     let score = 0;
     const reasons = [];
     if (profileSkillSet.has(String(skill.id || "").toLowerCase())) {
@@ -402,11 +415,25 @@ export function rebuildSkillEntryIndex(rootDir, manifest = loadManifest(rootDir)
     .filter((entry) => entry?.type === "skill")
     .map((entry) => buildIndexedSkillEntry(entry));
 
+  const tokenMap = {};
+  for (const skill of skills) {
+    const tokens = uniqueStrings([
+      String(skill.id || "").toLowerCase(),
+      ...skill.tags.map((value) => String(value || "").toLowerCase()),
+      ...skill.keywords.map((value) => String(value || "").toLowerCase()),
+    ]);
+    for (const token of tokens) {
+      if (!tokenMap[token]) tokenMap[token] = [];
+      tokenMap[token].push(skill.id);
+    }
+  }
+
   const index = {
     generated: nowISO(),
     revision: buildSkillIndexRevision(manifest),
     count: skills.length,
     skills,
+    tokenMap,
   };
   safeWriteJson(getSkillEntryIndexPath(normalizedRoot), index);
   return updateSkillEntryIndexCache(normalizedRoot, index, getFileMtimeMs(getManifestPath(normalizedRoot)));
@@ -432,6 +459,7 @@ export function loadSkillEntryIndex(rootDir, options = {}) {
         revision,
         count: existing.skills.length,
         skills: existing.skills,
+        tokenMap: existing.tokenMap || {},
       },
       manifestMtimeMs,
     );
@@ -440,7 +468,7 @@ export function loadSkillEntryIndex(rootDir, options = {}) {
   if (options?.allowRebuild === false) {
     return updateSkillEntryIndexCache(
       normalizedRoot,
-      { generated: nowISO(), revision, count: 0, skills: [] },
+      { generated: nowISO(), revision, count: 0, skills: [], tokenMap: {} },
       manifestMtimeMs,
     );
   }

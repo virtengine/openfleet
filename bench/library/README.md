@@ -16,7 +16,9 @@ node bench/library/library-resolver-bench.mjs --agents=500 --prompts=500 --skill
 - compiled agent-index build time
 - compiled agent-index load time
 - cold resolve latency
+- cold plan-resolve latency
 - warm resolve latency percentiles
+- warm plan-resolve latency percentiles
 
 ## Notes
 
