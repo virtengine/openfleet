@@ -46,24 +46,17 @@ describe("prepublish-check", () => {
     ]);
   });
 
-  it("falls back to regex parsing for JSX-bearing modules", async () => {
+  it("ignores import-like text in comments, strings, templates, and import.meta", async () => {
     const source = [
-      'import React from "react";',
-      'import wsBridge from "./lib/ws-bridge.mjs";',
-      'import StatusHeader from "./components/status-header.mjs";',
-      'export { helper } from "../shared/helper.mjs";',
-      'const lazy = await import("../screens/tasks.mjs");',
-      'export default function App() {',
-      '  return (<Box><Text>Hello</Text></Box>);',
-      '}',
+      '// import "./commented.mjs";',
+      'const text = "export * from \'./string.mjs\'";',
+      'const template = `import("./template.mjs") ${value}`;',
+      'const url = import.meta.url;',
+      'const dynamic = import(name);',
+      'export * from "./kept.mjs";',
     ].join("\n");
 
-    await expect(findLocalImportSpecifiers(source)).resolves.toEqual([
-      "./lib/ws-bridge.mjs",
-      "./components/status-header.mjs",
-      "../shared/helper.mjs",
-      "../screens/tasks.mjs",
-    ]);
+    await expect(findLocalImportSpecifiers(source)).resolves.toEqual(["./kept.mjs"]);
   });
 
   it("expands directory entries from the published files manifest", () => {
