@@ -195,6 +195,7 @@ body.kanban-dragging .kanban-card {
   background: var(--bg-card);
   border-radius: var(--radius-lg, 12px);
   padding: 14px;
+  overflow: hidden;
   /* Use the stable viewport height so each column keeps its own scroll area
      without feeling too tall on desktop or cramped on mobile. */
   height: clamp(360px, calc(var(--viewport-stable-height, 100vh) - 220px), 760px);
@@ -304,6 +305,7 @@ body.kanban-dragging .kanban-card {
 .kanban-column-footer {
   position: sticky;
   bottom: 0;
+  flex-shrink: 0;
   z-index: 2;
   margin: 0 -14px -14px;
   padding: 6px 14px 12px;
@@ -605,6 +607,9 @@ body.kanban-dragging .kanban-card {
 }
 
 .kanban-column-head {
+  flex-shrink: 0;
+  position: relative;
+  z-index: 2;
   border-radius: calc(var(--radius-md, 8px) - 2px);
   background:
     linear-gradient(135deg, rgba(255, 255, 255, 0.045), rgba(255, 255, 255, 0.01)),

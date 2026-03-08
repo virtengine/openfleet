@@ -1972,6 +1972,66 @@ describe("ui-server mini app", () => {
     ]);
   });
 
+  it("keeps legacy tasks without workspace metadata in the active workspace task list", async () => {
+    process.env.TELEGRAM_UI_TUNNEL = "disabled";
+
+    const tmpDir = mkdtempSync(join(tmpdir(), "bosun-ui-task-workspace-"));
+    const configPath = join(tmpDir, "bosun.config.json");
+    const storePath = join(tmpDir, ".bosun", ".cache", "kanban-state.json");
+    writeFileSync(
+      configPath,
+      JSON.stringify({
+        $schema: "./bosun.schema.json",
+        activeWorkspace: "virtengine-gh",
+        workspaces: [
+          {
+            id: "virtengine-gh",
+            name: "virtengine-gh",
+            repos: [{ name: "bosun", primary: true }],
+            activeRepo: "bosun",
+          },
+        ],
+      }, null, 2) + "\n",
+      "utf8",
+    );
+    process.env.BOSUN_CONFIG_PATH = configPath;
+
+    const taskStore = await import("../task/task-store.mjs");
+    const originalStorePath = taskStore.getStorePath();
+    taskStore.configureTaskStore({ storePath });
+    taskStore.loadStore();
+    taskStore.addTask({ id: "legacy-no-workspace", title: "Legacy task", status: "todo" });
+    taskStore.addTask({ id: "active-workspace", title: "Active workspace task", status: "draft", workspace: "virtengine-gh" });
+    taskStore.addTask({ id: "other-workspace", title: "Other workspace task", status: "todo", workspace: "other-workspace" });
+
+    const mod = await import("../server/ui-server.mjs");
+    try {
+      const server = await mod.startTelegramUiServer({
+        port: await getFreePort(),
+        host: "127.0.0.1",
+        skipInstanceLock: true,
+        skipAutoOpen: true,
+      });
+      const port = server.address().port;
+
+      const response = await fetch(`http://127.0.0.1:${port}/api/tasks`);
+      const json = await response.json();
+
+      expect(response.status).toBe(200);
+      expect(json.ok).toBe(true);
+      expect(json.total).toBe(2);
+      expect(json.statusCounts.backlog).toBe(1);
+      expect(json.statusCounts.draft).toBe(1);
+      expect(json.data.map((task) => task.id).sort()).toEqual([
+        "active-workspace",
+        "legacy-no-workspace",
+      ]);
+    } finally {
+      taskStore.configureTaskStore({ storePath: originalStorePath });
+      rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
+
   it("sets full dependencies and assigns sprint task ordering via task APIs", async () => {
     process.env.TELEGRAM_UI_TUNNEL = "disabled";
 

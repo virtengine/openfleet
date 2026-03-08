@@ -8820,6 +8820,12 @@ async function handleApi(req, res, url) {
           task.repository || task.meta?.repository || "",
         ).trim().toLowerCase();
         if (workspaceFilter && taskWorkspace !== workspaceFilter) {
+          // Backward compatibility: many legacy internal-store tasks predate
+          // workspace stamping and should remain visible in the active
+          // workspace board instead of being filtered out.
+          if (!taskWorkspaceRaw) {
+            return true;
+          }
           const taskWorkspacePath = normalizeCandidatePath(taskWorkspaceRaw);
           const workspaceMatchByPath =
             Boolean(taskWorkspacePath) &&
