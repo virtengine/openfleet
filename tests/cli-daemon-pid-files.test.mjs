@@ -75,6 +75,13 @@ describe("cli daemon pid tracking", () => {
     expect(cliSource).toContain("duplicate daemon-child ignored");
   });
 
+
+  it("propagates --config-dir/BOSUN_HOME into daemon-child env config dir", () => {
+    expect(cliSource).toContain("const configDirArg = getArgValue(\"--config-dir\");");
+    expect(cliSource).toContain("if (configDirArg) return resolve(configDirArg);");
+    expect(cliSource).toContain("if (process.env.BOSUN_HOME) return resolve(process.env.BOSUN_HOME);");
+    expect(cliSource).toContain("BOSUN_DIR: process.env.BOSUN_DIR || resolveConfigDirForCli(),");
+  });
   it("supports windows ghost daemon discovery for --daemon-status/--stop-daemon", () => {
     expect(cliSource).toContain("if (process.platform === \"win32\")");
     expect(cliSource).toContain("Get-CimInstance Win32_Process");
