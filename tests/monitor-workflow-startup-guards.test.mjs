@@ -30,6 +30,27 @@ describe("monitor workflow startup guards", () => {
     expect(monitorSource).toContain("canStartTask,");
   });
 
+  it("kicks schedule-driven workflow polling immediately when workflow lifecycle owns dispatch", () => {
+    expect(monitorSource).toContain('async function pollWorkflowSchedulesOnce(triggerSource = "schedule-poll", opts = {})');
+    expect(monitorSource).toContain('const includeTaskPoll = opts?.includeTaskPoll !== false;');
+    expect(monitorSource).toContain('if (triggerNode?.type === "trigger.task_available" || triggerNode?.type === "trigger.task_low") {');
+    expect(monitorSource).toContain('void pollWorkflowSchedulesOnce("startup", { includeTaskPoll: false }).catch((err) => {');
+    expect(monitorSource).toContain('void pollWorkflowSchedulesOnce("startup").catch((err) => {');
+    expect(
+      monitorSource.indexOf('internalTaskExecutor.start();'),
+    ).toBeLessThan(
+      monitorSource.indexOf('void pollWorkflowSchedulesOnce("startup").catch((err) => {'),
+    );
+  });
+
+  it("kicks non-task schedule polling during workflow automation startup", () => {
+    expect(
+      monitorSource.indexOf('await ensureWorkflowAutomationEngine().catch(() => {});'),
+    ).toBeLessThan(
+      monitorSource.indexOf('void pollWorkflowSchedulesOnce("startup", { includeTaskPoll: false }).catch((err) => {'),
+    );
+  });
+
   it("requires npm start lifecycle for dev-mode self-restart watcher by default", () => {
     expect(monitorSource).toContain("process.env.npm_lifecycle_event");
     expect(monitorSource).toContain('npmLifecycleEvent === "start"');
