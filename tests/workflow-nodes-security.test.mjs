@@ -198,6 +198,7 @@ describe("dangerous shell payload containment", () => {
     // The implementation must use JSON.stringify for title/body to prevent
     // shell metacharacter injection into the gh CLI command.
     expect(executeSrc).toContain("JSON.stringify(title)");
+    expect(executeSrc).toContain("JSON.stringify(String(body))");
   });
 
   it("action.run_command schema does not silently accept untrusted commands", () => {
