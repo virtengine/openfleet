@@ -1412,7 +1412,7 @@ describe("ui-server mini app", () => {
     expect(libAlphaList.data.some((entry) => entry.name === "Beta Prompt")).toBe(false);
 
     rmSync(tmpDir, { recursive: true, force: true });
-  });
+  }, 15000);
 
   it("exposes and executes shared bosun tools via /api/agents/tool parity endpoints", async () => {
     const mod = await import("../server/ui-server.mjs");

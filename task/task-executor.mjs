@@ -612,6 +612,8 @@ ${line}
 const WATCHDOG_GRACE_MS = 10 * 60_000; // 10 minutes — generous buffer, stream analysis handles real issues
 /** Max age for in-progress tasks to auto-resume after monitor restart */
 const INPROGRESS_RECOVERY_MAX_AGE_MS = 24 * 60 * 60 * 1000; // 24 hours — agents should be resumable for a full day
+/** Unstarted in-progress tasks older than this are treated as stranded and reset to todo */
+const INPROGRESS_RECOVERY_UNSTARTED_RESET_MS = 20 * 60 * 1000;
 
 function normalizeSelector(value) {
   return String(value || "")
@@ -3395,6 +3397,7 @@ class TaskExecutor {
     let reconciledDrift = 0;
     let skippedForActiveClaim = 0;
     let skippedForNoCommitBlock = 0;
+    let resetUnstarted = 0;
 
     for (const task of inProgressTasks) {
       const id = normalizeTaskIdKey(task?.id || task?.task_id);
@@ -3465,6 +3468,37 @@ class TaskExecutor {
         }
       }
       const hasThread = activeThreads.has(String(id));
+      const rawAttempts =
+        task?.agentAttempts ?? task?.agent_attempts ?? task?.meta?.agentAttempts;
+      const attempts = Number.isFinite(Number(rawAttempts))
+        ? Number(rawAttempts)
+        : 0;
+      const isUnstartedStale =
+        !hasThread &&
+        attempts <= 0 &&
+        ageMs > INPROGRESS_RECOVERY_UNSTARTED_RESET_MS;
+      if (isUnstartedStale) {
+        try {
+          await transitionTaskStatus(id, "todo", {
+            source: "task-executor-recovery-unstarted",
+          });
+        } catch {
+          /* best effort */
+        }
+        try {
+          transitionInternalTaskStatus(
+            id,
+            "todo",
+            "task-executor-recovery-unstarted",
+          );
+        } catch {
+          /* best effort */
+        }
+        this._removeRuntimeSlot(id);
+        resetToTodo++;
+        resetUnstarted++;
+        continue;
+      }
       const isFreshEnough =
         ageMs === 0 || ageMs <= INPROGRESS_RECOVERY_MAX_AGE_MS;
       if (hasThread || isFreshEnough) {
@@ -3521,6 +3555,9 @@ class TaskExecutor {
         `${TAG} in-progress recovery: resumed ${toDispatch.length}, reset ${resetToTodo} stale task(s) to todo` +
           (reconciledDrift > 0
             ? `, reconciled ${reconciledDrift} drifted task(s)`
+            : "") +
+          (resetUnstarted > 0
+            ? `, reset ${resetUnstarted} unstarted task(s)`
             : "") +
           (skippedForActiveClaim > 0
             ? `, skipped ${skippedForActiveClaim} active claim(s)`
