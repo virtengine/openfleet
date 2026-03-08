@@ -132,10 +132,26 @@ function parseJsonishArray(value) {
 }
 
 function extractConventionalScope(taskTitle = '') {
-  const match = String(taskTitle || '').match(
-    /(?:^\[[^\]]+\]\s*)?(?:feat|fix|docs|style|refactor|perf|test|build|ci|chore|revert)\(([^)]+)\)/i,
-  );
-  return match ? String(match[1] || '').toLowerCase().trim() : null;
+  const normalized = String(taskTitle || '').toLowerCase();
+  if (!normalized) return null;
+
+  let cursor = 0;
+  if (normalized.startsWith('[')) {
+    const closingBracket = normalized.indexOf(']');
+    if (closingBracket > 0) cursor = closingBracket + 1;
+  }
+
+  const candidate = normalized.slice(cursor).trimStart();
+  const types = ["feat", "fix", "docs", "style", "refactor", "perf", "test", "build", "ci", "chore", "revert"];
+  for (const type of types) {
+    const prefix = type + '(';
+    if (!candidate.startsWith(prefix)) continue;
+    const closingParen = candidate.indexOf(')', prefix.length);
+    if (closingParen <= prefix.length) return null;
+    const scope = candidate.slice(prefix.length, closingParen).trim();
+    return scope || null;
+  }
+  return null;
 }
 
 function parseMatchEnvNumber(name, fallback) {
