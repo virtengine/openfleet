@@ -201,6 +201,7 @@ import { fixGitConfigCorruption } from "../workspace/worktree-manager.mjs";
 // ── Task management subsystem imports ──────────────────────────────────────
 import {
   configureTaskStore,
+  canStartTask,
   getTask as getInternalTask,
   getTasksByStatus as getInternalTasksByStatus,
   updateTask as updateInternalTask,
@@ -548,6 +549,9 @@ async function ensureWorkflowAutomationEngine() {
       const services = {
         telegram: telegramService,
         kanban: kanbanService,
+        taskStore: {
+          canStartTask,
+        },
         agentPool: agentPoolService,
         meeting: meetingService,
         prompts: Object.keys(promptServices).length > 0 ? promptServices : null,
