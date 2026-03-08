@@ -1791,6 +1791,7 @@ export class WorkflowEngine extends EventEmitter {
         const node = nodeMap.get(nodeId);
         const edges = adjacency.get(nodeId) || [];
         const sourceOutput = ctx.getNodeOutput(nodeId);
+        const triggerBlocked = node?.type?.startsWith("trigger.") && sourceOutput?.triggered === false;
         const selectedPortRaw =
           sourceOutput?.matchedPort ??
           sourceOutput?.port ??
@@ -1799,6 +1800,19 @@ export class WorkflowEngine extends EventEmitter {
           typeof selectedPortRaw === "string" && selectedPortRaw.trim()
             ? selectedPortRaw.trim()
             : null;
+
+        if (triggerBlocked) {
+          for (const edge of edges) {
+            if (edge.backEdge) continue;
+            const newDegree = (inDegree.get(edge.target) || 1) - 1;
+            inDegree.set(edge.target, newDegree);
+            if (newDegree <= 0 && !executed.has(edge.target)) {
+              ctx.setNodeStatus(edge.target, NodeStatus.SKIPPED);
+              executed.add(edge.target);
+            }
+          }
+          continue;
+        }
 
         // Handle loop.for_each: iterate downstream subgraph per item
         if (node?.type === "loop.for_each" && ctx.getNodeStatus(nodeId) === NodeStatus.COMPLETED) {
@@ -2638,5 +2652,6 @@ export function listWorkflows(opts) { return getWorkflowEngine(opts).list(); }
 export function getWorkflow(id, opts) { return getWorkflowEngine(opts).get(id); }
 export async function executeWorkflow(id, data, opts) { return getWorkflowEngine(opts).execute(id, data, opts); }
 export async function retryWorkflowRun(runId, retryOpts, engineOpts) { return getWorkflowEngine(engineOpts).retryRun(runId, retryOpts); }
+
 
 
