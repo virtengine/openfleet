@@ -90,7 +90,7 @@
     "telegram-sentinel": "telegram/telegram-sentinel.mjs"
   },
   "scripts": {
-    "start": "node cli.mjs --config-dir .bosun --repo-root .",
+    "start": "node cli.mjs --config-dir .bosun --repo-root . --no-update-check",
     "setup": "node cli.mjs --setup",
     "setup:terminal": "node setup.mjs",
     "monitor": "node infra/monitor.mjs",
