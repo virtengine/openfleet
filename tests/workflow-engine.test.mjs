@@ -43,6 +43,29 @@ function makeSimpleWorkflow(nodes, edges, opts = {}) {
   };
 }
 
+function makeIsolatedGitEnv(extra = {}) {
+  const env = { ...process.env, ...extra };
+  for (const key of [
+    "GIT_DIR",
+    "GIT_WORK_TREE",
+    "GIT_COMMON_DIR",
+    "GIT_INDEX_FILE",
+    "GIT_OBJECT_DIRECTORY",
+    "GIT_ALTERNATE_OBJECT_DIRECTORIES",
+    "GIT_PREFIX",
+  ]) {
+    delete env[key];
+  }
+  return env;
+}
+
+function execGit(command, options = {}) {
+  return execSync(command, {
+    ...options,
+    env: makeIsolatedGitEnv(options.env),
+  });
+}
+
 // ── WorkflowContext Tests ───────────────────────────────────────────────────
 
 describe("WorkflowContext", () => {
@@ -1836,20 +1859,20 @@ describe("Session chaining - action.run_agent", () => {
 
     const repoDir = mkdtempSync(join(tmpdir(), "wf-agent-candidates-"));
     try {
-      execSync("git init", { cwd: repoDir, stdio: "ignore" });
-      execSync('git config --local user.email "bot@example.com"', { cwd: repoDir, stdio: "ignore" });
-      execSync('git config --local user.name "Bosun Bot"', { cwd: repoDir, stdio: "ignore" });
+      execGit("git init", { cwd: repoDir, stdio: "ignore" });
+      execGit('git config --local user.email "bot@example.com"', { cwd: repoDir, stdio: "ignore" });
+      execGit('git config --local user.name "Bosun Bot"', { cwd: repoDir, stdio: "ignore" });
       writeFileSync(join(repoDir, "README.md"), "base\n", "utf8");
-      execSync("git add README.md", { cwd: repoDir, stdio: "ignore" });
-      execSync('git commit -m "base"', { cwd: repoDir, stdio: "ignore" });
-      execSync("git checkout -b feature/candidate-test", { cwd: repoDir, stdio: "ignore" });
+      execGit("git add README.md", { cwd: repoDir, stdio: "ignore" });
+      execGit('git commit -m "base"', { cwd: repoDir, stdio: "ignore" });
+      execGit("git checkout -b feature/candidate-test", { cwd: repoDir, stdio: "ignore" });
 
       let runCount = 0;
       const launchEphemeralThread = vi.fn().mockImplementation(async (_prompt, runCwd) => {
         runCount += 1;
         writeFileSync(join(runCwd, `candidate-${runCount}.txt`), `candidate-${runCount}\n`, "utf8");
-        execSync("git add .", { cwd: runCwd, stdio: "ignore" });
-        execSync(`git commit -m "candidate-${runCount}"`, { cwd: runCwd, stdio: "ignore" });
+        execGit("git add .", { cwd: runCwd, stdio: "ignore" });
+        execGit(`git commit -m "candidate-${runCount}"`, { cwd: runCwd, stdio: "ignore" });
         return {
           success: true,
           output:
@@ -1897,11 +1920,11 @@ describe("Session chaining - action.run_agent", () => {
       expect(Array.isArray(result.candidates)).toBe(true);
       expect(result.candidates.length).toBe(2);
 
-      const currentBranch = execSync("git rev-parse --abbrev-ref HEAD", {
+      const currentBranch = execGit("git rev-parse --abbrev-ref HEAD", {
         cwd: repoDir,
         encoding: "utf8",
       }).trim();
-      const latestCommitMessage = execSync("git log -1 --pretty=%s", {
+      const latestCommitMessage = execGit("git log -1 --pretty=%s", {
         cwd: repoDir,
         encoding: "utf8",
       }).trim();
