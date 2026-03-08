@@ -210,6 +210,53 @@ describe("trigger.task_available", () => {
     expect(ctx.data.branch.startsWith("task/abc123-")).toBe(true);
   });
 
+  it("resolves repoRoot to matching sibling repository when task repository differs", async () => {
+    const nt = getNodeType("trigger.task_available");
+    const workspaceRoot = mkdtempSync(join(tmpdir(), "wf-task-repo-root-"));
+    const bosunRepo = join(workspaceRoot, "bosun");
+    const virtengineRepo = join(workspaceRoot, "virtengine");
+    mkdirSync(bosunRepo, { recursive: true });
+    mkdirSync(virtengineRepo, { recursive: true });
+    writeFileSync(join(bosunRepo, ".git"), "gitdir: /tmp/bosun\n");
+    writeFileSync(join(virtengineRepo, ".git"), "gitdir: /tmp/virtengine\n");
+
+    const listTasks = vi.fn().mockResolvedValue([
+      {
+        id: "repo-route-1",
+        title: "Cross-repo task",
+        description: "Should route to virtengine mirror",
+        status: "todo",
+        workspace: "virtengine-gh",
+        repository: "virtengine/virtengine",
+      },
+    ]);
+
+    const ctx = makeCtx({
+      activeSlotCount: 0,
+      repoRoot: bosunRepo,
+    });
+    const node = makeNode("trigger.task_available", {
+      maxParallel: 1,
+      status: "todo",
+    });
+
+    try {
+      const result = await nt.execute(node, ctx, {
+        services: {
+          kanban: {
+            listTasks,
+          },
+        },
+      });
+
+      expect(result.triggered).toBe(true);
+      expect(ctx.data.repository).toBe("virtengine/virtengine");
+      expect(ctx.data.repoRoot).toBe(virtengineRepo);
+    } finally {
+      try { rmSync(workspaceRoot, { recursive: true, force: true }); } catch { /* ok */ }
+    }
+  });
+
   it("returns blocked result when all tasks exceed repoAreaParallelLimit", async () => {
     const nt = getNodeType("trigger.task_available");
     const listTasks = vi.fn().mockResolvedValue([
@@ -676,6 +723,32 @@ describe("action.acquire_worktree", () => {
     expect(existsSync(result.worktreePath)).toBe(true);
   });
 
+  it("marks reused worktrees as managed for cleanup", async () => {
+    const nt = getNodeType("action.acquire_worktree");
+    const ctx1 = makeCtx({});
+    const branch = "task/reuse-managed";
+
+    const node = makeNode("action.acquire_worktree", {
+      repoRoot: repoDir,
+      taskId: "reuse-1",
+      branch,
+      baseBranch: "main",
+      fetchTimeout: 5000,
+      worktreeTimeout: 10000,
+    });
+
+    const first = await nt.execute(node, ctx1);
+    expect(first.success).toBe(true);
+    expect(first.created).toBe(true);
+
+    const ctx2 = makeCtx({});
+    const second = await nt.execute(node, ctx2);
+    expect(second.success).toBe(true);
+    expect(second.reused).toBe(true);
+    expect(ctx2.data._worktreeCreated).toBe(false);
+    expect(ctx2.data._worktreeManaged).toBe(true);
+  });
+
   it("repairs core.bare corruption after creating a worktree", async () => {
     const nt = getNodeType("action.acquire_worktree");
     const ctx = makeCtx({});
@@ -957,6 +1030,43 @@ describe("action.push_branch", () => {
 // ═══════════════════════════════════════════════════════════════════════════
 
 describe("action.release_worktree", () => {
+  it("releases reused managed worktrees", async () => {
+    const repoDir = mkdtempSync(join(tmpdir(), "wf-release-worktree-"));
+    try {
+      execGit("git init", { cwd: repoDir, stdio: "ignore" });
+      execGit("git config --local user.email test@test.com", { cwd: repoDir, stdio: "ignore" });
+      execGit("git config --local user.name Test", { cwd: repoDir, stdio: "ignore" });
+      writeFileSync(join(repoDir, "README.md"), "init\n");
+      execGit("git add README.md && git commit -m init", { cwd: repoDir, stdio: "ignore" });
+      execGit("git branch -M main", { cwd: repoDir, stdio: "ignore" });
+
+      const branch = "task/release-reused";
+      const worktreesDir = join(repoDir, ".bosun", "worktrees");
+      mkdirSync(worktreesDir, { recursive: true });
+      const worktreePath = join(worktreesDir, branch.replace(/[^a-zA-Z0-9._-]/g, "-"));
+      execGit(`git worktree add "${worktreePath}" -b "${branch}" main`, { cwd: repoDir, stdio: "ignore" });
+      expect(existsSync(worktreePath)).toBe(true);
+
+      const nt = getNodeType("action.release_worktree");
+      const ctx = makeCtx({
+        _worktreeCreated: false,
+        _worktreeManaged: true,
+      });
+      const node = makeNode("action.release_worktree", {
+        worktreePath,
+        repoRoot: repoDir,
+        taskId: "t-managed",
+      });
+
+      const result = await nt.execute(node, ctx);
+      expect(result.success).toBe(true);
+      expect(result.released).toBe(true);
+      expect(existsSync(worktreePath)).toBe(false);
+    } finally {
+      try { rmSync(repoDir, { recursive: true, force: true }); } catch { /* ok */ }
+    }
+  });
+
   it("succeeds when worktree path doesn't exist", async () => {
     const nt = getNodeType("action.release_worktree");
     const ctx = makeCtx({});
