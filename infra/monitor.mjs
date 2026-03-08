@@ -7397,30 +7397,6 @@ function normalizeAcceptanceCriteriaList(rawCriteria) {
   return criteria;
 }
 
-function isAcceptanceCriteriaHeader(line) {
-  const normalized = String(line || "").trim().toLowerCase();
-  if (!normalized) return false;
-  if (normalized === "acceptance criteria" || normalized === "acceptance criteria:") return true;
-  if (normalized.includes("acceptance criteria") && normalized.startsWith("#")) return true;
-  return false;
-}
-
-function parseListBullet(line) {
-  const text = String(line || "").trimStart();
-  if (!text) return null;
-  if (text.startsWith("-") || text.startsWith("*")) {
-    const rest = text.slice(1).trim();
-    return rest || null;
-  }
-  let i = 0;
-  while (i < text.length && text[i] >= "0" && text[i] <= "9") i++;
-  if (i > 0 && text[i] === ".") {
-    const rest = text.slice(i + 1).trim();
-    return rest || null;
-  }
-  return null;
-}
-
 function extractAcceptanceCriteriaFromTask(task) {
   if (!task || typeof task !== "object") return [];
 
@@ -7438,18 +7414,21 @@ function extractAcceptanceCriteriaFromTask(task) {
   for (const line of lines) {
     const trimmed = String(line || "").trim();
     if (!inSection) {
-      if (isAcceptanceCriteriaHeader(trimmed)) {
+      if (
+        /^#{1,6}\s*acceptance criteria\b/i.test(trimmed) ||
+        /^acceptance criteria\s*:?\s*$/i.test(trimmed)
+      ) {
         inSection = true;
       }
       continue;
     }
 
-    if (trimmed.startsWith("#") && trimmed.length > 1) break;
+    if (/^#{1,6}\s+\S/.test(trimmed)) break;
     if (!trimmed) continue;
 
-    const bullet = parseListBullet(trimmed);
+    const bullet = trimmed.match(/^(?:[-*]|\d+\.)\s+(.+)$/);
     if (bullet) {
-      sectionCriteria.push(bullet);
+      sectionCriteria.push(bullet[1]);
       continue;
     }
     sectionCriteria.push(trimmed);
@@ -7833,21 +7812,27 @@ const DEFAULT_BOSUN_UPSTREAM =
  */
 function extractScopeFromTitle(title) {
   if (!title) return null;
-  const normalized = String(title).trim();
-  const lowered = normalized.toLowerCase();
-  const openParen = lowered.indexOf("(");
-  const closeParen = lowered.indexOf(")", openParen + 1);
-  if (openParen <= 0 || closeParen <= openParen + 1) return null;
-
-  const typeSection = lowered.slice(0, openParen).trim();
-  const typeToken = typeSection.split(/\s+/).pop() || "";
-  const allowed = new Set(["feat", "fix", "docs", "style", "refactor", "perf", "test", "build", "ci", "chore", "revert"]);
-  if (!allowed.has(typeToken)) return null;
-
-  const scope = normalized.slice(openParen + 1, closeParen).trim();
-  return scope ? scope.toLowerCase() : null;
+  // Match conventional commit patterns: type(scope): ... or [P*] type(scope): ...
+  const match = String(title).match(
+    /(?:^\[P\d+\]\s*)?(?:feat|fix|docs|style|refactor|perf|test|build|ci|chore|revert)\(([^)]+)\)/i,
+  );
+  return match ? match[1].toLowerCase().trim() : null;
 }
 
+/**
+ * Resolve the upstream branch for a task using config-based scope routing.
+ * Priority:
+ *   1. Task-level explicit fields (target_branch, base_branch, etc.)
+ *   2. Task metadata fields
+ *   3. Task labels with upstream/base/target patterns
+ *   4. Text body extraction
+ *   5. Config scopeMap matching (title scope → branch)
+ *   6. Config scopeMap matching (keyword-based)
+ *   7. Legacy bosun keyword detection
+ *   8. Config defaultBranch
+ * @param {object} task
+ * @returns {string|null}
+ */
 function resolveUpstreamFromConfig(task) {
   if (!task) return null;
 
