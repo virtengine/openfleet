@@ -176,6 +176,36 @@ describe("listWorkspaces", () => {
     expect(repo.path).toBe(missingRepoPath);
   });
 
+  it("uses local repo URL path when configured workspace clone path is missing", () => {
+    const configDir = createConfigDir();
+    const localReposRoot = join(configDir, "local-repos");
+    const localBosunPath = join(localReposRoot, "bosun");
+    mkdirSync(join(localBosunPath, ".git"), { recursive: true });
+
+    writeBosunConfig(configDir, {
+      workspaces: [
+        {
+          id: "virtengine-gh",
+          name: "virtengine-gh",
+          repos: [
+            {
+              name: "bosun",
+              url: localBosunPath,
+              slug: "virtengine/bosun",
+            },
+          ],
+        },
+      ],
+      activeWorkspace: "virtengine-gh",
+    });
+
+    const [workspace] = listWorkspaces(configDir, { repoRoot: join(configDir, "unrelated-root") });
+    const [repo] = workspace.repos;
+
+    expect(workspace.exists).toBe(true);
+    expect(repo.exists).toBe(true);
+    expect(repo.path).toBe(localBosunPath);
+  });
   it("normalizes slug-only workspace repos so listing never crashes", () => {
     const configDir = createConfigDir();
 
@@ -242,3 +272,4 @@ describe("pullWorkspaceRepos", () => {
     expect(existsSync(join(configDir, "workspaces", "alpha", backupDir, "stale.txt"))).toBe(true);
   }, 60000);
 });
+

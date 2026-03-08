@@ -545,6 +545,46 @@ describe("action.claim_task", () => {
       claimSpy.mockRestore();
     }
   });
+
+  it("uses renewClaim fallback when renewTaskClaim is unavailable", async () => {
+    vi.useFakeTimers();
+    const nt = getNodeType("action.claim_task");
+    const claims = await import("../task/task-claims.mjs");
+    const initSpy = vi.spyOn(claims, "initTaskClaims").mockResolvedValue();
+    const claimSpy = vi.spyOn(claims, "claimTask").mockResolvedValue({
+      success: true,
+      token: "claim-token-fallback",
+    });
+    const renewSpy = vi.spyOn(claims, "renewClaim").mockResolvedValue({ success: true });
+
+    const ctx = makeCtx({ repoRoot: "/tmp/repo-root" });
+    try {
+      const node = makeNode("action.claim_task", {
+        taskId: "task-renew-fallback",
+        taskTitle: "Renew fallback",
+        renewIntervalMs: 50,
+      });
+
+      const result = await nt.execute(node, ctx);
+      expect(result.success).toBe(true);
+
+      await vi.advanceTimersByTimeAsync(60);
+      expect(renewSpy).toHaveBeenCalled();
+      expect(renewSpy).toHaveBeenCalledWith(
+        expect.objectContaining({
+          taskId: "task-renew-fallback",
+          claimToken: "claim-token-fallback",
+        }),
+      );
+    } finally {
+      const runtimeTimer = ctx.__workflowRuntimeState?.claimRenewTimer || ctx.data?._claimRenewTimer;
+      if (runtimeTimer) clearInterval(runtimeTimer);
+      initSpy.mockRestore();
+      claimSpy.mockRestore();
+      renewSpy.mockRestore();
+      vi.useRealTimers();
+    }
+  });
 });
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -955,11 +995,93 @@ describe("action.release_claim", () => {
     expect(result.success).toBe(true);
     clearInterval(timer); // extra safety
   });
+
+  it("uses releaseTask fallback when releaseTaskClaim is unavailable", async () => {
+    const nt = getNodeType("action.release_claim");
+    const claims = await import("../task/task-claims.mjs");
+    const initSpy = vi.spyOn(claims, "initTaskClaims").mockResolvedValue();
+    const releaseSpy = vi.spyOn(claims, "releaseTask").mockResolvedValue({ success: true });
+    const ctx = makeCtx({
+      _claimToken: "claim-fallback",
+      _claimInstanceId: "inst-fallback",
+      _claimRenewTimer: null,
+      repoRoot: "/tmp/repo-root",
+    });
+
+    try {
+      const node = makeNode("action.release_claim", { taskId: "task-release-fallback" });
+      const result = await nt.execute(node, ctx);
+      expect(result.success).toBe(true);
+      expect(releaseSpy).toHaveBeenCalledWith(
+        expect.objectContaining({
+          taskId: "task-release-fallback",
+          claimToken: "claim-fallback",
+          instanceId: "inst-fallback",
+        }),
+      );
+      expect(ctx.data._claimToken).toBeNull();
+      expect(ctx.data._claimInstanceId).toBeNull();
+    } finally {
+      initSpy.mockRestore();
+      releaseSpy.mockRestore();
+    }
+  });
 });
 
 // ═══════════════════════════════════════════════════════════════════════════
 //  Template: task-lifecycle
 // ═══════════════════════════════════════════════════════════════════════════
+
+
+
+describe("action.update_task_status", () => {
+  it("falls back to ctx taskId when config taskId is unresolved", async () => {
+    const nt = getNodeType("action.update_task_status");
+    const updateTaskStatus = vi.fn().mockResolvedValue(true);
+    const ctx = makeCtx({
+      taskId: "task-fallback-123",
+      taskTitle: "Fallback task",
+    });
+    const node = makeNode("action.update_task_status", {
+      taskId: "{{task.taskId}}",
+      status: "inprogress",
+    });
+
+    const result = await nt.execute(node, ctx, {
+      services: {
+        kanban: { updateTaskStatus },
+      },
+    });
+
+    expect(result.success).toBe(true);
+    expect(updateTaskStatus).toHaveBeenCalledWith(
+      "task-fallback-123",
+      "inprogress",
+      expect.objectContaining({ source: "workflow" }),
+    );
+  });
+
+  it("skips when taskId remains unresolved", async () => {
+    const nt = getNodeType("action.update_task_status");
+    const updateTaskStatus = vi.fn().mockResolvedValue(true);
+    const ctx = makeCtx({});
+    const node = makeNode("action.update_task_status", {
+      taskId: "{{task.taskId}}",
+      status: "inprogress",
+    });
+
+    const result = await nt.execute(node, ctx, {
+      services: {
+        kanban: { updateTaskStatus },
+      },
+    });
+
+    expect(result.success).toBe(false);
+    expect(result.skipped).toBe(true);
+    expect(result.error).toBe("unresolved_task_id");
+    expect(updateTaskStatus).not.toHaveBeenCalled();
+  });
+});
 
 describe("template-task-lifecycle", () => {
   beforeEach(() => { makeTmpEngine(); });
@@ -1246,3 +1368,5 @@ describe("template-ve-orchestrator-lite", () => {
     expect(Array.isArray(t.variables.protectedBranches)).toBe(true);
   });
 });
+
+

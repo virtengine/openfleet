@@ -690,6 +690,177 @@ function buildEpicDagGraph(tasks = [], epicDependencies = []) {
     edges,
   };
 }
+function slugifyPlanningId(value, fallback = "item") {
+  const normalized = String(value || "")
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "");
+  return normalized || fallback;
+}
+
+function normalizeTaskTypeValue(value, fallback = "task") {
+  const normalized = toText(value, fallback).toLowerCase();
+  return ["epic", "task", "subtask"].includes(normalized) ? normalized : fallback;
+}
+
+function normalizeTaskStatusValue(value) {
+  return toText(value).toLowerCase();
+}
+
+function isTerminalTaskStatus(value) {
+  return ["done", "completed", "closed", "merged", "cancelled"].includes(normalizeTaskStatusValue(value));
+}
+
+function isQueuedTask(task) {
+  const runtime = getTaskRuntimeSnapshot(task);
+  return runtime?.state === "queued" || normalizeTaskStatusValue(task?.status) === "queued";
+}
+
+function isBacklogDraftTask(task) {
+  const status = normalizeTaskStatusValue(task?.status);
+  return status === "draft" || status === "todo" || status === "backlog" || status === "planned" || status === "";
+}
+
+function isExecutionTask(task) {
+  return isActiveStatus(task?.status) || isReviewStatus(task?.status) || isQueuedTask(task);
+}
+
+function filterDagGraphByIds(graph = EMPTY_DAG_GRAPH, allowedIds = null, resolver = (node) => toText(node?.id || node?.taskId)) {
+  if (!allowedIds || allowedIds === "all") return graph;
+  const allowed = allowedIds instanceof Set ? allowedIds : new Set(Array.isArray(allowedIds) ? allowedIds : []);
+  const nodes = (graph?.nodes || []).filter((node) => allowed.has(resolver(node)) || allowed.has(toText(node?.id || node?.taskId)));
+  const nodeIds = new Set(nodes.map((node) => toText(node?.id || node?.taskId)).filter(Boolean));
+  const edges = (graph?.edges || []).filter((edge) => nodeIds.has(toText(edge?.source || edge?.from)) && nodeIds.has(toText(edge?.target || edge?.to)));
+  return { ...graph, nodes, edges };
+}
+
+function buildEpicCatalog(tasks = [], epicDependencies = []) {
+  const catalog = new Map();
+  const ensureEpic = (epicId) => {
+    const id = toText(epicId);
+    if (!id) return null;
+    if (!catalog.has(id)) {
+      catalog.set(id, {
+        id,
+        label: id,
+        taskIds: [],
+        dependencies: [],
+        completedCount: 0,
+        activeCount: 0,
+      });
+    }
+    return catalog.get(id);
+  };
+  for (const task of tasks || []) {
+    const epicId = toText(task?.epicId || task?.meta?.epicId);
+    if (!epicId) continue;
+    const entry = ensureEpic(epicId);
+    if (!entry) continue;
+    entry.taskIds.push(task.id);
+    if (normalizeTaskTypeValue(task?.type) === "epic") {
+      entry.label = toText(task?.title, epicId);
+      entry.anchorTaskId = task.id;
+    }
+    if (isTerminalTaskStatus(task?.status)) entry.completedCount += 1;
+    if (isExecutionTask(task)) entry.activeCount += 1;
+  }
+  for (const row of epicDependencies || []) {
+    const entry = ensureEpic(row?.epicId);
+    if (!entry) continue;
+    entry.dependencies = normalizeDependencyInput(row?.dependencies || []);
+  }
+  return [...catalog.values()]
+    .map((entry) => ({
+      ...entry,
+      taskIds: normalizeDependencyInput(entry.taskIds),
+      taskCount: normalizeDependencyInput(entry.taskIds).length,
+    }))
+    .sort((a, b) => String(a.label || a.id).localeCompare(String(b.label || b.id)));
+}
+
+function buildDagPlanningState({ tasks = [], sprintId = "all", sprintOrderMode = "parallel", sprintOptions = [], epicDependencies = [] }) {
+  const scopedTasks = (tasks || []).filter((task) => sprintId === "all" ? true : getTaskSprintId(task) === sprintId);
+  const allTaskMap = new Map((tasks || []).map((task) => [toText(task?.id), task]));
+  const scopedTaskIds = new Set(scopedTasks.map((task) => toText(task?.id)).filter(Boolean));
+  const sprintModeMap = new Map((sprintOptions || []).map((sprint) => [sprint.id, toText(sprint.executionMode || sprint.taskOrderMode || 'parallel', 'parallel')]));
+  const epicDependencyMap = new Map((epicDependencies || []).map((row) => [toText(row?.epicId), normalizeDependencyInput(row?.dependencies || [])]));
+  const tasksByEpic = new Map();
+  for (const task of tasks || []) {
+    const epicId = toText(task?.epicId || task?.meta?.epicId);
+    if (!epicId) continue;
+    const list = tasksByEpic.get(epicId) || [];
+    list.push(task);
+    tasksByEpic.set(epicId, list);
+  }
+  const isSequentialBlocked = (task) => {
+    const taskSprintId = getTaskSprintId(task);
+    const mode = sprintModeMap.get(taskSprintId) || sprintOrderMode;
+    if (mode !== 'sequential') return false;
+    const currentOrder = Number(getTaskSprintOrder(task));
+    if (!Number.isFinite(currentOrder) || currentOrder <= 1) return false;
+    return scopedTasks.some((candidate) => getTaskSprintId(candidate) === taskSprintId && Number(getTaskSprintOrder(candidate)) < currentOrder && !isTerminalTaskStatus(candidate?.status));
+  };
+  const isEpicBlocked = (task) => {
+    const epicId = toText(task?.epicId || task?.meta?.epicId);
+    if (!epicId) return false;
+    const requiredEpics = epicDependencyMap.get(epicId) || [];
+    if (!requiredEpics.length) return false;
+    return requiredEpics.some((requiredEpicId) => {
+      const epicTasks = tasksByEpic.get(requiredEpicId) || [];
+      if (!epicTasks.length) return true;
+      return epicTasks.some((candidate) => !isTerminalTaskStatus(candidate?.status));
+    });
+  };
+  const isDependencyBlocked = (task) => getTaskDependencyIds(task).some((depId) => {
+    const dependencyTask = allTaskMap.get(depId);
+    return !dependencyTask || !isTerminalTaskStatus(dependencyTask?.status);
+  });
+  const backlogTaskIds = new Set();
+  const executionTaskIds = new Set();
+  const readyTaskIds = new Set();
+  const sprintIdsByFocus = { all: new Set(), backlog: new Set(), execution: new Set(), ready: new Set() };
+  const epicIdsByFocus = { all: new Set(), backlog: new Set(), execution: new Set(), ready: new Set() };
+  for (const task of scopedTasks) {
+    const taskId = toText(task?.id);
+    const taskSprintId = getTaskSprintId(task);
+    const epicId = toText(task?.epicId || task?.meta?.epicId);
+    sprintIdsByFocus.all.add(taskSprintId || 'unassigned');
+    if (epicId) epicIdsByFocus.all.add(epicId);
+    if (isBacklogDraftTask(task)) {
+      backlogTaskIds.add(taskId);
+      sprintIdsByFocus.backlog.add(taskSprintId || 'unassigned');
+      if (epicId) epicIdsByFocus.backlog.add(epicId);
+    }
+    if (isExecutionTask(task)) {
+      executionTaskIds.add(taskId);
+      sprintIdsByFocus.execution.add(taskSprintId || 'unassigned');
+      if (epicId) epicIdsByFocus.execution.add(epicId);
+    }
+    const ready = !isBacklogDraftTask(task) && !isExecutionTask(task) && !isTerminalTaskStatus(task?.status) && !isDependencyBlocked(task) && !isEpicBlocked(task) && !isSequentialBlocked(task);
+    if (ready) {
+      readyTaskIds.add(taskId);
+      sprintIdsByFocus.ready.add(taskSprintId || 'unassigned');
+      if (epicId) epicIdsByFocus.ready.add(epicId);
+    }
+  }
+  return {
+    scopedTaskIds,
+    backlogTaskIds,
+    executionTaskIds,
+    readyTaskIds,
+    sprintIdsByFocus,
+    epicIdsByFocus,
+    epicCatalog: buildEpicCatalog(tasks, epicDependencies),
+    counts: {
+      all: scopedTaskIds.size,
+      backlog: backlogTaskIds.size,
+      execution: executionTaskIds.size,
+      ready: readyTaskIds.size,
+    },
+  };
+}
+
 function extractGlobalDagPayload(...sources) {
   for (const source of sources) {
     const payload = extractDagPayload(source);
@@ -3357,6 +3528,7 @@ function DagGraphSection({
   allowWiring = false,
   graphKey = "dag",
   emptyMessage = "No DAG nodes available for this view yet.",
+  highlightNodeIds = null,
 }) {
   const stageRef = useRef(null);
   const [zoom, setZoom] = useState(1);
@@ -3501,6 +3673,13 @@ function DagGraphSection({
     return map;
   }, [sortedNodes]);
 
+  const highlightedIds = useMemo(() => {
+    if (!highlightNodeIds || highlightNodeIds === "all") return new Set();
+    return highlightNodeIds instanceof Set
+      ? highlightNodeIds
+      : new Set(Array.isArray(highlightNodeIds) ? highlightNodeIds : []);
+  }, [highlightNodeIds]);
+
   const handleNodeClick = useCallback(async (node, event) => {
     event?.stopPropagation?.();
     if (allowWiring && typeof onCreateEdge === "function") {
@@ -3545,7 +3724,7 @@ function DagGraphSection({
       <div class="task-dag-header-row">
         <div>
           <div style=${{ fontWeight: "700" }}>${title || "Task DAG"}</div>
-          ${description && html`<div class="meta-text">${description}</div>`}
+          ${description ? html`<div class="meta-text">${description}</div>` : null}
           <div class="meta-text">Drag to pan · wheel to zoom · click node to ${allowWiring ? "wire edges" : "open task"}.</div>
         </div>
         <div class="task-dag-controls">
@@ -3554,7 +3733,9 @@ function DagGraphSection({
           <${Button} size="small" variant="outlined" onClick=${fitToView}>Fit</${Button}>
           <${Button} size="small" variant="text" onClick=${() => { setZoom(1); setPan({ x: 24, y: 24 }); }}>Reset</${Button}>
           <span class="task-dag-zoom-pill">${Math.round(zoom * 100)}%</span>
-          ${allowWiring && html`<span class="task-dag-wire-pill">${wireSourceId ? `Source: ${wireSourceId}` : wiringBusy ? "Saving edge…" : "Wiring: click source then target"}</span>`}
+          ${allowWiring
+            ? html`<span class="task-dag-wire-pill">${wireSourceId ? `Source: ${wireSourceId}` : wiringBusy ? "Saving edge…" : "Wiring: click source then target"}</span>`
+            : null}
         </div>
       </div>
       <div class="task-dag-legend">
@@ -3596,10 +3777,11 @@ function DagGraphSection({
               const pos = layout.positions.get(String(node.id));
               if (!pos) return null;
               const selected = wireSourceId && String(node.id) === wireSourceId;
+              const highlighted = highlightedIds.has(String(node.id)) || highlightedIds.has(String(node.taskId || ""));
               return html`
                 <g
                   key=${node.id}
-                  class=${`dag-node ${selected ? "dag-node-selected" : ""}`}
+                  class=${`dag-node ${selected ? "dag-node-selected" : ""} ${highlighted ? "dag-node-highlighted" : ""}`}
                   onPointerDown=${(event) => event.stopPropagation()}
                   onClick=${(event) => handleNodeClick(node, event)}
                   style=${{ cursor: allowWiring || node.taskId ? "pointer" : "default" }}
@@ -3612,8 +3794,8 @@ function DagGraphSection({
                     rx="14"
                     ry="14"
                     fill="var(--bg-surface)"
-                    stroke=${selected ? "var(--accent)" : "var(--border)"}
-                    stroke-width=${selected ? "2.2" : "1.5"}
+                    stroke=${selected ? "var(--accent)" : highlighted ? "var(--color-done)" : "var(--border)"}
+                    stroke-width=${selected || highlighted ? "2.2" : "1.5"}
                   />
                   <text x=${pos.x + 12} y=${pos.y + 24} fill="var(--text-primary)" font-size="13" font-weight="700">
                     ${truncate(node.title || "(untitled)", 34)}
@@ -3625,6 +3807,7 @@ function DagGraphSection({
                     ${String(node.status || "todo")}
                   </text>
                   ${Number.isFinite(node.order) && html`<text x=${pos.x + pos.width - 16} y=${pos.y + 22} text-anchor="end" fill="var(--text-muted)" font-size="11">#${node.order}</text>`}
+                  ${highlighted && html`<text x=${pos.x + pos.width - 12} y=${pos.y + pos.height - 12} text-anchor="end" fill="var(--color-done)" font-size="11" font-weight="700">Ready</text>`}
                 </g>
               `;
             })}
@@ -3659,6 +3842,11 @@ export function TasksTab() {
   const [dagEpicGraph, setDagEpicGraph] = useState(EMPTY_DAG_GRAPH);
   const [dagSources, setDagSources] = useState({ sprints: "", sprintGraph: "", globalGraph: "", epicDeps: "", tasks: "" });
   const [dagSprintOrderMode, setDagSprintOrderMode] = useState("parallel");
+  const [dagAllTasks, setDagAllTasks] = useState([]);
+  const [dagEpicDependencies, setDagEpicDependencies] = useState([]);
+  const [dagFocusMode, setDagFocusMode] = useState("all");
+  const [showCreateSprint, setShowCreateSprint] = useState(false);
+  const [createSeed, setCreateSeed] = useState(null);
   const [isCompact, setIsCompact] = useState(() => {
     try { return globalThis.matchMedia?.("(max-width: 768px)")?.matches ?? false; }
     catch { return false; }
@@ -3726,6 +3914,21 @@ export function TasksTab() {
   const hasMoreKanbanPages = isKanban && page + 1 < totalPages;
   const boardColumnTotals = tasksStatusCounts?.value || { draft: 0, backlog: 0, inProgress: 0, inReview: 0, done: 0 };
   const boardTotalTasks = Number(tasksTotal?.value || 0);
+  const dagTaskCatalog = dagAllTasks.length ? dagAllTasks : tasks;
+  const dagPlanningState = useMemo(() => buildDagPlanningState({
+    tasks: dagTaskCatalog,
+    sprintId: dagSelectedSprint,
+    sprintOrderMode: dagSprintOrderMode,
+    sprintOptions: dagSprints,
+    epicDependencies: dagEpicDependencies,
+  }), [dagAllTasks, dagEpicDependencies, dagSelectedSprint, dagSprintOrderMode, dagSprints, tasks]);
+  const dagEpicCatalog = dagPlanningState.epicCatalog;
+  const dagFocusOptions = [
+    { id: "all", label: "All structure", count: dagPlanningState.counts.all },
+    { id: "backlog", label: "Backlog & draft", count: dagPlanningState.counts.backlog },
+    { id: "execution", label: "Running & review", count: dagPlanningState.counts.execution },
+    { id: "ready", label: "Ready next", count: dagPlanningState.counts.ready },
+  ];
 
   const loadMoreKanbanTasks = useCallback(async () => {
     if (!isKanban || kanbanLoadingMore || isSearching) return;
@@ -3782,6 +3985,8 @@ export function TasksTab() {
           : tasks;
     const epicDeps = normalizeEpicDependenciesPayload(epicDepsMeta?.payload);
     const nextEpicGraph = buildEpicDagGraph(allTasks, epicDeps);
+    setDagAllTasks(allTasks);
+    setDagEpicDependencies(epicDeps);
 
     const sprintMetaEntry = sprintOptions.find((entry) => entry.id === resolvedSprint) || null;
     setDagSprintOrderMode(toText(sprintMetaEntry?.executionMode || sprintMetaEntry?.taskOrderMode || sprintMetaEntry?.sprintOrderMode || "parallel", "parallel"));
@@ -4024,6 +4229,32 @@ export function TasksTab() {
     });
   }, [visible, listSortCol, listSortDir]);
 
+  const dagTaskFocusIds = useMemo(() => {
+    if (dagFocusMode === "backlog") return dagPlanningState.backlogTaskIds;
+    if (dagFocusMode === "ready") return dagPlanningState.readyTaskIds;
+    if (dagFocusMode === "execution") return new Set([...dagPlanningState.executionTaskIds, ...dagPlanningState.readyTaskIds]);
+    return "all";
+  }, [dagFocusMode, dagPlanningState]);
+
+  const dagSprintFocusIds = useMemo(() => {
+    if (dagFocusMode === "backlog") return dagPlanningState.sprintIdsByFocus.backlog;
+    if (dagFocusMode === "ready") return dagPlanningState.sprintIdsByFocus.ready;
+    if (dagFocusMode === "execution") return new Set([...dagPlanningState.sprintIdsByFocus.execution, ...dagPlanningState.sprintIdsByFocus.ready]);
+    return "all";
+  }, [dagFocusMode, dagPlanningState]);
+
+  const dagEpicFocusIds = useMemo(() => {
+    if (dagFocusMode === "backlog") return dagPlanningState.epicIdsByFocus.backlog;
+    if (dagFocusMode === "ready") return dagPlanningState.epicIdsByFocus.ready;
+    if (dagFocusMode === "execution") return new Set([...dagPlanningState.epicIdsByFocus.execution, ...dagPlanningState.epicIdsByFocus.ready]);
+    return "all";
+  }, [dagFocusMode, dagPlanningState]);
+
+  const dagSprintGraphView = useMemo(() => filterDagGraphByIds(dagSprintGraph, dagTaskFocusIds, (node) => toText(node?.taskId || node?.id)), [dagSprintGraph, dagTaskFocusIds]);
+  const dagGlobalGraphView = useMemo(() => filterDagGraphByIds(dagGlobalGraph, dagSprintFocusIds, (node) => toText(node?.sprintId || node?.id)), [dagGlobalGraph, dagSprintFocusIds]);
+  const dagEpicGraphView = useMemo(() => filterDagGraphByIds(dagEpicGraph, dagEpicFocusIds, (node) => toText(node?.epicId || node?.id)), [dagEpicGraph, dagEpicFocusIds]);
+  const dagReadyHighlightIds = dagFocusMode === "execution" || dagFocusMode === "ready" ? dagPlanningState.readyTaskIds : null;
+
   /* ── Handlers ── */
   const handleFilter = async (s) => {
     haptic();
@@ -4110,29 +4341,31 @@ export function TasksTab() {
     }
   }, [loadDagViews]);
 
-  const handleCreateSprint = useCallback(async () => {
-    const rawName = globalThis.prompt?.("Sprint name", "Sprint " + new Date().toISOString().slice(0, 10));
-    const name = toText(rawName);
-    if (!name) return;
-    const rawId = globalThis.prompt?.("Sprint ID (optional)", name.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, ""));
-    const id = toText(rawId);
+  const handleCreateSprint = useCallback(() => {
+    haptic("medium");
+    setShowCreateSprint(true);
+  }, []);
+
+  const handleMoveSprint = useCallback(async (sprintId, direction) => {
+    const currentIndex = dagSprints.findIndex((entry) => entry.id === sprintId);
+    const targetIndex = currentIndex + direction;
+    if (currentIndex < 0 || targetIndex < 0 || targetIndex >= dagSprints.length) return;
+    const reordered = [...dagSprints];
+    const [moved] = reordered.splice(currentIndex, 1);
+    reordered.splice(targetIndex, 0, moved);
     haptic("medium");
     try {
-      await apiFetch("/api/tasks/sprints", {
-        method: "POST",
-        body: JSON.stringify({
-          ...(id ? { id } : {}),
-          name,
-          status: "active",
-        }),
-      });
-      showToast("Sprint created", "success");
+      await Promise.all(reordered.map((entry, index) => apiFetch(`/api/tasks/sprints/${encodeURIComponent(entry.id)}`, {
+        method: "PATCH",
+        body: JSON.stringify({ order: index + 1 }),
+      })));
+      showToast("Sprint order updated", "success");
       await loadDagViews();
-      if (id) setDagSelectedSprint(id);
     } catch {
-      /* toast via apiFetch */
+      setDagError("Failed to reorder sprints.");
     }
-  }, [loadDagViews]);
+  }, [dagSprints, loadDagViews]);
+
   const handleDagSprintModeChange = useCallback(async (mode) => {
     const nextMode = toText(mode, "parallel").toLowerCase();
     if (!dagSelectedSprint || dagSelectedSprint === "all") {
@@ -4852,8 +5085,8 @@ export function TasksTab() {
 
     ${isDag && html`
       <div class="task-dag-wrap" style=${{ display: "grid", gap: "10px", marginTop: "8px" }}>
-        ${dagError && html`<${Alert} severity="warning">${dagError}</${Alert}>`}
-        ${dagLoading && html`<${Alert} severity="info">Loading DAG data…</${Alert}>`}
+        ${dagError ? html`<${Alert} severity="warning">${dagError}</${Alert}>` : null}
+        ${dagLoading ? html`<${Alert} severity="info">Loading DAG data…</${Alert}>` : null}
         <${DagGraphSection}
           title=${dagSprintGraph.title || (dagSelectedSprint === "all" ? "All Sprint DAG" : `Sprint ${dagSelectedSprint} DAG`)}
           description=${dagSprintGraph.description || "Task dependency order within the selected sprint."}
@@ -4863,7 +5096,7 @@ export function TasksTab() {
           onCreateEdge={({ sourceNode, targetNode }) => handleCreateDagEdge({ sourceNode, targetNode, graphKind: "task" })}
           allowWiring=${true}
           emptyMessage="No sprint DAG data available yet."
-        />
+        ><//>
         <${DagGraphSection}
           title=${dagGlobalGraph.title || "Global DAG of DAGs"}
           description=${dagGlobalGraph.description || "Cross-sprint dependency overview."}
@@ -4873,7 +5106,7 @@ export function TasksTab() {
           onCreateEdge={({ sourceNode, targetNode }) => handleCreateDagEdge({ sourceNode, targetNode, graphKind: "task" })}
           allowWiring=${true}
           emptyMessage="No global DAG data available yet."
-        />
+        ><//>
         <${DagGraphSection}
           title=${dagEpicGraph.title || "Epic Dependency DAG"}
           description=${dagEpicGraph.description || "Epics and their run prerequisites."}
@@ -4882,7 +5115,7 @@ export function TasksTab() {
           onCreateEdge={({ sourceNode, targetNode }) => handleCreateDagEdge({ sourceNode, targetNode, graphKind: "epic" })}
           allowWiring=${true}
           emptyMessage="No epic DAG data available yet."
-        />
+        ><//>
       </div>
     `}
 

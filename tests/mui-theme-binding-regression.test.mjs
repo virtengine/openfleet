@@ -7,13 +7,22 @@ describe("mui module theme binding", () => {
     const source = readFileSync(resolve(process.cwd(), "ui/modules/mui.js"), "utf8");
     expect(source).toContain("createTheme as createMuiTheme");
     expect(source).toContain("export const veTheme = createMuiTheme(");
+    expect(source).toContain("function buildThemeOptions(");
+  });
+
+  it("keeps VeTheme synced with resolved CSS theme tokens", () => {
+    const source = readFileSync(resolve(process.cwd(), "ui/modules/mui.js"), "utf8");
+    expect(source).toContain("getComputedStyle(document.documentElement)");
+    expect(source).toContain('globalThis.matchMedia("(prefers-color-scheme: light)")');
+    expect(source).toContain("new MutationObserver(refreshTheme)");
+    expect(source).toContain("const theme = useResolvedMuiTheme();");
+    expect(source).toContain("<${MuiThemeProvider} theme=${theme}>");
   });
 
   it("uses local imported bindings for ThemeProvider and SvgIcon helpers", () => {
     const source = readFileSync(resolve(process.cwd(), "ui/modules/mui.js"), "utf8");
     expect(source).toContain("ThemeProvider as MuiThemeProvider");
     expect(source).toContain("SvgIcon as MuiSvgIcon");
-    expect(source).toContain("<${MuiThemeProvider} theme=${veTheme}>");
     expect(source).toContain("<${MuiSvgIcon} ...${props}");
   });
 

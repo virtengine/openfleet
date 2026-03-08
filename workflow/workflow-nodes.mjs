@@ -25,6 +25,7 @@ import { randomUUID } from "node:crypto";
 import { getAgentToolConfig, getEffectiveTools } from "../agent/agent-tool-config.mjs";
 import { getToolsPromptBlock } from "../agent/agent-custom-tools.mjs";
 import { buildRelevantSkillsPromptBlock, findRelevantSkills } from "../agent/bosun-skills.mjs";
+import { getSessionTracker } from "../infra/session-tracker.mjs";
 import { fixGitConfigCorruption } from "../workspace/worktree-manager.mjs";
 
 const TAG = "[workflow-nodes]";
@@ -1534,6 +1535,20 @@ registerNodeType("action.run_agent", {
     const prompt = ctx.resolve(node.config?.prompt || "");
     const sdk = node.config?.sdk || "auto";
     const cwd = ctx.resolve(node.config?.cwd || ctx.data?.worktreePath || process.cwd());
+    const trackedTaskId = String(
+      ctx.data?.taskId ||
+        ctx.data?.task?.id ||
+        ctx.data?.taskDetail?.id ||
+        ctx.resolve(node.config?.taskId || "") ||
+        "",
+    ).trim();
+    const trackedTaskTitle = String(
+      ctx.data?.task?.title ||
+        ctx.data?.taskDetail?.title ||
+        ctx.data?.taskInfo?.title ||
+        trackedTaskId ||
+        "",
+    ).trim();
     const agentProfileId = String(
       ctx.resolve(node.config?.agentProfile || ctx.data?.agentProfile || ""),
     ).trim();
@@ -1661,6 +1676,43 @@ registerNodeType("action.run_agent", {
         const maxRetainedEvents = Number.isFinite(Number(node.config?.maxRetainedEvents))
           ? Math.max(10, Math.min(500, Math.trunc(Number(node.config.maxRetainedEvents))))
           : WORKFLOW_AGENT_EVENT_PREVIEW_LIMIT;
+        const tracker = trackedTaskId ? getSessionTracker() : null;
+        const trackedSessionType = trackedTaskId ? "task" : "flow";
+
+        if (tracker && trackedTaskId) {
+          const existing = tracker.getSessionById(trackedTaskId);
+          if (!existing) {
+            tracker.createSession({
+              id: trackedTaskId,
+              type: "task",
+              taskId: trackedTaskId,
+              metadata: {
+                title: trackedTaskTitle || trackedTaskId,
+                workspaceId: String(ctx.data?.workspaceId || ctx.data?.activeWorkspace || "").trim() || undefined,
+                workspaceDir: String(cwd || "").trim() || undefined,
+                branch:
+                  String(
+                    ctx.data?.branch ||
+                      ctx.data?.task?.branchName ||
+                      ctx.data?.taskDetail?.branchName ||
+                      "",
+                  ).trim() || undefined,
+              },
+            });
+          } else {
+            tracker.updateSessionStatus(trackedTaskId, "active");
+            if (trackedTaskTitle) {
+              tracker.renameSession(trackedTaskId, trackedTaskTitle);
+            }
+          }
+          tracker.recordEvent(trackedTaskId, {
+            role: "system",
+            type: "system",
+            content: `Workflow agent run started in ${cwd}`,
+            timestamp: new Date().toISOString(),
+            _sessionType: trackedSessionType,
+          });
+        }
 
         const launchExtra = {};
         if (sessionId) launchExtra.resumeThreadId = sessionId;
@@ -1668,6 +1720,12 @@ registerNodeType("action.run_agent", {
         if (modelOverride) launchExtra.model = modelOverride;
         launchExtra.onEvent = (event) => {
           try {
+            if (tracker && trackedTaskId) {
+              tracker.recordEvent(trackedTaskId, {
+                ...(event && typeof event === "object" ? event : { content: String(event || "") }),
+                _sessionType: trackedSessionType,
+              });
+            }
             const line = summarizeAgentStreamEvent(event);
             if (!line || line === lastStreamLog) return;
             lastStreamLog = line;
@@ -1735,9 +1793,10 @@ registerNodeType("action.run_agent", {
               timeoutMs,
               maxRetries: sessionRetries,
               maxContinues,
-              sessionType: "flow",
+              sessionType: trackedSessionType,
               sdk: sdkOverride,
               model: modelOverride,
+              onEvent: launchExtra.onEvent,
             });
           }
 
@@ -1745,9 +1804,10 @@ registerNodeType("action.run_agent", {
             ctx.log(node.id, `${passLabel} Recovery: launchOrResumeThread taskKey=${recoveryTaskKey}`.trim());
             result = await agentPool.launchOrResumeThread(passPrompt, cwd, timeoutMs, {
               taskKey: recoveryTaskKey,
-              sessionType: "flow",
+              sessionType: trackedSessionType,
               sdk: sdkOverride,
               model: modelOverride,
+              onEvent: launchExtra.onEvent,
             });
           }
 
@@ -1759,6 +1819,24 @@ registerNodeType("action.run_agent", {
           clearInterval(heartbeat);
         }
         ctx.log(node.id, `${passLabel || "Agent"} completed: success=${success} streamEvents=${streamEventCount}`);
+
+        if (tracker && trackedTaskId) {
+          if (streamEventCount === 0) {
+            const fallbackContent = success
+              ? String(result?.output || result?.message || "Agent run completed.").trim()
+              : String(result?.error || "Agent run failed.").trim();
+            if (fallbackContent) {
+              tracker.recordEvent(trackedTaskId, {
+                role: success ? "assistant" : "system",
+                type: success ? "agent_message" : "error",
+                content: fallbackContent,
+                timestamp: new Date().toISOString(),
+                _sessionType: trackedSessionType,
+              });
+            }
+          }
+          tracker.endSession(trackedTaskId, success ? "completed" : "failed");
+        }
 
         const threadId = result?.threadId || result?.sessionId || sessionId || null;
         if (persistSession && threadId) {
@@ -2737,7 +2815,7 @@ registerNodeType("action.update_task_status", {
     required: ["taskId", "status"],
   },
   async execute(node, ctx, engine) {
-    const taskId = ctx.resolve(node.config?.taskId || "");
+    let taskId = ctx.resolve(node.config?.taskId || "");
     const status = node.config?.status;
     const kanban = engine.services?.kanban;
     const workflowEvent = ctx.resolve(node.config?.workflowEvent || "");
@@ -2755,6 +2833,29 @@ registerNodeType("action.update_task_status", {
     if (workflowEvent) updateOptions.workflowEvent = workflowEvent;
     if (workflowData) updateOptions.workflowData = workflowData;
     if (workflowDedupKey) updateOptions.workflowDedupKey = workflowDedupKey;
+
+    if (isUnresolvedTemplateToken(taskId)) {
+      const fallbackTaskId =
+        ctx.data?.taskId ||
+        ctx.data?.task?.id ||
+        ctx.data?.task_id ||
+        "";
+      if (fallbackTaskId && !isUnresolvedTemplateToken(fallbackTaskId)) {
+        taskId = String(fallbackTaskId);
+      }
+    }
+
+    if (!taskId || isUnresolvedTemplateToken(taskId)) {
+      const unresolvedValue = String(taskId || node.config?.taskId || "(empty)");
+      ctx.log(node.id, `Skipping update_task_status due unresolved taskId: ${unresolvedValue}`);
+      return {
+        success: false,
+        skipped: true,
+        error: "unresolved_task_id",
+        taskId: unresolvedValue,
+        status,
+      };
+    }
 
     if (kanban?.updateTaskStatus) {
       await kanban.updateTaskStatus(taskId, status, updateOptions);
@@ -7028,6 +7129,14 @@ function cfgOrCtx(node, ctx, key, defaultVal = "") {
   return defaultVal;
 }
 
+function getWorkflowRuntimeState(ctx) {
+  if (!ctx || typeof ctx !== "object") return {};
+  if (!ctx.__workflowRuntimeState || typeof ctx.__workflowRuntimeState !== "object") {
+    ctx.__workflowRuntimeState = {};
+  }
+  return ctx.__workflowRuntimeState;
+}
+
 function isUnresolvedTemplateToken(value) {
   return /{{[^{}]+}}/.test(String(value || ""));
 }
@@ -7602,11 +7711,18 @@ registerNodeType("action.claim_task", {
       ctx.data._claimToken = token;
       ctx.data._claimInstanceId = instanceId;
 
-      // Start renewal timer (stored in ctx for cleanup by release_claim)
-      if (renewIntervalMs > 0 && claims.renewTaskClaim) {
+      const runtimeState = getWorkflowRuntimeState(ctx);
+      // Start renewal timer (stored in non-serializable runtime state for cleanup by release_claim)
+      const renewClaimFn =
+        typeof claims.renewTaskClaim === "function"
+          ? claims.renewTaskClaim.bind(claims)
+          : typeof claims.renewClaim === "function"
+            ? claims.renewClaim.bind(claims)
+            : null;
+      if (renewIntervalMs > 0 && renewClaimFn) {
         const renewTimer = setInterval(async () => {
           try {
-            await claims.renewTaskClaim({ taskId, claimToken: token, instanceId, ttlMinutes });
+            await renewClaimFn({ taskId, claimToken: token, instanceId, ttlMinutes });
           } catch (renewErr) {
             const msg = renewErr?.message || String(renewErr);
             const fatal = ["claimed_by_different_instance", "claim_token_mismatch",
@@ -7614,6 +7730,7 @@ registerNodeType("action.claim_task", {
             if (fatal) {
               ctx.log(node.id, `Claim renewal fatal: ${msg} — aborting task`);
               clearInterval(renewTimer);
+              runtimeState.claimRenewTimer = null;
               ctx.data._claimRenewTimer = null;
               // Signal abort to downstream nodes via context
               ctx.data._claimStolen = true;
@@ -7624,7 +7741,9 @@ registerNodeType("action.claim_task", {
         }, renewIntervalMs);
         // Prevent timer from keeping the process alive
         if (renewTimer.unref) renewTimer.unref();
-        ctx.data._claimRenewTimer = renewTimer;
+        runtimeState.claimRenewTimer = renewTimer;
+        // Keep serialized context JSON-safe.
+        ctx.data._claimRenewTimer = null;
       }
 
       ctx.log(node.id, `Task "${taskTitle}" claimed (ttl=${ttlMinutes}min, renew=${renewIntervalMs}ms)`);
@@ -7660,11 +7779,14 @@ registerNodeType("action.release_claim", {
     const claimToken = cfgOrCtx(node, ctx, "claimToken") || ctx.data?._claimToken || "";
     const instanceId = cfgOrCtx(node, ctx, "instanceId") || ctx.data?._claimInstanceId || "";
 
-    // Always cancel the renewal timer first
-    if (ctx.data?._claimRenewTimer) {
-      try { clearInterval(ctx.data._claimRenewTimer); } catch { /* ok */ }
-      ctx.data._claimRenewTimer = null;
+    // Always cancel the renewal timer first.
+    const runtimeState = getWorkflowRuntimeState(ctx);
+    const renewTimer = runtimeState.claimRenewTimer || ctx.data?._claimRenewTimer;
+    if (renewTimer) {
+      try { clearInterval(renewTimer); } catch { /* ok */ }
     }
+    runtimeState.claimRenewTimer = null;
+    ctx.data._claimRenewTimer = null;
 
     if (!taskId || !claimToken) {
       ctx.log(node.id, `No claim to release for ${taskId || "(unknown)"}`);
@@ -7680,8 +7802,15 @@ registerNodeType("action.release_claim", {
       ctx.data._claimInstanceId = null;
       return { success: true, taskId, warning: initErr.message };
     }
+    const releaseClaimFn =
+      typeof claims.releaseTaskClaim === "function"
+        ? claims.releaseTaskClaim.bind(claims)
+        : typeof claims.releaseTask === "function"
+          ? claims.releaseTask.bind(claims)
+          : null;
     try {
-      await claims.releaseTaskClaim({ taskId, claimToken, instanceId });
+      if (!releaseClaimFn) throw new Error("no claim release function available");
+      await releaseClaimFn({ taskId, claimToken, instanceId });
       ctx.data._claimToken = null;
       ctx.data._claimInstanceId = null;
       ctx.log(node.id, `Claim released for ${taskId}`);
@@ -8669,3 +8798,6 @@ registerNodeType("action.web_search", {
 // ═══════════════════════════════════════════════════════════════════════════
 
 export { registerNodeType, getNodeType, listNodeTypes } from "./workflow-engine.mjs";
+
+
+

@@ -619,6 +619,20 @@ describe("template drift + update behavior", () => {
 });
 
 describe("workflow setup profiles", () => {
+  it("uses task-available triggers for batch task processing templates", () => {
+    const batchProcessor = getTemplate("template-task-batch-processor");
+    const batchPr = getTemplate("template-task-batch-pr");
+
+    expect(batchProcessor?.trigger).toBe("trigger.task_available");
+    expect(batchPr?.trigger).toBe("trigger.task_available");
+
+    const batchProcessorTriggerNode = batchProcessor?.nodes?.find((node) => node.id === "trigger");
+    const batchPrTriggerNode = batchPr?.nodes?.find((node) => node.id === "trigger");
+
+    expect(batchProcessorTriggerNode?.type).toBe("trigger.task_available");
+    expect(batchPrTriggerNode?.type).toBe("trigger.task_available");
+  });
+
   it("exposes built-in setup profiles with template selections", () => {
     const profiles = listWorkflowSetupProfiles();
     const ids = profiles.map((profile) => profile.id);
