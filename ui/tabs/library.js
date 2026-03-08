@@ -321,16 +321,16 @@ async function doRebuild() {
 }
 
 async function testProfileMatch(criteria = {}) {
-  const res = await apiFetch(`/api/library/match-profile?verbose=1`, {
+  const res = await apiFetch(`/api/library/resolve?verbose=1`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(criteria || {}),
   });
-  return res?.data || { best: null, candidates: [], auto: { shouldAutoApply: false } };
+  return res?.data || { best: null, candidates: [], plan: null, auto: { shouldAutoApply: false } };
 }
 
 async function fetchLibrarySources() {
-  const res = await apiFetch("/api/library/sources");
+  const res = await apiFetch("/api/library/sources?probe=1");
   return res?.data || [];
 }
 
@@ -1532,6 +1532,7 @@ function ProfileMatcher() {
 
   const best = result?.best || null;
   const candidates = Array.isArray(result?.candidates) ? result.candidates : [];
+  const plan = result?.plan || null;
   const auto = result?.auto || { shouldAutoApply: false, reason: "no-match" };
 
   return html`
@@ -1550,7 +1551,7 @@ function ProfileMatcher() {
         style="width:100%;padding:8px;border-radius:8px;border:1px solid var(--border,#333);background:var(--bg-input,#0d1117);color:var(--text-primary,#eee);" />
       <div class="library-actions">
         <${Button} variant="outlined" size="small" onClick=${doMatch} disabled=${loading || (!title.trim() && !description.trim())}>
-          ${loading ? html`<${Spinner} size=${14} />` : iconText(":mag: Match Agent")}
+          ${loading ? html`<${Spinner} size=${14} />` : iconText(":mag: Resolve Plan")}
         <//>
       </div>
       ${best && html`
@@ -1566,6 +1567,10 @@ function ProfileMatcher() {
           `}
           ${Array.isArray(best.reasons) && best.reasons.length > 0 && html`
             <div style="font-size:0.78em;color:var(--text-secondary);margin-top:4px;">reasons: ${best.reasons.join(", ")}</div>
+          `}
+          ${plan && html`
+            <div style="font-size:0.78em;color:var(--text-secondary);margin-top:6px;">prompt: ${plan.prompt?.name || "none"} | skills: ${(plan.skillIds || []).slice(0, 4).join(", ") || "none"}</div>
+            <div style="font-size:0.78em;color:var(--text-secondary);margin-top:4px;">builtin tools: ${(plan.builtinToolIds || []).slice(0, 6).join(", ") || "none"} | MCP: ${(plan.enabledMcpServers || []).slice(0, 4).join(", ") || "none"}</div>
           `}
           ${candidates.length > 1 && html`
             <div style="font-size:0.78em;color:var(--text-secondary);margin-top:6px;">alternatives: ${candidates.slice(1, 4).map((c) => `${c.name} (${c.score})`).join(" | ")}</div>
@@ -1588,6 +1593,7 @@ function AgentLibraryImporter({ onImported }) {
   const [branch, setBranch] = useState("main");
   const [maxProfiles, setMaxProfiles] = useState("80");
   const [loading, setLoading] = useState(false);
+  const selectedSource = useMemo(() => (sources || []).find((source) => source.id === sourceId) || null, [sources, sourceId]);
 
   useEffect(() => {
     let alive = true;
@@ -1628,7 +1634,13 @@ function AgentLibraryImporter({ onImported }) {
         <label style="display:flex;flex-direction:column;gap:4px;font-size:0.82em;color:var(--text-secondary);">
           Source
           <select value=${sourceId} onChange=${(e) => setSourceId(e.currentTarget.value)}>
-            ${(sources.length ? sources : [{ id: "microsoft-hve-core", name: "Microsoft HVE Core" }]).map((s) => html`<option key=${s.id} value=${s.id}>${s.name}</option>`)}
+            ${(sources.length ? sources : [
+              { id: "microsoft-hve-core", name: "Microsoft HVE Core" },
+              { id: "microsoft-skills", name: "Microsoft Skills" },
+              { id: "github-copilot-sdk", name: "GitHub Copilot SDK" },
+              { id: "azure-sdk-for-js", name: "Azure SDK for JavaScript" },
+              { id: "microsoft-vscode-python-environments", name: "Microsoft VS Code Python Environments" },
+            ]).map((s) => html`<option key=${s.id} value=${s.id}>${s.name}</option>`)}
           </select>
         </label>
         <label style="display:flex;flex-direction:column;gap:4px;font-size:0.82em;color:var(--text-secondary);">
@@ -1644,8 +1656,21 @@ function AgentLibraryImporter({ onImported }) {
         Custom Repo URL (optional)
         <input value=${repoUrl} onInput=${(e) => setRepoUrl(e.currentTarget.value)} placeholder="https://github.com/org/repo.git" />
       </label>
+      ${selectedSource ? html`
+        <div style="margin-top:8px;padding:8px 10px;border:1px solid var(--border,#333);border-radius:10px;background:var(--surface-2,rgba(255,255,255,0.03));display:flex;flex-direction:column;gap:6px;">
+          <div style="display:flex;flex-wrap:wrap;gap:6px;align-items:center;">
+            <span style="font-size:0.8em;font-weight:600;">${selectedSource.name}</span>
+            <span style="font-size:0.75em;padding:2px 6px;border-radius:999px;background:${selectedSource.status === "healthy" ? "rgba(34,197,94,0.18)" : selectedSource.status === "warning" ? "rgba(245,158,11,0.18)" : "rgba(239,68,68,0.18)"};color:var(--text-secondary);">${String(selectedSource.status || "unknown").toUpperCase()}</span>
+            <span style="font-size:0.75em;padding:2px 6px;border-radius:999px;background:rgba(59,130,246,0.16);color:var(--text-secondary);">Trust ${Number(selectedSource?.trust?.score || 0)}/100</span>
+            ${selectedSource.enabled === false ? html`<span style="font-size:0.75em;padding:2px 6px;border-radius:999px;background:rgba(239,68,68,0.18);color:var(--text-secondary);">AUTO-DISABLED</span>` : null}
+          </div>
+          <div style="font-size:0.8em;color:var(--text-secondary);">${selectedSource.description || ""}</div>
+          ${(selectedSource?.trust?.reasons?.length || 0) ? html`<div style="font-size:0.75em;color:var(--text-secondary);">Signals: ${selectedSource.trust.reasons.slice(0, 4).join(", ")}</div>` : null}
+          ${selectedSource?.probe?.checkedAt ? html`<div style="font-size:0.75em;color:var(--text-secondary);">Last probe: ${new Date(selectedSource.probe.checkedAt).toLocaleString()}${selectedSource?.probe?.error ? ` · ${selectedSource.probe.error}` : ""}</div>` : null}
+        </div>
+      ` : null}
       <div class="library-actions">
-        <${Button} variant="outlined" size="small" onClick=${doImport} disabled=${loading}>
+        <${Button} variant="outlined" size="small" onClick=${doImport} disabled=${loading || selectedSource?.enabled === false}>
           ${loading ? html`<${Spinner} size=${14} />` : iconText(":download: Import")}
         <//>
       </div>

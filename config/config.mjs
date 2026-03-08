@@ -1292,6 +1292,13 @@ export function loadConfig(argv = process.argv, options = {}) {
   const normalizedRepoRootOverride = repoRootOverride
     ? resolve(repoRootOverride)
     : "";
+  const explicitConfigDirRaw =
+    cli["config-dir"] || process.env.BOSUN_HOME || process.env.BOSUN_DIR || "";
+  const hasExplicitConfigDir = String(explicitConfigDirRaw || "").trim() !== "";
+  const allowRepoEnvWithExplicitConfig = isEnvEnabled(
+    process.env.BOSUN_LOAD_REPO_ENV_WITH_EXPLICIT_CONFIG,
+    false,
+  );
   let detectedRepoRoot = "";
   const getFallbackRepoRoot = () => {
     if (normalizedRepoRootOverride) return normalizedRepoRootOverride;
@@ -1301,8 +1308,7 @@ export function loadConfig(argv = process.argv, options = {}) {
 
   // Determine config directory (where bosun stores its config)
   const configDir =
-    cli["config-dir"] ||
-    process.env.BOSUN_DIR ||
+    explicitConfigDirRaw ||
     resolveConfigDir(normalizedRepoRootOverride);
 
   const configFile = loadConfigFile(configDir);
@@ -1367,8 +1373,14 @@ export function loadConfig(argv = process.argv, options = {}) {
   const envOverride = reloadEnv || !isEnvEnabled(process.env.BOSUN_ENV_NO_OVERRIDE, false);
   loadDotEnv(configDir, { override: envOverride });
 
-  // Also load .env from repo root if different
-  if (resolve(repoRoot) !== resolve(configDir)) {
+  const shouldLoadRepoEnv =
+    resolve(repoRoot) !== resolve(configDir) &&
+    (!hasExplicitConfigDir || allowRepoEnvWithExplicitConfig);
+
+  // Also load .env from repo root if different.
+  // When config-dir/BOSUN_HOME is explicit, keep that environment isolated
+  // from the repo root unless explicitly re-enabled.
+  if (shouldLoadRepoEnv) {
     loadDotEnv(repoRoot, { override: envOverride });
   }
 
@@ -1423,14 +1435,17 @@ export function loadConfig(argv = process.argv, options = {}) {
     repoRoot = (selHasGit ? selPath : null) || getFallbackRepoRoot();
   }
 
-  if (resolve(repoRoot) !== resolve(initialRepoRoot)) {
+  if (
+    shouldLoadRepoEnv &&
+    resolve(repoRoot) !== resolve(initialRepoRoot)
+  ) {
     loadDotEnv(repoRoot, { override: envOverride });
   }
 
-  const envPaths = [
-    resolve(configDir, ".env"),
-    resolve(repoRoot, ".env"),
-  ].filter((p, i, arr) => arr.indexOf(p) === i);
+  const envPaths = [resolve(configDir, ".env")];
+  if (shouldLoadRepoEnv) {
+    envPaths.push(resolve(repoRoot, ".env"));
+  }
   const kanbanSource = resolveKanbanBackendSource({
     envPaths,
     configFilePath: configFile.path,
@@ -2400,3 +2415,4 @@ export {
   resolveAgentRepoRoot,
 };
 export default loadConfig;
+

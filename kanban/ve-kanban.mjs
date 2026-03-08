@@ -89,11 +89,21 @@ function parseExecutorProfiles(rawValue) {
   return parsed.length > 0 ? parsed : DEFAULT_EXECUTOR_PROFILES;
 }
 
+function trimSlashEdges(value) {
+  const text = String(value || "");
+  let start = 0;
+  let end = text.length;
+  while (start < end && text.charCodeAt(start) === 47) start += 1;
+  while (end > start && text.charCodeAt(end - 1) === 47) end -= 1;
+  return text.slice(start, end);
+}
+
 function parseRepoSlug(raw) {
   const text = String(raw || "").trim().replace(/^https?:\/\/github\.com\//i, "");
   if (!text) return null;
-  const cleaned = text.replace(/\.git$/i, "").replace(/^\/+|\/+$/g, "");
-  const [owner, repo] = cleaned.split("/", 2);
+  const withoutGit = text.replace(/\.git$/i, "");
+  const cleaned = trimSlashEdges(withoutGit);
+  const [owner, repo] = cleaned.split("/").filter(Boolean);
   if (!owner || !repo) return null;
   return { owner, repo };
 }

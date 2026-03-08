@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, rmSync, writeFileSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { execSync } from "node:child_process";
@@ -15,6 +15,7 @@ import {
   registerNodeType,
   getNodeType,
 } from "../workflow/workflow-nodes.mjs";
+import { _resetSingleton as resetSessionTracker, getSessionTracker } from "../infra/session-tracker.mjs";
 
 // ── Helpers ─────────────────────────────────────────────────────────────────
 
@@ -600,6 +601,93 @@ describe("WorkflowEngine - run history details", () => {
       if (prevThreshold === undefined) delete process.env.WORKFLOW_RUN_STUCK_THRESHOLD_MS;
       else process.env.WORKFLOW_RUN_STUCK_THRESHOLD_MS = prevThreshold;
     }
+  });
+
+  it("reclassifies stale RUNNING index entries as interrupted on startup recovery", () => {
+    const wf = makeSimpleWorkflow(
+      [{ id: "trigger", type: "trigger.manual", label: "Start", config: {} }],
+      [],
+      { id: "wf-interrupted-index", name: "Interrupted Index Workflow" },
+    );
+    engine.save(wf);
+
+    const runsDir = join(tmpDir, "runs");
+    const runId = "run-interrupted-index";
+    writeFileSync(
+      join(runsDir, "index.json"),
+      JSON.stringify({
+        runs: [{
+          runId,
+          workflowId: wf.id,
+          workflowName: wf.name,
+          status: WorkflowStatus.RUNNING,
+          startedAt: 1,
+          endedAt: null,
+        }],
+      }, null, 2),
+      "utf8",
+    );
+    writeFileSync(
+      join(runsDir, `${runId}.json`),
+      JSON.stringify({
+        id: runId,
+        startedAt: 1,
+        endedAt: null,
+        data: { _workflowId: wf.id, _workflowName: wf.name },
+        nodeStatuses: { trigger: NodeStatus.COMPLETED, dispatch: NodeStatus.RUNNING },
+        nodeStatusEvents: [],
+        logs: [],
+        errors: [],
+      }, null, 2),
+      "utf8",
+    );
+    writeFileSync(join(runsDir, "_active-runs.json"), JSON.stringify([], null, 2), "utf8");
+
+    engine._detectInterruptedRuns();
+
+    const index = JSON.parse(readFileSync(join(runsDir, "index.json"), "utf8"));
+    const recovered = index.runs.find((entry) => entry.runId === runId);
+    expect(recovered).toBeTruthy();
+    expect(recovered.status).toBe(WorkflowStatus.PAUSED);
+    expect(recovered.resumable).toBe(true);
+    expect(typeof recovered.interruptedAt).toBe("number");
+  });
+
+  it("hydrates orphan running detail files into paused resumable index entries", () => {
+    const wf = makeSimpleWorkflow(
+      [{ id: "trigger", type: "trigger.manual", label: "Start", config: {} }],
+      [],
+      { id: "wf-interrupted-orphan", name: "Interrupted Orphan Workflow" },
+    );
+    engine.save(wf);
+
+    const runsDir = join(tmpDir, "runs");
+    const runId = "run-interrupted-orphan";
+    writeFileSync(join(runsDir, "index.json"), JSON.stringify({ runs: [] }, null, 2), "utf8");
+    writeFileSync(
+      join(runsDir, `${runId}.json`),
+      JSON.stringify({
+        id: runId,
+        startedAt: 1,
+        endedAt: null,
+        data: { _workflowId: wf.id, _workflowName: wf.name },
+        nodeStatuses: { trigger: NodeStatus.RUNNING },
+        nodeStatusEvents: [],
+        logs: [],
+        errors: [],
+      }, null, 2),
+      "utf8",
+    );
+    writeFileSync(join(runsDir, "_active-runs.json"), JSON.stringify([], null, 2), "utf8");
+
+    engine._detectInterruptedRuns();
+
+    const index = JSON.parse(readFileSync(join(runsDir, "index.json"), "utf8"));
+    const recovered = index.runs.find((entry) => entry.runId === runId);
+    expect(recovered).toBeTruthy();
+    expect(recovered.workflowId).toBe(wf.id);
+    expect(recovered.status).toBe(WorkflowStatus.PAUSED);
+    expect(recovered.resumable).toBe(true);
   });
 
   it("supports cooperative cancellation for running runs", async () => {
@@ -1542,6 +1630,13 @@ describe("WorkflowEngine trigger evaluation", () => {
 });
 
 describe("Session chaining - action.run_agent", () => {
+  beforeEach(() => {
+    resetSessionTracker({ persistDir: null });
+  });
+
+  afterEach(() => {
+    resetSessionTracker({ persistDir: null });
+  });
   it("propagates threadId to context and streams agent events into run logs", async () => {
     const handler = getNodeType("action.run_agent");
     expect(handler).toBeDefined();
@@ -1790,6 +1885,65 @@ describe("Session chaining - action.run_agent", () => {
     expect(ctx.data.threadId).toBe("thread-abc-123");
     expect(result.attempts).toBe(2);
     expect(mockEngine.services.agentPool.execWithRetry).toHaveBeenCalledTimes(1);
+    expect(mockEngine.services.agentPool.execWithRetry.mock.calls[0][1]).toEqual(
+      expect.objectContaining({
+        sessionType: "flow",
+        onEvent: expect.any(Function),
+      }),
+    );
+  });
+
+  it("creates and completes task sessions for task-backed agent runs", async () => {
+    const handler = getNodeType("action.run_agent");
+    const ctx = new WorkflowContext({
+      worktreePath: "/tmp/test",
+      taskId: "TASK-SESSION-1",
+      task: { id: "TASK-SESSION-1", title: "Task-backed run", branchName: "feat/task-session" },
+      workspaceId: "virtengine-gh",
+    });
+    const execWithRetry = vi.fn().mockImplementation(async (_prompt, opts) => {
+      opts?.onEvent?.({
+        type: "assistant.message",
+        data: { content: "Task run completed." },
+      });
+      return {
+        success: true,
+        output: "done",
+        sdk: "codex",
+        items: [],
+        threadId: "thread-task-1",
+      };
+    });
+    const mockEngine = {
+      services: {
+        agentPool: {
+          launchEphemeralThread: vi.fn(),
+          execWithRetry,
+        },
+      },
+    };
+
+    const node = { id: "task-agent", type: "action.run_agent", config: { prompt: "Do task work", autoRecover: true } };
+    const result = await handler.execute(node, ctx, mockEngine);
+
+    expect(result.success).toBe(true);
+    expect(execWithRetry).toHaveBeenCalledTimes(1);
+    expect(execWithRetry.mock.calls[0][1]).toEqual(
+      expect.objectContaining({
+        sessionType: "task",
+        onEvent: expect.any(Function),
+      }),
+    );
+
+    const tracker = getSessionTracker();
+    const session = tracker.getSessionById("TASK-SESSION-1");
+    expect(session).toBeTruthy();
+    expect(session.type).toBe("task");
+    expect(session.status).toBe("completed");
+    expect(session.metadata.workspaceId).toBe("virtengine-gh");
+    expect(session.metadata.workspaceDir).toBe("/tmp/test");
+    expect(session.metadata.branch).toBe("feat/task-session");
+    expect((session.messages || []).some((msg) => String(msg.content || "").includes("Task run completed."))).toBe(true);
   });
 
   it("throws when agent execution returns success=false when failOnError=true", async () => {

@@ -34,6 +34,29 @@ afterEach(() => {
   }
 });
 
+function sanitizedGitEnv(extra = {}) {
+  const env = { ...process.env, ...extra };
+  for (const key of [
+    "GIT_DIR",
+    "GIT_WORK_TREE",
+    "GIT_COMMON_DIR",
+    "GIT_INDEX_FILE",
+    "GIT_OBJECT_DIRECTORY",
+    "GIT_ALTERNATE_OBJECT_DIRECTORIES",
+    "GIT_PREFIX",
+  ]) {
+    delete env[key];
+  }
+  return env;
+}
+
+function execGit(command, options = {}) {
+  return execSync(command, {
+    ...options,
+    env: sanitizedGitEnv(options.env),
+  });
+}
+
 function createConfigDir() {
   const dir = mkdtempSync(join(tmpdir(), "workspace-manager-tests-"));
   cleanupDirs.push(dir);
@@ -63,20 +86,20 @@ function readConfig(configDir) {
 function createSeededBareRemote(baseDir, name = "remote-repo") {
   const barePath = join(baseDir, `${name}.git`);
   const seedPath = join(baseDir, `${name}-seed`);
-  execSync(`git init --bare "${barePath}"`, { stdio: ["ignore", "ignore", "ignore"] });
-  execSync(`git clone "${barePath}" "${seedPath}"`, { stdio: ["ignore", "ignore", "ignore"] });
-  execSync('git config --local user.email "bosun-tests@example.com"', {
+  execGit(`git init --bare "${barePath}"`, { stdio: ["ignore", "ignore", "ignore"] });
+  execGit(`git clone "${barePath}" "${seedPath}"`, { stdio: ["ignore", "ignore", "ignore"] });
+  execGit('git config --local user.email "bosun-tests@example.com"', {
     cwd: seedPath,
     stdio: ["ignore", "ignore", "ignore"],
   });
-  execSync('git config --local user.name "Bosun Tests"', {
+  execGit('git config --local user.name "Bosun Tests"', {
     cwd: seedPath,
     stdio: ["ignore", "ignore", "ignore"],
   });
   writeFileSync(join(seedPath, "README.md"), "# seed\n", "utf8");
-  execSync("git add README.md", { cwd: seedPath, stdio: ["ignore", "ignore", "ignore"] });
-  execSync('git commit -m "seed"', { cwd: seedPath, stdio: ["ignore", "ignore", "ignore"] });
-  execSync("git push origin HEAD", { cwd: seedPath, stdio: ["ignore", "ignore", "ignore"] });
+  execGit("git add README.md", { cwd: seedPath, stdio: ["ignore", "ignore", "ignore"] });
+  execGit('git commit -m "seed"', { cwd: seedPath, stdio: ["ignore", "ignore", "ignore"] });
+  execGit("git push origin HEAD", { cwd: seedPath, stdio: ["ignore", "ignore", "ignore"] });
   return barePath;
 }
 
@@ -176,6 +199,36 @@ describe("listWorkspaces", () => {
     expect(repo.path).toBe(missingRepoPath);
   });
 
+  it("uses local repo URL path when configured workspace clone path is missing", () => {
+    const configDir = createConfigDir();
+    const localReposRoot = join(configDir, "local-repos");
+    const localBosunPath = join(localReposRoot, "bosun");
+    mkdirSync(join(localBosunPath, ".git"), { recursive: true });
+
+    writeBosunConfig(configDir, {
+      workspaces: [
+        {
+          id: "virtengine-gh",
+          name: "virtengine-gh",
+          repos: [
+            {
+              name: "bosun",
+              url: localBosunPath,
+              slug: "virtengine/bosun",
+            },
+          ],
+        },
+      ],
+      activeWorkspace: "virtengine-gh",
+    });
+
+    const [workspace] = listWorkspaces(configDir, { repoRoot: join(configDir, "unrelated-root") });
+    const [repo] = workspace.repos;
+
+    expect(workspace.exists).toBe(true);
+    expect(repo.exists).toBe(true);
+    expect(repo.path).toBe(localBosunPath);
+  });
   it("normalizes slug-only workspace repos so listing never crashes", () => {
     const configDir = createConfigDir();
 
@@ -242,3 +295,4 @@ describe("pullWorkspaceRepos", () => {
     expect(existsSync(join(configDir, "workspaces", "alpha", backupDir, "stale.txt"))).toBe(true);
   }, 60000);
 });
+

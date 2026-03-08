@@ -1088,6 +1088,32 @@ describe("kanban-adapter internal backend", () => {
     expect(removeTask(created.id)).toBe(false);
   });
 
+  it("exposes internal timeline and workflow tracking fields on task detail", async () => {
+    const adapter = getKanbanAdapter();
+
+    addTask({
+      id: "internal-detail-1",
+      title: "Tracked internal task",
+      status: "inreview",
+      timeline: [{ type: "status.transition", status: "inreview", timestamp: "2026-03-08T10:00:00.000Z" }],
+      workflowRuns: [{ workflowId: "wf-1", runId: "run-1", status: "completed", endedAt: "2026-03-08T10:05:00.000Z" }],
+      statusHistory: [{ status: "inprogress", timestamp: "2026-03-08T09:55:00.000Z", source: "workflow" }],
+      lastActivityAt: "2026-03-08T10:05:00.000Z",
+      meta: {},
+    });
+
+    const task = await adapter.getTask("internal-detail-1");
+    expect(Array.isArray(task.timeline)).toBe(true);
+    expect(task.timeline.length).toBeGreaterThanOrEqual(1);
+    expect(task.timeline.some((entry) => entry.type === "status.transition" || entry.status === "inreview")).toBe(true);
+    expect(task.workflowRuns).toHaveLength(1);
+    expect(Array.isArray(task.statusHistory)).toBe(true);
+    expect(task.statusHistory).toHaveLength(1);
+    expect(task.lastActivityAt).toBe("2026-03-08T10:05:00.000Z");
+    expect(Array.isArray(task.meta.workflowRuns)).toBe(true);
+    expect(Array.isArray(task.meta.timeline)).toBe(true);
+  });
+
   it("recovers title/description from legacy malformed planner payloads", async () => {
     const adapter = getKanbanAdapter();
     addTask({

@@ -3234,7 +3234,7 @@
         ensureLibrarySeeded();
         return { ok: true, data: { count: STATE.libraryEntries.length, added: 0, removed: 0 } };
       }
-      if (route === '/api/library/match-profile') {
+      if (route === '/api/library/resolve' || route === '/api/library/match-profile') {
         ensureLibrarySeeded();
         const request = method === 'POST' ? (body || {}) : {
           title: params.get('title') || '',
@@ -3264,9 +3264,32 @@
           }
         }
         candidates.sort((a, b) => b.score - a.score);
+        const bestSkillIds = best ? ['code-review', 'testing-conventions'].slice(0, 2) : [];
         const payload = {
           best,
           candidates: candidates.slice(0, 5),
+          alternatives: candidates.slice(1, 5).map((candidate) => ({
+            id: candidate.id,
+            name: candidate.name,
+            score: candidate.score,
+            confidence: candidate.confidence,
+            reasons: candidate.reasons,
+          })),
+          plan: best ? {
+            planId: 'demo-resolve-plan',
+            agentProfileId: best.id,
+            agentName: best.name,
+            prompt: { id: `${best.id}-prompt`, type: 'library-entry', name: `${best.name} Prompt`, description: 'Demo prompt' },
+            skillIds: bestSkillIds,
+            selectedSkills: bestSkillIds.map((id) => ({ id, name: id.replace(/-/g, ' '), score: 4, reasons: ['demo-skill'] })),
+            builtinToolIds: ['read', 'edit', 'bash'],
+            recommendedToolIds: ['read', 'edit', 'bash'],
+            enabledMcpServers: ['context7'],
+            disabledBuiltinTools: [],
+            confidence: Math.min(1, Number(best?.confidence || 0)),
+            autoApply: Boolean(best && best.score >= 6),
+            reasons: Array.isArray(best?.reasons) ? best.reasons : [],
+          } : null,
           auto: { shouldAutoApply: Boolean(best && best.score >= 6), reason: best && best.score >= 6 ? 'high-confidence' : 'below-threshold' },
           context: {
             title: String(request.title || ''),
@@ -3276,7 +3299,7 @@
             changedFilesCount: Array.isArray(request.changedFiles) ? request.changedFiles.length : 0,
           },
         };
-        return { ok: true, data: method === 'POST' ? payload : payload.best };
+        return { ok: true, data: method === 'POST' || route === '/api/library/resolve' ? payload : payload.best };
       }
       if (route === '/api/library/sources') {
         return {
@@ -3288,6 +3311,54 @@
               repoUrl: 'https://github.com/microsoft/hve-core.git',
               defaultBranch: 'main',
               description: 'Core HVE agent library with domain and plugin agent templates.',
+              trust: { score: 96, status: 'healthy', enabled: true, reasons: ['official-maintainer', 'trusted-owner', 'high-import-coverage', 'remote-reachable'] },
+              probe: { checkedAt: '2026-03-09T00:00:00.000Z', reachable: true, branchExists: true },
+              status: 'healthy',
+              enabled: true,
+            },
+            {
+              id: 'microsoft-skills',
+              name: 'Microsoft Skills',
+              repoUrl: 'https://github.com/microsoft/skills.git',
+              defaultBranch: 'main',
+              description: 'Microsoft-maintained backend, frontend, planner, infrastructure, and scaffolder agent catalog.',
+              trust: { score: 94, status: 'healthy', enabled: true, reasons: ['official-maintainer', 'trusted-owner', 'high-import-coverage', 'recently-updated'] },
+              probe: { checkedAt: '2026-03-09T00:00:00.000Z', reachable: true, branchExists: true },
+              status: 'healthy',
+              enabled: true,
+            },
+            {
+              id: 'github-copilot-sdk',
+              name: 'GitHub Copilot SDK',
+              repoUrl: 'https://github.com/github/copilot-sdk.git',
+              defaultBranch: 'main',
+              description: 'Official GitHub workflow-authoring and docs-maintenance agents for Copilot SDK projects.',
+              trust: { score: 88, status: 'warning', enabled: true, reasons: ['official-maintainer', 'trusted-owner', 'branch-ok'] },
+              probe: { checkedAt: '2026-03-09T00:00:00.000Z', reachable: true, branchExists: true },
+              status: 'warning',
+              enabled: true,
+            },
+            {
+              id: 'azure-sdk-for-js',
+              name: 'Azure SDK for JavaScript',
+              repoUrl: 'https://github.com/Azure/azure-sdk-for-js.git',
+              defaultBranch: 'main',
+              description: 'Official Azure JavaScript SDK repo with agentic workflow authoring guidance and prompts.',
+              trust: { score: 85, status: 'warning', enabled: true, reasons: ['official-maintainer', 'trusted-owner', 'import-coverage'] },
+              probe: { checkedAt: '2026-03-09T00:00:00.000Z', reachable: true, branchExists: true },
+              status: 'warning',
+              enabled: true,
+            },
+            {
+              id: 'microsoft-vscode-python-environments',
+              name: 'Microsoft VS Code Python Environments',
+              repoUrl: 'https://github.com/microsoft/vscode-python-environments.git',
+              defaultBranch: 'main',
+              description: 'Microsoft-maintained maintainer, reviewer, and documentation agents for a production VS Code extension.',
+              trust: { score: 82, status: 'warning', enabled: true, reasons: ['official-maintainer', 'trusted-owner', 'import-coverage'] },
+              probe: { checkedAt: '2026-03-09T00:00:00.000Z', reachable: true, branchExists: true },
+              status: 'warning',
+              enabled: true,
             },
           ],
         };

@@ -244,6 +244,12 @@ function formatBytes(n) {
   return `${n}`;
 }
 
+function formatShreddingLabel(value) {
+  return String(value || "unknown")
+    .replace(/[_-]+/g, " ")
+    .replace(/\b\w/g, (match) => match.toUpperCase());
+}
+
 /**
  * Mini inline sparkline SVG — no axes, just the shape of the data.
  */
@@ -302,37 +308,42 @@ function ShreddingPanel({ period }) {
     dailySaved = {},
     dailyCounts = {},
     topAgents = [],
+    stageCounts = {},
+    topCompactionFamilies = [],
+    topCommandFamilies = [],
+    liveCompaction = {},
     recentEvents = [],
     diagnostics = {},
   } = data;
 
   const sparkValues = sortedDates.map((d) => dailySaved[d] || 0);
   const sparkCounts = sortedDates.map((d) => dailyCounts[d] || 0);
+  const stageItems = Object.entries(stageCounts)
+    .sort((a, b) => b[1] - a[1])
+    .map(([name, count]) => ({ name: formatShreddingLabel(name), count }));
+  const liveEvents = liveCompaction?.totalEvents || stageCounts.live_tool_compaction || 0;
+  const liveSavedChars = liveCompaction?.totalSavedChars || 0;
+  const liveAvgSavedPct = liveCompaction?.avgSavedPct || 0;
 
   return html`
     <${Paper} elevation=${1} sx=${{ p: 2, mb: 2 }}>
-      <!-- Header -->
       <${Stack} direction="row" justifyContent="space-between" alignItems="center" sx=${{ mb: 1.5 }}>
         <${Typography} variant="h6">✂ Context Shredding<//>
-        <${Chip} label="live" size="small" color="success" variant="outlined" />
+        <${Chip}
+          label=${liveEvents > 0 ? "live + tiered" : "tiered"}
+          size="small"
+          color=${liveEvents > 0 ? "success" : "default"}
+          variant="outlined"
+        />
       <//>
 
-      <!-- Stat cards row -->
       <${Stack} direction=${{ xs: "column", sm: "row" }} spacing=${1.5} sx=${{ mb: 2, flexWrap: "wrap" }}>
         <${AnalyticsStat} icon="✂" label="Events" value=${formatCount(totalEvents)} />
-        <${AnalyticsStat} icon="📉" label="Chars Saved"
-          value=${totalSavedChars >= 1_000_000
-            ? `${(totalSavedChars / 1_000_000).toFixed(2)} M`
-            : totalSavedChars >= 1_000
-              ? `${(totalSavedChars / 1_000).toFixed(1)} K`
-              : String(totalSavedChars)} />
+        <${AnalyticsStat} icon="📉" label="Chars Saved" value=${formatBytes(totalSavedChars)} />
         <${AnalyticsStat} icon="%" label="Avg Reduction" value=${avgSavedPct > 0 ? `${avgSavedPct}%` : "–"} />
-        <${AnalyticsStat} icon="📦" label="Original Chars"
-          value=${totalOriginalChars >= 1_000_000
-            ? `${(totalOriginalChars / 1_000_000).toFixed(2)} M`
-            : totalOriginalChars >= 1_000
-              ? `${(totalOriginalChars / 1_000).toFixed(1)} K`
-              : String(totalOriginalChars)} />
+        <${AnalyticsStat} icon="📦" label="Original Chars" value=${formatBytes(totalOriginalChars)} />
+        <${AnalyticsStat} icon="⚡" label="Live Events" value=${formatCount(liveEvents)} />
+        <${AnalyticsStat} icon="🧠" label="Live Avg" value=${liveAvgSavedPct > 0 ? `${liveAvgSavedPct}%` : "–"} />
       <//>
 
       ${(diagnostics?.excludedSynthetic || diagnostics?.excludedNoop || diagnostics?.unknownAttribution)
@@ -346,10 +357,7 @@ function ShreddingPanel({ period }) {
         `
         : null}
 
-      <!-- Trend row: daily savings sparkline + by-agent bar -->
       <${Stack} direction=${{ xs: "column", md: "row" }} spacing=${2} sx=${{ mb: 2 }}>
-
-        <!-- Daily savings trend -->
         <${Paper} variant="outlined" sx=${{ p: 1.5, flex: 1 }}>
           <${Typography} variant="subtitle2" gutterBottom>Chars Saved per Day<//>
           ${sparkValues.length > 1 ? html`
@@ -363,15 +371,17 @@ function ShreddingPanel({ period }) {
           ` : html`<${EmptyState} title="Not enough data" description="Need ≥2 days of events." />`}
         <//>
 
-        <!-- By-agent -->
         <${Paper} variant="outlined" sx=${{ p: 1.5, flex: 1 }}>
           <${Typography} variant="subtitle2" gutterBottom>By Agent Type<//>
           <${TopBarChart} items=${topAgents} palette=${SHRED_PALETTE} title="By Agent" />
         <//>
 
+        <${Paper} variant="outlined" sx=${{ p: 1.5, flex: 1 }}>
+          <${Typography} variant="subtitle2" gutterBottom>By Stage<//>
+          <${TopBarChart} items=${stageItems} palette=${SHRED_PALETTE} title="By Stage" />
+        <//>
       <//>
 
-      <!-- Reduction % gauge bar -->
       ${avgSavedPct > 0 ? html`
         <${Box} sx=${{ mb: 2 }}>
           <${Stack} direction="row" justifyContent="space-between" alignItems="center" sx=${{ mb: 0.5 }}>
@@ -390,7 +400,36 @@ function ShreddingPanel({ period }) {
         <//>
       ` : null}
 
-      <!-- Recent events table -->
+      ${(liveEvents > 0 || topCompactionFamilies.length > 0 || topCommandFamilies.length > 0) ? html`
+        <${Stack} direction=${{ xs: "column", md: "row" }} spacing=${2} sx=${{ mb: 2 }}>
+          <${Paper} variant="outlined" sx=${{ p: 1.5, flex: 1 }}>
+            <${Typography} variant="subtitle2" gutterBottom>Live Compaction Families<//>
+            <${TopBarChart} items=${topCompactionFamilies} palette=${SHRED_PALETTE} title="Live Families" />
+          <//>
+          <${Paper} variant="outlined" sx=${{ p: 1.5, flex: 1 }}>
+            <${Typography} variant="subtitle2" gutterBottom>Live Command Families<//>
+            <${TopBarChart} items=${topCommandFamilies} palette=${SHRED_PALETTE} title="Command Families" />
+          <//>
+          <${Paper} variant="outlined" sx=${{ p: 1.5, flex: 1 }}>
+            <${Typography} variant="subtitle2" gutterBottom>Live Compaction Savings<//>
+            <${Stack} spacing=${1}>
+              <${Typography} variant="caption" color="text.secondary">
+                Saved ${formatBytes(liveSavedChars)} across ${formatCount(liveEvents)} live-compacted outputs.
+              <//>
+              <${Typography} variant="caption" color="text.secondary">
+                Daily samples: ${sparkCounts.length ? sparkCounts.reduce((sum, value) => sum + value, 0) : 0} tracked shredding events in this window.
+              <//>
+              <${Chip}
+                label=${liveAvgSavedPct > 0 ? `${liveAvgSavedPct}% average live reduction` : "Live reductions pending"}
+                size="small"
+                color=${liveAvgSavedPct >= 30 ? "success" : liveAvgSavedPct >= 10 ? "warning" : "default"}
+                variant="outlined"
+              />
+            <//>
+          <//>
+        <//>
+      ` : null}
+
       ${recentEvents.length > 0 ? html`
         <${Typography} variant="subtitle2" gutterBottom>Recent Shredding Events<//>
         <${TableContainer}>
@@ -398,6 +437,8 @@ function ShreddingPanel({ period }) {
             <${TableHead}>
               <${TableRow}>
                 <${TableCell}>Time<//>
+                <${TableCell}>Stage<//>
+                <${TableCell}>Family<//>
                 <${TableCell} align="right">Original<//>
                 <${TableCell} align="right">Saved<//>
                 <${TableCell} align="right">Reduction<//>
@@ -409,6 +450,16 @@ function ShreddingPanel({ period }) {
                 <${TableRow} key=${i}>
                   <${TableCell}>
                     <${Typography} variant="caption">${formatRelative(ev.timestamp)}<//>
+                  <//>
+                  <${TableCell}>
+                    <${Typography} variant="caption" color="text.secondary">
+                      ${formatShreddingLabel(ev.stage)}
+                    <//>
+                  <//>
+                  <${TableCell}>
+                    <${Typography} variant="caption" color="text.secondary">
+                      ${ev.compactionFamily ? formatShreddingLabel(ev.compactionFamily) : ev.commandFamily ? formatShreddingLabel(ev.commandFamily) : "–"}
+                    <//>
                   <//>
                   <${TableCell} align="right">
                     <${Typography} variant="caption">${formatBytes(ev.originalChars)}<//>
@@ -440,7 +491,6 @@ function ShreddingPanel({ period }) {
     <//>
   `;
 }
-
 // ── Main exported component ──────────────────────────────────────────────────
 
 export function TelemetryTab() {

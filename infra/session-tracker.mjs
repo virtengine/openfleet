@@ -569,6 +569,7 @@ export class SessionTracker {
         status: s.status,
         workspaceId: String(s?.metadata?.workspaceId || "").trim() || null,
         workspaceDir: String(s?.metadata?.workspaceDir || "").trim() || null,
+        branch: String(s?.metadata?.branch || "").trim() || null,
         turnCount: s.turnCount || 0,
         createdAt: s.createdAt || new Date(s.startedAt).toISOString(),
         lastActiveAt: s.lastActiveAt || new Date(s.lastActivityAt).toISOString(),

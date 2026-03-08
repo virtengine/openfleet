@@ -12,6 +12,11 @@ import {
   upsertEntry,
   deleteEntry,
   listAgentProfiles,
+  loadAgentProfileIndex,
+  loadSkillEntryIndex,
+  rebuildAgentProfileIndex,
+  rebuildSkillEntryIndex,
+  resolveLibraryPlan,
   matchAgentProfile,
   matchAgentProfiles,
   detectScopes,
@@ -27,11 +32,37 @@ import {
   PROFILE_DIR,
   resolveEntry,
   listWellKnownAgentSources,
+  computeWellKnownSourceTrust,
+  probeWellKnownAgentSources,
+  clearWellKnownAgentSourceProbeCache,
   importAgentProfilesFromRepository,
   syncAutoDiscoveredLibraryEntries,
 } from "../infra/library-manager.mjs";
 
 // ── Helpers ─────────────────────────────────────────────────────────────────
+
+function sanitizedGitEnv(extra = {}) {
+  const env = { ...process.env, ...extra };
+  for (const key of [
+    "GIT_DIR",
+    "GIT_WORK_TREE",
+    "GIT_COMMON_DIR",
+    "GIT_INDEX_FILE",
+    "GIT_OBJECT_DIRECTORY",
+    "GIT_ALTERNATE_OBJECT_DIRECTORIES",
+    "GIT_PREFIX",
+  ]) {
+    delete env[key];
+  }
+  return env;
+}
+
+function execGit(command, options = {}) {
+  return execSync(command, {
+    ...options,
+    env: sanitizedGitEnv(options.env),
+  });
+}
 
 let tmpDir;
 
@@ -473,6 +504,146 @@ describe("resolveEntry (multi-workspace)", () => {
 });
 
 
+describe("compiled library indexes", () => {
+  beforeEach(() => fresh());
+  afterEach(() => cleanup());
+
+  it("builds compiled agent and skill indexes", () => {
+    scaffoldAgentProfiles(tmpDir);
+    upsertEntry(tmpDir, { type: "skill", name: "UI Testing", tags: ["ui", "test"] }, "# Skill: UI Testing\n\n<!-- tags: ui test -->");
+    rebuildManifest(tmpDir);
+
+    const agentIndex = rebuildAgentProfileIndex(tmpDir);
+    expect(agentIndex.count).toBeGreaterThanOrEqual(5);
+
+    const skillIndex = rebuildSkillEntryIndex(tmpDir);
+    expect(skillIndex.count).toBeGreaterThanOrEqual(1);
+
+    const loadedAgents = loadAgentProfileIndex(tmpDir);
+    const loadedSkills = loadSkillEntryIndex(tmpDir);
+    expect(Array.isArray(loadedAgents.profiles)).toBe(true);
+    expect(Array.isArray(loadedSkills.skills)).toBe(true);
+    expect(loadedAgents.profiles.some((profile) => profile.id === "ui-agent")).toBe(true);
+    expect(loadedSkills.skills.some((skill) => skill.name === "UI Testing")).toBe(true);
+  });
+
+  it("matchAgentProfiles uses compiled metadata on the hot path", () => {
+    scaffoldAgentProfiles(tmpDir);
+    rebuildManifest(tmpDir);
+    rebuildAgentProfileIndex(tmpDir);
+
+    rmSync(resolve(tmpDir, PROFILE_DIR, "ui-agent.json"), { force: true });
+
+    const result = matchAgentProfiles(tmpDir, {
+      title: "feat(portal): add login page",
+      description: "Update UI layout and component styles",
+      topN: 3,
+    });
+
+    expect(result.best).not.toBeNull();
+    expect(result.best.id).toBe("ui-agent");
+  });
+
+  it("keeps the agent index in sync on upsert", () => {
+    upsertEntry(tmpDir, {
+      type: "agent",
+      id: "index-agent",
+      name: "Index Agent",
+      description: "Compiled-index test profile",
+      tags: ["index"],
+    }, {
+      id: "index-agent",
+      name: "Index Agent",
+      description: "Compiled-index test profile",
+      titlePatterns: ["\\bindex\\b"],
+      scopes: ["infra"],
+      tags: ["index"],
+      agentType: "task",
+    });
+
+    const index = loadAgentProfileIndex(tmpDir);
+    expect(index.profiles.some((profile) => profile.id === "index-agent")).toBe(true);
+  });
+
+  it("keeps the agent index in sync on delete", () => {
+    upsertEntry(tmpDir, {
+      type: "agent",
+      id: "delete-agent",
+      name: "Delete Agent",
+      description: "Compiled-index delete test profile",
+      tags: ["delete"],
+    }, {
+      id: "delete-agent",
+      name: "Delete Agent",
+      description: "Compiled-index delete test profile",
+      titlePatterns: ["\\bdelete\\b"],
+      scopes: ["infra"],
+      tags: ["delete"],
+      agentType: "task",
+    });
+
+    expect(loadAgentProfileIndex(tmpDir).profiles.some((profile) => profile.id === "delete-agent")).toBe(true);
+    expect(deleteEntry(tmpDir, "delete-agent")).toBe(true);
+    expect(loadAgentProfileIndex(tmpDir).profiles.some((profile) => profile.id === "delete-agent")).toBe(false);
+  });
+
+  it("resolves a composed library plan with prompt, skills, and tools", () => {
+    upsertEntry(tmpDir, {
+      type: "prompt",
+      id: "ui-prompt",
+      name: "UI Prompt",
+      description: "Prompt for UI tasks",
+      tags: ["ui"],
+    }, "# UI Prompt\n\nFocus on UI quality.");
+
+    upsertEntry(tmpDir, {
+      type: "skill",
+      id: "ui-testing",
+      name: "UI Testing",
+      description: "UI testing skill",
+      tags: ["ui", "test"],
+    }, "# Skill: UI Testing\n\n<!-- tags: ui test -->");
+
+    upsertEntry(tmpDir, {
+      type: "agent",
+      id: "ui-resolver-agent",
+      name: "UI Resolver Agent",
+      description: "Agent for UI resolver tests",
+      tags: ["ui"],
+    }, {
+      id: "ui-resolver-agent",
+      name: "UI Resolver Agent",
+      description: "Agent for UI resolver tests",
+      titlePatterns: ["\\bui\\b", "\\bportal\\b"],
+      scopes: ["ui"],
+      tags: ["ui"],
+      promptOverride: "ui-prompt",
+      skills: ["ui-testing"],
+      enabledTools: ["read", "edit"],
+      enabledMcpServers: ["context7"],
+      agentType: "task",
+    });
+
+    rebuildManifest(tmpDir);
+
+    const result = resolveLibraryPlan(tmpDir, {
+      title: "feat(ui): improve portal layout",
+      description: "Update ui tests and component rendering",
+      changedFiles: ["ui/tabs/library.js", "ui/tests/layout.test.mjs"],
+      topN: 5,
+      skillTopN: 4,
+    });
+
+    expect(result.best).not.toBeNull();
+    expect(result.plan).not.toBeNull();
+    expect(result.plan.agentProfileId).toBe("ui-resolver-agent");
+    expect(result.plan.prompt?.id).toBe("ui-prompt");
+    expect(result.plan.skillIds).toContain("ui-testing");
+    expect(result.plan.recommendedToolIds).toContain("read");
+    expect(result.plan.enabledMcpServers).toContain("context7");
+  });
+});
+
 describe("matchAgentProfiles", () => {
   beforeEach(() => fresh());
   afterEach(() => cleanup());
@@ -511,6 +682,111 @@ describe("matchAgentProfiles", () => {
   });
 });
 
+describe("well-known source probes", () => {
+  beforeEach(() => clearWellKnownAgentSourceProbeCache());
+
+  it("computes trust score from static and probe signals", () => {
+    const source = {
+      id: "sample",
+      name: "Sample",
+      repoUrl: "https://github.com/microsoft/sample.git",
+      owner: "microsoft",
+      trustTier: "official",
+      importCoverage: "high",
+    };
+    const trust = computeWellKnownSourceTrust(source, {
+      reachable: true,
+      branchExists: true,
+      stars: 2400,
+      daysSincePush: 12,
+    }, { nowMs: Date.parse("2026-03-09T00:00:00Z") });
+    expect(trust.enabled).toBe(true);
+    expect(trust.status).toBe("healthy");
+    expect(trust.score).toBeGreaterThanOrEqual(85);
+    expect(trust.reasons).toContain("official-maintainer");
+    expect(trust.reasons).toContain("remote-reachable");
+  });
+
+  it("probes and ranks well-known sources", async () => {
+    const responses = new Map([
+      ["https://api.github.com/repos/microsoft/hve-core", {
+        ok: true,
+        json: async () => ({
+          default_branch: "main",
+          archived: false,
+          disabled: false,
+          stargazers_count: 2200,
+          forks_count: 140,
+          open_issues_count: 12,
+          pushed_at: "2026-03-01T00:00:00Z",
+        }),
+      }],
+      ["https://api.github.com/repos/microsoft/skills", {
+        ok: true,
+        json: async () => ({
+          default_branch: "main",
+          archived: false,
+          disabled: false,
+          stargazers_count: 980,
+          forks_count: 50,
+          open_issues_count: 4,
+          pushed_at: "2026-02-25T00:00:00Z",
+        }),
+      }],
+    ]);
+    const fetchImpl = async (url) => responses.get(String(url)) || { ok: false, status: 404, json: async () => ({}) };
+    const spawnImpl = (cmd, args) => ({
+      status: args.includes("https://github.com/microsoft/hve-core.git") || args.includes("https://github.com/microsoft/skills.git") ? 0 : 2,
+      stdout: args.includes("https://github.com/microsoft/hve-core.git") || args.includes("https://github.com/microsoft/skills.git") ? "deadbeef\trefs/heads/main\n" : "",
+      stderr: "",
+    });
+
+    const results = await probeWellKnownAgentSources({
+      sourceId: "microsoft-hve-core",
+      fetchImpl,
+      spawnImpl,
+      refresh: true,
+      nowMs: Date.parse("2026-03-09T00:00:00Z"),
+    });
+
+    expect(results).toHaveLength(1);
+    expect(results[0].id).toBe("microsoft-hve-core");
+    expect(results[0].enabled).toBe(true);
+    expect(results[0].probe?.reachable).toBe(true);
+    expect(results[0].trust.score).toBeGreaterThanOrEqual(80);
+  });
+
+  it("disables stale or unreachable sources after probing", async () => {
+    const fetchImpl = async () => ({
+      ok: true,
+      json: async () => ({
+        default_branch: "main",
+        archived: true,
+        disabled: false,
+        stargazers_count: 50,
+        forks_count: 5,
+        open_issues_count: 1,
+        pushed_at: "2023-01-01T00:00:00Z",
+      }),
+    });
+    const spawnImpl = () => ({ status: 2, stdout: "", stderr: "fatal" });
+
+    const results = await probeWellKnownAgentSources({
+      sourceId: "github-copilot-sdk",
+      fetchImpl,
+      spawnImpl,
+      refresh: true,
+      nowMs: Date.parse("2026-03-09T00:00:00Z"),
+    });
+
+    expect(results).toHaveLength(1);
+    expect(results[0].enabled).toBe(false);
+    expect(results[0].status).toBe("disabled");
+    expect(results[0].trust.reasons).toContain("archived");
+    expect(results[0].trust.reasons).toContain("remote-unreachable");
+  });
+});
+
 describe("well-known source import", () => {
   beforeEach(() => fresh());
   afterEach(() => cleanup());
@@ -518,8 +794,12 @@ describe("well-known source import", () => {
   it("lists known agent library sources", () => {
     const sources = listWellKnownAgentSources();
     expect(Array.isArray(sources)).toBe(true);
-    expect(sources.length).toBeGreaterThan(0);
+    expect(sources.length).toBeGreaterThanOrEqual(5);
     expect(sources.some((s) => s.id === "microsoft-hve-core")).toBe(true);
+    expect(sources.some((s) => s.id === "microsoft-skills")).toBe(true);
+    expect(sources.some((s) => s.id === "github-copilot-sdk")).toBe(true);
+    expect(sources.some((s) => s.id === "azure-sdk-for-js")).toBe(true);
+    expect(sources.some((s) => s.id === "microsoft-vscode-python-environments")).toBe(true);
   });
 
   it("imports agent profile + prompt from a git repository", () => {
@@ -538,13 +818,13 @@ describe("well-known source import", () => {
         ].join("\n"),
         "utf8",
       );
-      execSync("git init", { cwd: srcRepo, stdio: "pipe" });
-      execSync("git config user.email test@example.com", { cwd: srcRepo, stdio: "pipe" });
-      execSync("git config user.name test", { cwd: srcRepo, stdio: "pipe" });
-      execSync("git add .", { cwd: srcRepo, stdio: "pipe" });
-      execSync("git commit -m init", { cwd: srcRepo, stdio: "pipe" });
+      execGit("git init", { cwd: srcRepo, stdio: "pipe" });
+      execGit("git config user.email test@example.com", { cwd: srcRepo, stdio: "pipe" });
+      execGit("git config user.name test", { cwd: srcRepo, stdio: "pipe" });
+      execGit("git add .", { cwd: srcRepo, stdio: "pipe" });
+      execGit("git commit -m init", { cwd: srcRepo, stdio: "pipe" });
 
-      const branch = execSync("git rev-parse --abbrev-ref HEAD", { cwd: srcRepo, stdio: "pipe", encoding: "utf8" }).trim();
+      const branch = execGit("git rev-parse --abbrev-ref HEAD", { cwd: srcRepo, stdio: "pipe", encoding: "utf8" }).trim();
       const result = importAgentProfilesFromRepository(tmpDir, {
         repoUrl: srcRepo,
         branch,

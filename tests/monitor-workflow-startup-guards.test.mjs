@@ -39,6 +39,7 @@ describe("monitor workflow startup guards", () => {
     );
     expect(monitorSource).toContain('pollWorkflowSchedulesOnce = async function pollWorkflowSchedulesOnce(');
     expect(monitorSource).toContain('const includeTaskPoll = opts?.includeTaskPoll !== false;');
+    expect(monitorSource).not.toContain('_lastRunAt: Date.now()');
     expect(monitorSource).toContain('if (triggerNode?.type === "trigger.task_available" || triggerNode?.type === "trigger.task_low") {');
     expect(monitorSource).toContain('void pollWorkflowSchedulesOnce("startup", { includeTaskPoll: false }).catch((err) => {');
     expect(monitorSource).toContain('void pollWorkflowSchedulesOnce("startup").catch((err) => {');
@@ -65,4 +66,34 @@ describe("monitor workflow startup guards", () => {
       "CLI command mode in source checkout",
     );
   });
+  it("uses BOSUN_PROMPT_PLANNER path before workspace-root planner fallback", () => {
+    expect(monitorSource).toContain("process.env.BOSUN_PROMPT_PLANNER");
+    expect(monitorSource).toContain("BOSUN_PROMPT_PLANNER=");
+  });
+
+  it("guards backend task-id resolution against unresolved template tokens", () => {
+    expect(monitorSource).toContain("function hasUnresolvedTemplateToken(value)");
+    expect(monitorSource).toContain("if (!rawId || hasUnresolvedTemplateToken(rawId)) return null;");
+  });
+
+  it("lets explicit review-agent env override workflow replacement", () => {
+    expect(
+      monitorSource.indexOf("const explicit = process.env.INTERNAL_EXECUTOR_REVIEW_AGENT_ENABLED;"),
+    ).toBeLessThan(
+      monitorSource.indexOf("if (isWorkflowReplacingModule(\"review-agent.mjs\")) return false;"),
+    );
+  });
+
+  it("resets stale inreview tasks without PR metadata during review-agent rehydrate", () => {
+    expect(monitorSource).toContain("const hasReviewReference = Boolean(prUrl || prNumber || branchName);");
+    expect(monitorSource).toContain(
+      "review rehydrate reset ${taskId} to todo: missing prUrl/prNumber/branchName",
+    );
+    expect(monitorSource).toContain("setInternalTaskStatus(taskId, \"todo\", \"review-agent-rehydrate\")");
+    expect(monitorSource).toContain("await updateTaskStatus(taskId, \"todo\");");
+  });
+
 });
+
+
+

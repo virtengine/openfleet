@@ -690,6 +690,177 @@ function buildEpicDagGraph(tasks = [], epicDependencies = []) {
     edges,
   };
 }
+function slugifyPlanningId(value, fallback = "item") {
+  const normalized = String(value || "")
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "");
+  return normalized || fallback;
+}
+
+function normalizeTaskTypeValue(value, fallback = "task") {
+  const normalized = toText(value, fallback).toLowerCase();
+  return ["epic", "task", "subtask"].includes(normalized) ? normalized : fallback;
+}
+
+function normalizeTaskStatusValue(value) {
+  return toText(value).toLowerCase();
+}
+
+function isTerminalTaskStatus(value) {
+  return ["done", "completed", "closed", "merged", "cancelled"].includes(normalizeTaskStatusValue(value));
+}
+
+function isQueuedTask(task) {
+  const runtime = getTaskRuntimeSnapshot(task);
+  return runtime?.state === "queued" || normalizeTaskStatusValue(task?.status) === "queued";
+}
+
+function isBacklogDraftTask(task) {
+  const status = normalizeTaskStatusValue(task?.status);
+  return status === "draft" || status === "todo" || status === "backlog" || status === "planned" || status === "";
+}
+
+function isExecutionTask(task) {
+  return isActiveStatus(task?.status) || isReviewStatus(task?.status) || isQueuedTask(task);
+}
+
+function filterDagGraphByIds(graph = EMPTY_DAG_GRAPH, allowedIds = null, resolver = (node) => toText(node?.id || node?.taskId)) {
+  if (!allowedIds || allowedIds === "all") return graph;
+  const allowed = allowedIds instanceof Set ? allowedIds : new Set(Array.isArray(allowedIds) ? allowedIds : []);
+  const nodes = (graph?.nodes || []).filter((node) => allowed.has(resolver(node)) || allowed.has(toText(node?.id || node?.taskId)));
+  const nodeIds = new Set(nodes.map((node) => toText(node?.id || node?.taskId)).filter(Boolean));
+  const edges = (graph?.edges || []).filter((edge) => nodeIds.has(toText(edge?.source || edge?.from)) && nodeIds.has(toText(edge?.target || edge?.to)));
+  return { ...graph, nodes, edges };
+}
+
+function buildEpicCatalog(tasks = [], epicDependencies = []) {
+  const catalog = new Map();
+  const ensureEpic = (epicId) => {
+    const id = toText(epicId);
+    if (!id) return null;
+    if (!catalog.has(id)) {
+      catalog.set(id, {
+        id,
+        label: id,
+        taskIds: [],
+        dependencies: [],
+        completedCount: 0,
+        activeCount: 0,
+      });
+    }
+    return catalog.get(id);
+  };
+  for (const task of tasks || []) {
+    const epicId = toText(task?.epicId || task?.meta?.epicId);
+    if (!epicId) continue;
+    const entry = ensureEpic(epicId);
+    if (!entry) continue;
+    entry.taskIds.push(task.id);
+    if (normalizeTaskTypeValue(task?.type) === "epic") {
+      entry.label = toText(task?.title, epicId);
+      entry.anchorTaskId = task.id;
+    }
+    if (isTerminalTaskStatus(task?.status)) entry.completedCount += 1;
+    if (isExecutionTask(task)) entry.activeCount += 1;
+  }
+  for (const row of epicDependencies || []) {
+    const entry = ensureEpic(row?.epicId);
+    if (!entry) continue;
+    entry.dependencies = normalizeDependencyInput(row?.dependencies || []);
+  }
+  return [...catalog.values()]
+    .map((entry) => ({
+      ...entry,
+      taskIds: normalizeDependencyInput(entry.taskIds),
+      taskCount: normalizeDependencyInput(entry.taskIds).length,
+    }))
+    .sort((a, b) => String(a.label || a.id).localeCompare(String(b.label || b.id)));
+}
+
+function buildDagPlanningState({ tasks = [], sprintId = "all", sprintOrderMode = "parallel", sprintOptions = [], epicDependencies = [] }) {
+  const scopedTasks = (tasks || []).filter((task) => sprintId === "all" ? true : getTaskSprintId(task) === sprintId);
+  const allTaskMap = new Map((tasks || []).map((task) => [toText(task?.id), task]));
+  const scopedTaskIds = new Set(scopedTasks.map((task) => toText(task?.id)).filter(Boolean));
+  const sprintModeMap = new Map((sprintOptions || []).map((sprint) => [sprint.id, toText(sprint.executionMode || sprint.taskOrderMode || 'parallel', 'parallel')]));
+  const epicDependencyMap = new Map((epicDependencies || []).map((row) => [toText(row?.epicId), normalizeDependencyInput(row?.dependencies || [])]));
+  const tasksByEpic = new Map();
+  for (const task of tasks || []) {
+    const epicId = toText(task?.epicId || task?.meta?.epicId);
+    if (!epicId) continue;
+    const list = tasksByEpic.get(epicId) || [];
+    list.push(task);
+    tasksByEpic.set(epicId, list);
+  }
+  const isSequentialBlocked = (task) => {
+    const taskSprintId = getTaskSprintId(task);
+    const mode = sprintModeMap.get(taskSprintId) || sprintOrderMode;
+    if (mode !== 'sequential') return false;
+    const currentOrder = Number(getTaskSprintOrder(task));
+    if (!Number.isFinite(currentOrder) || currentOrder <= 1) return false;
+    return scopedTasks.some((candidate) => getTaskSprintId(candidate) === taskSprintId && Number(getTaskSprintOrder(candidate)) < currentOrder && !isTerminalTaskStatus(candidate?.status));
+  };
+  const isEpicBlocked = (task) => {
+    const epicId = toText(task?.epicId || task?.meta?.epicId);
+    if (!epicId) return false;
+    const requiredEpics = epicDependencyMap.get(epicId) || [];
+    if (!requiredEpics.length) return false;
+    return requiredEpics.some((requiredEpicId) => {
+      const epicTasks = tasksByEpic.get(requiredEpicId) || [];
+      if (!epicTasks.length) return true;
+      return epicTasks.some((candidate) => !isTerminalTaskStatus(candidate?.status));
+    });
+  };
+  const isDependencyBlocked = (task) => getTaskDependencyIds(task).some((depId) => {
+    const dependencyTask = allTaskMap.get(depId);
+    return !dependencyTask || !isTerminalTaskStatus(dependencyTask?.status);
+  });
+  const backlogTaskIds = new Set();
+  const executionTaskIds = new Set();
+  const readyTaskIds = new Set();
+  const sprintIdsByFocus = { all: new Set(), backlog: new Set(), execution: new Set(), ready: new Set() };
+  const epicIdsByFocus = { all: new Set(), backlog: new Set(), execution: new Set(), ready: new Set() };
+  for (const task of scopedTasks) {
+    const taskId = toText(task?.id);
+    const taskSprintId = getTaskSprintId(task);
+    const epicId = toText(task?.epicId || task?.meta?.epicId);
+    sprintIdsByFocus.all.add(taskSprintId || 'unassigned');
+    if (epicId) epicIdsByFocus.all.add(epicId);
+    if (isBacklogDraftTask(task)) {
+      backlogTaskIds.add(taskId);
+      sprintIdsByFocus.backlog.add(taskSprintId || 'unassigned');
+      if (epicId) epicIdsByFocus.backlog.add(epicId);
+    }
+    if (isExecutionTask(task)) {
+      executionTaskIds.add(taskId);
+      sprintIdsByFocus.execution.add(taskSprintId || 'unassigned');
+      if (epicId) epicIdsByFocus.execution.add(epicId);
+    }
+    const ready = !isBacklogDraftTask(task) && !isExecutionTask(task) && !isTerminalTaskStatus(task?.status) && !isDependencyBlocked(task) && !isEpicBlocked(task) && !isSequentialBlocked(task);
+    if (ready) {
+      readyTaskIds.add(taskId);
+      sprintIdsByFocus.ready.add(taskSprintId || 'unassigned');
+      if (epicId) epicIdsByFocus.ready.add(epicId);
+    }
+  }
+  return {
+    scopedTaskIds,
+    backlogTaskIds,
+    executionTaskIds,
+    readyTaskIds,
+    sprintIdsByFocus,
+    epicIdsByFocus,
+    epicCatalog: buildEpicCatalog(tasks, epicDependencies),
+    counts: {
+      all: scopedTaskIds.size,
+      backlog: backlogTaskIds.size,
+      execution: executionTaskIds.size,
+      ready: readyTaskIds.size,
+    },
+  };
+}
+
 function extractGlobalDagPayload(...sources) {
   for (const source of sources) {
     const payload = extractDagPayload(source);
@@ -1067,9 +1238,18 @@ export function StartTaskModal({
 
   const resetToInitial = useCallback(() => {
     const base = initialSnapshotRef.current || {};
-    setSdk(base.sdk || "auto");
-    setModel(base.model || "");
-    setTaskIdInput(base.taskIdInput || "");
+    setTitle(base.title || "");
+    setDescription(base.description || "");
+    setBaseBranch(base.baseBranch || "");
+    setPriority(base.priority || "medium");
+    setTaskType(base.taskType || "task");
+    setEpicId(base.epicId || "");
+    setStoryPoints(base.storyPoints || "");
+    setSelectedSprintId(base.sprintId || "");
+    setSprintOrderInput(base.sprintOrder || "");
+    setDependenciesInput(base.dependenciesInput || "");
+    setTagsInput(base.tagsInput || "");
+    setDraft(Boolean(base.draft));
     showToast("Changes discarded", "info");
   }, []);
 
@@ -1108,7 +1288,11 @@ export function StartTaskModal({
     <${Modal}
       title="Start Task"
       onClose=${onClose}
-      contentClassName="modal-content-wide task-detail-modal-jira"
+      contentClassName=${"modal-content-wide task-detail-modal-jira" + (presentation === "side-sheet" ? " task-detail-side-sheet" : "")}
+      layout=${presentation === "side-sheet" ? "side-sheet" : "sheet"}
+      resizable=${presentation === "side-sheet"}
+      widthStorageKey="tasks.task-detail.width"
+      defaultWidth=${860}
       unsavedChanges=${changeCount}
       onSaveBeforeClose=${() => handleStart({ closeAfterStart: true })}
       onDiscardBeforeClose=${() => {
@@ -2049,7 +2233,7 @@ export function TaskReviewModal({ task, onClose, onStart }) {
 }
 
 /* ─── TaskDetailModal ─── */
-export function TaskDetailModal({ task, onClose, onStart }) {
+export function TaskDetailModal({ task, onClose, onStart, presentation = "modal", taskCatalog = [], epicCatalog = [] }) {
   const [title, setTitle] = useState(sanitizeTaskText(task?.title || ""));
   const [description, setDescription] = useState(buildTaskDescriptionFallback(task?.title, task?.description));
   const [baseBranch, setBaseBranch] = useState(getTaskBaseBranch(task));
@@ -2162,6 +2346,11 @@ export function TaskDetailModal({ task, onClose, onStart }) {
     task?.assignees,
     task?.meta,
   ]);
+
+  const currentDependencyIds = useMemo(() => normalizeDependencyInput(dependenciesInput), [dependenciesInput]);
+  const taskCatalogOptions = useMemo(() => (taskCatalog || []).filter((entry) => toText(entry?.id) && toText(entry?.id) !== toText(task?.id)), [taskCatalog, task?.id]);
+  const dependencySuggestions = useMemo(() => taskCatalogOptions.filter((entry) => !currentDependencyIds.includes(toText(entry?.id))).slice(0, 10), [currentDependencyIds, taskCatalogOptions]);
+  const currentEpicEntry = useMemo(() => (epicCatalog || []).find((entry) => entry.id === epicId) || null, [epicCatalog, epicId]);
 
   const editableSnapshot = useMemo(
     () => ({
@@ -2655,6 +2844,43 @@ export function TaskDetailModal({ task, onClose, onStart }) {
     }
   };
 
+  const stageDependenciesInput = useCallback((nextDependencies) => {
+    setDependenciesInput(normalizeDependencyInput(nextDependencies).join(", "));
+  }, []);
+
+  const handleDependencyChipRemove = useCallback((dependencyId) => {
+    stageDependenciesInput(currentDependencyIds.filter((entry) => entry !== dependencyId));
+  }, [currentDependencyIds, stageDependenciesInput]);
+
+  const handleDependencyChipAdd = useCallback((dependencyId) => {
+    stageDependenciesInput([...currentDependencyIds, dependencyId]);
+  }, [currentDependencyIds, stageDependenciesInput]);
+
+  const handleSprintOrderNudge = useCallback(async (delta) => {
+    const sprintId = toText(selectedSprintId || getTaskSprintId(task));
+    if (!sprintId) {
+      showToast("Select a sprint first", "warning");
+      return;
+    }
+    const baseOrder = Number(sprintOrderInput || getTaskSprintOrder(task) || 1);
+    const nextOrder = Math.max(1, (Number.isFinite(baseOrder) ? baseOrder : 1) + delta);
+    setSprintOrderInput(String(nextOrder));
+    setSavingSprint(true);
+    try {
+      await apiFetch(`/api/tasks/sprints/${encodeURIComponent(sprintId)}/tasks`, {
+        method: "POST",
+        body: JSON.stringify({ taskId: task.id, sprintOrder: nextOrder }),
+      });
+      setDependencyFeedback(`Sprint order updated to ${nextOrder}.`);
+      showToast("Sprint order updated", "success");
+      scheduleRefresh(120);
+    } catch {
+      setDependencyFeedback("Failed to update sprint order.");
+    } finally {
+      setSavingSprint(false);
+    }
+  }, [selectedSprintId, sprintOrderInput, task]);
+
   const handleCreateSubtask = async () => {
     if (!task?.id || creatingSubtask) return;
     const cleanTitle = sanitizeTaskText(subtaskTitle || "").trim();
@@ -2755,7 +2981,11 @@ export function TaskDetailModal({ task, onClose, onStart }) {
     <${Modal}
       title=${task?.title || "Task Detail"}
       onClose=${onClose}
-      contentClassName="modal-content-wide task-detail-modal-jira"
+      contentClassName=${"modal-content-wide task-detail-modal-jira" + (presentation === "side-sheet" ? " task-detail-side-sheet" : "")}
+      layout=${presentation === "side-sheet" ? "side-sheet" : "sheet"}
+      resizable=${presentation === "side-sheet"}
+      widthStorageKey="tasks.task-detail.width"
+      defaultWidth=${900}
       unsavedChanges=${changeCount}
       onSaveBeforeClose=${() => handleSave({ closeAfterSave: true })}
       onDiscardBeforeClose=${() => {
@@ -3017,6 +3247,7 @@ export function TaskDetailModal({ task, onClose, onStart }) {
         </div>
         <div class="task-comments-block modal-form-span jira-panel">
           <div class="task-attachments-title">Dependencies & Sprint Wiring</div>
+          ${currentEpicEntry && html`<div class="meta-text" style=${{ marginBottom: "8px" }}>Epic: ${currentEpicEntry.label} · ${currentEpicEntry.taskCount} tasks</div>`}
           <${TextField}
             multiline
             rows=${2}
@@ -3026,6 +3257,19 @@ export function TaskDetailModal({ task, onClose, onStart }) {
             onInput=${(e) => setDependenciesInput(e.target.value)}
             fullWidth
           />
+          ${currentDependencyIds.length > 0 && html`
+            <div class="tag-row" style=${{ marginTop: "8px" }}>
+              ${currentDependencyIds.map((depId) => html`<button type="button" class="tag-chip task-structure-chip" onClick=${() => handleDependencyChipRemove(depId)} title="Remove dependency">${depId} ×</button>`)}
+            </div>
+          `}
+          ${dependencySuggestions.length > 0 && html`
+            <div style=${{ marginTop: "8px" }}>
+              <div class="meta-text" style=${{ marginBottom: "6px" }}>Quick add dependencies</div>
+              <div class="tag-row">
+                ${dependencySuggestions.map((entry) => html`<button type="button" class="tag-chip task-structure-chip task-structure-chip-muted" onClick=${() => handleDependencyChipAdd(entry.id)}>${entry.id}: ${truncate(entry.title || entry.id, 26)}</button>`)}
+              </div>
+            </div>
+          `}
           <div class="input-row" style=${{ marginTop: "8px" }}>
             <${Select}
               size="small"
@@ -3046,25 +3290,25 @@ export function TaskDetailModal({ task, onClose, onStart }) {
               inputProps=${{ min: 1, step: 1 }}
             />
           </div>
-          <div class="btn-row" style=${{ marginTop: "8px" }}>
-            <${Button}
-              variant="outlined"
-              size="small"
-              disabled=${savingDependencies}
-              onClick=${handleSaveDependencies}
-            >
+          <div class="btn-row" style=${{ marginTop: "8px", flexWrap: "wrap" }}>
+            <${Button} variant="outlined" size="small" disabled=${savingDependencies} onClick=${handleSaveDependencies}>
               ${savingDependencies ? "Saving…" : "Save Dependencies"}
             <//>
-            <${Button}
-              variant="outlined"
-              size="small"
-              disabled=${savingSprint || !selectedSprintId}
-              onClick=${handleSaveSprintAssignment}
-            >
+            <${Button} variant="outlined" size="small" disabled=${savingSprint || !selectedSprintId} onClick=${handleSaveSprintAssignment}>
               ${savingSprint ? "Saving…" : "Save Sprint Assignment"}
             <//>
+            <${Button} variant="text" size="small" disabled=${savingSprint} onClick=${() => handleSprintOrderNudge(-1)}>↑ Earlier</${Button}>
+            <${Button} variant="text" size="small" disabled=${savingSprint} onClick=${() => handleSprintOrderNudge(1)}>↓ Later</${Button}>
             ${dependencyFeedback && html`<span class="meta-text">${dependencyFeedback}</span>`}
           </div>
+          ${epicCatalog.length > 0 && html`
+            <div style=${{ marginTop: "10px" }}>
+              <div class="meta-text" style=${{ marginBottom: "6px" }}>Epic shortcuts</div>
+              <div class="tag-row">
+                ${epicCatalog.slice(0, 12).map((entry) => html`<button type="button" class="tag-chip task-structure-chip ${epicId === entry.id ? "task-structure-chip-active" : ""}" onClick=${() => setEpicId(entry.id)}>${entry.label}</button>`)}
+              </div>
+            </div>
+          `}
         </div>
         <${Tooltip} title="Use AI to expand and improve this task description"><${Button}
           variant="text" size="small"
@@ -3354,9 +3598,12 @@ function DagGraphSection({
   graph = EMPTY_DAG_GRAPH,
   onOpenTask,
   onCreateEdge,
+  onDeleteEdge,
   allowWiring = false,
+  interactionMode = "open",
   graphKey = "dag",
   emptyMessage = "No DAG nodes available for this view yet.",
+  highlightNodeIds = null,
 }) {
   const stageRef = useRef(null);
   const [zoom, setZoom] = useState(1);
@@ -3364,6 +3611,8 @@ function DagGraphSection({
   const [isPanning, setIsPanning] = useState(false);
   const [wireSourceId, setWireSourceId] = useState("");
   const [wiringBusy, setWiringBusy] = useState(false);
+  const [selectedEdgeKey, setSelectedEdgeKey] = useState("");
+  const isWireMode = allowWiring && interactionMode === "wire";
 
   const sortedNodes = useMemo(() => {
     const nodes = [...(graph?.nodes || [])];
@@ -3423,7 +3672,7 @@ function DagGraphSection({
   const edges = useMemo(() => {
     const raw = Array.isArray(graph?.edges) ? graph.edges : [];
     return raw
-      .map((edge) => {
+      .map((edge, idx) => {
         const sourceId = String(edge?.source || edge?.from || "").trim();
         const targetId = String(edge?.target || edge?.to || "").trim();
         if (!sourceId || !targetId) return null;
@@ -3431,10 +3680,22 @@ function DagGraphSection({
         const target = layout.positions.get(targetId);
         if (!source || !target) return null;
         const kind = toText(edge?.kind || edge?.type || "depends-on", "depends-on").toLowerCase();
-        return { source, target, kind };
+        return {
+          key: sourceId + "->" + targetId + ":" + kind + ":" + idx,
+          sourceId,
+          targetId,
+          source,
+          target,
+          kind,
+        };
       })
       .filter(Boolean);
   }, [graph?.edges, layout.positions]);
+
+  const selectedEdge = useMemo(
+    () => edges.find((edge) => edge.key === selectedEdgeKey) || null,
+    [edges, selectedEdgeKey],
+  );
 
   const worldBounds = useMemo(() => ({ width: layout.totalWidth, height: layout.totalHeight }), [layout]);
 
@@ -3456,6 +3717,11 @@ function DagGraphSection({
   useEffect(() => {
     fitToView();
   }, [fitToView, graphKey, sortedNodes.length, edges.length]);
+
+  useEffect(() => {
+    setWireSourceId("");
+    setSelectedEdgeKey("");
+  }, [graphKey, interactionMode]);
 
   const applyZoomAtPoint = useCallback((nextZoom, clientX, clientY) => {
     const el = stageRef.current;
@@ -3501,13 +3767,21 @@ function DagGraphSection({
     return map;
   }, [sortedNodes]);
 
+  const highlightedIds = useMemo(() => {
+    if (!highlightNodeIds || highlightNodeIds === "all") return new Set();
+    return highlightNodeIds instanceof Set
+      ? highlightNodeIds
+      : new Set(Array.isArray(highlightNodeIds) ? highlightNodeIds : []);
+  }, [highlightNodeIds]);
+
   const handleNodeClick = useCallback(async (node, event) => {
     event?.stopPropagation?.();
-    if (allowWiring && typeof onCreateEdge === "function") {
+    if (isWireMode && typeof onCreateEdge === "function") {
       const id = String(node?.id || "");
       if (!id || wiringBusy) return;
       if (!wireSourceId) {
         setWireSourceId(id);
+        setSelectedEdgeKey("");
         return;
       }
       if (wireSourceId === id) {
@@ -3530,7 +3804,25 @@ function DagGraphSection({
       return;
     }
     if (node?.taskId) onOpenTask?.(node.taskId);
-  }, [allowWiring, onCreateEdge, onOpenTask, wireSourceId, nodeById, wiringBusy]);
+  }, [isWireMode, onCreateEdge, onOpenTask, wireSourceId, nodeById, wiringBusy]);
+
+  const handleEdgeClick = useCallback((edge, event) => {
+    event?.stopPropagation?.();
+    if (!isWireMode || typeof onDeleteEdge !== "function") return;
+    setSelectedEdgeKey((current) => current === edge.key ? "" : edge.key);
+    setWireSourceId("");
+  }, [isWireMode, onDeleteEdge]);
+
+  const handleDeleteSelectedEdge = useCallback(async () => {
+    if (!selectedEdge || typeof onDeleteEdge !== "function") return;
+    setWiringBusy(true);
+    try {
+      await onDeleteEdge(selectedEdge);
+      setSelectedEdgeKey("");
+    } finally {
+      setWiringBusy(false);
+    }
+  }, [onDeleteEdge, selectedEdge]);
 
   if (!sortedNodes.length) {
     return html`
@@ -3545,8 +3837,8 @@ function DagGraphSection({
       <div class="task-dag-header-row">
         <div>
           <div style=${{ fontWeight: "700" }}>${title || "Task DAG"}</div>
-          ${description && html`<div class="meta-text">${description}</div>`}
-          <div class="meta-text">Drag to pan · wheel to zoom · click node to ${allowWiring ? "wire edges" : "open task"}.</div>
+          ${description ? html`<div class="meta-text">${description}</div>` : null}
+          <div class="meta-text">Drag to pan · wheel to zoom · click node to ${isWireMode ? "wire edges" : "open task"}.</div>
         </div>
         <div class="task-dag-controls">
           <${Button} size="small" variant="outlined" onClick=${() => setZoom((z) => Math.max(DAG_MIN_ZOOM, z * 0.9))}>-</${Button}>
@@ -3554,7 +3846,9 @@ function DagGraphSection({
           <${Button} size="small" variant="outlined" onClick=${fitToView}>Fit</${Button}>
           <${Button} size="small" variant="text" onClick=${() => { setZoom(1); setPan({ x: 24, y: 24 }); }}>Reset</${Button}>
           <span class="task-dag-zoom-pill">${Math.round(zoom * 100)}%</span>
-          ${allowWiring && html`<span class="task-dag-wire-pill">${wireSourceId ? `Source: ${wireSourceId}` : wiringBusy ? "Saving edge…" : "Wiring: click source then target"}</span>`}
+          ${allowWiring
+            ? html`<span class="task-dag-wire-pill">${wireSourceId ? `Source: ${wireSourceId}` : wiringBusy ? "Saving edge…" : "Wiring: click source then target"}</span>`
+            : null}
         </div>
       </div>
       <div class="task-dag-legend">
@@ -3596,13 +3890,14 @@ function DagGraphSection({
               const pos = layout.positions.get(String(node.id));
               if (!pos) return null;
               const selected = wireSourceId && String(node.id) === wireSourceId;
+              const highlighted = highlightedIds.has(String(node.id)) || highlightedIds.has(String(node.taskId || ""));
               return html`
                 <g
                   key=${node.id}
-                  class=${`dag-node ${selected ? "dag-node-selected" : ""}`}
+                  class=${`dag-node ${selected ? "dag-node-selected" : ""} ${highlighted ? "dag-node-highlighted" : ""}`}
                   onPointerDown=${(event) => event.stopPropagation()}
                   onClick=${(event) => handleNodeClick(node, event)}
-                  style=${{ cursor: allowWiring || node.taskId ? "pointer" : "default" }}
+                  style=${{ cursor: isWireMode || node.taskId ? "pointer" : "default" }}
                 >
                   <rect
                     x=${pos.x}
@@ -3612,8 +3907,8 @@ function DagGraphSection({
                     rx="14"
                     ry="14"
                     fill="var(--bg-surface)"
-                    stroke=${selected ? "var(--accent)" : "var(--border)"}
-                    stroke-width=${selected ? "2.2" : "1.5"}
+                    stroke=${selected ? "var(--accent)" : highlighted ? "var(--color-done)" : "var(--border)"}
+                    stroke-width=${selected || highlighted ? "2.2" : "1.5"}
                   />
                   <text x=${pos.x + 12} y=${pos.y + 24} fill="var(--text-primary)" font-size="13" font-weight="700">
                     ${truncate(node.title || "(untitled)", 34)}
@@ -3625,6 +3920,7 @@ function DagGraphSection({
                     ${String(node.status || "todo")}
                   </text>
                   ${Number.isFinite(node.order) && html`<text x=${pos.x + pos.width - 16} y=${pos.y + 22} text-anchor="end" fill="var(--text-muted)" font-size="11">#${node.order}</text>`}
+                  ${highlighted && html`<text x=${pos.x + pos.width - 12} y=${pos.y + pos.height - 12} text-anchor="end" fill="var(--color-done)" font-size="11" font-weight="700">Ready</text>`}
                 </g>
               `;
             })}
@@ -3659,6 +3955,13 @@ export function TasksTab() {
   const [dagEpicGraph, setDagEpicGraph] = useState(EMPTY_DAG_GRAPH);
   const [dagSources, setDagSources] = useState({ sprints: "", sprintGraph: "", globalGraph: "", epicDeps: "", tasks: "" });
   const [dagSprintOrderMode, setDagSprintOrderMode] = useState("parallel");
+  const [dagAllTasks, setDagAllTasks] = useState([]);
+  const [dagEpicDependencies, setDagEpicDependencies] = useState([]);
+  const [dagFocusMode, setDagFocusMode] = useState("all");
+  const [showCreateSprint, setShowCreateSprint] = useState(false);
+  const [editingSprint, setEditingSprint] = useState(null);
+  const [createSeed, setCreateSeed] = useState(null);
+  const [dagInteractionMode, setDagInteractionMode] = useState("open");
   const [isCompact, setIsCompact] = useState(() => {
     try { return globalThis.matchMedia?.("(max-width: 768px)")?.matches ?? false; }
     catch { return false; }
@@ -3726,6 +4029,46 @@ export function TasksTab() {
   const hasMoreKanbanPages = isKanban && page + 1 < totalPages;
   const boardColumnTotals = tasksStatusCounts?.value || { draft: 0, backlog: 0, inProgress: 0, inReview: 0, done: 0 };
   const boardTotalTasks = Number(tasksTotal?.value || 0);
+  const dagTaskCatalog = dagAllTasks.length ? dagAllTasks : tasks;
+  const dagPlanningState = useMemo(() => buildDagPlanningState({
+    tasks: dagTaskCatalog,
+    sprintId: dagSelectedSprint,
+    sprintOrderMode: dagSprintOrderMode,
+    sprintOptions: dagSprints,
+    epicDependencies: dagEpicDependencies,
+  }), [dagAllTasks, dagEpicDependencies, dagSelectedSprint, dagSprintOrderMode, dagSprints, tasks]);
+  const dagEpicCatalog = dagPlanningState.epicCatalog;
+  const dagScopedTasks = useMemo(
+    () => (dagTaskCatalog || []).filter((task) => dagSelectedSprint === "all" ? true : getTaskSprintId(task) === dagSelectedSprint),
+    [dagSelectedSprint, dagTaskCatalog],
+  );
+  const dagSprintQueue = useMemo(
+    () => [...dagScopedTasks].sort((a, b) => {
+      const ao = Number(getTaskSprintOrder(a) || Number.MAX_SAFE_INTEGER);
+      const bo = Number(getTaskSprintOrder(b) || Number.MAX_SAFE_INTEGER);
+      if (ao !== bo) return ao - bo;
+      return String(a?.title || a?.id || "").localeCompare(String(b?.title || b?.id || ""));
+    }),
+    [dagScopedTasks],
+  );
+  const dagReadyQueue = useMemo(
+    () => dagSprintQueue.filter((task) => dagPlanningState.readyTaskIds.has(toText(task?.id))),
+    [dagPlanningState.readyTaskIds, dagSprintQueue],
+  );
+  const dagBacklogQueue = useMemo(
+    () => dagSprintQueue.filter((task) => dagPlanningState.backlogTaskIds.has(toText(task?.id))),
+    [dagPlanningState.backlogTaskIds, dagSprintQueue],
+  );
+  const dagExecutionQueue = useMemo(
+    () => dagSprintQueue.filter((task) => dagPlanningState.executionTaskIds.has(toText(task?.id))),
+    [dagPlanningState.executionTaskIds, dagSprintQueue],
+  );
+  const dagFocusOptions = [
+    { id: "all", label: "All structure", count: dagPlanningState.counts.all },
+    { id: "backlog", label: "Backlog & draft", count: dagPlanningState.counts.backlog },
+    { id: "execution", label: "Running & review", count: dagPlanningState.counts.execution },
+    { id: "ready", label: "Ready next", count: dagPlanningState.counts.ready },
+  ];
 
   const loadMoreKanbanTasks = useCallback(async () => {
     if (!isKanban || kanbanLoadingMore || isSearching) return;
@@ -3782,6 +4125,8 @@ export function TasksTab() {
           : tasks;
     const epicDeps = normalizeEpicDependenciesPayload(epicDepsMeta?.payload);
     const nextEpicGraph = buildEpicDagGraph(allTasks, epicDeps);
+    setDagAllTasks(allTasks);
+    setDagEpicDependencies(epicDeps);
 
     const sprintMetaEntry = sprintOptions.find((entry) => entry.id === resolvedSprint) || null;
     setDagSprintOrderMode(toText(sprintMetaEntry?.executionMode || sprintMetaEntry?.taskOrderMode || sprintMetaEntry?.sprintOrderMode || "parallel", "parallel"));
@@ -4024,6 +4369,32 @@ export function TasksTab() {
     });
   }, [visible, listSortCol, listSortDir]);
 
+  const dagTaskFocusIds = useMemo(() => {
+    if (dagFocusMode === "backlog") return dagPlanningState.backlogTaskIds;
+    if (dagFocusMode === "ready") return dagPlanningState.readyTaskIds;
+    if (dagFocusMode === "execution") return new Set([...dagPlanningState.executionTaskIds, ...dagPlanningState.readyTaskIds]);
+    return "all";
+  }, [dagFocusMode, dagPlanningState]);
+
+  const dagSprintFocusIds = useMemo(() => {
+    if (dagFocusMode === "backlog") return dagPlanningState.sprintIdsByFocus.backlog;
+    if (dagFocusMode === "ready") return dagPlanningState.sprintIdsByFocus.ready;
+    if (dagFocusMode === "execution") return new Set([...dagPlanningState.sprintIdsByFocus.execution, ...dagPlanningState.sprintIdsByFocus.ready]);
+    return "all";
+  }, [dagFocusMode, dagPlanningState]);
+
+  const dagEpicFocusIds = useMemo(() => {
+    if (dagFocusMode === "backlog") return dagPlanningState.epicIdsByFocus.backlog;
+    if (dagFocusMode === "ready") return dagPlanningState.epicIdsByFocus.ready;
+    if (dagFocusMode === "execution") return new Set([...dagPlanningState.epicIdsByFocus.execution, ...dagPlanningState.epicIdsByFocus.ready]);
+    return "all";
+  }, [dagFocusMode, dagPlanningState]);
+
+  const dagSprintGraphView = useMemo(() => filterDagGraphByIds(dagSprintGraph, dagTaskFocusIds, (node) => toText(node?.taskId || node?.id)), [dagSprintGraph, dagTaskFocusIds]);
+  const dagGlobalGraphView = useMemo(() => filterDagGraphByIds(dagGlobalGraph, dagSprintFocusIds, (node) => toText(node?.sprintId || node?.id)), [dagGlobalGraph, dagSprintFocusIds]);
+  const dagEpicGraphView = useMemo(() => filterDagGraphByIds(dagEpicGraph, dagEpicFocusIds, (node) => toText(node?.epicId || node?.id)), [dagEpicGraph, dagEpicFocusIds]);
+  const dagReadyHighlightIds = dagFocusMode === "execution" || dagFocusMode === "ready" ? dagPlanningState.readyTaskIds : null;
+
   /* ── Handlers ── */
   const handleFilter = async (s) => {
     haptic();
@@ -4110,29 +4481,38 @@ export function TasksTab() {
     }
   }, [loadDagViews]);
 
-  const handleCreateSprint = useCallback(async () => {
-    const rawName = globalThis.prompt?.("Sprint name", "Sprint " + new Date().toISOString().slice(0, 10));
-    const name = toText(rawName);
-    if (!name) return;
-    const rawId = globalThis.prompt?.("Sprint ID (optional)", name.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, ""));
-    const id = toText(rawId);
+  const handleCreateSprint = useCallback(() => {
+    haptic("medium");
+    setEditingSprint(null);
+    setShowCreateSprint(true);
+  }, []);
+
+  const handleEditSprint = useCallback((sprint) => {
+    haptic("medium");
+    setEditingSprint(sprint || null);
+    setShowCreateSprint(true);
+  }, []);
+
+  const handleMoveSprint = useCallback(async (sprintId, direction) => {
+    const currentIndex = dagSprints.findIndex((entry) => entry.id === sprintId);
+    const targetIndex = currentIndex + direction;
+    if (currentIndex < 0 || targetIndex < 0 || targetIndex >= dagSprints.length) return;
+    const reordered = [...dagSprints];
+    const [moved] = reordered.splice(currentIndex, 1);
+    reordered.splice(targetIndex, 0, moved);
     haptic("medium");
     try {
-      await apiFetch("/api/tasks/sprints", {
-        method: "POST",
-        body: JSON.stringify({
-          ...(id ? { id } : {}),
-          name,
-          status: "active",
-        }),
-      });
-      showToast("Sprint created", "success");
+      await Promise.all(reordered.map((entry, index) => apiFetch(`/api/tasks/sprints/${encodeURIComponent(entry.id)}`, {
+        method: "PATCH",
+        body: JSON.stringify({ order: index + 1 }),
+      })));
+      showToast("Sprint order updated", "success");
       await loadDagViews();
-      if (id) setDagSelectedSprint(id);
     } catch {
-      /* toast via apiFetch */
+      setDagError("Failed to reorder sprints.");
     }
-  }, [loadDagViews]);
+  }, [dagSprints, loadDagViews]);
+
   const handleDagSprintModeChange = useCallback(async (mode) => {
     const nextMode = toText(mode, "parallel").toLowerCase();
     if (!dagSelectedSprint || dagSelectedSprint === "all") {
@@ -4153,6 +4533,27 @@ export function TasksTab() {
       setDagError("Failed to update sprint execution mode.");
     }
   }, [dagSelectedSprint, loadDagViews]);
+  const handleNudgeSprintTaskOrder = useCallback(async (taskId, delta) => {
+    const task = dagTaskCatalog.find((entry) => toText(entry?.id) === toText(taskId));
+    const sprintId = toText(getTaskSprintId(task));
+    if (!task?.id || !sprintId) return;
+    const currentOrder = Number(getTaskSprintOrder(task) || 1);
+    const nextOrder = Math.max(1, (Number.isFinite(currentOrder) ? currentOrder : 1) + delta);
+    try {
+      await apiFetch(
+        "/api/tasks/sprints/" + encodeURIComponent(sprintId) + "/tasks",
+        {
+          method: "POST",
+          body: JSON.stringify({ taskId: task.id, sprintOrder: nextOrder }),
+        },
+      );
+      showToast("Sprint order updated", "success");
+      await loadDagViews();
+    } catch {
+      setDagError("Failed to update sprint task order.");
+    }
+  }, [dagTaskCatalog, loadDagViews]);
+
   const handleCreateDagEdge = useCallback(async ({ sourceNode, targetNode, graphKind }) => {
     const srcTaskId = toText(sourceNode?.taskId || sourceNode?.id);
     const dstTaskId = toText(targetNode?.taskId || targetNode?.id);
@@ -4803,12 +5204,20 @@ export function TasksTab() {
     `}
 
     ${isDag && html`
-      <div class="snapshot-bar">
+      <div class="snapshot-bar snapshot-bar-dag">
         <span class="snapshot-view-tag">${iconText(":link: DAG")}</span>
-        <span class="pill">Sprint nodes: ${dagSprintGraph.nodes.length}</span>
-        <span class="pill">Global nodes: ${dagGlobalGraph.nodes.length}</span>
-        <span class="pill">Epic nodes: ${dagEpicGraph.nodes.length}</span>
-        <span class="pill">Global edges: ${dagGlobalGraph.edges.length}</span>
+        ${dagFocusOptions.map((option) => html`
+          <button
+            type="button"
+            class=${`snapshot-pill-btn ${dagFocusMode === option.id ? "snapshot-pill-active" : ""}`}
+            onClick=${() => setDagFocusMode(option.id)}
+          >
+            ${option.label} · ${option.count}
+          </button>
+        `)}
+        <span class="pill">Sprint nodes: ${dagSprintGraphView.nodes.length}</span>
+        <span class="pill">Global nodes: ${dagGlobalGraphView.nodes.length}</span>
+        <span class="pill">Epic nodes: ${dagEpicGraphView.nodes.length}</span>
       </div>
     `}
 
@@ -4843,6 +5252,21 @@ export function TasksTab() {
         border-color: var(--accent) !important;
         background: rgba(59,130,246,0.12) !important;
       }
+      .task-dag-shell { display:grid; grid-template-columns:minmax(260px, 320px) minmax(0, 1fr); gap:12px; align-items:start; }
+      .task-dag-sidebar { padding:12px; border:1px solid var(--border); border-radius:16px; background:var(--bg-surface); position:sticky; top:10px; display:grid; gap:12px; }
+      .task-dag-sidebar-head { display:grid; gap:8px; }
+      .task-dag-sidebar-title { font-weight:700; }
+      .task-dag-sidebar-list { display:grid; gap:8px; }
+      .task-dag-sidebar-card { display:flex; align-items:center; justify-content:space-between; gap:8px; padding:8px 10px; border:1px solid var(--border); border-radius:12px; background:rgba(255,255,255,0.02); }
+      .task-dag-sidebar-card.is-active { border-color: var(--accent); background: rgba(59,130,246,0.10); }
+      .task-dag-sidebar-card-main { display:grid; gap:2px; text-align:left; background:none; border:none; color:inherit; padding:0; cursor:pointer; flex:1; }
+      .task-dag-sidebar-card-actions { display:flex; align-items:center; gap:6px; }
+      .task-dag-mini-btn { min-width:28px; height:28px; border-radius:8px; border:1px solid var(--border); background:transparent; color:inherit; cursor:pointer; }
+      .task-dag-mini-btn:disabled { opacity:0.45; cursor:not-allowed; }
+      .task-structure-chip { cursor:pointer; border:1px solid var(--border); }
+      .task-structure-chip-muted { opacity:0.8; }
+      .task-structure-chip-active { border-color: var(--accent); background: rgba(59,130,246,0.18); }
+      @media (max-width: 960px) { .task-dag-shell { grid-template-columns: 1fr; } .task-dag-sidebar { position: static; } }
       @media (max-width: 640px) {
         .actions-label { display:none; }
       }
@@ -4851,38 +5275,168 @@ export function TasksTab() {
     ${isKanban && html`<${KanbanBoard} onOpenTask=${openDetail} hasMoreTasks=${hasMoreKanbanPages} loadingMoreTasks=${kanbanLoadingMore} onLoadMoreTasks=${loadMoreKanbanTasks} columnTotals=${boardColumnTotals} totalTasks=${boardTotalTasks} />`}
 
     ${isDag && html`
-      <div class="task-dag-wrap" style=${{ display: "grid", gap: "10px", marginTop: "8px" }}>
-        ${dagError && html`<${Alert} severity="warning">${dagError}</${Alert}>`}
-        ${dagLoading && html`<${Alert} severity="info">Loading DAG data…</${Alert}>`}
-        <${DagGraphSection}
-          title=${dagSprintGraph.title || (dagSelectedSprint === "all" ? "All Sprint DAG" : `Sprint ${dagSelectedSprint} DAG`)}
-          description=${dagSprintGraph.description || "Task dependency order within the selected sprint."}
-          graph=${dagSprintGraph}
-          graphKey="sprint"
-          onOpenTask=${openDetail}
-          onCreateEdge={({ sourceNode, targetNode }) => handleCreateDagEdge({ sourceNode, targetNode, graphKind: "task" })}
-          allowWiring=${true}
-          emptyMessage="No sprint DAG data available yet."
-        />
-        <${DagGraphSection}
-          title=${dagGlobalGraph.title || "Global DAG of DAGs"}
-          description=${dagGlobalGraph.description || "Cross-sprint dependency overview."}
-          graph=${dagGlobalGraph}
-          graphKey="global"
-          onOpenTask=${openDetail}
-          onCreateEdge={({ sourceNode, targetNode }) => handleCreateDagEdge({ sourceNode, targetNode, graphKind: "task" })}
-          allowWiring=${true}
-          emptyMessage="No global DAG data available yet."
-        />
-        <${DagGraphSection}
-          title=${dagEpicGraph.title || "Epic Dependency DAG"}
-          description=${dagEpicGraph.description || "Epics and their run prerequisites."}
-          graph=${dagEpicGraph}
-          graphKey="epic"
-          onCreateEdge={({ sourceNode, targetNode }) => handleCreateDagEdge({ sourceNode, targetNode, graphKind: "epic" })}
-          allowWiring=${true}
-          emptyMessage="No epic DAG data available yet."
-        />
+      <div class="task-dag-shell">
+        <div class="task-dag-sidebar jira-panel">
+          <div class="task-dag-sidebar-head">
+            <div>
+              <div class="task-dag-sidebar-title">Planning controls</div>
+              <div class="meta-text">Jira-style sprint and epic planning with direct DAG editing.</div>
+            </div>
+            <div class="btn-row">
+              <${Button} size="small" variant="text" onClick=${handleRefreshDag} disabled=${dagLoading}>${dagLoading ? "Refreshing…" : "Refresh"}</${Button}>
+              <${Button} size="small" variant="text" onClick=${handleCreateSprint}>+ Sprint</${Button}>
+              <${Button} size="small" variant="text" onClick=${() => { setCreateSeed({ taskType: "epic", draft: true, sprintId: dagSelectedSprint !== "all" ? dagSelectedSprint : "" }); setShowCreate(true); }}>+ Epic</${Button}>
+            </div>
+          </div>
+          <div class="tasks-filter-section">
+            <div class="tasks-filter-title">Interaction</div>
+            <div class="tasks-filter-row" style=${{ marginTop: "8px" }}>
+              <${ToggleButtonGroup}
+                size="small"
+                exclusive
+                value=${dagInteractionMode}
+                onChange=${(_event, next) => { if (next) setDagInteractionMode(next); }}
+              >
+                <${ToggleButton} value="open">Open tasks</${ToggleButton}>
+                <${ToggleButton} value="wire">Wire DAG</${ToggleButton}>
+              </${ToggleButtonGroup}>
+            </div>
+            <div class="meta-text" style=${{ marginTop: "6px" }}>
+              ${dagInteractionMode === "wire" ? "Click source then target to add edges." : "Click any node to open the Jira-style side panel."}
+            </div>
+          </div>
+          <div class="tasks-filter-section">
+            <div class="tasks-filter-title">Selected sprint</div>
+            <div class="tasks-filter-row" style=${{ marginTop: "8px" }}>
+              ${dagSprintPicker}
+            </div>
+            <div class="tasks-filter-row" style=${{ marginTop: "8px" }}>
+              <${Select} size="small" value=${dagSprintOrderMode} disabled=${dagLoading || dagSelectedSprint === "all"} onChange=${(e) => handleDagSprintModeChange(e.target.value)}>
+                <${MenuItem} value="parallel">Mode: parallel</${MenuItem}>
+                <${MenuItem} value="sequential">Mode: sequential</${MenuItem}>
+              </${Select}>
+            </div>
+          </div>
+          <div class="tasks-filter-section">
+            <div class="tasks-filter-title">Sprints</div>
+            <div class="task-dag-sidebar-list">
+              ${dagSprints.map((sprint, index) => html`
+                <div class=${`task-dag-sidebar-card ${dagSelectedSprint === sprint.id ? "is-active" : ""}`}>
+                  <button type="button" class="task-dag-sidebar-card-main" onClick=${() => handleSprintChange(sprint.id)}>
+                    <strong>${sprint.label}</strong>
+                    <span class="meta-text">${sprint.executionMode || "parallel"}</span>
+                  </button>
+                  <div class="task-dag-sidebar-card-actions">
+                    <button type="button" class="task-dag-mini-btn" disabled=${index === 0} onClick=${() => handleMoveSprint(sprint.id, -1)}>↑</button>
+                    <button type="button" class="task-dag-mini-btn" disabled=${index === dagSprints.length - 1} onClick=${() => handleMoveSprint(sprint.id, 1)}>↓</button>
+                    <button type="button" class="task-dag-mini-btn" onClick=${() => handleEditSprint(sprint)}>✎</button>
+                    <button type="button" class="task-dag-mini-btn" onClick=${() => { setCreateSeed({ taskType: "task", sprintId: sprint.id }); setShowCreate(true); }}>+</button>
+                  </div>
+                </div>
+              `)}
+            </div>
+          </div>
+          <div class="tasks-filter-section">
+            <div class="tasks-filter-title">Epics</div>
+            <div class="task-dag-sidebar-list">
+              ${dagEpicCatalog.map((epic) => html`
+                <div class="task-dag-sidebar-card">
+                  <div class="task-dag-sidebar-card-main">
+                    <strong>${epic.label}</strong>
+                    <span class="meta-text">${epic.taskCount} tasks · ${epic.dependencies.length} deps</span>
+                  </div>
+                  <div class="task-dag-sidebar-card-actions">
+                    <button type="button" class="task-dag-mini-btn" onClick=${() => { setCreateSeed({ taskType: "task", epicId: epic.id, sprintId: dagSelectedSprint !== "all" ? dagSelectedSprint : "" }); setShowCreate(true); }}>+</button>
+                    ${epic.anchorTaskId ? html`<button type="button" class="task-dag-mini-btn" onClick=${() => openDetail(epic.anchorTaskId)}>↗</button>` : null}
+                  </div>
+                </div>
+              `)}
+            </div>
+          </div>
+          <div class="tasks-filter-section">
+            <div class="tasks-filter-title">Sprint queue</div>
+            <div class="task-dag-sidebar-list">
+              ${dagSprintQueue.slice(0, 18).map((task) => html`
+                <div class="task-dag-sidebar-card">
+                  <div class="task-dag-sidebar-card-main">
+                    <strong>${truncate(task.title || task.id, 32)}</strong>
+                    <span class="meta-text">${task.id} · #${getTaskSprintOrder(task) || "—"} · ${task.status || "todo"}</span>
+                  </div>
+                  <div class="task-dag-sidebar-card-actions">
+                    <button type="button" class="task-dag-mini-btn" onClick=${() => handleNudgeSprintTaskOrder(task.id, -1)}>↑</button>
+                    <button type="button" class="task-dag-mini-btn" onClick=${() => handleNudgeSprintTaskOrder(task.id, 1)}>↓</button>
+                    <button type="button" class="task-dag-mini-btn" onClick=${() => openDetail(task.id)}>↗</button>
+                  </div>
+                </div>
+              `)}
+              ${dagSprintQueue.length === 0 ? html`<div class="meta-text">No tasks in the selected sprint yet.</div>` : null}
+            </div>
+          </div>
+          <div class="tasks-filter-section">
+            <div class="tasks-filter-title">Ready next</div>
+            <div class="task-dag-sidebar-list">
+              ${dagReadyQueue.slice(0, 12).map((task) => html`
+                <div class="task-dag-sidebar-card">
+                  <div class="task-dag-sidebar-card-main">
+                    <strong>${truncate(task.title || task.id, 32)}</strong>
+                    <span class="meta-text">${task.id} · ${task.status || "todo"}</span>
+                  </div>
+                  <div class="task-dag-sidebar-card-actions">
+                    <button type="button" class="task-dag-mini-btn" onClick=${() => openDetail(task.id)}>↗</button>
+                    <button type="button" class="task-dag-mini-btn" onClick=${() => openStartModal(task)}>▶</button>
+                  </div>
+                </div>
+              `)}
+              ${dagReadyQueue.length === 0 ? html`<div class="meta-text">No unblocked tasks are ready right now.</div>` : null}
+            </div>
+          </div>
+          <div class="tasks-filter-section">
+            <div class="tasks-filter-title">Backlog & review lanes</div>
+            <div class="task-dag-sidebar-list">
+              ${dagBacklogQueue.slice(0, 6).map((task) => html`<div class="task-dag-sidebar-card"><div class="task-dag-sidebar-card-main"><strong>${truncate(task.title || task.id, 28)}</strong><span class="meta-text">Backlog · ${task.id}</span></div><div class="task-dag-sidebar-card-actions"><button type="button" class="task-dag-mini-btn" onClick=${() => openDetail(task.id)}>↗</button></div></div>`)}
+              ${dagExecutionQueue.slice(0, 6).map((task) => html`<div class="task-dag-sidebar-card"><div class="task-dag-sidebar-card-main"><strong>${truncate(task.title || task.id, 28)}</strong><span class="meta-text">Running/Review · ${task.id}</span></div><div class="task-dag-sidebar-card-actions"><button type="button" class="task-dag-mini-btn" onClick=${() => openDetail(task.id)}>↗</button></div></div>`)}
+              ${dagBacklogQueue.length === 0 && dagExecutionQueue.length === 0 ? html`<div class="meta-text">No backlog or active tasks in this slice.</div>` : null}
+            </div>
+          </div>
+        </div>
+        <div class="task-dag-wrap" style=${{ display: "grid", gap: "10px", marginTop: "8px" }}>
+          ${dagError ? html`<${Alert} severity="warning">${dagError}</${Alert}>` : null}
+          ${dagLoading ? html`<${Alert} severity="info">Loading DAG data…</${Alert}>` : null}
+          <${DagGraphSection}
+            title=${dagSprintGraph.title || (dagSelectedSprint === "all" ? "All Sprint DAG" : `Sprint ${dagSelectedSprint} DAG`)}
+            description=${dagFocusMode === "execution" ? "Running and review tasks, with ready-next nodes highlighted." : dagSprintGraph.description || "Task dependency order within the selected sprint."}
+            graph=${dagSprintGraphView}
+            graphKey="sprint"
+            onOpenTask=${openDetail}
+            onCreateEdge={({ sourceNode, targetNode }) => handleCreateDagEdge({ sourceNode, targetNode, graphKind: "task" })}
+            allowWiring=${true}
+            interactionMode=${dagInteractionMode}
+            highlightNodeIds=${dagReadyHighlightIds}
+            emptyMessage="No sprint DAG data available yet."
+          ><//>
+          <${DagGraphSection}
+            title=${dagGlobalGraph.title || "Global DAG of DAGs"}
+            description=${dagGlobalGraph.description || "Cross-sprint dependency overview."}
+            graph=${dagGlobalGraphView}
+            graphKey="global"
+            onOpenTask=${openDetail}
+            onCreateEdge={({ sourceNode, targetNode }) => handleCreateDagEdge({ sourceNode, targetNode, graphKind: "task" })}
+            allowWiring=${true}
+            interactionMode=${dagInteractionMode}
+            emptyMessage="No global DAG data available yet."
+          ><//>
+          <${DagGraphSection}
+            title=${dagEpicGraph.title || "Epic Dependency DAG"}
+            description=${dagEpicGraph.description || "Epics and their run prerequisites."}
+            graph=${dagEpicGraphView}
+            graphKey="epic"
+            onOpenTask=${openDetail}
+            onCreateEdge={({ sourceNode, targetNode }) => handleCreateDagEdge({ sourceNode, targetNode, graphKind: "epic" })}
+            allowWiring=${true}
+            interactionMode=${dagInteractionMode}
+            emptyMessage="No epic DAG data available yet."
+          ><//>
+        </div>
       </div>
     `}
 
@@ -5005,23 +5559,57 @@ export function TasksTab() {
       ${ICONS.plus}
     <//>
 
+    ${showCreateSprint && html`
+      <${CreateSprintModalInline}
+        initialValues=${editingSprint}
+        onClose=${() => {
+          setShowCreateSprint(false);
+          setEditingSprint(null);
+        }}
+        onSaved=${async (savedSprint) => {
+          setShowCreateSprint(false);
+          setEditingSprint(null);
+          if (savedSprint?.id) setDagSelectedSprint(savedSprint.id);
+          await loadDagViews();
+        }}
+      />
+    `}
+
     ${showCreate &&
     html`
-      <${CreateTaskModalInline} onClose=${() => setShowCreate(false)} />
+      <${CreateTaskModalInline}
+        initialValues=${createSeed}
+        sprintOptions=${dagSprints}
+        taskCatalog=${dagTaskCatalog}
+        epicCatalog=${dagEpicCatalog}
+        onClose=${() => {
+          setShowCreate(false);
+          setCreateSeed(null);
+        }}
+        onCreated=${async () => {
+          setShowCreate(false);
+          setCreateSeed(null);
+          await loadDagViews();
+        }}
+      />
     `}
     ${detailTask && isActiveStatus(detailTask.status) && hasLiveExecutionEvidence(detailTask) &&
+    !isDag &&
     html`
       <${TaskProgressModal}
         task=${detailTask}
         onClose=${() => setDetailTask(null)}
       />
     `}
-    ${detailTask && (!isActiveStatus(detailTask.status) || !hasLiveExecutionEvidence(detailTask)) &&
+    ${detailTask && (isDag || !isActiveStatus(detailTask.status) || !hasLiveExecutionEvidence(detailTask)) &&
     html`
       <${TaskDetailModal}
         task=${detailTask}
         onClose=${() => setDetailTask(null)}
         onStart=${(task) => openStartModal(task)}
+        presentation=${isDag ? "side-sheet" : "modal"}
+        taskCatalog=${dagTaskCatalog}
+        epicCatalog=${dagEpicCatalog}
       />
     `}
     ${startTarget &&
@@ -5032,6 +5620,7 @@ export function TasksTab() {
         allowTaskIdInput=${false}
         onClose=${() => setStartTarget(null)}
         onStart=${startTask}
+        presentation=${isDag ? "side-sheet" : "modal"}
       />
     `}
     ${startAnyOpen &&
@@ -5053,28 +5642,113 @@ export function TasksTab() {
   `;
 }
 
+function CreateSprintModalInline({ onClose, initialValues = null, onSaved = null }) {
+  const [name, setName] = useState(toText(initialValues?.name || initialValues?.title || ""));
+  const [goal, setGoal] = useState(toText(initialValues?.goal || initialValues?.description || ""));
+  const [executionMode, setExecutionMode] = useState(toText(initialValues?.executionMode || initialValues?.taskOrderMode, "parallel"));
+  const [orderInput, setOrderInput] = useState(toText(initialValues?.order));
+  const [saving, setSaving] = useState(false);
+
+  const handleSubmit = useCallback(async () => {
+    const cleanName = sanitizeTaskText(name || "").trim();
+    if (!cleanName) {
+      showToast("Sprint name is required", "warning");
+      return false;
+    }
+    const payload = {
+      name: cleanName,
+      goal: sanitizeTaskText(goal || "").trim() || undefined,
+      executionMode: executionMode === "sequential" ? "sequential" : "parallel",
+      taskOrderMode: executionMode === "sequential" ? "sequential" : "parallel",
+    };
+    const orderNumber = Number(orderInput);
+    if (Number.isFinite(orderNumber) && orderNumber > 0) payload.order = orderNumber;
+    setSaving(true);
+    try {
+      const result = initialValues?.id
+        ? await apiFetch("/api/tasks/sprints/" + encodeURIComponent(initialValues.id), {
+          method: "PATCH",
+          body: JSON.stringify(payload),
+        })
+        : await apiFetch("/api/tasks/sprints", {
+          method: "POST",
+          body: JSON.stringify(payload),
+        });
+      showToast(initialValues?.id ? "Sprint updated" : "Sprint created", "success");
+      await onSaved?.(result?.data || result);
+      return true;
+    } catch {
+      return false;
+    } finally {
+      setSaving(false);
+    }
+  }, [executionMode, goal, initialValues?.id, name, onSaved, orderInput]);
+
+  return html`
+    <${Modal}
+      title=${initialValues?.id ? "Edit Sprint" : "New Sprint"}
+      onClose=${onClose}
+      contentClassName="modal-content-wide task-detail-modal-jira"
+      activeOperationLabel=${saving ? "Sprint save in progress" : ""}
+    >
+      <div class="flex-col create-task-form">
+        <${TextField} size="small" placeholder="Sprint name" value=${name} onInput=${(e) => setName(e.target.value)} fullWidth autoFocus=${true} />
+        <${TextField} multiline rows=${3} size="small" placeholder="Sprint goal" value=${goal} onInput=${(e) => setGoal(e.target.value)} fullWidth />
+        <div class="input-row">
+          <${Select} size="small" value=${executionMode} onChange=${(e) => setExecutionMode(e.target.value)}>
+            <${MenuItem} value="parallel">Parallel execution</${MenuItem}>
+            <${MenuItem} value="sequential">Sequential execution</${MenuItem}>
+          </${Select}>
+          <${TextField} size="small" type="number" placeholder="Board order" value=${orderInput} onInput=${(e) => setOrderInput(e.target.value)} inputProps=${{ min: 1, step: 1 }} />
+        </div>
+        <div class="btn-row" style=${{ marginTop: "8px" }}>
+          <${Button} variant="contained" size="small" disabled=${saving} onClick=${() => { void handleSubmit(); }}>
+            ${saving ? "Saving…" : initialValues?.id ? "Save Sprint" : "Create Sprint"}
+          <//>
+          <${Button} variant="text" size="small" disabled=${saving} onClick=${onClose}>Cancel</${Button}>
+        </div>
+      </div>
+    <//>
+  `;
+}
+
 /* ── Inline CreateTask (duplicated here to keep tasks.js self-contained) ── */
-function CreateTaskModalInline({ onClose }) {
-  const [title, setTitle] = useState("");
-  const [description, setDescription] = useState("");
-  const [baseBranch, setBaseBranch] = useState("");
-  const [priority, setPriority] = useState("medium");
-  const [tagsInput, setTagsInput] = useState("");
-  const [draft, setDraft] = useState(false);
+function CreateTaskModalInline({ onClose, initialValues = null, sprintOptions = [], taskCatalog = [], epicCatalog = [], onCreated = null }) {
+  const initialTaskType = normalizeTaskTypeValue(initialValues?.taskType || initialValues?.type || "task");
+  const [title, setTitle] = useState(initialValues?.title || "");
+  const [description, setDescription] = useState(initialValues?.description || "");
+  const [baseBranch, setBaseBranch] = useState(initialValues?.baseBranch || "");
+  const [priority, setPriority] = useState(initialValues?.priority || "medium");
+  const [taskType, setTaskType] = useState(initialTaskType);
+  const [epicId, setEpicId] = useState(initialValues?.epicId || "");
+  const [storyPoints, setStoryPoints] = useState(toText(initialValues?.storyPoints));
+  const [dependenciesInput, setDependenciesInput] = useState((initialValues?.dependencies || []).join(", "));
+  const [selectedSprintId, setSelectedSprintId] = useState(initialValues?.sprintId || "");
+  const [sprintOrderInput, setSprintOrderInput] = useState(toText(initialValues?.sprintOrder));
+  const [tagsInput, setTagsInput] = useState((initialValues?.tags || []).join(", "));
+  const [draft, setDraft] = useState(Boolean(initialValues?.draft));
   const [submitting, setSubmitting] = useState(false);
   const [rewriting, setRewriting] = useState(false);
-  const [workspaceId, setWorkspaceId] = useState(activeWorkspaceId.value || "");
-  const [repository, setRepository] = useState("");
+  const [workspaceId, setWorkspaceId] = useState(activeWorkspaceId.value || initialValues?.workspaceId || "");
+  const [repository, setRepository] = useState(initialValues?.repository || "");
   const [repositories, setRepositories] = useState([]);
-  const [showAdvanced, setShowAdvanced] = useState(false);
+  const [showAdvanced, setShowAdvanced] = useState(Boolean(initialValues?.epicId || initialValues?.sprintId || initialValues?.dependencies?.length));
   const initialSnapshotRef = useRef({
-    title: "",
-    description: "",
-    baseBranch: "",
-    priority: "medium",
-    tagsInput: "",
-    draft: false,
+    title: initialValues?.title || "",
+    description: initialValues?.description || "",
+    baseBranch: initialValues?.baseBranch || "",
+    priority: initialValues?.priority || "medium",
+    taskType: initialTaskType,
+    epicId: initialValues?.epicId || "",
+    storyPoints: toText(initialValues?.storyPoints),
+    sprintId: initialValues?.sprintId || "",
+    sprintOrder: toText(initialValues?.sprintOrder),
+    dependenciesInput: (initialValues?.dependencies || []).join(", "),
+    tagsInput: (initialValues?.tags || []).join(", "),
+    draft: Boolean(initialValues?.draft),
   });
+  const planningDependencyIds = useMemo(() => normalizeDependencyInput(dependenciesInput), [dependenciesInput]);
+  const dependencyTaskSuggestions = useMemo(() => (taskCatalog || []).filter((entry) => toText(entry?.id) && !planningDependencyIds.includes(toText(entry?.id))).slice(0, 10), [dependenciesInput, taskCatalog]);
   const pendingKey = "modal:create-task-inline";
 
   const handleRewrite = async () => {
@@ -5137,10 +5811,16 @@ function CreateTaskModalInline({ onClose }) {
       description: description || "",
       baseBranch: baseBranch || "",
       priority: priority || "medium",
+      taskType,
+      epicId: epicId || "",
+      storyPoints: storyPoints || "",
+      sprintId: selectedSprintId || "",
+      sprintOrder: sprintOrderInput || "",
+      dependenciesInput: dependenciesInput || "",
       tagsInput: tagsInput || "",
       draft: Boolean(draft),
     }),
-    [baseBranch, description, draft, priority, tagsInput, title],
+    [baseBranch, dependenciesInput, description, draft, epicId, priority, selectedSprintId, sprintOrderInput, storyPoints, tagsInput, taskType, title],
   );
   const changeCount = useMemo(
     () => countChangedFields(initialSnapshotRef.current, unsavedSnapshot),
@@ -5159,6 +5839,12 @@ function CreateTaskModalInline({ onClose }) {
     setDescription(base.description || "");
     setBaseBranch(base.baseBranch || "");
     setPriority(base.priority || "medium");
+    setTaskType(base.taskType || "task");
+    setEpicId(base.epicId || "");
+    setStoryPoints(base.storyPoints || "");
+    setSelectedSprintId(base.sprintId || "");
+    setSprintOrderInput(base.sprintOrder || "");
+    setDependenciesInput(base.dependenciesInput || "");
     setTagsInput(base.tagsInput || "");
     setDraft(Boolean(base.draft));
     showToast("Changes discarded", "info");
@@ -5195,13 +5881,16 @@ function CreateTaskModalInline({ onClose }) {
     const tags = normalizeTagInput(cleanTagsInput);
     const effectiveRepos = repositories.length > 0 ? repositories : (repository ? [repository] : []);
     try {
-      await apiFetch("/api/tasks/create", {
+      const createResponse = await apiFetch("/api/tasks/create", {
         method: "POST",
         body: JSON.stringify({
           title: cleanTitle,
           description: cleanDescription,
           baseBranch: baseBranch.trim() || undefined,
           priority,
+          type: taskType,
+          epicId: epicId || undefined,
+          storyPoints: storyPoints === "" ? undefined : Number(storyPoints),
           tags,
           draft,
           status: draft ? "draft" : "todo",
@@ -5210,6 +5899,39 @@ function CreateTaskModalInline({ onClose }) {
           repositories: effectiveRepos.length > 1 ? effectiveRepos : undefined,
         }),
       });
+      const createdTask = createResponse?.data || createResponse || null;
+      const createdTaskId = toText(createdTask?.id);
+      const dependencies = normalizeDependencyInput(dependenciesInput);
+      const sprintOrderNumber = sprintOrderInput === "" ? null : Number(sprintOrderInput);
+      if (createdTaskId && selectedSprintId) {
+        if (dependencies.length > 0) {
+          await apiFetch("/api/tasks/dependencies", {
+            method: "PUT",
+            body: JSON.stringify({
+              taskId: createdTaskId,
+              dependencies,
+              sprintId: selectedSprintId,
+              sprintOrder: Number.isFinite(sprintOrderNumber) ? sprintOrderNumber : undefined,
+            }),
+          });
+        } else {
+          await apiFetch("/api/tasks/sprints/" + encodeURIComponent(selectedSprintId) + "/tasks", {
+            method: "POST",
+            body: JSON.stringify({
+              taskId: createdTaskId,
+              sprintOrder: Number.isFinite(sprintOrderNumber) ? sprintOrderNumber : undefined,
+            }),
+          });
+        }
+      } else if (createdTaskId && dependencies.length > 0) {
+        await apiFetch("/api/tasks/dependencies", {
+          method: "PUT",
+          body: JSON.stringify({
+            taskId: createdTaskId,
+            dependencies,
+          }),
+        });
+      }
       showToast("Task created", "success");
       setTitle(cleanTitle);
       setDescription(cleanDescription);
@@ -5219,9 +5941,16 @@ function CreateTaskModalInline({ onClose }) {
         description: cleanDescription,
         baseBranch: baseBranch.trim(),
         priority,
+        taskType,
+        epicId,
+        storyPoints,
+        sprintId: selectedSprintId,
+        sprintOrder: sprintOrderInput,
+        dependenciesInput,
         tagsInput: cleanTagsInput,
         draft: Boolean(draft),
       };
+      await onCreated?.(createdTask);
       if (closeAfterSave) {
         onClose?.();
       }
@@ -5238,7 +5967,7 @@ function CreateTaskModalInline({ onClose }) {
   useEffect(() => {
     const tg = globalThis.Telegram?.WebApp;
     if (tg?.MainButton) {
-      tg.MainButton.setText("Create Task");
+      tg.MainButton.setText(taskType === "epic" ? "Create Epic" : "Create Task");
       tg.MainButton.show();
       tg.MainButton.onClick(handleSubmit);
       return () => {
@@ -5251,6 +5980,12 @@ function CreateTaskModalInline({ onClose }) {
     description,
     baseBranch,
     priority,
+    taskType,
+    epicId,
+    storyPoints,
+    selectedSprintId,
+    sprintOrderInput,
+    dependenciesInput,
     tagsInput,
     draft,
     rewriting,
@@ -5260,7 +5995,7 @@ function CreateTaskModalInline({ onClose }) {
   ]);
 
   const parsedTags = normalizeTagInput(tagsInput);
-  const hasAdvanced = baseBranch || draft || showAdvanced;
+  const hasAdvanced = baseBranch || draft || showAdvanced || epicId || selectedSprintId || dependenciesInput || storyPoints || taskType !== "task";
 
   const footerContent = html`
     <${Button}
@@ -5277,7 +6012,7 @@ function CreateTaskModalInline({ onClose }) {
 
   return html`
     <${Modal}
-      title="New Task"
+      title=${taskType === "epic" ? "New Epic" : "New Task"}
       onClose=${onClose}
       contentClassName="modal-content-wide task-detail-modal-jira"
       footer=${footerContent}
@@ -5364,6 +6099,33 @@ function CreateTaskModalInline({ onClose }) {
           onChange=${(v) => { haptic(); setPriority(v); }}
         />
 
+        <!-- Task type & planning -->
+        <div class="input-row">
+          <${Select} size="small" value=${taskType} onChange=${(e) => { setTaskType(e.target.value); if (e.target.value !== "epic" && initialValues?.epicId == null && epicId && epicId === slugifyPlanningId(title || epicId, "epic")) setEpicId(""); }}>
+            <${MenuItem} value="task">Task</${MenuItem}>
+            <${MenuItem} value="epic">Epic</${MenuItem}>
+            <${MenuItem} value="subtask">Subtask</${MenuItem}>
+          </${Select}>
+          <${TextField} size="small" placeholder="Epic ID / slug" value=${epicId} onInput=${(e) => setEpicId(e.target.value)} fullWidth />
+        </div>
+        <div class="input-row">
+          <${Select} size="small" value=${selectedSprintId} onChange=${(e) => setSelectedSprintId(e.target.value)}>
+            <${MenuItem} value="">No sprint</${MenuItem}>
+            ${sprintOptions.map((sprint) => html`<${MenuItem} value=${sprint.id}>${sprint.label}</${MenuItem}>`)}
+          </${Select}>
+          <${TextField} size="small" type="number" placeholder="Sprint order" value=${sprintOrderInput} onInput=${(e) => setSprintOrderInput(e.target.value)} inputProps=${{ min: 1, step: 1 }} />
+          <${TextField} size="small" placeholder="Story points" value=${storyPoints} onInput=${(e) => setStoryPoints(e.target.value)} />
+        </div>
+        ${(epicCatalog.length > 0 || dependencyTaskSuggestions.length > 0) && html`
+          <div class="task-comments-block jira-panel" style="padding:10px 12px">
+            ${epicCatalog.length > 0 && html`<div style=${{ marginBottom: "8px" }}><div class="meta-text" style=${{ marginBottom: "4px" }}>Epic shortcuts</div><div class="tag-row">${epicCatalog.slice(0, 10).map((entry) => html`<button type="button" class="tag-chip task-structure-chip ${epicId === entry.id ? "task-structure-chip-active" : ""}" onClick=${() => setEpicId(entry.id)}>${entry.label}</button>`)}</div></div>`}
+            ${dependencyTaskSuggestions.length > 0 && html`<div><div class="meta-text" style=${{ marginBottom: "4px" }}>Quick dependencies</div><div class="tag-row">${dependencyTaskSuggestions.map((entry) => html`<button type="button" class="tag-chip task-structure-chip task-structure-chip-muted" onClick=${() => setDependenciesInput(normalizeDependencyInput([...planningDependencyIds, entry.id]).join(", "))}>${entry.id}</button>`)}</div></div>`}
+          </div>
+        `}
+        <${TextField} size="small" multiline rows=${2} placeholder="Dependency task IDs (comma or newline separated)" value=${dependenciesInput} onInput=${(e) => setDependenciesInput(e.target.value)} fullWidth />
+        ${planningDependencyIds.length > 0 && html`<div class="tag-row">${planningDependencyIds.map((depId) => html`<button type="button" class="tag-chip task-structure-chip" onClick=${() => setDependenciesInput(planningDependencyIds.filter((entry) => entry !== depId).join(", "))}>${depId} ×</button>`)}</div>`}
+
+
         <!-- Workspace + Repo row -->
         ${workspaceOptions.length > 0 && html`
           <div class="input-row">
@@ -5444,6 +6206,7 @@ function CreateTaskModalInline({ onClose }) {
     <//>
   `;
 }
+
 
 
 

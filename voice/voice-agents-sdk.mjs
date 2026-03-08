@@ -335,7 +335,10 @@ export async function connectRealtimeSession(sessionHandle, config = {}) {
     if (!credential) {
       throw new Error("Azure voice credential not configured");
     }
-    const endpoint = String(config.azureEndpoint || "").trim().replace(/\/+$/, "").replace(/\/openai(?:\/.*)?$/, "");
+    let endpoint = String(config.azureEndpoint || "").trim();
+    while (endpoint.endsWith("/")) endpoint = endpoint.slice(0, -1);
+    const openaiIdx = endpoint.toLowerCase().indexOf("/openai");
+    if (openaiIdx >= 0) endpoint = endpoint.slice(0, openaiIdx);
     const deployment = normalizeAzureRealtimeDeployment(
       config.azureDeployment || OPENAI_REALTIME_MODEL,
     );
@@ -693,3 +696,4 @@ export async function getSdkDiagnostics() {
     timestamp: new Date().toISOString(),
   };
 }
+

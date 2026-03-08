@@ -69,7 +69,9 @@ import {
   rebuildManifest,
   matchAgentProfile,
   matchAgentProfiles,
+  resolveLibraryPlan,
   listWellKnownAgentSources,
+  probeWellKnownAgentSources,
   importAgentProfilesFromRepository,
   loadManifest,
   getManifestPath,
@@ -7178,14 +7180,13 @@ async function resolveLogPath(logType, query) {
     return resolvePreferredSystemLogPath();
   }
   if (logType === "agent") {
+    const matches = await listAgentLogFiles(query, 1);
+    if (matches.length > 0) {
+      return resolve(matches[0].source, matches[0].name);
+    }
     const agentLogsDir = await resolveAgentLogsDir();
     const files = await readdir(agentLogsDir).catch(() => []);
-    let candidates = files.filter((f) => f.endsWith(".log")).sort().reverse();
-    if (query) {
-      const q = query.toLowerCase();
-      const filtered = candidates.filter((f) => f.toLowerCase().includes(q));
-      if (filtered.length) candidates = filtered;
-    }
+    const candidates = files.filter((f) => f.endsWith(".log")).sort().reverse();
     return candidates.length ? resolve(agentLogsDir, candidates[0]) : null;
   }
   return null;
@@ -8214,6 +8215,13 @@ function buildTaskMetadataPatch(input = {}) {
     }
   }
 
+  if (hasOwn(input, "type")) {
+    const type = normalizeTaskTypeInput(input?.type);
+    if (type) {
+      topLevel.type = type;
+    }
+  }
+
   if (hasOwn(input, "epicId")) {
     const epicId = normalizeOptionalStringInput(input?.epicId);
     if (epicId) {
@@ -8247,6 +8255,13 @@ function buildTaskMetadataPatch(input = {}) {
   }
 
   return { topLevel, meta };
+}
+
+const TASK_TYPE_VALUES = new Set(["epic", "task", "subtask"]);
+
+function normalizeTaskTypeInput(input) {
+  const normalized = String(input ?? "").trim().toLowerCase();
+  return TASK_TYPE_VALUES.has(normalized) ? normalized : null;
 }
 
 const SPRINT_EXECUTION_MODES = new Set(["sequential", "parallel"]);
@@ -8589,11 +8604,40 @@ async function listAgentLogFiles(query = "", limit = 60) {
   const entries = [];
   const agentLogsDir = await resolveAgentLogsDir();
   const files = await readdir(agentLogsDir).catch(() => []);
+  const normalizedQuery = String(query || "").trim().toLowerCase();
+  const queryTerms = Array.from(new Set([
+    normalizedQuery,
+    ...normalizedQuery
+      .split(/[^a-z0-9]+/i)
+      .map((part) => part.trim())
+      .filter((part) => part.length >= 3),
+  ].filter(Boolean)));
+
+  const scoreAgentLogMatch = (name, lines = []) => {
+    if (!queryTerms.length) return 0;
+    const fileName = String(name || "").toLowerCase();
+    const joined = lines.join("\n").toLowerCase();
+    let score = 0;
+    for (const term of queryTerms) {
+      if (fileName.includes(term)) score += 120;
+      if (joined.includes(term)) score += 80;
+    }
+    if (joined.includes("task id:")) score += 8;
+    if (/(error|warn|failed|exception|timeout|anomal)/i.test(joined)) score += 6;
+    return score;
+  };
+
   for (const name of files) {
     if (!name.endsWith(".log")) continue;
-    if (query && !name.toLowerCase().includes(query.toLowerCase())) continue;
     try {
-      const info = await stat(resolve(agentLogsDir, name));
+      const filePath = resolve(agentLogsDir, name);
+      const info = await stat(filePath);
+      let score = 0;
+      if (queryTerms.length) {
+        const sample = await tailFile(filePath, 160, 250_000).catch(() => ({ lines: [] }));
+        score = scoreAgentLogMatch(name, sample?.lines || []);
+        if (score <= 0) continue;
+      }
       entries.push({
         name,
         source: agentLogsDir,
@@ -8601,13 +8645,113 @@ async function listAgentLogFiles(query = "", limit = 60) {
         mtime:
           info.mtime?.toISOString?.() || new Date(info.mtime).toISOString(),
         mtimeMs: info.mtimeMs,
+        score,
       });
     } catch {
       // ignore
     }
   }
-  entries.sort((a, b) => b.mtimeMs - a.mtimeMs);
+  entries.sort((a, b) => (b.score || 0) - (a.score || 0) || b.mtimeMs - a.mtimeMs);
   return entries.slice(0, limit);
+}
+
+function buildLogQueryTerms(query = "") {
+  const normalized = String(query || "").trim().toLowerCase();
+  if (!normalized) return [];
+  return Array.from(new Set([
+    normalized,
+    ...normalized
+      .split(/[^a-z0-9]+/i)
+      .map((part) => part.trim())
+      .filter((part) => part.length >= 3),
+  ].filter(Boolean)));
+}
+
+function isHighSignalLogLine(line = "") {
+  return /(error|warn|failed|exception|timeout|anomal|retry|blocked|fatal)/i.test(String(line || ""));
+}
+
+function filterRelevantLogLines(lines = [], query = "", limit = 200) {
+  const sourceLines = Array.isArray(lines)
+    ? lines.map((line) => String(line || "")).filter(Boolean)
+    : [];
+  if (!sourceLines.length) return [];
+
+  const terms = buildLogQueryTerms(query);
+  if (!terms.length) return sourceLines.slice(-limit);
+
+  const picked = new Set();
+  const addWithContext = (index, radius = 1) => {
+    for (let cursor = Math.max(0, index - radius); cursor <= Math.min(sourceLines.length - 1, index + radius); cursor += 1) {
+      picked.add(cursor);
+    }
+  };
+
+  sourceLines.forEach((line, index) => {
+    const lower = line.toLowerCase();
+    const termHit = terms.some((term) => lower.includes(term));
+    if (termHit) {
+      addWithContext(index, isHighSignalLogLine(line) ? 2 : 1);
+      return;
+    }
+    if (isHighSignalLogLine(line)) {
+      addWithContext(index, 1);
+    }
+  });
+
+  if (!picked.size) {
+    return sourceLines.slice(-limit);
+  }
+
+  const filtered = [...picked]
+    .sort((a, b) => a - b)
+    .map((index) => sourceLines[index]);
+  return filtered.slice(-limit);
+}
+
+async function resolveSessionWorktreePath(session) {
+  if (!session || typeof session !== "object") return null;
+  const directCandidates = [
+    session?.metadata?.worktreePath,
+    session?.metadata?.workspaceDir,
+    session?.metadata?.workspacePath,
+    session?.metadata?.cwd,
+  ]
+    .map((value) => String(value || "").trim())
+    .filter(Boolean);
+  for (const candidate of directCandidates) {
+    if (existsSync(candidate)) return candidate;
+  }
+
+  const branchHints = [
+    session?.metadata?.branch,
+    session?.metadata?.branchName,
+    session?.branch,
+  ]
+    .map((value) => String(value || "").trim().replace(/^refs\/heads\//, ""))
+    .filter(Boolean);
+  const taskHints = [session?.taskId, session?.id]
+    .map((value) => String(value || "").trim().toLowerCase())
+    .filter(Boolean);
+
+  try {
+    const active = await listActiveWorktrees(repoRoot);
+    const matched = (active || []).find((worktree) => {
+      const worktreePath = String(worktree?.path || "").trim();
+      const worktreeTaskKey = String(worktree?.taskKey || "").trim().toLowerCase();
+      const worktreeBranch = String(worktree?.branch || "")
+        .trim()
+        .replace(/^refs\/heads\//, "");
+      if (worktreePath && directCandidates.includes(worktreePath)) return true;
+      if (worktreeTaskKey && taskHints.includes(worktreeTaskKey)) return true;
+      return branchHints.some((hint) =>
+        hint && (worktreeBranch === hint || worktreeBranch.endsWith(`/${hint}`)),
+      );
+    });
+    return matched?.path || null;
+  } catch {
+    return null;
+  }
 }
 
 async function ensurePresenceLoaded() {
@@ -10385,6 +10529,81 @@ async function handleApi(req, res, url) {
     return;
   }
 
+  if (path === "/api/library/resolve") {
+    try {
+      const workspaceContext = resolveWorkspaceContextFromRequest(url, { allowAll: false });
+      if (!workspaceContext) {
+        jsonResponse(res, 400, { ok: false, error: "Unknown workspace" });
+        return;
+      }
+
+      const getCriteriaFromQuery = () => ({
+        title: (url.searchParams.get("title") || "").trim(),
+        description: (url.searchParams.get("description") || "").trim(),
+        agentType: (url.searchParams.get("agentType") || "").trim(),
+        tags: String(url.searchParams.get("tags") || "").split(",").map((t) => t.trim()).filter(Boolean),
+        changedFiles: String(url.searchParams.get("changedFiles") || "").split(",").map((t) => t.trim()).filter(Boolean),
+        topN: Number.parseInt(String(url.searchParams.get("topN") || ""), 10) || 5,
+        skillTopN: Number.parseInt(String(url.searchParams.get("skillTopN") || ""), 10) || 6,
+      });
+
+      const bodyCriteria = req.method === "POST" ? await readJsonBody(req).catch(() => ({})) : null;
+      const criteria = req.method === "POST"
+        ? {
+            ...(bodyCriteria || {}),
+            topN: Number.parseInt(String(bodyCriteria?.topN || ""), 10) || 5,
+            skillTopN: Number.parseInt(String(bodyCriteria?.skillTopN || ""), 10) || 6,
+          }
+        : getCriteriaFromQuery();
+
+      const roots = resolveLibraryRootsForContext(workspaceContext);
+      ensureLibraryRootsInitialized(roots);
+
+      let bestResult = null;
+      for (const rootInfo of roots) {
+        const result = resolveLibraryPlan(rootInfo.rootDir, criteria, {
+          topN: criteria?.topN || 5,
+          skillTopN: criteria?.skillTopN || 6,
+        });
+        if (!result?.best) continue;
+        const withScope = {
+          ...result,
+          best: { ...result.best, storageScope: rootInfo.scope },
+          candidates: (result.candidates || []).map((candidate) => ({ ...candidate, storageScope: rootInfo.scope })),
+          plan: result.plan ? { ...result.plan, storageScope: rootInfo.scope } : null,
+        };
+        if (!bestResult || Number(withScope.best?.score || 0) > Number(bestResult.best?.score || 0)) {
+          bestResult = withScope;
+        }
+      }
+
+      const verbose = req.method === "POST"
+        || ["1", "true", "yes"].includes(String(url.searchParams.get("verbose") || "").trim().toLowerCase());
+      const payload = bestResult || {
+        best: null,
+        candidates: [],
+        alternatives: [],
+        plan: null,
+        auto: { shouldAutoApply: false, reason: "no-match" },
+        context: {
+          title: String(criteria?.title || ""),
+          description: String(criteria?.description || ""),
+          requestedAgentType: String(criteria?.agentType || ""),
+          taskScope: null,
+          changedFilesCount: Array.isArray(criteria?.changedFiles) ? criteria.changedFiles.length : 0,
+        },
+      };
+
+      jsonResponse(res, 200, {
+        ok: true,
+        data: verbose ? payload : (payload.plan || null),
+      });
+    } catch (err) {
+      jsonResponse(res, 500, { ok: false, error: err.message });
+    }
+    return;
+  }
+
   if (path === "/api/library/match-profile") {
     try {
       const workspaceContext = resolveWorkspaceContextFromRequest(url, { allowAll: false });
@@ -10454,7 +10673,17 @@ async function handleApi(req, res, url) {
 
   if (path === "/api/library/sources" && req.method === "GET") {
     try {
-      jsonResponse(res, 200, { ok: true, data: listWellKnownAgentSources() });
+      const probe = String(url.searchParams.get("probe") || "").trim().toLowerCase();
+      const refresh = String(url.searchParams.get("refresh") || "").trim().toLowerCase();
+      const sourceId = String(url.searchParams.get("sourceId") || "").trim().toLowerCase() || undefined;
+      const useProbe = probe === "1" || probe === "true" || refresh === "1" || refresh === "true";
+      const data = useProbe
+        ? await probeWellKnownAgentSources({
+          sourceId,
+          refresh: refresh === "1" || refresh === "true",
+        })
+        : listWellKnownAgentSources();
+      jsonResponse(res, 200, { ok: true, data });
     } catch (err) {
       jsonResponse(res, 500, { ok: false, error: err.message });
     }
@@ -11232,7 +11461,6 @@ async function handleApi(req, res, url) {
         events.push(normalizedEntry);
       }
 
-      // Aggregate totals
       let totalEvents = events.length;
       let totalOriginalChars = 0;
       let totalCompressedChars = 0;
@@ -11240,24 +11468,50 @@ async function handleApi(req, res, url) {
       const dailySaved = {};
       const dailyCounts = {};
       const agentCounts = {};
+      const stageCounts = {};
+      const compactionFamilyCounts = {};
+      const commandFamilyCounts = {};
       let unknownAttribution = 0;
+      let liveTotalEvents = 0;
+      let liveOriginalChars = 0;
+      let liveCompressedChars = 0;
+      let liveSavedChars = 0;
 
       for (const e of events) {
-        totalOriginalChars  += e.originalChars  || 0;
-        totalCompressedChars += e.compressedChars || 0;
-        totalSavedChars     += e.savedChars      || 0;
+        const originalChars = numberOrZero(e.originalChars);
+        const compressedChars = numberOrZero(e.compressedChars);
+        const savedChars = numberOrZero(e.savedChars);
+        totalOriginalChars += originalChars;
+        totalCompressedChars += compressedChars;
+        totalSavedChars += savedChars;
         const day = (e.timestamp || "").slice(0, 10);
         if (day) {
-          dailySaved[day]  = (dailySaved[day]  || 0) + (e.savedChars || 0);
+          dailySaved[day] = (dailySaved[day] || 0) + savedChars;
           dailyCounts[day] = (dailyCounts[day] || 0) + 1;
         }
         const agent = normalizeShreddingAgentType(e.agentType);
         if (agent === "unspecified") unknownAttribution++;
         agentCounts[agent] = (agentCounts[agent] || 0) + 1;
+
+        const stage = String(e.stage || "session_total").trim().toLowerCase() || "session_total";
+        stageCounts[stage] = (stageCounts[stage] || 0) + 1;
+        if (stage === "live_tool_compaction") {
+          liveTotalEvents += 1;
+          liveOriginalChars += originalChars;
+          liveCompressedChars += compressedChars;
+          liveSavedChars += savedChars;
+          const compactionFamily = String(e.compactionFamily || "unknown").trim().toLowerCase() || "unknown";
+          const commandFamily = String(e.commandFamily || "unknown").trim().toLowerCase() || "unknown";
+          compactionFamilyCounts[compactionFamily] = (compactionFamilyCounts[compactionFamily] || 0) + 1;
+          commandFamilyCounts[commandFamily] = (commandFamilyCounts[commandFamily] || 0) + 1;
+        }
       }
 
       const avgSavedPct = totalOriginalChars > 0
         ? Math.round((totalSavedChars / totalOriginalChars) * 100)
+        : 0;
+      const liveAvgSavedPct = liveOriginalChars > 0
+        ? Math.round((liveSavedChars / liveOriginalChars) * 100)
         : 0;
 
       const sortedDates = Object.keys(dailySaved).sort();
@@ -11265,16 +11519,26 @@ async function handleApi(req, res, url) {
         .sort((a, b) => b[1] - a[1])
         .slice(0, 8)
         .map(([name, count]) => ({ name, count }));
+      const topCompactionFamilies = Object.entries(compactionFamilyCounts)
+        .sort((a, b) => b[1] - a[1])
+        .slice(0, 8)
+        .map(([name, count]) => ({ name, count }));
+      const topCommandFamilies = Object.entries(commandFamilyCounts)
+        .sort((a, b) => b[1] - a[1])
+        .slice(0, 8)
+        .map(([name, count]) => ({ name, count }));
 
-      // Recent events (last 20)
       const recentEvents = events.slice(-20).reverse().map((e) => ({
-        timestamp:      e.timestamp,
-        savedChars:     e.savedChars      || 0,
-        savedPct:       e.savedPct        || 0,
-        originalChars:  e.originalChars   || 0,
-        compressedChars: e.compressedChars || 0,
-        agentType:      normalizeShreddingAgentType(e.agentType),
-        attemptId:      e.attemptId       || null,
+        timestamp: e.timestamp,
+        savedChars: numberOrZero(e.savedChars),
+        savedPct: numberOrZero(e.savedPct),
+        originalChars: numberOrZero(e.originalChars),
+        compressedChars: numberOrZero(e.compressedChars),
+        agentType: normalizeShreddingAgentType(e.agentType),
+        attemptId: e.attemptId || null,
+        stage: String(e.stage || "session_total").trim().toLowerCase() || "session_total",
+        compactionFamily: String(e.compactionFamily || "").trim().toLowerCase() || null,
+        commandFamily: String(e.commandFamily || "").trim().toLowerCase() || null,
       }));
 
       jsonResponse(res, 200, {
@@ -11289,6 +11553,16 @@ async function handleApi(req, res, url) {
           dailySaved,
           dailyCounts,
           topAgents,
+          stageCounts,
+          topCompactionFamilies,
+          topCommandFamilies,
+          liveCompaction: {
+            totalEvents: liveTotalEvents,
+            totalOriginalChars: liveOriginalChars,
+            totalCompressedChars: liveCompressedChars,
+            totalSavedChars: liveSavedChars,
+            avgSavedPct: liveAvgSavedPct,
+          },
           recentEvents,
           diagnostics: {
             rawEvents: inWindow.length,
@@ -11461,8 +11735,20 @@ async function handleApi(req, res, url) {
         jsonResponse(res, 200, { ok: true, data: null });
         return;
       }
-      const tail = await tailFile(filePath, lines);
-      jsonResponse(res, 200, { ok: true, data: { file: fileName, content: tail } });
+      const tail = await tailFile(filePath, Math.max(lines * 4, 240));
+      const filteredLines = filterRelevantLogLines(tail?.lines || [], query || fileName, lines);
+      const contentLines = filteredLines.length ? filteredLines : (tail?.lines || []).slice(-lines);
+      jsonResponse(res, 200, {
+        ok: true,
+        data: {
+          file: fileName,
+          content: contentLines.join("\n"),
+          lines: contentLines,
+          mode: filteredLines.length ? "focused" : "tail",
+          totalLines: Array.isArray(tail?.lines) ? tail.lines.length : 0,
+          truncated: tail?.truncated === true,
+        },
+      });
     } catch (err) {
       jsonResponse(res, 200, { ok: true, data: null });
     }
@@ -13863,7 +14149,7 @@ async function handleApi(req, res, url) {
           });
           return;
         }
-        const worktreePath = session.metadata?.worktreePath;
+        const worktreePath = await resolveSessionWorktreePath(session);
         if (!worktreePath || !existsSync(worktreePath)) {
           jsonResponse(res, 200, { ok: true, diff: { files: [], totalFiles: 0, totalAdditions: 0, totalDeletions: 0, formatted: "(no worktree)" }, summary: "(no worktree)", commits: [] });
           return;

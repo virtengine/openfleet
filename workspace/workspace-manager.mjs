@@ -128,26 +128,32 @@ function normalizeId(value) {
     .replace(/^-|-$/g, "");
 }
 
+function trimGitSuffix(value) {
+  const text = String(value || "");
+  return text.toLowerCase().endsWith(".git") ? text.slice(0, -4) : text;
+}
+
 function extractRepoName(url) {
-  if (!url) return "";
-  // Handle SSH: git@github.com:org/repo.git
-  const sshMatch = url.match(/[/:]([^/]+)\.git$/);
-  if (sshMatch) return sshMatch[1];
-  // Handle HTTPS: https://github.com/org/repo.git or https://github.com/org/repo
-  const httpsMatch = url.match(/\/([^/]+?)(?:\.git)?$/);
-  if (httpsMatch) return httpsMatch[1];
-  return basename(url).replace(/\.git$/, "");
+  const raw = String(url || "").trim();
+  if (!raw) return "";
+  const normalized = raw.replace(/\\/g, "/");
+  const withoutScheme = normalized.replace(/^https?:\/\//i, "").replace(/^ssh:\/\//i, "");
+  const withoutUser = withoutScheme.replace(/^[^@]+@/, "");
+  const sshStyle = withoutUser.includes(":") ? withoutUser.replace(":", "/") : withoutUser;
+  const parts = trimGitSuffix(sshStyle).split("/").filter(Boolean);
+  return parts.length > 0 ? parts[parts.length - 1] : basename(raw).replace(/\.git$/, "");
 }
 
 function extractSlug(url) {
-  if (!url) return "";
-  // git@github.com:org/repo.git → org/repo
-  const sshMatch = url.match(/[/:]([^/]+\/[^/]+?)(?:\.git)?$/);
-  if (sshMatch) return sshMatch[1];
-  // https://github.com/org/repo.git → org/repo
-  const httpsMatch = url.match(/([^/]+\/[^/]+?)(?:\.git)?$/);
-  if (httpsMatch) return httpsMatch[1];
-  return "";
+  const raw = String(url || "").trim();
+  if (!raw) return "";
+  const normalized = raw.replace(/\\/g, "/");
+  const withoutScheme = normalized.replace(/^https?:\/\//i, "").replace(/^ssh:\/\//i, "");
+  const withoutUser = withoutScheme.replace(/^[^@]+@/, "");
+  const sshStyle = withoutUser.includes(":") ? withoutUser.replace(":", "/") : withoutUser;
+  const parts = trimGitSuffix(sshStyle).split("/").filter(Boolean);
+  if (parts.length < 3) return "";
+  return parts[parts.length - 2] + "/" + parts[parts.length - 1];
 }
 
 function extractGithubSlug(url) {
@@ -403,6 +409,16 @@ export function listWorkspaces(configDir, opts = {}) {
       const standardExists = existsSync(standardPath);
       let effectivePath = standardPath;
       let exists = standardExists;
+      const repoUrlRaw = String(repo.url || "").trim();
+      const looksLikeRemoteUrl =
+        /^https?:\/\//i.test(repoUrlRaw) ||
+        /^git@[^:]+:/i.test(repoUrlRaw) ||
+        /^ssh:\/\//i.test(repoUrlRaw);
+      const repoUrlPath = repoUrlRaw && !looksLikeRemoteUrl ? resolve(repoUrlRaw) : null;
+      if (!standardExists && repoUrlPath && existsSync(repoUrlPath)) {
+        effectivePath = repoUrlPath;
+        exists = true;
+      }
       if (!standardExists && repoRootOverride) {
         const altPath = resolve(repoRootOverride, repo.name);
         if (existsSync(altPath)) {
@@ -1000,3 +1016,4 @@ export function initializeWorkspaces(configDir, opts = {}) {
 
   return { workspaces: [], isNew: true };
 }
+

@@ -19,6 +19,7 @@ import { existsSync, readFileSync, writeFileSync, mkdirSync, readdirSync, statSy
 import { resolve, basename, join, relative } from "node:path";
 import { execSync, spawnSync } from "node:child_process";
 import { homedir } from "node:os";
+import { getAgentToolConfig, getEffectiveTools } from "../agent/agent-tool-config.mjs";
 
 // ── Constants ─────────────────────────────────────────────────────────────────
 
@@ -28,6 +29,13 @@ export const SKILL_DIR = ".bosun/skills";
 export const PROFILE_DIR = ".bosun/profiles";
 export const MCP_DIR = ".bosun/mcp-servers";
 export const TOOL_DIR = ".bosun/tools";
+export const LIBRARY_INDEX_DIR = ".bosun/library-index";
+export const AGENT_PROFILE_INDEX = "agent-profiles.json";
+export const SKILL_ENTRY_INDEX = "skills.json";
+
+const agentProfileIndexCache = new Map();
+const skillEntryIndexCache = new Map();
+const wellKnownSourceProbeCache = new Map();
 
 /** Resource types managed by the library */
 export const RESOURCE_TYPES = Object.freeze(["prompt", "agent", "skill", "mcp", "custom-tool"]);
@@ -59,6 +67,14 @@ function safeReadJson(filePath) {
 function safeWriteJson(filePath, data) {
   ensureDir(resolve(filePath, ".."));
   writeFileSync(filePath, JSON.stringify(data, null, 2) + "\n", "utf8");
+}
+
+function getFileMtimeMs(filePath) {
+  try {
+    return Number(statSync(filePath)?.mtimeMs || 0);
+  } catch {
+    return 0;
+  }
 }
 
 function slugify(name) {
@@ -117,15 +133,416 @@ function parseJsonishArray(value) {
 }
 
 function extractConventionalScope(taskTitle = '') {
-  const match = String(taskTitle || '').match(
-    /(?:^\[[^\]]+\]\s*)?(?:feat|fix|docs|style|refactor|perf|test|build|ci|chore|revert)\(([^)]+)\)/i,
-  );
-  return match ? String(match[1] || '').toLowerCase().trim() : null;
+  const normalized = String(taskTitle || '').toLowerCase();
+  if (!normalized) return null;
+
+  let cursor = 0;
+  if (normalized.startsWith('[')) {
+    const closingBracket = normalized.indexOf(']');
+    if (closingBracket > 0) cursor = closingBracket + 1;
+  }
+
+  const candidate = normalized.slice(cursor).trimStart();
+  const types = ["feat", "fix", "docs", "style", "refactor", "perf", "test", "build", "ci", "chore", "revert"];
+  for (const type of types) {
+    const prefix = type + '(';
+    if (!candidate.startsWith(prefix)) continue;
+    const closingParen = candidate.indexOf(')', prefix.length);
+    if (closingParen <= prefix.length) return null;
+    const scope = candidate.slice(prefix.length, closingParen).trim();
+    return scope || null;
+  }
+  return null;
 }
 
 function parseMatchEnvNumber(name, fallback) {
   const raw = Number.parseFloat(String(process.env[name] || '').trim());
   return Number.isFinite(raw) ? raw : fallback;
+}
+
+function buildTypeIndexRevision(manifest, type) {
+  const entries = Array.isArray(manifest?.entries)
+    ? manifest.entries.filter((entry) => entry?.type === type)
+    : [];
+  return entries
+    .slice()
+    .sort((a, b) => String(a?.id || "").localeCompare(String(b?.id || "")))
+    .map((entry) => [entry.id, entry.filename, entry.updatedAt].join(":"))
+    .join("|");
+}
+
+function buildAgentProfileIndexRevision(manifest) {
+  return buildTypeIndexRevision(manifest, "agent");
+}
+
+function buildSkillIndexRevision(manifest) {
+  return buildTypeIndexRevision(manifest, "skill");
+}
+
+function updateIndexCache(cache, rootDir, index, manifestMtimeMs = 0) {
+  const cacheKey = resolve(rootDir || getBosunHomeDir());
+  const payload = {
+    ...index,
+    count: Array.isArray(index?.profiles)
+      ? index.profiles.length
+      : Array.isArray(index?.skills)
+        ? index.skills.length
+        : Number(index?.count || 0),
+  };
+  cache.set(cacheKey, {
+    manifestMtimeMs: Number(manifestMtimeMs || 0),
+    index: payload,
+  });
+  return payload;
+}
+
+function updateAgentProfileIndexCache(rootDir, index, manifestMtimeMs = 0) {
+  return updateIndexCache(agentProfileIndexCache, rootDir, index, manifestMtimeMs);
+}
+
+function updateSkillEntryIndexCache(rootDir, index, manifestMtimeMs = 0) {
+  return updateIndexCache(skillEntryIndexCache, rootDir, index, manifestMtimeMs);
+}
+
+function buildIndexedAgentProfile(rootDir, entry) {
+  const profile = getEntryContent(rootDir, entry);
+  if (!profile || typeof profile !== "object") return null;
+  return {
+    ...entry,
+    profile,
+    agentType: String(profile?.agentType || "task").trim().toLowerCase() || "task",
+    titlePatterns: toStringArray(profile?.titlePatterns),
+    scopes: toStringArray(profile?.scopes),
+    tags: uniqueStrings([...(entry?.tags || []), ...toStringArray(profile?.tags)]),
+  };
+}
+
+function buildIndexedSkillEntry(entry) {
+  const tags = uniqueStrings(entry?.tags || []);
+  const keywords = keywordTokens(
+    [entry?.id, entry?.name, entry?.description, ...tags].filter(Boolean).join(" "),
+    { minLength: 3 },
+  );
+  return {
+    ...entry,
+    tags,
+    keywords,
+  };
+}
+
+function buildSkillSelection(rootDir, best, criteria = {}, opts = {}) {
+  const skillIndex = loadSkillEntryIndex(rootDir);
+  const indexedSkills = Array.isArray(skillIndex?.skills) ? skillIndex.skills : [];
+  const tokenMap = skillIndex?.tokenMap || {};
+  const indexedById = new Map(indexedSkills.map((entry) => [entry.id, entry]));
+  const profileSkillIds = toStringArray(best?.profile?.skills);
+  const textBlob = [criteria?.title, criteria?.description].filter(Boolean).join("\n");
+  const criteriaTags = uniqueStrings([
+    ...toStringArray(criteria?.tags),
+    ...keywordTokens(textBlob, { minLength: 4 }),
+    ...keywordTokens(toStringArray(criteria?.changedFiles).join(" "), { minLength: 3 }),
+  ]).map((value) => value.toLowerCase());
+
+  const candidateIds = new Set(profileSkillIds);
+  for (const tag of criteriaTags) {
+    const ids = Array.isArray(tokenMap?.[tag]) ? tokenMap[tag] : [];
+    if (ids.length > 128) continue;
+    for (const id of ids) candidateIds.add(id);
+  }
+
+  const scored = [];
+  const profileSkillSet = new Set(profileSkillIds.map((value) => value.toLowerCase()));
+  const candidateEntries = candidateIds.size > 0
+    ? [...candidateIds].map((id) => indexedById.get(id)).filter(Boolean)
+    : [];
+  for (const skill of candidateEntries) {
+    let score = 0;
+    const reasons = [];
+    if (profileSkillSet.has(String(skill.id || "").toLowerCase())) {
+      score += 12;
+      reasons.push("profile-skill");
+    }
+
+    const haystack = new Set([
+      ...skill.tags.map((value) => String(value || "").toLowerCase()),
+      ...skill.keywords.map((value) => String(value || "").toLowerCase()),
+      String(skill.id || "").toLowerCase(),
+    ]);
+    const tagHits = criteriaTags.filter((tag) => haystack.has(tag));
+    if (tagHits.length > 0) {
+      score += Math.min(6, tagHits.length * 2);
+      reasons.push(`tags:${tagHits.slice(0, 4).join(",")}`);
+    }
+
+    if (score <= 0) continue;
+    scored.push({
+      ...skill,
+      score,
+      reasons,
+    });
+  }
+
+  scored.sort((a, b) => {
+    if (b.score !== a.score) return b.score - a.score;
+    return String(a.name || "").localeCompare(String(b.name || ""));
+  });
+
+  const skillTopN = Math.max(1, Number.parseInt(String(opts?.skillTopN ?? criteria?.skillTopN ?? 6), 10) || 6);
+  const selectedSkillIds = uniqueStrings([
+    ...profileSkillIds,
+    ...scored.slice(0, skillTopN).map((entry) => entry.id),
+  ]);
+  const selectedSkills = selectedSkillIds
+    .map((skillId) => scored.find((entry) => entry.id === skillId) || indexedSkills.find((entry) => entry.id === skillId))
+    .filter(Boolean);
+
+  return {
+    selectedSkillIds,
+    selectedSkills,
+    candidates: scored.slice(0, skillTopN),
+  };
+}
+
+function resolvePromptSelection(rootDir, profile = {}) {
+  const promptOverrideId = String(profile?.promptOverride || "").trim();
+  if (!promptOverrideId) return null;
+  const entry = getEntry(rootDir, promptOverrideId);
+  if (!entry) {
+    return {
+      id: promptOverrideId,
+      type: "inline-or-missing",
+      name: promptOverrideId,
+      description: "Prompt override is inline text or not present in the local library registry.",
+    };
+  }
+  return {
+    id: entry.id,
+    type: "library-entry",
+    name: entry.name,
+    description: entry.description,
+  };
+}
+
+function resolveToolSelection(rootDir, best) {
+  const profile = best?.profile || {};
+  const profileEnabledTools = toStringArray(profile?.enabledTools);
+  const profileEnabledMcpServers = toStringArray(profile?.enabledMcpServers);
+  const rawCfg = best?.id
+    ? getAgentToolConfig(rootDir, best.id)
+    : { enabledTools: null, enabledMcpServers: [], disabledBuiltinTools: [] };
+  const effective = best?.id
+    ? getEffectiveTools(rootDir, best.id)
+    : { builtinTools: [], mcpServers: [] };
+
+  const builtinToolIds = Array.isArray(effective?.builtinTools)
+    ? effective.builtinTools.filter((tool) => tool?.enabled).map((tool) => tool.id)
+    : [];
+  const recommendedToolIds = uniqueStrings([
+    ...toStringArray(rawCfg?.enabledTools),
+    ...profileEnabledTools,
+    ...builtinToolIds,
+  ]);
+  const enabledMcpServers = uniqueStrings([
+    ...profileEnabledMcpServers,
+    ...toStringArray(rawCfg?.enabledMcpServers),
+    ...toStringArray(effective?.mcpServers),
+  ]);
+
+  return {
+    builtinToolIds,
+    recommendedToolIds,
+    enabledMcpServers,
+    disabledBuiltinTools: toStringArray(rawCfg?.disabledBuiltinTools),
+  };
+}
+
+export function getLibraryIndexDir(rootDir) {
+  return resolve(rootDir || getBosunHomeDir(), LIBRARY_INDEX_DIR);
+}
+
+export function getAgentProfileIndexPath(rootDir) {
+  return resolve(rootDir || getBosunHomeDir(), LIBRARY_INDEX_DIR, AGENT_PROFILE_INDEX);
+}
+
+export function getSkillEntryIndexPath(rootDir) {
+  return resolve(rootDir || getBosunHomeDir(), LIBRARY_INDEX_DIR, SKILL_ENTRY_INDEX);
+}
+
+export function rebuildAgentProfileIndex(rootDir, manifest = loadManifest(rootDir)) {
+  const normalizedRoot = resolve(rootDir || getBosunHomeDir());
+  const profiles = (manifest?.entries || [])
+    .filter((entry) => entry?.type === "agent")
+    .map((entry) => buildIndexedAgentProfile(normalizedRoot, entry))
+    .filter(Boolean);
+
+  const index = {
+    generated: nowISO(),
+    revision: buildAgentProfileIndexRevision(manifest),
+    count: profiles.length,
+    profiles,
+  };
+  safeWriteJson(getAgentProfileIndexPath(normalizedRoot), index);
+  return updateAgentProfileIndexCache(normalizedRoot, index, getFileMtimeMs(getManifestPath(normalizedRoot)));
+}
+
+export function loadAgentProfileIndex(rootDir, options = {}) {
+  const normalizedRoot = resolve(rootDir || getBosunHomeDir());
+  const manifestPath = getManifestPath(normalizedRoot);
+  const manifestMtimeMs = getFileMtimeMs(manifestPath);
+  const cacheEntry = agentProfileIndexCache.get(normalizedRoot);
+  if (cacheEntry && cacheEntry.manifestMtimeMs === manifestMtimeMs) {
+    return cacheEntry.index;
+  }
+
+  const manifest = loadManifest(normalizedRoot);
+  const revision = buildAgentProfileIndexRevision(manifest);
+  const existing = safeReadJson(getAgentProfileIndexPath(normalizedRoot));
+  if (existing && existing.revision === revision && Array.isArray(existing.profiles)) {
+    return updateAgentProfileIndexCache(
+      normalizedRoot,
+      {
+        generated: String(existing.generated || nowISO()),
+        revision,
+        count: existing.profiles.length,
+        profiles: existing.profiles,
+      },
+      manifestMtimeMs,
+    );
+  }
+
+  if (options?.allowRebuild === false) {
+    return updateAgentProfileIndexCache(
+      normalizedRoot,
+      { generated: nowISO(), revision, count: 0, profiles: [] },
+      manifestMtimeMs,
+    );
+  }
+
+  return rebuildAgentProfileIndex(normalizedRoot, manifest);
+}
+
+export function listIndexedAgentProfiles(rootDir, options = {}) {
+  const index = loadAgentProfileIndex(rootDir, options);
+  return Array.isArray(index?.profiles) ? index.profiles : [];
+}
+
+export function rebuildSkillEntryIndex(rootDir, manifest = loadManifest(rootDir)) {
+  const normalizedRoot = resolve(rootDir || getBosunHomeDir());
+  const skills = (manifest?.entries || [])
+    .filter((entry) => entry?.type === "skill")
+    .map((entry) => buildIndexedSkillEntry(entry));
+
+  const tokenMap = {};
+  for (const skill of skills) {
+    const tokens = uniqueStrings([
+      String(skill.id || "").toLowerCase(),
+      ...skill.tags.map((value) => String(value || "").toLowerCase()),
+      ...skill.keywords.map((value) => String(value || "").toLowerCase()),
+    ]);
+    for (const token of tokens) {
+      if (!tokenMap[token]) tokenMap[token] = [];
+      tokenMap[token].push(skill.id);
+    }
+  }
+
+  const index = {
+    generated: nowISO(),
+    revision: buildSkillIndexRevision(manifest),
+    count: skills.length,
+    skills,
+    tokenMap,
+  };
+  safeWriteJson(getSkillEntryIndexPath(normalizedRoot), index);
+  return updateSkillEntryIndexCache(normalizedRoot, index, getFileMtimeMs(getManifestPath(normalizedRoot)));
+}
+
+export function loadSkillEntryIndex(rootDir, options = {}) {
+  const normalizedRoot = resolve(rootDir || getBosunHomeDir());
+  const manifestPath = getManifestPath(normalizedRoot);
+  const manifestMtimeMs = getFileMtimeMs(manifestPath);
+  const cacheEntry = skillEntryIndexCache.get(normalizedRoot);
+  if (cacheEntry && cacheEntry.manifestMtimeMs === manifestMtimeMs) {
+    return cacheEntry.index;
+  }
+
+  const manifest = loadManifest(normalizedRoot);
+  const revision = buildSkillIndexRevision(manifest);
+  const existing = safeReadJson(getSkillEntryIndexPath(normalizedRoot));
+  if (existing && existing.revision === revision && Array.isArray(existing.skills)) {
+    return updateSkillEntryIndexCache(
+      normalizedRoot,
+      {
+        generated: String(existing.generated || nowISO()),
+        revision,
+        count: existing.skills.length,
+        skills: existing.skills,
+        tokenMap: existing.tokenMap || {},
+      },
+      manifestMtimeMs,
+    );
+  }
+
+  if (options?.allowRebuild === false) {
+    return updateSkillEntryIndexCache(
+      normalizedRoot,
+      { generated: nowISO(), revision, count: 0, skills: [], tokenMap: {} },
+      manifestMtimeMs,
+    );
+  }
+
+  return rebuildSkillEntryIndex(normalizedRoot, manifest);
+}
+
+export function listIndexedSkillEntries(rootDir, options = {}) {
+  const index = loadSkillEntryIndex(rootDir, options);
+  return Array.isArray(index?.skills) ? index.skills : [];
+}
+
+export function resolveLibraryPlan(rootDir, criteria = {}, opts = {}) {
+  const match = matchAgentProfiles(rootDir, criteria, opts);
+  const best = match?.best || null;
+  if (!best) {
+    return {
+      ...match,
+      plan: null,
+      alternatives: [],
+    };
+  }
+
+  const skillSelection = buildSkillSelection(rootDir, best, criteria, opts);
+  const prompt = resolvePromptSelection(rootDir, best.profile || {});
+  const toolSelection = resolveToolSelection(rootDir, best);
+
+  const plan = {
+    planId: `resolve-${Date.now().toString(36)}-${Math.random().toString(16).slice(2, 8)}`,
+    agentProfileId: best.id,
+    agentName: best.name,
+    prompt,
+    skillIds: skillSelection.selectedSkillIds,
+    selectedSkills: skillSelection.selectedSkills,
+    builtinToolIds: toolSelection.builtinToolIds,
+    recommendedToolIds: toolSelection.recommendedToolIds,
+    enabledMcpServers: toolSelection.enabledMcpServers,
+    disabledBuiltinTools: toolSelection.disabledBuiltinTools,
+    confidence: Number(best.confidence || 0),
+    autoApply: Boolean(match?.auto?.shouldAutoApply),
+    reasons: uniqueStrings([
+      ...toStringArray(best?.reasons),
+      ...skillSelection.selectedSkills.flatMap((entry) => toStringArray(entry?.reasons)),
+    ]),
+  };
+
+  return {
+    ...match,
+    plan,
+    alternatives: (match?.candidates || []).slice(1).map((candidate) => ({
+      id: candidate.id,
+      name: candidate.name,
+      score: candidate.score,
+      confidence: candidate.confidence,
+      reasons: candidate.reasons,
+    })),
+  };
 }
 
 // ── Manifest (library.json) ──────────────────────────────────────────────────
@@ -270,7 +687,7 @@ export function getEntryContent(rootDir, entry) {
  * @param {string|Object} [content]    - file content (md string or JSON object)
  * @returns {LibraryEntry}
  */
-export function upsertEntry(rootDir, data, content) {
+export function upsertEntry(rootDir, data, content, options = {}) {
   if (!data.type || !RESOURCE_TYPES.includes(data.type)) {
     throw new Error(`Invalid resource type: ${data.type}`);
   }
@@ -310,6 +727,10 @@ export function upsertEntry(rootDir, data, content) {
     manifest.entries.push(entry);
   }
   saveManifest(rootDir, manifest);
+  if (options?.skipIndexSync !== true) {
+    if (data.type === "agent") rebuildAgentProfileIndex(rootDir, manifest);
+    if (data.type === "skill") rebuildSkillEntryIndex(rootDir, manifest);
+  }
 
   return entry;
 }
@@ -317,7 +738,7 @@ export function upsertEntry(rootDir, data, content) {
 /**
  * Delete a library entry by id. Removes from manifest (optionally deletes file).
  */
-export function deleteEntry(rootDir, id, { deleteFile = false } = {}) {
+export function deleteEntry(rootDir, id, { deleteFile = false, syncIndexes = true } = {}) {
   const manifest = loadManifest(rootDir);
   const idx = manifest.entries.findIndex((e) => e.id === id);
   if (idx < 0) return false;
@@ -325,6 +746,10 @@ export function deleteEntry(rootDir, id, { deleteFile = false } = {}) {
   const entry = manifest.entries[idx];
   manifest.entries.splice(idx, 1);
   saveManifest(rootDir, manifest);
+  if (syncIndexes !== false) {
+    if (entry.type === "agent") rebuildAgentProfileIndex(rootDir, manifest);
+    if (entry.type === "skill") rebuildSkillEntryIndex(rootDir, manifest);
+  }
 
   if (deleteFile) {
     const filePath = resolve(dirForType(rootDir, entry.type), entry.filename);
@@ -369,7 +794,7 @@ export function matchAgentProfiles(rootDir, criteria = {}, opts = {}) {
     };
   }
 
-  const profiles = listAgentProfiles(rootDir);
+  const profiles = listIndexedAgentProfiles(rootDir);
   const taskScope = extractConventionalScope(title);
   const textBlob = `${title}\n${description}`.trim();
   const textBlobLower = textBlob.toLowerCase();
@@ -497,6 +922,8 @@ export function matchAgentProfile(rootDir, taskTitle) {
   return result.best || null;
 }
 
+const TRUSTED_GITHUB_OWNERS = new Set(["microsoft", "github", "azure"]);
+
 export const WELL_KNOWN_AGENT_SOURCES = Object.freeze([
   {
     id: "microsoft-hve-core",
@@ -504,11 +931,289 @@ export const WELL_KNOWN_AGENT_SOURCES = Object.freeze([
     repoUrl: "https://github.com/microsoft/hve-core.git",
     defaultBranch: "main",
     description: "Core HVE agent library with domain and plugin agent templates.",
+    owner: "microsoft",
+    trustTier: "official",
+    importCoverage: "high",
+    focuses: ["core", "plugins", "platform"],
+  },
+  {
+    id: "microsoft-skills",
+    name: "Microsoft Skills",
+    repoUrl: "https://github.com/microsoft/skills.git",
+    defaultBranch: "main",
+    description: "Microsoft-maintained backend, frontend, planner, infrastructure, and scaffolder agent catalog.",
+    owner: "microsoft",
+    trustTier: "official",
+    importCoverage: "high",
+    focuses: ["backend", "frontend", "planner", "infra", "scaffolding"],
+  },
+  {
+    id: "github-copilot-sdk",
+    name: "GitHub Copilot SDK",
+    repoUrl: "https://github.com/github/copilot-sdk.git",
+    defaultBranch: "main",
+    description: "Official GitHub workflow-authoring and docs-maintenance agents for Copilot SDK projects.",
+    owner: "github",
+    trustTier: "official",
+    importCoverage: "medium",
+    focuses: ["copilot", "workflow", "docs"],
+  },
+  {
+    id: "azure-sdk-for-js",
+    name: "Azure SDK for JavaScript",
+    repoUrl: "https://github.com/Azure/azure-sdk-for-js.git",
+    defaultBranch: "main",
+    description: "Official Azure JavaScript SDK repo with agentic workflow authoring guidance and prompts.",
+    owner: "azure",
+    trustTier: "official",
+    importCoverage: "medium",
+    focuses: ["azure", "javascript", "sdk", "workflow"],
+  },
+  {
+    id: "microsoft-vscode-python-environments",
+    name: "Microsoft VS Code Python Environments",
+    repoUrl: "https://github.com/microsoft/vscode-python-environments.git",
+    defaultBranch: "main",
+    description: "Microsoft-maintained maintainer, reviewer, and documentation agents for a production VS Code extension.",
+    owner: "microsoft",
+    trustTier: "official",
+    importCoverage: "medium",
+    focuses: ["vscode", "python", "extension", "maintainer"],
   },
 ]);
 
+function clampNumber(value, min, max) {
+  const numeric = Number(value);
+  if (!Number.isFinite(numeric)) return min;
+  return Math.max(min, Math.min(max, numeric));
+}
+
+function normalizeWellKnownSource(source = {}) {
+  const repoUrl = String(source.repoUrl || "").trim();
+  const github = repoUrl.match(/^https:\/\/github\.com\/([^/]+)\/([^/.]+)(?:\.git)?$/i);
+  const owner = String(source.owner || (github?.[1] || "")).trim();
+  const repo = String(source.repo || (github?.[2] || "")).trim();
+  return {
+    ...source,
+    owner: owner || null,
+    repo: repo || null,
+    provider: source.provider || (github ? "github" : null),
+    importCoverage: String(source.importCoverage || "medium"),
+    focuses: toStringArray(source.focuses),
+  };
+}
+
+function compareWellKnownSources(a, b) {
+  const delta = Number(b?.trust?.score || 0) - Number(a?.trust?.score || 0);
+  if (delta !== 0) return delta;
+  return String(a?.name || "").localeCompare(String(b?.name || ""));
+}
+
+export function computeWellKnownSourceTrust(source, probe = {}, options = {}) {
+  const nowMs = Number(options?.nowMs || Date.now());
+  const normalized = normalizeWellKnownSource(source);
+  const reasons = [];
+  let score = 20;
+
+  if (normalized.trustTier === "official") {
+    score += 25;
+    reasons.push("official-maintainer");
+  }
+  if (TRUSTED_GITHUB_OWNERS.has(String(normalized.owner || "").toLowerCase())) {
+    score += 15;
+    reasons.push("trusted-owner");
+  }
+  if (normalized.importCoverage === "high") {
+    score += 12;
+    reasons.push("high-import-coverage");
+  } else if (normalized.importCoverage === "medium") {
+    score += 6;
+    reasons.push("import-coverage");
+  }
+  if (normalized.provider === "github") {
+    score += 4;
+    reasons.push("github-source");
+  }
+
+  const stars = Number(probe?.stars || 0);
+  if (stars >= 10000) {
+    score += 10;
+    reasons.push("popular-repo");
+  } else if (stars >= 1000) {
+    score += 6;
+    reasons.push("established-repo");
+  } else if (stars >= 100) {
+    score += 3;
+  }
+
+  const daysSincePush = Number.isFinite(probe?.daysSincePush)
+    ? Number(probe.daysSincePush)
+    : (probe?.pushedAt ? Math.max(0, (nowMs - Date.parse(probe.pushedAt)) / 86400000) : null);
+  if (daysSincePush != null) {
+    if (daysSincePush <= 45) {
+      score += 10;
+      reasons.push("recently-updated");
+    } else if (daysSincePush <= 180) {
+      score += 6;
+      reasons.push("active-updates");
+    } else if (daysSincePush <= 365) {
+      score += 2;
+    } else if (daysSincePush > 730) {
+      score -= 16;
+      reasons.push("stale-upstream");
+    }
+  }
+
+  if (probe?.reachable === true) {
+    score += 8;
+    reasons.push("remote-reachable");
+  } else if (probe?.reachable === false) {
+    score -= 28;
+    reasons.push("remote-unreachable");
+  }
+
+  if (probe?.branchExists === true) {
+    score += 6;
+    reasons.push("branch-ok");
+  } else if (probe?.branchExists === false) {
+    score -= 22;
+    reasons.push("branch-missing");
+  }
+
+  if (probe?.archived === true) {
+    score -= 45;
+    reasons.push("archived");
+  }
+  if (probe?.disabled === true) {
+    score -= 45;
+    reasons.push("disabled");
+  }
+
+  score = Math.round(clampNumber(score, 0, 100));
+  const enabled = score >= 55 && probe?.archived !== true && probe?.disabled !== true && probe?.reachable !== false && probe?.branchExists !== false;
+  const status = !enabled ? "disabled" : score >= 85 ? "healthy" : score >= 65 ? "warning" : "degraded";
+
+  return {
+    score,
+    status,
+    enabled,
+    reasons: uniqueStrings(reasons),
+  };
+}
+
+function buildWellKnownSourceResult(source, probe = null, options = {}) {
+  const normalized = normalizeWellKnownSource(source);
+  const trust = computeWellKnownSourceTrust(normalized, probe || {}, options);
+  return {
+    ...normalized,
+    trust,
+    probe: probe ? { ...probe } : null,
+    enabled: trust.enabled,
+    status: trust.status,
+  };
+}
+
 export function listWellKnownAgentSources() {
-  return WELL_KNOWN_AGENT_SOURCES.map((source) => ({ ...source }));
+  return WELL_KNOWN_AGENT_SOURCES
+    .map((source) => buildWellKnownSourceResult(source))
+    .sort(compareWellKnownSources);
+}
+
+export function clearWellKnownAgentSourceProbeCache() {
+  wellKnownSourceProbeCache.clear();
+}
+
+async function fetchGithubRepoProbe(source, options = {}) {
+  const normalized = normalizeWellKnownSource(source);
+  if (normalized.provider !== "github" || !normalized.owner || !normalized.repo) {
+    return { checkedAt: nowISO(), reachable: false, branchExists: false, error: "Unsupported repository provider" };
+  }
+
+  const fetchImpl = options.fetchImpl || globalThis.fetch;
+  const spawnImpl = options.spawnImpl || spawnSync;
+  const branch = String(normalized.defaultBranch || "main").trim() || "main";
+  const headers = {
+    "Accept": "application/vnd.github+json",
+    "User-Agent": "bosun-library-manager",
+  };
+  if (process.env.GITHUB_TOKEN) headers.Authorization = `Bearer ${process.env.GITHUB_TOKEN}`;
+
+  let repoMeta = null;
+  let repoError = null;
+  if (typeof fetchImpl === "function") {
+    try {
+      const response = await fetchImpl(`https://api.github.com/repos/${normalized.owner}/${normalized.repo}`, { headers });
+      if (response?.ok) {
+        repoMeta = await response.json();
+      } else {
+        repoError = `GitHub API returned ${Number(response?.status || 0) || "error"}`;
+      }
+    } catch (err) {
+      repoError = err?.message || String(err);
+    }
+  } else {
+    repoError = "fetch unavailable";
+  }
+
+  let reachable = false;
+  let branchExists = false;
+  let gitError = null;
+  try {
+    const remote = spawnImpl("git", ["ls-remote", "--exit-code", "--heads", normalized.repoUrl, branch], {
+      encoding: "utf8",
+      stdio: ["ignore", "pipe", "pipe"],
+      timeout: Number(options.timeoutMs || 15000),
+    });
+    const stdout = String(remote?.stdout || "").trim();
+    reachable = Number(remote?.status) === 0 || stdout.length > 0;
+    branchExists = reachable && stdout.length > 0;
+    if (!reachable || !branchExists) {
+      gitError = String(remote?.stderr || remote?.stdout || "git ls-remote failed").trim() || null;
+    }
+  } catch (err) {
+    gitError = err?.message || String(err);
+  }
+
+  return {
+    checkedAt: nowISO(),
+    reachable,
+    branchExists,
+    defaultBranch: String(repoMeta?.default_branch || branch || "main"),
+    archived: repoMeta?.archived === true,
+    disabled: repoMeta?.disabled === true,
+    stars: Number(repoMeta?.stargazers_count || 0),
+    forks: Number(repoMeta?.forks_count || 0),
+    openIssues: Number(repoMeta?.open_issues_count || 0),
+    pushedAt: repoMeta?.pushed_at || null,
+    daysSincePush: repoMeta?.pushed_at ? Math.max(0, Math.round((Date.now() - Date.parse(repoMeta.pushed_at)) / 86400000)) : null,
+    apiReachable: Boolean(repoMeta),
+    importReady: reachable && branchExists && repoMeta?.archived !== true && repoMeta?.disabled !== true,
+    error: gitError || repoError || null,
+  };
+}
+
+export async function probeWellKnownAgentSources(options = {}) {
+  const nowMs = Number(options?.nowMs || Date.now());
+  const ttlMs = Math.max(1000, Number(options?.ttlMs || 30 * 60 * 1000));
+  const sourceId = String(options?.sourceId || "").trim().toLowerCase();
+  const refresh = options?.refresh === true;
+  const sources = WELL_KNOWN_AGENT_SOURCES.filter((source) => !sourceId || source.id === sourceId);
+  const results = [];
+
+  for (const source of sources) {
+    const cacheKey = source.id;
+    const cached = wellKnownSourceProbeCache.get(cacheKey) || null;
+    if (!refresh && cached && (nowMs - Number(cached.cachedAt || 0)) < ttlMs) {
+      results.push(buildWellKnownSourceResult(source, cached.probe, { nowMs }));
+      continue;
+    }
+
+    const probe = await fetchGithubRepoProbe(source, options);
+    wellKnownSourceProbeCache.set(cacheKey, { cachedAt: nowMs, probe });
+    results.push(buildWellKnownSourceResult(source, probe, { nowMs }));
+  }
+
+  return results.sort(compareWellKnownSources);
 }
 
 function parseSimpleFrontmatter(markdown = "") {
@@ -988,11 +1693,12 @@ export function importAgentProfilesFromRepository(rootDir, options = {}) {
         branch,
         relPath,
       },
-    }, profile);
+    }, profile, { skipIndexSync: true });
 
     imported.push({ id, name, relPath, promptId: importPrompts ? promptId : null });
   }
 
+  rebuildAgentProfileIndex(rootDir);
   rmSync(checkoutDir, { recursive: true, force: true });
 
   return {
@@ -1242,6 +1948,8 @@ export function rebuildManifest(rootDir) {
 
   const manifest = { entries: newEntries, generated: nowISO() };
   saveManifest(rootDir, manifest);
+  rebuildAgentProfileIndex(rootDir, manifest);
+  rebuildSkillEntryIndex(rootDir, manifest);
 
   return { entries: newEntries, added, removed };
 }

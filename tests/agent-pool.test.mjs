@@ -9,6 +9,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 const mockCodexStartThread = vi.fn();
 const mockCodexResumeThread = vi.fn();
 const mockCodexCtor = vi.fn();
+const mockCopilotStart = vi.fn();
 const mockCopilotCreateSession = vi.fn();
 const mockCopilotResumeSession = vi.fn();
 const mockClaudeQuery = vi.fn();
@@ -73,7 +74,10 @@ vi.mock("@github/copilot-sdk", () => {
   if (process.env.__MOCK_COPILOT_AVAILABLE === "1") {
     return {
       CopilotClient: class MockCopilotClient {
-        async start() {}
+        async start() {
+          const injected = mockCopilotStart();
+          if (injected !== undefined) return injected;
+        }
         async stop() {}
         async resumeSession(...args) {
           const injected = mockCopilotResumeSession(...args);
@@ -277,6 +281,7 @@ beforeEach(async () => {
   mockCodexStartThread.mockReset();
   mockCodexResumeThread.mockReset();
   mockCodexCtor.mockReset();
+  mockCopilotStart.mockReset();
   mockCopilotCreateSession.mockReset();
   mockCopilotResumeSession.mockReset();
   mockClaudeQuery.mockReset();
@@ -580,6 +585,38 @@ describe("launchEphemeralThread", () => {
     nowSpy.mockRestore();
   });
 
+  it("fails over when copilot startup reports a protocol version mismatch", async () => {
+    process.env.__MOCK_CODEX_AVAILABLE = "1";
+    process.env.__MOCK_COPILOT_AVAILABLE = "1";
+    process.env.OPENAI_API_KEY = "test-key";
+    process.env.GITHUB_TOKEN = "test-token";
+    process.env.AGENT_POOL_SDK_FAILURE_COOLDOWN_MS = "1000";
+    setPoolSdk("copilot");
+
+    mockCopilotStart.mockImplementationOnce(() => {
+      throw new Error(
+        "SDK protocol version mismatch: SDK expects version 2, but server reports version 3.",
+      );
+    });
+
+    const first = await launchEphemeralThread("test prompt", process.cwd(), 5000, {
+      sdk: "copilot",
+    });
+
+    expect(first.success).toBe(true);
+    expect(first.sdk).toBe("codex");
+    expect(mockCopilotStart).toHaveBeenCalledTimes(1);
+    expect(mockCodexStartThread).toHaveBeenCalledTimes(1);
+
+    const second = await launchEphemeralThread("test prompt", process.cwd(), 5000, {
+      sdk: "copilot",
+    });
+
+    expect(second.success).toBe(true);
+    expect(second.sdk).toBe("codex");
+    expect(mockCopilotStart).toHaveBeenCalledTimes(1);
+    expect(mockCodexStartThread).toHaveBeenCalledTimes(2);
+  });
   it("returns error when all SDKs are disabled", async () => {
     process.env.CODEX_SDK_DISABLED = "1";
     process.env.COPILOT_SDK_DISABLED = "1";

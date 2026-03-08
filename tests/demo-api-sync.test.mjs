@@ -178,9 +178,11 @@ const INTENTIONALLY_SKIPPED_ACTIONS = new Set([
 describe("demo.html :workflow: ui-server.mjs API sync", () => {
   const serverSrc = readFile("server/ui-server.mjs");
   const demoSrc = readFile("ui/demo.html");
+  const siteDemoSrc = readFile("site/ui/demo.html");
 
   const serverRoutes = extractServerRoutes(serverSrc);
   const demoRoutes = extractDemoRoutes(demoSrc);
+  const siteDemoRoutes = extractDemoRoutes(siteDemoSrc);
 
   it("server should have API routes (sanity check)", () => {
     expect(serverRoutes.size).toBeGreaterThan(30);
@@ -237,6 +239,16 @@ describe("demo.html :workflow: ui-server.mjs API sync", () => {
       ].join("\n");
       expect.fail(msg);
     }
+  });
+
+  it("site demo should mirror ui demo API routes", () => {
+    expect([...siteDemoRoutes].sort()).toEqual([...demoRoutes].sort());
+  });
+
+  it("site demo should mirror ui demo session actions", () => {
+    const demoActions = extractDemoSessionActions(demoSrc);
+    const siteActions = extractDemoSessionActions(siteDemoSrc);
+    expect([...siteActions].sort()).toEqual([...demoActions].sort());
   });
 
   it("no demo routes should be absent from the server (stale mocks)", () => {

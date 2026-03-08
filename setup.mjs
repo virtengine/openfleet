@@ -549,7 +549,6 @@ function parseEnvAssignmentLine(line) {
   const normalized = raw.startsWith("export ") ? raw.slice(7).trim() : raw;
   const match = normalized.match(/^([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(.*)$/);
   if (!match) return null;
-
   const key = match[1];
   let value = match[2] ?? "";
   if (
@@ -1047,23 +1046,29 @@ function extractProjectNumberFromText(value) {
   if (!text) return "";
   if (/^\d+$/.test(text)) return text;
 
-  const patterns = [
-    /\/projects\/(\d+)(?:\b|$)/i,
-    /\/projects\/v2\/(\d+)(?:\b|$)/i,
-    /\bproject\s*(?:number|id)?\s*[:#=-]?\s*(\d+)\b/i,
-    /\bnumber\s*[:#=-]\s*(\d+)\b/i,
-  ];
+  const lower = text.toLowerCase();
+  const scanAfter = (marker) => {
+    const idx = lower.indexOf(marker);
+    if (idx === -1) return "";
+    const tail = text.slice(idx + marker.length);
+    const match = tail.match(/\d+/);
+    return match ? match[0] : "";
+  };
 
-  for (const pattern of patterns) {
-    const match = text.match(pattern);
-    if (match && match[1]) return match[1];
-  }
+  const candidates = [
+    scanAfter("/projects/"),
+    scanAfter("/projects/v2/"),
+    scanAfter("project number"),
+    scanAfter("project id"),
+    scanAfter("project"),
+    scanAfter("number"),
+  ].filter(Boolean);
 
+  if (candidates.length > 0) return candidates[0];
   if (/project/i.test(text)) {
     const fallback = text.match(/\b(\d+)\b/);
     if (fallback && fallback[1]) return fallback[1];
   }
-
   return "";
 }
 
@@ -2274,9 +2279,12 @@ export function buildStandardizedEnvFile(templateText, envEntries) {
   const consumed = new Set();
   const seenKeys = new Set();
   const updated = lines.flatMap((line) => {
-    const match = line.match(/^\s*#?\s*([A-Z0-9_]+)=.*$/);
-    if (!match) return [line];
-    const key = match[1];
+    const trimmedLine = String(line || "").trim();
+    const noComment = trimmedLine.startsWith("#") ? trimmedLine.slice(1).trimStart() : trimmedLine;
+    const eqIdx = noComment.indexOf("=");
+    if (eqIdx <= 0) return [line];
+    const key = noComment.slice(0, eqIdx).trim();
+    if (!/^[A-Z0-9_]+$/.test(key)) return [line];
     if (seenKeys.has(key)) return [];
     seenKeys.add(key);
     if (!entryMap.has(key)) return [line];
@@ -6862,3 +6870,4 @@ if (process.argv[1] && resolve(process.argv[1]) === resolve(__filename_setup)) {
     process.exit(1);
   });
 }
+

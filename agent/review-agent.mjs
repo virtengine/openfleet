@@ -122,24 +122,36 @@ function extractRepoSlug(prUrl) {
 
 /**
  * Get the PR diff using `gh pr diff` or `git diff`.
- * @param {{ prUrl?: string, branchName?: string }} opts
+ * @param {{ prUrl?: string, prNumber?: number|string, repoSlug?: string, branchName?: string, cwd?: string|null }} opts
  * @returns {{ diff: string, truncated: boolean }}
  */
-function getPrDiff({ prUrl, branchName }) {
+function getPrDiff({ prUrl, prNumber, repoSlug, branchName, cwd }) {
   let diff = "";
+  const commandOptions = {
+    encoding: "utf8",
+    timeout: 30_000,
+    stdio: ["pipe", "pipe", "pipe"],
+    ...(cwd ? { cwd } : {}),
+  };
 
   // Strategy 1: gh pr diff
-  const prNumber = extractPrNumber(prUrl);
-  const repoSlug = extractRepoSlug(prUrl);
-  if (prNumber && repoSlug) {
+  const resolvedPrNumber = Number.isFinite(Number(prNumber))
+    ? Number(prNumber)
+    : extractPrNumber(prUrl);
+  const resolvedRepoSlug = String(repoSlug || "").trim() || extractRepoSlug(prUrl);
+  if (resolvedPrNumber) {
     try {
-      const result = spawnSync(
-        "gh",
-        ["pr", "diff", String(prNumber), "--repo", repoSlug],
-        { encoding: "utf8", timeout: 30_000, stdio: ["pipe", "pipe", "pipe"] },
-      );
-      if (result.status === 0 && result.stdout?.trim()) {
-        diff = result.stdout;
+      const attempts = [];
+      if (resolvedRepoSlug) {
+        attempts.push(["pr", "diff", String(resolvedPrNumber), "--repo", resolvedRepoSlug]);
+      }
+      attempts.push(["pr", "diff", String(resolvedPrNumber)]);
+      for (const args of attempts) {
+        const result = spawnSync("gh", args, commandOptions);
+        if (result.status === 0 && result.stdout?.trim()) {
+          diff = result.stdout;
+          break;
+        }
       }
     } catch {
       /* fall through to git diff */
@@ -149,13 +161,16 @@ function getPrDiff({ prUrl, branchName }) {
   // Strategy 2: git diff main...<branch>
   if (!diff && branchName) {
     try {
-      const result = spawnSync("git", ["diff", `main...${branchName}`], {
-        encoding: "utf8",
-        timeout: 30_000,
-        stdio: ["pipe", "pipe", "pipe"],
-      });
-      if (result.status === 0 && result.stdout?.trim()) {
-        diff = result.stdout;
+      const attempts = [
+        ["diff", `origin/main...${branchName}`],
+        ["diff", `main...${branchName}`],
+      ];
+      for (const args of attempts) {
+        const result = spawnSync("git", args, commandOptions);
+        if (result.status === 0 && result.stdout?.trim()) {
+          diff = result.stdout;
+          break;
+        }
       }
     } catch {
       /* ignore */
@@ -343,6 +358,17 @@ export class ReviewAgent {
       console.warn(`${TAG} queueReview called without task id — skipping`);
       return;
     }
+    const hasReviewReference = Boolean(
+      String(task.prUrl || "").trim() ||
+        String(task.prNumber || "").trim() ||
+        String(task.branchName || "").trim(),
+    );
+    if (!hasReviewReference) {
+      console.warn(
+        `${TAG} queueReview skipped for ${task.id}: no prUrl, prNumber, or branchName`,
+      );
+      return;
+    }
 
     if (this.#seen.has(task.id)) {
       console.log(`${TAG} task ${task.id} already queued/in-flight — skipping`);
@@ -463,7 +489,10 @@ export class ReviewAgent {
     // 1. Get PR diff
     const { diff, truncated } = getPrDiff({
       prUrl: task.prUrl,
+      prNumber: task.prNumber,
+      repoSlug: task.repoSlug,
       branchName: task.branchName,
+      cwd: task.worktreePath || null,
     });
 
     if (!diff) {

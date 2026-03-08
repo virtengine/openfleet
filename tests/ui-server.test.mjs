@@ -4,6 +4,23 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
+function sanitizedGitEnv(extra = {}) {
+  const env = { ...process.env, ...extra };
+  for (const key of [
+    "GIT_DIR",
+    "GIT_WORK_TREE",
+    "GIT_COMMON_DIR",
+    "GIT_INDEX_FILE",
+    "GIT_OBJECT_DIRECTORY",
+    "GIT_ALTERNATE_OBJECT_DIRECTORIES",
+    "GIT_PREFIX",
+  ]) {
+    delete env[key];
+  }
+  return env;
+}
+
+
 describe("ui-server mini app", () => {
   const ENV_KEYS = [
     "TELEGRAM_UI_TLS_DISABLE",
@@ -2339,9 +2356,180 @@ describe("ui-server mini app", () => {
     expect(listedByParentTaskId.taskId).toBe(parent.data.id);
     expect(Array.isArray(listedByParentTaskId.data)).toBe(true);
   });
+
+  it("focuses agent log tails on session-specific lines", async () => {
+    process.env.TELEGRAM_UI_TUNNEL = "disabled";
+
+    const mod = await import("../server/ui-server.mjs");
+    const server = await mod.startTelegramUiServer({
+      port: await getFreePort(),
+      host: "127.0.0.1",
+      skipInstanceLock: true,
+      skipAutoOpen: true,
+    });
+    const port = server.address().port;
+
+    const logDir = join(process.cwd(), "logs", "agents");
+    mkdirSync(logDir, { recursive: true });
+    const query = `ve-log-focus-${Date.now()}`;
+    const logPath = join(logDir, `agent-${query}.log`);
+    writeFileSync(
+      logPath,
+      [
+        "[2026-03-08T12:38:40.000Z] [info] monitor: unrelated health check",
+        `[2026-03-08T12:38:41.000Z] [info] task-executor: Task ${query} moved to review`,
+        `[2026-03-08T12:38:42.000Z] [error] review-agent: [${query}] failed due to policy check`,
+        "[2026-03-08T12:38:43.000Z] [info] monitor: another unrelated line",
+      ].join("\n"),
+      "utf8",
+    );
+
+    try {
+      const payload = await fetch(
+        `http://127.0.0.1:${port}/api/agent-logs/tail?query=${encodeURIComponent(query)}&lines=6`,
+      ).then((r) => r.json());
+
+      expect(payload.ok).toBe(true);
+      expect(payload.data?.file).toBe(`agent-${query}.log`);
+      expect(payload.data?.mode).toBe("focused");
+      expect(payload.data?.content || "").toContain(query);
+      expect(payload.data?.content || "").toContain("failed due to policy check");
+    } finally {
+      rmSync(logPath, { force: true });
+    }
+  });
+
+  it("falls back to session workspaceDir for diff view", async () => {
+    process.env.TELEGRAM_UI_TUNNEL = "disabled";
+
+    const repoDir = mkdtempSync(join(tmpdir(), "bosun-session-diff-"));
+    const filePath = join(repoDir, "notes.txt");
+    const { execSync } = await import("node:child_process");
+    execSync("git init", { cwd: repoDir, stdio: "pipe", env: sanitizedGitEnv() });
+    execSync("git config user.email bosun@example.com", { cwd: repoDir, stdio: "pipe", env: sanitizedGitEnv() });
+    execSync("git config user.name Bosun", { cwd: repoDir, stdio: "pipe", env: sanitizedGitEnv() });
+    writeFileSync(filePath, "line one\n", "utf8");
+    execSync("git add notes.txt", { cwd: repoDir, stdio: "pipe", env: sanitizedGitEnv() });
+    execSync('git commit -m "init"', { cwd: repoDir, stdio: "pipe", env: sanitizedGitEnv() });
+    writeFileSync(filePath, "line one\nline two\n", "utf8");
+
+    const mod = await import("../server/ui-server.mjs");
+    const server = await mod.startTelegramUiServer({
+      port: await getFreePort(),
+      host: "127.0.0.1",
+      skipInstanceLock: true,
+      skipAutoOpen: true,
+    });
+    const port = server.address().port;
+
+    try {
+      const created = await fetch(`http://127.0.0.1:${port}/api/sessions/create`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          type: "task",
+          workspaceDir: repoDir,
+          prompt: "diff fallback regression",
+        }),
+      }).then((r) => r.json());
+
+      expect(created.ok).toBe(true);
+      const sessionId = created.session?.id;
+      expect(sessionId).toBeTruthy();
+
+      const diffPayload = await fetch(
+        `http://127.0.0.1:${port}/api/sessions/${encodeURIComponent(sessionId)}/diff?workspace=all`,
+      ).then((r) => r.json());
+
+      expect(diffPayload.ok).toBe(true);
+      expect(diffPayload.diff?.totalFiles).toBeGreaterThan(0);
+      expect(Array.isArray(diffPayload.diff?.files)).toBe(true);
+      expect(diffPayload.diff.files.some((entry) => String(entry.file || entry.filename || "").includes("notes.txt"))).toBe(true);
+    } finally {
+      rmSync(repoDir, { recursive: true, force: true });
+    }
+  });
+
+  it("reports live compaction telemetry breakdowns", async () => {
+    const logDir = join(process.cwd(), ".cache", "agent-work-logs");
+    mkdirSync(logDir, { recursive: true });
+    const shreddingPath = join(logDir, "shredding-stats.jsonl");
+    const previousStats = existsSync(shreddingPath)
+      ? readFileSync(shreddingPath, "utf8")
+      : null;
+    const now = new Date();
+    const entries = [
+      {
+        timestamp: new Date(now.getTime() - 60_000).toISOString(),
+        originalChars: 9000,
+        compressedChars: 2200,
+        savedChars: 6800,
+        savedPct: 76,
+        agentType: "codex-sdk",
+        attemptId: "attempt-live-search",
+        stage: "live_tool_compaction",
+        compactionFamily: "search",
+        commandFamily: "rg",
+      },
+      {
+        timestamp: new Date(now.getTime() - 30_000).toISOString(),
+        originalChars: 5000,
+        compressedChars: 1800,
+        savedChars: 3200,
+        savedPct: 64,
+        agentType: "copilot-sdk",
+        attemptId: "attempt-live-git",
+        stage: "live_tool_compaction",
+        compactionFamily: "git",
+        commandFamily: "git",
+      },
+      {
+        timestamp: now.toISOString(),
+        originalChars: 14000,
+        compressedChars: 6000,
+        savedChars: 8000,
+        savedPct: 57,
+        agentType: "claude-sdk",
+        attemptId: "attempt-session-total",
+        stage: "session_total",
+      },
+    ];
+    writeFileSync(
+      shreddingPath,
+      `${entries.map((entry) => JSON.stringify(entry)).join("\n")}\n`,
+      "utf8",
+    );
+
+    const mod = await import("../server/ui-server.mjs");
+    const server = await mod.startTelegramUiServer({
+      port: await getFreePort(),
+      host: "127.0.0.1",
+      skipInstanceLock: true,
+      skipAutoOpen: true,
+    });
+    const port = server.address().port;
+
+    try {
+      const response = await fetch(`http://127.0.0.1:${port}/api/telemetry/shredding?days=30`);
+      const payload = await response.json();
+      expect(payload.ok).toBe(true);
+      expect(payload.data.stageCounts).toMatchObject({
+        live_tool_compaction: 2,
+        session_total: 1,
+      });
+      expect(payload.data.liveCompaction).toMatchObject({
+        totalEvents: 2,
+        totalSavedChars: 10000,
+        avgSavedPct: 71,
+      });
+      expect(payload.data.topCompactionFamilies.some((entry) => entry.name === "search" && entry.count === 1)).toBe(true);
+      expect(payload.data.topCommandFamilies.some((entry) => entry.name === "git" && entry.count === 1)).toBe(true);
+      expect(payload.data.recentEvents[0]).toHaveProperty("stage");
+      expect(payload.data.recentEvents.some((entry) => entry.compactionFamily === "search")).toBe(true);
+    } finally {
+      if (previousStats == null) rmSync(shreddingPath, { force: true });
+      else writeFileSync(shreddingPath, previousStats, "utf8");
+    }
+  });
+
 });
-
-
-
-
-

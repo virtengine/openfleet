@@ -81,6 +81,8 @@ describe("cli daemon pid tracking", () => {
     expect(cliSource).toContain("if (configDirArg) return resolve(configDirArg);");
     expect(cliSource).toContain("if (process.env.BOSUN_HOME) return resolve(process.env.BOSUN_HOME);");
     expect(cliSource).toContain("BOSUN_DIR: process.env.BOSUN_DIR || resolveConfigDirForCli(),");
+    expect(cliSource).toContain("function normalizeDetachedDaemonArgs(rawArgs = []) {");
+    expect(cliSource).toContain("...normalizeDetachedDaemonArgs(");
   });
   it("supports windows ghost daemon discovery for --daemon-status/--stop-daemon", () => {
     expect(cliSource).toContain("if (process.platform === \"win32\")");

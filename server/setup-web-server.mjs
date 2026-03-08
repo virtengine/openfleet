@@ -208,6 +208,15 @@ function normalizeWorkspaceId(value, fallback = "workspace") {
   return normalized || fallback;
 }
 
+function trimSlashEdges(value) {
+  const text = String(value || "");
+  let start = 0;
+  let end = text.length;
+  while (start < end && text.charCodeAt(start) === 47) start += 1;
+  while (end > start && text.charCodeAt(end - 1) === 47) end -= 1;
+  return text.slice(start, end);
+}
+
 function extractRepoNameFromText(text) {
   const raw = String(text || "").trim();
   if (!raw) return "";
@@ -216,15 +225,10 @@ function extractRepoNameFromText(text) {
   }
   try {
     const parsed = new URL(raw);
-    const pathname = String(parsed.pathname || "")
-      .replace(/\.git$/i, "")
-      .replace(/^\/+|\/+$/g, "");
+    const pathname = trimSlashEdges(String(parsed.pathname || "").replace(/\.git$/i, ""));
     return pathname.split("/").pop() || "";
   } catch {
-    const cleaned = raw
-      .replace(/\\/g, "/")
-      .replace(/\.git$/i, "")
-      .replace(/^\/+|\/+$/g, "");
+    const cleaned = trimSlashEdges(raw.replace(/\\/g, "/").replace(/\.git$/i, ""));
     return cleaned.split("/").pop() || "";
   }
 }
@@ -233,9 +237,14 @@ function normalizeRepoSlug(text) {
   const raw = String(text || "").trim();
   if (!raw) return "";
   if (/^[a-z0-9_.-]+\/[a-z0-9_.-]+$/i.test(raw)) return raw;
-  const fromUrl = raw.match(/github\.com[:/]([a-z0-9_.-]+\/[a-z0-9_.-]+)(?:\.git)?/i);
-  if (fromUrl?.[1]) return fromUrl[1];
-  return "";
+  const markerIdx = raw.toLowerCase().indexOf("github.com");
+  if (markerIdx === -1) return "";
+  let tail = raw.slice(markerIdx + "github.com".length);
+  if (tail.startsWith(":") || tail.startsWith("/")) tail = tail.slice(1);
+  tail = trimSlashEdges(tail.replace(/\.git$/i, ""));
+  const parts = tail.split("/").filter(Boolean);
+  if (parts.length < 2) return "";
+  return `${parts[0]}/${parts[1]}`;
 }
 
 function normalizeRepoConfigEntry(repo, index = 0) {
@@ -458,6 +467,14 @@ function buildStableSetupDefaults({
     contextShreddingMsgTier1MaxAge: 4,
     contextShreddingMsgMinCompressChars: 120,
     contextShreddingUserMsgFullTurns: 1,
+    contextShreddingLiveToolCompactionEnabled: false,
+    contextShreddingLiveToolCompactionMode: "auto",
+    contextShreddingLiveToolCompactionMinChars: 4000,
+    contextShreddingLiveToolCompactionTargetChars: 1800,
+    contextShreddingLiveToolCompactionMinSavingsPct: 15,
+    contextShreddingLiveToolCompactionMinRuntimeMs: 2000,
+    contextShreddingLiveToolCompactionBlockStructuredOutput: true,
+    contextShreddingLiveToolCompactionAllowCommands: "grep,rg,find,findstr,select-string,ag,ack,sift,fd,where,which,ls,dir,tree,git,go,npm,pnpm,yarn,npx,bun,node,python,python3,pytest,pip,pip3,poetry,docker,kubectl,helm,terraform,ansible,ansible-playbook,journalctl,tail,get-content,cargo,gradle,maven,mvn,javac,tsc,jest,vitest,deno,make,cmake,bazel,buck,nx,turbo,rush,composer,bundle",
     contextShreddingProfiles: "",
     voiceEnabled: true,
     voiceProvider: "auto",
@@ -1011,6 +1028,90 @@ function applyNonBlockingSetupEnvDefaults(envMap, env = {}, sourceEnv = process.
       { min: 0, max: 20 },
     ),
   );
+  envMap.CONTEXT_SHREDDING_LIVE_TOOL_COMPACTION_ENABLED = toBooleanEnvString(
+    pickNonEmptyValue(
+      env.contextShreddingLiveToolCompactionEnabled,
+      env.CONTEXT_SHREDDING_LIVE_TOOL_COMPACTION_ENABLED,
+      envMap.CONTEXT_SHREDDING_LIVE_TOOL_COMPACTION_ENABLED,
+      sourceEnv.CONTEXT_SHREDDING_LIVE_TOOL_COMPACTION_ENABLED,
+    ),
+    false,
+  );
+  const liveToolCompactionMode = String(
+    pickNonEmptyValue(
+      env.contextShreddingLiveToolCompactionMode,
+      env.CONTEXT_SHREDDING_LIVE_TOOL_COMPACTION_MODE,
+      envMap.CONTEXT_SHREDDING_LIVE_TOOL_COMPACTION_MODE,
+      sourceEnv.CONTEXT_SHREDDING_LIVE_TOOL_COMPACTION_MODE,
+    ) || "auto",
+  ).trim().toLowerCase();
+  envMap.CONTEXT_SHREDDING_LIVE_TOOL_COMPACTION_MODE = ["off", "auto", "aggressive"].includes(liveToolCompactionMode)
+    ? liveToolCompactionMode
+    : "auto";
+  envMap.CONTEXT_SHREDDING_LIVE_TOOL_COMPACTION_MIN_CHARS = String(
+    toBoundedInt(
+      pickNonEmptyValue(
+        env.contextShreddingLiveToolCompactionMinChars,
+        env.CONTEXT_SHREDDING_LIVE_TOOL_COMPACTION_MIN_CHARS,
+        envMap.CONTEXT_SHREDDING_LIVE_TOOL_COMPACTION_MIN_CHARS,
+        sourceEnv.CONTEXT_SHREDDING_LIVE_TOOL_COMPACTION_MIN_CHARS,
+      ),
+      4000,
+      { min: 500, max: 500000 },
+    ),
+  );
+  envMap.CONTEXT_SHREDDING_LIVE_TOOL_COMPACTION_TARGET_CHARS = String(
+    toBoundedInt(
+      pickNonEmptyValue(
+        env.contextShreddingLiveToolCompactionTargetChars,
+        env.CONTEXT_SHREDDING_LIVE_TOOL_COMPACTION_TARGET_CHARS,
+        envMap.CONTEXT_SHREDDING_LIVE_TOOL_COMPACTION_TARGET_CHARS,
+        sourceEnv.CONTEXT_SHREDDING_LIVE_TOOL_COMPACTION_TARGET_CHARS,
+      ),
+      1800,
+      { min: 200, max: 50000 },
+    ),
+  );
+  envMap.CONTEXT_SHREDDING_LIVE_TOOL_COMPACTION_MIN_SAVINGS_PCT = String(
+    toBoundedInt(
+      pickNonEmptyValue(
+        env.contextShreddingLiveToolCompactionMinSavingsPct,
+        env.CONTEXT_SHREDDING_LIVE_TOOL_COMPACTION_MIN_SAVINGS_PCT,
+        envMap.CONTEXT_SHREDDING_LIVE_TOOL_COMPACTION_MIN_SAVINGS_PCT,
+        sourceEnv.CONTEXT_SHREDDING_LIVE_TOOL_COMPACTION_MIN_SAVINGS_PCT,
+      ),
+      15,
+      { min: 0, max: 95 },
+    ),
+  );
+  envMap.CONTEXT_SHREDDING_LIVE_TOOL_COMPACTION_MIN_RUNTIME_MS = String(
+    toBoundedInt(
+      pickNonEmptyValue(
+        env.contextShreddingLiveToolCompactionMinRuntimeMs,
+        env.CONTEXT_SHREDDING_LIVE_TOOL_COMPACTION_MIN_RUNTIME_MS,
+        envMap.CONTEXT_SHREDDING_LIVE_TOOL_COMPACTION_MIN_RUNTIME_MS,
+        sourceEnv.CONTEXT_SHREDDING_LIVE_TOOL_COMPACTION_MIN_RUNTIME_MS,
+      ),
+      2000,
+      { min: 0, max: 3600000 },
+    ),
+  );
+  envMap.CONTEXT_SHREDDING_LIVE_TOOL_COMPACTION_BLOCK_STRUCTURED_OUTPUT = toBooleanEnvString(
+    pickNonEmptyValue(
+      env.contextShreddingLiveToolCompactionBlockStructuredOutput,
+      env.CONTEXT_SHREDDING_LIVE_TOOL_COMPACTION_BLOCK_STRUCTURED_OUTPUT,
+      envMap.CONTEXT_SHREDDING_LIVE_TOOL_COMPACTION_BLOCK_STRUCTURED_OUTPUT,
+      sourceEnv.CONTEXT_SHREDDING_LIVE_TOOL_COMPACTION_BLOCK_STRUCTURED_OUTPUT,
+    ),
+    true,
+  );
+  const liveToolCompactionAllowCommands =
+    env.contextShreddingLiveToolCompactionAllowCommands
+    ?? env.CONTEXT_SHREDDING_LIVE_TOOL_COMPACTION_ALLOW_COMMANDS
+    ?? envMap.CONTEXT_SHREDDING_LIVE_TOOL_COMPACTION_ALLOW_COMMANDS
+    ?? sourceEnv.CONTEXT_SHREDDING_LIVE_TOOL_COMPACTION_ALLOW_COMMANDS
+    ?? "grep,rg,find,findstr,select-string,ag,ack,sift,fd,where,which,ls,dir,tree,git,go,npm,pnpm,yarn,npx,bun,node,python,python3,pytest,pip,pip3,poetry,docker,kubectl,helm,terraform,ansible,ansible-playbook,journalctl,tail,get-content,cargo,gradle,maven,mvn,javac,tsc,jest,vitest,deno,make,cmake,bazel,buck,nx,turbo,rush,composer,bundle";
+  envMap.CONTEXT_SHREDDING_LIVE_TOOL_COMPACTION_ALLOW_COMMANDS = String(liveToolCompactionAllowCommands).trim();
   const contextShreddingProfiles =
     env.contextShreddingProfiles
     ?? env.CONTEXT_SHREDDING_PROFILES
@@ -2889,3 +2990,4 @@ if (process.argv[1] && resolve(process.argv[1]) === resolve(__filename_setup_web
     process.exit(1);
   });
 }
+

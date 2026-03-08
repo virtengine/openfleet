@@ -65,4 +65,16 @@ describe("ve-kanban native cli", () => {
       variant: "DEFAULT",
     });
   });
+
+  it("normalizes GitHub repository URLs with repeated slashes", () => {
+    const runtime = new VeKanbanRuntime({
+      env: {
+        GITHUB_REPOSITORY: "https://github.com///virtengine///bosun///.git",
+      },
+    });
+
+    expect(runtime.ghOwner).toBe("virtengine");
+    expect(runtime.ghRepo).toBe("bosun");
+    expect(runtime.projectName).toBe("bosun");
+  });
 });

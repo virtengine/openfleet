@@ -16,7 +16,7 @@
  *   3. Configuration loading from config.mjs
  */
 
-import { resolve, dirname } from "node:path";
+import { isAbsolute, resolve, dirname } from "node:path";
 import {
   existsSync,
   readFileSync,
@@ -615,6 +615,40 @@ function removePidFile() {
   }
 }
 
+function absolutizeDaemonArgPath(value) {
+  const raw = String(value || "").trim();
+  if (!raw) return raw;
+  return isAbsolute(raw) ? raw : resolve(process.cwd(), raw);
+}
+
+function normalizeDetachedDaemonArgs(rawArgs = []) {
+  const normalized = Array.isArray(rawArgs) ? [...rawArgs] : [];
+  const pathFlags = new Set(["--config-dir", "--repo-root", "--log-dir"]);
+  for (let i = 0; i < normalized.length; i += 1) {
+    const arg = String(normalized[i] || "").trim();
+    if (!arg.startsWith("--")) continue;
+
+    const eq = arg.indexOf("=");
+    if (eq > 0) {
+      const flag = arg.slice(0, eq);
+      const value = arg.slice(eq + 1);
+      if (pathFlags.has(flag)) {
+        normalized[i] = flag + "=" + absolutizeDaemonArgPath(value);
+      }
+      continue;
+    }
+
+    if (pathFlags.has(arg) && i + 1 < normalized.length) {
+      const value = String(normalized[i + 1] || "").trim();
+      if (value && !value.startsWith("--")) {
+        normalized[i + 1] = absolutizeDaemonArgPath(value);
+        i += 1;
+      }
+    }
+  }
+  return normalized;
+}
+
 function startDaemon() {
   const existing = getDaemonPid();
   if (existing) {
@@ -659,7 +693,9 @@ function startDaemon() {
       ...runAsNode,
       "--max-old-space-size=4096",
       fileURLToPath(new URL("./cli.mjs", import.meta.url)),
-      ...process.argv.slice(2).filter((a) => a !== "--daemon" && a !== "-d"),
+      ...normalizeDetachedDaemonArgs(
+        process.argv.slice(2).filter((a) => a !== "--daemon" && a !== "-d"),
+      ),
       "--daemon-child",
     ],
     {

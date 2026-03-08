@@ -8,6 +8,7 @@ import { signal, computed } from "@preact/signals";
 import {
   tasksData,
   tasksLoaded,
+  tasksPage,
   showToast,
   runOptimistic,
   loadTasks,
@@ -151,6 +152,14 @@ const TOUCH_DRAG_DELAY_MS = 180;
 const TOUCH_DRAG_START_PX = 6;
 const TOUCH_CANCEL_PX = 14;
 
+function queueBoardTasksRefresh() {
+  const page = Number(tasksPage?.value ?? 0);
+  const append = Number.isFinite(page) && page > 0;
+  setTimeout(() => {
+    void loadTasks({ append });
+  }, 500);
+}
+
 /* ─── Touch drag helpers ─── */
 
 function _createTouchClone(el) {
@@ -290,7 +299,7 @@ async function executeBoardTransition(task, newStatus, columnLabel) {
   );
 
   showToast(`Moved to ${columnLabel || "updated status"}`, "success");
-  setTimeout(() => loadTasks(), 500);
+  queueBoardTasksRefresh();
   return { ok: true, cancelled: false, action: decision.action, status: optimisticStatus };
 }
 
@@ -663,7 +672,7 @@ function KanbanColumn({
         },
       );
       showToast(`Moved to ${col.title}`, "success");
-      setTimeout(() => loadTasks(), 500);
+      queueBoardTasksRefresh();
     } catch (err) {
       showToast(err?.message || "Failed to move task", "error");
     }

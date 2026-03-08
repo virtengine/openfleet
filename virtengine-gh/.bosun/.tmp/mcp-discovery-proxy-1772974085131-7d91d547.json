@@ -1,0 +1,8 @@
+{
+  "rootDir": "virtengine-gh",
+  "timeoutMs": 30000,
+  "cacheTtlMs": 60000,
+  "executeTimeoutMs": 10000,
+  "includeCustomTools": true,
+  "servers": []
+}

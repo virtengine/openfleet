@@ -1,6 +1,6 @@
 {
   "name": "bosun",
-  "version": "0.40.3",
+  "version": "0.40.5",
   "description": "Bosun Autonomous Engineering — manages AI agent executors with failover, extremely powerful workflow builder, and a massive amount of included default workflow templates for autonomous engineering, creates PRs via Vibe-Kanban API, and sends Telegram notifications. Supports N executors with weighted distribution, multi-repo projects, and auto-setup.",
   "type": "module",
   "license": "Apache-2.0",
@@ -91,7 +91,7 @@
     "telegram-sentinel": "telegram/telegram-sentinel.mjs"
   },
   "scripts": {
-    "start": "node cli.mjs",
+    "start": "node cli.mjs --config-dir .bosun --repo-root . --no-update-check",
     "setup": "node cli.mjs --setup",
     "setup:terminal": "node setup.mjs",
     "monitor": "node infra/monitor.mjs",
@@ -130,6 +130,7 @@
     "bench:swebench:import": "node bench/swebench/bosun-swebench.mjs import",
     "bench:swebench:export": "node bench/swebench/bosun-swebench.mjs export",
     "bench:swebench:eval": "node bench/swebench/bosun-swebench.mjs eval",
+    "bench:library:resolver": "node bench/library/library-resolver-bench.mjs",
     "mutate": "npx stryker run",
     "mutate:incremental": "npx stryker run --incremental",
     "mutate:report": "node scripts/mutation-report.mjs",

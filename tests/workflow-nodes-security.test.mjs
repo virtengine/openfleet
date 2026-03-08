@@ -239,6 +239,21 @@ describe("dangerous shell payload containment", () => {
       }
     }
   }, 30_000);
+
+  it("action.create_pr adds the bosun-attached label by default", async () => {
+    const nodeType = getNodeType("action.create_pr");
+    const node = makeNode("action.create_pr", {
+      title: "Label test",
+      body: "Label test body",
+      branch: "feat/label-test",
+      labels: ["custom-label"],
+    });
+
+    const result = await nodeType.execute(node, makeCtx());
+    expect(Array.isArray(result.labels)).toBe(true);
+    expect(result.labels).toContain("custom-label");
+    expect(result.labels).toContain("bosun-attached");
+  }, 30_000);
 });
 
 // -- action.git_operations Safety ----------------------------------------------
