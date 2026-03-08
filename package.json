@@ -90,7 +90,7 @@
     "telegram-sentinel": "telegram/telegram-sentinel.mjs"
   },
   "scripts": {
-    "start": "node cli.mjs",
+    "start": "node cli.mjs --config-dir .bosun --repo-root .",
     "setup": "node cli.mjs --setup",
     "setup:terminal": "node setup.mjs",
     "monitor": "node infra/monitor.mjs",
@@ -336,4 +336,3 @@
     "gaxios": "7.1.4"
   }
 }
-
