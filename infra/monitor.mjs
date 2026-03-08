@@ -688,6 +688,24 @@ function resolvePlannerPromptFallback() {
     };
   }
 
+  const envPlannerPath = String(process.env.BOSUN_PROMPT_PLANNER || "").trim();
+  if (envPlannerPath) {
+    try {
+      if (existsSync(envPlannerPath)) {
+        const promptFromEnvPath = normalizePromptBody(readFileSync(envPlannerPath, "utf8"));
+        if (promptFromEnvPath) {
+          return {
+            prompt: promptFromEnvPath,
+            source: "env",
+            details: `BOSUN_PROMPT_PLANNER=${envPlannerPath}`,
+          };
+        }
+      }
+    } catch {
+      // best effort
+    }
+  }
+
   const workspaceRoot = String(repoRoot || process.cwd()).trim() || process.cwd();
   try {
     syncAutoDiscoveredLibraryEntries(workspaceRoot);

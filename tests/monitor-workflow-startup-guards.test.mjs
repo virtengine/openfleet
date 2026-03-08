@@ -65,6 +65,11 @@ describe("monitor workflow startup guards", () => {
       "CLI command mode in source checkout",
     );
   });
+  it("uses BOSUN_PROMPT_PLANNER path before workspace-root planner fallback", () => {
+    expect(monitorSource).toContain("process.env.BOSUN_PROMPT_PLANNER");
+    expect(monitorSource).toContain("BOSUN_PROMPT_PLANNER=");
+  });
+
   it("guards backend task-id resolution against unresolved template tokens", () => {
     expect(monitorSource).toContain("function hasUnresolvedTemplateToken(value)");
     expect(monitorSource).toContain("if (!rawId || hasUnresolvedTemplateToken(rawId)) return null;");
