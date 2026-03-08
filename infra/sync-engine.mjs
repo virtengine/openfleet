@@ -1018,8 +1018,13 @@ export class SyncEngine {
   }
 
   async #createExternalTask(task, baseBranchCandidate = null) {
+    const normalizedTitle = String(task?.title || "").trim();
+    if (!normalizedTitle) {
+      throw new Error(`cannot create external task for ${task?.id || "<unknown>"}: missing title`);
+    }
+
     const payload = {
-      title: task.title || "Untitled task",
+      title: normalizedTitle,
       description: task.description || "",
       status: "todo",
       assignee: task.assignee || null,

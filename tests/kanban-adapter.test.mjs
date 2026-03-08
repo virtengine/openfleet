@@ -195,6 +195,14 @@ describe("kanban-adapter github backend", () => {
     expect(issueCreateCall[1]).toContain("alice");
   });
 
+  it("rejects github issue creation when title is empty", async () => {
+    const adapter = getKanbanAdapter();
+    await expect(
+      adapter.createTask("ignored-project-id", { title: "   ", description: "desc" }),
+    ).rejects.toThrow("requires non-empty title");
+    expect(execFileMock).not.toHaveBeenCalled();
+  });
+
   it("does not default assignee to repo owner when user resolution fails", async () => {
     mockGh("ok");
     mockGhError(new Error("gh api unavailable"));
