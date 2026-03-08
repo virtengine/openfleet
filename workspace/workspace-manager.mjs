@@ -128,25 +128,44 @@ function normalizeId(value) {
     .replace(/^-|-$/g, "");
 }
 
+function stripGitSuffix(value) {
+  const text = String(value || "");
+  return text.toLowerCase().endsWith(".git") ? text.slice(0, -4) : text;
+}
+
+function extractTailSegments(url, count) {
+  const raw = stripGitSuffix(String(url || "").trim());
+  if (!raw) return [];
+  const normalized = raw.replace(/\\/g, "/");
+  const slash = normalized.lastIndexOf("/");
+  const colon = normalized.lastIndexOf(":");
+  const split = Math.max(slash, colon);
+  let tail = split >= 0 ? normalized.slice(split + 1) : normalized;
+  if (count > 1) {
+    const before = split >= 0 ? normalized.slice(0, split) : "";
+    const secondSlash = before.lastIndexOf("/");
+    const secondColon = before.lastIndexOf(":");
+    const prevSplit = Math.max(secondSlash, secondColon);
+    if (prevSplit >= 0) {
+      tail = before.slice(prevSplit + 1) + "/" + tail;
+    }
+  }
+  return tail.split("/").filter(Boolean);
+}
+
 function extractRepoName(url) {
   if (!url) return "";
-  // Handle SSH: git@github.com:org/repo.git
-  const sshMatch = url.match(/[/:]([^/]+)\.git$/);
-  if (sshMatch) return sshMatch[1];
-  // Handle HTTPS: https://github.com/org/repo.git or https://github.com/org/repo
-  const httpsMatch = url.match(/\/([^/]+?)(?:\.git)?$/);
-  if (httpsMatch) return httpsMatch[1];
-  return basename(url).replace(/\.git$/, "");
+  const segments = extractTailSegments(url, 1);
+  if (segments.length > 0) return segments[segments.length - 1];
+  return stripGitSuffix(basename(url));
 }
 
 function extractSlug(url) {
   if (!url) return "";
-  // git@github.com:org/repo.git → org/repo
-  const sshMatch = url.match(/[/:]([^/]+\/[^/]+?)(?:\.git)?$/);
-  if (sshMatch) return sshMatch[1];
-  // https://github.com/org/repo.git → org/repo
-  const httpsMatch = url.match(/([^/]+\/[^/]+?)(?:\.git)?$/);
-  if (httpsMatch) return httpsMatch[1];
+  const segments = extractTailSegments(url, 2);
+  if (segments.length >= 2) {
+    return segments[segments.length - 2] + "/" + segments[segments.length - 1];
+  }
   return "";
 }
 

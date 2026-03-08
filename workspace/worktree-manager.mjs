@@ -116,13 +116,20 @@ function _getFilesystemAgeMs(dirPath) {
  * @param {string} branch
  * @returns {string}
  */
+function trimLeadingAndTrailingDots(value) {
+  let start = 0;
+  let end = value.length;
+  while (start < end && value[start] === ".") start++;
+  while (end > start && value[end - 1] === ".") end--;
+  return value.slice(start, end);
+}
+
 function sanitizeBranchName(branch) {
-  return branch
-    .replace(/^refs\/heads\//, "")
+  const sanitized = branch
+    .replace("refs/heads/", "")
     .replace(/\//g, "-")
-    .replace(/[^a-zA-Z0-9._-]/g, "")
-    .replace(/^\.+/, "") // no leading dots
-    .replace(/\.+$/, "") // no trailing dots
+    .replace(/[^a-zA-Z0-9._-]/g, "");
+  return trimLeadingAndTrailingDots(sanitized)
     .slice(0, 60); // Windows MAX_PATH is 260, worktree base path ~60, leaves ~140 for this + git overhead
 }
 

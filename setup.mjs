@@ -1042,26 +1042,50 @@ function parseGitHubProjectList(rawOutput) {
   return candidates;
 }
 
+function readLeadingDigits(text) {
+  let out = "";
+  for (const ch of String(text || "")) {
+    if (ch >= "0" && ch <= "9") out += ch;
+    else break;
+  }
+  return out;
+}
+
+function firstNumberInText(text) {
+  const source = String(text || "");
+  let current = "";
+  for (const ch of source) {
+    if (ch >= "0" && ch <= "9") {
+      current += ch;
+      continue;
+    }
+    if (current) return current;
+  }
+  return current;
+}
+
 function extractProjectNumberFromText(value) {
   const text = String(value || "").trim();
   if (!text) return "";
   if (/^\d+$/.test(text)) return text;
 
-  const patterns = [
-    /\/projects\/(\d+)(?:\b|$)/i,
-    /\/projects\/v2\/(\d+)(?:\b|$)/i,
-    /\bproject\s*(?:number|id)?\s*[:#=-]?\s*(\d+)\b/i,
-    /\bnumber\s*[:#=-]\s*(\d+)\b/i,
-  ];
-
-  for (const pattern of patterns) {
-    const match = text.match(pattern);
-    if (match && match[1]) return match[1];
+  const lowered = text.toLowerCase();
+  for (const marker of ["/projects/v2/", "/projects/"]) {
+    const idx = lowered.indexOf(marker);
+    if (idx >= 0) {
+      const digits = readLeadingDigits(text.slice(idx + marker.length));
+      if (digits) return digits;
+    }
   }
 
-  if (/project/i.test(text)) {
-    const fallback = text.match(/\b(\d+)\b/);
-    if (fallback && fallback[1]) return fallback[1];
+  if (lowered.includes("project")) {
+    const digits = firstNumberInText(text);
+    if (digits) return digits;
+  }
+
+  if (lowered.includes("number") || lowered.includes("id")) {
+    const digits = firstNumberInText(text);
+    if (digits) return digits;
   }
 
   return "";
@@ -2274,9 +2298,13 @@ export function buildStandardizedEnvFile(templateText, envEntries) {
   const consumed = new Set();
   const seenKeys = new Set();
   const updated = lines.flatMap((line) => {
-    const match = line.match(/^\s*#?\s*([A-Z0-9_]+)=.*$/);
-    if (!match) return [line];
-    const key = match[1];
+    const trimmed = String(line || "").trim();
+    if (!trimmed) return [line];
+    const uncommented = trimmed.startsWith("#") ? trimmed.slice(1).trimStart() : trimmed;
+    const eqIdx = uncommented.indexOf("=");
+    if (eqIdx <= 0) return [line];
+    const key = uncommented.slice(0, eqIdx).trim();
+    if (!/^[A-Z0-9_]+$/.test(key)) return [line];
     if (seenKeys.has(key)) return [];
     seenKeys.add(key);
     if (!entryMap.has(key)) return [line];

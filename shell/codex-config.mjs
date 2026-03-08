@@ -248,7 +248,7 @@ export function ensureAgentMaxThreads(
       const endUpdated = nextUpdated === -1 ? toml.length : nextUpdated;
       const remaining = toml.substring(afterUpdated, endUpdated).trim();
       // If only whitespace or the bosun comment header remains, remove entire section
-      if (!remaining || /^(#[^\n]*\n?\s*)*$/.test(remaining)) {
+      if (!remaining || isCommentOnlyLines(remaining)) {
         // Remove from the line before [agents] header to section end
         const lineStart = toml.lastIndexOf("\n", updatedAgentsIdx);
         const removeFrom = lineStart === -1 ? updatedAgentsIdx : lineStart;
@@ -326,6 +326,23 @@ export function hasSandboxMode(toml) {
   return /^sandbox_mode\s*=/m.test(toml);
 }
 
+function isCommentOnlyLines(value) {
+  const lines = String(value || "").split(/\r?\n/);
+  for (const line of lines) {
+    const trimmed = line.trim();
+    if (!trimmed) continue;
+    if (!trimmed.startsWith("#")) return false;
+  }
+  return true;
+}
+
+function trimTrailingPathSeparators(value, separatorChars = ["/", "\\"]) {
+  const text = String(value || "");
+  let end = text.length;
+  while (end > 0 && separatorChars.includes(text[end - 1])) end--;
+  return text.slice(0, end);
+}
+
 function stripSandboxMode(toml) {
   let next = toml.replace(
     /^\s*#\s*Sandbox mode.*(?:\r?\n)?/gim,
@@ -336,9 +353,17 @@ function stripSandboxMode(toml) {
 }
 
 function extractSandboxModeValue(toml) {
-  const match = toml.match(/^\s*sandbox_mode\s*=\s*(.+)$/m);
-  if (!match) return "";
-  const raw = String(match[1] || "").split("#")[0].trim();
+  const lines = String(toml || "").split(/\r?\n/);
+  let raw = "";
+  for (const line of lines) {
+    const trimmed = line.trim();
+    if (!trimmed || trimmed.startsWith("#")) continue;
+    if (!trimmed.startsWith("sandbox_mode")) continue;
+    const eq = trimmed.indexOf("=");
+    if (eq === -1) continue;
+    raw = trimmed.slice(eq + 1).split("#")[0].trim();
+    break;
+  }
   if (!raw) return "";
   const quoted = raw.match(/^"(.*)"$/) || raw.match(/^'(.*)'$/);
   if (quoted) return quoted[1];
@@ -1733,7 +1758,7 @@ function normalizeTrustedPathForCompare(pathValue) {
     normalized = normalized.replace(/[\\/]+$/, "");
     return normalized.toLowerCase();
   }
-  return resolve(raw).replace(/\/+$/, "");
+  return trimTrailingPathSeparators(resolve(raw), ["/"]);
 }
 
 function buildTrustedPathVariants(pathValue) {

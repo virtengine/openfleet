@@ -173,6 +173,40 @@ export function extractErrors(logText) {
  *        |          ~~~~~~
  *        | Error message here
  */
+function extractPipeContent(rawLine, marker) {
+  const line = String(rawLine || "");
+  let i = 0;
+  while (i < line.length && /\s/.test(line[i])) i++;
+  if (line[i] !== marker) return null;
+  i++;
+  while (i < line.length && /\s/.test(line[i])) i++;
+  return line.slice(i);
+}
+
+function extractNumberPipeContent(rawLine) {
+  const line = String(rawLine || "");
+  let i = 0;
+  while (i < line.length && /\s/.test(line[i])) i++;
+  let digitStart = i;
+  while (i < line.length && /[0-9]/.test(line[i])) i++;
+  if (i === digitStart) return null;
+  while (i < line.length && /\s/.test(line[i])) i++;
+  if (line[i] !== "|") return null;
+  i++;
+  while (i < line.length && /\s/.test(line[i])) i++;
+  return line.slice(i);
+}
+
+function parseErrorTypeMessage(content) {
+  const idx = String(content || "").indexOf(":");
+  if (idx <= 0) return null;
+  const type = content.slice(0, idx).trim();
+  if (!type || !/^[A-Za-z0-9_.-]+$/.test(type)) return null;
+  const message = content.slice(idx + 1).trim();
+  if (!message) return null;
+  return { type, message };
+}
+
 function parseLineBlock(lines, startIdx) {
   let codeLine = "";
   let message = "";
@@ -185,18 +219,20 @@ function parseLineBlock(lines, startIdx) {
   }
 
   // Capture code line: " NNN |  code..."
-  if (i < lines.length && /^\s*\d+\s*\|/.test(lines[i])) {
-    const codeMatch = lines[i].match(/^\s*\d+\s*\|\s*(.*)$/);
-    if (codeMatch) codeLine = codeMatch[1].trim();
-    i++;
+  if (i < lines.length) {
+    const numberedCode = extractNumberPipeContent(lines[i]);
+    if (numberedCode !== null) {
+      codeLine = numberedCode.trim();
+      i++;
+    }
   }
 
   // Skip underline and intermediate "| ..." lines, capture last "| message" line
   let lastPipeMessage = "";
   while (i < lines.length) {
-    const pipeMatch = lines[i].match(/^\s*\|\s*(.*)$/);
-    if (!pipeMatch) break;
-    const content = pipeMatch[1].trim();
+    const piped = extractPipeContent(lines[i], "|");
+    if (piped === null) break;
+    const content = piped.trim();
     // Skip underline-only lines (~~~~) and empty lines
     if (content && !/^~+$/.test(content)) {
       lastPipeMessage = content;
@@ -225,30 +261,29 @@ function parsePlusBlock(lines, startIdx) {
   let i = startIdx;
 
   // First "+ " line is usually the code
-  if (i < lines.length && /^\s*\+\s*/.test(lines[i])) {
-    const codeMatch = lines[i].match(/^\s*\+\s*(.*)$/);
-    if (codeMatch) {
-      const content = codeMatch[1].trim();
+  if (i < lines.length) {
+    const plusCode = extractPipeContent(lines[i], "+");
+    if (plusCode !== null) {
+      const content = plusCode.trim();
       if (!/^~+$/.test(content)) codeLine = content;
+      i++;
     }
-    i++;
   }
 
   // Subsequent "+ " lines — skip underlines, capture error type + message
-  while (i < lines.length && /^\s*\+\s*/.test(lines[i])) {
-    const plusMatch = lines[i].match(/^\s*\+\s*(.*)$/);
-    if (plusMatch) {
-      const content = plusMatch[1].trim();
-      if (/^~+$/.test(content)) {
-        i++;
-        continue;
-      }
-      // Check for "ErrorType: message"
-      const errMatch = content.match(/^(\w[\w.-]+):\s*(.+)$/);
-      if (errMatch) {
-        errorType = errMatch[1];
-        message = errMatch[2].trim();
-      }
+  while (i < lines.length) {
+    const plusMatch = extractPipeContent(lines[i], "+");
+    if (plusMatch === null) break;
+    const content = plusMatch.trim();
+    if (/^~+$/.test(content)) {
+      i++;
+      continue;
+    }
+    // Check for "ErrorType: message"
+    const errMatch = parseErrorTypeMessage(content);
+    if (errMatch) {
+      errorType = errMatch.type;
+      message = errMatch.message;
     }
     i++;
   }
