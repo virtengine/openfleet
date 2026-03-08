@@ -12,7 +12,7 @@
  */
 
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
-import { mkdtempSync, rmSync, writeFileSync, mkdirSync } from "node:fs";
+import { existsSync, mkdtempSync, rmSync, writeFileSync, mkdirSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { execSync } from "node:child_process";
@@ -59,6 +59,14 @@ function execGit(command, options = {}) {
     ...options,
     env: makeIsolatedGitEnv(options.env),
   });
+}
+
+function sanitizedGitEnv() {
+  const env = { ...process.env };
+  delete env.GIT_DIR;
+  delete env.GIT_WORK_TREE;
+  delete env.GIT_INDEX_FILE;
+  return env;
 }
 
 let tmpDir;
@@ -153,6 +161,47 @@ describe("trigger.task_available", () => {
     expect(result.tasks[0].id).toBe("t-server");
   });
 
+  it("binds primary task context for downstream lifecycle nodes", async () => {
+    const nt = getNodeType("trigger.task_available");
+    const listTasks = vi.fn().mockResolvedValue([
+      {
+        id: "abc-123",
+        title: "Implement dispatch fix",
+        description: "Ensure claims initialize",
+        status: "todo",
+        workspace: "C:/repo/bosun",
+        repository: "virtengine/bosun",
+        repositories: ["virtengine/bosun"],
+        baseBranch: "main",
+      },
+    ]);
+    const ctx = makeCtx({ activeSlotCount: 0 });
+    const node = makeNode("trigger.task_available", {
+      maxParallel: 1,
+      status: "todo",
+    });
+
+    const result = await nt.execute(node, ctx, {
+      services: {
+        kanban: {
+          listTasks,
+        },
+      },
+    });
+
+    expect(result.triggered).toBe(true);
+    expect(result.taskCount).toBe(1);
+    expect(result.selectedTaskId).toBe("abc-123");
+    expect(ctx.data.taskId).toBe("abc-123");
+    expect(ctx.data.taskTitle).toBe("Implement dispatch fix");
+    expect(ctx.data.taskDescription).toBe("Ensure claims initialize");
+    expect(ctx.data.repoRoot).toBe("C:/repo/bosun");
+    expect(ctx.data.workspace).toBe("C:/repo/bosun");
+    expect(ctx.data.repository).toBe("virtengine/bosun");
+    expect(ctx.data.baseBranch).toBe("main");
+    expect(ctx.data.branch.startsWith("task/abc123-")).toBe(true);
+  });
+
   it("returns blocked result when all tasks exceed repoAreaParallelLimit", async () => {
     const nt = getNodeType("trigger.task_available");
     const listTasks = vi.fn().mockResolvedValue([
@@ -242,6 +291,37 @@ describe("trigger.task_available", () => {
     expect(canStartTask).toHaveBeenCalledTimes(2);
     expect(canStartTask).toHaveBeenNthCalledWith(1, "blocked-a", { sprintOrderMode: "sequential" });
     expect(canStartTask).toHaveBeenNthCalledWith(2, "blocked-b", { sprintOrderMode: "sequential" });
+  });
+
+  it("returns start_guard_blocked for unresolved epic dependencies", async () => {
+    const nt = getNodeType("trigger.task_available");
+    const listTasks = vi.fn().mockResolvedValue([
+      { id: "epic-blocked", title: "Epic Blocked", status: "todo" },
+    ]);
+    const canStartTask = vi.fn(() => ({
+      canStart: false,
+      reason: "epic_dependencies_unresolved",
+      blockingEpicIds: ["EPIC-B"],
+      blockingTaskIds: ["epic-b-task-1"],
+    }));
+
+    const ctx = makeCtx({ activeSlotCount: 0, _services: { taskStore: { canStartTask } } });
+    const node = makeNode("trigger.task_available", {
+      maxParallel: 1,
+      status: "todo",
+      enforceStartGuards: true,
+    });
+
+    const result = await nt.execute(node, ctx, {
+      services: { kanban: { listTasks }, taskStore: { canStartTask } },
+    });
+
+    expect(result.triggered).toBe(false);
+    expect(result.reason).toBe("start_guard_blocked");
+    expect(result.blocked).toHaveLength(1);
+    expect(result.blocked[0].reason).toBe("epic_dependencies_unresolved");
+    expect(result.blocked[0].blockingEpicIds).toEqual(["EPIC-B"]);
+    expect(result.blocked[0].blockingTaskIds).toEqual(["epic-b-task-1"]);
   });
 
   it("bypasses missing-task guard by default and emits audit event", async () => {
@@ -434,6 +514,40 @@ describe("action.release_slot", () => {
 });
 
 // ═══════════════════════════════════════════════════════════════════════════
+//  action.claim_task Tests
+// ═══════════════════════════════════════════════════════════════════════════
+
+describe("action.claim_task", () => {
+  it("initializes task-claims lazily before claiming", async () => {
+    const nt = getNodeType("action.claim_task");
+    const claims = await import("../task/task-claims.mjs");
+    const initSpy = vi.spyOn(claims, "initTaskClaims").mockResolvedValue();
+    const claimSpy = vi.spyOn(claims, "claimTask").mockResolvedValue({
+      success: true,
+      token: "claim-token-1",
+    });
+
+    try {
+      const ctx = makeCtx({ repoRoot: "/tmp/repo-root" });
+      const node = makeNode("action.claim_task", {
+        taskId: "task-1",
+        taskTitle: "Fix dispatch",
+        renewIntervalMs: 0,
+      });
+      const result = await nt.execute(node, ctx);
+
+      expect(result.success).toBe(true);
+      expect(result.claimToken).toBe("claim-token-1");
+      expect(initSpy).toHaveBeenCalled();
+      expect(claimSpy).toHaveBeenCalled();
+    } finally {
+      initSpy.mockRestore();
+      claimSpy.mockRestore();
+    }
+  });
+});
+
+// ═══════════════════════════════════════════════════════════════════════════
 //  action.resolve_executor Tests
 // ═══════════════════════════════════════════════════════════════════════════
 
@@ -464,6 +578,54 @@ describe("action.resolve_executor", () => {
     });
     const result = await nt.execute(node, ctx);
     expect(ctx.data.resolvedSdk).toBeDefined();
+  });
+});
+
+// ═══════════════════════════════════════════════════════════════════════════
+//  action.acquire_worktree Tests
+// ═══════════════════════════════════════════════════════════════════════════
+
+describe("action.acquire_worktree", () => {
+  let repoDir;
+
+  const gitExec = (command, options = {}) =>
+    execSync(command, {
+      env: sanitizedGitEnv(),
+      ...options,
+    });
+
+  beforeEach(() => {
+    repoDir = mkdtempSync(join(tmpdir(), "wf-acquire-worktree-"));
+    gitExec("git init", { cwd: repoDir, stdio: "ignore" });
+    gitExec("git config --local user.email test@test.com", { cwd: repoDir, stdio: "ignore" });
+    gitExec("git config --local user.name Test", { cwd: repoDir, stdio: "ignore" });
+    writeFileSync(join(repoDir, "README.md"), "init\n");
+    gitExec("git add README.md && git commit -m init", { cwd: repoDir, stdio: "ignore" });
+    gitExec("git branch -M main", { cwd: repoDir, stdio: "ignore" });
+  });
+
+  afterEach(() => {
+    try { rmSync(repoDir, { recursive: true, force: true }); } catch { /* ok */ }
+  });
+
+  it("falls back to defaultTargetBranch when baseBranch template is unresolved", async () => {
+    const nt = getNodeType("action.acquire_worktree");
+    const ctx = makeCtx({});
+    const node = makeNode("action.acquire_worktree", {
+      repoRoot: repoDir,
+      taskId: "abc123",
+      branch: "task/abc123-fallback-branch",
+      baseBranch: "{{baseBranch}}",
+      defaultTargetBranch: "main",
+      fetchTimeout: 5000,
+      worktreeTimeout: 10000,
+    });
+
+    const result = await nt.execute(node, ctx);
+    expect(result.success).toBe(true);
+    expect(result.baseBranch).toBe("main");
+    expect(result.created).toBe(true);
+    expect(existsSync(result.worktreePath)).toBe(true);
   });
 });
 
@@ -574,6 +736,12 @@ describe("action.build_task_prompt", () => {
 describe("action.detect_new_commits", () => {
   let gitDir;
 
+  const gitExec = (command, options = {}) =>
+    execSync(command, {
+      env: sanitizedGitEnv(),
+      ...options,
+    });
+
   beforeEach(() => {
     gitDir = mkdtempSync(join(tmpdir(), "wf-detect-commits-"));
     execGit("git init", { cwd: gitDir, stdio: "ignore" });
@@ -619,7 +787,7 @@ describe("action.detect_new_commits", () => {
 
   it("stores results in ctx.data", async () => {
     const nt = getNodeType("action.detect_new_commits");
-    const head = execSync("git rev-parse HEAD", { cwd: gitDir, encoding: "utf8" }).trim();
+    const head = gitExec("git rev-parse HEAD", { cwd: gitDir, encoding: "utf8" }).trim();
     const ctx = makeCtx({ _preExecHead: head });
     const node = makeNode("action.detect_new_commits", { worktreePath: gitDir });
     await nt.execute(node, ctx);
@@ -1050,3 +1218,6 @@ describe("template-ve-orchestrator-lite", () => {
     expect(Array.isArray(t.variables.protectedBranches)).toBe(true);
   });
 });
+
+
+

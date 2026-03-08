@@ -1282,12 +1282,12 @@ export class WorkflowEngine extends EventEmitter {
   // ── Schedule trigger evaluation ──────────────────────────────────────────
 
   /**
-   * Evaluate all workflows that use `trigger.schedule` or `trigger.scheduled_once`.
+   * Evaluate polling workflows.
    * Unlike evaluateTriggers() (event-driven), this is polling-based and should
    * be called periodically (e.g. every 60s) by the monitor.
    *
    * Returns an array of { workflowId, triggeredBy } for workflows whose
-   * schedule interval has elapsed since their last completed run.
+   * polling interval has elapsed since their last completed run.
    */
   evaluateScheduleTriggers() {
     if (!this._loaded) this.load();
@@ -1304,12 +1304,22 @@ export class WorkflowEngine extends EventEmitter {
       );
       if (alreadyRunning) continue;
 
-      const triggerNodes = (def.nodes || []).filter(
-        (n) => n.type === "trigger.schedule" || n.type === "trigger.scheduled_once",
+      const triggerNodes = (def.nodes || []).filter((n) =>
+        n.type === "trigger.schedule"
+        || n.type === "trigger.scheduled_once"
+        || n.type === "trigger.task_available"
+        || n.type === "trigger.task_low",
       );
 
       for (const tNode of triggerNodes) {
-        const intervalMs = Number(tNode.config?.intervalMs) || 3600000;
+        let intervalMs = 3600000;
+        if (tNode.type === "trigger.task_available") {
+          intervalMs = Number(tNode.config?.pollIntervalMs) || 30000;
+        } else if (tNode.type === "trigger.task_low") {
+          intervalMs = Number(tNode.config?.pollIntervalMs) || 60000;
+        } else {
+          intervalMs = Number(tNode.config?.intervalMs) || 3600000;
+        }
 
         // Find the most recent completed run for this workflow
         let lastRunAt = 0;
@@ -1781,6 +1791,7 @@ export class WorkflowEngine extends EventEmitter {
         const node = nodeMap.get(nodeId);
         const edges = adjacency.get(nodeId) || [];
         const sourceOutput = ctx.getNodeOutput(nodeId);
+        const triggerBlocked = node?.type?.startsWith("trigger.") && sourceOutput?.triggered === false;
         const selectedPortRaw =
           sourceOutput?.matchedPort ??
           sourceOutput?.port ??
@@ -1789,6 +1800,19 @@ export class WorkflowEngine extends EventEmitter {
           typeof selectedPortRaw === "string" && selectedPortRaw.trim()
             ? selectedPortRaw.trim()
             : null;
+
+        if (triggerBlocked) {
+          for (const edge of edges) {
+            if (edge.backEdge) continue;
+            const newDegree = (inDegree.get(edge.target) || 1) - 1;
+            inDegree.set(edge.target, newDegree);
+            if (newDegree <= 0 && !executed.has(edge.target)) {
+              ctx.setNodeStatus(edge.target, NodeStatus.SKIPPED);
+              executed.add(edge.target);
+            }
+          }
+          continue;
+        }
 
         // Handle loop.for_each: iterate downstream subgraph per item
         if (node?.type === "loop.for_each" && ctx.getNodeStatus(nodeId) === NodeStatus.COMPLETED) {
@@ -2604,5 +2628,6 @@ export function listWorkflows(opts) { return getWorkflowEngine(opts).list(); }
 export function getWorkflow(id, opts) { return getWorkflowEngine(opts).get(id); }
 export async function executeWorkflow(id, data, opts) { return getWorkflowEngine(opts).execute(id, data, opts); }
 export async function retryWorkflowRun(runId, retryOpts, engineOpts) { return getWorkflowEngine(engineOpts).retryRun(runId, retryOpts); }
+
 
 

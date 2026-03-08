@@ -19,6 +19,20 @@ set -euo pipefail
 ROOT="$(git rev-parse --show-toplevel 2>/dev/null || true)"
 [ -z "$ROOT" ] && exit 0
 [ ! -f "$ROOT/package.json" ] && exit 0
+
+repair_git_worktree_config() {
+  [ -z "${ROOT:-}" ] && return 0
+  [ ! -d "$ROOT/.git" ] && return 0
+  local bare
+  bare="$(git -C "$ROOT" config --bool --get core.bare 2>/dev/null || true)"
+  if [ "$bare" = "true" ]; then
+    echo "[hooks] repairing git config corruption: forcing core.bare=false"
+    git -C "$ROOT" config --local core.bare false >/dev/null 2>&1 || true
+  fi
+}
+
+trap repair_git_worktree_config EXIT
+
 cd "$ROOT"
 
 echo "[hooks] bosun pre-push: analyzing changed files…"

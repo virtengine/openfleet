@@ -1565,6 +1565,57 @@ describe("ui-server mini app", () => {
     expect(detail.data.workflowRuns.some((run) => run.workflowId === workflowId)).toBe(true);
   });
 
+  it("reports epic dependency blockers from start guards", async () => {
+    process.env.TELEGRAM_UI_TUNNEL = "disabled";
+    process.env.EXECUTOR_MODE = "internal";
+
+    const mod = await import("../server/ui-server.mjs");
+    const executeTask = vi.fn(async () => {});
+    mod.injectUiDependencies({
+      taskStoreApi: {
+        canStartTask: vi.fn(() => ({
+          canStart: false,
+          reason: "epic_dependencies_unresolved",
+          blockingEpicIds: ["EPIC-B"],
+          blockingTaskIds: ["dep-task-1"],
+        })),
+      },
+      getInternalExecutor: () => ({
+        getStatus: () => ({ maxParallel: 2, activeSlots: 0, slots: [] }),
+        executeTask,
+        isPaused: () => false,
+      }),
+    });
+
+    const server = await mod.startTelegramUiServer({
+      port: await getFreePort(),
+      host: "127.0.0.1",
+      skipInstanceLock: true,
+      skipAutoOpen: true,
+    });
+    const port = server.address().port;
+
+    const created = await fetch(`http://127.0.0.1:${port}/api/tasks/create`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ title: "guarded epic start", description: "epic guard" }),
+    }).then((r) => r.json());
+    expect(created.ok).toBe(true);
+
+    const blockedResp = await fetch(`http://127.0.0.1:${port}/api/tasks/start`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ taskId: created.data.id }),
+    });
+    const blockedJson = await blockedResp.json();
+
+    expect(blockedResp.status).toBe(409);
+    expect(blockedJson.ok).toBe(false);
+    expect(blockedJson.canStart.reason).toBe("epic_dependencies_unresolved");
+    expect(blockedJson.canStart.raw.blockingEpicIds).toEqual(["EPIC-B"]);
+    expect(executeTask).not.toHaveBeenCalled();
+  });
+
   it("blocks /api/tasks/start when can-start guard fails unless force override is set", async () => {
     process.env.TELEGRAM_UI_TUNNEL = "disabled";
     process.env.EXECUTOR_MODE = "internal";

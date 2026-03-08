@@ -429,6 +429,7 @@ function defaultMeta() {
     version: 1,
     projectId: null,
     lastFullSync: null,
+    epicDependencies: {},
     sprintOrderMode: "parallel",
     taskCount: 0,
     stats: {
@@ -806,6 +807,25 @@ function ensureSprintsMap() {
     _store.sprints = {};
   }
   return _store.sprints;
+}
+
+function ensureEpicDependenciesMap() {
+  if (!_store._meta || typeof _store._meta !== "object") {
+    _store._meta = defaultMeta();
+  }
+  if (!_store._meta.epicDependencies || typeof _store._meta.epicDependencies !== "object") {
+    _store._meta.epicDependencies = {};
+  }
+  const map = _store._meta.epicDependencies;
+  for (const [key, value] of Object.entries(map)) {
+    const epicId = String(key || "").trim();
+    if (!epicId) {
+      delete map[key];
+      continue;
+    }
+    map[epicId] = uniqueStringList(Array.isArray(value) ? value : []);
+  }
+  return map;
 }
 
 export function listSprints() {
@@ -1693,17 +1713,71 @@ export function getGlobalDagOfDags() {
       return String(a.to).localeCompare(String(b.to));
     });
 
+  const epicDependencies = getEpicDependencies();
+
   return {
     sprintOrderMode: mode,
     sprintCount: nodes.length,
     edgeCount: edges.length,
+    epicDependencies,
     nodes,
-    edges,
+    edges: edges.map((edge) => ({
+      ...edge,
+      kind: edge.taskLinks.some((link) => link?.type === 'sequence') ? 'sequential' : 'dependency',
+    })),
   };
 }
 
 export function getDagOfDags() {
   return getGlobalDagOfDags();
+}
+
+export function getEpicDependencies() {
+  ensureLoaded();
+  const map = ensureEpicDependenciesMap();
+  return Object.entries(map).map(([epicId, dependencies]) => ({
+    epicId,
+    dependencies: uniqueStringList(Array.isArray(dependencies) ? dependencies : []),
+  }));
+}
+
+export function setEpicDependencies(epicId, dependencies = []) {
+  ensureLoaded();
+  const normalizedEpicId = String(epicId || '').trim();
+  if (!normalizedEpicId) return null;
+  const cleaned = uniqueStringList((Array.isArray(dependencies) ? dependencies : [])
+    .map((entry) => String(entry || '').trim())
+    .filter((entry) => entry && entry !== normalizedEpicId));
+  const map = ensureEpicDependenciesMap();
+  if (cleaned.length > 0) map[normalizedEpicId] = cleaned;
+  else delete map[normalizedEpicId];
+  saveStore();
+  return { epicId: normalizedEpicId, dependencies: [...(map[normalizedEpicId] || [])] };
+}
+
+export function addEpicDependency(epicId, dependencyEpicId) {
+  ensureLoaded();
+  const normalizedEpicId = String(epicId || '').trim();
+  const normalizedDependency = String(dependencyEpicId || '').trim();
+  if (!normalizedEpicId || !normalizedDependency || normalizedEpicId === normalizedDependency) return null;
+  const map = ensureEpicDependenciesMap();
+  const next = uniqueStringList([...(map[normalizedEpicId] || []), normalizedDependency]);
+  map[normalizedEpicId] = next;
+  saveStore();
+  return { epicId: normalizedEpicId, dependencies: [...next] };
+}
+
+export function removeEpicDependency(epicId, dependencyEpicId) {
+  ensureLoaded();
+  const normalizedEpicId = String(epicId || '').trim();
+  const normalizedDependency = String(dependencyEpicId || '').trim();
+  if (!normalizedEpicId || !normalizedDependency) return null;
+  const map = ensureEpicDependenciesMap();
+  const next = uniqueStringList((map[normalizedEpicId] || []).filter((entry) => entry !== normalizedDependency));
+  if (next.length > 0) map[normalizedEpicId] = next;
+  else delete map[normalizedEpicId];
+  saveStore();
+  return { epicId: normalizedEpicId, dependencies: [...(map[normalizedEpicId] || [])] };
 }
 
 export function canStartTask(taskId, options = {}) {
@@ -1721,6 +1795,7 @@ export function canTaskStart(taskId, options = {}) {
       blockingTaskIds: [],
       missingDependencyTaskIds: [],
       blockingSprintIds: [],
+      blockingEpicIds: [],
       sprintOrderMode,
     };
   }
@@ -1732,6 +1807,7 @@ export function canTaskStart(taskId, options = {}) {
       blockingTaskIds: [],
       missingDependencyTaskIds: [],
       blockingSprintIds: [],
+      blockingEpicIds: [],
       sprintOrderMode,
     };
   }
@@ -1756,6 +1832,7 @@ export function canTaskStart(taskId, options = {}) {
       blockingTaskIds: uniqueStringList(blockingTaskIds),
       missingDependencyTaskIds: uniqueStringList(missingDependencyTaskIds),
       blockingSprintIds: [],
+      blockingEpicIds: [],
       sprintOrderMode,
     };
   }
@@ -1787,6 +1864,42 @@ export function canTaskStart(taskId, options = {}) {
           blockingTaskIds: uniqueStringList(blockingTaskIds),
           missingDependencyTaskIds: [],
           blockingSprintIds: [sprintId],
+          blockingEpicIds: [],
+          sprintOrderMode,
+          sprintTaskOrderMode,
+        };
+      }
+    }
+  }
+
+  const taskEpicId = String(task?.epicId || task?.meta?.epicId || '').trim();
+  if (taskEpicId) {
+    const epicDependenciesMap = ensureEpicDependenciesMap();
+    const requiredEpics = uniqueStringList(epicDependenciesMap[taskEpicId] || []);
+    if (requiredEpics.length > 0) {
+      const blockingEpicIds = [];
+      const blockingEpicTaskIds = [];
+      for (const requiredEpicId of requiredEpics) {
+        let hasIncomplete = false;
+        for (const candidate of Object.values(_store.tasks)) {
+          if (!candidate) continue;
+          const candidateEpicId = String(candidate?.epicId || candidate?.meta?.epicId || '').trim();
+          if (candidateEpicId !== requiredEpicId) continue;
+          if (!isTaskTerminal(candidate)) {
+            hasIncomplete = true;
+            blockingEpicTaskIds.push(candidate.id);
+          }
+        }
+        if (hasIncomplete) blockingEpicIds.push(requiredEpicId);
+      }
+      if (blockingEpicIds.length > 0) {
+        return {
+          canStart: false,
+          reason: "epic_dependencies_unresolved",
+          blockingTaskIds: uniqueStringList(blockingEpicTaskIds),
+          missingDependencyTaskIds: [],
+          blockingSprintIds: [],
+          blockingEpicIds: uniqueStringList(blockingEpicIds),
           sprintOrderMode,
           sprintTaskOrderMode,
         };
@@ -1818,6 +1931,7 @@ export function canTaskStart(taskId, options = {}) {
           blockingTaskIds: uniqueStringList(blockingTaskIds),
           missingDependencyTaskIds: [],
           blockingSprintIds: uniqueStringList(blockingSprintIds),
+          blockingEpicIds: [],
           sprintOrderMode,
           sprintTaskOrderMode,
         };
@@ -1831,6 +1945,7 @@ export function canTaskStart(taskId, options = {}) {
     blockingTaskIds: [],
     missingDependencyTaskIds: [],
     blockingSprintIds: [],
+    blockingEpicIds: [],
     sprintOrderMode,
   };
 }

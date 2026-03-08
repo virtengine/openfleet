@@ -463,9 +463,7 @@ export async function forceUpdate(currentVersion) {
       stdio: "inherit",
       timeout: 120000,
     });
-    console.log(
-      `\n  :check: Updated to v${latest}. Restart bosun to use the new version.\n`,
-    );
+    console.log(`\n  :check: Updated to v${latest}.\n`);
     return true; // update was installed
   } catch (err) {
     console.error(`\n  :close: Update failed: ${err.message}`);

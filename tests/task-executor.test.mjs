@@ -309,6 +309,66 @@ describe("task-executor", () => {
       expect(status.slots[0].agentInstanceId).toBeNull();
       expect(status.slots[0].runningFor).toBeGreaterThanOrEqual(4);
     });
+
+    it("surfaces repo area lock telemetry for operators", () => {
+      const ex = new TaskExecutor({ repoAreaParallelLimit: 2 });
+      ex._activeSlots.set("task-abc", {
+        taskId: "task-abc",
+        taskTitle: "Some task",
+        repoAreas: ["infra"],
+        attempt: 2,
+        startedAt: Date.now() - 5_000,
+        status: "running",
+      });
+      ex._repoAreaLockMetrics.set("infra", {
+        conflicts: 2,
+        blockedDispatches: 2,
+        selectedDispatches: 1,
+        waitMsTotal: 1200,
+        waitSamples: 2,
+        maxWaitMs: 900,
+        lastConflictAt: "2026-03-07T00:00:00.000Z",
+        lastSelectedAt: "2026-03-07T00:00:01.000Z",
+      });
+      ex._repoAreaDispatchCycle = {
+        cycle: 4,
+        at: "2026-03-07T00:00:02.000Z",
+        candidateCount: 3,
+        remaining: 1,
+        selectedCount: 1,
+        blockedTasks: 1,
+        blockedByArea: { infra: 1 },
+        saturatedAreas: ["infra"],
+      };
+
+      const status = ex.getStatus();
+
+      expect(status.repoAreaLocks).toEqual(
+        expect.objectContaining({
+          enabled: true,
+          configuredLimit: 2,
+          totals: expect.objectContaining({
+            conflicts: 2,
+            blockedDispatches: 2,
+          }),
+          lastDispatch: expect.objectContaining({
+            cycle: 4,
+            saturatedAreas: ["infra"],
+          }),
+        }),
+      );
+      expect(status.repoAreaLocks.areas).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            area: "infra",
+            activeSlots: 1,
+            conflicts: 2,
+            averageWaitMs: 600,
+            selectedDispatches: 1,
+          }),
+        ]),
+      );
+    });
   });
 
   describe("repo-area collision scheduling", () => {
@@ -334,6 +394,110 @@ describe("task-executor", () => {
         { id: "t2", repo_areas: ["infra"] },
       ], 2);
       expect(selected.map((task) => task.id)).toEqual(["t1", "t2"]);
+    });
+
+    it("reduces effective repo area cap when active failures are high", () => {
+      const ex = new TaskExecutor({ baseBranchParallelLimit: 0, repoAreaParallelLimit: 3 });
+      ex._activeSlots.set("active-1", {
+        taskId: "active-1",
+        repoAreas: ["infra"],
+        attempt: 2,
+        startedAt: Date.now() - 1_000,
+        status: "running",
+      });
+      ex._activeSlots.set("active-2", {
+        taskId: "active-2",
+        repoAreas: ["infra"],
+        attempt: 1,
+        startedAt: Date.now() - 1_000,
+        status: "running",
+      });
+
+      const selected = ex._selectTasksForBaseBranchLimit(
+        [{ id: "t1", repo_areas: ["infra"] }],
+        1,
+      );
+
+      expect(selected).toEqual([]);
+      expect(ex.getStatus().repoAreaLocks.areas).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            area: "infra",
+            effectiveLimit: 2,
+            conflicts: 1,
+            blockedDispatches: 1,
+            activeFailureRate: 0.5,
+          }),
+        ]),
+      );
+    });
+
+    it("reduces effective repo area cap when merge latency is elevated", () => {
+      const ex = new TaskExecutor({ baseBranchParallelLimit: 0, repoAreaParallelLimit: 2 });
+      ex._activeSlots.set("active-1", {
+        taskId: "active-1",
+        repoAreas: ["workflow"],
+        attempt: 1,
+        startedAt: Date.now() - 5 * 60 * 60 * 1000,
+        status: "running",
+      });
+
+      const selected = ex._selectTasksForBaseBranchLimit(
+        [{ id: "t1", repo_areas: ["workflow"] }],
+        1,
+      );
+
+      expect(selected).toEqual([]);
+      expect(ex.getStatus().repoAreaLocks.areas).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            area: "workflow",
+            effectiveLimit: 1,
+            averageMergeLatencyMs: expect.any(Number),
+          }),
+        ]),
+      );
+    });
+
+    it("tracks repo area wait time once a blocked task is later selected", () => {
+      const ex = new TaskExecutor({ baseBranchParallelLimit: 0, repoAreaParallelLimit: 1 });
+      const now = Date.now();
+      ex._activeSlots.set("active-1", {
+        taskId: "active-1",
+        repoAreas: ["infra"],
+        attempt: 1,
+        startedAt: now - 2_000,
+        status: "running",
+      });
+
+      vi.spyOn(Date, "now")
+        .mockReturnValueOnce(now)
+        .mockReturnValueOnce(now + 1_500)
+        .mockReturnValue(now + 1_500);
+
+      expect(
+        ex._selectTasksForBaseBranchLimit([{ id: "t1", repo_areas: ["infra"] }], 1),
+      ).toEqual([]);
+
+      ex._activeSlots.clear();
+
+      const selected = ex._selectTasksForBaseBranchLimit(
+        [{ id: "t1", repo_areas: ["infra"] }],
+        1,
+      );
+
+      expect(selected.map((task) => task.id)).toEqual(["t1"]);
+      expect(ex.getStatus().repoAreaLocks.areas).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            area: "infra",
+            waitSamples: 1,
+            averageWaitMs: 1500,
+            maxWaitMs: 1500,
+            selectedDispatches: 1,
+          }),
+        ]),
+      );
     });
   });
 
@@ -1015,4 +1179,3 @@ describe("task-executor", () => {
   // [LEGACY TESTS REMOVED] — All execution pipeline tests have been replaced
   // by comprehensive workflow node tests in tests/workflow-task-lifecycle.test.mjs
 });
-

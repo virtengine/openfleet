@@ -2920,7 +2920,8 @@ registerNodeType("action.create_pr", {
     // Build gh pr create command
     const args = ["gh", "pr", "create"];
     args.push("--title", JSON.stringify(title));
-    if (body) args.push("--body", JSON.stringify(body));
+    // gh pr create requires either --body (empty is allowed) or --fill* in non-interactive mode.
+    args.push("--body", JSON.stringify(String(body)));
     if (base) args.push("--base", base);
     if (branch) args.push("--head", branch);
     if (draft) args.push("--draft");
@@ -6916,6 +6917,7 @@ registerNodeType("transform.mcp_extract", {
 
 /** Module-scope lazy caches for task lifecycle imports. */
 let _taskClaimsMod = null;
+let _taskClaimsInitPromise = null;
 let _taskComplexityMod = null;
 let _kanbanAdapterMod = null;
 let _agentPoolMod = null;
@@ -6925,6 +6927,46 @@ let _diffStatsMod = null;
 async function ensureTaskClaimsMod() {
   if (!_taskClaimsMod) _taskClaimsMod = await import("../task/task-claims.mjs");
   return _taskClaimsMod;
+}
+function pickTaskString(...values) {
+  for (const value of values) {
+    const normalized = String(value || "").trim();
+    if (normalized) return normalized;
+  }
+  return "";
+}
+function deriveTaskBranch(task = {}) {
+  const explicit = pickTaskString(
+    task?.branch,
+    task?.branchName,
+    task?.meta?.branch,
+    task?.metadata?.branch,
+  );
+  if (explicit) return explicit;
+  const taskId = pickTaskString(task?.id, task?.task_id).replace(/[^a-zA-Z0-9]/g, "").slice(0, 12);
+  const titleSlug = pickTaskString(task?.title, "task")
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "")
+    .slice(0, 48);
+  const suffix = titleSlug || "task";
+  if (taskId) return `task/${taskId}-${suffix}`;
+  return `task/${suffix}`;
+}
+async function ensureTaskClaimsInitialized(ctx, claims) {
+  if (typeof claims?.initTaskClaims !== "function") return;
+  if (!_taskClaimsInitPromise) {
+    const repoRoot = pickTaskString(
+      ctx?.data?.repoRoot,
+      ctx?.data?.workspace,
+      process.cwd(),
+    );
+    _taskClaimsInitPromise = claims.initTaskClaims({ repoRoot }).catch((err) => {
+      _taskClaimsInitPromise = null;
+      throw err;
+    });
+  }
+  await _taskClaimsInitPromise;
 }
 async function ensureTaskComplexityMod() {
   if (!_taskComplexityMod) _taskComplexityMod = await import("../task/task-complexity.mjs");
@@ -6960,6 +7002,7 @@ function normalizeCanStartGuardResult(raw) {
       blockingTaskIds: [],
       missingDependencyTaskIds: [],
       blockingSprintIds: [],
+      blockingEpicIds: [],
     };
   }
   const data = raw && typeof raw === "object" ? raw : {};
@@ -6970,11 +7013,11 @@ function normalizeCanStartGuardResult(raw) {
     blockingTaskIds: Array.isArray(data.blockingTaskIds) ? data.blockingTaskIds : [],
     missingDependencyTaskIds: Array.isArray(data.missingDependencyTaskIds) ? data.missingDependencyTaskIds : [],
     blockingSprintIds: Array.isArray(data.blockingSprintIds) ? data.blockingSprintIds : [],
+    blockingEpicIds: Array.isArray(data.blockingEpicIds) ? data.blockingEpicIds : [],
     sprintOrderMode: data.sprintOrderMode || null,
     sprintTaskOrderMode: data.sprintTaskOrderMode || null,
   };
 }
-
 /** Resolve a config value, falling back to ctx.data, then defaultVal. */
 function cfgOrCtx(node, ctx, key, defaultVal = "") {
   const raw = node.config?.[key];
@@ -6982,6 +7025,40 @@ function cfgOrCtx(node, ctx, key, defaultVal = "") {
   const ctxVal = ctx.data?.[key];
   if (ctxVal != null && ctxVal !== "") return String(ctxVal);
   return defaultVal;
+}
+
+function isUnresolvedTemplateToken(value) {
+  return /{{[^{}]+}}/.test(String(value || ""));
+}
+
+function normalizeGitRefValue(value) {
+  const text = String(value ?? "").trim();
+  if (!text || isUnresolvedTemplateToken(text)) return "";
+  const lowered = text.toLowerCase();
+  if (lowered === "null" || lowered === "undefined") return "";
+  return text;
+}
+
+function pickGitRef(...candidates) {
+  for (const candidate of candidates) {
+    const normalized = normalizeGitRefValue(candidate);
+    if (normalized) return normalized;
+  }
+  return "";
+}
+
+function formatExecSyncError(err) {
+  if (!err) return "unknown error";
+  const detail = [err?.stderr, err?.stdout, err?.message]
+    .map((entry) => String(entry || "").trim())
+    .filter(Boolean)
+    .join(" | ");
+  return trimLogText(detail || String(err?.message || err), 420);
+}
+
+function isExistingBranchWorktreeError(err) {
+  const detail = formatExecSyncError(err).toLowerCase();
+  return detail.includes("already exists") || detail.includes("is already checked out");
 }
 
 /**
@@ -7176,6 +7253,7 @@ registerNodeType("trigger.task_available", {
               blockingTaskIds: guard.blockingTaskIds,
               missingDependencyTaskIds: guard.missingDependencyTaskIds,
               blockingSprintIds: guard.blockingSprintIds,
+              blockingEpicIds: guard.blockingEpicIds,
               sprintOrderMode: guard.sprintOrderMode,
               sprintTaskOrderMode: guard.sprintTaskOrderMode,
               strict: Boolean(taskNotFound && strictStartGuardMissingTask),
@@ -7277,12 +7355,54 @@ registerNodeType("trigger.task_available", {
       }
     }
 
+    const primaryTask = toDispatch[0] || null;
+    if (primaryTask) {
+      const taskId = pickTaskString(primaryTask.id, primaryTask.task_id);
+      const taskTitle = pickTaskString(primaryTask.title, primaryTask.task_title);
+      bindTaskContext(ctx, { taskId, taskTitle, task: primaryTask });
+      const taskDescription = pickTaskString(
+        primaryTask.description,
+        primaryTask.task_description,
+      );
+      if (taskDescription) ctx.data.taskDescription = taskDescription;
+      const taskWorkspace = pickTaskString(
+        primaryTask.workspace,
+        primaryTask.workspacePath,
+        primaryTask.meta?.workspace,
+        primaryTask.metadata?.workspace,
+      );
+      if (taskWorkspace) {
+        ctx.data.workspace = taskWorkspace;
+        if (!pickTaskString(ctx.data.repoRoot)) {
+          ctx.data.repoRoot = taskWorkspace;
+        }
+      }
+      const taskRepository = pickTaskString(
+        primaryTask.repository,
+        primaryTask.repo,
+        primaryTask.meta?.repository,
+        primaryTask.metadata?.repository,
+      );
+      if (taskRepository) ctx.data.repository = taskRepository;
+      const taskRepositories = Array.isArray(primaryTask.repositories)
+        ? primaryTask.repositories
+        : [];
+      if (taskRepositories.length > 0) {
+        ctx.data.repositories = taskRepositories;
+      }
+      const baseBranch = pickTaskString(primaryTask.baseBranch, primaryTask.base_branch);
+      if (baseBranch) ctx.data.baseBranch = baseBranch;
+      const branch = deriveTaskBranch(primaryTask);
+      if (branch) ctx.data.branch = branch;
+    }
+
     ctx.log(node.id, `Found ${toDispatch.length} task(s) ready (${remaining} slot(s) free)`);
     return {
       triggered: true,
       tasks: toDispatch,
       taskCount: toDispatch.length,
       availableSlots: remaining,
+      selectedTaskId: primaryTask ? pickTaskString(primaryTask.id, primaryTask.task_id) : "",
       auditEvents: startGuardAuditEvents,
     };
   },
@@ -7449,6 +7569,12 @@ registerNodeType("action.claim_task", {
     if (!taskId) throw new Error("action.claim_task: taskId is required");
 
     const claims = await ensureTaskClaimsMod();
+    try {
+      await ensureTaskClaimsInitialized(ctx, claims);
+    } catch (initErr) {
+      ctx.log(node.id, `Claim init failed: ${initErr.message}`);
+      return { success: false, error: initErr.message, taskId, alreadyClaimed: false };
+    }
 
     let claimResult;
     try {
@@ -7545,6 +7671,14 @@ registerNodeType("action.release_claim", {
     }
 
     const claims = await ensureTaskClaimsMod();
+    try {
+      await ensureTaskClaimsInitialized(ctx, claims);
+    } catch (initErr) {
+      ctx.log(node.id, `Claim release init warning: ${initErr.message}`);
+      ctx.data._claimToken = null;
+      ctx.data._claimInstanceId = null;
+      return { success: true, taskId, warning: initErr.message };
+    }
     try {
       await claims.releaseTaskClaim({ taskId, claimToken, instanceId });
       ctx.data._claimToken = null;
@@ -7665,7 +7799,9 @@ registerNodeType("action.acquire_worktree", {
     const taskId = cfgOrCtx(node, ctx, "taskId");
     const branch = cfgOrCtx(node, ctx, "branch");
     const repoRoot = cfgOrCtx(node, ctx, "repoRoot") || process.cwd();
-    const baseBranch = cfgOrCtx(node, ctx, "baseBranch", "origin/main");
+    const baseBranchRaw = cfgOrCtx(node, ctx, "baseBranch", "origin/main");
+    const defaultTargetBranch = cfgOrCtx(node, ctx, "defaultTargetBranch", "origin/main");
+    const baseBranch = pickGitRef(baseBranchRaw, defaultTargetBranch, "origin/main", "main");
     const fetchTimeout = node.config?.fetchTimeout ?? 30000;
     const worktreeTimeout = node.config?.worktreeTimeout ?? 60000;
 
@@ -7722,15 +7858,21 @@ registerNodeType("action.acquire_worktree", {
           `git worktree add "${worktreePath}" -b "${branch}" "${baseBranch}" 2>&1`,
           { cwd: repoRoot, encoding: "utf8", timeout: worktreeTimeout },
         );
-      } catch {
-        // Branch may already exist — try checkout
+      } catch (createErr) {
+        if (!isExistingBranchWorktreeError(createErr)) {
+          throw new Error(`Worktree creation failed: ${formatExecSyncError(createErr)}`);
+        }
+        // Branch already exists — attach worktree to existing branch.
         try {
           execSync(
             `git worktree add "${worktreePath}" "${branch}" 2>&1`,
             { cwd: repoRoot, encoding: "utf8", timeout: worktreeTimeout },
           );
-        } catch (err2) {
-          throw new Error(`Worktree creation failed: ${err2.message}`);
+        } catch (reuseErr) {
+          throw new Error(
+            `Worktree creation failed: ${formatExecSyncError(createErr)}; ` +
+            `reuse failed: ${formatExecSyncError(reuseErr)}`,
+          );
         }
       }
 
