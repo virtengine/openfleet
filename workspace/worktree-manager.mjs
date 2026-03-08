@@ -117,24 +117,13 @@ function _getFilesystemAgeMs(dirPath) {
  * @returns {string}
  */
 function sanitizeBranchName(branch) {
-  let text = String(branch || "");
-  if (text.startsWith("refs/heads/")) {
-    text = text.slice("refs/heads/".length);
-  }
-  text = text.replaceAll("/", "-");
-
-  const allowed = [];
-  for (const ch of text) {
-    const isAlphaNum = (ch >= "a" && ch <= "z") || (ch >= "A" && ch <= "Z") || (ch >= "0" && ch <= "9");
-    if (isAlphaNum || ch === "." || ch === "_" || ch === "-") {
-      allowed.push(ch);
-    }
-  }
-
-  text = allowed.join("");
-  while (text.startsWith(".")) text = text.slice(1);
-  while (text.endsWith(".")) text = text.slice(0, -1);
-  return text.slice(0, 60); // Windows MAX_PATH is 260, worktree base path ~60, leaves ~140 for this + git overhead
+  return branch
+    .replace(/^refs\/heads\//, "")
+    .replace(/\//g, "-")
+    .replace(/[^a-zA-Z0-9._-]/g, "")
+    .replace(/^\.+/, "") // no leading dots
+    .replace(/\.+$/, "") // no trailing dots
+    .slice(0, 60); // Windows MAX_PATH is 260, worktree base path ~60, leaves ~140 for this + git overhead
 }
 
 /**
@@ -1316,4 +1305,3 @@ export {
   COPILOT_WORKTREE_MAX_AGE_MS,
   GIT_ENV,
 };
-
