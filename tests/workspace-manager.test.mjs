@@ -34,6 +34,29 @@ afterEach(() => {
   }
 });
 
+function sanitizedGitEnv(extra = {}) {
+  const env = { ...process.env, ...extra };
+  for (const key of [
+    "GIT_DIR",
+    "GIT_WORK_TREE",
+    "GIT_COMMON_DIR",
+    "GIT_INDEX_FILE",
+    "GIT_OBJECT_DIRECTORY",
+    "GIT_ALTERNATE_OBJECT_DIRECTORIES",
+    "GIT_PREFIX",
+  ]) {
+    delete env[key];
+  }
+  return env;
+}
+
+function execGit(command, options = {}) {
+  return execSync(command, {
+    ...options,
+    env: sanitizedGitEnv(options.env),
+  });
+}
+
 function createConfigDir() {
   const dir = mkdtempSync(join(tmpdir(), "workspace-manager-tests-"));
   cleanupDirs.push(dir);
@@ -63,20 +86,20 @@ function readConfig(configDir) {
 function createSeededBareRemote(baseDir, name = "remote-repo") {
   const barePath = join(baseDir, `${name}.git`);
   const seedPath = join(baseDir, `${name}-seed`);
-  execSync(`git init --bare "${barePath}"`, { stdio: ["ignore", "ignore", "ignore"] });
-  execSync(`git clone "${barePath}" "${seedPath}"`, { stdio: ["ignore", "ignore", "ignore"] });
-  execSync('git config --local user.email "bosun-tests@example.com"', {
+  execGit(`git init --bare "${barePath}"`, { stdio: ["ignore", "ignore", "ignore"] });
+  execGit(`git clone "${barePath}" "${seedPath}"`, { stdio: ["ignore", "ignore", "ignore"] });
+  execGit('git config --local user.email "bosun-tests@example.com"', {
     cwd: seedPath,
     stdio: ["ignore", "ignore", "ignore"],
   });
-  execSync('git config --local user.name "Bosun Tests"', {
+  execGit('git config --local user.name "Bosun Tests"', {
     cwd: seedPath,
     stdio: ["ignore", "ignore", "ignore"],
   });
   writeFileSync(join(seedPath, "README.md"), "# seed\n", "utf8");
-  execSync("git add README.md", { cwd: seedPath, stdio: ["ignore", "ignore", "ignore"] });
-  execSync('git commit -m "seed"', { cwd: seedPath, stdio: ["ignore", "ignore", "ignore"] });
-  execSync("git push origin HEAD", { cwd: seedPath, stdio: ["ignore", "ignore", "ignore"] });
+  execGit("git add README.md", { cwd: seedPath, stdio: ["ignore", "ignore", "ignore"] });
+  execGit('git commit -m "seed"', { cwd: seedPath, stdio: ["ignore", "ignore", "ignore"] });
+  execGit("git push origin HEAD", { cwd: seedPath, stdio: ["ignore", "ignore", "ignore"] });
   return barePath;
 }
 

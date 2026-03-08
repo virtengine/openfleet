@@ -691,3 +691,198 @@ describe("context-cache", () => {
     });
   });
 });
+
+describe("live tool compaction", () => {
+  async function runLiveCompaction(items, env = {}) {
+    const keys = [
+      "CONTEXT_SHREDDING_LIVE_TOOL_COMPACTION_ENABLED",
+      "CONTEXT_SHREDDING_LIVE_TOOL_COMPACTION_MODE",
+      "CONTEXT_SHREDDING_LIVE_TOOL_COMPACTION_MIN_CHARS",
+      "CONTEXT_SHREDDING_LIVE_TOOL_COMPACTION_TARGET_CHARS",
+      "CONTEXT_SHREDDING_LIVE_TOOL_COMPACTION_MIN_SAVINGS_PCT",
+      "CONTEXT_SHREDDING_LIVE_TOOL_COMPACTION_MIN_RUNTIME_MS",
+      "CONTEXT_SHREDDING_LIVE_TOOL_COMPACTION_BLOCK_STRUCTURED_OUTPUT",
+      "CONTEXT_SHREDDING_LIVE_TOOL_COMPACTION_ALLOW_COMMANDS",
+    ];
+    const snapshot = Object.fromEntries(keys.map((key) => [key, process.env[key]]));
+    const { _resetConfigCache } = await import("../config/context-shredding-config.mjs");
+    const cacheModule = await import("../workspace/context-cache.mjs");
+    try {
+      process.env.CONTEXT_SHREDDING_LIVE_TOOL_COMPACTION_ENABLED = "true";
+      for (const [key, value] of Object.entries(env || {})) {
+        if (value == null) delete process.env[key];
+        else process.env[key] = String(value);
+      }
+      _resetConfigCache();
+      return await cacheModule.maybeCompressSessionItems(items, {
+        sessionType: "primary",
+        agentType: "codex-sdk",
+        force: false,
+        skip: false,
+      });
+    } finally {
+      for (const key of keys) {
+        if (snapshot[key] === undefined) delete process.env[key];
+        else process.env[key] = snapshot[key];
+      }
+      _resetConfigCache();
+    }
+  }
+
+  it("compacts large search-style command output when enabled", async () => {
+    const lines = [];
+    for (let i = 0; i < 220; i++) {
+      lines.push(`src/generated/file${i}.ts:${i + 1}: const needle${i} = true;`);
+    }
+    const items = [{
+      type: "command_execution",
+      command: "rg needle src",
+      exit_code: 0,
+      aggregated_output: lines.join("\n"),
+    }];
+
+    const result = await runLiveCompaction(items);
+
+    expect(result).toHaveLength(1);
+    expect(result[0]._liveCompacted).toBe(true);
+    expect(result[0]._cachedLogId).toBeTruthy();
+    expect(result[0].aggregated_output).toContain("Live-compacted search");
+    expect(result[0].aggregated_output).toContain("Top files: src/generated/file0.ts:1");
+    expect(result[0].aggregated_output).toContain("bosun --tool-log");
+    expect(result[0].aggregated_output.length).toBeLessThan(items[0].aggregated_output.length);
+  });
+
+  it("compacts shell-wrapped search commands without custom agent hints", async () => {
+    const lines = [];
+    for (let i = 0; i < 180; i++) {
+      lines.push(`src/feature/file${i}.ts:${i + 10}: export const thing${i} = true;`);
+    }
+    const items = [{
+      type: "command_execution",
+      command: 'bash -lc "rg thing src/feature"',
+      exit_code: 0,
+      aggregated_output: lines.join("\n"),
+    }];
+
+    const result = await runLiveCompaction(items, {
+      CONTEXT_SHREDDING_LIVE_TOOL_COMPACTION_MIN_CHARS: "1200",
+    });
+
+    expect(result[0]._liveCompacted).toBe(true);
+    expect(result[0]._liveCompactionFamily).toBe("search");
+    expect(result[0].aggregated_output).toContain("Live-compacted search");
+    expect(result[0].aggregated_output).toContain("src/feature/file0.ts:10");
+  });
+
+  it("preserves structured output when live compaction is enabled", async () => {
+    const structured = JSON.stringify({ files: Array.from({ length: 80 }, (_, i) => ({ path: `src/file${i}.ts`, ok: true })) }, null, 2);
+    const items = [{
+      type: "command_execution",
+      command: "node tool.mjs --json",
+      exit_code: 0,
+      aggregated_output: structured,
+    }];
+
+    const result = await runLiveCompaction(items);
+
+    expect(result[0]._liveCompacted).toBeUndefined();
+    expect(result[0].aggregated_output).toBe(structured);
+  });
+
+  it("keeps failure diagnostics while compacting noisy build output", async () => {
+    const lines = [];
+    for (let i = 0; i < 160; i++) {
+      lines.push(`ok   pkg/module${i} 0.${i % 10}s`);
+    }
+    lines.push("FAIL tests/foo.test.ts");
+    lines.push("Error: expected true to be false");
+    lines.push("    at tests/foo.test.ts:42:9");
+    const items = [{
+      type: "command_execution",
+      command: "go test ./...",
+      exit_code: 1,
+      aggregated_output: lines.join("\n"),
+    }];
+
+    const result = await runLiveCompaction(items, {
+      CONTEXT_SHREDDING_LIVE_TOOL_COMPACTION_MIN_CHARS: "1000",
+    });
+
+    expect(result[0]._liveCompacted).toBe(true);
+    expect(result[0].aggregated_output).toContain("FAIL tests/foo.test.ts");
+    expect(result[0].aggregated_output).toContain("expected true to be false");
+    expect(result[0].aggregated_output).toContain("bosun --tool-log");
+  });
+
+  it("keeps git diff filenames and hunk context while dropping bulk diff noise", async () => {
+    const lines = [
+      "diff --git a/src/app.ts b/src/app.ts",
+      "--- a/src/app.ts",
+      "+++ b/src/app.ts",
+      "@@ -10,6 +10,18 @@ export function render() {",
+      "+  const importantFlag = true;",
+      "+  const retryBudget = 3;",
+      "diff --git a/src/lib/cache.ts b/src/lib/cache.ts",
+      "--- a/src/lib/cache.ts",
+      "+++ b/src/lib/cache.ts",
+      "@@ -42,7 +42,11 @@ export function compact() {",
+      "+  throw new Error('cache mismatch');",
+    ];
+    for (let i = 0; i < 220; i++) {
+      lines.push(`+ filler line ${i} ${"x".repeat(40)}`);
+    }
+    const items = [{
+      type: "command_execution",
+      command: "git diff -- src",
+      exit_code: 0,
+      aggregated_output: lines.join("\n"),
+    }];
+
+    const result = await runLiveCompaction(items, {
+      CONTEXT_SHREDDING_LIVE_TOOL_COMPACTION_MIN_CHARS: "1400",
+      CONTEXT_SHREDDING_LIVE_TOOL_COMPACTION_MIN_SAVINGS_PCT: "5",
+      CONTEXT_SHREDDING_LIVE_TOOL_COMPACTION_TARGET_CHARS: "900",
+    });
+
+    expect(result[0]._liveCompacted).toBe(true);
+    expect(result[0]._liveCompactionFamily).toBe("git");
+    expect(result[0].aggregated_output).toContain("src/app.ts");
+    expect(result[0].aggregated_output).toContain("@@ -10,6 +10,18 @@ export function render() {");
+    expect(result[0].aggregated_output).toContain("cache mismatch");
+  });
+
+  it("keeps latest error signals in log-heavy outputs", async () => {
+    const lines = [];
+    for (let i = 0; i < 240; i++) {
+      lines.push(`INFO worker[${i % 3}] heartbeat ok`);
+    }
+    lines.push("WARN reconnecting stream after timeout");
+    lines.push("ERROR websocket disconnected unexpectedly");
+    lines.push("Traceback: reconnect loop exceeded budget");
+    lines.push("INFO shutting down worker 2");
+    const items = [{
+      type: "command_execution",
+      command: "journalctl -u bosun.service -n 500",
+      exit_code: 0,
+      aggregated_output: lines.join("\n"),
+    }];
+
+    const result = await runLiveCompaction(items, {
+      CONTEXT_SHREDDING_LIVE_TOOL_COMPACTION_MIN_CHARS: "1400",
+      CONTEXT_SHREDDING_LIVE_TOOL_COMPACTION_MIN_SAVINGS_PCT: "5",
+      CONTEXT_SHREDDING_LIVE_TOOL_COMPACTION_TARGET_CHARS: "900",
+    });
+
+    expect(result[0]._liveCompacted).toBe(true);
+    expect(result[0]._liveCompactionFamily).toBe("logs");
+    expect(result[0].aggregated_output).toContain("ERROR websocket disconnected unexpectedly");
+    expect(result[0].aggregated_output).toContain("Traceback: reconnect loop exceeded budget");
+    expect(result[0].aggregated_output).toContain("Repeated noise omitted:");
+  });
+});
+
+
+
+
+
+

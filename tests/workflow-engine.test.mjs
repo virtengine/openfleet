@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, rmSync, writeFileSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { execSync } from "node:child_process";
@@ -601,6 +601,93 @@ describe("WorkflowEngine - run history details", () => {
       if (prevThreshold === undefined) delete process.env.WORKFLOW_RUN_STUCK_THRESHOLD_MS;
       else process.env.WORKFLOW_RUN_STUCK_THRESHOLD_MS = prevThreshold;
     }
+  });
+
+  it("reclassifies stale RUNNING index entries as interrupted on startup recovery", () => {
+    const wf = makeSimpleWorkflow(
+      [{ id: "trigger", type: "trigger.manual", label: "Start", config: {} }],
+      [],
+      { id: "wf-interrupted-index", name: "Interrupted Index Workflow" },
+    );
+    engine.save(wf);
+
+    const runsDir = join(tmpDir, "runs");
+    const runId = "run-interrupted-index";
+    writeFileSync(
+      join(runsDir, "index.json"),
+      JSON.stringify({
+        runs: [{
+          runId,
+          workflowId: wf.id,
+          workflowName: wf.name,
+          status: WorkflowStatus.RUNNING,
+          startedAt: 1,
+          endedAt: null,
+        }],
+      }, null, 2),
+      "utf8",
+    );
+    writeFileSync(
+      join(runsDir, `${runId}.json`),
+      JSON.stringify({
+        id: runId,
+        startedAt: 1,
+        endedAt: null,
+        data: { _workflowId: wf.id, _workflowName: wf.name },
+        nodeStatuses: { trigger: NodeStatus.COMPLETED, dispatch: NodeStatus.RUNNING },
+        nodeStatusEvents: [],
+        logs: [],
+        errors: [],
+      }, null, 2),
+      "utf8",
+    );
+    writeFileSync(join(runsDir, "_active-runs.json"), JSON.stringify([], null, 2), "utf8");
+
+    engine._detectInterruptedRuns();
+
+    const index = JSON.parse(readFileSync(join(runsDir, "index.json"), "utf8"));
+    const recovered = index.runs.find((entry) => entry.runId === runId);
+    expect(recovered).toBeTruthy();
+    expect(recovered.status).toBe(WorkflowStatus.PAUSED);
+    expect(recovered.resumable).toBe(true);
+    expect(typeof recovered.interruptedAt).toBe("number");
+  });
+
+  it("hydrates orphan running detail files into paused resumable index entries", () => {
+    const wf = makeSimpleWorkflow(
+      [{ id: "trigger", type: "trigger.manual", label: "Start", config: {} }],
+      [],
+      { id: "wf-interrupted-orphan", name: "Interrupted Orphan Workflow" },
+    );
+    engine.save(wf);
+
+    const runsDir = join(tmpDir, "runs");
+    const runId = "run-interrupted-orphan";
+    writeFileSync(join(runsDir, "index.json"), JSON.stringify({ runs: [] }, null, 2), "utf8");
+    writeFileSync(
+      join(runsDir, `${runId}.json`),
+      JSON.stringify({
+        id: runId,
+        startedAt: 1,
+        endedAt: null,
+        data: { _workflowId: wf.id, _workflowName: wf.name },
+        nodeStatuses: { trigger: NodeStatus.RUNNING },
+        nodeStatusEvents: [],
+        logs: [],
+        errors: [],
+      }, null, 2),
+      "utf8",
+    );
+    writeFileSync(join(runsDir, "_active-runs.json"), JSON.stringify([], null, 2), "utf8");
+
+    engine._detectInterruptedRuns();
+
+    const index = JSON.parse(readFileSync(join(runsDir, "index.json"), "utf8"));
+    const recovered = index.runs.find((entry) => entry.runId === runId);
+    expect(recovered).toBeTruthy();
+    expect(recovered.workflowId).toBe(wf.id);
+    expect(recovered.status).toBe(WorkflowStatus.PAUSED);
+    expect(recovered.resumable).toBe(true);
   });
 
   it("supports cooperative cancellation for running runs", async () => {

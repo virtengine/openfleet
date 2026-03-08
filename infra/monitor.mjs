@@ -1831,14 +1831,15 @@ function isFalsyFlag(value) {
 }
 
 function isReviewAgentEnabled() {
-  // When the workflow version is handling reviews, the legacy review agent
-  // must be disabled to prevent duplicate reviews on the same PR.
-  if (isWorkflowReplacingModule("review-agent.mjs")) return false;
-
   const explicit = process.env.INTERNAL_EXECUTOR_REVIEW_AGENT_ENABLED;
   if (explicit !== undefined && String(explicit).trim() !== "") {
     return !isFalsyFlag(explicit);
   }
+
+  // When the workflow version is handling reviews, the legacy review agent
+  // must be disabled to prevent duplicate reviews on the same PR.
+  if (isWorkflowReplacingModule("review-agent.mjs")) return false;
+
   if (typeof internalExecutorConfig?.reviewAgentEnabled === "boolean") {
     return internalExecutorConfig.reviewAgentEnabled;
   }
@@ -13570,7 +13571,6 @@ pollWorkflowSchedulesOnce = async function pollWorkflowSchedulesOnce(
         .execute(workflowId, {
           _triggerSource: triggerSource,
           _triggeredBy: match?.triggeredBy || null,
-          _lastRunAt: Date.now(),
           repoRoot,
         })
         .then((ctx) => {
@@ -14422,14 +14422,37 @@ if (isExecutorDisabled()) {
           const pending = getTasksPendingReview();
           if (Array.isArray(pending) && pending.length > 0) {
             let requeued = 0;
+            let resetToTodo = 0;
             for (const task of pending) {
               const taskId = String(task?.id || "").trim();
               if (!taskId) continue;
-              reviewAgent.queueReview({
+              const branchName = String(task?.branchName || "").trim();
+              const prUrl = String(task?.prUrl || "").trim();
+              const prNumber = String(task?.prNumber || "").trim();
+              const hasReviewReference = Boolean(prUrl || prNumber || branchName);
+              if (!hasReviewReference) {
+                console.warn(
+                  `[monitor] review rehydrate reset ${taskId} to todo: missing prUrl/prNumber/branchName`,
+                );
+                try {
+                  setInternalTaskStatus(taskId, "todo", "review-agent-rehydrate");
+                } catch {
+                  /* best-effort */
+                }
+                try {
+                  await updateTaskStatus(taskId, "todo");
+                } catch {
+                  /* best-effort */
+                }
+                resetToTodo += 1;
+                continue;
+              }
+              await reviewAgent.queueReview({
                 id: taskId,
                 title: task?.title || taskId,
-                branchName: task?.branchName || "",
-                prUrl: task?.prUrl || "",
+                branchName,
+                prUrl,
+                prNumber,
                 description: task?.description || "",
                 taskContext: task?._taskContextBlock || task?.meta?.taskContextBlock || "",
                 worktreePath: null,
@@ -14441,6 +14464,11 @@ if (isExecutorDisabled()) {
             if (requeued > 0) {
               console.log(
                 `[monitor] review agent rehydrated ${requeued} inreview task(s) from task-store`,
+              );
+            }
+            if (resetToTodo > 0) {
+              console.warn(
+                `[monitor] review agent reset ${resetToTodo} stale inreview task(s) to todo due missing review references`,
               );
             }
           }
@@ -14685,3 +14713,4 @@ export {
   // Workflow event bridge — for fleet/kanban modules to emit events
   queueWorkflowEvent,
 };
+

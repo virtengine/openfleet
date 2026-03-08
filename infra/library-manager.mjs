@@ -19,6 +19,7 @@ import { existsSync, readFileSync, writeFileSync, mkdirSync, readdirSync, statSy
 import { resolve, basename, join, relative } from "node:path";
 import { execSync, spawnSync } from "node:child_process";
 import { homedir } from "node:os";
+import { getAgentToolConfig, getEffectiveTools } from "../agent/agent-tool-config.mjs";
 
 // ── Constants ─────────────────────────────────────────────────────────────────
 
@@ -28,6 +29,12 @@ export const SKILL_DIR = ".bosun/skills";
 export const PROFILE_DIR = ".bosun/profiles";
 export const MCP_DIR = ".bosun/mcp-servers";
 export const TOOL_DIR = ".bosun/tools";
+export const LIBRARY_INDEX_DIR = ".bosun/library-index";
+export const AGENT_PROFILE_INDEX = "agent-profiles.json";
+export const SKILL_ENTRY_INDEX = "skills.json";
+
+const agentProfileIndexCache = new Map();
+const skillEntryIndexCache = new Map();
 
 /** Resource types managed by the library */
 export const RESOURCE_TYPES = Object.freeze(["prompt", "agent", "skill", "mcp", "custom-tool"]);
@@ -59,6 +66,14 @@ function safeReadJson(filePath) {
 function safeWriteJson(filePath, data) {
   ensureDir(resolve(filePath, ".."));
   writeFileSync(filePath, JSON.stringify(data, null, 2) + "\n", "utf8");
+}
+
+function getFileMtimeMs(filePath) {
+  try {
+    return Number(statSync(filePath)?.mtimeMs || 0);
+  } catch {
+    return 0;
+  }
 }
 
 function slugify(name) {
@@ -117,15 +132,416 @@ function parseJsonishArray(value) {
 }
 
 function extractConventionalScope(taskTitle = '') {
-  const match = String(taskTitle || '').match(
-    /(?:^\[[^\]]+\]\s*)?(?:feat|fix|docs|style|refactor|perf|test|build|ci|chore|revert)\(([^)]+)\)/i,
-  );
-  return match ? String(match[1] || '').toLowerCase().trim() : null;
+  const normalized = String(taskTitle || '').toLowerCase();
+  if (!normalized) return null;
+
+  let cursor = 0;
+  if (normalized.startsWith('[')) {
+    const closingBracket = normalized.indexOf(']');
+    if (closingBracket > 0) cursor = closingBracket + 1;
+  }
+
+  const candidate = normalized.slice(cursor).trimStart();
+  const types = ["feat", "fix", "docs", "style", "refactor", "perf", "test", "build", "ci", "chore", "revert"];
+  for (const type of types) {
+    const prefix = type + '(';
+    if (!candidate.startsWith(prefix)) continue;
+    const closingParen = candidate.indexOf(')', prefix.length);
+    if (closingParen <= prefix.length) return null;
+    const scope = candidate.slice(prefix.length, closingParen).trim();
+    return scope || null;
+  }
+  return null;
 }
 
 function parseMatchEnvNumber(name, fallback) {
   const raw = Number.parseFloat(String(process.env[name] || '').trim());
   return Number.isFinite(raw) ? raw : fallback;
+}
+
+function buildTypeIndexRevision(manifest, type) {
+  const entries = Array.isArray(manifest?.entries)
+    ? manifest.entries.filter((entry) => entry?.type === type)
+    : [];
+  return entries
+    .slice()
+    .sort((a, b) => String(a?.id || "").localeCompare(String(b?.id || "")))
+    .map((entry) => [entry.id, entry.filename, entry.updatedAt].join(":"))
+    .join("|");
+}
+
+function buildAgentProfileIndexRevision(manifest) {
+  return buildTypeIndexRevision(manifest, "agent");
+}
+
+function buildSkillIndexRevision(manifest) {
+  return buildTypeIndexRevision(manifest, "skill");
+}
+
+function updateIndexCache(cache, rootDir, index, manifestMtimeMs = 0) {
+  const cacheKey = resolve(rootDir || getBosunHomeDir());
+  const payload = {
+    ...index,
+    count: Array.isArray(index?.profiles)
+      ? index.profiles.length
+      : Array.isArray(index?.skills)
+        ? index.skills.length
+        : Number(index?.count || 0),
+  };
+  cache.set(cacheKey, {
+    manifestMtimeMs: Number(manifestMtimeMs || 0),
+    index: payload,
+  });
+  return payload;
+}
+
+function updateAgentProfileIndexCache(rootDir, index, manifestMtimeMs = 0) {
+  return updateIndexCache(agentProfileIndexCache, rootDir, index, manifestMtimeMs);
+}
+
+function updateSkillEntryIndexCache(rootDir, index, manifestMtimeMs = 0) {
+  return updateIndexCache(skillEntryIndexCache, rootDir, index, manifestMtimeMs);
+}
+
+function buildIndexedAgentProfile(rootDir, entry) {
+  const profile = getEntryContent(rootDir, entry);
+  if (!profile || typeof profile !== "object") return null;
+  return {
+    ...entry,
+    profile,
+    agentType: String(profile?.agentType || "task").trim().toLowerCase() || "task",
+    titlePatterns: toStringArray(profile?.titlePatterns),
+    scopes: toStringArray(profile?.scopes),
+    tags: uniqueStrings([...(entry?.tags || []), ...toStringArray(profile?.tags)]),
+  };
+}
+
+function buildIndexedSkillEntry(entry) {
+  const tags = uniqueStrings(entry?.tags || []);
+  const keywords = keywordTokens(
+    [entry?.id, entry?.name, entry?.description, ...tags].filter(Boolean).join(" "),
+    { minLength: 3 },
+  );
+  return {
+    ...entry,
+    tags,
+    keywords,
+  };
+}
+
+function buildSkillSelection(rootDir, best, criteria = {}, opts = {}) {
+  const skillIndex = loadSkillEntryIndex(rootDir);
+  const indexedSkills = Array.isArray(skillIndex?.skills) ? skillIndex.skills : [];
+  const tokenMap = skillIndex?.tokenMap || {};
+  const indexedById = new Map(indexedSkills.map((entry) => [entry.id, entry]));
+  const profileSkillIds = toStringArray(best?.profile?.skills);
+  const textBlob = [criteria?.title, criteria?.description].filter(Boolean).join("\n");
+  const criteriaTags = uniqueStrings([
+    ...toStringArray(criteria?.tags),
+    ...keywordTokens(textBlob, { minLength: 4 }),
+    ...keywordTokens(toStringArray(criteria?.changedFiles).join(" "), { minLength: 3 }),
+  ]).map((value) => value.toLowerCase());
+
+  const candidateIds = new Set(profileSkillIds);
+  for (const tag of criteriaTags) {
+    const ids = Array.isArray(tokenMap?.[tag]) ? tokenMap[tag] : [];
+    if (ids.length > 128) continue;
+    for (const id of ids) candidateIds.add(id);
+  }
+
+  const scored = [];
+  const profileSkillSet = new Set(profileSkillIds.map((value) => value.toLowerCase()));
+  const candidateEntries = candidateIds.size > 0
+    ? [...candidateIds].map((id) => indexedById.get(id)).filter(Boolean)
+    : [];
+  for (const skill of candidateEntries) {
+    let score = 0;
+    const reasons = [];
+    if (profileSkillSet.has(String(skill.id || "").toLowerCase())) {
+      score += 12;
+      reasons.push("profile-skill");
+    }
+
+    const haystack = new Set([
+      ...skill.tags.map((value) => String(value || "").toLowerCase()),
+      ...skill.keywords.map((value) => String(value || "").toLowerCase()),
+      String(skill.id || "").toLowerCase(),
+    ]);
+    const tagHits = criteriaTags.filter((tag) => haystack.has(tag));
+    if (tagHits.length > 0) {
+      score += Math.min(6, tagHits.length * 2);
+      reasons.push(`tags:${tagHits.slice(0, 4).join(",")}`);
+    }
+
+    if (score <= 0) continue;
+    scored.push({
+      ...skill,
+      score,
+      reasons,
+    });
+  }
+
+  scored.sort((a, b) => {
+    if (b.score !== a.score) return b.score - a.score;
+    return String(a.name || "").localeCompare(String(b.name || ""));
+  });
+
+  const skillTopN = Math.max(1, Number.parseInt(String(opts?.skillTopN ?? criteria?.skillTopN ?? 6), 10) || 6);
+  const selectedSkillIds = uniqueStrings([
+    ...profileSkillIds,
+    ...scored.slice(0, skillTopN).map((entry) => entry.id),
+  ]);
+  const selectedSkills = selectedSkillIds
+    .map((skillId) => scored.find((entry) => entry.id === skillId) || indexedSkills.find((entry) => entry.id === skillId))
+    .filter(Boolean);
+
+  return {
+    selectedSkillIds,
+    selectedSkills,
+    candidates: scored.slice(0, skillTopN),
+  };
+}
+
+function resolvePromptSelection(rootDir, profile = {}) {
+  const promptOverrideId = String(profile?.promptOverride || "").trim();
+  if (!promptOverrideId) return null;
+  const entry = getEntry(rootDir, promptOverrideId);
+  if (!entry) {
+    return {
+      id: promptOverrideId,
+      type: "inline-or-missing",
+      name: promptOverrideId,
+      description: "Prompt override is inline text or not present in the local library registry.",
+    };
+  }
+  return {
+    id: entry.id,
+    type: "library-entry",
+    name: entry.name,
+    description: entry.description,
+  };
+}
+
+function resolveToolSelection(rootDir, best) {
+  const profile = best?.profile || {};
+  const profileEnabledTools = toStringArray(profile?.enabledTools);
+  const profileEnabledMcpServers = toStringArray(profile?.enabledMcpServers);
+  const rawCfg = best?.id
+    ? getAgentToolConfig(rootDir, best.id)
+    : { enabledTools: null, enabledMcpServers: [], disabledBuiltinTools: [] };
+  const effective = best?.id
+    ? getEffectiveTools(rootDir, best.id)
+    : { builtinTools: [], mcpServers: [] };
+
+  const builtinToolIds = Array.isArray(effective?.builtinTools)
+    ? effective.builtinTools.filter((tool) => tool?.enabled).map((tool) => tool.id)
+    : [];
+  const recommendedToolIds = uniqueStrings([
+    ...toStringArray(rawCfg?.enabledTools),
+    ...profileEnabledTools,
+    ...builtinToolIds,
+  ]);
+  const enabledMcpServers = uniqueStrings([
+    ...profileEnabledMcpServers,
+    ...toStringArray(rawCfg?.enabledMcpServers),
+    ...toStringArray(effective?.mcpServers),
+  ]);
+
+  return {
+    builtinToolIds,
+    recommendedToolIds,
+    enabledMcpServers,
+    disabledBuiltinTools: toStringArray(rawCfg?.disabledBuiltinTools),
+  };
+}
+
+export function getLibraryIndexDir(rootDir) {
+  return resolve(rootDir || getBosunHomeDir(), LIBRARY_INDEX_DIR);
+}
+
+export function getAgentProfileIndexPath(rootDir) {
+  return resolve(rootDir || getBosunHomeDir(), LIBRARY_INDEX_DIR, AGENT_PROFILE_INDEX);
+}
+
+export function getSkillEntryIndexPath(rootDir) {
+  return resolve(rootDir || getBosunHomeDir(), LIBRARY_INDEX_DIR, SKILL_ENTRY_INDEX);
+}
+
+export function rebuildAgentProfileIndex(rootDir, manifest = loadManifest(rootDir)) {
+  const normalizedRoot = resolve(rootDir || getBosunHomeDir());
+  const profiles = (manifest?.entries || [])
+    .filter((entry) => entry?.type === "agent")
+    .map((entry) => buildIndexedAgentProfile(normalizedRoot, entry))
+    .filter(Boolean);
+
+  const index = {
+    generated: nowISO(),
+    revision: buildAgentProfileIndexRevision(manifest),
+    count: profiles.length,
+    profiles,
+  };
+  safeWriteJson(getAgentProfileIndexPath(normalizedRoot), index);
+  return updateAgentProfileIndexCache(normalizedRoot, index, getFileMtimeMs(getManifestPath(normalizedRoot)));
+}
+
+export function loadAgentProfileIndex(rootDir, options = {}) {
+  const normalizedRoot = resolve(rootDir || getBosunHomeDir());
+  const manifestPath = getManifestPath(normalizedRoot);
+  const manifestMtimeMs = getFileMtimeMs(manifestPath);
+  const cacheEntry = agentProfileIndexCache.get(normalizedRoot);
+  if (cacheEntry && cacheEntry.manifestMtimeMs === manifestMtimeMs) {
+    return cacheEntry.index;
+  }
+
+  const manifest = loadManifest(normalizedRoot);
+  const revision = buildAgentProfileIndexRevision(manifest);
+  const existing = safeReadJson(getAgentProfileIndexPath(normalizedRoot));
+  if (existing && existing.revision === revision && Array.isArray(existing.profiles)) {
+    return updateAgentProfileIndexCache(
+      normalizedRoot,
+      {
+        generated: String(existing.generated || nowISO()),
+        revision,
+        count: existing.profiles.length,
+        profiles: existing.profiles,
+      },
+      manifestMtimeMs,
+    );
+  }
+
+  if (options?.allowRebuild === false) {
+    return updateAgentProfileIndexCache(
+      normalizedRoot,
+      { generated: nowISO(), revision, count: 0, profiles: [] },
+      manifestMtimeMs,
+    );
+  }
+
+  return rebuildAgentProfileIndex(normalizedRoot, manifest);
+}
+
+export function listIndexedAgentProfiles(rootDir, options = {}) {
+  const index = loadAgentProfileIndex(rootDir, options);
+  return Array.isArray(index?.profiles) ? index.profiles : [];
+}
+
+export function rebuildSkillEntryIndex(rootDir, manifest = loadManifest(rootDir)) {
+  const normalizedRoot = resolve(rootDir || getBosunHomeDir());
+  const skills = (manifest?.entries || [])
+    .filter((entry) => entry?.type === "skill")
+    .map((entry) => buildIndexedSkillEntry(entry));
+
+  const tokenMap = {};
+  for (const skill of skills) {
+    const tokens = uniqueStrings([
+      String(skill.id || "").toLowerCase(),
+      ...skill.tags.map((value) => String(value || "").toLowerCase()),
+      ...skill.keywords.map((value) => String(value || "").toLowerCase()),
+    ]);
+    for (const token of tokens) {
+      if (!tokenMap[token]) tokenMap[token] = [];
+      tokenMap[token].push(skill.id);
+    }
+  }
+
+  const index = {
+    generated: nowISO(),
+    revision: buildSkillIndexRevision(manifest),
+    count: skills.length,
+    skills,
+    tokenMap,
+  };
+  safeWriteJson(getSkillEntryIndexPath(normalizedRoot), index);
+  return updateSkillEntryIndexCache(normalizedRoot, index, getFileMtimeMs(getManifestPath(normalizedRoot)));
+}
+
+export function loadSkillEntryIndex(rootDir, options = {}) {
+  const normalizedRoot = resolve(rootDir || getBosunHomeDir());
+  const manifestPath = getManifestPath(normalizedRoot);
+  const manifestMtimeMs = getFileMtimeMs(manifestPath);
+  const cacheEntry = skillEntryIndexCache.get(normalizedRoot);
+  if (cacheEntry && cacheEntry.manifestMtimeMs === manifestMtimeMs) {
+    return cacheEntry.index;
+  }
+
+  const manifest = loadManifest(normalizedRoot);
+  const revision = buildSkillIndexRevision(manifest);
+  const existing = safeReadJson(getSkillEntryIndexPath(normalizedRoot));
+  if (existing && existing.revision === revision && Array.isArray(existing.skills)) {
+    return updateSkillEntryIndexCache(
+      normalizedRoot,
+      {
+        generated: String(existing.generated || nowISO()),
+        revision,
+        count: existing.skills.length,
+        skills: existing.skills,
+        tokenMap: existing.tokenMap || {},
+      },
+      manifestMtimeMs,
+    );
+  }
+
+  if (options?.allowRebuild === false) {
+    return updateSkillEntryIndexCache(
+      normalizedRoot,
+      { generated: nowISO(), revision, count: 0, skills: [], tokenMap: {} },
+      manifestMtimeMs,
+    );
+  }
+
+  return rebuildSkillEntryIndex(normalizedRoot, manifest);
+}
+
+export function listIndexedSkillEntries(rootDir, options = {}) {
+  const index = loadSkillEntryIndex(rootDir, options);
+  return Array.isArray(index?.skills) ? index.skills : [];
+}
+
+export function resolveLibraryPlan(rootDir, criteria = {}, opts = {}) {
+  const match = matchAgentProfiles(rootDir, criteria, opts);
+  const best = match?.best || null;
+  if (!best) {
+    return {
+      ...match,
+      plan: null,
+      alternatives: [],
+    };
+  }
+
+  const skillSelection = buildSkillSelection(rootDir, best, criteria, opts);
+  const prompt = resolvePromptSelection(rootDir, best.profile || {});
+  const toolSelection = resolveToolSelection(rootDir, best);
+
+  const plan = {
+    planId: `resolve-${Date.now().toString(36)}-${Math.random().toString(16).slice(2, 8)}`,
+    agentProfileId: best.id,
+    agentName: best.name,
+    prompt,
+    skillIds: skillSelection.selectedSkillIds,
+    selectedSkills: skillSelection.selectedSkills,
+    builtinToolIds: toolSelection.builtinToolIds,
+    recommendedToolIds: toolSelection.recommendedToolIds,
+    enabledMcpServers: toolSelection.enabledMcpServers,
+    disabledBuiltinTools: toolSelection.disabledBuiltinTools,
+    confidence: Number(best.confidence || 0),
+    autoApply: Boolean(match?.auto?.shouldAutoApply),
+    reasons: uniqueStrings([
+      ...toStringArray(best?.reasons),
+      ...skillSelection.selectedSkills.flatMap((entry) => toStringArray(entry?.reasons)),
+    ]),
+  };
+
+  return {
+    ...match,
+    plan,
+    alternatives: (match?.candidates || []).slice(1).map((candidate) => ({
+      id: candidate.id,
+      name: candidate.name,
+      score: candidate.score,
+      confidence: candidate.confidence,
+      reasons: candidate.reasons,
+    })),
+  };
 }
 
 // ── Manifest (library.json) ──────────────────────────────────────────────────
@@ -270,7 +686,7 @@ export function getEntryContent(rootDir, entry) {
  * @param {string|Object} [content]    - file content (md string or JSON object)
  * @returns {LibraryEntry}
  */
-export function upsertEntry(rootDir, data, content) {
+export function upsertEntry(rootDir, data, content, options = {}) {
   if (!data.type || !RESOURCE_TYPES.includes(data.type)) {
     throw new Error(`Invalid resource type: ${data.type}`);
   }
@@ -310,6 +726,10 @@ export function upsertEntry(rootDir, data, content) {
     manifest.entries.push(entry);
   }
   saveManifest(rootDir, manifest);
+  if (options?.skipIndexSync !== true) {
+    if (data.type === "agent") rebuildAgentProfileIndex(rootDir, manifest);
+    if (data.type === "skill") rebuildSkillEntryIndex(rootDir, manifest);
+  }
 
   return entry;
 }
@@ -317,7 +737,7 @@ export function upsertEntry(rootDir, data, content) {
 /**
  * Delete a library entry by id. Removes from manifest (optionally deletes file).
  */
-export function deleteEntry(rootDir, id, { deleteFile = false } = {}) {
+export function deleteEntry(rootDir, id, { deleteFile = false, syncIndexes = true } = {}) {
   const manifest = loadManifest(rootDir);
   const idx = manifest.entries.findIndex((e) => e.id === id);
   if (idx < 0) return false;
@@ -325,6 +745,10 @@ export function deleteEntry(rootDir, id, { deleteFile = false } = {}) {
   const entry = manifest.entries[idx];
   manifest.entries.splice(idx, 1);
   saveManifest(rootDir, manifest);
+  if (syncIndexes !== false) {
+    if (entry.type === "agent") rebuildAgentProfileIndex(rootDir, manifest);
+    if (entry.type === "skill") rebuildSkillEntryIndex(rootDir, manifest);
+  }
 
   if (deleteFile) {
     const filePath = resolve(dirForType(rootDir, entry.type), entry.filename);
@@ -369,7 +793,7 @@ export function matchAgentProfiles(rootDir, criteria = {}, opts = {}) {
     };
   }
 
-  const profiles = listAgentProfiles(rootDir);
+  const profiles = listIndexedAgentProfiles(rootDir);
   const taskScope = extractConventionalScope(title);
   const textBlob = `${title}\n${description}`.trim();
   const textBlobLower = textBlob.toLowerCase();
@@ -988,11 +1412,12 @@ export function importAgentProfilesFromRepository(rootDir, options = {}) {
         branch,
         relPath,
       },
-    }, profile);
+    }, profile, { skipIndexSync: true });
 
     imported.push({ id, name, relPath, promptId: importPrompts ? promptId : null });
   }
 
+  rebuildAgentProfileIndex(rootDir);
   rmSync(checkoutDir, { recursive: true, force: true });
 
   return {
@@ -1242,6 +1667,8 @@ export function rebuildManifest(rootDir) {
 
   const manifest = { entries: newEntries, generated: nowISO() };
   saveManifest(rootDir, manifest);
+  rebuildAgentProfileIndex(rootDir, manifest);
+  rebuildSkillEntryIndex(rootDir, manifest);
 
   return { entries: newEntries, added, removed };
 }

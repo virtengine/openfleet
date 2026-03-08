@@ -69,6 +69,7 @@ import {
   rebuildManifest,
   matchAgentProfile,
   matchAgentProfiles,
+  resolveLibraryPlan,
   listWellKnownAgentSources,
   importAgentProfilesFromRepository,
   loadManifest,
@@ -10409,6 +10410,81 @@ async function handleApi(req, res, url) {
     return;
   }
 
+  if (path === "/api/library/resolve") {
+    try {
+      const workspaceContext = resolveWorkspaceContextFromRequest(url, { allowAll: false });
+      if (!workspaceContext) {
+        jsonResponse(res, 400, { ok: false, error: "Unknown workspace" });
+        return;
+      }
+
+      const getCriteriaFromQuery = () => ({
+        title: (url.searchParams.get("title") || "").trim(),
+        description: (url.searchParams.get("description") || "").trim(),
+        agentType: (url.searchParams.get("agentType") || "").trim(),
+        tags: String(url.searchParams.get("tags") || "").split(",").map((t) => t.trim()).filter(Boolean),
+        changedFiles: String(url.searchParams.get("changedFiles") || "").split(",").map((t) => t.trim()).filter(Boolean),
+        topN: Number.parseInt(String(url.searchParams.get("topN") || ""), 10) || 5,
+        skillTopN: Number.parseInt(String(url.searchParams.get("skillTopN") || ""), 10) || 6,
+      });
+
+      const bodyCriteria = req.method === "POST" ? await readJsonBody(req).catch(() => ({})) : null;
+      const criteria = req.method === "POST"
+        ? {
+            ...(bodyCriteria || {}),
+            topN: Number.parseInt(String(bodyCriteria?.topN || ""), 10) || 5,
+            skillTopN: Number.parseInt(String(bodyCriteria?.skillTopN || ""), 10) || 6,
+          }
+        : getCriteriaFromQuery();
+
+      const roots = resolveLibraryRootsForContext(workspaceContext);
+      ensureLibraryRootsInitialized(roots);
+
+      let bestResult = null;
+      for (const rootInfo of roots) {
+        const result = resolveLibraryPlan(rootInfo.rootDir, criteria, {
+          topN: criteria?.topN || 5,
+          skillTopN: criteria?.skillTopN || 6,
+        });
+        if (!result?.best) continue;
+        const withScope = {
+          ...result,
+          best: { ...result.best, storageScope: rootInfo.scope },
+          candidates: (result.candidates || []).map((candidate) => ({ ...candidate, storageScope: rootInfo.scope })),
+          plan: result.plan ? { ...result.plan, storageScope: rootInfo.scope } : null,
+        };
+        if (!bestResult || Number(withScope.best?.score || 0) > Number(bestResult.best?.score || 0)) {
+          bestResult = withScope;
+        }
+      }
+
+      const verbose = req.method === "POST"
+        || ["1", "true", "yes"].includes(String(url.searchParams.get("verbose") || "").trim().toLowerCase());
+      const payload = bestResult || {
+        best: null,
+        candidates: [],
+        alternatives: [],
+        plan: null,
+        auto: { shouldAutoApply: false, reason: "no-match" },
+        context: {
+          title: String(criteria?.title || ""),
+          description: String(criteria?.description || ""),
+          requestedAgentType: String(criteria?.agentType || ""),
+          taskScope: null,
+          changedFilesCount: Array.isArray(criteria?.changedFiles) ? criteria.changedFiles.length : 0,
+        },
+      };
+
+      jsonResponse(res, 200, {
+        ok: true,
+        data: verbose ? payload : (payload.plan || null),
+      });
+    } catch (err) {
+      jsonResponse(res, 500, { ok: false, error: err.message });
+    }
+    return;
+  }
+
   if (path === "/api/library/match-profile") {
     try {
       const workspaceContext = resolveWorkspaceContextFromRequest(url, { allowAll: false });
@@ -11256,7 +11332,6 @@ async function handleApi(req, res, url) {
         events.push(normalizedEntry);
       }
 
-      // Aggregate totals
       let totalEvents = events.length;
       let totalOriginalChars = 0;
       let totalCompressedChars = 0;
@@ -11264,24 +11339,50 @@ async function handleApi(req, res, url) {
       const dailySaved = {};
       const dailyCounts = {};
       const agentCounts = {};
+      const stageCounts = {};
+      const compactionFamilyCounts = {};
+      const commandFamilyCounts = {};
       let unknownAttribution = 0;
+      let liveTotalEvents = 0;
+      let liveOriginalChars = 0;
+      let liveCompressedChars = 0;
+      let liveSavedChars = 0;
 
       for (const e of events) {
-        totalOriginalChars  += e.originalChars  || 0;
-        totalCompressedChars += e.compressedChars || 0;
-        totalSavedChars     += e.savedChars      || 0;
+        const originalChars = numberOrZero(e.originalChars);
+        const compressedChars = numberOrZero(e.compressedChars);
+        const savedChars = numberOrZero(e.savedChars);
+        totalOriginalChars += originalChars;
+        totalCompressedChars += compressedChars;
+        totalSavedChars += savedChars;
         const day = (e.timestamp || "").slice(0, 10);
         if (day) {
-          dailySaved[day]  = (dailySaved[day]  || 0) + (e.savedChars || 0);
+          dailySaved[day] = (dailySaved[day] || 0) + savedChars;
           dailyCounts[day] = (dailyCounts[day] || 0) + 1;
         }
         const agent = normalizeShreddingAgentType(e.agentType);
         if (agent === "unspecified") unknownAttribution++;
         agentCounts[agent] = (agentCounts[agent] || 0) + 1;
+
+        const stage = String(e.stage || "session_total").trim().toLowerCase() || "session_total";
+        stageCounts[stage] = (stageCounts[stage] || 0) + 1;
+        if (stage === "live_tool_compaction") {
+          liveTotalEvents += 1;
+          liveOriginalChars += originalChars;
+          liveCompressedChars += compressedChars;
+          liveSavedChars += savedChars;
+          const compactionFamily = String(e.compactionFamily || "unknown").trim().toLowerCase() || "unknown";
+          const commandFamily = String(e.commandFamily || "unknown").trim().toLowerCase() || "unknown";
+          compactionFamilyCounts[compactionFamily] = (compactionFamilyCounts[compactionFamily] || 0) + 1;
+          commandFamilyCounts[commandFamily] = (commandFamilyCounts[commandFamily] || 0) + 1;
+        }
       }
 
       const avgSavedPct = totalOriginalChars > 0
         ? Math.round((totalSavedChars / totalOriginalChars) * 100)
+        : 0;
+      const liveAvgSavedPct = liveOriginalChars > 0
+        ? Math.round((liveSavedChars / liveOriginalChars) * 100)
         : 0;
 
       const sortedDates = Object.keys(dailySaved).sort();
@@ -11289,16 +11390,26 @@ async function handleApi(req, res, url) {
         .sort((a, b) => b[1] - a[1])
         .slice(0, 8)
         .map(([name, count]) => ({ name, count }));
+      const topCompactionFamilies = Object.entries(compactionFamilyCounts)
+        .sort((a, b) => b[1] - a[1])
+        .slice(0, 8)
+        .map(([name, count]) => ({ name, count }));
+      const topCommandFamilies = Object.entries(commandFamilyCounts)
+        .sort((a, b) => b[1] - a[1])
+        .slice(0, 8)
+        .map(([name, count]) => ({ name, count }));
 
-      // Recent events (last 20)
       const recentEvents = events.slice(-20).reverse().map((e) => ({
-        timestamp:      e.timestamp,
-        savedChars:     e.savedChars      || 0,
-        savedPct:       e.savedPct        || 0,
-        originalChars:  e.originalChars   || 0,
-        compressedChars: e.compressedChars || 0,
-        agentType:      normalizeShreddingAgentType(e.agentType),
-        attemptId:      e.attemptId       || null,
+        timestamp: e.timestamp,
+        savedChars: numberOrZero(e.savedChars),
+        savedPct: numberOrZero(e.savedPct),
+        originalChars: numberOrZero(e.originalChars),
+        compressedChars: numberOrZero(e.compressedChars),
+        agentType: normalizeShreddingAgentType(e.agentType),
+        attemptId: e.attemptId || null,
+        stage: String(e.stage || "session_total").trim().toLowerCase() || "session_total",
+        compactionFamily: String(e.compactionFamily || "").trim().toLowerCase() || null,
+        commandFamily: String(e.commandFamily || "").trim().toLowerCase() || null,
       }));
 
       jsonResponse(res, 200, {
@@ -11313,6 +11424,16 @@ async function handleApi(req, res, url) {
           dailySaved,
           dailyCounts,
           topAgents,
+          stageCounts,
+          topCompactionFamilies,
+          topCommandFamilies,
+          liveCompaction: {
+            totalEvents: liveTotalEvents,
+            totalOriginalChars: liveOriginalChars,
+            totalCompressedChars: liveCompressedChars,
+            totalSavedChars: liveSavedChars,
+            avgSavedPct: liveAvgSavedPct,
+          },
           recentEvents,
           diagnostics: {
             rawEvents: inWindow.length,

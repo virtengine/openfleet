@@ -148,6 +148,16 @@ function resolveOpts(options = {}) {
     msgTier1MaxAge:       options.msgTier1MaxAge       ?? MSG_TIER_1_MAX_AGE,
     msgMinCompressChars:  options.msgMinCompressChars  ?? MSG_MIN_COMPRESS_CHARS,
     userMsgFullTurns:     options.userMsgFullTurns     ?? USER_MSG_FULL_TURNS,
+    liveToolCompactionEnabled: options.liveToolCompactionEnabled ?? false,
+    liveToolCompactionMode: String(options.liveToolCompactionMode ?? "auto").trim().toLowerCase() || "auto",
+    liveToolCompactionMinChars: options.liveToolCompactionMinChars ?? 4000,
+    liveToolCompactionTargetChars: options.liveToolCompactionTargetChars ?? 1800,
+    liveToolCompactionMinSavingsPct: options.liveToolCompactionMinSavingsPct ?? 15,
+    liveToolCompactionMinRuntimeMs: options.liveToolCompactionMinRuntimeMs ?? 2000,
+    liveToolCompactionBlockStructured: options.liveToolCompactionBlockStructured ?? true,
+    liveToolCompactionAllowCommands: Array.isArray(options.liveToolCompactionAllowCommands)
+      ? options.liveToolCompactionAllowCommands.map((value) => String(value).trim().toLowerCase()).filter(Boolean)
+      : String(options.liveToolCompactionAllowCommands || "").split(",").map((value) => value.trim().toLowerCase()).filter(Boolean),
   };
 }
 
@@ -359,6 +369,8 @@ function getItemText(item) {
     item.text ||
     item.output ||
     item.aggregated_output ||
+    item.stdout ||
+    item.stderr ||
     item.result ||
     item.message ||
     (item.error && typeof item.error === "object" ? item.error.message : "") ||
@@ -377,6 +389,8 @@ function setItemText(item, newText) {
   if (item.text !== undefined) { item.text = newText; return; }
   if (item.output !== undefined) { item.output = newText; return; }
   if (item.aggregated_output !== undefined) { item.aggregated_output = newText; return; }
+  if (item.stdout !== undefined) { item.stdout = newText; return; }
+  if (item.stderr !== undefined && !item.stdout) { item.stderr = newText; return; }
   if (item.result !== undefined) { item.result = newText; return; }
   if (item.message !== undefined) { item.message = newText; return; }
   // Fallback: set .output
@@ -434,6 +448,367 @@ function extractArgsPreview(item) {
   return "";
 }
 
+const LIVE_TOOL_RETRIEVE_PLACEHOLDER = "__BOSUN_TOOL_LOG__";
+const LIVE_ERROR_REGEX = /\b(error|errors|fatal|failed|failure|panic|traceback|exception|undefined|denied|not found|enoent|eacces)\b/i;
+const LIVE_WARN_REGEX = /\b(warn|warning|deprecated)\b/i;
+const LIVE_SUMMARY_REGEX = /\b(summary|total|totals|passed|failed|skipped|collected|found|matched|changed|insertions|deletions|done in|finished|ran \d+ tests?|test suites|packages? audited|up to date|build failed|completed)\b/i;
+const LIVE_STATUS_REGEX = /^(FAIL|ERROR|warning|fatal|M\s|A\s|D\s|R\s|\?\?|@@|diff --git|--- |\+\+\+ )/;
+const LIVE_STRUCTURED_FLAG_REGEX = /(^|\s)(--json|--format(?:=|\s+)json|-json\b|-o(?:=|\s+)json|--output(?:=|\s+)json|{{json\s+\.}})/i;
+const LIVE_FILE_REF_REGEX = /((?:[A-Za-z]:)?[.~/\\\w-]+(?:[\\/][^:\s]+)+(?::\d+(?::\d+)?)?)/;
+const LIVE_SHELL_WRAPPERS = new Set(["bash", "sh", "zsh", "pwsh", "powershell", "cmd"]);
+const LIVE_ENV_WRAPPERS = new Set(["env", "command", "time", "nohup"]);
+
+function extractCommandLine(item) {
+  if (!item || typeof item !== "object") return "";
+  return String(
+    item.command ||
+    item.cmd ||
+    item.input?.command ||
+    item.input?.cmd ||
+    item.arguments?.command ||
+    item.arguments?.cmd ||
+    item.args?.command ||
+    item.args?.cmd ||
+    ""
+  ).trim();
+}
+
+function normalizeCommandToken(token) {
+  return String(token || "")
+    .trim()
+    .replace(/^['"]|['"]$/g, "")
+    .replace(/^.*[\\/]/, "")
+    .replace(/\.(exe|cmd|bat|ps1)$/i, "")
+    .toLowerCase();
+}
+
+function tokenizeCommandLine(commandLine) {
+  return String(commandLine || "").match(/(?:"[^"]*"|'[^']*'|\S+)/g) || [];
+}
+
+function extractNestedCommandToken(token) {
+  const inner = String(token || "").trim().replace(/^['"]|['"]$/g, "");
+  if (!inner) return "";
+  const innerTokens = tokenizeCommandLine(inner);
+  return normalizeCommandToken(innerTokens[0]);
+}
+
+function resolveCommandLeadToken(tokens) {
+  if (!Array.isArray(tokens) || tokens.length === 0) return "";
+  let index = 0;
+  while (index < tokens.length) {
+    const current = normalizeCommandToken(tokens[index]);
+    if (!current) {
+      index += 1;
+      continue;
+    }
+    if (/^[A-Za-z_][A-Za-z0-9_]*=/.test(String(tokens[index] || ""))) {
+      index += 1;
+      continue;
+    }
+    if (LIVE_ENV_WRAPPERS.has(current)) {
+      index += 1;
+      continue;
+    }
+    if (LIVE_SHELL_WRAPPERS.has(current)) {
+      for (let inner = index + 1; inner < tokens.length; inner += 1) {
+        const raw = String(tokens[inner] || "").trim();
+        const normalized = normalizeCommandToken(raw);
+        if (!raw) continue;
+        if (["-c", "-lc", "/c", "-command", "-encodedcommand", "-nop", "-noprofile", "-noninteractive", "-login", "-i"].includes(normalized)) {
+          continue;
+        }
+        if (raw.startsWith("-")) continue;
+        const nested = extractNestedCommandToken(raw);
+        if (nested && !LIVE_SHELL_WRAPPERS.has(nested)) return nested;
+      }
+      return current;
+    }
+    return current;
+  }
+  return "";
+}
+
+function extractCommandFamily(item) {
+  const commandLine = extractCommandLine(item);
+  const tokens = tokenizeCommandLine(commandLine);
+  const first = resolveCommandLeadToken(tokens);
+  if (first && !LIVE_SHELL_WRAPPERS.has(first)) {
+    return first;
+  }
+  const toolName = normalizeCommandToken(extractToolName(item));
+  if (toolName && !["command_execution", "function_call_output", "tool_result", "tool_output", "command_output"].includes(toolName)) {
+    return toolName;
+  }
+  return first || toolName || "unknown";
+}
+
+function extractFileKey(line) {
+  const normalized = String(line || "");
+  const match = normalized.match(/^([^:\n]+\.[A-Za-z0-9_]+(?::\d+(?::\d+)?)?)/) || normalized.match(LIVE_FILE_REF_REGEX);
+  return match ? match[1] : "";
+}
+
+function getItemRuntimeMs(item) {
+  const candidates = [item?.duration_ms, item?.durationMs, item?.elapsed_ms, item?.elapsedMs, item?.runtime_ms, item?.runtimeMs];
+  for (const candidate of candidates) {
+    const value = Number(candidate);
+    if (Number.isFinite(value) && value >= 0) return value;
+  }
+  return null;
+}
+
+function isLikelyStructuredOutput(text, item) {
+  const commandLine = extractCommandLine(item);
+  if (LIVE_STRUCTURED_FLAG_REGEX.test(commandLine)) return true;
+  const trimmed = String(text || "").trim();
+  if (!trimmed) return false;
+  return (
+    (trimmed.startsWith("{") && trimmed.endsWith("}")) ||
+    (trimmed.startsWith("[") && trimmed.endsWith("]"))
+  );
+}
+
+function classifyLiveFamily(commandFamily, item) {
+  const cmd = String(commandFamily || "");
+  const full = `${cmd} ${extractCommandLine(item)}`.toLowerCase();
+  if (["grep", "rg", "find", "findstr", "select-string", "ag", "ack", "sift", "fd", "where", "which", "ls", "dir", "tree", "gci", "get-childitem"].includes(cmd) || /git\s+grep\b/.test(full)) return "search";
+  if (cmd === "git") return "git";
+  if (["go", "pytest", "cargo", "gradle", "maven", "mvn", "javac", "tsc", "jest", "vitest", "deno", "bun", "make", "cmake", "bazel", "buck", "nx", "turbo", "rush"].includes(cmd)) return "build";
+  if (["npm", "pnpm", "yarn", "node", "python", "python3", "pip", "pip3", "poetry", "composer", "bundle", "npx"].includes(cmd)) {
+    return /test|build|install|lint|run|pytest|jest|vitest|mocha|ava|unittest|coverage|compile/.test(full) ? "build" : "generic";
+  }
+  if (["journalctl", "tail", "get-content"].includes(cmd)) return "logs";
+  if (["docker", "kubectl"].includes(cmd) && /logs?\b|tail\b|follow\b|-f\b/.test(full)) return "logs";
+  if (["docker", "kubectl", "helm", "terraform", "ansible", "ansible-playbook", "systemctl"].includes(cmd)) return "ops";
+  return "generic";
+}
+
+function collectSignalIndices(lines, predicate, radius = 0, limit = Infinity) {
+  const out = new Set();
+  let count = 0;
+  for (let index = 0; index < lines.length; index += 1) {
+    if (!predicate(lines[index], index)) continue;
+    for (let inner = Math.max(0, index - radius); inner <= Math.min(lines.length - 1, index + radius); inner += 1) {
+      out.add(inner);
+    }
+    count += 1;
+    if (count >= limit) break;
+  }
+  return out;
+}
+
+function summarizeRepeatedNoise(lines) {
+  const counts = new Map();
+  for (const line of lines) {
+    const trimmed = String(line || "").trim();
+    if (!trimmed || trimmed.length < 8) continue;
+    counts.set(trimmed, (counts.get(trimmed) || 0) + 1);
+  }
+  return [...counts.entries()]
+    .filter(([, count]) => count >= 4)
+    .sort((a, b) => b[1] - a[1])
+    .slice(0, 4)
+    .map(([line, count]) => `${line.slice(0, 70)}${line.length > 70 ? "…" : ""} x${count}`);
+}
+
+function buildSearchFileSummary(lines) {
+  const counts = new Map();
+  for (const line of lines) {
+    const key = extractFileKey(line);
+    if (!key) continue;
+    counts.set(key, (counts.get(key) || 0) + 1);
+  }
+  return [...counts.entries()]
+    .sort((a, b) => b[1] - a[1])
+    .slice(0, 8)
+    .map(([file, count]) => `${file} (${count})`);
+}
+
+function pickSelectedLines(lines, family, mode) {
+  const maxLines = mode === "aggressive" ? 12 : 20;
+  const errorSet = collectSignalIndices(lines, (line) => LIVE_ERROR_REGEX.test(line) || LIVE_STATUS_REGEX.test(line), family === "build" ? 1 : 0, mode === "aggressive" ? 8 : 12);
+  const warnSet = collectSignalIndices(lines, (line) => LIVE_WARN_REGEX.test(line), 0, mode === "aggressive" ? 4 : 6);
+  const summarySet = collectSignalIndices(lines, (line) => LIVE_SUMMARY_REGEX.test(line), 0, mode === "aggressive" ? 5 : 8);
+  const fileSet = collectSignalIndices(lines, (line) => !!extractFileKey(line), 0, family === "search" ? maxLines : 8);
+  const selected = new Set();
+  const addIndices = (iterable) => {
+    for (const idx of iterable) {
+      if (selected.size < maxLines) selected.add(idx);
+    }
+  };
+  addIndices(errorSet);
+  addIndices(warnSet);
+  addIndices(summarySet);
+  if (family === "search" || family === "git") addIndices(fileSet);
+  if ((family === "logs" || family === "ops") && selected.size < maxLines) {
+    for (let i = Math.max(0, lines.length - (mode === "aggressive" ? 8 : 12)); i < lines.length && selected.size < maxLines; i += 1) {
+      selected.add(i);
+    }
+  }
+  if (selected.size < Math.min(6, maxLines)) {
+    for (let i = 0; i < Math.min(lines.length, 6) && selected.size < maxLines; i += 1) {
+      selected.add(i);
+    }
+  }
+  if (selected.size < Math.min(maxLines, lines.length) && !["search", "git", "build"].includes(family)) {
+    for (let i = Math.max(0, lines.length - 6); i < lines.length && selected.size < maxLines; i += 1) {
+      selected.add(i);
+    }
+  }
+  return [...selected].sort((a, b) => a - b).map((idx) => lines[idx]).filter(Boolean);
+}
+
+function renderLiveCompactionText(analysis, logRef, opts) {
+  const retrieve = `bosun --tool-log ${logRef}`;
+  const header = `[Live-compacted ${analysis.family}] ${analysis.commandLabel} -> ${analysis.lineCount} lines / ${charLabel(analysis.originalText)}, saved ~${analysis.savedPct}% | Full output: ${retrieve}`;
+  const sections = [header];
+  if (analysis.highlights.length) sections.push(`Highlights: ${analysis.highlights.join("; ")}`);
+  if (analysis.fileSummary.length) sections.push(`Top files: ${analysis.fileSummary.join(", ")}`);
+  if (analysis.repeatedSummary.length) sections.push(`Repeated noise omitted: ${analysis.repeatedSummary.join("; ")}`);
+  if (analysis.selectedLines.length) sections.push(`Selected lines:\n${analysis.selectedLines.join("\n")}`);
+  let rendered = sections.join("\n\n");
+  const targetChars = Math.max(200, Number(opts.liveToolCompactionTargetChars) || 1800);
+  let selected = [...analysis.selectedLines];
+  let repeated = [...analysis.repeatedSummary];
+  let fileSummary = [...analysis.fileSummary];
+  while (rendered.length > targetChars && selected.length > 6) {
+    selected.splice(Math.floor(selected.length / 2), 1);
+    const nextSections = [header];
+    if (analysis.highlights.length) nextSections.push(`Highlights: ${analysis.highlights.join("; ")}`);
+    if (fileSummary.length) nextSections.push(`Top files: ${fileSummary.join(", ")}`);
+    if (repeated.length) nextSections.push(`Repeated noise omitted: ${repeated.join("; ")}`);
+    if (selected.length) nextSections.push(`Selected lines:\n${selected.join("\n")}`);
+    rendered = nextSections.join("\n\n");
+  }
+  if (rendered.length > targetChars && repeated.length) {
+    repeated = [];
+    const nextSections = [header];
+    if (analysis.highlights.length) nextSections.push(`Highlights: ${analysis.highlights.join("; ")}`);
+    if (fileSummary.length) nextSections.push(`Top files: ${fileSummary.join(", ")}`);
+    if (selected.length) nextSections.push(`Selected lines:\n${selected.join("\n")}`);
+    rendered = nextSections.join("\n\n");
+  }
+  if (rendered.length > targetChars && fileSummary.length > 4) {
+    fileSummary = fileSummary.slice(0, 4);
+    const nextSections = [header];
+    if (analysis.highlights.length) nextSections.push(`Highlights: ${analysis.highlights.join("; ")}`);
+    if (fileSummary.length) nextSections.push(`Top files: ${fileSummary.join(", ")}`);
+    if (selected.length) nextSections.push(`Selected lines:\n${selected.join("\n")}`);
+    rendered = nextSections.join("\n\n");
+  }
+  if (rendered.length > targetChars) {
+    rendered = `${rendered.slice(0, Math.max(120, targetChars - retrieve.length - 40))}\n\n[...live summary trimmed... full output: ${retrieve}]`;
+  }
+  return rendered;
+}
+
+function analyzeLiveToolOutput(item, opts) {
+  const originalText = getItemText(item);
+  if (typeof originalText !== "string" || originalText.length < (opts.liveToolCompactionMinChars ?? 4000)) return null;
+  const commandFamily = extractCommandFamily(item);
+  const allowlist = new Set((opts.liveToolCompactionAllowCommands || []).map((value) => String(value).trim().toLowerCase()).filter(Boolean));
+  if (allowlist.size > 0 && !allowlist.has(commandFamily)) return null;
+  if (opts.liveToolCompactionBlockStructured !== false && isLikelyStructuredOutput(originalText, item)) return null;
+  const family = classifyLiveFamily(commandFamily, item);
+  const normalizedText = originalText.replace(/\r\n?/g, "\n");
+  const lines = normalizedText.split("\n");
+  if (lines.length < 20 && normalizedText.length < (opts.liveToolCompactionTargetChars ?? 1800) * 1.5) return null;
+  const mode = opts.liveToolCompactionMode === "aggressive" ? "aggressive" : "auto";
+  const selectedLines = pickSelectedLines(lines, family, mode);
+  if (!selectedLines.length) return null;
+  const errorCount = lines.filter((line) => LIVE_ERROR_REGEX.test(line)).length;
+  const warningCount = lines.filter((line) => LIVE_WARN_REGEX.test(line)).length;
+  const fileMatches = lines.filter((line) => !!extractFileKey(line)).length;
+  const highlights = [];
+  if (errorCount) highlights.push(`${errorCount} error line${errorCount === 1 ? "" : "s"}`);
+  if (warningCount) highlights.push(`${warningCount} warning line${warningCount === 1 ? "" : "s"}`);
+  if (family === "search" && fileMatches) highlights.push(`${fileMatches} file or match line${fileMatches === 1 ? "" : "s"}`);
+  if (!highlights.length) highlights.push(`${selectedLines.length} high-signal line${selectedLines.length === 1 ? "" : "s"}`);
+  const repeatedSummary = summarizeRepeatedNoise(lines);
+  const fileSummary = family === "search" || family === "git" ? buildSearchFileSummary(lines) : [];
+  const preview = renderLiveCompactionText({
+    family,
+    commandLabel: extractCommandLine(item) || extractToolName(item),
+    originalText,
+    lineCount: lines.length,
+    highlights,
+    fileSummary,
+    repeatedSummary,
+    selectedLines,
+    savedPct: 0,
+  }, LIVE_TOOL_RETRIEVE_PLACEHOLDER, opts);
+  const savedPct = Math.max(0, Math.round(((originalText.length - preview.length) / Math.max(1, originalText.length)) * 100));
+  if (savedPct < (opts.liveToolCompactionMinSavingsPct ?? 15)) return null;
+  return {
+    family,
+    commandFamily,
+    originalText,
+    lineCount: lines.length,
+    highlights,
+    fileSummary,
+    repeatedSummary,
+    selectedLines,
+    commandLabel: extractCommandLine(item) || extractToolName(item),
+    savedPct,
+  };
+}
+
+function shouldApplyLiveCompaction(item, opts, contextUsagePct, force = false) {
+  if (force) return true;
+  if (!opts.liveToolCompactionEnabled) return false;
+  if (opts.liveToolCompactionMode === "off") return false;
+  const currentText = getItemText(item);
+  if (typeof currentText !== "string" || currentText.length < (opts.liveToolCompactionMinChars ?? 4000)) return false;
+  if (opts.liveToolCompactionMode === "aggressive") return true;
+  const runtimeMs = getItemRuntimeMs(item);
+  const runtimeReady = runtimeMs == null || runtimeMs >= (opts.liveToolCompactionMinRuntimeMs ?? 2000);
+  const sizePressure = currentText.length >= Math.max((opts.liveToolCompactionMinChars ?? 4000) * 2, (opts.liveToolCompactionTargetChars ?? 1800) * 2);
+  const contextPressure = typeof contextUsagePct === "number" && contextUsagePct >= (opts.contextUsageThreshold ?? 0.5);
+  return runtimeReady && (sizePressure || contextPressure);
+}
+
+async function maybeCompactLiveToolOutputs(items, opts = {}, { contextUsagePct = null, force = false, agentType = null } = {}) {
+  if (!Array.isArray(items) || items.length === 0) return items;
+  let changed = false;
+  const nextItems = [];
+  for (const item of items) {
+    if (classifyItem(item) !== "tool_output") {
+      nextItems.push(item);
+      continue;
+    }
+    if (!shouldApplyLiveCompaction(item, opts, contextUsagePct, force)) {
+      nextItems.push(item);
+      continue;
+    }
+    const analysis = analyzeLiveToolOutput(item, opts);
+    if (!analysis) {
+      nextItems.push(item);
+      continue;
+    }
+    const logId = await writeToCache(item, extractToolName(item), extractArgsPreview(item));
+    const compactedItem = {
+      ...item,
+      _cachedLogId: logId,
+      _liveCompacted: true,
+      _liveCompactionFamily: analysis.family,
+    };
+    setItemText(compactedItem, renderLiveCompactionText(analysis, logId, opts));
+    nextItems.push(compactedItem);
+    changed = true;
+    recordShreddingEvent({
+      originalChars: analysis.originalText.length,
+      compressedChars: getItemText(compactedItem).length,
+      savedChars: Math.max(0, analysis.originalText.length - getItemText(compactedItem).length),
+      savedPct: analysis.savedPct,
+      agentType: agentType || null,
+      stage: "live_tool_compaction",
+      compactionFamily: analysis.family,
+      commandFamily: analysis.commandFamily,
+    });
+  }
+  return changed ? nextItems : items;
+}
 // ---------------------------------------------------------------------------
 // Tiered Compression
 // ---------------------------------------------------------------------------
@@ -566,6 +941,7 @@ function assignTurns(items) {
       item.type === "tool_result" ||
       item.type === "tool_output" ||
       item.type === "command_output" ||
+      item.type === "command_execution" ||
       (item.type === "item.completed" && item.item?.type !== "agent_message");
 
     if (isToolOutput) {
@@ -1445,7 +1821,8 @@ function classifyItem(item) {
     item.type === "function_call_output" ||
     item.type === "tool_result" ||
     item.type === "tool_output" ||
-    item.type === "command_output"
+    item.type === "command_output" ||
+    item.type === "command_execution"
   ) {
     return "tool_output";
   }
@@ -1797,7 +2174,8 @@ export function getToolLogMemCacheStats() {
 export function recordShreddingEvent(stats) {
   if (!stats || typeof stats !== "object") return;
   const { originalChars = 0, compressedChars = 0, savedChars = 0, savedPct = 0,
-          agentType = null, attemptId = null, taskId = null } = stats;
+          agentType = null, attemptId = null, taskId = null, stage = null,
+          compactionFamily = null, commandFamily = null } = stats;
 
   // Skip no-op events (nothing to report)
   if (originalChars === 0 && compressedChars === 0) return;
@@ -1811,6 +2189,9 @@ export function recordShreddingEvent(stats) {
     ...(agentType  ? { agentType }  : {}),
     ...(attemptId  ? { attemptId }  : {}),
     ...(taskId     ? { taskId }     : {}),
+    ...(stage      ? { stage }      : {}),
+    ...(compactionFamily ? { compactionFamily } : {}),
+    ...(commandFamily ? { commandFamily } : {}),
   };
 
   // Ring buffer — evict oldest when full
@@ -1896,15 +2277,24 @@ export async function maybeCompressSessionItems(
     ? Number(shreddingOpts.contextUsageThreshold)
     : 0.5;
 
-  if (!force && usagePct < threshold) return items;
+  const workingItems = await maybeCompactLiveToolOutputs(items, shreddingOpts, {
+    contextUsagePct: usagePct,
+    force,
+    agentType,
+  });
+  const workingUsagePct = workingItems === items
+    ? usagePct
+    : estimateContextUsagePct(workingItems);
 
-  shreddingOpts.contextUsagePct = usagePct;
-  const compressedItems = await compressAllItems(items, shreddingOpts);
+  if (!force && workingUsagePct < threshold) return workingItems;
+
+  shreddingOpts.contextUsagePct = workingUsagePct;
+  const compressedItems = await compressAllItems(workingItems, shreddingOpts);
 
   try {
     const savings = estimateSavings(items, compressedItems);
     if (savings.savedChars > 0) {
-      recordShreddingEvent({ ...savings, agentType: agentType || "unknown" });
+      recordShreddingEvent({ ...savings, agentType: agentType || "unknown", stage: "session_total" });
     }
   } catch {
     /* non-fatal */
@@ -1912,3 +2302,6 @@ export async function maybeCompressSessionItems(
 
   return compressedItems;
 }
+
+
+

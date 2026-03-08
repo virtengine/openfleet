@@ -321,12 +321,12 @@ async function doRebuild() {
 }
 
 async function testProfileMatch(criteria = {}) {
-  const res = await apiFetch(`/api/library/match-profile?verbose=1`, {
+  const res = await apiFetch(`/api/library/resolve?verbose=1`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(criteria || {}),
   });
-  return res?.data || { best: null, candidates: [], auto: { shouldAutoApply: false } };
+  return res?.data || { best: null, candidates: [], plan: null, auto: { shouldAutoApply: false } };
 }
 
 async function fetchLibrarySources() {
@@ -1532,6 +1532,7 @@ function ProfileMatcher() {
 
   const best = result?.best || null;
   const candidates = Array.isArray(result?.candidates) ? result.candidates : [];
+  const plan = result?.plan || null;
   const auto = result?.auto || { shouldAutoApply: false, reason: "no-match" };
 
   return html`
@@ -1550,7 +1551,7 @@ function ProfileMatcher() {
         style="width:100%;padding:8px;border-radius:8px;border:1px solid var(--border,#333);background:var(--bg-input,#0d1117);color:var(--text-primary,#eee);" />
       <div class="library-actions">
         <${Button} variant="outlined" size="small" onClick=${doMatch} disabled=${loading || (!title.trim() && !description.trim())}>
-          ${loading ? html`<${Spinner} size=${14} />` : iconText(":mag: Match Agent")}
+          ${loading ? html`<${Spinner} size=${14} />` : iconText(":mag: Resolve Plan")}
         <//>
       </div>
       ${best && html`
@@ -1566,6 +1567,10 @@ function ProfileMatcher() {
           `}
           ${Array.isArray(best.reasons) && best.reasons.length > 0 && html`
             <div style="font-size:0.78em;color:var(--text-secondary);margin-top:4px;">reasons: ${best.reasons.join(", ")}</div>
+          `}
+          ${plan && html`
+            <div style="font-size:0.78em;color:var(--text-secondary);margin-top:6px;">prompt: ${plan.prompt?.name || "none"} | skills: ${(plan.skillIds || []).slice(0, 4).join(", ") || "none"}</div>
+            <div style="font-size:0.78em;color:var(--text-secondary);margin-top:4px;">builtin tools: ${(plan.builtinToolIds || []).slice(0, 6).join(", ") || "none"} | MCP: ${(plan.enabledMcpServers || []).slice(0, 4).join(", ") || "none"}</div>
           `}
           ${candidates.length > 1 && html`
             <div style="font-size:0.78em;color:var(--text-secondary);margin-top:6px;">alternatives: ${candidates.slice(1, 4).map((c) => `${c.name} (${c.score})`).join(" | ")}</div>

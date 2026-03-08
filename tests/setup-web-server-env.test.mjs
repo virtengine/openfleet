@@ -397,6 +397,35 @@ describe("setup web server non-blocking env defaults", () => {
       ORCHESTRATOR_ARGS: "-CustomFlag true",
     });
   });
+
+  it("maps live compaction controls into env defaults and bounds", () => {
+    const envMap = {};
+    applyNonBlockingSetupEnvDefaults(
+      envMap,
+      {
+        contextShreddingLiveToolCompactionEnabled: true,
+        contextShreddingLiveToolCompactionMode: "aggressive",
+        contextShreddingLiveToolCompactionMinChars: 6400,
+        contextShreddingLiveToolCompactionTargetChars: 2400,
+        contextShreddingLiveToolCompactionMinSavingsPct: 22,
+        contextShreddingLiveToolCompactionMinRuntimeMs: 4500,
+        contextShreddingLiveToolCompactionBlockStructuredOutput: false,
+        contextShreddingLiveToolCompactionAllowCommands: "git,rg,journalctl",
+      },
+      {},
+    );
+
+    expect(envMap).toMatchObject({
+      CONTEXT_SHREDDING_LIVE_TOOL_COMPACTION_ENABLED: "true",
+      CONTEXT_SHREDDING_LIVE_TOOL_COMPACTION_MODE: "aggressive",
+      CONTEXT_SHREDDING_LIVE_TOOL_COMPACTION_MIN_CHARS: "6400",
+      CONTEXT_SHREDDING_LIVE_TOOL_COMPACTION_TARGET_CHARS: "2400",
+      CONTEXT_SHREDDING_LIVE_TOOL_COMPACTION_MIN_SAVINGS_PCT: "22",
+      CONTEXT_SHREDDING_LIVE_TOOL_COMPACTION_MIN_RUNTIME_MS: "4500",
+      CONTEXT_SHREDDING_LIVE_TOOL_COMPACTION_BLOCK_STRUCTURED_OUTPUT: "false",
+      CONTEXT_SHREDDING_LIVE_TOOL_COMPACTION_ALLOW_COMMANDS: "git,rg,journalctl",
+    });
+  });
 });
 
 describe("setup web server workspace normalization", () => {
