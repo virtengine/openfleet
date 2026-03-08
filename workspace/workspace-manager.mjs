@@ -44,6 +44,14 @@ function getChildProcess() {
   return _childProcessModule;
 }
 
+function sanitizeGitProcessEnv(baseEnv = process.env) {
+  const env = { ...baseEnv };
+  delete env.GIT_DIR;
+  delete env.GIT_WORK_TREE;
+  delete env.GIT_INDEX_FILE;
+  return env;
+}
+
 // Lazy-loaded reference to repo-config.mjs (resolved on first use)
 let _repoConfigModule = null;
 
@@ -247,6 +255,7 @@ function cloneIntoExistingRepoPath(childProcess, repoUrl, repoPath) {
     timeout: 300000,
     stdio: ["pipe", "pipe", "pipe"],
     cwd: repoPath,
+    env: sanitizeGitProcessEnv(),
   });
 }
 
@@ -321,6 +330,7 @@ function buildGitPullFailureDetails(err, repoPath, childProcess) {
           encoding: "utf8",
           timeout: 10_000,
           stdio: ["pipe", "pipe", "pipe"],
+          env: sanitizeGitProcessEnv(),
         }),
       );
       if (statusOut) {
@@ -571,6 +581,7 @@ export function addRepoToWorkspace(configDir, workspaceId, { url, name, branch, 
       encoding: "utf8",
       timeout: 300000, // 5 minutes
       stdio: ["pipe", "pipe", "pipe"],
+      env: sanitizeGitProcessEnv(),
     });
 
     if (result.status !== 0) {
@@ -698,6 +709,7 @@ export function pullWorkspaceRepos(configDir, workspaceId) {
           encoding: "utf8",
           timeout: 300000,
           stdio: ["pipe", "pipe", "pipe"],
+          env: sanitizeGitProcessEnv(),
         });
         if (clone.status !== 0) {
           const stderr = String(clone.stderr || clone.stdout || "");
@@ -787,6 +799,7 @@ export function pullWorkspaceRepos(configDir, workspaceId) {
         encoding: "utf8",
         timeout: 120000,
         stdio: ["pipe", "pipe", "pipe"],
+        env: sanitizeGitProcessEnv(),
       });
       results.push({ name: repo.name, success: true });
     } catch (err) {
@@ -939,6 +952,7 @@ export function detectWorkspaces(configDir) {
             encoding: "utf8",
             timeout: 3000,
             stdio: ["pipe", "pipe", "ignore"],
+            env: sanitizeGitProcessEnv(),
           }).trim();
           slug = extractSlug(remote);
         } catch { /* no remote */ }
