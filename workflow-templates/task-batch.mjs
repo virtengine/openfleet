@@ -214,7 +214,7 @@ export const TASK_BATCH_PR_TEMPLATE = {
 
     node("create-pr", "action.create_pr", "Create PR", {
       title: "{{task.taskTitle}}",
-      body: "Automated PR for task {{task.taskId}}",
+      body: "Task-ID: {{task.taskId}}\n\nAutomated PR for task {{task.taskId}}",
       base: "{{defaultBaseBranch}}",
       branch: "{{task.branch}}",
       draft: "{{draftPR}}",

@@ -847,10 +847,18 @@ describe("github template CLI compatibility", () => {
     // causing SyntaxError: Unexpected end of input.
     expect(cmd).not.toMatch(/\/\/(?!\*)/); // no `//` comments
   });
+  it("PR watchdog queues auto-merge after review instead of waiting for a later pass", () => {
+    const watchdogTemplate = getTemplate("template-bosun-pr-watchdog");
+    const fetchNode = watchdogTemplate.nodes.find((n) => n.id === "fetch-and-classify");
+    const reviewNode = watchdogTemplate.nodes.find((n) => n.id === "programmatic-review");
+
+    expect(fetchNode?.config?.command).toContain("pendingChecks:hasPend");
+    expect(reviewNode?.config?.command).toContain("mergeArgs.push('--auto')");
+    expect(reviewNode?.config?.command).toContain("reason:'ci_failed'");
+  });
 });
 
 // ── Dry-Run Execution ───────────────────────────────────────────────────────
-
 describe("template dry-run execution", () => {
   beforeEach(() => { makeTmpEngine(); });
   afterEach(() => {
@@ -929,4 +937,5 @@ describe("template category coverage", () => {
     }
   });
 });
+
 

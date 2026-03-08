@@ -272,3 +272,60 @@ ode_modules\\bosun processes after restart window.
   - Task stats now: draft 36, todo 25, inprogress 17, inreview 0, done 2 (total 80).
 - Residual:
   - Could not disable scheduled task due OS permission (Disable-ScheduledTask ... Access is denied); if global takeover reappears after next logon, disable/retarget that task with elevated rights.
+
+## 2026-03-09T07:07:51.6180162+11:00
+- Incident: source daemon healthy but workspace-mirror task store diverged from repo-local cache (mirror had 80 tasks / todo=1 while repo cache had 1050 tasks / todo=916), causing Task Planner false-low backlog and repeated planner failures.
+- Evidence:
+  - Workflow run payloads used repoRoot under .bosun/workspaces/virtengine-gh/bosun and showed 	odoCount=1.
+  - Run 5af251e4-9f42-4231-a279-f09b69855b03 failed materialize-tasks with Planner output ... empty after retries.
+  - Earlier run d3635fc3-4e00-47f7-8a12-f2465a069795 showed planner produced tasks but failed create with No project ID configured for backend=internal.
+- Recovery actions:
+  - Synced active mirror state file from repo-local cache:
+    osun/.bosun/.cache/kanban-state.json -> osun/.bosun/workspaces/virtengine-gh/bosun/.bosun/.cache/kanban-state.json.
+  - Added KANBAN_PROJECT_ID=internal to both osun/.env and osun/.bosun/.env so internal workflow create-task path has deterministic project id.
+  - Restarted source daemon via 
+ode cli.mjs --terminate then 
+ode cli.mjs --daemon --no-update-check --no-auto-update --config-dir .bosun --repo-root ..
+- Post-fix verification:
+  - Source runtime confirmed (cli.mjs + infra/monitor.mjs from repo with explicit .bosun config-dir).
+  - Monitor loaded 1050 tasks from active mirror store and planner run cff8e55-6b30-4b83-971e-568e4cb58ad8 completed with 	odoCount=921, 	riggered=false (no parser/create-task failure).
+  - Review deadlock cleared automatically on startup: 6 stale inreview tasks without PR refs reset to todo (2381010..., 971a5ecd..., 92a229d5..., c4260785..., 2b1e305b..., cc61ad0...).
+  - Workflow index is advancing (LastWriteTime moved from 07:06:01 to 07:06:42 local during check window).
+- Residual risk:
+  - monitor log still emitted one ailed to reload config: monitorMonitor is not defined warning during hot reload; runtime continued healthy, but keep watching for repeat.
+  - Bosun autonomous throughput remains below target this hour (recent window showed only 1 Task Batch -> PR completion and 0 merged PRs via gh pr list --state merged filter).
+## 2026-03-09T08:07:00+11:00
+- Incident: queue health degraded by stale inprogress tasks (14 tasks, ages 3h-27h) with no branch/pr metadata and no active workflow runs; this can pin executor accounting and reduce autonomous throughput.
+- Evidence:
+  - `node cli.mjs task stats --json --config-dir .bosun --repo-root .` before recovery: draft=36 todo=28 inprogress=14 inreview=0 done=2.
+  - `_active-runs.json` was empty while those inprogress items were old and unclaimed.
+  - Task Batch runs were active but throughput low; latest run showed `Found 2 task(s) ready (2 slot(s) free)` then non-actionable agent output.
+- Recovery action:
+  - Reset only stale `inprogress` tasks (>=3h old, no `prNumber`, no `prUrl`, no `branchName`) back to `todo` via local source CLI.
+  - Updated 14 task ids: ffe1021c...,57abaa84...,c164ad5b...,df0d7085...,2e900a62...,9c98e4e3...,673c5d42...,25c46266...,f36d571c...,a6a0198e...,c674417d...,744d5b93...,90b2ed2a...,44ff8df7....
+- Post-recovery verification:
+  - Task stats now: draft=36 todo=42 inprogress=0 inreview=0 done=2 total=80.
+  - Workflow cadence still healthy over 5-minute window (batchRecent=2, lifecycleRecent=5, no run errors in recent index entries).
+  - Daemon remains source-local (`cli.mjs` + `infra/monitor.mjs` from repo with `--config-dir .bosun --repo-root`).
+- Residual risk:
+  - Open PR throughput target (2-3 Bosun merges/hour) not yet met during this window.
+  - Open PRs #132/#155/#179 still require monitoring; check if `Task Batch -> PR` outputs continue to be non-actionable.
+
+## 2026-03-09T09:13:00+11:00
+- Incident: Task Lifecycle was livelocking on the same task (`a076ce3a-...`) every minute (`todo -> inprogress -> todo`) while 88 tasks were marked `inprogress` and 55 were stale (`agentAttempts=0`).
+- Root cause evidence from run `ccd890eb-876c-4653-a430-9be48510ef71`:
+  - `action.acquire_worktree` repeatedly failed for mirrored `virtengine` repo with `branch already exists` + `Filename too long` during `git worktree add` fallback checkout.
+  - Failure path immediately released claim, causing endless retry on same task and no real executor progress.
+- Fixes staged on `monitor/bosun-env-stability`:
+  - `workflow/workflow-nodes.mjs`
+    - Added deterministic short managed worktree directory naming (`task-<taskIdPrefix>-<sha1(branch)>`) to reduce path depth.
+    - Enforced best-effort `git config --local core.longpaths true` before worktree checkout.
+  - Regression tests in `tests/workflow-task-lifecycle.test.mjs` for short-path naming + longpaths enablement.
+  - Included accompanying workflow template/PR-flow hardening already in working tree (PR label/idempotent create_pr + Task-ID linking + demo default sync regeneration).
+- Validation completed:
+  - `npm test -- tests/workflow-task-lifecycle.test.mjs tests/workflow-nodes-security.test.mjs tests/workflow-templates.test.mjs` pass.
+  - `npm test -- tests/demo-defaults-sync.test.mjs` pass.
+  - `npm run build` pass.
+  - `npm run prepush:check` pass (157 files / 3441 tests).
+- Next runtime action after push/rollout:
+  - restart source daemon and verify no new `Worktree acquisition failed` loop lines for Task Lifecycle in monitor logs.

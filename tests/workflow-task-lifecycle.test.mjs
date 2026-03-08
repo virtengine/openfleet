@@ -748,6 +748,44 @@ describe("action.acquire_worktree", () => {
     expect(ctx2.data._worktreeCreated).toBe(false);
     expect(ctx2.data._worktreeManaged).toBe(true);
   });
+  it("uses a short managed worktree directory derived from task id", async () => {
+    const nt = getNodeType("action.acquire_worktree");
+    const ctx = makeCtx({});
+    const node = makeNode("action.acquire_worktree", {
+      repoRoot: repoDir,
+      taskId: "task-123e4567-e89b-12d3-a456-426614174000",
+      branch: "task/very-long-branch-name-that-would-normally-be-used-as-worktree-directory",
+      baseBranch: "main",
+      fetchTimeout: 5000,
+      worktreeTimeout: 10000,
+    });
+
+    const result = await nt.execute(node, ctx);
+    expect(result.success).toBe(true);
+    expect(result.worktreePath).toMatch(/\\.bosun[\\/]worktrees[\\/]task-task123e4567-[a-f0-9]{10}$/);
+    expect(result.worktreePath).not.toContain("very-long-branch-name");
+  });
+
+  it("enables core.longpaths before checkout", async () => {
+    const nt = getNodeType("action.acquire_worktree");
+    const ctx = makeCtx({});
+    const node = makeNode("action.acquire_worktree", {
+      repoRoot: repoDir,
+      taskId: "longpaths-1",
+      branch: "task/longpaths-enable",
+      baseBranch: "main",
+      fetchTimeout: 5000,
+      worktreeTimeout: 10000,
+    });
+
+    const result = await nt.execute(node, ctx);
+    expect(result.success).toBe(true);
+    const longpaths = gitExec("git config --local --get core.longpaths", {
+      cwd: repoDir,
+      encoding: "utf8",
+    }).trim().toLowerCase();
+    expect(longpaths).toBe("true");
+  });
 
   it("repairs core.bare corruption after creating a worktree", async () => {
     const nt = getNodeType("action.acquire_worktree");
@@ -1269,6 +1307,18 @@ describe("template-task-lifecycle", () => {
     expect(pushNode.config.emptyDiffGuard).toBe(true);
   });
 
+  it("links task PRs before moving tasks to inreview", () => {
+    const t = getTemplate("template-task-lifecycle");
+    const createPr = t.nodes.find((n) => n.id === "create-pr");
+    const prCreated = t.nodes.find((n) => n.id === "pr-created");
+
+    expect(createPr?.config?.body).toContain("Task-ID: {{taskId}}");
+    expect(prCreated?.config?.expression).toContain("create-pr");
+    expect(t.edges.find((e) => e.source === "create-pr" && e.target === "pr-created")).toBeDefined();
+    expect(t.edges.find((e) => e.source === "pr-created" && e.target === "set-inreview")).toBeDefined();
+    expect(t.edges.find((e) => e.source === "pr-created" && e.target === "set-todo-push-failed")).toBeDefined();
+  });
+
   it("has push-ok check after push-branch", () => {
     const t = getTemplate("template-task-lifecycle");
     const edge = t.edges.find(
@@ -1486,5 +1536,6 @@ describe("template-ve-orchestrator-lite", () => {
     expect(Array.isArray(t.variables.protectedBranches)).toBe(true);
   });
 });
+
 
 
