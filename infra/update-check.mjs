@@ -554,6 +554,7 @@ function isSuppressedStreamNoiseError(err) {
  * @param {function} [opts.onNotify]  - Called with message string for Telegram/log
  * @param {number}   [opts.intervalMs] - Poll interval (default: 10 min)
  * @param {number}   [opts.parentPid]  - Parent process PID to monitor (default: process.ppid)
+ * @param {boolean}  [opts.trackParent] - Monitor parent liveness (default: true)
  */
 export function startAutoUpdateLoop(opts = {}) {
   if (process.env.BOSUN_SKIP_AUTO_UPDATE === "1") {
@@ -594,14 +595,21 @@ export function startAutoUpdateLoop(opts = {}) {
 
   // Register cleanup handlers to prevent zombie processes
   registerCleanupHandlers();
+  const trackParent = opts.trackParent !== false;
 
-  // Track parent process if provided
-  if (opts.parentPid) {
-    parentPid = opts.parentPid;
-    console.log(`[auto-update] Monitoring parent process PID ${parentPid}`);
+  // Track parent process when enabled. Detached daemon-child monitor sessions
+  // should opt out so they do not self-terminate when the launcher exits.
+  if (trackParent) {
+    if (opts.parentPid) {
+      parentPid = opts.parentPid;
+      console.log(`[auto-update] Monitoring parent process PID ${parentPid}`);
+    } else {
+      parentPid = process.ppid; // Track parent by default
+      console.log(`[auto-update] Monitoring parent process PID ${parentPid}`);
+    }
   } else {
-    parentPid = process.ppid; // Track parent by default
-    console.log(`[auto-update] Monitoring parent process PID ${parentPid}`);
+    parentPid = null;
+    console.log("[auto-update] Parent process monitoring disabled");
   }
 
   console.log(

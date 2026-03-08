@@ -13676,12 +13676,15 @@ if (telegramWeeklyReportEnabled) {
 }
 
 // ── Self-updating: poll npm every 10 min, auto-install + restart ────────────
+const isDaemonChildForAutoUpdate =
+  process.argv.includes("--daemon-child") || process.env.BOSUN_DAEMON === "1";
 startAutoUpdateLoop({
   onRestart: (reason) => restartSelf(reason),
   onNotify: (msg) =>
     // Priority 1 (critical) bypasses the live digest so the user gets a
     // direct push notification for update-detected and restarting events.
     sendTelegramMessage(msg, { priority: 1, skipDedup: true }).catch(() => {}),
+  trackParent: !isDaemonChildForAutoUpdate,
 });
 
 startWatcher();

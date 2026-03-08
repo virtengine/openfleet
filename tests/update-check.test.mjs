@@ -57,6 +57,25 @@ describe("update-check", () => {
       stopAutoUpdateLoop();
     });
 
+    it("should allow disabling parent process monitoring", () => {
+      delete process.env.BOSUN_SKIP_AUTO_UPDATE;
+
+      const consoleSpy = vi.spyOn(console, "log");
+      startAutoUpdateLoop({
+        intervalMs: 1000000,
+        trackParent: false,
+      });
+
+      expect(consoleSpy).toHaveBeenCalledWith(
+        "[auto-update] Parent process monitoring disabled"
+      );
+      expect(consoleSpy).not.toHaveBeenCalledWith(
+        expect.stringContaining("[auto-update] Monitoring parent process PID")
+      );
+
+      stopAutoUpdateLoop();
+    });
+
     it("should allow custom parentPid", () => {
       delete process.env.BOSUN_SKIP_AUTO_UPDATE;
 

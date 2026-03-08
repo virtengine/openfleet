@@ -182,3 +182,23 @@ ode cli.mjs --daemon --config-dir .bosun --repo-root ...).
   - Latest runs include `Agent Session Monitor` and `Task trace workflow`; task-batch/planner runs still not recurring at 1-min cadence after the startup burst and need follow-up tuning/diagnosis.
 - Outstanding risk:
   - Planner startup run `19e3f239-...` failed (`Agent pool or planner prompt not available` -> no materialized tasks), and autonomous throughput remains below expected PR velocity.
+
+## 2026-03-09T01:19:06.7717691+11:00
+- Context: Hourly Bosun source-run health check on branch monitor/bosun-env-stability.
+- Initial incident: daemon/process mode inconsistent (AppData config active), source-local workflow telemetry stale, and workflow scheduler produced frozen active runs.
+- Root causes observed:
+  - Startup without explicit local routing can resolve to AppData config/log paths.
+  - Task Planner failures were caused by planner context mismatch (Agent pool or planner prompt not available) and missing workspace-mirror kanban cache (	odoCount=0 despite backlog).
+- Remediation this run:
+  - Restarted from source using explicit local paths: 
+pm run start -- --daemon --no-update-check --config-dir C:\Users\jON\Documents\source\repos\virtengine-gh\bosun\.bosun --repo-root C:\Users\jON\Documents\source\repos\virtengine-gh\bosun.
+  - Normalized planner prompt path to absolute source path in both .env and .bosun/.env.
+  - Seeded workspace-mirror cache file at .bosun/workspaces/virtengine-gh/bosun/.bosun/.cache/kanban-state.json to remove false zero-todo planner trigger failures.
+- Post-fix verification:
+  - 
+ode cli.mjs --daemon-status (with explicit local config) reports running.
+  - Workflow runs resumed at 1-minute cadence (Task Lifecycle, Task Batch Processor, Task Batch → PR, Task Replenish).
+  - Task Planner transitioned from repeated failures to completed status on latest observed cycle.
+  - One active long-running Task Lifecycle run remains expected; no frozen active-run pair after remediation.
+- Residual risk:
+  - Task stats CLI (80 tasks) and planner trigger store can still diverge depending on which runtime store is queried; monitor in next run and consider code-level store-path unification if divergence recurs.

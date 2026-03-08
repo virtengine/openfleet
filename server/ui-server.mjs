@@ -8095,6 +8095,13 @@ function buildTaskMetadataPatch(input = {}) {
     }
   }
 
+  if (hasOwn(input, "type")) {
+    const type = normalizeTaskTypeInput(input?.type);
+    if (type) {
+      topLevel.type = type;
+    }
+  }
+
   if (hasOwn(input, "epicId")) {
     const epicId = normalizeOptionalStringInput(input?.epicId);
     if (epicId) {
@@ -8128,6 +8135,13 @@ function buildTaskMetadataPatch(input = {}) {
   }
 
   return { topLevel, meta };
+}
+
+const TASK_TYPE_VALUES = new Set(["epic", "task", "subtask"]);
+
+function normalizeTaskTypeInput(input) {
+  const normalized = String(input ?? "").trim().toLowerCase();
+  return TASK_TYPE_VALUES.has(normalized) ? normalized : null;
 }
 
 const SPRINT_EXECUTION_MODES = new Set(["sequential", "parallel"]);
