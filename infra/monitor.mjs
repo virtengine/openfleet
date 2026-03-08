@@ -13518,10 +13518,11 @@ safeSetInterval("flush-error-queue", () => flushErrorQueue(), 60 * 1000);
 // This keeps scheduled and task-poll lifecycle templates executing without hardcoded
 // per-workflow timers.
 const scheduleCheckIntervalMs = 60 * 1000; // check every 60s
-async function pollWorkflowSchedulesOnce(triggerSource = "schedule-poll") {
+async function pollWorkflowSchedulesOnce(triggerSource = "schedule-poll", opts = {}) {
   try {
     const engine = await ensureWorkflowAutomationEngine();
     if (!engine?.evaluateScheduleTriggers) return;
+    const includeTaskPoll = opts?.includeTaskPoll !== false;
 
     const triggered = engine.evaluateScheduleTriggers();
     if (!Array.isArray(triggered) || triggered.length === 0) return;
@@ -13529,6 +13530,15 @@ async function pollWorkflowSchedulesOnce(triggerSource = "schedule-poll") {
     for (const match of triggered) {
       const workflowId = String(match?.workflowId || "").trim();
       if (!workflowId) continue;
+      if (!includeTaskPoll) {
+        const workflow = typeof engine.get === "function" ? engine.get(workflowId) : null;
+        const triggerNode = Array.isArray(workflow?.nodes)
+          ? workflow.nodes.find((node) => node?.id === match?.triggeredBy)
+          : null;
+        if (triggerNode?.type === "trigger.task_available" || triggerNode?.type === "trigger.task_low") {
+          continue;
+        }
+      }
       void engine
         .execute(workflowId, {
           _triggerSource: triggerSource,
@@ -13830,13 +13840,16 @@ let errorDetector = null;
 let agentSupervisor = null;
 
 if (!isMonitorTestRuntime) {
-if (workflowAutomationEnabled) {
-  await ensureWorkflowAutomationEngine().catch(() => {});
-} else {
-  console.log(
-    "[workflows] automation disabled (set WORKFLOW_AUTOMATION_ENABLED=true to enable event-driven workflow triggers)",
-  );
-}
+  if (workflowAutomationEnabled) {
+    await ensureWorkflowAutomationEngine().catch(() => {});
+    void pollWorkflowSchedulesOnce("startup", { includeTaskPoll: false }).catch((err) => {
+      console.warn(`[workflows] startup poll error: ${err?.message || err}`);
+    });
+  } else {
+    console.log(
+      "[workflows] automation disabled (set WORKFLOW_AUTOMATION_ENABLED=true to enable event-driven workflow triggers)",
+    );
+  }
 // ── Task Management Subsystem Initialization ────────────────────────────────
 try {
   mkdirSync(monitorStateCacheDir, { recursive: true });
@@ -14642,4 +14655,3 @@ export {
   // Workflow event bridge — for fleet/kanban modules to emit events
   queueWorkflowEvent,
 };
-
