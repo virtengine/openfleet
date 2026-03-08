@@ -329,3 +329,12 @@ ode cli.mjs --daemon --no-update-check --no-auto-update --config-dir .bosun --re
   - `npm run prepush:check` pass (157 files / 3441 tests).
 - Next runtime action after push/rollout:
   - restart source daemon and verify no new `Worktree acquisition failed` loop lines for Task Lifecycle in monitor logs.
+## 2026-03-09T09:33:20.4682819+11:00
+- Runtime: ~35 minutes.
+- Merged PR #179 (merge commit 340ec7b874004f0878d78f3e22c332e3dda7bda5), then fast-forwarded and pushed monitor/bosun-env-stability to the same commit as origin/main.
+- Restarted Bosun from source with explicit repo-local config: node cli.mjs --terminate --config-dir .bosun --repo-root . then node cli.mjs --daemon --no-update-check --no-auto-update --config-dir .bosun --repo-root ..
+- Post-restart runtime confirmed source-local only (cli.mjs + infra/monitor.mjs under repo path); daemon healthy at PID 35308.
+- Workflow engine resumed and schedule polls advanced; startup runs for Task Planner, Task Replenish, Workspace Hygiene completed successfully with no new monitor-error entries for No diff available, monitorMonitor is not defined, or uncaughtException.
+- Current active long-running workflow nodes remain: Task Lifecycle.run-agent, Bosun PR Watchdog.dispatch-fix, PR Conflict Resolver.resolve-conflicts (started at daemon startup and still executing).
+- Open throughput risk: merged Bosun-attached PRs in recent window are below target 2-3/hour (latest merged: #179 at 2026-03-08T22:26:21Z).
+- Queue health snapshot from task CLI remains stable for tracked set: draft=36, todo=42, inprogress=0, inreview=0, done=2.
