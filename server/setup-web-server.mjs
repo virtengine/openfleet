@@ -458,6 +458,14 @@ function buildStableSetupDefaults({
     contextShreddingMsgTier1MaxAge: 4,
     contextShreddingMsgMinCompressChars: 120,
     contextShreddingUserMsgFullTurns: 1,
+    contextShreddingLiveToolCompactionEnabled: false,
+    contextShreddingLiveToolCompactionMode: "auto",
+    contextShreddingLiveToolCompactionMinChars: 4000,
+    contextShreddingLiveToolCompactionTargetChars: 1800,
+    contextShreddingLiveToolCompactionMinSavingsPct: 15,
+    contextShreddingLiveToolCompactionMinRuntimeMs: 2000,
+    contextShreddingLiveToolCompactionBlockStructuredOutput: true,
+    contextShreddingLiveToolCompactionAllowCommands: "grep,rg,find,git,go,npm,pnpm,yarn,node,python,python3,pytest,docker,kubectl,cargo,gradle,maven,mvn,javac,tsc,jest,vitest,deno",
     contextShreddingProfiles: "",
     voiceEnabled: true,
     voiceProvider: "auto",
@@ -2889,3 +2897,4 @@ if (process.argv[1] && resolve(process.argv[1]) === resolve(__filename_setup_web
     process.exit(1);
   });
 }
+

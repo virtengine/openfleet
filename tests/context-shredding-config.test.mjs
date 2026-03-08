@@ -100,6 +100,14 @@ describe("DEFAULT_SHREDDING_CONFIG", () => {
     expect(DEFAULT_SHREDDING_CONFIG.msgTier1MaxAge).toBe(4);
     expect(DEFAULT_SHREDDING_CONFIG.msgMinCompressChars).toBe(120);
     expect(DEFAULT_SHREDDING_CONFIG.userMsgFullTurns).toBe(1);
+    expect(DEFAULT_SHREDDING_CONFIG.liveToolCompactionEnabled).toBe(false);
+    expect(DEFAULT_SHREDDING_CONFIG.liveToolCompactionMode).toBe("auto");
+    expect(DEFAULT_SHREDDING_CONFIG.liveToolCompactionMinChars).toBe(4000);
+    expect(DEFAULT_SHREDDING_CONFIG.liveToolCompactionTargetChars).toBe(1800);
+    expect(DEFAULT_SHREDDING_CONFIG.liveToolCompactionMinSavingsPct).toBe(15);
+    expect(DEFAULT_SHREDDING_CONFIG.liveToolCompactionMinRuntimeMs).toBe(2000);
+    expect(DEFAULT_SHREDDING_CONFIG.liveToolCompactionBlockStructured).toBe(true);
+    expect(DEFAULT_SHREDDING_CONFIG.liveToolCompactionAllowCommands).toContain("git");
   });
 
   it("has empty perType and perAgent by default", () => {
@@ -188,6 +196,30 @@ describe("loadContextShreddingConfig", () => {
     expect(cfg.compressUserMessages).toBe(false);
   });
 
+  it("parses live compaction env vars", () => {
+    const cfg = withEnv(
+      {
+        CONTEXT_SHREDDING_LIVE_TOOL_COMPACTION_ENABLED: "true",
+        CONTEXT_SHREDDING_LIVE_TOOL_COMPACTION_MODE: "aggressive",
+        CONTEXT_SHREDDING_LIVE_TOOL_COMPACTION_MIN_CHARS: "6000",
+        CONTEXT_SHREDDING_LIVE_TOOL_COMPACTION_TARGET_CHARS: "2200",
+        CONTEXT_SHREDDING_LIVE_TOOL_COMPACTION_MIN_SAVINGS_PCT: "25",
+        CONTEXT_SHREDDING_LIVE_TOOL_COMPACTION_MIN_RUNTIME_MS: "3500",
+        CONTEXT_SHREDDING_LIVE_TOOL_COMPACTION_BLOCK_STRUCTURED_OUTPUT: "false",
+        CONTEXT_SHREDDING_LIVE_TOOL_COMPACTION_ALLOW_COMMANDS: "git,rg,go",
+      },
+      () => loadContextShreddingConfig(),
+    );
+    expect(cfg.liveToolCompactionEnabled).toBe(true);
+    expect(cfg.liveToolCompactionMode).toBe("aggressive");
+    expect(cfg.liveToolCompactionMinChars).toBe(6000);
+    expect(cfg.liveToolCompactionTargetChars).toBe(2200);
+    expect(cfg.liveToolCompactionMinSavingsPct).toBe(25);
+    expect(cfg.liveToolCompactionMinRuntimeMs).toBe(3500);
+    expect(cfg.liveToolCompactionBlockStructured).toBe(false);
+    expect(cfg.liveToolCompactionAllowCommands).toEqual(["git", "rg", "go"]);
+  });
+
   it("parses CONTEXT_SHREDDING_PROFILES JSON correctly", () => {
     const profiles = JSON.stringify({
       perType: { voice: { fullContextTurns: 6 }, chat: { tier1MaxAge: 7 } },
@@ -243,6 +275,14 @@ describe("getDefaultOptions", () => {
     expect(opts).toHaveProperty("msgTier1MaxAge", 4);
     expect(opts).toHaveProperty("msgMinCompressChars", 120);
     expect(opts).toHaveProperty("userMsgFullTurns", 1);
+    expect(opts).toHaveProperty("liveToolCompactionEnabled", false);
+    expect(opts).toHaveProperty("liveToolCompactionMode", "auto");
+    expect(opts).toHaveProperty("liveToolCompactionMinChars", 4000);
+    expect(opts).toHaveProperty("liveToolCompactionTargetChars", 1800);
+    expect(opts).toHaveProperty("liveToolCompactionMinSavingsPct", 15);
+    expect(opts).toHaveProperty("liveToolCompactionMinRuntimeMs", 2000);
+    expect(opts).toHaveProperty("liveToolCompactionBlockStructured", true);
+    expect(opts).toHaveProperty("liveToolCompactionAllowCommands");
   });
 
   it("does NOT include perType or perAgent (these are config, not options)", () => {
@@ -440,3 +480,4 @@ describe("integration", () => {
     expect(opts.fullContextTurns).toBeUndefined();
   });
 });
+

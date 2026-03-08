@@ -12,6 +12,8 @@ import {
   upsertEntry,
   deleteEntry,
   listAgentProfiles,
+  loadAgentProfileIndex,
+  rebuildAgentProfileIndex,
   matchAgentProfile,
   matchAgentProfiles,
   detectScopes,
@@ -472,6 +474,83 @@ describe("resolveEntry (multi-workspace)", () => {
   });
 });
 
+
+describe("agent profile index", () => {
+  beforeEach(() => fresh());
+  afterEach(() => cleanup());
+
+  it("builds a compiled agent metadata index", () => {
+    scaffoldAgentProfiles(tmpDir);
+    rebuildManifest(tmpDir);
+
+    const index = rebuildAgentProfileIndex(tmpDir);
+    expect(index.count).toBeGreaterThanOrEqual(5);
+
+    const loaded = loadAgentProfileIndex(tmpDir);
+    expect(Array.isArray(loaded.profiles)).toBe(true);
+    expect(loaded.profiles.some((profile) => profile.id === "ui-agent")).toBe(true);
+  });
+
+  it("matchAgentProfiles uses compiled metadata on the hot path", () => {
+    scaffoldAgentProfiles(tmpDir);
+    rebuildManifest(tmpDir);
+    rebuildAgentProfileIndex(tmpDir);
+
+    rmSync(resolve(tmpDir, PROFILE_DIR, "ui-agent.json"), { force: true });
+
+    const result = matchAgentProfiles(tmpDir, {
+      title: "feat(portal): add login page",
+      description: "Update UI layout and component styles",
+      topN: 3,
+    });
+
+    expect(result.best).not.toBeNull();
+    expect(result.best.id).toBe("ui-agent");
+  });
+
+  it("keeps the agent index in sync on upsert", () => {
+    upsertEntry(tmpDir, {
+      type: "agent",
+      id: "index-agent",
+      name: "Index Agent",
+      description: "Compiled-index test profile",
+      tags: ["index"],
+    }, {
+      id: "index-agent",
+      name: "Index Agent",
+      description: "Compiled-index test profile",
+      titlePatterns: ["\\bindex\\b"],
+      scopes: ["infra"],
+      tags: ["index"],
+      agentType: "task",
+    });
+
+    const index = loadAgentProfileIndex(tmpDir);
+    expect(index.profiles.some((profile) => profile.id === "index-agent")).toBe(true);
+  });
+
+  it("keeps the agent index in sync on delete", () => {
+    upsertEntry(tmpDir, {
+      type: "agent",
+      id: "delete-agent",
+      name: "Delete Agent",
+      description: "Compiled-index delete test profile",
+      tags: ["delete"],
+    }, {
+      id: "delete-agent",
+      name: "Delete Agent",
+      description: "Compiled-index delete test profile",
+      titlePatterns: ["\\bdelete\\b"],
+      scopes: ["infra"],
+      tags: ["delete"],
+      agentType: "task",
+    });
+
+    expect(loadAgentProfileIndex(tmpDir).profiles.some((profile) => profile.id === "delete-agent")).toBe(true);
+    expect(deleteEntry(tmpDir, "delete-agent")).toBe(true);
+    expect(loadAgentProfileIndex(tmpDir).profiles.some((profile) => profile.id === "delete-agent")).toBe(false);
+  });
+});
 
 describe("matchAgentProfiles", () => {
   beforeEach(() => fresh());

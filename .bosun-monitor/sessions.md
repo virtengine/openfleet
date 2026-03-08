@@ -217,3 +217,29 @@ ode cli.mjs --daemon-status (with explicit local config) reports running.
   - post-merge source daemon restart validated with minute cadence schedule polls and fresh `todo -> inprogress` transitions.
 - Operational note:
   - Keep using workspace-local log/state paths under `bosun/.bosun/...` for source daemon checks; old AppData logs can be stale for this mode.
+
+## 2026-03-09T02:01:45.4518200+11:00
+- Incident: review pipeline spammed No diff available for review, blocking autonomous review/merge flow and forcing manual merges.
+- Root cause: gent/review-agent.mjs diff resolver ignored prNumber (only read prUrl/ranchName), while many queue sites provide prNumber only; stale in-review tasks without any review context were repeatedly requeued and hard-rejected.
+- Fix shipped (PR #176, merge commit 9f3f244c604ce00e045c063ad8ef0929d65f4b8a):
+  - getPrDiff now supports prNumber/epoSlug, attempts gh pr diff with and without --repo, and uses worktreePath as command cwd.
+  - Git diff fallback now tries origin/main...branch before main...branch.
+  - queueReview now skips tasks missing all of prUrl, prNumber, and ranchName to prevent false no-diff rejects.
+  - Added regression tests in 	ests/review-agent.test.mjs (prNumber-only diff retrieval + missing-context skip).
+- Validation:
+  - 
+pm test -- tests/review-agent.test.mjs pass.
+  - 
+pm test pass.
+  - 
+pm run build pass.
+  - 
+pm run prepush:check pass.
+- Delivery:
+  - Commit: 7f25452 on monitor/bosun-env-stability.
+  - PR: https://github.com/virtengine/bosun/pull/176 merged.
+  - CI checks all green.
+- Runtime post-merge:
+  - Fast-forwarded local branch to merged main commit 9f3f244.
+  - Restarted source daemon with explicit local config/repo-root.
+  - Scheduler cadence active and planner/batch workflows running post-restart.

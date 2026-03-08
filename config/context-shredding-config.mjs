@@ -97,6 +97,14 @@ export const CONTENT_TYPES = Object.freeze([
  * @property {boolean} compressToolOutputs  - Enable tool output compression
  * @property {boolean} compressAgentMessages - Enable agent message compression
  * @property {boolean} compressUserMessages - Enable user message compression
+ * @property {boolean} liveToolCompactionEnabled - Enable command-aware live compaction before history shredding
+ * @property {string}  liveToolCompactionMode - off|auto|aggressive smart mode for live compaction
+ * @property {number}  liveToolCompactionMinChars - Minimum output chars before live compaction is considered
+ * @property {number}  liveToolCompactionTargetChars - Target maximum chars for live-compacted outputs
+ * @property {number}  liveToolCompactionMinSavingsPct - Minimum savings percentage required to keep a compacted result
+ * @property {number}  liveToolCompactionMinRuntimeMs - Minimum runtime before live compaction is allowed when duration metadata exists
+ * @property {boolean} liveToolCompactionBlockStructured - Disable live compaction for likely structured outputs
+ * @property {string[]} liveToolCompactionAllowCommands - Command/tool allowlist for live compaction
  * @property {Object}  perType             - Per interaction-type overrides (keyed by INTERACTION_TYPES)
  * @property {Object}  perAgent            - Per agent-type overrides (keyed by AGENT_TYPES)
  */
@@ -137,6 +145,20 @@ export const DEFAULT_SHREDDING_CONFIG = Object.freeze({
                            // turns 5+: breadcrumb only
   msgMinCompressChars: 120,
   userMsgFullTurns: 1,     // only the current turn keeps the full user prompt
+
+  // ── Live command/tool compaction ─────────────────────────────
+  liveToolCompactionEnabled: false,
+  liveToolCompactionMode: "auto",
+  liveToolCompactionMinChars: 4000,
+  liveToolCompactionTargetChars: 1800,
+  liveToolCompactionMinSavingsPct: 15,
+  liveToolCompactionMinRuntimeMs: 2000,
+  liveToolCompactionBlockStructured: true,
+  liveToolCompactionAllowCommands: [
+    "grep", "rg", "find", "git", "go", "npm", "pnpm", "yarn", "node",
+    "python", "python3", "pytest", "docker", "kubectl", "cargo", "gradle",
+    "maven", "mvn", "javac", "tsc", "jest", "vitest", "deno",
+  ],
 
   // ── Per-type overrides (empty = use base config) ─────────────
   /** @type {Record<string, Partial<ShreddingConfig>>} */
@@ -301,6 +323,38 @@ export function loadContextShreddingConfig() {
   const userFull = parseEnvInt(env[`${ENV_PREFIX}USER_MSG_FULL_TURNS`], 0, 10);
   if (userFull != null) cfg.userMsgFullTurns = userFull;
 
+  // ── Live command/tool compaction ─────────────────────────────
+  const liveToolCompactionEnabled = parseEnvBool(env[`${ENV_PREFIX}LIVE_TOOL_COMPACTION_ENABLED`]);
+  if (liveToolCompactionEnabled != null) cfg.liveToolCompactionEnabled = liveToolCompactionEnabled;
+
+  const liveToolCompactionMode = String(env[`${ENV_PREFIX}LIVE_TOOL_COMPACTION_MODE`] || "").trim().toLowerCase();
+  if (["off", "auto", "aggressive"].includes(liveToolCompactionMode)) {
+    cfg.liveToolCompactionMode = liveToolCompactionMode;
+  }
+
+  const liveToolCompactionMinChars = parseEnvInt(env[`${ENV_PREFIX}LIVE_TOOL_COMPACTION_MIN_CHARS`], 500, 500000);
+  if (liveToolCompactionMinChars != null) cfg.liveToolCompactionMinChars = liveToolCompactionMinChars;
+
+  const liveToolCompactionTargetChars = parseEnvInt(env[`${ENV_PREFIX}LIVE_TOOL_COMPACTION_TARGET_CHARS`], 200, 50000);
+  if (liveToolCompactionTargetChars != null) cfg.liveToolCompactionTargetChars = liveToolCompactionTargetChars;
+
+  const liveToolCompactionMinSavingsPct = parseEnvInt(env[`${ENV_PREFIX}LIVE_TOOL_COMPACTION_MIN_SAVINGS_PCT`], 0, 95);
+  if (liveToolCompactionMinSavingsPct != null) cfg.liveToolCompactionMinSavingsPct = liveToolCompactionMinSavingsPct;
+
+  const liveToolCompactionMinRuntimeMs = parseEnvInt(env[`${ENV_PREFIX}LIVE_TOOL_COMPACTION_MIN_RUNTIME_MS`], 0, 60 * 60 * 1000);
+  if (liveToolCompactionMinRuntimeMs != null) cfg.liveToolCompactionMinRuntimeMs = liveToolCompactionMinRuntimeMs;
+
+  const liveToolCompactionBlockStructured = parseEnvBool(env[`${ENV_PREFIX}LIVE_TOOL_COMPACTION_BLOCK_STRUCTURED_OUTPUT`]);
+  if (liveToolCompactionBlockStructured != null) cfg.liveToolCompactionBlockStructured = liveToolCompactionBlockStructured;
+
+  const liveToolCompactionAllowCommands = String(env[`${ENV_PREFIX}LIVE_TOOL_COMPACTION_ALLOW_COMMANDS`] || "").trim();
+  if (liveToolCompactionAllowCommands) {
+    cfg.liveToolCompactionAllowCommands = liveToolCompactionAllowCommands
+      .split(",")
+      .map((value) => value.trim().toLowerCase())
+      .filter(Boolean);
+  }
+
   // ── Per-type JSON profiles ────────────────────────────────────
   const profilesEnv = env[`${ENV_PREFIX}PROFILES`];
   if (profilesEnv) {
@@ -450,6 +504,14 @@ function configToOptions(cfg) {
     msgTier1MaxAge: cfg.msgTier1MaxAge,
     msgMinCompressChars: cfg.msgMinCompressChars,
     userMsgFullTurns: cfg.userMsgFullTurns,
+    liveToolCompactionEnabled: cfg.liveToolCompactionEnabled,
+    liveToolCompactionMode: cfg.liveToolCompactionMode,
+    liveToolCompactionMinChars: cfg.liveToolCompactionMinChars,
+    liveToolCompactionTargetChars: cfg.liveToolCompactionTargetChars,
+    liveToolCompactionMinSavingsPct: cfg.liveToolCompactionMinSavingsPct,
+    liveToolCompactionMinRuntimeMs: cfg.liveToolCompactionMinRuntimeMs,
+    liveToolCompactionBlockStructured: cfg.liveToolCompactionBlockStructured,
+    liveToolCompactionAllowCommands: [...(cfg.liveToolCompactionAllowCommands || [])],
   };
 }
 
@@ -675,6 +737,82 @@ export const CONTEXT_SHREDDING_ENV_DEFS = [
     max: 10,
     unit: "turns",
     description: "Turns during which the full user prompt is preserved. After this, only a short summary is kept.",
+    advanced: true,
+  },
+  {
+    key: "CONTEXT_SHREDDING_LIVE_TOOL_COMPACTION_ENABLED",
+    label: "Live Tool Compaction",
+    type: "boolean",
+    default: false,
+    description: "Enable command-aware compaction of large tool outputs before they are stored in the active turn. Falls back to raw output on low confidence or unsafe shapes.",
+  },
+  {
+    key: "CONTEXT_SHREDDING_LIVE_TOOL_COMPACTION_MODE",
+    label: "Live Compaction Mode",
+    type: "select",
+    default: "auto",
+    options: ["off", "auto", "aggressive"],
+    description: "off disables live compaction, auto compacts only when pressure or signal justify it, and aggressive favors stronger reduction for noisy command families.",
+    advanced: true,
+  },
+  {
+    key: "CONTEXT_SHREDDING_LIVE_TOOL_COMPACTION_MIN_CHARS",
+    label: "Live Compaction Minimum Size",
+    type: "number",
+    default: 4000,
+    min: 500,
+    max: 500000,
+    unit: "chars",
+    description: "Minimum output size before live compaction is considered.",
+    advanced: true,
+  },
+  {
+    key: "CONTEXT_SHREDDING_LIVE_TOOL_COMPACTION_TARGET_CHARS",
+    label: "Live Compaction Target Size",
+    type: "number",
+    default: 1800,
+    min: 200,
+    max: 50000,
+    unit: "chars",
+    description: "Target upper bound for compacted live command output before retrieval hints and metadata.",
+    advanced: true,
+  },
+  {
+    key: "CONTEXT_SHREDDING_LIVE_TOOL_COMPACTION_MIN_SAVINGS_PCT",
+    label: "Live Compaction Min Savings",
+    type: "number",
+    default: 15,
+    min: 0,
+    max: 95,
+    unit: "%",
+    description: "Discard compacted output if it does not save at least this much space.",
+    advanced: true,
+  },
+  {
+    key: "CONTEXT_SHREDDING_LIVE_TOOL_COMPACTION_MIN_RUNTIME_MS",
+    label: "Live Compaction Min Runtime",
+    type: "number",
+    default: 2000,
+    min: 0,
+    max: 3600000,
+    unit: "ms",
+    description: "When command duration metadata is present, require at least this runtime before compacting in auto mode.",
+    advanced: true,
+  },
+  {
+    key: "CONTEXT_SHREDDING_LIVE_TOOL_COMPACTION_BLOCK_STRUCTURED_OUTPUT",
+    label: "Skip Structured Output",
+    type: "boolean",
+    default: true,
+    description: "Avoid live compaction for likely JSON or other structured outputs where exact bytes matter more than size.",
+    advanced: true,
+  },
+  {
+    key: "CONTEXT_SHREDDING_LIVE_TOOL_COMPACTION_ALLOW_COMMANDS",
+    label: "Live Compaction Allowlist",
+    type: "text",
+    default: "grep,rg,find,git,go,npm,pnpm,yarn,node,python,python3,pytest,docker,kubectl,cargo,gradle,maven,mvn,javac,tsc,jest,vitest,deno",
+    description: "Comma-separated command or tool families eligible for live compaction. Commands outside the allowlist pass through untouched.",
     advanced: true,
   },
   {

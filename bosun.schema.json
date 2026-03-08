@@ -1199,6 +1199,56 @@
           "default": 1,
           "description": "Turns during which the full user prompt is preserved."
         },
+        "liveToolCompactionEnabled": {
+          "type": "boolean",
+          "default": false,
+          "description": "Enable command-aware live compaction of large tool outputs before they are stored in the active turn."
+        },
+        "liveToolCompactionMode": {
+          "type": "string",
+          "enum": ["off", "auto", "aggressive"],
+          "default": "auto",
+          "description": "off disables live compaction, auto compacts only when pressure or signal justify it, and aggressive favors stronger reduction for noisy command families."
+        },
+        "liveToolCompactionMinChars": {
+          "type": "integer",
+          "minimum": 500,
+          "maximum": 500000,
+          "default": 4000,
+          "description": "Minimum output size before live compaction is considered."
+        },
+        "liveToolCompactionTargetChars": {
+          "type": "integer",
+          "minimum": 200,
+          "maximum": 50000,
+          "default": 1800,
+          "description": "Target upper bound for compacted live command output before retrieval hints and metadata."
+        },
+        "liveToolCompactionMinSavingsPct": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 95,
+          "default": 15,
+          "description": "Discard compacted output if it does not save at least this much space."
+        },
+        "liveToolCompactionMinRuntimeMs": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 3600000,
+          "default": 2000,
+          "description": "When command duration metadata is present, require at least this runtime before compacting in auto mode."
+        },
+        "liveToolCompactionBlockStructured": {
+          "type": "boolean",
+          "default": true,
+          "description": "Avoid live compaction for likely JSON or other structured outputs where exact bytes matter more than size."
+        },
+        "liveToolCompactionAllowCommands": {
+          "type": "array",
+          "items": { "type": "string" },
+          "default": ["grep", "rg", "find", "git", "go", "npm", "pnpm", "yarn", "node", "python", "python3", "pytest", "docker", "kubectl", "cargo", "gradle", "maven", "mvn", "javac", "tsc", "jest", "vitest", "deno"],
+          "description": "Command or tool families eligible for live compaction."
+        },
         "perType": {
           "type": "object",
           "description": "Per-interaction-type config overrides. Keys: task, manual, primary, chat, voice, flow.",
@@ -1237,3 +1287,4 @@
     }
   }
 }
+

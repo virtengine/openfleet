@@ -691,3 +691,104 @@ describe("context-cache", () => {
     });
   });
 });
+
+describe("live tool compaction", () => {
+  it("compacts large search-style command output when enabled", async () => {
+    const lines = [];
+    for (let i = 0; i < 220; i++) {
+      lines.push(`src/generated/file${i}.ts:${i + 1}: const needle${i} = true;`);
+    }
+    const items = [{
+      type: "command_execution",
+      command: "rg needle src",
+      exit_code: 0,
+      aggregated_output: lines.join("\n"),
+    }];
+
+    process.env.CONTEXT_SHREDDING_LIVE_TOOL_COMPACTION_ENABLED = "true";
+    const { _resetConfigCache } = await import("../config/context-shredding-config.mjs");
+    const cacheModule = await import("../workspace/context-cache.mjs");
+    _resetConfigCache();
+    const result = await cacheModule.maybeCompressSessionItems(items, {
+      sessionType: "primary",
+      agentType: "codex-sdk",
+      force: false,
+      skip: false,
+    });
+    delete process.env.CONTEXT_SHREDDING_LIVE_TOOL_COMPACTION_ENABLED;
+    delete process.env.CONTEXT_SHREDDING_LIVE_TOOL_COMPACTION_MIN_CHARS;
+    _resetConfigCache();
+
+    expect(result).toHaveLength(1);
+    expect(result[0]._liveCompacted).toBe(true);
+    expect(result[0]._cachedLogId).toBeTruthy();
+    expect(result[0].aggregated_output).toContain("Live-compacted search");
+    expect(result[0].aggregated_output).toContain("bosun --tool-log");
+    expect(result[0].aggregated_output.length).toBeLessThan(items[0].aggregated_output.length);
+  });
+
+  it("preserves structured output when live compaction is enabled", async () => {
+    const structured = JSON.stringify({ files: Array.from({ length: 80 }, (_, i) => ({ path: `src/file${i}.ts`, ok: true })) }, null, 2);
+    const items = [{
+      type: "command_execution",
+      command: "node tool.mjs --json",
+      exit_code: 0,
+      aggregated_output: structured,
+    }];
+
+    process.env.CONTEXT_SHREDDING_LIVE_TOOL_COMPACTION_ENABLED = "true";
+    const { _resetConfigCache } = await import("../config/context-shredding-config.mjs");
+    const cacheModule = await import("../workspace/context-cache.mjs");
+    _resetConfigCache();
+    const result = await cacheModule.maybeCompressSessionItems(items, {
+      sessionType: "primary",
+      agentType: "codex-sdk",
+    });
+    delete process.env.CONTEXT_SHREDDING_LIVE_TOOL_COMPACTION_ENABLED;
+    delete process.env.CONTEXT_SHREDDING_LIVE_TOOL_COMPACTION_MIN_CHARS;
+    _resetConfigCache();
+
+    expect(result[0]._liveCompacted).toBeUndefined();
+    expect(result[0].aggregated_output).toBe(structured);
+  });
+
+  it("keeps failure diagnostics while compacting noisy build output", async () => {
+    const lines = [];
+    for (let i = 0; i < 160; i++) {
+      lines.push(`ok   pkg/module${i} 0.${i % 10}s`);
+    }
+    lines.push("FAIL tests/foo.test.ts");
+    lines.push("Error: expected true to be false");
+    lines.push("    at tests/foo.test.ts:42:9");
+    const items = [{
+      type: "command_execution",
+      command: "go test ./...",
+      exit_code: 1,
+      aggregated_output: lines.join("\n"),
+    }];
+
+    process.env.CONTEXT_SHREDDING_LIVE_TOOL_COMPACTION_ENABLED = "true";
+    process.env.CONTEXT_SHREDDING_LIVE_TOOL_COMPACTION_MIN_CHARS = "1000";
+    const { _resetConfigCache } = await import("../config/context-shredding-config.mjs");
+    const cacheModule = await import("../workspace/context-cache.mjs");
+    _resetConfigCache();
+    const result = await cacheModule.maybeCompressSessionItems(items, {
+      sessionType: "primary",
+      agentType: "codex-sdk",
+    });
+    delete process.env.CONTEXT_SHREDDING_LIVE_TOOL_COMPACTION_ENABLED;
+    delete process.env.CONTEXT_SHREDDING_LIVE_TOOL_COMPACTION_MIN_CHARS;
+    _resetConfigCache();
+
+    expect(result[0]._liveCompacted).toBe(true);
+    expect(result[0].aggregated_output).toContain("FAIL tests/foo.test.ts");
+    expect(result[0].aggregated_output).toContain("expected true to be false");
+    expect(result[0].aggregated_output).toContain("bosun --tool-log");
+  });
+});
+
+
+
+
+
+
