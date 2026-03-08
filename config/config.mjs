@@ -1345,16 +1345,20 @@ export function loadConfig(argv = process.argv, options = {}) {
     repositories[0] ||
     null;
 
-  // Resolve repoRoot with workspace-awareness:
-  // When workspaces configured and the workspace repo has .git, prefer it
-  // over REPO_ROOT (env); REPO_ROOT becomes "developer root" for config only.
+  // Resolve repo root. Explicit repo-root/REPO_ROOT must win over workspace clones
+  // so source-based runs can pin execution to the developer working tree.
+  const explicitRepoRoot = normalizedRepoRootOverride ||
+    (process.env.REPO_ROOT ? resolve(process.env.REPO_ROOT) : "");
   const selectedRepoPath = selectedRepository?.path || "";
   const selectedRepoHasGit = selectedRepoPath && existsSync(resolve(selectedRepoPath, ".git"));
   let repoRoot =
-    (selectedRepoHasGit ? selectedRepoPath : null) || getFallbackRepoRoot();
+    explicitRepoRoot ||
+    (selectedRepoHasGit ? selectedRepoPath : null) ||
+    getFallbackRepoRoot();
 
-  // Resolve agent execution root (workspace-aware, separate from developer root)
-  const agentRepoRoot = resolveAgentRepoRoot();
+  // Resolve agent execution root. Keep workspace-aware behavior by default,
+  // but honor explicit repo-root/REPO_ROOT overrides.
+  const agentRepoRoot = explicitRepoRoot || resolveAgentRepoRoot();
 
   // Load .env from config dir — Bosun's .env is the primary source of truth
   // for Bosun-specific configuration, so it should override any stale shell

@@ -237,6 +237,9 @@ function isWslInteropRuntime() {
 }
 
 function resolveConfigDirForCli() {
+  const configDirArg = getArgValue("--config-dir");
+  if (configDirArg) return resolve(configDirArg);
+  if (process.env.BOSUN_HOME) return resolve(process.env.BOSUN_HOME);
   if (process.env.BOSUN_DIR) return resolve(process.env.BOSUN_DIR);
   const preferWindowsDirs =
     process.platform === "win32" && !isWslInteropRuntime();
