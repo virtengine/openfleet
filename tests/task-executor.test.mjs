@@ -701,6 +701,58 @@ describe("task-executor", () => {
       expect(executeSpy).not.toHaveBeenCalled();
     });
 
+    it("resets unstarted in-progress tasks beyond slot capacity so backlog can flow", async () => {
+      const ex = new TaskExecutor({ projectId: "proj-1", maxParallel: 1 });
+      ex._running = true;
+      const executeSpy = vi
+        .spyOn(ex, "executeTask")
+        .mockResolvedValue(undefined);
+      const staleTs = new Date(Date.now() - 2 * 60 * 60 * 1000).toISOString();
+
+      listTasks.mockResolvedValueOnce([
+        {
+          id: "resume-1",
+          title: "Resume one",
+          status: "inprogress",
+          updated_at: new Date().toISOString(),
+          agentAttempts: 1,
+        },
+        {
+          id: "stale-unstarted-1",
+          title: "Stale unstarted one",
+          status: "inprogress",
+          updated_at: staleTs,
+          agentAttempts: 0,
+        },
+        {
+          id: "stale-unstarted-2",
+          title: "Stale unstarted two",
+          status: "inprogress",
+          updated_at: staleTs,
+          agentAttempts: 0,
+        },
+      ]);
+      getActiveThreads.mockReturnValueOnce([]);
+
+      await ex._recoverInterruptedInProgressTasks();
+
+      expect(executeSpy).toHaveBeenCalledTimes(1);
+      expect(executeSpy).toHaveBeenCalledWith(
+        expect.objectContaining({ id: "resume-1" }),
+        expect.objectContaining({ recoveredFromInProgress: true }),
+      );
+      expect(updateTaskStatus).toHaveBeenCalledWith(
+        "stale-unstarted-1",
+        "todo",
+        expect.objectContaining({ source: "task-executor-recovery-unstarted" }),
+      );
+      expect(updateTaskStatus).toHaveBeenCalledWith(
+        "stale-unstarted-2",
+        "todo",
+        expect.objectContaining({ source: "task-executor-recovery-unstarted" }),
+      );
+    });
+
     it("does not resume in-progress tasks already blocked for no-commit thrash", async () => {
       const ex = new TaskExecutor({ projectId: "proj-1", maxParallel: 2 });
       ex._running = true;
