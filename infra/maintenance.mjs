@@ -117,8 +117,10 @@ function clearBranchSyncWarning(key) {
 function logThrottledBranchSync(
   key,
   message,
-  level = "warn",
-  throttleMs = BRANCH_SYNC_LOG_THROTTLE_MS,
+  {
+    level = "warn",
+    throttleMs = BRANCH_SYNC_LOG_THROTTLE_MS,
+  } = {},
 ) {
   const normalizedKey = String(key || "default").trim() || "default";
   const now = Date.now();
@@ -139,7 +141,9 @@ function logThrottledBranchSync(
   const suppressed = state.suppressed || 0;
   const suffix =
     suppressed > 0
-      ? ` (suppressed ${suppressed} similar message(s) in last ${Math.round(Math.max(1_000, Number(throttleMs) || BRANCH_SYNC_LOG_THROTTLE_MS) / 1000)}s)`
+      ? ` (suppressed ${suppressed} similar message(s) in last ${Math.round(
+          Math.max(1_000, Number(throttleMs) || BRANCH_SYNC_LOG_THROTTLE_MS) / 1000,
+        )}s)`
       : "";
   const line = `${message}${suffix}`;
 
@@ -738,7 +742,7 @@ export function classifyMonitorCommandLine(commandLine) {
   if (
     hasMonitorScriptSegment &&
     (JS_MONITOR_LAUNCHER_RE.test(normalized) ||
-      MONITOR_EVAL_IMPORT_RE.test(normalized))
+      ((normalized.includes("import") || normalized.includes("require")) && normalized.includes("monitor.mjs")))
   ) {
     return "monitor";
   }
@@ -1375,3 +1379,4 @@ export async function runMaintenanceSweep(opts = {}) {
 
   return result;
 }
+

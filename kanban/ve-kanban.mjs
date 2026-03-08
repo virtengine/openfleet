@@ -92,7 +92,8 @@ function parseExecutorProfiles(rawValue) {
 function parseRepoSlug(raw) {
   const text = String(raw || "").trim().replace(/^https?:\/\/github\.com\//i, "");
   if (!text) return null;
-  const cleaned = text.replace(/\.git$/i, "").replace(/^\/+|\/+$/g, "");
+  const withoutGit = text.replace(/\.git$/i, "");
+  const cleaned = withoutGit.replace(/^\/+/, "").replace(/\/+$/, "");
   const [owner, repo] = cleaned.split("/", 2);
   if (!owner || !repo) return null;
   return { owner, repo };
@@ -652,3 +653,4 @@ if (isDirectRun) {
       process.exit(1);
     });
 }
+

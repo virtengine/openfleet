@@ -3765,14 +3765,14 @@ function getTelegramWebAppUrl(url) {
   const candidates = [tUrl, explicit, url];
 
   for (const candidate of candidates) {
-    const normalized = String(candidate || "")
-      .trim()
-      .replace(/\/+$/, "");
+    let normalized = String(candidate || "").trim();
+    while (normalized.endsWith("/")) normalized = normalized.slice(0, -1);
     if (!normalized) continue;
     try {
       const parsed = new URL(normalized);
       if (parsed.protocol !== "https:") continue;
-      const normalizedUrl = parsed.toString().replace(/\/+$/, "");
+      let normalizedUrl = parsed.toString();
+      while (normalizedUrl.endsWith("/")) normalizedUrl = normalizedUrl.slice(0, -1);
       return appendTokenToUrl(normalizedUrl, getSessionToken()) || normalizedUrl;
     } catch {
       // try next candidate
@@ -11603,3 +11603,4 @@ export function stopStatusFileWriter() {
     _statusWriterTimer = null;
   }
 }
+

@@ -214,17 +214,13 @@ function extractRepoNameFromText(text) {
   if (/^[a-z0-9_.-]+\/[a-z0-9_.-]+$/i.test(raw)) {
     return raw.split("/").pop() || "";
   }
+  const trimSlashes = (value) => String(value || "").replace(/^\/+/, "").replace(/\/+$/, "");
   try {
     const parsed = new URL(raw);
-    const pathname = String(parsed.pathname || "")
-      .replace(/\.git$/i, "")
-      .replace(/^\/+|\/+$/g, "");
+    const pathname = trimSlashes(String(parsed.pathname || "").replace(/\.git$/i, ""));
     return pathname.split("/").pop() || "";
   } catch {
-    const cleaned = raw
-      .replace(/\\/g, "/")
-      .replace(/\.git$/i, "")
-      .replace(/^\/+|\/+$/g, "");
+    const cleaned = trimSlashes(raw.replace(/\\/g, "/").replace(/\.git$/i, ""));
     return cleaned.split("/").pop() || "";
   }
 }
@@ -233,9 +229,14 @@ function normalizeRepoSlug(text) {
   const raw = String(text || "").trim();
   if (!raw) return "";
   if (/^[a-z0-9_.-]+\/[a-z0-9_.-]+$/i.test(raw)) return raw;
-  const fromUrl = raw.match(/github\.com[:/]([a-z0-9_.-]+\/[a-z0-9_.-]+)(?:\.git)?/i);
-  if (fromUrl?.[1]) return fromUrl[1];
-  return "";
+  const markerIdx = raw.toLowerCase().indexOf("github.com");
+  if (markerIdx === -1) return "";
+  let tail = raw.slice(markerIdx + "github.com".length);
+  if (tail.startsWith(":") || tail.startsWith("/")) tail = tail.slice(1);
+  tail = tail.replace(/\.git$/i, "").replace(/^\/+/, "").replace(/\/+$/, "");
+  const parts = tail.split("/").filter(Boolean);
+  if (parts.length < 2) return "";
+  return `${parts[0]}/${parts[1]}`;
 }
 
 function normalizeRepoConfigEntry(repo, index = 0) {

@@ -901,6 +901,16 @@ export class AgentSupervisor {
     const progress = signals.sessionProgress;
     const analysis = signals.sessionAnalysis;
     const anomalies = signals.activeAnomalies || [];
+    const includesAny = (text, needles) => needles.some((needle) => text.includes(needle));
+    const includesOrdered = (text, parts) => {
+      let cursor = 0;
+      for (const part of parts) {
+        const idx = text.indexOf(part, cursor);
+        if (idx === -1) return false;
+        cursor = idx + part.length;
+      }
+      return true;
+    };
 
     // ── Agent completely dead ──
     if (
@@ -914,7 +924,13 @@ export class AgentSupervisor {
     // ── External errors (check first — these aren't the agent's fault) ──
     if (context.error || signals.error) {
       const errText = context.error || signals.error || "";
-      if (/429|rate.?limit|too many requests|quota exceeded/i.test(errText)) {
+      const errLower = String(errText).toLowerCase();
+      if (
+        errLower.includes("429") ||
+        includesOrdered(errLower, ["rate", "limit"]) ||
+        errLower.includes("too many requests") ||
+        errLower.includes("quota exceeded")
+      ) {
         // Check for flood
         if (signals.errorPatterns?.length >= 3) {
           const recent = signals.errorPatterns.slice(-5);
@@ -923,47 +939,83 @@ export class AgentSupervisor {
         }
         return SITUATION.RATE_LIMITED;
       }
-      if (/ECONNREFUSED|ETIMEDOUT|500|502|503|fetch failed/i.test(errText)) {
+      if (
+        includesAny(errLower, ["econnrefused", "etimedout", "fetch failed"]) ||
+        includesAny(errLower, [" 500", "500 ", "500internal", "500internalservererror"]) ||
+        includesAny(errLower, [" 502", "502 ", "502badgateway", "502bad gateway"]) ||
+        errLower.includes(" 503")
+      ) {
         return SITUATION.API_ERROR;
       }
-      if (/context.*(too long|exceeded|overflow)|max.*token/i.test(errText) ||
-          /context_length_exceeded|prompt_too_long|prompt.*too.*long/i.test(errText) ||
-          /This model's maximum context length/i.test(errText) ||
-          /token_budget.*exceeded|token.*budget/i.test(errText) ||
-          /turn_limit_reached|conversation.*too.*long/i.test(errText) ||
-          /string_above_max_length|maximum.*number.*tokens/i.test(errText)) {
+      if (
+        (errLower.includes("context") && includesAny(errLower, ["too long", "exceeded", "overflow"])) ||
+        includesOrdered(errLower, ["max", "token"]) ||
+        includesAny(errLower, ["context_length_exceeded", "prompt_too_long", "this model's maximum context length", "turn_limit_reached", "string_above_max_length"]) ||
+        includesOrdered(errLower, ["prompt", "too", "long"]) ||
+        includesOrdered(errLower, ["token_budget", "exceeded"]) ||
+        includesOrdered(errLower, ["token", "budget"]) ||
+        includesOrdered(errLower, ["conversation", "too", "long"]) ||
+        includesOrdered(errLower, ["maximum", "number", "tokens"])
+      ) {
         return SITUATION.TOKEN_OVERFLOW;
       }
-      if (/model.*not.*supported|model.*error|invalid.*model|model.*not.*found|model.*deprecated/i.test(errText)) {
+      if (
+        includesOrdered(errLower, ["model", "not", "supported"]) ||
+        includesOrdered(errLower, ["model", "error"]) ||
+        includesOrdered(errLower, ["invalid", "model"]) ||
+        includesOrdered(errLower, ["model", "not", "found"]) ||
+        includesOrdered(errLower, ["model", "deprecated"])
+      ) {
         return SITUATION.MODEL_ERROR;
       }
       // ── Auth failures — MUST come BEFORE session_expired (which has 'unauthorized')
-      if (/invalid.?api.?key|authentication_error|permission_error/i.test(errText) ||
-          /401 Unauthorized|403 Forbidden/i.test(errText) ||
-          /billing_hard_limit|insufficient_quota/i.test(errText) ||
-          /invalid.*credentials|access.?denied|not.?authorized/i.test(errText)) {
+      if (
+        includesAny(errLower, ["invalid api key", "invalid-api-key", "invalid_api_key", "authentication_error", "permission_error", "401 unauthorized", "403 forbidden", "billing_hard_limit", "insufficient_quota"]) ||
+        includesOrdered(errLower, ["invalid", "credentials"]) ||
+        includesOrdered(errLower, ["access", "denied"]) ||
+        includesOrdered(errLower, ["not", "authorized"])
+      ) {
         return SITUATION.AUTH_FAILURE;
       }
       // ── Session expired (after auth check since 'unauthorized' overlaps)
-      if (/session.*expired|thread.*not.*found/i.test(errText) ||
-          /invalid.*session|invalid.*token/i.test(errText)) {
+      if (
+        includesOrdered(errLower, ["session", "expired"]) ||
+        includesOrdered(errLower, ["thread", "not", "found"]) ||
+        includesOrdered(errLower, ["invalid", "session"]) ||
+        includesOrdered(errLower, ["invalid", "token"])
+      ) {
         return SITUATION.SESSION_EXPIRED;
       }
       // ── Content policy (safety filter)
-      if (/content_policy|content.?filter|safety_system|safety.*filter/i.test(errText) ||
-          /flagged.*content|output.*blocked|response.*blocked/i.test(errText)) {
+      if (
+        includesAny(errLower, ["content_policy", "content filter", "content-filter", "content_filter", "safety_system"]) ||
+        includesOrdered(errLower, ["safety", "filter"]) ||
+        includesOrdered(errLower, ["flagged", "content"]) ||
+        includesOrdered(errLower, ["output", "blocked"]) ||
+        includesOrdered(errLower, ["response", "blocked"])
+      ) {
         return SITUATION.CONTENT_POLICY;
       }
       // ── Codex sandbox/CLI errors
-      if (/sandbox.*fail|bwrap.*error|bubblewrap/i.test(errText) ||
-          /EPERM.*operation.*not.*permitted/i.test(errText) ||
-          /writable_roots|namespace.*error/i.test(errText) ||
-          /codex.*(segfault|killed|crash)/i.test(errText)) {
+      if (
+        includesOrdered(errLower, ["sandbox", "fail"]) ||
+        includesOrdered(errLower, ["bwrap", "error"]) ||
+        errLower.includes("bubblewrap") ||
+        includesOrdered(errLower, ["eperm", "operation", "not", "permitted"]) ||
+        errLower.includes("writable_roots") ||
+        includesOrdered(errLower, ["namespace", "error"]) ||
+        (errLower.includes("codex") && includesAny(errLower, ["segfault", "killed", "crash"]))
+      ) {
         return SITUATION.CODEX_SANDBOX;
       }
       // ── Invalid config (catch-all for config-related errors)
-      if (/config.*invalid|config.*missing|misconfigured/i.test(errText) ||
-          /OPENAI_API_KEY.*not.*set|ANTHROPIC_API_KEY.*not.*set/i.test(errText)) {
+      if (
+        includesOrdered(errLower, ["config", "invalid"]) ||
+        includesOrdered(errLower, ["config", "missing"]) ||
+        errLower.includes("misconfigured") ||
+        includesOrdered(errLower, ["openai_api_key", "not", "set"]) ||
+        includesOrdered(errLower, ["anthropic_api_key", "not", "set"])
+      ) {
         return SITUATION.INVALID_CONFIG;
       }
     }
@@ -1009,11 +1061,11 @@ export class AgentSupervisor {
     // ── Build/test/lint failures from context ──
     if (context.error) {
       const err = context.error.toLowerCase();
-      if (/pre-push hook.*fail/i.test(err)) return SITUATION.PRE_PUSH_FAILURE;
-      if (/git push.*fail|rejected.*push/i.test(err)) return SITUATION.PUSH_FAILURE;
-      if (/go build.*fail|compilation error|cannot find/i.test(err)) return SITUATION.BUILD_FAILURE;
-      if (/FAIL\s+\S+|test.*fail/i.test(err)) return SITUATION.TEST_FAILURE;
-      if (/golangci-lint|lint.*error/i.test(err)) return SITUATION.LINT_FAILURE;
+      if (includesOrdered(err, ["pre-push hook", "fail"])) return SITUATION.PRE_PUSH_FAILURE;
+      if (includesOrdered(err, ["git push", "fail"]) || includesOrdered(err, ["rejected", "push"])) return SITUATION.PUSH_FAILURE;
+      if (includesOrdered(err, ["go build", "fail"]) || err.includes("compilation error") || err.includes("cannot find")) return SITUATION.BUILD_FAILURE;
+      if ((err.includes("fail") && err.includes("test")) || err.includes("fail ")) return SITUATION.TEST_FAILURE;
+      if (err.includes("golangci-lint") || includesOrdered(err, ["lint", "error"])) return SITUATION.LINT_FAILURE;
       if (/merge conflict|CONFLICT/i.test(err)) return SITUATION.GIT_CONFLICT;
     }
 
@@ -1234,3 +1286,4 @@ export class AgentSupervisor {
 export function createAgentSupervisor(opts) {
   return new AgentSupervisor(opts);
 }
+

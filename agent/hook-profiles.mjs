@@ -187,7 +187,7 @@ function normalizeOverrideCommands(rawValue) {
     return [];
   }
   const commands = raw
-    .split(/\s*;;\s*|\r?\n/)
+    .split(/\r?\n/).flatMap((part) => part.split(";;"))
     .map((part) => part.trim())
     .filter(Boolean);
   return commands;

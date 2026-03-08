@@ -122,7 +122,9 @@ export class VkLogStream {
    * @param {(processId: string, meta: {sessionId?: string}) => void} [opts.onProcessConnected] - Callback when new process discovered
    */
   constructor(vkEndpointUrl, opts = {}) {
-    this.#baseUrl = vkEndpointUrl.replace(/\/+$/, "");
+    let normalizedBase = String(vkEndpointUrl || "");
+    while (normalizedBase.endsWith("/")) normalizedBase = normalizedBase.slice(0, -1);
+    this.#baseUrl = normalizedBase;
     this.#wsBaseUrl = this.#baseUrl
       .replace(/^http:/, "ws:")
       .replace(/^https:/, "wss:");
@@ -912,3 +914,4 @@ export class VkLogStream {
 }
 
 export default VkLogStream;
+
