@@ -124,3 +124,27 @@ ode cli.mjs --daemon-status => running.
   - Local task stats remain: draft 36 / todo 27 / inprogress 9 / inreview 6 / done 2 / blocked 0.
   - No open GitHub issues titled New task.
 - Outcome: issue source identified and corrected; planner now reads internal backlog consistently, and issue-spam path is contained by both config and code guards.
+
+## 2026-03-08T23:45:39+11:00
+- Context: User reported Telegram live digest uncaught exception: pollWorkflowSchedulesOnce is not defined around 23:13/23:15 local.
+- Root cause:
+  - pollWorkflowSchedulesOnce was declared inside an earlier if (!isMonitorTestRuntime) block in infra/monitor.mjs.
+  - Startup calls in a later block (oid pollWorkflowSchedulesOnce("startup", ...)) executed out of scope, triggering ReferenceError and recovery loops.
+- Fix:
+  - Hoisted schedule-poll helper to shared module scope via placeholder + assignment form.
+  - Added regression guard in 	ests/monitor-workflow-startup-guards.test.mjs ensuring helper is defined before startup invocations.
+  - Commit: 5b92f65 on monitor/bosun-env-stability.
+- Validation:
+  - Targeted: 
+pm test -- tests/monitor-workflow-startup-guards.test.mjs tests/workflow-engine.test.mjs (pass).
+  - Full gates: 
+pm run build (pass), 
+pm run prepush:check (pass, includes full 
+pm test).
+  - PR: #173 merged to main at 2026-03-08T12:42:22Z (merge commit 8f2bee69e651b3d3390dde15fc514a8cfe11e89).
+- Runtime post-merge:
+  - Restarted source daemon from repo (
+ode cli.mjs --daemon --config-dir .bosun --repo-root ...).
+  - Daemon healthy, schedule runs advancing, and no new pollWorkflowSchedulesOnce is not defined entries in .bosun/logs/monitor-error.log after restart window.
+- Note:
+  - Unexpected unstaged local changes appeared in package.json and package-lock.json during this run (not authored by this fix). Left untouched pending user direction.

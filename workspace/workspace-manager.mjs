@@ -403,6 +403,16 @@ export function listWorkspaces(configDir, opts = {}) {
       const standardExists = existsSync(standardPath);
       let effectivePath = standardPath;
       let exists = standardExists;
+      const repoUrlRaw = String(repo.url || "").trim();
+      const looksLikeRemoteUrl =
+        /^https?:\/\//i.test(repoUrlRaw) ||
+        /^git@[^:]+:/i.test(repoUrlRaw) ||
+        /^ssh:\/\//i.test(repoUrlRaw);
+      const repoUrlPath = repoUrlRaw && !looksLikeRemoteUrl ? resolve(repoUrlRaw) : null;
+      if (!standardExists && repoUrlPath && existsSync(repoUrlPath)) {
+        effectivePath = repoUrlPath;
+        exists = true;
+      }
       if (!standardExists && repoRootOverride) {
         const altPath = resolve(repoRootOverride, repo.name);
         if (existsSync(altPath)) {
@@ -1000,3 +1010,4 @@ export function initializeWorkspaces(configDir, opts = {}) {
 
   return { workspaces: [], isNew: true };
 }
+
