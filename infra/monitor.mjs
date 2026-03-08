@@ -13518,7 +13518,7 @@ safeSetInterval("flush-error-queue", () => flushErrorQueue(), 60 * 1000);
 // This keeps scheduled and task-poll lifecycle templates executing without hardcoded
 // per-workflow timers.
 const scheduleCheckIntervalMs = 60 * 1000; // check every 60s
-safeSetInterval("workflow-schedule-check", async () => {
+async function pollWorkflowSchedulesOnce(triggerSource = "schedule-poll") {
   try {
     const engine = await ensureWorkflowAutomationEngine();
     if (!engine?.evaluateScheduleTriggers) return;
@@ -13531,7 +13531,7 @@ safeSetInterval("workflow-schedule-check", async () => {
       if (!workflowId) continue;
       void engine
         .execute(workflowId, {
-          _triggerSource: "schedule-poll",
+          _triggerSource: triggerSource,
           _triggeredBy: match?.triggeredBy || null,
           _lastRunAt: Date.now(),
           repoRoot,
@@ -13559,9 +13559,12 @@ safeSetInterval("workflow-schedule-check", async () => {
       );
     }
   } catch (err) {
-    // Schedule evaluation must not crash the monitor
     console.warn(`[workflows] schedule-check error: ${err?.message || err}`);
   }
+}
+
+safeSetInterval("workflow-schedule-check", async () => {
+  await pollWorkflowSchedulesOnce();
 }, scheduleCheckIntervalMs);
 
 // Legacy merged PR check removed (workflow-only control).
@@ -14070,6 +14073,11 @@ if (isExecutorDisabled()) {
     };
     internalTaskExecutor = getTaskExecutor(execOpts);
     internalTaskExecutor.start();
+    if (workflowOwnsTaskExecutorLifecycle) {
+      void pollWorkflowSchedulesOnce("startup").catch((err) => {
+        console.warn(`[workflows] startup poll error: ${err?.message || err}`);
+      });
+    }
 
     // Write executor slots to status file every 30s for Telegram /tasks
     startStatusFileWriter(30000);
@@ -14634,5 +14642,4 @@ export {
   // Workflow event bridge — for fleet/kanban modules to emit events
   queueWorkflowEvent,
 };
-
 
