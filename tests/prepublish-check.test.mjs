@@ -46,6 +46,26 @@ describe("prepublish-check", () => {
     ]);
   });
 
+  it("falls back to regex parsing for JSX-bearing modules", async () => {
+    const source = [
+      'import React from "react";',
+      'import wsBridge from "./lib/ws-bridge.mjs";',
+      'import StatusHeader from "./components/status-header.mjs";',
+      'export { helper } from "../shared/helper.mjs";',
+      'const lazy = await import("../screens/tasks.mjs");',
+      'export default function App() {',
+      '  return (<Box><Text>Hello</Text></Box>);',
+      '}',
+    ].join("\n");
+
+    await expect(findLocalImportSpecifiers(source)).resolves.toEqual([
+      "./lib/ws-bridge.mjs",
+      "./components/status-header.mjs",
+      "../shared/helper.mjs",
+      "../screens/tasks.mjs",
+    ]);
+  });
+
   it("expands directory entries from the published files manifest", () => {
     const root = createFixture({
       "package.json": JSON.stringify({ name: "fixture", version: "1.0.0", files: ["infra"] }),

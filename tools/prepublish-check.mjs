@@ -15,6 +15,11 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 import { init, parse } from "es-module-lexer";
 
 const SOURCE_EXTENSIONS = new Set([".mjs", ".cjs", ".js"]);
+const FALLBACK_IMPORT_PATTERNS = [
+  /(?:^|\n)\s*import\s+(?:[\s\S]*?\s+from\s+)?["'](\.{1,2}\/[^"']+)["']/gm,
+  /(?:^|\n)\s*export\s+[\s\S]*?\s+from\s+["'](\.{1,2}\/[^"']+)["']/gm,
+  /\bimport\s*\(\s*["'](\.{1,2}\/[^"']+)["']\s*\)/gm,
+];
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const ROOT = resolve(__dirname, "..");
@@ -59,14 +64,33 @@ export function expandPublishedFiles(rootDir, filesArray = []) {
 
 export async function findLocalImportSpecifiers(source) {
   await init;
-  const [imports] = parse(source);
-  return imports
-    .map((entry) => entry.n)
-    .filter(
-      (specifier) =>
-        typeof specifier === "string" &&
-        (specifier.startsWith("./") || specifier.startsWith("../")),
-    );
+  try {
+    const [imports] = parse(source);
+    return imports
+      .map((entry) => entry.n)
+      .filter(
+        (specifier) =>
+          typeof specifier === "string" &&
+          (specifier.startsWith("./") || specifier.startsWith("../")),
+      );
+  } catch {
+    const matches = [];
+    for (const pattern of FALLBACK_IMPORT_PATTERNS) {
+      for (const match of source.matchAll(pattern)) {
+        matches.push({ index: match.index ?? 0, specifier: match[1] });
+      }
+    }
+
+    matches.sort((a, b) => a.index - b.index);
+    const seen = new Set();
+    const specifiers = [];
+    for (const { specifier } of matches) {
+      if (!specifier || seen.has(specifier)) continue;
+      seen.add(specifier);
+      specifiers.push(specifier);
+    }
+    return specifiers;
+  }
 }
 
 export async function validatePublishedLocalImports({ rootDir, pkg }) {
