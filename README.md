@@ -183,8 +183,15 @@ npm run hooks:install
 
 If you find this project useful or would like to stay up to date with new releases, a star is appreciated!
 
-[![Star History Chart](https://api.star-history.com/image?repos=VirtEngine/Bosun&type=date&legend=top-left)](https://www.star-history.com/?repos=VirtEngine%2FBosun&type=date&legend=top-left)
+## Star History
 
+<a href="https://www.star-history.com/?repos=VirtEngine%2FBosun&type=date&legend=top-left">
+ <picture>
+   <source media="(prefers-color-scheme: dark)" srcset="https://api.star-history.com/image?repos=VirtEngine/Bosun&type=date&theme=dark&legend=top-left" />
+   <source media="(prefers-color-scheme: light)" srcset="https://api.star-history.com/image?repos=VirtEngine/Bosun&type=date&legend=top-left" />
+   <img alt="Star History Chart" src="https://api.star-history.com/image?repos=VirtEngine/Bosun&type=date&legend=top-left" />
+ </picture>
+</a>
 ---
 
 ## License
