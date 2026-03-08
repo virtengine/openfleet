@@ -181,6 +181,10 @@ npm run hooks:install
 - `docs/` and `_docs/` — product docs, deep technical references, and long-form source material
 - `tools/` and `tests/` — build utilities, release checks, and regression coverage
 
+If you find this project useful or would like to stay up to date with new releases, a star is appreciated!
+
+[![Star History Chart](https://api.star-history.com/image?repos=VirtEngine/Bosun&type=date&legend=top-left)](https://www.star-history.com/?repos=VirtEngine%2FBosun&type=date&legend=top-left)
+
 ---
 
 ## License
