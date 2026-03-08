@@ -970,7 +970,7 @@ function App() {
   const [contextShreddingLiveToolCompactionMinSavingsPct, setContextShreddingLiveToolCompactionMinSavingsPct] = useState(15);
   const [contextShreddingLiveToolCompactionMinRuntimeMs, setContextShreddingLiveToolCompactionMinRuntimeMs] = useState(2000);
   const [contextShreddingLiveToolCompactionBlockStructuredOutput, setContextShreddingLiveToolCompactionBlockStructuredOutput] = useState(true);
-  const [contextShreddingLiveToolCompactionAllowCommands, setContextShreddingLiveToolCompactionAllowCommands] = useState("grep,rg,find,git,go,npm,pnpm,yarn,node,python,python3,pytest,docker,kubectl,cargo,gradle,maven,mvn,javac,tsc,jest,vitest,deno");
+  const [contextShreddingLiveToolCompactionAllowCommands, setContextShreddingLiveToolCompactionAllowCommands] = useState("grep,rg,find,findstr,select-string,ag,ack,sift,fd,where,which,ls,dir,tree,git,go,npm,pnpm,yarn,npx,bun,node,python,python3,pytest,pip,pip3,poetry,docker,kubectl,helm,terraform,ansible,ansible-playbook,journalctl,tail,get-content,cargo,gradle,maven,mvn,javac,tsc,jest,vitest,deno,make,cmake,bazel,buck,nx,turbo,rush,composer,bundle");
   const [contextShreddingProfiles, setContextShreddingProfiles] = useState("");
   const CURRENT_WORKFLOW_PROFILE_ID = "current-installed";
   // Kanban

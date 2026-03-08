@@ -811,7 +811,7 @@ export const CONTEXT_SHREDDING_ENV_DEFS = [
     key: "CONTEXT_SHREDDING_LIVE_TOOL_COMPACTION_ALLOW_COMMANDS",
     label: "Live Compaction Allowlist",
     type: "text",
-    default: "grep,rg,find,git,go,npm,pnpm,yarn,node,python,python3,pytest,docker,kubectl,cargo,gradle,maven,mvn,javac,tsc,jest,vitest,deno",
+    default: "grep,rg,find,findstr,select-string,ag,ack,sift,fd,where,which,ls,dir,tree,git,go,npm,pnpm,yarn,npx,bun,node,python,python3,pytest,pip,pip3,poetry,docker,kubectl,helm,terraform,ansible,ansible-playbook,journalctl,tail,get-content,cargo,gradle,maven,mvn,javac,tsc,jest,vitest,deno,make,cmake,bazel,buck,nx,turbo,rush,composer,bundle",
     description: "Comma-separated command or tool families eligible for live compaction. Commands outside the allowlist pass through untouched.",
     advanced: true,
   },

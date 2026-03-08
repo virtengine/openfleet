@@ -455,6 +455,8 @@ const LIVE_SUMMARY_REGEX = /\b(summary|total|totals|passed|failed|skipped|collec
 const LIVE_STATUS_REGEX = /^(ok|FAIL|PASS|ERROR|warning|fatal|M\s|A\s|D\s|R\s|\?\?|@@|diff --git|--- |\+\+\+ )/;
 const LIVE_STRUCTURED_FLAG_REGEX = /(^|\s)(--json|--format(?:=|\s+)json|-json\b|-o(?:=|\s+)json|--output(?:=|\s+)json|{{json\s+\.}})/i;
 const LIVE_FILE_REF_REGEX = /((?:[A-Za-z]:)?[.~/\\\w-]+(?:[\\/][^:\s]+)+(?::\d+(?::\d+)?)?)/;
+const LIVE_SHELL_WRAPPERS = new Set(["bash", "sh", "zsh", "pwsh", "powershell", "cmd"]);
+const LIVE_ENV_WRAPPERS = new Set(["env", "command", "time", "nohup"]);
 
 function extractCommandLine(item) {
   if (!item || typeof item !== "object") return "";
@@ -480,11 +482,58 @@ function normalizeCommandToken(token) {
     .toLowerCase();
 }
 
+function tokenizeCommandLine(commandLine) {
+  return String(commandLine || "").match(/(?:"[^"]*"|'[^']*'|\S+)/g) || [];
+}
+
+function extractNestedCommandToken(token) {
+  const inner = String(token || "").trim().replace(/^['"]|['"]$/g, "");
+  if (!inner) return "";
+  const innerTokens = tokenizeCommandLine(inner);
+  return normalizeCommandToken(innerTokens[0]);
+}
+
+function resolveCommandLeadToken(tokens) {
+  if (!Array.isArray(tokens) || tokens.length === 0) return "";
+  let index = 0;
+  while (index < tokens.length) {
+    const current = normalizeCommandToken(tokens[index]);
+    if (!current) {
+      index += 1;
+      continue;
+    }
+    if (/^[A-Za-z_][A-Za-z0-9_]*=/.test(String(tokens[index] || ""))) {
+      index += 1;
+      continue;
+    }
+    if (LIVE_ENV_WRAPPERS.has(current)) {
+      index += 1;
+      continue;
+    }
+    if (LIVE_SHELL_WRAPPERS.has(current)) {
+      for (let inner = index + 1; inner < tokens.length; inner += 1) {
+        const raw = String(tokens[inner] || "").trim();
+        const normalized = normalizeCommandToken(raw);
+        if (!raw) continue;
+        if (["-c", "-lc", "/c", "-command", "-encodedcommand", "-nop", "-noprofile", "-noninteractive", "-login", "-i"].includes(normalized)) {
+          continue;
+        }
+        if (raw.startsWith("-")) continue;
+        const nested = extractNestedCommandToken(raw);
+        if (nested && !LIVE_SHELL_WRAPPERS.has(nested)) return nested;
+      }
+      return current;
+    }
+    return current;
+  }
+  return "";
+}
+
 function extractCommandFamily(item) {
   const commandLine = extractCommandLine(item);
-  const tokens = commandLine.match(/(?:"[^"]+"|'[^']+'|\S+)/g) || [];
-  const first = normalizeCommandToken(tokens[0]);
-  if (first && !["bash", "sh", "zsh", "pwsh", "powershell", "cmd"].includes(first)) {
+  const tokens = tokenizeCommandLine(commandLine);
+  const first = resolveCommandLeadToken(tokens);
+  if (first && !LIVE_SHELL_WRAPPERS.has(first)) {
     return first;
   }
   const toolName = normalizeCommandToken(extractToolName(item));
@@ -523,12 +572,14 @@ function isLikelyStructuredOutput(text, item) {
 function classifyLiveFamily(commandFamily, item) {
   const cmd = String(commandFamily || "");
   const full = `${cmd} ${extractCommandLine(item)}`.toLowerCase();
-  if (["grep", "rg", "find"].includes(cmd) || /git\s+grep\b/.test(full)) return "search";
+  if (["grep", "rg", "find", "findstr", "select-string", "ag", "ack", "sift", "fd", "where", "which", "ls", "dir", "tree", "gci", "get-childitem"].includes(cmd) || /git\s+grep\b/.test(full)) return "search";
   if (cmd === "git") return "git";
-  if (["go", "pytest", "cargo", "gradle", "maven", "mvn", "javac", "tsc", "jest", "vitest", "deno"].includes(cmd)) return "build";
-  if (["npm", "pnpm", "yarn", "node", "python", "python3"].includes(cmd)) return /test|build|install|lint|run/.test(full) ? "build" : "generic";
-  if (["docker", "kubectl"].includes(cmd) && /logs?\b/.test(full)) return "logs";
-  if (["docker", "kubectl"].includes(cmd)) return "ops";
+  if (["go", "pytest", "cargo", "gradle", "maven", "mvn", "javac", "tsc", "jest", "vitest", "deno", "bun", "make", "cmake", "bazel", "buck", "nx", "turbo", "rush"].includes(cmd)) return "build";
+  if (["npm", "pnpm", "yarn", "node", "python", "python3", "pip", "pip3", "poetry", "composer", "bundle", "npx"].includes(cmd)) {
+    return /test|build|install|lint|run|pytest|jest|vitest|mocha|ava|unittest|coverage|compile/.test(full) ? "build" : "generic";
+  }
+  if (["docker", "kubectl", "journalctl", "tail", "get-content"].includes(cmd) && /logs?\b|tail\b|follow\b|-f\b/.test(full)) return "logs";
+  if (["docker", "kubectl", "helm", "terraform", "ansible", "ansible-playbook", "systemctl"].includes(cmd)) return "ops";
   return "generic";
 }
 

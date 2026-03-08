@@ -465,7 +465,7 @@ function buildStableSetupDefaults({
     contextShreddingLiveToolCompactionMinSavingsPct: 15,
     contextShreddingLiveToolCompactionMinRuntimeMs: 2000,
     contextShreddingLiveToolCompactionBlockStructuredOutput: true,
-    contextShreddingLiveToolCompactionAllowCommands: "grep,rg,find,git,go,npm,pnpm,yarn,node,python,python3,pytest,docker,kubectl,cargo,gradle,maven,mvn,javac,tsc,jest,vitest,deno",
+    contextShreddingLiveToolCompactionAllowCommands: "grep,rg,find,findstr,select-string,ag,ack,sift,fd,where,which,ls,dir,tree,git,go,npm,pnpm,yarn,npx,bun,node,python,python3,pytest,pip,pip3,poetry,docker,kubectl,helm,terraform,ansible,ansible-playbook,journalctl,tail,get-content,cargo,gradle,maven,mvn,javac,tsc,jest,vitest,deno,make,cmake,bazel,buck,nx,turbo,rush,composer,bundle",
     contextShreddingProfiles: "",
     voiceEnabled: true,
     voiceProvider: "auto",
@@ -1101,7 +1101,7 @@ function applyNonBlockingSetupEnvDefaults(envMap, env = {}, sourceEnv = process.
     ?? env.CONTEXT_SHREDDING_LIVE_TOOL_COMPACTION_ALLOW_COMMANDS
     ?? envMap.CONTEXT_SHREDDING_LIVE_TOOL_COMPACTION_ALLOW_COMMANDS
     ?? sourceEnv.CONTEXT_SHREDDING_LIVE_TOOL_COMPACTION_ALLOW_COMMANDS
-    ?? "grep,rg,find,git,go,npm,pnpm,yarn,node,python,python3,pytest,docker,kubectl,cargo,gradle,maven,mvn,javac,tsc,jest,vitest,deno";
+    ?? "grep,rg,find,findstr,select-string,ag,ack,sift,fd,where,which,ls,dir,tree,git,go,npm,pnpm,yarn,npx,bun,node,python,python3,pytest,pip,pip3,poetry,docker,kubectl,helm,terraform,ansible,ansible-playbook,journalctl,tail,get-content,cargo,gradle,maven,mvn,javac,tsc,jest,vitest,deno,make,cmake,bazel,buck,nx,turbo,rush,composer,bundle";
   envMap.CONTEXT_SHREDDING_LIVE_TOOL_COMPACTION_ALLOW_COMMANDS = String(liveToolCompactionAllowCommands).trim();
   const contextShreddingProfiles =
     env.contextShreddingProfiles
