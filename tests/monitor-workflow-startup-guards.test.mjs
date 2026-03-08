@@ -31,7 +31,13 @@ describe("monitor workflow startup guards", () => {
   });
 
   it("kicks schedule-driven workflow polling immediately when workflow lifecycle owns dispatch", () => {
-    expect(monitorSource).toContain('async function pollWorkflowSchedulesOnce(triggerSource = "schedule-poll", opts = {})');
+    expect(monitorSource).toContain("let pollWorkflowSchedulesOnce = async () => {};");
+    expect(
+      monitorSource.indexOf("let pollWorkflowSchedulesOnce = async () => {}"),
+    ).toBeLessThan(
+      monitorSource.indexOf('void pollWorkflowSchedulesOnce("startup", { includeTaskPoll: false }).catch((err) => {'),
+    );
+    expect(monitorSource).toContain('pollWorkflowSchedulesOnce = async function pollWorkflowSchedulesOnce(');
     expect(monitorSource).toContain('const includeTaskPoll = opts?.includeTaskPoll !== false;');
     expect(monitorSource).toContain('if (triggerNode?.type === "trigger.task_available" || triggerNode?.type === "trigger.task_low") {');
     expect(monitorSource).toContain('void pollWorkflowSchedulesOnce("startup", { includeTaskPoll: false }).catch((err) => {');
