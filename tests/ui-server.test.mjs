@@ -2450,4 +2450,86 @@ describe("ui-server mini app", () => {
     }
   });
 
+  it("reports live compaction telemetry breakdowns", async () => {
+    const logDir = join(process.cwd(), ".cache", "agent-work-logs");
+    mkdirSync(logDir, { recursive: true });
+    const shreddingPath = join(logDir, "shredding-stats.jsonl");
+    const previousStats = existsSync(shreddingPath)
+      ? readFileSync(shreddingPath, "utf8")
+      : null;
+    const now = new Date();
+    const entries = [
+      {
+        timestamp: new Date(now.getTime() - 60_000).toISOString(),
+        originalChars: 9000,
+        compressedChars: 2200,
+        savedChars: 6800,
+        savedPct: 76,
+        agentType: "codex-sdk",
+        attemptId: "attempt-live-search",
+        stage: "live_tool_compaction",
+        compactionFamily: "search",
+        commandFamily: "rg",
+      },
+      {
+        timestamp: new Date(now.getTime() - 30_000).toISOString(),
+        originalChars: 5000,
+        compressedChars: 1800,
+        savedChars: 3200,
+        savedPct: 64,
+        agentType: "copilot-sdk",
+        attemptId: "attempt-live-git",
+        stage: "live_tool_compaction",
+        compactionFamily: "git",
+        commandFamily: "git",
+      },
+      {
+        timestamp: now.toISOString(),
+        originalChars: 14000,
+        compressedChars: 6000,
+        savedChars: 8000,
+        savedPct: 57,
+        agentType: "claude-sdk",
+        attemptId: "attempt-session-total",
+        stage: "session_total",
+      },
+    ];
+    writeFileSync(
+      shreddingPath,
+      `${entries.map((entry) => JSON.stringify(entry)).join("\n")}\n`,
+      "utf8",
+    );
+
+    const mod = await import("../server/ui-server.mjs");
+    const server = await mod.startTelegramUiServer({
+      port: await getFreePort(),
+      host: "127.0.0.1",
+      skipInstanceLock: true,
+      skipAutoOpen: true,
+    });
+    const port = server.address().port;
+
+    try {
+      const response = await fetch(`http://127.0.0.1:${port}/api/telemetry/shredding?days=30`);
+      const payload = await response.json();
+      expect(payload.ok).toBe(true);
+      expect(payload.data.stageCounts).toMatchObject({
+        live_tool_compaction: 2,
+        session_total: 1,
+      });
+      expect(payload.data.liveCompaction).toMatchObject({
+        totalEvents: 2,
+        totalSavedChars: 10000,
+        avgSavedPct: 71,
+      });
+      expect(payload.data.topCompactionFamilies.some((entry) => entry.name === "search" && entry.count === 1)).toBe(true);
+      expect(payload.data.topCommandFamilies.some((entry) => entry.name === "git" && entry.count === 1)).toBe(true);
+      expect(payload.data.recentEvents[0]).toHaveProperty("stage");
+      expect(payload.data.recentEvents.some((entry) => entry.compactionFamily === "search")).toBe(true);
+    } finally {
+      if (previousStats == null) rmSync(shreddingPath, { force: true });
+      else writeFileSync(shreddingPath, previousStats, "utf8");
+    }
+  });
+
 });

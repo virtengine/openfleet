@@ -87,6 +87,48 @@ function resolveCopilotTransport() {
   return "auto";
 }
 
+export function resolveCopilotCliLaunchConfig({
+  env = process.env,
+  repoRoot = REPO_ROOT,
+  cliArgs = [],
+  fileExists = existsSync,
+  execPath = process.execPath,
+} = {}) {
+  const explicitCliPath =
+    String(env.COPILOT_CLI_PATH || env.GITHUB_COPILOT_CLI_PATH || "").trim() ||
+    undefined;
+  const normalizedCliArgs = Array.isArray(cliArgs) ? [...cliArgs] : [];
+
+  if (explicitCliPath) {
+    return {
+      cliPath: explicitCliPath,
+      cliArgs: normalizedCliArgs,
+      source: "env",
+    };
+  }
+
+  const bundledLoaderPath = resolve(
+    repoRoot,
+    "node_modules",
+    "@github",
+    "copilot",
+    "npm-loader.js",
+  );
+  if (fileExists(bundledLoaderPath)) {
+    return {
+      cliPath: execPath,
+      cliArgs: [bundledLoaderPath, ...normalizedCliArgs],
+      source: "bundled",
+    };
+  }
+
+  return {
+    cliPath: undefined,
+    cliArgs: normalizedCliArgs,
+    source: "path",
+  };
+}
+
 function normalizeProfileKey(name) {
   return String(name || "")
     .trim()
@@ -490,11 +532,14 @@ async function ensureClientStarted() {
   const Cls = await loadCopilotSdk();
   if (!Cls) return false;
 
+  // Build cliArgs for experimental features, permissions, and autonomy
+  const cliLaunch = resolveCopilotCliLaunchConfig({
+    cliArgs: await buildCliArgs(),
+  });
+  const cliPath = cliLaunch.cliPath;
+  const cliArgs = cliLaunch.cliArgs;
+
   // Auth passthrough: detect from multiple sources
-  const cliPath =
-    process.env.COPILOT_CLI_PATH ||
-    process.env.GITHUB_COPILOT_CLI_PATH ||
-    undefined;
   const cliUrl = process.env.COPILOT_CLI_URL || undefined;
   const token = await detectGitHubToken();
   const transport = resolveCopilotTransport();
@@ -502,9 +547,6 @@ async function ensureClientStarted() {
   // Session mode: "local" (default) uses stdio for full model access + MCP + sub-agents.
   // "auto" lets the SDK decide. "url" connects to remote server (potentially limited).
   const sessionMode = (process.env.COPILOT_SESSION_MODE || "local").trim().toLowerCase();
-
-  // Build cliArgs for experimental features, permissions, and autonomy
-  const cliArgs = await buildCliArgs();
 
   let clientOptions;
   if (transport === "url") {
@@ -538,7 +580,13 @@ async function ensureClientStarted() {
   }
 
   const modeLabel = clientOptions.cliUrl ? "remote" : "local (stdio)";
+  const cliLabel = cliPath || "copilot (PATH)";
   console.log(`[copilot-shell] starting client in ${modeLabel} mode`);
+  if (!clientOptions.cliUrl) {
+    console.log(
+      `[copilot-shell] using ${cliLaunch.source} Copilot CLI: ${cliLabel}`,
+    );
+  }
 
   const START_TIMEOUT_MS =
     Number(process.env.COPILOT_START_TIMEOUT_MS) || 20_000;

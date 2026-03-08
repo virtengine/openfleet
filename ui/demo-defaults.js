@@ -79,7 +79,7 @@
           "type": "action.run_command",
           "label": "Fetch, Classify & Label PRs",
           "config": {
-            "command": "node -e \" const fs=require('fs'); const path=require('path'); const {execFileSync}=require('child_process'); const LABEL_FIX='{{labelNeedsFix}}'; const MAX_PRS=Math.max(1,Number('{{maxPrs}}')||25); const REPO_SCOPE=String('{{repoScope}}'||'auto').trim(); const FIELDS='number,title,headRefName,baseRefName,isDraft,mergeable,statusCheckRollup,labels,url'; const FAIL_STATES=new Set(['FAILURE','ERROR','TIMED_OUT','CANCELLED','STARTUP_FAILURE']); const PEND_STATES=new Set(['PENDING','IN_PROGRESS','QUEUED','WAITING','REQUESTED','EXPECTED']); const CONFLICT_MERGEABLES=new Set(['CONFLICTING','BEHIND','DIRTY']); function ghJson(args){const out=execFileSync('gh',args,{encoding:'utf8',stdio:['pipe','pipe','pipe']}).trim();return out?JSON.parse(out):[];} function configPath(){   const home=String(process.env.BOSUN_HOME||process.env.VK_PROJECT_DIR||'').trim();   return home?path.join(home,'bosun.config.json'):path.join(process.cwd(),'bosun.config.json'); } function collectReposFromConfig(){   const repos=[];   try{     const cfg=JSON.parse(fs.readFileSync(configPath(),'utf8'));     const workspaces=Array.isArray(cfg?.workspaces)?cfg.workspaces:[];     if(workspaces.length>0){       const active=String(cfg?.activeWorkspace||'').trim().toLowerCase();       const activeWs=active?workspaces.find(w=>String(w?.id||'').trim().toLowerCase()===active):null;       const wsList=activeWs?[activeWs]:workspaces;       for(const ws of wsList){         for(const repo of (Array.isArray(ws?.repos)?ws.repos:[])){           const slug=typeof repo==='string'?String(repo).trim():String(repo?.slug||'').trim();           if(slug) repos.push(slug);         }       }     }     if(repos.length===0){       for(const repo of (Array.isArray(cfg?.repos)?cfg.repos:[])){         const slug=typeof repo==='string'?String(repo).trim():String(repo?.slug||'').trim();         if(slug) repos.push(slug);       }     }   }catch{}   return repos; } function resolveRepoTargets(){   if(REPO_SCOPE&&REPO_SCOPE!=='auto'&&REPO_SCOPE!=='all'&&REPO_SCOPE!=='current'){     return [...new Set(REPO_SCOPE.split(',').map(v=>v.trim()).filter(Boolean))];   }   if(REPO_SCOPE==='current') return [''];   const fromConfig=collectReposFromConfig();   if(fromConfig.length>0) return [...new Set(fromConfig)];   const envRepo=String(process.env.GITHUB_REPOSITORY||'').trim();   if(envRepo) return [envRepo];   return ['']; } function parseRepoFromUrl(url){   const raw=String(url||'');   const marker='github.com/';   const idx=raw.toLowerCase().indexOf(marker);   if(idx<0) return '';   const tail=raw.slice(idx+marker.length).split('/');   if(tail.length<2) return '';   const owner=String(tail[0]||'').trim();   const repo=String(tail[1]||'').trim();   return owner&&repo?(owner+'/'+repo):''; } const repoTargets=resolveRepoTargets(); const prs=[]; const repoErrors=[]; for(const target of repoTargets){   const repo=String(target||'').trim();   const args=['pr','list','--label','bosun-attached','--state','open','--json',FIELDS,'--limit',String(MAX_PRS)];   if(repo) args.push('--repo',repo);   try{     const list=ghJson(args);     for(const pr of (Array.isArray(list)?list:[])){       const prRepo=repo||parseRepoFromUrl(pr?.url)||String(process.env.GITHUB_REPOSITORY||'').trim();       prs.push({...pr,__repo:prRepo});     }   }catch(e){     repoErrors.push({repo:repo||'current',error:String(e?.message||e)});   } } const readyCandidates=[],conflicts=[],ciFailures=[],pending=[],drafted=[]; let newlyLabeled=0; for(const pr of prs){   const labels=(pr.labels||[]).map(l=>typeof l==='string'?l:l?.name).filter(Boolean);   const hasFixLabel=labels.includes(LABEL_FIX);   const checks=pr.statusCheckRollup||[];   const hasFail=checks.some(c=>FAIL_STATES.has(c.conclusion||c.state||''));   const hasPend=checks.some(c=>PEND_STATES.has(c.conclusion||c.state||''));   const isConflict=CONFLICT_MERGEABLES.has(String(pr.mergeable||'').toUpperCase());   const isDraft=pr.isDraft===true;   const repo=String(pr.__repo||'').trim();   if(isDraft){drafted.push({n:pr.number,repo});continue;}   if(isConflict){     conflicts.push({n:pr.number,repo,branch:pr.headRefName,base:pr.baseRefName,url:pr.url});     if(!hasFixLabel){       try{const editArgs=['pr','edit',String(pr.number),'--add-label',LABEL_FIX];if(repo)editArgs.push('--repo',repo);execFileSync('gh',editArgs,{encoding:'utf8',stdio:['pipe','pipe','pipe']});newlyLabeled++;}       catch(e){process.stderr.write('label err '+(repo?repo+' ':'')+'#'+pr.number+': '+(e?.message||e)+'\\\\n');}     }   } else if(hasFail){     ciFailures.push({n:pr.number,repo,branch:pr.headRefName,url:pr.url});     if(!hasFixLabel){       try{const editArgs=['pr','edit',String(pr.number),'--add-label',LABEL_FIX];if(repo)editArgs.push('--repo',repo);execFileSync('gh',editArgs,{encoding:'utf8',stdio:['pipe','pipe','pipe']});newlyLabeled++;}       catch(e){process.stderr.write('label err '+(repo?repo+' ':'')+'#'+pr.number+': '+(e?.message||e)+'\\\\n');}     }   } else if(hasPend){     pending.push({n:pr.number,repo});   } else if(checks.length>0&&!hasFixLabel){     readyCandidates.push({n:pr.number,repo,branch:pr.headRefName,base:pr.baseRefName,url:pr.url,title:pr.title});   } } console.log(JSON.stringify({   total:prs.length,   reposScanned:repoTargets.length,   repoErrors,   readyCandidates,   conflicts,   ciFailures,   pending:pending.length,   drafted:drafted.length,   newlyLabeled,   fixNeeded:conflicts.length+ciFailures.length })); \"",
+            "command": "node -e \" const fs=require('fs'); const path=require('path'); const {execFileSync}=require('child_process'); const LABEL_FIX='{{labelNeedsFix}}'; const MAX_PRS=Math.max(1,Number('{{maxPrs}}')||25); const REPO_SCOPE=String('{{repoScope}}'||'auto').trim(); const FIELDS='number,title,headRefName,baseRefName,isDraft,mergeable,statusCheckRollup,labels,url'; const FAIL_STATES=new Set(['FAILURE','ERROR','TIMED_OUT','CANCELLED','STARTUP_FAILURE']); const PEND_STATES=new Set(['PENDING','IN_PROGRESS','QUEUED','WAITING','REQUESTED','EXPECTED']); const CONFLICT_MERGEABLES=new Set(['CONFLICTING','BEHIND','DIRTY']); function ghJson(args){const out=execFileSync('gh',args,{encoding:'utf8',stdio:['pipe','pipe','pipe']}).trim();return out?JSON.parse(out):[];} function configPath(){   const home=String(process.env.BOSUN_HOME||process.env.VK_PROJECT_DIR||'').trim();   return home?path.join(home,'bosun.config.json'):path.join(process.cwd(),'bosun.config.json'); } function collectReposFromConfig(){   const repos=[];   try{     const cfg=JSON.parse(fs.readFileSync(configPath(),'utf8'));     const workspaces=Array.isArray(cfg?.workspaces)?cfg.workspaces:[];     if(workspaces.length>0){       const active=String(cfg?.activeWorkspace||'').trim().toLowerCase();       const activeWs=active?workspaces.find(w=>String(w?.id||'').trim().toLowerCase()===active):null;       const wsList=activeWs?[activeWs]:workspaces;       for(const ws of wsList){         for(const repo of (Array.isArray(ws?.repos)?ws.repos:[])){           const slug=typeof repo==='string'?String(repo).trim():String(repo?.slug||'').trim();           if(slug) repos.push(slug);         }       }     }     if(repos.length===0){       for(const repo of (Array.isArray(cfg?.repos)?cfg.repos:[])){         const slug=typeof repo==='string'?String(repo).trim():String(repo?.slug||'').trim();         if(slug) repos.push(slug);       }     }   }catch{}   return repos; } function resolveRepoTargets(){   if(REPO_SCOPE&&REPO_SCOPE!=='auto'&&REPO_SCOPE!=='all'&&REPO_SCOPE!=='current'){     return [...new Set(REPO_SCOPE.split(',').map(v=>v.trim()).filter(Boolean))];   }   if(REPO_SCOPE==='current') return [''];   const fromConfig=collectReposFromConfig();   if(fromConfig.length>0) return [...new Set(fromConfig)];   const envRepo=String(process.env.GITHUB_REPOSITORY||'').trim();   if(envRepo) return [envRepo];   return ['']; } function parseRepoFromUrl(url){   const raw=String(url||'');   const marker='github.com/';   const idx=raw.toLowerCase().indexOf(marker);   if(idx<0) return '';   const tail=raw.slice(idx+marker.length).split('/');   if(tail.length<2) return '';   const owner=String(tail[0]||'').trim();   const repo=String(tail[1]||'').trim();   return owner&&repo?(owner+'/'+repo):''; } const repoTargets=resolveRepoTargets(); const prs=[]; const repoErrors=[]; for(const target of repoTargets){   const repo=String(target||'').trim();   const args=['pr','list','--label','bosun-attached','--state','open','--json',FIELDS,'--limit',String(MAX_PRS)];   if(repo) args.push('--repo',repo);   try{     const list=ghJson(args);     for(const pr of (Array.isArray(list)?list:[])){       const prRepo=repo||parseRepoFromUrl(pr?.url)||String(process.env.GITHUB_REPOSITORY||'').trim();       prs.push({...pr,__repo:prRepo});     }   }catch(e){     repoErrors.push({repo:repo||'current',error:String(e?.message||e)});   } } const readyCandidates=[],conflicts=[],ciFailures=[],pending=[],drafted=[]; let newlyLabeled=0; for(const pr of prs){   const labels=(pr.labels||[]).map(l=>typeof l==='string'?l:l?.name).filter(Boolean);   const hasFixLabel=labels.includes(LABEL_FIX);   const checks=pr.statusCheckRollup||[];   const hasFail=checks.some(c=>FAIL_STATES.has(c.conclusion||c.state||''));   const hasPend=checks.some(c=>PEND_STATES.has(c.conclusion||c.state||''));   const isConflict=CONFLICT_MERGEABLES.has(String(pr.mergeable||'').toUpperCase());   const isDraft=pr.isDraft===true;   const repo=String(pr.__repo||'').trim();   if(isDraft){drafted.push({n:pr.number,repo});continue;}   if(isConflict){     conflicts.push({n:pr.number,repo,branch:pr.headRefName,base:pr.baseRefName,url:pr.url});     if(!hasFixLabel){       try{const editArgs=['pr','edit',String(pr.number),'--add-label',LABEL_FIX];if(repo)editArgs.push('--repo',repo);execFileSync('gh',editArgs,{encoding:'utf8',stdio:['pipe','pipe','pipe']});newlyLabeled++;}       catch(e){process.stderr.write('label err '+(repo?repo+' ':'')+'#'+pr.number+': '+(e?.message||e)+'\\\\n');}     }   } else if(hasFail){     ciFailures.push({n:pr.number,repo,branch:pr.headRefName,url:pr.url});     if(!hasFixLabel){       try{const editArgs=['pr','edit',String(pr.number),'--add-label',LABEL_FIX];if(repo)editArgs.push('--repo',repo);execFileSync('gh',editArgs,{encoding:'utf8',stdio:['pipe','pipe','pipe']});newlyLabeled++;}       catch(e){process.stderr.write('label err '+(repo?repo+' ':'')+'#'+pr.number+': '+(e?.message||e)+'\\\\n');}     }   } else if(checks.length>0&&!hasFixLabel){     if(hasPend) pending.push({n:pr.number,repo});     readyCandidates.push({n:pr.number,repo,branch:pr.headRefName,base:pr.baseRefName,url:pr.url,title:pr.title,pendingChecks:hasPend});   } } console.log(JSON.stringify({   total:prs.length,   reposScanned:repoTargets.length,   repoErrors,   readyCandidates,   conflicts,   ciFailures,   pending:pending.length,   drafted:drafted.length,   newlyLabeled,   fixNeeded:conflicts.length+ciFailures.length })); \"",
             "continueOnError": false,
             "failOnError": true
           },
@@ -196,7 +196,7 @@
           "type": "action.run_command",
           "label": "Review Gate: Programmatic Merge",
           "config": {
-            "command": "node -e \" const {execFileSync}=require('child_process'); const raw=String(process.env.BOSUN_FETCH_AND_CLASSIFY||''); const payload=(()=>{try{return JSON.parse(raw||'{}')}catch{return {}}})(); const candidates=Array.isArray(payload.readyCandidates)?payload.readyCandidates:[]; const ratio=Number('{{suspiciousDeletionRatio}}')||3; const minDel=Number('{{minDestructiveDeletions}}')||500; const labelReview=String('{{labelNeedsReview}}'||'bosun-needs-human-review'); const method=String('{{mergeMethod}}'||'squash').toLowerCase(); const merged=[]; const held=[]; const skipped=[]; function gh(args){return execFileSync('gh',args,{encoding:'utf8',stdio:['pipe','pipe','pipe']}).trim();} for(const c of candidates){   const repo=String(c?.repo||'').trim();   const n=String(c?.n||'').trim();   if(!repo||!n){skipped.push({repo,number:n,reason:'missing_repo_or_pr'});continue;}   try{     const viewRaw=gh(['pr','view',n,'--repo',repo,'--json','number,title,additions,deletions,changedFiles,isDraft']);     const view=(()=>{try{return JSON.parse(viewRaw||'{}')}catch{return {}}})();     if(view?.isDraft===true){skipped.push({repo,number:n,reason:'draft'});continue;}     const add=Number(view?.additions||0);     const del=Number(view?.deletions||0);     const changed=Number(view?.changedFiles||0);     const destructive=(del>(add*ratio))&&(del>minDel);     const tooWide=changed>250;     if(destructive||tooWide){       gh(['pr','edit',n,'--repo',repo,'--add-label',labelReview]);       gh(['pr','comment',n,'--repo',repo,'--body',':warning: Bosun held this PR for human review due to suspicious diff footprint.']);       held.push({repo,number:n,reason:destructive?'destructive_diff':'changed_files_too_large',additions:add,deletions:del,changedFiles:changed});       continue;     }     const checksRaw=gh(['pr','checks',n,'--repo',repo,'--json','name,state,conclusion']);     const checks=(()=>{try{return JSON.parse(checksRaw||'[]')}catch{return []}})();     const bad=(Array.isArray(checks)?checks:[]).some((x)=>{       const c=String(x?.conclusion||'').toUpperCase();       const s=String(x?.state||'').toUpperCase();       return ['FAILURE','ERROR','TIMED_OUT','CANCELLED'].includes(c) || ['PENDING','IN_PROGRESS','QUEUED','WAITING','REQUESTED','EXPECTED'].includes(s);     });     if(bad){skipped.push({repo,number:n,reason:'ci_not_green'});continue;}     const mergeArgs=['pr','merge',n,'--repo',repo,'--delete-branch'];     if(method==='rebase') mergeArgs.push('--rebase');     else if(method==='merge') mergeArgs.push('--merge');     else mergeArgs.push('--squash');     gh(mergeArgs);     merged.push({repo,number:n,title:String(view?.title||'')});   }catch(e){     held.push({repo,number:n,reason:'merge_attempt_failed',error:String(e?.message||e)});   } } console.log(JSON.stringify({mergedCount:merged.length,heldCount:held.length,skippedCount:skipped.length,merged,held,skipped})); \"",
+            "command": "node -e \" const {execFileSync}=require('child_process'); const raw=String(process.env.BOSUN_FETCH_AND_CLASSIFY||''); const payload=(()=>{try{return JSON.parse(raw||'{}')}catch{return {}}})(); const candidates=Array.isArray(payload.readyCandidates)?payload.readyCandidates:[]; const ratio=Number('{{suspiciousDeletionRatio}}')||3; const minDel=Number('{{minDestructiveDeletions}}')||500; const labelReview=String('{{labelNeedsReview}}'||'bosun-needs-human-review'); const method=String('{{mergeMethod}}'||'squash').toLowerCase(); const merged=[]; const held=[]; const skipped=[]; function gh(args){return execFileSync('gh',args,{encoding:'utf8',stdio:['pipe','pipe','pipe']}).trim();} for(const c of candidates){   const repo=String(c?.repo||'').trim();   const n=String(c?.n||'').trim();   if(!repo||!n){skipped.push({repo,number:n,reason:'missing_repo_or_pr'});continue;}   try{     const viewRaw=gh(['pr','view',n,'--repo',repo,'--json','number,title,additions,deletions,changedFiles,isDraft']);     const view=(()=>{try{return JSON.parse(viewRaw||'{}')}catch{return {}}})();     if(view?.isDraft===true){skipped.push({repo,number:n,reason:'draft'});continue;}     const add=Number(view?.additions||0);     const del=Number(view?.deletions||0);     const changed=Number(view?.changedFiles||0);     const destructive=(del>(add*ratio))&&(del>minDel);     const tooWide=changed>250;     if(destructive||tooWide){       gh(['pr','edit',n,'--repo',repo,'--add-label',labelReview]);       gh(['pr','comment',n,'--repo',repo,'--body',':warning: Bosun held this PR for human review due to suspicious diff footprint.']);       held.push({repo,number:n,reason:destructive?'destructive_diff':'changed_files_too_large',additions:add,deletions:del,changedFiles:changed});       continue;     }     const checksRaw=gh(['pr','checks',n,'--repo',repo,'--json','name,state,conclusion']);     const checks=(()=>{try{return JSON.parse(checksRaw||'[]')}catch{return []}})();     const hasFailure=(Array.isArray(checks)?checks:[]).some((x)=>{       const c=String(x?.conclusion||'').toUpperCase();       const s=String(x?.state||'').toUpperCase();       return ['FAILURE','ERROR','TIMED_OUT','CANCELLED'].includes(c) || ['STARTUP_FAILURE'].includes(s);     });     if(hasFailure){skipped.push({repo,number:n,reason:'ci_failed'});continue;}     const mergeArgs=['pr','merge',n,'--repo',repo,'--delete-branch'];     mergeArgs.push('--auto');     if(method==='rebase') mergeArgs.push('--rebase');     else if(method==='merge') mergeArgs.push('--merge');     else mergeArgs.push('--squash');     gh(mergeArgs);     merged.push({repo,number:n,title:String(view?.title||'')});   }catch(e){     held.push({repo,number:n,reason:'merge_attempt_failed',error:String(e?.message||e)});   } } console.log(JSON.stringify({mergedCount:merged.length,heldCount:held.length,skippedCount:skipped.length,merged,held,skipped})); \"",
             "continueOnError": true,
             "failOnError": false,
             "env": {
@@ -437,7 +437,7 @@
           "type": "action.run_command",
           "label": "Sync PR State → Kanban (Programmatic)",
           "config": {
-            "command": "node -e \" const {execFileSync}=require('child_process'); const fs=require('fs'); const raw=String(process.env.BOSUN_FETCH_PR_STATE||''); const data=(()=>{try{return JSON.parse(raw||'{}')}catch{return {}}})(); const merged=Array.isArray(data.merged)?data.merged:[]; const open=Array.isArray(data.open)?data.open:[]; const updates=[]; const unresolved=[]; const taskCli=fs.existsSync('task-cli.mjs')?'task-cli.mjs':''; if(!taskCli){   console.log(JSON.stringify({updated:0,unresolved:[{reason:'task_cli_missing'}],needsAgent:true}));   process.exit(0); } function runTask(args){return execFileSync('node',[taskCli,...args],{encoding:'utf8',stdio:['pipe','pipe','pipe']}).trim();} for(const item of merged){   const id=String(item?.taskId||'').trim();   if(!id) continue;   try{runTask(['update',id,'--status','done']);updates.push({taskId:id,status:'done'});}catch(e){unresolved.push({taskId:id,status:'done',error:String(e?.message||e)});} } for(const item of open){   const id=String(item?.taskId||'').trim();   if(!id) continue;   try{runTask(['update',id,'--status','inreview']);updates.push({taskId:id,status:'inreview'});}catch(e){unresolved.push({taskId:id,status:'inreview',error:String(e?.message||e)});} } console.log(JSON.stringify({updated:updates.length,updates,unresolved,needsAgent:unresolved.length>0})); \"",
+            "command": "node -e \" const {execFileSync}=require('child_process'); const fs=require('fs'); const raw=String(process.env.BOSUN_FETCH_PR_STATE||''); const data=(()=>{try{return JSON.parse(raw||'{}')}catch{return {}}})(); const merged=Array.isArray(data.merged)?data.merged:[]; const open=Array.isArray(data.open)?data.open:[]; const updates=[]; const unresolved=[]; const taskCli=['task-cli.mjs','task/task-cli.mjs'].find(p=>fs.existsSync(p))||''; if(!taskCli){   console.log(JSON.stringify({updated:0,unresolved:[{reason:'task_cli_missing'}],needsAgent:true}));   process.exit(0); } function runTask(args){return execFileSync('node',[taskCli,...args],{encoding:'utf8',stdio:['pipe','pipe','pipe']}).trim();} function getTaskStatus(id){   try{const raw=runTask(['get',id,'--json']);return JSON.parse(raw||'{}')?.status||null;}catch{return null;} } for(const item of merged){   const id=String(item?.taskId||'').trim();   if(!id) continue;   try{runTask(['update',id,'--status','done']);updates.push({taskId:id,status:'done'});}catch(e){unresolved.push({taskId:id,status:'done',error:String(e?.message||e)});} } for(const item of open){   const id=String(item?.taskId||'').trim();   if(!id) continue;   try{const current=getTaskStatus(id);if(current==='inreview'||current==='done'){updates.push({taskId:id,status:current,skipped:true});continue;}runTask(['update',id,'--status','inreview']);updates.push({taskId:id,status:'inreview'});}catch(e){unresolved.push({taskId:id,status:'inreview',error:String(e?.message||e)});} } console.log(JSON.stringify({updated:updates.length,updates,unresolved,needsAgent:unresolved.length>0})); \"",
             "continueOnError": true,
             "failOnError": false,
             "env": {
@@ -13497,7 +13497,7 @@
           "label": "Create PR",
           "config": {
             "title": "{{task.taskTitle}}",
-            "body": "Automated PR for task {{task.taskId}}",
+            "body": "Task-ID: {{task.taskId}}\n\nAutomated PR for task {{task.taskId}}",
             "base": "{{defaultBaseBranch}}",
             "branch": "{{task.branch}}",
             "draft": "{{draftPR}}"
@@ -13856,8 +13856,8 @@
         "workflow-first",
         "core"
       ],
-      "nodeCount": 35,
-      "edgeCount": 37,
+      "nodeCount": 36,
+      "edgeCount": 39,
       "recommended": true,
       "enabled": true,
       "trigger": "trigger.task_available",
@@ -14219,7 +14219,7 @@
           "label": "Create PR",
           "config": {
             "title": "{{taskTitle}}",
-            "body": "Automated PR for task {{taskId}}",
+            "body": "Task-ID: {{taskId}}\n\nAutomated PR for task {{taskId}}",
             "base": "{{baseBranch}}",
             "branch": "{{branch}}",
             "cwd": "{{worktreePath}}"
@@ -14230,6 +14230,22 @@
           },
           "outputs": [
             "default"
+          ]
+        },
+        {
+          "id": "pr-created",
+          "type": "condition.expression",
+          "label": "PR Linked?",
+          "config": {
+            "expression": "Boolean($ctx.getNodeOutput('create-pr')?.prNumber || $ctx.getNodeOutput('create-pr')?.prUrl)"
+          },
+          "position": {
+            "x": 0,
+            "y": 2325
+          },
+          "outputs": [
+            "yes",
+            "no"
           ]
         },
         {
@@ -14621,10 +14637,24 @@
           "condition": "$output?.result === true"
         },
         {
-          "id": "create-pr->set-inreview",
+          "id": "create-pr->pr-created",
           "source": "create-pr",
-          "target": "set-inreview",
+          "target": "pr-created",
           "sourcePort": "default"
+        },
+        {
+          "id": "pr-created->set-inreview",
+          "source": "pr-created",
+          "target": "set-inreview",
+          "sourcePort": "yes",
+          "condition": "$output?.result === true"
+        },
+        {
+          "id": "pr-created->set-todo-push-failed",
+          "source": "pr-created",
+          "target": "set-todo-push-failed",
+          "sourcePort": "no",
+          "condition": "$output?.result !== true"
         },
         {
           "id": "set-inreview->log-success",
@@ -14761,8 +14791,8 @@
         "lite",
         "ve-orchestrator"
       ],
-      "nodeCount": 23,
-      "edgeCount": 23,
+      "nodeCount": 24,
+      "edgeCount": 25,
       "recommended": false,
       "enabled": true,
       "trigger": "trigger.task_available",
@@ -15048,6 +15078,7 @@
           "label": "Create PR",
           "config": {
             "title": "{{taskTitle}}",
+            "body": "Task-ID: {{taskId}}\n\nAutomated PR for task {{taskId}}",
             "base": "{{defaultTargetBranch}}",
             "branch": "{{branch}}",
             "cwd": "{{worktreePath}}"
@@ -15058,6 +15089,22 @@
           },
           "outputs": [
             "default"
+          ]
+        },
+        {
+          "id": "pr-created",
+          "type": "condition.expression",
+          "label": "PR Linked?",
+          "config": {
+            "expression": "Boolean($ctx.getNodeOutput('pr')?.prNumber || $ctx.getNodeOutput('pr')?.prUrl)"
+          },
+          "position": {
+            "x": 180,
+            "y": 1935
+          },
+          "outputs": [
+            "yes",
+            "no"
           ]
         },
         {
@@ -15280,10 +15327,24 @@
           "sourcePort": "default"
         },
         {
-          "id": "pr->set-inreview",
+          "id": "pr->pr-created",
           "source": "pr",
-          "target": "set-inreview",
+          "target": "pr-created",
           "sourcePort": "default"
+        },
+        {
+          "id": "pr-created->set-inreview",
+          "source": "pr-created",
+          "target": "set-inreview",
+          "sourcePort": "yes",
+          "condition": "$output?.result === true"
+        },
+        {
+          "id": "pr-created->set-todo",
+          "source": "pr-created",
+          "target": "set-todo",
+          "sourcePort": "no",
+          "condition": "$output?.result !== true"
         },
         {
           "id": "set-inreview->join-outcomes",
@@ -15738,7 +15799,7 @@
           "type": "action.run_command",
           "label": "Fetch, Classify & Label PRs",
           "config": {
-            "command": "node -e \" const fs=require('fs'); const path=require('path'); const {execFileSync}=require('child_process'); const LABEL_FIX='{{labelNeedsFix}}'; const MAX_PRS=Math.max(1,Number('{{maxPrs}}')||25); const REPO_SCOPE=String('{{repoScope}}'||'auto').trim(); const FIELDS='number,title,headRefName,baseRefName,isDraft,mergeable,statusCheckRollup,labels,url'; const FAIL_STATES=new Set(['FAILURE','ERROR','TIMED_OUT','CANCELLED','STARTUP_FAILURE']); const PEND_STATES=new Set(['PENDING','IN_PROGRESS','QUEUED','WAITING','REQUESTED','EXPECTED']); const CONFLICT_MERGEABLES=new Set(['CONFLICTING','BEHIND','DIRTY']); function ghJson(args){const out=execFileSync('gh',args,{encoding:'utf8',stdio:['pipe','pipe','pipe']}).trim();return out?JSON.parse(out):[];} function configPath(){   const home=String(process.env.BOSUN_HOME||process.env.VK_PROJECT_DIR||'').trim();   return home?path.join(home,'bosun.config.json'):path.join(process.cwd(),'bosun.config.json'); } function collectReposFromConfig(){   const repos=[];   try{     const cfg=JSON.parse(fs.readFileSync(configPath(),'utf8'));     const workspaces=Array.isArray(cfg?.workspaces)?cfg.workspaces:[];     if(workspaces.length>0){       const active=String(cfg?.activeWorkspace||'').trim().toLowerCase();       const activeWs=active?workspaces.find(w=>String(w?.id||'').trim().toLowerCase()===active):null;       const wsList=activeWs?[activeWs]:workspaces;       for(const ws of wsList){         for(const repo of (Array.isArray(ws?.repos)?ws.repos:[])){           const slug=typeof repo==='string'?String(repo).trim():String(repo?.slug||'').trim();           if(slug) repos.push(slug);         }       }     }     if(repos.length===0){       for(const repo of (Array.isArray(cfg?.repos)?cfg.repos:[])){         const slug=typeof repo==='string'?String(repo).trim():String(repo?.slug||'').trim();         if(slug) repos.push(slug);       }     }   }catch{}   return repos; } function resolveRepoTargets(){   if(REPO_SCOPE&&REPO_SCOPE!=='auto'&&REPO_SCOPE!=='all'&&REPO_SCOPE!=='current'){     return [...new Set(REPO_SCOPE.split(',').map(v=>v.trim()).filter(Boolean))];   }   if(REPO_SCOPE==='current') return [''];   const fromConfig=collectReposFromConfig();   if(fromConfig.length>0) return [...new Set(fromConfig)];   const envRepo=String(process.env.GITHUB_REPOSITORY||'').trim();   if(envRepo) return [envRepo];   return ['']; } function parseRepoFromUrl(url){   const raw=String(url||'');   const marker='github.com/';   const idx=raw.toLowerCase().indexOf(marker);   if(idx<0) return '';   const tail=raw.slice(idx+marker.length).split('/');   if(tail.length<2) return '';   const owner=String(tail[0]||'').trim();   const repo=String(tail[1]||'').trim();   return owner&&repo?(owner+'/'+repo):''; } const repoTargets=resolveRepoTargets(); const prs=[]; const repoErrors=[]; for(const target of repoTargets){   const repo=String(target||'').trim();   const args=['pr','list','--label','bosun-attached','--state','open','--json',FIELDS,'--limit',String(MAX_PRS)];   if(repo) args.push('--repo',repo);   try{     const list=ghJson(args);     for(const pr of (Array.isArray(list)?list:[])){       const prRepo=repo||parseRepoFromUrl(pr?.url)||String(process.env.GITHUB_REPOSITORY||'').trim();       prs.push({...pr,__repo:prRepo});     }   }catch(e){     repoErrors.push({repo:repo||'current',error:String(e?.message||e)});   } } const readyCandidates=[],conflicts=[],ciFailures=[],pending=[],drafted=[]; let newlyLabeled=0; for(const pr of prs){   const labels=(pr.labels||[]).map(l=>typeof l==='string'?l:l?.name).filter(Boolean);   const hasFixLabel=labels.includes(LABEL_FIX);   const checks=pr.statusCheckRollup||[];   const hasFail=checks.some(c=>FAIL_STATES.has(c.conclusion||c.state||''));   const hasPend=checks.some(c=>PEND_STATES.has(c.conclusion||c.state||''));   const isConflict=CONFLICT_MERGEABLES.has(String(pr.mergeable||'').toUpperCase());   const isDraft=pr.isDraft===true;   const repo=String(pr.__repo||'').trim();   if(isDraft){drafted.push({n:pr.number,repo});continue;}   if(isConflict){     conflicts.push({n:pr.number,repo,branch:pr.headRefName,base:pr.baseRefName,url:pr.url});     if(!hasFixLabel){       try{const editArgs=['pr','edit',String(pr.number),'--add-label',LABEL_FIX];if(repo)editArgs.push('--repo',repo);execFileSync('gh',editArgs,{encoding:'utf8',stdio:['pipe','pipe','pipe']});newlyLabeled++;}       catch(e){process.stderr.write('label err '+(repo?repo+' ':'')+'#'+pr.number+': '+(e?.message||e)+'\\\\n');}     }   } else if(hasFail){     ciFailures.push({n:pr.number,repo,branch:pr.headRefName,url:pr.url});     if(!hasFixLabel){       try{const editArgs=['pr','edit',String(pr.number),'--add-label',LABEL_FIX];if(repo)editArgs.push('--repo',repo);execFileSync('gh',editArgs,{encoding:'utf8',stdio:['pipe','pipe','pipe']});newlyLabeled++;}       catch(e){process.stderr.write('label err '+(repo?repo+' ':'')+'#'+pr.number+': '+(e?.message||e)+'\\\\n');}     }   } else if(hasPend){     pending.push({n:pr.number,repo});   } else if(checks.length>0&&!hasFixLabel){     readyCandidates.push({n:pr.number,repo,branch:pr.headRefName,base:pr.baseRefName,url:pr.url,title:pr.title});   } } console.log(JSON.stringify({   total:prs.length,   reposScanned:repoTargets.length,   repoErrors,   readyCandidates,   conflicts,   ciFailures,   pending:pending.length,   drafted:drafted.length,   newlyLabeled,   fixNeeded:conflicts.length+ciFailures.length })); \"",
+            "command": "node -e \" const fs=require('fs'); const path=require('path'); const {execFileSync}=require('child_process'); const LABEL_FIX='{{labelNeedsFix}}'; const MAX_PRS=Math.max(1,Number('{{maxPrs}}')||25); const REPO_SCOPE=String('{{repoScope}}'||'auto').trim(); const FIELDS='number,title,headRefName,baseRefName,isDraft,mergeable,statusCheckRollup,labels,url'; const FAIL_STATES=new Set(['FAILURE','ERROR','TIMED_OUT','CANCELLED','STARTUP_FAILURE']); const PEND_STATES=new Set(['PENDING','IN_PROGRESS','QUEUED','WAITING','REQUESTED','EXPECTED']); const CONFLICT_MERGEABLES=new Set(['CONFLICTING','BEHIND','DIRTY']); function ghJson(args){const out=execFileSync('gh',args,{encoding:'utf8',stdio:['pipe','pipe','pipe']}).trim();return out?JSON.parse(out):[];} function configPath(){   const home=String(process.env.BOSUN_HOME||process.env.VK_PROJECT_DIR||'').trim();   return home?path.join(home,'bosun.config.json'):path.join(process.cwd(),'bosun.config.json'); } function collectReposFromConfig(){   const repos=[];   try{     const cfg=JSON.parse(fs.readFileSync(configPath(),'utf8'));     const workspaces=Array.isArray(cfg?.workspaces)?cfg.workspaces:[];     if(workspaces.length>0){       const active=String(cfg?.activeWorkspace||'').trim().toLowerCase();       const activeWs=active?workspaces.find(w=>String(w?.id||'').trim().toLowerCase()===active):null;       const wsList=activeWs?[activeWs]:workspaces;       for(const ws of wsList){         for(const repo of (Array.isArray(ws?.repos)?ws.repos:[])){           const slug=typeof repo==='string'?String(repo).trim():String(repo?.slug||'').trim();           if(slug) repos.push(slug);         }       }     }     if(repos.length===0){       for(const repo of (Array.isArray(cfg?.repos)?cfg.repos:[])){         const slug=typeof repo==='string'?String(repo).trim():String(repo?.slug||'').trim();         if(slug) repos.push(slug);       }     }   }catch{}   return repos; } function resolveRepoTargets(){   if(REPO_SCOPE&&REPO_SCOPE!=='auto'&&REPO_SCOPE!=='all'&&REPO_SCOPE!=='current'){     return [...new Set(REPO_SCOPE.split(',').map(v=>v.trim()).filter(Boolean))];   }   if(REPO_SCOPE==='current') return [''];   const fromConfig=collectReposFromConfig();   if(fromConfig.length>0) return [...new Set(fromConfig)];   const envRepo=String(process.env.GITHUB_REPOSITORY||'').trim();   if(envRepo) return [envRepo];   return ['']; } function parseRepoFromUrl(url){   const raw=String(url||'');   const marker='github.com/';   const idx=raw.toLowerCase().indexOf(marker);   if(idx<0) return '';   const tail=raw.slice(idx+marker.length).split('/');   if(tail.length<2) return '';   const owner=String(tail[0]||'').trim();   const repo=String(tail[1]||'').trim();   return owner&&repo?(owner+'/'+repo):''; } const repoTargets=resolveRepoTargets(); const prs=[]; const repoErrors=[]; for(const target of repoTargets){   const repo=String(target||'').trim();   const args=['pr','list','--label','bosun-attached','--state','open','--json',FIELDS,'--limit',String(MAX_PRS)];   if(repo) args.push('--repo',repo);   try{     const list=ghJson(args);     for(const pr of (Array.isArray(list)?list:[])){       const prRepo=repo||parseRepoFromUrl(pr?.url)||String(process.env.GITHUB_REPOSITORY||'').trim();       prs.push({...pr,__repo:prRepo});     }   }catch(e){     repoErrors.push({repo:repo||'current',error:String(e?.message||e)});   } } const readyCandidates=[],conflicts=[],ciFailures=[],pending=[],drafted=[]; let newlyLabeled=0; for(const pr of prs){   const labels=(pr.labels||[]).map(l=>typeof l==='string'?l:l?.name).filter(Boolean);   const hasFixLabel=labels.includes(LABEL_FIX);   const checks=pr.statusCheckRollup||[];   const hasFail=checks.some(c=>FAIL_STATES.has(c.conclusion||c.state||''));   const hasPend=checks.some(c=>PEND_STATES.has(c.conclusion||c.state||''));   const isConflict=CONFLICT_MERGEABLES.has(String(pr.mergeable||'').toUpperCase());   const isDraft=pr.isDraft===true;   const repo=String(pr.__repo||'').trim();   if(isDraft){drafted.push({n:pr.number,repo});continue;}   if(isConflict){     conflicts.push({n:pr.number,repo,branch:pr.headRefName,base:pr.baseRefName,url:pr.url});     if(!hasFixLabel){       try{const editArgs=['pr','edit',String(pr.number),'--add-label',LABEL_FIX];if(repo)editArgs.push('--repo',repo);execFileSync('gh',editArgs,{encoding:'utf8',stdio:['pipe','pipe','pipe']});newlyLabeled++;}       catch(e){process.stderr.write('label err '+(repo?repo+' ':'')+'#'+pr.number+': '+(e?.message||e)+'\\\\n');}     }   } else if(hasFail){     ciFailures.push({n:pr.number,repo,branch:pr.headRefName,url:pr.url});     if(!hasFixLabel){       try{const editArgs=['pr','edit',String(pr.number),'--add-label',LABEL_FIX];if(repo)editArgs.push('--repo',repo);execFileSync('gh',editArgs,{encoding:'utf8',stdio:['pipe','pipe','pipe']});newlyLabeled++;}       catch(e){process.stderr.write('label err '+(repo?repo+' ':'')+'#'+pr.number+': '+(e?.message||e)+'\\\\n');}     }   } else if(checks.length>0&&!hasFixLabel){     if(hasPend) pending.push({n:pr.number,repo});     readyCandidates.push({n:pr.number,repo,branch:pr.headRefName,base:pr.baseRefName,url:pr.url,title:pr.title,pendingChecks:hasPend});   } } console.log(JSON.stringify({   total:prs.length,   reposScanned:repoTargets.length,   repoErrors,   readyCandidates,   conflicts,   ciFailures,   pending:pending.length,   drafted:drafted.length,   newlyLabeled,   fixNeeded:conflicts.length+ciFailures.length })); \"",
             "continueOnError": false,
             "failOnError": true
           },
@@ -15855,7 +15916,7 @@
           "type": "action.run_command",
           "label": "Review Gate: Programmatic Merge",
           "config": {
-            "command": "node -e \" const {execFileSync}=require('child_process'); const raw=String(process.env.BOSUN_FETCH_AND_CLASSIFY||''); const payload=(()=>{try{return JSON.parse(raw||'{}')}catch{return {}}})(); const candidates=Array.isArray(payload.readyCandidates)?payload.readyCandidates:[]; const ratio=Number('{{suspiciousDeletionRatio}}')||3; const minDel=Number('{{minDestructiveDeletions}}')||500; const labelReview=String('{{labelNeedsReview}}'||'bosun-needs-human-review'); const method=String('{{mergeMethod}}'||'squash').toLowerCase(); const merged=[]; const held=[]; const skipped=[]; function gh(args){return execFileSync('gh',args,{encoding:'utf8',stdio:['pipe','pipe','pipe']}).trim();} for(const c of candidates){   const repo=String(c?.repo||'').trim();   const n=String(c?.n||'').trim();   if(!repo||!n){skipped.push({repo,number:n,reason:'missing_repo_or_pr'});continue;}   try{     const viewRaw=gh(['pr','view',n,'--repo',repo,'--json','number,title,additions,deletions,changedFiles,isDraft']);     const view=(()=>{try{return JSON.parse(viewRaw||'{}')}catch{return {}}})();     if(view?.isDraft===true){skipped.push({repo,number:n,reason:'draft'});continue;}     const add=Number(view?.additions||0);     const del=Number(view?.deletions||0);     const changed=Number(view?.changedFiles||0);     const destructive=(del>(add*ratio))&&(del>minDel);     const tooWide=changed>250;     if(destructive||tooWide){       gh(['pr','edit',n,'--repo',repo,'--add-label',labelReview]);       gh(['pr','comment',n,'--repo',repo,'--body',':warning: Bosun held this PR for human review due to suspicious diff footprint.']);       held.push({repo,number:n,reason:destructive?'destructive_diff':'changed_files_too_large',additions:add,deletions:del,changedFiles:changed});       continue;     }     const checksRaw=gh(['pr','checks',n,'--repo',repo,'--json','name,state,conclusion']);     const checks=(()=>{try{return JSON.parse(checksRaw||'[]')}catch{return []}})();     const bad=(Array.isArray(checks)?checks:[]).some((x)=>{       const c=String(x?.conclusion||'').toUpperCase();       const s=String(x?.state||'').toUpperCase();       return ['FAILURE','ERROR','TIMED_OUT','CANCELLED'].includes(c) || ['PENDING','IN_PROGRESS','QUEUED','WAITING','REQUESTED','EXPECTED'].includes(s);     });     if(bad){skipped.push({repo,number:n,reason:'ci_not_green'});continue;}     const mergeArgs=['pr','merge',n,'--repo',repo,'--delete-branch'];     if(method==='rebase') mergeArgs.push('--rebase');     else if(method==='merge') mergeArgs.push('--merge');     else mergeArgs.push('--squash');     gh(mergeArgs);     merged.push({repo,number:n,title:String(view?.title||'')});   }catch(e){     held.push({repo,number:n,reason:'merge_attempt_failed',error:String(e?.message||e)});   } } console.log(JSON.stringify({mergedCount:merged.length,heldCount:held.length,skippedCount:skipped.length,merged,held,skipped})); \"",
+            "command": "node -e \" const {execFileSync}=require('child_process'); const raw=String(process.env.BOSUN_FETCH_AND_CLASSIFY||''); const payload=(()=>{try{return JSON.parse(raw||'{}')}catch{return {}}})(); const candidates=Array.isArray(payload.readyCandidates)?payload.readyCandidates:[]; const ratio=Number('{{suspiciousDeletionRatio}}')||3; const minDel=Number('{{minDestructiveDeletions}}')||500; const labelReview=String('{{labelNeedsReview}}'||'bosun-needs-human-review'); const method=String('{{mergeMethod}}'||'squash').toLowerCase(); const merged=[]; const held=[]; const skipped=[]; function gh(args){return execFileSync('gh',args,{encoding:'utf8',stdio:['pipe','pipe','pipe']}).trim();} for(const c of candidates){   const repo=String(c?.repo||'').trim();   const n=String(c?.n||'').trim();   if(!repo||!n){skipped.push({repo,number:n,reason:'missing_repo_or_pr'});continue;}   try{     const viewRaw=gh(['pr','view',n,'--repo',repo,'--json','number,title,additions,deletions,changedFiles,isDraft']);     const view=(()=>{try{return JSON.parse(viewRaw||'{}')}catch{return {}}})();     if(view?.isDraft===true){skipped.push({repo,number:n,reason:'draft'});continue;}     const add=Number(view?.additions||0);     const del=Number(view?.deletions||0);     const changed=Number(view?.changedFiles||0);     const destructive=(del>(add*ratio))&&(del>minDel);     const tooWide=changed>250;     if(destructive||tooWide){       gh(['pr','edit',n,'--repo',repo,'--add-label',labelReview]);       gh(['pr','comment',n,'--repo',repo,'--body',':warning: Bosun held this PR for human review due to suspicious diff footprint.']);       held.push({repo,number:n,reason:destructive?'destructive_diff':'changed_files_too_large',additions:add,deletions:del,changedFiles:changed});       continue;     }     const checksRaw=gh(['pr','checks',n,'--repo',repo,'--json','name,state,conclusion']);     const checks=(()=>{try{return JSON.parse(checksRaw||'[]')}catch{return []}})();     const hasFailure=(Array.isArray(checks)?checks:[]).some((x)=>{       const c=String(x?.conclusion||'').toUpperCase();       const s=String(x?.state||'').toUpperCase();       return ['FAILURE','ERROR','TIMED_OUT','CANCELLED'].includes(c) || ['STARTUP_FAILURE'].includes(s);     });     if(hasFailure){skipped.push({repo,number:n,reason:'ci_failed'});continue;}     const mergeArgs=['pr','merge',n,'--repo',repo,'--delete-branch'];     mergeArgs.push('--auto');     if(method==='rebase') mergeArgs.push('--rebase');     else if(method==='merge') mergeArgs.push('--merge');     else mergeArgs.push('--squash');     gh(mergeArgs);     merged.push({repo,number:n,title:String(view?.title||'')});   }catch(e){     held.push({repo,number:n,reason:'merge_attempt_failed',error:String(e?.message||e)});   } } console.log(JSON.stringify({mergedCount:merged.length,heldCount:held.length,skippedCount:skipped.length,merged,held,skipped})); \"",
             "continueOnError": true,
             "failOnError": false,
             "env": {
@@ -16070,7 +16131,7 @@
           "type": "action.run_command",
           "label": "Sync PR State → Kanban (Programmatic)",
           "config": {
-            "command": "node -e \" const {execFileSync}=require('child_process'); const fs=require('fs'); const raw=String(process.env.BOSUN_FETCH_PR_STATE||''); const data=(()=>{try{return JSON.parse(raw||'{}')}catch{return {}}})(); const merged=Array.isArray(data.merged)?data.merged:[]; const open=Array.isArray(data.open)?data.open:[]; const updates=[]; const unresolved=[]; const taskCli=fs.existsSync('task-cli.mjs')?'task-cli.mjs':''; if(!taskCli){   console.log(JSON.stringify({updated:0,unresolved:[{reason:'task_cli_missing'}],needsAgent:true}));   process.exit(0); } function runTask(args){return execFileSync('node',[taskCli,...args],{encoding:'utf8',stdio:['pipe','pipe','pipe']}).trim();} for(const item of merged){   const id=String(item?.taskId||'').trim();   if(!id) continue;   try{runTask(['update',id,'--status','done']);updates.push({taskId:id,status:'done'});}catch(e){unresolved.push({taskId:id,status:'done',error:String(e?.message||e)});} } for(const item of open){   const id=String(item?.taskId||'').trim();   if(!id) continue;   try{runTask(['update',id,'--status','inreview']);updates.push({taskId:id,status:'inreview'});}catch(e){unresolved.push({taskId:id,status:'inreview',error:String(e?.message||e)});} } console.log(JSON.stringify({updated:updates.length,updates,unresolved,needsAgent:unresolved.length>0})); \"",
+            "command": "node -e \" const {execFileSync}=require('child_process'); const fs=require('fs'); const raw=String(process.env.BOSUN_FETCH_PR_STATE||''); const data=(()=>{try{return JSON.parse(raw||'{}')}catch{return {}}})(); const merged=Array.isArray(data.merged)?data.merged:[]; const open=Array.isArray(data.open)?data.open:[]; const updates=[]; const unresolved=[]; const taskCli=['task-cli.mjs','task/task-cli.mjs'].find(p=>fs.existsSync(p))||''; if(!taskCli){   console.log(JSON.stringify({updated:0,unresolved:[{reason:'task_cli_missing'}],needsAgent:true}));   process.exit(0); } function runTask(args){return execFileSync('node',[taskCli,...args],{encoding:'utf8',stdio:['pipe','pipe','pipe']}).trim();} function getTaskStatus(id){   try{const raw=runTask(['get',id,'--json']);return JSON.parse(raw||'{}')?.status||null;}catch{return null;} } for(const item of merged){   const id=String(item?.taskId||'').trim();   if(!id) continue;   try{runTask(['update',id,'--status','done']);updates.push({taskId:id,status:'done'});}catch(e){unresolved.push({taskId:id,status:'done',error:String(e?.message||e)});} } for(const item of open){   const id=String(item?.taskId||'').trim();   if(!id) continue;   try{const current=getTaskStatus(id);if(current==='inreview'||current==='done'){updates.push({taskId:id,status:current,skipped:true});continue;}runTask(['update',id,'--status','inreview']);updates.push({taskId:id,status:'inreview'});}catch(e){unresolved.push({taskId:id,status:'inreview',error:String(e?.message||e)});} } console.log(JSON.stringify({updated:updates.length,updates,unresolved,needsAgent:unresolved.length>0})); \"",
             "continueOnError": true,
             "failOnError": false,
             "env": {
@@ -28306,7 +28367,7 @@
           "label": "Create PR",
           "config": {
             "title": "{{task.taskTitle}}",
-            "body": "Automated PR for task {{task.taskId}}",
+            "body": "Task-ID: {{task.taskId}}\n\nAutomated PR for task {{task.taskId}}",
             "base": "{{defaultBaseBranch}}",
             "branch": "{{task.branch}}",
             "draft": "{{draftPR}}"
@@ -28657,7 +28718,7 @@
       "description": "Complete task execution pipeline: poll for tasks → claim → worktree → agent dispatch → commit detection → PR creation → status transition. Replaces the monolithic TaskExecutor.executeTask() method with a composable workflow DAG.",
       "category": "lifecycle",
       "enabled": true,
-      "nodeCount": 35,
+      "nodeCount": 36,
       "trigger": "trigger.task_available",
       "variables": {
         "maxParallel": 3,
@@ -28989,7 +29050,7 @@
           "label": "Create PR",
           "config": {
             "title": "{{taskTitle}}",
-            "body": "Automated PR for task {{taskId}}",
+            "body": "Task-ID: {{taskId}}\n\nAutomated PR for task {{taskId}}",
             "base": "{{baseBranch}}",
             "branch": "{{branch}}",
             "cwd": "{{worktreePath}}"
@@ -29000,6 +29061,22 @@
           },
           "outputs": [
             "default"
+          ]
+        },
+        {
+          "id": "pr-created",
+          "type": "condition.expression",
+          "label": "PR Linked?",
+          "config": {
+            "expression": "Boolean($ctx.getNodeOutput('create-pr')?.prNumber || $ctx.getNodeOutput('create-pr')?.prUrl)"
+          },
+          "position": {
+            "x": 0,
+            "y": 2325
+          },
+          "outputs": [
+            "yes",
+            "no"
           ]
         },
         {
@@ -29391,10 +29468,24 @@
           "condition": "$output?.result === true"
         },
         {
-          "id": "create-pr->set-inreview",
+          "id": "create-pr->pr-created",
           "source": "create-pr",
-          "target": "set-inreview",
+          "target": "pr-created",
           "sourcePort": "default"
+        },
+        {
+          "id": "pr-created->set-inreview",
+          "source": "pr-created",
+          "target": "set-inreview",
+          "sourcePort": "yes",
+          "condition": "$output?.result === true"
+        },
+        {
+          "id": "pr-created->set-todo-push-failed",
+          "source": "pr-created",
+          "target": "set-todo-push-failed",
+          "sourcePort": "no",
+          "condition": "$output?.result !== true"
         },
         {
           "id": "set-inreview->log-success",
@@ -29536,7 +29627,7 @@
       "description": "Simplified task lifecycle for lightweight deployments. Same core flow as the full Task Lifecycle (slot → claim → worktree → agent → push → PR) but with fewer failure branches and no anti-thrash.",
       "category": "lifecycle",
       "enabled": true,
-      "nodeCount": 23,
+      "nodeCount": 24,
       "trigger": "trigger.task_available",
       "variables": {
         "maxParallel": 2,
@@ -29797,6 +29888,7 @@
           "label": "Create PR",
           "config": {
             "title": "{{taskTitle}}",
+            "body": "Task-ID: {{taskId}}\n\nAutomated PR for task {{taskId}}",
             "base": "{{defaultTargetBranch}}",
             "branch": "{{branch}}",
             "cwd": "{{worktreePath}}"
@@ -29807,6 +29899,22 @@
           },
           "outputs": [
             "default"
+          ]
+        },
+        {
+          "id": "pr-created",
+          "type": "condition.expression",
+          "label": "PR Linked?",
+          "config": {
+            "expression": "Boolean($ctx.getNodeOutput('pr')?.prNumber || $ctx.getNodeOutput('pr')?.prUrl)"
+          },
+          "position": {
+            "x": 180,
+            "y": 1935
+          },
+          "outputs": [
+            "yes",
+            "no"
           ]
         },
         {
@@ -30029,10 +30137,24 @@
           "sourcePort": "default"
         },
         {
-          "id": "pr->set-inreview",
+          "id": "pr->pr-created",
           "source": "pr",
-          "target": "set-inreview",
+          "target": "pr-created",
           "sourcePort": "default"
+        },
+        {
+          "id": "pr-created->set-inreview",
+          "source": "pr-created",
+          "target": "set-inreview",
+          "sourcePort": "yes",
+          "condition": "$output?.result === true"
+        },
+        {
+          "id": "pr-created->set-todo",
+          "source": "pr-created",
+          "target": "set-todo",
+          "sourcePort": "no",
+          "condition": "$output?.result !== true"
         },
         {
           "id": "set-inreview->join-outcomes",

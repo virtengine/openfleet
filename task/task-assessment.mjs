@@ -435,16 +435,24 @@ function extractDecisionJson(raw) {
         if (decision) return decision;
       }
 
-      const fenceRegex = /```(?:json)?\s*\n?([\s\S]*?)\n?```/gi;
-      for (const match of trimmed.matchAll(fenceRegex)) {
-        const fenced = (match[1] || "").trim();
-        if (!fenced || seenStrings.has(fenced)) continue;
-        seenStrings.add(fenced);
-        const parsedFence = tryParseJson(fenced);
-        if (parsedFence) {
-          const decision = inspect(parsedFence);
-          if (decision) return decision;
+      let fenceCursor = 0;
+      while (fenceCursor < trimmed.length) {
+        const open = trimmed.indexOf("```", fenceCursor);
+        if (open === -1) break;
+        const headerEnd = trimmed.indexOf("\n", open + 3);
+        if (headerEnd === -1) break;
+        const close = trimmed.indexOf("```", headerEnd + 1);
+        if (close === -1) break;
+        const fenced = trimmed.slice(headerEnd + 1, close).trim();
+        if (fenced && !seenStrings.has(fenced)) {
+          seenStrings.add(fenced);
+          const parsedFence = tryParseJson(fenced);
+          if (parsedFence) {
+            const decision = inspect(parsedFence);
+            if (decision) return decision;
+          }
         }
+        fenceCursor = close + 3;
       }
 
       for (const candidate of collectJsonObjectCandidates(trimmed)) {

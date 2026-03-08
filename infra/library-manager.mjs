@@ -35,6 +35,7 @@ export const SKILL_ENTRY_INDEX = "skills.json";
 
 const agentProfileIndexCache = new Map();
 const skillEntryIndexCache = new Map();
+const wellKnownSourceProbeCache = new Map();
 
 /** Resource types managed by the library */
 export const RESOURCE_TYPES = Object.freeze(["prompt", "agent", "skill", "mcp", "custom-tool"]);
@@ -921,6 +922,8 @@ export function matchAgentProfile(rootDir, taskTitle) {
   return result.best || null;
 }
 
+const TRUSTED_GITHUB_OWNERS = new Set(["microsoft", "github", "azure"]);
+
 export const WELL_KNOWN_AGENT_SOURCES = Object.freeze([
   {
     id: "microsoft-hve-core",
@@ -928,11 +931,289 @@ export const WELL_KNOWN_AGENT_SOURCES = Object.freeze([
     repoUrl: "https://github.com/microsoft/hve-core.git",
     defaultBranch: "main",
     description: "Core HVE agent library with domain and plugin agent templates.",
+    owner: "microsoft",
+    trustTier: "official",
+    importCoverage: "high",
+    focuses: ["core", "plugins", "platform"],
+  },
+  {
+    id: "microsoft-skills",
+    name: "Microsoft Skills",
+    repoUrl: "https://github.com/microsoft/skills.git",
+    defaultBranch: "main",
+    description: "Microsoft-maintained backend, frontend, planner, infrastructure, and scaffolder agent catalog.",
+    owner: "microsoft",
+    trustTier: "official",
+    importCoverage: "high",
+    focuses: ["backend", "frontend", "planner", "infra", "scaffolding"],
+  },
+  {
+    id: "github-copilot-sdk",
+    name: "GitHub Copilot SDK",
+    repoUrl: "https://github.com/github/copilot-sdk.git",
+    defaultBranch: "main",
+    description: "Official GitHub workflow-authoring and docs-maintenance agents for Copilot SDK projects.",
+    owner: "github",
+    trustTier: "official",
+    importCoverage: "medium",
+    focuses: ["copilot", "workflow", "docs"],
+  },
+  {
+    id: "azure-sdk-for-js",
+    name: "Azure SDK for JavaScript",
+    repoUrl: "https://github.com/Azure/azure-sdk-for-js.git",
+    defaultBranch: "main",
+    description: "Official Azure JavaScript SDK repo with agentic workflow authoring guidance and prompts.",
+    owner: "azure",
+    trustTier: "official",
+    importCoverage: "medium",
+    focuses: ["azure", "javascript", "sdk", "workflow"],
+  },
+  {
+    id: "microsoft-vscode-python-environments",
+    name: "Microsoft VS Code Python Environments",
+    repoUrl: "https://github.com/microsoft/vscode-python-environments.git",
+    defaultBranch: "main",
+    description: "Microsoft-maintained maintainer, reviewer, and documentation agents for a production VS Code extension.",
+    owner: "microsoft",
+    trustTier: "official",
+    importCoverage: "medium",
+    focuses: ["vscode", "python", "extension", "maintainer"],
   },
 ]);
 
+function clampNumber(value, min, max) {
+  const numeric = Number(value);
+  if (!Number.isFinite(numeric)) return min;
+  return Math.max(min, Math.min(max, numeric));
+}
+
+function normalizeWellKnownSource(source = {}) {
+  const repoUrl = String(source.repoUrl || "").trim();
+  const github = repoUrl.match(/^https:\/\/github\.com\/([^/]+)\/([^/.]+)(?:\.git)?$/i);
+  const owner = String(source.owner || (github?.[1] || "")).trim();
+  const repo = String(source.repo || (github?.[2] || "")).trim();
+  return {
+    ...source,
+    owner: owner || null,
+    repo: repo || null,
+    provider: source.provider || (github ? "github" : null),
+    importCoverage: String(source.importCoverage || "medium"),
+    focuses: toStringArray(source.focuses),
+  };
+}
+
+function compareWellKnownSources(a, b) {
+  const delta = Number(b?.trust?.score || 0) - Number(a?.trust?.score || 0);
+  if (delta !== 0) return delta;
+  return String(a?.name || "").localeCompare(String(b?.name || ""));
+}
+
+export function computeWellKnownSourceTrust(source, probe = {}, options = {}) {
+  const nowMs = Number(options?.nowMs || Date.now());
+  const normalized = normalizeWellKnownSource(source);
+  const reasons = [];
+  let score = 20;
+
+  if (normalized.trustTier === "official") {
+    score += 25;
+    reasons.push("official-maintainer");
+  }
+  if (TRUSTED_GITHUB_OWNERS.has(String(normalized.owner || "").toLowerCase())) {
+    score += 15;
+    reasons.push("trusted-owner");
+  }
+  if (normalized.importCoverage === "high") {
+    score += 12;
+    reasons.push("high-import-coverage");
+  } else if (normalized.importCoverage === "medium") {
+    score += 6;
+    reasons.push("import-coverage");
+  }
+  if (normalized.provider === "github") {
+    score += 4;
+    reasons.push("github-source");
+  }
+
+  const stars = Number(probe?.stars || 0);
+  if (stars >= 10000) {
+    score += 10;
+    reasons.push("popular-repo");
+  } else if (stars >= 1000) {
+    score += 6;
+    reasons.push("established-repo");
+  } else if (stars >= 100) {
+    score += 3;
+  }
+
+  const daysSincePush = Number.isFinite(probe?.daysSincePush)
+    ? Number(probe.daysSincePush)
+    : (probe?.pushedAt ? Math.max(0, (nowMs - Date.parse(probe.pushedAt)) / 86400000) : null);
+  if (daysSincePush != null) {
+    if (daysSincePush <= 45) {
+      score += 10;
+      reasons.push("recently-updated");
+    } else if (daysSincePush <= 180) {
+      score += 6;
+      reasons.push("active-updates");
+    } else if (daysSincePush <= 365) {
+      score += 2;
+    } else if (daysSincePush > 730) {
+      score -= 16;
+      reasons.push("stale-upstream");
+    }
+  }
+
+  if (probe?.reachable === true) {
+    score += 8;
+    reasons.push("remote-reachable");
+  } else if (probe?.reachable === false) {
+    score -= 28;
+    reasons.push("remote-unreachable");
+  }
+
+  if (probe?.branchExists === true) {
+    score += 6;
+    reasons.push("branch-ok");
+  } else if (probe?.branchExists === false) {
+    score -= 22;
+    reasons.push("branch-missing");
+  }
+
+  if (probe?.archived === true) {
+    score -= 45;
+    reasons.push("archived");
+  }
+  if (probe?.disabled === true) {
+    score -= 45;
+    reasons.push("disabled");
+  }
+
+  score = Math.round(clampNumber(score, 0, 100));
+  const enabled = score >= 55 && probe?.archived !== true && probe?.disabled !== true && probe?.reachable !== false && probe?.branchExists !== false;
+  const status = !enabled ? "disabled" : score >= 85 ? "healthy" : score >= 65 ? "warning" : "degraded";
+
+  return {
+    score,
+    status,
+    enabled,
+    reasons: uniqueStrings(reasons),
+  };
+}
+
+function buildWellKnownSourceResult(source, probe = null, options = {}) {
+  const normalized = normalizeWellKnownSource(source);
+  const trust = computeWellKnownSourceTrust(normalized, probe || {}, options);
+  return {
+    ...normalized,
+    trust,
+    probe: probe ? { ...probe } : null,
+    enabled: trust.enabled,
+    status: trust.status,
+  };
+}
+
 export function listWellKnownAgentSources() {
-  return WELL_KNOWN_AGENT_SOURCES.map((source) => ({ ...source }));
+  return WELL_KNOWN_AGENT_SOURCES
+    .map((source) => buildWellKnownSourceResult(source))
+    .sort(compareWellKnownSources);
+}
+
+export function clearWellKnownAgentSourceProbeCache() {
+  wellKnownSourceProbeCache.clear();
+}
+
+async function fetchGithubRepoProbe(source, options = {}) {
+  const normalized = normalizeWellKnownSource(source);
+  if (normalized.provider !== "github" || !normalized.owner || !normalized.repo) {
+    return { checkedAt: nowISO(), reachable: false, branchExists: false, error: "Unsupported repository provider" };
+  }
+
+  const fetchImpl = options.fetchImpl || globalThis.fetch;
+  const spawnImpl = options.spawnImpl || spawnSync;
+  const branch = String(normalized.defaultBranch || "main").trim() || "main";
+  const headers = {
+    "Accept": "application/vnd.github+json",
+    "User-Agent": "bosun-library-manager",
+  };
+  if (process.env.GITHUB_TOKEN) headers.Authorization = `Bearer ${process.env.GITHUB_TOKEN}`;
+
+  let repoMeta = null;
+  let repoError = null;
+  if (typeof fetchImpl === "function") {
+    try {
+      const response = await fetchImpl(`https://api.github.com/repos/${normalized.owner}/${normalized.repo}`, { headers });
+      if (response?.ok) {
+        repoMeta = await response.json();
+      } else {
+        repoError = `GitHub API returned ${Number(response?.status || 0) || "error"}`;
+      }
+    } catch (err) {
+      repoError = err?.message || String(err);
+    }
+  } else {
+    repoError = "fetch unavailable";
+  }
+
+  let reachable = false;
+  let branchExists = false;
+  let gitError = null;
+  try {
+    const remote = spawnImpl("git", ["ls-remote", "--exit-code", "--heads", normalized.repoUrl, branch], {
+      encoding: "utf8",
+      stdio: ["ignore", "pipe", "pipe"],
+      timeout: Number(options.timeoutMs || 15000),
+    });
+    const stdout = String(remote?.stdout || "").trim();
+    reachable = Number(remote?.status) === 0 || stdout.length > 0;
+    branchExists = reachable && stdout.length > 0;
+    if (!reachable || !branchExists) {
+      gitError = String(remote?.stderr || remote?.stdout || "git ls-remote failed").trim() || null;
+    }
+  } catch (err) {
+    gitError = err?.message || String(err);
+  }
+
+  return {
+    checkedAt: nowISO(),
+    reachable,
+    branchExists,
+    defaultBranch: String(repoMeta?.default_branch || branch || "main"),
+    archived: repoMeta?.archived === true,
+    disabled: repoMeta?.disabled === true,
+    stars: Number(repoMeta?.stargazers_count || 0),
+    forks: Number(repoMeta?.forks_count || 0),
+    openIssues: Number(repoMeta?.open_issues_count || 0),
+    pushedAt: repoMeta?.pushed_at || null,
+    daysSincePush: repoMeta?.pushed_at ? Math.max(0, Math.round((Date.now() - Date.parse(repoMeta.pushed_at)) / 86400000)) : null,
+    apiReachable: Boolean(repoMeta),
+    importReady: reachable && branchExists && repoMeta?.archived !== true && repoMeta?.disabled !== true,
+    error: gitError || repoError || null,
+  };
+}
+
+export async function probeWellKnownAgentSources(options = {}) {
+  const nowMs = Number(options?.nowMs || Date.now());
+  const ttlMs = Math.max(1000, Number(options?.ttlMs || 30 * 60 * 1000));
+  const sourceId = String(options?.sourceId || "").trim().toLowerCase();
+  const refresh = options?.refresh === true;
+  const sources = WELL_KNOWN_AGENT_SOURCES.filter((source) => !sourceId || source.id === sourceId);
+  const results = [];
+
+  for (const source of sources) {
+    const cacheKey = source.id;
+    const cached = wellKnownSourceProbeCache.get(cacheKey) || null;
+    if (!refresh && cached && (nowMs - Number(cached.cachedAt || 0)) < ttlMs) {
+      results.push(buildWellKnownSourceResult(source, cached.probe, { nowMs }));
+      continue;
+    }
+
+    const probe = await fetchGithubRepoProbe(source, options);
+    wellKnownSourceProbeCache.set(cacheKey, { cachedAt: nowMs, probe });
+    results.push(buildWellKnownSourceResult(source, probe, { nowMs }));
+  }
+
+  return results.sort(compareWellKnownSources);
 }
 
 function parseSimpleFrontmatter(markdown = "") {

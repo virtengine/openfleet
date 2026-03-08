@@ -32,6 +32,9 @@ import {
   PROFILE_DIR,
   resolveEntry,
   listWellKnownAgentSources,
+  computeWellKnownSourceTrust,
+  probeWellKnownAgentSources,
+  clearWellKnownAgentSourceProbeCache,
   importAgentProfilesFromRepository,
   syncAutoDiscoveredLibraryEntries,
 } from "../infra/library-manager.mjs";
@@ -679,6 +682,111 @@ describe("matchAgentProfiles", () => {
   });
 });
 
+describe("well-known source probes", () => {
+  beforeEach(() => clearWellKnownAgentSourceProbeCache());
+
+  it("computes trust score from static and probe signals", () => {
+    const source = {
+      id: "sample",
+      name: "Sample",
+      repoUrl: "https://github.com/microsoft/sample.git",
+      owner: "microsoft",
+      trustTier: "official",
+      importCoverage: "high",
+    };
+    const trust = computeWellKnownSourceTrust(source, {
+      reachable: true,
+      branchExists: true,
+      stars: 2400,
+      daysSincePush: 12,
+    }, { nowMs: Date.parse("2026-03-09T00:00:00Z") });
+    expect(trust.enabled).toBe(true);
+    expect(trust.status).toBe("healthy");
+    expect(trust.score).toBeGreaterThanOrEqual(85);
+    expect(trust.reasons).toContain("official-maintainer");
+    expect(trust.reasons).toContain("remote-reachable");
+  });
+
+  it("probes and ranks well-known sources", async () => {
+    const responses = new Map([
+      ["https://api.github.com/repos/microsoft/hve-core", {
+        ok: true,
+        json: async () => ({
+          default_branch: "main",
+          archived: false,
+          disabled: false,
+          stargazers_count: 2200,
+          forks_count: 140,
+          open_issues_count: 12,
+          pushed_at: "2026-03-01T00:00:00Z",
+        }),
+      }],
+      ["https://api.github.com/repos/microsoft/skills", {
+        ok: true,
+        json: async () => ({
+          default_branch: "main",
+          archived: false,
+          disabled: false,
+          stargazers_count: 980,
+          forks_count: 50,
+          open_issues_count: 4,
+          pushed_at: "2026-02-25T00:00:00Z",
+        }),
+      }],
+    ]);
+    const fetchImpl = async (url) => responses.get(String(url)) || { ok: false, status: 404, json: async () => ({}) };
+    const spawnImpl = (cmd, args) => ({
+      status: args.includes("https://github.com/microsoft/hve-core.git") || args.includes("https://github.com/microsoft/skills.git") ? 0 : 2,
+      stdout: args.includes("https://github.com/microsoft/hve-core.git") || args.includes("https://github.com/microsoft/skills.git") ? "deadbeef\trefs/heads/main\n" : "",
+      stderr: "",
+    });
+
+    const results = await probeWellKnownAgentSources({
+      sourceId: "microsoft-hve-core",
+      fetchImpl,
+      spawnImpl,
+      refresh: true,
+      nowMs: Date.parse("2026-03-09T00:00:00Z"),
+    });
+
+    expect(results).toHaveLength(1);
+    expect(results[0].id).toBe("microsoft-hve-core");
+    expect(results[0].enabled).toBe(true);
+    expect(results[0].probe?.reachable).toBe(true);
+    expect(results[0].trust.score).toBeGreaterThanOrEqual(80);
+  });
+
+  it("disables stale or unreachable sources after probing", async () => {
+    const fetchImpl = async () => ({
+      ok: true,
+      json: async () => ({
+        default_branch: "main",
+        archived: true,
+        disabled: false,
+        stargazers_count: 50,
+        forks_count: 5,
+        open_issues_count: 1,
+        pushed_at: "2023-01-01T00:00:00Z",
+      }),
+    });
+    const spawnImpl = () => ({ status: 2, stdout: "", stderr: "fatal" });
+
+    const results = await probeWellKnownAgentSources({
+      sourceId: "github-copilot-sdk",
+      fetchImpl,
+      spawnImpl,
+      refresh: true,
+      nowMs: Date.parse("2026-03-09T00:00:00Z"),
+    });
+
+    expect(results).toHaveLength(1);
+    expect(results[0].enabled).toBe(false);
+    expect(results[0].status).toBe("disabled");
+    expect(results[0].trust.reasons).toContain("archived");
+    expect(results[0].trust.reasons).toContain("remote-unreachable");
+  });
+});
+
 describe("well-known source import", () => {
   beforeEach(() => fresh());
   afterEach(() => cleanup());
@@ -686,8 +794,12 @@ describe("well-known source import", () => {
   it("lists known agent library sources", () => {
     const sources = listWellKnownAgentSources();
     expect(Array.isArray(sources)).toBe(true);
-    expect(sources.length).toBeGreaterThan(0);
+    expect(sources.length).toBeGreaterThanOrEqual(5);
     expect(sources.some((s) => s.id === "microsoft-hve-core")).toBe(true);
+    expect(sources.some((s) => s.id === "microsoft-skills")).toBe(true);
+    expect(sources.some((s) => s.id === "github-copilot-sdk")).toBe(true);
+    expect(sources.some((s) => s.id === "azure-sdk-for-js")).toBe(true);
+    expect(sources.some((s) => s.id === "microsoft-vscode-python-environments")).toBe(true);
   });
 
   it("imports agent profile + prompt from a git repository", () => {

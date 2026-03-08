@@ -1,0 +1,12 @@
+## 2026-03-09 03:39:10 +11:00
+- Scope: GitHub code-scanning remediation batch focused on `js/polynomial-redos` high-volume findings.
+- Files hardened: `agent/agent-supervisor.mjs`, `agent/autofix.mjs`, `agent/fleet-coordinator.mjs`, `agent/hook-profiles.mjs`, `shell/codex-config.mjs`, `workspace/workspace-manager.mjs`, `workspace/worktree-manager.mjs`, `infra/maintenance.mjs`, `kanban/ve-kanban.mjs`, `kanban/vk-log-stream.mjs`, `server/setup-web-server.mjs`, `setup.mjs`, `task/task-assessment.mjs`, `telegram/telegram-bot.mjs`, `voice/voice-agents-sdk.mjs`.
+- Security strategy: replaced risky regex patterns with bounded string parsing and explicit token/ordering checks to reduce ReDoS risk without behavior changes.
+- Validation evidence: `node --check` passed on all touched files; `npm test` passed (156 files / 3429 tests); `npm run build` passed.
+- Local OSS security tooling candidates (free, CLI-friendly):
+  - `semgrep` (SAST rules, quick PR scans)
+  - `gitleaks` (secret scanning)
+  - `trivy fs` (dependency + IaC scanning)
+  - `osv-scanner` (lockfile/package vulnerability checks)
+  - `npm audit --omit=dev` (Node dependency CVEs)
+  - `eslint-plugin-security` (JS security lint rules)

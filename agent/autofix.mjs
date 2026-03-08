@@ -93,7 +93,6 @@ export function extractErrors(logText) {
   const atLineHeader = /^At\s+([A-Za-z]:\\[^\n:]+\.ps1):(\d+)\s+char:(\d+)/;
 
   // Pattern C: TerminatingError(X): "message"
-  const terminatingPattern = /TerminatingError\(([^)]+)\):\s*"(.+?)"/;
 
   for (let i = 0; i < lines.length; i++) {
     const line = lines[i];
@@ -147,16 +146,24 @@ export function extractErrors(logText) {
     }
 
     // ── Check Pattern C (TerminatingError) ──────────────────────────
-    let matchD = line.match(terminatingPattern);
-    if (matchD) {
-      addError({
-        errorType: "TerminatingError",
-        file: "unknown",
-        line: 0,
-        column: null,
-        message: `${matchD[1]}: ${matchD[2].trim()}`,
-        signature: `TerminatingError:${matchD[1]}`,
-      });
+    const marker = "TerminatingError(";
+    const markerPos = line.indexOf(marker);
+    if (markerPos !== -1) {
+      const typeStart = markerPos + marker.length;
+      const typeEnd = line.indexOf(")", typeStart);
+      const colonPos = typeEnd >= 0 ? line.indexOf(":", typeEnd + 1) : -1;
+      const errorType = typeEnd >= 0 ? line.slice(typeStart, typeEnd).trim() : "";
+      const detail = colonPos >= 0 ? line.slice(colonPos + 1).trim().replace(/^"|"$/g, "") : "";
+      if (errorType && detail) {
+        addError({
+          errorType: "TerminatingError",
+          file: "unknown",
+          line: 0,
+          column: null,
+          message: `${errorType}: ${detail}`,
+          signature: `TerminatingError:${errorType}`,
+        });
+      }
     }
   }
 
@@ -185,18 +192,22 @@ function parseLineBlock(lines, startIdx) {
   }
 
   // Capture code line: " NNN |  code..."
-  if (i < lines.length && /^\s*\d+\s*\|/.test(lines[i])) {
-    const codeMatch = lines[i].match(/^\s*\d+\s*\|\s*(.*)$/);
-    if (codeMatch) codeLine = codeMatch[1].trim();
-    i++;
+  if (i < lines.length) {
+    const raw = String(lines[i] || "");
+    const sep = raw.indexOf("|");
+    if (sep !== -1 && /^\s*\d+\s*$/.test(raw.slice(0, sep))) {
+      codeLine = raw.slice(sep + 1).trim();
+      i++;
+    }
   }
 
   // Skip underline and intermediate "| ..." lines, capture last "| message" line
   let lastPipeMessage = "";
   while (i < lines.length) {
-    const pipeMatch = lines[i].match(/^\s*\|\s*(.*)$/);
-    if (!pipeMatch) break;
-    const content = pipeMatch[1].trim();
+    const raw = String(lines[i] || "");
+    const sep = raw.indexOf("|");
+    if (sep === -1 || raw.slice(0, sep).trim().length > 0) break;
+    const content = raw.slice(sep + 1).trim();
     // Skip underline-only lines (~~~~) and empty lines
     if (content && !/^~+$/.test(content)) {
       lastPipeMessage = content;
@@ -225,29 +236,32 @@ function parsePlusBlock(lines, startIdx) {
   let i = startIdx;
 
   // First "+ " line is usually the code
-  if (i < lines.length && /^\s*\+\s*/.test(lines[i])) {
-    const codeMatch = lines[i].match(/^\s*\+\s*(.*)$/);
-    if (codeMatch) {
-      const content = codeMatch[1].trim();
+  if (i < lines.length) {
+    const raw = String(lines[i] || "").trimStart();
+    if (raw.startsWith("+")) {
+      const content = raw.slice(1).trim();
       if (!/^~+$/.test(content)) codeLine = content;
+      i++;
     }
-    i++;
   }
 
   // Subsequent "+ " lines — skip underlines, capture error type + message
-  while (i < lines.length && /^\s*\+\s*/.test(lines[i])) {
-    const plusMatch = lines[i].match(/^\s*\+\s*(.*)$/);
-    if (plusMatch) {
-      const content = plusMatch[1].trim();
-      if (/^~+$/.test(content)) {
-        i++;
-        continue;
-      }
-      // Check for "ErrorType: message"
-      const errMatch = content.match(/^(\w[\w.-]+):\s*(.+)$/);
-      if (errMatch) {
-        errorType = errMatch[1];
-        message = errMatch[2].trim();
+  while (i < lines.length) {
+    const raw = String(lines[i] || "").trimStart();
+    if (!raw.startsWith("+")) break;
+    const content = raw.slice(1).trim();
+    if (/^~+$/.test(content)) {
+      i++;
+      continue;
+    }
+    // Check for "ErrorType: message"
+    const colonPos = content.indexOf(":");
+    if (colonPos > 0 && colonPos < content.length - 1) {
+      const maybeType = content.slice(0, colonPos).trim();
+      const maybeMessage = content.slice(colonPos + 1).trim();
+      if (/^\w[\w.-]+$/.test(maybeType) && maybeMessage) {
+        errorType = maybeType;
+        message = maybeMessage;
       }
     }
     i++;
