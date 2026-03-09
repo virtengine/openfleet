@@ -523,7 +523,7 @@ function compressImmediateGitText(text, logId, opts) {
   const head = text.slice(0, headChars);
   const tail = tailChars > 0 ? text.slice(-tailChars) : "";
   const omitted = text.length - headChars - (tailChars > 0 ? tailChars : 0);
-  const lineCount = text.length === 0 ? 0 : text.split("\n").length;
+  const lineCount = text.length === 0 ? 0 : (text.match(/\n/g) || []).length + 1;
   const note = `\n\n[…git capped: ${lineCount} lines, ${omitted} chars hidden. Full: bosun --tool-log ${logId}]\n\n`;
   return head + note + tail;
 }
