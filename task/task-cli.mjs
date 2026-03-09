@@ -538,20 +538,12 @@ function readRepoAreaLocksFromRuntimeState() {
         };
         const telemetry = normalizeRepoAreaTelemetryEntry(telemetryByArea[area]);
         const historicalAdaptive = buildRepoAreaAdaptiveSignals(telemetry, configuredLimit);
-        const averageMergeLatencyMs =
-          signal.mergeLatencySamples > 0
-            ? signal.mergeLatencyMsTotal / signal.mergeLatencySamples
-            : 0;
-        const outcomeFailureRate = telemetry.recentOutcomes.length > 0
-          ? telemetry.recentOutcomes.reduce(
-            (sum, value) => sum + (Number(value) > 0 ? 1 : 0),
-            0,
-          ) / telemetry.recentOutcomes.length
-          : 0;
-        const activeFailureRate = signal.active > 0 ? signal.retrying / signal.active : 0;
-        const telemetryMergeLatencyMs = averageNumbers(telemetry.mergeLatencySamples);
-        const adaptiveFailureRate = Math.max(activeFailureRate, outcomeFailureRate);
-        const adaptiveMergeLatencyMs = Math.max(averageMergeLatencyMs, telemetryMergeLatencyMs);
+        const adaptiveState = computeRepoAreaAdaptiveState({
+          configuredLimit,
+          telemetry,
+          signal,
+          historicalAdaptive
+        });
         const effectiveLimit = computeRepoAreaEffectiveLimit({
           configuredLimit,
           activeSignals: signal,
@@ -565,15 +557,16 @@ function readRepoAreaLocksFromRuntimeState() {
           effectiveLimit,
           activeSlots: activeCounts.get(area) || 0,
           waitingTasks: blockedByArea.get(area) || 0,
-          activeFailureRate,
-          outcomeFailureRate,
-          adaptiveFailureRate,
+          activeFailureRate: adaptiveState.activeFailureRate,
+          outcomeFailureRate: adaptiveState.outcomeFailureRate,
+          adaptiveFailureRate: adaptiveState.adaptiveFailureRate,
           historicalFailureRate: historicalAdaptive.failureRate,
-          averageMergeLatencyMs,
-          telemetryMergeLatencyMs,
+          averageMergeLatencyMs: adaptiveState.averageMergeLatencyMs,
+          telemetryMergeLatencyMs: adaptiveState.telemetryMergeLatencyMs,
           historicalMergeLatencyMs: historicalAdaptive.mergeLatencyAvgMs,
-          adaptiveMergeLatencyMs,
-          adaptiveReasons: historicalAdaptive.adaptiveReasons,
+          adaptiveMergeLatencyMs: adaptiveState.adaptiveMergeLatencyMs,
+          adaptivePenalty: adaptiveState.adaptivePenalty,
+          adaptiveReasons: adaptiveState.adaptiveReasons,
           maxMergeLatencyMs: signal.maxMergeLatencyMs || 0,
           conflicts: Math.max(0, Math.trunc(Number(metric?.conflicts || 0))),
           blockedDispatches: Math.max(
@@ -624,6 +617,11 @@ function readRepoAreaLocksFromRuntimeState() {
           dispatchCycle?.cycleAreaMetrics &&
           typeof dispatchCycle.cycleAreaMetrics === "object"
             ? { ...dispatchCycle.cycleAreaMetrics }
+            : {},
+        areaLimits:
+          dispatchCycle?.areaLimits &&
+          typeof dispatchCycle.areaLimits === "object"
+            ? { ...dispatchCycle.areaLimits }
             : {},
       },
       totals: {
@@ -681,6 +679,10 @@ function readRepoAreaLocksFromRuntimeState() {
               cycleAreaMetrics:
                 entry?.cycleAreaMetrics && typeof entry.cycleAreaMetrics === "object"
                   ? { ...entry.cycleAreaMetrics }
+                  : {},
+              areaLimits:
+                entry?.areaLimits && typeof entry.areaLimits === "object"
+                  ? { ...entry.areaLimits }
                   : {},
             }))
           : [],
@@ -760,65 +762,145 @@ function buildRepoAreaAdaptiveSignals(entry, baseLimit) {
   };
 }
 
+function computeRepoAreaAdaptiveState({
+  configuredLimit = 0,
+  signal = null,
+  telemetry = null,
+  historicalAdaptive = null,
+} = {}) {
+  const normalizedConfiguredLimit = Math.max(
+    0,
+    Math.trunc(Number(configuredLimit || 0)),
+  );
+  const normalizedSignal = signal && typeof signal === "object"
+    ? signal
+    : {
+      active: 0,
+      retrying: 0,
+      mergeLatencyMsTotal: 0,
+      mergeLatencySamples: 0,
+      maxMergeLatencyMs: 0,
+    };
+  const normalizedTelemetry = normalizeRepoAreaTelemetryEntry(telemetry);
+  const normalizedHistorical = historicalAdaptive || buildRepoAreaAdaptiveSignals(
+    normalizedTelemetry,
+    normalizedConfiguredLimit,
+  );
+
+  const activeFailureRate =
+    normalizedSignal.active > 0
+      ? normalizedSignal.retrying / normalizedSignal.active
+      : 0;
+  const outcomeFailures = normalizedTelemetry.recentOutcomes.reduce(
+    (sum, value) => sum + (Number(value) > 0 ? 1 : 0),
+    0,
+  );
+  const outcomeFailureRate =
+    normalizedTelemetry.recentOutcomes.length > 0
+      ? outcomeFailures / normalizedTelemetry.recentOutcomes.length
+      : 0;
+  const averageMergeLatencyMs =
+    normalizedSignal.mergeLatencySamples > 0
+      ? normalizedSignal.mergeLatencyMsTotal / normalizedSignal.mergeLatencySamples
+      : 0;
+  const telemetryMergeLatencyMs = averageNumbers(
+    normalizedTelemetry.mergeLatencySamples,
+  );
+  const adaptiveFailureRate = Math.max(activeFailureRate, outcomeFailureRate);
+  const adaptiveMergeLatencyMs = Math.max(
+    averageMergeLatencyMs,
+    telemetryMergeLatencyMs,
+  );
+
+  const adaptiveReasons = new Set(normalizedHistorical.adaptiveReasons || []);
+  let penalty = 0;
+  if (
+    (normalizedSignal.active > 0 || normalizedTelemetry.recentOutcomes.length >= 4) &&
+    adaptiveFailureRate >= 0.5
+  ) {
+    penalty += 1;
+    adaptiveReasons.add("failure_rate");
+    if (normalizedSignal.active > 0 && activeFailureRate >= 0.5) {
+      adaptiveReasons.add("active_failure_rate");
+    }
+    if (normalizedTelemetry.recentOutcomes.length >= 4 && outcomeFailureRate >= 0.5) {
+      adaptiveReasons.add("outcome_failure_rate");
+    }
+  }
+  if (
+    (normalizedSignal.active > 0 ||
+      normalizedTelemetry.mergeLatencySamples.length >= 3) &&
+    adaptiveMergeLatencyMs >= REPO_AREA_SLOW_MERGE_LATENCY_MS
+  ) {
+    penalty += 1;
+    adaptiveReasons.add("merge_latency");
+    if (
+      normalizedSignal.active > 0 &&
+      averageMergeLatencyMs >= REPO_AREA_SLOW_MERGE_LATENCY_MS
+    ) {
+      adaptiveReasons.add("active_merge_latency");
+    }
+    if (
+      normalizedTelemetry.mergeLatencySamples.length >= 3 &&
+      telemetryMergeLatencyMs >= REPO_AREA_SLOW_MERGE_LATENCY_MS
+    ) {
+      adaptiveReasons.add("historical_merge_latency");
+    }
+  }
+  if (
+    (normalizedSignal.active > 1 || normalizedTelemetry.recentOutcomes.length >= 6) &&
+    adaptiveFailureRate >= 0.75 &&
+    adaptiveMergeLatencyMs >= REPO_AREA_VERY_SLOW_MERGE_LATENCY_MS
+  ) {
+    penalty += 1;
+    adaptiveReasons.add("severe_lock_pressure");
+  }
+
+  const liveLimit =
+    normalizedConfiguredLimit > 0
+      ? Math.max(
+        1,
+        normalizedConfiguredLimit -
+          Math.min(normalizedConfiguredLimit - 1, penalty),
+      )
+      : 0;
+  const effectiveLimit =
+    normalizedConfiguredLimit > 0
+      ? Math.min(normalizedHistorical.effectiveLimit, liveLimit)
+      : 0;
+
+  return {
+    activeFailureRate,
+    outcomeFailureRate,
+    adaptiveFailureRate,
+    averageMergeLatencyMs,
+    telemetryMergeLatencyMs,
+    adaptiveMergeLatencyMs,
+    adaptivePenalty: Math.max(
+      0,
+      normalizedConfiguredLimit > 0
+        ? normalizedConfiguredLimit - effectiveLimit
+        : 0,
+    ),
+    adaptiveReasons: Array.from(adaptiveReasons),
+    historicalFailureRate: normalizedHistorical.failureRate,
+    historicalMergeLatencyMs: normalizedHistorical.mergeLatencyAvgMs,
+    effectiveLimit,
+  };
+}
+
 function computeRepoAreaEffectiveLimit({
   configuredLimit,
   activeSignals = {},
   telemetry = { recentOutcomes: [], mergeLatencySamples: [] },
   historicalAdaptive = { effectiveLimit: 0 },
 } = {}) {
-  if (!Number.isFinite(configuredLimit) || configuredLimit <= 0) return 0;
-  if (configuredLimit <= 1) return 1;
-
-  const signal = activeSignals || {};
-  const failureRate =
-    Number(signal.active || 0) > 0
-      ? Number(signal.retrying || 0) / Number(signal.active || 1)
-      : 0;
-  const averageMergeLatencyMs =
-    Number(signal.mergeLatencySamples || 0) > 0
-      ? Number(signal.mergeLatencyMsTotal || 0) / Number(signal.mergeLatencySamples || 1)
-      : 0;
-  const outcomeFailures = (telemetry.recentOutcomes || []).reduce(
-    (sum, value) => sum + (Number(value) > 0 ? 1 : 0),
-    0,
-  );
-  const outcomeFailureRate =
-    (telemetry.recentOutcomes || []).length > 0
-      ? outcomeFailures / telemetry.recentOutcomes.length
-      : 0;
-  const telemetryMergeLatencyMs = averageNumbers(telemetry.mergeLatencySamples || []);
-  const adaptiveFailureRate = Math.max(failureRate, outcomeFailureRate);
-  const adaptiveMergeLatencyMs = Math.max(
-    averageMergeLatencyMs,
-    telemetryMergeLatencyMs,
-  );
-
-  let penalty = 0;
-  if (
-    ((signal.active || 0) > 0 || (telemetry.recentOutcomes || []).length >= 4) &&
-    adaptiveFailureRate >= 0.5
-  ) {
-    penalty += 1;
-  }
-  if (
-    ((signal.active || 0) > 0 || (telemetry.mergeLatencySamples || []).length >= 3) &&
-    adaptiveMergeLatencyMs >= REPO_AREA_SLOW_MERGE_LATENCY_MS
-  ) {
-    penalty += 1;
-  }
-  if (
-    ((signal.active || 0) > 1 || (telemetry.recentOutcomes || []).length >= 6) &&
-    adaptiveFailureRate >= 0.75 &&
-    adaptiveMergeLatencyMs >= REPO_AREA_VERY_SLOW_MERGE_LATENCY_MS
-  ) {
-    penalty += 1;
-  }
-
-  const liveLimit = Math.max(
-    1,
-    configuredLimit - Math.min(configuredLimit - 1, penalty),
-  );
-  return Math.min(Math.max(1, historicalAdaptive.effectiveLimit || liveLimit), liveLimit);
+  return computeRepoAreaAdaptiveState({
+    configuredLimit,
+    signal: activeSignals,
+    telemetry,
+    historicalAdaptive,
+  }).effectiveLimit;
 }
 
 /**

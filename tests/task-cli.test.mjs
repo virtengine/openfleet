@@ -45,6 +45,14 @@ describe("task-cli taskStats repo area lock state", () => {
         selectedCount: 1,
         blockedTasks: 2,
         blockedByArea: { infra: 2 },
+        areaLimits: {
+          infra: {
+            configuredLimit: 3,
+            effectiveLimit: 1,
+            adaptivePenalty: 2,
+            adaptiveReasons: ["failure_rate", "merge_latency"],
+          },
+        },
       },
       repoAreaLockMetrics: {
         infra: {
@@ -114,11 +122,20 @@ describe("task-cli taskStats repo area lock state", () => {
         expect.objectContaining({
           area: "infra",
           effectiveLimit: 1,
+          adaptivePenalty: 2,
           waitingTasks: 1,
           activeFailureRate: 1,
           adaptiveReasons: expect.arrayContaining(["failure_rate", "merge_latency"]),
         }),
       ]),
+    );
+    expect(stats.repoAreaLocks.lastDispatch.areaLimits).toEqual(
+      expect.objectContaining({
+        infra: expect.objectContaining({
+          configuredLimit: 3,
+          effectiveLimit: 1,
+        }),
+      }),
     );
   });
 

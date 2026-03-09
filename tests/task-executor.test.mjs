@@ -370,6 +370,7 @@ describe("task-executor", () => {
             conflictEvents: 1,
             waitMsTotal: 600,
             saturatedAreas: ["infra"],
+            areaLimits: expect.any(Object),
           }),
         }),
       );
@@ -381,6 +382,7 @@ describe("task-executor", () => {
             conflicts: 2,
             averageWaitMs: 600,
             selectedDispatches: 1,
+            adaptivePenalty: expect.any(Number),
           }),
         ]),
       );
@@ -657,6 +659,12 @@ describe("task-executor", () => {
           blockedTasks: 1,
           conflictEvents: 1,
           blockedByArea: expect.objectContaining({ infra: 1 }),
+          areaLimits: expect.objectContaining({
+            infra: expect.objectContaining({
+              configuredLimit: 1,
+              effectiveLimit: 1,
+            }),
+          }),
           cycleAreaMetrics: expect.objectContaining({
             infra: expect.objectContaining({
               conflicts: 1,
@@ -722,6 +730,7 @@ describe("task-executor", () => {
         expect.objectContaining({
           effectiveLimit: 1,
           adaptiveReasons: expect.arrayContaining(["failure_rate", "merge_latency"]),
+          adaptivePenalty: expect.any(Number),
           historicalFailureRate: expect.any(Number),
         }),
       );
