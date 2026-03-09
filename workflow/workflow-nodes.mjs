@@ -204,6 +204,59 @@ function simplifyPathLabel(filePath) {
   return parts[0] || normalized;
 }
 
+function evaluateTaskAssignedTriggerConfig(config = {}, eventData = {}) {
+  let triggered = eventData?.eventType === "task.assigned";
+  if (!triggered) return false;
+
+  const task = eventData?.task || eventData || {};
+  const expectedAgentType = String(config?.agentType || "").trim().toLowerCase();
+  if (expectedAgentType) {
+    const candidateTypes = new Set(
+      [
+        eventData?.agentType,
+        eventData?.assignedAgentType,
+        eventData?.task?.agentType,
+        eventData?.task?.assignedAgentType,
+        eventData?.task?.agentProfile,
+        task?.agentType,
+        task?.assignedAgentType,
+        task?.agentProfile,
+      ]
+        .map((value) => String(value || "").trim().toLowerCase())
+        .filter(Boolean),
+    );
+    triggered = candidateTypes.has(expectedAgentType);
+  }
+
+  if (triggered && config?.taskPattern) {
+    try {
+      const regex = new RegExp(String(config.taskPattern), "i");
+      const searchableText = [
+        eventData?.taskTitle,
+        task?.title,
+        ...(Array.isArray(task?.tags) ? task.tags : []),
+      ]
+        .map((value) => String(value || "").trim())
+        .filter(Boolean)
+        .join(" ");
+      triggered = regex.test(searchableText);
+    } catch {
+      triggered = false;
+    }
+  }
+
+  if (triggered && config?.filter) {
+    try {
+      const fn = new Function("task", "$data", `return !!(${config.filter});`);
+      triggered = Boolean(fn(task, eventData));
+    } catch {
+      triggered = false;
+    }
+  }
+
+  return triggered;
+}
+
 function isManagedBosunWorktree(worktreePath, repoRoot) {
   const resolvedWorktree = resolve(String(worktreePath || ""));
   const managedRoot = resolve(String(repoRoot || process.cwd()), ".bosun", "worktrees");
@@ -1360,15 +1413,11 @@ registerNodeType("trigger.task_assigned", {
     properties: {
       agentType: { type: "string", description: "Filter by agent type (e.g., 'frontend')" },
       taskPattern: { type: "string", description: "Title/tag pattern to match" },
+      filter: { type: "string", description: "JS expression filter (e.g., \"task.tags?.includes('backend')\")" },
     },
   },
   async execute(node, ctx) {
-    const triggered = ctx.data?.eventType === "task.assigned";
-    if (triggered && node.config?.taskPattern) {
-      const regex = new RegExp(node.config.taskPattern, "i");
-      const title = ctx.data?.taskTitle || "";
-      return { triggered: regex.test(title), task: ctx.data };
-    }
+    const triggered = evaluateTaskAssignedTriggerConfig(node.config, ctx.data);
     return { triggered, task: ctx.data };
   },
 });
@@ -1708,6 +1757,97 @@ registerNodeType("action.run_agent", {
     }
 
     ctx.log(node.id, `Running agent (${sdk}) in ${cwd}`);
+
+    // ── Sub-workflow delegation ─────────────────────────────────────
+    // If an agent-type workflow exists (metadata.replaces.module =
+    // "primary-agent.mjs") and its trigger filter matches this task,
+    // delegate the full agent execution to that workflow instead of
+    // running a single generic agent pass.
+    // Guard: skip delegation when already inside an agent sub-workflow
+    // to prevent infinite recursion.
+    if (engine?.list && !ctx.data?._agentWorkflowActive) {
+      try {
+        const allWorkflows = engine.list() || [];
+        for (const wf of allWorkflows) {
+          if (wf?.enabled === false) continue;
+          if (wf?.metadata?.replaces?.module !== "primary-agent.mjs") continue;
+
+          const triggerNode = (wf.nodes || []).find((n) => n.type === "trigger.task_assigned");
+          if (!triggerNode) continue;
+          const delegationData = {
+            ...ctx.data,
+            eventType: "task.assigned",
+            taskId: trackedTaskId,
+            taskTitle: trackedTaskTitle,
+          };
+          if (!evaluateTaskAssignedTriggerConfig(triggerNode?.config, delegationData)) continue;
+
+          const tracker = trackedTaskId ? getSessionTracker() : null;
+          if (tracker && trackedTaskId) {
+            const existing = tracker.getSessionById(trackedTaskId);
+            if (!existing) {
+              tracker.createSession({
+                id: trackedTaskId,
+                type: "task",
+                taskId: trackedTaskId,
+                metadata: {
+                  title: trackedTaskTitle || trackedTaskId,
+                  workspaceId: String(ctx.data?.workspaceId || ctx.data?.activeWorkspace || "").trim() || undefined,
+                  workspaceDir: String(cwd || "").trim() || undefined,
+                  branch:
+                    String(
+                      ctx.data?.branch ||
+                        ctx.data?.task?.branchName ||
+                        ctx.data?.taskDetail?.branchName ||
+                        "",
+                    ).trim() || undefined,
+                },
+              });
+            } else {
+              tracker.updateSessionStatus(trackedTaskId, "active");
+              if (trackedTaskTitle) tracker.renameSession(trackedTaskId, trackedTaskTitle);
+            }
+            tracker.recordEvent(trackedTaskId, {
+              role: "system",
+              type: "system",
+              content: `Delegating to agent workflow "${wf.name}" (${wf.id})`,
+              timestamp: new Date().toISOString(),
+              _sessionType: "task",
+            });
+          }
+
+          // Delegate to this agent workflow
+          ctx.log(node.id, `Delegating to agent workflow "${wf.name}" (${wf.id})`);
+          const subCtx = await engine.execute(wf.id, {
+            ...delegationData,
+            _agentWorkflowActive: true,
+          });
+          const subErrors = Array.isArray(subCtx?.errors) ? subCtx.errors : [];
+          const subStatus = subErrors.length === 0 ? "completed" : "failed";
+          if (tracker && trackedTaskId) {
+            tracker.updateSessionStatus(trackedTaskId, subStatus);
+            tracker.recordEvent(trackedTaskId, {
+              role: subStatus === "completed" ? "assistant" : "system",
+              type: subStatus === "completed" ? "agent_message" : "error",
+              content: `Agent workflow "${wf.name}" ${subStatus} (${subErrors.length} errors)`,
+              timestamp: new Date().toISOString(),
+              _sessionType: "task",
+            });
+          }
+          ctx.log(node.id, `Agent workflow "${wf.name}" ${subStatus} (${subErrors.length} errors)`);
+          return {
+            success: subErrors.length === 0,
+            delegated: true,
+            subWorkflowId: wf.id,
+            subWorkflowName: wf.name,
+            subStatus,
+          };
+        }
+      } catch (err) {
+        ctx.log(node.id, `Sub-workflow delegation check failed: ${err?.message || err}`);
+        // Fall through to generic agent execution
+      }
+    }
 
     // Use the engine's service injection to call agent pool
     const agentPool = engine.services?.agentPool;
@@ -9289,6 +9429,4 @@ registerNodeType("action.web_search", {
 // ═══════════════════════════════════════════════════════════════════════════
 
 export { registerNodeType, getNodeType, listNodeTypes } from "./workflow-engine.mjs";
-
-
 

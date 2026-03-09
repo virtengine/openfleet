@@ -406,6 +406,15 @@ describe("workflow-templates", () => {
     );
     expect(createFlowEdge).toBeDefined();
   });
+
+  it("backend agent template keeps backend/api trigger filter", () => {
+    const template = getTemplate("template-backend-agent");
+    expect(template).toBeDefined();
+
+    const triggerNode = template.nodes.find((n) => n.id === "trigger");
+    expect(triggerNode?.type).toBe("trigger.task_assigned");
+    expect(triggerNode?.config?.filter).toBe("task.tags?.some(t => t === 'backend' || t === 'api')");
+  });
 });
 
 // ── Template API ────────────────────────────────────────────────────────────
@@ -937,5 +946,4 @@ describe("template category coverage", () => {
     }
   });
 });
-
 
