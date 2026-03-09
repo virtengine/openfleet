@@ -5874,8 +5874,17 @@ function scrubStackTraces(payload) {
   }
   return out;
 }
-function jsonResponse(res, statusCode, payload) {
+function normalizeJsonResponsePayload(statusCode, payload) {
   const safePayload = scrubStackTraces(payload);
+  if (statusCode < 500) return safePayload;
+  if (safePayload && typeof safePayload === "object" && !Array.isArray(safePayload)) {
+    return { ...safePayload, error: "Internal server error" };
+  }
+  return { ok: false, error: "Internal server error" };
+}
+
+function jsonResponse(res, statusCode, payload) {
+  const safePayload = normalizeJsonResponsePayload(statusCode, payload);
   const body = JSON.stringify(safePayload, null, 2);
   res.writeHead(statusCode, {
     "Content-Type": "application/json; charset=utf-8",

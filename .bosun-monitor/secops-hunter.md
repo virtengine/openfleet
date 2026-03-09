@@ -67,3 +67,16 @@
 - Local OSS tooling notes:
   - Executed: `npm audit` during install (0 vulnerabilities).
   - Keep free CLI stack in rotation: `semgrep`, `gitleaks`, `osv-scanner`, `trivy`, `npm audit`.
+
+## 2026-03-09 21:26:55 +11:00
+
+- Scope: Final follow-up batch for remaining main-branch CodeQL alerts after PR #194 merge.
+- Files hardened: `task/task-store.mjs`, `server/ui-server.mjs`.
+- Security strategy:
+  - replaced dynamic `task[key]` assignment with explicit direct setter functions to remove remaining prototype-pollution sink.
+  - enforced generic error payloads for all 5xx JSON responses to eliminate any stack-derived leakage path.
+- Validation evidence:
+  - `node --check task/task-store.mjs server/ui-server.mjs` passed.
+  - `npm test -- tests/task-store.test.mjs tests/ui-server.test.mjs` passed (66 tests).
+- Tooling notes:
+  - existing free OSS CLI stack remains recommended: `semgrep`, `gitleaks`, `osv-scanner`, `trivy`, `npm audit`.
