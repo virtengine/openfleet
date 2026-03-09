@@ -362,3 +362,28 @@ ode cli.mjs --config-dir .bosun --repo-root . --workspace-health reports HEALTHY
   - Workflow scheduler remains active (Task Planner / Task Replenish / Task Batch Processor runs continuing each minute).
 - Throughput status: still below target (task stats remain 	odo=1455, inprogress=1); one long-running Task Lifecycle run (a6387b1-...) is still in un-agent and should be watched next run for completion vs timeout.
 - No code changes shipped in this run; no PR/merge action required.
+
+## 2026-03-09T14:54:05+11:00 incident follow-up
+- User-reported symptom confirmed: only 2 done tasks after prolonged runtime while backlog exceeded 1.4k tasks.
+- Root cause found in live monitor logs: Task Lifecycle reused a stale/broken managed worktree path, then ction.detect_new_commits failed with atal: not a git repository .../.git/worktrees/..., causing claim heartbeat owner_mismatch loops and zero durable E2E completions.
+- Code fix shipped on monitor/bosun-env-stability:
+  - workflow/workflow-nodes.mjs: validate managed worktree before reuse; if invalid, remove/prune and recreate before lifecycle continues.
+  - 	ests/workflow-task-lifecycle.test.mjs: regression test for invalid managed-worktree self-heal.
+- Validation completed:
+  - 
+pm test -- tests/workflow-task-lifecycle.test.mjs pass.
+  - 
+pm run build pass.
+  - 
+pm run prepush:check pass (full suite 158 files / 3456 tests).
+- Delivery:
+  - Commit: 3c86c46 (ix(workflow): heal invalid managed worktrees before reuse).
+  - Pushed: origin/monitor/bosun-env-stability.
+- Runtime recovery performed:
+  - Reset orphan in-progress guard tasks (604c4ab2..., 4fe18c6...) back to todo.
+  - Restarted source daemon with explicit local flags (--config-dir .bosun --repo-root . --no-update-check --no-auto-update).
+  - Post-restart monitor shows stale in-progress recovery and fresh dispatch (	odo -> inprogress) with no new recurrence of the old 
+ot a git repository .../.git/worktrees/... signature in the new daemon epoch.
+- Remaining risk to monitor next hour:
+  - High interrupted-run volume (Detected 446 interrupted run(s) on startup) and repeated stuck_agent: undefined alerts still indicate broader executor/watchdog instability beyond this specific worktree corruption fix.
+- Run duration: ~01:05:00.
