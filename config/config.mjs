@@ -31,6 +31,7 @@ import {
   getModelsForExecutor,
   MODEL_ALIASES,
 } from "../task/task-complexity.mjs";
+import { normalizePipelineWorkflows } from "../workflow/pipeline-workflows.mjs";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
@@ -2000,6 +2001,7 @@ export function loadConfig(argv = process.argv, options = {}) {
     configData,
     triggerSystemDefaults,
   );
+  const workflows = normalizePipelineWorkflows(configData.workflows || {});
 
   // ── GitHub Reconciler ───────────────────────────────────
   const ghReconcileEnabled = isEnvEnabled(
@@ -2266,6 +2268,7 @@ export function loadConfig(argv = process.argv, options = {}) {
     telegramVerbosity,
 
     triggerSystem,
+    workflows,
 
     // GitHub Reconciler
     githubReconcile: {
@@ -2303,10 +2306,20 @@ export function loadConfig(argv = process.argv, options = {}) {
     activeWorkspace,
     agentRepoRoot,
 
+    workflows:
+      configData.workflows &&
+      typeof configData.workflows === "object" &&
+      !Array.isArray(configData.workflows)
+        ? Object.freeze({ ...configData.workflows })
+        : Object.freeze({}),
+
     // Agent prompts
     agentPrompts,
     agentPromptSources,
     agentPromptCatalog,
+
+    // Declarative workflows
+    workflows: configData.workflows && typeof configData.workflows === "object" ? configData.workflows : {},
 
     // First run
     isFirstRun,

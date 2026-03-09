@@ -76,7 +76,8 @@ function showHelp() {
     bosun [options]
 
   COMMANDS
-    --setup                     Launch the web-based setup wizard (default)
+    workflow list              List declarative pipeline workflows
+    workflow run <name>        Run a declarative pipeline workflow    --setup                     Launch the web-based setup wizard (default)
     --setup-terminal            Run the legacy terminal setup wizard
     --where                     Show the resolved bosun config directory
     --doctor                    Validate bosun .env/config setup
@@ -150,6 +151,18 @@ function showHelp() {
     task import <file.json>     Bulk import tasks from JSON file
 
     Run 'bosun task --help' for complete task CLI documentation and examples.
+
+  WORKFLOWS
+    workflow list               List built-in and configured workflows
+    workflow run <name>         Run a declarative fresh-context workflow
+
+    Run 'bosun workflow --help' for workflow CLI details.
+
+  WORKFLOWS
+    workflow list               List built-in and config-defined pipeline workflows
+    workflow run <name>         Run a declarative pipeline workflow
+
+    Run 'bosun workflow --help' for workflow CLI examples.
 
   VIBE-KANBAN
     --no-vk-spawn               Don't auto-spawn Vibe-Kanban
@@ -1223,6 +1236,21 @@ async function main() {
     process.exit(0);
   }
 
+  const workflowFlagIndex = args.indexOf("--workflow");
+  const workflowCommandIndex =
+    args[0] === "workflow"
+      ? 0
+      : args[0]?.startsWith("--")
+        ? args.indexOf("workflow")
+        : -1;
+  if (workflowCommandIndex >= 0 || workflowFlagIndex >= 0) {
+    const { runWorkflowCli } = await import("./workflow/workflow-cli.mjs");
+    const commandStartIndex = workflowCommandIndex >= 0 ? workflowCommandIndex : workflowFlagIndex;
+    const workflowArgs = args.slice(commandStartIndex + 1);
+    await runWorkflowCli(workflowArgs);
+    process.exit(0);
+  }
+
   // Handle --help
   if (args.includes("--help") || args.includes("-h")) {
     showHelp();
@@ -2284,3 +2312,4 @@ main().catch(async (err) => {
   await sendCrashNotification(1, null).catch(() => {});
   process.exit(1);
 });
+

@@ -71,10 +71,17 @@
     "./container-runner": "./infra/container-runner.mjs",
     "./compat": "./compat.mjs",
     "./task-cli": "./task/task-cli.mjs",
+    "./task-pipeline": "./task/pipeline.mjs",
+    "./task-msg-hub": "./task/msg-hub.mjs",
+    "./workflow-cli": "./workflow/workflow-cli.mjs",
+    "./pipeline-workflows": "./workflow/pipeline-workflows.mjs",
     "./github-auth-manager": "./github/github-auth-manager.mjs",
     "./git-commit-helpers": "./git/git-commit-helpers.mjs",
     "./opencode-shell": "./shell/opencode-shell.mjs",
-    "./context-indexer": "./workspace/context-indexer.mjs"
+    "./context-indexer": "./workspace/context-indexer.mjs",
+    "./msg-hub": "./workflow/msg-hub.mjs",
+    "./declarative-workflows": "./workflow/declarative-workflows.mjs",
+    "./pipeline": "./workflow/pipeline.mjs"
   },
   "bin": {
     "bosun": "cli.mjs",
@@ -194,6 +201,8 @@
     "infra/library-manager.mjs",
     "infra/maintenance.mjs",
     "workflow/manual-flows.mjs",
+    "workflow/pipeline-workflows.mjs",
+    "workflow/workflow-cli.mjs",
     "workflow/mcp-discovery-proxy.mjs",
     "workflow/mcp-workflow-adapter.mjs",
     "workflow/mcp-registry.mjs",
@@ -233,6 +242,8 @@
     "task/task-claims.mjs",
     "task/task-context.mjs",
     "task/task-attachments.mjs",
+    "task/pipeline.mjs",
+    "task/msg-hub.mjs",
     "task/task-executor.mjs",
     "task/task-store.mjs",
     "telegram/telegram-bot.mjs",
@@ -301,7 +312,9 @@
     "bosun-tui.mjs",
     "tui/",
     "tools/",
-    "ui/vendor/"
+    "ui/vendor/",
+    "workflow/msg-hub.mjs",
+    "workflow/declarative-workflows.mjs"
   ],
   "dependencies": {
     "@anthropic-ai/claude-agent-sdk": "latest",
