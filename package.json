@@ -96,6 +96,7 @@
     "setup:terminal": "node setup.mjs",
     "monitor": "node infra/monitor.mjs",
     "desktop": "node cli.mjs --desktop",
+    "audit:ci": "node cli.mjs audit --ci",
     "desktop:install": "npm -C desktop install",
     "desktop:dist": "npm -C desktop run dist",
     "build": "node tools/vendor-sync.mjs",
@@ -158,6 +159,7 @@
     "bosun.config.example.json",
     "bosun.schema.json",
     "agent/bosun-skills.mjs",
+    "agent/skills/skill-codebase-audit.md",
     "shell/codex-model-profiles.mjs",
     "shell/codex-shell.mjs",
     "config/config.mjs",
@@ -190,6 +192,7 @@
     "git/git-safety.mjs",
     "kanban/kanban-adapter.mjs",
     "lib/logger.mjs",
+    "lib/codebase-audit.mjs",
     "lib/session-insights.mjs",
     "infra/library-manager.mjs",
     "infra/maintenance.mjs",
@@ -346,3 +349,4 @@
     "gaxios": "7.1.4"
   }
 }
+

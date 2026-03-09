@@ -37,6 +37,10 @@ jobs:
       - name: Run build
         run: npm run build
 
+      - name: Audit conformity gate
+        if: ${{ vars.BOSUN_AUDIT_CI == '1' }}
+        run: npm run audit:ci
+
       - name: Native call parity gate
         run: npm run check:native-call-parity
 
