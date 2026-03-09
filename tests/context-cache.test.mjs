@@ -17,8 +17,11 @@ vi.mock("node:path", async (importOriginal) => {
 
 describe("context-cache", () => {
   let contextCache;
+  let originalGitOutputMaxChars;
 
   beforeEach(async () => {
+    originalGitOutputMaxChars = process.env.BOSUN_GIT_OUTPUT_MAX_CHARS;
+    delete process.env.BOSUN_GIT_OUTPUT_MAX_CHARS;
     // Clean test directory
     rmSync(TEST_CACHE_DIR, { recursive: true, force: true });
     mkdirSync(TEST_CACHE_DIR, { recursive: true });
@@ -29,6 +32,11 @@ describe("context-cache", () => {
   });
 
   afterEach(() => {
+    if (originalGitOutputMaxChars === undefined) {
+      delete process.env.BOSUN_GIT_OUTPUT_MAX_CHARS;
+    } else {
+      process.env.BOSUN_GIT_OUTPUT_MAX_CHARS = originalGitOutputMaxChars;
+    }
     rmSync(TEST_CACHE_DIR, { recursive: true, force: true });
     vi.restoreAllMocks();
   });
@@ -50,6 +58,13 @@ describe("context-cache", () => {
       });
     }
     return items;
+  }
+
+  function makeLargeGitOutput(lines = 1400) {
+    return Array.from(
+      { length: lines },
+      (_, i) => `${String(i).padStart(4, "0")} commit message ${"x".repeat(30)}`,
+    ).join("\n");
   }
 
   // ── cacheAndCompressItems ──────────────────────────────────────────────
@@ -133,6 +148,97 @@ describe("context-cache", () => {
       );
       // More aggressive should compress more
       expect(cachedAggressive.length).toBeGreaterThanOrEqual(cached.length);
+    });
+
+    it("immediately caps large git log output and preserves the full disk cache entry", async () => {
+      const fullOutput = makeLargeGitOutput(1500);
+      const items = [{
+        type: "command_execution",
+        command: "git log --oneline",
+        aggregated_output: fullOutput,
+      }];
+
+      const result = await contextCache.cacheAndCompressItems(items);
+
+      expect(result).toHaveLength(1);
+      expect(result[0]._cachedLogId).toBeDefined();
+      expect(result[0].aggregated_output.length).toBeLessThan(1000);
+      expect(result[0].aggregated_output).toContain("bosun --tool-log");
+      expect(result[0].aggregated_output).toMatch(/git capped: \d+ lines, \d+ chars hidden/i);
+
+      const retrieved = await contextCache.retrieveToolLog(result[0]._cachedLogId);
+      expect(retrieved.found).toBe(true);
+      expect(retrieved.entry.item.aggregated_output).toBe(fullOutput);
+    });
+
+    it("immediately caps other high-volume git history outputs", async () => {
+      const fullOutput = makeLargeGitOutput(1500);
+      const cases = [
+        { command: "git shortlog -sn", field: "aggregated_output" },
+        { command: "git reflog", field: "aggregated_output" },
+        { command: "git diff HEAD~20 HEAD", field: "aggregated_output" },
+        { tool_name: "git", arguments: ["log", "--oneline"], field: "output" },
+      ];
+
+      for (const entry of cases) {
+        const [result] = await contextCache.cacheAndCompressItems([{
+          type: entry.field === "output" ? "function_call_output" : "command_execution",
+          tool_name: entry.tool_name,
+          arguments: entry.arguments,
+          command: entry.command,
+          [entry.field]: fullOutput,
+        }]);
+
+        expect(result._cachedLogId).toBeDefined();
+        expect(result[entry.field]).toContain("bosun --tool-log");
+        expect(result[entry.field].length).toBeLessThan(1000);
+      }
+    });
+
+    it("leaves bounded git commands untouched", async () => {
+      const largeOutput = makeLargeGitOutput(1500);
+      const statusItems = [{
+        type: "command_execution",
+        command: "git status --short",
+        aggregated_output: largeOutput,
+      }];
+      const diffStatItems = [{
+        type: "command_execution",
+        command: "git diff --stat HEAD~1",
+        aggregated_output: largeOutput,
+      }];
+      const showItems = [{
+        type: "command_execution",
+        command: "git show HEAD~1",
+        aggregated_output: largeOutput,
+      }];
+
+      const [statusResult] = await contextCache.cacheAndCompressItems(statusItems);
+      const [diffStatResult] = await contextCache.cacheAndCompressItems(diffStatItems);
+      const [showResult] = await contextCache.cacheAndCompressItems(showItems);
+
+      expect(statusResult._cachedLogId).toBeUndefined();
+      expect(statusResult.aggregated_output).toBe(largeOutput);
+      expect(diffStatResult._cachedLogId).toBeUndefined();
+      expect(diffStatResult.aggregated_output).toBe(largeOutput);
+      expect(showResult._cachedLogId).toBeUndefined();
+      expect(showResult.aggregated_output).toBe(largeOutput);
+    });
+
+    it("disables the immediate git cap when BOSUN_GIT_OUTPUT_MAX_CHARS=0", async () => {
+      process.env.BOSUN_GIT_OUTPUT_MAX_CHARS = "0";
+
+      const fullOutput = makeLargeGitOutput(1500);
+      const items = [{
+        type: "command_execution",
+        command: "git log --oneline",
+        aggregated_output: fullOutput,
+      }];
+
+      const [result] = await contextCache.cacheAndCompressItems(items);
+
+      expect(result._cachedLogId).toBeUndefined();
+      expect(result.aggregated_output).toBe(fullOutput);
     });
   });
 
