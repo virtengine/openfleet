@@ -1905,7 +1905,10 @@ describe("Session chaining - action.run_agent", () => {
     expect(ctx.data.threadId).toBe("thread-abc-123");
     expect(launchEphemeralThread).toHaveBeenCalledTimes(1);
     expect(launchEphemeralThread.mock.calls[0][3]).toEqual(
-      expect.objectContaining({ onEvent: expect.any(Function) }),
+      expect.objectContaining({
+        onEvent: expect.any(Function),
+        systemPrompt: expect.any(String),
+      }),
     );
     const runLogText = ctx.logs.map((entry) => String(entry?.message || "")).join("\n");
     expect(runLogText).toMatch(/Tool call: apply_patch/);
@@ -2151,6 +2154,7 @@ describe("Session chaining - action.run_agent", () => {
       expect.objectContaining({
         sessionType: "flow",
         onEvent: expect.any(Function),
+        systemPrompt: expect.any(String),
       }),
     );
   });
@@ -2194,6 +2198,7 @@ describe("Session chaining - action.run_agent", () => {
       expect.objectContaining({
         sessionType: "task",
         onEvent: expect.any(Function),
+        systemPrompt: expect.any(String),
       }),
     );
 

@@ -1087,6 +1087,7 @@ async function launchCodexThread(prompt, cwd, timeoutMs, extra = {}) {
     onThreadReady = null,
     taskKey: steerKey = null,
     envOverrides = null,
+    systemPrompt = "",
   } = extra;
 
   let reportedThreadId = null;
@@ -1198,7 +1199,10 @@ async function launchCodexThread(prompt, cwd, timeoutMs, extra = {}) {
   // ── 4. Stream the turn ───────────────────────────────────────────────────
   try {
     const streamSafety = resolveCodexStreamSafety(timeoutMs);
-    const safePrompt = sanitizeAndBoundPrompt(`${prompt}${TOOL_OUTPUT_GUARDRAIL}`);
+    const anchoredPrompt = String(systemPrompt || "").trim()
+      ? `${String(systemPrompt).trim()}\n\n---\n\n${prompt}`
+      : prompt;
+    const safePrompt = sanitizeAndBoundPrompt(`${anchoredPrompt}${TOOL_OUTPUT_GUARDRAIL}`);
     const turn = await thread.runStreamed(safePrompt, {
       signal: controller.signal,
     });
@@ -1832,6 +1836,7 @@ async function launchClaudeThread(prompt, cwd, timeoutMs, extra = {}) {
     model: requestedModel = null,
     taskKey: steerKey = null,
     envOverrides = null,
+    systemPrompt = "",
   } = extra;
 
   // ── 1. Load the SDK ──────────────────────────────────────────────────────
@@ -1974,7 +1979,10 @@ async function launchClaudeThread(prompt, cwd, timeoutMs, extra = {}) {
       `# ${extractTaskHeading(prompt)}\n\n${prompt}\n\n---\n` +
       'Do NOT respond with "Ready" or ask what to do. EXECUTE this task.';
 
-    msgQueue.push(makeUserMessage(formattedPrompt));
+    const anchoredPrompt = String(systemPrompt || "").trim()
+      ? `${String(systemPrompt).trim()}\n\n---\n\n${formattedPrompt}`
+      : formattedPrompt;
+    msgQueue.push(makeUserMessage(anchoredPrompt));
 
     // Register active session for mid-execution steering (Claude uses message queue)
     if (steerKey) {
