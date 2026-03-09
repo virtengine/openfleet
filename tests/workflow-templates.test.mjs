@@ -631,6 +631,9 @@ describe("workflow setup profiles", () => {
 
     expect(batchProcessorTriggerNode?.type).toBe("trigger.task_available");
     expect(batchPrTriggerNode?.type).toBe("trigger.task_available");
+
+    const coordinatorEdge = batchProcessor?.edges?.find((edge) => edge.source === "check-coordinator" && edge.target === "query-tasks");
+    expect(coordinatorEdge?.condition).toBe("result === true || result?.result === true || result?.value === true");
   });
 
   it("exposes built-in setup profiles with template selections", () => {
@@ -937,5 +940,7 @@ describe("template category coverage", () => {
     }
   });
 });
+
+
 
 

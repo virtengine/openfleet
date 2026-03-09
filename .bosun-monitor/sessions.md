@@ -387,3 +387,22 @@ ot a git repository .../.git/worktrees/... signature in the new daemon epoch.
 - Remaining risk to monitor next hour:
   - High interrupted-run volume (Detected 446 interrupted run(s) on startup) and repeated stuck_agent: undefined alerts still indicate broader executor/watchdog instability beyond this specific worktree corruption fix.
 - Run duration: ~01:05:00.
+
+## 2026-03-09T15:18:00+11:00 incident follow-up
+- Runtime duration: ~00:55:00.
+- Health check confirmed source daemon still running from repo (`cli.mjs` + `infra/monitor.mjs` daemon-child), but runtime remains degraded: recurring `stuck_agent: undefined` + Codex/Copilot timeout cooldown loops.
+- Found orphan manually-started task (`66bc4d1a-...`) stuck `inprogress` with no workflow/PR metadata; reset to `todo` via source-local CLI and verified temporary queue reconciliation (`inprogress` dropped to 0 immediately after reset).
+- Identified likely dispatch gate bug from live workflow runs (`Task Batch Processor` run `e26e2fde-...`): `check-coordinator` returned true while downstream `query-tasks` remained skipped.
+- Local code patch prepared (not shipped):
+  - `workflow-templates/task-batch.mjs` edge condition widened to accept boolean/legacy condition payloads.
+  - `tests/workflow-templates.test.mjs` regression assertion added.
+- Validation evidence:
+  - Targeted: `npm test -- tests/workflow-templates.test.mjs` passed.
+  - Full validation blocked by existing workspace instability outside this patch:
+    - `npm test` failed on pre-existing guard tests (`tests/monitor-is-branch-merged-guard.test.mjs`).
+    - `npm run prepush:check` failed with existing transform error in `server/ui-server.mjs` and broad pre-existing failures (`ui-server`, `voice`, `demo-defaults-sync`) plus unrelated dirty tracked files.
+- Critical blocker:
+  - Unexpected concurrent tracked changes appeared across multiple files during this run (`infra/monitor.mjs`, `server/ui-server.mjs`, `workflow/workflow-nodes.mjs`, etc.).
+  - Paused before commit/push/PR to avoid clobbering unrelated in-flight edits; operator decision required before any git write operations.
+- Next run focus:
+  - Resolve/confirm ownership of concurrent tracked edits, then either isolate patch in clean worktree or integrate with active changes and rerun full validation ladder before shipping.

@@ -13813,7 +13813,7 @@
           "source": "check-coordinator",
           "target": "query-tasks",
           "sourcePort": "default",
-          "condition": "result.result === true"
+          "condition": "result === true || result?.result === true || result?.value === true"
         },
         {
           "id": "query-tasks->dispatch-tasks",
@@ -28671,7 +28671,7 @@
           "source": "check-coordinator",
           "target": "query-tasks",
           "sourcePort": "default",
-          "condition": "result.result === true"
+          "condition": "result === true || result?.result === true || result?.value === true"
         },
         {
           "id": "query-tasks->dispatch-tasks",

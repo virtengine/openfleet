@@ -110,7 +110,9 @@ export const TASK_BATCH_PROCESSOR_TEMPLATE = {
   ],
   edges: [
     edge("trigger", "check-coordinator"),
-    edge("check-coordinator", "query-tasks", { condition: "result.result === true" }),
+    edge("check-coordinator", "query-tasks", {
+      condition: "result === true || result?.result === true || result?.value === true",
+    }),
     edge("query-tasks", "dispatch-tasks"),
     edge("dispatch-tasks", "join-dispatch"),
     edge("join-dispatch", "record-results"),
@@ -259,3 +261,4 @@ export const TASK_BATCH_PR_TEMPLATE = {
     tags: ["task", "batch", "pr", "agent", "autonomous"],
   },
 };
+
