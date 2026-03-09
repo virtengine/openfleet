@@ -1438,6 +1438,7 @@ async function launchCopilotThread(prompt, cwd, timeoutMs, extra = {}) {
 
   let client;
   let unsubscribe = null;
+  let stopCopilotFirstEventWatch = null;
   let finalResponse = "";
   const allItems = [];
   const autoApprovePermissions = shouldAutoApproveCopilotPermissions();
@@ -1672,7 +1673,50 @@ async function launchCopilotThread(prompt, cwd, timeoutMs, extra = {}) {
         // Don't let this timer keep the process alive
         if (ht && typeof ht.unref === "function") ht.unref();
       });
-      await Promise.race([sendPromise, copilotHardTimeout]);
+      // Some Copilot SDK builds can stall sendAndWait without yielding any
+      // events. Apply an early watchdog so we can fail over before the full
+      // task timeout elapses.
+      let copilotFirstEventTimeoutMs = null;
+      const firstEventWatch =
+        typeof session.on === "function"
+          ? new Promise((_, reject) => {
+              copilotFirstEventTimeoutMs = getFirstEventTimeoutMs(timeoutMs);
+              if (!Number.isFinite(copilotFirstEventTimeoutMs) || copilotFirstEventTimeoutMs <= 0) {
+                return;
+              }
+              let settled = false;
+              let off = null;
+              const timer = setTimeout(() => {
+                settled = true;
+                if (typeof off === "function") off();
+                reject(new Error("timeout_no_events"));
+              }, clampTimerDelayMs(copilotFirstEventTimeoutMs, "copilot-first-event-timeout"));
+              if (timer && typeof timer.unref === "function") timer.unref();
+              off = session.on((event) => {
+                if (settled) return;
+                if (!event || typeof event !== "object") return;
+                const t = String(event.type || "");
+                if (
+                  t === "assistant.message" ||
+                  t === "assistant.message_delta" ||
+                  t === "session.idle" ||
+                  t === "session.error"
+                ) {
+                  settled = true;
+                  clearTimeout(timer);
+                  if (typeof off === "function") off();
+                }
+              });
+              stopCopilotFirstEventWatch = () => {
+                settled = true;
+                clearTimeout(timer);
+                if (typeof off === "function") off();
+              };
+            })
+          : null;
+      await Promise.race(
+        [sendPromise, copilotHardTimeout, firstEventWatch].filter(Boolean),
+      );
     }
 
     const output =
@@ -1694,6 +1738,7 @@ async function launchCopilotThread(prompt, cwd, timeoutMs, extra = {}) {
       err?.name === "AbortError" ||
       errMsg === "timeout" ||
       errMsg === "hard_timeout" ||
+      errMsg === "timeout_no_events" ||
       errMsg === "timeout_waiting_for_idle" ||
       isIdleWaitTimeout;
 
@@ -1715,11 +1760,15 @@ async function launchCopilotThread(prompt, cwd, timeoutMs, extra = {}) {
     }
 
     if (isTimeout) {
+      const noEventsSuffix =
+        errMsg === "timeout_no_events"
+          ? ` (no events received within ${getFirstEventTimeoutMs(timeoutMs)}ms)`
+          : "";
       return {
         success: false,
         output: "",
         items: allItems,
-        error: `${TAG} copilot timeout after ${timeoutMs}ms${isIdleWaitTimeout ? " waiting for session.idle" : ""}`,
+        error: `${TAG} copilot timeout after ${timeoutMs}ms${isIdleWaitTimeout ? " waiting for session.idle" : noEventsSuffix}`,
         sdk: "copilot",
         threadId: resumeThreadId,
       };
@@ -1751,6 +1800,13 @@ async function launchCopilotThread(prompt, cwd, timeoutMs, extra = {}) {
       threadId: resumeThreadId,
     };
   } finally {
+    try {
+      if (typeof stopCopilotFirstEventWatch === "function") {
+        stopCopilotFirstEventWatch();
+      }
+    } catch {
+      /* best effort */
+    }
     clearAbortScope();
     if (steerKey) unregisterActiveSession(steerKey);
     try {
