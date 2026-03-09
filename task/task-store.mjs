@@ -975,11 +975,9 @@ export function updateTask(taskId, updates) {
 
   const previousStatus = task.status;
   const patch = updates && typeof updates === "object" ? updates : {};
-  const blockedKeys = new Set(["__proto__", "constructor", "prototype"]);
-
   for (const [key, value] of Object.entries(patch)) {
     if (key === "id") continue;
-    if (blockedKeys.has(key)) continue;
+    if (key === "__proto__" || key === "constructor" || key === "prototype") continue;
     if (key === "lastAgentOutput") {
       task.lastAgentOutput = truncate(value, MAX_AGENT_OUTPUT);
       continue;
@@ -2303,4 +2301,3 @@ export function getStaleInReviewTasks(maxAgeMs) {
     (t) => t.status === "inreview" && t.lastActivityAt < cutoff,
   );
 }
-

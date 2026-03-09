@@ -572,17 +572,17 @@
     }document.head.appendChild(Object.assign(document.createElement('script'),{type:'importmap',nonce:"${nonce}",innerText}))${
       policy ? ')' : ''
     };i(\`{"imports":{"x":"\${b('')}"}}\`);i(\`{"imports":{"y":"\${b('')}"}}\`);cm=${
-      supportsImportMaps && jsonModulesEnabled ? `c(b(\`import"\${b('{}','text/json')}"with{type:"json"}\`))` : 'false'
+      supportsImportMaps && jsonModulesEnabled ? 'c(b(`import${jb}with{type:"json"}`))' : 'false'
     };sp=${
-      supportsImportMaps && wasmSourcePhaseEnabled ?
+      supportsImportMaps && wasmSourcePhaseEnabled ? 'c(b(`import source x from ${wb}`))' : 'false'
         `c(b(\`import source x from "\${b(new Uint8Array(${JSON.stringify(wasmBytes)}),'application/wasm')\}"\`))`
       : 'false'
     };Promise.all([${supportsImportMaps ? 'true' : "c('x')"},${supportsImportMaps ? "c('y')" : false},cm,${
-      supportsImportMaps && cssModulesEnabled ?
+      supportsImportMaps && cssModulesEnabled ? 'cm.then(s=>s?c(b(`import${cb}with{type:"css"}`)):false)' : 'false'
         `cm.then(s=>s?c(b(\`import"\${b('','text/css')\}"with{type:"css"}\`)):false)`
       : 'false'
     },sp,${
-      supportsImportMaps && wasmInstancePhaseEnabled ?
+      supportsImportMaps && wasmInstancePhaseEnabled ? `${wasmSourcePhaseEnabled ? 'sp.then(s=>s?' : ''}c(b(\`import\${wb}\`))${wasmSourcePhaseEnabled ? ' :false)'.trim() : ''}` : 'false'
         `${wasmSourcePhaseEnabled ? 'sp.then(s=>s?' : ''}c(b(\`import"\${b(new Uint8Array(${JSON.stringify(wasmBytes)}),'application/wasm')\}"\`))${wasmSourcePhaseEnabled ? ':false)' : ''}`
       : 'false'
     }]).then(a=>parent.postMessage(['${msgTag}'].concat(a),'*'))<${''}/script>`;
@@ -910,7 +910,7 @@
     }
   };
 
-  const urlJsString = url => `'${url.replace(/'/g, "\\'")}'`;
+  const urlJsString = url => JSON.stringify(String(url));
 
   let resolvedSource, lastIndex;
   const pushStringTo = (load, originalIndex, dynamicImportEndStack) => {

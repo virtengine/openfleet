@@ -257,6 +257,27 @@ describe("task-store concurrent save consistency", () => {
 });
 
 
+describe("task-store updateTask hardening", () => {
+  it("ignores dangerous patch keys without polluting object prototypes", async () => {
+    const dir = makeTempDir("task-store-hardening-");
+    const storeDir = join(dir, ".bosun", ".cache");
+    mkdirSync(storeDir, { recursive: true });
+    const storePath = join(storeDir, "kanban-state.json");
+
+    const ts = await loadTaskStoreModule();
+    ts.configureTaskStore({ storePath });
+    ts.loadStore();
+    ts.addTask({ id: "safe-1", title: "Safe", status: "todo" });
+
+    const before = {}.polluted;
+    ts.updateTask("safe-1", { ["__proto__"]: { polluted: true }, constructor: { polluted: true }, prototype: { polluted: true }, title: "Still Safe" });
+
+    const task = ts.getTask("safe-1");
+    expect(task.title).toBe("Still Safe");
+    expect(Object.prototype.hasOwnProperty.call(task, "constructor")).toBe(false);
+    expect({}.polluted).toBe(before);
+  });
+});
 describe("task-store external change visibility", () => {
   it("reloads from disk when another process updates the store file", async () => {
     const dir = makeTempDir("task-store-external-reload-");
