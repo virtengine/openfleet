@@ -878,24 +878,69 @@ function renderModal() {
   return "";
 }
 
+function isSafeUrlAttributeValue(raw) {
+  const value = String(raw || "").trim();
+  if (!value) return true;
+  if (value.startsWith("/") || value.startsWith("#") || value.startsWith("./") || value.startsWith("../")) return true;
+  try {
+    const parsed = new URL(value, window.location.origin);
+    return ["http:", "https:", "mailto:", "tel:"].includes(parsed.protocol);
+  } catch {
+    return false;
+  }
+}
+
+function sanitizeMarkupHtml(html) {
+  const doc = new DOMParser().parseFromString(String(html || ""), "text/html");
+  for (const node of doc.querySelectorAll("script,style,iframe,object,embed")) {
+    node.remove();
+  }
+  for (const el of doc.querySelectorAll("*")) {
+    for (const attr of [...el.attributes]) {
+      const name = String(attr.name || "").toLowerCase();
+      const value = String(attr.value || "").trim().toLowerCase();
+      const urlAttr = name === "src" || name === "href" || name === "xlink:href" || name === "action" || name === "formaction";
+      if (name.startsWith("on") || (urlAttr && !isSafeUrlAttributeValue(value))) {
+        el.removeAttribute(attr.name);
+      }
+    }
+  }
+  return doc.body ? doc.body.innerHTML : "";
+}
+function replaceViewMarkup(html) {
+  const safe = sanitizeMarkupHtml(html);
+  const range = document.createRange();
+  range.selectNode(view);
+  const fragment = range.createContextualFragment(safe);
+  view.replaceChildren(fragment);
+}
+
+function appendViewMarkup(html) {
+  const safe = sanitizeMarkupHtml(html);
+  const range = document.createRange();
+  range.selectNode(view);
+  const fragment = range.createContextualFragment(safe);
+  view.appendChild(fragment);
+}
+
 function render() {
   tabs.forEach((tab) => {
     const target = tab.dataset.action.replace("tab:", "");
     tab.classList.toggle("active", target === state.tab);
   });
 
-  if (state.tab === "overview") view.innerHTML = renderOverview();
-  if (state.tab === "tasks") view.innerHTML = renderTasks();
-  if (state.tab === "agents") view.innerHTML = renderAgents();
-  if (state.tab === "worktrees") view.innerHTML = renderWorktrees();
-  if (state.tab === "workspaces") view.innerHTML = renderWorkspaces();
-  if (state.tab === "presence") view.innerHTML = renderPresence();
-  if (state.tab === "executor") view.innerHTML = renderExecutor();
-  if (state.tab === "logs") view.innerHTML = renderLogs();
-  if (state.tab === "git") view.innerHTML = renderGit();
-  if (state.tab === "agentlogs") view.innerHTML = renderAgentLogs();
-  if (state.tab === "commands") view.innerHTML = renderCommands();
-  view.insertAdjacentHTML("beforeend", renderModal());
+  if (state.tab === "overview") replaceViewMarkup(renderOverview());
+  if (state.tab === "tasks") replaceViewMarkup(renderTasks());
+  if (state.tab === "agents") replaceViewMarkup(renderAgents());
+  if (state.tab === "worktrees") replaceViewMarkup(renderWorktrees());
+  if (state.tab === "workspaces") replaceViewMarkup(renderWorkspaces());
+  if (state.tab === "presence") replaceViewMarkup(renderPresence());
+  if (state.tab === "executor") replaceViewMarkup(renderExecutor());
+  if (state.tab === "logs") replaceViewMarkup(renderLogs());
+  if (state.tab === "git") replaceViewMarkup(renderGit());
+  if (state.tab === "agentlogs") replaceViewMarkup(renderAgentLogs());
+  if (state.tab === "commands") replaceViewMarkup(renderCommands());
+  appendViewMarkup(renderModal());
 }
 
 async function handleAction(action, element) {
