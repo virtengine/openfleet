@@ -104,6 +104,25 @@ const TOOL_OUTPUT_GUARDRAIL = String.raw`
 [Tool Output Guardrail] Keep tool outputs compact: prefer narrow searches, bounded command output (for example head/tail), and summaries for large results instead of dumping full payloads.
 [Context Cache] Older tool outputs are automatically compressed and cached to disk. If you see "[…compressed — full output: bosun --tool-log <ID>]" and need the full output, run that command to retrieve it.
 [Message Compression] Older agent reasoning and past user prompts are progressively compressed. Instruction-bearing content (AGENTS.md rules, system directives) is pinned and never compressed.`;
+const DEFAULT_EXECUTOR_SYSTEM_PROMPT = [
+  "# BOSUN AGENT SYSTEM DIRECTIVE",
+  "",
+  "You are an autonomous software engineering agent running inside Bosun.",
+  "Execute assigned tasks end-to-end without waiting for additional user input.",
+  "Use available tools to inspect code, apply changes, and verify outcomes.",
+  "Prefer concrete actions over discussion and report progress/results clearly.",
+  "",
+  "Execution policy:",
+  "1. Do not ask clarifying questions unless blocked by missing external access.",
+  "2. Keep edits scoped to the requested task and repository boundaries.",
+  "3. Run targeted verification first, then broader test/build checks when required.",
+  "4. Summarize what changed, why, and what verification ran.",
+].join("\n");
+
+function resolveExecutorSystemPrompt(overridePrompt = "") {
+  const text = String(overridePrompt || "").trim();
+  return text || DEFAULT_EXECUTOR_SYSTEM_PROMPT;
+}
 
 function parseBoundedNumber(value, fallback, min, max) {
   const num = Number(value);
@@ -405,20 +424,6 @@ function injectGitHubSessionEnv(baseEnv, token) {
   if (!env.GITHUB_PAT) env.GITHUB_PAT = resolved;
   if (!env.COPILOT_CLI_TOKEN) env.COPILOT_CLI_TOKEN = resolved;
   return env;
-}
-
-/**
- * Extract a human-readable task heading from the prompt built by _buildTaskPrompt.
- * The first line is "# TASKID — Task Title"; we return the title portion only.
- * Falls back to the raw first line if no em-dash separator is found.
- * @param {string} prompt
- * @returns {string}
- */
-function extractTaskHeading(prompt) {
-  const firstLine = String(prompt || "").split(/\r?\n/)[0].replace(/^#+\s*/, "").trim();
-  const dashIdx = firstLine.indexOf(" \u2014 ");
-  const title = dashIdx !== -1 ? firstLine.slice(dashIdx + 3).trim() : firstLine;
-  return title || "Execute Task";
 }
 
 function shouldAutoApproveCopilotPermissions() {
@@ -1055,7 +1060,9 @@ async function launchCodexThread(prompt, cwd, timeoutMs, extra = {}) {
     onThreadReady = null,
     taskKey: steerKey = null,
     envOverrides = null,
+    systemPrompt: systemPromptOverride = "",
   } = extra;
+  const systemPrompt = resolveExecutorSystemPrompt(systemPromptOverride);
 
   let reportedThreadId = null;
   const emitThreadReady = (threadId) => {
@@ -1166,7 +1173,8 @@ async function launchCodexThread(prompt, cwd, timeoutMs, extra = {}) {
   // ── 4. Stream the turn ───────────────────────────────────────────────────
   try {
     const streamSafety = resolveCodexStreamSafety(timeoutMs);
-    const safePrompt = sanitizeAndBoundPrompt(`${prompt}${TOOL_OUTPUT_GUARDRAIL}`);
+    const initialPrompt = `${systemPrompt}\n\n---\n\n${prompt}`;
+    const safePrompt = sanitizeAndBoundPrompt(`${initialPrompt}${TOOL_OUTPUT_GUARDRAIL}`);
     const turn = await thread.runStreamed(safePrompt, {
       signal: controller.signal,
     });
@@ -1377,7 +1385,9 @@ async function launchCopilotThread(prompt, cwd, timeoutMs, extra = {}) {
     model: requestedModel = null,
     taskKey: steerKey = null,
     envOverrides = null,
+    systemPrompt: systemPromptOverride = "",
   } = extra;
+  const systemPrompt = resolveExecutorSystemPrompt(systemPromptOverride);
 
   // ── 1. Load the SDK ──────────────────────────────────────────────────────
   let CopilotClientClass;
@@ -1487,9 +1497,7 @@ async function launchCopilotThread(prompt, cwd, timeoutMs, extra = {}) {
       workingDirectory: cwd,
       systemMessage: {
         mode: "replace",
-        content:
-          "You are an ephemeral task agent. Execute the given task immediately. " +
-          "Do NOT ask for confirmation. Produce concise, actionable output.",
+        content: systemPrompt,
       },
       infiniteSessions: { enabled: true },
       // Auto-respond to user input requests — agent should never block
@@ -1576,7 +1584,7 @@ async function launchCopilotThread(prompt, cwd, timeoutMs, extra = {}) {
     }
 
     const formattedPrompt =
-      `# ${extractTaskHeading(prompt)}\n\n${prompt}\n\n---\n` +
+      `${prompt}\n\n---\n` +
       'Do NOT respond with "Ready" or ask what to do. EXECUTE this task.';
 
     const hasSend = typeof session.send === "function";
@@ -1800,7 +1808,9 @@ async function launchClaudeThread(prompt, cwd, timeoutMs, extra = {}) {
     model: requestedModel = null,
     taskKey: steerKey = null,
     envOverrides = null,
+    systemPrompt: systemPromptOverride = "",
   } = extra;
+  const systemPrompt = resolveExecutorSystemPrompt(systemPromptOverride);
 
   // ── 1. Load the SDK ──────────────────────────────────────────────────────
   let queryFn;
@@ -1939,7 +1949,7 @@ async function launchClaudeThread(prompt, cwd, timeoutMs, extra = {}) {
     const msgQueue = createMessageQueue();
 
     const formattedPrompt =
-      `# ${extractTaskHeading(prompt)}\n\n${prompt}\n\n---\n` +
+      `${prompt}\n\n---\n` +
       'Do NOT respond with "Ready" or ask what to do. EXECUTE this task.';
 
     msgQueue.push(makeUserMessage(formattedPrompt));
@@ -1987,6 +1997,7 @@ async function launchClaudeThread(prompt, cwd, timeoutMs, extra = {}) {
         "",
     ).trim();
     if (model) options.model = model;
+    options.systemPrompt = systemPrompt;
 
     const result = await withTemporaryEnv(runtimeEnv, async () =>
       queryFn({
@@ -3326,6 +3337,7 @@ export async function execWithRetry(prompt, options = {}) {
     buildContinuePrompt,
     sdk,
     model,
+    systemPrompt,
     sessionType = "task",
     onEvent,
     onAbortControllerReplaced,
@@ -3413,6 +3425,7 @@ export async function execWithRetry(prompt, options = {}) {
       taskKey,
       sdk,
       model,
+      systemPrompt,
       sessionType,
       onEvent,
       abortController,

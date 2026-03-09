@@ -687,6 +687,38 @@ describe("action.build_task_prompt", () => {
     expect(ctx.data._taskPrompt).toBe(result.prompt);
   });
 
+  it("emits stable systemPrompt and task-specific firstUserMessage in strict cache anchor mode", async () => {
+    vi.stubEnv("BOSUN_CACHE_ANCHOR_MODE", "strict");
+    vi.resetModules();
+    try {
+      const { getNodeType: getNodeTypeReloaded } = await import("../workflow/workflow-nodes.mjs");
+      const nt = getNodeTypeReloaded("action.build_task_prompt");
+      const ctx = makeCtx({});
+      const node = makeNode("action.build_task_prompt", {
+        taskId: "TASK-43",
+        taskTitle: "Refactor cache anchor behavior",
+        taskDescription: "Move dynamic task context to first user message.",
+        branch: "feat/cache-anchor",
+        worktreePath: "/tmp/cache-anchor-wt",
+      });
+      const result = await nt.execute(node, ctx);
+
+      expect(result.cacheAnchorMode).toBe("strict");
+      expect(typeof result.systemPrompt).toBe("string");
+      expect(result.systemPrompt.length).toBeGreaterThan(20);
+      expect(result.systemPrompt).not.toContain("TASK-43");
+      expect(result.systemPrompt).not.toContain("/tmp/cache-anchor-wt");
+
+      expect(result.firstUserMessage).toContain("TASK-43");
+      expect(result.firstUserMessage).toContain("/tmp/cache-anchor-wt");
+      expect(result.prompt).toBe(result.firstUserMessage);
+      expect(ctx.data._taskSystemPrompt).toBe(result.systemPrompt);
+      expect(ctx.data._taskFirstUserMessage).toBe(result.firstUserMessage);
+    } finally {
+      vi.unstubAllEnvs();
+    }
+  });
+
   it("includes branch and repo info", async () => {
     const nt = getNodeType("action.build_task_prompt");
     const ctx = makeCtx({});

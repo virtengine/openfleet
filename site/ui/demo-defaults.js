@@ -14114,6 +14114,7 @@
           "label": "Execute Agent",
           "config": {
             "prompt": "{{_taskPrompt}}",
+            "systemPrompt": "{{_taskSystemPrompt}}",
             "taskId": "{{taskId}}",
             "cwd": "{{worktreePath}}",
             "timeoutMs": "{{taskTimeoutMs}}",
@@ -28884,6 +28885,7 @@
           "label": "Execute Agent",
           "config": {
             "prompt": "{{_taskPrompt}}",
+            "systemPrompt": "{{_taskSystemPrompt}}",
             "taskId": "{{taskId}}",
             "cwd": "{{worktreePath}}",
             "timeoutMs": "{{taskTimeoutMs}}",

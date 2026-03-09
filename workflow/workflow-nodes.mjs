@@ -40,6 +40,26 @@ const WORKFLOW_AGENT_EVENT_PREVIEW_LIMIT = (() => {
   if (!Number.isFinite(raw)) return 80;
   return Math.max(20, Math.min(500, Math.trunc(raw)));
 })();
+const CACHE_ANCHOR_MODE = (() => {
+  const raw = String(process.env.BOSUN_CACHE_ANCHOR_MODE || "compat")
+    .trim()
+    .toLowerCase();
+  return raw === "strict" ? "strict" : "compat";
+})();
+const WORKFLOW_SYSTEM_PROMPT_CACHE_ANCHOR = [
+  "# BOSUN AGENT SYSTEM DIRECTIVE",
+  "",
+  "You are an autonomous software engineering agent running inside Bosun.",
+  "Execute assigned tasks end-to-end without waiting for additional user input.",
+  "Use available tools to inspect code, apply changes, and verify outcomes.",
+  "Prefer concrete actions over discussion and report progress/results clearly.",
+  "",
+  "Execution policy:",
+  "1. Do not ask clarifying questions unless blocked by missing external access.",
+  "2. Keep edits scoped to the requested task and repository boundaries.",
+  "3. Run targeted verification first, then broader test/build checks when required.",
+  "4. Summarize what changed, why, and what verification ran.",
+].join("\n");
 
 function makeIsolatedGitEnv(extra = {}) {
   const env = { ...process.env, ...extra };
@@ -1499,6 +1519,7 @@ registerNodeType("action.run_agent", {
     type: "object",
     properties: {
       prompt: { type: "string", description: "Agent prompt (supports {{variables}})" },
+      systemPrompt: { type: "string", description: "Stable system prompt / cache anchor (supports {{variables}})" },
       sdk: { type: "string", enum: ["codex", "copilot", "claude", "auto"], default: "auto" },
       model: { type: "string", description: "Optional model override for the selected SDK" },
       taskId: { type: "string", description: "Optional task ID used for task metadata lookup" },
@@ -1532,6 +1553,13 @@ registerNodeType("action.run_agent", {
   },
   async execute(node, ctx, engine) {
     const prompt = ctx.resolve(node.config?.prompt || "");
+    const systemPrompt = String(
+      ctx.resolve(
+        node.config?.systemPrompt ||
+        ctx.data?._taskSystemPrompt ||
+        "",
+      ) || "",
+    ).trim();
     const sdk = node.config?.sdk || "auto";
     const cwd = ctx.resolve(node.config?.cwd || ctx.data?.worktreePath || process.cwd());
     const agentProfileId = String(
@@ -1548,7 +1576,7 @@ registerNodeType("action.run_agent", {
         null;
       const task = ctx.data?.task || ctx.data?.taskDetail || ctx.data?.taskInfo || null;
       const contextBlock = explicitContext || buildTaskContextBlock(task);
-      if (contextBlock) finalPrompt = `${prompt}\n\n${contextBlock}`;
+      if (contextBlock) finalPrompt = `${finalPrompt}\n\n${contextBlock}`;
     }
 
     ctx.log(node.id, `Running agent (${sdk}) in ${cwd}`);
@@ -1666,6 +1694,7 @@ registerNodeType("action.run_agent", {
         if (sessionId) launchExtra.resumeThreadId = sessionId;
         if (sdkOverride) launchExtra.sdk = sdkOverride;
         if (modelOverride) launchExtra.model = modelOverride;
+        if (systemPrompt) launchExtra.systemPrompt = systemPrompt;
         launchExtra.onEvent = (event) => {
           try {
             const line = summarizeAgentStreamEvent(event);
@@ -1738,6 +1767,7 @@ registerNodeType("action.run_agent", {
               sessionType: "flow",
               sdk: sdkOverride,
               model: modelOverride,
+              systemPrompt,
             });
           }
 
@@ -1748,6 +1778,7 @@ registerNodeType("action.run_agent", {
               sessionType: "flow",
               sdk: sdkOverride,
               model: modelOverride,
+              systemPrompt,
             });
           }
 
@@ -8068,70 +8099,81 @@ registerNodeType("action.build_task_prompt", {
     const allowedRepositories = normalizeStringArray(repositories, primaryRepository);
     const matchedSkills = findRelevantSkills(repoRoot, taskTitle, taskDescription || "", {});
     const activeSkillFiles = matchedSkills.map((skill) => skill.filename);
+    const cacheAnchorMode = CACHE_ANCHOR_MODE;
 
     if (customTemplate) {
       ctx.data._taskPrompt = customTemplate;
+      ctx.data._taskFirstUserMessage = customTemplate;
+      ctx.data._taskSystemPrompt =
+        cacheAnchorMode === "strict" ? WORKFLOW_SYSTEM_PROMPT_CACHE_ANCHOR : "";
       ctx.log(node.id, `Prompt from custom template (${customTemplate.length} chars)`);
-      return { success: true, prompt: customTemplate, source: "custom" };
+      return {
+        success: true,
+        prompt: customTemplate,
+        firstUserMessage: customTemplate,
+        systemPrompt: ctx.data._taskSystemPrompt,
+        cacheAnchorMode,
+        source: "custom",
+      };
     }
 
-    const parts = [];
+    const promptParts = [];
 
     // Header
-    parts.push(`# Task: ${taskTitle}`);
-    if (taskId) parts.push(`Task ID: ${taskId}`);
-    parts.push("");
+    promptParts.push(`# Task: ${taskTitle}`);
+    if (taskId) promptParts.push(`Task ID: ${taskId}`);
+    promptParts.push("");
 
     // Retry context (if applicable)
     if (retryReason) {
-      parts.push("## Retry Context");
-      parts.push(`Previous attempt failed: ${retryReason}`);
-      parts.push("Try a different approach this time.");
-      parts.push("");
+      promptParts.push("## Retry Context");
+      promptParts.push(`Previous attempt failed: ${retryReason}`);
+      promptParts.push("Try a different approach this time.");
+      promptParts.push("");
     }
 
     // Description
     if (taskDescription) {
-      parts.push("## Description");
-      parts.push(taskDescription);
-      parts.push("");
+      promptParts.push("## Description");
+      promptParts.push(taskDescription);
+      promptParts.push("");
     }
 
     // Environment context
-    parts.push("## Environment");
+    promptParts.push("## Environment");
     const envLines = [];
     if (worktreePath) envLines.push(`- **Working Directory:** ${worktreePath}`);
     if (branch) envLines.push(`- **Branch:** ${branch}`);
     if (baseBranch) envLines.push(`- **Base Branch:** ${baseBranch}`);
     if (repoSlug) envLines.push(`- **Repository:** ${repoSlug}`);
     if (repoRoot) envLines.push(`- **Repo Root:** ${repoRoot}`);
-    if (envLines.length) parts.push(envLines.join("\n"));
-    parts.push("");
+    if (envLines.length) promptParts.push(envLines.join("\n"));
+    promptParts.push("");
 
     // Workspace and repository scope guardrails.
-    parts.push("## Workspace Scope Contract");
-    if (workspace) parts.push(`- **Workspace:** ${workspace}`);
-    if (primaryRepository) parts.push(`- **Primary Repository:** ${primaryRepository}`);
+    promptParts.push("## Workspace Scope Contract");
+    if (workspace) promptParts.push(`- **Workspace:** ${workspace}`);
+    if (primaryRepository) promptParts.push(`- **Primary Repository:** ${primaryRepository}`);
     if (allowedRepositories.length > 0) {
-      parts.push("- **Allowed Repositories:**");
+      promptParts.push("- **Allowed Repositories:**");
       for (const allowedRepo of allowedRepositories) {
-        parts.push(`  - ${allowedRepo}`);
+        promptParts.push(`  - ${allowedRepo}`);
       }
     } else {
-      parts.push("- **Allowed Repositories:** (not declared)");
+      promptParts.push("- **Allowed Repositories:** (not declared)");
     }
-    if (worktreePath) parts.push(`- **Write Scope Root:** ${worktreePath}`);
-    parts.push("");
-    parts.push("Hard boundaries:");
+    if (worktreePath) promptParts.push(`- **Write Scope Root:** ${worktreePath}`);
+    promptParts.push("");
+    promptParts.push("Hard boundaries:");
     if (worktreePath) {
-      parts.push(`1. Modify files only inside \`${worktreePath}\`.`);
+      promptParts.push(`1. Modify files only inside \`${worktreePath}\`.`);
     } else {
-      parts.push("1. Modify files only inside the active repository working directory.");
+      promptParts.push("1. Modify files only inside the active repository working directory.");
     }
-    parts.push("2. Modify code only in the allowed repositories listed above.");
-    parts.push("3. If required work depends on an unlisted repository, stop and report `blocked: cross-repo dependency`.");
-    parts.push("4. In completion notes, list every repository you touched and why.");
-    parts.push("");
+    promptParts.push("2. Modify code only in the allowed repositories listed above.");
+    promptParts.push("3. If required work depends on an unlisted repository, stop and report `blocked: cross-repo dependency`.");
+    promptParts.push("4. In completion notes, list every repository you touched and why.");
+    promptParts.push("");
 
     // AGENTS.md + copilot-instructions.md
     if (includeAgentsMd) {
@@ -8147,9 +8189,9 @@ registerNodeType("action.build_task_prompt", {
               const content = readFileSync(fullPath, "utf8").trim();
               if (content && content.length > 10) {
                 loaded.add(doc);
-                parts.push(`## ${doc}`);
-                parts.push(content);
-                parts.push("");
+                promptParts.push(`## ${doc}`);
+                promptParts.push(content);
+                promptParts.push("");
               }
             }
           } catch { /* best-effort */ }
@@ -8161,12 +8203,12 @@ registerNodeType("action.build_task_prompt", {
     if (includeStatusEndpoint) {
       const port = process.env.AGENT_ENDPOINT_PORT || process.env.BOSUN_AGENT_ENDPOINT_PORT || "";
       if (port) {
-        parts.push("## Agent Status Endpoint");
-        parts.push(`POST http://127.0.0.1:${port}/status — Report progress`);
-        parts.push(`POST http://127.0.0.1:${port}/heartbeat — Heartbeat ping`);
-        parts.push(`POST http://127.0.0.1:${port}/error — Report errors`);
-        parts.push(`POST http://127.0.0.1:${port}/complete — Signal completion`);
-        parts.push("");
+        promptParts.push("## Agent Status Endpoint");
+        promptParts.push(`POST http://127.0.0.1:${port}/status — Report progress`);
+        promptParts.push(`POST http://127.0.0.1:${port}/heartbeat — Heartbeat ping`);
+        promptParts.push(`POST http://127.0.0.1:${port}/error — Report errors`);
+        promptParts.push(`POST http://127.0.0.1:${port}/complete — Signal completion`);
+        promptParts.push("");
       }
     }
 
@@ -8177,21 +8219,21 @@ registerNodeType("action.build_task_prompt", {
       {},
     );
     if (relevantSkillsBlock) {
-      parts.push(relevantSkillsBlock);
-      parts.push("");
+      promptParts.push(relevantSkillsBlock);
+      promptParts.push("");
     }
 
-    parts.push("## Tool Discovery");
-    parts.push(
+    promptParts.push("## Tool Discovery");
+    promptParts.push(
       "Bosun uses a compact MCP discovery layer for external MCP servers and the custom tool library.",
     );
-    parts.push(
+    promptParts.push(
       "Preferred flow: `search` -> `get_schema` -> `execute`.",
     );
-    parts.push(
+    promptParts.push(
       "Only eager tools are preloaded below to keep context small. Use `call_discovered_tool` only as a direct fallback when orchestration code is unnecessary.",
     );
-    parts.push("");
+    promptParts.push("");
 
     const eagerToolBlock = getToolsPromptBlock(repoRoot, {
       activeSkills: activeSkillFiles,
@@ -8202,13 +8244,13 @@ registerNodeType("action.build_task_prompt", {
       limit: 12,
     });
     if (eagerToolBlock) {
-      parts.push(eagerToolBlock);
-      parts.push("");
+      promptParts.push(eagerToolBlock);
+      promptParts.push("");
     }
 
     // Instructions
-    parts.push("## Instructions");
-    parts.push(
+    promptParts.push("## Instructions");
+    promptParts.push(
       "1. Read and understand the task description above.\n" +
       "2. Follow the project instructions in AGENTS.md.\n" +
       "3. Respect the Workspace Scope Contract and never cross repository boundaries.\n" +
@@ -8220,17 +8262,32 @@ registerNodeType("action.build_task_prompt", {
       "9. Never ask for user input — you are autonomous.\n" +
       "10. Use all available tools to verify your work.",
     );
-    parts.push("");
+    promptParts.push("");
 
     // Co-author trailer
-    parts.push("## Git Attribution");
-    parts.push("Add this trailer to all commits:");
-    parts.push("Co-authored-by: bosun[bot] <bosun@virtengine.com>");
+    promptParts.push("## Git Attribution");
+    promptParts.push("Add this trailer to all commits:");
+    promptParts.push("Co-authored-by: bosun[bot] <bosun@virtengine.com>");
 
-    const prompt = parts.join("\n");
-    ctx.data._taskPrompt = prompt;
-    ctx.log(node.id, `Prompt built (${prompt.length} chars)`);
-    return { success: true, prompt, source: "generated", length: prompt.length };
+    const firstUserMessage = promptParts.join("\n");
+    const systemPrompt =
+      cacheAnchorMode === "strict" ? WORKFLOW_SYSTEM_PROMPT_CACHE_ANCHOR : "";
+    ctx.data._taskPrompt = firstUserMessage;
+    ctx.data._taskFirstUserMessage = firstUserMessage;
+    ctx.data._taskSystemPrompt = systemPrompt;
+    ctx.log(
+      node.id,
+      `Prompt built (${firstUserMessage.length} chars, mode=${cacheAnchorMode}, system=${systemPrompt.length} chars)`,
+    );
+    return {
+      success: true,
+      prompt: firstUserMessage,
+      firstUserMessage,
+      systemPrompt,
+      cacheAnchorMode,
+      source: "generated",
+      length: firstUserMessage.length,
+    };
   },
 });
 

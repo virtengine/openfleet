@@ -160,6 +160,7 @@ export const TASK_LIFECYCLE_TEMPLATE = {
     // ── Execute agent ────────────────────────────────────────────────────
     node("run-agent", "action.run_agent", "Execute Agent", {
       prompt: "{{_taskPrompt}}",
+      systemPrompt: "{{_taskSystemPrompt}}",
       taskId: "{{taskId}}",
       cwd: "{{worktreePath}}",
       timeoutMs: "{{taskTimeoutMs}}",

@@ -1546,7 +1546,10 @@ describe("Session chaining - action.run_agent", () => {
     const handler = getNodeType("action.run_agent");
     expect(handler).toBeDefined();
 
-    const ctx = new WorkflowContext({ worktreePath: "/tmp/test" });
+    const ctx = new WorkflowContext({
+      worktreePath: "/tmp/test",
+      _taskSystemPrompt: "Stable system prompt for cache anchoring.",
+    });
     const launchEphemeralThread = vi.fn().mockImplementation(
       async (_prompt, _cwd, _timeoutMs, extra) => {
         extra?.onEvent?.({
@@ -1587,7 +1590,10 @@ describe("Session chaining - action.run_agent", () => {
     expect(ctx.data.threadId).toBe("thread-abc-123");
     expect(launchEphemeralThread).toHaveBeenCalledTimes(1);
     expect(launchEphemeralThread.mock.calls[0][3]).toEqual(
-      expect.objectContaining({ onEvent: expect.any(Function) }),
+      expect.objectContaining({
+        onEvent: expect.any(Function),
+        systemPrompt: "Stable system prompt for cache anchoring.",
+      }),
     );
     const runLogText = ctx.logs.map((entry) => String(entry?.message || "")).join("\n");
     expect(runLogText).toMatch(/Tool call: apply_patch/);
@@ -2985,4 +2991,3 @@ describe("WorkflowEngine.getTaskTraceEvents", () => {
     expect(reread[0].taskId).toBe("TASK-TRACE-READBACK");
   });
 });
-
