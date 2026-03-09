@@ -482,3 +482,31 @@ ode cli.mjs --daemon-status => running PID 59940.
 - Runtime remains source-local daemon PID 59940.
 - Scheduler resumed low cadence (`schedule poll triggered 2 workflow run(s)` at 19:14:33Z and 19:15:33Z), but queue throughput is still poor (`inprogress=0`, `done=2`).
 - `owner_mismatch` reappeared for task `df0d7085-...` in the same window, so claim/state instability is still not fully resolved.
+
+## 2026-03-10T07:12:00+11:00 runtime check
+- Runtime duration: ~00:22:00.
+- Required startup checks completed:
+  - Branch: `monitor/bosun-env-stability` (working tree contains pre-existing workflow/template/test/demo edits).
+  - `package.json` version: `0.40.10`.
+  - Source daemon active: `node cli.mjs --daemon-status --config-dir .bosun --repo-root .` => PID 59940.
+  - Active runtime log sink confirmed as `.bosun/logs/monitor.log`.
+- Incident status: still unhealthy.
+  - Scheduler heartbeat is active (`schedule poll triggered ...` every minute), but run completions stopped after `2026-03-09T19:59:03Z`.
+  - `.bosun/workflow-runs/_active-runs.json` remains pinned to two long-running `Bosun PR Watchdog` runs (`07852e00-...`, `5e4bcb0d-...`) stuck in `dispatch-fix`.
+  - `task stats` remains stagnant: draft 36, todo 1330, inprogress 0, inreview 0, done 2.
+  - Throughput check (`gh pr list --state merged --search merged:>=<last-hour>`) returned `[]`.
+- Root cause evidence:
+  - Both stuck PR Watchdog run artifacts show `dispatch-fix` status `running` immediately after `Delegating to agent workflow "Backend Agent"` with no subsequent progress.
+  - Repeated `owner_mismatch` heartbeat warnings for task `df0d7085-...` continue in live logs despite task status being `todo`.
+- Ops fix attempted (no source edits):
+  - Backed up claim files to `.cache/bosun/backups/monitor-20260310-070845/`.
+  - Pruned non-inprogress claims from `.cache/bosun/task-claims.json` (5 entries removed).
+- Post-fix result:
+  - On-disk claim files are now empty, but in-memory `owner_mismatch` warnings still recur (`20:08:35Z`), indicating runtime-held stale claim state and unresolved stuck workflow execution.
+  - No resumed schedule-run completions during observation window through `20:10:35Z`.
+- Branch sync/push:
+  - `monitor/bosun-env-stability...origin/main` = ahead 18 / behind 0.
+  - Pushed current branch (`Everything up-to-date`; hooks passed).
+- Handoff:
+  - Next run should prioritize a code-level fix in `action.run_agent` delegation path (PR Watchdog -> Backend Agent) because stuck delegated runs are starving autonomous workflow completion.
+  - If no safe live cancellation path is available, coordinate a controlled runtime recycle only after confirming policy allows interrupting active source processes.
