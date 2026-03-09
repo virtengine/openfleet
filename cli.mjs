@@ -1192,12 +1192,33 @@ async function main() {
   // Apply legacy CODEX_MONITOR_* → BOSUN_* env aliases before any config ops
   applyAllCompatibility();
 
+  // Apply config/repo CLI overrides before any subcommand routing so task
+  // commands resolve the same workspace config/store paths as daemon mode.
+  const earlyConfigDirArg = getArgValue("--config-dir");
+  if (earlyConfigDirArg) {
+    const resolvedConfigDirArg = resolve(earlyConfigDirArg);
+    process.env.BOSUN_DIR = resolvedConfigDirArg;
+    process.env.BOSUN_HOME = resolvedConfigDirArg;
+  }
+  const earlyRepoRootArg = getArgValue("--repo-root");
+  if (earlyRepoRootArg) {
+    process.env.REPO_ROOT = resolve(earlyRepoRootArg);
+  }
+
   // Handle 'task' subcommand FIRST — before --help, so that
   // `bosun task --help` and `bosun task create --help` route to task-specific help
   // rather than the main bosun help page.
-  if (args[0] === "task" || args.includes("--task")) {
+  const taskFlagIndex = args.indexOf("--task");
+  const taskCommandIndex =
+    args[0] === "task"
+      ? 0
+      : args[0]?.startsWith("--")
+        ? args.indexOf("task")
+        : -1;
+  if (taskCommandIndex >= 0 || taskFlagIndex >= 0) {
     const { runTaskCli } = await import("./task/task-cli.mjs");
-    const taskArgs = args[0] === "task" ? args.slice(1) : args.slice(args.indexOf("--task") + 1);
+    const commandStartIndex = taskCommandIndex >= 0 ? taskCommandIndex : taskFlagIndex;
+    const taskArgs = args.slice(commandStartIndex + 1);
     await runTaskCli(taskArgs);
     process.exit(0);
   }

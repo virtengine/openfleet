@@ -30,6 +30,14 @@ describe("monitor workflow startup guards", () => {
     expect(monitorSource).toContain("canStartTask,");
   });
 
+  it("auto-disables stale task-batch-pr workflows when workflowDefaults no longer request them", () => {
+    expect(monitorSource).toContain('import("../workflow/workflow-templates.mjs")');
+    expect(monitorSource).toContain('const staleWorkflowTemplateIds = ["template-task-batch-pr"]');
+    expect(monitorSource).toContain("workflowTemplates.resolveWorkflowTemplateIds({");
+    expect(monitorSource).toContain("requestedTemplateIds.has(installedFrom)");
+    expect(monitorSource).toContain("auto-disabled stale workflow");
+  });
+
   it("kicks schedule-driven workflow polling immediately when workflow lifecycle owns dispatch", () => {
     expect(monitorSource).toContain("let pollWorkflowSchedulesOnce = async () => {};");
     expect(

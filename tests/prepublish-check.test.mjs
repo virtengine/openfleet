@@ -46,6 +46,19 @@ describe("prepublish-check", () => {
     ]);
   });
 
+  it("ignores import-like text in comments, strings, templates, and import.meta", async () => {
+    const source = [
+      '// import "./commented.mjs";',
+      'const text = "export * from \'./string.mjs\'";',
+      'const template = `import("./template.mjs") ${value}`;',
+      'const url = import.meta.url;',
+      'const dynamic = import(name);',
+      'export * from "./kept.mjs";',
+    ].join("\n");
+
+    await expect(findLocalImportSpecifiers(source)).resolves.toEqual(["./kept.mjs"]);
+  });
+
   it("expands directory entries from the published files manifest", () => {
     const root = createFixture({
       "package.json": JSON.stringify({ name: "fixture", version: "1.0.0", files: ["infra"] }),

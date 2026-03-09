@@ -338,3 +338,13 @@ ode cli.mjs --daemon --no-update-check --no-auto-update --config-dir .bosun --re
 - Current active long-running workflow nodes remain: Task Lifecycle.run-agent, Bosun PR Watchdog.dispatch-fix, PR Conflict Resolver.resolve-conflicts (started at daemon startup and still executing).
 - Open throughput risk: merged Bosun-attached PRs in recent window are below target 2-3/hour (latest merged: #179 at 2026-03-08T22:26:21Z).
 - Queue health snapshot from task CLI remains stable for tracked set: draft=36, todo=42, inprogress=0, inreview=0, done=2.
+
+## 2026-03-09T12:10:15+11:00
+- Hourly ops check on branch monitor/bosun-env-stability found source daemon healthy (repo-local cli + monitor PIDs active) and schedule cadence advancing.
+- Verified merged Bosun-attached PR throughput in recent window via GitHub API: #183, #184, #185 merged between 2026-03-09T00:23:29Z and 2026-03-09T00:58:34Z.
+- Identified CLI/runtime state mismatch cause: 
+ode cli.mjs --config-dir .bosun --repo-root . task ... previously bypassed task subcommand routing and ignored config-dir before task routing, leading to misleading task stats.
+- Local code fix authored (not yet committed): cli.mjs now applies early --config-dir/--repo-root env overrides and supports task subcommand routing when global flags precede 	ask; added 	ests/cli-task-routing.test.mjs.
+- Validation: 
+pm test -- tests/cli-task-routing.test.mjs tests/cli-workspace-config-dir.test.mjs passed.
+- Safety blocker: unexpected concurrent tracked change detected in gent/agent-endpoint.mjs; paused before commit/push pending operator direction.

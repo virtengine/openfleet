@@ -56,6 +56,13 @@ describe("action.create_pr schema integrity", () => {
     expect(props).toHaveProperty("baseBranch");
   });
 
+  it("schema accepts 'repoSlug' for GitHub-hosted mirror worktrees", () => {
+    const nodeType = getNodeType("action.create_pr");
+    const props = nodeType.schema?.properties ?? {};
+    expect(props).toHaveProperty("repoSlug");
+    expect(props.repoSlug.type).toBe("string");
+  });
+
   it("schema requires 'title' but not 'base' or 'branch'", () => {
     const nodeType = getNodeType("action.create_pr");
     const required = nodeType.schema?.required ?? [];
@@ -204,6 +211,14 @@ describe("dangerous shell payload containment", () => {
     // shell metacharacter injection into the gh CLI command.
     expect(executeSrc).toContain("JSON.stringify(title)");
     expect(executeSrc).toContain("JSON.stringify(String(body))");
+  });
+
+  it("action.create_pr passes repoSlug through gh commands when available", () => {
+    const nodeType = getNodeType("action.create_pr");
+    const executeSrc = nodeType.execute.toString();
+    expect(executeSrc).toContain("repoSlug");
+    expect(executeSrc).toContain("args.push(\"--repo\", repoSlug)");
+    expect(executeSrc).toContain("existingArgs.push(\"--repo\", repoSlug)");
   });
 
   it("action.run_command schema does not silently accept untrusted commands", () => {

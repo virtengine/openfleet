@@ -22,3 +22,4 @@
 - Local OSS security tooling updates:
   - Executed: `npm audit --audit-level=high` (built-in dependency CVE scan).
   - Recommended next installs (free/open-source): `semgrep`, `gitleaks`, `osv-scanner`, `trivy`.
+- Post-main CodeQL refresh (`run 22834818631`): open code-scanning alerts reduced from 94 to 65 (29 resolved this batch).
