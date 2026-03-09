@@ -67,7 +67,7 @@ const PROVIDER_MATRIX = Object.freeze([
       VOICE_VISION_MODEL: "claude-3-7-sonnet-latest",
     },
     expectTier: 2,
-    expectTokenStatus: 500,
+    expectTokenStatus: 400,
     expectVisionProvider: "claude",
     expectedOutbound: {
       vision: "api.anthropic.com/v1/messages",
@@ -83,7 +83,7 @@ const PROVIDER_MATRIX = Object.freeze([
       VOICE_VISION_MODEL: "gemini-2.5-flash",
     },
     expectTier: 2,
-    expectTokenStatus: 500,
+    expectTokenStatus: 400,
     expectVisionProvider: "gemini",
     expectedOutbound: {
       vision: "generativelanguage.googleapis.com/v1beta/models/",

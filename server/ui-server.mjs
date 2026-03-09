@@ -5882,16 +5882,9 @@ function normalizeJsonResponsePayload(statusCode, payload) {
   const safePayload = scrubStackTraces(payload);
   if (statusCode < 500) return safePayload;
   if (safePayload && typeof safePayload === "object" && !Array.isArray(safePayload)) {
-    const next = { ...safePayload };
-    if (typeof next.error === "string") {
-      next.error = isStackLikeErrorText(next.error) ? "Internal server error" : next.error;
-      return next;
-    }
-    next.error = "Internal server error";
-    return next;
-  }
-  if (typeof safePayload === "string") {
-    return { ok: false, error: isStackLikeErrorText(safePayload) ? "Internal server error" : safePayload };
+    const out = { ...safePayload };
+    out.error = "Internal server error";
+    return out;
   }
   return { ok: false, error: "Internal server error" };
 }
@@ -14793,7 +14786,12 @@ async function handleApi(req, res, url) {
         connectionInfo,
       });
     } catch (err) {
-      jsonResponse(res, 500, { error: err.message });
+      const message = String(err?.message || "Internal server error");
+      if (/does not support realtime token/i.test(message)) {
+        jsonResponse(res, 400, { error: message });
+      } else {
+        jsonResponse(res, 500, { error: message });
+      }
     }
     return;
   }
@@ -14904,6 +14902,11 @@ async function handleApi(req, res, url) {
       );
       const activeVoiceAgentId = selectedVoiceAgent?.id || "voice-agent";
       const { createEphemeralToken, getVoiceToolDefinitions, getVoiceConfig, isPrivilegedVoiceContext } = await import("../voice/voice-relay.mjs");
+      const voiceCfg = getVoiceConfig();
+      if (!voiceCfg || (voiceCfg.provider !== "openai" && voiceCfg.provider !== "azure")) {
+        jsonResponse(res, 400, { error: `provider "${voiceCfg?.provider || "unknown"}" does not support realtime token` });
+        return;
+      }
       const privileged = isPrivilegedVoiceContext(callContext);
       const delegateOnly =
         body?.delegateOnly === true && !privileged;
@@ -14939,7 +14942,6 @@ async function handleApi(req, res, url) {
 
       // When client requests sdkMode, include extra fields for @openai/agents SDK
       if (body?.sdkMode === true) {
-        const voiceCfg = getVoiceConfig();
         tokenData.instructions = [voiceCfg.instructions || "", capabilityPrompt]
           .filter(Boolean)
           .join("\n\n")
