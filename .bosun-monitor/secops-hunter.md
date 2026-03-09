@@ -93,3 +93,17 @@
 - Tooling notes:
   - No new tool installed in this pass.
   - Free OSS CLI stack retained for local scanning: `semgrep`, `gitleaks`, `osv-scanner`, `trivy`, `npm audit`.
+
+## 2026-03-09 22:13:00 +11:00
+
+- Scope: Follow-up hardening for persistent CodeQL `js/stack-trace-exposure` alert after first 5xx masking pass.
+- Files hardened: `server/ui-server.mjs`.
+- Security strategy:
+  - `jsonResponse` now short-circuits `statusCode >= 500` before any payload normalization so error payload objects are never read or transformed on 5xx paths.
+  - keeps existing stack-key scrubbing behavior for non-5xx responses.
+- Validation evidence:
+  - `node --check server/ui-server.mjs` passed.
+  - `npm test -- tests/ui-server.test.mjs tests/voice-provider-smoke.test.mjs` passed (49 tests).
+- Tooling notes:
+  - No new installs this pass.
+  - Free OSS CLI stack remains: `semgrep`, `gitleaks`, `osv-scanner`, `trivy`, `npm audit`.
