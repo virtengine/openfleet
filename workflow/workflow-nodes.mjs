@@ -155,7 +155,7 @@ function execGitArgsSync(args, options = {}) {
   const gitArgs = args.map((arg) => String(arg));
   let lastEnoent = null;
   for (const gitBinary of resolveGitCandidates(env)) {
-    if (gitBinary !== "git" && !existsSync(gitBinary)) continue;
+
     try {
       return execFileSync(gitBinary, gitArgs, {
         ...options,
