@@ -159,6 +159,7 @@
     "bosun.config.example.json",
     "bosun.schema.json",
     "agent/bosun-skills.mjs",
+    "agent/skills/skill-codebase-audit.md",
     "shell/codex-model-profiles.mjs",
     "shell/codex-shell.mjs",
     "config/config.mjs",

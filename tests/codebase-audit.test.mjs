@@ -116,6 +116,31 @@ describe("codebase audit engine", () => {
     expect(goContent).toContain("CLAUDE:SUMMARY");
   });
 
+  it("ignores marker literals that only appear inside code", () => {
+    const root = createRepo();
+    writeFileSync(
+      resolve(root, "src", "marker-literals.mjs"),
+      [
+        'const summaryMarker = "CLAUDE:SUMMARY";',
+        'const warnMarker = "CLAUDE:WARN";',
+        '',
+        'export function markerLiterals() {',
+        '  return { summaryMarker, warnMarker };',
+        '}',
+        '',
+      ].join("\n"),
+      "utf8",
+    );
+
+    const scan = scanRepository(root, { dryRun: true });
+    const file = scan.files.find((entry) => entry.path === "src/marker-literals.mjs");
+
+    expect(file.hasSummary).toBe(false);
+    expect(file.hasWarn).toBe(false);
+    expect(file.summaryLine).toBe("");
+    expect(file.warnLines).toEqual([]);
+  });
+
 
   it("scans a single file target and keeps root manifests deduplicated", () => {
     const root = createRepo();
