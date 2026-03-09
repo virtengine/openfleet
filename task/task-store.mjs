@@ -976,41 +976,41 @@ export function updateTask(taskId, updates) {
   const previousStatus = task.status;
   const patch = updates && typeof updates === "object" ? updates : {};
   const blockedKeys = new Set(["__proto__", "constructor", "prototype"]);
-  const directPatchKeys = new Set([
-    "title",
-    "description",
-    "externalStatus",
-    "externalId",
-    "externalBackend",
-    "assignee",
-    "priority",
-    "projectId",
-    "workspace",
-    "repository",
-    "repositories",
-    "baseBranch",
-    "branchName",
-    "prNumber",
-    "prUrl",
-    "epicId",
-    "parentTaskId",
-    "stateVersion",
-    "createdAt",
-    "updatedAt",
-    "lastActivityAt",
-    "statusHistory",
-    "agentAttempts",
-    "consecutiveNoCommits",
-    "errorPattern",
-    "reviewStatus",
-    "reviewIssues",
-    "reviewedAt",
-    "cooldownUntil",
-    "blockedReason",
-    "lastSyncedAt",
-    "syncDirty",
-    "meta",
-  ]);
+  const directPatchSetters = {
+    title: (next) => { task.title = next; },
+    description: (next) => { task.description = next; },
+    externalStatus: (next) => { task.externalStatus = next; },
+    externalId: (next) => { task.externalId = next; },
+    externalBackend: (next) => { task.externalBackend = next; },
+    assignee: (next) => { task.assignee = next; },
+    priority: (next) => { task.priority = next; },
+    projectId: (next) => { task.projectId = next; },
+    workspace: (next) => { task.workspace = next; },
+    repository: (next) => { task.repository = next; },
+    repositories: (next) => { task.repositories = next; },
+    baseBranch: (next) => { task.baseBranch = next; },
+    branchName: (next) => { task.branchName = next; },
+    prNumber: (next) => { task.prNumber = next; },
+    prUrl: (next) => { task.prUrl = next; },
+    epicId: (next) => { task.epicId = next; },
+    parentTaskId: (next) => { task.parentTaskId = next; },
+    stateVersion: (next) => { task.stateVersion = next; },
+    createdAt: (next) => { task.createdAt = next; },
+    updatedAt: (next) => { task.updatedAt = next; },
+    lastActivityAt: (next) => { task.lastActivityAt = next; },
+    statusHistory: (next) => { task.statusHistory = next; },
+    agentAttempts: (next) => { task.agentAttempts = next; },
+    consecutiveNoCommits: (next) => { task.consecutiveNoCommits = next; },
+    errorPattern: (next) => { task.errorPattern = next; },
+    reviewStatus: (next) => { task.reviewStatus = next; },
+    reviewIssues: (next) => { task.reviewIssues = next; },
+    reviewedAt: (next) => { task.reviewedAt = next; },
+    cooldownUntil: (next) => { task.cooldownUntil = next; },
+    blockedReason: (next) => { task.blockedReason = next; },
+    lastSyncedAt: (next) => { task.lastSyncedAt = next; },
+    syncDirty: (next) => { task.syncDirty = next; },
+    meta: (next) => { task.meta = next; },
+  };
 
   for (const [key, value] of Object.entries(patch)) {
     if (key === "id") continue;
@@ -1070,8 +1070,9 @@ export function updateTask(taskId, updates) {
       };
       continue;
     }
-    if (directPatchKeys.has(key)) {
-      task[key] = value;
+    const applyDirectPatch = directPatchSetters[key];
+    if (typeof applyDirectPatch === "function") {
+      applyDirectPatch(value);
     }
   }
 
