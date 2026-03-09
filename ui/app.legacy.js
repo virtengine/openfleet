@@ -890,7 +890,7 @@ function isSafeUrlAttributeValue(raw) {
   }
 }
 
-function sanitizeMarkupHtml(html) {
+function sanitizeMarkupFragment(html) {
   const doc = new DOMParser().parseFromString(String(html || ""), "text/html");
   for (const node of doc.querySelectorAll("script,style,iframe,object,embed")) {
     node.remove();
@@ -905,22 +905,22 @@ function sanitizeMarkupHtml(html) {
       }
     }
   }
-  return doc.body ? doc.body.innerHTML : "";
+  const fragment = document.createDocumentFragment();
+  if (doc.body) {
+    while (doc.body.firstChild) {
+      fragment.appendChild(doc.body.firstChild);
+    }
+  }
+  return fragment;
 }
 function replaceViewMarkup(html) {
-  const safe = sanitizeMarkupHtml(html);
-  const range = document.createRange();
-  range.selectNode(view);
-  const fragment = range.createContextualFragment(safe);
-  view.replaceChildren(fragment);
+  const safe = sanitizeMarkupFragment(html);
+  view.replaceChildren(safe);
 }
 
 function appendViewMarkup(html) {
-  const safe = sanitizeMarkupHtml(html);
-  const range = document.createRange();
-  range.selectNode(view);
-  const fragment = range.createContextualFragment(safe);
-  view.appendChild(fragment);
+  const safe = sanitizeMarkupFragment(html);
+  view.appendChild(safe);
 }
 
 function render() {

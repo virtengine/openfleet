@@ -36,3 +36,14 @@
 - Local OSS security tooling updates:
   - Executed: `npm audit --audit-level=high`.
   - Recommended CLI installs (free/open source): `semgrep`, `gitleaks`, `osv-scanner`, `trivy`.
+
+## 2026-03-09 15:52:40 +11:00
+- Scope: PR #189 final follow-up to close residual CodeQL DOM-XSS alerts still open on PR head.
+- Files hardened: `ui/app.legacy.js`, `site/ui/app.legacy.js`, `site/js/telegram-chat-sim.js`.
+- Security strategy: removed parsed-DOM-to-HTML string roundtrip patterns (`innerHTML`/`createContextualFragment` from sanitized strings) and shifted to safer fragment/text handling to avoid DOM text reinterpretation sinks.
+- Validation evidence:
+  - `node --check ui/app.legacy.js site/ui/app.legacy.js site/js/telegram-chat-sim.js` passed.
+  - `npm test -- tests/ui-server.test.mjs tests/demo-load-smoke.test.mjs` passed (51 tests).
+- Local OSS security tooling updates:
+  - No new tool install in this pass.
+  - Existing recommended free CLI tools remain: `semgrep`, `gitleaks`, `osv-scanner`, `trivy`, plus `npm audit`.
