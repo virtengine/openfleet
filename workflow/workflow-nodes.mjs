@@ -1,3 +1,6 @@
+// Forwarding note: `buildWorkflowAgentToolContract` and the embedded
+// `## Tool Capability Contract` prompt now live in
+// `workflow/workflow-nodes/definitions.mjs` after the node split.
 import {
   getNodeType,
   getNodeTypeMeta,
@@ -64,3 +67,4 @@ export {
   unregisterNodeType,
 };
 export { registerRuntimeNodeType as registerNodeType };
+
