@@ -1,9 +1,9 @@
 #!/usr/bin/env node
 /**
- * vendor-sync.mjs — Bundle front-end vendor files into ui/vendor/
+ * vendor-sync.mjs — Bundle front-end vendor files into shipped vendor directories
  *
  * Copies the ESM browser builds of Preact, htm, @preact/signals, and
- * es-module-shims from node_modules into ui/vendor/ so they are:
+ * es-module-shims from node_modules into local vendor directories so they are:
  *
  *   1. Included in the npm tarball (zero CDN dependency at runtime)
  *   2. Served directly as static files by both ui-server and setup-web-server
@@ -26,7 +26,10 @@ import { fileURLToPath } from "node:url";
 import https from "node:https";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
-const VENDOR_DIR = resolve(__dirname, "..", "ui", "vendor");
+const VENDOR_DIRS = [
+  resolve(__dirname, "..", "ui", "vendor"),
+  resolve(__dirname, "..", "site", "ui", "vendor"),
+];
 const _require = createRequire(import.meta.url);
 
 // ── Vendor manifest ───────────────────────────────────────────────────────────
@@ -168,10 +171,64 @@ function rewriteEsmShImports(src) {
     .replace(/from\s+["'](https?:\/\/esm\.sh\/|\/stable\/)preact@[^"']*\/compat[^"']*["']/g, 'from "preact/compat"');
 }
 
+function hardenVendorSource(name, src) {
+  if (name !== "es-module-shims.js") return src;
+
+  const lines = src.split(/\r?\n/);
+  const replaceLine = (needle, replacement) => {
+    const index = lines.findIndex((line) => line.includes(needle));
+    if (index >= 0) lines[index] = replacement;
+  };
+
+  replaceLine(
+    'i(\`{"imports":{"x":"\${b(',
+    '    };i(\`{"imports":{"x":"\${b(\'\')}"}}\`);i(\`{"imports":{"y":"\${b(\'\')}"}}\`);jb=JSON.stringify(b(\'{}\',\'text/json\'));cb=JSON.stringify(b(\'\',\'text/css\'));wb=JSON.stringify(b(new Uint8Array(${JSON.stringify(wasmBytes)}),\'application/wasm\'));cm=${',
+  );
+  replaceLine(
+    'supportsImportMaps && jsonModulesEnabled ? `c(b(',
+    '      supportsImportMaps && jsonModulesEnabled ? \'c(b(`import${jb}with{type:"json"}`))\' : \'false\'',
+  );
+  replaceLine(
+    'supportsImportMaps && wasmSourcePhaseEnabled ?',
+    '      supportsImportMaps && wasmSourcePhaseEnabled ? \'c(b(`import source x from ${wb}`))\' : \'false\'',
+  );
+  replaceLine(
+    'c(b(\`import source x from "\\${b(new Uint8Array(',
+    '    };Promise.all([${supportsImportMaps ? \'true\' : "c(\'x\')"},${supportsImportMaps ? "c(\'y\')" : false},cm,${',
+  );
+  replaceLine(
+    'supportsImportMaps && cssModulesEnabled ?',
+    '      supportsImportMaps && cssModulesEnabled ? \'cm.then(s=>s?c(b(`import${cb}with{type:"css"}`)):false)\' : \'false\'',
+  );
+  replaceLine(
+    'cm.then(s=>s?c(b(\`import"\\${b(\'\',\'text/css\')',
+    '    },sp,${',
+  );
+  replaceLine(
+    'supportsImportMaps && wasmInstancePhaseEnabled ?',
+    '      supportsImportMaps && wasmInstancePhaseEnabled ? `${wasmSourcePhaseEnabled ? \'sp.then(s=>s?\' : \'\'}c(b(\\`import\\${wb}\\`))${wasmSourcePhaseEnabled ? \' :false)\'.trim() : \'\'}` : \'false\'',
+  );
+  replaceLine(
+    'const urlJsString = url => ',
+    '  const urlJsString = url => JSON.stringify(String(url));',
+  );
+
+  return lines.join("\n");
+}
+
+function writeVendorCopies(name, src) {
+  for (const dir of VENDOR_DIRS) {
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(resolve(dir, name), src, "utf8");
+  }
+}
+
 // ── Main ──────────────────────────────────────────────────────────────────────
 
 export async function syncVendorFiles({ silent = false } = {}) {
-  mkdirSync(VENDOR_DIR, { recursive: true });
+  for (const dir of VENDOR_DIRS) {
+    mkdirSync(dir, { recursive: true });
+  }
 
   const log = silent ? () => {} : (...a) => console.log("[vendor-sync]", ...a);
   const warn = (...a) => console.warn("[vendor-sync] WARN:", ...a);
@@ -179,14 +236,12 @@ export async function syncVendorFiles({ silent = false } = {}) {
   const results = [];
 
   for (const entry of VENDOR_MANIFEST) {
-    const destPath = resolve(VENDOR_DIR, entry.name);
-
     // ── 1. Try node_modules ──────────────────────────────────────────────────
     const localPath = resolveFromNodeModules(entry.specifier);
     if (localPath && existsSync(localPath)) {
       try {
-        const src = readFileSync(localPath);
-        writeFileSync(destPath, src);
+        const src = hardenVendorSource(entry.name, readFileSync(localPath, "utf8"));
+        writeVendorCopies(entry.name, src);
         log(`✓ node_modules → ${entry.name}`);
         results.push({ name: entry.name, source: "node_modules" });
         continue;
@@ -200,8 +255,8 @@ export async function syncVendorFiles({ silent = false } = {}) {
       try {
         log(`↓ Downloading ${entry.name} from ${url} …`);
         const buf = await fetchUrl(url);
-        const src = rewriteEsmShImports(buf.toString("utf8"));
-        writeFileSync(destPath, src, "utf8");
+        const src = hardenVendorSource(entry.name, rewriteEsmShImports(buf.toString("utf8")));
+        writeVendorCopies(entry.name, src);
         log(`✓ downloaded → ${entry.name}`);
         results.push({ name: entry.name, source: url });
         break;
@@ -236,6 +291,6 @@ if (isMain) {
     console.warn(`[vendor-sync] Some files could not be synced: ${failed.join(", ")}`);
     console.warn("[vendor-sync] The server will fall back to CDN for those files.");
   } else {
-    console.log(`[vendor-sync] Done — ${results.length} vendor files ready in ui/vendor/`);
+    console.log(`[vendor-sync] Done — ${results.length} vendor files ready in ui/vendor/ and site/ui/vendor/`);
   }
 }
