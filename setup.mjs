@@ -980,6 +980,11 @@ function getGitHubAuthScopes(cwd) {
       encoding: "utf8",
       cwd: cwd || process.cwd(),
       stdio: ["ignore", "pipe", "pipe"],
+      timeout: 3000,
+      env: {
+        ...process.env,
+        GH_PROMPT_DISABLED: "1",
+      },
     });
     const line = String(output || "")
       .split(/\r?\n/)
