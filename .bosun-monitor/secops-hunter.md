@@ -1,4 +1,5 @@
 ## 2026-03-09 03:39:10 +11:00
+
 - Scope: GitHub code-scanning remediation batch focused on `js/polynomial-redos` high-volume findings.
 - Files hardened: `agent/agent-supervisor.mjs`, `agent/autofix.mjs`, `agent/fleet-coordinator.mjs`, `agent/hook-profiles.mjs`, `shell/codex-config.mjs`, `workspace/workspace-manager.mjs`, `workspace/worktree-manager.mjs`, `infra/maintenance.mjs`, `kanban/ve-kanban.mjs`, `kanban/vk-log-stream.mjs`, `server/setup-web-server.mjs`, `setup.mjs`, `task/task-assessment.mjs`, `telegram/telegram-bot.mjs`, `voice/voice-agents-sdk.mjs`.
 - Security strategy: replaced risky regex patterns with bounded string parsing and explicit token/ordering checks to reduce ReDoS risk without behavior changes.
@@ -12,6 +13,7 @@
   - `eslint-plugin-security` (JS security lint rules)
 
 ## 2026-03-09 12:25:00 +11:00
+
 - Scope: GitHub code-scanning hardening batch focused on command-injection sinks and unsafe hostname substring checks.
 - Files hardened: `agent/agent-endpoint.mjs`, `agent/agent-pool.mjs`, `agent/autofix.mjs`, `git/sdk-conflict-resolver.mjs`, `infra/container-runner.mjs`, `infra/library-manager.mjs`, `infra/monitor.mjs`, `server/ui-server.mjs`, `shell/codex-config.mjs`, `shell/codex-model-profiles.mjs`, `shell/codex-shell.mjs`, `voice/voice-tools.mjs`, `workspace/worktree-manager.mjs`.
 - Security strategy: replaced shell-string execution with argument-safe `spawnSync` paths, added input validation for git refs/ports/repo URLs, and moved Azure host detection from substring checks to parsed-host suffix validation.
@@ -25,6 +27,7 @@
 - Post-main CodeQL refresh (`run 22834818631`): open code-scanning alerts reduced from 94 to 65 (29 resolved this batch).
 
 ## 2026-03-09 15:29:17 +11:00
+
 - Scope: SecOps follow-up batch on remaining CodeQL alerts (command/2nd-order injection, XSS, request forgery, insecure randomness, prototype pollution, stack-trace exposure, regex hardening).
 - Files hardened: `infra/monitor.mjs`, `setup.mjs`, `server/ui-server.mjs`, `server/setup-web-server.mjs`, `git/sdk-conflict-resolver.mjs`, `task/task-executor.mjs`, `workspace/workspace-monitor.mjs`, `workflow/workflow-nodes.mjs`, `kanban/kanban-adapter.mjs`, `kanban/vk-log-stream.mjs`, `github/github-oauth-portal.mjs`, `voice/voice-action-dispatcher.mjs`, `voice/voice-tools.mjs`, `voice/voice-relay.mjs`, `voice/voice-auth-manager.mjs`, `task/task-store.mjs`, `desktop/main.mjs`, `lib/session-insights.mjs`, `ui/app.legacy.js`, `site/ui/app.legacy.js`, `site/js/telegram-chat-sim.js`, plus security regression tests.
 - Security strategy: eliminate shell-string execution paths, enforce input/URL constraints before network or process dispatch, replace insecure randomness with `crypto.randomUUID`, add HTML sanitization before DOM injection, and harden error payloads to avoid stack exposure.
@@ -38,6 +41,7 @@
   - Recommended CLI installs (free/open source): `semgrep`, `gitleaks`, `osv-scanner`, `trivy`.
 
 ## 2026-03-09 15:52:40 +11:00
+
 - Scope: PR #189 final follow-up to close residual CodeQL DOM-XSS alerts still open on PR head.
 - Files hardened: `ui/app.legacy.js`, `site/ui/app.legacy.js`, `site/js/telegram-chat-sim.js`.
 - Security strategy: removed parsed-DOM-to-HTML string roundtrip patterns (`innerHTML`/`createContextualFragment` from sanitized strings) and shifted to safer fragment/text handling to avoid DOM text reinterpretation sinks.
