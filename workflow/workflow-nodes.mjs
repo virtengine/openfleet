@@ -7421,10 +7421,8 @@ function findExistingWorktreePathForBranch(repoRoot, branch) {
   const normalizedBranch = String(branch || "").trim();
   if (!normalizedBranch) return "";
   try {
-    const raw = execSync("git worktree list --porcelain", {
+    const raw = execGitArgsSync(["worktree", "list", "--porcelain"], {
       cwd: repoRoot,
-      encoding: "utf8",
-      stdio: ["ignore", "pipe", "pipe"],
       timeout: 10000,
     });
     const entries = String(raw || "").split(/\r?\n\r?\n/).map((chunk) => chunk.trim()).filter(Boolean);
@@ -9183,9 +9181,3 @@ registerNodeType("action.web_search", {
 // ═══════════════════════════════════════════════════════════════════════════
 
 export { registerNodeType, getNodeType, listNodeTypes } from "./workflow-engine.mjs";
-
-
-
-
-
-
