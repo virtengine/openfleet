@@ -3036,7 +3036,7 @@
       "enabled": true,
       "trigger": "trigger.task_assigned",
       "variables": {
-        "testFramework": "node --test",
+        "testFramework": "npm test",
         "buildCommand": "npm run build",
         "agentSdk": "auto",
         "timeoutMs": 3600000,
@@ -19374,7 +19374,7 @@
       "nodeCount": 23,
       "trigger": "trigger.task_assigned",
       "variables": {
-        "testFramework": "node --test",
+        "testFramework": "npm test",
         "buildCommand": "npm run build",
         "agentSdk": "auto",
         "timeoutMs": 3600000,
