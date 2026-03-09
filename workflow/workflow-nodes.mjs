@@ -18,7 +18,7 @@
  */
 
 import { registerNodeType } from "./workflow-engine.mjs";
-import { existsSync, readFileSync, writeFileSync, mkdirSync } from "node:fs";
+import { existsSync, readFileSync, writeFileSync, mkdirSync, rmSync } from "node:fs";
 import { resolve, dirname } from "node:path";
 import { execSync, execFileSync, spawn } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
@@ -7447,6 +7447,50 @@ function findExistingWorktreePathForBranch(repoRoot, branch) {
   return "";
 }
 
+function isValidGitWorktreePath(worktreePath) {
+  if (!worktreePath || !existsSync(worktreePath)) return false;
+  try {
+    const inside = execGitArgsSync(["rev-parse", "--is-inside-work-tree"], {
+      cwd: worktreePath,
+      encoding: "utf8",
+      timeout: 5000,
+      stdio: ["ignore", "pipe", "pipe"],
+    }).trim().toLowerCase();
+    return inside === "true";
+  } catch {
+    return false;
+  }
+}
+
+function cleanupBrokenManagedWorktree(repoRoot, worktreePath) {
+  if (!worktreePath) return;
+  try {
+    execGitArgsSync(["worktree", "remove", String(worktreePath), "--force"], {
+      cwd: repoRoot,
+      encoding: "utf8",
+      timeout: 30000,
+      stdio: ["ignore", "pipe", "pipe"],
+    });
+  } catch {
+    // Best-effort: stale metadata can make removal fail; fallback to filesystem cleanup.
+  }
+  try {
+    rmSync(worktreePath, { recursive: true, force: true });
+  } catch {
+    /* best-effort */
+  }
+  try {
+    execGitArgsSync(["worktree", "prune"], {
+      cwd: repoRoot,
+      encoding: "utf8",
+      timeout: 15000,
+      stdio: ["ignore", "pipe", "pipe"],
+    });
+  } catch {
+    /* best-effort */
+  }
+}
+
 /**
  * Anti-thrash state — module-scope to survive across workflow runs.
  * Mirrors TaskExecutor._noCommitCounts / _skipUntil / _completedWithPR.
@@ -8266,6 +8310,13 @@ registerNodeType("action.acquire_worktree", {
       }
 
       if (existsSync(worktreePath)) {
+        if (!isValidGitWorktreePath(worktreePath)) {
+          ctx.log(node.id, `Managed worktree is invalid, recreating: ${worktreePath}`);
+          cleanupBrokenManagedWorktree(repoRoot, worktreePath);
+        }
+      }
+
+      if (existsSync(worktreePath)) {
         // Reuse existing worktree — pull latest base if possible
         try {
           execSync(`git pull --rebase origin ${baseBranchShort}`, {
@@ -8302,6 +8353,19 @@ registerNodeType("action.acquire_worktree", {
         } catch (reuseErr) {
           const existingBranchWorktree = findExistingWorktreePathForBranch(repoRoot, branch);
           if (existingBranchWorktree && existsSync(existingBranchWorktree)) {
+            if (!isValidGitWorktreePath(existingBranchWorktree) &&
+              isManagedBosunWorktree(existingBranchWorktree, repoRoot)
+            ) {
+              ctx.log(
+                node.id,
+                `Existing branch worktree is invalid, recreating managed path: ${existingBranchWorktree}`,
+              );
+              cleanupBrokenManagedWorktree(repoRoot, existingBranchWorktree);
+            }
+          }
+          if (existingBranchWorktree && existsSync(existingBranchWorktree) &&
+            isValidGitWorktreePath(existingBranchWorktree)
+          ) {
             ctx.data.worktreePath = existingBranchWorktree;
             ctx.data._worktreeCreated = false;
             ctx.data._worktreeManaged = true;

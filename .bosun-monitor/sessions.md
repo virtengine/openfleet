@@ -348,3 +348,17 @@ ode cli.mjs --config-dir .bosun --repo-root . task ... previously bypassed task 
 - Validation: 
 pm test -- tests/cli-task-routing.test.mjs tests/cli-workspace-config-dir.test.mjs passed.
 - Safety blocker: unexpected concurrent tracked change detected in gent/agent-endpoint.mjs; paused before commit/push pending operator direction.
+
+## 2026-03-09T14:07:07+11:00 runtime check
+- Runtime duration: ~00:20:00.
+- Source daemon health: running from repo source (cli.mjs --daemon-child + infra/monitor.mjs --daemon-child) with explicit --config-dir .bosun --repo-root.
+- Incident found: local git metadata was in bare mode (core.bare=true), causing git status/workspace operations to fail with atal: this operation must be run in a work tree.
+- Operational fix applied: git config --local core.bare false in osun/.
+- Post-fix verification:
+  - git rev-parse --is-inside-work-tree now returns 	rue.
+  - git status -sb works again on monitor/bosun-env-stability.
+  - 
+ode cli.mjs --config-dir .bosun --repo-root . --workspace-health reports HEALTHY (with expected warnings about local changes/sandbox roots).
+  - Workflow scheduler remains active (Task Planner / Task Replenish / Task Batch Processor runs continuing each minute).
+- Throughput status: still below target (task stats remain 	odo=1455, inprogress=1); one long-running Task Lifecycle run (a6387b1-...) is still in un-agent and should be watched next run for completion vs timeout.
+- No code changes shipped in this run; no PR/merge action required.

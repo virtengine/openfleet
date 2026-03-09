@@ -890,6 +890,43 @@ describe("action.acquire_worktree", () => {
     expect(normalizedPath).not.toContain("very-long-branch-name");
   });
 
+
+  it("recreates invalid managed worktrees instead of reusing broken git metadata", async () => {
+    const nt = getNodeType("action.acquire_worktree");
+    const branch = "task/recreate-invalid-managed";
+    const node = makeNode("action.acquire_worktree", {
+      repoRoot: repoDir,
+      taskId: "recreate-invalid-1",
+      branch,
+      baseBranch: "main",
+      fetchTimeout: 5000,
+      worktreeTimeout: 10000,
+    });
+
+    const firstCtx = makeCtx({});
+    const first = await nt.execute(node, firstCtx);
+    expect(first.success).toBe(true);
+    expect(first.created).toBe(true);
+
+    gitExec('git worktree remove "' + first.worktreePath + '" --force', {
+      cwd: repoDir,
+      stdio: "ignore",
+    });
+    mkdirSync(first.worktreePath, { recursive: true });
+    writeFileSync(join(first.worktreePath, "stale.txt"), "stale");
+
+    const secondCtx = makeCtx({});
+    const second = await nt.execute(node, secondCtx);
+    expect(second.success).toBe(true);
+    expect(typeof second.worktreePath).toBe("string");
+    expect(second.worktreePath.length).toBeGreaterThan(0);
+    const isGit = gitExec("git rev-parse --is-inside-work-tree", {
+      cwd: second.worktreePath,
+      encoding: "utf8",
+    }).trim();
+    expect(isGit).toBe("true");
+  });
+
   it("enables core.longpaths before checkout", async () => {
     const nt = getNodeType("action.acquire_worktree");
     const ctx = makeCtx({});
@@ -1699,6 +1736,8 @@ describe("template-ve-orchestrator-lite", () => {
     expect(Array.isArray(t.variables.protectedBranches)).toBe(true);
   });
 });
+
+
 
 
 
