@@ -1437,6 +1437,56 @@ describe("action.update_task_status", () => {
     expect(result.error).toBe("unresolved_task_id");
     expect(updateTaskStatus).not.toHaveBeenCalled();
   });
+
+  it("persists PR linkage metadata when moving task to inreview", async () => {
+    const nt = getNodeType("action.update_task_status");
+    const updateTaskStatus = vi.fn().mockResolvedValue(true);
+    const updateTask = vi.fn().mockResolvedValue(true);
+    const ctx = makeCtx({
+      taskId: "task-review-123",
+      taskTitle: "Review-ready task",
+      branch: "task/task-review-123",
+    });
+    ctx.getNodeOutput = vi.fn((id) => {
+      if (id !== "create-pr") return null;
+      return {
+        prNumber: 987,
+        prUrl: "https://github.com/virtengine/bosun/pull/987",
+        branch: "task/task-review-123",
+      };
+    });
+    const node = makeNode("action.update_task_status", {
+      taskId: "{{taskId}}",
+      status: "inreview",
+      taskTitle: "{{taskTitle}}",
+    });
+
+    const result = await nt.execute(node, ctx, {
+      services: {
+        kanban: { updateTaskStatus, updateTask },
+      },
+    });
+
+    expect(result.success).toBe(true);
+    expect(updateTaskStatus).toHaveBeenCalledWith(
+      "task-review-123",
+      "inreview",
+      expect.objectContaining({
+        source: "workflow",
+        branchName: "task/task-review-123",
+        prNumber: 987,
+        prUrl: "https://github.com/virtengine/bosun/pull/987",
+      }),
+    );
+    expect(updateTask).toHaveBeenCalledWith(
+      "task-review-123",
+      expect.objectContaining({
+        branchName: "task/task-review-123",
+        prNumber: 987,
+        prUrl: "https://github.com/virtengine/bosun/pull/987",
+      }),
+    );
+  });
 });
 
 describe("template-task-lifecycle", () => {
@@ -1736,6 +1786,7 @@ describe("template-ve-orchestrator-lite", () => {
     expect(Array.isArray(t.variables.protectedBranches)).toBe(true);
   });
 });
+
 
 
 

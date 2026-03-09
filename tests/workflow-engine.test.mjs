@@ -1689,6 +1689,45 @@ describe("Session chaining - action.run_agent", () => {
     expect(runLogText).toMatch(/Agent: Implemented the requested changes\./);
   });
 
+  it("resolves templated timeoutMs before launching agent", async () => {
+    const handler = getNodeType("action.run_agent");
+    expect(handler).toBeDefined();
+
+    const ctx = new WorkflowContext({
+      worktreePath: "/tmp/test",
+      taskTimeoutMs: 21600000,
+    });
+    const launchEphemeralThread = vi.fn().mockResolvedValue({
+      success: true,
+      output: "done",
+      sdk: "codex",
+      items: [],
+      threadId: "thread-timeout-resolve",
+    });
+    const mockEngine = {
+      services: {
+        agentPool: {
+          launchEphemeralThread,
+        },
+      },
+    };
+
+    const node = {
+      id: "a-timeout",
+      type: "action.run_agent",
+      config: {
+        prompt: "timeout test",
+        timeoutMs: "{{taskTimeoutMs}}",
+        autoRecover: false,
+      },
+    };
+
+    const result = await handler.execute(node, ctx, mockEngine);
+    expect(result.success).toBe(true);
+    expect(launchEphemeralThread).toHaveBeenCalledTimes(1);
+    expect(launchEphemeralThread.mock.calls[0][2]).toBe(21600000);
+  });
+
   it("propagates threadId to context from execWithRetry", async () => {
     const handler = getNodeType("action.run_agent");
     expect(handler).toBeDefined();
@@ -3139,4 +3178,5 @@ describe("WorkflowEngine.getTaskTraceEvents", () => {
     expect(reread[0].taskId).toBe("TASK-TRACE-READBACK");
   });
 });
+
 
