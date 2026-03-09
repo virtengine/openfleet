@@ -168,4 +168,25 @@ describe("codebase audit engine", () => {
     expect(cliRun.exitCode).toBe(1);
     expect(stdout.join("\n")).toContain("Conformity failed");
   });
+
+  it("treats --ci as a conformity alias with exit gating", async () => {
+    const root = createRepo();
+
+    const failingRun = await runAuditCli(["--ci", "--root", root], {
+      stdout: () => {},
+      stderr: () => {},
+    });
+    expect(failingRun.exitCode).toBe(1);
+    expect(failingRun.result.command).toBe("conformity");
+
+    generateSummaries(root);
+    generateWarnings(root);
+
+    const passingRun = await runAuditCli(["--ci", "--root", root], {
+      stdout: () => {},
+      stderr: () => {},
+    });
+    expect(passingRun.exitCode).toBe(0);
+    expect(passingRun.result.ok).toBe(true);
+  });
 });
