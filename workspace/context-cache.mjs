@@ -106,6 +106,7 @@ const _contentCacheConfig = {
 const TIER_0_MAX_AGE = 2;  // last 3 turns: full context
 const TIER_1_MAX_AGE = 5;  // turns 3-5: light compression
 const TIER_2_MAX_AGE = 9;  // turns 6-9: moderate compression
+const DEFAULT_GIT_OUTPUT_MAX_CHARS = 8000;
 
 // ── Compression parameters ────────────────────────────────────────────────
 const TIER_1_HEAD_CHARS = 2000;
@@ -148,7 +149,20 @@ function resolveOpts(options = {}) {
     msgTier1MaxAge:       options.msgTier1MaxAge       ?? MSG_TIER_1_MAX_AGE,
     msgMinCompressChars:  options.msgMinCompressChars  ?? MSG_MIN_COMPRESS_CHARS,
     userMsgFullTurns:     options.userMsgFullTurns     ?? USER_MSG_FULL_TURNS,
+    gitOutputMaxChars:    options.gitOutputMaxChars    ?? getGitOutputMaxCharsFromEnv(),
   };
+}
+
+function getGitOutputMaxCharsFromEnv() {
+  const raw = process.env.BOSUN_GIT_OUTPUT_MAX_CHARS;
+  if (raw === undefined || raw === null || raw === "") {
+    return DEFAULT_GIT_OUTPUT_MAX_CHARS;
+  }
+  const parsed = Number.parseInt(String(raw), 10);
+  if (!Number.isFinite(parsed) || parsed < 0) {
+    return DEFAULT_GIT_OUTPUT_MAX_CHARS;
+  }
+  return parsed;
 }
 
 // ---------------------------------------------------------------------------
@@ -432,6 +446,92 @@ function extractArgsPreview(item) {
     return parts.join(", ");
   }
   return "";
+}
+
+function extractCommandText(item) {
+  if (!item || typeof item !== "object") return "";
+
+  const directCommand = typeof item.command === "string" ? item.command : "";
+  if (directCommand) return directCommand;
+
+  const args = item.arguments || item.args || item.call?.arguments;
+  if (typeof args === "string") {
+    const trimmed = args.trim();
+    if (!trimmed) return "";
+    const parsed = safeParse(args);
+    if (parsed && typeof parsed === "object" && Object.keys(parsed).length > 0) {
+      return extractCommandText({ arguments: parsed });
+    }
+    return trimmed;
+  }
+
+  if (Array.isArray(args)) {
+    return args.map((part) => String(part ?? "")).join(" ").trim();
+  }
+
+  const argsObj = args;
+  if (!argsObj || typeof argsObj !== "object") return "";
+
+  for (const key of ["command", "cmd", "argv", "args"]) {
+    const value = argsObj[key];
+    if (typeof value === "string" && value.trim()) return value;
+    if (Array.isArray(value)) return value.map((part) => String(part ?? "")).join(" ").trim();
+  }
+
+  return "";
+}
+
+function normalizeGitDescriptor(item) {
+  const toolName = extractToolName(item);
+  const commandText = extractCommandText(item);
+  return `${toolName} ${commandText}`
+    .toLowerCase()
+    .replaceAll(/_+/g, " ")
+    .replaceAll(/\s+/g, " ")
+    .trim();
+}
+
+function classifyImmediateGitOutput(item, opts) {
+  const maxChars = opts?.gitOutputMaxChars ?? DEFAULT_GIT_OUTPUT_MAX_CHARS;
+  if (!Number.isFinite(maxChars) || maxChars <= 0) return null;
+
+  const text = getItemText(item);
+  if (typeof text !== "string" || text.length <= maxChars) return null;
+
+  const descriptor = normalizeGitDescriptor(item);
+  if (!descriptor.includes("git")) return null;
+
+  if (/\bgit\s+log\b/.test(descriptor)) return { kind: "log", text };
+  if (/\bgit\s+shortlog\b/.test(descriptor)) return { kind: "shortlog", text };
+  if (/\bgit\s+reflog\b/.test(descriptor)) return { kind: "reflog", text };
+
+  if (/\bgit\s+diff\b/.test(descriptor)) {
+    const boundedDiff = /(?:^|\s)--(?:stat|shortstat|numstat|name-only|name-status|summary)\b/.test(descriptor);
+    if (!boundedDiff) return { kind: "diff", text };
+  }
+
+  return null;
+}
+
+function compressImmediateGitText(text, logId, opts) {
+  const headChars = opts?.tier2HeadChars ?? TIER_2_HEAD_CHARS;
+  const tailChars = opts?.tier2TailChars ?? TIER_2_TAIL_CHARS;
+  if (typeof text !== "string" || text.length <= headChars + tailChars + 200) {
+    return text;
+  }
+
+  const head = text.slice(0, headChars);
+  const tail = tailChars > 0 ? text.slice(-tailChars) : "";
+  const omitted = text.length - headChars - (tailChars > 0 ? tailChars : 0);
+  const lineCount = text.length === 0 ? 0 : text.split("\n").length;
+  const note = `\n\n[…git capped: ${lineCount} lines, ${omitted} chars hidden. Full: bosun --tool-log ${logId}]\n\n`;
+  return head + note + tail;
+}
+
+function applyImmediateGitCompression(item, logId, opts) {
+  const compressed = { ...item, _cachedLogId: logId, _compressed: "git_tier2" };
+  setItemText(compressed, compressImmediateGitText(getItemText(item), logId, opts));
+  return compressed;
 }
 
 // ---------------------------------------------------------------------------
@@ -1110,9 +1210,6 @@ export async function cacheAndCompressItems(items, options = {}) {
   const turnItems = assignTurns(items);
   const maxTurn = turnItems.reduce((m, t) => Math.max(m, t.turn), 0);
 
-  // Nothing to compress if we don't have enough turns yet
-  if (maxTurn < opts.fullContextTurns) return items;
-
   // ── Content-aware scoring pass ──────────────────────────────────────────
   // Phase 1: Score every item's inherent value density
   const scores = new Map();
@@ -1164,6 +1261,20 @@ export async function cacheAndCompressItems(items, options = {}) {
  * @param {Array} cachePromises  Mutated — cache promises pushed here
  */
 function processCompressItem(item, age, scores, actionPaths, result, cachePromises, opts) {
+  const immediateGitOutput = classifyImmediateGitOutput(item, opts);
+  if (immediateGitOutput && !item._cachedLogId) {
+    const toolName = extractToolName(item);
+    const argsPreview = extractArgsPreview(item);
+    const cacheIdx = result.length;
+    result.push(item);
+    cachePromises.push(
+      writeToCache(item, toolName, argsPreview).then((logId) => {
+        result[cacheIdx] = applyImmediateGitCompression(item, logId, opts);
+      }),
+    );
+    return;
+  }
+
   // Tier 0: keep full
   const tier0Limit = opts?.tier0MaxAge ?? TIER_0_MAX_AGE;
   if (age <= tier0Limit) { result.push(item); return; }
