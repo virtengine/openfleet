@@ -51,3 +51,19 @@
 - Local OSS security tooling updates:
   - No new tool install in this pass.
   - Existing recommended free CLI tools remain: `semgrep`, `gitleaks`, `osv-scanner`, `trivy`, plus `npm audit`.
+
+## 2026-03-09 21:13:41 +11:00
+
+- Scope: SecOps batch for remaining CodeQL alerts on task patching, workflow screenshot command execution, workspace git monitor shaping, and vendor shim string-sanitization paths.
+- Files hardened: `task/task-store.mjs`, `workflow/workflow-nodes.mjs`, `workspace/workspace-monitor.mjs`, `ui/vendor/es-module-shims.js`, `site/ui/vendor/es-module-shims.js`.
+- Security strategy:
+  - replaced dynamic task property assignment with a direct allowlist to avoid prototype-polluting key writes.
+  - replaced shell-string `node -e` execution with argument-safe `spawnSync` in screenshot workflow path.
+  - constrained monitor git invocations to fixed command shapes before process spawn.
+  - hardened vendor shim inline-script data/URL literal escaping (`wasmBytes` serialization and URL JS string encoding).
+- Validation evidence:
+  - `node --check` passed on all touched files.
+  - `npm test -- tests/workflow-task-lifecycle.test.mjs tests/worktree-manager.test.mjs tests/ui-server.test.mjs` passed (252 tests).
+- Local OSS tooling notes:
+  - Executed: `npm audit` during install (0 vulnerabilities).
+  - Keep free CLI stack in rotation: `semgrep`, `gitleaks`, `osv-scanner`, `trivy`, `npm audit`.
