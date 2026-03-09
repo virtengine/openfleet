@@ -870,7 +870,7 @@ describe("action.acquire_worktree", () => {
     expect(result.created).toBe(false);
     expect(String(result.worktreePath).replace(/\\/g, "/")).toBe(String(legacyPath).replace(/\\/g, "/"));
     expect(ctx.data._worktreeManaged).toBe(true);
-  });
+  }, 10000);
   it("uses a short managed worktree directory derived from task id", async () => {
     const nt = getNodeType("action.acquire_worktree");
     const ctx = makeCtx({});

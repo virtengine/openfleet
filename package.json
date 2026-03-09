@@ -197,6 +197,7 @@
     "infra/library-manager.mjs",
     "infra/maintenance.mjs",
     "workflow/manual-flows.mjs",
+    "workflow-templates/code-quality.mjs",
     "workflow/mcp-discovery-proxy.mjs",
     "workflow/mcp-workflow-adapter.mjs",
     "workflow/mcp-registry.mjs",

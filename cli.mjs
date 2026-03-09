@@ -319,18 +319,22 @@ const DAEMON_RESTART_DELAY_MS = Math.max(
   1000,
   Number(process.env.BOSUN_DAEMON_RESTART_DELAY_MS || 5000) || 5000,
 );
+const DAEMON_MAX_RESTART_DELAY_MS = Math.max(
+  DAEMON_RESTART_DELAY_MS,
+  Number(process.env.BOSUN_DAEMON_MAX_RESTART_DELAY_MS || 120000) || 120000,
+);
 const DAEMON_MAX_RESTARTS = Math.max(
   0,
-  Number(process.env.BOSUN_DAEMON_MAX_RESTARTS || 0) || 0,
+  Number(process.env.BOSUN_DAEMON_MAX_RESTARTS || 25) || 25,
 );
 const DAEMON_INSTANT_CRASH_WINDOW_MS = Math.max(
   1000,
-  Number(process.env.BOSUN_DAEMON_INSTANT_CRASH_WINDOW_MS || 15000) ||
-    15000,
+  Number(process.env.BOSUN_DAEMON_INSTANT_CRASH_WINDOW_MS || 60000) ||
+    60000,
 );
 const DAEMON_MAX_INSTANT_RESTARTS = Math.max(
   1,
-  Number(process.env.BOSUN_DAEMON_MAX_INSTANT_RESTARTS || 3) || 3,
+  Number(process.env.BOSUN_DAEMON_MAX_INSTANT_RESTARTS || 5) || 5,
 );
 let daemonRestartCount = 0;
 const daemonCrashTracker = createDaemonCrashTracker({
@@ -2157,7 +2161,7 @@ function runMonitor({ restartReason = "" } = {}) {
         }
         monitorChild = fork(monitorPath, process.argv.slice(2), {
           stdio: "inherit",
-          execArgv: ["--max-old-space-size=4096"],
+          execArgv: ["--max-old-space-size=4096", "--trace-warnings"],
           env: childEnv,
           windowsHide: IS_DAEMON_CHILD && process.platform === "win32",
         });
@@ -2193,7 +2197,12 @@ function runMonitor({ restartReason = "" } = {}) {
             if (shouldAutoRestart) {
               const crashState = daemonCrashTracker.recordExit();
               daemonRestartCount += 1;
-              const delayMs = isOSKill ? 5000 : DAEMON_RESTART_DELAY_MS;
+              // Exponential backoff: base delay doubles each attempt, capped at max
+              const backoffDelay = Math.min(
+                DAEMON_RESTART_DELAY_MS * Math.pow(2, Math.min(daemonRestartCount - 1, 10)),
+                DAEMON_MAX_RESTART_DELAY_MS,
+              );
+              const delayMs = isOSKill ? 5000 : backoffDelay;
               if (IS_DAEMON_CHILD && crashState.exceeded) {
                 const durationSec = Math.max(
                   1,

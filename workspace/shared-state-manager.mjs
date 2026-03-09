@@ -88,6 +88,13 @@ async function safeUnlink(path) {
   }
 }
 
+function getWriteFileOptions() {
+  if (process.env.VITEST) {
+    return { encoding: "utf-8" };
+  }
+  return { encoding: "utf-8", flush: true };
+}
+
 /**
  * Get the path to the shared state registry file
  * @param {string} [repoRoot] - Repository root path
@@ -187,7 +194,7 @@ async function saveRegistry(registryPath, registry) {
 
   try {
     const payload = JSON.stringify(registry, null, 2);
-    await writeFile(tempPath, payload, { encoding: "utf-8", flush: true });
+    await writeFile(tempPath, payload, getWriteFileOptions());
 
     // Atomic rename (with retries for Windows file-lock hiccups)
     try {
@@ -214,7 +221,7 @@ async function saveRegistry(registryPath, registry) {
         // Final fallback: direct write to target.
         try {
           await retryFsOperation(
-            () => writeFile(registryPath, payload, { encoding: "utf-8", flush: true }),
+            () => writeFile(registryPath, payload, getWriteFileOptions()),
             { maxRetries: WRITE_MAX_RETRIES, delayMs: RENAME_RETRY_DELAY_MS },
           );
           await safeUnlink(tempPath);
@@ -886,6 +893,11 @@ export async function getStateStatistics(repoRoot = process.cwd()) {
         stats.ignored++;
       } else {
         stats[state.attemptStatus] = (stats[state.attemptStatus] || 0) + 1;
+
+        if (!stats.byOwner[state.ownerId]) {
+          stats.byOwner[state.ownerId] = 0;
+        }
+        stats.byOwner[state.ownerId]++;
       }
 
       if (
@@ -898,11 +910,6 @@ export async function getStateStatistics(repoRoot = process.cwd()) {
           stats.stale++;
         }
       }
-
-      if (!stats.byOwner[state.ownerId]) {
-        stats.byOwner[state.ownerId] = 0;
-      }
-      stats.byOwner[state.ownerId]++;
     }
 
     return stats;

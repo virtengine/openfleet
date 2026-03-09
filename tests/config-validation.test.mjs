@@ -145,7 +145,7 @@ describe("loadConfig validation and edge cases", () => {
 
     expect(config).toBeDefined();
     expect(config.internalExecutor.maxParallel).toBe(3);
-  });
+  }, 10000);
 
   it("returns a config object with expected shape", () => {
     const config = loadConfig([

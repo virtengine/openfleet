@@ -11718,6 +11718,330 @@
       ]
     },
     {
+      "id": "template-code-quality-striker",
+      "name": "Code Quality Striker",
+      "description": "Recurring autonomous refactoring agent that improves codebase structure for long-term agentic development. Runs every 2 hours with a hard 90-minute session cap. Each session MUST produce a passing PR before terminating. Scope is strictly limited to structural quality: module decomposition, deduplication, function splitting. Zero functional changes allowed.",
+      "category": "maintenance",
+      "categoryLabel": "Maintenance",
+      "categoryIcon": ":settings:",
+      "categoryOrder": 99,
+      "tags": [
+        "refactor",
+        "code-quality",
+        "maintenance",
+        "scheduled",
+        "agentic"
+      ],
+      "nodeCount": 12,
+      "edgeCount": 12,
+      "recommended": true,
+      "enabled": true,
+      "trigger": "trigger.schedule",
+      "variables": {
+        "sessionTimeoutMs": 5400000,
+        "branch": "chore/code-quality-striker-{{_runId}}",
+        "baseBranch": "main",
+        "sessionLogPath": ".bosun-monitor/code-quality-striker.md",
+        "maxFilesPerSession": 6,
+        "minFileSizeKb": 30,
+        "testCommand": "npm test",
+        "buildCommand": "npm run build",
+        "syntaxCheckCommand": "node --check"
+      },
+      "metadata": {
+        "author": "bosun",
+        "version": 1,
+        "createdAt": "2026-03-09T00:00:00Z",
+        "templateVersion": "1.0.0",
+        "tags": [
+          "refactor",
+          "code-quality",
+          "maintenance",
+          "scheduled",
+          "agentic"
+        ],
+        "sessionLog": ".bosun-monitor/code-quality-striker.md"
+      },
+      "nodes": [
+        {
+          "id": "trigger",
+          "type": "trigger.schedule",
+          "label": "Every 2 Hours",
+          "config": {
+            "intervalMs": 7200000,
+            "cron": "0 */2 * * *"
+          },
+          "position": {
+            "x": 400,
+            "y": 50
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "check-active-pr",
+          "type": "condition.expression",
+          "label": "Active Striker PR?",
+          "config": {
+            "expression": "(() => { try { const r = $ctx.runCommand('git branch -r'); return (r?.output || '').includes('code-quality-striker'); } catch { return false; } })()"
+          },
+          "position": {
+            "x": 400,
+            "y": 180
+          },
+          "outputs": [
+            "yes",
+            "no"
+          ]
+        },
+        {
+          "id": "skip-already-running",
+          "type": "notify.log",
+          "label": "Skip — PR Already Open",
+          "config": {
+            "message": "Code quality striker skipped: an open quality striker PR already exists. Will retry next cycle.",
+            "level": "info"
+          },
+          "position": {
+            "x": 650,
+            "y": 310
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "scan-candidates",
+          "type": "action.run_command",
+          "label": "Scan Large Files",
+          "config": {
+            "command": "node -e \"const{readdirSync,statSync}=require('fs');const{join,relative}=require('path');const base=process.cwd();function walk(d){const out=[];for(const f of readdirSync(d,{withFileTypes:true})){if(f.name==='node_modules'||f.name==='.cache'||f.name==='.git'||f.name==='worktrees')continue;const p=join(d,f.name);if(f.isDirectory())out.push(...walk(p));else if(/\\.(mjs|js)$/.test(f.name)){const s=statSync(p);out.push({p,kb:Math.round(s.size/1024)})}}return out}const files=walk(base).filter(x=>x.kb>={{minFileSizeKb}}).sort((a,b)=>b.kb-a.kb).slice(0,20);console.log(files.map(x=>x.kb+'kb\\t'+relative(base,x.p)).join('\\n'))\"",
+            "continueOnError": true
+          },
+          "position": {
+            "x": 400,
+            "y": 310
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "run-striker",
+          "type": "action.run_agent",
+          "label": "Code Quality Striker Agent",
+          "config": {
+            "timeoutMs": "{{sessionTimeoutMs}}",
+            "sdk": "auto",
+            "prompt": "# Code Quality Striker\n\nYou are a **structural quality agent**. Your sole mandate is to improve the\ninternal structure of the codebase so that future agentic models can work on\nit more efficiently — smaller files, clearer module boundaries, zero\nduplication, and self-contained functions.\n\n## Session Constraints\n\n- **Hard session cap**: you have at most 90 minutes total. Budget your time.\n- **You MUST open a PR before ending** — a session with no PR is a failed\n  session. If you run out of time mid-refactor, commit what you have, push,\n  and open the PR immediately even if the work is partial, AS LONG AS all\n  tests pass.\n- **Maximum {{maxFilesPerSession}} source files changed** in a single PR.\n  Keep diffs small and reviewable. Better to do one clean split per session\n  than attempt a mega-refactor.\n- You may run multiple sessions and PRs over time. Prefer incremental progress.\n\n## ✅ Allowed Changes (ONLY these)\n\n1. **Module decomposition** — extract a large file into smaller, focused\n   modules. The extracted module must be imported back so the public surface\n   is identical.\n2. **Function splitting** — break functions > ~80 lines into smaller,\n   well-named helpers within the same file or a co-located util module.\n3. **Deduplication** — extract identical or near-identical logic blocks into\n   a shared helper. Must not change call-site behaviour.\n4. **Dead code removal** — remove functions, variables, or imports that are\n   verifiably unreferenced (no callers anywhere in the repo).\n5. **Import cleanup** — remove unused imports, deduplicate import statements,\n   consolidate barrel imports.\n\n## ❌ Forbidden Changes (HARD STOPS — never do these)\n\n- Adding, removing, or changing any exported function signature or return value\n- Changing any HTTP route path, method, or response shape\n- Changing any config key names or default values\n- Adding new features, flags, or options of any kind\n- Changing test assertions or test logic\n- Renaming exported symbols (only rename internal/private symbols)\n- Adding comments, JSDoc, or inline documentation (unless minimal and necessary)\n- Changing error messages visible to users or logs (string literals)\n- Any change to .json, .sh, .md, .yaml, .html, .css, or non-.mjs/.js files\n  (unless you are only touching an import path string that is broken by a move)\n\n## Workflow\n\n### Step 1 — Identify your target\n\nUse the candidate file list provided (sorted by size, largest first):\n\n```\n{{scan-candidates.output}}\n```\n\nPick **1–3 files** for this session. Prioritise:\n- Files > 500 lines used by multiple modules (high parallel-conflict risk)\n- Files with clearly repeated logic blocks\n- Files with functions > 100 lines that have distinct sub-responsibilities\n\nRead each target file in full before making any decision. Do NOT edit\nanything you have not fully read.\n\n### Step 2 — Plan your split in writing\n\nBefore touching the file, write a short plan (to yourself, as a comment in\nyour reasoning — DO NOT add it to the code):\n- What gets extracted and where\n- New file names (follow existing naming conventions in that directory)\n- Which exports stay vs. move\n- Any callers that will need their import paths updated\n\n### Step 3 — Extract and wire up\n\n- Create the new module file(s) under the same directory as the source file.\n- Update the source file to re-export or directly import the extracted piece\n  so every existing call-site continues to work without modification.\n- Update any OTHER files that directly imported from the source file, if and\n  only if you moved an export that those files reference. Use\n  `grep -r 'importedName' --include='*.mjs' --include='*.js'` to find callers.\n- **Do not touch callers unless strictly required by the move.**\n\n### Step 4 — Validate before committing\n\nRun ALL of the following in order. Do not commit if any fail:\n\n```bash\n# 1. Syntax check every file you touched\n{{syntaxCheckCommand}} <file1> <file2> ...\n\n# 2. Full test suite — must be 0 failures, 0 unexpected skips\nnpm test\n\n# 3. Build — must pass clean\nnpm run build\n```\n\nIf tests fail, **revert your change** (`git checkout -- <file>`) and either:\n- Attempt a smaller, safer split of the same file, OR\n- Move to a different target file\n\n**Never push a failing test suite.**\n\n### Step 5 — Commit, push, and open the PR\n\nBranch name: `chore/code-quality-striker-{{_runId}}`\nBase branch: `{{baseBranch}}`\n\nCommit message format:\n```\nrefactor(<module>): split <description>\n\n- extracted <what> into <new-file>\n- <any other bullet points>\n\nNo functional changes. All tests pass.\n```\n\nPR title: `refactor: code quality pass — <one-line summary>`\n\nPR body template:\n```markdown\n## Code Quality Pass\n\n**Session**: code-quality-striker {{_runId}}\n**Scope**: structural refactor only — zero functional changes\n\n### Changes\n- <bullet per extracted module or dedup>\n\n### Validation\n- `node --check` passed on all touched files\n- `npm test` passed (N tests)\n- `npm run build` passed\n\n### Why\n<one sentence: \"X was Y lines with Z responsibilities; split to improve\nparallel edit safety for future agent sessions.\">\n```\n\n### Step 6 — Write session log\n\nAppend a new entry to `{{sessionLogPath}}` using this\nexact format (create the file if it does not exist):\n\n```markdown\n## <ISO timestamp with timezone>\n\n- Scope: <one sentence describing what was refactored>\n- Files changed: <comma-separated list>\n- Strategy: <what split/dedup/cleanup was performed and why>\n- Validation evidence:\n  - `node --check` passed on all touched files\n  - `npm test` passed (N tests)\n  - `npm run build` passed\n- PR: #<number> — `<branch name>`\n```\n\n## Time Budget Warning\n\nIf you have fewer than 15 minutes remaining:\n- Stop new analysis immediately\n- Commit and push whatever passing changes you have\n- Open the PR even if the scope is smaller than planned\n- Write the session log\n- Stop\n\nA small, clean, tested PR is always better than nothing."
+          },
+          "position": {
+            "x": 400,
+            "y": 450
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "verify-tests",
+          "type": "validation.tests",
+          "label": "Verify — npm test",
+          "config": {
+            "command": "{{testCommand}}"
+          },
+          "position": {
+            "x": 200,
+            "y": 610
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "verify-build",
+          "type": "validation.build",
+          "label": "Verify — npm run build",
+          "config": {
+            "command": "{{buildCommand}}",
+            "zeroWarnings": false
+          },
+          "position": {
+            "x": 600,
+            "y": 610
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "check-validation",
+          "type": "condition.expression",
+          "label": "Validation Passed?",
+          "config": {
+            "expression": "$ctx.getNodeOutput('verify-tests')?.success === true && $ctx.getNodeOutput('verify-build')?.success === true"
+          },
+          "position": {
+            "x": 400,
+            "y": 750
+          },
+          "outputs": [
+            "yes",
+            "no"
+          ]
+        },
+        {
+          "id": "create-pr",
+          "type": "action.create_pr",
+          "label": "Open Quality PR",
+          "config": {
+            "title": "refactor: code quality pass {{_runId}}",
+            "body": "Automated code-quality session. Structural refactor only — zero functional changes. See `.bosun-monitor/code-quality-striker.md` for session details.",
+            "branch": "{{branch}}",
+            "baseBranch": "{{baseBranch}}",
+            "labels": [
+              "refactor",
+              "code-quality",
+              "automated"
+            ]
+          },
+          "position": {
+            "x": 200,
+            "y": 890
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "notify-success",
+          "type": "notify.telegram",
+          "label": "Notify PR Opened",
+          "config": {
+            "message": ":check: Code quality striker session complete.\nPR opened: **{{branch}}**\nRun ID: `{{_runId}}`",
+            "silent": true
+          },
+          "position": {
+            "x": 200,
+            "y": 1030
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "notify-failure",
+          "type": "notify.telegram",
+          "label": "Notify — Validation Failed",
+          "config": {
+            "message": ":alert: Code quality striker **validation failed** for run `{{_runId}}`.\n\nThe agent produced changes that broke tests or build. No PR was created.\nCheck `.bosun-monitor/code-quality-striker.md` for details."
+          },
+          "position": {
+            "x": 600,
+            "y": 890
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "log-failure",
+          "type": "notify.log",
+          "label": "Log Failure",
+          "config": {
+            "message": "Code quality striker run {{_runId}} failed validation — no PR created.",
+            "level": "warn"
+          },
+          "position": {
+            "x": 600,
+            "y": 1030
+          },
+          "outputs": [
+            "default"
+          ]
+        }
+      ],
+      "edges": [
+        {
+          "id": "trigger->check-active-pr",
+          "source": "trigger",
+          "target": "check-active-pr",
+          "sourcePort": "default"
+        },
+        {
+          "id": "check-active-pr->skip-already-running",
+          "source": "check-active-pr",
+          "target": "skip-already-running",
+          "sourcePort": "yes",
+          "condition": "$output?.result === true"
+        },
+        {
+          "id": "check-active-pr->scan-candidates",
+          "source": "check-active-pr",
+          "target": "scan-candidates",
+          "sourcePort": "no",
+          "condition": "$output?.result !== true"
+        },
+        {
+          "id": "scan-candidates->run-striker",
+          "source": "scan-candidates",
+          "target": "run-striker",
+          "sourcePort": "default"
+        },
+        {
+          "id": "run-striker->verify-tests",
+          "source": "run-striker",
+          "target": "verify-tests",
+          "sourcePort": "default"
+        },
+        {
+          "id": "run-striker->verify-build",
+          "source": "run-striker",
+          "target": "verify-build",
+          "sourcePort": "default"
+        },
+        {
+          "id": "verify-tests->check-validation",
+          "source": "verify-tests",
+          "target": "check-validation",
+          "sourcePort": "default"
+        },
+        {
+          "id": "verify-build->check-validation",
+          "source": "verify-build",
+          "target": "check-validation",
+          "sourcePort": "default"
+        },
+        {
+          "id": "check-validation->create-pr",
+          "source": "check-validation",
+          "target": "create-pr",
+          "sourcePort": "yes",
+          "condition": "$output?.result === true"
+        },
+        {
+          "id": "check-validation->notify-failure",
+          "source": "check-validation",
+          "target": "notify-failure",
+          "sourcePort": "no",
+          "condition": "$output?.result !== true"
+        },
+        {
+          "id": "create-pr->notify-success",
+          "source": "create-pr",
+          "target": "notify-success",
+          "sourcePort": "default"
+        },
+        {
+          "id": "notify-failure->log-failure",
+          "source": "notify-failure",
+          "target": "log-failure",
+          "sourcePort": "default"
+        }
+      ]
+    },
+    {
       "id": "template-flow-control-suite",
       "name": "Flow Control Suite",
       "description": "Exercises flow-control primitives in a single short workflow: join, while-loop (0 iters), universal dispatch, and meeting finalization.",
@@ -27153,6 +27477,317 @@
         "templateState": {
           "templateId": "template-bosun-tool-pipeline",
           "templateName": "Bosun Tool Pipeline",
+          "templateVersion": "1.0.0",
+          "installedTemplateVersion": "1.0.0",
+          "isCustomized": false,
+          "updateAvailable": false
+        }
+      }
+    },
+    {
+      "id": "wf-code-quality-striker",
+      "name": "Code Quality Striker",
+      "description": "Recurring autonomous refactoring agent that improves codebase structure for long-term agentic development. Runs every 2 hours with a hard 90-minute session cap. Each session MUST produce a passing PR before terminating. Scope is strictly limited to structural quality: module decomposition, deduplication, function splitting. Zero functional changes allowed.",
+      "category": "maintenance",
+      "enabled": true,
+      "nodeCount": 12,
+      "trigger": "trigger.schedule",
+      "variables": {
+        "sessionTimeoutMs": 5400000,
+        "branch": "chore/code-quality-striker-{{_runId}}",
+        "baseBranch": "main",
+        "sessionLogPath": ".bosun-monitor/code-quality-striker.md",
+        "maxFilesPerSession": 6,
+        "minFileSizeKb": 30,
+        "testCommand": "npm test",
+        "buildCommand": "npm run build",
+        "syntaxCheckCommand": "node --check"
+      },
+      "nodes": [
+        {
+          "id": "trigger",
+          "type": "trigger.schedule",
+          "label": "Every 2 Hours",
+          "config": {
+            "intervalMs": 7200000,
+            "cron": "0 */2 * * *"
+          },
+          "position": {
+            "x": 400,
+            "y": 50
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "check-active-pr",
+          "type": "condition.expression",
+          "label": "Active Striker PR?",
+          "config": {
+            "expression": "(() => { try { const r = $ctx.runCommand('git branch -r'); return (r?.output || '').includes('code-quality-striker'); } catch { return false; } })()"
+          },
+          "position": {
+            "x": 400,
+            "y": 180
+          },
+          "outputs": [
+            "yes",
+            "no"
+          ]
+        },
+        {
+          "id": "skip-already-running",
+          "type": "notify.log",
+          "label": "Skip — PR Already Open",
+          "config": {
+            "message": "Code quality striker skipped: an open quality striker PR already exists. Will retry next cycle.",
+            "level": "info"
+          },
+          "position": {
+            "x": 650,
+            "y": 310
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "scan-candidates",
+          "type": "action.run_command",
+          "label": "Scan Large Files",
+          "config": {
+            "command": "node -e \"const{readdirSync,statSync}=require('fs');const{join,relative}=require('path');const base=process.cwd();function walk(d){const out=[];for(const f of readdirSync(d,{withFileTypes:true})){if(f.name==='node_modules'||f.name==='.cache'||f.name==='.git'||f.name==='worktrees')continue;const p=join(d,f.name);if(f.isDirectory())out.push(...walk(p));else if(/\\.(mjs|js)$/.test(f.name)){const s=statSync(p);out.push({p,kb:Math.round(s.size/1024)})}}return out}const files=walk(base).filter(x=>x.kb>={{minFileSizeKb}}).sort((a,b)=>b.kb-a.kb).slice(0,20);console.log(files.map(x=>x.kb+'kb\\t'+relative(base,x.p)).join('\\n'))\"",
+            "continueOnError": true
+          },
+          "position": {
+            "x": 400,
+            "y": 310
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "run-striker",
+          "type": "action.run_agent",
+          "label": "Code Quality Striker Agent",
+          "config": {
+            "timeoutMs": "{{sessionTimeoutMs}}",
+            "sdk": "auto",
+            "prompt": "# Code Quality Striker\n\nYou are a **structural quality agent**. Your sole mandate is to improve the\ninternal structure of the codebase so that future agentic models can work on\nit more efficiently — smaller files, clearer module boundaries, zero\nduplication, and self-contained functions.\n\n## Session Constraints\n\n- **Hard session cap**: you have at most 90 minutes total. Budget your time.\n- **You MUST open a PR before ending** — a session with no PR is a failed\n  session. If you run out of time mid-refactor, commit what you have, push,\n  and open the PR immediately even if the work is partial, AS LONG AS all\n  tests pass.\n- **Maximum {{maxFilesPerSession}} source files changed** in a single PR.\n  Keep diffs small and reviewable. Better to do one clean split per session\n  than attempt a mega-refactor.\n- You may run multiple sessions and PRs over time. Prefer incremental progress.\n\n## ✅ Allowed Changes (ONLY these)\n\n1. **Module decomposition** — extract a large file into smaller, focused\n   modules. The extracted module must be imported back so the public surface\n   is identical.\n2. **Function splitting** — break functions > ~80 lines into smaller,\n   well-named helpers within the same file or a co-located util module.\n3. **Deduplication** — extract identical or near-identical logic blocks into\n   a shared helper. Must not change call-site behaviour.\n4. **Dead code removal** — remove functions, variables, or imports that are\n   verifiably unreferenced (no callers anywhere in the repo).\n5. **Import cleanup** — remove unused imports, deduplicate import statements,\n   consolidate barrel imports.\n\n## ❌ Forbidden Changes (HARD STOPS — never do these)\n\n- Adding, removing, or changing any exported function signature or return value\n- Changing any HTTP route path, method, or response shape\n- Changing any config key names or default values\n- Adding new features, flags, or options of any kind\n- Changing test assertions or test logic\n- Renaming exported symbols (only rename internal/private symbols)\n- Adding comments, JSDoc, or inline documentation (unless minimal and necessary)\n- Changing error messages visible to users or logs (string literals)\n- Any change to .json, .sh, .md, .yaml, .html, .css, or non-.mjs/.js files\n  (unless you are only touching an import path string that is broken by a move)\n\n## Workflow\n\n### Step 1 — Identify your target\n\nUse the candidate file list provided (sorted by size, largest first):\n\n```\n{{scan-candidates.output}}\n```\n\nPick **1–3 files** for this session. Prioritise:\n- Files > 500 lines used by multiple modules (high parallel-conflict risk)\n- Files with clearly repeated logic blocks\n- Files with functions > 100 lines that have distinct sub-responsibilities\n\nRead each target file in full before making any decision. Do NOT edit\nanything you have not fully read.\n\n### Step 2 — Plan your split in writing\n\nBefore touching the file, write a short plan (to yourself, as a comment in\nyour reasoning — DO NOT add it to the code):\n- What gets extracted and where\n- New file names (follow existing naming conventions in that directory)\n- Which exports stay vs. move\n- Any callers that will need their import paths updated\n\n### Step 3 — Extract and wire up\n\n- Create the new module file(s) under the same directory as the source file.\n- Update the source file to re-export or directly import the extracted piece\n  so every existing call-site continues to work without modification.\n- Update any OTHER files that directly imported from the source file, if and\n  only if you moved an export that those files reference. Use\n  `grep -r 'importedName' --include='*.mjs' --include='*.js'` to find callers.\n- **Do not touch callers unless strictly required by the move.**\n\n### Step 4 — Validate before committing\n\nRun ALL of the following in order. Do not commit if any fail:\n\n```bash\n# 1. Syntax check every file you touched\n{{syntaxCheckCommand}} <file1> <file2> ...\n\n# 2. Full test suite — must be 0 failures, 0 unexpected skips\nnpm test\n\n# 3. Build — must pass clean\nnpm run build\n```\n\nIf tests fail, **revert your change** (`git checkout -- <file>`) and either:\n- Attempt a smaller, safer split of the same file, OR\n- Move to a different target file\n\n**Never push a failing test suite.**\n\n### Step 5 — Commit, push, and open the PR\n\nBranch name: `chore/code-quality-striker-{{_runId}}`\nBase branch: `{{baseBranch}}`\n\nCommit message format:\n```\nrefactor(<module>): split <description>\n\n- extracted <what> into <new-file>\n- <any other bullet points>\n\nNo functional changes. All tests pass.\n```\n\nPR title: `refactor: code quality pass — <one-line summary>`\n\nPR body template:\n```markdown\n## Code Quality Pass\n\n**Session**: code-quality-striker {{_runId}}\n**Scope**: structural refactor only — zero functional changes\n\n### Changes\n- <bullet per extracted module or dedup>\n\n### Validation\n- `node --check` passed on all touched files\n- `npm test` passed (N tests)\n- `npm run build` passed\n\n### Why\n<one sentence: \"X was Y lines with Z responsibilities; split to improve\nparallel edit safety for future agent sessions.\">\n```\n\n### Step 6 — Write session log\n\nAppend a new entry to `{{sessionLogPath}}` using this\nexact format (create the file if it does not exist):\n\n```markdown\n## <ISO timestamp with timezone>\n\n- Scope: <one sentence describing what was refactored>\n- Files changed: <comma-separated list>\n- Strategy: <what split/dedup/cleanup was performed and why>\n- Validation evidence:\n  - `node --check` passed on all touched files\n  - `npm test` passed (N tests)\n  - `npm run build` passed\n- PR: #<number> — `<branch name>`\n```\n\n## Time Budget Warning\n\nIf you have fewer than 15 minutes remaining:\n- Stop new analysis immediately\n- Commit and push whatever passing changes you have\n- Open the PR even if the scope is smaller than planned\n- Write the session log\n- Stop\n\nA small, clean, tested PR is always better than nothing."
+          },
+          "position": {
+            "x": 400,
+            "y": 450
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "verify-tests",
+          "type": "validation.tests",
+          "label": "Verify — npm test",
+          "config": {
+            "command": "{{testCommand}}"
+          },
+          "position": {
+            "x": 200,
+            "y": 610
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "verify-build",
+          "type": "validation.build",
+          "label": "Verify — npm run build",
+          "config": {
+            "command": "{{buildCommand}}",
+            "zeroWarnings": false
+          },
+          "position": {
+            "x": 600,
+            "y": 610
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "check-validation",
+          "type": "condition.expression",
+          "label": "Validation Passed?",
+          "config": {
+            "expression": "$ctx.getNodeOutput('verify-tests')?.success === true && $ctx.getNodeOutput('verify-build')?.success === true"
+          },
+          "position": {
+            "x": 400,
+            "y": 750
+          },
+          "outputs": [
+            "yes",
+            "no"
+          ]
+        },
+        {
+          "id": "create-pr",
+          "type": "action.create_pr",
+          "label": "Open Quality PR",
+          "config": {
+            "title": "refactor: code quality pass {{_runId}}",
+            "body": "Automated code-quality session. Structural refactor only — zero functional changes. See `.bosun-monitor/code-quality-striker.md` for session details.",
+            "branch": "{{branch}}",
+            "baseBranch": "{{baseBranch}}",
+            "labels": [
+              "refactor",
+              "code-quality",
+              "automated"
+            ]
+          },
+          "position": {
+            "x": 200,
+            "y": 890
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "notify-success",
+          "type": "notify.telegram",
+          "label": "Notify PR Opened",
+          "config": {
+            "message": ":check: Code quality striker session complete.\nPR opened: **{{branch}}**\nRun ID: `{{_runId}}`",
+            "silent": true
+          },
+          "position": {
+            "x": 200,
+            "y": 1030
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "notify-failure",
+          "type": "notify.telegram",
+          "label": "Notify — Validation Failed",
+          "config": {
+            "message": ":alert: Code quality striker **validation failed** for run `{{_runId}}`.\n\nThe agent produced changes that broke tests or build. No PR was created.\nCheck `.bosun-monitor/code-quality-striker.md` for details."
+          },
+          "position": {
+            "x": 600,
+            "y": 890
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "log-failure",
+          "type": "notify.log",
+          "label": "Log Failure",
+          "config": {
+            "message": "Code quality striker run {{_runId}} failed validation — no PR created.",
+            "level": "warn"
+          },
+          "position": {
+            "x": 600,
+            "y": 1030
+          },
+          "outputs": [
+            "default"
+          ]
+        }
+      ],
+      "edges": [
+        {
+          "id": "trigger->check-active-pr",
+          "source": "trigger",
+          "target": "check-active-pr",
+          "sourcePort": "default"
+        },
+        {
+          "id": "check-active-pr->skip-already-running",
+          "source": "check-active-pr",
+          "target": "skip-already-running",
+          "sourcePort": "yes",
+          "condition": "$output?.result === true"
+        },
+        {
+          "id": "check-active-pr->scan-candidates",
+          "source": "check-active-pr",
+          "target": "scan-candidates",
+          "sourcePort": "no",
+          "condition": "$output?.result !== true"
+        },
+        {
+          "id": "scan-candidates->run-striker",
+          "source": "scan-candidates",
+          "target": "run-striker",
+          "sourcePort": "default"
+        },
+        {
+          "id": "run-striker->verify-tests",
+          "source": "run-striker",
+          "target": "verify-tests",
+          "sourcePort": "default"
+        },
+        {
+          "id": "run-striker->verify-build",
+          "source": "run-striker",
+          "target": "verify-build",
+          "sourcePort": "default"
+        },
+        {
+          "id": "verify-tests->check-validation",
+          "source": "verify-tests",
+          "target": "check-validation",
+          "sourcePort": "default"
+        },
+        {
+          "id": "verify-build->check-validation",
+          "source": "verify-build",
+          "target": "check-validation",
+          "sourcePort": "default"
+        },
+        {
+          "id": "check-validation->create-pr",
+          "source": "check-validation",
+          "target": "create-pr",
+          "sourcePort": "yes",
+          "condition": "$output?.result === true"
+        },
+        {
+          "id": "check-validation->notify-failure",
+          "source": "check-validation",
+          "target": "notify-failure",
+          "sourcePort": "no",
+          "condition": "$output?.result !== true"
+        },
+        {
+          "id": "create-pr->notify-success",
+          "source": "create-pr",
+          "target": "notify-success",
+          "sourcePort": "default"
+        },
+        {
+          "id": "notify-failure->log-failure",
+          "source": "notify-failure",
+          "target": "log-failure",
+          "sourcePort": "default"
+        }
+      ],
+      "metadata": {
+        "author": "bosun-demo",
+        "createdAt": "2026-03-28T12:00:00.000Z",
+        "updatedAt": "2026-03-28T12:00:00.000Z",
+        "templateState": {
+          "templateId": "template-code-quality-striker",
+          "templateName": "Code Quality Striker",
           "templateVersion": "1.0.0",
           "installedTemplateVersion": "1.0.0",
           "isCustomized": false,

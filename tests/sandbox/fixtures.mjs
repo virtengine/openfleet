@@ -306,6 +306,7 @@ export const TEMPLATE_FIXTURES = {
   "template-sync-engine":                 { scenario: scenarios.kanbanState(),     inputVars: {} },
   "template-dependency-audit":            { scenario: scenarios.securityAudit(),   inputVars: {} },
   "template-secret-scanner":             { scenario: scenarios.securityAudit(),   inputVars: {} },
+  "template-code-quality-striker":       { scenario: scenarios.greenPR(202),      inputVars: {} },
   "template-task-lifecycle":              { scenario: scenarios.greenPR(98),      inputVars: { taskId: "TASK-7", worktreePath: "/tmp/wt/task-7", branch: "feat/task-7", baseBranch: "main", prNumber: 98 } },
   "template-ve-orchestrator-lite":        { scenario: scenarios.kanbanState(),     inputVars: { maxConcurrent: 2 } },
   "template-task-batch-processor":        { scenario: scenarios.kanbanState(),     inputVars: { batchSize: 3 } },
