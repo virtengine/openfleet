@@ -4408,6 +4408,82 @@ function parsePlannerJsonFromText(value) {
   return null;
 }
 
+const PLANNER_SCORE_MAX = 10;
+const PLANNER_RISK_LEVELS = ["low", "medium", "high", "critical"];
+const PLANNER_RISK_ORDER = { low: 0, medium: 1, high: 2, critical: 3 };
+const CALIBRATED_MIN_IMPACT_SCORE = 6;
+const CALIBRATED_MAX_RISK_WITHOUT_HUMAN = "medium";
+
+function parsePlannerNumericScore(value) {
+  if (value == null) return null;
+  if (typeof value === "number") {
+    return Number.isFinite(value) ? { numeric: value, scale: null } : null;
+  }
+  const raw = String(value || "").trim();
+  if (!raw) return null;
+
+  const ratioMatch = raw.match(/^(-?\d+(?:\.\d+)?)\s*\/\s*(1|10|100)$/);
+  if (ratioMatch) {
+    const numeric = Number(ratioMatch[1]);
+    const denom = Number(ratioMatch[2]);
+    if (!Number.isFinite(numeric) || !Number.isFinite(denom) || denom <= 0) return null;
+    return { numeric, scale: denom };
+  }
+
+  const percentMatch = raw.match(/^(-?\d+(?:\.\d+)?)\s*%$/);
+  if (percentMatch) {
+    const numeric = Number(percentMatch[1]);
+    if (!Number.isFinite(numeric)) return null;
+    return { numeric, scale: 100 };
+  }
+
+  const numeric = Number(raw);
+  if (!Number.isFinite(numeric)) return null;
+  return { numeric, scale: null };
+}
+
+function normalizePlannerScore(value, { preferTenScaleIntegers = false } = {}) {
+  const parsed = parsePlannerNumericScore(value);
+  if (!parsed) return null;
+
+  let scaled = parsed.numeric;
+  if (parsed.scale === 1) {
+    scaled = parsed.numeric * PLANNER_SCORE_MAX;
+  } else if (parsed.scale === 100) {
+    scaled = parsed.numeric / 10;
+  } else if (parsed.scale === 10) {
+    scaled = parsed.numeric;
+  } else if (scaled > 10 && scaled <= 100) {
+    scaled = scaled / 10;
+  } else if (scaled > 0 && scaled < 1) {
+    scaled = scaled * PLANNER_SCORE_MAX;
+  } else if (scaled === 1) {
+    scaled = preferTenScaleIntegers ? 1 : PLANNER_SCORE_MAX;
+  }
+
+  const clamped = Math.max(0, Math.min(PLANNER_SCORE_MAX, scaled));
+  return Math.round(clamped * 10) / 10;
+}
+
+function normalizePlannerRiskLevel(value, { preferTenScaleIntegers = false } = {}) {
+  const raw = String(value || "").trim().toLowerCase();
+  if (PLANNER_RISK_LEVELS.includes(raw)) return raw;
+
+  if (raw) {
+    if (/\b(critical|catastrophic|severe|blocker)\b/.test(raw)) return "critical";
+    if (/\b(high|significant|major|risky|dangerous)\b/.test(raw)) return "high";
+    if (/\b(medium|moderate)\b/.test(raw)) return "medium";
+    if (/\b(low|minor|trivial|safe)\b/.test(raw)) return "low";
+  }
+
+  const numeric = normalizePlannerScore(value, { preferTenScaleIntegers });
+  if (!Number.isFinite(numeric)) return null;
+  if (numeric >= 9) return "critical";
+  if (numeric >= 7) return "high";
+  if (numeric >= 4) return "medium";
+  return "low";
+}
+
 function normalizePlannerTaskForCreation(task, index) {
   if (!task || typeof task !== "object") return null;
   const title = String(task.title || "").trim();
@@ -4432,33 +4508,15 @@ function normalizePlannerTaskForCreation(task, index) {
     }
     return normalized;
   };
-  const normalizeScore = (value) => {
-    const numeric = Number(value);
-    if (!Number.isFinite(numeric)) return null;
-    const scaled = numeric <= 1 ? numeric * 10 : numeric;
-    const clamped = Math.max(0, Math.min(10, scaled));
-    return Math.round(clamped * 10) / 10;
-  };
-  const normalizeRiskLevel = (value) => {
-    const raw = String(value || "").trim().toLowerCase();
-    if (["low", "medium", "high", "critical"].includes(raw)) return raw;
-    const numeric = normalizeScore(value);
-    if (!Number.isFinite(numeric)) return null;
-    if (numeric >= 9) return "critical";
-    if (numeric >= 7) return "high";
-    if (numeric >= 4) return "medium";
-    return "low";
-  };
-
   const lines = [];
   const description = String(task.description || "").trim();
   if (description) lines.push(description);
   const acceptanceCriteria = normalizeStringList(task.acceptance_criteria);
   const verification = normalizeStringList(task.verification);
   const repoAreas = normalizeRepoAreas(task.repo_areas || task.repoAreas);
-  const impact = normalizeScore(task.impact);
-  const confidence = normalizeScore(task.confidence);
-  const risk = normalizeRiskLevel(task.risk);
+  const impact = normalizePlannerScore(task.impact);
+  const confidence = normalizePlannerScore(task.confidence);
+  const risk = normalizePlannerRiskLevel(task.risk);
   const estimatedEffort = String(task.estimated_effort || task.estimatedEffort || "").trim().toLowerCase();
   const whyNow = String(task.why_now || task.whyNow || "").trim();
   const killCriteria = normalizeStringList(task.kill_criteria || task.killCriteria);
@@ -4628,8 +4686,8 @@ registerNodeType("action.materialize_planner_tasks", {
       failOnZero: { type: "boolean", default: true, description: "Fail node when zero tasks are created" },
       minCreated: { type: "number", default: 1, description: "Minimum created tasks required for success" },
       projectId: { type: "string", description: "Optional explicit project ID for list/create operations" },
-      minImpactScore: { type: "number", default: 5, description: "Minimum planner impact score required for creation; accepts 0-1 or 0-10 scales" },
-      maxRiskWithoutHuman: { type: "string", default: "medium", description: "Maximum planner risk level allowed for auto-creation (low|medium|high|critical)" },
+      minImpactScore: { type: "number", default: CALIBRATED_MIN_IMPACT_SCORE, description: "Minimum planner impact score required for creation; accepts 0-1 or 0-10 scales" },
+      maxRiskWithoutHuman: { type: "string", default: CALIBRATED_MAX_RISK_WITHOUT_HUMAN, description: "Maximum planner risk level allowed for auto-creation (low|medium|high|critical)" },
       maxConcurrentRepoAreaTasks: { type: "number", default: 0, description: "Maximum concurrent backlog tasks per repo area (0 disables limit)" },
     },
   },
@@ -4643,25 +4701,14 @@ registerNodeType("action.materialize_planner_tasks", {
     const dedupEnabled = node.config?.dedup !== false;
     const status = String(ctx.resolve(node.config?.status || "todo")).trim() || "todo";
     const projectId = String(ctx.resolve(node.config?.projectId || "")).trim();
-    const normalizeScore = (value) => {
-      const numeric = Number(value);
-      if (!Number.isFinite(numeric)) return null;
-      const scaled = numeric <= 1 ? numeric * 10 : numeric;
-      const clamped = Math.max(0, Math.min(10, scaled));
-      return Math.round(clamped * 10) / 10;
-    };
-    const normalizeRiskLevel = (value) => {
-      const raw = String(value || "").trim().toLowerCase();
-      if (["low", "medium", "high", "critical"].includes(raw)) return raw;
-      const numeric = normalizeScore(value);
-      if (!Number.isFinite(numeric)) return null;
-      if (numeric >= 9) return "critical";
-      if (numeric >= 7) return "high";
-      if (numeric >= 4) return "medium";
-      return "low";
-    };
-    const minImpactScore = normalizeScore(ctx.resolve(node.config?.minImpactScore ?? 5));
-    const maxRiskWithoutHuman = normalizeRiskLevel(ctx.resolve(node.config?.maxRiskWithoutHuman ?? "medium")) || "medium";
+    const minImpactScore = normalizePlannerScore(
+      ctx.resolve(node.config?.minImpactScore ?? CALIBRATED_MIN_IMPACT_SCORE),
+      { preferTenScaleIntegers: true },
+    );
+    const maxRiskWithoutHuman = normalizePlannerRiskLevel(
+      ctx.resolve(node.config?.maxRiskWithoutHuman ?? CALIBRATED_MAX_RISK_WITHOUT_HUMAN),
+      { preferTenScaleIntegers: true },
+    ) || CALIBRATED_MAX_RISK_WITHOUT_HUMAN;
     const maxConcurrentRepoAreaTasks = Number(ctx.resolve(node.config?.maxConcurrentRepoAreaTasks ?? 0));
     const materializationDefaults = resolvePlannerMaterializationDefaults(ctx);
 
@@ -4742,9 +4789,8 @@ registerNodeType("action.materialize_planner_tasks", {
         skipped.push({ title: task.title, reason: "below_min_impact", impact: task.impact, minImpactScore });
         continue;
       }
-      const riskOrder = { low: 0, medium: 1, high: 2, critical: 3 };
-      const taskRiskOrder = riskOrder[String(task.risk || "").toLowerCase()];
-      const maxRiskOrder = riskOrder[String(maxRiskWithoutHuman || "").toLowerCase()];
+      const taskRiskOrder = PLANNER_RISK_ORDER[String(task.risk || "").toLowerCase()];
+      const maxRiskOrder = PLANNER_RISK_ORDER[String(maxRiskWithoutHuman || "").toLowerCase()];
       if (Number.isFinite(taskRiskOrder) && Number.isFinite(maxRiskOrder) && taskRiskOrder > maxRiskOrder) {
         skipped.push({ title: task.title, reason: "risk_above_threshold", risk: task.risk, maxRiskWithoutHuman });
         continue;

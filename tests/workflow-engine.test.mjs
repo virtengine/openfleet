@@ -3049,9 +3049,9 @@ it("action.materialize_planner_tasks applies calibrated default impact/risk gate
       "```json",
       "{",
       '  "tasks": [',
-      '    { "title": "[m] fix(workflow): low default impact", "description": "A", "acceptance_criteria": ["ac"], "verification": ["v"], "repo_areas": ["workflow"], "impact": 0.2, "risk": 0.2 },',
-      '    { "title": "[m] fix(workflow): high default risk", "description": "B", "acceptance_criteria": ["ac"], "verification": ["v"], "repo_areas": ["workflow"], "impact": 0.8, "risk": 0.9 },',
-      '    { "title": "[m] fix(server): default valid", "description": "C", "acceptance_criteria": ["ac"], "verification": ["v"], "repo_areas": ["server"], "impact": 0.8, "confidence": 0.7, "risk": 0.5 }',
+      '    { "title": "[m] fix(workflow): low default impact", "description": "A", "acceptance_criteria": ["ac"], "verification": ["v"], "repo_areas": ["workflow"], "impact": 0.55, "risk": 0.2 },',
+      '    { "title": "[m] fix(workflow): semantically high risk", "description": "B", "acceptance_criteria": ["ac"], "verification": ["v"], "repo_areas": ["workflow"], "impact": 0.8, "risk": "high risk: production blast radius" },',
+      '    { "title": "[m] fix(server): default valid", "description": "C", "acceptance_criteria": ["ac"], "verification": ["v"], "repo_areas": ["server"], "impact": "8/10", "confidence": "70%", "risk": "5/10" }',
       "  ]",
       "}",
       "```",
@@ -3084,7 +3084,7 @@ it("action.materialize_planner_tasks applies calibrated default impact/risk gate
   expect(result.skippedCount).toBe(2);
   expect(result.skipped).toEqual(expect.arrayContaining([
     expect.objectContaining({ title: "[m] fix(workflow): low default impact", reason: "below_min_impact" }),
-    expect.objectContaining({ title: "[m] fix(workflow): high default risk", reason: "risk_above_threshold" }),
+    expect.objectContaining({ title: "[m] fix(workflow): semantically high risk", reason: "risk_above_threshold" }),
   ]));
   expect(createTask).toHaveBeenCalledWith("", expect.objectContaining({
     title: "[m] fix(server): default valid",
@@ -3096,6 +3096,52 @@ it("action.materialize_planner_tasks applies calibrated default impact/risk gate
       }),
     }),
   }));
+});
+
+it("action.materialize_planner_tasks treats explicit integer impact thresholds as 0-10 scale", async () => {
+  const handler = getNodeType("action.materialize_planner_tasks");
+  expect(handler).toBeDefined();
+
+  const ctx = new WorkflowContext({});
+  ctx.setNodeOutput("run-planner", {
+    output: [
+      "```json",
+      "{",
+      '  "tasks": [',
+      '    { "title": "[m] fix(workflow): score two on ten", "description": "A", "acceptance_criteria": ["ac"], "verification": ["v"], "repo_areas": ["workflow"], "impact": 2, "confidence": 8, "risk": 2 }',
+      "  ]",
+      "}",
+      "```",
+    ].join("\n"),
+  });
+
+  const createTask = vi.fn(async () => ({ id: "task-explicit-threshold-1" }));
+  const mockEngine = {
+    services: {
+      kanban: {
+        createTask,
+      },
+    },
+  };
+
+  const node = {
+    id: "materialize-explicit-threshold",
+    type: "action.materialize_planner_tasks",
+    config: {
+      plannerNodeId: "run-planner",
+      dedup: false,
+      failOnZero: true,
+      minCreated: 1,
+      minImpactScore: 1,
+      maxRiskWithoutHuman: "medium",
+    },
+  };
+
+  const result = await handler.execute(node, ctx, mockEngine);
+  expect(result.success).toBe(true);
+  expect(result.createdCount).toBe(1);
+  expect(result.skippedCount).toBe(0);
+  expect(createTask).toHaveBeenCalledTimes(1);
 });
 describe("WorkflowEngine singleton services", () => {
   beforeEach(() => {
