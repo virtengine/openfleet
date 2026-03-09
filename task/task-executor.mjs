@@ -2334,6 +2334,8 @@ class TaskExecutor {
       blockedByArea: {},
       saturatedAreas: [],
     };
+    /** @type {Array<{ cycle: number, at: string|null, candidateCount: number, remaining: number, selectedCount: number, blockedTasks: number, blockedByArea: Record<string, number>, saturatedAreas: string[] }>} */
+    this._repoAreaDispatchHistory = [];
 
     // Track tasks that have already been completed with a PR (prevents re-dispatch loop)
     /** @type {Set<string>} taskId set */
@@ -2508,6 +2510,62 @@ class TaskExecutor {
         0,
         Math.trunc(Number(parsed?.repoAreaConflictCount || 0)),
       );
+      this._repoAreaLockMetrics.clear();
+      for (const [area, raw] of Object.entries(parsed?.repoAreaLockMetrics || {})) {
+        const areaKey = normalizeRepoAreaKey(area);
+        if (!areaKey) continue;
+        this._repoAreaLockMetrics.set(areaKey, {
+          conflicts: Math.max(0, Math.trunc(Number(raw?.conflicts || 0))),
+          blockedDispatches: Math.max(
+            0,
+            Math.trunc(Number(raw?.blockedDispatches || 0)),
+          ),
+          selectedDispatches: Math.max(
+            0,
+            Math.trunc(Number(raw?.selectedDispatches || 0)),
+          ),
+          waitMsTotal: Math.max(0, Math.trunc(Number(raw?.waitMsTotal || 0))),
+          waitSamples: Math.max(0, Math.trunc(Number(raw?.waitSamples || 0))),
+          maxWaitMs: Math.max(0, Math.trunc(Number(raw?.maxWaitMs || 0))),
+          lastConflictAt: raw?.lastConflictAt ? String(raw.lastConflictAt) : null,
+          lastSelectedAt: raw?.lastSelectedAt ? String(raw.lastSelectedAt) : null,
+        });
+      }
+      this._repoAreaDispatchCycle = {
+        cycle: Math.max(
+          0,
+          Math.trunc(Number(parsed?.repoAreaDispatchCycle?.cycle || 0)),
+        ),
+        at: parsed?.repoAreaDispatchCycle?.at
+          ? String(parsed.repoAreaDispatchCycle.at)
+          : null,
+        candidateCount: Math.max(
+          0,
+          Math.trunc(Number(parsed?.repoAreaDispatchCycle?.candidateCount || 0)),
+        ),
+        remaining: Math.max(
+          0,
+          Math.trunc(Number(parsed?.repoAreaDispatchCycle?.remaining || 0)),
+        ),
+        selectedCount: Math.max(
+          0,
+          Math.trunc(Number(parsed?.repoAreaDispatchCycle?.selectedCount || 0)),
+        ),
+        blockedTasks: Math.max(
+          0,
+          Math.trunc(Number(parsed?.repoAreaDispatchCycle?.blockedTasks || 0)),
+        ),
+        blockedByArea:
+          parsed?.repoAreaDispatchCycle?.blockedByArea &&
+          typeof parsed.repoAreaDispatchCycle.blockedByArea === "object"
+            ? { ...parsed.repoAreaDispatchCycle.blockedByArea }
+            : {},
+        saturatedAreas: Array.isArray(parsed?.repoAreaDispatchCycle?.saturatedAreas)
+          ? parsed.repoAreaDispatchCycle.saturatedAreas
+              .map((area) => normalizeRepoAreaKey(area))
+              .filter(Boolean)
+          : [],
+      };
       this._repoAreaTelemetry.clear();
       for (const [area, raw] of Object.entries(parsed?.repoAreaTelemetry || {})) {
         const areaKey = normalizeRepoAreaKey(area);
@@ -2550,6 +2608,34 @@ class TaskExecutor {
         if (!key || !startedAt) continue;
         this._repoAreaTaskStartedAt.set(key, startedAt);
       }
+      this._repoAreaDispatchHistory = Array.isArray(parsed?.repoAreaDispatchHistory)
+        ? parsed.repoAreaDispatchHistory
+          .slice(-20)
+          .map((entry) => ({
+            cycle: Math.max(0, Math.trunc(Number(entry?.cycle || 0))),
+            at: entry?.at ? String(entry.at) : null,
+            candidateCount: Math.max(0, Math.trunc(Number(entry?.candidateCount || 0))),
+            remaining: Math.max(0, Math.trunc(Number(entry?.remaining || 0))),
+            selectedCount: Math.max(0, Math.trunc(Number(entry?.selectedCount || 0))),
+            blockedTasks: Math.max(0, Math.trunc(Number(entry?.blockedTasks || 0))),
+            blockedByArea:
+              entry?.blockedByArea && typeof entry.blockedByArea === "object"
+                ? Object.fromEntries(
+                  Object.entries(entry.blockedByArea)
+                    .map(([area, count]) => [
+                      normalizeRepoAreaKey(area),
+                      Math.max(0, Math.trunc(Number(count || 0))),
+                    ])
+                    .filter(([area]) => Boolean(area)),
+                )
+                : {},
+            saturatedAreas: Array.isArray(entry?.saturatedAreas)
+              ? entry.saturatedAreas
+                .map((area) => normalizeRepoAreaKey(area))
+                .filter(Boolean)
+              : [],
+          }))
+        : [];
 
       const slots = parsed?.slots || {};
       let restored = 0;
@@ -2627,10 +2713,17 @@ class TaskExecutor {
             nextAgentInstanceId: this._nextAgentInstanceId,
             repoAreaDispatchCycles: this._repoAreaDispatchCycles,
             repoAreaConflictCount: this._repoAreaConflictCount,
+            repoAreaLockMetrics: Object.fromEntries(this._repoAreaLockMetrics),
+            repoAreaDispatchCycle: {
+              ...this._repoAreaDispatchCycle,
+              blockedByArea: { ...this._repoAreaDispatchCycle.blockedByArea },
+              saturatedAreas: [...this._repoAreaDispatchCycle.saturatedAreas],
+            },
             repoAreaTelemetry: Object.fromEntries(this._repoAreaTelemetry),
             repoAreaBlockedTasks: Object.fromEntries(this._repoAreaBlockedTasks),
             repoAreaTaskAreas: Object.fromEntries(this._repoAreaTaskAreas),
             repoAreaTaskStartedAt: Object.fromEntries(this._repoAreaTaskStartedAt),
+            repoAreaDispatchHistory: this._repoAreaDispatchHistory.slice(-20),
             slots,
             savedAt: new Date().toISOString(),
           },
@@ -4019,6 +4112,10 @@ class TaskExecutor {
     }
     if (configuredLimit <= 1) return 1;
 
+    const historical = buildRepoAreaAdaptiveSignals(
+      this._repoAreaTelemetry.get(normalizeRepoAreaKey(area)),
+      configuredLimit,
+    );
     const signal = activeSignals?.get(area) || {
       active: 0,
       retrying: 0,
@@ -4031,34 +4128,58 @@ class TaskExecutor {
       signal.mergeLatencySamples > 0
         ? signal.mergeLatencyMsTotal / signal.mergeLatencySamples
         : 0;
+    const telemetry = normalizeRepoAreaTelemetryEntry(
+      this._repoAreaTelemetry.get(normalizeRepoAreaKey(area)),
+    );
+    const outcomeFailures = telemetry.recentOutcomes.reduce(
+      (sum, value) => sum + (Number(value) > 0 ? 1 : 0),
+      0,
+    );
+    const outcomeFailureRate =
+      telemetry.recentOutcomes.length > 0
+        ? outcomeFailures / telemetry.recentOutcomes.length
+        : 0;
+    const telemetryMergeLatencyMs = averageNumbers(telemetry.mergeLatencySamples);
+    const adaptiveFailureRate = Math.max(failureRate, outcomeFailureRate);
+    const adaptiveMergeLatencyMs = Math.max(
+      averageMergeLatencyMs,
+      telemetryMergeLatencyMs,
+    );
 
     let penalty = 0;
-    if (signal.active > 0 && failureRate >= 0.5) {
-      penalty += 1;
-    }
     if (
-      signal.active > 0 &&
-      averageMergeLatencyMs >= REPO_AREA_SLOW_MERGE_LATENCY_MS
+      (signal.active > 0 || telemetry.recentOutcomes.length >= 4) &&
+      adaptiveFailureRate >= 0.5
     ) {
       penalty += 1;
     }
     if (
-      signal.active > 1 &&
-      failureRate >= 0.75 &&
-      averageMergeLatencyMs >= REPO_AREA_VERY_SLOW_MERGE_LATENCY_MS
+      (signal.active > 0 || telemetry.mergeLatencySamples.length >= 3) &&
+      adaptiveMergeLatencyMs >= REPO_AREA_SLOW_MERGE_LATENCY_MS
+    ) {
+      penalty += 1;
+    }
+    if (
+      (signal.active > 1 || telemetry.recentOutcomes.length >= 6) &&
+      adaptiveFailureRate >= 0.75 &&
+      adaptiveMergeLatencyMs >= REPO_AREA_VERY_SLOW_MERGE_LATENCY_MS
     ) {
       penalty += 1;
     }
 
-    return Math.max(
+    const liveLimit = Math.max(
       1,
       configuredLimit - Math.min(configuredLimit - 1, penalty),
     );
+    return Math.min(historical.effectiveLimit, liveLimit);
   }
 
   _buildRepoAreaLockStatus(now = Date.now()) {
     const activeCounts = this._buildActiveRepoAreaCounts();
     const activeSignals = this._buildActiveRepoAreaSignals(now);
+    const blockedTaskWaitingCounts = buildRepoAreaWaitingCounts(
+      this._repoAreaBlockedTasks,
+    );
     const waitingCounts = new Map();
     for (const pending of this._repoAreaPendingWaits.values()) {
       waitingCounts.set(
@@ -4102,15 +4223,35 @@ class TaskExecutor {
           signal.mergeLatencySamples > 0
             ? signal.mergeLatencyMsTotal / signal.mergeLatencySamples
             : 0;
+        const telemetry = normalizeRepoAreaTelemetryEntry(
+          this._repoAreaTelemetry.get(area),
+        );
+        const outcomeFailureRate =
+          telemetry.recentOutcomes.length > 0
+            ? telemetry.recentOutcomes.reduce(
+              (sum, value) => sum + (Number(value) > 0 ? 1 : 0),
+              0,
+            ) / telemetry.recentOutcomes.length
+            : 0;
+        const telemetryMergeLatencyMs = averageNumbers(telemetry.mergeLatencySamples);
+        const adaptiveFailureRate = Math.max(activeFailureRate, outcomeFailureRate);
+        const adaptiveMergeLatencyMs = Math.max(
+          averageMergeLatencyMs,
+          telemetryMergeLatencyMs,
+        );
 
         return {
           area,
           configuredLimit: Number(this.repoAreaParallelLimit || 0),
           effectiveLimit: this._computeRepoAreaEffectiveLimit(area, activeSignals),
           activeSlots: active,
-          waitingTasks,
+          waitingTasks: Math.max(waitingTasks, blockedTaskWaitingCounts.get(area) || 0),
           activeFailureRate,
+          outcomeFailureRate,
+          adaptiveFailureRate,
           averageMergeLatencyMs,
+          telemetryMergeLatencyMs,
+          adaptiveMergeLatencyMs,
           maxMergeLatencyMs: signal.maxMergeLatencyMs || 0,
           conflicts: metric.conflicts,
           blockedDispatches: metric.blockedDispatches,
@@ -4129,12 +4270,26 @@ class TaskExecutor {
       configuredLimit: Number(this.repoAreaParallelLimit || 0),
       areas: items,
       totals: {
+        dispatchCycles: Math.max(
+          0,
+          Number(this._repoAreaDispatchCycles || 0),
+        ),
+        conflictEvents: Math.max(
+          0,
+          Number(this._repoAreaConflictCount || 0),
+        ),
         conflicts: items.reduce((sum, item) => sum + item.conflicts, 0),
         blockedDispatches: items.reduce(
           (sum, item) => sum + item.blockedDispatches,
           0,
         ),
         waitingTasks: items.reduce((sum, item) => sum + item.waitingTasks, 0),
+      },
+      dispatch: {
+        cycles: Math.max(0, Math.trunc(Number(this._repoAreaDispatchCycles || 0))),
+        conflicts: Math.max(0, Math.trunc(Number(this._repoAreaConflictCount || 0))),
+        blockedTasksTracked: this._repoAreaBlockedTasks.size,
+        recent: this._repoAreaDispatchHistory.slice(-10),
       },
       lastDispatch: {
         ...this._repoAreaDispatchCycle,
@@ -4178,6 +4333,10 @@ class TaskExecutor {
       blockedByArea: {},
       saturatedAreas: [],
     };
+    this._repoAreaDispatchCycles = Math.max(
+      0,
+      Number(this._repoAreaDispatchCycles || 0),
+    ) + 1;
 
     const selected = [];
     for (const task of candidates) {
@@ -4220,12 +4379,19 @@ class TaskExecutor {
               metric.blockedDispatches += 1;
               metric.lastConflictAt = this._repoAreaDispatchCycle.at;
             }
+            this._repoAreaConflictCount = Math.max(
+              0,
+              Number(this._repoAreaConflictCount || 0),
+            ) + 1;
             this._beginRepoAreaWait(task?.id || task?.task_id, area, now);
             this._repoAreaDispatchCycle.blockedByArea[area] =
               (this._repoAreaDispatchCycle.blockedByArea[area] || 0) + 1;
           }
+          this._recordRepoAreaConflict(task, blockedAreas, now);
           continue;
         }
+        this._rememberTaskRepoAreas(task, now);
+        this._clearRepoAreaBlockedTask(task?.id || task?.task_id);
         this._clearRepoAreaWaitsForTask(task, now);
         for (const area of areas) {
           repoAreaCounts.set(area, (repoAreaCounts.get(area) || 0) + 1);
@@ -4244,6 +4410,20 @@ class TaskExecutor {
     this._repoAreaDispatchCycle.saturatedAreas = Object.keys(
       this._repoAreaDispatchCycle.blockedByArea,
     ).sort();
+    this._repoAreaDispatchHistory.push({
+      cycle: this._repoAreaDispatchCycle.cycle,
+      at: this._repoAreaDispatchCycle.at,
+      candidateCount: this._repoAreaDispatchCycle.candidateCount,
+      remaining: this._repoAreaDispatchCycle.remaining,
+      selectedCount: this._repoAreaDispatchCycle.selectedCount,
+      blockedTasks: this._repoAreaDispatchCycle.blockedTasks,
+      blockedByArea: { ...this._repoAreaDispatchCycle.blockedByArea },
+      saturatedAreas: [...this._repoAreaDispatchCycle.saturatedAreas],
+    });
+    this._repoAreaDispatchHistory = this._repoAreaDispatchHistory.slice(-20);
+    if (enforceRepoArea) {
+      this._saveRuntimeState();
+    }
 
     return selected;
   }

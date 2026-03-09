@@ -499,6 +499,79 @@ describe("task-executor", () => {
         ]),
       );
     });
+
+    it("keeps throughput within budget under sustained lock pressure", () => {
+      const ex = new TaskExecutor({ baseBranchParallelLimit: 0, repoAreaParallelLimit: 2 });
+      const now = Date.now();
+      ex._activeSlots.set("active-infra", {
+        taskId: "active-infra",
+        repoAreas: ["infra"],
+        attempt: 2,
+        startedAt: now - 6 * 60 * 60 * 1000,
+        status: "running",
+      });
+
+      let tick = now;
+      vi.spyOn(Date, "now").mockImplementation(() => {
+        tick += 500;
+        return tick;
+      });
+
+      const cycle1 = ex._selectTasksForBaseBranchLimit(
+        [
+          { id: "infra-task", repo_areas: ["infra"] },
+          { id: "workflow-task-1", repo_areas: ["workflow"] },
+          { id: "workflow-task-2", repo_areas: ["workflow"] },
+        ],
+        2,
+      );
+      const cycle2 = ex._selectTasksForBaseBranchLimit(
+        [
+          { id: "infra-task", repo_areas: ["infra"] },
+          { id: "server-task-1", repo_areas: ["server"] },
+          { id: "server-task-2", repo_areas: ["server"] },
+        ],
+        2,
+      );
+
+      ex._activeSlots.clear();
+
+      const cycle3 = ex._selectTasksForBaseBranchLimit(
+        [
+          { id: "infra-task", repo_areas: ["infra"] },
+          { id: "workflow-task-3", repo_areas: ["workflow"] },
+        ],
+        2,
+      );
+
+      const selectedCount = cycle1.length + cycle2.length + cycle3.length;
+      expect(selectedCount).toBeGreaterThanOrEqual(4);
+
+      const status = ex.getStatus();
+      expect(status.repoAreaLocks.totals).toEqual(
+        expect.objectContaining({
+          dispatchCycles: 3,
+          conflictEvents: expect.any(Number),
+          blockedDispatches: expect.any(Number),
+        }),
+      );
+      expect(status.repoAreaLocks.totals.conflictEvents).toBeGreaterThanOrEqual(2);
+      expect(status.repoAreaLocks.lastDispatch).toEqual(
+        expect.objectContaining({
+          cycle: 3,
+          selectedCount: 2,
+        }),
+      );
+      expect(status.repoAreaLocks.areas).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            area: "infra",
+            waitSamples: 1,
+            conflicts: expect.any(Number),
+          }),
+        ]),
+      );
+    });
   });
 
   describe("pause state persistence", () => {
