@@ -4587,11 +4587,11 @@ class JiraAdapter {
   }
 
   _sanitizeJiraLabel(value) {
-    return String(value || "")
-      .trim()
-      .toLowerCase()
-      .replace(/[^a-z0-9_-]+/g, "-")
-      .replace(/^-+|-+$/g, "");
+    const raw = String(value || "").trim().toLowerCase();
+    let normalized = raw.replace(/[^a-z0-9_-]+/g, "-");
+    while (normalized.startsWith("-")) normalized = normalized.slice(1);
+    while (normalized.endsWith("-")) normalized = normalized.slice(0, -1);
+    return normalized;
   }
 
   _authHeaders() {

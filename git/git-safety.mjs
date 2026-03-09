@@ -40,7 +40,7 @@ function getNumstat(cwd, rangeSpec) {
   return { files, inserted, deleted };
 }
 
-function isSafeGitBranchName(rawBranch) {
+export function isSafeGitBranchName(rawBranch) {
   const branch = String(rawBranch || "").trim();
   if (!branch) return false;
 

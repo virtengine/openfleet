@@ -507,7 +507,7 @@ export async function resolveConflictsWithSDK({
       `${tag} no merge in progress — starting merge of ${normalizedBaseRef}`,
     );
     // Fetch and start the merge
-    await gitExec(["fetch", "origin", normalizedBaseBranch], worktreePath);
+    await gitExec(["fetch", "origin", "--prune", "--quiet"], worktreePath);
     const mergeResult = await gitExec(
       ["merge", normalizedBaseRef, "--no-edit"],
       worktreePath,

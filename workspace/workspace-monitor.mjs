@@ -328,22 +328,25 @@ class WorkspaceMonitor {
    * Execute git command in workspace
    */
   async gitCommand(cwd, args) {
-    // Basic safety check: prevent use of dangerous git options that can lead to
-    // command execution (e.g., via --upload-pack on certain subcommands).
-    if (!Array.isArray(args)) {
-      throw new TypeError("gitCommand expected args to be an array");
+    if (!Array.isArray(args) || args.length === 0) {
+      throw new TypeError("gitCommand expected a non-empty args array");
     }
 
-    for (const arg of args) {
-      if (typeof arg !== "string") continue;
+    const command = String(args[0] || "").toLowerCase();
+    const allowedCommands = new Set(["rev-parse", "rev-list", "diff", "ls-files", "log"]);
+    if (!allowedCommands.has(command)) {
+      throw new Error(`Unsupported git subcommand in monitor: ${command}`);
+    }
+
+    const allowedOptions = new Set(["--abbrev-ref", "--count", "--name-only", "--others", "--exclude-standard", "--format=%H|%s|%ct", "-1"]);
+    for (let i = 1; i < args.length; i += 1) {
+      const arg = String(args[i] || "");
       const lower = arg.toLowerCase();
-      // Block known command-execution vectors in git transport arguments.
-      if (
-        lower === "--upload-pack" ||
-        lower.startsWith("--upload-pack=") ||
-        lower.includes("upload-pack")
-      ) {
+      if (lower === "--upload-pack" || lower.startsWith("--upload-pack=") || lower.includes("upload-pack")) {
         throw new Error("Usage of upload-pack arguments is not allowed in gitCommand");
+      }
+      if (arg.startsWith("-") && !allowedOptions.has(arg)) {
+        throw new Error(`Unsupported git option in monitor: ${arg}`);
       }
     }
 

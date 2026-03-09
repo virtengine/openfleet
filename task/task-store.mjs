@@ -1020,10 +1020,12 @@ export function updateTask(taskId, updates) {
       task.workflowRuns = normalizeWorkflowRunLinks(value);
       continue;
     }
-    if (key === "assignees" || key === "watchers" || key === "childTaskIds" || key === "dependencyTaskIds" || key === "blockedByTaskIds" || key === "dependsOn") {
-      task[key] = uniqueStringList(value);
-      continue;
-    }
+    if (key === "assignees") { task.assignees = uniqueStringList(value); continue; }
+    if (key === "watchers") { task.watchers = uniqueStringList(value); continue; }
+    if (key === "childTaskIds") { task.childTaskIds = uniqueStringList(value); continue; }
+    if (key === "dependencyTaskIds") { task.dependencyTaskIds = uniqueStringList(value); continue; }
+    if (key === "blockedByTaskIds") { task.blockedByTaskIds = uniqueStringList(value); continue; }
+    if (key === "dependsOn") { task.dependsOn = uniqueStringList(value); continue; }
     if (key === "links") {
       const links = value && typeof value === "object" ? value : {};
       task.links = {
@@ -1033,7 +1035,9 @@ export function updateTask(taskId, updates) {
       };
       continue;
     }
-    task[key] = value;
+    if (Object.prototype.hasOwnProperty.call(task, key)) {
+      task[key] = value;
+    }
   }
 
   if (typeof patch.draft === "boolean") {
