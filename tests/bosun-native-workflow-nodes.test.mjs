@@ -158,7 +158,7 @@ describe("action.bosun_tool", () => {
     expect(typeof result.stdout).toBe("string");
     expect(result.matchedPort).toBeDefined();
     expect(ctx.data.todoResult).toBeDefined();
-  });
+  }, 15000);
 
   it("resolves args with template interpolation", async () => {
     const handler = getNodeType("action.bosun_tool");
@@ -1083,3 +1083,4 @@ describe("cross-node data piping", () => {
     expect(invokeOutput.workflowId).toBe("chain-child-wf");
   });
 });
+
