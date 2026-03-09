@@ -36,6 +36,12 @@ import { randomUUID } from "node:crypto";
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
 const TAG = "[task-cli]";
+const EXECUTOR_RUNTIME_STATE_FILE = resolve(
+  __dirname,
+  "..",
+  ".cache",
+  "task-executor-runtime.json",
+);
 
 // ── Store helpers ─────────────────────────────────────────────────────────────
 
@@ -423,7 +429,64 @@ export async function taskDelete(id) {
  */
 export async function taskStats() {
   const store = await initStore();
-  return store.getStats();
+  const stats = store.getStats();
+  return {
+    ...stats,
+    repoAreaLocks: readRepoAreaLocksFromRuntimeState(),
+  };
+}
+
+function readRepoAreaLocksFromRuntimeState() {
+  if (!existsSync(EXECUTOR_RUNTIME_STATE_FILE)) return null;
+  try {
+    const raw = readFileSync(EXECUTOR_RUNTIME_STATE_FILE, "utf8");
+    const parsed = JSON.parse(raw);
+    const lockMetrics =
+      parsed?.repoAreaLockMetrics && typeof parsed.repoAreaLockMetrics === "object"
+        ? parsed.repoAreaLockMetrics
+        : {};
+    const blockedTasks =
+      parsed?.repoAreaBlockedTasks && typeof parsed.repoAreaBlockedTasks === "object"
+        ? parsed.repoAreaBlockedTasks
+        : {};
+    const dispatchCycle =
+      parsed?.repoAreaDispatchCycle && typeof parsed.repoAreaDispatchCycle === "object"
+        ? parsed.repoAreaDispatchCycle
+        : {};
+    const areas = Object.entries(lockMetrics)
+      .map(([area, metric]) => ({
+        area,
+        conflicts: Math.max(0, Math.trunc(Number(metric?.conflicts || 0))),
+        blockedDispatches: Math.max(
+          0,
+          Math.trunc(Number(metric?.blockedDispatches || 0)),
+        ),
+        selectedDispatches: Math.max(
+          0,
+          Math.trunc(Number(metric?.selectedDispatches || 0)),
+        ),
+        averageWaitMs:
+          Number(metric?.waitSamples || 0) > 0
+            ? Number(metric?.waitMsTotal || 0) / Number(metric?.waitSamples || 0)
+            : 0,
+        maxWaitMs: Math.max(0, Math.trunc(Number(metric?.maxWaitMs || 0))),
+        waitSamples: Math.max(0, Math.trunc(Number(metric?.waitSamples || 0))),
+        lastConflictAt: metric?.lastConflictAt ? String(metric.lastConflictAt) : null,
+        lastSelectedAt: metric?.lastSelectedAt ? String(metric.lastSelectedAt) : null,
+      }))
+      .sort((a, b) => b.blockedDispatches - a.blockedDispatches || a.area.localeCompare(b.area));
+
+    return {
+      dispatchCycles: Math.max(0, Math.trunc(Number(parsed?.repoAreaDispatchCycles || 0))),
+      conflictEvents: Math.max(0, Math.trunc(Number(parsed?.repoAreaConflictCount || 0))),
+      blockedTasksTracked: Object.keys(blockedTasks).length,
+      lastDispatch: dispatchCycle,
+      areas,
+    };
+  } catch (err) {
+    console.warn(`${TAG} failed to read executor lock state: ${err.message}`);
+    return null;
+  }
 }
 
 /**
@@ -881,6 +944,21 @@ async function cliStats(args) {
   console.log(`    Done:        ${stats.done || 0}`);
   console.log(`    Blocked:     ${stats.blocked || 0}`);
   console.log(`    Total:       ${stats.total || 0}`);
+  if (stats.repoAreaLocks) {
+    const lockState = stats.repoAreaLocks;
+    console.log(`\n  Repo Area Locks:`);
+    console.log(`    Dispatch Cycles:   ${lockState.dispatchCycles || 0}`);
+    console.log(`    Conflict Events:   ${lockState.conflictEvents || 0}`);
+    console.log(`    Blocked Tracked:   ${lockState.blockedTasksTracked || 0}`);
+    const topAreas = Array.isArray(lockState.areas)
+      ? lockState.areas.slice(0, 3)
+      : [];
+    for (const area of topAreas) {
+      console.log(
+        `    - ${area.area}: blocked=${area.blockedDispatches || 0}, selected=${area.selectedDispatches || 0}, avgWaitMs=${Math.round(area.averageWaitMs || 0)}`,
+      );
+    }
+  }
   console.log("");
 }
 

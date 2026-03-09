@@ -4226,6 +4226,10 @@ class TaskExecutor {
         const telemetry = normalizeRepoAreaTelemetryEntry(
           this._repoAreaTelemetry.get(area),
         );
+        const historicalAdaptive = buildRepoAreaAdaptiveSignals(
+          telemetry,
+          Number(this.repoAreaParallelLimit || 0),
+        );
         const outcomeFailureRate =
           telemetry.recentOutcomes.length > 0
             ? telemetry.recentOutcomes.reduce(
@@ -4249,9 +4253,12 @@ class TaskExecutor {
           activeFailureRate,
           outcomeFailureRate,
           adaptiveFailureRate,
+          historicalFailureRate: historicalAdaptive.failureRate,
           averageMergeLatencyMs,
           telemetryMergeLatencyMs,
+          historicalMergeLatencyMs: historicalAdaptive.mergeLatencyAvgMs,
           adaptiveMergeLatencyMs,
+          adaptiveReasons: historicalAdaptive.adaptiveReasons,
           maxMergeLatencyMs: signal.maxMergeLatencyMs || 0,
           conflicts: metric.conflicts,
           blockedDispatches: metric.blockedDispatches,

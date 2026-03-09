@@ -674,8 +674,8 @@ describe("task-executor", () => {
 
       const status = ex.getStatus().repoAreaLocks;
       const infra = status.areas.find((item) => item.area === "infra");
-      expect(status.dispatchCycles).toBe(1);
-      expect(status.totalConflicts).toBeGreaterThanOrEqual(1);
+      expect(status.totals.dispatchCycles).toBe(1);
+      expect(status.totals.conflictEvents).toBeGreaterThanOrEqual(1);
       expect(infra).toEqual(
         expect.objectContaining({
           effectiveLimit: 1,
