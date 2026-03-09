@@ -11136,34 +11136,16 @@ function stopBatchFlushLoop() {
  */
 export async function startTelegramBot(options = {}) {
   refreshTelegramConfigFromEnv();
-  if (!telegramToken || !telegramChatId) {
-    console.warn(
-      "[telegram-bot] disabled (missing TELEGRAM_BOT_TOKEN or TELEGRAM_CHAT_ID)",
-    );
-    return;
-  }
 
-  // Initialize the primary agent context
-  await initPrimaryAgent();
-
-  // Probe Telegram API connectivity before startup registration
-  const reachable = await probeTelegramConnectivity();
-  if (reachable) {
-    await registerBotCommands();
-  } else {
-    console.warn(
-      "[telegram-bot] Telegram API unreachable at startup — command registration deferred",
-    );
-  }
-
-  // Start Telegram UI server (Mini App) when configured.
+  // Start Telegram UI server (Mini App / Portal) when configured.
   // Portal startup is independent of Telegram polling state — it must always
   // run when TELEGRAM_UI_PORT or TELEGRAM_MINIAPP_ENABLED is set, even when
-  // polling is suppressed by a 409 conflict cooldown or another poll owner.
+  // no Telegram bot token is configured (local-only portal mode).
   const miniAppEnabled = ["1", "true", "yes"].includes(
     String(process.env.TELEGRAM_MINIAPP_ENABLED || "").toLowerCase(),
   );
   const miniAppPort = Number(process.env.TELEGRAM_UI_PORT || "0");
+  const hasTelegram = !!(telegramToken && telegramChatId);
 
   if (miniAppEnabled || miniAppPort > 0) {
     const restartReason = String(
@@ -11198,6 +11180,35 @@ export async function startTelegramBot(options = {}) {
         },
       });
       syncUiUrlsFromServer();
+    } catch (err) {
+      console.warn(`[telegram-bot] UI server start failed: ${err.message}`);
+    }
+  }
+
+  if (!hasTelegram) {
+    console.warn(
+      "[telegram-bot] Telegram polling disabled (missing TELEGRAM_BOT_TOKEN or TELEGRAM_CHAT_ID)" +
+      (miniAppEnabled || miniAppPort > 0 ? " — portal UI is still active" : ""),
+    );
+    return;
+  }
+
+  // Initialize the primary agent context
+  await initPrimaryAgent();
+
+  // Probe Telegram API connectivity before startup registration
+  const reachable = await probeTelegramConnectivity();
+  if (reachable) {
+    await registerBotCommands();
+  } else {
+    console.warn(
+      "[telegram-bot] Telegram API unreachable at startup — command registration deferred",
+    );
+  }
+
+  // Wire up Telegram-specific UI integrations (menu button, firewall alerts)
+  if (miniAppEnabled || miniAppPort > 0) {
+    try {
       if (reachable && telegramWebAppUrl) {
         const updated = await setWebAppMenuButton(telegramWebAppUrl);
         if (updated) {
@@ -11269,7 +11280,7 @@ export async function startTelegramBot(options = {}) {
         }
       }
     } catch (err) {
-      console.warn(`[telegram-bot] UI server start failed: ${err.message}`);
+      console.warn(`[telegram-bot] UI Telegram integration failed: ${err.message}`);
       if (reachable) {
         await clearWebAppMenuButton();
         lastMenuButtonUrl = null;
