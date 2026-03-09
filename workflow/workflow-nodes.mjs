@@ -3117,6 +3117,7 @@ registerNodeType("action.create_pr", {
       base: { type: "string", description: "Base branch" },
       baseBranch: { type: "string", description: "Legacy alias for base branch" },
       branch: { type: "string", description: "Head branch (source)" },
+      repoSlug: { type: "string", description: "GitHub repository slug (owner/repo)" },
       draft: { type: "boolean", default: false },
       labels: {
         oneOf: [{ type: "string" }, { type: "array", items: { type: "string" } }],
@@ -3136,6 +3137,9 @@ registerNodeType("action.create_pr", {
     const body = ctx.resolve(node.config?.body || "");
     const base = ctx.resolve(node.config?.base || node.config?.baseBranch || "main");
     const branch = ctx.resolve(node.config?.branch || "");
+    const repoSlug = String(
+      ctx.resolve(node.config?.repoSlug || ctx.data?.repoSlug || ctx.data?.repository || ""),
+    ).trim();
     const draft = node.config?.draft === true;
     const failOnError = node.config?.failOnError === true;
     const cwd = ctx.resolve(node.config?.cwd || ctx.data?.worktreePath || process.cwd());
@@ -3172,6 +3176,7 @@ registerNodeType("action.create_pr", {
           "--json",
           "number,url,title,headRefName,baseRefName",
         ];
+        if (repoSlug) existingArgs.push("--repo", repoSlug);
         if (base) existingArgs.push("--base", base);
         const existingRaw = execFileSync("gh", existingArgs, execOptions).trim();
         const existingList = existingRaw ? JSON.parse(existingRaw) : [];
@@ -3181,7 +3186,10 @@ registerNodeType("action.create_pr", {
         if (!Number.isFinite(prNumber) || prNumber <= 0) return null;
         if (labels.length) {
           try {
-            execFileSync("gh", ["pr", "edit", String(prNumber), "--add-label", labels.join(",")], execOptions);
+            const editArgs = ["pr", "edit", String(prNumber)];
+            if (repoSlug) editArgs.push("--repo", repoSlug);
+            editArgs.push("--add-label", labels.join(","));
+            execFileSync("gh", editArgs, execOptions);
           } catch {
           }
         }
@@ -3190,6 +3198,7 @@ registerNodeType("action.create_pr", {
           existing: true,
           prUrl: String(existing?.url || "").trim(),
           prNumber,
+          repoSlug: repoSlug || null,
           title,
           base: base || String(existing?.baseRefName || "").trim() || null,
           branch: branch || String(existing?.headRefName || "").trim() || null,
@@ -3205,6 +3214,7 @@ registerNodeType("action.create_pr", {
 
     // Build gh pr create command
     const args = ["gh", "pr", "create"];
+    if (repoSlug) args.push("--repo", repoSlug);
     args.push("--title", JSON.stringify(title));
     // gh pr create requires either --body (empty is allowed) or --fill* in non-interactive mode.
     args.push("--body", JSON.stringify(String(body)));
@@ -3229,6 +3239,7 @@ registerNodeType("action.create_pr", {
         success: true,
         prUrl,
         prNumber,
+        repoSlug: repoSlug || null,
         title,
         base,
         branch: branch || null,
@@ -7251,13 +7262,33 @@ function looksLikeFilesystemPath(value) {
 function resolveTaskRepositoryRoot(taskRepository, currentRepoRoot) {
   const repository = String(taskRepository || "").trim();
   const repoRoot = String(currentRepoRoot || "").trim();
-  if (!repository || !repoRoot) return "";
+  if (!repoRoot) return "";
+  const portableRoot = resolve(repoRoot).replace(/\\/g, "/");
+  const marker = "/.bosun/workspaces/";
+  const markerIndex = portableRoot.toLowerCase().indexOf(marker);
+  if (!repository) {
+    return markerIndex >= 0 ? portableRoot.slice(0, markerIndex) : resolve(repoRoot);
+  }
   const repoName = repository.split("/").pop();
-  if (!repoName) return "";
-  const candidates = [
+  if (!repoName) return markerIndex >= 0 ? portableRoot.slice(0, markerIndex) : resolve(repoRoot);
+  const candidates = [];
+
+  if (markerIndex >= 0) {
+    const actualRepoRoot = portableRoot.slice(0, markerIndex);
+    const remainder = portableRoot.slice(markerIndex + marker.length).split("/").filter(Boolean);
+    const currentRepoName = String(remainder[1] || "").trim();
+    const workspaceRoot = resolve(actualRepoRoot, "..");
+    if (currentRepoName && currentRepoName.toLowerCase() === repoName.toLowerCase()) {
+      candidates.push(actualRepoRoot);
+    }
+    candidates.push(resolve(workspaceRoot, repoName));
+  }
+
+  candidates.push(
     resolve(repoRoot, "..", repoName),
     resolve(repoRoot, ".bosun", "workspaces", String(process.env.BOSUN_WORKSPACE || "").trim(), repoName),
-  ];
+  );
+
   for (const candidate of candidates) {
     if (!candidate || candidate.includes("workspaces/")) {
       // keep candidate even when BOSUN_WORKSPACE is empty; resolve() will normalize it.
@@ -7384,6 +7415,36 @@ function formatExecSyncError(err) {
 function isExistingBranchWorktreeError(err) {
   const detail = formatExecSyncError(err).toLowerCase();
   return detail.includes("already exists") || detail.includes("is already checked out");
+}
+
+function findExistingWorktreePathForBranch(repoRoot, branch) {
+  const normalizedBranch = String(branch || "").trim();
+  if (!normalizedBranch) return "";
+  try {
+    const raw = execSync("git worktree list --porcelain", {
+      cwd: repoRoot,
+      encoding: "utf8",
+      stdio: ["ignore", "pipe", "pipe"],
+      timeout: 10000,
+    });
+    const entries = String(raw || "").split(/\r?\n\r?\n/).map((chunk) => chunk.trim()).filter(Boolean);
+    for (const entry of entries) {
+      let worktreePath = "";
+      let branchRef = "";
+      for (const line of entry.split(/\r?\n/)) {
+        if (line.startsWith("worktree ")) worktreePath = line.slice("worktree ".length).trim();
+        if (line.startsWith("branch ")) branchRef = line.slice("branch ".length).trim();
+      }
+      if (!worktreePath || !branchRef) continue;
+      const shortRef = branchRef.replace(/^refs\/heads\//, "");
+      if (shortRef === normalizedBranch || branchRef === normalizedBranch) {
+        return worktreePath;
+      }
+    }
+  } catch {
+    // Best-effort lookup only.
+  }
+  return "";
 }
 
 /**
@@ -7710,13 +7771,14 @@ registerNodeType("trigger.task_available", {
       );
       if (taskRepository) {
         ctx.data.repository = taskRepository;
-        const resolvedRepoRoot = resolveTaskRepositoryRoot(
-          taskRepository,
-          pickTaskString(ctx.data.repoRoot, process.cwd()),
-        );
-        if (resolvedRepoRoot) {
-          ctx.data.repoRoot = resolvedRepoRoot;
-        }
+        ctx.data.repoSlug = taskRepository;
+      }
+      const resolvedRepoRoot = resolveTaskRepositoryRoot(
+        taskRepository,
+        pickTaskString(ctx.data.repoRoot, process.cwd()),
+      );
+      if (resolvedRepoRoot) {
+        ctx.data.repoRoot = resolvedRepoRoot;
       }
       const taskRepositories = Array.isArray(primaryTask.repositories)
         ? primaryTask.repositories
@@ -8161,6 +8223,7 @@ registerNodeType("action.acquire_worktree", {
 
     if (!branch) throw new Error("action.acquire_worktree: branch is required");
     if (!taskId) throw new Error("action.acquire_worktree: taskId is required");
+    ctx.data.baseBranch = baseBranch;
 
     // Non-git directory — agent spawns directly
     const isGit = existsSync(resolve(repoRoot, ".git"));
@@ -8237,6 +8300,22 @@ registerNodeType("action.acquire_worktree", {
             { cwd: repoRoot, encoding: "utf8", timeout: worktreeTimeout },
           );
         } catch (reuseErr) {
+          const existingBranchWorktree = findExistingWorktreePathForBranch(repoRoot, branch);
+          if (existingBranchWorktree && existsSync(existingBranchWorktree)) {
+            ctx.data.worktreePath = existingBranchWorktree;
+            ctx.data._worktreeCreated = false;
+            ctx.data._worktreeManaged = true;
+            ctx.log(node.id, `Reusing existing branch worktree: ${existingBranchWorktree}`);
+            return {
+              success: true,
+              worktreePath: existingBranchWorktree,
+              created: false,
+              reused: true,
+              reusedExistingBranch: true,
+              branch,
+              baseBranch,
+            };
+          }
           throw new Error(
             `Worktree creation failed: ${formatExecSyncError(createErr)}; ` +
             `reuse failed: ${formatExecSyncError(reuseErr)}`,
@@ -9042,6 +9121,9 @@ registerNodeType("action.web_search", {
 // ═══════════════════════════════════════════════════════════════════════════
 
 export { registerNodeType, getNodeType, listNodeTypes } from "./workflow-engine.mjs";
+
+
+
 
 
 
