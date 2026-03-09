@@ -459,6 +459,46 @@ describe("task-executor", () => {
       );
     });
 
+    it("reduces effective repo area cap from recent outcome telemetry", () => {
+      const ex = new TaskExecutor({ baseBranchParallelLimit: 0, repoAreaParallelLimit: 2 });
+      const startedAt = Date.now() - 1_000;
+      ex._activeSlots.set("active-1", {
+        taskId: "active-1",
+        repoAreas: ["infra"],
+        attempt: 1,
+        startedAt,
+        status: "running",
+      });
+      ex._repoAreaTelemetry.set("infra", {
+        conflictCount: 0,
+        totalWaitMs: 0,
+        lastWaitMs: 0,
+        maxWaitMs: 0,
+        lastBlockedAt: 0,
+        lastOutcomeAt: Date.now(),
+        recentOutcomes: [1, 1, 0, 1, 1, 0],
+        mergeLatencySamples: [],
+      });
+
+      const selected = ex._selectTasksForBaseBranchLimit(
+        [{ id: "t1", repo_areas: ["infra"] }],
+        1,
+      );
+
+      expect(selected).toEqual([]);
+      expect(ex.getStatus().repoAreaLocks.areas).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            area: "infra",
+            effectiveLimit: 1,
+            activeFailureRate: 0,
+            outcomeFailureRate: expect.any(Number),
+            adaptiveFailureRate: expect.any(Number),
+          }),
+        ]),
+      );
+    });
+
     it("tracks repo area wait time once a blocked task is later selected", () => {
       const ex = new TaskExecutor({ baseBranchParallelLimit: 0, repoAreaParallelLimit: 1 });
       const now = Date.now();
@@ -570,6 +610,78 @@ describe("task-executor", () => {
             conflicts: expect.any(Number),
           }),
         ]),
+      );
+    });
+
+    it("persists repo area lock metrics and dispatch cycles to runtime state", () => {
+      const ex = new TaskExecutor({ baseBranchParallelLimit: 0, repoAreaParallelLimit: 1 });
+      ex._activeSlots.set("active-1", {
+        taskId: "active-1",
+        repoAreas: ["infra"],
+        attempt: 1,
+        startedAt: Date.now() - 2_000,
+        status: "running",
+      });
+
+      expect(
+        ex._selectTasksForBaseBranchLimit([{ id: "t1", repo_areas: ["infra"] }], 1),
+      ).toEqual([]);
+
+      const runtimeWriteCall = writeFileSync.mock.calls.find(([filePath]) =>
+        String(filePath || "").includes("task-executor-runtime.json"),
+      );
+      expect(runtimeWriteCall).toBeDefined();
+      const runtimePayload = JSON.parse(runtimeWriteCall[1]);
+      expect(runtimePayload.repoAreaDispatchCycles).toBe(1);
+      expect(runtimePayload.repoAreaDispatchCycle).toEqual(
+        expect.objectContaining({
+          cycle: 1,
+          blockedTasks: 1,
+          blockedByArea: expect.objectContaining({ infra: 1 }),
+        }),
+      );
+      expect(runtimePayload.repoAreaLockMetrics.infra).toEqual(
+        expect.objectContaining({
+          blockedDispatches: 1,
+          conflicts: 1,
+        }),
+      );
+    });
+
+    it("exposes adaptive lock reasons from historical telemetry", () => {
+      const ex = new TaskExecutor({ baseBranchParallelLimit: 0, repoAreaParallelLimit: 2 });
+      ex._repoAreaTelemetry.set("infra", {
+        conflictCount: 3,
+        totalWaitMs: 1_500,
+        lastWaitMs: 600,
+        maxWaitMs: 900,
+        lastBlockedAt: Date.now() - 5_000,
+        lastOutcomeAt: Date.now() - 2_000,
+        recentOutcomes: [1, 1, 0, 1],
+        mergeLatencySamples: [5 * 60 * 60 * 1000, 5 * 60 * 60 * 1000, 5 * 60 * 60 * 1000],
+      });
+      ex._activeSlots.set("active-1", {
+        taskId: "active-1",
+        repoAreas: ["infra"],
+        attempt: 1,
+        startedAt: Date.now() - 1_000,
+        status: "running",
+      });
+
+      expect(
+        ex._selectTasksForBaseBranchLimit([{ id: "t1", repo_areas: ["infra"] }], 1),
+      ).toEqual([]);
+
+      const status = ex.getStatus().repoAreaLocks;
+      const infra = status.areas.find((item) => item.area === "infra");
+      expect(status.dispatchCycles).toBe(1);
+      expect(status.totalConflicts).toBeGreaterThanOrEqual(1);
+      expect(infra).toEqual(
+        expect.objectContaining({
+          effectiveLimit: 1,
+          adaptiveReasons: expect.arrayContaining(["failure_rate", "merge_latency"]),
+          historicalFailureRate: expect.any(Number),
+        }),
       );
     });
   });

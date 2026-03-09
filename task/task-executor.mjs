@@ -4379,10 +4379,6 @@ class TaskExecutor {
               metric.blockedDispatches += 1;
               metric.lastConflictAt = this._repoAreaDispatchCycle.at;
             }
-            this._repoAreaConflictCount = Math.max(
-              0,
-              Number(this._repoAreaConflictCount || 0),
-            ) + 1;
             this._beginRepoAreaWait(task?.id || task?.task_id, area, now);
             this._repoAreaDispatchCycle.blockedByArea[area] =
               (this._repoAreaDispatchCycle.blockedByArea[area] || 0) + 1;
