@@ -59,7 +59,7 @@ function makeIsolatedGitEnv(extra = {}) {
   return env;
 }
 
-function resolveGitBinary(env = process.env) {
+function resolveGitCandidates(env = process.env) {
   const candidates = [];
   const envGitExe = env?.GIT_EXE || process.env.GIT_EXE;
   if (envGitExe) candidates.push(envGitExe);
@@ -78,10 +78,73 @@ function resolveGitBinary(env = process.env) {
       "/opt/homebrew/bin/git",
     );
   }
-  for (const candidate of candidates) {
-    if (candidate && existsSync(candidate)) return candidate;
+
+  if (process.platform === "win32") {
+    try {
+      const whereOutput = execFileSync("where.exe", ["git"], {
+        encoding: "utf8",
+        env,
+        stdio: ["ignore", "pipe", "ignore"],
+        windowsHide: true,
+      });
+      for (const line of String(whereOutput || "").split(/\r?\n/)) {
+        const candidate = line.trim();
+        if (!candidate) continue;
+        candidates.push(candidate);
+      }
+    } catch {
+      /* best-effort */
+    }
   }
-  return "git";
+
+  candidates.push("git");
+  const deduped = [];
+  const seen = new Set();
+  for (const candidate of candidates) {
+    const key = process.platform === "win32"
+      ? String(candidate || "").toLowerCase()
+      : String(candidate || "");
+    if (!candidate || seen.has(key)) continue;
+    seen.add(key);
+    deduped.push(candidate);
+  }
+  return deduped;
+}
+
+function buildGitExecutionEnv(baseEnv, gitBinary) {
+  if (process.platform !== "win32") return baseEnv;
+  const normalizedBinary = String(gitBinary || "").replace(/\//g, "\\");
+  if (!normalizedBinary.includes("\\") || !normalizedBinary.toLowerCase().endsWith("\\git.exe")) {
+    return baseEnv;
+  }
+  const env = { ...baseEnv };
+  const pathKey = Object.prototype.hasOwnProperty.call(env, "Path")
+    ? "Path"
+    : "PATH";
+  const existing = String(env[pathKey] ?? env.PATH ?? env.Path ?? "");
+  const parts = existing
+    .split(";")
+    .map((part) => part.trim())
+    .filter(Boolean);
+  const seen = new Set(parts.map((part) => part.toLowerCase()));
+  const binaryDir = dirname(normalizedBinary);
+  const gitRoot = dirname(binaryDir);
+  for (const dir of [
+    binaryDir,
+    `${gitRoot}\\cmd`,
+    `${gitRoot}\\bin`,
+    `${gitRoot}\\mingw64\\bin`,
+    `${gitRoot}\\usr\\bin`,
+  ]) {
+    const normalizedDir = String(dir || "").replace(/\//g, "\\");
+    if (!normalizedDir || seen.has(normalizedDir.toLowerCase())) continue;
+    seen.add(normalizedDir.toLowerCase());
+    parts.unshift(normalizedDir);
+  }
+  env[pathKey] = parts.join(";");
+  if (pathKey === "PATH") env.Path = env[pathKey];
+  else env.PATH = env[pathKey];
+  return env;
 }
 
 function execGitArgsSync(args, options = {}) {
@@ -89,11 +152,25 @@ function execGitArgsSync(args, options = {}) {
     throw new Error("execGitArgsSync requires a non-empty args array");
   }
   const env = makeIsolatedGitEnv(options.env);
-  const gitBinary = resolveGitBinary(env);
-  return execFileSync(gitBinary, args.map((arg) => String(arg)), {
-    ...options,
-    env,
-  });
+  const gitArgs = args.map((arg) => String(arg));
+  let lastEnoent = null;
+  for (const gitBinary of resolveGitCandidates(env)) {
+    if (gitBinary !== "git" && !existsSync(gitBinary)) continue;
+    try {
+      return execFileSync(gitBinary, gitArgs, {
+        ...options,
+        env: buildGitExecutionEnv(env, gitBinary),
+      });
+    } catch (error) {
+      if (error?.code === "ENOENT") {
+        lastEnoent = error;
+        continue;
+      }
+      throw error;
+    }
+  }
+  if (lastEnoent) throw lastEnoent;
+  throw new Error("Git executable not found");
 }
 
 function trimLogText(value, max = 180) {
