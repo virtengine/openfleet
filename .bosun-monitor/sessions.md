@@ -445,3 +445,34 @@ ode cli.mjs --daemon-status => running PID 59940.
   - Verify final patch evaluates gentType + 	askPattern + ilter together for delegation matching.
   - Verify delegated execution still emits session-tracker events and preserves task/session observability.
   - Confirm task lifecycle continues to PR handoff path (not generic executor-only completion).
+
+## 2026-03-10T05:11:03+11:00 runtime check
+- Runtime duration: ~00:10:00.
+- Initial health snapshot:
+  - Source daemon running from repo CLI (PID 59940), monitor active (PID 1776).
+  - `task stats`: draft 36, todo 1299, inprogress 31, inreview 0, done 2.
+  - In-progress quality was degraded: 26/31 were stale over 60m and all 31 had `agentAttempts=0`.
+  - Repeated `owner_mismatch` claim heartbeat failures for recurring task IDs (`a076ce3a...`, `25c46266...`, `673c5d42...`, `9c98e4e3...`, `ffe1021c...`).
+- Root cause:
+  - Claim state divergence between `.cache/bosun/task-claims.json` and `.cache/bosun/shared-task-states.json` (local claim token/owner pairs did not match shared lease token/owner pairs for active IDs).
+  - Stale in-progress tasks with no attempts remained pinned and continued to trigger heartbeat failures.
+- Ops fix applied (no source-code edits):
+  - Backed up claim files to `.cache/bosun/backups/20260310-050432/`.
+  - Pruned mismatched local claims from `.cache/bosun/task-claims.json`.
+  - Requeued stale no-attempt in-progress tasks (>60m) to `todo` via source CLI (`task update`) — 26 tasks updated.
+  - Pruned stale shared lease entries for affected IDs (`TASK-1`, `a076ce3a...`, `25c46266...`, `673c5d42...`, `9c98e4e3...`, `f2ab8397...`, `ffe1021c...`).
+- Post-fix verification:
+  - `task stats`: draft 36, todo 1325, inprogress 5, inreview 0, done 2.
+  - Remaining in-progress tasks: 5, all fresh (`staleOver60m=0`), none in review.
+  - Observation window 2026-03-09T18:09:43Z..18:11:03Z: no new `owner_mismatch` log lines observed.
+  - Scheduler continued minute cadence and schedule workflows completed.
+- Throughput status:
+  - `gh pr list --state merged --search "merged:>=<last-hour> label:bosun-attached"` returned no merged PRs in the last hour.
+
+## 2026-03-10T06:14:00+11:00 runtime check
+- Incident: source daemon remained alive but autonomous scheduler activity was degraded (no schedule-poll/schedule-run completion lines in observation windows).
+- Evidence: monitor log showed repeated startup/re-init + duplicate-start suppression; recent windows contained `stuck_agent`/SDK timeout history and no Bosun-attributed merged PRs in the last hour.
+- Ops fix (no code changes): reset 5 stale `guarded start task` placeholders from `inprogress` to `todo`.
+- Post-fix state: `task stats` => draft 36, todo 1330, inprogress 0, inreview 0, done 2; no fresh owner_mismatch/stuck_agent lines immediately after cleanup.
+- Remaining blocker: scheduler cadence still absent, so throughput remains stalled; next run should isolate monitor control-loop contention before any planning/backlog actions.
+- Branch sync note: monitor branch currently ahead 15 / behind 3 vs `origin/main`.
