@@ -80,3 +80,16 @@
   - `npm test -- tests/task-store.test.mjs tests/ui-server.test.mjs` passed (66 tests).
 - Tooling notes:
   - existing free OSS CLI stack remains recommended: `semgrep`, `gitleaks`, `osv-scanner`, `trivy`, `npm audit`.
+
+## 2026-03-09 22:02:00 +11:00
+
+- Scope: Final cleanup for remaining main-branch CodeQL alert `#65` (`js/stack-trace-exposure`) in `server/ui-server.mjs`.
+- Files hardened: `server/ui-server.mjs`.
+- Security strategy:
+  - for all `>=500` JSON responses, return a fixed generic payload (`{ ok: false, error: "Internal server error" }`) instead of preserving any upstream fields, fully severing stack/tainted-data flow to response body.
+- Validation evidence:
+  - `node --check server/ui-server.mjs` passed.
+  - `npm test -- tests/ui-server.test.mjs tests/voice-provider-smoke.test.mjs` passed (49 tests).
+- Tooling notes:
+  - No new tool installed in this pass.
+  - Free OSS CLI stack retained for local scanning: `semgrep`, `gitleaks`, `osv-scanner`, `trivy`, `npm audit`.

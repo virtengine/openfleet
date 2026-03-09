@@ -5881,11 +5881,6 @@ function scrubStackTraces(payload) {
 function normalizeJsonResponsePayload(statusCode, payload) {
   const safePayload = scrubStackTraces(payload);
   if (statusCode < 500) return safePayload;
-  if (safePayload && typeof safePayload === "object" && !Array.isArray(safePayload)) {
-    const out = { ...safePayload };
-    out.error = "Internal server error";
-    return out;
-  }
   return { ok: false, error: "Internal server error" };
 }
 
