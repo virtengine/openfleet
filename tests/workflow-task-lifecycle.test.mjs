@@ -1004,6 +1004,23 @@ describe("action.detect_new_commits", () => {
     expect(result.hasNewCommits).toBe(false);
     expect(result.error).toMatch(/worktreePath/);
   });
+
+  it("detects commits even when ComSpec is invalid", async () => {
+    const nt = getNodeType("action.detect_new_commits");
+    const head = execGit("git rev-parse HEAD", { cwd: gitDir, encoding: "utf8" }).trim();
+    const ctx = makeCtx({ _preExecHead: head });
+    const node = makeNode("action.detect_new_commits", { worktreePath: gitDir });
+    const originalComSpec = process.env.ComSpec;
+    process.env.ComSpec = join(gitDir, "missing-cmd.exe");
+    try {
+      const result = await nt.execute(node, ctx);
+      expect(result.success).toBe(true);
+      expect(result.postExecHead).toBe(head);
+    } finally {
+      if (originalComSpec == null) delete process.env.ComSpec;
+      else process.env.ComSpec = originalComSpec;
+    }
+  });
 });
 
 // ═══════════════════════════════════════════════════════════════════════════

@@ -60,9 +60,22 @@ function makeIsolatedGitEnv(extra = {}) {
 }
 
 function execGitSync(command, options = {}) {
+  const trimmed = String(command || "").trim();
+  const env = makeIsolatedGitEnv(options.env);
+  if (trimmed.toLowerCase().startsWith("git ")) {
+    const argString = trimmed.slice(4).trim();
+    const args = argString
+      ? (argString.match(/(?:[^\s"']+|"[^"]*"|'[^']*')+/g) || [])
+        .map((part) => part.replace(/^['"]|['"]$/g, ""))
+      : [];
+    return execFileSync("git", args, {
+      ...options,
+      env,
+    });
+  }
   return execSync(command, {
     ...options,
-    env: makeIsolatedGitEnv(options.env),
+    env,
   });
 }
 
