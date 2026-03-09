@@ -459,6 +459,18 @@
     let demoRunning = true;
     let typingTimeout = null;
 
+    function isSafeUrlAttributeValue(raw) {
+      const value = String(raw || "").trim();
+      if (!value) return true;
+      if (value.startsWith("/") || value.startsWith("#") || value.startsWith("./") || value.startsWith("../")) return true;
+      try {
+        const parsed = new URL(value, window.location.origin);
+        return ["http:", "https:", "mailto:", "tel:"].includes(parsed.protocol);
+      } catch {
+        return false;
+      }
+    }
+
     function sanitizeBotHtml(html) {
       const tpl = document.createElement("template");
       tpl.innerHTML = String(html || "");
@@ -468,13 +480,21 @@
           const name = String(attr.name || "").toLowerCase();
           const value = String(attr.value || "").trim().toLowerCase();
           const urlAttr = name === "src" || name === "href" || name === "xlink:href";
-          if (name.startsWith("on") || (urlAttr && (value.startsWith("javascript:") || value.startsWith("data:text/html")))) {
+          if (name.startsWith("on") || (urlAttr && !isSafeUrlAttributeValue(value))) {
             el.removeAttribute(attr.name);
           }
         }
       });
       return tpl.innerHTML;
     }
+    function setNodeMarkup(node, html) {
+      const safe = sanitizeBotHtml(html);
+      const range = document.createRange();
+      range.selectNode(node);
+      const fragment = range.createContextualFragment(safe);
+      node.replaceChildren(fragment);
+    }
+
     /* ── Message rendering ─────────────────────────────────────────── */
     function addMessage(type, html, keyboard) {
       // Remove typing indicator if present
@@ -485,21 +505,27 @@
       msg.className = 'tg-chat__msg tg-chat__msg--' + type;
 
       if (type === 'bot') {
-        msg.innerHTML = `
+        setNodeMarkup(
+          msg,
+          `
           <div class="tg-chat__msg-avatar">${BOT_AVATAR}</div>
           <div class="tg-chat__msg-bubble">
             <div class="tg-chat__msg-name">${BOT_NAME}</div>
             <div class="tg-chat__msg-text">${sanitizeBotHtml(html)}</div>
             <div class="tg-chat__msg-time">${timeStr()}</div>
           </div>
-        `;
+        `,
+        );
       } else {
-        msg.innerHTML = `
+        setNodeMarkup(
+          msg,
+          `
           <div class="tg-chat__msg-bubble">
             <div class="tg-chat__msg-text">${escapeHtml(html)}</div>
             <div class="tg-chat__msg-time">${timeStr()} ✓✓</div>
           </div>
-        `;
+        `,
+        );
       }
 
       messagesEl.appendChild(msg);

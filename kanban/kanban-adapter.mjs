@@ -5942,13 +5942,11 @@ function resolveBackendName() {
 export function getKanbanAdapter() {
   const name = resolveBackendName();
   if (activeAdapter && activeBackendName === name) return activeAdapter;
-  const factory = ADAPTERS[name];
-  if (!factory) throw new Error(`${TAG} unknown kanban backend: ${name}`);
   if (name === "internal") activeAdapter = ADAPTERS.internal();
   else if (name === "vk") activeAdapter = ADAPTERS.vk();
   else if (name === "github") activeAdapter = ADAPTERS.github();
   else if (name === "jira") activeAdapter = ADAPTERS.jira();
-  else activeAdapter = factory();
+  else throw new Error(`${TAG} unknown kanban backend: ${name}`);
   activeBackendName = name;
   console.log(`${TAG} using ${name} backend`);
   return activeAdapter;

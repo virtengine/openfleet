@@ -59,12 +59,23 @@ function extractLocalAssets(html, htmlPath) {
 
 function extractInlineScripts(html) {
   const scripts = [];
-  const re = /<script\b([^>]*)>([\s\S]*?)<\/script\s*>/gi;
-  let match;
-  while ((match = re.exec(html)) !== null) {
-    const attrs = match[1] || "";
-    const body = (match[2] || "").trim();
-    if (attrs.includes("src=")) continue;
+  const source = String(html || "");
+  let cursor = 0;
+  while (cursor < source.length) {
+    const openIdx = source.toLowerCase().indexOf("<script", cursor);
+    if (openIdx < 0) break;
+    const openEnd = source.indexOf(">", openIdx);
+    if (openEnd < 0) break;
+    const closeIdx = source.toLowerCase().indexOf("</script", openEnd + 1);
+    if (closeIdx < 0) break;
+    const closeEnd = source.indexOf(">", closeIdx);
+    if (closeEnd < 0) break;
+
+    const attrs = source.slice(openIdx + 7, openEnd);
+    const body = source.slice(openEnd + 1, closeIdx).trim();
+    cursor = closeEnd + 1;
+
+    if (/\bsrc\s*=\s*/i.test(attrs)) continue;
     const typeMatch = attrs.match(/type\s*=\s*["']([^"']+)["']/i);
     const scriptType = (typeMatch?.[1] || "").toLowerCase();
     const isModule = scriptType === "module";
@@ -73,8 +84,7 @@ function extractInlineScripts(html) {
       scriptType === "text/javascript" ||
       scriptType === "application/javascript" ||
       scriptType === "module";
-    if (!isJsType) continue;
-    if (!body) continue;
+    if (!isJsType || !body) continue;
     scripts.push({ code: body, isModule });
   }
   return scripts;

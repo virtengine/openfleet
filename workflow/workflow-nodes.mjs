@@ -9147,11 +9147,9 @@ registerNodeType("action.web_search", {
               signal: AbortSignal.timeout(10000),
             });
             const html = await pageResp.text();
-            // Simple text extraction — strip tags
-            results[i].content = html
-              .replace(/<script\b[\s\S]*?<\/script\s*>/gi, "")
-              .replace(/<style\b[\s\S]*?<\/style\s*>/gi, "")
-              .replace(/<[^>]+>/g, " ")
+            // Convert markup to plain text without regex script/style filters.
+            const plain = stripHtmlToText(html);
+            results[i].content = plain
               .replace(/\s+/g, " ")
               .trim()
               .slice(0, 5000);
