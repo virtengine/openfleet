@@ -460,10 +460,11 @@ async function ensureWorkflowAutomationEngine() {
 
   workflowAutomationInitPromise = (async () => {
     try {
-      const [{ getWorkflowEngine }, { createTask }, wfNodes] = await Promise.all([
+      const [{ getWorkflowEngine }, { createTask }, wfNodes, workflowTemplates] = await Promise.all([
         import("../workflow/workflow-engine.mjs"),
         import("../kanban/kanban-adapter.mjs"),
         import("../workflow/workflow-nodes.mjs"),
+        import("../workflow/workflow-templates.mjs"),
       ]);
       if (!wfNodes) {
         throw new Error("workflow nodes unavailable");
@@ -559,6 +560,43 @@ async function ensureWorkflowAutomationEngine() {
       };
 
       const engine = getWorkflowEngine({ services });
+
+      const configuredWorkflowProfile =
+        config?.workflowDefaults && typeof config.workflowDefaults === "object"
+          ? config.workflowDefaults.profile || "balanced"
+          : "balanced";
+      const configuredWorkflowTemplates =
+        config?.workflowDefaults && typeof config.workflowDefaults === "object"
+          ? config.workflowDefaults.templates || []
+          : [];
+      const requestedTemplateIds = new Set(
+        typeof workflowTemplates?.resolveWorkflowTemplateIds === "function"
+          ? workflowTemplates.resolveWorkflowTemplateIds({
+              profileId: configuredWorkflowProfile,
+              templateIds: configuredWorkflowTemplates,
+            })
+          : [],
+      );
+      const staleWorkflowTemplateIds = ["template-task-batch-pr"];
+      for (const summary of engine.list?.() || []) {
+        const installedFrom = String(summary?.metadata?.installedFrom || "").trim();
+        if (!staleWorkflowTemplateIds.includes(installedFrom)) continue;
+        if (requestedTemplateIds.has(installedFrom)) continue;
+        if (summary?.enabled === false) continue;
+        const def = engine.get?.(summary.id);
+        if (!def || def.enabled === false) continue;
+        def.enabled = false;
+        def.metadata = {
+          ...(def.metadata || {}),
+          autoDisabledReason:
+            "disabled on startup because the template is no longer requested by workflowDefaults",
+        };
+        engine.save(def);
+        console.log(
+          "[workflows] auto-disabled stale workflow " + (def.name || def.id) + " (" + installedFrom + ")",
+        );
+      }
+
       workflowAutomationEngine = engine;
       bindWorkflowEngineToAnomalyDetector(engine);
 
@@ -2081,7 +2119,15 @@ let selfRestartWatcherEnabled = isSelfRestartWatcherEnabled();
 function buildCodexSdkOptionsForMonitor() {
   const { env: resolvedEnv } = resolveCodexProfileRuntime(process.env);
   const baseUrl = resolvedEnv.OPENAI_BASE_URL || "";
-  const isAzure = baseUrl.includes(".openai.azure.com");
+  const isAzure = (() => {
+        try {
+          const parsed = new URL(baseUrl);
+          const host = String(parsed.hostname || "").toLowerCase();
+          return host === "openai.azure.com" || host.endsWith(".openai.azure.com");
+        } catch {
+          return false;
+        }
+      })();
   const env = { ...resolvedEnv };
   // For SDK compatibility, pass Azure endpoint via provider config instead of OPENAI_BASE_URL.
   delete env.OPENAI_BASE_URL;

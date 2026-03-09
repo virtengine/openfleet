@@ -430,9 +430,17 @@ async function getThread() {
     // even if config.toml hasn't been patched by codex-config.mjs yet.
     // This is the most reliable path for Azure/Foundry deployments where
     // dropped SSE streams ("response.failed") are the dominant failure mode.
-    const providerName = resolvedEnv.OPENAI_BASE_URL?.toLowerCase().includes(".openai.azure.com")
-      ? "azure"
-      : "openai";
+    const providerName = (() => {
+      try {
+        const parsed = new URL(String(resolvedEnv.OPENAI_BASE_URL || ""));
+        const host = String(parsed.hostname || "").toLowerCase();
+        return host === "openai.azure.com" || host.endsWith(".openai.azure.com")
+          ? "azure"
+          : "openai";
+      } catch {
+        return "openai";
+      }
+    })();
     const STREAM_IDLE_TIMEOUT_MS = 3_600_000; // 60 min — matches Azure max stream lifetime
     const streamProviderOverrides = {
       stream_idle_timeout_ms: STREAM_IDLE_TIMEOUT_MS,

@@ -1247,7 +1247,15 @@ function ensureModelProviderSectionsFromEnv(toml, env = process.env) {
 
   if (
     activeProvider === "azure" ||
-    String(activeBaseUrl).toLowerCase().includes(".openai.azure.com")
+    (() => {
+      try {
+        const parsed = new URL(String(activeBaseUrl || ""));
+        const host = String(parsed.hostname || "").toLowerCase();
+        return host === "openai.azure.com" || host.endsWith(".openai.azure.com");
+      } catch {
+        return false;
+      }
+    })()
   ) {
     if (!hasModelProviderSection(toml, "azure")) {
       toml += buildModelProviderSection("azure", {

@@ -4254,14 +4254,35 @@ function ensureSelfSignedCert() {
     const opensslBin = findOpenssl();
     const lanIp = getLocalLanIp();
     const subjectAltName = `DNS:localhost,IP:127.0.0.1,IP:${lanIp}`;
-    execSync(
-      `"${opensslBin}" req -x509 -newkey ec -pkeyopt ec_paramgen_curve:prime256v1 ` +
-        `-keyout "${tlsKeyPath}" -out "${tlsCertPath}" ` +
-        `-days 825 -nodes -batch ` +
-        `-subj "/CN=bosun" ` +
-        `-addext "subjectAltName=${subjectAltName}"`,
-      { stdio: "pipe", timeout: 10_000 },
+    const opensslRes = spawnSync(
+      opensslBin,
+      [
+        "req",
+        "-x509",
+        "-newkey",
+        "ec",
+        "-pkeyopt",
+        "ec_paramgen_curve:prime256v1",
+        "-keyout",
+        tlsKeyPath,
+        "-out",
+        tlsCertPath,
+        "-days",
+        "825",
+        "-nodes",
+        "-batch",
+        "-subj",
+        "/CN=bosun",
+        "-addext",
+        `subjectAltName=${subjectAltName}`,
+      ],
+      { stdio: ["ignore", "pipe", "pipe"], timeout: 10_000, encoding: "utf8" },
     );
+    if (opensslRes.error || opensslRes.status !== 0) {
+      throw new Error(
+        String(opensslRes.stderr || opensslRes.stdout || "openssl failed").trim(),
+      );
+    }
 
     console.log(
       `[telegram-ui] auto-generated self-signed TLS cert (SAN: ${subjectAltName})`,
@@ -4391,18 +4412,52 @@ export async function openFirewallPort(port) {
 
   // Try pkexec first (GUI sudo prompt — works on Linux desktop)
   if (process.platform === "linux") {
-    // Build the actual command for pkexec (it doesn't support shell pipelines)
-    let pkexecCmd;
-    if (firewall === "ufw") {
-      pkexecCmd = `pkexec ufw allow ${port}/tcp comment "bosun UI"`;
-    } else if (firewall === "firewalld") {
-      pkexecCmd = `pkexec bash -c 'firewall-cmd --add-port=${port}/tcp --permanent && firewall-cmd --reload'`;
-    } else {
-      pkexecCmd = `pkexec iptables -I INPUT -p tcp --dport ${port} -j ACCEPT`;
+    const safePort = Number.parseInt(String(port), 10);
+    if (!Number.isInteger(safePort) || safePort <= 0 || safePort > 65535) {
+      return { success: false, message: "Invalid port." };
     }
 
     try {
-      execSync(pkexecCmd, { encoding: "utf8", timeout: 60000, stdio: "pipe" });
+      if (firewall === "ufw") {
+        const res = spawnSync(
+          "pkexec",
+          ["ufw", "allow", `${safePort}/tcp`, "comment", "bosun UI"],
+          { encoding: "utf8", timeout: 60000, stdio: ["ignore", "pipe", "pipe"] },
+        );
+        if (res.error || res.status !== 0) {
+          throw new Error(String(res.stderr || res.stdout || "pkexec ufw failed").trim());
+        }
+      } else if (firewall === "firewalld") {
+        const addRes = spawnSync(
+          "pkexec",
+          ["firewall-cmd", `--add-port=${safePort}/tcp`, "--permanent"],
+          { encoding: "utf8", timeout: 60000, stdio: ["ignore", "pipe", "pipe"] },
+        );
+        if (addRes.error || addRes.status !== 0) {
+          throw new Error(
+            String(addRes.stderr || addRes.stdout || "pkexec firewall-cmd add failed").trim(),
+          );
+        }
+        const reloadRes = spawnSync("pkexec", ["firewall-cmd", "--reload"], {
+          encoding: "utf8",
+          timeout: 60000,
+          stdio: ["ignore", "pipe", "pipe"],
+        });
+        if (reloadRes.error || reloadRes.status !== 0) {
+          throw new Error(
+            String(reloadRes.stderr || reloadRes.stdout || "pkexec firewall-cmd reload failed").trim(),
+          );
+        }
+      } else {
+        const res = spawnSync(
+          "pkexec",
+          ["iptables", "-I", "INPUT", "-p", "tcp", "--dport", String(safePort), "-j", "ACCEPT"],
+          { encoding: "utf8", timeout: 60000, stdio: ["ignore", "pipe", "pipe"] },
+        );
+        if (res.error || res.status !== 0) {
+          throw new Error(String(res.stderr || res.stdout || "pkexec iptables failed").trim());
+        }
+      }
       // Re-check after opening
       firewallState = await checkFirewall(port);
       return { success: true, message: `Firewall rule added via ${firewall}.` };
@@ -7906,11 +7961,23 @@ async function readStatusSnapshot() {
 }
 
 function runGit(args, timeoutMs = 10000) {
-  return execSync(`git ${args}`, {
+  const argList = Array.isArray(args)
+    ? args
+    : String(args || "")
+      .trim()
+      .split(/\s+/)
+      .filter(Boolean);
+  const res = spawnSync("git", argList, {
     cwd: repoRoot,
     encoding: "utf8",
     timeout: timeoutMs,
-  }).trim();
+    stdio: ["ignore", "pipe", "pipe"],
+  });
+  if (res.error) throw res.error;
+  if (res.status !== 0) {
+    throw new Error(String(res.stderr || res.stdout || "git command failed").trim());
+  }
+  return String(res.stdout || "").trim();
 }
 
 async function readJsonBody(req) {

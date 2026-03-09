@@ -821,7 +821,15 @@ function launchCodexExec(prompt, cwd, timeoutMs) {
       // or strip OPENAI_BASE_URL so it uses ChatGPT OAuth for non-Azure.
       const { env: codexEnv } = resolveCodexProfileRuntime(process.env);
       const baseUrl = codexEnv.OPENAI_BASE_URL || "";
-      const isAzure = baseUrl.includes(".openai.azure.com");
+      const isAzure = (() => {
+        try {
+          const parsed = new URL(baseUrl);
+          const host = String(parsed.hostname || "").toLowerCase();
+          return host === "openai.azure.com" || host.endsWith(".openai.azure.com");
+        } catch {
+          return false;
+        }
+      })();
       if (isAzure) {
         if (codexEnv.OPENAI_API_KEY && !codexEnv.AZURE_OPENAI_API_KEY) {
           codexEnv.AZURE_OPENAI_API_KEY = codexEnv.OPENAI_API_KEY;

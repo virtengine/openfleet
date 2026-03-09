@@ -89,6 +89,32 @@ function nowISO() {
   return new Date().toISOString();
 }
 
+function isSafeGitRefName(value) {
+  const ref = String(value || "").trim();
+  if (!ref) return false;
+  if (ref.startsWith("-") || ref.includes("..") || ref.includes("//")) return false;
+  if (ref.endsWith("/") || ref.endsWith(".")) return false;
+  return /^[A-Za-z0-9][A-Za-z0-9._/-]{0,199}$/.test(ref);
+}
+
+function isSafeGitRepositorySource(value) {
+  const source = String(value || "").trim();
+  if (!source) return false;
+  if (existsSync(source)) {
+    return true;
+  }
+  if (/^git@[A-Za-z0-9.-]+:[A-Za-z0-9._/-]+(?:\.git)?$/i.test(source)) {
+    return true;
+  }
+  try {
+    const parsed = new URL(source);
+    if (!["http:", "https:", "ssh:", "file:"].includes(parsed.protocol)) return false;
+    return Boolean(parsed.hostname || parsed.protocol === "file:");
+  } catch {
+    return false;
+  }
+}
+
 function toStringArray(input) {
   if (!Array.isArray(input)) return [];
   return input.map((item) => String(item || '').trim()).filter(Boolean);
@@ -1601,6 +1627,12 @@ export function importAgentProfilesFromRepository(rootDir, options = {}) {
   if (!repoUrl) throw new Error("repoUrl or sourceId is required");
 
   const branch = String(options?.branch || known?.defaultBranch || "main").trim() || "main";
+  if (!isSafeGitRepositorySource(repoUrl)) {
+    throw new Error("repoUrl must be a valid http(s)/ssh git repository URL");
+  }
+  if (!isSafeGitRefName(branch)) {
+    throw new Error("branch contains unsafe characters");
+  }
   const maxProfiles = Math.max(1, Math.min(500, Number.parseInt(String(options?.maxProfiles || "100"), 10) || 100));
   const importPrompts = options?.importPrompts !== false;
 
@@ -1608,7 +1640,7 @@ export function importAgentProfilesFromRepository(rootDir, options = {}) {
   const checkoutDir = resolve(cacheRoot, `import-${Date.now()}-${Math.random().toString(16).slice(2, 8)}`);
   ensureDir(checkoutDir);
 
-  const clone = spawnSync("git", ["clone", "--depth", "1", "--branch", branch, repoUrl, checkoutDir], {
+  const clone = spawnSync("git", ["clone", "--depth", "1", "--branch", branch, "--", repoUrl, checkoutDir], {
     encoding: "utf8",
     stdio: ["ignore", "pipe", "pipe"],
   });
@@ -1735,16 +1767,23 @@ export function detectScopes(repoRoot, opts = {}) {
     delete gitEnv.GIT_INDEX_FILE;
     delete gitEnv.GIT_COMMON_DIR;
     delete gitEnv.GIT_PREFIX;
-    const log = execSync(
-      `git log --oneline -${maxCommits} --format="%s"`,
+    const safeMaxCommits = Math.max(1, Math.min(5000, Number.parseInt(String(maxCommits), 10) || 200));
+    const logResult = spawnSync(
+      "git",
+      ["log", "--oneline", "-" + safeMaxCommits, "--format=%s"],
       {
         cwd: repoRoot,
         env: gitEnv,
         encoding: "utf8",
         timeout: 10000,
-        stdio: ["pipe", "pipe", "pipe"],
+        stdio: ["ignore", "pipe", "pipe"],
       },
     );
+    if (logResult.error) throw logResult.error;
+    if (logResult.status !== 0) {
+      throw new Error(String(logResult.stderr || logResult.stdout || "git log failed").trim());
+    }
+    const log = String(logResult.stdout || "");
     const scopeRegex = /(?:feat|fix|docs|style|refactor|perf|test|build|ci|chore|revert)\(([^)]+)\)/gi;
     for (const line of log.split("\n")) {
       let m;

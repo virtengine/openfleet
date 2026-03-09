@@ -16,7 +16,7 @@
  * read-write, then runs the agent inside the container.
  */
 
-import { spawn, execSync } from "node:child_process";
+import { spawn, spawnSync, execSync } from "node:child_process";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { resolve, basename } from "node:path";
 
@@ -52,6 +52,25 @@ const OUTPUT_END_MARKER = "---CODEXMON_OUTPUT_END---";
 
 const activeContainers = new Map(); // containerName → { proc, startTime, taskId }
 let containerIdCounter = 0;
+
+function runContainerRuntimeSync(args, options = {}) {
+  const res = spawnSync(containerRuntime, args, {
+    encoding: "utf8",
+    stdio: ["ignore", "pipe", "pipe"],
+    ...options,
+  });
+  if (res.error) throw res.error;
+  if (res.status !== 0) {
+    throw new Error(
+      String(
+        res.stderr ||
+        res.stdout ||
+        `${containerRuntime} ${args.join(" ")} exited with status ${res.status}`,
+      ).trim(),
+    );
+  }
+  return String(res.stdout || "");
+}
 
 // ── Public API ───────────────────────────────────────────────────────────────
 
@@ -329,10 +348,7 @@ export async function runInContainer(options) {
         `[container] ${containerName} timed out after ${timeout}ms, stopping`,
       );
       try {
-        execSync(`${containerRuntime} stop ${containerName}`, {
-          stdio: "pipe",
-          timeout: 15000,
-        });
+        runContainerRuntimeSync(["stop", containerName], { timeout: 15000 });
       } catch {
         proc.kill("SIGKILL");
       }
@@ -386,14 +402,11 @@ export async function stopAllContainers(timeoutMs = 10000) {
 
   for (const name of names) {
     try {
-      execSync(`${containerRuntime} stop ${name}`, {
-        stdio: "pipe",
-        timeout: timeoutMs,
-      });
+      runContainerRuntimeSync(["stop", name], { timeout: timeoutMs });
     } catch {
       // Try force kill
       try {
-        execSync(`${containerRuntime} kill ${name}`, { stdio: "pipe" });
+        runContainerRuntimeSync(["kill", name]);
       } catch {
         /* already stopped */
       }
@@ -425,7 +438,7 @@ export function cleanupOrphanedContainers() {
         .map((c) => c.configuration.id);
       for (const name of orphans) {
         try {
-          execSync(`container stop ${name}`, { stdio: "pipe" });
+          runContainerRuntimeSync(["stop", name]);
         } catch {
           /* already stopped */
         }
@@ -436,17 +449,14 @@ export function cleanupOrphanedContainers() {
         );
       }
     } else {
-      output = execSync(
-        `${containerRuntime} ps --filter "name=codexmon-" --format "{{.Names}}"`,
-        { stdio: ["pipe", "pipe", "pipe"], encoding: "utf-8" },
-      );
+      output = runContainerRuntimeSync(["ps", "--filter", "name=codexmon-", "--format", "{{.Names}}"]);
       const orphans = output
         .trim()
         .split("\n")
         .filter((n) => n);
       for (const name of orphans) {
         try {
-          execSync(`${containerRuntime} stop ${name}`, { stdio: "pipe" });
+          runContainerRuntimeSync(["stop", name]);
         } catch {
           /* already stopped */
         }

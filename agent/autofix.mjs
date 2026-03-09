@@ -536,7 +536,15 @@ export function runCodexExec(
       // Otherwise strip OPENAI_BASE_URL so the CLI uses its ChatGPT OAuth.
       const { env: codexEnv } = resolveCodexProfileRuntime(process.env);
       const baseUrl = codexEnv.OPENAI_BASE_URL || "";
-      const isAzure = baseUrl.includes(".openai.azure.com");
+      const isAzure = (() => {
+        try {
+          const parsed = new URL(baseUrl);
+          const host = String(parsed.hostname || "").toLowerCase();
+          return host === "openai.azure.com" || host.endsWith(".openai.azure.com");
+        } catch {
+          return false;
+        }
+      })();
       if (isAzure) {
         // Map OPENAI_API_KEY → AZURE_OPENAI_API_KEY for Azure auth header
         if (codexEnv.OPENAI_API_KEY && !codexEnv.AZURE_OPENAI_API_KEY) {
@@ -568,22 +576,11 @@ export function runCodexExec(
         // Node double-killing the child with SIGTERM before our handler runs.
         env: codexEnv,
       };
-      if (process.platform === "win32") {
-        // On Windows, spawn with shell: true so cmd.exe can resolve .cmd/.ps1
-        // shims (e.g. codex.cmd installed by npm). Without shell: true, Node's
-        // spawn() looks for a literal "codex" executable which doesn't exist
-        // on Windows — only codex.cmd does — causing ENOENT (os error 2).
-        // Arguments are passed as an array so shell word-splitting is safe.
-        child = spawn("codex", args, {
-          ...spawnOptions,
-          shell: true,
-        });
-      } else {
-        child = spawn("codex", args, {
-          ...spawnOptions,
-          shell: false,
-        });
-      }
+      const codexBin = process.platform === "win32" ? "codex.cmd" : "codex";
+      child = spawn(codexBin, args, {
+        ...spawnOptions,
+        shell: false,
+      });
     } catch (err) {
       return promiseResolve({
         success: false,

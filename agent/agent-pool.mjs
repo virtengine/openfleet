@@ -682,7 +682,15 @@ async function withTemporaryEnv(overrides, fn) {
 function buildCodexSdkOptions(envInput = process.env) {
   const { env: resolvedEnv } = resolveCodexProfileRuntime(envInput);
   const baseUrl = resolvedEnv.OPENAI_BASE_URL || "";
-  const isAzure = baseUrl.includes(".openai.azure.com");
+  const isAzure = (() => {
+        try {
+          const parsed = new URL(baseUrl);
+          const host = String(parsed.hostname || "").toLowerCase();
+          return host === "openai.azure.com" || host.endsWith(".openai.azure.com");
+        } catch {
+          return false;
+        }
+      })();
   const env = { ...resolvedEnv };
   // Always strip OPENAI_BASE_URL — for Azure we use config overrides,
   // for non-Azure the CLI should use its built-in endpoint.
