@@ -314,6 +314,6 @@ if [ "${#FINAL_TEST_LIST[@]}" -eq 0 ]; then
 fi
 
 echo "[hooks] running ${#FINAL_TEST_LIST[@]}/${TOTAL_TESTS} targeted tests…"
-npx vitest run --config vitest.config.mjs "${FINAL_TEST_LIST[@]}"
+node node_modules/vitest/vitest.mjs run --config vitest.config.mjs "${FINAL_TEST_LIST[@]}"
 
 echo "[hooks] pre-push checks passed ✓"
