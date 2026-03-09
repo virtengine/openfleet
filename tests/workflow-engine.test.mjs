@@ -3038,6 +3038,190 @@ it("action.materialize_planner_tasks enforces planner quality gates and persists
     }),
   }));
 });
+
+it("action.materialize_planner_tasks reorders candidates using replayed executor feedback priors", async () => {
+  const handler = getNodeType("action.materialize_planner_tasks");
+  expect(handler).toBeDefined();
+
+  const ctx = new WorkflowContext({});
+  ctx.setNodeOutput("run-planner", {
+    output: [
+      "```json",
+      "{",
+      '  "tasks": [',
+      '    { "title": "[m] fix(workflow): repeat offender", "description": "A", "acceptance_criteria": ["ac-a"], "verification": ["verify-a"], "repo_areas": ["workflow"], "impact": 0.9, "confidence": 0.9, "risk": 0.2 },',
+      '    { "title": "[m] chore(workflow): stable follow-up", "description": "B", "acceptance_criteria": ["ac-b"], "verification": ["verify-b"], "repo_areas": ["workflow"], "impact": 0.7, "confidence": 0.8, "risk": 0.2 }',
+      "  ]",
+      "}",
+      "```",
+    ].join("\n"),
+  });
+
+  const createTask = vi
+    .fn()
+    .mockResolvedValueOnce({ id: "task-rank-1" })
+    .mockResolvedValueOnce({ id: "task-rank-2" });
+  const listTasks = vi.fn().mockResolvedValue([
+    {
+      id: "hist-1",
+      title: "[m] fix(workflow): failed attempt 1",
+      status: "todo",
+      agentAttempts: 3,
+      consecutiveNoCommits: 2,
+      blockedReason: "merge conflict",
+      meta: { repo_areas: ["workflow"] },
+    },
+    {
+      id: "hist-2",
+      title: "[m] fix(workflow): failed attempt 2",
+      status: "todo",
+      agentAttempts: 2,
+      consecutiveNoCommits: 1,
+      blockedReason: "tests failing",
+      meta: { repo_areas: ["workflow"] },
+    },
+    {
+      id: "hist-3",
+      title: "[m] chore(workflow): baseline success",
+      status: "done",
+      hasCommits: true,
+      agentAttempts: 1,
+      consecutiveNoCommits: 0,
+      meta: { repo_areas: ["workflow"] },
+    },
+  ]);
+
+  const mockEngine = {
+    services: {
+      kanban: {
+        createTask,
+        listTasks,
+      },
+    },
+  };
+
+  const node = {
+    id: "materialize-ranked",
+    type: "action.materialize_planner_tasks",
+    config: {
+      plannerNodeId: "run-planner",
+      failOnZero: true,
+      dedup: false,
+      minCreated: 2,
+      failurePriorThreshold: 2,
+      failurePriorStep: 2,
+      feedbackSignalScale: 0.2,
+    },
+  };
+
+  const result = await handler.execute(node, ctx, mockEngine);
+  expect(result.success).toBe(true);
+  expect(result.createdCount).toBe(2);
+  const createdTitles = createTask.mock.calls.map((call) => call?.[1]?.title);
+  expect(createdTitles).toEqual([
+    "[m] chore(workflow): stable follow-up",
+    "[m] fix(workflow): repeat offender",
+  ]);
+  expect(result.rankedTasks?.[0]?.title).toBe("[m] chore(workflow): stable follow-up");
+});
+
+it("action.materialize_planner_tasks reorders candidates from planner feedback replay when historical rows lack signals", async () => {
+  const handler = getNodeType("action.materialize_planner_tasks");
+  expect(handler).toBeDefined();
+
+  const ctx = new WorkflowContext({
+    _plannerFeedback: {
+      rankingSignals: {
+        failureThreshold: 2.5,
+        weights: {
+          agentAttempts: 0.35,
+          consecutiveNoCommits: 1.25,
+          blockedReason: 1.5,
+          debtTrend: 0.4,
+        },
+        patterns: [
+          {
+            key: "workflow::fix",
+            repoArea: "workflow",
+            archetype: "fix",
+            failureCounter: 6.2,
+            failures: 4,
+            successes: 0,
+            negativePrior: 2.2,
+          },
+        ],
+      },
+      taskStore: {
+        hotTasks: [
+          {
+            taskId: "hist-hot-1",
+            title: "[m] fix(workflow): repeat offender",
+            status: "blocked",
+            agentAttempts: 3,
+            consecutiveNoCommits: 2,
+            blockedReason: "merge conflict",
+            archetype: "fix",
+            repoAreas: ["workflow"],
+          },
+        ],
+      },
+    },
+  });
+  ctx.setNodeOutput("run-planner", {
+    output: [
+      "```json",
+      "{",
+      '  "tasks": [',
+      '    { "title": "[m] fix(workflow): repeat offender", "description": "A", "acceptance_criteria": ["ac-a"], "verification": ["verify-a"], "repo_areas": ["workflow"], "impact": 0.9, "confidence": 0.9, "risk": 0.2 },',
+      '    { "title": "[m] chore(workflow): stable follow-up", "description": "B", "acceptance_criteria": ["ac-b"], "verification": ["verify-b"], "repo_areas": ["workflow"], "impact": 0.7, "confidence": 0.8, "risk": 0.2 }',
+      "  ]",
+      "}",
+      "```",
+    ].join("\n"),
+  });
+
+  const createTask = vi
+    .fn()
+    .mockResolvedValueOnce({ id: "task-feedback-rank-1" })
+    .mockResolvedValueOnce({ id: "task-feedback-rank-2" });
+  const listTasks = vi.fn().mockResolvedValue([
+    {
+      id: "hist-empty-1",
+      title: "[m] fix(workflow): old task without executor metadata",
+      status: "todo",
+      meta: { repo_areas: ["workflow"] },
+    },
+  ]);
+
+  const node = {
+    id: "materialize-feedback-ranked",
+    type: "action.materialize_planner_tasks",
+    config: {
+      plannerNodeId: "run-planner",
+      failOnZero: true,
+      dedup: false,
+      minCreated: 2,
+      failurePriorThreshold: 2,
+      failurePriorStep: 2,
+      feedbackSignalScale: 0.2,
+    },
+  };
+
+  const result = await handler.execute(node, ctx, {
+    services: {
+      kanban: {
+        createTask,
+        listTasks,
+      },
+    },
+  });
+  expect(result.success).toBe(true);
+  const createdTitles = createTask.mock.calls.map((call) => call?.[1]?.title);
+  expect(createdTitles).toEqual([
+    "[m] chore(workflow): stable follow-up",
+    "[m] fix(workflow): repeat offender",
+  ]);
+});
 describe("WorkflowEngine singleton services", () => {
   beforeEach(() => {
     resetWorkflowEngine();
@@ -3540,4 +3724,3 @@ describe("WorkflowEngine.getTaskTraceEvents", () => {
     expect(reread[0].taskId).toBe("TASK-TRACE-READBACK");
   });
 });
-
