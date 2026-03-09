@@ -427,3 +427,21 @@ ode cli.mjs --daemon --config-dir .bosun --repo-root . --no-update-check --no-au
 - Throughput snapshot:
   - Recent merged PRs exist in the last hour (#194, #195, #197, #198), but attribution to fully autonomous Bosun E2E remains mixed and should be revalidated next run from workflow-node evidence.
 - No code edits shipped this run; runtime remediation only.
+
+## 2026-03-10T04:17:58+11:00 workflow delegation review (monitor-only)
+
+- Scope: reviewed in-progress agent patch only (no new code changes) on monitor/bosun-env-stability.
+- Runtime/logging status:
+  - Source daemon active: 
+ode cli.mjs --daemon-status => running PID 59940.
+  - Active monitor sink is .bosun/logs/monitor.log (last write advancing to 2026-03-10 04:13 local).
+  - Repo-root logs/monitor.log is stale and not the active sink for current source runtime.
+- Patch review findings (workflow/workflow-nodes.mjs, workflow-templates/agents.mjs):
+  1. Delegation selection currently evaluates only trigger config.filter and ignores gentType / 	askPattern on 	rigger.task_assigned.
+  2. BACKEND_AGENT_TEMPLATE trigger filter was removed ({}), so backend workflow can match all tasks by default.
+  3. Delegated path in ction.run_agent returns early before session-tracker/runSinglePass wiring, so Sessions view can miss active agent progress/events for delegated flows.
+- Risk: tasks may route to wrong custom agent workflow and appear less traceable in Sessions view despite workflow activity.
+- Next monitor check:
+  - Verify final patch evaluates gentType + 	askPattern + ilter together for delegation matching.
+  - Verify delegated execution still emits session-tracker events and preserves task/session observability.
+  - Confirm task lifecycle continues to PR handoff path (not generic executor-only completion).
