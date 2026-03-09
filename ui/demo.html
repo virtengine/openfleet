@@ -2691,6 +2691,8 @@
       // ── Status & Executor ──
       if (route === '/api/status')
         return { data: buildStatusSnapshot() };
+      if (route === '/api/retry-queue')
+        return { ok: true, count: 0, items: [] };
       if (route === '/api/executor') {
         const statusSnapshot = buildStatusSnapshot();
         const slots = buildDemoSlots();
@@ -5069,6 +5071,7 @@
   </script>
 </body>
 </html>
+
 
 
 
