@@ -22,6 +22,13 @@ describe("chat session regressions", () => {
     expect(source).toContain("buildSessionApiPath");
     expect(source).toContain("resolveSessionWorkspaceHint");
     expect(source).toContain("sessionPath(id, action = \"\")");
+    expect(source).toContain("buildSessionApiPath(id, \"\", { workspace: \"all\" })");
+    expect(source).toContain("isScopedSessionNotFound");
+
+    const loadMessagesBlock =
+      source.match(/export async function loadSessionMessages[\s\S]*?\n}\n\nfunction normalizePreview/)?.[0] || "";
+    expect(loadMessagesBlock).not.toContain("sessionMessages.value = [];");
+    expect(loadMessagesBlock).not.toContain("sessionPagination.value = null;");
   });
 
   it("exposes workspace metadata in session summaries for UI routing", () => {

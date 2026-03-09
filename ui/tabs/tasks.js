@@ -501,6 +501,64 @@ function normalizeDagNode(node, index) {
   };
 }
 
+function buildDagDepthMap(levelSource = []) {
+  const levels = Array.isArray(levelSource) ? levelSource : [];
+  const depthMap = new Map();
+  levels.forEach((level, depth) => {
+    const entries = Array.isArray(level)
+      ? level
+      : Array.isArray(level?.nodes)
+        ? level.nodes
+        : [];
+    entries.forEach((entry) => {
+      const id = toText(entry?.id || entry?.taskId || entry);
+      if (id && !depthMap.has(id)) depthMap.set(id, depth);
+    });
+  });
+  return depthMap;
+}
+
+function buildTopologicalDepthMap(nodes = [], rawEdges = []) {
+  const depthMap = new Map();
+  const indegree = new Map();
+  const outgoing = new Map();
+  const ids = new Set();
+  for (const node of nodes) {
+    const id = toText(node?.id || node?.taskId);
+    if (!id) continue;
+    ids.add(id);
+    indegree.set(id, 0);
+    outgoing.set(id, []);
+  }
+  for (const edge of rawEdges || []) {
+    const sourceId = toText(edge?.source || edge?.from || edge?.parent || edge?.dependsOn);
+    const targetId = toText(edge?.target || edge?.to || edge?.child || edge?.taskId);
+    if (!sourceId || !targetId || !ids.has(sourceId) || !ids.has(targetId) || sourceId === targetId) continue;
+    outgoing.get(sourceId)?.push(targetId);
+    indegree.set(targetId, (indegree.get(targetId) || 0) + 1);
+  }
+
+  const queue = [...indegree.entries()]
+    .filter(([, degree]) => degree === 0)
+    .map(([id]) => id);
+  queue.forEach((id) => depthMap.set(id, 0));
+
+  while (queue.length) {
+    const sourceId = queue.shift();
+    const nextDepth = (depthMap.get(sourceId) || 0) + 1;
+    for (const targetId of outgoing.get(sourceId) || []) {
+      if (!depthMap.has(targetId) || (depthMap.get(targetId) || 0) < nextDepth) {
+        depthMap.set(targetId, nextDepth);
+      }
+      const nextDegree = (indegree.get(targetId) || 0) - 1;
+      indegree.set(targetId, nextDegree);
+      if (nextDegree === 0) queue.push(targetId);
+    }
+  }
+
+  return depthMap;
+}
+
 function normalizeDagGraph(raw, fallbackTitle = "") {
   const payload = extractDagPayload(raw);
   const graph =
@@ -531,15 +589,31 @@ function normalizeDagGraph(raw, fallbackTitle = "") {
 
   const rawNodes =
     nodeSourceCandidates.find((value) => Array.isArray(value) && value.length > 0) || [];
-  const nodes = rawNodes.map(normalizeDagNode).filter((node) => node && node.id);
+  const depthByLevel = buildDagDepthMap(graph?.levels || payload?.levels || []);
+  const provisionalNodes = rawNodes.map(normalizeDagNode).filter((node) => node && node.id);
+  const rawEdges =
+    edgeSourceCandidates.find((value) => Array.isArray(value) && value.length > 0) || [];
+  const depthByTopology = depthByLevel.size
+    ? new Map()
+    : buildTopologicalDepthMap(provisionalNodes, rawEdges);
+  const nodes = provisionalNodes.map((node) => {
+    const depth = Number.isFinite(Number(node?.depth))
+      ? Number(node.depth)
+      : depthByLevel.get(node.id)
+        ?? (node.taskId ? depthByLevel.get(node.taskId) : null)
+        ?? depthByTopology.get(node.id)
+        ?? (node.taskId ? depthByTopology.get(node.taskId) : null);
+    return {
+      ...node,
+      depth: Number.isFinite(Number(depth)) ? Number(depth) : null,
+    };
+  });
   const idLookup = new Map();
   for (const node of nodes) {
     idLookup.set(node.id, node.id);
     if (node.taskId) idLookup.set(node.taskId, node.id);
   }
 
-  const rawEdges =
-    edgeSourceCandidates.find((value) => Array.isArray(value) && value.length > 0) || [];
   const edges = [];
   const seen = new Set();
   const pushEdge = (source, target, kind = "depends-on") => {
@@ -3597,6 +3671,7 @@ function DagGraphSection({
   description = "",
   graph = EMPTY_DAG_GRAPH,
   onOpenTask,
+  onActivateNode,
   onCreateEdge,
   onDeleteEdge,
   allowWiring = false,
@@ -3612,7 +3687,11 @@ function DagGraphSection({
   const [wireSourceId, setWireSourceId] = useState("");
   const [wiringBusy, setWiringBusy] = useState(false);
   const [selectedEdgeKey, setSelectedEdgeKey] = useState("");
+  const [wireDrag, setWireDrag] = useState(null);
+  const [wireHoverId, setWireHoverId] = useState("");
   const isWireMode = allowWiring && interactionMode === "wire";
+  const wireHoverIdRef = useRef("");
+  const wireDragCleanupRef = useRef(null);
 
   const sortedNodes = useMemo(() => {
     const nodes = [...(graph?.nodes || [])];
@@ -3721,7 +3800,16 @@ function DagGraphSection({
   useEffect(() => {
     setWireSourceId("");
     setSelectedEdgeKey("");
+    setWireDrag(null);
+    setWireHoverId("");
   }, [graphKey, interactionMode]);
+
+  useEffect(() => () => {
+    if (typeof wireDragCleanupRef.current === "function") {
+      wireDragCleanupRef.current();
+      wireDragCleanupRef.current = null;
+    }
+  }, []);
 
   const applyZoomAtPoint = useCallback((nextZoom, clientX, clientY) => {
     const el = stageRef.current;
@@ -3803,8 +3891,12 @@ function DagGraphSection({
       }
       return;
     }
+    if (typeof onActivateNode === "function") {
+      onActivateNode(node);
+      return;
+    }
     if (node?.taskId) onOpenTask?.(node.taskId);
-  }, [isWireMode, onCreateEdge, onOpenTask, wireSourceId, nodeById, wiringBusy]);
+  }, [isWireMode, onActivateNode, onCreateEdge, onOpenTask, wireSourceId, nodeById, wiringBusy]);
 
   const handleEdgeClick = useCallback((edge, event) => {
     event?.stopPropagation?.();
@@ -3823,6 +3915,83 @@ function DagGraphSection({
       setWiringBusy(false);
     }
   }, [onDeleteEdge, selectedEdge]);
+
+  const commitWireConnection = useCallback(async (sourceId, targetId) => {
+    if (!isWireMode || typeof onCreateEdge !== "function") return;
+    if (!sourceId || !targetId || sourceId === targetId || wiringBusy) {
+      setWireSourceId("");
+      setWireHoverId("");
+      return;
+    }
+    const sourceNode = nodeById.get(sourceId) || null;
+    const targetNode = nodeById.get(targetId) || null;
+    if (!sourceNode || !targetNode) {
+      setWireSourceId("");
+      setWireHoverId("");
+      return;
+    }
+    setWiringBusy(true);
+    try {
+      await onCreateEdge({ sourceNode, targetNode });
+    } finally {
+      setWireSourceId("");
+      setWireHoverId("");
+      setWiringBusy(false);
+    }
+  }, [isWireMode, nodeById, onCreateEdge, wiringBusy]);
+
+  const beginWireDrag = useCallback((node, event) => {
+    if (!isWireMode || typeof onCreateEdge !== "function" || wiringBusy) return;
+    const sourceId = String(node?.id || "").trim();
+    if (!sourceId) return;
+    event?.preventDefault?.();
+    event?.stopPropagation?.();
+    if (typeof wireDragCleanupRef.current === "function") {
+      wireDragCleanupRef.current();
+      wireDragCleanupRef.current = null;
+    }
+    setWireSourceId(sourceId);
+    setSelectedEdgeKey("");
+    setWireHoverId("");
+    wireHoverIdRef.current = "";
+    setWireDrag({ sourceId, clientX: event.clientX, clientY: event.clientY });
+
+    const handleMove = (moveEvent) => {
+      setWireDrag((current) => current
+        ? { ...current, clientX: moveEvent.clientX, clientY: moveEvent.clientY }
+        : current);
+    };
+    const finish = async () => {
+      const targetId = wireHoverIdRef.current;
+      if (typeof wireDragCleanupRef.current === "function") {
+        wireDragCleanupRef.current();
+        wireDragCleanupRef.current = null;
+      }
+      setWireDrag(null);
+      await commitWireConnection(sourceId, targetId);
+    };
+    const cleanup = () => {
+      window.removeEventListener("pointermove", handleMove);
+      window.removeEventListener("pointerup", finish);
+    };
+    wireDragCleanupRef.current = cleanup;
+    window.addEventListener("pointermove", handleMove);
+    window.addEventListener("pointerup", finish, { once: true });
+  }, [commitWireConnection, isWireMode, onCreateEdge, wiringBusy]);
+
+  const previewPath = (() => {
+    if (!wireDrag || !stageRef.current) return null;
+    const source = layout.positions.get(String(wireDrag.sourceId));
+    if (!source) return null;
+    const rect = stageRef.current.getBoundingClientRect();
+    const x1 = source.x + source.width;
+    const y1 = source.y + source.height / 2;
+    const x2 = (wireDrag.clientX - rect.left - pan.x) / zoom;
+    const y2 = (wireDrag.clientY - rect.top - pan.y) / zoom;
+    const c1 = x1 + Math.max(40, (x2 - x1) * 0.35);
+    const c2 = x2 - Math.max(30, (x2 - x1) * 0.35);
+    return `M ${x1} ${y1} C ${c1} ${y1}, ${c2} ${y2}, ${x2} ${y2}`;
+  })();
 
   if (!sortedNodes.length) {
     return html`
@@ -3846,8 +4015,11 @@ function DagGraphSection({
           <${Button} size="small" variant="outlined" onClick=${fitToView}>Fit</${Button}>
           <${Button} size="small" variant="text" onClick=${() => { setZoom(1); setPan({ x: 24, y: 24 }); }}>Reset</${Button}>
           <span class="task-dag-zoom-pill">${Math.round(zoom * 100)}%</span>
+          ${selectedEdge && typeof onDeleteEdge === "function"
+            ? html`<${Button} size="small" variant="outlined" color="error" disabled=${wiringBusy} onClick=${handleDeleteSelectedEdge}>Delete edge</${Button}>`
+            : null}
           ${allowWiring
-            ? html`<span class="task-dag-wire-pill">${wireSourceId ? `Source: ${wireSourceId}` : wiringBusy ? "Saving edge…" : "Wiring: click source then target"}</span>`
+            ? html`<span class="task-dag-wire-pill">${wireDrag ? "Drag to a target node to connect" : wireSourceId ? `Source: ${wireSourceId}` : wiringBusy ? "Saving edge…" : "Wire by drag or click"}</span>`
             : null}
         </div>
       </div>
@@ -3865,7 +4037,8 @@ function DagGraphSection({
           </defs>
           <g transform=${`translate(${pan.x} ${pan.y}) scale(${zoom})`}>
             <rect x="0" y="0" width=${worldBounds.width} height=${worldBounds.height} fill="transparent" />
-            ${edges.map(({ source, target, kind }, idx) => {
+            ${edges.map((edge, idx) => {
+              const { source, target, kind } = edge;
               const x1 = source.x + source.width;
               const y1 = source.y + source.height / 2;
               const x2 = target.x;
@@ -3880,22 +4053,46 @@ function DagGraphSection({
                   fill="none"
                   stroke=${style.color}
                   stroke-dasharray=${style.dash || ""}
-                  stroke-opacity="0.75"
-                  stroke-width="2"
+                  stroke-opacity=${selectedEdgeKey === edge.key ? "1" : "0.75"}
+                  stroke-width=${selectedEdgeKey === edge.key ? "3" : "2"}
                   marker-end=${`url(#dag-arrow-${graphKey})`}
+                  onClick=${(event) => handleEdgeClick(edge, event)}
                 />
               `;
             })}
+            ${previewPath ? html`
+              <path
+                d=${previewPath}
+                fill="none"
+                stroke="var(--accent)"
+                stroke-width="2.5"
+                stroke-dasharray="6 5"
+                stroke-opacity="0.9"
+                marker-end=${`url(#dag-arrow-${graphKey})`}
+                pointer-events="none"
+              />
+            ` : null}
             ${sortedNodes.map((node) => {
               const pos = layout.positions.get(String(node.id));
               if (!pos) return null;
               const selected = wireSourceId && String(node.id) === wireSourceId;
+              const hoverTarget = wireHoverId && String(node.id) === wireHoverId;
               const highlighted = highlightedIds.has(String(node.id)) || highlightedIds.has(String(node.taskId || ""));
               return html`
                 <g
                   key=${node.id}
-                  class=${`dag-node ${selected ? "dag-node-selected" : ""} ${highlighted ? "dag-node-highlighted" : ""}`}
+                  class=${`dag-node ${selected ? "dag-node-selected" : ""} ${hoverTarget ? "dag-node-hover-target" : ""} ${highlighted ? "dag-node-highlighted" : ""}`}
                   onPointerDown=${(event) => event.stopPropagation()}
+                  onPointerEnter=${() => {
+                    if (!wireDrag || String(node.id) === String(wireDrag.sourceId)) return;
+                    wireHoverIdRef.current = String(node.id);
+                    setWireHoverId(String(node.id));
+                  }}
+                  onPointerLeave=${() => {
+                    if (wireHoverIdRef.current !== String(node.id)) return;
+                    wireHoverIdRef.current = "";
+                    setWireHoverId("");
+                  }}
                   onClick=${(event) => handleNodeClick(node, event)}
                   style=${{ cursor: isWireMode || node.taskId ? "pointer" : "default" }}
                 >
@@ -3907,8 +4104,8 @@ function DagGraphSection({
                     rx="14"
                     ry="14"
                     fill="var(--bg-surface)"
-                    stroke=${selected ? "var(--accent)" : highlighted ? "var(--color-done)" : "var(--border)"}
-                    stroke-width=${selected || highlighted ? "2.2" : "1.5"}
+                    stroke=${selected ? "var(--accent)" : hoverTarget ? "var(--color-warning)" : highlighted ? "var(--color-done)" : "var(--border)"}
+                    stroke-width=${selected || hoverTarget || highlighted ? "2.2" : "1.5"}
                   />
                   <text x=${pos.x + 12} y=${pos.y + 24} fill="var(--text-primary)" font-size="13" font-weight="700">
                     ${truncate(node.title || "(untitled)", 34)}
@@ -3919,6 +4116,17 @@ function DagGraphSection({
                   <text x=${pos.x + 12} y=${pos.y + 64} fill="var(--accent)" font-size="11">
                     ${String(node.status || "todo")}
                   </text>
+                  ${isWireMode ? html`
+                    <circle
+                      cx=${pos.x + pos.width - 14}
+                      cy=${pos.y + pos.height / 2}
+                      r="8"
+                      fill=${selected ? "var(--accent)" : "var(--bg-canvas, #0f1115)"}
+                      stroke="var(--accent)"
+                      stroke-width="2"
+                      onPointerDown=${(event) => beginWireDrag(node, event)}
+                    />
+                  ` : null}
                   ${Number.isFinite(node.order) && html`<text x=${pos.x + pos.width - 16} y=${pos.y + 22} text-anchor="end" fill="var(--text-muted)" font-size="11">#${node.order}</text>`}
                   ${highlighted && html`<text x=${pos.x + pos.width - 12} y=${pos.y + pos.height - 12} text-anchor="end" fill="var(--color-done)" font-size="11" font-weight="700">Ready</text>`}
                 </g>
@@ -4590,6 +4798,33 @@ export function TasksTab() {
     showToast(`Wired dependency: ${srcTaskId} -> ${dstTaskId}`, "success");
     await loadDagViews();
   }, [loadDagViews]);
+
+  const handleDeleteDagEdge = useCallback(async ({ sourceId, targetId, graphKind }) => {
+    const srcId = toText(sourceId);
+    const dstId = toText(targetId);
+    if (!srcId || !dstId || srcId === dstId) return;
+
+    if (graphKind === "epic") {
+      const epic = dagEpicCatalog.find((entry) => toText(entry?.id) === dstId);
+      const remaining = normalizeDependencyInput((epic?.dependencies || []).filter((id) => id !== srcId));
+      await apiFetch("/api/tasks/epic-dependencies", {
+        method: "PUT",
+        body: JSON.stringify({ epicId: dstId, dependencies: remaining }),
+      });
+      showToast(`Removed epic dependency: ${srcId} -> ${dstId}`, "success");
+      await loadDagViews();
+      return;
+    }
+
+    const task = dagTaskCatalog.find((entry) => toText(entry?.id) === dstId);
+    const remaining = normalizeDependencyInput(getTaskDependencyIds(task).filter((id) => id !== srcId));
+    await apiFetch("/api/tasks/dependencies", {
+      method: "PUT",
+      body: JSON.stringify({ taskId: dstId, dependencies: remaining }),
+    });
+    showToast(`Removed dependency: ${srcId} -> ${dstId}`, "success");
+    await loadDagViews();
+  }, [dagEpicCatalog, dagTaskCatalog, loadDagViews]);
 
   const handleSprintChange = useCallback((nextSprint) => {
     const sprintId = toText(nextSprint, "all");
@@ -5409,6 +5644,7 @@ export function TasksTab() {
             graphKey="sprint"
             onOpenTask=${openDetail}
             onCreateEdge={({ sourceNode, targetNode }) => handleCreateDagEdge({ sourceNode, targetNode, graphKind: "task" })}
+            onDeleteEdge=${(edge) => handleDeleteDagEdge({ sourceId: edge?.sourceId, targetId: edge?.targetId, graphKind: "task" })}
             allowWiring=${true}
             interactionMode=${dagInteractionMode}
             highlightNodeIds=${dagReadyHighlightIds}
@@ -5419,10 +5655,9 @@ export function TasksTab() {
             description=${dagGlobalGraph.description || "Cross-sprint dependency overview."}
             graph=${dagGlobalGraphView}
             graphKey="global"
-            onOpenTask=${openDetail}
-            onCreateEdge={({ sourceNode, targetNode }) => handleCreateDagEdge({ sourceNode, targetNode, graphKind: "task" })}
-            allowWiring=${true}
-            interactionMode=${dagInteractionMode}
+            onActivateNode=${(node) => handleSprintChange(node?.sprintId || node?.id || "all")}
+            allowWiring=${false}
+            interactionMode="open"
             emptyMessage="No global DAG data available yet."
           ><//>
           <${DagGraphSection}
@@ -5430,8 +5665,12 @@ export function TasksTab() {
             description=${dagEpicGraph.description || "Epics and their run prerequisites."}
             graph=${dagEpicGraphView}
             graphKey="epic"
-            onOpenTask=${openDetail}
+            onActivateNode=${(node) => {
+              const epic = dagEpicCatalog.find((entry) => toText(entry?.id) === toText(node?.epicId || node?.id));
+              if (epic?.anchorTaskId) openDetail(epic.anchorTaskId);
+            }}
             onCreateEdge={({ sourceNode, targetNode }) => handleCreateDagEdge({ sourceNode, targetNode, graphKind: "epic" })}
+            onDeleteEdge=${(edge) => handleDeleteDagEdge({ sourceId: edge?.sourceId, targetId: edge?.targetId, graphKind: "epic" })}
             allowWiring=${true}
             interactionMode=${dagInteractionMode}
             emptyMessage="No epic DAG data available yet."
@@ -6206,10 +6445,6 @@ function CreateTaskModalInline({ onClose, initialValues = null, sprintOptions = 
     <//>
   `;
 }
-
-
-
-
 
 
 

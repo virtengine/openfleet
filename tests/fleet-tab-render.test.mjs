@@ -54,7 +54,7 @@ for (const { relPath, source } of sourceFiles) {
       );
       // Should NOT contain multiple sibling `detailTab === "..." &&` patterns
       // at the same nesting level inside fleet-session-body
-      const bodyChunk = bodySection.slice(0, 2000);
+      const bodyChunk = bodySection.slice(0, 6000);
       const andPatterns = (bodyChunk.match(/detailTab\s*===\s*["'][^"']+["']\s*&&/g) || []);
       // With a chained ternary, we should only see ternary (? :) patterns, not &&
       expect(andPatterns.length).toBe(0);
@@ -207,3 +207,4 @@ describe("fleet entry building logic", () => {
     }
   });
 });
+
