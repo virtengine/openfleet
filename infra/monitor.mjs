@@ -1557,52 +1557,59 @@ const WORKSPACE_SYNC_INTERVAL_MS = parseEnvInteger(
   { min: 60 * 1000, max: 120 * 60 * 1000 },
 ); // 1m..120m (default 30m)
 const WORKSPACE_SYNC_INITIAL_DELAY_MS = parseEnvInteger(
-  process.env.BOSUN_WORKSPACE_SYNC_INITIAL_DELAY_MS,
-  20 * 1000,
-  { min: 0, max: 5 * 60 * 1000 },
-); // 0s..5m (default 20s)
+  isDevMode()
+    ? process.env.DEVMODE_WORKSPACE_SYNC_INITIAL_DELAY_MS
+    : process.env.BOSUN_WORKSPACE_SYNC_INITIAL_DELAY_MS,
+  60 * 1000,
+  { min: 0, max: 10 * 60 * 1000 },
+); // 0s..5m (default 60s)
 const WORKSPACE_SYNC_INITIAL_JITTER_MS = parseEnvInteger(
   process.env.BOSUN_WORKSPACE_SYNC_INITIAL_JITTER_MS,
   5 * 1000,
   { min: 0, max: 60 * 1000 },
 ); // 0s..60s (default 5s)
-const WORKSPACE_SYNC_WARN_THROTTLE_BASE_MS = parseEnvInteger(
-  process.env.BOSUN_WORKSPACE_SYNC_WARN_THROTTLE_MS,
-  6 * 60 * 60 * 1000,
-  { min: 60 * 1000, max: 24 * 60 * 60 * 1000 },
-); // 1m..24h (default 6h)
-const WORKSPACE_SYNC_WARN_THROTTLE_MS = isDevMode()
-  ? parseEnvInteger(
-      process.env.DEVMODE_WORKSPACE_SYNC_WARN_THROTTLE_MS,
-      30 * 60 * 1000,
-      { min: 10 * 1000, max: 24 * 60 * 60 * 1000 },
-    )
-  : WORKSPACE_SYNC_WARN_THROTTLE_BASE_MS;
+const WORKSPACE_SYNC_WARN_THROTTLE_MS = parseEnvInteger(
+  isDevMode()
+    ? process.env.DEVMODE_WORKSPACE_SYNC_WARN_THROTTLE_MS
+    : process.env.BOSUN_WORKSPACE_SYNC_WARN_THROTTLE_MS,
+  isDevMode() ? 30 * 60 * 1000 : 6 * 60 * 60 * 1000,
+  { min: 10 * 1000, max: 24 * 60 * 60 * 1000 },
+); // 10s..24h (default dev 30m, prod 6h)
 const WORKSPACE_SYNC_SLOW_WARN_MS = parseEnvInteger(
-  process.env.BOSUN_WORKSPACE_SYNC_SLOW_WARN_MS,
-  90 * 1000,
+  isDevMode()
+    ? process.env.DEVMODE_WORKSPACE_SYNC_SLOW_WARN_MS
+    : process.env.BOSUN_WORKSPACE_SYNC_SLOW_WARN_MS,
+  isDevMode() ? 30 * 1000 : 90 * 1000,
   { min: 5 * 1000, max: 10 * 60 * 1000 },
-); // 5s..10m (default 90s)
-const WORKSPACE_SYNC_WARN_MAX_KEYS_BASE = parseEnvInteger(
-  process.env.BOSUN_WORKSPACE_SYNC_WARN_MAX_KEYS,
+); // 5s..10m (default dev 30s, prod 90s)
+const WORKSPACE_SYNC_WARN_MAX_KEYS = parseEnvInteger(
+  isDevMode()
+    ? process.env.DEVMODE_WORKSPACE_SYNC_WARN_MAX_KEYS
+    : process.env.BOSUN_WORKSPACE_SYNC_WARN_MAX_KEYS,
   500,
-  { min: 50, max: 5000 },
-); // 50..5000 (default 500)
-const WORKSPACE_SYNC_WARN_MAX_KEYS = isDevMode()
-  ? parseEnvInteger(
-      process.env.DEVMODE_WORKSPACE_SYNC_WARN_MAX_KEYS,
-      WORKSPACE_SYNC_WARN_MAX_KEYS_BASE,
-      { min: 10, max: 5000 },
-    )
-  : WORKSPACE_SYNC_WARN_MAX_KEYS_BASE;
+  { min: 10, max: 5000 },
+); // 10..5000 (default 500)
 const WORKSPACE_SYNC_WARN_STATE_FILE = "ve-workspace-sync-warn-state.json";
 const WORKSPACE_SYNC_WARN_STATE_TMP_FILE = "ve-workspace-sync-warn-state.json.tmp";
+const WORKSPACE_SYNC_WARN_STATE_WRITE_GAP_MS = isDevMode()
+  ? parseEnvInteger(
+      process.env.DEVMODE_WORKSPACE_SYNC_WARN_STATE_WRITE_GAP_MS,
+      2 * 1000,
+      { min: 200, max: 60 * 1000 },
+    )
+  : parseEnvInteger(
+      process.env.BOSUN_WORKSPACE_SYNC_WARN_STATE_WRITE_GAP_MS,
+      5 * 1000,
+      { min: 200, max: 60 * 1000 },
+    );
 const WORKSPACE_SYNC_WARN_STALE_EXPIRY_MS = 24 * 60 * 60 * 1000;
 const WORKSPACE_SYNC_WARN_ARCHIVE_MAX_FILES = 5;
 const WORKSPACE_SYNC_WARN_ARCHIVE_MAX_AGE_MS = 14 * 24 * 60 * 60 * 1000;
 let workspaceSyncTimer = null;
 let workspaceSyncInitialTimer = null;
 let workspaceSyncInFlight = false;
+let workspaceSyncWarnStateWriteTimer = null;
+let workspaceSyncWarnStateWriteConfigDir = null;
 const workspaceSyncWarnSeen = new Map();
 function resolveWorkspaceSyncWarnStatePaths(configDir) {
   const cacheDir = resolve(configDir || process.cwd(), ".cache");
@@ -1612,8 +1619,8 @@ function resolveWorkspaceSyncWarnStatePaths(configDir) {
 }
 function pruneWorkspaceSyncWarnSeen(now = Date.now()) {
   let changed = false;
-  for (const [seenKey, entry] of workspaceSyncWarnSeen.entries()) {
-    const updatedAt = Number(entry?.updatedAt || 0);
+  for (const [seenKey, seenAt] of workspaceSyncWarnSeen.entries()) {
+    const updatedAt = Number(seenAt || 0);
     if (now - updatedAt >= WORKSPACE_SYNC_WARN_STALE_EXPIRY_MS) {
       workspaceSyncWarnSeen.delete(seenKey);
       changed = true;
@@ -1710,7 +1717,7 @@ function persistWorkspaceSyncWarnState(configDir) {
   evictWorkspaceSyncWarnSeenOverflow();
   const entries = [];
   for (const [key, value] of workspaceSyncWarnSeen.entries()) {
-    entries.push({ key, updatedAt: Number(value?.updatedAt || 0) });
+    entries.push({ key, updatedAt: Number(value || 0) });
   }
   const payload = JSON.stringify(
     {
@@ -1739,6 +1746,26 @@ function persistWorkspaceSyncWarnState(configDir) {
     }
   }
 }
+function scheduleWorkspaceSyncWarnStatePersist(configDir, { immediate = false } = {}) {
+  workspaceSyncWarnStateWriteConfigDir = configDir || workspaceSyncWarnStateWriteConfigDir || process.cwd();
+  if (immediate || WORKSPACE_SYNC_WARN_STATE_WRITE_GAP_MS <= 0) {
+    if (workspaceSyncWarnStateWriteTimer) {
+      clearTimeout(workspaceSyncWarnStateWriteTimer);
+      workspaceSyncWarnStateWriteTimer = null;
+    }
+    persistWorkspaceSyncWarnState(workspaceSyncWarnStateWriteConfigDir);
+    return;
+  }
+  if (workspaceSyncWarnStateWriteTimer) {
+    clearTimeout(workspaceSyncWarnStateWriteTimer);
+    workspaceSyncWarnStateWriteTimer = null;
+  }
+  workspaceSyncWarnStateWriteTimer = safeSetTimeout("workspace-sync-warn-state-persist", () => {
+    workspaceSyncWarnStateWriteTimer = null;
+    persistWorkspaceSyncWarnState(workspaceSyncWarnStateWriteConfigDir);
+  }, WORKSPACE_SYNC_WARN_STATE_WRITE_GAP_MS);
+  if (workspaceSyncWarnStateWriteTimer?.unref) workspaceSyncWarnStateWriteTimer.unref();
+}
 function loadWorkspaceSyncWarnState(configDir) {
   const { statePath } = resolveWorkspaceSyncWarnStatePaths(configDir);
   // Run archive cleanup during monitor startup initialization.
@@ -1755,11 +1782,11 @@ function loadWorkspaceSyncWarnState(configDir) {
       const key = String(entry?.key || "").trim();
       const updatedAt = Number(entry?.updatedAt || entry?.timestamp || 0);
       if (!key || !Number.isFinite(updatedAt) || updatedAt <= 0) continue;
-      workspaceSyncWarnSeen.set(key, { updatedAt });
+      workspaceSyncWarnSeen.set(key, updatedAt);
     }
     const now = Date.now();
     const changed = pruneWorkspaceSyncWarnSeen(now) || evictWorkspaceSyncWarnSeenOverflow();
-    if (changed) persistWorkspaceSyncWarnState(configDir);
+    if (changed) scheduleWorkspaceSyncWarnStatePersist(configDir, { immediate: true });
   } catch (err) {
     console.warn(
       `[monitor] workspace sync warn state load failed; archiving corrupt file: ${err?.message || err}`,
@@ -1776,20 +1803,34 @@ function stopWorkspaceSyncTimers() {
     clearInterval(workspaceSyncTimer);
     workspaceSyncTimer = null;
   }
+  if (workspaceSyncWarnStateWriteTimer) {
+    clearTimeout(workspaceSyncWarnStateWriteTimer);
+    workspaceSyncWarnStateWriteTimer = null;
+    scheduleWorkspaceSyncWarnStatePersist(
+      workspaceSyncWarnStateWriteConfigDir || config?.configDir || process.cwd(),
+      { immediate: true },
+    );
+  }
 }
 function shouldEmitWorkspaceSyncWarn(key, now = Date.now()) {
   const stateConfigDir = config?.configDir || process.cwd();
   let changed = false;
+  for (const [seenKey, seenAt] of workspaceSyncWarnSeen.entries()) {
+    if (now - Number(seenAt || 0) >= WORKSPACE_SYNC_WARN_THROTTLE_MS) {
+      workspaceSyncWarnSeen.delete(seenKey);
+      changed = true;
+    }
+  }
   changed = pruneWorkspaceSyncWarnSeen(now) || changed;
-  const last = Number(workspaceSyncWarnSeen.get(key)?.updatedAt || 0);
+  const last = Number(workspaceSyncWarnSeen.get(key) || 0);
   if (last > 0 && now - last < WORKSPACE_SYNC_WARN_THROTTLE_MS) return false;
   // Refresh key insertion order so oldest eviction works predictably.
   workspaceSyncWarnSeen.delete(key);
-  workspaceSyncWarnSeen.set(key, { updatedAt: now });
+  workspaceSyncWarnSeen.set(key, now);
   changed = true;
   // keep memory bounded
   changed = evictWorkspaceSyncWarnSeenOverflow() || changed;
-  if (changed) persistWorkspaceSyncWarnState(stateConfigDir);
+  if (changed) scheduleWorkspaceSyncWarnStatePersist(stateConfigDir);
   return true;
 }
 function clearWorkspaceSyncWarnForWorkspace(workspaceId) {
@@ -1802,7 +1843,7 @@ function clearWorkspaceSyncWarnForWorkspace(workspaceId) {
     }
   }
   if (changed) {
-    persistWorkspaceSyncWarnState(config?.configDir || process.cwd());
+    scheduleWorkspaceSyncWarnStatePersist(config?.configDir || process.cwd());
   }
 }
 function isBenignWorkspaceSyncFailure(errorText) {
