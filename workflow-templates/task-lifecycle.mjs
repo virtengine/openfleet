@@ -133,6 +133,8 @@ export const TASK_LIFECYCLE_TEMPLATE = {
       taskId: "{{taskId}}",
       taskTitle: "{{taskTitle}}",
       taskDescription: "{{taskDescription}}",
+      repoRoot: "{{repoRoot}}",
+      workspace: "{{workspace}}",
       defaultSdk: "{{defaultSdk}}",
     }, { x: 200, y: 1090 }),
 
@@ -161,6 +163,9 @@ export const TASK_LIFECYCLE_TEMPLATE = {
     node("run-agent", "action.run_agent", "Execute Agent", {
       prompt: "{{_taskPrompt}}",
       taskId: "{{taskId}}",
+      sdk: "{{resolvedSdk}}",
+      model: "{{resolvedModel}}",
+      agentProfile: "{{agentProfile}}",
       cwd: "{{worktreePath}}",
       timeoutMs: "{{taskTimeoutMs}}",
       maxRetries: "{{maxRetries}}",
@@ -466,6 +471,11 @@ export const VE_ORCHESTRATOR_LITE_TEMPLATE = {
 
     // ── Resolve executor ─────────────────────────────────────────────────
     node("resolve", "action.resolve_executor", "Resolve SDK", {
+      taskId: "{{taskId}}",
+      taskTitle: "{{taskTitle}}",
+      taskDescription: "{{taskDescription}}",
+      repoRoot: "{{repoRoot}}",
+      workspace: "{{workspace}}",
       defaultSdk: "{{defaultSdk}}",
     }, { x: 300, y: 960 }),
 
@@ -490,6 +500,9 @@ export const VE_ORCHESTRATOR_LITE_TEMPLATE = {
     node("agent", "action.run_agent", "Run Agent", {
       prompt: "{{_taskPrompt}}",
       taskId: "{{taskId}}",
+      sdk: "{{resolvedSdk}}",
+      model: "{{resolvedModel}}",
+      agentProfile: "{{agentProfile}}",
       cwd: "{{worktreePath}}",
       timeoutMs: "{{taskTimeoutMs}}",
       maxRetries: "{{maxRetries}}",
@@ -628,3 +641,4 @@ export const VE_ORCHESTRATOR_LITE_TEMPLATE = {
     },
   },
 };
+
