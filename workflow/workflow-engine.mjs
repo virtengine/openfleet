@@ -33,7 +33,7 @@
  *   executeWorkflow() — run a workflow by ID with given context
  */
 
-import { existsSync, readFileSync, writeFileSync, mkdirSync, readdirSync, unlinkSync } from "node:fs";
+import { existsSync, readFileSync, writeFileSync, mkdirSync, readdirSync, unlinkSync, statSync } from "node:fs";
 import { writeFile as writeFileAsync } from "node:fs/promises";
 import { resolve, basename, extname, join } from "node:path";
 import { randomUUID } from "node:crypto";
@@ -69,9 +69,9 @@ const MAX_CONCURRENT_RUNS = readBoundedEnvInt("WORKFLOW_MAX_CONCURRENT_RUNS", 16
   min: 1,
   max: 256,
 });
-const MAX_PERSISTED_RUNS = readBoundedEnvInt("WORKFLOW_MAX_PERSISTED_RUNS", 200, {
+const MAX_PERSISTED_RUNS = readBoundedEnvInt("WORKFLOW_MAX_PERSISTED_RUNS", 2000, {
   min: 20,
-  max: 5000,
+  max: 20000,
 });
 const DEFAULT_RUN_STUCK_THRESHOLD_MS = readBoundedEnvInt(
   "WORKFLOW_RUN_STUCK_THRESHOLD_MS",
@@ -1355,7 +1355,11 @@ export class WorkflowEngine extends EventEmitter {
 
   /** Get historical run logs */
   getRunHistory(workflowId, limit = 20) {
-    const persisted = this._readRunIndex()
+    const normalizedLimit = Number(limit);
+    const targetCount = Number.isFinite(normalizedLimit) && normalizedLimit > 0
+      ? Math.min(MAX_PERSISTED_RUNS, Math.max(Math.floor(normalizedLimit), 200))
+      : MAX_PERSISTED_RUNS;
+    const persisted = this._hydrateRunIndexFromDetails(targetCount)
       .map((entry) => this._normalizeRunSummary(entry))
       .filter(Boolean);
     const active = this.getActiveRuns();
@@ -1364,11 +1368,79 @@ export class WorkflowEngine extends EventEmitter {
     let runs = [...active, ...persisted.filter((run) => !activeRunIds.has(run.runId))];
     if (workflowId) runs = runs.filter((r) => r.workflowId === workflowId);
     runs.sort((a, b) => Number(b?.startedAt || 0) - Number(a?.startedAt || 0));
-    const normalizedLimit = Number(limit);
     if (Number.isFinite(normalizedLimit) && normalizedLimit > 0) {
       return runs.slice(0, normalizedLimit);
     }
     return runs;
+  }
+
+  _hydrateRunIndexFromDetails(targetCount = MAX_PERSISTED_RUNS) {
+    const normalizedTarget = Number.isFinite(Number(targetCount)) && Number(targetCount) > 0
+      ? Math.min(MAX_PERSISTED_RUNS, Math.max(20, Math.floor(Number(targetCount))))
+      : MAX_PERSISTED_RUNS;
+    const runs = this._readRunIndex();
+    if (runs.length >= normalizedTarget) return runs;
+    if (!existsSync(this.runsDir)) return runs;
+
+    try {
+      const seen = new Set(
+        runs
+          .map((entry) => String(entry?.runId || "").trim())
+          .filter(Boolean),
+      );
+      const detailFiles = readdirSync(this.runsDir)
+        .filter((file) =>
+          extname(file) === ".json" &&
+          file !== "index.json" &&
+          file !== ACTIVE_RUNS_INDEX,
+        )
+        .map((file) => {
+          const detailPath = resolve(this.runsDir, file);
+          let mtimeMs = 0;
+          try {
+            mtimeMs = statSync(detailPath).mtimeMs || 0;
+          } catch {
+            mtimeMs = 0;
+          }
+          return { file, detailPath, mtimeMs };
+        })
+        .sort((a, b) => b.mtimeMs - a.mtimeMs);
+
+      let didHydrate = false;
+      for (const detailFile of detailFiles) {
+        if (runs.length >= normalizedTarget) break;
+        const runId = basename(detailFile.file, ".json");
+        if (!runId || seen.has(runId)) continue;
+        try {
+          const detail = JSON.parse(readFileSync(detailFile.detailPath, "utf8"));
+          const summary = this._buildSummaryFromDetail({
+            runId,
+            workflowId: detail?.data?._workflowId || null,
+            workflowName: detail?.data?._workflowName || null,
+            status: detail?.status || WorkflowStatus.COMPLETED,
+            detail,
+          });
+          if (!summary) continue;
+          runs.push(summary);
+          seen.add(runId);
+          didHydrate = true;
+        } catch {
+          // ignore malformed legacy run files
+        }
+      }
+
+      if (!didHydrate) return runs;
+
+      runs.sort((a, b) => Number(a?.startedAt || 0) - Number(b?.startedAt || 0));
+      if (runs.length > MAX_PERSISTED_RUNS) {
+        runs.splice(0, runs.length - MAX_PERSISTED_RUNS);
+      }
+      const indexPath = resolve(this.runsDir, "index.json");
+      writeFileSync(indexPath, JSON.stringify({ runs }, null, 2), "utf8");
+      return runs;
+    } catch {
+      return runs;
+    }
   }
 
   /**
