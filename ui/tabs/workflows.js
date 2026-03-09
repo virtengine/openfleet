@@ -1217,6 +1217,8 @@ function WorkflowCanvas({ workflow, onSave, nodeTypes: availableNodeTypes = [] }
   const NODE_W = 220;
   const NODE_H = 60;
   const PORT_R = 8;
+  const HISTORY_LIMIT = 50;
+  const HISTORY_COMMIT_DEBOUNCE_MS = 220;
 
   const toCanvas = useCallback((clientX, clientY) => {
     const rect = canvasRef.current?.getBoundingClientRect();
@@ -1238,7 +1240,7 @@ function WorkflowCanvas({ workflow, onSave, nodeTypes: availableNodeTypes = [] }
     historyTimerRef.current = null;
     const snapshot = parseGraphSnapshot(historyPendingSnapshotRef.current);
     historyPendingSnapshotRef.current = null;
-    const nextHistory = pushHistorySnapshot(historyRef.current, snapshot.nodes, snapshot.edges, 50);
+    const nextHistory = pushHistorySnapshot(historyRef.current, snapshot.nodes, snapshot.edges, HISTORY_LIMIT);
     if (nextHistory !== historyRef.current) setHistory(nextHistory);
     return nextHistory;
   }, [setHistory]);
@@ -1250,9 +1252,9 @@ function WorkflowCanvas({ workflow, onSave, nodeTypes: availableNodeTypes = [] }
       const snapshot = parseGraphSnapshot(historyPendingSnapshotRef.current);
       historyPendingSnapshotRef.current = null;
       historyTimerRef.current = null;
-      const nextHistory = pushHistorySnapshot(historyRef.current, snapshot.nodes, snapshot.edges, 50);
+      const nextHistory = pushHistorySnapshot(historyRef.current, snapshot.nodes, snapshot.edges, HISTORY_LIMIT);
       if (nextHistory !== historyRef.current) setHistory(nextHistory);
-    }, 220);
+    }, HISTORY_COMMIT_DEBOUNCE_MS);
   }, [setHistory]);
 
   const scheduleSave = useCallback((nextNodes, nextEdges) => {
@@ -1282,7 +1284,7 @@ function WorkflowCanvas({ workflow, onSave, nodeTypes: availableNodeTypes = [] }
       scheduleHistoryCommit(nextNodes, nextEdges);
     } else if (options.history !== "skip") {
       flushPendingHistory();
-      const nextHistory = pushHistorySnapshot(historyRef.current, nextNodes, nextEdges, 50);
+      const nextHistory = pushHistorySnapshot(historyRef.current, nextNodes, nextEdges, HISTORY_LIMIT);
       if (nextHistory !== historyRef.current) setHistory(nextHistory);
     }
     return { nodes: nextNodes, edges: nextEdges };
@@ -1336,7 +1338,7 @@ function WorkflowCanvas({ workflow, onSave, nodeTypes: availableNodeTypes = [] }
 
   const redoCanvas = useCallback(() => {
     const readyHistory = flushPendingHistory();
-    const { history: nextHistory, snapshot } = redoHistory(readyHistory, 50);
+    const { history: nextHistory, snapshot } = redoHistory(readyHistory, HISTORY_LIMIT);
     if (nextHistory === readyHistory) return;
     setHistory(nextHistory);
     applyHistorySnapshot(snapshot);
@@ -1358,6 +1360,33 @@ function WorkflowCanvas({ workflow, onSave, nodeTypes: availableNodeTypes = [] }
         e.preventDefault();
         setSpacePanning(true);
         return;
+      }
+      if (e.key === "Escape") {
+        if (showNodePalette) {
+          e.preventDefault();
+          closeNodePalette();
+          return;
+        }
+        if (showShortcutOverlay) {
+          e.preventDefault();
+          setShowShortcutOverlay(false);
+          return;
+        }
+        if (contextMenu) {
+          e.preventDefault();
+          setContextMenu(null);
+          return;
+        }
+        if (connecting) {
+          e.preventDefault();
+          setConnecting(null);
+          return;
+        }
+        if (!inInput && editingNode) {
+          e.preventDefault();
+          setEditingNode(null);
+          return;
+        }
       }
       if (!inInput && !modKey && !e.altKey && e.key === "/") {
         e.preventDefault();
@@ -1427,7 +1456,7 @@ function WorkflowCanvas({ workflow, onSave, nodeTypes: availableNodeTypes = [] }
       window.removeEventListener("keyup", onKeyUp);
       window.removeEventListener("blur", onWindowBlur);
     };
-  }, [applyGraphChange, openNodePalette, redoCanvas, undoCanvas]);
+  }, [applyGraphChange, closeNodePalette, connecting, contextMenu, editingNode, openNodePalette, redoCanvas, showNodePalette, showShortcutOverlay, undoCanvas]);
 
   // ── Mouse events ──────────────────────────────────────────
 

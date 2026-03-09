@@ -78,6 +78,19 @@ describe("workflow canvas helpers", () => {
     expect(results[0].outputs).toContain("default");
   });
 
+  it("returns every registered node when the caller raises the limit", () => {
+    const nodeTypes = Array.from({ length: 81 }, (_, index) => ({
+      type: `category.node_${index}`,
+      category: index % 2 === 0 ? "category" : "other",
+      description: `Node ${index} description`,
+      schema: { properties: { value: { type: "string" } } },
+    }));
+
+    const results = searchNodeTypes(nodeTypes, "node", nodeTypes.length);
+
+    expect(results).toHaveLength(nodeTypes.length);
+  });
+
   it("searches category and description fields without truncating matches", () => {
     const nodeTypes = [
       {
