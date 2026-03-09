@@ -5853,6 +5853,12 @@ export function getTelegramUiUrl() {
   return uiServerUrl;
 }
 
+function isStackLikeErrorText(value) {
+  if (typeof value !== "string") return false;
+  const lower = value.toLowerCase();
+  return (value.includes("\n") && lower.includes(" at ")) || lower.includes("error:\n    at ");
+}
+
 function scrubStackTraces(payload) {
   if (payload == null) return payload;
   if (payload instanceof Error) {
@@ -5860,9 +5866,7 @@ function scrubStackTraces(payload) {
     return scrubStackTraces({ error: safeMessage });
   }
   if (typeof payload === "string") {
-    const lower = payload.toLowerCase();
-    const looksLikeStack = (payload.includes("\n") && lower.includes(" at ")) || lower.includes("error:\n    at ");
-    return looksLikeStack ? "Internal server error" : payload;
+    return isStackLikeErrorText(payload) ? "Internal server error" : payload;
   }
   if (Array.isArray(payload)) return payload.map((item) => scrubStackTraces(item));
   if (typeof payload !== "object") return payload;
@@ -5878,7 +5882,16 @@ function normalizeJsonResponsePayload(statusCode, payload) {
   const safePayload = scrubStackTraces(payload);
   if (statusCode < 500) return safePayload;
   if (safePayload && typeof safePayload === "object" && !Array.isArray(safePayload)) {
-    return { ...safePayload, error: "Internal server error" };
+    const next = { ...safePayload };
+    if (typeof next.error === "string") {
+      next.error = isStackLikeErrorText(next.error) ? "Internal server error" : next.error;
+      return next;
+    }
+    next.error = "Internal server error";
+    return next;
+  }
+  if (typeof safePayload === "string") {
+    return { ok: false, error: isStackLikeErrorText(safePayload) ? "Internal server error" : safePayload };
   }
   return { ok: false, error: "Internal server error" };
 }
