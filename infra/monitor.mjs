@@ -14742,7 +14742,10 @@ injectMonitorFunctions({
   },
   triggerTaskPlanner,
 });
-if (telegramBotEnabled) {
+const portalWantsStart =
+  ["1", "true", "yes"].includes(String(process.env.TELEGRAM_MINIAPP_ENABLED || "").toLowerCase()) ||
+  Number(process.env.TELEGRAM_UI_PORT || "0") > 0;
+if (telegramBotEnabled || portalWantsStart) {
   runDetached("telegram-bot:start-startup", () =>
     startTelegramBot(getTelegramBotStartOptions()));
 
