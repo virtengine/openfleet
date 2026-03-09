@@ -737,6 +737,13 @@ export const WEEKLY_FITNESS_SUMMARY_TEMPLATE = {
 
 Evaluate the last {{lookbackDays}} days using this machine-readable summary:
 
+Metrics to evaluate:
+- Throughput
+- Regression rate
+- Merge success
+- Reopened tasks
+- Debt growth
+
 ## Weekly Fitness JSON
 {{fitnessSummaryJson}}
 

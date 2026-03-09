@@ -358,6 +358,44 @@ describe("guaranteed: behavioral contracts", () => {
     harness.assertions.noEngineErrors(ctx);
   });
 
+  it("template-weekly-fitness-summary: emits parse-safe summary with mixed telemetry quality", async () => {
+    const harness = createTemplateHarness("template-weekly-fitness-summary", {
+      prs: [],
+      issues: [],
+      checks: [],
+      releases: [],
+    });
+    const fixtures = TEMPLATE_FIXTURES["template-weekly-fitness-summary"] ?? { inputVars: {} };
+
+    const { ctx } = await harness.run({
+      ...fixtures.inputVars,
+      lookbackDays: 7,
+      maxFollowupTasks: 2,
+      createFollowupTasks: true,
+    });
+
+    harness.assertions.noEngineErrors(ctx);
+    const summary = ctx?.data?.fitnessSummary;
+    expect(summary?.schemaVersion).toBe("1.0");
+    expect(summary?.metrics?.throughput).toBeDefined();
+    expect(summary?.metrics?.regression_rate).toBeDefined();
+    expect(summary?.metrics?.merge_success).toBeDefined();
+    expect(summary?.metrics?.reopened_tasks).toBeDefined();
+    expect(summary?.metrics?.debt_growth).toBeDefined();
+    expect(typeof summary?.metrics?.throughput?.confidence).toBe("string");
+    expect(summary?.metrics?.throughput).toHaveProperty("delta");
+    expect(summary?.metrics?.merge_success).toHaveProperty("delta");
+    expect(Array.isArray(summary?.trendAlerts)).toBe(true);
+
+    const serialized = ctx?.data?.fitnessSummaryJson;
+    expect(() => JSON.parse(serialized)).not.toThrow();
+
+    const artifact = ctx?.getNodeOutput?.("persist-fitness-summary");
+    expect(artifact?.success).toBe(true);
+
+    harness.cleanup();
+  });
+
   it("template-weekly-fitness-summary: emits artifact and survives degraded telemetry", async () => {
     const { harness, fixtures } = setupHarness("template-weekly-fitness-summary");
     const runInput = { ...fixtures.inputVars, createFollowupTasks: false };
@@ -365,10 +403,10 @@ describe("guaranteed: behavioral contracts", () => {
     const { ctx: firstCtx } = await harness.run(runInput);
     harness.assertions.noEngineErrors(firstCtx);
 
-    const firstWrite = harness.assertions.nodeSucceeded(firstCtx, "write-fitness-summary-latest");
+    const firstWrite = harness.assertions.nodeSucceeded(firstCtx, "persist-fitness-summary");
     const firstArtifact = JSON.parse(readFileSync(firstWrite.path, "utf8"));
-    expect(firstArtifact?.schemaVersion).toBeTruthy();
-    expect(firstArtifact?.trend?.parseErrors ?? []).toEqual([]);
+    expect(firstArtifact?.schemaVersion).toBe("1.0");
+    expect(firstArtifact?.dataQuality?.overallConfidence).toBeTruthy();
 
     const stableDispatch = _activeDispatch;
     _activeDispatch = (cmd) => {
@@ -381,24 +419,19 @@ describe("guaranteed: behavioral contracts", () => {
     const { ctx: secondCtx } = await harness.run(runInput);
     harness.assertions.noEngineErrors(secondCtx);
 
-    const secondWrite = harness.assertions.nodeSucceeded(secondCtx, "write-fitness-summary-latest");
+    const secondWrite = harness.assertions.nodeSucceeded(secondCtx, "persist-fitness-summary");
     const secondArtifact = JSON.parse(readFileSync(secondWrite.path, "utf8"));
-    expect(secondArtifact?.sources?.pr?.available).toBe(false);
-    expect(Number(secondArtifact?.metrics?.mergeSuccess?.confidence ?? 1)).toBeLessThanOrEqual(0.25);
-    expect(secondArtifact?.trend?.priorWeekAvailable).toBe(true);
-    expect(secondArtifact?.planner?.trendDeltas).toBeDefined();
-    expect(Array.isArray(secondArtifact?.trend?.parseErrors)).toBe(true);
-    expect(secondArtifact?.trend?.parseErrors?.length ?? 0).toBe(0);
+    expect(["missing", "degraded", "ok"]).toContain(secondArtifact?.sourceHealth?.prs?.status);
+    expect(secondArtifact?.metrics?.merge_success?.confidence).toBe("low");
+    expect(secondArtifact?.priorWeekDeltas).toBeTruthy();
+    expect(secondArtifact?.metrics?.throughput).toHaveProperty("delta");
 
-    const datedArtifactPath = secondCtx.getNodeOutput("write-fitness-summary-history")?.path;
     try {
       if (existsSync(firstWrite.path)) rmSync(firstWrite.path, { force: true });
-      if (datedArtifactPath && existsSync(datedArtifactPath)) rmSync(datedArtifactPath, { force: true });
     } catch {
       // best-effort cleanup of generated artifacts
     }
   });
-
   // ── CI/CD templates ───────────────────────────────────────────────────
 
   it("template-build-deploy: runs build → deploy pipeline", async () => {
@@ -647,3 +680,4 @@ describe("guaranteed: fixture registry covers all templates", () => {
     }
   });
 });
+

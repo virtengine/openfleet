@@ -393,11 +393,11 @@ describe("workflow-templates", () => {
     expect(taskNode?.config?.subcommand).toBe("task list");
     expect(taskNode?.config?.args).toContain("--format json");
 
-    const summaryNode = template.nodes.find((n) => n.id === "prepare-fitness-summary");
+    const summaryNode = template.nodes.find((n) => n.id === "summarize-fitness-metrics");
     expect(summaryNode?.type).toBe("action.set_variable");
-    expect(summaryNode?.config?.key).toBe("weeklyFitnessSummary");
+    expect(summaryNode?.config?.key).toBe("fitnessSummary");
 
-    const latestArtifactNode = template.nodes.find((n) => n.id === "write-fitness-summary-latest");
+    const latestArtifactNode = template.nodes.find((n) => n.id === "persist-fitness-summary");
     expect(latestArtifactNode?.type).toBe("action.write_file");
     expect(latestArtifactNode?.config?.path).toBe(".bosun/workflow-runs/weekly-fitness-summary.latest.json");
 
@@ -410,14 +410,14 @@ describe("workflow-templates", () => {
     expect(prompt).toContain("reopened tasks");
     expect(prompt).toContain("debt growth");
     expect(prompt).toContain("confidence");
-    expect(prompt).toContain("weekly summary json");
+    expect(prompt).toContain("weekly fitness json");
 
     const materializeNode = template.nodes.find((n) => n.id === "materialize-followups");
     expect(materializeNode?.type).toBe("action.materialize_planner_tasks");
     expect(materializeNode?.config?.maxTasks).toBe("{{maxFollowupTasks}}");
 
     const artifactEdge = template.edges.find(
-      (e) => e.source === "write-fitness-summary-history" && e.target === "evaluate-fitness",
+      (e) => e.source === "persist-fitness-summary" && e.target === "evaluate-fitness",
     );
     expect(artifactEdge).toBeDefined();
 
