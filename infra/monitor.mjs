@@ -1566,25 +1566,207 @@ const WORKSPACE_SYNC_INITIAL_JITTER_MS = parseEnvInteger(
   5 * 1000,
   { min: 0, max: 60 * 1000 },
 ); // 0s..60s (default 5s)
-const WORKSPACE_SYNC_WARN_THROTTLE_MS = parseEnvInteger(
+const WORKSPACE_SYNC_WARN_THROTTLE_BASE_MS = parseEnvInteger(
   process.env.BOSUN_WORKSPACE_SYNC_WARN_THROTTLE_MS,
   6 * 60 * 60 * 1000,
   { min: 60 * 1000, max: 24 * 60 * 60 * 1000 },
 ); // 1m..24h (default 6h)
+const WORKSPACE_SYNC_WARN_THROTTLE_MS = isDevMode()
+  ? parseEnvInteger(
+      process.env.DEVMODE_WORKSPACE_SYNC_WARN_THROTTLE_MS,
+      30 * 60 * 1000,
+      { min: 10 * 1000, max: 24 * 60 * 60 * 1000 },
+    )
+  : WORKSPACE_SYNC_WARN_THROTTLE_BASE_MS;
 const WORKSPACE_SYNC_SLOW_WARN_MS = parseEnvInteger(
   process.env.BOSUN_WORKSPACE_SYNC_SLOW_WARN_MS,
   90 * 1000,
   { min: 5 * 1000, max: 10 * 60 * 1000 },
 ); // 5s..10m (default 90s)
-const WORKSPACE_SYNC_WARN_MAX_KEYS = parseEnvInteger(
+const WORKSPACE_SYNC_WARN_MAX_KEYS_BASE = parseEnvInteger(
   process.env.BOSUN_WORKSPACE_SYNC_WARN_MAX_KEYS,
   500,
   { min: 50, max: 5000 },
 ); // 50..5000 (default 500)
+const WORKSPACE_SYNC_WARN_MAX_KEYS = isDevMode()
+  ? parseEnvInteger(
+      process.env.DEVMODE_WORKSPACE_SYNC_WARN_MAX_KEYS,
+      WORKSPACE_SYNC_WARN_MAX_KEYS_BASE,
+      { min: 10, max: 5000 },
+    )
+  : WORKSPACE_SYNC_WARN_MAX_KEYS_BASE;
+const WORKSPACE_SYNC_WARN_STATE_FILE = "ve-workspace-sync-warn-state.json";
+const WORKSPACE_SYNC_WARN_STATE_TMP_FILE = "ve-workspace-sync-warn-state.json.tmp";
+const WORKSPACE_SYNC_WARN_STALE_EXPIRY_MS = 24 * 60 * 60 * 1000;
+const WORKSPACE_SYNC_WARN_ARCHIVE_MAX_FILES = 5;
+const WORKSPACE_SYNC_WARN_ARCHIVE_MAX_AGE_MS = 14 * 24 * 60 * 60 * 1000;
 let workspaceSyncTimer = null;
 let workspaceSyncInitialTimer = null;
 let workspaceSyncInFlight = false;
 const workspaceSyncWarnSeen = new Map();
+function resolveWorkspaceSyncWarnStatePaths(configDir) {
+  const cacheDir = resolve(configDir || process.cwd(), ".cache");
+  const statePath = resolve(cacheDir, WORKSPACE_SYNC_WARN_STATE_FILE);
+  const tmpPath = resolve(cacheDir, WORKSPACE_SYNC_WARN_STATE_TMP_FILE);
+  return { cacheDir, statePath, tmpPath };
+}
+function pruneWorkspaceSyncWarnSeen(now = Date.now()) {
+  let changed = false;
+  for (const [seenKey, entry] of workspaceSyncWarnSeen.entries()) {
+    const updatedAt = Number(entry?.updatedAt || 0);
+    if (now - updatedAt >= WORKSPACE_SYNC_WARN_STALE_EXPIRY_MS) {
+      workspaceSyncWarnSeen.delete(seenKey);
+      changed = true;
+    }
+  }
+  return changed;
+}
+function evictWorkspaceSyncWarnSeenOverflow() {
+  let changed = false;
+  // Evict oldest entries so warn state remains bounded.
+  while (workspaceSyncWarnSeen.size > WORKSPACE_SYNC_WARN_MAX_KEYS) {
+    const oldestKey = workspaceSyncWarnSeen.keys().next().value;
+    if (!oldestKey) break;
+    workspaceSyncWarnSeen.delete(oldestKey);
+    changed = true;
+  }
+  return changed;
+}
+function cleanupWorkspaceSyncWarnStateArchives(configDir, now = Date.now()) {
+  const { cacheDir, statePath } = resolveWorkspaceSyncWarnStatePaths(configDir);
+  const archivePrefix = `${WORKSPACE_SYNC_WARN_STATE_FILE}.archive.`;
+  let entries = [];
+  try {
+    entries = readdirSync(cacheDir)
+      .filter((name) => name.startsWith(archivePrefix))
+      .map((name) => {
+        const path = resolve(cacheDir, name);
+        let mtimeMs = 0;
+        try {
+          mtimeMs = Number(statSync(path).mtimeMs || 0);
+        } catch {
+          // Ignore files that disappear during cleanup.
+        }
+        return { name, path, mtimeMs };
+      });
+  } catch {
+    return;
+  }
+  const keep = [];
+  for (const entry of entries) {
+    if (!entry.mtimeMs || now - entry.mtimeMs > WORKSPACE_SYNC_WARN_ARCHIVE_MAX_AGE_MS) {
+      try {
+        unlinkSync(entry.path);
+      } catch {
+        // Ignore cleanup failures; best effort.
+      }
+      continue;
+    }
+    keep.push(entry);
+  }
+  keep.sort((a, b) => b.mtimeMs - a.mtimeMs);
+  for (const entry of keep.slice(WORKSPACE_SYNC_WARN_ARCHIVE_MAX_FILES)) {
+    try {
+      unlinkSync(entry.path);
+    } catch {
+      // Ignore cleanup failures; best effort.
+    }
+  }
+  if (keep.length > WORKSPACE_SYNC_WARN_ARCHIVE_MAX_FILES) {
+    console.log(
+      `[monitor] workspace sync warn archive cleanup: kept ${WORKSPACE_SYNC_WARN_ARCHIVE_MAX_FILES} newest archives for ${basename(statePath)}`,
+    );
+  }
+}
+function archiveWorkspaceSyncWarnStateFile(configDir, reason = "corrupt") {
+  const { cacheDir, statePath } = resolveWorkspaceSyncWarnStatePaths(configDir);
+  if (!existsSync(statePath)) return;
+  const timestamp = new Date().toISOString().replaceAll(":", "-");
+  const archiveName = `${WORKSPACE_SYNC_WARN_STATE_FILE}.archive.${timestamp}.${reason}.json`;
+  const archivePath = resolve(cacheDir, archiveName);
+  try {
+    renameSync(statePath, archivePath);
+    console.warn(
+      `[monitor] workspace sync warn state archived (${reason}): ${basename(archivePath)}`,
+    );
+  } catch (err) {
+    console.warn(
+      `[monitor] workspace sync warn state archive failed (${reason}): ${err?.message || err}`,
+    );
+  }
+}
+function persistWorkspaceSyncWarnState(configDir) {
+  const { cacheDir, statePath, tmpPath } = resolveWorkspaceSyncWarnStatePaths(configDir);
+  try {
+    mkdirSync(cacheDir, { recursive: true });
+  } catch (err) {
+    console.warn(
+      `[monitor] workspace sync warn state: unable to create cache dir: ${err?.message || err}`,
+    );
+    return;
+  }
+  const now = Date.now();
+  pruneWorkspaceSyncWarnSeen(now);
+  evictWorkspaceSyncWarnSeenOverflow();
+  const entries = [];
+  for (const [key, value] of workspaceSyncWarnSeen.entries()) {
+    entries.push({ key, updatedAt: Number(value?.updatedAt || 0) });
+  }
+  const payload = JSON.stringify(
+    {
+      version: 1,
+      updatedAt: now,
+      entries,
+    },
+    null,
+    2,
+  );
+  let tmpWritten = false;
+  try {
+    writeFileSync(tmpPath, payload, "utf8");
+    tmpWritten = true;
+    renameSync(tmpPath, statePath);
+  } catch (err) {
+    console.warn(
+      `[monitor] workspace sync warn state persist failed: ${err?.message || err}`,
+    );
+    if (tmpWritten || existsSync(tmpPath)) {
+      try {
+        unlinkSync(tmpPath);
+      } catch {
+        // Ignore temp cleanup failures.
+      }
+    }
+  }
+}
+function loadWorkspaceSyncWarnState(configDir) {
+  const { statePath } = resolveWorkspaceSyncWarnStatePaths(configDir);
+  // Run archive cleanup during monitor startup initialization.
+  cleanupWorkspaceSyncWarnStateArchives(configDir);
+  if (!existsSync(statePath)) return;
+  try {
+    const raw = readFileSync(statePath, "utf8");
+    const parsed = JSON.parse(raw);
+    const entries = Array.isArray(parsed?.entries)
+      ? parsed.entries
+      : Object.entries(parsed || {}).map(([key, updatedAt]) => ({ key, updatedAt }));
+    workspaceSyncWarnSeen.clear();
+    for (const entry of entries) {
+      const key = String(entry?.key || "").trim();
+      const updatedAt = Number(entry?.updatedAt || entry?.timestamp || 0);
+      if (!key || !Number.isFinite(updatedAt) || updatedAt <= 0) continue;
+      workspaceSyncWarnSeen.set(key, { updatedAt });
+    }
+    const now = Date.now();
+    const changed = pruneWorkspaceSyncWarnSeen(now) || evictWorkspaceSyncWarnSeenOverflow();
+    if (changed) persistWorkspaceSyncWarnState(configDir);
+  } catch (err) {
+    console.warn(
+      `[monitor] workspace sync warn state load failed; archiving corrupt file: ${err?.message || err}`,
+    );
+    archiveWorkspaceSyncWarnStateFile(configDir, "corrupt");
+  }
+}
 function stopWorkspaceSyncTimers() {
   if (workspaceSyncInitialTimer) {
     clearTimeout(workspaceSyncInitialTimer);
@@ -1596,27 +1778,31 @@ function stopWorkspaceSyncTimers() {
   }
 }
 function shouldEmitWorkspaceSyncWarn(key, now = Date.now()) {
-  for (const [seenKey, seenAt] of workspaceSyncWarnSeen.entries()) {
-    if (now - Number(seenAt || 0) >= WORKSPACE_SYNC_WARN_THROTTLE_MS) {
-      workspaceSyncWarnSeen.delete(seenKey);
-    }
-  }
-  const last = Number(workspaceSyncWarnSeen.get(key) || 0);
+  const stateConfigDir = config?.configDir || process.cwd();
+  let changed = false;
+  changed = pruneWorkspaceSyncWarnSeen(now) || changed;
+  const last = Number(workspaceSyncWarnSeen.get(key)?.updatedAt || 0);
   if (last > 0 && now - last < WORKSPACE_SYNC_WARN_THROTTLE_MS) return false;
-  workspaceSyncWarnSeen.set(key, now);
+  // Refresh key insertion order so oldest eviction works predictably.
+  workspaceSyncWarnSeen.delete(key);
+  workspaceSyncWarnSeen.set(key, { updatedAt: now });
+  changed = true;
   // keep memory bounded
-  if (workspaceSyncWarnSeen.size > WORKSPACE_SYNC_WARN_MAX_KEYS) {
-    const oldestKey = workspaceSyncWarnSeen.keys().next().value;
-    if (oldestKey) workspaceSyncWarnSeen.delete(oldestKey);
-  }
+  changed = evictWorkspaceSyncWarnSeenOverflow() || changed;
+  if (changed) persistWorkspaceSyncWarnState(stateConfigDir);
   return true;
 }
 function clearWorkspaceSyncWarnForWorkspace(workspaceId) {
+  let changed = false;
   const prefix = `${workspaceId}:`;
   for (const key of workspaceSyncWarnSeen.keys()) {
     if (String(key).startsWith(prefix)) {
       workspaceSyncWarnSeen.delete(key);
+      changed = true;
     }
+  }
+  if (changed) {
+    persistWorkspaceSyncWarnState(config?.configDir || process.cwd());
   }
 }
 function isBenignWorkspaceSyncFailure(errorText) {
@@ -1642,6 +1828,7 @@ function isBenignWorkspaceSyncFailure(errorText) {
 {
   const wsArray = config.repositories?.filter((r) => r.workspace) || [];
   if (wsArray.length > 0) {
+    loadWorkspaceSyncWarnState(config?.configDir || process.cwd());
     const workspaceIds = [...new Set(wsArray.map((r) => r.workspace).filter(Boolean))];
     const doWorkspaceSync = () => {
       if (shuttingDown) return;
@@ -14882,4 +15069,3 @@ export {
   // Workflow event bridge — for fleet/kanban modules to emit events
   queueWorkflowEvent,
 };
-
