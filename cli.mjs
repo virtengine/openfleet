@@ -33,7 +33,7 @@ import {
   detectLegacySetup,
   migrateFromLegacy,
 } from "./compat.mjs";
-import { resolveRepoRoot } from "./config/repo-root.mjs";
+import { resolveRepoLocalBosunDir, resolveRepoRoot } from "./config/repo-root.mjs";
 
 const MONITOR_START_MAX_WAIT_MS = Math.max(
   0,
@@ -242,6 +242,16 @@ function resolveConfigDirForCli() {
   if (configDirArg) return resolve(configDirArg);
   if (process.env.BOSUN_HOME) return resolve(process.env.BOSUN_HOME);
   if (process.env.BOSUN_DIR) return resolve(process.env.BOSUN_DIR);
+
+  const repoRootArg = getArgValue("--repo-root");
+  const repoRoot = repoRootArg
+    ? resolve(repoRootArg)
+    : process.env.REPO_ROOT
+      ? resolve(process.env.REPO_ROOT)
+      : resolveRepoRoot({ cwd: process.cwd() });
+  const repoLocalConfigDir = resolveRepoLocalBosunDir(repoRoot);
+  if (repoLocalConfigDir) return repoLocalConfigDir;
+
   const preferWindowsDirs =
     process.platform === "win32" && !isWslInteropRuntime();
   const baseDir = preferWindowsDirs

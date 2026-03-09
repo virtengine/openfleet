@@ -24,7 +24,7 @@ import {
   getAgentPromptDefinitions,
   resolveAgentPrompts,
 } from "../agent/agent-prompts.mjs";
-import { resolveAgentRepoRoot } from "./repo-root.mjs";
+import { resolveAgentRepoRoot, resolveRepoLocalBosunDir } from "./repo-root.mjs";
 import { applyAllCompatibility } from "../compat.mjs";
 import {
   normalizeExecutorKey,
@@ -129,7 +129,11 @@ function resolveConfigDir(repoRoot) {
   if (process.env.BOSUN_HOME) return resolve(process.env.BOSUN_HOME);
   if (process.env.BOSUN_DIR) return resolve(process.env.BOSUN_DIR);
 
-  // 2. Platform-aware user home
+  // 2. Prefer repo-local runtime state for source checkouts and repo-scoped runs.
+  const repoLocalConfigDir = resolveRepoLocalBosunDir(repoRoot);
+  if (repoLocalConfigDir) return repoLocalConfigDir;
+
+  // 3. Platform-aware user home
   const preferWindowsDirs =
     process.platform === "win32" && !isWslInteropRuntime();
   const baseDir = preferWindowsDirs

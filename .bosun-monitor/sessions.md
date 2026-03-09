@@ -404,3 +404,26 @@
 - Remaining risk to monitor next hour:
   - High interrupted-run volume (Detected 446 interrupted run(s) on startup) and repeated stuck_agent: undefined alerts still indicate broader executor/watchdog instability beyond this specific worktree corruption fix.
 - Run duration: ~01:05:00.
+
+## 2026-03-09T22:05:29+11:00 hourly ops run
+
+- Incident: Bosun was running from global install paths (C:\nvm4w\nodejs\node_modules\bosun\cli.mjs + AppData monitor) instead of source osun/cli.mjs, creating split task stores (	ask stats 80 vs 1111) and Telegram poll conflict risk.
+- Evidence:
+  - 
+ode cli.mjs --daemon-status --config-dir .bosun --repo-root . reported "not running in daemon mode, but 2 bosun process(es) are active" before remediation.
+  - Process table showed global CLI/monitor command lines.
+  - AppData monitor logs showed minute-level schedule churn against a single looping task and historical stuck_agent / owner-mismatch noise.
+- Recovery applied:
+  - 
+ode cli.mjs --terminate
+  - 
+ode cli.mjs --daemon --config-dir .bosun --repo-root . --no-update-check --no-auto-update
+- Post-recovery verification:
+  - Only repo-local daemon+monitor remain active (no global node_modules/bosun processes).
+  - Source daemon healthy (PID 71144), scheduler resumed (schedule poll triggered + multiple schedule-run completed).
+  - Recovery path executed (in-progress recovery: resumed 3, reset 2 stale + 2 unstarted).
+  - inreview=0; inprogress=8 (includes 5 guarded-start tasks), requiring next-run watch for automatic drain.
+  - No new post-restart error signatures appended to .bosun/logs/monitor-error.log beyond startup watch-path warning.
+- Throughput snapshot:
+  - Recent merged PRs exist in the last hour (#194, #195, #197, #198), but attribution to fully autonomous Bosun E2E remains mixed and should be revalidated next run from workflow-node evidence.
+- No code edits shipped this run; runtime remediation only.
