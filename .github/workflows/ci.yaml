@@ -34,6 +34,9 @@ jobs:
       - name: Packed CLI smoke test
         run: npm run smoke:packed-cli
 
+      - name: Audit conformity gate
+        run: node cli.mjs audit --ci
+
       - name: Run build
         run: npm run build
 
@@ -42,3 +45,4 @@ jobs:
 
       - name: Run tests
         run: npm test
+

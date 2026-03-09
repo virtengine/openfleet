@@ -317,3 +317,4 @@ echo "[hooks] running ${#FINAL_TEST_LIST[@]}/${TOTAL_TESTS} targeted tests…"
 npx vitest run --config vitest.config.mjs "${FINAL_TEST_LIST[@]}"
 
 echo "[hooks] pre-push checks passed ✓"
+

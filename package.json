@@ -74,7 +74,8 @@
     "./github-auth-manager": "./github/github-auth-manager.mjs",
     "./git-commit-helpers": "./git/git-commit-helpers.mjs",
     "./opencode-shell": "./shell/opencode-shell.mjs",
-    "./context-indexer": "./workspace/context-indexer.mjs"
+    "./context-indexer": "./workspace/context-indexer.mjs",
+    "./audit": "./tools/codebase-audit.mjs"
   },
   "bin": {
     "bosun": "cli.mjs",
@@ -292,7 +293,9 @@
     "workflow-templates/task-lifecycle.mjs",
     "workflow-templates/bosun-native.mjs",
     "tools/",
-    "ui/vendor/"
+    "ui/vendor/",
+    "tools/codebase-audit.mjs",
+    "agent/skill-codebase-audit.md"
   ],
   "dependencies": {
     "@anthropic-ai/claude-agent-sdk": "latest",

@@ -20,4 +20,6 @@ fi
 
 cd "$ROOT"
 echo "[hooks] bosun pre-commit checks"
+node cli.mjs audit conformity --staged --new-files-only --warn-only
 npm run syntax:check
+
