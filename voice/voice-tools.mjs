@@ -2939,15 +2939,8 @@ const TOOL_HANDLERS = {
     ];
 
     const isSafe = SAFE_PATTERNS.some((p) => p.test(rawCmd));
-    const isOwnerSession = context?.isOwner === true || context?.role === "owner" || context?.role === "admin";
-    if (!isSafe && !isOwnerSession) {
+    if (!isSafe) {
       return "{RESPONSE}: Blocked non-read-only workspace command for this session. Ask an owner/admin to run it, or switch to a delegated agent workflow.";
-    }
-    if (!isSafe && isOwnerSession && !hasExplicitConfirmation(args)) {
-      return "{RESPONSE}: Non-read-only command requires explicit confirmation for owner/admin direct execution (confirm=true or confirmation='yes').";
-    }
-    if (!isSafe && isOwnerSession) {
-      console.log(`[voice-tools] Owner direct shell: ${rawCmd.slice(0, 100)}`);
     }
 
     try {
@@ -2957,25 +2950,38 @@ const TOOL_HANDLERS = {
       if (hasShellMeta) {
         return "{RESPONSE}: Shell metacharacters are not allowed in direct workspace commands.";
       }
-      const tokens =
-        String(rawCmd).match(/(?:[^\s"']+|"(?:\\.|[^"])*"|'(?:\\.|[^'])*')+/g) || [];
+      const tokens = String(rawCmd)
+        .split(/\s+/)
+        .map((token) => token.trim())
+        .filter(Boolean);
       if (tokens.length === 0) {
         return "{RESPONSE}: command is required.";
       }
-      const normalizeToken = (token) => {
-        if (
-          (token.startsWith('"') && token.endsWith('"')) ||
-          (token.startsWith("'") && token.endsWith("'"))
-        ) {
-          return token.slice(1, -1);
-        }
-        return token;
-      };
-      const cmd = normalizeToken(tokens[0]);
-      const cmdArgs = tokens.slice(1).map(normalizeToken);
-      const res = spawnSync(cmd, cmdArgs, {
+      const commandAllowlist = Object.freeze({
+        git: "git",
+        npm: "npm",
+        node: "node",
+        ls: "ls",
+        cat: "cat",
+        head: "head",
+        tail: "tail",
+        wc: "wc",
+        find: "find",
+        grep: "grep",
+        echo: "echo",
+        pwd: "pwd",
+        which: "which",
+        type: "type",
+      });
+      const requestedCmd = String(tokens[0] || "").toLowerCase();
+      const safeCmd = commandAllowlist[requestedCmd];
+      if (!safeCmd) {
+        return "{RESPONSE}: Command is not allowlisted for direct execution.";
+      }
+      const cmdArgs = tokens.slice(1);
+      const res = spawnSync(safeCmd, cmdArgs, {
         encoding: "utf8",
-        timeout: isOwnerSession ? 120_000 : 20_000,
+        timeout: 20_000,
         cwd,
         shell: false,
         stdio: ["ignore", "pipe", "pipe"],
