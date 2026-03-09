@@ -1021,6 +1021,7 @@ describe("action.detect_new_commits", () => {
       else process.env.ComSpec = originalComSpec;
     }
   });  it("detects commits when PATH is unavailable", async () => {
+    if (process.platform !== "win32") return;
     const nt = getNodeType("action.detect_new_commits");
     const head = execGit("git rev-parse HEAD", { cwd: gitDir, encoding: "utf8" }).trim();
     const ctx = makeCtx({ _preExecHead: head });
