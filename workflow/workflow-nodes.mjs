@@ -59,8 +59,11 @@ function makeIsolatedGitEnv(extra = {}) {
   return env;
 }
 
-function execGitSync(command, options = {}) {
-  return execSync(command, {
+function execGitArgsSync(args, options = {}) {
+  if (!Array.isArray(args) || !args.length) {
+    throw new Error("execGitArgsSync requires a non-empty args array");
+  }
+  return execFileSync("git", args.map((arg) => String(arg)), {
     ...options,
     env: makeIsolatedGitEnv(options.env),
   });
@@ -8537,7 +8540,7 @@ registerNodeType("action.detect_new_commits", {
     // Get current HEAD
     let postExecHead = "";
     try {
-      postExecHead = execGitSync("git rev-parse HEAD", {
+      postExecHead = execGitArgsSync(["rev-parse", "HEAD"], {
         cwd: worktreePath, encoding: "utf8", timeout: 5000,
       }).trim();
     } catch (err) {
@@ -8551,7 +8554,7 @@ registerNodeType("action.detect_new_commits", {
     let hasUnpushed = false;
     let commitCount = 0;
     try {
-      const log = execGitSync(`git log --oneline ${baseBranch}..HEAD`, {
+      const log = execGitArgsSync(["log", "--oneline", `${baseBranch}..HEAD`], {
         cwd: worktreePath, encoding: "utf8", timeout: 10000,
         stdio: ["ignore", "pipe", "pipe"],
       }).trim();
@@ -8565,7 +8568,7 @@ registerNodeType("action.detect_new_commits", {
     let diffStats = null;
     if (hasNewCommits || hasUnpushed) {
       try {
-        const statOutput = execGitSync(`git diff --stat ${baseBranch}..HEAD`, {
+        const statOutput = execGitArgsSync(["diff", "--stat", `${baseBranch}..HEAD`], {
           cwd: worktreePath, encoding: "utf8", timeout: 10000,
           stdio: ["ignore", "pipe", "pipe"],
         }).trim();

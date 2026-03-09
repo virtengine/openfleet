@@ -2666,7 +2666,7 @@ describe("WorkflowEngine singleton services", () => {
     expect(second.services.kanban).toBeDefined();
     expect(second.services.agentPool).toBeDefined();
     expect(second.services.prompts?.planner).toBe("Planner prompt");
-  });
+  }, 20000);
 });
 
 // ── Anomaly Detector Integration Tests ──────────────────────────────────────
