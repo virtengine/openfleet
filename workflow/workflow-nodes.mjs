@@ -59,13 +59,33 @@ function makeIsolatedGitEnv(extra = {}) {
   return env;
 }
 
+function resolveGitBinary(env = process.env) {
+  const candidates = [];
+  const envGitExe = env?.GIT_EXE || process.env.GIT_EXE;
+  if (envGitExe) candidates.push(envGitExe);
+  if (process.platform === "win32") {
+    candidates.push(
+      "C:\\Program Files\\Git\\cmd\\git.exe",
+      "C:\\Program Files\\Git\\bin\\git.exe",
+      "C:\\Program Files (x86)\\Git\\cmd\\git.exe",
+      "C:\\Program Files (x86)\\Git\\bin\\git.exe",
+    );
+  }
+  for (const candidate of candidates) {
+    if (candidate && existsSync(candidate)) return candidate;
+  }
+  return "git";
+}
+
 function execGitArgsSync(args, options = {}) {
   if (!Array.isArray(args) || !args.length) {
     throw new Error("execGitArgsSync requires a non-empty args array");
   }
-  return execFileSync("git", args.map((arg) => String(arg)), {
+  const env = makeIsolatedGitEnv(options.env);
+  const gitBinary = resolveGitBinary(env);
+  return execFileSync(gitBinary, args.map((arg) => String(arg)), {
     ...options,
-    env: makeIsolatedGitEnv(options.env),
+    env,
   });
 }
 
