@@ -332,6 +332,17 @@ function envFlagEnabled(value) {
   return ["1", "true", "yes", "on", "y"].includes(raw);
 }
 
+function applyNodeWarningSuppressionEnv(runtimeEnv) {
+  const nextEnv = { ...(runtimeEnv || {}) };
+  if (String(process.env.BOSUN_SUPPRESS_NODE_WARNINGS ?? "").trim() === "0") {
+    return nextEnv;
+  }
+  if (!nextEnv.NODE_NO_WARNINGS) {
+    nextEnv.NODE_NO_WARNINGS = "1";
+  }
+  return nextEnv;
+}
+
 const GITHUB_TOKEN_CACHE_TTL_MS = 60_000;
 let cachedGithubSessionToken = null;
 let cachedGithubSessionTokenAt = 0;
@@ -870,6 +881,7 @@ function applySdkFailureCooldown(name, error, nowMs = Date.now()) {
 }
 
 const MONITOR_MONITOR_TASK_KEY = "monitor-monitor";
+const MONITOR_MONITOR_THREAD_REFRESH_TURNS_REMAINING = parseBoundedNumber(process.env.DEVMODE_MONITOR_MONITOR_THREAD_REFRESH_TURNS_REMAINING, 5, 1, 1000);
 let monitorMonitorTimeoutBoundsWarningKey = "";
 let monitorMonitorTimeoutAdjustmentKey = "";
 
@@ -1115,7 +1127,8 @@ async function launchCodexThread(prompt, cwd, timeoutMs, extra = {}) {
     envOverrides && typeof envOverrides === "object"
       ? { ...process.env, ...envOverrides }
       : process.env;
-  const codexOpts = buildCodexSdkOptions(codexRuntimeEnv);
+  const codexSessionEnv = applyNodeWarningSuppressionEnv(codexRuntimeEnv);
+  const codexOpts = buildCodexSdkOptions(codexSessionEnv);
   const modelOverride = String(extra?.model || "").trim();
   if (modelOverride) {
     codexOpts.env = { ...(codexOpts.env || {}), CODEX_MODEL: modelOverride };
@@ -1418,11 +1431,12 @@ async function launchCopilotThread(prompt, cwd, timeoutMs, extra = {}) {
     envOverrides && typeof envOverrides === "object"
       ? { ...process.env, ...envOverrides }
       : process.env;
+  const runtimeSessionEnv = applyNodeWarningSuppressionEnv(runtimeEnv);
   const token =
-    runtimeEnv.COPILOT_CLI_TOKEN ||
-    runtimeEnv.GITHUB_TOKEN ||
-    runtimeEnv.GH_TOKEN ||
-    runtimeEnv.GITHUB_PAT ||
+    runtimeSessionEnv.COPILOT_CLI_TOKEN ||
+    runtimeSessionEnv.GITHUB_TOKEN ||
+    runtimeSessionEnv.GH_TOKEN ||
+    runtimeSessionEnv.GITHUB_PAT ||
     undefined;
 
   // ── 3. Create & start ephemeral client (LOCAL mode) ──────────────────────
@@ -1444,10 +1458,10 @@ async function launchCopilotThread(prompt, cwd, timeoutMs, extra = {}) {
   const autoApprovePermissions = shouldAutoApproveCopilotPermissions();
   const clientEnv = autoApprovePermissions
     ? {
-        ...runtimeEnv,
-        COPILOT_ALLOW_ALL: runtimeEnv.COPILOT_ALLOW_ALL || "true",
+        ...runtimeSessionEnv,
+        COPILOT_ALLOW_ALL: runtimeSessionEnv.COPILOT_ALLOW_ALL || "true",
       }
-    : runtimeEnv;
+    : runtimeSessionEnv;
   try {
     await withSanitizedOpenAiEnv(async () => {
       let clientOpts;
@@ -1467,7 +1481,7 @@ async function launchCopilotThread(prompt, cwd, timeoutMs, extra = {}) {
           }
         }
         const cliLaunch = resolveCopilotCliLaunchConfig({
-          env: runtimeEnv,
+          env: runtimeSessionEnv,
           repoRoot: REPO_ROOT,
           cliArgs: buildPoolCopilotCliArgs(mcpConfigPath),
         });
@@ -1897,10 +1911,11 @@ async function launchClaudeThread(prompt, cwd, timeoutMs, extra = {}) {
     envOverrides && typeof envOverrides === "object"
       ? { ...process.env, ...envOverrides }
       : process.env;
+  const runtimeSessionEnv = applyNodeWarningSuppressionEnv(runtimeEnv);
   const apiKey =
-    runtimeEnv.ANTHROPIC_API_KEY ||
-    runtimeEnv.CLAUDE_API_KEY ||
-    runtimeEnv.CLAUDE_KEY ||
+    runtimeSessionEnv.ANTHROPIC_API_KEY ||
+    runtimeSessionEnv.CLAUDE_API_KEY ||
+    runtimeSessionEnv.CLAUDE_KEY ||
     undefined;
 
   // ── 3. Build message queue ───────────────────────────────────────────────
@@ -2040,28 +2055,28 @@ async function launchClaudeThread(prompt, cwd, timeoutMs, extra = {}) {
       settingSources: ["user", "project"],
       permissionMode:
         claudePermissionMode ||
-        runtimeEnv.CLAUDE_PERMISSION_MODE ||
+        runtimeSessionEnv.CLAUDE_PERMISSION_MODE ||
         "bypassPermissions",
     };
     if (apiKey) options.apiKey = apiKey;
     const explicitAllowedTools = normalizeList(claudeAllowedTools);
     const allowedTools = explicitAllowedTools.length
       ? explicitAllowedTools
-      : normalizeList(runtimeEnv.CLAUDE_ALLOWED_TOOLS);
+      : normalizeList(runtimeSessionEnv.CLAUDE_ALLOWED_TOOLS);
     if (allowedTools.length) {
       options.allowedTools = allowedTools;
     }
 
     const model = String(
       requestedModel ||
-        runtimeEnv.CLAUDE_MODEL ||
-        runtimeEnv.CLAUDE_CODE_MODEL ||
-        runtimeEnv.ANTHROPIC_MODEL ||
+        runtimeSessionEnv.CLAUDE_MODEL ||
+        runtimeSessionEnv.CLAUDE_CODE_MODEL ||
+        runtimeSessionEnv.ANTHROPIC_MODEL ||
         "",
     ).trim();
     if (model) options.model = model;
 
-    const result = await withTemporaryEnv(runtimeEnv, async () =>
+    const result = await withTemporaryEnv(runtimeSessionEnv, async () =>
       queryFn({
         prompt: msgQueue.iterator(),
         options,
@@ -2849,7 +2864,8 @@ async function resumeCodexThread(threadId, prompt, cwd, timeoutMs, extra = {}) {
     envOverrides && typeof envOverrides === "object"
       ? { ...process.env, ...envOverrides }
       : process.env;
-  const codexOpts = buildCodexSdkOptions(codexRuntimeEnv);
+  const codexSessionEnv = applyNodeWarningSuppressionEnv(codexRuntimeEnv);
+  const codexOpts = buildCodexSdkOptions(codexSessionEnv);
   const modelOverride = String(extra?.model || "").trim();
   if (modelOverride) {
     codexOpts.env = { ...(codexOpts.env || {}), CODEX_MODEL: modelOverride };
@@ -3063,6 +3079,7 @@ export async function launchOrResumeThread(
     restBaseEnv,
     resolvedGithubToken,
   );
+  restExtra.envOverrides = applyNodeWarningSuppressionEnv(restExtra.envOverrides);
   // Pass taskKey through as steer key so SDK launchers can register active sessions
   restExtra.taskKey = taskKey;
   if (restExtra.sdk) {
@@ -3085,19 +3102,32 @@ export async function launchOrResumeThread(
   // Check registry for existing thread
   const existing = threadRegistry.get(taskKey);
   if (existing && existing.alive && existing.threadId) {
+    const turnsRemaining = MAX_THREAD_TURNS - existing.turnCount;
+    const shouldForceRefreshMonitorMonitorThread =
+      String(taskKey || "").trim() === MONITOR_MONITOR_TASK_KEY &&
+      turnsRemaining <= MONITOR_MONITOR_THREAD_REFRESH_TURNS_REMAINING;
+    if (shouldForceRefreshMonitorMonitorThread) {
+      console.log(
+        `${TAG} proactively refreshing monitor-monitor thread with ${turnsRemaining} turns remaining (threshold=${MONITOR_MONITOR_THREAD_REFRESH_TURNS_REMAINING})`,
+      );
+      existing.alive = false;
+      threadRegistry.set(taskKey, existing);
+      saveThreadRegistry().catch(() => {});
+    }
+
     // Approaching-exhaustion warning (non-blocking — still proceeds with resume)
     if (
       existing.turnCount >= THREAD_EXHAUSTION_WARNING_THRESHOLD &&
-      existing.turnCount < MAX_THREAD_TURNS
+      existing.turnCount < MAX_THREAD_TURNS &&
+      existing.alive
     ) {
-      const remaining = MAX_THREAD_TURNS - existing.turnCount;
       console.warn(
-        `${TAG} :alert: thread for task "${taskKey}" approaching exhaustion: ${existing.turnCount}/${MAX_THREAD_TURNS} turns (${remaining} remaining)`,
+        `${TAG} :alert: thread for task "${taskKey}" approaching exhaustion: ${existing.turnCount}/${MAX_THREAD_TURNS} turns (${turnsRemaining} remaining)`,
       );
     }
 
     // Check if thread has exceeded max turns — force fresh start
-    if (existing.turnCount >= MAX_THREAD_TURNS) {
+    if (existing.alive && existing.turnCount >= MAX_THREAD_TURNS) {
       console.warn(
         `${TAG} thread for task "${taskKey}" exceeded ${MAX_THREAD_TURNS} turns (has ${existing.turnCount}) — invalidating and starting fresh`,
       );
@@ -3105,7 +3135,10 @@ export async function launchOrResumeThread(
       threadRegistry.set(taskKey, existing);
       saveThreadRegistry().catch(() => {});
       // Fall through to fresh launch below
-    } else if (Date.now() - existing.createdAt > THREAD_MAX_ABSOLUTE_AGE_MS) {
+    } else if (
+      existing.alive &&
+      Date.now() - existing.createdAt > THREAD_MAX_ABSOLUTE_AGE_MS
+    ) {
       console.warn(
         `${TAG} thread for task "${taskKey}" exceeded absolute age limit — invalidating and starting fresh`,
       );

@@ -1,18 +1,11 @@
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-
-// ---------------------------------------------------------------------------
-// Mock SDK dynamic imports — these fire before any test module import.
-// The SDKs are not installed in the test env, so we mock them to control
-// behaviour: by default they throw "not available" unless overridden.
-// ---------------------------------------------------------------------------
-
-const mockCodexStartThread = vi.fn();
-const mockCodexResumeThread = vi.fn();
-const mockCodexCtor = vi.fn();
-const mockCopilotStart = vi.fn();
-const mockCopilotCreateSession = vi.fn();
-const mockCopilotResumeSession = vi.fn();
-const mockClaudeQuery = vi.fn();
+const __RUN_VITEST_ONLY = Boolean(process.env.VITEST);
+let mockCodexStartThread;
+let mockCodexResumeThread;
+let mockCodexCtor;
+let mockCopilotStart;
+let mockCopilotCreateSession;
+let mockCopilotResumeSession;
+let mockClaudeQuery;
 
 function makeCodexMockThread(
   threadId = "mock-codex-thread",
@@ -32,6 +25,23 @@ function makeCodexMockThread(
     }),
   };
 }
+
+if (__RUN_VITEST_ONLY) {
+const { afterEach, beforeEach, describe, expect, it, vi } = globalThis;
+
+// ---------------------------------------------------------------------------
+// Mock SDK dynamic imports — these fire before any test module import.
+// The SDKs are not installed in the test env, so we mock them to control
+// behaviour: by default they throw "not available" unless overridden.
+// ---------------------------------------------------------------------------
+
+mockCodexStartThread = vi.fn();
+mockCodexResumeThread = vi.fn();
+mockCodexCtor = vi.fn();
+mockCopilotStart = vi.fn();
+mockCopilotCreateSession = vi.fn();
+mockCopilotResumeSession = vi.fn();
+mockClaudeQuery = vi.fn();
 
 vi.mock("@openai/codex-sdk", () => {
   return {
@@ -1394,3 +1404,4 @@ describe("resolution and launch integration", () => {
     expect(result.error).toMatch(/all sdks are disabled/i);
   });
 });
+}
