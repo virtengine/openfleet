@@ -33,6 +33,7 @@ import {
   selectCoordinator,
   getPresenceState,
 } from "../infra/presence.mjs";
+import { sanitizeGitEnv } from "../git/git-safety.mjs";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
@@ -57,11 +58,7 @@ function emitFleetEvent(eventType, eventData = {}, opts = {}) {
 // ── Repo Fingerprinting ──────────────────────────────────────────────────────
 
 function buildGitEnv() {
-  const env = { ...process.env };
-  delete env.GIT_DIR;
-  delete env.GIT_WORK_TREE;
-  delete env.GIT_INDEX_FILE;
-  return env;
+  return sanitizeGitEnv();
 }
 
 /**
@@ -857,4 +854,3 @@ export function formatFleetSummary() {
 
   return lines.join("\n");
 }
-

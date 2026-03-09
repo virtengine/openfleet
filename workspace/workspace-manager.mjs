@@ -48,7 +48,13 @@ function sanitizeGitProcessEnv(baseEnv = process.env) {
   const env = { ...baseEnv };
   delete env.GIT_DIR;
   delete env.GIT_WORK_TREE;
+  delete env.GIT_COMMON_DIR;
   delete env.GIT_INDEX_FILE;
+  delete env.GIT_OBJECT_DIRECTORY;
+  delete env.GIT_ALTERNATE_OBJECT_DIRECTORIES;
+  delete env.GIT_NAMESPACE;
+  delete env.GIT_PREFIX;
+  delete env.GIT_SUPER_PREFIX;
   return env;
 }
 
@@ -1016,4 +1022,3 @@ export function initializeWorkspaces(configDir, opts = {}) {
 
   return { workspaces: [], isNew: true };
 }
-

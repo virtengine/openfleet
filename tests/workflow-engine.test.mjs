@@ -690,6 +690,71 @@ describe("WorkflowEngine - run history details", () => {
     expect(recovered.resumable).toBe(true);
   });
 
+  it("hydrates missing history entries from run detail files when index is truncated", () => {
+    const wf = makeSimpleWorkflow(
+      [{ id: "trigger", type: "trigger.manual", label: "Start", config: {} }],
+      [],
+      { id: "wf-hydrate-history", name: "Hydrate History Workflow" },
+    );
+    engine.save(wf);
+
+    const runsDir = join(tmpDir, "runs");
+    const indexedRunId = "run-indexed";
+    writeFileSync(
+      join(runsDir, "index.json"),
+      JSON.stringify({
+        runs: [{
+          runId: indexedRunId,
+          workflowId: wf.id,
+          workflowName: wf.name,
+          status: WorkflowStatus.COMPLETED,
+          startedAt: 3000,
+          endedAt: 3200,
+          duration: 200,
+          nodeCount: 1,
+          logCount: 0,
+          errorCount: 0,
+          activeNodeCount: 0,
+          completedCount: 1,
+          failedCount: 0,
+        }],
+      }, null, 2),
+      "utf8",
+    );
+
+    const detailRuns = [
+      { runId: "run-hydrate-1", startedAt: 1000 },
+      { runId: "run-hydrate-2", startedAt: 2000 },
+    ];
+    for (const entry of detailRuns) {
+      writeFileSync(
+        join(runsDir, `${entry.runId}.json`),
+        JSON.stringify({
+          id: entry.runId,
+          startedAt: entry.startedAt,
+          endedAt: entry.startedAt + 120,
+          status: WorkflowStatus.COMPLETED,
+          data: { _workflowId: wf.id, _workflowName: wf.name },
+          nodeStatuses: { trigger: NodeStatus.COMPLETED },
+          nodeStatusEvents: [],
+          logs: [],
+          errors: [],
+        }, null, 2),
+        "utf8",
+      );
+    }
+
+    const history = engine.getRunHistory(wf.id, 5);
+    const runIds = history.map((run) => run.runId);
+    expect(runIds).toContain(indexedRunId);
+    expect(runIds).toContain("run-hydrate-1");
+    expect(runIds).toContain("run-hydrate-2");
+
+    const reloadedIndex = JSON.parse(readFileSync(join(runsDir, "index.json"), "utf8"));
+    const reloadedIds = (reloadedIndex.runs || []).map((run) => run.runId);
+    expect(reloadedIds).toContain("run-hydrate-1");
+    expect(reloadedIds).toContain("run-hydrate-2");
+  });
   it("supports cooperative cancellation for running runs", async () => {
     let releaseRun;
     const blocker = new Promise((resolve) => { releaseRun = resolve; });
@@ -3178,5 +3243,6 @@ describe("WorkflowEngine.getTaskTraceEvents", () => {
     expect(reread[0].taskId).toBe("TASK-TRACE-READBACK");
   });
 });
+
 
 

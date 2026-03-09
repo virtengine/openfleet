@@ -83,7 +83,11 @@ import {
   formatComplexityDecision,
   normalizeExecutorKey,
 } from "./task-complexity.mjs";
-import { evaluateBranchSafetyForPush, normalizeBaseBranch } from "../git/git-safety.mjs";
+import {
+  evaluateBranchSafetyForPush,
+  normalizeBaseBranch,
+  sanitizeGitEnv,
+} from "../git/git-safety.mjs";
 import {
   loadHooks,
   registerBuiltinHooks,
@@ -960,6 +964,7 @@ function ensureBaseBranchAvailable(repoRoot, baseBranch, defaultTargetBranch) {
     cwd: repoRoot,
     encoding: "utf8",
     timeout: 5000,
+    env: sanitizeGitEnv(),
   });
   if (localCheck.status === 0) {
     return branch;
@@ -971,6 +976,7 @@ function ensureBaseBranchAvailable(repoRoot, baseBranch, defaultTargetBranch) {
     cwd: repoRoot,
     encoding: "utf8",
     timeout: 8000,
+    env: sanitizeGitEnv(),
   });
   remoteExists = remoteLocalCheck.status === 0;
   if (!remoteExists) {
@@ -979,11 +985,13 @@ function ensureBaseBranchAvailable(repoRoot, baseBranch, defaultTargetBranch) {
         cwd: repoRoot,
         encoding: "utf8",
         timeout: 15000,
+        env: sanitizeGitEnv(),
       });
       const refreshedCheck = spawnSync("git", ["show-ref", "--verify", remoteHeadRef], {
         cwd: repoRoot,
         encoding: "utf8",
         timeout: 8000,
+        env: sanitizeGitEnv(),
       });
       remoteExists = refreshedCheck.status === 0;
     } catch {
@@ -996,6 +1004,7 @@ function ensureBaseBranchAvailable(repoRoot, baseBranch, defaultTargetBranch) {
       cwd: repoRoot,
       encoding: "utf8",
       timeout: 8000,
+      env: sanitizeGitEnv(),
     });
     return branch;
   }
@@ -1006,6 +1015,7 @@ function ensureBaseBranchAvailable(repoRoot, baseBranch, defaultTargetBranch) {
       cwd: repoRoot,
       encoding: "utf8",
       timeout: 15000,
+      env: sanitizeGitEnv(),
     });
   } catch {
     /* best-effort */
@@ -1014,7 +1024,7 @@ function ensureBaseBranchAvailable(repoRoot, baseBranch, defaultTargetBranch) {
   const createRes = spawnSync(
     "git",
     ["branch", branch, fallbackNorm.remoteRef],
-    { cwd: repoRoot, encoding: "utf8", timeout: 8000 },
+    { cwd: repoRoot, encoding: "utf8", timeout: 8000, env: sanitizeGitEnv() },
   );
   if (createRes.status !== 0) {
     const stderr = (createRes.stderr || "").trim();
@@ -1028,6 +1038,7 @@ function ensureBaseBranchAvailable(repoRoot, baseBranch, defaultTargetBranch) {
     cwd: repoRoot,
     encoding: "utf8",
     timeout: 30_000,
+    env: sanitizeGitEnv(),
   });
   return branch;
 }

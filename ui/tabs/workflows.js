@@ -54,7 +54,7 @@ const draggingNode = signal(null);
 const connectingFrom = signal(null);
 const viewMode = signal("list"); // "list" | "canvas" | "runs"
 const WORKFLOW_RUN_PAGE_SIZE = 20;
-const WORKFLOW_RUN_MAX_FETCH = 200;
+const WORKFLOW_RUN_MAX_FETCH = 5000;
 const workflowRunsLimit = signal(WORKFLOW_RUN_PAGE_SIZE);
 
 // ── Execute Dialog state ──────────────────────────────────────────────────
@@ -3909,8 +3909,4 @@ export function WorkflowsTab() {
     </div>
   `;
 }
-
-
-
-
 

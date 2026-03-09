@@ -12598,7 +12598,7 @@ async function handleApi(req, res, url) {
       const engine = wfCtx.engine;
       const rawLimit = Number(url.searchParams.get("limit"));
       const limit = Number.isFinite(rawLimit) && rawLimit > 0
-        ? Math.min(rawLimit, 500)
+        ? Math.min(rawLimit, 5000)
         : 200;
       const runs = engine.getRunHistory ? engine.getRunHistory(null, limit) : [];
       jsonResponse(res, 200, { ok: true, runs });
@@ -12772,7 +12772,7 @@ async function handleApi(req, res, url) {
       if (action === "runs") {
         const rawLimit = Number(url.searchParams.get("limit"));
         const limit = Number.isFinite(rawLimit) && rawLimit > 0
-          ? Math.min(rawLimit, 500)
+          ? Math.min(rawLimit, 5000)
           : 200;
         const runs = engine.getRunHistory ? engine.getRunHistory(workflowId, limit) : [];
         jsonResponse(res, 200, { ok: true, runs });
@@ -16509,6 +16509,7 @@ export function stopTelegramUiServer() {
 }
 
 export { getLocalLanIp };
+
 
 
 

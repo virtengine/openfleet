@@ -102,6 +102,47 @@ export async function loadSessions(filter = {}) {
 }
 
 export async function loadSessionMessages(id, opts = {}) {
+  const parseApiError = (err) => {
+    const raw = String(err?.message || "").trim();
+    if (!raw) return "";
+    try {
+      const parsed = JSON.parse(raw);
+      if (parsed && typeof parsed.error === "string") {
+        return String(parsed.error).trim();
+      }
+    } catch {
+      // Not a JSON API error body.
+    }
+    return raw;
+  };
+  const isScopedSessionNotFound = (err) => {
+    const message = parseApiError(err).toLowerCase();
+    return (
+      message.includes("session not found") ||
+      message.includes("request failed (404)")
+    );
+  };
+  const buildMessagesUrl = (path, limit, offset) => {
+    try {
+      const parsed = new URL(path, globalThis.location?.origin || "http://localhost");
+      parsed.searchParams.set("limit", String(limit));
+      if (offset != null) {
+        parsed.searchParams.set("offset", String(offset));
+      }
+      return `${parsed.pathname}${parsed.search}`;
+    } catch {
+      const join = path.includes("?") ? "&" : "?";
+      const parts = [`limit=${encodeURIComponent(String(limit))}`];
+      if (offset != null) {
+        parts.push(`offset=${encodeURIComponent(String(offset))}`);
+      }
+      return `${path}${join}${parts.join("&")}`;
+    }
+  };
+  const fetchSessionAtPath = async (path, limit, offset) => {
+    const url = buildMessagesUrl(path, limit, offset);
+    return apiFetch(url, { _silent: true });
+  };
   try {
     const baseUrl = sessionPath(id);
     if (!baseUrl) return { ok: false, error: "invalid" };
@@ -110,24 +151,18 @@ export async function loadSessionMessages(id, opts = {}) {
       Number.isFinite(requestedLimit) && requestedLimit > 0
         ? Math.min(Math.floor(requestedLimit), MAX_SESSION_PAGE_SIZE)
         : DEFAULT_SESSION_PAGE_SIZE;
-    const url = (() => {
-      try {
-        const parsed = new URL(baseUrl, globalThis.location?.origin || "http://localhost");
-        parsed.searchParams.set("limit", String(limit));
-        if (opts.offset != null) {
-          parsed.searchParams.set("offset", String(opts.offset));
-        }
-        return `${parsed.pathname}${parsed.search}`;
-      } catch {
-        const join = baseUrl.includes("?") ? "&" : "?";
-        const parts = [`limit=${encodeURIComponent(String(limit))}`];
-        if (opts.offset != null) {
-          parts.push(`offset=${encodeURIComponent(String(opts.offset))}`);
-        }
-        return `${baseUrl}${join}${parts.join("&")}`;
-      }
-    })();
-    const res = await apiFetch(url, { _silent: true });
+    const fallbackUrl = buildSessionApiPath(id, "", { workspace: "all" });
+    let res;
+    try {
+      res = await fetchSessionAtPath(baseUrl, limit, opts.offset);
+    } catch (err) {
+      const shouldRetryAll =
+        Boolean(fallbackUrl) &&
+        fallbackUrl !== baseUrl &&
+        isScopedSessionNotFound(err);
+      if (!shouldRetryAll) throw err;
+      res = await fetchSessionAtPath(fallbackUrl, limit, opts.offset);
+    }
     if (res?.session) {
       const normalized = dedupeMessages(res.session.messages || []);
       if (opts.prepend && sessionMessages.value?.length) {
@@ -140,12 +175,8 @@ export async function loadSessionMessages(id, opts = {}) {
       sessionPagination.value = res.pagination || null;
       return { ok: true, messages: normalized, pagination: res.pagination || null };
     }
-    sessionMessages.value = [];
-    sessionPagination.value = null;
     return { ok: false, error: "empty" };
   } catch {
-    sessionMessages.value = [];
-    sessionPagination.value = null;
     return { ok: false, error: "unavailable" };
   }
 }

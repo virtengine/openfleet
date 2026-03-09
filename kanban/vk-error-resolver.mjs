@@ -17,11 +17,15 @@
  * - Only resolves for successfully completed tasks
  */
 
-import { spawn, execSync } from "node:child_process";
+import { spawn, spawnSync, execSync } from "node:child_process";
 import { existsSync, mkdirSync, writeFileSync, readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { fileURLToPath } from "url";
 import { getWorktreeManager } from "../workspace/worktree-manager.mjs";
+import {
+  evaluateBranchSafetyForPush,
+  sanitizeGitEnv,
+} from "../git/git-safety.mjs";
 
 const __dirname = resolve(fileURLToPath(new URL(".", import.meta.url)));
 
@@ -63,6 +67,31 @@ const ERROR_PATTERNS = [
 function extractBranch(logLine) {
   const branchMatch = logLine.match(/ve\/[\w-]+/);
   return branchMatch ? branchMatch[0] : null;
+}
+
+function runGit(args, cwd, opts = {}) {
+  const result = spawnSync("git", args, {
+    cwd,
+    encoding: "utf8",
+    stdio: ["ignore", "pipe", "pipe"],
+    shell: false,
+    timeout: opts.timeout ?? 30_000,
+    env: sanitizeGitEnv(process.env, opts.env || {}),
+  });
+  if (result.status === 0) {
+    return String(result.stdout || "").trim();
+  }
+  const stderr = String(result.stderr || result.stdout || result.error?.message || "git command failed").trim();
+  throw new Error(stderr || "git command failed");
+}
+
+function assertPushSafe(worktreePath, branch) {
+  const safety = evaluateBranchSafetyForPush(worktreePath, { baseBranch: "main" });
+  if (!safety.safe) {
+    throw new Error(
+      `refusing git mutation on ${branch}: ${safety.reason || "branch safety check failed"}`,
+    );
+  }
 }
 
 // ── State Management ─────────────────────────────────────────────────────────
@@ -196,26 +225,22 @@ class UncommittedChangesResolver {
     }
 
     try {
+      assertPushSafe(worktreePath, branch);
+
       // Add uncommitted files
-      execSync("git add .", {
-        cwd: worktreePath,
-        stdio: "pipe",
-        env: { ...process.env, GIT_EDITOR: ":", GIT_MERGE_AUTOEDIT: "no" },
+      runGit(["add", "."], worktreePath, {
+        env: { GIT_EDITOR: ":", GIT_MERGE_AUTOEDIT: "no" },
       });
 
       // Commit changes
       const commitMsg = "chore(bosun): add uncommitted changes";
-      execSync(`git commit -m "${commitMsg}" --no-edit`, {
-        cwd: worktreePath,
-        stdio: "pipe",
-        env: { ...process.env, GIT_EDITOR: ":", GIT_MERGE_AUTOEDIT: "no" },
+      runGit(["commit", "-m", commitMsg, "--no-edit"], worktreePath, {
+        env: { GIT_EDITOR: ":", GIT_MERGE_AUTOEDIT: "no" },
       });
 
       // Push to remote
-      execSync(`git push origin ${branch}`, {
-        cwd: worktreePath,
-        stdio: "pipe",
-      });
+      assertPushSafe(worktreePath, branch);
+      runGit(["push", "origin", branch], worktreePath);
 
       console.log(
         `[vk-error-resolver] ✓ Resolved uncommitted changes on ${branch}`,
@@ -255,28 +280,19 @@ class PushFailureResolver {
 
     try {
       // Fetch latest from remote
-      execSync(`git fetch origin ${branch}`, {
-        cwd: worktreePath,
-        stdio: "pipe",
-      });
+      assertPushSafe(worktreePath, branch);
+      runGit(["fetch", "origin", branch], worktreePath);
 
       // Check if behind
-      const behind = execSync(`git rev-list --count HEAD..origin/${branch}`, {
-        cwd: worktreePath,
-        encoding: "utf8",
-      }).trim();
+      const behind = runGit(["rev-list", "--count", `HEAD..origin/${branch}`], worktreePath);
 
       if (parseInt(behind) > 0) {
         // Rebase and retry push
-        execSync(`git rebase origin/${branch}`, {
-          cwd: worktreePath,
-          stdio: "pipe",
-          env: { ...process.env, GIT_EDITOR: ":", GIT_MERGE_AUTOEDIT: "no" },
+        runGit(["rebase", `origin/${branch}`], worktreePath, {
+          env: { GIT_EDITOR: ":", GIT_MERGE_AUTOEDIT: "no" },
         });
-        execSync(`git push origin ${branch} --force-with-lease`, {
-          cwd: worktreePath,
-          stdio: "pipe",
-        });
+        assertPushSafe(worktreePath, branch);
+        runGit(["push", "origin", branch, "--force-with-lease"], worktreePath);
 
         console.log(
           `[vk-error-resolver] ✓ Resolved push failure on ${branch} (rebased)`,
@@ -286,10 +302,8 @@ class PushFailureResolver {
       }
 
       // Try force push as last resort
-      execSync(`git push origin ${branch} --force-with-lease`, {
-        cwd: worktreePath,
-        stdio: "pipe",
-      });
+      assertPushSafe(worktreePath, branch);
+      runGit(["push", "origin", branch, "--force-with-lease"], worktreePath);
 
       console.log(
         `[vk-error-resolver] ✓ Resolved push failure on ${branch} (force-pushed)`,
@@ -345,22 +359,12 @@ class CIRetriggerResolver {
         }
 
         try {
-          execSync(
-            'git commit --allow-empty -m "chore: trigger CI" --no-edit',
-            {
-              cwd: worktreePath,
-              stdio: "pipe",
-              env: {
-                ...process.env,
-                GIT_EDITOR: ":",
-                GIT_MERGE_AUTOEDIT: "no",
-              },
-            },
-          );
-          execSync(`git push origin ${branch}`, {
-            cwd: worktreePath,
-            stdio: "pipe",
+          assertPushSafe(worktreePath, branch);
+          runGit(["commit", "--allow-empty", "-m", "chore: trigger CI", "--no-edit"], worktreePath, {
+            env: { GIT_EDITOR: ":", GIT_MERGE_AUTOEDIT: "no" },
           });
+          assertPushSafe(worktreePath, branch);
+          runGit(["push", "origin", branch], worktreePath);
 
           console.log(`[vk-error-resolver] ✓ Triggered CI for PR #${prNumber}`);
           this.stateManager.clearSignature(signature);

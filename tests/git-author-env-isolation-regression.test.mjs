@@ -25,4 +25,16 @@ describe("git author env isolation regression", () => {
     expect(lifecycle).toContain('"GIT_COMMON_DIR"');
     expect(lifecycle).toContain('"GIT_ALTERNATE_OBJECT_DIRECTORIES"');
   });
+
+  it("routes live git mutations through shared safety sanitization", () => {
+    const gitSafety = read("git/git-safety.mjs");
+    const worktreeManager = read("workspace/worktree-manager.mjs");
+    const taskExecutor = read("task/task-executor.mjs");
+    const resolver = read("kanban/vk-error-resolver.mjs");
+
+    expect(gitSafety).toContain("export function sanitizeGitEnv");
+    expect(worktreeManager).toContain("return sanitizeGitEnv(process.env, GIT_ENV);");
+    expect(taskExecutor).toContain('env: sanitizeGitEnv()');
+    expect(resolver).toContain("env: sanitizeGitEnv(process.env, opts.env || {})");
+  });
 });
