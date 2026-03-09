@@ -673,6 +673,23 @@ async function withTemporaryEnv(overrides, fn) {
   }
 }
 
+function applyNodeWarningSuppressionEnv(envInput = process.env) {
+  const baseEnv = envInput && typeof envInput === "object"
+    ? { ...envInput }
+    : { ...process.env };
+  if (baseEnv.BOSUN_SUPPRESS_NODE_WARNINGS === "0" || process.env.BOSUN_SUPPRESS_NODE_WARNINGS === "0") {
+    return baseEnv;
+  }
+  const optOut = String(baseEnv.BOSUN_SUPPRESS_NODE_WARNINGS ?? process.env.BOSUN_SUPPRESS_NODE_WARNINGS ?? "")
+    .trim()
+    .toLowerCase();
+  if (optOut === "0" || optOut === "false" || optOut === "off") {
+    return baseEnv;
+  }
+  baseEnv.NODE_NO_WARNINGS = "1";
+  return baseEnv;
+}
+
 /**
  * Build Codex SDK constructor options with Azure auto-detection.
  * When OPENAI_BASE_URL points to Azure, configures the SDK with Azure
@@ -691,7 +708,7 @@ function buildCodexSdkOptions(envInput = process.env) {
           return false;
         }
       })();
-  const env = { ...resolvedEnv };
+  const env = applyNodeWarningSuppressionEnv({ ...resolvedEnv });
   // Always strip OPENAI_BASE_URL — for Azure we use config overrides,
   // for non-Azure the CLI should use its built-in endpoint.
   delete env.OPENAI_BASE_URL;
@@ -1115,7 +1132,9 @@ async function launchCodexThread(prompt, cwd, timeoutMs, extra = {}) {
     envOverrides && typeof envOverrides === "object"
       ? { ...process.env, ...envOverrides }
       : process.env;
-  const codexOpts = buildCodexSdkOptions(codexRuntimeEnv);
+  const codexOpts = buildCodexSdkOptions(
+    applyNodeWarningSuppressionEnv(codexRuntimeEnv),
+  );
   const modelOverride = String(extra?.model || "").trim();
   if (modelOverride) {
     codexOpts.env = { ...(codexOpts.env || {}), CODEX_MODEL: modelOverride };
@@ -1447,12 +1466,13 @@ async function launchCopilotThread(prompt, cwd, timeoutMs, extra = {}) {
         COPILOT_ALLOW_ALL: runtimeEnv.COPILOT_ALLOW_ALL || "true",
       }
     : runtimeEnv;
+  const safeClientEnv = applyNodeWarningSuppressionEnv(clientEnv);
   try {
     await withSanitizedOpenAiEnv(async () => {
       let clientOpts;
       if (sessionMode === "remote" && cliUrl) {
         // Remote mode: connect to existing server (limited model/tool access)
-        clientOpts = { cliUrl, env: clientEnv };
+        clientOpts = { cliUrl, env: safeClientEnv };
       } else {
         // Local mode (default): stdio for full capability
         // Write temp MCP config if resolved MCP servers are available
@@ -1472,7 +1492,7 @@ async function launchCopilotThread(prompt, cwd, timeoutMs, extra = {}) {
         });
         clientOpts = {
           cwd,
-          env: clientEnv,
+          env: safeClientEnv,
           cliArgs: cliLaunch.cliArgs,
           useStdio: true,
         };
@@ -2520,6 +2540,7 @@ const THREAD_MAX_AGE_MS = 12 * 60 * 60 * 1000; // 12 hours
 
 /** Maximum turns before a thread is considered exhausted and must be replaced */
 const MAX_THREAD_TURNS = 100;
+const MONITOR_MONITOR_THREAD_REFRESH_TURNS_REMAINING = parseBoundedNumber(process.env.DEVMODE_MONITOR_MONITOR_THREAD_REFRESH_TURNS_REMAINING, 5, 1, MAX_THREAD_TURNS);
 
 /** Maximum absolute age for a thread (regardless of lastUsedAt) */
 const THREAD_MAX_ABSOLUTE_AGE_MS = 24 * 60 * 60 * 1000; // 24 hours
@@ -2556,6 +2577,10 @@ const activeSessions = new Map();
 
 /** Threshold for approaching-exhaustion warning (80% of MAX_THREAD_TURNS). */
 const THREAD_EXHAUSTION_WARNING_THRESHOLD = Math.floor(MAX_THREAD_TURNS * 0.8);
+
+function shouldForceRefreshMonitorMonitorThread(taskKey, turnsRemaining) {
+  return String(taskKey || "").trim() === "monitor-monitor" && turnsRemaining <= MONITOR_MONITOR_THREAD_REFRESH_TURNS_REMAINING;
+}
 
 /**
  * Register an active session so the supervisor can steer it mid-execution.
@@ -2793,7 +2818,9 @@ async function resumeCodexThread(threadId, prompt, cwd, timeoutMs, extra = {}) {
     envOverrides && typeof envOverrides === "object"
       ? { ...process.env, ...envOverrides }
       : process.env;
-  const codexOpts = buildCodexSdkOptions(codexRuntimeEnv);
+  const codexOpts = buildCodexSdkOptions(
+    applyNodeWarningSuppressionEnv(codexRuntimeEnv),
+  );
   const modelOverride = String(extra?.model || "").trim();
   if (modelOverride) {
     codexOpts.env = { ...(codexOpts.env || {}), CODEX_MODEL: modelOverride };
@@ -3029,6 +3056,17 @@ export async function launchOrResumeThread(
   // Check registry for existing thread
   const existing = threadRegistry.get(taskKey);
   if (existing && existing.alive && existing.threadId) {
+    const turnsRemaining = MAX_THREAD_TURNS - Number(existing.turnCount || 0);
+    if (shouldForceRefreshMonitorMonitorThread(taskKey, turnsRemaining)) {
+      console.log(
+        `${TAG} proactively refreshing monitor-monitor thread (turnsRemaining=${turnsRemaining}, threshold=${MONITOR_MONITOR_THREAD_REFRESH_TURNS_REMAINING})`,
+      );
+      existing.alive = false;
+      existing.lastError = `monitor_monitor_proactive_refresh:${turnsRemaining}`;
+      threadRegistry.set(taskKey, existing);
+      saveThreadRegistry().catch(() => {});
+    }
+    if (existing.alive && existing.threadId) {
     // Approaching-exhaustion warning (non-blocking — still proceeds with resume)
     if (
       existing.turnCount >= THREAD_EXHAUSTION_WARNING_THRESHOLD &&
@@ -3202,6 +3240,7 @@ export async function launchOrResumeThread(
         saveThreadRegistry().catch(() => {});
       }
     } // close else for turn-count / absolute-age guard
+    }
   }
 
   // Fresh launch — pre-register a thread as soon as the SDK exposes one.

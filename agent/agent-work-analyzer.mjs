@@ -69,9 +69,22 @@ const ALERT_COOLDOWN_RETENTION_MS = Math.max(
   FAILED_SESSION_TRANSIENT_ALERT_MIN_COOLDOWN_MS * 3,
   3 * 60 * 60 * 1000,
 ); // keep cooldown history bounded
-const ALERT_COOLDOWN_REPLAY_MAX_BYTES = Math.max(
-  256 * 1024,
-  Number(process.env.AGENT_ALERT_COOLDOWN_REPLAY_MAX_BYTES || 2 * 1024 * 1024) || 2 * 1024 * 1024,
+function normalizeReplayMaxBytes(value) {
+  const DEFAULT_REPLAY_MAX_BYTES = 8 * 1024 * 1024;
+  const MIN_REPLAY_MAX_BYTES = 256 * 1024;
+  const MAX_REPLAY_MAX_BYTES = 64 * 1024 * 1024;
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed) || parsed <= 0) {
+    return DEFAULT_REPLAY_MAX_BYTES;
+  }
+  const bounded = Math.trunc(parsed);
+  if (bounded < MIN_REPLAY_MAX_BYTES) return MIN_REPLAY_MAX_BYTES;
+  if (bounded > MAX_REPLAY_MAX_BYTES) return MAX_REPLAY_MAX_BYTES;
+  return bounded;
+}
+
+const ALERT_COOLDOWN_REPLAY_MAX_BYTES = normalizeReplayMaxBytes(
+  process.env.AGENT_ALERT_COOLDOWN_REPLAY_MAX_BYTES,
 );
 
 function getAlertCooldownMs(alert) {
