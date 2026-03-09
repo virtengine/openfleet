@@ -33,7 +33,7 @@ import {
   detectLegacySetup,
   migrateFromLegacy,
 } from "./compat.mjs";
-import { resolveRepoRoot } from "./config/repo-root.mjs";
+import { resolveRepoLocalBosunDir, resolveRepoRoot } from "./config/repo-root.mjs";
 
 const MONITOR_START_MAX_WAIT_MS = Math.max(
   0,
@@ -76,7 +76,6 @@ function showHelp() {
     bosun [options]
 
   COMMANDS
-    audit <subcommand>          Run codebase annotation audit workflows
     --setup                     Launch the web-based setup wizard (default)
     --setup-terminal            Run the legacy terminal setup wizard
     --where                     Show the resolved bosun config directory
@@ -242,6 +241,16 @@ function resolveConfigDirForCli() {
   if (configDirArg) return resolve(configDirArg);
   if (process.env.BOSUN_HOME) return resolve(process.env.BOSUN_HOME);
   if (process.env.BOSUN_DIR) return resolve(process.env.BOSUN_DIR);
+
+  const repoRootArg = getArgValue("--repo-root");
+  const repoRoot = repoRootArg
+    ? resolve(repoRootArg)
+    : process.env.REPO_ROOT
+      ? resolve(process.env.REPO_ROOT)
+      : resolveRepoRoot({ cwd: process.cwd() });
+  const repoLocalConfigDir = resolveRepoLocalBosunDir(repoRoot);
+  if (repoLocalConfigDir) return repoLocalConfigDir;
+
   const preferWindowsDirs =
     process.platform === "win32" && !isWslInteropRuntime();
   const baseDir = preferWindowsDirs
@@ -309,18 +318,22 @@ const DAEMON_RESTART_DELAY_MS = Math.max(
   1000,
   Number(process.env.BOSUN_DAEMON_RESTART_DELAY_MS || 5000) || 5000,
 );
+const DAEMON_MAX_RESTART_DELAY_MS = Math.max(
+  DAEMON_RESTART_DELAY_MS,
+  Number(process.env.BOSUN_DAEMON_MAX_RESTART_DELAY_MS || 120000) || 120000,
+);
 const DAEMON_MAX_RESTARTS = Math.max(
   0,
-  Number(process.env.BOSUN_DAEMON_MAX_RESTARTS || 0) || 0,
+  Number(process.env.BOSUN_DAEMON_MAX_RESTARTS || 25) || 25,
 );
 const DAEMON_INSTANT_CRASH_WINDOW_MS = Math.max(
   1000,
-  Number(process.env.BOSUN_DAEMON_INSTANT_CRASH_WINDOW_MS || 15000) ||
-    15000,
+  Number(process.env.BOSUN_DAEMON_INSTANT_CRASH_WINDOW_MS || 60000) ||
+    60000,
 );
 const DAEMON_MAX_INSTANT_RESTARTS = Math.max(
   1,
-  Number(process.env.BOSUN_DAEMON_MAX_INSTANT_RESTARTS || 3) || 3,
+  Number(process.env.BOSUN_DAEMON_MAX_INSTANT_RESTARTS || 5) || 5,
 );
 let daemonRestartCount = 0;
 const daemonCrashTracker = createDaemonCrashTracker({
@@ -1222,12 +1235,6 @@ async function main() {
     const taskArgs = args.slice(commandStartIndex + 1);
     await runTaskCli(taskArgs);
     process.exit(0);
-  }
-
-  if (args[0] === "audit") {
-    const { runAuditCli } = await import("./lib/codebase-audit.mjs");
-    const { exitCode } = await runAuditCli(args.slice(1));
-    process.exit(exitCode ?? 0);
   }
 
   // Handle --help
@@ -2147,7 +2154,7 @@ function runMonitor({ restartReason = "" } = {}) {
         }
         monitorChild = fork(monitorPath, process.argv.slice(2), {
           stdio: "inherit",
-          execArgv: ["--max-old-space-size=4096"],
+          execArgv: ["--max-old-space-size=4096", "--trace-warnings"],
           env: childEnv,
           windowsHide: IS_DAEMON_CHILD && process.platform === "win32",
         });
@@ -2183,7 +2190,12 @@ function runMonitor({ restartReason = "" } = {}) {
             if (shouldAutoRestart) {
               const crashState = daemonCrashTracker.recordExit();
               daemonRestartCount += 1;
-              const delayMs = isOSKill ? 5000 : DAEMON_RESTART_DELAY_MS;
+              // Exponential backoff: base delay doubles each attempt, capped at max
+              const backoffDelay = Math.min(
+                DAEMON_RESTART_DELAY_MS * Math.pow(2, Math.min(daemonRestartCount - 1, 10)),
+                DAEMON_MAX_RESTART_DELAY_MS,
+              );
+              const delayMs = isOSKill ? 5000 : backoffDelay;
               if (IS_DAEMON_CHILD && crashState.exceeded) {
                 const durationSec = Math.max(
                   1,
@@ -2291,4 +2303,3 @@ main().catch(async (err) => {
   await sendCrashNotification(1, null).catch(() => {});
   process.exit(1);
 });
-

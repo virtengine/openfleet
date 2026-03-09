@@ -12,6 +12,7 @@
  *   workflow-templates/ci-cd.mjs      — Build & Deploy, Release Pipeline, Canary Deploy
  *   workflow-templates/reliability.mjs — Error Recovery, Anomaly Watchdog, Workspace Hygiene, Health Check, Task Finalization Guard, Task Repair Worktree, Task Orphan Worktree Recovery, Incident Response, Task Archiver, Sync Engine
  *   workflow-templates/security.mjs   — Dependency Audit, Secret Scanner
+ *   workflow-templates/code-quality.mjs — Code Quality Striker
  *
  * To add a new template:
  *   1. Choose the appropriate category file (or create a new one)
@@ -96,6 +97,11 @@ import {
   SECRET_SCANNER_TEMPLATE,
 } from "../workflow-templates/security.mjs";
 
+// Code Quality (structural refactor, agentic maintenance)
+import {
+  CODE_QUALITY_STRIKER_TEMPLATE,
+} from "../workflow-templates/code-quality.mjs";
+
 // Task Lifecycle (workflow-first core)
 import {
   TASK_LIFECYCLE_TEMPLATE,
@@ -177,6 +183,7 @@ export {
   SYNC_ENGINE_TEMPLATE,
   DEPENDENCY_AUDIT_TEMPLATE,
   SECRET_SCANNER_TEMPLATE,
+  CODE_QUALITY_STRIKER_TEMPLATE,
   TASK_LIFECYCLE_TEMPLATE,
   VE_ORCHESTRATOR_LITE_TEMPLATE,
   TASK_BATCH_PROCESSOR_TEMPLATE,
@@ -213,7 +220,8 @@ export const TEMPLATE_CATEGORIES = Object.freeze({
   research:    { label: "Research",     icon: ":microscope:", order: 8 },
   coverage:    { label: "Coverage",     icon: ":chart:", order: 9 },
   "mcp-integration": { label: "MCP Integration", icon: ":plug:", order: 10 },
-  custom:      { label: "Custom",       icon: ":settings:", order: 11 },
+  maintenance: { label: "Maintenance",   icon: ":wrench:",   order: 11 },
+  custom:      { label: "Custom",       icon: ":settings:", order: 12 },
 });
 
 export const WORKFLOW_TEMPLATES = Object.freeze([
@@ -259,6 +267,8 @@ export const WORKFLOW_TEMPLATES = Object.freeze([
   // ── Security ──
   DEPENDENCY_AUDIT_TEMPLATE,
   SECRET_SCANNER_TEMPLATE,
+  // ── Maintenance (structural quality, agentic dev) ──
+  CODE_QUALITY_STRIKER_TEMPLATE,
   // ── Task Lifecycle (workflow-first core) ──
   TASK_LIFECYCLE_TEMPLATE,
   VE_ORCHESTRATOR_LITE_TEMPLATE,

@@ -43,6 +43,14 @@ const WORKFLOW_AGENT_EVENT_PREVIEW_LIMIT = (() => {
 })();
 const BOSUN_ATTACHED_PR_LABEL = "bosun-attached";
 
+function shouldBypassGhPrCreationForTests() {
+  return Boolean(process.env.VITEST) && process.env.BOSUN_TEST_ALLOW_GH !== "true";
+}
+
+function shouldSkipGitRefreshForTests() {
+  return Boolean(process.env.VITEST) && process.env.BOSUN_TEST_ALLOW_GIT_REFRESH !== "true";
+}
+
 function makeIsolatedGitEnv(extra = {}) {
   const env = { ...process.env, ...extra };
   for (const key of [
@@ -3296,6 +3304,27 @@ registerNodeType("action.create_pr", {
 
     const cmd = args.join(" ");
     ctx.log(node.id, `Creating PR: ${cmd}`);
+
+    if (shouldBypassGhPrCreationForTests()) {
+      ctx.log(node.id, "Skipping gh CLI PR creation in test runtime; using Bosun-managed handoff");
+      return {
+        success: true,
+        handedOff: true,
+        lifecycle: "bosun_managed",
+        action: "pr_handoff",
+        message: "gh CLI skipped in test runtime; Bosun manages pull-request lifecycle.",
+        title,
+        body,
+        base,
+        branch: branch || null,
+        draft,
+        labels,
+        reviewers,
+        cwd,
+        repoSlug: repoSlug || null,
+        ghError: "skipped_in_test_runtime",
+      };
+    }
 
     try {
       const output = execSync(cmd, execOptions);
@@ -8355,14 +8384,16 @@ registerNodeType("action.acquire_worktree", {
     try {
       // Ensure base branch ref is fresh
       const baseBranchShort = baseBranch.replace(/^origin\//, "");
-      try {
-        execSync(`git fetch origin ${baseBranchShort} --no-tags`, {
-          cwd: repoRoot, encoding: "utf8",
-          timeout: fetchTimeout,
-          stdio: ["ignore", "pipe", "pipe"],
-        });
-      } catch {
-        // Best-effort fetch — offline or transient issue is OK
+      if (!shouldSkipGitRefreshForTests()) {
+        try {
+          execSync(`git fetch origin ${baseBranchShort} --no-tags`, {
+            cwd: repoRoot, encoding: "utf8",
+            timeout: fetchTimeout,
+            stdio: ["ignore", "pipe", "pipe"],
+          });
+        } catch {
+          // Best-effort fetch — offline or transient issue is OK
+        }
       }
 
       const worktreesDir = resolve(repoRoot, ".bosun", "worktrees");
@@ -8391,14 +8422,16 @@ registerNodeType("action.acquire_worktree", {
 
       if (existsSync(worktreePath)) {
         // Reuse existing worktree — pull latest base if possible
-        try {
-          execSync(`git pull --rebase origin ${baseBranchShort}`, {
-            cwd: worktreePath, encoding: "utf8",
-            timeout: fetchTimeout,
-            stdio: ["ignore", "pipe", "pipe"],
-          });
-        } catch {
-          /* rebase failures are non-fatal for reuse */
+        if (!shouldSkipGitRefreshForTests()) {
+          try {
+            execSync(`git pull --rebase origin ${baseBranchShort}`, {
+              cwd: worktreePath, encoding: "utf8",
+              timeout: fetchTimeout,
+              stdio: ["ignore", "pipe", "pipe"],
+            });
+          } catch {
+            /* rebase failures are non-fatal for reuse */
+          }
         }
         ctx.data.worktreePath = worktreePath;
         ctx.data._worktreeCreated = false;

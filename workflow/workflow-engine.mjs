@@ -395,6 +395,7 @@ export class WorkflowEngine extends EventEmitter {
     super();
     this.workflowDir = opts.workflowDir || resolve(process.cwd(), ".bosun", WORKFLOW_DIR_NAME);
     this.runsDir = opts.runsDir || resolve(process.cwd(), ".bosun", WORKFLOW_RUNS_DIR);
+    this.detectInterruptedRuns = opts.detectInterruptedRuns !== false;
     this.services = opts.services || {};
     this._workflows = new Map();
     this._activeRuns = new Map();
@@ -666,7 +667,9 @@ export class WorkflowEngine extends EventEmitter {
     // Detect runs that were interrupted by a previous shutdown.
     // These are runs persisted to disk with status=RUNNING that are
     // NOT in our in-memory _activeRuns (because we just booted).
-    this._detectInterruptedRuns();
+    if (this.detectInterruptedRuns) {
+      this._detectInterruptedRuns();
+    }
   }
 
   /** Ensure storage directories exist */
@@ -2665,6 +2668,11 @@ export class WorkflowEngine extends EventEmitter {
 
 let _defaultEngine = null;
 
+function shouldDisableDefaultInterruptedRunDetection(opts = {}) {
+  const isTestProcess = Boolean(process.env.VITEST) || process.env.NODE_ENV === "test";
+  return isTestProcess && !opts.workflowDir && !opts.runsDir;
+}
+
 function mergeWorkflowServices(currentServices, incomingServices) {
   const current =
     currentServices && typeof currentServices === "object"
@@ -2687,7 +2695,14 @@ function mergeWorkflowServices(currentServices, incomingServices) {
  */
 export function getWorkflowEngine(opts = {}) {
   if (!_defaultEngine) {
-    _defaultEngine = new WorkflowEngine(opts);
+    const engineOpts = opts && typeof opts === "object" ? { ...opts } : {};
+    if (
+      engineOpts.detectInterruptedRuns === undefined &&
+      shouldDisableDefaultInterruptedRunDetection(engineOpts)
+    ) {
+      engineOpts.detectInterruptedRuns = false;
+    }
+    _defaultEngine = new WorkflowEngine(engineOpts);
     _defaultEngine.load();
   } else if (opts && typeof opts === "object") {
     if (opts.services && typeof opts.services === "object") {

@@ -1115,6 +1115,10 @@ function parseTemplateIdList(rawValue) {
     .filter(Boolean);
 }
 
+function shouldBootstrapDefaultWorkflowSingleton() {
+  return !process.env.VITEST;
+}
+
 function resolveWorkflowBootstrapSelection(templatesModule) {
   let configWorkflowDefaults = {};
   try {
@@ -1328,28 +1332,33 @@ async function getWorkflowEngineModule() {
           onTaskWorkflowEvent: handleTaskWorkflowTraceEvent,
         };
         _wfServices = services;
-        const engine = _wfEngine.getWorkflowEngine({ services });
-        if (!_wfTaskTraceHookRegistered && typeof engine?.registerTaskTraceHook === "function") {
-          engine.registerTaskTraceHook((event) => {
-            handleTaskWorkflowTraceEvent(event);
-          });
-          _wfTaskTraceHookRegistered = true;
-        }
         _wfServicesReady = true;
 
-        // Resume any runs that were interrupted by a previous shutdown.
-        // This must happen AFTER services are wired so node executors work.
-        if (typeof engine.resumeInterruptedRuns === "function") {
-          engine.resumeInterruptedRuns().catch((err) => {
-            console.warn("[workflows] Failed to resume interrupted runs:", err.message);
-          });
+        if (shouldBootstrapDefaultWorkflowSingleton()) {
+          const engine = _wfEngine.getWorkflowEngine({ services });
+          if (!_wfTaskTraceHookRegistered && typeof engine?.registerTaskTraceHook === "function") {
+            engine.registerTaskTraceHook((event) => {
+              handleTaskWorkflowTraceEvent(event);
+            });
+            _wfTaskTraceHookRegistered = true;
+          }
+
+          // Resume any runs that were interrupted by a previous shutdown.
+          // This must happen AFTER services are wired so node executors work.
+          if (typeof engine.resumeInterruptedRuns === "function") {
+            engine.resumeInterruptedRuns().catch((err) => {
+              console.warn("[workflows] Failed to resume interrupted runs:", err.message);
+            });
+          }
+        } else {
+          _wfRecommendedInstalled = true;
         }
       } catch (err) {
         console.warn("[workflows] services setup failed (engine still usable):", err.message);
       }
     }
 
-    if (!_wfRecommendedInstalled && _wfTemplates) {
+    if (!_wfRecommendedInstalled && _wfTemplates && shouldBootstrapDefaultWorkflowSingleton()) {
       try {
         const engine = _wfEngine.getWorkflowEngine();
         const selection = resolveWorkflowBootstrapSelection(_wfTemplates);
@@ -15663,7 +15672,7 @@ export async function startTelegramUiServer(options = {}) {
   if (uiServer) return uiServer;
 
   injectUiDependencies(options.dependencies || {});
-  await ensureTaskStoreApi();
+  const taskStoreModule = await ensureTaskStoreApi();
 
   const rawPort = options.port ?? getDefaultPort();
   const configuredPort = Number(rawPort);
@@ -15671,6 +15680,15 @@ export async function startTelegramUiServer(options = {}) {
     Boolean(process.env.VITEST) ||
     process.env.NODE_ENV === "test" ||
     Boolean(process.env.JEST_WORKER_ID);
+  if (isTestRun && typeof taskStoreModule?.configureTaskStore === "function") {
+    const isolatedStorePath = resolve(
+      repoRoot,
+      ".bosun",
+      ".cache",
+      `kanban-state-vitest-${process.pid}-${Date.now()}-${Math.random().toString(16).slice(2, 8)}.json`,
+    );
+    taskStoreModule.configureTaskStore({ storePath: isolatedStorePath });
+  }
   const skipInstanceLock =
     options.skipInstanceLock === true ||
     process.env.BOSUN_UI_SKIP_INSTANCE_LOCK === "1" ||
