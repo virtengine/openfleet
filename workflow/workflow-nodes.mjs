@@ -2656,7 +2656,12 @@ registerNodeType("action.execute_workflow", {
 
     if (mode === "dispatch") {
       ctx.log(node.id, `Dispatching workflow "${workflowId}"`);
-      const dispatched = engine.execute(workflowId, childInput);
+      let dispatched;
+      try {
+        dispatched = Promise.resolve(engine.execute(workflowId, childInput));
+      } catch (err) {
+        dispatched = Promise.reject(err);
+      }
       dispatched
         .then((childCtx) => {
           const status = childCtx?.errors?.length ? "failed" : "completed";
@@ -5305,7 +5310,12 @@ const UNIVERSAL_FLOW_NODE = {
 
     if (mode === "dispatch") {
       ctx.log(node.id, `Dispatching universal workflow \"${workflowId}\"`);
-      const dispatched = engine.execute(workflowId, childInput);
+      let dispatched;
+      try {
+        dispatched = Promise.resolve(engine.execute(workflowId, childInput));
+      } catch (err) {
+        dispatched = Promise.reject(err);
+      }
       dispatched
         .then((childCtx) => {
           const status = childCtx?.errors?.length ? "failed" : "completed";
@@ -6073,7 +6083,12 @@ registerNodeType("action.invoke_workflow", {
     // ── Dispatch mode ──
     if (mode === "dispatch") {
       ctx.log(node.id, `Dispatching workflow "${workflowId}" (fire-and-forget)`);
-      const promise = engine.execute(workflowId, childInput);
+      let promise;
+      try {
+        promise = Promise.resolve(engine.execute(workflowId, childInput));
+      } catch (err) {
+        promise = Promise.reject(err);
+      }
       promise.catch((err) => {
         ctx.log(node.id, `Dispatched workflow "${workflowId}" failed: ${err.message}`, "error");
       });
@@ -9598,4 +9613,3 @@ registerNodeType("action.web_search", {
 // ═══════════════════════════════════════════════════════════════════════════
 
 export { registerNodeType, getNodeType, listNodeTypes } from "./workflow-engine.mjs";
-
