@@ -70,6 +70,13 @@ function resolveGitBinary(env = process.env) {
       "C:\\Program Files (x86)\\Git\\cmd\\git.exe",
       "C:\\Program Files (x86)\\Git\\bin\\git.exe",
     );
+  } else {
+    candidates.push(
+      "/usr/bin/git",
+      "/usr/local/bin/git",
+      "/bin/git",
+      "/opt/homebrew/bin/git",
+    );
   }
   for (const candidate of candidates) {
     if (candidate && existsSync(candidate)) return candidate;
