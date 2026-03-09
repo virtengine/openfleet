@@ -1035,7 +1035,8 @@ export async function executeFlow(templateId, formValues, rootDir, context = {})
 
     return completeRun(run.id, result, rootDir);
   } catch (err) {
-    return failRun(run.id, err.message || String(err), rootDir);
+    console.warn("[manual-flows] execution failed for " + run.id + ": " + (err?.message || String(err)));
+    return failRun(run.id, "Execution failed", rootDir);
   }
 }
 

@@ -6429,7 +6429,7 @@ async function maybeRestartTaskOnReopen({
         attempted: true,
         started: false,
         reason: "task_lookup_failed",
-        error: err?.message || String(err),
+        error: "Task lookup failed",
       };
     }
   }
