@@ -337,8 +337,22 @@ describe("task-executor", () => {
         remaining: 1,
         selectedCount: 1,
         blockedTasks: 1,
+        conflictEvents: 1,
+        waitMsTotal: 600,
+        waitSamples: 1,
+        maxWaitMs: 600,
         blockedByArea: { infra: 1 },
         saturatedAreas: ["infra"],
+        cycleAreaMetrics: {
+          infra: {
+            conflicts: 1,
+            blockedDispatches: 1,
+            selectedDispatches: 0,
+            waitMsTotal: 600,
+            waitSamples: 1,
+            maxWaitMs: 600,
+          },
+        },
       };
 
       const status = ex.getStatus();
@@ -353,6 +367,8 @@ describe("task-executor", () => {
           }),
           lastDispatch: expect.objectContaining({
             cycle: 4,
+            conflictEvents: 1,
+            waitMsTotal: 600,
             saturatedAreas: ["infra"],
           }),
         }),
@@ -600,6 +616,8 @@ describe("task-executor", () => {
         expect.objectContaining({
           cycle: 3,
           selectedCount: 2,
+          conflictEvents: expect.any(Number),
+          waitMsTotal: expect.any(Number),
         }),
       );
       expect(status.repoAreaLocks.areas).toEqual(
@@ -637,13 +655,37 @@ describe("task-executor", () => {
         expect.objectContaining({
           cycle: 1,
           blockedTasks: 1,
+          conflictEvents: 1,
           blockedByArea: expect.objectContaining({ infra: 1 }),
+          cycleAreaMetrics: expect.objectContaining({
+            infra: expect.objectContaining({
+              conflicts: 1,
+              blockedDispatches: 1,
+            }),
+          }),
         }),
       );
       expect(runtimePayload.repoAreaLockMetrics.infra).toEqual(
         expect.objectContaining({
           blockedDispatches: 1,
           conflicts: 1,
+        }),
+      );
+      expect(runtimePayload.repoAreaLockStatus).toEqual(
+        expect.objectContaining({
+          enabled: true,
+          configuredLimit: 1,
+          totals: expect.objectContaining({
+            dispatchCycles: 1,
+            conflictEvents: 1,
+          }),
+          areas: expect.arrayContaining([
+            expect.objectContaining({
+              area: "infra",
+              effectiveLimit: 1,
+              conflicts: 1,
+            }),
+          ]),
         }),
       );
     });
