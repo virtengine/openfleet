@@ -42,6 +42,13 @@ const RECONNECT_DELAY_MS = 3000; // Delay before reconnecting a dropped WebSocke
 const MAX_RECONNECT_ATTEMPTS = 10; // Max consecutive reconnect failures per process
 const SESSION_RECONNECT_DELAY_MS = 5000; // Delay before reconnecting a dropped session stream
 const MAX_SESSION_RECONNECT_ATTEMPTS = 15; // Max consecutive reconnect failures per session
+const PROCESS_ID_RE = /^[a-f0-9-]{8,64}$/i;
+
+function normalizeProcessId(processId) {
+  const raw = String(processId || "").trim();
+  if (!PROCESS_ID_RE.test(raw)) return null;
+  return raw.toLowerCase();
+}
 
 /**
  * VkLogStream - Captures real-time agent logs from VK execution processes.
@@ -569,8 +576,16 @@ export class VkLogStream {
    * @param {object} meta
    */
   #connectWebSocket(processId, meta = {}) {
-    const shortId = processId.slice(0, 8);
-    const wsUrl = `${this.#wsBaseUrl}/api/execution-processes/${processId}/raw-logs/ws`;
+    const normalizedProcessId = normalizeProcessId(processId);
+    if (!normalizedProcessId) {
+      console.warn(`[vk-log-stream] invalid processId for websocket connect: ${String(processId || "")}`);
+      return;
+    }
+    const shortId = normalizedProcessId.slice(0, 8);
+    const wsUrl = new URL(
+      `/api/execution-processes/${encodeURIComponent(normalizedProcessId)}/raw-logs/ws`,
+      this.#wsBaseUrl,
+    ).toString();
 
     let ws;
     try {
@@ -582,8 +597,8 @@ export class VkLogStream {
       return;
     }
 
-    this.#connections.set(processId, ws);
-    this.#reconnectCounts.set(processId, 0);
+    this.#connections.set(normalizedProcessId, ws);
+    this.#reconnectCounts.set(normalizedProcessId, 0);
 
     const logPrefix = `[vk-log-stream:${shortId}]`;
 
@@ -592,11 +607,11 @@ export class VkLogStream {
         `${logPrefix} connected to raw-logs WebSocket` +
           (meta.taskId ? ` (task: ${meta.taskId.slice(0, 8)})` : ""),
       );
-      this.#reconnectCounts.set(processId, 0);
+      this.#reconnectCounts.set(normalizedProcessId, 0);
     });
 
     ws.addEventListener("message", (event) => {
-      this.#handleMessage(processId, event.data, meta);
+      this.#handleMessage(normalizedProcessId, event.data, meta);
     });
 
     ws.addEventListener("close", (event) => {

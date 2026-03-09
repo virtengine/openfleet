@@ -5855,16 +5855,21 @@ export function getTelegramUiUrl() {
 
 function scrubStackTraces(payload) {
   if (payload == null) return payload;
+  if (payload instanceof Error) {
+    const safeMessage = String(payload.message || "Internal server error");
+    return scrubStackTraces({ error: safeMessage });
+  }
   if (typeof payload === "string") {
-    return payload.includes("\n") && payload.toLowerCase().includes(" at ")
-      ? "Internal server error"
-      : payload;
+    const lower = payload.toLowerCase();
+    const looksLikeStack = (payload.includes("\n") && lower.includes(" at ")) || lower.includes("error:\n    at ");
+    return looksLikeStack ? "Internal server error" : payload;
   }
   if (Array.isArray(payload)) return payload.map((item) => scrubStackTraces(item));
   if (typeof payload !== "object") return payload;
   const out = {};
   for (const [key, value] of Object.entries(payload)) {
-    if (key.toLowerCase() === "stack") continue;
+    const keyLower = key.toLowerCase();
+    if (keyLower === "stack") continue;
     out[key] = scrubStackTraces(value);
   }
   return out;

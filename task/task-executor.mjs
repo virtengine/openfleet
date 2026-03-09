@@ -966,16 +966,29 @@ function ensureBaseBranchAvailable(repoRoot, baseBranch, defaultTargetBranch) {
   }
 
   let remoteExists = false;
-  try {
-    const remoteCheck = spawnSync(
-      "git",
-      ["ls-remote", "--heads", "origin", branch],
-      { cwd: repoRoot, encoding: "utf8", timeout: 8000 },
-    );
-    remoteExists =
-      remoteCheck.status === 0 && (remoteCheck.stdout || "").trim().length > 0;
-  } catch {
-    remoteExists = false;
+  const remoteHeadRef = `refs/remotes/origin/${branch}`;
+  const remoteLocalCheck = spawnSync("git", ["show-ref", "--verify", remoteHeadRef], {
+    cwd: repoRoot,
+    encoding: "utf8",
+    timeout: 8000,
+  });
+  remoteExists = remoteLocalCheck.status === 0;
+  if (!remoteExists) {
+    try {
+      spawnSync("git", ["fetch", "origin", "--prune", "--quiet"], {
+        cwd: repoRoot,
+        encoding: "utf8",
+        timeout: 15000,
+      });
+      const refreshedCheck = spawnSync("git", ["show-ref", "--verify", remoteHeadRef], {
+        cwd: repoRoot,
+        encoding: "utf8",
+        timeout: 8000,
+      });
+      remoteExists = refreshedCheck.status === 0;
+    } catch {
+      remoteExists = false;
+    }
   }
 
   if (remoteExists) {
@@ -989,7 +1002,7 @@ function ensureBaseBranchAvailable(repoRoot, baseBranch, defaultTargetBranch) {
 
   const fallbackNorm = normalizeBaseBranch(fallback, "origin");
   try {
-    spawnSync("git", ["fetch", "origin", fallbackNorm.branch, "--quiet"], {
+    spawnSync("git", ["fetch", "origin", "--prune", "--quiet"], {
       cwd: repoRoot,
       encoding: "utf8",
       timeout: 15000,
