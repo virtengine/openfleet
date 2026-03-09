@@ -38,8 +38,9 @@ export const PR_MERGE_STRATEGY_TEMPLATE = {
     baseBranch: "main",
   },
   nodes: [
-    node("trigger", "trigger.pr_event", "PR Ready for Review", {
+    node("trigger", "trigger.pr_event", "PR Ready for Merge Decision", {
       event: "review_requested",
+      events: ["review_requested", "approved", "opened"],
     }, { x: 400, y: 50 }),
 
     node("check-ci", "validation.build", "Check CI Status", {
@@ -1500,3 +1501,4 @@ export const SDK_CONFLICT_RESOLVER_TEMPLATE = {
     },
   },
 };
+

@@ -931,9 +931,14 @@
         {
           "id": "trigger",
           "type": "trigger.pr_event",
-          "label": "PR Ready for Review",
+          "label": "PR Ready for Merge Decision",
           "config": {
-            "event": "review_requested"
+            "event": "review_requested",
+            "events": [
+              "review_requested",
+              "approved",
+              "opened"
+            ]
           },
           "position": {
             "x": 400,
@@ -14861,6 +14866,8 @@
             "taskId": "{{taskId}}",
             "taskTitle": "{{taskTitle}}",
             "taskDescription": "{{taskDescription}}",
+            "repoRoot": "{{repoRoot}}",
+            "workspace": "{{workspace}}",
             "defaultSdk": "{{defaultSdk}}"
           },
           "position": {
@@ -14919,6 +14926,9 @@
           "config": {
             "prompt": "{{_taskPrompt}}",
             "taskId": "{{taskId}}",
+            "sdk": "{{resolvedSdk}}",
+            "model": "{{resolvedModel}}",
+            "agentProfile": "{{agentProfile}}",
             "cwd": "{{worktreePath}}",
             "timeoutMs": "{{taskTimeoutMs}}",
             "maxRetries": "{{maxRetries}}",
@@ -15759,6 +15769,11 @@
           "type": "action.resolve_executor",
           "label": "Resolve SDK",
           "config": {
+            "taskId": "{{taskId}}",
+            "taskTitle": "{{taskTitle}}",
+            "taskDescription": "{{taskDescription}}",
+            "repoRoot": "{{repoRoot}}",
+            "workspace": "{{workspace}}",
             "defaultSdk": "{{defaultSdk}}"
           },
           "position": {
@@ -15813,6 +15828,9 @@
           "config": {
             "prompt": "{{_taskPrompt}}",
             "taskId": "{{taskId}}",
+            "sdk": "{{resolvedSdk}}",
+            "model": "{{resolvedModel}}",
+            "agentProfile": "{{agentProfile}}",
             "cwd": "{{worktreePath}}",
             "timeoutMs": "{{taskTimeoutMs}}",
             "maxRetries": "{{maxRetries}}",
@@ -17379,9 +17397,14 @@
         {
           "id": "trigger",
           "type": "trigger.pr_event",
-          "label": "PR Ready for Review",
+          "label": "PR Ready for Merge Decision",
           "config": {
-            "event": "review_requested"
+            "event": "review_requested",
+            "events": [
+              "review_requested",
+              "approved",
+              "opened"
+            ]
           },
           "position": {
             "x": 400,
@@ -30467,6 +30490,8 @@
             "taskId": "{{taskId}}",
             "taskTitle": "{{taskTitle}}",
             "taskDescription": "{{taskDescription}}",
+            "repoRoot": "{{repoRoot}}",
+            "workspace": "{{workspace}}",
             "defaultSdk": "{{defaultSdk}}"
           },
           "position": {
@@ -30525,6 +30550,9 @@
           "config": {
             "prompt": "{{_taskPrompt}}",
             "taskId": "{{taskId}}",
+            "sdk": "{{resolvedSdk}}",
+            "model": "{{resolvedModel}}",
+            "agentProfile": "{{agentProfile}}",
             "cwd": "{{worktreePath}}",
             "timeoutMs": "{{taskTimeoutMs}}",
             "maxRetries": "{{maxRetries}}",
@@ -31344,6 +31372,11 @@
           "type": "action.resolve_executor",
           "label": "Resolve SDK",
           "config": {
+            "taskId": "{{taskId}}",
+            "taskTitle": "{{taskTitle}}",
+            "taskDescription": "{{taskDescription}}",
+            "repoRoot": "{{repoRoot}}",
+            "workspace": "{{workspace}}",
             "defaultSdk": "{{defaultSdk}}"
           },
           "position": {
@@ -31398,6 +31431,9 @@
           "config": {
             "prompt": "{{_taskPrompt}}",
             "taskId": "{{taskId}}",
+            "sdk": "{{resolvedSdk}}",
+            "model": "{{resolvedModel}}",
+            "agentProfile": "{{agentProfile}}",
             "cwd": "{{worktreePath}}",
             "timeoutMs": "{{taskTimeoutMs}}",
             "maxRetries": "{{maxRetries}}",

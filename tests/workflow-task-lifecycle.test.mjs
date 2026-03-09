@@ -766,6 +766,149 @@ describe("action.resolve_executor", () => {
     const result = await nt.execute(node, ctx);
     expect(ctx.data.resolvedSdk).toBeDefined();
   });
+
+  it("applies library profile and skill resolution into context", async () => {
+    const nt = getNodeType("action.resolve_executor");
+    const root = mkdtempSync(join(tmpdir(), "wf-resolve-executor-library-"));
+    const bosunDir = join(root, ".bosun");
+    const profilesDir = join(bosunDir, "profiles");
+    const skillsDir = join(bosunDir, "skills");
+    mkdirSync(profilesDir, { recursive: true });
+    mkdirSync(skillsDir, { recursive: true });
+
+    const manifest = {
+      generated: new Date().toISOString(),
+      entries: [
+        {
+          id: "backend-agent",
+          type: "agent",
+          name: "Backend Agent",
+          description: "Backend profile",
+          filename: "backend-agent.json",
+          tags: ["backend", "api"],
+          scope: "global",
+          workspace: null,
+          meta: {},
+          createdAt: new Date().toISOString(),
+          updatedAt: new Date().toISOString(),
+        },
+        {
+          id: "background-task-execution",
+          type: "skill",
+          name: "Background Task Execution",
+          description: "Background worker guidance",
+          filename: "background-task-execution.md",
+          tags: ["backend", "api"],
+          scope: "global",
+          workspace: null,
+          meta: {},
+          createdAt: new Date().toISOString(),
+          updatedAt: new Date().toISOString(),
+        },
+      ],
+    };
+    writeFileSync(join(bosunDir, "library.json"), JSON.stringify(manifest, null, 2));
+    writeFileSync(
+      join(profilesDir, "backend-agent.json"),
+      JSON.stringify({
+        id: "backend-agent",
+        name: "Backend Agent",
+        description: "Backend specialist",
+        titlePatterns: ["\\(api\\)", "\\bapi\\b"],
+        scopes: ["api", "backend"],
+        tags: ["backend", "api"],
+        skills: ["background-task-execution"],
+      }, null, 2),
+    );
+    writeFileSync(join(skillsDir, "background-task-execution.md"), "# Skill\nRun background task updates.");
+
+    const ctx = makeCtx({
+      repoRoot: root,
+      task: {
+        tags: ["backend", "api"],
+      },
+    });
+    const node = makeNode("action.resolve_executor", {
+      taskTitle: "feat(api): add webhooks endpoint",
+      taskDescription: "Implement backend API endpoint and worker",
+      repoRoot: root,
+      defaultSdk: "auto",
+    });
+
+    const result = await nt.execute(node, ctx);
+    expect(result.success).toBe(true);
+    expect(ctx.data.agentProfile).toBe("backend-agent");
+    expect(ctx.data.resolvedAgentProfile?.id).toBe("backend-agent");
+    expect(Array.isArray(ctx.data.resolvedSkillIds)).toBe(true);
+    expect(ctx.data.resolvedSkillIds).toContain("background-task-execution");
+
+    rmSync(root, { recursive: true, force: true });
+  });
+
+  it("honors profile sdk/model preference when defined", async () => {
+    const nt = getNodeType("action.resolve_executor");
+    const root = mkdtempSync(join(tmpdir(), "wf-resolve-executor-profile-sdk-"));
+    const bosunDir = join(root, ".bosun");
+    const profilesDir = join(bosunDir, "profiles");
+    mkdirSync(profilesDir, { recursive: true });
+
+    const now = new Date().toISOString();
+    writeFileSync(join(bosunDir, "library.json"), JSON.stringify({
+      generated: now,
+      entries: [
+        {
+          id: "devops-agent",
+          type: "agent",
+          name: "DevOps Agent",
+          description: "CI profile",
+          filename: "devops-agent.json",
+          tags: ["ci", "cd"],
+          scope: "global",
+          workspace: null,
+          meta: {},
+          createdAt: now,
+          updatedAt: now,
+        },
+      ],
+    }, null, 2));
+    writeFileSync(
+      join(profilesDir, "devops-agent.json"),
+      JSON.stringify({
+        id: "devops-agent",
+        name: "DevOps Agent",
+        description: "CI/CD specialist",
+        titlePatterns: ["\\(ci\\)", "\\bpipeline\\b"],
+        scopes: ["ci", "cd"],
+        tags: ["ci", "cd", "devops"],
+        sdk: "CLAUDE_CODE",
+        model: "claude-sonnet-4",
+      }, null, 2),
+    );
+
+    const saved = { ...process.env };
+    delete process.env.COPILOT_MODEL;
+    delete process.env.CLAUDE_MODEL;
+    delete process.env.CODEX_MODEL;
+
+    try {
+      const ctx = makeCtx({ repoRoot: root, task: { tags: ["ci"] } });
+      const node = makeNode("action.resolve_executor", {
+        taskTitle: "chore(ci): stabilize pipeline cache",
+        taskDescription: "Improve CI reliability",
+        repoRoot: root,
+        defaultSdk: "copilot",
+      });
+      const result = await nt.execute(node, ctx);
+      expect(result.success).toBe(true);
+      expect(result.tier).toBe("profile");
+      expect(result.sdk).toBe("claude");
+      expect(result.model).toBe("claude-sonnet-4");
+      expect(ctx.data.agentProfile).toBe("devops-agent");
+    } finally {
+      Object.assign(process.env, saved);
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
 });
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -1786,11 +1929,4 @@ describe("template-ve-orchestrator-lite", () => {
     expect(Array.isArray(t.variables.protectedBranches)).toBe(true);
   });
 });
-
-
-
-
-
-
-
 

@@ -2348,6 +2348,61 @@ describe("Session chaining - action.run_agent", () => {
     expect(messages.some((msg) => String(msg?.content || "").includes("Backend Agent\" completed"))).toBe(true);
   });
 
+  it("does not delegate agent workflows when task context is missing", async () => {
+    const handler = getNodeType("action.run_agent");
+    expect(handler).toBeDefined();
+
+    const ctx = new WorkflowContext({
+      eventType: "schedule-poll",
+      taskId: "",
+      taskTitle: "",
+    });
+
+    const execute = vi.fn().mockResolvedValue({ errors: [] });
+    const launchEphemeralThread = vi.fn().mockResolvedValue({
+      success: true,
+      output: "done",
+      sdk: "codex",
+      items: [],
+      threadId: "thread-no-delegation",
+    });
+    const mockEngine = {
+      list: vi.fn().mockReturnValue([
+        {
+          id: "wf-backend",
+          name: "Backend Agent",
+          enabled: true,
+          metadata: { replaces: { module: "primary-agent.mjs" } },
+          nodes: [
+            {
+              id: "trigger",
+              type: "trigger.task_assigned",
+              config: {},
+            },
+          ],
+        },
+      ]),
+      execute,
+      services: {
+        agentPool: {
+          launchEphemeralThread,
+        },
+      },
+    };
+
+    const node = {
+      id: "generic-agent",
+      type: "action.run_agent",
+      config: { prompt: "Generic non-task run", autoRecover: false },
+    };
+
+    const result = await handler.execute(node, ctx, mockEngine);
+
+    expect(result.success).toBe(true);
+    expect(result.delegated).not.toBe(true);
+    expect(execute).not.toHaveBeenCalled();
+    expect(launchEphemeralThread).toHaveBeenCalledTimes(1);
+  });
   it("trigger.task_assigned applies agentType, taskPattern, and filter together", async () => {
     const trigger = getNodeType("trigger.task_assigned");
     expect(trigger).toBeDefined();
@@ -2379,6 +2434,64 @@ describe("Session chaining - action.run_agent", () => {
     });
     const agentMismatchResult = await trigger.execute(node, agentMismatchCtx);
     expect(agentMismatchResult.triggered).toBe(false);
+  });
+});
+
+describe("trigger.pr_event normalization", () => {
+  it("treats ready_for_review and synchronize aliases as opened", async () => {
+    const trigger = getNodeType("trigger.pr_event");
+    expect(trigger).toBeDefined();
+
+    const node = {
+      id: "pr-trigger",
+      type: "trigger.pr_event",
+      config: { event: "opened" },
+    };
+
+    const readyCtx = new WorkflowContext({
+      eventType: "pr.ready_for_review",
+      prEvent: "ready_for_review",
+      branch: "feature/one",
+    });
+    const readyResult = await trigger.execute(node, readyCtx);
+    expect(readyResult.triggered).toBe(true);
+    expect(readyResult.prEvent).toBe("opened");
+
+    const syncCtx = new WorkflowContext({
+      eventType: "pr.synchronize",
+      prEvent: "synchronize",
+      branch: "feature/two",
+    });
+    const syncResult = await trigger.execute(node, syncCtx);
+    expect(syncResult.triggered).toBe(true);
+    expect(syncResult.prEvent).toBe("opened");
+  });
+
+  it("supports config.events list for merge strategy triggers", async () => {
+    const trigger = getNodeType("trigger.pr_event");
+    expect(trigger).toBeDefined();
+
+    const node = {
+      id: "pr-trigger-events",
+      type: "trigger.pr_event",
+      config: { events: ["review_requested", "approved", "opened"] },
+    };
+
+    const approvedCtx = new WorkflowContext({
+      eventType: "pr.approved",
+      prEvent: "approved",
+      branch: "feature/approved",
+    });
+    const approvedResult = await trigger.execute(node, approvedCtx);
+    expect(approvedResult.triggered).toBe(true);
+
+    const mergedCtx = new WorkflowContext({
+      eventType: "pr.merged",
+      prEvent: "merged",
+      branch: "feature/merged",
+    });
+    const mergedResult = await trigger.execute(node, mergedCtx);
+    expect(mergedResult.triggered).toBe(false);
   });
 });
 
@@ -3427,6 +3540,4 @@ describe("WorkflowEngine.getTaskTraceEvents", () => {
     expect(reread[0].taskId).toBe("TASK-TRACE-READBACK");
   });
 });
-
-
 
