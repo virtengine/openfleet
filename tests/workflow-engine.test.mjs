@@ -2736,8 +2736,8 @@ it("action.materialize_planner_tasks parses fenced JSON and creates tasks", asyn
     meta: expect.objectContaining({
       repo_areas: ["workflow"],
       planner: expect.objectContaining({
-        impact: 1,
-        confidence: 1,
+        impact: 8,
+        confidence: 7,
         risk: "low",
         repo_areas: ["workflow"],
       }),
@@ -3027,13 +3027,72 @@ it("action.materialize_planner_tasks enforces planner quality gates and persists
     meta: expect.objectContaining({
       repo_areas: ["server"],
       planner: expect.objectContaining({
-        impact: 1,
-        confidence: 1,
+        impact: 9,
+        confidence: 8,
         risk: "low",
         estimated_effort: "m",
         repo_areas: ["server"],
         why_now: "blocking incidents",
         kill_criteria: ["if flaky"],
+      }),
+    }),
+  }));
+});
+
+it("action.materialize_planner_tasks applies calibrated default impact/risk gates", async () => {
+  const handler = getNodeType("action.materialize_planner_tasks");
+  expect(handler).toBeDefined();
+
+  const ctx = new WorkflowContext({});
+  ctx.setNodeOutput("run-planner", {
+    output: [
+      "```json",
+      "{",
+      '  "tasks": [',
+      '    { "title": "[m] fix(workflow): low default impact", "description": "A", "acceptance_criteria": ["ac"], "verification": ["v"], "repo_areas": ["workflow"], "impact": 0.2, "risk": 0.2 },',
+      '    { "title": "[m] fix(workflow): high default risk", "description": "B", "acceptance_criteria": ["ac"], "verification": ["v"], "repo_areas": ["workflow"], "impact": 0.8, "risk": 0.9 },',
+      '    { "title": "[m] fix(server): default valid", "description": "C", "acceptance_criteria": ["ac"], "verification": ["v"], "repo_areas": ["server"], "impact": 0.8, "confidence": 0.7, "risk": 0.5 }',
+      "  ]",
+      "}",
+      "```",
+    ].join("\n"),
+  });
+
+  const createTask = vi.fn(async () => ({ id: "task-default-gates-1" }));
+  const mockEngine = {
+    services: {
+      kanban: {
+        createTask,
+      },
+    },
+  };
+
+  const node = {
+    id: "materialize-default-gates",
+    type: "action.materialize_planner_tasks",
+    config: {
+      plannerNodeId: "run-planner",
+      dedup: false,
+      failOnZero: true,
+      minCreated: 1,
+    },
+  };
+
+  const result = await handler.execute(node, ctx, mockEngine);
+  expect(result.success).toBe(true);
+  expect(result.createdCount).toBe(1);
+  expect(result.skippedCount).toBe(2);
+  expect(result.skipped).toEqual(expect.arrayContaining([
+    expect.objectContaining({ title: "[m] fix(workflow): low default impact", reason: "below_min_impact" }),
+    expect.objectContaining({ title: "[m] fix(workflow): high default risk", reason: "risk_above_threshold" }),
+  ]));
+  expect(createTask).toHaveBeenCalledWith("", expect.objectContaining({
+    title: "[m] fix(server): default valid",
+    meta: expect.objectContaining({
+      planner: expect.objectContaining({
+        impact: 8,
+        confidence: 7,
+        risk: "medium",
       }),
     }),
   }));
@@ -3540,4 +3599,3 @@ describe("WorkflowEngine.getTaskTraceEvents", () => {
     expect(reread[0].taskId).toBe("TASK-TRACE-READBACK");
   });
 });
-

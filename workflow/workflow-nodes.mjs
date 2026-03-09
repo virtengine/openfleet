@@ -4435,12 +4435,14 @@ function normalizePlannerTaskForCreation(task, index) {
   const normalizeScore = (value) => {
     const numeric = Number(value);
     if (!Number.isFinite(numeric)) return null;
-    return Math.max(0, Math.min(10, Math.round(numeric)));
+    const scaled = numeric <= 1 ? numeric * 10 : numeric;
+    const clamped = Math.max(0, Math.min(10, scaled));
+    return Math.round(clamped * 10) / 10;
   };
   const normalizeRiskLevel = (value) => {
     const raw = String(value || "").trim().toLowerCase();
     if (["low", "medium", "high", "critical"].includes(raw)) return raw;
-    const numeric = Number(value);
+    const numeric = normalizeScore(value);
     if (!Number.isFinite(numeric)) return null;
     if (numeric >= 9) return "critical";
     if (numeric >= 7) return "high";
@@ -4626,8 +4628,8 @@ registerNodeType("action.materialize_planner_tasks", {
       failOnZero: { type: "boolean", default: true, description: "Fail node when zero tasks are created" },
       minCreated: { type: "number", default: 1, description: "Minimum created tasks required for success" },
       projectId: { type: "string", description: "Optional explicit project ID for list/create operations" },
-      minImpactScore: { type: "number", default: 0, description: "Minimum planner impact score (0-10) required for creation" },
-      maxRiskWithoutHuman: { type: "string", default: "high", description: "Maximum planner risk level allowed for auto-creation" },
+      minImpactScore: { type: "number", default: 5, description: "Minimum planner impact score required for creation; accepts 0-1 or 0-10 scales" },
+      maxRiskWithoutHuman: { type: "string", default: "medium", description: "Maximum planner risk level allowed for auto-creation (low|medium|high|critical)" },
       maxConcurrentRepoAreaTasks: { type: "number", default: 0, description: "Maximum concurrent backlog tasks per repo area (0 disables limit)" },
     },
   },
@@ -4641,8 +4643,25 @@ registerNodeType("action.materialize_planner_tasks", {
     const dedupEnabled = node.config?.dedup !== false;
     const status = String(ctx.resolve(node.config?.status || "todo")).trim() || "todo";
     const projectId = String(ctx.resolve(node.config?.projectId || "")).trim();
-    const minImpactScore = Number(ctx.resolve(node.config?.minImpactScore ?? 0));
-    const maxRiskWithoutHuman = String(ctx.resolve(node.config?.maxRiskWithoutHuman || "high")).trim().toLowerCase() || "high";
+    const normalizeScore = (value) => {
+      const numeric = Number(value);
+      if (!Number.isFinite(numeric)) return null;
+      const scaled = numeric <= 1 ? numeric * 10 : numeric;
+      const clamped = Math.max(0, Math.min(10, scaled));
+      return Math.round(clamped * 10) / 10;
+    };
+    const normalizeRiskLevel = (value) => {
+      const raw = String(value || "").trim().toLowerCase();
+      if (["low", "medium", "high", "critical"].includes(raw)) return raw;
+      const numeric = normalizeScore(value);
+      if (!Number.isFinite(numeric)) return null;
+      if (numeric >= 9) return "critical";
+      if (numeric >= 7) return "high";
+      if (numeric >= 4) return "medium";
+      return "low";
+    };
+    const minImpactScore = normalizeScore(ctx.resolve(node.config?.minImpactScore ?? 5));
+    const maxRiskWithoutHuman = normalizeRiskLevel(ctx.resolve(node.config?.maxRiskWithoutHuman ?? "medium")) || "medium";
     const maxConcurrentRepoAreaTasks = Number(ctx.resolve(node.config?.maxConcurrentRepoAreaTasks ?? 0));
     const materializationDefaults = resolvePlannerMaterializationDefaults(ctx);
 
@@ -9598,4 +9617,3 @@ registerNodeType("action.web_search", {
 // ═══════════════════════════════════════════════════════════════════════════
 
 export { registerNodeType, getNodeType, listNodeTypes } from "./workflow-engine.mjs";
-
