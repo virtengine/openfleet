@@ -472,20 +472,9 @@
     }
 
     function sanitizeBotHtml(html) {
-      const tpl = document.createElement("template");
-      tpl.innerHTML = String(html || "");
-      tpl.content.querySelectorAll("script,style,iframe,object,embed").forEach((node) => node.remove());
-      tpl.content.querySelectorAll("*").forEach((el) => {
-        for (const attr of [...el.attributes]) {
-          const name = String(attr.name || "").toLowerCase();
-          const value = String(attr.value || "").trim().toLowerCase();
-          const urlAttr = name === "src" || name === "href" || name === "xlink:href";
-          if (name.startsWith("on") || (urlAttr && !isSafeUrlAttributeValue(value))) {
-            el.removeAttribute(attr.name);
-          }
-        }
-      });
-      return tpl.innerHTML;
+      const text = String(html || "");
+      // Allow plain text only in simulator bubbles; avoid DOM reparse hazards.
+      return escapeHtml(text).replace(/\r?\n/g, "<br>");
     }
     function setNodeMarkup(node, html) {
       const safe = sanitizeBotHtml(html);
