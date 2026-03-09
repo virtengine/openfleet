@@ -304,6 +304,24 @@ export class SessionTracker {
     session.status = status;
     this.#refreshDerivedState(session);
     this.#markDirty(taskId);
+
+    // Lazy import to avoid top-level await issues
+    import("./runtime-accumulator.mjs")
+      .then((module) => {
+        if (module.addCompletedSession) {
+          module.addCompletedSession({
+            id: taskId,
+            taskId: taskId,
+            taskTitle: session.taskTitle,
+            executor: session.executor,
+            model: session.model,
+            startedAt: session.startedAt,
+            endedAt: session.endedAt,
+            status: status,
+          });
+        }
+      })
+      .catch(() => {});
   }
 
   /**

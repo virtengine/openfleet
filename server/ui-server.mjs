@@ -7088,7 +7088,7 @@ function broadcastUiEvent(channels, type, payload = {}) {
 }
 
 function broadcastSessionMessage(payload) {
-  const required = new Set(["sessions", "chat"]);
+  const required = new Set(["sessions", "chat", "tui"]);
   const message = {
     type: "session-message",
     channels: Array.from(required),
@@ -7104,6 +7104,124 @@ function broadcastSessionMessage(payload) {
       sendWsMessage(socket, message);
     }
   }
+}
+
+async function collectUiStats() {
+  const os = await import("node:os");
+  const memUsage = process.memoryUsage();
+  const cpuUsage = process.cpuUsage();
+
+  const totalMem = os.totalmem();
+  const freeMem = os.freemem();
+  const usedMem = totalMem - freeMem;
+
+  // Try to read status from the monitor's status file first
+  let orchestratorStatus = null;
+  const statusPath = resolve(repoRoot, ".cache", "ve-orchestrator-status.json");
+  try {
+    if (existsSync(statusPath)) {
+      const raw = await readFile(statusPath, "utf8");
+      orchestratorStatus = JSON.parse(raw);
+    }
+  } catch { /* best effort */ }
+
+  let taskStats = {
+    total: 0,
+    active: 0,
+    completed: 0,
+    failed: 0,
+    queued: 0,
+  };
+  
+  // Use orchestrator status if available, otherwise try task store
+  if (orchestratorStatus?.counts) {
+    taskStats = {
+      total: (orchestratorStatus.counts.todo || 0) + (orchestratorStatus.counts.inprogress || 0) + 
+             (orchestratorStatus.counts.done || 0) + (orchestratorStatus.counts.inreview || 0) +
+             (orchestratorStatus.counts.blocked || 0),
+      active: orchestratorStatus.counts.inprogress || 0,
+      completed: orchestratorStatus.counts.done || 0,
+      failed: orchestratorStatus.counts.error || 0,
+      queued: orchestratorStatus.counts.todo || 0,
+    };
+  } else {
+    try {
+      const taskStoreModule = await import("../task/task-store.mjs").catch(() => ({}));
+      const getStats = taskStoreModule?.getStats;
+      if (typeof getStats === "function") {
+        const stats = getStats();
+        taskStats = {
+          total: stats?.total || 0,
+          active: (stats?.inprogress || 0) + (stats?.todo || 0),
+          completed: stats?.done || 0,
+          failed: stats?.failed || 0,
+          queued: stats?.todo || 0,
+        };
+      }
+    } catch { /* best effort */ }
+  }
+
+  let sessionStats = {
+    total: 0,
+    active: 0,
+    completed: 0,
+    failed: 0,
+  };
+
+  // Use orchestrator status for session/attempt info
+  if (orchestratorStatus?.attempts) {
+    const attempts = Object.values(orchestratorStatus.attempts);
+    sessionStats = {
+      total: attempts.length,
+      active: attempts.filter((a) => a.status === "running" || a.status === "active").length,
+      completed: attempts.filter((a) => a.status === "done" || a.status === "completed").length,
+      failed: attempts.filter((a) => a.status === "failed" || a.status === "error").length,
+    };
+  } else if (typeof getActiveThreads === "function") {
+    try {
+      const activeThreads = getActiveThreads() || [];
+      sessionStats = {
+        total: activeThreads.length,
+        active: activeThreads.filter((t) => t.status === "active").length,
+        completed: activeThreads.filter((t) => t.status === "completed").length,
+        failed: activeThreads.filter((t) => t.status === "failed").length,
+      };
+    } catch { /* best effort */ }
+  }
+
+  return {
+    uptimeMs: process.uptime() * 1000,
+    runtimeMs: globalThis.__bosun_runtimeMs || 0,
+    totalCostUsd: globalThis.__bosun_totalCostUsd || 0,
+    totalSessions: sessionStats.total,
+    activeSessions: sessionStats.active,
+    completedSessions: sessionStats.completed,
+    failedSessions: sessionStats.failed,
+    totalTasks: taskStats.total,
+    activeTasks: taskStats.active,
+    completedTasks: taskStats.completed,
+    failedTasks: taskStats.failed,
+    queuedTasks: taskStats.queued,
+    activeSlots: orchestratorStatus?.active_slots || "0/0",
+    executorMode: orchestratorStatus?.executor_mode || "unknown",
+    retryQueue: globalThis.__bosun_setRetryQueueData ? _retryQueue : { count: 0, items: [] },
+    workflows: {
+      active: globalThis.__bosun_activeWorkflows || [],
+      total: globalThis.__bosun_totalWorkflows || 0,
+    },
+    agents: {
+      online: sessionStats.active,
+      total: 5,
+    },
+    memory: {
+      used: usedMem,
+      total: totalMem,
+    },
+    cpu: {
+      usage: ((cpuUsage.user + cpuUsage.system) / 1000000) * 100,
+    },
+    ts: Date.now(),
+  };
 }
 
 /* ─── Log Streaming Helpers ─── */
@@ -13279,6 +13397,21 @@ async function handleApi(req, res, url) {
     return;
   }
 
+  // ── GET /api/retry-queue ───────────────────────────────────────────
+  if (path === "/api/retry-queue" && req.method === "GET") {
+    try {
+      const retryQueue = globalThis.__bosun_setRetryQueueData ? _retryQueue : { count: 0, items: [] };
+      jsonResponse(res, 200, {
+        ok: true,
+        count: retryQueue.count || 0,
+        items: retryQueue.items || [],
+      });
+    } catch (err) {
+      jsonResponse(res, 500, { ok: false, error: err.message, count: 0, items: [] });
+    }
+    return;
+  }
+
   if (path === "/api/executor/dispatch") {
     try {
       const executor = uiDeps.getInternalExecutor?.();
@@ -15756,6 +15889,46 @@ export async function startTelegramUiServer(options = {}) {
         broadcastSessionMessage(payload);
       });
     }
+
+    // Periodic stats broadcast for TUI
+    let statsBroadcastInterval = null;
+    function startStatsBroadcast() {
+      if (statsBroadcastInterval) return;
+      const intervalMs = Number(process.env.BOSUN_STATS_BROADCAST_MS) || 2000;
+      statsBroadcastInterval = setInterval(async () => {
+        try {
+          const stats = await collectUiStats();
+          broadcastUiEvent(["stats", "tui"], "stats", stats);
+        } catch (err) {
+          // best effort
+        }
+      }, intervalMs);
+      statsBroadcastInterval.unref?.();
+    }
+    startStatsBroadcast();
+
+    // Retry queue tracking
+    let _retryQueue = { count: 0, items: [] };
+    function setRetryQueueData(data) {
+      _retryQueue = data || { count: 0, items: [] };
+    }
+    globalThis.__bosun_setRetryQueueData = setRetryQueueData;
+
+    // Session tracking
+    let _activeSessions = [];
+    function updateActiveSessions(sessions) {
+      _activeSessions = sessions || [];
+      // Broadcast session updates
+      for (const session of _activeSessions) {
+        broadcastUiEvent(["sessions", "tui"], "session:update", session);
+      }
+    }
+
+    // Task CRUD events
+    function broadcastTaskEvent(type, task) {
+      broadcastUiEvent(["tasks", "tui"], type, task);
+    }
+
     wsServer.on("connection", (socket, req) => {
       socket.__channels = new Set(["*"]);
       socket.__lastPong = Date.now();
