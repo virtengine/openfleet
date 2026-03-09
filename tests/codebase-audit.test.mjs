@@ -131,6 +131,14 @@ describe("codebase audit engine", () => {
     expect(existsSync(resolve(root, "CLAUDE.md"))).toBe(true);
     expect(existsSync(resolve(root, "AGENTS.md"))).toBe(true);
     expect(existsSync(resolve(root, "INDEX.map"))).toBe(true);
+    expect(trimResult.schedulePath).toContain("schedule.json");
+
+    const conformity = runConformity(root);
+    expect(existsSync(resolve(root, ".bosun", "audit", "schedule.json"))).toBe(true);
+
+    const schedule = JSON.parse(readFileSync(resolve(root, ".bosun", "audit", "schedule.json"), "utf8"));
+    expect(schedule.filesAudited).toBe(4);
+    expect(schedule.conformityScore).toBe(conformity.score);
   });
 
   it("migrates BOSUN markers and fails conformity on leaks", async () => {
@@ -159,6 +167,7 @@ describe("codebase audit engine", () => {
     const conformity = runConformity(root, { dryRun: true });
     expect(conformity.ok).toBe(false);
     expect(conformity.credentialFindings.length).toBeGreaterThan(0);
+    expect(conformity.schedulePath).toContain("schedule.json");
 
     const stdout = [];
     const cliRun = await runAuditCli(["conformity", "--root", root], {
