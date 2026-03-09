@@ -66,6 +66,11 @@ describe("monitor workflow startup guards", () => {
     );
   });
 
+  it("defaults workflow automation to enabled when env is unset", () => {
+    expect(monitorSource).toContain("process.env.WORKFLOW_AUTOMATION_ENABLED");
+    expect(monitorSource).toContain("  true,");
+  });
+
   it("requires npm start lifecycle for dev-mode self-restart watcher by default", () => {
     expect(monitorSource).toContain("process.env.npm_lifecycle_event");
     expect(monitorSource).toContain('npmLifecycleEvent === "start"');
@@ -102,6 +107,5 @@ describe("monitor workflow startup guards", () => {
   });
 
 });
-
 
 
