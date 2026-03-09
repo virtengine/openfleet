@@ -204,6 +204,90 @@ function simplifyPathLabel(filePath) {
   return parts[0] || normalized;
 }
 
+const PR_EVENT_ALIAS_MAP = Object.freeze({
+  open: "opened",
+  opened: "opened",
+  reopen: "opened",
+  reopened: "opened",
+  ready_for_review: "opened",
+  readyforreview: "opened",
+  synchronize: "opened",
+  synchronized: "opened",
+  edited: "opened",
+  merge: "merged",
+  merged: "merged",
+  review_requested: "review_requested",
+  reviewrequest: "review_requested",
+  review_requested_event: "review_requested",
+  changes_requested: "changes_requested",
+  change_requested: "changes_requested",
+  requested_changes: "changes_requested",
+  approved: "approved",
+  approval: "approved",
+  close: "closed",
+  closed: "closed",
+});
+
+function normalizePrEventName(value) {
+  const raw = String(value || "").trim().toLowerCase();
+  if (!raw) return "";
+  const normalized = raw.replace(/[\s-]+/g, "_");
+  return PR_EVENT_ALIAS_MAP[normalized] || normalized;
+}
+
+function evaluateTaskAssignedTriggerConfig(config = {}, eventData = {}) {
+  let triggered = eventData?.eventType === "task.assigned";
+  if (!triggered) return false;
+
+  const task = eventData?.task || eventData || {};
+  const expectedAgentType = String(config?.agentType || "").trim().toLowerCase();
+  if (expectedAgentType) {
+    const candidateTypes = new Set(
+      [
+        eventData?.agentType,
+        eventData?.assignedAgentType,
+        eventData?.task?.agentType,
+        eventData?.task?.assignedAgentType,
+        eventData?.task?.agentProfile,
+        task?.agentType,
+        task?.assignedAgentType,
+        task?.agentProfile,
+      ]
+        .map((value) => String(value || "").trim().toLowerCase())
+        .filter(Boolean),
+    );
+    triggered = candidateTypes.has(expectedAgentType);
+  }
+
+  if (triggered && config?.taskPattern) {
+    try {
+      const regex = new RegExp(String(config.taskPattern), "i");
+      const searchableText = [
+        eventData?.taskTitle,
+        task?.title,
+        ...(Array.isArray(task?.tags) ? task.tags : []),
+      ]
+        .map((value) => String(value || "").trim())
+        .filter(Boolean)
+        .join(" ");
+      triggered = regex.test(searchableText);
+    } catch {
+      triggered = false;
+    }
+  }
+
+  if (triggered && config?.filter) {
+    try {
+      const fn = new Function("task", "$data", `return !!(${config.filter});`);
+      triggered = Boolean(fn(task, eventData));
+    } catch {
+      triggered = false;
+    }
+  }
+
+  return triggered;
+}
+
 function isManagedBosunWorktree(worktreePath, repoRoot) {
   const resolvedWorktree = resolve(String(worktreePath || ""));
   const managedRoot = resolve(String(repoRoot || process.cwd()), ".bosun", "worktrees");
@@ -1338,18 +1422,34 @@ registerNodeType("trigger.pr_event", {
     type: "object",
     properties: {
       event: { type: "string", enum: ["opened", "merged", "review_requested", "changes_requested", "approved", "closed"], description: "PR event type" },
+      events: {
+        type: "array",
+        items: { type: "string" },
+        description: "Optional set of accepted PR event types (supports aliases like ready_for_review/synchronize)",
+      },
       branchPattern: { type: "string", description: "Branch name regex filter" },
     },
   },
   async execute(node, ctx) {
-    const expected = node.config?.event;
-    const actual = ctx.data?.prEvent;
-    let triggered = expected === actual;
+    const expectedEvents = [
+      node.config?.event,
+      ...(Array.isArray(node.config?.events) ? node.config.events : []),
+    ]
+      .map((value) => normalizePrEventName(value))
+      .filter(Boolean);
+    const actual = normalizePrEventName(
+      ctx.data?.prEvent
+      || (String(ctx.data?.eventType || "").startsWith("pr.")
+        ? String(ctx.data.eventType).slice(3).trim()
+        : ""),
+    );
+    const expectedSet = new Set(expectedEvents);
+    let triggered = expectedSet.size > 0 ? expectedSet.has(actual) : Boolean(actual);
     if (triggered && node.config?.branchPattern) {
       const regex = new RegExp(node.config.branchPattern);
       triggered = regex.test(ctx.data?.branch || "");
     }
-    return { triggered, prEvent: actual };
+    return { triggered, prEvent: actual, expectedEvents };
   },
 });
 
@@ -1360,15 +1460,11 @@ registerNodeType("trigger.task_assigned", {
     properties: {
       agentType: { type: "string", description: "Filter by agent type (e.g., 'frontend')" },
       taskPattern: { type: "string", description: "Title/tag pattern to match" },
+      filter: { type: "string", description: "JS expression filter (e.g., \"task.tags?.includes('backend')\")" },
     },
   },
   async execute(node, ctx) {
-    const triggered = ctx.data?.eventType === "task.assigned";
-    if (triggered && node.config?.taskPattern) {
-      const regex = new RegExp(node.config.taskPattern, "i");
-      const title = ctx.data?.taskTitle || "";
-      return { triggered: regex.test(title), task: ctx.data };
-    }
+    const triggered = evaluateTaskAssignedTriggerConfig(node.config, ctx.data);
     return { triggered, task: ctx.data };
   },
 });
@@ -1708,6 +1804,107 @@ registerNodeType("action.run_agent", {
     }
 
     ctx.log(node.id, `Running agent (${sdk}) in ${cwd}`);
+
+    // ── Sub-workflow delegation ─────────────────────────────────────
+    // If an agent-type workflow exists (metadata.replaces.module =
+    // "primary-agent.mjs") and its trigger filter matches this task,
+    // delegate the full agent execution to that workflow instead of
+    // running a single generic agent pass.
+    // Guard: skip delegation when already inside an agent sub-workflow
+    // to prevent infinite recursion.
+    const hasDelegationTaskContext = Boolean(
+      trackedTaskId ||
+      trackedTaskTitle ||
+      ctx.data?.task?.id ||
+      ctx.data?.taskDetail?.id ||
+      ctx.data?.taskInfo?.id ||
+      ctx.data?.task?.title ||
+      ctx.data?.taskDetail?.title ||
+      ctx.data?.taskInfo?.title,
+    );
+    if (engine?.list && !ctx.data?._agentWorkflowActive && hasDelegationTaskContext) {
+      try {
+        const allWorkflows = engine.list() || [];
+        for (const wf of allWorkflows) {
+          if (wf?.enabled === false) continue;
+          if (wf?.metadata?.replaces?.module !== "primary-agent.mjs") continue;
+
+          const triggerNode = (wf.nodes || []).find((n) => n.type === "trigger.task_assigned");
+          if (!triggerNode) continue;
+          const delegationData = {
+            ...ctx.data,
+            eventType: "task.assigned",
+            taskId: trackedTaskId,
+            taskTitle: trackedTaskTitle,
+          };
+          if (!evaluateTaskAssignedTriggerConfig(triggerNode?.config, delegationData)) continue;
+
+          const tracker = trackedTaskId ? getSessionTracker() : null;
+          if (tracker && trackedTaskId) {
+            const existing = tracker.getSessionById(trackedTaskId);
+            if (!existing) {
+              tracker.createSession({
+                id: trackedTaskId,
+                type: "task",
+                taskId: trackedTaskId,
+                metadata: {
+                  title: trackedTaskTitle || trackedTaskId,
+                  workspaceId: String(ctx.data?.workspaceId || ctx.data?.activeWorkspace || "").trim() || undefined,
+                  workspaceDir: String(cwd || "").trim() || undefined,
+                  branch:
+                    String(
+                      ctx.data?.branch ||
+                        ctx.data?.task?.branchName ||
+                        ctx.data?.taskDetail?.branchName ||
+                        "",
+                    ).trim() || undefined,
+                },
+              });
+            } else {
+              tracker.updateSessionStatus(trackedTaskId, "active");
+              if (trackedTaskTitle) tracker.renameSession(trackedTaskId, trackedTaskTitle);
+            }
+            tracker.recordEvent(trackedTaskId, {
+              role: "system",
+              type: "system",
+              content: `Delegating to agent workflow "${wf.name}" (${wf.id})`,
+              timestamp: new Date().toISOString(),
+              _sessionType: "task",
+            });
+          }
+
+          // Delegate to this agent workflow
+          ctx.log(node.id, `Delegating to agent workflow "${wf.name}" (${wf.id})`);
+          const subCtx = await engine.execute(wf.id, {
+            ...delegationData,
+            _agentWorkflowActive: true,
+          });
+          const subErrors = Array.isArray(subCtx?.errors) ? subCtx.errors : [];
+          const subStatus = subErrors.length === 0 ? "completed" : "failed";
+          if (tracker && trackedTaskId) {
+            tracker.updateSessionStatus(trackedTaskId, subStatus);
+            tracker.recordEvent(trackedTaskId, {
+              role: subStatus === "completed" ? "assistant" : "system",
+              type: subStatus === "completed" ? "agent_message" : "error",
+              content: `Agent workflow "${wf.name}" ${subStatus} (${subErrors.length} errors)`,
+              timestamp: new Date().toISOString(),
+              _sessionType: "task",
+            });
+          }
+          ctx.log(node.id, `Agent workflow "${wf.name}" ${subStatus} (${subErrors.length} errors)`);
+          return {
+            success: subErrors.length === 0,
+            delegated: true,
+            subWorkflowId: wf.id,
+            subWorkflowName: wf.name,
+            subStatus,
+          };
+        }
+      } catch (err) {
+        ctx.log(node.id, `Sub-workflow delegation check failed: ${err?.message || err}`);
+        // Fall through to generic agent execution
+      }
+    }
 
     // Use the engine's service injection to call agent pool
     const agentPool = engine.services?.agentPool;
@@ -7329,6 +7526,7 @@ let _kanbanAdapterMod = null;
 let _agentPoolMod = null;
 let _gitSafetyMod = null;
 let _diffStatsMod = null;
+let _libraryManagerMod = null;
 
 async function ensureTaskClaimsMod() {
   if (!_taskClaimsMod) _taskClaimsMod = await import("../task/task-claims.mjs");
@@ -7440,6 +7638,10 @@ async function ensureDiffStatsMod() {
   if (!_diffStatsMod) _diffStatsMod = await import("../git/diff-stats.mjs");
   return _diffStatsMod;
 }
+async function ensureLibraryManagerMod() {
+  if (!_libraryManagerMod) _libraryManagerMod = await import("../infra/library-manager.mjs");
+  return _libraryManagerMod;
+}
 let _taskStoreMod = null;
 async function ensureTaskStoreMod() {
   if (!_taskStoreMod) _taskStoreMod = await import("../task/task-store.mjs");
@@ -7477,6 +7679,16 @@ function cfgOrCtx(node, ctx, key, defaultVal = "") {
   const ctxVal = ctx.data?.[key];
   if (ctxVal != null && ctxVal !== "") return String(ctxVal);
   return defaultVal;
+}
+
+function normalizeSdkForWorkflow(value, fallback = "auto") {
+  const raw = String(value || "").trim().toLowerCase();
+  if (!raw) return fallback;
+  if (raw === "auto") return "auto";
+  if (raw === "codex" || raw === "openai") return "codex";
+  if (raw === "copilot" || raw === "github_copilot" || raw === "github-copilot") return "copilot";
+  if (raw === "claude" || raw === "claude_code" || raw === "claude-code") return "claude";
+  return fallback;
 }
 
 function getWorkflowRuntimeState(ctx) {
@@ -8277,33 +8489,119 @@ registerNodeType("action.resolve_executor", {
     const defaultSdk = cfgOrCtx(node, ctx, "defaultSdk", "auto");
     const sdkOverride = cfgOrCtx(node, ctx, "sdkOverride");
     const modelOverride = cfgOrCtx(node, ctx, "modelOverride");
+    const taskId = cfgOrCtx(node, ctx, "taskId");
+    const taskTitle = cfgOrCtx(node, ctx, "taskTitle");
+    const taskDescription = cfgOrCtx(node, ctx, "taskDescription");
+    const task = ctx.data?.task || {};
+    const repoRoot = cfgOrCtx(node, ctx, "repoRoot") || cfgOrCtx(node, ctx, "workspace") || process.cwd();
 
     // Check env var overrides (mirrors TaskExecutor behavior)
     const envModel =
       process.env.COPILOT_MODEL || process.env.CLAUDE_MODEL || process.env.CODEX_MODEL || "";
+    let profileSdk = "";
+    let profileModel = "";
+    let resolvedProfile = null;
+
+    // Library resolver for profile/skill/tool selection.
+    try {
+      const library = await ensureLibraryManagerMod();
+      const criteria = {
+        title: taskTitle || task.title || "",
+        description: taskDescription || task.description || "",
+        agentType:
+          ctx.data?.agentType
+          || task.agentType
+          || task.assignedAgentType
+          || "",
+        tags: Array.isArray(task.tags) ? task.tags : [],
+        changedFiles: Array.isArray(task.changedFiles) ? task.changedFiles : [],
+      };
+      const planResult =
+        typeof library.resolveLibraryPlan === "function"
+          ? library.resolveLibraryPlan(repoRoot, criteria, { topN: 5, skillTopN: 6 })
+          : null;
+      const best = planResult?.best || null;
+      const plan = planResult?.plan || null;
+      if (best) {
+        const profileId = String(plan?.agentProfileId || best.id || "").trim();
+        if (profileId) ctx.data.agentProfile = profileId;
+        const selectedSkills = Array.isArray(plan?.selectedSkills) ? plan.selectedSkills : [];
+        const skillIds = Array.isArray(plan?.skillIds)
+          ? plan.skillIds
+          : selectedSkills.map((entry) => String(entry?.id || "").trim()).filter(Boolean);
+        const skillFiles = selectedSkills.map((entry) => String(entry?.filename || "").trim()).filter(Boolean);
+        const reasons = Array.isArray(plan?.reasons) ? plan.reasons : Array.isArray(best?.reasons) ? best.reasons : [];
+
+        resolvedProfile = {
+          id: profileId || String(best.id || "").trim(),
+          name: String(plan?.agentName || best?.name || "").trim(),
+          agentType: String(best?.agentType || "").trim(),
+          score: Number(best?.score || 0),
+          confidence: Number(best?.confidence || 0),
+          autoApply: Boolean(planResult?.auto?.shouldAutoApply),
+          reasons,
+          skillIds,
+          selectedSkills,
+          builtinToolIds: Array.isArray(plan?.builtinToolIds) ? plan.builtinToolIds : [],
+          recommendedToolIds: Array.isArray(plan?.recommendedToolIds) ? plan.recommendedToolIds : [],
+          enabledMcpServers: Array.isArray(plan?.enabledMcpServers) ? plan.enabledMcpServers : [],
+        };
+        ctx.data.resolvedAgentProfile = resolvedProfile;
+        ctx.data.resolvedSkillIds = skillIds;
+        ctx.data.resolvedSkillFiles = skillFiles;
+        ctx.data.resolvedBuiltinToolIds = resolvedProfile.builtinToolIds;
+        ctx.data.resolvedRecommendedToolIds = resolvedProfile.recommendedToolIds;
+        ctx.data.resolvedEnabledMcpServers = resolvedProfile.enabledMcpServers;
+
+        profileSdk = normalizeSdkForWorkflow(best?.profile?.sdk, "");
+        profileModel = String(best?.profile?.model || "").trim();
+        ctx.log(
+          node.id,
+          `Library match: profile=${resolvedProfile.id || "(none)"} score=${resolvedProfile.score} confidence=${resolvedProfile.confidence.toFixed(2)}`,
+        );
+      }
+    } catch (err) {
+      ctx.log(node.id, `Library resolver unavailable: ${err?.message || err}`);
+    }
 
     // Manual override takes precedence
     if (sdkOverride && sdkOverride !== "auto") {
-      const model = modelOverride || envModel || "";
-      ctx.data.resolvedSdk = sdkOverride;
+      const sdk = normalizeSdkForWorkflow(sdkOverride, sdkOverride);
+      const model = modelOverride || envModel || profileModel || "";
+      ctx.data.resolvedSdk = sdk;
       ctx.data.resolvedModel = model;
-      ctx.log(node.id, `Executor override: sdk=${sdkOverride}, model=${model}`);
-      return { success: true, sdk: sdkOverride, model, tier: "override", profile: null };
+      ctx.log(node.id, `Executor override: sdk=${sdk}, model=${model}`);
+      return { success: true, sdk, model, tier: "override", profile: resolvedProfile };
+    }
+
+    // Profile preference takes precedence when explicitly set in library profile.
+    if (profileSdk) {
+      const model = modelOverride || envModel || profileModel || "";
+      ctx.data.resolvedSdk = profileSdk;
+      ctx.data.resolvedModel = model;
+      ctx.log(node.id, `Executor profile preference: sdk=${profileSdk}, model=${model}`);
+      return {
+        success: true,
+        sdk: profileSdk,
+        model,
+        tier: "profile",
+        profile: resolvedProfile,
+      };
     }
 
     // Complexity-based routing
     try {
       const complexity = await ensureTaskComplexityMod();
-      const task = {
-        id: cfgOrCtx(node, ctx, "taskId"),
-        title: cfgOrCtx(node, ctx, "taskTitle"),
-        description: cfgOrCtx(node, ctx, "taskDescription"),
+      const complexityTask = {
+        id: taskId,
+        title: taskTitle,
+        description: taskDescription,
       };
 
       if (complexity.resolveExecutorForTask && complexity.executorToSdk) {
-        const resolved = complexity.resolveExecutorForTask(task);
+        const resolved = complexity.resolveExecutorForTask(complexityTask);
         const sdk = complexity.executorToSdk(resolved.executor);
-        const model = modelOverride || envModel || resolved.model || "";
+        const model = modelOverride || envModel || profileModel || resolved.model || "";
         ctx.data.resolvedSdk = sdk;
         ctx.data.resolvedModel = model;
         ctx.log(node.id, `Executor: sdk=${sdk}, model=${model}, tier=${resolved.tier || "default"}`);
@@ -8312,7 +8610,7 @@ registerNodeType("action.resolve_executor", {
           sdk,
           model,
           tier: resolved.tier || "default",
-          profile: resolved.name || null,
+          profile: resolvedProfile || resolved.name || null,
           complexity: resolved.complexity || null,
         };
       }
@@ -8331,10 +8629,10 @@ registerNodeType("action.resolve_executor", {
       }
     }
     const model = modelOverride || envModel || "";
-    ctx.data.resolvedSdk = sdk;
+    ctx.data.resolvedSdk = normalizeSdkForWorkflow(sdk, sdk);
     ctx.data.resolvedModel = model;
-    ctx.log(node.id, `Executor fallback: sdk=${sdk}`);
-    return { success: true, sdk, model, tier: "default", profile: null };
+    ctx.log(node.id, `Executor fallback: sdk=${ctx.data.resolvedSdk}`);
+    return { success: true, sdk: ctx.data.resolvedSdk, model, tier: "default", profile: resolvedProfile };
   },
 });
 
@@ -8689,7 +8987,10 @@ registerNodeType("action.build_task_prompt", {
     const primaryRepository = pickFirstString(repository, repoSlug);
     const allowedRepositories = normalizeStringArray(repositories, primaryRepository);
     const matchedSkills = findRelevantSkills(repoRoot, taskTitle, taskDescription || "", {});
-    const activeSkillFiles = matchedSkills.map((skill) => skill.filename);
+    const matchedSkillFiles = matchedSkills.map((skill) => skill.filename);
+    const resolvedSkillFiles = normalizeStringArray(ctx.data?.resolvedSkillFiles || []);
+    const activeSkillFiles = normalizeStringArray(matchedSkillFiles, resolvedSkillFiles);
+    const resolvedSkillIds = normalizeStringArray(ctx.data?.resolvedSkillIds || []);
 
     if (customTemplate) {
       ctx.data._taskPrompt = customTemplate;
@@ -8800,6 +9101,14 @@ registerNodeType("action.build_task_prompt", {
     );
     if (relevantSkillsBlock) {
       parts.push(relevantSkillsBlock);
+      parts.push("");
+    }
+    if (resolvedSkillIds.length > 0) {
+      parts.push("## Library-Resolved Skills");
+      parts.push("Auto-selected by the library resolver for this task:");
+      for (const skillId of resolvedSkillIds) {
+        parts.push(`- ${skillId}`);
+      }
       parts.push("");
     }
 
@@ -9289,6 +9598,4 @@ registerNodeType("action.web_search", {
 // ═══════════════════════════════════════════════════════════════════════════
 
 export { registerNodeType, getNodeType, listNodeTypes } from "./workflow-engine.mjs";
-
-
 

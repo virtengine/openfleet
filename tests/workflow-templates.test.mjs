@@ -406,6 +406,36 @@ describe("workflow-templates", () => {
     );
     expect(createFlowEdge).toBeDefined();
   });
+
+  it("backend agent template keeps backend/api trigger filter", () => {
+    const template = getTemplate("template-backend-agent");
+    expect(template).toBeDefined();
+
+    const triggerNode = template.nodes.find((n) => n.id === "trigger");
+    expect(triggerNode?.type).toBe("trigger.task_assigned");
+    expect(triggerNode?.config?.filter).toBe("task.tags?.some(t => t === 'backend' || t === 'api')");
+  });
+
+  it("task lifecycle template passes resolved executor outputs into run-agent", () => {
+    const template = getTemplate("template-task-lifecycle");
+    expect(template).toBeDefined();
+
+    const runAgent = template.nodes.find((n) => n.id === "run-agent");
+    expect(runAgent?.type).toBe("action.run_agent");
+    expect(runAgent?.config?.sdk).toBe("{{resolvedSdk}}");
+    expect(runAgent?.config?.model).toBe("{{resolvedModel}}");
+    expect(runAgent?.config?.agentProfile).toBe("{{agentProfile}}");
+  });
+
+  it("pr merge strategy template listens to review, approval, and opened aliases", () => {
+    const template = getTemplate("template-pr-merge-strategy");
+    expect(template).toBeDefined();
+
+    const triggerNode = template.nodes.find((n) => n.id === "trigger");
+    expect(triggerNode?.type).toBe("trigger.pr_event");
+    expect(triggerNode?.config?.event).toBe("review_requested");
+    expect(triggerNode?.config?.events).toEqual(["review_requested", "approved", "opened"]);
+  });
 });
 
 // ── Template API ────────────────────────────────────────────────────────────
@@ -937,5 +967,4 @@ describe("template category coverage", () => {
     }
   });
 });
-
 

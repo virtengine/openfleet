@@ -427,3 +427,86 @@ ode cli.mjs --daemon --config-dir .bosun --repo-root . --no-update-check --no-au
 - Throughput snapshot:
   - Recent merged PRs exist in the last hour (#194, #195, #197, #198), but attribution to fully autonomous Bosun E2E remains mixed and should be revalidated next run from workflow-node evidence.
 - No code edits shipped this run; runtime remediation only.
+
+## 2026-03-10T04:17:58+11:00 workflow delegation review (monitor-only)
+
+- Scope: reviewed in-progress agent patch only (no new code changes) on monitor/bosun-env-stability.
+- Runtime/logging status:
+  - Source daemon active: 
+ode cli.mjs --daemon-status => running PID 59940.
+  - Active monitor sink is .bosun/logs/monitor.log (last write advancing to 2026-03-10 04:13 local).
+  - Repo-root logs/monitor.log is stale and not the active sink for current source runtime.
+- Patch review findings (workflow/workflow-nodes.mjs, workflow-templates/agents.mjs):
+  1. Delegation selection currently evaluates only trigger config.filter and ignores gentType / 	askPattern on 	rigger.task_assigned.
+  2. BACKEND_AGENT_TEMPLATE trigger filter was removed ({}), so backend workflow can match all tasks by default.
+  3. Delegated path in ction.run_agent returns early before session-tracker/runSinglePass wiring, so Sessions view can miss active agent progress/events for delegated flows.
+- Risk: tasks may route to wrong custom agent workflow and appear less traceable in Sessions view despite workflow activity.
+- Next monitor check:
+  - Verify final patch evaluates gentType + 	askPattern + ilter together for delegation matching.
+  - Verify delegated execution still emits session-tracker events and preserves task/session observability.
+  - Confirm task lifecycle continues to PR handoff path (not generic executor-only completion).
+
+## 2026-03-10T05:11:03+11:00 runtime check
+- Runtime duration: ~00:10:00.
+- Initial health snapshot:
+  - Source daemon running from repo CLI (PID 59940), monitor active (PID 1776).
+  - `task stats`: draft 36, todo 1299, inprogress 31, inreview 0, done 2.
+  - In-progress quality was degraded: 26/31 were stale over 60m and all 31 had `agentAttempts=0`.
+  - Repeated `owner_mismatch` claim heartbeat failures for recurring task IDs (`a076ce3a...`, `25c46266...`, `673c5d42...`, `9c98e4e3...`, `ffe1021c...`).
+- Root cause:
+  - Claim state divergence between `.cache/bosun/task-claims.json` and `.cache/bosun/shared-task-states.json` (local claim token/owner pairs did not match shared lease token/owner pairs for active IDs).
+  - Stale in-progress tasks with no attempts remained pinned and continued to trigger heartbeat failures.
+- Ops fix applied (no source-code edits):
+  - Backed up claim files to `.cache/bosun/backups/20260310-050432/`.
+  - Pruned mismatched local claims from `.cache/bosun/task-claims.json`.
+  - Requeued stale no-attempt in-progress tasks (>60m) to `todo` via source CLI (`task update`) — 26 tasks updated.
+  - Pruned stale shared lease entries for affected IDs (`TASK-1`, `a076ce3a...`, `25c46266...`, `673c5d42...`, `9c98e4e3...`, `f2ab8397...`, `ffe1021c...`).
+- Post-fix verification:
+  - `task stats`: draft 36, todo 1325, inprogress 5, inreview 0, done 2.
+  - Remaining in-progress tasks: 5, all fresh (`staleOver60m=0`), none in review.
+  - Observation window 2026-03-09T18:09:43Z..18:11:03Z: no new `owner_mismatch` log lines observed.
+  - Scheduler continued minute cadence and schedule workflows completed.
+- Throughput status:
+  - `gh pr list --state merged --search "merged:>=<last-hour> label:bosun-attached"` returned no merged PRs in the last hour.
+
+## 2026-03-10T06:14:00+11:00 runtime check
+- Incident: source daemon remained alive but autonomous scheduler activity was degraded (no schedule-poll/schedule-run completion lines in observation windows).
+- Evidence: monitor log showed repeated startup/re-init + duplicate-start suppression; recent windows contained `stuck_agent`/SDK timeout history and no Bosun-attributed merged PRs in the last hour.
+- Ops fix (no code changes): reset 5 stale `guarded start task` placeholders from `inprogress` to `todo`.
+- Post-fix state: `task stats` => draft 36, todo 1330, inprogress 0, inreview 0, done 2; no fresh owner_mismatch/stuck_agent lines immediately after cleanup.
+- Remaining blocker: scheduler cadence still absent, so throughput remains stalled; next run should isolate monitor control-loop contention before any planning/backlog actions.
+- Branch sync note: monitor branch currently ahead 15 / behind 3 vs `origin/main`.
+
+### 2026-03-10T06:15:34+11:00 post-push validation
+- Pushed monitor notes and merged `origin/main` into `monitor/bosun-env-stability`; branch is now behind 0 / ahead 17 vs `origin/main` and synced with `origin/monitor/bosun-env-stability`.
+- Runtime remains source-local daemon PID 59940.
+- Scheduler resumed low cadence (`schedule poll triggered 2 workflow run(s)` at 19:14:33Z and 19:15:33Z), but queue throughput is still poor (`inprogress=0`, `done=2`).
+- `owner_mismatch` reappeared for task `df0d7085-...` in the same window, so claim/state instability is still not fully resolved.
+
+## 2026-03-10T07:12:00+11:00 runtime check
+- Runtime duration: ~00:22:00.
+- Required startup checks completed:
+  - Branch: `monitor/bosun-env-stability` (working tree contains pre-existing workflow/template/test/demo edits).
+  - `package.json` version: `0.40.10`.
+  - Source daemon active: `node cli.mjs --daemon-status --config-dir .bosun --repo-root .` => PID 59940.
+  - Active runtime log sink confirmed as `.bosun/logs/monitor.log`.
+- Incident status: still unhealthy.
+  - Scheduler heartbeat is active (`schedule poll triggered ...` every minute), but run completions stopped after `2026-03-09T19:59:03Z`.
+  - `.bosun/workflow-runs/_active-runs.json` remains pinned to two long-running `Bosun PR Watchdog` runs (`07852e00-...`, `5e4bcb0d-...`) stuck in `dispatch-fix`.
+  - `task stats` remains stagnant: draft 36, todo 1330, inprogress 0, inreview 0, done 2.
+  - Throughput check (`gh pr list --state merged --search merged:>=<last-hour>`) returned `[]`.
+- Root cause evidence:
+  - Both stuck PR Watchdog run artifacts show `dispatch-fix` status `running` immediately after `Delegating to agent workflow "Backend Agent"` with no subsequent progress.
+  - Repeated `owner_mismatch` heartbeat warnings for task `df0d7085-...` continue in live logs despite task status being `todo`.
+- Ops fix attempted (no source edits):
+  - Backed up claim files to `.cache/bosun/backups/monitor-20260310-070845/`.
+  - Pruned non-inprogress claims from `.cache/bosun/task-claims.json` (5 entries removed).
+- Post-fix result:
+  - On-disk claim files are now empty, but in-memory `owner_mismatch` warnings still recur (`20:08:35Z`), indicating runtime-held stale claim state and unresolved stuck workflow execution.
+  - No resumed schedule-run completions during observation window through `20:10:35Z`.
+- Branch sync/push:
+  - `monitor/bosun-env-stability...origin/main` = ahead 18 / behind 0.
+  - Pushed current branch (`Everything up-to-date`; hooks passed).
+- Handoff:
+  - Next run should prioritize a code-level fix in `action.run_agent` delegation path (PR Watchdog -> Backend Agent) because stuck delegated runs are starving autonomous workflow completion.
+  - If no safe live cancellation path is available, coordinate a controlled runtime recycle only after confirming policy allows interrupting active source processes.

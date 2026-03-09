@@ -2196,6 +2196,303 @@ describe("Session chaining - action.run_agent", () => {
       }
     }
   }, 60000);
+
+  it("delegates using full trigger.task_assigned semantics", async () => {
+    const handler = getNodeType("action.run_agent");
+    expect(handler).toBeDefined();
+
+    const ctx = new WorkflowContext({
+      taskId: "TASK-DELEGATE-1",
+      taskTitle: "Add API endpoint",
+      agentType: "backend",
+      task: {
+        id: "TASK-DELEGATE-1",
+        title: "Add API endpoint",
+        tags: ["backend", "api"],
+      },
+    });
+
+    const execute = vi.fn().mockResolvedValue({ errors: [] });
+    const launchEphemeralThread = vi.fn();
+    const mockEngine = {
+      list: vi.fn().mockReturnValue([
+        {
+          id: "wf-frontend",
+          name: "Frontend Agent",
+          enabled: true,
+          metadata: { replaces: { module: "primary-agent.mjs" } },
+          nodes: [
+            {
+              id: "trigger",
+              type: "trigger.task_assigned",
+              config: { agentType: "frontend", taskPattern: "ui|css" },
+            },
+          ],
+        },
+        {
+          id: "wf-backend",
+          name: "Backend Agent",
+          enabled: true,
+          metadata: { replaces: { module: "primary-agent.mjs" } },
+          nodes: [
+            {
+              id: "trigger",
+              type: "trigger.task_assigned",
+              config: {
+                agentType: "backend",
+                taskPattern: "api",
+                filter: "task.tags?.includes('backend')",
+              },
+            },
+          ],
+        },
+      ]),
+      execute,
+      services: {
+        agentPool: {
+          launchEphemeralThread,
+        },
+      },
+    };
+
+    const node = {
+      id: "delegated-agent",
+      type: "action.run_agent",
+      config: { prompt: "Handle task" },
+    };
+
+    const result = await handler.execute(node, ctx, mockEngine);
+    expect(result).toMatchObject({
+      success: true,
+      delegated: true,
+      subWorkflowId: "wf-backend",
+      subWorkflowName: "Backend Agent",
+      subStatus: "completed",
+    });
+    expect(execute).toHaveBeenCalledTimes(1);
+    expect(execute).toHaveBeenCalledWith(
+      "wf-backend",
+      expect.objectContaining({
+        _agentWorkflowActive: true,
+        eventType: "task.assigned",
+        taskId: "TASK-DELEGATE-1",
+        taskTitle: "Add API endpoint",
+      }),
+    );
+    expect(launchEphemeralThread).not.toHaveBeenCalled();
+  });
+
+  it("records delegated runs in session tracker for task visibility", async () => {
+    const handler = getNodeType("action.run_agent");
+    expect(handler).toBeDefined();
+
+    const ctx = new WorkflowContext({
+      taskId: "TASK-DELEGATE-SESSION",
+      taskTitle: "Backend migration",
+      workspaceId: "virtengine-gh",
+      task: {
+        id: "TASK-DELEGATE-SESSION",
+        title: "Backend migration",
+        tags: ["backend"],
+        branchName: "feat/backend-migration",
+      },
+    });
+
+    const mockEngine = {
+      list: vi.fn().mockReturnValue([
+        {
+          id: "wf-backend",
+          name: "Backend Agent",
+          enabled: true,
+          metadata: { replaces: { module: "primary-agent.mjs" } },
+          nodes: [
+            {
+              id: "trigger",
+              type: "trigger.task_assigned",
+              config: {
+                taskPattern: "backend",
+                filter: "task.tags?.includes('backend')",
+              },
+            },
+          ],
+        },
+      ]),
+      execute: vi.fn().mockResolvedValue({ errors: [] }),
+      services: {
+        agentPool: {
+          launchEphemeralThread: vi.fn(),
+        },
+      },
+    };
+
+    const node = {
+      id: "delegated-session-node",
+      type: "action.run_agent",
+      config: { prompt: "Handle task via delegated workflow" },
+    };
+
+    const result = await handler.execute(node, ctx, mockEngine);
+    expect(result.success).toBe(true);
+    expect(result.delegated).toBe(true);
+
+    const tracker = getSessionTracker();
+    const session = tracker.getSessionById("TASK-DELEGATE-SESSION");
+    expect(session).toBeTruthy();
+    expect(session.type).toBe("task");
+    expect(session.status).toBe("completed");
+    expect(session.metadata.workspaceId).toBe("virtengine-gh");
+    expect(session.metadata.branch).toBe("feat/backend-migration");
+
+    const messages = Array.isArray(session.messages) ? session.messages : [];
+    expect(messages.some((msg) => String(msg?.content || "").includes("Delegating to agent workflow"))).toBe(true);
+    expect(messages.some((msg) => String(msg?.content || "").includes("Backend Agent\" completed"))).toBe(true);
+  });
+
+  it("does not delegate agent workflows when task context is missing", async () => {
+    const handler = getNodeType("action.run_agent");
+    expect(handler).toBeDefined();
+
+    const ctx = new WorkflowContext({
+      eventType: "schedule-poll",
+      taskId: "",
+      taskTitle: "",
+    });
+
+    const execute = vi.fn().mockResolvedValue({ errors: [] });
+    const launchEphemeralThread = vi.fn().mockResolvedValue({
+      success: true,
+      output: "done",
+      sdk: "codex",
+      items: [],
+      threadId: "thread-no-delegation",
+    });
+    const mockEngine = {
+      list: vi.fn().mockReturnValue([
+        {
+          id: "wf-backend",
+          name: "Backend Agent",
+          enabled: true,
+          metadata: { replaces: { module: "primary-agent.mjs" } },
+          nodes: [
+            {
+              id: "trigger",
+              type: "trigger.task_assigned",
+              config: {},
+            },
+          ],
+        },
+      ]),
+      execute,
+      services: {
+        agentPool: {
+          launchEphemeralThread,
+        },
+      },
+    };
+
+    const node = {
+      id: "generic-agent",
+      type: "action.run_agent",
+      config: { prompt: "Generic non-task run", autoRecover: false },
+    };
+
+    const result = await handler.execute(node, ctx, mockEngine);
+
+    expect(result.success).toBe(true);
+    expect(result.delegated).not.toBe(true);
+    expect(execute).not.toHaveBeenCalled();
+    expect(launchEphemeralThread).toHaveBeenCalledTimes(1);
+  });
+  it("trigger.task_assigned applies agentType, taskPattern, and filter together", async () => {
+    const trigger = getNodeType("trigger.task_assigned");
+    expect(trigger).toBeDefined();
+
+    const node = {
+      id: "trigger-assigned",
+      type: "trigger.task_assigned",
+      config: {
+        agentType: "backend",
+        taskPattern: "api",
+        filter: "task.tags?.includes('backend')",
+      },
+    };
+
+    const matchingCtx = new WorkflowContext({
+      eventType: "task.assigned",
+      taskTitle: "Build API endpoint",
+      agentType: "backend",
+      task: { tags: ["backend", "api"] },
+    });
+    const matchingResult = await trigger.execute(node, matchingCtx);
+    expect(matchingResult.triggered).toBe(true);
+
+    const agentMismatchCtx = new WorkflowContext({
+      eventType: "task.assigned",
+      taskTitle: "Build API endpoint",
+      agentType: "frontend",
+      task: { tags: ["backend", "api"] },
+    });
+    const agentMismatchResult = await trigger.execute(node, agentMismatchCtx);
+    expect(agentMismatchResult.triggered).toBe(false);
+  });
+});
+
+describe("trigger.pr_event normalization", () => {
+  it("treats ready_for_review and synchronize aliases as opened", async () => {
+    const trigger = getNodeType("trigger.pr_event");
+    expect(trigger).toBeDefined();
+
+    const node = {
+      id: "pr-trigger",
+      type: "trigger.pr_event",
+      config: { event: "opened" },
+    };
+
+    const readyCtx = new WorkflowContext({
+      eventType: "pr.ready_for_review",
+      prEvent: "ready_for_review",
+      branch: "feature/one",
+    });
+    const readyResult = await trigger.execute(node, readyCtx);
+    expect(readyResult.triggered).toBe(true);
+    expect(readyResult.prEvent).toBe("opened");
+
+    const syncCtx = new WorkflowContext({
+      eventType: "pr.synchronize",
+      prEvent: "synchronize",
+      branch: "feature/two",
+    });
+    const syncResult = await trigger.execute(node, syncCtx);
+    expect(syncResult.triggered).toBe(true);
+    expect(syncResult.prEvent).toBe("opened");
+  });
+
+  it("supports config.events list for merge strategy triggers", async () => {
+    const trigger = getNodeType("trigger.pr_event");
+    expect(trigger).toBeDefined();
+
+    const node = {
+      id: "pr-trigger-events",
+      type: "trigger.pr_event",
+      config: { events: ["review_requested", "approved", "opened"] },
+    };
+
+    const approvedCtx = new WorkflowContext({
+      eventType: "pr.approved",
+      prEvent: "approved",
+      branch: "feature/approved",
+    });
+    const approvedResult = await trigger.execute(node, approvedCtx);
+    expect(approvedResult.triggered).toBe(true);
+
+    const mergedCtx = new WorkflowContext({
+      eventType: "pr.merged",
+      prEvent: "merged",
+      branch: "feature/merged",
+    });
+    const mergedResult = await trigger.execute(node, mergedCtx);
+    expect(mergedResult.triggered).toBe(false);
+  });
 });
 
 it("agent.run_planner streams planner events and propagates threadId", async () => {
@@ -3243,6 +3540,4 @@ describe("WorkflowEngine.getTaskTraceEvents", () => {
     expect(reread[0].taskId).toBe("TASK-TRACE-READBACK");
   });
 });
-
-
 
