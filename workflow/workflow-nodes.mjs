@@ -1682,7 +1682,10 @@ registerNodeType("action.run_agent", {
     const agentProfileId = String(
       ctx.resolve(node.config?.agentProfile || ctx.data?.agentProfile || ""),
     ).trim();
-    const timeoutMs = node.config?.timeoutMs || 3600000;
+    const resolvedTimeoutMs = ctx.resolve(node.config?.timeoutMs ?? ctx.data?.taskTimeoutMs ?? 3600000);
+    const timeoutMs = Number.isFinite(Number(resolvedTimeoutMs))
+      ? Math.max(1000, Math.trunc(Number(resolvedTimeoutMs)))
+      : 3600000;
     const includeTaskContext = node.config?.includeTaskContext !== false;
     const toolContract = buildWorkflowAgentToolContract(cwd, agentProfileId);
     let finalPrompt = `${toolContract}\n\n${prompt}`;
@@ -1791,8 +1794,8 @@ registerNodeType("action.run_agent", {
           node.config?.continuePrompt ||
             "Continue exactly where you left off. Resume execution from the last incomplete step, avoid redoing completed work, and finish the task end-to-end.",
         );
-        const parsedSessionRetries = Number(node.config?.sessionRetries);
-        const parsedMaxContinues = Number(node.config?.maxContinues);
+        const parsedSessionRetries = Number(ctx.resolve(node.config?.sessionRetries ?? 2));
+        const parsedMaxContinues = Number(ctx.resolve(node.config?.maxContinues ?? 2));
         const sessionRetries = Number.isFinite(parsedSessionRetries)
           ? Math.max(0, Math.min(10, Math.floor(parsedSessionRetries)))
           : 2;
@@ -1803,8 +1806,9 @@ registerNodeType("action.run_agent", {
         const modelOverride = node.config?.model
           ? String(ctx.resolve(node.config.model) || "").trim() || undefined
           : undefined;
-        const maxRetainedEvents = Number.isFinite(Number(node.config?.maxRetainedEvents))
-          ? Math.max(10, Math.min(500, Math.trunc(Number(node.config.maxRetainedEvents))))
+        const resolvedMaxRetainedEvents = Number(ctx.resolve(node.config?.maxRetainedEvents));
+        const maxRetainedEvents = Number.isFinite(resolvedMaxRetainedEvents)
+          ? Math.max(10, Math.min(500, Math.trunc(resolvedMaxRetainedEvents)))
           : WORKFLOW_AGENT_EVENT_PREVIEW_LIMIT;
         const tracker = trackedTaskId ? getSessionTracker() : null;
         const trackedSessionType = trackedTaskId ? "task" : "flow";
@@ -2988,7 +2992,73 @@ registerNodeType("action.update_task_status", {
     }
 
     if (kanban?.updateTaskStatus) {
+      const createPrOutput =
+        typeof ctx.getNodeOutput === "function"
+          ? ctx.getNodeOutput("create-pr")
+          : null;
+
+      const normalizeString = (value) => {
+        if (value == null) return null;
+        const text = String(value).trim();
+        return text ? text : null;
+      };
+      const normalizePrNumber = (value) => {
+        if (value == null || value === "") return null;
+        const parsed = Number.parseInt(String(value), 10);
+        return Number.isFinite(parsed) && parsed > 0 ? parsed : null;
+      };
+
+      const branchForTask = normalizeString(
+        node.config?.branchName ||
+          node.config?.branch ||
+          createPrOutput?.branch ||
+          ctx.data?.branchName ||
+          ctx.data?.branch ||
+          ctx.data?.task?.branchName ||
+          ctx.data?.task?.branch,
+      );
+      const prUrlForTask = normalizeString(
+        node.config?.prUrl ||
+          createPrOutput?.prUrl ||
+          createPrOutput?.url ||
+          ctx.data?.prUrl ||
+          ctx.data?.task?.prUrl,
+      );
+      const prNumberForTask = normalizePrNumber(
+        node.config?.prNumber ||
+          createPrOutput?.prNumber ||
+          ctx.data?.prNumber ||
+          ctx.data?.task?.prNumber,
+      );
+
+      if (branchForTask) updateOptions.branchName = branchForTask;
+      if (prUrlForTask) updateOptions.prUrl = prUrlForTask;
+      if (prNumberForTask != null) updateOptions.prNumber = prNumberForTask;
+
       await kanban.updateTaskStatus(taskId, status, updateOptions);
+
+      // Persist PR linkage/branch metadata so review rehydrate does not reset
+      // in-review tasks back to todo due missing references.
+      if (
+        (status === "inreview" || status === "inprogress") &&
+        typeof kanban.updateTask === "function" &&
+        (branchForTask || prUrlForTask || prNumberForTask != null)
+      ) {
+        const linkagePatch = {};
+        if (branchForTask) linkagePatch.branchName = branchForTask;
+        if (prUrlForTask) linkagePatch.prUrl = prUrlForTask;
+        if (prNumberForTask != null) linkagePatch.prNumber = prNumberForTask;
+        try {
+          await kanban.updateTask(taskId, linkagePatch);
+        } catch (err) {
+          ctx.log(
+            node.id,
+            `Failed to persist task linkage metadata: ${err?.message || err}`,
+            "warn",
+          );
+        }
+      }
+
       bindTaskContext(ctx, {
         taskId,
         taskTitle,
@@ -9186,3 +9256,6 @@ registerNodeType("action.web_search", {
 // ═══════════════════════════════════════════════════════════════════════════
 
 export { registerNodeType, getNodeType, listNodeTypes } from "./workflow-engine.mjs";
+
+
+
