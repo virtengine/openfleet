@@ -50,7 +50,13 @@ import {
   streamRetryDelay,
   MAX_STREAM_RETRIES,
 } from "../infra/stream-resilience.mjs";
-import { compressAllItems, estimateSavings, estimateContextUsagePct, recordShreddingEvent } from "../workspace/context-cache.mjs";
+import {
+  applyImmediateGitOutputCaps,
+  compressAllItems,
+  estimateSavings,
+  estimateContextUsagePct,
+  recordShreddingEvent,
+} from "../workspace/context-cache.mjs";
 import { resolveContextShreddingOptions } from "../config/context-shredding-config.mjs";
 
 // Lazy-load MCP registry to avoid circular dependencies.
@@ -228,14 +234,15 @@ async function maybeCompressResultItems(
   );
   if (shreddingOpts?._skip === true) return items;
 
-  const usagePct = estimateContextUsagePct(items);
+  const precompressedItems = await applyImmediateGitOutputCaps(items, shreddingOpts);
+  const usagePct = estimateContextUsagePct(precompressedItems);
   const threshold = Number.isFinite(shreddingOpts?.contextUsageThreshold)
     ? Number(shreddingOpts.contextUsageThreshold)
     : 0.5;
-  if (usagePct < threshold) return items;
+  if (usagePct < threshold) return precompressedItems;
 
   shreddingOpts.contextUsagePct = usagePct;
-  const compressedItems = await compressAllItems(items, shreddingOpts);
+  const compressedItems = await compressAllItems(precompressedItems, shreddingOpts);
   try {
     const savings = estimateSavings(items, compressedItems);
     if (savings.savedChars > 0) {

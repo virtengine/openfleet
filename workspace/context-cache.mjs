@@ -1250,9 +1250,10 @@ export async function cacheAndCompressItems(items, options = {}) {
   return result;
 }
 
-async function applyImmediateGitOutputCaps(items, opts) {
+export async function applyImmediateGitOutputCaps(items, options = {}) {
   if (!Array.isArray(items) || items.length === 0) return items;
 
+  const opts = resolveOpts(options);
   const result = [...items];
   const cachePromises = [];
 
@@ -2026,7 +2027,7 @@ export async function maybeCompressSessionItems(
   );
 
   const shreddingOpts = resolveContextShreddingOptions(sessionType, agentType);
-  const immediateCapItems = await applyImmediateGitOutputCaps(items, resolveOpts(shreddingOpts));
+  const immediateCapItems = await applyImmediateGitOutputCaps(items, shreddingOpts);
   if (shreddingOpts?._skip === true && !force) return immediateCapItems;
 
   const usagePct = estimateContextUsagePct(immediateCapItems);
