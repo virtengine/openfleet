@@ -476,3 +476,9 @@ ode cli.mjs --daemon-status => running PID 59940.
 - Post-fix state: `task stats` => draft 36, todo 1330, inprogress 0, inreview 0, done 2; no fresh owner_mismatch/stuck_agent lines immediately after cleanup.
 - Remaining blocker: scheduler cadence still absent, so throughput remains stalled; next run should isolate monitor control-loop contention before any planning/backlog actions.
 - Branch sync note: monitor branch currently ahead 15 / behind 3 vs `origin/main`.
+
+### 2026-03-10T06:15:34+11:00 post-push validation
+- Pushed monitor notes and merged `origin/main` into `monitor/bosun-env-stability`; branch is now behind 0 / ahead 17 vs `origin/main` and synced with `origin/monitor/bosun-env-stability`.
+- Runtime remains source-local daemon PID 59940.
+- Scheduler resumed low cadence (`schedule poll triggered 2 workflow run(s)` at 19:14:33Z and 19:15:33Z), but queue throughput is still poor (`inprogress=0`, `done=2`).
+- `owner_mismatch` reappeared for task `df0d7085-...` in the same window, so claim/state instability is still not fully resolved.
