@@ -599,13 +599,26 @@ function guessContentType(name, kind) {
 
 function isLikelyAttachmentUrl(url, isImage = false) {
   if (!url) return false;
-  const text = String(url).toLowerCase();
+  const text = String(url).trim();
   if (isImage) return true;
-  if (text.includes("user-images.githubusercontent.com")) return true;
-  if (text.includes("github.com/user-attachments")) return true;
-  if (text.includes("/attachments/")) return true;
-  if (text.includes("/files/")) return true;
-  return /\.(png|jpe?g|gif|webp|bmp|svg|pdf|json|csv|txt|log|zip|gz|tgz|xz|tar|rar|7z|docx?|xlsx?|pptx?)(\?|#|$)/i.test(text);
+
+  let parsed = null;
+  try {
+    parsed = new URL(text);
+  } catch {
+    parsed = null;
+  }
+
+  if (parsed) {
+    const host = parsed.hostname.toLowerCase();
+    const path = parsed.pathname.toLowerCase();
+    if (host === "user-images.githubusercontent.com") return true;
+    if (host === "github.com" && path.startsWith("/user-attachments/")) return true;
+    if (path.includes("/attachments/") || path.includes("/files/")) return true;
+  }
+
+  const lowered = text.toLowerCase();
+  return /\.(png|jpe?g|gif|webp|bmp|svg|pdf|json|csv|txt|log|zip|gz|tgz|xz|tar|rar|7z|docx?|xlsx?|pptx?)(\?|#|$)/i.test(lowered);
 }
 
 function extractMarkdownLinks(text) {
@@ -5170,7 +5183,7 @@ class JiraAdapter {
         clauses.push(`labels in ("draft")`);
       } else {
         const statusNames = this._statusCandidates(normalized)
-          .map((name) => `"${name.replace(/"/g, '\\"')}"`)
+          .map((name) => `"${name.replace(/\\/g, '\\\\').replace(/"/g, '\\"')}"`)
           .join(", ");
         if (statusNames) clauses.push(`status in (${statusNames})`);
       }
@@ -5178,13 +5191,13 @@ class JiraAdapter {
 
     if (this._enforceTaskLabel && this._taskScopeLabels.length > 0) {
       const labelsExpr = this._taskScopeLabels
-        .map((label) => `"${label.replace(/"/g, '\\"')}"`)
+        .map((label) => `"${label.replace(/\\/g, '\\\\').replace(/"/g, '\\"')}"`)
         .join(", ");
       clauses.push(`labels in (${labelsExpr})`);
     }
 
     if (filters.assignee) {
-      clauses.push(`assignee = "${String(filters.assignee).replace(/"/g, '\\"')}"`);
+      clauses.push(`assignee = "${String(filters.assignee).replace(/\\/g, '\\\\').replace(/"/g, '\\"')}"`);
     }
 
     const customJql = String(filters.jql || "").trim();
@@ -5929,9 +5942,11 @@ function resolveBackendName() {
 export function getKanbanAdapter() {
   const name = resolveBackendName();
   if (activeAdapter && activeBackendName === name) return activeAdapter;
-  const factory = ADAPTERS[name];
-  if (!factory) throw new Error(`${TAG} unknown kanban backend: ${name}`);
-  activeAdapter = factory();
+  if (name === "internal") activeAdapter = ADAPTERS.internal();
+  else if (name === "vk") activeAdapter = ADAPTERS.vk();
+  else if (name === "github") activeAdapter = ADAPTERS.github();
+  else if (name === "jira") activeAdapter = ADAPTERS.jira();
+  else throw new Error(`${TAG} unknown kanban backend: ${name}`);
   activeBackendName = name;
   console.log(`${TAG} using ${name} backend`);
   return activeAdapter;

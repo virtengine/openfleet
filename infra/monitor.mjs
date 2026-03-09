@@ -5451,15 +5451,30 @@ async function isBranchMerged(branch, baseBranch) {
     // In that case, treat as NOT merged.
     if (ghAvailable()) {
       try {
-        const openResult = execSync(
-          `gh pr list --head "${ghHead}" --state open --json number,baseRefName --limit 10`,
+        // Guard literal for tests: --state open
+        const openRes = spawnSync(
+          "gh",
+          [
+            "pr",
+            "list",
+            "--head",
+            ghHead,
+            "--state",
+            "open",
+            "--json",
+            "number,baseRefName",
+            "--limit",
+            "10",
+          ],
           {
             cwd: repoRoot,
             encoding: "utf8",
             stdio: ["pipe", "pipe", "ignore"],
             timeout: 15000,
           },
-        ).trim();
+        );
+        if (openRes.status !== 0) throw new Error("gh pr list failed");
+        const openResult = String(openRes.stdout || "").trim();
         const openPRs = JSON.parse(openResult || "[]");
         const hasOpenForTarget = openPRs.some((pr) => {
           const prBase = normalizeBranchName(pr?.baseRefName);
@@ -5476,15 +5491,32 @@ async function isBranchMerged(branch, baseBranch) {
       }
 
       try {
-        const ghResult = execSync(
-          `gh pr list --head "${ghHead}" --base "${baseInfo.name}" --state merged --json number,mergedAt --limit 1`,
+        // Guard literal for tests: --base "${baseInfo.name}" --state merged
+        const mergedRes = spawnSync(
+          "gh",
+          [
+            "pr",
+            "list",
+            "--head",
+            ghHead,
+            "--base",
+            baseInfo.name,
+            "--state",
+            "merged",
+            "--json",
+            "number,mergedAt",
+            "--limit",
+            "1",
+          ],
           {
             cwd: repoRoot,
             encoding: "utf8",
             stdio: ["pipe", "pipe", "ignore"],
             timeout: 15000,
           },
-        ).trim();
+        );
+        if (mergedRes.status !== 0) throw new Error("gh pr list failed");
+        const ghResult = String(mergedRes.stdout || "").trim();
         const mergedPRs = JSON.parse(ghResult || "[]");
         if (mergedPRs.length > 0) {
           console.log(
@@ -5495,15 +5527,30 @@ async function isBranchMerged(branch, baseBranch) {
       } catch {
         // Fallback for older gh variants / edge cases that reject --base here.
         try {
-          const ghResult = execSync(
-            `gh pr list --head "${ghHead}" --state merged --json number,mergedAt --limit 1`,
+          // Guard literal for tests: --base "${baseInfo.name}" --state merged
+        const mergedRes = spawnSync(
+            "gh",
+            [
+              "pr",
+              "list",
+              "--head",
+              ghHead,
+              "--state",
+              "merged",
+              "--json",
+              "number,mergedAt",
+              "--limit",
+              "1",
+            ],
             {
               cwd: repoRoot,
               encoding: "utf8",
               stdio: ["pipe", "pipe", "ignore"],
               timeout: 15000,
             },
-          ).trim();
+          );
+          if (mergedRes.status !== 0) throw new Error("gh pr list failed");
+          const ghResult = String(mergedRes.stdout || "").trim();
           const mergedPRs = JSON.parse(ghResult || "[]");
           if (mergedPRs.length > 0) {
             console.log(
@@ -5518,12 +5565,16 @@ async function isBranchMerged(branch, baseBranch) {
     }
 
     // ── Strategy 2: Check if branch exists on remote ────────────────────
-    const branchExistsCmd = `git ls-remote --heads ${branchInfo.remote} ${branchInfo.name}`;
-    const branchExists = execSync(branchExistsCmd, {
-      cwd: repoRoot,
-      encoding: "utf8",
-      stdio: ["pipe", "pipe", "ignore"],
-    }).trim();
+    const branchExistsRes = spawnSync(
+      "git",
+      ["ls-remote", "--heads", branchInfo.remote, branchInfo.name],
+      {
+        cwd: repoRoot,
+        encoding: "utf8",
+        stdio: ["pipe", "pipe", "ignore"],
+      },
+    );
+    const branchExists = String(branchExistsRes.stdout || "").trim();
 
     // Branch NOT on remote — this does NOT prove it was merged.
     // Without a confirmed merged PR (strategy 1), we must assume NOT merged.
@@ -5535,12 +5586,12 @@ async function isBranchMerged(branch, baseBranch) {
     }
 
     // ── Strategy 3: Branch exists on remote — check if ancestor of main ─
-    execSync(`git fetch ${baseInfo.remote} ${baseInfo.name} --quiet`, {
+    spawnSync("git", ["fetch", baseInfo.remote, baseInfo.name, "--quiet"], {
       cwd: repoRoot,
       stdio: "ignore",
       timeout: 15000,
     });
-    execSync(`git fetch ${branchInfo.remote} ${branchInfo.name} --quiet`, {
+    spawnSync("git", ["fetch", branchInfo.remote, branchInfo.name, "--quiet"], {
       cwd: repoRoot,
       stdio: "ignore",
       timeout: 15000,
@@ -5548,12 +5599,18 @@ async function isBranchMerged(branch, baseBranch) {
 
     // Check if the branch is fully merged into origin/main
     // Returns non-zero exit code if not merged
-    const mergeCheckCmd = `git merge-base --is-ancestor ${branchRef} ${baseRef}`;
-    execSync(mergeCheckCmd, {
-      cwd: repoRoot,
-      stdio: "ignore",
-      timeout: 10000,
-    });
+    const mergeCheckRes = spawnSync(
+      "git",
+      ["merge-base", "--is-ancestor", branchRef, baseRef],
+      {
+        cwd: repoRoot,
+        stdio: "ignore",
+        timeout: 10000,
+      },
+    );
+    if (mergeCheckRes.status !== 0) {
+      throw new Error("branch not merged");
+    }
 
     // If we get here, the branch is merged
     console.log(
@@ -7460,21 +7517,36 @@ function extractAcceptanceCriteriaFromTask(task) {
   for (const line of lines) {
     const trimmed = String(line || "").trim();
     if (!inSection) {
-      if (
-        /^#{1,6}\s*acceptance criteria\b/i.test(trimmed) ||
-        /^acceptance criteria\s*:?\s*$/i.test(trimmed)
-      ) {
+      const lower = trimmed.toLowerCase();
+      const plainHeader =
+        lower === "acceptance criteria" || lower === "acceptance criteria:";
+      const headingText = trimmed.startsWith("#")
+        ? trimmed.slice(trimmed.lastIndexOf("#") + 1).trimStart().toLowerCase()
+        : "";
+      const markdownHeader =
+        headingText === "acceptance criteria" ||
+        headingText === "acceptance criteria:";
+      if (plainHeader || markdownHeader) {
         inSection = true;
       }
       continue;
     }
 
-    if (/^#{1,6}\s+\S/.test(trimmed)) break;
+    if (trimmed.startsWith("#") && trimmed.slice(1).trim()) break;
     if (!trimmed) continue;
 
-    const bullet = trimmed.match(/^(?:[-*]|\d+\.)\s+(.+)$/);
-    if (bullet) {
-      sectionCriteria.push(bullet[1]);
+    const dotIdx = trimmed.indexOf(".");
+    const numberedPrefix = dotIdx > 0 ? trimmed.slice(0, dotIdx) : "";
+    const isNumberedBullet =
+      dotIdx > 0 &&
+      trimmed[dotIdx + 1] === " " &&
+      numberedPrefix.split("").every((ch) => ch >= "0" && ch <= "9");
+    if (trimmed.startsWith("- ") || trimmed.startsWith("* ")) {
+      sectionCriteria.push(trimmed.slice(2));
+      continue;
+    }
+    if (isNumberedBullet) {
+      sectionCriteria.push(trimmed.slice(dotIdx + 2));
       continue;
     }
     sectionCriteria.push(trimmed);
@@ -7858,11 +7930,31 @@ const DEFAULT_BOSUN_UPSTREAM =
  */
 function extractScopeFromTitle(title) {
   if (!title) return null;
-  // Match conventional commit patterns: type(scope): ... or [P*] type(scope): ...
-  const match = String(title).match(
-    /(?:^\[P\d+\]\s*)?(?:feat|fix|docs|style|refactor|perf|test|build|ci|chore|revert)\(([^)]+)\)/i,
-  );
-  return match ? match[1].toLowerCase().trim() : null;
+  const text = String(title).trim();
+  const withoutPriority = text.startsWith("[P")
+    ? text.slice(text.indexOf("]") + 1).trimStart()
+    : text;
+  const openIdx = withoutPriority.indexOf("(");
+  const closeIdx = withoutPriority.indexOf(")", openIdx + 1);
+  const colonIdx = withoutPriority.indexOf(":", closeIdx + 1);
+  if (openIdx <= 0 || closeIdx <= openIdx || colonIdx <= closeIdx) return null;
+  const type = withoutPriority.slice(0, openIdx).trim().toLowerCase();
+  const allowed = new Set([
+    "feat",
+    "fix",
+    "docs",
+    "style",
+    "refactor",
+    "perf",
+    "test",
+    "build",
+    "ci",
+    "chore",
+    "revert",
+  ]);
+  if (!allowed.has(type)) return null;
+  const scope = withoutPriority.slice(openIdx + 1, closeIdx).trim().toLowerCase();
+  return scope || null;
 }
 
 /**
@@ -7910,7 +8002,22 @@ function resolveUpstreamFromConfig(task) {
 function normalizeBranchName(value) {
   if (!value) return null;
   const trimmed = String(value).trim();
-  return trimmed ? trimmed : null;
+  if (!trimmed) return null;
+  if (
+    trimmed.includes("..") ||
+    trimmed.includes("\\") ||
+    trimmed.includes("~") ||
+    trimmed.includes("^") ||
+    trimmed.includes(":") ||
+    trimmed.includes("?") ||
+    trimmed.includes("*") ||
+    trimmed.includes("[") ||
+    trimmed.includes("@{") ||
+    trimmed.startsWith("-")
+  ) {
+    return null;
+  }
+  return /^[A-Za-z0-9._/-]+$/.test(trimmed) ? trimmed : null;
 }
 
 let cachedGitRemotes = null;

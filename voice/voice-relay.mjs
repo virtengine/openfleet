@@ -1513,7 +1513,7 @@ export async function executeVoiceTool(toolName, toolArgs, context = {}) {
     const { executeToolCall } = await import("./voice-tools.mjs");
     return await executeToolCall(toolName, toolArgs, context);
   } catch (err) {
-    console.error(`[voice-relay] tool execution error (${toolName}):`, err.message);
+    console.error("[voice-relay] tool execution error (%s): %s", String(toolName || "unknown"), String(err?.message || err || "unknown"));
     return { result: null, error: err.message };
   }
 }

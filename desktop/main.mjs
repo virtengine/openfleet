@@ -304,6 +304,18 @@ function parseBoolEnv(value, fallback) {
   return fallback;
 }
 
+function shouldSkipTlsVerification(urlStr) {
+  const allowInsecure = parseBoolEnv(process.env.BOSUN_DESKTOP_ALLOW_INSECURE_TLS, false);
+  if (!allowInsecure) return false;
+  try {
+    const parsed = new URL(String(urlStr || ""));
+    const host = parsed.hostname.toLowerCase();
+    return host === "localhost" || host === "127.0.0.1" || host === "::1";
+  } catch {
+    return false;
+  }
+}
+
 function isWslInteropRuntime() {
   return Boolean(
     process.env.WSL_DISTRO_NAME
@@ -841,7 +853,7 @@ function uiServerRequest(urlStr, { method = "GET", body } = {}) {
       if (body) headers["Content-Length"] = String(Buffer.byteLength(body));
       const req = (isHttps ? httpsRequest : httpRequest)(
         urlStr,
-        { method, headers, timeout: 5000, rejectUnauthorized: false },
+        { method, headers, timeout: 5000, rejectUnauthorized: !shouldSkipTlsVerification(urlStr) },
         (res) => {
           let buf = "";
           res.setEncoding("utf8");
@@ -1276,7 +1288,7 @@ async function probeUiServer(url) {
         {
           method: "GET",
           timeout: 1500,
-          rejectUnauthorized: false,
+          rejectUnauthorized: !shouldSkipTlsVerification(url),
         },
         (res) => {
           res.resume();

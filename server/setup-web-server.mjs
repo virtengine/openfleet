@@ -31,6 +31,13 @@ import {
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
+function trimTrailingSlashes(value) {
+  let out = String(value || "");
+  while (out.endsWith("/")) out = out.slice(0, -1);
+  return out;
+}
+
+
 // ── Vendor file serving (hoisting-safe) ───────────────────────────────────────────
 // Resolution order:
 //   1. ui/vendor/ bundled files — shipped in the npm tarball, zero CDN dependency
@@ -1337,12 +1344,10 @@ function applyNonBlockingSetupEnvDefaults(envMap, env = {}, sourceEnv = process.
     ),
   );
 
-  envMap.VK_BASE_URL = String(
+  envMap.VK_BASE_URL = trimTrailingSlashes(String(
     pickNonEmptyValue(env.vkBaseUrl, envMap.VK_BASE_URL, sourceEnv.VK_BASE_URL) ||
       "http://127.0.0.1:54089",
-  )
-    .trim()
-    .replace(/\/+$/, "");
+  ).trim());
   if (!envMap.VK_BASE_URL) {
     envMap.VK_BASE_URL = "http://127.0.0.1:54089";
   }
@@ -1740,7 +1745,7 @@ async function handleModelsProbe(body) {
   }
 
   // For OpenAI / compatible endpoints, try GET /v1/models
-  const resolvedBase = (baseUrl || "https://api.openai.com").replace(/\/+$/, "");
+  const resolvedBase = trimTrailingSlashes(baseUrl || "https://api.openai.com");
   const endpoint = `${resolvedBase}/v1/models`;
 
   try {
@@ -1835,7 +1840,7 @@ async function handleVoiceEndpointTest(body) {
         return { ok: false, error: "Azure API key is required" };
       }
       // Strip path suffix so users can paste full URLs without double-path 404s.
-      let base = String(azureEndpoint).replace(/\/+$/, "");
+      let base = trimTrailingSlashes(String(azureEndpoint));
       try { const u = new URL(base); base = `${u.protocol}//${u.host}`; } catch { /* keep as-is */ }
       // Prefer /openai/models as a credential check — it works on both classic
       // Azure OpenAI resources AND Azure AI Foundry "Global Standard" deployments.
@@ -1885,7 +1890,7 @@ async function handleVoiceEndpointTest(body) {
       if (normalizedProvider === "azure" && deployment) {
         const dep = String(deployment).trim();
         try {
-          let base = String(azureEndpoint).replace(/\/+$/, "");
+          let base = trimTrailingSlashes(String(azureEndpoint));
           try { const u = new URL(base); base = `${u.protocol}//${u.host}`; } catch { /* keep */ }
           const depUrl = `${base}/openai/deployments/${encodeURIComponent(dep)}/chat/completions?api-version=2024-10-21`;
           const depCtrl = new AbortController();

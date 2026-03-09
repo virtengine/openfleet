@@ -23,6 +23,7 @@ import { loadConfig } from "../config/config.mjs";
 import { execPrimaryPrompt, getPrimaryAgentName, setPrimaryAgent, getAgentMode, setAgentMode } from "../agent/primary-agent.mjs";
 import { existsSync } from "node:fs";
 import { resolve as resolvePath } from "node:path";
+import { randomUUID } from "node:crypto";
 
 // ── Module-scope lazy imports ───────────────────────────────────────────────
 
@@ -495,7 +496,7 @@ registerAction("session.history", async (params) => {
 
 registerAction("session.create", async (params, context) => {
   const tracker = await getSessionTracker();
-  const sessionId = params.id || `voice-live-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
+  const sessionId = params.id || `voice-live-${Date.now()}-${randomUUID().slice(0, 6)}`;
   const session = tracker.createSession
     ? tracker.createSession({
         id: sessionId,
@@ -1001,7 +1002,7 @@ export async function dispatchVoiceAction(intent, context = {}) {
       durationMs: Date.now() - startMs,
     };
   } catch (err) {
-    console.error(`[voice-action-dispatcher] ${action} error:`, err.message);
+    console.error("[voice-action-dispatcher] %s error: %s", String(action || "unknown"), String(err?.message || err || "unknown"));
     return {
       ok: false,
       action,

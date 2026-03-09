@@ -11,6 +11,7 @@ import { loadConfig } from "../config/config.mjs";
 import { execPrimaryPrompt, getPrimaryAgentName, setPrimaryAgent, getAgentMode, setAgentMode } from "../agent/primary-agent.mjs";
 import { existsSync } from "node:fs";
 import { resolve as resolvePath } from "node:path";
+import { randomUUID } from "node:crypto";
 import { resolveAgentRepoRoot } from "../config/repo-root.mjs";
 import { getVisionSessionState } from "./vision-session-state.mjs";
 
@@ -1301,7 +1302,7 @@ export async function executeToolCall(toolName, args = {}, context = {}) {
     const result = await handler(args, context);
     return { result: typeof result === "string" ? result : JSON.stringify(result, null, 2) };
   } catch (err) {
-    console.error(`[voice-tools] ${toolName} error:`, err.message);
+    console.error("[voice-tools] %s error: %s", String(toolName || "unknown"), String(err?.message || err || "unknown"));
     return { result: null, error: err.message };
   }
 }
@@ -1383,7 +1384,7 @@ const TOOL_HANDLERS = {
     const shortTitle = String(args.message || "").trim().slice(0, 90) || "Voice task";
 
     // ── Create a live session for direct execution (no background queue) ──
-    const liveSessionId = `voice-live-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
+    const liveSessionId = `voice-live-${Date.now()}-${randomUUID().slice(0, 6)}`;
 
     try {
       const tracker = await getSessionTracker();
@@ -2879,9 +2880,9 @@ const TOOL_HANDLERS = {
       if (!rest) {
         return TOOL_HANDLERS.sync_prompt_defaults({ apply: false }, context);
       }
-      const applyMatch = rest.match(/^apply(?:\s+(.*))?$/i);
-      if (applyMatch) {
-        const keyText = String(applyMatch[1] || "").trim();
+      const lowerRest = rest.toLowerCase();
+      if (lowerRest === "apply" || lowerRest.startsWith("apply ")) {
+        const keyText = String(rest.slice(5) || "").trim();
         const keys = normalizeStringArrayArg(keyText);
         return TOOL_HANDLERS.sync_prompt_defaults(
           keys.length ? { apply: true, keys } : { apply: true },

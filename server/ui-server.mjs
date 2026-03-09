@@ -4629,21 +4629,49 @@ function parseBoundedInt(rawValue, fallback, { min = 1, max = Number.MAX_SAFE_IN
 function normalizeDomainName(rawValue) {
   const value = String(rawValue || "").trim().toLowerCase();
   if (!value) return "";
-  const withoutScheme = value.replace(/^https?:\/\//, "");
-  const withoutPath = withoutScheme.split("/")[0].replace(/:\d+$/, "");
-  return withoutPath.replace(/\.+$/, "");
+  let withoutScheme = value;
+  if (withoutScheme.startsWith("http://")) withoutScheme = withoutScheme.slice(7);
+  else if (withoutScheme.startsWith("https://")) withoutScheme = withoutScheme.slice(8);
+  const slashIndex = withoutScheme.indexOf("/");
+  const withoutPath = slashIndex >= 0 ? withoutScheme.slice(0, slashIndex) : withoutScheme;
+  const colonIndex = withoutPath.lastIndexOf(":");
+  const hostOnly = colonIndex > 0 ? withoutPath.slice(0, colonIndex) : withoutPath;
+  let end = hostOnly.length;
+  while (end > 0 && hostOnly[end - 1] === ".") end -= 1;
+  return hostOnly.slice(0, end);
 }
 
 export function sanitizeHostnameLabel(rawValue, fallback = "operator") {
-  const normalized = String(rawValue || "")
-    .trim()
-    .toLowerCase()
-    .replace(/[^a-z0-9-]+/g, "-")
-    .replace(/-+/g, "-")
-    .replace(/^-+/, "")
-    .replace(/-+$/, "");
-  if (!normalized) return fallback;
-  return normalized.slice(0, 63).replace(/-+$/, "") || fallback;
+  const input = String(rawValue || "").trim().toLowerCase();
+  if (!input) return fallback;
+  let out = "";
+  let prevDash = false;
+  for (const ch of input) {
+    const isAlphaNum =
+      (ch >= "a" && ch <= "z") ||
+      (ch >= "0" && ch <= "9");
+    if (isAlphaNum) {
+      out += ch;
+      prevDash = false;
+      continue;
+    }
+    if (ch === "-") {
+      if (!prevDash) {
+        out += "-";
+        prevDash = true;
+      }
+      continue;
+    }
+    if (!prevDash) {
+      out += "-";
+      prevDash = true;
+    }
+  }
+  while (out.startsWith("-")) out = out.slice(1);
+  while (out.endsWith("-")) out = out.slice(0, -1);
+  if (!out) return fallback;
+  const bounded = out.slice(0, 63);
+  return bounded.endsWith("-") ? bounded.slice(0, -1) || fallback : bounded;
 }
 
 function getTunnelIdentity() {
@@ -5825,8 +5853,25 @@ export function getTelegramUiUrl() {
   return uiServerUrl;
 }
 
+function scrubStackTraces(payload) {
+  if (payload == null) return payload;
+  if (typeof payload === "string") {
+    return payload.includes("\n") && payload.toLowerCase().includes(" at ")
+      ? "Internal server error"
+      : payload;
+  }
+  if (Array.isArray(payload)) return payload.map((item) => scrubStackTraces(item));
+  if (typeof payload !== "object") return payload;
+  const out = {};
+  for (const [key, value] of Object.entries(payload)) {
+    if (key.toLowerCase() === "stack") continue;
+    out[key] = scrubStackTraces(value);
+  }
+  return out;
+}
 function jsonResponse(res, statusCode, payload) {
-  const body = JSON.stringify(payload, null, 2);
+  const safePayload = scrubStackTraces(payload);
+  const body = JSON.stringify(safePayload, null, 2);
   res.writeHead(statusCode, {
     "Content-Type": "application/json; charset=utf-8",
     "Access-Control-Allow-Origin": "*",

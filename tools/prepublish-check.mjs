@@ -12,7 +12,6 @@
 import { existsSync, readFileSync, readdirSync, statSync } from "node:fs";
 import { dirname, extname, relative, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
-import { init, parse } from "es-module-lexer";
 
 const SOURCE_EXTENSIONS = new Set([".mjs", ".cjs", ".js"]);
 
@@ -57,16 +56,276 @@ export function expandPublishedFiles(rootDir, filesArray = []) {
   return published;
 }
 
+function isIdentifierChar(char) {
+  return /[A-Za-z0-9_$]/.test(char);
+}
+
+function matchesKeyword(source, index, keyword) {
+  if (!source.startsWith(keyword, index)) return false;
+  const before = source[index - 1] ?? "";
+  const after = source[index + keyword.length] ?? "";
+  return !isIdentifierChar(before) && !isIdentifierChar(after);
+}
+
+function skipLineComment(source, index) {
+  let cursor = index + 2;
+  while (cursor < source.length && source[cursor] !== "\n") cursor += 1;
+  return cursor;
+}
+
+function skipBlockComment(source, index) {
+  let cursor = index + 2;
+  while (cursor + 1 < source.length) {
+    if (source[cursor] === "*" && source[cursor + 1] === "/") return cursor + 2;
+    cursor += 1;
+  }
+  return source.length;
+}
+
+function skipWhitespaceAndComments(source, index) {
+  let cursor = index;
+  while (cursor < source.length) {
+    const char = source[cursor];
+    const next = source[cursor + 1];
+    if (/\s/.test(char)) {
+      cursor += 1;
+      continue;
+    }
+    if (char === "/" && next === "/") {
+      cursor = skipLineComment(source, cursor);
+      continue;
+    }
+    if (char === "/" && next === "*") {
+      cursor = skipBlockComment(source, cursor);
+      continue;
+    }
+    break;
+  }
+  return cursor;
+}
+
+function consumeQuotedString(source, index) {
+  const quote = source[index];
+  let cursor = index + 1;
+  while (cursor < source.length) {
+    const char = source[cursor];
+    if (char === "\\") {
+      cursor += 2;
+      continue;
+    }
+    if (char === quote) return cursor + 1;
+    cursor += 1;
+  }
+  return source.length;
+}
+
+function consumeTemplateLiteral(source, index) {
+  let cursor = index + 1;
+  let expressionDepth = 0;
+
+  while (cursor < source.length) {
+    const char = source[cursor];
+    const next = source[cursor + 1];
+    if (char === "\\") {
+      cursor += 2;
+      continue;
+    }
+    if (expressionDepth === 0 && char === "`") return cursor + 1;
+    if (char === "$" && next === "{") {
+      expressionDepth += 1;
+      cursor += 2;
+      continue;
+    }
+    if (expressionDepth > 0) {
+      if (char === "'" || char === '"') {
+        cursor = consumeQuotedString(source, cursor);
+        continue;
+      }
+      if (char === "`") {
+        cursor = consumeTemplateLiteral(source, cursor);
+        continue;
+      }
+      if (char === "/" && next === "/") {
+        cursor = skipLineComment(source, cursor);
+        continue;
+      }
+      if (char === "/" && next === "*") {
+        cursor = skipBlockComment(source, cursor);
+        continue;
+      }
+      if (char === "{") {
+        expressionDepth += 1;
+      } else if (char === "}") {
+        expressionDepth -= 1;
+      }
+    }
+    cursor += 1;
+  }
+  return source.length;
+}
+
+function readQuotedLiteral(source, index) {
+  const quote = source[index];
+  if (quote !== "'" && quote !== '"') return null;
+  let cursor = index + 1;
+  let value = "";
+  while (cursor < source.length) {
+    const char = source[cursor];
+    if (char === "\\") {
+      const escaped = source[cursor + 1];
+      if (escaped === undefined) return null;
+      value += escaped;
+      cursor += 2;
+      continue;
+    }
+    if (char === quote) {
+      return { value, end: cursor + 1 };
+    }
+    value += char;
+    cursor += 1;
+  }
+  return null;
+}
+
+function readSpecifierLiteral(source, index) {
+  const cursor = skipWhitespaceAndComments(source, index);
+  return readQuotedLiteral(source, cursor);
+}
+
+function scanForFromSpecifier(source, index) {
+  let cursor = index;
+  let parenDepth = 0;
+  let braceDepth = 0;
+  let bracketDepth = 0;
+
+  while (cursor < source.length) {
+    cursor = skipWhitespaceAndComments(source, cursor);
+    const char = source[cursor];
+    if (char === undefined) break;
+    if (char === "'" || char === '"') {
+      cursor = consumeQuotedString(source, cursor);
+      continue;
+    }
+    if (char === "`") {
+      cursor = consumeTemplateLiteral(source, cursor);
+      continue;
+    }
+    if (char === "(") {
+      parenDepth += 1;
+      cursor += 1;
+      continue;
+    }
+    if (char === ")") {
+      parenDepth = Math.max(0, parenDepth - 1);
+      cursor += 1;
+      continue;
+    }
+    if (char === "{") {
+      braceDepth += 1;
+      cursor += 1;
+      continue;
+    }
+    if (char === "}") {
+      braceDepth = Math.max(0, braceDepth - 1);
+      cursor += 1;
+      continue;
+    }
+    if (char === "[") {
+      bracketDepth += 1;
+      cursor += 1;
+      continue;
+    }
+    if (char === "]") {
+      bracketDepth = Math.max(0, bracketDepth - 1);
+      cursor += 1;
+      continue;
+    }
+    if (
+      parenDepth === 0 &&
+      braceDepth === 0 &&
+      bracketDepth === 0 &&
+      matchesKeyword(source, cursor, "from")
+    ) {
+      const literal = readSpecifierLiteral(source, cursor + 4);
+      return {
+        end: literal?.end ?? cursor + 4,
+        specifier: literal?.value ?? null,
+      };
+    }
+    if (parenDepth === 0 && braceDepth === 0 && bracketDepth === 0 && char === ";") {
+      return { end: cursor + 1, specifier: null };
+    }
+    cursor += 1;
+  }
+
+  return { end: cursor, specifier: null };
+}
+
+function findNextModuleSpecifier(source, index, keyword) {
+  const cursor = skipWhitespaceAndComments(source, index + keyword.length);
+  if (source[cursor] === ".") {
+    return { end: cursor + 1, specifier: null };
+  }
+  if (keyword === "import" && source[cursor] === "(") {
+    const literal = readSpecifierLiteral(source, cursor + 1);
+    return {
+      end: literal?.end ?? cursor + 1,
+      specifier: literal?.value ?? null,
+    };
+  }
+  if (source[cursor] === "'" || source[cursor] === '"') {
+    const literal = readQuotedLiteral(source, cursor);
+    return {
+      end: literal?.end ?? cursor,
+      specifier: literal?.value ?? null,
+    };
+  }
+  return scanForFromSpecifier(source, cursor);
+}
+
 export async function findLocalImportSpecifiers(source) {
-  await init;
-  const [imports] = parse(source);
-  return imports
-    .map((entry) => entry.n)
-    .filter(
-      (specifier) =>
-        typeof specifier === "string" &&
-        (specifier.startsWith("./") || specifier.startsWith("../")),
-    );
+  const specifiers = [];
+  let cursor = 0;
+
+  while (cursor < source.length) {
+    const char = source[cursor];
+    const next = source[cursor + 1];
+    if (char === "'" || char === '"') {
+      cursor = consumeQuotedString(source, cursor);
+      continue;
+    }
+    if (char === "`") {
+      cursor = consumeTemplateLiteral(source, cursor);
+      continue;
+    }
+    if (char === "/" && next === "/") {
+      cursor = skipLineComment(source, cursor);
+      continue;
+    }
+    if (char === "/" && next === "*") {
+      cursor = skipBlockComment(source, cursor);
+      continue;
+    }
+
+    let match = null;
+    if (matchesKeyword(source, cursor, "import")) {
+      match = findNextModuleSpecifier(source, cursor, "import");
+    } else if (matchesKeyword(source, cursor, "export")) {
+      match = findNextModuleSpecifier(source, cursor, "export");
+    }
+
+    if (match) {
+      if (match.specifier?.startsWith("./") || match.specifier?.startsWith("../")) {
+        specifiers.push(match.specifier);
+      }
+      cursor = Math.max(match.end, cursor + 1);
+      continue;
+    }
+
+    cursor += 1;
+  }
+
+  return specifiers;
 }
 
 export async function validatePublishedLocalImports({ rootDir, pkg }) {

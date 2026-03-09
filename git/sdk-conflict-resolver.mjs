@@ -848,26 +848,14 @@ function launchCodexExec(prompt, cwd, timeoutMs) {
       }
       delete codexEnv.OPENAI_BASE_URL;
 
-      if (process.platform === "win32") {
-        const shellQuote = (value) =>
-          /\s/.test(value) ? `"${String(value).replace(/"/g, '\\"')}"` : value;
-        const fullCommand = ["codex", ...args].map(shellQuote).join(" ");
-        child = spawn(fullCommand, {
-          cwd,
-          stdio: ["pipe", "pipe", "pipe"],
-          shell: true,
-          timeout: timeoutMs,
-          env: codexEnv,
-        });
-      } else {
-        child = spawn("codex", args, {
-          cwd,
-          stdio: ["pipe", "pipe", "pipe"],
-          shell: false,
-          timeout: timeoutMs,
-          env: codexEnv,
-        });
-      }
+      const codexBin = process.platform === "win32" ? "codex.cmd" : "codex";
+      child = spawn(codexBin, args, {
+        cwd,
+        stdio: ["pipe", "pipe", "pipe"],
+        shell: false,
+        timeout: timeoutMs,
+        env: codexEnv,
+      });
     } catch (err) {
       return resolvePromise({
         success: false,

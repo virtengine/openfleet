@@ -24,7 +24,7 @@ import { createInterface } from "node:readline";
 import { existsSync, readFileSync, writeFileSync, mkdirSync, rmSync } from "node:fs";
 import { homedir } from "node:os";
 import { resolve, dirname, basename, relative, isAbsolute } from "node:path";
-import { execSync } from "node:child_process";
+import { execSync, spawnSync } from "node:child_process";
 import { execFileSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import {
@@ -277,23 +277,25 @@ function normalizeBaseUrl(raw) {
 function openUrlInBrowser(url) {
   const target = String(url || "").trim();
   if (!target) return false;
-  const escaped = target.replace(/"/g, '\\"');
   try {
     if (process.platform === "darwin") {
-      execSync(`open "${escaped}"`);
-      return true;
+      const res = spawnSync("open", [target], { stdio: "ignore" });
+      return res.status === 0;
     }
     if (process.platform === "win32") {
-      execSync(`cmd /c start "" "${escaped}"`);
-      return true;
+      const res = spawnSync("cmd", ["/c", "start", "", target], {
+        stdio: "ignore",
+        shell: false,
+      });
+      return res.status === 0;
     }
     if (commandExists("xdg-open")) {
-      execSync(`xdg-open "${escaped}"`);
-      return true;
+      const res = spawnSync("xdg-open", [target], { stdio: "ignore" });
+      return res.status === 0;
     }
     if (commandExists("gio")) {
-      execSync(`gio open "${escaped}"`);
-      return true;
+      const res = spawnSync("gio", ["open", target], { stdio: "ignore" });
+      return res.status === 0;
     }
   } catch {
     return false;
@@ -2265,7 +2267,7 @@ function formatEnvValue(value) {
   const raw = String(value ?? "");
   const needsQuotes = /\s|#|=/.test(raw);
   if (!needsQuotes) return raw;
-  return `"${raw.replace(/"/g, '\\"')}"`;
+  return `"${raw.replace(/\\/g, '\\\\').replace(/"/g, '\\"')}"`;
 }
 
 export function buildStandardizedEnvFile(templateText, envEntries) {

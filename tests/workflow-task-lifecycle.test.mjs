@@ -257,6 +257,98 @@ describe("trigger.task_available", () => {
     }
   });
 
+  it("prefers the actual repo root over mirrored .bosun workspace paths for same-repo tasks", async () => {
+    const nt = getNodeType("trigger.task_available");
+    const workspaceRoot = mkdtempSync(join(tmpdir(), "wf-task-repo-mirror-"));
+    const actualRepo = join(workspaceRoot, "bosun");
+    const mirroredRepo = join(actualRepo, ".bosun", "workspaces", "virtengine-gh", "bosun");
+    mkdirSync(actualRepo, { recursive: true });
+    mkdirSync(mirroredRepo, { recursive: true });
+    writeFileSync(join(actualRepo, ".git"), "gitdir: /tmp/actual-bosun\n");
+    writeFileSync(join(mirroredRepo, ".git"), "gitdir: /tmp/mirror-bosun\n");
+
+    const listTasks = vi.fn().mockResolvedValue([
+      {
+        id: "repo-route-same-1",
+        title: "Same repo task",
+        description: "Should use actual repo root",
+        status: "todo",
+        workspace: "virtengine-gh",
+        repository: "virtengine/bosun",
+      },
+    ]);
+
+    const ctx = makeCtx({
+      activeSlotCount: 0,
+      repoRoot: mirroredRepo,
+    });
+    const node = makeNode("trigger.task_available", {
+      maxParallel: 1,
+      status: "todo",
+    });
+
+    try {
+      const result = await nt.execute(node, ctx, {
+        services: {
+          kanban: {
+            listTasks,
+          },
+        },
+      });
+
+      expect(result.triggered).toBe(true);
+      expect(ctx.data.repository).toBe("virtengine/bosun");
+      expect(String(ctx.data.repoRoot || "").replace(/\\/g, "/")).toBe(actualRepo.replace(/\\/g, "/"));
+      expect(ctx.data.repoSlug).toBe("virtengine/bosun");
+    } finally {
+      try { rmSync(workspaceRoot, { recursive: true, force: true }); } catch { /* ok */ }
+    }
+  });
+
+  it("normalizes mirrored repoRoot even when internal tasks omit repository metadata", async () => {
+    const nt = getNodeType("trigger.task_available");
+    const workspaceRoot = mkdtempSync(join(tmpdir(), "wf-task-repo-default-"));
+    const actualRepo = join(workspaceRoot, "bosun");
+    const mirroredRepo = join(actualRepo, ".bosun", "workspaces", "virtengine-gh", "bosun");
+    mkdirSync(actualRepo, { recursive: true });
+    mkdirSync(mirroredRepo, { recursive: true });
+    writeFileSync(join(actualRepo, ".git"), "gitdir: /tmp/actual-bosun-default\n");
+    writeFileSync(join(mirroredRepo, ".git"), "gitdir: /tmp/mirror-bosun-default\n");
+
+    const listTasks = vi.fn().mockResolvedValue([
+      {
+        id: "repo-route-default-1",
+        title: "Default repo task",
+        description: "Should still use actual repo root",
+        status: "todo",
+      },
+    ]);
+
+    const ctx = makeCtx({
+      activeSlotCount: 0,
+      repoRoot: mirroredRepo,
+    });
+    const node = makeNode("trigger.task_available", {
+      maxParallel: 1,
+      status: "todo",
+    });
+
+    try {
+      const result = await nt.execute(node, ctx, {
+        services: {
+          kanban: {
+            listTasks,
+          },
+        },
+      });
+
+      expect(result.triggered).toBe(true);
+      expect(String(ctx.data.repoRoot || "").replace(/\\/g, "/")).toBe(actualRepo.replace(/\\/g, "/"));
+    } finally {
+      try { rmSync(workspaceRoot, { recursive: true, force: true }); } catch { /* ok */ }
+    }
+  });
+
   it("returns blocked result when all tasks exceed repoAreaParallelLimit", async () => {
     const nt = getNodeType("trigger.task_available");
     const listTasks = vi.fn().mockResolvedValue([
@@ -719,6 +811,7 @@ describe("action.acquire_worktree", () => {
     const result = await nt.execute(node, ctx);
     expect(result.success).toBe(true);
     expect(result.baseBranch).toBe("main");
+    expect(ctx.data.baseBranch).toBe("main");
     expect(result.created).toBe(true);
     expect(existsSync(result.worktreePath)).toBe(true);
   });
@@ -748,6 +841,36 @@ describe("action.acquire_worktree", () => {
     expect(ctx2.data._worktreeCreated).toBe(false);
     expect(ctx2.data._worktreeManaged).toBe(true);
   });
+
+  it("reuses an already-attached branch worktree even when managed path naming changed", async () => {
+    const nt = getNodeType("action.acquire_worktree");
+    const branch = "task/legacy-reuse-branch";
+    const legacyPath = join(repoDir, ".bosun", "worktrees", "task-legacy-reuse");
+    mkdirSync(join(repoDir, ".bosun", "worktrees"), { recursive: true });
+
+    gitExec('git worktree add "' + legacyPath + '" -b "' + branch + '" main', {
+      cwd: repoDir,
+      stdio: "ignore",
+    });
+
+    const ctx = makeCtx({});
+    const node = makeNode("action.acquire_worktree", {
+      repoRoot: repoDir,
+      taskId: "legacy-1",
+      branch,
+      baseBranch: "main",
+      fetchTimeout: 5000,
+      worktreeTimeout: 10000,
+    });
+
+    const result = await nt.execute(node, ctx);
+    expect(result.success).toBe(true);
+    expect(result.reused).toBe(true);
+    expect(result.reusedExistingBranch).toBe(true);
+    expect(result.created).toBe(false);
+    expect(String(result.worktreePath).replace(/\\/g, "/")).toBe(String(legacyPath).replace(/\\/g, "/"));
+    expect(ctx.data._worktreeManaged).toBe(true);
+  });
   it("uses a short managed worktree directory derived from task id", async () => {
     const nt = getNodeType("action.acquire_worktree");
     const ctx = makeCtx({});
@@ -765,6 +888,43 @@ describe("action.acquire_worktree", () => {
     const normalizedPath = String(result.worktreePath || "").replace(/\\/g, "/");
     expect(normalizedPath).toMatch(/\/\.bosun\/worktrees\/task-task123e4567-[a-f0-9]{10}$/);
     expect(normalizedPath).not.toContain("very-long-branch-name");
+  });
+
+
+  it("recreates invalid managed worktrees instead of reusing broken git metadata", async () => {
+    const nt = getNodeType("action.acquire_worktree");
+    const branch = "task/recreate-invalid-managed";
+    const node = makeNode("action.acquire_worktree", {
+      repoRoot: repoDir,
+      taskId: "recreate-invalid-1",
+      branch,
+      baseBranch: "main",
+      fetchTimeout: 5000,
+      worktreeTimeout: 10000,
+    });
+
+    const firstCtx = makeCtx({});
+    const first = await nt.execute(node, firstCtx);
+    expect(first.success).toBe(true);
+    expect(first.created).toBe(true);
+
+    gitExec('git worktree remove "' + first.worktreePath + '" --force', {
+      cwd: repoDir,
+      stdio: "ignore",
+    });
+    mkdirSync(first.worktreePath, { recursive: true });
+    writeFileSync(join(first.worktreePath, "stale.txt"), "stale");
+
+    const secondCtx = makeCtx({});
+    const second = await nt.execute(node, secondCtx);
+    expect(second.success).toBe(true);
+    expect(typeof second.worktreePath).toBe("string");
+    expect(second.worktreePath.length).toBeGreaterThan(0);
+    const isGit = gitExec("git rev-parse --is-inside-work-tree", {
+      cwd: second.worktreePath,
+      encoding: "utf8",
+    }).trim();
+    expect(isGit).toBe("true");
   });
 
   it("enables core.longpaths before checkout", async () => {
@@ -1576,6 +1736,8 @@ describe("template-ve-orchestrator-lite", () => {
     expect(Array.isArray(t.variables.protectedBranches)).toBe(true);
   });
 });
+
+
 
 
 
