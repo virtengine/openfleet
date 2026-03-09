@@ -1268,6 +1268,24 @@ export function transitionTaskLifecycle(taskId, action, options = {}) {
   }
 
   const normalizedAction = String(action || "").trim().toLowerCase();
+  const shouldGuardStart = normalizedAction === "start" || normalizedAction === "resume";
+  const overrideStartGuard = options.force === true
+    || options.forceStart === true
+    || options.manualOverride === true
+    || options.overrideStartGuard === true;
+  if (shouldGuardStart && !overrideStartGuard) {
+    const canStart = canTaskStart(taskId, options);
+    if (!canStart.canStart) {
+      return {
+        ok: false,
+        error: "start_guard_blocked",
+        reason: canStart.reason,
+        action: normalizedAction,
+        canStart,
+        task: { ...task },
+      };
+    }
+  }
   const targetStatus =
     normalizeTaskStatus(options.targetStatus || options.status || LIFECYCLE_ACTION_TARGET[normalizedAction] || "");
   if (!targetStatus) {
@@ -1285,6 +1303,7 @@ export function transitionTaskLifecycle(taskId, action, options = {}) {
       task: { ...task },
     };
   }
+
 
   const previousStatus = task.status;
   const updated = setTaskStatus(taskId, targetStatus, options.source || "lifecycle");
