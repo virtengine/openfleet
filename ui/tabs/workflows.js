@@ -1183,6 +1183,10 @@ function WorkflowCanvas({ workflow, onSave, nodeTypes: availableNodeTypes = [] }
   const historyPendingSnapshotRef = useRef(null);
   const saveTimer = useRef(null);
   const selectedNodeIdsRef = useRef(selectedNodeIds);
+  const workflowSnapshotKey = useMemo(
+    () => serializeGraphSnapshot(workflow?.nodes || [], workflow?.edges || []),
+    [workflow?.nodes, workflow?.edges],
+  );
   useEffect(() => { selectedNodeIdsRef.current = selectedNodeIds; }, [selectedNodeIds]);
   useEffect(() => {
     nodesRef.current = nodes;
@@ -1207,7 +1211,7 @@ function WorkflowCanvas({ workflow, onSave, nodeTypes: availableNodeTypes = [] }
     setEditingNode(null);
     setContextMenu(null);
     setShowNodePalette(false);
-  }, [workflow?.id, workflow?.nodes?.length, workflow?.edges?.length]);
+  }, [workflow?.id, workflowSnapshotKey]);
 
   // Canvas dimensions
   const NODE_W = 220;
@@ -2136,7 +2140,10 @@ function NodePalette({
 }) {
   const [selectedIndex, setSelectedIndex] = useState(0);
 
-  const results = useMemo(() => searchNodeTypes(types || [], query, 40), [types, query]);
+  const results = useMemo(() => {
+    const safeTypes = types || [];
+    return searchNodeTypes(safeTypes, query, Math.max(1, safeTypes.length || 1));
+  }, [types, query]);
 
   useEffect(() => {
     if (!open) return;
@@ -3873,7 +3880,6 @@ export function WorkflowsTab() {
     </div>
   `;
 }
-
 
 
 
