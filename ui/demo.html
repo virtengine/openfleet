@@ -17,11 +17,11 @@
       shim.onerror = function() {
         var fb = document.createElement("script");
         fb.async = true;
-        fb.src = "https://cdn.jsdelivr.net/npm/es-module-shims@1.10.0/dist/es-module-shims.min.js";
+        fb.src = "https://cdn.jsdelivr.net/npm/es-module-shims@2.8.0/dist/es-module-shims.min.js";
         fb.onerror = function() {
           var fb2 = document.createElement("script");
           fb2.async = true;
-          fb2.src = "https://unpkg.com/es-module-shims@1.10.0/dist/es-module-shims.min.js";
+          fb2.src = "https://unpkg.com/es-module-shims@2.8.0/dist/es-module-shims.min.js";
           document.head.appendChild(fb2);
         };
         document.head.appendChild(fb);
