@@ -1011,7 +1011,6 @@ export function updateTask(taskId, updates) {
     "syncDirty",
     "meta",
   ]);
-
   for (const [key, value] of Object.entries(patch)) {
     if (key === "id") continue;
     if (blockedKeys.has(key)) continue;
@@ -2338,4 +2337,3 @@ export function getStaleInReviewTasks(maxAgeMs) {
     (t) => t.status === "inreview" && t.lastActivityAt < cutoff,
   );
 }
-
