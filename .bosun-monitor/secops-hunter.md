@@ -23,3 +23,16 @@
   - Executed: `npm audit --audit-level=high` (built-in dependency CVE scan).
   - Recommended next installs (free/open-source): `semgrep`, `gitleaks`, `osv-scanner`, `trivy`.
 - Post-main CodeQL refresh (`run 22834818631`): open code-scanning alerts reduced from 94 to 65 (29 resolved this batch).
+
+## 2026-03-09 15:29:17 +11:00
+- Scope: SecOps follow-up batch on remaining CodeQL alerts (command/2nd-order injection, XSS, request forgery, insecure randomness, prototype pollution, stack-trace exposure, regex hardening).
+- Files hardened: `infra/monitor.mjs`, `setup.mjs`, `server/ui-server.mjs`, `server/setup-web-server.mjs`, `git/sdk-conflict-resolver.mjs`, `task/task-executor.mjs`, `workspace/workspace-monitor.mjs`, `workflow/workflow-nodes.mjs`, `kanban/kanban-adapter.mjs`, `kanban/vk-log-stream.mjs`, `github/github-oauth-portal.mjs`, `voice/voice-action-dispatcher.mjs`, `voice/voice-tools.mjs`, `voice/voice-relay.mjs`, `voice/voice-auth-manager.mjs`, `task/task-store.mjs`, `desktop/main.mjs`, `lib/session-insights.mjs`, `ui/app.legacy.js`, `site/ui/app.legacy.js`, `site/js/telegram-chat-sim.js`, plus security regression tests.
+- Security strategy: eliminate shell-string execution paths, enforce input/URL constraints before network or process dispatch, replace insecure randomness with `crypto.randomUUID`, add HTML sanitization before DOM injection, and harden error payloads to avoid stack exposure.
+- Validation evidence:
+  - `node --check` passed on all touched modules.
+  - `npm test -- tests/monitor-is-branch-merged-guard.test.mjs tests/voice-auth-manager-oauth.test.mjs tests/ui-server.test.mjs` passed (99 tests).
+  - Additional targeted suite run passed on 9 modules; one suite (`tests/setup-web-server-env.test.mjs`) currently fails under Vitest loader with `SyntaxError: Invalid or unexpected token` while passing under direct Node test loader (existing harness incompatibility to investigate separately).
+  - `npm run build` passed.
+- Local OSS security tooling updates:
+  - Executed: `npm audit --audit-level=high`.
+  - Recommended CLI installs (free/open source): `semgrep`, `gitleaks`, `osv-scanner`, `trivy`.

@@ -747,7 +747,22 @@ const UPSTREAM_LABEL_REGEX =
 function normalizeBranchName(value) {
   if (!value) return null;
   const trimmed = String(value || "").trim();
-  return trimmed ? trimmed : null;
+  if (!trimmed) return null;
+  if (
+    trimmed.includes("..") ||
+    trimmed.includes("\\") ||
+    trimmed.includes("~") ||
+    trimmed.includes("^") ||
+    trimmed.includes(":") ||
+    trimmed.includes("?") ||
+    trimmed.includes("*") ||
+    trimmed.includes("[") ||
+    trimmed.includes("@{") ||
+    trimmed.startsWith("-")
+  ) {
+    return null;
+  }
+  return /^[A-Za-z0-9._/-]+$/.test(trimmed) ? trimmed : null;
 }
 
 function extractScopeFromTitle(title) {

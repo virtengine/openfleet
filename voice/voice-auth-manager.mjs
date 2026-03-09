@@ -15,6 +15,15 @@ function normalizeProvider(provider) {
   return String(provider || "").trim().toLowerCase();
 }
 
+function escapeHtml(value) {
+  return String(value ?? "")
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, '&#39;');
+}
+
 function readStateFile() {
   if (!existsSync(VOICE_AUTH_STATE_PATH)) return {};
   const raw = readFileSync(VOICE_AUTH_STATE_PATH, "utf8");
@@ -342,7 +351,7 @@ function _createCallbackServer(provider, cfg, expectedState, codeVerifier) {
         : "";
       res.writeHead(200, { "Content-Type": "text/html; charset=utf-8" });
       res.end(`<!DOCTYPE html><html><body style="font-family:system-ui;padding:40px">
-        <h2>Sign-in failed</h2><p>${errorDescription}</p>${providerHint}<p>You can close this window.</p>
+        <h2>Sign-in failed</h2><p>${escapeHtml(errorDescription)}</p>${providerHint}<p>You can close this window.</p>
       </body></html>`);
       if (pending) { pending.status = "error"; pending.result = { error: errorDescription }; }
       setTimeout(() => server.close(), 500);

@@ -459,6 +459,22 @@
     let demoRunning = true;
     let typingTimeout = null;
 
+    function sanitizeBotHtml(html) {
+      const tpl = document.createElement("template");
+      tpl.innerHTML = String(html || "");
+      tpl.content.querySelectorAll("script,style,iframe,object,embed").forEach((node) => node.remove());
+      tpl.content.querySelectorAll("*").forEach((el) => {
+        for (const attr of [...el.attributes]) {
+          const name = String(attr.name || "").toLowerCase();
+          const value = String(attr.value || "").trim().toLowerCase();
+          const urlAttr = name === "src" || name === "href" || name === "xlink:href";
+          if (name.startsWith("on") || (urlAttr && (value.startsWith("javascript:") || value.startsWith("data:text/html")))) {
+            el.removeAttribute(attr.name);
+          }
+        }
+      });
+      return tpl.innerHTML;
+    }
     /* ── Message rendering ─────────────────────────────────────────── */
     function addMessage(type, html, keyboard) {
       // Remove typing indicator if present
@@ -473,7 +489,7 @@
           <div class="tg-chat__msg-avatar">${BOT_AVATAR}</div>
           <div class="tg-chat__msg-bubble">
             <div class="tg-chat__msg-name">${BOT_NAME}</div>
-            <div class="tg-chat__msg-text">${html}</div>
+            <div class="tg-chat__msg-text">${sanitizeBotHtml(html)}</div>
             <div class="tg-chat__msg-time">${timeStr()}</div>
           </div>
         `;

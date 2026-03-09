@@ -114,6 +114,19 @@ export const webhookEvents = new EventEmitter();
 
 // ── HTML helpers ─────────────────────────────────────────────────────────────
 
+function escapeHtml(value) {
+  return String(value ?? "")
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/\'/g, "&#39;");
+}
+
+function normalizeInstallationId(value) {
+  const raw = String(value ?? "").trim();
+  return /^\d+$/.test(raw) ? raw : "";
+}
 function htmlPage(title, bodyHtml) {
   return `<!DOCTYPE html>
 <html lang="en">
@@ -428,8 +441,8 @@ async function handleCallback(req, res) {
   const urlObj = new URL(req.url, `http://${DEFAULT_HOST}`);
   const code = urlObj.searchParams.get("code");
   const state = urlObj.searchParams.get("state");
-  const installationId = urlObj.searchParams.get("installation_id");
-  const setupAction = urlObj.searchParams.get("setup_action");
+  const installationId = normalizeInstallationId(urlObj.searchParams.get("installation_id"));
+  const setupAction = String(urlObj.searchParams.get("setup_action") || "").trim().toLowerCase();
 
   // Validate CSRF — allow state to be absent if GitHub passes it only on install
   if (state && !consumeCsrfToken(state)) {
@@ -507,10 +520,10 @@ async function handleCallback(req, res) {
 
   const loginHtml = user
     ? `<div class="user-card">
-        <img class="user-avatar" src="https://github.com/${user.login}.png?size=96" alt="${user.login}" />
+        <img class="user-avatar" src="https://github.com/${encodeURIComponent(String(user.login || ""))}.png?size=96" alt="${escapeHtml(user.login)}" />
         <div>
-          <div class="user-login">${user.login}</div>
-          <div class="user-id">GitHub ID: ${user.id}</div>
+          <div class="user-login">${escapeHtml(user.login)}</div>
+          <div class="user-id">GitHub ID: ${escapeHtml(user.id)}</div>
         </div>
       </div>`
     : "<p>Token saved.</p>";
@@ -521,7 +534,7 @@ async function handleCallback(req, res) {
       <div class="card-title">Authenticated User</div>
       ${loginHtml}
     </div>
-    ${installationId ? `<div class="card"><div class="card-title">Installation</div><p>Installation ID: <strong>${installationId}</strong> (${setupAction ?? "install"})</p></div>` : ""}
+    ${installationId ? `<div class="card"><div class="card-title">Installation</div><p>Installation ID: <strong>${installationId}</strong> (${escapeHtml(setupAction || "install")})</p></div>` : ""}
     <div class="btn-row">
       <a class="btn btn-primary" href="/">← Back to portal</a>
     </div>
@@ -533,8 +546,8 @@ async function handleCallback(req, res) {
 
 async function handleSetup(req, res) {
   const urlObj = new URL(req.url, `http://${DEFAULT_HOST}`);
-  const installationId = urlObj.searchParams.get("installation_id");
-  const setupAction = urlObj.searchParams.get("setup_action") ?? "install";
+  const installationId = normalizeInstallationId(urlObj.searchParams.get("installation_id"));
+  const setupAction = String(urlObj.searchParams.get("setup_action") ?? "install").trim().toLowerCase();
 
   if (!installationId) {
     res.writeHead(400, { "Content-Type": "text/html; charset=utf-8" });
@@ -579,7 +592,7 @@ async function handleSetup(req, res) {
     // Non-critical
   }
 
-  const accountName = installDetails?.account?.login ?? `#${installationId}`;
+  const accountName = escapeHtml(installDetails?.account?.login ?? `#${installationId}`);
   const repoCount = installDetails?.repositories_count ?? "?";
 
   const actionLabel =
@@ -595,11 +608,11 @@ async function handleSetup(req, res) {
       </div>
       <div class="status-row">
         <div class="dot dot-green"></div>
-        <span>Installation ID: <strong>${installationId}</strong></span>
+        <span>Installation ID: <strong>${escapeHtml(installationId)}</strong></span>
       </div>
       <div class="status-row">
         <div class="dot dot-green"></div>
-        <span>Repositories: <strong>${repoCount}</strong></span>
+        <span>Repositories: <strong>${escapeHtml(repoCount)}</strong></span>
       </div>
     </div>
     <div class="card">

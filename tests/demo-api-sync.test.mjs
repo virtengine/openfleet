@@ -311,7 +311,7 @@ describe("import map consistency", () => {
       ["demo.html", signalsUrl],
       ["index.html", indexSignalsUrl],
     ]) {
-      if (url.includes("cdn.jsdelivr.net")) {
+      let host = ""; try { host = new URL(url).hostname.toLowerCase(); } catch { host = ""; } if (host === "cdn.jsdelivr.net") {
         expect.fail(
           `${label} uses jsdelivr for @preact/signals which bundles a separate ` +
             `preact instance internally, breaking signals/hooks integration. ` +

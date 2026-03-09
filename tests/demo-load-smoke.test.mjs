@@ -59,7 +59,7 @@ function extractLocalAssets(html, htmlPath) {
 
 function extractInlineScripts(html) {
   const scripts = [];
-  const re = /<script\b([^>]*)>([\s\S]*?)<\/script>/gi;
+  const re = /<script\b([^>]*)>([\s\S]*?)<\/script\s*>/gi;
   let match;
   while ((match = re.exec(html)) !== null) {
     const attrs = match[1] || "";

@@ -2222,7 +2222,7 @@ registerNodeType("action.run_agent", {
     ctx.log(node.id, "Agent pool not available, using shell fallback");
     try {
       const output = execSync(
-        `node -e "import('../agent/agent-pool.mjs').then(m => m.launchEphemeralThread(process.argv[1], process.argv[2], ${timeoutMs}).then(r => console.log(JSON.stringify(r))))" "${finalPrompt.replace(/"/g, '\\"')}" "${cwd}"`,
+        `node -e "import('../agent/agent-pool.mjs').then(m => m.launchEphemeralThread(process.argv[1], process.argv[2], ${timeoutMs}).then(r => console.log(JSON.stringify(r))))" "${finalPrompt.replace(/\\/g, '\\\\').replace(/"/g, '\\"')}" "${cwd}"`,
         { cwd: resolve(dirname(new URL(import.meta.url).pathname)), timeout: timeoutMs + 30000, encoding: "utf8" }
       );
       const parsed = JSON.parse(output);
@@ -3047,7 +3047,7 @@ registerNodeType("action.git_operations", {
 
       const commands = {
         add: `git add ${addPaths}`,
-        commit: `git add -A && git commit -m "${message.replace(/"/g, '\\"')}"`,
+        commit: `git add -A && git commit -m "${message.replace(/\\/g, '\\\\').replace(/"/g, '\\"')}"`,
         tag: tagName ? `git tag ${tagName}` : "",
         push: includeTags
           ? "git push --set-upstream origin HEAD && git push --tags"
@@ -9149,8 +9149,8 @@ registerNodeType("action.web_search", {
             const html = await pageResp.text();
             // Simple text extraction — strip tags
             results[i].content = html
-              .replace(/<script[\s\S]*?<\/script>/gi, "")
-              .replace(/<style[\s\S]*?<\/style>/gi, "")
+              .replace(/<script\b[\s\S]*?<\/script\s*>/gi, "")
+              .replace(/<style\b[\s\S]*?<\/style\s*>/gi, "")
               .replace(/<[^>]+>/g, " ")
               .replace(/\s+/g, " ")
               .trim()

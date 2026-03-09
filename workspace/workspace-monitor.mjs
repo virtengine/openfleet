@@ -335,9 +335,15 @@ class WorkspaceMonitor {
     }
 
     for (const arg of args) {
-      // Disallow --upload-pack and its variants (e.g., --upload-pack=/path/to/cmd)
-      if (typeof arg === "string" && (arg === "--upload-pack" || arg.startsWith("--upload-pack="))) {
-        throw new Error("Usage of --upload-pack is not allowed in gitCommand");
+      if (typeof arg !== "string") continue;
+      const lower = arg.toLowerCase();
+      // Block known command-execution vectors in git transport arguments.
+      if (
+        lower === "--upload-pack" ||
+        lower.startsWith("--upload-pack=") ||
+        lower.includes("upload-pack")
+      ) {
+        throw new Error("Usage of upload-pack arguments is not allowed in gitCommand");
       }
     }
 

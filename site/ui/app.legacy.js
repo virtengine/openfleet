@@ -878,24 +878,42 @@ function renderModal() {
   return "";
 }
 
+function sanitizeMarkupHtml(html) {
+  const tpl = document.createElement("template");
+  tpl.innerHTML = String(html || "");
+  for (const node of tpl.content.querySelectorAll("script,style,iframe,object,embed")) {
+    node.remove();
+  }
+  for (const el of tpl.content.querySelectorAll("*")) {
+    for (const attr of [...el.attributes]) {
+      const name = String(attr.name || "").toLowerCase();
+      const value = String(attr.value || "").trim().toLowerCase();
+      const urlAttr = name === "src" || name === "href" || name === "xlink:href" || name === "action" || name === "formaction";
+      if (name.startsWith("on") || (urlAttr && (value.startsWith("javascript:") || value.startsWith("data:text/html")))) {
+        el.removeAttribute(attr.name);
+      }
+    }
+  }
+  return tpl.innerHTML;
+}
 function render() {
   tabs.forEach((tab) => {
     const target = tab.dataset.action.replace("tab:", "");
     tab.classList.toggle("active", target === state.tab);
   });
 
-  if (state.tab === "overview") view.innerHTML = renderOverview();
-  if (state.tab === "tasks") view.innerHTML = renderTasks();
-  if (state.tab === "agents") view.innerHTML = renderAgents();
-  if (state.tab === "worktrees") view.innerHTML = renderWorktrees();
-  if (state.tab === "workspaces") view.innerHTML = renderWorkspaces();
-  if (state.tab === "presence") view.innerHTML = renderPresence();
-  if (state.tab === "executor") view.innerHTML = renderExecutor();
-  if (state.tab === "logs") view.innerHTML = renderLogs();
-  if (state.tab === "git") view.innerHTML = renderGit();
-  if (state.tab === "agentlogs") view.innerHTML = renderAgentLogs();
-  if (state.tab === "commands") view.innerHTML = renderCommands();
-  view.insertAdjacentHTML("beforeend", renderModal());
+  if (state.tab === "overview") view.innerHTML = sanitizeMarkupHtml(renderOverview());
+  if (state.tab === "tasks") view.innerHTML = sanitizeMarkupHtml(renderTasks());
+  if (state.tab === "agents") view.innerHTML = sanitizeMarkupHtml(renderAgents());
+  if (state.tab === "worktrees") view.innerHTML = sanitizeMarkupHtml(renderWorktrees());
+  if (state.tab === "workspaces") view.innerHTML = sanitizeMarkupHtml(renderWorkspaces());
+  if (state.tab === "presence") view.innerHTML = sanitizeMarkupHtml(renderPresence());
+  if (state.tab === "executor") view.innerHTML = sanitizeMarkupHtml(renderExecutor());
+  if (state.tab === "logs") view.innerHTML = sanitizeMarkupHtml(renderLogs());
+  if (state.tab === "git") view.innerHTML = sanitizeMarkupHtml(renderGit());
+  if (state.tab === "agentlogs") view.innerHTML = sanitizeMarkupHtml(renderAgentLogs());
+  if (state.tab === "commands") view.innerHTML = sanitizeMarkupHtml(renderCommands());
+  view.insertAdjacentHTML("beforeend", sanitizeMarkupHtml(renderModal()));
 }
 
 async function handleAction(action, element) {
