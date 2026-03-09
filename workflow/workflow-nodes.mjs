@@ -7447,6 +7447,7 @@ function findExistingWorktreePathForBranch(repoRoot, branch) {
   return "";
 }
 
+<<<<<<< HEAD
 function isValidGitWorktreePath(worktreePath) {
   if (!worktreePath || !existsSync(worktreePath)) return false;
   try {
@@ -7491,6 +7492,8 @@ function cleanupBrokenManagedWorktree(repoRoot, worktreePath) {
   }
 }
 
+=======
+>>>>>>> 42ddcc9 (fix(workflow): reuse existing branch worktree when already attached)
 /**
  * Anti-thrash state — module-scope to survive across workflow runs.
  * Mirrors TaskExecutor._noCommitCounts / _skipUntil / _completedWithPR.
@@ -8353,6 +8356,7 @@ registerNodeType("action.acquire_worktree", {
         } catch (reuseErr) {
           const existingBranchWorktree = findExistingWorktreePathForBranch(repoRoot, branch);
           if (existingBranchWorktree && existsSync(existingBranchWorktree)) {
+<<<<<<< HEAD
             if (!isValidGitWorktreePath(existingBranchWorktree) &&
               isManagedBosunWorktree(existingBranchWorktree, repoRoot)
             ) {
@@ -8366,6 +8370,8 @@ registerNodeType("action.acquire_worktree", {
           if (existingBranchWorktree && existsSync(existingBranchWorktree) &&
             isValidGitWorktreePath(existingBranchWorktree)
           ) {
+=======
+>>>>>>> 42ddcc9 (fix(workflow): reuse existing branch worktree when already attached)
             ctx.data.worktreePath = existingBranchWorktree;
             ctx.data._worktreeCreated = false;
             ctx.data._worktreeManaged = true;
@@ -9183,6 +9189,7 @@ registerNodeType("action.web_search", {
 // ═══════════════════════════════════════════════════════════════════════════
 
 export { registerNodeType, getNodeType, listNodeTypes } from "./workflow-engine.mjs";
+
 
 
 
