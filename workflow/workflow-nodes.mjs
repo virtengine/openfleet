@@ -20,7 +20,7 @@
 import { registerNodeType } from "./workflow-engine.mjs";
 import { existsSync, readFileSync, writeFileSync, mkdirSync, rmSync } from "node:fs";
 import { resolve, dirname } from "node:path";
-import { execSync, execFileSync, spawn } from "node:child_process";
+import { execSync, execFileSync, spawn, spawnSync } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
 import { getAgentToolConfig, getEffectiveTools } from "../agent/agent-tool-config.mjs";
 import { getToolsPromptBlock } from "../agent/agent-custom-tools.mjs";
@@ -3469,10 +3469,15 @@ registerNodeType("validation.screenshot", {
               await browser.close();
             })();
           `;
-          execSync(`node -e "${script.replace(/\n/g, " ").replace(/"/g, '\\"')}"`, {
+          const runRes = spawnSync("node", ["-e", script], {
             timeout: 60000,
-            stdio: "pipe",
+            stdio: ["ignore", "pipe", "pipe"],
+            encoding: "utf8",
+            shell: false,
           });
+          if (runRes.status !== 0) {
+            throw new Error((runRes.stderr || runRes.stdout || "Playwright screenshot command failed").trim());
+          }
         },
       },
       {

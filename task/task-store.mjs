@@ -976,6 +976,41 @@ export function updateTask(taskId, updates) {
   const previousStatus = task.status;
   const patch = updates && typeof updates === "object" ? updates : {};
   const blockedKeys = new Set(["__proto__", "constructor", "prototype"]);
+  const directPatchKeys = new Set([
+    "title",
+    "description",
+    "externalStatus",
+    "externalId",
+    "externalBackend",
+    "assignee",
+    "priority",
+    "projectId",
+    "workspace",
+    "repository",
+    "repositories",
+    "baseBranch",
+    "branchName",
+    "prNumber",
+    "prUrl",
+    "epicId",
+    "parentTaskId",
+    "stateVersion",
+    "createdAt",
+    "updatedAt",
+    "lastActivityAt",
+    "statusHistory",
+    "agentAttempts",
+    "consecutiveNoCommits",
+    "errorPattern",
+    "reviewStatus",
+    "reviewIssues",
+    "reviewedAt",
+    "cooldownUntil",
+    "blockedReason",
+    "lastSyncedAt",
+    "syncDirty",
+    "meta",
+  ]);
 
   for (const [key, value] of Object.entries(patch)) {
     if (key === "id") continue;
@@ -1035,7 +1070,7 @@ export function updateTask(taskId, updates) {
       };
       continue;
     }
-    if (Object.prototype.hasOwnProperty.call(task, key)) {
+    if (directPatchKeys.has(key)) {
       task[key] = value;
     }
   }

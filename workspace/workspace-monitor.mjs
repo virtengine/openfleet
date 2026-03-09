@@ -338,20 +338,25 @@ class WorkspaceMonitor {
       throw new Error(`Unsupported git subcommand in monitor: ${command}`);
     }
 
-    const allowedOptions = new Set(["--abbrev-ref", "--count", "--name-only", "--others", "--exclude-standard", "--format=%H|%s|%ct", "-1"]);
-    for (let i = 1; i < args.length; i += 1) {
-      const arg = String(args[i] || "");
-      const lower = arg.toLowerCase();
-      if (lower === "--upload-pack" || lower.startsWith("--upload-pack=") || lower.includes("upload-pack")) {
-        throw new Error("Usage of upload-pack arguments is not allowed in gitCommand");
-      }
-      if (arg.startsWith("-") && !allowedOptions.has(arg)) {
-        throw new Error(`Unsupported git option in monitor: ${arg}`);
-      }
+    const commandShapes = new Map([
+      ["rev-parse", [["--abbrev-ref", "HEAD"]]],
+      ["rev-list", [["--count", "@{u}..HEAD"], ["--count", "HEAD..@{u}"]]],
+      ["diff", [["--name-only"]]],
+      ["ls-files", [["--others", "--exclude-standard"]]],
+      ["log", [["-1", "--format=%H|%s|%ct"]]],
+    ]).get(command) || [];
+
+    const receivedTail = args.slice(1).map((entry) => String(entry || ""));
+    const matchedShape = commandShapes.some((shape) =>
+      shape.length === receivedTail.length && shape.every((expected, idx) => expected === receivedTail[idx]),
+    );
+    if (!matchedShape) {
+      throw new Error(`Unsupported git arguments in monitor for ${command}: ${receivedTail.join(" ")}`);
     }
 
+    const safeArgs = [command, ...receivedTail];
     return new Promise((resolve, reject) => {
-      const proc = spawn("git", args, { cwd, shell: false });
+      const proc = spawn("git", safeArgs, { cwd, shell: false });
       let stdout = "";
       let stderr = "";
 
@@ -588,3 +593,4 @@ class WorkspaceMonitor {
 }
 
 export { WorkspaceMonitor };
+
