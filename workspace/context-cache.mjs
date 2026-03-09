@@ -1250,6 +1250,32 @@ export async function cacheAndCompressItems(items, options = {}) {
   return result;
 }
 
+async function applyImmediateGitOutputCaps(items, opts) {
+  if (!Array.isArray(items) || items.length === 0) return items;
+
+  const result = [...items];
+  const cachePromises = [];
+
+  for (const [index, item] of items.entries()) {
+    const immediateGitOutput = classifyImmediateGitOutput(item, opts);
+    if (!immediateGitOutput || item?._cachedLogId) continue;
+
+    const toolName = extractToolName(item);
+    const argsPreview = extractArgsPreview(item);
+    cachePromises.push(
+      writeToCache(item, toolName, argsPreview).then((logId) => {
+        result[index] = applyImmediateGitCompression(item, logId, opts);
+      }),
+    );
+  }
+
+  if (cachePromises.length > 0) {
+    await Promise.all(cachePromises);
+  }
+
+  return result;
+}
+
 /**
  * Process a single item for the compression pipeline (extracted to keep
  * `cacheAndCompressItems` under cognitive-complexity limit).
@@ -2000,17 +2026,18 @@ export async function maybeCompressSessionItems(
   );
 
   const shreddingOpts = resolveContextShreddingOptions(sessionType, agentType);
-  if (shreddingOpts?._skip === true && !force) return items;
+  const immediateCapItems = await applyImmediateGitOutputCaps(items, resolveOpts(shreddingOpts));
+  if (shreddingOpts?._skip === true && !force) return immediateCapItems;
 
-  const usagePct = estimateContextUsagePct(items);
+  const usagePct = estimateContextUsagePct(immediateCapItems);
   const threshold = Number.isFinite(shreddingOpts?.contextUsageThreshold)
     ? Number(shreddingOpts.contextUsageThreshold)
     : 0.5;
 
-  if (!force && usagePct < threshold) return items;
+  if (!force && usagePct < threshold) return immediateCapItems;
 
   shreddingOpts.contextUsagePct = usagePct;
-  const compressedItems = await compressAllItems(items, shreddingOpts);
+  const compressedItems = await compressAllItems(immediateCapItems, shreddingOpts);
 
   try {
     const savings = estimateSavings(items, compressedItems);

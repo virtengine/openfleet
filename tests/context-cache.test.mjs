@@ -609,6 +609,48 @@ describe("context-cache", () => {
     });
   });
 
+  // ── maybeCompressSessionItems ────────────────────────────────────────
+
+  describe("maybeCompressSessionItems", () => {
+    it("applies immediate git caps even below the usage threshold", async () => {
+      const fullOutput = makeLargeGitOutput(1500);
+      const items = [{
+        type: "command_execution",
+        command: "git log --oneline",
+        aggregated_output: fullOutput,
+      }];
+
+      const [result] = await contextCache.maybeCompressSessionItems(items, {
+        sessionType: "primary",
+      });
+
+      expect(result._cachedLogId).toBeDefined();
+      expect(result.aggregated_output).toContain("bosun --tool-log");
+      expect(result.aggregated_output.length).toBeLessThan(1000);
+
+      const retrieved = await contextCache.retrieveToolLog(result._cachedLogId);
+      expect(retrieved.found).toBe(true);
+      expect(retrieved.entry.item.aggregated_output).toBe(fullOutput);
+    });
+
+    it("respects BOSUN_GIT_OUTPUT_MAX_CHARS=0 in session-level compression", async () => {
+      process.env.BOSUN_GIT_OUTPUT_MAX_CHARS = "0";
+
+      const fullOutput = makeLargeGitOutput(1500);
+      const items = [{
+        type: "command_execution",
+        command: "git log --oneline",
+        aggregated_output: fullOutput,
+      }];
+
+      const [result] = await contextCache.maybeCompressSessionItems(items, {
+        sessionType: "primary",
+      });
+
+      expect(result._cachedLogId).toBeUndefined();
+      expect(result.aggregated_output).toBe(fullOutput);
+    });
+  });
   // ── Content-Aware Relevance Scoring ───────────────────────────────────
 
   describe("scoreToolOutput", () => {
@@ -797,3 +839,4 @@ describe("context-cache", () => {
     });
   });
 });
+
