@@ -28,6 +28,7 @@
 
 import { describe, it, expect, vi, beforeAll, beforeEach, afterEach } from "vitest";
 import { EventEmitter } from "node:events";
+import { readFileSync, existsSync, rmSync } from "node:fs";
 
 import { TEMPLATE_FIXTURES } from "./sandbox/fixtures.mjs";
 import { createExecSandbox  } from "./sandbox/exec-sandbox.mjs";
@@ -355,6 +356,47 @@ describe("guaranteed: behavioral contracts", () => {
     const { harness, fixtures } = setupHarness("template-sprint-retrospective");
     const { ctx } = await harness.run({ ...fixtures.inputVars });
     harness.assertions.noEngineErrors(ctx);
+  });
+
+  it("template-weekly-fitness-summary: emits artifact and survives degraded telemetry", async () => {
+    const { harness, fixtures } = setupHarness("template-weekly-fitness-summary");
+    const runInput = { ...fixtures.inputVars, createFollowupTasks: false };
+
+    const { ctx: firstCtx } = await harness.run(runInput);
+    harness.assertions.noEngineErrors(firstCtx);
+
+    const firstWrite = harness.assertions.nodeSucceeded(firstCtx, "write-fitness-summary-latest");
+    const firstArtifact = JSON.parse(readFileSync(firstWrite.path, "utf8"));
+    expect(firstArtifact?.schemaVersion).toBeTruthy();
+    expect(firstArtifact?.trend?.parseErrors ?? []).toEqual([]);
+
+    const stableDispatch = _activeDispatch;
+    _activeDispatch = (cmd) => {
+      if (/gh\s+pr\s+list/i.test(String(cmd))) {
+        throw new Error("gh unavailable (degraded fixture)");
+      }
+      return stableDispatch(cmd);
+    };
+
+    const { ctx: secondCtx } = await harness.run(runInput);
+    harness.assertions.noEngineErrors(secondCtx);
+
+    const secondWrite = harness.assertions.nodeSucceeded(secondCtx, "write-fitness-summary-latest");
+    const secondArtifact = JSON.parse(readFileSync(secondWrite.path, "utf8"));
+    expect(secondArtifact?.sources?.pr?.available).toBe(false);
+    expect(Number(secondArtifact?.metrics?.mergeSuccess?.confidence ?? 1)).toBeLessThanOrEqual(0.25);
+    expect(secondArtifact?.trend?.priorWeekAvailable).toBe(true);
+    expect(secondArtifact?.planner?.trendDeltas).toBeDefined();
+    expect(Array.isArray(secondArtifact?.trend?.parseErrors)).toBe(true);
+    expect(secondArtifact?.trend?.parseErrors?.length ?? 0).toBe(0);
+
+    const datedArtifactPath = secondCtx.getNodeOutput("write-fitness-summary-history")?.path;
+    try {
+      if (existsSync(firstWrite.path)) rmSync(firstWrite.path, { force: true });
+      if (datedArtifactPath && existsSync(datedArtifactPath)) rmSync(datedArtifactPath, { force: true });
+    } catch {
+      // best-effort cleanup of generated artifacts
+    }
   });
 
   // ── CI/CD templates ───────────────────────────────────────────────────

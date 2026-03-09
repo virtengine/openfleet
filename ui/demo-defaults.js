@@ -6891,8 +6891,8 @@
         "debt",
         "throughput"
       ],
-      "nodeCount": 10,
-      "edgeCount": 12,
+      "nodeCount": 15,
+      "edgeCount": 18,
       "recommended": false,
       "enabled": false,
       "trigger": "trigger.schedule",
@@ -6949,7 +6949,9 @@
           "type": "action.bosun_cli",
           "label": "Collect Task Metrics",
           "config": {
-            "command": "task list --format json --since {{lookbackDays}}d",
+            "subcommand": "task list",
+            "args": "--format json --since {{lookbackDays}}d",
+            "parseJson": true,
             "continueOnError": true
           },
           "position": {
@@ -6965,7 +6967,7 @@
           "type": "action.run_command",
           "label": "Collect PR Metrics",
           "config": {
-            "command": "gh pr list --state all --json number,state,mergedAt,closedAt,title --limit 200",
+            "command": "gh pr list --state all --json number,state,mergedAt,closedAt,createdAt,updatedAt,title,body --limit 200",
             "continueOnError": true
           },
           "position": {
@@ -6993,17 +6995,100 @@
           ]
         },
         {
+          "id": "read-previous-summary",
+          "type": "action.read_file",
+          "label": "Read Prior Summary",
+          "config": {
+            "path": ".bosun/workflow-runs/weekly-fitness-summary.latest.json"
+          },
+          "position": {
+            "x": 960,
+            "y": 180
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "summarize-fitness-metrics",
+          "type": "action.set_variable",
+          "label": "Summarize Fitness Metrics",
+          "config": {
+            "key": "fitnessSummary",
+            "value": "(() => {  try {    const now = Date.now();    const lookbackDays = Math.max(1, Number($data?.lookbackDays || 7));    const windowMs = lookbackDays * 24 * 60 * 60 * 1000;    const currentStart = now - windowMs;    const previousStart = currentStart - windowMs;    const previousEnd = currentStart;    const toNumber = (v, fallback = 0) => { const n = Number(v); return Number.isFinite(n) ? n : fallback; };    const toIso = (ms) => new Date(ms).toISOString();    const parseJsonSafe = (raw) => { try { return JSON.parse(String(raw)); } catch { return null; } };    const parseArray = (raw) => {      if (Array.isArray(raw)) return raw.filter(Boolean);      if (raw && typeof raw === 'object') {        if (Array.isArray(raw.items)) return raw.items.filter(Boolean);        if (Array.isArray(raw.tasks)) return raw.tasks.filter(Boolean);      }      if (typeof raw !== 'string') return [];      const trimmed = raw.trim();      if (!trimmed) return [];      const parsed = parseJsonSafe(trimmed);      if (Array.isArray(parsed)) return parsed.filter(Boolean);      if (parsed && typeof parsed === 'object') {        if (Array.isArray(parsed.items)) return parsed.items.filter(Boolean);        if (Array.isArray(parsed.tasks)) return parsed.tasks.filter(Boolean);      }      const lines = trimmed.split(/\\r?\\n/).map((line) => parseJsonSafe(line)).filter(Boolean);      return Array.isArray(lines) ? lines : [];    };    const getTs = (item) => {      if (!item || typeof item !== 'object') return null;      const fields = ['completedAt', 'closedAt', 'mergedAt', 'resolvedAt', 'updatedAt', 'createdAt', 'timestamp', 'ts', 'date'];      for (const key of fields) {        const value = item[key];        if (!value) continue;        const ms = Date.parse(String(value));        if (Number.isFinite(ms)) return ms;        if (typeof value === 'number' && Number.isFinite(value)) return value > 1e12 ? value : value * 1000;      }      return null;    };    const normalizeBucket = (items) => {      const stamped = [];      const unstamped = [];      for (const item of items) {        const ts = getTs(item);        if (ts == null) unstamped.push(item); else stamped.push({ item, ts });      }      return { stamped, unstamped };    };    const splitWindows = (items) => {      const { stamped, unstamped } = normalizeBucket(items);      const current = stamped.filter((entry) => entry.ts >= currentStart && entry.ts <= now).map((entry) => entry.item);      const previous = stamped.filter((entry) => entry.ts >= previousStart && entry.ts < previousEnd).map((entry) => entry.item);      const usedFallbackWindow = stamped.length === 0 && unstamped.length > 0;      if (usedFallbackWindow) return { current: unstamped, previous: [], usedFallbackWindow };      return { current, previous, usedFallbackWindow };    };    const metric = (name, value, previous, direction, unit, confidence, status, notes = []) => {      const hasCurrent = typeof value === 'number' && Number.isFinite(value);      const hasPrevious = typeof previous === 'number' && Number.isFinite(previous);      return {        name,        value: hasCurrent ? value : null,        previous: hasPrevious ? previous : null,        delta: hasCurrent && hasPrevious ? Number((value - previous).toFixed(2)) : null,        direction,        unit,        confidence,        status,        notes: notes.filter(Boolean),      };    };    const sourceStatus = (nodeOut, parsedList) => {      const hasPayload = nodeOut?.output != null && (Array.isArray(nodeOut.output) || String(nodeOut.output).trim() !== '');      const success = nodeOut?.success !== false;      if (!hasPayload && !success) return { status: 'missing', confidence: 'low' };      if (!hasPayload && success) return { status: 'missing', confidence: 'low' };      if (!Array.isArray(parsedList)) return { status: 'degraded', confidence: 'low' };      return { status: 'ok', confidence: parsedList.length > 0 ? 'high' : 'medium' };    };    const taskNode = $ctx.getNodeOutput('task-metrics') || {};    const prNode = $ctx.getNodeOutput('pr-metrics') || {};    const debtNode = $ctx.getNodeOutput('debt-metrics') || {};    const prevNode = $ctx.getNodeOutput('read-previous-summary') || {};    const tasks = parseArray(taskNode.output);    const prs = parseArray(prNode.output);    const debt = parseArray(debtNode.output);    const taskHealth = sourceStatus(taskNode, tasks);    const prHealth = sourceStatus(prNode, prs);    const debtHealth = sourceStatus(debtNode, debt);    const taskSplit = splitWindows(tasks);    const prSplit = splitWindows(prs);    const debtSplit = splitWindows(debt);    const doneStatuses = new Set(['done', 'closed', 'completed', 'merged', 'resolved']);    const isDone = (item) => doneStatuses.has(String(item?.status || '').toLowerCase());    const throughputCurrent = taskSplit.current.filter(isDone).length;    const throughputPrevious = taskSplit.previous.filter(isDone).length;    const reopenedCount = (items) => items.filter((item) => {      if (!item || typeof item !== 'object') return false;      const reopenCount = toNumber(item.reopenCount ?? item.reopenedCount, 0);      if (reopenCount > 0) return true;      if (item.reopened === true) return true;      const status = String(item.status || '').toLowerCase();      return status.includes('reopen');    }).length;    const reopenedCurrent = reopenedCount(taskSplit.current);    const reopenedPrevious = reopenedCount(taskSplit.previous);    const classifyRegression = (pr) => /revert|regression|rollback|hotfix/i.test(String(pr?.title || '') + ' ' + String(pr?.body || ''));    const regressionCurrentCount = prSplit.current.filter(classifyRegression).length;    const regressionPreviousCount = prSplit.previous.filter(classifyRegression).length;    const regressionCurrentRate = prSplit.current.length > 0 ? Number(((regressionCurrentCount / prSplit.current.length) * 100).toFixed(2)) : null;    const regressionPreviousRate = prSplit.previous.length > 0 ? Number(((regressionPreviousCount / prSplit.previous.length) * 100).toFixed(2)) : null;    const mergedCount = (items) => items.filter((pr) => String(pr?.state || '').toLowerCase() === 'merged' || Boolean(pr?.mergedAt)).length;    const closedCount = (items) => items.filter((pr) => {      const state = String(pr?.state || '').toLowerCase();      return state === 'closed' || state === 'merged' || Boolean(pr?.closedAt) || Boolean(pr?.mergedAt);    }).length;    const mergeClosedCurrent = closedCount(prSplit.current);    const mergeClosedPrevious = closedCount(prSplit.previous);    const mergeSuccessCurrent = mergeClosedCurrent > 0 ? Number(((mergedCount(prSplit.current) / mergeClosedCurrent) * 100).toFixed(2)) : null;    const mergeSuccessPrevious = mergeClosedPrevious > 0 ? Number(((mergedCount(prSplit.previous) / mergeClosedPrevious) * 100).toFixed(2)) : null;    const debtDelta = (entries) => {      let total = 0;      for (const entry of entries) {        if (entry == null) continue;        if (typeof entry === 'number') { total += entry; continue; }        if (typeof entry !== 'object') continue;        if (Number.isFinite(Number(entry.debtDelta))) { total += Number(entry.debtDelta); continue; }        if (Number.isFinite(Number(entry.delta))) { total += Number(entry.delta); continue; }        if (Number.isFinite(Number(entry.netChange))) { total += Number(entry.netChange); continue; }        const amt = Number.isFinite(Number(entry.amount)) ? Number(entry.amount) : 1;        const kind = String(entry.type || entry.event || entry.action || '').toLowerCase();        if (/resolved|burn|paydown|decrease|closed/.test(kind)) total -= amt;        else if (/created|added|increase|opened|new/.test(kind)) total += amt;      }      return Number(total.toFixed(2));    };    const debtCurrent = debtSplit.current.length > 0 ? debtDelta(debtSplit.current) : null;    const debtPrevious = debtSplit.previous.length > 0 ? debtDelta(debtSplit.previous) : null;    const priorParsed = prevNode?.success === true ? parseJsonSafe(prevNode.content) : null;    const priorWeekDeltas = priorParsed?.metrics || null;    const metricConfidence = (primaryHealth, hasValue, usedFallbackWindow) => {      if (!hasValue) return 'low';      if (primaryHealth.status === 'missing') return 'low';      if (primaryHealth.status === 'degraded') return 'low';      if (usedFallbackWindow) return 'medium';      return primaryHealth.confidence || 'medium';    };    const throughputMetric = metric('throughput', throughputCurrent, throughputPrevious, 'up_is_good', 'tasks', metricConfidence(taskHealth, true, taskSplit.usedFallbackWindow), taskHealth.status, [taskSplit.usedFallbackWindow ? 'No task timestamps detected; treated all records as current week.' : '']);    const regressionMetric = metric('regression_rate', regressionCurrentRate, regressionPreviousRate, 'down_is_good', 'percent', metricConfidence(prHealth, regressionCurrentRate != null, prSplit.usedFallbackWindow), prHealth.status, [regressionCurrentRate == null ? 'Insufficient PR sample to compute regression rate.' : '', prSplit.usedFallbackWindow ? 'No PR timestamps detected; treated all records as current week.' : '']);    const mergeMetric = metric('merge_success', mergeSuccessCurrent, mergeSuccessPrevious, 'up_is_good', 'percent', metricConfidence(prHealth, mergeSuccessCurrent != null, prSplit.usedFallbackWindow), prHealth.status, [mergeSuccessCurrent == null ? 'No closed or merged PRs in scope.' : '', prSplit.usedFallbackWindow ? 'No PR timestamps detected; treated all records as current week.' : '']);    const reopenedMetric = metric('reopened_tasks', reopenedCurrent, reopenedPrevious, 'down_is_good', 'tasks', metricConfidence(taskHealth, true, taskSplit.usedFallbackWindow), taskHealth.status, [taskSplit.usedFallbackWindow ? 'No task timestamps detected; treated all records as current week.' : '']);    const debtMetric = metric('debt_growth', debtCurrent, debtPrevious, 'down_is_good', 'points', metricConfidence(debtHealth, debtCurrent != null, debtSplit.usedFallbackWindow), debtHealth.status, [debtCurrent == null ? 'No debt ledger events in scope.' : '', debtSplit.usedFallbackWindow ? 'No debt timestamps detected; treated all records as current week.' : '']);    const metrics = { throughput: throughputMetric, regression_rate: regressionMetric, merge_success: mergeMetric, reopened_tasks: reopenedMetric, debt_growth: debtMetric };    const alertThresholds = { throughput: 1, regression_rate: 2.5, merge_success: 2.5, reopened_tasks: 1, debt_growth: 1 };    const trendAlerts = Object.entries(metrics).flatMap(([metricName, m]) => {      if (m == null || m.delta == null) return [];      const delta = Number(m.delta);      const isRegression = (m.direction === 'up_is_good' && delta < 0) || (m.direction === 'down_is_good' && delta > 0);      if (!isRegression) return [];      const absDelta = Math.abs(delta);      const threshold = alertThresholds[metricName] ?? 1;      const severity = absDelta >= threshold * 2 ? 'high' : absDelta >= threshold ? 'medium' : 'low';      return [{ metric: metricName, severity, delta, reason: `${metricName} moved in a negative direction by ${delta} ${m.unit}.` }];    });    const sourceHealth = {      tasks: { ...taskHealth, count: tasks.length },      prs: { ...prHealth, count: prs.length },      debt: { ...debtHealth, count: debt.length },    };    const confidenceValues = Object.values(metrics).map((m) => m?.confidence || 'low');    const overallConfidence = confidenceValues.every((c) => c === 'high') ? 'high' : confidenceValues.some((c) => c === 'low') ? 'low' : 'medium';    return {      schemaVersion: '1.0',      generatedAt: toIso(now),      lookbackDays,      window: { currentStart: toIso(currentStart), currentEnd: toIso(now), previousStart: toIso(previousStart), previousEnd: toIso(previousEnd) },      sourceHealth,      metrics,      trendAlerts,      priorWeekDeltas,      dataQuality: {        overallConfidence,        missingSources: Object.entries(sourceHealth).filter(([, v]) => v.status === 'missing').map(([k]) => k),        degradedSources: Object.entries(sourceHealth).filter(([, v]) => v.status === 'degraded').map(([k]) => k),      },    };  } catch (error) {    return {      schemaVersion: '1.0',      generatedAt: new Date().toISOString(),      lookbackDays: Number($data?.lookbackDays || 7),      sourceHealth: {        tasks: { status: 'missing', confidence: 'low', count: 0 },        prs: { status: 'missing', confidence: 'low', count: 0 },        debt: { status: 'missing', confidence: 'low', count: 0 },      },      metrics: {        throughput: { value: null, previous: null, delta: null, confidence: 'low', status: 'missing' },        regression_rate: { value: null, previous: null, delta: null, confidence: 'low', status: 'missing' },        merge_success: { value: null, previous: null, delta: null, confidence: 'low', status: 'missing' },        reopened_tasks: { value: null, previous: null, delta: null, confidence: 'low', status: 'missing' },        debt_growth: { value: null, previous: null, delta: null, confidence: 'low', status: 'missing' },      },      trendAlerts: [{ metric: 'summary', severity: 'high', delta: null, reason: `Fitness summary fallback engaged: ${error?.message || 'unknown error'}` }],      priorWeekDeltas: null,      dataQuality: { overallConfidence: 'low', missingSources: ['tasks', 'prs', 'debt'], degradedSources: [] },    };  }})()",
+            "isExpression": true
+          },
+          "position": {
+            "x": 420,
+            "y": 360
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "serialize-fitness-summary",
+          "type": "action.set_variable",
+          "label": "Serialize Fitness Summary",
+          "config": {
+            "key": "fitnessSummaryJson",
+            "value": "(() => JSON.stringify($data?.fitnessSummary || {}, null, 2))()",
+            "isExpression": true
+          },
+          "position": {
+            "x": 420,
+            "y": 500
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "render-trend-alerts",
+          "type": "action.set_variable",
+          "label": "Render Trend Alerts",
+          "config": {
+            "key": "fitnessTrendAlertsText",
+            "value": "(() => { const alerts = Array.isArray($data?.fitnessSummary?.trendAlerts) ? $data.fitnessSummary.trendAlerts : []; if (!alerts.length) return 'No negative trend alerts this week.'; return alerts.map((a, idx) => `${idx + 1}. ${a.metric} (${a.severity}) - ${a.reason}`).join('\\n'); })()",
+            "isExpression": true
+          },
+          "position": {
+            "x": 420,
+            "y": 640
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "persist-fitness-summary",
+          "type": "action.write_file",
+          "label": "Persist Fitness Summary Artifact",
+          "config": {
+            "path": ".bosun/workflow-runs/weekly-fitness-summary.latest.json",
+            "content": "{{fitnessSummaryJson}}",
+            "mkdir": true
+          },
+          "position": {
+            "x": 420,
+            "y": 780
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
           "id": "evaluate-fitness",
           "type": "action.run_agent",
           "label": "Evaluate Fitness",
           "config": {
-            "prompt": "# Weekly Delivery Fitness Evaluation\n\nEvaluate the last {{lookbackDays}} days using these metrics:\n- Throughput\n- Regression rate\n- Merge success\n- Reopened tasks\n- Debt growth\n\n## Task Data\n{{taskMetrics}}\n\n## PR Data\n{{prMetrics}}\n\n## Debt Ledger Data\n{{debtMetrics}}\n\nFocus directive: {{evaluatorFocus}}\n\nReturn sections:\n1) Scorecard (0-100) with one line per metric\n2) Root-cause analysis of the largest drag\n3) Countermeasures ranked by impact/cost\n4) FOLLOW_UP_ACTION lines using format:\nFOLLOW_UP_ACTION: [title] | [description] | [repo_area] | [risk] | [effort]\n\nOnly include FOLLOW_UP_ACTION lines for changes that are worth implementing this week.",
+            "prompt": "# Weekly Delivery Fitness Evaluation\n\nEvaluate the last {{lookbackDays}} days using this machine-readable summary:\n\n## Weekly Fitness JSON\n{{fitnessSummaryJson}}\n\n## Negative Trend Alerts\n{{fitnessTrendAlertsText}}\n\nFocus directive: {{evaluatorFocus}}\n\nRequirements:\n- Respect confidence and status on each metric.\n- If a metric has low confidence or missing telemetry, call that out explicitly and avoid overconfident recommendations.\n- Use prior-week deltas when available.\n- If one telemetry source is unavailable, still provide a stable scorecard and best-effort recommendations.\n\nReturn sections:\n1) Scorecard (0-100) with one line per metric and confidence\n2) Root-cause analysis of the largest drag\n3) Countermeasures ranked by impact/cost\n4) FOLLOW_UP_ACTION lines using format:\nFOLLOW_UP_ACTION: [title] | [description] | [repo_area] | [risk] | [effort]\n\nOnly include FOLLOW_UP_ACTION lines for changes that are worth implementing this week.",
             "sdk": "auto",
             "timeoutMs": 600000
           },
           "position": {
             "x": 420,
-            "y": 360
+            "y": 930
           },
           "outputs": [
             "default"
@@ -7018,7 +7103,7 @@
           },
           "position": {
             "x": 420,
-            "y": 520
+            "y": 1090
           },
           "outputs": [
             "default"
@@ -7029,13 +7114,13 @@
           "type": "action.run_agent",
           "label": "Build Follow-up Tasks JSON",
           "config": {
-            "prompt": "Convert FOLLOW_UP_ACTION lines below into a single JSON object with shape { \"tasks\": [...] }.\n\nSource:\n{{evaluateFitness}}\n\nRules:\n- Generate at most {{maxFollowupTasks}} tasks\n- Include fields: title, description, implementation_steps, acceptance_criteria, verification, priority, tags, base_branch, impact, confidence, risk, estimated_effort, repo_areas, why_now, kill_criteria\n- Keep tasks implementation-ready and avoid duplicates\n- Return only JSON",
+            "prompt": "Convert FOLLOW_UP_ACTION lines below into a single JSON object with shape { \"tasks\": [...] }.\n\nSource:\n{{evaluate-fitness.output}}\n\nStructured context:\n{{fitnessSummaryJson}}\n\nRules:\n- Generate at most {{maxFollowupTasks}} tasks\n- Include fields: title, description, implementation_steps, acceptance_criteria, verification, priority, tags, base_branch, impact, confidence, risk, estimated_effort, repo_areas, why_now, kill_criteria\n- Use trend deltas from the summary artifact to justify urgency and avoid parse errors\n- Keep tasks implementation-ready and avoid duplicates\n- Return only JSON",
             "sdk": "auto",
             "timeoutMs": 300000
           },
           "position": {
             "x": 220,
-            "y": 690
+            "y": 1260
           },
           "outputs": [
             "default"
@@ -7055,7 +7140,7 @@
           },
           "position": {
             "x": 220,
-            "y": 850
+            "y": 1420
           },
           "outputs": [
             "default"
@@ -7066,12 +7151,12 @@
           "type": "notify.telegram",
           "label": "Send Weekly Fitness Summary",
           "config": {
-            "message": ":chart: Weekly fitness evaluation complete. Follow-up tasks created: {{materialize-followups.createdCount}}\n\n{{evaluateFitness}}",
+            "message": ":chart: Weekly fitness evaluation complete. Follow-up tasks created: {{materialize-followups.createdCount}}\\n\\nTrend alerts:\\n{{fitnessTrendAlertsText}}\\n\\n{{evaluate-fitness.output}}",
             "silent": true
           },
           "position": {
             "x": 420,
-            "y": 1010
+            "y": 1580
           },
           "outputs": [
             "default"
@@ -7087,7 +7172,7 @@
           },
           "position": {
             "x": 620,
-            "y": 690
+            "y": 1260
           },
           "outputs": [
             "default"
@@ -7114,20 +7199,56 @@
           "sourcePort": "default"
         },
         {
-          "id": "task-metrics->evaluate-fitness",
+          "id": "trigger->read-previous-summary",
+          "source": "trigger",
+          "target": "read-previous-summary",
+          "sourcePort": "default"
+        },
+        {
+          "id": "task-metrics->summarize-fitness-metrics",
           "source": "task-metrics",
-          "target": "evaluate-fitness",
+          "target": "summarize-fitness-metrics",
           "sourcePort": "default"
         },
         {
-          "id": "pr-metrics->evaluate-fitness",
+          "id": "pr-metrics->summarize-fitness-metrics",
           "source": "pr-metrics",
-          "target": "evaluate-fitness",
+          "target": "summarize-fitness-metrics",
           "sourcePort": "default"
         },
         {
-          "id": "debt-metrics->evaluate-fitness",
+          "id": "debt-metrics->summarize-fitness-metrics",
           "source": "debt-metrics",
+          "target": "summarize-fitness-metrics",
+          "sourcePort": "default"
+        },
+        {
+          "id": "read-previous-summary->summarize-fitness-metrics",
+          "source": "read-previous-summary",
+          "target": "summarize-fitness-metrics",
+          "sourcePort": "default"
+        },
+        {
+          "id": "summarize-fitness-metrics->serialize-fitness-summary",
+          "source": "summarize-fitness-metrics",
+          "target": "serialize-fitness-summary",
+          "sourcePort": "default"
+        },
+        {
+          "id": "serialize-fitness-summary->render-trend-alerts",
+          "source": "serialize-fitness-summary",
+          "target": "render-trend-alerts",
+          "sourcePort": "default"
+        },
+        {
+          "id": "render-trend-alerts->persist-fitness-summary",
+          "source": "render-trend-alerts",
+          "target": "persist-fitness-summary",
+          "sourcePort": "default"
+        },
+        {
+          "id": "persist-fitness-summary->evaluate-fitness",
+          "source": "persist-fitness-summary",
           "target": "evaluate-fitness",
           "sourcePort": "default"
         },
@@ -24569,7 +24690,7 @@
       "description": "Weekly evaluator workflow that scores delivery fitness using throughput, regression rate, merge success, reopened tasks, and debt growth. Produces follow-up actions and can materialize them as backlog tasks.",
       "category": "planning",
       "enabled": false,
-      "nodeCount": 10,
+      "nodeCount": 15,
       "trigger": "trigger.schedule",
       "variables": {
         "scheduleCron": "0 9 * * 1",
@@ -24600,7 +24721,9 @@
           "type": "action.bosun_cli",
           "label": "Collect Task Metrics",
           "config": {
-            "command": "task list --format json --since {{lookbackDays}}d",
+            "subcommand": "task list",
+            "args": "--format json --since {{lookbackDays}}d",
+            "parseJson": true,
             "continueOnError": true
           },
           "position": {
@@ -24616,7 +24739,7 @@
           "type": "action.run_command",
           "label": "Collect PR Metrics",
           "config": {
-            "command": "gh pr list --state all --json number,state,mergedAt,closedAt,title --limit 200",
+            "command": "gh pr list --state all --json number,state,mergedAt,closedAt,createdAt,updatedAt,title,body --limit 200",
             "continueOnError": true
           },
           "position": {
@@ -24644,17 +24767,100 @@
           ]
         },
         {
+          "id": "read-previous-summary",
+          "type": "action.read_file",
+          "label": "Read Prior Summary",
+          "config": {
+            "path": ".bosun/workflow-runs/weekly-fitness-summary.latest.json"
+          },
+          "position": {
+            "x": 960,
+            "y": 180
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "summarize-fitness-metrics",
+          "type": "action.set_variable",
+          "label": "Summarize Fitness Metrics",
+          "config": {
+            "key": "fitnessSummary",
+            "value": "(() => {  try {    const now = Date.now();    const lookbackDays = Math.max(1, Number($data?.lookbackDays || 7));    const windowMs = lookbackDays * 24 * 60 * 60 * 1000;    const currentStart = now - windowMs;    const previousStart = currentStart - windowMs;    const previousEnd = currentStart;    const toNumber = (v, fallback = 0) => { const n = Number(v); return Number.isFinite(n) ? n : fallback; };    const toIso = (ms) => new Date(ms).toISOString();    const parseJsonSafe = (raw) => { try { return JSON.parse(String(raw)); } catch { return null; } };    const parseArray = (raw) => {      if (Array.isArray(raw)) return raw.filter(Boolean);      if (raw && typeof raw === 'object') {        if (Array.isArray(raw.items)) return raw.items.filter(Boolean);        if (Array.isArray(raw.tasks)) return raw.tasks.filter(Boolean);      }      if (typeof raw !== 'string') return [];      const trimmed = raw.trim();      if (!trimmed) return [];      const parsed = parseJsonSafe(trimmed);      if (Array.isArray(parsed)) return parsed.filter(Boolean);      if (parsed && typeof parsed === 'object') {        if (Array.isArray(parsed.items)) return parsed.items.filter(Boolean);        if (Array.isArray(parsed.tasks)) return parsed.tasks.filter(Boolean);      }      const lines = trimmed.split(/\\r?\\n/).map((line) => parseJsonSafe(line)).filter(Boolean);      return Array.isArray(lines) ? lines : [];    };    const getTs = (item) => {      if (!item || typeof item !== 'object') return null;      const fields = ['completedAt', 'closedAt', 'mergedAt', 'resolvedAt', 'updatedAt', 'createdAt', 'timestamp', 'ts', 'date'];      for (const key of fields) {        const value = item[key];        if (!value) continue;        const ms = Date.parse(String(value));        if (Number.isFinite(ms)) return ms;        if (typeof value === 'number' && Number.isFinite(value)) return value > 1e12 ? value : value * 1000;      }      return null;    };    const normalizeBucket = (items) => {      const stamped = [];      const unstamped = [];      for (const item of items) {        const ts = getTs(item);        if (ts == null) unstamped.push(item); else stamped.push({ item, ts });      }      return { stamped, unstamped };    };    const splitWindows = (items) => {      const { stamped, unstamped } = normalizeBucket(items);      const current = stamped.filter((entry) => entry.ts >= currentStart && entry.ts <= now).map((entry) => entry.item);      const previous = stamped.filter((entry) => entry.ts >= previousStart && entry.ts < previousEnd).map((entry) => entry.item);      const usedFallbackWindow = stamped.length === 0 && unstamped.length > 0;      if (usedFallbackWindow) return { current: unstamped, previous: [], usedFallbackWindow };      return { current, previous, usedFallbackWindow };    };    const metric = (name, value, previous, direction, unit, confidence, status, notes = []) => {      const hasCurrent = typeof value === 'number' && Number.isFinite(value);      const hasPrevious = typeof previous === 'number' && Number.isFinite(previous);      return {        name,        value: hasCurrent ? value : null,        previous: hasPrevious ? previous : null,        delta: hasCurrent && hasPrevious ? Number((value - previous).toFixed(2)) : null,        direction,        unit,        confidence,        status,        notes: notes.filter(Boolean),      };    };    const sourceStatus = (nodeOut, parsedList) => {      const hasPayload = nodeOut?.output != null && (Array.isArray(nodeOut.output) || String(nodeOut.output).trim() !== '');      const success = nodeOut?.success !== false;      if (!hasPayload && !success) return { status: 'missing', confidence: 'low' };      if (!hasPayload && success) return { status: 'missing', confidence: 'low' };      if (!Array.isArray(parsedList)) return { status: 'degraded', confidence: 'low' };      return { status: 'ok', confidence: parsedList.length > 0 ? 'high' : 'medium' };    };    const taskNode = $ctx.getNodeOutput('task-metrics') || {};    const prNode = $ctx.getNodeOutput('pr-metrics') || {};    const debtNode = $ctx.getNodeOutput('debt-metrics') || {};    const prevNode = $ctx.getNodeOutput('read-previous-summary') || {};    const tasks = parseArray(taskNode.output);    const prs = parseArray(prNode.output);    const debt = parseArray(debtNode.output);    const taskHealth = sourceStatus(taskNode, tasks);    const prHealth = sourceStatus(prNode, prs);    const debtHealth = sourceStatus(debtNode, debt);    const taskSplit = splitWindows(tasks);    const prSplit = splitWindows(prs);    const debtSplit = splitWindows(debt);    const doneStatuses = new Set(['done', 'closed', 'completed', 'merged', 'resolved']);    const isDone = (item) => doneStatuses.has(String(item?.status || '').toLowerCase());    const throughputCurrent = taskSplit.current.filter(isDone).length;    const throughputPrevious = taskSplit.previous.filter(isDone).length;    const reopenedCount = (items) => items.filter((item) => {      if (!item || typeof item !== 'object') return false;      const reopenCount = toNumber(item.reopenCount ?? item.reopenedCount, 0);      if (reopenCount > 0) return true;      if (item.reopened === true) return true;      const status = String(item.status || '').toLowerCase();      return status.includes('reopen');    }).length;    const reopenedCurrent = reopenedCount(taskSplit.current);    const reopenedPrevious = reopenedCount(taskSplit.previous);    const classifyRegression = (pr) => /revert|regression|rollback|hotfix/i.test(String(pr?.title || '') + ' ' + String(pr?.body || ''));    const regressionCurrentCount = prSplit.current.filter(classifyRegression).length;    const regressionPreviousCount = prSplit.previous.filter(classifyRegression).length;    const regressionCurrentRate = prSplit.current.length > 0 ? Number(((regressionCurrentCount / prSplit.current.length) * 100).toFixed(2)) : null;    const regressionPreviousRate = prSplit.previous.length > 0 ? Number(((regressionPreviousCount / prSplit.previous.length) * 100).toFixed(2)) : null;    const mergedCount = (items) => items.filter((pr) => String(pr?.state || '').toLowerCase() === 'merged' || Boolean(pr?.mergedAt)).length;    const closedCount = (items) => items.filter((pr) => {      const state = String(pr?.state || '').toLowerCase();      return state === 'closed' || state === 'merged' || Boolean(pr?.closedAt) || Boolean(pr?.mergedAt);    }).length;    const mergeClosedCurrent = closedCount(prSplit.current);    const mergeClosedPrevious = closedCount(prSplit.previous);    const mergeSuccessCurrent = mergeClosedCurrent > 0 ? Number(((mergedCount(prSplit.current) / mergeClosedCurrent) * 100).toFixed(2)) : null;    const mergeSuccessPrevious = mergeClosedPrevious > 0 ? Number(((mergedCount(prSplit.previous) / mergeClosedPrevious) * 100).toFixed(2)) : null;    const debtDelta = (entries) => {      let total = 0;      for (const entry of entries) {        if (entry == null) continue;        if (typeof entry === 'number') { total += entry; continue; }        if (typeof entry !== 'object') continue;        if (Number.isFinite(Number(entry.debtDelta))) { total += Number(entry.debtDelta); continue; }        if (Number.isFinite(Number(entry.delta))) { total += Number(entry.delta); continue; }        if (Number.isFinite(Number(entry.netChange))) { total += Number(entry.netChange); continue; }        const amt = Number.isFinite(Number(entry.amount)) ? Number(entry.amount) : 1;        const kind = String(entry.type || entry.event || entry.action || '').toLowerCase();        if (/resolved|burn|paydown|decrease|closed/.test(kind)) total -= amt;        else if (/created|added|increase|opened|new/.test(kind)) total += amt;      }      return Number(total.toFixed(2));    };    const debtCurrent = debtSplit.current.length > 0 ? debtDelta(debtSplit.current) : null;    const debtPrevious = debtSplit.previous.length > 0 ? debtDelta(debtSplit.previous) : null;    const priorParsed = prevNode?.success === true ? parseJsonSafe(prevNode.content) : null;    const priorWeekDeltas = priorParsed?.metrics || null;    const metricConfidence = (primaryHealth, hasValue, usedFallbackWindow) => {      if (!hasValue) return 'low';      if (primaryHealth.status === 'missing') return 'low';      if (primaryHealth.status === 'degraded') return 'low';      if (usedFallbackWindow) return 'medium';      return primaryHealth.confidence || 'medium';    };    const throughputMetric = metric('throughput', throughputCurrent, throughputPrevious, 'up_is_good', 'tasks', metricConfidence(taskHealth, true, taskSplit.usedFallbackWindow), taskHealth.status, [taskSplit.usedFallbackWindow ? 'No task timestamps detected; treated all records as current week.' : '']);    const regressionMetric = metric('regression_rate', regressionCurrentRate, regressionPreviousRate, 'down_is_good', 'percent', metricConfidence(prHealth, regressionCurrentRate != null, prSplit.usedFallbackWindow), prHealth.status, [regressionCurrentRate == null ? 'Insufficient PR sample to compute regression rate.' : '', prSplit.usedFallbackWindow ? 'No PR timestamps detected; treated all records as current week.' : '']);    const mergeMetric = metric('merge_success', mergeSuccessCurrent, mergeSuccessPrevious, 'up_is_good', 'percent', metricConfidence(prHealth, mergeSuccessCurrent != null, prSplit.usedFallbackWindow), prHealth.status, [mergeSuccessCurrent == null ? 'No closed or merged PRs in scope.' : '', prSplit.usedFallbackWindow ? 'No PR timestamps detected; treated all records as current week.' : '']);    const reopenedMetric = metric('reopened_tasks', reopenedCurrent, reopenedPrevious, 'down_is_good', 'tasks', metricConfidence(taskHealth, true, taskSplit.usedFallbackWindow), taskHealth.status, [taskSplit.usedFallbackWindow ? 'No task timestamps detected; treated all records as current week.' : '']);    const debtMetric = metric('debt_growth', debtCurrent, debtPrevious, 'down_is_good', 'points', metricConfidence(debtHealth, debtCurrent != null, debtSplit.usedFallbackWindow), debtHealth.status, [debtCurrent == null ? 'No debt ledger events in scope.' : '', debtSplit.usedFallbackWindow ? 'No debt timestamps detected; treated all records as current week.' : '']);    const metrics = { throughput: throughputMetric, regression_rate: regressionMetric, merge_success: mergeMetric, reopened_tasks: reopenedMetric, debt_growth: debtMetric };    const alertThresholds = { throughput: 1, regression_rate: 2.5, merge_success: 2.5, reopened_tasks: 1, debt_growth: 1 };    const trendAlerts = Object.entries(metrics).flatMap(([metricName, m]) => {      if (m == null || m.delta == null) return [];      const delta = Number(m.delta);      const isRegression = (m.direction === 'up_is_good' && delta < 0) || (m.direction === 'down_is_good' && delta > 0);      if (!isRegression) return [];      const absDelta = Math.abs(delta);      const threshold = alertThresholds[metricName] ?? 1;      const severity = absDelta >= threshold * 2 ? 'high' : absDelta >= threshold ? 'medium' : 'low';      return [{ metric: metricName, severity, delta, reason: `${metricName} moved in a negative direction by ${delta} ${m.unit}.` }];    });    const sourceHealth = {      tasks: { ...taskHealth, count: tasks.length },      prs: { ...prHealth, count: prs.length },      debt: { ...debtHealth, count: debt.length },    };    const confidenceValues = Object.values(metrics).map((m) => m?.confidence || 'low');    const overallConfidence = confidenceValues.every((c) => c === 'high') ? 'high' : confidenceValues.some((c) => c === 'low') ? 'low' : 'medium';    return {      schemaVersion: '1.0',      generatedAt: toIso(now),      lookbackDays,      window: { currentStart: toIso(currentStart), currentEnd: toIso(now), previousStart: toIso(previousStart), previousEnd: toIso(previousEnd) },      sourceHealth,      metrics,      trendAlerts,      priorWeekDeltas,      dataQuality: {        overallConfidence,        missingSources: Object.entries(sourceHealth).filter(([, v]) => v.status === 'missing').map(([k]) => k),        degradedSources: Object.entries(sourceHealth).filter(([, v]) => v.status === 'degraded').map(([k]) => k),      },    };  } catch (error) {    return {      schemaVersion: '1.0',      generatedAt: new Date().toISOString(),      lookbackDays: Number($data?.lookbackDays || 7),      sourceHealth: {        tasks: { status: 'missing', confidence: 'low', count: 0 },        prs: { status: 'missing', confidence: 'low', count: 0 },        debt: { status: 'missing', confidence: 'low', count: 0 },      },      metrics: {        throughput: { value: null, previous: null, delta: null, confidence: 'low', status: 'missing' },        regression_rate: { value: null, previous: null, delta: null, confidence: 'low', status: 'missing' },        merge_success: { value: null, previous: null, delta: null, confidence: 'low', status: 'missing' },        reopened_tasks: { value: null, previous: null, delta: null, confidence: 'low', status: 'missing' },        debt_growth: { value: null, previous: null, delta: null, confidence: 'low', status: 'missing' },      },      trendAlerts: [{ metric: 'summary', severity: 'high', delta: null, reason: `Fitness summary fallback engaged: ${error?.message || 'unknown error'}` }],      priorWeekDeltas: null,      dataQuality: { overallConfidence: 'low', missingSources: ['tasks', 'prs', 'debt'], degradedSources: [] },    };  }})()",
+            "isExpression": true
+          },
+          "position": {
+            "x": 420,
+            "y": 360
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "serialize-fitness-summary",
+          "type": "action.set_variable",
+          "label": "Serialize Fitness Summary",
+          "config": {
+            "key": "fitnessSummaryJson",
+            "value": "(() => JSON.stringify($data?.fitnessSummary || {}, null, 2))()",
+            "isExpression": true
+          },
+          "position": {
+            "x": 420,
+            "y": 500
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "render-trend-alerts",
+          "type": "action.set_variable",
+          "label": "Render Trend Alerts",
+          "config": {
+            "key": "fitnessTrendAlertsText",
+            "value": "(() => { const alerts = Array.isArray($data?.fitnessSummary?.trendAlerts) ? $data.fitnessSummary.trendAlerts : []; if (!alerts.length) return 'No negative trend alerts this week.'; return alerts.map((a, idx) => `${idx + 1}. ${a.metric} (${a.severity}) - ${a.reason}`).join('\\n'); })()",
+            "isExpression": true
+          },
+          "position": {
+            "x": 420,
+            "y": 640
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "persist-fitness-summary",
+          "type": "action.write_file",
+          "label": "Persist Fitness Summary Artifact",
+          "config": {
+            "path": ".bosun/workflow-runs/weekly-fitness-summary.latest.json",
+            "content": "{{fitnessSummaryJson}}",
+            "mkdir": true
+          },
+          "position": {
+            "x": 420,
+            "y": 780
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
           "id": "evaluate-fitness",
           "type": "action.run_agent",
           "label": "Evaluate Fitness",
           "config": {
-            "prompt": "# Weekly Delivery Fitness Evaluation\n\nEvaluate the last {{lookbackDays}} days using these metrics:\n- Throughput\n- Regression rate\n- Merge success\n- Reopened tasks\n- Debt growth\n\n## Task Data\n{{taskMetrics}}\n\n## PR Data\n{{prMetrics}}\n\n## Debt Ledger Data\n{{debtMetrics}}\n\nFocus directive: {{evaluatorFocus}}\n\nReturn sections:\n1) Scorecard (0-100) with one line per metric\n2) Root-cause analysis of the largest drag\n3) Countermeasures ranked by impact/cost\n4) FOLLOW_UP_ACTION lines using format:\nFOLLOW_UP_ACTION: [title] | [description] | [repo_area] | [risk] | [effort]\n\nOnly include FOLLOW_UP_ACTION lines for changes that are worth implementing this week.",
+            "prompt": "# Weekly Delivery Fitness Evaluation\n\nEvaluate the last {{lookbackDays}} days using this machine-readable summary:\n\n## Weekly Fitness JSON\n{{fitnessSummaryJson}}\n\n## Negative Trend Alerts\n{{fitnessTrendAlertsText}}\n\nFocus directive: {{evaluatorFocus}}\n\nRequirements:\n- Respect confidence and status on each metric.\n- If a metric has low confidence or missing telemetry, call that out explicitly and avoid overconfident recommendations.\n- Use prior-week deltas when available.\n- If one telemetry source is unavailable, still provide a stable scorecard and best-effort recommendations.\n\nReturn sections:\n1) Scorecard (0-100) with one line per metric and confidence\n2) Root-cause analysis of the largest drag\n3) Countermeasures ranked by impact/cost\n4) FOLLOW_UP_ACTION lines using format:\nFOLLOW_UP_ACTION: [title] | [description] | [repo_area] | [risk] | [effort]\n\nOnly include FOLLOW_UP_ACTION lines for changes that are worth implementing this week.",
             "sdk": "auto",
             "timeoutMs": 600000
           },
           "position": {
             "x": 420,
-            "y": 360
+            "y": 930
           },
           "outputs": [
             "default"
@@ -24669,7 +24875,7 @@
           },
           "position": {
             "x": 420,
-            "y": 520
+            "y": 1090
           },
           "outputs": [
             "default"
@@ -24680,13 +24886,13 @@
           "type": "action.run_agent",
           "label": "Build Follow-up Tasks JSON",
           "config": {
-            "prompt": "Convert FOLLOW_UP_ACTION lines below into a single JSON object with shape { \"tasks\": [...] }.\n\nSource:\n{{evaluateFitness}}\n\nRules:\n- Generate at most {{maxFollowupTasks}} tasks\n- Include fields: title, description, implementation_steps, acceptance_criteria, verification, priority, tags, base_branch, impact, confidence, risk, estimated_effort, repo_areas, why_now, kill_criteria\n- Keep tasks implementation-ready and avoid duplicates\n- Return only JSON",
+            "prompt": "Convert FOLLOW_UP_ACTION lines below into a single JSON object with shape { \"tasks\": [...] }.\n\nSource:\n{{evaluate-fitness.output}}\n\nStructured context:\n{{fitnessSummaryJson}}\n\nRules:\n- Generate at most {{maxFollowupTasks}} tasks\n- Include fields: title, description, implementation_steps, acceptance_criteria, verification, priority, tags, base_branch, impact, confidence, risk, estimated_effort, repo_areas, why_now, kill_criteria\n- Use trend deltas from the summary artifact to justify urgency and avoid parse errors\n- Keep tasks implementation-ready and avoid duplicates\n- Return only JSON",
             "sdk": "auto",
             "timeoutMs": 300000
           },
           "position": {
             "x": 220,
-            "y": 690
+            "y": 1260
           },
           "outputs": [
             "default"
@@ -24706,7 +24912,7 @@
           },
           "position": {
             "x": 220,
-            "y": 850
+            "y": 1420
           },
           "outputs": [
             "default"
@@ -24717,12 +24923,12 @@
           "type": "notify.telegram",
           "label": "Send Weekly Fitness Summary",
           "config": {
-            "message": ":chart: Weekly fitness evaluation complete. Follow-up tasks created: {{materialize-followups.createdCount}}\n\n{{evaluateFitness}}",
+            "message": ":chart: Weekly fitness evaluation complete. Follow-up tasks created: {{materialize-followups.createdCount}}\\n\\nTrend alerts:\\n{{fitnessTrendAlertsText}}\\n\\n{{evaluate-fitness.output}}",
             "silent": true
           },
           "position": {
             "x": 420,
-            "y": 1010
+            "y": 1580
           },
           "outputs": [
             "default"
@@ -24738,7 +24944,7 @@
           },
           "position": {
             "x": 620,
-            "y": 690
+            "y": 1260
           },
           "outputs": [
             "default"
@@ -24765,20 +24971,56 @@
           "sourcePort": "default"
         },
         {
-          "id": "task-metrics->evaluate-fitness",
+          "id": "trigger->read-previous-summary",
+          "source": "trigger",
+          "target": "read-previous-summary",
+          "sourcePort": "default"
+        },
+        {
+          "id": "task-metrics->summarize-fitness-metrics",
           "source": "task-metrics",
-          "target": "evaluate-fitness",
+          "target": "summarize-fitness-metrics",
           "sourcePort": "default"
         },
         {
-          "id": "pr-metrics->evaluate-fitness",
+          "id": "pr-metrics->summarize-fitness-metrics",
           "source": "pr-metrics",
-          "target": "evaluate-fitness",
+          "target": "summarize-fitness-metrics",
           "sourcePort": "default"
         },
         {
-          "id": "debt-metrics->evaluate-fitness",
+          "id": "debt-metrics->summarize-fitness-metrics",
           "source": "debt-metrics",
+          "target": "summarize-fitness-metrics",
+          "sourcePort": "default"
+        },
+        {
+          "id": "read-previous-summary->summarize-fitness-metrics",
+          "source": "read-previous-summary",
+          "target": "summarize-fitness-metrics",
+          "sourcePort": "default"
+        },
+        {
+          "id": "summarize-fitness-metrics->serialize-fitness-summary",
+          "source": "summarize-fitness-metrics",
+          "target": "serialize-fitness-summary",
+          "sourcePort": "default"
+        },
+        {
+          "id": "serialize-fitness-summary->render-trend-alerts",
+          "source": "serialize-fitness-summary",
+          "target": "render-trend-alerts",
+          "sourcePort": "default"
+        },
+        {
+          "id": "render-trend-alerts->persist-fitness-summary",
+          "source": "render-trend-alerts",
+          "target": "persist-fitness-summary",
+          "sourcePort": "default"
+        },
+        {
+          "id": "persist-fitness-summary->evaluate-fitness",
+          "source": "persist-fitness-summary",
           "target": "evaluate-fitness",
           "sourcePort": "default"
         },
