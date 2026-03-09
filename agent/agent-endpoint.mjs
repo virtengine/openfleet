@@ -358,7 +358,11 @@ export class AgentEndpoint {
    */
   async _killProcessOnPort(port) {
     try {
-      const { execSync, spawnSync } = await import("node:child_process");
+      const { spawnSync } = await import("node:child_process");
+      const portNumber = Number.parseInt(String(port), 10);
+      if (!Number.isInteger(portNumber) || portNumber <= 0 || portNumber > 65535) {
+        throw new Error(`invalid port: ${port}`);
+      }
       const isWindows = process.platform === "win32";
       let output;
       const pids = new Set();
@@ -402,12 +406,29 @@ export class AgentEndpoint {
       };
 
       if (isWindows) {
-        // Windows: netstat -ano | findstr
-        output = execSync(`netstat -ano | findstr ":${port}"`, {
+        // Windows: netstat -ano then filter in-process to avoid shell command injection.
+        const netstatRes = spawnSync("netstat", ["-ano"], {
           encoding: "utf8",
           timeout: 5000,
-        }).trim();
-        const lines = output.split("\n").filter((line) => line.includes("LISTENING"));
+          windowsHide: true,
+          stdio: ["ignore", "pipe", "pipe"],
+        });
+        if (netstatRes.error) throw netstatRes.error;
+        if (netstatRes.status !== 0) {
+          throw new Error(
+            String(
+              netstatRes.stderr ||
+              netstatRes.stdout ||
+              `netstat exited with status ${netstatRes.status}`,
+            ).trim(),
+          );
+        }
+        output = String(netstatRes.stdout || "").trim();
+        const lines = output
+          .split("\n")
+          .filter(
+            (line) => line.includes("LISTENING") && line.includes(`:${portNumber}`),
+          );
         for (const line of lines) {
           const parts = line.trim().split(/\s+/);
           const pid = parts[parts.length - 1];
@@ -417,29 +438,37 @@ export class AgentEndpoint {
         }
       } else {
         // Linux/macOS: lsof -i
-        try {
-          output = execSync(`lsof -ti :${port}`, {
-            encoding: "utf8",
-            timeout: 5000,
-          }).trim();
-          const pidList = output.split("\n").filter((pid) => pid.trim());
-          for (const pid of pidList) {
-            if (pid && /^\d+$/.test(pid) && !protectedPids.has(pid)) {
-              pids.add(pid);
-            }
+        const lsofRes = spawnSync("lsof", ["-ti", `:${portNumber}`], {
+          encoding: "utf8",
+          timeout: 5000,
+          stdio: ["ignore", "pipe", "pipe"],
+        });
+        if (lsofRes.error) throw lsofRes.error;
+        // lsof returns exit code 1 when no processes found (port is free)
+        if (lsofRes.status === 1) {
+          return;
+        }
+        if (lsofRes.status !== 0) {
+          throw new Error(
+            String(
+              lsofRes.stderr ||
+              lsofRes.stdout ||
+              `lsof exited with status ${lsofRes.status}`,
+            ).trim(),
+          );
+        }
+        output = String(lsofRes.stdout || "").trim();
+        const pidList = output.split("\n").filter((pid) => pid.trim());
+        for (const pid of pidList) {
+          if (pid && /^\d+$/.test(pid) && !protectedPids.has(pid)) {
+            pids.add(pid);
           }
-          if (pidList.length > 0 && pids.size === 0) {
-            console.log(
-              `${TAG} Port ${port} held by own process tree (PIDs: ${pidList.join(", ")}) — skipping kill`,
-            );
-            return;
-          }
-        } catch (lsofErr) {
-          // lsof returns exit code 1 when no processes found (port is free)
-          if (lsofErr.status === 1) {
-            return; // Port is already free
-          }
-          throw lsofErr;
+        }
+        if (pidList.length > 0 && pids.size === 0) {
+          console.log(
+            `${TAG} Port ${portNumber} held by own process tree (PIDs: ${pidList.join(", ")}) — skipping kill`,
+          );
+          return;
         }
       }
 
@@ -490,10 +519,7 @@ export class AgentEndpoint {
             }
           } else {
             // Graceful SIGTERM first — only escalate to SIGKILL if still alive
-            execSync(`kill ${pid}`, {
-              encoding: "utf8",
-              timeout: 5000,
-            });
+            process.kill(Number(pid), "SIGTERM");
           }
         } catch (killErr) {
           /* may already be dead — log for diagnostics */
@@ -528,7 +554,7 @@ export class AgentEndpoint {
           try {
             process.kill(Number(pid), 0); // probe — throws if dead
             console.warn(`${TAG} PID ${pid} still alive after SIGTERM — sending SIGKILL`);
-            execSync(`kill -9 ${pid}`, { encoding: "utf8", timeout: 5000 });
+            process.kill(Number(pid), "SIGKILL");
           } catch {
             /* already dead — good */
           }

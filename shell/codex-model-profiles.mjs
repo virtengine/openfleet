@@ -21,7 +21,15 @@ function profilePrefix(name) {
 
 function inferGlobalProvider(env) {
   const baseUrl = clean(env.OPENAI_BASE_URL).toLowerCase();
-  if (baseUrl.includes(".openai.azure.com")) return "azure";
+  if ((() => {
+        try {
+          const parsed = new URL(baseUrl);
+          const host = String(parsed.hostname || "").toLowerCase();
+          return host === "openai.azure.com" || host.endsWith(".openai.azure.com");
+        } catch {
+          return false;
+        }
+      })()) return "azure";
   return "openai";
 }
 

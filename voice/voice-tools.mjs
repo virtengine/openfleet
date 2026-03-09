@@ -1744,13 +1744,26 @@ const TOOL_HANDLERS = {
 
   async get_pr_status(args) {
     try {
-      const { execSync } = await import("node:child_process");
-      const limit = args.limit || 10;
-      const result = execSync(
-        `gh pr list --limit ${limit} --json number,title,state,author,url --jq ".[] | {number, title, state, author: .author.login}"`,
-        { encoding: "utf8", timeout: 15_000 },
+      const { spawnSync } = await import("node:child_process");
+      const limit = Math.max(1, Math.min(100, Number.parseInt(String(args.limit || 10), 10) || 10));
+      const result = spawnSync(
+        "gh",
+        [
+          "pr",
+          "list",
+          "--limit",
+          String(limit),
+          "--json",
+          "number,title,state,author,url",
+          "--jq",
+          ".[] | {number, title, state, author: .author.login}",
+        ],
+        { encoding: "utf8", timeout: 15_000, stdio: ["ignore", "pipe", "pipe"] },
       );
-      return result.trim() || "No open pull requests.";
+      if (result.error || result.status !== 0) {
+        throw new Error(String(result.stderr || result.stdout || "gh pr list failed").trim());
+      }
+      return String(result.stdout || "").trim() || "No open pull requests.";
     } catch {
       return "Could not fetch PR status. Ensure gh CLI is installed.";
     }
@@ -1848,15 +1861,27 @@ const TOOL_HANDLERS = {
 
   async search_code(args, context) {
     try {
-      const { execSync } = await import("node:child_process");
-      const pattern = args.filePattern ? `--include="${args.filePattern}"` : "";
-      const limit = args.maxResults || 20;
+      const { spawnSync } = await import("node:child_process");
+      const limit = Math.max(1, Math.min(200, Number.parseInt(String(args.maxResults || 20), 10) || 20));
+      const query = String(args.query || "");
+      const filePattern = String(args.filePattern || "").trim();
       const cwd = await resolveToolCwd(context);
-      const result = execSync(
-        `grep -rn ${pattern} "${args.query}" . --max-count=${limit} 2>/dev/null || true`,
-        { encoding: "utf8", timeout: 10_000, cwd },
-      );
-      return result.trim() || `No matches found for "${args.query}".`;
+      const grepArgs = ["-rn", query, ".", "--max-count", String(limit)];
+      if (filePattern) {
+        grepArgs.splice(2, 0, "--include", filePattern);
+      }
+      const result = spawnSync("grep", grepArgs, {
+        encoding: "utf8",
+        timeout: 10_000,
+        cwd,
+        stdio: ["ignore", "pipe", "pipe"],
+      });
+      if (result.error) throw result.error;
+      if (result.status !== 0 && result.status !== 1) {
+        throw new Error(String(result.stderr || result.stdout || "grep failed").trim());
+      }
+      const out = String(result.stdout || "").trim();
+      return out || `No matches found for "${args.query}".`;
     } catch {
       return `Search failed for "${args.query}".`;
     }
@@ -2914,27 +2939,61 @@ const TOOL_HANDLERS = {
     ];
 
     const isSafe = SAFE_PATTERNS.some((p) => p.test(rawCmd));
-    const isOwnerSession = context?.isOwner === true || context?.role === "owner" || context?.role === "admin";
-    if (!isSafe && !isOwnerSession) {
+    if (!isSafe) {
       return "{RESPONSE}: Blocked non-read-only workspace command for this session. Ask an owner/admin to run it, or switch to a delegated agent workflow.";
-    }
-    if (!isSafe && isOwnerSession && !hasExplicitConfirmation(args)) {
-      return "{RESPONSE}: Non-read-only command requires explicit confirmation for owner/admin direct execution (confirm=true or confirmation='yes').";
-    }
-    if (!isSafe && isOwnerSession) {
-      console.log(`[voice-tools] Owner direct shell: ${rawCmd.slice(0, 100)}`);
     }
 
     try {
-      const { execSync } = await import("node:child_process");
+      const { spawnSync } = await import("node:child_process");
       const cwd = await resolveToolCwd(context);
-      const output = execSync(rawCmd, {
-        encoding: "utf8",
-        timeout: isOwnerSession ? 120_000 : 20_000,
-        cwd,
-        shell: true,
+      const hasShellMeta = /[|&;<>\x60$(){}]/.test(rawCmd);
+      if (hasShellMeta) {
+        return "{RESPONSE}: Shell metacharacters are not allowed in direct workspace commands.";
+      }
+      const tokens = String(rawCmd)
+        .split(/\s+/)
+        .map((token) => token.trim())
+        .filter(Boolean);
+      if (tokens.length === 0) {
+        return "{RESPONSE}: command is required.";
+      }
+      const commandAllowlist = Object.freeze({
+        git: "git",
+        npm: "npm",
+        node: "node",
+        ls: "ls",
+        cat: "cat",
+        head: "head",
+        tail: "tail",
+        wc: "wc",
+        find: "find",
+        grep: "grep",
+        echo: "echo",
+        pwd: "pwd",
+        which: "which",
+        type: "type",
       });
-      const trimmed = String(output || "").trim();
+      const requestedCmd = String(tokens[0] || "").toLowerCase();
+      const safeCmd = commandAllowlist[requestedCmd];
+      if (!safeCmd) {
+        return "{RESPONSE}: Command is not allowlisted for direct execution.";
+      }
+      const cmdArgs = tokens.slice(1);
+      const res = spawnSync(safeCmd, cmdArgs, {
+        encoding: "utf8",
+        timeout: 20_000,
+        cwd,
+        shell: false,
+        stdio: ["ignore", "pipe", "pipe"],
+      });
+      if (res.error) throw res.error;
+      if (res.status !== 0) {
+        const err = new Error(String(res.stderr || res.stdout || "command failed").trim());
+        err.stderr = res.stderr;
+        err.stdout = res.stdout;
+        throw err;
+      }
+      const trimmed = String(res.stdout || "").trim();
       if (!trimmed) return "Command completed with no output.";
       return trimmed.length > 3000 ? trimmed.slice(0, 3000) + "\n… (truncated)" : trimmed;
     } catch (err) {

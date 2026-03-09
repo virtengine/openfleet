@@ -13,7 +13,7 @@
  *   - thread registry integration for agent <-> worktree linkage
  */
 
-import { spawnSync, execSync } from "node:child_process";
+import { spawnSync } from "node:child_process";
 import {
   existsSync,
   mkdirSync,
@@ -259,10 +259,17 @@ function removePathWithPowerShell(targetPath, opts = {}) {
       escapedPath +
       "' -Recurse -Force | ForEach-Object { $_.Attributes = 'Normal' } -ErrorAction SilentlyContinue; "
     : "";
-  execSync(
-    `${pwsh} -NoProfile -Command "${preface}Remove-Item -LiteralPath '${escapedPath}' -Recurse -Force -ErrorAction Stop"`,
-    { timeout: timeoutMs, stdio: "pipe" },
-  );
+    const script = preface + "Remove-Item -LiteralPath '" + escapedPath + "' -Recurse -Force -ErrorAction Stop";
+  const res = spawnSync(pwsh, ["-NoProfile", "-Command", script], {
+    timeout: timeoutMs,
+    stdio: ["ignore", "pipe", "pipe"],
+    encoding: "utf8",
+    windowsHide: true,
+  });
+  if (res.error) throw res.error;
+  if (res.status !== 0) {
+    throw new Error(String(res.stderr || res.stdout || "PowerShell remove path failed").trim());
+  }
 }
 
 /**
