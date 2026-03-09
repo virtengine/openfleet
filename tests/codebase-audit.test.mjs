@@ -116,6 +116,25 @@ describe("codebase audit engine", () => {
     expect(goContent).toContain("CLAUDE:SUMMARY");
   });
 
+
+  it("scans a single file target and keeps root manifests deduplicated", () => {
+    const root = createRepo();
+    writeFileSync(resolve(root, "root.mjs"), [
+      "export function rootTask() {",
+      "  return true;",
+      "}",
+      "",
+    ].join("\n"), "utf8");
+
+    const fileScan = scanRepository(root, { targetDir: "src/app.mjs", dryRun: true });
+    expect(fileScan.files.map((file) => file.path)).toEqual(["src/app.mjs"]);
+
+    generateSummaries(root);
+    generateManifests(root);
+
+    const rootManifest = readFileSync(resolve(root, "CLAUDE.md"), "utf8");
+    expect((rootManifest.match(/`root\.mjs`/g) || []).length).toBe(1);
+  });
   it("builds manifests and index files", () => {
     const root = createRepo();
     generateSummaries(root);
