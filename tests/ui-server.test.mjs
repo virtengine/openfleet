@@ -1414,6 +1414,48 @@ describe("ui-server mini app", () => {
     rmSync(tmpDir, { recursive: true, force: true });
   }, 15000);
 
+  it("exposes typed workflow node ports and inline UI metadata", async () => {
+    process.env.TELEGRAM_UI_TUNNEL = "disabled";
+    const mod = await import("../server/ui-server.mjs");
+    const server = await mod.startTelegramUiServer({
+      port: await getFreePort(),
+      host: "127.0.0.1",
+      skipInstanceLock: true,
+      skipAutoOpen: true,
+    });
+    const port = server.address().port;
+
+    const response = await fetch(`http://127.0.0.1:${port}/api/workflows/node-types`);
+    const payload = await response.json();
+    expect(response.status).toBe(200);
+    expect(payload.ok).toBe(true);
+    expect(Array.isArray(payload.nodeTypes)).toBe(true);
+    expect(payload.nodeTypes.length).toBeGreaterThan(10);
+
+    const manualTrigger = payload.nodeTypes.find((nodeType) => nodeType.type === "trigger.manual");
+    expect(manualTrigger).toBeTruthy();
+    expect(Array.isArray(manualTrigger.ports?.outputs)).toBe(true);
+    expect(manualTrigger.ports.outputs[0]).toMatchObject({
+      name: "default",
+      type: "TaskDef",
+    });
+
+    const runAgent = payload.nodeTypes.find((nodeType) => nodeType.type === "action.run_agent");
+    expect(runAgent).toBeTruthy();
+    expect(Array.isArray(runAgent.ports?.inputs)).toBe(true);
+    expect(Array.isArray(runAgent.ports?.outputs)).toBe(true);
+    expect(runAgent.ports.inputs[0]).toMatchObject({
+      name: "default",
+      type: "TaskDef",
+    });
+    expect(runAgent.ports.outputs[0]).toMatchObject({
+      name: "default",
+      type: "AgentResult",
+    });
+    expect(Array.isArray(runAgent.ui?.primaryFields)).toBe(true);
+    expect(runAgent.ui.primaryFields).toContain("model");
+  }, 20000);
+
   it("exposes and executes shared bosun tools via /api/agents/tool parity endpoints", async () => {
     const mod = await import("../server/ui-server.mjs");
     const server = await mod.startTelegramUiServer({
