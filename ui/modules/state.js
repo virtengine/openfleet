@@ -159,18 +159,15 @@ export const tasksStatusCounts = signal({ draft: 0, backlog: 0, inProgress: 0, i
 export const retryQueueData = signal({ count: 0, items: [] });
 export const retryQueueLoaded = signal(false);
 
-export async function loadRetryQueue() {
-  const url = "/api/retry-queue";
-  if (_cacheFresh(url, "retry-queue")) return;
-  const res = await apiFetch(url, { _silent: true }).catch(() => ({ ok: false, items: [], count: 0, stats: null }));
-  retryQueueData.value = {
-    count: Number(res?.count || 0),
-    items: Array.isArray(res?.items) ? res.items : [],
-    stats: res?.stats && typeof res.stats === "object"
+function normalizeRetryQueuePayload(payload) {
+  return {
+    count: Number(payload?.count || 0),
+    items: Array.isArray(payload?.items) ? payload.items : [],
+    stats: payload?.stats && typeof payload.stats === "object"
       ? {
-          totalRetriesToday: Number(res.stats.totalRetriesToday || 0),
-          peakRetryDepth: Number(res.stats.peakRetryDepth || 0),
-          exhaustedTaskIds: Array.isArray(res.stats.exhaustedTaskIds) ? res.stats.exhaustedTaskIds : [],
+          totalRetriesToday: Number(payload.stats.totalRetriesToday || 0),
+          peakRetryDepth: Number(payload.stats.peakRetryDepth || 0),
+          exhaustedTaskIds: Array.isArray(payload.stats.exhaustedTaskIds) ? payload.stats.exhaustedTaskIds : [],
         }
       : {
           totalRetriesToday: 0,
@@ -178,6 +175,13 @@ export async function loadRetryQueue() {
           exhaustedTaskIds: [],
         },
   };
+}
+
+export async function loadRetryQueue() {
+  const url = "/api/retry-queue";
+  if (_cacheFresh(url, "retry-queue")) return;
+  const res = await apiFetch(url, { _silent: true }).catch(() => ({ ok: false, items: [], count: 0, stats: null }));
+  retryQueueData.value = normalizeRetryQueuePayload(res);
   _cacheSet(url, retryQueueData.value);
   _markFresh("retry-queue");
   retryQueueLoaded.value = true;
@@ -1022,6 +1026,13 @@ const WS_CHANNEL_MAP = {
 /** Start listening for WS invalidation messages and auto-refreshing. */
 export function initWsInvalidationListener() {
   onWsMessage((msg) => {
+    if (msg?.type === "retry-queue-updated") {
+      retryQueueData.value = normalizeRetryQueuePayload(msg?.payload);
+      _cacheSet("/api/retry-queue", retryQueueData.value);
+      _markFresh("retry-queue");
+      retryQueueLoaded.value = true;
+      return;
+    }
     if (msg?.type !== "invalidate") return;
     const channels = Array.isArray(msg.channels) ? msg.channels : [];
     // Clear cache for invalidated channels so next fetch is fresh
