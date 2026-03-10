@@ -151,16 +151,47 @@ export const WorkflowStatus = Object.freeze({
 
 const _nodeTypeRegistry = new Map();
 
+function normalizeNodeTypeEntry(type, handler, options = {}) {
+  const source = String(options.source || handler?.source || "builtin").trim() || "builtin";
+  const badge = options.badge ?? handler?.badge ?? (source === "custom" ? "custom" : null);
+  const inputs = Array.isArray(options.inputs)
+    ? [...options.inputs]
+    : Array.isArray(handler?.inputs)
+      ? [...handler.inputs]
+      : [];
+  const outputs = Array.isArray(options.outputs)
+    ? [...options.outputs]
+    : Array.isArray(handler?.outputs)
+      ? [...handler.outputs]
+      : [];
+  return {
+    handler,
+    meta: {
+      type,
+      source,
+      badge,
+      isCustom: source === "custom",
+      inputs,
+      outputs,
+      filePath: options.filePath || handler?.filePath || null,
+    },
+  };
+}
+
 /**
  * Register a node type handler.
  * @param {string} type - Node type identifier (e.g., "trigger.task_low", "action.run_agent")
  * @param {object} handler - { execute(node, context, engine), validate?(node), describe?() }
  */
-export function registerNodeType(type, handler) {
+export function registerNodeType(type, handler, options = {}) {
   if (!handler || typeof handler.execute !== "function") {
     throw new Error(`${TAG} Node type "${type}" must have an execute function`);
   }
-  _nodeTypeRegistry.set(type, handler);
+  _nodeTypeRegistry.set(type, normalizeNodeTypeEntry(type, handler, options));
+}
+
+export function unregisterNodeType(type) {
+  return _nodeTypeRegistry.delete(type);
 }
 
 /**
@@ -169,7 +200,11 @@ export function registerNodeType(type, handler) {
  * @returns {object|null}
  */
 export function getNodeType(type) {
-  return _nodeTypeRegistry.get(type) || null;
+  return _nodeTypeRegistry.get(type)?.handler || null;
+}
+
+export function getNodeTypeMeta(type) {
+  return _nodeTypeRegistry.get(type)?.meta || null;
 }
 
 /**
@@ -178,13 +213,21 @@ export function getNodeType(type) {
  */
 export function listNodeTypes() {
   const result = [];
-  for (const [type, handler] of _nodeTypeRegistry) {
+  for (const [type, entry] of _nodeTypeRegistry) {
+    const handler = entry.handler;
+    const meta = entry.meta || {};
     const [category] = type.split(".");
     result.push({
       type,
       category,
       description: handler.describe?.() || type,
       schema: handler.schema || null,
+      source: meta.source || "builtin",
+      badge: meta.badge || null,
+      isCustom: meta.isCustom === true,
+      inputs: meta.inputs || [],
+      outputs: meta.outputs || [],
+      filePath: meta.filePath || null,
     });
   }
   return result;
@@ -2799,6 +2842,5 @@ export function listWorkflows(opts) { return getWorkflowEngine(opts).list(); }
 export function getWorkflow(id, opts) { return getWorkflowEngine(opts).get(id); }
 export async function executeWorkflow(id, data, opts) { return getWorkflowEngine(opts).execute(id, data, opts); }
 export async function retryWorkflowRun(runId, retryOpts, engineOpts) { return getWorkflowEngine(engineOpts).retryRun(runId, retryOpts); }
-
 
 

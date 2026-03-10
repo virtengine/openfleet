@@ -2264,6 +2264,9 @@ function NodePalette({
                 <div style="display:flex; align-items:center; gap:8px; flex-wrap:wrap;">
                   <span style="font-weight:700; font-size:13px;">${item.label}</span>
                   <span style=${`display:inline-flex; align-items:center; padding:2px 8px; border-radius:999px; font-size:10px; letter-spacing:0.04em; text-transform:uppercase; color:${meta.color}; background:${meta.bg}; border:1px solid ${meta.color}33;`}>${meta.label || item.category}</span>
+                  ${item.badge ? html`
+                    <span style=${`display:inline-flex; align-items:center; padding:2px 8px; border-radius:999px; font-size:10px; letter-spacing:0.04em; text-transform:uppercase; color:${item.isCustom ? '#f472b6' : '#cbd5e1'}; background:${item.isCustom ? 'rgba(244,114,182,0.2)' : 'rgba(148,163,184,0.2)'}; border:1px solid ${item.isCustom ? '#f472b655' : '#94a3b855'};`}>${item.badge}</span>
+                  ` : ""}
                   <span style="font-size:11px; opacity:0.55;">${item.type}</span>
                 </div>
                 <div style="font-size:12px; opacity:0.78; line-height:1.4;">${item.description || "No description available."}</div>
@@ -3981,4 +3984,3 @@ export function WorkflowsTab() {
     </div>
   `;
 }
-

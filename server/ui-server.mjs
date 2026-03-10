@@ -12631,6 +12631,12 @@ async function handleApi(req, res, url) {
         category: nt.type.split(".")[0],
         description: nt.description || "",
         schema: nt.schema || {},
+        source: nt.source || "builtin",
+        badge: nt.badge || null,
+        isCustom: nt.isCustom === true,
+        inputs: Array.isArray(nt.inputs) ? nt.inputs : [],
+        outputs: Array.isArray(nt.outputs) ? nt.outputs : [],
+        filePath: nt.filePath || null,
       })) });
     } catch (err) {
       jsonResponse(res, 500, { ok: false, error: err.message });
