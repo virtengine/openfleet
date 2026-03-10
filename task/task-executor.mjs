@@ -115,6 +115,8 @@ const NO_COMMIT_MAX_COOLDOWN_MS = 2 * 60 * 60 * 1000;
 const CLAIM_CONFLICT_COMMENT_COOLDOWN_MS = 30 * 60 * 1000; // 30 minutes
 const REPO_AREA_SLOW_MERGE_LATENCY_MS = 4 * 60 * 60 * 1000;
 const REPO_AREA_VERY_SLOW_MERGE_LATENCY_MS = 8 * 60 * 60 * 1000;
+const REPO_AREA_STARVATION_WAIT_MS = 2 * 60 * 1000;
+const REPO_AREA_STARVATION_BLOCKED_CYCLES = 3;
 const FATAL_CLAIM_RENEW_ERRORS = new Set([
   "task_claimed_by_different_instance",
   "claim_token_mismatch",
@@ -2448,27 +2450,33 @@ class TaskExecutor {
     this._noCommitCounts = new Map();
     /** @type {Map<string, number>} taskId → skip-until timestamp */
     this._skipUntil = new Map();
-    /** @type {Map<string, { conflicts: number, blockedDispatches: number, selectedDispatches: number, waitMsTotal: number, waitSamples: number, maxWaitMs: number, lastConflictAt: string|null, lastSelectedAt: string|null }>} */
+    /** @type {Map<string, { conflicts: number, blockedDispatches: number, selectedDispatches: number, waitMsTotal: number, waitSamples: number, maxWaitMs: number, starvationEvents: number, maxStarvationWaitMs: number, maxStarvationCycles: number, lastConflictAt: string|null, lastSelectedAt: string|null, lastStarvationAt: string|null }>} */
     this._repoAreaLockMetrics = new Map();
-    /** @type {Map<string, { taskId: string, area: string, startedAt: number }>} */
+    /** @type {Map<string, { taskId: string, area: string, startedAt: number, blockedCycles: number, starvationCounted: boolean, lastObservedAt: number }>} */
     this._repoAreaPendingWaits = new Map();
+    /** @type {Map<string, { workerId: string, area: string, waitMsTotal: number, waitSamples: number, lastWaitMs: number, maxWaitMs: number, starvationEvents: number, maxStarvationWaitMs: number, maxStarvationCycles: number, lastBlockedAt: string|null, lastSelectedAt: string|null, lastStarvationAt: string|null }>} */
+    this._repoAreaWorkerMetrics = new Map();
+    this._repoAreaFairQueueCursor = 0;
     this._repoAreaDispatchCycle = {
       cycle: 0,
       at: null,
+      policy: "round_robin_oldest_wait",
       candidateCount: 0,
       remaining: 0,
       selectedCount: 0,
       blockedTasks: 0,
       conflictEvents: 0,
+      starvationEvents: 0,
       waitMsTotal: 0,
       waitSamples: 0,
       maxWaitMs: 0,
       blockedByArea: {},
       saturatedAreas: [],
+      starvingAreas: [],
       cycleAreaMetrics: {},
       areaLimits: {},
     };
-    /** @type {Array<{ cycle: number, at: string|null, candidateCount: number, remaining: number, selectedCount: number, blockedTasks: number, conflictEvents: number, waitMsTotal: number, waitSamples: number, maxWaitMs: number, blockedByArea: Record<string, number>, saturatedAreas: string[], cycleAreaMetrics: Record<string, { conflicts: number, blockedDispatches: number, selectedDispatches: number, waitMsTotal: number, waitSamples: number, maxWaitMs: number }>, areaLimits: Record<string, { configuredLimit: number, effectiveLimit: number, adaptivePenalty: number, adaptiveReasons: string[], activeSlots: number, activeFailureRate: number, adaptiveFailureRate: number, averageMergeLatencyMs: number, adaptiveMergeLatencyMs: number }> }>} */
+    /** @type {Array<{ cycle: number, at: string|null, policy: string, candidateCount: number, remaining: number, selectedCount: number, blockedTasks: number, conflictEvents: number, starvationEvents: number, waitMsTotal: number, waitSamples: number, maxWaitMs: number, blockedByArea: Record<string, number>, saturatedAreas: string[], starvingAreas: string[], cycleAreaMetrics: Record<string, { conflicts: number, blockedDispatches: number, selectedDispatches: number, starvationEvents: number, waitMsTotal: number, waitSamples: number, maxWaitMs: number }>, areaLimits: Record<string, { configuredLimit: number, effectiveLimit: number, adaptivePenalty: number, adaptiveReasons: string[], activeSlots: number, activeFailureRate: number, adaptiveFailureRate: number, averageMergeLatencyMs: number, adaptiveMergeLatencyMs: number }> }>} */
     this._repoAreaDispatchHistory = [];
 
     // Track tasks that have already been completed with a PR (prevents re-dispatch loop)
@@ -2644,6 +2652,10 @@ class TaskExecutor {
         0,
         Math.trunc(Number(parsed?.repoAreaConflictCount || 0)),
       );
+      this._repoAreaFairQueueCursor = Math.max(
+        0,
+        Math.trunc(Number(parsed?.repoAreaFairQueueCursor || 0)),
+      );
       this._repoAreaLockMetrics.clear();
       for (const [area, raw] of Object.entries(parsed?.repoAreaLockMetrics || {})) {
         const areaKey = normalizeRepoAreaKey(area);
@@ -2661,8 +2673,54 @@ class TaskExecutor {
           waitMsTotal: Math.max(0, Math.trunc(Number(raw?.waitMsTotal || 0))),
           waitSamples: Math.max(0, Math.trunc(Number(raw?.waitSamples || 0))),
           maxWaitMs: Math.max(0, Math.trunc(Number(raw?.maxWaitMs || 0))),
+          starvationEvents: Math.max(
+            0,
+            Math.trunc(Number(raw?.starvationEvents || 0)),
+          ),
+          maxStarvationWaitMs: Math.max(
+            0,
+            Math.trunc(Number(raw?.maxStarvationWaitMs || 0)),
+          ),
+          maxStarvationCycles: Math.max(
+            0,
+            Math.trunc(Number(raw?.maxStarvationCycles || 0)),
+          ),
           lastConflictAt: raw?.lastConflictAt ? String(raw.lastConflictAt) : null,
           lastSelectedAt: raw?.lastSelectedAt ? String(raw.lastSelectedAt) : null,
+          lastStarvationAt: raw?.lastStarvationAt
+            ? String(raw.lastStarvationAt)
+            : null,
+        });
+      }
+      this._repoAreaWorkerMetrics.clear();
+      for (const [key, raw] of Object.entries(parsed?.repoAreaWorkerMetrics || {})) {
+        const areaKey = normalizeRepoAreaKey(raw?.area);
+        const workerId = String(raw?.workerId || "").trim() || "executor";
+        if (!areaKey) continue;
+        this._repoAreaWorkerMetrics.set(String(key || `${areaKey}::${workerId}`), {
+          workerId,
+          area: areaKey,
+          waitMsTotal: Math.max(0, Math.trunc(Number(raw?.waitMsTotal || 0))),
+          waitSamples: Math.max(0, Math.trunc(Number(raw?.waitSamples || 0))),
+          lastWaitMs: Math.max(0, Math.trunc(Number(raw?.lastWaitMs || 0))),
+          maxWaitMs: Math.max(0, Math.trunc(Number(raw?.maxWaitMs || 0))),
+          starvationEvents: Math.max(
+            0,
+            Math.trunc(Number(raw?.starvationEvents || 0)),
+          ),
+          maxStarvationWaitMs: Math.max(
+            0,
+            Math.trunc(Number(raw?.maxStarvationWaitMs || 0)),
+          ),
+          maxStarvationCycles: Math.max(
+            0,
+            Math.trunc(Number(raw?.maxStarvationCycles || 0)),
+          ),
+          lastBlockedAt: raw?.lastBlockedAt ? String(raw.lastBlockedAt) : null,
+          lastSelectedAt: raw?.lastSelectedAt ? String(raw.lastSelectedAt) : null,
+          lastStarvationAt: raw?.lastStarvationAt
+            ? String(raw.lastStarvationAt)
+            : null,
         });
       }
       this._repoAreaDispatchCycle = {
@@ -2673,6 +2731,9 @@ class TaskExecutor {
         at: parsed?.repoAreaDispatchCycle?.at
           ? String(parsed.repoAreaDispatchCycle.at)
           : null,
+        policy:
+          String(parsed?.repoAreaDispatchCycle?.policy || "").trim() ||
+          "round_robin_oldest_wait",
         candidateCount: Math.max(
           0,
           Math.trunc(Number(parsed?.repoAreaDispatchCycle?.candidateCount || 0)),
@@ -2692,6 +2753,10 @@ class TaskExecutor {
         conflictEvents: Math.max(
           0,
           Math.trunc(Number(parsed?.repoAreaDispatchCycle?.conflictEvents || 0)),
+        ),
+        starvationEvents: Math.max(
+          0,
+          Math.trunc(Number(parsed?.repoAreaDispatchCycle?.starvationEvents || 0)),
         ),
         waitMsTotal: Math.max(
           0,
@@ -2725,6 +2790,11 @@ class TaskExecutor {
               .map((area) => normalizeRepoAreaKey(area))
               .filter(Boolean)
           : [],
+        starvingAreas: Array.isArray(parsed?.repoAreaDispatchCycle?.starvingAreas)
+          ? parsed.repoAreaDispatchCycle.starvingAreas
+              .map((area) => normalizeRepoAreaKey(area))
+              .filter(Boolean)
+          : [],
         cycleAreaMetrics:
           parsed?.repoAreaDispatchCycle?.cycleAreaMetrics &&
           typeof parsed.repoAreaDispatchCycle.cycleAreaMetrics === "object"
@@ -2741,6 +2811,10 @@ class TaskExecutor {
                     selectedDispatches: Math.max(
                       0,
                       Math.trunc(Number(metric?.selectedDispatches || 0)),
+                    ),
+                    starvationEvents: Math.max(
+                      0,
+                      Math.trunc(Number(metric?.starvationEvents || 0)),
                     ),
                     waitMsTotal: Math.max(
                       0,
@@ -2849,6 +2923,8 @@ class TaskExecutor {
           .map((entry) => ({
             cycle: Math.max(0, Math.trunc(Number(entry?.cycle || 0))),
             at: entry?.at ? String(entry.at) : null,
+            policy:
+              String(entry?.policy || "").trim() || "round_robin_oldest_wait",
             candidateCount: Math.max(0, Math.trunc(Number(entry?.candidateCount || 0))),
             remaining: Math.max(0, Math.trunc(Number(entry?.remaining || 0))),
             selectedCount: Math.max(0, Math.trunc(Number(entry?.selectedCount || 0))),
@@ -2856,6 +2932,10 @@ class TaskExecutor {
             conflictEvents: Math.max(
               0,
               Math.trunc(Number(entry?.conflictEvents || 0)),
+            ),
+            starvationEvents: Math.max(
+              0,
+              Math.trunc(Number(entry?.starvationEvents || 0)),
             ),
             waitMsTotal: Math.max(0, Math.trunc(Number(entry?.waitMsTotal || 0))),
             waitSamples: Math.max(0, Math.trunc(Number(entry?.waitSamples || 0))),
@@ -2873,6 +2953,11 @@ class TaskExecutor {
                 : {},
             saturatedAreas: Array.isArray(entry?.saturatedAreas)
               ? entry.saturatedAreas
+                .map((area) => normalizeRepoAreaKey(area))
+                .filter(Boolean)
+              : [],
+            starvingAreas: Array.isArray(entry?.starvingAreas)
+              ? entry.starvingAreas
                 .map((area) => normalizeRepoAreaKey(area))
                 .filter(Boolean)
               : [],
@@ -2894,6 +2979,10 @@ class TaskExecutor {
                         selectedDispatches: Math.max(
                           0,
                           Math.trunc(Number(metric?.selectedDispatches || 0)),
+                        ),
+                        starvationEvents: Math.max(
+                          0,
+                          Math.trunc(Number(metric?.starvationEvents || 0)),
                         ),
                         waitMsTotal: Math.max(
                           0,
@@ -3038,11 +3127,14 @@ class TaskExecutor {
             repoAreaParallelLimit: this.repoAreaParallelLimit,
             repoAreaDispatchCycles: this._repoAreaDispatchCycles,
             repoAreaConflictCount: this._repoAreaConflictCount,
+            repoAreaFairQueueCursor: this._repoAreaFairQueueCursor,
             repoAreaLockMetrics: Object.fromEntries(this._repoAreaLockMetrics),
+            repoAreaWorkerMetrics: Object.fromEntries(this._repoAreaWorkerMetrics),
             repoAreaDispatchCycle: {
               ...this._repoAreaDispatchCycle,
               blockedByArea: { ...this._repoAreaDispatchCycle.blockedByArea },
               saturatedAreas: [...this._repoAreaDispatchCycle.saturatedAreas],
+              starvingAreas: [...(this._repoAreaDispatchCycle.starvingAreas || [])],
               cycleAreaMetrics: { ...this._repoAreaDispatchCycle.cycleAreaMetrics },
               areaLimits: { ...(this._repoAreaDispatchCycle.areaLimits || {}) },
             },
@@ -3145,6 +3237,8 @@ class TaskExecutor {
       entry.lastBlockedAt = now;
       const lockMetric = this._getRepoAreaLockMetric(areaKey);
       if (lockMetric) lockMetric.conflicts += 1;
+      const workerMetric = this._getRepoAreaWorkerMetric(areaKey);
+      if (workerMetric) workerMetric.lastBlockedAt = new Date(now).toISOString();
     }
   }
 
@@ -4330,11 +4424,44 @@ class TaskExecutor {
         waitMsTotal: 0,
         waitSamples: 0,
         maxWaitMs: 0,
+        starvationEvents: 0,
+        maxStarvationWaitMs: 0,
+        maxStarvationCycles: 0,
         lastConflictAt: null,
         lastSelectedAt: null,
+        lastStarvationAt: null,
       });
     }
     return this._repoAreaLockMetrics.get(area);
+  }
+
+  _buildRepoAreaWorkerMetricKey(area) {
+    const normalizedArea = normalizeRepoAreaKey(area);
+    if (!normalizedArea) return "";
+    const workerId = String(this._instanceId || "").trim() || "executor";
+    return `${normalizedArea}::${workerId}`;
+  }
+
+  _getRepoAreaWorkerMetric(area) {
+    const key = this._buildRepoAreaWorkerMetricKey(area);
+    if (!key) return null;
+    if (!this._repoAreaWorkerMetrics.has(key)) {
+      this._repoAreaWorkerMetrics.set(key, {
+        workerId: String(this._instanceId || "").trim() || "executor",
+        area: normalizeRepoAreaKey(area),
+        waitMsTotal: 0,
+        waitSamples: 0,
+        lastWaitMs: 0,
+        maxWaitMs: 0,
+        starvationEvents: 0,
+        maxStarvationWaitMs: 0,
+        maxStarvationCycles: 0,
+        lastBlockedAt: null,
+        lastSelectedAt: null,
+        lastStarvationAt: null,
+      });
+    }
+    return this._repoAreaWorkerMetrics.get(key);
   }
 
   _makeRepoAreaWaitKey(taskId, area) {
@@ -4345,12 +4472,45 @@ class TaskExecutor {
 
   _beginRepoAreaWait(taskId, area, now = Date.now()) {
     const key = this._makeRepoAreaWaitKey(taskId, area);
-    if (!key || this._repoAreaPendingWaits.has(key)) return;
+    if (!key) return { starvationDetected: false, waitMs: 0, blockedCycles: 0 };
+    const existing = this._repoAreaPendingWaits.get(key);
+    if (existing) {
+      existing.blockedCycles = Math.max(
+        1,
+        Math.trunc(Number(existing.blockedCycles || 0)),
+      ) + 1;
+      existing.lastObservedAt = now;
+      const waitMs = Math.max(0, now - Number(existing.startedAt || now));
+      const shouldMarkStarved =
+        !existing.starvationCounted &&
+        (
+          waitMs >= REPO_AREA_STARVATION_WAIT_MS ||
+          existing.blockedCycles >= REPO_AREA_STARVATION_BLOCKED_CYCLES
+        );
+      if (shouldMarkStarved) {
+        existing.starvationCounted = true;
+        this._recordRepoAreaStarvation(
+          area,
+          waitMs,
+          existing.blockedCycles,
+          now,
+        );
+      }
+      return {
+        starvationDetected: shouldMarkStarved,
+        waitMs,
+        blockedCycles: existing.blockedCycles,
+      };
+    }
     this._repoAreaPendingWaits.set(key, {
       taskId: normalizeTaskIdKey(taskId),
       area,
       startedAt: now,
+      blockedCycles: 1,
+      starvationCounted: false,
+      lastObservedAt: now,
     });
+    return { starvationDetected: false, waitMs: 0, blockedCycles: 1 };
   }
 
   _finalizeRepoAreaWait(taskId, area, now = Date.now()) {
@@ -4365,6 +4525,14 @@ class TaskExecutor {
       metric.waitMsTotal += durationMs;
       metric.waitSamples += 1;
       metric.maxWaitMs = Math.max(metric.maxWaitMs, durationMs);
+    }
+    const workerMetric = this._getRepoAreaWorkerMetric(area);
+    if (workerMetric && durationMs > 0) {
+      workerMetric.waitMsTotal += durationMs;
+      workerMetric.waitSamples += 1;
+      workerMetric.lastWaitMs = durationMs;
+      workerMetric.maxWaitMs = Math.max(workerMetric.maxWaitMs, durationMs);
+      workerMetric.lastSelectedAt = new Date(now).toISOString();
     }
     return durationMs;
   }
@@ -4391,6 +4559,124 @@ class TaskExecutor {
     for (const area of this._extractTaskRepoAreas(task)) {
       this._finalizeRepoAreaWait(taskId, area, now);
     }
+  }
+
+  _recordRepoAreaStarvation(area, waitMs, blockedCycles, now = Date.now()) {
+    const metric = this._getRepoAreaLockMetric(area);
+    if (metric) {
+      metric.starvationEvents += 1;
+      metric.maxStarvationWaitMs = Math.max(
+        metric.maxStarvationWaitMs,
+        Math.max(0, Math.trunc(Number(waitMs || 0))),
+      );
+      metric.maxStarvationCycles = Math.max(
+        metric.maxStarvationCycles,
+        Math.max(0, Math.trunc(Number(blockedCycles || 0))),
+      );
+      metric.lastStarvationAt = new Date(now).toISOString();
+    }
+    const workerMetric = this._getRepoAreaWorkerMetric(area);
+    if (workerMetric) {
+      workerMetric.starvationEvents += 1;
+      workerMetric.maxStarvationWaitMs = Math.max(
+        workerMetric.maxStarvationWaitMs,
+        Math.max(0, Math.trunc(Number(waitMs || 0))),
+      );
+      workerMetric.maxStarvationCycles = Math.max(
+        workerMetric.maxStarvationCycles,
+        Math.max(0, Math.trunc(Number(blockedCycles || 0))),
+      );
+      workerMetric.lastBlockedAt = new Date(now).toISOString();
+      workerMetric.lastStarvationAt = new Date(now).toISOString();
+    }
+  }
+
+  _getTaskRepoAreaPendingState(task, now = Date.now()) {
+    const taskId = normalizeTaskIdKey(task?.id || task?.task_id);
+    const areas = this._extractTaskRepoAreas(task);
+    let maxWaitMs = 0;
+    let maxBlockedCycles = 0;
+    let starving = false;
+    for (const area of areas) {
+      const key = this._makeRepoAreaWaitKey(taskId, area);
+      const pending = key ? this._repoAreaPendingWaits.get(key) : null;
+      if (!pending) continue;
+      const waitMs = Math.max(0, now - Number(pending.startedAt || now));
+      maxWaitMs = Math.max(maxWaitMs, waitMs);
+      maxBlockedCycles = Math.max(
+        maxBlockedCycles,
+        Math.max(0, Math.trunc(Number(pending.blockedCycles || 0))),
+      );
+      if (pending.starvationCounted) starving = true;
+    }
+    return {
+      taskId,
+      areas,
+      maxWaitMs,
+      maxBlockedCycles,
+      starving,
+      primaryArea: areas[0] || "__unscoped__",
+    };
+  }
+
+  _orderCandidatesForRepoAreaFairQueue(candidates, now = Date.now()) {
+    if (!Array.isArray(candidates) || candidates.length <= 1) return candidates || [];
+    const grouped = new Map();
+    for (let index = 0; index < candidates.length; index += 1) {
+      const task = candidates[index];
+      const pending = this._getTaskRepoAreaPendingState(task, now);
+      const bucket = pending.primaryArea;
+      if (!grouped.has(bucket)) grouped.set(bucket, []);
+      grouped.get(bucket).push({ task, index, pending });
+    }
+    const groups = Array.from(grouped.entries()).map(([area, queue]) => {
+      queue.sort((a, b) => {
+        if (b.pending.maxBlockedCycles !== a.pending.maxBlockedCycles) {
+          return b.pending.maxBlockedCycles - a.pending.maxBlockedCycles;
+        }
+        if (b.pending.maxWaitMs !== a.pending.maxWaitMs) {
+          return b.pending.maxWaitMs - a.pending.maxWaitMs;
+        }
+        return a.index - b.index;
+      });
+      return {
+        area,
+        queue,
+        oldestWaitMs: queue.reduce(
+          (max, entry) => Math.max(max, entry.pending.maxWaitMs),
+          0,
+        ),
+      };
+    });
+    groups.sort((a, b) => {
+      if (b.oldestWaitMs !== a.oldestWaitMs) return b.oldestWaitMs - a.oldestWaitMs;
+      return a.area.localeCompare(b.area);
+    });
+    if (groups.length === 0) return candidates.slice();
+
+    let cursor = Math.max(
+      0,
+      Math.trunc(Number(this._repoAreaFairQueueCursor || 0)),
+    ) % groups.length;
+    const ordered = [];
+    let remaining = candidates.length;
+    while (remaining > 0) {
+      let progressed = false;
+      for (let offset = 0; offset < groups.length; offset += 1) {
+        const idx = (cursor + offset) % groups.length;
+        const group = groups[idx];
+        if (!group || group.queue.length === 0) continue;
+        const next = group.queue.shift();
+        ordered.push(next.task);
+        cursor = (idx + 1) % groups.length;
+        remaining -= 1;
+        progressed = true;
+        break;
+      }
+      if (!progressed) break;
+    }
+    this._repoAreaFairQueueCursor = cursor;
+    return ordered.length > 0 ? ordered : candidates.slice();
   }
 
   _buildActiveRepoAreaSignals(now = Date.now()) {
@@ -4508,17 +4794,31 @@ class TaskExecutor {
       this._repoAreaBlockedTasks,
     );
     const waitingCounts = new Map();
+    const starvingCounts = new Map();
+    const oldestWaitByArea = new Map();
     for (const pending of this._repoAreaPendingWaits.values()) {
+      const waitMs = Math.max(0, now - Number(pending.startedAt || now));
       waitingCounts.set(
         pending.area,
         (waitingCounts.get(pending.area) || 0) + 1,
       );
+      oldestWaitByArea.set(
+        pending.area,
+        Math.max(oldestWaitByArea.get(pending.area) || 0, waitMs),
+      );
+      if (pending.starvationCounted) {
+        starvingCounts.set(
+          pending.area,
+          (starvingCounts.get(pending.area) || 0) + 1,
+        );
+      }
     }
 
     const areas = new Set([
       ...activeCounts.keys(),
       ...activeSignals.keys(),
       ...waitingCounts.keys(),
+      ...starvingCounts.keys(),
       ...this._repoAreaLockMetrics.keys(),
     ]);
 
@@ -4532,8 +4832,12 @@ class TaskExecutor {
           waitMsTotal: 0,
           waitSamples: 0,
           maxWaitMs: 0,
+          starvationEvents: 0,
+          maxStarvationWaitMs: 0,
+          maxStarvationCycles: 0,
           lastConflictAt: null,
           lastSelectedAt: null,
+          lastStarvationAt: null,
         };
         const signal = activeSignals.get(area) || {
           active: 0,
@@ -4564,6 +4868,8 @@ class TaskExecutor {
           effectiveLimit: adaptiveState.effectiveLimit,
           activeSlots: active,
           waitingTasks: Math.max(waitingTasks, blockedTaskWaitingCounts.get(area) || 0),
+          starvingTasks: starvingCounts.get(area) || 0,
+          oldestWaitingMs: oldestWaitByArea.get(area) || 0,
           activeFailureRate: adaptiveState.activeFailureRate,
           outcomeFailureRate: adaptiveState.outcomeFailureRate,
           adaptiveFailureRate: adaptiveState.adaptiveFailureRate,
@@ -4583,9 +4889,50 @@ class TaskExecutor {
           waitMsTotal: metric.waitMsTotal,
           maxWaitMs: metric.maxWaitMs,
           waitSamples: metric.waitSamples,
+          starvationEvents: metric.starvationEvents,
+          maxStarvationWaitMs: metric.maxStarvationWaitMs,
+          maxStarvationCycles: metric.maxStarvationCycles,
           lastConflictAt: metric.lastConflictAt,
           lastSelectedAt: metric.lastSelectedAt,
+          lastStarvationAt: metric.lastStarvationAt,
         };
+      });
+
+    const worker = Array.from(this._repoAreaWorkerMetrics.values())
+      .map((entry) => ({
+        workerId: String(entry?.workerId || "").trim() || "executor",
+        area: normalizeRepoAreaKey(entry?.area),
+        waitMsTotal: Math.max(0, Math.trunc(Number(entry?.waitMsTotal || 0))),
+        waitSamples: Math.max(0, Math.trunc(Number(entry?.waitSamples || 0))),
+        lastWaitMs: Math.max(0, Math.trunc(Number(entry?.lastWaitMs || 0))),
+        maxWaitMs: Math.max(0, Math.trunc(Number(entry?.maxWaitMs || 0))),
+        starvationEvents: Math.max(
+          0,
+          Math.trunc(Number(entry?.starvationEvents || 0)),
+        ),
+        maxStarvationWaitMs: Math.max(
+          0,
+          Math.trunc(Number(entry?.maxStarvationWaitMs || 0)),
+        ),
+        maxStarvationCycles: Math.max(
+          0,
+          Math.trunc(Number(entry?.maxStarvationCycles || 0)),
+        ),
+        lastBlockedAt: entry?.lastBlockedAt ? String(entry.lastBlockedAt) : null,
+        lastSelectedAt: entry?.lastSelectedAt ? String(entry.lastSelectedAt) : null,
+        lastStarvationAt: entry?.lastStarvationAt
+          ? String(entry.lastStarvationAt)
+          : null,
+      }))
+      .filter((entry) => Boolean(entry.area))
+      .sort((a, b) => {
+        if (b.starvationEvents !== a.starvationEvents) {
+          return b.starvationEvents - a.starvationEvents;
+        }
+        if (b.maxWaitMs !== a.maxWaitMs) return b.maxWaitMs - a.maxWaitMs;
+        const areaCmp = a.area.localeCompare(b.area);
+        if (areaCmp !== 0) return areaCmp;
+        return a.workerId.localeCompare(b.workerId);
       });
 
     return {
@@ -4606,9 +4953,18 @@ class TaskExecutor {
           (sum, item) => sum + item.blockedDispatches,
           0,
         ),
+        starvationEvents: items.reduce((sum, item) => sum + item.starvationEvents, 0),
         waitMsTotal: items.reduce((sum, item) => sum + item.waitMsTotal, 0),
         waitSamples: items.reduce((sum, item) => sum + item.waitSamples, 0),
         waitingTasks: items.reduce((sum, item) => sum + item.waitingTasks, 0),
+        starvingTasks: items.reduce((sum, item) => sum + item.starvingTasks, 0),
+      },
+      worker,
+      fairQueue: {
+        policy: "round_robin_oldest_wait",
+        cursor: Math.max(0, Math.trunc(Number(this._repoAreaFairQueueCursor || 0))),
+        starvationWaitMs: REPO_AREA_STARVATION_WAIT_MS,
+        starvationBlockedCycles: REPO_AREA_STARVATION_BLOCKED_CYCLES,
       },
       dispatch: {
         cycles: Math.max(0, Math.trunc(Number(this._repoAreaDispatchCycles || 0))),
@@ -4620,6 +4976,7 @@ class TaskExecutor {
         ...this._repoAreaDispatchCycle,
         blockedByArea: { ...this._repoAreaDispatchCycle.blockedByArea },
         saturatedAreas: [...this._repoAreaDispatchCycle.saturatedAreas],
+        starvingAreas: [...(this._repoAreaDispatchCycle.starvingAreas || [])],
         areaLimits:
           this._repoAreaDispatchCycle.areaLimits &&
           typeof this._repoAreaDispatchCycle.areaLimits === "object"
@@ -4642,6 +4999,9 @@ class TaskExecutor {
 
     const now = Date.now();
     this._pruneRepoAreaPendingWaits(candidates, now);
+    const orderedCandidates = enforceRepoArea
+      ? this._orderCandidatesForRepoAreaFairQueue(candidates, now)
+      : candidates;
 
     const baseBranchCounts = enforceBaseBranch
       ? this._buildActiveBaseBranchCounts()
@@ -4660,6 +5020,7 @@ class TaskExecutor {
           conflicts: Math.max(0, Number(metric?.conflicts || 0)),
           blockedDispatches: Math.max(0, Number(metric?.blockedDispatches || 0)),
           selectedDispatches: Math.max(0, Number(metric?.selectedDispatches || 0)),
+          starvationEvents: Math.max(0, Number(metric?.starvationEvents || 0)),
           waitMsTotal: Math.max(0, Number(metric?.waitMsTotal || 0)),
           waitSamples: Math.max(0, Number(metric?.waitSamples || 0)),
           maxWaitMs: Math.max(0, Number(metric?.maxWaitMs || 0)),
@@ -4673,16 +5034,19 @@ class TaskExecutor {
     this._repoAreaDispatchCycle = {
       cycle: Number(this._repoAreaDispatchCycle?.cycle || 0) + 1,
       at: new Date(now).toISOString(),
-      candidateCount: candidates.length,
+      policy: "round_robin_oldest_wait",
+      candidateCount: orderedCandidates.length,
       remaining,
       selectedCount: 0,
       blockedTasks: 0,
       conflictEvents: 0,
+      starvationEvents: 0,
       waitMsTotal: 0,
       waitSamples: 0,
       maxWaitMs: 0,
       blockedByArea: {},
       saturatedAreas: [],
+      starvingAreas: [],
       cycleAreaMetrics: {},
       areaLimits: {},
     };
@@ -4692,7 +5056,8 @@ class TaskExecutor {
     ) + 1;
 
     const selected = [];
-    for (const task of candidates) {
+    const starvingAreas = new Set();
+    for (const task of orderedCandidates) {
       if (selected.length >= remaining) break;
 
       if (enforceBaseBranch) {
@@ -4763,7 +5128,10 @@ class TaskExecutor {
               metric.blockedDispatches += 1;
               metric.lastConflictAt = this._repoAreaDispatchCycle.at;
             }
-            this._beginRepoAreaWait(task?.id || task?.task_id, area, now);
+            const waitState = this._beginRepoAreaWait(task?.id || task?.task_id, area, now);
+            if (waitState.starvationDetected) {
+              starvingAreas.add(area);
+            }
             this._repoAreaDispatchCycle.blockedByArea[area] =
               (this._repoAreaDispatchCycle.blockedByArea[area] || 0) + 1;
           }
@@ -4780,6 +5148,10 @@ class TaskExecutor {
             metric.selectedDispatches += 1;
             metric.lastSelectedAt = this._repoAreaDispatchCycle.at;
           }
+          const workerMetric = this._getRepoAreaWorkerMetric(area);
+          if (workerMetric) {
+            workerMetric.lastSelectedAt = this._repoAreaDispatchCycle.at;
+          }
         }
       }
 
@@ -4793,6 +5165,7 @@ class TaskExecutor {
         conflicts: 0,
         blockedDispatches: 0,
         selectedDispatches: 0,
+        starvationEvents: 0,
         waitMsTotal: 0,
         waitSamples: 0,
         maxWaitMs: 0,
@@ -4816,6 +5189,13 @@ class TaskExecutor {
               Number(baseline.selectedDispatches || 0),
           ),
         ),
+        starvationEvents: Math.max(
+          0,
+          Math.trunc(
+            Number(metric?.starvationEvents || 0) -
+              Number(baseline.starvationEvents || 0),
+          ),
+        ),
         waitMsTotal: Math.max(
           0,
           Math.trunc(Number(metric?.waitMsTotal || 0) - Number(baseline.waitMsTotal || 0)),
@@ -4832,6 +5212,7 @@ class TaskExecutor {
         delta.conflicts > 0 ||
         delta.blockedDispatches > 0 ||
         delta.selectedDispatches > 0 ||
+        delta.starvationEvents > 0 ||
         delta.waitMsTotal > 0 ||
         delta.waitSamples > 0
       ) {
@@ -4854,23 +5235,31 @@ class TaskExecutor {
       (max, metric) => Math.max(max, Number(metric?.maxWaitMs || 0)),
       0,
     );
+    this._repoAreaDispatchCycle.starvationEvents = Object.values(cycleAreaMetrics).reduce(
+      (sum, metric) => sum + Number(metric?.starvationEvents || 0),
+      0,
+    );
     this._repoAreaDispatchCycle.cycleAreaMetrics = cycleAreaMetrics;
     this._repoAreaDispatchCycle.saturatedAreas = Object.keys(
       this._repoAreaDispatchCycle.blockedByArea,
     ).sort();
+    this._repoAreaDispatchCycle.starvingAreas = Array.from(starvingAreas).sort();
     this._repoAreaDispatchHistory.push({
       cycle: this._repoAreaDispatchCycle.cycle,
       at: this._repoAreaDispatchCycle.at,
+      policy: this._repoAreaDispatchCycle.policy,
       candidateCount: this._repoAreaDispatchCycle.candidateCount,
       remaining: this._repoAreaDispatchCycle.remaining,
       selectedCount: this._repoAreaDispatchCycle.selectedCount,
       blockedTasks: this._repoAreaDispatchCycle.blockedTasks,
       conflictEvents: this._repoAreaDispatchCycle.conflictEvents,
+      starvationEvents: this._repoAreaDispatchCycle.starvationEvents,
       waitMsTotal: this._repoAreaDispatchCycle.waitMsTotal,
       waitSamples: this._repoAreaDispatchCycle.waitSamples,
       maxWaitMs: this._repoAreaDispatchCycle.maxWaitMs,
       blockedByArea: { ...this._repoAreaDispatchCycle.blockedByArea },
       saturatedAreas: [...this._repoAreaDispatchCycle.saturatedAreas],
+      starvingAreas: [...this._repoAreaDispatchCycle.starvingAreas],
       cycleAreaMetrics: { ...this._repoAreaDispatchCycle.cycleAreaMetrics },
       areaLimits: { ...(this._repoAreaDispatchCycle.areaLimits || {}) },
     });
