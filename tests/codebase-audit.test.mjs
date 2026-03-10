@@ -144,6 +144,31 @@ describe("codebase audit engine", () => {
     expect(cycleContent).toContain("circular dependency chains");
   });
 
+  it("does not treat marker literals as real annotations", () => {
+    const root = createRepo();
+    writeFileSync(
+      resolve(root, "src", "marker-literal.mjs"),
+      [
+        'export const marker = "CLAUDE:SUMMARY in a string literal";',
+        "",
+        "export function markerLiteral() {",
+        "  return marker;",
+        "}",
+        "",
+      ].join("\n"),
+      "utf8",
+    );
+
+    const scan = scanRepository(root, { dryRun: true });
+    const markerFile = scan.files.find((file) => file.path === "src/marker-literal.mjs");
+    expect(markerFile).toBeTruthy();
+    expect(markerFile.hasSummary).toBe(false);
+
+    generateSummaries(root);
+    const content = readFileSync(resolve(root, "src", "marker-literal.mjs"), "utf8");
+    expect(content).toMatch(/^\/\/ CLAUDE:SUMMARY/m);
+  });
+
 
   it("scans a single file target and keeps root manifests deduplicated", () => {
     const root = createRepo();
