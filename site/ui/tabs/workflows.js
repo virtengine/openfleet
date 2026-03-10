@@ -2722,7 +2722,7 @@ function WorkflowListView() {
           <span class="btn-icon">${resolveIcon("plus")}</span>
           Create Workflow
         <//>
-        <${Button} type="button" variant="outlined" size="small" onClick=${() => { selectedRunId.value = null; selectedRunDetail.value = null; workflowRunsLimit.value = WORKFLOW_RUN_PAGE_SIZE; viewMode.value = "runs"; loadRuns(); }}>
+        <${Button} type="button" variant="outlined" size="small" onClick=${() => { selectedRunId.value = null; selectedRunDetail.value = null; resetWorkflowRunsState(); viewMode.value = "runs"; loadRuns(null, { reset: true }); }}>
           <span class="btn-icon">${resolveIcon("chart")}</span>
           Run History
         <//>
@@ -3078,7 +3078,6 @@ function RunHistoryView() {
   const totalRuns = Number(workflowRunsTotal.value || runs.length);
   const hasMoreRuns = workflowRunsHasMore.value === true;
   const loadingMoreRuns = workflowRunsLoadingMore.value === true;
-  const runsLimit = Number(workflowRunsLimit.value || WORKFLOW_RUN_PAGE_SIZE);
   const selectedRun = selectedRunDetail.value;
   const workflowNameMap = new Map((workflows.value || []).map((wf) => [wf.id, wf.name]));
   const [nowTick, setNowTick] = useState(Date.now());
@@ -3354,20 +3353,21 @@ function RunHistoryView() {
       <div style="display: flex; align-items: center; gap: 12px; margin-bottom: 16px; flex-wrap: wrap;">
         <${Button} variant="text" size="small" onClick=${returnToWorkflowList}>← Back to Workflows<//>
         <h2 style="margin: 0; font-size: 18px; font-weight: 700;">Run History</h2>
-        <${Button} variant="text" size="small" onClick=${() => loadRuns()}>Refresh<//>
+        <${Button}
+          variant="text"
+          size="small"
+          onClick=${() => loadRuns(undefined, { limit: Math.max(runs.length, WORKFLOW_RUN_PAGE_SIZE) })}
+        >
+          Refresh
+        <//>
         ${canLoadMoreRuns && html`
           <${Button}
             variant="text"
             size="small"
-            onClick=${() => {
-              const nextLimit = Math.min(
-                runsLimit + WORKFLOW_RUN_PAGE_SIZE,
-                WORKFLOW_RUN_MAX_FETCH,
-              );
-              loadRuns(null, { limit: nextLimit }).catch(() => {});
-            }}
+            onClick=${() => triggerLoadMoreRuns()}
+            disabled=${loadingMoreRuns}
           >
-            Load older
+            ${loadingMoreRuns ? "Loading…" : "Load older"}
           <//>
         `}
         ${hasRunningRuns && html`<span class="wf-badge" style="background: #3b82f630; color: #60a5fa;">Live</span>`}
@@ -3401,7 +3401,7 @@ function RunHistoryView() {
 
       <div class="wf-runs-filters">
         <${Chip}
-          label=${`All ${runCounts.all}`}
+          label=${`All ${totalRuns}`}
           onClick=${() => setStatusFilter("all")}
           variant=${statusFilter === "all" ? "filled" : "outlined"}
           size="small"
@@ -3426,6 +3426,7 @@ function RunHistoryView() {
         />
         <span class="wf-runs-count">${filteredRuns.length} shown</span>
         <span class="wf-runs-count">${runs.length} loaded</span>
+        <span class="wf-runs-count">${totalRuns} total</span>
       </div>
 
       ${runs.length === 0 && html`
@@ -3436,7 +3437,7 @@ function RunHistoryView() {
         <div style="text-align: center; padding: 28px; opacity: 0.6;">
           <div>No runs match the current filters yet.</div>
           ${canLoadMoreRuns && html`
-            <div style="margin-top: 6px;">Bosun is only filtering the first ${runs.length} loaded run(s); older monitor/event history will keep loading while the filter is active.</div>
+            <div style="margin-top: 6px;">Bosun has loaded ${runs.length} of ${totalRuns} run(s); older history will keep loading while the filter is active.</div>
           `}
         </div>
       `}
@@ -3491,7 +3492,23 @@ function RunHistoryView() {
             <//>
           `;
         })}
+        ${canLoadMoreRuns && html`
+          <div ref=${tailSentinelRef} style="height: 1px;"></div>
+        `}
       </div>
+      ${canLoadMoreRuns && html`
+        <div style="display: flex; justify-content: center; margin-top: 12px;">
+          <${Button}
+            type="button"
+            variant="outlined"
+            size="small"
+            onClick=${() => triggerLoadMoreRuns()}
+            disabled=${loadingMoreRuns}
+          >
+            ${loadingMoreRuns ? "Loading more runs..." : `Load more runs (${runs.length}/${totalRuns})`}
+          <//>
+        </div>
+      `}
     </div>
   `;
 }
@@ -3512,8 +3529,7 @@ export function WorkflowsTab() {
       activeWorkflow.value = null;
       selectedRunId.value = null;
       selectedRunDetail.value = null;
-      workflowRuns.value = [];
-      workflowRunsLimit.value = WORKFLOW_RUN_PAGE_SIZE;
+      resetWorkflowRunsState();
       viewMode.value = "list";
       setRouteParams({}, { replace: true, skipGuard: true });
       loadWorkflows();
@@ -3533,9 +3549,9 @@ export function WorkflowsTab() {
     const wantsRuns = Boolean(route.runsView) || Boolean(runId);
 
     if (wantsRuns) {
-      workflowRunsLimit.value = WORKFLOW_RUN_PAGE_SIZE;
+      resetWorkflowRunsState();
       viewMode.value = "runs";
-      loadRuns();
+      loadRuns(null, { reset: true });
       if (runId) {
         loadRunDetail(runId);
       } else {

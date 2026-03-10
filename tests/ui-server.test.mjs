@@ -1637,6 +1637,63 @@ describe("ui-server mini app", () => {
     expect(detail.data.workflowRuns.some((run) => run.workflowId === workflowId)).toBe(true);
   });
 
+  it("returns workflow run pagination metadata for global history", async () => {
+    process.env.TELEGRAM_UI_TUNNEL = "disabled";
+
+    const mod = await import("../server/ui-server.mjs");
+    const server = await mod.startTelegramUiServer({
+      port: await getFreePort(),
+      host: "127.0.0.1",
+      skipInstanceLock: true,
+      skipAutoOpen: true,
+    });
+    const port = server.address().port;
+
+    const workflowId = `wf-run-page-${Date.now()}`;
+    const saveWorkflow = await fetch(`http://127.0.0.1:${port}/api/workflows/save`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        id: workflowId,
+        name: "Run pagination workflow",
+        enabled: true,
+        nodes: [
+          { id: "trigger", type: "trigger.manual", label: "Start", config: {} },
+        ],
+        edges: [],
+      }),
+    }).then((r) => r.json());
+    expect(saveWorkflow.ok).toBe(true);
+
+    for (let index = 0; index < 3; index += 1) {
+      const runResponse = await fetch(`http://127.0.0.1:${port}/api/workflows/${encodeURIComponent(workflowId)}/execute`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          waitForCompletion: true,
+          iteration: index,
+        }),
+      }).then((r) => r.json());
+      expect(runResponse.ok).toBe(true);
+    }
+
+    const history = await fetch(
+      `http://127.0.0.1:${port}/api/workflows/runs?limit=2&offset=1`,
+    ).then((r) => r.json());
+
+    expect(history.ok).toBe(true);
+    expect(Array.isArray(history.runs)).toBe(true);
+    expect(history.runs).toHaveLength(2);
+    expect(history.pagination).toMatchObject({
+      total: expect.any(Number),
+      offset: 1,
+      limit: 2,
+      count: 2,
+      hasMore: expect.any(Boolean),
+    });
+    expect(history.pagination.total).toBeGreaterThanOrEqual(3);
+  }, 15000);
+
   it("reports epic dependency blockers from start guards", async () => {
     process.env.TELEGRAM_UI_TUNNEL = "disabled";
     process.env.EXECUTOR_MODE = "internal";

@@ -433,14 +433,14 @@ export const AGENT_SESSION_MONITOR_TEMPLATE = {
 };
 
 // ═══════════════════════════════════════════════════════════════════════════
-//  Task Completion Agent
+//  Backend Agent
 // ═══════════════════════════════════════════════════════════════════════════
 
 resetLayout();
 
 export const BACKEND_AGENT_TEMPLATE = {
   id: "template-backend-agent",
-  name: "Task Completion Agent",
+  name: "Backend Agent",
   description:
     "Spins up an agent focused on backend/API development with a " +
     "test-first methodology. Writes tests first, implements the feature, " +
@@ -452,16 +452,12 @@ export const BACKEND_AGENT_TEMPLATE = {
   variables: {
     testFramework: "node --test",
     buildCommand: "npm run build",
-    baseBranch: "main",
-    protectedBranches: ["main", "master", "develop", "production"],
     agentSdk: "auto",
     timeoutMs: 3600000,
     autoFixTimeoutMs: 1200000,
   },
   nodes: [
-    node("trigger", "trigger.task_assigned", "Task Assigned", {
-      filter: "task.tags?.some(t => t === 'backend' || t === 'api')",
-    }, { x: 400, y: 50 }),
+    node("trigger", "trigger.task_assigned", "Task Assigned", {}, { x: 400, y: 50 }),
 
     node("plan-work", "agent.run_planner", "Plan Implementation", {
       prompt: "Analyze the task requirements and create a step-by-step implementation plan. Identify which files need to be modified, what tests need to be written, and any API contracts to maintain.",
@@ -517,24 +513,11 @@ Commit with message "feat: implement [feature]"`,
       expression: "$ctx.getNodeOutput('build')?.passed === true && $ctx.getNodeOutput('test-final')?.passed === true && $ctx.getNodeOutput('lint')?.passed === true",
     }, { x: 400, y: 1040, outputs: ["yes", "no"] }),
 
-    node("push-branch", "action.push_branch", "Push Branch", {
-      worktreePath: "{{worktreePath}}",
-      branch: "{{branch}}",
-      baseBranch: "{{baseBranch}}",
-      rebaseBeforePush: true,
-      emptyDiffGuard: true,
-      protectedBranches: "{{protectedBranches}}",
-    }, { x: 250, y: 1110 }),
-
-    node("push-ok", "condition.expression", "Push OK?", {
-      expression: "$ctx.getNodeOutput('push-branch')?.pushed === true",
-    }, { x: 250, y: 1175, outputs: ["yes", "no"] }),
-
     node("create-pr", "action.create_pr", "Handoff PR Lifecycle", {
       title: "feat: {{taskTitle}}",
       body: "Implements backend task with test-first methodology.\n\n**Plan:**\n{{plan}}\n\nAll tests passing. Bosun lifecycle handoff ready.",
-      branch: "{{branch}}",
-      baseBranch: "{{baseBranch}}",
+      branch: "feat/{{taskSlug}}",
+      baseBranch: "main",
       failOnError: true,
       maxRetries: 3,
       retryDelayMs: 15000,
@@ -542,22 +525,16 @@ Commit with message "feat: implement [feature]"`,
     }, { x: 250, y: 1170 }),
 
     node("pr-created", "condition.expression", "Handoff Recorded?", {
-      expression: "Boolean($ctx.getNodeOutput('create-pr')?.prNumber || $ctx.getNodeOutput('create-pr')?.prUrl)",
+      expression: "$ctx.getNodeOutput('create-pr')?.success === true",
     }, { x: 250, y: 1240, outputs: ["yes", "no"] }),
 
-    node("set-inreview", "action.update_task_status", "Set In-Review", {
-      taskId: "{{taskId}}",
-      status: "inreview",
-      taskTitle: "{{taskTitle}}",
-    }, { x: 180, y: 1320 }),
-
     node("notify-done", "notify.log", "Task Complete", {
-      message: "Task completion agent finished task — PR lifecycle handoff recorded",
+      message: "Backend agent completed task — PR lifecycle handoff recorded",
       level: "info",
     }, { x: 180, y: 1320 }),
 
     node("notify-pr-failed", "notify.telegram", "Escalate Lifecycle Handoff Failure", {
-      message: ":alert: Task completion agent passed validation for {{taskTitle}} but failed to record Bosun PR lifecycle handoff after retries. Manual follow-up required.",
+      message: ":alert: Backend agent passed validation for {{taskTitle}} but failed to record Bosun PR lifecycle handoff after retries. Manual follow-up required.",
     }, { x: 420, y: 1320 }),
 
     node("set-validation-summary", "action.set_variable", "Summarize Validation Output", {
@@ -605,24 +582,11 @@ Commit with message "fix: address backend workflow validation failures"`,
       expression: "$ctx.getNodeOutput('build-retry')?.passed === true && $ctx.getNodeOutput('test-retry')?.passed === true && $ctx.getNodeOutput('lint-retry')?.passed === true",
     }, { x: 620, y: 1690, outputs: ["yes", "no"] }),
 
-    node("push-branch-retry", "action.push_branch", "Push Branch (Retry)", {
-      worktreePath: "{{worktreePath}}",
-      branch: "{{branch}}",
-      baseBranch: "{{baseBranch}}",
-      rebaseBeforePush: true,
-      emptyDiffGuard: true,
-      protectedBranches: "{{protectedBranches}}",
-    }, { x: 450, y: 1760 }),
-
-    node("push-ok-retry", "condition.expression", "Push OK? (Retry)", {
-      expression: "$ctx.getNodeOutput('push-branch-retry')?.pushed === true",
-    }, { x: 450, y: 1825, outputs: ["yes", "no"] }),
-
     node("create-pr-retry", "action.create_pr", "Handoff PR Lifecycle (After Retry)", {
       title: "feat: {{taskTitle}}",
       body: "Implements backend task after auto-fix retry.\n\n**Plan:**\n{{plan}}\n\nValidation passed after remediation. Bosun lifecycle handoff ready.",
-      branch: "{{branch}}",
-      baseBranch: "{{baseBranch}}",
+      branch: "feat/{{taskSlug}}",
+      baseBranch: "main",
       failOnError: true,
       maxRetries: 3,
       retryDelayMs: 15000,
@@ -630,26 +594,20 @@ Commit with message "fix: address backend workflow validation failures"`,
     }, { x: 450, y: 1820 }),
 
     node("pr-created-retry", "condition.expression", "Handoff Recorded (Retry Path)?", {
-      expression: "Boolean($ctx.getNodeOutput('create-pr-retry')?.prNumber || $ctx.getNodeOutput('create-pr-retry')?.prUrl)",
+      expression: "$ctx.getNodeOutput('create-pr-retry')?.success === true",
     }, { x: 450, y: 1890, outputs: ["yes", "no"] }),
 
-    node("set-inreview-retry", "action.update_task_status", "Set In-Review (Retry)", {
-      taskId: "{{taskId}}",
-      status: "inreview",
-      taskTitle: "{{taskTitle}}",
-    }, { x: 360, y: 1980 }),
-
     node("notify-done-retry", "notify.log", "Task Complete (After Retry)", {
-      message: "Task completion agent finished task after retry — PR lifecycle handoff recorded",
+      message: "Backend agent completed task after retry — PR lifecycle handoff recorded",
       level: "info",
     }, { x: 360, y: 1980 }),
 
     node("notify-fail", "notify.telegram", "Checks Failed", {
-      message: ":alert: Task completion agent: validation failed for task {{taskTitle}} even after remediation pass. Manual review needed.",
+      message: ":alert: Backend agent: validation failed for task {{taskTitle}} even after remediation pass. Manual review needed.",
     }, { x: 820, y: 1820 }),
 
     node("notify-pr-failed-retry", "notify.telegram", "Escalate Lifecycle Failure (Retry Path)", {
-      message: ":alert: Task completion agent remediation passed for {{taskTitle}} but Bosun PR lifecycle handoff failed after retries. Manual follow-up required.",
+      message: ":alert: Backend agent remediation passed for {{taskTitle}} but Bosun PR lifecycle handoff failed after retries. Manual follow-up required.",
     }, { x: 620, y: 1980 }),
   ],
   edges: [
@@ -660,28 +618,20 @@ Commit with message "fix: address backend workflow validation failures"`,
     edge("build", "test-final"),
     edge("test-final", "lint"),
     edge("lint", "all-passed"),
-    edge("all-passed", "push-branch", { condition: "$output?.result === true", port: "yes" }),
+    edge("all-passed", "create-pr", { condition: "$output?.result === true", port: "yes" }),
     edge("all-passed", "set-validation-summary", { condition: "$output?.result !== true", port: "no" }),
     edge("set-validation-summary", "auto-fix"),
-    edge("push-branch", "push-ok"),
-    edge("push-ok", "create-pr", { condition: "$output?.result === true", port: "yes" }),
-    edge("push-ok", "notify-pr-failed", { condition: "$output?.result !== true", port: "no" }),
     edge("create-pr", "pr-created"),
-    edge("pr-created", "set-inreview", { condition: "$output?.result === true", port: "yes" }),
-    edge("set-inreview", "notify-done"),
+    edge("pr-created", "notify-done", { condition: "$output?.result === true", port: "yes" }),
     edge("pr-created", "notify-pr-failed", { condition: "$output?.result !== true", port: "no" }),
     edge("auto-fix", "build-retry"),
     edge("build-retry", "test-retry"),
     edge("test-retry", "lint-retry"),
     edge("lint-retry", "retry-passed"),
-    edge("retry-passed", "push-branch-retry", { condition: "$output?.result === true", port: "yes" }),
+    edge("retry-passed", "create-pr-retry", { condition: "$output?.result === true", port: "yes" }),
     edge("retry-passed", "notify-fail", { condition: "$output?.result !== true", port: "no" }),
-    edge("push-branch-retry", "push-ok-retry"),
-    edge("push-ok-retry", "create-pr-retry", { condition: "$output?.result === true", port: "yes" }),
-    edge("push-ok-retry", "notify-pr-failed-retry", { condition: "$output?.result !== true", port: "no" }),
     edge("create-pr-retry", "pr-created-retry"),
-    edge("pr-created-retry", "set-inreview-retry", { condition: "$output?.result === true", port: "yes" }),
-    edge("set-inreview-retry", "notify-done-retry"),
+    edge("pr-created-retry", "notify-done-retry", { condition: "$output?.result === true", port: "yes" }),
     edge("pr-created-retry", "notify-pr-failed-retry", { condition: "$output?.result !== true", port: "no" }),
   ],
   metadata: {

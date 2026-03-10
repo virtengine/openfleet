@@ -557,6 +557,29 @@ describe("WorkflowEngine - run history details", () => {
     expect(engine.getRunDetail("does-not-exist")).toBeNull();
   });
 
+  it("returns paginated run history metadata without dropping total counts", async () => {
+    const wf = makeSimpleWorkflow(
+      [{ id: "trigger", type: "trigger.manual", label: "Start", config: {} }],
+      [],
+      { name: "Paged History Workflow" },
+    );
+
+    engine.save(wf);
+    await engine.execute(wf.id, { run: 1 });
+    await engine.execute(wf.id, { run: 2 });
+    await engine.execute(wf.id, { run: 3 });
+
+    const page = engine.getRunHistoryPage(wf.id, { offset: 1, limit: 1 });
+    expect(page.total).toBeGreaterThanOrEqual(3);
+    expect(page.offset).toBe(1);
+    expect(page.limit).toBe(1);
+    expect(page.count).toBe(1);
+    expect(Array.isArray(page.runs)).toBe(true);
+    expect(page.runs).toHaveLength(1);
+    expect(page.hasMore).toBe(true);
+    expect(page.nextOffset).toBe(2);
+  });
+
   it("includes active runs in history and exposes live run detail while executing", async () => {
     const prevThreshold = process.env.WORKFLOW_RUN_STUCK_THRESHOLD_MS;
     process.env.WORKFLOW_RUN_STUCK_THRESHOLD_MS = "20";

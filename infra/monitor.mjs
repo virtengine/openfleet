@@ -14029,6 +14029,7 @@ let agentEventBus = null;
 let reviewAgent = null;
 /** @type {Map<string, { approved: boolean, reviewedAt: string }>} */
 const reviewGateResults = new Map();
+const pendingMergeStrategyByTask = new Map();
 /** @type {null} Sync engine lifecycle now managed by workflow template */
 let syncEngine = null;
 /** @type {import("./error-detector.mjs").ErrorDetector|null} */
