@@ -388,6 +388,8 @@ describe("guaranteed: behavioral contracts", () => {
     expect(Array.isArray(summary?.trendAlerts)).toBe(true);
     expect(summary?.plannerSignals?.schemaVersion).toBe("1.0");
     expect(summary?.plannerSignals?.trendDeltas).toBeTruthy();
+    expect(summary?.plannerArtifact?.schemaVersion).toBe("1.0");
+    expect(summary?.plannerArtifact?.trendDeltas).toBeTruthy();
 
     const serialized = ctx?.data?.fitnessSummaryJson;
     expect(() => JSON.parse(serialized)).not.toThrow();
@@ -480,9 +482,14 @@ describe("guaranteed: behavioral contracts", () => {
     expect(() => JSON.parse(JSON.stringify(artifact?.trendDeltas ?? {}))).not.toThrow();
     expect(() => JSON.parse(JSON.stringify(artifact?.priorWeekTrendDeltas ?? {}))).not.toThrow();
     expect(() => JSON.parse(JSON.stringify(artifact?.plannerSignals ?? {}))).not.toThrow();
+    expect(() => JSON.parse(JSON.stringify(artifact?.plannerArtifact ?? {}))).not.toThrow();
     expect(artifact?.trendDeltas).toHaveProperty("merge_success");
     expect(artifact?.priorWeekTrendDeltas).toHaveProperty("merge_success");
     expect(["low", "medium", "high"]).toContain(artifact?.dataQuality?.overallConfidence);
+    const telemetryAlerts = Array.isArray(artifact?.trendAlerts)
+      ? artifact.trendAlerts.filter((alert) => String(alert?.metric || "").startsWith("telemetry:"))
+      : [];
+    expect(telemetryAlerts.length).toBeGreaterThan(0);
   });
 
   it("template-weekly-fitness-summary: partially parsed task telemetry still computes best-effort throughput", async () => {
@@ -540,6 +547,41 @@ describe("guaranteed: behavioral contracts", () => {
       ? artifact.trendAlerts.filter((alert) => alert?.metric === "throughput")
       : [];
     expect(throughputAlerts.length).toBe(0);
+    const telemetryAlerts = Array.isArray(artifact?.trendAlerts)
+      ? artifact.trendAlerts.filter((alert) => alert?.metric === "telemetry:tasks")
+      : [];
+    expect(telemetryAlerts.length).toBeGreaterThan(0);
+  });
+
+  it("template-weekly-fitness-summary: parses wrapped canonical task payloads and preserves planner artifact", async () => {
+    const { harness, fixtures } = setupHarness("template-weekly-fitness-summary");
+    const runInput = { ...fixtures.inputVars, createFollowupTasks: false };
+
+    const stableDispatch = _activeDispatch;
+    _activeDispatch = (cmd) => {
+      const command = String(cmd || "");
+      if (/^bosun\s+task\s+list\b/i.test(command)) {
+        return JSON.stringify({
+          result: {
+            tasks: [
+              { status: "done", completedAt: "2026-03-08T10:00:00Z", reopenCount: 0 },
+            ],
+          },
+        });
+      }
+      return stableDispatch(command);
+    };
+
+    const { ctx } = await harness.run(runInput);
+    harness.assertions.noEngineErrors(ctx);
+
+    const write = harness.assertions.nodeSucceeded(ctx, "persist-fitness-summary");
+    const artifact = JSON.parse(readFileSync(write.path, "utf8"));
+
+    expect(artifact?.sourceHealth?.tasks?.status).toBe("ok");
+    expect(artifact?.metrics?.throughput?.value).toBe(1);
+    expect(artifact?.plannerArtifact?.schemaVersion).toBe("1.0");
+    expect(() => JSON.parse(JSON.stringify(artifact?.plannerArtifact ?? {}))).not.toThrow();
   });
   // ── CI/CD templates ───────────────────────────────────────────────────
 

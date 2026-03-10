@@ -519,27 +519,40 @@ export const WEEKLY_FITNESS_SUMMARY_TEMPLATE = {
         "      }" +
         "      return null;" +
         "    };" +
-        "    const parseSource = (raw) => {" +
-        "      if (Array.isArray(raw)) return { items: raw.filter(Boolean), degraded: false };" +
+        "    const parseSource = (raw, depth = 0) => {" +
+        "      if (depth > 3) return { items: [], degraded: true, parsedAny: false, partial: false };" +
+        "      if (Array.isArray(raw)) return { items: raw.filter(Boolean), degraded: false, parsedAny: raw.length > 0, partial: false };" +
         "      if (raw && typeof raw === 'object') {" +
-        "        const canonical = extractCanonicalItems(raw) ?? extractCanonicalItems(raw.output);" +
-        "        if (canonical) return { items: canonical, degraded: false };" +
-        "        return { items: [], degraded: true };" +
+        "        const canonical = extractCanonicalItems(raw) ?? extractCanonicalItems(raw.output) ?? extractCanonicalItems(raw.result) ?? extractCanonicalItems(raw.payload);" +
+        "        if (canonical) return { items: canonical, degraded: false, parsedAny: canonical.length > 0, partial: false };" +
+        "        const wrappedCandidates = [raw.output, raw.result, raw.payload, raw.data, raw.stdout, raw.content, raw.text, raw.json];" +
+        "        for (const candidate of wrappedCandidates) {" +
+        "          if (candidate == null) continue;" +
+        "          const parsedCandidate = parseSource(candidate, depth + 1);" +
+        "          if (parsedCandidate.items.length > 0 || parsedCandidate.parsedAny || parsedCandidate.degraded === false) return parsedCandidate;" +
+        "        }" +
+        "        return { items: [], degraded: Object.keys(raw).length > 0, parsedAny: false, partial: false };" +
         "      }" +
-        "      if (typeof raw !== 'string') return { items: [], degraded: true };" +
+        "      if (typeof raw !== 'string') return { items: [], degraded: true, parsedAny: false, partial: false };" +
         "      const trimmed = raw.trim();" +
-        "      if (!trimmed) return { items: [], degraded: false };" +
+        "      if (!trimmed) return { items: [], degraded: false, parsedAny: false, partial: false };" +
         "      const parsed = parseJsonSafe(trimmed);" +
-        "      if (Array.isArray(parsed)) return { items: parsed.filter(Boolean), degraded: false };" +
+        "      if (Array.isArray(parsed)) return { items: parsed.filter(Boolean), degraded: false, parsedAny: true, partial: false };" +
         "      if (parsed && typeof parsed === 'object') {" +
-        "        const canonical = extractCanonicalItems(parsed) ?? extractCanonicalItems(parsed.output);" +
-        "        if (canonical) return { items: canonical, degraded: false };" +
-        "        return { items: [], degraded: true };" +
+        "        const canonical = extractCanonicalItems(parsed) ?? extractCanonicalItems(parsed.output) ?? extractCanonicalItems(parsed.result) ?? extractCanonicalItems(parsed.payload);" +
+        "        if (canonical) return { items: canonical, degraded: false, parsedAny: true, partial: false };" +
         "      }" +
-        "      const lines = trimmed.split(/\\r?\\n/);" +
-        "      const parsedLines = lines.map((line) => parseJsonSafe(line)).filter(Boolean);" +
-        "      if (parsedLines.length > 0) return { items: parsedLines, degraded: parsedLines.length < lines.filter(Boolean).length };" +
-        "      return { items: [], degraded: true };" +
+        "      const lines = trimmed.split(/\\r?\\n/).filter((line) => line.trim() !== '');" +
+        "      const parsedLines = [];" +
+        "      let failedLines = 0;" +
+        "      for (const line of lines) {" +
+        "        const parsedLine = parseJsonSafe(line);" +
+        "        if (parsedLine == null) { failedLines += 1; continue; }" +
+        "        if (Array.isArray(parsedLine)) parsedLines.push(...parsedLine.filter(Boolean));" +
+        "        else parsedLines.push(parsedLine);" +
+        "      }" +
+        "      if (parsedLines.length > 0) return { items: parsedLines, degraded: failedLines > 0, parsedAny: true, partial: failedLines > 0 };" +
+        "      return { items: [], degraded: true, parsedAny: false, partial: false };" +
         "    };" +
         "    const getTs = (item) => {" +
         "      if (!item || typeof item !== 'object') return null;" +
@@ -586,13 +599,23 @@ export const WEEKLY_FITNESS_SUMMARY_TEMPLATE = {
         "      };" +
         "    };" +
         "    const sourceStatus = (nodeOut, parsedList, parsedMeta = {}) => {" +
-        "      const hasPayload = nodeOut?.output != null && (Array.isArray(nodeOut.output) || String(nodeOut.output).trim() !== '');" +
+        "      const output = nodeOut?.output;" +
+        "      const hasPayload = (() => {" +
+        "        if (output == null) return false;" +
+        "        if (Array.isArray(output)) return true;" +
+        "        if (typeof output === 'string') return output.trim() !== '';" +
+        "        if (typeof output === 'object') {" +
+        "          const wrapped = [output.stdout, output.content, output.text, output.json, output.output, output.result, output.payload, output.data];" +
+        "          if (wrapped.some((v) => (typeof v === 'string' ? v.trim() !== '' : v != null))) return true;" +
+        "          return Object.keys(output).length > 0;" +
+        "        }" +
+        "        return true;" +
+        "      })();" +
         "      const success = nodeOut?.success !== false;" +
-        "      if (!hasPayload && !success) return { status: 'missing', confidence: 'low' };" +
-        "      if (!hasPayload && success) return { status: 'missing', confidence: 'low' };" +
-        "      if (!success && hasPayload) return { status: 'degraded', confidence: 'low' };" +
-        "      if (parsedMeta?.degraded) return { status: 'degraded', confidence: 'low' };" +
+        "      if (!hasPayload) return { status: 'missing', confidence: 'low' };" +
         "      if (!Array.isArray(parsedList)) return { status: 'degraded', confidence: 'low' };" +
+        "      if (parsedMeta?.degraded || parsedMeta?.partial) return { status: 'degraded', confidence: parsedList.length > 0 ? 'medium' : 'low' };" +
+        "      if (!success) return { status: 'degraded', confidence: parsedList.length > 0 ? 'medium' : 'low' };" +
         "      return { status: 'ok', confidence: parsedList.length > 0 ? 'high' : 'medium' };" +
         "    };" +
         "    const taskNode = $ctx.getNodeOutput('task-metrics') || {};" +
@@ -658,8 +681,8 @@ export const WEEKLY_FITNESS_SUMMARY_TEMPLATE = {
         "    };" +
         "    const debtCurrent = debtSplit.current.length > 0 ? debtDelta(debtSplit.current) : null;" +
         "    const debtPrevious = debtSplit.previous.length > 0 ? debtDelta(debtSplit.previous) : null;" +
-        "    const priorRaw = prevNode?.success === true ? parseJsonSafe(prevNode.content) : null;" +
-        "    const priorParsed = priorRaw?.fitnessSummary && typeof priorRaw.fitnessSummary === 'object' ? priorRaw.fitnessSummary : priorRaw;" +
+        "    const priorRaw = prevNode?.success === true ? (parseSource(prevNode.content).items?.[0] ?? parseJsonSafe(prevNode.content)) : null;" +
+        "    const priorParsed = priorRaw?.fitnessSummary && typeof priorRaw.fitnessSummary === 'object' ? priorRaw.fitnessSummary : (priorRaw && typeof priorRaw === 'object' ? priorRaw : null);" +
         "    const metricConfidence = (primaryHealth, hasValue, usedFallbackWindow) => {" +
         "      if (!hasValue) return 'low';" +
         "      if (primaryHealth.status === 'missing') return 'low';" +
@@ -688,7 +711,7 @@ export const WEEKLY_FITNESS_SUMMARY_TEMPLATE = {
         "    const priorWeekDeltas = priorWeekTrendDeltas;" +
         "    const priorWeekMetrics = priorParsed?.metrics && typeof priorParsed.metrics === 'object' ? priorParsed.metrics : null;" +
         "    const alertThresholds = { throughput: 1, regression_rate: 2.5, merge_success: 2.5, reopened_tasks: 1, debt_growth: 1 };" +
-        "    const trendAlerts = Object.entries(metrics).flatMap(([metricName, m]) => {" +
+        "    const metricTrendAlerts = Object.entries(metrics).flatMap(([metricName, m]) => {" +
         "      if (m == null || m.delta == null) return [];" +
         "      if (String(m.confidence || '').toLowerCase() === 'low') return [];" +
         "      const delta = Number(m.delta);" +
@@ -704,6 +727,13 @@ export const WEEKLY_FITNESS_SUMMARY_TEMPLATE = {
         "      prs: { ...prHealth, count: prs.length }," +
         "      debt: { ...debtHealth, count: debt.length }," +
         "    };" +
+        "    const sourceTelemetryAlerts = Object.entries(sourceHealth).flatMap(([sourceName, health]) => {" +
+        "      if (health?.status === 'ok') return [];" +
+        "      const severity = health?.status === 'missing' ? 'high' : 'medium';" +
+        "      const reason = health?.status === 'missing' ? `${sourceName} telemetry missing; metric interpretation may be limited.` : `${sourceName} telemetry partially parsed; confidence reduced.`;" +
+        "      return [{ metric: `telemetry:${sourceName}`, severity, delta: null, reason }];" +
+        "    });" +
+        "    const trendAlerts = [...metricTrendAlerts, ...sourceTelemetryAlerts];" +
         "    const confidenceValues = Object.values(metrics).map((m) => m?.confidence || 'low');" +
         "    const overallConfidence = confidenceValues.every((c) => c === 'high') ? 'high' : confidenceValues.some((c) => c === 'low') ? 'low' : 'medium';" +
         "    const plannerSignals = {" +
@@ -718,6 +748,19 @@ export const WEEKLY_FITNESS_SUMMARY_TEMPLATE = {
         "      trendDeltas," +
         "      priorWeekTrendDeltas," +
         "    };" +
+        "    const plannerArtifact = {" +
+        "      schemaVersion: '1.0'," +
+        "      generatedAt: toIso(now)," +
+        "      lookbackDays," +
+        "      sourceStatus: plannerSignals.sourceStatus," +
+        "      metricConfidence: plannerSignals.metricConfidence," +
+        "      metricValues: plannerSignals.metricValues," +
+        "      trendDeltas," +
+        "      priorWeekTrendDeltas," +
+        "      trendAlertCount: plannerSignals.trendAlertCount," +
+        "      highSeverityAlertCount: plannerSignals.highSeverityAlertCount," +
+        "      trendAlerts," +
+        "    };" +
         "    return {" +
         "      schemaVersion: '1.0'," +
         "      generatedAt: toIso(now)," +
@@ -731,6 +774,7 @@ export const WEEKLY_FITNESS_SUMMARY_TEMPLATE = {
         "      priorWeekDeltas," +
         "      priorWeekMetrics," +
         "      plannerSignals," +
+        "      plannerArtifact," +
         "      dataQuality: {" +
         "        overallConfidence," +
         "        missingSources: Object.entries(sourceHealth).filter(([, v]) => v.status === 'missing').map(([k]) => k)," +
@@ -770,6 +814,19 @@ export const WEEKLY_FITNESS_SUMMARY_TEMPLATE = {
         "        metricValues: { throughput: null, regression_rate: null, merge_success: null, reopened_tasks: null, debt_growth: null }," +
         "        trendDeltas: { throughput: null, regression_rate: null, merge_success: null, reopened_tasks: null, debt_growth: null }," +
         "        priorWeekTrendDeltas: { throughput: null, regression_rate: null, merge_success: null, reopened_tasks: null, debt_growth: null }," +
+        "      }," +
+        "      plannerArtifact: {" +
+        "        schemaVersion: '1.0'," +
+        "        generatedAt: new Date().toISOString()," +
+        "        lookbackDays: Number($data?.lookbackDays || 7)," +
+        "        sourceStatus: { tasks: 'missing', prs: 'missing', debt: 'missing' }," +
+        "        metricConfidence: { throughput: 'low', regression_rate: 'low', merge_success: 'low', reopened_tasks: 'low', debt_growth: 'low' }," +
+        "        metricValues: { throughput: null, regression_rate: null, merge_success: null, reopened_tasks: null, debt_growth: null }," +
+        "        trendDeltas: { throughput: null, regression_rate: null, merge_success: null, reopened_tasks: null, debt_growth: null }," +
+        "        priorWeekTrendDeltas: { throughput: null, regression_rate: null, merge_success: null, reopened_tasks: null, debt_growth: null }," +
+        "        trendAlertCount: 1," +
+        "        highSeverityAlertCount: 1," +
+        "        trendAlerts: [{ metric: 'summary', severity: 'high', delta: null, reason: `Fitness summary fallback engaged: ${error?.message || 'unknown error'}` }]," +
         "      }," +
         "      dataQuality: { overallConfidence: 'low', missingSources: ['tasks', 'prs', 'debt'], degradedSources: [] }," +
         "    };" +
