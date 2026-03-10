@@ -3049,7 +3049,7 @@ it("action.materialize_planner_tasks applies calibrated default impact/risk gate
       "```json",
       "{",
       '  "tasks": [',
-      '    { "title": "[m] fix(workflow): low default impact", "description": "A", "acceptance_criteria": ["ac"], "verification": ["v"], "repo_areas": ["workflow"], "impact": 0.55, "risk": 0.2 },',
+      '    { "title": "[m] fix(workflow): low default impact", "description": "A", "acceptance_criteria": ["ac"], "verification": ["v"], "repo_areas": ["workflow"], "impact": 0.68, "risk": 0.2 },',
       '    { "title": "[m] fix(workflow): semantically high risk", "description": "B", "acceptance_criteria": ["ac"], "verification": ["v"], "repo_areas": ["workflow"], "impact": 0.8, "risk": "high risk: production blast radius" },',
       '    { "title": "[m] fix(server): default valid", "description": "C", "acceptance_criteria": ["ac"], "verification": ["v"], "repo_areas": ["server"], "impact": "8/10", "confidence": "70%", "risk": "5/10" }',
       "  ]",
@@ -3196,6 +3196,64 @@ it("action.materialize_planner_tasks normalizes mixed 0-1 and 0-10 planner score
       planner: expect.objectContaining({
         impact: 7,
         confidence: 8,
+        risk: "low",
+      }),
+    }),
+  }));
+});
+
+it("action.materialize_planner_tasks keeps fractional sub-1 scores on ten-scale tasks", async () => {
+  const handler = getNodeType("action.materialize_planner_tasks");
+  expect(handler).toBeDefined();
+
+  const ctx = new WorkflowContext({});
+  ctx.setNodeOutput("run-planner", {
+    output: [
+      "```json",
+      "{",
+      '  "tasks": [',
+      '    { "title": "[m] fix(workflow): decimal on ten scale", "description": "A", "acceptance_criteria": ["ac"], "verification": ["v"], "repo_areas": ["workflow"], "impact": 8, "confidence": 7, "risk": 0.8 },',
+      '    { "title": "[m] fix(server): decimal on ratio scale", "description": "B", "acceptance_criteria": ["ac"], "verification": ["v"], "repo_areas": ["server"], "impact": 0.8, "confidence": 0.7, "risk": 0.8 }',
+      "  ]",
+      "}",
+      "```",
+    ].join("\n"),
+  });
+
+  const createTask = vi.fn(async () => ({ id: "task-decimal-mapping-1" }));
+  const mockEngine = {
+    services: {
+      kanban: {
+        createTask,
+      },
+    },
+  };
+
+  const node = {
+    id: "materialize-decimal-mapping",
+    type: "action.materialize_planner_tasks",
+    config: {
+      plannerNodeId: "run-planner",
+      dedup: false,
+      failOnZero: true,
+      minCreated: 1,
+      minImpactScore: 6,
+      maxRiskWithoutHuman: "medium",
+    },
+  };
+
+  const result = await handler.execute(node, ctx, mockEngine);
+  expect(result.success).toBe(true);
+  expect(result.createdCount).toBe(1);
+  expect(result.skipped).toEqual(expect.arrayContaining([
+    expect.objectContaining({ title: "[m] fix(server): decimal on ratio scale", reason: "risk_above_threshold" }),
+  ]));
+  expect(createTask).toHaveBeenCalledWith("", expect.objectContaining({
+    title: "[m] fix(workflow): decimal on ten scale",
+    meta: expect.objectContaining({
+      planner: expect.objectContaining({
+        impact: 8,
+        confidence: 7,
         risk: "low",
       }),
     }),

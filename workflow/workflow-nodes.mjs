@@ -4411,7 +4411,7 @@ function parsePlannerJsonFromText(value) {
 const PLANNER_SCORE_MAX = 10;
 const PLANNER_RISK_LEVELS = ["low", "medium", "high", "critical"];
 const PLANNER_RISK_ORDER = { low: 0, medium: 1, high: 2, critical: 3 };
-const CALIBRATED_MIN_IMPACT_SCORE = 6.5;
+const CALIBRATED_MIN_IMPACT_SCORE = 7;
 const CALIBRATED_MAX_RISK_WITHOUT_HUMAN = "medium";
 const PLANNER_SCORE_MODE_RATIO = "ratio";
 const PLANNER_SCORE_MODE_TEN = "ten";
@@ -4444,7 +4444,7 @@ function parsePlannerNumericScore(value) {
   return { numeric, scale: null };
 }
 
-function normalizePlannerScore(value, { preferTenScaleIntegers = false } = {}) {
+function normalizePlannerScore(value, { preferTenScaleIntegers = false, preserveFractionalTenScale = false } = {}) {
   const parsed = parsePlannerNumericScore(value);
   if (!parsed) return null;
 
@@ -4458,7 +4458,10 @@ function normalizePlannerScore(value, { preferTenScaleIntegers = false } = {}) {
   } else if (scaled > 10 && scaled <= 100) {
     scaled = scaled / 10;
   } else if (scaled > 0 && scaled < 1) {
-    scaled = scaled * PLANNER_SCORE_MAX;
+    const hasFractionalPart = Math.abs((scaled % 1)) > Number.EPSILON;
+    if (!(preserveFractionalTenScale && hasFractionalPart)) {
+      scaled = scaled * PLANNER_SCORE_MAX;
+    }
   } else if (scaled === 1) {
     scaled = preferTenScaleIntegers ? 1 : PLANNER_SCORE_MAX;
   }
@@ -4481,18 +4484,18 @@ function inferPlannerTaskScoreMode(task) {
   return PLANNER_SCORE_MODE_RATIO;
 }
 
-function normalizePlannerRiskLevel(value, { preferTenScaleIntegers = false } = {}) {
+function normalizePlannerRiskLevel(value, { preferTenScaleIntegers = false, preserveFractionalTenScale = false } = {}) {
   const raw = String(value || "").trim().toLowerCase();
   if (PLANNER_RISK_LEVELS.includes(raw)) return raw;
 
   if (raw) {
-    if (/\b(critical|catastrophic|severe|blocker)\b/.test(raw)) return "critical";
-    if (/\b(high|significant|major|risky|dangerous)\b/.test(raw)) return "high";
+    if (/\b(critical|catastrophic|severe|blocker|sev[\s-]*0|sev[\s-]*1|data\s+loss|outage|downtime|rce)\b/.test(raw)) return "critical";
+    if (/\b(high|significant|major|risky|dangerous|blast\s+radius|customer[\s-]*impact|security|compliance|incident|breaking\s+change|migration\s+risk)\b/.test(raw)) return "high";
     if (/\b(medium|moderate)\b/.test(raw)) return "medium";
     if (/\b(low|minor|trivial|safe)\b/.test(raw)) return "low";
   }
 
-  const numeric = normalizePlannerScore(value, { preferTenScaleIntegers });
+  const numeric = normalizePlannerScore(value, { preferTenScaleIntegers, preserveFractionalTenScale });
   if (!Number.isFinite(numeric)) return null;
   if (numeric >= 9) return "critical";
   if (numeric >= 7) return "high";
@@ -4534,7 +4537,10 @@ function normalizePlannerTaskForCreation(task, index) {
   const repoAreas = normalizeRepoAreas(task.repo_areas || task.repoAreas);
   const impact = normalizePlannerScore(task.impact, { preferTenScaleIntegers });
   const confidence = normalizePlannerScore(task.confidence, { preferTenScaleIntegers });
-  const risk = normalizePlannerRiskLevel(task.risk, { preferTenScaleIntegers });
+  const risk = normalizePlannerRiskLevel(task.risk, {
+    preferTenScaleIntegers,
+    preserveFractionalTenScale: scoreMode === PLANNER_SCORE_MODE_TEN,
+  });
   const estimatedEffort = String(task.estimated_effort || task.estimatedEffort || "").trim().toLowerCase();
   const whyNow = String(task.why_now || task.whyNow || "").trim();
   const killCriteria = normalizeStringList(task.kill_criteria || task.killCriteria);
