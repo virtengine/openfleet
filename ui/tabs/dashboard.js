@@ -1029,6 +1029,9 @@ export function DashboardTab() {
                   <div key=${item.taskId} class="dashboard-retry-item">
                     <div class="dashboard-retry-main">
                       <div class="dashboard-retry-task">${item.taskId}</div>
+                      ${item.taskTitle
+                        ? html`<div class="dashboard-retry-task-title">${truncate(item.taskTitle, 72)}</div>`
+                        : null}
                       <div class="dashboard-retry-error">${truncate(item.lastError || item.reason || "Unknown retry reason", 120)}</div>
                     </div>
                     <div class="dashboard-retry-meta">

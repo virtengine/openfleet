@@ -287,11 +287,18 @@ export class AgentEventBus {
         retryCount: 0,
         lastRetryAt: 0,
         cooldownUntil: 0,
+        taskTitle: String(task?.title || "").trim(),
       });
     } else {
       const state = this._autoActionState.get(taskId);
-      if (state && state.cooldownUntil > 0) {
-        state.cooldownUntil = 0;
+      if (state) {
+        if (state.cooldownUntil > 0) {
+          state.cooldownUntil = 0;
+        }
+        const startedTitle = String(task?.title || "").trim();
+        if (startedTitle) {
+          state.taskTitle = startedTitle;
+        }
         this._autoActionState.set(taskId, state);
       }
     }
@@ -343,6 +350,17 @@ export class AgentEventBus {
       title: task?.title || "",
       error: errorMsg,
     });
+
+    const failedTitle = String(task?.title || "").trim();
+    if (failedTitle) {
+      const state = this._autoActionState.get(taskId) || {
+        retryCount: 0,
+        lastRetryAt: 0,
+        cooldownUntil: 0,
+      };
+      state.taskTitle = failedTitle;
+      this._autoActionState.set(taskId, state);
+    }
 
     if (this._errorDetector) {
       const cls = this._errorDetector.classify(errorMsg, "");
@@ -700,6 +718,10 @@ export class AgentEventBus {
       cooldownUntil: 0,
     };
     const now = Date.now();
+    const task = this._resolveTask(taskId);
+    const taskTitle =
+      String(task?.title || "").trim()
+      || String(this._autoActionState.get(taskId)?.taskTitle || "").trim();
 
     if (state.cooldownUntil > now) {
       console.log(
@@ -757,6 +779,7 @@ export class AgentEventBus {
             retryCount: state.retryCount,
             item: {
               taskId,
+              taskTitle,
               retryCount: state.retryCount,
               maxRetries: this._maxAutoRetries,
               reason: recovery?.reason || "error detected",
@@ -799,6 +822,7 @@ export class AgentEventBus {
             type: "upsert",
             item: {
               taskId,
+              taskTitle,
               retryCount: state.retryCount,
               maxRetries: this._maxAutoRetries,
               reason: recovery?.reason || "rate limited",
@@ -832,8 +856,7 @@ export class AgentEventBus {
           } catch { /* best-effort */ }
         }
         if (this._sendTelegram) {
-          const task = this._resolveTask(taskId);
-          const title = task?.title || taskId;
+          const title = taskTitle || taskId;
           this._sendTelegram(
             `:close: Auto-blocked: "${title}" — ${recovery?.reason || "too many errors"}`,
           );
@@ -855,6 +878,7 @@ export class AgentEventBus {
             retryCount: state.retryCount,
             item: {
               taskId,
+              taskTitle,
               retryCount: state.retryCount,
               maxRetries: this._maxAutoRetries,
               reason: recovery?.reason || "new session",
@@ -901,8 +925,7 @@ export class AgentEventBus {
           `${TAG} manual review needed for ${taskId}: ${recovery?.reason || rawError}`,
         );
         if (this._sendTelegram && (recovery?.errorCount || 0) >= 3) {
-          const task = this._resolveTask(taskId);
-          const title = task?.title || taskId;
+          const title = taskTitle || taskId;
           this._sendTelegram(
             `:alert: "${title}" needs manual review: ${recovery?.reason || "repeated errors"}`,
           );

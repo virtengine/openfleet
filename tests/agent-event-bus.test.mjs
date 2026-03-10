@@ -551,7 +551,7 @@ describe("agent-event-bus", () => {
       });
 
       // First start the task to initialize auto-action state
-      bus.onTaskStarted({ id: "task-1" }, {});
+      bus.onTaskStarted({ id: "task-1", title: "Retry queue title test" }, {});
       vi.advanceTimersByTime(600);
       bus.onTaskFailed({ id: "task-1" }, "build error");
 
@@ -563,6 +563,7 @@ describe("agent-event-bus", () => {
       const queue = bus.getRetryQueue();
       expect(queue.count).toBe(1);
       expect(queue.items[0].taskId).toBe("task-1");
+      expect(queue.items[0].taskTitle).toBe("Retry queue title test");
     });
 
     it("invokes threshold hook instead of retry when threshold is reached", () => {
