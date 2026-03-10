@@ -607,6 +607,10 @@ function EntryEditor({ entry, onClose, onSaved, onDeleted }) {
   const [form, setForm] = useState(initialFormSnapshot);
   const [baseline, setBaseline] = useState(initialFormSnapshot);
   const [loading, setLoading] = useState(false);
+  const [importAgents, setImportAgents] = useState(true);
+  const [importSkills, setImportSkills] = useState(true);
+  const [importPrompts, setImportPrompts] = useState(true);
+  const [importTools, setImportTools] = useState(true);
   const [loadingContent, setLoadingContent] = useState(!isNew && !!entry?.id);
   const [confirmDelete, setConfirmDelete] = useState(false);
   const pendingKey = useMemo(
@@ -682,6 +686,9 @@ function EntryEditor({ entry, onClose, onSaved, onDeleted }) {
     }
     setLoading(true);
     try {
+      if (!importAgents && !importPrompts && !importSkills && !importTools) {
+        throw new Error("Select at least one import type");
+      }
       const tags = form.tags.split(/[,\s]+/).map((t) => t.trim().toLowerCase()).filter(Boolean);
       let content = form.content;
       if (form.type === "agent") {
@@ -733,6 +740,9 @@ function EntryEditor({ entry, onClose, onSaved, onDeleted }) {
   const handleDelete = useCallback(async () => {
     setLoading(true);
     try {
+      if (!importAgents && !importPrompts && !importSkills && !importTools) {
+        throw new Error("Select at least one import type");
+      }
       const res = await removeEntry(
         entry.id,
         true,
@@ -885,6 +895,9 @@ function AgentToolConfigurator({ agentId, agentName }) {
   const loadConfig = useCallback(async () => {
     setLoading(true);
     try {
+      if (!importAgents && !importPrompts && !importSkills && !importTools) {
+        throw new Error("Select at least one import type");
+      }
       const [effective, inst] = await Promise.all([
         fetchAgentToolConfig(agentId),
         fetchMcpInstalled(),
@@ -1106,6 +1119,9 @@ function McpMarketplace({ onInstalled }) {
   const loadData = useCallback(async () => {
     setLoading(true);
     try {
+      if (!importAgents && !importPrompts && !importSkills && !importTools) {
+        throw new Error("Select at least one import type");
+      }
       const [cat, inst] = await Promise.all([
         fetchMcpCatalog(),
         fetchMcpInstalled(),
@@ -1465,11 +1481,18 @@ function McpCustomInstallForm({ onInstall, installing }) {
 function ScopeDetector() {
   const [showing, setShowing] = useState(false);
   const [loading, setLoading] = useState(false);
+  const [importAgents, setImportAgents] = useState(true);
+  const [importSkills, setImportSkills] = useState(true);
+  const [importPrompts, setImportPrompts] = useState(true);
+  const [importTools, setImportTools] = useState(true);
 
   const loadScopes = useCallback(async () => {
     if (scopes.value.length && showing) { setShowing(false); return; }
     setLoading(true);
     try {
+      if (!importAgents && !importPrompts && !importSkills && !importTools) {
+        throw new Error("Select at least one import type");
+      }
       const result = await fetchScopes();
       scopes.value = result;
     } catch (err) {
@@ -1512,11 +1535,18 @@ function ProfileMatcher() {
   const [changedFiles, setChangedFiles] = useState("");
   const [result, setResult] = useState(null);
   const [loading, setLoading] = useState(false);
+  const [importAgents, setImportAgents] = useState(true);
+  const [importSkills, setImportSkills] = useState(true);
+  const [importPrompts, setImportPrompts] = useState(true);
+  const [importTools, setImportTools] = useState(true);
 
   const doMatch = useCallback(async () => {
     if (!title.trim() && !description.trim()) return;
     setLoading(true);
     try {
+      if (!importAgents && !importPrompts && !importSkills && !importTools) {
+        throw new Error("Select at least one import type");
+      }
       const response = await testProfileMatch({
         title: title.trim(),
         description: description.trim(),
@@ -1593,6 +1623,10 @@ function AgentLibraryImporter({ onImported }) {
   const [branch, setBranch] = useState("main");
   const [maxProfiles, setMaxProfiles] = useState("80");
   const [loading, setLoading] = useState(false);
+  const [importAgents, setImportAgents] = useState(true);
+  const [importSkills, setImportSkills] = useState(true);
+  const [importPrompts, setImportPrompts] = useState(true);
+  const [importTools, setImportTools] = useState(true);
   const selectedSource = useMemo(() => (sources || []).find((source) => source.id === sourceId) || null, [sources, sourceId]);
 
   useEffect(() => {
@@ -1609,27 +1643,40 @@ function AgentLibraryImporter({ onImported }) {
   const doImport = useCallback(async () => {
     setLoading(true);
     try {
+      if (!importAgents && !importPrompts && !importSkills && !importTools) {
+        throw new Error("Select at least one import type");
+      }
       const payload = {
         sourceId: sourceId || undefined,
         repoUrl: repoUrl.trim() || undefined,
         branch: branch.trim() || undefined,
-        maxProfiles: Number.parseInt(String(maxProfiles || ""), 10) || undefined,
-        importPrompts: true,
+        maxEntries: Number.parseInt(String(maxProfiles || ""), 10) || undefined,
+        importAgents,
+        importSkills,
+        importPrompts,
+        importTools,
       };
       const res = await importLibrarySource(payload);
       if (!res?.ok) throw new Error(res?.error || "Import failed");
       const count = Number(res?.data?.importedCount || 0);
-      showToast(`Imported ${count} profiles`, "success");
+      const byType = res?.data?.importedByType || {};
+      const details = [
+        `agents ${Number(byType?.agent || 0)}`,
+        `prompts ${Number(byType?.prompt || 0)}`,
+        `skills ${Number(byType?.skill || 0)}`,
+        `tools ${Number(byType?.mcp || 0)}`,
+      ].join(", ");
+      showToast(`Imported ${count} entries (${details})`, "success");
       if (typeof onImported === "function") onImported();
     } catch (err) {
       showToast(`Import failed: ${err.message}`, "error");
     }
     setLoading(false);
-  }, [sourceId, repoUrl, branch, maxProfiles, onImported]);
+  }, [sourceId, repoUrl, branch, maxProfiles, importAgents, importSkills, importPrompts, importTools, onImported]);
 
   return html`
     <div style="margin-top:10px;padding:10px;border:1px solid var(--border,#333);border-radius:10px;">
-      <div style="font-size:0.9em;font-weight:600;margin-bottom:6px;">${iconText(":package: Import Agent Library")}</div>
+      <div style="font-size:0.9em;font-weight:600;margin-bottom:6px;">${iconText(":package: Import Library Content")}</div>
       <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:8px;">
         <label style="display:flex;flex-direction:column;gap:4px;font-size:0.82em;color:var(--text-secondary);">
           Source
@@ -1648,7 +1695,7 @@ function AgentLibraryImporter({ onImported }) {
           <input value=${branch} onInput=${(e) => setBranch(e.currentTarget.value)} placeholder="main" />
         </label>
         <label style="display:flex;flex-direction:column;gap:4px;font-size:0.82em;color:var(--text-secondary);">
-          Max Profiles
+          Max Entries
           <input value=${maxProfiles} onInput=${(e) => setMaxProfiles(e.currentTarget.value)} placeholder="80" />
         </label>
       </div>
@@ -1656,6 +1703,12 @@ function AgentLibraryImporter({ onImported }) {
         Custom Repo URL (optional)
         <input value=${repoUrl} onInput=${(e) => setRepoUrl(e.currentTarget.value)} placeholder="https://github.com/org/repo.git" />
       </label>
+      <div style="margin-top:8px;display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:6px;">
+        <label style="display:flex;align-items:center;gap:6px;font-size:0.8em;color:var(--text-secondary);"><input type="checkbox" checked=${importAgents} onChange=${(e) => setImportAgents(Boolean(e.currentTarget.checked))} /> Agent Profiles</label>
+        <label style="display:flex;align-items:center;gap:6px;font-size:0.8em;color:var(--text-secondary);"><input type="checkbox" checked=${importPrompts} onChange=${(e) => setImportPrompts(Boolean(e.currentTarget.checked))} /> Prompts</label>
+        <label style="display:flex;align-items:center;gap:6px;font-size:0.8em;color:var(--text-secondary);"><input type="checkbox" checked=${importSkills} onChange=${(e) => setImportSkills(Boolean(e.currentTarget.checked))} /> Skills</label>
+        <label style="display:flex;align-items:center;gap:6px;font-size:0.8em;color:var(--text-secondary);"><input type="checkbox" checked=${importTools} onChange=${(e) => setImportTools(Boolean(e.currentTarget.checked))} /> Tools (MCP)</label>
+      </div>
       ${selectedSource ? html`
         <div style="margin-top:8px;padding:8px 10px;border:1px solid var(--border,#333);border-radius:10px;background:var(--surface-2,rgba(255,255,255,0.03));display:flex;flex-direction:column;gap:6px;">
           <div style="display:flex;flex-wrap:wrap;gap:6px;align-items:center;">
@@ -1686,11 +1739,18 @@ export function LibraryTab() {
   injectStyles();
   const [editing, setEditing] = useState(null);      // entry being edited, or {} for new
   const [loading, setLoading] = useState(false);
+  const [importAgents, setImportAgents] = useState(true);
+  const [importSkills, setImportSkills] = useState(true);
+  const [importPrompts, setImportPrompts] = useState(true);
+  const [importTools, setImportTools] = useState(true);
 
   // Load all entries on mount and type/search changes
   const loadEntries = useCallback(async () => {
     setLoading(true);
     try {
+      if (!importAgents && !importPrompts && !importSkills && !importTools) {
+        throw new Error("Select at least one import type");
+      }
       const [filteredEntries, globalEntries] = await Promise.all([
         fetchEntries(filterType.value),
         apiFetch("/api/library").then((res) => res?.data || []),
@@ -1728,6 +1788,9 @@ export function LibraryTab() {
   const handleInit = useCallback(async () => {
     setLoading(true);
     try {
+      if (!importAgents && !importPrompts && !importSkills && !importTools) {
+        throw new Error("Select at least one import type");
+      }
       const res = await doInit();
       if (res?.ok) {
         showToast(`Library initialized: ${res.data?.entries || 0} entries, ${res.data?.scaffolded || 0} profiles scaffolded`, "success");

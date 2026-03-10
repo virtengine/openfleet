@@ -1252,7 +1252,7 @@ function parseSimpleFrontmatter(markdown = "") {
   for (const line of head) {
     const m = line.match(/^([A-Za-z0-9_-]+)\s*:\s*(.*)$/);
     if (!m) continue;
-    attrs[m[1].trim()] = String(m[2] || "").trim();
+    attrs[m[1].trim()] = parseTomlValue(m[2]);
   }
   const body = text.slice(end + 5).trim();
   return { attrs, body };
@@ -1293,6 +1293,57 @@ function ensureUniqueId(baseId, takenIds) {
   return id;
 }
 
+function getFrontmatterValue(attrs = {}, keys = []) {
+  if (!attrs || typeof attrs !== "object") return null;
+  for (const key of keys) {
+    if (Object.hasOwn(attrs, key)) return attrs[key];
+  }
+  const lowerMap = new Map(
+    Object.keys(attrs).map((key) => [String(key || "").toLowerCase(), attrs[key]]),
+  );
+  for (const key of keys) {
+    const hit = lowerMap.get(String(key || "").toLowerCase());
+    if (hit != null) return hit;
+  }
+  return null;
+}
+
+function normalizeImportedDescription(rawDescription, body = "") {
+  const raw = String(rawDescription || "").trim();
+  if (raw) {
+    if ((raw.startsWith('"') && raw.endsWith('"')) || (raw.startsWith("'") && raw.endsWith("'"))) {
+      return raw.slice(1, -1).trim();
+    }
+    return raw;
+  }
+  const fallback = String(body || "")
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .find((line) => line && !line.startsWith("#"));
+  return String(fallback || "Imported library entry").trim();
+}
+
+function inferImportedEntryKind(relPath = "", fileName = "", attrs = {}) {
+  const pathLower = String(relPath || "").toLowerCase();
+  const fileLower = String(fileName || "").toLowerCase();
+  const explicitType = String(getFrontmatterValue(attrs, ["type", "kind", "resourceType"]) || "").trim().toLowerCase();
+  if (explicitType === "agent" || explicitType === "profile") return "agent";
+  if (explicitType === "skill") return "skill";
+  if (explicitType === "prompt") return "prompt";
+
+  if (/\.agent\.md$/i.test(fileLower) || /\/\.github\/agents\//i.test(pathLower)) return "agent";
+  if (
+    fileLower === "skill.md"
+    || /\.skill\.md$/i.test(fileLower)
+
+  ) return "skill";
+  if (
+    /\.prompt\.md$/i.test(fileLower)
+    || /\/prompts\//i.test(pathLower)
+    || /\/\.github\/prompts\//i.test(pathLower)
+  ) return "prompt";
+  return null;
+}
 function humanizeSlug(slug) {
   const value = String(slug || "").trim();
   if (!value) return "";
@@ -1633,8 +1684,17 @@ export function importAgentProfilesFromRepository(rootDir, options = {}) {
   if (!isSafeGitRefName(branch)) {
     throw new Error("branch contains unsafe characters");
   }
-  const maxProfiles = Math.max(1, Math.min(500, Number.parseInt(String(options?.maxProfiles || "100"), 10) || 100));
+  const maxProfiles = Math.max(
+    1,
+    Math.min(
+      500,
+      Number.parseInt(String(options?.maxEntries ?? options?.maxProfiles ?? "100"), 10) || 100,
+    ),
+  );
+  const importAgents = options?.importAgents !== false;
+  const importSkills = options?.importSkills !== false;
   const importPrompts = options?.importPrompts !== false;
+  const importTools = options?.importTools !== false;
 
   const cacheRoot = ensureDir(resolve(rootDir || getBosunHomeDir(), ".bosun", ".cache", "imports"));
   const checkoutDir = resolve(cacheRoot, `import-${Date.now()}-${Math.random().toString(16).slice(2, 8)}`);
@@ -1650,88 +1710,247 @@ export function importAgentProfilesFromRepository(rootDir, options = {}) {
   }
 
   const files = walkFilesRecursive(checkoutDir);
-  const candidates = files
+  const markdownCandidates = files
     .filter((fullPath) => /\.md$/i.test(fullPath))
-    .filter((fullPath) => /\.agent\.md$/i.test(fullPath) || /[\\/]\.github[\\/]agents[\\/]/i.test(fullPath));
+    .map((fullPath) => {
+      const relPath = fullPath.slice(checkoutDir.length + 1).replace(/\\/g, "/");
+      const fileName = basename(fullPath);
+      const raw = readFileSync(fullPath, "utf8");
+      const parsed = parseSimpleFrontmatter(raw);
+      return {
+        fullPath,
+        relPath,
+        fileName,
+        raw,
+        attrs: parsed.attrs,
+        body: parsed.body,
+        kind: inferImportedEntryKind(relPath, fileName, parsed.attrs),
+      };
+    })
+    .filter((entry) => Boolean(entry.kind))
+    .sort((a, b) => {
+      const rank = { agent: 0, prompt: 1, skill: 2 };
+      const aRank = Number(rank[a.kind] ?? 99);
+      const bRank = Number(rank[b.kind] ?? 99);
+      if (aRank !== bRank) return aRank - bRank;
+      return String(a.relPath || "").localeCompare(String(b.relPath || ""));
+    });
 
-  const takenIds = new Set(listEntries(rootDir, { type: "agent" }).map((entry) => String(entry?.id || "").trim()).filter(Boolean));
+  const candidates = markdownCandidates.slice(0, maxProfiles);
+
+  const takenIds = new Set(
+    listEntries(rootDir).map((entry) => String(entry?.id || "").trim()).filter(Boolean),
+  );
   const imported = [];
+  const importedByType = { agent: 0, prompt: 0, skill: 0, mcp: 0 };
+  let needsAgentIndexRefresh = false;
+  let needsSkillIndexRefresh = false;
 
-  for (const fullPath of candidates.slice(0, maxProfiles)) {
-    const raw = readFileSync(fullPath, "utf8");
-    const { attrs, body } = parseSimpleFrontmatter(raw);
-    const relPath = fullPath.slice(checkoutDir.length + 1).replace(/\\/g, "/");
-    const fileName = basename(fullPath).replace(/\.md$/i, "");
-    const name = String(attrs.name || fileName.replace(/[-_.]+/g, " ")).trim();
-    const description = String(attrs.description || body.split(/\r?\n/).find((line) => line.trim()) || "Imported agent profile").trim();
-    const baseId = slugify(`${sourceId || "imported"}-${name}`) || slugify(fileName) || `imported-agent-${imported.length + 1}`;
-    const id = ensureUniqueId(baseId, takenIds);
+  try {
+    for (const candidate of candidates) {
+      const { attrs, body, relPath, fileName, kind } = candidate;
+      const fileStem = basename(fileName, ".md");
+      const relSegments = relPath.split(/[\\/]/).filter(Boolean);
+      const parentSegment = relSegments.length > 1 ? relSegments[relSegments.length - 2] : "";
+      const fallbackNameBase = fileStem.toLowerCase() === "skill" && parentSegment ? parentSegment : fileStem;
+      const fallbackName = fallbackNameBase.replace(/\.agent$/i, "").replace(/\.skill$/i, "").replace(/\.prompt$/i, "");
+      const name = String(getFrontmatterValue(attrs, ["name", "title"]) || fallbackName.replace(/[-_.]+/g, " ")).trim();
+      const description = normalizeImportedDescription(getFrontmatterValue(attrs, ["description", "summary"]), body);
+      const keywords = keywordTokens(`${name} ${description} ${relPath}`, { minLength: 4 }).slice(0, 10);
 
-    const toolHints = parseJsonishArray(attrs.tools);
-    const keywords = keywordTokens(`${name} ${description} ${relPath}`, { minLength: 4 }).slice(0, 10);
-    const titlePatterns = uniqueStrings(keywords.slice(0, 6).map((token) => `\\b${token.replace(/[.*+?^${}()|[\\]\\]/g, "")}\\b`));
-    const scopes = uniqueStrings(relPath.split(/[\\/]/).map((segment) => slugify(segment))).filter((segment) => segment && segment !== "github" && segment !== "agents").slice(0, 6);
-    const promptId = `${id}-prompt`;
+      if (kind === "prompt") {
+        if (!importPrompts) continue;
+        const baseId = slugify(`${sourceId || "imported"}-${name}`) || slugify(fileStem) || `imported-prompt-${imported.length + 1}`;
+        const id = ensureUniqueId(baseId, takenIds);
+        const promptContent = String(body || candidate.raw || "").trim();
+        if (!promptContent) continue;
+        upsertEntry(rootDir, {
+          id,
+          type: "prompt",
+          name,
+          description: description || `Imported prompt from ${known?.name || repoUrl}`,
+          tags: uniqueStrings(["imported", "prompt", sourceId || "external", ...parseJsonishArray(getFrontmatterValue(attrs, ["tags"]))]),
+          meta: {
+            sourceId: sourceId || null,
+            repoUrl,
+            branch,
+            relPath,
+          },
+        }, promptContent);
+        imported.push({ id, name, relPath, type: "prompt", promptId: null });
+        importedByType.prompt += 1;
+        continue;
+      }
 
-    if (importPrompts && body) {
+      if (kind === "skill") {
+        if (!importSkills) continue;
+        const baseId = slugify(`${sourceId || "imported"}-${name}`) || slugify(fileStem) || `imported-skill-${imported.length + 1}`;
+        const id = ensureUniqueId(baseId, takenIds);
+        const skillContent = String(body || candidate.raw || "").trim();
+        if (!skillContent) continue;
+        upsertEntry(rootDir, {
+          id,
+          type: "skill",
+          name,
+          description: description || "Imported skill",
+          tags: uniqueStrings(["imported", "skill", sourceId || "external", ...parseJsonishArray(getFrontmatterValue(attrs, ["tags"]))]),
+          meta: {
+            sourceId: sourceId || null,
+            repoUrl,
+            branch,
+            relPath,
+          },
+        }, skillContent, { skipIndexSync: true });
+        imported.push({ id, name, relPath, type: "skill", promptId: null });
+        importedByType.skill += 1;
+        needsSkillIndexRefresh = true;
+        continue;
+      }
+
+      if (kind !== "agent" || !importAgents) continue;
+
+      const baseId = slugify(`${sourceId || "imported"}-${name}`) || slugify(fileStem) || `imported-agent-${imported.length + 1}`;
+      const id = ensureUniqueId(baseId, takenIds);
+      const toolHints = parseJsonishArray(getFrontmatterValue(attrs, ["tools", "enabledTools"]));
+      const profileSkillHints = parseJsonishArray(getFrontmatterValue(attrs, ["skills"]));
+      const mcpHints = parseJsonishArray(getFrontmatterValue(attrs, ["enabledMcpServers", "mcpServers", "mcp"]));
+      const titlePatternHints = parseJsonishArray(getFrontmatterValue(attrs, ["titlePatterns", "title_patterns", "patterns"]));
+      const tags = uniqueStrings([
+        "imported",
+        sourceId || "external",
+        ...parseJsonishArray(getFrontmatterValue(attrs, ["tags"])),
+        ...keywords.slice(0, 4),
+      ]);
+      const pathScopes = uniqueStrings(
+        relPath
+          .split(/[\\/]/)
+          .slice(0, -1)
+          .map((segment) => slugify(segment))
+          .filter((segment) => segment && segment !== "github" && segment !== "agents"),
+      ).slice(0, 6);
+      const explicitScopes = parseJsonishArray(getFrontmatterValue(attrs, ["scopes", "scope"]));
+      const scopes = uniqueStrings([...explicitScopes, ...pathScopes]).slice(0, 8);
+      const titlePatterns = uniqueStrings([
+        ...titlePatternHints,
+        ...keywordTokens(name, { minLength: 4 }).slice(0, 4).map((token) => `\\b${token.replace(/[.*+?^${}()|[\\]\\]/g, "")}\\b`),
+      ]);
+      const promptId = `${id}-prompt`;
+
+      if (importPrompts && body) {
+        upsertEntry(rootDir, {
+          id: promptId,
+          type: "prompt",
+          name: `${name} Prompt`,
+          description: `Imported prompt from ${known?.name || repoUrl}`,
+          tags: uniqueStrings(["imported", "agent-prompt", sourceId || "external"]),
+          meta: {
+            sourceId: sourceId || null,
+            repoUrl,
+            branch,
+            relPath,
+          },
+        }, body);
+        imported.push({ id: promptId, name: `${name} Prompt`, relPath, type: "prompt", promptId: null });
+        importedByType.prompt += 1;
+      }
+
+      const explicitAgentType = String(getFrontmatterValue(attrs, ["agentType", "agent_type"]) || "").trim().toLowerCase();
+      const profile = {
+        id,
+        name,
+        description,
+        titlePatterns: titlePatterns.length ? titlePatterns : ["\\btask\\b"],
+        scopes,
+        sdk: null,
+        model: null,
+        promptOverride: importPrompts && body ? promptId : null,
+        skills: profileSkillHints,
+        hookProfile: null,
+        env: {},
+        enabledTools: toolHints.length ? toolHints : null,
+        enabledMcpServers: mcpHints,
+        tags,
+        agentType: explicitAgentType || (/voice|audio|realtime/i.test(`${name} ${description}`) ? "voice" : "task"),
+        importMeta: {
+          sourceId: sourceId || null,
+          repoUrl,
+          branch,
+          relPath,
+        },
+      };
+
       upsertEntry(rootDir, {
-        id: promptId,
-        type: "prompt",
-        name: `${name} Prompt`,
-        description: `Imported prompt from ${known?.name || repoUrl}`,
-        tags: uniqueStrings(["imported", "agent-prompt", sourceId || "external"]),
+        id,
+        type: "agent",
+        name,
+        description,
+        tags: profile.tags,
         meta: {
           sourceId: sourceId || null,
           repoUrl,
           branch,
           relPath,
         },
-      }, body);
+      }, profile, { skipIndexSync: true });
+
+      imported.push({ id, name, relPath, type: "agent", promptId: importPrompts && body ? promptId : null });
+      importedByType.agent += 1;
+      needsAgentIndexRefresh = true;
     }
 
-    const profile = {
-      id,
-      name,
-      description,
-      titlePatterns: titlePatterns.length ? titlePatterns : ["\\btask\\b"],
-      scopes,
-      sdk: null,
-      model: null,
-      promptOverride: importPrompts ? promptId : null,
-      skills: [],
-      hookProfile: null,
-      env: {},
-      enabledTools: toolHints.length ? toolHints : null,
-      enabledMcpServers: [],
-      tags: uniqueStrings(["imported", sourceId || "external", ...keywords.slice(0, 4)]),
-      agentType: /voice|audio|realtime/i.test(`${name} ${description}`) ? "voice" : "task",
-      importMeta: {
-        sourceId: sourceId || null,
-        repoUrl,
-        branch,
-        relPath,
-      },
-    };
-
-    upsertEntry(rootDir, {
-      id,
-      type: "agent",
-      name,
-      description,
-      tags: profile.tags,
-      meta: {
-        sourceId: sourceId || null,
-        repoUrl,
-        branch,
-        relPath,
-      },
-    }, profile, { skipIndexSync: true });
-
-    imported.push({ id, name, relPath, promptId: importPrompts ? promptId : null });
+    if (importTools) {
+      const mcpCandidates = uniqueStrings([
+        resolve(checkoutDir, ".codex", "config.toml"),
+      ]);
+      for (const configPath of mcpCandidates) {
+        if (!existsSync(configPath)) continue;
+        let raw = "";
+        try {
+          raw = readFileSync(configPath, "utf8");
+        } catch {
+          continue;
+        }
+        const relPath = relative(checkoutDir, configPath).replace(/\\/g, "/");
+        const discovered = parseMcpServersFromToml(raw, relPath);
+        for (const mcp of discovered) {
+          const baseId = slugify(`${sourceId || "imported"}-${mcp.id}`) || slugify(mcp.id) || `imported-mcp-${imported.length + 1}`;
+          const id = ensureUniqueId(baseId, takenIds);
+          const content = {
+            id,
+            name: mcp.name,
+            description: "Imported MCP server definition from " + relPath,
+            transport: mcp.transport,
+            command: mcp.transport === "stdio" ? mcp.command : undefined,
+            args: mcp.transport === "stdio" ? mcp.args : undefined,
+            url: mcp.transport === "url" ? mcp.url : undefined,
+            env: Object.keys(mcp.env || {}).length ? mcp.env : undefined,
+            source: "imported",
+            tags: ["imported", "mcp", sourceId || "external"],
+          };
+          upsertEntry(rootDir, {
+            id,
+            type: "mcp",
+            name: mcp.name,
+            description: content.description,
+            tags: uniqueStrings(["imported", "mcp", sourceId || "external"]),
+            meta: {
+              sourceId: sourceId || null,
+              repoUrl,
+              branch,
+              relPath,
+            },
+          }, content);
+          imported.push({ id, name: mcp.name, relPath, type: "mcp", promptId: null });
+          importedByType.mcp += 1;
+        }
+      }
+    }
+  } finally {
+    rmSync(checkoutDir, { recursive: true, force: true });
   }
 
-  rebuildAgentProfileIndex(rootDir);
-  rmSync(checkoutDir, { recursive: true, force: true });
+  if (needsAgentIndexRefresh) rebuildAgentProfileIndex(rootDir);
+  if (needsSkillIndexRefresh) rebuildSkillEntryIndex(rootDir);
 
   return {
     ok: true,
@@ -1739,10 +1958,10 @@ export function importAgentProfilesFromRepository(rootDir, options = {}) {
     repoUrl,
     branch,
     importedCount: imported.length,
+    importedByType,
     imported,
   };
 }
-
 
 // ── Scope Auto-Detection ─────────────────────────────────────────────────────
 
