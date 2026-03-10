@@ -4408,6 +4408,101 @@ function parsePlannerJsonFromText(value) {
   return null;
 }
 
+const PLANNER_SCORE_MAX = 10;
+const PLANNER_RISK_LEVELS = ["low", "medium", "high", "critical"];
+const PLANNER_RISK_ORDER = { low: 0, medium: 1, high: 2, critical: 3 };
+const CALIBRATED_MIN_IMPACT_SCORE = 7;
+const CALIBRATED_MAX_RISK_WITHOUT_HUMAN = "medium";
+const PLANNER_SCORE_MODE_RATIO = "ratio";
+const PLANNER_SCORE_MODE_TEN = "ten";
+
+function parsePlannerNumericScore(value) {
+  if (value == null) return null;
+  if (typeof value === "number") {
+    return Number.isFinite(value) ? { numeric: value, scale: null } : null;
+  }
+  const raw = String(value || "").trim();
+  if (!raw) return null;
+
+  const ratioMatch = raw.match(/^(-?\d+(?:\.\d+)?)\s*\/\s*(1|10|100)$/);
+  if (ratioMatch) {
+    const numeric = Number(ratioMatch[1]);
+    const denom = Number(ratioMatch[2]);
+    if (!Number.isFinite(numeric) || !Number.isFinite(denom) || denom <= 0) return null;
+    return { numeric, scale: denom };
+  }
+
+  const percentMatch = raw.match(/^(-?\d+(?:\.\d+)?)\s*%$/);
+  if (percentMatch) {
+    const numeric = Number(percentMatch[1]);
+    if (!Number.isFinite(numeric)) return null;
+    return { numeric, scale: 100 };
+  }
+
+  const numeric = Number(raw);
+  if (!Number.isFinite(numeric)) return null;
+  return { numeric, scale: null };
+}
+
+function normalizePlannerScore(value, { preferTenScaleIntegers = false, preserveFractionalTenScale = false } = {}) {
+  const parsed = parsePlannerNumericScore(value);
+  if (!parsed) return null;
+
+  let scaled = parsed.numeric;
+  if (parsed.scale === 1) {
+    scaled = parsed.numeric * PLANNER_SCORE_MAX;
+  } else if (parsed.scale === 100) {
+    scaled = parsed.numeric / 10;
+  } else if (parsed.scale === 10) {
+    scaled = parsed.numeric;
+  } else if (scaled > 10 && scaled <= 100) {
+    scaled = scaled / 10;
+  } else if (scaled > 0 && scaled < 1) {
+    const hasFractionalPart = Math.abs((scaled % 1)) > Number.EPSILON;
+    if (!(preserveFractionalTenScale && hasFractionalPart)) {
+      scaled = scaled * PLANNER_SCORE_MAX;
+    }
+  } else if (scaled === 1) {
+    scaled = preferTenScaleIntegers ? 1 : PLANNER_SCORE_MAX;
+  }
+
+  const clamped = Math.max(0, Math.min(PLANNER_SCORE_MAX, scaled));
+  return Math.round(clamped * 10) / 10;
+}
+
+function inferPlannerTaskScoreMode(task) {
+  if (!task || typeof task !== "object") return PLANNER_SCORE_MODE_RATIO;
+  const candidates = [task.impact, task.confidence, task.risk];
+  for (const candidate of candidates) {
+    const parsed = parsePlannerNumericScore(candidate);
+    if (!parsed) continue;
+    if (parsed.scale === 10) return PLANNER_SCORE_MODE_TEN;
+    if (parsed.scale === 1 || parsed.scale === 100) return PLANNER_SCORE_MODE_RATIO;
+    if (parsed.numeric > 1 && parsed.numeric <= PLANNER_SCORE_MAX) return PLANNER_SCORE_MODE_TEN;
+    if (parsed.numeric > PLANNER_SCORE_MAX && parsed.numeric <= 100) return PLANNER_SCORE_MODE_RATIO;
+  }
+  return PLANNER_SCORE_MODE_RATIO;
+}
+
+function normalizePlannerRiskLevel(value, { preferTenScaleIntegers = false, preserveFractionalTenScale = false } = {}) {
+  const raw = String(value || "").trim().toLowerCase();
+  if (PLANNER_RISK_LEVELS.includes(raw)) return raw;
+
+  if (raw) {
+    if (/\b(critical|catastrophic|severe|blocker|sev[\s-]*0|sev[\s-]*1|data\s+loss|outage|downtime|rce)\b/.test(raw)) return "critical";
+    if (/\b(high|significant|major|risky|dangerous|blast\s+radius|customer[\s-]*impact|security|compliance|incident|breaking\s+change|migration\s+risk)\b/.test(raw)) return "high";
+    if (/\b(medium|moderate)\b/.test(raw)) return "medium";
+    if (/\b(low|minor|trivial|safe)\b/.test(raw)) return "low";
+  }
+
+  const numeric = normalizePlannerScore(value, { preferTenScaleIntegers, preserveFractionalTenScale });
+  if (!Number.isFinite(numeric)) return null;
+  if (numeric >= 9) return "critical";
+  if (numeric >= 7) return "high";
+  if (numeric >= 4) return "medium";
+  return "low";
+}
+
 function normalizePlannerTaskForCreation(task, index) {
   if (!task || typeof task !== "object") return null;
   const title = String(task.title || "").trim();
@@ -4432,31 +4527,20 @@ function normalizePlannerTaskForCreation(task, index) {
     }
     return normalized;
   };
-  const normalizeScore = (value) => {
-    const numeric = Number(value);
-    if (!Number.isFinite(numeric)) return null;
-    return Math.max(0, Math.min(10, Math.round(numeric)));
-  };
-  const normalizeRiskLevel = (value) => {
-    const raw = String(value || "").trim().toLowerCase();
-    if (["low", "medium", "high", "critical"].includes(raw)) return raw;
-    const numeric = Number(value);
-    if (!Number.isFinite(numeric)) return null;
-    if (numeric >= 9) return "critical";
-    if (numeric >= 7) return "high";
-    if (numeric >= 4) return "medium";
-    return "low";
-  };
-
+  const scoreMode = inferPlannerTaskScoreMode(task);
+  const preferTenScaleIntegers = scoreMode === PLANNER_SCORE_MODE_TEN;
   const lines = [];
   const description = String(task.description || "").trim();
   if (description) lines.push(description);
   const acceptanceCriteria = normalizeStringList(task.acceptance_criteria);
   const verification = normalizeStringList(task.verification);
   const repoAreas = normalizeRepoAreas(task.repo_areas || task.repoAreas);
-  const impact = normalizeScore(task.impact);
-  const confidence = normalizeScore(task.confidence);
-  const risk = normalizeRiskLevel(task.risk);
+  const impact = normalizePlannerScore(task.impact, { preferTenScaleIntegers });
+  const confidence = normalizePlannerScore(task.confidence, { preferTenScaleIntegers });
+  const risk = normalizePlannerRiskLevel(task.risk, {
+    preferTenScaleIntegers,
+    preserveFractionalTenScale: scoreMode === PLANNER_SCORE_MODE_TEN,
+  });
   const estimatedEffort = String(task.estimated_effort || task.estimatedEffort || "").trim().toLowerCase();
   const whyNow = String(task.why_now || task.whyNow || "").trim();
   const killCriteria = normalizeStringList(task.kill_criteria || task.killCriteria);
@@ -4614,6 +4698,15 @@ function resolvePlannerFeedbackContext(value) {
   return String(value).trim();
 }
 
+function buildPlannerSkipReasonHistogram(skipped = []) {
+  const histogram = {};
+  for (const entry of skipped) {
+    const reason = String(entry?.reason || "unknown");
+    histogram[reason] = (histogram[reason] || 0) + 1;
+  }
+  return histogram;
+}
+
 registerNodeType("action.materialize_planner_tasks", {
   describe: () => "Parse planner JSON output and create backlog tasks in Kanban",
   schema: {
@@ -4626,8 +4719,8 @@ registerNodeType("action.materialize_planner_tasks", {
       failOnZero: { type: "boolean", default: true, description: "Fail node when zero tasks are created" },
       minCreated: { type: "number", default: 1, description: "Minimum created tasks required for success" },
       projectId: { type: "string", description: "Optional explicit project ID for list/create operations" },
-      minImpactScore: { type: "number", default: 0, description: "Minimum planner impact score (0-10) required for creation" },
-      maxRiskWithoutHuman: { type: "string", default: "high", description: "Maximum planner risk level allowed for auto-creation" },
+      minImpactScore: { type: "number", default: CALIBRATED_MIN_IMPACT_SCORE, description: "Minimum planner impact score required for creation; accepts 0-1 or 0-10 scales" },
+      maxRiskWithoutHuman: { type: "string", default: CALIBRATED_MAX_RISK_WITHOUT_HUMAN, description: "Maximum planner risk level allowed for auto-creation (low|medium|high|critical)" },
       maxConcurrentRepoAreaTasks: { type: "number", default: 0, description: "Maximum concurrent backlog tasks per repo area (0 disables limit)" },
     },
   },
@@ -4641,8 +4734,14 @@ registerNodeType("action.materialize_planner_tasks", {
     const dedupEnabled = node.config?.dedup !== false;
     const status = String(ctx.resolve(node.config?.status || "todo")).trim() || "todo";
     const projectId = String(ctx.resolve(node.config?.projectId || "")).trim();
-    const minImpactScore = Number(ctx.resolve(node.config?.minImpactScore ?? 0));
-    const maxRiskWithoutHuman = String(ctx.resolve(node.config?.maxRiskWithoutHuman || "high")).trim().toLowerCase() || "high";
+    const minImpactScore = normalizePlannerScore(
+      ctx.resolve(node.config?.minImpactScore ?? CALIBRATED_MIN_IMPACT_SCORE),
+      { preferTenScaleIntegers: true },
+    );
+    const maxRiskWithoutHuman = normalizePlannerRiskLevel(
+      ctx.resolve(node.config?.maxRiskWithoutHuman ?? CALIBRATED_MAX_RISK_WITHOUT_HUMAN),
+      { preferTenScaleIntegers: true },
+    ) || CALIBRATED_MAX_RISK_WITHOUT_HUMAN;
     const maxConcurrentRepoAreaTasks = Number(ctx.resolve(node.config?.maxConcurrentRepoAreaTasks ?? 0));
     const materializationDefaults = resolvePlannerMaterializationDefaults(ctx);
 
@@ -4700,34 +4799,46 @@ registerNodeType("action.materialize_planner_tasks", {
 
     const created = [];
     const skipped = [];
+    const materializationOutcomes = [];
     const createdAreaCounts = new Map();
     for (const task of parsedTasks) {
+      const baseOutcome = {
+        title: task.title,
+        impact: task.impact,
+        confidence: task.confidence,
+        risk: task.risk,
+      };
       const key = task.title.toLowerCase();
       if (dedupEnabled && existingTitleSet.has(key)) {
         skipped.push({ title: task.title, reason: "duplicate_title" });
+        materializationOutcomes.push({ ...baseOutcome, created: false, reason: "duplicate_title" });
         continue;
       }
       if (!Array.isArray(task.acceptanceCriteria) || task.acceptanceCriteria.length === 0) {
         skipped.push({ title: task.title, reason: "missing_acceptance_criteria" });
+        materializationOutcomes.push({ ...baseOutcome, created: false, reason: "missing_acceptance_criteria" });
         continue;
       }
       if (!Array.isArray(task.verification) || task.verification.length === 0) {
         skipped.push({ title: task.title, reason: "missing_verification" });
+        materializationOutcomes.push({ ...baseOutcome, created: false, reason: "missing_verification" });
         continue;
       }
       if (!Array.isArray(task.repoAreas) || task.repoAreas.length === 0) {
         skipped.push({ title: task.title, reason: "missing_repo_areas" });
+        materializationOutcomes.push({ ...baseOutcome, created: false, reason: "missing_repo_areas" });
         continue;
       }
       if (Number.isFinite(minImpactScore) && Number.isFinite(task.impact) && task.impact < minImpactScore) {
         skipped.push({ title: task.title, reason: "below_min_impact", impact: task.impact, minImpactScore });
+        materializationOutcomes.push({ ...baseOutcome, created: false, reason: "below_min_impact" });
         continue;
       }
-      const riskOrder = { low: 0, medium: 1, high: 2, critical: 3 };
-      const taskRiskOrder = riskOrder[String(task.risk || "").toLowerCase()];
-      const maxRiskOrder = riskOrder[String(maxRiskWithoutHuman || "").toLowerCase()];
+      const taskRiskOrder = PLANNER_RISK_ORDER[String(task.risk || "").toLowerCase()];
+      const maxRiskOrder = PLANNER_RISK_ORDER[String(maxRiskWithoutHuman || "").toLowerCase()];
       if (Number.isFinite(taskRiskOrder) && Number.isFinite(maxRiskOrder) && taskRiskOrder > maxRiskOrder) {
         skipped.push({ title: task.title, reason: "risk_above_threshold", risk: task.risk, maxRiskWithoutHuman });
+        materializationOutcomes.push({ ...baseOutcome, created: false, reason: "risk_above_threshold" });
         continue;
       }
       if (Number.isFinite(maxConcurrentRepoAreaTasks) && maxConcurrentRepoAreaTasks > 0) {
@@ -4750,6 +4861,7 @@ registerNodeType("action.materialize_planner_tasks", {
             repoAreas: saturatedAreas,
             maxConcurrentRepoAreaTasks,
           });
+          materializationOutcomes.push({ ...baseOutcome, created: false, reason: "repo_area_saturated" });
           continue;
         }
       }
@@ -4810,6 +4922,7 @@ registerNodeType("action.materialize_planner_tasks", {
         id: createdTask?.id || null,
         title: task.title,
       });
+      materializationOutcomes.push({ ...baseOutcome, created: true, reason: null });
       for (const area of task.repoAreas) {
         const areaKey = normalizePlannerAreaKey(area);
         if (!areaKey) continue;
@@ -4820,9 +4933,10 @@ registerNodeType("action.materialize_planner_tasks", {
 
     const createdCount = created.length;
     const skippedCount = skipped.length;
+    const skipReasonHistogram = buildPlannerSkipReasonHistogram(skipped);
     ctx.log(
       node.id,
-      `Planner materialization parsed=${parsedTasks.length} created=${createdCount} skipped=${skippedCount}`,
+      `Planner materialization parsed=${parsedTasks.length} created=${createdCount} skipped=${skippedCount} histogram=${JSON.stringify(skipReasonHistogram)}`,
     );
 
     if (failOnZero && createdCount < Math.max(1, minCreated)) {
@@ -4836,6 +4950,8 @@ registerNodeType("action.materialize_planner_tasks", {
       parsedCount: parsedTasks.length,
       createdCount,
       skippedCount,
+      skipReasonHistogram,
+      materializationOutcomes,
       created,
       skipped,
       tasks: parsedTasks,
@@ -9617,5 +9733,3 @@ registerNodeType("action.web_search", {
 // ═══════════════════════════════════════════════════════════════════════════
 
 export { registerNodeType, getNodeType, listNodeTypes } from "./workflow-engine.mjs";
-
-
