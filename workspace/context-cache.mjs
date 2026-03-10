@@ -516,13 +516,16 @@ function classifyImmediateGitOutput(item, opts) {
 function compressImmediateGitText(text, logId, opts) {
   const headChars = opts?.tier2HeadChars ?? TIER_2_HEAD_CHARS;
   const tailChars = opts?.tier2TailChars ?? TIER_2_TAIL_CHARS;
-  if (typeof text !== "string" || text.length <= headChars + tailChars + 200) {
-    return text;
-  }
+  if (typeof text !== "string" || text.length === 0) return text;
 
-  const head = text.slice(0, headChars);
-  const tail = tailChars > 0 ? text.slice(-tailChars) : "";
-  const omitted = text.length - headChars - (tailChars > 0 ? tailChars : 0);
+  const keepHead = Math.max(0, Math.min(headChars, text.length));
+  const remaining = Math.max(0, text.length - keepHead);
+  const keepTail = Math.max(0, Math.min(tailChars, remaining));
+  const omitted = Math.max(0, text.length - keepHead - keepTail);
+  if (omitted === 0) return text;
+
+  const head = text.slice(0, keepHead);
+  const tail = keepTail > 0 ? text.slice(-keepTail) : "";
   const lineCount = text.length === 0 ? 0 : text.split("\n").length;
   const note = `\n\n[…git capped: ${lineCount} lines, ${omitted} chars hidden. Full: bosun --tool-log ${logId}]\n\n`;
   return head + note + tail;
