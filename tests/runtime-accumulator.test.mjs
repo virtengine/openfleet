@@ -4,6 +4,7 @@ import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import {
   _resetRuntimeAccumulatorForTests,
+  addSessionAccumulationListener,
   addCompletedSession,
   getRuntimeStats,
   getSessionAccumulatorLogPath,
@@ -53,6 +54,12 @@ describe("runtime-accumulator", () => {
             status: "completed",
           });
 
+          const currentLines = readFileSync(getSessionAccumulatorLogPath(), "utf8")
+            .split(/\r?\n/)
+            .map((line) => line.trim())
+            .filter(Boolean);
+          expect(currentLines).toHaveLength(expectedAttempts + 1);
+
           expectedAttempts += 1;
           expectedTokenCount += tokenCount;
           expectedInputTokens += inputTokens;
@@ -93,6 +100,57 @@ describe("runtime-accumulator", () => {
         .map((line) => line.trim())
         .filter(Boolean);
       expect(lines).toHaveLength(6);
+    } finally {
+      _resetRuntimeAccumulatorForTests();
+      rmSync(cacheDir, { recursive: true, force: true });
+    }
+  });
+
+  it("emits a typed session-accumulated event with updated per-task totals", () => {
+    const cacheDir = mkdtempSync(join(tmpdir(), "bosun-runtime-accumulator-events-"));
+    const taskId = "task-session-event";
+    const payloads = [];
+
+    try {
+      _resetRuntimeAccumulatorForTests({ cacheDir });
+      const unsubscribe = addSessionAccumulationListener((payload) => payloads.push(payload));
+
+      addCompletedSession({
+        id: `${taskId}-session-1`,
+        sessionId: `${taskId}-session-1`,
+        sessionKey: `${taskId}:session-1`,
+        taskId,
+        taskTitle: "Event payload test",
+        startedAt: 1_000,
+        endedAt: 3_500,
+        durationMs: 2_500,
+        tokenCount: 300,
+        inputTokens: 200,
+        outputTokens: 100,
+        status: "completed",
+      });
+      unsubscribe();
+
+      expect(payloads).toHaveLength(1);
+      expect(payloads[0]).toMatchObject({
+        type: "session-accumulated",
+        taskId,
+        session: {
+          taskId,
+          tokenCount: 300,
+          inputTokens: 200,
+          outputTokens: 100,
+          durationMs: 2_500,
+        },
+        totals: {
+          taskId,
+          attemptsCount: 1,
+          tokenCount: 300,
+          inputTokens: 200,
+          outputTokens: 100,
+          durationMs: 2_500,
+        },
+      });
     } finally {
       _resetRuntimeAccumulatorForTests();
       rmSync(cacheDir, { recursive: true, force: true });

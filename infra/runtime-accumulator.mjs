@@ -302,6 +302,7 @@ function appendCompletedSessionRecord(record) {
 function emitSessionAccumulated(taskId, session, totals) {
 	if (!taskId || SESSION_ACCUMULATION_LISTENERS.size === 0) return;
 	const payload = {
+		type: "session-accumulated",
 		taskId,
 		session: { ...session },
 		totals: cloneLifetimeTotals(totals),
