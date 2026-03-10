@@ -4411,8 +4411,10 @@ function parsePlannerJsonFromText(value) {
 const PLANNER_SCORE_MAX = 10;
 const PLANNER_RISK_LEVELS = ["low", "medium", "high", "critical"];
 const PLANNER_RISK_ORDER = { low: 0, medium: 1, high: 2, critical: 3 };
-const CALIBRATED_MIN_IMPACT_SCORE = 6;
+const CALIBRATED_MIN_IMPACT_SCORE = 6.5;
 const CALIBRATED_MAX_RISK_WITHOUT_HUMAN = "medium";
+const PLANNER_SCORE_MODE_RATIO = "ratio";
+const PLANNER_SCORE_MODE_TEN = "ten";
 
 function parsePlannerNumericScore(value) {
   if (value == null) return null;
@@ -4465,6 +4467,20 @@ function normalizePlannerScore(value, { preferTenScaleIntegers = false } = {}) {
   return Math.round(clamped * 10) / 10;
 }
 
+function inferPlannerTaskScoreMode(task) {
+  if (!task || typeof task !== "object") return PLANNER_SCORE_MODE_RATIO;
+  const candidates = [task.impact, task.confidence, task.risk];
+  for (const candidate of candidates) {
+    const parsed = parsePlannerNumericScore(candidate);
+    if (!parsed) continue;
+    if (parsed.scale === 10) return PLANNER_SCORE_MODE_TEN;
+    if (parsed.scale === 1 || parsed.scale === 100) return PLANNER_SCORE_MODE_RATIO;
+    if (parsed.numeric > 1 && parsed.numeric <= PLANNER_SCORE_MAX) return PLANNER_SCORE_MODE_TEN;
+    if (parsed.numeric > PLANNER_SCORE_MAX && parsed.numeric <= 100) return PLANNER_SCORE_MODE_RATIO;
+  }
+  return PLANNER_SCORE_MODE_RATIO;
+}
+
 function normalizePlannerRiskLevel(value, { preferTenScaleIntegers = false } = {}) {
   const raw = String(value || "").trim().toLowerCase();
   if (PLANNER_RISK_LEVELS.includes(raw)) return raw;
@@ -4508,15 +4524,17 @@ function normalizePlannerTaskForCreation(task, index) {
     }
     return normalized;
   };
+  const scoreMode = inferPlannerTaskScoreMode(task);
+  const preferTenScaleIntegers = scoreMode === PLANNER_SCORE_MODE_TEN;
   const lines = [];
   const description = String(task.description || "").trim();
   if (description) lines.push(description);
   const acceptanceCriteria = normalizeStringList(task.acceptance_criteria);
   const verification = normalizeStringList(task.verification);
   const repoAreas = normalizeRepoAreas(task.repo_areas || task.repoAreas);
-  const impact = normalizePlannerScore(task.impact);
-  const confidence = normalizePlannerScore(task.confidence);
-  const risk = normalizePlannerRiskLevel(task.risk);
+  const impact = normalizePlannerScore(task.impact, { preferTenScaleIntegers });
+  const confidence = normalizePlannerScore(task.confidence, { preferTenScaleIntegers });
+  const risk = normalizePlannerRiskLevel(task.risk, { preferTenScaleIntegers });
   const estimatedEffort = String(task.estimated_effort || task.estimatedEffort || "").trim().toLowerCase();
   const whyNow = String(task.why_now || task.whyNow || "").trim();
   const killCriteria = normalizeStringList(task.kill_criteria || task.killCriteria);

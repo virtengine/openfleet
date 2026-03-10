@@ -3143,6 +3143,64 @@ it("action.materialize_planner_tasks treats explicit integer impact thresholds a
   expect(result.skippedCount).toBe(0);
   expect(createTask).toHaveBeenCalledTimes(1);
 });
+
+it("action.materialize_planner_tasks normalizes mixed 0-1 and 0-10 planner scores consistently", async () => {
+  const handler = getNodeType("action.materialize_planner_tasks");
+  expect(handler).toBeDefined();
+
+  const ctx = new WorkflowContext({});
+  ctx.setNodeOutput("run-planner", {
+    output: [
+      "```json",
+      "{",
+      '  "tasks": [',
+      '    { "title": "[m] fix(workflow): one on ten risk", "description": "A", "acceptance_criteria": ["ac"], "verification": ["v"], "repo_areas": ["workflow"], "impact": 7, "confidence": 8, "risk": 1 },',
+      '    { "title": "[m] fix(server): one on one risk", "description": "B", "acceptance_criteria": ["ac"], "verification": ["v"], "repo_areas": ["server"], "impact": 0.8, "confidence": 0.7, "risk": 1 }',
+      "  ]",
+      "}",
+      "```",
+    ].join("\n"),
+  });
+
+  const createTask = vi.fn(async () => ({ id: "task-score-normalization-1" }));
+  const mockEngine = {
+    services: {
+      kanban: {
+        createTask,
+      },
+    },
+  };
+
+  const node = {
+    id: "materialize-score-normalization",
+    type: "action.materialize_planner_tasks",
+    config: {
+      plannerNodeId: "run-planner",
+      dedup: false,
+      failOnZero: true,
+      minCreated: 1,
+      minImpactScore: 6,
+      maxRiskWithoutHuman: "medium",
+    },
+  };
+
+  const result = await handler.execute(node, ctx, mockEngine);
+  expect(result.success).toBe(true);
+  expect(result.createdCount).toBe(1);
+  expect(result.skipped).toEqual(expect.arrayContaining([
+    expect.objectContaining({ title: "[m] fix(server): one on one risk", reason: "risk_above_threshold" }),
+  ]));
+  expect(createTask).toHaveBeenCalledWith("", expect.objectContaining({
+    title: "[m] fix(workflow): one on ten risk",
+    meta: expect.objectContaining({
+      planner: expect.objectContaining({
+        impact: 7,
+        confidence: 8,
+        risk: "low",
+      }),
+    }),
+  }));
+});
 describe("WorkflowEngine singleton services", () => {
   beforeEach(() => {
     resetWorkflowEngine();
