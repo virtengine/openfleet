@@ -391,7 +391,7 @@ describe("workflow-templates", () => {
     const taskNode = template.nodes.find((n) => n.id === "task-metrics");
     expect(taskNode?.type).toBe("action.bosun_cli");
     expect(taskNode?.config?.subcommand).toBe("task list");
-    expect(taskNode?.config?.args).toContain("--format json");
+    expect(taskNode?.config?.args).toContain("--json");
 
     const summaryNode = template.nodes.find((n) => n.id === "summarize-fitness-metrics");
     expect(summaryNode?.type).toBe("action.set_variable");

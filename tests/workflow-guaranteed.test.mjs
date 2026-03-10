@@ -500,6 +500,34 @@ describe("guaranteed: behavioral contracts", () => {
     expect(artifact?.metrics?.reopened_tasks?.value).toBe(0);
     expect(artifact?.priorWeekDeltas).toHaveProperty("throughput");
   });
+
+  it("template-weekly-fitness-summary: non-json task telemetry is marked degraded and suppressed from trend alerts", async () => {
+    const { harness, fixtures } = setupHarness("template-weekly-fitness-summary");
+    const runInput = { ...fixtures.inputVars, createFollowupTasks: false };
+
+    const stableDispatch = _activeDispatch;
+    _activeDispatch = (cmd) => {
+      const command = String(cmd || "");
+      if (/^bosun\s+task\s+list\b/i.test(command)) {
+        return "2 task(s):\n[done] TASK-1\n[inprogress] TASK-2";
+      }
+      return stableDispatch(command);
+    };
+
+    const { ctx } = await harness.run(runInput);
+    harness.assertions.noEngineErrors(ctx);
+
+    const write = harness.assertions.nodeSucceeded(ctx, "persist-fitness-summary");
+    const artifact = JSON.parse(readFileSync(write.path, "utf8"));
+
+    expect(artifact?.sourceHealth?.tasks?.status).toBe("degraded");
+    expect(artifact?.metrics?.throughput?.confidence).toBe("low");
+    expect(artifact?.metrics?.throughput?.value).toBeNull();
+    const throughputAlerts = Array.isArray(artifact?.trendAlerts)
+      ? artifact.trendAlerts.filter((alert) => alert?.metric === "throughput")
+      : [];
+    expect(throughputAlerts.length).toBe(0);
+  });
   // ── CI/CD templates ───────────────────────────────────────────────────
 
   it("template-build-deploy: runs build → deploy pipeline", async () => {

@@ -478,7 +478,7 @@ export const WEEKLY_FITNESS_SUMMARY_TEMPLATE = {
 
     node("task-metrics", "action.bosun_cli", "Collect Task Metrics", {
       subcommand: "task list",
-      args: "--format json --since {{lookbackDays}}d",
+      args: "--json",
       parseJson: true,
       continueOnError: true,
     }, { x: 150, y: 180 }),
@@ -529,8 +529,7 @@ export const WEEKLY_FITNESS_SUMMARY_TEMPLATE = {
         "      const lines = trimmed.split(/\\r?\\n/);" +
         "      const parsedLines = lines.map((line) => parseJsonSafe(line)).filter(Boolean);" +
         "      if (parsedLines.length > 0) return { items: parsedLines, degraded: parsedLines.length < lines.filter(Boolean).length };" +
-        "      const looksStructured = /^[[{]/.test(trimmed);" +
-        "      return { items: [], degraded: looksStructured };" +
+        "      return { items: [], degraded: true };" +
         "    };" +
         "    const getTs = (item) => {" +
         "      if (!item || typeof item !== 'object') return null;" +
@@ -581,6 +580,7 @@ export const WEEKLY_FITNESS_SUMMARY_TEMPLATE = {
         "      const success = nodeOut?.success !== false;" +
         "      if (!hasPayload && !success) return { status: 'missing', confidence: 'low' };" +
         "      if (!hasPayload && success) return { status: 'missing', confidence: 'low' };" +
+        "      if (!success && hasPayload) return { status: 'degraded', confidence: 'low' };" +
         "      if (parsedMeta?.degraded) return { status: 'degraded', confidence: 'low' };" +
         "      if (!Array.isArray(parsedList)) return { status: 'degraded', confidence: 'low' };" +
         "      return { status: 'ok', confidence: parsedList.length > 0 ? 'high' : 'medium' };" +
@@ -679,6 +679,7 @@ export const WEEKLY_FITNESS_SUMMARY_TEMPLATE = {
         "    const alertThresholds = { throughput: 1, regression_rate: 2.5, merge_success: 2.5, reopened_tasks: 1, debt_growth: 1 };" +
         "    const trendAlerts = Object.entries(metrics).flatMap(([metricName, m]) => {" +
         "      if (m == null || m.delta == null) return [];" +
+        "      if (String(m.confidence || '').toLowerCase() === 'low') return [];" +
         "      const delta = Number(m.delta);" +
         "      const isRegression = (m.direction === 'up_is_good' && delta < 0) || (m.direction === 'down_is_good' && delta > 0);" +
         "      if (!isRegression) return [];" +
