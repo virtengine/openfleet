@@ -4423,6 +4423,76 @@ class TaskExecutor {
    * @returns {Promise<void>}
    */
   async executeTask(task, options = {}) {
+    const taskId = String(task?.id || task?.task_id || "").trim();
+    if (!taskId) {
+      return { skipped: true, reason: "missing_task_id" };
+    }
+
+    // When workflow automation owns lifecycle execution, emit a synthetic
+    // "started" slot so monitor/ui hooks can dispatch trigger.task_assigned.
+    if (this.workflowOwnsTaskLifecycle) {
+      const now = Date.now();
+      const taskTitle = String(task?.title || task?.task_title || taskId).trim() || taskId;
+      const resolvedSdk = String(
+        options?.sdk ||
+          options?.executor ||
+          task?.sdk ||
+          task?.executor ||
+          this.sdk ||
+          "auto",
+      ).trim() || "auto";
+      const resolvedModel = String(
+        options?.model ||
+          task?.model ||
+          task?.modelName ||
+          "",
+      ).trim();
+      const branch = String(
+        task?.branch ||
+          task?.branchName ||
+          task?.meta?.branch ||
+          task?.meta?.branch_name ||
+          "",
+      ).trim() || `task/${taskId.replace(/[^a-zA-Z0-9]/g, "").slice(0, 12) || "work"}`;
+      const worktreePath = String(
+        task?.worktreePath ||
+          task?.meta?.worktreePath ||
+          task?.meta?.worktree_path ||
+          "",
+      ).trim() || null;
+
+      const slot = {
+        taskId,
+        taskTitle,
+        branch,
+        worktreePath,
+        sdk: resolvedSdk,
+        model: resolvedModel || null,
+        attempt: 1,
+        startedAt: now,
+        status: "running",
+        agentInstanceId: null,
+      };
+
+      if (typeof this.onTaskStarted === "function") {
+        try {
+          await this.onTaskStarted(task, slot);
+        } catch (err) {
+          console.warn(`${TAG} onTaskStarted hook failed for "${taskTitle}": ${err?.message || err}`);
+        }
+      }
+
+      return {
+        queued: false,
+        started: true,
+        dispatched: true,
+        mode: "workflow-owned",
+        taskId,
+        sdk: resolvedSdk,
+        model: resolvedModel || null,
+      };
+    }
+
     // [LEGACY REMOVED] Replaced by workflow node: TASK_LIFECYCLE_TEMPLATE (all nodes)
     // See workflow-templates/task-lifecycle.mjs
     return { skipped: true, reason: "legacy_removed" };
