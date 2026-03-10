@@ -17,6 +17,7 @@ const ISOLATED_BOSUN_DIR = join(tmpdir(), `bosun-voice-smoke-${process.pid}`);
 
 const ENV_KEYS = [
   "BOSUN_DIR",
+  "BOSUN_HOME",
   "TELEGRAM_UI_TLS_DISABLE",
   "TELEGRAM_UI_ALLOW_UNSAFE",
   "TELEGRAM_UI_TUNNEL",
@@ -26,6 +27,7 @@ const ENV_KEYS = [
   "BOSUN_ENV_NO_OVERRIDE",
   "VOICE_ENABLED",
   "VOICE_PROVIDER",
+  "VOICE_PROVIDERS",
   "VOICE_MODEL",
   "VOICE_VISION_MODEL",
   "VOICE_FALLBACK_MODE",
@@ -179,9 +181,11 @@ beforeEach(() => {
   process.env.BOSUN_ENV_NO_OVERRIDE = "1";
   process.env.VOICE_ENABLED = "true";
   process.env.VOICE_FALLBACK_MODE = "browser";
+  process.env.VOICE_PROVIDERS = "";
   // Isolate from the developer's ~/.bosun config dir and .env file so that
   // real Azure credentials don't leak into provider-selection logic.
   process.env.BOSUN_DIR = ISOLATED_BOSUN_DIR;
+  process.env.BOSUN_HOME = ISOLATED_BOSUN_DIR;
 
   // Set credential keys to empty strings instead of deleting them so that
   // loadDotEnv ({ override: false }) in loadConfig() won't re-populate them
