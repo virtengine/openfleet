@@ -423,6 +423,8 @@ describe("guaranteed: behavioral contracts", () => {
     const secondArtifact = JSON.parse(readFileSync(secondWrite.path, "utf8"));
     expect(["missing", "degraded", "ok"]).toContain(secondArtifact?.sourceHealth?.prs?.status);
     expect(secondArtifact?.metrics?.merge_success?.confidence).toBe("low");
+    expect(secondArtifact?.trendDeltas).toHaveProperty("throughput");
+    expect(secondArtifact?.priorWeekTrendDeltas).toHaveProperty("throughput");
     expect(secondArtifact?.priorWeekDeltas).toBeTruthy();
     expect(secondArtifact?.metrics?.throughput).toHaveProperty("delta");
 
@@ -431,6 +433,43 @@ describe("guaranteed: behavioral contracts", () => {
     } catch {
       // best-effort cleanup of generated artifacts
     }
+  });
+
+  it("template-weekly-fitness-summary: mixed degraded + healthy sources produce parse-safe trend deltas", async () => {
+    const { harness, fixtures } = setupHarness("template-weekly-fitness-summary");
+    const runInput = { ...fixtures.inputVars, createFollowupTasks: false };
+
+    const stableDispatch = _activeDispatch;
+    _activeDispatch = (cmd) => {
+      const command = String(cmd || "");
+      if (/^bosun\s+task\s+list\b/i.test(command)) {
+        return "{ malformed-task-json";
+      }
+      if (/task-debt-ledger\.jsonl/i.test(command)) {
+        return "{ malformed-ledger-json";
+      }
+      return stableDispatch(command);
+    };
+
+    const { ctx } = await harness.run(runInput);
+    harness.assertions.noEngineErrors(ctx);
+
+    const write = harness.assertions.nodeSucceeded(ctx, "persist-fitness-summary");
+    const artifact = JSON.parse(readFileSync(write.path, "utf8"));
+
+    expect(artifact?.sourceHealth?.tasks?.status).toBe("degraded");
+    expect(artifact?.sourceHealth?.debt?.status).toBe("degraded");
+    expect(artifact?.sourceHealth?.prs?.status).toBe("ok");
+    expect(artifact?.metrics?.throughput?.value).toBeNull();
+    expect(artifact?.metrics?.throughput?.confidence).toBe("low");
+    expect(artifact?.metrics?.debt_growth?.value).toBeNull();
+    expect(artifact?.metrics?.regression_rate).toHaveProperty("value");
+
+    expect(() => JSON.parse(JSON.stringify(artifact?.trendDeltas ?? {}))).not.toThrow();
+    expect(() => JSON.parse(JSON.stringify(artifact?.priorWeekTrendDeltas ?? {}))).not.toThrow();
+    expect(artifact?.trendDeltas).toHaveProperty("merge_success");
+    expect(artifact?.priorWeekTrendDeltas).toHaveProperty("merge_success");
+    expect(["low", "medium", "high"]).toContain(artifact?.dataQuality?.overallConfidence);
   });
   // ── CI/CD templates ───────────────────────────────────────────────────
 

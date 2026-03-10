@@ -511,23 +511,26 @@ export const WEEKLY_FITNESS_SUMMARY_TEMPLATE = {
         "    const toNumber = (v, fallback = 0) => { const n = Number(v); return Number.isFinite(n) ? n : fallback; };" +
         "    const toIso = (ms) => new Date(ms).toISOString();" +
         "    const parseJsonSafe = (raw) => { try { return JSON.parse(String(raw)); } catch { return null; } };" +
-        "    const parseArray = (raw) => {" +
-        "      if (Array.isArray(raw)) return raw.filter(Boolean);" +
+        "    const parseSource = (raw) => {" +
+        "      if (Array.isArray(raw)) return { items: raw.filter(Boolean), degraded: false };" +
         "      if (raw && typeof raw === 'object') {" +
-        "        if (Array.isArray(raw.items)) return raw.items.filter(Boolean);" +
-        "        if (Array.isArray(raw.tasks)) return raw.tasks.filter(Boolean);" +
+        "        if (Array.isArray(raw.items)) return { items: raw.items.filter(Boolean), degraded: false };" +
+        "        if (Array.isArray(raw.tasks)) return { items: raw.tasks.filter(Boolean), degraded: false };" +
         "      }" +
-        "      if (typeof raw !== 'string') return [];" +
+        "      if (typeof raw !== 'string') return { items: [], degraded: false };" +
         "      const trimmed = raw.trim();" +
-        "      if (!trimmed) return [];" +
+        "      if (!trimmed) return { items: [], degraded: false };" +
         "      const parsed = parseJsonSafe(trimmed);" +
-        "      if (Array.isArray(parsed)) return parsed.filter(Boolean);" +
+        "      if (Array.isArray(parsed)) return { items: parsed.filter(Boolean), degraded: false };" +
         "      if (parsed && typeof parsed === 'object') {" +
-        "        if (Array.isArray(parsed.items)) return parsed.items.filter(Boolean);" +
-        "        if (Array.isArray(parsed.tasks)) return parsed.tasks.filter(Boolean);" +
+        "        if (Array.isArray(parsed.items)) return { items: parsed.items.filter(Boolean), degraded: false };" +
+        "        if (Array.isArray(parsed.tasks)) return { items: parsed.tasks.filter(Boolean), degraded: false };" +
         "      }" +
-        "      const lines = trimmed.split(/\\r?\\n/).map((line) => parseJsonSafe(line)).filter(Boolean);" +
-        "      return Array.isArray(lines) ? lines : [];" +
+        "      const lines = trimmed.split(/\\r?\\n/);" +
+        "      const parsedLines = lines.map((line) => parseJsonSafe(line)).filter(Boolean);" +
+        "      if (parsedLines.length > 0) return { items: parsedLines, degraded: parsedLines.length < lines.filter(Boolean).length };" +
+        "      const looksStructured = /^[[{]/.test(trimmed);" +
+        "      return { items: [], degraded: looksStructured };" +
         "    };" +
         "    const getTs = (item) => {" +
         "      if (!item || typeof item !== 'object') return null;" +
@@ -573,11 +576,12 @@ export const WEEKLY_FITNESS_SUMMARY_TEMPLATE = {
         "        notes: notes.filter(Boolean)," +
         "      };" +
         "    };" +
-        "    const sourceStatus = (nodeOut, parsedList) => {" +
+        "    const sourceStatus = (nodeOut, parsedList, parsedMeta = {}) => {" +
         "      const hasPayload = nodeOut?.output != null && (Array.isArray(nodeOut.output) || String(nodeOut.output).trim() !== '');" +
         "      const success = nodeOut?.success !== false;" +
         "      if (!hasPayload && !success) return { status: 'missing', confidence: 'low' };" +
         "      if (!hasPayload && success) return { status: 'missing', confidence: 'low' };" +
+        "      if (parsedMeta?.degraded) return { status: 'degraded', confidence: 'low' };" +
         "      if (!Array.isArray(parsedList)) return { status: 'degraded', confidence: 'low' };" +
         "      return { status: 'ok', confidence: parsedList.length > 0 ? 'high' : 'medium' };" +
         "    };" +
@@ -585,19 +589,23 @@ export const WEEKLY_FITNESS_SUMMARY_TEMPLATE = {
         "    const prNode = $ctx.getNodeOutput('pr-metrics') || {};" +
         "    const debtNode = $ctx.getNodeOutput('debt-metrics') || {};" +
         "    const prevNode = $ctx.getNodeOutput('read-previous-summary') || {};" +
-        "    const tasks = parseArray(taskNode.output);" +
-        "    const prs = parseArray(prNode.output);" +
-        "    const debt = parseArray(debtNode.output);" +
-        "    const taskHealth = sourceStatus(taskNode, tasks);" +
-        "    const prHealth = sourceStatus(prNode, prs);" +
-        "    const debtHealth = sourceStatus(debtNode, debt);" +
+        "    const taskParsed = parseSource(taskNode.output);" +
+        "    const prParsed = parseSource(prNode.output);" +
+        "    const debtParsed = parseSource(debtNode.output);" +
+        "    const tasks = taskParsed.items;" +
+        "    const prs = prParsed.items;" +
+        "    const debt = debtParsed.items;" +
+        "    const taskHealth = sourceStatus(taskNode, tasks, taskParsed);" +
+        "    const prHealth = sourceStatus(prNode, prs, prParsed);" +
+        "    const debtHealth = sourceStatus(debtNode, debt, debtParsed);" +
         "    const taskSplit = splitWindows(tasks);" +
         "    const prSplit = splitWindows(prs);" +
         "    const debtSplit = splitWindows(debt);" +
         "    const doneStatuses = new Set(['done', 'closed', 'completed', 'merged', 'resolved']);" +
         "    const isDone = (item) => doneStatuses.has(String(item?.status || '').toLowerCase());" +
-        "    const throughputCurrent = taskSplit.current.filter(isDone).length;" +
-        "    const throughputPrevious = taskSplit.previous.filter(isDone).length;" +
+        "    const taskTelemetryUnavailable = taskHealth.status === 'missing' || taskHealth.status === 'degraded';" +
+        "    const throughputCurrent = taskTelemetryUnavailable ? null : taskSplit.current.filter(isDone).length;" +
+        "    const throughputPrevious = taskTelemetryUnavailable ? null : taskSplit.previous.filter(isDone).length;" +
         "    const reopenedCount = (items) => items.filter((item) => {" +
         "      if (!item || typeof item !== 'object') return false;" +
         "      const reopenCount = toNumber(item.reopenCount ?? item.reopenedCount, 0);" +
@@ -606,8 +614,8 @@ export const WEEKLY_FITNESS_SUMMARY_TEMPLATE = {
         "      const status = String(item.status || '').toLowerCase();" +
         "      return status.includes('reopen');" +
         "    }).length;" +
-        "    const reopenedCurrent = reopenedCount(taskSplit.current);" +
-        "    const reopenedPrevious = reopenedCount(taskSplit.previous);" +
+        "    const reopenedCurrent = taskTelemetryUnavailable ? null : reopenedCount(taskSplit.current);" +
+        "    const reopenedPrevious = taskTelemetryUnavailable ? null : reopenedCount(taskSplit.previous);" +
         "    const classifyRegression = (pr) => /revert|regression|rollback|hotfix/i.test(String(pr?.title || '') + ' ' + String(pr?.body || ''));" +
         "    const regressionCurrentCount = prSplit.current.filter(classifyRegression).length;" +
         "    const regressionPreviousCount = prSplit.previous.filter(classifyRegression).length;" +
@@ -641,7 +649,6 @@ export const WEEKLY_FITNESS_SUMMARY_TEMPLATE = {
         "    const debtCurrent = debtSplit.current.length > 0 ? debtDelta(debtSplit.current) : null;" +
         "    const debtPrevious = debtSplit.previous.length > 0 ? debtDelta(debtSplit.previous) : null;" +
         "    const priorParsed = prevNode?.success === true ? parseJsonSafe(prevNode.content) : null;" +
-        "    const priorWeekDeltas = priorParsed?.metrics || null;" +
         "    const metricConfidence = (primaryHealth, hasValue, usedFallbackWindow) => {" +
         "      if (!hasValue) return 'low';" +
         "      if (primaryHealth.status === 'missing') return 'low';" +
@@ -649,12 +656,26 @@ export const WEEKLY_FITNESS_SUMMARY_TEMPLATE = {
         "      if (usedFallbackWindow) return 'medium';" +
         "      return primaryHealth.confidence || 'medium';" +
         "    };" +
-        "    const throughputMetric = metric('throughput', throughputCurrent, throughputPrevious, 'up_is_good', 'tasks', metricConfidence(taskHealth, true, taskSplit.usedFallbackWindow), taskHealth.status, [taskSplit.usedFallbackWindow ? 'No task timestamps detected; treated all records as current week.' : '']);" +
+        "    const throughputMetric = metric('throughput', throughputCurrent, throughputPrevious, 'up_is_good', 'tasks', metricConfidence(taskHealth, throughputCurrent != null, taskSplit.usedFallbackWindow), taskHealth.status, [throughputCurrent == null ? 'Task telemetry unavailable for this window.' : '', taskSplit.usedFallbackWindow ? 'No task timestamps detected; treated all records as current week.' : '']);" +
         "    const regressionMetric = metric('regression_rate', regressionCurrentRate, regressionPreviousRate, 'down_is_good', 'percent', metricConfidence(prHealth, regressionCurrentRate != null, prSplit.usedFallbackWindow), prHealth.status, [regressionCurrentRate == null ? 'Insufficient PR sample to compute regression rate.' : '', prSplit.usedFallbackWindow ? 'No PR timestamps detected; treated all records as current week.' : '']);" +
         "    const mergeMetric = metric('merge_success', mergeSuccessCurrent, mergeSuccessPrevious, 'up_is_good', 'percent', metricConfidence(prHealth, mergeSuccessCurrent != null, prSplit.usedFallbackWindow), prHealth.status, [mergeSuccessCurrent == null ? 'No closed or merged PRs in scope.' : '', prSplit.usedFallbackWindow ? 'No PR timestamps detected; treated all records as current week.' : '']);" +
-        "    const reopenedMetric = metric('reopened_tasks', reopenedCurrent, reopenedPrevious, 'down_is_good', 'tasks', metricConfidence(taskHealth, true, taskSplit.usedFallbackWindow), taskHealth.status, [taskSplit.usedFallbackWindow ? 'No task timestamps detected; treated all records as current week.' : '']);" +
+        "    const reopenedMetric = metric('reopened_tasks', reopenedCurrent, reopenedPrevious, 'down_is_good', 'tasks', metricConfidence(taskHealth, reopenedCurrent != null, taskSplit.usedFallbackWindow), taskHealth.status, [reopenedCurrent == null ? 'Task telemetry unavailable for this window.' : '', taskSplit.usedFallbackWindow ? 'No task timestamps detected; treated all records as current week.' : '']);" +
         "    const debtMetric = metric('debt_growth', debtCurrent, debtPrevious, 'down_is_good', 'points', metricConfidence(debtHealth, debtCurrent != null, debtSplit.usedFallbackWindow), debtHealth.status, [debtCurrent == null ? 'No debt ledger events in scope.' : '', debtSplit.usedFallbackWindow ? 'No debt timestamps detected; treated all records as current week.' : '']);" +
         "    const metrics = { throughput: throughputMetric, regression_rate: regressionMetric, merge_success: mergeMetric, reopened_tasks: reopenedMetric, debt_growth: debtMetric };" +
+        "    const metricKeys = ['throughput', 'regression_rate', 'merge_success', 'reopened_tasks', 'debt_growth'];" +
+        "    const trendDeltas = metricKeys.reduce((acc, key) => { const d = metrics?.[key]?.delta; acc[key] = Number.isFinite(d) ? d : null; return acc; }, {});" +
+        "    const normalizePriorTrendDelta = (metricName) => {" +
+        "      const direct = priorParsed?.priorWeekTrendDeltas?.[metricName];" +
+        "      if (Number.isFinite(Number(direct))) return Number(Number(direct).toFixed(2));" +
+        "      const trend = priorParsed?.trendDeltas?.[metricName];" +
+        "      if (Number.isFinite(Number(trend))) return Number(Number(trend).toFixed(2));" +
+        "      const metricDelta = priorParsed?.metrics?.[metricName]?.delta;" +
+        "      if (Number.isFinite(Number(metricDelta))) return Number(Number(metricDelta).toFixed(2));" +
+        "      return null;" +
+        "    };" +
+        "    const priorWeekTrendDeltas = metricKeys.reduce((acc, key) => { acc[key] = normalizePriorTrendDelta(key); return acc; }, {});" +
+        "    const priorWeekDeltas = priorWeekTrendDeltas;" +
+        "    const priorWeekMetrics = priorParsed?.metrics && typeof priorParsed.metrics === 'object' ? priorParsed.metrics : null;" +
         "    const alertThresholds = { throughput: 1, regression_rate: 2.5, merge_success: 2.5, reopened_tasks: 1, debt_growth: 1 };" +
         "    const trendAlerts = Object.entries(metrics).flatMap(([metricName, m]) => {" +
         "      if (m == null || m.delta == null) return [];" +
@@ -680,8 +701,11 @@ export const WEEKLY_FITNESS_SUMMARY_TEMPLATE = {
         "      window: { currentStart: toIso(currentStart), currentEnd: toIso(now), previousStart: toIso(previousStart), previousEnd: toIso(previousEnd) }," +
         "      sourceHealth," +
         "      metrics," +
+        "      trendDeltas," +
         "      trendAlerts," +
+        "      priorWeekTrendDeltas," +
         "      priorWeekDeltas," +
+        "      priorWeekMetrics," +
         "      dataQuality: {" +
         "        overallConfidence," +
         "        missingSources: Object.entries(sourceHealth).filter(([, v]) => v.status === 'missing').map(([k]) => k)," +
@@ -705,8 +729,11 @@ export const WEEKLY_FITNESS_SUMMARY_TEMPLATE = {
         "        reopened_tasks: { value: null, previous: null, delta: null, confidence: 'low', status: 'missing' }," +
         "        debt_growth: { value: null, previous: null, delta: null, confidence: 'low', status: 'missing' }," +
         "      }," +
+        "      trendDeltas: { throughput: null, regression_rate: null, merge_success: null, reopened_tasks: null, debt_growth: null }," +
         "      trendAlerts: [{ metric: 'summary', severity: 'high', delta: null, reason: `Fitness summary fallback engaged: ${error?.message || 'unknown error'}` }]," +
+        "      priorWeekTrendDeltas: { throughput: null, regression_rate: null, merge_success: null, reopened_tasks: null, debt_growth: null }," +
         "      priorWeekDeltas: null," +
+        "      priorWeekMetrics: null," +
         "      dataQuality: { overallConfidence: 'low', missingSources: ['tasks', 'prs', 'debt'], degradedSources: [] }," +
         "    };" +
         "  }" +
