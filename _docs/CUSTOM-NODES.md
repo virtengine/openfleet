@@ -44,6 +44,7 @@ export async function execute(node, ctx) {
 - Bosun scans `custom-nodes/*.mjs` on workflow module startup.
 - In dev mode, Bosun watches `custom-nodes/` and hot-reloads changed files.
 - Custom nodes appear in the workflow palette with a `custom` badge.
+- Custom nodes are also returned by node fuzzy search in the workflow canvas.
 
 ## Validation
 
