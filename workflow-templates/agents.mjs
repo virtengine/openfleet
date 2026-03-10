@@ -457,7 +457,9 @@ export const BACKEND_AGENT_TEMPLATE = {
     autoFixTimeoutMs: 1200000,
   },
   nodes: [
-    node("trigger", "trigger.task_assigned", "Task Assigned", {}, { x: 400, y: 50 }),
+    node("trigger", "trigger.task_assigned", "Task Assigned", {
+      filter: "task.tags?.some(t => t === 'backend' || t === 'api')",
+    }, { x: 400, y: 50 }),
 
     node("plan-work", "agent.run_planner", "Plan Implementation", {
       prompt: "Analyze the task requirements and create a step-by-step implementation plan. Identify which files need to be modified, what tests need to be written, and any API contracts to maintain.",
@@ -525,7 +527,7 @@ Commit with message "feat: implement [feature]"`,
     }, { x: 250, y: 1170 }),
 
     node("pr-created", "condition.expression", "Handoff Recorded?", {
-      expression: "$ctx.getNodeOutput('create-pr')?.success === true",
+      expression: "Boolean($ctx.getNodeOutput('create-pr')?.prNumber || $ctx.getNodeOutput('create-pr')?.prUrl)",
     }, { x: 250, y: 1240, outputs: ["yes", "no"] }),
 
     node("notify-done", "notify.log", "Task Complete", {
@@ -594,7 +596,7 @@ Commit with message "fix: address backend workflow validation failures"`,
     }, { x: 450, y: 1820 }),
 
     node("pr-created-retry", "condition.expression", "Handoff Recorded (Retry Path)?", {
-      expression: "$ctx.getNodeOutput('create-pr-retry')?.success === true",
+      expression: "Boolean($ctx.getNodeOutput('create-pr-retry')?.prNumber || $ctx.getNodeOutput('create-pr-retry')?.prUrl)",
     }, { x: 450, y: 1890, outputs: ["yes", "no"] }),
 
     node("notify-done-retry", "notify.log", "Task Complete (After Retry)", {
@@ -964,3 +966,4 @@ export const MEETING_SUBWORKFLOW_CHAIN_TEMPLATE = {
     requiredTemplates: ["template-task-planner"],
   },
 };
+

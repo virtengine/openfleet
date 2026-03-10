@@ -204,6 +204,90 @@ function simplifyPathLabel(filePath) {
   return parts[0] || normalized;
 }
 
+const PR_EVENT_ALIAS_MAP = Object.freeze({
+  open: "opened",
+  opened: "opened",
+  reopen: "opened",
+  reopened: "opened",
+  ready_for_review: "opened",
+  readyforreview: "opened",
+  synchronize: "opened",
+  synchronized: "opened",
+  edited: "opened",
+  merge: "merged",
+  merged: "merged",
+  review_requested: "review_requested",
+  reviewrequest: "review_requested",
+  review_requested_event: "review_requested",
+  changes_requested: "changes_requested",
+  change_requested: "changes_requested",
+  requested_changes: "changes_requested",
+  approved: "approved",
+  approval: "approved",
+  close: "closed",
+  closed: "closed",
+});
+
+function normalizePrEventName(value) {
+  const raw = String(value || "").trim().toLowerCase();
+  if (!raw) return "";
+  const normalized = raw.replace(/[\s-]+/g, "_");
+  return PR_EVENT_ALIAS_MAP[normalized] || normalized;
+}
+
+function evaluateTaskAssignedTriggerConfig(config = {}, eventData = {}) {
+  let triggered = eventData?.eventType === "task.assigned";
+  if (!triggered) return false;
+
+  const task = eventData?.task || eventData || {};
+  const expectedAgentType = String(config?.agentType || "").trim().toLowerCase();
+  if (expectedAgentType) {
+    const candidateTypes = new Set(
+      [
+        eventData?.agentType,
+        eventData?.assignedAgentType,
+        eventData?.task?.agentType,
+        eventData?.task?.assignedAgentType,
+        eventData?.task?.agentProfile,
+        task?.agentType,
+        task?.assignedAgentType,
+        task?.agentProfile,
+      ]
+        .map((value) => String(value || "").trim().toLowerCase())
+        .filter(Boolean),
+    );
+    triggered = candidateTypes.has(expectedAgentType);
+  }
+
+  if (triggered && config?.taskPattern) {
+    try {
+      const regex = new RegExp(String(config.taskPattern), "i");
+      const searchableText = [
+        eventData?.taskTitle,
+        task?.title,
+        ...(Array.isArray(task?.tags) ? task.tags : []),
+      ]
+        .map((value) => String(value || "").trim())
+        .filter(Boolean)
+        .join(" ");
+      triggered = regex.test(searchableText);
+    } catch {
+      triggered = false;
+    }
+  }
+
+  if (triggered && config?.filter) {
+    try {
+      const fn = new Function("task", "$data", `return !!(${config.filter});`);
+      triggered = Boolean(fn(task, eventData));
+    } catch {
+      triggered = false;
+    }
+  }
+
+  return triggered;
+}
+
 function isManagedBosunWorktree(worktreePath, repoRoot) {
   const resolvedWorktree = resolve(String(worktreePath || ""));
   const managedRoot = resolve(String(repoRoot || process.cwd()), ".bosun", "worktrees");
@@ -1338,18 +1422,34 @@ registerNodeType("trigger.pr_event", {
     type: "object",
     properties: {
       event: { type: "string", enum: ["opened", "merged", "review_requested", "changes_requested", "approved", "closed"], description: "PR event type" },
+      events: {
+        type: "array",
+        items: { type: "string" },
+        description: "Optional set of accepted PR event types (supports aliases like ready_for_review/synchronize)",
+      },
       branchPattern: { type: "string", description: "Branch name regex filter" },
     },
   },
   async execute(node, ctx) {
-    const expected = node.config?.event;
-    const actual = ctx.data?.prEvent;
-    let triggered = expected === actual;
+    const expectedEvents = [
+      node.config?.event,
+      ...(Array.isArray(node.config?.events) ? node.config.events : []),
+    ]
+      .map((value) => normalizePrEventName(value))
+      .filter(Boolean);
+    const actual = normalizePrEventName(
+      ctx.data?.prEvent
+      || (String(ctx.data?.eventType || "").startsWith("pr.")
+        ? String(ctx.data.eventType).slice(3).trim()
+        : ""),
+    );
+    const expectedSet = new Set(expectedEvents);
+    let triggered = expectedSet.size > 0 ? expectedSet.has(actual) : Boolean(actual);
     if (triggered && node.config?.branchPattern) {
       const regex = new RegExp(node.config.branchPattern);
       triggered = regex.test(ctx.data?.branch || "");
     }
-    return { triggered, prEvent: actual };
+    return { triggered, prEvent: actual, expectedEvents };
   },
 });
 
@@ -1364,21 +1464,7 @@ registerNodeType("trigger.task_assigned", {
     },
   },
   async execute(node, ctx) {
-    let triggered = ctx.data?.eventType === "task.assigned";
-    if (triggered && node.config?.taskPattern) {
-      const regex = new RegExp(node.config.taskPattern, "i");
-      const title = ctx.data?.taskTitle || "";
-      triggered = regex.test(title);
-    }
-    if (triggered && node.config?.filter) {
-      try {
-        const task = ctx.data?.task || ctx.data || {};
-        const fn = new Function("task", "$data", `return !!(${node.config.filter});`);
-        triggered = fn(task, ctx.data);
-      } catch {
-        triggered = false;
-      }
-    }
+    const triggered = evaluateTaskAssignedTriggerConfig(node.config, ctx.data);
     return { triggered, task: ctx.data };
   },
 });
@@ -1726,37 +1812,85 @@ registerNodeType("action.run_agent", {
     // running a single generic agent pass.
     // Guard: skip delegation when already inside an agent sub-workflow
     // to prevent infinite recursion.
-    if (engine?.list && !ctx.data?._agentWorkflowActive) {
+    const hasDelegationTaskContext = Boolean(
+      trackedTaskId ||
+      trackedTaskTitle ||
+      ctx.data?.task?.id ||
+      ctx.data?.taskDetail?.id ||
+      ctx.data?.taskInfo?.id ||
+      ctx.data?.task?.title ||
+      ctx.data?.taskDetail?.title ||
+      ctx.data?.taskInfo?.title,
+    );
+    if (engine?.list && !ctx.data?._agentWorkflowActive && hasDelegationTaskContext) {
       try {
         const allWorkflows = engine.list() || [];
         for (const wf of allWorkflows) {
           if (wf?.enabled === false) continue;
           if (wf?.metadata?.replaces?.module !== "primary-agent.mjs") continue;
 
-          // Evaluate the trigger node's filter (if any)
-          const triggerNode = (wf.nodes || []).find(n => n.type?.startsWith("trigger."));
-          const filter = triggerNode?.config?.filter;
-          if (filter) {
-            try {
-              const task = ctx.data?.task || ctx.data || {};
-              const fn = new Function("task", "$data", `return !!(${filter});`);
-              if (!fn(task, ctx.data)) continue;
-            } catch {
-              continue;
+          const triggerNode = (wf.nodes || []).find((n) => n.type === "trigger.task_assigned");
+          if (!triggerNode) continue;
+          const delegationData = {
+            ...ctx.data,
+            eventType: "task.assigned",
+            taskId: trackedTaskId,
+            taskTitle: trackedTaskTitle,
+          };
+          if (!evaluateTaskAssignedTriggerConfig(triggerNode?.config, delegationData)) continue;
+
+          const tracker = trackedTaskId ? getSessionTracker() : null;
+          if (tracker && trackedTaskId) {
+            const existing = tracker.getSessionById(trackedTaskId);
+            if (!existing) {
+              tracker.createSession({
+                id: trackedTaskId,
+                type: "task",
+                taskId: trackedTaskId,
+                metadata: {
+                  title: trackedTaskTitle || trackedTaskId,
+                  workspaceId: String(ctx.data?.workspaceId || ctx.data?.activeWorkspace || "").trim() || undefined,
+                  workspaceDir: String(cwd || "").trim() || undefined,
+                  branch:
+                    String(
+                      ctx.data?.branch ||
+                        ctx.data?.task?.branchName ||
+                        ctx.data?.taskDetail?.branchName ||
+                        "",
+                    ).trim() || undefined,
+                },
+              });
+            } else {
+              tracker.updateSessionStatus(trackedTaskId, "active");
+              if (trackedTaskTitle) tracker.renameSession(trackedTaskId, trackedTaskTitle);
             }
+            tracker.recordEvent(trackedTaskId, {
+              role: "system",
+              type: "system",
+              content: `Delegating to agent workflow "${wf.name}" (${wf.id})`,
+              timestamp: new Date().toISOString(),
+              _sessionType: "task",
+            });
           }
 
           // Delegate to this agent workflow
           ctx.log(node.id, `Delegating to agent workflow "${wf.name}" (${wf.id})`);
           const subCtx = await engine.execute(wf.id, {
-            ...ctx.data,
+            ...delegationData,
             _agentWorkflowActive: true,
-            eventType: "task.assigned",
-            taskId: trackedTaskId,
-            taskTitle: trackedTaskTitle,
           });
           const subErrors = Array.isArray(subCtx?.errors) ? subCtx.errors : [];
           const subStatus = subErrors.length === 0 ? "completed" : "failed";
+          if (tracker && trackedTaskId) {
+            tracker.updateSessionStatus(trackedTaskId, subStatus);
+            tracker.recordEvent(trackedTaskId, {
+              role: subStatus === "completed" ? "assistant" : "system",
+              type: subStatus === "completed" ? "agent_message" : "error",
+              content: `Agent workflow "${wf.name}" ${subStatus} (${subErrors.length} errors)`,
+              timestamp: new Date().toISOString(),
+              _sessionType: "task",
+            });
+          }
           ctx.log(node.id, `Agent workflow "${wf.name}" ${subStatus} (${subErrors.length} errors)`);
           return {
             success: subErrors.length === 0,
@@ -3070,7 +3204,7 @@ registerNodeType("action.update_task_status", {
     if (kanban?.updateTaskStatus) {
       const createPrOutput =
         typeof ctx.getNodeOutput === "function"
-          ? ctx.getNodeOutput("create-pr")
+          ? (ctx.getNodeOutput("create-pr") || ctx.getNodeOutput("pr") || ctx.getNodeOutput("create-pr-retry"))
           : null;
 
       const normalizeString = (value) => {
@@ -5426,6 +5560,7 @@ registerNodeType("loop.for_each", {
     return {
       items,
       count: items.length,
+      totalItems: items.length,
       variable: varName,
       results,
       successCount,
@@ -7521,6 +7656,7 @@ let _taskClaimsInitPromise = null;
 let _taskComplexityMod = null;
 let _kanbanAdapterMod = null;
 let _agentPoolMod = null;
+let _libraryManagerMod = null;
 let _gitSafetyMod = null;
 let _diffStatsMod = null;
 
@@ -7617,6 +7753,10 @@ async function ensureTaskClaimsInitialized(ctx, claims) {
 async function ensureTaskComplexityMod() {
   if (!_taskComplexityMod) _taskComplexityMod = await import("../task/task-complexity.mjs");
   return _taskComplexityMod;
+}
+async function ensureLibraryManagerMod() {
+  if (!_libraryManagerMod) _libraryManagerMod = await import("../infra/library-manager.mjs");
+  return _libraryManagerMod;
 }
 async function ensureKanbanAdapterMod() {
   if (!_kanbanAdapterMod) _kanbanAdapterMod = await import("../kanban/kanban-adapter.mjs");
@@ -8348,11 +8488,25 @@ registerNodeType("action.claim_task", {
       if (renewIntervalMs > 0 && renewClaimFn) {
         const renewTimer = setInterval(async () => {
           try {
-            await renewClaimFn({ taskId, claimToken: token, instanceId, ttlMinutes });
+            const renewalResult = await renewClaimFn({ taskId, claimToken: token, instanceId, ttlMinutes });
+            if (renewalResult && renewalResult.success === false) {
+              const resultError = String(renewalResult.error || "claim_renew_failed");
+              const fatalResult = ["claimed_by_different_instance", "claim_token_mismatch",
+                "task_not_claimed", "owner_mismatch", "attempt_token_mismatch"].some((e) => resultError.includes(e));
+              if (fatalResult) {
+                ctx.log(node.id, `Claim renewal fatal: ${resultError} — aborting task`);
+                clearInterval(renewTimer);
+                runtimeState.claimRenewTimer = null;
+                ctx.data._claimRenewTimer = null;
+                ctx.data._claimStolen = true;
+              } else {
+                ctx.log(node.id, `Claim renewal warning: ${resultError}`);
+              }
+            }
           } catch (renewErr) {
             const msg = renewErr?.message || String(renewErr);
             const fatal = ["claimed_by_different_instance", "claim_token_mismatch",
-              "task_not_claimed", "owner_mismatch"].some((e) => msg.includes(e));
+              "task_not_claimed", "owner_mismatch", "attempt_token_mismatch"].some((e) => msg.includes(e));
             if (fatal) {
               ctx.log(node.id, `Claim renewal fatal: ${msg} — aborting task`);
               clearInterval(renewTimer);
@@ -8471,6 +8625,16 @@ registerNodeType("action.resolve_executor", {
     const defaultSdk = cfgOrCtx(node, ctx, "defaultSdk", "auto");
     const sdkOverride = cfgOrCtx(node, ctx, "sdkOverride");
     const modelOverride = cfgOrCtx(node, ctx, "modelOverride");
+    const repoRoot = cfgOrCtx(node, ctx, "repoRoot")
+      || cfgOrCtx(node, ctx, "workspace")
+      || process.cwd();
+    const task = {
+      id: cfgOrCtx(node, ctx, "taskId"),
+      title: cfgOrCtx(node, ctx, "taskTitle"),
+      description: cfgOrCtx(node, ctx, "taskDescription"),
+      tags: Array.isArray(ctx.data?.task?.tags) ? ctx.data.task.tags : [],
+    };
+    let profileDecision = null;
 
     // Check env var overrides (mirrors TaskExecutor behavior)
     const envModel =
@@ -8485,28 +8649,74 @@ registerNodeType("action.resolve_executor", {
       return { success: true, sdk: sdkOverride, model, tier: "override", profile: null };
     }
 
+    try {
+      const library = await ensureLibraryManagerMod();
+      const match = library.matchAgentProfiles?.(
+        repoRoot,
+        {
+          title: task.title,
+          description: task.description,
+          tags: task.tags,
+        },
+        { topN: 1 },
+      );
+      const profile = match?.best?.profile || null;
+      const profileId = String(match?.best?.id || "").trim();
+      if (profileId && profile) {
+        profileDecision = { id: profileId, profile };
+        ctx.data.agentProfile = profileId;
+        ctx.data.resolvedAgentProfile = {
+          id: profileId,
+          name: match?.best?.name || profile?.name || profileId,
+          ...profile,
+        };
+        const skillIds = Array.isArray(profile.skills)
+          ? profile.skills.map((value) => String(value || "").trim()).filter(Boolean)
+          : [];
+        ctx.data.resolvedSkillIds = skillIds;
+      }
+    } catch (err) {
+      ctx.log(node.id, `Library profile resolution failed: ${err.message}`);
+    }
+
     // Complexity-based routing
     try {
       const complexity = await ensureTaskComplexityMod();
-      const task = {
-        id: cfgOrCtx(node, ctx, "taskId"),
-        title: cfgOrCtx(node, ctx, "taskTitle"),
-        description: cfgOrCtx(node, ctx, "taskDescription"),
-      };
-
       if (complexity.resolveExecutorForTask && complexity.executorToSdk) {
-        const resolved = complexity.resolveExecutorForTask(task);
-        const sdk = complexity.executorToSdk(resolved.executor);
-        const model = modelOverride || envModel || resolved.model || "";
+        const baseProfile = profileDecision?.profile
+          ? {
+              name: profileDecision.id,
+              executor: profileDecision.profile.sdk || "CODEX",
+              model: profileDecision.profile.model || "",
+              variant: "DEFAULT",
+              role: "primary",
+              weight: 100,
+              enabled: true,
+            }
+          : undefined;
+        const resolved = complexity.resolveExecutorForTask(task, baseProfile);
+        let sdk = complexity.executorToSdk(resolved.executor);
+        const profileSdkRaw = String(profileDecision?.profile?.sdk || "").trim().toLowerCase();
+        const profileModelRaw = String(profileDecision?.profile?.model || "").trim().toLowerCase();
+        if (profileSdkRaw) {
+          if (profileSdkRaw.includes("claude")) sdk = "claude";
+          else if (profileSdkRaw.includes("copilot")) sdk = "copilot";
+          else if (profileSdkRaw.includes("codex")) sdk = "codex";
+        } else if (profileModelRaw) {
+          if (profileModelRaw.includes("claude")) sdk = "claude";
+          else if (profileModelRaw.includes("gpt") || profileModelRaw.includes("codex")) sdk = "codex";
+        }
+        const model = modelOverride || envModel || profileDecision?.profile?.model || resolved.model || "";
+        const tier = profileDecision?.profile ? "profile" : (resolved.tier || "default");
         ctx.data.resolvedSdk = sdk;
         ctx.data.resolvedModel = model;
-        ctx.log(node.id, `Executor: sdk=${sdk}, model=${model}, tier=${resolved.tier || "default"}`);
+        ctx.log(node.id, `Executor: sdk=${sdk}, model=${model}, tier=${tier}`);
         return {
           success: true,
           sdk,
           model,
-          tier: resolved.tier || "default",
-          profile: resolved.name || null,
+          tier,
+          profile: profileDecision?.id || resolved.name || null,
           complexity: resolved.complexity || null,
         };
       }
@@ -8524,11 +8734,12 @@ registerNodeType("action.resolve_executor", {
         sdk = "codex";
       }
     }
-    const model = modelOverride || envModel || "";
+    const model = modelOverride || envModel || profileDecision?.profile?.model || "";
     ctx.data.resolvedSdk = sdk;
     ctx.data.resolvedModel = model;
+    const fallbackTier = profileDecision?.profile ? "profile" : "default";
     ctx.log(node.id, `Executor fallback: sdk=${sdk}`);
-    return { success: true, sdk, model, tier: "default", profile: null };
+    return { success: true, sdk, model, tier: fallbackTier, profile: profileDecision?.id || null };
   },
 });
 
