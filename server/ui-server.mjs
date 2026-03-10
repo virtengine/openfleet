@@ -5977,13 +5977,31 @@ function normalizeCanStartResult(result, { override = false } = {}) {
       : raw.canStart === false || raw.allowed === false || raw.startable === false
         ? false
         : true;
+  const normalizeIdList = (value) => {
+    if (!Array.isArray(value)) return [];
+    const seen = new Set();
+    const ids = [];
+    for (const entry of value) {
+      const id = String(entry || "").trim();
+      if (!id || seen.has(id)) continue;
+      seen.add(id);
+      ids.push(id);
+    }
+    return ids;
+  };
+  const blockingTaskIds = normalizeIdList(raw.blockingTaskIds);
+  const missingDependencyTaskIds = normalizeIdList(raw.missingDependencyTaskIds);
+  const blockingSprintIds = normalizeIdList(raw.blockingSprintIds);
+  const blockingEpicIds = normalizeIdList(raw.blockingEpicIds);
   const blockedByRaw = Array.isArray(raw.blockedBy)
     ? raw.blockedBy
     : Array.isArray(raw.blockers)
       ? raw.blockers
       : Array.isArray(raw.dependencies)
         ? raw.dependencies.filter((entry) => entry && entry.ready === false)
-        : [];
+        : blockingTaskIds.length > 0
+          ? blockingTaskIds
+          : [];
   const blockedBy = blockedByRaw
     .map((entry) => {
       if (typeof entry === "string") return { taskId: entry };
@@ -5996,12 +6014,17 @@ function normalizeCanStartResult(result, { override = false } = {}) {
       };
     })
     .filter(Boolean);
+  const blockedByTaskIds = normalizeIdList(blockedBy.map((entry) => entry?.taskId).filter(Boolean));
   const reason = String(raw.reason || raw.message || "").trim() || (canStart ? "allowed" : "blocked");
   return {
     available: true,
     canStart,
     reason,
     blockedBy,
+    blockingTaskIds: blockingTaskIds.length > 0 ? blockingTaskIds : blockedByTaskIds,
+    missingDependencyTaskIds,
+    blockingSprintIds,
+    blockingEpicIds,
     raw,
   };
 }
@@ -9945,7 +9968,7 @@ async function handleApi(req, res, url) {
       applyInternalLifecycleTransition(taskId, lifecycleAction, {
         source: "api.tasks.update",
         actor: "ui",
-        force: lifecycleAction === "start" || lifecycleAction === "resume",
+        force: forceStart || manualOverride,
         reason: body?.reason || null,
         payload: {
           previousStatus: previousTask?.status || null,
@@ -10080,7 +10103,7 @@ async function handleApi(req, res, url) {
       applyInternalLifecycleTransition(taskId, lifecycleAction, {
         source: "api.tasks.edit",
         actor: "ui",
-        force: lifecycleAction === "start" || lifecycleAction === "resume",
+        force: forceStart || manualOverride,
         reason: body?.reason || null,
         payload: {
           previousStatus: previousTask?.status || null,
