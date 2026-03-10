@@ -36,6 +36,14 @@ import { randomUUID } from "node:crypto";
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
 const TAG = "[task-cli]";
+const EXECUTOR_RUNTIME_STATE_FILE = resolve(
+  __dirname,
+  "..",
+  ".cache",
+  "task-executor-runtime.json",
+);
+const REPO_AREA_SLOW_MERGE_LATENCY_MS = 4 * 60 * 60 * 1000;
+const REPO_AREA_VERY_SLOW_MERGE_LATENCY_MS = 8 * 60 * 60 * 1000;
 
 // ── Store helpers ─────────────────────────────────────────────────────────────
 
@@ -423,7 +431,476 @@ export async function taskDelete(id) {
  */
 export async function taskStats() {
   const store = await initStore();
-  return store.getStats();
+  const stats = store.getStats();
+  return {
+    ...stats,
+    repoAreaLocks: readRepoAreaLocksFromRuntimeState(),
+  };
+}
+
+function readRepoAreaLocksFromRuntimeState() {
+  if (!existsSync(EXECUTOR_RUNTIME_STATE_FILE)) return null;
+  try {
+    const raw = readFileSync(EXECUTOR_RUNTIME_STATE_FILE, "utf8");
+    const parsed = JSON.parse(raw);
+    const configuredLimit = Math.max(
+      0,
+      Math.trunc(Number(parsed?.repoAreaParallelLimit || 0)),
+    );
+    const lockMetrics =
+      parsed?.repoAreaLockMetrics && typeof parsed.repoAreaLockMetrics === "object"
+        ? parsed.repoAreaLockMetrics
+        : {};
+    const telemetryByArea =
+      parsed?.repoAreaTelemetry && typeof parsed.repoAreaTelemetry === "object"
+        ? parsed.repoAreaTelemetry
+        : {};
+    const blockedTasks =
+      parsed?.repoAreaBlockedTasks && typeof parsed.repoAreaBlockedTasks === "object"
+        ? parsed.repoAreaBlockedTasks
+        : {};
+    const taskAreas =
+      parsed?.repoAreaTaskAreas && typeof parsed.repoAreaTaskAreas === "object"
+        ? parsed.repoAreaTaskAreas
+        : {};
+    const runtimeSlots =
+      parsed?.slots && typeof parsed.slots === "object"
+        ? parsed.slots
+        : {};
+    const dispatchCycle =
+      parsed?.repoAreaDispatchCycle && typeof parsed.repoAreaDispatchCycle === "object"
+        ? parsed.repoAreaDispatchCycle
+        : {};
+    const activeSignals = new Map();
+    const activeCounts = new Map();
+    for (const [taskId, slot] of Object.entries(runtimeSlots)) {
+      const normalizedTaskId = normalizeTaskId(taskId);
+      if (!normalizedTaskId) continue;
+      const repoAreas = Array.isArray(slot?.repoAreas)
+        ? slot.repoAreas
+        : taskAreas[normalizedTaskId];
+      const areas = normalizeRepoAreas(repoAreas);
+      if (areas.length === 0) continue;
+      const startedAt = Math.max(0, Math.trunc(Number(slot?.startedAt || 0)));
+      const activeAgeMs = startedAt > 0 ? Math.max(0, Date.now() - startedAt) : 0;
+      const mergeLatencyMs = Number(slot?.mergeLatencyMs || slot?.mergeLatency || 0);
+      const latencySampleMs = mergeLatencyMs > 0 ? mergeLatencyMs : activeAgeMs;
+      const attempt = Number(slot?.attempt || 0);
+      const status = String(slot?.status || "").trim().toLowerCase();
+      for (const area of areas) {
+        activeCounts.set(area, (activeCounts.get(area) || 0) + 1);
+        let signal = activeSignals.get(area);
+        if (!signal) {
+          signal = {
+            active: 0,
+            retrying: 0,
+            mergeLatencyMsTotal: 0,
+            mergeLatencySamples: 0,
+            maxMergeLatencyMs: 0,
+          };
+          activeSignals.set(area, signal);
+        }
+        signal.active += 1;
+        if (attempt > 1 || status === "failed") signal.retrying += 1;
+        if (latencySampleMs > 0) {
+          signal.mergeLatencyMsTotal += latencySampleMs;
+          signal.mergeLatencySamples += 1;
+          signal.maxMergeLatencyMs = Math.max(signal.maxMergeLatencyMs, latencySampleMs);
+        }
+      }
+    }
+
+    const blockedByArea = new Map();
+    for (const blocked of Object.values(blockedTasks)) {
+      const areas = normalizeRepoAreas(blocked?.areas);
+      for (const area of areas) {
+        blockedByArea.set(area, (blockedByArea.get(area) || 0) + 1);
+      }
+    }
+
+    const allAreas = new Set([
+      ...Object.keys(lockMetrics).map((area) => normalizeRepoAreaKey(area)).filter(Boolean),
+      ...Object.keys(telemetryByArea).map((area) => normalizeRepoAreaKey(area)).filter(Boolean),
+      ...activeCounts.keys(),
+      ...blockedByArea.keys(),
+    ]);
+
+    const areas = Array.from(allAreas)
+      .sort()
+      .map((area) => {
+        const metric = lockMetrics[area] || {};
+        const signal = activeSignals.get(area) || {
+          active: 0,
+          retrying: 0,
+          mergeLatencyMsTotal: 0,
+          mergeLatencySamples: 0,
+          maxMergeLatencyMs: 0,
+        };
+        const telemetry = normalizeRepoAreaTelemetryEntry(telemetryByArea[area]);
+        const historicalAdaptive = buildRepoAreaAdaptiveSignals(telemetry, configuredLimit);
+        const adaptiveState = computeRepoAreaAdaptiveState({
+          configuredLimit,
+          telemetry,
+          signal,
+          historicalAdaptive
+        });
+        const effectiveLimit = computeRepoAreaEffectiveLimit({
+          configuredLimit,
+          activeSignals: signal,
+          telemetry,
+          historicalAdaptive,
+        });
+
+        return {
+          area,
+          configuredLimit,
+          effectiveLimit,
+          activeSlots: activeCounts.get(area) || 0,
+          waitingTasks: blockedByArea.get(area) || 0,
+          activeFailureRate: adaptiveState.activeFailureRate,
+          outcomeFailureRate: adaptiveState.outcomeFailureRate,
+          adaptiveFailureRate: adaptiveState.adaptiveFailureRate,
+          historicalFailureRate: historicalAdaptive.failureRate,
+          averageMergeLatencyMs: adaptiveState.averageMergeLatencyMs,
+          telemetryMergeLatencyMs: adaptiveState.telemetryMergeLatencyMs,
+          historicalMergeLatencyMs: historicalAdaptive.mergeLatencyAvgMs,
+          adaptiveMergeLatencyMs: adaptiveState.adaptiveMergeLatencyMs,
+          adaptivePenalty: adaptiveState.adaptivePenalty,
+          adaptiveReasons: adaptiveState.adaptiveReasons,
+          maxMergeLatencyMs: signal.maxMergeLatencyMs || 0,
+          conflicts: Math.max(0, Math.trunc(Number(metric?.conflicts || 0))),
+          blockedDispatches: Math.max(
+            0,
+            Math.trunc(Number(metric?.blockedDispatches || 0)),
+          ),
+          selectedDispatches: Math.max(
+            0,
+            Math.trunc(Number(metric?.selectedDispatches || 0)),
+          ),
+          averageWaitMs:
+            Number(metric?.waitSamples || 0) > 0
+              ? Number(metric?.waitMsTotal || 0) / Number(metric?.waitSamples || 0)
+              : 0,
+          maxWaitMs: Math.max(0, Math.trunc(Number(metric?.maxWaitMs || 0))),
+          waitSamples: Math.max(0, Math.trunc(Number(metric?.waitSamples || 0))),
+          lastConflictAt: metric?.lastConflictAt ? String(metric.lastConflictAt) : null,
+          lastSelectedAt: metric?.lastSelectedAt ? String(metric.lastSelectedAt) : null,
+        };
+      })
+      .sort((a, b) => b.blockedDispatches - a.blockedDispatches || a.area.localeCompare(b.area));
+
+    return {
+      enabled: configuredLimit > 0,
+      configuredLimit,
+      dispatchCycles: Math.max(0, Math.trunc(Number(parsed?.repoAreaDispatchCycles || 0))),
+      conflictEvents: Math.max(0, Math.trunc(Number(parsed?.repoAreaConflictCount || 0))),
+      blockedTasksTracked: Object.keys(blockedTasks).length,
+      lastDispatch: {
+        cycle: Math.max(0, Math.trunc(Number(dispatchCycle?.cycle || 0))),
+        at: dispatchCycle?.at ? String(dispatchCycle.at) : null,
+        candidateCount: Math.max(0, Math.trunc(Number(dispatchCycle?.candidateCount || 0))),
+        remaining: Math.max(0, Math.trunc(Number(dispatchCycle?.remaining || 0))),
+        selectedCount: Math.max(0, Math.trunc(Number(dispatchCycle?.selectedCount || 0))),
+        blockedTasks: Math.max(0, Math.trunc(Number(dispatchCycle?.blockedTasks || 0))),
+        conflictEvents: Math.max(0, Math.trunc(Number(dispatchCycle?.conflictEvents || 0))),
+        waitMsTotal: Math.max(0, Math.trunc(Number(dispatchCycle?.waitMsTotal || 0))),
+        waitSamples: Math.max(0, Math.trunc(Number(dispatchCycle?.waitSamples || 0))),
+        maxWaitMs: Math.max(0, Math.trunc(Number(dispatchCycle?.maxWaitMs || 0))),
+        blockedByArea:
+          dispatchCycle?.blockedByArea && typeof dispatchCycle.blockedByArea === "object"
+            ? { ...dispatchCycle.blockedByArea }
+            : {},
+        saturatedAreas: Array.isArray(dispatchCycle?.saturatedAreas)
+          ? dispatchCycle.saturatedAreas.map((area) => String(area || "").trim()).filter(Boolean)
+          : [],
+        cycleAreaMetrics:
+          dispatchCycle?.cycleAreaMetrics &&
+          typeof dispatchCycle.cycleAreaMetrics === "object"
+            ? { ...dispatchCycle.cycleAreaMetrics }
+            : {},
+        areaLimits:
+          dispatchCycle?.areaLimits &&
+          typeof dispatchCycle.areaLimits === "object"
+            ? { ...dispatchCycle.areaLimits }
+            : {},
+      },
+      totals: {
+        dispatchCycles: Math.max(0, Math.trunc(Number(parsed?.repoAreaDispatchCycles || 0))),
+        conflictEvents: Math.max(0, Math.trunc(Number(parsed?.repoAreaConflictCount || 0))),
+        conflicts: areas.reduce((sum, area) => sum + (area.conflicts || 0), 0),
+        blockedDispatches: areas.reduce(
+          (sum, area) => sum + (area.blockedDispatches || 0),
+          0,
+        ),
+        waitMsTotal: areas.reduce(
+          (sum, area) => sum + ((area.averageWaitMs || 0) * (area.waitSamples || 0)),
+          0,
+        ),
+        waitSamples: areas.reduce((sum, area) => sum + (area.waitSamples || 0), 0),
+        waitingTasks: areas.reduce((sum, area) => sum + (area.waitingTasks || 0), 0),
+      },
+      dispatch: {
+        cycles: Math.max(0, Math.trunc(Number(parsed?.repoAreaDispatchCycles || 0))),
+        conflicts: Math.max(0, Math.trunc(Number(parsed?.repoAreaConflictCount || 0))),
+        blockedTasksTracked: Object.keys(blockedTasks).length,
+        recent: Array.isArray(parsed?.repoAreaDispatchHistory)
+          ? parsed.repoAreaDispatchHistory
+            .slice(-10)
+            .map((entry) => ({
+              cycle: Math.max(0, Math.trunc(Number(entry?.cycle || 0))),
+              at: entry?.at ? String(entry.at) : null,
+              candidateCount: Math.max(
+                0,
+                Math.trunc(Number(entry?.candidateCount || 0)),
+              ),
+              remaining: Math.max(0, Math.trunc(Number(entry?.remaining || 0))),
+              selectedCount: Math.max(
+                0,
+                Math.trunc(Number(entry?.selectedCount || 0)),
+              ),
+              blockedTasks: Math.max(
+                0,
+                Math.trunc(Number(entry?.blockedTasks || 0)),
+              ),
+              conflictEvents: Math.max(
+                0,
+                Math.trunc(Number(entry?.conflictEvents || 0)),
+              ),
+              waitMsTotal: Math.max(0, Math.trunc(Number(entry?.waitMsTotal || 0))),
+              waitSamples: Math.max(0, Math.trunc(Number(entry?.waitSamples || 0))),
+              maxWaitMs: Math.max(0, Math.trunc(Number(entry?.maxWaitMs || 0))),
+              blockedByArea:
+                entry?.blockedByArea && typeof entry.blockedByArea === "object"
+                  ? { ...entry.blockedByArea }
+                  : {},
+              saturatedAreas: Array.isArray(entry?.saturatedAreas)
+                ? entry.saturatedAreas.map((area) => String(area || "").trim()).filter(Boolean)
+                : [],
+              cycleAreaMetrics:
+                entry?.cycleAreaMetrics && typeof entry.cycleAreaMetrics === "object"
+                  ? { ...entry.cycleAreaMetrics }
+                  : {},
+              areaLimits:
+                entry?.areaLimits && typeof entry.areaLimits === "object"
+                  ? { ...entry.areaLimits }
+                  : {},
+            }))
+          : [],
+      },
+      areas,
+    };
+  } catch (err) {
+    console.warn(`${TAG} failed to read executor lock state: ${err.message}`);
+    return null;
+  }
+}
+
+function normalizeTaskId(value) {
+  return String(value || "").trim();
+}
+
+function normalizeRepoAreaKey(value) {
+  return String(value || "").trim().toLowerCase();
+}
+
+function normalizeRepoAreas(input) {
+  if (!Array.isArray(input)) return [];
+  return [...new Set(input.map((value) => normalizeRepoAreaKey(value)).filter(Boolean))];
+}
+
+function normalizeRepoAreaTelemetryEntry(raw = {}) {
+  const recentOutcomes = Array.isArray(raw?.recentOutcomes)
+    ? raw.recentOutcomes
+      .map((value) => Number(value))
+      .filter((value) => value === 0 || value === 1)
+      .slice(-20)
+    : [];
+  const mergeLatencySamples = Array.isArray(raw?.mergeLatencySamples)
+    ? raw.mergeLatencySamples
+      .map((value) => Number(value))
+      .filter((value) => Number.isFinite(value) && value >= 0)
+      .slice(-12)
+    : [];
+  return {
+    recentOutcomes,
+    mergeLatencySamples,
+  };
+}
+
+function averageNumbers(values = []) {
+  if (!Array.isArray(values) || values.length === 0) return 0;
+  const total = values.reduce((sum, value) => sum + Number(value || 0), 0);
+  return total / values.length;
+}
+
+function buildRepoAreaAdaptiveSignals(entry, baseLimit) {
+  const normalizedBase = Number(baseLimit || 0);
+  const outcomes = Array.isArray(entry?.recentOutcomes) ? entry.recentOutcomes : [];
+  const failures = outcomes.reduce((sum, value) => sum + (Number(value) > 0 ? 1 : 0), 0);
+  const samples = outcomes.length;
+  const failureRate = samples > 0 ? failures / samples : 0;
+  const mergeLatencyAvgMs = averageNumbers(entry?.mergeLatencySamples || []);
+  const adaptiveReasons = [];
+  if (samples >= 4 && failureRate >= 0.5) adaptiveReasons.push("failure_rate");
+  if (
+    (entry?.mergeLatencySamples?.length || 0) >= 3 &&
+    mergeLatencyAvgMs >= REPO_AREA_SLOW_MERGE_LATENCY_MS
+  ) {
+    adaptiveReasons.push("merge_latency");
+  }
+  const adaptivePenalty =
+    normalizedBase > 1 && adaptiveReasons.length > 0 ? 1 : 0;
+  const effectiveLimit =
+    normalizedBase > 0
+      ? Math.max(1, normalizedBase - adaptivePenalty)
+      : 0;
+  return {
+    failureRate,
+    mergeLatencyAvgMs,
+    adaptiveReasons,
+    effectiveLimit,
+  };
+}
+
+function computeRepoAreaAdaptiveState({
+  configuredLimit = 0,
+  signal = null,
+  telemetry = null,
+  historicalAdaptive = null,
+} = {}) {
+  const normalizedConfiguredLimit = Math.max(
+    0,
+    Math.trunc(Number(configuredLimit || 0)),
+  );
+  const normalizedSignal = signal && typeof signal === "object"
+    ? signal
+    : {
+      active: 0,
+      retrying: 0,
+      mergeLatencyMsTotal: 0,
+      mergeLatencySamples: 0,
+      maxMergeLatencyMs: 0,
+    };
+  const normalizedTelemetry = normalizeRepoAreaTelemetryEntry(telemetry);
+  const normalizedHistorical = historicalAdaptive || buildRepoAreaAdaptiveSignals(
+    normalizedTelemetry,
+    normalizedConfiguredLimit,
+  );
+
+  const activeFailureRate =
+    normalizedSignal.active > 0
+      ? normalizedSignal.retrying / normalizedSignal.active
+      : 0;
+  const outcomeFailures = normalizedTelemetry.recentOutcomes.reduce(
+    (sum, value) => sum + (Number(value) > 0 ? 1 : 0),
+    0,
+  );
+  const outcomeFailureRate =
+    normalizedTelemetry.recentOutcomes.length > 0
+      ? outcomeFailures / normalizedTelemetry.recentOutcomes.length
+      : 0;
+  const averageMergeLatencyMs =
+    normalizedSignal.mergeLatencySamples > 0
+      ? normalizedSignal.mergeLatencyMsTotal / normalizedSignal.mergeLatencySamples
+      : 0;
+  const telemetryMergeLatencyMs = averageNumbers(
+    normalizedTelemetry.mergeLatencySamples,
+  );
+  const adaptiveFailureRate = Math.max(activeFailureRate, outcomeFailureRate);
+  const adaptiveMergeLatencyMs = Math.max(
+    averageMergeLatencyMs,
+    telemetryMergeLatencyMs,
+  );
+
+  const adaptiveReasons = new Set(normalizedHistorical.adaptiveReasons || []);
+  let penalty = 0;
+  if (
+    (normalizedSignal.active > 0 || normalizedTelemetry.recentOutcomes.length >= 4) &&
+    adaptiveFailureRate >= 0.5
+  ) {
+    penalty += 1;
+    adaptiveReasons.add("failure_rate");
+    if (normalizedSignal.active > 0 && activeFailureRate >= 0.5) {
+      adaptiveReasons.add("active_failure_rate");
+    }
+    if (normalizedTelemetry.recentOutcomes.length >= 4 && outcomeFailureRate >= 0.5) {
+      adaptiveReasons.add("outcome_failure_rate");
+    }
+  }
+  if (
+    (normalizedSignal.active > 0 ||
+      normalizedTelemetry.mergeLatencySamples.length >= 3) &&
+    adaptiveMergeLatencyMs >= REPO_AREA_SLOW_MERGE_LATENCY_MS
+  ) {
+    penalty += 1;
+    adaptiveReasons.add("merge_latency");
+    if (
+      normalizedSignal.active > 0 &&
+      averageMergeLatencyMs >= REPO_AREA_SLOW_MERGE_LATENCY_MS
+    ) {
+      adaptiveReasons.add("active_merge_latency");
+    }
+    if (
+      normalizedTelemetry.mergeLatencySamples.length >= 3 &&
+      telemetryMergeLatencyMs >= REPO_AREA_SLOW_MERGE_LATENCY_MS
+    ) {
+      adaptiveReasons.add("historical_merge_latency");
+    }
+  }
+  if (
+    (normalizedSignal.active > 1 || normalizedTelemetry.recentOutcomes.length >= 6) &&
+    adaptiveFailureRate >= 0.75 &&
+    adaptiveMergeLatencyMs >= REPO_AREA_VERY_SLOW_MERGE_LATENCY_MS
+  ) {
+    penalty += 1;
+    adaptiveReasons.add("severe_lock_pressure");
+  }
+
+  const liveLimit =
+    normalizedConfiguredLimit > 0
+      ? Math.max(
+        1,
+        normalizedConfiguredLimit -
+          Math.min(normalizedConfiguredLimit - 1, penalty),
+      )
+      : 0;
+  const effectiveLimit =
+    normalizedConfiguredLimit > 0
+      ? Math.min(normalizedHistorical.effectiveLimit, liveLimit)
+      : 0;
+
+  return {
+    activeFailureRate,
+    outcomeFailureRate,
+    adaptiveFailureRate,
+    averageMergeLatencyMs,
+    telemetryMergeLatencyMs,
+    adaptiveMergeLatencyMs,
+    adaptivePenalty: Math.max(
+      0,
+      normalizedConfiguredLimit > 0
+        ? normalizedConfiguredLimit - effectiveLimit
+        : 0,
+    ),
+    adaptiveReasons: Array.from(adaptiveReasons),
+    historicalFailureRate: normalizedHistorical.failureRate,
+    historicalMergeLatencyMs: normalizedHistorical.mergeLatencyAvgMs,
+    effectiveLimit,
+  };
+}
+
+function computeRepoAreaEffectiveLimit({
+  configuredLimit,
+  activeSignals = {},
+  telemetry = { recentOutcomes: [], mergeLatencySamples: [] },
+  historicalAdaptive = { effectiveLimit: 0 },
+} = {}) {
+  return computeRepoAreaAdaptiveState({
+    configuredLimit,
+    signal: activeSignals,
+    telemetry,
+    historicalAdaptive,
+  }).effectiveLimit;
 }
 
 /**
@@ -881,6 +1358,36 @@ async function cliStats(args) {
   console.log(`    Done:        ${stats.done || 0}`);
   console.log(`    Blocked:     ${stats.blocked || 0}`);
   console.log(`    Total:       ${stats.total || 0}`);
+  if (stats.repoAreaLocks) {
+    const lockState = stats.repoAreaLocks;
+    const totals = lockState.totals || {};
+    console.log(`\n  Repo Area Locks:`);
+    console.log(`    Dispatch Cycles:   ${totals.dispatchCycles || lockState.dispatchCycles || 0}`);
+    console.log(`    Conflict Events:   ${totals.conflictEvents || lockState.conflictEvents || 0}`);
+    console.log(`    Blocked Tracked:   ${lockState.blockedTasksTracked || lockState.dispatch?.blockedTasksTracked || 0}`);
+    const totalWaitSamples = Number(totals.waitSamples || 0);
+    const totalWaitMs = Number(totals.waitMsTotal || 0);
+    const globalAvgWaitMs =
+      totalWaitSamples > 0 ? Math.round(totalWaitMs / totalWaitSamples) : 0;
+    console.log(`    Avg Wait (global): ${globalAvgWaitMs}`);
+    const lastDispatch = lockState.lastDispatch || null;
+    if (lastDispatch && Number(lastDispatch.cycle || 0) > 0) {
+      console.log(
+        `    Last Cycle:        #${lastDispatch.cycle} conflicts=${lastDispatch.conflictEvents || 0}, waitMs=${Math.round(lastDispatch.waitMsTotal || 0)}`,
+      );
+    }
+    if (Number(lockState.configuredLimit || 0) > 0) {
+      console.log(`    Configured Limit:  ${lockState.configuredLimit}`);
+    }
+    const topAreas = Array.isArray(lockState.areas)
+      ? lockState.areas.slice(0, 3)
+      : [];
+    for (const area of topAreas) {
+      console.log(
+        `    - ${area.area}: blocked=${area.blockedDispatches || 0}, selected=${area.selectedDispatches || 0}, limit=${area.effectiveLimit || 0}/${area.configuredLimit || lockState.configuredLimit || 0}, avgWaitMs=${Math.round(area.averageWaitMs || 0)}`,
+      );
+    }
+  }
   console.log("");
 }
 
