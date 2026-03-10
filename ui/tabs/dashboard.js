@@ -22,6 +22,7 @@ import {
   projectSummary,
   loadStatus,
   loadProjectSummary,
+  loadRetryQueue,
   showToast,
   refreshTab,
   runOptimistic,
@@ -30,6 +31,7 @@ import {
   getDashboardHistory,
   setPendingChange,
   clearPendingChange,
+  retryQueueData,
 } from "../modules/state.js";
 import { navigateTo } from "../modules/router.js";
 import { ICONS } from "../modules/icons.js";
@@ -322,6 +324,7 @@ export function DashboardTab() {
   const prevCounts = useRef(null);
   const status = statusData.value;
   const executor = executorData.value;
+  const retryQueue = retryQueueData.value || { count: 0, items: [], stats: {} };
   const project = projectSummary.value;
   const counts = status?.counts || {};
   const summary = status?.success_metrics || {};
@@ -446,6 +449,10 @@ export function DashboardTab() {
         setRecentCommits(commits.slice(0, 3));
       })
       .catch(() => {});
+  }, []);
+
+  useEffect(() => {
+    loadRetryQueue().catch(() => {});
   }, []);
 
   // ── Flash metrics on counts change ──
@@ -657,6 +664,34 @@ export function DashboardTab() {
 
   /* ── Recent activity (last 5 tasks from global tasks signal) ── */
   const recentTasks = (tasksData.value || []).slice(0, 5);
+  const retryItems = Array.isArray(retryQueue.items) ? retryQueue.items : [];
+
+  const formatRetryCountdown = useCallback((nextAttemptAt) => {
+    const target = Number(nextAttemptAt || 0);
+    if (!Number.isFinite(target) || target <= 0) return "Now";
+    const remainingMs = target - now.getTime();
+    if (remainingMs <= 0) return "Now";
+    const totalSec = Math.ceil(remainingMs / 1000);
+    const min = Math.floor(totalSec / 60);
+    const sec = totalSec % 60;
+    if (min > 0) return `${min}m ${String(sec).padStart(2, "0")}s`;
+    return `${sec}s`;
+  }, [now]);
+
+  const handleRetryNow = useCallback(async (taskId) => {
+    const id = String(taskId || "").trim();
+    if (!id) return;
+    try {
+      await apiFetch("/api/tasks/retry", {
+        method: "POST",
+        body: JSON.stringify({ taskId: id }),
+      });
+      showToast(`Retry requested for ${id}`, "success");
+      scheduleRefresh(100);
+    } catch {
+      /* toast shown by apiFetch */
+    }
+  }, []);
 
   /* ── Loading skeleton ── */
   if (!status && !executor)
@@ -979,6 +1014,42 @@ export function DashboardTab() {
               `,
             )}
           </div>
+        <//>
+
+        <${Card}
+          title=${html`<span class="dashboard-card-title"
+            ><span class="dashboard-title-icon">${ICONS.refresh || resolveIcon("refresh")}</span>Retry Queue</span
+          >`}
+          className="dashboard-card dashboard-retry-queue"
+        >
+          ${retryItems.length
+            ? html`
+              <div class="dashboard-retry-list">
+                ${retryItems.map((item) => html`
+                  <div key=${item.taskId} class="dashboard-retry-item">
+                    <div class="dashboard-retry-main">
+                      <div class="dashboard-retry-task">${item.taskId}</div>
+                      <div class="dashboard-retry-error">${truncate(item.lastError || item.reason || "Unknown retry reason", 120)}</div>
+                    </div>
+                    <div class="dashboard-retry-meta">
+                      <span class="dashboard-retry-pill">Attempt ${item.retryCount || 0}</span>
+                      <span class="dashboard-retry-pill">Next ${formatRetryCountdown(item.nextAttemptAt)}</span>
+                      <${Button}
+                        variant="outlined"
+                        size="small"
+                        onClick=${() => {
+                          haptic("medium");
+                          void handleRetryNow(item.taskId);
+                        }}
+                      >
+                        Retry Now
+                      <//>
+                    </div>
+                  </div>
+                `)}
+              </div>
+            `
+            : html`<${EmptyState} title="No queued retries" description="Failed tasks waiting to retry appear here automatically." />`}
         <//>
 
         <${Card}

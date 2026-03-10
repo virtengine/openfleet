@@ -1963,6 +1963,17 @@ export function loadConfig(argv = process.argv, options = {}) {
         internalExecutorConfig.maxRetries ||
         2,
     ),
+    retryReviewThreshold: Number(
+      process.env.INTERNAL_EXECUTOR_RETRY_REVIEW_THRESHOLD ||
+        internalExecutorConfig.retryReviewThreshold ||
+        internalExecutorConfig.maxRetries ||
+        3,
+    ),
+    retryDelayMs: Number(
+      process.env.INTERNAL_EXECUTOR_RETRY_DELAY_MS ||
+        internalExecutorConfig.retryDelayMs ||
+        15000,
+    ),
     autoCreatePr: internalExecutorConfig.autoCreatePr !== false,
     projectId:
       process.env.INTERNAL_EXECUTOR_PROJECT_ID ||

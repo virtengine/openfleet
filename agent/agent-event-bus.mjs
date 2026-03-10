@@ -20,6 +20,12 @@
  *   AGENT_EVENT  — Frozen enum of all event types
  */
 
+import {
+  createRetryQueueState,
+  reduceRetryQueue,
+  snapshotRetryQueue,
+} from "./retry-queue.mjs";
+
 const TAG = "[agent-event-bus]";
 
 // ── Event Types ─────────────────────────────────────────────────────────────
@@ -48,6 +54,7 @@ export const AGENT_EVENT = Object.freeze({
   AUTO_COOLDOWN: "agent:auto-cooldown",
   AUTO_BLOCK: "agent:auto-block",
   AUTO_NEW_SESSION: "agent:auto-new-session",
+  RETRY_QUEUE_UPDATED: "agent:retry-queue-updated",
   EXECUTOR_PAUSED: "agent:executor-paused",
   EXECUTOR_RESUMED: "agent:executor-resumed",
 
@@ -80,6 +87,10 @@ const DEFAULTS = {
   dedupeWindowMs: 500,
   /** Max auto-action retries before blocking */
   maxAutoRetries: 5,
+  /** Retry count threshold before routing to review workflow hook (0 disables) */
+  retryReviewThreshold: 0,
+  /** Default delay before next retry attempt appears due */
+  retryDelayMs: 15_000,
 };
 
 // ── AgentEventBus Class ─────────────────────────────────────────────────────
@@ -115,6 +126,24 @@ export class AgentEventBus {
     this._maxAutoRetries =
       options.maxAutoRetries ?? DEFAULTS.maxAutoRetries;
     this._dedupeWindowMs = options.dedupeWindowMs || DEFAULTS.dedupeWindowMs;
+    this._retryReviewThreshold =
+      Number.isFinite(Number(options.retryReviewThreshold))
+        ? Math.max(0, Math.trunc(Number(options.retryReviewThreshold)))
+        : DEFAULTS.retryReviewThreshold;
+    this._retryDelayMs =
+      Number.isFinite(Number(options.retryDelayMs))
+        ? Math.max(0, Math.trunc(Number(options.retryDelayMs)))
+        : DEFAULTS.retryDelayMs;
+    this._onRetryThresholdExceeded =
+      typeof options.onRetryThresholdExceeded === "function"
+        ? options.onRetryThresholdExceeded
+        : null;
+    this._setRetryQueueData =
+      typeof options.setRetryQueueData === "function"
+        ? options.setRetryQueueData
+        : (typeof globalThis.__bosun_setRetryQueueData === "function"
+            ? globalThis.__bosun_setRetryQueueData
+            : null);
 
     /** @type {Array<{type: string, taskId: string, payload: object, ts: number}>} ring buffer */
     this._eventLog = [];
@@ -133,6 +162,7 @@ export class AgentEventBus {
 
     /** @type {Map<string, number>} dedup key → last emit timestamp */
     this._recentEmits = new Map();
+    this._retryQueueState = createRetryQueueState();
 
     /** @type {ReturnType<typeof setInterval>|null} */
     this._staleCheckTimer = null;
@@ -259,6 +289,10 @@ export class AgentEventBus {
         cooldownUntil: 0,
       });
     }
+    this._updateRetryQueue(
+      { type: "remove", taskId },
+      { reason: "task-started", taskId },
+    );
   }
 
   /**
@@ -278,6 +312,10 @@ export class AgentEventBus {
       prNumber: result?.prNumber || null,
     });
     this._autoActionState.delete(taskId);
+    this._updateRetryQueue(
+      { type: "remove", taskId },
+      { reason: "task-completed", taskId },
+    );
 
     // Auto-review
     if (result?.success && this._reviewAgent) {
@@ -389,6 +427,12 @@ export class AgentEventBus {
         const title = task?.title || taskId;
         this._sendTelegram(`:close: Task blocked: "${title}" (source: ${source})`);
       }
+    }
+    if (newStatus !== "error") {
+      this._updateRetryQueue(
+        { type: "remove", taskId },
+        { reason: `status:${newStatus}`, taskId },
+      );
     }
   }
 
@@ -509,6 +553,7 @@ export class AgentEventBus {
    * @returns {object}
    */
   getStatus() {
+    const retryQueue = snapshotRetryQueue(this._retryQueueState);
     return {
       started: this._started,
       eventLogSize: this._eventLog.length,
@@ -516,9 +561,23 @@ export class AgentEventBus {
       errorTrackedTasks: this._errorHistory.size,
       autoActionTasks: this._autoActionState.size,
       listenerCount: this._listeners.size,
+      retryQueue,
       liveness: this.getAgentLiveness(),
       errorPatterns: this.getErrorPatternSummary(),
     };
+  }
+
+  getRetryQueue() {
+    return snapshotRetryQueue(this._retryQueueState);
+  }
+
+  clearRetryQueueTask(taskId, reason = "manual") {
+    const id = String(taskId || "").trim();
+    if (!id) return;
+    this._updateRetryQueue(
+      { type: "remove", taskId: id },
+      { reason, taskId: id },
+    );
   }
 
   // ══════════════════════════════════════════════════════════════════════════
@@ -535,6 +594,39 @@ export class AgentEventBus {
       );
     } catch (err) {
       console.warn(`${TAG} WS broadcast error:`, err.message || err);
+    }
+  }
+
+  _updateRetryQueue(action, meta = {}) {
+    this._retryQueueState = reduceRetryQueue(this._retryQueueState, action);
+    const snapshot = snapshotRetryQueue(this._retryQueueState);
+    if (!this._setRetryQueueData && typeof globalThis.__bosun_setRetryQueueData === "function") {
+      this._setRetryQueueData = globalThis.__bosun_setRetryQueueData;
+    }
+    if (typeof this._setRetryQueueData === "function") {
+      try {
+        this._setRetryQueueData(snapshot);
+      } catch {
+        /* best effort */
+      }
+    }
+    this.emit(AGENT_EVENT.RETRY_QUEUE_UPDATED, meta.taskId || "system", {
+      reason: meta.reason || "retry-queue-updated",
+      retryQueue: snapshot,
+    });
+  }
+
+  _tryTriggerRetryThresholdReview(payload) {
+    if (!this._onRetryThresholdExceeded) return;
+    try {
+      const maybePromise = this._onRetryThresholdExceeded(payload);
+      if (maybePromise && typeof maybePromise.then === "function") {
+        maybePromise.catch((err) => {
+          console.warn(`${TAG} retry-threshold hook failed:`, err?.message || err);
+        });
+      }
+    } catch (err) {
+      console.warn(`${TAG} retry-threshold hook failed:`, err?.message || err);
     }
   }
 
@@ -607,6 +699,33 @@ export class AgentEventBus {
 
     switch (action) {
       case "retry_with_prompt": {
+        if (this._retryReviewThreshold > 0 && state.retryCount >= this._retryReviewThreshold) {
+          const reason =
+            recovery?.reason ||
+            `retry threshold reached (${state.retryCount}/${this._retryReviewThreshold})`;
+          this._updateRetryQueue(
+            { type: "mark-exhausted", taskId },
+            { reason: "retry-threshold-exceeded", taskId },
+          );
+          this.emit(AGENT_EVENT.AUTO_REVIEW, taskId, {
+            reason,
+            retryCount: state.retryCount,
+            threshold: this._retryReviewThreshold,
+            pattern: classification?.pattern || null,
+            source: "retry-threshold",
+          });
+          this._tryTriggerRetryThresholdReview({
+            taskId,
+            reason,
+            retryCount: state.retryCount,
+            threshold: this._retryReviewThreshold,
+            classification,
+            recovery,
+            rawError,
+          });
+          console.log(`${TAG} ${taskId} reached retry threshold (${state.retryCount}); routed to review workflow`);
+          return;
+        }
         if (state.retryCount >= this._maxAutoRetries) {
           console.log(`${TAG} ${taskId} exhausted retries (${state.retryCount})`);
           this._executeAutoAction(taskId, "block", recovery, classification, rawError);
@@ -615,6 +734,28 @@ export class AgentEventBus {
         state.retryCount++;
         state.lastRetryAt = now;
         this._autoActionState.set(taskId, state);
+        const retryDelayMs =
+          Number.isFinite(Number(recovery?.cooldownMs))
+            ? Math.max(0, Math.trunc(Number(recovery.cooldownMs)))
+            : this._retryDelayMs;
+        const nextAttemptAt = now + retryDelayMs;
+        this._updateRetryQueue(
+          {
+            type: "bump-count",
+            taskId,
+            retryCount: state.retryCount,
+            item: {
+              taskId,
+              retryCount: state.retryCount,
+              maxRetries: this._maxAutoRetries,
+              reason: recovery?.reason || "error detected",
+              lastError: rawError || recovery?.reason || "",
+              nextAttemptAt,
+              status: "scheduled",
+            },
+          },
+          { reason: "auto-retry", taskId },
+        );
 
         this.emit(AGENT_EVENT.AUTO_RETRY, taskId, {
           retryCount: state.retryCount,
@@ -622,6 +763,8 @@ export class AgentEventBus {
           reason: recovery?.reason || "error detected",
           prompt: recovery?.prompt || null,
           pattern: classification?.pattern,
+          nextAttemptAt,
+          retryDelayMs,
         });
         console.log(
           `${TAG} auto-retry #${state.retryCount}/${this._maxAutoRetries} for ${taskId} (${classification?.pattern || "?"})`,
@@ -640,6 +783,21 @@ export class AgentEventBus {
           reason: recovery?.reason || "rate limited",
           pattern: classification?.pattern,
         });
+        this._updateRetryQueue(
+          {
+            type: "upsert",
+            item: {
+              taskId,
+              retryCount: state.retryCount,
+              maxRetries: this._maxAutoRetries,
+              reason: recovery?.reason || "rate limited",
+              lastError: rawError || recovery?.reason || "",
+              nextAttemptAt: state.cooldownUntil,
+              status: "cooldown",
+            },
+          },
+          { reason: "auto-cooldown", taskId },
+        );
         console.log(
           `${TAG} cooldown ${cooldownMs}ms for ${taskId} (${classification?.pattern || "?"})`,
         );
@@ -647,6 +805,10 @@ export class AgentEventBus {
       }
 
       case "block": {
+        this._updateRetryQueue(
+          { type: "mark-exhausted", taskId },
+          { reason: "auto-block", taskId },
+        );
         this.emit(AGENT_EVENT.AUTO_BLOCK, taskId, {
           reason: recovery?.reason || "too many errors",
           errorCount: recovery?.errorCount || 0,
@@ -675,6 +837,23 @@ export class AgentEventBus {
         state.retryCount++;
         state.lastRetryAt = now;
         this._autoActionState.set(taskId, state);
+        this._updateRetryQueue(
+          {
+            type: "bump-count",
+            taskId,
+            retryCount: state.retryCount,
+            item: {
+              taskId,
+              retryCount: state.retryCount,
+              maxRetries: this._maxAutoRetries,
+              reason: recovery?.reason || "new session",
+              lastError: rawError || recovery?.reason || "",
+              nextAttemptAt: now + this._retryDelayMs,
+              status: "new-session",
+            },
+          },
+          { reason: "auto-new-session", taskId },
+        );
 
         this.emit(AGENT_EVENT.AUTO_NEW_SESSION, taskId, {
           reason: recovery?.reason || "session expired / token overflow",
@@ -703,6 +882,10 @@ export class AgentEventBus {
 
       case "manual":
       default: {
+        this._updateRetryQueue(
+          { type: "remove", taskId },
+          { reason: "manual-review", taskId },
+        );
         console.log(
           `${TAG} manual review needed for ${taskId}: ${recovery?.reason || rawError}`,
         );
@@ -763,6 +946,17 @@ export class AgentEventBus {
 
   _checkStaleAgents() {
     const now = Date.now();
+    this._retryQueueState = reduceRetryQueue(this._retryQueueState, {
+      type: "expire",
+      now,
+    });
+    if (typeof this._setRetryQueueData === "function") {
+      try {
+        this._setRetryQueueData(snapshotRetryQueue(this._retryQueueState));
+      } catch {
+        /* best effort */
+      }
+    }
     for (const [taskId, lastHb] of this._heartbeats) {
       const elapsed = now - lastHb;
       if (elapsed >= this._staleThresholdMs) {
