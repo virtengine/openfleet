@@ -140,8 +140,28 @@ vi.mock("node:fs", async (importOriginal) => {
 
 describe("task-cli taskStats repo area lock state", () => {
   beforeEach(() => {
+    vi.resetModules();
     vi.clearAllMocks();
     mockExistsSync.mockImplementation(() => false);
+    vi.doMock("../task/task-store.mjs", () => ({
+      configureTaskStore: mockConfigureTaskStore,
+      loadStore: mockLoadStore,
+      getStats: mockGetStats,
+    }));
+    vi.doMock("node:fs", async () => {
+      const actual = await vi.importActual("node:fs");
+      return {
+        ...actual,
+        readFileSync: mockReadFileSync,
+        existsSync: mockExistsSync,
+        statSync: mockStatSync,
+      };
+    });
+  });
+
+  afterEach(() => {
+    vi.doUnmock("../task/task-store.mjs");
+    vi.doUnmock("node:fs");
   });
 
   it("surfaces adaptive repo-area lock state from runtime payload", async () => {

@@ -188,11 +188,13 @@ export async function loadSessionMessages(id, opts = {}) {
     }
     if (!opts.prepend) {
       _bindSessionStore(targetSessionId, [], res?.pagination || null);
+      sessionMessagesSessionId.value = targetSessionId;
     }
     return { ok: false, error: "empty" };
   } catch {
     if (!opts.prepend) {
       _bindSessionStore(targetSessionId, [], null);
+      sessionMessagesSessionId.value = targetSessionId;
     }
     return { ok: false, error: "unavailable" };
   }
