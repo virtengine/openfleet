@@ -4319,6 +4319,118 @@ registerNodeType("notify.webhook_out", {
   },
 });
 
+registerNodeType("action.emit_event", {
+  describe: () =>
+    "Emit an internal workflow event and optionally dispatch matching trigger.event workflows",
+  schema: {
+    type: "object",
+    properties: {
+      eventType: { type: "string", description: "Event type to emit (for example session-stuck)" },
+      payload: {
+        type: "object",
+        description: "Event payload object forwarded to matching workflows",
+        additionalProperties: true,
+      },
+      dispatch: {
+        type: "boolean",
+        default: true,
+        description: "When true, evaluate and execute matching event-trigger workflows",
+      },
+      includeCurrentWorkflow: {
+        type: "boolean",
+        default: false,
+        description: "Allow dispatching the currently running workflow if it matches",
+      },
+      outputVariable: {
+        type: "string",
+        description: "Optional context key where event output will be stored",
+      },
+    },
+    required: ["eventType"],
+  },
+  async execute(node, ctx, engine) {
+    const eventType = String(ctx.resolve(node.config?.eventType || "") || "").trim();
+    if (!eventType) throw new Error("action.emit_event: 'eventType' is required");
+
+    const payload = resolveWorkflowNodeValue(node.config?.payload ?? {}, ctx);
+    const shouldDispatch = parseBooleanSetting(
+      resolveWorkflowNodeValue(node.config?.dispatch ?? true, ctx),
+      true,
+    );
+    const includeCurrentWorkflow = parseBooleanSetting(
+      resolveWorkflowNodeValue(node.config?.includeCurrentWorkflow ?? false, ctx),
+      false,
+    );
+    const currentWorkflowId = String(ctx.data?._workflowId || "").trim();
+
+    const output = {
+      success: true,
+      eventType,
+      payload,
+      dispatched: false,
+      dispatchCount: 0,
+      matched: [],
+      runs: [],
+    };
+
+    if (shouldDispatch && engine?.evaluateTriggers && engine?.execute) {
+      const matched = await engine.evaluateTriggers(eventType, payload || {});
+      output.matched = matched;
+      for (const trigger of matched) {
+        const workflowId = String(trigger?.workflowId || "").trim();
+        if (!workflowId) continue;
+        if (!includeCurrentWorkflow && currentWorkflowId && workflowId === currentWorkflowId) {
+          continue;
+        }
+        try {
+          const childCtx = await engine.execute(
+            workflowId,
+            {
+              ...(payload && typeof payload === "object" ? payload : {}),
+              eventType,
+              _triggerSource: "workflow.emit_event",
+              _triggeredByWorkflowId: currentWorkflowId || null,
+              _triggeredByRunId: ctx.id,
+            },
+            { force: true },
+          );
+          const childErrors = Array.isArray(childCtx?.errors) ? childCtx.errors : [];
+          output.runs.push({
+            workflowId,
+            runId: childCtx?.id || null,
+            status: childErrors.length > 0 ? "failed" : "completed",
+          });
+        } catch (err) {
+          output.runs.push({
+            workflowId,
+            runId: null,
+            status: "failed",
+            error: err?.message || String(err),
+          });
+        }
+      }
+      output.dispatchCount = output.runs.length;
+      output.dispatched = output.dispatchCount > 0;
+    }
+
+    if (ctx?.data && typeof ctx.data === "object") {
+      ctx.data.eventType = eventType;
+      ctx.data.eventPayload = payload;
+    }
+
+    const outputVariable = String(ctx.resolve(node.config?.outputVariable || "") || "").trim();
+    if (outputVariable) {
+      ctx.data[outputVariable] = output;
+    }
+
+    ctx.log(
+      node.id,
+      `Emitted event ${eventType} (dispatch=${output.dispatched}, runs=${output.dispatchCount})`,
+    );
+    return output;
+  },
+});
+
 // ═══════════════════════════════════════════════════════════════════════════
 //  AGENT-SPECIFIC — Specialized agent operations
 // ═══════════════════════════════════════════════════════════════════════════

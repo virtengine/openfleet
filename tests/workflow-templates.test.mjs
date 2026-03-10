@@ -10,6 +10,7 @@ import {
   listWorkflowSetupProfiles,
   getWorkflowSetupProfile,
   resolveWorkflowTemplateIds,
+  resolveWorkflowTemplateConfig,
   normalizeTemplateOverridesById,
   applyWorkflowTemplateState,
   updateWorkflowFromTemplate,
@@ -442,6 +443,27 @@ describe("workflow-templates", () => {
     }
   });
 
+  it("continuation loop template exposes configurable turn/stuck controls", () => {
+    const template = getTemplate("template-continuation-loop");
+    expect(template).toBeDefined();
+    expect(template?.trigger).toBe("trigger.manual");
+
+    expect(template?.variables?.maxTurns).toBe(8);
+    expect(template?.variables?.terminalStates).toEqual(["done", "cancelled"]);
+    expect(template?.variables?.stuckThresholdMs).toBe(300000);
+    expect(template?.variables?.onStuck).toBe("escalate");
+
+    const emitNode = template?.nodes?.find((n) => n.id === "emit-stuck");
+    expect(emitNode?.type).toBe("action.emit_event");
+    expect(emitNode?.config?.eventType).toBe("session-stuck");
+
+    const routeNode = template?.nodes?.find((n) => n.id === "stuck-route");
+    expect(routeNode?.type).toBe("condition.switch");
+    expect(routeNode?.config?.cases?.retry).toBe("retry");
+    expect(routeNode?.config?.cases?.escalate).toBe("escalate");
+    expect(routeNode?.config?.cases?.pause).toBe("pause");
+  });
+
   it("pr merge strategy template listens to review, approval, and opened aliases", () => {
     const template = getTemplate("template-pr-merge-strategy");
     expect(template).toBeDefined();
@@ -450,6 +472,32 @@ describe("workflow-templates", () => {
     expect(triggerNode?.type).toBe("trigger.pr_event");
     expect(triggerNode?.config?.event).toBe("review_requested");
     expect(triggerNode?.config?.events).toEqual(["review_requested", "approved", "opened"]);
+  });
+
+  it("continuation loop template includes stuck handling and terminal-state exits", () => {
+    const template = getTemplate("template-continuation-loop");
+    expect(template).toBeDefined();
+    expect(template?.trigger).toBe("trigger.manual");
+    expect(template?.variables?.onStuck).toBe("escalate");
+    expect(template?.variables?.terminalStates).toEqual(["done", "cancelled"]);
+
+    const pollTask = template.nodes.find((n) => n.id === "poll-task");
+    const stuckSwitch = template.nodes.find((n) => n.id === "stuck-route");
+    const endTerminal = template.nodes.find((n) => n.id === "end-terminal");
+    const endMaxTurns = template.nodes.find((n) => n.id === "end-max-turns");
+    const stuckEvent = template.nodes.find((n) => n.id === "emit-stuck");
+
+    expect(pollTask?.type).toBe("action.bosun_function");
+    expect(pollTask?.config?.function).toBe("tasks.get");
+    expect(stuckSwitch?.type).toBe("condition.switch");
+    expect(stuckEvent?.type).toBe("action.emit_event");
+    expect(endTerminal?.type).toBe("flow.end");
+    expect(endMaxTurns?.type).toBe("flow.end");
+
+    const loopBackEdge = template.edges.find(
+      (e) => e.source === "increment-turn" && e.target === "poll-task",
+    );
+    expect(loopBackEdge?.backEdge).toBe(true);
   });
 });
 
@@ -758,6 +806,39 @@ describe("workflow setup profiles", () => {
     const resolved = resolveWorkflowTemplateIds({ profileId: "workflowFirst" });
     expect(resolved).toContain("template-task-lifecycle");
     expect(resolved).toContain("template-task-batch-processor");
+  });
+
+  it("resolves typed workflows into template ids and overrides", () => {
+    const resolved = resolveWorkflowTemplateIds({
+      profileId: "manual",
+      workflows: [
+        {
+          type: "continuation-loop",
+          enabled: true,
+          maxTurns: "6",
+          terminalStates: "done,cancelled",
+          onStuck: "pause",
+        },
+      ],
+    });
+
+    expect(resolved).toContain("template-continuation-loop");
+
+    const config = resolveWorkflowTemplateConfig([
+      {
+        type: "continuation-loop",
+        enabled: true,
+        maxTurns: "6",
+        terminalStates: "done,cancelled",
+        onStuck: "pause",
+      },
+    ]);
+    expect(config.templateIds).toEqual(["template-continuation-loop"]);
+    expect(config.overridesById["template-continuation-loop"]).toEqual({
+      maxTurns: 6,
+      terminalStates: ["done", "cancelled"],
+      onStuck: "pause",
+    });
   });
 
   it("resolves explicit template lists and filters unknown IDs", () => {

@@ -43,6 +43,71 @@
       "default": false,
       "description": "Delegate task finalization and recovery to workflow automation instead of the legacy TaskExecutor. Automatically set to true when workflowFirst is enabled."
     },
+    "workflowDefaults": {
+      "type": "object",
+      "additionalProperties": true,
+      "properties": {
+        "profile": {
+          "type": "string",
+          "description": "Default workflow setup profile (for example: balanced, autonomous, workflowFirst)."
+        },
+        "autoInstall": {
+          "type": "boolean",
+          "description": "Automatically install requested templates on startup."
+        },
+        "templates": {
+          "oneOf": [
+            { "type": "array", "items": { "type": "string" } },
+            { "type": "string" }
+          ],
+          "description": "Explicit template IDs to install/enable."
+        },
+        "templateOverridesById": {
+          "type": "object",
+          "additionalProperties": { "type": "object" },
+          "description": "Template variable overrides keyed by template id."
+        }
+      }
+    },
+    "workflows": {
+      "type": "array",
+      "description": "Opt-in typed workflow templates that resolve to built-in workflow definitions.",
+      "items": {
+        "type": "object",
+        "additionalProperties": true,
+        "properties": {
+          "type": {
+            "type": "string",
+            "enum": ["continuation-loop"]
+          },
+          "enabled": { "type": "boolean" },
+          "name": { "type": "string" },
+          "taskId": { "type": "string" },
+          "worktreePath": { "type": "string" },
+          "pollIntervalMs": { "type": "number" },
+          "maxTurns": { "type": "number" },
+          "terminalStates": {
+            "oneOf": [
+              { "type": "array", "items": { "type": "string" } },
+              { "type": "string" }
+            ]
+          },
+          "stuckThresholdMs": { "type": "number" },
+          "onStuck": { "type": "string", "enum": ["retry", "escalate", "pause"] },
+          "continuePrompt": { "type": "string" },
+          "retryPrompt": { "type": "string" },
+          "sdk": { "type": "string" },
+          "model": { "type": "string" },
+          "timeoutMs": { "type": "number" },
+          "options": {
+            "type": "object",
+            "additionalProperties": true,
+            "description": "Additional template variable overrides for this typed workflow entry."
+          }
+        },
+        "required": ["type"]
+      }
+    },
     "interactiveShellEnabled": { "type": "boolean" },
     "shellEnabled": { "type": "boolean" },
     "codexEnabled": { "type": "boolean" },

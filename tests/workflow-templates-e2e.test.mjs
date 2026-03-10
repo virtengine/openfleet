@@ -893,6 +893,62 @@ describe("workflow-templates E2E execution", () => {
     });
   });
 
+  describe("Continuation Loop (template-continuation-loop)", () => {
+    it("advances through mocked external statuses and exits on terminal state", async () => {
+      const statuses = ["inprogress", "inreview", "done"];
+      mockServices.kanban.getTask.mockImplementation(async (id) => ({
+        id,
+        title: `Task ${id}`,
+        status: "inprogress",
+        externalStatus: statuses.shift() || "done",
+      }));
+
+      const installed = installTemplate("template-continuation-loop", engine, {
+        taskId: "LIN-123",
+        worktreePath: "/tmp/worktree/lin-123",
+        maxTurns: 8,
+        pollIntervalMs: 1,
+        terminalStates: ["done", "cancelled"],
+        stuckThresholdMs: 600000,
+        onStuck: "retry",
+      });
+
+      const ctx = await engine.execute(installed.id, {}, { force: true });
+      expect(ctx).toBeDefined();
+      expect(ctx.errors).toEqual([]);
+      expect(ctx.getNodeStatus("end-terminal")).toBe("completed");
+      expect(mockServices.kanban.getTask).toHaveBeenCalled();
+      expect(mockServices.kanban.getTask.mock.calls.length).toBeGreaterThanOrEqual(3);
+    });
+
+    it("fires session-stuck hook and executes pause action when configured", async () => {
+      mockServices.kanban.getTask.mockImplementation(async (id) => ({
+        id,
+        title: `Task ${id}`,
+        status: "inprogress",
+        externalStatus: "inprogress",
+      }));
+
+      const installed = installTemplate("template-continuation-loop", engine, {
+        taskId: "LIN-STUCK-1",
+        worktreePath: "/tmp/worktree/lin-stuck-1",
+        maxTurns: 3,
+        pollIntervalMs: 1,
+        terminalStates: ["done", "cancelled"],
+        stuckThresholdMs: 1,
+        onStuck: "pause",
+      });
+
+      const ctx = await engine.execute(installed.id, {}, { force: true });
+      expect(ctx).toBeDefined();
+      expect(ctx.errors).toEqual([]);
+      expect(ctx.getNodeStatus("emit-stuck")).toBe("completed");
+      expect(ctx.getNodeStatus("stuck-pause")).toBe("completed");
+      expect(ctx.getNodeStatus("end-paused")).toBe("completed");
+      expect(ctx.data?.eventType).toBe("session-stuck");
+    });
+  });
+
   describe("Incident Response (template-incident-response)", () => {
     it("handles incident response workflow", async () => {
       const installed = installTemplate("template-incident-response", engine);
@@ -1289,4 +1345,5 @@ describe("workflow-templates E2E execution", () => {
     });
   });
 });
+
 

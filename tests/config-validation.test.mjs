@@ -173,6 +173,55 @@ describe("loadConfig validation and edge cases", () => {
     expect(typeof config.jira.projectKey).toBe("string");
     expect(typeof config.triggerSystem).toBe("object");
     expect(Array.isArray(config.triggerSystem.templates)).toBe(true);
+    expect(typeof config.workflowDefaults).toBe("object");
+    expect(Array.isArray(config.workflows)).toBe(true);
+  });
+
+  it("normalizes typed workflow entries from bosun.config.json", async () => {
+    await writeFile(
+      resolve(tempConfigDir, "bosun.config.json"),
+      JSON.stringify(
+        {
+          workflows: [
+            {
+              type: "continuation-loop",
+              enabled: true,
+              taskId: "LIN-123",
+              maxTurns: 5,
+              pollIntervalMs: 2500,
+              terminalStates: ["Done", "Cancelled", "done"],
+              stuckThresholdMs: 120000,
+              onStuck: "pause",
+            },
+          ],
+        },
+        null,
+        2,
+      ),
+      "utf8",
+    );
+
+    const config = loadConfig([
+      "node",
+      "bosun",
+      "--config-dir",
+      tempConfigDir,
+      "--repo-root",
+      tempConfigDir,
+    ]);
+
+    expect(Array.isArray(config.workflows)).toBe(true);
+    expect(config.workflows).toHaveLength(1);
+    expect(config.workflows[0]).toMatchObject({
+      type: "continuation-loop",
+      enabled: true,
+      taskId: "LIN-123",
+      maxTurns: 5,
+      pollIntervalMs: 2500,
+      terminalStates: ["done", "cancelled"],
+      stuckThresholdMs: 120000,
+      onStuck: "pause",
+    });
   });
 
   it("parses executor model lists from EXECUTORS env", () => {
@@ -472,3 +521,4 @@ describe("loadConfig validation and edge cases", () => {
     expect(config.scriptPath).toBe(scriptFile);
   });
 });
+

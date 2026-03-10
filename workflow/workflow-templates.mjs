@@ -128,6 +128,11 @@ import {
   FLOW_CONTROL_SUITE_TEMPLATE,
 } from "../workflow-templates/coverage.mjs";
 
+// Continuation Loop (issue-state continuation polling)
+import {
+  CONTINUATION_LOOP_TEMPLATE,
+} from "../workflow-templates/continuation-loop.mjs";
+
 // MCP Integration (MCP tool → workflow data piping)
 import {
   MCP_TOOL_CHAIN_TEMPLATE,
@@ -194,6 +199,7 @@ export {
   MCP_RESEARCH_PROBE_TEMPLATE,
   AGENT_EXECUTION_PIPELINE_TEMPLATE,
   FLOW_CONTROL_SUITE_TEMPLATE,
+  CONTINUATION_LOOP_TEMPLATE,
   MCP_TOOL_CHAIN_TEMPLATE,
   MCP_GITHUB_PR_MONITOR_TEMPLATE,
   MCP_CROSS_SERVER_PIPELINE_TEMPLATE,
@@ -283,6 +289,8 @@ export const WORKFLOW_TEMPLATES = Object.freeze([
   MCP_RESEARCH_PROBE_TEMPLATE,
   AGENT_EXECUTION_PIPELINE_TEMPLATE,
   FLOW_CONTROL_SUITE_TEMPLATE,
+  // ── Continuation Loop ──
+  CONTINUATION_LOOP_TEMPLATE,
   // ── MCP Integration (MCP tool → workflow data piping) ──
   MCP_TOOL_CHAIN_TEMPLATE,
   MCP_GITHUB_PR_MONITOR_TEMPLATE,
@@ -984,9 +992,13 @@ export function getWorkflowSetupProfile(profileId = "balanced") {
  * @returns {string[]}
  */
 export function resolveWorkflowTemplateIds(opts = {}) {
+  const fromWorkflowConfig = resolveWorkflowTemplateConfig(opts.workflows || []);
   const explicit = normalizeTemplateIdList(opts.templateIds || []);
-  if (explicit.length > 0) return explicit;
-  return resolveProfileTemplateIds(opts.profileId || "balanced");
+  if (explicit.length > 0) {
+    return normalizeTemplateIdList([...explicit, ...fromWorkflowConfig.templateIds]);
+  }
+  const fromProfile = resolveProfileTemplateIds(opts.profileId || "balanced");
+  return normalizeTemplateIdList([...fromProfile, ...fromWorkflowConfig.templateIds]);
 }
 
 function coerceTemplateVariableValue(rawValue, defaultValue) {
@@ -1180,4 +1192,3 @@ export function installRecommendedTemplates(engine, overridesById = {}) {
     .map((template) => template.id);
   return installTemplateSet(engine, recommendedIds, overridesById);
 }
-
