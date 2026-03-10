@@ -859,7 +859,7 @@ function extractCommandText(item) {
 function normalizeGitTokenSource(value) {
   return String(value || "")
     .toLowerCase()
-    .replaceAll(/_+/g, " ")
+    .replaceAll(/[^a-z0-9]+/g, " ")
     .replaceAll(/\s+/g, " ")
     .trim();
 }
@@ -871,7 +871,18 @@ function inferGitCommandSignals(toolName, commandText) {
 
   const commandLooksGit = /\bgit\b/.test(normalizedCommand);
   const toolLooksGit = normalizedToolName.includes("git");
-  if (!toolLooksGit && !commandLooksGit) return { eligible: false, subcommand: "", boundedDiff: false };
+  if (!toolLooksGit && !commandLooksGit) {
+    return {
+      eligible: false,
+      boundedDiff: false,
+      hasLog: false,
+      hasShortlog: false,
+      hasReflog: false,
+      hasDiff: false,
+      hasShow: false,
+      hasStatus: false,
+    };
+  }
 
   let commandBody = normalizedCommand.startsWith("git ")
     ? normalizedCommand.slice(4).trim()
@@ -884,10 +895,16 @@ function inferGitCommandSignals(toolName, commandText) {
       .trim();
   }
 
-  const subcommand = commandBody.split(" ")[0] || "";
+  const source = `${commandBody} ${normalizedToolName}`.trim();
+  const hasShortlog = /\bshortlog\b/.test(source);
+  const hasReflog = /\breflog\b/.test(source);
+  const hasLog = !hasShortlog && !hasReflog && /\blog\b/.test(source);
+  const hasDiff = /\bdiff\b/.test(source);
+  const hasShow = /\bshow\b/.test(source);
+  const hasStatus = /\bstatus\b/.test(source);
   const boundedDiff = /(?:^|\s)--(?:stat|shortstat|numstat|name-only|name-status|summary)\b/.test(commandBody)
     || /\bdiff(?:\s|-)*(?:stat|shortstat|numstat|name only|name status|summary)\b/.test(merged);
-  return { eligible: true, subcommand, boundedDiff };
+  return { eligible: true, boundedDiff, hasLog, hasShortlog, hasReflog, hasDiff, hasShow, hasStatus };
 }
 
 function classifyImmediateGitOutput(item, opts) {
@@ -899,15 +916,23 @@ function classifyImmediateGitOutput(item, opts) {
 
   const toolName = extractToolName(item);
   const commandText = extractCommandText(item);
-  const { eligible, subcommand, boundedDiff } = inferGitCommandSignals(toolName, commandText);
+  const {
+    eligible,
+    boundedDiff,
+    hasLog,
+    hasShortlog,
+    hasReflog,
+    hasDiff,
+    hasShow,
+    hasStatus,
+  } = inferGitCommandSignals(toolName, commandText);
   if (!eligible) return null;
 
-  if (subcommand === "log") return { kind: "log", text };
-  if (subcommand === "shortlog") return { kind: "shortlog", text };
-  if (subcommand === "reflog") return { kind: "reflog", text };
-  if (subcommand === "diff") {
-    if (!boundedDiff) return { kind: "diff", text };
-  }
+  if (hasStatus || hasShow) return null;
+  if (hasShortlog) return { kind: "shortlog", text };
+  if (hasReflog) return { kind: "reflog", text };
+  if (hasLog) return { kind: "log", text };
+  if (hasDiff && !boundedDiff) return { kind: "diff", text };
 
   return null;
 }
