@@ -6,6 +6,7 @@
  */
 
 import { resolve, dirname, basename } from "node:path";
+import { tmpdir } from "node:os";
 import { fileURLToPath } from "node:url";
 import {
   readFileSync,
@@ -50,9 +51,20 @@ function isTestIsolatedStorePath(candidatePath) {
   return TEST_STORE_FILENAME_RE.test(basename(String(candidatePath || "")));
 }
 
+function sanitizePathToken(value) {
+  const normalized = String(value || "")
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "")
+    .slice(0, 80);
+  return normalized || "store";
+}
+
 function buildIsolatedTestStorePath(persistentStorePath) {
   return resolve(
-    dirname(persistentStorePath),
+    tmpdir(),
+    "bosun-vitest",
+    sanitizePathToken(dirname(persistentStorePath)),
     "kanban-state-vitest-" + process.pid + "-" + Date.now() + "-" + Math.random().toString(16).slice(2, 8) + ".json",
   );
 }

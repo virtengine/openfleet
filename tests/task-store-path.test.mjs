@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { resolve } from "node:path";
+import { resolve, dirname } from "node:path";
 
 const tempDirs = [];
 const TEST_ENV_KEYS = [
@@ -103,11 +103,20 @@ describe("task-store path configuration", () => {
       const taskStore = await loadTaskStoreModule();
 
       expect(taskStore.getStorePath()).toContain("kanban-state-vitest-");
+      expect(dirname(taskStore.getStorePath())).toContain(
+        resolve(tmpdir(), "bosun-vitest"),
+      );
       expect(taskStore.getStorePath()).not.toBe(persistentPath);
+      expect(taskStore.getStorePath()).not.toContain(
+        resolve(process.cwd(), ".bosun"),
+      );
 
       taskStore.configureTaskStore({ storePath: persistentPath });
       expect(taskStore.getStorePath()).toContain("kanban-state-vitest-");
       expect(taskStore.getStorePath()).not.toBe(persistentPath);
+      expect(taskStore.getStorePath()).not.toContain(
+        resolve(process.cwd(), ".bosun"),
+      );
     } finally {
       restoreEnv(env);
     }

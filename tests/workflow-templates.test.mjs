@@ -663,6 +663,22 @@ describe("workflow setup profiles", () => {
     expect(batchPrTriggerNode?.type).toBe("trigger.task_available");
   });
 
+  it("filters batch task templates to workspace-backed backlog tasks before dispatch", () => {
+    const batchProcessor = getTemplate("template-task-batch-processor");
+    const batchPr = getTemplate("template-task-batch-pr");
+    const queryScripts = [
+      batchProcessor?.nodes?.find((node) => node.id === "query-tasks")?.config?.args?.[1],
+      batchPr?.nodes?.find((node) => node.id === "query-tasks")?.config?.args?.[1],
+    ];
+
+    for (const script of queryScripts) {
+      expect(script).toContain("const filtered = (tasks || []).filter((task) => {");
+      expect(script).toContain('const repository = typeof task?.repository === "string" ? task.repository.trim() : "";');
+      expect(script).toContain('const workspace = typeof task?.workspace === "string" ? task.workspace.trim() : "";');
+      expect(script).toContain("repository.length > 0 && workspace.length > 0");
+    }
+  });
+
   it("exposes built-in setup profiles with template selections", () => {
     const profiles = listWorkflowSetupProfiles();
     const ids = profiles.map((profile) => profile.id);
@@ -967,4 +983,3 @@ describe("template category coverage", () => {
     }
   });
 });
-
