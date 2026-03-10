@@ -1443,6 +1443,29 @@ function WorkflowCanvas({ workflow, onSave, nodeTypes: availableNodeTypes = [] }
           normalizedStatuses[nodeId] = normalizeLiveNodeStatus(status);
         }
         setLiveNodeStatuses(normalizedStatuses);
+        const nodeOutputs = detailedRun?.detail?.nodeOutputs && typeof detailedRun.detail.nodeOutputs === "object"
+          ? detailedRun.detail.nodeOutputs
+          : {};
+        setLiveNodeOutputPreviews((prev) => {
+          const next = { ...prev };
+          for (const node of nodesRef.current || []) {
+            const nodeId = String(node?.id || "").trim();
+            if (!nodeId || !Object.prototype.hasOwnProperty.call(nodeOutputs, nodeId)) continue;
+            const preview = resolveNodeOutputPreview(node?.type, null, nodeOutputs[nodeId]);
+            const lines = Array.isArray(preview?.lines)
+              ? preview.lines.map((line) => String(line || "").trim()).filter(Boolean).slice(0, 3)
+              : [];
+            if (!lines.length && preview?.tokenCount == null) continue;
+            next[nodeId] = {
+              lines,
+              tokenCount: Number.isFinite(Number(preview?.tokenCount))
+                ? Math.max(0, Math.round(Number(preview.tokenCount)))
+                : null,
+              updatedAt: Date.now(),
+            };
+          }
+          return next;
+        });
       } catch {
         if (cancelled) return;
       }
