@@ -125,18 +125,30 @@ function areBoardFiltersEqual(a, b) {
 
 function readRawPersistedBoardFilters(storage, key, workspaceScope) {
   const raw = storage?.getItem?.(key);
-  if (!raw) return null;
+  if (!raw) return { filters: null, invalid: false, exists: false };
   try {
     const parsed = JSON.parse(raw);
-    if (!parsed || typeof parsed !== "object") return null;
-    if (parsed.version !== KANBAN_BOARD_FILTER_SCHEMA_VERSION) return null;
+    if (!parsed || typeof parsed !== "object") return { filters: null, invalid: true, exists: true };
+    if (parsed.version !== KANBAN_BOARD_FILTER_SCHEMA_VERSION) return { filters: null, invalid: true, exists: true };
     const payloadWorkspace = normalizeBoardWorkspaceScope(parsed.workspace);
-    if (payloadWorkspace !== normalizeBoardWorkspaceScope(workspaceScope)) return null;
-    if (!parsed.filters || typeof parsed.filters !== "object") return null;
-    return parsed.filters;
+    if (payloadWorkspace !== normalizeBoardWorkspaceScope(workspaceScope)) {
+      return { filters: null, invalid: true, exists: true };
+    }
+    if (!parsed.filters || typeof parsed.filters !== "object") {
+      return { filters: null, invalid: true, exists: true };
+    }
+    return { filters: parsed.filters, invalid: false, exists: true };
   } catch {
-    return null;
+    return { filters: null, invalid: true, exists: true };
   }
+}
+
+function shouldRewritePersistedBoardFilters(rawFilters, sanitized) {
+  if (!rawFilters || typeof rawFilters !== "object") return true;
+  for (const key of BOARD_FILTER_KEYS) {
+    if (trimFilterValue(rawFilters[key]) !== sanitized[key]) return true;
+  }
+  return false;
 }
 
 export function readPersistedBoardFilters({ storage, workspaceId, validateWith } = {}) {
@@ -145,18 +157,47 @@ export function readPersistedBoardFilters({ storage, workspaceId, validateWith }
 
   const workspaceScope = normalizeBoardWorkspaceScope(workspaceId);
   const scopedKey = buildBoardFilterStorageKey(workspaceScope);
-  let rawFilters = readRawPersistedBoardFilters(resolvedStorage, scopedKey, workspaceScope);
+  const scopedResult = readRawPersistedBoardFilters(resolvedStorage, scopedKey, workspaceScope);
+  if (scopedResult.invalid) {
+    persistBoardFilters({
+      storage: resolvedStorage,
+      workspaceId: workspaceScope,
+      filters: DEFAULT_BOARD_FILTERS,
+    });
+    return { ...DEFAULT_BOARD_FILTERS };
+  }
+
+  let rawFilters = scopedResult.filters;
   if (!rawFilters && workspaceScope === KANBAN_BOARD_GLOBAL_SCOPE) {
-    rawFilters = readRawPersistedBoardFilters(resolvedStorage, KANBAN_BOARD_FILTER_LEGACY_KEY, workspaceScope);
+    const legacyResult = readRawPersistedBoardFilters(
+      resolvedStorage,
+      KANBAN_BOARD_FILTER_LEGACY_KEY,
+      workspaceScope,
+    );
+    rawFilters = legacyResult.filters;
     if (rawFilters) {
       persistBoardFilters({
         storage: resolvedStorage,
         workspaceId: workspaceScope,
         filters: rawFilters,
       });
+    } else if (legacyResult.invalid) {
+      resolvedStorage?.removeItem?.(KANBAN_BOARD_FILTER_LEGACY_KEY);
     }
   }
-  return sanitizeBoardFilters(rawFilters || DEFAULT_BOARD_FILTERS, validateWith);
+
+  const sanitized = sanitizeBoardFilters(rawFilters || DEFAULT_BOARD_FILTERS, validateWith);
+  if (
+    rawFilters &&
+    shouldRewritePersistedBoardFilters(rawFilters, sanitized)
+  ) {
+    persistBoardFilters({
+      storage: resolvedStorage,
+      workspaceId: workspaceScope,
+      filters: sanitized,
+    });
+  }
+  return sanitized;
 }
 
 export function persistBoardFilters({ storage, workspaceId, filters } = {}) {
@@ -997,6 +1038,7 @@ function KanbanFilter({ tasks, filters, onFilterChange }) {
 /* ─── KanbanBoard (main export) ─── */
 export function KanbanBoard({ onOpenTask, hasMoreTasks = false, loadingMoreTasks = false, onLoadMoreTasks = null, columnTotals = {}, totalTasks = 0, workspaceId = "" }) {
   const workspaceScope = normalizeBoardWorkspaceScope(workspaceId);
+  const [hydratedWorkspaceScope, setHydratedWorkspaceScope] = useState(workspaceScope);
   const [filters, setFilters] = useState(() => readPersistedBoardFilters({ workspaceId: workspaceScope }));
   const allTasks = tasksData.value || [];
   const boardTasksLoaded = Boolean(tasksLoaded.value);
@@ -1018,9 +1060,15 @@ export function KanbanBoard({ onOpenTask, hasMoreTasks = false, loadingMoreTasks
   }, [allTasks]);
 
   useEffect(() => {
-    const hydrated = readPersistedBoardFilters({ workspaceId: workspaceScope });
+    const hydrated = readPersistedBoardFilters({
+      workspaceId: workspaceScope,
+      validateWith: boardTasksLoaded
+        ? { allowedRepos: knownRepos, allowedAssignees: knownAssignees }
+        : undefined,
+    });
     setFilters((prev) => (areBoardFiltersEqual(prev, hydrated) ? prev : hydrated));
-  }, [workspaceScope]);
+    setHydratedWorkspaceScope(workspaceScope);
+  }, [boardTasksLoaded, knownAssignees, knownRepos, workspaceScope]);
 
   useEffect(() => {
     if (!boardTasksLoaded) return;
@@ -1034,8 +1082,9 @@ export function KanbanBoard({ onOpenTask, hasMoreTasks = false, loadingMoreTasks
   }, [boardTasksLoaded, knownRepos, knownAssignees]);
 
   useEffect(() => {
+    if (hydratedWorkspaceScope !== workspaceScope) return;
     persistBoardFilters({ workspaceId: workspaceScope, filters });
-  }, [workspaceScope, filters]);
+  }, [workspaceScope, hydratedWorkspaceScope, filters]);
 
   const filteredTasks = useMemo(() => {
     let tasks = allTasks;

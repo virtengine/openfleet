@@ -42,6 +42,11 @@ describe("kanban scroll regression guards", () => {
     expect(cssSource).toMatch(/\.kanban-column-footer \{[\s\S]*position: sticky;/);
     expect(cssSource).toMatch(/\.kanban-column \{[\s\S]*height: clamp\(/);
   });
+
+  it("gates persistence until workspace hydration completes", () => {
+    expect(boardSource).toContain("hydratedWorkspaceScope");
+    expect(boardSource).toContain("if (hydratedWorkspaceScope !== workspaceScope) return;");
+  });
 });
 
 class MemoryStorage {
@@ -168,6 +173,8 @@ describe("kanban board filter persistence", () => {
       priority: "",
       search: "",
     });
+    expect(storage.getItem(buildBoardFilterStorageKey("ws-stale"))).toContain("\"version\":2");
+    expect(storage.getItem(buildBoardFilterStorageKey("ws-stale"))).toContain("\"workspace\":\"ws-stale\"");
   });
 
   it("sanitizes invalid and stale filter values during mutation validation", () => {
@@ -226,5 +233,38 @@ describe("kanban board filter persistence", () => {
     expect(sanitized.assignee).toBe("");
     expect(sanitized.priority).toBe("");
     expect(sanitized.search.length).toBe(120);
+  });
+
+  it("rewrites persisted filters when load-time validation drops stale values", () => {
+    const storage = new MemoryStorage();
+    const key = buildBoardFilterStorageKey("ws-alpha");
+    storage.setItem(key, JSON.stringify({
+      version: 2,
+      workspace: "ws-alpha",
+      filters: {
+        repo: "repo-removed",
+        assignee: "agent-removed",
+        priority: "high",
+        search: "keep",
+      },
+    }));
+
+    const filters = readPersistedBoardFilters({
+      storage,
+      workspaceId: "ws-alpha",
+      validateWith: {
+        allowedRepos: new Set(["repo-live"]),
+        allowedAssignees: new Set(["agent-live"]),
+      },
+    });
+
+    expect(filters).toEqual({
+      repo: "",
+      assignee: "",
+      priority: "high",
+      search: "keep",
+    });
+    expect(storage.getItem(key)).toContain("\"repo\":\"\"");
+    expect(storage.getItem(key)).toContain("\"assignee\":\"\"");
   });
 });
