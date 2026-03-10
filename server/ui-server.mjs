@@ -12646,12 +12646,39 @@ async function handleApi(req, res, url) {
         return;
       }
       const engine = wfCtx.engine;
+      const rawOffset = Number(url.searchParams.get("offset"));
       const rawLimit = Number(url.searchParams.get("limit"));
+      const offset = Number.isFinite(rawOffset) && rawOffset > 0
+        ? Math.max(0, Math.floor(rawOffset))
+        : 0;
       const limit = Number.isFinite(rawLimit) && rawLimit > 0
         ? Math.min(rawLimit, 5000)
-        : 200;
-      const runs = engine.getRunHistory ? engine.getRunHistory(null, limit) : [];
-      jsonResponse(res, 200, { ok: true, runs });
+        : 20;
+      const page = typeof engine.getRunHistoryPage === "function"
+        ? engine.getRunHistoryPage(null, { offset, limit })
+        : {
+            runs: engine.getRunHistory ? engine.getRunHistory(null, limit) : [],
+            total: engine.getRunHistory ? engine.getRunHistory(null).length : 0,
+            offset,
+            limit,
+          };
+      const runs = Array.isArray(page?.runs) ? page.runs : [];
+      const total = Number.isFinite(Number(page?.total)) ? Number(page.total) : runs.length;
+      const nextOffset = Number.isFinite(Number(page?.nextOffset))
+        ? Number(page.nextOffset)
+        : (offset + runs.length < total ? offset + runs.length : null);
+      jsonResponse(res, 200, {
+        ok: true,
+        runs,
+        pagination: {
+          total,
+          offset,
+          limit,
+          count: runs.length,
+          hasMore: page?.hasMore === true || (nextOffset != null && nextOffset < total),
+          nextOffset,
+        },
+      });
     } catch (err) {
       jsonResponse(res, 500, { ok: false, error: err.message });
     }
@@ -12820,12 +12847,39 @@ async function handleApi(req, res, url) {
       }
 
       if (action === "runs") {
+        const rawOffset = Number(url.searchParams.get("offset"));
         const rawLimit = Number(url.searchParams.get("limit"));
+        const offset = Number.isFinite(rawOffset) && rawOffset > 0
+          ? Math.max(0, Math.floor(rawOffset))
+          : 0;
         const limit = Number.isFinite(rawLimit) && rawLimit > 0
           ? Math.min(rawLimit, 5000)
-          : 200;
-        const runs = engine.getRunHistory ? engine.getRunHistory(workflowId, limit) : [];
-        jsonResponse(res, 200, { ok: true, runs });
+          : 20;
+        const page = typeof engine.getRunHistoryPage === "function"
+          ? engine.getRunHistoryPage(workflowId, { offset, limit })
+          : {
+              runs: engine.getRunHistory ? engine.getRunHistory(workflowId, limit) : [],
+              total: engine.getRunHistory ? engine.getRunHistory(workflowId).length : 0,
+              offset,
+              limit,
+            };
+        const runs = Array.isArray(page?.runs) ? page.runs : [];
+        const total = Number.isFinite(Number(page?.total)) ? Number(page.total) : runs.length;
+        const nextOffset = Number.isFinite(Number(page?.nextOffset))
+          ? Number(page.nextOffset)
+          : (offset + runs.length < total ? offset + runs.length : null);
+        jsonResponse(res, 200, {
+          ok: true,
+          runs,
+          pagination: {
+            total,
+            offset,
+            limit,
+            count: runs.length,
+            hasMore: page?.hasMore === true || (nextOffset != null && nextOffset < total),
+            nextOffset,
+          },
+        });
         return;
       }
 

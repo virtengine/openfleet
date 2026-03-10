@@ -34,6 +34,11 @@ const templates = signal([]);
 const nodeTypes = signal([]);
 const activeWorkflow = signal(null);
 const workflowRuns = signal([]);
+const workflowRunsTotal = signal(0);
+const workflowRunsHasMore = signal(false);
+const workflowRunsNextOffset = signal(0);
+const workflowRunsLoadingMore = signal(false);
+const workflowRunsScopeId = signal(null);
 const selectedRunId = signal(null);
 const selectedRunDetail = signal(null);
 const canvasZoom = signal(1);
@@ -63,6 +68,30 @@ const installDialogVars = signal({});
 const installDialogMode = signal("quick");
 const installDialogInstalling = signal(false);
 const installDialogResult = signal(null);
+
+function resetWorkflowRunsState(scopeWorkflowId = null) {
+  workflowRuns.value = [];
+  workflowRunsTotal.value = 0;
+  workflowRunsHasMore.value = false;
+  workflowRunsNextOffset.value = 0;
+  workflowRunsLoadingMore.value = false;
+  workflowRunsScopeId.value = scopeWorkflowId ? String(scopeWorkflowId) : null;
+  workflowRunsLimit.value = WORKFLOW_RUN_PAGE_SIZE;
+}
+
+function mergeWorkflowRunPages(existingRuns, nextRuns) {
+  const merged = [];
+  const seen = new Set();
+  for (const run of [...(existingRuns || []), ...(nextRuns || [])]) {
+    const runId = String(run?.runId || "").trim();
+    const dedupeKey = runId || JSON.stringify(run);
+    if (seen.has(dedupeKey)) continue;
+    seen.add(dedupeKey);
+    merged.push(run);
+  }
+  return merged;
+}
+
 function cloneVars(input) {
   if (!input || typeof input !== "object") return {};
   try {
@@ -76,7 +105,7 @@ function returnToWorkflowList() {
   selectedEdgeId.value = null;
   selectedRunId.value = null;
   selectedRunDetail.value = null;
-  workflowRunsLimit.value = WORKFLOW_RUN_PAGE_SIZE;
+  resetWorkflowRunsState();
   viewMode.value = "list";
   setRouteParams({}, { replace: true, skipGuard: true });
 }
@@ -1074,27 +1103,55 @@ async function applyTemplateUpdate(workflowId, mode = "replace", force = false) 
 }
 
 async function loadRuns(workflowId, opts = {}) {
+  const append = opts.append === true;
+  const hasScopedWorkflowId = workflowId !== undefined;
+  const scopedWorkflowId = hasScopedWorkflowId
+    ? (workflowId ? String(workflowId) : null)
+    : workflowRunsScopeId.value;
   try {
+    if (opts.reset === true) {
+      resetWorkflowRunsState(scopedWorkflowId);
+    }
     const rawLimit =
-      opts.limit != null ? Number(opts.limit) : Number(workflowRunsLimit.value);
+      opts.limit != null
+        ? Number(opts.limit)
+        : (append ? WORKFLOW_RUN_PAGE_SIZE : Number(workflowRunsLimit.value));
+    const rawOffset =
+      opts.offset != null
+        ? Number(opts.offset)
+        : (append ? Number(workflowRunsNextOffset.value || workflowRuns.value.length) : 0);
     const limit =
       Number.isFinite(rawLimit) && rawLimit > 0
         ? Math.min(Math.floor(rawLimit), WORKFLOW_RUN_MAX_FETCH)
         : WORKFLOW_RUN_PAGE_SIZE;
-    const baseUrl = workflowId
-      ? `/api/workflows/${workflowId}/runs`
+    const offset =
+      Number.isFinite(rawOffset) && rawOffset > 0
+        ? Math.max(0, Math.floor(rawOffset))
+        : 0;
+    const baseUrl = scopedWorkflowId
+      ? `/api/workflows/${scopedWorkflowId}/runs`
       : "/api/workflows/runs";
-    const data = await apiFetch(`${baseUrl}?limit=${limit}`);
+    if (append) workflowRunsLoadingMore.value = true;
+    const data = await apiFetch(`${baseUrl}?limit=${limit}&offset=${offset}`);
     if (data?.runs) {
-      workflowRuns.value = data.runs;
-      workflowRunsLimit.value = limit;
-      if (selectedRunId.value && !data.runs.find((run) => run.runId === selectedRunId.value)) {
-        selectedRunId.value = null;
-        selectedRunDetail.value = null;
-      }
+      const pageRuns = Array.isArray(data.runs) ? data.runs : [];
+      const mergedRuns = append
+        ? mergeWorkflowRunPages(workflowRuns.value, pageRuns)
+        : pageRuns;
+      const total = Number(data?.pagination?.total);
+      const nextOffset = Number(data?.pagination?.nextOffset);
+      const hasMore = data?.pagination?.hasMore === true;
+      workflowRuns.value = mergedRuns;
+      workflowRunsScopeId.value = scopedWorkflowId;
+      workflowRunsLimit.value = mergedRuns.length;
+      workflowRunsTotal.value = Number.isFinite(total) ? total : mergedRuns.length;
+      workflowRunsNextOffset.value = Number.isFinite(nextOffset) ? nextOffset : mergedRuns.length;
+      workflowRunsHasMore.value = hasMore || mergedRuns.length < workflowRunsTotal.value;
     }
   } catch (err) {
     console.error("[workflows] Failed to load runs:", err);
+  } finally {
+    workflowRunsLoadingMore.value = false;
   }
 }
 
@@ -3018,12 +3075,23 @@ function safePrettyJson(value) {
 
 function RunHistoryView() {
   const runs = workflowRuns.value || [];
+  const totalRuns = Number(workflowRunsTotal.value || runs.length);
+  const hasMoreRuns = workflowRunsHasMore.value === true;
+  const loadingMoreRuns = workflowRunsLoadingMore.value === true;
   const runsLimit = Number(workflowRunsLimit.value || WORKFLOW_RUN_PAGE_SIZE);
   const selectedRun = selectedRunDetail.value;
   const workflowNameMap = new Map((workflows.value || []).map((wf) => [wf.id, wf.name]));
   const [nowTick, setNowTick] = useState(Date.now());
   const hasRunningRuns = runs.some((run) => run?.status === "running");
   const selectedRunIsRunning = selectedRun?.status === "running";
+  const autoLoadMoreRef = useRef(false);
+  const tailSentinelRef = useRef(null);
+  const lastAutoLoadCountRef = useRef(-1);
+  const [statusFilter, setStatusFilter] = useState("all");
+  const [workflowFilter, setWorkflowFilter] = useState("all");
+  const [triggerFilter, setTriggerFilter] = useState("all");
+  const [searchQuery, setSearchQuery] = useState("");
+  const normalizedSearch = String(searchQuery || "").trim().toLowerCase();
 
   useEffect(() => {
     const timer = setInterval(() => setNowTick(Date.now()), 1000);
@@ -3036,7 +3104,7 @@ function RunHistoryView() {
 
     const poll = async () => {
       if (cancelled) return;
-      await loadRuns().catch(() => {});
+      await loadRuns(undefined, { limit: Math.max(runs.length, WORKFLOW_RUN_PAGE_SIZE) }).catch(() => {});
       if (!cancelled && selectedRunId.value && selectedRunIsRunning) {
         await loadRunDetail(selectedRunId.value).catch(() => {});
       }
@@ -3048,14 +3116,7 @@ function RunHistoryView() {
       cancelled = true;
       clearInterval(timer);
     };
-  }, [hasRunningRuns, selectedRunIsRunning, selectedRunId.value]);
-
-  const [statusFilter, setStatusFilter] = useState("all");
-  const [workflowFilter, setWorkflowFilter] = useState("all");
-  const [triggerFilter, setTriggerFilter] = useState("all");
-  const [searchQuery, setSearchQuery] = useState("");
-  const autoLoadMoreRef = useRef(false);
-  const normalizedSearch = String(searchQuery || "").trim().toLowerCase();
+  }, [hasRunningRuns, runs.length, selectedRunIsRunning, selectedRunId.value]);
 
   const workflowOptions = useMemo(() => {
     const map = new Map();
@@ -3109,12 +3170,24 @@ function RunHistoryView() {
   }, [runs]);
 
   const canLoadMoreRuns =
-    runs.length >= runsLimit && runsLimit < WORKFLOW_RUN_MAX_FETCH;
+    hasMoreRuns && runs.length < WORKFLOW_RUN_MAX_FETCH;
   const hasRunFilters =
     statusFilter !== "all" ||
     workflowFilter !== "all" ||
     triggerFilter !== "all" ||
     Boolean(normalizedSearch);
+
+  const triggerLoadMoreRuns = useCallback(() => {
+    if (!canLoadMoreRuns || loadingMoreRuns) return false;
+    const nextOffset = Number(workflowRunsNextOffset.value || runs.length);
+    if (nextOffset >= totalRuns && totalRuns > 0) return false;
+    void loadRuns(undefined, {
+      append: true,
+      offset: nextOffset,
+      limit: WORKFLOW_RUN_PAGE_SIZE,
+    });
+    return true;
+  }, [canLoadMoreRuns, loadingMoreRuns, runs.length, totalRuns]);
 
   useEffect(() => {
     if (!hasRunFilters || filteredRuns.length > 0 || !canLoadMoreRuns) {
@@ -3123,16 +3196,53 @@ function RunHistoryView() {
     }
     if (autoLoadMoreRef.current) return;
     autoLoadMoreRef.current = true;
-    const nextLimit = Math.min(
-      runsLimit + WORKFLOW_RUN_PAGE_SIZE,
-      WORKFLOW_RUN_MAX_FETCH,
-    );
-    Promise.resolve(loadRuns(null, { limit: nextLimit }))
-      .catch(() => {})
+    Promise.resolve(triggerLoadMoreRuns())
       .finally(() => {
         autoLoadMoreRef.current = false;
       });
-  }, [hasRunFilters, filteredRuns.length, canLoadMoreRuns, runsLimit, statusFilter, workflowFilter, triggerFilter, normalizedSearch]);
+  }, [hasRunFilters, filteredRuns.length, canLoadMoreRuns, triggerLoadMoreRuns, statusFilter, workflowFilter, triggerFilter, normalizedSearch]);
+
+  useEffect(() => {
+    if (selectedRun || !canLoadMoreRuns || typeof IntersectionObserver !== "function") {
+      lastAutoLoadCountRef.current = -1;
+      return;
+    }
+    const sentinel = tailSentinelRef.current;
+    if (!sentinel) return;
+    const observer = new IntersectionObserver(
+      (entries) => {
+        for (const entry of entries) {
+          if (!entry.isIntersecting) continue;
+          const key = runs.length;
+          if (lastAutoLoadCountRef.current === key || loadingMoreRuns) continue;
+          lastAutoLoadCountRef.current = key;
+          triggerLoadMoreRuns();
+        }
+      },
+      {
+        root: null,
+        rootMargin: "0px 0px 240px 0px",
+        threshold: 0,
+      },
+    );
+    observer.observe(sentinel);
+    return () => observer.disconnect();
+  }, [selectedRun, canLoadMoreRuns, loadingMoreRuns, runs.length, triggerLoadMoreRuns]);
+
+  useEffect(() => {
+    if (selectedRun || !canLoadMoreRuns || loadingMoreRuns || typeof window === "undefined") return;
+    const doc = document?.documentElement;
+    const body = document?.body;
+    const scrollHeight = Math.max(
+      Number(doc?.scrollHeight || 0),
+      Number(body?.scrollHeight || 0),
+    );
+    if (scrollHeight > window.innerHeight + 240) return;
+    const key = runs.length;
+    if (lastAutoLoadCountRef.current === key) return;
+    lastAutoLoadCountRef.current = key;
+    triggerLoadMoreRuns();
+  }, [selectedRun, canLoadMoreRuns, loadingMoreRuns, runs.length, filteredRuns.length, triggerLoadMoreRuns]);
 
   if (selectedRun) {
     const statusStyles = getRunStatusBadgeStyles(selectedRun.status);

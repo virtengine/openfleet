@@ -1798,7 +1798,7 @@ describe("template-task-lifecycle", () => {
     expect(prCreated?.config?.expression).toContain("create-pr");
     expect(prCreated?.config?.expression).toContain("prNumber");
     expect(prCreated?.config?.expression).toContain("prUrl");
-    expect(prCreated?.config?.expression).not.toContain("handedOff");
+    expect(prCreated?.config?.expression).toContain("handedOff");
     expect(t.edges.find((e) => e.source === "create-pr" && e.target === "pr-created")).toBeDefined();
     expect(t.edges.find((e) => e.source === "pr-created" && e.target === "set-inreview")).toBeDefined();
     expect(t.edges.find((e) => e.source === "pr-created" && e.target === "set-todo-push-failed")).toBeDefined();
@@ -1834,6 +1834,7 @@ describe("template-task-lifecycle", () => {
     expect(t.edges.find((e) => e.source === "release-worktree" && e.target === "release-claim")).toBeDefined();
     expect(t.edges.find((e) => e.source === "release-claim" && e.target === "release-slot")).toBeDefined();
   });
+
 
   it("claim-failed path releases slot", () => {
     const t = getTemplate("template-task-lifecycle");
@@ -1992,6 +1993,12 @@ describe("template-ve-orchestrator-lite", () => {
     const t = getTemplate("template-ve-orchestrator-lite");
     expect(t.edges.find((e) => e.source === "release-worktree" && e.target === "release-claim")).toBeDefined();
     expect(t.edges.find((e) => e.source === "release-claim" && e.target === "release-slot")).toBeDefined();
+  });
+
+  it("treats Bosun-managed PR handoff as inreview-eligible", () => {
+    const t = getTemplate("template-ve-orchestrator-lite");
+    const prCreated = t.nodes.find((n) => n.id === "pr-created");
+    expect(prCreated?.config?.expression).toContain("handedOff");
   });
 
   it("claim-failed path releases slot", () => {

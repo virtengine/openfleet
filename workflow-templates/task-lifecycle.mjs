@@ -214,7 +214,7 @@ export const TASK_LIFECYCLE_TEMPLATE = {
     }, { x: 0, y: 2260 }),
 
     node("pr-created", "condition.expression", "PR Linked?", {
-      expression: "Boolean($ctx.getNodeOutput('create-pr')?.prNumber || $ctx.getNodeOutput('create-pr')?.prUrl)",
+      expression: "Boolean($ctx.getNodeOutput('create-pr')?.success === true || $ctx.getNodeOutput('create-pr')?.handedOff === true || $ctx.getNodeOutput('create-pr')?.prNumber || $ctx.getNodeOutput('create-pr')?.prUrl)",
     }, { x: 0, y: 2325, outputs: ["yes", "no"] }),
 
     // ── SUCCESS PATH: Set status → inreview ──────────────────────────────
@@ -538,7 +538,7 @@ export const VE_ORCHESTRATOR_LITE_TEMPLATE = {
     }, { x: 180, y: 1870 }),
 
     node("pr-created", "condition.expression", "PR Linked?", {
-      expression: "Boolean($ctx.getNodeOutput('pr')?.prNumber || $ctx.getNodeOutput('pr')?.prUrl)",
+      expression: "Boolean($ctx.getNodeOutput('pr')?.success === true || $ctx.getNodeOutput('pr')?.handedOff === true || $ctx.getNodeOutput('pr')?.prNumber || $ctx.getNodeOutput('pr')?.prUrl)",
     }, { x: 180, y: 1935, outputs: ["yes", "no"] }),
 
     // ── Set inreview ─────────────────────────────────────────────────────
