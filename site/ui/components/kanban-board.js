@@ -63,9 +63,102 @@ const PRIORITY_LABELS = {
 };
 
 const LOAD_MORE_THRESHOLD_PX = 140;
+const KANBAN_BOARD_FILTER_SCHEMA_VERSION = 1;
+const KANBAN_BOARD_FILTER_STORAGE_PREFIX = "ve-kanban-board-filters";
+const KANBAN_BOARD_FILTER_LEGACY_KEY = "ve-kanban-board-filters";
+const KANBAN_BOARD_GLOBAL_SCOPE = "global";
+const DEFAULT_BOARD_FILTERS = Object.freeze({ repo: "", assignee: "", priority: "", search: "" });
+const BOARD_FILTER_KEYS = ["repo", "assignee", "priority", "search"];
+const ALLOWED_PRIORITIES = new Set(["critical", "high", "medium", "low"]);
 
 function matchTaskId(a, b) {
   return String(a) === String(b);
+}
+
+function getBoardFilterStorage(storage) {
+  if (storage && typeof storage.getItem === "function" && typeof storage.setItem === "function") return storage;
+  if (typeof localStorage === "undefined") return null;
+  return localStorage;
+}
+
+export function normalizeBoardWorkspaceScope(workspaceId) {
+  const raw = String(workspaceId || "").trim();
+  return raw || KANBAN_BOARD_GLOBAL_SCOPE;
+}
+
+export function buildBoardFilterStorageKey(workspaceId) {
+  return `${KANBAN_BOARD_FILTER_STORAGE_PREFIX}:${normalizeBoardWorkspaceScope(workspaceId)}`;
+}
+
+function trimFilterValue(value) {
+  return typeof value === "string" ? value.trim() : "";
+}
+
+export function sanitizeBoardFilters(filters, options = {}) {
+  const raw = filters && typeof filters === "object" ? filters : {};
+  const result = { ...DEFAULT_BOARD_FILTERS };
+  for (const key of BOARD_FILTER_KEYS) {
+    result[key] = trimFilterValue(raw[key]);
+  }
+
+  if (!ALLOWED_PRIORITIES.has(result.priority)) result.priority = "";
+
+  const repoSet = options?.allowedRepos instanceof Set ? options.allowedRepos : null;
+  const assigneeSet = options?.allowedAssignees instanceof Set ? options.allowedAssignees : null;
+  if (repoSet && result.repo && !repoSet.has(result.repo)) result.repo = "";
+  if (assigneeSet && result.assignee && !assigneeSet.has(result.assignee)) result.assignee = "";
+  return result;
+}
+
+function areBoardFiltersEqual(a, b) {
+  return (
+    String(a?.repo || "") === String(b?.repo || "") &&
+    String(a?.assignee || "") === String(b?.assignee || "") &&
+    String(a?.priority || "") === String(b?.priority || "") &&
+    String(a?.search || "") === String(b?.search || "")
+  );
+}
+
+function readRawPersistedBoardFilters(storage, key) {
+  const raw = storage?.getItem?.(key);
+  if (!raw) return null;
+  try {
+    const parsed = JSON.parse(raw);
+    if (!parsed || typeof parsed !== "object") return null;
+    if (parsed.version !== KANBAN_BOARD_FILTER_SCHEMA_VERSION) return null;
+    if (!parsed.filters || typeof parsed.filters !== "object") return null;
+    return parsed.filters;
+  } catch {
+    return null;
+  }
+}
+
+export function readPersistedBoardFilters({ storage, workspaceId, validateWith } = {}) {
+  const resolvedStorage = getBoardFilterStorage(storage);
+  if (!resolvedStorage) return { ...DEFAULT_BOARD_FILTERS };
+
+  const scopedKey = buildBoardFilterStorageKey(workspaceId);
+  let rawFilters = readRawPersistedBoardFilters(resolvedStorage, scopedKey);
+  if (!rawFilters) {
+    rawFilters = readRawPersistedBoardFilters(resolvedStorage, KANBAN_BOARD_FILTER_LEGACY_KEY);
+  }
+  return sanitizeBoardFilters(rawFilters || DEFAULT_BOARD_FILTERS, validateWith);
+}
+
+export function persistBoardFilters({ storage, workspaceId, filters } = {}) {
+  const resolvedStorage = getBoardFilterStorage(storage);
+  if (!resolvedStorage) return false;
+  const payload = {
+    version: KANBAN_BOARD_FILTER_SCHEMA_VERSION,
+    workspace: normalizeBoardWorkspaceScope(workspaceId),
+    filters: sanitizeBoardFilters(filters),
+  };
+  try {
+    resolvedStorage.setItem(buildBoardFilterStorageKey(workspaceId), JSON.stringify(payload));
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 function getColumnForStatus(status) {
@@ -758,9 +851,47 @@ function KanbanFilter({ tasks, filters, onFilterChange }) {
 }
 
 /* ─── KanbanBoard (main export) ─── */
-export function KanbanBoard({ onOpenTask, hasMoreTasks = false, loadingMoreTasks = false, onLoadMoreTasks = null, columnTotals = {}, totalTasks = 0 }) {
-  const [filters, setFilters] = useState({ repo: "", assignee: "", priority: "", search: "" });
+export function KanbanBoard({ onOpenTask, hasMoreTasks = false, loadingMoreTasks = false, onLoadMoreTasks = null, columnTotals = {}, totalTasks = 0, workspaceId = "" }) {
+  const workspaceScope = normalizeBoardWorkspaceScope(workspaceId);
+  const [filters, setFilters] = useState(() => readPersistedBoardFilters({ workspaceId: workspaceScope }));
   const allTasks = tasksData.value || [];
+  const boardTasksLoaded = Boolean(tasksLoaded.value);
+  const knownRepos = useMemo(() => {
+    const repos = new Set();
+    for (const task of allTasks) {
+      const repoName = String(task?.repo || task?.repository || "").trim();
+      if (repoName) repos.add(repoName);
+    }
+    return repos;
+  }, [allTasks]);
+  const knownAssignees = useMemo(() => {
+    const assignees = new Set();
+    for (const task of allTasks) {
+      const assignee = String(task?.assignee || "").trim();
+      if (assignee) assignees.add(assignee);
+    }
+    return assignees;
+  }, [allTasks]);
+
+  useEffect(() => {
+    const hydrated = readPersistedBoardFilters({ workspaceId: workspaceScope });
+    setFilters((prev) => (areBoardFiltersEqual(prev, hydrated) ? prev : hydrated));
+  }, [workspaceScope]);
+
+  useEffect(() => {
+    if (!boardTasksLoaded) return;
+    setFilters((prev) => {
+      const sanitized = sanitizeBoardFilters(prev, {
+        allowedRepos: knownRepos,
+        allowedAssignees: knownAssignees,
+      });
+      return areBoardFiltersEqual(prev, sanitized) ? prev : sanitized;
+    });
+  }, [boardTasksLoaded, knownRepos, knownAssignees]);
+
+  useEffect(() => {
+    persistBoardFilters({ workspaceId: workspaceScope, filters });
+  }, [workspaceScope, filters]);
 
   const filteredTasks = useMemo(() => {
     let tasks = allTasks;
@@ -810,7 +941,6 @@ export function KanbanBoard({ onOpenTask, hasMoreTasks = false, loadingMoreTasks
     </${Box}>
   `;
 }
-
 
 
 
