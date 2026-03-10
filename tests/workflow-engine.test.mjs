@@ -579,6 +579,30 @@ describe("WorkflowEngine - run history details", () => {
     expect(page.hasMore).toBe(true);
     expect(page.nextOffset).toBe(2);
   });
+  it("paginates global run history beyond the initial page size", async () => {
+    const wf = makeSimpleWorkflow(
+      [{ id: "trigger", type: "trigger.manual", label: "Start", config: {} }],
+      [],
+      { name: "Global Paged History Workflow" },
+    );
+
+    engine.save(wf);
+    for (let i = 0; i < 35; i += 1) {
+      await engine.execute(wf.id, { run: i + 1 });
+    }
+
+    const all = engine.getRunHistory();
+    expect(all.length).toBeGreaterThanOrEqual(35);
+
+    const page = engine.getRunHistoryPage(null, { offset: 20, limit: 10 });
+    expect(page.total).toBeGreaterThanOrEqual(35);
+    expect(page.offset).toBe(20);
+    expect(page.limit).toBe(10);
+    expect(page.count).toBe(10);
+    expect(page.runs).toHaveLength(10);
+    expect(page.hasMore).toBe(true);
+    expect(page.nextOffset).toBe(30);
+  });
 
   it("includes active runs in history and exposes live run detail while executing", async () => {
     const prevThreshold = process.env.WORKFLOW_RUN_STUCK_THRESHOLD_MS;
@@ -3954,3 +3978,4 @@ describe("WorkflowEngine.getTaskTraceEvents", () => {
     expect(reread[0].taskId).toBe("TASK-TRACE-READBACK");
   });
 });
+

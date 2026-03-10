@@ -746,6 +746,8 @@ const WATCHDOG_GRACE_MS = 10 * 60_000; // 10 minutes — generous buffer, stream
 const INPROGRESS_RECOVERY_MAX_AGE_MS = 24 * 60 * 60 * 1000; // 24 hours — agents should be resumable for a full day
 /** Unstarted in-progress tasks older than this are treated as stranded and reset to todo */
 const INPROGRESS_RECOVERY_UNSTARTED_RESET_MS = 20 * 60 * 1000;
+/** Periodic in-progress recovery cadence while executor is running */
+const INPROGRESS_RECOVERY_INTERVAL_MS = 5 * 60 * 1000;
 
 function normalizeSelector(value) {
   return String(value || "")
@@ -2400,6 +2402,8 @@ class TaskExecutor {
     this._pauseTimer = null;
     this._pollTimer = null;
     this._pollInProgress = false;
+    this._recoveryTimer = null;
+    this._inProgressRecoveryInFlight = false;
     this._resolvedProjectId = null;
     this._taskClaimsReady = false;
     this._taskClaimsInitPromise = null;
@@ -3382,11 +3386,9 @@ class TaskExecutor {
       }
 
       try {
-        await this._recoverInterruptedInProgressTasks();
-      } catch (err) {
-        console.warn(
-          `${TAG} in-progress recovery warning: ${err?.message || err}`,
-        );
+        await this._runInProgressRecoverySafely("startup");
+      } catch {
+        // _runInProgressRecoverySafely already logs details
       }
     };
 
@@ -3397,6 +3399,14 @@ class TaskExecutor {
       .finally(() => {
         if (!this.workflowOwnsTaskLifecycle) this._runPollLoopSafely();
       });
+
+    if (this._recoveryTimer) {
+      clearInterval(this._recoveryTimer);
+      this._recoveryTimer = null;
+    }
+    this._recoveryTimer = setInterval(() => {
+      void this._runInProgressRecoverySafely("interval");
+    }, INPROGRESS_RECOVERY_INTERVAL_MS);
 
     if (this.workflowOwnsTaskLifecycle) {
       console.log(
@@ -3428,6 +3438,10 @@ class TaskExecutor {
     if (this._pollTimer) {
       clearInterval(this._pollTimer);
       this._pollTimer = null;
+    }
+    if (this._recoveryTimer) {
+      clearInterval(this._recoveryTimer);
+      this._recoveryTimer = null;
     }
 
     // Persist runtime state before waiting so unexpected exits still recover
@@ -4962,6 +4976,21 @@ class TaskExecutor {
     });
   }
 
+  async _runInProgressRecoverySafely(trigger = "interval") {
+    if (!this._running) return;
+    if (this._inProgressRecoveryInFlight) return;
+    this._inProgressRecoveryInFlight = true;
+    try {
+      await this._recoverInterruptedInProgressTasks();
+    } catch (err) {
+      console.warn(
+        `${TAG} in-progress recovery warning (${trigger}): ${err?.message || err}`,
+      );
+    } finally {
+      this._inProgressRecoveryInFlight = false;
+    }
+  }
+
   /**
    * Check kanban for todo tasks and dispatch execution.
    * Guarded against overlapping polls and slot saturation.
@@ -5584,3 +5613,4 @@ export function isExecutorDisabled() {
 
 export { TaskExecutor };
 export default TaskExecutor;
+

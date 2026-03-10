@@ -1354,9 +1354,10 @@ export class WorkflowEngine extends EventEmitter {
   }
 
   /** Get historical run logs */
-  getRunHistory(workflowId, limit = 20) {
+  getRunHistory(workflowId, limit = null) {
     const normalizedLimit = Number(limit);
-    const targetCount = Number.isFinite(normalizedLimit) && normalizedLimit > 0
+    const hasLimit = Number.isFinite(normalizedLimit) && normalizedLimit > 0;
+    const targetCount = hasLimit
       ? Math.min(MAX_PERSISTED_RUNS, Math.max(Math.floor(normalizedLimit), 200))
       : MAX_PERSISTED_RUNS;
     const persisted = this._hydrateRunIndexFromDetails(targetCount)
@@ -1368,8 +1369,8 @@ export class WorkflowEngine extends EventEmitter {
     let runs = [...active, ...persisted.filter((run) => !activeRunIds.has(run.runId))];
     if (workflowId) runs = runs.filter((r) => r.workflowId === workflowId);
     runs.sort((a, b) => Number(b?.startedAt || 0) - Number(a?.startedAt || 0));
-    if (Number.isFinite(normalizedLimit) && normalizedLimit > 0) {
-      return runs.slice(0, normalizedLimit);
+    if (hasLimit) {
+      return runs.slice(0, Math.floor(normalizedLimit));
     }
     return runs;
   }
@@ -2823,5 +2824,4 @@ export function listWorkflows(opts) { return getWorkflowEngine(opts).list(); }
 export function getWorkflow(id, opts) { return getWorkflowEngine(opts).get(id); }
 export async function executeWorkflow(id, data, opts) { return getWorkflowEngine(opts).execute(id, data, opts); }
 export async function retryWorkflowRun(runId, retryOpts, engineOpts) { return getWorkflowEngine(engineOpts).retryRun(runId, retryOpts); }
-
 

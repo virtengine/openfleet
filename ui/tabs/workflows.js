@@ -58,7 +58,7 @@ const selectedEdgeId = signal(null);
 const draggingNode = signal(null);
 const connectingFrom = signal(null);
 const viewMode = signal("list"); // "list" | "canvas" | "runs"
-const WORKFLOW_RUN_PAGE_SIZE = 20;
+const WORKFLOW_RUN_PAGE_SIZE = 50;
 const WORKFLOW_RUN_MAX_FETCH = 5000;
 const workflowRunsLimit = signal(WORKFLOW_RUN_PAGE_SIZE);
 
@@ -3503,7 +3503,7 @@ function RunHistoryView() {
   }, [runs, workflowNameMap, statusFilter, workflowFilter, triggerFilter, normalizedSearch]);
 
   const runCounts = useMemo(() => {
-    const counts = { all: runs.length, running: 0, failed: 0, completed: 0 };
+    const counts = { all: runs.length, running: 0, failed: 0, completed: 0, paused: 0 };
     for (const run of runs) {
       const status = String(run?.status || "");
       if (status in counts) counts[status] += 1;
@@ -3766,6 +3766,12 @@ function RunHistoryView() {
           label=${`Completed ${runCounts.completed}`}
           onClick=${() => setStatusFilter("completed")}
           variant=${statusFilter === "completed" ? "filled" : "outlined"}
+          size="small"
+        />
+        <${Chip}
+          label=${`Paused ${runCounts.paused}`}
+          onClick=${() => setStatusFilter("paused")}
+          variant=${statusFilter === "paused" ? "filled" : "outlined"}
           size="small"
         />
         <span class="wf-runs-count">${filteredRuns.length} shown</span>
