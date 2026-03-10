@@ -7659,21 +7659,41 @@ function queueWorkflowWsEvent(event = {}) {
       return;
     }
     const runEvents = new Map();
-    const nodeEvents = new Map();
+    const nodeTransitionEvents = [];
     const edgeEvents = new Map();
     for (const entry of pending) {
       const kind = String(entry.kind || "").trim();
       if (kind === "run") {
         runEvents.set(String(entry.runId || ""), entry);
       } else if (kind === "node") {
-        nodeEvents.set(String(entry.nodeId || ""), entry);
+        nodeTransitionEvents.push(entry);
       } else if (kind === "edge") {
         edgeEvents.set(String(entry.edgeId || ""), entry);
       }
     }
+    nodeTransitionEvents.sort((a, b) => Number(a.seq || 0) - Number(b.seq || 0));
+    const nodeEventsById = new Map();
+    for (const entry of nodeTransitionEvents) {
+      const nodeId = String(entry.nodeId || "").trim();
+      if (!nodeId) continue;
+      const current = nodeEventsById.get(nodeId) || { running: null, latest: null };
+      const status = String(entry.status || "").trim().toLowerCase();
+      if (status === "running" || String(entry.eventType || "").trim() === "node:start") {
+        current.running = entry;
+      }
+      current.latest = entry;
+      nodeEventsById.set(nodeId, current);
+    }
+    const nodeEvents = [];
+    for (const state of nodeEventsById.values()) {
+      if (state.running) nodeEvents.push(state.running);
+      if (state.latest && (!state.running || state.latest.seq !== state.running.seq)) {
+        nodeEvents.push(state.latest);
+      }
+    }
     const events = [
       ...Array.from(runEvents.values()),
-      ...Array.from(nodeEvents.values()),
+      ...nodeEvents,
       ...Array.from(edgeEvents.values()),
     ].sort((a, b) => Number(a.seq || 0) - Number(b.seq || 0));
     if (events.length) {

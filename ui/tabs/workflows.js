@@ -64,6 +64,7 @@ const WORKFLOW_RUN_MAX_FETCH = 5000;
 const WORKFLOW_LIVE_POLL_MS = 3000;
 const WORKFLOW_LIVE_WS_BATCH_MS = 90;
 const NODE_COMPLETION_FLASH_MS = 1400;
+const NODE_RUNNING_HINT_MS = 500;
 const EDGE_FLOW_ANIMATION_MS = 1200;
 const workflowRunsLimit = signal(WORKFLOW_RUN_PAGE_SIZE);
 
@@ -1344,6 +1345,7 @@ function WorkflowCanvas({ workflow, onSave, nodeTypes: availableNodeTypes = [] }
   const [liveNodeStatuses, setLiveNodeStatuses] = useState({});
   const [liveNodeOutputPreviews, setLiveNodeOutputPreviews] = useState({});
   const [liveNodeFlashStates, setLiveNodeFlashStates] = useState({});
+  const [liveNodeRunningHints, setLiveNodeRunningHints] = useState({});
   const [liveEdgeActivity, setLiveEdgeActivity] = useState({});
   const [liveNowTick, setLiveNowTick] = useState(Date.now());
   const marqueeStartRef = useRef(null);
@@ -1394,6 +1396,7 @@ function WorkflowCanvas({ workflow, onSave, nodeTypes: availableNodeTypes = [] }
     setLiveNodeStatuses({});
     setLiveNodeOutputPreviews({});
     setLiveNodeFlashStates({});
+    setLiveNodeRunningHints({});
     setLiveEdgeActivity({});
   }, [workflow?.id, workflowSnapshotKey]);
 
@@ -1403,6 +1406,7 @@ function WorkflowCanvas({ workflow, onSave, nodeTypes: availableNodeTypes = [] }
       setLiveNodeStatuses({});
       setLiveNodeOutputPreviews({});
       setLiveNodeFlashStates({});
+      setLiveNodeRunningHints({});
       setLiveEdgeActivity({});
       return;
     }
@@ -1418,6 +1422,7 @@ function WorkflowCanvas({ workflow, onSave, nodeTypes: availableNodeTypes = [] }
         if (!targetRun?.runId) {
           setLiveRun(null);
           setLiveNodeStatuses({});
+          setLiveNodeRunningHints({});
           setLiveNodeOutputPreviews({});
           setLiveNodeFlashStates({});
           setLiveEdgeActivity({});
@@ -1465,6 +1470,17 @@ function WorkflowCanvas({ workflow, onSave, nodeTypes: availableNodeTypes = [] }
       const next = { ...prev };
       for (const [nodeId, flash] of Object.entries(next)) {
         if (!flash || Number(flash.until) <= now) {
+          delete next[nodeId];
+          changed = true;
+        }
+      }
+      return changed ? next : prev;
+    });
+    setLiveNodeRunningHints((prev) => {
+      let changed = false;
+      const next = { ...prev };
+      for (const [nodeId, until] of Object.entries(next)) {
+        if (Number(until || 0) <= now) {
           delete next[nodeId];
           changed = true;
         }
@@ -1566,6 +1582,27 @@ function WorkflowCanvas({ workflow, onSave, nodeTypes: availableNodeTypes = [] }
         }
         return next;
       });
+      setLiveNodeRunningHints((prev) => {
+        const next = { ...prev };
+        const now = Date.now();
+        let changed = false;
+        for (const event of queued) {
+          if (event.kind !== "node" || !event.nodeId) continue;
+          const normalized = normalizeLiveNodeStatus(event.status);
+          if (normalized === "running") {
+            next[event.nodeId] = now + NODE_RUNNING_HINT_MS;
+            changed = true;
+            continue;
+          }
+          if (normalized === "success" || normalized === "fail" || normalized === "skipped") {
+            if (next[event.nodeId]) {
+              delete next[event.nodeId];
+              changed = true;
+            }
+          }
+        }
+        return changed ? next : prev;
+      });
       setLiveEdgeActivity((prev) => {
         const next = { ...prev };
         const now = Date.now();
@@ -1617,7 +1654,7 @@ function WorkflowCanvas({ workflow, onSave, nodeTypes: availableNodeTypes = [] }
 
   // Canvas dimensions
   const NODE_W = 220;
-  const NODE_H = 122;
+  const NODE_H = 138;
   const NODE_HEADER_H = 62;
   const PORT_R = 8;
   const HISTORY_LIMIT = 50;
@@ -2399,6 +2436,20 @@ function WorkflowCanvas({ workflow, onSave, nodeTypes: availableNodeTypes = [] }
                   marker-end="url(#arrowhead)"
                   style=${`cursor: pointer; transition: stroke 0.15s, stroke-width 0.15s; ${isActiveFlow ? "filter: drop-shadow(0 0 6px rgba(96,165,250,0.45));" : ""}`}
                 />
+                ${isActiveFlow && html`
+                  <path
+                    d=${edgePath}
+                    fill="none"
+                    stroke="#93c5fd"
+                    stroke-width="1.6"
+                    stroke-dasharray="12,8"
+                    marker-end="url(#arrowhead)"
+                    opacity="0.9"
+                    style="pointer-events: none;"
+                  >
+                    <animate attributeName="stroke-dashoffset" values="0;-20" dur="0.45s" repeatCount="indefinite" />
+                  </path>
+                `}
                 <!-- Invisible wider hit area -->
                 <path
                   d=${edgePath}
@@ -2462,13 +2513,17 @@ function WorkflowCanvas({ workflow, onSave, nodeTypes: availableNodeTypes = [] }
             const preview = resolveNodeOutputPreview(node.type, liveNodeOutputPreviews[node.id], null);
             const previewLines = preview.lines.slice(0, 3);
             const hasPreview = previewLines.length > 0 || preview.tokenCount != null;
-            const spinnerVisible = nodeRunStatus === "running";
+            const runningHintUntil = Number(liveNodeRunningHints[node.id] || 0);
+            const hasRunningHint = runningHintUntil > liveNowTick;
+            const spinnerVisible = nodeRunStatus === "running" || hasRunningHint;
+            const previewPanelY = NODE_HEADER_H + 8;
+            const previewPanelH = Math.max(30, NODE_H - previewPanelY - 8);
             const x = node.position?.x || 0;
             const y = node.position?.y || 0;
             return html`
               <g
                 key=${node.id}
-                class=${`wf-node${nodeRunStatus === "running" ? " wf-node-running" : ""}${flashState ? ` wf-node-flash-${flashState}` : ""}`}
+                class=${`wf-node${spinnerVisible ? " wf-node-running" : ""}${flashState ? ` wf-node-flash-${flashState}` : ""}`}
                 transform="translate(${x} ${y})"
                 onMouseDown=${(e) => onNodeMouseDown(node.id, e)}
                 onPointerDown=${(e) => onNodePointerDown(node.id, e)}
@@ -2486,6 +2541,22 @@ function WorkflowCanvas({ workflow, onSave, nodeTypes: availableNodeTypes = [] }
                   stroke=${executionVisuals.stroke}
                   stroke-width=${executionVisuals.strokeWidth}
                 />
+                ${spinnerVisible && html`
+                  <rect
+                    x="1.5"
+                    y="1.5"
+                    width=${NODE_W - 3}
+                    height=${NODE_H - 3}
+                    rx="7"
+                    fill="none"
+                    stroke="#93c5fd"
+                    stroke-opacity="0.85"
+                    stroke-width="1.6"
+                    stroke-dasharray="10 6"
+                  >
+                    <animate attributeName="stroke-dashoffset" values="0;-32" dur="1s" repeatCount="indefinite" />
+                  </rect>
+                `}
 
                 <!-- Category color strip -->
                 <rect
@@ -2537,25 +2608,36 @@ function WorkflowCanvas({ workflow, onSave, nodeTypes: availableNodeTypes = [] }
 
                 ${spinnerVisible && html`
                   <g transform="translate(${NODE_W - 22} ${NODE_HEADER_H - 18})">
-                    <circle r="8" cx="0" cy="0" fill="none" stroke="#93c5fd55" stroke-width="1.5" />
-                    <path d="M 0 -8 A 8 8 0 0 1 6.4 -4.8" fill="none" stroke="#93c5fd" stroke-width="1.8" stroke-linecap="round">
-                      <animateTransform attributeName="transform" type="rotate" from="0 0 0" to="360 0 0" dur="0.9s" repeatCount="indefinite" />
+                    <circle r="9" cx="0" cy="0" fill="rgba(15, 23, 42, 0.72)" stroke="#93c5fd44" stroke-width="1.2" />
+                    <circle r="6.8" cx="0" cy="0" fill="none" stroke="#93c5fd33" stroke-width="1.2" />
+                    <path d="M 0 -6.8 A 6.8 6.8 0 0 1 5.4 -4.2" fill="none" stroke="#93c5fd" stroke-width="1.8" stroke-linecap="round">
+                      <animateTransform attributeName="transform" type="rotate" from="0 0 0" to="360 0 0" dur="0.8s" repeatCount="indefinite" />
                     </path>
                   </g>
                 `}
 
                 <line x1="8" y1=${NODE_HEADER_H} x2=${NODE_W - 8} y2=${NODE_HEADER_H} stroke="#2e3748" stroke-width="1" opacity="0.85" />
+                <rect
+                  x="8"
+                  y=${previewPanelY}
+                  width=${NODE_W - 16}
+                  height=${previewPanelH}
+                  rx="6"
+                  fill="rgba(15, 23, 42, 0.45)"
+                  stroke=${hasPreview ? "rgba(148, 163, 184, 0.28)" : "rgba(71, 85, 105, 0.2)"}
+                  stroke-width="1"
+                />
 
                 ${hasPreview && html`
-                  <text x="10" y=${NODE_HEADER_H + 16} fill="#cbd5e1" font-size="10" font-family="ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace">
+                  <text x="14" y=${previewPanelY + 14} fill="#cbd5e1" font-size="10" font-family="ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace">
                     ${previewLines.map((line, index) => html`
-                      <tspan x="10" dy=${index === 0 ? 0 : 13}>${line.slice(0, 48)}</tspan>
+                      <tspan x="14" dy=${index === 0 ? 0 : 13}>${line.slice(0, 44)}</tspan>
                     `)}
                   </text>
                 `}
                 ${preview.tokenCount != null && html`
                   <text
-                    x=${NODE_W - 10}
+                    x=${NODE_W - 14}
                     y=${NODE_H - 10}
                     text-anchor="end"
                     fill="#93c5fd"
