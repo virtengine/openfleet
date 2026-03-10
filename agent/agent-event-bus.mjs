@@ -288,6 +288,12 @@ export class AgentEventBus {
         lastRetryAt: 0,
         cooldownUntil: 0,
       });
+    } else {
+      const state = this._autoActionState.get(taskId);
+      if (state && state.cooldownUntil > 0) {
+        state.cooldownUntil = 0;
+        this._autoActionState.set(taskId, state);
+      }
     }
     this._updateRetryQueue(
       { type: "remove", taskId },
@@ -574,6 +580,11 @@ export class AgentEventBus {
   clearRetryQueueTask(taskId, reason = "manual") {
     const id = String(taskId || "").trim();
     if (!id) return;
+    const state = this._autoActionState.get(id);
+    if (state && state.cooldownUntil > 0) {
+      state.cooldownUntil = 0;
+      this._autoActionState.set(id, state);
+    }
     this._updateRetryQueue(
       { type: "remove", taskId: id },
       { reason, taskId: id },

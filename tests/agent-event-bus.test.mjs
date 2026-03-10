@@ -617,6 +617,41 @@ describe("agent-event-bus", () => {
         expect.stringContaining("Auto-blocked"),
       );
     });
+
+    it("clears cooldown on manual retry queue clear", () => {
+      mockDetector.classify.mockReturnValue({
+        pattern: "rate_limit",
+        confidence: 0.95,
+      });
+      mockDetector.recordError.mockReturnValue({
+        action: "cooldown",
+        cooldownMs: 60_000,
+        reason: "rate limited",
+      });
+
+      bus.onTaskStarted({ id: "task-1" }, {});
+      vi.advanceTimersByTime(600);
+      bus.onTaskFailed({ id: "task-1" }, "rate limited");
+
+      mockDetector.classify.mockReturnValue({
+        pattern: "build_failure",
+        confidence: 0.9,
+      });
+      mockDetector.recordError.mockReturnValue({
+        action: "retry_with_prompt",
+        errorCount: 1,
+        reason: "build error",
+      });
+
+      bus.clearRetryQueueTask("task-1", "manual-retry-now");
+      vi.advanceTimersByTime(600);
+      bus.onTaskFailed({ id: "task-1" }, "build failed after manual retry");
+
+      const retryEvents = bus
+        .getEventLog()
+        .filter((e) => e.type === AGENT_EVENT.AUTO_RETRY);
+      expect(retryEvents.length).toBe(1);
+    });
   });
 
   // ── Pattern Trend Detection ─────────────────────────────────────────
