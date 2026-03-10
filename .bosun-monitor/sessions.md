@@ -511,3 +511,4 @@ ode cli.mjs --daemon-status => running PID 59940.
   - Next run should prioritize a code-level fix in `action.run_agent` delegation path (PR Watchdog -> Backend Agent) because stuck delegated runs are starving autonomous workflow completion.
   - If no safe live cancellation path is available, coordinate a controlled runtime recycle only after confirming policy allows interrupting active source processes.
 - 2026-03-11 02:06 AEDT: Runtime healthy and advancing; fixed split-store drift by syncing all kanban mirrors and moved merged PR #217 task (`92a229d5...`) from `inreview` to `done`; remaining risk is recurring historical `owner_mismatch` / `stuck_agent` signals and low merged-PR throughput.
+- 2026-03-11T05:07:56+11:00: split-store/claim resync done; scheduler active; owner_mismatch still recurring (df0d7085) -> code-path tracing next run.
