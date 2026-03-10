@@ -8,7 +8,14 @@ import { useState, useEffect, useCallback, useRef } from "preact/hooks";
 import htm from "htm";
 import { signal, computed, effect } from "@preact/signals";
 import { apiFetch, onWsMessage } from "../modules/api.js";
-import { buildSessionApiPath, resolveSessionWorkspaceHint } from "../modules/session-api.js";
+import {
+  buildSessionApiPath,
+  createSessionLoadMeta,
+  markSessionLoadFailure,
+  markSessionLoadSuccess,
+  resetSessionRetryMeta,
+  resolveSessionWorkspaceHint,
+} from "../modules/session-api.js";
 import { formatRelative, truncate } from "../modules/utils.js";
 import { resolveIcon } from "../modules/icon-utils.js";
 import {
@@ -37,6 +44,7 @@ export const selectedSessionId = signal(readPersistedSelectedSessionId());
 export const sessionMessages = signal([]);
 export const sessionMessagesSessionId = signal("");
 export const sessionsError = signal(null);
+export const sessionLoadMeta = signal(createSessionLoadMeta());
 /** Pagination metadata from the last loadSessionMessages call */
 export const sessionPagination = signal(null);
 
@@ -61,6 +69,25 @@ let _wsListenerReady = false;
 
 /** Track the last filter used so createSession can reload with the same filter */
 let _lastLoadFilter = {};
+let _sessionRetryTimer = null;
+
+function clearSessionRetryTimer() {
+  if (_sessionRetryTimer) {
+    clearTimeout(_sessionRetryTimer);
+    _sessionRetryTimer = null;
+  }
+}
+
+function scheduleSessionRetry(meta) {
+  clearSessionRetryTimer();
+  const nextRetryAt = Date.parse(String(meta?.nextRetryAt || ""));
+  if (!Number.isFinite(nextRetryAt)) return;
+  const delayMs = Math.max(0, nextRetryAt - Date.now());
+  _sessionRetryTimer = setTimeout(() => {
+    _sessionRetryTimer = null;
+    loadSessions(_lastLoadFilter, { source: "retry" }).catch(() => {});
+  }, delayMs);
+}
 
 function sessionPath(id, action = "") {
   const session = (sessionsData.peek() || []).find((entry) => entry?.id === id) || null;
@@ -72,7 +99,7 @@ function sessionPath(id, action = "") {
 }
 
 /* ─── Data loaders ─── */
-export async function loadSessions(filter = {}) {
+export async function loadSessions(filter = {}, _opts = {}) {
   const normalizedFilter = {
     ...(filter && typeof filter === "object" ? filter : {}),
   };
@@ -96,9 +123,15 @@ export async function loadSessions(filter = {}) {
         selectedSessionId.value = null;
       }
     }
+    clearSessionRetryTimer();
+    sessionLoadMeta.value = markSessionLoadSuccess(sessionLoadMeta.peek());
     sessionsError.value = null;
   } catch {
-    sessionsError.value = "unavailable";
+    const nextMeta = markSessionLoadFailure(sessionLoadMeta.peek());
+    sessionLoadMeta.value = nextMeta;
+    scheduleSessionRetry(nextMeta);
+    const hasCachedData = Array.isArray(sessionsData.peek()) && sessionsData.peek().length > 0;
+    sessionsError.value = hasCachedData || Boolean(nextMeta.lastSuccessAt) ? null : "unavailable";
   }
 }
 
@@ -865,7 +898,10 @@ export function SessionList({
     normalizeSessionViewFilter(sessionView),
   );
   const allSessions = sessionsData.value || [];
+  const loadMeta = sessionLoadMeta.value || createSessionLoadMeta();
   const error = sessionsError.value;
+  const showStaleBanner = Boolean(loadMeta.stale && (loadMeta.lastSuccessAt || allSessions.length > 0));
+  const [retryCountdownNow, setRetryCountdownNow] = useState(() => Date.now());
   const hasSearch = search.trim().length > 0;
   const resolvedSessionView =
     typeof onSessionViewChange === "function"
@@ -879,6 +915,14 @@ export function SessionList({
       setUncontrolledSessionView(normalized);
     }
   }, [onSessionViewChange, sessionView, uncontrolledSessionView]);
+
+  useEffect(() => {
+    if (!showStaleBanner || !loadMeta.nextRetryAt || loadMeta.retriesExhausted) return undefined;
+    const interval = setInterval(() => {
+      setRetryCountdownNow(Date.now());
+    }, 1000);
+    return () => clearInterval(interval);
+  }, [showStaleBanner, loadMeta.nextRetryAt, loadMeta.retriesExhausted]);
 
   const setSessionView = useCallback(
     (nextFilter) => {
@@ -952,8 +996,10 @@ export function SessionList({
   );
 
   const handleRetry = useCallback(() => {
+    clearSessionRetryTimer();
     sessionsError.value = null;
-    loadSessions(_lastLoadFilter);
+    sessionLoadMeta.value = resetSessionRetryMeta(sessionLoadMeta.peek());
+    loadSessions(_lastLoadFilter, { source: "manual-retry" });
   }, []);
 
   const handleCreateSession = useCallback(() => {
@@ -1089,7 +1135,14 @@ export function SessionList({
     `;
   }
 
-  if (error) {
+  const nextRetryMs = Date.parse(String(loadMeta.nextRetryAt || ""));
+  const retrySeconds =
+    Number.isFinite(nextRetryMs) && !loadMeta.retriesExhausted
+      ? Math.max(0, Math.ceil((nextRetryMs - retryCountdownNow) / 1000))
+      : 0;
+  const retryAttemptDisplay = Math.min(loadMeta.retryAttempt || 0, loadMeta.maxAttempts || 0);
+
+  if (error && !showStaleBanner) {
     return html`
       <${Paper} elevation=${0} sx=${{ height: "100%", display: "flex", flexDirection: "column" }}>
         <${Box} sx=${{ p: 1.5, display: "flex", justifyContent: "space-between", alignItems: "center" }}>
@@ -1142,6 +1195,33 @@ export function SessionList({
           </${Button}>
         </${Stack}>
       </${Box}>
+
+      ${showStaleBanner &&
+      html`
+        <${Box} sx=${{ px: 1.5, pb: 1 }}>
+          <${Alert}
+            severity="warning"
+            variant="outlined"
+            action=${html`
+              <${Button} size="small" color="warning" onClick=${handleRetry}>
+                Retry now
+              </${Button}>
+            `}
+          >
+            <${Typography} variant="body2" sx=${{ fontWeight: 600 }}>
+              Session list is showing stale data.
+            </${Typography}>
+            <${Typography} variant="caption" component="div">
+              Last successful refresh: ${loadMeta.lastSuccessAt ? formatRelative(loadMeta.lastSuccessAt) : "unknown"}
+            </${Typography}>
+            <${Typography} variant="caption" component="div">
+              ${loadMeta.retriesExhausted
+                ? `Automatic retries stopped after ${loadMeta.maxAttempts} attempts.`
+                : `Retry ${retryAttemptDisplay}/${loadMeta.maxAttempts} in ${retrySeconds}s.`}
+            </${Typography}>
+          </${Alert}>
+        </${Box}>
+      `}
 
       <!-- Search bar -->
       <${Box} sx=${{ px: 1.5, pb: 1 }}>
