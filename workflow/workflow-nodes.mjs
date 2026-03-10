@@ -4752,6 +4752,46 @@ function hasTaskCommitEvidence(task) {
   return false;
 }
 
+function createEmptyPlannerPatternPrior() {
+  return {
+    failureCount: 0,
+    successCount: 0,
+    failureWeight: 0,
+    successWeight: 0,
+    failureCounter: 0,
+    commitlessFailureCount: 0,
+    commitlessSuccessCount: 0,
+    commitlessFailureCounter: 0,
+    signalTotals: {
+      agentAttempts: 0,
+      consecutiveNoCommits: 0,
+      blockedReason: 0,
+      debtTrend: 0,
+    },
+    lastUpdatedAt: null,
+  };
+}
+
+function normalizePlannerPatternPrior(entry) {
+  if (!entry || typeof entry !== "object" || Array.isArray(entry)) {
+    return createEmptyPlannerPatternPrior();
+  }
+  const base = createEmptyPlannerPatternPrior();
+  const signalTotals = entry.signalTotals && typeof entry.signalTotals === "object"
+    ? entry.signalTotals
+    : {};
+  return {
+    ...base,
+    ...entry,
+    signalTotals: {
+      agentAttempts: Number(signalTotals.agentAttempts || 0),
+      consecutiveNoCommits: Number(signalTotals.consecutiveNoCommits || 0),
+      blockedReason: Number(signalTotals.blockedReason || 0),
+      debtTrend: Number(signalTotals.debtTrend || 0),
+    },
+  };
+}
+
 function resolvePlannerOutcomeSignals(task, weights) {
   const attempts = Math.max(0, Number(task?.agentAttempts || task?.meta?.agentAttempts || 0));
   const noCommits = Math.max(
@@ -4763,23 +4803,36 @@ function resolvePlannerOutcomeSignals(task, weights) {
   const commitEvidence = hasTaskCommitEvidence(task);
   const status = String(task?.status || "").trim().toLowerCase();
   const completedStatus = ["done", "completed", "closed", "merged"].includes(status);
+  const agentAttemptsPenalty = commitEvidence ? 0 : (attempts * weights.agentAttempts);
+  const consecutiveNoCommitsPenalty = noCommits * weights.consecutiveNoCommits;
+  const blockedPenalty = blockedReason ? weights.blockedReason : 0;
+  const debtTrendPenalty = debtTrendSignal * weights.debtTrend;
 
   const failureWeight =
-    attempts * weights.agentAttempts +
-    noCommits * weights.consecutiveNoCommits +
-    (blockedReason ? weights.blockedReason : 0) +
-    debtTrendSignal * weights.debtTrend;
+    agentAttemptsPenalty +
+    consecutiveNoCommitsPenalty +
+    blockedPenalty +
+    debtTrendPenalty;
   const successWeight =
     (commitEvidence ? weights.commitSuccess : 0) +
     ((completedStatus && !blockedReason) ? weights.completedSuccess : 0);
+  const commitlessFailureEvent = attempts > 0 && !commitEvidence;
 
   return {
     attempts,
     noCommits,
     blockedReason,
     debtTrendSignal,
+    commitEvidence,
+    commitlessFailureEvent,
     failureWeight,
     successWeight,
+    failureComponents: {
+      agentAttemptsPenalty,
+      consecutiveNoCommitsPenalty,
+      blockedPenalty,
+      debtTrendPenalty,
+    },
   };
 }
 
@@ -4807,7 +4860,15 @@ function loadPlannerPriorState(statePath) {
     if (!parsed || typeof parsed !== "object") return base;
     return {
       version: 1,
-      patterns: parsed.patterns && typeof parsed.patterns === "object" ? parsed.patterns : {},
+      patterns:
+        parsed.patterns && typeof parsed.patterns === "object"
+          ? Object.fromEntries(
+            Object.entries(parsed.patterns).map(([key, value]) => [
+              key,
+              normalizePlannerPatternPrior(value),
+            ]),
+          )
+          : {},
       outcomes: parsed.outcomes && typeof parsed.outcomes === "object" ? parsed.outcomes : {},
     };
   } catch {
@@ -4848,30 +4909,39 @@ function replayPlannerOutcomes(existingTasks, priorState, weights) {
     priorState.outcomes[taskId] = { signature, updatedAt: nowIso };
 
     for (const key of keys) {
-      const current =
-        priorState.patterns[key] && typeof priorState.patterns[key] === "object"
-          ? priorState.patterns[key]
-          : {
-            failureCount: 0,
-            successCount: 0,
-            failureWeight: 0,
-            successWeight: 0,
-            failureCounter: 0,
-            lastUpdatedAt: null,
-          };
+      const current = normalizePlannerPatternPrior(priorState.patterns[key]);
       const priorCounter = Math.max(0, Number(current.failureCounter || 0));
+      const priorCommitlessCounter = Math.max(0, Number(current.commitlessFailureCounter || 0));
       if (signals.failureWeight > 0) {
         current.failureCount = Number(current.failureCount || 0) + 1;
         current.failureWeight = Number(current.failureWeight || 0) + signals.failureWeight;
+        current.signalTotals.agentAttempts += signals.failureComponents.agentAttemptsPenalty;
+        current.signalTotals.consecutiveNoCommits += signals.failureComponents.consecutiveNoCommitsPenalty;
+        current.signalTotals.blockedReason += signals.failureComponents.blockedPenalty;
+        current.signalTotals.debtTrend += signals.failureComponents.debtTrendPenalty;
       }
       if (signals.successWeight > 0) {
         current.successCount = Number(current.successCount || 0) + 1;
         current.successWeight = Number(current.successWeight || 0) + signals.successWeight;
       }
+      if (signals.commitlessFailureEvent) {
+        current.commitlessFailureCount = Number(current.commitlessFailureCount || 0) + 1;
+      }
+      if (signals.commitEvidence) {
+        current.commitlessSuccessCount = Number(current.commitlessSuccessCount || 0) + 1;
+      }
       current.failureCounter = Number(
         Math.max(
           0,
           (priorCounter * 0.82) + signals.failureWeight - (signals.successWeight * 0.95),
+        ).toFixed(3),
+      );
+      current.commitlessFailureCounter = Number(
+        Math.max(
+          0,
+          (priorCommitlessCounter * 0.86) +
+            (signals.commitlessFailureEvent ? 1.25 : 0) -
+            (signals.commitEvidence ? 1.1 : 0),
         ).toFixed(3),
       );
       current.lastUpdatedAt = nowIso;
@@ -4907,21 +4977,37 @@ function rankPlannerTaskCandidates(tasks, priorState, rankingConfig) {
       const failureWeight = Number(prior.failureWeight || 0);
       const successWeight = Number(prior.successWeight || 0);
       const failureCounter = Number(prior.failureCounter || 0);
+      const commitlessFailureCounter = Number(prior.commitlessFailureCounter || 0);
+      const commitlessFailureCount = Number(prior.commitlessFailureCount || 0);
+      const commitlessSuccessCount = Number(prior.commitlessSuccessCount || 0);
       const netFailureEvents = Math.max(0, failureCount - successCount);
       const netFailureWeight = Math.max(0, failureWeight - successWeight);
+      const netCommitlessEvents = Math.max(0, commitlessFailureCount - commitlessSuccessCount);
+      const repeatedFailureSignal = Math.max(
+        netFailureEvents,
+        Math.max(0, failureCounter),
+        netCommitlessEvents,
+        Math.max(0, commitlessFailureCounter),
+      );
       const signalPenalty = Math.max(
         netFailureWeight * rankingConfig.signalPenaltyScale,
         Math.max(0, failureCounter) * rankingConfig.signalPenaltyScale,
       );
       const negativePrior =
-        Math.max(netFailureEvents, Math.max(0, failureCounter)) >=
-        rankingConfig.failureThreshold
+        repeatedFailureSignal >= rankingConfig.failureThreshold
           ? Math.min(
             rankingConfig.maxNegativePrior,
-            rankingConfig.failurePriorStep * (Math.max(netFailureEvents, Math.max(0, failureCounter)) - rankingConfig.failureThreshold + 1),
+            rankingConfig.failurePriorStep * (repeatedFailureSignal - rankingConfig.failureThreshold + 1),
           )
           : 0;
-      return { key, signalPenalty, negativePrior, failureCounter: Math.max(0, failureCounter) };
+      return {
+        key,
+        signalPenalty,
+        negativePrior,
+        failureCounter: Math.max(0, failureCounter),
+        commitlessFailureCounter: Math.max(0, commitlessFailureCounter),
+        netCommitlessEvents,
+      };
     });
     const totalPenalty = penalties.reduce(
       (sum, item) => sum + item.signalPenalty + item.negativePrior,
@@ -5094,20 +5180,22 @@ registerNodeType("action.materialize_planner_tasks", {
           ),
       ).trim();
       if (!key) continue;
-      const entry =
-        priorState.patterns[key] && typeof priorState.patterns[key] === "object"
-          ? priorState.patterns[key]
-          : {
-            failureCount: 0,
-            successCount: 0,
-            failureWeight: 0,
-            successWeight: 0,
-            failureCounter: 0,
-            lastUpdatedAt: null,
-          };
+      const entry = normalizePlannerPatternPrior(priorState.patterns[key]);
       const incomingCounter = Math.max(0, Number(pattern.failureCounter || 0));
       const incomingFailures = Math.max(0, Number(pattern.failures || 0));
       const incomingSuccesses = Math.max(0, Number(pattern.successes || 0));
+      const incomingCommitlessCounter = Math.max(
+        0,
+        Number(pattern.commitlessFailureCounter || pattern.commitless_counter || 0),
+      );
+      const incomingCommitlessFailures = Math.max(
+        0,
+        Number(pattern.commitlessFailures || pattern.commitless_failures || 0),
+      );
+      const incomingCommitlessSuccesses = Math.max(
+        0,
+        Number(pattern.commitlessSuccesses || pattern.commitless_successes || 0),
+      );
       entry.failureCounter = Number(
         Math.max(entry.failureCounter || 0, incomingCounter).toFixed(3),
       );
@@ -5118,6 +5206,17 @@ registerNodeType("action.materialize_planner_tasks", {
       entry.successCount = Math.max(
         Number(entry.successCount || 0),
         incomingSuccesses,
+      );
+      entry.commitlessFailureCounter = Number(
+        Math.max(entry.commitlessFailureCounter || 0, incomingCommitlessCounter).toFixed(3),
+      );
+      entry.commitlessFailureCount = Math.max(
+        Number(entry.commitlessFailureCount || 0),
+        incomingCommitlessFailures,
+      );
+      entry.commitlessSuccessCount = Math.max(
+        Number(entry.commitlessSuccessCount || 0),
+        incomingCommitlessSuccesses,
       );
       entry.lastUpdatedAt = new Date().toISOString();
       priorState.patterns[key] = entry;

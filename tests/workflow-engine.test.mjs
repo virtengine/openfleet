@@ -3222,6 +3222,92 @@ it("action.materialize_planner_tasks reorders candidates from planner feedback r
     "[m] fix(workflow): repeat offender",
   ]);
 });
+
+it("action.materialize_planner_tasks avoids over-penalizing patterns after transient failures recover", async () => {
+  const handler = getNodeType("action.materialize_planner_tasks");
+  expect(handler).toBeDefined();
+
+  const ctx = new WorkflowContext({});
+  ctx.setNodeOutput("run-planner", {
+    output: [
+      "```json",
+      "{",
+      '  "tasks": [',
+      '    { "title": "[m] fix(workflow): recovered pattern", "description": "A", "acceptance_criteria": ["ac-a"], "verification": ["verify-a"], "repo_areas": ["workflow"], "impact": 0.9, "confidence": 0.9, "risk": 0.2 },',
+      '    { "title": "[m] chore(workflow): fallback task", "description": "B", "acceptance_criteria": ["ac-b"], "verification": ["verify-b"], "repo_areas": ["workflow"], "impact": 0.8, "confidence": 0.85, "risk": 0.2 }',
+      "  ]",
+      "}",
+      "```",
+    ].join("\n"),
+  });
+
+  const createTask = vi
+    .fn()
+    .mockResolvedValueOnce({ id: "task-recovered-1" })
+    .mockResolvedValueOnce({ id: "task-recovered-2" });
+  const listTasks = vi.fn().mockResolvedValue([
+    {
+      id: "hist-recovered-failure",
+      title: "[m] fix(workflow): temporary failure",
+      status: "todo",
+      agentAttempts: 2,
+      consecutiveNoCommits: 2,
+      blockedReason: "merge conflict",
+      meta: { repo_areas: ["workflow"] },
+    },
+    {
+      id: "hist-recovered-success-1",
+      title: "[m] fix(workflow): merged follow-up",
+      status: "done",
+      hasCommits: true,
+      agentAttempts: 1,
+      consecutiveNoCommits: 0,
+      meta: { repo_areas: ["workflow"] },
+    },
+    {
+      id: "hist-recovered-success-2",
+      title: "[m] fix(workflow): merged stabilization",
+      status: "done",
+      hasCommits: true,
+      agentAttempts: 1,
+      consecutiveNoCommits: 0,
+      meta: { repo_areas: ["workflow"] },
+    },
+  ]);
+
+  const result = await handler.execute(
+    {
+      id: "materialize-recovered",
+      type: "action.materialize_planner_tasks",
+      config: {
+        plannerNodeId: "run-planner",
+        failOnZero: true,
+        dedup: false,
+        minCreated: 2,
+        failurePriorThreshold: 2,
+        failurePriorStep: 2,
+        feedbackSignalScale: 0.2,
+      },
+    },
+    ctx,
+    {
+      services: {
+        kanban: {
+          createTask,
+          listTasks,
+        },
+      },
+    },
+  );
+
+  expect(result.success).toBe(true);
+  const createdTitles = createTask.mock.calls.map((call) => call?.[1]?.title);
+  expect(createdTitles).toEqual([
+    "[m] fix(workflow): recovered pattern",
+    "[m] chore(workflow): fallback task",
+  ]);
+  expect(result.rankedTasks?.[0]?._ranking?.penalty ?? 0).toBeLessThan(0.4);
+});
 describe("WorkflowEngine singleton services", () => {
   beforeEach(() => {
     resetWorkflowEngine();
