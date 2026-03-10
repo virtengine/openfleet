@@ -3202,10 +3202,16 @@ registerNodeType("action.update_task_status", {
     }
 
     if (kanban?.updateTaskStatus) {
-      const createPrOutput =
-        typeof ctx.getNodeOutput === "function"
-          ? ctx.getNodeOutput("create-pr")
-          : null;
+      const getLinkedPrOutput = () => {
+        if (typeof ctx.getNodeOutput !== "function") return null;
+        for (const nodeId of ["create-pr", "pr"]) {
+          const output = ctx.getNodeOutput(nodeId);
+          if (output && typeof output === "object") return output;
+        }
+        return null;
+      };
+
+      const createPrOutput = getLinkedPrOutput();
 
       const normalizeString = (value) => {
         if (value == null) return null;

@@ -416,6 +416,19 @@ describe("workflow-templates", () => {
     expect(triggerNode?.config?.filter).toBe("task.tags?.some(t => t === 'backend' || t === 'api')");
   });
 
+  it("agent templates only advance to inreview after a real PR is linked", () => {
+    const backendTemplate = getTemplate("template-backend-agent");
+    expect(backendTemplate).toBeDefined();
+    const backendGate = backendTemplate.nodes.find((n) => n.id === "pr-created");
+    const backendRetryGate = backendTemplate.nodes.find((n) => n.id === "pr-created-retry");
+    expect(backendGate?.config?.expression).toContain("prNumber");
+    expect(backendGate?.config?.expression).toContain("prUrl");
+    expect(backendGate?.config?.expression).not.toContain("success === true");
+    expect(backendRetryGate?.config?.expression).toContain("prNumber");
+    expect(backendRetryGate?.config?.expression).toContain("prUrl");
+    expect(backendRetryGate?.config?.expression).not.toContain("success === true");
+  });
+
   it("task lifecycle template passes resolved executor outputs into run-agent", () => {
     const template = getTemplate("template-task-lifecycle");
     expect(template).toBeDefined();

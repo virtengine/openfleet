@@ -388,15 +388,15 @@ export async function applyStoredDefaults() {
     }
   }
 
-  const configUpdates = {};
-  if (sdk && sdk !== "auto") configUpdates.sdk = sdk;
-  if (region && region !== "auto") configUpdates.region = region;
+  const settingsUpdates = {};
+  if (sdk && sdk !== "auto") settingsUpdates.INTERNAL_EXECUTOR_SDK = sdk;
+  if (region && region !== "auto") settingsUpdates.EXECUTOR_REGIONS = region;
 
-  if (Object.keys(configUpdates).length) {
+  if (Object.keys(settingsUpdates).length) {
     promises.push(
-      apiFetch("/api/config/update", {
+      apiFetch("/api/settings/update", {
         method: "POST",
-        body: JSON.stringify(configUpdates),
+        body: JSON.stringify({ changes: settingsUpdates }),
         _silent: true,
       }).catch(() => {}),
     );

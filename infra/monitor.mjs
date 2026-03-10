@@ -14594,12 +14594,31 @@ if (isExecutorDisabled()) {
               const taskId = String(task?.id || "").trim();
               if (!taskId) continue;
               const branchName = String(task?.branchName || "").trim();
-              const prUrl = String(task?.prUrl || "").trim();
-              const prNumber = String(task?.prNumber || "").trim();
-              const hasReviewReference = Boolean(prUrl || prNumber || branchName);
+              let prUrl = String(task?.prUrl || "").trim();
+              let prNumber = String(task?.prNumber || "").trim();
+              if (!prUrl && !prNumber && branchName) {
+                let existingPr = await findExistingPrForBranch(branchName);
+                if (!existingPr) {
+                  existingPr = await findExistingPrForBranchApi(branchName);
+                }
+                if (existingPr?.number) {
+                  prNumber = String(existingPr.number).trim();
+                  prUrl = String(existingPr.url || "").trim();
+                  try {
+                    updateInternalTask(taskId, {
+                      branchName,
+                      prNumber: parsePositivePrNumber(prNumber),
+                      prUrl: prUrl || undefined,
+                    });
+                  } catch {
+                    /* best-effort */
+                  }
+                }
+              }
+              const hasReviewReference = Boolean(prUrl || prNumber);
               if (!hasReviewReference) {
                 console.warn(
-                  `[monitor] review rehydrate reset ${taskId} to todo: missing prUrl/prNumber/branchName`,
+                  `[monitor] review rehydrate reset ${taskId} to todo: missing prUrl/prNumber`,
                 );
                 try {
                   setInternalTaskStatus(taskId, "todo", "review-agent-rehydrate");

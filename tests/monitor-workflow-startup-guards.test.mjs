@@ -109,10 +109,13 @@ describe("monitor workflow startup guards", () => {
     );
   });
 
-  it("resets stale inreview tasks without PR metadata during review-agent rehydrate", () => {
-    expect(monitorSource).toContain("const hasReviewReference = Boolean(prUrl || prNumber || branchName);");
+  it("attempts branch-to-PR recovery before resetting stale inreview tasks during review-agent rehydrate", () => {
+    expect(monitorSource).toContain("let existingPr = await findExistingPrForBranch(branchName);");
+    expect(monitorSource).toContain("existingPr = await findExistingPrForBranchApi(branchName);");
+    expect(monitorSource).toContain("updateInternalTask(taskId, {");
+    expect(monitorSource).toContain("const hasReviewReference = Boolean(prUrl || prNumber);");
     expect(monitorSource).toContain(
-      "review rehydrate reset ${taskId} to todo: missing prUrl/prNumber/branchName",
+      "review rehydrate reset ${taskId} to todo: missing prUrl/prNumber",
     );
     expect(monitorSource).toContain("setInternalTaskStatus(taskId, \"todo\", \"review-agent-rehydrate\")");
     expect(monitorSource).toContain("await updateTaskStatus(taskId, \"todo\");");

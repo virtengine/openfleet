@@ -1669,6 +1669,56 @@ describe("action.update_task_status", () => {
       }),
     );
   });
+
+  it("persists PR linkage metadata from VE Orchestrator Lite pr node output", async () => {
+    const nt = getNodeType("action.update_task_status");
+    const updateTaskStatus = vi.fn().mockResolvedValue(true);
+    const updateTask = vi.fn().mockResolvedValue(true);
+    const ctx = makeCtx({
+      taskId: "task-lite-review-123",
+      taskTitle: "Lite review task",
+      branch: "task/task-lite-review-123",
+    });
+    ctx.getNodeOutput = vi.fn((id) => {
+      if (id !== "pr") return null;
+      return {
+        prNumber: 321,
+        prUrl: "https://github.com/virtengine/bosun/pull/321",
+        branch: "task/task-lite-review-123",
+      };
+    });
+    const node = makeNode("action.update_task_status", {
+      taskId: "{{taskId}}",
+      status: "inreview",
+      taskTitle: "{{taskTitle}}",
+    });
+
+    const result = await nt.execute(node, ctx, {
+      services: {
+        kanban: { updateTaskStatus, updateTask },
+      },
+    });
+
+    expect(result.success).toBe(true);
+    expect(updateTaskStatus).toHaveBeenCalledWith(
+      "task-lite-review-123",
+      "inreview",
+      expect.objectContaining({
+        source: "workflow",
+        branchName: "task/task-lite-review-123",
+        prNumber: 321,
+        prUrl: "https://github.com/virtengine/bosun/pull/321",
+      }),
+    );
+    expect(updateTask).toHaveBeenCalledWith(
+      "task-lite-review-123",
+      expect.objectContaining({
+        branchName: "task/task-lite-review-123",
+        prNumber: 321,
+        prUrl: "https://github.com/virtengine/bosun/pull/321",
+      }),
+    );
+  });
 });
 
 describe("template-task-lifecycle", () => {
@@ -1746,6 +1796,9 @@ describe("template-task-lifecycle", () => {
 
     expect(createPr?.config?.body).toContain("Task-ID: {{taskId}}");
     expect(prCreated?.config?.expression).toContain("create-pr");
+    expect(prCreated?.config?.expression).toContain("prNumber");
+    expect(prCreated?.config?.expression).toContain("prUrl");
+    expect(prCreated?.config?.expression).not.toContain("handedOff");
     expect(t.edges.find((e) => e.source === "create-pr" && e.target === "pr-created")).toBeDefined();
     expect(t.edges.find((e) => e.source === "pr-created" && e.target === "set-inreview")).toBeDefined();
     expect(t.edges.find((e) => e.source === "pr-created" && e.target === "set-todo-push-failed")).toBeDefined();

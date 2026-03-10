@@ -641,4 +641,3 @@ export const VE_ORCHESTRATOR_LITE_TEMPLATE = {
     },
   },
 };
-

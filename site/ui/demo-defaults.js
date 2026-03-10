@@ -3016,577 +3016,6 @@
       ]
     },
     {
-      "id": "template-backend-agent",
-      "name": "Backend Agent",
-      "description": "Spins up an agent focused on backend/API development with a test-first methodology. Writes tests first, implements the feature, validates with build + lint, then creates a PR.",
-      "category": "agents",
-      "categoryLabel": "Agents",
-      "categoryIcon": ":bot:",
-      "categoryOrder": 2,
-      "tags": [
-        "agent",
-        "backend",
-        "api",
-        "test-first",
-        "tdd"
-      ],
-      "nodeCount": 23,
-      "edgeCount": 22,
-      "recommended": true,
-      "enabled": true,
-      "trigger": "trigger.task_assigned",
-      "variables": {
-        "testFramework": "node --test",
-        "buildCommand": "npm run build",
-        "agentSdk": "auto",
-        "timeoutMs": 3600000,
-        "autoFixTimeoutMs": 1200000
-      },
-      "metadata": {
-        "author": "bosun",
-        "version": 1,
-        "createdAt": "2025-02-25T00:00:00Z",
-        "templateVersion": "1.0.0",
-        "tags": [
-          "agent",
-          "backend",
-          "api",
-          "test-first",
-          "tdd"
-        ],
-        "replaces": {
-          "module": "primary-agent.mjs",
-          "functions": [
-            "runAgentWithTask"
-          ],
-          "calledFrom": [
-            "task-executor.mjs:executeTask"
-          ],
-          "description": "Replaces generic agent task execution with a structured backend workflow. Test-first methodology, build/lint gates, and Bosun-managed PR lifecycle handoff are enforced as distinct workflow stages."
-        }
-      },
-      "nodes": [
-        {
-          "id": "trigger",
-          "type": "trigger.task_assigned",
-          "label": "Task Assigned",
-          "config": {
-            "filter": "task.tags?.some(t => t === 'backend' || t === 'api')"
-          },
-          "position": {
-            "x": 400,
-            "y": 50
-          },
-          "outputs": [
-            "default"
-          ]
-        },
-        {
-          "id": "plan-work",
-          "type": "agent.run_planner",
-          "label": "Plan Implementation",
-          "config": {
-            "prompt": "Analyze the task requirements and create a step-by-step implementation plan. Identify which files need to be modified, what tests need to be written, and any API contracts to maintain.",
-            "outputVariable": "plan"
-          },
-          "position": {
-            "x": 400,
-            "y": 180
-          },
-          "outputs": [
-            "default"
-          ]
-        },
-        {
-          "id": "write-tests",
-          "type": "action.run_agent",
-          "label": "Write Tests First",
-          "config": {
-            "prompt": "# Test-First Development\n\nBased on the plan:\n{{plan}}\n\nWrite comprehensive tests FIRST before any implementation:\n1. Unit tests for new functions/methods\n2. Integration tests for API endpoints if applicable\n3. Edge cases and error scenarios\n\nUse the project's existing test framework: {{testFramework}}\nCommit with message \"test: add tests for [feature]\"",
-            "sdk": "{{agentSdk}}",
-            "timeoutMs": "{{timeoutMs}}"
-          },
-          "position": {
-            "x": 400,
-            "y": 330
-          },
-          "outputs": [
-            "default"
-          ]
-        },
-        {
-          "id": "implement",
-          "type": "action.run_agent",
-          "label": "Implement Feature",
-          "config": {
-            "prompt": "# Implement Backend Feature\n\nThe tests have been written. Now implement the feature to make them pass:\n1. Follow existing code conventions\n2. Add proper error handling\n3. Ensure all new tests pass\n4. Do NOT modify the tests — make the code fit the contract\n\nRun `{{testFramework}}` after implementation.\nCommit with message \"feat: implement [feature]\"",
-            "sdk": "{{agentSdk}}",
-            "timeoutMs": "{{timeoutMs}}"
-          },
-          "position": {
-            "x": 400,
-            "y": 490
-          },
-          "outputs": [
-            "default"
-          ]
-        },
-        {
-          "id": "build",
-          "type": "validation.build",
-          "label": "Build Check",
-          "config": {
-            "command": "{{buildCommand}}",
-            "zeroWarnings": true
-          },
-          "position": {
-            "x": 400,
-            "y": 650
-          },
-          "outputs": [
-            "default"
-          ]
-        },
-        {
-          "id": "test-final",
-          "type": "validation.tests",
-          "label": "Final Test Run",
-          "config": {
-            "command": "{{testFramework}}"
-          },
-          "position": {
-            "x": 400,
-            "y": 780
-          },
-          "outputs": [
-            "default"
-          ]
-        },
-        {
-          "id": "lint",
-          "type": "validation.lint",
-          "label": "Lint Check",
-          "config": {
-            "command": "npm run lint 2>/dev/null || echo 'no lint script'"
-          },
-          "position": {
-            "x": 400,
-            "y": 910
-          },
-          "outputs": [
-            "default"
-          ]
-        },
-        {
-          "id": "all-passed",
-          "type": "condition.expression",
-          "label": "All Checks Passed?",
-          "config": {
-            "expression": "$ctx.getNodeOutput('build')?.passed === true && $ctx.getNodeOutput('test-final')?.passed === true && $ctx.getNodeOutput('lint')?.passed === true"
-          },
-          "position": {
-            "x": 400,
-            "y": 1040
-          },
-          "outputs": [
-            "yes",
-            "no"
-          ]
-        },
-        {
-          "id": "create-pr",
-          "type": "action.create_pr",
-          "label": "Handoff PR Lifecycle",
-          "config": {
-            "title": "feat: {{taskTitle}}",
-            "body": "Implements backend task with test-first methodology.\n\n**Plan:**\n{{plan}}\n\nAll tests passing. Bosun lifecycle handoff ready.",
-            "branch": "feat/{{taskSlug}}",
-            "baseBranch": "main",
-            "failOnError": true,
-            "maxRetries": 3,
-            "retryDelayMs": 15000,
-            "continueOnError": true
-          },
-          "position": {
-            "x": 250,
-            "y": 1170
-          },
-          "outputs": [
-            "default"
-          ]
-        },
-        {
-          "id": "pr-created",
-          "type": "condition.expression",
-          "label": "Handoff Recorded?",
-          "config": {
-            "expression": "$ctx.getNodeOutput('create-pr')?.success === true"
-          },
-          "position": {
-            "x": 250,
-            "y": 1240
-          },
-          "outputs": [
-            "yes",
-            "no"
-          ]
-        },
-        {
-          "id": "notify-done",
-          "type": "notify.log",
-          "label": "Task Complete",
-          "config": {
-            "message": "Backend agent completed task — PR lifecycle handoff recorded",
-            "level": "info"
-          },
-          "position": {
-            "x": 180,
-            "y": 1320
-          },
-          "outputs": [
-            "default"
-          ]
-        },
-        {
-          "id": "notify-pr-failed",
-          "type": "notify.telegram",
-          "label": "Escalate Lifecycle Handoff Failure",
-          "config": {
-            "message": ":alert: Backend agent passed validation for {{taskTitle}} but failed to record Bosun PR lifecycle handoff after retries. Manual follow-up required."
-          },
-          "position": {
-            "x": 420,
-            "y": 1320
-          },
-          "outputs": [
-            "default"
-          ]
-        },
-        {
-          "id": "set-validation-summary",
-          "type": "action.set_variable",
-          "label": "Summarize Validation Output",
-          "config": {
-            "key": "validationSummary",
-            "value": "(() => { const implement = $ctx.getNodeOutput('implement') || {}; const build = $ctx.getNodeOutput('build') || {}; const test = $ctx.getNodeOutput('test-final') || {}; const lint = $ctx.getNodeOutput('lint') || {}; return ['- implement.success: ' + (implement.success === true), '- build.passed: ' + (build.passed === true), '- test-final.passed: ' + (test.passed === true), '- lint.passed: ' + (lint.passed === true), '', 'Build output:', String(build.output || '').slice(0, 6000), '', 'Test output:', String(test.output || '').slice(0, 6000), '', 'Lint output:', String(lint.output || '').slice(0, 6000)].join('\\n'); })()",
-            "isExpression": true
-          },
-          "position": {
-            "x": 620,
-            "y": 1090
-          },
-          "outputs": [
-            "default"
-          ]
-        },
-        {
-          "id": "auto-fix",
-          "type": "action.run_agent",
-          "label": "Auto-Fix Validation Failures",
-          "config": {
-            "prompt": "# Fix Backend Validation Failures\n\nThe first validation pass failed for task **{{taskTitle}}**.\n\nPlan:\n{{plan}}\n\nCurrent validation outputs:\n{{validationSummary}}\n\nFix the code so build/tests/lint pass.\nDo NOT weaken, remove, or bypass tests.\nKeep the original task scope.\n\nRun build + tests + lint locally before finishing.\nCommit with message \"fix: address backend workflow validation failures\"",
-            "sdk": "{{agentSdk}}",
-            "timeoutMs": "{{autoFixTimeoutMs}}"
-          },
-          "position": {
-            "x": 620,
-            "y": 1170
-          },
-          "outputs": [
-            "default"
-          ]
-        },
-        {
-          "id": "build-retry",
-          "type": "validation.build",
-          "label": "Build Check (Retry)",
-          "config": {
-            "command": "{{buildCommand}}",
-            "zeroWarnings": true
-          },
-          "position": {
-            "x": 620,
-            "y": 1300
-          },
-          "outputs": [
-            "default"
-          ]
-        },
-        {
-          "id": "test-retry",
-          "type": "validation.tests",
-          "label": "Final Test Run (Retry)",
-          "config": {
-            "command": "{{testFramework}}"
-          },
-          "position": {
-            "x": 620,
-            "y": 1430
-          },
-          "outputs": [
-            "default"
-          ]
-        },
-        {
-          "id": "lint-retry",
-          "type": "validation.lint",
-          "label": "Lint Check (Retry)",
-          "config": {
-            "command": "npm run lint 2>/dev/null || echo 'no lint script'"
-          },
-          "position": {
-            "x": 620,
-            "y": 1560
-          },
-          "outputs": [
-            "default"
-          ]
-        },
-        {
-          "id": "retry-passed",
-          "type": "condition.expression",
-          "label": "Retry Checks Passed?",
-          "config": {
-            "expression": "$ctx.getNodeOutput('build-retry')?.passed === true && $ctx.getNodeOutput('test-retry')?.passed === true && $ctx.getNodeOutput('lint-retry')?.passed === true"
-          },
-          "position": {
-            "x": 620,
-            "y": 1690
-          },
-          "outputs": [
-            "yes",
-            "no"
-          ]
-        },
-        {
-          "id": "create-pr-retry",
-          "type": "action.create_pr",
-          "label": "Handoff PR Lifecycle (After Retry)",
-          "config": {
-            "title": "feat: {{taskTitle}}",
-            "body": "Implements backend task after auto-fix retry.\n\n**Plan:**\n{{plan}}\n\nValidation passed after remediation. Bosun lifecycle handoff ready.",
-            "branch": "feat/{{taskSlug}}",
-            "baseBranch": "main",
-            "failOnError": true,
-            "maxRetries": 3,
-            "retryDelayMs": 15000,
-            "continueOnError": true
-          },
-          "position": {
-            "x": 450,
-            "y": 1820
-          },
-          "outputs": [
-            "default"
-          ]
-        },
-        {
-          "id": "pr-created-retry",
-          "type": "condition.expression",
-          "label": "Handoff Recorded (Retry Path)?",
-          "config": {
-            "expression": "$ctx.getNodeOutput('create-pr-retry')?.success === true"
-          },
-          "position": {
-            "x": 450,
-            "y": 1890
-          },
-          "outputs": [
-            "yes",
-            "no"
-          ]
-        },
-        {
-          "id": "notify-done-retry",
-          "type": "notify.log",
-          "label": "Task Complete (After Retry)",
-          "config": {
-            "message": "Backend agent completed task after retry — PR lifecycle handoff recorded",
-            "level": "info"
-          },
-          "position": {
-            "x": 360,
-            "y": 1980
-          },
-          "outputs": [
-            "default"
-          ]
-        },
-        {
-          "id": "notify-fail",
-          "type": "notify.telegram",
-          "label": "Checks Failed",
-          "config": {
-            "message": ":alert: Backend agent: validation failed for task {{taskTitle}} even after remediation pass. Manual review needed."
-          },
-          "position": {
-            "x": 820,
-            "y": 1820
-          },
-          "outputs": [
-            "default"
-          ]
-        },
-        {
-          "id": "notify-pr-failed-retry",
-          "type": "notify.telegram",
-          "label": "Escalate Lifecycle Failure (Retry Path)",
-          "config": {
-            "message": ":alert: Backend agent remediation passed for {{taskTitle}} but Bosun PR lifecycle handoff failed after retries. Manual follow-up required."
-          },
-          "position": {
-            "x": 620,
-            "y": 1980
-          },
-          "outputs": [
-            "default"
-          ]
-        }
-      ],
-      "edges": [
-        {
-          "id": "trigger->plan-work",
-          "source": "trigger",
-          "target": "plan-work",
-          "sourcePort": "default"
-        },
-        {
-          "id": "plan-work->write-tests",
-          "source": "plan-work",
-          "target": "write-tests",
-          "sourcePort": "default"
-        },
-        {
-          "id": "write-tests->implement",
-          "source": "write-tests",
-          "target": "implement",
-          "sourcePort": "default"
-        },
-        {
-          "id": "implement->build",
-          "source": "implement",
-          "target": "build",
-          "sourcePort": "default"
-        },
-        {
-          "id": "build->test-final",
-          "source": "build",
-          "target": "test-final",
-          "sourcePort": "default"
-        },
-        {
-          "id": "test-final->lint",
-          "source": "test-final",
-          "target": "lint",
-          "sourcePort": "default"
-        },
-        {
-          "id": "lint->all-passed",
-          "source": "lint",
-          "target": "all-passed",
-          "sourcePort": "default"
-        },
-        {
-          "id": "all-passed->create-pr",
-          "source": "all-passed",
-          "target": "create-pr",
-          "sourcePort": "yes",
-          "condition": "$output?.result === true"
-        },
-        {
-          "id": "all-passed->set-validation-summary",
-          "source": "all-passed",
-          "target": "set-validation-summary",
-          "sourcePort": "no",
-          "condition": "$output?.result !== true"
-        },
-        {
-          "id": "set-validation-summary->auto-fix",
-          "source": "set-validation-summary",
-          "target": "auto-fix",
-          "sourcePort": "default"
-        },
-        {
-          "id": "create-pr->pr-created",
-          "source": "create-pr",
-          "target": "pr-created",
-          "sourcePort": "default"
-        },
-        {
-          "id": "pr-created->notify-done",
-          "source": "pr-created",
-          "target": "notify-done",
-          "sourcePort": "yes",
-          "condition": "$output?.result === true"
-        },
-        {
-          "id": "pr-created->notify-pr-failed",
-          "source": "pr-created",
-          "target": "notify-pr-failed",
-          "sourcePort": "no",
-          "condition": "$output?.result !== true"
-        },
-        {
-          "id": "auto-fix->build-retry",
-          "source": "auto-fix",
-          "target": "build-retry",
-          "sourcePort": "default"
-        },
-        {
-          "id": "build-retry->test-retry",
-          "source": "build-retry",
-          "target": "test-retry",
-          "sourcePort": "default"
-        },
-        {
-          "id": "test-retry->lint-retry",
-          "source": "test-retry",
-          "target": "lint-retry",
-          "sourcePort": "default"
-        },
-        {
-          "id": "lint-retry->retry-passed",
-          "source": "lint-retry",
-          "target": "retry-passed",
-          "sourcePort": "default"
-        },
-        {
-          "id": "retry-passed->create-pr-retry",
-          "source": "retry-passed",
-          "target": "create-pr-retry",
-          "sourcePort": "yes",
-          "condition": "$output?.result === true"
-        },
-        {
-          "id": "retry-passed->notify-fail",
-          "source": "retry-passed",
-          "target": "notify-fail",
-          "sourcePort": "no",
-          "condition": "$output?.result !== true"
-        },
-        {
-          "id": "create-pr-retry->pr-created-retry",
-          "source": "create-pr-retry",
-          "target": "pr-created-retry",
-          "sourcePort": "default"
-        },
-        {
-          "id": "pr-created-retry->notify-done-retry",
-          "source": "pr-created-retry",
-          "target": "notify-done-retry",
-          "sourcePort": "yes",
-          "condition": "$output?.result === true"
-        },
-        {
-          "id": "pr-created-retry->notify-pr-failed-retry",
-          "source": "pr-created-retry",
-          "target": "notify-pr-failed-retry",
-          "sourcePort": "no",
-          "condition": "$output?.result !== true"
-        }
-      ]
-    },
-    {
       "id": "template-custom-agent",
       "name": "Custom Agent Profile",
       "description": "Starter template for creating a custom agent profile with configurable validation, notification, and completion gates. Duplicate and customize to match your specific workflow.",
@@ -4595,6 +4024,742 @@
           "source": "meeting-finalize",
           "target": "final-log",
           "sourcePort": "default"
+        }
+      ]
+    },
+    {
+      "id": "template-backend-agent",
+      "name": "Task Completion Agent",
+      "description": "Spins up an agent focused on backend/API development with a test-first methodology. Writes tests first, implements the feature, validates with build + lint, then creates a PR.",
+      "category": "agents",
+      "categoryLabel": "Agents",
+      "categoryIcon": ":bot:",
+      "categoryOrder": 2,
+      "tags": [
+        "agent",
+        "backend",
+        "api",
+        "test-first",
+        "tdd"
+      ],
+      "nodeCount": 29,
+      "edgeCount": 30,
+      "recommended": true,
+      "enabled": true,
+      "trigger": "trigger.task_assigned",
+      "variables": {
+        "testFramework": "node --test",
+        "buildCommand": "npm run build",
+        "baseBranch": "main",
+        "protectedBranches": [
+          "main",
+          "master",
+          "develop",
+          "production"
+        ],
+        "agentSdk": "auto",
+        "timeoutMs": 3600000,
+        "autoFixTimeoutMs": 1200000
+      },
+      "metadata": {
+        "author": "bosun",
+        "version": 1,
+        "createdAt": "2025-02-25T00:00:00Z",
+        "templateVersion": "1.0.0",
+        "tags": [
+          "agent",
+          "backend",
+          "api",
+          "test-first",
+          "tdd"
+        ],
+        "replaces": {
+          "module": "primary-agent.mjs",
+          "functions": [
+            "runAgentWithTask"
+          ],
+          "calledFrom": [
+            "task-executor.mjs:executeTask"
+          ],
+          "description": "Replaces generic agent task execution with a structured backend workflow. Test-first methodology, build/lint gates, and Bosun-managed PR lifecycle handoff are enforced as distinct workflow stages."
+        }
+      },
+      "nodes": [
+        {
+          "id": "trigger",
+          "type": "trigger.task_assigned",
+          "label": "Task Assigned",
+          "config": {
+            "filter": "task.tags?.some(t => t === 'backend' || t === 'api')"
+          },
+          "position": {
+            "x": 400,
+            "y": 50
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "plan-work",
+          "type": "agent.run_planner",
+          "label": "Plan Implementation",
+          "config": {
+            "prompt": "Analyze the task requirements and create a step-by-step implementation plan. Identify which files need to be modified, what tests need to be written, and any API contracts to maintain.",
+            "outputVariable": "plan"
+          },
+          "position": {
+            "x": 400,
+            "y": 180
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "write-tests",
+          "type": "action.run_agent",
+          "label": "Write Tests First",
+          "config": {
+            "prompt": "# Test-First Development\n\nBased on the plan:\n{{plan}}\n\nWrite comprehensive tests FIRST before any implementation:\n1. Unit tests for new functions/methods\n2. Integration tests for API endpoints if applicable\n3. Edge cases and error scenarios\n\nUse the project's existing test framework: {{testFramework}}\nCommit with message \"test: add tests for [feature]\"",
+            "sdk": "{{agentSdk}}",
+            "timeoutMs": "{{timeoutMs}}"
+          },
+          "position": {
+            "x": 400,
+            "y": 330
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "implement",
+          "type": "action.run_agent",
+          "label": "Implement Feature",
+          "config": {
+            "prompt": "# Implement Backend Feature\n\nThe tests have been written. Now implement the feature to make them pass:\n1. Follow existing code conventions\n2. Add proper error handling\n3. Ensure all new tests pass\n4. Do NOT modify the tests — make the code fit the contract\n\nRun `{{testFramework}}` after implementation.\nCommit with message \"feat: implement [feature]\"",
+            "sdk": "{{agentSdk}}",
+            "timeoutMs": "{{timeoutMs}}"
+          },
+          "position": {
+            "x": 400,
+            "y": 490
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "build",
+          "type": "validation.build",
+          "label": "Build Check",
+          "config": {
+            "command": "{{buildCommand}}",
+            "zeroWarnings": true
+          },
+          "position": {
+            "x": 400,
+            "y": 650
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "test-final",
+          "type": "validation.tests",
+          "label": "Final Test Run",
+          "config": {
+            "command": "{{testFramework}}"
+          },
+          "position": {
+            "x": 400,
+            "y": 780
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "lint",
+          "type": "validation.lint",
+          "label": "Lint Check",
+          "config": {
+            "command": "npm run lint 2>/dev/null || echo 'no lint script'"
+          },
+          "position": {
+            "x": 400,
+            "y": 910
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "all-passed",
+          "type": "condition.expression",
+          "label": "All Checks Passed?",
+          "config": {
+            "expression": "$ctx.getNodeOutput('build')?.passed === true && $ctx.getNodeOutput('test-final')?.passed === true && $ctx.getNodeOutput('lint')?.passed === true"
+          },
+          "position": {
+            "x": 400,
+            "y": 1040
+          },
+          "outputs": [
+            "yes",
+            "no"
+          ]
+        },
+        {
+          "id": "push-branch",
+          "type": "action.push_branch",
+          "label": "Push Branch",
+          "config": {
+            "worktreePath": "{{worktreePath}}",
+            "branch": "{{branch}}",
+            "baseBranch": "{{baseBranch}}",
+            "rebaseBeforePush": true,
+            "emptyDiffGuard": true,
+            "protectedBranches": "{{protectedBranches}}"
+          },
+          "position": {
+            "x": 250,
+            "y": 1110
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "push-ok",
+          "type": "condition.expression",
+          "label": "Push OK?",
+          "config": {
+            "expression": "$ctx.getNodeOutput('push-branch')?.pushed === true"
+          },
+          "position": {
+            "x": 250,
+            "y": 1175
+          },
+          "outputs": [
+            "yes",
+            "no"
+          ]
+        },
+        {
+          "id": "create-pr",
+          "type": "action.create_pr",
+          "label": "Handoff PR Lifecycle",
+          "config": {
+            "title": "feat: {{taskTitle}}",
+            "body": "Implements backend task with test-first methodology.\n\n**Plan:**\n{{plan}}\n\nAll tests passing. Bosun lifecycle handoff ready.",
+            "branch": "{{branch}}",
+            "baseBranch": "{{baseBranch}}",
+            "failOnError": true,
+            "maxRetries": 3,
+            "retryDelayMs": 15000,
+            "continueOnError": true
+          },
+          "position": {
+            "x": 250,
+            "y": 1170
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "pr-created",
+          "type": "condition.expression",
+          "label": "Handoff Recorded?",
+          "config": {
+            "expression": "Boolean($ctx.getNodeOutput('create-pr')?.prNumber || $ctx.getNodeOutput('create-pr')?.prUrl)"
+          },
+          "position": {
+            "x": 250,
+            "y": 1240
+          },
+          "outputs": [
+            "yes",
+            "no"
+          ]
+        },
+        {
+          "id": "set-inreview",
+          "type": "action.update_task_status",
+          "label": "Set In-Review",
+          "config": {
+            "taskId": "{{taskId}}",
+            "status": "inreview",
+            "taskTitle": "{{taskTitle}}"
+          },
+          "position": {
+            "x": 180,
+            "y": 1320
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "notify-done",
+          "type": "notify.log",
+          "label": "Task Complete",
+          "config": {
+            "message": "Task completion agent finished task — PR lifecycle handoff recorded",
+            "level": "info"
+          },
+          "position": {
+            "x": 180,
+            "y": 1320
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "notify-pr-failed",
+          "type": "notify.telegram",
+          "label": "Escalate Lifecycle Handoff Failure",
+          "config": {
+            "message": ":alert: Task completion agent passed validation for {{taskTitle}} but failed to record Bosun PR lifecycle handoff after retries. Manual follow-up required."
+          },
+          "position": {
+            "x": 420,
+            "y": 1320
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "set-validation-summary",
+          "type": "action.set_variable",
+          "label": "Summarize Validation Output",
+          "config": {
+            "key": "validationSummary",
+            "value": "(() => { const implement = $ctx.getNodeOutput('implement') || {}; const build = $ctx.getNodeOutput('build') || {}; const test = $ctx.getNodeOutput('test-final') || {}; const lint = $ctx.getNodeOutput('lint') || {}; return ['- implement.success: ' + (implement.success === true), '- build.passed: ' + (build.passed === true), '- test-final.passed: ' + (test.passed === true), '- lint.passed: ' + (lint.passed === true), '', 'Build output:', String(build.output || '').slice(0, 6000), '', 'Test output:', String(test.output || '').slice(0, 6000), '', 'Lint output:', String(lint.output || '').slice(0, 6000)].join('\\n'); })()",
+            "isExpression": true
+          },
+          "position": {
+            "x": 620,
+            "y": 1090
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "auto-fix",
+          "type": "action.run_agent",
+          "label": "Auto-Fix Validation Failures",
+          "config": {
+            "prompt": "# Fix Backend Validation Failures\n\nThe first validation pass failed for task **{{taskTitle}}**.\n\nPlan:\n{{plan}}\n\nCurrent validation outputs:\n{{validationSummary}}\n\nFix the code so build/tests/lint pass.\nDo NOT weaken, remove, or bypass tests.\nKeep the original task scope.\n\nRun build + tests + lint locally before finishing.\nCommit with message \"fix: address backend workflow validation failures\"",
+            "sdk": "{{agentSdk}}",
+            "timeoutMs": "{{autoFixTimeoutMs}}"
+          },
+          "position": {
+            "x": 620,
+            "y": 1170
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "build-retry",
+          "type": "validation.build",
+          "label": "Build Check (Retry)",
+          "config": {
+            "command": "{{buildCommand}}",
+            "zeroWarnings": true
+          },
+          "position": {
+            "x": 620,
+            "y": 1300
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "test-retry",
+          "type": "validation.tests",
+          "label": "Final Test Run (Retry)",
+          "config": {
+            "command": "{{testFramework}}"
+          },
+          "position": {
+            "x": 620,
+            "y": 1430
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "lint-retry",
+          "type": "validation.lint",
+          "label": "Lint Check (Retry)",
+          "config": {
+            "command": "npm run lint 2>/dev/null || echo 'no lint script'"
+          },
+          "position": {
+            "x": 620,
+            "y": 1560
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "retry-passed",
+          "type": "condition.expression",
+          "label": "Retry Checks Passed?",
+          "config": {
+            "expression": "$ctx.getNodeOutput('build-retry')?.passed === true && $ctx.getNodeOutput('test-retry')?.passed === true && $ctx.getNodeOutput('lint-retry')?.passed === true"
+          },
+          "position": {
+            "x": 620,
+            "y": 1690
+          },
+          "outputs": [
+            "yes",
+            "no"
+          ]
+        },
+        {
+          "id": "push-branch-retry",
+          "type": "action.push_branch",
+          "label": "Push Branch (Retry)",
+          "config": {
+            "worktreePath": "{{worktreePath}}",
+            "branch": "{{branch}}",
+            "baseBranch": "{{baseBranch}}",
+            "rebaseBeforePush": true,
+            "emptyDiffGuard": true,
+            "protectedBranches": "{{protectedBranches}}"
+          },
+          "position": {
+            "x": 450,
+            "y": 1760
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "push-ok-retry",
+          "type": "condition.expression",
+          "label": "Push OK? (Retry)",
+          "config": {
+            "expression": "$ctx.getNodeOutput('push-branch-retry')?.pushed === true"
+          },
+          "position": {
+            "x": 450,
+            "y": 1825
+          },
+          "outputs": [
+            "yes",
+            "no"
+          ]
+        },
+        {
+          "id": "create-pr-retry",
+          "type": "action.create_pr",
+          "label": "Handoff PR Lifecycle (After Retry)",
+          "config": {
+            "title": "feat: {{taskTitle}}",
+            "body": "Implements backend task after auto-fix retry.\n\n**Plan:**\n{{plan}}\n\nValidation passed after remediation. Bosun lifecycle handoff ready.",
+            "branch": "{{branch}}",
+            "baseBranch": "{{baseBranch}}",
+            "failOnError": true,
+            "maxRetries": 3,
+            "retryDelayMs": 15000,
+            "continueOnError": true
+          },
+          "position": {
+            "x": 450,
+            "y": 1820
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "pr-created-retry",
+          "type": "condition.expression",
+          "label": "Handoff Recorded (Retry Path)?",
+          "config": {
+            "expression": "Boolean($ctx.getNodeOutput('create-pr-retry')?.prNumber || $ctx.getNodeOutput('create-pr-retry')?.prUrl)"
+          },
+          "position": {
+            "x": 450,
+            "y": 1890
+          },
+          "outputs": [
+            "yes",
+            "no"
+          ]
+        },
+        {
+          "id": "set-inreview-retry",
+          "type": "action.update_task_status",
+          "label": "Set In-Review (Retry)",
+          "config": {
+            "taskId": "{{taskId}}",
+            "status": "inreview",
+            "taskTitle": "{{taskTitle}}"
+          },
+          "position": {
+            "x": 360,
+            "y": 1980
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "notify-done-retry",
+          "type": "notify.log",
+          "label": "Task Complete (After Retry)",
+          "config": {
+            "message": "Task completion agent finished task after retry — PR lifecycle handoff recorded",
+            "level": "info"
+          },
+          "position": {
+            "x": 360,
+            "y": 1980
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "notify-fail",
+          "type": "notify.telegram",
+          "label": "Checks Failed",
+          "config": {
+            "message": ":alert: Task completion agent: validation failed for task {{taskTitle}} even after remediation pass. Manual review needed."
+          },
+          "position": {
+            "x": 820,
+            "y": 1820
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "notify-pr-failed-retry",
+          "type": "notify.telegram",
+          "label": "Escalate Lifecycle Failure (Retry Path)",
+          "config": {
+            "message": ":alert: Task completion agent remediation passed for {{taskTitle}} but Bosun PR lifecycle handoff failed after retries. Manual follow-up required."
+          },
+          "position": {
+            "x": 620,
+            "y": 1980
+          },
+          "outputs": [
+            "default"
+          ]
+        }
+      ],
+      "edges": [
+        {
+          "id": "trigger->plan-work",
+          "source": "trigger",
+          "target": "plan-work",
+          "sourcePort": "default"
+        },
+        {
+          "id": "plan-work->write-tests",
+          "source": "plan-work",
+          "target": "write-tests",
+          "sourcePort": "default"
+        },
+        {
+          "id": "write-tests->implement",
+          "source": "write-tests",
+          "target": "implement",
+          "sourcePort": "default"
+        },
+        {
+          "id": "implement->build",
+          "source": "implement",
+          "target": "build",
+          "sourcePort": "default"
+        },
+        {
+          "id": "build->test-final",
+          "source": "build",
+          "target": "test-final",
+          "sourcePort": "default"
+        },
+        {
+          "id": "test-final->lint",
+          "source": "test-final",
+          "target": "lint",
+          "sourcePort": "default"
+        },
+        {
+          "id": "lint->all-passed",
+          "source": "lint",
+          "target": "all-passed",
+          "sourcePort": "default"
+        },
+        {
+          "id": "all-passed->push-branch",
+          "source": "all-passed",
+          "target": "push-branch",
+          "sourcePort": "yes",
+          "condition": "$output?.result === true"
+        },
+        {
+          "id": "all-passed->set-validation-summary",
+          "source": "all-passed",
+          "target": "set-validation-summary",
+          "sourcePort": "no",
+          "condition": "$output?.result !== true"
+        },
+        {
+          "id": "set-validation-summary->auto-fix",
+          "source": "set-validation-summary",
+          "target": "auto-fix",
+          "sourcePort": "default"
+        },
+        {
+          "id": "push-branch->push-ok",
+          "source": "push-branch",
+          "target": "push-ok",
+          "sourcePort": "default"
+        },
+        {
+          "id": "push-ok->create-pr",
+          "source": "push-ok",
+          "target": "create-pr",
+          "sourcePort": "yes",
+          "condition": "$output?.result === true"
+        },
+        {
+          "id": "push-ok->notify-pr-failed",
+          "source": "push-ok",
+          "target": "notify-pr-failed",
+          "sourcePort": "no",
+          "condition": "$output?.result !== true"
+        },
+        {
+          "id": "create-pr->pr-created",
+          "source": "create-pr",
+          "target": "pr-created",
+          "sourcePort": "default"
+        },
+        {
+          "id": "pr-created->set-inreview",
+          "source": "pr-created",
+          "target": "set-inreview",
+          "sourcePort": "yes",
+          "condition": "$output?.result === true"
+        },
+        {
+          "id": "set-inreview->notify-done",
+          "source": "set-inreview",
+          "target": "notify-done",
+          "sourcePort": "default"
+        },
+        {
+          "id": "pr-created->notify-pr-failed",
+          "source": "pr-created",
+          "target": "notify-pr-failed",
+          "sourcePort": "no",
+          "condition": "$output?.result !== true"
+        },
+        {
+          "id": "auto-fix->build-retry",
+          "source": "auto-fix",
+          "target": "build-retry",
+          "sourcePort": "default"
+        },
+        {
+          "id": "build-retry->test-retry",
+          "source": "build-retry",
+          "target": "test-retry",
+          "sourcePort": "default"
+        },
+        {
+          "id": "test-retry->lint-retry",
+          "source": "test-retry",
+          "target": "lint-retry",
+          "sourcePort": "default"
+        },
+        {
+          "id": "lint-retry->retry-passed",
+          "source": "lint-retry",
+          "target": "retry-passed",
+          "sourcePort": "default"
+        },
+        {
+          "id": "retry-passed->push-branch-retry",
+          "source": "retry-passed",
+          "target": "push-branch-retry",
+          "sourcePort": "yes",
+          "condition": "$output?.result === true"
+        },
+        {
+          "id": "retry-passed->notify-fail",
+          "source": "retry-passed",
+          "target": "notify-fail",
+          "sourcePort": "no",
+          "condition": "$output?.result !== true"
+        },
+        {
+          "id": "push-branch-retry->push-ok-retry",
+          "source": "push-branch-retry",
+          "target": "push-ok-retry",
+          "sourcePort": "default"
+        },
+        {
+          "id": "push-ok-retry->create-pr-retry",
+          "source": "push-ok-retry",
+          "target": "create-pr-retry",
+          "sourcePort": "yes",
+          "condition": "$output?.result === true"
+        },
+        {
+          "id": "push-ok-retry->notify-pr-failed-retry",
+          "source": "push-ok-retry",
+          "target": "notify-pr-failed-retry",
+          "sourcePort": "no",
+          "condition": "$output?.result !== true"
+        },
+        {
+          "id": "create-pr-retry->pr-created-retry",
+          "source": "create-pr-retry",
+          "target": "pr-created-retry",
+          "sourcePort": "default"
+        },
+        {
+          "id": "pr-created-retry->set-inreview-retry",
+          "source": "pr-created-retry",
+          "target": "set-inreview-retry",
+          "sourcePort": "yes",
+          "condition": "$output?.result === true"
+        },
+        {
+          "id": "set-inreview-retry->notify-done-retry",
+          "source": "set-inreview-retry",
+          "target": "notify-done-retry",
+          "sourcePort": "default"
+        },
+        {
+          "id": "pr-created-retry->notify-pr-failed-retry",
+          "source": "pr-created-retry",
+          "target": "notify-pr-failed-retry",
+          "sourcePort": "no",
+          "condition": "$output?.result !== true"
         }
       ]
     },
@@ -19366,555 +19531,6 @@
       }
     },
     {
-      "id": "wf-backend-agent",
-      "name": "Backend Agent",
-      "description": "Spins up an agent focused on backend/API development with a test-first methodology. Writes tests first, implements the feature, validates with build + lint, then creates a PR.",
-      "category": "agents",
-      "enabled": true,
-      "nodeCount": 23,
-      "trigger": "trigger.task_assigned",
-      "variables": {
-        "testFramework": "node --test",
-        "buildCommand": "npm run build",
-        "agentSdk": "auto",
-        "timeoutMs": 3600000,
-        "autoFixTimeoutMs": 1200000
-      },
-      "nodes": [
-        {
-          "id": "trigger",
-          "type": "trigger.task_assigned",
-          "label": "Task Assigned",
-          "config": {
-            "filter": "task.tags?.some(t => t === 'backend' || t === 'api')"
-          },
-          "position": {
-            "x": 400,
-            "y": 50
-          },
-          "outputs": [
-            "default"
-          ]
-        },
-        {
-          "id": "plan-work",
-          "type": "agent.run_planner",
-          "label": "Plan Implementation",
-          "config": {
-            "prompt": "Analyze the task requirements and create a step-by-step implementation plan. Identify which files need to be modified, what tests need to be written, and any API contracts to maintain.",
-            "outputVariable": "plan"
-          },
-          "position": {
-            "x": 400,
-            "y": 180
-          },
-          "outputs": [
-            "default"
-          ]
-        },
-        {
-          "id": "write-tests",
-          "type": "action.run_agent",
-          "label": "Write Tests First",
-          "config": {
-            "prompt": "# Test-First Development\n\nBased on the plan:\n{{plan}}\n\nWrite comprehensive tests FIRST before any implementation:\n1. Unit tests for new functions/methods\n2. Integration tests for API endpoints if applicable\n3. Edge cases and error scenarios\n\nUse the project's existing test framework: {{testFramework}}\nCommit with message \"test: add tests for [feature]\"",
-            "sdk": "{{agentSdk}}",
-            "timeoutMs": "{{timeoutMs}}"
-          },
-          "position": {
-            "x": 400,
-            "y": 330
-          },
-          "outputs": [
-            "default"
-          ]
-        },
-        {
-          "id": "implement",
-          "type": "action.run_agent",
-          "label": "Implement Feature",
-          "config": {
-            "prompt": "# Implement Backend Feature\n\nThe tests have been written. Now implement the feature to make them pass:\n1. Follow existing code conventions\n2. Add proper error handling\n3. Ensure all new tests pass\n4. Do NOT modify the tests — make the code fit the contract\n\nRun `{{testFramework}}` after implementation.\nCommit with message \"feat: implement [feature]\"",
-            "sdk": "{{agentSdk}}",
-            "timeoutMs": "{{timeoutMs}}"
-          },
-          "position": {
-            "x": 400,
-            "y": 490
-          },
-          "outputs": [
-            "default"
-          ]
-        },
-        {
-          "id": "build",
-          "type": "validation.build",
-          "label": "Build Check",
-          "config": {
-            "command": "{{buildCommand}}",
-            "zeroWarnings": true
-          },
-          "position": {
-            "x": 400,
-            "y": 650
-          },
-          "outputs": [
-            "default"
-          ]
-        },
-        {
-          "id": "test-final",
-          "type": "validation.tests",
-          "label": "Final Test Run",
-          "config": {
-            "command": "{{testFramework}}"
-          },
-          "position": {
-            "x": 400,
-            "y": 780
-          },
-          "outputs": [
-            "default"
-          ]
-        },
-        {
-          "id": "lint",
-          "type": "validation.lint",
-          "label": "Lint Check",
-          "config": {
-            "command": "npm run lint 2>/dev/null || echo 'no lint script'"
-          },
-          "position": {
-            "x": 400,
-            "y": 910
-          },
-          "outputs": [
-            "default"
-          ]
-        },
-        {
-          "id": "all-passed",
-          "type": "condition.expression",
-          "label": "All Checks Passed?",
-          "config": {
-            "expression": "$ctx.getNodeOutput('build')?.passed === true && $ctx.getNodeOutput('test-final')?.passed === true && $ctx.getNodeOutput('lint')?.passed === true"
-          },
-          "position": {
-            "x": 400,
-            "y": 1040
-          },
-          "outputs": [
-            "yes",
-            "no"
-          ]
-        },
-        {
-          "id": "create-pr",
-          "type": "action.create_pr",
-          "label": "Handoff PR Lifecycle",
-          "config": {
-            "title": "feat: {{taskTitle}}",
-            "body": "Implements backend task with test-first methodology.\n\n**Plan:**\n{{plan}}\n\nAll tests passing. Bosun lifecycle handoff ready.",
-            "branch": "feat/{{taskSlug}}",
-            "baseBranch": "main",
-            "failOnError": true,
-            "maxRetries": 3,
-            "retryDelayMs": 15000,
-            "continueOnError": true
-          },
-          "position": {
-            "x": 250,
-            "y": 1170
-          },
-          "outputs": [
-            "default"
-          ]
-        },
-        {
-          "id": "pr-created",
-          "type": "condition.expression",
-          "label": "Handoff Recorded?",
-          "config": {
-            "expression": "$ctx.getNodeOutput('create-pr')?.success === true"
-          },
-          "position": {
-            "x": 250,
-            "y": 1240
-          },
-          "outputs": [
-            "yes",
-            "no"
-          ]
-        },
-        {
-          "id": "notify-done",
-          "type": "notify.log",
-          "label": "Task Complete",
-          "config": {
-            "message": "Backend agent completed task — PR lifecycle handoff recorded",
-            "level": "info"
-          },
-          "position": {
-            "x": 180,
-            "y": 1320
-          },
-          "outputs": [
-            "default"
-          ]
-        },
-        {
-          "id": "notify-pr-failed",
-          "type": "notify.telegram",
-          "label": "Escalate Lifecycle Handoff Failure",
-          "config": {
-            "message": ":alert: Backend agent passed validation for {{taskTitle}} but failed to record Bosun PR lifecycle handoff after retries. Manual follow-up required."
-          },
-          "position": {
-            "x": 420,
-            "y": 1320
-          },
-          "outputs": [
-            "default"
-          ]
-        },
-        {
-          "id": "set-validation-summary",
-          "type": "action.set_variable",
-          "label": "Summarize Validation Output",
-          "config": {
-            "key": "validationSummary",
-            "value": "(() => { const implement = $ctx.getNodeOutput('implement') || {}; const build = $ctx.getNodeOutput('build') || {}; const test = $ctx.getNodeOutput('test-final') || {}; const lint = $ctx.getNodeOutput('lint') || {}; return ['- implement.success: ' + (implement.success === true), '- build.passed: ' + (build.passed === true), '- test-final.passed: ' + (test.passed === true), '- lint.passed: ' + (lint.passed === true), '', 'Build output:', String(build.output || '').slice(0, 6000), '', 'Test output:', String(test.output || '').slice(0, 6000), '', 'Lint output:', String(lint.output || '').slice(0, 6000)].join('\\n'); })()",
-            "isExpression": true
-          },
-          "position": {
-            "x": 620,
-            "y": 1090
-          },
-          "outputs": [
-            "default"
-          ]
-        },
-        {
-          "id": "auto-fix",
-          "type": "action.run_agent",
-          "label": "Auto-Fix Validation Failures",
-          "config": {
-            "prompt": "# Fix Backend Validation Failures\n\nThe first validation pass failed for task **{{taskTitle}}**.\n\nPlan:\n{{plan}}\n\nCurrent validation outputs:\n{{validationSummary}}\n\nFix the code so build/tests/lint pass.\nDo NOT weaken, remove, or bypass tests.\nKeep the original task scope.\n\nRun build + tests + lint locally before finishing.\nCommit with message \"fix: address backend workflow validation failures\"",
-            "sdk": "{{agentSdk}}",
-            "timeoutMs": "{{autoFixTimeoutMs}}"
-          },
-          "position": {
-            "x": 620,
-            "y": 1170
-          },
-          "outputs": [
-            "default"
-          ]
-        },
-        {
-          "id": "build-retry",
-          "type": "validation.build",
-          "label": "Build Check (Retry)",
-          "config": {
-            "command": "{{buildCommand}}",
-            "zeroWarnings": true
-          },
-          "position": {
-            "x": 620,
-            "y": 1300
-          },
-          "outputs": [
-            "default"
-          ]
-        },
-        {
-          "id": "test-retry",
-          "type": "validation.tests",
-          "label": "Final Test Run (Retry)",
-          "config": {
-            "command": "{{testFramework}}"
-          },
-          "position": {
-            "x": 620,
-            "y": 1430
-          },
-          "outputs": [
-            "default"
-          ]
-        },
-        {
-          "id": "lint-retry",
-          "type": "validation.lint",
-          "label": "Lint Check (Retry)",
-          "config": {
-            "command": "npm run lint 2>/dev/null || echo 'no lint script'"
-          },
-          "position": {
-            "x": 620,
-            "y": 1560
-          },
-          "outputs": [
-            "default"
-          ]
-        },
-        {
-          "id": "retry-passed",
-          "type": "condition.expression",
-          "label": "Retry Checks Passed?",
-          "config": {
-            "expression": "$ctx.getNodeOutput('build-retry')?.passed === true && $ctx.getNodeOutput('test-retry')?.passed === true && $ctx.getNodeOutput('lint-retry')?.passed === true"
-          },
-          "position": {
-            "x": 620,
-            "y": 1690
-          },
-          "outputs": [
-            "yes",
-            "no"
-          ]
-        },
-        {
-          "id": "create-pr-retry",
-          "type": "action.create_pr",
-          "label": "Handoff PR Lifecycle (After Retry)",
-          "config": {
-            "title": "feat: {{taskTitle}}",
-            "body": "Implements backend task after auto-fix retry.\n\n**Plan:**\n{{plan}}\n\nValidation passed after remediation. Bosun lifecycle handoff ready.",
-            "branch": "feat/{{taskSlug}}",
-            "baseBranch": "main",
-            "failOnError": true,
-            "maxRetries": 3,
-            "retryDelayMs": 15000,
-            "continueOnError": true
-          },
-          "position": {
-            "x": 450,
-            "y": 1820
-          },
-          "outputs": [
-            "default"
-          ]
-        },
-        {
-          "id": "pr-created-retry",
-          "type": "condition.expression",
-          "label": "Handoff Recorded (Retry Path)?",
-          "config": {
-            "expression": "$ctx.getNodeOutput('create-pr-retry')?.success === true"
-          },
-          "position": {
-            "x": 450,
-            "y": 1890
-          },
-          "outputs": [
-            "yes",
-            "no"
-          ]
-        },
-        {
-          "id": "notify-done-retry",
-          "type": "notify.log",
-          "label": "Task Complete (After Retry)",
-          "config": {
-            "message": "Backend agent completed task after retry — PR lifecycle handoff recorded",
-            "level": "info"
-          },
-          "position": {
-            "x": 360,
-            "y": 1980
-          },
-          "outputs": [
-            "default"
-          ]
-        },
-        {
-          "id": "notify-fail",
-          "type": "notify.telegram",
-          "label": "Checks Failed",
-          "config": {
-            "message": ":alert: Backend agent: validation failed for task {{taskTitle}} even after remediation pass. Manual review needed."
-          },
-          "position": {
-            "x": 820,
-            "y": 1820
-          },
-          "outputs": [
-            "default"
-          ]
-        },
-        {
-          "id": "notify-pr-failed-retry",
-          "type": "notify.telegram",
-          "label": "Escalate Lifecycle Failure (Retry Path)",
-          "config": {
-            "message": ":alert: Backend agent remediation passed for {{taskTitle}} but Bosun PR lifecycle handoff failed after retries. Manual follow-up required."
-          },
-          "position": {
-            "x": 620,
-            "y": 1980
-          },
-          "outputs": [
-            "default"
-          ]
-        }
-      ],
-      "edges": [
-        {
-          "id": "trigger->plan-work",
-          "source": "trigger",
-          "target": "plan-work",
-          "sourcePort": "default"
-        },
-        {
-          "id": "plan-work->write-tests",
-          "source": "plan-work",
-          "target": "write-tests",
-          "sourcePort": "default"
-        },
-        {
-          "id": "write-tests->implement",
-          "source": "write-tests",
-          "target": "implement",
-          "sourcePort": "default"
-        },
-        {
-          "id": "implement->build",
-          "source": "implement",
-          "target": "build",
-          "sourcePort": "default"
-        },
-        {
-          "id": "build->test-final",
-          "source": "build",
-          "target": "test-final",
-          "sourcePort": "default"
-        },
-        {
-          "id": "test-final->lint",
-          "source": "test-final",
-          "target": "lint",
-          "sourcePort": "default"
-        },
-        {
-          "id": "lint->all-passed",
-          "source": "lint",
-          "target": "all-passed",
-          "sourcePort": "default"
-        },
-        {
-          "id": "all-passed->create-pr",
-          "source": "all-passed",
-          "target": "create-pr",
-          "sourcePort": "yes",
-          "condition": "$output?.result === true"
-        },
-        {
-          "id": "all-passed->set-validation-summary",
-          "source": "all-passed",
-          "target": "set-validation-summary",
-          "sourcePort": "no",
-          "condition": "$output?.result !== true"
-        },
-        {
-          "id": "set-validation-summary->auto-fix",
-          "source": "set-validation-summary",
-          "target": "auto-fix",
-          "sourcePort": "default"
-        },
-        {
-          "id": "create-pr->pr-created",
-          "source": "create-pr",
-          "target": "pr-created",
-          "sourcePort": "default"
-        },
-        {
-          "id": "pr-created->notify-done",
-          "source": "pr-created",
-          "target": "notify-done",
-          "sourcePort": "yes",
-          "condition": "$output?.result === true"
-        },
-        {
-          "id": "pr-created->notify-pr-failed",
-          "source": "pr-created",
-          "target": "notify-pr-failed",
-          "sourcePort": "no",
-          "condition": "$output?.result !== true"
-        },
-        {
-          "id": "auto-fix->build-retry",
-          "source": "auto-fix",
-          "target": "build-retry",
-          "sourcePort": "default"
-        },
-        {
-          "id": "build-retry->test-retry",
-          "source": "build-retry",
-          "target": "test-retry",
-          "sourcePort": "default"
-        },
-        {
-          "id": "test-retry->lint-retry",
-          "source": "test-retry",
-          "target": "lint-retry",
-          "sourcePort": "default"
-        },
-        {
-          "id": "lint-retry->retry-passed",
-          "source": "lint-retry",
-          "target": "retry-passed",
-          "sourcePort": "default"
-        },
-        {
-          "id": "retry-passed->create-pr-retry",
-          "source": "retry-passed",
-          "target": "create-pr-retry",
-          "sourcePort": "yes",
-          "condition": "$output?.result === true"
-        },
-        {
-          "id": "retry-passed->notify-fail",
-          "source": "retry-passed",
-          "target": "notify-fail",
-          "sourcePort": "no",
-          "condition": "$output?.result !== true"
-        },
-        {
-          "id": "create-pr-retry->pr-created-retry",
-          "source": "create-pr-retry",
-          "target": "pr-created-retry",
-          "sourcePort": "default"
-        },
-        {
-          "id": "pr-created-retry->notify-done-retry",
-          "source": "pr-created-retry",
-          "target": "notify-done-retry",
-          "sourcePort": "yes",
-          "condition": "$output?.result === true"
-        },
-        {
-          "id": "pr-created-retry->notify-pr-failed-retry",
-          "source": "pr-created-retry",
-          "target": "notify-pr-failed-retry",
-          "sourcePort": "no",
-          "condition": "$output?.result !== true"
-        }
-      ],
-      "metadata": {
-        "author": "bosun-demo",
-        "createdAt": "2026-03-11T12:00:00.000Z",
-        "updatedAt": "2026-03-11T12:00:00.000Z",
-        "templateState": {
-          "templateId": "template-backend-agent",
-          "templateName": "Backend Agent",
-          "templateVersion": "1.0.0",
-          "installedTemplateVersion": "1.0.0",
-          "isCustomized": false,
-          "updateAvailable": false
-        }
-      }
-    },
-    {
       "id": "wf-custom-agent",
       "name": "Custom Agent Profile",
       "description": "Starter template for creating a custom agent profile with configurable validation, notification, and completion gates. Duplicate and customize to match your specific workflow.",
@@ -20076,8 +19692,8 @@
       ],
       "metadata": {
         "author": "bosun-demo",
-        "createdAt": "2026-03-12T12:00:00.000Z",
-        "updatedAt": "2026-03-12T12:00:00.000Z",
+        "createdAt": "2026-03-11T12:00:00.000Z",
+        "updatedAt": "2026-03-11T12:00:00.000Z",
         "templateState": {
           "templateId": "template-custom-agent",
           "templateName": "Custom Agent Profile",
@@ -20496,8 +20112,8 @@
       ],
       "metadata": {
         "author": "bosun-demo",
-        "createdAt": "2026-03-13T12:00:00.000Z",
-        "updatedAt": "2026-03-13T12:00:00.000Z",
+        "createdAt": "2026-03-12T12:00:00.000Z",
+        "updatedAt": "2026-03-12T12:00:00.000Z",
         "templateState": {
           "templateId": "template-frontend-agent",
           "templateName": "Frontend Agent",
@@ -20872,11 +20488,725 @@
       ],
       "metadata": {
         "author": "bosun-demo",
-        "createdAt": "2026-03-14T12:00:00.000Z",
-        "updatedAt": "2026-03-14T12:00:00.000Z",
+        "createdAt": "2026-03-13T12:00:00.000Z",
+        "updatedAt": "2026-03-13T12:00:00.000Z",
         "templateState": {
           "templateId": "template-meeting-subworkflow-chain",
           "templateName": "Meeting Orchestrator + Subworkflow Chain",
+          "templateVersion": "1.0.0",
+          "installedTemplateVersion": "1.0.0",
+          "isCustomized": false,
+          "updateAvailable": false
+        }
+      }
+    },
+    {
+      "id": "wf-backend-agent",
+      "name": "Task Completion Agent",
+      "description": "Spins up an agent focused on backend/API development with a test-first methodology. Writes tests first, implements the feature, validates with build + lint, then creates a PR.",
+      "category": "agents",
+      "enabled": true,
+      "nodeCount": 29,
+      "trigger": "trigger.task_assigned",
+      "variables": {
+        "testFramework": "node --test",
+        "buildCommand": "npm run build",
+        "baseBranch": "main",
+        "protectedBranches": [
+          "main",
+          "master",
+          "develop",
+          "production"
+        ],
+        "agentSdk": "auto",
+        "timeoutMs": 3600000,
+        "autoFixTimeoutMs": 1200000
+      },
+      "nodes": [
+        {
+          "id": "trigger",
+          "type": "trigger.task_assigned",
+          "label": "Task Assigned",
+          "config": {
+            "filter": "task.tags?.some(t => t === 'backend' || t === 'api')"
+          },
+          "position": {
+            "x": 400,
+            "y": 50
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "plan-work",
+          "type": "agent.run_planner",
+          "label": "Plan Implementation",
+          "config": {
+            "prompt": "Analyze the task requirements and create a step-by-step implementation plan. Identify which files need to be modified, what tests need to be written, and any API contracts to maintain.",
+            "outputVariable": "plan"
+          },
+          "position": {
+            "x": 400,
+            "y": 180
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "write-tests",
+          "type": "action.run_agent",
+          "label": "Write Tests First",
+          "config": {
+            "prompt": "# Test-First Development\n\nBased on the plan:\n{{plan}}\n\nWrite comprehensive tests FIRST before any implementation:\n1. Unit tests for new functions/methods\n2. Integration tests for API endpoints if applicable\n3. Edge cases and error scenarios\n\nUse the project's existing test framework: {{testFramework}}\nCommit with message \"test: add tests for [feature]\"",
+            "sdk": "{{agentSdk}}",
+            "timeoutMs": "{{timeoutMs}}"
+          },
+          "position": {
+            "x": 400,
+            "y": 330
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "implement",
+          "type": "action.run_agent",
+          "label": "Implement Feature",
+          "config": {
+            "prompt": "# Implement Backend Feature\n\nThe tests have been written. Now implement the feature to make them pass:\n1. Follow existing code conventions\n2. Add proper error handling\n3. Ensure all new tests pass\n4. Do NOT modify the tests — make the code fit the contract\n\nRun `{{testFramework}}` after implementation.\nCommit with message \"feat: implement [feature]\"",
+            "sdk": "{{agentSdk}}",
+            "timeoutMs": "{{timeoutMs}}"
+          },
+          "position": {
+            "x": 400,
+            "y": 490
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "build",
+          "type": "validation.build",
+          "label": "Build Check",
+          "config": {
+            "command": "{{buildCommand}}",
+            "zeroWarnings": true
+          },
+          "position": {
+            "x": 400,
+            "y": 650
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "test-final",
+          "type": "validation.tests",
+          "label": "Final Test Run",
+          "config": {
+            "command": "{{testFramework}}"
+          },
+          "position": {
+            "x": 400,
+            "y": 780
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "lint",
+          "type": "validation.lint",
+          "label": "Lint Check",
+          "config": {
+            "command": "npm run lint 2>/dev/null || echo 'no lint script'"
+          },
+          "position": {
+            "x": 400,
+            "y": 910
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "all-passed",
+          "type": "condition.expression",
+          "label": "All Checks Passed?",
+          "config": {
+            "expression": "$ctx.getNodeOutput('build')?.passed === true && $ctx.getNodeOutput('test-final')?.passed === true && $ctx.getNodeOutput('lint')?.passed === true"
+          },
+          "position": {
+            "x": 400,
+            "y": 1040
+          },
+          "outputs": [
+            "yes",
+            "no"
+          ]
+        },
+        {
+          "id": "push-branch",
+          "type": "action.push_branch",
+          "label": "Push Branch",
+          "config": {
+            "worktreePath": "{{worktreePath}}",
+            "branch": "{{branch}}",
+            "baseBranch": "{{baseBranch}}",
+            "rebaseBeforePush": true,
+            "emptyDiffGuard": true,
+            "protectedBranches": "{{protectedBranches}}"
+          },
+          "position": {
+            "x": 250,
+            "y": 1110
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "push-ok",
+          "type": "condition.expression",
+          "label": "Push OK?",
+          "config": {
+            "expression": "$ctx.getNodeOutput('push-branch')?.pushed === true"
+          },
+          "position": {
+            "x": 250,
+            "y": 1175
+          },
+          "outputs": [
+            "yes",
+            "no"
+          ]
+        },
+        {
+          "id": "create-pr",
+          "type": "action.create_pr",
+          "label": "Handoff PR Lifecycle",
+          "config": {
+            "title": "feat: {{taskTitle}}",
+            "body": "Implements backend task with test-first methodology.\n\n**Plan:**\n{{plan}}\n\nAll tests passing. Bosun lifecycle handoff ready.",
+            "branch": "{{branch}}",
+            "baseBranch": "{{baseBranch}}",
+            "failOnError": true,
+            "maxRetries": 3,
+            "retryDelayMs": 15000,
+            "continueOnError": true
+          },
+          "position": {
+            "x": 250,
+            "y": 1170
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "pr-created",
+          "type": "condition.expression",
+          "label": "Handoff Recorded?",
+          "config": {
+            "expression": "Boolean($ctx.getNodeOutput('create-pr')?.prNumber || $ctx.getNodeOutput('create-pr')?.prUrl)"
+          },
+          "position": {
+            "x": 250,
+            "y": 1240
+          },
+          "outputs": [
+            "yes",
+            "no"
+          ]
+        },
+        {
+          "id": "set-inreview",
+          "type": "action.update_task_status",
+          "label": "Set In-Review",
+          "config": {
+            "taskId": "{{taskId}}",
+            "status": "inreview",
+            "taskTitle": "{{taskTitle}}"
+          },
+          "position": {
+            "x": 180,
+            "y": 1320
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "notify-done",
+          "type": "notify.log",
+          "label": "Task Complete",
+          "config": {
+            "message": "Task completion agent finished task — PR lifecycle handoff recorded",
+            "level": "info"
+          },
+          "position": {
+            "x": 180,
+            "y": 1320
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "notify-pr-failed",
+          "type": "notify.telegram",
+          "label": "Escalate Lifecycle Handoff Failure",
+          "config": {
+            "message": ":alert: Task completion agent passed validation for {{taskTitle}} but failed to record Bosun PR lifecycle handoff after retries. Manual follow-up required."
+          },
+          "position": {
+            "x": 420,
+            "y": 1320
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "set-validation-summary",
+          "type": "action.set_variable",
+          "label": "Summarize Validation Output",
+          "config": {
+            "key": "validationSummary",
+            "value": "(() => { const implement = $ctx.getNodeOutput('implement') || {}; const build = $ctx.getNodeOutput('build') || {}; const test = $ctx.getNodeOutput('test-final') || {}; const lint = $ctx.getNodeOutput('lint') || {}; return ['- implement.success: ' + (implement.success === true), '- build.passed: ' + (build.passed === true), '- test-final.passed: ' + (test.passed === true), '- lint.passed: ' + (lint.passed === true), '', 'Build output:', String(build.output || '').slice(0, 6000), '', 'Test output:', String(test.output || '').slice(0, 6000), '', 'Lint output:', String(lint.output || '').slice(0, 6000)].join('\\n'); })()",
+            "isExpression": true
+          },
+          "position": {
+            "x": 620,
+            "y": 1090
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "auto-fix",
+          "type": "action.run_agent",
+          "label": "Auto-Fix Validation Failures",
+          "config": {
+            "prompt": "# Fix Backend Validation Failures\n\nThe first validation pass failed for task **{{taskTitle}}**.\n\nPlan:\n{{plan}}\n\nCurrent validation outputs:\n{{validationSummary}}\n\nFix the code so build/tests/lint pass.\nDo NOT weaken, remove, or bypass tests.\nKeep the original task scope.\n\nRun build + tests + lint locally before finishing.\nCommit with message \"fix: address backend workflow validation failures\"",
+            "sdk": "{{agentSdk}}",
+            "timeoutMs": "{{autoFixTimeoutMs}}"
+          },
+          "position": {
+            "x": 620,
+            "y": 1170
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "build-retry",
+          "type": "validation.build",
+          "label": "Build Check (Retry)",
+          "config": {
+            "command": "{{buildCommand}}",
+            "zeroWarnings": true
+          },
+          "position": {
+            "x": 620,
+            "y": 1300
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "test-retry",
+          "type": "validation.tests",
+          "label": "Final Test Run (Retry)",
+          "config": {
+            "command": "{{testFramework}}"
+          },
+          "position": {
+            "x": 620,
+            "y": 1430
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "lint-retry",
+          "type": "validation.lint",
+          "label": "Lint Check (Retry)",
+          "config": {
+            "command": "npm run lint 2>/dev/null || echo 'no lint script'"
+          },
+          "position": {
+            "x": 620,
+            "y": 1560
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "retry-passed",
+          "type": "condition.expression",
+          "label": "Retry Checks Passed?",
+          "config": {
+            "expression": "$ctx.getNodeOutput('build-retry')?.passed === true && $ctx.getNodeOutput('test-retry')?.passed === true && $ctx.getNodeOutput('lint-retry')?.passed === true"
+          },
+          "position": {
+            "x": 620,
+            "y": 1690
+          },
+          "outputs": [
+            "yes",
+            "no"
+          ]
+        },
+        {
+          "id": "push-branch-retry",
+          "type": "action.push_branch",
+          "label": "Push Branch (Retry)",
+          "config": {
+            "worktreePath": "{{worktreePath}}",
+            "branch": "{{branch}}",
+            "baseBranch": "{{baseBranch}}",
+            "rebaseBeforePush": true,
+            "emptyDiffGuard": true,
+            "protectedBranches": "{{protectedBranches}}"
+          },
+          "position": {
+            "x": 450,
+            "y": 1760
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "push-ok-retry",
+          "type": "condition.expression",
+          "label": "Push OK? (Retry)",
+          "config": {
+            "expression": "$ctx.getNodeOutput('push-branch-retry')?.pushed === true"
+          },
+          "position": {
+            "x": 450,
+            "y": 1825
+          },
+          "outputs": [
+            "yes",
+            "no"
+          ]
+        },
+        {
+          "id": "create-pr-retry",
+          "type": "action.create_pr",
+          "label": "Handoff PR Lifecycle (After Retry)",
+          "config": {
+            "title": "feat: {{taskTitle}}",
+            "body": "Implements backend task after auto-fix retry.\n\n**Plan:**\n{{plan}}\n\nValidation passed after remediation. Bosun lifecycle handoff ready.",
+            "branch": "{{branch}}",
+            "baseBranch": "{{baseBranch}}",
+            "failOnError": true,
+            "maxRetries": 3,
+            "retryDelayMs": 15000,
+            "continueOnError": true
+          },
+          "position": {
+            "x": 450,
+            "y": 1820
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "pr-created-retry",
+          "type": "condition.expression",
+          "label": "Handoff Recorded (Retry Path)?",
+          "config": {
+            "expression": "Boolean($ctx.getNodeOutput('create-pr-retry')?.prNumber || $ctx.getNodeOutput('create-pr-retry')?.prUrl)"
+          },
+          "position": {
+            "x": 450,
+            "y": 1890
+          },
+          "outputs": [
+            "yes",
+            "no"
+          ]
+        },
+        {
+          "id": "set-inreview-retry",
+          "type": "action.update_task_status",
+          "label": "Set In-Review (Retry)",
+          "config": {
+            "taskId": "{{taskId}}",
+            "status": "inreview",
+            "taskTitle": "{{taskTitle}}"
+          },
+          "position": {
+            "x": 360,
+            "y": 1980
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "notify-done-retry",
+          "type": "notify.log",
+          "label": "Task Complete (After Retry)",
+          "config": {
+            "message": "Task completion agent finished task after retry — PR lifecycle handoff recorded",
+            "level": "info"
+          },
+          "position": {
+            "x": 360,
+            "y": 1980
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "notify-fail",
+          "type": "notify.telegram",
+          "label": "Checks Failed",
+          "config": {
+            "message": ":alert: Task completion agent: validation failed for task {{taskTitle}} even after remediation pass. Manual review needed."
+          },
+          "position": {
+            "x": 820,
+            "y": 1820
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "notify-pr-failed-retry",
+          "type": "notify.telegram",
+          "label": "Escalate Lifecycle Failure (Retry Path)",
+          "config": {
+            "message": ":alert: Task completion agent remediation passed for {{taskTitle}} but Bosun PR lifecycle handoff failed after retries. Manual follow-up required."
+          },
+          "position": {
+            "x": 620,
+            "y": 1980
+          },
+          "outputs": [
+            "default"
+          ]
+        }
+      ],
+      "edges": [
+        {
+          "id": "trigger->plan-work",
+          "source": "trigger",
+          "target": "plan-work",
+          "sourcePort": "default"
+        },
+        {
+          "id": "plan-work->write-tests",
+          "source": "plan-work",
+          "target": "write-tests",
+          "sourcePort": "default"
+        },
+        {
+          "id": "write-tests->implement",
+          "source": "write-tests",
+          "target": "implement",
+          "sourcePort": "default"
+        },
+        {
+          "id": "implement->build",
+          "source": "implement",
+          "target": "build",
+          "sourcePort": "default"
+        },
+        {
+          "id": "build->test-final",
+          "source": "build",
+          "target": "test-final",
+          "sourcePort": "default"
+        },
+        {
+          "id": "test-final->lint",
+          "source": "test-final",
+          "target": "lint",
+          "sourcePort": "default"
+        },
+        {
+          "id": "lint->all-passed",
+          "source": "lint",
+          "target": "all-passed",
+          "sourcePort": "default"
+        },
+        {
+          "id": "all-passed->push-branch",
+          "source": "all-passed",
+          "target": "push-branch",
+          "sourcePort": "yes",
+          "condition": "$output?.result === true"
+        },
+        {
+          "id": "all-passed->set-validation-summary",
+          "source": "all-passed",
+          "target": "set-validation-summary",
+          "sourcePort": "no",
+          "condition": "$output?.result !== true"
+        },
+        {
+          "id": "set-validation-summary->auto-fix",
+          "source": "set-validation-summary",
+          "target": "auto-fix",
+          "sourcePort": "default"
+        },
+        {
+          "id": "push-branch->push-ok",
+          "source": "push-branch",
+          "target": "push-ok",
+          "sourcePort": "default"
+        },
+        {
+          "id": "push-ok->create-pr",
+          "source": "push-ok",
+          "target": "create-pr",
+          "sourcePort": "yes",
+          "condition": "$output?.result === true"
+        },
+        {
+          "id": "push-ok->notify-pr-failed",
+          "source": "push-ok",
+          "target": "notify-pr-failed",
+          "sourcePort": "no",
+          "condition": "$output?.result !== true"
+        },
+        {
+          "id": "create-pr->pr-created",
+          "source": "create-pr",
+          "target": "pr-created",
+          "sourcePort": "default"
+        },
+        {
+          "id": "pr-created->set-inreview",
+          "source": "pr-created",
+          "target": "set-inreview",
+          "sourcePort": "yes",
+          "condition": "$output?.result === true"
+        },
+        {
+          "id": "set-inreview->notify-done",
+          "source": "set-inreview",
+          "target": "notify-done",
+          "sourcePort": "default"
+        },
+        {
+          "id": "pr-created->notify-pr-failed",
+          "source": "pr-created",
+          "target": "notify-pr-failed",
+          "sourcePort": "no",
+          "condition": "$output?.result !== true"
+        },
+        {
+          "id": "auto-fix->build-retry",
+          "source": "auto-fix",
+          "target": "build-retry",
+          "sourcePort": "default"
+        },
+        {
+          "id": "build-retry->test-retry",
+          "source": "build-retry",
+          "target": "test-retry",
+          "sourcePort": "default"
+        },
+        {
+          "id": "test-retry->lint-retry",
+          "source": "test-retry",
+          "target": "lint-retry",
+          "sourcePort": "default"
+        },
+        {
+          "id": "lint-retry->retry-passed",
+          "source": "lint-retry",
+          "target": "retry-passed",
+          "sourcePort": "default"
+        },
+        {
+          "id": "retry-passed->push-branch-retry",
+          "source": "retry-passed",
+          "target": "push-branch-retry",
+          "sourcePort": "yes",
+          "condition": "$output?.result === true"
+        },
+        {
+          "id": "retry-passed->notify-fail",
+          "source": "retry-passed",
+          "target": "notify-fail",
+          "sourcePort": "no",
+          "condition": "$output?.result !== true"
+        },
+        {
+          "id": "push-branch-retry->push-ok-retry",
+          "source": "push-branch-retry",
+          "target": "push-ok-retry",
+          "sourcePort": "default"
+        },
+        {
+          "id": "push-ok-retry->create-pr-retry",
+          "source": "push-ok-retry",
+          "target": "create-pr-retry",
+          "sourcePort": "yes",
+          "condition": "$output?.result === true"
+        },
+        {
+          "id": "push-ok-retry->notify-pr-failed-retry",
+          "source": "push-ok-retry",
+          "target": "notify-pr-failed-retry",
+          "sourcePort": "no",
+          "condition": "$output?.result !== true"
+        },
+        {
+          "id": "create-pr-retry->pr-created-retry",
+          "source": "create-pr-retry",
+          "target": "pr-created-retry",
+          "sourcePort": "default"
+        },
+        {
+          "id": "pr-created-retry->set-inreview-retry",
+          "source": "pr-created-retry",
+          "target": "set-inreview-retry",
+          "sourcePort": "yes",
+          "condition": "$output?.result === true"
+        },
+        {
+          "id": "set-inreview-retry->notify-done-retry",
+          "source": "set-inreview-retry",
+          "target": "notify-done-retry",
+          "sourcePort": "default"
+        },
+        {
+          "id": "pr-created-retry->notify-pr-failed-retry",
+          "source": "pr-created-retry",
+          "target": "notify-pr-failed-retry",
+          "sourcePort": "no",
+          "condition": "$output?.result !== true"
+        }
+      ],
+      "metadata": {
+        "author": "bosun-demo",
+        "createdAt": "2026-03-14T12:00:00.000Z",
+        "updatedAt": "2026-03-14T12:00:00.000Z",
+        "templateState": {
+          "templateId": "template-backend-agent",
+          "templateName": "Task Completion Agent",
           "templateVersion": "1.0.0",
           "installedTemplateVersion": "1.0.0",
           "isCustomized": false,
