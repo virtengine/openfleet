@@ -64,8 +64,8 @@ describe("pipeline workflow definitions", () => {
       tempConfigDir,
     ]);
 
-    expect(getPipelineWorkflow("code-review", config.workflows)).toBeDefined();
-    expect(getPipelineWorkflow("parallel-search", config.workflows)).toBeDefined();
+    expect(getPipelineWorkflow("code-review", config.workflows)).toBeTruthy();
+    expect(getPipelineWorkflow("parallel-search", config.workflows)).toBeTruthy();
   });
 
   it("runs a workflow with an injected stage runner", async () => {

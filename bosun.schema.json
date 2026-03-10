@@ -68,128 +68,6 @@
       "default": false,
       "description": "Delegate task finalization and recovery to workflow automation instead of the legacy TaskExecutor. Automatically set to true when workflowFirst is enabled."
     },
-    "workflows": {
-      "type": "object",
-      "description": "Declarative fresh-context multi-agent workflows addressable via bosun workflow run <name>.",
-      "additionalProperties": {
-        "type": "object",
-        "additionalProperties": true,
-        "properties": {
-          "id": {
-            "type": "string"
-          },
-          "name": {
-            "type": "string"
-          },
-          "description": {
-            "type": "string"
-          },
-          "type": {
-            "type": "string",
-            "enum": [
-              "sequential",
-              "fanout",
-              "race"
-            ]
-          },
-          "taskTemplate": {
-            "type": "string"
-          },
-          "aggregation": {
-            "type": "string"
-          },
-          "stages": {
-            "type": "array",
-            "items": {
-              "anyOf": [
-                {
-                  "type": "string"
-                },
-                {
-                  "type": "object",
-                  "additionalProperties": true,
-                  "properties": {
-                    "id": {
-                      "type": "string"
-                    },
-                    "name": {
-                      "type": "string"
-                    },
-                    "role": {
-                      "type": "string"
-                    },
-                    "sdk": {
-                      "type": "string"
-                    },
-                    "executor": {
-                      "type": "string"
-                    },
-                    "model": {
-                      "type": "string"
-                    },
-                    "prompt": {
-                      "type": "string"
-                    },
-                    "timeoutMs": {
-                      "type": "number"
-                    },
-                    "maxRetries": {
-                      "type": "number"
-                    }
-                  }
-                }
-              ]
-            }
-          },
-          "agents": {
-            "type": "array",
-            "items": {
-              "anyOf": [
-                {
-                  "type": "string"
-                },
-                {
-                  "type": "object",
-                  "additionalProperties": true,
-                  "properties": {
-                    "id": {
-                      "type": "string"
-                    },
-                    "name": {
-                      "type": "string"
-                    },
-                    "role": {
-                      "type": "string"
-                    },
-                    "sdk": {
-                      "type": "string"
-                    },
-                    "executor": {
-                      "type": "string"
-                    },
-                    "model": {
-                      "type": "string"
-                    },
-                    "prompt": {
-                      "type": "string"
-                    },
-                    "timeoutMs": {
-                      "type": "number"
-                    },
-                    "maxRetries": {
-                      "type": "number"
-                    }
-                  }
-                }
-              ]
-            }
-          },
-          "metadata": {
-            "type": "object"
-          }
-        }
-      }
-    },
     "interactiveShellEnabled": {
       "type": "boolean"
     },
@@ -1321,6 +1199,104 @@
             "fallbackToInteractive": {
               "type": "boolean",
               "description": "Allow interactive configuration if all other sources fail"
+            }
+          }
+        }
+      }
+    },
+    "workflows": {
+      "type": "object",
+      "description": "Declarative multi-agent pipeline workflows runnable via bosun workflow run <name>.",
+      "additionalProperties": {
+        "type": "object",
+        "properties": {
+          "type": {
+            "type": "string",
+            "enum": [
+              "sequential",
+              "fanout",
+              "race"
+            ]
+          },
+          "description": {
+            "type": "string"
+          },
+          "stages": {
+            "type": "array",
+            "items": {
+              "oneOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "object",
+                  "properties": {
+                    "name": {
+                      "type": "string"
+                    },
+                    "stage": {
+                      "type": "string"
+                    },
+                    "prompt": {
+                      "type": "string"
+                    },
+                    "promptTemplate": {
+                      "type": "string"
+                    },
+                    "sdk": {
+                      "type": "string"
+                    },
+                    "model": {
+                      "type": "string"
+                    },
+                    "cwd": {
+                      "type": "string"
+                    },
+                    "timeoutMs": {
+                      "type": "number"
+                    }
+                  }
+                }
+              ]
+            }
+          },
+          "agents": {
+            "type": "array",
+            "items": {
+              "oneOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "object",
+                  "properties": {
+                    "name": {
+                      "type": "string"
+                    },
+                    "stage": {
+                      "type": "string"
+                    },
+                    "prompt": {
+                      "type": "string"
+                    },
+                    "promptTemplate": {
+                      "type": "string"
+                    },
+                    "sdk": {
+                      "type": "string"
+                    },
+                    "model": {
+                      "type": "string"
+                    },
+                    "cwd": {
+                      "type": "string"
+                    },
+                    "timeoutMs": {
+                      "type": "number"
+                    }
+                  }
+                }
+              ]
             }
           }
         }

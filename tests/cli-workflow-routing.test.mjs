@@ -8,7 +8,7 @@ describe("cli workflow routing", () => {
   it("documents workflow commands in the top-level help", () => {
     expect(cliSource).toContain("WORKFLOWS");
     expect(cliSource).toContain("workflow list");
-    expect(cliSource).toContain("Run 'bosun workflow --help' for workflow CLI details.");
+    expect(cliSource).toContain("Run 'bosun workflow --help' for workflow CLI examples.");
   });
 
   it("routes workflow subcommands before generic help handling", () => {

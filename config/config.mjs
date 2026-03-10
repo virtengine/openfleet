@@ -2305,21 +2305,12 @@ export function loadConfig(argv = process.argv, options = {}) {
     workspacesDir,
     activeWorkspace,
     agentRepoRoot,
-
-    workflows:
-      configData.workflows &&
-      typeof configData.workflows === "object" &&
-      !Array.isArray(configData.workflows)
-        ? Object.freeze({ ...configData.workflows })
-        : Object.freeze({}),
+    workflows,
 
     // Agent prompts
     agentPrompts,
     agentPromptSources,
     agentPromptCatalog,
-
-    // Declarative workflows
-    workflows: configData.workflows && typeof configData.workflows === "object" ? configData.workflows : {},
 
     // First run
     isFirstRun,

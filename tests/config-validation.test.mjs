@@ -444,4 +444,34 @@ describe("loadConfig validation and edge cases", () => {
 
     expect(config.scriptPath).toBe(scriptFile);
   });
+  it("loads declarative workflow definitions from bosun.config.json", async () => {
+    await writeFile(
+      resolve(tempConfigDir, "bosun.config.json"),
+      JSON.stringify({
+        workflows: {
+          "code-review": {
+            type: "sequential",
+            stages: ["implement", "review"],
+          },
+        },
+      }),
+      "utf8",
+    );
+
+    const config = loadConfig([
+      "node",
+      "bosun",
+      "--config-dir",
+      tempConfigDir,
+      "--repo-root",
+      tempConfigDir,
+    ]);
+
+    expect(config.workflows["code-review"]).toMatchObject({
+      name: "code-review",
+      type: "sequential",
+    });
+    expect(config.workflows["parallel-search"]).toBeTruthy();
+  });
 });
+

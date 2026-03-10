@@ -77,7 +77,8 @@ function showHelp() {
 
   COMMANDS
     workflow list              List declarative pipeline workflows
-    workflow run <name>        Run a declarative pipeline workflow    --setup                     Launch the web-based setup wizard (default)
+    workflow run <name>        Run a declarative pipeline workflow
+    --setup                    Launch the web-based setup wizard (default)
     --setup-terminal            Run the legacy terminal setup wizard
     --where                     Show the resolved bosun config directory
     --doctor                    Validate bosun .env/config setup
@@ -155,12 +156,6 @@ function showHelp() {
   WORKFLOWS
     workflow list               List built-in and configured workflows
     workflow run <name>         Run a declarative fresh-context workflow
-
-    Run 'bosun workflow --help' for workflow CLI details.
-
-  WORKFLOWS
-    workflow list               List built-in and config-defined pipeline workflows
-    workflow run <name>         Run a declarative pipeline workflow
 
     Run 'bosun workflow --help' for workflow CLI examples.
 
@@ -2312,4 +2307,3 @@ main().catch(async (err) => {
   await sendCrashNotification(1, null).catch(() => {});
   process.exit(1);
 });
-
