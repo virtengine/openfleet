@@ -34,6 +34,11 @@ const ENV_KEYS = [
   "GEMINI_API_KEY",
   "GOOGLE_API_KEY",
   "GEMINI_SDK_DISABLED",
+  "WORKFLOW_RECOVERY_MAX_ATTEMPTS",
+  "WORKFLOW_RECOVERY_ESCALATION_THRESHOLD",
+  "WORKFLOW_RECOVERY_BACKOFF_BASE_MS",
+  "WORKFLOW_RECOVERY_BACKOFF_MAX_MS",
+  "WORKFLOW_RECOVERY_BACKOFF_JITTER_RATIO",
 ];
 
 describe("loadConfig validation and edge cases", () => {
@@ -65,6 +70,11 @@ describe("loadConfig validation and edge cases", () => {
     delete process.env.TELEGRAM_INTERVAL_MIN;
     delete process.env.INTERNAL_EXECUTOR_PARALLEL;
     delete process.env.DEPENDABOT_MERGE_METHOD;
+    delete process.env.WORKFLOW_RECOVERY_MAX_ATTEMPTS;
+    delete process.env.WORKFLOW_RECOVERY_ESCALATION_THRESHOLD;
+    delete process.env.WORKFLOW_RECOVERY_BACKOFF_BASE_MS;
+    delete process.env.WORKFLOW_RECOVERY_BACKOFF_MAX_MS;
+    delete process.env.WORKFLOW_RECOVERY_BACKOFF_JITTER_RATIO;
 
     const config = loadConfig([
       "node",
@@ -78,6 +88,77 @@ describe("loadConfig validation and edge cases", () => {
     expect(config.telegramIntervalMin).toBe(10);
     expect(config.internalExecutor.maxParallel).toBe(3);
     expect(config.dependabotMergeMethod).toBe("squash");
+    expect(config.workflowRecovery).toEqual({
+      maxAttempts: 5,
+      escalationWarnAfterAttempts: 3,
+      baseBackoffMs: 5000,
+      maxBackoffMs: 60_000,
+      jitterRatio: 0.2,
+    });
+  });
+
+  it("loads workflow recovery policy from config file and allows env overrides", async () => {
+    await writeFile(
+      resolve(tempConfigDir, "bosun.config.json"),
+      JSON.stringify(
+        {
+          workflowRecovery: {
+            maxAttempts: 7,
+            escalationWarnAfterAttempts: 4,
+            baseBackoffMs: 2500,
+            maxBackoffMs: 45_000,
+            jitterRatio: 0.35,
+          },
+        },
+        null,
+        2,
+      ),
+      "utf8",
+    );
+    process.env.WORKFLOW_RECOVERY_MAX_ATTEMPTS = "6";
+    process.env.WORKFLOW_RECOVERY_BACKOFF_BASE_MS = "1500";
+
+    const config = loadConfig([
+      "node",
+      "bosun",
+      "--config-dir",
+      tempConfigDir,
+      "--repo-root",
+      tempConfigDir,
+    ]);
+
+    expect(config.workflowRecovery).toEqual({
+      maxAttempts: 6,
+      escalationWarnAfterAttempts: 4,
+      baseBackoffMs: 1500,
+      maxBackoffMs: 45_000,
+      jitterRatio: 0.35,
+    });
+  });
+
+  it("falls back to safe workflow recovery defaults when overrides are invalid", () => {
+    process.env.WORKFLOW_RECOVERY_MAX_ATTEMPTS = "0";
+    process.env.WORKFLOW_RECOVERY_ESCALATION_THRESHOLD = "99";
+    process.env.WORKFLOW_RECOVERY_BACKOFF_BASE_MS = "-1";
+    process.env.WORKFLOW_RECOVERY_BACKOFF_MAX_MS = "999999999";
+    process.env.WORKFLOW_RECOVERY_BACKOFF_JITTER_RATIO = "2";
+
+    const config = loadConfig([
+      "node",
+      "bosun",
+      "--config-dir",
+      tempConfigDir,
+      "--repo-root",
+      tempConfigDir,
+    ]);
+
+    expect(config.workflowRecovery).toEqual({
+      maxAttempts: 5,
+      escalationWarnAfterAttempts: 3,
+      baseBackoffMs: 5000,
+      maxBackoffMs: 60_000,
+      jitterRatio: 0.2,
+    });
   });
 
   it("prefers repo-local .bosun config when repo root has a configured runtime", async () => {
@@ -172,6 +253,9 @@ describe("loadConfig validation and edge cases", () => {
     expect(typeof config.jira).toBe("object");
     expect(typeof config.jira.projectKey).toBe("string");
     expect(typeof config.triggerSystem).toBe("object");
+    expect(typeof config.workflowRecovery).toBe("object");
+    expect(typeof config.workflowRecovery.maxAttempts).toBe("number");
+    expect(typeof config.workflowRecovery.escalationWarnAfterAttempts).toBe("number");
     expect(Array.isArray(config.triggerSystem.templates)).toBe(true);
   });
 

@@ -69,13 +69,13 @@ describe("monitor workflow startup guards", () => {
   });
 
   it("defines bounded workflow recovery policy and structured telemetry", () => {
-    expect(monitorSource).toContain("const workflowRecoveryPolicy = (() => {");
-    expect(monitorSource).toContain("WORKFLOW_RECOVERY_MAX_ATTEMPTS");
-    expect(monitorSource).toContain("WORKFLOW_RECOVERY_ESCALATION_THRESHOLD");
-    expect(monitorSource).toContain("WORKFLOW_RECOVERY_BACKOFF_BASE_MS");
-    expect(monitorSource).toContain("WORKFLOW_RECOVERY_BACKOFF_MAX_MS");
-    expect(monitorSource).toContain("WORKFLOW_RECOVERY_BACKOFF_JITTER_RATIO");
+    expect(monitorSource).toContain("const DEFAULT_WORKFLOW_RECOVERY_POLICY = Object.freeze({");
+    expect(monitorSource).toContain("function normalizeWorkflowRecoveryPolicy(candidate = {})");
+    expect(monitorSource).toContain("applyWorkflowRecoveryPolicy(configWorkflowRecovery, \"startup-config\")");
+    expect(monitorSource).toContain("applyWorkflowRecoveryPolicy(");
+    expect(monitorSource).toContain("emitWorkflowRecoveryTelemetry(\"policy_updated\"");
     expect(monitorSource).toContain("emitWorkflowRecoveryTelemetry(\"attempt\"");
+    expect(monitorSource).toContain("emitWorkflowRecoveryTelemetry(\"suppressed\"");
     expect(monitorSource).toContain("emitWorkflowRecoveryTelemetry(\"retry_scheduled\"");
     expect(monitorSource).toContain("emitWorkflowRecoveryTelemetry(\"escalated\"");
     expect(monitorSource).toContain("component: \"monitor.workflow-recovery\"");
@@ -122,4 +122,3 @@ describe("monitor workflow startup guards", () => {
   });
 
 });
-

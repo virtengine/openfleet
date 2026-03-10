@@ -382,7 +382,9 @@ function parseEnvInteger(value, defaultValue, { min = null, max = null } = {}) {
 }
 
 function parseEnvNumber(value, defaultValue, { min = null, max = null } = {}) {
-  const parsed = Number(String(value ?? "").trim());
+  const normalized = String(value ?? "").trim();
+  if (!normalized) return defaultValue;
+  const parsed = Number(normalized);
   if (!Number.isFinite(parsed)) return defaultValue;
   if (Number.isFinite(min) && parsed < min) return defaultValue;
   if (Number.isFinite(max) && parsed > max) return defaultValue;
@@ -466,37 +468,15 @@ function buildWorkflowEventPayload(eventType, eventData = {}) {
   return payload;
 }
 
-const workflowRecoveryPolicy = (() => {
-  const maxAttempts = parseEnvInteger(
-    process.env.WORKFLOW_RECOVERY_MAX_ATTEMPTS,
-    5,
-    { min: 1, max: 20 },
-  );
-  const escalationWarnAfterAttempts = parseEnvInteger(
-    process.env.WORKFLOW_RECOVERY_ESCALATION_THRESHOLD,
-    3,
-    { min: 1, max: maxAttempts },
-  );
-  return Object.freeze({
-    maxAttempts,
-    escalationWarnAfterAttempts,
-    baseBackoffMs: parseEnvInteger(
-      process.env.WORKFLOW_RECOVERY_BACKOFF_BASE_MS,
-      5000,
-      { min: 50, max: 60_000 },
-    ),
-    maxBackoffMs: parseEnvInteger(
-      process.env.WORKFLOW_RECOVERY_BACKOFF_MAX_MS,
-      60_000,
-      { min: 1000, max: 30 * 60 * 1000 },
-    ),
-    jitterRatio: parseEnvNumber(
-      process.env.WORKFLOW_RECOVERY_BACKOFF_JITTER_RATIO,
-      0.2,
-      { min: 0, max: 0.9 },
-    ),
-  });
-})();
+const DEFAULT_WORKFLOW_RECOVERY_POLICY = Object.freeze({
+  maxAttempts: 5,
+  escalationWarnAfterAttempts: 3,
+  baseBackoffMs: 5000,
+  maxBackoffMs: 60_000,
+  jitterRatio: 0.2,
+});
+
+let workflowRecoveryPolicy = DEFAULT_WORKFLOW_RECOVERY_POLICY;
 
 const workflowRecoveryState = new Map();
 const workflowRecoveryTimers = new Map();
@@ -509,6 +489,69 @@ function emitWorkflowRecoveryTelemetry(eventName, details = {}) {
     ...details,
   };
   console.log(`[monitor-telemetry] ${JSON.stringify(payload)}`);
+}
+
+function normalizeWorkflowRecoveryPolicy(candidate = {}) {
+  const policy =
+    candidate && typeof candidate === "object" ? candidate : {};
+  const maxAttempts = parseEnvInteger(
+    policy.maxAttempts,
+    DEFAULT_WORKFLOW_RECOVERY_POLICY.maxAttempts,
+    { min: 1, max: 20 },
+  );
+  const escalationWarnAfterAttempts = parseEnvInteger(
+    policy.escalationWarnAfterAttempts,
+    DEFAULT_WORKFLOW_RECOVERY_POLICY.escalationWarnAfterAttempts,
+    { min: 1, max: maxAttempts },
+  );
+  return Object.freeze({
+    maxAttempts,
+    escalationWarnAfterAttempts,
+    baseBackoffMs: parseEnvInteger(
+      policy.baseBackoffMs,
+      DEFAULT_WORKFLOW_RECOVERY_POLICY.baseBackoffMs,
+      { min: 50, max: 60_000 },
+    ),
+    maxBackoffMs: parseEnvInteger(
+      policy.maxBackoffMs,
+      DEFAULT_WORKFLOW_RECOVERY_POLICY.maxBackoffMs,
+      { min: 1000, max: 30 * 60 * 1000 },
+    ),
+    jitterRatio: parseEnvNumber(
+      policy.jitterRatio,
+      DEFAULT_WORKFLOW_RECOVERY_POLICY.jitterRatio,
+      { min: 0, max: 0.9 },
+    ),
+  });
+}
+
+function isWorkflowRecoveryPolicyEqual(left, right) {
+  return (
+    left?.maxAttempts === right?.maxAttempts &&
+    left?.escalationWarnAfterAttempts === right?.escalationWarnAfterAttempts &&
+    left?.baseBackoffMs === right?.baseBackoffMs &&
+    left?.maxBackoffMs === right?.maxBackoffMs &&
+    left?.jitterRatio === right?.jitterRatio
+  );
+}
+
+function applyWorkflowRecoveryPolicy(nextPolicy, reason = "startup") {
+  const normalized = normalizeWorkflowRecoveryPolicy(nextPolicy);
+  const changed = !isWorkflowRecoveryPolicyEqual(
+    workflowRecoveryPolicy,
+    normalized,
+  );
+  workflowRecoveryPolicy = normalized;
+  if (!changed) return;
+
+  for (const operation of workflowRecoveryTimers.keys()) {
+    clearWorkflowRecoveryTimer(operation);
+  }
+  workflowRecoveryState.clear();
+  emitWorkflowRecoveryTelemetry("policy_updated", {
+    reason,
+    policy: normalized,
+  });
 }
 
 function clearWorkflowRecoveryTimer(operation) {
@@ -538,6 +581,29 @@ function computeWorkflowRecoveryBackoffMs(attempt) {
   ));
 }
 
+function emitWorkflowRecoverySuppressed(operation, state, reason, metadata = {}) {
+  if (!state || !reason) return;
+  const counters = state.suppressedCounters || {};
+  const nextCount = Number(counters[reason] || 0) + 1;
+  counters[reason] = nextCount;
+  state.suppressedCounters = counters;
+  workflowRecoveryState.set(operation, state);
+
+  if (nextCount !== 1 && nextCount % 10 !== 0) return;
+  emitWorkflowRecoveryTelemetry("suppressed", {
+    operation,
+    reason,
+    suppressedCount: nextCount,
+    attempts: Number(state.attempts || 0),
+    terminalEscalated: state.terminalEscalated === true,
+    inFlight: state.inFlight === true,
+    nextRetryAt: state.nextRetryAt
+      ? new Date(state.nextRetryAt).toISOString()
+      : null,
+    context: metadata || null,
+  });
+}
+
 function runWorkflowRecoveryWithPolicy(operation, attemptFn, metadata = {}) {
   const op = String(operation || "").trim();
   if (!op || typeof attemptFn !== "function") return;
@@ -549,11 +615,19 @@ function runWorkflowRecoveryWithPolicy(operation, attemptFn, metadata = {}) {
     terminalEscalated: false,
     inFlight: false,
     nextRetryAt: 0,
+    suppressedCounters: {},
   };
   if (state.terminalEscalated || state.inFlight) {
+    emitWorkflowRecoverySuppressed(
+      op,
+      state,
+      state.terminalEscalated ? "terminal-escalated" : "in-flight",
+      metadata,
+    );
     return;
   }
   if (state.nextRetryAt > now) {
+    emitWorkflowRecoverySuppressed(op, state, "cooldown", metadata);
     return;
   }
 
@@ -1604,8 +1678,11 @@ let {
   telegramVerbosity,
   fleet: fleetConfig,
   internalExecutor: internalExecutorConfig,
+  workflowRecovery: configWorkflowRecovery,
   executorMode: configExecutorMode,
 } = config;
+
+applyWorkflowRecoveryPolicy(configWorkflowRecovery, "startup-config");
 
 const telegramWeeklyReportEnabled = parseEnvBoolean(
   process.env.TELEGRAM_WEEKLY_REPORT_ENABLED,
@@ -13324,6 +13401,10 @@ function applyConfig(nextConfig, options = {}) {
   workflowAutomationEnabled = parseEnvBoolean(
     process.env.WORKFLOW_AUTOMATION_ENABLED,
     workflowAutomationEnabled,
+  );
+  applyWorkflowRecoveryPolicy(
+    nextConfig.workflowRecovery,
+    `config-reload:${reason || "unknown"}`,
   );
   {
     const dedupMs = Number(
