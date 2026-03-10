@@ -5,7 +5,8 @@
  * Provides an in-memory cache with auto-persist on every mutation.
  */
 
-import { resolve, dirname } from "node:path";
+import { resolve, dirname, basename } from "node:path";
+import { tmpdir } from "node:os";
 import { fileURLToPath } from "node:url";
 import {
   readFileSync,
@@ -20,6 +21,53 @@ import {
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
 const TAG = "[task-store]";
+const IS_WINDOWS = process.platform === "win32";
+const TEST_STORE_FILENAME_RE = /^kanban-state-vitest-\d+-\d+-[a-f0-9]+\.json$/i;
+
+let testIsolatedStorePath = null;
+
+function isLikelyTestRuntime() {
+  if (process.env.VITEST) return true;
+  if (process.env.VITEST_POOL_ID) return true;
+  if (process.env.VITEST_WORKER_ID) return true;
+  if (process.env.JEST_WORKER_ID) return true;
+  if (process.env.NODE_ENV === "test") return true;
+  const argv = Array.isArray(process.argv)
+    ? process.argv.join(" ").toLowerCase()
+    : "";
+  return argv.includes("vitest") || argv.includes("jest");
+}
+
+function pathsEqual(a, b) {
+  const left = resolve(String(a || ""));
+  const right = resolve(String(b || ""));
+  if (IS_WINDOWS) {
+    return left.toLowerCase() === right.toLowerCase();
+  }
+  return left === right;
+}
+
+function isTestIsolatedStorePath(candidatePath) {
+  return TEST_STORE_FILENAME_RE.test(basename(String(candidatePath || "")));
+}
+
+function sanitizePathToken(value) {
+  const normalized = String(value || "")
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "")
+    .slice(0, 80);
+  return normalized || "store";
+}
+
+function buildIsolatedTestStorePath(persistentStorePath) {
+  return resolve(
+    tmpdir(),
+    "bosun-vitest",
+    sanitizePathToken(dirname(persistentStorePath)),
+    "kanban-state-vitest-" + process.pid + "-" + Date.now() + "-" + Math.random().toString(16).slice(2, 8) + ".json",
+  );
+}
 
 function inferRepoRoot(startDir) {
   let current = resolve(startDir || process.cwd());
@@ -53,7 +101,7 @@ function resolveBosunHomeDir() {
   return resolve(base, "bosun");
 }
 
-function resolveDefaultStorePath() {
+function resolvePersistentStorePath() {
   const repoRoot = inferRepoRoot(process.cwd());
   if (repoRoot) {
     return resolve(repoRoot, ".bosun", ".cache", "kanban-state.json");
@@ -63,6 +111,22 @@ function resolveDefaultStorePath() {
     return resolve(bosunHome, ".cache", "kanban-state.json");
   }
   return resolve(__dirname, "..", ".cache", "kanban-state.json");
+}
+
+function resolveStorePathForRuntime(candidatePath) {
+  const resolvedPath = resolve(String(candidatePath || ""));
+  if (!isLikelyTestRuntime()) return resolvedPath;
+  if (isTestIsolatedStorePath(resolvedPath)) return resolvedPath;
+  const persistentPath = resolvePersistentStorePath();
+  if (!pathsEqual(resolvedPath, persistentPath)) return resolvedPath;
+  if (!testIsolatedStorePath) {
+    testIsolatedStorePath = buildIsolatedTestStorePath(persistentPath);
+  }
+  return testIsolatedStorePath;
+}
+
+function resolveDefaultStorePath() {
+  return resolveStorePathForRuntime(resolvePersistentStorePath());
 }
 
 let storePath = resolveDefaultStorePath();
@@ -135,7 +199,7 @@ export function configureTaskStore(options = {}) {
   const homeDir = resolveBosunHomeDir();
   const defaultBase = baseDir || repoRoot || homeDir || resolve(__dirname);
   const needsBosunSubdir = Boolean(baseDir || repoRoot);
-  const nextPath = options.storePath
+  const configuredPath = options.storePath
     ? resolve(baseDir || process.cwd(), options.storePath)
     : resolve(
         defaultBase,
@@ -143,6 +207,7 @@ export function configureTaskStore(options = {}) {
         ".cache",
         "kanban-state.json",
       );
+  const nextPath = resolveStorePathForRuntime(configuredPath);
 
   if (nextPath !== storePath) {
     storePath = nextPath;

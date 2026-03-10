@@ -23,6 +23,12 @@ const sourceFiles = [
 
 for (const { relPath, source } of sourceFiles) {
   describe(`FleetSessionsPanel render stability (${relPath})`, () => {
+    it("treats detached sessions as active based on status, not history-only placement", () => {
+      expect(source).toContain("function isFleetEntryActive(entry)");
+      expect(source).not.toContain("if (entry.isHistory) return false;");
+      expect(source).toContain('return status === "active" || status === "running" || status === "busy" || status === "inprogress";');
+    });
+
     it("uses useMemo for entries array to prevent infinite render loops", () => {
       // The entries array must be memoised with useMemo, not rebuilt inline
       expect(source).toContain("useMemo");

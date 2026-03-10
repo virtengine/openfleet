@@ -83,6 +83,12 @@ async function initStore() {
   return _taskStoreModule;
 }
 
+async function flushStoreWrites(store) {
+  if (typeof store?.waitForStoreWrites === "function") {
+    await store.waitForStoreWrites();
+  }
+}
+
 /**
  * Resolve the kanban store path with priority:
  *   1. BOSUN_STORE_PATH env var (explicit override)
@@ -296,6 +302,7 @@ export async function taskCreate(data) {
   if (!result) {
     throw new Error(`Failed to create task — addTask returned null`);
   }
+  await flushStoreWrites(store);
   return result;
 }
 
@@ -396,6 +403,7 @@ export async function taskUpdate(id, patch) {
   if (updates.status && updates.status !== task.status) {
     store.setTaskStatus(task.id, updates.status, "external");
     delete updates.status;
+    await flushStoreWrites(store);
   }
 
   // Apply remaining updates
@@ -405,6 +413,7 @@ export async function taskUpdate(id, patch) {
     if (!result) {
       throw new Error(`Failed to update task ${task.id}`);
     }
+    await flushStoreWrites(store);
     return result;
   }
 
@@ -422,7 +431,11 @@ export async function taskDelete(id) {
   if (!task) {
     throw new Error(`Task not found: ${id}`);
   }
-  return store.removeTask(task.id);
+  const removed = store.removeTask(task.id);
+  if (removed) {
+    await flushStoreWrites(store);
+  }
+  return removed;
 }
 
 /**

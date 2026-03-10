@@ -7,7 +7,7 @@ function normalizeWorkspaceHint(value) {
   const raw = String(value || "").trim();
   if (!raw) return "";
   const lower = raw.toLowerCase();
-  if (lower === "all" || lower === "*") return "";
+  if (lower === "all" || lower === "*") return "all";
   if (lower === "active") return "active";
   return raw;
 }

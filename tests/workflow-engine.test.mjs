@@ -423,6 +423,26 @@ describe("WorkflowEngine - loop.for_each", () => {
     expect(iterations[0]).toEqual({ nodeId: "loop", index: 0, total: 2 });
     expect(iterations[1]).toEqual({ nodeId: "loop", index: 1, total: 2 });
   });
+
+  it("returns totalItems alongside count for batch summary templates", async () => {
+    const wf = makeSimpleWorkflow(
+      [
+        { id: "trigger", type: "trigger.manual", label: "Start", config: {} },
+        { id: "loop", type: "loop.for_each", label: "Loop Items", config: { items: '["a","b","c"]', variable: "item" } },
+      ],
+      [{ id: "e1", source: "trigger", target: "loop" }],
+    );
+
+    engine.save(wf);
+    const ctx = await engine.execute(wf.id, {});
+    expect(ctx.errors).toEqual([]);
+    expect(ctx.getNodeOutput("loop")).toMatchObject({
+      count: 3,
+      totalItems: 3,
+      successCount: 3,
+      failCount: 0,
+    });
+  });
 });
 
 describe("WorkflowEngine - source port routing", () => {
