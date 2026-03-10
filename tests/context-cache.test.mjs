@@ -164,7 +164,7 @@ describe("context-cache", () => {
       expect(result[0]._cachedLogId).toBeDefined();
       expect(result[0].aggregated_output.length).toBeLessThan(1000);
       expect(result[0].aggregated_output).toContain("bosun --tool-log");
-      expect(result[0].aggregated_output).toMatch(/git capped: \d+ lines, \d+ chars hidden/i);
+      expect(result[0].aggregated_output).toMatch(/git capped: \d+ lines, \d+ chars suppressed/i);
 
       const retrieved = await contextCache.retrieveToolLog(result[0]._cachedLogId);
       expect(retrieved.found).toBe(true);
