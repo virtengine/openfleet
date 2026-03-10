@@ -78,8 +78,8 @@ export const TASK_BATCH_PROCESSOR_TEMPLATE = {
               status: t.status,
               branch: t.branch || t.metadata?.branch || null,
               scope: t.scope || t.metadata?.scope || null,
-              repository: t.repository || null,
-              workspace: t.workspace || null,
+              repository: typeof t?.repository === "string" ? t.repository.trim() : null,
+              workspace: typeof t?.workspace === "string" ? t.workspace.trim() : null,
             }))));
           })
           .catch(e => { console.error(e.message); process.exit(1); });
