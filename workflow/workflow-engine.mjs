@@ -1661,8 +1661,10 @@ export class WorkflowEngine extends EventEmitter {
 
     // Track in-degree for proper scheduling (exclude back-edges)
     const inDegree = new Map();
+    const incomingSatisfiedCount = new Map();
     for (const node of def.nodes || []) {
       inDegree.set(node.id, 0);
+      incomingSatisfiedCount.set(node.id, 0);
     }
     for (const edge of def.edges || []) {
       if (!edge.backEdge) {
@@ -1972,9 +1974,31 @@ export class WorkflowEngine extends EventEmitter {
           }
         }
 
+        const consumeEdgeDependency = (targetNodeId, matched) => {
+          const nextDegree = (inDegree.get(targetNodeId) || 1) - 1;
+          inDegree.set(targetNodeId, nextDegree);
+          if (matched) {
+            incomingSatisfiedCount.set(
+              targetNodeId,
+              (incomingSatisfiedCount.get(targetNodeId) || 0) + 1,
+            );
+          }
+          if (nextDegree <= 0 && !executed.has(targetNodeId)) {
+            if ((incomingSatisfiedCount.get(targetNodeId) || 0) > 0) {
+              ready.add(targetNodeId);
+            } else {
+              ctx.setNodeStatus(targetNodeId, NodeStatus.SKIPPED);
+              executed.add(targetNodeId);
+            }
+          }
+        };
+
         for (const edge of edges) {
           const edgePort = String(edge?.sourcePort || "default").trim() || "default";
           if (selectedPort && edgePort !== selectedPort) {
+            if (!edge.backEdge) {
+              consumeEdgeDependency(edge.target, false);
+            }
             continue;
           }
 
@@ -1985,8 +2009,7 @@ export class WorkflowEngine extends EventEmitter {
               if (!condResult) {
                 // For back-edges, a false condition simply means "don't loop"
                 if (!edge.backEdge) {
-                  ctx.setNodeStatus(edge.target, NodeStatus.SKIPPED);
-                  executed.add(edge.target);
+                  consumeEdgeDependency(edge.target, false);
                 }
                 continue;
               }
@@ -2027,6 +2050,7 @@ export class WorkflowEngine extends EventEmitter {
             for (const nid of subgraph) {
               executed.delete(nid);
               ctx.setNodeStatus(nid, NodeStatus.PENDING);
+              incomingSatisfiedCount.set(nid, 0);
               // Restore in-degree for nodes in the subgraph so they schedule
               // correctly on this new iteration.
               let deg = 0;
@@ -2051,11 +2075,7 @@ export class WorkflowEngine extends EventEmitter {
           }
 
           // Decrement in-degree (forward edges only)
-          const newDegree = (inDegree.get(edge.target) || 1) - 1;
-          inDegree.set(edge.target, newDegree);
-          if (newDegree <= 0 && !executed.has(edge.target)) {
-            ready.add(edge.target);
-          }
+          consumeEdgeDependency(edge.target, true);
         }
       }
     }
@@ -2824,4 +2844,5 @@ export function listWorkflows(opts) { return getWorkflowEngine(opts).list(); }
 export function getWorkflow(id, opts) { return getWorkflowEngine(opts).get(id); }
 export async function executeWorkflow(id, data, opts) { return getWorkflowEngine(opts).execute(id, data, opts); }
 export async function retryWorkflowRun(runId, retryOpts, engineOpts) { return getWorkflowEngine(engineOpts).retryRun(runId, retryOpts); }
+
 

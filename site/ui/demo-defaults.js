@@ -14665,8 +14665,8 @@
         "workflow-first",
         "core"
       ],
-      "nodeCount": 36,
-      "edgeCount": 39,
+      "nodeCount": 38,
+      "edgeCount": 41,
       "recommended": true,
       "enabled": true,
       "trigger": "trigger.task_available",
@@ -14920,11 +14920,11 @@
           ]
         },
         {
-          "id": "run-agent",
+          "id": "run-agent-plan",
           "type": "action.run_agent",
-          "label": "Execute Agent",
+          "label": "Agent Plan",
           "config": {
-            "prompt": "{{_taskPrompt}}",
+            "prompt": "{{_taskPrompt}}\n\nExecution phase: planning. Produce a concrete implementation plan and identify required tests. Do not make code changes in this phase.",
             "taskId": "{{taskId}}",
             "sdk": "{{resolvedSdk}}",
             "model": "{{resolvedModel}}",
@@ -14938,6 +14938,54 @@
           "position": {
             "x": 200,
             "y": 1480
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "run-agent-tests",
+          "type": "action.run_agent",
+          "label": "Agent Tests",
+          "config": {
+            "prompt": "{{_taskPrompt}}\n\nExecution phase: tests. Write or update tests first for the target behavior, then validate failures/pass criteria before implementation changes.",
+            "taskId": "{{taskId}}",
+            "sdk": "{{resolvedSdk}}",
+            "model": "{{resolvedModel}}",
+            "agentProfile": "{{agentProfile}}",
+            "cwd": "{{worktreePath}}",
+            "timeoutMs": "{{taskTimeoutMs}}",
+            "maxRetries": "{{maxRetries}}",
+            "maxContinues": "{{maxContinues}}",
+            "failOnError": false
+          },
+          "position": {
+            "x": 200,
+            "y": 1545
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "run-agent-implement",
+          "type": "action.run_agent",
+          "label": "Agent Implement",
+          "config": {
+            "prompt": "{{_taskPrompt}}\n\nExecution phase: implementation. Complete implementation after tests exist, run required verification (tests/lint/build), then commit, push, and create/update PR.",
+            "taskId": "{{taskId}}",
+            "sdk": "{{resolvedSdk}}",
+            "model": "{{resolvedModel}}",
+            "agentProfile": "{{agentProfile}}",
+            "cwd": "{{worktreePath}}",
+            "timeoutMs": "{{taskTimeoutMs}}",
+            "maxRetries": "{{maxRetries}}",
+            "maxContinues": "{{maxContinues}}",
+            "failOnError": false
+          },
+          "position": {
+            "x": 200,
+            "y": 1610
           },
           "outputs": [
             "default"
@@ -15406,14 +15454,26 @@
           "sourcePort": "default"
         },
         {
-          "id": "build-prompt->run-agent",
+          "id": "build-prompt->run-agent-plan",
           "source": "build-prompt",
-          "target": "run-agent",
+          "target": "run-agent-plan",
           "sourcePort": "default"
         },
         {
-          "id": "run-agent->claim-stolen",
-          "source": "run-agent",
+          "id": "run-agent-plan->run-agent-tests",
+          "source": "run-agent-plan",
+          "target": "run-agent-tests",
+          "sourcePort": "default"
+        },
+        {
+          "id": "run-agent-tests->run-agent-implement",
+          "source": "run-agent-tests",
+          "target": "run-agent-implement",
+          "sourcePort": "default"
+        },
+        {
+          "id": "run-agent-implement->claim-stolen",
+          "source": "run-agent-implement",
           "target": "claim-stolen",
           "sourcePort": "default"
         },
@@ -30320,7 +30380,7 @@
       "description": "Complete task execution pipeline: poll for tasks → claim → worktree → agent dispatch → commit detection → PR creation → status transition. Replaces the monolithic TaskExecutor.executeTask() method with a composable workflow DAG.",
       "category": "lifecycle",
       "enabled": true,
-      "nodeCount": 36,
+      "nodeCount": 38,
       "trigger": "trigger.task_available",
       "variables": {
         "maxParallel": 3,
@@ -30544,11 +30604,11 @@
           ]
         },
         {
-          "id": "run-agent",
+          "id": "run-agent-plan",
           "type": "action.run_agent",
-          "label": "Execute Agent",
+          "label": "Agent Plan",
           "config": {
-            "prompt": "{{_taskPrompt}}",
+            "prompt": "{{_taskPrompt}}\n\nExecution phase: planning. Produce a concrete implementation plan and identify required tests. Do not make code changes in this phase.",
             "taskId": "{{taskId}}",
             "sdk": "{{resolvedSdk}}",
             "model": "{{resolvedModel}}",
@@ -30562,6 +30622,54 @@
           "position": {
             "x": 200,
             "y": 1480
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "run-agent-tests",
+          "type": "action.run_agent",
+          "label": "Agent Tests",
+          "config": {
+            "prompt": "{{_taskPrompt}}\n\nExecution phase: tests. Write or update tests first for the target behavior, then validate failures/pass criteria before implementation changes.",
+            "taskId": "{{taskId}}",
+            "sdk": "{{resolvedSdk}}",
+            "model": "{{resolvedModel}}",
+            "agentProfile": "{{agentProfile}}",
+            "cwd": "{{worktreePath}}",
+            "timeoutMs": "{{taskTimeoutMs}}",
+            "maxRetries": "{{maxRetries}}",
+            "maxContinues": "{{maxContinues}}",
+            "failOnError": false
+          },
+          "position": {
+            "x": 200,
+            "y": 1545
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "run-agent-implement",
+          "type": "action.run_agent",
+          "label": "Agent Implement",
+          "config": {
+            "prompt": "{{_taskPrompt}}\n\nExecution phase: implementation. Complete implementation after tests exist, run required verification (tests/lint/build), then commit, push, and create/update PR.",
+            "taskId": "{{taskId}}",
+            "sdk": "{{resolvedSdk}}",
+            "model": "{{resolvedModel}}",
+            "agentProfile": "{{agentProfile}}",
+            "cwd": "{{worktreePath}}",
+            "timeoutMs": "{{taskTimeoutMs}}",
+            "maxRetries": "{{maxRetries}}",
+            "maxContinues": "{{maxContinues}}",
+            "failOnError": false
+          },
+          "position": {
+            "x": 200,
+            "y": 1610
           },
           "outputs": [
             "default"
@@ -31030,14 +31138,26 @@
           "sourcePort": "default"
         },
         {
-          "id": "build-prompt->run-agent",
+          "id": "build-prompt->run-agent-plan",
           "source": "build-prompt",
-          "target": "run-agent",
+          "target": "run-agent-plan",
           "sourcePort": "default"
         },
         {
-          "id": "run-agent->claim-stolen",
-          "source": "run-agent",
+          "id": "run-agent-plan->run-agent-tests",
+          "source": "run-agent-plan",
+          "target": "run-agent-tests",
+          "sourcePort": "default"
+        },
+        {
+          "id": "run-agent-tests->run-agent-implement",
+          "source": "run-agent-tests",
+          "target": "run-agent-implement",
+          "sourcePort": "default"
+        },
+        {
+          "id": "run-agent-implement->claim-stolen",
+          "source": "run-agent-implement",
           "target": "claim-stolen",
           "sourcePort": "default"
         },

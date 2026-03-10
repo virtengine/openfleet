@@ -584,6 +584,20 @@ async function ensureWorkflowAutomationEngine() {
           : [],
       );
       const staleWorkflowTemplateIds = ["template-task-batch-pr"];
+      if (typeof workflowTemplates?.reconcileInstalledTemplates === "function") {
+        const reconcile = workflowTemplates.reconcileInstalledTemplates(engine, {
+          autoUpdateUnmodified: true,
+          forceUpdateTemplateIds: ["template-task-lifecycle"],
+        });
+        if (Number(reconcile?.autoUpdated || 0) > 0) {
+          console.log(
+            `[workflows] reconciled template-backed workflow(s): ${reconcile.autoUpdated} updated` +
+              (Array.isArray(reconcile?.forceUpdated) && reconcile.forceUpdated.length > 0
+                ? ` (${reconcile.forceUpdated.length} forced)`
+                : ""),
+          );
+        }
+      }
       for (const summary of engine.list?.() || []) {
         const installedFrom = String(summary?.metadata?.installedFrom || "").trim();
         if (!staleWorkflowTemplateIds.includes(installedFrom)) continue;

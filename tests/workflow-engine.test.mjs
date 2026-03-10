@@ -492,6 +492,38 @@ describe("WorkflowEngine - source port routing", () => {
     expect(result.errors).toEqual([]);
     expect(visited).toEqual(["left"]);
   });
+
+  it("keeps shared downstream nodes runnable when one conditional edge is false", async () => {
+    const visited = [];
+    registerNodeType("test.capture_multi_edge", {
+      describe: () => "Capture multi-edge convergence",
+      schema: { type: "object", properties: {} },
+      async execute(node) {
+        visited.push(node.id);
+        return { ok: true };
+      },
+    });
+
+    const wf = makeSimpleWorkflow(
+      [
+        { id: "trigger", type: "trigger.manual", label: "Start", config: {} },
+        { id: "branch", type: "notify.log", label: "Branch", config: { message: "branch" } },
+        { id: "shared", type: "test.capture_multi_edge", label: "Shared", config: {} },
+      ],
+      [
+        { id: "e1", source: "trigger", target: "branch" },
+        { id: "e2", source: "branch", target: "shared", condition: "false" },
+        { id: "e3", source: "branch", target: "shared", condition: "true" },
+      ],
+      { name: "Conditional Convergence Workflow" },
+    );
+
+    engine.save(wf);
+    const result = await engine.execute(wf.id, {});
+    expect(result.errors).toEqual([]);
+    expect(visited).toEqual(["shared"]);
+    expect(result.getNodeStatus("shared")).toBe(NodeStatus.COMPLETED);
+  });
 });
 
 // ── Run History / Detail Tests ──────────────────────────────────────────────

@@ -1742,7 +1742,7 @@ describe("template-task-lifecycle", () => {
     const required = [
       "trigger", "check-slots", "allocate-slot", "claim-task",
       "claim-ok", "set-inprogress", "acquire-worktree", "worktree-ok",
-      "resolve-executor", "record-head", "build-prompt", "run-agent",
+      "resolve-executor", "record-head", "build-prompt", "run-agent-plan", "run-agent-tests", "run-agent-implement",
       "claim-stolen", "detect-commits", "has-commits",
       "push-branch", "push-ok", "create-pr", "set-inreview", "log-success",
       "log-no-commits", "set-todo-cooldown",
@@ -1772,12 +1772,12 @@ describe("template-task-lifecycle", () => {
     expect(resolveEdge.source).toBe("worktree-ok");
   });
 
-  it("has claim-stolen check after run-agent", () => {
+  it("has claim-stolen check after the 3-phase agent sequence", () => {
     const t = getTemplate("template-task-lifecycle");
-    const edge = t.edges.find(
-      (e) => e.source === "run-agent" && e.target === "claim-stolen",
-    );
-    expect(edge).toBeDefined();
+    expect(t.edges.find((e) => e.source === "build-prompt" && e.target === "run-agent-plan")).toBeDefined();
+    expect(t.edges.find((e) => e.source === "run-agent-plan" && e.target === "run-agent-tests")).toBeDefined();
+    expect(t.edges.find((e) => e.source === "run-agent-tests" && e.target === "run-agent-implement")).toBeDefined();
+    expect(t.edges.find((e) => e.source === "run-agent-implement" && e.target === "claim-stolen")).toBeDefined();
   });
 
   it("push-branch has baseBranch and rebaseBeforePush config", () => {

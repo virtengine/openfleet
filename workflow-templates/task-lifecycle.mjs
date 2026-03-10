@@ -158,10 +158,9 @@ export const TASK_LIFECYCLE_TEMPLATE = {
       repository: "{{repository}}",
       repositories: "{{repositories}}",
     }, { x: 200, y: 1350 }),
-
-    // ── Execute agent ────────────────────────────────────────────────────
-    node("run-agent", "action.run_agent", "Execute Agent", {
-      prompt: "{{_taskPrompt}}",
+    // ── Execute agent (phase 1: planning) ───────────────────────────────
+    node("run-agent-plan", "action.run_agent", "Agent Plan", {
+      prompt: "{{_taskPrompt}}\n\nExecution phase: planning. Produce a concrete implementation plan and identify required tests. Do not make code changes in this phase.",
       taskId: "{{taskId}}",
       sdk: "{{resolvedSdk}}",
       model: "{{resolvedModel}}",
@@ -172,6 +171,34 @@ export const TASK_LIFECYCLE_TEMPLATE = {
       maxContinues: "{{maxContinues}}",
       failOnError: false,
     }, { x: 200, y: 1480 }),
+
+    // ── Execute agent (phase 2: tests-first) ────────────────────────────
+    node("run-agent-tests", "action.run_agent", "Agent Tests", {
+      prompt: "{{_taskPrompt}}\n\nExecution phase: tests. Write or update tests first for the target behavior, then validate failures/pass criteria before implementation changes.",
+      taskId: "{{taskId}}",
+      sdk: "{{resolvedSdk}}",
+      model: "{{resolvedModel}}",
+      agentProfile: "{{agentProfile}}",
+      cwd: "{{worktreePath}}",
+      timeoutMs: "{{taskTimeoutMs}}",
+      maxRetries: "{{maxRetries}}",
+      maxContinues: "{{maxContinues}}",
+      failOnError: false,
+    }, { x: 200, y: 1545 }),
+
+    // ── Execute agent (phase 3: implementation + verification) ──────────
+    node("run-agent-implement", "action.run_agent", "Agent Implement", {
+      prompt: "{{_taskPrompt}}\n\nExecution phase: implementation. Complete implementation after tests exist, run required verification (tests/lint/build), then commit, push, and create/update PR.",
+      taskId: "{{taskId}}",
+      sdk: "{{resolvedSdk}}",
+      model: "{{resolvedModel}}",
+      agentProfile: "{{agentProfile}}",
+      cwd: "{{worktreePath}}",
+      timeoutMs: "{{taskTimeoutMs}}",
+      maxRetries: "{{maxRetries}}",
+      maxContinues: "{{maxContinues}}",
+      failOnError: false,
+    }, { x: 200, y: 1610 }),
 
     // ── Check if claim was stolen during agent execution ─────────────────
     node("claim-stolen", "condition.expression", "Claim Stolen?", {
@@ -327,8 +354,10 @@ export const TASK_LIFECYCLE_TEMPLATE = {
     edge("worktree-ok", "resolve-executor", { condition: "$output?.result === true", port: "yes" }),
     edge("resolve-executor", "record-head"),
     edge("record-head", "build-prompt"),
-    edge("build-prompt", "run-agent"),
-    edge("run-agent", "claim-stolen"),
+    edge("build-prompt", "run-agent-plan"),
+    edge("run-agent-plan", "run-agent-tests"),
+    edge("run-agent-tests", "run-agent-implement"),
+    edge("run-agent-implement", "claim-stolen"),
 
     // Post-agent: check claim
     edge("claim-stolen", "detect-commits", { condition: "$output?.result !== true", port: "no" }),
