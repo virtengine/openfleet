@@ -571,7 +571,6 @@ describe("task-executor", () => {
       expect(infra.adaptiveReasons).toContain("historical_merge_latency");
       expect(infra.telemetryMergeLatencyMs).toBeGreaterThanOrEqual(slowLatencyMs);
     });
-
     it("tracks repo area wait time once a blocked task is later selected", () => {
       const ex = new TaskExecutor({ baseBranchParallelLimit: 0, repoAreaParallelLimit: 1 });
       const now = Date.now();
