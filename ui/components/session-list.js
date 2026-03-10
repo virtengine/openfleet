@@ -184,15 +184,11 @@ export async function loadSessionMessages(id, opts = {}) {
     }
     if (!opts.prepend) {
       sessionMessagesSessionId.value = targetSessionId;
-      sessionMessages.value = [];
-      sessionPagination.value = null;
     }
     return { ok: false, error: "empty" };
   } catch {
     if (!opts.prepend) {
       sessionMessagesSessionId.value = targetSessionId;
-      sessionMessages.value = [];
-      sessionPagination.value = null;
     }
     return { ok: false, error: "unavailable" };
   }
