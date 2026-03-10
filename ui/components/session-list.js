@@ -102,6 +102,13 @@ export async function loadSessions(filter = {}) {
   }
 }
 
+function _bindSessionStore(targetId, messages, pagination) {
+  if (String(selectedSessionId.value || "") !== String(targetId)) return;
+  sessionMessagesSessionId.value = targetId;
+  sessionMessages.value = messages;
+  sessionPagination.value = pagination;
+}
+
 export async function loadSessionMessages(id, opts = {}) {
   const targetSessionId = String(id || "").trim();
   if (!targetSessionId) return { ok: false, error: "invalid" };
@@ -173,26 +180,19 @@ export async function loadSessionMessages(id, opts = {}) {
       if (opts.prepend && sameBoundSession && sessionMessages.value?.length) {
         // Prepend older messages (loading history on scroll up)
         const merged = dedupeMessages([...normalized, ...sessionMessages.value]);
-        sessionMessagesSessionId.value = targetSessionId;
-        sessionMessages.value = merged;
+        _bindSessionStore(targetSessionId, merged, res.pagination || null);
       } else {
-        sessionMessagesSessionId.value = targetSessionId;
-        sessionMessages.value = normalized;
+        _bindSessionStore(targetSessionId, normalized, res.pagination || null);
       }
-      sessionPagination.value = res.pagination || null;
       return { ok: true, messages: normalized, pagination: res.pagination || null };
     }
     if (!opts.prepend) {
-      sessionMessagesSessionId.value = targetSessionId;
-      sessionMessages.value = [];
-      sessionPagination.value = null;
+      _bindSessionStore(targetSessionId, [], res?.pagination || null);
     }
     return { ok: false, error: "empty" };
   } catch {
     if (!opts.prepend) {
-      sessionMessagesSessionId.value = targetSessionId;
-      sessionMessages.value = [];
-      sessionPagination.value = null;
+      _bindSessionStore(targetSessionId, [], null);
     }
     return { ok: false, error: "unavailable" };
   }

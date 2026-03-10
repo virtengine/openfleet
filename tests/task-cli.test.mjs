@@ -86,34 +86,57 @@ describe("task CLI store persistence", () => {
 
     expect(result.status).toBe(0);
     expect((readStore(storePath).tasks || {})[task.id]).toBeUndefined();
+  });
+});
 
-const mockConfigureTaskStore = vi.fn();
-const mockLoadStore = vi.fn();
-const mockGetStats = vi.fn(() => ({
-  draft: 1,
-  todo: 2,
-  inprogress: 1,
-  inreview: 0,
-  done: 3,
-  blocked: 0,
-  total: 7,
+const {
+  mockConfigureTaskStore,
+  mockLoadStore,
+  mockGetStats,
+  mockReadFileSync,
+  mockExistsSync,
+  mockStatSync,
+} = vi.hoisted(() => ({
+  mockConfigureTaskStore: vi.fn(),
+  mockLoadStore: vi.fn(),
+  mockGetStats: vi.fn(() => ({
+    draft: 1,
+    todo: 2,
+    inprogress: 1,
+    inreview: 0,
+    done: 3,
+    blocked: 0,
+    total: 7,
+  })),
+  mockReadFileSync: vi.fn(),
+  mockExistsSync: vi.fn(() => false),
+  mockStatSync: vi.fn(() => ({ isDirectory: () => false })),
 }));
 
-const mockReadFileSync = vi.fn();
-const mockExistsSync = vi.fn(() => false);
-const mockStatSync = vi.fn(() => ({ isDirectory: () => false }));
+vi.mock("../task/task-store.mjs", async (importOriginal) => {
+  const actual = await importOriginal();
+  mockConfigureTaskStore.mockImplementation((...args) => actual.configureTaskStore(...args));
+  mockLoadStore.mockImplementation((...args) => actual.loadStore(...args));
+  return {
+    ...actual,
+    configureTaskStore: mockConfigureTaskStore,
+    loadStore: mockLoadStore,
+    getStats: mockGetStats,
+  };
+});
 
-vi.mock("../task/task-store.mjs", () => ({
-  configureTaskStore: mockConfigureTaskStore,
-  loadStore: mockLoadStore,
-  getStats: mockGetStats,
-}));
-
-vi.mock("node:fs", () => ({
-  readFileSync: mockReadFileSync,
-  existsSync: mockExistsSync,
-  statSync: mockStatSync,
-}));
+vi.mock("node:fs", async (importOriginal) => {
+  const actual = await importOriginal();
+  mockReadFileSync.mockImplementation((...args) => actual.readFileSync(...args));
+  mockExistsSync.mockImplementation((...args) => actual.existsSync(...args));
+  mockStatSync.mockImplementation((...args) => actual.statSync(...args));
+  return {
+    ...actual,
+    readFileSync: mockReadFileSync,
+    existsSync: mockExistsSync,
+    statSync: mockStatSync,
+  };
+});
 
 describe("task-cli taskStats repo area lock state", () => {
   beforeEach(() => {
