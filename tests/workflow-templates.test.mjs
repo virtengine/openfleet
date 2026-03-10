@@ -828,16 +828,24 @@ describe("workflow setup profiles", () => {
       {
         type: "continuation-loop",
         enabled: true,
+        worktreePath: "/tmp/worktree/task-1",
         maxTurns: "6",
         terminalStates: "done,cancelled",
         onStuck: "pause",
+        sdk: "copilot",
+        model: "claude-opus-4.6",
+        timeoutMs: "900000",
       },
     ]);
     expect(config.templateIds).toEqual(["template-continuation-loop"]);
     expect(config.overridesById["template-continuation-loop"]).toEqual({
+      worktreePath: "/tmp/worktree/task-1",
       maxTurns: 6,
       terminalStates: ["done", "cancelled"],
       onStuck: "pause",
+      sdk: "copilot",
+      model: "claude-opus-4.6",
+      timeoutMs: 900000,
     });
   });
 
