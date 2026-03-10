@@ -3315,11 +3315,7 @@ it("action.materialize_planner_tasks improves skip-reason histogram with calibra
         ...config,
       },
     }, ctx, mockEngine);
-    const histogram = result.skipped.reduce((acc, entry) => {
-      const reason = String(entry?.reason || "unknown");
-      acc[reason] = (acc[reason] || 0) + 1;
-      return acc;
-    }, {});
+    const histogram = result.skipReasonHistogram || {};
     return { result, histogram };
   };
 
@@ -3335,6 +3331,24 @@ it("action.materialize_planner_tasks improves skip-reason histogram with calibra
   // Calibrated defaults should reduce low-value/high-risk creation while preserving non-zero throughput.
   expect(calibrated.result.createdCount).toBeGreaterThan(0);
   expect(calibrated.result.createdCount).toBeLessThan(baseline.result.createdCount);
+  expect(calibrated.result.materializationOutcomes).toEqual(expect.arrayContaining([
+    expect.objectContaining({
+      title: "[m] fix(core): semantically high risk",
+      impact: 8,
+      confidence: 7,
+      risk: "high",
+      created: false,
+      reason: "risk_above_threshold",
+    }),
+    expect.objectContaining({
+      title: "[m] fix(task): healthy ten",
+      impact: 8.2,
+      confidence: 7.5,
+      risk: "low",
+      created: true,
+      reason: null,
+    }),
+  ]));
 });
 describe("WorkflowEngine singleton services", () => {
   beforeEach(() => {

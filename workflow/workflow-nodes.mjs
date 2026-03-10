@@ -4698,6 +4698,15 @@ function resolvePlannerFeedbackContext(value) {
   return String(value).trim();
 }
 
+function buildPlannerSkipReasonHistogram(skipped = []) {
+  const histogram = {};
+  for (const entry of skipped) {
+    const reason = String(entry?.reason || "unknown");
+    histogram[reason] = (histogram[reason] || 0) + 1;
+  }
+  return histogram;
+}
+
 registerNodeType("action.materialize_planner_tasks", {
   describe: () => "Parse planner JSON output and create backlog tasks in Kanban",
   schema: {
@@ -4790,33 +4799,46 @@ registerNodeType("action.materialize_planner_tasks", {
 
     const created = [];
     const skipped = [];
+    const materializationOutcomes = [];
     const createdAreaCounts = new Map();
     for (const task of parsedTasks) {
+      const baseOutcome = {
+        title: task.title,
+        impact: task.impact,
+        confidence: task.confidence,
+        risk: task.risk,
+      };
       const key = task.title.toLowerCase();
       if (dedupEnabled && existingTitleSet.has(key)) {
         skipped.push({ title: task.title, reason: "duplicate_title" });
+        materializationOutcomes.push({ ...baseOutcome, created: false, reason: "duplicate_title" });
         continue;
       }
       if (!Array.isArray(task.acceptanceCriteria) || task.acceptanceCriteria.length === 0) {
         skipped.push({ title: task.title, reason: "missing_acceptance_criteria" });
+        materializationOutcomes.push({ ...baseOutcome, created: false, reason: "missing_acceptance_criteria" });
         continue;
       }
       if (!Array.isArray(task.verification) || task.verification.length === 0) {
         skipped.push({ title: task.title, reason: "missing_verification" });
+        materializationOutcomes.push({ ...baseOutcome, created: false, reason: "missing_verification" });
         continue;
       }
       if (!Array.isArray(task.repoAreas) || task.repoAreas.length === 0) {
         skipped.push({ title: task.title, reason: "missing_repo_areas" });
+        materializationOutcomes.push({ ...baseOutcome, created: false, reason: "missing_repo_areas" });
         continue;
       }
       if (Number.isFinite(minImpactScore) && Number.isFinite(task.impact) && task.impact < minImpactScore) {
         skipped.push({ title: task.title, reason: "below_min_impact", impact: task.impact, minImpactScore });
+        materializationOutcomes.push({ ...baseOutcome, created: false, reason: "below_min_impact" });
         continue;
       }
       const taskRiskOrder = PLANNER_RISK_ORDER[String(task.risk || "").toLowerCase()];
       const maxRiskOrder = PLANNER_RISK_ORDER[String(maxRiskWithoutHuman || "").toLowerCase()];
       if (Number.isFinite(taskRiskOrder) && Number.isFinite(maxRiskOrder) && taskRiskOrder > maxRiskOrder) {
         skipped.push({ title: task.title, reason: "risk_above_threshold", risk: task.risk, maxRiskWithoutHuman });
+        materializationOutcomes.push({ ...baseOutcome, created: false, reason: "risk_above_threshold" });
         continue;
       }
       if (Number.isFinite(maxConcurrentRepoAreaTasks) && maxConcurrentRepoAreaTasks > 0) {
@@ -4839,6 +4861,7 @@ registerNodeType("action.materialize_planner_tasks", {
             repoAreas: saturatedAreas,
             maxConcurrentRepoAreaTasks,
           });
+          materializationOutcomes.push({ ...baseOutcome, created: false, reason: "repo_area_saturated" });
           continue;
         }
       }
@@ -4899,6 +4922,7 @@ registerNodeType("action.materialize_planner_tasks", {
         id: createdTask?.id || null,
         title: task.title,
       });
+      materializationOutcomes.push({ ...baseOutcome, created: true, reason: null });
       for (const area of task.repoAreas) {
         const areaKey = normalizePlannerAreaKey(area);
         if (!areaKey) continue;
@@ -4909,9 +4933,10 @@ registerNodeType("action.materialize_planner_tasks", {
 
     const createdCount = created.length;
     const skippedCount = skipped.length;
+    const skipReasonHistogram = buildPlannerSkipReasonHistogram(skipped);
     ctx.log(
       node.id,
-      `Planner materialization parsed=${parsedTasks.length} created=${createdCount} skipped=${skippedCount}`,
+      `Planner materialization parsed=${parsedTasks.length} created=${createdCount} skipped=${skippedCount} histogram=${JSON.stringify(skipReasonHistogram)}`,
     );
 
     if (failOnZero && createdCount < Math.max(1, minCreated)) {
@@ -4925,6 +4950,8 @@ registerNodeType("action.materialize_planner_tasks", {
       parsedCount: parsedTasks.length,
       createdCount,
       skippedCount,
+      skipReasonHistogram,
+      materializationOutcomes,
       created,
       skipped,
       tasks: parsedTasks,
