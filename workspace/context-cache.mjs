@@ -856,6 +856,40 @@ function extractCommandText(item) {
   return "";
 }
 
+function normalizeGitTokenSource(value) {
+  return String(value || "")
+    .toLowerCase()
+    .replaceAll(/_+/g, " ")
+    .replaceAll(/\s+/g, " ")
+    .trim();
+}
+
+function inferGitCommandSignals(toolName, commandText) {
+  const normalizedToolName = normalizeGitTokenSource(toolName);
+  const normalizedCommand = normalizeGitTokenSource(commandText);
+  const merged = `${normalizedCommand} ${normalizedToolName}`.trim();
+
+  const commandLooksGit = /\bgit\b/.test(normalizedCommand);
+  const toolLooksGit = normalizedToolName.includes("git");
+  if (!toolLooksGit && !commandLooksGit) return { eligible: false, subcommand: "", boundedDiff: false };
+
+  let commandBody = normalizedCommand.startsWith("git ")
+    ? normalizedCommand.slice(4).trim()
+    : normalizedCommand;
+
+  if (!commandBody && toolLooksGit) {
+    commandBody = normalizedToolName
+      .replaceAll(/\bgit\b/g, " ")
+      .replaceAll(/\s+/g, " ")
+      .trim();
+  }
+
+  const subcommand = commandBody.split(" ")[0] || "";
+  const boundedDiff = /(?:^|\s)--(?:stat|shortstat|numstat|name-only|name-status|summary)\b/.test(commandBody)
+    || /\bdiff(?:\s|-)*(?:stat|shortstat|numstat|name only|name status|summary)\b/.test(merged);
+  return { eligible: true, subcommand, boundedDiff };
+}
+
 function classifyImmediateGitOutput(item, opts) {
   const maxChars = opts?.gitOutputMaxChars ?? DEFAULT_GIT_OUTPUT_MAX_CHARS;
   if (!Number.isFinite(maxChars) || maxChars <= 0) return null;
@@ -863,26 +897,15 @@ function classifyImmediateGitOutput(item, opts) {
   const text = getItemText(item);
   if (typeof text !== "string" || text.length <= maxChars) return null;
 
-  const toolName = extractToolName(item).toLowerCase();
-  const commandText = extractCommandText(item)
-    .toLowerCase()
-    .replaceAll(/_+/g, " ")
-    .replaceAll(/\s+/g, " ")
-    .trim();
-  const toolLooksGit = toolName.includes("git");
-  const commandLooksGit = /\bgit\b/.test(commandText);
-  if (!toolLooksGit && !commandLooksGit) return null;
-
-  const commandBody = commandText.startsWith("git ")
-    ? commandText.slice(4).trim()
-    : commandText;
-  const subcommand = commandBody.split(" ")[0] || "";
+  const toolName = extractToolName(item);
+  const commandText = extractCommandText(item);
+  const { eligible, subcommand, boundedDiff } = inferGitCommandSignals(toolName, commandText);
+  if (!eligible) return null;
 
   if (subcommand === "log") return { kind: "log", text };
   if (subcommand === "shortlog") return { kind: "shortlog", text };
   if (subcommand === "reflog") return { kind: "reflog", text };
   if (subcommand === "diff") {
-    const boundedDiff = /(?:^|\s)--(?:stat|shortstat|numstat|name-only|name-status|summary)\b/.test(commandBody);
     if (!boundedDiff) return { kind: "diff", text };
   }
 
