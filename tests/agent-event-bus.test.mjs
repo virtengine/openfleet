@@ -471,6 +471,59 @@ describe("agent-event-bus", () => {
       expect(staleEvents.length).toBeGreaterThanOrEqual(1);
       expect(staleEvents[0].taskId).toBe("task-1");
     });
+
+    it("does not emit retry queue updates when expire check makes no changes", () => {
+      const setRetryQueueData = vi.fn();
+      bus.stop();
+      bus = createAgentEventBus({
+        broadcastUiEvent: mockBroadcast,
+        staleThresholdMs: 5000,
+        staleCheckIntervalMs: 2000,
+        setRetryQueueData,
+      });
+
+      bus._checkStaleAgents();
+
+      const queueEvents = bus
+        .getEventLog()
+        .filter((e) => e.type === AGENT_EVENT.RETRY_QUEUE_UPDATED);
+      expect(setRetryQueueData).not.toHaveBeenCalled();
+      expect(queueEvents).toHaveLength(0);
+    });
+
+    it("emits retry queue updates when expire check removes queued tasks", () => {
+      const setRetryQueueData = vi.fn();
+      bus.stop();
+      bus = createAgentEventBus({
+        broadcastUiEvent: mockBroadcast,
+        staleThresholdMs: 5000,
+        staleCheckIntervalMs: 2000,
+        setRetryQueueData,
+      });
+
+      bus._updateRetryQueue(
+        {
+          type: "add",
+          item: {
+            taskId: "task-1",
+            retryCount: 1,
+            nextAttemptAt: 0,
+            expiresAt: 0,
+          },
+        },
+        { reason: "seed", taskId: "task-1" },
+      );
+      setRetryQueueData.mockClear();
+
+      bus._checkStaleAgents();
+
+      const queueEvents = bus
+        .getEventLog()
+        .filter((e) => e.type === AGENT_EVENT.RETRY_QUEUE_UPDATED);
+      expect(setRetryQueueData).toHaveBeenCalledTimes(1);
+      expect(bus.getRetryQueue().count).toBe(0);
+      expect(queueEvents.at(-1)?.payload?.reason).toBe("expire");
+    });
   });
 
   // ── Auto-Actions ────────────────────────────────────────────────────

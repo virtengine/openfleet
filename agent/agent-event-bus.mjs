@@ -957,16 +957,28 @@ export class AgentEventBus {
 
   _checkStaleAgents() {
     const now = Date.now();
+    const beforeSnapshot = snapshotRetryQueue(this._retryQueueState);
     this._retryQueueState = reduceRetryQueue(this._retryQueueState, {
       type: "expire",
       now,
     });
-    if (typeof this._setRetryQueueData === "function") {
+    const afterSnapshot = snapshotRetryQueue(this._retryQueueState);
+    const queueChanged =
+      beforeSnapshot.count !== afterSnapshot.count ||
+      JSON.stringify(beforeSnapshot.items) !== JSON.stringify(afterSnapshot.items) ||
+      JSON.stringify(beforeSnapshot.stats) !== JSON.stringify(afterSnapshot.stats);
+    if (queueChanged && typeof this._setRetryQueueData === "function") {
       try {
-        this._setRetryQueueData(snapshotRetryQueue(this._retryQueueState));
+        this._setRetryQueueData(afterSnapshot);
       } catch {
         /* best effort */
       }
+    }
+    if (queueChanged) {
+      this.emit(AGENT_EVENT.RETRY_QUEUE_UPDATED, "system", {
+        reason: "expire",
+        retryQueue: afterSnapshot,
+      });
     }
     for (const [taskId, lastHb] of this._heartbeats) {
       const elapsed = now - lastHb;
