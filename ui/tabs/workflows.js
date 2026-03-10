@@ -1934,6 +1934,8 @@ function WorkflowCanvas({ workflow, onSave, nodeTypes: availableNodeTypes = [] }
             target: nodeId,
             sourcePort: sourcePort?.name || "default",
             targetPort: targetPort?.name || "default",
+            sourcePortType: sourcePort?.type || "Any",
+            targetPortType: targetPort?.type || "Any",
           }],
         }));
       }

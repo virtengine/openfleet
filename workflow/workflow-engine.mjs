@@ -345,6 +345,8 @@ function hydrateWorkflowDefinition(def, { strict = false } = {}) {
       ...edge,
       sourcePort: sourcePort?.name || String(edge.sourcePort || "default").trim() || "default",
       targetPort: targetPort?.name || String(edge.targetPort || "default").trim() || "default",
+      sourcePortType: sourcePort?.type || null,
+      targetPortType: targetPort?.type || null,
     };
   });
 

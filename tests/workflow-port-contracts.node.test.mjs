@@ -161,6 +161,46 @@ describe("workflow engine port hydration", () => {
     assert.equal(loaded.metadata.validationIssues[0].edgeId, "e1");
     assert.equal(loaded.metadata.validationIssues[0].sourceType, "json");
     assert.equal(loaded.metadata.validationIssues[0].targetType, "number");
+    assert.equal(loaded.edges[0].sourcePortType, "json");
+    assert.equal(loaded.edges[0].targetPortType, "number");
+  });
+
+  it("save() persists edge port type metadata for compatible edges", () => {
+    const sourceType = uniqueType("save_source");
+    const targetType = uniqueType("save_target");
+
+    registerNodeType(sourceType, {
+      describe: () => "Typed source",
+      schema: { type: "object", properties: {} },
+      outputs: [{ name: "default", label: "Out", type: "TaskDef" }],
+      async execute() {
+        return { ok: true };
+      },
+    });
+
+    registerNodeType(targetType, {
+      describe: () => "Typed target",
+      schema: { type: "object", properties: {} },
+      inputs: [{ name: "default", label: "In", type: "TaskDef" }],
+      async execute() {
+        return { ok: true };
+      },
+    });
+
+    const saved = engine.save({
+      id: "wf-save-persists-edge-port-types",
+      name: "Save Persists Edge Port Types",
+      enabled: true,
+      nodes: [
+        { id: "source", type: sourceType, label: "Source", config: {} },
+        { id: "target", type: targetType, label: "Target", config: {} },
+      ],
+      edges: [{ id: "e1", source: "source", target: "target" }],
+      variables: {},
+    });
+
+    assert.equal(saved.edges[0].sourcePortType, "TaskDef");
+    assert.equal(saved.edges[0].targetPortType, "TaskDef");
   });
 });
 
