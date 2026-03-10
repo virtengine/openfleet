@@ -113,6 +113,15 @@ describe("workflow canvas history", () => {
     expect(history.past.length).toBe(50);
   });
 
+  it("does not grow history when a snapshot is unchanged", () => {
+    let history = createHistoryState([], []);
+    history = pushHistorySnapshot(history, [makeNode("node-a", 10, 20)], [], 50);
+    const beforeRepeat = history;
+    const repeated = pushHistorySnapshot(history, [makeNode("node-a", 10, 20)], [], 50);
+    expect(repeated).toBe(beforeRepeat);
+    expect(repeated.past.length).toBe(1);
+  });
+
   it("snapshot serialization round-trips node and edge data", () => {
     const nodes = [makeNode("n1", 40, 80)];
     const edges = [{ id: "e1", source: "n1", target: "n2", condition: "ok" }];

@@ -1657,6 +1657,16 @@ function WorkflowCanvas({ workflow, onSave, nodeTypes: availableNodeTypes = [] }
     setZoom(z => Math.max(0.2, Math.min(3, z + delta)));
   }, []);
 
+  const onCanvasDoubleClick = useCallback((e) => {
+    const target = e.target;
+    const isBackgroundTarget =
+      target === e.currentTarget ||
+      target?.classList?.contains?.("canvas-bg");
+    if (!isBackgroundTarget) return;
+    e.preventDefault();
+    openNodePalette(toCanvas(e.clientX, e.clientY));
+  }, [openNodePalette, toCanvas]);
+
   // ── Node interaction ──────────────────────────────────────
 
   const onNodeMouseDown = useCallback((nodeId, e) => {
@@ -1992,6 +2002,7 @@ function WorkflowCanvas({ workflow, onSave, nodeTypes: availableNodeTypes = [] }
         onPointerUp=${onPointerUp}
         onPointerCancel=${onPointerUp}
         onWheel=${onWheel}
+        onDblClick=${onCanvasDoubleClick}
         onContextMenu=${(e) => e.preventDefault()}
       >
         <defs>
@@ -2010,7 +2021,7 @@ function WorkflowCanvas({ workflow, onSave, nodeTypes: availableNodeTypes = [] }
         </defs>
 
         <!-- Background grid — covers entire pannable area -->
-        <rect class="canvas-bg" x="-10000" y="-10000" width="30000" height="30000" fill="url(#grid-pattern)" onDblClick=${(e) => { e.preventDefault(); openNodePalette(toCanvas(e.clientX, e.clientY)); }} />
+        <rect class="canvas-bg" x="-10000" y="-10000" width="30000" height="30000" fill="url(#grid-pattern)" />
 
         <g transform="translate(${pan.x} ${pan.y}) scale(${zoom})">
 
@@ -4113,4 +4124,3 @@ export function WorkflowsTab() {
     </div>
   `;
 }
-
