@@ -1383,6 +1383,27 @@ function setStickyMenuState(chatId, patch) {
   stickyMenuState.set(chatId, { ...current, ...patch });
 }
 
+function clearStickyMenuTimer(chatId) {
+  const timer = stickyMenuTimers.get(chatId);
+  if (timer) {
+    clearTimeout(timer);
+    stickyMenuTimers.delete(chatId);
+  }
+}
+
+function isStickyMenuInteractive(chatId) {
+  if (!chatId) return false;
+  return stickyMenuState.get(chatId)?.mode === "interactive";
+}
+
+function getStickyMenuRestoreTarget(chatId) {
+  const state = stickyMenuState.get(chatId) || {};
+  return {
+    screenId: state.restoreScreenId || state.screenId || "home",
+    params: state.restoreParams || state.params || {},
+  };
+}
+
 function isStickyMenuMessage(chatId, messageId) {
   if (!chatId || !messageId) return false;
   const state = stickyMenuState.get(chatId);
@@ -1406,19 +1427,21 @@ function ensureStickyMenuEnabled(chatId, messageId, screenId, params) {
     messageId,
     screenId: screenId || state?.screenId || "home",
     params: params || state?.params || {},
+    mode: "menu",
+    restoreScreenId: null,
+    restoreParams: null,
   });
   return true;
 }
 
 function scheduleStickyMenuBump(chatId, lastMessageId) {
   const state = stickyMenuState.get(chatId);
-  if (!state?.enabled || !state?.screenId) return;
+  if (!state?.enabled || !state?.screenId || state.mode === "interactive") return;
   if (lastMessageId && state.messageId && lastMessageId === state.messageId)
     return;
   // Debounce: cancel existing timer and schedule a fresh one so rapid
   // messages don't cause multiple bumps (reduces flicker)
-  const existing = stickyMenuTimers.get(chatId);
-  if (existing) clearTimeout(existing);
+  clearStickyMenuTimer(chatId);
   const timer = setTimeout(() => {
     stickyMenuTimers.delete(chatId);
     bumpStickyMenu(chatId).catch(() => {});
@@ -1428,12 +1451,56 @@ function scheduleStickyMenuBump(chatId, lastMessageId) {
 
 async function bumpStickyMenu(chatId) {
   const state = stickyMenuState.get(chatId);
-  if (!state?.enabled || !state?.screenId) return;
+  if (!state?.enabled || !state?.screenId || state.mode === "interactive") return;
   // On bump (new messages pushed menu up), clear any inline result
   // so the menu shows clean navigation when it reappears at the bottom
   await showUiScreen(chatId, null, state.screenId, state.params || {}, {
     sticky: true,
   });
+}
+
+async function showStickyInteractiveMessage(chatId, text, options = {}) {
+  const state = stickyMenuState.get(chatId) || {};
+  const hasStickyMenu = Boolean(state.enabled);
+  const { screenId, params } = getStickyMenuRestoreTarget(chatId);
+  const targetMessageId =
+    options.messageId || (hasStickyMenu ? state.messageId || null : null);
+  const messageOptions = { ...options };
+  delete messageOptions.messageId;
+  clearStickyMenuTimer(chatId);
+
+  let nextMessageId = targetMessageId;
+  if (targetMessageId) {
+    nextMessageId = await editDirect(chatId, targetMessageId, text, messageOptions);
+  } else {
+    nextMessageId = await sendDirect(chatId, text, {
+      ...messageOptions,
+      skipSticky: true,
+    });
+  }
+
+  setStickyMenuState(chatId, {
+    enabled: hasStickyMenu,
+    messageId: nextMessageId,
+    screenId,
+    params,
+    mode: "interactive",
+    restoreScreenId: screenId,
+    restoreParams: params,
+  });
+  return nextMessageId;
+}
+
+async function restoreStickyMenuMessage(chatId, fallbackScreenId = "home", fallbackParams = {}) {
+  const state = stickyMenuState.get(chatId);
+  if (!state?.enabled) return false;
+  clearStickyMenuTimer(chatId);
+  const screenId = state.restoreScreenId || state.screenId || fallbackScreenId;
+  const params = state.restoreParams || state.params || fallbackParams;
+  await showUiScreen(chatId, state.messageId || null, screenId, params, {
+    sticky: true,
+  });
+  return true;
 }
 
 async function refreshStickyMenu(chatId, screenId = "home", params = {}) {
@@ -1445,11 +1512,7 @@ async function refreshStickyMenu(chatId, screenId = "home", params = {}) {
       /* best effort */
     }
   }
-  const timer = stickyMenuTimers.get(chatId);
-  if (timer) {
-    clearTimeout(timer);
-    stickyMenuTimers.delete(chatId);
-  }
+  clearStickyMenuTimer(chatId);
   stickyMenuState.delete(chatId);
   clearPendingUiInput(chatId);
   await showUiScreen(chatId, null, screenId, params, { sticky: true });
@@ -2589,12 +2652,7 @@ async function handleCallbackQuery(query) {
     // Close and disable sticky menu
     const state = stickyMenuState.get(chatId);
     if (state?.enabled) {
-      // Cancel any pending bump timer
-      const timer = stickyMenuTimers.get(chatId);
-      if (timer) {
-        clearTimeout(timer);
-        stickyMenuTimers.delete(chatId);
-      }
+      clearStickyMenuTimer(chatId);
       // Delete the sticky menu message
       if (state.messageId) {
         await deleteDirect(chatId, state.messageId).catch(() => {});
@@ -2612,11 +2670,7 @@ async function handleCallbackQuery(query) {
     const state = stickyMenuState.get(chatId);
     if (state?.enabled) {
       // Menu is open → close it
-      const timer = stickyMenuTimers.get(chatId);
-      if (timer) {
-        clearTimeout(timer);
-        stickyMenuTimers.delete(chatId);
-      }
+      clearStickyMenuTimer(chatId);
       if (state.messageId) {
         await deleteDirect(chatId, state.messageId).catch(() => {});
       }
@@ -2628,7 +2682,7 @@ async function handleCallbackQuery(query) {
     return;
   }
   if (data === "cb:confirm_restart") {
-    await sendReply(
+    await showStickyInteractiveMessage(
       chatId,
       ":alert: Restart will stop the orchestrator process and let the monitor respawn it.\nProceed?",
       { reply_markup: buildConfirmKeyboard("cb:do_restart", "Confirm Restart") },
@@ -2660,7 +2714,10 @@ async function handleCallbackQuery(query) {
     return;
   }
   if (data === "cb:dismiss") {
-    // Delete the message with the buttons
+    if (isStickyMenuInteractive(chatId) && isStickyMenuMessage(chatId, query.message?.message_id)) {
+      await restoreStickyMenuMessage(chatId);
+      return;
+    }
     if (query.message?.message_id) {
       await deleteDirect(chatId, query.message.message_id);
     }
@@ -2677,7 +2734,9 @@ async function handleCallbackQuery(query) {
       return;
     }
     uiTokenRegistry.delete(token);
-    if (query.message?.message_id) {
+    if (isStickyMenuInteractive(chatId) && isStickyMenuMessage(chatId, query.message?.message_id)) {
+      await restoreStickyMenuMessage(chatId);
+    } else if (query.message?.message_id) {
       await deleteDirect(chatId, query.message.message_id);
     }
     await dispatchUiCommand(chatId, payload.command);
@@ -2862,7 +2921,11 @@ async function handleUpdate(update) {
     const cmdText = text.split(/\s+/)[0].toLowerCase().replace(/@\w+/, "");
     if (cmdText === "/cancel") {
       clearPendingUiInput(chatId);
-      await sendReply(chatId, ":check: Input cancelled.");
+      if (isStickyMenuInteractive(chatId)) {
+        await restoreStickyMenuMessage(chatId);
+      } else {
+        await sendReply(chatId, ":check: Input cancelled.");
+      }
       return;
     }
     if (!text.startsWith("/")) {
@@ -4217,7 +4280,7 @@ async function promptUiInput(chatId, key, extra = {}) {
   const keyboard = buildKeyboard([
     [{ text: ":close: Cancel", callback_data: uiCallback("cancel") }],
   ]);
-  await sendReply(chatId, `${prompt}\n\nSend /cancel to abort.`, {
+  await showStickyInteractiveMessage(chatId, `${prompt}\n\nSend /cancel to abort.`, {
     reply_markup: keyboard,
   });
 }
@@ -4243,10 +4306,9 @@ async function promptActionConfirm(chatId, token, payload, options = {}) {
     payload.confirmLabel || "Confirm",
     payload.backAction,
   );
-  await sendReply(chatId, text, {
+  await showStickyInteractiveMessage(chatId, text, {
     parseMode: "Markdown",
     reply_markup: keyboard,
-    skipSticky: true,
     ...options,
   });
 }
@@ -4254,6 +4316,9 @@ async function promptActionConfirm(chatId, token, payload, options = {}) {
 async function handleUiInput(chatId, request, text) {
   const trimmed = String(text || "").trim();
   if (!trimmed) {
+    if (isStickyMenuInteractive(chatId)) {
+      await restoreStickyMenuMessage(chatId);
+    }
     await sendReply(chatId, ":alert: Input was empty. Prompt cancelled.");
     return;
   }
@@ -4273,11 +4338,17 @@ async function handleUiInput(chatId, request, text) {
   }
   const buildCommand = request.buildCommand;
   if (typeof buildCommand !== "function") {
+    if (isStickyMenuInteractive(chatId)) {
+      await restoreStickyMenuMessage(chatId);
+    }
     await sendReply(chatId, ":alert: Unable to process that input.");
     return;
   }
   const command = buildCommand(trimmed, request);
   if (!command) {
+    if (isStickyMenuInteractive(chatId)) {
+      await restoreStickyMenuMessage(chatId);
+    }
     await sendReply(chatId, ":alert: Could not build a command from that input.");
     return;
   }
@@ -4297,6 +4368,9 @@ async function handleUiInput(chatId, request, text) {
     const token = issueUiToken(payload);
     await promptActionConfirm(chatId, token, payload);
     return;
+  }
+  if (isStickyMenuInteractive(chatId)) {
+    await restoreStickyMenuMessage(chatId);
   }
   await dispatchUiCommand(chatId, command);
 }
@@ -4391,7 +4465,7 @@ async function promptStartTaskConfirm(chatId, details = {}) {
       uiButton(":close: Cancel", "cancel"),
     ],
   ]);
-  await sendReply(chatId, lines.join("\n"), {
+  await showStickyInteractiveMessage(chatId, lines.join("\n"), {
     parseMode: "Markdown",
     reply_markup: keyboard,
   });
@@ -4456,7 +4530,7 @@ async function showStartTaskExecutorPicker(chatId, taskId) {
     "",
     "Auto picks internal if available, otherwise VK.",
   ];
-  await sendReply(chatId, lines.join("\n"), {
+  await showStickyInteractiveMessage(chatId, lines.join("\n"), {
     parseMode: "Markdown",
     reply_markup: buildKeyboard(rows),
   });
@@ -4506,7 +4580,7 @@ async function showStartTaskSdkPicker(chatId, taskId, executor) {
     [uiButton(":close: Cancel", "cancel")],
   ];
   const keyboard = buildKeyboard(rows);
-  await sendReply(chatId, lines.join("\n"), {
+  await showStickyInteractiveMessage(chatId, lines.join("\n"), {
     parseMode: "Markdown",
     reply_markup: keyboard,
   });
@@ -4575,7 +4649,7 @@ async function showStartTaskModelPicker(chatId, taskId, sdk, executor) {
   rows.push([uiButton("Custom Model", uiTokenAction(tokenCustom))]);
   rows.push([uiButton(":arrowRight: Back", uiTokenAction(tokenBack))]);
   const keyboard = buildKeyboard(rows);
-  await sendReply(chatId, lines.join("\n"), {
+  await showStickyInteractiveMessage(chatId, lines.join("\n"), {
     parseMode: "Markdown",
     reply_markup: keyboard,
   });
@@ -6197,6 +6271,9 @@ async function showUiScreen(chatId, messageId, screenId, params = {}, opts = {})
         screenId,
         params,
         messageId: resolvedMessageId,
+        mode: "menu",
+        restoreScreenId: null,
+        restoreParams: null,
       });
     }
   } else if (stickyActive) {
@@ -6217,6 +6294,9 @@ async function showUiScreen(chatId, messageId, screenId, params = {}, opts = {})
       messageId: newId,
       screenId,
       params,
+      mode: "menu",
+      restoreScreenId: null,
+      restoreParams: null,
     });
   } else {
     await sendDirect(chatId, text, sendOpts);
@@ -6229,6 +6309,10 @@ async function handleUiAction({ chatId, messageId, data }) {
   const staleSticky = stickyEnabled && isStaleStickyMenuMessage(chatId, messageId);
   if (type === "cancel") {
     clearPendingUiInput(chatId);
+    if (isStickyMenuInteractive(chatId)) {
+      await restoreStickyMenuMessage(chatId);
+      return;
+    }
     if (messageId) {
       await deleteDirect(chatId, messageId);
     }
@@ -6341,6 +6425,9 @@ async function handleUiAction({ chatId, messageId, data }) {
       }
       if (staleSticky && messageId) {
         await deleteDirect(chatId, messageId);
+      }
+      if (isStickyMenuInteractive(chatId)) {
+        await restoreStickyMenuMessage(chatId);
       }
       await dispatchUiCommand(chatId, payload.command);
       return;
@@ -6807,6 +6894,10 @@ async function cmdCancel(chatId) {
     return;
   }
   clearPendingUiInput(chatId);
+  if (isStickyMenuInteractive(chatId)) {
+    await restoreStickyMenuMessage(chatId);
+    return;
+  }
   await sendReply(chatId, ":check: Input cancelled.");
 }
 
@@ -11614,4 +11705,3 @@ export function stopStatusFileWriter() {
     _statusWriterTimer = null;
   }
 }
-

@@ -1790,6 +1790,20 @@ function ContextViewer({ sessionId }) {
 }
 
 /* ─── Fleet Full Session View ─── */
+function getFleetEntryStatus(entry) {
+  return String(
+    entry?.slot?.status
+    || entry?.session?.status
+    || (entry?.isHistory ? "history" : "unknown"),
+  ).toLowerCase();
+}
+
+function isFleetEntryActive(entry) {
+  if (!entry || typeof entry !== "object") return false;
+  const status = getFleetEntryStatus(entry);
+  return status === "active" || status === "running" || status === "busy" || status === "inprogress";
+}
+
 function FleetSessionsPanel({ slots, taskFallbackEntries = [], onOpenWorkspace, onForceStop }) {
   const [detailTab, setDetailTab] = useState("stream");
   const [sessionScope, setSessionScope] = useState("active");
@@ -1910,7 +1924,21 @@ function FleetSessionsPanel({ slots, taskFallbackEntries = [], onOpenWorkspace, 
       });
   }, [allSessions, entries]);
 
-  const visibleEntries = sessionScope === "history" ? historyEntries : entries;
+  const allEntries = useMemo(() => [...entries, ...historyEntries], [entries, historyEntries]);
+  const activeCount = useMemo(
+    () => allEntries.filter((entry) => isFleetEntryActive(entry)).length,
+    [allEntries],
+  );
+  const historyCount = useMemo(
+    () => allEntries.filter((entry) => !isFleetEntryActive(entry)).length,
+    [allEntries],
+  );
+  const visibleEntries = useMemo(() => {
+    if (sessionScope === "history") {
+      return allEntries.filter((entry) => !isFleetEntryActive(entry));
+    }
+    return allEntries.filter((entry) => isFleetEntryActive(entry));
+  }, [allEntries, sessionScope]);
 
   /* Build a stable fingerprint so the effect only fires when entries actually
      change rather than on every render (entries is now memoised but we still
@@ -1990,7 +2018,7 @@ function FleetSessionsPanel({ slots, taskFallbackEntries = [], onOpenWorkspace, 
                 setSessionScope("active");
               }}
             >
-              Active (${entries.length})
+              Active (${activeCount})
             <//>
             <${Button} variant="text" size="small"
               className=${`fleet-session-scope-btn ${sessionScope === "history" ? "active" : ""}`}
@@ -1999,7 +2027,7 @@ function FleetSessionsPanel({ slots, taskFallbackEntries = [], onOpenWorkspace, 
                 setSessionScope("history");
               }}
             >
-              History (${historyEntries.length})
+              History (${historyCount})
             <//>
           </div>
           ${visibleEntries.length === 0

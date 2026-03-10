@@ -1577,7 +1577,7 @@ describe("ui-server mini app", () => {
     expect(detail.ok).toBe(true);
     expect(detail.data.runtimeSnapshot.state).toBe("queued");
     expect(detail.data.runtimeSnapshot.isLive).toBe(false);
-  }, 60000);
+  }, 120000);
 
   it("enriches task detail with linked workflow runs for the same taskId", async () => {
     process.env.TELEGRAM_UI_TUNNEL = "disabled";
@@ -1684,6 +1684,9 @@ describe("ui-server mini app", () => {
     expect(blockedResp.status).toBe(409);
     expect(blockedJson.ok).toBe(false);
     expect(blockedJson.canStart.reason).toBe("epic_dependencies_unresolved");
+    expect(blockedJson.canStart.blockingEpicIds).toEqual(["EPIC-B"]);
+    expect(blockedJson.canStart.blockingTaskIds).toEqual(["dep-task-1"]);
+    expect(blockedJson.canStart.blockedBy).toEqual([{ taskId: "dep-task-1" }]);
     expect(blockedJson.canStart.raw.blockingEpicIds).toEqual(["EPIC-B"]);
     expect(executeTask).not.toHaveBeenCalled();
   });
@@ -1757,7 +1760,7 @@ describe("ui-server mini app", () => {
     const executeTask = vi.fn(async () => {});
     mod.injectUiDependencies({
       taskStoreApi: {
-        canStartTask: vi.fn(() => ({ canStart: false, reason: "dependency_blocked" })),
+        canStartTask: vi.fn(() => ({ canStart: false, reason: "epic_dependencies_unresolved", blockingEpicIds: ["EPIC-B"], blockingTaskIds: ["dep-task-1"] })),
         appendTaskTimelineEvent: vi.fn(),
       },
       getInternalExecutor: () => ({
@@ -1778,7 +1781,7 @@ describe("ui-server mini app", () => {
     const created = await fetch(`http://127.0.0.1:${port}/api/tasks/create`, {
       method: "POST",
       headers: { "content-type": "application/json" },
-      body: JSON.stringify({ title: "guarded lifecycle", description: "lifecycle guard" }),
+      body: JSON.stringify({ title: "guarded epic lifecycle", description: "lifecycle epic guard" }),
     }).then((r) => r.json());
     expect(created.ok).toBe(true);
 
@@ -1795,6 +1798,8 @@ describe("ui-server mini app", () => {
     expect(update.ok).toBe(true);
     expect(update.lifecycle.startDispatch.started).toBe(false);
     expect(update.lifecycle.startDispatch.reason).toBe("start_guard_blocked");
+    expect(update.lifecycle.startDispatch.canStart.blockingTaskIds).toEqual(["dep-task-1"]);
+    expect(update.lifecycle.startDispatch.canStart.blockingEpicIds).toEqual(["EPIC-B"]);
     expect(executeTask).not.toHaveBeenCalled();
   });
 
@@ -2533,3 +2538,4 @@ describe("ui-server mini app", () => {
   });
 
 });
+

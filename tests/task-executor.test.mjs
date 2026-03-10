@@ -517,6 +517,60 @@ describe("task-executor", () => {
       );
     });
 
+    it("reduces effective limit from outcome failure telemetry without active slots", () => {
+      const ex = new TaskExecutor({ baseBranchParallelLimit: 0, repoAreaParallelLimit: 3 });
+      ex._repoAreaTelemetry.set("infra", {
+        conflictCount: 0,
+        totalWaitMs: 0,
+        lastWaitMs: 0,
+        maxWaitMs: 0,
+        lastBlockedAt: 0,
+        lastOutcomeAt: Date.now(),
+        recentOutcomes: [1, 1, 1, 0, 1, 0],
+        mergeLatencySamples: [],
+      });
+
+      const selected = ex._selectTasksForBaseBranchLimit(
+        [{ id: "t1", repo_areas: ["infra"] }],
+        3,
+      );
+
+      expect(selected.map((t) => t.id)).toEqual(["t1"]);
+      const status = ex.getStatus().repoAreaLocks;
+      const infra = status.areas.find((item) => item.area === "infra");
+      expect(infra).toBeDefined();
+      expect(infra.effectiveLimit).toBeLessThan(3);
+      expect(infra.adaptiveReasons).toContain("outcome_failure_rate");
+      expect(infra.outcomeFailureRate).toBeGreaterThanOrEqual(0.5);
+    });
+
+    it("reduces effective limit from slow merge latency telemetry without active slots", () => {
+      const slowLatencyMs = 5 * 60 * 60 * 1000;
+      const ex = new TaskExecutor({ baseBranchParallelLimit: 0, repoAreaParallelLimit: 3 });
+      ex._repoAreaTelemetry.set("infra", {
+        conflictCount: 0,
+        totalWaitMs: 0,
+        lastWaitMs: 0,
+        maxWaitMs: 0,
+        lastBlockedAt: 0,
+        lastOutcomeAt: Date.now(),
+        recentOutcomes: [],
+        mergeLatencySamples: [slowLatencyMs, slowLatencyMs, slowLatencyMs],
+      });
+
+      const selected = ex._selectTasksForBaseBranchLimit(
+        [{ id: "t1", repo_areas: ["infra"] }],
+        3,
+      );
+
+      expect(selected.map((t) => t.id)).toEqual(["t1"]);
+      const status = ex.getStatus().repoAreaLocks;
+      const infra = status.areas.find((item) => item.area === "infra");
+      expect(infra).toBeDefined();
+      expect(infra.effectiveLimit).toBeLessThan(3);
+      expect(infra.adaptiveReasons).toContain("historical_merge_latency");
+      expect(infra.telemetryMergeLatencyMs).toBeGreaterThanOrEqual(slowLatencyMs);
+    });
     it("tracks repo area wait time once a blocked task is later selected", () => {
       const ex = new TaskExecutor({ baseBranchParallelLimit: 0, repoAreaParallelLimit: 1 });
       const now = Date.now();

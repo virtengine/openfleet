@@ -2708,8 +2708,18 @@ class TaskExecutor {
         blockedByArea:
           parsed?.repoAreaDispatchCycle?.blockedByArea &&
           typeof parsed.repoAreaDispatchCycle.blockedByArea === "object"
-            ? { ...parsed.repoAreaDispatchCycle.blockedByArea }
-            : {},
+            ? Object.assign(
+              Object.create(null),
+              Object.fromEntries(
+                Object.entries(parsed.repoAreaDispatchCycle.blockedByArea)
+                  .map(([key, val]) => [
+                    normalizeRepoAreaKey(key),
+                    Math.max(0, Math.trunc(Number(val || 0))),
+                  ])
+                  .filter(([key]) => Boolean(key)),
+              ),
+            )
+            : Object.create(null),
         saturatedAreas: Array.isArray(parsed?.repoAreaDispatchCycle?.saturatedAreas)
           ? parsed.repoAreaDispatchCycle.saturatedAreas
               .map((area) => normalizeRepoAreaKey(area))
@@ -3133,6 +3143,8 @@ class TaskExecutor {
       entry.lastWaitMs = waitMs;
       entry.maxWaitMs = Math.max(entry.maxWaitMs, waitMs);
       entry.lastBlockedAt = now;
+      const lockMetric = this._getRepoAreaLockMetric(areaKey);
+      if (lockMetric) lockMetric.conflicts += 1;
     }
   }
 
@@ -4748,7 +4760,6 @@ class TaskExecutor {
           for (const area of blockedAreas) {
             const metric = this._getRepoAreaLockMetric(area);
             if (metric) {
-              metric.conflicts += 1;
               metric.blockedDispatches += 1;
               metric.lastConflictAt = this._repoAreaDispatchCycle.at;
             }
