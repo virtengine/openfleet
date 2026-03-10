@@ -121,11 +121,15 @@ export function redoHistory(history, limit = 50) {
 
 export function getNodeSearchMetadata(nodeType) {
   const schemaProps = Object.keys(nodeType?.schema?.properties || {});
+  const declaredInputs = Array.isArray(nodeType?.inputs)
+    ? nodeType.inputs.filter((value) => typeof value === "string" && value.trim())
+    : [];
+  const mergedInputs = [...new Set([...declaredInputs, ...schemaProps])];
   const outputs = Array.isArray(nodeType?.outputs) && nodeType.outputs.length ? nodeType.outputs : ["default"];
   return {
     category: nodeType?.category || String(nodeType?.type || "").split(".")[0] || "other",
     description: String(nodeType?.description || ""),
-    inputs: schemaProps,
+    inputs: mergedInputs,
     label: getLabel(nodeType?.type),
     outputs,
     type: String(nodeType?.type || ""),
