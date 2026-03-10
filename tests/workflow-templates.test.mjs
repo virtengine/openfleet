@@ -482,6 +482,8 @@ describe("workflow-templates", () => {
     expect(template?.variables?.terminalStates).toEqual(["done", "cancelled"]);
 
     const pollTask = template.nodes.find((n) => n.id === "poll-task");
+    const captureProgress = template.nodes.find((n) => n.id === "capture-progress");
+    const deriveSignature = template.nodes.find((n) => n.id === "derive-signature");
     const stuckSwitch = template.nodes.find((n) => n.id === "stuck-route");
     const endTerminal = template.nodes.find((n) => n.id === "end-terminal");
     const endMaxTurns = template.nodes.find((n) => n.id === "end-max-turns");
@@ -493,6 +495,9 @@ describe("workflow-templates", () => {
     expect(stuckEvent?.type).toBe("action.emit_event");
     expect(endTerminal?.type).toBe("flow.end");
     expect(endMaxTurns?.type).toBe("flow.end");
+    expect(captureProgress?.config?.command).toContain("git status --porcelain=v1");
+    expect(captureProgress?.config?.command).toContain("statusDigest");
+    expect(deriveSignature?.config?.value).toContain("statusDigest");
 
     const loopBackEdge = template.edges.find(
       (e) => e.source === "increment-turn" && e.target === "poll-task",

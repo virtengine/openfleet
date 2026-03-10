@@ -116,7 +116,7 @@ export const CONTINUATION_LOOP_TEMPLATE = {
 
     node("capture-progress", "action.run_command", "Capture Progress Signature", {
       command:
-        "node -e \"const cp=require('node:child_process');const head=(cp.execSync('git rev-parse HEAD',{encoding:'utf8'}).trim()||'');const dirtyRaw=cp.execSync('git status --porcelain',{encoding:'utf8'});const dirtyCount=dirtyRaw.split(/\\r?\\n/).filter(Boolean).length;process.stdout.write(JSON.stringify({head,dirtyCount}));\"",
+        "node -e \"const cp=require('node:child_process');const crypto=require('node:crypto');const head=(cp.execSync('git rev-parse HEAD',{encoding:'utf8'}).trim()||'');const dirtyRaw=cp.execSync('git status --porcelain=v1',{encoding:'utf8'});const dirtyCount=dirtyRaw.split(/\\r?\\n/).filter(Boolean).length;const statusDigest=crypto.createHash('sha1').update(dirtyRaw).digest('hex').slice(0,16);process.stdout.write(JSON.stringify({head,dirtyCount,statusDigest}));\"",
       cwd: "{{worktreePath}}",
       failOnError: false,
     }, { x: 800, y: 1120 }),
@@ -124,7 +124,7 @@ export const CONTINUATION_LOOP_TEMPLATE = {
     node("derive-signature", "action.set_variable", "Derive Signature", {
       key: "currentProgressSignature",
       value:
-        "(() => { const raw = String($ctx.getNodeOutput('capture-progress')?.output || '').trim(); try { const parsed = JSON.parse(raw); const head = String(parsed?.head || ''); const dirty = Number(parsed?.dirtyCount || 0); return `${head}:${dirty}`; } catch { return ''; } })()",
+        "(() => { const raw = String($ctx.getNodeOutput('capture-progress')?.output || '').trim(); try { const parsed = JSON.parse(raw); const head = String(parsed?.head || ''); const dirty = Number(parsed?.dirtyCount || 0); const statusDigest = String(parsed?.statusDigest || ''); return `${head}:${dirty}:${statusDigest}`; } catch { return ''; } })()",
       isExpression: true,
     }, { x: 800, y: 1240 }),
 

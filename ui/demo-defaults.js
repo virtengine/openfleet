@@ -7708,7 +7708,7 @@
           "type": "action.run_command",
           "label": "Capture Progress Signature",
           "config": {
-            "command": "node -e \"const cp=require('node:child_process');const head=(cp.execSync('git rev-parse HEAD',{encoding:'utf8'}).trim()||'');const dirtyRaw=cp.execSync('git status --porcelain',{encoding:'utf8'});const dirtyCount=dirtyRaw.split(/\\r?\\n/).filter(Boolean).length;process.stdout.write(JSON.stringify({head,dirtyCount}));\"",
+            "command": "node -e \"const cp=require('node:child_process');const crypto=require('node:crypto');const head=(cp.execSync('git rev-parse HEAD',{encoding:'utf8'}).trim()||'');const dirtyRaw=cp.execSync('git status --porcelain=v1',{encoding:'utf8'});const dirtyCount=dirtyRaw.split(/\\r?\\n/).filter(Boolean).length;const statusDigest=crypto.createHash('sha1').update(dirtyRaw).digest('hex').slice(0,16);process.stdout.write(JSON.stringify({head,dirtyCount,statusDigest}));\"",
             "cwd": "{{worktreePath}}",
             "failOnError": false
           },
@@ -7726,7 +7726,7 @@
           "label": "Derive Signature",
           "config": {
             "key": "currentProgressSignature",
-            "value": "(() => { const raw = String($ctx.getNodeOutput('capture-progress')?.output || '').trim(); try { const parsed = JSON.parse(raw); const head = String(parsed?.head || ''); const dirty = Number(parsed?.dirtyCount || 0); return `${head}:${dirty}`; } catch { return ''; } })()",
+            "value": "(() => { const raw = String($ctx.getNodeOutput('capture-progress')?.output || '').trim(); try { const parsed = JSON.parse(raw); const head = String(parsed?.head || ''); const dirty = Number(parsed?.dirtyCount || 0); const statusDigest = String(parsed?.statusDigest || ''); return `${head}:${dirty}:${statusDigest}`; } catch { return ''; } })()",
             "isExpression": true
           },
           "position": {
@@ -8456,7 +8456,7 @@
           "type": "action.run_command",
           "label": "Capture Progress Signature",
           "config": {
-            "command": "node -e \"const cp=require('node:child_process');const head=(cp.execSync('git rev-parse HEAD',{encoding:'utf8'}).trim()||'');const dirtyRaw=cp.execSync('git status --porcelain',{encoding:'utf8'});const dirtyCount=dirtyRaw.split(/\\r?\\n/).filter(Boolean).length;process.stdout.write(JSON.stringify({head,dirtyCount}));\"",
+            "command": "node -e \"const cp=require('node:child_process');const crypto=require('node:crypto');const head=(cp.execSync('git rev-parse HEAD',{encoding:'utf8'}).trim()||'');const dirtyRaw=cp.execSync('git status --porcelain=v1',{encoding:'utf8'});const dirtyCount=dirtyRaw.split(/\\r?\\n/).filter(Boolean).length;const statusDigest=crypto.createHash('sha1').update(dirtyRaw).digest('hex').slice(0,16);process.stdout.write(JSON.stringify({head,dirtyCount,statusDigest}));\"",
             "cwd": "{{worktreePath}}",
             "failOnError": false
           },
@@ -8474,7 +8474,7 @@
           "label": "Derive Signature",
           "config": {
             "key": "currentProgressSignature",
-            "value": "(() => { const raw = String($ctx.getNodeOutput('capture-progress')?.output || '').trim(); try { const parsed = JSON.parse(raw); const head = String(parsed?.head || ''); const dirty = Number(parsed?.dirtyCount || 0); return `${head}:${dirty}`; } catch { return ''; } })()",
+            "value": "(() => { const raw = String($ctx.getNodeOutput('capture-progress')?.output || '').trim(); try { const parsed = JSON.parse(raw); const head = String(parsed?.head || ''); const dirty = Number(parsed?.dirtyCount || 0); const statusDigest = String(parsed?.statusDigest || ''); return `${head}:${dirty}:${statusDigest}`; } catch { return ''; } })()",
             "isExpression": true
           },
           "position": {
@@ -25169,7 +25169,7 @@
           "type": "action.run_command",
           "label": "Capture Progress Signature",
           "config": {
-            "command": "node -e \"const cp=require('node:child_process');const head=(cp.execSync('git rev-parse HEAD',{encoding:'utf8'}).trim()||'');const dirtyRaw=cp.execSync('git status --porcelain',{encoding:'utf8'});const dirtyCount=dirtyRaw.split(/\\r?\\n/).filter(Boolean).length;process.stdout.write(JSON.stringify({head,dirtyCount}));\"",
+            "command": "node -e \"const cp=require('node:child_process');const crypto=require('node:crypto');const head=(cp.execSync('git rev-parse HEAD',{encoding:'utf8'}).trim()||'');const dirtyRaw=cp.execSync('git status --porcelain=v1',{encoding:'utf8'});const dirtyCount=dirtyRaw.split(/\\r?\\n/).filter(Boolean).length;const statusDigest=crypto.createHash('sha1').update(dirtyRaw).digest('hex').slice(0,16);process.stdout.write(JSON.stringify({head,dirtyCount,statusDigest}));\"",
             "cwd": "{{worktreePath}}",
             "failOnError": false
           },
@@ -25187,7 +25187,7 @@
           "label": "Derive Signature",
           "config": {
             "key": "currentProgressSignature",
-            "value": "(() => { const raw = String($ctx.getNodeOutput('capture-progress')?.output || '').trim(); try { const parsed = JSON.parse(raw); const head = String(parsed?.head || ''); const dirty = Number(parsed?.dirtyCount || 0); return `${head}:${dirty}`; } catch { return ''; } })()",
+            "value": "(() => { const raw = String($ctx.getNodeOutput('capture-progress')?.output || '').trim(); try { const parsed = JSON.parse(raw); const head = String(parsed?.head || ''); const dirty = Number(parsed?.dirtyCount || 0); const statusDigest = String(parsed?.statusDigest || ''); return `${head}:${dirty}:${statusDigest}`; } catch { return ''; } })()",
             "isExpression": true
           },
           "position": {
@@ -25904,7 +25904,7 @@
           "type": "action.run_command",
           "label": "Capture Progress Signature",
           "config": {
-            "command": "node -e \"const cp=require('node:child_process');const head=(cp.execSync('git rev-parse HEAD',{encoding:'utf8'}).trim()||'');const dirtyRaw=cp.execSync('git status --porcelain',{encoding:'utf8'});const dirtyCount=dirtyRaw.split(/\\r?\\n/).filter(Boolean).length;process.stdout.write(JSON.stringify({head,dirtyCount}));\"",
+            "command": "node -e \"const cp=require('node:child_process');const crypto=require('node:crypto');const head=(cp.execSync('git rev-parse HEAD',{encoding:'utf8'}).trim()||'');const dirtyRaw=cp.execSync('git status --porcelain=v1',{encoding:'utf8'});const dirtyCount=dirtyRaw.split(/\\r?\\n/).filter(Boolean).length;const statusDigest=crypto.createHash('sha1').update(dirtyRaw).digest('hex').slice(0,16);process.stdout.write(JSON.stringify({head,dirtyCount,statusDigest}));\"",
             "cwd": "{{worktreePath}}",
             "failOnError": false
           },
@@ -25922,7 +25922,7 @@
           "label": "Derive Signature",
           "config": {
             "key": "currentProgressSignature",
-            "value": "(() => { const raw = String($ctx.getNodeOutput('capture-progress')?.output || '').trim(); try { const parsed = JSON.parse(raw); const head = String(parsed?.head || ''); const dirty = Number(parsed?.dirtyCount || 0); return `${head}:${dirty}`; } catch { return ''; } })()",
+            "value": "(() => { const raw = String($ctx.getNodeOutput('capture-progress')?.output || '').trim(); try { const parsed = JSON.parse(raw); const head = String(parsed?.head || ''); const dirty = Number(parsed?.dirtyCount || 0); const statusDigest = String(parsed?.statusDigest || ''); return `${head}:${dirty}:${statusDigest}`; } catch { return ''; } })()",
             "isExpression": true
           },
           "position": {
