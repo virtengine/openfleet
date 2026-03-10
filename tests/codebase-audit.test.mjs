@@ -202,6 +202,29 @@ describe("codebase audit engine", () => {
       "utf8",
     );
     writeFileSync(
+      resolve(root, "src", "legacy-style.mjs"),
+      [
+        "// SUMMARY: Legacy JS summary format.",
+        "",
+        "export function legacyStyle() {",
+        "  return true;",
+        "}",
+        "",
+      ].join("\n"),
+      "utf8",
+    );
+    writeFileSync(
+      resolve(root, "src", "legacy-warn.py"),
+      [
+        "# WARNING: Legacy warning format.",
+        "",
+        "def legacy_warn():",
+        "    return True",
+        "",
+      ].join("\n"),
+      "utf8",
+    );
+    writeFileSync(
       resolve(root, "src", "secret.mjs"),
       'const token = "sk-1234567890ABCDEFGHIJKLMNOP";\n',
       "utf8",
@@ -210,6 +233,8 @@ describe("codebase audit engine", () => {
     const migrateResult = migrateAnnotations(root);
     expect(migrateResult.migrated).toBeGreaterThan(0);
     expect(readFileSync(resolve(root, "src", "legacy.py"), "utf8")).toContain("CLAUDE:SUMMARY");
+    expect(readFileSync(resolve(root, "src", "legacy-style.mjs"), "utf8")).toContain("CLAUDE:SUMMARY");
+    expect(readFileSync(resolve(root, "src", "legacy-warn.py"), "utf8")).toContain("CLAUDE:WARN");
 
     const conformity = runConformity(root, { dryRun: true });
     expect(conformity.ok).toBe(false);
