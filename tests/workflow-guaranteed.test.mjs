@@ -471,6 +471,35 @@ describe("guaranteed: behavioral contracts", () => {
     expect(artifact?.priorWeekTrendDeltas).toHaveProperty("merge_success");
     expect(["low", "medium", "high"]).toContain(artifact?.dataQuality?.overallConfidence);
   });
+
+  it("template-weekly-fitness-summary: partially parsed task telemetry still computes best-effort throughput", async () => {
+    const { harness, fixtures } = setupHarness("template-weekly-fitness-summary");
+    const runInput = { ...fixtures.inputVars, createFollowupTasks: false };
+
+    const stableDispatch = _activeDispatch;
+    _activeDispatch = (cmd) => {
+      const command = String(cmd || "");
+      if (/^bosun\s+task\s+list\b/i.test(command)) {
+        return [
+          "{\"status\":\"done\",\"completedAt\":\"2026-03-08T10:00:00Z\",\"reopenCount\":0}",
+          "{ malformed-task-json",
+        ].join("\n");
+      }
+      return stableDispatch(command);
+    };
+
+    const { ctx } = await harness.run(runInput);
+    harness.assertions.noEngineErrors(ctx);
+
+    const write = harness.assertions.nodeSucceeded(ctx, "persist-fitness-summary");
+    const artifact = JSON.parse(readFileSync(write.path, "utf8"));
+
+    expect(artifact?.sourceHealth?.tasks?.status).toBe("degraded");
+    expect(artifact?.metrics?.throughput?.value).toBe(1);
+    expect(artifact?.metrics?.throughput?.confidence).toBe("low");
+    expect(artifact?.metrics?.reopened_tasks?.value).toBe(0);
+    expect(artifact?.priorWeekDeltas).toHaveProperty("throughput");
+  });
   // ── CI/CD templates ───────────────────────────────────────────────────
 
   it("template-build-deploy: runs build → deploy pipeline", async () => {
@@ -719,4 +748,3 @@ describe("guaranteed: fixture registry covers all templates", () => {
     }
   });
 });
-

@@ -603,7 +603,7 @@ export const WEEKLY_FITNESS_SUMMARY_TEMPLATE = {
         "    const debtSplit = splitWindows(debt);" +
         "    const doneStatuses = new Set(['done', 'closed', 'completed', 'merged', 'resolved']);" +
         "    const isDone = (item) => doneStatuses.has(String(item?.status || '').toLowerCase());" +
-        "    const taskTelemetryUnavailable = taskHealth.status === 'missing' || taskHealth.status === 'degraded';" +
+        "    const taskTelemetryUnavailable = taskHealth.status === 'missing' || (taskHealth.status === 'degraded' && tasks.length === 0);" +
         "    const throughputCurrent = taskTelemetryUnavailable ? null : taskSplit.current.filter(isDone).length;" +
         "    const throughputPrevious = taskTelemetryUnavailable ? null : taskSplit.previous.filter(isDone).length;" +
         "    const reopenedCount = (items) => items.filter((item) => {" +
@@ -732,7 +732,7 @@ export const WEEKLY_FITNESS_SUMMARY_TEMPLATE = {
         "      trendDeltas: { throughput: null, regression_rate: null, merge_success: null, reopened_tasks: null, debt_growth: null }," +
         "      trendAlerts: [{ metric: 'summary', severity: 'high', delta: null, reason: `Fitness summary fallback engaged: ${error?.message || 'unknown error'}` }]," +
         "      priorWeekTrendDeltas: { throughput: null, regression_rate: null, merge_success: null, reopened_tasks: null, debt_growth: null }," +
-        "      priorWeekDeltas: null," +
+        "      priorWeekDeltas: { throughput: null, regression_rate: null, merge_success: null, reopened_tasks: null, debt_growth: null }," +
         "      priorWeekMetrics: null," +
         "      dataQuality: { overallConfidence: 'low', missingSources: ['tasks', 'prs', 'debt'], degradedSources: [] }," +
         "    };" +
