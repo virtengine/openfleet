@@ -1352,6 +1352,7 @@ async function getWorkflowEngineModule() {
 
         if (shouldBootstrapDefaultWorkflowSingleton()) {
           const engine = _wfEngine.getWorkflowEngine({ services });
+          attachWorkflowEngineLiveBridge(engine);
           if (!_wfTaskTraceHookRegistered && typeof engine?.registerTaskTraceHook === "function") {
             engine.registerTaskTraceHook((event) => {
               handleTaskWorkflowTraceEvent(event);
@@ -1377,6 +1378,7 @@ async function getWorkflowEngineModule() {
     if (!_wfRecommendedInstalled && _wfTemplates && shouldBootstrapDefaultWorkflowSingleton()) {
       try {
         const engine = _wfEngine.getWorkflowEngine();
+        attachWorkflowEngineLiveBridge(engine);
         const selection = resolveWorkflowBootstrapSelection(_wfTemplates);
         let result = { installed: [], skipped: [], errors: [] };
 
@@ -1672,6 +1674,7 @@ async function getWorkflowRequestContext(reqUrl) {
         services: _wfServices || {},
         onTaskWorkflowEvent: handleTaskWorkflowTraceEvent,
       });
+      attachWorkflowEngineLiveBridge(engine);
       if (typeof engine.registerTaskTraceHook === "function") {
         engine.registerTaskTraceHook((event) => {
           handleTaskWorkflowTraceEvent(event);
@@ -1679,6 +1682,7 @@ async function getWorkflowRequestContext(reqUrl) {
       }
       engine.load();
     }
+    attachWorkflowEngineLiveBridge(engine);
     _wfEngineByWorkspace.set(workspaceKey, engine);
   }
   maybeBootstrapWorkspaceWorkflowTemplates(
@@ -3401,6 +3405,10 @@ const wsClients = new Set();
 let sessionListenerAttached = false;
 /** @type {ReturnType<typeof setInterval>|null} */
 let wsHeartbeatTimer = null;
+const WORKFLOW_WS_BATCH_MS = 80;
+const workflowWsBatchByKey = new Map();
+const workflowEngineListenerCleanup = new WeakMap();
+let workflowWsSeq = 0;
 let uiInstanceLockPath = "";
 let uiInstanceLockHeld = false;
 let _sessionTokenLastTouchedAt = 0;
@@ -7536,6 +7544,298 @@ function sendWsMessage(socket, payload) {
   } catch {
     // best effort
   }
+}
+
+function normalizeWorkflowNodeStatus(status) {
+  const normalized = String(status || "").trim().toLowerCase();
+  if (normalized === "completed" || normalized === "success") return "success";
+  if (normalized === "failed" || normalized === "error" || normalized === "fail") return "fail";
+  if (normalized === "running") return "running";
+  if (normalized === "skipped" || normalized === "skip") return "skipped";
+  if (normalized === "waiting") return "waiting";
+  return normalized || "unknown";
+}
+
+function pickTokenCount(payload = {}) {
+  const candidates = [
+    payload?.tokenCount,
+    payload?.totalTokens,
+    payload?.usage?.total_tokens,
+    payload?.usage?.totalTokens,
+    payload?.summary?.tokenCount,
+    payload?.summary?.totalTokens,
+    payload?.metrics?.total_tokens,
+    payload?.metrics?.totalTokens,
+  ];
+  for (const candidate of candidates) {
+    const parsed = Number(candidate);
+    if (Number.isFinite(parsed) && parsed >= 0) return Math.max(0, Math.round(parsed));
+  }
+  return null;
+}
+
+function summarizeOutputLines(value, maxLines = 3, maxChars = 140) {
+  const text = String(value ?? "")
+    .replace(/\r\n/g, "\n")
+    .replace(/\r/g, "\n")
+    .trim();
+  if (!text) return [];
+  const lines = text
+    .split("\n")
+    .map((line) => line.trim())
+    .filter(Boolean)
+    .slice(0, maxLines)
+    .map((line) => (line.length > maxChars ? `${line.slice(0, maxChars - 1)}…` : line));
+  return lines;
+}
+
+function buildWorkflowNodeOutputPreview(nodeType, output = null) {
+  if (output == null) return { lines: [] };
+  const type = String(nodeType || "").trim().toLowerCase();
+  const out = output && typeof output === "object" ? output : { value: output };
+  const lines = [];
+
+  if (type.startsWith("agent.") || type === "action.run_agent") {
+    const text = out.summary || out.output || out.message || "";
+    lines.push(...summarizeOutputLines(text, 3, 120));
+    const tokenCount = pickTokenCount(out);
+    return { lines: lines.slice(0, 3), tokenCount };
+  }
+
+  if (type.startsWith("condition.")) {
+    const branch =
+      String(out.matchedPort || out.port || "").trim() ||
+      (typeof out.result === "boolean" ? (out.result ? "true" : "false") : "");
+    if (branch) lines.push(`Branch: ${branch}`);
+    if (Object.prototype.hasOwnProperty.call(out, "value")) lines.push(`Value: ${String(out.value)}`);
+    return { lines: lines.slice(0, 3) };
+  }
+
+  if (type.startsWith("git.") || type.startsWith("github.")) {
+    const shaRaw = String(out.commitSha || out.sha || out.head || "").trim();
+    const sha = /^[0-9a-f]{7,40}$/i.test(shaRaw) ? shaRaw.slice(0, 12) : "";
+    const prUrlRaw = String(out.prUrl || out.url || out.htmlUrl || "").trim();
+    if (sha) lines.push(`Commit: ${sha}`);
+    if (prUrlRaw) lines.push(`PR: ${prUrlRaw}`);
+    if (!lines.length && out.output) lines.push(...summarizeOutputLines(out.output, 2, 120));
+    return { lines: lines.slice(0, 3) };
+  }
+
+  if (typeof out === "object") {
+    const text = out.message || out.summary || out.output || out.error || "";
+    if (text) lines.push(...summarizeOutputLines(text, 3, 120));
+    if (!lines.length) {
+      const keys = Object.keys(out).slice(0, 3);
+      if (keys.length) lines.push(`Keys: ${keys.join(", ")}`);
+    }
+    return { lines: lines.slice(0, 3) };
+  }
+
+  return { lines: summarizeOutputLines(out, 3, 120) };
+}
+
+function queueWorkflowWsEvent(event = {}) {
+  const runId = String(event.runId || "").trim();
+  const workflowId = String(event.workflowId || "").trim();
+  if (!runId || !workflowId) return;
+  const key = `${workflowId}:${runId}`;
+  let bucket = workflowWsBatchByKey.get(key);
+  if (!bucket) {
+    bucket = { workflowId, runId, events: [], timer: null };
+    workflowWsBatchByKey.set(key, bucket);
+  }
+  const seq = ++workflowWsSeq;
+  bucket.events.push({
+    ...event,
+    seq,
+    timestamp: Number(event.timestamp) || Date.now(),
+  });
+  if (bucket.timer) return;
+  bucket.timer = setTimeout(() => {
+    bucket.timer = null;
+    const pending = bucket.events.splice(0, bucket.events.length);
+    if (!pending.length) {
+      workflowWsBatchByKey.delete(key);
+      return;
+    }
+    const runEvents = new Map();
+    const nodeEvents = new Map();
+    const edgeEvents = new Map();
+    for (const entry of pending) {
+      const kind = String(entry.kind || "").trim();
+      if (kind === "run") {
+        runEvents.set(String(entry.runId || ""), entry);
+      } else if (kind === "node") {
+        nodeEvents.set(String(entry.nodeId || ""), entry);
+      } else if (kind === "edge") {
+        edgeEvents.set(String(entry.edgeId || ""), entry);
+      }
+    }
+    const events = [
+      ...Array.from(runEvents.values()),
+      ...Array.from(nodeEvents.values()),
+      ...Array.from(edgeEvents.values()),
+    ].sort((a, b) => Number(a.seq || 0) - Number(b.seq || 0));
+    if (events.length) {
+      broadcastUiEvent(["workflows"], "workflow-run-events", {
+        workflowId: bucket.workflowId,
+        runId: bucket.runId,
+        events,
+      });
+    }
+    if (!bucket.events.length) workflowWsBatchByKey.delete(key);
+  }, WORKFLOW_WS_BATCH_MS);
+}
+
+function attachWorkflowEngineLiveBridge(engine) {
+  if (!engine || typeof engine.on !== "function" || workflowEngineListenerCleanup.has(engine)) {
+    return;
+  }
+  const unsubs = [];
+  const listen = (eventName, handler) => {
+    const wrapped = (payload = {}) => {
+      try {
+        handler(payload);
+      } catch {
+        // best effort
+      }
+    };
+    engine.on(eventName, wrapped);
+    unsubs.push(() => {
+      try {
+        engine.off(eventName, wrapped);
+      } catch {}
+    });
+  };
+
+  listen("run:start", (payload) => {
+    queueWorkflowWsEvent({
+      kind: "run",
+      workflowId: payload.workflowId,
+      workflowName: payload.name || payload.workflowName || null,
+      runId: payload.runId,
+      status: "running",
+      eventType: "run:start",
+      timestamp: Date.now(),
+    });
+  });
+  listen("run:end", (payload) => {
+    queueWorkflowWsEvent({
+      kind: "run",
+      workflowId: payload.workflowId,
+      workflowName: payload.workflowName || payload.name || null,
+      runId: payload.runId,
+      status: String(payload.status || "").trim().toLowerCase() || "completed",
+      duration: Number(payload.duration) || null,
+      eventType: "run:end",
+      timestamp: Date.now(),
+    });
+  });
+  listen("run:error", (payload) => {
+    queueWorkflowWsEvent({
+      kind: "run",
+      workflowId: payload.workflowId,
+      workflowName: payload.workflowName || payload.name || null,
+      runId: payload.runId,
+      status: "failed",
+      error: String(payload.error || "").trim() || null,
+      eventType: "run:error",
+      timestamp: Date.now(),
+    });
+  });
+  listen("run:cancel:requested", (payload) => {
+    queueWorkflowWsEvent({
+      kind: "run",
+      workflowId: payload.workflowId,
+      workflowName: payload.workflowName || null,
+      runId: payload.runId,
+      status: "cancelled",
+      eventType: "run:cancel",
+      timestamp: Number(payload.requestedAt) || Date.now(),
+    });
+  });
+  listen("node:start", (payload) => {
+    queueWorkflowWsEvent({
+      kind: "node",
+      workflowId: payload.workflowId,
+      workflowName: payload.workflowName || null,
+      runId: payload.runId,
+      nodeId: payload.nodeId,
+      nodeType: payload.nodeType,
+      nodeLabel: payload.nodeLabel,
+      status: "running",
+      eventType: "node:start",
+      timestamp: Date.now(),
+    });
+  });
+  listen("node:complete", (payload) => {
+    const preview = buildWorkflowNodeOutputPreview(payload.nodeType, payload.output);
+    queueWorkflowWsEvent({
+      kind: "node",
+      workflowId: payload.workflowId,
+      workflowName: payload.workflowName || null,
+      runId: payload.runId,
+      nodeId: payload.nodeId,
+      nodeType: payload.nodeType,
+      nodeLabel: payload.nodeLabel,
+      status: "success",
+      outputPreview: preview,
+      eventType: "node:complete",
+      timestamp: Date.now(),
+    });
+  });
+  listen("node:error", (payload) => {
+    queueWorkflowWsEvent({
+      kind: "node",
+      workflowId: payload.workflowId,
+      workflowName: payload.workflowName || null,
+      runId: payload.runId,
+      nodeId: payload.nodeId,
+      nodeType: payload.nodeType,
+      nodeLabel: payload.nodeLabel,
+      status: "fail",
+      error: String(payload.error || "").trim() || null,
+      retries: Number(payload.retries) || 0,
+      eventType: "node:error",
+      timestamp: Date.now(),
+    });
+  });
+  listen("node:skip", (payload) => {
+    queueWorkflowWsEvent({
+      kind: "node",
+      workflowId: payload.workflowId,
+      workflowName: payload.workflowName || null,
+      runId: payload.runId,
+      nodeId: payload.nodeId,
+      nodeType: payload.nodeType,
+      nodeLabel: payload.nodeLabel,
+      status: normalizeWorkflowNodeStatus(payload.status || "skipped"),
+      reason: payload.reason || "skipped",
+      eventType: "node:skip",
+      timestamp: Date.now(),
+    });
+  });
+  listen("edge:flow", (payload) => {
+    queueWorkflowWsEvent({
+      kind: "edge",
+      workflowId: payload.workflowId,
+      workflowName: payload.workflowName || null,
+      runId: payload.runId,
+      edgeId: payload.edgeId,
+      source: payload.source,
+      target: payload.target,
+      sourcePort: payload.sourcePort || "default",
+      backEdge: payload.backEdge === true,
+      reason: payload.reason || "flow",
+      iteration: Number(payload.iteration) || null,
+      eventType: "edge:flow",
+      timestamp: Date.now(),
+    });
+  });
+
+  workflowEngineListenerCleanup.set(engine, () => {
+    for (const unsub of unsubs) unsub();
+  });
 }
 
 function broadcastUiEvent(channels, type, payload = {}) {

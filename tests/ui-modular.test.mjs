@@ -1,5 +1,6 @@
 import { describe, it, expect } from "vitest";
 import {
+  buildNodeStatusesFromRunDetail,
   createHistoryState,
   parseGraphSnapshot,
   pushHistorySnapshot,
@@ -204,5 +205,43 @@ describe("workflow canvas helpers", () => {
     const branched = pushHistorySnapshot(undone.history, [{ id: "node-3", position: { x: 40, y: 50 } }], [], 50);
     expect(parseGraphSnapshot(branched.present).nodes[0].id).toBe("node-3");
     expect(branched.future).toEqual([]);
+  });
+
+  it("prefers status events and explicit statuses when deriving node execution states", () => {
+    const statuses = buildNodeStatusesFromRunDetail({
+      status: "running",
+      detail: {
+        nodeStatuses: {
+          "node-a": "waiting",
+        },
+        nodeStatusEvents: [
+          { nodeId: "node-a", status: "running" },
+          { nodeId: "node-b", status: "completed" },
+        ],
+      },
+    });
+
+    expect(statuses).toEqual({
+      "node-a": "running",
+      "node-b": "completed",
+    });
+  });
+
+  it("backfills node statuses from logs when explicit status data is missing", () => {
+    const statuses = buildNodeStatusesFromRunDetail({
+      status: "failed",
+      detail: {
+        logs: [
+          { nodeId: "node-a" },
+          { nodeId: "node-a" },
+          { nodeId: "node-b" },
+        ],
+      },
+    });
+
+    expect(statuses).toEqual({
+      "node-a": "failed",
+      "node-b": "failed",
+    });
   });
 });

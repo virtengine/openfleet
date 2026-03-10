@@ -1648,6 +1648,42 @@ export class WorkflowEngine extends EventEmitter {
     const executed = new Set();
     const queue = [...entryNodes.map((n) => n.id)];
     const nodeMap = new Map((def.nodes || []).map((n) => [n.id, n]));
+    const workflowId = ctx?.data?._workflowId || null;
+    const workflowName = ctx?.data?._workflowName || null;
+    const emitNodeEvent = (type, node, payload = {}) => {
+      this.emit(type, {
+        runId: ctx.id,
+        workflowId,
+        workflowName,
+        nodeId: node?.id || payload?.nodeId || null,
+        nodeType: node?.type || payload?.nodeType || null,
+        nodeLabel: node?.label || payload?.nodeLabel || null,
+        ...payload,
+      });
+    };
+    const emitEdgeFlow = (edge, payload = {}) => {
+      if (!edge) return;
+      this.emit("edge:flow", {
+        runId: ctx.id,
+        workflowId,
+        workflowName,
+        edgeId: edge.id || `${edge.source}->${edge.target}`,
+        source: edge.source,
+        target: edge.target,
+        sourcePort: String(edge.sourcePort || "default").trim() || "default",
+        backEdge: edge.backEdge === true,
+        ...payload,
+      });
+    };
+    const markNodeSkipped = (nodeId, reason = "skipped", payload = {}) => {
+      const node = nodeMap.get(nodeId) || null;
+      ctx.setNodeStatus(nodeId, NodeStatus.SKIPPED);
+      emitNodeEvent("node:skip", node, {
+        status: NodeStatus.SKIPPED,
+        reason,
+        ...payload,
+      });
+    };
 
     // ── Resume support (retry from_failed) ──────────────────────────────
     // If nodes are already marked COMPLETED in the context (pre-seeded by
@@ -1710,7 +1746,7 @@ export class WorkflowEngine extends EventEmitter {
         ctx.data._workflowTerminalAt = Date.now();
         for (const [nid] of nodeMap) {
           if (!executed.has(nid)) {
-            ctx.setNodeStatus(nid, NodeStatus.SKIPPED);
+            markNodeSkipped(nid, "run-cancelled");
             executed.add(nid);
           }
         }
@@ -1732,19 +1768,19 @@ export class WorkflowEngine extends EventEmitter {
 
           const activeInfo = this._activeRuns.get(ctx.id);
           if (activeInfo?.cancelRequested) {
-            ctx.setNodeStatus(nodeId, NodeStatus.SKIPPED);
+            markNodeSkipped(nodeId, "run-cancelled");
             executed.add(nodeId);
             return { nodeId, result: null, skipped: true };
           }
 
           ctx.setNodeStatus(nodeId, NodeStatus.RUNNING);
           console.log(`${TAG} node:start ${nodeId} (${node.type}) [${node.label || ""}] wf=${ctx.data?._workflowName || ctx.data?._workflowId || "?"}`);
-          this.emit("node:start", { nodeId, type: node.type, label: node.label });
+          emitNodeEvent("node:start", node, { status: NodeStatus.RUNNING });
           await this._emitTaskTraceEvent("workflow.node.start", {
             ctx,
             runId: ctx.id,
-            workflowId: ctx.data?._workflowId || null,
-            workflowName: ctx.data?._workflowName || null,
+            workflowId,
+            workflowName,
             node,
             status: NodeStatus.RUNNING,
           });
@@ -1774,7 +1810,7 @@ export class WorkflowEngine extends EventEmitter {
                 ctx.incrementRetry(nodeId);
                 const backoffMs = Math.min(baseRetryDelay * Math.pow(2, attempt - 1), 30000);
                 ctx.log(nodeId, `Retry ${attempt}/${maxRetries} after ${backoffMs}ms`, "warn");
-                this.emit("node:retry", { nodeId, attempt, maxRetries, backoffMs });
+                emitNodeEvent("node:retry", node, { attempt, maxRetries, backoffMs });
                 await new Promise((r) => setTimeout(r, backoffMs));
                 ctx.setNodeStatus(nodeId, NodeStatus.RUNNING);
               }
@@ -1784,12 +1820,15 @@ export class WorkflowEngine extends EventEmitter {
               executed.add(nodeId);
               const resultSuffix = node.type?.startsWith("condition.") ? ` result=${JSON.stringify(result?.result ?? result)}` : "";
               console.log(`${TAG} node:complete ${nodeId} (${node.type}) [${node.label || ""}]${resultSuffix}`);
-              this.emit("node:complete", { nodeId, type: node.type });
+              emitNodeEvent("node:complete", node, {
+                status: NodeStatus.COMPLETED,
+                output: result,
+              });
               await this._emitTaskTraceEvent("workflow.node.complete", {
                 ctx,
                 runId: ctx.id,
-                workflowId: ctx.data?._workflowId || null,
-                workflowName: ctx.data?._workflowName || null,
+                workflowId,
+                workflowName,
                 node,
                 result,
                 status: NodeStatus.COMPLETED,
@@ -1812,12 +1851,16 @@ export class WorkflowEngine extends EventEmitter {
           ctx.setNodeStatus(nodeId, NodeStatus.FAILED);
           executed.add(nodeId);
           console.warn(`${TAG} node:FAILED ${nodeId} (${node.type}) [${node.label || ""}]: ${lastErr?.message || lastErr}`);
-          this.emit("node:error", { nodeId, error: lastErr.message, retries: ctx.getRetryCount(nodeId) });
+          emitNodeEvent("node:error", node, {
+            status: NodeStatus.FAILED,
+            error: lastErr.message,
+            retries: ctx.getRetryCount(nodeId),
+          });
           await this._emitTaskTraceEvent("workflow.node.error", {
             ctx,
             runId: ctx.id,
-            workflowId: ctx.data?._workflowId || null,
-            workflowName: ctx.data?._workflowName || null,
+            workflowId,
+            workflowName,
             node,
             status: NodeStatus.FAILED,
             error: lastErr?.message || String(lastErr),
@@ -1841,7 +1884,7 @@ export class WorkflowEngine extends EventEmitter {
           // If any node fails hard, mark remaining as skipped
           for (const [nid] of nodeMap) {
             if (!executed.has(nid)) {
-              ctx.setNodeStatus(nid, NodeStatus.SKIPPED);
+              markNodeSkipped(nid, "upstream-failed");
             }
           }
           return;
@@ -1855,7 +1898,7 @@ export class WorkflowEngine extends EventEmitter {
         ctx.data._workflowTerminalAt = Date.now();
         for (const [nid] of nodeMap) {
           if (!executed.has(nid)) {
-            ctx.setNodeStatus(nid, NodeStatus.SKIPPED);
+            markNodeSkipped(nid, "run-cancelled");
             executed.add(nid);
           }
         }
@@ -1885,7 +1928,7 @@ export class WorkflowEngine extends EventEmitter {
 
         for (const [nid] of nodeMap) {
           if (!executed.has(nid)) {
-            ctx.setNodeStatus(nid, NodeStatus.SKIPPED);
+            markNodeSkipped(nid, "workflow-ended");
             executed.add(nid);
           }
         }
@@ -1913,7 +1956,7 @@ export class WorkflowEngine extends EventEmitter {
             const newDegree = (inDegree.get(edge.target) || 1) - 1;
             inDegree.set(edge.target, newDegree);
             if (newDegree <= 0 && !executed.has(edge.target)) {
-              ctx.setNodeStatus(edge.target, NodeStatus.SKIPPED);
+              markNodeSkipped(edge.target, "trigger-not-fired", { sourceNodeId: nodeId });
               executed.add(edge.target);
             }
           }
@@ -1978,7 +2021,7 @@ export class WorkflowEngine extends EventEmitter {
           }
         }
 
-        const consumeEdgeDependency = (targetNodeId, matched) => {
+        const consumeEdgeDependency = (targetNodeId, matched, skipInfo = null) => {
           const nextDegree = (inDegree.get(targetNodeId) || 1) - 1;
           inDegree.set(targetNodeId, nextDegree);
           if (matched) {
@@ -1991,7 +2034,7 @@ export class WorkflowEngine extends EventEmitter {
             if ((incomingSatisfiedCount.get(targetNodeId) || 0) > 0) {
               ready.add(targetNodeId);
             } else {
-              ctx.setNodeStatus(targetNodeId, NodeStatus.SKIPPED);
+              markNodeSkipped(targetNodeId, skipInfo?.reason || "skipped", skipInfo?.payload || {});
               executed.add(targetNodeId);
               const skippedNode = nodeMap.get(targetNodeId);
               console.log(`${TAG} node:SKIPPED ${targetNodeId} (${skippedNode?.type || "?"}) [${skippedNode?.label || ""}] — no satisfied edges`);
@@ -2003,7 +2046,13 @@ export class WorkflowEngine extends EventEmitter {
           const edgePort = String(edge?.sourcePort || "default").trim() || "default";
           if (selectedPort && edgePort !== selectedPort) {
             if (!edge.backEdge) {
-              consumeEdgeDependency(edge.target, false);
+              consumeEdgeDependency(edge.target, false, {
+                reason: "edge-port-mismatch",
+                payload: {
+                  sourceNodeId: nodeId,
+                  edgeId: edge.id || `${edge.source}->${edge.target}`,
+                },
+              });
             }
             continue;
           }
@@ -2015,7 +2064,13 @@ export class WorkflowEngine extends EventEmitter {
               if (!condResult) {
                 // For back-edges, a false condition simply means "don't loop"
                 if (!edge.backEdge) {
-                  consumeEdgeDependency(edge.target, false);
+                  consumeEdgeDependency(edge.target, false, {
+                    reason: "edge-condition-false",
+                    payload: {
+                      sourceNodeId: nodeId,
+                      edgeId: edge.id || `${edge.source}->${edge.target}`,
+                    },
+                  });
                 }
                 continue;
               }
@@ -2039,6 +2094,11 @@ export class WorkflowEngine extends EventEmitter {
             }
 
             backEdgeIterations.set(edgeKey, iterCount);
+            emitEdgeFlow(edge, {
+              reason: "back-edge",
+              iteration: iterCount,
+              maxIterations: maxIter,
+            });
             this.emit("loop:back_edge", {
               edgeId: edgeKey,
               source: edge.source,
@@ -2081,6 +2141,9 @@ export class WorkflowEngine extends EventEmitter {
           }
 
           // Decrement in-degree (forward edges only)
+          emitEdgeFlow(edge, {
+            reason: selectedPort ? "selected-port" : "forward",
+          });
           consumeEdgeDependency(edge.target, true);
         }
       }
@@ -2903,5 +2966,3 @@ export function listWorkflows(opts) { return getWorkflowEngine(opts).list(); }
 export function getWorkflow(id, opts) { return getWorkflowEngine(opts).get(id); }
 export async function executeWorkflow(id, data, opts) { return getWorkflowEngine(opts).execute(id, data, opts); }
 export async function retryWorkflowRun(runId, retryOpts, engineOpts) { return getWorkflowEngine(engineOpts).retryRun(runId, retryOpts); }
-
-
