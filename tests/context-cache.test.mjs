@@ -240,6 +240,27 @@ describe("context-cache", () => {
       expect(result._cachedLogId).toBeUndefined();
       expect(result.aggregated_output).toBe(fullOutput);
     });
+
+    it("applies the immediate git cap when BOSUN_GIT_OUTPUT_MAX_CHARS is set below tier-2 span", async () => {
+      process.env.BOSUN_GIT_OUTPUT_MAX_CHARS = "900";
+
+      const fullOutput = makeLargeGitOutput(60);
+      const items = [{
+        type: "command_execution",
+        command: "git log --oneline",
+        aggregated_output: fullOutput,
+      }];
+
+      const [result] = await contextCache.cacheAndCompressItems(items);
+
+      expect(result._cachedLogId).toBeDefined();
+      expect(result.aggregated_output).toContain("bosun --tool-log");
+      expect(result.aggregated_output).not.toBe(fullOutput);
+
+      const retrieved = await contextCache.retrieveToolLog(result._cachedLogId);
+      expect(retrieved.found).toBe(true);
+      expect(retrieved.entry.item.aggregated_output).toBe(fullOutput);
+    });
   });
 
   // ── retrieveToolLog ────────────────────────────────────────────────────
