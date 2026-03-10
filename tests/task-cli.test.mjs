@@ -86,6 +86,8 @@ describe("task CLI store persistence", () => {
 
     expect(result.status).toBe(0);
     expect((readStore(storePath).tasks || {})[task.id]).toBeUndefined();
+  });
+});
 
 const mockConfigureTaskStore = vi.fn();
 const mockLoadStore = vi.fn();
@@ -103,22 +105,30 @@ const mockReadFileSync = vi.fn();
 const mockExistsSync = vi.fn(() => false);
 const mockStatSync = vi.fn(() => ({ isDirectory: () => false }));
 
-vi.mock("../task/task-store.mjs", () => ({
-  configureTaskStore: mockConfigureTaskStore,
-  loadStore: mockLoadStore,
-  getStats: mockGetStats,
-}));
-
-vi.mock("node:fs", () => ({
-  readFileSync: mockReadFileSync,
-  existsSync: mockExistsSync,
-  statSync: mockStatSync,
-}));
-
 describe("task-cli taskStats repo area lock state", () => {
   beforeEach(() => {
+    vi.resetModules();
     vi.clearAllMocks();
     mockExistsSync.mockImplementation(() => false);
+    vi.doMock("../task/task-store.mjs", () => ({
+      configureTaskStore: mockConfigureTaskStore,
+      loadStore: mockLoadStore,
+      getStats: mockGetStats,
+    }));
+    vi.doMock("node:fs", async () => {
+      const actual = await vi.importActual("node:fs");
+      return {
+        ...actual,
+        readFileSync: mockReadFileSync,
+        existsSync: mockExistsSync,
+        statSync: mockStatSync,
+      };
+    });
+  });
+
+  afterEach(() => {
+    vi.doUnmock("../task/task-store.mjs");
+    vi.doUnmock("node:fs");
   });
 
   it("surfaces adaptive repo-area lock state from runtime payload", async () => {
