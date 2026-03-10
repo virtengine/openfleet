@@ -106,7 +106,7 @@ export const TASK_BATCH_PROCESSOR_TEMPLATE = {
     // ── Record batch results ─────────────────────────────────────────────
     node("record-results", "action.set_variable", "Record Results", {
       key: "batchResult",
-      value: "{{dispatchResult}}",
+      value: "{{dispatch-tasks}}",
     }, { x: 400, y: 570 }),
 
     // ── Notify on completion ─────────────────────────────────────────────

@@ -14583,7 +14583,7 @@
           "label": "Record Results",
           "config": {
             "key": "batchResult",
-            "value": "{{dispatchResult}}"
+            "value": "{{dispatch-tasks}}"
           },
           "position": {
             "x": 400,
@@ -30234,7 +30234,7 @@
           "label": "Record Results",
           "config": {
             "key": "batchResult",
-            "value": "{{dispatchResult}}"
+            "value": "{{dispatch-tasks}}"
           },
           "position": {
             "x": 400,

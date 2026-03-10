@@ -679,6 +679,15 @@ describe("workflow setup profiles", () => {
     }
   });
 
+  it("wires batch summary notifications to the loop fan-out output", () => {
+    const batchProcessor = getTemplate("template-task-batch-processor");
+    const recordNode = batchProcessor?.nodes?.find((node) => node.id === "record-results");
+    const notifyNode = batchProcessor?.nodes?.find((node) => node.id === "notify-complete");
+
+    expect(recordNode?.config?.value).toBe("{{dispatch-tasks}}");
+    expect(notifyNode?.config?.message).toContain("{{batchResult.successCount}}/{{batchResult.totalItems}}");
+  });
+
   it("exposes built-in setup profiles with template selections", () => {
     const profiles = listWorkflowSetupProfiles();
     const ids = profiles.map((profile) => profile.id);
