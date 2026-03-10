@@ -1060,6 +1060,35 @@ describe("New node types", () => {
     expect(canonical).toBe(typoAlias);
   });
 
+  it("flow.universal dispatch mode accepts synchronous engine return values", async () => {
+    const handler = getNodeType("flow.universal");
+    expect(handler).toBeDefined();
+
+    const ctx = new WorkflowContext({ _workflowId: "parent-wf", taskId: "TASK-42" });
+    const mockEngine = {
+      execute: vi.fn(() => new WorkflowContext({ ok: true })),
+      get: vi.fn(() => ({ id: "template-task-archiver" })),
+    };
+    const node = {
+      id: "universal-dispatch",
+      type: "flow.universal",
+      config: {
+        workflowId: "template-task-archiver",
+        mode: "dispatch",
+        inheritContext: true,
+      },
+    };
+
+    const result = await handler.execute(node, ctx, mockEngine);
+    expect(result).toMatchObject({
+      success: true,
+      queued: true,
+      mode: "dispatch",
+      workflowId: "template-task-archiver",
+    });
+    expect(mockEngine.execute).toHaveBeenCalledTimes(1);
+  });
+
   it("flow.end hard-stops remaining nodes and marks run as failed", async () => {
     const testEngine = makeTmpEngine();
     const wf = makeSimpleWorkflow(
@@ -1200,6 +1229,36 @@ describe("action.execute_workflow", () => {
       releaseChild?.(new WorkflowContext({}));
       await childRunPromise;
     }
+  });
+
+  it("dispatch mode accepts synchronous engine return values", async () => {
+    const handler = getNodeType("action.execute_workflow");
+    expect(handler).toBeDefined();
+
+    const ctx = new WorkflowContext({ _workflowId: "parent-dispatch-wf" });
+    const mockEngine = {
+      execute: vi.fn(() => new WorkflowContext({ ok: true })),
+      get: vi.fn().mockReturnValue({ id: "child-dispatch-wf" }),
+    };
+    const node = {
+      id: "dispatch-child-sync-return",
+      type: "action.execute_workflow",
+      config: {
+        workflowId: "child-dispatch-wf",
+        mode: "dispatch",
+        outputVariable: "dispatchSummary",
+      },
+    };
+
+    const result = await handler.execute(node, ctx, mockEngine);
+    expect(result).toMatchObject({
+      success: true,
+      queued: true,
+      mode: "dispatch",
+      workflowId: "child-dispatch-wf",
+    });
+    expect(ctx.data.dispatchSummary).toEqual(result);
+    expect(mockEngine.execute).toHaveBeenCalledTimes(1);
   });
 
   it("blocks recursive workflow loops unless allowRecursive is true", async () => {
