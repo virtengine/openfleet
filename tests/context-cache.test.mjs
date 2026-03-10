@@ -180,6 +180,9 @@ describe("context-cache", () => {
         { tool_name: "git", arguments: ["log", "--oneline"], field: "output" },
         { tool_name: "workspace_git_runner", command: "log --oneline", field: "aggregated_output" },
         { tool_name: "git_log_runner", field: "output" },
+        { tool_name: "workspace-git-log-runner", field: "output" },
+        { tool_name: "workspace-git-reflog-runner", field: "output" },
+        { tool_name: "workspace-git-diff-runner", field: "output" },
       ];
 
       for (const entry of cases) {
@@ -219,11 +222,23 @@ describe("context-cache", () => {
         tool_name: "git_diff_stat",
         output: largeOutput,
       }];
+      const showToolNameOnlyItems = [{
+        type: "function_call_output",
+        tool_name: "workspace-git-show-runner",
+        output: largeOutput,
+      }];
+      const statusToolNameOnlyItems = [{
+        type: "function_call_output",
+        tool_name: "workspace-git-status-runner",
+        output: largeOutput,
+      }];
 
       const [statusResult] = await contextCache.cacheAndCompressItems(statusItems);
       const [diffStatResult] = await contextCache.cacheAndCompressItems(diffStatItems);
       const [showResult] = await contextCache.cacheAndCompressItems(showItems);
       const [diffStatToolNameOnlyResult] = await contextCache.cacheAndCompressItems(diffStatToolNameOnlyItems);
+      const [showToolNameOnlyResult] = await contextCache.cacheAndCompressItems(showToolNameOnlyItems);
+      const [statusToolNameOnlyResult] = await contextCache.cacheAndCompressItems(statusToolNameOnlyItems);
 
       expect(statusResult._cachedLogId).toBeUndefined();
       expect(statusResult.aggregated_output).toBe(largeOutput);
@@ -233,6 +248,10 @@ describe("context-cache", () => {
       expect(showResult.aggregated_output).toBe(largeOutput);
       expect(diffStatToolNameOnlyResult._cachedLogId).toBeUndefined();
       expect(diffStatToolNameOnlyResult.output).toBe(largeOutput);
+      expect(showToolNameOnlyResult._cachedLogId).toBeUndefined();
+      expect(showToolNameOnlyResult.output).toBe(largeOutput);
+      expect(statusToolNameOnlyResult._cachedLogId).toBeUndefined();
+      expect(statusToolNameOnlyResult.output).toBe(largeOutput);
     });
 
     it("disables the immediate git cap when BOSUN_GIT_OUTPUT_MAX_CHARS=0", async () => {
