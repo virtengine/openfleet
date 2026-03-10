@@ -35,6 +35,7 @@ function readPersistedSelectedSessionId() {
 export const sessionsData = signal([]);
 export const selectedSessionId = signal(readPersistedSelectedSessionId());
 export const sessionMessages = signal([]);
+export const sessionMessagesSessionId = signal("");
 export const sessionsError = signal(null);
 /** Pagination metadata from the last loadSessionMessages call */
 export const sessionPagination = signal(null);
@@ -102,6 +103,8 @@ export async function loadSessions(filter = {}) {
 }
 
 export async function loadSessionMessages(id, opts = {}) {
+  const targetSessionId = String(id || "").trim();
+  if (!targetSessionId) return { ok: false, error: "invalid" };
   const parseApiError = (err) => {
     const raw = String(err?.message || "").trim();
     if (!raw) return "";
@@ -144,7 +147,7 @@ export async function loadSessionMessages(id, opts = {}) {
     return apiFetch(url, { _silent: true });
   };
   try {
-    const baseUrl = sessionPath(id);
+    const baseUrl = sessionPath(targetSessionId);
     if (!baseUrl) return { ok: false, error: "invalid" };
     const requestedLimit = opts.limit != null ? Number(opts.limit) : DEFAULT_SESSION_PAGE_SIZE;
     const limit =
@@ -165,18 +168,32 @@ export async function loadSessionMessages(id, opts = {}) {
     }
     if (res?.session) {
       const normalized = dedupeMessages(res.session.messages || []);
-      if (opts.prepend && sessionMessages.value?.length) {
+      const sameBoundSession =
+        String(sessionMessagesSessionId.value || "") === targetSessionId;
+      if (opts.prepend && sameBoundSession && sessionMessages.value?.length) {
         // Prepend older messages (loading history on scroll up)
         const merged = dedupeMessages([...normalized, ...sessionMessages.value]);
+        sessionMessagesSessionId.value = targetSessionId;
         sessionMessages.value = merged;
       } else {
+        sessionMessagesSessionId.value = targetSessionId;
         sessionMessages.value = normalized;
       }
       sessionPagination.value = res.pagination || null;
       return { ok: true, messages: normalized, pagination: res.pagination || null };
     }
+    if (!opts.prepend) {
+      sessionMessagesSessionId.value = targetSessionId;
+      sessionMessages.value = [];
+      sessionPagination.value = null;
+    }
     return { ok: false, error: "empty" };
   } catch {
+    if (!opts.prepend) {
+      sessionMessagesSessionId.value = targetSessionId;
+      sessionMessages.value = [];
+      sessionPagination.value = null;
+    }
     return { ok: false, error: "unavailable" };
   }
 }
@@ -373,6 +390,11 @@ function _flushMessageBatch() {
   if (_msgBatchBuffer.length === 0) return;
   const batch = _msgBatchBuffer;
   _msgBatchBuffer = [];
+  const selectedId = String(selectedSessionId.value || "");
+  if (!selectedId) return;
+  const boundId = String(sessionMessagesSessionId.value || "");
+  if (boundId && boundId !== selectedId) return;
+  if (!boundId) sessionMessagesSessionId.value = selectedId;
   const current = Array.isArray(sessionMessages.value) ? sessionMessages.value : [];
   const merged = dedupeMessages([...current, ...batch]);
   if (merged.length !== current.length) {

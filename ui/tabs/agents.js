@@ -48,6 +48,7 @@ import {
   selectedSessionId,
   sessionsData,
   sessionMessages,
+  sessionMessagesSessionId,
 } from "../components/session-list.js";
 import { ChatView } from "../components/chat-view.js";
 import { DiffViewer } from "../components/diff-viewer.js";
@@ -500,7 +501,9 @@ function WorkspaceViewer({ agent, onClose }) {
     const actionHistory = contextData?.actionHistory || contextData?.toolHistory || [];
     const fileAccess = contextData?.fileAccessSummary || null;
     const fileAccessFiles = fileAccess?.files || [];
-    const streamMessages = sessionMessages.value || [];
+    const streamMessages = String(sessionMessagesSessionId.value || "") === String(sessionId || "")
+      ? (sessionMessages.value || [])
+      : [];
     const latestModelResponse =
       streamMessages
         .slice()
@@ -2487,10 +2490,3 @@ export function FleetSessionsTab() {
     `}
   `;
 }
-
-
-
-
-
-
-
