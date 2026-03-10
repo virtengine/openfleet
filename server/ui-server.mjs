@@ -5891,11 +5891,35 @@ function normalizeJsonResponsePayload(payload) {
   return scrubStackTraces(payload);
 }
 
+function extractSafeErrorMessage(payload) {
+  if (payload == null) return "Internal server error";
+  if (payload instanceof Error) {
+    const message = String(payload.message || "").trim();
+    if (!message || isStackLikeErrorText(message)) return "Internal server error";
+    return message;
+  }
+  if (typeof payload === "string") {
+    const message = payload.trim();
+    if (!message || isStackLikeErrorText(message)) return "Internal server error";
+    return message;
+  }
+  if (typeof payload === "object") {
+    const candidate = String(payload?.error || payload?.message || "").trim();
+    if (!candidate || isStackLikeErrorText(candidate)) return "Internal server error";
+    return candidate;
+  }
+  return "Internal server error";
+}
+
 function jsonResponse(res, statusCode, payload) {
+  const normalizedPayload = normalizeJsonResponsePayload(payload);
   const safePayload =
     statusCode >= 500
-      ? { ok: false, error: "Internal server error" }
-      : normalizeJsonResponsePayload(payload);
+      ? {
+          ok: false,
+          error: extractSafeErrorMessage(normalizedPayload),
+        }
+      : normalizedPayload;
   const body = JSON.stringify(safePayload, null, 2);
   res.writeHead(statusCode, {
     "Content-Type": "application/json; charset=utf-8",
@@ -10841,8 +10865,11 @@ async function handleApi(req, res, url) {
         sourceId: String(body?.sourceId || "").trim() || undefined,
         repoUrl: String(body?.repoUrl || "").trim() || undefined,
         branch: String(body?.branch || "").trim() || undefined,
-        maxProfiles: Number.parseInt(String(body?.maxProfiles || ""), 10) || undefined,
+        maxEntries: Number.parseInt(String(body?.maxEntries ?? body?.maxProfiles ?? ""), 10) || undefined,
+        importAgents: body?.importAgents !== false,
+        importSkills: body?.importSkills !== false,
         importPrompts: body?.importPrompts !== false,
+        importTools: body?.importTools !== false,
       });
 
       broadcastUiEvent(["library"], "invalidate", {
@@ -14150,6 +14177,7 @@ async function handleApi(req, res, url) {
           broadcastUiEvent(["sessions"], "invalidate", { reason: "session-message", sessionId });
         }
       } catch (err) {
+        console.error("[ui-server] session message failed for %s: %s", String(sessionId), String(err?.message || err || "unknown"));
         jsonResponse(res, 500, { ok: false, error: err.message });
       }
       return;
@@ -16509,9 +16537,4 @@ export function stopTelegramUiServer() {
 }
 
 export { getLocalLanIp };
-
-
-
-
-
 

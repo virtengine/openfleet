@@ -3267,13 +3267,17 @@ function getRunActivityAt(run) {
 function normalizeWorkflowRunTriggerSource(run) {
   const rawSource = String(run?.triggerSource || "").trim().toLowerCase();
   const triggerEvent = String(run?.triggerEvent || "").trim().toLowerCase();
-  if (!rawSource || rawSource === "manual") return "manual";
+  if (!rawSource) {
+    return triggerEvent ? "event" : "unknown";
+  }
+  if (rawSource === "manual") return "manual";
   if (
     rawSource === "monitor-event" ||
     rawSource === "monitor" ||
     rawSource === "schedule-poll" ||
     rawSource === "startup" ||
-    rawSource === "manual-sweep"
+    rawSource === "manual-sweep" ||
+    rawSource.includes("schedule")
   ) {
     return "monitor-event";
   }
@@ -3282,7 +3286,7 @@ function normalizeWorkflowRunTriggerSource(run) {
     rawSource === "ui-server" ||
     rawSource === "ui-event" ||
     rawSource.includes("webhook") ||
-    (triggerEvent && rawSource !== "manual")
+    triggerEvent
   ) {
     return "event";
   }
@@ -3625,6 +3629,7 @@ function RunHistoryView() {
           <${MenuItem} value="manual">Manual</${MenuItem}>
           <${MenuItem} value="monitor-event">Monitor Event</${MenuItem}>
           <${MenuItem} value="event">Event</${MenuItem}>
+          <${MenuItem} value="unknown">Unknown</${MenuItem}>
         </${Select}>
       </div>
 
@@ -3976,3 +3981,4 @@ export function WorkflowsTab() {
     </div>
   `;
 }
+

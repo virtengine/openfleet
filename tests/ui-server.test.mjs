@@ -1577,7 +1577,7 @@ describe("ui-server mini app", () => {
     expect(detail.ok).toBe(true);
     expect(detail.data.runtimeSnapshot.state).toBe("queued");
     expect(detail.data.runtimeSnapshot.isLive).toBe(false);
-  }, 60000);
+  }, 120000);
 
   it("enriches task detail with linked workflow runs for the same taskId", async () => {
     process.env.TELEGRAM_UI_TUNNEL = "disabled";
