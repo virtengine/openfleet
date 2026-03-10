@@ -511,20 +511,30 @@ export const WEEKLY_FITNESS_SUMMARY_TEMPLATE = {
         "    const toNumber = (v, fallback = 0) => { const n = Number(v); return Number.isFinite(n) ? n : fallback; };" +
         "    const toIso = (ms) => new Date(ms).toISOString();" +
         "    const parseJsonSafe = (raw) => { try { return JSON.parse(String(raw)); } catch { return null; } };" +
+        "    const extractCanonicalItems = (value) => {" +
+        "      if (!value || typeof value !== 'object') return null;" +
+        "      const keys = ['items', 'tasks', 'entries', 'records', 'results', 'data'];" +
+        "      for (const key of keys) {" +
+        "        if (Array.isArray(value[key])) return value[key].filter(Boolean);" +
+        "      }" +
+        "      return null;" +
+        "    };" +
         "    const parseSource = (raw) => {" +
         "      if (Array.isArray(raw)) return { items: raw.filter(Boolean), degraded: false };" +
         "      if (raw && typeof raw === 'object') {" +
-        "        if (Array.isArray(raw.items)) return { items: raw.items.filter(Boolean), degraded: false };" +
-        "        if (Array.isArray(raw.tasks)) return { items: raw.tasks.filter(Boolean), degraded: false };" +
+        "        const canonical = extractCanonicalItems(raw) ?? extractCanonicalItems(raw.output);" +
+        "        if (canonical) return { items: canonical, degraded: false };" +
+        "        return { items: [], degraded: true };" +
         "      }" +
-        "      if (typeof raw !== 'string') return { items: [], degraded: false };" +
+        "      if (typeof raw !== 'string') return { items: [], degraded: true };" +
         "      const trimmed = raw.trim();" +
         "      if (!trimmed) return { items: [], degraded: false };" +
         "      const parsed = parseJsonSafe(trimmed);" +
         "      if (Array.isArray(parsed)) return { items: parsed.filter(Boolean), degraded: false };" +
         "      if (parsed && typeof parsed === 'object') {" +
-        "        if (Array.isArray(parsed.items)) return { items: parsed.items.filter(Boolean), degraded: false };" +
-        "        if (Array.isArray(parsed.tasks)) return { items: parsed.tasks.filter(Boolean), degraded: false };" +
+        "        const canonical = extractCanonicalItems(parsed) ?? extractCanonicalItems(parsed.output);" +
+        "        if (canonical) return { items: canonical, degraded: false };" +
+        "        return { items: [], degraded: true };" +
         "      }" +
         "      const lines = trimmed.split(/\\r?\\n/);" +
         "      const parsedLines = lines.map((line) => parseJsonSafe(line)).filter(Boolean);" +
@@ -533,7 +543,7 @@ export const WEEKLY_FITNESS_SUMMARY_TEMPLATE = {
         "    };" +
         "    const getTs = (item) => {" +
         "      if (!item || typeof item !== 'object') return null;" +
-        "      const fields = ['completedAt', 'closedAt', 'mergedAt', 'resolvedAt', 'updatedAt', 'createdAt', 'timestamp', 'ts', 'date'];" +
+        "      const fields = ['completedAt', 'closedAt', 'mergedAt', 'resolvedAt', 'updatedAt', 'createdAt', 'timestamp', 'ts', 'date', 'completed_at', 'closed_at', 'merged_at', 'resolved_at', 'updated_at', 'created_at'];" +
         "      for (const key of fields) {" +
         "        const value = item[key];" +
         "        if (!value) continue;" +
@@ -602,16 +612,16 @@ export const WEEKLY_FITNESS_SUMMARY_TEMPLATE = {
         "    const prSplit = splitWindows(prs);" +
         "    const debtSplit = splitWindows(debt);" +
         "    const doneStatuses = new Set(['done', 'closed', 'completed', 'merged', 'resolved']);" +
-        "    const isDone = (item) => doneStatuses.has(String(item?.status || '').toLowerCase());" +
+        "    const isDone = (item) => doneStatuses.has(String(item?.status ?? item?.state ?? '').toLowerCase());" +
         "    const taskTelemetryUnavailable = taskHealth.status === 'missing' || (taskHealth.status === 'degraded' && tasks.length === 0);" +
         "    const throughputCurrent = taskTelemetryUnavailable ? null : taskSplit.current.filter(isDone).length;" +
         "    const throughputPrevious = taskTelemetryUnavailable ? null : taskSplit.previous.filter(isDone).length;" +
         "    const reopenedCount = (items) => items.filter((item) => {" +
         "      if (!item || typeof item !== 'object') return false;" +
-        "      const reopenCount = toNumber(item.reopenCount ?? item.reopenedCount, 0);" +
+        "      const reopenCount = toNumber(item.reopenCount ?? item.reopenedCount ?? item.reopen_count ?? item.reopened_count, 0);" +
         "      if (reopenCount > 0) return true;" +
         "      if (item.reopened === true) return true;" +
-        "      const status = String(item.status || '').toLowerCase();" +
+        "      const status = String(item.status ?? item.state ?? '').toLowerCase();" +
         "      return status.includes('reopen');" +
         "    }).length;" +
         "    const reopenedCurrent = taskTelemetryUnavailable ? null : reopenedCount(taskSplit.current);" +
@@ -621,10 +631,10 @@ export const WEEKLY_FITNESS_SUMMARY_TEMPLATE = {
         "    const regressionPreviousCount = prSplit.previous.filter(classifyRegression).length;" +
         "    const regressionCurrentRate = prSplit.current.length > 0 ? Number(((regressionCurrentCount / prSplit.current.length) * 100).toFixed(2)) : null;" +
         "    const regressionPreviousRate = prSplit.previous.length > 0 ? Number(((regressionPreviousCount / prSplit.previous.length) * 100).toFixed(2)) : null;" +
-        "    const mergedCount = (items) => items.filter((pr) => String(pr?.state || '').toLowerCase() === 'merged' || Boolean(pr?.mergedAt)).length;" +
+        "    const mergedCount = (items) => items.filter((pr) => String(pr?.state || '').toLowerCase() === 'merged' || Boolean(pr?.mergedAt) || Boolean(pr?.merged_at) || pr?.merged === true).length;" +
         "    const closedCount = (items) => items.filter((pr) => {" +
         "      const state = String(pr?.state || '').toLowerCase();" +
-        "      return state === 'closed' || state === 'merged' || Boolean(pr?.closedAt) || Boolean(pr?.mergedAt);" +
+        "      return state === 'closed' || state === 'merged' || Boolean(pr?.closedAt) || Boolean(pr?.closed_at) || Boolean(pr?.mergedAt) || Boolean(pr?.merged_at);" +
         "    }).length;" +
         "    const mergeClosedCurrent = closedCount(prSplit.current);" +
         "    const mergeClosedPrevious = closedCount(prSplit.previous);" +
@@ -648,7 +658,8 @@ export const WEEKLY_FITNESS_SUMMARY_TEMPLATE = {
         "    };" +
         "    const debtCurrent = debtSplit.current.length > 0 ? debtDelta(debtSplit.current) : null;" +
         "    const debtPrevious = debtSplit.previous.length > 0 ? debtDelta(debtSplit.previous) : null;" +
-        "    const priorParsed = prevNode?.success === true ? parseJsonSafe(prevNode.content) : null;" +
+        "    const priorRaw = prevNode?.success === true ? parseJsonSafe(prevNode.content) : null;" +
+        "    const priorParsed = priorRaw?.fitnessSummary && typeof priorRaw.fitnessSummary === 'object' ? priorRaw.fitnessSummary : priorRaw;" +
         "    const metricConfidence = (primaryHealth, hasValue, usedFallbackWindow) => {" +
         "      if (!hasValue) return 'low';" +
         "      if (primaryHealth.status === 'missing') return 'low';" +
@@ -695,6 +706,18 @@ export const WEEKLY_FITNESS_SUMMARY_TEMPLATE = {
         "    };" +
         "    const confidenceValues = Object.values(metrics).map((m) => m?.confidence || 'low');" +
         "    const overallConfidence = confidenceValues.every((c) => c === 'high') ? 'high' : confidenceValues.some((c) => c === 'low') ? 'low' : 'medium';" +
+        "    const plannerSignals = {" +
+        "      schemaVersion: '1.0'," +
+        "      overallConfidence," +
+        "      trendAlertCount: trendAlerts.length," +
+        "      highSeverityAlertCount: trendAlerts.filter((a) => a?.severity === 'high').length," +
+        "      sourceStatus: Object.fromEntries(Object.entries(sourceHealth).map(([k, v]) => [k, v?.status || 'missing']))," +
+        "      metricStatus: Object.fromEntries(metricKeys.map((k) => [k, metrics?.[k]?.status || 'missing']))," +
+        "      metricConfidence: Object.fromEntries(metricKeys.map((k) => [k, metrics?.[k]?.confidence || 'low']))," +
+        "      metricValues: Object.fromEntries(metricKeys.map((k) => [k, Number.isFinite(metrics?.[k]?.value) ? Number(metrics[k].value) : null]))," +
+        "      trendDeltas," +
+        "      priorWeekTrendDeltas," +
+        "    };" +
         "    return {" +
         "      schemaVersion: '1.0'," +
         "      generatedAt: toIso(now)," +
@@ -707,6 +730,7 @@ export const WEEKLY_FITNESS_SUMMARY_TEMPLATE = {
         "      priorWeekTrendDeltas," +
         "      priorWeekDeltas," +
         "      priorWeekMetrics," +
+        "      plannerSignals," +
         "      dataQuality: {" +
         "        overallConfidence," +
         "        missingSources: Object.entries(sourceHealth).filter(([, v]) => v.status === 'missing').map(([k]) => k)," +
@@ -735,6 +759,18 @@ export const WEEKLY_FITNESS_SUMMARY_TEMPLATE = {
         "      priorWeekTrendDeltas: { throughput: null, regression_rate: null, merge_success: null, reopened_tasks: null, debt_growth: null }," +
         "      priorWeekDeltas: { throughput: null, regression_rate: null, merge_success: null, reopened_tasks: null, debt_growth: null }," +
         "      priorWeekMetrics: null," +
+        "      plannerSignals: {" +
+        "        schemaVersion: '1.0'," +
+        "        overallConfidence: 'low'," +
+        "        trendAlertCount: 1," +
+        "        highSeverityAlertCount: 1," +
+        "        sourceStatus: { tasks: 'missing', prs: 'missing', debt: 'missing' }," +
+        "        metricStatus: { throughput: 'missing', regression_rate: 'missing', merge_success: 'missing', reopened_tasks: 'missing', debt_growth: 'missing' }," +
+        "        metricConfidence: { throughput: 'low', regression_rate: 'low', merge_success: 'low', reopened_tasks: 'low', debt_growth: 'low' }," +
+        "        metricValues: { throughput: null, regression_rate: null, merge_success: null, reopened_tasks: null, debt_growth: null }," +
+        "        trendDeltas: { throughput: null, regression_rate: null, merge_success: null, reopened_tasks: null, debt_growth: null }," +
+        "        priorWeekTrendDeltas: { throughput: null, regression_rate: null, merge_success: null, reopened_tasks: null, debt_growth: null }," +
+        "      }," +
         "      dataQuality: { overallConfidence: 'low', missingSources: ['tasks', 'prs', 'debt'], degradedSources: [] }," +
         "    };" +
         "  }" +
