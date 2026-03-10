@@ -232,4 +232,96 @@ describe("task-cli taskStats repo area lock state", () => {
     const stats = parseJsonPayloadFromStdout(result.stdout);
     expect(stats.repoAreaLocks).toBeNull();
   });
+
+  it("keeps default stats output lock-telemetry free without debug mode", async () => {
+    const runtimePayload = {
+      repoAreaParallelLimit: 2,
+      repoAreaDispatchCycles: 2,
+      repoAreaConflictCount: 1,
+      repoAreaLockMetrics: {
+        infra: {
+          conflicts: 1,
+          blockedDispatches: 1,
+          selectedDispatches: 1,
+          waitMsTotal: 850,
+          waitSamples: 1,
+        },
+      },
+      repoAreaContentionEvents: [
+        {
+          at: "2026-03-09T10:00:00.000Z",
+          taskId: "task-123",
+          area: "infra",
+          waitMs: 850,
+          resolutionReason: "selected",
+        },
+      ],
+    };
+    mockExistsSync.mockImplementation((filePath) =>
+      String(filePath || "").includes("task-executor-runtime.json"),
+    );
+    mockReadFileSync.mockImplementation((filePath) => {
+      if (String(filePath || "").includes("task-executor-runtime.json")) {
+        return JSON.stringify(runtimePayload);
+      }
+      return "{}";
+    });
+
+    vi.resetModules();
+    const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
+    const { runTaskCli } = await import("../task/task-cli.mjs");
+    await runTaskCli(["stats"]);
+
+    const output = logSpy.mock.calls.map((entry) => entry.join(" ")).join("\n");
+    expect(output).toContain("Task Statistics");
+    expect(output).not.toContain("Repo Area Locks");
+    expect(output).not.toContain("contention:");
+    logSpy.mockRestore();
+  });
+
+  it("shows lock diagnostics in stats output when debug mode is enabled", async () => {
+    const runtimePayload = {
+      repoAreaParallelLimit: 2,
+      repoAreaDispatchCycles: 2,
+      repoAreaConflictCount: 1,
+      repoAreaLockMetrics: {
+        infra: {
+          conflicts: 1,
+          blockedDispatches: 1,
+          selectedDispatches: 1,
+          waitMsTotal: 850,
+          waitSamples: 1,
+        },
+      },
+      repoAreaContentionEvents: [
+        {
+          at: "2026-03-09T10:00:00.000Z",
+          taskId: "task-123",
+          area: "infra",
+          waitMs: 850,
+          resolutionReason: "selected",
+        },
+      ],
+    };
+    mockExistsSync.mockImplementation((filePath) =>
+      String(filePath || "").includes("task-executor-runtime.json"),
+    );
+    mockReadFileSync.mockImplementation((filePath) => {
+      if (String(filePath || "").includes("task-executor-runtime.json")) {
+        return JSON.stringify(runtimePayload);
+      }
+      return "{}";
+    });
+
+    vi.resetModules();
+    const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
+    const { runTaskCli } = await import("../task/task-cli.mjs");
+    await runTaskCli(["stats", "--debug"]);
+
+    const output = logSpy.mock.calls.map((entry) => entry.join(" ")).join("\n");
+    expect(output).toContain("Repo Area Locks");
+    expect(output).toContain("Contention Events:");
+    expect(output).toContain("contention: area=infra, waitMs=850, reason=selected, task=task-123");
+    logSpy.mockRestore();
+  });
 });
