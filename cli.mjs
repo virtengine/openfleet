@@ -81,6 +81,7 @@ function showHelp() {
     --where                     Show the resolved bosun config directory
     --doctor                    Validate bosun .env/config setup
     --tool-log <ID|list|prune>  Retrieve/list/prune cached tool outputs
+    node:create <name>          Scaffold a custom workflow node in custom-nodes/
     --context-index [mode]      Run context index workflow (run|status|search)
     --context-index-query <text> Query text for context index search mode
     --context-index-limit <n>   Max results for context index search (default: 25)
@@ -2322,4 +2323,3 @@ main().catch(async (err) => {
   await sendCrashNotification(1, null).catch(() => {});
   process.exit(1);
 });
-
