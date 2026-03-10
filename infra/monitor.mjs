@@ -381,6 +381,14 @@ function parseEnvInteger(value, defaultValue, { min = null, max = null } = {}) {
   return parsed;
 }
 
+function parseEnvNumber(value, defaultValue, { min = null, max = null } = {}) {
+  const parsed = Number(String(value ?? "").trim());
+  if (!Number.isFinite(parsed)) return defaultValue;
+  if (Number.isFinite(min) && parsed < min) return defaultValue;
+  if (Number.isFinite(max) && parsed > max) return defaultValue;
+  return parsed;
+}
+
 let workflowAutomationEnabled = false;
 let workflowEventDedupWindowMs = 15_000;
 const workflowEventDedup = new Map();
@@ -456,6 +464,192 @@ function buildWorkflowEventPayload(eventType, eventData = {}) {
   payload._triggerEventType = eventType;
   payload._triggeredAt = new Date().toISOString();
   return payload;
+}
+
+const workflowRecoveryPolicy = (() => {
+  const maxAttempts = parseEnvInteger(
+    process.env.WORKFLOW_RECOVERY_MAX_ATTEMPTS,
+    5,
+    { min: 1, max: 20 },
+  );
+  const escalationWarnAfterAttempts = parseEnvInteger(
+    process.env.WORKFLOW_RECOVERY_ESCALATION_THRESHOLD,
+    3,
+    { min: 1, max: maxAttempts },
+  );
+  return Object.freeze({
+    maxAttempts,
+    escalationWarnAfterAttempts,
+    baseBackoffMs: parseEnvInteger(
+      process.env.WORKFLOW_RECOVERY_BACKOFF_BASE_MS,
+      5000,
+      { min: 50, max: 60_000 },
+    ),
+    maxBackoffMs: parseEnvInteger(
+      process.env.WORKFLOW_RECOVERY_BACKOFF_MAX_MS,
+      60_000,
+      { min: 1000, max: 30 * 60 * 1000 },
+    ),
+    jitterRatio: parseEnvNumber(
+      process.env.WORKFLOW_RECOVERY_BACKOFF_JITTER_RATIO,
+      0.2,
+      { min: 0, max: 0.9 },
+    ),
+  });
+})();
+
+const workflowRecoveryState = new Map();
+const workflowRecoveryTimers = new Map();
+
+function emitWorkflowRecoveryTelemetry(eventName, details = {}) {
+  const payload = {
+    ts: new Date().toISOString(),
+    component: "monitor.workflow-recovery",
+    event: eventName,
+    ...details,
+  };
+  console.log(`[monitor-telemetry] ${JSON.stringify(payload)}`);
+}
+
+function clearWorkflowRecoveryTimer(operation) {
+  const existing = workflowRecoveryTimers.get(operation);
+  if (existing) {
+    clearTimeout(existing);
+    workflowRecoveryTimers.delete(operation);
+  }
+}
+
+function computeWorkflowRecoveryBackoffMs(attempt) {
+  const cappedBase = Math.max(1, workflowRecoveryPolicy.baseBackoffMs);
+  const expDelay = Math.min(
+    cappedBase * Math.pow(2, Math.max(0, attempt - 1)),
+    Math.max(cappedBase, workflowRecoveryPolicy.maxBackoffMs),
+  );
+  const jitterWindow = Math.max(
+    0,
+    Math.round(expDelay * workflowRecoveryPolicy.jitterRatio),
+  );
+  const jitter = jitterWindow > 0
+    ? Math.floor(Math.random() * (jitterWindow * 2 + 1)) - jitterWindow
+    : 0;
+  return Math.max(0, Math.min(
+    Math.round(expDelay + jitter),
+    Math.max(cappedBase, workflowRecoveryPolicy.maxBackoffMs),
+  ));
+}
+
+function runWorkflowRecoveryWithPolicy(operation, attemptFn, metadata = {}) {
+  const op = String(operation || "").trim();
+  if (!op || typeof attemptFn !== "function") return;
+
+  const now = Date.now();
+  const state = workflowRecoveryState.get(op) || {
+    attempts: 0,
+    warningEscalated: false,
+    terminalEscalated: false,
+    inFlight: false,
+    nextRetryAt: 0,
+  };
+  if (state.terminalEscalated || state.inFlight) {
+    return;
+  }
+  if (state.nextRetryAt > now) {
+    return;
+  }
+
+  const attempt = state.attempts + 1;
+  state.inFlight = true;
+  workflowRecoveryState.set(op, state);
+  emitWorkflowRecoveryTelemetry("attempt", {
+    operation: op,
+    attempt,
+    maxAttempts: workflowRecoveryPolicy.maxAttempts,
+    escalationWarnAfterAttempts: workflowRecoveryPolicy.escalationWarnAfterAttempts,
+    trigger: metadata?.trigger || "manual",
+    context: metadata || null,
+  });
+
+  const startedAt = Date.now();
+  void Promise.resolve()
+    .then(() => attemptFn({ operation: op, attempt }))
+    .then(() => {
+      clearWorkflowRecoveryTimer(op);
+      workflowRecoveryState.delete(op);
+      emitWorkflowRecoveryTelemetry("success", {
+        operation: op,
+        attempt,
+        durationMs: Date.now() - startedAt,
+        context: metadata || null,
+      });
+    })
+    .catch((err) => {
+      const errorMessage = formatMonitorError(err);
+      const failureAt = Date.now();
+      const willWarnEscalate =
+        !state.warningEscalated &&
+        attempt >= workflowRecoveryPolicy.escalationWarnAfterAttempts;
+      const terminalEscalated = attempt >= workflowRecoveryPolicy.maxAttempts;
+      state.attempts = attempt;
+      state.lastError = errorMessage;
+      state.lastFailureAt = failureAt;
+      state.inFlight = false;
+      if (willWarnEscalate) {
+        state.warningEscalated = true;
+      }
+
+      if (terminalEscalated) {
+        state.terminalEscalated = true;
+        state.nextRetryAt = 0;
+        workflowRecoveryState.set(op, state);
+        clearWorkflowRecoveryTimer(op);
+        emitWorkflowRecoveryTelemetry("escalated", {
+          operation: op,
+          attempt,
+          escalationState: "terminal",
+          error: errorMessage,
+          durationMs: failureAt - startedAt,
+          context: metadata || null,
+        });
+        console.warn(
+          `[workflows] recovery escalated for ${op} after ${attempt} attempt(s): ${errorMessage}`,
+        );
+        return;
+      }
+
+      const backoffMs = computeWorkflowRecoveryBackoffMs(attempt);
+      state.nextRetryAt = failureAt + backoffMs;
+      workflowRecoveryState.set(op, state);
+      emitWorkflowRecoveryTelemetry("retry_scheduled", {
+        operation: op,
+        attempt,
+        error: errorMessage,
+        backoffMs,
+        nextRetryAt: new Date(state.nextRetryAt).toISOString(),
+        escalationState: state.warningEscalated ? "warning" : "none",
+        durationMs: failureAt - startedAt,
+        context: metadata || null,
+      });
+      if (willWarnEscalate) {
+        console.warn(
+          `[workflows] recovery warning for ${op}: ${attempt} consecutive failures (threshold ${workflowRecoveryPolicy.escalationWarnAfterAttempts})`,
+        );
+      }
+
+      clearWorkflowRecoveryTimer(op);
+      const timer = setTimeout(() => {
+        workflowRecoveryTimers.delete(op);
+        runWorkflowRecoveryWithPolicy(op, attemptFn, {
+          ...metadata,
+          trigger: "retry-timer",
+        });
+      }, backoffMs);
+      if (typeof timer.unref === "function") timer.unref();
+      workflowRecoveryTimers.set(op, timer);
+    })
+    .finally(() => {
+      const current = workflowRecoveryState.get(op);
+      if (current) current.inFlight = false;
+    });
 }
 
 async function ensureWorkflowAutomationEngine() {
@@ -13715,7 +13909,12 @@ pollWorkflowSchedulesOnce = async function pollWorkflowSchedulesOnce(
 ) {
   try {
     const engine = await ensureWorkflowAutomationEngine();
-    if (!engine?.evaluateScheduleTriggers) return;
+    if (!engine?.evaluateScheduleTriggers) {
+      if (opts?.requireEngine) {
+        throw new Error("workflow automation engine unavailable");
+      }
+      return;
+    }
     const includeTaskPoll = opts?.includeTaskPoll !== false;
 
     const triggered = engine.evaluateScheduleTriggers();
@@ -13763,6 +13962,7 @@ pollWorkflowSchedulesOnce = async function pollWorkflowSchedulesOnce(
     }
   } catch (err) {
     console.warn(`[workflows] schedule-check error: ${err?.message || err}`);
+    if (opts?.throwOnError) throw err;
   }
 };
 
@@ -14038,9 +14238,34 @@ let agentSupervisor = null;
 if (!isMonitorTestRuntime) {
   if (workflowAutomationEnabled) {
     await ensureWorkflowAutomationEngine().catch(() => {});
-    void pollWorkflowSchedulesOnce("startup", { includeTaskPoll: false }).catch((err) => {
-      console.warn(`[workflows] startup poll error: ${err?.message || err}`);
-    });
+    runWorkflowRecoveryWithPolicy(
+      "stale-dispatch-unstick",
+      () =>
+        pollWorkflowSchedulesOnce("startup", {
+          includeTaskPoll: false,
+          requireEngine: true,
+          throwOnError: true,
+        }),
+      {
+        trigger: "startup",
+        operationType: "stale-dispatch-unstick",
+        includeTaskPoll: false,
+      },
+    );
+    runWorkflowRecoveryWithPolicy(
+      "workflow-history-unstick",
+      async () => {
+        const engine = await ensureWorkflowAutomationEngine();
+        if (!engine?.resumeInterruptedRuns) {
+          throw new Error("workflow engine resumeInterruptedRuns unavailable");
+        }
+        await engine.resumeInterruptedRuns();
+      },
+      {
+        trigger: "startup",
+        operationType: "workflow-history-unstick",
+      },
+    );
   } else {
     console.log(
       "[workflows] automation disabled (set WORKFLOW_AUTOMATION_ENABLED=true to enable event-driven workflow triggers)",
@@ -14283,9 +14508,19 @@ if (isExecutorDisabled()) {
     internalTaskExecutor = getTaskExecutor(execOpts);
     internalTaskExecutor.start();
     if (workflowOwnsTaskExecutorLifecycle) {
-      void pollWorkflowSchedulesOnce("startup").catch((err) => {
-        console.warn(`[workflows] startup poll error: ${err?.message || err}`);
-      });
+      runWorkflowRecoveryWithPolicy(
+        "stale-dispatch-task-poll-unstick",
+        () =>
+          pollWorkflowSchedulesOnce("startup", {
+            requireEngine: true,
+            throwOnError: true,
+          }),
+        {
+          trigger: "startup",
+          operationType: "stale-dispatch-task-poll-unstick",
+          includeTaskPoll: true,
+        },
+      );
     }
 
     // Write executor slots to status file every 30s for Telegram /tasks
@@ -14882,4 +15117,3 @@ export {
   // Workflow event bridge — for fleet/kanban modules to emit events
   queueWorkflowEvent,
 };
-
