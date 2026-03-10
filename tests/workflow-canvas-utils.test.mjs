@@ -123,4 +123,60 @@ describe("workflow canvas history", () => {
     expect(parsed.nodes).toEqual(nodes);
     expect(parsed.edges).toEqual(edges);
   });
+
+  it("undo/redo restores node move, edge creation, and config edits", () => {
+    const nodeA = makeNode("node-a", 20, 40);
+    const nodeB = makeNode("node-b", 280, 40);
+    let history = createHistoryState([nodeA, nodeB], []);
+
+    history = pushHistorySnapshot(
+      history,
+      [
+        { ...nodeA, position: { x: 140, y: 120 } },
+        nodeB,
+      ],
+      [],
+      50,
+    );
+
+    history = pushHistorySnapshot(
+      history,
+      [
+        { ...nodeA, position: { x: 140, y: 120 } },
+        nodeB,
+      ],
+      [{ id: "edge-a-b", source: "node-a", target: "node-b", sourcePort: "default" }],
+      50,
+    );
+
+    history = pushHistorySnapshot(
+      history,
+      [
+        { ...nodeA, position: { x: 140, y: 120 }, config: { prompt: "hello" } },
+        nodeB,
+      ],
+      [{ id: "edge-a-b", source: "node-a", target: "node-b", sourcePort: "default" }],
+      50,
+    );
+
+    const undoConfig = undoHistory(history);
+    expect(undoConfig.snapshot.nodes[0].config || {}).toEqual({});
+    expect(undoConfig.snapshot.edges).toHaveLength(1);
+
+    const undoEdge = undoHistory(undoConfig.history);
+    expect(undoEdge.snapshot.edges).toHaveLength(0);
+    expect(undoEdge.snapshot.nodes[0].position).toEqual({ x: 140, y: 120 });
+
+    const undoMove = undoHistory(undoEdge.history);
+    expect(undoMove.snapshot.nodes[0].position).toEqual({ x: 20, y: 40 });
+
+    const redoMove = redoHistory(undoMove.history, 50);
+    expect(redoMove.snapshot.nodes[0].position).toEqual({ x: 140, y: 120 });
+
+    const redoEdge = redoHistory(redoMove.history, 50);
+    expect(redoEdge.snapshot.edges).toHaveLength(1);
+
+    const redoConfig = redoHistory(redoEdge.history, 50);
+    expect(redoConfig.snapshot.nodes[0].config).toEqual({ prompt: "hello" });
+  });
 });
