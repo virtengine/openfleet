@@ -5434,6 +5434,7 @@ registerNodeType("loop.for_each", {
     return {
       items,
       count: items.length,
+      totalItems: items.length,
       variable: varName,
       results,
       successCount,
@@ -8365,22 +8366,40 @@ registerNodeType("action.claim_task", {
             : null;
       if (renewIntervalMs > 0 && renewClaimFn) {
         const renewTimer = setInterval(async () => {
-          try {
-            await renewClaimFn({ taskId, claimToken: token, instanceId, ttlMinutes });
-          } catch (renewErr) {
-            const msg = renewErr?.message || String(renewErr);
-            const fatal = ["claimed_by_different_instance", "claim_token_mismatch",
-              "task_not_claimed", "owner_mismatch"].some((e) => msg.includes(e));
+          const handleClaimRenewFailure = (rawReason) => {
+            const reason = String(rawReason || "unknown");
+            const fatal = [
+              "claimed_by_different_instance",
+              "claim_token_mismatch",
+              "attempt_token_mismatch",
+              "task_not_claimed",
+              "owner_mismatch",
+            ].some((entry) => reason.includes(entry));
             if (fatal) {
-              ctx.log(node.id, `Claim renewal fatal: ${msg} — aborting task`);
+              ctx.log(node.id, `Claim renewal fatal: ${reason} — aborting task`);
               clearInterval(renewTimer);
               runtimeState.claimRenewTimer = null;
               ctx.data._claimRenewTimer = null;
-              // Signal abort to downstream nodes via context
+              // Signal abort to downstream nodes via context.
               ctx.data._claimStolen = true;
-            } else {
-              ctx.log(node.id, `Claim renewal warning: ${msg}`);
+              return;
             }
+            ctx.log(node.id, `Claim renewal warning: ${reason}`);
+          };
+          try {
+            const renewResult = await renewClaimFn({
+              taskId,
+              claimToken: token,
+              instanceId,
+              ttlMinutes,
+            });
+            if (renewResult && renewResult.success === false) {
+              handleClaimRenewFailure(
+                renewResult.error || renewResult.reason || "claim_renew_failed",
+              );
+            }
+          } catch (renewErr) {
+            handleClaimRenewFailure(renewErr?.message || String(renewErr));
           }
         }, renewIntervalMs);
         // Prevent timer from keeping the process alive
@@ -9598,4 +9617,5 @@ registerNodeType("action.web_search", {
 // ═══════════════════════════════════════════════════════════════════════════
 
 export { registerNodeType, getNodeType, listNodeTypes } from "./workflow-engine.mjs";
+
 

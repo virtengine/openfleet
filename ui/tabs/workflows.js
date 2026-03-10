@@ -3264,6 +3264,48 @@ function getRunActivityAt(run) {
   return candidates.length > 0 ? Math.max(...candidates) : null;
 }
 
+function normalizeWorkflowRunTriggerSource(run) {
+  const rawSource = String(run?.triggerSource || "").trim().toLowerCase();
+  const triggerEvent = String(run?.triggerEvent || "").trim().toLowerCase();
+  if (!rawSource || rawSource === "manual") return "manual";
+  if (
+    rawSource === "monitor-event" ||
+    rawSource === "monitor" ||
+    rawSource === "schedule-poll" ||
+    rawSource === "startup" ||
+    rawSource === "manual-sweep"
+  ) {
+    return "monitor-event";
+  }
+  if (
+    rawSource === "event" ||
+    rawSource === "ui-server" ||
+    rawSource === "ui-event" ||
+    rawSource.includes("webhook") ||
+    (triggerEvent && rawSource !== "manual")
+  ) {
+    return "event";
+  }
+  return rawSource;
+}
+
+function getWorkflowRunTriggerLabel(run) {
+  const normalizedSource = normalizeWorkflowRunTriggerSource(run);
+  const rawSource = String(run?.triggerSource || "").trim().toLowerCase();
+  const triggerEvent = String(run?.triggerEvent || "").trim();
+  if (normalizedSource === "manual") return "manual";
+  if (normalizedSource === "monitor-event") {
+    if (triggerEvent) return `monitor:${triggerEvent}`;
+    if (rawSource && rawSource !== "monitor-event") return `monitor:${rawSource}`;
+    return "monitor";
+  }
+  if (normalizedSource === "event") {
+    if (triggerEvent) return `event:${triggerEvent}`;
+    return rawSource || "event";
+  }
+  return rawSource || normalizedSource || "unknown";
+}
+
 function buildNodeStatusesFromRunDetail(run) {
   const detail = run?.detail || {};
   const statuses = { ...(detail?.nodeStatuses || {}) };
@@ -3351,6 +3393,7 @@ function RunHistoryView() {
   const [workflowFilter, setWorkflowFilter] = useState("all");
   const [triggerFilter, setTriggerFilter] = useState("all");
   const [searchQuery, setSearchQuery] = useState("");
+  const autoLoadMoreRef = useRef(false);
   const normalizedSearch = String(searchQuery || "").trim().toLowerCase();
 
   const workflowOptions = useMemo(() => {
@@ -3376,7 +3419,7 @@ function RunHistoryView() {
       const runWorkflowName =
         String(run?.workflowName || workflowNameMap.get(runWorkflowId) || runWorkflowId)
           .toLowerCase();
-      const runTriggerSource = String(run?.triggerSource || "manual").toLowerCase();
+      const runTriggerSource = normalizeWorkflowRunTriggerSource(run);
       const runTriggerEvent = String(run?.triggerEvent || "").toLowerCase();
       const runId = String(run?.runId || "").toLowerCase();
 
@@ -3406,6 +3449,29 @@ function RunHistoryView() {
 
   const canLoadMoreRuns =
     runs.length >= runsLimit && runsLimit < WORKFLOW_RUN_MAX_FETCH;
+  const hasRunFilters =
+    statusFilter !== "all" ||
+    workflowFilter !== "all" ||
+    triggerFilter !== "all" ||
+    Boolean(normalizedSearch);
+
+  useEffect(() => {
+    if (!hasRunFilters || filteredRuns.length > 0 || !canLoadMoreRuns) {
+      autoLoadMoreRef.current = false;
+      return;
+    }
+    if (autoLoadMoreRef.current) return;
+    autoLoadMoreRef.current = true;
+    const nextLimit = Math.min(
+      runsLimit + WORKFLOW_RUN_PAGE_SIZE,
+      WORKFLOW_RUN_MAX_FETCH,
+    );
+    Promise.resolve(loadRuns(null, { limit: nextLimit }))
+      .catch(() => {})
+      .finally(() => {
+        autoLoadMoreRef.current = false;
+      });
+  }, [hasRunFilters, filteredRuns.length, canLoadMoreRuns, runsLimit, statusFilter, workflowFilter, triggerFilter, normalizedSearch]);
 
   if (selectedRun) {
     const statusStyles = getRunStatusBadgeStyles(selectedRun.status);
@@ -3597,7 +3663,10 @@ function RunHistoryView() {
 
       ${runs.length > 0 && filteredRuns.length === 0 && html`
         <div style="text-align: center; padding: 28px; opacity: 0.6;">
-          No runs match the current filters.
+          <div>No runs match the current filters yet.</div>
+          ${canLoadMoreRuns && html`
+            <div style="margin-top: 6px;">Bosun is only filtering the first ${runs.length} loaded run(s); older monitor/event history will keep loading while the filter is active.</div>
+          `}
         </div>
       `}
 
@@ -3612,9 +3681,7 @@ function RunHistoryView() {
           const borderColor = run.isStuck
             ? "#f59e0b80"
             : (run.status === "running" ? "#3b82f680" : "var(--color-border, #2a3040)");
-          const triggerLabel = run.triggerSource === "monitor-event"
-            ? `event:${run.triggerEvent || "unknown"}`
-            : (run.triggerSource || "manual");
+          const triggerLabel = getWorkflowRunTriggerLabel(run);
           return html`
             <${Button}
               key=${run.runId}
@@ -3909,4 +3976,3 @@ export function WorkflowsTab() {
     </div>
   `;
 }
-

@@ -31,6 +31,14 @@ describe("chat session regressions", () => {
     expect(loadMessagesBlock).not.toContain("sessionPagination.value = null;");
   });
 
+  it("retries inspector full-session fetches against workspace=all when scoped lookups 404", () => {
+    const source = read("ui/app.js");
+    expect(source).toContain("const fallbackSessionPath = buildSessionApiPath(sessionId, \"\", {");
+    expect(source).toContain('workspace: "all"');
+    expect(source).toContain("errorText.includes(\"session not found\") || errorText.includes(\"request failed (404)\")");
+    expect(source).toContain("res = await apiFetch(fallbackSessionPath, { _silent: true });");
+  });
+
   it("exposes workspace metadata in session summaries for UI routing", () => {
     const source = read("infra/session-tracker.mjs");
     expect(source).toContain("workspaceId: String(s?.metadata?.workspaceId || \"\").trim() || null");
