@@ -3201,6 +3201,83 @@ it("action.materialize_planner_tasks normalizes mixed 0-1 and 0-10 planner score
     }),
   }));
 });
+
+it("action.materialize_planner_tasks improves skip-reason histogram with calibrated defaults", async () => {
+  const handler = getNodeType("action.materialize_planner_tasks");
+  expect(handler).toBeDefined();
+
+  const plannerTasks = [
+    { title: "[m] fix(api): low ratio impact", impact: 0.4, confidence: 0.8, risk: 0.2 },
+    { title: "[m] fix(worker): low ten impact", impact: 4, confidence: 8, risk: 2 },
+    { title: "[m] fix(ui): medium impact ratio", impact: 0.62, confidence: 0.8, risk: 0.3 },
+    { title: "[m] fix(ui): medium impact ten", impact: "6.2/10", confidence: "8/10", risk: "3/10" },
+    { title: "[m] fix(core): semantically high risk", impact: 0.8, confidence: 0.7, risk: "high risk: production blast radius" },
+    { title: "[m] fix(core): semantically major risk", impact: "8/10", confidence: "8/10", risk: "major migration risk" },
+    { title: "[m] fix(task): healthy ratio", impact: 0.82, confidence: 0.75, risk: 0.25 },
+    { title: "[m] fix(task): healthy ten", impact: 8.2, confidence: 7.5, risk: 2.5 },
+  ];
+  const plannerOutput = [
+    "```json",
+    JSON.stringify({
+      tasks: plannerTasks.map((task) => ({
+        ...task,
+        description: "sample",
+        acceptance_criteria: ["ac"],
+        verification: ["v"],
+        repo_areas: ["workflow"],
+      })),
+    }, null, 2),
+    "```",
+  ].join("\n");
+
+  const runNode = async (config) => {
+    const ctx = new WorkflowContext({});
+    ctx.setNodeOutput("run-planner", { output: plannerOutput });
+    let createId = 0;
+    const createTask = vi.fn(async () => {
+      createId += 1;
+      return { id: `task-${createId}` };
+    });
+    const mockEngine = {
+      services: {
+        kanban: {
+          createTask,
+        },
+      },
+    };
+    const result = await handler.execute({
+      id: "materialize-histogram",
+      type: "action.materialize_planner_tasks",
+      config: {
+        plannerNodeId: "run-planner",
+        maxTasks: plannerTasks.length,
+        dedup: false,
+        failOnZero: false,
+        minCreated: 0,
+        ...config,
+      },
+    }, ctx, mockEngine);
+    const histogram = result.skipped.reduce((acc, entry) => {
+      const reason = String(entry?.reason || "unknown");
+      acc[reason] = (acc[reason] || 0) + 1;
+      return acc;
+    }, {});
+    return { result, histogram };
+  };
+
+  const baseline = await runNode({
+    minImpactScore: 5,
+    maxRiskWithoutHuman: "high",
+  });
+  const calibrated = await runNode({});
+
+  expect(calibrated.histogram.below_min_impact || 0).toBeGreaterThan(baseline.histogram.below_min_impact || 0);
+  expect(calibrated.histogram.risk_above_threshold || 0).toBeGreaterThan(baseline.histogram.risk_above_threshold || 0);
+
+  // Calibrated defaults should reduce low-value/high-risk creation while preserving non-zero throughput.
+  expect(calibrated.result.createdCount).toBeGreaterThan(0);
+  expect(calibrated.result.createdCount).toBeLessThan(baseline.result.createdCount);
+});
 describe("WorkflowEngine singleton services", () => {
   beforeEach(() => {
     resetWorkflowEngine();
