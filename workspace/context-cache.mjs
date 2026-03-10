@@ -481,16 +481,6 @@ function extractCommandText(item) {
   return "";
 }
 
-function normalizeGitDescriptor(item) {
-  const toolName = extractToolName(item);
-  const commandText = extractCommandText(item);
-  return `${toolName} ${commandText}`
-    .toLowerCase()
-    .replaceAll(/_+/g, " ")
-    .replaceAll(/\s+/g, " ")
-    .trim();
-}
-
 function classifyImmediateGitOutput(item, opts) {
   const maxChars = opts?.gitOutputMaxChars ?? DEFAULT_GIT_OUTPUT_MAX_CHARS;
   if (!Number.isFinite(maxChars) || maxChars <= 0) return null;
@@ -498,15 +488,26 @@ function classifyImmediateGitOutput(item, opts) {
   const text = getItemText(item);
   if (typeof text !== "string" || text.length <= maxChars) return null;
 
-  const descriptor = normalizeGitDescriptor(item);
-  if (!descriptor.includes("git")) return null;
+  const toolName = extractToolName(item).toLowerCase();
+  const commandText = extractCommandText(item)
+    .toLowerCase()
+    .replaceAll(/_+/g, " ")
+    .replaceAll(/\s+/g, " ")
+    .trim();
+  const toolLooksGit = toolName.includes("git");
+  const commandLooksGit = /\bgit\b/.test(commandText);
+  if (!toolLooksGit && !commandLooksGit) return null;
 
-  if (/\bgit\s+log\b/.test(descriptor)) return { kind: "log", text };
-  if (/\bgit\s+shortlog\b/.test(descriptor)) return { kind: "shortlog", text };
-  if (/\bgit\s+reflog\b/.test(descriptor)) return { kind: "reflog", text };
+  const commandBody = commandText.startsWith("git ")
+    ? commandText.slice(4).trim()
+    : commandText;
+  const subcommand = commandBody.split(" ")[0] || "";
 
-  if (/\bgit\s+diff\b/.test(descriptor)) {
-    const boundedDiff = /(?:^|\s)--(?:stat|shortstat|numstat|name-only|name-status|summary)\b/.test(descriptor);
+  if (subcommand === "log") return { kind: "log", text };
+  if (subcommand === "shortlog") return { kind: "shortlog", text };
+  if (subcommand === "reflog") return { kind: "reflog", text };
+  if (subcommand === "diff") {
+    const boundedDiff = /(?:^|\s)--(?:stat|shortstat|numstat|name-only|name-status|summary)\b/.test(commandBody);
     if (!boundedDiff) return { kind: "diff", text };
   }
 
