@@ -106,6 +106,55 @@ describe("kanban board filter persistence", () => {
     });
   });
 
+  it("does not hydrate workspace-specific filters from legacy global payloads", () => {
+    const storage = new MemoryStorage();
+    storage.setItem("ve-kanban-board-filters", JSON.stringify({
+      version: 2,
+      workspace: "global",
+      filters: { repo: "repo-legacy", assignee: "", priority: "high", search: "legacy" },
+    }));
+
+    expect(readPersistedBoardFilters({ storage, workspaceId: "ws-alpha" })).toEqual({
+      repo: "",
+      assignee: "",
+      priority: "",
+      search: "",
+    });
+  });
+
+  it("falls back to legacy global payload only for global scope and migrates it", () => {
+    const storage = new MemoryStorage();
+    storage.setItem("ve-kanban-board-filters", JSON.stringify({
+      version: 2,
+      workspace: "global",
+      filters: { repo: "repo-legacy", assignee: "agent-1", priority: "high", search: "legacy" },
+    }));
+
+    expect(readPersistedBoardFilters({ storage, workspaceId: "" })).toEqual({
+      repo: "repo-legacy",
+      assignee: "agent-1",
+      priority: "high",
+      search: "legacy",
+    });
+    expect(storage.getItem(buildBoardFilterStorageKey("global"))).toContain("\"workspace\":\"global\"");
+  });
+
+  it("ignores persisted payloads when the scoped key workspace metadata is mismatched", () => {
+    const storage = new MemoryStorage();
+    storage.setItem(buildBoardFilterStorageKey("ws-alpha"), JSON.stringify({
+      version: 2,
+      workspace: "ws-beta",
+      filters: { repo: "repo-beta", assignee: "agent-2", priority: "medium", search: "wrong-scope" },
+    }));
+
+    expect(readPersistedBoardFilters({ storage, workspaceId: "ws-alpha" })).toEqual({
+      repo: "",
+      assignee: "",
+      priority: "",
+      search: "",
+    });
+  });
+
   it("falls back to safe defaults for stale schema payloads", () => {
     const storage = new MemoryStorage();
     storage.setItem(buildBoardFilterStorageKey("ws-stale"), JSON.stringify({
@@ -141,5 +190,41 @@ describe("kanban board filter persistence", () => {
       priority: "",
       search: "escaped",
     });
+  });
+
+  it("does not clear repo or assignee when allowed sets are present but empty", () => {
+    const sanitized = sanitizeBoardFilters(
+      {
+        repo: "repo-persisted",
+        assignee: "agent-persisted",
+        priority: "high",
+        search: "keep",
+      },
+      {
+        allowedRepos: new Set(),
+        allowedAssignees: new Set(),
+      },
+    );
+
+    expect(sanitized).toEqual({
+      repo: "repo-persisted",
+      assignee: "agent-persisted",
+      priority: "high",
+      search: "keep",
+    });
+  });
+
+  it("trims and bounds malformed filter mutations", () => {
+    const sanitized = sanitizeBoardFilters({
+      repo: ["repo-array"],
+      assignee: null,
+      priority: "urgent",
+      search: `  ${"x".repeat(200)}  `,
+    });
+
+    expect(sanitized.repo).toBe("");
+    expect(sanitized.assignee).toBe("");
+    expect(sanitized.priority).toBe("");
+    expect(sanitized.search.length).toBe(120);
   });
 });

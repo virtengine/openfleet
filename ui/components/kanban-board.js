@@ -65,13 +65,14 @@ const PRIORITY_LABELS = {
 
 const LOAD_MORE_THRESHOLD_PX = 140;
 const AUTO_LOAD_MAX_TASKS = 300;
-const KANBAN_BOARD_FILTER_SCHEMA_VERSION = 1;
+const KANBAN_BOARD_FILTER_SCHEMA_VERSION = 2;
 const KANBAN_BOARD_FILTER_STORAGE_PREFIX = "ve-kanban-board-filters";
 const KANBAN_BOARD_FILTER_LEGACY_KEY = "ve-kanban-board-filters";
 const KANBAN_BOARD_GLOBAL_SCOPE = "global";
 const DEFAULT_BOARD_FILTERS = Object.freeze({ repo: "", assignee: "", priority: "", search: "" });
 const BOARD_FILTER_KEYS = ["repo", "assignee", "priority", "search"];
 const ALLOWED_PRIORITIES = new Set(["critical", "high", "medium", "low"]);
+const MAX_FILTER_SEARCH_LENGTH = 120;
 
 function matchTaskId(a, b) {
   return String(a) === String(b);
@@ -102,13 +103,14 @@ export function sanitizeBoardFilters(filters, options = {}) {
   for (const key of BOARD_FILTER_KEYS) {
     result[key] = trimFilterValue(raw[key]);
   }
+  result.search = result.search.slice(0, MAX_FILTER_SEARCH_LENGTH);
 
   if (!ALLOWED_PRIORITIES.has(result.priority)) result.priority = "";
 
   const repoSet = options?.allowedRepos instanceof Set ? options.allowedRepos : null;
   const assigneeSet = options?.allowedAssignees instanceof Set ? options.allowedAssignees : null;
-  if (repoSet && result.repo && !repoSet.has(result.repo)) result.repo = "";
-  if (assigneeSet && result.assignee && !assigneeSet.has(result.assignee)) result.assignee = "";
+  if (repoSet && repoSet.size > 0 && result.repo && !repoSet.has(result.repo)) result.repo = "";
+  if (assigneeSet && assigneeSet.size > 0 && result.assignee && !assigneeSet.has(result.assignee)) result.assignee = "";
   return result;
 }
 
@@ -121,13 +123,15 @@ function areBoardFiltersEqual(a, b) {
   );
 }
 
-function readRawPersistedBoardFilters(storage, key) {
+function readRawPersistedBoardFilters(storage, key, workspaceScope) {
   const raw = storage?.getItem?.(key);
   if (!raw) return null;
   try {
     const parsed = JSON.parse(raw);
     if (!parsed || typeof parsed !== "object") return null;
     if (parsed.version !== KANBAN_BOARD_FILTER_SCHEMA_VERSION) return null;
+    const payloadWorkspace = normalizeBoardWorkspaceScope(parsed.workspace);
+    if (payloadWorkspace !== normalizeBoardWorkspaceScope(workspaceScope)) return null;
     if (!parsed.filters || typeof parsed.filters !== "object") return null;
     return parsed.filters;
   } catch {
@@ -139,10 +143,18 @@ export function readPersistedBoardFilters({ storage, workspaceId, validateWith }
   const resolvedStorage = getBoardFilterStorage(storage);
   if (!resolvedStorage) return { ...DEFAULT_BOARD_FILTERS };
 
-  const scopedKey = buildBoardFilterStorageKey(workspaceId);
-  let rawFilters = readRawPersistedBoardFilters(resolvedStorage, scopedKey);
-  if (!rawFilters) {
-    rawFilters = readRawPersistedBoardFilters(resolvedStorage, KANBAN_BOARD_FILTER_LEGACY_KEY);
+  const workspaceScope = normalizeBoardWorkspaceScope(workspaceId);
+  const scopedKey = buildBoardFilterStorageKey(workspaceScope);
+  let rawFilters = readRawPersistedBoardFilters(resolvedStorage, scopedKey, workspaceScope);
+  if (!rawFilters && workspaceScope === KANBAN_BOARD_GLOBAL_SCOPE) {
+    rawFilters = readRawPersistedBoardFilters(resolvedStorage, KANBAN_BOARD_FILTER_LEGACY_KEY, workspaceScope);
+    if (rawFilters) {
+      persistBoardFilters({
+        storage: resolvedStorage,
+        workspaceId: workspaceScope,
+        filters: rawFilters,
+      });
+    }
   }
   return sanitizeBoardFilters(rawFilters || DEFAULT_BOARD_FILTERS, validateWith);
 }
@@ -150,13 +162,14 @@ export function readPersistedBoardFilters({ storage, workspaceId, validateWith }
 export function persistBoardFilters({ storage, workspaceId, filters } = {}) {
   const resolvedStorage = getBoardFilterStorage(storage);
   if (!resolvedStorage) return false;
+  const workspaceScope = normalizeBoardWorkspaceScope(workspaceId);
   const payload = {
     version: KANBAN_BOARD_FILTER_SCHEMA_VERSION,
-    workspace: normalizeBoardWorkspaceScope(workspaceId),
+    workspace: workspaceScope,
     filters: sanitizeBoardFilters(filters),
   };
   try {
-    resolvedStorage.setItem(buildBoardFilterStorageKey(workspaceId), JSON.stringify(payload));
+    resolvedStorage.setItem(buildBoardFilterStorageKey(workspaceScope), JSON.stringify(payload));
     return true;
   } catch {
     return false;
@@ -1082,4 +1095,3 @@ export function KanbanBoard({ onOpenTask, hasMoreTasks = false, loadingMoreTasks
     </${Box}>
   `;
 }
-
