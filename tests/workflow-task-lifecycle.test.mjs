@@ -17,6 +17,7 @@ import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { execSync } from "node:child_process";
 import { getNodeType } from "../workflow/workflow-nodes.mjs";
+import { clearContractCache } from "../workflow/workflow-contract.mjs";
 import {
   WorkflowEngine,
   WorkflowContext,
@@ -105,6 +106,8 @@ describe("task lifecycle node type registration", () => {
     "action.resolve_executor",
     "action.acquire_worktree",
     "action.release_worktree",
+    "read-workflow-contract",
+    "workflow-contract-validation",
     "action.build_task_prompt",
     "action.detect_new_commits",
     "action.push_branch",
@@ -1257,6 +1260,84 @@ describe("action.build_task_prompt", () => {
     expect(result.prompt).toContain("**Primary Repository:** org/primary");
     expect(result.prompt).toContain("org/shared-lib");
   });
+
+  it("injects WORKFLOW.md content when a contract was loaded earlier in the workflow", async () => {
+    const nt = getNodeType("action.build_task_prompt");
+    const ctx = makeCtx({
+      _workflowContract: {
+        found: true,
+        path: "/tmp/project/WORKFLOW.md",
+        raw: "projectDescription: Demo\nterminalStates: [done]\nforbiddenPatterns: [git push --force]",
+        parsed: {
+          projectDescription: "Demo",
+          terminalStates: ["done"],
+          forbiddenPatterns: ["git push --force"],
+          preferredTools: [],
+          preferredModel: "",
+          escalationContact: "",
+          escalationPaths: [],
+          rules: [],
+        },
+      },
+    });
+    const node = makeNode("action.build_task_prompt", {
+      taskTitle: "Respect contract",
+      taskDescription: "Build prompt with contract",
+    });
+
+    const result = await nt.execute(node, ctx);
+
+    expect(result.prompt).toContain("## WORKFLOW.md Contract");
+    expect(result.prompt).toContain("terminalStates: [done]");
+    expect(result.prompt).toContain("forbiddenPatterns: [git push --force]");
+  });
+});
+
+describe("workflow contract nodes", () => {
+  it("reads WORKFLOW.md into workflow context", async () => {
+    const projectDir = mkdtempSync(join(tmpdir(), "wf-contract-read-"));
+    writeFileSync(join(projectDir, "WORKFLOW.md"), [
+      "# Demo Contract",
+      "terminalStates: [done]",
+      "forbiddenPatterns:",
+      "  - git push --force",
+    ].join("\n"));
+
+    const nt = getNodeType("read-workflow-contract");
+    const ctx = makeCtx({ repoRoot: projectDir });
+    const node = makeNode("read-workflow-contract", { repoRoot: projectDir });
+    const result = await nt.execute(node, ctx);
+
+    expect(result.found).toBe(true);
+    expect(result.contract.terminalStates).toEqual(["done"]);
+    expect(result.contract.forbiddenPatterns).toEqual(["git push --force"]);
+    expect(ctx.data._workflowContract.path).toBe(join(projectDir, "WORKFLOW.md"));
+    expect(ctx.log).toHaveBeenCalled();
+
+    rmSync(projectDir, { recursive: true, force: true });
+    clearContractCache(projectDir);
+  });
+
+  it("fails fast when WORKFLOW.md is malformed", async () => {
+    const projectDir = mkdtempSync(join(tmpdir(), "wf-contract-invalid-"));
+    writeFileSync(join(projectDir, "WORKFLOW.md"), [
+      "# Broken Contract",
+      "forbiddenPatterns:",
+      "  - rm -rf /",
+    ].join("\n"));
+
+    const readNode = makeNode("read-workflow-contract", { repoRoot: projectDir }, "read-contract");
+    const validateNode = makeNode("workflow-contract-validation", { repoRoot: projectDir }, "validate-contract");
+    const ctx = makeCtx({ repoRoot: projectDir });
+
+    await getNodeType("read-workflow-contract").execute(readNode, ctx);
+    await expect(getNodeType("workflow-contract-validation").execute(validateNode, ctx))
+      .rejects
+      .toThrow(/terminalStates/i);
+
+    rmSync(projectDir, { recursive: true, force: true });
+    clearContractCache(projectDir);
+  });
 });
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -1742,7 +1823,8 @@ describe("template-task-lifecycle", () => {
     const required = [
       "trigger", "check-slots", "allocate-slot", "claim-task",
       "claim-ok", "set-inprogress", "acquire-worktree", "worktree-ok",
-      "resolve-executor", "record-head", "build-prompt", "run-agent-plan", "run-agent-tests", "run-agent-implement",
+      "resolve-executor", "record-head", "read-workflow-contract",
+      "workflow-contract-validation", "build-prompt", "run-agent-plan", "run-agent-tests", "run-agent-implement",
       "claim-stolen", "detect-commits", "has-commits",
       "push-branch", "push-ok", "create-pr", "set-inreview", "log-success",
       "log-no-commits", "set-todo-cooldown", "create-pr-retry", "pr-created-stolen", "set-inreview-stolen", "log-claim-stolen-recovered",
@@ -2053,5 +2135,4 @@ describe("template-ve-orchestrator-lite", () => {
     expect(Array.isArray(t.variables.protectedBranches)).toBe(true);
   });
 });
-
 
