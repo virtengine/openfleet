@@ -80,6 +80,30 @@ function createRepo() {
     ].join("\n"),
     "utf8",
   );
+  writeFileSync(
+    resolve(root, "src", "cycle-a.mjs"),
+    [
+      'import { b } from "./cycle-b.mjs";',
+      "",
+      "export function a() {",
+      "  return b();",
+      "}",
+      "",
+    ].join("\n"),
+    "utf8",
+  );
+  writeFileSync(
+    resolve(root, "src", "cycle-b.mjs"),
+    [
+      'import { a } from "./cycle-a.mjs";',
+      "",
+      "export function b() {",
+      "  return a();",
+      "}",
+      "",
+    ].join("\n"),
+    "utf8",
+  );
   return root;
 }
 
@@ -88,12 +112,13 @@ describe("codebase audit engine", () => {
     const root = createRepo();
     const result = scanRepository(root, { dryRun: true });
 
-    expect(result.totals.files).toBe(4);
-    expect(result.totals.missingSummary).toBe(3);
-    expect(result.languages.javascript).toBe(1);
+    expect(result.totals.files).toBe(6);
+    expect(result.totals.missingSummary).toBe(5);
+    expect(result.languages.javascript).toBe(3);
     expect(result.languages.python).toBe(1);
     expect(result.languages.go).toBe(1);
     expect(result.languages.rust).toBe(1);
+    expect(result.warningKinds["circular-deps"]).toBeGreaterThan(0);
     expect(result.warningKinds["lazy-init"]).toBeGreaterThan(0);
     expect(result.warningKinds["side-effects"]).toBeGreaterThan(0);
   });
@@ -102,7 +127,7 @@ describe("codebase audit engine", () => {
     const root = createRepo();
 
     const summaryResult = generateSummaries(root);
-    expect(summaryResult.added).toBe(3);
+    expect(summaryResult.added).toBe(5);
 
     const warnResult = generateWarnings(root);
     expect(warnResult.added).toBeGreaterThan(0);
@@ -114,6 +139,9 @@ describe("codebase audit engine", () => {
 
     const goContent = readFileSync(resolve(root, "cmd", "server.go"), "utf8");
     expect(goContent).toContain("CLAUDE:SUMMARY");
+
+    const cycleContent = readFileSync(resolve(root, "src", "cycle-a.mjs"), "utf8");
+    expect(cycleContent).toContain("circular dependency chains");
   });
 
 
@@ -145,7 +173,7 @@ describe("codebase audit engine", () => {
     const trimResult = trimAuditArtifacts(root, { dryRun: true });
 
     expect(manifestResult.directories).toBeGreaterThan(0);
-    expect(indexResult.entries).toBe(4);
+    expect(indexResult.entries).toBe(6);
     expect(trimResult.conformityScore).toBeGreaterThanOrEqual(0);
     expect(existsSync(resolve(root, "CLAUDE.md"))).toBe(true);
     expect(existsSync(resolve(root, "AGENTS.md"))).toBe(true);
@@ -156,7 +184,7 @@ describe("codebase audit engine", () => {
     expect(existsSync(resolve(root, ".bosun", "audit", "schedule.json"))).toBe(true);
 
     const schedule = JSON.parse(readFileSync(resolve(root, ".bosun", "audit", "schedule.json"), "utf8"));
-    expect(schedule.filesAudited).toBe(4);
+    expect(schedule.filesAudited).toBe(6);
     expect(schedule.conformityScore).toBe(conformity.score);
   });
 
