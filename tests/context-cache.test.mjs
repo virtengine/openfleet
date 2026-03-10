@@ -178,6 +178,7 @@ describe("context-cache", () => {
         { command: "git reflog", field: "aggregated_output" },
         { command: "git diff HEAD~20 HEAD", field: "aggregated_output" },
         { tool_name: "git", arguments: ["log", "--oneline"], field: "output" },
+        { tool_name: "workspace_git_runner", command: "log --oneline", field: "aggregated_output" },
       ];
 
       for (const entry of cases) {
