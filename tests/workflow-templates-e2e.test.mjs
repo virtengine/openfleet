@@ -430,7 +430,13 @@ describe("workflow-templates E2E execution", () => {
 
   // Override delay-related variables so templates with action.delay nodes
   // don't sleep for minutes during tests (e.g. canary-deploy promotionDelayMs).
-  const DELAY_OVERRIDES = { promotionDelayMs: 10 };
+  const DELAY_OVERRIDES = {
+    promotionDelayMs: 10,
+    pollIntervalMs: 1,
+    maxTurns: 2,
+    stuckThresholdMs: 10,
+    onStuck: "pause",
+  };
 
   describe("all templates execute without engine errors", () => {
     for (const template of WORKFLOW_TEMPLATES) {
@@ -1345,5 +1351,4 @@ describe("workflow-templates E2E execution", () => {
     });
   });
 });
-
 
