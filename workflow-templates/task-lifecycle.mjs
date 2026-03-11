@@ -60,7 +60,7 @@ export const TASK_LIFECYCLE_TEMPLATE = {
     baseBranchLimit: 0,
     pollIntervalMs: 30000,
     claimTtlMinutes: 180,
-    claimRenewIntervalMs: 300000,
+    claimRenewIntervalMs: 60000,
     defaultSdk: "auto",
     defaultTargetBranch: "origin/main",
     taskTimeoutMs: 21600000, // 6 hours
@@ -241,7 +241,7 @@ export const TASK_LIFECYCLE_TEMPLATE = {
     }, { x: 0, y: 2260 }),
 
     node("pr-created", "condition.expression", "PR Linked?", {
-      expression: "Boolean($ctx.getNodeOutput('create-pr')?.success === true || $ctx.getNodeOutput('create-pr')?.handedOff === true || $ctx.getNodeOutput('create-pr')?.prNumber || $ctx.getNodeOutput('create-pr')?.prUrl)",
+      expression: "Boolean($ctx.getNodeOutput('create-pr')?.success === true && ($ctx.getNodeOutput('create-pr')?.prNumber || $ctx.getNodeOutput('create-pr')?.prUrl))",
     }, { x: 0, y: 2325, outputs: ["yes", "no"] }),
 
     // ── SUCCESS PATH: Set status → inreview ──────────────────────────────
@@ -278,21 +278,45 @@ export const TASK_LIFECYCLE_TEMPLATE = {
     }, { x: 180, y: 2260 }),
 
     // ── CLAIM STOLEN PATH: Log ───────────────────────────────────────────
+    node("create-pr-retry", "action.create_pr", "Recover PR Link", {
+      title: "{{taskTitle}}",
+      body: "Task-ID: {{taskId}}\n\nAutomated PR for task {{taskId}}",
+      base: "{{baseBranch}}",
+      branch: "{{branch}}",
+      cwd: "{{worktreePath}}",
+      failOnError: false,
+    }, { x: 400, y: 1740 }),
+
+    node("pr-created-stolen", "condition.expression", "PR Linked After Claim Loss?", {
+      expression: "Boolean($ctx.getNodeOutput('create-pr-retry')?.success === true && ($ctx.getNodeOutput('create-pr-retry')?.prNumber || $ctx.getNodeOutput('create-pr-retry')?.prUrl))",
+    }, { x: 400, y: 1870, outputs: ["yes", "no"] }),
+
+    node("set-inreview-stolen", "action.update_task_status", "Set In-Review (Recovered)", {
+      taskId: "{{taskId}}",
+      status: "inreview",
+      taskTitle: "{{taskTitle}}",
+    }, { x: 250, y: 2000 }),
+
+    node("log-claim-stolen-recovered", "notify.log", "Log Claim Loss Recovery", {
+      message: "Task \"{{taskTitle}}\" ({{taskId}}) — claim lost after PR link recovery, keeping inreview",
+      level: "warn",
+    }, { x: 250, y: 2130 }),
+
     node("log-claim-stolen", "notify.log", "Log Claim Stolen", {
       message: "Task \"{{taskTitle}}\" ({{taskId}}) — claim was stolen, aborting",
       level: "warn",
-    }, { x: 400, y: 1740 }),
+    }, { x: 550, y: 2000 }),
 
     // ── CLAIM STOLEN PATH: Set todo ──────────────────────────────────────
     node("set-todo-stolen", "action.update_task_status", "Set Todo (Stolen)", {
       taskId: "{{taskId}}",
       status: "todo",
       taskTitle: "{{taskTitle}}",
-    }, { x: 400, y: 1870 }),
+    }, { x: 550, y: 2130 }),
 
     node("join-outcomes", "flow.join", "Join Outcome Paths", {
       mode: "all",
-      sourceNodeIds: ["log-success", "set-todo-push-failed", "set-todo-cooldown", "set-todo-stolen"],
+      sourceNodeIds: ["log-success", "set-todo-push-failed", "set-todo-cooldown", "set-todo-stolen", "log-claim-stolen-recovered"],
       includeSkipped: true,
     }, { x: 200, y: 2560 }),
 
@@ -383,7 +407,12 @@ export const TASK_LIFECYCLE_TEMPLATE = {
     edge("set-todo-cooldown", "join-outcomes"),
 
     // Claim stolen path
-    edge("claim-stolen", "log-claim-stolen", { condition: "$output?.result === true", port: "yes" }),
+    edge("claim-stolen", "create-pr-retry", { condition: "$output?.result === true", port: "yes" }),
+    edge("create-pr-retry", "pr-created-stolen"),
+    edge("pr-created-stolen", "set-inreview-stolen", { condition: "$output?.result === true", port: "yes" }),
+    edge("set-inreview-stolen", "log-claim-stolen-recovered"),
+    edge("log-claim-stolen-recovered", "join-outcomes"),
+    edge("pr-created-stolen", "log-claim-stolen", { condition: "$output?.result !== true", port: "no" }),
     edge("log-claim-stolen", "set-todo-stolen"),
     edge("set-todo-stolen", "join-outcomes"),
 
@@ -567,7 +596,7 @@ export const VE_ORCHESTRATOR_LITE_TEMPLATE = {
     }, { x: 180, y: 1870 }),
 
     node("pr-created", "condition.expression", "PR Linked?", {
-      expression: "Boolean($ctx.getNodeOutput('pr')?.success === true || $ctx.getNodeOutput('pr')?.handedOff === true || $ctx.getNodeOutput('pr')?.prNumber || $ctx.getNodeOutput('pr')?.prUrl)",
+      expression: "Boolean($ctx.getNodeOutput('pr')?.success === true && ($ctx.getNodeOutput('pr')?.prNumber || $ctx.getNodeOutput('pr')?.prUrl))",
     }, { x: 180, y: 1935, outputs: ["yes", "no"] }),
 
     // ── Set inreview ─────────────────────────────────────────────────────

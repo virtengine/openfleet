@@ -1745,7 +1745,7 @@ describe("template-task-lifecycle", () => {
       "resolve-executor", "record-head", "build-prompt", "run-agent-plan", "run-agent-tests", "run-agent-implement",
       "claim-stolen", "detect-commits", "has-commits",
       "push-branch", "push-ok", "create-pr", "set-inreview", "log-success",
-      "log-no-commits", "set-todo-cooldown",
+      "log-no-commits", "set-todo-cooldown", "create-pr-retry", "pr-created-stolen", "set-inreview-stolen", "log-claim-stolen-recovered",
       "release-worktree", "release-claim", "release-slot",
     ];
     for (const id of required) {
@@ -1798,7 +1798,10 @@ describe("template-task-lifecycle", () => {
     expect(prCreated?.config?.expression).toContain("create-pr");
     expect(prCreated?.config?.expression).toContain("prNumber");
     expect(prCreated?.config?.expression).toContain("prUrl");
-    expect(prCreated?.config?.expression).toContain("handedOff");
+    // handedOff without a real PR number must NOT satisfy the pr-created gate
+    expect(prCreated?.config?.expression).not.toContain("handedOff");
+    // gate requires success AND an actual PR reference
+    expect(prCreated?.config?.expression).toContain("success === true");
     expect(t.edges.find((e) => e.source === "create-pr" && e.target === "pr-created")).toBeDefined();
     expect(t.edges.find((e) => e.source === "pr-created" && e.target === "set-inreview")).toBeDefined();
     expect(t.edges.find((e) => e.source === "pr-created" && e.target === "set-todo-push-failed")).toBeDefined();
@@ -1827,12 +1830,30 @@ describe("template-task-lifecycle", () => {
     expect(t.edges.find((e) => e.source === "log-success" && e.target === "join-outcomes")).toBeDefined();
     expect(t.edges.find((e) => e.source === "set-todo-cooldown" && e.target === "join-outcomes")).toBeDefined();
     expect(t.edges.find((e) => e.source === "set-todo-stolen" && e.target === "join-outcomes")).toBeDefined();
+    expect(t.edges.find((e) => e.source === "log-claim-stolen-recovered" && e.target === "join-outcomes")).toBeDefined();
     expect(t.edges.find((e) => e.source === "set-todo-push-failed" && e.target === "join-outcomes")).toBeDefined();
     // join-outcomes → release-worktree
     expect(t.edges.find((e) => e.source === "join-outcomes" && e.target === "release-worktree")).toBeDefined();
     // release-worktree → release-claim → release-slot
     expect(t.edges.find((e) => e.source === "release-worktree" && e.target === "release-claim")).toBeDefined();
     expect(t.edges.find((e) => e.source === "release-claim" && e.target === "release-slot")).toBeDefined();
+  });
+
+  it("tries to recover PR linkage before sending a stolen claim back to todo", () => {
+    const t = getTemplate("template-task-lifecycle");
+    const retryPr = t.nodes.find((n) => n.id === "create-pr-retry");
+    const prCreatedStolen = t.nodes.find((n) => n.id === "pr-created-stolen");
+
+    expect(retryPr?.config?.body).toContain("Task-ID: {{taskId}}");
+    expect(retryPr?.config?.branch).toBe("{{branch}}");
+    expect(prCreatedStolen?.config?.expression).toContain("create-pr-retry");
+    expect(prCreatedStolen?.config?.expression).toContain("prNumber");
+    expect(prCreatedStolen?.config?.expression).toContain("prUrl");
+
+    expect(t.edges.find((e) => e.source === "claim-stolen" && e.target === "create-pr-retry")).toBeDefined();
+    expect(t.edges.find((e) => e.source === "create-pr-retry" && e.target === "pr-created-stolen")).toBeDefined();
+    expect(t.edges.find((e) => e.source === "pr-created-stolen" && e.target === "set-inreview-stolen")).toBeDefined();
+    expect(t.edges.find((e) => e.source === "pr-created-stolen" && e.target === "log-claim-stolen")).toBeDefined();
   });
 
 
@@ -1871,7 +1892,7 @@ describe("template-task-lifecycle", () => {
     const t = getTemplate("template-task-lifecycle");
     expect(t.variables.maxParallel).toBe(3);
     expect(t.variables.claimTtlMinutes).toBe(180);
-    expect(t.variables.claimRenewIntervalMs).toBe(300000);
+    expect(t.variables.claimRenewIntervalMs).toBe(60000);
     expect(t.variables.taskTimeoutMs).toBe(21600000);
     expect(t.variables.defaultSdk).toBe("auto");
     expect(Array.isArray(t.variables.protectedBranches)).toBe(true);
@@ -1995,10 +2016,14 @@ describe("template-ve-orchestrator-lite", () => {
     expect(t.edges.find((e) => e.source === "release-claim" && e.target === "release-slot")).toBeDefined();
   });
 
-  it("treats Bosun-managed PR handoff as inreview-eligible", () => {
+  it("requires confirmed PR reference before transitioning to inreview", () => {
     const t = getTemplate("template-ve-orchestrator-lite");
     const prCreated = t.nodes.find((n) => n.id === "pr-created");
-    expect(prCreated?.config?.expression).toContain("handedOff");
+    // handedOff without a real PR number must NOT satisfy the gate — tasks
+    // must have an actual prNumber or prUrl to enter inreview.
+    expect(prCreated?.config?.expression).not.toContain("handedOff");
+    expect(prCreated?.config?.expression).toContain("success === true");
+    expect(prCreated?.config?.expression).toContain("prNumber");
   });
 
   it("claim-failed path releases slot", () => {

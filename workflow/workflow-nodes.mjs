@@ -3560,10 +3560,11 @@ registerNodeType("action.create_pr", {
       if (failOnError) {
         return { success: false, error: errorMsg, command: cmd };
       }
-      // Graceful fallback — record handoff for Bosun management
+      // Graceful fallback — record handoff for Bosun management, but mark as failed
+      // so the task-lifecycle pr-created gate routes back to todo for retry.
       ctx.log(node.id, `Falling back to Bosun-managed PR lifecycle handoff`);
       return {
-        success: true,
+        success: false,
         handedOff: true,
         lifecycle: "bosun_managed",
         action: "pr_handoff",
@@ -8424,7 +8425,7 @@ registerNodeType("action.claim_task", {
       taskId: { type: "string", description: "Task ID to claim" },
       taskTitle: { type: "string", description: "Task title" },
       ttlMinutes: { type: "number", default: 180, description: "Claim TTL in minutes" },
-      renewIntervalMs: { type: "number", default: 300000, description: "Renewal interval (5 min default)" },
+      renewIntervalMs: { type: "number", default: 60000, description: "Renewal interval (1 min default)" },
       instanceId: { type: "string", description: "Orchestrator instance ID (auto-gen if omitted)" },
       branch: { type: "string", description: "Branch for claim metadata" },
       sdk: { type: "string", description: "SDK for claim metadata" },
@@ -8436,7 +8437,7 @@ registerNodeType("action.claim_task", {
     const taskId = cfgOrCtx(node, ctx, "taskId");
     const taskTitle = cfgOrCtx(node, ctx, "taskTitle");
     const ttlMinutes = node.config?.ttlMinutes ?? 180;
-    const renewIntervalMs = node.config?.renewIntervalMs ?? 300000;
+    const renewIntervalMs = node.config?.renewIntervalMs ?? 60000;
     const instanceId = cfgOrCtx(node, ctx, "instanceId") || ctx.data?._agentInstanceId || `wf-${randomUUID().slice(0, 8)}`;
     const branch = cfgOrCtx(node, ctx, "branch");
     const sdk = cfgOrCtx(node, ctx, "resolvedSdk", cfgOrCtx(node, ctx, "sdk"));

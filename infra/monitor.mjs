@@ -6156,7 +6156,11 @@ async function checkMergedPRsAndUpdateTasks() {
       const approved =
         String(task?.reviewStatus || "").trim().toLowerCase() === "approved" ||
         isTaskReviewApprovedForFlow(taskId);
-      if (!approved && !allowsMergedRecovery) continue;
+      // inreview tasks must always be checked — their PR may have merged even if
+      // the review-approval flag was never set (e.g. FLOW_REQUIRE_REVIEW=false or
+      // auto-merge on GitHub without a Bosun review pass).
+      const allowsInreviewMergeCheck = taskStatus === "inreview";
+      if (!approved && !allowsMergedRecovery && !allowsInreviewMergeCheck) continue;
 
       let prUrl = String(task?.prUrl || task?.pr_url || "").trim();
       let prNumber =
@@ -6187,7 +6191,24 @@ async function checkMergedPRsAndUpdateTasks() {
           }
         }
       }
-      if (!prNumber) continue;
+      if (!prNumber) {
+        // inreview tasks with no discoverable PR are stuck — reset them to todo
+        // so the workflow can retry PR creation. Allow a grace period of 2 minutes
+        // to avoid racing with a very recently created inreview status.
+        if (allowsInreviewMergeCheck) {
+          const updatedAt = Date.parse(task?.updatedAt || task?.updated_at || "");
+          const ageMs = Number.isFinite(updatedAt) ? Date.now() - updatedAt : Infinity;
+          if (ageMs > 2 * 60 * 1000) {
+            console.warn(
+              `[monitor] review reconcile: inreview task ${taskId} has no discoverable PR — resetting to todo`,
+            );
+            try { setInternalTaskStatus(taskId, "todo", "review-reconcile-no-pr"); } catch { /* best-effort */ }
+            try { await updateTaskStatus(taskId, "todo"); } catch { /* best-effort */ }
+            summary.resetNopr = (summary.resetNopr || 0) + 1;
+          }
+        }
+        continue;
+      }
       if (!prUrl) {
         prUrl = `${getRepoUrlBaseForSlug(resolvedRepoSlug)}/pull/${prNumber}`;
       }

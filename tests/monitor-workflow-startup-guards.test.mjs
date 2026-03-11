@@ -143,7 +143,8 @@ describe("monitor workflow startup guards", () => {
     expect(monitorSource).toContain("...(getInternalTasksByStatus(\"todo\") || []),");
     expect(monitorSource).toContain("...(getInternalTasksByStatus(\"inprogress\") || []),");
     expect(monitorSource).toContain("const allowsMergedRecovery =");
-    expect(monitorSource).toContain("if (!approved && !allowsMergedRecovery) continue;");
+    expect(monitorSource).toContain("const allowsInreviewMergeCheck = taskStatus === \"inreview\"");
+    expect(monitorSource).toContain("if (!approved && !allowsMergedRecovery && !allowsInreviewMergeCheck) continue;");
     expect(monitorSource).toContain("marking ${taskId} done${recoverySuffix}");
   });
 });

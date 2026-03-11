@@ -14717,8 +14717,8 @@
         "workflow-first",
         "core"
       ],
-      "nodeCount": 38,
-      "edgeCount": 41,
+      "nodeCount": 42,
+      "edgeCount": 46,
       "recommended": true,
       "enabled": true,
       "trigger": "trigger.task_available",
@@ -14727,7 +14727,7 @@
         "baseBranchLimit": 0,
         "pollIntervalMs": 30000,
         "claimTtlMinutes": 180,
-        "claimRenewIntervalMs": 300000,
+        "claimRenewIntervalMs": 60000,
         "defaultSdk": "auto",
         "defaultTargetBranch": "origin/main",
         "taskTimeoutMs": 21600000,
@@ -15151,7 +15151,7 @@
           "type": "condition.expression",
           "label": "PR Linked?",
           "config": {
-            "expression": "Boolean($ctx.getNodeOutput('create-pr')?.success === true || $ctx.getNodeOutput('create-pr')?.handedOff === true || $ctx.getNodeOutput('create-pr')?.prNumber || $ctx.getNodeOutput('create-pr')?.prUrl)"
+            "expression": "Boolean($ctx.getNodeOutput('create-pr')?.success === true && ($ctx.getNodeOutput('create-pr')?.prNumber || $ctx.getNodeOutput('create-pr')?.prUrl))"
           },
           "position": {
             "x": 0,
@@ -15246,6 +15246,75 @@
           ]
         },
         {
+          "id": "create-pr-retry",
+          "type": "action.create_pr",
+          "label": "Recover PR Link",
+          "config": {
+            "title": "{{taskTitle}}",
+            "body": "Task-ID: {{taskId}}\n\nAutomated PR for task {{taskId}}",
+            "base": "{{baseBranch}}",
+            "branch": "{{branch}}",
+            "cwd": "{{worktreePath}}",
+            "failOnError": false
+          },
+          "position": {
+            "x": 400,
+            "y": 1740
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "pr-created-stolen",
+          "type": "condition.expression",
+          "label": "PR Linked After Claim Loss?",
+          "config": {
+            "expression": "Boolean($ctx.getNodeOutput('create-pr-retry')?.success === true && ($ctx.getNodeOutput('create-pr-retry')?.prNumber || $ctx.getNodeOutput('create-pr-retry')?.prUrl))"
+          },
+          "position": {
+            "x": 400,
+            "y": 1870
+          },
+          "outputs": [
+            "yes",
+            "no"
+          ]
+        },
+        {
+          "id": "set-inreview-stolen",
+          "type": "action.update_task_status",
+          "label": "Set In-Review (Recovered)",
+          "config": {
+            "taskId": "{{taskId}}",
+            "status": "inreview",
+            "taskTitle": "{{taskTitle}}"
+          },
+          "position": {
+            "x": 250,
+            "y": 2000
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "log-claim-stolen-recovered",
+          "type": "notify.log",
+          "label": "Log Claim Loss Recovery",
+          "config": {
+            "message": "Task \"{{taskTitle}}\" ({{taskId}}) — claim lost after PR link recovery, keeping inreview",
+            "level": "warn"
+          },
+          "position": {
+            "x": 250,
+            "y": 2130
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
           "id": "log-claim-stolen",
           "type": "notify.log",
           "label": "Log Claim Stolen",
@@ -15254,8 +15323,8 @@
             "level": "warn"
           },
           "position": {
-            "x": 400,
-            "y": 1740
+            "x": 550,
+            "y": 2000
           },
           "outputs": [
             "default"
@@ -15271,8 +15340,8 @@
             "taskTitle": "{{taskTitle}}"
           },
           "position": {
-            "x": 400,
-            "y": 1870
+            "x": 550,
+            "y": 2130
           },
           "outputs": [
             "default"
@@ -15288,7 +15357,8 @@
               "log-success",
               "set-todo-push-failed",
               "set-todo-cooldown",
-              "set-todo-stolen"
+              "set-todo-stolen",
+              "log-claim-stolen-recovered"
             ],
             "includeSkipped": true
           },
@@ -15627,11 +15697,43 @@
           "sourcePort": "default"
         },
         {
-          "id": "claim-stolen->log-claim-stolen",
+          "id": "claim-stolen->create-pr-retry",
           "source": "claim-stolen",
-          "target": "log-claim-stolen",
+          "target": "create-pr-retry",
           "sourcePort": "yes",
           "condition": "$output?.result === true"
+        },
+        {
+          "id": "create-pr-retry->pr-created-stolen",
+          "source": "create-pr-retry",
+          "target": "pr-created-stolen",
+          "sourcePort": "default"
+        },
+        {
+          "id": "pr-created-stolen->set-inreview-stolen",
+          "source": "pr-created-stolen",
+          "target": "set-inreview-stolen",
+          "sourcePort": "yes",
+          "condition": "$output?.result === true"
+        },
+        {
+          "id": "set-inreview-stolen->log-claim-stolen-recovered",
+          "source": "set-inreview-stolen",
+          "target": "log-claim-stolen-recovered",
+          "sourcePort": "default"
+        },
+        {
+          "id": "log-claim-stolen-recovered->join-outcomes",
+          "source": "log-claim-stolen-recovered",
+          "target": "join-outcomes",
+          "sourcePort": "default"
+        },
+        {
+          "id": "pr-created-stolen->log-claim-stolen",
+          "source": "pr-created-stolen",
+          "target": "log-claim-stolen",
+          "sourcePort": "no",
+          "condition": "$output?.result !== true"
         },
         {
           "id": "log-claim-stolen->set-todo-stolen",
@@ -16030,7 +16132,7 @@
           "type": "condition.expression",
           "label": "PR Linked?",
           "config": {
-            "expression": "Boolean($ctx.getNodeOutput('pr')?.success === true || $ctx.getNodeOutput('pr')?.handedOff === true || $ctx.getNodeOutput('pr')?.prNumber || $ctx.getNodeOutput('pr')?.prUrl)"
+            "expression": "Boolean($ctx.getNodeOutput('pr')?.success === true && ($ctx.getNodeOutput('pr')?.prNumber || $ctx.getNodeOutput('pr')?.prUrl))"
           },
           "position": {
             "x": 180,
@@ -30484,14 +30586,14 @@
       "description": "Complete task execution pipeline: poll for tasks → claim → worktree → agent dispatch → commit detection → PR creation → status transition. Replaces the monolithic TaskExecutor.executeTask() method with a composable workflow DAG.",
       "category": "lifecycle",
       "enabled": true,
-      "nodeCount": 38,
+      "nodeCount": 42,
       "trigger": "trigger.task_available",
       "variables": {
         "maxParallel": 3,
         "baseBranchLimit": 0,
         "pollIntervalMs": 30000,
         "claimTtlMinutes": 180,
-        "claimRenewIntervalMs": 300000,
+        "claimRenewIntervalMs": 60000,
         "defaultSdk": "auto",
         "defaultTargetBranch": "origin/main",
         "taskTimeoutMs": 21600000,
@@ -30887,7 +30989,7 @@
           "type": "condition.expression",
           "label": "PR Linked?",
           "config": {
-            "expression": "Boolean($ctx.getNodeOutput('create-pr')?.success === true || $ctx.getNodeOutput('create-pr')?.handedOff === true || $ctx.getNodeOutput('create-pr')?.prNumber || $ctx.getNodeOutput('create-pr')?.prUrl)"
+            "expression": "Boolean($ctx.getNodeOutput('create-pr')?.success === true && ($ctx.getNodeOutput('create-pr')?.prNumber || $ctx.getNodeOutput('create-pr')?.prUrl))"
           },
           "position": {
             "x": 0,
@@ -30982,6 +31084,75 @@
           ]
         },
         {
+          "id": "create-pr-retry",
+          "type": "action.create_pr",
+          "label": "Recover PR Link",
+          "config": {
+            "title": "{{taskTitle}}",
+            "body": "Task-ID: {{taskId}}\n\nAutomated PR for task {{taskId}}",
+            "base": "{{baseBranch}}",
+            "branch": "{{branch}}",
+            "cwd": "{{worktreePath}}",
+            "failOnError": false
+          },
+          "position": {
+            "x": 400,
+            "y": 1740
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "pr-created-stolen",
+          "type": "condition.expression",
+          "label": "PR Linked After Claim Loss?",
+          "config": {
+            "expression": "Boolean($ctx.getNodeOutput('create-pr-retry')?.success === true && ($ctx.getNodeOutput('create-pr-retry')?.prNumber || $ctx.getNodeOutput('create-pr-retry')?.prUrl))"
+          },
+          "position": {
+            "x": 400,
+            "y": 1870
+          },
+          "outputs": [
+            "yes",
+            "no"
+          ]
+        },
+        {
+          "id": "set-inreview-stolen",
+          "type": "action.update_task_status",
+          "label": "Set In-Review (Recovered)",
+          "config": {
+            "taskId": "{{taskId}}",
+            "status": "inreview",
+            "taskTitle": "{{taskTitle}}"
+          },
+          "position": {
+            "x": 250,
+            "y": 2000
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "log-claim-stolen-recovered",
+          "type": "notify.log",
+          "label": "Log Claim Loss Recovery",
+          "config": {
+            "message": "Task \"{{taskTitle}}\" ({{taskId}}) — claim lost after PR link recovery, keeping inreview",
+            "level": "warn"
+          },
+          "position": {
+            "x": 250,
+            "y": 2130
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
           "id": "log-claim-stolen",
           "type": "notify.log",
           "label": "Log Claim Stolen",
@@ -30990,8 +31161,8 @@
             "level": "warn"
           },
           "position": {
-            "x": 400,
-            "y": 1740
+            "x": 550,
+            "y": 2000
           },
           "outputs": [
             "default"
@@ -31007,8 +31178,8 @@
             "taskTitle": "{{taskTitle}}"
           },
           "position": {
-            "x": 400,
-            "y": 1870
+            "x": 550,
+            "y": 2130
           },
           "outputs": [
             "default"
@@ -31024,7 +31195,8 @@
               "log-success",
               "set-todo-push-failed",
               "set-todo-cooldown",
-              "set-todo-stolen"
+              "set-todo-stolen",
+              "log-claim-stolen-recovered"
             ],
             "includeSkipped": true
           },
@@ -31363,11 +31535,43 @@
           "sourcePort": "default"
         },
         {
-          "id": "claim-stolen->log-claim-stolen",
+          "id": "claim-stolen->create-pr-retry",
           "source": "claim-stolen",
-          "target": "log-claim-stolen",
+          "target": "create-pr-retry",
           "sourcePort": "yes",
           "condition": "$output?.result === true"
+        },
+        {
+          "id": "create-pr-retry->pr-created-stolen",
+          "source": "create-pr-retry",
+          "target": "pr-created-stolen",
+          "sourcePort": "default"
+        },
+        {
+          "id": "pr-created-stolen->set-inreview-stolen",
+          "source": "pr-created-stolen",
+          "target": "set-inreview-stolen",
+          "sourcePort": "yes",
+          "condition": "$output?.result === true"
+        },
+        {
+          "id": "set-inreview-stolen->log-claim-stolen-recovered",
+          "source": "set-inreview-stolen",
+          "target": "log-claim-stolen-recovered",
+          "sourcePort": "default"
+        },
+        {
+          "id": "log-claim-stolen-recovered->join-outcomes",
+          "source": "log-claim-stolen-recovered",
+          "target": "join-outcomes",
+          "sourcePort": "default"
+        },
+        {
+          "id": "pr-created-stolen->log-claim-stolen",
+          "source": "pr-created-stolen",
+          "target": "log-claim-stolen",
+          "sourcePort": "no",
+          "condition": "$output?.result !== true"
         },
         {
           "id": "log-claim-stolen->set-todo-stolen",
@@ -31745,7 +31949,7 @@
           "type": "condition.expression",
           "label": "PR Linked?",
           "config": {
-            "expression": "Boolean($ctx.getNodeOutput('pr')?.success === true || $ctx.getNodeOutput('pr')?.handedOff === true || $ctx.getNodeOutput('pr')?.prNumber || $ctx.getNodeOutput('pr')?.prUrl)"
+            "expression": "Boolean($ctx.getNodeOutput('pr')?.success === true && ($ctx.getNodeOutput('pr')?.prNumber || $ctx.getNodeOutput('pr')?.prUrl))"
           },
           "position": {
             "x": 180,
