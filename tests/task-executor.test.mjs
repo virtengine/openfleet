@@ -1568,9 +1568,32 @@ describe("task-executor", () => {
   // Legacy stubs — verify gutted methods return expected no-op values
   // ────────────────────────────────────────────────────────────────────────
 
-  describe("legacy method stubs", () => {
-    it("executeTask returns legacy_removed stub", async () => {
-      const ex = new TaskExecutor();
+describe("legacy method stubs", () => {
+    it("executeTask dispatches workflow-owned lifecycle via onTaskStarted hook", async () => {
+      const onTaskStarted = vi.fn();
+      const ex = new TaskExecutor({ onTaskStarted, workflowOwnsTaskLifecycle: true });
+      const result = await ex.executeTask({ id: "test-1", title: "Test" });
+      expect(result).toMatchObject({
+        queued: false,
+        started: true,
+        dispatched: true,
+        mode: "workflow-owned",
+        taskId: "test-1",
+      });
+      expect(onTaskStarted).toHaveBeenCalledTimes(1);
+      const [taskArg, slotArg] = onTaskStarted.mock.calls[0];
+      expect(taskArg).toMatchObject({ id: "test-1", title: "Test" });
+      expect(slotArg).toMatchObject({
+        taskId: "test-1",
+        taskTitle: "Test",
+        sdk: "auto",
+        status: "running",
+        attempt: 1,
+      });
+    });
+
+    it("executeTask returns legacy_removed stub when workflow lifecycle ownership is disabled", async () => {
+      const ex = new TaskExecutor({ workflowOwnsTaskLifecycle: false });
       const result = await ex.executeTask({ id: "test-1", title: "Test" });
       expect(result).toEqual({ skipped: true, reason: "legacy_removed" });
     });
