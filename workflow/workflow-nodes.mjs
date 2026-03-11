@@ -9426,12 +9426,47 @@ registerNodeType("action.push_branch", {
       return { success: false, error: `Protected branch: ${cleanBranch}`, pushed: false };
     }
 
+    // ── Fetch (always, independent of rebase) ──
+    // Must succeed before push so --force-with-lease has fresh remote tracking refs.
+    try {
+      execSync(`git fetch ${remote} --no-tags`, {
+        cwd: worktreePath, timeout: 30000, stdio: ["ignore", "pipe", "pipe"],
+      });
+    } catch (fetchErr) {
+      ctx.log(node.id, `Fetch failed (will push anyway): ${fetchErr.message?.slice(0, 200)}`);
+    }
+
     // ── Rebase-before-push ──
     if (rebaseBeforePush) {
+      // Step 1: if the remote already has commits on this branch (previous run / partial push),
+      // rebase local onto origin/${cleanBranch} first so we incorporate those commits and
+      // the subsequent push is a clean fast-forward instead of a diverged force-push.
+      const remoteTrackingRef = `${remote}/${cleanBranch}`;
       try {
-        execSync(`git fetch ${remote} --no-tags`, {
-          cwd: worktreePath, timeout: 30000, stdio: ["ignore", "pipe", "pipe"],
+        execSync(`git rev-parse --verify ${remoteTrackingRef}`, {
+          cwd: worktreePath, timeout: 5000, stdio: ["ignore", "pipe", "pipe"],
         });
+        // Remote branch exists — check if it diverges from local
+        const behindCount = execSync(
+          `git rev-list --count HEAD..${remoteTrackingRef}`,
+          { cwd: worktreePath, encoding: "utf8", timeout: 10000, stdio: ["ignore", "pipe", "pipe"] }
+        ).trim();
+        if (parseInt(behindCount, 10) > 0) {
+          try {
+            execSync(`git rebase ${remoteTrackingRef}`, {
+              cwd: worktreePath, encoding: "utf8", timeout: 60000,
+              stdio: ["ignore", "pipe", "pipe"],
+            });
+            ctx.log(node.id, `Synced local with ${remoteTrackingRef} (was ${behindCount} behind)`);
+          } catch (syncErr) {
+            try { execSync("git rebase --abort", { cwd: worktreePath, timeout: 10000, stdio: ["ignore", "pipe", "pipe"] }); } catch { /* ok */ }
+            ctx.log(node.id, `Sync with ${remoteTrackingRef} conflicted, skipping: ${syncErr.message?.slice(0, 200)}`);
+          }
+        }
+      } catch { /* remote branch doesn't exist yet — normal for first push */ }
+
+      // Step 2: rebase onto base branch (e.g. origin/main)
+      try {
         execSync(`git rebase ${baseBranch}`, {
           cwd: worktreePath, encoding: "utf8", timeout: 60000,
           stdio: ["ignore", "pipe", "pipe"],
@@ -9444,7 +9479,7 @@ registerNodeType("action.push_branch", {
             cwd: worktreePath, timeout: 10000, stdio: ["ignore", "pipe", "pipe"],
           });
         } catch { /* already aborted */ }
-        ctx.log(node.id, `Rebase conflict, skipping: ${rebaseErr.message?.slice(0, 200)}`);
+        ctx.log(node.id, `Rebase onto ${baseBranch} conflicted, skipping: ${rebaseErr.message?.slice(0, 200)}`);
       }
     }
 
