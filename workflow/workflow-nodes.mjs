@@ -27,6 +27,7 @@ import { getToolsPromptBlock } from "../agent/agent-custom-tools.mjs";
 import { buildRelevantSkillsPromptBlock, findRelevantSkills } from "../agent/bosun-skills.mjs";
 import { getSessionTracker } from "../infra/session-tracker.mjs";
 import { fixGitConfigCorruption } from "../workspace/worktree-manager.mjs";
+import { clearBlockedWorktreeIdentity } from "../git/git-safety.mjs";
 
 const TAG = "[workflow-nodes]";
 const PORTABLE_WORKTREE_COUNT_COMMAND = "node -e \"const cp=require('node:child_process');const wt=cp.execSync('git worktree list --porcelain',{encoding:'utf8'});const count=(wt.match(/^worktree /gm)||[]).length;process.stdout.write(String(count)+'\\\\n');\"";
@@ -8843,6 +8844,8 @@ registerNodeType("action.acquire_worktree", {
         ctx.data._worktreeCreated = false;
         ctx.data._worktreeManaged = true;
         ctx.log(node.id, `Reusing worktree: ${worktreePath}`);
+        const cleared1 = clearBlockedWorktreeIdentity(worktreePath);
+        if (cleared1) ctx.log(node.id, `Cleared blocked test git identity from worktree: ${worktreePath}`);
         return { success: true, worktreePath, created: false, reused: true, branch, baseBranch };
       }
 
@@ -8882,6 +8885,8 @@ registerNodeType("action.acquire_worktree", {
             ctx.data._worktreeCreated = false;
             ctx.data._worktreeManaged = true;
             ctx.log(node.id, `Reusing existing branch worktree: ${existingBranchWorktree}`);
+            const cleared2 = clearBlockedWorktreeIdentity(existingBranchWorktree);
+            if (cleared2) ctx.log(node.id, `Cleared blocked test git identity from worktree: ${existingBranchWorktree}`);
             return {
               success: true,
               worktreePath: existingBranchWorktree,
@@ -8899,6 +8904,8 @@ registerNodeType("action.acquire_worktree", {
         }
       }
       fixGitConfigCorruption(repoRoot);
+      const cleared3 = clearBlockedWorktreeIdentity(worktreePath);
+      if (cleared3) ctx.log(node.id, `Cleared blocked test git identity from worktree: ${worktreePath}`);
 
       ctx.data.worktreePath = worktreePath;
       ctx.data._worktreeCreated = true;
