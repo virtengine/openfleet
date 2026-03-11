@@ -568,7 +568,11 @@ async function ensureWorkflowAutomationEngine() {
         anomalyDetector: anomalyDetector || null,
       };
 
-      const engine = getWorkflowEngine({ services });
+      const engine = getWorkflowEngine({
+        services,
+        workflowDir: resolve(repoRoot, ".bosun", "workflows"),
+        runsDir: resolve(repoRoot, ".bosun", "workflow-runs"),
+      });
 
       const configuredWorkflowProfile =
         config?.workflowDefaults && typeof config.workflowDefaults === "object"
@@ -4322,7 +4326,7 @@ async function getAttemptInfo(attemptId) {
 }
 
 function ghAvailable() {
-  const res = spawnSync("gh", ["--version"], { stdio: "ignore" });
+  const res = spawnSync("gh", ["--version"], { stdio: "ignore", timeout: 8000 });
   return res.status === 0;
 }
 
@@ -4399,7 +4403,7 @@ async function findExistingPrForBranchInRepo(branch, repoOverride = "") {
   const res = spawnSync(
     "gh",
     args,
-    { encoding: "utf8" },
+    { encoding: "utf8", timeout: 15000 },
   );
   if (res.status !== 0) {
     return null;
@@ -4430,14 +4434,22 @@ async function findExistingPrForBranchApiInRepo(branch, repoOverride = "") {
     head,
   )}`;
   try {
-    const res = await fetch(url, {
-      headers: {
-        Authorization: `Bearer ${githubToken}`,
-        Accept: "application/vnd.github+json",
-        "X-GitHub-Api-Version": "2022-11-28",
-        "User-Agent": "bosun",
-      },
-    });
+    const abort = new AbortController();
+    const abortTimer = setTimeout(() => abort.abort(), 15000);
+    let res;
+    try {
+      res = await fetch(url, {
+        headers: {
+          Authorization: `Bearer ${githubToken}`,
+          Accept: "application/vnd.github+json",
+          "X-GitHub-Api-Version": "2022-11-28",
+          "User-Agent": "bosun",
+        },
+        signal: abort.signal,
+      });
+    } finally {
+      clearTimeout(abortTimer);
+    }
     if (!res || !res.ok) {
       const text = res ? await res.text().catch(() => "") : "";
       const status = res?.status || "no response";
@@ -4473,7 +4485,7 @@ async function getPullRequestByNumber(prNumber, repoOverride = "") {
     const res = spawnSync(
       "gh",
       args,
-      { encoding: "utf8" },
+      { encoding: "utf8", timeout: 15000 },
     );
     if (res.status === 0) {
       try {
@@ -4488,14 +4500,22 @@ async function getPullRequestByNumber(prNumber, repoOverride = "") {
   if (!owner || !repo) return null;
   const url = `https://api.github.com/repos/${owner}/${repo}/pulls/${prNumber}`;
   try {
-    const res = await fetch(url, {
-      headers: {
-        Authorization: `Bearer ${githubToken}`,
-        Accept: "application/vnd.github+json",
-        "X-GitHub-Api-Version": "2022-11-28",
-        "User-Agent": "bosun",
-      },
-    });
+    const abort = new AbortController();
+    const abortTimer = setTimeout(() => abort.abort(), 15000);
+    let res;
+    try {
+      res = await fetch(url, {
+        headers: {
+          Authorization: `Bearer ${githubToken}`,
+          Accept: "application/vnd.github+json",
+          "X-GitHub-Api-Version": "2022-11-28",
+          "User-Agent": "bosun",
+        },
+        signal: abort.signal,
+      });
+    } finally {
+      clearTimeout(abortTimer);
+    }
     if (!res || !res.ok) {
       const text = res ? await res.text().catch(() => "") : "";
       const status = res?.status || "no response";
@@ -6084,14 +6104,25 @@ loadRecoveryCache();
  */
 async function checkMergedPRsAndUpdateTasks() {
   if (workflowTaskReconcileInFlight) {
-    return {
-      checked: 0,
-      movedDone: 0,
-      movedReview: 0,
-      movedTodo: 0,
-      skippedByWorkflowReplacement: false,
-      skippedReason: "already_running",
-    };
+    // Safety release: if the in-flight flag has been stuck for >2 minutes (e.g.
+    // due to a hung fetch/spawnSync that resolved but the finally never ran),
+    // force-release it so reconcile can run again.
+    const staleMs = Date.now() - workflowTaskReconcileLastAt;
+    if (staleMs > 2 * 60 * 1000) {
+      console.warn(
+        `[monitor] review reconcile: in-flight flag stale (${staleMs}ms) — force releasing`,
+      );
+      workflowTaskReconcileInFlight = false;
+    } else {
+      return {
+        checked: 0,
+        movedDone: 0,
+        movedReview: 0,
+        movedTodo: 0,
+        skippedByWorkflowReplacement: false,
+        skippedReason: "already_running",
+      };
+    }
   }
   const now = Date.now();
   if (
@@ -15302,7 +15333,6 @@ export {
   // Workflow event bridge — for fleet/kanban modules to emit events
   queueWorkflowEvent,
 };
-
 
 
 
