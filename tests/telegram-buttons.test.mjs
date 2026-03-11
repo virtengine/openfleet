@@ -168,6 +168,44 @@ describe("telegram-bot inline keyboards", () => {
       expect(botSource).toContain("await showStickyInteractiveMessage(chatId, `${prompt}\\n\\nSend /cancel to abort.`");
       expect(botSource).toContain("await restoreStickyMenuMessage(chatId);");
     });
+
+    it("recovers sticky context from reconnect callback updates", async () => {
+      const fs = await import("node:fs");
+      const path = await import("node:path");
+      const { fileURLToPath } = await import("node:url");
+
+      const __dirname = path.resolve(
+        fileURLToPath(new URL(".", import.meta.url)),
+      );
+      const botSource = fs.readFileSync(
+        path.resolve(__dirname, "..", "telegram", "telegram-bot.mjs"),
+        "utf8",
+      );
+
+      expect(botSource).toContain("function recoverStickyMenuContextFromCallback(query, reason = \"callback\")");
+      expect(botSource).toContain("recoverStickyMenuContextFromCallback(query, \"reconnect\")");
+      expect(botSource).toContain("sticky_menu.context_recovered");
+    });
+
+    it("deduplicates rapid repeated menu callbacks", async () => {
+      const fs = await import("node:fs");
+      const path = await import("node:path");
+      const { fileURLToPath } = await import("node:url");
+
+      const __dirname = path.resolve(
+        fileURLToPath(new URL(".", import.meta.url)),
+      );
+      const botSource = fs.readFileSync(
+        path.resolve(__dirname, "..", "telegram", "telegram-bot.mjs"),
+        "utf8",
+      );
+
+      expect(botSource).toContain("const callbackActionDeduper = new Map();");
+      expect(botSource).toContain("const CALLBACK_ACTION_DEDUPE_MS = Math.max(");
+      expect(botSource).toContain("function dedupeMenuCallbackAction({");
+      expect(botSource).toContain("sticky_menu.callback_deduped");
+      expect(botSource).toContain("Already processing...");
+    });
   });
 
   describe("/helpfull command", () => {
