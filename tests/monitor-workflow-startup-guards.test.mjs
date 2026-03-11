@@ -150,4 +150,46 @@ describe("monitor workflow startup guards", () => {
 });
 
 
+describe("task-executor in-progress recovery owner_mismatch guards", () => {
+  const executorSource = readFileSync(resolve(process.cwd(), "task/task-executor.mjs"), "utf8");
+
+  it("skips resumable dispatch in workflow-owned mode when agent thread is alive", () => {
+    // When workflowOwnsTaskLifecycle is true and hasThread is true,
+    // recovery must NOT add the task to resumable (which calls executeTask()
+    // and fires task.assigned, launching a second competing workflow run).
+    expect(executorSource).toContain("if (this.workflowOwnsTaskLifecycle) {");
+    expect(executorSource).toContain("if (hasThread) {");
+    // The skip branch must appear BEFORE the resumable.push call
+    const wfGuardPos = executorSource.indexOf("if (this.workflowOwnsTaskLifecycle) {");
+    const resumablePushPos = executorSource.indexOf("resumable.push({ ...task, id });");
+    expect(wfGuardPos).toBeLessThan(resumablePushPos);
+  });
+
+  it("resets fresh workflow-owned task to todo when agent thread died instead of re-dispatching", () => {
+    // When workflowOwnsTaskLifecycle is true and there is no active thread
+    // but the task is fresh, recovery must reset to todo (not call executeTask).
+    // Resetting to todo lets trigger.task_available re-dispatch cleanly.
+    expect(executorSource).toContain("source: \"task-executor-recovery-workflow-owned\"");
+  });
+
+  it("uses stale threshold of 600s so recovery interval cannot race heartbeat renewal", () => {
+    // INPROGRESS_RECOVERY_INTERVAL_MS is 300s.  If SHARED_STATE_STALE_THRESHOLD_MS
+    // were also 300s they could coincide.  600s ensures a generous buffer so a
+    // workflow that misses one heartbeat renewal is not immediately evicted.
+    expect(executorSource).toContain("600_000");
+    const defaultPos = executorSource.indexOf("|| 600_000");
+    const staleConstPos = executorSource.indexOf("SHARED_STATE_STALE_THRESHOLD_MS");
+    expect(staleConstPos).toBeLessThan(defaultPos + 200);
+  });
+
+  it("skips owner_mismatch check against own instanceId so workflow-owned claims are also respected", () => {
+    // The old guard `ownerId !== this._instanceId` caused workflow-owned tasks
+    // (which use wf-<uuid> as ownerId) to always pass through to the re-dispatch
+    // path when their heartbeat was stale.  The simplified guard accepts any
+    // non-stale owner.
+    expect(executorSource).not.toContain("ownerId !== this._instanceId");
+  });
+});
+
+
 
