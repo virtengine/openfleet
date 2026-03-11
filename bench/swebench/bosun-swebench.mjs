@@ -5,12 +5,9 @@ import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { taskCreate, taskList } from "../../task-cli.mjs";
+import { taskCreate, taskList } from "../../task/task-cli.mjs";
 
-const __filename = fileURLToPath(import.meta.url);
-const __dirname = dirname(__filename);
-
-function usage() {
+export function usage() {
   console.log(`
 Bosun SWE-bench bridge
 
@@ -26,7 +23,7 @@ Notes:
 `);
 }
 
-function parseArgs(argv) {
+export function parseArgs(argv) {
   const args = { _: [] };
   for (let i = 0; i < argv.length; i += 1) {
     const a = argv[i];
@@ -50,7 +47,7 @@ function parseArgs(argv) {
   return args;
 }
 
-function readJsonOrJsonl(pathLike) {
+export function readJsonOrJsonl(pathLike) {
   const file = resolve(pathLike);
   const raw = readFileSync(file, "utf8");
   const trimmed = raw.trim();
@@ -87,7 +84,7 @@ function firstNonEmpty(obj, keys) {
   return "";
 }
 
-function buildTaskFromInstance(instance, opts = {}) {
+export function buildTaskFromInstance(instance, opts = {}) {
   const instanceId = firstNonEmpty(instance, ["instance_id", "id"]);
   if (!instanceId) throw new Error("Missing instance_id");
   const problem = firstNonEmpty(instance, ["problem_statement", "statement", "text"]);
@@ -139,7 +136,7 @@ function buildTaskFromInstance(instance, opts = {}) {
   };
 }
 
-function writeJsonl(pathLike, records) {
+export function writeJsonl(pathLike, records) {
   const outFile = resolve(pathLike);
   mkdirSync(dirname(outFile), { recursive: true });
   const body = records.map((r) => JSON.stringify(r)).join("\n") + "\n";
@@ -147,12 +144,12 @@ function writeJsonl(pathLike, records) {
   return outFile;
 }
 
-function sha256File(pathLike) {
+export function sha256File(pathLike) {
   const content = readFileSync(pathLike);
   return createHash("sha256").update(content).digest("hex");
 }
 
-function safeGit(args, cwd = process.cwd()) {
+export function safeGit(args, cwd = process.cwd()) {
   try {
     return execFileSync("git", args, { encoding: "utf8", cwd }).trim();
   } catch {
@@ -160,7 +157,7 @@ function safeGit(args, cwd = process.cwd()) {
   }
 }
 
-function getTaskSwebenchMeta(task) {
+export function getTaskSwebenchMeta(task) {
   const meta = task?.meta?.swebench;
   if (!meta || typeof meta !== "object") return null;
   const instanceId = normString(meta.instance_id);
@@ -173,7 +170,7 @@ function getTaskSwebenchMeta(task) {
   };
 }
 
-function computePatchForTask(task, sweMeta) {
+export function computePatchForTask(task, sweMeta) {
   const repoDir = sweMeta.workspace || process.cwd();
   const base = sweMeta.base_commit;
   const ref = normString(task.branchName || "HEAD");
@@ -187,7 +184,7 @@ function computePatchForTask(task, sweMeta) {
   return diff;
 }
 
-async function cmdImport(args) {
+export async function cmdImport(args) {
   const instancesPath = normString(args.instances);
   if (!instancesPath) throw new Error("--instances is required");
   const instances = readJsonOrJsonl(instancesPath);
@@ -216,7 +213,7 @@ async function cmdImport(args) {
   console.log(`Imported SWE-bench tasks: created=${created}, skipped=${skipped}, total=${instances.length}`);
 }
 
-async function cmdExport(args) {
+export async function cmdExport(args) {
   const out = normString(args.out);
   if (!out) throw new Error("--out is required");
   const model = normString(args.model) || "bosun";
@@ -252,7 +249,7 @@ async function cmdExport(args) {
   }
 }
 
-function cmdEval(args) {
+export function cmdEval(args) {
   const predictions = normString(args.predictions);
   const instanceIds = normString(args["instance-ids"] || args.instances);
   if (!predictions) throw new Error("--predictions is required");
@@ -298,8 +295,8 @@ function cmdEval(args) {
   execFileSync("python", cmd, { stdio: "inherit" });
 }
 
-async function main() {
-  const args = parseArgs(process.argv.slice(2));
+export async function main(argv = process.argv.slice(2)) {
+  const args = parseArgs(argv);
   const cmd = normString(args._[0] || "").toLowerCase();
   if (!cmd || ["-h", "--help", "help"].includes(cmd)) {
     usage();
@@ -322,7 +319,18 @@ async function main() {
   throw new Error(`Unknown command: ${cmd}`);
 }
 
-main().catch((err) => {
-  console.error(`[bosun-swebench] ${err.message}`);
-  process.exit(1);
-});
+const isDirectRun = (() => {
+  if (!process.argv[1]) return false;
+  try {
+    return fileURLToPath(import.meta.url) === resolve(process.argv[1]);
+  } catch {
+    return false;
+  }
+})();
+
+if (isDirectRun) {
+  main().catch((err) => {
+    console.error(`[bosun-swebench] ${err.message}`);
+    process.exit(1);
+  });
+}

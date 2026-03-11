@@ -12,6 +12,7 @@ This bridge keeps **Bosun** as the task execution system (multi-task, multi-turn
 
 - Python environment with SWE-bench harness installed.
 - Bosun running against repositories/workspaces that correspond to SWE-bench instances.
+- Bosun using the **internal kanban backend** (`KANBAN_BACKEND=internal`, which is the default). This bridge imports tasks into Bosun's internal task store; other kanban backends will not see those imported tasks unless you build a separate sync path.
 - Instance input JSONL with at least:
   - `instance_id`
   - `problem_statement`
@@ -32,6 +33,13 @@ You can also set per-instance `candidate_count` inside `instances.jsonl`.
 ### 2) Let Bosun execute tasks
 
 Run Bosun normally (`node cli.mjs`) and allow your configured executor/workflows to process tasks.
+
+Important execution details:
+
+- Imported SWE-bench tasks are stored as regular Bosun tasks tagged with `swebench` and `benchmark`.
+- On the default workflow-first lifecycle, Bosun will still apply its normal task machinery (executor resolution, workflow prompts, relevant skills, tool-discovery guidance, candidate-count handling, and context management).
+- If you want a dedicated SWE-bench execution path, create an enabled agent workflow that replaces `primary-agent.mjs` and match SWE-bench tasks with `trigger.task_assigned` filtering such as `task.tags?.includes('swebench')`.
+- This bridge **does not** currently ship a dedicated SWEBench workflow/template or a CLI flag that pins benchmark tasks to a specific workflow. It uses whatever Bosun task/workflow setup is currently active.
 
 ### 3) Export predictions in official schema
 
@@ -67,3 +75,11 @@ And writes a reproducibility manifest at:
 - Keep all run inputs versioned (`instances.jsonl`, prompts/config, model routing config).
 - Store full artifacts under a run folder (`run_id`, predictions, harness output logs).
 - Re-run the same run id/config multiple times to track variance.
+
+## Current scope
+
+This bridge is intentionally narrow:
+
+- It fixes import/export/eval compatibility with the official SWE-bench harness.
+- It allows Bosun's existing execution stack to operate on imported SWE-bench tasks.
+- It does **not** by itself prove that every Bosun capability or optimization is exercised. If you need a benchmark path that explicitly pins custom workflows, prompt libraries, skills, or agent profiles, build and version that workflow/config as part of the benchmark setup.
