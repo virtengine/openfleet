@@ -87,6 +87,63 @@ describe("task CLI store persistence", () => {
     expect(result.status).toBe(0);
     expect((readStore(storePath).tasks || {})[task.id]).toBeUndefined();
   });
+
+  it("canonicalizes workspace and repository keys on create", () => {
+    const storePath = makeTempStorePath();
+    const result = spawnSync(
+      process.execPath,
+      [
+        "cli.mjs",
+        "task",
+        "create",
+        JSON.stringify({
+          title: "Canonical task key",
+          status: "todo",
+          draft: false,
+          workspace: "VirtEngine-GH\\BOSUN",
+          repository: "VirtEngine-GH\\Repo-ONE/",
+        }),
+      ],
+      {
+        cwd: process.cwd(),
+        env: { ...process.env, BOSUN_STORE_PATH: storePath },
+        encoding: "utf8",
+      },
+    );
+
+    expect(result.status).toBe(0);
+    const tasks = Object.values(readStore(storePath).tasks || {});
+    expect(tasks).toHaveLength(1);
+    expect(tasks[0]?.workspace).toBe("virtengine-gh/bosun");
+    expect(tasks[0]?.repository).toBe("virtengine-gh/repo-one");
+  });
+
+  it("fails fast when repository keys collide after normalization", () => {
+    const storePath = makeTempStorePath();
+    const result = spawnSync(
+      process.execPath,
+      [
+        "cli.mjs",
+        "task",
+        "create",
+        JSON.stringify({
+          title: "Collision task key",
+          status: "todo",
+          draft: false,
+          repository: "virtengine-gh/bosun",
+          repositories: ["VirtEngine-GH\\BOSUN"],
+        }),
+      ],
+      {
+        cwd: process.cwd(),
+        env: { ...process.env, BOSUN_STORE_PATH: storePath },
+        encoding: "utf8",
+      },
+    );
+
+    expect(result.status).not.toBe(0);
+    expect(String(result.stderr || "")).toMatch(/collision/i);
+  });
 });
 
 const {
@@ -143,11 +200,15 @@ describe("task-cli taskStats repo area lock state", () => {
     vi.resetModules();
     vi.clearAllMocks();
     mockExistsSync.mockImplementation(() => false);
-    vi.doMock("../task/task-store.mjs", () => ({
-      configureTaskStore: mockConfigureTaskStore,
-      loadStore: mockLoadStore,
-      getStats: mockGetStats,
-    }));
+    vi.doMock("../task/task-store.mjs", async () => {
+      const actual = await vi.importActual("../task/task-store.mjs");
+      return {
+        ...actual,
+        configureTaskStore: mockConfigureTaskStore,
+        loadStore: mockLoadStore,
+        getStats: mockGetStats,
+      };
+    });
     vi.doMock("node:fs", async () => {
       const actual = await vi.importActual("node:fs");
       return {
@@ -162,6 +223,70 @@ describe("task-cli taskStats repo area lock state", () => {
   afterEach(() => {
     vi.doUnmock("../task/task-store.mjs");
     vi.doUnmock("node:fs");
+    delete process.env.BOSUN_HOME;
+  });
+
+  it("resolves active workspace store path using canonical workspace/repository keys", async () => {
+    process.env.BOSUN_HOME = resolve(tmpdir(), "bosun-home");
+    const runtimePayload = {};
+    const expectedStorePathFragment = "/workspaces/virtengine-gh/bosun/.bosun/.cache/kanban-state.json";
+
+    mockExistsSync.mockImplementation((filePath) => {
+      const value = String(filePath || "").replace(/\\/g, "/");
+      if (value.endsWith("/bosun.config.json")) return true;
+      if (value.includes(expectedStorePathFragment.replace("/kanban-state.json", ""))) return true;
+      if (value.includes("task-executor-runtime.json")) return true;
+      return false;
+    });
+    mockReadFileSync.mockImplementation((filePath) => {
+      const value = String(filePath || "").replace(/\\/g, "/");
+      if (value.endsWith("/bosun.config.json")) {
+        return JSON.stringify({
+          workspacesDir: "C:/tmp/workspaces",
+          activeWorkspace: "VirtEngine-GH",
+          workspaces: [
+            {
+              id: "virtengine-gh",
+              activeRepo: "BOSUN",
+              repos: [{ name: "bosun", primary: true }],
+            },
+          ],
+        });
+      }
+      if (value.includes("task-executor-runtime.json")) {
+        return JSON.stringify(runtimePayload);
+      }
+      return "{}";
+    });
+
+    vi.resetModules();
+    const { taskStats } = await import("../task/task-cli.mjs");
+    await taskStats();
+
+    const firstCall = mockConfigureTaskStore.mock.calls[0]?.[0] || {};
+    const configuredPath = String(firstCall.storePath || "").replace(/\\/g, "/");
+    expect(configuredPath).toContain(expectedStorePathFragment);
+  });
+
+  it("fails fast when workspace ids collide after normalization", async () => {
+    process.env.BOSUN_HOME = resolve(tmpdir(), "bosun-home");
+    mockExistsSync.mockImplementation((filePath) =>
+      String(filePath || "").replace(/\\/g, "/").endsWith("/bosun.config.json"),
+    );
+    mockReadFileSync.mockImplementation((filePath) => {
+      if (String(filePath || "").replace(/\\/g, "/").endsWith("/bosun.config.json")) {
+        return JSON.stringify({
+          workspacesDir: "C:/tmp/workspaces",
+          activeWorkspace: "prod",
+          workspaces: [{ id: "Prod" }, { id: "prod" }],
+        });
+      }
+      return "{}";
+    });
+
+    vi.resetModules();
+    const { taskStats } = await import("../task/task-cli.mjs");
+    await expect(taskStats()).rejects.toThrow(/collision/i);
   });
 
   it("surfaces adaptive repo-area lock state from runtime payload", async () => {

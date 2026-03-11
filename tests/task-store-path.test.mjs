@@ -121,5 +121,25 @@ describe("task-store path configuration", () => {
       restoreEnv(env);
     }
   });
+
+  it("normalizes equivalent workspace-rooted keys to one canonical key", async () => {
+    const taskStore = await loadTaskStoreModule();
+    expect(taskStore.normalizeWorkspaceStorageKey("VirtEngine-GH\\BOSUN")).toBe(
+      "virtengine-gh/bosun",
+    );
+    expect(taskStore.normalizeWorkspaceStorageKey("./virtengine-gh/bosun/")).toBe(
+      "virtengine-gh/bosun",
+    );
+  });
+
+  it("rejects collisions caused by case or separator normalization", async () => {
+    const taskStore = await loadTaskStoreModule();
+    expect(() =>
+      taskStore.normalizeWorkspaceStorageKeys(
+        ["virtengine-gh/bosun", "VirtEngine-GH\\BOSUN"],
+        { kind: "test.workspace-keys" },
+      ),
+    ).toThrow(/collision/i);
+  });
 });
 

@@ -32,6 +32,10 @@ import { homedir } from "node:os";
 import { fileURLToPath } from "node:url";
 import { readFileSync, existsSync, statSync } from "node:fs";
 import { randomUUID } from "node:crypto";
+import {
+  normalizeWorkspaceStorageKey,
+  normalizeWorkspaceStorageKeys,
+} from "./task-store.mjs";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
@@ -48,6 +52,20 @@ const REPO_AREA_VERY_SLOW_MERGE_LATENCY_MS = 8 * 60 * 60 * 1000;
 // ── Store helpers ─────────────────────────────────────────────────────────────
 
 let _storeReady = false;
+
+function rethrowKeyCollision(err) {
+  if (err?.code === "TASK_STORE_KEY_COLLISION") {
+    throw err;
+  }
+}
+
+function normalizeStoreScopeKey(value) {
+  return normalizeWorkspaceStorageKey(value);
+}
+
+function assertNoStoreKeyCollisions(values, kind) {
+  normalizeWorkspaceStorageKeys(values, { kind });
+}
 
 function ensureStore() {
   if (_storeReady) return;
@@ -105,16 +123,42 @@ function resolveKanbanStorePath() {
       if (existsSync(configPath)) {
         const cfg = JSON.parse(readFileSync(configPath, "utf8"));
         const workspacesDir = cfg.workspacesDir || resolve(bosunHome, "workspaces");
-        const activeWs = cfg.activeWorkspace;
+        const activeWs = String(cfg?.activeWorkspace || "").trim();
+        const workspaceEntries = Array.isArray(cfg?.workspaces) ? cfg.workspaces : [];
+        assertNoStoreKeyCollisions(
+          workspaceEntries.map((entry) => entry?.id),
+          "bosun.config.workspaces",
+        );
         if (activeWs && workspacesDir) {
-          const ws = (cfg.workspaces || []).find((w) => w.id === activeWs);
-          const primaryRepoName =
-            ws?.activeRepo ||
-            (cfg.repos || []).find((r) => r.primary)?.name;
+          const activeWorkspaceKey = normalizeStoreScopeKey(activeWs);
+          const ws =
+            workspaceEntries.find(
+              (entry) => normalizeStoreScopeKey(entry?.id) === activeWorkspaceKey,
+            ) || null;
+          const repos = Array.isArray(ws?.repos) ? ws.repos : [];
+          assertNoStoreKeyCollisions(
+            repos.map((repo) => repo?.slug || repo?.name),
+            "bosun.config.repos",
+          );
+          const activeRepoKey = normalizeStoreScopeKey(ws?.activeRepo);
+          const selectedRepo =
+            (activeRepoKey
+              ? repos.find(
+                  (repo) =>
+                    normalizeStoreScopeKey(repo?.slug || repo?.name)
+                    === activeRepoKey,
+                )
+              : null) ||
+            repos.find((repo) => repo?.primary) ||
+            null;
+          const fallbackRepoName = (cfg.repos || []).find((r) => r.primary)?.name;
+          const primaryRepoName = normalizeStoreScopeKey(
+            selectedRepo?.name || selectedRepo?.slug || fallbackRepoName,
+          );
           if (primaryRepoName) {
             const wsStorePath = resolve(
               workspacesDir,
-              activeWs,
+              activeWorkspaceKey,
               primaryRepoName,
               ".bosun",
               ".cache",
@@ -130,7 +174,8 @@ function resolveKanbanStorePath() {
         }
       }
     }
-  } catch {
+  } catch (err) {
+    rethrowKeyCollision(err);
     // fall through to legacy CWD-based resolution
   }
 
@@ -145,31 +190,46 @@ function resolveActiveWorkspaceDefaults() {
     const configPath = resolve(bosunHome, "bosun.config.json");
     if (!existsSync(configPath)) return { workspace: "", repository: "" };
     const cfg = JSON.parse(readFileSync(configPath, "utf8"));
-    const activeWsId = String(cfg?.activeWorkspace || "").trim();
+    const activeWsId = normalizeStoreScopeKey(cfg?.activeWorkspace);
     const workspaces = Array.isArray(cfg?.workspaces) ? cfg.workspaces : [];
+    assertNoStoreKeyCollisions(
+      workspaces.map((entry) => entry?.id),
+      "bosun.config.workspaces",
+    );
     const workspace =
       (activeWsId
-        ? workspaces.find((entry) => String(entry?.id || "").trim() === activeWsId)
+        ? workspaces.find(
+            (entry) => normalizeStoreScopeKey(entry?.id) === activeWsId,
+          )
         : null) ||
       workspaces[0] ||
       null;
     const repos = Array.isArray(workspace?.repos) ? workspace.repos : [];
-    const activeRepoName = String(workspace?.activeRepo || "").trim();
+    assertNoStoreKeyCollisions(
+      repos.map((repo) => repo?.slug || repo?.name),
+      "bosun.config.repos",
+    );
+    const activeRepoName = normalizeStoreScopeKey(workspace?.activeRepo);
     const selectedRepo =
       (activeRepoName
-        ? repos.find((repo) => String(repo?.name || "").trim() === activeRepoName)
+        ? repos.find(
+            (repo) =>
+              normalizeStoreScopeKey(repo?.slug || repo?.name)
+              === activeRepoName,
+          )
         : null) ||
       repos.find((repo) => repo?.primary) ||
       repos[0] ||
       null;
-    const repository = String(
+    const repository = normalizeStoreScopeKey(
       selectedRepo?.slug || selectedRepo?.name || "",
-    ).trim();
+    );
     return {
-      workspace: String(workspace?.id || activeWsId || "").trim(),
+      workspace: normalizeStoreScopeKey(workspace?.id || activeWsId || ""),
       repository,
     };
-  } catch {
+  } catch (err) {
+    rethrowKeyCollision(err);
     return { workspace: "", repository: "" };
   }
 }
@@ -232,6 +292,10 @@ function hasFlag(args, flag) {
  */
 export async function taskCreate(data) {
   const store = await initStore();
+  const normalizeKey = store.normalizeWorkspaceStorageKey || normalizeStoreScopeKey;
+  const normalizeKeys =
+    store.normalizeWorkspaceStorageKeys
+    || ((values, options = {}) => normalizeWorkspaceStorageKeys(values, options));
   const id = data.id || randomUUID();
   const parsedCandidateCount = Number(data?.candidateCount);
   const candidateCount = Number.isFinite(parsedCandidateCount)
@@ -252,6 +316,14 @@ export async function taskCreate(data) {
     inputMeta.execution = executionMeta;
   }
   const defaults = resolveActiveWorkspaceDefaults();
+  const workspaceKey = normalizeKey(
+    data.workspace || defaults.workspace || process.cwd(),
+  );
+  const repositoryKey = normalizeKey(data.repository || defaults.repository || "");
+  const repositoryKeys = normalizeKeys(
+    [repositoryKey, ...(Array.isArray(data.repositories) ? data.repositories : [])],
+    { kind: `task-cli:create:${id}:repositories` },
+  );
   const taskData = {
     id,
     title: data.title,
@@ -261,9 +333,9 @@ export async function taskCreate(data) {
     priority: data.priority || "medium",
     tags: normalizeTags(data.tags),
     baseBranch: data.baseBranch || data.base_branch || "main",
-    workspace: data.workspace || defaults.workspace || process.cwd(),
-    repository: data.repository || defaults.repository || "",
-    repositories: data.repositories || [],
+    workspace: workspaceKey || null,
+    repository: repositoryKey || null,
+    repositories: repositoryKeys,
     candidateCount: candidateCount && candidateCount > 1 ? candidateCount : undefined,
     meta: inputMeta,
   };
