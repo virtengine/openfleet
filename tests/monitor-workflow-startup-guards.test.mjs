@@ -191,5 +191,38 @@ describe("task-executor in-progress recovery owner_mismatch guards", () => {
   });
 });
 
+describe("workflow-engine interrupted run deduplication", () => {
+  const engineSource = readFileSync(
+    resolve(process.cwd(), "workflow/workflow-engine.mjs"),
+    "utf8",
+  );
 
+  it("deduplicates interrupted runs by taskId before resuming", () => {
+    expect(engineSource).toContain("latestByTaskId");
+    expect(engineSource).toContain("duplicate_task_run");
+  });
+
+  it("keeps only the most recent interrupted run per taskId (by startedAt)", () => {
+    expect(engineSource).toContain("dedupedCount");
+  });
+
+  it("reads taskId from detail.data.taskId or detail.inputData.taskId", () => {
+    expect(engineSource).toContain("d.data?.taskId || d.inputData?.taskId");
+  });
+});
+
+describe("shared-state-manager registry repair", () => {
+  const ssmSource = readFileSync(
+    resolve(process.cwd(), "workspace/shared-state-manager.mjs"),
+    "utf8",
+  );
+
+  it("repairs missing fields instead of wiping all claims on invalid structure", () => {
+    expect(ssmSource).toContain("repaired");
+  });
+
+  it("no longer resets the entire registry for structural issues", () => {
+    expect(ssmSource).not.toContain('"[SharedStateManager] Invalid registry structure, resetting"');
+  });
+});
 

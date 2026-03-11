@@ -131,15 +131,22 @@ async function loadRegistry(registryPath) {
     const registry = JSON.parse(content);
 
     // Validate structure
-    if (
-      !registry.version ||
-      !registry.tasks ||
-      typeof registry.tasks !== "object"
-    ) {
+    // Repair instead of wipe: preserve any valid task entries while fixing
+    // missing/invalid structural fields. Wiping on minor corruption was causing
+    // active claims to be lost, leading to cascading "claim was stolen" failures.
+    let repaired = false;
+    if (!registry.version) {
+      registry.version = REGISTRY_VERSION;
+      repaired = true;
+    }
+    if (!registry.tasks || typeof registry.tasks !== "object" || Array.isArray(registry.tasks)) {
+      registry.tasks = {};
+      repaired = true;
+    }
+    if (repaired) {
       console.warn(
-        "[SharedStateManager] Invalid registry structure, resetting",
+        "[SharedStateManager] Invalid registry structure, repaired (preserved existing task entries)",
       );
-      return createEmptyRegistry();
     }
 
     return registry;
