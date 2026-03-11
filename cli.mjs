@@ -76,6 +76,7 @@ function showHelp() {
     bosun [options]
 
   COMMANDS
+    audit <command> [options]   Codebase annotation audit workflows (scan/generate/warn/manifest/index/trim/conformity/migrate)
     --setup                     Launch the web-based setup wizard (default)
     --setup-terminal            Run the legacy terminal setup wizard
     --where                     Show the resolved bosun config directory
@@ -1235,6 +1236,22 @@ async function main() {
     const taskArgs = args.slice(commandStartIndex + 1);
     await runTaskCli(taskArgs);
     process.exit(0);
+  }
+
+  // Handle 'audit' subcommand before --help so command-specific help works.
+  const auditFlagIndex = args.indexOf("--audit");
+  const auditCommandIndex =
+    args[0] === "audit"
+      ? 0
+      : args[0]?.startsWith("--")
+        ? args.indexOf("audit")
+        : -1;
+  if (auditCommandIndex >= 0 || auditFlagIndex >= 0) {
+    const { runAuditCli } = await import("./lib/codebase-audit.mjs");
+    const commandStartIndex = auditCommandIndex >= 0 ? auditCommandIndex : auditFlagIndex;
+    const auditArgs = args.slice(commandStartIndex + 1);
+    const result = await runAuditCli(auditArgs);
+    process.exit(Number.isInteger(result?.exitCode) ? result.exitCode : 0);
   }
 
   // Handle --help

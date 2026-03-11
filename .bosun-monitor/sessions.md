@@ -510,3 +510,36 @@ ode cli.mjs --daemon-status => running PID 59940.
 - Handoff:
   - Next run should prioritize a code-level fix in `action.run_agent` delegation path (PR Watchdog -> Backend Agent) because stuck delegated runs are starving autonomous workflow completion.
   - If no safe live cancellation path is available, coordinate a controlled runtime recycle only after confirming policy allows interrupting active source processes.
+- 2026-03-11 02:06 AEDT: Runtime healthy and advancing; fixed split-store drift by syncing all kanban mirrors and moved merged PR #217 task (`92a229d5...`) from `inreview` to `done`; remaining risk is recurring historical `owner_mismatch` / `stuck_agent` signals and low merged-PR throughput.
+- 2026-03-11T05:07:56+11:00: split-store/claim resync done; scheduler active; owner_mismatch still recurring (df0d7085) -> code-path tracing next run.
+
+## 2026-03-11T06:10:00+11:00 hourly run
+- Runtime: ~00:10:00.
+- Startup checks completed in bosun/:
+  - branch monitor/bosun-env-stability; package.json version 0.40.11.
+  - node cli.mjs --daemon-status reported daemon mode off but active source processes (cli.mjs + infra/monitor.mjs), so no restart/start was performed.
+  - command surface and runtime roots verified with node cli.mjs --help and node cli.mjs --where.
+- Runtime health evidence:
+  - .bosun/logs/monitor.log and .bosun/workflow-runs/index.json both advanced during this run.
+  - scheduler cadence remained active at ~1 minute with fresh Task Planner/Replenish/Lifecycle/Batch completions.
+- Incident found: split store plus stale execution occupancy.
+  - workspace mirror had inprogress=15 inreview=2 while repo-local mirror lagged (inprogress=8 inreview=1) at session start.
+  - AppData claim/shared ledgers still held stale owner records for old inprogress tasks, matching prior owner_mismatch symptom family.
+- Ops remediation applied (no source code edits):
+  1. Backed up runtime files to .bosun-monitor/backups/20260311-060718.
+  2. Reset 7 stale inprogress tasks (>60m old, no PR linkage) back to todo via source CLI.
+  3. Pruned corresponding stale AppData claim/shared entries for those 7 task IDs.
+  4. Re-synced repo-local kanban mirror from active workspace mirror.
+- Post-fix validation:
+  - task stats moved from todo=17,inprogress=15,inreview=2 to todo=24,inprogress=8,inreview=2.
+  - claim/shared ledgers dropped from 9 stale entries to 2 active IDs (a076ce3a..., df0d7085...).
+  - no fresh owner_mismatch lines appeared in current monitor-error tail; schedule-runs continued immediately after cleanup.
+- Throughput check:
+  - gh pr list --state merged --search merged:>=<now-1h> repo:virtengine/bosun returned [] (no Bosun merges in last hour).
+- Branch sync:
+  - git merge origin/main reported already up to date; branch not behind origin/main.
+- Remaining risk / next run:
+  1. trace why stale claim ownership persists for the two remaining IDs (a076ce3a, df0d7085) and whether they should still be active.
+  2. verify inreview tasks auto-progress and do not occupy slots indefinitely.
+  3. keep watching for stuck_agent: undefined recurrence in fresh windows.
+

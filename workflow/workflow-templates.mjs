@@ -447,11 +447,19 @@ export function updateWorkflowFromTemplate(engine, workflowId, opts = {}) {
 
 export function reconcileInstalledTemplates(engine, opts = {}) {
   const autoUpdateUnmodified = opts.autoUpdateUnmodified !== false;
+  const forceUpdateTemplateIds = new Set(
+    (Array.isArray(opts.forceUpdateTemplateIds)
+      ? opts.forceUpdateTemplateIds
+      : [opts.forceUpdateTemplateIds])
+      .map((value) => String(value || "").trim())
+      .filter(Boolean),
+  );
   const workflows = engine.list();
   const result = {
     scanned: 0,
     metadataUpdated: 0,
     autoUpdated: 0,
+    forceUpdated: [],
     updateAvailable: [],
     customized: [],
     updatedWorkflowIds: [],
@@ -491,6 +499,17 @@ export function reconcileInstalledTemplates(engine, opts = {}) {
           templateId: state.templateId,
           isCustomized: state.isCustomized === true,
         });
+      }
+
+      const shouldForceUpdate =
+        state.updateAvailable === true &&
+        forceUpdateTemplateIds.has(String(state.templateId || "").trim());
+      if (shouldForceUpdate) {
+        const saved = updateWorkflowFromTemplate(engine, def.id, { mode: "replace", force: true });
+        result.autoUpdated += 1;
+        result.updatedWorkflowIds.push(saved.id);
+        result.forceUpdated.push(saved.id);
+        continue;
       }
 
       if (autoUpdateUnmodified && state.updateAvailable === true && state.isCustomized !== true) {

@@ -109,14 +109,45 @@ describe("monitor workflow startup guards", () => {
     );
   });
 
-  it("resets stale inreview tasks without PR metadata during review-agent rehydrate", () => {
-    expect(monitorSource).toContain("const hasReviewReference = Boolean(prUrl || prNumber || branchName);");
+  it("attempts branch-to-PR recovery before resetting stale inreview tasks during review-agent rehydrate", () => {
+    expect(monitorSource).toContain("let existingPr = await findExistingPrForBranchInRepo(");
+    expect(monitorSource).toContain("existingPr = await findExistingPrForBranchApiInRepo(");
+    expect(monitorSource).toContain("updateInternalTask(taskId, {");
+    expect(monitorSource).toContain("const hasReviewReference = Boolean(prUrl || prNumber);");
     expect(monitorSource).toContain(
-      "review rehydrate reset ${taskId} to todo: missing prUrl/prNumber/branchName",
+      "review rehydrate reset ${taskId} to todo: missing prUrl/prNumber",
     );
     expect(monitorSource).toContain("setInternalTaskStatus(taskId, \"todo\", \"review-agent-rehydrate\")");
     expect(monitorSource).toContain("await updateTaskStatus(taskId, \"todo\");");
   });
 
+  it("resolves repo slug from task/PR context before flow-gate merge and review rehydrate", () => {
+    expect(monitorSource).toContain("function resolveTaskRepoSlug(task, context = {})");
+    expect(monitorSource).toContain("const resolvedRepoSlug = resolveTaskRepoSlug(task, context);");
+    expect(monitorSource).toContain("if (resolvedRepoSlug) autoArgs.push(\"--repo\", resolvedRepoSlug);");
+    expect(monitorSource).toContain("findExistingPrForBranchInRepo(");
+    expect(monitorSource).toContain("findExistingPrForBranchApiInRepo(");
+    expect(monitorSource).toContain("repoSlug: taskRepoSlug || undefined");
+  });
+
+  it("runs periodic merged-PR reconciliation for inreview tasks", () => {
+    expect(monitorSource).toContain("async function checkMergedPRsAndUpdateTasks()");
+    expect(monitorSource).toContain("workflowTaskReconcileInFlight");
+    expect(monitorSource).toContain("[monitor] review reconcile: PR #");
+    expect(monitorSource).toContain("safeSetInterval(\"workflow-review-merge-reconcile\"");
+    expect(monitorSource).toContain("checkMergedPRsAndUpdateTasks();");
+  });
+
+  it("recovers merged PR tasks that were bounced back to todo/inprogress", () => {
+    expect(monitorSource).toContain("const mergedRecoveryCandidates = [");
+    expect(monitorSource).toContain("...(getInternalTasksByStatus(\"todo\") || []),");
+    expect(monitorSource).toContain("...(getInternalTasksByStatus(\"inprogress\") || []),");
+    expect(monitorSource).toContain("const allowsMergedRecovery =");
+    expect(monitorSource).toContain("const allowsInreviewMergeCheck = taskStatus === \"inreview\"");
+    expect(monitorSource).toContain("if (!approved && !allowsMergedRecovery && !allowsInreviewMergeCheck) continue;");
+    expect(monitorSource).toContain("marking ${taskId} done${recoverySuffix}");
+  });
 });
+
+
 

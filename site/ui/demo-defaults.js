@@ -3220,7 +3220,7 @@
           "type": "condition.expression",
           "label": "Handoff Recorded?",
           "config": {
-            "expression": "$ctx.getNodeOutput('create-pr')?.success === true"
+            "expression": "Boolean($ctx.getNodeOutput('create-pr')?.prNumber || $ctx.getNodeOutput('create-pr')?.prUrl)"
           },
           "position": {
             "x": 250,
@@ -3385,7 +3385,7 @@
           "type": "condition.expression",
           "label": "Handoff Recorded (Retry Path)?",
           "config": {
-            "expression": "$ctx.getNodeOutput('create-pr-retry')?.success === true"
+            "expression": "Boolean($ctx.getNodeOutput('create-pr-retry')?.prNumber || $ctx.getNodeOutput('create-pr-retry')?.prUrl)"
           },
           "position": {
             "x": 450,
@@ -7036,7 +7036,7 @@
         "author": "bosun",
         "version": 1,
         "createdAt": "2025-02-25T00:00:00Z",
-        "templateVersion": "1.0.0",
+        "templateVersion": "1.0.1",
         "tags": [
           "anomaly",
           "watchdog",
@@ -7316,7 +7316,7 @@
         "author": "bosun",
         "version": 1,
         "createdAt": "2025-02-24T00:00:00Z",
-        "templateVersion": "1.0.0",
+        "templateVersion": "1.0.1",
         "tags": [
           "error",
           "recovery",
@@ -7549,7 +7549,7 @@
         "author": "bosun",
         "version": 1,
         "createdAt": "2025-02-25T00:00:00Z",
-        "templateVersion": "1.0.0",
+        "templateVersion": "1.0.1",
         "tags": [
           "health",
           "config",
@@ -7761,7 +7761,7 @@
         "author": "bosun",
         "version": 1,
         "createdAt": "2025-02-25T00:00:00Z",
-        "templateVersion": "1.0.0",
+        "templateVersion": "1.0.1",
         "tags": [
           "incident",
           "response",
@@ -8086,7 +8086,7 @@
         "author": "bosun",
         "version": 1,
         "createdAt": "2025-06-01T00:00:00Z",
-        "templateVersion": "1.0.0",
+        "templateVersion": "1.0.1",
         "tags": [
           "sync",
           "kanban",
@@ -8433,7 +8433,7 @@
         "author": "bosun",
         "version": 1,
         "createdAt": "2025-06-01T00:00:00Z",
-        "templateVersion": "1.0.0",
+        "templateVersion": "1.0.1",
         "tags": [
           "archive",
           "cleanup",
@@ -8730,8 +8730,8 @@
         "handoff",
         "reliability"
       ],
-      "nodeCount": 15,
-      "edgeCount": 17,
+      "nodeCount": 17,
+      "edgeCount": 20,
       "recommended": true,
       "enabled": true,
       "trigger": "trigger.event",
@@ -8744,7 +8744,7 @@
         "author": "bosun",
         "version": 1,
         "createdAt": "2026-02-26T00:00:00Z",
-        "templateVersion": "1.0.0",
+        "templateVersion": "1.0.1",
         "tags": [
           "finalization",
           "quality-gate",
@@ -8960,6 +8960,38 @@
           ]
         },
         {
+          "id": "has-pr-missing-context",
+          "type": "condition.expression",
+          "label": "PR Linked Without Worktree?",
+          "config": {
+            "expression": "Boolean($data?.prNumber || $data?.prUrl)"
+          },
+          "position": {
+            "x": 620,
+            "y": 450
+          },
+          "outputs": [
+            "yes",
+            "no"
+          ]
+        },
+        {
+          "id": "notify-skip-missing-context",
+          "type": "notify.log",
+          "label": "Skip Missing Context With PR",
+          "config": {
+            "message": "Task {{taskId}} finalization skipped quality gate: missing worktree context but PR linkage exists",
+            "level": "warn"
+          },
+          "position": {
+            "x": 620,
+            "y": 560
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
           "id": "notify-pass",
           "type": "notify.log",
           "label": "Log Finalization Success",
@@ -9065,10 +9097,24 @@
           "condition": "$output?.result === true"
         },
         {
-          "id": "has-worktree->mark-todo-missing",
+          "id": "has-worktree->has-pr-missing-context",
           "source": "has-worktree",
-          "target": "mark-todo-missing",
+          "target": "has-pr-missing-context",
           "sourcePort": "default",
+          "condition": "$output?.result !== true"
+        },
+        {
+          "id": "has-pr-missing-context->notify-skip-missing-context",
+          "source": "has-pr-missing-context",
+          "target": "notify-skip-missing-context",
+          "sourcePort": "yes",
+          "condition": "$output?.result === true"
+        },
+        {
+          "id": "has-pr-missing-context->mark-todo-missing",
+          "source": "has-pr-missing-context",
+          "target": "mark-todo-missing",
+          "sourcePort": "no",
           "condition": "$output?.result !== true"
         },
         {
@@ -9132,6 +9178,12 @@
           "sourcePort": "default"
         },
         {
+          "id": "notify-skip-missing-context->end-success",
+          "source": "notify-skip-missing-context",
+          "target": "end-success",
+          "sourcePort": "default"
+        },
+        {
           "id": "notify-pass->chain-archiver",
           "source": "notify-pass",
           "target": "chain-archiver",
@@ -9192,7 +9244,7 @@
         "author": "bosun",
         "version": 1,
         "createdAt": "2026-03-04T00:00:00Z",
-        "templateVersion": "1.0.0",
+        "templateVersion": "1.0.1",
         "tags": [
           "orphan",
           "recovery",
@@ -9421,7 +9473,7 @@
         "author": "bosun",
         "version": 1,
         "createdAt": "2026-02-26T00:00:00Z",
-        "templateVersion": "1.0.0",
+        "templateVersion": "1.0.1",
         "tags": [
           "repair",
           "recovery",
@@ -9811,7 +9863,7 @@
         "author": "bosun",
         "version": 1,
         "createdAt": "2026-02-27T00:00:00Z",
-        "templateVersion": "1.0.0",
+        "templateVersion": "1.0.1",
         "tags": [
           "task",
           "status",
@@ -10024,7 +10076,7 @@
         "author": "bosun",
         "version": 1,
         "createdAt": "2025-02-25T00:00:00Z",
-        "templateVersion": "1.0.0",
+        "templateVersion": "1.0.1",
         "tags": [
           "maintenance",
           "cleanup",
@@ -14665,8 +14717,8 @@
         "workflow-first",
         "core"
       ],
-      "nodeCount": 36,
-      "edgeCount": 39,
+      "nodeCount": 42,
+      "edgeCount": 46,
       "recommended": true,
       "enabled": true,
       "trigger": "trigger.task_available",
@@ -14675,7 +14727,7 @@
         "baseBranchLimit": 0,
         "pollIntervalMs": 30000,
         "claimTtlMinutes": 180,
-        "claimRenewIntervalMs": 300000,
+        "claimRenewIntervalMs": 60000,
         "defaultSdk": "auto",
         "defaultTargetBranch": "origin/main",
         "taskTimeoutMs": 21600000,
@@ -14920,11 +14972,11 @@
           ]
         },
         {
-          "id": "run-agent",
+          "id": "run-agent-plan",
           "type": "action.run_agent",
-          "label": "Execute Agent",
+          "label": "Agent Plan",
           "config": {
-            "prompt": "{{_taskPrompt}}",
+            "prompt": "{{_taskPrompt}}\n\nExecution phase: planning. Produce a concrete implementation plan and identify required tests. Do not make code changes in this phase.",
             "taskId": "{{taskId}}",
             "sdk": "{{resolvedSdk}}",
             "model": "{{resolvedModel}}",
@@ -14938,6 +14990,54 @@
           "position": {
             "x": 200,
             "y": 1480
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "run-agent-tests",
+          "type": "action.run_agent",
+          "label": "Agent Tests",
+          "config": {
+            "prompt": "{{_taskPrompt}}\n\nExecution phase: tests. Write or update tests first for the target behavior, then validate failures/pass criteria before implementation changes.",
+            "taskId": "{{taskId}}",
+            "sdk": "{{resolvedSdk}}",
+            "model": "{{resolvedModel}}",
+            "agentProfile": "{{agentProfile}}",
+            "cwd": "{{worktreePath}}",
+            "timeoutMs": "{{taskTimeoutMs}}",
+            "maxRetries": "{{maxRetries}}",
+            "maxContinues": "{{maxContinues}}",
+            "failOnError": false
+          },
+          "position": {
+            "x": 200,
+            "y": 1545
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "run-agent-implement",
+          "type": "action.run_agent",
+          "label": "Agent Implement",
+          "config": {
+            "prompt": "{{_taskPrompt}}\n\nExecution phase: implementation. Complete implementation after tests exist, run required verification (tests/lint/build), then commit, push, and create/update PR.",
+            "taskId": "{{taskId}}",
+            "sdk": "{{resolvedSdk}}",
+            "model": "{{resolvedModel}}",
+            "agentProfile": "{{agentProfile}}",
+            "cwd": "{{worktreePath}}",
+            "timeoutMs": "{{taskTimeoutMs}}",
+            "maxRetries": "{{maxRetries}}",
+            "maxContinues": "{{maxContinues}}",
+            "failOnError": false
+          },
+          "position": {
+            "x": 200,
+            "y": 1610
           },
           "outputs": [
             "default"
@@ -15051,7 +15151,7 @@
           "type": "condition.expression",
           "label": "PR Linked?",
           "config": {
-            "expression": "Boolean($ctx.getNodeOutput('create-pr')?.prNumber || $ctx.getNodeOutput('create-pr')?.prUrl)"
+            "expression": "Boolean($ctx.getNodeOutput('create-pr')?.success === true && ($ctx.getNodeOutput('create-pr')?.prNumber || $ctx.getNodeOutput('create-pr')?.prUrl))"
           },
           "position": {
             "x": 0,
@@ -15146,6 +15246,75 @@
           ]
         },
         {
+          "id": "create-pr-retry",
+          "type": "action.create_pr",
+          "label": "Recover PR Link",
+          "config": {
+            "title": "{{taskTitle}}",
+            "body": "Task-ID: {{taskId}}\n\nAutomated PR for task {{taskId}}",
+            "base": "{{baseBranch}}",
+            "branch": "{{branch}}",
+            "cwd": "{{worktreePath}}",
+            "failOnError": false
+          },
+          "position": {
+            "x": 400,
+            "y": 1740
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "pr-created-stolen",
+          "type": "condition.expression",
+          "label": "PR Linked After Claim Loss?",
+          "config": {
+            "expression": "Boolean($ctx.getNodeOutput('create-pr-retry')?.success === true && ($ctx.getNodeOutput('create-pr-retry')?.prNumber || $ctx.getNodeOutput('create-pr-retry')?.prUrl))"
+          },
+          "position": {
+            "x": 400,
+            "y": 1870
+          },
+          "outputs": [
+            "yes",
+            "no"
+          ]
+        },
+        {
+          "id": "set-inreview-stolen",
+          "type": "action.update_task_status",
+          "label": "Set In-Review (Recovered)",
+          "config": {
+            "taskId": "{{taskId}}",
+            "status": "inreview",
+            "taskTitle": "{{taskTitle}}"
+          },
+          "position": {
+            "x": 250,
+            "y": 2000
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "log-claim-stolen-recovered",
+          "type": "notify.log",
+          "label": "Log Claim Loss Recovery",
+          "config": {
+            "message": "Task \"{{taskTitle}}\" ({{taskId}}) — claim lost after PR link recovery, keeping inreview",
+            "level": "warn"
+          },
+          "position": {
+            "x": 250,
+            "y": 2130
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
           "id": "log-claim-stolen",
           "type": "notify.log",
           "label": "Log Claim Stolen",
@@ -15154,8 +15323,8 @@
             "level": "warn"
           },
           "position": {
-            "x": 400,
-            "y": 1740
+            "x": 550,
+            "y": 2000
           },
           "outputs": [
             "default"
@@ -15171,8 +15340,8 @@
             "taskTitle": "{{taskTitle}}"
           },
           "position": {
-            "x": 400,
-            "y": 1870
+            "x": 550,
+            "y": 2130
           },
           "outputs": [
             "default"
@@ -15188,7 +15357,8 @@
               "log-success",
               "set-todo-push-failed",
               "set-todo-cooldown",
-              "set-todo-stolen"
+              "set-todo-stolen",
+              "log-claim-stolen-recovered"
             ],
             "includeSkipped": true
           },
@@ -15406,14 +15576,26 @@
           "sourcePort": "default"
         },
         {
-          "id": "build-prompt->run-agent",
+          "id": "build-prompt->run-agent-plan",
           "source": "build-prompt",
-          "target": "run-agent",
+          "target": "run-agent-plan",
           "sourcePort": "default"
         },
         {
-          "id": "run-agent->claim-stolen",
-          "source": "run-agent",
+          "id": "run-agent-plan->run-agent-tests",
+          "source": "run-agent-plan",
+          "target": "run-agent-tests",
+          "sourcePort": "default"
+        },
+        {
+          "id": "run-agent-tests->run-agent-implement",
+          "source": "run-agent-tests",
+          "target": "run-agent-implement",
+          "sourcePort": "default"
+        },
+        {
+          "id": "run-agent-implement->claim-stolen",
+          "source": "run-agent-implement",
           "target": "claim-stolen",
           "sourcePort": "default"
         },
@@ -15515,11 +15697,43 @@
           "sourcePort": "default"
         },
         {
-          "id": "claim-stolen->log-claim-stolen",
+          "id": "claim-stolen->create-pr-retry",
           "source": "claim-stolen",
-          "target": "log-claim-stolen",
+          "target": "create-pr-retry",
           "sourcePort": "yes",
           "condition": "$output?.result === true"
+        },
+        {
+          "id": "create-pr-retry->pr-created-stolen",
+          "source": "create-pr-retry",
+          "target": "pr-created-stolen",
+          "sourcePort": "default"
+        },
+        {
+          "id": "pr-created-stolen->set-inreview-stolen",
+          "source": "pr-created-stolen",
+          "target": "set-inreview-stolen",
+          "sourcePort": "yes",
+          "condition": "$output?.result === true"
+        },
+        {
+          "id": "set-inreview-stolen->log-claim-stolen-recovered",
+          "source": "set-inreview-stolen",
+          "target": "log-claim-stolen-recovered",
+          "sourcePort": "default"
+        },
+        {
+          "id": "log-claim-stolen-recovered->join-outcomes",
+          "source": "log-claim-stolen-recovered",
+          "target": "join-outcomes",
+          "sourcePort": "default"
+        },
+        {
+          "id": "pr-created-stolen->log-claim-stolen",
+          "source": "pr-created-stolen",
+          "target": "log-claim-stolen",
+          "sourcePort": "no",
+          "condition": "$output?.result !== true"
         },
         {
           "id": "log-claim-stolen->set-todo-stolen",
@@ -15918,7 +16132,7 @@
           "type": "condition.expression",
           "label": "PR Linked?",
           "config": {
-            "expression": "Boolean($ctx.getNodeOutput('pr')?.prNumber || $ctx.getNodeOutput('pr')?.prUrl)"
+            "expression": "Boolean($ctx.getNodeOutput('pr')?.success === true && ($ctx.getNodeOutput('pr')?.prNumber || $ctx.getNodeOutput('pr')?.prUrl))"
           },
           "position": {
             "x": 180,
@@ -19535,7 +19749,7 @@
           "type": "condition.expression",
           "label": "Handoff Recorded?",
           "config": {
-            "expression": "$ctx.getNodeOutput('create-pr')?.success === true"
+            "expression": "Boolean($ctx.getNodeOutput('create-pr')?.prNumber || $ctx.getNodeOutput('create-pr')?.prUrl)"
           },
           "position": {
             "x": 250,
@@ -19700,7 +19914,7 @@
           "type": "condition.expression",
           "label": "Handoff Recorded (Retry Path)?",
           "config": {
-            "expression": "$ctx.getNodeOutput('create-pr-retry')?.success === true"
+            "expression": "Boolean($ctx.getNodeOutput('create-pr-retry')?.prNumber || $ctx.getNodeOutput('create-pr-retry')?.prUrl)"
           },
           "position": {
             "x": 450,
@@ -23376,8 +23590,8 @@
         "templateState": {
           "templateId": "template-anomaly-watchdog",
           "templateName": "Anomaly Watchdog",
-          "templateVersion": "1.0.0",
-          "installedTemplateVersion": "1.0.0",
+          "templateVersion": "1.0.1",
+          "installedTemplateVersion": "1.0.1",
           "isCustomized": false,
           "updateAvailable": false
         }
@@ -23587,8 +23801,8 @@
         "templateState": {
           "templateId": "template-error-recovery",
           "templateName": "Error Recovery",
-          "templateVersion": "1.0.0",
-          "installedTemplateVersion": "1.0.0",
+          "templateVersion": "1.0.1",
+          "installedTemplateVersion": "1.0.1",
           "isCustomized": false,
           "updateAvailable": false
         }
@@ -23776,8 +23990,8 @@
         "templateState": {
           "templateId": "template-health-check",
           "templateName": "Health Check",
-          "templateVersion": "1.0.0",
-          "installedTemplateVersion": "1.0.0",
+          "templateVersion": "1.0.1",
+          "installedTemplateVersion": "1.0.1",
           "isCustomized": false,
           "updateAvailable": false
         }
@@ -24074,8 +24288,8 @@
         "templateState": {
           "templateId": "template-incident-response",
           "templateName": "Incident Response",
-          "templateVersion": "1.0.0",
-          "installedTemplateVersion": "1.0.0",
+          "templateVersion": "1.0.1",
+          "installedTemplateVersion": "1.0.1",
           "isCustomized": false,
           "updateAvailable": false
         }
@@ -24396,8 +24610,8 @@
         "templateState": {
           "templateId": "template-sync-engine",
           "templateName": "Kanban Sync Engine",
-          "templateVersion": "1.0.0",
-          "installedTemplateVersion": "1.0.0",
+          "templateVersion": "1.0.1",
+          "installedTemplateVersion": "1.0.1",
           "isCustomized": false,
           "updateAvailable": false
         }
@@ -24682,8 +24896,8 @@
         "templateState": {
           "templateId": "template-task-archiver",
           "templateName": "Task Archiver",
-          "templateVersion": "1.0.0",
-          "installedTemplateVersion": "1.0.0",
+          "templateVersion": "1.0.1",
+          "installedTemplateVersion": "1.0.1",
           "isCustomized": false,
           "updateAvailable": false
         }
@@ -24695,7 +24909,7 @@
       "description": "Shared post-completion quality gate for all agents. Runs pre-push validation in the task worktree, normalizes status transitions, and hands off failures to a dedicated repair workflow.",
       "category": "reliability",
       "enabled": true,
-      "nodeCount": 15,
+      "nodeCount": 17,
       "trigger": "trigger.event",
       "variables": {
         "finalizationTimeoutMs": 3600000,
@@ -24896,6 +25110,38 @@
           ]
         },
         {
+          "id": "has-pr-missing-context",
+          "type": "condition.expression",
+          "label": "PR Linked Without Worktree?",
+          "config": {
+            "expression": "Boolean($data?.prNumber || $data?.prUrl)"
+          },
+          "position": {
+            "x": 620,
+            "y": 450
+          },
+          "outputs": [
+            "yes",
+            "no"
+          ]
+        },
+        {
+          "id": "notify-skip-missing-context",
+          "type": "notify.log",
+          "label": "Skip Missing Context With PR",
+          "config": {
+            "message": "Task {{taskId}} finalization skipped quality gate: missing worktree context but PR linkage exists",
+            "level": "warn"
+          },
+          "position": {
+            "x": 620,
+            "y": 560
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
           "id": "notify-pass",
           "type": "notify.log",
           "label": "Log Finalization Success",
@@ -25001,10 +25247,24 @@
           "condition": "$output?.result === true"
         },
         {
-          "id": "has-worktree->mark-todo-missing",
+          "id": "has-worktree->has-pr-missing-context",
           "source": "has-worktree",
-          "target": "mark-todo-missing",
+          "target": "has-pr-missing-context",
           "sourcePort": "default",
+          "condition": "$output?.result !== true"
+        },
+        {
+          "id": "has-pr-missing-context->notify-skip-missing-context",
+          "source": "has-pr-missing-context",
+          "target": "notify-skip-missing-context",
+          "sourcePort": "yes",
+          "condition": "$output?.result === true"
+        },
+        {
+          "id": "has-pr-missing-context->mark-todo-missing",
+          "source": "has-pr-missing-context",
+          "target": "mark-todo-missing",
+          "sourcePort": "no",
           "condition": "$output?.result !== true"
         },
         {
@@ -25068,6 +25328,12 @@
           "sourcePort": "default"
         },
         {
+          "id": "notify-skip-missing-context->end-success",
+          "source": "notify-skip-missing-context",
+          "target": "end-success",
+          "sourcePort": "default"
+        },
+        {
           "id": "notify-pass->chain-archiver",
           "source": "notify-pass",
           "target": "chain-archiver",
@@ -25105,8 +25371,8 @@
         "templateState": {
           "templateId": "template-task-finalization-guard",
           "templateName": "Task Finalization Guard",
-          "templateVersion": "1.0.0",
-          "installedTemplateVersion": "1.0.0",
+          "templateVersion": "1.0.1",
+          "installedTemplateVersion": "1.0.1",
           "isCustomized": false,
           "updateAvailable": false
         }
@@ -25310,8 +25576,8 @@
         "templateState": {
           "templateId": "template-task-orphan-worktree-recovery",
           "templateName": "Task Orphan Worktree Recovery",
-          "templateVersion": "1.0.0",
-          "installedTemplateVersion": "1.0.0",
+          "templateVersion": "1.0.1",
+          "installedTemplateVersion": "1.0.1",
           "isCustomized": false,
           "updateAvailable": false
         }
@@ -25685,8 +25951,8 @@
         "templateState": {
           "templateId": "template-task-repair-worktree",
           "templateName": "Task Repair Worktree",
-          "templateVersion": "1.0.0",
-          "installedTemplateVersion": "1.0.0",
+          "templateVersion": "1.0.1",
+          "installedTemplateVersion": "1.0.1",
           "isCustomized": false,
           "updateAvailable": false
         }
@@ -25872,8 +26138,8 @@
         "templateState": {
           "templateId": "template-task-status-transition-manager",
           "templateName": "Task Status Transition Manager",
-          "templateVersion": "1.0.0",
-          "installedTemplateVersion": "1.0.0",
+          "templateVersion": "1.0.1",
+          "installedTemplateVersion": "1.0.1",
           "isCustomized": false,
           "updateAvailable": false
         }
@@ -26083,8 +26349,8 @@
         "templateState": {
           "templateId": "template-workspace-hygiene",
           "templateName": "Workspace Hygiene",
-          "templateVersion": "1.0.0",
-          "installedTemplateVersion": "1.0.0",
+          "templateVersion": "1.0.1",
+          "installedTemplateVersion": "1.0.1",
           "isCustomized": false,
           "updateAvailable": false
         }
@@ -30320,14 +30586,14 @@
       "description": "Complete task execution pipeline: poll for tasks → claim → worktree → agent dispatch → commit detection → PR creation → status transition. Replaces the monolithic TaskExecutor.executeTask() method with a composable workflow DAG.",
       "category": "lifecycle",
       "enabled": true,
-      "nodeCount": 36,
+      "nodeCount": 42,
       "trigger": "trigger.task_available",
       "variables": {
         "maxParallel": 3,
         "baseBranchLimit": 0,
         "pollIntervalMs": 30000,
         "claimTtlMinutes": 180,
-        "claimRenewIntervalMs": 300000,
+        "claimRenewIntervalMs": 60000,
         "defaultSdk": "auto",
         "defaultTargetBranch": "origin/main",
         "taskTimeoutMs": 21600000,
@@ -30544,11 +30810,11 @@
           ]
         },
         {
-          "id": "run-agent",
+          "id": "run-agent-plan",
           "type": "action.run_agent",
-          "label": "Execute Agent",
+          "label": "Agent Plan",
           "config": {
-            "prompt": "{{_taskPrompt}}",
+            "prompt": "{{_taskPrompt}}\n\nExecution phase: planning. Produce a concrete implementation plan and identify required tests. Do not make code changes in this phase.",
             "taskId": "{{taskId}}",
             "sdk": "{{resolvedSdk}}",
             "model": "{{resolvedModel}}",
@@ -30562,6 +30828,54 @@
           "position": {
             "x": 200,
             "y": 1480
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "run-agent-tests",
+          "type": "action.run_agent",
+          "label": "Agent Tests",
+          "config": {
+            "prompt": "{{_taskPrompt}}\n\nExecution phase: tests. Write or update tests first for the target behavior, then validate failures/pass criteria before implementation changes.",
+            "taskId": "{{taskId}}",
+            "sdk": "{{resolvedSdk}}",
+            "model": "{{resolvedModel}}",
+            "agentProfile": "{{agentProfile}}",
+            "cwd": "{{worktreePath}}",
+            "timeoutMs": "{{taskTimeoutMs}}",
+            "maxRetries": "{{maxRetries}}",
+            "maxContinues": "{{maxContinues}}",
+            "failOnError": false
+          },
+          "position": {
+            "x": 200,
+            "y": 1545
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "run-agent-implement",
+          "type": "action.run_agent",
+          "label": "Agent Implement",
+          "config": {
+            "prompt": "{{_taskPrompt}}\n\nExecution phase: implementation. Complete implementation after tests exist, run required verification (tests/lint/build), then commit, push, and create/update PR.",
+            "taskId": "{{taskId}}",
+            "sdk": "{{resolvedSdk}}",
+            "model": "{{resolvedModel}}",
+            "agentProfile": "{{agentProfile}}",
+            "cwd": "{{worktreePath}}",
+            "timeoutMs": "{{taskTimeoutMs}}",
+            "maxRetries": "{{maxRetries}}",
+            "maxContinues": "{{maxContinues}}",
+            "failOnError": false
+          },
+          "position": {
+            "x": 200,
+            "y": 1610
           },
           "outputs": [
             "default"
@@ -30675,7 +30989,7 @@
           "type": "condition.expression",
           "label": "PR Linked?",
           "config": {
-            "expression": "Boolean($ctx.getNodeOutput('create-pr')?.prNumber || $ctx.getNodeOutput('create-pr')?.prUrl)"
+            "expression": "Boolean($ctx.getNodeOutput('create-pr')?.success === true && ($ctx.getNodeOutput('create-pr')?.prNumber || $ctx.getNodeOutput('create-pr')?.prUrl))"
           },
           "position": {
             "x": 0,
@@ -30770,6 +31084,75 @@
           ]
         },
         {
+          "id": "create-pr-retry",
+          "type": "action.create_pr",
+          "label": "Recover PR Link",
+          "config": {
+            "title": "{{taskTitle}}",
+            "body": "Task-ID: {{taskId}}\n\nAutomated PR for task {{taskId}}",
+            "base": "{{baseBranch}}",
+            "branch": "{{branch}}",
+            "cwd": "{{worktreePath}}",
+            "failOnError": false
+          },
+          "position": {
+            "x": 400,
+            "y": 1740
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "pr-created-stolen",
+          "type": "condition.expression",
+          "label": "PR Linked After Claim Loss?",
+          "config": {
+            "expression": "Boolean($ctx.getNodeOutput('create-pr-retry')?.success === true && ($ctx.getNodeOutput('create-pr-retry')?.prNumber || $ctx.getNodeOutput('create-pr-retry')?.prUrl))"
+          },
+          "position": {
+            "x": 400,
+            "y": 1870
+          },
+          "outputs": [
+            "yes",
+            "no"
+          ]
+        },
+        {
+          "id": "set-inreview-stolen",
+          "type": "action.update_task_status",
+          "label": "Set In-Review (Recovered)",
+          "config": {
+            "taskId": "{{taskId}}",
+            "status": "inreview",
+            "taskTitle": "{{taskTitle}}"
+          },
+          "position": {
+            "x": 250,
+            "y": 2000
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "log-claim-stolen-recovered",
+          "type": "notify.log",
+          "label": "Log Claim Loss Recovery",
+          "config": {
+            "message": "Task \"{{taskTitle}}\" ({{taskId}}) — claim lost after PR link recovery, keeping inreview",
+            "level": "warn"
+          },
+          "position": {
+            "x": 250,
+            "y": 2130
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
           "id": "log-claim-stolen",
           "type": "notify.log",
           "label": "Log Claim Stolen",
@@ -30778,8 +31161,8 @@
             "level": "warn"
           },
           "position": {
-            "x": 400,
-            "y": 1740
+            "x": 550,
+            "y": 2000
           },
           "outputs": [
             "default"
@@ -30795,8 +31178,8 @@
             "taskTitle": "{{taskTitle}}"
           },
           "position": {
-            "x": 400,
-            "y": 1870
+            "x": 550,
+            "y": 2130
           },
           "outputs": [
             "default"
@@ -30812,7 +31195,8 @@
               "log-success",
               "set-todo-push-failed",
               "set-todo-cooldown",
-              "set-todo-stolen"
+              "set-todo-stolen",
+              "log-claim-stolen-recovered"
             ],
             "includeSkipped": true
           },
@@ -31030,14 +31414,26 @@
           "sourcePort": "default"
         },
         {
-          "id": "build-prompt->run-agent",
+          "id": "build-prompt->run-agent-plan",
           "source": "build-prompt",
-          "target": "run-agent",
+          "target": "run-agent-plan",
           "sourcePort": "default"
         },
         {
-          "id": "run-agent->claim-stolen",
-          "source": "run-agent",
+          "id": "run-agent-plan->run-agent-tests",
+          "source": "run-agent-plan",
+          "target": "run-agent-tests",
+          "sourcePort": "default"
+        },
+        {
+          "id": "run-agent-tests->run-agent-implement",
+          "source": "run-agent-tests",
+          "target": "run-agent-implement",
+          "sourcePort": "default"
+        },
+        {
+          "id": "run-agent-implement->claim-stolen",
+          "source": "run-agent-implement",
           "target": "claim-stolen",
           "sourcePort": "default"
         },
@@ -31139,11 +31535,43 @@
           "sourcePort": "default"
         },
         {
-          "id": "claim-stolen->log-claim-stolen",
+          "id": "claim-stolen->create-pr-retry",
           "source": "claim-stolen",
-          "target": "log-claim-stolen",
+          "target": "create-pr-retry",
           "sourcePort": "yes",
           "condition": "$output?.result === true"
+        },
+        {
+          "id": "create-pr-retry->pr-created-stolen",
+          "source": "create-pr-retry",
+          "target": "pr-created-stolen",
+          "sourcePort": "default"
+        },
+        {
+          "id": "pr-created-stolen->set-inreview-stolen",
+          "source": "pr-created-stolen",
+          "target": "set-inreview-stolen",
+          "sourcePort": "yes",
+          "condition": "$output?.result === true"
+        },
+        {
+          "id": "set-inreview-stolen->log-claim-stolen-recovered",
+          "source": "set-inreview-stolen",
+          "target": "log-claim-stolen-recovered",
+          "sourcePort": "default"
+        },
+        {
+          "id": "log-claim-stolen-recovered->join-outcomes",
+          "source": "log-claim-stolen-recovered",
+          "target": "join-outcomes",
+          "sourcePort": "default"
+        },
+        {
+          "id": "pr-created-stolen->log-claim-stolen",
+          "source": "pr-created-stolen",
+          "target": "log-claim-stolen",
+          "sourcePort": "no",
+          "condition": "$output?.result !== true"
         },
         {
           "id": "log-claim-stolen->set-todo-stolen",
@@ -31521,7 +31949,7 @@
           "type": "condition.expression",
           "label": "PR Linked?",
           "config": {
-            "expression": "Boolean($ctx.getNodeOutput('pr')?.prNumber || $ctx.getNodeOutput('pr')?.prUrl)"
+            "expression": "Boolean($ctx.getNodeOutput('pr')?.success === true && ($ctx.getNodeOutput('pr')?.prNumber || $ctx.getNodeOutput('pr')?.prUrl))"
           },
           "position": {
             "x": 180,

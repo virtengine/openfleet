@@ -527,7 +527,7 @@ Commit with message "feat: implement [feature]"`,
     }, { x: 250, y: 1170 }),
 
     node("pr-created", "condition.expression", "Handoff Recorded?", {
-      expression: "$ctx.getNodeOutput('create-pr')?.success === true",
+      expression: "Boolean($ctx.getNodeOutput('create-pr')?.prNumber || $ctx.getNodeOutput('create-pr')?.prUrl)",
     }, { x: 250, y: 1240, outputs: ["yes", "no"] }),
 
     node("notify-done", "notify.log", "Task Complete", {
@@ -596,7 +596,7 @@ Commit with message "fix: address backend workflow validation failures"`,
     }, { x: 450, y: 1820 }),
 
     node("pr-created-retry", "condition.expression", "Handoff Recorded (Retry Path)?", {
-      expression: "$ctx.getNodeOutput('create-pr-retry')?.success === true",
+      expression: "Boolean($ctx.getNodeOutput('create-pr-retry')?.prNumber || $ctx.getNodeOutput('create-pr-retry')?.prUrl)",
     }, { x: 450, y: 1890, outputs: ["yes", "no"] }),
 
     node("notify-done-retry", "notify.log", "Task Complete (After Retry)", {
@@ -966,3 +966,4 @@ export const MEETING_SUBWORKFLOW_CHAIN_TEMPLATE = {
     requiredTemplates: ["template-task-planner"],
   },
 };
+

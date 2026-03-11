@@ -953,6 +953,7 @@ describe("task-executor", () => {
       expect(ex._running).toBe(true);
       // workflowOwnsTaskLifecycle defaults to true — no poll timer
       expect(ex._pollTimer).toBeNull();
+      expect(ex._recoveryTimer).not.toBeNull();
       ex._running = false;
     });
 
@@ -961,8 +962,10 @@ describe("task-executor", () => {
       ex.start();
       expect(ex._running).toBe(true);
       expect(ex._pollTimer).not.toBeNull();
+      expect(ex._recoveryTimer).not.toBeNull();
       ex._running = false;
       clearInterval(ex._pollTimer);
+      clearInterval(ex._recoveryTimer);
     });
 
     it("start() waits for thread registry load before in-progress recovery", async () => {
@@ -989,6 +992,7 @@ describe("task-executor", () => {
 
       ex._running = false;
       clearInterval(ex._pollTimer);
+      clearInterval(ex._recoveryTimer);
     });
 
     it("stop() sets _running to false and clears poll timer", async () => {
@@ -1002,6 +1006,7 @@ describe("task-executor", () => {
 
       expect(ex._running).toBe(false);
       expect(ex._pollTimer).toBeNull();
+      expect(ex._recoveryTimer).toBeNull();
     });
 
     it("stop() waits for active slots gracefully", async () => {
@@ -1636,3 +1641,4 @@ describe("legacy method stubs", () => {
   // [LEGACY TESTS REMOVED] — All execution pipeline tests have been replaced
   // by comprehensive workflow node tests in tests/workflow-task-lifecycle.test.mjs
 });
+

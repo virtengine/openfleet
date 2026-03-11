@@ -71,6 +71,12 @@ const SHARED_STATE_ENABLED = process.env.SHARED_STATE_ENABLED !== "false"; // de
 const SHARED_STATE_HEARTBEAT_INTERVAL_MS = Number(process.env.SHARED_STATE_HEARTBEAT_INTERVAL_MS) || 60_000;
 const SHARED_STATE_STALE_THRESHOLD_MS = Number(process.env.SHARED_STATE_STALE_THRESHOLD_MS) || 300_000;
 const SHARED_STATE_MAX_RETRIES = Number(process.env.SHARED_STATE_MAX_RETRIES) || 3;
+const SHARED_STATE_FATAL_CLAIM_REASONS = new Set([
+  "existing_owner_active",
+  "owner_mismatch",
+  "attempt_token_mismatch",
+  "task_ignored",
+]);
 
 // ── State ────────────────────────────────────────────────────────────────────
 
@@ -102,6 +108,13 @@ function withRegistryLock(fn) {
   // doesn't permanently poison all subsequent callers.
   _registryLockChain = next.catch(() => {});
   return next;
+}
+function isFatalSharedClaimConflict(reason) {
+  const normalized = String(reason || "").trim().toLowerCase();
+  if (!normalized) return false;
+  if (SHARED_STATE_FATAL_CLAIM_REASONS.has(normalized)) return true;
+  if (normalized.startsWith("task_ignored")) return true;
+  return false;
 }
 
 // ── Initialization ───────────────────────────────────────────────────────────
@@ -619,6 +632,53 @@ async function _claimTaskInner(opts) {
     coordinator_priority: presenceState.coordinator_priority ?? 100,
     metadata: claimMetadata,
   };
+  const syncSharedClaimOrRollback = async ({
+    warningLabel,
+    successLabel,
+    rollbackClaim = null,
+  }) => {
+    if (!SHARED_STATE_ENABLED) return { success: true };
+
+    try {
+      const sharedResult = await claimTaskInSharedState(
+        taskId,
+        instanceId,
+        claimToken,
+        Math.floor(SHARED_STATE_STALE_THRESHOLD_MS / 1000),
+        state.repoRoot,
+      );
+      if (!sharedResult.success) {
+        const reason = sharedResult.reason || "shared_state_claim_failed";
+        console.info(`[task-claims] ${warningLabel} for ${taskId}: ${reason}`);
+
+        if (isFatalSharedClaimConflict(reason)) {
+          if (rollbackClaim) {
+            registry.claims[taskId] = rollbackClaim;
+          } else {
+            delete registry.claims[taskId];
+          }
+          await saveClaimsRegistry(registry);
+          await appendAuditEntry({
+            action: "claim_sync_rollback",
+            task_id: taskId,
+            instance_id: instanceId,
+            claim_token: claimToken,
+            rollback_reason: reason,
+            rollback_to_instance: rollbackClaim?.instance_id || null,
+          });
+          return { success: false, error: reason };
+        }
+
+        return { success: true };
+      }
+
+      console.info(`[task-claims] ${successLabel} for ${taskId}`);
+      return { success: true };
+    } catch (err) {
+      console.warn(`[task-claims] Shared state sync failed for ${taskId}: ${err.message}`);
+      return { success: true };
+    }
+  };
 
   // If no existing claim, grant immediately
   if (!existingClaim) {
@@ -632,24 +692,13 @@ async function _claimTaskInner(opts) {
       expires_at: expiresAt.toISOString(),
     });
 
-    // Sync to shared state (non-blocking, log on failure)
-    if (SHARED_STATE_ENABLED) {
-      try {
-        const sharedResult = await claimTaskInSharedState(
-          taskId,
-          instanceId,
-          claimToken,
-          Math.floor(SHARED_STATE_STALE_THRESHOLD_MS / 1000),
-          state.repoRoot
-        );
-        if (!sharedResult.success) {
-          console.info(`[task-claims] Shared state claim warning for ${taskId}: ${sharedResult.reason}`);
-        } else {
-          console.info(`[task-claims] Shared state synced for ${taskId}`);
-        }
-      } catch (err) {
-        console.warn(`[task-claims] Shared state sync failed for ${taskId}: ${err.message}`);
-      }
+    const sharedSync = await syncSharedClaimOrRollback({
+      warningLabel: "Shared state claim warning",
+      successLabel: "Shared state synced",
+      rollbackClaim: null,
+    });
+    if (!sharedSync.success) {
+      return { success: false, error: sharedSync.error };
     }
 
     return { success: true, token: claimToken, claim: newClaim };
@@ -675,24 +724,13 @@ async function _claimTaskInner(opts) {
       resolution_reason: staleCheck.reason,
     });
 
-    // Sync to shared state after override
-    if (SHARED_STATE_ENABLED) {
-      try {
-        const sharedResult = await claimTaskInSharedState(
-          taskId,
-          instanceId,
-          claimToken,
-          Math.floor(SHARED_STATE_STALE_THRESHOLD_MS / 1000),
-          state.repoRoot
-        );
-        if (!sharedResult.success) {
-          console.info(`[task-claims] Shared state override warning for ${taskId}: ${sharedResult.reason}`);
-        } else {
-          console.info(`[task-claims] Shared state synced after override for ${taskId}`);
-        }
-      } catch (err) {
-        console.warn(`[task-claims] Shared state sync failed after override for ${taskId}: ${err.message}`);
-      }
+    const sharedSync = await syncSharedClaimOrRollback({
+      warningLabel: "Shared state override warning",
+      successLabel: "Shared state synced after override",
+      rollbackClaim: null,
+    });
+    if (!sharedSync.success) {
+      return { success: false, error: sharedSync.error };
     }
 
     return {
@@ -724,6 +762,16 @@ async function _claimTaskInner(opts) {
       previous_token: existingClaim.claim_token,
       resolution_reason: resolution.reason,
     });
+
+    const sharedSync = await syncSharedClaimOrRollback({
+      warningLabel: "Shared state override warning",
+      successLabel: "Shared state synced after override",
+      rollbackClaim: existingClaim,
+    });
+    if (!sharedSync.success) {
+      return { success: false, error: sharedSync.error };
+    }
+
     return {
       success: true,
       token: claimToken,
@@ -895,6 +943,9 @@ async function _renewClaimInner(opts) {
   // Renew the claim
   const now = new Date();
   const expiresAt = new Date(now.getTime() + ttlMinutes * 60 * 1000);
+  const previousClaimSnapshot = {
+    ...claim,
+  };
   claim.expires_at = expiresAt.toISOString();
   claim.ttl_minutes = ttlMinutes;
   claim.renewed_at = now.toISOString();
@@ -934,6 +985,15 @@ async function _renewClaimInner(opts) {
         // over — surface as a fatal claim renewal failure so the task-executor
         // can abort the now-orphaned agent instead of letting it run forever.
         if (reason === "attempt_token_mismatch" || reason === "owner_mismatch") {
+          registry.claims[taskId] = previousClaimSnapshot;
+          await saveClaimsRegistry(registry);
+          await appendAuditEntry({
+            action: "renew_rollback",
+            task_id: taskId,
+            instance_id: instanceId,
+            claim_token: claimToken,
+            rollback_reason: reason,
+          });
           console.warn(`[task-claims] Shared state heartbeat FATAL for ${taskId}: ${reason} — surfacing as claim failure`);
           return { success: false, error: reason };
         }
@@ -1045,5 +1105,8 @@ export const _test = {
   retryFsOperation,
   isRetriableFsError,
 };
+
+
+
 
 

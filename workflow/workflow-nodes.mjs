@@ -3204,7 +3204,7 @@ registerNodeType("action.update_task_status", {
     if (kanban?.updateTaskStatus) {
       const createPrOutput =
         typeof ctx.getNodeOutput === "function"
-          ? ctx.getNodeOutput("create-pr")
+          ? (ctx.getNodeOutput("create-pr") || ctx.getNodeOutput("pr") || ctx.getNodeOutput("create-pr-retry"))
           : null;
 
       const normalizeString = (value) => {
@@ -3560,10 +3560,11 @@ registerNodeType("action.create_pr", {
       if (failOnError) {
         return { success: false, error: errorMsg, command: cmd };
       }
-      // Graceful fallback — record handoff for Bosun management
+      // Graceful fallback — record handoff for Bosun management, but mark as failed
+      // so the task-lifecycle pr-created gate routes back to todo for retry.
       ctx.log(node.id, `Falling back to Bosun-managed PR lifecycle handoff`);
       return {
-        success: true,
+        success: false,
         handedOff: true,
         lifecycle: "bosun_managed",
         action: "pr_handoff",
@@ -7656,9 +7657,9 @@ let _taskClaimsInitPromise = null;
 let _taskComplexityMod = null;
 let _kanbanAdapterMod = null;
 let _agentPoolMod = null;
+let _libraryManagerMod = null;
 let _gitSafetyMod = null;
 let _diffStatsMod = null;
-let _libraryManagerMod = null;
 
 async function ensureTaskClaimsMod() {
   if (!_taskClaimsMod) _taskClaimsMod = await import("../task/task-claims.mjs");
@@ -7754,6 +7755,10 @@ async function ensureTaskComplexityMod() {
   if (!_taskComplexityMod) _taskComplexityMod = await import("../task/task-complexity.mjs");
   return _taskComplexityMod;
 }
+async function ensureLibraryManagerMod() {
+  if (!_libraryManagerMod) _libraryManagerMod = await import("../infra/library-manager.mjs");
+  return _libraryManagerMod;
+}
 async function ensureKanbanAdapterMod() {
   if (!_kanbanAdapterMod) _kanbanAdapterMod = await import("../kanban/kanban-adapter.mjs");
   return _kanbanAdapterMod;
@@ -7769,10 +7774,6 @@ async function ensureGitSafetyMod() {
 async function ensureDiffStatsMod() {
   if (!_diffStatsMod) _diffStatsMod = await import("../git/diff-stats.mjs");
   return _diffStatsMod;
-}
-async function ensureLibraryManagerMod() {
-  if (!_libraryManagerMod) _libraryManagerMod = await import("../infra/library-manager.mjs");
-  return _libraryManagerMod;
 }
 let _taskStoreMod = null;
 async function ensureTaskStoreMod() {
@@ -7811,16 +7812,6 @@ function cfgOrCtx(node, ctx, key, defaultVal = "") {
   const ctxVal = ctx.data?.[key];
   if (ctxVal != null && ctxVal !== "") return String(ctxVal);
   return defaultVal;
-}
-
-function normalizeSdkForWorkflow(value, fallback = "auto") {
-  const raw = String(value || "").trim().toLowerCase();
-  if (!raw) return fallback;
-  if (raw === "auto") return "auto";
-  if (raw === "codex" || raw === "openai") return "codex";
-  if (raw === "copilot" || raw === "github_copilot" || raw === "github-copilot") return "copilot";
-  if (raw === "claude" || raw === "claude_code" || raw === "claude-code") return "claude";
-  return fallback;
 }
 
 function getWorkflowRuntimeState(ctx) {
@@ -8434,7 +8425,7 @@ registerNodeType("action.claim_task", {
       taskId: { type: "string", description: "Task ID to claim" },
       taskTitle: { type: "string", description: "Task title" },
       ttlMinutes: { type: "number", default: 180, description: "Claim TTL in minutes" },
-      renewIntervalMs: { type: "number", default: 300000, description: "Renewal interval (5 min default)" },
+      renewIntervalMs: { type: "number", default: 60000, description: "Renewal interval (1 min default)" },
       instanceId: { type: "string", description: "Orchestrator instance ID (auto-gen if omitted)" },
       branch: { type: "string", description: "Branch for claim metadata" },
       sdk: { type: "string", description: "SDK for claim metadata" },
@@ -8446,7 +8437,7 @@ registerNodeType("action.claim_task", {
     const taskId = cfgOrCtx(node, ctx, "taskId");
     const taskTitle = cfgOrCtx(node, ctx, "taskTitle");
     const ttlMinutes = node.config?.ttlMinutes ?? 180;
-    const renewIntervalMs = node.config?.renewIntervalMs ?? 300000;
+    const renewIntervalMs = node.config?.renewIntervalMs ?? 60000;
     const instanceId = cfgOrCtx(node, ctx, "instanceId") || ctx.data?._agentInstanceId || `wf-${randomUUID().slice(0, 8)}`;
     const branch = cfgOrCtx(node, ctx, "branch");
     const sdk = cfgOrCtx(node, ctx, "resolvedSdk", cfgOrCtx(node, ctx, "sdk"));
@@ -8497,40 +8488,36 @@ registerNodeType("action.claim_task", {
             : null;
       if (renewIntervalMs > 0 && renewClaimFn) {
         const renewTimer = setInterval(async () => {
-          const handleClaimRenewFailure = (rawReason) => {
-            const reason = String(rawReason || "unknown");
-            const fatal = [
-              "claimed_by_different_instance",
-              "claim_token_mismatch",
-              "attempt_token_mismatch",
-              "task_not_claimed",
-              "owner_mismatch",
-            ].some((entry) => reason.includes(entry));
+          try {
+            const renewalResult = await renewClaimFn({ taskId, claimToken: token, instanceId, ttlMinutes });
+            if (renewalResult && renewalResult.success === false) {
+              const resultError = String(renewalResult.error || "claim_renew_failed");
+              const fatalResult = ["claimed_by_different_instance", "claim_token_mismatch",
+                "task_not_claimed", "owner_mismatch", "attempt_token_mismatch"].some((e) => resultError.includes(e));
+              if (fatalResult) {
+                ctx.log(node.id, `Claim renewal fatal: ${resultError} — aborting task`);
+                clearInterval(renewTimer);
+                runtimeState.claimRenewTimer = null;
+                ctx.data._claimRenewTimer = null;
+                ctx.data._claimStolen = true;
+              } else {
+                ctx.log(node.id, `Claim renewal warning: ${resultError}`);
+              }
+            }
+          } catch (renewErr) {
+            const msg = renewErr?.message || String(renewErr);
+            const fatal = ["claimed_by_different_instance", "claim_token_mismatch",
+              "task_not_claimed", "owner_mismatch", "attempt_token_mismatch"].some((e) => msg.includes(e));
             if (fatal) {
-              ctx.log(node.id, `Claim renewal fatal: ${reason} — aborting task`);
+              ctx.log(node.id, `Claim renewal fatal: ${msg} — aborting task`);
               clearInterval(renewTimer);
               runtimeState.claimRenewTimer = null;
               ctx.data._claimRenewTimer = null;
-              // Signal abort to downstream nodes via context.
+              // Signal abort to downstream nodes via context
               ctx.data._claimStolen = true;
-              return;
+            } else {
+              ctx.log(node.id, `Claim renewal warning: ${msg}`);
             }
-            ctx.log(node.id, `Claim renewal warning: ${reason}`);
-          };
-          try {
-            const renewResult = await renewClaimFn({
-              taskId,
-              claimToken: token,
-              instanceId,
-              ttlMinutes,
-            });
-            if (renewResult && renewResult.success === false) {
-              handleClaimRenewFailure(
-                renewResult.error || renewResult.reason || "claim_renew_failed",
-              );
-            }
-          } catch (renewErr) {
-            handleClaimRenewFailure(renewErr?.message || String(renewErr));
           }
         }, renewIntervalMs);
         // Prevent timer from keeping the process alive
@@ -8639,128 +8626,98 @@ registerNodeType("action.resolve_executor", {
     const defaultSdk = cfgOrCtx(node, ctx, "defaultSdk", "auto");
     const sdkOverride = cfgOrCtx(node, ctx, "sdkOverride");
     const modelOverride = cfgOrCtx(node, ctx, "modelOverride");
-    const taskId = cfgOrCtx(node, ctx, "taskId");
-    const taskTitle = cfgOrCtx(node, ctx, "taskTitle");
-    const taskDescription = cfgOrCtx(node, ctx, "taskDescription");
-    const task = ctx.data?.task || {};
-    const repoRoot = cfgOrCtx(node, ctx, "repoRoot") || cfgOrCtx(node, ctx, "workspace") || process.cwd();
+    const repoRoot = cfgOrCtx(node, ctx, "repoRoot")
+      || cfgOrCtx(node, ctx, "workspace")
+      || process.cwd();
+    const task = {
+      id: cfgOrCtx(node, ctx, "taskId"),
+      title: cfgOrCtx(node, ctx, "taskTitle"),
+      description: cfgOrCtx(node, ctx, "taskDescription"),
+      tags: Array.isArray(ctx.data?.task?.tags) ? ctx.data.task.tags : [],
+    };
+    let profileDecision = null;
 
     // Check env var overrides (mirrors TaskExecutor behavior)
     const envModel =
       process.env.COPILOT_MODEL || process.env.CLAUDE_MODEL || process.env.CODEX_MODEL || "";
-    let profileSdk = "";
-    let profileModel = "";
-    let resolvedProfile = null;
-
-    // Library resolver for profile/skill/tool selection.
-    try {
-      const library = await ensureLibraryManagerMod();
-      const criteria = {
-        title: taskTitle || task.title || "",
-        description: taskDescription || task.description || "",
-        agentType:
-          ctx.data?.agentType
-          || task.agentType
-          || task.assignedAgentType
-          || "",
-        tags: Array.isArray(task.tags) ? task.tags : [],
-        changedFiles: Array.isArray(task.changedFiles) ? task.changedFiles : [],
-      };
-      const planResult =
-        typeof library.resolveLibraryPlan === "function"
-          ? library.resolveLibraryPlan(repoRoot, criteria, { topN: 5, skillTopN: 6 })
-          : null;
-      const best = planResult?.best || null;
-      const plan = planResult?.plan || null;
-      if (best) {
-        const profileId = String(plan?.agentProfileId || best.id || "").trim();
-        if (profileId) ctx.data.agentProfile = profileId;
-        const selectedSkills = Array.isArray(plan?.selectedSkills) ? plan.selectedSkills : [];
-        const skillIds = Array.isArray(plan?.skillIds)
-          ? plan.skillIds
-          : selectedSkills.map((entry) => String(entry?.id || "").trim()).filter(Boolean);
-        const skillFiles = selectedSkills.map((entry) => String(entry?.filename || "").trim()).filter(Boolean);
-        const reasons = Array.isArray(plan?.reasons) ? plan.reasons : Array.isArray(best?.reasons) ? best.reasons : [];
-
-        resolvedProfile = {
-          id: profileId || String(best.id || "").trim(),
-          name: String(plan?.agentName || best?.name || "").trim(),
-          agentType: String(best?.agentType || "").trim(),
-          score: Number(best?.score || 0),
-          confidence: Number(best?.confidence || 0),
-          autoApply: Boolean(planResult?.auto?.shouldAutoApply),
-          reasons,
-          skillIds,
-          selectedSkills,
-          builtinToolIds: Array.isArray(plan?.builtinToolIds) ? plan.builtinToolIds : [],
-          recommendedToolIds: Array.isArray(plan?.recommendedToolIds) ? plan.recommendedToolIds : [],
-          enabledMcpServers: Array.isArray(plan?.enabledMcpServers) ? plan.enabledMcpServers : [],
-        };
-        ctx.data.resolvedAgentProfile = resolvedProfile;
-        ctx.data.resolvedSkillIds = skillIds;
-        ctx.data.resolvedSkillFiles = skillFiles;
-        ctx.data.resolvedBuiltinToolIds = resolvedProfile.builtinToolIds;
-        ctx.data.resolvedRecommendedToolIds = resolvedProfile.recommendedToolIds;
-        ctx.data.resolvedEnabledMcpServers = resolvedProfile.enabledMcpServers;
-
-        profileSdk = normalizeSdkForWorkflow(best?.profile?.sdk, "");
-        profileModel = String(best?.profile?.model || "").trim();
-        ctx.log(
-          node.id,
-          `Library match: profile=${resolvedProfile.id || "(none)"} score=${resolvedProfile.score} confidence=${resolvedProfile.confidence.toFixed(2)}`,
-        );
-      }
-    } catch (err) {
-      ctx.log(node.id, `Library resolver unavailable: ${err?.message || err}`);
-    }
 
     // Manual override takes precedence
     if (sdkOverride && sdkOverride !== "auto") {
-      const sdk = normalizeSdkForWorkflow(sdkOverride, sdkOverride);
-      const model = modelOverride || envModel || profileModel || "";
-      ctx.data.resolvedSdk = sdk;
+      const model = modelOverride || envModel || "";
+      ctx.data.resolvedSdk = sdkOverride;
       ctx.data.resolvedModel = model;
-      ctx.log(node.id, `Executor override: sdk=${sdk}, model=${model}`);
-      return { success: true, sdk, model, tier: "override", profile: resolvedProfile };
+      ctx.log(node.id, `Executor override: sdk=${sdkOverride}, model=${model}`);
+      return { success: true, sdk: sdkOverride, model, tier: "override", profile: null };
     }
 
-    // Profile preference takes precedence when explicitly set in library profile.
-    if (profileSdk) {
-      const model = modelOverride || envModel || profileModel || "";
-      ctx.data.resolvedSdk = profileSdk;
-      ctx.data.resolvedModel = model;
-      ctx.log(node.id, `Executor profile preference: sdk=${profileSdk}, model=${model}`);
-      return {
-        success: true,
-        sdk: profileSdk,
-        model,
-        tier: "profile",
-        profile: resolvedProfile,
-      };
+    try {
+      const library = await ensureLibraryManagerMod();
+      const match = library.matchAgentProfiles?.(
+        repoRoot,
+        {
+          title: task.title,
+          description: task.description,
+          tags: task.tags,
+        },
+        { topN: 1 },
+      );
+      const profile = match?.best?.profile || null;
+      const profileId = String(match?.best?.id || "").trim();
+      if (profileId && profile) {
+        profileDecision = { id: profileId, profile };
+        ctx.data.agentProfile = profileId;
+        ctx.data.resolvedAgentProfile = {
+          id: profileId,
+          name: match?.best?.name || profile?.name || profileId,
+          ...profile,
+        };
+        const skillIds = Array.isArray(profile.skills)
+          ? profile.skills.map((value) => String(value || "").trim()).filter(Boolean)
+          : [];
+        ctx.data.resolvedSkillIds = skillIds;
+      }
+    } catch (err) {
+      ctx.log(node.id, `Library profile resolution failed: ${err.message}`);
     }
 
     // Complexity-based routing
     try {
       const complexity = await ensureTaskComplexityMod();
-      const complexityTask = {
-        id: taskId,
-        title: taskTitle,
-        description: taskDescription,
-      };
-
       if (complexity.resolveExecutorForTask && complexity.executorToSdk) {
-        const resolved = complexity.resolveExecutorForTask(complexityTask);
-        const sdk = complexity.executorToSdk(resolved.executor);
-        const model = modelOverride || envModel || profileModel || resolved.model || "";
+        const baseProfile = profileDecision?.profile
+          ? {
+              name: profileDecision.id,
+              executor: profileDecision.profile.sdk || "CODEX",
+              model: profileDecision.profile.model || "",
+              variant: "DEFAULT",
+              role: "primary",
+              weight: 100,
+              enabled: true,
+            }
+          : undefined;
+        const resolved = complexity.resolveExecutorForTask(task, baseProfile);
+        let sdk = complexity.executorToSdk(resolved.executor);
+        const profileSdkRaw = String(profileDecision?.profile?.sdk || "").trim().toLowerCase();
+        const profileModelRaw = String(profileDecision?.profile?.model || "").trim().toLowerCase();
+        if (profileSdkRaw) {
+          if (profileSdkRaw.includes("claude")) sdk = "claude";
+          else if (profileSdkRaw.includes("copilot")) sdk = "copilot";
+          else if (profileSdkRaw.includes("codex")) sdk = "codex";
+        } else if (profileModelRaw) {
+          if (profileModelRaw.includes("claude")) sdk = "claude";
+          else if (profileModelRaw.includes("gpt") || profileModelRaw.includes("codex")) sdk = "codex";
+        }
+        const model = modelOverride || envModel || profileDecision?.profile?.model || resolved.model || "";
+        const tier = profileDecision?.profile ? "profile" : (resolved.tier || "default");
         ctx.data.resolvedSdk = sdk;
         ctx.data.resolvedModel = model;
-        ctx.log(node.id, `Executor: sdk=${sdk}, model=${model}, tier=${resolved.tier || "default"}`);
+        ctx.log(node.id, `Executor: sdk=${sdk}, model=${model}, tier=${tier}`);
         return {
           success: true,
           sdk,
           model,
-          tier: resolved.tier || "default",
-          profile: resolvedProfile || resolved.name || null,
+          tier,
+          profile: profileDecision?.id || resolved.name || null,
           complexity: resolved.complexity || null,
         };
       }
@@ -8778,11 +8735,12 @@ registerNodeType("action.resolve_executor", {
         sdk = "codex";
       }
     }
-    const model = modelOverride || envModel || "";
-    ctx.data.resolvedSdk = normalizeSdkForWorkflow(sdk, sdk);
+    const model = modelOverride || envModel || profileDecision?.profile?.model || "";
+    ctx.data.resolvedSdk = sdk;
     ctx.data.resolvedModel = model;
-    ctx.log(node.id, `Executor fallback: sdk=${ctx.data.resolvedSdk}`);
-    return { success: true, sdk: ctx.data.resolvedSdk, model, tier: "default", profile: resolvedProfile };
+    const fallbackTier = profileDecision?.profile ? "profile" : "default";
+    ctx.log(node.id, `Executor fallback: sdk=${sdk}`);
+    return { success: true, sdk, model, tier: fallbackTier, profile: profileDecision?.id || null };
   },
 });
 
@@ -9137,10 +9095,7 @@ registerNodeType("action.build_task_prompt", {
     const primaryRepository = pickFirstString(repository, repoSlug);
     const allowedRepositories = normalizeStringArray(repositories, primaryRepository);
     const matchedSkills = findRelevantSkills(repoRoot, taskTitle, taskDescription || "", {});
-    const matchedSkillFiles = matchedSkills.map((skill) => skill.filename);
-    const resolvedSkillFiles = normalizeStringArray(ctx.data?.resolvedSkillFiles || []);
-    const activeSkillFiles = normalizeStringArray(matchedSkillFiles, resolvedSkillFiles);
-    const resolvedSkillIds = normalizeStringArray(ctx.data?.resolvedSkillIds || []);
+    const activeSkillFiles = matchedSkills.map((skill) => skill.filename);
 
     if (customTemplate) {
       ctx.data._taskPrompt = customTemplate;
@@ -9251,14 +9206,6 @@ registerNodeType("action.build_task_prompt", {
     );
     if (relevantSkillsBlock) {
       parts.push(relevantSkillsBlock);
-      parts.push("");
-    }
-    if (resolvedSkillIds.length > 0) {
-      parts.push("## Library-Resolved Skills");
-      parts.push("Auto-selected by the library resolver for this task:");
-      for (const skillId of resolvedSkillIds) {
-        parts.push(`- ${skillId}`);
-      }
       parts.push("");
     }
 

@@ -392,6 +392,9 @@ let workflowAutomationReadyLogged = false;
 let workflowAutomationUnavailableLogged = false;
 let workflowConflictResolverPausedLogged = false;
 let workflowTaskReconcilePausedLogged = false;
+let workflowTaskReconcileInFlight = false;
+let workflowTaskReconcileLastAt = 0;
+const WORKFLOW_TASK_RECONCILE_MIN_INTERVAL_MS = 45 * 1000;
 
 /**
  * Cache of module names that have an enabled workflow replacement.
@@ -584,6 +587,20 @@ async function ensureWorkflowAutomationEngine() {
           : [],
       );
       const staleWorkflowTemplateIds = ["template-task-batch-pr"];
+      if (typeof workflowTemplates?.reconcileInstalledTemplates === "function") {
+        const reconcile = workflowTemplates.reconcileInstalledTemplates(engine, {
+          autoUpdateUnmodified: true,
+          forceUpdateTemplateIds: ["template-task-lifecycle", "template-task-finalization-guard"],
+        });
+        if (Number(reconcile?.autoUpdated || 0) > 0) {
+          console.log(
+            `[workflows] reconciled template-backed workflow(s): ${reconcile.autoUpdated} updated` +
+              (Array.isArray(reconcile?.forceUpdated) && reconcile.forceUpdated.length > 0
+                ? ` (${reconcile.forceUpdated.length} forced)`
+                : ""),
+          );
+        }
+      }
       for (const summary of engine.list?.() || []) {
         const installedFrom = String(summary?.metadata?.installedFrom || "").trim();
         if (!staleWorkflowTemplateIds.includes(installedFrom)) continue;
@@ -4357,20 +4374,31 @@ function findWorktreeForBranch(branch) {
 
 async function findExistingPrForBranch(branch) {
   if (!branch || !ghAvailable()) return null;
+  const normalizedRepo = normalizeRepoSlugCandidate(repoSlug);
+  return await findExistingPrForBranchInRepo(branch, normalizedRepo);
+}
+
+async function findExistingPrForBranchInRepo(branch, repoOverride = "") {
+  if (!branch || !ghAvailable()) return null;
+  const resolvedRepo =
+    normalizeRepoSlugCandidate(repoOverride) ||
+    normalizeRepoSlugCandidate(repoSlug);
+  const args = [
+    "pr",
+    "list",
+    "--head",
+    branch,
+    "--state",
+    "all",
+    "--limit",
+    "5",
+    "--json",
+    "number,state,title,url,mergedAt,closedAt",
+  ];
+  if (resolvedRepo) args.push("--repo", resolvedRepo);
   const res = spawnSync(
     "gh",
-    [
-      "pr",
-      "list",
-      "--head",
-      branch,
-      "--state",
-      "all",
-      "--limit",
-      "5",
-      "--json",
-      "number,state,title,url,mergedAt,closedAt",
-    ],
+    args,
     { encoding: "utf8" },
   );
   if (res.status !== 0) {
@@ -4385,8 +4413,17 @@ async function findExistingPrForBranch(branch) {
 }
 
 async function findExistingPrForBranchApi(branch) {
-  if (!branch || !githubToken || !repoSlug) return null;
-  const [owner, repo] = repoSlug.split("/");
+  const normalizedRepo = normalizeRepoSlugCandidate(repoSlug);
+  return await findExistingPrForBranchApiInRepo(branch, normalizedRepo);
+}
+
+async function findExistingPrForBranchApiInRepo(branch, repoOverride = "") {
+  if (!branch || !githubToken) return null;
+  const resolvedRepo =
+    normalizeRepoSlugCandidate(repoOverride) ||
+    normalizeRepoSlugCandidate(repoSlug);
+  if (!resolvedRepo) return null;
+  const [owner, repo] = resolvedRepo.split("/");
   if (!owner || !repo) return null;
   const head = `${owner}:${branch}`;
   const url = `https://api.github.com/repos/${owner}/${repo}/pulls?state=all&head=${encodeURIComponent(
@@ -4419,18 +4456,23 @@ async function findExistingPrForBranchApi(branch) {
   }
 }
 
-async function getPullRequestByNumber(prNumber) {
+async function getPullRequestByNumber(prNumber, repoOverride = "") {
   if (!Number.isFinite(prNumber) || prNumber <= 0) return null;
+  const resolvedRepo =
+    normalizeRepoSlugCandidate(repoOverride) ||
+    normalizeRepoSlugCandidate(repoSlug);
   if (ghAvailable()) {
+    const args = [
+      "pr",
+      "view",
+      String(prNumber),
+      "--json",
+      "number,state,title,url,mergedAt,closedAt,mergeable,mergeStateStatus",
+    ];
+    if (resolvedRepo) args.push("--repo", resolvedRepo);
     const res = spawnSync(
       "gh",
-      [
-        "pr",
-        "view",
-        String(prNumber),
-        "--json",
-        "number,state,title,url,mergedAt,closedAt,mergeable,mergeStateStatus",
-      ],
+      args,
       { encoding: "utf8" },
     );
     if (res.status === 0) {
@@ -4441,8 +4483,8 @@ async function getPullRequestByNumber(prNumber) {
       }
     }
   }
-  if (!githubToken || !repoSlug) return null;
-  const [owner, repo] = repoSlug.split("/");
+  if (!githubToken || !resolvedRepo) return null;
+  const [owner, repo] = resolvedRepo.split("/");
   if (!owner || !repo) return null;
   const url = `https://api.github.com/repos/${owner}/${repo}/pulls/${prNumber}`;
   try {
@@ -6041,19 +6083,192 @@ loadRecoveryCache();
  * Also detects open PRs with merge conflicts and triggers resolution.
  */
 async function checkMergedPRsAndUpdateTasks() {
-  if (!workflowTaskReconcilePausedLogged) {
-    workflowTaskReconcilePausedLogged = true;
-    console.log(
-      "[monitor] legacy task-status reconciliation path removed — use workflows",
-    );
+  if (workflowTaskReconcileInFlight) {
+    return {
+      checked: 0,
+      movedDone: 0,
+      movedReview: 0,
+      movedTodo: 0,
+      skippedByWorkflowReplacement: false,
+      skippedReason: "already_running",
+    };
   }
-  return {
+  const now = Date.now();
+  if (
+    workflowTaskReconcileLastAt > 0 &&
+    now - workflowTaskReconcileLastAt < WORKFLOW_TASK_RECONCILE_MIN_INTERVAL_MS
+  ) {
+    return {
+      checked: 0,
+      movedDone: 0,
+      movedReview: 0,
+      movedTodo: 0,
+      skippedByWorkflowReplacement: false,
+      skippedReason: "cooldown",
+    };
+  }
+
+  workflowTaskReconcileInFlight = true;
+  workflowTaskReconcileLastAt = now;
+
+  const summary = {
     checked: 0,
     movedDone: 0,
     movedReview: 0,
     movedTodo: 0,
-    skippedByWorkflowReplacement: true,
+    skippedByWorkflowReplacement: false,
   };
+  try {
+    const pendingReview = Array.isArray(getTasksPendingReview())
+      ? getTasksPendingReview()
+      : [];
+    const mergedRecoveryCandidates = [
+      ...(getInternalTasksByStatus("todo") || []),
+      ...(getInternalTasksByStatus("inprogress") || []),
+      ...(getInternalTasksByStatus("inreview") || []),
+    ].filter((task) => {
+      const status = String(task?.status || "").trim().toLowerCase();
+      if (!status || status === "done") return false;
+      const prNumber =
+        parsePositivePrNumber(task?.prNumber) ||
+        parsePositivePrNumber(task?.pr_number) ||
+        extractPrNumberFromUrl(task?.prUrl || task?.pr_url || "");
+      return Boolean(prNumber);
+    });
+    const pendingById = new Map();
+    for (const task of [...pendingReview, ...mergedRecoveryCandidates]) {
+      const id = String(task?.id || "").trim();
+      if (!id || pendingById.has(id)) continue;
+      pendingById.set(id, task);
+    }
+    const pending = [...pendingById.values()];
+    if (pending.length === 0) {
+      return summary;
+    }
+
+    for (const task of pending) {
+      const taskId = String(task?.id || "").trim();
+      if (!taskId) continue;
+      const taskStatus = String(task?.status || "").trim().toLowerCase();
+      const allowsMergedRecovery =
+        taskStatus === "todo" || taskStatus === "inprogress";
+
+      const approved =
+        String(task?.reviewStatus || "").trim().toLowerCase() === "approved" ||
+        isTaskReviewApprovedForFlow(taskId);
+      // inreview tasks must always be checked — their PR may have merged even if
+      // the review-approval flag was never set (e.g. FLOW_REQUIRE_REVIEW=false or
+      // auto-merge on GitHub without a Bosun review pass).
+      const allowsInreviewMergeCheck = taskStatus === "inreview";
+      if (!approved && !allowsMergedRecovery && !allowsInreviewMergeCheck) continue;
+
+      let prUrl = String(task?.prUrl || task?.pr_url || "").trim();
+      let prNumber =
+        parsePositivePrNumber(task?.prNumber) ||
+        parsePositivePrNumber(task?.pr_number) ||
+        null;
+      if (!prNumber && prUrl) {
+        prNumber = extractPrNumberFromUrl(prUrl);
+      }
+
+      const resolvedRepoSlug = resolveTaskRepoSlug(task, { prUrl, prNumber });
+      if (!prNumber) {
+        const branch = String(task?.branchName || task?.branch || "").trim();
+        if (branch) {
+          let existingPr = await findExistingPrForBranchInRepo(
+            branch,
+            resolvedRepoSlug,
+          );
+          if (!existingPr) {
+            existingPr = await findExistingPrForBranchApiInRepo(
+              branch,
+              resolvedRepoSlug,
+            );
+          }
+          if (existingPr?.number) {
+            prNumber = parsePositivePrNumber(existingPr.number);
+            prUrl = prUrl || String(existingPr.url || "").trim();
+          }
+        }
+      }
+      if (!prNumber) {
+        // inreview tasks with no discoverable PR are stuck — reset them to todo
+        // so the workflow can retry PR creation. Allow a grace period of 2 minutes
+        // to avoid racing with a very recently created inreview status.
+        if (allowsInreviewMergeCheck) {
+          const updatedAt = Date.parse(task?.updatedAt || task?.updated_at || "");
+          const ageMs = Number.isFinite(updatedAt) ? Date.now() - updatedAt : Infinity;
+          if (ageMs > 2 * 60 * 1000) {
+            console.warn(
+              `[monitor] review reconcile: inreview task ${taskId} has no discoverable PR — resetting to todo`,
+            );
+            try { setInternalTaskStatus(taskId, "todo", "review-reconcile-no-pr"); } catch { /* best-effort */ }
+            try { await updateTaskStatus(taskId, "todo"); } catch { /* best-effort */ }
+            summary.resetNopr = (summary.resetNopr || 0) + 1;
+          }
+        }
+        continue;
+      }
+      if (!prUrl) {
+        prUrl = `${getRepoUrlBaseForSlug(resolvedRepoSlug)}/pull/${prNumber}`;
+      }
+
+      summary.checked += 1;
+      const prInfo = await getPullRequestByNumber(prNumber, resolvedRepoSlug);
+      const prState = String(prInfo?.state || "").trim().toUpperCase();
+      const mergedAt = String(prInfo?.mergedAt || prInfo?.merged_at || "").trim();
+      const isMerged = prState === "MERGED" || Boolean(mergedAt);
+      if (!isMerged) continue;
+
+      const recoverySuffix = allowsMergedRecovery
+        ? ` (status=${taskStatus || "unknown"})`
+        : "";
+      console.log(
+        `[monitor] review reconcile: PR #${prNumber} merged (${resolvedRepoSlug || "repo-unknown"}) — marking ${taskId} done${recoverySuffix}`,
+      );
+      try {
+        setInternalTaskStatus(taskId, "done", "review-merge-reconcile");
+      } catch {
+        /* best-effort */
+      }
+      try {
+        updateInternalTask(taskId, {
+          prNumber,
+          prUrl,
+          repository:
+            normalizeRepoSlugCandidate(task?.repository) ||
+            resolvedRepoSlug ||
+            undefined,
+        });
+      } catch {
+        /* best-effort */
+      }
+      try {
+        await updateTaskStatus(taskId, "done", {
+          source: "review-merge-reconcile",
+          workflowData: {
+            prNumber,
+            prUrl,
+            repository: resolvedRepoSlug || task?.repository || null,
+          },
+        });
+      } catch {
+        /* best-effort */
+      }
+      summary.movedDone += 1;
+    }
+
+    if (!workflowTaskReconcilePausedLogged) {
+      workflowTaskReconcilePausedLogged = true;
+      console.log(
+        "[monitor] workflow review reconciliation enabled for inreview tasks with merged PRs",
+      );
+    }
+
+    return summary;
+  } finally {
+    workflowTaskReconcileInFlight = false;
+  }
 }
 
 async function reconcileTaskStatuses(reason = "manual") {
@@ -6997,14 +7212,24 @@ async function queueFlowReview(taskId, ctx, reason = "") {
   const id = String(taskId || "").trim();
   if (!id) return false;
   try {
+    const task = getInternalTask(id);
+    const resolvedRepoSlug = resolveTaskRepoSlug(task, ctx);
+    const resolvedRepoUrlBase = getRepoUrlBaseForSlug(resolvedRepoSlug);
+    const resolvedPrNumber =
+      parsePositivePrNumber(ctx?.prNumber) ||
+      parsePositivePrNumber(task?.prNumber) ||
+      parsePositivePrNumber(task?.pr_number) ||
+      null;
     const prUrl =
       ctx?.prUrl ||
-      (ctx?.prNumber ? `${repoUrlBase}/pull/${ctx.prNumber}` : "");
+      (resolvedPrNumber ? `${resolvedRepoUrlBase}/pull/${resolvedPrNumber}` : "");
     await reviewAgent.queueReview({
       id,
       title: ctx?.taskTitle || id,
       branchName: ctx?.branch || "",
       prUrl,
+      prNumber: resolvedPrNumber,
+      repoSlug: resolvedRepoSlug || undefined,
       description: ctx?.taskDescription || "",
       taskContext: reason ? `Flow gate reason: ${reason}` : "",
       worktreePath: ctx?.worktreeDir || null,
@@ -7027,8 +7252,47 @@ function parsePositivePrNumber(value) {
 
 function extractPrNumberFromUrl(prUrl) {
   const raw = String(prUrl || "");
-  const match = raw.match(/\/pull\/(\d+)(?:$|[/?#])/i);
-  return match ? parsePositivePrNumber(match[1]) : null;
+  return parsePositivePrNumber(parsePrNumberFromUrl(raw));
+}
+
+function normalizeRepoSlugCandidate(value) {
+  const raw = String(value || "").trim();
+  if (!raw) return "";
+  const trimmed = raw
+    .replace(/^https?:\/\/github\.com\//i, "")
+    .replace(/^github\.com\//i, "")
+    .replace(/\/+$/g, "");
+  const parts = trimmed.split("/").filter(Boolean);
+  if (parts.length < 2) return "";
+  const owner = String(parts[0] || "").trim();
+  const repo = String(parts[1] || "").trim();
+  if (!owner || !repo) return "";
+  return `${owner}/${repo}`;
+}
+
+function extractRepoSlugFromPrUrl(prUrl) {
+  const raw = String(prUrl || "").trim();
+  if (!raw) return "";
+  const match = raw.match(/github\.com\/([^/]+\/[^/#?]+)\/pull\//i);
+  return normalizeRepoSlugCandidate(match?.[1] || "");
+}
+
+function resolveTaskRepoSlug(task, context = {}) {
+  return (
+    normalizeRepoSlugCandidate(context?.repoSlug) ||
+    normalizeRepoSlugCandidate(context?.repository) ||
+    extractRepoSlugFromPrUrl(context?.prUrl) ||
+    normalizeRepoSlugCandidate(task?.repository) ||
+    normalizeRepoSlugCandidate(task?.repoSlug) ||
+    extractRepoSlugFromPrUrl(task?.prUrl || task?.pr_url || "") ||
+    normalizeRepoSlugCandidate(repoSlug)
+  );
+}
+
+function getRepoUrlBaseForSlug(slug) {
+  const normalizedSlug = normalizeRepoSlugCandidate(slug);
+  if (normalizedSlug) return `https://github.com/${normalizedSlug}`;
+  return String(repoUrlBase || "https://github.com").replace(/\/+$/g, "");
 }
 
 function buildFlowGateMergeBody(taskTitle, taskId) {
@@ -7056,6 +7320,8 @@ async function triggerFlowPostReviewMerge(taskId, context = {}) {
   if (!id) return false;
 
   const task = getInternalTask(id);
+  const resolvedRepoSlug = resolveTaskRepoSlug(task, context);
+  const resolvedRepoUrlBase = getRepoUrlBaseForSlug(resolvedRepoSlug);
   const branch = String(
     context.branch || task?.branchName || task?.branch || "",
   ).trim();
@@ -7075,9 +7341,15 @@ async function triggerFlowPostReviewMerge(taskId, context = {}) {
   }
 
   if (!prNumber && branch) {
-    let existingPr = await findExistingPrForBranch(branch);
+    let existingPr = await findExistingPrForBranchInRepo(
+      branch,
+      resolvedRepoSlug,
+    );
     if (!existingPr) {
-      existingPr = await findExistingPrForBranchApi(branch);
+      existingPr = await findExistingPrForBranchApiInRepo(
+        branch,
+        resolvedRepoSlug,
+      );
     }
     if (existingPr?.number) {
       prNumber = parsePositivePrNumber(existingPr.number);
@@ -7091,9 +7363,12 @@ async function triggerFlowPostReviewMerge(taskId, context = {}) {
     );
     return false;
   }
+  if (!prUrl) {
+    prUrl = `${resolvedRepoUrlBase}/pull/${prNumber}`;
+  }
 
   const autoArgs = ["pr", "merge", String(prNumber)];
-  if (repoSlug) autoArgs.push("--repo", repoSlug);
+  if (resolvedRepoSlug) autoArgs.push("--repo", resolvedRepoSlug);
   autoArgs.push("--body", buildFlowGateMergeBody(taskTitle, id));
   autoArgs.push("--auto", "--squash");
 
@@ -7115,7 +7390,7 @@ async function triggerFlowPostReviewMerge(taskId, context = {}) {
   ).trim();
   if (/clean status|not in the correct state/i.test(autoErr)) {
     const directArgs = ["pr", "merge", String(prNumber)];
-    if (repoSlug) directArgs.push("--repo", repoSlug);
+    if (resolvedRepoSlug) directArgs.push("--repo", resolvedRepoSlug);
     directArgs.push("--body", buildFlowGateMergeBody(taskTitle, id));
     directArgs.push("--squash");
     const directResult = spawnSync("gh", directArgs, {
@@ -7180,6 +7455,8 @@ async function shouldFinalizeMergedTask(task, context = {}) {
 
   const branch = context.branch || task?.branch || task?.workspace_branch || "";
   const prNumber = context.prNumber || task?.pr_number || null;
+  const resolvedRepoSlug = resolveTaskRepoSlug(task, context);
+  const resolvedRepoUrlBase = getRepoUrlBaseForSlug(resolvedRepoSlug);
   const reason = context.reason || "merged_before_review";
   console.log(
     `[flow-gate] Task "${task?.title || taskId}" merged but review is not approved yet — holding in inreview`,
@@ -7198,9 +7475,12 @@ async function shouldFinalizeMergedTask(task, context = {}) {
     taskDescription: task?.description || task?.body || "",
     branch,
     prNumber,
+    repoSlug: resolvedRepoSlug || null,
     prUrl:
       context.prUrl ||
-      (prNumber ? `${repoUrlBase}/pull/${prNumber}` : task?.pr_url || ""),
+      task?.prUrl ||
+      task?.pr_url ||
+      (prNumber ? `${resolvedRepoUrlBase}/pull/${prNumber}` : ""),
   }, reason);
   return false;
 }
@@ -13771,6 +14051,15 @@ safeSetInterval("workflow-schedule-check", async () => {
   await pollWorkflowSchedulesOnce();
 }, scheduleCheckIntervalMs);
 
+safeSetInterval("workflow-review-merge-reconcile", async () => {
+  const result = await checkMergedPRsAndUpdateTasks();
+  if ((result?.movedDone || 0) > 0) {
+    console.log(
+      `[monitor] review merge reconcile moved ${result.movedDone} task(s) to done`,
+    );
+  }
+}, scheduleCheckIntervalMs);
+
 // Legacy merged PR check removed (workflow-only control).
 
 // ── Periodic epic branch sync/merge: every 15 min ──────────────────────────
@@ -14029,6 +14318,7 @@ let agentEventBus = null;
 let reviewAgent = null;
 /** @type {Map<string, { approved: boolean, reviewedAt: string }>} */
 const reviewGateResults = new Map();
+const pendingMergeStrategyByTask = new Map();
 /** @type {null} Sync engine lifecycle now managed by workflow template */
 let syncEngine = null;
 /** @type {import("./error-detector.mjs").ErrorDetector|null} */
@@ -14558,6 +14848,9 @@ if (isExecutorDisabled()) {
                 branch: pendingCtx?.branch || "",
                 prNumber: pendingCtx?.prNumber || null,
                 prUrl: pendingCtx?.prUrl || "",
+                repoSlug:
+                  pendingCtx?.repoSlug ||
+                  resolveTaskRepoSlug(getInternalTask(taskId), pendingCtx || {}),
               });
             } else {
               console.log(
@@ -14594,12 +14887,45 @@ if (isExecutorDisabled()) {
               const taskId = String(task?.id || "").trim();
               if (!taskId) continue;
               const branchName = String(task?.branchName || "").trim();
-              const prUrl = String(task?.prUrl || "").trim();
-              const prNumber = String(task?.prNumber || "").trim();
-              const hasReviewReference = Boolean(prUrl || prNumber || branchName);
+              let prUrl = String(task?.prUrl || "").trim();
+              let prNumber = String(task?.prNumber || "").trim();
+              const taskRepoSlug = resolveTaskRepoSlug(task, {
+                prUrl,
+                prNumber,
+                branch: branchName,
+              });
+              if (!prUrl && !prNumber && branchName) {
+                let existingPr = await findExistingPrForBranchInRepo(
+                  branchName,
+                  taskRepoSlug,
+                );
+                if (!existingPr) {
+                  existingPr = await findExistingPrForBranchApiInRepo(
+                    branchName,
+                    taskRepoSlug,
+                  );
+                }
+                if (existingPr?.number) {
+                  prNumber = String(existingPr.number).trim();
+                  prUrl = String(existingPr.url || "").trim();
+                  try {
+                    updateInternalTask(taskId, {
+                      branchName,
+                      prNumber: parsePositivePrNumber(prNumber),
+                      prUrl: prUrl || undefined,
+                    });
+                  } catch {
+                    /* best-effort */
+                  }
+                }
+              }
+              if (!prUrl && prNumber) {
+                prUrl = `${getRepoUrlBaseForSlug(taskRepoSlug)}/pull/${prNumber}`;
+              }
+              const hasReviewReference = Boolean(prUrl || prNumber);
               if (!hasReviewReference) {
                 console.warn(
-                  `[monitor] review rehydrate reset ${taskId} to todo: missing prUrl/prNumber/branchName`,
+                  `[monitor] review rehydrate reset ${taskId} to todo: missing prUrl/prNumber`,
                 );
                 try {
                   setInternalTaskStatus(taskId, "todo", "review-agent-rehydrate");
@@ -14620,6 +14946,7 @@ if (isExecutorDisabled()) {
                 branchName,
                 prUrl,
                 prNumber,
+                repoSlug: taskRepoSlug || undefined,
                 description: task?.description || "",
                 taskContext: task?._taskContextBlock || task?.meta?.taskContextBlock || "",
                 worktreePath: null,
@@ -14883,3 +15210,9 @@ export {
   // Workflow event bridge — for fleet/kanban modules to emit events
   queueWorkflowEvent,
 };
+
+
+
+
+
+

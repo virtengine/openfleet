@@ -18,3 +18,12 @@ test("agent-work-analyzer defaults to tailing startup log from EOF", () => {
 test("startup tail mode clears replayed in-memory sessions", () => {
   assert.match(src, /activeSessions\.clear\(\);/);
 });
+
+test("analyzer ignores events that do not include an attempt_id", () => {
+  assert.match(src, /const attemptId = String\(event\?\.attempt_id \|\| ""\)\.trim\(\);/);
+  assert.match(src, /if \(!attemptId\) \{\s*return;\s*\}/);
+});
+
+test("alert logging uses a stable fallback scope identifier", () => {
+  assert.match(src, /alert\?\.attempt_id \|\| alert\?\.task_id \|\| alert\?\.executor \|\| "unknown"/);
+});

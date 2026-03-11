@@ -416,15 +416,30 @@ describe("workflow-templates", () => {
     expect(triggerNode?.config?.filter).toBe("task.tags?.some(t => t === 'backend' || t === 'api')");
   });
 
-  it("task lifecycle template passes resolved executor outputs into run-agent", () => {
+  it("agent templates only advance to inreview after a real PR is linked", () => {
+    const backendTemplate = getTemplate("template-backend-agent");
+    expect(backendTemplate).toBeDefined();
+    const backendGate = backendTemplate.nodes.find((n) => n.id === "pr-created");
+    const backendRetryGate = backendTemplate.nodes.find((n) => n.id === "pr-created-retry");
+    expect(backendGate?.config?.expression).toContain("prNumber");
+    expect(backendGate?.config?.expression).toContain("prUrl");
+    expect(backendGate?.config?.expression).not.toContain("success === true");
+    expect(backendRetryGate?.config?.expression).toContain("prNumber");
+    expect(backendRetryGate?.config?.expression).toContain("prUrl");
+    expect(backendRetryGate?.config?.expression).not.toContain("success === true");
+  });
+
+  it("task lifecycle template passes resolved executor outputs into run-agent phases", () => {
     const template = getTemplate("template-task-lifecycle");
     expect(template).toBeDefined();
 
-    const runAgent = template.nodes.find((n) => n.id === "run-agent");
-    expect(runAgent?.type).toBe("action.run_agent");
-    expect(runAgent?.config?.sdk).toBe("{{resolvedSdk}}");
-    expect(runAgent?.config?.model).toBe("{{resolvedModel}}");
-    expect(runAgent?.config?.agentProfile).toBe("{{agentProfile}}");
+    for (const phaseNodeId of ["run-agent-plan", "run-agent-tests", "run-agent-implement"]) {
+      const runAgent = template.nodes.find((n) => n.id === phaseNodeId);
+      expect(runAgent?.type).toBe("action.run_agent");
+      expect(runAgent?.config?.sdk).toBe("{{resolvedSdk}}");
+      expect(runAgent?.config?.model).toBe("{{resolvedModel}}");
+      expect(runAgent?.config?.agentProfile).toBe("{{agentProfile}}");
+    }
   });
 
   it("pr merge strategy template listens to review, approval, and opened aliases", () => {
@@ -631,6 +646,28 @@ describe("template drift + update behavior", () => {
     expect(result.autoUpdated).toBe(0);
     expect(result.customized.some((entry) => entry.workflowId === wf.id)).toBe(true);
     expect(result.updateAvailable.some((entry) => entry.workflowId === wf.id)).toBe(true);
+  });
+
+  it("force-updates customized workflows for selected template ids", () => {
+    const installed = installTemplate("template-error-recovery", engine);
+    const wf = engine.get(installed.id);
+    wf.variables.customNote = "edited";
+    applyWorkflowTemplateState(wf);
+    wf.metadata.templateState.installedTemplateFingerprint = "0000-outdated";
+    wf.metadata.templateState.installedTemplateVersion = "0000-outdated";
+    wf.metadata.templateState.updateAvailable = true;
+    engine.save(wf);
+
+    const result = reconcileInstalledTemplates(engine, {
+      autoUpdateUnmodified: true,
+      forceUpdateTemplateIds: ["template-error-recovery"],
+    });
+    expect(result.autoUpdated).toBe(1);
+    expect(result.forceUpdated).toEqual([wf.id]);
+
+    const refreshed = engine.get(wf.id);
+    expect(refreshed.metadata.templateState.updateAvailable).toBe(false);
+    expect(refreshed.metadata.templateState.isCustomized).toBe(false);
   });
 
   it("supports copy update mode for customized workflows", () => {
