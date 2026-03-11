@@ -147,6 +147,29 @@ describe("telegram-bot inline keyboards", () => {
     });
   });
 
+  describe("sticky interactive menu flow", () => {
+    it("keeps interactive prompts in the sticky slot until completion", async () => {
+      const fs = await import("node:fs");
+      const path = await import("node:path");
+      const { fileURLToPath } = await import("node:url");
+
+      const __dirname = path.resolve(
+        fileURLToPath(new URL(".", import.meta.url)),
+      );
+      const botSource = fs.readFileSync(
+        path.resolve(__dirname, "..", "telegram", "telegram-bot.mjs"),
+        "utf8",
+      );
+
+      expect(botSource).toContain("function isStickyMenuInteractive(chatId)");
+      expect(botSource).toContain("async function showStickyInteractiveMessage(");
+      expect(botSource).toContain("async function restoreStickyMenuMessage(");
+      expect(botSource).toContain('state.mode === "interactive"');
+      expect(botSource).toContain("await showStickyInteractiveMessage(chatId, `${prompt}\\n\\nSend /cancel to abort.`");
+      expect(botSource).toContain("await restoreStickyMenuMessage(chatId);");
+    });
+  });
+
   describe("/helpfull command", () => {
     it("should have a /helpfull command registered", async () => {
       const fs = await import("node:fs");

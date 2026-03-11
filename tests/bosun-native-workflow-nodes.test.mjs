@@ -334,6 +334,34 @@ describe("action.invoke_workflow", () => {
     }
   });
 
+  it("dispatch mode accepts synchronous engine return values", async () => {
+    const handler = getNodeType("action.invoke_workflow");
+    const ctx = new WorkflowContext({ _workflowId: "parent-wf" });
+
+    const mockEngine = {
+      execute: vi.fn(() => new WorkflowContext({ ok: true })),
+      get: vi.fn().mockReturnValue({ id: "child-dispatch-wf" }),
+    };
+
+    const node = {
+      id: "dispatch-node-sync-return",
+      type: "action.invoke_workflow",
+      config: {
+        workflowId: "child-dispatch-wf",
+        mode: "dispatch",
+        outputVariable: "dispatchResult",
+      },
+    };
+
+    const result = await handler.execute(node, ctx, mockEngine);
+    expect(result.success).toBe(true);
+    expect(result.dispatched).toBe(true);
+    expect(result.mode).toBe("dispatch");
+    expect(result.workflowId).toBe("child-dispatch-wf");
+    expect(ctx.data.dispatchResult).toEqual(result);
+    expect(mockEngine.execute).toHaveBeenCalledTimes(1);
+  });
+
   it("handles child workflow failure gracefully (failOnError=false)", async () => {
     const handler = getNodeType("action.invoke_workflow");
     const ctx = new WorkflowContext({ _workflowId: "parent-wf" });
@@ -1083,4 +1111,3 @@ describe("cross-node data piping", () => {
     expect(invokeOutput.workflowId).toBe("chain-child-wf");
   });
 });
-

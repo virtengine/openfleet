@@ -423,6 +423,26 @@ describe("WorkflowEngine - loop.for_each", () => {
     expect(iterations[0]).toEqual({ nodeId: "loop", index: 0, total: 2 });
     expect(iterations[1]).toEqual({ nodeId: "loop", index: 1, total: 2 });
   });
+
+  it("returns totalItems alongside count for batch summary templates", async () => {
+    const wf = makeSimpleWorkflow(
+      [
+        { id: "trigger", type: "trigger.manual", label: "Start", config: {} },
+        { id: "loop", type: "loop.for_each", label: "Loop Items", config: { items: '["a","b","c"]', variable: "item" } },
+      ],
+      [{ id: "e1", source: "trigger", target: "loop" }],
+    );
+
+    engine.save(wf);
+    const ctx = await engine.execute(wf.id, {});
+    expect(ctx.errors).toEqual([]);
+    expect(ctx.getNodeOutput("loop")).toMatchObject({
+      count: 3,
+      totalItems: 3,
+      successCount: 3,
+      failCount: 0,
+    });
+  });
 });
 
 describe("WorkflowEngine - source port routing", () => {
@@ -1040,6 +1060,35 @@ describe("New node types", () => {
     expect(canonical).toBe(typoAlias);
   });
 
+  it("flow.universal dispatch mode accepts synchronous engine return values", async () => {
+    const handler = getNodeType("flow.universal");
+    expect(handler).toBeDefined();
+
+    const ctx = new WorkflowContext({ _workflowId: "parent-wf", taskId: "TASK-42" });
+    const mockEngine = {
+      execute: vi.fn(() => new WorkflowContext({ ok: true })),
+      get: vi.fn(() => ({ id: "template-task-archiver" })),
+    };
+    const node = {
+      id: "universal-dispatch",
+      type: "flow.universal",
+      config: {
+        workflowId: "template-task-archiver",
+        mode: "dispatch",
+        inheritContext: true,
+      },
+    };
+
+    const result = await handler.execute(node, ctx, mockEngine);
+    expect(result).toMatchObject({
+      success: true,
+      queued: true,
+      mode: "dispatch",
+      workflowId: "template-task-archiver",
+    });
+    expect(mockEngine.execute).toHaveBeenCalledTimes(1);
+  });
+
   it("flow.end hard-stops remaining nodes and marks run as failed", async () => {
     const testEngine = makeTmpEngine();
     const wf = makeSimpleWorkflow(
@@ -1180,6 +1229,36 @@ describe("action.execute_workflow", () => {
       releaseChild?.(new WorkflowContext({}));
       await childRunPromise;
     }
+  });
+
+  it("dispatch mode accepts synchronous engine return values", async () => {
+    const handler = getNodeType("action.execute_workflow");
+    expect(handler).toBeDefined();
+
+    const ctx = new WorkflowContext({ _workflowId: "parent-dispatch-wf" });
+    const mockEngine = {
+      execute: vi.fn(() => new WorkflowContext({ ok: true })),
+      get: vi.fn().mockReturnValue({ id: "child-dispatch-wf" }),
+    };
+    const node = {
+      id: "dispatch-child-sync-return",
+      type: "action.execute_workflow",
+      config: {
+        workflowId: "child-dispatch-wf",
+        mode: "dispatch",
+        outputVariable: "dispatchSummary",
+      },
+    };
+
+    const result = await handler.execute(node, ctx, mockEngine);
+    expect(result).toMatchObject({
+      success: true,
+      queued: true,
+      mode: "dispatch",
+      workflowId: "child-dispatch-wf",
+    });
+    expect(ctx.data.dispatchSummary).toEqual(result);
+    expect(mockEngine.execute).toHaveBeenCalledTimes(1);
   });
 
   it("blocks recursive workflow loops unless allowRecursive is true", async () => {
@@ -2736,8 +2815,8 @@ it("action.materialize_planner_tasks parses fenced JSON and creates tasks", asyn
     meta: expect.objectContaining({
       repo_areas: ["workflow"],
       planner: expect.objectContaining({
-        impact: 1,
-        confidence: 1,
+        impact: 8,
+        confidence: 7,
         risk: "low",
         repo_areas: ["workflow"],
       }),
@@ -3027,8 +3106,8 @@ it("action.materialize_planner_tasks enforces planner quality gates and persists
     meta: expect.objectContaining({
       repo_areas: ["server"],
       planner: expect.objectContaining({
-        impact: 1,
-        confidence: 1,
+        impact: 9,
+        confidence: 8,
         risk: "low",
         estimated_effort: "m",
         repo_areas: ["server"],
@@ -3037,6 +3116,318 @@ it("action.materialize_planner_tasks enforces planner quality gates and persists
       }),
     }),
   }));
+});
+
+it("action.materialize_planner_tasks applies calibrated default impact/risk gates", async () => {
+  const handler = getNodeType("action.materialize_planner_tasks");
+  expect(handler).toBeDefined();
+
+  const ctx = new WorkflowContext({});
+  ctx.setNodeOutput("run-planner", {
+    output: [
+      "```json",
+      "{",
+      '  "tasks": [',
+      '    { "title": "[m] fix(workflow): low default impact", "description": "A", "acceptance_criteria": ["ac"], "verification": ["v"], "repo_areas": ["workflow"], "impact": 0.68, "risk": 0.2 },',
+      '    { "title": "[m] fix(workflow): semantically high risk", "description": "B", "acceptance_criteria": ["ac"], "verification": ["v"], "repo_areas": ["workflow"], "impact": 0.8, "risk": "high risk: production blast radius" },',
+      '    { "title": "[m] fix(server): default valid", "description": "C", "acceptance_criteria": ["ac"], "verification": ["v"], "repo_areas": ["server"], "impact": "8/10", "confidence": "70%", "risk": "5/10" }',
+      "  ]",
+      "}",
+      "```",
+    ].join("\n"),
+  });
+
+  const createTask = vi.fn(async () => ({ id: "task-default-gates-1" }));
+  const mockEngine = {
+    services: {
+      kanban: {
+        createTask,
+      },
+    },
+  };
+
+  const node = {
+    id: "materialize-default-gates",
+    type: "action.materialize_planner_tasks",
+    config: {
+      plannerNodeId: "run-planner",
+      dedup: false,
+      failOnZero: true,
+      minCreated: 1,
+    },
+  };
+
+  const result = await handler.execute(node, ctx, mockEngine);
+  expect(result.success).toBe(true);
+  expect(result.createdCount).toBe(1);
+  expect(result.skippedCount).toBe(2);
+  expect(result.skipped).toEqual(expect.arrayContaining([
+    expect.objectContaining({ title: "[m] fix(workflow): low default impact", reason: "below_min_impact" }),
+    expect.objectContaining({ title: "[m] fix(workflow): semantically high risk", reason: "risk_above_threshold" }),
+  ]));
+  expect(createTask).toHaveBeenCalledWith("", expect.objectContaining({
+    title: "[m] fix(server): default valid",
+    meta: expect.objectContaining({
+      planner: expect.objectContaining({
+        impact: 8,
+        confidence: 7,
+        risk: "medium",
+      }),
+    }),
+  }));
+});
+
+it("action.materialize_planner_tasks treats explicit integer impact thresholds as 0-10 scale", async () => {
+  const handler = getNodeType("action.materialize_planner_tasks");
+  expect(handler).toBeDefined();
+
+  const ctx = new WorkflowContext({});
+  ctx.setNodeOutput("run-planner", {
+    output: [
+      "```json",
+      "{",
+      '  "tasks": [',
+      '    { "title": "[m] fix(workflow): score two on ten", "description": "A", "acceptance_criteria": ["ac"], "verification": ["v"], "repo_areas": ["workflow"], "impact": 2, "confidence": 8, "risk": 2 }',
+      "  ]",
+      "}",
+      "```",
+    ].join("\n"),
+  });
+
+  const createTask = vi.fn(async () => ({ id: "task-explicit-threshold-1" }));
+  const mockEngine = {
+    services: {
+      kanban: {
+        createTask,
+      },
+    },
+  };
+
+  const node = {
+    id: "materialize-explicit-threshold",
+    type: "action.materialize_planner_tasks",
+    config: {
+      plannerNodeId: "run-planner",
+      dedup: false,
+      failOnZero: true,
+      minCreated: 1,
+      minImpactScore: 1,
+      maxRiskWithoutHuman: "medium",
+    },
+  };
+
+  const result = await handler.execute(node, ctx, mockEngine);
+  expect(result.success).toBe(true);
+  expect(result.createdCount).toBe(1);
+  expect(result.skippedCount).toBe(0);
+  expect(createTask).toHaveBeenCalledTimes(1);
+});
+
+it("action.materialize_planner_tasks normalizes mixed 0-1 and 0-10 planner scores consistently", async () => {
+  const handler = getNodeType("action.materialize_planner_tasks");
+  expect(handler).toBeDefined();
+
+  const ctx = new WorkflowContext({});
+  ctx.setNodeOutput("run-planner", {
+    output: [
+      "```json",
+      "{",
+      '  "tasks": [',
+      '    { "title": "[m] fix(workflow): one on ten risk", "description": "A", "acceptance_criteria": ["ac"], "verification": ["v"], "repo_areas": ["workflow"], "impact": 7, "confidence": 8, "risk": 1 },',
+      '    { "title": "[m] fix(server): one on one risk", "description": "B", "acceptance_criteria": ["ac"], "verification": ["v"], "repo_areas": ["server"], "impact": 0.8, "confidence": 0.7, "risk": 1 }',
+      "  ]",
+      "}",
+      "```",
+    ].join("\n"),
+  });
+
+  const createTask = vi.fn(async () => ({ id: "task-score-normalization-1" }));
+  const mockEngine = {
+    services: {
+      kanban: {
+        createTask,
+      },
+    },
+  };
+
+  const node = {
+    id: "materialize-score-normalization",
+    type: "action.materialize_planner_tasks",
+    config: {
+      plannerNodeId: "run-planner",
+      dedup: false,
+      failOnZero: true,
+      minCreated: 1,
+      minImpactScore: 6,
+      maxRiskWithoutHuman: "medium",
+    },
+  };
+
+  const result = await handler.execute(node, ctx, mockEngine);
+  expect(result.success).toBe(true);
+  expect(result.createdCount).toBe(1);
+  expect(result.skipped).toEqual(expect.arrayContaining([
+    expect.objectContaining({ title: "[m] fix(server): one on one risk", reason: "risk_above_threshold" }),
+  ]));
+  expect(createTask).toHaveBeenCalledWith("", expect.objectContaining({
+    title: "[m] fix(workflow): one on ten risk",
+    meta: expect.objectContaining({
+      planner: expect.objectContaining({
+        impact: 7,
+        confidence: 8,
+        risk: "low",
+      }),
+    }),
+  }));
+});
+
+it("action.materialize_planner_tasks keeps fractional sub-1 scores on ten-scale tasks", async () => {
+  const handler = getNodeType("action.materialize_planner_tasks");
+  expect(handler).toBeDefined();
+
+  const ctx = new WorkflowContext({});
+  ctx.setNodeOutput("run-planner", {
+    output: [
+      "```json",
+      "{",
+      '  "tasks": [',
+      '    { "title": "[m] fix(workflow): decimal on ten scale", "description": "A", "acceptance_criteria": ["ac"], "verification": ["v"], "repo_areas": ["workflow"], "impact": 8, "confidence": 7, "risk": 0.8 },',
+      '    { "title": "[m] fix(server): decimal on ratio scale", "description": "B", "acceptance_criteria": ["ac"], "verification": ["v"], "repo_areas": ["server"], "impact": 0.8, "confidence": 0.7, "risk": 0.8 }',
+      "  ]",
+      "}",
+      "```",
+    ].join("\n"),
+  });
+
+  const createTask = vi.fn(async () => ({ id: "task-decimal-mapping-1" }));
+  const mockEngine = {
+    services: {
+      kanban: {
+        createTask,
+      },
+    },
+  };
+
+  const node = {
+    id: "materialize-decimal-mapping",
+    type: "action.materialize_planner_tasks",
+    config: {
+      plannerNodeId: "run-planner",
+      dedup: false,
+      failOnZero: true,
+      minCreated: 1,
+      minImpactScore: 6,
+      maxRiskWithoutHuman: "medium",
+    },
+  };
+
+  const result = await handler.execute(node, ctx, mockEngine);
+  expect(result.success).toBe(true);
+  expect(result.createdCount).toBe(1);
+  expect(result.skipped).toEqual(expect.arrayContaining([
+    expect.objectContaining({ title: "[m] fix(server): decimal on ratio scale", reason: "risk_above_threshold" }),
+  ]));
+  expect(createTask).toHaveBeenCalledWith("", expect.objectContaining({
+    title: "[m] fix(workflow): decimal on ten scale",
+    meta: expect.objectContaining({
+      planner: expect.objectContaining({
+        impact: 8,
+        confidence: 7,
+        risk: "low",
+      }),
+    }),
+  }));
+});
+
+it("action.materialize_planner_tasks improves skip-reason histogram with calibrated defaults", async () => {
+  const handler = getNodeType("action.materialize_planner_tasks");
+  expect(handler).toBeDefined();
+
+  const plannerTasks = [
+    { title: "[m] fix(api): low ratio impact", impact: 0.4, confidence: 0.8, risk: 0.2 },
+    { title: "[m] fix(worker): low ten impact", impact: 4, confidence: 8, risk: 2 },
+    { title: "[m] fix(ui): medium impact ratio", impact: 0.62, confidence: 0.8, risk: 0.3 },
+    { title: "[m] fix(ui): medium impact ten", impact: "6.2/10", confidence: "8/10", risk: "3/10" },
+    { title: "[m] fix(core): semantically high risk", impact: 0.8, confidence: 0.7, risk: "high risk: production blast radius" },
+    { title: "[m] fix(core): semantically major risk", impact: "8/10", confidence: "8/10", risk: "major migration risk" },
+    { title: "[m] fix(task): healthy ratio", impact: 0.82, confidence: 0.75, risk: 0.25 },
+    { title: "[m] fix(task): healthy ten", impact: 8.2, confidence: 7.5, risk: 2.5 },
+  ];
+  const plannerOutput = [
+    "```json",
+    JSON.stringify({
+      tasks: plannerTasks.map((task) => ({
+        ...task,
+        description: "sample",
+        acceptance_criteria: ["ac"],
+        verification: ["v"],
+        repo_areas: ["workflow"],
+      })),
+    }, null, 2),
+    "```",
+  ].join("\n");
+
+  const runNode = async (config) => {
+    const ctx = new WorkflowContext({});
+    ctx.setNodeOutput("run-planner", { output: plannerOutput });
+    let createId = 0;
+    const createTask = vi.fn(async () => {
+      createId += 1;
+      return { id: `task-${createId}` };
+    });
+    const mockEngine = {
+      services: {
+        kanban: {
+          createTask,
+        },
+      },
+    };
+    const result = await handler.execute({
+      id: "materialize-histogram",
+      type: "action.materialize_planner_tasks",
+      config: {
+        plannerNodeId: "run-planner",
+        maxTasks: plannerTasks.length,
+        dedup: false,
+        failOnZero: false,
+        minCreated: 0,
+        ...config,
+      },
+    }, ctx, mockEngine);
+    const histogram = result.skipReasonHistogram || {};
+    return { result, histogram };
+  };
+
+  const baseline = await runNode({
+    minImpactScore: 5,
+    maxRiskWithoutHuman: "high",
+  });
+  const calibrated = await runNode({});
+
+  expect(calibrated.histogram.below_min_impact || 0).toBeGreaterThan(baseline.histogram.below_min_impact || 0);
+  expect(calibrated.histogram.risk_above_threshold || 0).toBeGreaterThan(baseline.histogram.risk_above_threshold || 0);
+
+  // Calibrated defaults should reduce low-value/high-risk creation while preserving non-zero throughput.
+  expect(calibrated.result.createdCount).toBeGreaterThan(0);
+  expect(calibrated.result.createdCount).toBeLessThan(baseline.result.createdCount);
+  expect(calibrated.result.materializationOutcomes).toEqual(expect.arrayContaining([
+    expect.objectContaining({
+      title: "[m] fix(core): semantically high risk",
+      impact: 8,
+      confidence: 7,
+      risk: "high",
+      created: false,
+      reason: "risk_above_threshold",
+    }),
+    expect.objectContaining({
+      title: "[m] fix(task): healthy ten",
+      impact: 8.2,
+      confidence: 7.5,
+      risk: "low",
+      created: true,
+      reason: null,
+    }),
+  ]));
 });
 describe("WorkflowEngine singleton services", () => {
   beforeEach(() => {
@@ -3540,4 +3931,3 @@ describe("WorkflowEngine.getTaskTraceEvents", () => {
     expect(reread[0].taskId).toBe("TASK-TRACE-READBACK");
   });
 });
-

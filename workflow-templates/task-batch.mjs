@@ -66,13 +66,20 @@ export const TASK_BATCH_PROCESSOR_TEMPLATE = {
         import("./kanban-adapter.mjs")
           .then(k => k.listTasks(undefined, { status: "todo" }))
           .then(tasks => {
-            const batch = (tasks || []).slice(0, parseInt(process.env.MAX_BATCH || "10"));
+            const filtered = (tasks || []).filter((task) => {
+              const repository = typeof task?.repository === "string" ? task.repository.trim() : "";
+              const workspace = typeof task?.workspace === "string" ? task.workspace.trim() : "";
+              return task && task.status === "todo" && !task.draft && repository.length > 0 && workspace.length > 0;
+            });
+            const batch = filtered.slice(0, parseInt(process.env.MAX_BATCH || "10"));
             console.log(JSON.stringify(batch.map(t => ({
               taskId: t.id,
               taskTitle: t.title || t.id,
               status: t.status,
               branch: t.branch || t.metadata?.branch || null,
               scope: t.scope || t.metadata?.scope || null,
+              repository: typeof t?.repository === "string" ? t.repository.trim() : null,
+              workspace: typeof t?.workspace === "string" ? t.workspace.trim() : null,
             }))));
           })
           .catch(e => { console.error(e.message); process.exit(1); });
@@ -99,7 +106,7 @@ export const TASK_BATCH_PROCESSOR_TEMPLATE = {
     // ── Record batch results ─────────────────────────────────────────────
     node("record-results", "action.set_variable", "Record Results", {
       key: "batchResult",
-      value: "{{dispatchResult}}",
+      value: "{{dispatch-tasks}}",
     }, { x: 400, y: 570 }),
 
     // ── Notify on completion ─────────────────────────────────────────────
@@ -165,11 +172,18 @@ export const TASK_BATCH_PR_TEMPLATE = {
         import("./kanban-adapter.mjs")
           .then(k => k.listTasks(undefined, { status: "todo" }))
           .then(tasks => {
-            const batch = (tasks || []).slice(0, parseInt(process.env.MAX_BATCH || "5"));
+            const filtered = (tasks || []).filter((task) => {
+              const repository = typeof task?.repository === "string" ? task.repository.trim() : "";
+              const workspace = typeof task?.workspace === "string" ? task.workspace.trim() : "";
+              return task && task.status === "todo" && !task.draft && repository.length > 0 && workspace.length > 0;
+            });
+            const batch = filtered.slice(0, parseInt(process.env.MAX_BATCH || "5"));
             console.log(JSON.stringify(batch.map(t => ({
               taskId: t.id,
               taskTitle: t.title || t.id,
               branch: t.branch || t.metadata?.branch || null,
+              repository: t.repository || null,
+              workspace: t.workspace || null,
             }))));
           })
           .catch(e => { console.error(e.message); process.exit(1); });

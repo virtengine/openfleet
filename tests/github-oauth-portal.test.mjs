@@ -114,6 +114,7 @@ describe("github-oauth-portal", () => {
     });
 
     portal = await getPortal();
+    portal.webhookEvents.removeAllListeners();
   });
 
   afterEach(async () => {
@@ -291,12 +292,14 @@ describe("github-oauth-portal", () => {
     baseUrl = result.url;
 
     const events = [];
+    result.webhookEvents.on("github:issue_comment", (event) => events.push(`issue:${event.action}`));
     result.webhookEvents.on("bosun:command:status", () => events.push("status"));
     result.webhookEvents.on("bosun:command:run", (e) => events.push(`run:${e.taskId}`));
     result.webhookEvents.on("bosun:command:retry", () => events.push("retry"));
+    result.webhookEvents.on("bosun:command:assign", (e) => events.push(`assign:${e.arg}`));
     result.webhookEvents.on("bosun:mention", () => events.push("mention"));
 
-    const comment = "/bosun status\n/bosun run task-123\n/bosun retry\n@bosun-ve hello";
+    const comment = "/bosun status\n/bosun run task-123\n/bosun retry\n/bosun assign octocat\n@bosun-ve hello";
     const body = JSON.stringify({
       action: "created",
       comment: { body: comment },
@@ -319,6 +322,76 @@ describe("github-oauth-portal", () => {
     expect(events).toContain("status");
     expect(events).toContain("run:task-123");
     expect(events).toContain("retry");
+    expect(events).toContain("assign:octocat");
+    expect(events).toContain("mention");
+    expect(events).toContain("issue:created");
+  });
+
+  it("POST /webhook emits issue_comment events without processing edited comments", async () => {
+    const result = await portal.startOAuthPortal({ port: 0, host: "127.0.0.1", quiet: true });
+    server = result.server;
+    baseUrl = result.url;
+
+    const events = [];
+    result.webhookEvents.on("github:issue_comment", (event) => events.push(`issue:${event.action}`));
+    result.webhookEvents.on("bosun:command:status", () => events.push("status"));
+    result.webhookEvents.on("bosun:mention", () => events.push("mention"));
+
+    const body = JSON.stringify({
+      action: "edited",
+      comment: { body: "/bosun status\n@bosun-ve hello" },
+    });
+    const sig = signBody(WEBHOOK_SECRET, body);
+
+    await fetch(`${baseUrl}/webhook`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "X-GitHub-Event": "issue_comment",
+        "X-Hub-Signature-256": sig,
+      },
+      body,
+    });
+
+    await new Promise((r) => setTimeout(r, 20));
+
+    expect(events).toEqual(["issue:edited"]);
+  });
+
+  it("POST /webhook processes pull request review comments", async () => {
+    const result = await portal.startOAuthPortal({ port: 0, host: "127.0.0.1", quiet: true });
+    server = result.server;
+    baseUrl = result.url;
+
+    const events = [];
+    result.webhookEvents.on("github:pull_request_review_comment", (event) => {
+      events.push(`review:${event.action}`);
+    });
+    result.webhookEvents.on("bosun:command:run", (event) => events.push(`run:${event.taskId}`));
+    result.webhookEvents.on("bosun:command:note", (event) => events.push(`note:${event.arg}`));
+    result.webhookEvents.on("bosun:mention", () => events.push("mention"));
+
+    const body = JSON.stringify({
+      action: "edited",
+      comment: { body: "/bosun run task-456\n/bosun note follow-up\n@bosun-ve hello" },
+    });
+    const sig = signBody(WEBHOOK_SECRET, body);
+
+    await fetch(`${baseUrl}/webhook`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "X-GitHub-Event": "pull_request_review_comment",
+        "X-Hub-Signature-256": sig,
+      },
+      body,
+    });
+
+    await new Promise((r) => setTimeout(r, 20));
+
+    expect(events).toContain("review:edited");
+    expect(events).toContain("run:task-456");
+    expect(events).toContain("note:follow-up");
     expect(events).toContain("mention");
   });
 

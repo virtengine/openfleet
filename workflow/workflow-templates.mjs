@@ -654,6 +654,72 @@ function resolveProfileTemplateIds(profileId) {
   return [...profile.templateIds];
 }
 
+const WORKFLOW_TYPE_TEMPLATE_MAP = Object.freeze({
+  "continuation-loop": "template-continuation-loop",
+});
+
+const WORKFLOW_CONFIG_RESERVED_KEYS = new Set([
+  "type",
+  "templateId",
+  "enabled",
+  "name",
+  "options",
+]);
+
+function normalizeWorkflowConfigEntries(rawEntries = []) {
+  const source = Array.isArray(rawEntries) ? rawEntries : [];
+  const normalized = [];
+  for (const raw of source) {
+    if (!raw || typeof raw !== "object" || Array.isArray(raw)) continue;
+    const type = String(raw.type || "").trim().toLowerCase();
+    if (!type) continue;
+    const templateId = WORKFLOW_TYPE_TEMPLATE_MAP[type];
+    if (!templateId || !_TEMPLATE_BY_ID.has(templateId)) continue;
+    const enabled = raw.enabled !== false;
+    const entry = { ...raw, type, templateId, enabled };
+    normalized.push(entry);
+  }
+  return normalized;
+}
+
+function toTemplateOverridesFromWorkflowEntry(entry = {}) {
+  const template = getTemplate(entry.templateId);
+  if (!template) return {};
+  const templateVars = template.variables && typeof template.variables === "object"
+    ? template.variables
+    : {};
+  const picks = {};
+  for (const [key, value] of Object.entries(entry)) {
+    if (WORKFLOW_CONFIG_RESERVED_KEYS.has(key)) continue;
+    if (!Object.prototype.hasOwnProperty.call(templateVars, key)) continue;
+    picks[key] = coerceTemplateVariableValue(value, templateVars[key]);
+  }
+  if (entry.options && typeof entry.options === "object" && !Array.isArray(entry.options)) {
+    for (const [key, value] of Object.entries(entry.options)) {
+      if (!Object.prototype.hasOwnProperty.call(templateVars, key)) continue;
+      picks[key] = coerceTemplateVariableValue(value, templateVars[key]);
+    }
+  }
+  return picks;
+}
+
+export function resolveWorkflowTemplateConfig(rawEntries = []) {
+  const entries = normalizeWorkflowConfigEntries(rawEntries);
+  const templateIds = [];
+  const overridesById = {};
+  for (const entry of entries) {
+    if (entry.enabled !== true) continue;
+    if (!templateIds.includes(entry.templateId)) templateIds.push(entry.templateId);
+    const overrides = toTemplateOverridesFromWorkflowEntry(entry);
+    if (Object.keys(overrides).length > 0) {
+      overridesById[entry.templateId] = {
+        ...(overridesById[entry.templateId] || {}),
+        ...overrides,
+      };
+    }
+  }
+  return { templateIds, overridesById };
+}
 /**
  * Get a template by ID.
  * @param {string} id
@@ -1095,5 +1161,4 @@ export function installRecommendedTemplates(engine, overridesById = {}) {
     .map((template) => template.id);
   return installTemplateSet(engine, recommendedIds, overridesById);
 }
-
 

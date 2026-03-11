@@ -21,6 +21,7 @@ import {
 } from "@mui/material";
 import {
   sessionMessages,
+  sessionMessagesSessionId,
   loadSessionMessages,
   loadSessions,
   sessionsData,
@@ -708,7 +709,9 @@ export function ChatView({ sessionId, readOnly = false, embedded = false }) {
 
   let messages = [];
   try {
-    messages = sessionMessages.value || [];
+    const boundSessionId = String(sessionMessagesSessionId.value || "");
+    const currentSessionId = String(sessionId || "");
+    messages = boundSessionId === currentSessionId ? (sessionMessages.value || []) : [];
   } catch (err) {
     console.warn("[ChatView] Failed to read sessionMessages:", err);
   }
@@ -1141,7 +1144,8 @@ export function ChatView({ sessionId, readOnly = false, embedded = false }) {
     }
 
     const editedAt = new Date().toISOString();
-    sessionMessages.value = (sessionMessages.value || []).map((msg) =>
+    sessionMessagesSessionId.value = String(sessionId || "");
+    sessionMessages.value = ((sessionMessages.value || [])).map((msg) =>
       msg === editingMsgRef
         ? { ...msg, content: next, edited: true, editedAt }
         : msg,
@@ -1184,6 +1188,7 @@ export function ChatView({ sessionId, readOnly = false, embedded = false }) {
       attachments: pendingAttachments,
       timestamp: new Date().toISOString(),
     };
+    sessionMessagesSessionId.value = String(sessionId || "");
     sessionMessages.value = [...(sessionMessages.value || []), optimistic];
     setInput("");
     setPendingAttachments([]);

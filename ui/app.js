@@ -1015,6 +1015,10 @@ function InspectorPanel({ onResizeStart, onResizeReset, showResizer }) {
           workspace: workspaceHint,
           query: { full: "1" },
         });
+        const fallbackSessionPath = buildSessionApiPath(sessionId, "", {
+          workspace: "all",
+          query: { full: "1" },
+        });
         if (!fullSessionPath) {
           if (active) {
             setInsights(null);
@@ -1022,7 +1026,18 @@ function InspectorPanel({ onResizeStart, onResizeReset, showResizer }) {
           }
           return;
         }
-        const res = await apiFetch(fullSessionPath, { _silent: true });
+        let res;
+        try {
+          res = await apiFetch(fullSessionPath, { _silent: true });
+        } catch (err) {
+          const errorText = String(err?.message || "").toLowerCase();
+          const shouldRetryAll =
+            Boolean(fallbackSessionPath) &&
+            fallbackSessionPath !== fullSessionPath &&
+            (errorText.includes("session not found") || errorText.includes("request failed (404)"));
+          if (!shouldRetryAll) throw err;
+          res = await apiFetch(fallbackSessionPath, { _silent: true });
+        }
         if (!active) return;
         const nextInsights = buildSessionInsights(res?.session || null);
         setInsights(nextInsights);

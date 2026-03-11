@@ -732,6 +732,45 @@ describe("action.claim_task", () => {
       vi.useRealTimers();
     }
   });
+
+  it("marks claim as stolen when renewal returns owner_mismatch without throwing", async () => {
+    vi.useFakeTimers();
+    const nt = getNodeType("action.claim_task");
+    const claims = await import("../task/task-claims.mjs");
+    const initSpy = vi.spyOn(claims, "initTaskClaims").mockResolvedValue();
+    const claimSpy = vi.spyOn(claims, "claimTask").mockResolvedValue({
+      success: true,
+      token: "claim-token-fatal",
+    });
+    const renewSpy = vi.spyOn(claims, "renewClaim").mockResolvedValue({
+      success: false,
+      error: "owner_mismatch",
+    });
+
+    const ctx = makeCtx({ repoRoot: "/tmp/repo-root" });
+    try {
+      const node = makeNode("action.claim_task", {
+        taskId: "task-renew-fatal",
+        taskTitle: "Renew fatal",
+        renewIntervalMs: 50,
+      });
+
+      const result = await nt.execute(node, ctx);
+      expect(result.success).toBe(true);
+
+      await vi.advanceTimersByTimeAsync(60);
+      expect(renewSpy).toHaveBeenCalledTimes(1);
+      expect(ctx.data._claimStolen).toBe(true);
+      expect(ctx.__workflowRuntimeState?.claimRenewTimer || null).toBeNull();
+    } finally {
+      const runtimeTimer = ctx.__workflowRuntimeState?.claimRenewTimer || ctx.data?._claimRenewTimer;
+      if (runtimeTimer) clearInterval(runtimeTimer);
+      initSpy.mockRestore();
+      claimSpy.mockRestore();
+      renewSpy.mockRestore();
+      vi.useRealTimers();
+    }
+  });
 });
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -1929,4 +1968,5 @@ describe("template-ve-orchestrator-lite", () => {
     expect(Array.isArray(t.variables.protectedBranches)).toBe(true);
   });
 });
+
 

@@ -1275,7 +1275,7 @@ try {
 }
 workflowAutomationEnabled = parseEnvBoolean(
   process.env.WORKFLOW_AUTOMATION_ENABLED,
-  false,
+  true,
 );
 {
   const dedupMs = Number(process.env.WORKFLOW_EVENT_DEDUP_WINDOW_MS || "15000");
