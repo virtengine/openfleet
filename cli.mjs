@@ -336,6 +336,19 @@ const DAEMON_MAX_INSTANT_RESTARTS = Math.max(
   1,
   Number(process.env.BOSUN_DAEMON_MAX_INSTANT_RESTARTS || 5) || 5,
 );
+const DAEMON_MISCONFIG_GUARD_ENABLED = !["0", "false", "off", "no"].includes(
+  String(process.env.BOSUN_DAEMON_MISCONFIG_GUARD || "1")
+    .trim()
+    .toLowerCase(),
+);
+const DAEMON_MISCONFIG_GUARD_MIN_RESTARTS = Math.max(
+  1,
+  Number(process.env.BOSUN_DAEMON_MISCONFIG_GUARD_MIN_RESTARTS || 3) || 3,
+);
+const DAEMON_MISCONFIG_LOG_SCAN_LINES = Math.max(
+  20,
+  Number(process.env.BOSUN_DAEMON_MISCONFIG_LOG_SCAN_LINES || 250) || 250,
+);
 let daemonRestartCount = 0;
 const daemonCrashTracker = createDaemonCrashTracker({
   instantCrashWindowMs: DAEMON_INSTANT_CRASH_WINDOW_MS,
@@ -2080,6 +2093,77 @@ function getMonitorPidFileCandidates(extraCacheDirs = []) {
   ]);
 }
 
+function tailLinesFromFile(filePath, maxLines = 200) {
+  try {
+    if (!existsSync(filePath)) return [];
+    const raw = readFileSync(filePath, "utf8");
+    if (!raw) return [];
+    const lines = raw.split(/\r?\n/).filter(Boolean);
+    if (lines.length <= maxLines) return lines;
+    return lines.slice(-maxLines);
+  } catch {
+    return [];
+  }
+}
+
+function detectDaemonRestartStormSignals(options) {
+  const resolvedOptions = options && typeof options === "object" ? options : {};
+  const logDir = resolvedOptions.logDir || resolve(__dirname, "logs");
+  const maxLines = resolvedOptions.maxLines || DAEMON_MISCONFIG_LOG_SCAN_LINES;
+  const reasons = [];
+  const monitorErrorLines = tailLinesFromFile(
+    resolve(logDir, "monitor-error.log"),
+    maxLines,
+  );
+  const monitorLines = tailLinesFromFile(resolve(logDir, "monitor.log"), maxLines);
+  const combined = [...monitorErrorLines, ...monitorLines].join("\n");
+  if (!combined) {
+    return { hasSignal: false, reasons: [] };
+  }
+
+  if (
+    /missing prerequisites:\s*no API key|codex unavailable:\s*no API key/i.test(
+      combined,
+    )
+  ) {
+    reasons.push("missing_api_key");
+  }
+  if (
+    /another bosun instance holds the lock|duplicate start ignored|another bosun is already running/i
+      .test(combined)
+  ) {
+    reasons.push("duplicate_runtime");
+  }
+  if (/Shared state heartbeat FATAL.*owner_mismatch/i.test(combined)) {
+    reasons.push("shared_state_owner_mismatch");
+  }
+  if (
+    /There is no tracking information for the current branch|git pull <remote> <branch>/i
+      .test(combined)
+  ) {
+    reasons.push("workspace_git_tracking_missing");
+  }
+
+  return {
+    hasSignal: reasons.length > 0,
+    reasons,
+  };
+}
+
+function shouldPauseDaemonRestartStorm(options) {
+  const resolvedOptions = options && typeof options === "object" ? options : {};
+  const restartCount = Number(resolvedOptions.restartCount || 0);
+  const logDir = resolvedOptions.logDir;
+  if (!IS_DAEMON_CHILD) return { pause: false, reasons: [] };
+  if (!DAEMON_MISCONFIG_GUARD_ENABLED) return { pause: false, reasons: [] };
+  if (restartCount < DAEMON_MISCONFIG_GUARD_MIN_RESTARTS) {
+    return { pause: false, reasons: [] };
+  }
+  const signals = detectDaemonRestartStormSignals({ logDir });
+  if (!signals.hasSignal) return { pause: false, reasons: [] };
+  return { pause: true, reasons: signals.reasons };
+}
+
 function detectExistingMonitorLockOwner(excludePid = null) {
   try {
     for (const pidFile of getMonitorPidFileCandidates()) {
@@ -2213,6 +2297,19 @@ function runMonitor({ restartReason = "" } = {}) {
                 DAEMON_MAX_RESTART_DELAY_MS,
               );
               const delayMs = isOSKill ? 5000 : backoffDelay;
+              const restartStormGuard = shouldPauseDaemonRestartStorm({
+                restartCount: daemonRestartCount,
+              });
+              if (restartStormGuard.pause) {
+                const reasonLabel = restartStormGuard.reasons.join(", ");
+                console.error(
+                  `\n  :close: Monitor restart storm paused after ${daemonRestartCount} attempts due to persistent runtime issues (${reasonLabel}).`,
+                );
+                sendCrashNotification(exitCode, signal).finally(() =>
+                  process.exit(exitCode),
+                );
+                return;
+              }
               if (IS_DAEMON_CHILD && crashState.exceeded) {
                 const durationSec = Math.max(
                   1,
