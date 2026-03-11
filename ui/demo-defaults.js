@@ -7036,7 +7036,7 @@
         "author": "bosun",
         "version": 1,
         "createdAt": "2025-02-25T00:00:00Z",
-        "templateVersion": "1.0.0",
+        "templateVersion": "1.0.1",
         "tags": [
           "anomaly",
           "watchdog",
@@ -7316,7 +7316,7 @@
         "author": "bosun",
         "version": 1,
         "createdAt": "2025-02-24T00:00:00Z",
-        "templateVersion": "1.0.0",
+        "templateVersion": "1.0.1",
         "tags": [
           "error",
           "recovery",
@@ -7549,7 +7549,7 @@
         "author": "bosun",
         "version": 1,
         "createdAt": "2025-02-25T00:00:00Z",
-        "templateVersion": "1.0.0",
+        "templateVersion": "1.0.1",
         "tags": [
           "health",
           "config",
@@ -7761,7 +7761,7 @@
         "author": "bosun",
         "version": 1,
         "createdAt": "2025-02-25T00:00:00Z",
-        "templateVersion": "1.0.0",
+        "templateVersion": "1.0.1",
         "tags": [
           "incident",
           "response",
@@ -8086,7 +8086,7 @@
         "author": "bosun",
         "version": 1,
         "createdAt": "2025-06-01T00:00:00Z",
-        "templateVersion": "1.0.0",
+        "templateVersion": "1.0.1",
         "tags": [
           "sync",
           "kanban",
@@ -8433,7 +8433,7 @@
         "author": "bosun",
         "version": 1,
         "createdAt": "2025-06-01T00:00:00Z",
-        "templateVersion": "1.0.0",
+        "templateVersion": "1.0.1",
         "tags": [
           "archive",
           "cleanup",
@@ -8730,8 +8730,8 @@
         "handoff",
         "reliability"
       ],
-      "nodeCount": 15,
-      "edgeCount": 17,
+      "nodeCount": 17,
+      "edgeCount": 20,
       "recommended": true,
       "enabled": true,
       "trigger": "trigger.event",
@@ -8744,7 +8744,7 @@
         "author": "bosun",
         "version": 1,
         "createdAt": "2026-02-26T00:00:00Z",
-        "templateVersion": "1.0.0",
+        "templateVersion": "1.0.1",
         "tags": [
           "finalization",
           "quality-gate",
@@ -8960,6 +8960,38 @@
           ]
         },
         {
+          "id": "has-pr-missing-context",
+          "type": "condition.expression",
+          "label": "PR Linked Without Worktree?",
+          "config": {
+            "expression": "Boolean($data?.prNumber || $data?.prUrl)"
+          },
+          "position": {
+            "x": 620,
+            "y": 450
+          },
+          "outputs": [
+            "yes",
+            "no"
+          ]
+        },
+        {
+          "id": "notify-skip-missing-context",
+          "type": "notify.log",
+          "label": "Skip Missing Context With PR",
+          "config": {
+            "message": "Task {{taskId}} finalization skipped quality gate: missing worktree context but PR linkage exists",
+            "level": "warn"
+          },
+          "position": {
+            "x": 620,
+            "y": 560
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
           "id": "notify-pass",
           "type": "notify.log",
           "label": "Log Finalization Success",
@@ -9065,10 +9097,24 @@
           "condition": "$output?.result === true"
         },
         {
-          "id": "has-worktree->mark-todo-missing",
+          "id": "has-worktree->has-pr-missing-context",
           "source": "has-worktree",
-          "target": "mark-todo-missing",
+          "target": "has-pr-missing-context",
           "sourcePort": "default",
+          "condition": "$output?.result !== true"
+        },
+        {
+          "id": "has-pr-missing-context->notify-skip-missing-context",
+          "source": "has-pr-missing-context",
+          "target": "notify-skip-missing-context",
+          "sourcePort": "yes",
+          "condition": "$output?.result === true"
+        },
+        {
+          "id": "has-pr-missing-context->mark-todo-missing",
+          "source": "has-pr-missing-context",
+          "target": "mark-todo-missing",
+          "sourcePort": "no",
           "condition": "$output?.result !== true"
         },
         {
@@ -9132,6 +9178,12 @@
           "sourcePort": "default"
         },
         {
+          "id": "notify-skip-missing-context->end-success",
+          "source": "notify-skip-missing-context",
+          "target": "end-success",
+          "sourcePort": "default"
+        },
+        {
           "id": "notify-pass->chain-archiver",
           "source": "notify-pass",
           "target": "chain-archiver",
@@ -9192,7 +9244,7 @@
         "author": "bosun",
         "version": 1,
         "createdAt": "2026-03-04T00:00:00Z",
-        "templateVersion": "1.0.0",
+        "templateVersion": "1.0.1",
         "tags": [
           "orphan",
           "recovery",
@@ -9421,7 +9473,7 @@
         "author": "bosun",
         "version": 1,
         "createdAt": "2026-02-26T00:00:00Z",
-        "templateVersion": "1.0.0",
+        "templateVersion": "1.0.1",
         "tags": [
           "repair",
           "recovery",
@@ -9811,7 +9863,7 @@
         "author": "bosun",
         "version": 1,
         "createdAt": "2026-02-27T00:00:00Z",
-        "templateVersion": "1.0.0",
+        "templateVersion": "1.0.1",
         "tags": [
           "task",
           "status",
@@ -10024,7 +10076,7 @@
         "author": "bosun",
         "version": 1,
         "createdAt": "2025-02-25T00:00:00Z",
-        "templateVersion": "1.0.0",
+        "templateVersion": "1.0.1",
         "tags": [
           "maintenance",
           "cleanup",
@@ -23436,8 +23488,8 @@
         "templateState": {
           "templateId": "template-anomaly-watchdog",
           "templateName": "Anomaly Watchdog",
-          "templateVersion": "1.0.0",
-          "installedTemplateVersion": "1.0.0",
+          "templateVersion": "1.0.1",
+          "installedTemplateVersion": "1.0.1",
           "isCustomized": false,
           "updateAvailable": false
         }
@@ -23647,8 +23699,8 @@
         "templateState": {
           "templateId": "template-error-recovery",
           "templateName": "Error Recovery",
-          "templateVersion": "1.0.0",
-          "installedTemplateVersion": "1.0.0",
+          "templateVersion": "1.0.1",
+          "installedTemplateVersion": "1.0.1",
           "isCustomized": false,
           "updateAvailable": false
         }
@@ -23836,8 +23888,8 @@
         "templateState": {
           "templateId": "template-health-check",
           "templateName": "Health Check",
-          "templateVersion": "1.0.0",
-          "installedTemplateVersion": "1.0.0",
+          "templateVersion": "1.0.1",
+          "installedTemplateVersion": "1.0.1",
           "isCustomized": false,
           "updateAvailable": false
         }
@@ -24134,8 +24186,8 @@
         "templateState": {
           "templateId": "template-incident-response",
           "templateName": "Incident Response",
-          "templateVersion": "1.0.0",
-          "installedTemplateVersion": "1.0.0",
+          "templateVersion": "1.0.1",
+          "installedTemplateVersion": "1.0.1",
           "isCustomized": false,
           "updateAvailable": false
         }
@@ -24456,8 +24508,8 @@
         "templateState": {
           "templateId": "template-sync-engine",
           "templateName": "Kanban Sync Engine",
-          "templateVersion": "1.0.0",
-          "installedTemplateVersion": "1.0.0",
+          "templateVersion": "1.0.1",
+          "installedTemplateVersion": "1.0.1",
           "isCustomized": false,
           "updateAvailable": false
         }
@@ -24742,8 +24794,8 @@
         "templateState": {
           "templateId": "template-task-archiver",
           "templateName": "Task Archiver",
-          "templateVersion": "1.0.0",
-          "installedTemplateVersion": "1.0.0",
+          "templateVersion": "1.0.1",
+          "installedTemplateVersion": "1.0.1",
           "isCustomized": false,
           "updateAvailable": false
         }
@@ -24755,7 +24807,7 @@
       "description": "Shared post-completion quality gate for all agents. Runs pre-push validation in the task worktree, normalizes status transitions, and hands off failures to a dedicated repair workflow.",
       "category": "reliability",
       "enabled": true,
-      "nodeCount": 15,
+      "nodeCount": 17,
       "trigger": "trigger.event",
       "variables": {
         "finalizationTimeoutMs": 3600000,
@@ -24956,6 +25008,38 @@
           ]
         },
         {
+          "id": "has-pr-missing-context",
+          "type": "condition.expression",
+          "label": "PR Linked Without Worktree?",
+          "config": {
+            "expression": "Boolean($data?.prNumber || $data?.prUrl)"
+          },
+          "position": {
+            "x": 620,
+            "y": 450
+          },
+          "outputs": [
+            "yes",
+            "no"
+          ]
+        },
+        {
+          "id": "notify-skip-missing-context",
+          "type": "notify.log",
+          "label": "Skip Missing Context With PR",
+          "config": {
+            "message": "Task {{taskId}} finalization skipped quality gate: missing worktree context but PR linkage exists",
+            "level": "warn"
+          },
+          "position": {
+            "x": 620,
+            "y": 560
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
           "id": "notify-pass",
           "type": "notify.log",
           "label": "Log Finalization Success",
@@ -25061,10 +25145,24 @@
           "condition": "$output?.result === true"
         },
         {
-          "id": "has-worktree->mark-todo-missing",
+          "id": "has-worktree->has-pr-missing-context",
           "source": "has-worktree",
-          "target": "mark-todo-missing",
+          "target": "has-pr-missing-context",
           "sourcePort": "default",
+          "condition": "$output?.result !== true"
+        },
+        {
+          "id": "has-pr-missing-context->notify-skip-missing-context",
+          "source": "has-pr-missing-context",
+          "target": "notify-skip-missing-context",
+          "sourcePort": "yes",
+          "condition": "$output?.result === true"
+        },
+        {
+          "id": "has-pr-missing-context->mark-todo-missing",
+          "source": "has-pr-missing-context",
+          "target": "mark-todo-missing",
+          "sourcePort": "no",
           "condition": "$output?.result !== true"
         },
         {
@@ -25128,6 +25226,12 @@
           "sourcePort": "default"
         },
         {
+          "id": "notify-skip-missing-context->end-success",
+          "source": "notify-skip-missing-context",
+          "target": "end-success",
+          "sourcePort": "default"
+        },
+        {
           "id": "notify-pass->chain-archiver",
           "source": "notify-pass",
           "target": "chain-archiver",
@@ -25165,8 +25269,8 @@
         "templateState": {
           "templateId": "template-task-finalization-guard",
           "templateName": "Task Finalization Guard",
-          "templateVersion": "1.0.0",
-          "installedTemplateVersion": "1.0.0",
+          "templateVersion": "1.0.1",
+          "installedTemplateVersion": "1.0.1",
           "isCustomized": false,
           "updateAvailable": false
         }
@@ -25370,8 +25474,8 @@
         "templateState": {
           "templateId": "template-task-orphan-worktree-recovery",
           "templateName": "Task Orphan Worktree Recovery",
-          "templateVersion": "1.0.0",
-          "installedTemplateVersion": "1.0.0",
+          "templateVersion": "1.0.1",
+          "installedTemplateVersion": "1.0.1",
           "isCustomized": false,
           "updateAvailable": false
         }
@@ -25745,8 +25849,8 @@
         "templateState": {
           "templateId": "template-task-repair-worktree",
           "templateName": "Task Repair Worktree",
-          "templateVersion": "1.0.0",
-          "installedTemplateVersion": "1.0.0",
+          "templateVersion": "1.0.1",
+          "installedTemplateVersion": "1.0.1",
           "isCustomized": false,
           "updateAvailable": false
         }
@@ -25932,8 +26036,8 @@
         "templateState": {
           "templateId": "template-task-status-transition-manager",
           "templateName": "Task Status Transition Manager",
-          "templateVersion": "1.0.0",
-          "installedTemplateVersion": "1.0.0",
+          "templateVersion": "1.0.1",
+          "installedTemplateVersion": "1.0.1",
           "isCustomized": false,
           "updateAvailable": false
         }
@@ -26143,8 +26247,8 @@
         "templateState": {
           "templateId": "template-workspace-hygiene",
           "templateName": "Workspace Hygiene",
-          "templateVersion": "1.0.0",
-          "installedTemplateVersion": "1.0.0",
+          "templateVersion": "1.0.1",
+          "installedTemplateVersion": "1.0.1",
           "isCustomized": false,
           "updateAvailable": false
         }

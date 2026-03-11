@@ -156,6 +156,129 @@ describe("task-claims", () => {
     });
   });
 
+  describe("shared state claim rollback", () => {
+    beforeEach(() => {
+      vi.resetModules();
+    });
+
+    afterEach(() => {
+      vi.resetModules();
+      vi.unmock("../workspace/shared-state-manager.mjs");
+    });
+
+    it("rolls back a new local claim when shared state reports active owner", async () => {
+      const claimInSharedStateMock = vi.fn(async () => ({
+        success: false,
+        reason: "existing_owner_active",
+      }));
+
+      vi.doMock("../workspace/shared-state-manager.mjs", () => ({
+        claimTaskInSharedState: claimInSharedStateMock,
+        renewSharedStateHeartbeat: vi.fn(async () => ({ success: true })),
+        releaseSharedState: vi.fn(async () => ({ success: true })),
+      }));
+
+      const { initTaskClaims, claimTask, getClaim } = await import("../task/task-claims.mjs");
+      await initTaskClaims({ repoRoot: tempRoot });
+
+      const result = await claimTask({
+        taskId: "task-shared-conflict",
+        instanceId: "instance-1",
+      });
+
+      expect(result.success).toBe(false);
+      expect(result.error).toBe("existing_owner_active");
+      expect(await getClaim("task-shared-conflict")).toBeNull();
+      expect(claimInSharedStateMock).toHaveBeenCalledTimes(1);
+    });
+
+    it("restores previous local owner when override sync fails", async () => {
+      const claimInSharedStateMock = vi
+        .fn()
+        .mockResolvedValueOnce({ success: true })
+        .mockResolvedValueOnce({ success: false, reason: "existing_owner_active" });
+
+      vi.doMock("../workspace/shared-state-manager.mjs", () => ({
+        claimTaskInSharedState: claimInSharedStateMock,
+        renewSharedStateHeartbeat: vi.fn(async () => ({ success: true })),
+        releaseSharedState: vi.fn(async () => ({ success: true })),
+      }));
+
+      const { listActiveInstances, selectCoordinator } = vi.mocked(
+        await import("../infra/presence.mjs"),
+      );
+      listActiveInstances.mockReturnValue([{ instance_id: "instance-1" }, { instance_id: "coordinator" }]);
+      selectCoordinator.mockReturnValue({ instance_id: "coordinator" });
+
+      const { initTaskClaims, claimTask, getClaim } = await import("../task/task-claims.mjs");
+      await initTaskClaims({ repoRoot: tempRoot });
+
+      const first = await claimTask({
+        taskId: "task-shared-override",
+        instanceId: "instance-1",
+      });
+      expect(first.success).toBe(true);
+
+      const second = await claimTask({
+        taskId: "task-shared-override",
+        instanceId: "coordinator",
+      });
+
+      expect(second.success).toBe(false);
+      expect(second.error).toBe("existing_owner_active");
+
+      const persisted = await getClaim("task-shared-override");
+      expect(persisted?.instance_id).toBe("instance-1");
+      expect(claimInSharedStateMock).toHaveBeenCalledTimes(2);
+    });
+    it("rolls back local renewal timestamp when shared heartbeat reports owner mismatch", async () => {
+      const claimInSharedStateMock = vi.fn(async () => ({ success: true }));
+      const renewSharedStateHeartbeatMock = vi
+        .fn()
+        .mockResolvedValueOnce({ success: true })
+        .mockResolvedValueOnce({ success: false, reason: "owner_mismatch" });
+
+      vi.doMock("../workspace/shared-state-manager.mjs", () => ({
+        claimTaskInSharedState: claimInSharedStateMock,
+        renewSharedStateHeartbeat: renewSharedStateHeartbeatMock,
+        releaseSharedState: vi.fn(async () => ({ success: true })),
+      }));
+
+      const { initTaskClaims, claimTask, renewClaim, getClaim } = await import("../task/task-claims.mjs");
+      await initTaskClaims({ repoRoot: tempRoot });
+
+      const first = await claimTask({
+        taskId: "task-shared-renew-mismatch",
+        instanceId: "instance-1",
+      });
+      expect(first.success).toBe(true);
+
+      const beforeRenew = await getClaim("task-shared-renew-mismatch");
+      expect(beforeRenew?.renewed_at).toBeFalsy();
+
+      const renewedOnce = await renewClaim({
+        taskId: "task-shared-renew-mismatch",
+        claimToken: first.token,
+        instanceId: "instance-1",
+      });
+      expect(renewedOnce.success).toBe(true);
+
+      const snapshotBeforeFatal = await getClaim("task-shared-renew-mismatch");
+      expect(snapshotBeforeFatal?.renewed_at).toBeTruthy();
+
+      const renewedTwice = await renewClaim({
+        taskId: "task-shared-renew-mismatch",
+        claimToken: first.token,
+        instanceId: "instance-1",
+      });
+      expect(renewedTwice.success).toBe(false);
+      expect(renewedTwice.error).toBe("owner_mismatch");
+
+      const afterFatal = await getClaim("task-shared-renew-mismatch");
+      expect(afterFatal?.renewed_at).toBe(snapshotBeforeFatal?.renewed_at);
+      expect(renewSharedStateHeartbeatMock).toHaveBeenCalledTimes(2);
+    });
+  });
   describe("releaseTask", () => {
     let initTaskClaims, claimTask, releaseTask, getClaim;
 
@@ -674,4 +797,5 @@ describe("task-claims", () => {
     });
   });
 });
+
 

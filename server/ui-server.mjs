@@ -2582,6 +2582,13 @@ function resolveActiveWorkspaceExecutionContext() {
   const configDir = resolveUiConfigDir();
   if (!configDir) return fallback;
 
+  const explicitWorkspaceDirHint = normalizeCandidatePath(
+    process.env.CODEX_MONITOR_HOME
+    || process.env.CODEX_MONITOR_DIR
+    || process.env.BOSUN_HOME
+    || process.env.BOSUN_DIR,
+  );
+
   const listed = listManagedWorkspaces(configDir, { repoRoot });
   const active = getActiveManagedWorkspace(configDir);
   const activeId = String(active?.id || "").trim();
@@ -2592,7 +2599,16 @@ function resolveActiveWorkspaceExecutionContext() {
     active ||
     listed[0] ||
     null;
-  if (!workspace) return fallback;
+  if (!workspace) {
+    if (process.env.VITEST && explicitWorkspaceDirHint) {
+      return {
+        workspaceId: "",
+        workspaceDir: explicitWorkspaceDirHint,
+        workspaceRoot: explicitWorkspaceDirHint,
+      };
+    }
+    return fallback;
+  }
 
   const workspaceId = String(workspace.id || "").trim();
   const workspaceDir = pickWorkspaceRepoDir(workspace) || fallback.workspaceDir;
@@ -3035,6 +3051,31 @@ let _localRequestAddressCache = {
 /** Map<string, { sockets: Set<WebSocket>, offset: number, pollTimer }> keyed by filePath */
 const logStreamers = new Map();
 let uiDeps = {};
+
+async function resolveVoiceRelay() {
+  const moduleRelay = await import("../voice/voice-relay.mjs");
+  let injectedRelay = null;
+  if (uiDeps?.voiceRelay && typeof uiDeps.voiceRelay === "object") {
+    injectedRelay = uiDeps.voiceRelay;
+  } else if (typeof uiDeps?.getVoiceRelay === "function") {
+    try {
+      const resolved = await Promise.resolve(uiDeps.getVoiceRelay());
+      if (resolved && typeof resolved === "object") {
+        injectedRelay = resolved;
+      }
+    } catch {
+      // best effort
+    }
+  }
+
+  // Preserve support for partial test doubles by falling back to module methods
+  // whenever an injected relay does not define an API used by a route.
+  if (!injectedRelay) return moduleRelay;
+  return {
+    ...moduleRelay,
+    ...injectedRelay,
+  };
+}
 
 /**
  * Resolve the execPrimaryPrompt function. Prefers the injected dependency,
@@ -14851,9 +14892,9 @@ async function handleApi(req, res, url) {
   // GET /api/voice/sdk-config — SDK-first configuration for client
   if (path === "/api/voice/sdk-config" && req.method === "GET") {
     try {
-      const { getVoiceConfig } = await import("../voice/voice-relay.mjs");
+      const relay = await resolveVoiceRelay();
       const { getClientSdkConfig } = await import("../voice/voice-agents-sdk.mjs");
-      const voiceConfig = getVoiceConfig();
+      const voiceConfig = relay.getVoiceConfig(true);
       const sdkConfig = await getClientSdkConfig(voiceConfig);
       jsonResponse(res, 200, sdkConfig);
     } catch (err) {
@@ -14870,10 +14911,10 @@ async function handleApi(req, res, url) {
   // GET /api/voice/config
   if (path === "/api/voice/config" && req.method === "GET") {
     try {
-      const { isVoiceAvailable, getVoiceConfig, getRealtimeConnectionInfo } = await import("../voice/voice-relay.mjs");
-      const availability = isVoiceAvailable();
-      const config = getVoiceConfig();
-      const connectionInfo = availability.tier === 1 ? getRealtimeConnectionInfo() : null;
+      const relay = await resolveVoiceRelay();
+      const config = relay.getVoiceConfig(true);
+      const availability = relay.isVoiceAvailable();
+      const connectionInfo = availability.tier === 1 ? relay.getRealtimeConnectionInfo() : null;
 
       jsonResponse(res, 200, {
         available: availability.available,
@@ -15011,16 +15052,16 @@ async function handleApi(req, res, url) {
         requestedVoiceAgentId,
       );
       const activeVoiceAgentId = selectedVoiceAgent?.id || "voice-agent";
-      const { createEphemeralToken, getVoiceToolDefinitions, getVoiceConfig, isPrivilegedVoiceContext } = await import("../voice/voice-relay.mjs");
-      const voiceCfg = getVoiceConfig();
+      const relay = await resolveVoiceRelay();
+      const voiceCfg = relay.getVoiceConfig(true);
       if (!voiceCfg || (voiceCfg.provider !== "openai" && voiceCfg.provider !== "azure")) {
         jsonResponse(res, 400, { error: `provider "${voiceCfg?.provider || "unknown"}" does not support realtime token` });
         return;
       }
-      const privileged = isPrivilegedVoiceContext(callContext);
+      const privileged = relay.isPrivilegedVoiceContext(callContext);
       const delegateOnly =
         body?.delegateOnly === true && !privileged;
-      let tools = await getVoiceToolDefinitions({ delegateOnly, context: callContext });
+      let tools = await relay.getVoiceToolDefinitions({ delegateOnly, context: callContext });
 
       const voiceToolCfg = getAgentToolConfig(libraryRoot, activeVoiceAgentId);
       tools = applyVoiceAgentToolFilters(tools, voiceToolCfg);
@@ -15041,7 +15082,7 @@ async function handleApi(req, res, url) {
           ? voiceToolCfg.enabledMcpServers
           : undefined,
       };
-      const tokenData = await createEphemeralToken(tools, voiceCallContext);
+      const tokenData = await relay.createEphemeralToken(tools, voiceCallContext);
       tokenData.voiceAgentId = activeVoiceAgentId;
       tokenData.voiceAgentName = selectedVoiceAgent?.name || null;
       tokenData.voiceAgentSkills = Array.isArray(selectedVoiceAgent?.skills) ? selectedVoiceAgent.skills : [];
@@ -15522,8 +15563,8 @@ async function handleApi(req, res, url) {
       const prompt = String(body?.prompt || "").trim() || undefined;
       const model = String(body?.visionModel || "").trim() || undefined;
 
-      const { analyzeVisionFrame } = await import("../voice/voice-relay.mjs");
-      const pending = analyzeVisionFrame(frame.raw, {
+      const relay = await resolveVoiceRelay();
+      const pending = relay.analyzeVisionFrame(frame.raw, {
         source,
         context: callContext,
         prompt,
@@ -16614,4 +16655,3 @@ export function stopTelegramUiServer() {
 }
 
 export { getLocalLanIp };
-
