@@ -2324,16 +2324,8 @@ export async function launchEphemeralThread(
       missingPrereqSdks.push({ name, reason: prereq.reason });
       if (name === primaryName) {
         console.warn(
-          `${TAG} primary SDK "${name}" missing prerequisites: ${prereq.reason}; not attempting fallback`,
+          `${TAG} primary SDK "${name}" missing prerequisites: ${prereq.reason}; trying fallback chain`,
         );
-        return {
-          success: false,
-          output: "",
-          items: [],
-          error: `${TAG} ${name} unavailable: ${prereq.reason}`,
-          sdk: primaryName,
-          threadId: null,
-        };
       } else {
         console.log(`${TAG} skipping fallback SDK "${name}": ${prereq.reason}`);
       }
