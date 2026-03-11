@@ -197,7 +197,7 @@ import {
   installConsoleInterceptor,
   setErrorLogFile,
 } from "../lib/logger.mjs";
-import { fixGitConfigCorruption } from "../workspace/worktree-manager.mjs";
+import { fixGitConfigCorruption, listActiveWorktrees } from "../workspace/worktree-manager.mjs";
 // ── Task management subsystem imports ──────────────────────────────────────
 import {
   configureTaskStore,
@@ -14061,6 +14061,98 @@ safeSetInterval("workflow-review-merge-reconcile", async () => {
 }, scheduleCheckIntervalMs);
 
 // Legacy merged PR check removed (workflow-only control).
+
+// ── Periodic stale worktree sync: every 5 min ─────────────────────────────
+// Detects task worktrees that are diverged from their remote (local commits
+// not pushed, or remote has newer commits from a previous run).  For each
+// diverged worktree it: fetches remote, rebases local onto the remote tracking
+// ref for that branch, then pushes with --force-with-lease.  This keeps the
+// VS Code source-control view clean and unblocks tasks that got stuck mid-push.
+async function syncDivergedWorktrees() {
+  const worktrees = listActiveWorktrees(repoRoot);
+  let synced = 0;
+  let failed = 0;
+
+  for (const wt of worktrees) {
+    const { path: wtPath, branch } = wt;
+    if (!wtPath || !branch || !branch.startsWith("task/")) continue;
+
+    try {
+      // Fetch remote to update tracking refs
+      execSync("git fetch origin --no-tags", {
+        cwd: wtPath, timeout: 30_000, stdio: ["ignore", "pipe", "pipe"],
+      });
+
+      // Check ahead/behind vs remote tracking ref
+      const remoteRef = `origin/${branch}`;
+      let remoteExists = false;
+      try {
+        execSync(`git rev-parse --verify ${remoteRef}`, {
+          cwd: wtPath, timeout: 5_000, stdio: ["ignore", "pipe", "pipe"],
+        });
+        remoteExists = true;
+      } catch { /* branch not yet pushed — nothing to sync */ }
+
+      if (!remoteExists) continue;
+
+      const ahead = parseInt(
+        execSync(`git rev-list --count ${remoteRef}..HEAD`, {
+          cwd: wtPath, encoding: "utf8", timeout: 10_000, stdio: ["ignore", "pipe", "pipe"],
+        }).trim(), 10);
+      const behind = parseInt(
+        execSync(`git rev-list --count HEAD..${remoteRef}`, {
+          cwd: wtPath, encoding: "utf8", timeout: 10_000, stdio: ["ignore", "pipe", "pipe"],
+        }).trim(), 10);
+
+      // Only act on diverged worktrees (behind > 0 AND ahead > 0)
+      if (ahead === 0 || behind === 0) continue;
+
+      console.log(
+        `[monitor:worktree-sync] ${branch} diverged: ${ahead} ahead, ${behind} behind — rebasing and pushing`,
+      );
+
+      // Rebase local onto remote tracking ref to incorporate remote commits
+      let rebased = false;
+      try {
+        execSync(`git rebase ${remoteRef}`, {
+          cwd: wtPath, encoding: "utf8", timeout: 60_000, stdio: ["ignore", "pipe", "pipe"],
+        });
+        rebased = true;
+      } catch (rebaseErr) {
+        try { execSync("git rebase --abort", { cwd: wtPath, timeout: 10_000, stdio: ["ignore", "pipe", "pipe"] }); } catch { /* ok */ }
+        console.warn(
+          `[monitor:worktree-sync] ${branch} rebase conflict — skipping push: ${rebaseErr.message?.slice(0, 200)}`,
+        );
+        failed++;
+        continue;
+      }
+
+      // Push with --force-with-lease (safe: we just fetched fresh remote refs)
+      try {
+        execSync(`git push --force-with-lease --set-upstream origin HEAD`, {
+          cwd: wtPath, encoding: "utf8", timeout: 30_000, stdio: ["ignore", "pipe", "pipe"],
+        });
+        console.log(`[monitor:worktree-sync] ${branch} sync-pushed successfully`);
+        synced++;
+      } catch (pushErr) {
+        console.warn(
+          `[monitor:worktree-sync] ${branch} push failed: ${pushErr.message?.slice(0, 200)}`,
+        );
+        failed++;
+      }
+    } catch (err) {
+      console.warn(`[monitor:worktree-sync] ${branch} error: ${err.message?.slice(0, 200)}`);
+      failed++;
+    }
+  }
+
+  if (synced > 0 || failed > 0) {
+    console.log(`[monitor:worktree-sync] cycle complete — synced=${synced} failed=${failed}`);
+  }
+}
+
+const worktreeSyncIntervalMs = 5 * 60 * 1000; // 5 min
+safeSetInterval("worktree-sync", syncDivergedWorktrees, worktreeSyncIntervalMs);
 
 // ── Periodic epic branch sync/merge: every 15 min ──────────────────────────
 const epicMergeIntervalMs = 15 * 60 * 1000;

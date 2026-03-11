@@ -28,6 +28,7 @@ import { buildRelevantSkillsPromptBlock, findRelevantSkills } from "../agent/bos
 import { getSessionTracker } from "../infra/session-tracker.mjs";
 import { fixGitConfigCorruption } from "../workspace/worktree-manager.mjs";
 import { clearBlockedWorktreeIdentity } from "../git/git-safety.mjs";
+import { getGitHubToken } from "../github/github-auth-manager.mjs";
 
 const TAG = "[workflow-nodes]";
 const PORTABLE_WORKTREE_COUNT_COMMAND = "node -e \"const cp=require('node:child_process');const wt=cp.execSync('git worktree list --porcelain',{encoding:'utf8'});const count=(wt.match(/^worktree /gm)||[]).length;process.stdout.write(String(count)+'\\\\n');\"";
@@ -3436,11 +3437,29 @@ registerNodeType("action.create_pr", {
       BOSUN_ATTACHED_PR_LABEL,
     ]));
     const reviewers = toList(ctx.resolve(node.config?.reviewers || ""));
+
+    // Resolve Bosun's best available GitHub token and inject as GH_TOKEN so that
+    // `gh pr create` uses a user OAuth / App installation token rather than the
+    // ambient GITHUB_TOKEN. GitHub suppresses pull_request CI workflow triggers
+    // for events caused by GITHUB_TOKEN (loop-prevention), so using a real user
+    // token here is what allows CI to fire automatically on the created PR.
+    let ghTokenEnv = {};
+    try {
+      const [ghOwner, ghRepo] = repoSlug ? repoSlug.split("/") : [];
+      const { token, type } = await getGitHubToken({ owner: ghOwner, repo: ghRepo });
+      // Only inject when we have a real user/app token, not an env-fallback
+      // (which would be GITHUB_TOKEN itself — injecting it would be redundant).
+      if (type !== "env") {
+        ghTokenEnv = { GH_TOKEN: token };
+      }
+    } catch {
+      // No auth available — fall back to ambient environment
+    }
     const execOptions = {
       cwd,
       encoding: "utf8",
       timeout: 60000,
-      env: makeIsolatedGitEnv(),
+      env: makeIsolatedGitEnv(ghTokenEnv),
       stdio: ["pipe", "pipe", "pipe"],
     };
 
@@ -9426,12 +9445,47 @@ registerNodeType("action.push_branch", {
       return { success: false, error: `Protected branch: ${cleanBranch}`, pushed: false };
     }
 
+    // ── Fetch (always, independent of rebase) ──
+    // Must succeed before push so --force-with-lease has fresh remote tracking refs.
+    try {
+      execSync(`git fetch ${remote} --no-tags`, {
+        cwd: worktreePath, timeout: 30000, stdio: ["ignore", "pipe", "pipe"],
+      });
+    } catch (fetchErr) {
+      ctx.log(node.id, `Fetch failed (will push anyway): ${fetchErr.message?.slice(0, 200)}`);
+    }
+
     // ── Rebase-before-push ──
     if (rebaseBeforePush) {
+      // Step 1: if the remote already has commits on this branch (previous run / partial push),
+      // rebase local onto origin/${cleanBranch} first so we incorporate those commits and
+      // the subsequent push is a clean fast-forward instead of a diverged force-push.
+      const remoteTrackingRef = `${remote}/${cleanBranch}`;
       try {
-        execSync(`git fetch ${remote} --no-tags`, {
-          cwd: worktreePath, timeout: 30000, stdio: ["ignore", "pipe", "pipe"],
+        execSync(`git rev-parse --verify ${remoteTrackingRef}`, {
+          cwd: worktreePath, timeout: 5000, stdio: ["ignore", "pipe", "pipe"],
         });
+        // Remote branch exists — check if it diverges from local
+        const behindCount = execSync(
+          `git rev-list --count HEAD..${remoteTrackingRef}`,
+          { cwd: worktreePath, encoding: "utf8", timeout: 10000, stdio: ["ignore", "pipe", "pipe"] }
+        ).trim();
+        if (parseInt(behindCount, 10) > 0) {
+          try {
+            execSync(`git rebase ${remoteTrackingRef}`, {
+              cwd: worktreePath, encoding: "utf8", timeout: 60000,
+              stdio: ["ignore", "pipe", "pipe"],
+            });
+            ctx.log(node.id, `Synced local with ${remoteTrackingRef} (was ${behindCount} behind)`);
+          } catch (syncErr) {
+            try { execSync("git rebase --abort", { cwd: worktreePath, timeout: 10000, stdio: ["ignore", "pipe", "pipe"] }); } catch { /* ok */ }
+            ctx.log(node.id, `Sync with ${remoteTrackingRef} conflicted, skipping: ${syncErr.message?.slice(0, 200)}`);
+          }
+        }
+      } catch { /* remote branch doesn't exist yet — normal for first push */ }
+
+      // Step 2: rebase onto base branch (e.g. origin/main)
+      try {
         execSync(`git rebase ${baseBranch}`, {
           cwd: worktreePath, encoding: "utf8", timeout: 60000,
           stdio: ["ignore", "pipe", "pipe"],
@@ -9444,7 +9498,7 @@ registerNodeType("action.push_branch", {
             cwd: worktreePath, timeout: 10000, stdio: ["ignore", "pipe", "pipe"],
           });
         } catch { /* already aborted */ }
-        ctx.log(node.id, `Rebase conflict, skipping: ${rebaseErr.message?.slice(0, 200)}`);
+        ctx.log(node.id, `Rebase onto ${baseBranch} conflicted, skipping: ${rebaseErr.message?.slice(0, 200)}`);
       }
     }
 
