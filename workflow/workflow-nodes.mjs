@@ -28,6 +28,7 @@ import { buildRelevantSkillsPromptBlock, findRelevantSkills } from "../agent/bos
 import { getSessionTracker } from "../infra/session-tracker.mjs";
 import { fixGitConfigCorruption } from "../workspace/worktree-manager.mjs";
 import { clearBlockedWorktreeIdentity } from "../git/git-safety.mjs";
+import { getGitHubToken } from "../github/github-auth-manager.mjs";
 
 const TAG = "[workflow-nodes]";
 const PORTABLE_WORKTREE_COUNT_COMMAND = "node -e \"const cp=require('node:child_process');const wt=cp.execSync('git worktree list --porcelain',{encoding:'utf8'});const count=(wt.match(/^worktree /gm)||[]).length;process.stdout.write(String(count)+'\\\\n');\"";
@@ -3436,11 +3437,29 @@ registerNodeType("action.create_pr", {
       BOSUN_ATTACHED_PR_LABEL,
     ]));
     const reviewers = toList(ctx.resolve(node.config?.reviewers || ""));
+
+    // Resolve Bosun's best available GitHub token and inject as GH_TOKEN so that
+    // `gh pr create` uses a user OAuth / App installation token rather than the
+    // ambient GITHUB_TOKEN. GitHub suppresses pull_request CI workflow triggers
+    // for events caused by GITHUB_TOKEN (loop-prevention), so using a real user
+    // token here is what allows CI to fire automatically on the created PR.
+    let ghTokenEnv = {};
+    try {
+      const [ghOwner, ghRepo] = repoSlug ? repoSlug.split("/") : [];
+      const { token, type } = await getGitHubToken({ owner: ghOwner, repo: ghRepo });
+      // Only inject when we have a real user/app token, not an env-fallback
+      // (which would be GITHUB_TOKEN itself — injecting it would be redundant).
+      if (type !== "env") {
+        ghTokenEnv = { GH_TOKEN: token };
+      }
+    } catch {
+      // No auth available — fall back to ambient environment
+    }
     const execOptions = {
       cwd,
       encoding: "utf8",
       timeout: 60000,
-      env: makeIsolatedGitEnv(),
+      env: makeIsolatedGitEnv(ghTokenEnv),
       stdio: ["pipe", "pipe", "pipe"],
     };
 
