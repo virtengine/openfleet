@@ -634,8 +634,10 @@ async function ensureWorkflowAutomationEngine() {
           );
         }
       }
+      workflowAutomationInitDone = true;
       return engine;
     } catch (err) {
+      workflowAutomationInitDone = false;
       if (!workflowAutomationUnavailableLogged) {
         workflowAutomationUnavailableLogged = true;
         console.warn(
@@ -644,7 +646,6 @@ async function ensureWorkflowAutomationEngine() {
       }
       return null;
     } finally {
-      workflowAutomationInitDone = true;
       workflowAutomationInitPromise = null;
     }
   })();

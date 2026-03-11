@@ -66,6 +66,18 @@ describe("monitor workflow startup guards", () => {
     );
   });
 
+  it("allows workflow automation init retries after transient startup failure", () => {
+    expect(monitorSource).toContain("workflowAutomationInitDone = true;");
+    expect(monitorSource).toContain("workflowAutomationInitDone = false;");
+    const catchStart = monitorSource.indexOf("} catch (err) {");
+    const finallyStart = monitorSource.indexOf("} finally {");
+    const catchBlock = monitorSource.slice(catchStart, finallyStart);
+    const finallyBlock = monitorSource.slice(finallyStart, finallyStart + 160);
+    expect(catchBlock).toContain("workflowAutomationInitDone = false;");
+    expect(finallyBlock).toContain("workflowAutomationInitPromise = null;");
+    expect(finallyBlock).not.toContain("workflowAutomationInitDone = true;");
+  });
+
   it("defaults workflow automation to enabled when env is unset", () => {
     expect(monitorSource).toContain("process.env.WORKFLOW_AUTOMATION_ENABLED");
     expect(monitorSource).toContain("  true,");
@@ -107,5 +119,4 @@ describe("monitor workflow startup guards", () => {
   });
 
 });
-
 
