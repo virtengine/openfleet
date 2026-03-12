@@ -2838,6 +2838,15 @@ select.input {
   box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.1);
 }
 
+.dashboard-action-icon svg {
+  width: 1em;
+  height: 1em;
+  max-width: 100%;
+  max-height: 100%;
+  display: block;
+  flex: none;
+}
+
 .dashboard-action-btn:hover .dashboard-action-icon {
   transform: scale(1.1) rotate(5deg);
   background: rgba(255, 255, 255, 0.1);
@@ -4313,8 +4322,23 @@ select.input {
 }
 
 .btn-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
   margin-right: 6px;
   font-size: 1.1em;
+  line-height: 0;
+  vertical-align: middle;
+  flex: none;
+}
+
+.btn-icon svg {
+  width: 1em;
+  height: 1em;
+  max-width: 100%;
+  max-height: 100%;
+  display: block;
+  flex: none;
 }
 
 /* ═══════════════════════════════════════════════
@@ -4833,6 +4857,15 @@ select.input {
   color: var(--color-done);
 }
 
+.fleet-rest-icon svg {
+  width: 1em;
+  height: 1em;
+  max-width: 100%;
+  max-height: 100%;
+  display: block;
+  flex: none;
+}
+
 .fleet-rest-label {
   font-size: 15px;
   font-weight: 700;
@@ -4858,8 +4891,21 @@ select.input {
 }
 
 .dashboard-welcome-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
   font-size: 52px;
+  line-height: 1;
   margin-bottom: 8px;
+}
+
+.dashboard-welcome-icon svg {
+  width: 1em;
+  height: 1em;
+  max-width: 100%;
+  max-height: 100%;
+  display: block;
+  flex: none;
 }
 
 .dashboard-welcome-title {

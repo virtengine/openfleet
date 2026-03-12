@@ -1,5 +1,6 @@
 import { describe, it, expect } from "vitest";
 import {
+  buildNodeStatusesFromRunDetail,
   createHistoryState,
   parseGraphSnapshot,
   pushHistorySnapshot,
@@ -7,10 +8,12 @@ import {
   searchNodeTypes,
   undoHistory,
 } from "../ui/tabs/workflow-canvas-utils.mjs";
-import { existsSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { resolve } from "node:path";
 
 const uiDir = resolve(process.cwd(), "ui");
+const uiComponentsCss = readFileSync(resolve(process.cwd(), "ui/styles/components.css"), "utf8");
+const siteComponentsCss = readFileSync(resolve(process.cwd(), "site/ui/styles/components.css"), "utf8");
 
 describe("modular mini app structure", () => {
   const requiredModules = [
@@ -204,5 +207,58 @@ describe("workflow canvas helpers", () => {
     const branched = pushHistorySnapshot(undone.history, [{ id: "node-3", position: { x: 40, y: 50 } }], [], 50);
     expect(parseGraphSnapshot(branched.present).nodes[0].id).toBe("node-3");
     expect(branched.future).toEqual([]);
+  });
+
+  it("prefers status events and explicit statuses when deriving node execution states", () => {
+    const statuses = buildNodeStatusesFromRunDetail({
+      status: "running",
+      detail: {
+        nodeStatuses: {
+          "node-a": "waiting",
+        },
+        nodeStatusEvents: [
+          { nodeId: "node-a", status: "running" },
+          { nodeId: "node-b", status: "completed" },
+        ],
+      },
+    });
+
+    expect(statuses).toEqual({
+      "node-a": "running",
+      "node-b": "completed",
+    });
+  });
+
+  it("backfills node statuses from logs when explicit status data is missing", () => {
+    const statuses = buildNodeStatusesFromRunDetail({
+      status: "failed",
+      detail: {
+        logs: [
+          { nodeId: "node-a" },
+          { nodeId: "node-a" },
+          { nodeId: "node-b" },
+        ],
+      },
+    });
+
+    expect(statuses).toEqual({
+      "node-a": "failed",
+      "node-b": "failed",
+    });
+  });
+});
+
+describe("shared icon sizing rules", () => {
+  it("keeps shared icon wrappers from letting inline svg render at intrinsic size", () => {
+    for (const source of [uiComponentsCss, siteComponentsCss]) {
+      expect(source).toContain(".btn-icon svg");
+      expect(source).toContain(".dashboard-action-icon svg");
+      expect(source).toContain(".fleet-rest-icon svg");
+      expect(source).toContain(".dashboard-welcome-icon svg");
+      expect(source).toContain("width: 1em;");
+      expect(source).toContain("height: 1em;");
+      expect(source).toContain("max-width: 100%;");
+      expect(source).toContain("max-height: 100%;");
+    }
   });
 });

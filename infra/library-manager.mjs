@@ -16,7 +16,7 @@
  */
 
 import { existsSync, readFileSync, writeFileSync, mkdirSync, readdirSync, statSync, unlinkSync, rmSync } from "node:fs";
-import { resolve, basename, join, relative, extname } from "node:path";
+import { resolve, basename, join, relative, extname, sep } from "node:path";
 import { execSync, spawnSync } from "node:child_process";
 import { homedir } from "node:os";
 import { getAgentToolConfig, getEffectiveTools } from "../agent/agent-tool-config.mjs";
@@ -1246,6 +1246,8 @@ export function getEntryContent(rootDir, entry) {
   if (!entry) return null;
   const dir = dirForType(rootDir, entry.type);
   const filePath = resolve(dir, entry.filename);
+  // Prevent path traversal — resolved path must stay within the type directory
+  if (!filePath.startsWith(dir + sep) && filePath !== dir) return null;
   if (!existsSync(filePath)) return null;
   try {
     const raw = readFileSync(filePath, "utf8");
@@ -1294,6 +1296,10 @@ export function upsertEntry(rootDir, data, content, options = {}) {
   if (content !== undefined) {
     const dir = ensureDir(dirForType(rootDir, entry.type));
     const filePath = resolve(dir, entry.filename);
+    // Prevent path traversal — resolved path must stay within the type directory
+    if (!filePath.startsWith(dir + sep) && filePath !== dir) {
+      throw new Error(`Path traversal blocked: ${entry.filename}`);
+    }
     const body = typeof content === "object" ? JSON.stringify(content, null, 2) + "\n" : String(content);
     writeFileSync(filePath, body, "utf8");
   }

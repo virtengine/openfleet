@@ -15964,8 +15964,8 @@
         "workflow-first",
         "core"
       ],
-      "nodeCount": 42,
-      "edgeCount": 46,
+      "nodeCount": 44,
+      "edgeCount": 48,
       "recommended": true,
       "enabled": true,
       "trigger": "trigger.task_available",
@@ -16194,6 +16194,38 @@
           ]
         },
         {
+          "id": "read-workflow-contract",
+          "type": "read-workflow-contract",
+          "label": "Read WORKFLOW.md",
+          "config": {
+            "repoRoot": "{{repoRoot}}",
+            "worktreePath": "{{worktreePath}}"
+          },
+          "position": {
+            "x": 200,
+            "y": 1350
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "workflow-contract-validation",
+          "type": "workflow-contract-validation",
+          "label": "Validate WORKFLOW.md",
+          "config": {
+            "repoRoot": "{{repoRoot}}",
+            "worktreePath": "{{worktreePath}}"
+          },
+          "position": {
+            "x": 200,
+            "y": 1480
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
           "id": "build-prompt",
           "type": "action.build_task_prompt",
           "label": "Build Prompt",
@@ -16212,7 +16244,7 @@
           },
           "position": {
             "x": 200,
-            "y": 1350
+            "y": 1610
           },
           "outputs": [
             "default"
@@ -16236,7 +16268,7 @@
           },
           "position": {
             "x": 200,
-            "y": 1480
+            "y": 1740
           },
           "outputs": [
             "default"
@@ -16817,8 +16849,20 @@
           "sourcePort": "default"
         },
         {
-          "id": "record-head->build-prompt",
+          "id": "record-head->read-workflow-contract",
           "source": "record-head",
+          "target": "read-workflow-contract",
+          "sourcePort": "default"
+        },
+        {
+          "id": "read-workflow-contract->workflow-contract-validation",
+          "source": "read-workflow-contract",
+          "target": "workflow-contract-validation",
+          "sourcePort": "default"
+        },
+        {
+          "id": "workflow-contract-validation->build-prompt",
+          "source": "workflow-contract-validation",
           "target": "build-prompt",
           "sourcePort": "default"
         },
@@ -17066,8 +17110,8 @@
         "lite",
         "ve-orchestrator"
       ],
-      "nodeCount": 24,
-      "edgeCount": 25,
+      "nodeCount": 26,
+      "edgeCount": 27,
       "recommended": false,
       "enabled": true,
       "trigger": "trigger.task_available",
@@ -17262,6 +17306,38 @@
           ]
         },
         {
+          "id": "read-workflow-contract",
+          "type": "read-workflow-contract",
+          "label": "Read WORKFLOW.md",
+          "config": {
+            "repoRoot": "{{repoRoot}}",
+            "worktreePath": "{{worktreePath}}"
+          },
+          "position": {
+            "x": 300,
+            "y": 1220
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "workflow-contract-validation",
+          "type": "workflow-contract-validation",
+          "label": "Validate WORKFLOW.md",
+          "config": {
+            "repoRoot": "{{repoRoot}}",
+            "worktreePath": "{{worktreePath}}"
+          },
+          "position": {
+            "x": 300,
+            "y": 1350
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
           "id": "prompt",
           "type": "action.build_task_prompt",
           "label": "Build Prompt",
@@ -17276,7 +17352,7 @@
           },
           "position": {
             "x": 300,
-            "y": 1220
+            "y": 1480
           },
           "outputs": [
             "default"
@@ -17299,7 +17375,7 @@
           },
           "position": {
             "x": 300,
-            "y": 1350
+            "y": 1610
           },
           "outputs": [
             "default"
@@ -17573,8 +17649,20 @@
           "sourcePort": "default"
         },
         {
-          "id": "record-head->prompt",
+          "id": "record-head->read-workflow-contract",
           "source": "record-head",
+          "target": "read-workflow-contract",
+          "sourcePort": "default"
+        },
+        {
+          "id": "read-workflow-contract->workflow-contract-validation",
+          "source": "read-workflow-contract",
+          "target": "workflow-contract-validation",
+          "sourcePort": "default"
+        },
+        {
+          "id": "workflow-contract-validation->prompt",
+          "source": "workflow-contract-validation",
           "target": "prompt",
           "sourcePort": "default"
         },
@@ -33008,7 +33096,7 @@
       "description": "Complete task execution pipeline: poll for tasks → claim → worktree → agent dispatch → commit detection → PR creation → status transition. Replaces the monolithic TaskExecutor.executeTask() method with a composable workflow DAG.",
       "category": "task-execution",
       "enabled": true,
-      "nodeCount": 42,
+      "nodeCount": 44,
       "trigger": "trigger.task_available",
       "variables": {
         "maxParallel": 3,
@@ -33207,6 +33295,38 @@
           ]
         },
         {
+          "id": "read-workflow-contract",
+          "type": "read-workflow-contract",
+          "label": "Read WORKFLOW.md",
+          "config": {
+            "repoRoot": "{{repoRoot}}",
+            "worktreePath": "{{worktreePath}}"
+          },
+          "position": {
+            "x": 200,
+            "y": 1350
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "workflow-contract-validation",
+          "type": "workflow-contract-validation",
+          "label": "Validate WORKFLOW.md",
+          "config": {
+            "repoRoot": "{{repoRoot}}",
+            "worktreePath": "{{worktreePath}}"
+          },
+          "position": {
+            "x": 200,
+            "y": 1480
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
           "id": "build-prompt",
           "type": "action.build_task_prompt",
           "label": "Build Prompt",
@@ -33225,7 +33345,7 @@
           },
           "position": {
             "x": 200,
-            "y": 1350
+            "y": 1610
           },
           "outputs": [
             "default"
@@ -33249,7 +33369,7 @@
           },
           "position": {
             "x": 200,
-            "y": 1480
+            "y": 1740
           },
           "outputs": [
             "default"
@@ -33830,8 +33950,20 @@
           "sourcePort": "default"
         },
         {
-          "id": "record-head->build-prompt",
+          "id": "record-head->read-workflow-contract",
           "source": "record-head",
+          "target": "read-workflow-contract",
+          "sourcePort": "default"
+        },
+        {
+          "id": "read-workflow-contract->workflow-contract-validation",
+          "source": "read-workflow-contract",
+          "target": "workflow-contract-validation",
+          "sourcePort": "default"
+        },
+        {
+          "id": "workflow-contract-validation->build-prompt",
+          "source": "workflow-contract-validation",
           "target": "build-prompt",
           "sourcePort": "default"
         },
@@ -34084,7 +34216,7 @@
       "description": "Simplified task lifecycle for lightweight deployments. Same core flow as the full Task Lifecycle (slot → claim → worktree → agent → push → PR) but with fewer failure branches and no anti-thrash.",
       "category": "task-execution",
       "enabled": true,
-      "nodeCount": 24,
+      "nodeCount": 26,
       "trigger": "trigger.task_available",
       "variables": {
         "maxParallel": 2,
@@ -34254,6 +34386,38 @@
           ]
         },
         {
+          "id": "read-workflow-contract",
+          "type": "read-workflow-contract",
+          "label": "Read WORKFLOW.md",
+          "config": {
+            "repoRoot": "{{repoRoot}}",
+            "worktreePath": "{{worktreePath}}"
+          },
+          "position": {
+            "x": 300,
+            "y": 1220
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "workflow-contract-validation",
+          "type": "workflow-contract-validation",
+          "label": "Validate WORKFLOW.md",
+          "config": {
+            "repoRoot": "{{repoRoot}}",
+            "worktreePath": "{{worktreePath}}"
+          },
+          "position": {
+            "x": 300,
+            "y": 1350
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
           "id": "prompt",
           "type": "action.build_task_prompt",
           "label": "Build Prompt",
@@ -34268,7 +34432,7 @@
           },
           "position": {
             "x": 300,
-            "y": 1220
+            "y": 1480
           },
           "outputs": [
             "default"
@@ -34291,7 +34455,7 @@
           },
           "position": {
             "x": 300,
-            "y": 1350
+            "y": 1610
           },
           "outputs": [
             "default"
@@ -34565,8 +34729,20 @@
           "sourcePort": "default"
         },
         {
-          "id": "record-head->prompt",
+          "id": "record-head->read-workflow-contract",
           "source": "record-head",
+          "target": "read-workflow-contract",
+          "sourcePort": "default"
+        },
+        {
+          "id": "read-workflow-contract->workflow-contract-validation",
+          "source": "read-workflow-contract",
+          "target": "workflow-contract-validation",
+          "sourcePort": "default"
+        },
+        {
+          "id": "workflow-contract-validation->prompt",
+          "source": "workflow-contract-validation",
           "target": "prompt",
           "sourcePort": "default"
         },
