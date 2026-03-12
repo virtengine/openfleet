@@ -368,10 +368,21 @@ function uniqueResolvedPaths(paths) {
   return results;
 }
 
+function getWorkspaceScopedCacheDirCandidate(repoRootPath) {
+  const bosunDir = process.env.BOSUN_DIR || resolveConfigDirForCli();
+  if (!bosunDir || !repoRootPath) return null;
+  const parts = String(repoRootPath).replace(/\\/g, "/").split("/").filter(Boolean);
+  const repoName = parts.at(-1);
+  const workspaceName = parts.at(-2);
+  if (!repoName || !workspaceName) return null;
+  return resolve(bosunDir, "workspaces", workspaceName, repoName, ".cache");
+}
+
 function getRuntimeCacheDirCandidates(extraCacheDirs = []) {
   return uniqueResolvedPaths([
     ...extraCacheDirs,
     runtimeCacheDir,
+    getWorkspaceScopedCacheDirCandidate(runtimeRepoRoot),
     process.env.BOSUN_DIR ? resolve(process.env.BOSUN_DIR, ".cache") : null,
     resolve(__dirname, ".cache"),
     resolve(process.cwd(), ".cache"),
@@ -625,6 +636,42 @@ function findGhostDaemonPids() {
   }
 }
 
+function findGhostSentinelPids() {
+  if (process.platform === "win32") {
+    try {
+      const out = execFileSync(
+        "powershell",
+        [
+          "-NoProfile",
+          "-Command",
+          "Get-CimInstance Win32_Process | Where-Object { $_.Name -match '^(node|electron)(\\.exe)?$' -and $_.CommandLine -match 'telegram-sentinel\\.mjs' } | Select-Object -ExpandProperty ProcessId",
+        ],
+        { encoding: "utf8", stdio: ["pipe", "pipe", "pipe"], timeout: 3000 },
+      ).trim();
+      if (!out) return [];
+      return out
+        .split(/\r?\n/)
+        .map((s) => parseInt(String(s).trim(), 10))
+        .filter((n) => Number.isFinite(n) && n > 0 && n !== process.pid);
+    } catch {
+      return [];
+    }
+  }
+  try {
+    const out = execFileSync(
+      "pgrep",
+      ["-f", "telegram-sentinel\\.mjs"],
+      { encoding: "utf8", stdio: ["pipe", "pipe", "pipe"], timeout: 3000 },
+    ).trim();
+    return out
+      .split("\n")
+      .map((s) => parseInt(s.trim(), 10))
+      .filter((n) => Number.isFinite(n) && n > 0 && n !== process.pid);
+  } catch {
+    return [];
+  }
+}
+
 function writePidFile(pid) {
   try {
     mkdirSync(dirname(DAEMON_PID_FILE), { recursive: true });
@@ -852,10 +899,14 @@ function daemonStatus() {
   } else {
     // Check for ghost daemon-child processes (alive but no PID file)
     const ghosts = findGhostDaemonPids();
+    const ghostSentinels = findGhostSentinelPids();
     if (ghosts.length > 0) {
       console.log(`  :alert:  bosun daemon is NOT tracked (no PID file), but ${ghosts.length} ghost process(es) found: ${ghosts.join(", ")}`);
       console.log(`  The daemon is likely running but its PID file was lost.`);
-      console.log(`  Run --stop-daemon to clean up, then --daemon to restart.`);
+      if (ghostSentinels.length > 0) {
+        console.log(`  Ghost sentinel restart owner(s) detected: ${ghostSentinels.join(", ")}`);
+      }
+      console.log(`  Run --terminate to stop restart owners, then --daemon to restart.`);
     } else {
       // Broader scan: portal, monitor, ui-server, etc. (non-daemon bosun processes)
       const allPids = findAllBosunProcessPids();
@@ -1108,6 +1159,7 @@ async function terminateBosun() {
     ]).map((pidFile) => readAlivePid(pidFile)),
     readSentinelPid(),
   ].filter((pid) => Number.isFinite(pid) && pid > 0);
+  const sentinelGhostPids = findGhostSentinelPids();
   const manualStopHoldMs =
     Math.max(
       0,
@@ -1119,9 +1171,17 @@ async function terminateBosun() {
     ...daemonPids,
     ...monitorPids,
     ...sentinelPids,
+    ...sentinelGhostPids,
+    ...ghosts,
   ]);
   const restartOwnerPids = Array.from(
-    new Set([...ancestorPids, ...sentinelPids, ...daemonPids, ...ghosts]),
+    new Set([
+      ...ancestorPids,
+      ...sentinelPids,
+      ...sentinelGhostPids,
+      ...daemonPids,
+      ...ghosts,
+    ]),
   ).filter((pid) => pid !== process.pid);
   const tracked = [...restartOwnerPids, ...monitorPids];
   const trackedPids = Array.from(new Set([...tracked, ...ghosts])).filter(
