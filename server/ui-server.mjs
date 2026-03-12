@@ -874,7 +874,7 @@ function buildVoiceToolCapabilityPrompt(tools = [], toolConfig = null, selectedV
       ? `Enabled MCP servers (for invoke_mcp_tool): ${enabledServers.join(", ")}.`
       : "Enabled MCP servers: none.",
     skills.length > 0
-      ? `Voice agent skills: ${skills.join(", ")}.`
+      ? `Voice agent skills (${skills.length}): ${skills.join(", ")}. Full skill instructions are provided in the Voice Agent Skills section above.`
       : "Voice agent skills: none specified.",
     "",
     "TOOL USAGE RULES:",
@@ -15320,6 +15320,12 @@ async function handleApi(req, res, url) {
     return;
   }
 
+  if (path === "/api/agent/modes" && req.method === "GET") {
+    const { listAvailableModes } = await import("../agent/primary-agent.mjs");
+    jsonResponse(res, 200, { modes: listAvailableModes() });
+    return;
+  }
+
   if (path === "/api/agents/sdk-command" && req.method === "POST") {
     try {
       const body = await readJsonBody(req);
@@ -16643,12 +16649,37 @@ async function handleApi(req, res, url) {
         selectedVoiceAgent,
       );
 
+      // Resolve voice agent skill content from library
+      let voiceSkillContent = "";
+      if (Array.isArray(selectedVoiceAgent?.skills) && selectedVoiceAgent.skills.length > 0) {
+        try {
+          const { loadManifest, getEntryContent } = await import("../infra/library-manager.mjs");
+          const manifest = loadManifest(libraryRoot);
+          const skillSections = [];
+          for (const skillId of selectedVoiceAgent.skills) {
+            const entry = manifest.entries.find((e) => e.type === "skill" && e.id === skillId);
+            if (entry) {
+              const content = getEntryContent(libraryRoot, entry);
+              if (typeof content === "string" && content.trim()) {
+                skillSections.push(`### ${entry.name || skillId}\n${content.trim()}`);
+              }
+            }
+          }
+          if (skillSections.length > 0) {
+            voiceSkillContent = skillSections.join("\n\n");
+          }
+        } catch {
+          // best effort — continue without skill content
+        }
+      }
+
       const voiceCallContext = {
         ...callContext,
         voiceAgentId: activeVoiceAgentId,
         voiceAgentName: selectedVoiceAgent?.name || undefined,
         voiceAgentInstructions: selectedVoiceAgent?.voiceInstructions || undefined,
         voiceAgentSkills: Array.isArray(selectedVoiceAgent?.skills) ? selectedVoiceAgent.skills : undefined,
+        voiceAgentSkillsContent: voiceSkillContent || undefined,
         voiceToolCapabilityPrompt: capabilityPrompt,
         enabledMcpServers: Array.isArray(voiceToolCfg?.enabledMcpServers)
           ? voiceToolCfg.enabledMcpServers
@@ -16671,6 +16702,9 @@ async function handleApi(req, res, url) {
           .trim() || undefined;
         if (selectedVoiceAgent?.voiceInstructions) {
           tokenData.instructions = `${tokenData.instructions || ""}\n\n${selectedVoiceAgent.voiceInstructions}`.trim();
+        }
+        if (voiceSkillContent) {
+          tokenData.instructions = `${tokenData.instructions || ""}\n\n## Voice Agent Skills\n${voiceSkillContent}`.trim();
         }
         if (tokenData.provider === "azure") {
           tokenData.azureEndpoint = voiceCfg.azureEndpoint || undefined;

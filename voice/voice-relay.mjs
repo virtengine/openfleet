@@ -324,6 +324,7 @@ function sanitizeVoiceCallContext(context = {}) {
   const rawEnabledMcpServers = Array.isArray(context?.enabledMcpServers)
     ? context.enabledMcpServers.map((s) => String(s || "").trim()).filter(Boolean)
     : [];
+  const rawVoiceAgentSkillsContent = String(context?.voiceAgentSkillsContent || "").trim();
 
   return {
     sessionId: rawSessionId || null,
@@ -335,6 +336,7 @@ function sanitizeVoiceCallContext(context = {}) {
     voiceAgentInstructions: rawVoiceAgentInstructions || null,
     voiceToolCapabilityPrompt: rawVoiceToolCapabilityPrompt || null,
     voiceAgentSkills: rawVoiceAgentSkills,
+    voiceAgentSkillsContent: rawVoiceAgentSkillsContent || null,
     enabledMcpServers: rawEnabledMcpServers,
   };
 }
@@ -427,9 +429,11 @@ async function buildSessionScopedInstructions(baseInstructions, callContext = {}
     context.enabledMcpServers?.length
       ? `Enabled MCP servers for this session: ${context.enabledMcpServers.join(", ")}.`
       : "",
-    context.voiceAgentSkills?.length
-      ? `Voice agent skills: ${context.voiceAgentSkills.join(", ")}.`
-      : "",
+    context.voiceAgentSkillsContent
+      ? `## Voice Agent Skills\n${context.voiceAgentSkillsContent}`
+      : context.voiceAgentSkills?.length
+        ? `Voice agent skills: ${context.voiceAgentSkills.join(", ")}.`
+        : "",
     context.executor
       ? `Preferred executor for delegated work: ${context.executor}.`
       : "Preferred executor for delegated work: use configured default.",

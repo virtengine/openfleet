@@ -3513,6 +3513,13 @@ export const BUILTIN_AGENT_PROFILES = [
     voiceInstructions: "You are Nova, a female voice agent. Be concise, warm, and practical. Use tools for facts and execution. Keep spoken responses short and clear.",
     enabledTools: null,
     enabledMcpServers: [],
+    customModes: [
+      {
+        id: "voice-command",
+        description: "Execute voice commands with full tool access",
+        prefix: "[MODE: voice-command] Execute the user's request using available tools. Always call tools when they can answer the question.\n\n",
+      },
+    ],
   },
   {
     id: "voice-agent-male",
