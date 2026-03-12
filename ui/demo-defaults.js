@@ -37301,6 +37301,7 @@
       "agentType": "voice",
       "voiceAgent": true,
       "voicePersona": "neutral",
+      "voiceInstructions": "You are Bosun, a voice assistant for the VirtEngine development platform. Be helpful, concise, and professional. Use tools to answer questions and execute tasks.",
       "enabledTools": null,
       "enabledMcpServers": []
     },

@@ -701,9 +701,6 @@ function EntryEditor({ entry, onClose, onSaved, onDeleted }) {
     }
     setLoading(true);
     try {
-      if (!importAgents && !importPrompts && !importSkills && !importTools) {
-        throw new Error("Select at least one import type");
-      }
       const tags = form.tags.split(/[,\s]+/).map((t) => t.trim().toLowerCase()).filter(Boolean);
       let content = form.content;
       if (form.type === "agent") {
@@ -755,9 +752,6 @@ function EntryEditor({ entry, onClose, onSaved, onDeleted }) {
   const handleDelete = useCallback(async () => {
     setLoading(true);
     try {
-      if (!importAgents && !importPrompts && !importSkills && !importTools) {
-        throw new Error("Select at least one import type");
-      }
       const res = await removeEntry(
         entry.id,
         true,
@@ -1131,9 +1125,6 @@ function McpMarketplace({ onInstalled }) {
   const loadData = useCallback(async () => {
     setLoading(true);
     try {
-      if (!importAgents && !importPrompts && !importSkills && !importTools) {
-        throw new Error("Select at least one import type");
-      }
       const [cat, inst] = await Promise.all([
         fetchMcpCatalog(),
         fetchMcpInstalled(),
@@ -1311,7 +1302,7 @@ function McpMarketplace({ onInstalled }) {
       <div style="margin-bottom:8px;">
         <${SearchInput}
           value=${marketplaceSearch}
-          onChange=${setMarketplaceSearch}
+          onInput=${(e) => setMarketplaceSearch(e.target.value)}
           placeholder="Search marketplace (GitHub, Playwright, Exa, etc.)..." />
       </div>
 
@@ -2403,7 +2394,7 @@ export function LibraryTab() {
         <div class="search-wrap">
           <${SearchInput}
             value=${searchQuery.value}
-            onChange=${handleSearch}
+            onInput=${(e) => handleSearch(e.target.value)}
             placeholder="Search prompts, agents, skills, MCP servers..." />
         </div>
         <${TypePills} />

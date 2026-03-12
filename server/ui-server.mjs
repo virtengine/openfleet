@@ -17045,16 +17045,19 @@ async function handleApi(req, res, url) {
         ? voiceToolCfg.enabledMcpServers
         : [];
       tokenData.tools = Array.isArray(tools) ? tools : [];
+      tokenData.resolvedToolNames = Array.isArray(tools) ? tools.map((t) => t?.name).filter(Boolean) : [];
+      tokenData.enabledToolsMode = voiceToolCfg?.enabledTools == null ? "all" : "custom";
 
       // When client requests sdkMode, include extra fields for @openai/agents SDK
       if (body?.sdkMode === true) {
-        tokenData.instructions = [voiceCfg.instructions || "", capabilityPrompt]
+        const baseInstruction = [voiceCfg.instructions || "", capabilityPrompt]
           .filter(Boolean)
           .join("\n\n")
-          .trim() || undefined;
-        if (selectedVoiceAgent?.voiceInstructions) {
-          tokenData.instructions = `${tokenData.instructions || ""}\n\n${selectedVoiceAgent.voiceInstructions}`.trim();
-        }
+          .trim() || "";
+        // Prepend voice identity so the agent knows who it is
+        tokenData.instructions = selectedVoiceAgent?.voiceInstructions
+          ? `${selectedVoiceAgent.voiceInstructions}\n\n${baseInstruction}`.trim()
+          : baseInstruction || undefined;
         if (voiceSkillContent) {
           tokenData.instructions = `${tokenData.instructions || ""}\n\n## Voice Agent Skills\n${voiceSkillContent}`.trim();
         }
