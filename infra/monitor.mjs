@@ -2170,6 +2170,7 @@ const SELF_RESTART_FORCE_ACTIVE_SLOT_MIN_AGE_MS = Math.max(
 );
 let selfWatcher = null;
 let selfWatcherLib = null;
+let selfWatcherExtra = []; // watchers for sibling source dirs (task/, workspace/, etc.)
 let selfWatcherDebounce = null;
 let selfRestartTimer = null;
 let selfRestartLastChangeAt = 0;
@@ -12888,6 +12889,10 @@ function stopSelfWatcher() {
     selfWatcherLib.close();
     selfWatcherLib = null;
   }
+  for (const w of selfWatcherExtra) {
+    try { w.close(); } catch {}
+  }
+  selfWatcherExtra = [];
   if (selfWatcherDebounce) {
     clearTimeout(selfWatcherDebounce);
     selfWatcherDebounce = null;
@@ -13245,10 +13250,21 @@ function startSelfWatcher() {
     const libDir = resolve(__dirname, "lib");
     if (existsSync(libDir)) {
       selfWatcherLib = watch(libDir, { persistent: true }, handleSourceChange);
-      console.log("[monitor] watching own source files (root + lib/) for self-restart");
-    } else {
-      console.log("[monitor] watching own source files for self-restart");
     }
+    // Watch sibling source directories that contain runtime-critical modules
+    const repoRoot = resolve(__dirname, "..");
+    const siblingDirs = ["task", "workspace", "workflow", "workflow-templates", "agent", "shell", "kanban", "github", "config"];
+    const watchedDirs = ["infra/", "infra/lib/"];
+    for (const dir of siblingDirs) {
+      const dirPath = resolve(repoRoot, dir);
+      if (existsSync(dirPath)) {
+        try {
+          selfWatcherExtra.push(watch(dirPath, { persistent: true }, handleSourceChange));
+          watchedDirs.push(`${dir}/`);
+        } catch {}
+      }
+    }
+    console.log(`[monitor] watching source files for self-restart: ${watchedDirs.join(", ")}`);
   } catch (err) {
     console.warn(`[monitor] self-watcher failed: ${err.message}`);
   }
