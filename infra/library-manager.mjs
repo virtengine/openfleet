@@ -16,7 +16,7 @@
  */
 
 import { existsSync, readFileSync, writeFileSync, mkdirSync, readdirSync, statSync, unlinkSync, rmSync } from "node:fs";
-import { resolve, basename, join, relative } from "node:path";
+import { resolve, basename, join, relative, extname } from "node:path";
 import { execSync, spawnSync } from "node:child_process";
 import { homedir } from "node:os";
 import { getAgentToolConfig, getEffectiveTools } from "../agent/agent-tool-config.mjs";
@@ -36,6 +36,160 @@ export const SKILL_ENTRY_INDEX = "skills.json";
 const agentProfileIndexCache = new Map();
 const skillEntryIndexCache = new Map();
 const wellKnownSourceProbeCache = new Map();
+const repoContextCache = new Map();
+
+const REPO_CONTEXT_TTL_MS = 120_000;
+
+/**
+ * Maps file extensions → domain tags used for scoring.
+ * Intentionally broad — a single file can belong to multiple domains.
+ */
+const EXT_DOMAIN_MAP = Object.freeze({
+  ".js": ["javascript", "web"],
+  ".mjs": ["javascript", "web"],
+  ".cjs": ["javascript", "web"],
+  ".jsx": ["javascript", "react", "frontend", "web"],
+  ".ts": ["typescript", "web"],
+  ".tsx": ["typescript", "react", "frontend", "web"],
+  ".vue": ["vue", "frontend", "web"],
+  ".svelte": ["svelte", "frontend", "web"],
+  ".css": ["styling", "frontend", "web"],
+  ".scss": ["styling", "frontend", "web"],
+  ".less": ["styling", "frontend", "web"],
+  ".html": ["frontend", "web"],
+  ".py": ["python"],
+  ".pyx": ["python"],
+  ".go": ["go", "backend"],
+  ".rs": ["rust", "systems"],
+  ".java": ["java", "backend"],
+  ".kt": ["kotlin", "backend"],
+  ".cs": ["csharp", "dotnet", "backend"],
+  ".fs": ["fsharp", "dotnet", "backend"],
+  ".rb": ["ruby", "backend"],
+  ".php": ["php", "backend"],
+  ".swift": ["swift", "mobile"],
+  ".m": ["objc", "mobile"],
+  ".dart": ["dart", "flutter", "mobile"],
+  ".c": ["c", "systems"],
+  ".cpp": ["cpp", "systems"],
+  ".h": ["c", "systems"],
+  ".hpp": ["cpp", "systems"],
+  ".sh": ["shell", "devops"],
+  ".bash": ["shell", "devops"],
+  ".ps1": ["powershell", "devops"],
+  ".sql": ["database", "sql"],
+  ".graphql": ["graphql", "api"],
+  ".proto": ["protobuf", "api", "grpc"],
+  ".yaml": ["config"],
+  ".yml": ["config"],
+  ".toml": ["config"],
+  ".json": ["config"],
+  ".xml": ["config"],
+  ".tf": ["terraform", "infra", "devops"],
+  ".hcl": ["terraform", "infra", "devops"],
+  ".dockerfile": ["docker", "infra", "devops"],
+  ".md": ["docs"],
+  ".mdx": ["docs"],
+  ".rst": ["docs"],
+});
+
+/**
+ * Maps special filenames (case-insensitive) → domain tags.
+ */
+const FILENAME_DOMAIN_MAP = Object.freeze({
+  "dockerfile": ["docker", "infra", "devops"],
+  "docker-compose.yml": ["docker", "infra", "devops"],
+  "docker-compose.yaml": ["docker", "infra", "devops"],
+  "makefile": ["build", "devops"],
+  "cmakelists.txt": ["cmake", "build", "cpp"],
+  "package.json": ["javascript", "node", "web"],
+  "tsconfig.json": ["typescript", "web"],
+  "requirements.txt": ["python"],
+  "pyproject.toml": ["python"],
+  "cargo.toml": ["rust", "systems"],
+  "go.mod": ["go", "backend"],
+  "gemfile": ["ruby", "backend"],
+  "composer.json": ["php", "backend"],
+  ".github/workflows": ["ci", "devops", "github"],
+  "jenkinsfile": ["ci", "devops"],
+  ".gitlab-ci.yml": ["ci", "devops"],
+});
+
+/**
+ * Maps path segments → domain tags for deeper context.
+ */
+const PATH_SEGMENT_DOMAINS = Object.freeze({
+  test: ["testing"],
+  tests: ["testing"],
+  __tests__: ["testing"],
+  spec: ["testing"],
+  e2e: ["testing", "e2e"],
+  fixtures: ["testing"],
+  src: [],
+  lib: [],
+  dist: ["build"],
+  build: ["build"],
+  docs: ["docs"],
+  scripts: ["devops", "scripting"],
+  infra: ["infra", "devops"],
+  deploy: ["infra", "devops"],
+  k8s: ["kubernetes", "infra", "devops"],
+  migrations: ["database"],
+  models: ["backend", "database"],
+  api: ["api", "backend"],
+  routes: ["api", "backend"],
+  controllers: ["api", "backend"],
+  middleware: ["backend"],
+  components: ["frontend"],
+  pages: ["frontend"],
+  hooks: ["frontend", "react"],
+  styles: ["styling", "frontend"],
+  utils: ["utility"],
+  helpers: ["utility"],
+  config: ["config"],
+});
+
+/**
+ * Maps detected stack IDs (from detectProjectStack) → skill-relevant tags.
+ */
+const STACK_DOMAIN_MAP = Object.freeze({
+  node: ["javascript", "node", "web"],
+  python: ["python"],
+  go: ["go", "backend"],
+  rust: ["rust", "systems"],
+  java: ["java", "backend"],
+  dotnet: ["csharp", "dotnet", "backend"],
+  ruby: ["ruby", "backend"],
+  php: ["php", "backend"],
+  make: ["build"],
+});
+
+/**
+ * Maps detected framework names → skill-relevant tags.
+ */
+const FRAMEWORK_DOMAIN_MAP = Object.freeze({
+  react: ["react", "frontend", "web"],
+  nextjs: ["react", "nextjs", "frontend", "web", "ssr"],
+  vue: ["vue", "frontend", "web"],
+  nuxt: ["vue", "nuxt", "frontend", "web", "ssr"],
+  svelte: ["svelte", "frontend", "web"],
+  angular: ["angular", "frontend", "web"],
+  express: ["express", "backend", "api", "web"],
+  fastify: ["fastify", "backend", "api", "web"],
+  nestjs: ["nestjs", "backend", "api", "web"],
+  electron: ["electron", "desktop"],
+  django: ["django", "python", "backend", "web"],
+  flask: ["flask", "python", "backend", "api"],
+  fastapi: ["fastapi", "python", "backend", "api"],
+  pytorch: ["pytorch", "python", "ml", "ai"],
+  tensorflow: ["tensorflow", "python", "ml", "ai"],
+  spring: ["spring", "java", "backend"],
+  rails: ["rails", "ruby", "backend", "web"],
+  laravel: ["laravel", "php", "backend", "web"],
+  gin: ["gin", "go", "backend", "api"],
+  actix: ["actix", "rust", "backend", "api"],
+  axum: ["axum", "rust", "backend", "api"],
+});
 
 /** Resource types managed by the library */
 export const RESOURCE_TYPES = Object.freeze(["prompt", "agent", "skill", "mcp", "custom-tool"]);
@@ -256,6 +410,195 @@ function buildIndexedSkillEntry(entry) {
   };
 }
 
+// ── Repo-context signal layer ─────────────────────────────────────────────────
+
+/**
+ * Lazily import detectProjectStack to avoid circular dependencies.
+ * Falls back gracefully if the module is unavailable.
+ */
+let _detectProjectStack = null;
+function getDetectProjectStack() {
+  if (_detectProjectStack !== undefined && _detectProjectStack !== null) return _detectProjectStack;
+  try {
+    // Dynamic import would be async — use a cached lazy approach via require-like pattern.
+    // Since this module is ESM, we attempt the import and cache it.
+    _detectProjectStack = null;
+  } catch {
+    _detectProjectStack = null;
+  }
+  return _detectProjectStack;
+}
+
+/**
+ * Build a lightweight repo-context object from the workspace directory.
+ * Results are cached per repoRoot with TTL (default 120s).
+ *
+ * The context is built purely from file-system marker files (package.json,
+ * Cargo.toml, etc.) and is designed to complete in <20ms.
+ *
+ * @param {string} repoRoot
+ * @returns {{ languages: string[], frameworks: string[], domains: string[], stacks: string[] }}
+ */
+export function buildRepoContext(repoRoot) {
+  if (!repoRoot) return { languages: [], frameworks: [], domains: [], stacks: [] };
+  const key = resolve(repoRoot);
+  const cached = repoContextCache.get(key);
+  if (cached && (Date.now() - cached.ts) < REPO_CONTEXT_TTL_MS) return cached.ctx;
+
+  const ctx = _scanRepoContextFast(key);
+  repoContextCache.set(key, { ts: Date.now(), ctx });
+  return ctx;
+}
+
+const _STACK_MARKERS = [
+  { id: "node", markers: ["package.json"] },
+  { id: "python", markers: ["pyproject.toml", "setup.py", "requirements.txt", "Pipfile"] },
+  { id: "go", markers: ["go.mod"] },
+  { id: "rust", markers: ["Cargo.toml"] },
+  { id: "java", markers: ["pom.xml", "build.gradle", "build.gradle.kts"] },
+  { id: "dotnet", markers: ["*.csproj", "*.sln"] },
+  { id: "ruby", markers: ["Gemfile"] },
+  { id: "php", markers: ["composer.json"] },
+];
+
+const _FRAMEWORK_MARKERS = {
+  node: [
+    { file: "package.json", detect: (raw) => {
+      const deps = `${raw}`;
+      const found = [];
+      if (deps.includes('"react"')) found.push("react");
+      if (deps.includes('"next"')) found.push("nextjs");
+      if (deps.includes('"vue"')) found.push("vue");
+      if (deps.includes('"nuxt"')) found.push("nuxt");
+      if (deps.includes('"svelte"')) found.push("svelte");
+      if (deps.includes('"@angular/core"')) found.push("angular");
+      if (deps.includes('"express"')) found.push("express");
+      if (deps.includes('"fastify"')) found.push("fastify");
+      if (deps.includes('"@nestjs/core"')) found.push("nestjs");
+      if (deps.includes('"electron"')) found.push("electron");
+      if (deps.includes('"vitest"') || deps.includes('"jest"') || deps.includes('"mocha"')) found.push("testing");
+      return found;
+    }},
+  ],
+};
+
+function _scanRepoContextFast(rootDir) {
+  const stacks = [];
+  const frameworks = [];
+  const domains = new Set();
+
+  for (const def of _STACK_MARKERS) {
+    const found = def.markers.some((m) => {
+      if (m.includes("*")) {
+        try {
+          return readdirSync(rootDir).some((f) => f.endsWith(m.replace("*", "")));
+        } catch { return false; }
+      }
+      return existsSync(resolve(rootDir, m));
+    });
+    if (!found) continue;
+    stacks.push(def.id);
+    const stackDomains = STACK_DOMAIN_MAP[def.id];
+    if (stackDomains) for (const d of stackDomains) domains.add(d);
+  }
+
+  for (const stackId of stacks) {
+    const fmDetectors = _FRAMEWORK_MARKERS[stackId];
+    if (!fmDetectors) continue;
+    for (const det of fmDetectors) {
+      const fpath = resolve(rootDir, det.file);
+      if (!existsSync(fpath)) continue;
+      try {
+        const raw = readFileSync(fpath, "utf8").slice(0, 8192);
+        const found = det.detect(raw);
+        for (const fw of found) {
+          frameworks.push(fw);
+          const fwDomains = FRAMEWORK_DOMAIN_MAP[fw];
+          if (fwDomains) for (const d of fwDomains) domains.add(d);
+        }
+      } catch { /* ignore */ }
+    }
+  }
+
+  const languages = uniqueStrings(stacks.flatMap((s) => STACK_DOMAIN_MAP[s] || []).filter((d) =>
+    !["web", "backend", "systems", "build"].includes(d)));
+
+  return {
+    languages: uniqueStrings(languages),
+    frameworks: uniqueStrings(frameworks),
+    domains: [...domains],
+    stacks: uniqueStrings(stacks),
+  };
+}
+
+/**
+ * Infer domain tags from a list of changed file paths.
+ * Pure computation — no I/O. Designed for <1ms on typical inputs.
+ *
+ * @param {string[]} changedFiles
+ * @returns {{ fileDomains: string[], fileLanguages: string[], testRelated: boolean }}
+ */
+export function inferFileContextSignals(changedFiles) {
+  const domains = new Set();
+  const languages = new Set();
+  let testRelated = false;
+
+  for (const filePath of changedFiles) {
+    if (!filePath) continue;
+    const normalized = String(filePath).replace(/\\/g, "/").toLowerCase();
+
+    // Extension-based domains
+    const ext = extname(normalized);
+    const extDomains = EXT_DOMAIN_MAP[ext];
+    if (extDomains) {
+      for (const d of extDomains) domains.add(d);
+      if (extDomains[0] && !["config", "docs", "styling", "web"].includes(extDomains[0])) {
+        languages.add(extDomains[0]);
+      }
+    }
+
+    // Filename-based domains (e.g. Dockerfile, Makefile)
+    const fname = basename(normalized);
+    const fnameDomains = FILENAME_DOMAIN_MAP[fname];
+    if (fnameDomains) for (const d of fnameDomains) domains.add(d);
+
+    // Path-segment domains
+    const segments = normalized.split("/");
+    for (const seg of segments) {
+      const segDomains = PATH_SEGMENT_DOMAINS[seg];
+      if (segDomains) for (const d of segDomains) domains.add(d);
+    }
+
+    // Test detection from filename patterns
+    if (/\.(test|spec|e2e)\.[a-z]+$/.test(normalized) || /__(tests|test)__/.test(normalized)) {
+      testRelated = true;
+      domains.add("testing");
+    }
+  }
+
+  return {
+    fileDomains: [...domains],
+    fileLanguages: [...languages],
+    testRelated,
+  };
+}
+
+/**
+ * Precompiled regex cache for title patterns to avoid re-compiling on every match.
+ */
+const compiledRegexCache = new Map();
+function getCompiledRegex(pattern) {
+  let re = compiledRegexCache.get(pattern);
+  if (re !== undefined) return re;
+  try {
+    re = new RegExp(pattern, "i");
+  } catch {
+    re = null;
+  }
+  compiledRegexCache.set(pattern, re);
+  return re;
+}
+
 function buildSkillSelection(rootDir, best, criteria = {}, opts = {}) {
   const skillIndex = loadSkillEntryIndex(rootDir);
   const indexedSkills = Array.isArray(skillIndex?.skills) ? skillIndex.skills : [];
@@ -263,10 +606,18 @@ function buildSkillSelection(rootDir, best, criteria = {}, opts = {}) {
   const indexedById = new Map(indexedSkills.map((entry) => [entry.id, entry]));
   const profileSkillIds = toStringArray(best?.profile?.skills);
   const textBlob = [criteria?.title, criteria?.description].filter(Boolean).join("\n");
+
+  // Gather repo-context and file-context signals
+  const repoCtx = criteria?.repoContext || (criteria?.repoRoot ? buildRepoContext(criteria.repoRoot) : null);
+  const changedFiles = toStringArray(criteria?.changedFiles);
+  const fileSignals = changedFiles.length > 0 ? inferFileContextSignals(changedFiles) : null;
+
   const criteriaTags = uniqueStrings([
     ...toStringArray(criteria?.tags),
     ...keywordTokens(textBlob, { minLength: 4 }),
-    ...keywordTokens(toStringArray(criteria?.changedFiles).join(" "), { minLength: 3 }),
+    ...keywordTokens(changedFiles.join(" "), { minLength: 3 }),
+    ...(repoCtx ? [...repoCtx.languages, ...repoCtx.frameworks, ...repoCtx.domains] : []),
+    ...(fileSignals ? [...fileSignals.fileDomains, ...fileSignals.fileLanguages] : []),
   ]).map((value) => value.toLowerCase());
 
   const candidateIds = new Set(profileSkillIds);
@@ -275,6 +626,12 @@ function buildSkillSelection(rootDir, best, criteria = {}, opts = {}) {
     if (ids.length > 128) continue;
     for (const id of ids) candidateIds.add(id);
   }
+
+  // Build domain-relevance set for bonus scoring
+  const contextDomains = new Set([
+    ...(repoCtx ? [...repoCtx.languages, ...repoCtx.frameworks, ...repoCtx.domains] : []),
+    ...(fileSignals ? [...fileSignals.fileDomains, ...fileSignals.fileLanguages] : []),
+  ].map((d) => d.toLowerCase()));
 
   const scored = [];
   const profileSkillSet = new Set(profileSkillIds.map((value) => value.toLowerCase()));
@@ -298,6 +655,16 @@ function buildSkillSelection(rootDir, best, criteria = {}, opts = {}) {
     if (tagHits.length > 0) {
       score += Math.min(6, tagHits.length * 2);
       reasons.push(`tags:${tagHits.slice(0, 4).join(",")}`);
+    }
+
+    // Signal: repo-context domain overlap → up to +4
+    if (contextDomains.size > 0) {
+      const domainHits = [...contextDomains].filter((d) => haystack.has(d));
+      if (domainHits.length > 0) {
+        const domainScore = Math.min(4, domainHits.length);
+        score += domainScore;
+        reasons.push(`domain:${domainHits.slice(0, 3).join(",")}`);
+      }
     }
 
     if (score <= 0) continue;
@@ -824,13 +1191,29 @@ export function matchAgentProfiles(rootDir, criteria = {}, opts = {}) {
   const taskScope = extractConventionalScope(title);
   const textBlob = `${title}\n${description}`.trim();
   const textBlobLower = textBlob.toLowerCase();
+
+  // Repo-context and file-context signals
+  const repoCtx = criteria?.repoContext || (criteria?.repoRoot ? buildRepoContext(criteria.repoRoot) : null);
+  const changedFiles = toStringArray(criteria?.changedFiles);
+  const fileSignals = changedFiles.length > 0 ? inferFileContextSignals(changedFiles) : null;
+
   const criteriaTags = uniqueStrings([
     ...toStringArray(criteria?.tags),
     ...toStringArray(String(criteria?.tagsCsv || "").split(",")),
     ...keywordTokens(textBlob, { minLength: 4 }),
+    ...(repoCtx ? [...repoCtx.languages, ...repoCtx.frameworks] : []),
+    ...(fileSignals ? fileSignals.fileLanguages : []),
   ]).map((v) => v.toLowerCase());
-  const changedFiles = toStringArray(criteria?.changedFiles);
   const changedHints = keywordTokens(changedFiles.join(" "), { minLength: 3 });
+
+  // Combined domain set for profile matching
+  const contextDomains = new Set([
+    ...(repoCtx ? [...repoCtx.languages, ...repoCtx.frameworks, ...repoCtx.domains] : []),
+    ...(fileSignals ? [...fileSignals.fileDomains, ...fileSignals.fileLanguages] : []),
+  ].map((d) => d.toLowerCase()));
+
+  // Max theoretical score: 10 + 6 + 6 + 3 + 8 + 6 + 4 = 43
+  const MAX_THEORETICAL_SCORE = 43;
 
   const candidates = [];
   for (const entry of profiles) {
@@ -843,25 +1226,25 @@ export function matchAgentProfiles(rootDir, criteria = {}, opts = {}) {
     let score = 0;
     const reasons = [];
 
+    // ── Signal 1: titlePattern regex match → +10 (precompiled) ──
     const patterns = toStringArray(profile.titlePatterns);
     for (const pattern of patterns) {
-      try {
-        if (new RegExp(pattern, "i").test(textBlob)) {
-          score += 10;
-          reasons.push(`pattern:${pattern}`);
-          break;
-        }
-      } catch {
-        // ignore invalid regex
+      const re = getCompiledRegex(pattern);
+      if (re && re.test(textBlob)) {
+        score += 10;
+        reasons.push(`pattern:${pattern}`);
+        break;
       }
     }
 
+    // ── Signal 2: conventional-commit scope match → +6 ──
     const scopes = toStringArray(profile.scopes).map((s) => s.toLowerCase());
     if (taskScope && scopes.includes(taskScope)) {
       score += 6;
       reasons.push(`scope:${taskScope}`);
     }
 
+    // ── Signal 3: tag overlap → up to +6 ──
     const profileTags = uniqueStrings([...(entry.tags || []), ...toStringArray(profile.tags)]).map((v) => v.toLowerCase());
     const tagHits = criteriaTags.filter((tag) => profileTags.includes(tag));
     if (tagHits.length > 0) {
@@ -870,6 +1253,7 @@ export function matchAgentProfiles(rootDir, criteria = {}, opts = {}) {
       reasons.push(`tags:${tagHits.slice(0, 4).join(",")}`);
     }
 
+    // ── Signal 4: voice-type hint → +3 ──
     if (profileType === "voice") {
       const voiceHint = /\bvoice\b|\bcall\b|\brealtime\b/.test(textBlobLower);
       if (voiceHint) {
@@ -878,6 +1262,7 @@ export function matchAgentProfiles(rootDir, criteria = {}, opts = {}) {
       }
     }
 
+    // ── Signal 5: changed-file path match → up to +8 ──
     const scopeHitsFromPaths = scopes.filter((scope) =>
       changedHints.includes(scope) || changedFiles.some((f) => String(f).toLowerCase().includes(`/${scope}/`) || String(f).toLowerCase().includes(`\\${scope}\\`)),
     );
@@ -887,9 +1272,31 @@ export function matchAgentProfiles(rootDir, criteria = {}, opts = {}) {
       reasons.push(`paths:${scopeHitsFromPaths.slice(0, 4).join(",")}`);
     }
 
+    // ── Signal 6: repo-context domain match → up to +6 ──
+    if (contextDomains.size > 0) {
+      const profileAllTags = new Set([...profileTags, ...scopes]);
+      const domainHits = [...contextDomains].filter((d) => profileAllTags.has(d));
+      if (domainHits.length > 0) {
+        const domainScore = Math.min(6, domainHits.length * 2);
+        score += domainScore;
+        reasons.push(`repo-ctx:${domainHits.slice(0, 3).join(",")}`);
+      }
+    }
+
+    // ── Signal 7: file-type domain match → up to +4 ──
+    if (fileSignals && fileSignals.fileDomains.length > 0) {
+      const profileAllTags = new Set([...profileTags, ...scopes]);
+      const fileHits = fileSignals.fileDomains.filter((d) => profileAllTags.has(d));
+      if (fileHits.length > 0) {
+        const fileTypeScore = Math.min(4, fileHits.length);
+        score += fileTypeScore;
+        reasons.push(`file-type:${fileHits.slice(0, 3).join(",")}`);
+      }
+    }
+
     if (score <= 0) continue;
 
-    const confidence = Math.max(0, Math.min(1, score / 24));
+    const confidence = Math.max(0, Math.min(1, score / MAX_THEORETICAL_SCORE));
     candidates.push({
       ...entry,
       agentType: profileType,
@@ -932,6 +1339,8 @@ export function matchAgentProfiles(rootDir, criteria = {}, opts = {}) {
       requestedAgentType,
       taskScope,
       changedFilesCount: changedFiles.length,
+      repoContext: repoCtx || null,
+      fileSignals: fileSignals || null,
     },
   };
 }

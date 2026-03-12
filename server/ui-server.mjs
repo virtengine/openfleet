@@ -11416,6 +11416,11 @@ async function handleApi(req, res, url) {
           }
         : getCriteriaFromQuery();
 
+      // Inject workspace repo root for repo-context-aware resolution
+      if (!criteria.repoRoot) {
+        criteria.repoRoot = workspaceContext.workspaceDir || workspaceContext.workspaceRoot || repoRoot;
+      }
+
       const roots = resolveLibraryRootsForContext(workspaceContext);
       ensureLibraryRootsInitialized(roots);
 
@@ -11488,6 +11493,11 @@ async function handleApi(req, res, url) {
             topN: Number.parseInt(String(bodyCriteria?.topN || ""), 10) || 5,
           }
         : getCriteriaFromQuery();
+
+      // Inject workspace repo root for repo-context-aware matching
+      if (!criteria.repoRoot) {
+        criteria.repoRoot = workspaceContext.workspaceDir || workspaceContext.workspaceRoot || repoRoot;
+      }
 
       const roots = resolveLibraryRootsForContext(workspaceContext);
       ensureLibraryRootsInitialized(roots);

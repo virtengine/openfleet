@@ -8823,6 +8823,7 @@ registerNodeType("action.resolve_executor", {
           title: task.title,
           description: task.description,
           tags: task.tags,
+          repoRoot,
         },
         { topN: 1 },
       );
