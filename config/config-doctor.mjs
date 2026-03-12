@@ -3,6 +3,7 @@ import { resolve, dirname, isAbsolute, relative, join } from "node:path";
 import { execSync, spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { homedir } from "node:os";
+import { ensureTestRuntimeSandbox } from "../infra/test-runtime.mjs";
 import { getWorkflowContract } from "../workflow/workflow-contract.mjs";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -96,6 +97,9 @@ function resolveConfigDir(repoRoot) {
   if (isPathInside(repoPath, packageDir) || hasSetupMarkers(packageDir)) {
     return packageDir;
   }
+
+  const sandbox = ensureTestRuntimeSandbox();
+  if (sandbox?.configDir) return sandbox.configDir;
 
   const preferWindowsDirs =
     process.platform === "win32" && !isWslInteropRuntime();

@@ -602,6 +602,7 @@ async function ensureWorkflowAutomationEngine() {
         services,
         workflowDir: resolve(repoRoot, ".bosun", "workflows"),
         runsDir: resolve(repoRoot, ".bosun", "workflow-runs"),
+        configDir: repoRoot,
       });
 
       const configuredWorkflowProfile =
@@ -14065,7 +14066,7 @@ safeSetInterval("flush-error-queue", () => flushErrorQueue(), 60 * 1000);
 // Check all installed polling workflows (trigger.schedule, trigger.scheduled_once,
 // trigger.task_available, trigger.task_low) and fire any whose interval has elapsed.
 // This keeps scheduled and task-poll lifecycle templates executing without hardcoded
-// per-workflow timers.
+// per-workflow timers.  Workspace-aware: skips workflows for paused/disabled workspaces.
 const scheduleCheckIntervalMs = 60 * 1000; // check every 60s
 pollWorkflowSchedulesOnce = async function pollWorkflowSchedulesOnce(
   triggerSource = "schedule-poll",
@@ -14076,7 +14077,7 @@ pollWorkflowSchedulesOnce = async function pollWorkflowSchedulesOnce(
     if (!engine?.evaluateScheduleTriggers) return;
     const includeTaskPoll = opts?.includeTaskPoll !== false;
 
-    const triggered = engine.evaluateScheduleTriggers();
+    const triggered = engine.evaluateScheduleTriggers({ configDir: repoRoot });
     if (!Array.isArray(triggered) || triggered.length === 0) return;
 
     for (const match of triggered) {
@@ -14095,10 +14096,15 @@ pollWorkflowSchedulesOnce = async function pollWorkflowSchedulesOnce(
         .execute(workflowId, {
           _triggerSource: triggerSource,
           _triggeredBy: match?.triggeredBy || null,
+          _workspaceId: match?.workspaceId || null,
           repoRoot,
         })
         .then((ctx) => {
           const runId = ctx?.id || "unknown";
+          // Quiet mode: don't log completed runs where trigger didn't fire
+          const triggerNodeId = match?.triggeredBy;
+          const triggerOutput = triggerNodeId ? ctx?.getNodeOutput?.(triggerNodeId) : null;
+          if (triggerOutput?.triggered === false) return; // silent — trigger didn't fire
           const runStatus =
             Array.isArray(ctx?.errors) && ctx.errors.length > 0
               ? "failed"

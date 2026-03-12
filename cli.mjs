@@ -28,6 +28,7 @@ import { fileURLToPath } from "node:url";
 import { execFileSync, execSync, fork, spawn } from "node:child_process";
 import os from "node:os";
 import { createDaemonCrashTracker } from "./infra/daemon-restart-policy.mjs";
+import { ensureTestRuntimeSandbox } from "./infra/test-runtime.mjs";
 import {
   applyAllCompatibility,
   detectLegacySetup,
@@ -140,6 +141,12 @@ function showHelp() {
     --workspace-switch <id>     Switch active workspace
     --workspace-add-repo        Add repo to workspace (interactive)
     --workspace-health          Run workspace health diagnostics
+    --workspace-pause <id>      Pause a workspace (no new workflows)
+    --workspace-resume <id>     Resume a paused workspace
+    --workspace-disable <id>    Disable a workspace entirely
+    --workspace-status          Show state summary of all workspaces
+    --workspace-executors <id>  Show/set executor config for workspace
+                                  [--max-concurrent N] [--pool shared|dedicated] [--weight N]
 
   TASK MANAGEMENT
     task list [--status s] [--json]  List tasks with optional filters
@@ -251,6 +258,9 @@ function resolveConfigDirForCli() {
       : resolveRepoRoot({ cwd: process.cwd() });
   const repoLocalConfigDir = resolveRepoLocalBosunDir(repoRoot);
   if (repoLocalConfigDir) return repoLocalConfigDir;
+
+  const sandbox = ensureTestRuntimeSandbox();
+  if (sandbox?.configDir) return sandbox.configDir;
 
   const preferWindowsDirs =
     process.platform === "win32" && !isWslInteropRuntime();
@@ -368,10 +378,21 @@ function uniqueResolvedPaths(paths) {
   return results;
 }
 
+function getWorkspaceScopedCacheDirCandidate(repoRootPath) {
+  const bosunDir = process.env.BOSUN_DIR || resolveConfigDirForCli();
+  if (!bosunDir || !repoRootPath) return null;
+  const parts = String(repoRootPath).replace(/\\/g, "/").split("/").filter(Boolean);
+  const repoName = parts.at(-1);
+  const workspaceName = parts.at(-2);
+  if (!repoName || !workspaceName) return null;
+  return resolve(bosunDir, "workspaces", workspaceName, repoName, ".cache");
+}
+
 function getRuntimeCacheDirCandidates(extraCacheDirs = []) {
   return uniqueResolvedPaths([
     ...extraCacheDirs,
     runtimeCacheDir,
+    getWorkspaceScopedCacheDirCandidate(runtimeRepoRoot),
     process.env.BOSUN_DIR ? resolve(process.env.BOSUN_DIR, ".cache") : null,
     resolve(__dirname, ".cache"),
     resolve(process.cwd(), ".cache"),
@@ -625,6 +646,42 @@ function findGhostDaemonPids() {
   }
 }
 
+function findGhostSentinelPids() {
+  if (process.platform === "win32") {
+    try {
+      const out = execFileSync(
+        "powershell",
+        [
+          "-NoProfile",
+          "-Command",
+          "Get-CimInstance Win32_Process | Where-Object { $_.Name -match '^(node|electron)(\\.exe)?$' -and $_.CommandLine -match 'telegram-sentinel\\.mjs' } | Select-Object -ExpandProperty ProcessId",
+        ],
+        { encoding: "utf8", stdio: ["pipe", "pipe", "pipe"], timeout: 3000 },
+      ).trim();
+      if (!out) return [];
+      return out
+        .split(/\r?\n/)
+        .map((s) => parseInt(String(s).trim(), 10))
+        .filter((n) => Number.isFinite(n) && n > 0 && n !== process.pid);
+    } catch {
+      return [];
+    }
+  }
+  try {
+    const out = execFileSync(
+      "pgrep",
+      ["-f", "telegram-sentinel\\.mjs"],
+      { encoding: "utf8", stdio: ["pipe", "pipe", "pipe"], timeout: 3000 },
+    ).trim();
+    return out
+      .split("\n")
+      .map((s) => parseInt(s.trim(), 10))
+      .filter((n) => Number.isFinite(n) && n > 0 && n !== process.pid);
+  } catch {
+    return [];
+  }
+}
+
 function writePidFile(pid) {
   try {
     mkdirSync(dirname(DAEMON_PID_FILE), { recursive: true });
@@ -852,10 +909,14 @@ function daemonStatus() {
   } else {
     // Check for ghost daemon-child processes (alive but no PID file)
     const ghosts = findGhostDaemonPids();
+    const ghostSentinels = findGhostSentinelPids();
     if (ghosts.length > 0) {
       console.log(`  :alert:  bosun daemon is NOT tracked (no PID file), but ${ghosts.length} ghost process(es) found: ${ghosts.join(", ")}`);
       console.log(`  The daemon is likely running but its PID file was lost.`);
-      console.log(`  Run --stop-daemon to clean up, then --daemon to restart.`);
+      if (ghostSentinels.length > 0) {
+        console.log(`  Ghost sentinel restart owner(s) detected: ${ghostSentinels.join(", ")}`);
+      }
+      console.log(`  Run --terminate to stop restart owners, then --daemon to restart.`);
     } else {
       // Broader scan: portal, monitor, ui-server, etc. (non-daemon bosun processes)
       const allPids = findAllBosunProcessPids();
@@ -1108,6 +1169,7 @@ async function terminateBosun() {
     ]).map((pidFile) => readAlivePid(pidFile)),
     readSentinelPid(),
   ].filter((pid) => Number.isFinite(pid) && pid > 0);
+  const sentinelGhostPids = findGhostSentinelPids();
   const manualStopHoldMs =
     Math.max(
       0,
@@ -1119,9 +1181,17 @@ async function terminateBosun() {
     ...daemonPids,
     ...monitorPids,
     ...sentinelPids,
+    ...sentinelGhostPids,
+    ...ghosts,
   ]);
   const restartOwnerPids = Array.from(
-    new Set([...ancestorPids, ...sentinelPids, ...daemonPids, ...ghosts]),
+    new Set([
+      ...ancestorPids,
+      ...sentinelPids,
+      ...sentinelGhostPids,
+      ...daemonPids,
+      ...ghosts,
+    ]),
   ).filter((pid) => pid !== process.pid);
   const tracked = [...restartOwnerPids, ...monitorPids];
   const trackedPids = Array.from(new Set([...tracked, ...ghosts])).filter(
@@ -1742,7 +1812,11 @@ async function main() {
       console.log("\n  Workspaces:");
       for (const ws of workspaces) {
         const marker = ws.id === active?.id ? " ← active" : "";
-        console.log(`    ${ws.name} (${ws.id})${marker}`);
+        const stateIcon = ws.state === "active" ? "●" : ws.state === "paused" ? "◐" : "○";
+        const stateLabel = ws.state !== "active" ? ` [${ws.state}]` : "";
+        console.log(`    ${stateIcon} ${ws.name} (${ws.id})${stateLabel}${marker}`);
+        const ex = ws.executors;
+        console.log(`      executors: max=${ex.maxConcurrent}, pool=${ex.pool}, weight=${ex.weight}`);
         for (const repo of ws.repos || []) {
           const primary = repo.primary ? " [primary]" : "";
           const exists = repo.exists ? "✓" : "✗";
@@ -1829,6 +1903,137 @@ async function main() {
     const result = runWorkspaceHealthCheck({ configDir });
     console.log(formatWorkspaceHealthReport(result));
     process.exit(result.ok ? 0 : 1);
+  }
+
+  // Handle --workspace-pause
+  if (args.includes("--workspace-pause") || args.includes("workspace-pause")) {
+    const { pauseWorkspace, getWorkspace } = await import("./workspace/workspace-manager.mjs");
+    const configDirArg = getArgValue("--config-dir");
+    const configDir = configDirArg || process.env.BOSUN_DIR || resolveConfigDirForCli();
+    const wsId = getArgValue("--workspace-pause") || getArgValue("workspace-pause");
+    if (!wsId) {
+      console.error("  Error: workspace ID required. Usage: bosun --workspace-pause <id>");
+      process.exit(1);
+    }
+    try {
+      pauseWorkspace(configDir, wsId);
+      const ws = getWorkspace(configDir, wsId);
+      console.log(`\n  ⏸  Workspace "${ws?.name || wsId}" paused — no new workflows will start\n`);
+    } catch (err) {
+      console.error(`  Error: ${err.message}`);
+      process.exit(1);
+    }
+    process.exit(0);
+  }
+
+  // Handle --workspace-resume
+  if (args.includes("--workspace-resume") || args.includes("workspace-resume")) {
+    const { resumeWorkspace, getWorkspace } = await import("./workspace/workspace-manager.mjs");
+    const configDirArg = getArgValue("--config-dir");
+    const configDir = configDirArg || process.env.BOSUN_DIR || resolveConfigDirForCli();
+    const wsId = getArgValue("--workspace-resume") || getArgValue("workspace-resume");
+    if (!wsId) {
+      console.error("  Error: workspace ID required. Usage: bosun --workspace-resume <id>");
+      process.exit(1);
+    }
+    try {
+      resumeWorkspace(configDir, wsId);
+      const ws = getWorkspace(configDir, wsId);
+      console.log(`\n  ▶  Workspace "${ws?.name || wsId}" resumed — workflows will trigger normally\n`);
+    } catch (err) {
+      console.error(`  Error: ${err.message}`);
+      process.exit(1);
+    }
+    process.exit(0);
+  }
+
+  // Handle --workspace-disable
+  if (args.includes("--workspace-disable") || args.includes("workspace-disable")) {
+    const { disableWorkspace, getWorkspace } = await import("./workspace/workspace-manager.mjs");
+    const configDirArg = getArgValue("--config-dir");
+    const configDir = configDirArg || process.env.BOSUN_DIR || resolveConfigDirForCli();
+    const wsId = getArgValue("--workspace-disable") || getArgValue("workspace-disable");
+    if (!wsId) {
+      console.error("  Error: workspace ID required. Usage: bosun --workspace-disable <id>");
+      process.exit(1);
+    }
+    try {
+      disableWorkspace(configDir, wsId);
+      const ws = getWorkspace(configDir, wsId);
+      console.log(`\n  ⏹  Workspace "${ws?.name || wsId}" disabled — no workflows, no executors\n`);
+    } catch (err) {
+      console.error(`  Error: ${err.message}`);
+      process.exit(1);
+    }
+    process.exit(0);
+  }
+
+  // Handle --workspace-status
+  if (args.includes("--workspace-status") || args.includes("workspace-status")) {
+    const { getWorkspaceStateSummary } = await import("./workspace/workspace-manager.mjs");
+    const configDirArg = getArgValue("--config-dir");
+    const configDir = configDirArg || process.env.BOSUN_DIR || resolveConfigDirForCli();
+    const summary = getWorkspaceStateSummary(configDir);
+    if (summary.length === 0) {
+      console.log("\n  No workspaces configured.\n");
+    } else {
+      console.log("\n  Workspace Status:");
+      for (const ws of summary) {
+        const stateIcon = ws.state === "active" ? "●" : ws.state === "paused" ? "◐" : "○";
+        const current = ws.isCurrent ? " ← current" : "";
+        console.log(`    ${stateIcon} ${ws.name} (${ws.id}) — ${ws.state}${current}`);
+        const ex = ws.executors;
+        console.log(`      executors: max=${ex.maxConcurrent}, pool=${ex.pool}, weight=${ex.weight}`);
+        if (ws.disabledWorkflows.length > 0) {
+          console.log(`      disabled workflows: ${ws.disabledWorkflows.join(", ")}`);
+        }
+        if (ws.enabledWorkflows.length > 0) {
+          console.log(`      enabled workflows: ${ws.enabledWorkflows.join(", ")}`);
+        }
+      }
+      console.log("");
+    }
+    process.exit(0);
+  }
+
+  // Handle --workspace-executors
+  if (args.includes("--workspace-executors") || args.includes("workspace-executors")) {
+    const { setWorkspaceExecutors, getWorkspace } = await import("./workspace/workspace-manager.mjs");
+    const configDirArg = getArgValue("--config-dir");
+    const configDir = configDirArg || process.env.BOSUN_DIR || resolveConfigDirForCli();
+    const wsId = getArgValue("--workspace-executors") || getArgValue("workspace-executors");
+    if (!wsId) {
+      console.error("  Error: workspace ID required. Usage: bosun --workspace-executors <id> [--max-concurrent N] [--pool shared|dedicated] [--weight N]");
+      process.exit(1);
+    }
+    const maxConcurrent = getArgValue("--max-concurrent");
+    const pool = getArgValue("--pool");
+    const weight = getArgValue("--weight");
+    const hasUpdate = maxConcurrent || pool || weight;
+    if (hasUpdate) {
+      try {
+        const opts = {};
+        if (maxConcurrent) opts.maxConcurrent = Number(maxConcurrent);
+        if (pool) opts.pool = pool;
+        if (weight) opts.weight = Number(weight);
+        const result = setWorkspaceExecutors(configDir, wsId, opts);
+        console.log(`\n  ✓ Executor config updated for "${wsId}":`, JSON.stringify(result), "\n");
+      } catch (err) {
+        console.error(`  Error: ${err.message}`);
+        process.exit(1);
+      }
+    } else {
+      const ws = getWorkspace(configDir, wsId);
+      if (!ws) {
+        console.error(`  Error: workspace "${wsId}" not found`);
+        process.exit(1);
+      }
+      console.log(`\n  Executor config for "${ws.name}":`);
+      console.log(`    maxConcurrent: ${ws.executors.maxConcurrent}`);
+      console.log(`    pool: ${ws.executors.pool}`);
+      console.log(`    weight: ${ws.executors.weight}\n`);
+    }
+    process.exit(0);
   }
 
   // Handle --setup-terminal (legacy terminal wizard)
