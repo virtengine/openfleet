@@ -176,6 +176,64 @@ function finalizeCollector(contract, collector) {
   storeSectionValue(contract, key);
 }
 
+function parseMarkdownHeadingLine(trimmedLine = "") {
+  const line = String(trimmedLine || "");
+  if (!line || line[0] !== "#") return null;
+  let depth = 0;
+  while (depth < line.length && depth < 6 && line[depth] === "#") depth += 1;
+  if (depth < 1 || depth > 6) return null;
+  if (line[depth] !== " ") return null;
+  return line.slice(depth + 1);
+}
+
+function isAsciiLetter(char) {
+  if (!char) return false;
+  const code = char.charCodeAt(0);
+  return (code >= 65 && code <= 90) || (code >= 97 && code <= 122);
+}
+
+function isContractFieldKeyChar(char) {
+  if (!char) return false;
+  if (char === " " || char === "_" || char === "-") return true;
+  const code = char.charCodeAt(0);
+  return (
+    (code >= 65 && code <= 90) ||
+    (code >= 97 && code <= 122) ||
+    (code >= 48 && code <= 57)
+  );
+}
+
+function parseContractFieldLine(rawLine = "") {
+  const line = String(rawLine || "");
+  const trimmedStart = line.trimStart();
+  if (!trimmedStart || !isAsciiLetter(trimmedStart[0])) return null;
+  let idx = 1;
+  while (idx < trimmedStart.length) {
+    const ch = trimmedStart[idx];
+    if (ch === ":") break;
+    if (!isContractFieldKeyChar(ch)) return null;
+    idx += 1;
+  }
+  if (trimmedStart[idx] !== ":") return null;
+  const key = trimmedStart.slice(0, idx).trimEnd();
+  if (!key) return null;
+  return {
+    key,
+    value: trimmedStart.slice(idx + 1).trimStart(),
+  };
+}
+
+function parseMarkdownBulletLine(rawLine = "") {
+  const line = String(rawLine || "");
+  const trimmedStart = line.trimStart();
+  if (!trimmedStart) return null;
+  const marker = trimmedStart[0];
+  if (marker !== "-" && marker !== "*") return null;
+  const separator = trimmedStart[1];
+  if (separator !== " " && separator !== "\t") return null;
+  return trimmedStart.slice(2).trimStart();
+}
+
 export function parseWorkflowContractMarkdown(content = "", projectRoot = "") {
   const contract = createEmptyContract(projectRoot);
   const source = String(content || "");
@@ -197,11 +255,11 @@ export function parseWorkflowContractMarkdown(content = "", projectRoot = "") {
     }
     if (inFence) continue;
 
-    const headingMatch = trimmed.match(/^#{1,6}\s+(.*)$/);
-    if (headingMatch) {
+    const headingText = parseMarkdownHeadingLine(trimmed);
+    if (headingText !== null) {
       finalizeCollector(contract, collector);
       collector = null;
-      const headingKey = normalizeHeadingKey(headingMatch[1]);
+      const headingKey = normalizeHeadingKey(headingText);
       if (headingKey) {
         collector = LIST_FIELDS.has(headingKey)
           ? { key: headingKey, items: [] }
@@ -210,15 +268,15 @@ export function parseWorkflowContractMarkdown(content = "", projectRoot = "") {
       continue;
     }
 
-    const fieldMatch = line.match(/^\s*([A-Za-z][A-Za-z0-9 _-]*)\s*:\s*(.*)$/);
+    const fieldMatch = parseContractFieldLine(line);
     if (fieldMatch) {
       finalizeCollector(contract, collector);
       collector = null;
 
-      const key = normalizeContractKey(fieldMatch[1]);
+      const key = normalizeContractKey(fieldMatch.key);
       if (!key) continue;
 
-      const rawValue = String(fieldMatch[2] || "").trim();
+      const rawValue = String(fieldMatch.value || "").trim();
       if (LIST_FIELDS.has(key)) {
         if (rawValue) {
           appendListValues(contract, key, parseInlineList(rawValue));
@@ -243,9 +301,9 @@ export function parseWorkflowContractMarkdown(content = "", projectRoot = "") {
     if (!collector) continue;
 
     if (LIST_FIELDS.has(collector.key)) {
-      const bulletMatch = line.match(/^\s*[-*]\s+(.*)$/);
-      if (bulletMatch) {
-        collector.items.push(stripWrappingQuotes(bulletMatch[1]));
+      const bulletText = parseMarkdownBulletLine(line);
+      if (bulletText !== null) {
+        collector.items.push(stripWrappingQuotes(bulletText));
         continue;
       }
       if (!trimmed) continue;
