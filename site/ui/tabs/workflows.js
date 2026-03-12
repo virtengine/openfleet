@@ -299,6 +299,11 @@ function humanizeVarKey(key) {
 /** Infer a short helper text for a variable key */
 function inferVarHelp(key, value) {
   const k = key.toLowerCase();
+  if (k.includes("testcommand") || k.includes("test_command") || k === "testframework" || k === "test_framework") return "Test command for your project — select from presets or enter custom";
+  if (k.includes("buildcommand") || k.includes("build_command")) return "Build command for your project — select from presets or enter custom";
+  if (k.includes("lintcommand") || k.includes("lint_command") || k.includes("lintcmd")) return "Lint/style check command — select from presets or enter custom";
+  if (k.includes("syntaxcheck") || k.includes("syntax_check")) return "Syntax/compile check command — select from presets or enter custom";
+  if (k === "basebranch" || k === "base_branch" || k === "defaultbasebranch") return "Base branch for PRs — select from common options or enter custom";
   if (k.includes("timeout") || k.includes("delay") || k.includes("cooldown")) return "Duration in milliseconds";
   if (k.includes("branch")) return "Git branch name";
   if (k.includes("url") || k.includes("endpoint")) return "URL / endpoint";
@@ -314,12 +319,24 @@ function inferVarHelp(key, value) {
 function inferVarOptions(key, value) {
   const k = String(key || "").toLowerCase();
   const options = [];
+
   if (k.includes("executor") || k.includes("sdk")) {
     options.push("auto", "codex", "claude", "copilot");
   } else if (k.includes("bumptype") || k.includes("bump_type")) {
     options.push("patch", "minor", "major");
+  } else if (k.includes("testcommand") || k.includes("test_command") || k === "testframework" || k === "test_framework") {
+    options.push("npm test", "yarn test", "pnpm test", "pytest", "poetry run pytest", "go test ./...", "cargo test", "mvn test", "./gradlew test", "dotnet test", "bundle exec rspec", "make test");
+  } else if (k.includes("buildcommand") || k.includes("build_command")) {
+    options.push("npm run build", "yarn build", "pnpm build", "go build ./...", "cargo build", "mvn package -DskipTests", "./gradlew build", "dotnet build", "python -m build", "make");
+  } else if (k.includes("lintcommand") || k.includes("lint_command") || k.includes("lintcmd")) {
+    options.push("npm run lint", "npx eslint .", "ruff check .", "golangci-lint run", "cargo clippy -- -D warnings", "dotnet format --verify-no-changes", "bundle exec rubocop");
+  } else if (k.includes("syntaxcheck") || k.includes("syntax_check")) {
+    options.push("node --check", "npx tsc --noEmit", "python -m py_compile", "go vet ./...", "cargo check", "dotnet build --no-restore");
+  } else if (k === "basebranch" || k === "base_branch" || k === "defaultbasebranch" || k === "targetbranch") {
+    options.push("main", "master", "develop", "staging");
   }
-  // Keep typed value only when this field already has known preset options.
+
+  // Keep typed value when this field has known preset options.
   if (options.length > 0 && typeof value === "string" && value.trim()) {
     options.unshift(value.trim());
   }
@@ -368,7 +385,12 @@ function isQuickVarKey(key) {
     k.includes("sdk") ||
     k.includes("model") ||
     k.includes("branch") ||
-    k.includes("title")
+    k.includes("title") ||
+    k.includes("testcommand") || k.includes("test_command") ||
+    k === "testframework" || k === "test_framework" ||
+    k.includes("buildcommand") || k.includes("build_command") ||
+    k.includes("lintcommand") || k.includes("lint_command") ||
+    k.includes("syntaxcheck") || k.includes("syntax_check")
   );
 }
 
@@ -2042,49 +2064,80 @@ function NodePalette({ nodeTypes: types, onSelect, onClose }) {
 
 const COMMAND_PRESETS = {
   testing: [
-    { label: "Run Tests", cmd: "npm test", icon: "beaker" },
-    { label: "Run Single File", cmd: 'npx vitest run tests/{{testFile}}', icon: "target" },
-    { label: "Syntax Check", cmd: "npm run syntax:check", icon: "check" },
+    { label: "Run Tests (npm)", cmd: "npm test", icon: "🧪" },
+    { label: "Run Tests (yarn)", cmd: "yarn test", icon: "🧪" },
+    { label: "Run Tests (pnpm)", cmd: "pnpm test", icon: "🧪" },
+    { label: "Run Tests (pytest)", cmd: "pytest", icon: "🧪" },
+    { label: "Run Tests (Go)", cmd: "go test ./...", icon: "🧪" },
+    { label: "Run Tests (Rust)", cmd: "cargo test", icon: "🧪" },
+    { label: "Run Tests (Java/Maven)", cmd: "mvn test", icon: "🧪" },
+    { label: "Run Tests (Java/Gradle)", cmd: "./gradlew test", icon: "🧪" },
+    { label: "Run Tests (.NET)", cmd: "dotnet test", icon: "🧪" },
+    { label: "Run Tests (Ruby)", cmd: "bundle exec rspec", icon: "🧪" },
+    { label: "Run Single File", cmd: 'npx vitest run tests/{{testFile}}', icon: "🎯" },
+    { label: "Syntax Check (Node)", cmd: "npm run syntax:check", icon: "✅" },
+    { label: "Syntax Check (Python)", cmd: "python -m py_compile", icon: "✅" },
+    { label: "Syntax Check (Go)", cmd: "go vet ./...", icon: "✅" },
+    { label: "Syntax Check (Rust)", cmd: "cargo check", icon: "✅" },
   ],
   build: [
-    { label: "Build Project", cmd: "npm run build", icon: "hammer" },
-    { label: "Build Watch", cmd: "npm run build -- --watch", icon: "eye" },
-    { label: "Type Check", cmd: "npx tsc --noEmit", icon: "ruler" },
+    { label: "Build (npm)", cmd: "npm run build", icon: "🔨" },
+    { label: "Build (yarn)", cmd: "yarn build", icon: "🔨" },
+    { label: "Build (pnpm)", cmd: "pnpm build", icon: "🔨" },
+    { label: "Build (Go)", cmd: "go build ./...", icon: "🔨" },
+    { label: "Build (Rust)", cmd: "cargo build", icon: "🔨" },
+    { label: "Build (Maven)", cmd: "mvn package -DskipTests", icon: "🔨" },
+    { label: "Build (Gradle)", cmd: "./gradlew build", icon: "🔨" },
+    { label: "Build (.NET)", cmd: "dotnet build", icon: "🔨" },
+    { label: "Build (Python)", cmd: "python -m build", icon: "🔨" },
+    { label: "Build (Make)", cmd: "make", icon: "🔨" },
+    { label: "Build Watch", cmd: "npm run build -- --watch", icon: "👁" },
+    { label: "Type Check (TS)", cmd: "npx tsc --noEmit", icon: "📏" },
+  ],
+  lint: [
+    { label: "Lint (npm)", cmd: "npm run lint", icon: "🔍" },
+    { label: "Lint (ESLint)", cmd: "npx eslint .", icon: "🔍" },
+    { label: "Lint (Python/Ruff)", cmd: "ruff check .", icon: "🔍" },
+    { label: "Lint (Python/Flake8)", cmd: "flake8", icon: "🔍" },
+    { label: "Lint (Go)", cmd: "golangci-lint run", icon: "🔍" },
+    { label: "Lint (Rust)", cmd: "cargo clippy -- -D warnings", icon: "🔍" },
+    { label: "Lint (Ruby)", cmd: "bundle exec rubocop", icon: "🔍" },
+    { label: "Lint (.NET)", cmd: "dotnet format --verify-no-changes", icon: "🔍" },
   ],
   git: [
-    { label: "Diff Stats", cmd: "git diff --stat main...HEAD", icon: "chart" },
-    { label: "Git Status", cmd: "git status --porcelain", icon: "clipboard" },
-    { label: "Stage All", cmd: "git add -A", icon: "download" },
-    { label: "Commit", cmd: 'git commit -m "{{commitMessage}}"', icon: "save" },
-    { label: "Push", cmd: "git push --set-upstream origin HEAD", icon: "rocket" },
+    { label: "Diff Stats", cmd: "git diff --stat main...HEAD", icon: "📊" },
+    { label: "Git Status", cmd: "git status --porcelain", icon: "📋" },
+    { label: "Stage All", cmd: "git add -A", icon: "⬇" },
+    { label: "Commit", cmd: 'git commit -m "{{commitMessage}}"', icon: "💾" },
+    { label: "Push", cmd: "git push --set-upstream origin HEAD", icon: "🚀" },
   ],
   github: [
-    { label: "Check CI", cmd: "gh pr checks --json name,state", icon: "search" },
-    { label: "Merge PR (squash)", cmd: "gh pr merge --auto --squash", icon: "git" },
-    { label: "Close PR", cmd: 'gh pr close --comment "{{reason}}"', icon: "ban" },
-    { label: "PR Diff", cmd: "gh pr diff --stat", icon: "chart" },
-    { label: "PR Handoff Note", cmd: 'echo "Bosun manages PR lifecycle after push; direct PR commands are disabled."', icon: "edit" },
-    { label: "Add Label", cmd: 'gh pr edit --add-label "{{label}}"', icon: "tag" },
-    { label: "Request Review", cmd: 'gh pr edit --add-reviewer {{reviewer}}', icon: "eye" },
+    { label: "Check CI", cmd: "gh pr checks --json name,state", icon: "🔍" },
+    { label: "Merge PR (squash)", cmd: "gh pr merge --auto --squash", icon: "🔀" },
+    { label: "Close PR", cmd: 'gh pr close --comment "{{reason}}"', icon: "🚫" },
+    { label: "PR Diff", cmd: "gh pr diff --stat", icon: "📊" },
+    { label: "PR Handoff Note", cmd: 'echo "Bosun manages PR lifecycle after push; direct PR commands are disabled."', icon: "📝" },
+    { label: "Add Label", cmd: 'gh pr edit --add-label "{{label}}"', icon: "🏷" },
+    { label: "Request Review", cmd: 'gh pr edit --add-reviewer {{reviewer}}', icon: "👁" },
   ],
   bosun: [
-    { label: "List Tasks", cmd: "bosun task list --status todo --json", icon: "clipboard" },
-    { label: "Count Tasks", cmd: "bosun task list --status todo --count", icon: "hash" },
-    { label: "Task Stats", cmd: "bosun task stats --json", icon: "chart" },
-    { label: "Plan Tasks", cmd: "bosun task plan --count 5", icon: "compass" },
-    { label: "Create Task", cmd: 'bosun task create --title "{{title}}" --status todo', icon: "plus" },
-    { label: "Monitor Status", cmd: "bosun --daemon-status", icon: "heart" },
+    { label: "List Tasks", cmd: "bosun task list --status todo --json", icon: "📋" },
+    { label: "Count Tasks", cmd: "bosun task list --status todo --count", icon: "#️⃣" },
+    { label: "Task Stats", cmd: "bosun task stats --json", icon: "📊" },
+    { label: "Plan Tasks", cmd: "bosun task plan --count 5", icon: "🧭" },
+    { label: "Create Task", cmd: 'bosun task create --title "{{title}}" --status todo', icon: "➕" },
+    { label: "Monitor Status", cmd: "bosun --daemon-status", icon: "❤" },
   ],
   session: [
-    { label: "Continue Session", cmd: 'bosun agent continue --session "{{sessionId}}" --prompt "continue"', icon: "play" },
-    { label: "Restart Agent", cmd: 'bosun agent restart --session "{{sessionId}}"', icon: "refresh" },
-    { label: "Kill Agent", cmd: 'bosun agent kill --session "{{sessionId}}"', icon: "stop" },
-    { label: "List Sessions", cmd: "bosun agent list --json", icon: "server" },
+    { label: "Continue Session", cmd: 'bosun agent continue --session "{{sessionId}}" --prompt "continue"', icon: "▶" },
+    { label: "Restart Agent", cmd: 'bosun agent restart --session "{{sessionId}}"', icon: "🔄" },
+    { label: "Kill Agent", cmd: 'bosun agent kill --session "{{sessionId}}"', icon: "⏹" },
+    { label: "List Sessions", cmd: "bosun agent list --json", icon: "🖥" },
   ],
   screenshots: [
-    { label: "Desktop Screenshot", cmd: "bosun screenshot --viewport 1280x720", icon: "monitor" },
-    { label: "Mobile Screenshot", cmd: "bosun screenshot --viewport 375x812", icon: "phone" },
-    { label: "All Viewports", cmd: "bosun screenshot --viewport desktop,mobile", icon: "camera" },
+    { label: "Desktop Screenshot", cmd: "bosun screenshot --viewport 1280x720", icon: "🖥" },
+    { label: "Mobile Screenshot", cmd: "bosun screenshot --viewport 375x812", icon: "📱" },
+    { label: "All Viewports", cmd: "bosun screenshot --viewport desktop,mobile", icon: "📸" },
   ],
 };
 
@@ -2519,16 +2572,33 @@ function NodeConfigEditor({ node, nodeTypes: types, onUpdate, onUpdateLabel, onC
             ${[
               ...(nodeAction === "build" ? [
                 { label: "npm run build", cmd: "npm run build" },
+                { label: "yarn build", cmd: "yarn build" },
+                { label: "go build", cmd: "go build ./..." },
+                { label: "cargo build", cmd: "cargo build" },
+                { label: "mvn package", cmd: "mvn package -DskipTests" },
+                { label: "gradlew build", cmd: "./gradlew build" },
+                { label: "dotnet build", cmd: "dotnet build" },
+                { label: "make", cmd: "make" },
                 { label: "Zero Warnings", cmd: "npm run build", extra: { zeroWarnings: true } },
               ] : []),
               ...(nodeAction === "tests" ? [
                 { label: "npm test", cmd: "npm test" },
                 { label: "Vitest", cmd: "npx vitest run" },
                 { label: "Jest", cmd: "npx jest" },
+                { label: "pytest", cmd: "pytest" },
+                { label: "go test", cmd: "go test ./..." },
+                { label: "cargo test", cmd: "cargo test" },
+                { label: "mvn test", cmd: "mvn test" },
+                { label: "dotnet test", cmd: "dotnet test" },
+                { label: "rspec", cmd: "bundle exec rspec" },
               ] : []),
               ...(nodeAction === "lint" ? [
                 { label: "npm run lint", cmd: "npm run lint" },
                 { label: "ESLint", cmd: "npx eslint ." },
+                { label: "Ruff", cmd: "ruff check ." },
+                { label: "golangci-lint", cmd: "golangci-lint run" },
+                { label: "Clippy", cmd: "cargo clippy -- -D warnings" },
+                { label: "Rubocop", cmd: "bundle exec rubocop" },
               ] : []),
             ].map(p => html`
               <${Button}

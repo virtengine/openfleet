@@ -407,13 +407,14 @@ describe("workflow-templates", () => {
     expect(createFlowEdge).toBeDefined();
   });
 
-  it("backend agent template keeps backend/api trigger filter", () => {
+  it("backend agent template triggers on task_assigned without restrictive filter", () => {
     const template = getTemplate("template-backend-agent");
     expect(template).toBeDefined();
 
     const triggerNode = template.nodes.find((n) => n.id === "trigger");
     expect(triggerNode?.type).toBe("trigger.task_assigned");
-    expect(triggerNode?.config?.filter).toBe("task.tags?.some(t => t === 'backend' || t === 'api')");
+    // No restrictive filter — triggers on any assigned task (language-agnostic)
+    expect(triggerNode?.config?.filter).toBeUndefined();
   });
 
   it("agent templates only advance to inreview after a real PR is linked", () => {

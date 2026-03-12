@@ -13220,8 +13220,25 @@ async function handleApi(req, res, url) {
         return;
       }
       const tplMod = _wfTemplates;
-      const list = tplMod.listTemplates();
+      const rootDir = wfCtx.workspaceContext?.workspaceDir || process.cwd();
+      const list = tplMod.listTemplates(rootDir);
       jsonResponse(res, 200, { ok: true, templates: list });
+    } catch (err) {
+      jsonResponse(res, 500, { ok: false, error: err.message });
+    }
+    return;
+  }
+
+  if (path === "/api/workflows/detect-project") {
+    try {
+      const wfCtx = await getWorkflowRequestContext(url);
+      const rootDir = wfCtx.ok ? (wfCtx.workspaceContext?.workspaceDir || process.cwd()) : process.cwd();
+      let detected = { stacks: [], primary: null, commands: {}, frameworks: [], isMonorepo: false };
+      try {
+        const { detectProjectStack } = await import("../workflow/project-detection.mjs");
+        detected = detectProjectStack(rootDir);
+      } catch {}
+      jsonResponse(res, 200, { ok: true, detected });
     } catch (err) {
       jsonResponse(res, 500, { ok: false, error: err.message });
     }

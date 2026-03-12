@@ -31,6 +31,7 @@
  */
 
 import { createHash, randomUUID } from "node:crypto";
+import { detectProjectStack, getCommandPresets } from "./project-detection.mjs";
 
 // ── Re-export helpers for external consumers ────────────────────────────────
 export { node, edge, resetLayout } from "../workflow-templates/_helpers.mjs";
@@ -810,7 +811,33 @@ export function expandTemplateGroups(templateIds) {
  * List all available templates with metadata.
  * @returns {Array<{id, name, description, category, tags, replaces?}>}
  */
-function inferVariableInputAndOptions(key, defaultValue) {
+/**
+ * Classify a variable key into a command category if it matches.
+ * Returns "test" | "build" | "lint" | "syntaxCheck" | null.
+ */
+function classifyCommandVariable(key) {
+  const k = String(key || "").toLowerCase();
+  if (k.includes("testcommand") || k.includes("test_command") || k === "testframework" || k === "test_framework") return "test";
+  if (k.includes("buildcommand") || k.includes("build_command")) return "build";
+  if (k.includes("lintcommand") || k.includes("lint_command") || k.includes("lintcmd")) return "lint";
+  if (k.includes("syntaxcheck") || k.includes("syntax_check") || k.includes("typecheckcommand") || k.includes("type_check")) return "syntaxCheck";
+  return null;
+}
+
+let _cachedDetection = null;
+let _cachedDetectionRoot = null;
+
+function getCachedDetection(rootDir) {
+  if (!rootDir) return null;
+  if (_cachedDetectionRoot === rootDir && _cachedDetection) return _cachedDetection;
+  try {
+    _cachedDetection = detectProjectStack(rootDir);
+    _cachedDetectionRoot = rootDir;
+  } catch { _cachedDetection = null; }
+  return _cachedDetection;
+}
+
+function inferVariableInputAndOptions(key, defaultValue, rootDir) {
   const normalized = String(key || "").trim().toLowerCase();
   if (typeof defaultValue === "boolean") return { input: "toggle", options: [] };
   if (typeof defaultValue === "number") return { input: "number", options: [] };
@@ -819,10 +846,30 @@ function inferVariableInputAndOptions(key, defaultValue) {
   }
 
   const optionValues = [];
-  if (normalized.includes("executor") || normalized.includes("sdk")) {
+
+  // Command-type variables get auto-detected + multi-language presets
+  const cmdCategory = classifyCommandVariable(normalized);
+  if (cmdCategory) {
+    const detected = rootDir ? getCachedDetection(rootDir) : null;
+    const presets = getCommandPresets(detected);
+    const presetList = presets[cmdCategory] || [];
+
+    if (presetList.length > 0) {
+      // Put current default first if not already in presets
+      const existingValues = new Set(presetList.map(p => p.value));
+      if (typeof defaultValue === "string" && defaultValue.trim() && !existingValues.has(defaultValue.trim())) {
+        optionValues.push(defaultValue.trim());
+      }
+      for (const p of presetList) {
+        optionValues.push(p.value);
+      }
+    }
+  } else if (normalized.includes("executor") || normalized.includes("sdk")) {
     optionValues.push("auto", "codex", "claude", "copilot");
   } else if (normalized.includes("bumptype") || normalized.includes("bump_type")) {
     optionValues.push("patch", "minor", "major");
+  } else if (normalized === "basebranch" || normalized === "base_branch" || normalized === "defaultbasebranch" || normalized === "targetbranch" || normalized === "default_target_branch") {
+    optionValues.push("main", "master", "develop", "staging");
   }
 
   if (typeof defaultValue === "string" && defaultValue.trim()) {
@@ -848,10 +895,15 @@ function inferVariableDescription(key, defaultValue) {
   const normalized = String(key || "").trim().toLowerCase();
   if (normalized.includes("taskid") || normalized.includes("task_id")) return "Task identifier (for example TASK-123).";
   if (normalized.includes("prompt") || normalized.includes("problem") || normalized.includes("description")) return "Free-form instruction text.";
+  if (normalized === "basebranch" || normalized === "base_branch" || normalized === "defaultbasebranch") return "Base branch for PRs (e.g. main, master, develop). Select from common options or type a custom branch.";
   if (normalized.includes("branch")) return "Git branch name.";
   if (normalized.includes("timeout") || normalized.includes("delay") || normalized.includes("cooldown")) return "Duration in milliseconds.";
   if (normalized.includes("executor") || normalized.includes("sdk")) return "Executor profile used by agent nodes.";
   if (normalized.includes("model")) return "Model id used by agent nodes.";
+  if (classifyCommandVariable(normalized) === "test") return "Test command for your project. Auto-detected from project files when available.";
+  if (classifyCommandVariable(normalized) === "build") return "Build command for your project. Auto-detected from project files when available.";
+  if (classifyCommandVariable(normalized) === "lint") return "Lint/style check command. Auto-detected from project files when available.";
+  if (classifyCommandVariable(normalized) === "syntaxCheck") return "Syntax/compile check command. Auto-detected from project files when available.";
   if (typeof defaultValue === "boolean") return "Toggle this setting on or off.";
   if (typeof defaultValue === "number") return "Numeric workflow setting.";
   return "";
@@ -895,7 +947,7 @@ function collectTemplateCapabilities(template) {
   };
 }
 
-export function listTemplates() {
+export function listTemplates(rootDir) {
   return WORKFLOW_TEMPLATES.map((t) => {
     const cat = TEMPLATE_CATEGORIES[t.category] || TEMPLATE_CATEGORIES.custom;
     const fingerprint = computeWorkflowFingerprint(t);
@@ -922,7 +974,7 @@ export function listTemplates() {
       variables: t.variables && typeof t.variables === "object"
         ? Object.entries(t.variables).map(([key, defaultValue]) => {
             const required = defaultValue === "" || defaultValue == null;
-            const inferred = inferVariableInputAndOptions(key, defaultValue);
+            const inferred = inferVariableInputAndOptions(key, defaultValue, rootDir);
             return {
               key,
               defaultValue,

@@ -4030,17 +4030,17 @@
     {
       "id": "template-backend-agent",
       "name": "Task Completion Agent",
-      "description": "Spins up an agent focused on backend/API development with a test-first methodology. Writes tests first, implements the feature, validates with build + lint, then creates a PR.",
+      "description": "General-purpose task completion agent with a test-first methodology. Writes tests first, implements the feature, validates with build + lint, then creates a PR. Works with any language/framework — commands are auto-detected from your project or fully customizable.",
       "category": "agents",
       "categoryLabel": "Agents",
       "categoryIcon": ":bot:",
       "categoryOrder": 2,
       "tags": [
         "agent",
-        "backend",
-        "api",
+        "task-completion",
         "test-first",
-        "tdd"
+        "tdd",
+        "multi-language"
       ],
       "nodeCount": 29,
       "edgeCount": 30,
@@ -4048,8 +4048,9 @@
       "enabled": true,
       "trigger": "trigger.task_assigned",
       "variables": {
-        "testFramework": "node --test",
+        "testCommand": "npm test",
         "buildCommand": "npm run build",
+        "lintCommand": "",
         "baseBranch": "main",
         "protectedBranches": [
           "main",
@@ -4063,15 +4064,15 @@
       },
       "metadata": {
         "author": "bosun",
-        "version": 1,
+        "version": 2,
         "createdAt": "2025-02-25T00:00:00Z",
-        "templateVersion": "1.0.0",
+        "templateVersion": "2.0.0",
         "tags": [
           "agent",
-          "backend",
-          "api",
+          "task-completion",
           "test-first",
-          "tdd"
+          "tdd",
+          "multi-language"
         ],
         "replaces": {
           "module": "primary-agent.mjs",
@@ -4081,7 +4082,7 @@
           "calledFrom": [
             "task-executor.mjs:executeTask"
           ],
-          "description": "Replaces generic agent task execution with a structured backend workflow. Test-first methodology, build/lint gates, and Bosun-managed PR lifecycle handoff are enforced as distinct workflow stages."
+          "description": "Replaces generic agent task execution with a structured workflow. Test-first methodology, build/lint gates, and Bosun-managed PR lifecycle handoff are enforced as distinct workflow stages. Works with any language/framework."
         }
       },
       "nodes": [
@@ -4089,9 +4090,7 @@
           "id": "trigger",
           "type": "trigger.task_assigned",
           "label": "Task Assigned",
-          "config": {
-            "filter": "task.tags?.some(t => t === 'backend' || t === 'api')"
-          },
+          "config": {},
           "position": {
             "x": 400,
             "y": 50
@@ -4121,7 +4120,7 @@
           "type": "action.run_agent",
           "label": "Write Tests First",
           "config": {
-            "prompt": "# Test-First Development\n\nBased on the plan:\n{{plan}}\n\nWrite comprehensive tests FIRST before any implementation:\n1. Unit tests for new functions/methods\n2. Integration tests for API endpoints if applicable\n3. Edge cases and error scenarios\n\nUse the project's existing test framework: {{testFramework}}\nCommit with message \"test: add tests for [feature]\"",
+            "prompt": "# Test-First Development\n\nBased on the plan:\n{{plan}}\n\nWrite comprehensive tests FIRST before any implementation:\n1. Unit tests for new functions/methods\n2. Integration tests for API endpoints if applicable\n3. Edge cases and error scenarios\n\nUse the project's test command: {{testCommand}}\nCommit with message \"test: add tests for [feature]\"",
             "sdk": "{{agentSdk}}",
             "timeoutMs": "{{timeoutMs}}"
           },
@@ -4138,7 +4137,7 @@
           "type": "action.run_agent",
           "label": "Implement Feature",
           "config": {
-            "prompt": "# Implement Backend Feature\n\nThe tests have been written. Now implement the feature to make them pass:\n1. Follow existing code conventions\n2. Add proper error handling\n3. Ensure all new tests pass\n4. Do NOT modify the tests — make the code fit the contract\n\nRun `{{testFramework}}` after implementation.\nCommit with message \"feat: implement [feature]\"",
+            "prompt": "# Implement Feature\n\nThe tests have been written. Now implement the feature to make them pass:\n1. Follow existing code conventions\n2. Add proper error handling\n3. Ensure all new tests pass\n4. Do NOT modify the tests — make the code fit the contract\n\nRun `{{testCommand}}` after implementation.\nCommit with message \"feat: implement [feature]\"",
             "sdk": "{{agentSdk}}",
             "timeoutMs": "{{timeoutMs}}"
           },
@@ -4171,7 +4170,7 @@
           "type": "validation.tests",
           "label": "Final Test Run",
           "config": {
-            "command": "{{testFramework}}"
+            "command": "{{testCommand}}"
           },
           "position": {
             "x": 400,
@@ -4186,7 +4185,7 @@
           "type": "validation.lint",
           "label": "Lint Check",
           "config": {
-            "command": "npm run lint 2>/dev/null || echo 'no lint script'"
+            "command": "{{lintCommand}} 2>/dev/null || echo 'no lint configured'"
           },
           "position": {
             "x": 400,
@@ -4356,7 +4355,7 @@
           "type": "action.run_agent",
           "label": "Auto-Fix Validation Failures",
           "config": {
-            "prompt": "# Fix Backend Validation Failures\n\nThe first validation pass failed for task **{{taskTitle}}**.\n\nPlan:\n{{plan}}\n\nCurrent validation outputs:\n{{validationSummary}}\n\nFix the code so build/tests/lint pass.\nDo NOT weaken, remove, or bypass tests.\nKeep the original task scope.\n\nRun build + tests + lint locally before finishing.\nCommit with message \"fix: address backend workflow validation failures\"",
+            "prompt": "# Fix Validation Failures\n\nThe first validation pass failed for task **{{taskTitle}}**.\n\nPlan:\n{{plan}}\n\nCurrent validation outputs:\n{{validationSummary}}\n\nFix the code so build/tests/lint pass.\nDo NOT weaken, remove, or bypass tests.\nKeep the original task scope.\n\nRun build + tests + lint locally before finishing.\nCommit with message \"fix: address validation failures\"",
             "sdk": "{{agentSdk}}",
             "timeoutMs": "{{autoFixTimeoutMs}}"
           },
@@ -4389,7 +4388,7 @@
           "type": "validation.tests",
           "label": "Final Test Run (Retry)",
           "config": {
-            "command": "{{testFramework}}"
+            "command": "{{testCommand}}"
           },
           "position": {
             "x": 620,
@@ -4404,7 +4403,7 @@
           "type": "validation.lint",
           "label": "Lint Check (Retry)",
           "config": {
-            "command": "npm run lint 2>/dev/null || echo 'no lint script'"
+            "command": "{{lintCommand}} 2>/dev/null || echo 'no lint configured'"
           },
           "position": {
             "x": 620,
@@ -11968,7 +11967,9 @@
         "minFileSizeKb": 30,
         "testCommand": "npm test",
         "buildCommand": "npm run build",
-        "syntaxCheckCommand": "node --check"
+        "syntaxCheckCommand": "node --check",
+        "lintCommand": "",
+        "sourceExtensions": ".mjs,.js,.ts,.tsx,.py,.go,.rs,.java,.cs,.rb,.php"
       },
       "metadata": {
         "author": "bosun",
@@ -12038,7 +12039,7 @@
           "type": "action.run_command",
           "label": "Scan Large Files",
           "config": {
-            "command": "node -e \"const{readdirSync,statSync}=require('fs');const{join,relative}=require('path');const base=process.cwd();function walk(d){const out=[];for(const f of readdirSync(d,{withFileTypes:true})){if(f.name==='node_modules'||f.name==='.cache'||f.name==='.git'||f.name==='worktrees')continue;const p=join(d,f.name);if(f.isDirectory())out.push(...walk(p));else if(/\\.(mjs|js)$/.test(f.name)){const s=statSync(p);out.push({p,kb:Math.round(s.size/1024)})}}return out}const files=walk(base).filter(x=>x.kb>={{minFileSizeKb}}).sort((a,b)=>b.kb-a.kb).slice(0,20);console.log(files.map(x=>x.kb+'kb\\t'+relative(base,x.p)).join('\\n'))\"",
+            "command": "node -e \"const{readdirSync,statSync}=require('fs');const{join,relative}=require('path');const base=process.cwd();const exts=new Set('{{sourceExtensions}}'.split(',').map(e=>e.trim()));function walk(d){const out=[];for(const f of readdirSync(d,{withFileTypes:true})){if(f.name==='node_modules'||f.name==='.cache'||f.name==='.git'||f.name==='worktrees'||f.name==='__pycache__'||f.name==='.venv'||f.name==='target'||f.name==='vendor'||f.name==='dist'||f.name==='build')continue;const p=join(d,f.name);if(f.isDirectory())out.push(...walk(p));else{const ext='.'+f.name.split('.').pop();if(exts.has(ext)){const s=statSync(p);out.push({p,kb:Math.round(s.size/1024)})}}}return out}const files=walk(base).filter(x=>x.kb>={{minFileSizeKb}}).sort((a,b)=>b.kb-a.kb).slice(0,20);console.log(files.map(x=>x.kb+'kb\\t'+relative(base,x.p)).join('\\n'))\"",
             "continueOnError": true
           },
           "position": {
@@ -12056,7 +12057,7 @@
           "config": {
             "timeoutMs": "{{sessionTimeoutMs}}",
             "sdk": "auto",
-            "prompt": "# Code Quality Striker\n\nYou are a **structural quality agent**. Your sole mandate is to improve the\ninternal structure of the codebase so that future agentic models can work on\nit more efficiently — smaller files, clearer module boundaries, zero\nduplication, and self-contained functions.\n\n## Session Constraints\n\n- **Hard session cap**: you have at most 90 minutes total. Budget your time.\n- **You MUST open a PR before ending** — a session with no PR is a failed\n  session. If you run out of time mid-refactor, commit what you have, push,\n  and open the PR immediately even if the work is partial, AS LONG AS all\n  tests pass.\n- **Maximum {{maxFilesPerSession}} source files changed** in a single PR.\n  Keep diffs small and reviewable. Better to do one clean split per session\n  than attempt a mega-refactor.\n- You may run multiple sessions and PRs over time. Prefer incremental progress.\n\n## ✅ Allowed Changes (ONLY these)\n\n1. **Module decomposition** — extract a large file into smaller, focused\n   modules. The extracted module must be imported back so the public surface\n   is identical.\n2. **Function splitting** — break functions > ~80 lines into smaller,\n   well-named helpers within the same file or a co-located util module.\n3. **Deduplication** — extract identical or near-identical logic blocks into\n   a shared helper. Must not change call-site behaviour.\n4. **Dead code removal** — remove functions, variables, or imports that are\n   verifiably unreferenced (no callers anywhere in the repo).\n5. **Import cleanup** — remove unused imports, deduplicate import statements,\n   consolidate barrel imports.\n\n## ❌ Forbidden Changes (HARD STOPS — never do these)\n\n- Adding, removing, or changing any exported function signature or return value\n- Changing any HTTP route path, method, or response shape\n- Changing any config key names or default values\n- Adding new features, flags, or options of any kind\n- Changing test assertions or test logic\n- Renaming exported symbols (only rename internal/private symbols)\n- Adding comments, JSDoc, or inline documentation (unless minimal and necessary)\n- Changing error messages visible to users or logs (string literals)\n- Any change to .json, .sh, .md, .yaml, .html, .css, or non-.mjs/.js files\n  (unless you are only touching an import path string that is broken by a move)\n\n## Workflow\n\n### Step 1 — Identify your target\n\nUse the candidate file list provided (sorted by size, largest first):\n\n```\n{{scan-candidates.output}}\n```\n\nPick **1–3 files** for this session. Prioritise:\n- Files > 500 lines used by multiple modules (high parallel-conflict risk)\n- Files with clearly repeated logic blocks\n- Files with functions > 100 lines that have distinct sub-responsibilities\n\nRead each target file in full before making any decision. Do NOT edit\nanything you have not fully read.\n\n### Step 2 — Plan your split in writing\n\nBefore touching the file, write a short plan (to yourself, as a comment in\nyour reasoning — DO NOT add it to the code):\n- What gets extracted and where\n- New file names (follow existing naming conventions in that directory)\n- Which exports stay vs. move\n- Any callers that will need their import paths updated\n\n### Step 3 — Extract and wire up\n\n- Create the new module file(s) under the same directory as the source file.\n- Update the source file to re-export or directly import the extracted piece\n  so every existing call-site continues to work without modification.\n- Update any OTHER files that directly imported from the source file, if and\n  only if you moved an export that those files reference. Use\n  `grep -r 'importedName' --include='*.mjs' --include='*.js'` to find callers.\n- **Do not touch callers unless strictly required by the move.**\n\n### Step 4 — Validate before committing\n\nRun ALL of the following in order. Do not commit if any fail:\n\n```bash\n# 1. Syntax check every file you touched\n{{syntaxCheckCommand}} <file1> <file2> ...\n\n# 2. Full test suite — must be 0 failures, 0 unexpected skips\nnpm test\n\n# 3. Build — must pass clean\nnpm run build\n```\n\nIf tests fail, **revert your change** (`git checkout -- <file>`) and either:\n- Attempt a smaller, safer split of the same file, OR\n- Move to a different target file\n\n**Never push a failing test suite.**\n\n### Step 5 — Commit, push, and open the PR\n\nBranch name: `chore/code-quality-striker-{{_runId}}`\nBase branch: `{{baseBranch}}`\n\nCommit message format:\n```\nrefactor(<module>): split <description>\n\n- extracted <what> into <new-file>\n- <any other bullet points>\n\nNo functional changes. All tests pass.\n```\n\nPR title: `refactor: code quality pass — <one-line summary>`\n\nPR body template:\n```markdown\n## Code Quality Pass\n\n**Session**: code-quality-striker {{_runId}}\n**Scope**: structural refactor only — zero functional changes\n\n### Changes\n- <bullet per extracted module or dedup>\n\n### Validation\n- `node --check` passed on all touched files\n- `npm test` passed (N tests)\n- `npm run build` passed\n\n### Why\n<one sentence: \"X was Y lines with Z responsibilities; split to improve\nparallel edit safety for future agent sessions.\">\n```\n\n### Step 6 — Write session log\n\nAppend a new entry to `{{sessionLogPath}}` using this\nexact format (create the file if it does not exist):\n\n```markdown\n## <ISO timestamp with timezone>\n\n- Scope: <one sentence describing what was refactored>\n- Files changed: <comma-separated list>\n- Strategy: <what split/dedup/cleanup was performed and why>\n- Validation evidence:\n  - `node --check` passed on all touched files\n  - `npm test` passed (N tests)\n  - `npm run build` passed\n- PR: #<number> — `<branch name>`\n```\n\n## Time Budget Warning\n\nIf you have fewer than 15 minutes remaining:\n- Stop new analysis immediately\n- Commit and push whatever passing changes you have\n- Open the PR even if the scope is smaller than planned\n- Write the session log\n- Stop\n\nA small, clean, tested PR is always better than nothing."
+            "prompt": "# Code Quality Striker\n\nYou are a **structural quality agent**. Your sole mandate is to improve the\ninternal structure of the codebase so that future agentic models can work on\nit more efficiently — smaller files, clearer module boundaries, zero\nduplication, and self-contained functions.\n\n## Session Constraints\n\n- **Hard session cap**: you have at most 90 minutes total. Budget your time.\n- **You MUST open a PR before ending** — a session with no PR is a failed\n  session. If you run out of time mid-refactor, commit what you have, push,\n  and open the PR immediately even if the work is partial, AS LONG AS all\n  tests pass.\n- **Maximum {{maxFilesPerSession}} source files changed** in a single PR.\n  Keep diffs small and reviewable. Better to do one clean split per session\n  than attempt a mega-refactor.\n- You may run multiple sessions and PRs over time. Prefer incremental progress.\n\n## ✅ Allowed Changes (ONLY these)\n\n1. **Module decomposition** — extract a large file into smaller, focused\n   modules. The extracted module must be imported back so the public surface\n   is identical.\n2. **Function splitting** — break functions > ~80 lines into smaller,\n   well-named helpers within the same file or a co-located util module.\n3. **Deduplication** — extract identical or near-identical logic blocks into\n   a shared helper. Must not change call-site behaviour.\n4. **Dead code removal** — remove functions, variables, or imports that are\n   verifiably unreferenced (no callers anywhere in the repo).\n5. **Import cleanup** — remove unused imports, deduplicate import statements,\n   consolidate barrel imports.\n\n## ❌ Forbidden Changes (HARD STOPS — never do these)\n\n- Adding, removing, or changing any exported function signature or return value\n- Changing any HTTP route path, method, or response shape\n- Changing any config key names or default values\n- Adding new features, flags, or options of any kind\n- Changing test assertions or test logic\n- Renaming exported symbols (only rename internal/private symbols)\n- Adding comments, JSDoc, or inline documentation (unless minimal and necessary)\n- Changing error messages visible to users or logs (string literals)\n- Any change to .json, .sh, .md, .yaml, .html, .css, or non-.mjs/.js files\n  (unless you are only touching an import path string that is broken by a move)\n\n## Workflow\n\n### Step 1 — Identify your target\n\nUse the candidate file list provided (sorted by size, largest first):\n\n```\n{{scan-candidates.output}}\n```\n\nPick **1–3 files** for this session. Prioritise:\n- Files > 500 lines used by multiple modules (high parallel-conflict risk)\n- Files with clearly repeated logic blocks\n- Files with functions > 100 lines that have distinct sub-responsibilities\n\nRead each target file in full before making any decision. Do NOT edit\nanything you have not fully read.\n\n### Step 2 — Plan your split in writing\n\nBefore touching the file, write a short plan (to yourself, as a comment in\nyour reasoning — DO NOT add it to the code):\n- What gets extracted and where\n- New file names (follow existing naming conventions in that directory)\n- Which exports stay vs. move\n- Any callers that will need their import paths updated\n\n### Step 3 — Extract and wire up\n\n- Create the new module file(s) under the same directory as the source file.\n- Update the source file to re-export or directly import the extracted piece\n  so every existing call-site continues to work without modification.\n- Update any OTHER files that directly imported from the source file, if and\n  only if you moved an export that those files reference. Use\n  `grep -r 'importedName' --include='*.mjs' --include='*.js'` to find callers.\n- **Do not touch callers unless strictly required by the move.**\n\n### Step 4 — Validate before committing\n\nRun ALL of the following in order. Do not commit if any fail:\n\n```bash\n# 1. Syntax check every file you touched\n{{syntaxCheckCommand}} <file1> <file2> ...\n\n# 2. Lint check (if configured)\n{{lintCommand}}\n\n# 3. Full test suite — must be 0 failures, 0 unexpected skips\n{{testCommand}}\n\n# 4. Build — must pass clean\n{{buildCommand}}\n```\n\nIf tests fail, **revert your change** (`git checkout -- <file>`) and either:\n- Attempt a smaller, safer split of the same file, OR\n- Move to a different target file\n\n**Never push a failing test suite.**\n\n### Step 5 — Commit, push, and open the PR\n\nBranch name: `chore/code-quality-striker-{{_runId}}`\nBase branch: `{{baseBranch}}`\n\nCommit message format:\n```\nrefactor(<module>): split <description>\n\n- extracted <what> into <new-file>\n- <any other bullet points>\n\nNo functional changes. All tests pass.\n```\n\nPR title: `refactor: code quality pass — <one-line summary>`\n\nPR body template:\n```markdown\n## Code Quality Pass\n\n**Session**: code-quality-striker {{_runId}}\n**Scope**: structural refactor only — zero functional changes\n\n### Changes\n- <bullet per extracted module or dedup>\n\n### Validation\n- `{{syntaxCheckCommand}}` passed on all touched files\n- `{{testCommand}}` passed (N tests)\n- `{{buildCommand}}` passed\n\n### Why\n<one sentence: \"X was Y lines with Z responsibilities; split to improve\nparallel edit safety for future agent sessions.\">\n```\n\n### Step 6 — Write session log\n\nAppend a new entry to `{{sessionLogPath}}` using this\nexact format (create the file if it does not exist):\n\n```markdown\n## <ISO timestamp with timezone>\n\n- Scope: <one sentence describing what was refactored>\n- Files changed: <comma-separated list>\n- Strategy: <what split/dedup/cleanup was performed and why>\n- Validation evidence:\n  - `{{syntaxCheckCommand}}` passed on all touched files\n  - `{{testCommand}}` passed (N tests)\n  - `{{buildCommand}}` passed\n- PR: #<number> — `<branch name>`\n```\n\n## Time Budget Warning\n\nIf you have fewer than 15 minutes remaining:\n- Stop new analysis immediately\n- Commit and push whatever passing changes you have\n- Open the PR even if the scope is smaller than planned\n- Write the session log\n- Stop\n\nA small, clean, tested PR is always better than nothing."
           },
           "position": {
             "x": 400,
@@ -12069,7 +12070,7 @@
         {
           "id": "verify-tests",
           "type": "validation.tests",
-          "label": "Verify — npm test",
+          "label": "Verify — Tests",
           "config": {
             "command": "{{testCommand}}"
           },
@@ -12084,7 +12085,7 @@
         {
           "id": "verify-build",
           "type": "validation.build",
-          "label": "Verify — npm run build",
+          "label": "Verify — Build",
           "config": {
             "command": "{{buildCommand}}",
             "zeroWarnings": false
@@ -20717,14 +20718,15 @@
     {
       "id": "wf-backend-agent",
       "name": "Task Completion Agent",
-      "description": "Spins up an agent focused on backend/API development with a test-first methodology. Writes tests first, implements the feature, validates with build + lint, then creates a PR.",
+      "description": "General-purpose task completion agent with a test-first methodology. Writes tests first, implements the feature, validates with build + lint, then creates a PR. Works with any language/framework — commands are auto-detected from your project or fully customizable.",
       "category": "agents",
       "enabled": true,
       "nodeCount": 29,
       "trigger": "trigger.task_assigned",
       "variables": {
-        "testFramework": "node --test",
+        "testCommand": "npm test",
         "buildCommand": "npm run build",
+        "lintCommand": "",
         "baseBranch": "main",
         "protectedBranches": [
           "main",
@@ -20741,9 +20743,7 @@
           "id": "trigger",
           "type": "trigger.task_assigned",
           "label": "Task Assigned",
-          "config": {
-            "filter": "task.tags?.some(t => t === 'backend' || t === 'api')"
-          },
+          "config": {},
           "position": {
             "x": 400,
             "y": 50
@@ -20773,7 +20773,7 @@
           "type": "action.run_agent",
           "label": "Write Tests First",
           "config": {
-            "prompt": "# Test-First Development\n\nBased on the plan:\n{{plan}}\n\nWrite comprehensive tests FIRST before any implementation:\n1. Unit tests for new functions/methods\n2. Integration tests for API endpoints if applicable\n3. Edge cases and error scenarios\n\nUse the project's existing test framework: {{testFramework}}\nCommit with message \"test: add tests for [feature]\"",
+            "prompt": "# Test-First Development\n\nBased on the plan:\n{{plan}}\n\nWrite comprehensive tests FIRST before any implementation:\n1. Unit tests for new functions/methods\n2. Integration tests for API endpoints if applicable\n3. Edge cases and error scenarios\n\nUse the project's test command: {{testCommand}}\nCommit with message \"test: add tests for [feature]\"",
             "sdk": "{{agentSdk}}",
             "timeoutMs": "{{timeoutMs}}"
           },
@@ -20790,7 +20790,7 @@
           "type": "action.run_agent",
           "label": "Implement Feature",
           "config": {
-            "prompt": "# Implement Backend Feature\n\nThe tests have been written. Now implement the feature to make them pass:\n1. Follow existing code conventions\n2. Add proper error handling\n3. Ensure all new tests pass\n4. Do NOT modify the tests — make the code fit the contract\n\nRun `{{testFramework}}` after implementation.\nCommit with message \"feat: implement [feature]\"",
+            "prompt": "# Implement Feature\n\nThe tests have been written. Now implement the feature to make them pass:\n1. Follow existing code conventions\n2. Add proper error handling\n3. Ensure all new tests pass\n4. Do NOT modify the tests — make the code fit the contract\n\nRun `{{testCommand}}` after implementation.\nCommit with message \"feat: implement [feature]\"",
             "sdk": "{{agentSdk}}",
             "timeoutMs": "{{timeoutMs}}"
           },
@@ -20823,7 +20823,7 @@
           "type": "validation.tests",
           "label": "Final Test Run",
           "config": {
-            "command": "{{testFramework}}"
+            "command": "{{testCommand}}"
           },
           "position": {
             "x": 400,
@@ -20838,7 +20838,7 @@
           "type": "validation.lint",
           "label": "Lint Check",
           "config": {
-            "command": "npm run lint 2>/dev/null || echo 'no lint script'"
+            "command": "{{lintCommand}} 2>/dev/null || echo 'no lint configured'"
           },
           "position": {
             "x": 400,
@@ -21008,7 +21008,7 @@
           "type": "action.run_agent",
           "label": "Auto-Fix Validation Failures",
           "config": {
-            "prompt": "# Fix Backend Validation Failures\n\nThe first validation pass failed for task **{{taskTitle}}**.\n\nPlan:\n{{plan}}\n\nCurrent validation outputs:\n{{validationSummary}}\n\nFix the code so build/tests/lint pass.\nDo NOT weaken, remove, or bypass tests.\nKeep the original task scope.\n\nRun build + tests + lint locally before finishing.\nCommit with message \"fix: address backend workflow validation failures\"",
+            "prompt": "# Fix Validation Failures\n\nThe first validation pass failed for task **{{taskTitle}}**.\n\nPlan:\n{{plan}}\n\nCurrent validation outputs:\n{{validationSummary}}\n\nFix the code so build/tests/lint pass.\nDo NOT weaken, remove, or bypass tests.\nKeep the original task scope.\n\nRun build + tests + lint locally before finishing.\nCommit with message \"fix: address validation failures\"",
             "sdk": "{{agentSdk}}",
             "timeoutMs": "{{autoFixTimeoutMs}}"
           },
@@ -21041,7 +21041,7 @@
           "type": "validation.tests",
           "label": "Final Test Run (Retry)",
           "config": {
-            "command": "{{testFramework}}"
+            "command": "{{testCommand}}"
           },
           "position": {
             "x": 620,
@@ -21056,7 +21056,7 @@
           "type": "validation.lint",
           "label": "Lint Check (Retry)",
           "config": {
-            "command": "npm run lint 2>/dev/null || echo 'no lint script'"
+            "command": "{{lintCommand}} 2>/dev/null || echo 'no lint configured'"
           },
           "position": {
             "x": 620,
@@ -21421,8 +21421,8 @@
         "templateState": {
           "templateId": "template-backend-agent",
           "templateName": "Task Completion Agent",
-          "templateVersion": "1.0.0",
-          "installedTemplateVersion": "1.0.0",
+          "templateVersion": "2.0.0",
+          "installedTemplateVersion": "2.0.0",
           "isCustomized": false,
           "updateAvailable": false
         }
@@ -28120,7 +28120,9 @@
         "minFileSizeKb": 30,
         "testCommand": "npm test",
         "buildCommand": "npm run build",
-        "syntaxCheckCommand": "node --check"
+        "syntaxCheckCommand": "node --check",
+        "lintCommand": "",
+        "sourceExtensions": ".mjs,.js,.ts,.tsx,.py,.go,.rs,.java,.cs,.rb,.php"
       },
       "nodes": [
         {
@@ -28176,7 +28178,7 @@
           "type": "action.run_command",
           "label": "Scan Large Files",
           "config": {
-            "command": "node -e \"const{readdirSync,statSync}=require('fs');const{join,relative}=require('path');const base=process.cwd();function walk(d){const out=[];for(const f of readdirSync(d,{withFileTypes:true})){if(f.name==='node_modules'||f.name==='.cache'||f.name==='.git'||f.name==='worktrees')continue;const p=join(d,f.name);if(f.isDirectory())out.push(...walk(p));else if(/\\.(mjs|js)$/.test(f.name)){const s=statSync(p);out.push({p,kb:Math.round(s.size/1024)})}}return out}const files=walk(base).filter(x=>x.kb>={{minFileSizeKb}}).sort((a,b)=>b.kb-a.kb).slice(0,20);console.log(files.map(x=>x.kb+'kb\\t'+relative(base,x.p)).join('\\n'))\"",
+            "command": "node -e \"const{readdirSync,statSync}=require('fs');const{join,relative}=require('path');const base=process.cwd();const exts=new Set('{{sourceExtensions}}'.split(',').map(e=>e.trim()));function walk(d){const out=[];for(const f of readdirSync(d,{withFileTypes:true})){if(f.name==='node_modules'||f.name==='.cache'||f.name==='.git'||f.name==='worktrees'||f.name==='__pycache__'||f.name==='.venv'||f.name==='target'||f.name==='vendor'||f.name==='dist'||f.name==='build')continue;const p=join(d,f.name);if(f.isDirectory())out.push(...walk(p));else{const ext='.'+f.name.split('.').pop();if(exts.has(ext)){const s=statSync(p);out.push({p,kb:Math.round(s.size/1024)})}}}return out}const files=walk(base).filter(x=>x.kb>={{minFileSizeKb}}).sort((a,b)=>b.kb-a.kb).slice(0,20);console.log(files.map(x=>x.kb+'kb\\t'+relative(base,x.p)).join('\\n'))\"",
             "continueOnError": true
           },
           "position": {
@@ -28194,7 +28196,7 @@
           "config": {
             "timeoutMs": "{{sessionTimeoutMs}}",
             "sdk": "auto",
-            "prompt": "# Code Quality Striker\n\nYou are a **structural quality agent**. Your sole mandate is to improve the\ninternal structure of the codebase so that future agentic models can work on\nit more efficiently — smaller files, clearer module boundaries, zero\nduplication, and self-contained functions.\n\n## Session Constraints\n\n- **Hard session cap**: you have at most 90 minutes total. Budget your time.\n- **You MUST open a PR before ending** — a session with no PR is a failed\n  session. If you run out of time mid-refactor, commit what you have, push,\n  and open the PR immediately even if the work is partial, AS LONG AS all\n  tests pass.\n- **Maximum {{maxFilesPerSession}} source files changed** in a single PR.\n  Keep diffs small and reviewable. Better to do one clean split per session\n  than attempt a mega-refactor.\n- You may run multiple sessions and PRs over time. Prefer incremental progress.\n\n## ✅ Allowed Changes (ONLY these)\n\n1. **Module decomposition** — extract a large file into smaller, focused\n   modules. The extracted module must be imported back so the public surface\n   is identical.\n2. **Function splitting** — break functions > ~80 lines into smaller,\n   well-named helpers within the same file or a co-located util module.\n3. **Deduplication** — extract identical or near-identical logic blocks into\n   a shared helper. Must not change call-site behaviour.\n4. **Dead code removal** — remove functions, variables, or imports that are\n   verifiably unreferenced (no callers anywhere in the repo).\n5. **Import cleanup** — remove unused imports, deduplicate import statements,\n   consolidate barrel imports.\n\n## ❌ Forbidden Changes (HARD STOPS — never do these)\n\n- Adding, removing, or changing any exported function signature or return value\n- Changing any HTTP route path, method, or response shape\n- Changing any config key names or default values\n- Adding new features, flags, or options of any kind\n- Changing test assertions or test logic\n- Renaming exported symbols (only rename internal/private symbols)\n- Adding comments, JSDoc, or inline documentation (unless minimal and necessary)\n- Changing error messages visible to users or logs (string literals)\n- Any change to .json, .sh, .md, .yaml, .html, .css, or non-.mjs/.js files\n  (unless you are only touching an import path string that is broken by a move)\n\n## Workflow\n\n### Step 1 — Identify your target\n\nUse the candidate file list provided (sorted by size, largest first):\n\n```\n{{scan-candidates.output}}\n```\n\nPick **1–3 files** for this session. Prioritise:\n- Files > 500 lines used by multiple modules (high parallel-conflict risk)\n- Files with clearly repeated logic blocks\n- Files with functions > 100 lines that have distinct sub-responsibilities\n\nRead each target file in full before making any decision. Do NOT edit\nanything you have not fully read.\n\n### Step 2 — Plan your split in writing\n\nBefore touching the file, write a short plan (to yourself, as a comment in\nyour reasoning — DO NOT add it to the code):\n- What gets extracted and where\n- New file names (follow existing naming conventions in that directory)\n- Which exports stay vs. move\n- Any callers that will need their import paths updated\n\n### Step 3 — Extract and wire up\n\n- Create the new module file(s) under the same directory as the source file.\n- Update the source file to re-export or directly import the extracted piece\n  so every existing call-site continues to work without modification.\n- Update any OTHER files that directly imported from the source file, if and\n  only if you moved an export that those files reference. Use\n  `grep -r 'importedName' --include='*.mjs' --include='*.js'` to find callers.\n- **Do not touch callers unless strictly required by the move.**\n\n### Step 4 — Validate before committing\n\nRun ALL of the following in order. Do not commit if any fail:\n\n```bash\n# 1. Syntax check every file you touched\n{{syntaxCheckCommand}} <file1> <file2> ...\n\n# 2. Full test suite — must be 0 failures, 0 unexpected skips\nnpm test\n\n# 3. Build — must pass clean\nnpm run build\n```\n\nIf tests fail, **revert your change** (`git checkout -- <file>`) and either:\n- Attempt a smaller, safer split of the same file, OR\n- Move to a different target file\n\n**Never push a failing test suite.**\n\n### Step 5 — Commit, push, and open the PR\n\nBranch name: `chore/code-quality-striker-{{_runId}}`\nBase branch: `{{baseBranch}}`\n\nCommit message format:\n```\nrefactor(<module>): split <description>\n\n- extracted <what> into <new-file>\n- <any other bullet points>\n\nNo functional changes. All tests pass.\n```\n\nPR title: `refactor: code quality pass — <one-line summary>`\n\nPR body template:\n```markdown\n## Code Quality Pass\n\n**Session**: code-quality-striker {{_runId}}\n**Scope**: structural refactor only — zero functional changes\n\n### Changes\n- <bullet per extracted module or dedup>\n\n### Validation\n- `node --check` passed on all touched files\n- `npm test` passed (N tests)\n- `npm run build` passed\n\n### Why\n<one sentence: \"X was Y lines with Z responsibilities; split to improve\nparallel edit safety for future agent sessions.\">\n```\n\n### Step 6 — Write session log\n\nAppend a new entry to `{{sessionLogPath}}` using this\nexact format (create the file if it does not exist):\n\n```markdown\n## <ISO timestamp with timezone>\n\n- Scope: <one sentence describing what was refactored>\n- Files changed: <comma-separated list>\n- Strategy: <what split/dedup/cleanup was performed and why>\n- Validation evidence:\n  - `node --check` passed on all touched files\n  - `npm test` passed (N tests)\n  - `npm run build` passed\n- PR: #<number> — `<branch name>`\n```\n\n## Time Budget Warning\n\nIf you have fewer than 15 minutes remaining:\n- Stop new analysis immediately\n- Commit and push whatever passing changes you have\n- Open the PR even if the scope is smaller than planned\n- Write the session log\n- Stop\n\nA small, clean, tested PR is always better than nothing."
+            "prompt": "# Code Quality Striker\n\nYou are a **structural quality agent**. Your sole mandate is to improve the\ninternal structure of the codebase so that future agentic models can work on\nit more efficiently — smaller files, clearer module boundaries, zero\nduplication, and self-contained functions.\n\n## Session Constraints\n\n- **Hard session cap**: you have at most 90 minutes total. Budget your time.\n- **You MUST open a PR before ending** — a session with no PR is a failed\n  session. If you run out of time mid-refactor, commit what you have, push,\n  and open the PR immediately even if the work is partial, AS LONG AS all\n  tests pass.\n- **Maximum {{maxFilesPerSession}} source files changed** in a single PR.\n  Keep diffs small and reviewable. Better to do one clean split per session\n  than attempt a mega-refactor.\n- You may run multiple sessions and PRs over time. Prefer incremental progress.\n\n## ✅ Allowed Changes (ONLY these)\n\n1. **Module decomposition** — extract a large file into smaller, focused\n   modules. The extracted module must be imported back so the public surface\n   is identical.\n2. **Function splitting** — break functions > ~80 lines into smaller,\n   well-named helpers within the same file or a co-located util module.\n3. **Deduplication** — extract identical or near-identical logic blocks into\n   a shared helper. Must not change call-site behaviour.\n4. **Dead code removal** — remove functions, variables, or imports that are\n   verifiably unreferenced (no callers anywhere in the repo).\n5. **Import cleanup** — remove unused imports, deduplicate import statements,\n   consolidate barrel imports.\n\n## ❌ Forbidden Changes (HARD STOPS — never do these)\n\n- Adding, removing, or changing any exported function signature or return value\n- Changing any HTTP route path, method, or response shape\n- Changing any config key names or default values\n- Adding new features, flags, or options of any kind\n- Changing test assertions or test logic\n- Renaming exported symbols (only rename internal/private symbols)\n- Adding comments, JSDoc, or inline documentation (unless minimal and necessary)\n- Changing error messages visible to users or logs (string literals)\n- Any change to .json, .sh, .md, .yaml, .html, .css, or non-.mjs/.js files\n  (unless you are only touching an import path string that is broken by a move)\n\n## Workflow\n\n### Step 1 — Identify your target\n\nUse the candidate file list provided (sorted by size, largest first):\n\n```\n{{scan-candidates.output}}\n```\n\nPick **1–3 files** for this session. Prioritise:\n- Files > 500 lines used by multiple modules (high parallel-conflict risk)\n- Files with clearly repeated logic blocks\n- Files with functions > 100 lines that have distinct sub-responsibilities\n\nRead each target file in full before making any decision. Do NOT edit\nanything you have not fully read.\n\n### Step 2 — Plan your split in writing\n\nBefore touching the file, write a short plan (to yourself, as a comment in\nyour reasoning — DO NOT add it to the code):\n- What gets extracted and where\n- New file names (follow existing naming conventions in that directory)\n- Which exports stay vs. move\n- Any callers that will need their import paths updated\n\n### Step 3 — Extract and wire up\n\n- Create the new module file(s) under the same directory as the source file.\n- Update the source file to re-export or directly import the extracted piece\n  so every existing call-site continues to work without modification.\n- Update any OTHER files that directly imported from the source file, if and\n  only if you moved an export that those files reference. Use\n  `grep -r 'importedName' --include='*.mjs' --include='*.js'` to find callers.\n- **Do not touch callers unless strictly required by the move.**\n\n### Step 4 — Validate before committing\n\nRun ALL of the following in order. Do not commit if any fail:\n\n```bash\n# 1. Syntax check every file you touched\n{{syntaxCheckCommand}} <file1> <file2> ...\n\n# 2. Lint check (if configured)\n{{lintCommand}}\n\n# 3. Full test suite — must be 0 failures, 0 unexpected skips\n{{testCommand}}\n\n# 4. Build — must pass clean\n{{buildCommand}}\n```\n\nIf tests fail, **revert your change** (`git checkout -- <file>`) and either:\n- Attempt a smaller, safer split of the same file, OR\n- Move to a different target file\n\n**Never push a failing test suite.**\n\n### Step 5 — Commit, push, and open the PR\n\nBranch name: `chore/code-quality-striker-{{_runId}}`\nBase branch: `{{baseBranch}}`\n\nCommit message format:\n```\nrefactor(<module>): split <description>\n\n- extracted <what> into <new-file>\n- <any other bullet points>\n\nNo functional changes. All tests pass.\n```\n\nPR title: `refactor: code quality pass — <one-line summary>`\n\nPR body template:\n```markdown\n## Code Quality Pass\n\n**Session**: code-quality-striker {{_runId}}\n**Scope**: structural refactor only — zero functional changes\n\n### Changes\n- <bullet per extracted module or dedup>\n\n### Validation\n- `{{syntaxCheckCommand}}` passed on all touched files\n- `{{testCommand}}` passed (N tests)\n- `{{buildCommand}}` passed\n\n### Why\n<one sentence: \"X was Y lines with Z responsibilities; split to improve\nparallel edit safety for future agent sessions.\">\n```\n\n### Step 6 — Write session log\n\nAppend a new entry to `{{sessionLogPath}}` using this\nexact format (create the file if it does not exist):\n\n```markdown\n## <ISO timestamp with timezone>\n\n- Scope: <one sentence describing what was refactored>\n- Files changed: <comma-separated list>\n- Strategy: <what split/dedup/cleanup was performed and why>\n- Validation evidence:\n  - `{{syntaxCheckCommand}}` passed on all touched files\n  - `{{testCommand}}` passed (N tests)\n  - `{{buildCommand}}` passed\n- PR: #<number> — `<branch name>`\n```\n\n## Time Budget Warning\n\nIf you have fewer than 15 minutes remaining:\n- Stop new analysis immediately\n- Commit and push whatever passing changes you have\n- Open the PR even if the scope is smaller than planned\n- Write the session log\n- Stop\n\nA small, clean, tested PR is always better than nothing."
           },
           "position": {
             "x": 400,
@@ -28207,7 +28209,7 @@
         {
           "id": "verify-tests",
           "type": "validation.tests",
-          "label": "Verify — npm test",
+          "label": "Verify — Tests",
           "config": {
             "command": "{{testCommand}}"
           },
@@ -28222,7 +28224,7 @@
         {
           "id": "verify-build",
           "type": "validation.build",
-          "label": "Verify — npm run build",
+          "label": "Verify — Build",
           "config": {
             "command": "{{buildCommand}}",
             "zeroWarnings": false

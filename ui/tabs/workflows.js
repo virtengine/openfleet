@@ -309,6 +309,11 @@ function humanizeVarKey(key) {
 /** Infer a short helper text for a variable key */
 function inferVarHelp(key, value) {
   const k = key.toLowerCase();
+  if (k.includes("testcommand") || k.includes("test_command") || k === "testframework" || k === "test_framework") return "Test command for your project — select from presets or enter custom";
+  if (k.includes("buildcommand") || k.includes("build_command")) return "Build command for your project — select from presets or enter custom";
+  if (k.includes("lintcommand") || k.includes("lint_command") || k.includes("lintcmd")) return "Lint/style check command — select from presets or enter custom";
+  if (k.includes("syntaxcheck") || k.includes("syntax_check")) return "Syntax/compile check command — select from presets or enter custom";
+  if (k === "basebranch" || k === "base_branch" || k === "defaultbasebranch") return "Base branch for PRs — select from common options or enter custom";
   if (k.includes("timeout") || k.includes("delay") || k.includes("cooldown")) return "Duration in milliseconds";
   if (k.includes("branch")) return "Git branch name";
   if (k.includes("url") || k.includes("endpoint")) return "URL / endpoint";
@@ -324,12 +329,24 @@ function inferVarHelp(key, value) {
 function inferVarOptions(key, value) {
   const k = String(key || "").toLowerCase();
   const options = [];
+
   if (k.includes("executor") || k.includes("sdk")) {
     options.push("auto", "codex", "claude", "copilot");
   } else if (k.includes("bumptype") || k.includes("bump_type")) {
     options.push("patch", "minor", "major");
+  } else if (k.includes("testcommand") || k.includes("test_command") || k === "testframework" || k === "test_framework") {
+    options.push("npm test", "yarn test", "pnpm test", "pytest", "poetry run pytest", "go test ./...", "cargo test", "mvn test", "./gradlew test", "dotnet test", "bundle exec rspec", "make test");
+  } else if (k.includes("buildcommand") || k.includes("build_command")) {
+    options.push("npm run build", "yarn build", "pnpm build", "go build ./...", "cargo build", "mvn package -DskipTests", "./gradlew build", "dotnet build", "python -m build", "make");
+  } else if (k.includes("lintcommand") || k.includes("lint_command") || k.includes("lintcmd")) {
+    options.push("npm run lint", "npx eslint .", "ruff check .", "golangci-lint run", "cargo clippy -- -D warnings", "dotnet format --verify-no-changes", "bundle exec rubocop");
+  } else if (k.includes("syntaxcheck") || k.includes("syntax_check")) {
+    options.push("node --check", "npx tsc --noEmit", "python -m py_compile", "go vet ./...", "cargo check", "dotnet build --no-restore");
+  } else if (k === "basebranch" || k === "base_branch" || k === "defaultbasebranch" || k === "targetbranch") {
+    options.push("main", "master", "develop", "staging");
   }
-  // Keep typed value only when this field already has known preset options.
+
+  // Keep typed value when this field has known preset options.
   if (options.length > 0 && typeof value === "string" && value.trim()) {
     options.unshift(value.trim());
   }
@@ -378,7 +395,12 @@ function isQuickVarKey(key) {
     k.includes("sdk") ||
     k.includes("model") ||
     k.includes("branch") ||
-    k.includes("title")
+    k.includes("title") ||
+    k.includes("testcommand") || k.includes("test_command") ||
+    k === "testframework" || k === "test_framework" ||
+    k.includes("buildcommand") || k.includes("build_command") ||
+    k.includes("lintcommand") || k.includes("lint_command") ||
+    k.includes("syntaxcheck") || k.includes("syntax_check")
   );
 }
 
@@ -2381,14 +2403,45 @@ function KeyboardShortcutOverlay({ open, onClose, canUndo, canRedo }) {
 
 const COMMAND_PRESETS = {
   testing: [
-    { label: "Run Tests", cmd: "npm test", icon: "beaker" },
+    { label: "Run Tests (npm)", cmd: "npm test", icon: "beaker" },
+    { label: "Run Tests (yarn)", cmd: "yarn test", icon: "beaker" },
+    { label: "Run Tests (pnpm)", cmd: "pnpm test", icon: "beaker" },
+    { label: "Run Tests (pytest)", cmd: "pytest", icon: "beaker" },
+    { label: "Run Tests (Go)", cmd: "go test ./...", icon: "beaker" },
+    { label: "Run Tests (Rust)", cmd: "cargo test", icon: "beaker" },
+    { label: "Run Tests (Java/Maven)", cmd: "mvn test", icon: "beaker" },
+    { label: "Run Tests (Java/Gradle)", cmd: "./gradlew test", icon: "beaker" },
+    { label: "Run Tests (.NET)", cmd: "dotnet test", icon: "beaker" },
+    { label: "Run Tests (Ruby)", cmd: "bundle exec rspec", icon: "beaker" },
     { label: "Run Single File", cmd: 'npx vitest run tests/{{testFile}}', icon: "target" },
-    { label: "Syntax Check", cmd: "npm run syntax:check", icon: "check" },
+    { label: "Syntax Check (Node)", cmd: "npm run syntax:check", icon: "check" },
+    { label: "Syntax Check (Python)", cmd: "python -m py_compile", icon: "check" },
+    { label: "Syntax Check (Go)", cmd: "go vet ./...", icon: "check" },
+    { label: "Syntax Check (Rust)", cmd: "cargo check", icon: "check" },
   ],
   build: [
-    { label: "Build Project", cmd: "npm run build", icon: "hammer" },
+    { label: "Build (npm)", cmd: "npm run build", icon: "hammer" },
+    { label: "Build (yarn)", cmd: "yarn build", icon: "hammer" },
+    { label: "Build (pnpm)", cmd: "pnpm build", icon: "hammer" },
+    { label: "Build (Go)", cmd: "go build ./...", icon: "hammer" },
+    { label: "Build (Rust)", cmd: "cargo build", icon: "hammer" },
+    { label: "Build (Maven)", cmd: "mvn package -DskipTests", icon: "hammer" },
+    { label: "Build (Gradle)", cmd: "./gradlew build", icon: "hammer" },
+    { label: "Build (.NET)", cmd: "dotnet build", icon: "hammer" },
+    { label: "Build (Python)", cmd: "python -m build", icon: "hammer" },
+    { label: "Build (Make)", cmd: "make", icon: "hammer" },
     { label: "Build Watch", cmd: "npm run build -- --watch", icon: "eye" },
-    { label: "Type Check", cmd: "npx tsc --noEmit", icon: "ruler" },
+    { label: "Type Check (TS)", cmd: "npx tsc --noEmit", icon: "ruler" },
+  ],
+  lint: [
+    { label: "Lint (npm)", cmd: "npm run lint", icon: "search" },
+    { label: "Lint (ESLint)", cmd: "npx eslint .", icon: "search" },
+    { label: "Lint (Python/Ruff)", cmd: "ruff check .", icon: "search" },
+    { label: "Lint (Python/Flake8)", cmd: "flake8", icon: "search" },
+    { label: "Lint (Go)", cmd: "golangci-lint run", icon: "search" },
+    { label: "Lint (Rust)", cmd: "cargo clippy -- -D warnings", icon: "search" },
+    { label: "Lint (Ruby)", cmd: "bundle exec rubocop", icon: "search" },
+    { label: "Lint (.NET)", cmd: "dotnet format --verify-no-changes", icon: "search" },
   ],
   git: [
     { label: "Diff Stats", cmd: "git diff --stat main...HEAD", icon: "chart" },
@@ -2858,16 +2911,33 @@ function NodeConfigEditor({ node, nodeTypes: types, onUpdate, onUpdateLabel, onC
             ${[
               ...(nodeAction === "build" ? [
                 { label: "npm run build", cmd: "npm run build" },
+                { label: "yarn build", cmd: "yarn build" },
+                { label: "go build", cmd: "go build ./..." },
+                { label: "cargo build", cmd: "cargo build" },
+                { label: "mvn package", cmd: "mvn package -DskipTests" },
+                { label: "gradlew build", cmd: "./gradlew build" },
+                { label: "dotnet build", cmd: "dotnet build" },
+                { label: "make", cmd: "make" },
                 { label: "Zero Warnings", cmd: "npm run build", extra: { zeroWarnings: true } },
               ] : []),
               ...(nodeAction === "tests" ? [
                 { label: "npm test", cmd: "npm test" },
                 { label: "Vitest", cmd: "npx vitest run" },
                 { label: "Jest", cmd: "npx jest" },
+                { label: "pytest", cmd: "pytest" },
+                { label: "go test", cmd: "go test ./..." },
+                { label: "cargo test", cmd: "cargo test" },
+                { label: "mvn test", cmd: "mvn test" },
+                { label: "dotnet test", cmd: "dotnet test" },
+                { label: "rspec", cmd: "bundle exec rspec" },
               ] : []),
               ...(nodeAction === "lint" ? [
                 { label: "npm run lint", cmd: "npm run lint" },
                 { label: "ESLint", cmd: "npx eslint ." },
+                { label: "Ruff", cmd: "ruff check ." },
+                { label: "golangci-lint", cmd: "golangci-lint run" },
+                { label: "Clippy", cmd: "cargo clippy -- -D warnings" },
+                { label: "Rubocop", cmd: "bundle exec rubocop" },
               ] : []),
             ].map(p => html`
               <${Button}

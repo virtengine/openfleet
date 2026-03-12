@@ -163,6 +163,8 @@ const INTENTIONALLY_SKIPPED = new Set([
   "/api/workflows/concurrency",
   // Telemetry — server-only
   "/api/telemetry/shredding",
+  // Project detection — server-only (requires filesystem access)
+  "/api/workflows/detect-project",
 ]);
 
 // ── Session actions intentionally skipped in demo ─────────────────────

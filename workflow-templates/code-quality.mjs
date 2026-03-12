@@ -42,6 +42,8 @@ export const CODE_QUALITY_STRIKER_TEMPLATE = {
     testCommand: "npm test",
     buildCommand: "npm run build",
     syntaxCheckCommand: "node --check",
+    lintCommand: "",
+    sourceExtensions: ".mjs,.js,.ts,.tsx,.py,.go,.rs,.java,.cs,.rb,.php",
   },
   nodes: [
     // ── 1. Schedule trigger ────────────────────────────────────────────────
@@ -62,9 +64,10 @@ export const CODE_QUALITY_STRIKER_TEMPLATE = {
 
     // ── 3. Identify refactoring candidates ─────────────────────────────────
     node("scan-candidates", "action.run_command", "Scan Large Files", {
-      // List .mjs/.js source files outside node_modules/.cache sorted by size.
+      // List source files outside node_modules/.cache sorted by size.
+      // Uses configurable sourceExtensions to support any language.
       // Output: newline-separated relative paths.
-      command: "node -e \"const{readdirSync,statSync}=require('fs');const{join,relative}=require('path');const base=process.cwd();function walk(d){const out=[];for(const f of readdirSync(d,{withFileTypes:true})){if(f.name==='node_modules'||f.name==='.cache'||f.name==='.git'||f.name==='worktrees')continue;const p=join(d,f.name);if(f.isDirectory())out.push(...walk(p));else if(/\\.(mjs|js)$/.test(f.name)){const s=statSync(p);out.push({p,kb:Math.round(s.size/1024)})}}return out}const files=walk(base).filter(x=>x.kb>={{minFileSizeKb}}).sort((a,b)=>b.kb-a.kb).slice(0,20);console.log(files.map(x=>x.kb+'kb\\t'+relative(base,x.p)).join('\\n'))\"",
+      command: "node -e \"const{readdirSync,statSync}=require('fs');const{join,relative}=require('path');const base=process.cwd();const exts=new Set('{{sourceExtensions}}'.split(',').map(e=>e.trim()));function walk(d){const out=[];for(const f of readdirSync(d,{withFileTypes:true})){if(f.name==='node_modules'||f.name==='.cache'||f.name==='.git'||f.name==='worktrees'||f.name==='__pycache__'||f.name==='.venv'||f.name==='target'||f.name==='vendor'||f.name==='dist'||f.name==='build')continue;const p=join(d,f.name);if(f.isDirectory())out.push(...walk(p));else{const ext='.'+f.name.split('.').pop();if(exts.has(ext)){const s=statSync(p);out.push({p,kb:Math.round(s.size/1024)})}}}return out}const files=walk(base).filter(x=>x.kb>={{minFileSizeKb}}).sort((a,b)=>b.kb-a.kb).slice(0,20);console.log(files.map(x=>x.kb+'kb\\t'+relative(base,x.p)).join('\\n'))\"",
       continueOnError: true,
     }, { x: 400, y: 310 }),
 
@@ -163,11 +166,14 @@ Run ALL of the following in order. Do not commit if any fail:
 # 1. Syntax check every file you touched
 {{syntaxCheckCommand}} <file1> <file2> ...
 
-# 2. Full test suite — must be 0 failures, 0 unexpected skips
-npm test
+# 2. Lint check (if configured)
+{{lintCommand}}
 
-# 3. Build — must pass clean
-npm run build
+# 3. Full test suite — must be 0 failures, 0 unexpected skips
+{{testCommand}}
+
+# 4. Build — must pass clean
+{{buildCommand}}
 \`\`\`
 
 If tests fail, **revert your change** (\`git checkout -- <file>\`) and either:
@@ -204,9 +210,9 @@ PR body template:
 - <bullet per extracted module or dedup>
 
 ### Validation
-- \`node --check\` passed on all touched files
-- \`npm test\` passed (N tests)
-- \`npm run build\` passed
+- \`{{syntaxCheckCommand}}\` passed on all touched files
+- \`{{testCommand}}\` passed (N tests)
+- \`{{buildCommand}}\` passed
 
 ### Why
 <one sentence: "X was Y lines with Z responsibilities; split to improve
@@ -225,9 +231,9 @@ exact format (create the file if it does not exist):
 - Files changed: <comma-separated list>
 - Strategy: <what split/dedup/cleanup was performed and why>
 - Validation evidence:
-  - \`node --check\` passed on all touched files
-  - \`npm test\` passed (N tests)
-  - \`npm run build\` passed
+  - \`{{syntaxCheckCommand}}\` passed on all touched files
+  - \`{{testCommand}}\` passed (N tests)
+  - \`{{buildCommand}}\` passed
 - PR: #<number> — \`<branch name>\`
 \`\`\`
 
@@ -244,11 +250,11 @@ A small, clean, tested PR is always better than nothing.`,
     }, { x: 400, y: 450 }),
 
     // ── 5. Verify tests pass ───────────────────────────────────────────────
-    node("verify-tests", "validation.tests", "Verify — npm test", {
+    node("verify-tests", "validation.tests", "Verify — Tests", {
       command: "{{testCommand}}",
     }, { x: 200, y: 610 }),
 
-    node("verify-build", "validation.build", "Verify — npm run build", {
+    node("verify-build", "validation.build", "Verify — Build", {
       command: "{{buildCommand}}",
       zeroWarnings: false,
     }, { x: 600, y: 610 }),
