@@ -435,6 +435,13 @@ function normalizeAgentType(rawType) {
   return "task";
 }
 
+/** Normalize tags to an array regardless of input type (string, array, null). */
+function normalizeTags(raw) {
+  if (Array.isArray(raw)) return raw;
+  if (typeof raw === "string") return raw.split(/[,\s]+/).map(t => t.trim()).filter(Boolean);
+  return [];
+}
+
 function normalizeStorageScope(rawScope, fallback = "repo") {
   const value = String(rawScope || "").trim().toLowerCase();
   if (value === "repo" || value === "workspace" || value === "global") return value;
@@ -606,7 +613,7 @@ function EntryEditor({ entry, onClose, onSaved, onDeleted }) {
     type: entry?.type || "prompt",
     name: entry?.name || "",
     description: entry?.description || "",
-    tags: (entry?.tags || []).join(", "),
+    tags: normalizeTags(entry?.tags).join(", "),
     scope: entry?.scope || "global",
     storageScope: normalizeStorageScope(entry?.storageScope, "repo"),
     agentType: inferAgentTypeFromEntry(entry, null),
@@ -632,7 +639,7 @@ function EntryEditor({ entry, onClose, onSaved, onDeleted }) {
       type: entry?.type || "prompt",
       name: entry?.name || "",
       description: entry?.description || "",
-      tags: (entry?.tags || []).join(", "),
+      tags: normalizeTags(entry?.tags).join(", "),
       scope: entry?.scope || "global",
       storageScope: normalizeStorageScope(entry?.storageScope, "repo"),
       agentType: inferAgentTypeFromEntry(entry, null),
@@ -903,9 +910,6 @@ function AgentToolConfigurator({ agentId, agentName }) {
   const loadConfig = useCallback(async () => {
     setLoading(true);
     try {
-      if (!importAgents && !importPrompts && !importSkills && !importTools) {
-        throw new Error("Select at least one import type");
-      }
       const [effective, inst] = await Promise.all([
         fetchAgentToolConfig(agentId),
         fetchMcpInstalled(),

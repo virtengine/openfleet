@@ -769,6 +769,18 @@ function sendSessionUpdate(tokenData = {}) {
   const transcriptionEnabled =
     sessionConfig?.input_audio_transcription !== undefined;
 
+  // Include instructions from the server session config so the voice agent
+  // receives its system prompt (persona, tools, behaviour rules).
+  const instructions = sessionConfig?.instructions || tokenData?.instructions || undefined;
+
+  // Include tool definitions so the realtime model can invoke them.
+  const tools = Array.isArray(sessionConfig?.tools) && sessionConfig.tools.length
+    ? sessionConfig.tools
+    : Array.isArray(tokenData?.tools) && tokenData.tools.length
+      ? tokenData.tools
+      : undefined;
+  const toolChoice = sessionConfig?.tool_choice || undefined;
+
   sendRealtimeEvent({
     type: "session.update",
     session: {
@@ -776,6 +788,8 @@ function sendSessionUpdate(tokenData = {}) {
       voice: voiceId,
       input_audio_format: "pcm16",
       output_audio_format: "pcm16",
+      ...(instructions ? { instructions } : {}),
+      ...(tools ? { tools, tool_choice: toolChoice || "auto" } : {}),
       ...(transcriptionEnabled
         ? { input_audio_transcription: { model: transcriptionModel } }
         : {}),
