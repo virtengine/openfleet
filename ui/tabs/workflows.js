@@ -3088,6 +3088,52 @@ function NodeConfigEditor({ node, nodeTypes: types, onUpdate, onUpdateLabel, onC
  *  Workflow List View
  * ═══════════════════════════════════════════════════════════════ */
 
+function humanizeWorkflowCategory(category) {
+  const normalized = String(category || "custom").trim();
+  if (!normalized) return "Custom";
+  return normalized
+    .replace(/[-_]+/g, " ")
+    .replace(/\b\w/g, (char) => char.toUpperCase());
+}
+
+function normalizeWorkflowCategoryMeta(source, fallbackCategory = "custom") {
+  const key = String(source?.category || fallbackCategory || "custom").trim() || "custom";
+  const order = Number(source?.categoryOrder);
+  return {
+    key,
+    label: String(source?.categoryLabel || humanizeWorkflowCategory(key)),
+    icon: String(source?.categoryIcon || "settings"),
+    order: Number.isFinite(order) ? order : 99,
+  };
+}
+
+function groupItemsByWorkflowCategory(items, getSource) {
+  const groups = new Map();
+  for (const item of items || []) {
+    const meta = normalizeWorkflowCategoryMeta(getSource(item), item?.category);
+    if (!groups.has(meta.key)) groups.set(meta.key, { ...meta, items: [] });
+    groups.get(meta.key).items.push(item);
+  }
+  return Array.from(groups.values()).sort((a, b) => a.order - b.order || a.label.localeCompare(b.label));
+}
+
+function resolveWorkflowTemplateSource(workflow, templateLookupById, templateLookupByName) {
+  const templateState = workflow?.metadata?.templateState || null;
+  const candidates = [
+    templateState?.templateId,
+    workflow?.metadata?.installedFrom,
+    templateState?.templateName,
+    workflow?.name,
+  ];
+  for (const candidate of candidates) {
+    const key = String(candidate || "").trim();
+    if (!key) continue;
+    if (templateLookupById.has(key)) return templateLookupById.get(key);
+    if (templateLookupByName.has(key)) return templateLookupByName.get(key);
+  }
+  return null;
+}
+
 function WorkflowListView() {
   const wfs = workflows.value || [];
   const tmpls = templates.value || [];
@@ -3100,6 +3146,28 @@ function WorkflowListView() {
     if (installedTemplateIds.has(t.id) || installedTemplateIds.has(t.name)) return false;
     return true;
   });
+  const templateLookup = useMemo(() => {
+    const byId = new Map();
+    const byName = new Map();
+    tmpls.forEach((template) => {
+      const id = String(template?.id || "").trim();
+      const name = String(template?.name || "").trim();
+      if (id) byId.set(id, template);
+      if (name) byName.set(name, template);
+    });
+    return { byId, byName };
+  }, [tmpls]);
+  const workflowGroups = useMemo(() => {
+    return groupItemsByWorkflowCategory(wfs, (wf) => {
+      return (
+        resolveWorkflowTemplateSource(wf, templateLookup.byId, templateLookup.byName)
+        || { category: wf?.category || "custom" }
+      );
+    });
+  }, [wfs, templateLookup]);
+  const availableTemplateGroups = useMemo(() => {
+    return groupItemsByWorkflowCategory(availableTemplates, (template) => template);
+  }, [availableTemplates]);
 
   return html`
     <div style="padding: 0 4px;">
@@ -3144,133 +3212,144 @@ function WorkflowListView() {
           <h3 style="font-size: 14px; font-weight: 600; color: var(--color-text-secondary, #8b95a5); margin-bottom: 12px; text-transform: uppercase; letter-spacing: 0.5px;">
             Your Workflows (${wfs.length})
           </h3>
-          <div style="display: grid; gap: 10px; grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));">
-            ${wfs.map(wf => html`
-              ${(() => {
-                const templateState = wf.metadata?.templateState || null;
-                const hasTemplateUpdate = templateState?.updateAvailable === true;
-                const isCustomizedTemplate = templateState?.isCustomized === true;
-                const isCore = wf.core === true;
-                return html`
-              <div key=${wf.id} class="wf-card" style="background: var(--color-bg-secondary, #1a1f2e); border-radius: 12px; padding: 14px; border: 1px solid var(--color-border, #2a3040); cursor: pointer; transition: border-color 0.15s;"
-                   onClick=${() => {
-                     apiFetch("/api/workflows/" + wf.id).then(d => {
-                       activeWorkflow.value = d?.workflow || wf;
-                       viewMode.value = "canvas";
-                     }).catch(() => { activeWorkflow.value = wf; viewMode.value = "canvas"; });
-                   }}>
-                <div style="display: flex; align-items: center; gap: 8px; margin-bottom: 8px;">
-                  <span class="icon-inline" style="font-size: 14px;">${resolveIcon(getNodeMeta(wf.trigger || "action")?.icon) || ICONS.dot}</span>
-                  <span style="font-weight: 600; font-size: 14px; flex: 1;">${wf.name}</span>
-                  <span class="wf-badge" style="background: ${wf.enabled ? '#10b98130' : '#6b728030'}; color: ${wf.enabled ? '#10b981' : '#6b7280'}; font-size: 10px;">
-                    ${wf.enabled ? "Active" : "Paused"}
-                  </span>
-                  ${isCore && html`
-                    <span class="wf-badge" style="background: #8b5cf620; color: #a78bfa; font-size: 10px; font-weight: 600;">
-                      Core
-                    </span>
-                  `}
-                  ${templateState?.templateId && html`
-                    <span class="wf-badge" style="background: #3b82f620; color: #60a5fa; font-size: 10px;">
-                      Template
-                    </span>
-                  `}
-                  ${isCustomizedTemplate && html`
-                    <span class="wf-badge" style="background: #f59e0b20; color: #f59e0b; font-size: 10px;">
-                      Customized
-                    </span>
-                  `}
-                  ${hasTemplateUpdate && html`
-                    <span class="wf-badge" style="background: #ef444420; color: #f87171; font-size: 10px;">
-                      Update Available
-                    </span>
-                  `}
-                </div>
-                ${wf.description && html`
-                  <div style="font-size: 12px; color: var(--color-text-secondary, #8b95a5); margin-bottom: 8px; line-height: 1.4;">
-                    ${wf.description.slice(0, 120)}${wf.description.length > 120 ? "…" : ""}
-                  </div>
-                `}
-                ${templateState?.templateId && html`
-                  <div style="font-size: 11px; color: var(--color-text-secondary, #7f8aa0); margin-bottom: 8px;">
-                    ${templateState.templateName || templateState.templateId}
-                    ${templateState.installedTemplateVersion && templateState.templateVersion && templateState.installedTemplateVersion !== templateState.templateVersion && html`
-                      <span> · v${templateState.installedTemplateVersion} → v${templateState.templateVersion}</span>
-                    `}
-                  </div>
-                `}
-                <div style="display: flex; gap: 8px; align-items: center; font-size: 11px; color: var(--color-text-secondary, #6b7280);">
-                  <span>${wf.nodeCount || 0} nodes</span>
-                  <span>·</span>
-                  <span>${wf.category || "custom"}</span>
-                  <div style="flex: 1;"></div>
-                  ${hasTemplateUpdate && html`
-                    <${Button}
-                      variant="text"
-                      size="small"
-                      sx=${{ fontSize: '11px', borderColor: '#f59e0b80', color: '#f59e0b', textTransform: 'none' }}
-                      onClick=${async (e) => {
-                        e.stopPropagation();
-                        if (!isCustomizedTemplate) {
-                          await applyTemplateUpdate(wf.id, "replace", true);
-                          return;
-                        }
-                        const choice = window.prompt(
-                          "Template update available for customized workflow.\nType 'copy' to create an updated copy, or 'replace' to overwrite this workflow.",
-                          "copy",
-                        );
-                        const normalized = String(choice || "").trim().toLowerCase();
-                        if (normalized === "copy") {
-                          await applyTemplateUpdate(wf.id, "copy", false);
-                          return;
-                        }
-                        if (normalized === "replace") {
-                          const ok = window.confirm("Replace this customized workflow with latest template? This cannot be undone.");
-                          if (!ok) return;
-                          await applyTemplateUpdate(wf.id, "replace", true);
-                        }
-                      }}
-                    >
-                      <span class="icon-inline">${resolveIcon("refresh")}</span>
-                      Update
-                    <//>
-                  `}
-                  ${!isCore && html`<${Button}
-                    variant="text"
-                    size="small"
-                    sx=${{ fontSize: '11px', textTransform: 'none' }}
-                    onClick=${(e) => {
-                      e.stopPropagation();
-                      setWorkflowEnabled(wf.id, !wf.enabled);
-                    }}
-                  >
-                    <span class="icon-inline">${resolveIcon(wf.enabled ? "pause" : "play")}</span>
-                    ${wf.enabled ? "Pause" : "Resume"}
-                  <//>`}
-                  <${Button}
-                    variant="text"
-                    size="small"
-                    sx=${{ fontSize: '11px', textTransform: 'none', ...(wf.enabled ? {} : { opacity: 0.65 }) }}
-                    onClick=${(e) => {
-                      e.stopPropagation();
-                      if (!wf.enabled) {
-                        showToast("Workflow is paused. Resume it before running.", "warning");
-                        return;
-                      }
-                      openExecuteDialog(wf.id);
-                    }}
-                  >
-                    <span class="icon-inline">${resolveIcon("play")}</span>
-                  <//>
-                  ${!isCore && html`<${Button} variant="text" size="small" sx=${{ fontSize: '11px', color: '#ef4444', textTransform: 'none' }} onClick=${(e) => { e.stopPropagation(); if (confirm("Delete " + wf.name + "?")) deleteWorkflow(wf.id); }}>
-                    <span class="icon-inline">${resolveIcon("trash")}</span>
-                  <//>`}
-                </div>
+          ${workflowGroups.map((group) => html`
+            <div key=${group.key} style="margin-bottom: 20px;">
+              <div style="display: flex; align-items: center; gap: 8px; margin-bottom: 10px; padding-bottom: 6px; border-bottom: 1px solid var(--color-border, #2a304060);">
+                <span class="icon-inline" style="font-size: 16px;">${resolveIcon(group.icon) || ICONS.dot}</span>
+                <span style="font-size: 13px; font-weight: 600; color: var(--color-text-secondary, #8b95a5);">${group.label}</span>
+                <span style="font-size: 11px; color: var(--color-text-secondary, #6b7280);">(${group.items.length})</span>
               </div>
-            `;
-              })()}
-            `)}
-          </div>
+              <div style="display: grid; gap: 10px; grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));">
+                ${group.items.map(wf => html`
+                  ${(() => {
+                    const templateState = wf.metadata?.templateState || null;
+                    const hasTemplateUpdate = templateState?.updateAvailable === true;
+                    const isCustomizedTemplate = templateState?.isCustomized === true;
+                    const isCore = wf.core === true;
+                    return html`
+                  <div key=${wf.id} class="wf-card" style="background: var(--color-bg-secondary, #1a1f2e); border-radius: 12px; padding: 14px; border: 1px solid var(--color-border, #2a3040); cursor: pointer; transition: border-color 0.15s;"
+                       onClick=${() => {
+                         apiFetch("/api/workflows/" + wf.id).then(d => {
+                           activeWorkflow.value = d?.workflow || wf;
+                           viewMode.value = "canvas";
+                         }).catch(() => { activeWorkflow.value = wf; viewMode.value = "canvas"; });
+                       }}>
+                    <div style="display: flex; align-items: center; gap: 8px; margin-bottom: 8px;">
+                      <span class="icon-inline" style="font-size: 14px;">${resolveIcon(getNodeMeta(wf.trigger || "action")?.icon) || ICONS.dot}</span>
+                      <span style="font-weight: 600; font-size: 14px; flex: 1;">${wf.name}</span>
+                      <span class="wf-badge" style="background: ${wf.enabled ? '#10b98130' : '#6b728030'}; color: ${wf.enabled ? '#10b981' : '#6b7280'}; font-size: 10px;">
+                        ${wf.enabled ? "Active" : "Paused"}
+                      </span>
+                      ${isCore && html`
+                        <span class="wf-badge" style="background: #8b5cf620; color: #a78bfa; font-size: 10px; font-weight: 600;">
+                          Core
+                        </span>
+                      `}
+                      ${templateState?.templateId && html`
+                        <span class="wf-badge" style="background: #3b82f620; color: #60a5fa; font-size: 10px;">
+                          Template
+                        </span>
+                      `}
+                      ${isCustomizedTemplate && html`
+                        <span class="wf-badge" style="background: #f59e0b20; color: #f59e0b; font-size: 10px;">
+                          Customized
+                        </span>
+                      `}
+                      ${hasTemplateUpdate && html`
+                        <span class="wf-badge" style="background: #ef444420; color: #f87171; font-size: 10px;">
+                          Update Available
+                        </span>
+                      `}
+                    </div>
+                    ${wf.description && html`
+                      <div style="font-size: 12px; color: var(--color-text-secondary, #8b95a5); margin-bottom: 8px; line-height: 1.4;">
+                        ${wf.description.slice(0, 120)}${wf.description.length > 120 ? "…" : ""}
+                      </div>
+                    `}
+                    ${templateState?.templateId && html`
+                      <div style="font-size: 11px; color: var(--color-text-secondary, #7f8aa0); margin-bottom: 8px;">
+                        ${templateState.templateName || templateState.templateId}
+                        ${templateState.installedTemplateVersion && templateState.templateVersion && templateState.installedTemplateVersion !== templateState.templateVersion && html`
+                          <span> · v${templateState.installedTemplateVersion} → v${templateState.templateVersion}</span>
+                        `}
+                      </div>
+                    `}
+                    <div style="display: flex; gap: 8px; align-items: center; font-size: 11px; color: var(--color-text-secondary, #6b7280);">
+                      <span>${wf.nodeCount || 0} nodes</span>
+                      <span>·</span>
+                      <span class="wf-badge" style="font-size: 10px; padding: 2px 8px; background: var(--color-bg, #0d1117); color: var(--color-text-secondary, #8b95a5);">
+                        ${group.label}
+                      </span>
+                      <div style="flex: 1;"></div>
+                      ${hasTemplateUpdate && html`
+                        <${Button}
+                          variant="text"
+                          size="small"
+                          sx=${{ fontSize: '11px', borderColor: '#f59e0b80', color: '#f59e0b', textTransform: 'none' }}
+                          onClick=${async (e) => {
+                            e.stopPropagation();
+                            if (!isCustomizedTemplate) {
+                              await applyTemplateUpdate(wf.id, "replace", true);
+                              return;
+                            }
+                            const choice = window.prompt(
+                              "Template update available for customized workflow.\nType 'copy' to create an updated copy, or 'replace' to overwrite this workflow.",
+                              "copy",
+                            );
+                            const normalized = String(choice || "").trim().toLowerCase();
+                            if (normalized === "copy") {
+                              await applyTemplateUpdate(wf.id, "copy", false);
+                              return;
+                            }
+                            if (normalized === "replace") {
+                              const ok = window.confirm("Replace this customized workflow with latest template? This cannot be undone.");
+                              if (!ok) return;
+                              await applyTemplateUpdate(wf.id, "replace", true);
+                            }
+                          }}
+                        >
+                          <span class="icon-inline">${resolveIcon("refresh")}</span>
+                          Update
+                        <//>
+                      `}
+                      ${!isCore && html`<${Button}
+                        variant="text"
+                        size="small"
+                        sx=${{ fontSize: '11px', textTransform: 'none' }}
+                        onClick=${(e) => {
+                          e.stopPropagation();
+                          setWorkflowEnabled(wf.id, !wf.enabled);
+                        }}
+                      >
+                        <span class="icon-inline">${resolveIcon(wf.enabled ? "pause" : "play")}</span>
+                        ${wf.enabled ? "Pause" : "Resume"}
+                      <//>`}
+                      <${Button}
+                        variant="text"
+                        size="small"
+                        sx=${{ fontSize: '11px', textTransform: 'none', ...(wf.enabled ? {} : { opacity: 0.65 }) }}
+                        onClick=${(e) => {
+                          e.stopPropagation();
+                          if (!wf.enabled) {
+                            showToast("Workflow is paused. Resume it before running.", "warning");
+                            return;
+                          }
+                          openExecuteDialog(wf.id);
+                        }}
+                      >
+                        <span class="icon-inline">${resolveIcon("play")}</span>
+                      <//>
+                      ${!isCore && html`<${Button} variant="text" size="small" sx=${{ fontSize: '11px', color: '#ef4444', textTransform: 'none' }} onClick=${(e) => { e.stopPropagation(); if (confirm("Delete " + wf.name + "?")) deleteWorkflow(wf.id); }}>
+                        <span class="icon-inline">${resolveIcon("trash")}</span>
+                      <//>`}
+                    </div>
+                  </div>
+                `;
+                  })()}
+                `)}
+              </div>
+            </div>
+          `)}
         </div>
       `}
 
@@ -3310,60 +3389,50 @@ function WorkflowListView() {
             <span>All templates are installed!</span>
           </div>
         `}
-        ${(() => {
-          // Group templates by category
-          const groups = {};
-          availableTemplates.forEach(t => {
-            const key = t.category || "custom";
-            if (!groups[key]) groups[key] = { label: t.categoryLabel || key, icon: t.categoryIcon || "settings", order: t.categoryOrder || 99, items: [] };
-            groups[key].items.push(t);
-          });
-          const sorted = Object.entries(groups).sort((a, b) => a[1].order - b[1].order);
-          return sorted.map(([cat, group]) => html`
-            <div key=${cat} style="margin-bottom: 20px;">
-              <div style="display: flex; align-items: center; gap: 8px; margin-bottom: 10px; padding-bottom: 6px; border-bottom: 1px solid var(--color-border, #2a304060);">
-                <span class="icon-inline" style="font-size: 16px;">${resolveIcon(group.icon) || ICONS.dot}</span>
-                <span style="font-size: 13px; font-weight: 600; color: var(--color-text-secondary, #8b95a5);">${group.label}</span>
-                <span style="font-size: 11px; color: var(--color-text-secondary, #6b7280);">(${group.items.length})</span>
-              </div>
-              <div style="display: grid; gap: 10px; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));">
-                ${group.items.map(t => html`
-                  <div key=${t.id} class="wf-card wf-template-card" style="background: var(--color-bg-secondary, #1a1f2e); border-radius: 12px; padding: 14px; border: 1px solid var(--color-border, #2a304080);">
-                    <div style="display: flex; align-items: center; gap: 8px; margin-bottom: 8px;">
-                      <span class="icon-inline" style="font-size: 14px;">${resolveIcon(t.categoryIcon || group.icon) || ICONS.dot}</span>
-                      <span style="font-weight: 600; font-size: 14px; flex: 1;">${t.name}</span>
-                      ${t.recommended && html`
-                        <span class="wf-badge" style="background: #10b98125; color: #10b981; border-color: #10b98140; font-size: 10px; padding: 2px 8px; font-weight: 600; letter-spacing: 0.3px; display: inline-flex; align-items: center; gap: 4px;">
-                          <span class="icon-inline">${resolveIcon("star")}</span>
-                          Recommended
-                        </span>
-                      `}
-                    </div>
-                    <div style="font-size: 12px; color: var(--color-text-secondary, #8b95a5); margin-bottom: 10px; line-height: 1.4;">
-                      ${t.description?.slice(0, 120)}${(t.description?.length || 0) > 120 ? "…" : ""}
-                    </div>
-                    <div style="display: flex; gap: 6px; flex-wrap: wrap; margin-bottom: 10px;">
-                      ${(t.tags || []).map(tag => html`
-                        <span key=${tag} class="wf-badge" style="font-size: 10px; padding: 2px 6px;">${tag}</span>
-                      `)}
-                    </div>
-                    <div style="display: flex; gap: 8px; align-items: center;">
-                      <span style="font-size: 11px; color: var(--color-text-secondary, #6b7280);">${t.nodeCount} nodes</span>
-                      <div style="flex: 1;"></div>
-                      <${Button}
-                        variant="contained"
-                        size="small"
-                        onClick=${() => openInstallTemplateDialog(t.id)}
-                      >
-                        Install →
-                      <//>
-                    </div>
-                  </div>
-                `)}
-              </div>
+        ${availableTemplateGroups.map((group) => html`
+          <div key=${group.key} style="margin-bottom: 20px;">
+            <div style="display: flex; align-items: center; gap: 8px; margin-bottom: 10px; padding-bottom: 6px; border-bottom: 1px solid var(--color-border, #2a304060);">
+              <span class="icon-inline" style="font-size: 16px;">${resolveIcon(group.icon) || ICONS.dot}</span>
+              <span style="font-size: 13px; font-weight: 600; color: var(--color-text-secondary, #8b95a5);">${group.label}</span>
+              <span style="font-size: 11px; color: var(--color-text-secondary, #6b7280);">(${group.items.length})</span>
             </div>
-          `);
-        })()}
+            <div style="display: grid; gap: 10px; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));">
+              ${group.items.map(t => html`
+                <div key=${t.id} class="wf-card wf-template-card" style="background: var(--color-bg-secondary, #1a1f2e); border-radius: 12px; padding: 14px; border: 1px solid var(--color-border, #2a304080);">
+                  <div style="display: flex; align-items: center; gap: 8px; margin-bottom: 8px;">
+                    <span class="icon-inline" style="font-size: 14px;">${resolveIcon(t.categoryIcon || group.icon) || ICONS.dot}</span>
+                    <span style="font-weight: 600; font-size: 14px; flex: 1;">${t.name}</span>
+                    ${t.recommended && html`
+                      <span class="wf-badge" style="background: #10b98125; color: #10b981; border-color: #10b98140; font-size: 10px; padding: 2px 8px; font-weight: 600; letter-spacing: 0.3px; display: inline-flex; align-items: center; gap: 4px;">
+                        <span class="icon-inline">${resolveIcon("star")}</span>
+                        Recommended
+                      </span>
+                    `}
+                  </div>
+                  <div style="font-size: 12px; color: var(--color-text-secondary, #8b95a5); margin-bottom: 10px; line-height: 1.4;">
+                    ${t.description?.slice(0, 120)}${(t.description?.length || 0) > 120 ? "…" : ""}
+                  </div>
+                  <div style="display: flex; gap: 6px; flex-wrap: wrap; margin-bottom: 10px;">
+                    ${(t.tags || []).map(tag => html`
+                      <span key=${tag} class="wf-badge" style="font-size: 10px; padding: 2px 6px;">${tag}</span>
+                    `)}
+                  </div>
+                  <div style="display: flex; gap: 8px; align-items: center;">
+                    <span style="font-size: 11px; color: var(--color-text-secondary, #6b7280);">${t.nodeCount} nodes</span>
+                    <div style="flex: 1;"></div>
+                    <${Button}
+                      variant="contained"
+                      size="small"
+                      onClick=${() => openInstallTemplateDialog(t.id)}
+                    >
+                      Install →
+                    <//>
+                  </div>
+                </div>
+              `)}
+            </div>
+          </div>
+        `)}
       </div>
     </div>
   `;
@@ -4190,4 +4259,3 @@ export function WorkflowsTab() {
     </div>
   `;
 }
-
