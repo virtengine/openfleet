@@ -4984,6 +4984,249 @@ select.input {
   }
 }
 
+/* ── Task Detail — Jira-style layout ──────────────────────── */
+
+/* Breadcrumb bar */
+.task-detail-breadcrumb {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  color: var(--text-hint, #8b949e);
+  padding: 12px 24px 0;
+}
+.task-detail-breadcrumb a, .task-detail-breadcrumb span {
+  color: var(--text-hint, #8b949e);
+  text-decoration: none;
+}
+.task-detail-breadcrumb a:hover { color: var(--accent, #60a5fa); }
+
+/* Title area — large inline-editable title */
+.task-detail-title-area {
+  padding: 4px 24px 12px;
+}
+.task-detail-title-input {
+  width: 100%;
+  font-size: 20px;
+  font-weight: 600;
+  line-height: 1.4;
+  background: transparent;
+  border: none;
+  color: var(--color-text, #e6edf3);
+  outline: none;
+  padding: 4px 0;
+  border-bottom: 2px solid transparent;
+  transition: border-color 0.15s;
+}
+.task-detail-title-input:focus {
+  border-bottom-color: var(--accent, #60a5fa);
+}
+
+/* Status transition button (like Jira's blue button) */
+.task-status-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 14px;
+  border-radius: 4px;
+  font-size: 12px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  border: none;
+  cursor: pointer;
+  transition: filter 0.12s;
+}
+.task-status-btn:hover { filter: brightness(1.15); }
+.task-status-btn[data-status="todo"] { background: #388bfd30; color: #58a6ff; }
+.task-status-btn[data-status="inprogress"] { background: #3b82f6; color: #fff; }
+.task-status-btn[data-status="inreview"] { background: #a855f7; color: #fff; }
+.task-status-btn[data-status="done"] { background: #22c55e; color: #fff; }
+.task-status-btn[data-status="cancelled"] { background: #6b728020; color: #9ca3af; }
+.task-status-btn[data-status="error"] { background: #ef4444; color: #fff; }
+.task-status-btn[data-status="draft"] { background: #6b728030; color: #9ca3af; }
+
+/* Action icon buttons */
+.task-action-icon-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 32px;
+  height: 32px;
+  border-radius: 6px;
+  border: 1px solid var(--border, #30363d);
+  background: transparent;
+  color: var(--text-secondary, #8b949e);
+  cursor: pointer;
+  font-size: 14px;
+  transition: background 0.12s, color 0.12s;
+}
+.task-action-icon-btn:hover {
+  background: var(--bg-card-hover, #161b22);
+  color: var(--color-text, #e6edf3);
+}
+
+/* Tab bar (Jira style) */
+.task-tab-bar {
+  display: flex;
+  gap: 0;
+  border-bottom: 2px solid var(--border, #30363d);
+  padding: 0 24px;
+  background: var(--bg-surface, #0d1117);
+}
+.task-tab-btn {
+  padding: 10px 16px;
+  border: none;
+  background: transparent;
+  color: var(--text-secondary, #8b949e);
+  font-size: 13px;
+  font-weight: 500;
+  cursor: pointer;
+  border-bottom: 2px solid transparent;
+  margin-bottom: -2px;
+  transition: color 0.12s, border-color 0.12s;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.task-tab-btn:hover { color: var(--color-text, #e6edf3); }
+.task-tab-btn[data-active="true"] {
+  color: var(--accent, #60a5fa);
+  border-bottom-color: var(--accent, #60a5fa);
+  font-weight: 600;
+}
+.task-tab-count {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 18px;
+  height: 18px;
+  padding: 0 5px;
+  border-radius: 9px;
+  background: var(--bg-card-hover, #21262d);
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--text-secondary, #8b949e);
+}
+
+/* Two-column details layout */
+.task-detail-columns {
+  display: grid;
+  grid-template-columns: 1fr 320px;
+  gap: 0;
+  min-height: 0;
+}
+.task-detail-main {
+  padding: 20px 24px;
+  overflow-y: auto;
+  scrollbar-width: thin;
+  display: flex;
+  flex-direction: column;
+  gap: 20px;
+}
+.task-detail-sidebar {
+  padding: 16px 20px;
+  overflow-y: auto;
+  scrollbar-width: thin;
+  border-left: 1px solid var(--border, #30363d);
+  background: var(--bg-surface, #0d1117);
+  display: flex;
+  flex-direction: column;
+  gap: 0;
+}
+
+/* Sidebar field rows (Jira detail panel) */
+.task-sidebar-field {
+  display: flex;
+  align-items: flex-start;
+  padding: 8px 0;
+  border-bottom: 1px solid color-mix(in srgb, var(--border, #30363d) 40%, transparent);
+  gap: 12px;
+}
+.task-sidebar-field:last-child { border-bottom: none; }
+.task-sidebar-label {
+  flex-shrink: 0;
+  width: 90px;
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--text-hint, #8b949e);
+  padding-top: 6px;
+}
+.task-sidebar-value {
+  flex: 1;
+  min-width: 0;
+  font-size: 13px;
+  color: var(--color-text, #e6edf3);
+}
+
+/* Section headers inside main content */
+.task-section {
+  border: 1px solid var(--border, #30363d);
+  border-radius: 8px;
+  overflow: hidden;
+}
+.task-section-title {
+  padding: 10px 14px;
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  color: var(--text-hint, #8b949e);
+  background: var(--bg-surface, #0d1117);
+  border-bottom: 1px solid var(--border, #30363d);
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.task-section-body {
+  padding: 14px;
+}
+
+/* Priority dot */
+.task-priority-dot {
+  display: inline-block;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+}
+.task-priority-dot[data-priority="critical"] { background: #ef4444; }
+.task-priority-dot[data-priority="high"] { background: #f97316; }
+.task-priority-dot[data-priority="medium"] { background: #eab308; }
+.task-priority-dot[data-priority="low"] { background: #6b7280; }
+
+/* Timestamps */
+.task-timestamps {
+  padding: 12px 0 4px;
+  border-top: 1px solid var(--border, #30363d);
+  margin-top: 8px;
+}
+.task-timestamp-row {
+  font-size: 11px;
+  color: var(--text-hint, #8b949e);
+  padding: 2px 0;
+}
+
+/* Save bar at bottom of sidebar */
+.task-save-bar {
+  padding: 12px 0;
+  border-top: 1px solid var(--border, #30363d);
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+  margin-top: auto;
+}
+
+/* Responsive */
+@media (max-width: 900px) {
+  .task-detail-columns {
+    grid-template-columns: 1fr;
+  }
+  .task-detail-sidebar {
+    border-left: none;
+    border-top: 1px solid var(--border, #30363d);
+  }
+}
+
 /* ── Chat input wrapper: accommodate mic btn ── */
 .chat-input-wrapper .mic-btn {
   flex-shrink: 0;

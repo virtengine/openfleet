@@ -3108,91 +3108,696 @@ export function TaskDetailModal({ task, onClose, onStart, presentation = "modal"
       }}
       activeOperationLabel=${activeOperationLabel}
     >
-      ${/* ── Task Header Strip ──────────────────────────────────────────── */ ""}
-      <div class="task-fullscreen-header" style="display:flex;align-items:center;gap:12px;padding:14px 24px;border-bottom:1px solid var(--border,#333);background:var(--bg-surface,#0d1117);flex-wrap:wrap;">
-        <div style="display:flex;align-items:center;gap:6px;flex-shrink:0;">
-          <span style="font-family:monospace;font-size:0.75em;opacity:0.5;user-select:all;">${task?.id?.slice(0, 8)}</span>
-          <${Badge} status=${task?.status} text=${task?.status} />
-          ${task?.priority && html`<${Badge} status=${task.priority} text=${task.priority} />`}
-          ${manualOverride && html`<${Badge} status="warning" text="manual" />`}
-        </div>
+      ${/* ── Breadcrumb ── */ ""}
+      <div class="task-detail-breadcrumb">
+        <span>Tasks</span>
+        <span>/</span>
+        <span style="color:var(--color-text);font-weight:500;user-select:all;">${task?.id?.slice(0, 8) || "New"}</span>
+        ${task?.priority && html`<span class="task-priority-dot" data-priority=${task.priority}></span>`}
+        ${manualOverride && html`<span class="exec-plan-badge" style="background:#fbbf2420;color:#fbbf24;">MANUAL</span>`}
+      </div>
+
+      ${/* ── Title + Actions ── */ ""}
+      <div class="task-detail-title-area" style="display:flex;gap:12px;align-items:flex-start;">
         <div style="flex:1;min-width:0;">
-          <strong style="font-size:1em;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;display:block;">${task?.title || "Untitled"}</strong>
+          <input class="task-detail-title-input" value=${title} onInput=${(e) => setTitle(e.target.value)} placeholder="Task title" />
         </div>
-        <div style="display:flex;gap:6px;align-items:center;flex-shrink:0;">
+        <div style="display:flex;gap:6px;align-items:center;padding-top:6px;flex-shrink:0;">
+          <button class="task-status-btn" data-status=${status}>
+            ${(status || "todo").toUpperCase()}
+          </button>
           ${canDispatch && html`
             <${Button} variant="contained" size="small" onClick=${handleStart}>
               ${iconText(":play: Dispatch")}
             <//>
           `}
-          <button
+          <button class="task-action-icon-btn"
             onClick=${() => setFullScreen(!fullScreen)}
-            style="padding:4px 8px;border-radius:4px;border:1px solid var(--border-color,#444);background:transparent;color:var(--color-text,#e0e0e0);font-size:0.75em;cursor:pointer;"
-            title=${fullScreen ? "Exit fullscreen" : "Fullscreen"}
-          >${fullScreen ? "⊟" : "⊞"}</button>
+            title=${fullScreen ? "Exit fullscreen" : "Fullscreen"}>
+            ${fullScreen ? "⊟" : "⊞"}
+          </button>
         </div>
       </div>
 
-      ${/* ── Tab Navigation ─────────────────────────────────────────────── */ ""}
-      <div style="display:flex;gap:0;border-bottom:1px solid var(--border-color,#333);background:var(--bg-surface,#0d1117);padding:0 24px;">
-        ${["details", "execution", "history"].map((tab) => html`
-          <button key=${tab}
-            onClick=${() => setActiveTab(tab)}
-            style="padding:8px 16px;border:none;background:transparent;color:${activeTab === tab ? 'var(--accent,#60a5fa)' : 'var(--color-text,#e0e0e0)'};font-size:0.8em;font-weight:${activeTab === tab ? '700' : '400'};cursor:pointer;border-bottom:2px solid ${activeTab === tab ? 'var(--accent,#60a5fa)' : 'transparent'};text-transform:capitalize;"
-          >${tab === "execution" ? "▶️ Execution Plan" : tab === "history" ? "⏱ History" : "✎ Details"}</button>
-        `)}
+      ${/* ── Tab Bar (Jira style) ── */ ""}
+      <div class="task-tab-bar">
+        <button class="task-tab-btn" data-active=${activeTab === "details"} onClick=${() => setActiveTab("details")}>
+          ${"✎"} Details
+        </button>
+        <button class="task-tab-btn" data-active=${activeTab === "execution"} onClick=${() => setActiveTab("execution")}>
+          ${"▶️"} Execution Plan
+          ${executionPlan?.stageCount > 0 && html`<span class="task-tab-count">${executionPlan.stageCount}</span>`}
+        </button>
+        <button class="task-tab-btn" data-active=${activeTab === "history"} onClick=${() => setActiveTab("history")}>
+          ${"⏱"} History
+          ${historyEntries.length > 0 && html`<span class="task-tab-count">${historyEntries.length}</span>`}
+        </button>
       </div>
 
-      ${/* ── Content Body ─────────────────────────────────────────────────── */ ""}
+      ${/* ── Content Body ───────────────────────────────────────────── */ ""}
       <div style="padding:${fullScreen ? '20px 24px' : '0'};overflow-y:auto;max-height:${fullScreen ? 'calc(100dvh - 140px)' : 'auto'};">
 
-      ${/* ── DETAILS TAB ─────────────────────────────────────────────────── */ ""}
-      ${activeTab === "details" && html`<div style="display:contents;">
+      ${/* ── DETAILS TAB — Two-column Jira layout ─────────────────── */ ""}
+      ${activeTab === "details" && html`<div class="task-detail-columns" style="max-height:${fullScreen ? 'calc(100dvh - 160px)' : '65vh'};overflow:hidden;">
 
-      <div class="modal-form-span">
-        <div class="task-comments-block jira-panel" style="padding:12px;border:1px solid var(--border);border-radius:12px;background:var(--bg-surface)">
-          <div class="task-attachments-title">Tracking Overview</div>
-          <div class="task-comments-list" style="display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:10px;">
-            <div class="task-comment-item">
-              <div class="task-comment-meta">Assigned Agents</div>
-              <div class="task-comment-body">${taskAgents.length ? taskAgents.join(" · ") : "No agent assignment recorded."}</div>
+      ${/* ── LEFT: Main Content ── */ ""}
+      <div class="task-detail-main">
+
+        ${/* Description */ ""}
+        <div class="task-section">
+          <div class="task-section-title">Description</div>
+          <div class="task-section-body">
+            <div class="textarea-with-mic" style="position:relative">
+              <${TextField} multiline rows=${4} size="small" placeholder="Add a description..." value=${description} onInput=${(e) => setDescription(e.target.value)} style=${{ paddingRight: "36px" }} fullWidth />
+              <${VoiceMicButton}
+                onTranscript=${(t) => setDescription((prev) => (prev ? prev + " " + t : t))}
+                disabled=${saving || rewriting}
+                size="sm"
+                className="textarea-mic-btn"
+              />
             </div>
-            <div class="task-comment-item">
-              <div class="task-comment-meta">Workflow Runs</div>
-              <div class="task-comment-body">${workflowRuns.length ? `${workflowRuns.length} linked runs` : "No workflow runs linked yet."}</div>
-            </div>
-            <div class="task-comment-item">
-              <div class="task-comment-meta">Timeline Events</div>
-              <div class="task-comment-body">${historyEntries.length ? `${historyEntries.length} recorded entries` : "No timeline history yet."}</div>
-            </div>
-            <div class="task-comment-item">
-              <div class="task-comment-meta">Branch / PR</div>
-              <div class="task-comment-body">${relatedLinks.length ? relatedLinks.map((item) => `${item.kind}: ${item.value}`).join(" · ") : "No branch or PR links recorded."}</div>
+            <div style="display:flex;gap:6px;margin-top:8px;">
+              <${Tooltip} title="Use AI to expand and improve this task description">
+                <${Button}
+                  variant="text" size="small"
+                  style=${{ display: "flex", alignItems: "center", gap: "6px", fontSize: "12px", padding: "5px 10px", opacity: !title.trim() ? 0.45 : 1 }}
+                  disabled=${!title.trim() || rewriting || saving}
+                  onClick=${async () => {
+                    if (!title.trim() || rewriting) return;
+                    setRewriting(true);
+                    haptic("medium");
+                    try {
+                      const res = await apiFetch("/api/tasks/rewrite", {
+                        method: "POST",
+                        body: JSON.stringify({ title: title.trim(), description: description.trim() }),
+                      });
+                      if (res?.data) {
+                        if (res.data.title) setTitle(res.data.title);
+                        if (res.data.description) setDescription(res.data.description);
+                        showToast("Task description improved", "success");
+                        haptic("medium");
+                      }
+                    } catch { /* toast via apiFetch */ }
+                    setRewriting(false);
+                  }}
+                >
+                  ${rewriting
+                    ? html`<span style="display:inline-block;animation:spin 0.8s linear infinite">${"⏱"}</span> Improving…`
+                    : html`${iconText(":star: Improve with AI")}`
+                  }
+                <//>
+              <//>
             </div>
           </div>
         </div>
+
+        ${/* Attachments */ ""}
+        <div class="task-section" onPaste=${handleAttachmentPaste}>
+          <div class="task-section-title">
+            Attachments
+            <span class="task-tab-count">${attachments.length}</span>
+            <span style="margin-left:auto;">
+              <${Button}
+                variant="text" size="small"
+                type="button"
+                onClick=${() => attachmentInputRef.current && attachmentInputRef.current.click()}
+                disabled=${uploadingAttachment}
+              >
+                Upload
+              <//>
+            </span>
+          </div>
+          <div class="task-section-body">
+            <input
+              ref=${attachmentInputRef}
+              type="file"
+              multiple
+              style="display:none"
+              onChange=${handleAttachmentPick}
+            />
+            ${attachments.length === 0 && !uploadingAttachment && html`
+              <div class="meta-text">No attachments uploaded.</div>
+            `}
+            ${uploadingAttachment && html`
+              <div class="meta-text">Uploading attachments...</div>
+            `}
+            ${attachments.length > 0 && html`
+              <div class="task-attachments-list">
+                ${attachments.map((att, index) => {
+                  const name = att.name || att.filename || "attachment";
+                  const url = att.url || att.filePath || att.path || "";
+                  const size = att.size ? formatBytes(att.size) : "";
+                  const isImage = isImageAttachment(att);
+                  return html`
+                    <div class="task-attachment-item" key=${att.id || `${name}-${index}`}>
+                      ${isImage && url
+                        ? html`<img class="task-attachment-thumb" src=${url} alt=${name} />`
+                        : html`<span class="task-attachment-icon">${"🔗"}</span>`}
+                      <div class="task-attachment-meta">
+                        ${url
+                          ? html`<a class="task-attachment-name" href=${url} target="_blank" rel="noopener">${name}</a>`
+                          : html`<span class="task-attachment-name">${name}</span>`}
+                        <div class="task-attachment-sub">
+                          ${(att.kind || "file")}${size ? ` · ${size}` : ""}
+                        </div>
+                      </div>
+                    </div>
+                  `;
+                })}
+              </div>
+            `}
+          </div>
+        </div>
+
+        ${/* Subtasks */ ""}
+        <div class="task-section">
+          <div class="task-section-title">
+            Subtasks
+            ${subtasks.length > 0 && html`<span class="task-tab-count">${subtasks.length}</span>`}
+            <span style="margin-left:auto;">
+              <${Button}
+                variant="text"
+                size="small"
+                onClick=${loadSubtasks}
+                disabled=${subtasksLoading || creatingSubtask}
+              >
+                ${subtasksLoading ? "Refreshing…" : "Refresh"}
+              <//>
+            </span>
+          </div>
+          <div class="task-section-body">
+            <div class="task-comment-composer" style=${{ marginBottom: "8px" }}>
+              <${TextField}
+                size="small"
+                placeholder="Create subtask summary"
+                value=${subtaskTitle}
+                onInput=${(e) => setSubtaskTitle(e.target.value)}
+                fullWidth
+              />
+              <${Button}
+                variant="contained"
+                size="small"
+                disabled=${creatingSubtask || !sanitizeTaskText(subtaskTitle || "").trim()}
+                onClick=${handleCreateSubtask}
+              >
+                ${creatingSubtask ? "Creating…" : "Add"}
+              <//>
+            </div>
+            <div class="task-comments-list">
+              ${!subtasksLoading && !subtasks.length && html`<div class="meta-text">No subtasks yet.</div>`}
+              ${subtasks.map((subtask) => html`
+                <div class="task-comment-item" key=${subtask.id}>
+                  <div class="task-comment-meta">
+                    <span style="user-select:all">${subtask.id}</span>
+                    ${subtask.status ? ` · ${subtask.status}` : ""}
+                    ${subtask.storyPoints ? ` · ${subtask.storyPoints} pts` : ""}
+                  </div>
+                  <div class="task-comment-body">${subtask.title}</div>
+                  ${subtask.assignee && html`<div class="task-comment-meta">Assignee: ${subtask.assignee}</div>`}
+                </div>
+              `)}
+            </div>
+          </div>
+        </div>
+
+        ${/* Comments & Updates */ ""}
+        <div class="task-section">
+          <div class="task-section-title">
+            Comments & Updates
+            ${comments.length > 0 && html`<span class="task-tab-count">${comments.length}</span>`}
+          </div>
+          <div class="task-section-body">
+            <div class="task-comments-list">
+              ${comments.length > 0
+                ? comments.map((comment, index) => html`
+                  <div class="task-comment-item" key=${comment.id || `comment-${index}`}>
+                    <div class="task-comment-meta">
+                      ${comment.author ? `@${comment.author}` : "comment"}
+                      ${comment.createdAt ? ` · ${formatRelative(comment.createdAt)}` : ""}
+                    </div>
+                    <div class="task-comment-body">${comment.body}</div>
+                  </div>
+                `)
+                : html`<div class="meta-text">No comments yet. Add one below.</div>`}
+            </div>
+            <div class="task-comment-composer" style=${{ marginTop: "10px" }}>
+              <${TextField}
+                multiline
+                rows=${2}
+                size="small"
+                placeholder="Add a comment or status update..."
+                value=${commentDraft}
+                onInput=${(e) => setCommentDraft(e.target.value)}
+                fullWidth
+              />
+              <${Button}
+                variant="contained"
+                size="small"
+                disabled=${postingComment || !sanitizeTaskText(commentDraft || "").trim()}
+                onClick=${handlePostComment}
+              >
+                ${postingComment ? "Posting…" : "Post Comment"}
+              <//>
+            </div>
+          </div>
+        </div>
+
+        ${/* Tracking Overview */ ""}
+        <div class="task-section">
+          <div class="task-section-title">Tracking Overview</div>
+          <div class="task-section-body">
+            <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:10px;">
+              <div class="task-comment-item">
+                <div class="task-comment-meta">Assigned Agents</div>
+                <div class="task-comment-body">${taskAgents.length ? taskAgents.join(" · ") : "No agent assignment recorded."}</div>
+              </div>
+              <div class="task-comment-item">
+                <div class="task-comment-meta">Workflow Runs</div>
+                <div class="task-comment-body">${workflowRuns.length ? `${workflowRuns.length} linked runs` : "No workflow runs linked yet."}</div>
+              </div>
+              <div class="task-comment-item">
+                <div class="task-comment-meta">Timeline Events</div>
+                <div class="task-comment-body">${historyEntries.length ? `${historyEntries.length} recorded entries` : "No timeline history yet."}</div>
+              </div>
+              <div class="task-comment-item">
+                <div class="task-comment-meta">Branch / PR</div>
+                <div class="task-comment-body">${relatedLinks.length ? relatedLinks.map((item) => `${item.kind}: ${item.value}`).join(" · ") : "No branch or PR links recorded."}</div>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        ${/* Workflow Activity */ ""}
+        ${workflowRuns.length > 0 && html`
+          <div class="task-section">
+            <div class="task-section-title">Workflow Activity</div>
+            <div class="task-section-body">
+              <div class="task-comments-list">
+                ${workflowRuns.map((run, index) => html`
+                  <div class="task-comment-item" key=${`workflow-${index}`}>
+                    <div class="task-comment-meta">
+                      ${run.workflowId || "workflow"}
+                      ${run.runId ? ` · run ${run.runId}` : ""}
+                      ${run.timestamp ? ` · ${formatRelative(run.timestamp)}` : ""}
+                    </div>
+                    <div class="task-comment-body">${run.status || run.result || "No status summary"}</div>
+                    ${run.result && run.status && run.result !== run.status && html`
+                      <div class="task-comment-body">${run.result}</div>
+                    `}
+                  </div>
+                `)}
+              </div>
+            </div>
+          </div>
+        `}
+
       </div>
 
-      ${workflowRuns.length > 0 && html`
-        <div class="task-comments-block modal-form-span jira-panel">
-          <div class="task-attachments-title">Workflow Activity</div>
-          <div class="task-comments-list">
-            ${workflowRuns.map((run, index) => html`
-              <div class="task-comment-item" key=${`workflow-${index}`}>
-                <div class="task-comment-meta">
-                  ${run.workflowId || "workflow"}
-                  ${run.runId ? ` · run ${run.runId}` : ""}
-                  ${run.timestamp ? ` · ${formatRelative(run.timestamp)}` : ""}
-                </div>
-                <div class="task-comment-body">${run.status || run.result || "No status summary"}</div>
-                ${run.result && run.status && run.result !== run.status && html`
-                  <div class="task-comment-body">${run.result}</div>
-                `}
-              </div>
-            `)}
+      ${/* ── RIGHT: Sidebar ── */ ""}
+      <div class="task-detail-sidebar">
+
+        ${/* Status */ ""}
+        <div class="task-sidebar-field">
+          <div class="task-sidebar-label">Status</div>
+          <div class="task-sidebar-value">
+            <${Select}
+              size="small"
+              value=${status}
+              onChange=${(e) => {
+                const next = e.target.value;
+                setStatus(next);
+                if (next === "draft") setDraft(true);
+                else if (draft) setDraft(false);
+              }}
+              fullWidth
+            >
+              ${["draft", "todo", "inprogress", "inreview", "done", "cancelled"].map(
+                (s) => html`<${MenuItem} value=${s}>${s}</${MenuItem}>`,
+              )}
+            </${Select}>
           </div>
         </div>
-      `}
+
+        ${/* Priority */ ""}
+        <div class="task-sidebar-field">
+          <div class="task-sidebar-label">Priority</div>
+          <div class="task-sidebar-value">
+            <${Select}
+              size="small"
+              value=${priority}
+              onChange=${(e) => setPriority(e.target.value)}
+              fullWidth
+            >
+              <${MenuItem} value="">No priority</${MenuItem}>
+              ${["low", "medium", "high", "critical"].map(
+                (p) => html`<${MenuItem} value=${p}>${p}</${MenuItem}>`,
+              )}
+            </${Select}>
+          </div>
+        </div>
+
+        ${/* Assignee */ ""}
+        <div class="task-sidebar-field">
+          <div class="task-sidebar-label">Assignee</div>
+          <div class="task-sidebar-value">
+            <${TextField}
+              size="small"
+              variant="outlined"
+              placeholder="Assignee"
+              value=${assignee}
+              onInput=${(e) => setAssignee(e.target.value)}
+              fullWidth
+            />
+          </div>
+        </div>
+
+        ${/* Assignees */ ""}
+        <div class="task-sidebar-field">
+          <div class="task-sidebar-label">Assignees</div>
+          <div class="task-sidebar-value">
+            <${TextField}
+              size="small"
+              variant="outlined"
+              placeholder="alice, bob"
+              value=${assigneesInput}
+              onInput=${(e) => setAssigneesInput(e.target.value)}
+              fullWidth
+            />
+          </div>
+        </div>
+
+        ${/* Sprint */ ""}
+        <div class="task-sidebar-field">
+          <div class="task-sidebar-label">Sprint</div>
+          <div class="task-sidebar-value">
+            <div style="display:flex;gap:6px;">
+              <${Select}
+                size="small"
+                value=${selectedSprintId}
+                onChange=${(e) => setSelectedSprintId(e.target.value)}
+                style=${{ flex: 1 }}
+              >
+                <${MenuItem} value="">No sprint</${MenuItem}>
+                ${sprintOptions.map((sprint) => html`
+                  <${MenuItem} key=${sprint.id} value=${sprint.id}>${sprint.label}</${MenuItem}>
+                `)}
+              </${Select}>
+              <${TextField}
+                size="small"
+                type="number"
+                placeholder="#"
+                value=${sprintOrderInput}
+                onInput=${(e) => setSprintOrderInput(e.target.value)}
+                inputProps=${{ min: 1, step: 1 }}
+                style=${{ width: "60px" }}
+              />
+            </div>
+          </div>
+        </div>
+
+        ${/* Story Points */ ""}
+        <div class="task-sidebar-field">
+          <div class="task-sidebar-label">Story Points</div>
+          <div class="task-sidebar-value">
+            <${TextField}
+              size="small"
+              variant="outlined"
+              type="number"
+              placeholder="Points"
+              value=${storyPoints}
+              onInput=${(e) => setStoryPoints(e.target.value)}
+              fullWidth
+            />
+          </div>
+        </div>
+
+        ${/* Due Date */ ""}
+        <div class="task-sidebar-field">
+          <div class="task-sidebar-label">Due Date</div>
+          <div class="task-sidebar-value">
+            <${TextField}
+              size="small"
+              variant="outlined"
+              type="date"
+              value=${dueDate}
+              onInput=${(e) => setDueDate(e.target.value)}
+              InputLabelProps=${{ shrink: true }}
+              fullWidth
+            />
+          </div>
+        </div>
+
+        ${/* Epic */ ""}
+        <div class="task-sidebar-field">
+          <div class="task-sidebar-label">Epic</div>
+          <div class="task-sidebar-value">
+            <${TextField}
+              size="small"
+              variant="outlined"
+              placeholder="Epic"
+              value=${epicId}
+              onInput=${(e) => setEpicId(e.target.value)}
+              fullWidth
+            />
+            ${epicCatalog.length > 0 && html`
+              <div class="tag-row" style=${{ marginTop: "6px" }}>
+                ${epicCatalog.slice(0, 6).map((entry) => html`<button type="button" class="tag-chip task-structure-chip ${epicId === entry.id ? "task-structure-chip-active" : ""}" style="font-size:10px;" onClick=${() => setEpicId(entry.id)}>${entry.label}</button>`)}
+              </div>
+            `}
+          </div>
+        </div>
+
+        ${/* Parent Task */ ""}
+        <div class="task-sidebar-field">
+          <div class="task-sidebar-label">Parent Task</div>
+          <div class="task-sidebar-value">
+            <${TextField}
+              size="small"
+              variant="outlined"
+              placeholder="Parent task ID"
+              value=${parentTaskId}
+              onInput=${(e) => setParentTaskId(e.target.value)}
+              fullWidth
+            />
+          </div>
+        </div>
+
+        ${/* Tags */ ""}
+        <div class="task-sidebar-field">
+          <div class="task-sidebar-label">Tags</div>
+          <div class="task-sidebar-value">
+            <${TextField} size="small" variant="outlined" placeholder="Tags (comma-separated)" value=${tagsInput} onInput=${(e) => setTagsInput(e.target.value)} fullWidth />
+            ${normalizeTagInput(tagsInput).length > 0 && html`
+              <div class="tag-row" style=${{ marginTop: "4px" }}>
+                ${normalizeTagInput(tagsInput).map(
+                  (tag) => html`<span class="tag-chip">#${tag}</span>`,
+                )}
+              </div>
+            `}
+          </div>
+        </div>
+
+        ${/* Workspace & Repository */ ""}
+        <div class="task-sidebar-field">
+          <div class="task-sidebar-label">Workspace</div>
+          <div class="task-sidebar-value">
+            <${Select}
+              size="small"
+              value=${workspaceId}
+              onChange=${(e) => setWorkspaceId(e.target.value)}
+              fullWidth
+            >
+              <${MenuItem} value="">Active workspace</${MenuItem}>
+              ${workspaceOptions.map(
+                (ws) => html`<${MenuItem} value=${ws.id}>${ws.name || ws.id}</${MenuItem}>`,
+              )}
+            </${Select}>
+          </div>
+        </div>
+
+        <div class="task-sidebar-field">
+          <div class="task-sidebar-label">Repository</div>
+          <div class="task-sidebar-value">
+            <${Select}
+              size="small"
+              value=${repository}
+              onChange=${(e) => setRepository(e.target.value)}
+              disabled=${!repositoryOptions.length}
+              fullWidth
+            >
+              <${MenuItem} value="">
+                ${repositoryOptions.length ? "Auto repository" : "No repos in workspace"}
+              </${MenuItem}>
+              ${repositoryOptions.map(
+                (repo) =>
+                  html`<${MenuItem} value=${repo.slug}>${repo.name}${repo.primary ? " (Primary)" : ""}</${MenuItem}>`,
+              )}
+            </${Select}>
+          </div>
+        </div>
+
+        ${/* Base Branch */ ""}
+        <div class="task-sidebar-field">
+          <div class="task-sidebar-label">Base Branch</div>
+          <div class="task-sidebar-value">
+            <${TextField} size="small" variant="outlined" placeholder="e.g. feature/xyz" value=${baseBranch} onInput=${(e) => setBaseBranch(e.target.value)} fullWidth />
+          </div>
+        </div>
+
+        ${/* Draft toggle */ ""}
+        <div class="task-sidebar-field">
+          <div class="task-sidebar-label">Draft</div>
+          <div class="task-sidebar-value">
+            <${Toggle}
+              label="Keep in backlog"
+              checked=${draft}
+              onChange=${(next) => {
+                setDraft(next);
+                if (next) setStatus("draft");
+                else if (status === "draft") setStatus("todo");
+              }}
+            />
+          </div>
+        </div>
+
+        ${/* Manual Override toggle */ ""}
+        <div class="task-sidebar-field">
+          <div class="task-sidebar-label">Manual</div>
+          <div class="task-sidebar-value">
+            <${Toggle}
+              label="Exclude from automation"
+              checked=${manualOverride}
+              disabled=${manualBusy || !task?.id}
+              onChange=${handleManualToggle}
+            />
+            ${manualOverride && html`
+              <${TextField} size="small" variant="outlined" placeholder="Reason (optional)" value=${manualReason} disabled=${manualBusy} onInput=${(e) => setManualReason(e.target.value)} fullWidth style=${{ marginTop: "6px" }} />
+              <div class="meta-text" style=${{ marginTop: "4px" }}>Bosun will skip this task until cleared.</div>
+            `}
+          </div>
+        </div>
+
+        ${/* Dependencies */ ""}
+        <div class="task-sidebar-field" style="flex-direction:column;gap:6px;">
+          <div class="task-sidebar-label" style="width:auto;">Dependencies</div>
+          <div class="task-sidebar-value">
+            ${currentEpicEntry && html`<div class="meta-text" style=${{ marginBottom: "6px" }}>Epic: ${currentEpicEntry.label} · ${currentEpicEntry.taskCount} tasks</div>`}
+            <${TextField}
+              multiline
+              rows=${2}
+              size="small"
+              placeholder="Dependency task IDs (comma or newline separated)"
+              value=${dependenciesInput}
+              onInput=${(e) => setDependenciesInput(e.target.value)}
+              fullWidth
+            />
+            ${currentDependencyIds.length > 0 && html`
+              <div class="tag-row" style=${{ marginTop: "6px" }}>
+                ${currentDependencyIds.map((depId) => html`<button type="button" class="tag-chip task-structure-chip" onClick=${() => handleDependencyChipRemove(depId)} title="Remove dependency">${depId} ×</button>`)}
+              </div>
+            `}
+            ${dependencySuggestions.length > 0 && html`
+              <div style=${{ marginTop: "6px" }}>
+                <div class="meta-text" style=${{ marginBottom: "4px" }}>Quick add</div>
+                <div class="tag-row">
+                  ${dependencySuggestions.map((entry) => html`<button type="button" class="tag-chip task-structure-chip task-structure-chip-muted" onClick=${() => handleDependencyChipAdd(entry.id)}>${entry.id}: ${truncate(entry.title || entry.id, 20)}</button>`)}
+                </div>
+              </div>
+            `}
+            <div style="display:flex;gap:4px;margin-top:6px;flex-wrap:wrap;">
+              <${Button} variant="outlined" size="small" disabled=${savingDependencies} onClick=${handleSaveDependencies}>
+                ${savingDependencies ? "Saving…" : "Save Deps"}
+              <//>
+              <${Button} variant="outlined" size="small" disabled=${savingSprint || !selectedSprintId} onClick=${handleSaveSprintAssignment}>
+                ${savingSprint ? "Saving…" : "Save Sprint"}
+              <//>
+              <${Button} variant="text" size="small" disabled=${savingSprint} onClick=${() => handleSprintOrderNudge(-1)}>↑<//>
+              <${Button} variant="text" size="small" disabled=${savingSprint} onClick=${() => handleSprintOrderNudge(1)}>↓<//>
+            </div>
+            ${dependencyFeedback && html`<span class="meta-text">${dependencyFeedback}</span>`}
+          </div>
+        </div>
+
+        ${/* Meta info */ ""}
+        ${task?.meta?.triggerTemplate?.id && html`
+          <div class="task-sidebar-field">
+            <div class="task-sidebar-label">Trigger</div>
+            <div class="task-sidebar-value" style="font-size:11px;opacity:0.7;">${task.meta.triggerTemplate.id}</div>
+          </div>
+        `}
+        ${(task?.meta?.execution?.sdk || task?.meta?.execution?.model) && html`
+          <div class="task-sidebar-field">
+            <div class="task-sidebar-label">Exec Override</div>
+            <div class="task-sidebar-value" style="font-size:11px;opacity:0.7;">
+              ${task?.meta?.execution?.sdk || "auto"}${task?.meta?.execution?.model ? ` · ${task.meta.execution.model}` : ""}
+            </div>
+          </div>
+        `}
+        ${task?.branch && html`
+          <div class="task-sidebar-field">
+            <div class="task-sidebar-label">Branch</div>
+            <div class="task-sidebar-value" style="font-size:11px;user-select:all;word-break:break-all;">${task.branch}</div>
+          </div>
+        `}
+
+        ${/* Timestamps */ ""}
+        <div class="task-timestamps">
+          ${task?.created_at && html`<div class="task-timestamp-row">Created ${new Date(task.created_at).toLocaleString()}</div>`}
+          ${task?.updated_at && html`<div class="task-timestamp-row">Updated ${formatRelative(task.updated_at)}</div>`}
+        </div>
+
+        ${/* Save bar */ ""}
+        <div class="task-save-bar">
+          <${SaveDiscardBar}
+            dirty=${hasUnsaved}
+            message=${unsavedChangesMessage(changeCount)}
+            saveLabel="Save Changes"
+            discardLabel="Discard"
+            onSave=${() => {
+              void handleSave({ closeAfterSave: false });
+            }}
+            onDiscard=${handleDiscardChanges}
+            saving=${saving}
+            disabled=${Boolean(activeOperationLabel && !saving)}
+          />
+        </div>
+
+        <div style="display:flex;gap:4px;flex-wrap:wrap;">
+          ${(task?.status === "error" || task?.status === "cancelled") && html`
+            <${Button} variant="contained" size="small" onClick=${handleRetry}>↻ Retry<//>
+          `}
+          <${Button}
+            variant="outlined" size="small"
+            onClick=${() => { void handleSave({ closeAfterSave: true }); }}
+            disabled=${saving}
+          >
+            ${saving ? "Saving…" : iconText(":save: Save")}
+          <//>
+          <${Button} variant="text" size="small" onClick=${() => handleStatusUpdate("inreview")}>→ Review<//>
+          <${Button} variant="text" size="small" onClick=${() => handleStatusUpdate("done")}>${iconText("✓ Done")}<//>
+          ${task?.status !== "cancelled" && html`
+            <${Button}
+              variant="text" size="small"
+              style=${{ color: "var(--color-error)" }}
+              onClick=${handleCancel}
+            >
+              ${iconText("✕ Cancel")}
+            <//>
+          `}
+          ${task?.id && html`
+            <${Button}
+              variant="text" size="small"
+              onClick=${() => {
+                haptic();
+                sendCommandToChat("/logs " + task.id);
+              }}
+            >
+              ${iconText(":file: Logs")}
+            <//>
+          `}
+        </div>
+
+      </div>
 
       </div>`}
 
@@ -3603,506 +4208,6 @@ export function TaskDetailModal({ task, onClose, onStart, presentation = "modal"
 
       </div>`}
 
-      ${/* ── DETAILS TAB (Form) ── shown when details tab is active ── */ ""}
-      ${activeTab === "details" && html`<div style="display:contents;">
-        <div class="flex-col gap-md modal-form-grid jira-task-layout">
-        <div class="input-with-mic modal-form-span">
-          <${TextField} size="small" variant="outlined" placeholder="Title" value=${title} onInput=${(e) => setTitle(e.target.value)} fullWidth />
-          <${VoiceMicButtonInline}
-            onTranscript=${(t) => setTitle((prev) => (prev ? prev + " " + t : t))}
-            disabled=${saving || rewriting}
-          />
-        </div>
-        <div class="textarea-with-mic modal-form-span" style="position:relative">
-          <${TextField} multiline rows=${5} size="small" placeholder="Description" value=${description} onInput=${(e) => setDescription(e.target.value)} style=${{ paddingRight: "36px" }} fullWidth />
-          <${VoiceMicButton}
-            onTranscript=${(t) => setDescription((prev) => (prev ? prev + " " + t : t))}
-            disabled=${saving || rewriting}
-            size="sm"
-            className="textarea-mic-btn"
-          />
-        </div>
-        <div
-          class="task-attachments-block modal-form-span jira-panel"
-          onPaste=${handleAttachmentPaste}
-        >
-          <div class="task-attachments-header">
-            <div class="task-attachments-title">Attachments</div>
-            <div class="task-attachments-actions">
-              <${Button}
-                variant="text" size="small"
-                type="button"
-                onClick=${() => attachmentInputRef.current && attachmentInputRef.current.click()}
-                disabled=${uploadingAttachment}
-              >
-                Upload
-              <//>
-            </div>
-          </div>
-          <input
-            ref=${attachmentInputRef}
-            type="file"
-            multiple
-            style="display:none"
-            onChange=${handleAttachmentPick}
-          />
-          ${attachments.length === 0 && !uploadingAttachment && html`
-            <div class="meta-text">No attachments uploaded.</div>
-          `}
-          ${uploadingAttachment && html`
-            <div class="meta-text">Uploading attachments...</div>
-          `}
-          ${attachments.length > 0 && html`
-            <div class="task-attachments-list">
-              ${attachments.map((att, index) => {
-                const name = att.name || att.filename || "attachment";
-                const url = att.url || att.filePath || att.path || "";
-                const size = att.size ? formatBytes(att.size) : "";
-                const isImage = isImageAttachment(att);
-                return html`
-                  <div class="task-attachment-item" key=${att.id || `${name}-${index}`}>
-                    ${isImage && url
-                      ? html`<img class="task-attachment-thumb" src=${url} alt=${name} />`
-                      : html`<span class="task-attachment-icon">${resolveIcon(":link:")}</span>`}
-                    <div class="task-attachment-meta">
-                      ${url
-                        ? html`<a class="task-attachment-name" href=${url} target="_blank" rel="noopener">${name}</a>`
-                        : html`<span class="task-attachment-name">${name}</span>`}
-                      <div class="task-attachment-sub">
-                        ${(att.kind || "file")}${size ? ` · ${size}` : ""}
-                      </div>
-                    </div>
-                  </div>
-                `;
-              })}
-            </div>
-          `}
-        </div>
-                <div class="task-comments-block modal-form-span jira-panel">
-          <div class="task-attachments-title">Comments & Updates</div>
-          <div class="task-comments-list">
-            ${comments.length > 0
-              ? comments.map((comment, index) => html`
-                <div class="task-comment-item" key=${comment.id || `comment-${index}`}>
-                  <div class="task-comment-meta">
-                    ${comment.author ? `@${comment.author}` : "comment"}
-                    ${comment.createdAt ? ` · ${formatRelative(comment.createdAt)}` : ""}
-                  </div>
-                  <div class="task-comment-body">${comment.body}</div>
-                </div>
-              `)
-              : html`<div class="meta-text">No comments yet. Add one below.</div>`}
-          </div>
-          <div class="task-comment-composer">
-            <${TextField}
-              multiline
-              rows=${2}
-              size="small"
-              placeholder="Add a comment or status update..."
-              value=${commentDraft}
-              onInput=${(e) => setCommentDraft(e.target.value)}
-              fullWidth
-            />
-            <${Button}
-              variant="contained"
-              size="small"
-              disabled=${postingComment || !sanitizeTaskText(commentDraft || "").trim()}
-              onClick=${handlePostComment}
-            >
-              ${postingComment ? "Posting…" : "Post Comment"}
-            <//>
-          </div>
-        </div>
-        <div class="task-comments-block modal-form-span jira-subtasks-panel">
-          <div class="task-attachments-header">
-            <div class="task-attachments-title">Subtasks</div>
-            <div class="task-attachments-actions">
-              <${Button}
-                variant="text"
-                size="small"
-                onClick=${loadSubtasks}
-                disabled=${subtasksLoading || creatingSubtask}
-              >
-                ${subtasksLoading ? "Refreshing…" : "Refresh"}
-              <//>
-            </div>
-          </div>
-          <div class="task-comment-composer" style=${{ marginTop: "8px" }}>
-            <${TextField}
-              size="small"
-              placeholder="Create subtask summary"
-              value=${subtaskTitle}
-              onInput=${(e) => setSubtaskTitle(e.target.value)}
-              fullWidth
-            />
-            <${Button}
-              variant="contained"
-              size="small"
-              disabled=${creatingSubtask || !sanitizeTaskText(subtaskTitle || "").trim()}
-              onClick=${handleCreateSubtask}
-            >
-              ${creatingSubtask ? "Creating…" : "Add"}
-            <//>
-          </div>
-          <div class="task-comments-list" style=${{ marginTop: "8px" }}>
-            ${!subtasksLoading && !subtasks.length && html`<div class="meta-text">No subtasks yet.</div>`}
-            ${subtasks.map((subtask) => html`
-              <div class="task-comment-item" key=${subtask.id}>
-                <div class="task-comment-meta">
-                  <span style="user-select:all">${subtask.id}</span>
-                  ${subtask.status ? ` · ${subtask.status}` : ""}
-                  ${subtask.storyPoints ? ` · ${subtask.storyPoints} pts` : ""}
-                </div>
-                <div class="task-comment-body">${subtask.title}</div>
-                ${subtask.assignee && html`<div class="task-comment-meta">Assignee: ${subtask.assignee}</div>`}
-              </div>
-            `)}
-          </div>
-        </div>
-        <div class="task-comments-block modal-form-span jira-panel">
-          <div class="task-attachments-title">Dependencies & Sprint Wiring</div>
-          ${currentEpicEntry && html`<div class="meta-text" style=${{ marginBottom: "8px" }}>Epic: ${currentEpicEntry.label} · ${currentEpicEntry.taskCount} tasks</div>`}
-          <${TextField}
-            multiline
-            rows=${2}
-            size="small"
-            placeholder="Dependency task IDs (comma or newline separated)"
-            value=${dependenciesInput}
-            onInput=${(e) => setDependenciesInput(e.target.value)}
-            fullWidth
-          />
-          ${currentDependencyIds.length > 0 && html`
-            <div class="tag-row" style=${{ marginTop: "8px" }}>
-              ${currentDependencyIds.map((depId) => html`<button type="button" class="tag-chip task-structure-chip" onClick=${() => handleDependencyChipRemove(depId)} title="Remove dependency">${depId} ×</button>`)}
-            </div>
-          `}
-          ${dependencySuggestions.length > 0 && html`
-            <div style=${{ marginTop: "8px" }}>
-              <div class="meta-text" style=${{ marginBottom: "6px" }}>Quick add dependencies</div>
-              <div class="tag-row">
-                ${dependencySuggestions.map((entry) => html`<button type="button" class="tag-chip task-structure-chip task-structure-chip-muted" onClick=${() => handleDependencyChipAdd(entry.id)}>${entry.id}: ${truncate(entry.title || entry.id, 26)}</button>`)}
-              </div>
-            </div>
-          `}
-          <div class="input-row" style=${{ marginTop: "8px" }}>
-            <${Select}
-              size="small"
-              value=${selectedSprintId}
-              onChange=${(e) => setSelectedSprintId(e.target.value)}
-            >
-              <${MenuItem} value="">No sprint</${MenuItem}>
-              ${sprintOptions.map((sprint) => html`
-                <${MenuItem} key=${sprint.id} value=${sprint.id}>${sprint.label}</${MenuItem}>
-              `)}
-            </${Select}>
-            <${TextField}
-              size="small"
-              type="number"
-              placeholder="Sprint order"
-              value=${sprintOrderInput}
-              onInput=${(e) => setSprintOrderInput(e.target.value)}
-              inputProps=${{ min: 1, step: 1 }}
-            />
-          </div>
-          <div class="btn-row" style=${{ marginTop: "8px", flexWrap: "wrap" }}>
-            <${Button} variant="outlined" size="small" disabled=${savingDependencies} onClick=${handleSaveDependencies}>
-              ${savingDependencies ? "Saving…" : "Save Dependencies"}
-            <//>
-            <${Button} variant="outlined" size="small" disabled=${savingSprint || !selectedSprintId} onClick=${handleSaveSprintAssignment}>
-              ${savingSprint ? "Saving…" : "Save Sprint Assignment"}
-            <//>
-            <${Button} variant="text" size="small" disabled=${savingSprint} onClick=${() => handleSprintOrderNudge(-1)}>↑ Earlier</${Button}>
-            <${Button} variant="text" size="small" disabled=${savingSprint} onClick=${() => handleSprintOrderNudge(1)}>↓ Later</${Button}>
-            ${dependencyFeedback && html`<span class="meta-text">${dependencyFeedback}</span>`}
-          </div>
-          ${epicCatalog.length > 0 && html`
-            <div style=${{ marginTop: "10px" }}>
-              <div class="meta-text" style=${{ marginBottom: "6px" }}>Epic shortcuts</div>
-              <div class="tag-row">
-                ${epicCatalog.slice(0, 12).map((entry) => html`<button type="button" class="tag-chip task-structure-chip ${epicId === entry.id ? "task-structure-chip-active" : ""}" onClick=${() => setEpicId(entry.id)}>${entry.label}</button>`)}
-              </div>
-            </div>
-          `}
-        </div>
-        <${Tooltip} title="Use AI to expand and improve this task description"><${Button}
-          variant="text" size="small"
-          style=${{ display: "flex", alignItems: "center", gap: "6px", alignSelf: "flex-start", fontSize: "12px", padding: "5px 10px", opacity: !title.trim() ? 0.45 : 1 }}
-          disabled=${!title.trim() || rewriting || saving}
-          onClick=${async () => {
-            if (!title.trim() || rewriting) return;
-            setRewriting(true);
-            haptic("medium");
-            try {
-              const res = await apiFetch("/api/tasks/rewrite", {
-                method: "POST",
-                body: JSON.stringify({ title: title.trim(), description: description.trim() }),
-              });
-              if (res?.data) {
-                if (res.data.title) setTitle(res.data.title);
-                if (res.data.description) setDescription(res.data.description);
-                showToast("Task description improved", "success");
-                haptic("medium");
-              }
-            } catch { /* toast via apiFetch */ }
-            setRewriting(false);
-          }}
-        >
-          ${rewriting
-            ? html`<span style="display:inline-block;animation:spin 0.8s linear infinite">${resolveIcon(":clock:")}</span> Improving…`
-            : html`${iconText(":star: Improve with AI")}`
-          }
-        <//><//> 
-        <${TextField} size="small" variant="outlined" className="modal-form-span" placeholder="Base branch (optional, e.g. feature/xyz)" value=${baseBranch} onInput=${(e) => setBaseBranch(e.target.value)} fullWidth />        <div class="modal-form-span jira-meta-grid">
-          <${TextField}
-            size="small"
-            variant="outlined"
-            label="Assignee"
-            value=${assignee}
-            onInput=${(e) => setAssignee(e.target.value)}
-            fullWidth
-          />
-          <${TextField}
-            size="small"
-            variant="outlined"
-            label="Assignees"
-            placeholder="alice, bob"
-            value=${assigneesInput}
-            onInput=${(e) => setAssigneesInput(e.target.value)}
-            fullWidth
-          />
-          <${TextField}
-            size="small"
-            variant="outlined"
-            label="Epic"
-            value=${epicId}
-            onInput=${(e) => setEpicId(e.target.value)}
-            fullWidth
-          />
-          <${TextField}
-            size="small"
-            variant="outlined"
-            type="number"
-            label="Story Points"
-            value=${storyPoints}
-            onInput=${(e) => setStoryPoints(e.target.value)}
-            fullWidth
-          />
-          <${TextField}
-            size="small"
-            variant="outlined"
-            type="date"
-            label="Due Date"
-            value=${dueDate}
-            onInput=${(e) => setDueDate(e.target.value)}
-            InputLabelProps=${{ shrink: true }}
-            fullWidth
-          />
-          <${TextField}
-            size="small"
-            variant="outlined"
-            label="Parent Task"
-            value=${parentTaskId}
-            onInput=${(e) => setParentTaskId(e.target.value)}
-            fullWidth
-          />
-        </div>
-        <div class="input-row modal-form-span">
-          <${Select}
-            size="small"
-            value=${workspaceId}
-            onChange=${(e) => setWorkspaceId(e.target.value)}
-          >
-            <${MenuItem} value="">Active workspace</${MenuItem}>
-            ${workspaceOptions.map(
-              (ws) => html`<${MenuItem} value=${ws.id}>${ws.name || ws.id}</${MenuItem}>`,
-            )}
-          </${Select}>
-          <${Select}
-            size="small"
-            value=${repository}
-            onChange=${(e) => setRepository(e.target.value)}
-            disabled=${!repositoryOptions.length}
-          >
-            <${MenuItem} value="">
-              ${repositoryOptions.length ? "Auto repository" : "No repos in workspace"}
-            </${MenuItem}>
-            ${repositoryOptions.map(
-              (repo) =>
-                html`<${MenuItem} value=${repo.slug}>${repo.name}${repo.primary ? " (Primary)" : ""}</${MenuItem}>`,
-            )}
-          </${Select}>
-        </div>
-        <${TextField} size="small" variant="outlined" className="modal-form-span" placeholder="Tags (comma-separated)" value=${tagsInput} onInput=${(e) => setTagsInput(e.target.value)} fullWidth />
-        ${normalizeTagInput(tagsInput).length > 0 &&
-        html`
-          <div class="tag-row modal-form-span">
-            ${normalizeTagInput(tagsInput).map(
-              (tag) => html`<span class="tag-chip">#${tag}</span>`,
-            )}
-          </div>
-        `}
-
-        <div class="input-row modal-form-span">
-          <${Select}
-            size="small"
-            value=${status}
-            onChange=${(e) => {
-              const next = e.target.value;
-              setStatus(next);
-              if (next === "draft") setDraft(true);
-              else if (draft) setDraft(false);
-            }}
-          >
-            ${["draft", "todo", "inprogress", "inreview", "done", "cancelled"].map(
-              (s) => html`<${MenuItem} value=${s}>${s}</${MenuItem}>`,
-            )}
-          </${Select}>
-          <${Select}
-            size="small"
-            value=${priority}
-            onChange=${(e) => setPriority(e.target.value)}
-          >
-            <${MenuItem} value="">No priority</${MenuItem}>
-            ${["low", "medium", "high", "critical"].map(
-              (p) => html`<${MenuItem} value=${p}>${p}</${MenuItem}>`,
-            )}
-          </${Select}>
-        </div>
-        <div class="modal-form-span">
-          <${Toggle}
-            label="Draft (keep in backlog)"
-            checked=${draft}
-            onChange=${(next) => {
-              setDraft(next);
-              if (next) setStatus("draft");
-              else if (status === "draft") setStatus("todo");
-            }}
-          />
-        </div>
-        <div class="modal-form-span">
-          <${Toggle}
-            label="Manual takeover (exclude from automation)"
-            checked=${manualOverride}
-            disabled=${manualBusy || !task?.id}
-            onChange=${handleManualToggle}
-          />
-        </div>
-        <${TextField} size="small" variant="outlined" className="modal-form-span" placeholder="Manual reason (optional)" value=${manualReason} disabled=${manualBusy} onInput=${(e) => setManualReason(e.target.value)} fullWidth />
-        ${manualOverride &&
-        html`
-          <div class="modal-form-span">
-            <div class="meta-text">
-              Bosun will skip this task until manual takeover is cleared.
-            </div>
-            ${manualReason &&
-            html`<div class="meta-text">Reason: ${manualReason}</div>`}
-          </div>
-        `}
-
-        ${task?.created_at &&
-        html`
-          <div class="meta-text modal-form-span">
-            Created: ${new Date(task.created_at).toLocaleString()}
-          </div>
-        `}
-        ${task?.updated_at &&
-        html`
-          <div class="meta-text modal-form-span">
-            Updated: ${formatRelative(task.updated_at)}
-          </div>
-        `}
-        ${task?.meta?.triggerTemplate?.id &&
-        html`
-          <div class="meta-text modal-form-span">
-            Trigger Template: ${task.meta.triggerTemplate.id}
-          </div>
-        `}
-        ${(task?.meta?.execution?.sdk || task?.meta?.execution?.model) &&
-        html`
-          <div class="meta-text modal-form-span">
-            Execution Override:
-            ${task?.meta?.execution?.sdk || "auto"}
-            ${task?.meta?.execution?.model
-              ? html` · ${task.meta.execution.model}`
-              : ""}
-          </div>
-        `}
-        ${task?.assignee &&
-        html` <div class="meta-text modal-form-span">Assignee: ${task.assignee}</div> `}
-        ${task?.branch &&
-        html`
-          <div class="meta-text modal-form-span" style="user-select:all">
-            Branch: ${task.branch}
-          </div>
-        `}
-
-        <${SaveDiscardBar}
-          dirty=${hasUnsaved}
-          message=${unsavedChangesMessage(changeCount)}
-          saveLabel="Save Changes"
-          discardLabel="Discard"
-          onSave=${() => {
-            void handleSave({ closeAfterSave: false });
-          }}
-          onDiscard=${handleDiscardChanges}
-          saving=${saving}
-          disabled=${Boolean(activeOperationLabel && !saving)}
-        />
-
-        <div class="btn-row modal-form-span">
-          ${(task?.status === "error" || task?.status === "cancelled") &&
-          html`
-            <${Button} variant="contained" size="small" onClick=${handleRetry}>
-              ↻ Retry
-            <//>
-          `}
-          <${Button}
-            variant="outlined" size="small"
-            onClick=${() => {
-              void handleSave({ closeAfterSave: true });
-            }}
-            disabled=${saving}
-          >
-            ${saving ? "Saving…" : iconText(":save: Save")}
-          <//>
-          <${Button}
-            variant="text" size="small"
-            onClick=${() => handleStatusUpdate("inreview")}
-          >
-            → Review
-          <//>
-          <${Button}
-            variant="text" size="small"
-            onClick=${() => handleStatusUpdate("done")}
-          >
-            ${iconText("✓ Done")}
-          <//>
-          ${task?.status !== "cancelled" &&
-          html`
-            <${Button}
-              variant="text" size="small"
-              style=${{ color: "var(--color-error)" }}
-              onClick=${handleCancel}
-            >
-              ${iconText("✕ Cancel")}
-            <//>
-          `}
-        </div>
-
-        ${task?.id &&
-        html`
-          <${Button}
-            variant="text" size="small"
-            onClick=${() => {
-              haptic();
-              sendCommandToChat("/logs " + task.id);
-            }}
-          >
-            ${iconText(":file: View Agent Logs")}
-          <//>
-        `}
-      </div>
-      </div>`}
 
       </div>
     <//>
