@@ -38,6 +38,10 @@ import { writeFile as writeFileAsync } from "node:fs/promises";
 import { resolve, basename, extname, join } from "node:path";
 import { randomUUID } from "node:crypto";
 import { EventEmitter } from "node:events";
+import {
+  ensureTestRuntimeSandbox,
+  resolvePathForTestRuntime,
+} from "../infra/test-runtime.mjs";
 
 // ── Constants ───────────────────────────────────────────────────────────────
 
@@ -393,8 +397,19 @@ export class WorkflowEngine extends EventEmitter {
    */
   constructor(opts = {}) {
     super();
-    this.workflowDir = opts.workflowDir || resolve(process.cwd(), ".bosun", WORKFLOW_DIR_NAME);
-    this.runsDir = opts.runsDir || resolve(process.cwd(), ".bosun", WORKFLOW_RUNS_DIR);
+    const sandbox = ensureTestRuntimeSandbox();
+    const defaultWorkflowDir = resolve(process.cwd(), ".bosun", WORKFLOW_DIR_NAME);
+    const defaultRunsDir = resolve(process.cwd(), ".bosun", WORKFLOW_RUNS_DIR);
+    this.workflowDir = resolvePathForTestRuntime(
+      opts.workflowDir || defaultWorkflowDir,
+      defaultWorkflowDir,
+      sandbox?.workflowDir,
+    );
+    this.runsDir = resolvePathForTestRuntime(
+      opts.runsDir || defaultRunsDir,
+      defaultRunsDir,
+      sandbox?.runsDir,
+    );
     this.detectInterruptedRuns = opts.detectInterruptedRuns !== false;
     this.services = opts.services || {};
     this._workflows = new Map();
@@ -2903,5 +2918,4 @@ export function listWorkflows(opts) { return getWorkflowEngine(opts).list(); }
 export function getWorkflow(id, opts) { return getWorkflowEngine(opts).get(id); }
 export async function executeWorkflow(id, data, opts) { return getWorkflowEngine(opts).execute(id, data, opts); }
 export async function retryWorkflowRun(runId, retryOpts, engineOpts) { return getWorkflowEngine(engineOpts).retryRun(runId, retryOpts); }
-
 

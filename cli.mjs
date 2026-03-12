@@ -28,6 +28,7 @@ import { fileURLToPath } from "node:url";
 import { execFileSync, execSync, fork, spawn } from "node:child_process";
 import os from "node:os";
 import { createDaemonCrashTracker } from "./infra/daemon-restart-policy.mjs";
+import { ensureTestRuntimeSandbox } from "./infra/test-runtime.mjs";
 import {
   applyAllCompatibility,
   detectLegacySetup,
@@ -251,6 +252,9 @@ function resolveConfigDirForCli() {
       : resolveRepoRoot({ cwd: process.cwd() });
   const repoLocalConfigDir = resolveRepoLocalBosunDir(repoRoot);
   if (repoLocalConfigDir) return repoLocalConfigDir;
+
+  const sandbox = ensureTestRuntimeSandbox();
+  if (sandbox?.configDir) return sandbox.configDir;
 
   const preferWindowsDirs =
     process.platform === "win32" && !isWslInteropRuntime();

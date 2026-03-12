@@ -31,6 +31,7 @@ import {
   getModelsForExecutor,
   MODEL_ALIASES,
 } from "../task/task-complexity.mjs";
+import { ensureTestRuntimeSandbox } from "../infra/test-runtime.mjs";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
@@ -133,7 +134,11 @@ function resolveConfigDir(repoRoot) {
   const repoLocalConfigDir = resolveRepoLocalBosunDir(repoRoot);
   if (repoLocalConfigDir) return repoLocalConfigDir;
 
-  // 3. Platform-aware user home
+  // 3. Tests must not fall through to the user's real global Bosun home.
+  const sandbox = ensureTestRuntimeSandbox();
+  if (sandbox?.configDir) return sandbox.configDir;
+
+  // 4. Platform-aware user home
   const preferWindowsDirs =
     process.platform === "win32" && !isWslInteropRuntime();
   const baseDir = preferWindowsDirs
@@ -2419,4 +2424,3 @@ export {
   resolveAgentRepoRoot,
 };
 export default loadConfig;
-

@@ -53,6 +53,7 @@ import {
   streamRetryDelay,
   MAX_STREAM_RETRIES,
 } from "../infra/stream-resilience.mjs";
+import { ensureTestRuntimeSandbox } from "../infra/test-runtime.mjs";
 import { compressAllItems, estimateSavings, estimateContextUsagePct, recordShreddingEvent } from "../workspace/context-cache.mjs";
 import { resolveContextShreddingOptions } from "../config/context-shredding-config.mjs";
 
@@ -2521,7 +2522,10 @@ export async function execPooledPrompt(userMessage, options = {}) {
 /** @type {Map<string, ThreadRecord>} In-memory registry keyed by taskKey */
 const threadRegistry = new Map();
 
-const THREAD_REGISTRY_FILE = resolve(__dirname, "..", "logs", "thread-registry.json");
+const testSandbox = ensureTestRuntimeSandbox();
+const THREAD_REGISTRY_FILE = testSandbox?.cacheDir
+  ? resolve(testSandbox.cacheDir, "thread-registry.json")
+  : resolve(__dirname, "..", "logs", "thread-registry.json");
 const THREAD_MAX_AGE_MS = 12 * 60 * 60 * 1000; // 12 hours
 
 /** Maximum turns before a thread is considered exhausted and must be replaced */
@@ -2707,7 +2711,7 @@ async function loadThreadRegistry() {
 async function saveThreadRegistry() {
   try {
     const { writeFile, mkdir } = await import("node:fs/promises");
-    await mkdir(resolve(__dirname, "..", "logs"), { recursive: true });
+    await mkdir(dirname(THREAD_REGISTRY_FILE), { recursive: true });
     const obj = Object.fromEntries(threadRegistry);
     await writeFile(THREAD_REGISTRY_FILE, JSON.stringify(obj, null, 2), "utf8");
   } catch {
