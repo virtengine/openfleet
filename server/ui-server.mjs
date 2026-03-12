@@ -10111,250 +10111,544 @@ async function handleApi(req, res, url) {
     return;
   }
 
-  // ── Task Execution Plan ──────────────────────────────────────────────────
+  // ── Task Execution Plan (resolve + dry-run) ─────────────────────────────
   if (path === "/api/tasks/execution-plan") {
     try {
       const taskId = url.searchParams.get("taskId") || url.searchParams.get("id") || "";
-      if (!taskId) {
-        jsonResponse(res, 400, { ok: false, error: "taskId required" });
-        return;
-      }
+      if (!taskId) { jsonResponse(res, 400, { ok: false, error: "taskId required" }); return; }
       const adapter = getKanbanAdapter();
       const task = await adapter.getTask(taskId);
-      if (!task) {
-        jsonResponse(res, 404, { ok: false, error: "Task not found" });
-        return;
-      }
+      if (!task) { jsonResponse(res, 404, { ok: false, error: "Task not found" }); return; }
 
+      const mode = url.searchParams.get("mode") || "resolve"; // "resolve" | "dry-run"
       const wfCtx = await getWorkflowRequestContext(url);
       const engine = wfCtx.ok ? wfCtx.engine : null;
-      const stages = [];
 
       // Resolve library roots for skill resolution
       let libraryRoots = [];
+      let wsCtx = null;
       try {
-        const wsCtx = resolveWorkspaceContextFromRequest(url, { allowAll: false });
+        wsCtx = resolveWorkspaceContextFromRequest(url, { allowAll: false });
         if (wsCtx) {
           libraryRoots = resolveLibraryRootsForContext(wsCtx);
           ensureLibraryRootsInitialized(libraryRoots);
         }
       } catch { /* best-effort */ }
 
-      if (engine) {
-        const allWorkflows = engine.list();
-        const fullWorkflows = allWorkflows.map((w) => engine.get(w.id)).filter(Boolean);
+      let evaluateTaskAssignedTriggerConfig;
+      let getNodeType;
+      try {
+        const wfNodes = await import("../workflow/workflow-nodes.mjs");
+        evaluateTaskAssignedTriggerConfig = wfNodes.evaluateTaskAssignedTriggerConfig;
+        const wfEngine = await import("../workflow/workflow-engine.mjs");
+        getNodeType = wfEngine.getNodeType;
+      } catch { /* fallback */ }
 
-        // Import the trigger evaluator
-        let evaluateTaskAssignedTriggerConfig;
+      if (!engine) {
+        jsonResponse(res, 500, { ok: false, error: "Workflow engine not available" });
+        return;
+      }
+
+      // ── Build event context ─────────────────────────────────────────────
+      const eventData = {
+        eventType: "task.assigned",
+        taskId: task.id,
+        taskTitle: task.title || "",
+        task: {
+          id: task.id, title: task.title || "",
+          description: task.description || "",
+          tags: task.tags || [],
+          agentType: task.agentType || task.assignedAgentType || "",
+          assignedAgentType: task.assignedAgentType || task.agentType || "",
+          agentProfile: task.agentProfile || "",
+        },
+      };
+
+      const allWorkflows = engine.list();
+      const fullWorkflows = allWorkflows.map((w) => engine.get(w.id)).filter(Boolean);
+
+      // ── Helper: resolve variables in a config object ──────────────────
+      const resolveVarsInConfig = (config, variables, taskCtx) => {
+        const merged = { ...variables, ...taskCtx };
+        const resolveStr = (s) => {
+          if (typeof s !== "string") return s;
+          // Exact match preserves type
+          const exact = s.match(/^\{\{([A-Za-z0-9_][A-Za-z0-9_.-]*)\}\}$/);
+          if (exact) {
+            const v = merged[exact[1]];
+            return v != null ? v : s;
+          }
+          return s.replace(/\{\{([A-Za-z0-9_][A-Za-z0-9_.-]*)\}\}/g, (match, key) => {
+            const v = merged[key];
+            return v != null ? String(v) : match;
+          });
+        };
+        const walk = (obj) => {
+          if (typeof obj === "string") return resolveStr(obj);
+          if (Array.isArray(obj)) return obj.map(walk);
+          if (obj && typeof obj === "object") {
+            const out = {};
+            for (const [k, v] of Object.entries(obj)) out[k] = walk(v);
+            return out;
+          }
+          return obj;
+        };
+        return walk(config);
+      };
+
+      // ── Helper: validate an expression compiles ───────────────────────
+      const validateExpression = (expr) => {
+        if (!expr || typeof expr !== "string") return { valid: true };
         try {
-          const wfNodes = await import("../workflow/workflow-nodes.mjs");
-          evaluateTaskAssignedTriggerConfig = wfNodes.evaluateTaskAssignedTriggerConfig;
-        } catch { /* fallback below */ }
+          new Function("$output", "$data", "$status", "$ctx", `return (${expr});`);
+          return { valid: true };
+        } catch (e) {
+          return { valid: false, error: e.message };
+        }
+      };
 
-        // Simulate task.assigned event data
-        const eventData = {
-          eventType: "task.assigned",
-          taskId: task.id,
-          taskTitle: task.title || "",
-          task: {
-            id: task.id,
-            title: task.title || "",
-            description: task.description || "",
+      // ── Helper: find unresolved {{vars}} ──────────────────────────────
+      const findUnresolvedVars = (config, variables, wellKnown) => {
+        const configStr = JSON.stringify(config ?? {});
+        const unresolvedArr = [];
+        const rxp = /\{\{([A-Za-z0-9_][A-Za-z0-9_.-]*)\}\}/g;
+        let m;
+        while ((m = rxp.exec(configStr)) !== null) {
+          const v = m[1];
+          if (!variables[v] && variables[v] !== 0 && !wellKnown.has(v)) {
+            unresolvedArr.push(v);
+          }
+        }
+        return [...new Set(unresolvedArr)];
+      };
+
+      // ── Well-known runtime variables (set by engine/lifecycle) ────────
+      const WELL_KNOWN_RUNTIME = new Set([
+        "taskId", "taskTitle", "taskDescription", "worktreePath", "branch",
+        "baseBranch", "prNumber", "sessionId", "agentId", "resolvedSdk",
+        "resolvedModel", "agentProfile", "resolvedSkillIds", "executor",
+        "prompt", "ctx", "data", "node", "commitSha", "environment",
+        "toStatus", "batchSize", "maxConcurrent",
+      ]);
+
+      // ── Helper: resolve library plan for a node ───────────────────────
+      const resolveLibraryForNode = async (nd, wf) => {
+        const resolveMode = nd.config?.resolveMode || wf.metadata?.resolveMode || "manual";
+        if (resolveMode !== "library" || libraryRoots.length === 0) return null;
+        try {
+          const libMgr = await import("../infra/library-manager.mjs");
+          if (typeof libMgr.resolveLibraryPlan !== "function") return null;
+          const promptText = nd.config?.prompt || "";
+          const criteria = {
+            title: (task.title || "") + " " + (nd.label || ""),
+            description: (task.description || "") + "\n" + promptText,
             tags: task.tags || [],
-            agentType: task.agentType || task.assignedAgentType || "",
-            assignedAgentType: task.assignedAgentType || task.agentType || "",
-            agentProfile: task.agentProfile || "",
-          },
+          };
+          let bestPlan = null;
+          for (const rootInfo of libraryRoots) {
+            const result = libMgr.resolveLibraryPlan(rootInfo.rootDir, criteria, { topN: 3, skillTopN: 5 });
+            if (!result?.best) continue;
+            if (!bestPlan || Number(result.best?.score || 0) > Number(bestPlan.best?.score || 0)) {
+              bestPlan = result;
+            }
+          }
+          return bestPlan;
+        } catch { return null; }
+      };
+
+      // ── Helper: build detailed node info ──────────────────────────────
+      const buildNodeDetail = async (nd, wf, taskCtx) => {
+        const resolvedConfig = resolveVarsInConfig(nd.config || {}, wf.variables || {}, taskCtx);
+        const unresolvedVars = findUnresolvedVars(nd.config || {}, { ...(wf.variables || {}), ...taskCtx }, WELL_KNOWN_RUNTIME);
+
+        const detail = {
+          id: nd.id,
+          type: nd.type,
+          label: nd.label || nd.id,
+          category: nd.type.split(".")[0],
+          typeRegistered: getNodeType ? !!getNodeType(nd.type) : true,
+          unresolvedVars: unresolvedVars.length > 0 ? unresolvedVars : undefined,
         };
 
-        for (const wf of fullWorkflows) {
-          if (wf.enabled === false) continue;
+        // Position info
+        if (nd.position) detail.position = nd.position;
 
-          // Find trigger.task_assigned nodes
-          const triggerNodes = (wf.nodes || []).filter(
-            (n) => n.type === "trigger.task_assigned",
-          );
-          if (triggerNodes.length === 0) continue;
-
-          // Check if any trigger matches this task
-          let matched = false;
-          for (const tNode of triggerNodes) {
-            if (evaluateTaskAssignedTriggerConfig) {
-              matched = evaluateTaskAssignedTriggerConfig(tNode.config || {}, eventData);
-            } else {
-              // Fallback: simple pattern check
-              const pattern = tNode.config?.taskPattern;
-              if (pattern) {
-                try {
-                  const rx = new RegExp(pattern, "i");
-                  const text = [task.title || "", ...(task.tags || [])].join(" ");
-                  matched = rx.test(text);
-                } catch { matched = false; }
-              } else {
-                matched = true;
-              }
-            }
-            if (matched) break;
+        // ── Trigger nodes ─────────────────────────────────────────────
+        if (nd.type.startsWith("trigger.")) {
+          detail.isTrigger = true;
+          if (nd.config?.taskPattern) {
+            detail.taskPattern = nd.config.taskPattern;
+            try {
+              const rx = new RegExp(nd.config.taskPattern, "i");
+              const text = [task.title || "", ...(task.tags || [])].join(" ");
+              detail.patternMatches = rx.test(text);
+            } catch (e) { detail.patternError = e.message; }
           }
+        }
 
-          if (!matched) continue;
-
-          // Build ordered node list following edges
-          const nodeMap = new Map((wf.nodes || []).map((n) => [n.id, n]));
-          const edgesBySource = new Map();
-          for (const e of (wf.edges || [])) {
-            if (!edgesBySource.has(e.source)) edgesBySource.set(e.source, []);
-            edgesBySource.get(e.source).push(e);
+        // ── Condition nodes ───────────────────────────────────────────
+        if (nd.type.startsWith("condition.")) {
+          detail.isCondition = true;
+          if (nd.type === "condition.expression" && nd.config?.expression) {
+            const exprCheck = validateExpression(nd.config.expression);
+            detail.expression = nd.config.expression;
+            detail.expressionValid = exprCheck.valid;
+            if (!exprCheck.valid) detail.expressionError = exprCheck.error;
           }
+          if (nd.type === "condition.switch" && nd.config?.expression) {
+            const swCheck = validateExpression(nd.config.expression);
+            detail.expression = nd.config.expression;
+            detail.expressionValid = swCheck.valid;
+            if (!swCheck.valid) detail.expressionError = swCheck.error;
+            detail.cases = nd.config.cases ? Object.keys(nd.config.cases) : [];
+          }
+        }
 
-          const orderedNodes = [];
-          const visited = new Set();
-          const triggerNodeId = triggerNodes[0]?.id;
-          const queue = triggerNodeId ? [triggerNodeId] : [];
-          while (queue.length > 0) {
-            const nid = queue.shift();
-            if (visited.has(nid)) continue;
-            visited.add(nid);
-            const nd = nodeMap.get(nid);
-            if (!nd) continue;
-
-            const nodeInfo = {
-              id: nd.id,
-              type: nd.type,
-              label: nd.label || nd.id,
-              config: {},
+        // ── Agent run nodes ───────────────────────────────────────────
+        if (nd.type === "action.run_agent") {
+          const promptRaw = nd.config?.prompt || "";
+          const promptResolved = typeof resolvedConfig.prompt === "string" ? resolvedConfig.prompt : promptRaw;
+          const resolveMode = nd.config?.resolveMode || wf.metadata?.resolveMode || "manual";
+          detail.isAgentRun = true;
+          detail.resolveMode = resolveMode;
+          detail.promptRaw = promptRaw;
+          detail.promptResolved = promptResolved;
+          detail.sdk = resolvedConfig.sdk || "auto";
+          detail.model = resolvedConfig.model || "auto";
+          detail.timeoutMs = resolvedConfig.timeoutMs || 3600000;
+          detail.maxRetries = resolvedConfig.maxRetries ?? 2;
+          detail.maxContinues = resolvedConfig.maxContinues ?? 2;
+          detail.cwd = resolvedConfig.cwd || "{{worktreePath}}";
+          detail.includeTaskContext = resolvedConfig.includeTaskContext !== false;
+          // Library resolution
+          const libResult = await resolveLibraryForNode(nd, wf);
+          if (libResult) {
+            detail.resolvedAgent = libResult.plan?.agentName || libResult.best?.name || null;
+            detail.resolvedAgentId = libResult.plan?.agentProfileId || libResult.best?.id || null;
+            detail.resolvedSkills = (libResult.plan?.selectedSkills || []).map((s) => ({
+              id: s.id || s.skillId, name: s.name || s.id || s.skillId,
+              score: s.score, source: s.source,
+            }));
+            detail.resolvedPromptId = libResult.plan?.prompt?.id || null;
+            detail.resolvedTools = {
+              builtin: libResult.plan?.builtinToolIds || [],
+              recommended: libResult.plan?.recommendedToolIds || [],
+              mcp: libResult.plan?.enabledMcpServers || [],
             };
-
-            if (nd.type === "action.run_agent") {
-              const promptText = nd.config?.prompt || "";
-              const resolveMode = nd.config?.resolveMode || wf.metadata?.resolveMode || "manual";
-              nodeInfo.isAgentRun = true;
-              nodeInfo.resolveMode = resolveMode;
-              nodeInfo.promptPreview = promptText.length > 200
-                ? promptText.slice(0, 200) + "…"
-                : promptText;
-
-              // Resolve library skills for this node
-              if (resolveMode === "library" && libraryRoots.length > 0) {
-                try {
-                  const libMgr = await import("../infra/library-manager.mjs");
-                  if (typeof libMgr.resolveLibraryPlan === "function") {
-                    const criteria = {
-                      title: (task.title || "") + " " + (nd.label || ""),
-                      description: (task.description || "") + "\n" + promptText,
-                      tags: task.tags || [],
-                    };
-                    let bestPlan = null;
-                    for (const rootInfo of libraryRoots) {
-                      const result = libMgr.resolveLibraryPlan(rootInfo.rootDir, criteria, {
-                        topN: 3,
-                        skillTopN: 4,
-                      });
-                      if (!result?.best) continue;
-                      if (!bestPlan || Number(result.best?.score || 0) > Number(bestPlan.best?.score || 0)) {
-                        bestPlan = result;
-                      }
-                    }
-                    if (bestPlan) {
-                      nodeInfo.resolvedAgent = bestPlan.plan?.agentName || bestPlan.best?.name || null;
-                      nodeInfo.resolvedAgentId = bestPlan.plan?.agentProfileId || bestPlan.best?.id || null;
-                      nodeInfo.resolvedSkills = (bestPlan.plan?.selectedSkills || []).map((s) => ({
-                        id: s.id || s.skillId,
-                        name: s.name || s.id || s.skillId,
-                        score: s.score,
-                      }));
-                      nodeInfo.confidence = bestPlan.plan?.confidence || bestPlan.best?.confidence || 0;
-                    }
-                  }
-                } catch { /* library resolution is best-effort */ }
-              }
-            } else if (nd.type === "action.resolve_executor") {
-              nodeInfo.isResolveExecutor = true;
-            } else if (nd.type === "action.build_task_prompt") {
-              nodeInfo.isBuildPrompt = true;
-            } else if (nd.type.startsWith("trigger.")) {
-              nodeInfo.isTrigger = true;
-              if (nd.config?.taskPattern) {
-                nodeInfo.config.taskPattern = nd.config.taskPattern;
-              }
-            } else if (nd.type.startsWith("condition.")) {
-              nodeInfo.isCondition = true;
-            }
-
-            orderedNodes.push(nodeInfo);
-
-            const outEdges = edgesBySource.get(nid) || [];
-            for (const e of outEdges) {
-              if (!visited.has(e.target) && !e.backEdge) {
-                queue.push(e.target);
-              }
-            }
+            detail.confidence = libResult.plan?.confidence || libResult.best?.confidence || 0;
+            detail.alternatives = (libResult.alternatives || []).slice(0, 3).map((a) => ({
+              id: a.id, name: a.name, confidence: a.confidence,
+            }));
           }
+        }
 
-          stages.push({
-            workflowId: wf.id,
-            workflowName: wf.name,
-            category: wf.category,
-            core: wf.core === true,
-            trigger: wf.trigger,
-            description: wf.description || "",
-            nodeCount: orderedNodes.length,
-            agentRunCount: orderedNodes.filter((n) => n.isAgentRun).length,
-            nodes: orderedNodes,
+        // ── Command nodes ─────────────────────────────────────────────
+        if (nd.type === "action.run_command") {
+          detail.isCommand = true;
+          detail.commandRaw = nd.config?.command || "";
+          detail.commandResolved = resolvedConfig.command || "";
+          detail.commandCwd = resolvedConfig.cwd || "{{worktreePath}}";
+          detail.commandTimeout = resolvedConfig.timeoutMs || 300000;
+          detail.failOnError = resolvedConfig.failOnError || false;
+        }
+
+        // ── Executor resolver ─────────────────────────────────────────
+        if (nd.type === "action.resolve_executor") {
+          detail.isResolveExecutor = true;
+          detail.sdkOverride = resolvedConfig.sdkOverride || "auto";
+          detail.modelOverride = resolvedConfig.modelOverride || "auto";
+        }
+
+        // ── Build/test/lint validation nodes ───────────────────────────
+        if (nd.type === "validation.build" || nd.type === "validation.tests" || nd.type === "validation.lint") {
+          detail.isValidation = true;
+          detail.validationType = nd.type.split(".")[1];
+          detail.commandRaw = nd.config?.command || "";
+          detail.commandResolved = resolvedConfig.command || "";
+        }
+
+        // ── Task status updates ───────────────────────────────────────
+        if (nd.type === "action.update_task_status") {
+          detail.isStatusUpdate = true;
+          detail.targetStatus = resolvedConfig.status || resolvedConfig.toStatus || "";
+        }
+
+        // ── Sub-workflow calls ─────────────────────────────────────────
+        if (nd.type === "action.execute_workflow" || nd.type === "flow.universal") {
+          detail.isSubWorkflow = true;
+          detail.targetWorkflowId = resolvedConfig.workflowId || resolvedConfig.childWorkflowId || "";
+          detail.inheritContext = resolvedConfig.inheritContext !== false;
+        }
+
+        // ── Build prompt node ─────────────────────────────────────────
+        if (nd.type === "action.build_task_prompt") {
+          detail.isBuildPrompt = true;
+        }
+
+        // ── Slot/claim/worktree management ────────────────────────────
+        if (["action.allocate_slot", "action.release_slot"].includes(nd.type)) detail.isSlotMgmt = true;
+        if (["action.claim_task", "action.release_claim"].includes(nd.type)) detail.isClaimMgmt = true;
+        if (["action.acquire_worktree", "action.release_worktree"].includes(nd.type)) detail.isWorktreeMgmt = true;
+        if (nd.type === "action.push_branch") detail.isPushBranch = true;
+        if (nd.type === "action.create_pr") detail.isCreatePR = true;
+        if (nd.type === "action.detect_new_commits") detail.isDetectCommits = true;
+
+        // ── Notification nodes ────────────────────────────────────────
+        if (nd.type.startsWith("notify.")) {
+          detail.isNotify = true;
+          if (nd.type === "notify.log") detail.logMessage = resolvedConfig.message || resolvedConfig.text || "";
+        }
+
+        // ── Flow control ──────────────────────────────────────────────
+        if (nd.type === "flow.join") detail.joinMode = resolvedConfig.mode || "all";
+        if (nd.type === "flow.end") detail.isFlowEnd = true;
+        if (nd.type === "flow.gate") detail.isGate = true;
+
+        return detail;
+      };
+
+      // ── Helper: build edge details with validation ────────────────────
+      const buildEdgeDetail = (edge) => {
+        const detail = {
+          id: edge.id || `${edge.source}->${edge.target}`,
+          source: edge.source,
+          target: edge.target,
+        };
+        if (edge.sourcePort) detail.sourcePort = edge.sourcePort;
+        if (edge.backEdge) detail.isBackEdge = true;
+        if (edge.condition) {
+          detail.condition = edge.condition;
+          const check = validateExpression(edge.condition);
+          detail.conditionValid = check.valid;
+          if (!check.valid) detail.conditionError = check.error;
+        }
+        return detail;
+      };
+
+      // ── Build stages from matching workflows ──────────────────────────
+      const stages = [];
+      const validationIssues = [];
+
+      // Task context for variable resolution preview
+      const taskCtx = {
+        taskId: task.id, taskTitle: task.title || "", taskDescription: task.description || "",
+        worktreePath: `<worktree>/${task.id}`, branch: `feat/${task.id}`,
+        baseBranch: "main", resolvedSdk: "auto", resolvedModel: "auto",
+        agentProfile: "", sessionId: `session-${task.id}`,
+      };
+
+      // ── Phase 1: task_assigned workflows ──────────────────────────────
+      for (const wf of fullWorkflows) {
+        if (wf.enabled === false) continue;
+        const triggerNodes = (wf.nodes || []).filter((n) => n.type === "trigger.task_assigned");
+        if (triggerNodes.length === 0) continue;
+
+        let matched = false;
+        let matchedTrigger = null;
+        for (const tNode of triggerNodes) {
+          if (evaluateTaskAssignedTriggerConfig) {
+            matched = evaluateTaskAssignedTriggerConfig(tNode.config || {}, eventData);
+          } else {
+            const pattern = tNode.config?.taskPattern;
+            if (pattern) {
+              try { matched = new RegExp(pattern, "i").test([task.title || "", ...(task.tags || [])].join(" ")); }
+              catch { matched = false; }
+            } else { matched = true; }
+          }
+          if (matched) { matchedTrigger = tNode; break; }
+        }
+        if (!matched) continue;
+
+        // Build node map and edge adjacency
+        const nodeMap = new Map((wf.nodes || []).map((n) => [n.id, n]));
+        const edgesBySource = new Map();
+        const edgesByTarget = new Map();
+        for (const e of (wf.edges || [])) {
+          if (!edgesBySource.has(e.source)) edgesBySource.set(e.source, []);
+          edgesBySource.get(e.source).push(e);
+          if (!edgesByTarget.has(e.target)) edgesByTarget.set(e.target, []);
+          edgesByTarget.get(e.target).push(e);
+        }
+
+        // BFS from trigger to build ordered node list
+        const orderedNodes = [];
+        const visited = new Set();
+        const queue = matchedTrigger?.id ? [matchedTrigger.id] : [];
+        while (queue.length > 0) {
+          const nid = queue.shift();
+          if (visited.has(nid)) continue;
+          visited.add(nid);
+          const nd = nodeMap.get(nid);
+          if (!nd) continue;
+          orderedNodes.push(await buildNodeDetail(nd, wf, taskCtx));
+          for (const e of (edgesBySource.get(nid) || [])) {
+            if (!visited.has(e.target) && !e.backEdge) queue.push(e.target);
+          }
+        }
+
+        // Build edge details
+        const edgeDetails = (wf.edges || []).map(buildEdgeDetail);
+
+        // Validate: orphan nodes (not reachable from trigger)
+        const orphanNodes = (wf.nodes || [])
+          .filter((n) => !visited.has(n.id))
+          .map((n) => n.id);
+        if (orphanNodes.length > 0) {
+          validationIssues.push({
+            workflowId: wf.id, workflowName: wf.name, level: "warning",
+            message: `${orphanNodes.length} node(s) not reachable from trigger: ${orphanNodes.join(", ")}`,
           });
         }
 
-        // Also include trigger.task_available workflows (polling-based)
-        for (const wf of fullWorkflows) {
-          if (wf.enabled === false) continue;
-          const taskAvailTriggers = (wf.nodes || []).filter(
-            (n) => n.type === "trigger.task_available",
-          );
-          if (taskAvailTriggers.length === 0) continue;
-          // Skip if already added as task_assigned match
-          if (stages.some((s) => s.workflowId === wf.id)) continue;
+        // Validate: edge condition syntax
+        for (const ed of edgeDetails) {
+          if (ed.conditionValid === false) {
+            validationIssues.push({
+              workflowId: wf.id, workflowName: wf.name, level: "error",
+              message: `Edge ${ed.source}→${ed.target} has invalid condition: ${ed.conditionError}`,
+            });
+          }
+        }
 
-          stages.push({
-            workflowId: wf.id,
-            workflowName: wf.name,
-            category: wf.category,
-            core: wf.core === true,
-            trigger: wf.trigger || "trigger.task_available",
-            description: wf.description || "",
-            nodeCount: (wf.nodes || []).length,
-            agentRunCount: (wf.nodes || []).filter((n) => n.type === "action.run_agent").length,
-            nodes: (wf.nodes || []).map((nd) => ({
-              id: nd.id,
-              type: nd.type,
-              label: nd.label || nd.id,
-              isAgentRun: nd.type === "action.run_agent",
-              isTrigger: nd.type.startsWith("trigger."),
-              isCondition: nd.type.startsWith("condition."),
-              isResolveExecutor: nd.type === "action.resolve_executor",
-              isBuildPrompt: nd.type === "action.build_task_prompt",
-            })),
-            matchType: "polling",
-          });
+        // Validate: expression nodes
+        for (const nd of orderedNodes) {
+          if (nd.expressionValid === false) {
+            validationIssues.push({
+              workflowId: wf.id, workflowName: wf.name, level: "error",
+              message: `Node "${nd.id}" has invalid expression: ${nd.expressionError}`,
+            });
+          }
+          if (!nd.typeRegistered) {
+            validationIssues.push({
+              workflowId: wf.id, workflowName: wf.name, level: "error",
+              message: `Node "${nd.id}" uses unregistered type: "${nd.type}"`,
+            });
+          }
+          if (nd.unresolvedVars?.length > 0) {
+            validationIssues.push({
+              workflowId: wf.id, workflowName: wf.name, level: "warning",
+              message: `Node "${nd.id}" has unresolved variables: ${nd.unresolvedVars.join(", ")}`,
+            });
+          }
+        }
+
+        stages.push({
+          workflowId: wf.id, workflowName: wf.name, category: wf.category,
+          core: wf.core === true, trigger: wf.trigger, matchType: "task_assigned",
+          description: wf.description || "",
+          variables: wf.variables || {},
+          nodeCount: orderedNodes.length, edgeCount: edgeDetails.length,
+          agentRunCount: orderedNodes.filter((n) => n.isAgentRun).length,
+          nodes: orderedNodes, edges: edgeDetails,
+        });
+      }
+
+      // ── Phase 2: task_available workflows (polling/lifecycle) ──────────
+      for (const wf of fullWorkflows) {
+        if (wf.enabled === false) continue;
+        if ((wf.nodes || []).every((n) => n.type !== "trigger.task_available")) continue;
+        if (stages.some((s) => s.workflowId === wf.id)) continue;
+
+        const nodeMap = new Map((wf.nodes || []).map((n) => [n.id, n]));
+        const edgesBySource = new Map();
+        for (const e of (wf.edges || [])) {
+          if (!edgesBySource.has(e.source)) edgesBySource.set(e.source, []);
+          edgesBySource.get(e.source).push(e);
+        }
+
+        // BFS from trigger(s)
+        const triggerIds = (wf.nodes || []).filter((n) => n.type.startsWith("trigger.")).map((n) => n.id);
+        const orderedNodes = [];
+        const visited = new Set();
+        const queue = [...triggerIds];
+        while (queue.length > 0) {
+          const nid = queue.shift();
+          if (visited.has(nid)) continue;
+          visited.add(nid);
+          const nd = nodeMap.get(nid);
+          if (!nd) continue;
+          orderedNodes.push(await buildNodeDetail(nd, wf, taskCtx));
+          for (const e of (edgesBySource.get(nid) || [])) {
+            if (!visited.has(e.target) && !e.backEdge) queue.push(e.target);
+          }
+        }
+
+        const edgeDetails = (wf.edges || []).map(buildEdgeDetail);
+
+        stages.push({
+          workflowId: wf.id, workflowName: wf.name, category: wf.category,
+          core: wf.core === true, trigger: wf.trigger || "trigger.task_available",
+          matchType: "polling",
+          description: wf.description || "",
+          variables: wf.variables || {},
+          nodeCount: orderedNodes.length, edgeCount: edgeDetails.length,
+          agentRunCount: orderedNodes.filter((n) => n.isAgentRun).length,
+          nodes: orderedNodes, edges: edgeDetails,
+        });
+      }
+
+      // ── Dry-run simulation ────────────────────────────────────────────
+      let dryRunResults = null;
+      if (mode === "dry-run") {
+        dryRunResults = [];
+        for (const stage of stages) {
+          const wf = engine.get(stage.workflowId);
+          if (!wf) continue;
+          const simResult = { workflowId: stage.workflowId, workflowName: stage.workflowName, nodes: [] };
+          try {
+            // Use the engine's dryRun mode
+            const ctx = await engine.execute(stage.workflowId, {
+              ...taskCtx,
+              ...(wf.variables || {}),
+              _dryRunSimulation: true,
+            }, { dryRun: true, force: true });
+
+            // Extract per-node results from context
+            const nodeStatuses = ctx?.nodeStatuses || ctx?.data?._nodeStatuses || new Map();
+            const nodeOutputs = ctx?.nodeOutputs || ctx?.data?._nodeOutputs || new Map();
+            for (const nd of stage.nodes) {
+              const status = nodeStatuses instanceof Map ? nodeStatuses.get(nd.id) : nodeStatuses?.[nd.id];
+              const output = nodeOutputs instanceof Map ? nodeOutputs.get(nd.id) : nodeOutputs?.[nd.id];
+              simResult.nodes.push({
+                id: nd.id, status: status || "simulated",
+                output: output?._dryRun ? { dryRun: true, type: output.type } : undefined,
+              });
+            }
+            simResult.status = "completed";
+          } catch (err) {
+            simResult.status = "error";
+            simResult.error = err.message;
+            // Even partial results are useful
+            if (err.message?.includes("Missing capability")) {
+              simResult.missingCapability = err.message;
+            }
+          }
+          dryRunResults.push(simResult);
         }
       }
 
-      // Sort: core first, then by match type, then by name
+      // ── Sort and respond ──────────────────────────────────────────────
       stages.sort((a, b) => {
         if (a.core !== b.core) return a.core ? -1 : 1;
-        if (a.matchType !== b.matchType) {
-          if (!a.matchType && b.matchType) return -1;
-          if (a.matchType && !b.matchType) return 1;
-        }
+        const matchOrder = { polling: 0, task_assigned: 1 };
+        const aOrd = matchOrder[a.matchType] ?? 1;
+        const bOrd = matchOrder[b.matchType] ?? 1;
+        if (aOrd !== bOrd) return aOrd - bOrd;
         return (a.workflowName || "").localeCompare(b.workflowName || "");
       });
 
       jsonResponse(res, 200, {
         ok: true,
+        mode,
         taskId: task.id,
         taskTitle: task.title || "",
+        taskDescription: (task.description || "").slice(0, 500),
+        taskTags: task.tags || [],
         stages,
         stageCount: stages.length,
         agentRunTotal: stages.reduce((sum, s) => sum + (s.agentRunCount || 0), 0),
+        validationIssues: validationIssues.length > 0 ? validationIssues : undefined,
+        dryRunResults: dryRunResults || undefined,
       });
     } catch (err) {
       jsonResponse(res, 500, { ok: false, error: err.message });
