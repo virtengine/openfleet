@@ -38,6 +38,23 @@ describe("monitor workflow startup guards", () => {
     expect(monitorSource).toContain("auto-disabled stale workflow");
   });
 
+  it("stores workflow definitions and runs under the selected repoRoot", () => {
+    expect(monitorSource).toContain('workflowDir: resolve(repoRoot, ".bosun", "workflows")');
+    expect(monitorSource).toContain('runsDir: resolve(repoRoot, ".bosun", "workflow-runs")');
+  });
+
+  it("derives and exports a repo-scoped agent endpoint port before workflow task polling", () => {
+    expect(monitorSource).toContain("function deriveRepoScopedAgentEndpointPort(repoRoot)");
+    expect(monitorSource).toContain("function syncAgentEndpointPortEnv(port)");
+    expect(monitorSource).toContain("const requestedAgentEndpointPort = resolveMonitorAgentEndpointPort(repoRoot);");
+    expect(monitorSource).toContain("syncAgentEndpointPortEnv(agentEndpoint.getPort());");
+    expect(
+      monitorSource.indexOf("const requestedAgentEndpointPort = resolveMonitorAgentEndpointPort(repoRoot);"),
+    ).toBeLessThan(
+      monitorSource.indexOf('void pollWorkflowSchedulesOnce("startup").catch((err) => {'),
+    );
+  });
+
   it("kicks schedule-driven workflow polling immediately when workflow lifecycle owns dispatch", () => {
     expect(monitorSource).toContain("let pollWorkflowSchedulesOnce = async () => {};");
     expect(
@@ -225,4 +242,3 @@ describe("shared-state-manager registry repair", () => {
     expect(ssmSource).not.toContain('"[SharedStateManager] Invalid registry structure, resetting"');
   });
 });
-

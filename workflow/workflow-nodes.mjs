@@ -7678,6 +7678,7 @@ let _taskComplexityMod = null;
 let _kanbanAdapterMod = null;
 let _agentPoolMod = null;
 let _libraryManagerMod = null;
+let _configMod = null;
 let _gitSafetyMod = null;
 let _diffStatsMod = null;
 
@@ -7775,6 +7776,10 @@ async function ensureTaskComplexityMod() {
   if (!_taskComplexityMod) _taskComplexityMod = await import("../task/task-complexity.mjs");
   return _taskComplexityMod;
 }
+async function ensureConfigMod() {
+  if (!_configMod) _configMod = await import("../config/config.mjs");
+  return _configMod;
+}
 async function ensureLibraryManagerMod() {
   if (!_libraryManagerMod) _libraryManagerMod = await import("../infra/library-manager.mjs");
   return _libraryManagerMod;
@@ -7794,6 +7799,94 @@ async function ensureGitSafetyMod() {
 async function ensureDiffStatsMod() {
   if (!_diffStatsMod) _diffStatsMod = await import("../git/diff-stats.mjs");
   return _diffStatsMod;
+}
+function normalizeWorkflowSdkKey(value) {
+  const raw = String(value || "").trim().toLowerCase();
+  if (!raw || raw === "auto") return "";
+  if (raw.includes("copilot")) return "copilot";
+  if (raw.includes("codex") || raw.includes("gpt")) return "codex";
+  if (raw.includes("claude")) return "claude";
+  if (raw.includes("gemini")) return "gemini";
+  if (raw.includes("opencode")) return "opencode";
+  return raw;
+}
+function sdkToComplexityExecutorType(sdk) {
+  if (sdk === "copilot") return "COPILOT";
+  if (sdk === "codex") return "CODEX";
+  return "";
+}
+function buildWorkflowBaseExecutorProfile(sdk, defaults = {}) {
+  const executor = sdkToComplexityExecutorType(sdk);
+  if (!executor) return null;
+  return {
+    name: defaults.name || sdk,
+    executor,
+    variant: defaults.variant || "DEFAULT",
+    role: defaults.role || "primary",
+    weight: Number.isFinite(Number(defaults.weight)) ? Number(defaults.weight) : 100,
+    enabled: defaults.enabled !== false,
+    codexProfile: defaults.codexProfile || "",
+  };
+}
+function resolveWorkflowExecutorPreference(config, defaultSdk) {
+  const defaultSdkKey = normalizeWorkflowSdkKey(defaultSdk);
+  if (defaultSdkKey) {
+    return {
+      sdk: defaultSdkKey,
+      model: "",
+      baseProfile: buildWorkflowBaseExecutorProfile(defaultSdkKey, {
+        name: `default-${defaultSdkKey}`,
+      }),
+    };
+  }
+
+  const configuredExecutors = Array.isArray(config?.executorConfig?.executors)
+    ? config.executorConfig.executors.filter((entry) => entry?.enabled !== false)
+    : [];
+  const primaryExecutor = configuredExecutors[0] || null;
+  if (primaryExecutor?.executor) {
+    const configuredSdk = normalizeWorkflowSdkKey(primaryExecutor.executor);
+    if (configuredSdk) {
+      return {
+        sdk: configuredSdk,
+        model: Array.isArray(primaryExecutor.models)
+          ? String(primaryExecutor.models[0] || "").trim()
+          : "",
+        baseProfile: buildWorkflowBaseExecutorProfile(configuredSdk, {
+          name: primaryExecutor.name || configuredSdk,
+          variant: primaryExecutor.variant || "DEFAULT",
+          role: primaryExecutor.role || "primary",
+          weight: primaryExecutor.weight,
+          enabled: primaryExecutor.enabled !== false,
+          codexProfile: primaryExecutor.codexProfile || "",
+        }),
+      };
+    }
+  }
+
+  const internalSdk = normalizeWorkflowSdkKey(config?.internalExecutor?.sdk);
+  if (internalSdk) {
+    return {
+      sdk: internalSdk,
+      model: "",
+      baseProfile: buildWorkflowBaseExecutorProfile(internalSdk, {
+        name: `internal-${internalSdk}`,
+      }),
+    };
+  }
+
+  const primaryAgentSdk = normalizeWorkflowSdkKey(config?.primaryAgent);
+  if (primaryAgentSdk) {
+    return {
+      sdk: primaryAgentSdk,
+      model: "",
+      baseProfile: buildWorkflowBaseExecutorProfile(primaryAgentSdk, {
+        name: `primary-${primaryAgentSdk}`,
+      }),
+    };
+  }
+
+  return null;
 }
 let _taskStoreMod = null;
 async function ensureTaskStoreMod() {
@@ -8656,6 +8749,7 @@ registerNodeType("action.resolve_executor", {
       tags: Array.isArray(ctx.data?.task?.tags) ? ctx.data.task.tags : [],
     };
     let profileDecision = null;
+    let configuredExecutorPreference = null;
 
     // Check env var overrides (mirrors TaskExecutor behavior)
     const envModel =
@@ -8700,6 +8794,18 @@ registerNodeType("action.resolve_executor", {
       ctx.log(node.id, `Library profile resolution failed: ${err.message}`);
     }
 
+    if (!profileDecision?.profile) {
+      try {
+        const configMod = await ensureConfigMod();
+        configuredExecutorPreference = resolveWorkflowExecutorPreference(
+          configMod.loadConfig?.(process.argv, { reloadEnv: false }) || null,
+          defaultSdk,
+        );
+      } catch (err) {
+        ctx.log(node.id, `Executor config resolution failed: ${err.message}`);
+      }
+    }
+
     // Complexity-based routing
     try {
       const complexity = await ensureTaskComplexityMod();
@@ -8714,7 +8820,25 @@ registerNodeType("action.resolve_executor", {
               weight: 100,
               enabled: true,
             }
-          : undefined;
+          : configuredExecutorPreference?.baseProfile || undefined;
+        if (!baseProfile && configuredExecutorPreference?.sdk) {
+          const configuredModel =
+            modelOverride || envModel || configuredExecutorPreference.model || "";
+          ctx.data.resolvedSdk = configuredExecutorPreference.sdk;
+          ctx.data.resolvedModel = configuredModel;
+          ctx.log(
+            node.id,
+            `Executor configured: sdk=${configuredExecutorPreference.sdk}, model=${configuredModel}`,
+          );
+          return {
+            success: true,
+            sdk: configuredExecutorPreference.sdk,
+            model: configuredModel,
+            tier: "configured",
+            profile: null,
+            complexity: null,
+          };
+        }
         const resolved = complexity.resolveExecutorForTask(task, baseProfile);
         let sdk = complexity.executorToSdk(resolved.executor);
         const profileSdkRaw = String(profileDecision?.profile?.sdk || "").trim().toLowerCase();
@@ -8726,8 +8850,16 @@ registerNodeType("action.resolve_executor", {
         } else if (profileModelRaw) {
           if (profileModelRaw.includes("claude")) sdk = "claude";
           else if (profileModelRaw.includes("gpt") || profileModelRaw.includes("codex")) sdk = "codex";
+        } else if (configuredExecutorPreference?.sdk) {
+          sdk = configuredExecutorPreference.sdk;
         }
-        const model = modelOverride || envModel || profileDecision?.profile?.model || resolved.model || "";
+        const model =
+          modelOverride ||
+          envModel ||
+          profileDecision?.profile?.model ||
+          configuredExecutorPreference?.model ||
+          resolved.model ||
+          "";
         const tier = profileDecision?.profile ? "profile" : (resolved.tier || "default");
         ctx.data.resolvedSdk = sdk;
         ctx.data.resolvedModel = model;
@@ -8746,8 +8878,8 @@ registerNodeType("action.resolve_executor", {
     }
 
     // Fallback
-    let sdk = defaultSdk;
-    if (sdk === "auto") {
+    let sdk = configuredExecutorPreference?.sdk || defaultSdk;
+    if (!sdk || sdk === "auto") {
       try {
         const pool = await ensureAgentPoolMod();
         sdk = pool.getPoolSdkName?.() || "codex";
@@ -8755,7 +8887,12 @@ registerNodeType("action.resolve_executor", {
         sdk = "codex";
       }
     }
-    const model = modelOverride || envModel || profileDecision?.profile?.model || "";
+    const model =
+      modelOverride ||
+      envModel ||
+      profileDecision?.profile?.model ||
+      configuredExecutorPreference?.model ||
+      "";
     ctx.data.resolvedSdk = sdk;
     ctx.data.resolvedModel = model;
     const fallbackTier = profileDecision?.profile ? "profile" : "default";

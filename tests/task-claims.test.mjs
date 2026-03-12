@@ -118,23 +118,40 @@ describe("task-claims", () => {
       expect(claim.metadata.agent).toBe("codex");
     });
 
-    it("reclaims a task when existing owner is stale/offline", async () => {
-      const { listActiveInstances } = vi.mocked(await import("../infra/presence.mjs"));
-      await claimTask({
-        taskId: "task-stale",
-        instanceId: "instance-1",
-      });
+    it("reclaims a task when existing owner is stale/offline and shared state accepts the takeover", async () => {
+      vi.resetModules();
+      const claimInSharedStateMock = vi.fn(async () => ({ success: true }));
+      vi.doMock("../workspace/shared-state-manager.mjs", () => ({
+        claimTaskInSharedState: claimInSharedStateMock,
+        renewSharedStateHeartbeat: vi.fn(async () => ({ success: true })),
+        releaseSharedState: vi.fn(async () => ({ success: true })),
+      }));
 
-      listActiveInstances.mockReturnValueOnce([{ instance_id: "instance-2" }]);
-      const result = await claimTask({
-        taskId: "task-stale",
-        instanceId: "instance-2",
-      });
+      try {
+        const { listActiveInstances } = vi.mocked(await import("../infra/presence.mjs"));
+        const freshClaims = await import("../task/task-claims.mjs");
+        await freshClaims.initTaskClaims({ repoRoot: tempRoot });
 
-      expect(result.success).toBe(true);
-      expect(result.resolution?.override).toBe(true);
-      expect(result.resolution?.reason).toBe("owner_stale");
-      expect(result.claim.instance_id).toBe("instance-2");
+        await freshClaims.claimTask({
+          taskId: "task-stale",
+          instanceId: "instance-1",
+        });
+
+        listActiveInstances.mockReturnValueOnce([{ instance_id: "instance-2" }]);
+        const result = await freshClaims.claimTask({
+          taskId: "task-stale",
+          instanceId: "instance-2",
+        });
+
+        expect(result.success).toBe(true);
+        expect(result.resolution?.override).toBe(true);
+        expect(result.resolution?.reason).toBe("owner_stale");
+        expect(result.claim.instance_id).toBe("instance-2");
+        expect(claimInSharedStateMock).toHaveBeenCalledTimes(2);
+      } finally {
+        vi.doUnmock("../workspace/shared-state-manager.mjs");
+        vi.resetModules();
+      }
     });
 
     it("does not reclaim when existing owner is active", async () => {
@@ -189,6 +206,32 @@ describe("task-claims", () => {
       expect(result.success).toBe(false);
       expect(result.error).toBe("existing_owner_active");
       expect(await getClaim("task-shared-conflict")).toBeNull();
+      expect(claimInSharedStateMock).toHaveBeenCalledTimes(1);
+    });
+
+    it("rolls back a new local claim when shared state prefixes the active-owner conflict reason", async () => {
+      const claimInSharedStateMock = vi.fn(async () => ({
+        success: false,
+        reason: "conflict: existing_owner_active",
+      }));
+
+      vi.doMock("../workspace/shared-state-manager.mjs", () => ({
+        claimTaskInSharedState: claimInSharedStateMock,
+        renewSharedStateHeartbeat: vi.fn(async () => ({ success: true })),
+        releaseSharedState: vi.fn(async () => ({ success: true })),
+      }));
+
+      const { initTaskClaims, claimTask, getClaim } = await import("../task/task-claims.mjs");
+      await initTaskClaims({ repoRoot: tempRoot });
+
+      const result = await claimTask({
+        taskId: "task-shared-prefixed-conflict",
+        instanceId: "instance-1",
+      });
+
+      expect(result.success).toBe(false);
+      expect(result.error).toBe("existing_owner_active");
+      expect(await getClaim("task-shared-prefixed-conflict")).toBeNull();
       expect(claimInSharedStateMock).toHaveBeenCalledTimes(1);
     });
 
@@ -797,5 +840,4 @@ describe("task-claims", () => {
     });
   });
 });
-
 

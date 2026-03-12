@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it } from "vitest";
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { spawnSync } from "node:child_process";
 import { tmpdir } from "node:os";
 import { resolve } from "node:path";
@@ -40,9 +40,9 @@ describe("bosun SWE-bench bridge", () => {
 
   it("imports SWE-bench instances into the internal task store", () => {
     const dir = makeTempDir("bosun-swebench-");
-    const storePath = resolve(dir, "kanban-state.json");
     const instancesPath = resolve(dir, "instances.jsonl");
     const workspaceDir = resolve(dir, "workspace");
+    const storePath = resolve(workspaceDir, ".bosun", ".cache", "kanban-state.json");
     mkdirSync(workspaceDir, { recursive: true });
     writeFileSync(
       instancesPath,
@@ -72,15 +72,14 @@ describe("bosun SWE-bench bridge", () => {
       ],
       {
         cwd: process.cwd(),
-        env: {
-          ...process.env,
-          BOSUN_STORE_PATH: storePath,
-        },
         encoding: "utf8",
       },
     );
 
     expect(result.status).toBe(0);
+    expect(result.stdout).toContain(
+      "Ensured SWE-bench workflow runtime: workspaces=1, installed=1, already_present=0",
+    );
     expect(result.stdout).toContain("Imported SWE-bench tasks: created=1, skipped=0, total=1");
 
     const tasks = Object.values(readStore(storePath).tasks || {});
@@ -92,5 +91,13 @@ describe("bosun SWE-bench bridge", () => {
     expect(tasks[0]?.meta?.swebench?.instance_id).toBe("demo__repo-2");
     expect(tasks[0]?.meta?.swebench?.base_commit).toBe("def456");
     expect(tasks[0]?.workspace).toBe(workspaceDir);
+
+    const workflowDir = resolve(workspaceDir, ".bosun", "workflows");
+    expect(existsSync(workflowDir)).toBe(true);
+    const workflowFiles = readdirSync(workflowDir).filter((entry) => entry.endsWith(".json"));
+    expect(workflowFiles.length).toBeGreaterThan(0);
+    const installedWorkflow = JSON.parse(readFileSync(resolve(workflowDir, workflowFiles[0]), "utf8"));
+    expect(installedWorkflow?.metadata?.installedFrom).toBe("template-task-lifecycle");
+    expect(installedWorkflow?.variables?.maxParallel).toBe(1);
   });
 });

@@ -1,5 +1,5 @@
 import { execSync, spawn, spawnSync } from "node:child_process";
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import {
   existsSync,
   mkdirSync,
@@ -379,6 +379,36 @@ function parseEnvInteger(value, defaultValue, { min = null, max = null } = {}) {
   if (Number.isFinite(min) && parsed < min) return defaultValue;
   if (Number.isFinite(max) && parsed > max) return defaultValue;
   return parsed;
+}
+
+const DEFAULT_AGENT_ENDPOINT_PORT = 18432;
+const REPO_SCOPED_AGENT_ENDPOINT_PORT_WINDOW = 2048;
+
+function deriveRepoScopedAgentEndpointPort(repoRoot) {
+  const normalizedRoot = resolve(String(repoRoot || process.cwd()))
+    .replace(/\\/g, "/")
+    .toLowerCase();
+  const digest = createHash("sha1").update(normalizedRoot, "utf8").digest();
+  const offset = ((digest[0] << 8) | digest[1]) % REPO_SCOPED_AGENT_ENDPOINT_PORT_WINDOW;
+  return DEFAULT_AGENT_ENDPOINT_PORT + offset;
+}
+
+function resolveMonitorAgentEndpointPort(repoRoot) {
+  const explicit = parseEnvInteger(
+    process.env.AGENT_ENDPOINT_PORT ?? process.env.BOSUN_AGENT_ENDPOINT_PORT,
+    Number.NaN,
+    { min: 1, max: 65535 },
+  );
+  if (Number.isFinite(explicit)) return explicit;
+  return deriveRepoScopedAgentEndpointPort(repoRoot);
+}
+
+function syncAgentEndpointPortEnv(port) {
+  const normalized = Number(port);
+  if (!Number.isInteger(normalized) || normalized <= 0 || normalized > 65535) return;
+  const value = String(normalized);
+  process.env.BOSUN_AGENT_ENDPOINT_PORT = value;
+  process.env.AGENT_ENDPOINT_PORT = value;
 }
 
 let workflowAutomationEnabled = false;
@@ -14696,11 +14726,6 @@ if (isExecutorDisabled()) {
     };
     internalTaskExecutor = getTaskExecutor(execOpts);
     internalTaskExecutor.start();
-    if (workflowOwnsTaskExecutorLifecycle) {
-      void pollWorkflowSchedulesOnce("startup").catch((err) => {
-        console.warn(`[workflows] startup poll error: ${err?.message || err}`);
-      });
-    }
 
     // Write executor slots to status file every 30s for Telegram /tasks
     startStatusFileWriter(30000);
@@ -14710,8 +14735,14 @@ if (isExecutorDisabled()) {
 
     // ── Agent Endpoint ──
     try {
+      const requestedAgentEndpointPort = resolveMonitorAgentEndpointPort(repoRoot);
+      syncAgentEndpointPortEnv(requestedAgentEndpointPort);
       agentEndpoint = createAgentEndpoint({
-        port: Number(process.env.AGENT_ENDPOINT_PORT || 18432),
+        port: requestedAgentEndpointPort,
+        allowConflictKill: parseEnvBoolean(
+          process.env.BOSUN_AGENT_ENDPOINT_REAP_CONFLICTS,
+          false,
+        ),
         taskStore: {
           listTasks: (_projectId, { status } = {}) => {
             const normalized = String(status || "")
@@ -14819,20 +14850,17 @@ if (isExecutorDisabled()) {
           }
         },
       });
-      agentEndpoint
-        .start()
-        .then(() => {
-          console.log("[monitor] agent endpoint started");
-        })
-        .catch((err) => {
-          console.warn(
-            `[monitor] agent endpoint failed to start: ${err.message}`,
-          );
-          agentEndpoint = null;
-        });
+      await agentEndpoint.start();
+      syncAgentEndpointPortEnv(agentEndpoint.getPort());
+      console.log(`[monitor] agent endpoint started on port ${agentEndpoint.getPort()}`);
     } catch (err) {
       console.warn(`[monitor] agent endpoint creation failed: ${err.message}`);
       agentEndpoint = null;
+    }
+    if (workflowOwnsTaskExecutorLifecycle) {
+      void pollWorkflowSchedulesOnce("startup").catch((err) => {
+        console.warn(`[workflows] startup poll error: ${err?.message || err}`);
+      });
     }
 
     // ── Agent Event Bus ──

@@ -6,13 +6,22 @@ import { fileURLToPath } from "node:url";
 import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { taskCreate, taskList } from "../../task/task-cli.mjs";
+import { WorkflowEngine } from "../../workflow/workflow-engine.mjs";
+import { installTemplateSet } from "../../workflow/workflow-templates.mjs";
+
+const DEFAULT_SWEBENCH_TEMPLATE_IDS = Object.freeze(["template-task-lifecycle"]);
+const DEFAULT_SWEBENCH_TEMPLATE_OVERRIDES = Object.freeze({
+  "template-task-lifecycle": Object.freeze({
+    maxParallel: 1,
+  }),
+});
 
 export function usage() {
   console.log(`
 Bosun SWE-bench bridge
 
 Usage:
-  node bench/swebench/bosun-swebench.mjs import --instances <path> [--status todo] [--priority high] [--candidates 3]
+  node bench/swebench/bosun-swebench.mjs import --instances <path> [--status todo] [--priority high] [--candidates 3] [--no-ensure-runtime]
   node bench/swebench/bosun-swebench.mjs export --out <predictions.jsonl> --model <name>
   node bench/swebench/bosun-swebench.mjs eval --predictions <predictions.jsonl> --instance-ids <ids.jsonl> [--max-workers 8] [--run-id bosun-run]
 
@@ -45,6 +54,13 @@ export function parseArgs(argv) {
     }
   }
   return args;
+}
+
+function isFlagDisabled(args, key) {
+  const value = args?.[key];
+  if (value === undefined) return false;
+  if (value === true) return true;
+  return ["0", "false", "no", "off"].includes(normString(value).toLowerCase());
 }
 
 export function readJsonOrJsonl(pathLike) {
@@ -136,6 +152,54 @@ export function buildTaskFromInstance(instance, opts = {}) {
   };
 }
 
+export function resolveSwebenchWorkflowRuntimePaths(workspace) {
+  const repoRoot = resolve(normString(workspace) || process.cwd());
+  return {
+    repoRoot,
+    workflowDir: resolve(repoRoot, ".bosun", "workflows"),
+    runsDir: resolve(repoRoot, ".bosun", "workflow-runs"),
+  };
+}
+
+export function resolveSwebenchKanbanStorePath(workspace) {
+  const repoRoot = resolve(normString(workspace) || process.cwd());
+  return resolve(repoRoot, ".bosun", ".cache", "kanban-state.json");
+}
+
+export function ensureSwebenchWorkflowRuntime(workspace, opts = {}) {
+  const { repoRoot, workflowDir, runsDir } = resolveSwebenchWorkflowRuntimePaths(workspace);
+  if (!existsSync(repoRoot)) {
+    return {
+      repoRoot,
+      workflowDir,
+      runsDir,
+      installed: [],
+      skipped: [],
+      errors: [{ id: "workspace", error: `Workspace does not exist: ${repoRoot}` }],
+    };
+  }
+  const templateIds = Array.isArray(opts.templateIds) && opts.templateIds.length > 0
+    ? opts.templateIds
+    : [...DEFAULT_SWEBENCH_TEMPLATE_IDS];
+  const lifecycleOverrides = {
+    ...DEFAULT_SWEBENCH_TEMPLATE_OVERRIDES["template-task-lifecycle"],
+    ...(opts.overridesById?.["template-task-lifecycle"] || {}),
+  };
+  const overridesById = {
+    ...DEFAULT_SWEBENCH_TEMPLATE_OVERRIDES,
+    ...(opts.overridesById || {}),
+    "template-task-lifecycle": lifecycleOverrides,
+  };
+  const engine = new WorkflowEngine({ workflowDir, runsDir });
+  const result = installTemplateSet(engine, templateIds, overridesById);
+  return {
+    repoRoot,
+    workflowDir,
+    runsDir,
+    ...result,
+  };
+}
+
 export function writeJsonl(pathLike, records) {
   const outFile = resolve(pathLike);
   mkdirSync(dirname(outFile), { recursive: true });
@@ -188,8 +252,10 @@ export async function cmdImport(args) {
   const instancesPath = normString(args.instances);
   if (!instancesPath) throw new Error("--instances is required");
   const instances = readJsonOrJsonl(instancesPath);
+  const ensureRuntime = !isFlagDisabled(args, "no-ensure-runtime");
   let created = 0;
   let skipped = 0;
+  const runtimeResults = new Map();
 
   for (const inst of instances) {
     const task = buildTaskFromInstance(inst, {
@@ -197,9 +263,32 @@ export async function cmdImport(args) {
       priority: normString(args.priority) || "high",
       candidateCount: normString(args.candidates || args.candidateCount || ""),
     });
+    if (ensureRuntime) {
+      const runtimeKey = resolve(normString(task.workspace) || process.cwd());
+      if (!runtimeResults.has(runtimeKey)) {
+        const runtimeResult = ensureSwebenchWorkflowRuntime(task.workspace);
+        if (Array.isArray(runtimeResult.errors) && runtimeResult.errors.length > 0) {
+          const firstError = runtimeResult.errors[0];
+          throw new Error(
+            `Failed to ensure SWE-bench workflow runtime for ${runtimeKey}: ${firstError?.error || "unknown error"}`,
+          );
+        }
+        runtimeResults.set(runtimeKey, runtimeResult);
+      }
+    }
 
     try {
-      await taskCreate(task);
+      const previousStorePath = process.env.BOSUN_STORE_PATH;
+      process.env.BOSUN_STORE_PATH = resolveSwebenchKanbanStorePath(task.workspace);
+      try {
+        await taskCreate(task);
+      } finally {
+        if (previousStorePath == null) {
+          delete process.env.BOSUN_STORE_PATH;
+        } else {
+          process.env.BOSUN_STORE_PATH = previousStorePath;
+        }
+      }
       created += 1;
     } catch (err) {
       if (String(err.message || "").toLowerCase().includes("exists")) {
@@ -208,6 +297,18 @@ export async function cmdImport(args) {
         throw err;
       }
     }
+  }
+
+  if (ensureRuntime) {
+    let installed = 0;
+    let alreadyPresent = 0;
+    for (const result of runtimeResults.values()) {
+      installed += Array.isArray(result.installed) ? result.installed.length : 0;
+      alreadyPresent += Array.isArray(result.skipped) ? result.skipped.length : 0;
+    }
+    console.log(
+      `Ensured SWE-bench workflow runtime: workspaces=${runtimeResults.size}, installed=${installed}, already_present=${alreadyPresent}`,
+    );
   }
 
   console.log(`Imported SWE-bench tasks: created=${created}, skipped=${skipped}, total=${instances.length}`);
