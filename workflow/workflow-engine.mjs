@@ -1738,6 +1738,7 @@ export class WorkflowEngine extends EventEmitter {
           }
 
           ctx.setNodeStatus(nodeId, NodeStatus.RUNNING);
+          console.info(`${TAG} node:start ${nodeId} (${node.type}) [${node.label || ""}] wf=${ctx.data?._workflowName || ctx.data?._workflowId || "?"}`);
           this.emit("node:start", { nodeId, type: node.type, label: node.label });
           await this._emitTaskTraceEvent("workflow.node.start", {
             ctx,
@@ -1781,6 +1782,7 @@ export class WorkflowEngine extends EventEmitter {
               ctx.setNodeOutput(nodeId, result);
               ctx.setNodeStatus(nodeId, NodeStatus.COMPLETED);
               executed.add(nodeId);
+              console.info(`${TAG} node:complete ${nodeId} (${node.type}) [${node.label || ""}]`);
               this.emit("node:complete", { nodeId, type: node.type });
               await this._emitTaskTraceEvent("workflow.node.complete", {
                 ctx,
@@ -1808,6 +1810,7 @@ export class WorkflowEngine extends EventEmitter {
           ctx.error(nodeId, lastErr);
           ctx.setNodeStatus(nodeId, NodeStatus.FAILED);
           executed.add(nodeId);
+          console.warn(`${TAG} node:FAILED ${nodeId} (${node.type}) [${node.label || ""}]: ${lastErr?.message || lastErr}`);
           this.emit("node:error", { nodeId, error: lastErr.message, retries: ctx.getRetryCount(nodeId) });
           await this._emitTaskTraceEvent("workflow.node.error", {
             ctx,
@@ -1989,6 +1992,8 @@ export class WorkflowEngine extends EventEmitter {
             } else {
               ctx.setNodeStatus(targetNodeId, NodeStatus.SKIPPED);
               executed.add(targetNodeId);
+              const skippedNode = nodeMap.get(targetNodeId);
+              console.info(`${TAG} node:SKIPPED ${targetNodeId} (${skippedNode?.type || "?"}) [${skippedNode?.label || ""}] — no satisfied edges`);
             }
           }
         };
