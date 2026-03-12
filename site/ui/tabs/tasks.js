@@ -2415,6 +2415,8 @@ export function TaskDetailModal({ task, onClose, onStart, presentation = "modal"
   const [expandedStages, setExpandedStages] = useState({});
   const [dryRunLoading, setDryRunLoading] = useState(false);
   const [dryRunResults, setDryRunResults] = useState(null);
+  const [fullScreen, setFullScreen] = useState(false);
+  const [activeTab, setActiveTab] = useState("details");
 
   const fetchExecutionPlan = useCallback((mode = "resolve") => {
     if (!task?.id) return;
@@ -3091,9 +3093,11 @@ export function TaskDetailModal({ task, onClose, onStart, presentation = "modal"
     <${Modal}
       title=${task?.title || "Task Detail"}
       onClose=${onClose}
-      contentClassName=${"modal-content-wide task-detail-modal-jira" + (presentation === "side-sheet" ? " task-detail-side-sheet" : "")}
-      layout=${presentation === "side-sheet" ? "side-sheet" : "sheet"}
-      resizable=${presentation === "side-sheet"}
+      contentClassName=${fullScreen
+        ? "task-detail-fullscreen"
+        : "modal-content-wide task-detail-modal-jira" + (presentation === "side-sheet" ? " task-detail-side-sheet" : "")}
+      layout=${fullScreen ? "sheet" : (presentation === "side-sheet" ? "side-sheet" : "sheet")}
+      resizable=${!fullScreen && presentation === "side-sheet"}
       widthStorageKey="tasks.task-detail.width"
       defaultWidth=${900}
       unsavedChanges=${changeCount}
@@ -3104,24 +3108,46 @@ export function TaskDetailModal({ task, onClose, onStart, presentation = "modal"
       }}
       activeOperationLabel=${activeOperationLabel}
     >
-      <div class="task-modal-summary jira-task-summary">
-        <div class="task-modal-id" style="user-select:all">ID: ${task?.id}</div>
-        <div class="task-modal-badges">
+      ${/* ── Task Header Strip ──────────────────────────────────────────── */ ""}
+      <div class="task-fullscreen-header" style="display:flex;align-items:center;gap:12px;padding:14px 24px;border-bottom:1px solid var(--border,#333);background:var(--bg-surface,#0d1117);flex-wrap:wrap;">
+        <div style="display:flex;align-items:center;gap:6px;flex-shrink:0;">
+          <span style="font-family:monospace;font-size:0.75em;opacity:0.5;user-select:all;">${task?.id?.slice(0, 8)}</span>
           <${Badge} status=${task?.status} text=${task?.status} />
-          ${task?.priority &&
-          html`<${Badge} status=${task.priority} text=${task.priority} />`}
+          ${task?.priority && html`<${Badge} status=${task.priority} text=${task.priority} />`}
           ${manualOverride && html`<${Badge} status="warning" text="manual" />`}
         </div>
-        ${canDispatch &&
-        html`
-          <div class="task-modal-actions">
+        <div style="flex:1;min-width:0;">
+          <strong style="font-size:1em;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;display:block;">${task?.title || "Untitled"}</strong>
+        </div>
+        <div style="display:flex;gap:6px;align-items:center;flex-shrink:0;">
+          ${canDispatch && html`
             <${Button} variant="contained" size="small" onClick=${handleStart}>
-              ${iconText(":play: Dispatch Task")}
+              ${iconText(":play: Dispatch")}
             <//>
-          </div>
-        `}
+          `}
+          <button
+            onClick=${() => setFullScreen(!fullScreen)}
+            style="padding:4px 8px;border-radius:4px;border:1px solid var(--border-color,#444);background:transparent;color:var(--color-text,#e0e0e0);font-size:0.75em;cursor:pointer;"
+            title=${fullScreen ? "Exit fullscreen" : "Fullscreen"}
+          >${fullScreen ? "⊟" : "⊞"}</button>
+        </div>
       </div>
 
+      ${/* ── Tab Navigation ─────────────────────────────────────────────── */ ""}
+      <div style="display:flex;gap:0;border-bottom:1px solid var(--border-color,#333);background:var(--bg-surface,#0d1117);padding:0 24px;">
+        ${["details", "execution", "history"].map((tab) => html`
+          <button key=${tab}
+            onClick=${() => setActiveTab(tab)}
+            style="padding:8px 16px;border:none;background:transparent;color:${activeTab === tab ? 'var(--accent,#60a5fa)' : 'var(--color-text,#e0e0e0)'};font-size:0.8em;font-weight:${activeTab === tab ? '700' : '400'};cursor:pointer;border-bottom:2px solid ${activeTab === tab ? 'var(--accent,#60a5fa)' : 'transparent'};text-transform:capitalize;"
+          >${tab === "execution" ? "▶️ Execution Plan" : tab === "history" ? "⏱ History" : "✎ Details"}</button>
+        `)}
+      </div>
+
+      ${/* ── Content Body ─────────────────────────────────────────────────── */ ""}
+      <div style="padding:${fullScreen ? '20px 24px' : '0'};overflow-y:auto;max-height:${fullScreen ? 'calc(100dvh - 140px)' : 'auto'};">
+
+      ${/* ── DETAILS TAB ─────────────────────────────────────────────────── */ ""}
+      ${activeTab === "details" && html`<div style="display:contents;">
 
       <div class="modal-form-span">
         <div class="task-comments-block jira-panel" style="padding:12px;border:1px solid var(--border);border-radius:12px;background:var(--bg-surface)">
@@ -3168,35 +3194,38 @@ export function TaskDetailModal({ task, onClose, onStart, presentation = "modal"
         </div>
       `}
 
-      ${/* ── Execution Plan Visualization ─────────────────────────────── */ ""}
-      <div class="task-comments-block modal-form-span jira-panel">
-        <div class="task-attachments-title" style="cursor:pointer;display:flex;align-items:center;gap:6px;" onClick=${() => setExecutionPlanExpanded(!executionPlanExpanded)}>
-          <span>${executionPlanExpanded ? "▾" : "▸"}</span>
-          <span>▶️ Execution Plan</span>
-          ${executionPlanLoading && html`<span style="font-size:0.8em;opacity:0.6;margin-left:4px;">Loading…</span>`}
-          ${executionPlan && html`<span style="font-size:0.8em;opacity:0.6;margin-left:4px;">${executionPlan.stageCount || 0} workflows · ${executionPlan.agentRunTotal || 0} agent runs</span>`}
+      </div>`}
+
+      ${/* ── EXECUTION TAB ─────────────────────────────────────────────── */ ""}
+      ${activeTab === "execution" && html`<div style="display:contents;">
+
+      ${/* ── Execution Plan Visualization (Premium) ─────────────────────── */ ""}
+      <div class="exec-plan-stage" style="margin:0 0 14px;">
+        <div class="exec-plan-stage-header" style="background:transparent;border-bottom:none;padding:12px 16px;">
+          <span style="font-weight:700;font-size:0.9em;flex:1;">▶️ Execution Plan</span>
+          ${executionPlanLoading && html`<span style="font-size:0.8em;opacity:0.6;">Loading…</span>`}
+          ${executionPlan && html`<span style="font-size:0.8em;opacity:0.6;">${executionPlan.stageCount || 0} workflows · ${executionPlan.agentRunTotal || 0} agent runs</span>`}
           ${executionPlan?.validationIssues?.length > 0 && html`
-            <span style="background:#ef444430;color:#f87171;padding:1px 6px;border-radius:3px;font-size:0.7em;font-weight:600;margin-left:4px;">
+            <span class="exec-plan-badge" style="background:#ef444420;color:#f87171;">
               ${executionPlan.validationIssues.filter((v) => v.level === "error").length} errors
             </span>
           `}
         </div>
-        ${executionPlanExpanded && html`
-          <div style="margin-top:8px;">
-            ${/* ── Action buttons ── */ ""}
-            <div style="display:flex;gap:6px;margin-bottom:10px;align-items:center;">
-              <button style="padding:4px 10px;border-radius:4px;border:1px solid var(--border-color,#444);background:var(--color-bg-secondary,#1a1f2e);color:var(--color-text,#e0e0e0);font-size:0.8em;cursor:pointer;"
-                onClick=${() => fetchExecutionPlan("resolve")} disabled=${executionPlanLoading}>
-                🔄 Refresh
-              </button>
-              <button style="padding:4px 10px;border-radius:4px;border:1px solid #3b82f660;background:#3b82f620;color:#60a5fa;font-size:0.8em;cursor:pointer;font-weight:600;"
-                onClick=${() => fetchExecutionPlan("dry-run")} disabled=${dryRunLoading || executionPlanLoading}>
-                ${dryRunLoading ? "Running…" : "▶️ Dry Run"}
-              </button>
-              ${executionPlan?.mode === "dry-run" && html`
-                <span style="font-size:0.75em;color:#10b981;font-weight:600;">✓ Dry-run complete</span>
-              `}
-            </div>
+        <div class="exec-plan-stage-body">
+          ${/* ── Action buttons ── */ ""}
+          <div style="display:flex;gap:8px;margin-bottom:14px;align-items:center;">
+            <button style="padding:6px 14px;border-radius:6px;border:1px solid var(--border-color,#444);background:var(--color-bg-secondary,#1a1f2e);color:var(--color-text,#e0e0e0);font-size:0.8em;cursor:pointer;"
+              onClick=${() => fetchExecutionPlan("resolve")} disabled=${executionPlanLoading}>
+              🔄 Refresh Plan
+            </button>
+            <button style="padding:6px 14px;border-radius:6px;border:1px solid #3b82f660;background:#3b82f620;color:#60a5fa;font-size:0.8em;cursor:pointer;font-weight:600;"
+              onClick=${() => fetchExecutionPlan("dry-run")} disabled=${dryRunLoading || executionPlanLoading}>
+              ${dryRunLoading ? "Simulating…" : "▶️ Dry Run Simulation"}
+            </button>
+            ${executionPlan?.mode === "dry-run" && html`
+              <span style="font-size:0.8em;color:#10b981;font-weight:600;">✓ Dry-run complete</span>
+            `}
+          </div>
 
             ${/* ── Validation Issues ── */ ""}
             ${executionPlan?.validationIssues?.length > 0 && html`
@@ -3215,81 +3244,125 @@ export function TaskDetailModal({ task, onClose, onStart, presentation = "modal"
               <div style="opacity:0.6;font-size:0.85em;padding:8px;">No execution plan data available.</div>
             `}
 
-            ${/* ── Workflow Stages ── */ ""}
-            ${executionPlan?.stages?.map((stage, si) => html`
-              <div key=${`stage-${si}`} style="margin-bottom:12px;border:1px solid var(--border-color,#333);border-radius:8px;overflow:hidden;">
-                ${/* ── Stage Header ── */ ""}
-                <div style="padding:10px 12px;background:var(--color-bg-secondary,#141820);display:flex;align-items:center;gap:8px;cursor:pointer;border-bottom:1px solid var(--border-color,#333);"
-                     onClick=${() => toggleStageExpand(si)}>
-                  <span style="font-size:0.75em;opacity:0.5;">${expandedStages[si] !== false ? "▾" : "▸"}</span>
-                  ${stage.core ? html`<span style="background:#8b5cf620;color:#a78bfa;padding:1px 6px;border-radius:3px;font-size:0.65em;font-weight:600;">CORE</span>` : ""}
+            ${/* ── Workflow Stages (Enhanced) ── */ ""}
+            ${executionPlan?.stages?.map((stage, si) => {
+              const matchColors = {
+                task_assigned: { bg: "#3b82f620", color: "#60a5fa", label: "Task Match" },
+                polling: { bg: "#6b728020", color: "#9ca3af", label: "Lifecycle" },
+                pr_event: { bg: "#8b5cf620", color: "#a78bfa", label: "PR Event" },
+                schedule: { bg: "#06b6d420", color: "#22d3ee", label: "Scheduled" },
+                event: { bg: "#f5932020", color: "#fb923c", label: "Event" },
+                anomaly: { bg: "#ef444420", color: "#f87171", label: "Anomaly" },
+                webhook: { bg: "#84cc1620", color: "#a3e635", label: "Webhook" },
+                manual: { bg: "#6b728020", color: "#d1d5db", label: "Manual" },
+                workflow_call: { bg: "#14b8a620", color: "#2dd4bf", label: "Sub-call" },
+              };
+              const mc = matchColors[stage.matchType] || { bg: "#33333320", color: "#888", label: stage.matchType };
+
+              return html`
+              <div key=${`stage-${si}`} class="exec-plan-stage">
+                <div class="exec-plan-stage-header" onClick=${() => toggleStageExpand(si)}>
+                  <span style="font-size:0.8em;opacity:0.5;">${expandedStages[si] !== false ? "▾" : "▸"}</span>
+                  ${stage.core ? html`<span class="exec-plan-badge" style="background:#8b5cf620;color:#a78bfa;">CORE</span>` : ""}
                   <strong style="font-size:0.9em;flex:1;">${stage.workflowName}</strong>
-                  <span style="font-size:0.7em;padding:1px 6px;border-radius:3px;background:${stage.matchType === 'polling' ? '#6b728020' : '#3b82f620'};color:${stage.matchType === 'polling' ? '#9ca3af' : '#60a5fa'};">
-                    ${stage.matchType === "polling" ? "lifecycle" : "matched"}
-                  </span>
-                  <span style="font-size:0.7em;opacity:0.5;">${stage.nodeCount} nodes · ${stage.agentRunCount} agents</span>
-                  <span style="font-size:0.65em;opacity:0.4;text-transform:uppercase;">${stage.category || ""}</span>
+                  <span class="exec-plan-badge" style="background:${mc.bg};color:${mc.color};">${mc.label}</span>
+                  <span style="font-size:0.75em;opacity:0.5;">${stage.nodeCount} nodes · ${stage.agentRunCount} agents</span>
+                  <span style="font-size:0.65em;opacity:0.35;text-transform:uppercase;">${stage.category || ""}</span>
                 </div>
 
-                ${/* ── Stage Body ── */ ""}
                 ${expandedStages[si] !== false && html`
-                  <div style="padding:10px 12px;">
-                    ${stage.description ? html`<div style="font-size:0.8em;opacity:0.6;margin-bottom:8px;">${stage.description}</div>` : ""}
+                  <div class="exec-plan-stage-body">
+                    ${stage.description ? html`<div style="font-size:0.8em;opacity:0.6;margin-bottom:10px;">${stage.description}</div>` : ""}
 
                     ${/* ── Node Pipeline ── */ ""}
-                    <div style="display:flex;flex-direction:column;gap:3px;">
+                    <div style="display:flex;flex-direction:column;gap:0;">
                       ${(stage.nodes || []).map((nd, ni) => {
                         const isExpanded = expandedNodes[`${si}-${nd.id}`];
-                        const nodeColors = nd.isAgentRun ? { bg: "#1a2a4a", border: "#2d5a9f", accent: "#60a5fa" }
-                          : nd.isTrigger ? { bg: "#2a2010", border: "#8b6914", accent: "#fbbf24" }
-                          : nd.isCondition ? { bg: "#1a1a30", border: "#5b21b6", accent: "#a78bfa" }
-                          : nd.isCommand || nd.isValidation ? { bg: "#1a2a20", border: "#166534", accent: "#4ade80" }
-                          : nd.isStatusUpdate ? { bg: "#2a1a1a", border: "#7f1d1d", accent: "#fca5a5" }
-                          : nd.isNotify ? { bg: "#1a2020", border: "#334155", accent: "#94a3b8" }
-                          : { bg: "#1a1a1e", border: "#333", accent: "#888" };
+                        const nodeColor = nd.isAgentRun ? "#3b82f6"
+                          : nd.isTrigger ? "#eab308"
+                          : nd.isCondition ? "#8b5cf6"
+                          : nd.isCommand || nd.isValidation ? "#22c55e"
+                          : nd.isStatusUpdate ? "#ef4444"
+                          : nd.isPromptBuilder ? "#f59e0b"
+                          : nd.isCreatePr || nd.isPushBranch ? "#06b6d4"
+                          : nd.isSubWorkflow ? "#14b8a6"
+                          : nd.isNotify ? "#64748b"
+                          : "#6b7280";
                         const hasIssue = nd.expressionValid === false || !nd.typeRegistered || (nd.unresolvedVars?.length > 0);
                         const dryRunNode = dryRunResults?.find((dr) => dr.workflowId === stage.workflowId)?.nodes?.find((dn) => dn.id === nd.id);
 
                         return html`
                           <div key=${`n-${ni}`}>
-                            ${/* ── Edge connector ── */ ""}
-                            ${ni > 0 && html`
-                              <div style="margin-left:18px;height:8px;border-left:2px solid ${nodeColors.border};opacity:0.3;"></div>
-                            `}
-                            ${/* ── Node card ── */ ""}
-                            <div style="border:1px solid ${hasIssue ? '#ef4444' : nodeColors.border};border-radius:6px;background:${nodeColors.bg};cursor:pointer;transition:all 0.15s;"
-                                 onClick=${() => toggleNodeExpand(si, nd.id)}>
-                              ${/* ── Node header ── */ ""}
-                              <div style="padding:6px 10px;display:flex;align-items:center;gap:6px;">
-                                <span style="font-size:0.65em;opacity:0.5;width:16px;text-align:center;">${ni + 1}</span>
-                                <span style="font-size:0.7em;color:${nodeColors.accent};opacity:0.7;min-width:60px;">${nd.type.split(".").pop()}</span>
-                                <strong style="font-size:0.8em;flex:1;">${nd.label}</strong>
-                                ${hasIssue ? html`<span style="color:#ef4444;font-size:0.7em;" title="Has issues">✗</span>` : ""}
+                            ${ni > 0 && html`<div class="exec-plan-connector"></div>`}
+                            <div class="exec-plan-node" style="border-color:${hasIssue ? '#ef4444' : nodeColor + '40'};">
+                              <div class="exec-plan-node-header" onClick=${() => toggleNodeExpand(si, nd.id)}>
+                                <span style="width:22px;height:22px;border-radius:6px;background:${nodeColor}20;color:${nodeColor};display:flex;align-items:center;justify-content:center;font-size:10px;font-weight:700;flex-shrink:0;">${ni + 1}</span>
+                                <span style="font-size:0.7em;color:${nodeColor};opacity:0.8;min-width:70px;font-weight:500;">${nd.type.split(".").pop()}</span>
+                                <strong style="flex:1;font-size:0.85em;">${nd.label}</strong>
+                                ${hasIssue ? html`<span style="color:#ef4444;font-size:0.7em;">✗</span>` : ""}
+
+                                ${/* Agent badges */ ""}
                                 ${nd.isAgentRun && nd.resolvedAgent ? html`
-                                  <span style="font-size:0.7em;color:${nodeColors.accent};opacity:0.8;">
-                                    🤖 ${nd.resolvedAgent}
-                                    ${nd.confidence ? html` (${Math.round(nd.confidence * 100)}%)` : ""}
+                                  <span class="exec-plan-skill-tag" style="background:${nodeColor}15;color:${nodeColor};border-color:${nodeColor}30;">
+                                    🤖 ${nd.resolvedAgent} ${nd.confidence ? `(${Math.round(nd.confidence * 100)}%)` : ""}
                                   </span>
                                 ` : ""}
                                 ${nd.isAgentRun && !nd.resolvedAgent && nd.resolveMode === "library" ? html`
-                                  <span style="font-size:0.7em;opacity:0.5;">Library Auto</span>
+                                  <span class="exec-plan-badge" style="background:#f59e0b20;color:#fbbf24;">Auto-Resolve</span>
                                 ` : ""}
-                                ${nd.isCommand ? html`<span style="font-size:0.65em;font-family:monospace;opacity:0.5;max-width:200px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${nd.commandResolved || nd.commandRaw}</span>` : ""}
-                                ${nd.isStatusUpdate ? html`<span style="font-size:0.7em;opacity:0.6;">→ ${nd.targetStatus}</span>` : ""}
+
+                                ${/* Context flow chips */ ""}
+                                ${nd.contextPreview?.hasTaskPrompt ? html`<span class="exec-plan-context-chip">TaskPrompt</span>` : ""}
+                                ${nd.contextPreview?.hasPreviousOutput ? html`<span class="exec-plan-context-chip" style="background:#8b5cf615;color:#a78bfa;border-color:#8b5cf630;">PrevOutput</span>` : ""}
+
+                                ${/* Status indicators */ ""}
+                                ${nd.isStatusUpdate ? html`<span class="exec-plan-badge" style="background:#ef444420;color:#fca5a5;">→ ${nd.targetStatus}</span>` : ""}
+                                ${nd.isCommand ? html`<span style="font-size:0.65em;font-family:monospace;opacity:0.5;max-width:180px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${nd.commandResolved || nd.commandRaw}</span>` : ""}
+                                ${nd.isPromptBuilder ? html`<span class="exec-plan-badge" style="background:#f59e0b20;color:#fbbf24;">Builds TaskPrompt</span>` : ""}
+                                ${nd.isCreatePr ? html`<span class="exec-plan-badge" style="background:#06b6d420;color:#22d3ee;">Creates PR</span>` : ""}
+
                                 ${dryRunNode ? html`<span style="font-size:0.65em;color:${dryRunNode.status === 'simulated' || dryRunNode.status === 'COMPLETED' ? '#10b981' : '#fbbf24'};">● ${dryRunNode.status}</span>` : ""}
                                 <span style="font-size:0.65em;opacity:0.3;">${isExpanded ? "▾" : "▸"}</span>
                               </div>
 
-                              ${/* ── Expanded node details ── */ ""}
                               ${isExpanded && html`
-                                <div style="padding:6px 10px 8px;border-top:1px solid ${nodeColors.border}40;font-size:0.75em;">
-                                  <div style="display:grid;grid-template-columns:auto 1fr;gap:3px 10px;align-items:start;">
+                                <div class="exec-plan-node-body">
+                                  ${/* ── Inputs from previous nodes ── */ ""}
+                                  ${nd.inputsFrom?.length > 0 ? html`
+                                    <div style="margin-bottom:8px;padding:6px 8px;background:var(--bg-surface,#0d1117);border-radius:6px;border:1px solid var(--border-color,#333);">
+                                      <div style="font-size:0.85em;opacity:0.6;margin-bottom:4px;font-weight:600;">Inputs From:</div>
+                                      <div style="display:flex;flex-wrap:wrap;gap:4px;">
+                                        ${nd.inputsFrom.map((inp) => html`
+                                          <span class="exec-plan-context-chip" style="background:#3b82f610;color:#60a5fa;border-color:#3b82f625;">
+                                            ${inp.nodeLabel} ${inp.port ? `[${inp.port}]` : ""} ${inp.condition ? `if: ${inp.condition.slice(0, 30)}` : ""}
+                                          </span>
+                                        `)}
+                                      </div>
+                                    </div>
+                                  ` : ""}
+
+                                  <div style="display:grid;grid-template-columns:auto 1fr;gap:3px 12px;align-items:start;">
                                     <span style="opacity:0.5;">Type:</span>
                                     <span style="font-family:monospace;">${nd.type}${!nd.typeRegistered ? html` <span style="color:#ef4444;">✗ unregistered</span>` : ""}</span>
 
                                     ${nd.isTrigger && nd.taskPattern ? html`
                                       <span style="opacity:0.5;">Pattern:</span>
                                       <span style="font-family:monospace;">${nd.taskPattern} ${nd.patternMatches === true ? html`<span style="color:#10b981;">✓ matches</span>` : nd.patternMatches === false ? html`<span style="color:#ef4444;">✗ no match</span>` : ""}</span>
+                                    ` : ""}
+
+                                    ${nd.isTrigger && nd.prEvents ? html`
+                                      <span style="opacity:0.5;">PR Events:</span>
+                                      <span>${nd.prEvents.join(", ")}</span>
+                                    ` : ""}
+
+                                    ${nd.isTrigger && nd.eventTypes?.length > 0 ? html`
+                                      <span style="opacity:0.5;">Event Types:</span>
+                                      <span>${nd.eventTypes.join(", ")}</span>
+                                    ` : ""}
+
+                                    ${nd.isTrigger && nd.intervalMs ? html`
+                                      <span style="opacity:0.5;">Interval:</span>
+                                      <span>${Math.round(nd.intervalMs / 60000)}min</span>
                                     ` : ""}
 
                                     ${nd.isCondition && nd.expression ? html`
@@ -3306,7 +3379,7 @@ export function TaskDetailModal({ task, onClose, onStart, presentation = "modal"
                                       <span style="opacity:0.5;">Model:</span><span>${nd.model || "auto"}</span>
                                       <span style="opacity:0.5;">Timeout:</span><span>${Math.round((nd.timeoutMs || 3600000) / 60000)}min</span>
                                       <span style="opacity:0.5;">Retries:</span><span>${nd.maxRetries ?? 2} retries, ${nd.maxContinues ?? 2} continues</span>
-                                      <span style="opacity:0.5;">Resolve:</span><span>${nd.resolveMode || "manual"}</span>
+                                      <span style="opacity:0.5;">Resolve:</span><span style="font-weight:500;color:${nd.resolveMode === 'library' ? '#f59e0b' : '#60a5fa'};">${nd.resolveMode || "manual"}${nd.resolveMode === "library" ? " (auto)" : ""}</span>
                                       <span style="opacity:0.5;">CWD:</span><span style="font-family:monospace;">${nd.cwd || "auto"}</span>
                                     ` : ""}
 
@@ -3330,7 +3403,18 @@ export function TaskDetailModal({ task, onClose, onStart, presentation = "modal"
 
                                     ${nd.isValidation ? html`
                                       <span style="opacity:0.5;">${nd.validationType} cmd:</span>
-                                      <span style="font-family:monospace;">${nd.commandResolved || nd.commandRaw || "auto"}</span>
+                                      <span style="font-family:monospace;">${nd.commandResolved || nd.commandRaw || "auto-detect"}</span>
+                                    ` : ""}
+
+                                    ${nd.isPromptBuilder ? html`
+                                      <span style="opacity:0.5;">Output:</span><span>${"{{TaskPrompt}}"}</span>
+                                      <span style="opacity:0.5;">Include Skills:</span><span>${nd.includeSkills !== false ? "Yes" : "No"}</span>
+                                      <span style="opacity:0.5;">Include Agent Instructions:</span><span>${nd.includeAgentInstructions !== false ? "Yes" : "No"}</span>
+                                    ` : ""}
+
+                                    ${nd.isCreatePr ? html`
+                                      <span style="opacity:0.5;">PR Title:</span><span>${nd.prTitle || "auto"}</span>
+                                      <span style="opacity:0.5;">Base Branch:</span><span>${nd.prBaseBranch || "main"}</span>
                                     ` : ""}
 
                                     ${nd.joinMode ? html`
@@ -3347,15 +3431,33 @@ export function TaskDetailModal({ task, onClose, onStart, presentation = "modal"
                                     ` : ""}
                                   </div>
 
-                                  ${/* ── Agent: resolved skills ── */ ""}
+                                  ${/* ── Agent: Context Preview ── */ ""}
+                                  ${nd.isAgentRun && nd.contextPreview ? html`
+                                    <div style="margin-top:8px;padding:6px 8px;background:#1a1a2e;border-radius:6px;border:1px solid #333;">
+                                      <div style="font-size:0.85em;opacity:0.6;margin-bottom:4px;font-weight:600;">🔗 Context Injected:</div>
+                                      <div style="display:flex;flex-wrap:wrap;gap:4px;">
+                                        ${nd.contextPreview.hasTaskPrompt ? html`<span class="exec-plan-context-chip">Task Prompt (built by build_task_prompt)</span>` : ""}
+                                        ${nd.contextPreview.hasPreviousOutput ? html`<span class="exec-plan-context-chip" style="background:#8b5cf615;color:#a78bfa;border-color:#8b5cf630;">Previous Agent Output</span>` : ""}
+                                        ${nd.contextPreview.hasWorktreePath ? html`<span class="exec-plan-context-chip" style="background:#22c55e15;color:#4ade80;border-color:#22c55e30;">Worktree Path</span>` : ""}
+                                        ${nd.contextPreview.hasBranchName ? html`<span class="exec-plan-context-chip" style="background:#06b6d415;color:#22d3ee;border-color:#06b6d430;">Branch Name</span>` : ""}
+                                        ${nd.contextPreview.hasPrUrl ? html`<span class="exec-plan-context-chip" style="background:#8b5cf615;color:#c4b5fd;border-color:#8b5cf630;">PR Link</span>` : ""}
+                                        ${nd.includeTaskContext ? html`<span class="exec-plan-context-chip" style="background:#f59e0b15;color:#fbbf24;border-color:#f59e0b30;">Full Task Context</span>` : ""}
+                                        ${(nd.contextPreview.injectedVariables || []).map((v) => html`
+                                          <span class="exec-plan-context-chip" style="background:#64748b15;color:#94a3b8;border-color:#64748b30;">${"{{" + v + "}}"}</span>
+                                        `)}
+                                      </div>
+                                    </div>
+                                  ` : ""}
+
+                                  ${/* ── Agent: resolved skills with descriptions ── */ ""}
                                   ${nd.isAgentRun && nd.resolvedSkills?.length > 0 ? html`
-                                    <div style="margin-top:6px;padding-top:4px;border-top:1px dashed ${nodeColors.border}40;">
-                                      <div style="opacity:0.6;margin-bottom:3px;">⭐ Resolved Skills:</div>
+                                    <div style="margin-top:8px;padding:8px;background:var(--bg-surface,#0d1117);border-radius:6px;border:1px solid var(--border-color,#333);">
+                                      <div style="font-size:0.85em;opacity:0.6;margin-bottom:6px;font-weight:600;">⭐ Resolved Skills (${nd.resolvedSkills.length}):</div>
                                       ${nd.resolvedSkills.map((sk) => html`
-                                        <div style="display:flex;gap:6px;padding:1px 0;align-items:center;">
-                                          <span style="font-weight:500;">${sk.name}</span>
-                                          ${sk.score ? html`<span style="opacity:0.4;font-size:0.9em;">${Math.round(sk.score * 100)}%</span>` : ""}
-                                          ${sk.source ? html`<span style="opacity:0.3;font-size:0.85em;">(${sk.source})</span>` : ""}
+                                        <div style="display:flex;gap:8px;padding:4px 0;align-items:start;border-bottom:1px solid var(--border-color,#222);">
+                                          <span class="exec-plan-skill-tag">${sk.name} ${sk.score ? `${Math.round(sk.score * 100)}%` : ""}</span>
+                                          ${sk.source ? html`<span style="opacity:0.35;font-size:0.85em;">(${sk.source})</span>` : ""}
+                                          ${sk.description ? html`<span style="opacity:0.5;font-size:0.85em;flex:1;">${sk.description.slice(0, 120)}${sk.description.length > 120 ? "…" : ""}</span>` : ""}
                                         </div>
                                       `)}
                                     </div>
@@ -3363,24 +3465,26 @@ export function TaskDetailModal({ task, onClose, onStart, presentation = "modal"
 
                                   ${/* ── Agent: resolved tools ── */ ""}
                                   ${nd.isAgentRun && nd.resolvedTools && (nd.resolvedTools.builtin?.length > 0 || nd.resolvedTools.mcp?.length > 0) ? html`
-                                    <div style="margin-top:4px;">
-                                      <span style="opacity:0.6;">🔧 Tools: </span>
-                                      <span>${[...(nd.resolvedTools.builtin || []), ...(nd.resolvedTools.mcp || [])].join(", ")}</span>
+                                    <div style="margin-top:6px;display:flex;flex-wrap:wrap;gap:4px;align-items:center;">
+                                      <span style="opacity:0.6;font-size:0.85em;">🔧 Tools:</span>
+                                      ${[...(nd.resolvedTools.builtin || []), ...(nd.resolvedTools.mcp || [])].map((t) => html`
+                                        <span style="padding:1px 6px;border-radius:4px;font-size:0.75em;background:#22c55e10;color:#4ade80;border:1px solid #22c55e25;">${t}</span>
+                                      `)}
                                     </div>
                                   ` : ""}
 
                                   ${/* ── Agent: alternatives ── */ ""}
                                   ${nd.isAgentRun && nd.alternatives?.length > 0 ? html`
-                                    <div style="margin-top:4px;opacity:0.5;">
-                                      <span>Alt: ${nd.alternatives.map((a) => `${a.name} (${Math.round((a.confidence || 0) * 100)}%)`).join(", ")}</span>
+                                    <div style="margin-top:6px;opacity:0.5;font-size:0.85em;">
+                                      <span>Alternatives: ${nd.alternatives.map((a) => `${a.name} (${Math.round((a.confidence || 0) * 100)}%)`).join(", ")}</span>
                                     </div>
                                   ` : ""}
 
                                   ${/* ── Agent: prompt preview ── */ ""}
                                   ${nd.isAgentRun && nd.promptResolved ? html`
-                                    <details style="margin-top:6px;">
-                                      <summary style="cursor:pointer;opacity:0.6;font-size:0.9em;">Prompt Preview (${nd.promptResolved.length} chars)</summary>
-                                      <pre style="margin-top:4px;padding:6px;background:#00000030;border-radius:4px;white-space:pre-wrap;word-break:break-word;max-height:200px;overflow-y:auto;font-size:0.85em;">${nd.promptResolved.slice(0, 2000)}${nd.promptResolved.length > 2000 ? "\n…(truncated)" : ""}</pre>
+                                    <details style="margin-top:8px;">
+                                      <summary style="cursor:pointer;opacity:0.6;font-size:0.85em;font-weight:500;">Prompt Preview (${nd.promptResolved.length} chars)</summary>
+                                      <pre style="margin-top:4px;padding:8px;background:#00000030;border-radius:6px;white-space:pre-wrap;word-break:break-word;max-height:300px;overflow-y:auto;font-size:0.8em;line-height:1.5;">${nd.promptResolved.slice(0, 3000)}${nd.promptResolved.length > 3000 ? "\n…(truncated)" : ""}</pre>
                                     </details>
                                   ` : ""}
                                 </div>
@@ -3391,18 +3495,18 @@ export function TaskDetailModal({ task, onClose, onStart, presentation = "modal"
                       })}
                     </div>
 
-                    ${/* ── Edge Details ── */ ""}
+                    ${/* ── Edge routing ── */ ""}
                     ${stage.edges?.some((e) => e.condition || e.sourcePort || e.isBackEdge) && html`
-                      <details style="margin-top:8px;">
-                        <summary style="cursor:pointer;font-size:0.75em;opacity:0.5;">Edge routing (${stage.edges.length} edges)</summary>
-                        <div style="margin-top:4px;font-size:0.7em;font-family:monospace;">
+                      <details style="margin-top:10px;">
+                        <summary style="cursor:pointer;font-size:0.8em;opacity:0.5;font-weight:500;">Edge Routing (${stage.edges.length} edges)</summary>
+                        <div style="margin-top:6px;font-size:0.75em;font-family:monospace;">
                           ${stage.edges.filter((e) => e.condition || e.sourcePort || e.isBackEdge).map((e) => html`
-                            <div style="padding:2px 0;display:flex;gap:4px;align-items:center;">
+                            <div style="padding:3px 0;display:flex;gap:6px;align-items:center;">
                               <span>${e.source}</span>
                               <span style="opacity:0.3;">→</span>
                               <span>${e.target}</span>
                               ${e.sourcePort ? html`<span style="color:#a78bfa;">[${e.sourcePort}]</span>` : ""}
-                              ${e.condition ? html`<span style="opacity:0.5;color:${e.conditionValid === false ? '#ef4444' : '#4ade80'};">${e.condition.length > 50 ? e.condition.slice(0, 50) + "…" : e.condition}</span>` : ""}
+                              ${e.condition ? html`<span style="opacity:0.5;color:${e.conditionValid === false ? '#ef4444' : '#4ade80'};">${e.condition.length > 60 ? e.condition.slice(0, 60) + "…" : e.condition}</span>` : ""}
                               ${e.isBackEdge ? html`<span style="color:#fbbf24;">↩ loop</span>` : ""}
                               ${e.conditionValid === false ? html`<span style="color:#ef4444;">✗ ${e.conditionError}</span>` : ""}
                             </div>
@@ -3413,29 +3517,33 @@ export function TaskDetailModal({ task, onClose, onStart, presentation = "modal"
                   </div>
                 `}
               </div>
-            `)}
+            `;})}
 
             ${/* ── Dry-run results summary ── */ ""}
             ${dryRunResults && html`
-              <div style="margin-top:8px;border:1px solid #10b98140;border-radius:6px;padding:8px;background:#10b98110;">
-                <div style="font-weight:600;font-size:0.8em;color:#10b981;margin-bottom:4px;">✅ Dry-Run Results</div>
+              <div style="margin-top:10px;border:1px solid #10b98140;border-radius:8px;padding:10px;background:#10b98110;">
+                <div style="font-weight:600;font-size:0.85em;color:#10b981;margin-bottom:6px;">✓ Dry-Run Simulation Results</div>
                 ${dryRunResults.map((dr) => html`
-                  <div style="font-size:0.75em;padding:2px 0;">
+                  <div style="font-size:0.8em;padding:3px 0;display:flex;gap:8px;align-items:center;">
                     <span style="font-weight:500;">${dr.workflowName}</span>
-                    <span style="color:${dr.status === 'completed' ? '#10b981' : dr.status === 'error' ? '#ef4444' : '#fbbf24'};">
-                      — ${dr.status}
+                    <span class="exec-plan-badge" style="background:${dr.status === 'completed' ? '#10b98120' : dr.status === 'error' ? '#ef444420' : '#fbbf2420'};color:${dr.status === 'completed' ? '#10b981' : dr.status === 'error' ? '#ef4444' : '#fbbf24'};">
+                      ${dr.status}
                     </span>
-                    ${dr.error ? html`<span style="color:#ef4444;margin-left:4px;">${dr.error}</span>` : ""}
-                    ${dr.nodes?.length > 0 ? html`<span style="opacity:0.5;margin-left:4px;">(${dr.nodes.length} nodes simulated)</span>` : ""}
+                    ${dr.error ? html`<span style="color:#ef4444;font-size:0.9em;">${dr.error}</span>` : ""}
+                    ${dr.nodes?.length > 0 ? html`<span style="opacity:0.5;">(${dr.nodes.length} nodes simulated)</span>` : ""}
                   </div>
                 `)}
               </div>
             `}
-          </div>
-        `}
+        </div>
       </div>
 
-      ${historyEntries.length > 0 && html`
+      </div>`}
+
+      ${/* ── HISTORY TAB ─────────────────────────────────────────────────── */ ""}
+      ${activeTab === "history" && html`<div style="display:contents;">
+
+      ${historyEntries.length > 0 ? html`
         <div class="task-comments-block modal-form-span jira-panel">
           <div class="task-attachments-title">History Timeline</div>
           <div class="task-comments-list">
@@ -3450,7 +3558,7 @@ export function TaskDetailModal({ task, onClose, onStart, presentation = "modal"
             `)}
           </div>
         </div>
-      `}
+      ` : ""}
 
       ${relatedLinks.length > 0 && html`
         <div class="task-comments-block modal-form-span jira-panel">
@@ -3468,7 +3576,36 @@ export function TaskDetailModal({ task, onClose, onStart, presentation = "modal"
             `)}
           </div>
         </div>
-      `}        <div class="flex-col gap-md modal-form-grid jira-task-layout">
+      `}
+
+      ${/* workflow activity in history tab too */ ""}
+      ${workflowRuns.length > 0 && html`
+        <div class="task-comments-block modal-form-span jira-panel">
+          <div class="task-attachments-title">Workflow Activity</div>
+          <div class="task-comments-list">
+            ${workflowRuns.map((run, index) => html`
+              <div class="task-comment-item" key=${`wf-hist-${index}`}>
+                <div class="task-comment-meta">
+                  ${run.workflowId || "workflow"}
+                  ${run.runId ? ` · run ${run.runId}` : ""}
+                  ${run.timestamp ? ` · ${formatRelative(run.timestamp)}` : ""}
+                </div>
+                <div class="task-comment-body">${run.status || run.result || "No status summary"}</div>
+              </div>
+            `)}
+          </div>
+        </div>
+      `}
+
+      ${historyEntries.length === 0 && workflowRuns.length === 0 && relatedLinks.length === 0 ? html`
+        <div style="padding:24px;text-align:center;opacity:0.5;font-size:0.9em;">No history, workflow runs, or links recorded yet.</div>
+      ` : ""}
+
+      </div>`}
+
+      ${/* ── DETAILS TAB (Form) ── shown when details tab is active ── */ ""}
+      ${activeTab === "details" && html`<div style="display:contents;">
+        <div class="flex-col gap-md modal-form-grid jira-task-layout">
         <div class="input-with-mic modal-form-span">
           <${TextField} size="small" variant="outlined" placeholder="Title" value=${title} onInput=${(e) => setTitle(e.target.value)} fullWidth />
           <${VoiceMicButtonInline}
@@ -3964,6 +4101,9 @@ export function TaskDetailModal({ task, onClose, onStart, presentation = "modal"
             ${iconText(":file: View Agent Logs")}
           <//>
         `}
+      </div>
+      </div>`}
+
       </div>
     <//>
   `;

@@ -10283,17 +10283,65 @@ async function handleApi(req, res, url) {
         // Position info
         if (nd.position) detail.position = nd.position;
 
-        // ── Trigger nodes ─────────────────────────────────────────────
-        if (nd.type.startsWith("trigger.")) {
+        // ── Context flow: what feeds into this node ───────────────────
+        const incomingEdges = (wf.edges || []).filter((e) => e.target === nd.id);
+        if (incomingEdges.length > 0) {
+          detail.inputsFrom = incomingEdges.map((e) => {
+            const srcNode = (wf.nodes || []).find((n) => n.id === e.source);
+            return {
+              nodeId: e.source,
+              nodeLabel: srcNode?.label || e.source,
+              nodeType: srcNode?.type || "unknown",
+              port: e.sourcePort || undefined,
+              condition: e.condition || undefined,
+            };
+          });
+        }
+
+        // ── Trigger-specific info ─────────────────────────────────────
+        if (nd.type === "trigger.pr_event") {
           detail.isTrigger = true;
-          if (nd.config?.taskPattern) {
-            detail.taskPattern = nd.config.taskPattern;
-            try {
-              const rx = new RegExp(nd.config.taskPattern, "i");
-              const text = [task.title || "", ...(task.tags || [])].join(" ");
-              detail.patternMatches = rx.test(text);
-            } catch (e) { detail.patternError = e.message; }
-          }
+          detail.triggerSubtype = "pr_event";
+          detail.prEvents = nd.config?.events || ["opened"];
+        }
+        if (nd.type === "trigger.event") {
+          detail.isTrigger = true;
+          detail.triggerSubtype = "event";
+          detail.eventTypes = nd.config?.eventTypes || nd.config?.events || [];
+        }
+        if (nd.type === "trigger.schedule") {
+          detail.isTrigger = true;
+          detail.triggerSubtype = "schedule";
+          detail.intervalMs = nd.config?.intervalMs;
+        }
+        if (nd.type === "trigger.anomaly") {
+          detail.isTrigger = true;
+          detail.triggerSubtype = "anomaly";
+          detail.anomalyTypes = nd.config?.types || [];
+        }
+        if (nd.type === "trigger.webhook") {
+          detail.isTrigger = true;
+          detail.triggerSubtype = "webhook";
+        }
+        if (nd.type === "trigger.workflow_call") {
+          detail.isTrigger = true;
+          detail.triggerSubtype = "workflow_call";
+        }
+        if (nd.type === "trigger.manual") {
+          detail.isTrigger = true;
+          detail.triggerSubtype = "manual";
+        }
+        // task_assigned / task_available pattern matching
+        if (nd.type.startsWith("trigger.") && !detail.isTrigger) {
+          detail.isTrigger = true;
+        }
+        if (nd.config?.taskPattern) {
+          detail.taskPattern = nd.config.taskPattern;
+          try {
+            const rx = new RegExp(nd.config.taskPattern, "i");
+            const text = [task.title || "", ...(task.tags || [])].join(" ");
+            detail.patternMatches = rx.test(text);
+          } catch (e) { detail.patternError = e.message; }
         }
 
         // ── Condition nodes ───────────────────────────────────────────
@@ -10330,6 +10378,8 @@ async function handleApi(req, res, url) {
           detail.maxContinues = resolvedConfig.maxContinues ?? 2;
           detail.cwd = resolvedConfig.cwd || "{{worktreePath}}";
           detail.includeTaskContext = resolvedConfig.includeTaskContext !== false;
+          // Resolve mode indicator
+          detail.resolveMode = nd.config?.resolveMode || "manual";
           // Library resolution
           const libResult = await resolveLibraryForNode(nd, wf);
           if (libResult) {
@@ -10338,8 +10388,11 @@ async function handleApi(req, res, url) {
             detail.resolvedSkills = (libResult.plan?.selectedSkills || []).map((s) => ({
               id: s.id || s.skillId, name: s.name || s.id || s.skillId,
               score: s.score, source: s.source,
+              description: s.description || s.reasons?.join("; ") || "",
+              reasons: s.reasons || [],
             }));
             detail.resolvedPromptId = libResult.plan?.prompt?.id || null;
+            detail.resolvedPromptName = libResult.plan?.prompt?.name || null;
             detail.resolvedTools = {
               builtin: libResult.plan?.builtinToolIds || [],
               recommended: libResult.plan?.recommendedToolIds || [],
@@ -10350,6 +10403,42 @@ async function handleApi(req, res, url) {
               id: a.id, name: a.name, confidence: a.confidence,
             }));
           }
+          // Context preview: what this agent node will receive
+          detail.contextPreview = {
+            hasTaskPrompt: (promptRaw || "").includes("{{TaskPrompt}}") || (promptRaw || "").includes("{{taskPrompt}}"),
+            hasPreviousOutput: (promptRaw || "").includes("{{previousOutput}}") || (promptRaw || "").includes("{{agentOutput}}"),
+            hasWorktreePath: (promptRaw || "").includes("{{worktreePath}}"),
+            hasBranchName: (promptRaw || "").includes("{{branchName}}"),
+            hasPrUrl: (promptRaw || "").includes("{{prUrl}}") || (promptRaw || "").includes("{{prNumber}}"),
+            injectedVariables: unresolvedVars.filter((v) => WELL_KNOWN_RUNTIME.has(v)),
+            customVariables: unresolvedVars.filter((v) => !WELL_KNOWN_RUNTIME.has(v)),
+          };
+        }
+
+        // ── Task prompt builder ───────────────────────────────────────
+        if (nd.type === "action.build_task_prompt") {
+          detail.isPromptBuilder = true;
+          detail.outputVariable = "TaskPrompt";
+          detail.includeSkills = resolvedConfig.includeSkills !== false;
+          detail.includeAgentInstructions = resolvedConfig.includeAgentInstructions !== false;
+        }
+
+        // ── Task status update ────────────────────────────────────────
+        if (nd.type === "action.update_task_status") {
+          detail.isStatusUpdate = true;
+          detail.targetStatus = resolvedConfig.status || resolvedConfig.targetStatus;
+        }
+
+        // ── Create PR ─────────────────────────────────────────────────
+        if (nd.type === "action.create_pr") {
+          detail.isCreatePr = true;
+          detail.prTitle = resolvedConfig.title || "{{taskTitle}}";
+          detail.prBaseBranch = resolvedConfig.baseBranch || "main";
+        }
+
+        // ── Push Branch ───────────────────────────────────────────────
+        if (nd.type === "action.push_branch") {
+          detail.isPushBranch = true;
         }
 
         // ── Command nodes ─────────────────────────────────────────────
@@ -10377,22 +10466,11 @@ async function handleApi(req, res, url) {
           detail.commandResolved = resolvedConfig.command || "";
         }
 
-        // ── Task status updates ───────────────────────────────────────
-        if (nd.type === "action.update_task_status") {
-          detail.isStatusUpdate = true;
-          detail.targetStatus = resolvedConfig.status || resolvedConfig.toStatus || "";
-        }
-
         // ── Sub-workflow calls ─────────────────────────────────────────
         if (nd.type === "action.execute_workflow" || nd.type === "flow.universal") {
           detail.isSubWorkflow = true;
           detail.targetWorkflowId = resolvedConfig.workflowId || resolvedConfig.childWorkflowId || "";
           detail.inheritContext = resolvedConfig.inheritContext !== false;
-        }
-
-        // ── Build prompt node ─────────────────────────────────────────
-        if (nd.type === "action.build_task_prompt") {
-          detail.isBuildPrompt = true;
         }
 
         // ── Slot/claim/worktree management ────────────────────────────
@@ -10589,6 +10667,67 @@ async function handleApi(req, res, url) {
           workflowId: wf.id, workflowName: wf.name, category: wf.category,
           core: wf.core === true, trigger: wf.trigger || "trigger.task_available",
           matchType: "polling",
+          description: wf.description || "",
+          variables: wf.variables || {},
+          nodeCount: orderedNodes.length, edgeCount: edgeDetails.length,
+          agentRunCount: orderedNodes.filter((n) => n.isAgentRun).length,
+          nodes: orderedNodes, edges: edgeDetails,
+        });
+      }
+
+      // ── Phase 3: related workflows (PR, event, schedule, anomaly, etc.) ─
+      const relatedTriggerTypes = new Set([
+        "trigger.pr_event", "trigger.event", "trigger.schedule",
+        "trigger.anomaly", "trigger.webhook", "trigger.workflow_call",
+        "trigger.manual", "trigger.task_low", "trigger.scheduled_once",
+      ]);
+      for (const wf of fullWorkflows) {
+        if (wf.enabled === false) continue;
+        if (stages.some((s) => s.workflowId === wf.id)) continue;
+        const relatedTriggers = (wf.nodes || []).filter((n) => relatedTriggerTypes.has(n.type));
+        if (relatedTriggers.length === 0) continue;
+
+        // Check if this workflow is task-related by inspecting nodes for task operations
+        const allNodes = wf.nodes || [];
+        const hasTaskNodes = allNodes.some((n) =>
+          n.type === "action.run_agent" || n.type === "action.update_task_status" ||
+          n.type === "action.claim_task" || n.type === "action.build_task_prompt" ||
+          n.type === "action.create_pr" || n.type === "action.push_branch" ||
+          n.type === "action.run_command" || n.type === "validation.build" ||
+          n.type === "validation.tests" || n.type === "validation.lint"
+        );
+        if (!hasTaskNodes) continue;
+
+        const nodeMap = new Map(allNodes.map((n) => [n.id, n]));
+        const edgesBySource = new Map();
+        for (const e of (wf.edges || [])) {
+          if (!edgesBySource.has(e.source)) edgesBySource.set(e.source, []);
+          edgesBySource.get(e.source).push(e);
+        }
+
+        const triggerIds = relatedTriggers.map((n) => n.id);
+        const orderedNodes = [];
+        const visited = new Set();
+        const queue = [...triggerIds];
+        while (queue.length > 0) {
+          const nid = queue.shift();
+          if (visited.has(nid)) continue;
+          visited.add(nid);
+          const nd = nodeMap.get(nid);
+          if (!nd) continue;
+          orderedNodes.push(await buildNodeDetail(nd, wf, taskCtx));
+          for (const e of (edgesBySource.get(nid) || [])) {
+            if (!visited.has(e.target) && !e.backEdge) queue.push(e.target);
+          }
+        }
+
+        const edgeDetails = (wf.edges || []).map(buildEdgeDetail);
+        const triggerType = relatedTriggers[0]?.type || "related";
+
+        stages.push({
+          workflowId: wf.id, workflowName: wf.name, category: wf.category,
+          core: wf.core === true, trigger: wf.trigger || triggerType,
+          matchType: triggerType.replace("trigger.", ""),
           description: wf.description || "",
           variables: wf.variables || {},
           nodeCount: orderedNodes.length, edgeCount: edgeDetails.length,
