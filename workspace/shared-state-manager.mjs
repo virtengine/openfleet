@@ -454,6 +454,62 @@ export async function claimTaskInSharedState(
 }
 
 /**
+ * Force-claim a task in shared state, bypassing conflict resolution.
+ *
+ * Used when local stale detection has confirmed the previous owner is dead
+ * but the shared state heartbeat is still fresh (e.g., after a release that
+ * refreshed the heartbeat). This ensures the shared state reflects the actual
+ * current owner so heartbeat renewals succeed.
+ *
+ * @param {string} taskId - Task identifier
+ * @param {string} ownerId - New owner identifier
+ * @param {string} attemptToken - New attempt token
+ * @param {number} [ttlSeconds] - TTL for stale detection
+ * @param {string} [repoRoot] - Repository root path
+ * @returns {Promise<{success: boolean, state?: TaskSharedState, reason?: string}>}
+ */
+export async function forceClaimTaskInSharedState(
+  taskId,
+  ownerId,
+  attemptToken,
+  ttlSeconds = DEFAULT_TTL_SECONDS,
+  repoRoot = process.cwd(),
+) {
+  const registryPath = getRegistryPath(repoRoot);
+  try {
+    const registry = await loadRegistry(registryPath);
+    const existing = registry.tasks[taskId];
+    const now = new Date().toISOString();
+
+    const newState = {
+      taskId,
+      ownerId,
+      ownerHeartbeat: now,
+      attemptToken,
+      attemptStarted: now,
+      attemptStatus: "claimed",
+      retryCount: existing ? (existing.retryCount || 0) + 1 : 0,
+      ttlSeconds,
+      eventLog: existing?.eventLog || [],
+    };
+    if (existing?.lastError) newState.lastError = existing.lastError;
+
+    logEvent(
+      newState,
+      "conflict",
+      ownerId,
+      `force_takeover: local_stale_override (prev: ${existing?.ownerId || "none"})`,
+    );
+    registry.tasks[taskId] = newState;
+    await saveRegistry(registryPath, registry);
+    return { success: true, state: newState };
+  } catch (error) {
+    console.error("[SharedStateManager] Failed to force-claim task:", error);
+    return { success: false, reason: `error: ${error.message}` };
+  }
+}
+
+/**
  * Renew heartbeat for an active task claim
  *
  * @param {string} taskId - Task identifier
@@ -537,6 +593,7 @@ export async function releaseSharedState(
   status,
   errorMessage,
   repoRoot = process.cwd(),
+  { ownerId } = {},
 ) {
   const registryPath = getRegistryPath(repoRoot);
 
@@ -552,15 +609,20 @@ export async function releaseSharedState(
     }
 
     if (state.attemptToken !== attemptToken) {
-      return {
-        success: false,
-        reason: "attempt_token_mismatch",
-      };
+      // Fallback: allow release by ownerId when token doesn't match
+      // (token can diverge after claim-stolen rollbacks or takeovers)
+      if (!ownerId || state.ownerId !== ownerId) {
+        return {
+          success: false,
+          reason: "attempt_token_mismatch",
+        };
+      }
     }
 
-    const now = new Date().toISOString();
     state.attemptStatus = status;
-    state.ownerHeartbeat = now;
+    // Clear heartbeat so the entry is immediately stale for resolveConflict.
+    // A released task should never block the next claim attempt.
+    state.ownerHeartbeat = null;
 
     if (errorMessage) {
       state.lastError = errorMessage;
@@ -849,8 +911,8 @@ export async function cleanupOldStates(
         continue;
       }
 
-      // Check if old enough
-      const lastUpdate = new Date(state.ownerHeartbeat).getTime();
+      // Check if old enough (use attemptStarted as fallback when heartbeat was cleared on release)
+      const lastUpdate = new Date(state.ownerHeartbeat || state.attemptStarted || 0).getTime();
       if (lastUpdate < cutoffTime) {
         delete registry.tasks[taskId];
         cleanedTasks.push(taskId);

@@ -52,6 +52,7 @@ import {
 } from "../infra/presence.mjs";
 import {
   claimTaskInSharedState,
+  forceClaimTaskInSharedState,
   renewSharedStateHeartbeat,
   releaseSharedState,
 } from "../workspace/shared-state-manager.mjs";
@@ -682,6 +683,27 @@ async function _claimTaskInner(opts) {
           return { success: false, error: normalizedReason };
         }
 
+        // Non-fatal rejection on stale override: force-update the shared state
+        // so heartbeat renewals match the actual (local) owner.
+        if (isStaleOverride) {
+          try {
+            const forceResult = await forceClaimTaskInSharedState(
+              taskId,
+              instanceId,
+              claimToken,
+              Math.floor(SHARED_STATE_STALE_THRESHOLD_MS / 1000),
+              state.repoRoot,
+            );
+            if (forceResult.success) {
+              console.info(`[task-claims] Shared state force-claimed after stale override for ${taskId}`);
+            } else {
+              console.warn(`[task-claims] Shared state force-claim failed for ${taskId}: ${forceResult.reason}`);
+            }
+          } catch (forceErr) {
+            console.warn(`[task-claims] Shared state force-claim error for ${taskId}: ${forceErr.message}`);
+          }
+        }
+
         return { success: true };
       }
 
@@ -890,7 +912,8 @@ async function _releaseTaskInner(opts) {
         claim.claim_token,
         force ? "abandoned" : "complete",
         force ? "Force released by user" : undefined,
-        state.repoRoot
+        state.repoRoot,
+        { ownerId: claim.instance_id },
       );
       if (!sharedResult.success) {
         console.info(`[task-claims] Shared state release warning for ${taskId}: ${sharedResult.reason}`);
