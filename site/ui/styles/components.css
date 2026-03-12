@@ -3673,6 +3673,7 @@ select.input {
 .fleet-fullview {
   display: grid;
   grid-template-columns: minmax(260px, 340px) minmax(0, 1fr);
+  grid-template-rows: minmax(0, 1fr);
   gap: 12px;
   min-height: 0;
 }
@@ -3682,6 +3683,7 @@ select.input {
   flex-direction: column;
   gap: 8px;
   min-height: 0;
+  overflow-y: auto;
 }
 
 .fleet-session-scope {
@@ -3717,12 +3719,43 @@ select.input {
   opacity: 0.96;
 }
 
+.fleet-fullview {
+  /* Constrain the grid height so the chat scrollbar stays inside the panel
+     instead of pushing the entire page.  The grid children use flex/overflow
+     to fill this bounded container. */
+  height: calc(100vh - 260px);
+  min-height: 420px;
+  max-height: calc(100vh - 180px);
+}
+
 .fleet-session-detail {
-  min-height: 62vh;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  overflow: hidden;
 }
 
 .fleet-session-body {
+  flex: 1;
   min-height: 0;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+/* ChatView inside fleet session body must fill available space */
+.fleet-session-body > .chat-view,
+.fleet-session-body > .chat-view-embedded {
+  flex: 1;
+  min-height: 0;
+  overflow: hidden;
+}
+
+/* Constrain the fleet log viewer similarly */
+.fleet-session-log {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
 }
 
 .fleet-overview-card {

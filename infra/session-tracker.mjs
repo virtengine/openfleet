@@ -22,8 +22,9 @@ const SESSIONS_DIR = resolve(__dirname, "..", "logs", "sessions");
 
 const TAG = "[session-tracker]";
 
-/** Default: keep last 10 messages per task session. */
-const DEFAULT_MAX_MESSAGES = 10;
+/** Default: keep last 300 messages per task session.
+ *  Previously 10 — far too few for historic session review. */
+const DEFAULT_MAX_MESSAGES = 300;
 
 /** Default: keep a larger history for manual/primary chat sessions. */
 const DEFAULT_CHAT_MAX_MESSAGES = 2000;
