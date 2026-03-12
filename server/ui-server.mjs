@@ -1695,6 +1695,21 @@ async function getWorkflowRequestContext(reqUrl) {
   };
 }
 
+/**
+ * Return the lowercase ID of the primary (first) workspace.
+ * Used so that legacy tasks without a workspace stamp are visible only in
+ * that workspace and not leaked into every workspace.
+ */
+function resolvePrimaryWorkspaceId() {
+  try {
+    const configDir = resolveUiConfigDir();
+    const workspaces = listManagedWorkspaces(configDir);
+    return String(workspaces[0]?.id || "").trim().toLowerCase();
+  } catch {
+    return "";
+  }
+}
+
 function taskMatchesWorkspaceContext(task, workspaceContext) {
   const workspaceFilter = String(
     workspaceContext?.workspaceFilter || workspaceContext?.workspaceId || "",
@@ -1706,7 +1721,12 @@ function taskMatchesWorkspaceContext(task, workspaceContext) {
   const taskWorkspaceRaw = String(task?.workspace || task?.meta?.workspace || "").trim();
   const taskWorkspace = taskWorkspaceRaw.toLowerCase();
   if (taskWorkspace === workspaceFilter) return true;
-  if (!taskWorkspaceRaw) return true;
+  if (!taskWorkspaceRaw) {
+    // Legacy tasks without workspace stamps are only visible in the
+    // primary (first) workspace — not leaked into every workspace.
+    const primaryId = resolvePrimaryWorkspaceId();
+    return !primaryId || workspaceFilter === primaryId;
+  }
 
   const taskWorkspacePath = normalizeCandidatePath(taskWorkspaceRaw);
   const workspaceDirFilter = normalizeCandidatePath(workspaceContext?.workspaceDir);
@@ -3054,8 +3074,11 @@ function sessionMatchesWorkspaceContext(session, workspaceContext) {
   const hasWorkspaceMeta =
     Boolean(sessionWorkspace.workspaceId) || Boolean(sessionWorkspace.workspaceDir);
   if (!hasWorkspaceMeta) {
-    // Backward compatibility for sessions created before workspace metadata existed.
-    return true;
+    // Legacy sessions without workspace metadata are only visible in the
+    // primary (first) workspace — not leaked into every workspace.
+    const filter = String(workspaceContext.workspaceFilter || "").trim().toLowerCase();
+    const primaryId = resolvePrimaryWorkspaceId();
+    return !filter || !primaryId || filter === primaryId;
   }
   if (sessionWorkspace.workspaceId) {
     return sessionWorkspace.workspaceId === String(workspaceContext.workspaceFilter || "").trim().toLowerCase();
@@ -9977,11 +10000,14 @@ async function handleApi(req, res, url) {
           task.repository || task.meta?.repository || "",
         ).trim().toLowerCase();
         if (workspaceFilter && taskWorkspace !== workspaceFilter) {
-          // Backward compatibility: many legacy internal-store tasks predate
-          // workspace stamping and should remain visible in the active
-          // workspace board instead of being filtered out.
+          // Legacy tasks without workspace stamps are only visible in the
+          // primary (first) workspace — not leaked into every workspace.
           if (!taskWorkspaceRaw) {
-            return true;
+            const primaryId = resolvePrimaryWorkspaceId();
+            if (!primaryId || workspaceFilter === primaryId) {
+              return true;
+            }
+            return false;
           }
           const taskWorkspacePath = normalizeCandidatePath(taskWorkspaceRaw);
           const workspaceMatchByPath =
