@@ -10675,20 +10675,32 @@ async function handleApi(req, res, url) {
         });
       }
 
-      // ── Phase 3: related workflows (PR, event, schedule, anomaly, etc.) ─
-      const relatedTriggerTypes = new Set([
-        "trigger.pr_event", "trigger.event", "trigger.schedule",
-        "trigger.anomaly", "trigger.webhook", "trigger.workflow_call",
-        "trigger.manual", "trigger.task_low", "trigger.scheduled_once",
+      // ── Phase 3: related workflows triggered by task lifecycle events ──
+      // Only include workflows whose triggers can ACTUALLY fire as a direct
+      // or indirect result of a task's lifecycle (not schedules/manual/cron).
+      const TASK_LIFECYCLE_EVENT_TYPES = new Set([
+        "task.failed", "task.completed", "task.status_changed",
+        "task.transition.requested", "task.finalization_failed",
+        "pr.conflict_detected",
       ]);
       for (const wf of fullWorkflows) {
         if (wf.enabled === false) continue;
         if (stages.some((s) => s.workflowId === wf.id)) continue;
-        const relatedTriggers = (wf.nodes || []).filter((n) => relatedTriggerTypes.has(n.type));
+        const allNodes = wf.nodes || [];
+
+        // Filter to triggers that genuinely fire during task lifecycle
+        const relatedTriggers = allNodes.filter((n) => {
+          if (n.type === "trigger.pr_event") return true; // PR events from task PRs
+          if (n.type === "trigger.event") {
+            const evType = n.config?.eventType;
+            return evType && TASK_LIFECYCLE_EVENT_TYPES.has(evType);
+          }
+          if (n.type === "trigger.anomaly") return true; // agent anomalies during task
+          return false;
+        });
         if (relatedTriggers.length === 0) continue;
 
-        // Check if this workflow is task-related by inspecting nodes for task operations
-        const allNodes = wf.nodes || [];
+        // Secondary check: workflow must contain task-related action nodes
         const hasTaskNodes = allNodes.some((n) =>
           n.type === "action.run_agent" || n.type === "action.update_task_status" ||
           n.type === "action.claim_task" || n.type === "action.build_task_prompt" ||
