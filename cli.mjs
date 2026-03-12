@@ -918,6 +918,19 @@ function daemonStatus() {
       }
       console.log(`  Run --terminate to stop restart owners, then --daemon to restart.`);
     } else {
+      const existingMonitorOwner = detectExistingMonitorLockOwner();
+      if (existingMonitorOwner) {
+        console.log(
+          `  bosun daemon is not running in daemon mode, but bosun monitor is active (PID ${existingMonitorOwner.pid}).`,
+        );
+        console.log(
+          `  Bosun is running in monitor mode with lock file ${existingMonitorOwner.pidFile}.`,
+        );
+        console.log(
+          `  Use 'bosun --terminate' to stop it, or 'bosun --daemon' only after it is fully stopped.`,
+        );
+        process.exit(0);
+      }
       // Broader scan: portal, monitor, ui-server, etc. (non-daemon bosun processes)
       const allPids = findAllBosunProcessPids();
       if (allPids.length > 0) {
