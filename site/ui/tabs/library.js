@@ -1835,23 +1835,27 @@ function AgentLibraryImporter({ onImported }) {
         <label style="display:flex;flex-direction:column;gap:4px;font-size:0.82em;color:var(--text-secondary);">
           Source
           <select value=${sourceId} onChange=${(e) => setSourceId(e.currentTarget.value)}>
-            ${(sources.length ? sources : [
-              { id: "microsoft-skills", name: "Microsoft Skills" },
-              { id: "microsoft-hve-core", name: "Microsoft HVE Core" },
-              { id: "microsoft-vscode", name: "Microsoft VS Code" },
-              { id: "microsoft-powertoys", name: "Microsoft PowerToys" },
-              { id: "microsoft-typespec", name: "Microsoft TypeSpec" },
-              { id: "microsoft-copilot-for-azure", name: "GitHub Copilot for Azure" },
-              { id: "microsoft-vscode-python-environments", name: "VS Code Python Environments" },
-              { id: "github-copilot-sdk", name: "GitHub Copilot SDK" },
-              { id: "github-desktop", name: "GitHub Desktop" },
-              { id: "azure-sdk-for-js", name: "Azure SDK for JavaScript" },
-              { id: "mastra-ai-mastra", name: "Mastra AI Framework" },
-              { id: "canonical-copilot-collections", name: "Canonical Copilot Collections" },
-              { id: "copilot-kit", name: "Copilot Kit" },
-              { id: "copilot-prompts-collection", name: "GitHub Copilot Prompts" },
-              { id: "playwright-mcp-prompts", name: "Playwright MCP Prompts" },
-            ]).map((s) => html`<option key=${s.id} value=${s.id}>${s.name}</option>`)}
+            ${(sources.length ? [...sources].sort((a, b) => (Number(b.estimatedPlugins || 0) - Number(a.estimatedPlugins || 0)) || String(a.name || "").localeCompare(String(b.name || ""))) : [
+              { id: "microsoft-skills", name: "Microsoft Skills", estimatedPlugins: 180 },
+              { id: "microsoft-hve-core", name: "Microsoft HVE Core", estimatedPlugins: 60 },
+              { id: "canonical-copilot-collections", name: "Canonical Copilot Collections", estimatedPlugins: 50 },
+              { id: "microsoft-copilot-for-azure", name: "GitHub Copilot for Azure", estimatedPlugins: 45 },
+              { id: "mastra-ai-mastra", name: "Mastra AI Framework", estimatedPlugins: 40 },
+              { id: "copilot-kit", name: "Copilot Kit", estimatedPlugins: 35 },
+              { id: "copilot-prompts-collection", name: "GitHub Copilot Prompts", estimatedPlugins: 30 },
+              { id: "playwright-mcp-prompts", name: "Playwright MCP Prompts", estimatedPlugins: 25 },
+              { id: "modelcontextprotocol-servers", name: "MCP Official Servers", estimatedPlugins: 25 },
+              { id: "microsoft-typespec", name: "Microsoft TypeSpec", estimatedPlugins: 20 },
+              { id: "microsoft-vscode", name: "Microsoft VS Code", estimatedPlugins: 15 },
+              { id: "azure-sdk-for-js", name: "Azure SDK for JavaScript", estimatedPlugins: 15 },
+              { id: "microsoft-powertoys", name: "Microsoft PowerToys", estimatedPlugins: 10 },
+              { id: "github-copilot-sdk", name: "GitHub Copilot SDK", estimatedPlugins: 10 },
+              { id: "github-desktop", name: "GitHub Desktop", estimatedPlugins: 10 },
+            ]).map((s) => {
+              const est = Number(s.estimatedPlugins || 0);
+              const label = est > 0 ? `${s.name} (~${est} plugins)` : s.name;
+              return html`<option key=${s.id} value=${s.id}>${label}</option>`;
+            })}
           </select>
         </label>
         <label style="display:flex;flex-direction:column;gap:4px;font-size:0.82em;color:var(--text-secondary);">

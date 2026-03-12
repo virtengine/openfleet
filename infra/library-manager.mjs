@@ -1555,6 +1555,7 @@ export const WELL_KNOWN_AGENT_SOURCES = Object.freeze([
     owner: "microsoft",
     trustTier: "official",
     importCoverage: "high",
+    estimatedPlugins: 180,
     focuses: ["backend", "frontend", "planner", "infra", "scaffolding", "azure"],
   },
   {
@@ -1566,6 +1567,7 @@ export const WELL_KNOWN_AGENT_SOURCES = Object.freeze([
     owner: "microsoft",
     trustTier: "official",
     importCoverage: "high",
+    estimatedPlugins: 60,
     focuses: ["core", "plugins", "platform"],
   },
   {
@@ -1577,6 +1579,7 @@ export const WELL_KNOWN_AGENT_SOURCES = Object.freeze([
     owner: "microsoft",
     trustTier: "official",
     importCoverage: "medium",
+    estimatedPlugins: 15,
     focuses: ["vscode", "editor", "extensions", "testing"],
   },
   {
@@ -1588,6 +1591,7 @@ export const WELL_KNOWN_AGENT_SOURCES = Object.freeze([
     owner: "microsoft",
     trustTier: "official",
     importCoverage: "medium",
+    estimatedPlugins: 10,
     focuses: ["windows", "utilities", "c-sharp", "plugins"],
   },
   {
@@ -1599,6 +1603,7 @@ export const WELL_KNOWN_AGENT_SOURCES = Object.freeze([
     owner: "microsoft",
     trustTier: "official",
     importCoverage: "medium",
+    estimatedPlugins: 20,
     focuses: ["api", "code-generation", "typescript", "openapi"],
   },
   {
@@ -1610,6 +1615,7 @@ export const WELL_KNOWN_AGENT_SOURCES = Object.freeze([
     owner: "microsoft",
     trustTier: "official",
     importCoverage: "high",
+    estimatedPlugins: 45,
     focuses: ["azure", "cloud", "infrastructure", "deployment"],
   },
   {
@@ -1621,6 +1627,7 @@ export const WELL_KNOWN_AGENT_SOURCES = Object.freeze([
     owner: "microsoft",
     trustTier: "official",
     importCoverage: "medium",
+    estimatedPlugins: 8,
     focuses: ["vscode", "python", "extension", "maintainer"],
   },
   {
@@ -1632,6 +1639,7 @@ export const WELL_KNOWN_AGENT_SOURCES = Object.freeze([
     owner: "microsoft",
     trustTier: "official",
     importCoverage: "medium",
+    estimatedPlugins: 12,
     focuses: ["documentation", "vscode", "markdown", "authoring"],
   },
   {
@@ -1643,6 +1651,7 @@ export const WELL_KNOWN_AGENT_SOURCES = Object.freeze([
     owner: "microsoft",
     trustTier: "official",
     importCoverage: "medium",
+    estimatedPlugins: 8,
     focuses: ["windows", "winui", "sdk", "desktop"],
   },
   {
@@ -1654,6 +1663,7 @@ export const WELL_KNOWN_AGENT_SOURCES = Object.freeze([
     owner: "microsoft",
     trustTier: "official",
     importCoverage: "medium",
+    estimatedPlugins: 10,
     focuses: ["java", "vscode", "debugging", "testing"],
   },
   {
@@ -1665,6 +1675,7 @@ export const WELL_KNOWN_AGENT_SOURCES = Object.freeze([
     owner: "microsoft",
     trustTier: "official",
     importCoverage: "medium",
+    estimatedPlugins: 6,
     focuses: ["rust", "serverless", "durable-functions", "workflows"],
   },
   {
@@ -1676,6 +1687,7 @@ export const WELL_KNOWN_AGENT_SOURCES = Object.freeze([
     owner: "microsoft",
     trustTier: "official",
     importCoverage: "medium",
+    estimatedPlugins: 6,
     focuses: ["ebpf", "windows", "kernel", "networking"],
   },
   // ── GitHub — Official ─────────────────────────────────────────────────────
@@ -1688,6 +1700,7 @@ export const WELL_KNOWN_AGENT_SOURCES = Object.freeze([
     owner: "github",
     trustTier: "official",
     importCoverage: "medium",
+    estimatedPlugins: 10,
     focuses: ["copilot", "workflow", "docs"],
   },
   {
@@ -1699,6 +1712,7 @@ export const WELL_KNOWN_AGENT_SOURCES = Object.freeze([
     owner: "desktop",
     trustTier: "official",
     importCoverage: "medium",
+    estimatedPlugins: 10,
     focuses: ["electron", "typescript", "git", "desktop"],
   },
   // ── Azure — Official ──────────────────────────────────────────────────────
@@ -1711,6 +1725,7 @@ export const WELL_KNOWN_AGENT_SOURCES = Object.freeze([
     owner: "azure",
     trustTier: "official",
     importCoverage: "medium",
+    estimatedPlugins: 15,
     focuses: ["azure", "javascript", "sdk", "workflow"],
   },
   // ── Community — Verified ──────────────────────────────────────────────────
@@ -1723,6 +1738,7 @@ export const WELL_KNOWN_AGENT_SOURCES = Object.freeze([
     owner: "mastra-ai",
     trustTier: "community",
     importCoverage: "high",
+    estimatedPlugins: 40,
     focuses: ["ai", "agents", "prompts", "automation"],
   },
   {
@@ -1734,6 +1750,7 @@ export const WELL_KNOWN_AGENT_SOURCES = Object.freeze([
     owner: "Z3Prover",
     trustTier: "community",
     importCoverage: "low",
+    estimatedPlugins: 3,
     focuses: ["formal-verification", "smt", "solver", "c++"],
   },
   {
@@ -1745,6 +1762,7 @@ export const WELL_KNOWN_AGENT_SOURCES = Object.freeze([
     owner: "likec4",
     trustTier: "community",
     importCoverage: "medium",
+    estimatedPlugins: 12,
     focuses: ["architecture", "diagrams", "documentation", "c4"],
   },
   {
@@ -1756,6 +1774,7 @@ export const WELL_KNOWN_AGENT_SOURCES = Object.freeze([
     owner: "canonical",
     trustTier: "community",
     importCoverage: "high",
+    estimatedPlugins: 50,
     focuses: ["ubuntu", "linux", "open-source", "devops"],
   },
   {
@@ -1767,6 +1786,7 @@ export const WELL_KNOWN_AGENT_SOURCES = Object.freeze([
     owner: "debs-obrien",
     trustTier: "community",
     importCoverage: "high",
+    estimatedPlugins: 25,
     focuses: ["playwright", "testing", "e2e", "automation"],
   },
   {
@@ -1778,6 +1798,7 @@ export const WELL_KNOWN_AGENT_SOURCES = Object.freeze([
     owner: "raffertyuy",
     trustTier: "community",
     importCoverage: "high",
+    estimatedPlugins: 30,
     focuses: ["prompts", "code-review", "refactoring", "docs"],
   },
   {
@@ -1789,6 +1810,7 @@ export const WELL_KNOWN_AGENT_SOURCES = Object.freeze([
     owner: "TheSethRose",
     trustTier: "community",
     importCoverage: "high",
+    estimatedPlugins: 35,
     focuses: ["copilot", "agents", "skills", "prompts"],
   },
   {
@@ -1800,6 +1822,7 @@ export const WELL_KNOWN_AGENT_SOURCES = Object.freeze([
     owner: "dataplat",
     trustTier: "community",
     importCoverage: "medium",
+    estimatedPlugins: 10,
     focuses: ["sql-server", "database", "powershell", "administration"],
   },
   {
@@ -1811,6 +1834,7 @@ export const WELL_KNOWN_AGENT_SOURCES = Object.freeze([
     owner: "FinOps-Open-Cost-and-Usage-Spec",
     trustTier: "community",
     importCoverage: "medium",
+    estimatedPlugins: 8,
     focuses: ["finops", "cloud-costs", "specification", "governance"],
   },
   // ── MCP Tool Repositories ──────────────────────────────────────────────────
@@ -1823,6 +1847,7 @@ export const WELL_KNOWN_AGENT_SOURCES = Object.freeze([
     owner: "modelcontextprotocol",
     trustTier: "official",
     importCoverage: "high",
+    estimatedPlugins: 25,
     focuses: ["mcp", "tools", "filesystem", "database", "web", "search"],
   },
   {
@@ -1834,6 +1859,7 @@ export const WELL_KNOWN_AGENT_SOURCES = Object.freeze([
     owner: "github",
     trustTier: "official",
     importCoverage: "medium",
+    estimatedPlugins: 3,
     focuses: ["mcp", "github", "issues", "pull-requests", "code-search"],
   },
   {
@@ -1845,6 +1871,7 @@ export const WELL_KNOWN_AGENT_SOURCES = Object.freeze([
     owner: "punkpeye",
     trustTier: "community",
     importCoverage: "low",
+    estimatedPlugins: 5,
     focuses: ["mcp", "tools", "community", "catalog"],
   },
 ]);
@@ -1871,6 +1898,9 @@ function normalizeWellKnownSource(source = {}) {
 }
 
 function compareWellKnownSources(a, b) {
+  // Sort by estimated plugin count (most first), then trust score, then name
+  const pluginDelta = Number(b?.estimatedPlugins || 0) - Number(a?.estimatedPlugins || 0);
+  if (pluginDelta !== 0) return pluginDelta;
   const delta = Number(b?.trust?.score || 0) - Number(a?.trust?.score || 0);
   if (delta !== 0) return delta;
   return String(a?.name || "").localeCompare(String(b?.name || ""));

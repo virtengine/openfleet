@@ -9510,6 +9510,37 @@ registerNodeType("action.build_task_prompt", {
       parts.push("");
     }
 
+    // Inject library-resolved skills from agent.select_profile.
+    // These are skills assigned to the matched agent profile or scored by
+    // the library resolver's buildSkillSelection — distinct from the
+    // filesystem-based .bosun/skills/ resolved above.
+    const librarySkillIds = Array.isArray(ctx.data?.resolvedSkillIds) ? ctx.data.resolvedSkillIds : [];
+    if (librarySkillIds.length > 0) {
+      try {
+        const library = await ensureLibraryManagerMod();
+        const libraryRoot = repoRoot || process.cwd();
+        const fsSkillNames = new Set(matchedSkills.map((s) => String(s.filename || "").replace(/\.md$/i, "").toLowerCase()));
+        const librarySkillParts = [];
+        for (const skillId of librarySkillIds) {
+          if (fsSkillNames.has(skillId.toLowerCase())) continue;
+          const entry = library.getEntry?.(libraryRoot, skillId);
+          if (!entry) continue;
+          const content = library.getEntryContent?.(libraryRoot, entry);
+          if (!content || (typeof content === "string" && !content.trim())) continue;
+          const body = typeof content === "string" ? content.trim() : JSON.stringify(content, null, 2);
+          librarySkillParts.push(`### Skill: ${entry.name || skillId} (\`${skillId}\`)`);
+          librarySkillParts.push(body);
+          librarySkillParts.push("");
+        }
+        if (librarySkillParts.length > 0) {
+          parts.push("## Library Skills");
+          parts.push(...librarySkillParts);
+        }
+      } catch (err) {
+        ctx.log(node.id, `Library skill injection failed (non-fatal): ${err.message}`);
+      }
+    }
+
     parts.push("## Tool Discovery");
     parts.push(
       "Bosun uses a compact MCP discovery layer for external MCP servers and the custom tool library.",
