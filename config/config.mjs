@@ -1005,10 +1005,88 @@ class ExecutorScheduler {
     this._roundRobinIndex = 0;
     this._failureCounts = new Map(); // name → consecutive failures
     this._disabledUntil = new Map(); // name → timestamp
+    this._workspaceActiveCount = new Map(); // workspaceId → current active executor count
+    this._workspaceConfigs = new Map(); // workspaceId → { maxConcurrent, pool, weight }
+  }
+
+  /**
+   * Register workspace executor config for concurrency tracking.
+   * @param {string} workspaceId
+   * @param {{ maxConcurrent?: number, pool?: string, weight?: number }} wsExecutorConfig
+   */
+  registerWorkspace(workspaceId, wsExecutorConfig = {}) {
+    if (!workspaceId) return;
+    this._workspaceConfigs.set(workspaceId, {
+      maxConcurrent: wsExecutorConfig.maxConcurrent ?? 3,
+      pool: wsExecutorConfig.pool ?? "shared",
+      weight: wsExecutorConfig.weight ?? 1.0,
+    });
+    if (!this._workspaceActiveCount.has(workspaceId)) {
+      this._workspaceActiveCount.set(workspaceId, 0);
+    }
+  }
+
+  /**
+   * Check if a workspace has available executor slots.
+   * @param {string} [workspaceId]
+   * @returns {boolean}
+   */
+  hasAvailableSlot(workspaceId) {
+    if (!workspaceId) return true; // no workspace scope — always available
+    const config = this._workspaceConfigs.get(workspaceId);
+    if (!config) return true; // no config registered — no limit
+    const active = this._workspaceActiveCount.get(workspaceId) || 0;
+    return active < config.maxConcurrent;
+  }
+
+  /**
+   * Acquire an executor slot for a workspace.
+   * @param {string} [workspaceId]
+   * @returns {boolean} true if slot acquired, false if at limit
+   */
+  acquireSlot(workspaceId) {
+    if (!workspaceId) return true;
+    if (!this.hasAvailableSlot(workspaceId)) return false;
+    this._workspaceActiveCount.set(
+      workspaceId,
+      (this._workspaceActiveCount.get(workspaceId) || 0) + 1,
+    );
+    return true;
+  }
+
+  /**
+   * Release an executor slot for a workspace.
+   * @param {string} [workspaceId]
+   */
+  releaseSlot(workspaceId) {
+    if (!workspaceId) return;
+    const current = this._workspaceActiveCount.get(workspaceId) || 0;
+    this._workspaceActiveCount.set(workspaceId, Math.max(0, current - 1));
+  }
+
+  /**
+   * Get workspace executor usage summary.
+   * @returns {Array<{ workspaceId: string, active: number, maxConcurrent: number, pool: string, weight: number }>}
+   */
+  getWorkspaceSummary() {
+    const result = [];
+    for (const [wsId, config] of this._workspaceConfigs) {
+      result.push({
+        workspaceId: wsId,
+        active: this._workspaceActiveCount.get(wsId) || 0,
+        ...config,
+      });
+    }
+    return result;
   }
 
   /** Get the next executor based on distribution strategy */
-  next() {
+  next(workspaceId) {
+    // Check workspace slot availability before selecting
+    if (workspaceId && !this.hasAvailableSlot(workspaceId)) {
+      return null; // workspace at executor capacity
+    }
+
     const available = this._getAvailable();
     if (!available.length) {
       // All disabled — reset and use primary
@@ -1017,6 +1095,23 @@ class ExecutorScheduler {
       return this.executors[0];
     }
 
+    // For dedicated pools, filter to workspace-assigned executors
+    if (workspaceId) {
+      const wsConfig = this._workspaceConfigs.get(workspaceId);
+      if (wsConfig?.pool === "dedicated" && wsConfig.executors) {
+        const dedicated = available.filter((e) =>
+          wsConfig.executors.includes(e.name),
+        );
+        if (dedicated.length) {
+          return this._selectByStrategy(dedicated);
+        }
+      }
+    }
+
+    return this._selectByStrategy(available);
+  }
+
+  _selectByStrategy(available) {
     switch (this.distribution) {
       case "round-robin":
         return this._roundRobin(available);

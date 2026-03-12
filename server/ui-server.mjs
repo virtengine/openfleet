@@ -131,6 +131,10 @@ import {
   pullWorkspaceRepos,
   initializeWorkspaces,
   mergeDetectedWorkspaces,
+  setWorkspaceState,
+  getWorkspaceStateSummary,
+  setWorkspaceExecutors,
+  isWorkflowAllowedForWorkspace,
 } from "../workspace/workspace-manager.mjs";
 import {
   getSessionTracker,
@@ -12092,6 +12096,121 @@ async function handleApi(req, res, url) {
       const configDir = resolveUiConfigDir();
       const result = runWorkspaceHealthCheck({ configDir });
       jsonResponse(res, 200, { ok: result.ok, data: result });
+    } catch (err) {
+      jsonResponse(res, 500, { ok: false, error: err.message });
+    }
+    return;
+  }
+
+  // ── Workspace State Management API ─────────────────────────────────────────
+
+  if (path === "/api/workspaces/state") {
+    try {
+      const configDir = resolveUiConfigDir();
+      if (req.method === "POST") {
+        const body = await readJsonBody(req);
+        const wsId = body?.workspaceId || body?.id;
+        const state = body?.state;
+        if (!wsId || !state) {
+          jsonResponse(res, 400, { ok: false, error: "workspaceId and state required" });
+          return;
+        }
+        if (!["active", "paused", "disabled"].includes(state)) {
+          jsonResponse(res, 400, { ok: false, error: "state must be active, paused, or disabled" });
+          return;
+        }
+        setWorkspaceState(configDir, wsId, state);
+        const summary = getWorkspaceStateSummary(configDir);
+        jsonResponse(res, 200, { ok: true, data: summary });
+        broadcastUiEvent(["workspaces"], "invalidate", { reason: "state-changed", workspaceId: wsId, state });
+      } else {
+        const summary = getWorkspaceStateSummary(configDir);
+        jsonResponse(res, 200, { ok: true, data: summary });
+      }
+    } catch (err) {
+      jsonResponse(res, 500, { ok: false, error: err.message });
+    }
+    return;
+  }
+
+  if (path === "/api/workspaces/executors") {
+    try {
+      const configDir = resolveUiConfigDir();
+      if (req.method === "POST") {
+        const body = await readJsonBody(req);
+        const wsId = body?.workspaceId || body?.id;
+        if (!wsId) {
+          jsonResponse(res, 400, { ok: false, error: "workspaceId required" });
+          return;
+        }
+        const opts = {};
+        if (body?.maxConcurrent !== undefined) opts.maxConcurrent = Number(body.maxConcurrent);
+        if (body?.pool !== undefined) opts.pool = String(body.pool);
+        if (body?.weight !== undefined) opts.weight = Number(body.weight);
+        const result = setWorkspaceExecutors(configDir, wsId, opts);
+        jsonResponse(res, 200, { ok: true, data: result });
+        broadcastUiEvent(["workspaces"], "invalidate", { reason: "executors-changed", workspaceId: wsId });
+      } else {
+        const wsId = url.searchParams.get("workspaceId") || url.searchParams.get("id");
+        if (!wsId) {
+          jsonResponse(res, 400, { ok: false, error: "workspaceId query param required" });
+          return;
+        }
+        const ws = getManagedWorkspace(configDir, wsId);
+        jsonResponse(res, 200, { ok: true, data: ws?.executors || null });
+      }
+    } catch (err) {
+      jsonResponse(res, 500, { ok: false, error: err.message });
+    }
+    return;
+  }
+
+  if (path === "/api/workspaces/workflows") {
+    try {
+      const configDir = resolveUiConfigDir();
+      if (req.method === "POST") {
+        const body = await readJsonBody(req);
+        const wsId = body?.workspaceId || body?.id;
+        if (!wsId) {
+          jsonResponse(res, 400, { ok: false, error: "workspaceId required" });
+          return;
+        }
+        const ws = getManagedWorkspace(configDir, wsId);
+        if (!ws) {
+          jsonResponse(res, 404, { ok: false, error: "Workspace not found" });
+          return;
+        }
+        // Update enabledWorkflows / disabledWorkflows in workspace config
+        const config = JSON.parse((await import("node:fs")).readFileSync(
+          (await import("node:path")).resolve(configDir, "bosun.config.json"), "utf8",
+        ));
+        const workspaces = Array.isArray(config.workspaces) ? config.workspaces : [];
+        const target = workspaces.find((w) => (w.id || "").toLowerCase() === wsId.toLowerCase());
+        if (target) {
+          if (body.enabledWorkflows !== undefined) target.enabledWorkflows = body.enabledWorkflows;
+          if (body.disabledWorkflows !== undefined) target.disabledWorkflows = body.disabledWorkflows;
+          (await import("node:fs")).writeFileSync(
+            (await import("node:path")).resolve(configDir, "bosun.config.json"),
+            JSON.stringify(config, null, 2) + "\n", "utf8",
+          );
+        }
+        jsonResponse(res, 200, { ok: true });
+        broadcastUiEvent(["workspaces"], "invalidate", { reason: "workflows-changed", workspaceId: wsId });
+      } else {
+        const wsId = url.searchParams.get("workspaceId") || url.searchParams.get("id");
+        if (!wsId) {
+          jsonResponse(res, 400, { ok: false, error: "workspaceId query param required" });
+          return;
+        }
+        const ws = getManagedWorkspace(configDir, wsId);
+        jsonResponse(res, 200, {
+          ok: true,
+          data: {
+            enabledWorkflows: ws?.enabledWorkflows || [],
+            disabledWorkflows: ws?.disabledWorkflows || [],
+          },
+        });
+      }
     } catch (err) {
       jsonResponse(res, 500, { ok: false, error: err.message });
     }

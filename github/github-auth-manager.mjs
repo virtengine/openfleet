@@ -64,7 +64,7 @@ async function loadSavedOAuthToken() {
 function looksLikeRealToken(token) {
   if (!token || typeof token !== "string") return false;
   const t = token.trim();
-  if (t.length < 20) return false;
+  if (t.length < 8) return false;
   // Reject common placeholder values
   const PLACEHOLDERS = [
     "oauth-token", "your-token", "token-here", "placeholder",

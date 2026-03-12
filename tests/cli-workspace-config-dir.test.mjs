@@ -16,7 +16,7 @@ describe("cli workspace config-dir resolution", () => {
       "configDirArg || process.env.BOSUN_DIR || resolveConfigDirForCli()";
     const matches = workspaceSection.split(expected).length - 1;
 
-    expect(matches).toBe(5);
+    expect(matches).toBe(10);
     expect(workspaceSection).not.toContain('resolve(os.homedir(), "bosun")');
   });
 
