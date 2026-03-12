@@ -1824,6 +1824,40 @@ export const WELL_KNOWN_AGENT_SOURCES = Object.freeze([
     importCoverage: "medium",
     focuses: ["finops", "cloud-costs", "specification", "governance"],
   },
+  // ── MCP Tool Repositories ──────────────────────────────────────────────────
+  {
+    id: "modelcontextprotocol-servers",
+    name: "MCP Official Servers",
+    repoUrl: "https://github.com/modelcontextprotocol/servers.git",
+    defaultBranch: "main",
+    description: "Official Model Context Protocol reference servers — filesystem, GitHub, Git, Postgres, Slack, Google Maps, Puppeteer, and more.",
+    owner: "modelcontextprotocol",
+    trustTier: "official",
+    importCoverage: "high",
+    focuses: ["mcp", "tools", "filesystem", "database", "web", "search"],
+  },
+  {
+    id: "github-mcp-server",
+    name: "GitHub MCP Server",
+    repoUrl: "https://github.com/github/github-mcp-server.git",
+    defaultBranch: "main",
+    description: "Official GitHub MCP server for repository management, issues, pull requests, and code search.",
+    owner: "github",
+    trustTier: "official",
+    importCoverage: "medium",
+    focuses: ["mcp", "github", "issues", "pull-requests", "code-search"],
+  },
+  {
+    id: "punkpeye-awesome-mcp-servers",
+    name: "Awesome MCP Servers",
+    repoUrl: "https://github.com/punkpeye/awesome-mcp-servers.git",
+    defaultBranch: "main",
+    description: "Community-curated list of MCP server implementations — databases, dev tools, cloud platforms, AI services, and productivity tools.",
+    owner: "punkpeye",
+    trustTier: "community",
+    importCoverage: "low",
+    focuses: ["mcp", "tools", "community", "catalog"],
+  },
 ]);
 
 function clampNumber(value, min, max) {
@@ -2296,6 +2330,48 @@ function parseMcpServersFromToml(tomlText, sourcePath = "") {
   return normalized;
 }
 
+/**
+ * Parse MCP server definitions from JSON config (.mcp.json / .vscode/mcp.json).
+ * Supports the VS Code MCP JSON format: { "servers": { "<id>": { ... } } }
+ * and the flat format: { "<id>": { "command": ..., "args": [...] } }
+ */
+function parseMcpServersFromJson(jsonText, sourcePath = "") {
+  const results = [];
+  let parsed;
+  try { parsed = JSON.parse(jsonText); } catch { return results; }
+  if (!parsed || typeof parsed !== "object") return results;
+
+  const serversObj = (parsed.servers && typeof parsed.servers === "object")
+    ? parsed.servers
+    : (parsed.mcpServers && typeof parsed.mcpServers === "object")
+      ? parsed.mcpServers
+      : parsed;
+  for (const [rawId, def] of Object.entries(serversObj)) {
+    if (!def || typeof def !== "object" || Array.isArray(def)) continue;
+    const command = String(def.command || "").trim();
+    const url = String(def.url || "").trim();
+    if (!command && !url) continue;
+    const id = slugifyIdentifier(rawId.replace(/_/g, "-")) || rawId;
+    const args = toStringArray(Array.isArray(def.args) ? def.args : []);
+    const env = {};
+    if (def.env && typeof def.env === "object") {
+      for (const k of Object.keys(def.env)) env[k] = "";
+    }
+    results.push({
+      id,
+      rawId,
+      name: String(def.name || rawId).trim(),
+      transport: url ? "url" : "stdio",
+      command: command || undefined,
+      args: args.length ? args : undefined,
+      url: url || undefined,
+      env,
+      sourcePath,
+    });
+  }
+  return results;
+}
+
 function discoverLocalAgentTemplates(rootDir) {
   const candidateDirs = uniqueStrings([
     resolve(rootDir, ".github", "agents"),
@@ -2572,8 +2648,49 @@ export function scanRepositoryForImport(options = {}) {
       })
       .slice(0, maxEntries);
 
-    const byType = { agent: 0, prompt: 0, skill: 0 };
+    const byType = { agent: 0, prompt: 0, skill: 0, mcp: 0 };
     for (const c of candidates) byType[c.kind] = (byType[c.kind] || 0) + 1;
+
+    // Scan for MCP server definitions in known config files
+    const mcpConfigPaths = [
+      resolve(checkoutDir, ".codex", "config.toml"),
+      resolve(checkoutDir, ".mcp.json"),
+      resolve(checkoutDir, ".vscode", "mcp.json"),
+    ];
+    for (const configPath of mcpConfigPaths) {
+      if (!existsSync(configPath)) continue;
+      let raw = "";
+      try { raw = readFileSync(configPath, "utf8"); } catch { continue; }
+      const relPath = relative(checkoutDir, configPath).replace(/\\/g, "/");
+      if (/\.toml$/i.test(configPath)) {
+        const discovered = parseMcpServersFromToml(raw, relPath);
+        for (const mcp of discovered) {
+          candidates.push({
+            relPath: `${relPath}#${mcp.id}`,
+            fileName: basename(configPath),
+            kind: "mcp",
+            name: mcp.name || mcp.id,
+            description: `${mcp.transport === "stdio" ? "stdio" : "url"} MCP server${mcp.command ? ": " + mcp.command : ""}`,
+            selected: true,
+          });
+          byType.mcp += 1;
+        }
+      } else {
+        // JSON-based MCP config (.mcp.json / .vscode/mcp.json)
+        const discovered = parseMcpServersFromJson(raw, relPath);
+        for (const mcp of discovered) {
+          candidates.push({
+            relPath: `${relPath}#${mcp.id}`,
+            fileName: basename(configPath),
+            kind: "mcp",
+            name: mcp.name || mcp.id,
+            description: `${mcp.transport === "stdio" ? "stdio" : "url"} MCP server${mcp.command ? ": " + mcp.command : ""}`,
+            selected: true,
+          });
+          byType.mcp += 1;
+        }
+      }
+    }
 
     // Duplicate detection against existing library entries
     const rootDir = options?.rootDir || null;
@@ -2640,7 +2757,7 @@ export function importAgentProfilesFromRepository(rootDir, options = {}) {
   const importTools = options?.importTools !== false;
   const includeEntries = Array.isArray(options?.includeEntries) ? new Set(options.includeEntries.map((e) => String(e || "").trim()).filter(Boolean)) : null;
 
-  const cacheRoot = ensureDir(resolve(rootDir || getBosunHomeDir(), ".bosun", ".cache", "imports"));
+  const cacheRoot = ensureDir(resolve(getBosunHomeDir(), ".bosun", ".cache", "imports"));
   const checkoutDir = resolve(cacheRoot, `import-${Date.now()}-${Math.random().toString(16).slice(2, 8)}`);
   ensureDir(checkoutDir);
 
@@ -2858,10 +2975,12 @@ export function importAgentProfilesFromRepository(rootDir, options = {}) {
     }
 
     if (importTools) {
-      const mcpCandidates = uniqueStrings([
-        resolve(checkoutDir, ".codex", "config.toml"),
-      ]);
-      for (const configPath of mcpCandidates) {
+      const mcpConfigFiles = [
+        { path: resolve(checkoutDir, ".codex", "config.toml"), format: "toml" },
+        { path: resolve(checkoutDir, ".mcp.json"), format: "json" },
+        { path: resolve(checkoutDir, ".vscode", "mcp.json"), format: "json" },
+      ];
+      for (const { path: configPath, format } of mcpConfigFiles) {
         if (!existsSync(configPath)) continue;
         let raw = "";
         try {
@@ -2870,7 +2989,9 @@ export function importAgentProfilesFromRepository(rootDir, options = {}) {
           continue;
         }
         const relPath = relative(checkoutDir, configPath).replace(/\\/g, "/");
-        const discovered = parseMcpServersFromToml(raw, relPath);
+        const discovered = format === "toml"
+          ? parseMcpServersFromToml(raw, relPath)
+          : parseMcpServersFromJson(raw, relPath);
         for (const mcp of discovered) {
           const baseId = slugify(`${sourceId || "imported"}-${mcp.id}`) || slugify(mcp.id) || `imported-mcp-${imported.length + 1}`;
           const id = ensureUniqueId(baseId, takenIds);

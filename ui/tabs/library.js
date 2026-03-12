@@ -1655,7 +1655,7 @@ function ImportPreviewModal({ candidates, source, onConfirm, onClose, loading, d
 
   const selectedCount = useMemo(() => Object.values(selection).filter(Boolean).length, [selection]);
   const typeCounts = useMemo(() => {
-    const counts = { agent: 0, skill: 0, prompt: 0 };
+    const counts = { agent: 0, skill: 0, prompt: 0, mcp: 0 };
     for (const c of (candidates || [])) counts[c.kind] = (counts[c.kind] || 0) + 1;
     return counts;
   }, [candidates]);
@@ -1677,7 +1677,7 @@ function ImportPreviewModal({ candidates, source, onConfirm, onClose, loading, d
     onConfirm(selected);
   }, [selection, onConfirm]);
 
-  const kindIcon = { agent: "🤖", skill: "⚡", prompt: "📝" };
+  const kindIcon = { agent: "🤖", skill: "⚡", prompt: "📝", mcp: "🔧" };
   const allFilteredSelected = filtered.length > 0 && filtered.every((c) => selection[c.relPath]);
 
   const dupReasonLabel = (info) => {
@@ -1715,6 +1715,7 @@ function ImportPreviewModal({ candidates, source, onConfirm, onClose, loading, d
             ["agent", "Agents", typeCounts.agent],
             ["skill", "Skills", typeCounts.skill],
             ["prompt", "Prompts", typeCounts.prompt],
+            ["mcp", "Tools", typeCounts.mcp],
           ].filter(([, , count]) => count > 0 || true).map(([key, label, count]) => html`
             <button key=${key} onClick=${() => setTypeFilter(key)}
               style="padding:3px 10px;border-radius:12px;border:1px solid var(--border,#333);background:${typeFilter === key ? "var(--accent,#3b82f6)" : "transparent"};color:${typeFilter === key ? "#fff" : "var(--text-secondary)"};font-size:0.78em;cursor:pointer;">
