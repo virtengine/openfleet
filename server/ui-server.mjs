@@ -158,6 +158,21 @@ import {
   getPrimaryAgentInfo,
 } from "../agent/primary-agent.mjs";
 import {
+  buildBenchmarkModePreset,
+  getBenchmarkProvider,
+  launchBenchmark,
+  listBenchmarkProviders,
+  prepareBenchmarkWorkspacePreset,
+} from "../bench/benchmark-registry.mjs";
+import {
+  clearBenchmarkModeState,
+  filterTasksForBenchmarkMode,
+  readBenchmarkModeState,
+  summarizeBenchmarkTasks,
+  taskMatchesBenchmarkMode,
+  writeBenchmarkModeState,
+} from "../bench/benchmark-mode.mjs";
+import {
   addTaskAttachment,
   listTaskAttachments,
   mergeTaskAttachments,
@@ -1675,6 +1690,352 @@ async function getWorkflowRequestContext(reqUrl) {
     wfMod,
     engine,
     workspaceContext: { ...workspaceContext, workspaceDir: paths.workspaceRoot },
+  };
+}
+
+function taskMatchesWorkspaceContext(task, workspaceContext) {
+  const workspaceFilter = String(
+    workspaceContext?.workspaceFilter || workspaceContext?.workspaceId || "",
+  )
+    .trim()
+    .toLowerCase();
+  if (!workspaceFilter) return true;
+
+  const taskWorkspaceRaw = String(task?.workspace || task?.meta?.workspace || "").trim();
+  const taskWorkspace = taskWorkspaceRaw.toLowerCase();
+  if (taskWorkspace === workspaceFilter) return true;
+  if (!taskWorkspaceRaw) return true;
+
+  const taskWorkspacePath = normalizeCandidatePath(taskWorkspaceRaw);
+  const workspaceDirFilter = normalizeCandidatePath(workspaceContext?.workspaceDir);
+  return Boolean(taskWorkspacePath && workspaceDirFilter && taskWorkspacePath === workspaceDirFilter);
+}
+
+async function listTasksForWorkspaceContext(workspaceContext, { status = "", projectId = "" } = {}) {
+  const adapter = getKanbanAdapter();
+  const projects = await adapter.listProjects();
+  const activeProject = projectId || projects[0]?.id || projects[0]?.project_id || "";
+  if (!activeProject) {
+    return { tasks: [], projectId: "" };
+  }
+  const rawTasks = await adapter.listTasks(activeProject, status ? { status } : {});
+  const tasks = (Array.isArray(rawTasks) ? rawTasks : []).filter((task) =>
+    taskMatchesWorkspaceContext(task, workspaceContext),
+  );
+  return { tasks, projectId: activeProject };
+}
+
+function sortTasksByRecency(tasks = []) {
+  return [...tasks].sort((a, b) => {
+    const aTs = Date.parse(a?.updatedAt || a?.createdAt || 0) || 0;
+    const bTs = Date.parse(b?.updatedAt || b?.createdAt || 0) || 0;
+    return bTs - aTs;
+  });
+}
+
+async function collectBenchmarkWorkflowRuns(reqUrl, taskIds = new Set(), limit = 12) {
+  if (!(taskIds instanceof Set) || taskIds.size === 0) return [];
+  try {
+    const wfCtx = await getWorkflowRequestContext(reqUrl);
+    if (!wfCtx?.ok || !wfCtx.engine) return [];
+    const summaries = wfCtx.engine.getRunHistory ? wfCtx.engine.getRunHistory(null, 240) : [];
+    const runs = [];
+    for (const summary of summaries) {
+      if (!summary?.runId) continue;
+      const detail = wfCtx.engine.getRunDetail ? wfCtx.engine.getRunDetail(summary.runId) : null;
+      if (!detail?.detail) continue;
+      const data = detail.detail?.data || {};
+      const primaryTaskId = String(
+        data.taskId || data.activeTaskId || data?.task?.id || "",
+      ).trim();
+      let matches = Boolean(primaryTaskId && taskIds.has(primaryTaskId));
+      if (!matches && typeof wfCtx.engine.getTaskTraceEvents === "function") {
+        const traceEvents = wfCtx.engine.getTaskTraceEvents(summary.runId) || [];
+        matches = traceEvents.some((event) => taskIds.has(String(event?.taskId || "").trim()));
+      }
+      if (!matches) continue;
+      runs.push({
+        runId: detail.runId,
+        workflowId: detail.workflowId,
+        workflowName: detail.workflowName,
+        status: detail.status,
+        startedAt: detail.startedAt || null,
+        endedAt: detail.endedAt || null,
+        duration: detail.duration || null,
+        summary:
+          detail.status === "failed"
+            ? `Workflow run failed (${detail.workflowName || detail.workflowId || detail.runId})`
+            : `Workflow run ${detail.status || "completed"} (${detail.workflowName || detail.workflowId || detail.runId})`,
+      });
+      if (runs.length >= limit) break;
+    }
+    return runs;
+  } catch {
+    return [];
+  }
+}
+
+async function collectBenchmarkExecutorActivity({
+  executor,
+  modeState,
+  workspaceContext,
+  tasks = [],
+}) {
+  if (!executor || typeof executor.getStatus !== "function") {
+    return {
+      activeSlots: 0,
+      paused: false,
+      maxParallel: 0,
+      benchmarkSlots: [],
+      competingSlots: [],
+      unclassifiedSlots: [],
+    };
+  }
+
+  const adapter = getKanbanAdapter();
+  const status = executor.getStatus() || {};
+  const slots = Array.isArray(status?.slots) ? status.slots : [];
+  const taskMap = new Map();
+  for (const task of Array.isArray(tasks) ? tasks : []) {
+    const taskId = String(task?.id || task?.task_id || "").trim();
+    if (!taskId) continue;
+    taskMap.set(taskId, task);
+  }
+
+  const benchmarkSlots = [];
+  const competingSlots = [];
+  const unclassifiedSlots = [];
+  for (const slot of slots) {
+    const taskId = String(slot?.taskId || slot?.task_id || "").trim();
+    if (!taskId) continue;
+    let task = taskMap.get(taskId) || null;
+    if (!task) {
+      try {
+        task = await adapter.getTask(taskId);
+      } catch {
+        task = null;
+      }
+    }
+    if (task && !taskMatchesWorkspaceContext(task, workspaceContext)) {
+      continue;
+    }
+    const entry = {
+      taskId,
+      taskTitle: String(slot?.taskTitle || task?.title || taskId).trim() || taskId,
+      status: String(slot?.status || task?.status || "").trim() || null,
+      runningFor: Number.isFinite(slot?.runningFor) ? Number(slot.runningFor) : null,
+      sdk: String(slot?.sdk || task?.sdk || task?.executor || "").trim() || null,
+      model: String(slot?.model || task?.model || task?.modelName || "").trim() || null,
+      workspace: String(task?.workspace || task?.meta?.workspace || "").trim() || null,
+      repository: String(task?.repository || task?.meta?.repository || "").trim() || null,
+    };
+    if (!task) {
+      unclassifiedSlots.push(entry);
+      continue;
+    }
+    if (
+      taskMatchesBenchmarkMode(task, modeState, {
+        repoRoot: modeState?.repoRoot || workspaceContext?.workspaceDir || repoRoot,
+      })
+    ) {
+      benchmarkSlots.push(entry);
+    } else {
+      competingSlots.push(entry);
+    }
+  }
+
+  return {
+    activeSlots: Number(status?.activeSlots || slots.length || 0),
+    paused: Boolean(status?.paused),
+    maxParallel: Number.isFinite(status?.maxParallel) ? Number(status.maxParallel) : 0,
+    benchmarkSlots,
+    competingSlots,
+    unclassifiedSlots,
+  };
+}
+
+async function holdCompetingBenchmarkSlots({
+  executor,
+  modeState,
+  workspaceContext,
+  tasks = [],
+}) {
+  const activity = await collectBenchmarkExecutorActivity({
+    executor,
+    modeState,
+    workspaceContext,
+    tasks,
+  });
+  const aborted = [];
+  if (!executor || typeof executor.abortTask !== "function") {
+    return { activity, attempted: 0, aborted, unclassified: activity.unclassifiedSlots };
+  }
+  for (const slot of activity.competingSlots) {
+    const result = executor.abortTask(String(slot.taskId), "benchmark_mode_focus");
+    aborted.push({
+      taskId: slot.taskId,
+      taskTitle: slot.taskTitle,
+      ok: Boolean(result?.ok),
+      reason: result?.reason || null,
+    });
+  }
+  return {
+    activity,
+    attempted: activity.competingSlots.length,
+    aborted,
+    unclassified: activity.unclassifiedSlots,
+  };
+}
+
+async function applyBenchmarkModeChange({
+  workspaceContext,
+  providerId,
+  body = {},
+  enable = true,
+}) {
+  const targetRoot =
+    normalizeCandidatePath(body?.repoRoot || body?.workspaceDir || workspaceContext?.workspaceDir)
+    || repoRoot;
+  const currentMode = readBenchmarkModeState(targetRoot);
+  const executor = uiDeps.getInternalExecutor?.() || null;
+
+  if (!enable) {
+    let restoredMaxParallel = null;
+    if (executor && Number.isFinite(currentMode.previousMaxParallel)) {
+      executor.maxParallel = Number(currentMode.previousMaxParallel);
+      if (currentMode.previousMaxParallel === 0) {
+        executor.pause?.("benchmark-mode-disabled");
+      } else if (executor.isPaused?.()) {
+        executor.resume?.();
+      }
+      restoredMaxParallel = executor.maxParallel;
+    }
+    return {
+      mode: clearBenchmarkModeState(targetRoot),
+      targetRoot,
+      restoredMaxParallel,
+      appliedMaxParallel: null,
+      holdResult: { attempted: 0, aborted: [], unclassified: [] },
+    };
+  }
+
+  const resolvedWorkspaceDir =
+    normalizeCandidatePath(body?.workspaceDir || workspaceContext?.workspaceDir || targetRoot)
+    || targetRoot;
+  const desiredMaxParallel = Number.isFinite(Number(body?.maxParallel))
+    ? Number(body.maxParallel)
+    : undefined;
+  let nextMode = buildBenchmarkModePreset(providerId, {
+    enabled: true,
+    repoRoot: targetRoot,
+    workspaceId: workspaceContext?.workspaceId || body?.workspaceId || "",
+    workspaceDir: resolvedWorkspaceDir,
+    pauseOtherAgents:
+      typeof body?.pauseOtherAgents === "boolean" ? body.pauseOtherAgents : undefined,
+    holdActiveNonBenchmarkTasks:
+      typeof body?.holdActiveNonBenchmarkTasks === "boolean"
+        ? body.holdActiveNonBenchmarkTasks
+        : undefined,
+    maxParallel: desiredMaxParallel,
+    previousMaxParallel:
+      currentMode.enabled && Number.isFinite(currentMode.previousMaxParallel)
+        ? currentMode.previousMaxParallel
+        : (executor && Number.isFinite(executor.maxParallel) ? executor.maxParallel : null),
+  });
+
+  let appliedMaxParallel = null;
+  if (executor && Number.isFinite(nextMode.maxParallel)) {
+    executor.maxParallel = Number(nextMode.maxParallel);
+    if (nextMode.maxParallel === 0) {
+      executor.pause?.("benchmark-mode");
+    } else if (executor.isPaused?.()) {
+      executor.resume?.();
+    }
+    appliedMaxParallel = executor.maxParallel;
+  }
+
+  nextMode = writeBenchmarkModeState(targetRoot, nextMode);
+  let holdResult = { attempted: 0, aborted: [], unclassified: [] };
+  if (executor && nextMode.holdActiveNonBenchmarkTasks) {
+    const { tasks } = await listTasksForWorkspaceContext(workspaceContext);
+    holdResult = await holdCompetingBenchmarkSlots({
+      executor,
+      modeState: nextMode,
+      workspaceContext,
+      tasks,
+    });
+  }
+
+  return {
+    mode: nextMode,
+    targetRoot,
+    restoredMaxParallel: null,
+    appliedMaxParallel,
+    holdResult,
+  };
+}
+
+async function buildBenchmarkSnapshot(reqUrl, providerId = "") {
+  const workspaceContext = resolveWorkspaceContextFromRequest(reqUrl, { allowAll: false });
+  if (!workspaceContext) {
+    return { ok: false, status: 400, error: "Unknown workspace. Set a valid workspace query value." };
+  }
+
+  const rawProviderId = String(providerId || "").trim().toLowerCase();
+  const modeState = readBenchmarkModeState(workspaceContext.workspaceDir || repoRoot);
+  const effectiveProviderId =
+    rawProviderId
+    || modeState.providerId
+    || (listBenchmarkProviders().find((entry) => entry.supports?.launch)?.id || "swebench");
+  const filterMode = modeState.enabled
+    ? modeState
+    : buildBenchmarkModePreset(effectiveProviderId, {
+        enabled: true,
+        workspaceId: workspaceContext.workspaceId,
+        workspaceDir: workspaceContext.workspaceDir,
+        repoRoot: workspaceContext.workspaceDir || repoRoot,
+      });
+
+  const { tasks, projectId } = await listTasksForWorkspaceContext(workspaceContext);
+  const matchingTasks = filterTasksForBenchmarkMode(tasks, filterMode, {
+    repoRoot: workspaceContext.workspaceDir || repoRoot,
+  });
+  const recentTasks = sortTasksByRecency(matchingTasks).slice(0, 12);
+  const enrichedTasks = await applySharedStateToTasks(recentTasks);
+  const recentWithRuntime = enrichedTasks.map((task) => withTaskRuntimeSnapshot(task));
+  const workflowRuns = await collectBenchmarkWorkflowRuns(
+    reqUrl,
+    new Set(matchingTasks.map((task) => String(task?.id || task?.task_id || "").trim()).filter(Boolean)),
+    12,
+  );
+  const executor = uiDeps.getInternalExecutor?.() || null;
+  const executorActivity = await collectBenchmarkExecutorActivity({
+    executor,
+    modeState: filterMode,
+    workspaceContext,
+    tasks,
+  });
+
+  return {
+    ok: true,
+    data: {
+      providers: listBenchmarkProviders(),
+      provider: getBenchmarkProvider(effectiveProviderId) ? effectiveProviderId : "",
+      workspace: {
+        workspaceId: workspaceContext.workspaceId || "",
+        workspaceDir: workspaceContext.workspaceDir || repoRoot,
+        workspaceRoot: workspaceContext.workspaceRoot || workspaceContext.workspaceDir || repoRoot,
+      },
+      projectId,
+      mode: modeState,
+      filter: filterMode,
+      summary: summarizeBenchmarkTasks(tasks, filterMode, {
+        repoRoot: workspaceContext.workspaceDir || repoRoot,
+      }),
+      recentTasks: recentWithRuntime,
+      workflowRuns,
+      executor: executorActivity,
+    },
   };
 }
 
@@ -9252,6 +9613,279 @@ async function handleApi(req, res, url) {
       const adapter = getKanbanAdapter();
       const projects = await adapter.listProjects();
       jsonResponse(res, 200, { ok: true, data: projects });
+    } catch (err) {
+      jsonResponse(res, 500, { ok: false, error: err.message });
+    }
+    return;
+  }
+
+  if (path === "/api/benchmarks" && req.method === "GET") {
+    try {
+      const providerId = String(
+        url.searchParams.get("provider") || url.searchParams.get("type") || "",
+      )
+        .trim()
+        .toLowerCase();
+      const snapshot = await buildBenchmarkSnapshot(url, providerId);
+      if (!snapshot?.ok) {
+        jsonResponse(res, snapshot?.status || 400, {
+          ok: false,
+          error: snapshot?.error || "Failed to load benchmark status",
+        });
+        return;
+      }
+      jsonResponse(res, 200, { ok: true, data: snapshot.data });
+    } catch (err) {
+      jsonResponse(res, 500, { ok: false, error: err.message });
+    }
+    return;
+  }
+
+  if (path === "/api/benchmarks/mode" && req.method === "POST") {
+    try {
+      const body = await readJsonBody(req).catch(() => ({}));
+      const requestedWorkspaceId = String(
+        body?.workspaceId || url.searchParams.get("workspace") || "",
+      ).trim();
+      const workspaceContext = requestedWorkspaceId
+        ? resolveWorkspaceContextById(requestedWorkspaceId)
+        : resolveWorkspaceContextFromRequest(url, { allowAll: false });
+      if (!workspaceContext) {
+        jsonResponse(res, 400, { ok: false, error: "Unknown workspace" });
+        return;
+      }
+
+      const providerId = String(
+        body?.providerId || body?.type || url.searchParams.get("provider") || "",
+      )
+        .trim()
+        .toLowerCase();
+      if (body?.enabled !== false && providerId && !getBenchmarkProvider(providerId)) {
+        jsonResponse(res, 400, { ok: false, error: `Unknown benchmark provider: ${providerId}` });
+        return;
+      }
+
+      const modeChange = await applyBenchmarkModeChange({
+        workspaceContext,
+        providerId,
+        body,
+        enable: body?.enabled !== false,
+      });
+
+      const snapshotUrl = new URL(url.toString());
+      if (workspaceContext.workspaceId) {
+        snapshotUrl.searchParams.set("workspace", workspaceContext.workspaceId);
+      }
+      if (providerId) {
+        snapshotUrl.searchParams.set("provider", providerId);
+      }
+      const snapshot = await buildBenchmarkSnapshot(snapshotUrl, providerId);
+
+      jsonResponse(res, 200, {
+        ok: true,
+        data: {
+          mode: modeChange.mode,
+          targetRoot: modeChange.targetRoot,
+          appliedMaxParallel: modeChange.appliedMaxParallel,
+          restoredMaxParallel: modeChange.restoredMaxParallel,
+          hold: modeChange.holdResult,
+          snapshot: snapshot?.ok ? snapshot.data : null,
+        },
+      });
+      broadcastUiEvent(["benchmarks", "tasks", "executor", "overview", "workflows"], "invalidate", {
+        reason: body?.enabled === false ? "benchmark-mode-disabled" : "benchmark-mode-enabled",
+        providerId: providerId || modeChange.mode?.providerId || "",
+        workspaceId: workspaceContext.workspaceId || "",
+      });
+    } catch (err) {
+      jsonResponse(res, 500, { ok: false, error: err.message });
+    }
+    return;
+  }
+
+  if (path === "/api/benchmarks/workspace" && req.method === "POST") {
+    try {
+      const body = await readJsonBody(req).catch(() => ({}));
+      const providerId = String(body?.providerId || body?.type || "").trim().toLowerCase();
+      const provider = providerId ? getBenchmarkProvider(providerId) : null;
+      if (providerId && !provider) {
+        jsonResponse(res, 400, { ok: false, error: `Unknown benchmark provider: ${providerId}` });
+        return;
+      }
+
+      const configDir = resolveUiConfigDir();
+      const workspaceName = String(
+        body?.name
+          || provider?.workspacePreset?.recommendedWorkspaceName
+          || (providerId ? `bench-${providerId}` : "bench"),
+      ).trim();
+      if (!workspaceName) {
+        jsonResponse(res, 400, { ok: false, error: "Workspace name is required" });
+        return;
+      }
+
+      const reuseExisting = body?.reuseExisting !== false;
+      let workspace = null;
+      let created = false;
+      try {
+        workspace = createManagedWorkspace(configDir, {
+          name: workspaceName,
+          id: body?.id,
+        });
+        created = true;
+      } catch (err) {
+        if (!reuseExisting || !String(err?.message || "").includes("already exists")) {
+          throw err;
+        }
+        const existingId = String(body?.id || workspaceName).trim().toLowerCase();
+        workspace = listManagedWorkspaces(configDir, { repoRoot }).find((entry) => {
+          const entryId = String(entry?.id || "").trim().toLowerCase();
+          const entryName = String(entry?.name || "").trim().toLowerCase();
+          return entryId === existingId || entryName === workspaceName.toLowerCase();
+        }) || null;
+        if (!workspace) throw err;
+      }
+
+      let repo = null;
+      if (body?.repoUrl) {
+        repo = addRepoToWorkspace(configDir, workspace.id, {
+          url: String(body.repoUrl).trim(),
+          name: String(body?.repoName || "").trim() || undefined,
+          branch: String(body?.repoBranch || body?.branch || "").trim() || undefined,
+          primary: body?.primary !== false,
+        });
+      }
+
+      if (body?.switchActive !== false) {
+        setActiveManagedWorkspace(configDir, workspace.id);
+      }
+
+      const resolvedWorkspace = listManagedWorkspaces(configDir, { repoRoot }).find(
+        (entry) => String(entry?.id || "").trim() === String(workspace?.id || "").trim(),
+      ) || workspace;
+
+      const presetRoot = normalizeCandidatePath(
+        body?.repoRoot || repo?.path || resolvedWorkspace?.path || workspace?.path || "",
+      );
+      const preset =
+        provider?.supports?.workspacePreset === true && presetRoot
+          ? prepareBenchmarkWorkspacePreset(presetRoot, {
+              providerId,
+              ensureRuntime: body?.ensureRuntime !== false,
+            })
+          : null;
+
+      let mode = null;
+      if (body?.activateMode === true) {
+        const workspaceContext = resolveWorkspaceContextById(workspace.id);
+        if (workspaceContext) {
+          const modeChange = await applyBenchmarkModeChange({
+            workspaceContext,
+            providerId,
+            body: {
+              ...body,
+              workspaceId: workspace.id,
+              workspaceDir: presetRoot || workspaceContext.workspaceDir,
+            },
+            enable: true,
+          });
+          mode = modeChange.mode;
+        }
+      }
+
+      jsonResponse(res, 200, {
+        ok: true,
+        data: {
+          workspace: resolvedWorkspace,
+          created,
+          reused: !created,
+          switchedActive: body?.switchActive !== false,
+          repo,
+          preset,
+          mode,
+        },
+      });
+      broadcastUiEvent(["workspaces", "library", "workflows", "benchmarks"], "invalidate", {
+        reason: "benchmark-workspace-prepared",
+        providerId,
+        workspaceId: workspace.id,
+      });
+    } catch (err) {
+      jsonResponse(res, 500, { ok: false, error: err.message });
+    }
+    return;
+  }
+
+  if (path === "/api/benchmarks/run" && req.method === "POST") {
+    try {
+      const body = await readJsonBody(req).catch(() => ({}));
+      const providerId = String(body?.providerId || body?.type || "").trim().toLowerCase();
+      if (!providerId) {
+        jsonResponse(res, 400, { ok: false, error: "providerId is required" });
+        return;
+      }
+      const provider = getBenchmarkProvider(providerId);
+      if (!provider) {
+        jsonResponse(res, 400, { ok: false, error: `Unknown benchmark provider: ${providerId}` });
+        return;
+      }
+
+      const requestedWorkspaceId = String(
+        body?.workspaceId || url.searchParams.get("workspace") || "",
+      ).trim();
+      const workspaceContext = requestedWorkspaceId
+        ? resolveWorkspaceContextById(requestedWorkspaceId)
+        : resolveWorkspaceContextFromRequest(url, { allowAll: false });
+      if (!workspaceContext) {
+        jsonResponse(res, 400, { ok: false, error: "Unknown workspace" });
+        return;
+      }
+
+      let preset = null;
+      if (body?.prepareWorkspace === true && provider.supports?.workspacePreset === true) {
+        preset = prepareBenchmarkWorkspacePreset(workspaceContext.workspaceDir, {
+          providerId,
+          ensureRuntime: body?.ensureRuntime !== false,
+        });
+      }
+
+      const launchResult = await launchBenchmark(providerId, body || {});
+      let mode = null;
+      if (body?.activateMode === true) {
+        const modeChange = await applyBenchmarkModeChange({
+          workspaceContext,
+          providerId,
+          body: {
+            ...body,
+            workspaceId: workspaceContext.workspaceId,
+            workspaceDir: workspaceContext.workspaceDir,
+          },
+          enable: true,
+        });
+        mode = modeChange.mode;
+      }
+
+      const snapshotUrl = new URL(url.toString());
+      if (workspaceContext.workspaceId) {
+        snapshotUrl.searchParams.set("workspace", workspaceContext.workspaceId);
+      }
+      snapshotUrl.searchParams.set("provider", providerId);
+      const snapshot = await buildBenchmarkSnapshot(snapshotUrl, providerId);
+
+      jsonResponse(res, 200, {
+        ok: true,
+        data: {
+          launch: launchResult,
+          preset,
+          mode,
+          snapshot: snapshot?.ok ? snapshot.data : null,
+        },
+      });
+      broadcastUiEvent(["benchmarks", "tasks", "workflows", "executor"], "invalidate", {
+        reason: "benchmark-run-started",
+        providerId,
+        workspaceId: workspaceContext.workspaceId || "",
+      });
     } catch (err) {
       jsonResponse(res, 500, { ok: false, error: err.message });
     }

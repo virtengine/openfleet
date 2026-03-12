@@ -90,6 +90,11 @@ describe("bosun SWE-bench bridge", () => {
     expect(tasks[0]?.candidateCount).toBe(2);
     expect(tasks[0]?.meta?.swebench?.instance_id).toBe("demo__repo-2");
     expect(tasks[0]?.meta?.swebench?.base_commit).toBe("def456");
+    expect(tasks[0]?.tags).toEqual(expect.arrayContaining(["benchmark", "swebench", "benchmark:swebench"]));
+    expect(tasks[0]?.meta?.benchmark).toEqual({
+      type: "swebench",
+      provider: "swebench",
+    });
     expect(tasks[0]?.workspace).toBe(workspaceDir);
 
     const workflowDir = resolve(workspaceDir, ".bosun", "workflows");

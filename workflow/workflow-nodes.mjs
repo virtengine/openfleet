@@ -25,6 +25,7 @@ import { createHash, randomUUID } from "node:crypto";
 import { getAgentToolConfig, getEffectiveTools } from "../agent/agent-tool-config.mjs";
 import { getToolsPromptBlock } from "../agent/agent-custom-tools.mjs";
 import { buildRelevantSkillsPromptBlock, findRelevantSkills } from "../agent/bosun-skills.mjs";
+import { readBenchmarkModeState, taskMatchesBenchmarkMode } from "../bench/benchmark-mode.mjs";
 import { getSessionTracker } from "../infra/session-tracker.mjs";
 import { fixGitConfigCorruption } from "../workspace/worktree-manager.mjs";
 import { clearBlockedWorktreeIdentity } from "../git/git-safety.mjs";
@@ -8074,6 +8075,7 @@ registerNodeType("trigger.task_available", {
       listRetries: { type: "number", default: 3, description: "Retries for listTasks calls" },
       listRetryDelayMs: { type: "number", default: 2000, description: "Base delay between retries" },
       repoAreaParallelLimit: { type: "number", default: 0, description: "Per-repo-area active task cap (0 disables limit)" },
+      respectBenchmarkMode: { type: "boolean", default: true, description: "Honor repo-local benchmark mode task filtering" },
       enforceStartGuards: { type: "boolean", default: true, description: "Filter out tasks blocked by dependency/sprint DAG start guards" },
       sprintOrderMode: { type: "string", enum: ["parallel", "sequential"], description: "Optional global sprint-order override when evaluating guards" },
       strictStartGuardMissingTask: { type: "boolean", default: false, description: "When true, task_not_found from start guards blocks dispatch and emits audit events" },
@@ -8087,6 +8089,7 @@ registerNodeType("trigger.task_available", {
     const listRetries = node.config?.listRetries ?? 3;
     const listRetryDelayMs = node.config?.listRetryDelayMs ?? 2000;
     const repoAreaParallelLimit = Number(node.config?.repoAreaParallelLimit ?? 0);
+    const respectBenchmarkMode = node.config?.respectBenchmarkMode !== false;
     const enforceStartGuards = node.config?.enforceStartGuards !== false;
     const sprintOrderMode = String(node.config?.sprintOrderMode || "").trim().toLowerCase();
     const strictStartGuardMissingTask =
@@ -8169,6 +8172,40 @@ registerNodeType("trigger.task_available", {
 
     if (tasks.length === 0) {
       return { triggered: false, reason: "all_filtered", taskCount: 0 };
+    }
+
+    let benchmarkMode = null;
+    if (respectBenchmarkMode && tasks.length > 0) {
+      try {
+        const benchmarkRepoRoot =
+          cfgOrCtx(node, ctx, "repoRoot")
+          || cfgOrCtx(node, ctx, "workspace")
+          || process.cwd();
+        benchmarkMode = readBenchmarkModeState(benchmarkRepoRoot);
+        if (benchmarkMode.enabled) {
+          const beforeCount = tasks.length;
+          tasks = tasks.filter((task) =>
+            taskMatchesBenchmarkMode(task, benchmarkMode, { repoRoot: benchmarkRepoRoot }),
+          );
+          const filteredCount = beforeCount - tasks.length;
+          if (filteredCount > 0) {
+            ctx.log(
+              node.id,
+              `Benchmark mode filtered ${filteredCount} competing task(s) for ${benchmarkMode.providerId || "benchmark"} focus`,
+            );
+          }
+          if (tasks.length === 0) {
+            return {
+              triggered: false,
+              reason: "benchmark_mode_filtered",
+              taskCount: 0,
+              benchmarkMode,
+            };
+          }
+        }
+      } catch (err) {
+        ctx.log(node.id, `Benchmark mode filter warning: ${err?.message || err}`);
+      }
     }
 
     // DAG / sprint-order guard: only dispatch tasks that can legally start.
@@ -8264,6 +8301,7 @@ registerNodeType("trigger.task_available", {
             taskCount: 0,
             blocked,
             auditEvents,
+            benchmarkMode,
           };
         }
       }
@@ -8331,6 +8369,7 @@ registerNodeType("trigger.task_available", {
           availableSlots: remaining,
           repoAreaParallelLimit,
           auditEvents: startGuardAuditEvents,
+          benchmarkMode,
         };
       }
     }
@@ -8394,6 +8433,7 @@ registerNodeType("trigger.task_available", {
       availableSlots: remaining,
       selectedTaskId: primaryTask ? pickTaskString(primaryTask.id, primaryTask.task_id) : "",
       auditEvents: startGuardAuditEvents,
+      benchmarkMode,
     };
   },
 });

@@ -1,5 +1,3 @@
-#!/usr/bin/env node
-
 /**
  * task-cli.mjs — CLI task management for Bosun
  *

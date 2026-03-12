@@ -78,7 +78,7 @@
   },
   "bin": {
     "bosun": "cli.mjs",
-    "bosun-task": "task/task-cli.mjs",
+    "bosun-task": "task/task-cli-bin.mjs",
     "bosun-setup": "setup.mjs",
     "bosun-chat-id": "telegram/get-telegram-chat-id.mjs",
     "bosun-shared-workspaces": "workspace/shared-workspace-cli.mjs",
@@ -236,6 +236,7 @@
     "task/task-assessment.mjs",
     "task/task-debt-ledger.mjs",
     "task/task-cli.mjs",
+    "task/task-cli-bin.mjs",
     "task/task-complexity.mjs",
     "task/task-claims.mjs",
     "task/task-context.mjs",

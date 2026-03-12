@@ -70,7 +70,7 @@ ADJACENCY_MAP=(
   "workspace/|workspace-*|shared-state*|worktree-*|sync-engine*"
   "infra/|monitor-*|daemon-*|restart-*|startup-*|maintenance-*|anomaly-*|preflight*"
   "agent/|agent-*|primary-agent*|fleet-*|review-agent*|analyze-agent*|autofix*|streaming-agent*"
-  "bench/|bench-swebench*|task-*"
+  "bench/|bench-swebench*|benchmark-*|task-*"
   "config/|config-*|bosun-skills*|codex-config*"
   "telegram/|telegram-*|whatsapp-*"
   "voice/|voice-*|mic-*|native-call*"

@@ -1,5 +1,3 @@
-#!/usr/bin/env node
-
 import { readFileSync, writeFileSync, existsSync, mkdirSync } from "node:fs";
 import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -133,13 +131,17 @@ export function buildTaskFromInstance(instance, opts = {}) {
     description,
     status: opts.status || "todo",
     priority: opts.priority || "high",
-    tags: ["swebench", "benchmark"],
+    tags: ["swebench", "benchmark", "benchmark:swebench"],
     workspace: workspace || process.cwd(),
     repository: repo,
     baseBranch: "main",
     meta: {
       candidateCount: candidateCount > 1 ? candidateCount : undefined,
       execution: candidateCount > 1 ? { candidateCount } : {},
+      benchmark: {
+        type: "swebench",
+        provider: "swebench",
+      },
       swebench: {
         instance_id: instanceId,
         repo,
@@ -312,6 +314,23 @@ export async function cmdImport(args) {
   }
 
   console.log(`Imported SWE-bench tasks: created=${created}, skipped=${skipped}, total=${instances.length}`);
+  return {
+    created,
+    skipped,
+    total: instances.length,
+    ensureRuntime,
+    runtime: {
+      workspaces: runtimeResults.size,
+      installed: [...runtimeResults.values()].reduce(
+        (sum, result) => sum + (Array.isArray(result.installed) ? result.installed.length : 0),
+        0,
+      ),
+      alreadyPresent: [...runtimeResults.values()].reduce(
+        (sum, result) => sum + (Array.isArray(result.skipped) ? result.skipped.length : 0),
+        0,
+      ),
+    },
+  };
 }
 
 export async function cmdExport(args) {

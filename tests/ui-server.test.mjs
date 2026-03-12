@@ -2547,6 +2547,215 @@ describe("ui-server mini app", () => {
     }
   });
 
-});
+  it("serves benchmark snapshots and persists benchmark mode for the active workspace", async () => {
+    process.env.TELEGRAM_UI_TUNNEL = "disabled";
+    const tmpDir = mkdtempSync(join(tmpdir(), "bosun-ui-benchmark-mode-"));
+    const configPath = join(tmpDir, "bosun.config.json");
+    const workspaceRoot = join(tmpDir, "workspaces", "bench-alpha");
+    const workspaceRepo = join(workspaceRoot, "repo");
+    mkdirSync(join(workspaceRepo, ".git"), { recursive: true });
+    process.env.BOSUN_CONFIG_PATH = configPath;
+    writeFileSync(
+      configPath,
+      JSON.stringify(
+        {
+          $schema: "./bosun.schema.json",
+          activeWorkspace: "bench-alpha",
+          workspaces: [
+            {
+              id: "bench-alpha",
+              name: "Benchmark Alpha",
+              path: workspaceRoot,
+              activeRepo: "repo",
+              repos: [{ name: "repo", path: workspaceRepo, primary: true }],
+            },
+          ],
+        },
+        null,
+        2,
+      ) + "\n",
+      "utf8",
+    );
 
+    const mod = await import("../server/ui-server.mjs");
+    const executor = {
+      maxParallel: 4,
+      paused: false,
+      getStatus() {
+        return {
+          maxParallel: this.maxParallel,
+          activeSlots: 0,
+          slots: [],
+          paused: this.paused,
+        };
+      },
+      isPaused() {
+        return this.paused;
+      },
+      pause() {
+        this.paused = true;
+      },
+      resume() {
+        this.paused = false;
+      },
+      abortTask: vi.fn(() => ({ ok: true, reason: "benchmark_mode_focus" })),
+    };
+    mod.injectUiDependencies({
+      getInternalExecutor: () => executor,
+    });
+
+    const server = await mod.startTelegramUiServer({
+      port: await getFreePort(),
+      host: "127.0.0.1",
+      skipInstanceLock: true,
+      skipAutoOpen: true,
+    });
+    const port = server.address().port;
+
+    try {
+      const snapshot = await fetch(`http://127.0.0.1:${port}/api/benchmarks`).then((r) => r.json());
+      expect(snapshot.ok).toBe(true);
+      expect(snapshot.data.providers.some((entry) => entry.id === "swebench")).toBe(true);
+      expect(snapshot.data.workspace.workspaceId).toBe("bench-alpha");
+
+      const enabled = await fetch(`http://127.0.0.1:${port}/api/benchmarks/mode`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          providerId: "swebench",
+          enabled: true,
+          maxParallel: 1,
+          pauseOtherAgents: true,
+          holdActiveNonBenchmarkTasks: false,
+        }),
+      }).then((r) => r.json());
+
+      expect(enabled.ok).toBe(true);
+      expect(enabled.data.mode.enabled).toBe(true);
+      expect(enabled.data.mode.providerId).toBe("swebench");
+      expect(enabled.data.appliedMaxParallel).toBe(1);
+
+      const modePath = join(workspaceRepo, ".bosun", ".cache", "benchmark-mode.json");
+      expect(existsSync(modePath)).toBe(true);
+      expect(JSON.parse(readFileSync(modePath, "utf8")).providerId).toBe("swebench");
+
+      const disabled = await fetch(`http://127.0.0.1:${port}/api/benchmarks/mode`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ providerId: "swebench", enabled: false }),
+      }).then((r) => r.json());
+
+      expect(disabled.ok).toBe(true);
+      expect(disabled.data.mode.enabled).toBe(false);
+      expect(existsSync(modePath)).toBe(false);
+    } finally {
+      rmSync(tmpDir, { recursive: true, force: true });
+    }
+  }, 20000);
+
+  it("creates benchmark workspaces and launches SWE-bench imports through benchmark routes", async () => {
+    process.env.TELEGRAM_UI_TUNNEL = "disabled";
+    const tmpDir = mkdtempSync(join(tmpdir(), "bosun-ui-benchmark-run-"));
+    const configPath = join(tmpDir, "bosun.config.json");
+    process.env.BOSUN_CONFIG_PATH = configPath;
+    writeFileSync(
+      configPath,
+      JSON.stringify({ $schema: "./bosun.schema.json", workspaces: [] }, null, 2) + "\n",
+      "utf8",
+    );
+
+    const mod = await import("../server/ui-server.mjs");
+    const executor = {
+      maxParallel: 3,
+      paused: false,
+      getStatus() {
+        return {
+          maxParallel: this.maxParallel,
+          activeSlots: 0,
+          slots: [],
+          paused: this.paused,
+        };
+      },
+      isPaused() {
+        return this.paused;
+      },
+      pause() {
+        this.paused = true;
+      },
+      resume() {
+        this.paused = false;
+      },
+      abortTask: vi.fn(() => ({ ok: true, reason: "benchmark_mode_focus" })),
+    };
+    mod.injectUiDependencies({
+      getInternalExecutor: () => executor,
+    });
+
+    const server = await mod.startTelegramUiServer({
+      port: await getFreePort(),
+      host: "127.0.0.1",
+      skipInstanceLock: true,
+      skipAutoOpen: true,
+    });
+    const port = server.address().port;
+
+    try {
+      const workspaceResponse = await fetch(`http://127.0.0.1:${port}/api/benchmarks/workspace`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          providerId: "swebench",
+          name: "Bench Smoke",
+          switchActive: true,
+          ensureRuntime: true,
+        }),
+      }).then((r) => r.json());
+
+      expect(workspaceResponse.ok).toBe(true);
+      expect(workspaceResponse.data.created).toBe(true);
+      expect(workspaceResponse.data.preset.profile.id).toBe("benchmark-agent");
+
+      const workspaceRoot = workspaceResponse.data.preset.rootDir || workspaceResponse.data.workspace.path;
+      expect(typeof workspaceRoot).toBe("string");
+      expect(existsSync(join(workspaceRoot, ".bosun", "profiles", "benchmark-agent.json"))).toBe(true);
+
+      const instancesPath = join(tmpDir, "instances.jsonl");
+      writeFileSync(
+        instancesPath,
+        `${JSON.stringify({
+          instance_id: "demo__bench-1",
+          problem_statement: "Fix benchmark route coverage",
+          repo: "acme/widgets",
+          base_commit: "abc123",
+          workspace: workspaceRoot,
+        })}\n`,
+        "utf8",
+      );
+
+      const runResponse = await fetch(`http://127.0.0.1:${port}/api/benchmarks/run`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          providerId: "swebench",
+          instances: instancesPath,
+          prepareWorkspace: true,
+          activateMode: true,
+        }),
+      }).then((r) => r.json());
+
+      expect(runResponse.ok).toBe(true);
+      expect(runResponse.data.launch.created).toBe(1);
+      expect(runResponse.data.mode.enabled).toBe(true);
+      expect(runResponse.data.snapshot.recentTasks.some((task) => task.id === "swebench-demo__bench-1")).toBe(true);
+
+      const storePath = join(workspaceRoot, ".bosun", ".cache", "kanban-state.json");
+      expect(existsSync(storePath)).toBe(true);
+      const store = JSON.parse(readFileSync(storePath, "utf8"));
+      expect(Object.keys(store.tasks || {})).toContain("swebench-demo__bench-1");
+    } finally {
+      rmSync(tmpDir, { recursive: true, force: true });
+    }
+  }, 30000);
+
+});
 
