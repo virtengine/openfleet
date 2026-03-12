@@ -169,6 +169,8 @@ const INTENTIONALLY_SKIPPED = new Set([
   "/api/workspaces/state",
   "/api/workspaces/executors",
   "/api/workspaces/workflows",
+  // Task execution plan — server-only (requires task store + library resolver)
+  "/api/tasks/execution-plan",
 ]);
 
 // ── Session actions intentionally skipped in demo ─────────────────────

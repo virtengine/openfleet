@@ -11736,6 +11736,180 @@
       ]
     },
     {
+      "id": "template-task-backend",
+      "name": "Backend Task Workflow",
+      "description": "Specialised for server-side tasks — APIs, databases, services, middleware. Runs three phases: plan, implement with TDD, and verify with full test suite.",
+      "category": "task-execution",
+      "categoryLabel": "Task Execution",
+      "categoryIcon": ":settings:",
+      "categoryOrder": 99,
+      "tags": [
+        "backend",
+        "api",
+        "server",
+        "task-type"
+      ],
+      "nodeCount": 5,
+      "edgeCount": 4,
+      "recommended": true,
+      "enabled": true,
+      "trigger": "trigger.task_assigned",
+      "variables": {
+        "taskTimeoutMs": 21600000,
+        "maxRetries": 2,
+        "maxContinues": 3,
+        "testCommand": "auto",
+        "buildCommand": "auto",
+        "lintCommand": "auto"
+      },
+      "metadata": {
+        "author": "bosun",
+        "version": 1,
+        "createdAt": "2025-06-01T00:00:00Z",
+        "templateVersion": "1.0.0",
+        "tags": [
+          "backend",
+          "api",
+          "server",
+          "task-type"
+        ],
+        "resolveMode": "library"
+      },
+      "nodes": [
+        {
+          "id": "trigger",
+          "type": "trigger.task_assigned",
+          "label": "Task Assigned",
+          "config": {
+            "taskPattern": "api|server|backend|database|model|migration|endpoint|middleware|service|graphql|rest|grpc"
+          },
+          "position": {
+            "x": 400,
+            "y": 50
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "plan",
+          "type": "action.run_agent",
+          "label": "Plan Backend",
+          "config": {
+            "prompt": "## Phase: Backend Planning\n\nAnalyse the task and produce a plan:\n1. Data model / schema changes\n2. API endpoint design (routes, request/response shapes)\n3. Service layer logic\n4. Database queries or migrations\n5. Test plan (unit + integration)\n\nDo NOT write code yet.",
+            "taskId": "{{taskId}}",
+            "sdk": "{{resolvedSdk}}",
+            "model": "{{resolvedModel}}",
+            "agentProfile": "{{agentProfile}}",
+            "cwd": "{{worktreePath}}",
+            "timeoutMs": "{{taskTimeoutMs}}",
+            "maxRetries": "{{maxRetries}}",
+            "maxContinues": "{{maxContinues}}",
+            "resolveMode": "library",
+            "failOnError": false
+          },
+          "position": {
+            "x": 400,
+            "y": 180
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "implement-tdd",
+          "type": "action.run_agent",
+          "label": "Implement (TDD)",
+          "config": {
+            "prompt": "## Phase: Test-Driven Implementation\n\n1. Write tests FIRST for the planned changes\n2. Verify tests fail (red)\n3. Implement the backend logic to make tests pass (green)\n4. Refactor for clarity and performance\n5. Run full test suite: {{testCommand}}\n6. Run build: {{buildCommand}}\n7. Run lint: {{lintCommand}}\n\nCommit with descriptive messages.",
+            "taskId": "{{taskId}}",
+            "sdk": "{{resolvedSdk}}",
+            "model": "{{resolvedModel}}",
+            "agentProfile": "{{agentProfile}}",
+            "cwd": "{{worktreePath}}",
+            "timeoutMs": "{{taskTimeoutMs}}",
+            "maxRetries": "{{maxRetries}}",
+            "maxContinues": "{{maxContinues}}",
+            "resolveMode": "library",
+            "failOnError": false
+          },
+          "position": {
+            "x": 400,
+            "y": 380
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "verify",
+          "type": "action.run_agent",
+          "label": "Verify & PR",
+          "config": {
+            "prompt": "## Phase: Verification\n\n1. Run the complete test suite: {{testCommand}}\n2. Run build: {{buildCommand}}\n3. Ensure no regressions\n4. Push changes and create/update PR\n5. Include test results summary in PR description",
+            "taskId": "{{taskId}}",
+            "sdk": "{{resolvedSdk}}",
+            "model": "{{resolvedModel}}",
+            "agentProfile": "{{agentProfile}}",
+            "cwd": "{{worktreePath}}",
+            "timeoutMs": "{{taskTimeoutMs}}",
+            "maxRetries": "{{maxRetries}}",
+            "maxContinues": "{{maxContinues}}",
+            "resolveMode": "library",
+            "failOnError": false
+          },
+          "position": {
+            "x": 400,
+            "y": 560
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "done",
+          "type": "notify.log",
+          "label": "Complete",
+          "config": {
+            "message": "Backend task completed — API/service implemented and tested."
+          },
+          "position": {
+            "x": 400,
+            "y": 720
+          },
+          "outputs": [
+            "default"
+          ]
+        }
+      ],
+      "edges": [
+        {
+          "id": "trigger->plan",
+          "source": "trigger",
+          "target": "plan",
+          "sourcePort": "default"
+        },
+        {
+          "id": "plan->implement-tdd",
+          "source": "plan",
+          "target": "implement-tdd",
+          "sourcePort": "default"
+        },
+        {
+          "id": "implement-tdd->verify",
+          "source": "implement-tdd",
+          "target": "verify",
+          "sourcePort": "default"
+        },
+        {
+          "id": "verify->done",
+          "source": "verify",
+          "target": "done",
+          "sourcePort": "default"
+        }
+      ]
+    },
+    {
       "id": "template-bosun-tool-pipeline",
       "name": "Bosun Tool Pipeline",
       "description": "Run Bosun built-in or custom tools from a workflow with structured output piping. Discovers available tools, invokes a selected tool, extracts specific data fields, and forwards them to downstream nodes. Combines action.bosun_function and action.bosun_tool for full tool integration.",
@@ -11934,6 +12108,184 @@
           "id": "run-tool->log-results",
           "source": "run-tool",
           "target": "log-results",
+          "sourcePort": "default"
+        }
+      ]
+    },
+    {
+      "id": "template-task-cicd",
+      "name": "CI/CD Task Workflow",
+      "description": "For pipeline, deployment, infrastructure, and build-system tasks. Plans the change, implements with validation steps, then verifies the pipeline works end-to-end.",
+      "category": "task-execution",
+      "categoryLabel": "Task Execution",
+      "categoryIcon": ":settings:",
+      "categoryOrder": 99,
+      "tags": [
+        "ci",
+        "cd",
+        "pipeline",
+        "deploy",
+        "infrastructure",
+        "task-type"
+      ],
+      "nodeCount": 5,
+      "edgeCount": 4,
+      "recommended": true,
+      "enabled": true,
+      "trigger": "trigger.task_assigned",
+      "variables": {
+        "taskTimeoutMs": 21600000,
+        "maxRetries": 2,
+        "maxContinues": 3,
+        "testCommand": "auto",
+        "buildCommand": "auto",
+        "lintCommand": "auto"
+      },
+      "metadata": {
+        "author": "bosun",
+        "version": 1,
+        "createdAt": "2025-06-01T00:00:00Z",
+        "templateVersion": "1.0.0",
+        "tags": [
+          "ci",
+          "cd",
+          "pipeline",
+          "deploy",
+          "infrastructure",
+          "task-type"
+        ],
+        "resolveMode": "library"
+      },
+      "nodes": [
+        {
+          "id": "trigger",
+          "type": "trigger.task_assigned",
+          "label": "Task Assigned",
+          "config": {
+            "taskPattern": "ci|cd|pipeline|deploy|infrastructure|docker|kubernetes|k8s|terraform|github.action|build.system|release|devops"
+          },
+          "position": {
+            "x": 400,
+            "y": 50
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "plan-pipeline",
+          "type": "action.run_agent",
+          "label": "Plan Pipeline Change",
+          "config": {
+            "prompt": "## Phase: CI/CD Planning\n\nAnalyse the pipeline/infrastructure task:\n1. Current CI/CD configuration\n2. What needs to change and why\n3. Impact on existing workflows/pipelines\n4. Rollback strategy\n5. Test plan for verifying the change\n\nDo NOT make changes yet.",
+            "taskId": "{{taskId}}",
+            "sdk": "{{resolvedSdk}}",
+            "model": "{{resolvedModel}}",
+            "agentProfile": "{{agentProfile}}",
+            "cwd": "{{worktreePath}}",
+            "timeoutMs": "{{taskTimeoutMs}}",
+            "maxRetries": "{{maxRetries}}",
+            "maxContinues": "{{maxContinues}}",
+            "resolveMode": "library",
+            "failOnError": false
+          },
+          "position": {
+            "x": 400,
+            "y": 180
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "implement-pipeline",
+          "type": "action.run_agent",
+          "label": "Implement Pipeline",
+          "config": {
+            "prompt": "## Phase: Pipeline Implementation\n\n1. Make the CI/CD / infrastructure changes per the plan\n2. Update configuration files (workflows, Dockerfiles, Terraform, etc.)\n3. Add or update pipeline tests where applicable\n4. Run build: {{buildCommand}}\n5. Run lint: {{lintCommand}}\n6. Validate configuration syntax\n\nCommit changes with clear descriptions.",
+            "taskId": "{{taskId}}",
+            "sdk": "{{resolvedSdk}}",
+            "model": "{{resolvedModel}}",
+            "agentProfile": "{{agentProfile}}",
+            "cwd": "{{worktreePath}}",
+            "timeoutMs": "{{taskTimeoutMs}}",
+            "maxRetries": "{{maxRetries}}",
+            "maxContinues": "{{maxContinues}}",
+            "resolveMode": "library",
+            "failOnError": false
+          },
+          "position": {
+            "x": 400,
+            "y": 380
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "verify-pipeline",
+          "type": "action.run_agent",
+          "label": "Verify & PR",
+          "config": {
+            "prompt": "## Phase: Pipeline Verification\n\n1. Run full test suite: {{testCommand}}\n2. Run build: {{buildCommand}}\n3. Verify pipeline configuration is valid\n4. Push and create/update PR\n5. Include deployment / rollback instructions in PR description",
+            "taskId": "{{taskId}}",
+            "sdk": "{{resolvedSdk}}",
+            "model": "{{resolvedModel}}",
+            "agentProfile": "{{agentProfile}}",
+            "cwd": "{{worktreePath}}",
+            "timeoutMs": "{{taskTimeoutMs}}",
+            "maxRetries": "{{maxRetries}}",
+            "maxContinues": "{{maxContinues}}",
+            "resolveMode": "library",
+            "failOnError": false
+          },
+          "position": {
+            "x": 400,
+            "y": 560
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "done",
+          "type": "notify.log",
+          "label": "Complete",
+          "config": {
+            "message": "CI/CD task completed — pipeline updated and verified."
+          },
+          "position": {
+            "x": 400,
+            "y": 720
+          },
+          "outputs": [
+            "default"
+          ]
+        }
+      ],
+      "edges": [
+        {
+          "id": "trigger->plan-pipeline",
+          "source": "trigger",
+          "target": "plan-pipeline",
+          "sourcePort": "default"
+        },
+        {
+          "id": "plan-pipeline->implement-pipeline",
+          "source": "plan-pipeline",
+          "target": "implement-pipeline",
+          "sourcePort": "default"
+        },
+        {
+          "id": "implement-pipeline->verify-pipeline",
+          "source": "implement-pipeline",
+          "target": "verify-pipeline",
+          "sourcePort": "default"
+        },
+        {
+          "id": "verify-pipeline->done",
+          "source": "verify-pipeline",
+          "target": "done",
           "sourcePort": "default"
         }
       ]
@@ -12265,6 +12617,358 @@
       ]
     },
     {
+      "id": "template-task-debug",
+      "name": "Debug Task Workflow",
+      "description": "Bug investigation and fix workflow. Starts with reproduction and root-cause analysis, then implements a targeted fix with regression tests.",
+      "category": "task-execution",
+      "categoryLabel": "Task Execution",
+      "categoryIcon": ":settings:",
+      "categoryOrder": 99,
+      "tags": [
+        "debug",
+        "bug",
+        "fix",
+        "error",
+        "task-type"
+      ],
+      "nodeCount": 5,
+      "edgeCount": 4,
+      "recommended": true,
+      "enabled": true,
+      "trigger": "trigger.task_assigned",
+      "variables": {
+        "taskTimeoutMs": 21600000,
+        "maxRetries": 3,
+        "maxContinues": 4,
+        "testCommand": "auto",
+        "buildCommand": "auto",
+        "lintCommand": "auto"
+      },
+      "metadata": {
+        "author": "bosun",
+        "version": 1,
+        "createdAt": "2025-06-01T00:00:00Z",
+        "templateVersion": "1.0.0",
+        "tags": [
+          "debug",
+          "bug",
+          "fix",
+          "error",
+          "task-type"
+        ],
+        "resolveMode": "library"
+      },
+      "nodes": [
+        {
+          "id": "trigger",
+          "type": "trigger.task_assigned",
+          "label": "Task Assigned",
+          "config": {
+            "taskPattern": "bug|fix|error|crash|regression|broken|debug|issue|defect|hotfix|patch"
+          },
+          "position": {
+            "x": 400,
+            "y": 50
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "reproduce",
+          "type": "action.run_agent",
+          "label": "Reproduce & Analyse",
+          "config": {
+            "prompt": "## Phase: Bug Reproduction & Root Cause Analysis\n\n1. Read the bug report carefully\n2. Find the relevant code area\n3. Reproduce the issue (write a failing test if possible)\n4. Trace the root cause through the codebase\n5. Document: what fails, where, why, and the minimal fix needed\n\nDo NOT fix the bug yet — only diagnose.",
+            "taskId": "{{taskId}}",
+            "sdk": "{{resolvedSdk}}",
+            "model": "{{resolvedModel}}",
+            "agentProfile": "{{agentProfile}}",
+            "cwd": "{{worktreePath}}",
+            "timeoutMs": "{{taskTimeoutMs}}",
+            "maxRetries": "{{maxRetries}}",
+            "maxContinues": "{{maxContinues}}",
+            "resolveMode": "library",
+            "failOnError": false
+          },
+          "position": {
+            "x": 400,
+            "y": 180
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "fix-and-test",
+          "type": "action.run_agent",
+          "label": "Fix & Regression Test",
+          "config": {
+            "prompt": "## Phase: Fix Implementation with Regression Tests\n\n1. Write a regression test that demonstrates the bug (must fail before fix)\n2. Apply the minimal, surgical fix\n3. Verify the regression test now passes\n4. Run the full test suite: {{testCommand}}\n5. Run build: {{buildCommand}}\n6. Run lint: {{lintCommand}}\n7. Ensure no other tests broke\n\nCommit fix and test together with a clear commit message.",
+            "taskId": "{{taskId}}",
+            "sdk": "{{resolvedSdk}}",
+            "model": "{{resolvedModel}}",
+            "agentProfile": "{{agentProfile}}",
+            "cwd": "{{worktreePath}}",
+            "timeoutMs": "{{taskTimeoutMs}}",
+            "maxRetries": "{{maxRetries}}",
+            "maxContinues": "{{maxContinues}}",
+            "resolveMode": "library",
+            "failOnError": false
+          },
+          "position": {
+            "x": 400,
+            "y": 380
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "verify",
+          "type": "action.run_agent",
+          "label": "Verify & PR",
+          "config": {
+            "prompt": "## Phase: Final Verification\n\n1. Run complete test suite: {{testCommand}}\n2. Run build: {{buildCommand}}\n3. Confirm the original bug is fixed\n4. Confirm no regressions\n5. Push and create/update PR with root cause analysis in description",
+            "taskId": "{{taskId}}",
+            "sdk": "{{resolvedSdk}}",
+            "model": "{{resolvedModel}}",
+            "agentProfile": "{{agentProfile}}",
+            "cwd": "{{worktreePath}}",
+            "timeoutMs": "{{taskTimeoutMs}}",
+            "maxRetries": "{{maxRetries}}",
+            "maxContinues": "{{maxContinues}}",
+            "resolveMode": "library",
+            "failOnError": false
+          },
+          "position": {
+            "x": 400,
+            "y": 560
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "done",
+          "type": "notify.log",
+          "label": "Complete",
+          "config": {
+            "message": "Debug task completed — bug fixed with regression test."
+          },
+          "position": {
+            "x": 400,
+            "y": 720
+          },
+          "outputs": [
+            "default"
+          ]
+        }
+      ],
+      "edges": [
+        {
+          "id": "trigger->reproduce",
+          "source": "trigger",
+          "target": "reproduce",
+          "sourcePort": "default"
+        },
+        {
+          "id": "reproduce->fix-and-test",
+          "source": "reproduce",
+          "target": "fix-and-test",
+          "sourcePort": "default"
+        },
+        {
+          "id": "fix-and-test->verify",
+          "source": "fix-and-test",
+          "target": "verify",
+          "sourcePort": "default"
+        },
+        {
+          "id": "verify->done",
+          "source": "verify",
+          "target": "done",
+          "sourcePort": "default"
+        }
+      ]
+    },
+    {
+      "id": "template-task-design",
+      "name": "Design Task Workflow",
+      "description": "For design-related tasks — mockups, wireframes, design tokens, component library work. Analyses design requirements, implements the design system changes, and verifies visual output.",
+      "category": "task-execution",
+      "categoryLabel": "Task Execution",
+      "categoryIcon": ":settings:",
+      "categoryOrder": 99,
+      "tags": [
+        "design",
+        "mockup",
+        "wireframe",
+        "design-system",
+        "task-type"
+      ],
+      "nodeCount": 5,
+      "edgeCount": 4,
+      "recommended": false,
+      "enabled": true,
+      "trigger": "trigger.task_assigned",
+      "variables": {
+        "taskTimeoutMs": 21600000,
+        "maxRetries": 2,
+        "maxContinues": 3,
+        "testCommand": "auto",
+        "buildCommand": "auto",
+        "lintCommand": "auto"
+      },
+      "metadata": {
+        "author": "bosun",
+        "version": 1,
+        "createdAt": "2025-06-01T00:00:00Z",
+        "templateVersion": "1.0.0",
+        "tags": [
+          "design",
+          "mockup",
+          "wireframe",
+          "design-system",
+          "task-type"
+        ],
+        "resolveMode": "library"
+      },
+      "nodes": [
+        {
+          "id": "trigger",
+          "type": "trigger.task_assigned",
+          "label": "Task Assigned",
+          "config": {
+            "taskPattern": "design|mockup|wireframe|prototype|design.system|theme|color|typography|icon|illustration|ux"
+          },
+          "position": {
+            "x": 400,
+            "y": 50
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "analyse-requirements",
+          "type": "action.run_agent",
+          "label": "Analyse Design Req",
+          "config": {
+            "prompt": "## Phase: Design Requirements Analysis\n\n1. Review the design task requirements\n2. Identify affected design tokens, components, or patterns\n3. Check existing design system for reusable pieces\n4. Plan the implementation approach\n5. List affected files and components\n\nDo NOT make changes yet.",
+            "taskId": "{{taskId}}",
+            "sdk": "{{resolvedSdk}}",
+            "model": "{{resolvedModel}}",
+            "agentProfile": "{{agentProfile}}",
+            "cwd": "{{worktreePath}}",
+            "timeoutMs": "{{taskTimeoutMs}}",
+            "maxRetries": "{{maxRetries}}",
+            "maxContinues": "{{maxContinues}}",
+            "resolveMode": "library",
+            "failOnError": false
+          },
+          "position": {
+            "x": 400,
+            "y": 180
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "implement-design",
+          "type": "action.run_agent",
+          "label": "Implement Design",
+          "config": {
+            "prompt": "## Phase: Design Implementation\n\n1. Update design tokens (colors, spacing, typography) if needed\n2. Create / update components per the design specification\n3. Ensure consistency with existing design system\n4. Add visual tests or snapshots where applicable\n5. Run build: {{buildCommand}}\n6. Run lint: {{lintCommand}}\n\nCommit changes with descriptive messages.",
+            "taskId": "{{taskId}}",
+            "sdk": "{{resolvedSdk}}",
+            "model": "{{resolvedModel}}",
+            "agentProfile": "{{agentProfile}}",
+            "cwd": "{{worktreePath}}",
+            "timeoutMs": "{{taskTimeoutMs}}",
+            "maxRetries": "{{maxRetries}}",
+            "maxContinues": "{{maxContinues}}",
+            "resolveMode": "library",
+            "failOnError": false
+          },
+          "position": {
+            "x": 400,
+            "y": 380
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "verify-design",
+          "type": "action.run_agent",
+          "label": "Verify & PR",
+          "config": {
+            "prompt": "## Phase: Design Verification\n\n1. Run tests: {{testCommand}}\n2. Run build: {{buildCommand}}\n3. Verify visual consistency\n4. Check design token values are correct\n5. Push and create/update PR",
+            "taskId": "{{taskId}}",
+            "sdk": "{{resolvedSdk}}",
+            "model": "{{resolvedModel}}",
+            "agentProfile": "{{agentProfile}}",
+            "cwd": "{{worktreePath}}",
+            "timeoutMs": "{{taskTimeoutMs}}",
+            "maxRetries": "{{maxRetries}}",
+            "maxContinues": "{{maxContinues}}",
+            "resolveMode": "library",
+            "failOnError": false
+          },
+          "position": {
+            "x": 400,
+            "y": 560
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "done",
+          "type": "notify.log",
+          "label": "Complete",
+          "config": {
+            "message": "Design task completed — design changes implemented and verified."
+          },
+          "position": {
+            "x": 400,
+            "y": 720
+          },
+          "outputs": [
+            "default"
+          ]
+        }
+      ],
+      "edges": [
+        {
+          "id": "trigger->analyse-requirements",
+          "source": "trigger",
+          "target": "analyse-requirements",
+          "sourcePort": "default"
+        },
+        {
+          "id": "analyse-requirements->implement-design",
+          "source": "analyse-requirements",
+          "target": "implement-design",
+          "sourcePort": "default"
+        },
+        {
+          "id": "implement-design->verify-design",
+          "source": "implement-design",
+          "target": "verify-design",
+          "sourcePort": "default"
+        },
+        {
+          "id": "verify-design->done",
+          "source": "verify-design",
+          "target": "done",
+          "sourcePort": "default"
+        }
+      ]
+    },
+    {
       "id": "template-flow-control-suite",
       "name": "Flow Control Suite",
       "description": "Exercises flow-control primitives in a single short workflow: join, while-loop (0 iters), universal dispatch, and meeting finalization.",
@@ -12443,6 +13147,383 @@
         {
           "id": "finalize-meeting->done",
           "source": "finalize-meeting",
+          "target": "done",
+          "sourcePort": "default"
+        }
+      ]
+    },
+    {
+      "id": "template-task-frontend",
+      "name": "Frontend Task Workflow",
+      "description": "Specialised for UI tasks — components, pages, styling, accessibility. Runs three phases: design analysis, implement with component tests, and visual verification.",
+      "category": "task-execution",
+      "categoryLabel": "Task Execution",
+      "categoryIcon": ":settings:",
+      "categoryOrder": 99,
+      "tags": [
+        "frontend",
+        "ui",
+        "css",
+        "component",
+        "task-type"
+      ],
+      "nodeCount": 5,
+      "edgeCount": 4,
+      "recommended": true,
+      "enabled": true,
+      "trigger": "trigger.task_assigned",
+      "variables": {
+        "taskTimeoutMs": 21600000,
+        "maxRetries": 2,
+        "maxContinues": 3,
+        "testCommand": "auto",
+        "buildCommand": "auto",
+        "lintCommand": "auto"
+      },
+      "metadata": {
+        "author": "bosun",
+        "version": 1,
+        "createdAt": "2025-06-01T00:00:00Z",
+        "templateVersion": "1.0.0",
+        "tags": [
+          "frontend",
+          "ui",
+          "css",
+          "component",
+          "task-type"
+        ],
+        "resolveMode": "library"
+      },
+      "nodes": [
+        {
+          "id": "trigger",
+          "type": "trigger.task_assigned",
+          "label": "Task Assigned",
+          "config": {
+            "taskPattern": "frontend|ui|component|page|layout|style|css|responsive|accessibility|a11y|design.system"
+          },
+          "position": {
+            "x": 400,
+            "y": 50
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "analyse-design",
+          "type": "action.run_agent",
+          "label": "Analyse Design",
+          "config": {
+            "prompt": "## Phase: Design Analysis\n\nAnalyse the UI task requirements:\n1. Component hierarchy and structure\n2. Layout and responsive breakpoints\n3. State management needs\n4. Accessibility requirements (ARIA, keyboard nav)\n5. Styling approach (CSS modules, Tailwind, styled-components)\n6. Component test plan\n\nDo NOT write code yet.",
+            "taskId": "{{taskId}}",
+            "sdk": "{{resolvedSdk}}",
+            "model": "{{resolvedModel}}",
+            "agentProfile": "{{agentProfile}}",
+            "cwd": "{{worktreePath}}",
+            "timeoutMs": "{{taskTimeoutMs}}",
+            "maxRetries": "{{maxRetries}}",
+            "maxContinues": "{{maxContinues}}",
+            "resolveMode": "library",
+            "failOnError": false
+          },
+          "position": {
+            "x": 400,
+            "y": 180
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "implement-ui",
+          "type": "action.run_agent",
+          "label": "Implement UI",
+          "config": {
+            "prompt": "## Phase: UI Implementation\n\n1. Create / update components per the design plan\n2. Implement layouts, styling, and responsive design\n3. Add proper accessibility attributes\n4. Write component tests\n5. Run tests: {{testCommand}}\n6. Run build: {{buildCommand}}\n7. Run lint: {{lintCommand}}\n\nCommit with descriptive messages.",
+            "taskId": "{{taskId}}",
+            "sdk": "{{resolvedSdk}}",
+            "model": "{{resolvedModel}}",
+            "agentProfile": "{{agentProfile}}",
+            "cwd": "{{worktreePath}}",
+            "timeoutMs": "{{taskTimeoutMs}}",
+            "maxRetries": "{{maxRetries}}",
+            "maxContinues": "{{maxContinues}}",
+            "resolveMode": "library",
+            "failOnError": false
+          },
+          "position": {
+            "x": 400,
+            "y": 380
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "verify-visual",
+          "type": "action.run_agent",
+          "label": "Verify & PR",
+          "config": {
+            "prompt": "## Phase: Visual Verification\n\n1. Run the full test suite: {{testCommand}}\n2. Run build: {{buildCommand}}\n3. Verify components render correctly\n4. Check responsive breakpoints\n5. Verify accessibility (screen reader, keyboard)\n6. Push changes and create/update PR",
+            "taskId": "{{taskId}}",
+            "sdk": "{{resolvedSdk}}",
+            "model": "{{resolvedModel}}",
+            "agentProfile": "{{agentProfile}}",
+            "cwd": "{{worktreePath}}",
+            "timeoutMs": "{{taskTimeoutMs}}",
+            "maxRetries": "{{maxRetries}}",
+            "maxContinues": "{{maxContinues}}",
+            "resolveMode": "library",
+            "failOnError": false
+          },
+          "position": {
+            "x": 400,
+            "y": 560
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "done",
+          "type": "notify.log",
+          "label": "Complete",
+          "config": {
+            "message": "Frontend task completed — UI implemented and verified."
+          },
+          "position": {
+            "x": 400,
+            "y": 720
+          },
+          "outputs": [
+            "default"
+          ]
+        }
+      ],
+      "edges": [
+        {
+          "id": "trigger->analyse-design",
+          "source": "trigger",
+          "target": "analyse-design",
+          "sourcePort": "default"
+        },
+        {
+          "id": "analyse-design->implement-ui",
+          "source": "analyse-design",
+          "target": "implement-ui",
+          "sourcePort": "default"
+        },
+        {
+          "id": "implement-ui->verify-visual",
+          "source": "implement-ui",
+          "target": "verify-visual",
+          "sourcePort": "default"
+        },
+        {
+          "id": "verify-visual->done",
+          "source": "verify-visual",
+          "target": "done",
+          "sourcePort": "default"
+        }
+      ]
+    },
+    {
+      "id": "template-task-fullstack",
+      "name": "Fullstack Task Workflow",
+      "description": "Handles tasks that span frontend and backend — API endpoints, database models, and UI components. Runs four agent phases: architecture planning, backend implementation, frontend implementation, and integration testing.",
+      "category": "task-execution",
+      "categoryLabel": "Task Execution",
+      "categoryIcon": ":settings:",
+      "categoryOrder": 99,
+      "tags": [
+        "fullstack",
+        "task-type"
+      ],
+      "nodeCount": 6,
+      "edgeCount": 5,
+      "recommended": true,
+      "enabled": true,
+      "trigger": "trigger.task_assigned",
+      "variables": {
+        "taskTimeoutMs": 21600000,
+        "maxRetries": 2,
+        "maxContinues": 3,
+        "testCommand": "auto",
+        "buildCommand": "auto",
+        "lintCommand": "auto"
+      },
+      "metadata": {
+        "author": "bosun",
+        "version": 1,
+        "createdAt": "2025-06-01T00:00:00Z",
+        "templateVersion": "1.0.0",
+        "tags": [
+          "fullstack",
+          "task-type"
+        ],
+        "resolveMode": "library"
+      },
+      "nodes": [
+        {
+          "id": "trigger",
+          "type": "trigger.task_assigned",
+          "label": "Task Assigned",
+          "config": {
+            "taskPattern": "full.?stack|end.to.end|api.*ui|server.*client|frontend.*backend|database.*component"
+          },
+          "position": {
+            "x": 400,
+            "y": 50
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "plan-architecture",
+          "type": "action.run_agent",
+          "label": "Plan Architecture",
+          "config": {
+            "prompt": "## Phase: Architecture Planning\n\nAnalyse the task and produce a concrete plan covering:\n1. Backend changes: API routes, models, services, migrations\n2. Frontend changes: components, pages, state management\n3. Shared types / contracts between layers\n4. Test strategy for each layer\n5. Integration points and data flow\n\nDo NOT write code yet — produce only the plan.",
+            "taskId": "{{taskId}}",
+            "sdk": "{{resolvedSdk}}",
+            "model": "{{resolvedModel}}",
+            "agentProfile": "{{agentProfile}}",
+            "cwd": "{{worktreePath}}",
+            "timeoutMs": "{{taskTimeoutMs}}",
+            "maxRetries": "{{maxRetries}}",
+            "maxContinues": "{{maxContinues}}",
+            "resolveMode": "library",
+            "failOnError": false
+          },
+          "position": {
+            "x": 400,
+            "y": 180
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "implement-backend",
+          "type": "action.run_agent",
+          "label": "Implement Backend",
+          "config": {
+            "prompt": "## Phase: Backend Implementation\n\nImplement the server-side / API changes from the architecture plan:\n- Models, schemas, database migrations\n- API routes and controllers\n- Service / business logic\n- Unit tests for backend logic\n- Run tests: {{testCommand}}\n\nCommit backend changes separately.",
+            "taskId": "{{taskId}}",
+            "sdk": "{{resolvedSdk}}",
+            "model": "{{resolvedModel}}",
+            "agentProfile": "{{agentProfile}}",
+            "cwd": "{{worktreePath}}",
+            "timeoutMs": "{{taskTimeoutMs}}",
+            "maxRetries": "{{maxRetries}}",
+            "maxContinues": "{{maxContinues}}",
+            "resolveMode": "library",
+            "failOnError": false
+          },
+          "position": {
+            "x": 400,
+            "y": 340
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "implement-frontend",
+          "type": "action.run_agent",
+          "label": "Implement Frontend",
+          "config": {
+            "prompt": "## Phase: Frontend Implementation\n\nImplement the client-side / UI changes:\n- Components, pages, layouts\n- State management and API integration\n- Styling and responsive design\n- Component tests\n- Run build: {{buildCommand}}\n\nCommit frontend changes separately.",
+            "taskId": "{{taskId}}",
+            "sdk": "{{resolvedSdk}}",
+            "model": "{{resolvedModel}}",
+            "agentProfile": "{{agentProfile}}",
+            "cwd": "{{worktreePath}}",
+            "timeoutMs": "{{taskTimeoutMs}}",
+            "maxRetries": "{{maxRetries}}",
+            "maxContinues": "{{maxContinues}}",
+            "resolveMode": "library",
+            "failOnError": false
+          },
+          "position": {
+            "x": 400,
+            "y": 500
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "integration-test",
+          "type": "action.run_agent",
+          "label": "Integration Test",
+          "config": {
+            "prompt": "## Phase: Integration Testing\n\nVerify the full stack works end-to-end:\n1. Run the full test suite: {{testCommand}}\n2. Run the build: {{buildCommand}}\n3. Run lint: {{lintCommand}}\n4. Fix any integration issues between frontend and backend\n5. Ensure all tests pass before completing\n\nPush all changes and create/update the PR.",
+            "taskId": "{{taskId}}",
+            "sdk": "{{resolvedSdk}}",
+            "model": "{{resolvedModel}}",
+            "agentProfile": "{{agentProfile}}",
+            "cwd": "{{worktreePath}}",
+            "timeoutMs": "{{taskTimeoutMs}}",
+            "maxRetries": "{{maxRetries}}",
+            "maxContinues": "{{maxContinues}}",
+            "resolveMode": "library",
+            "failOnError": false
+          },
+          "position": {
+            "x": 400,
+            "y": 660
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "done",
+          "type": "notify.log",
+          "label": "Complete",
+          "config": {
+            "message": "Fullstack task completed — all layers implemented and tested."
+          },
+          "position": {
+            "x": 400,
+            "y": 820
+          },
+          "outputs": [
+            "default"
+          ]
+        }
+      ],
+      "edges": [
+        {
+          "id": "trigger->plan-architecture",
+          "source": "trigger",
+          "target": "plan-architecture",
+          "sourcePort": "default"
+        },
+        {
+          "id": "plan-architecture->implement-backend",
+          "source": "plan-architecture",
+          "target": "implement-backend",
+          "sourcePort": "default"
+        },
+        {
+          "id": "implement-backend->implement-frontend",
+          "source": "implement-backend",
+          "target": "implement-frontend",
+          "sourcePort": "default"
+        },
+        {
+          "id": "implement-frontend->integration-test",
+          "source": "implement-frontend",
+          "target": "integration-test",
+          "sourcePort": "default"
+        },
+        {
+          "id": "integration-test->done",
+          "source": "integration-test",
           "target": "done",
           "sourcePort": "default"
         }
@@ -14356,8 +15437,8 @@
       "id": "template-task-batch-pr",
       "name": "Task Batch → PR",
       "description": "Simplified batch processor that picks todo tasks, runs the agent on each, and creates pull requests for any that produce commits. Ideal for autonomous mode where tasks should flow straight to PRs.",
-      "category": "lifecycle",
-      "categoryLabel": "Lifecycle",
+      "category": "task-execution",
+      "categoryLabel": "Task Execution",
       "categoryIcon": ":settings:",
       "categoryOrder": 99,
       "tags": [
@@ -14665,8 +15746,8 @@
       "id": "template-task-batch-processor",
       "name": "Task Batch Processor",
       "description": "Monitors the task backlog and dispatches multiple tasks in parallel using the Task Lifecycle sub-workflow. Automatically picks up tasks when backlog drops below threshold, fans out execution across available slots, and reports batch results.",
-      "category": "lifecycle",
-      "categoryLabel": "Lifecycle",
+      "category": "task-execution",
+      "categoryLabel": "Task Execution",
       "categoryIcon": ":settings:",
       "categoryOrder": 99,
       "tags": [
@@ -14872,8 +15953,8 @@
       "id": "template-task-lifecycle",
       "name": "Task Lifecycle",
       "description": "Complete task execution pipeline: poll for tasks → claim → worktree → agent dispatch → commit detection → PR creation → status transition. Replaces the monolithic TaskExecutor.executeTask() method with a composable workflow DAG.",
-      "category": "lifecycle",
-      "categoryLabel": "Lifecycle",
+      "category": "task-execution",
+      "categoryLabel": "Task Execution",
       "categoryIcon": ":settings:",
       "categoryOrder": 99,
       "tags": [
@@ -15975,8 +17056,8 @@
       "id": "template-ve-orchestrator-lite",
       "name": "VE Orchestrator Lite",
       "description": "Simplified task lifecycle for lightweight deployments. Same core flow as the full Task Lifecycle (slot → claim → worktree → agent → push → PR) but with fewer failure branches and no anti-thrash.",
-      "category": "lifecycle",
-      "categoryLabel": "Lifecycle",
+      "category": "task-execution",
+      "categoryLabel": "Task Execution",
       "categoryIcon": ":settings:",
       "categoryOrder": 99,
       "tags": [
@@ -27908,6 +28989,169 @@
       }
     },
     {
+      "id": "wf-task-backend",
+      "name": "Backend Task Workflow",
+      "description": "Specialised for server-side tasks — APIs, databases, services, middleware. Runs three phases: plan, implement with TDD, and verify with full test suite.",
+      "category": "task-execution",
+      "enabled": true,
+      "nodeCount": 5,
+      "trigger": "trigger.task_assigned",
+      "variables": {
+        "taskTimeoutMs": 21600000,
+        "maxRetries": 2,
+        "maxContinues": 3,
+        "testCommand": "auto",
+        "buildCommand": "auto",
+        "lintCommand": "auto"
+      },
+      "nodes": [
+        {
+          "id": "trigger",
+          "type": "trigger.task_assigned",
+          "label": "Task Assigned",
+          "config": {
+            "taskPattern": "api|server|backend|database|model|migration|endpoint|middleware|service|graphql|rest|grpc"
+          },
+          "position": {
+            "x": 400,
+            "y": 50
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "plan",
+          "type": "action.run_agent",
+          "label": "Plan Backend",
+          "config": {
+            "prompt": "## Phase: Backend Planning\n\nAnalyse the task and produce a plan:\n1. Data model / schema changes\n2. API endpoint design (routes, request/response shapes)\n3. Service layer logic\n4. Database queries or migrations\n5. Test plan (unit + integration)\n\nDo NOT write code yet.",
+            "taskId": "{{taskId}}",
+            "sdk": "{{resolvedSdk}}",
+            "model": "{{resolvedModel}}",
+            "agentProfile": "{{agentProfile}}",
+            "cwd": "{{worktreePath}}",
+            "timeoutMs": "{{taskTimeoutMs}}",
+            "maxRetries": "{{maxRetries}}",
+            "maxContinues": "{{maxContinues}}",
+            "resolveMode": "library",
+            "failOnError": false
+          },
+          "position": {
+            "x": 400,
+            "y": 180
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "implement-tdd",
+          "type": "action.run_agent",
+          "label": "Implement (TDD)",
+          "config": {
+            "prompt": "## Phase: Test-Driven Implementation\n\n1. Write tests FIRST for the planned changes\n2. Verify tests fail (red)\n3. Implement the backend logic to make tests pass (green)\n4. Refactor for clarity and performance\n5. Run full test suite: {{testCommand}}\n6. Run build: {{buildCommand}}\n7. Run lint: {{lintCommand}}\n\nCommit with descriptive messages.",
+            "taskId": "{{taskId}}",
+            "sdk": "{{resolvedSdk}}",
+            "model": "{{resolvedModel}}",
+            "agentProfile": "{{agentProfile}}",
+            "cwd": "{{worktreePath}}",
+            "timeoutMs": "{{taskTimeoutMs}}",
+            "maxRetries": "{{maxRetries}}",
+            "maxContinues": "{{maxContinues}}",
+            "resolveMode": "library",
+            "failOnError": false
+          },
+          "position": {
+            "x": 400,
+            "y": 380
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "verify",
+          "type": "action.run_agent",
+          "label": "Verify & PR",
+          "config": {
+            "prompt": "## Phase: Verification\n\n1. Run the complete test suite: {{testCommand}}\n2. Run build: {{buildCommand}}\n3. Ensure no regressions\n4. Push changes and create/update PR\n5. Include test results summary in PR description",
+            "taskId": "{{taskId}}",
+            "sdk": "{{resolvedSdk}}",
+            "model": "{{resolvedModel}}",
+            "agentProfile": "{{agentProfile}}",
+            "cwd": "{{worktreePath}}",
+            "timeoutMs": "{{taskTimeoutMs}}",
+            "maxRetries": "{{maxRetries}}",
+            "maxContinues": "{{maxContinues}}",
+            "resolveMode": "library",
+            "failOnError": false
+          },
+          "position": {
+            "x": 400,
+            "y": 560
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "done",
+          "type": "notify.log",
+          "label": "Complete",
+          "config": {
+            "message": "Backend task completed — API/service implemented and tested."
+          },
+          "position": {
+            "x": 400,
+            "y": 720
+          },
+          "outputs": [
+            "default"
+          ]
+        }
+      ],
+      "edges": [
+        {
+          "id": "trigger->plan",
+          "source": "trigger",
+          "target": "plan",
+          "sourcePort": "default"
+        },
+        {
+          "id": "plan->implement-tdd",
+          "source": "plan",
+          "target": "implement-tdd",
+          "sourcePort": "default"
+        },
+        {
+          "id": "implement-tdd->verify",
+          "source": "implement-tdd",
+          "target": "verify",
+          "sourcePort": "default"
+        },
+        {
+          "id": "verify->done",
+          "source": "verify",
+          "target": "done",
+          "sourcePort": "default"
+        }
+      ],
+      "metadata": {
+        "author": "bosun-demo",
+        "createdAt": "2026-03-28T12:00:00.000Z",
+        "updatedAt": "2026-03-28T12:00:00.000Z",
+        "templateState": {
+          "templateId": "template-task-backend",
+          "templateName": "Backend Task Workflow",
+          "templateVersion": "1.0.0",
+          "installedTemplateVersion": "1.0.0",
+          "isCustomized": false,
+          "updateAvailable": false
+        }
+      }
+    },
+    {
       "id": "wf-bosun-tool-pipeline",
       "name": "Bosun Tool Pipeline",
       "description": "Run Bosun built-in or custom tools from a workflow with structured output piping. Discovers available tools, invokes a selected tool, extracts specific data fields, and forwards them to downstream nodes. Combines action.bosun_function and action.bosun_tool for full tool integration.",
@@ -28096,6 +29340,169 @@
         "templateState": {
           "templateId": "template-bosun-tool-pipeline",
           "templateName": "Bosun Tool Pipeline",
+          "templateVersion": "1.0.0",
+          "installedTemplateVersion": "1.0.0",
+          "isCustomized": false,
+          "updateAvailable": false
+        }
+      }
+    },
+    {
+      "id": "wf-task-cicd",
+      "name": "CI/CD Task Workflow",
+      "description": "For pipeline, deployment, infrastructure, and build-system tasks. Plans the change, implements with validation steps, then verifies the pipeline works end-to-end.",
+      "category": "task-execution",
+      "enabled": true,
+      "nodeCount": 5,
+      "trigger": "trigger.task_assigned",
+      "variables": {
+        "taskTimeoutMs": 21600000,
+        "maxRetries": 2,
+        "maxContinues": 3,
+        "testCommand": "auto",
+        "buildCommand": "auto",
+        "lintCommand": "auto"
+      },
+      "nodes": [
+        {
+          "id": "trigger",
+          "type": "trigger.task_assigned",
+          "label": "Task Assigned",
+          "config": {
+            "taskPattern": "ci|cd|pipeline|deploy|infrastructure|docker|kubernetes|k8s|terraform|github.action|build.system|release|devops"
+          },
+          "position": {
+            "x": 400,
+            "y": 50
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "plan-pipeline",
+          "type": "action.run_agent",
+          "label": "Plan Pipeline Change",
+          "config": {
+            "prompt": "## Phase: CI/CD Planning\n\nAnalyse the pipeline/infrastructure task:\n1. Current CI/CD configuration\n2. What needs to change and why\n3. Impact on existing workflows/pipelines\n4. Rollback strategy\n5. Test plan for verifying the change\n\nDo NOT make changes yet.",
+            "taskId": "{{taskId}}",
+            "sdk": "{{resolvedSdk}}",
+            "model": "{{resolvedModel}}",
+            "agentProfile": "{{agentProfile}}",
+            "cwd": "{{worktreePath}}",
+            "timeoutMs": "{{taskTimeoutMs}}",
+            "maxRetries": "{{maxRetries}}",
+            "maxContinues": "{{maxContinues}}",
+            "resolveMode": "library",
+            "failOnError": false
+          },
+          "position": {
+            "x": 400,
+            "y": 180
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "implement-pipeline",
+          "type": "action.run_agent",
+          "label": "Implement Pipeline",
+          "config": {
+            "prompt": "## Phase: Pipeline Implementation\n\n1. Make the CI/CD / infrastructure changes per the plan\n2. Update configuration files (workflows, Dockerfiles, Terraform, etc.)\n3. Add or update pipeline tests where applicable\n4. Run build: {{buildCommand}}\n5. Run lint: {{lintCommand}}\n6. Validate configuration syntax\n\nCommit changes with clear descriptions.",
+            "taskId": "{{taskId}}",
+            "sdk": "{{resolvedSdk}}",
+            "model": "{{resolvedModel}}",
+            "agentProfile": "{{agentProfile}}",
+            "cwd": "{{worktreePath}}",
+            "timeoutMs": "{{taskTimeoutMs}}",
+            "maxRetries": "{{maxRetries}}",
+            "maxContinues": "{{maxContinues}}",
+            "resolveMode": "library",
+            "failOnError": false
+          },
+          "position": {
+            "x": 400,
+            "y": 380
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "verify-pipeline",
+          "type": "action.run_agent",
+          "label": "Verify & PR",
+          "config": {
+            "prompt": "## Phase: Pipeline Verification\n\n1. Run full test suite: {{testCommand}}\n2. Run build: {{buildCommand}}\n3. Verify pipeline configuration is valid\n4. Push and create/update PR\n5. Include deployment / rollback instructions in PR description",
+            "taskId": "{{taskId}}",
+            "sdk": "{{resolvedSdk}}",
+            "model": "{{resolvedModel}}",
+            "agentProfile": "{{agentProfile}}",
+            "cwd": "{{worktreePath}}",
+            "timeoutMs": "{{taskTimeoutMs}}",
+            "maxRetries": "{{maxRetries}}",
+            "maxContinues": "{{maxContinues}}",
+            "resolveMode": "library",
+            "failOnError": false
+          },
+          "position": {
+            "x": 400,
+            "y": 560
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "done",
+          "type": "notify.log",
+          "label": "Complete",
+          "config": {
+            "message": "CI/CD task completed — pipeline updated and verified."
+          },
+          "position": {
+            "x": 400,
+            "y": 720
+          },
+          "outputs": [
+            "default"
+          ]
+        }
+      ],
+      "edges": [
+        {
+          "id": "trigger->plan-pipeline",
+          "source": "trigger",
+          "target": "plan-pipeline",
+          "sourcePort": "default"
+        },
+        {
+          "id": "plan-pipeline->implement-pipeline",
+          "source": "plan-pipeline",
+          "target": "implement-pipeline",
+          "sourcePort": "default"
+        },
+        {
+          "id": "implement-pipeline->verify-pipeline",
+          "source": "implement-pipeline",
+          "target": "verify-pipeline",
+          "sourcePort": "default"
+        },
+        {
+          "id": "verify-pipeline->done",
+          "source": "verify-pipeline",
+          "target": "done",
+          "sourcePort": "default"
+        }
+      ],
+      "metadata": {
+        "author": "bosun-demo",
+        "createdAt": "2026-03-28T12:00:00.000Z",
+        "updatedAt": "2026-03-28T12:00:00.000Z",
+        "templateState": {
+          "templateId": "template-task-cicd",
+          "templateName": "CI/CD Task Workflow",
           "templateVersion": "1.0.0",
           "installedTemplateVersion": "1.0.0",
           "isCustomized": false,
@@ -28417,6 +29824,332 @@
       }
     },
     {
+      "id": "wf-task-debug",
+      "name": "Debug Task Workflow",
+      "description": "Bug investigation and fix workflow. Starts with reproduction and root-cause analysis, then implements a targeted fix with regression tests.",
+      "category": "task-execution",
+      "enabled": true,
+      "nodeCount": 5,
+      "trigger": "trigger.task_assigned",
+      "variables": {
+        "taskTimeoutMs": 21600000,
+        "maxRetries": 3,
+        "maxContinues": 4,
+        "testCommand": "auto",
+        "buildCommand": "auto",
+        "lintCommand": "auto"
+      },
+      "nodes": [
+        {
+          "id": "trigger",
+          "type": "trigger.task_assigned",
+          "label": "Task Assigned",
+          "config": {
+            "taskPattern": "bug|fix|error|crash|regression|broken|debug|issue|defect|hotfix|patch"
+          },
+          "position": {
+            "x": 400,
+            "y": 50
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "reproduce",
+          "type": "action.run_agent",
+          "label": "Reproduce & Analyse",
+          "config": {
+            "prompt": "## Phase: Bug Reproduction & Root Cause Analysis\n\n1. Read the bug report carefully\n2. Find the relevant code area\n3. Reproduce the issue (write a failing test if possible)\n4. Trace the root cause through the codebase\n5. Document: what fails, where, why, and the minimal fix needed\n\nDo NOT fix the bug yet — only diagnose.",
+            "taskId": "{{taskId}}",
+            "sdk": "{{resolvedSdk}}",
+            "model": "{{resolvedModel}}",
+            "agentProfile": "{{agentProfile}}",
+            "cwd": "{{worktreePath}}",
+            "timeoutMs": "{{taskTimeoutMs}}",
+            "maxRetries": "{{maxRetries}}",
+            "maxContinues": "{{maxContinues}}",
+            "resolveMode": "library",
+            "failOnError": false
+          },
+          "position": {
+            "x": 400,
+            "y": 180
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "fix-and-test",
+          "type": "action.run_agent",
+          "label": "Fix & Regression Test",
+          "config": {
+            "prompt": "## Phase: Fix Implementation with Regression Tests\n\n1. Write a regression test that demonstrates the bug (must fail before fix)\n2. Apply the minimal, surgical fix\n3. Verify the regression test now passes\n4. Run the full test suite: {{testCommand}}\n5. Run build: {{buildCommand}}\n6. Run lint: {{lintCommand}}\n7. Ensure no other tests broke\n\nCommit fix and test together with a clear commit message.",
+            "taskId": "{{taskId}}",
+            "sdk": "{{resolvedSdk}}",
+            "model": "{{resolvedModel}}",
+            "agentProfile": "{{agentProfile}}",
+            "cwd": "{{worktreePath}}",
+            "timeoutMs": "{{taskTimeoutMs}}",
+            "maxRetries": "{{maxRetries}}",
+            "maxContinues": "{{maxContinues}}",
+            "resolveMode": "library",
+            "failOnError": false
+          },
+          "position": {
+            "x": 400,
+            "y": 380
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "verify",
+          "type": "action.run_agent",
+          "label": "Verify & PR",
+          "config": {
+            "prompt": "## Phase: Final Verification\n\n1. Run complete test suite: {{testCommand}}\n2. Run build: {{buildCommand}}\n3. Confirm the original bug is fixed\n4. Confirm no regressions\n5. Push and create/update PR with root cause analysis in description",
+            "taskId": "{{taskId}}",
+            "sdk": "{{resolvedSdk}}",
+            "model": "{{resolvedModel}}",
+            "agentProfile": "{{agentProfile}}",
+            "cwd": "{{worktreePath}}",
+            "timeoutMs": "{{taskTimeoutMs}}",
+            "maxRetries": "{{maxRetries}}",
+            "maxContinues": "{{maxContinues}}",
+            "resolveMode": "library",
+            "failOnError": false
+          },
+          "position": {
+            "x": 400,
+            "y": 560
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "done",
+          "type": "notify.log",
+          "label": "Complete",
+          "config": {
+            "message": "Debug task completed — bug fixed with regression test."
+          },
+          "position": {
+            "x": 400,
+            "y": 720
+          },
+          "outputs": [
+            "default"
+          ]
+        }
+      ],
+      "edges": [
+        {
+          "id": "trigger->reproduce",
+          "source": "trigger",
+          "target": "reproduce",
+          "sourcePort": "default"
+        },
+        {
+          "id": "reproduce->fix-and-test",
+          "source": "reproduce",
+          "target": "fix-and-test",
+          "sourcePort": "default"
+        },
+        {
+          "id": "fix-and-test->verify",
+          "source": "fix-and-test",
+          "target": "verify",
+          "sourcePort": "default"
+        },
+        {
+          "id": "verify->done",
+          "source": "verify",
+          "target": "done",
+          "sourcePort": "default"
+        }
+      ],
+      "metadata": {
+        "author": "bosun-demo",
+        "createdAt": "2026-03-28T12:00:00.000Z",
+        "updatedAt": "2026-03-28T12:00:00.000Z",
+        "templateState": {
+          "templateId": "template-task-debug",
+          "templateName": "Debug Task Workflow",
+          "templateVersion": "1.0.0",
+          "installedTemplateVersion": "1.0.0",
+          "isCustomized": false,
+          "updateAvailable": false
+        }
+      }
+    },
+    {
+      "id": "wf-task-design",
+      "name": "Design Task Workflow",
+      "description": "For design-related tasks — mockups, wireframes, design tokens, component library work. Analyses design requirements, implements the design system changes, and verifies visual output.",
+      "category": "task-execution",
+      "enabled": true,
+      "nodeCount": 5,
+      "trigger": "trigger.task_assigned",
+      "variables": {
+        "taskTimeoutMs": 21600000,
+        "maxRetries": 2,
+        "maxContinues": 3,
+        "testCommand": "auto",
+        "buildCommand": "auto",
+        "lintCommand": "auto"
+      },
+      "nodes": [
+        {
+          "id": "trigger",
+          "type": "trigger.task_assigned",
+          "label": "Task Assigned",
+          "config": {
+            "taskPattern": "design|mockup|wireframe|prototype|design.system|theme|color|typography|icon|illustration|ux"
+          },
+          "position": {
+            "x": 400,
+            "y": 50
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "analyse-requirements",
+          "type": "action.run_agent",
+          "label": "Analyse Design Req",
+          "config": {
+            "prompt": "## Phase: Design Requirements Analysis\n\n1. Review the design task requirements\n2. Identify affected design tokens, components, or patterns\n3. Check existing design system for reusable pieces\n4. Plan the implementation approach\n5. List affected files and components\n\nDo NOT make changes yet.",
+            "taskId": "{{taskId}}",
+            "sdk": "{{resolvedSdk}}",
+            "model": "{{resolvedModel}}",
+            "agentProfile": "{{agentProfile}}",
+            "cwd": "{{worktreePath}}",
+            "timeoutMs": "{{taskTimeoutMs}}",
+            "maxRetries": "{{maxRetries}}",
+            "maxContinues": "{{maxContinues}}",
+            "resolveMode": "library",
+            "failOnError": false
+          },
+          "position": {
+            "x": 400,
+            "y": 180
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "implement-design",
+          "type": "action.run_agent",
+          "label": "Implement Design",
+          "config": {
+            "prompt": "## Phase: Design Implementation\n\n1. Update design tokens (colors, spacing, typography) if needed\n2. Create / update components per the design specification\n3. Ensure consistency with existing design system\n4. Add visual tests or snapshots where applicable\n5. Run build: {{buildCommand}}\n6. Run lint: {{lintCommand}}\n\nCommit changes with descriptive messages.",
+            "taskId": "{{taskId}}",
+            "sdk": "{{resolvedSdk}}",
+            "model": "{{resolvedModel}}",
+            "agentProfile": "{{agentProfile}}",
+            "cwd": "{{worktreePath}}",
+            "timeoutMs": "{{taskTimeoutMs}}",
+            "maxRetries": "{{maxRetries}}",
+            "maxContinues": "{{maxContinues}}",
+            "resolveMode": "library",
+            "failOnError": false
+          },
+          "position": {
+            "x": 400,
+            "y": 380
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "verify-design",
+          "type": "action.run_agent",
+          "label": "Verify & PR",
+          "config": {
+            "prompt": "## Phase: Design Verification\n\n1. Run tests: {{testCommand}}\n2. Run build: {{buildCommand}}\n3. Verify visual consistency\n4. Check design token values are correct\n5. Push and create/update PR",
+            "taskId": "{{taskId}}",
+            "sdk": "{{resolvedSdk}}",
+            "model": "{{resolvedModel}}",
+            "agentProfile": "{{agentProfile}}",
+            "cwd": "{{worktreePath}}",
+            "timeoutMs": "{{taskTimeoutMs}}",
+            "maxRetries": "{{maxRetries}}",
+            "maxContinues": "{{maxContinues}}",
+            "resolveMode": "library",
+            "failOnError": false
+          },
+          "position": {
+            "x": 400,
+            "y": 560
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "done",
+          "type": "notify.log",
+          "label": "Complete",
+          "config": {
+            "message": "Design task completed — design changes implemented and verified."
+          },
+          "position": {
+            "x": 400,
+            "y": 720
+          },
+          "outputs": [
+            "default"
+          ]
+        }
+      ],
+      "edges": [
+        {
+          "id": "trigger->analyse-requirements",
+          "source": "trigger",
+          "target": "analyse-requirements",
+          "sourcePort": "default"
+        },
+        {
+          "id": "analyse-requirements->implement-design",
+          "source": "analyse-requirements",
+          "target": "implement-design",
+          "sourcePort": "default"
+        },
+        {
+          "id": "implement-design->verify-design",
+          "source": "implement-design",
+          "target": "verify-design",
+          "sourcePort": "default"
+        },
+        {
+          "id": "verify-design->done",
+          "source": "verify-design",
+          "target": "done",
+          "sourcePort": "default"
+        }
+      ],
+      "metadata": {
+        "author": "bosun-demo",
+        "createdAt": "2026-03-28T12:00:00.000Z",
+        "updatedAt": "2026-03-28T12:00:00.000Z",
+        "templateState": {
+          "templateId": "template-task-design",
+          "templateName": "Design Task Workflow",
+          "templateVersion": "1.0.0",
+          "installedTemplateVersion": "1.0.0",
+          "isCustomized": false,
+          "updateAvailable": false
+        }
+      }
+    },
+    {
       "id": "wf-flow-control-suite",
       "name": "Flow Control Suite",
       "description": "Exercises flow-control primitives in a single short workflow: join, while-loop (0 iters), universal dispatch, and meeting finalization.",
@@ -28585,6 +30318,363 @@
         "templateState": {
           "templateId": "template-flow-control-suite",
           "templateName": "Flow Control Suite",
+          "templateVersion": "1.0.0",
+          "installedTemplateVersion": "1.0.0",
+          "isCustomized": false,
+          "updateAvailable": false
+        }
+      }
+    },
+    {
+      "id": "wf-task-frontend",
+      "name": "Frontend Task Workflow",
+      "description": "Specialised for UI tasks — components, pages, styling, accessibility. Runs three phases: design analysis, implement with component tests, and visual verification.",
+      "category": "task-execution",
+      "enabled": true,
+      "nodeCount": 5,
+      "trigger": "trigger.task_assigned",
+      "variables": {
+        "taskTimeoutMs": 21600000,
+        "maxRetries": 2,
+        "maxContinues": 3,
+        "testCommand": "auto",
+        "buildCommand": "auto",
+        "lintCommand": "auto"
+      },
+      "nodes": [
+        {
+          "id": "trigger",
+          "type": "trigger.task_assigned",
+          "label": "Task Assigned",
+          "config": {
+            "taskPattern": "frontend|ui|component|page|layout|style|css|responsive|accessibility|a11y|design.system"
+          },
+          "position": {
+            "x": 400,
+            "y": 50
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "analyse-design",
+          "type": "action.run_agent",
+          "label": "Analyse Design",
+          "config": {
+            "prompt": "## Phase: Design Analysis\n\nAnalyse the UI task requirements:\n1. Component hierarchy and structure\n2. Layout and responsive breakpoints\n3. State management needs\n4. Accessibility requirements (ARIA, keyboard nav)\n5. Styling approach (CSS modules, Tailwind, styled-components)\n6. Component test plan\n\nDo NOT write code yet.",
+            "taskId": "{{taskId}}",
+            "sdk": "{{resolvedSdk}}",
+            "model": "{{resolvedModel}}",
+            "agentProfile": "{{agentProfile}}",
+            "cwd": "{{worktreePath}}",
+            "timeoutMs": "{{taskTimeoutMs}}",
+            "maxRetries": "{{maxRetries}}",
+            "maxContinues": "{{maxContinues}}",
+            "resolveMode": "library",
+            "failOnError": false
+          },
+          "position": {
+            "x": 400,
+            "y": 180
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "implement-ui",
+          "type": "action.run_agent",
+          "label": "Implement UI",
+          "config": {
+            "prompt": "## Phase: UI Implementation\n\n1. Create / update components per the design plan\n2. Implement layouts, styling, and responsive design\n3. Add proper accessibility attributes\n4. Write component tests\n5. Run tests: {{testCommand}}\n6. Run build: {{buildCommand}}\n7. Run lint: {{lintCommand}}\n\nCommit with descriptive messages.",
+            "taskId": "{{taskId}}",
+            "sdk": "{{resolvedSdk}}",
+            "model": "{{resolvedModel}}",
+            "agentProfile": "{{agentProfile}}",
+            "cwd": "{{worktreePath}}",
+            "timeoutMs": "{{taskTimeoutMs}}",
+            "maxRetries": "{{maxRetries}}",
+            "maxContinues": "{{maxContinues}}",
+            "resolveMode": "library",
+            "failOnError": false
+          },
+          "position": {
+            "x": 400,
+            "y": 380
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "verify-visual",
+          "type": "action.run_agent",
+          "label": "Verify & PR",
+          "config": {
+            "prompt": "## Phase: Visual Verification\n\n1. Run the full test suite: {{testCommand}}\n2. Run build: {{buildCommand}}\n3. Verify components render correctly\n4. Check responsive breakpoints\n5. Verify accessibility (screen reader, keyboard)\n6. Push changes and create/update PR",
+            "taskId": "{{taskId}}",
+            "sdk": "{{resolvedSdk}}",
+            "model": "{{resolvedModel}}",
+            "agentProfile": "{{agentProfile}}",
+            "cwd": "{{worktreePath}}",
+            "timeoutMs": "{{taskTimeoutMs}}",
+            "maxRetries": "{{maxRetries}}",
+            "maxContinues": "{{maxContinues}}",
+            "resolveMode": "library",
+            "failOnError": false
+          },
+          "position": {
+            "x": 400,
+            "y": 560
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "done",
+          "type": "notify.log",
+          "label": "Complete",
+          "config": {
+            "message": "Frontend task completed — UI implemented and verified."
+          },
+          "position": {
+            "x": 400,
+            "y": 720
+          },
+          "outputs": [
+            "default"
+          ]
+        }
+      ],
+      "edges": [
+        {
+          "id": "trigger->analyse-design",
+          "source": "trigger",
+          "target": "analyse-design",
+          "sourcePort": "default"
+        },
+        {
+          "id": "analyse-design->implement-ui",
+          "source": "analyse-design",
+          "target": "implement-ui",
+          "sourcePort": "default"
+        },
+        {
+          "id": "implement-ui->verify-visual",
+          "source": "implement-ui",
+          "target": "verify-visual",
+          "sourcePort": "default"
+        },
+        {
+          "id": "verify-visual->done",
+          "source": "verify-visual",
+          "target": "done",
+          "sourcePort": "default"
+        }
+      ],
+      "metadata": {
+        "author": "bosun-demo",
+        "createdAt": "2026-03-28T12:00:00.000Z",
+        "updatedAt": "2026-03-28T12:00:00.000Z",
+        "templateState": {
+          "templateId": "template-task-frontend",
+          "templateName": "Frontend Task Workflow",
+          "templateVersion": "1.0.0",
+          "installedTemplateVersion": "1.0.0",
+          "isCustomized": false,
+          "updateAvailable": false
+        }
+      }
+    },
+    {
+      "id": "wf-task-fullstack",
+      "name": "Fullstack Task Workflow",
+      "description": "Handles tasks that span frontend and backend — API endpoints, database models, and UI components. Runs four agent phases: architecture planning, backend implementation, frontend implementation, and integration testing.",
+      "category": "task-execution",
+      "enabled": true,
+      "nodeCount": 6,
+      "trigger": "trigger.task_assigned",
+      "variables": {
+        "taskTimeoutMs": 21600000,
+        "maxRetries": 2,
+        "maxContinues": 3,
+        "testCommand": "auto",
+        "buildCommand": "auto",
+        "lintCommand": "auto"
+      },
+      "nodes": [
+        {
+          "id": "trigger",
+          "type": "trigger.task_assigned",
+          "label": "Task Assigned",
+          "config": {
+            "taskPattern": "full.?stack|end.to.end|api.*ui|server.*client|frontend.*backend|database.*component"
+          },
+          "position": {
+            "x": 400,
+            "y": 50
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "plan-architecture",
+          "type": "action.run_agent",
+          "label": "Plan Architecture",
+          "config": {
+            "prompt": "## Phase: Architecture Planning\n\nAnalyse the task and produce a concrete plan covering:\n1. Backend changes: API routes, models, services, migrations\n2. Frontend changes: components, pages, state management\n3. Shared types / contracts between layers\n4. Test strategy for each layer\n5. Integration points and data flow\n\nDo NOT write code yet — produce only the plan.",
+            "taskId": "{{taskId}}",
+            "sdk": "{{resolvedSdk}}",
+            "model": "{{resolvedModel}}",
+            "agentProfile": "{{agentProfile}}",
+            "cwd": "{{worktreePath}}",
+            "timeoutMs": "{{taskTimeoutMs}}",
+            "maxRetries": "{{maxRetries}}",
+            "maxContinues": "{{maxContinues}}",
+            "resolveMode": "library",
+            "failOnError": false
+          },
+          "position": {
+            "x": 400,
+            "y": 180
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "implement-backend",
+          "type": "action.run_agent",
+          "label": "Implement Backend",
+          "config": {
+            "prompt": "## Phase: Backend Implementation\n\nImplement the server-side / API changes from the architecture plan:\n- Models, schemas, database migrations\n- API routes and controllers\n- Service / business logic\n- Unit tests for backend logic\n- Run tests: {{testCommand}}\n\nCommit backend changes separately.",
+            "taskId": "{{taskId}}",
+            "sdk": "{{resolvedSdk}}",
+            "model": "{{resolvedModel}}",
+            "agentProfile": "{{agentProfile}}",
+            "cwd": "{{worktreePath}}",
+            "timeoutMs": "{{taskTimeoutMs}}",
+            "maxRetries": "{{maxRetries}}",
+            "maxContinues": "{{maxContinues}}",
+            "resolveMode": "library",
+            "failOnError": false
+          },
+          "position": {
+            "x": 400,
+            "y": 340
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "implement-frontend",
+          "type": "action.run_agent",
+          "label": "Implement Frontend",
+          "config": {
+            "prompt": "## Phase: Frontend Implementation\n\nImplement the client-side / UI changes:\n- Components, pages, layouts\n- State management and API integration\n- Styling and responsive design\n- Component tests\n- Run build: {{buildCommand}}\n\nCommit frontend changes separately.",
+            "taskId": "{{taskId}}",
+            "sdk": "{{resolvedSdk}}",
+            "model": "{{resolvedModel}}",
+            "agentProfile": "{{agentProfile}}",
+            "cwd": "{{worktreePath}}",
+            "timeoutMs": "{{taskTimeoutMs}}",
+            "maxRetries": "{{maxRetries}}",
+            "maxContinues": "{{maxContinues}}",
+            "resolveMode": "library",
+            "failOnError": false
+          },
+          "position": {
+            "x": 400,
+            "y": 500
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "integration-test",
+          "type": "action.run_agent",
+          "label": "Integration Test",
+          "config": {
+            "prompt": "## Phase: Integration Testing\n\nVerify the full stack works end-to-end:\n1. Run the full test suite: {{testCommand}}\n2. Run the build: {{buildCommand}}\n3. Run lint: {{lintCommand}}\n4. Fix any integration issues between frontend and backend\n5. Ensure all tests pass before completing\n\nPush all changes and create/update the PR.",
+            "taskId": "{{taskId}}",
+            "sdk": "{{resolvedSdk}}",
+            "model": "{{resolvedModel}}",
+            "agentProfile": "{{agentProfile}}",
+            "cwd": "{{worktreePath}}",
+            "timeoutMs": "{{taskTimeoutMs}}",
+            "maxRetries": "{{maxRetries}}",
+            "maxContinues": "{{maxContinues}}",
+            "resolveMode": "library",
+            "failOnError": false
+          },
+          "position": {
+            "x": 400,
+            "y": 660
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "done",
+          "type": "notify.log",
+          "label": "Complete",
+          "config": {
+            "message": "Fullstack task completed — all layers implemented and tested."
+          },
+          "position": {
+            "x": 400,
+            "y": 820
+          },
+          "outputs": [
+            "default"
+          ]
+        }
+      ],
+      "edges": [
+        {
+          "id": "trigger->plan-architecture",
+          "source": "trigger",
+          "target": "plan-architecture",
+          "sourcePort": "default"
+        },
+        {
+          "id": "plan-architecture->implement-backend",
+          "source": "plan-architecture",
+          "target": "implement-backend",
+          "sourcePort": "default"
+        },
+        {
+          "id": "implement-backend->implement-frontend",
+          "source": "implement-backend",
+          "target": "implement-frontend",
+          "sourcePort": "default"
+        },
+        {
+          "id": "implement-frontend->integration-test",
+          "source": "implement-frontend",
+          "target": "integration-test",
+          "sourcePort": "default"
+        },
+        {
+          "id": "integration-test->done",
+          "source": "integration-test",
+          "target": "done",
+          "sourcePort": "default"
+        }
+      ],
+      "metadata": {
+        "author": "bosun-demo",
+        "createdAt": "2026-03-28T12:00:00.000Z",
+        "updatedAt": "2026-03-28T12:00:00.000Z",
+        "templateState": {
+          "templateId": "template-task-fullstack",
+          "templateName": "Fullstack Task Workflow",
           "templateVersion": "1.0.0",
           "installedTemplateVersion": "1.0.0",
           "isCustomized": false,
@@ -30424,7 +32514,7 @@
       "id": "wf-task-batch-pr",
       "name": "Task Batch → PR",
       "description": "Simplified batch processor that picks todo tasks, runs the agent on each, and creates pull requests for any that produce commits. Ideal for autonomous mode where tasks should flow straight to PRs.",
-      "category": "lifecycle",
+      "category": "task-execution",
       "enabled": true,
       "nodeCount": 11,
       "trigger": "trigger.task_available",
@@ -30721,7 +32811,7 @@
       "id": "wf-task-batch-processor",
       "name": "Task Batch Processor",
       "description": "Monitors the task backlog and dispatches multiple tasks in parallel using the Task Lifecycle sub-workflow. Automatically picks up tasks when backlog drops below threshold, fans out execution across available slots, and reports batch results.",
-      "category": "lifecycle",
+      "category": "task-execution",
       "enabled": true,
       "nodeCount": 7,
       "trigger": "trigger.task_available",
@@ -30916,7 +33006,7 @@
       "id": "wf-task-lifecycle",
       "name": "Task Lifecycle",
       "description": "Complete task execution pipeline: poll for tasks → claim → worktree → agent dispatch → commit detection → PR creation → status transition. Replaces the monolithic TaskExecutor.executeTask() method with a composable workflow DAG.",
-      "category": "lifecycle",
+      "category": "task-execution",
       "enabled": true,
       "nodeCount": 42,
       "trigger": "trigger.task_available",
@@ -31992,7 +34082,7 @@
       "id": "wf-ve-orchestrator-lite",
       "name": "VE Orchestrator Lite",
       "description": "Simplified task lifecycle for lightweight deployments. Same core flow as the full Task Lifecycle (slot → claim → worktree → agent → push → PR) but with fewer failure branches and no anti-thrash.",
-      "category": "lifecycle",
+      "category": "task-execution",
       "enabled": true,
       "nodeCount": 24,
       "trigger": "trigger.task_available",

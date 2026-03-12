@@ -1817,7 +1817,7 @@ describe("template-task-lifecycle", () => {
     const t = getTemplate("template-task-lifecycle");
     expect(t).toBeDefined();
     expect(t.name).toBe("Task Lifecycle");
-    expect(t.category).toBe("lifecycle");
+    expect(t.category).toBe("task-execution");
     expect(t.enabled).toBe(true);
     expect(t.recommended).toBe(true);
   });
@@ -2037,7 +2037,7 @@ describe("template-ve-orchestrator-lite", () => {
     const t = getTemplate("template-ve-orchestrator-lite");
     expect(t).toBeDefined();
     expect(t.name).toBe("VE Orchestrator Lite");
-    expect(t.category).toBe("lifecycle");
+    expect(t.category).toBe("task-execution");
     expect(t.enabled).toBe(true);
     expect(t.recommended).toBe(false);
   });

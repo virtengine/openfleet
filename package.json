@@ -305,6 +305,7 @@
     "workflow-templates/research.mjs",
     "workflow-templates/security.mjs",
     "workflow-templates/task-batch.mjs",
+    "workflow-templates/task-execution.mjs",
     "workflow-templates/task-lifecycle.mjs",
     "workflow-templates/issue-continuation.mjs",
     "workflow-templates/bosun-native.mjs",

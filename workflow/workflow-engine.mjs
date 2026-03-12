@@ -243,6 +243,7 @@ export function listNodeTypes() {
  * @property {string} [description] - What this workflow does
  * @property {string} [category] - Grouping category
  * @property {boolean} [enabled] - Whether this workflow is active
+ * @property {boolean} [core] - Core workflows cannot be disabled or deleted
  * @property {string} [trigger] - Primary trigger type
  * @property {WorkflowNode[]} nodes - All nodes in the workflow
  * @property {WorkflowEdge[]} edges - Connections between nodes
@@ -724,6 +725,7 @@ export class WorkflowEngine extends EventEmitter {
       description: w.description,
       category: w.category,
       enabled: w.enabled !== false,
+      core: w.core === true,
       trigger: w.trigger,
       nodeCount: w.nodes?.length || 0,
       edgeCount: w.edges?.length || 0,
@@ -746,6 +748,16 @@ export class WorkflowEngine extends EventEmitter {
       def.metadata.createdAt = def.metadata.updatedAt;
     }
     def.metadata.version = (def.metadata.version || 0) + 1;
+
+    // Prevent disabling core workflows
+    const existing = this._workflows.get(def.id);
+    if (existing?.core === true && def.enabled === false) {
+      def.enabled = true;
+    }
+    // Preserve core flag — cannot be removed via save
+    if (existing?.core === true) {
+      def.core = true;
+    }
 
     this._ensureDirs();
     this._workflows.set(def.id, def);
@@ -795,6 +807,10 @@ export class WorkflowEngine extends EventEmitter {
 
   /** Delete a workflow */
   delete(id) {
+    const existing = this._workflows.get(id);
+    if (existing?.core === true) {
+      throw new Error(`Cannot delete core workflow "${existing.name || id}"`);
+    }
     this._workflows.delete(id);
     const filePath = resolve(this.workflowDir, `${id}.json`);
     try {

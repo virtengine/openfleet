@@ -103,6 +103,16 @@ import {
   CODE_QUALITY_STRIKER_TEMPLATE,
 } from "../workflow-templates/code-quality.mjs";
 
+// Task Execution (task-type-specific workflows)
+import {
+  FULLSTACK_TASK_TEMPLATE,
+  BACKEND_TASK_TEMPLATE,
+  FRONTEND_TASK_TEMPLATE,
+  DEBUG_TASK_TEMPLATE,
+  CICD_TASK_TEMPLATE,
+  DESIGN_TASK_TEMPLATE,
+} from "../workflow-templates/task-execution.mjs";
+
 // Task Lifecycle (workflow-first core)
 import {
   TASK_LIFECYCLE_TEMPLATE,
@@ -185,6 +195,12 @@ export {
   DEPENDENCY_AUDIT_TEMPLATE,
   SECRET_SCANNER_TEMPLATE,
   CODE_QUALITY_STRIKER_TEMPLATE,
+  FULLSTACK_TASK_TEMPLATE,
+  BACKEND_TASK_TEMPLATE,
+  FRONTEND_TASK_TEMPLATE,
+  DEBUG_TASK_TEMPLATE,
+  CICD_TASK_TEMPLATE,
+  DESIGN_TASK_TEMPLATE,
   TASK_LIFECYCLE_TEMPLATE,
   VE_ORCHESTRATOR_LITE_TEMPLATE,
   TASK_BATCH_PROCESSOR_TEMPLATE,
@@ -211,18 +227,19 @@ export {
 
 /** Category metadata for UI grouping. */
 export const TEMPLATE_CATEGORIES = Object.freeze({
-  github:      { label: "GitHub",       icon: ":git:", order: 1 },
-  agents:      { label: "Agents",       icon: ":bot:", order: 2 },
-  planning:    { label: "Planning",     icon: ":clipboard:", order: 3 },
-  "ci-cd":     { label: "CI / CD",      icon: ":refresh:", order: 4 },
-  reliability: { label: "Reliability",  icon: ":shield:", order: 5 },
-  security:    { label: "Security",     icon: ":lock:", order: 6 },
-  lifecycle:   { label: "Lifecycle",    icon: ":rocket:", order: 7 },
-  research:    { label: "Research",     icon: ":microscope:", order: 8 },
-  coverage:    { label: "Coverage",     icon: ":chart:", order: 9 },
-  "mcp-integration": { label: "MCP Integration", icon: ":plug:", order: 10 },
-  maintenance: { label: "Maintenance",   icon: ":wrench:",   order: 11 },
-  custom:      { label: "Custom",       icon: ":settings:", order: 12 },
+  "task-execution": { label: "Task Execution", icon: ":play:", order: 1 },
+  github:      { label: "GitHub",       icon: ":git:", order: 2 },
+  agents:      { label: "Agents",       icon: ":bot:", order: 3 },
+  planning:    { label: "Planning",     icon: ":clipboard:", order: 4 },
+  "ci-cd":     { label: "CI / CD",      icon: ":refresh:", order: 5 },
+  reliability: { label: "Reliability",  icon: ":shield:", order: 6 },
+  security:    { label: "Security",     icon: ":lock:", order: 7 },
+  lifecycle:   { label: "Lifecycle",    icon: ":rocket:", order: 8 },
+  research:    { label: "Research",     icon: ":microscope:", order: 9 },
+  coverage:    { label: "Coverage",     icon: ":chart:", order: 10 },
+  "mcp-integration": { label: "MCP Integration", icon: ":plug:", order: 11 },
+  maintenance: { label: "Maintenance",   icon: ":wrench:",   order: 12 },
+  custom:      { label: "Custom",       icon: ":settings:", order: 13 },
 });
 
 export const WORKFLOW_TEMPLATES = Object.freeze([
@@ -270,6 +287,13 @@ export const WORKFLOW_TEMPLATES = Object.freeze([
   SECRET_SCANNER_TEMPLATE,
   // ── Maintenance (structural quality, agentic dev) ──
   CODE_QUALITY_STRIKER_TEMPLATE,
+  // ── Task Execution (task-type workflows + core lifecycle) ──
+  FULLSTACK_TASK_TEMPLATE,
+  BACKEND_TASK_TEMPLATE,
+  FRONTEND_TASK_TEMPLATE,
+  DEBUG_TASK_TEMPLATE,
+  CICD_TASK_TEMPLATE,
+  DESIGN_TASK_TEMPLATE,
   // ── Task Lifecycle (workflow-first core) ──
   TASK_LIFECYCLE_TEMPLATE,
   VE_ORCHESTRATOR_LITE_TEMPLATE,

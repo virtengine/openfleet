@@ -2406,6 +2406,23 @@ export function TaskDetailModal({ task, onClose, onStart, presentation = "modal"
     task?.workflowHistory,
     task?.workflows,
   ]);
+
+  // ── Execution Plan state ──────────────────────────────────────────────────
+  const [executionPlan, setExecutionPlan] = useState(null);
+  const [executionPlanLoading, setExecutionPlanLoading] = useState(false);
+  const [executionPlanExpanded, setExecutionPlanExpanded] = useState(false);
+  useEffect(() => {
+    if (!task?.id) return;
+    setExecutionPlan(null);
+    setExecutionPlanLoading(true);
+    const wsParam = typeof window !== "undefined" && window.__bosunWorkspaceId ? `&workspace=${encodeURIComponent(window.__bosunWorkspaceId)}` : "";
+    fetch(`/api/tasks/execution-plan?taskId=${encodeURIComponent(task.id)}${wsParam}`)
+      .then((r) => r.json())
+      .then((data) => { if (data?.ok) setExecutionPlan(data); })
+      .catch(() => {})
+      .finally(() => setExecutionPlanLoading(false));
+  }, [task?.id]);
+
   const relatedLinks = useMemo(() => buildTaskRelatedLinks(task), [
     task?.id,
     task?.branch,
@@ -3131,6 +3148,65 @@ export function TaskDetailModal({ task, onClose, onStart, presentation = "modal"
           </div>
         </div>
       `}
+
+      ${/* ── Execution Plan Visualization ─────────────────────────────── */ ""}
+      <div class="task-comments-block modal-form-span jira-panel">
+        <div class="task-attachments-title" style="cursor:pointer;display:flex;align-items:center;gap:6px;" onClick=${() => setExecutionPlanExpanded(!executionPlanExpanded)}>
+          <span>${executionPlanExpanded ? "▾" : "▸"}</span>
+          <span>▶️ Execution Plan</span>
+          ${executionPlanLoading && html`<span style="font-size:0.8em;opacity:0.6;margin-left:4px;">Loading…</span>`}
+          ${executionPlan && html`<span style="font-size:0.8em;opacity:0.6;margin-left:4px;">${executionPlan.stageCount || 0} workflows · ${executionPlan.agentRunTotal || 0} agent runs</span>`}
+        </div>
+        ${executionPlanExpanded && html`
+          <div class="task-comments-list" style="margin-top:8px;">
+            ${!executionPlan && !executionPlanLoading && html`
+              <div class="task-comment-item" style="opacity:0.6;">No execution plan data available.</div>
+            `}
+            ${executionPlan?.stages?.map((stage, si) => html`
+              <div key=${`stage-${si}`} style="margin-bottom:12px;border:1px solid var(--border-color, #333);border-radius:6px;padding:8px;">
+                <div style="display:flex;align-items:center;gap:6px;margin-bottom:6px;">
+                  ${stage.core ? html`<span style="background:#2d6a4f;color:#fff;padding:1px 6px;border-radius:3px;font-size:0.7em;font-weight:600;">CORE</span>` : ""}
+                  <strong>${stage.workflowName}</strong>
+                  ${stage.matchType === "polling" ? html`<span style="font-size:0.75em;opacity:0.6;margin-left:4px;">(polling)</span>` : ""}
+                  <span style="font-size:0.75em;opacity:0.5;margin-left:auto;">${stage.category || ""}</span>
+                </div>
+                ${stage.description ? html`<div style="font-size:0.8em;opacity:0.7;margin-bottom:6px;">${stage.description.length > 120 ? stage.description.slice(0, 120) + "…" : stage.description}</div>` : ""}
+                <div style="display:flex;flex-wrap:wrap;gap:4px;align-items:center;">
+                  ${(stage.nodes || []).map((nd, ni) => html`
+                    <div key=${`n-${ni}`} style="display:contents;">
+                      ${ni > 0 ? html`<span style="opacity:0.3;font-size:0.8em;">→</span>` : ""}
+                      <div style=${{
+                        padding: "3px 8px",
+                        borderRadius: "4px",
+                        fontSize: "0.75em",
+                        background: nd.isAgentRun ? "var(--accent-bg, #1a3a5c)" : nd.isTrigger ? "var(--trigger-bg, #3a2a1a)" : nd.isCondition ? "var(--condition-bg, #2a2a3a)" : "var(--node-bg, #1a1a2a)",
+                        border: nd.isAgentRun ? "1px solid var(--accent-border, #2d6a9f)" : "1px solid var(--border-color, #333)",
+                        position: "relative",
+                      }}>
+                        <div style="font-weight:${nd.isAgentRun ? 600 : 400};">${nd.label}</div>
+                        ${nd.isAgentRun && nd.resolvedAgent ? html`
+                          <div style="font-size:0.85em;opacity:0.8;margin-top:2px;">
+                            🤖 ${nd.resolvedAgent}
+                            ${nd.confidence ? html`<span style="opacity:0.5;margin-left:4px;">(${Math.round(nd.confidence * 100)}%)</span>` : ""}
+                          </div>
+                        ` : ""}
+                        ${nd.isAgentRun && nd.resolvedSkills?.length > 0 ? html`
+                          <div style="font-size:0.8em;opacity:0.6;margin-top:2px;">
+                            Skills: ${nd.resolvedSkills.map((s) => s.name).join(", ")}
+                          </div>
+                        ` : ""}
+                        ${nd.isAgentRun && nd.resolveMode === "library" && !nd.resolvedAgent ? html`
+                          <div style="font-size:0.8em;opacity:0.5;margin-top:2px;">Resolved by Library</div>
+                        ` : ""}
+                      </div>
+                    </div>
+                  `)}
+                </div>
+              </div>
+            `)}
+          </div>
+        `}
+      </div>
 
       ${historyEntries.length > 0 && html`
         <div class="task-comments-block modal-form-span jira-panel">

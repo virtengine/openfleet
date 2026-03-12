@@ -10111,6 +10111,257 @@ async function handleApi(req, res, url) {
     return;
   }
 
+  // ── Task Execution Plan ──────────────────────────────────────────────────
+  if (path === "/api/tasks/execution-plan") {
+    try {
+      const taskId = url.searchParams.get("taskId") || url.searchParams.get("id") || "";
+      if (!taskId) {
+        jsonResponse(res, 400, { ok: false, error: "taskId required" });
+        return;
+      }
+      const adapter = getKanbanAdapter();
+      const task = await adapter.getTask(taskId);
+      if (!task) {
+        jsonResponse(res, 404, { ok: false, error: "Task not found" });
+        return;
+      }
+
+      const wfCtx = await getWorkflowRequestContext(url);
+      const engine = wfCtx.ok ? wfCtx.engine : null;
+      const stages = [];
+
+      // Resolve library roots for skill resolution
+      let libraryRoots = [];
+      try {
+        const wsCtx = resolveWorkspaceContextFromRequest(url, { allowAll: false });
+        if (wsCtx) {
+          libraryRoots = resolveLibraryRootsForContext(wsCtx);
+          ensureLibraryRootsInitialized(libraryRoots);
+        }
+      } catch { /* best-effort */ }
+
+      if (engine) {
+        const allWorkflows = engine.list();
+        const fullWorkflows = allWorkflows.map((w) => engine.get(w.id)).filter(Boolean);
+
+        // Import the trigger evaluator
+        let evaluateTaskAssignedTriggerConfig;
+        try {
+          const wfNodes = await import("../workflow/workflow-nodes.mjs");
+          evaluateTaskAssignedTriggerConfig = wfNodes.evaluateTaskAssignedTriggerConfig;
+        } catch { /* fallback below */ }
+
+        // Simulate task.assigned event data
+        const eventData = {
+          eventType: "task.assigned",
+          taskId: task.id,
+          taskTitle: task.title || "",
+          task: {
+            id: task.id,
+            title: task.title || "",
+            description: task.description || "",
+            tags: task.tags || [],
+            agentType: task.agentType || task.assignedAgentType || "",
+            assignedAgentType: task.assignedAgentType || task.agentType || "",
+            agentProfile: task.agentProfile || "",
+          },
+        };
+
+        for (const wf of fullWorkflows) {
+          if (wf.enabled === false) continue;
+
+          // Find trigger.task_assigned nodes
+          const triggerNodes = (wf.nodes || []).filter(
+            (n) => n.type === "trigger.task_assigned",
+          );
+          if (triggerNodes.length === 0) continue;
+
+          // Check if any trigger matches this task
+          let matched = false;
+          for (const tNode of triggerNodes) {
+            if (evaluateTaskAssignedTriggerConfig) {
+              matched = evaluateTaskAssignedTriggerConfig(tNode.config || {}, eventData);
+            } else {
+              // Fallback: simple pattern check
+              const pattern = tNode.config?.taskPattern;
+              if (pattern) {
+                try {
+                  const rx = new RegExp(pattern, "i");
+                  const text = [task.title || "", ...(task.tags || [])].join(" ");
+                  matched = rx.test(text);
+                } catch { matched = false; }
+              } else {
+                matched = true;
+              }
+            }
+            if (matched) break;
+          }
+
+          if (!matched) continue;
+
+          // Build ordered node list following edges
+          const nodeMap = new Map((wf.nodes || []).map((n) => [n.id, n]));
+          const edgesBySource = new Map();
+          for (const e of (wf.edges || [])) {
+            if (!edgesBySource.has(e.source)) edgesBySource.set(e.source, []);
+            edgesBySource.get(e.source).push(e);
+          }
+
+          const orderedNodes = [];
+          const visited = new Set();
+          const triggerNodeId = triggerNodes[0]?.id;
+          const queue = triggerNodeId ? [triggerNodeId] : [];
+          while (queue.length > 0) {
+            const nid = queue.shift();
+            if (visited.has(nid)) continue;
+            visited.add(nid);
+            const nd = nodeMap.get(nid);
+            if (!nd) continue;
+
+            const nodeInfo = {
+              id: nd.id,
+              type: nd.type,
+              label: nd.label || nd.id,
+              config: {},
+            };
+
+            if (nd.type === "action.run_agent") {
+              const promptText = nd.config?.prompt || "";
+              const resolveMode = nd.config?.resolveMode || wf.metadata?.resolveMode || "manual";
+              nodeInfo.isAgentRun = true;
+              nodeInfo.resolveMode = resolveMode;
+              nodeInfo.promptPreview = promptText.length > 200
+                ? promptText.slice(0, 200) + "…"
+                : promptText;
+
+              // Resolve library skills for this node
+              if (resolveMode === "library" && libraryRoots.length > 0) {
+                try {
+                  const libMgr = await import("../infra/library-manager.mjs");
+                  if (typeof libMgr.resolveLibraryPlan === "function") {
+                    const criteria = {
+                      title: (task.title || "") + " " + (nd.label || ""),
+                      description: (task.description || "") + "\n" + promptText,
+                      tags: task.tags || [],
+                    };
+                    let bestPlan = null;
+                    for (const rootInfo of libraryRoots) {
+                      const result = libMgr.resolveLibraryPlan(rootInfo.rootDir, criteria, {
+                        topN: 3,
+                        skillTopN: 4,
+                      });
+                      if (!result?.best) continue;
+                      if (!bestPlan || Number(result.best?.score || 0) > Number(bestPlan.best?.score || 0)) {
+                        bestPlan = result;
+                      }
+                    }
+                    if (bestPlan) {
+                      nodeInfo.resolvedAgent = bestPlan.plan?.agentName || bestPlan.best?.name || null;
+                      nodeInfo.resolvedAgentId = bestPlan.plan?.agentProfileId || bestPlan.best?.id || null;
+                      nodeInfo.resolvedSkills = (bestPlan.plan?.selectedSkills || []).map((s) => ({
+                        id: s.id || s.skillId,
+                        name: s.name || s.id || s.skillId,
+                        score: s.score,
+                      }));
+                      nodeInfo.confidence = bestPlan.plan?.confidence || bestPlan.best?.confidence || 0;
+                    }
+                  }
+                } catch { /* library resolution is best-effort */ }
+              }
+            } else if (nd.type === "action.resolve_executor") {
+              nodeInfo.isResolveExecutor = true;
+            } else if (nd.type === "action.build_task_prompt") {
+              nodeInfo.isBuildPrompt = true;
+            } else if (nd.type.startsWith("trigger.")) {
+              nodeInfo.isTrigger = true;
+              if (nd.config?.taskPattern) {
+                nodeInfo.config.taskPattern = nd.config.taskPattern;
+              }
+            } else if (nd.type.startsWith("condition.")) {
+              nodeInfo.isCondition = true;
+            }
+
+            orderedNodes.push(nodeInfo);
+
+            const outEdges = edgesBySource.get(nid) || [];
+            for (const e of outEdges) {
+              if (!visited.has(e.target) && !e.backEdge) {
+                queue.push(e.target);
+              }
+            }
+          }
+
+          stages.push({
+            workflowId: wf.id,
+            workflowName: wf.name,
+            category: wf.category,
+            core: wf.core === true,
+            trigger: wf.trigger,
+            description: wf.description || "",
+            nodeCount: orderedNodes.length,
+            agentRunCount: orderedNodes.filter((n) => n.isAgentRun).length,
+            nodes: orderedNodes,
+          });
+        }
+
+        // Also include trigger.task_available workflows (polling-based)
+        for (const wf of fullWorkflows) {
+          if (wf.enabled === false) continue;
+          const taskAvailTriggers = (wf.nodes || []).filter(
+            (n) => n.type === "trigger.task_available",
+          );
+          if (taskAvailTriggers.length === 0) continue;
+          // Skip if already added as task_assigned match
+          if (stages.some((s) => s.workflowId === wf.id)) continue;
+
+          stages.push({
+            workflowId: wf.id,
+            workflowName: wf.name,
+            category: wf.category,
+            core: wf.core === true,
+            trigger: wf.trigger || "trigger.task_available",
+            description: wf.description || "",
+            nodeCount: (wf.nodes || []).length,
+            agentRunCount: (wf.nodes || []).filter((n) => n.type === "action.run_agent").length,
+            nodes: (wf.nodes || []).map((nd) => ({
+              id: nd.id,
+              type: nd.type,
+              label: nd.label || nd.id,
+              isAgentRun: nd.type === "action.run_agent",
+              isTrigger: nd.type.startsWith("trigger."),
+              isCondition: nd.type.startsWith("condition."),
+              isResolveExecutor: nd.type === "action.resolve_executor",
+              isBuildPrompt: nd.type === "action.build_task_prompt",
+            })),
+            matchType: "polling",
+          });
+        }
+      }
+
+      // Sort: core first, then by match type, then by name
+      stages.sort((a, b) => {
+        if (a.core !== b.core) return a.core ? -1 : 1;
+        if (a.matchType !== b.matchType) {
+          if (!a.matchType && b.matchType) return -1;
+          if (a.matchType && !b.matchType) return 1;
+        }
+        return (a.workflowName || "").localeCompare(b.workflowName || "");
+      });
+
+      jsonResponse(res, 200, {
+        ok: true,
+        taskId: task.id,
+        taskTitle: task.title || "",
+        stages,
+        stageCount: stages.length,
+        agentRunTotal: stages.reduce((sum, s) => sum + (s.agentRunCount || 0), 0),
+      });
+    } catch (err) {
+      jsonResponse(res, 500, { ok: false, error: err.message });
+    }
+    return;
+  }
+
   if (path === "/api/tasks/sprints" && req.method === "GET") {
     try {
       const list = await callTaskStoreFunction(TASK_STORE_SPRINT_EXPORTS.list, []);

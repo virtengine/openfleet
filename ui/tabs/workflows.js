@@ -1954,7 +1954,7 @@ function WorkflowCanvas({ workflow, onSave, nodeTypes: availableNodeTypes = [] }
           <span class="btn-icon">${resolveIcon("play")}</span>
           Run
         <//>
-        <${Button}
+        ${workflow?.core !== true && html`<${Button}
           variant="outlined"
           size="small"
           onClick=${() => {
@@ -1964,7 +1964,8 @@ function WorkflowCanvas({ workflow, onSave, nodeTypes: availableNodeTypes = [] }
         >
           <span class="btn-icon">${resolveIcon(workflow?.enabled === false ? "play" : "pause")}</span>
           ${workflow?.enabled === false ? "Resume" : "Pause"}
-        <//>
+        <//>`}
+        ${workflow?.core === true && html`<span class="wf-badge" style="background: #8b5cf620; color: #a78bfa; font-size: 11px; font-weight: 600;">Core</span>`}
         <${Button} variant="text" size="small" disabled=${historyState.past.length === 0} onClick=${undoCanvas}>Undo<//>
         <${Button} variant="text" size="small" disabled=${historyState.future.length === 0} onClick=${redoCanvas}>Redo<//>
         <${Button} variant="text" size="small" onClick=${() => setShowShortcutOverlay(true)}>Shortcuts ?<//>
@@ -3149,6 +3150,7 @@ function WorkflowListView() {
                 const templateState = wf.metadata?.templateState || null;
                 const hasTemplateUpdate = templateState?.updateAvailable === true;
                 const isCustomizedTemplate = templateState?.isCustomized === true;
+                const isCore = wf.core === true;
                 return html`
               <div key=${wf.id} class="wf-card" style="background: var(--color-bg-secondary, #1a1f2e); border-radius: 12px; padding: 14px; border: 1px solid var(--color-border, #2a3040); cursor: pointer; transition: border-color 0.15s;"
                    onClick=${() => {
@@ -3163,6 +3165,11 @@ function WorkflowListView() {
                   <span class="wf-badge" style="background: ${wf.enabled ? '#10b98130' : '#6b728030'}; color: ${wf.enabled ? '#10b981' : '#6b7280'}; font-size: 10px;">
                     ${wf.enabled ? "Active" : "Paused"}
                   </span>
+                  ${isCore && html`
+                    <span class="wf-badge" style="background: #8b5cf620; color: #a78bfa; font-size: 10px; font-weight: 600;">
+                      Core
+                    </span>
+                  `}
                   ${templateState?.templateId && html`
                     <span class="wf-badge" style="background: #3b82f620; color: #60a5fa; font-size: 10px;">
                       Template
@@ -3228,7 +3235,7 @@ function WorkflowListView() {
                       Update
                     <//>
                   `}
-                  <${Button}
+                  ${!isCore && html`<${Button}
                     variant="text"
                     size="small"
                     sx=${{ fontSize: '11px', textTransform: 'none' }}
@@ -3239,7 +3246,7 @@ function WorkflowListView() {
                   >
                     <span class="icon-inline">${resolveIcon(wf.enabled ? "pause" : "play")}</span>
                     ${wf.enabled ? "Pause" : "Resume"}
-                  <//>
+                  <//>`}
                   <${Button}
                     variant="text"
                     size="small"
@@ -3255,9 +3262,9 @@ function WorkflowListView() {
                   >
                     <span class="icon-inline">${resolveIcon("play")}</span>
                   <//>
-                  <${Button} variant="text" size="small" sx=${{ fontSize: '11px', color: '#ef4444', textTransform: 'none' }} onClick=${(e) => { e.stopPropagation(); if (confirm("Delete " + wf.name + "?")) deleteWorkflow(wf.id); }}>
+                  ${!isCore && html`<${Button} variant="text" size="small" sx=${{ fontSize: '11px', color: '#ef4444', textTransform: 'none' }} onClick=${(e) => { e.stopPropagation(); if (confirm("Delete " + wf.name + "?")) deleteWorkflow(wf.id); }}>
                     <span class="icon-inline">${resolveIcon("trash")}</span>
-                  <//>
+                  <//>`}
                 </div>
               </div>
             `;

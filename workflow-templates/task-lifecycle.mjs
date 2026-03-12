@@ -51,8 +51,9 @@ export const TASK_LIFECYCLE_TEMPLATE = {
     "agent dispatch → commit detection → PR creation → status transition. " +
     "Replaces the monolithic TaskExecutor.executeTask() method with a " +
     "composable workflow DAG.",
-  category: "lifecycle",
+  category: "task-execution",
   enabled: true,
+  core: true,
   recommended: true,
   trigger: "trigger.task_available",
   variables: {
@@ -468,7 +469,7 @@ export const VE_ORCHESTRATOR_LITE_TEMPLATE = {
     "Simplified task lifecycle for lightweight deployments. Same core " +
     "flow as the full Task Lifecycle (slot → claim → worktree → agent → " +
     "push → PR) but with fewer failure branches and no anti-thrash.",
-  category: "lifecycle",
+  category: "task-execution",
   enabled: true,
   recommended: false,
   trigger: "trigger.task_available",
