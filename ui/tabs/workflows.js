@@ -3572,9 +3572,6 @@ function RunHistoryView() {
   const [nowTick, setNowTick] = useState(Date.now());
   const hasRunningRuns = runs.some((run) => run?.status === "running");
   const selectedRunIsRunning = selectedRun?.status === "running";
-  const autoLoadMoreRef = useRef(false);
-  const tailSentinelRef = useRef(null);
-  const lastAutoLoadCountRef = useRef(-1);
   const [statusFilter, setStatusFilter] = useState("all");
   const [workflowFilter, setWorkflowFilter] = useState("all");
   const [triggerFilter, setTriggerFilter] = useState("all");
@@ -3659,12 +3656,6 @@ function RunHistoryView() {
 
   const canLoadMoreRuns =
     hasMoreRuns && runs.length < WORKFLOW_RUN_MAX_FETCH;
-  const hasRunFilters =
-    statusFilter !== "all" ||
-    workflowFilter !== "all" ||
-    triggerFilter !== "all" ||
-    Boolean(normalizedSearch);
-
   const triggerLoadMoreRuns = useCallback(() => {
     if (!canLoadMoreRuns || loadingMoreRuns) return false;
     const nextOffset = Number(workflowRunsNextOffset.value || runs.length);
@@ -3676,61 +3667,6 @@ function RunHistoryView() {
     });
     return true;
   }, [canLoadMoreRuns, loadingMoreRuns, runs.length, totalRuns]);
-
-  useEffect(() => {
-    if (!hasRunFilters || filteredRuns.length > 0 || !canLoadMoreRuns) {
-      autoLoadMoreRef.current = false;
-      return;
-    }
-    if (autoLoadMoreRef.current) return;
-    autoLoadMoreRef.current = true;
-    Promise.resolve(triggerLoadMoreRuns())
-      .finally(() => {
-        autoLoadMoreRef.current = false;
-      });
-  }, [hasRunFilters, filteredRuns.length, canLoadMoreRuns, triggerLoadMoreRuns, statusFilter, workflowFilter, triggerFilter, normalizedSearch]);
-
-  useEffect(() => {
-    if (selectedRun || !canLoadMoreRuns || typeof IntersectionObserver !== "function") {
-      lastAutoLoadCountRef.current = -1;
-      return;
-    }
-    const sentinel = tailSentinelRef.current;
-    if (!sentinel) return;
-    const observer = new IntersectionObserver(
-      (entries) => {
-        for (const entry of entries) {
-          if (!entry.isIntersecting) continue;
-          const key = runs.length;
-          if (lastAutoLoadCountRef.current === key || loadingMoreRuns) continue;
-          lastAutoLoadCountRef.current = key;
-          triggerLoadMoreRuns();
-        }
-      },
-      {
-        root: null,
-        rootMargin: "0px 0px 240px 0px",
-        threshold: 0,
-      },
-    );
-    observer.observe(sentinel);
-    return () => observer.disconnect();
-  }, [selectedRun, canLoadMoreRuns, loadingMoreRuns, runs.length, triggerLoadMoreRuns]);
-
-  useEffect(() => {
-    if (selectedRun || !canLoadMoreRuns || loadingMoreRuns || typeof window === "undefined") return;
-    const doc = document?.documentElement;
-    const body = document?.body;
-    const scrollHeight = Math.max(
-      Number(doc?.scrollHeight || 0),
-      Number(body?.scrollHeight || 0),
-    );
-    if (scrollHeight > window.innerHeight + 240) return;
-    const key = runs.length;
-    if (lastAutoLoadCountRef.current === key) return;
-    lastAutoLoadCountRef.current = key;
-    triggerLoadMoreRuns();
-  }, [selectedRun, canLoadMoreRuns, loadingMoreRuns, runs.length, filteredRuns.length, triggerLoadMoreRuns]);
 
   if (selectedRun) {
     const statusStyles = getRunStatusBadgeStyles(selectedRun.status);
@@ -3933,7 +3869,7 @@ function RunHistoryView() {
         <div style="text-align: center; padding: 28px; opacity: 0.6;">
           <div>No runs match the current filters yet.</div>
           ${canLoadMoreRuns && html`
-            <div style="margin-top: 6px;">Bosun has loaded ${runs.length} of ${totalRuns} run(s); older history will keep loading while the filter is active.</div>
+            <div style="margin-top: 6px;">Bosun has loaded ${runs.length} of ${totalRuns} run(s); use Load more runs to search older history.</div>
           `}
         </div>
       `}
@@ -3988,9 +3924,6 @@ function RunHistoryView() {
             <//>
           `;
         })}
-        ${canLoadMoreRuns && html`
-          <div ref=${tailSentinelRef} style="height: 1px;"></div>
-        `}
       </div>
       ${canLoadMoreRuns && html`
         <div style="display: flex; justify-content: center; margin-top: 12px;">

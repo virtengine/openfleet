@@ -18,9 +18,10 @@ describe("workflow run history UI pagination", () => {
       expect(source).toContain("data?.pagination?.hasMore");
     });
 
-    it(`${label} auto-load older workflow runs with a sentinel`, () => {
-      expect(source).toContain("tailSentinelRef");
-      expect(source).toContain("new IntersectionObserver");
+    it(`${label} keeps older workflow pagination manual-only`, () => {
+      expect(source).not.toContain("tailSentinelRef");
+      expect(source).not.toContain("autoLoadMoreRef");
+      expect(source).not.toContain("new IntersectionObserver");
       expect(source).toContain("Load more runs");
       expect(source).toContain("of ${totalRuns} run(s)");
     });

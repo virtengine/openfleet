@@ -10115,10 +10115,20 @@ async function handleApi(req, res, url) {
   if (path === "/api/tasks/execution-plan") {
     try {
       const taskId = url.searchParams.get("taskId") || url.searchParams.get("id") || "";
-      if (!taskId) { jsonResponse(res, 400, { ok: false, error: "taskId required" }); return; }
-      const adapter = getKanbanAdapter();
-      const task = await adapter.getTask(taskId);
-      if (!task) { jsonResponse(res, 404, { ok: false, error: "Task not found" }); return; }
+      const adHocTitle = url.searchParams.get("title") || "";
+      const adHocDescription = url.searchParams.get("description") || "";
+
+      let task;
+      if (taskId) {
+        const adapter = getKanbanAdapter();
+        task = await adapter.getTask(taskId);
+        if (!task) { jsonResponse(res, 404, { ok: false, error: "Task not found" }); return; }
+      } else if (adHocTitle) {
+        // Ad-hoc mode: create a virtual task from query params for Library resolver
+        task = { id: `adhoc-${Date.now()}`, title: adHocTitle, description: adHocDescription, tags: [], status: "todo" };
+      } else {
+        jsonResponse(res, 400, { ok: false, error: "taskId or title required" }); return;
+      }
 
       const mode = url.searchParams.get("mode") || "resolve"; // "resolve" | "dry-run"
       const wfCtx = await getWorkflowRequestContext(url);
