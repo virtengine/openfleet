@@ -22,7 +22,6 @@ import {
   ListItemSecondaryAction, Divider, Tooltip, Alert,
   Menu, MenuItem,
   ToggleButton, ToggleButtonGroup,
-  Select as MuiSelect, FormControl, InputLabel,
   Slider, Collapse,
 } from "@mui/material";
 

@@ -260,8 +260,8 @@ export function resolvePathForTestRuntime(candidatePath, persistentPath, sandbox
   const resolvedCandidate = resolve(String(candidatePath || ""));
   if (!isTestRuntime()) return resolvedCandidate;
   if (!persistentPath || !sandboxPath) return resolvedCandidate;
-  const resolvedPersistent = resolve(String(persistentPath || ""));
+  const resolvedPersistent = resolve(String(persistentPath));
   if (!pathsEqual(resolvedCandidate, resolvedPersistent)) return resolvedCandidate;
   ensureTestRuntimeSandbox();
-  return resolve(String(sandboxPath || ""));
+  return resolve(String(sandboxPath));
 }

@@ -4144,6 +4144,9 @@ registerNodeType("validation.lint", {
   },
   async execute(node, ctx) {
     const command = ctx.resolve(node.config?.command || "npm run lint");
+    if (!command || !command.trim()) {
+      return { passed: true, output: "no lint configured", skipped: true };
+    }
     const cwd = ctx.resolve(node.config?.cwd || ctx.data?.worktreePath || process.cwd());
     try {
       const output = execSync(command, { cwd, timeout: node.config?.timeoutMs || 120000, encoding: "utf8", stdio: "pipe" });

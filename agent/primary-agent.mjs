@@ -68,8 +68,6 @@ import { getModelsForExecutor, normalizeExecutorKey } from "../task/task-complex
 
 /** Valid agent interaction modes */
 const CORE_MODES = ["ask", "agent", "plan", "web", "instant"];
-/** @deprecated Use getValidModes() instead */
-const VALID_MODES = CORE_MODES;
 /** Custom modes loaded from library */
 const _customModes = new Map();
 

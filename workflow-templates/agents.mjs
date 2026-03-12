@@ -511,7 +511,7 @@ Commit with message "feat: implement [feature]"`,
     }, { x: 400, y: 780 }),
 
     node("lint", "validation.lint", "Lint Check", {
-      command: "{{lintCommand}} 2>/dev/null || echo 'no lint configured'",
+      command: "{{lintCommand}}",
     }, { x: 400, y: 910 }),
 
     node("all-passed", "condition.expression", "All Checks Passed?", {
@@ -599,7 +599,7 @@ Commit with message "fix: address validation failures"`,
     }, { x: 620, y: 1430 }),
 
     node("lint-retry", "validation.lint", "Lint Check (Retry)", {
-      command: "{{lintCommand}} 2>/dev/null || echo 'no lint configured'",
+      command: "{{lintCommand}}",
     }, { x: 620, y: 1560 }),
 
     node("retry-passed", "condition.expression", "Retry Checks Passed?", {

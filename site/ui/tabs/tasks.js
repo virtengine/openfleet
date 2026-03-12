@@ -2410,7 +2410,6 @@ export function TaskDetailModal({ task, onClose, onStart, presentation = "modal"
   // ── Execution Plan state ──────────────────────────────────────────────────
   const [executionPlan, setExecutionPlan] = useState(null);
   const [executionPlanLoading, setExecutionPlanLoading] = useState(false);
-  const [executionPlanExpanded, setExecutionPlanExpanded] = useState(false);
   const [expandedNodes, setExpandedNodes] = useState({});
   const [expandedStages, setExpandedStages] = useState({});
   const [dryRunLoading, setDryRunLoading] = useState(false);

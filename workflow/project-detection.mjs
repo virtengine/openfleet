@@ -304,10 +304,16 @@ const STACK_DEFINITIONS = [
     detectCommands(rootDir) {
       const cmds = { test: "make test", build: "make", lint: "make lint", syntaxCheck: "make check", typeCheck: "" };
       try {
-        const mf = readFileSync(resolve(rootDir, "Makefile"), "utf8");
-        if (!mf.includes("test:")) cmds.test = "";
-        if (!mf.includes("lint:")) cmds.lint = "";
-        if (!mf.includes("check:")) cmds.syntaxCheck = "";
+        // Try all known Makefile variants (case-sensitive filesystems may use different names)
+        let mf = "";
+        for (const name of ["Makefile", "makefile", "GNUmakefile"]) {
+          try { mf = readFileSync(resolve(rootDir, name), "utf8"); break; } catch {}
+        }
+        if (mf) {
+          if (!mf.includes("test:")) cmds.test = "";
+          if (!mf.includes("lint:")) cmds.lint = "";
+          if (!mf.includes("check:")) cmds.syntaxCheck = "";
+        }
       } catch {}
       return cmds;
     },
@@ -347,7 +353,7 @@ function markerExists(rootDir, marker) {
   if (marker.includes("*")) {
     // Glob-style: *.csproj, *.sln etc.
     try {
-      const ext = marker.replace("*", "");
+      const ext = marker.replace(/\*/g, "");
       return readdirSync(rootDir).some(f => f.endsWith(ext));
     } catch { return false; }
   }

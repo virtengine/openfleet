@@ -4185,7 +4185,7 @@
           "type": "validation.lint",
           "label": "Lint Check",
           "config": {
-            "command": "{{lintCommand}} 2>/dev/null || echo 'no lint configured'"
+            "command": "{{lintCommand}}"
           },
           "position": {
             "x": 400,
@@ -4403,7 +4403,7 @@
           "type": "validation.lint",
           "label": "Lint Check (Retry)",
           "config": {
-            "command": "{{lintCommand}} 2>/dev/null || echo 'no lint configured'"
+            "command": "{{lintCommand}}"
           },
           "position": {
             "x": 620,
@@ -22007,7 +22007,7 @@
           "type": "validation.lint",
           "label": "Lint Check",
           "config": {
-            "command": "{{lintCommand}} 2>/dev/null || echo 'no lint configured'"
+            "command": "{{lintCommand}}"
           },
           "position": {
             "x": 400,
@@ -22225,7 +22225,7 @@
           "type": "validation.lint",
           "label": "Lint Check (Retry)",
           "config": {
-            "command": "{{lintCommand}} 2>/dev/null || echo 'no lint configured'"
+            "command": "{{lintCommand}}"
           },
           "position": {
             "x": 620,

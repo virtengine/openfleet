@@ -134,7 +134,6 @@ import {
   setWorkspaceState,
   getWorkspaceStateSummary,
   setWorkspaceExecutors,
-  isWorkflowAllowedForWorkspace,
 } from "../workspace/workspace-manager.mjs";
 import {
   getSessionTracker,

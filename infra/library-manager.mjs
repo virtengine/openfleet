@@ -16,7 +16,7 @@
  */
 
 import { existsSync, readFileSync, writeFileSync, mkdirSync, readdirSync, statSync, unlinkSync, rmSync } from "node:fs";
-import { resolve, basename, join, relative, extname, sep } from "node:path";
+import { resolve, basename, relative, extname, sep } from "node:path";
 import { execSync, spawnSync } from "node:child_process";
 import { homedir } from "node:os";
 import { getAgentToolConfig, getEffectiveTools } from "../agent/agent-tool-config.mjs";
@@ -541,19 +541,9 @@ function buildIndexedSkillEntry(entry) {
 /**
  * Lazily import detectProjectStack to avoid circular dependencies.
  * Falls back gracefully if the module is unavailable.
+ * @private - kept for future use when project-detection integration is complete
  */
 let _detectProjectStack = null;
-function getDetectProjectStack() {
-  if (_detectProjectStack !== undefined && _detectProjectStack !== null) return _detectProjectStack;
-  try {
-    // Dynamic import would be async — use a cached lazy approach via require-like pattern.
-    // Since this module is ESM, we attempt the import and cache it.
-    _detectProjectStack = null;
-  } catch {
-    _detectProjectStack = null;
-  }
-  return _detectProjectStack;
-}
 
 /**
  * Build a lightweight repo-context object from the workspace directory.
@@ -617,7 +607,7 @@ function _scanRepoContextFast(rootDir) {
     const found = def.markers.some((m) => {
       if (m.includes("*")) {
         try {
-          return readdirSync(rootDir).some((f) => f.endsWith(m.replace("*", "")));
+          return readdirSync(rootDir).some((f) => f.endsWith(m.replace(/\*/g, "")));
         } catch { return false; }
       }
       return existsSync(resolve(rootDir, m));
@@ -877,7 +867,7 @@ function buildSkillSelection(rootDir, best, criteria = {}, opts = {}) {
     selectedSkillIds,
     selectedSkills,
     candidates: scored.slice(0, Math.max(skillTopN, 20)),
-    tokenBudgetUsed: maxSkillTokens > 0 ? maxSkillTokens - (maxSkillTokens > 0 ? 0 : 0) : undefined,
+    tokenBudgetUsed: maxSkillTokens > 0 ? maxSkillTokens : undefined,
   };
 }
 
@@ -2838,6 +2828,11 @@ export function importAgentProfilesFromRepository(rootDir, options = {}) {
   if (!isSafeGitRefName(branch)) {
     throw new Error("Branch name contains invalid characters");
   }
+  const importAgents = options?.importAgents !== false;
+  const importSkills = options?.importSkills !== false;
+  const importPrompts = options?.importPrompts !== false;
+  const importTools = options?.importTools !== false;
+  const includeEntries = Array.isArray(options?.includeEntries) ? new Set(options.includeEntries.map((e) => String(e || "").trim()).filter(Boolean)) : null;
   const maxProfiles = Math.max(
     1,
     Math.min(
@@ -2846,11 +2841,6 @@ export function importAgentProfilesFromRepository(rootDir, options = {}) {
         (includeEntries ? 2000 : 100),
     ),
   );
-  const importAgents = options?.importAgents !== false;
-  const importSkills = options?.importSkills !== false;
-  const importPrompts = options?.importPrompts !== false;
-  const importTools = options?.importTools !== false;
-  const includeEntries = Array.isArray(options?.includeEntries) ? new Set(options.includeEntries.map((e) => String(e || "").trim()).filter(Boolean)) : null;
 
   const cacheRoot = ensureDir(resolve(getBosunHomeDir(), ".cache", "imports"));
   const checkoutDir = resolve(cacheRoot, `import-${Date.now()}-${Math.random().toString(16).slice(2, 8)}`);
