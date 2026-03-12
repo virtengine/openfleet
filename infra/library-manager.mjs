@@ -231,6 +231,132 @@ function getFileMtimeMs(filePath) {
   }
 }
 
+// ── Token estimation & similarity utilities ──────────────────────────────────
+
+/**
+ * Rough token estimate: ~4 chars per token (GPT-family tokenizers average 3.5–4.5).
+ * Fast O(1) — no actual tokenizer needed.
+ */
+function estimateTokenCount(text) {
+  if (!text) return 0;
+  return Math.ceil(String(text).length / 4);
+}
+
+/**
+ * Jaccard similarity on word-level unigrams. Returns 0–1.
+ * Cheap O(n) — suitable for batch comparisons.
+ */
+function jaccardSimilarity(a, b) {
+  const wordsA = new Set(String(a || "").toLowerCase().split(/\W+/).filter(Boolean));
+  const wordsB = new Set(String(b || "").toLowerCase().split(/\W+/).filter(Boolean));
+  if (wordsA.size === 0 && wordsB.size === 0) return 1;
+  if (wordsA.size === 0 || wordsB.size === 0) return 0;
+  let intersection = 0;
+  for (const w of wordsA) if (wordsB.has(w)) intersection++;
+  return intersection / (wordsA.size + wordsB.size - intersection);
+}
+
+/**
+ * Detect potential duplicates between import candidates and existing library entries.
+ * Returns a Map<relPath, { existingEntry, similarity, reason }> for candidates that
+ * appear to be duplicates of existing entries.
+ */
+function detectImportDuplicates(candidates, existingEntries) {
+  const duplicates = new Map();
+  if (!candidates?.length || !existingEntries?.length) return duplicates;
+
+  // Build lookup structures for existing entries
+  const existingByName = new Map();
+  const existingBySlug = new Map();
+  for (const entry of existingEntries) {
+    const nameLower = String(entry.name || "").toLowerCase().trim();
+    const slug = slugify(entry.name);
+    if (nameLower) {
+      if (!existingByName.has(nameLower)) existingByName.set(nameLower, []);
+      existingByName.get(nameLower).push(entry);
+    }
+    if (slug) {
+      if (!existingBySlug.has(slug)) existingBySlug.set(slug, []);
+      existingBySlug.get(slug).push(entry);
+    }
+  }
+
+  for (const candidate of candidates) {
+    const candName = String(candidate.name || "").toLowerCase().trim();
+    const candSlug = slugify(candidate.name);
+    const candDesc = String(candidate.description || "").toLowerCase().trim();
+
+    // 1. Exact name match
+    if (candName && existingByName.has(candName)) {
+      const matches = existingByName.get(candName);
+      duplicates.set(candidate.relPath, {
+        existingEntries: matches.map((e) => ({ id: e.id, name: e.name, type: e.type })),
+        similarity: 1.0,
+        reason: "exact-name",
+      });
+      continue;
+    }
+
+    // 2. Exact slug match
+    if (candSlug && existingBySlug.has(candSlug)) {
+      const matches = existingBySlug.get(candSlug);
+      duplicates.set(candidate.relPath, {
+        existingEntries: matches.map((e) => ({ id: e.id, name: e.name, type: e.type })),
+        similarity: 0.95,
+        reason: "slug-match",
+      });
+      continue;
+    }
+
+    // 3. High name+description similarity (Jaccard > 0.65)
+    let bestSim = 0;
+    let bestMatch = null;
+    for (const entry of existingEntries) {
+      const entryName = String(entry.name || "");
+      const entryDesc = String(entry.description || "");
+      const nameSim = jaccardSimilarity(candName, entryName);
+      const descSim = candDesc && entryDesc ? jaccardSimilarity(candDesc, entryDesc) : 0;
+      const combined = nameSim * 0.6 + descSim * 0.4;
+      if (combined > bestSim) {
+        bestSim = combined;
+        bestMatch = entry;
+      }
+    }
+    if (bestSim >= 0.65 && bestMatch) {
+      duplicates.set(candidate.relPath, {
+        existingEntries: [{ id: bestMatch.id, name: bestMatch.name, type: bestMatch.type }],
+        similarity: Math.round(bestSim * 100) / 100,
+        reason: "similar-content",
+      });
+    }
+  }
+
+  return duplicates;
+}
+
+/**
+ * Detect duplicates among candidates themselves (intra-import).
+ * Returns a Map<relPath, relPath[]> mapping each candidate to its duplicate peers.
+ */
+function detectIntraDuplicates(candidates) {
+  const groups = new Map();
+  if (!candidates?.length) return groups;
+  const slugMap = new Map();
+  for (const c of candidates) {
+    const slug = slugify(c.name);
+    if (!slug) continue;
+    if (!slugMap.has(slug)) slugMap.set(slug, []);
+    slugMap.get(slug).push(c.relPath);
+  }
+  for (const [, paths] of slugMap) {
+    if (paths.length < 2) continue;
+    for (const p of paths) {
+      groups.set(p, paths.filter((other) => other !== p));
+    }
+  }
+  return groups;
+}
+
 function slugify(name) {
   return String(name || "")
     .trim()
@@ -605,7 +731,9 @@ function buildSkillSelection(rootDir, best, criteria = {}, opts = {}) {
   const tokenMap = skillIndex?.tokenMap || {};
   const indexedById = new Map(indexedSkills.map((entry) => [entry.id, entry]));
   const profileSkillIds = toStringArray(best?.profile?.skills);
-  const textBlob = [criteria?.title, criteria?.description].filter(Boolean).join("\n");
+  const titleRaw = String(criteria?.title || "").trim();
+  const descRaw = String(criteria?.description || "").trim();
+  const textBlob = [titleRaw, descRaw].filter(Boolean).join("\n");
 
   // Gather repo-context and file-context signals
   const repoCtx = criteria?.repoContext || (criteria?.repoRoot ? buildRepoContext(criteria.repoRoot) : null);
@@ -632,6 +760,10 @@ function buildSkillSelection(rootDir, best, criteria = {}, opts = {}) {
     ...(repoCtx ? [...repoCtx.languages, ...repoCtx.frameworks, ...repoCtx.domains] : []),
     ...(fileSignals ? [...fileSignals.fileDomains, ...fileSignals.fileLanguages] : []),
   ].map((d) => d.toLowerCase()));
+
+  // Precompute title/description words for direct name matching
+  const titleWords = new Set(titleRaw.toLowerCase().split(/\W+/).filter((w) => w.length >= 3));
+  const descWords = new Set(descRaw.toLowerCase().split(/\W+/).filter((w) => w.length >= 3));
 
   const scored = [];
   const profileSkillSet = new Set(profileSkillIds.map((value) => value.toLowerCase()));
@@ -667,6 +799,26 @@ function buildSkillSelection(rootDir, best, criteria = {}, opts = {}) {
       }
     }
 
+    // Signal: direct task-title match → up to +8
+    // Matches skill name/description words against the task title for high-precision relevance
+    if (titleWords.size > 0) {
+      const skillNameWords = String(skill.name || "").toLowerCase().split(/\W+/).filter((w) => w.length >= 3);
+      const skillDescWords = String(skill.description || "").toLowerCase().split(/\W+/).filter((w) => w.length >= 3);
+      let titleHits = 0;
+      for (const w of skillNameWords) {
+        if (titleWords.has(w)) titleHits += 2;
+        else if (descWords.has(w)) titleHits += 1;
+      }
+      for (const w of skillDescWords) {
+        if (titleWords.has(w)) titleHits += 1;
+      }
+      if (titleHits > 0) {
+        const titleScore = Math.min(8, titleHits);
+        score += titleScore;
+        reasons.push(`title-match:${titleScore}`);
+      }
+    }
+
     if (score <= 0) continue;
     scored.push({
       ...skill,
@@ -681,9 +833,41 @@ function buildSkillSelection(rootDir, best, criteria = {}, opts = {}) {
   });
 
   const skillTopN = Math.max(1, Number.parseInt(String(opts?.skillTopN ?? criteria?.skillTopN ?? 6), 10) || 6);
+  const maxSkillTokens = Number.parseInt(String(opts?.maxSkillTokens ?? criteria?.maxSkillTokens ?? ""), 10) || 0;
+
+  // Select skills: profile skills first, then top-N scored, enforce token budget if set
+  let selectedCandidates;
+  if (maxSkillTokens > 0) {
+    selectedCandidates = [];
+    let tokenBudget = maxSkillTokens;
+    // Profile skills always included first (they're explicitly assigned)
+    for (const skillId of profileSkillIds) {
+      const entry = indexedById.get(skillId);
+      if (!entry) continue;
+      const content = getEntryContent(rootDir, entry);
+      const tokens = estimateTokenCount(typeof content === "string" ? content : JSON.stringify(content || ""));
+      tokenBudget -= tokens;
+      selectedCandidates.push(entry);
+    }
+    // Then greedily add top-scored skills until budget exhausted
+    const profileSet = new Set(profileSkillIds.map((id) => id.toLowerCase()));
+    for (const candidate of scored) {
+      if (selectedCandidates.length >= skillTopN) break;
+      if (tokenBudget <= 0) break;
+      if (profileSet.has(String(candidate.id || "").toLowerCase())) continue;
+      const content = getEntryContent(rootDir, candidate);
+      const tokens = estimateTokenCount(typeof content === "string" ? content : JSON.stringify(content || ""));
+      if (tokens > tokenBudget && selectedCandidates.length > 0) continue;
+      tokenBudget -= tokens;
+      selectedCandidates.push(candidate);
+    }
+  } else {
+    selectedCandidates = scored.slice(0, skillTopN);
+  }
+
   const selectedSkillIds = uniqueStrings([
     ...profileSkillIds,
-    ...scored.slice(0, skillTopN).map((entry) => entry.id),
+    ...selectedCandidates.map((entry) => entry.id),
   ]);
   const selectedSkills = selectedSkillIds
     .map((skillId) => scored.find((entry) => entry.id === skillId) || indexedSkills.find((entry) => entry.id === skillId))
@@ -692,7 +876,8 @@ function buildSkillSelection(rootDir, best, criteria = {}, opts = {}) {
   return {
     selectedSkillIds,
     selectedSkills,
-    candidates: scored.slice(0, skillTopN),
+    candidates: scored.slice(0, Math.max(skillTopN, 20)),
+    tokenBudgetUsed: maxSkillTokens > 0 ? maxSkillTokens - (maxSkillTokens > 0 ? 0 : 0) : undefined,
   };
 }
 
@@ -2322,8 +2507,8 @@ export function scanRepositoryForImport(options = {}) {
   const maxEntries = Math.max(
     1,
     Math.min(
-      500,
-      Number.parseInt(String(options?.maxEntries ?? "200"), 10) || 200,
+      2000,
+      Number.parseInt(String(options?.maxEntries ?? "500"), 10) || 500,
     ),
   );
 
@@ -2390,6 +2575,28 @@ export function scanRepositoryForImport(options = {}) {
     const byType = { agent: 0, prompt: 0, skill: 0 };
     for (const c of candidates) byType[c.kind] = (byType[c.kind] || 0) + 1;
 
+    // Duplicate detection against existing library entries
+    const rootDir = options?.rootDir || null;
+    let duplicateMap = {};
+    let intraDuplicateMap = {};
+    if (rootDir) {
+      try {
+        const existingEntries = listEntries(rootDir);
+        const extDups = detectImportDuplicates(candidates, existingEntries);
+        for (const [relPath, info] of extDups) {
+          duplicateMap[relPath] = info;
+          // Auto-deselect exact duplicates
+          const cand = candidates.find((c) => c.relPath === relPath);
+          if (cand && info.similarity >= 0.95) cand.selected = false;
+        }
+      } catch { /* skip if library not accessible */ }
+    }
+    // Intra-import duplicate detection
+    const intraDups = detectIntraDuplicates(candidates);
+    for (const [relPath, peers] of intraDups) {
+      intraDuplicateMap[relPath] = peers;
+    }
+
     return {
       ok: true,
       source: known ? { id: known.id, name: known.name } : { id: sourceId || "custom", name: repoUrl },
@@ -2398,6 +2605,8 @@ export function scanRepositoryForImport(options = {}) {
       totalCandidates: candidates.length,
       candidatesByType: byType,
       candidates,
+      duplicates: duplicateMap,
+      intraDuplicates: intraDuplicateMap,
     };
   } finally {
     rmSync(checkoutDir, { recursive: true, force: true });
@@ -2420,8 +2629,9 @@ export function importAgentProfilesFromRepository(rootDir, options = {}) {
   const maxProfiles = Math.max(
     1,
     Math.min(
-      500,
-      Number.parseInt(String(options?.maxEntries ?? options?.maxProfiles ?? "100"), 10) || 100,
+      2000,
+      Number.parseInt(String(options?.maxEntries ?? options?.maxProfiles ?? ""), 10) ||
+        (includeEntries ? 2000 : 100),
     ),
   );
   const importAgents = options?.importAgents !== false;

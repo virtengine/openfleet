@@ -136,6 +136,7 @@ import {
   getSessionTracker,
   addSessionEventListener,
 } from "../infra/session-tracker.mjs";
+import { ensureTestRuntimeSandbox } from "../infra/test-runtime.mjs";
 import {
   collectDiffStats,
   getCompactDiffSummary,
@@ -3077,6 +3078,38 @@ function resolveSessionWorkspaceDir(session = null) {
   return context.workspaceDir || repoRoot;
 }
 
+const HIDDEN_GENERATED_WORKFLOW_NAME_SET = new Set([
+  "Task trace workflow",
+  "Dispatch workflow",
+  "WF Dispatch Test",
+  "Start alias workflow",
+  "Start alias dispatch workflow",
+  "Encoded id dispatch workflow",
+  "Dispatch start regression",
+]);
+
+function shouldHideGeneratedWorkflowFromList(workflow = {}) {
+  if (!workflow || typeof workflow !== "object") return false;
+  const id = String(workflow.id || "").trim();
+  const name = String(workflow.name || "").trim();
+  if (
+    id.startsWith("wf-task-trace-") ||
+    id.startsWith("wf-run-page-") ||
+    id.startsWith("wf+dispatch+") ||
+    id.startsWith("wf-dispatch-start-") ||
+    id.startsWith("wf dispatch ") ||
+    id.startsWith("wf start alias ") ||
+    id.startsWith("wf start dispatch ") ||
+    id.startsWith("workflow dispatch ")
+  ) {
+    return true;
+  }
+  if (!workflow.metadata?.installedFrom && HIDDEN_GENERATED_WORKFLOW_NAME_SET.has(name)) {
+    return true;
+  }
+  return false;
+}
+
 function normalizeWorktreePath(input) {
   if (!input) return "";
   try {
@@ -3471,6 +3504,7 @@ async function resolveExecPrimaryPrompt() {
  * Ensures the directory exists.
  */
 function resolveUiConfigDir() {
+  const sandbox = ensureTestRuntimeSandbox();
   if (process.env.BOSUN_CONFIG_PATH) {
     const fromConfigPath = dirname(resolve(process.env.BOSUN_CONFIG_PATH));
     try { mkdirSync(fromConfigPath, { recursive: true }); } catch { /* ok */ }
@@ -3502,6 +3536,7 @@ function resolveUiConfigDir() {
   const dir = uiDeps.configDir
     || process.env.BOSUN_HOME
     || process.env.BOSUN_DIR
+    || sandbox?.configDir
     || resolve(baseDir, "bosun");
   if (dir) {
     try { mkdirSync(dir, { recursive: true }); } catch { /* ok */ }
@@ -11562,16 +11597,28 @@ async function handleApi(req, res, url) {
 
   if (path === "/api/library/preview" && req.method === "POST") {
     try {
+      const workspaceContext = resolveWorkspaceContextFromRequest(url, { allowAll: false });
       const body = await readJsonBody(req).catch(() => ({}));
+      // Resolve library root for duplicate detection (optional — works without workspace)
+      let libraryRoot = null;
+      if (workspaceContext) {
+        try {
+          const targetRoot = resolveLibraryTargetRoot(workspaceContext, "repo", null);
+          libraryRoot = targetRoot?.rootDir || null;
+        } catch { /* skip — dedup is best-effort */ }
+      }
       const result = scanRepositoryForImport({
         sourceId: String(body?.sourceId || "").trim() || undefined,
         repoUrl: String(body?.repoUrl || "").trim() || undefined,
         branch: String(body?.branch || "").trim() || undefined,
         maxEntries: Number.parseInt(String(body?.maxEntries ?? ""), 10) || undefined,
+        rootDir: libraryRoot,
       });
       jsonResponse(res, 200, { ok: true, data: result });
     } catch (err) {
-      jsonResponse(res, 500, { ok: false, error: err.message });
+      console.error("[library-preview] Preview failed:", err);
+      const msg = String(err?.message || "Preview failed").split("\n")[0].trim() || "Preview failed";
+      jsonResponse(res, 500, { ok: false, error: msg });
     }
     return;
   }
@@ -11583,7 +11630,10 @@ async function handleApi(req, res, url) {
         jsonResponse(res, 400, { ok: false, error: "Unknown workspace" });
         return;
       }
-      const body = await readJsonBody(req).catch(() => ({}));
+      const body = await readJsonBody(req).catch((bodyErr) => {
+        console.error("[library-import] Failed to parse request body:", bodyErr?.message);
+        return {};
+      });
       const requestedScope = normalizeLibraryStorageScope(body?.storageScope || body?.source, "repo");
       const targetRoot = resolveLibraryTargetRoot(workspaceContext, requestedScope, null);
       const includeEntries = Array.isArray(body?.includeEntries) ? body.includeEntries : null;
@@ -11612,7 +11662,10 @@ async function handleApi(req, res, url) {
         },
       });
     } catch (err) {
-      jsonResponse(res, 500, { ok: false, error: err.message });
+      console.error("[library-import] Import failed:", err);
+      // Take first line only to avoid stack-trace scrubbing by jsonResponse
+      const msg = String(err?.message || "Import failed").split("\n")[0].trim() || "Import failed";
+      jsonResponse(res, 500, { ok: false, error: msg });
     }
     return;
   }
@@ -13069,7 +13122,7 @@ async function handleApi(req, res, url) {
         return;
       }
       const engine = wfCtx.engine;
-      const all = engine.list();
+      const all = engine.list().filter((workflow) => !shouldHideGeneratedWorkflowFromList(workflow));
       jsonResponse(res, 200, { ok: true, workflows: all.map(w => ({
         id: w.id, name: w.name, description: w.description, category: w.category,
         enabled: w.enabled !== false,
@@ -16499,6 +16552,7 @@ export async function startTelegramUiServer(options = {}) {
 
   injectUiDependencies(options.dependencies || {});
   const taskStoreModule = await ensureTaskStoreApi();
+  const sandbox = ensureTestRuntimeSandbox();
 
   const rawPort = options.port ?? getDefaultPort();
   const configuredPort = Number(rawPort);
@@ -16507,10 +16561,9 @@ export async function startTelegramUiServer(options = {}) {
     process.env.NODE_ENV === "test" ||
     Boolean(process.env.JEST_WORKER_ID);
   if (isTestRun && typeof taskStoreModule?.configureTaskStore === "function") {
+    const cacheDir = sandbox?.cacheDir || resolve(repoRoot, ".bosun", ".cache");
     const isolatedStorePath = resolve(
-      repoRoot,
-      ".bosun",
-      ".cache",
+      cacheDir,
       `kanban-state-vitest-${process.pid}-${Date.now()}-${Math.random().toString(16).slice(2, 8)}.json`,
     );
     taskStoreModule.configureTaskStore({ storePath: isolatedStorePath });

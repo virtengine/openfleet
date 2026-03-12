@@ -1633,18 +1633,25 @@ function parseApiError(err) {
   return msg;
 }
 
-function ImportPreviewModal({ candidates, source, onConfirm, onClose, loading }) {
+function ImportPreviewModal({ candidates, source, onConfirm, onClose, loading, duplicates, intraDuplicates }) {
   const [selection, setSelection] = useState(() => {
     const map = {};
     for (const c of (candidates || [])) map[c.relPath] = c.selected !== false;
     return map;
   });
   const [typeFilter, setTypeFilter] = useState("all");
+  const [showDupOnly, setShowDupOnly] = useState(false);
+
+  const dupMap = duplicates || {};
+  const intraDupMap = intraDuplicates || {};
+  const dupCount = Object.keys(dupMap).length;
 
   const filtered = useMemo(() => {
-    if (typeFilter === "all") return candidates || [];
-    return (candidates || []).filter((c) => c.kind === typeFilter);
-  }, [candidates, typeFilter]);
+    let list = candidates || [];
+    if (typeFilter !== "all") list = list.filter((c) => c.kind === typeFilter);
+    if (showDupOnly) list = list.filter((c) => dupMap[c.relPath] || intraDupMap[c.relPath]);
+    return list;
+  }, [candidates, typeFilter, showDupOnly, dupMap, intraDupMap]);
 
   const selectedCount = useMemo(() => Object.values(selection).filter(Boolean).length, [selection]);
   const typeCounts = useMemo(() => {
@@ -1673,6 +1680,13 @@ function ImportPreviewModal({ candidates, source, onConfirm, onClose, loading })
   const kindIcon = { agent: "🤖", skill: "⚡", prompt: "📝" };
   const allFilteredSelected = filtered.length > 0 && filtered.every((c) => selection[c.relPath]);
 
+  const dupReasonLabel = (info) => {
+    if (!info) return "";
+    if (info.reason === "exact-name") return "Exact name match";
+    if (info.reason === "slug-match") return "Very similar name";
+    return `${Math.round((info.similarity || 0) * 100)}% similar`;
+  };
+
   return html`
     <${Modal} title="Select Items to Import" onClose=${onClose} wide=${true}>
       <div style="display:flex;flex-direction:column;gap:10px;max-height:70vh;">
@@ -1682,7 +1696,19 @@ function ImportPreviewModal({ candidates, source, onConfirm, onClose, loading })
           <span style="font-size:0.8em;color:var(--text-secondary);">${(candidates || []).length} items found</span>
           <span style="font-size:0.8em;color:var(--text-secondary);">·</span>
           <span style="font-size:0.8em;color:var(--text-secondary);">${selectedCount} selected</span>
+          ${dupCount > 0 ? html`
+            <span style="font-size:0.8em;color:var(--text-secondary);">·</span>
+            <span style="font-size:0.78em;padding:2px 8px;border-radius:999px;background:rgba(245,158,11,0.18);color:#f59e0b;cursor:pointer;" onClick=${() => setShowDupOnly(!showDupOnly)}>
+              ⚠ ${dupCount} duplicate${dupCount !== 1 ? "s" : ""}${showDupOnly ? " (showing)" : ""}
+            </span>
+          ` : null}
         </div>
+        ${dupCount > 0 ? html`
+          <div style="font-size:0.75em;padding:6px 10px;border-radius:8px;background:rgba(245,158,11,0.08);border:1px solid rgba(245,158,11,0.2);color:var(--text-secondary);">
+            ⚠ ${dupCount} item${dupCount !== 1 ? "s" : ""} appear${dupCount === 1 ? "s" : ""} similar to entries already in your library.
+            Exact matches are auto-deselected. Review and toggle as needed.
+          </div>
+        ` : null}
         <div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap;">
           ${[
             ["all", "All", (candidates || []).length],
@@ -1705,17 +1731,34 @@ function ImportPreviewModal({ candidates, source, onConfirm, onClose, loading })
           <span style="font-size:0.75em;font-weight:600;color:var(--text-secondary);width:60px;text-align:center;">TYPE</span>
         </div>
         <div style="overflow-y:auto;max-height:50vh;display:flex;flex-direction:column;">
-          ${filtered.map((c) => html`
-            <label key=${c.relPath} style="display:flex;align-items:flex-start;gap:6px;padding:5px 0;border-bottom:1px solid var(--border,#222);cursor:pointer;opacity:${selection[c.relPath] ? 1 : 0.5};">
-              <input type="checkbox" checked=${Boolean(selection[c.relPath])} onChange=${() => toggle(c.relPath)} style="margin-top:2px;" />
-              <div style="flex:1;min-width:0;">
-                <div style="font-size:0.82em;font-weight:500;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${c.name || c.fileName}</div>
-                <div style="font-size:0.72em;color:var(--text-secondary);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;" title=${c.relPath}>${c.relPath}</div>
-                ${c.description ? html`<div style="font-size:0.72em;color:var(--text-secondary);margin-top:2px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${String(c.description || "").slice(0, 120)}</div>` : null}
-              </div>
-              <span style="font-size:0.72em;padding:2px 6px;border-radius:999px;background:${c.kind === "agent" ? "rgba(59,130,246,0.18)" : c.kind === "skill" ? "rgba(34,197,94,0.18)" : "rgba(168,85,247,0.18)"};color:var(--text-secondary);width:60px;text-align:center;flex-shrink:0;">${kindIcon[c.kind] || ""} ${c.kind}</span>
-            </label>
-          `)}
+          ${filtered.map((c) => {
+            const dupInfo = dupMap[c.relPath];
+            const intraDup = intraDupMap[c.relPath];
+            const hasDup = !!dupInfo;
+            const hasIntraDup = !!intraDup;
+            return html`
+              <label key=${c.relPath} style="display:flex;align-items:flex-start;gap:6px;padding:5px 0;border-bottom:1px solid var(--border,#222);cursor:pointer;opacity:${selection[c.relPath] ? 1 : 0.5};${hasDup ? "background:rgba(245,158,11,0.04);" : ""}">
+                <input type="checkbox" checked=${Boolean(selection[c.relPath])} onChange=${() => toggle(c.relPath)} style="margin-top:2px;" />
+                <div style="flex:1;min-width:0;">
+                  <div style="font-size:0.82em;font-weight:500;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${c.name || c.fileName}</div>
+                  <div style="font-size:0.72em;color:var(--text-secondary);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;" title=${c.relPath}>${c.relPath}</div>
+                  ${c.description ? html`<div style="font-size:0.72em;color:var(--text-secondary);margin-top:2px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${String(c.description || "").slice(0, 120)}</div>` : null}
+                  ${hasDup ? html`
+                    <div style="font-size:0.7em;margin-top:3px;padding:2px 6px;border-radius:6px;background:rgba(245,158,11,0.12);color:#f59e0b;display:inline-flex;align-items:center;gap:4px;">
+                      ⚠ ${dupReasonLabel(dupInfo)}: existing "${dupInfo.existingEntries?.[0]?.name || "?"}"
+                      ${dupInfo.similarity >= 0.95 ? html` · <em>auto-deselected</em>` : null}
+                    </div>
+                  ` : null}
+                  ${hasIntraDup && !hasDup ? html`
+                    <div style="font-size:0.7em;margin-top:3px;padding:2px 6px;border-radius:6px;background:rgba(59,130,246,0.12);color:#3b82f6;display:inline-flex;align-items:center;gap:4px;">
+                      ↔ Similar to ${intraDup.length} other item${intraDup.length !== 1 ? "s" : ""} in this import
+                    </div>
+                  ` : null}
+                </div>
+                <span style="font-size:0.72em;padding:2px 6px;border-radius:999px;background:${c.kind === "agent" ? "rgba(59,130,246,0.18)" : c.kind === "skill" ? "rgba(34,197,94,0.18)" : "rgba(168,85,247,0.18)"};color:var(--text-secondary);width:60px;text-align:center;flex-shrink:0;">${kindIcon[c.kind] || ""} ${c.kind}</span>
+              </label>
+            `;
+          })}
           ${filtered.length === 0 ? html`<div style="padding:20px;text-align:center;color:var(--text-secondary);font-size:0.85em;">No items found</div>` : null}
         </div>
         <div style="display:flex;gap:8px;justify-content:flex-end;padding-top:8px;border-top:1px solid var(--border,#333);">
@@ -1882,6 +1925,8 @@ function AgentLibraryImporter({ onImported }) {
       <${ImportPreviewModal}
         candidates=${previewData.candidates}
         source=${previewData.source}
+        duplicates=${previewData.duplicates}
+        intraDuplicates=${previewData.intraDuplicates}
         onConfirm=${doImport}
         onClose=${() => setPreviewData(null)}
         loading=${importing}
