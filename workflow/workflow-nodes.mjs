@@ -8112,7 +8112,20 @@ function isValidGitWorktreePath(worktreePath) {
       timeout: 5000,
       stdio: ["ignore", "pipe", "pipe"],
     }).trim().toLowerCase();
-    return inside === "true";
+    if (inside !== "true") return false;
+    // A nested folder inside the main repo also returns inside-work-tree=true.
+    // Reuse is safe only when the path itself is the git top-level root.
+    const topLevel = execGitArgsSync(["rev-parse", "--show-toplevel"], {
+      cwd: worktreePath,
+      encoding: "utf8",
+      timeout: 5000,
+      stdio: ["ignore", "pipe", "pipe"],
+    }).trim();
+    const normalize = (value) =>
+      resolve(String(value || ""))
+        .replace(/\\/g, "/")
+        .replace(/\/+$/, "");
+    return normalize(topLevel) === normalize(worktreePath);
   } catch {
     return false;
   }

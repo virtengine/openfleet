@@ -1196,7 +1196,14 @@ describe("action.acquire_worktree", () => {
       encoding: "utf8",
     }).trim();
     expect(isGit).toBe("true");
-  });
+
+    const topLevel = gitExec("git rev-parse --show-toplevel", {
+      cwd: second.worktreePath,
+      encoding: "utf8",
+    }).trim().replace(/\\/g, "/");
+    const expectedRoot = String(second.worktreePath).replace(/\\/g, "/");
+    expect(topLevel).toBe(expectedRoot);
+  }, 15000);
 
   it("enables core.longpaths before checkout", async () => {
     const nt = getNodeType("action.acquire_worktree");
