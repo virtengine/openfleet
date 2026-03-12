@@ -299,6 +299,11 @@ function humanizeVarKey(key) {
 /** Infer a short helper text for a variable key */
 function inferVarHelp(key, value) {
   const k = key.toLowerCase();
+  if (k.includes("testcommand") || k.includes("test_command") || k === "testframework" || k === "test_framework") return "Test command for your project — select from presets or enter custom";
+  if (k.includes("buildcommand") || k.includes("build_command")) return "Build command for your project — select from presets or enter custom";
+  if (k.includes("lintcommand") || k.includes("lint_command") || k.includes("lintcmd")) return "Lint/style check command — select from presets or enter custom";
+  if (k.includes("syntaxcheck") || k.includes("syntax_check")) return "Syntax/compile check command — select from presets or enter custom";
+  if (k === "basebranch" || k === "base_branch" || k === "defaultbasebranch") return "Base branch for PRs — select from common options or enter custom";
   if (k.includes("timeout") || k.includes("delay") || k.includes("cooldown")) return "Duration in milliseconds";
   if (k.includes("branch")) return "Git branch name";
   if (k.includes("url") || k.includes("endpoint")) return "URL / endpoint";
@@ -314,12 +319,24 @@ function inferVarHelp(key, value) {
 function inferVarOptions(key, value) {
   const k = String(key || "").toLowerCase();
   const options = [];
+
   if (k.includes("executor") || k.includes("sdk")) {
     options.push("auto", "codex", "claude", "copilot");
   } else if (k.includes("bumptype") || k.includes("bump_type")) {
     options.push("patch", "minor", "major");
+  } else if (k.includes("testcommand") || k.includes("test_command") || k === "testframework" || k === "test_framework") {
+    options.push("npm test", "yarn test", "pnpm test", "pytest", "poetry run pytest", "go test ./...", "cargo test", "mvn test", "./gradlew test", "dotnet test", "bundle exec rspec", "make test");
+  } else if (k.includes("buildcommand") || k.includes("build_command")) {
+    options.push("npm run build", "yarn build", "pnpm build", "go build ./...", "cargo build", "mvn package -DskipTests", "./gradlew build", "dotnet build", "python -m build", "make");
+  } else if (k.includes("lintcommand") || k.includes("lint_command") || k.includes("lintcmd")) {
+    options.push("npm run lint", "npx eslint .", "ruff check .", "golangci-lint run", "cargo clippy -- -D warnings", "dotnet format --verify-no-changes", "bundle exec rubocop");
+  } else if (k.includes("syntaxcheck") || k.includes("syntax_check")) {
+    options.push("node --check", "npx tsc --noEmit", "python -m py_compile", "go vet ./...", "cargo check", "dotnet build --no-restore");
+  } else if (k === "basebranch" || k === "base_branch" || k === "defaultbasebranch" || k === "targetbranch") {
+    options.push("main", "master", "develop", "staging");
   }
-  // Keep typed value only when this field already has known preset options.
+
+  // Keep typed value when this field has known preset options.
   if (options.length > 0 && typeof value === "string" && value.trim()) {
     options.unshift(value.trim());
   }
@@ -368,7 +385,12 @@ function isQuickVarKey(key) {
     k.includes("sdk") ||
     k.includes("model") ||
     k.includes("branch") ||
-    k.includes("title")
+    k.includes("title") ||
+    k.includes("testcommand") || k.includes("test_command") ||
+    k === "testframework" || k === "test_framework" ||
+    k.includes("buildcommand") || k.includes("build_command") ||
+    k.includes("lintcommand") || k.includes("lint_command") ||
+    k.includes("syntaxcheck") || k.includes("syntax_check")
   );
 }
 
@@ -1682,7 +1704,7 @@ function WorkflowCanvas({ workflow, onSave }) {
           <span class="btn-icon">${resolveIcon("play")}</span>
           Run
         <//>
-        <${Button}
+        ${workflow?.core !== true && html`<${Button}
           variant="outlined"
           size="small"
           onClick=${() => {
@@ -1692,7 +1714,8 @@ function WorkflowCanvas({ workflow, onSave }) {
         >
           <span class="btn-icon">${resolveIcon(workflow?.enabled === false ? "play" : "pause")}</span>
           ${workflow?.enabled === false ? "Resume" : "Pause"}
-        <//>
+        <//>`}
+        ${workflow?.core === true && html`<span class="wf-badge" style="background: #8b5cf620; color: #a78bfa; font-size: 11px; font-weight: 600;">Core</span>`}
         <div style="flex:1;"></div>
         ${selectedNodeIds.size > 1 && html`
           <span class="wf-badge" style="font-size: 11px; background: #3b82f640; color: #60a5fa; border: 1px solid #3b82f660;">
@@ -2042,49 +2065,80 @@ function NodePalette({ nodeTypes: types, onSelect, onClose }) {
 
 const COMMAND_PRESETS = {
   testing: [
-    { label: "Run Tests", cmd: "npm test", icon: "beaker" },
-    { label: "Run Single File", cmd: 'npx vitest run tests/{{testFile}}', icon: "target" },
-    { label: "Syntax Check", cmd: "npm run syntax:check", icon: "check" },
+    { label: "Run Tests (npm)", cmd: "npm test", icon: "🧪" },
+    { label: "Run Tests (yarn)", cmd: "yarn test", icon: "🧪" },
+    { label: "Run Tests (pnpm)", cmd: "pnpm test", icon: "🧪" },
+    { label: "Run Tests (pytest)", cmd: "pytest", icon: "🧪" },
+    { label: "Run Tests (Go)", cmd: "go test ./...", icon: "🧪" },
+    { label: "Run Tests (Rust)", cmd: "cargo test", icon: "🧪" },
+    { label: "Run Tests (Java/Maven)", cmd: "mvn test", icon: "🧪" },
+    { label: "Run Tests (Java/Gradle)", cmd: "./gradlew test", icon: "🧪" },
+    { label: "Run Tests (.NET)", cmd: "dotnet test", icon: "🧪" },
+    { label: "Run Tests (Ruby)", cmd: "bundle exec rspec", icon: "🧪" },
+    { label: "Run Single File", cmd: 'npx vitest run tests/{{testFile}}', icon: "🎯" },
+    { label: "Syntax Check (Node)", cmd: "npm run syntax:check", icon: "✅" },
+    { label: "Syntax Check (Python)", cmd: "python -m py_compile", icon: "✅" },
+    { label: "Syntax Check (Go)", cmd: "go vet ./...", icon: "✅" },
+    { label: "Syntax Check (Rust)", cmd: "cargo check", icon: "✅" },
   ],
   build: [
-    { label: "Build Project", cmd: "npm run build", icon: "hammer" },
-    { label: "Build Watch", cmd: "npm run build -- --watch", icon: "eye" },
-    { label: "Type Check", cmd: "npx tsc --noEmit", icon: "ruler" },
+    { label: "Build (npm)", cmd: "npm run build", icon: "🔨" },
+    { label: "Build (yarn)", cmd: "yarn build", icon: "🔨" },
+    { label: "Build (pnpm)", cmd: "pnpm build", icon: "🔨" },
+    { label: "Build (Go)", cmd: "go build ./...", icon: "🔨" },
+    { label: "Build (Rust)", cmd: "cargo build", icon: "🔨" },
+    { label: "Build (Maven)", cmd: "mvn package -DskipTests", icon: "🔨" },
+    { label: "Build (Gradle)", cmd: "./gradlew build", icon: "🔨" },
+    { label: "Build (.NET)", cmd: "dotnet build", icon: "🔨" },
+    { label: "Build (Python)", cmd: "python -m build", icon: "🔨" },
+    { label: "Build (Make)", cmd: "make", icon: "🔨" },
+    { label: "Build Watch", cmd: "npm run build -- --watch", icon: "👁" },
+    { label: "Type Check (TS)", cmd: "npx tsc --noEmit", icon: "📏" },
+  ],
+  lint: [
+    { label: "Lint (npm)", cmd: "npm run lint", icon: "🔍" },
+    { label: "Lint (ESLint)", cmd: "npx eslint .", icon: "🔍" },
+    { label: "Lint (Python/Ruff)", cmd: "ruff check .", icon: "🔍" },
+    { label: "Lint (Python/Flake8)", cmd: "flake8", icon: "🔍" },
+    { label: "Lint (Go)", cmd: "golangci-lint run", icon: "🔍" },
+    { label: "Lint (Rust)", cmd: "cargo clippy -- -D warnings", icon: "🔍" },
+    { label: "Lint (Ruby)", cmd: "bundle exec rubocop", icon: "🔍" },
+    { label: "Lint (.NET)", cmd: "dotnet format --verify-no-changes", icon: "🔍" },
   ],
   git: [
-    { label: "Diff Stats", cmd: "git diff --stat main...HEAD", icon: "chart" },
-    { label: "Git Status", cmd: "git status --porcelain", icon: "clipboard" },
-    { label: "Stage All", cmd: "git add -A", icon: "download" },
-    { label: "Commit", cmd: 'git commit -m "{{commitMessage}}"', icon: "save" },
-    { label: "Push", cmd: "git push --set-upstream origin HEAD", icon: "rocket" },
+    { label: "Diff Stats", cmd: "git diff --stat main...HEAD", icon: "📊" },
+    { label: "Git Status", cmd: "git status --porcelain", icon: "📋" },
+    { label: "Stage All", cmd: "git add -A", icon: "⬇" },
+    { label: "Commit", cmd: 'git commit -m "{{commitMessage}}"', icon: "💾" },
+    { label: "Push", cmd: "git push --set-upstream origin HEAD", icon: "🚀" },
   ],
   github: [
-    { label: "Check CI", cmd: "gh pr checks --json name,state", icon: "search" },
-    { label: "Merge PR (squash)", cmd: "gh pr merge --auto --squash", icon: "git" },
-    { label: "Close PR", cmd: 'gh pr close --comment "{{reason}}"', icon: "ban" },
-    { label: "PR Diff", cmd: "gh pr diff --stat", icon: "chart" },
-    { label: "PR Handoff Note", cmd: 'echo "Bosun manages PR lifecycle after push; direct PR commands are disabled."', icon: "edit" },
-    { label: "Add Label", cmd: 'gh pr edit --add-label "{{label}}"', icon: "tag" },
-    { label: "Request Review", cmd: 'gh pr edit --add-reviewer {{reviewer}}', icon: "eye" },
+    { label: "Check CI", cmd: "gh pr checks --json name,state", icon: "🔍" },
+    { label: "Merge PR (squash)", cmd: "gh pr merge --auto --squash", icon: "🔀" },
+    { label: "Close PR", cmd: 'gh pr close --comment "{{reason}}"', icon: "🚫" },
+    { label: "PR Diff", cmd: "gh pr diff --stat", icon: "📊" },
+    { label: "PR Handoff Note", cmd: 'echo "Bosun manages PR lifecycle after push; direct PR commands are disabled."', icon: "📝" },
+    { label: "Add Label", cmd: 'gh pr edit --add-label "{{label}}"', icon: "🏷" },
+    { label: "Request Review", cmd: 'gh pr edit --add-reviewer {{reviewer}}', icon: "👁" },
   ],
   bosun: [
-    { label: "List Tasks", cmd: "bosun task list --status todo --json", icon: "clipboard" },
-    { label: "Count Tasks", cmd: "bosun task list --status todo --count", icon: "hash" },
-    { label: "Task Stats", cmd: "bosun task stats --json", icon: "chart" },
-    { label: "Plan Tasks", cmd: "bosun task plan --count 5", icon: "compass" },
-    { label: "Create Task", cmd: 'bosun task create --title "{{title}}" --status todo', icon: "plus" },
-    { label: "Monitor Status", cmd: "bosun --daemon-status", icon: "heart" },
+    { label: "List Tasks", cmd: "bosun task list --status todo --json", icon: "📋" },
+    { label: "Count Tasks", cmd: "bosun task list --status todo --count", icon: "#️⃣" },
+    { label: "Task Stats", cmd: "bosun task stats --json", icon: "📊" },
+    { label: "Plan Tasks", cmd: "bosun task plan --count 5", icon: "🧭" },
+    { label: "Create Task", cmd: 'bosun task create --title "{{title}}" --status todo', icon: "➕" },
+    { label: "Monitor Status", cmd: "bosun --daemon-status", icon: "❤" },
   ],
   session: [
-    { label: "Continue Session", cmd: 'bosun agent continue --session "{{sessionId}}" --prompt "continue"', icon: "play" },
-    { label: "Restart Agent", cmd: 'bosun agent restart --session "{{sessionId}}"', icon: "refresh" },
-    { label: "Kill Agent", cmd: 'bosun agent kill --session "{{sessionId}}"', icon: "stop" },
-    { label: "List Sessions", cmd: "bosun agent list --json", icon: "server" },
+    { label: "Continue Session", cmd: 'bosun agent continue --session "{{sessionId}}" --prompt "continue"', icon: "▶" },
+    { label: "Restart Agent", cmd: 'bosun agent restart --session "{{sessionId}}"', icon: "🔄" },
+    { label: "Kill Agent", cmd: 'bosun agent kill --session "{{sessionId}}"', icon: "⏹" },
+    { label: "List Sessions", cmd: "bosun agent list --json", icon: "🖥" },
   ],
   screenshots: [
-    { label: "Desktop Screenshot", cmd: "bosun screenshot --viewport 1280x720", icon: "monitor" },
-    { label: "Mobile Screenshot", cmd: "bosun screenshot --viewport 375x812", icon: "phone" },
-    { label: "All Viewports", cmd: "bosun screenshot --viewport desktop,mobile", icon: "camera" },
+    { label: "Desktop Screenshot", cmd: "bosun screenshot --viewport 1280x720", icon: "🖥" },
+    { label: "Mobile Screenshot", cmd: "bosun screenshot --viewport 375x812", icon: "📱" },
+    { label: "All Viewports", cmd: "bosun screenshot --viewport desktop,mobile", icon: "📸" },
   ],
 };
 
@@ -2519,16 +2573,33 @@ function NodeConfigEditor({ node, nodeTypes: types, onUpdate, onUpdateLabel, onC
             ${[
               ...(nodeAction === "build" ? [
                 { label: "npm run build", cmd: "npm run build" },
+                { label: "yarn build", cmd: "yarn build" },
+                { label: "go build", cmd: "go build ./..." },
+                { label: "cargo build", cmd: "cargo build" },
+                { label: "mvn package", cmd: "mvn package -DskipTests" },
+                { label: "gradlew build", cmd: "./gradlew build" },
+                { label: "dotnet build", cmd: "dotnet build" },
+                { label: "make", cmd: "make" },
                 { label: "Zero Warnings", cmd: "npm run build", extra: { zeroWarnings: true } },
               ] : []),
               ...(nodeAction === "tests" ? [
                 { label: "npm test", cmd: "npm test" },
                 { label: "Vitest", cmd: "npx vitest run" },
                 { label: "Jest", cmd: "npx jest" },
+                { label: "pytest", cmd: "pytest" },
+                { label: "go test", cmd: "go test ./..." },
+                { label: "cargo test", cmd: "cargo test" },
+                { label: "mvn test", cmd: "mvn test" },
+                { label: "dotnet test", cmd: "dotnet test" },
+                { label: "rspec", cmd: "bundle exec rspec" },
               ] : []),
               ...(nodeAction === "lint" ? [
                 { label: "npm run lint", cmd: "npm run lint" },
                 { label: "ESLint", cmd: "npx eslint ." },
+                { label: "Ruff", cmd: "ruff check ." },
+                { label: "golangci-lint", cmd: "golangci-lint run" },
+                { label: "Clippy", cmd: "cargo clippy -- -D warnings" },
+                { label: "Rubocop", cmd: "bundle exec rubocop" },
               ] : []),
             ].map(p => html`
               <${Button}
@@ -2678,6 +2749,52 @@ function NodeConfigEditor({ node, nodeTypes: types, onUpdate, onUpdateLabel, onC
  *  Workflow List View
  * ═══════════════════════════════════════════════════════════════ */
 
+function humanizeWorkflowCategory(category) {
+  const normalized = String(category || "custom").trim();
+  if (!normalized) return "Custom";
+  return normalized
+    .replace(/[-_]+/g, " ")
+    .replace(/\b\w/g, (char) => char.toUpperCase());
+}
+
+function normalizeWorkflowCategoryMeta(source, fallbackCategory = "custom") {
+  const key = String(source?.category || fallbackCategory || "custom").trim() || "custom";
+  const order = Number(source?.categoryOrder);
+  return {
+    key,
+    label: String(source?.categoryLabel || humanizeWorkflowCategory(key)),
+    icon: String(source?.categoryIcon || "settings"),
+    order: Number.isFinite(order) ? order : 99,
+  };
+}
+
+function groupItemsByWorkflowCategory(items, getSource) {
+  const groups = new Map();
+  for (const item of items || []) {
+    const meta = normalizeWorkflowCategoryMeta(getSource(item), item?.category);
+    if (!groups.has(meta.key)) groups.set(meta.key, { ...meta, items: [] });
+    groups.get(meta.key).items.push(item);
+  }
+  return Array.from(groups.values()).sort((a, b) => a.order - b.order || a.label.localeCompare(b.label));
+}
+
+function resolveWorkflowTemplateSource(workflow, templateLookupById, templateLookupByName) {
+  const templateState = workflow?.metadata?.templateState || null;
+  const candidates = [
+    templateState?.templateId,
+    workflow?.metadata?.installedFrom,
+    templateState?.templateName,
+    workflow?.name,
+  ];
+  for (const candidate of candidates) {
+    const key = String(candidate || "").trim();
+    if (!key) continue;
+    if (templateLookupById.has(key)) return templateLookupById.get(key);
+    if (templateLookupByName.has(key)) return templateLookupByName.get(key);
+  }
+  return null;
+}
+
 function WorkflowListView() {
   const wfs = workflows.value || [];
   const tmpls = templates.value || [];
@@ -2690,6 +2807,28 @@ function WorkflowListView() {
     if (installedTemplateIds.has(t.id) || installedTemplateIds.has(t.name)) return false;
     return true;
   });
+  const templateLookup = useMemo(() => {
+    const byId = new Map();
+    const byName = new Map();
+    tmpls.forEach((template) => {
+      const id = String(template?.id || "").trim();
+      const name = String(template?.name || "").trim();
+      if (id) byId.set(id, template);
+      if (name) byName.set(name, template);
+    });
+    return { byId, byName };
+  }, [tmpls]);
+  const workflowGroups = useMemo(() => {
+    return groupItemsByWorkflowCategory(wfs, (wf) => {
+      return (
+        resolveWorkflowTemplateSource(wf, templateLookup.byId, templateLookup.byName)
+        || { category: wf?.category || "custom" }
+      );
+    });
+  }, [wfs, templateLookup]);
+  const availableTemplateGroups = useMemo(() => {
+    return groupItemsByWorkflowCategory(availableTemplates, (template) => template);
+  }, [availableTemplates]);
 
   return html`
     <div style="padding: 0 4px;">
@@ -2734,127 +2873,144 @@ function WorkflowListView() {
           <h3 style="font-size: 14px; font-weight: 600; color: var(--color-text-secondary, #8b95a5); margin-bottom: 12px; text-transform: uppercase; letter-spacing: 0.5px;">
             Your Workflows (${wfs.length})
           </h3>
-          <div style="display: grid; gap: 10px; grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));">
-            ${wfs.map(wf => html`
-              ${(() => {
-                const templateState = wf.metadata?.templateState || null;
-                const hasTemplateUpdate = templateState?.updateAvailable === true;
-                const isCustomizedTemplate = templateState?.isCustomized === true;
-                return html`
-              <div key=${wf.id} class="wf-card" style="background: var(--color-bg-secondary, #1a1f2e); border-radius: 12px; padding: 14px; border: 1px solid var(--color-border, #2a3040); cursor: pointer; transition: border-color 0.15s;"
-                   onClick=${() => {
-                     apiFetch("/api/workflows/" + wf.id).then(d => {
-                       activeWorkflow.value = d?.workflow || wf;
-                       viewMode.value = "canvas";
-                     }).catch(() => { activeWorkflow.value = wf; viewMode.value = "canvas"; });
-                   }}>
-                <div style="display: flex; align-items: center; gap: 8px; margin-bottom: 8px;">
-                  <span class="icon-inline" style="font-size: 14px;">${resolveIcon(getNodeMeta(wf.trigger || "action")?.icon) || ICONS.dot}</span>
-                  <span style="font-weight: 600; font-size: 14px; flex: 1;">${wf.name}</span>
-                  <span class="wf-badge" style="background: ${wf.enabled ? '#10b98130' : '#6b728030'}; color: ${wf.enabled ? '#10b981' : '#6b7280'}; font-size: 10px;">
-                    ${wf.enabled ? "Active" : "Paused"}
-                  </span>
-                  ${templateState?.templateId && html`
-                    <span class="wf-badge" style="background: #3b82f620; color: #60a5fa; font-size: 10px;">
-                      Template
-                    </span>
-                  `}
-                  ${isCustomizedTemplate && html`
-                    <span class="wf-badge" style="background: #f59e0b20; color: #f59e0b; font-size: 10px;">
-                      Customized
-                    </span>
-                  `}
-                  ${hasTemplateUpdate && html`
-                    <span class="wf-badge" style="background: #ef444420; color: #f87171; font-size: 10px;">
-                      Update Available
-                    </span>
-                  `}
-                </div>
-                ${wf.description && html`
-                  <div style="font-size: 12px; color: var(--color-text-secondary, #8b95a5); margin-bottom: 8px; line-height: 1.4;">
-                    ${wf.description.slice(0, 120)}${wf.description.length > 120 ? "…" : ""}
-                  </div>
-                `}
-                ${templateState?.templateId && html`
-                  <div style="font-size: 11px; color: var(--color-text-secondary, #7f8aa0); margin-bottom: 8px;">
-                    ${templateState.templateName || templateState.templateId}
-                    ${templateState.installedTemplateVersion && templateState.templateVersion && templateState.installedTemplateVersion !== templateState.templateVersion && html`
-                      <span> · v${templateState.installedTemplateVersion} → v${templateState.templateVersion}</span>
-                    `}
-                  </div>
-                `}
-                <div style="display: flex; gap: 8px; align-items: center; font-size: 11px; color: var(--color-text-secondary, #6b7280);">
-                  <span>${wf.nodeCount || 0} nodes</span>
-                  <span>·</span>
-                  <span>${wf.category || "custom"}</span>
-                  <div style="flex: 1;"></div>
-                  ${hasTemplateUpdate && html`
-                    <${Button}
-                      variant="text"
-                      size="small"
-                      sx=${{ fontSize: '11px', borderColor: '#f59e0b80', color: '#f59e0b', textTransform: 'none' }}
-                      onClick=${async (e) => {
-                        e.stopPropagation();
-                        if (!isCustomizedTemplate) {
-                          await applyTemplateUpdate(wf.id, "replace", true);
-                          return;
-                        }
-                        const choice = window.prompt(
-                          "Template update available for customized workflow.\nType 'copy' to create an updated copy, or 'replace' to overwrite this workflow.",
-                          "copy",
-                        );
-                        const normalized = String(choice || "").trim().toLowerCase();
-                        if (normalized === "copy") {
-                          await applyTemplateUpdate(wf.id, "copy", false);
-                          return;
-                        }
-                        if (normalized === "replace") {
-                          const ok = window.confirm("Replace this customized workflow with latest template? This cannot be undone.");
-                          if (!ok) return;
-                          await applyTemplateUpdate(wf.id, "replace", true);
-                        }
-                      }}
-                    >
-                      <span class="icon-inline">${resolveIcon("refresh")}</span>
-                      Update
-                    <//>
-                  `}
-                  <${Button}
-                    variant="text"
-                    size="small"
-                    sx=${{ fontSize: '11px', textTransform: 'none' }}
-                    onClick=${(e) => {
-                      e.stopPropagation();
-                      setWorkflowEnabled(wf.id, !wf.enabled);
-                    }}
-                  >
-                    <span class="icon-inline">${resolveIcon(wf.enabled ? "pause" : "play")}</span>
-                    ${wf.enabled ? "Pause" : "Resume"}
-                  <//>
-                  <${Button}
-                    variant="text"
-                    size="small"
-                    sx=${{ fontSize: '11px', textTransform: 'none', ...(wf.enabled ? {} : { opacity: 0.65 }) }}
-                    onClick=${(e) => {
-                      e.stopPropagation();
-                      if (!wf.enabled) {
-                        showToast("Workflow is paused. Resume it before running.", "warning");
-                        return;
-                      }
-                      openExecuteDialog(wf.id);
-                    }}
-                  >
-                    <span class="icon-inline">${resolveIcon("play")}</span>
-                  <//>
-                  <${Button} variant="text" size="small" sx=${{ fontSize: '11px', color: '#ef4444', textTransform: 'none' }} onClick=${(e) => { e.stopPropagation(); if (confirm("Delete " + wf.name + "?")) deleteWorkflow(wf.id); }}>
-                    <span class="icon-inline">${resolveIcon("trash")}</span>
-                  <//>
-                </div>
+          ${workflowGroups.map((group) => html`
+            <div key=${group.key} style="margin-bottom: 20px;">
+              <div style="display: flex; align-items: center; gap: 8px; margin-bottom: 10px; padding-bottom: 6px; border-bottom: 1px solid var(--color-border, #2a304060);">
+                <span class="icon-inline" style="font-size: 16px;">${resolveIcon(group.icon) || ICONS.dot}</span>
+                <span style="font-size: 13px; font-weight: 600; color: var(--color-text-secondary, #8b95a5);">${group.label}</span>
+                <span style="font-size: 11px; color: var(--color-text-secondary, #6b7280);">(${group.items.length})</span>
               </div>
-            `;
-              })()}
-            `)}
-          </div>
+              <div style="display: grid; gap: 10px; grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));">
+                ${group.items.map(wf => html`
+                  ${(() => {
+                    const templateState = wf.metadata?.templateState || null;
+                    const hasTemplateUpdate = templateState?.updateAvailable === true;
+                    const isCustomizedTemplate = templateState?.isCustomized === true;
+                    const isCore = wf.core === true;
+                    return html`
+                  <div key=${wf.id} class="wf-card" style="background: var(--color-bg-secondary, #1a1f2e); border-radius: 12px; padding: 14px; border: 1px solid var(--color-border, #2a3040); cursor: pointer; transition: border-color 0.15s;"
+                       onClick=${() => {
+                         apiFetch("/api/workflows/" + wf.id).then(d => {
+                           activeWorkflow.value = d?.workflow || wf;
+                           viewMode.value = "canvas";
+                         }).catch(() => { activeWorkflow.value = wf; viewMode.value = "canvas"; });
+                       }}>
+                    <div style="display: flex; align-items: center; gap: 8px; margin-bottom: 8px;">
+                      <span class="icon-inline" style="font-size: 14px;">${resolveIcon(getNodeMeta(wf.trigger || "action")?.icon) || ICONS.dot}</span>
+                      <span style="font-weight: 600; font-size: 14px; flex: 1;">${wf.name}</span>
+                      <span class="wf-badge" style="background: ${wf.enabled ? '#10b98130' : '#6b728030'}; color: ${wf.enabled ? '#10b981' : '#6b7280'}; font-size: 10px;">
+                        ${wf.enabled ? "Active" : "Paused"}
+                      </span>
+                      ${isCore && html`
+                        <span class="wf-badge" style="background: #8b5cf620; color: #a78bfa; font-size: 10px; font-weight: 600;">
+                          Core
+                        </span>
+                      `}
+                      ${templateState?.templateId && html`
+                        <span class="wf-badge" style="background: #3b82f620; color: #60a5fa; font-size: 10px;">
+                          Template
+                        </span>
+                      `}
+                      ${isCustomizedTemplate && html`
+                        <span class="wf-badge" style="background: #f59e0b20; color: #f59e0b; font-size: 10px;">
+                          Customized
+                        </span>
+                      `}
+                      ${hasTemplateUpdate && html`
+                        <span class="wf-badge" style="background: #ef444420; color: #f87171; font-size: 10px;">
+                          Update Available
+                        </span>
+                      `}
+                    </div>
+                    ${wf.description && html`
+                      <div style="font-size: 12px; color: var(--color-text-secondary, #8b95a5); margin-bottom: 8px; line-height: 1.4;">
+                        ${wf.description.slice(0, 120)}${wf.description.length > 120 ? "…" : ""}
+                      </div>
+                    `}
+                    ${templateState?.templateId && html`
+                      <div style="font-size: 11px; color: var(--color-text-secondary, #7f8aa0); margin-bottom: 8px;">
+                        ${templateState.templateName || templateState.templateId}
+                        ${templateState.installedTemplateVersion && templateState.templateVersion && templateState.installedTemplateVersion !== templateState.templateVersion && html`
+                          <span> · v${templateState.installedTemplateVersion} → v${templateState.templateVersion}</span>
+                        `}
+                      </div>
+                    `}
+                    <div style="display: flex; gap: 8px; align-items: center; font-size: 11px; color: var(--color-text-secondary, #6b7280);">
+                      <span>${wf.nodeCount || 0} nodes</span>
+                      <span>·</span>
+                      <span class="wf-badge" style="font-size: 10px; padding: 2px 8px; background: var(--color-bg, #0d1117); color: var(--color-text-secondary, #8b95a5);">
+                        ${group.label}
+                      </span>
+                      <div style="flex: 1;"></div>
+                      ${hasTemplateUpdate && html`
+                        <${Button}
+                          variant="text"
+                          size="small"
+                          sx=${{ fontSize: '11px', borderColor: '#f59e0b80', color: '#f59e0b', textTransform: 'none' }}
+                          onClick=${async (e) => {
+                            e.stopPropagation();
+                            if (!isCustomizedTemplate) {
+                              await applyTemplateUpdate(wf.id, "replace", true);
+                              return;
+                            }
+                            const choice = window.prompt(
+                              "Template update available for customized workflow.\nType 'copy' to create an updated copy, or 'replace' to overwrite this workflow.",
+                              "copy",
+                            );
+                            const normalized = String(choice || "").trim().toLowerCase();
+                            if (normalized === "copy") {
+                              await applyTemplateUpdate(wf.id, "copy", false);
+                              return;
+                            }
+                            if (normalized === "replace") {
+                              const ok = window.confirm("Replace this customized workflow with latest template? This cannot be undone.");
+                              if (!ok) return;
+                              await applyTemplateUpdate(wf.id, "replace", true);
+                            }
+                          }}
+                        >
+                          <span class="icon-inline">${resolveIcon("refresh")}</span>
+                          Update
+                        <//>
+                      `}
+                      ${!isCore && html`<${Button}
+                        variant="text"
+                        size="small"
+                        sx=${{ fontSize: '11px', textTransform: 'none' }}
+                        onClick=${(e) => {
+                          e.stopPropagation();
+                          setWorkflowEnabled(wf.id, !wf.enabled);
+                        }}
+                      >
+                        <span class="icon-inline">${resolveIcon(wf.enabled ? "pause" : "play")}</span>
+                        ${wf.enabled ? "Pause" : "Resume"}
+                      <//>`}
+                      <${Button}
+                        variant="text"
+                        size="small"
+                        sx=${{ fontSize: '11px', textTransform: 'none', ...(wf.enabled ? {} : { opacity: 0.65 }) }}
+                        onClick=${(e) => {
+                          e.stopPropagation();
+                          if (!wf.enabled) {
+                            showToast("Workflow is paused. Resume it before running.", "warning");
+                            return;
+                          }
+                          openExecuteDialog(wf.id);
+                        }}
+                      >
+                        <span class="icon-inline">${resolveIcon("play")}</span>
+                      <//>
+                      ${!isCore && html`<${Button} variant="text" size="small" sx=${{ fontSize: '11px', color: '#ef4444', textTransform: 'none' }} onClick=${(e) => { e.stopPropagation(); if (confirm("Delete " + wf.name + "?")) deleteWorkflow(wf.id); }}>
+                        <span class="icon-inline">${resolveIcon("trash")}</span>
+                      <//>`}
+                    </div>
+                  </div>
+                `;
+                  })()}
+                `)}
+              </div>
+            </div>
+          `)}
         </div>
       `}
 
@@ -2894,60 +3050,50 @@ function WorkflowListView() {
             <span>All templates are installed!</span>
           </div>
         `}
-        ${(() => {
-          // Group templates by category
-          const groups = {};
-          availableTemplates.forEach(t => {
-            const key = t.category || "custom";
-            if (!groups[key]) groups[key] = { label: t.categoryLabel || key, icon: t.categoryIcon || "settings", order: t.categoryOrder || 99, items: [] };
-            groups[key].items.push(t);
-          });
-          const sorted = Object.entries(groups).sort((a, b) => a[1].order - b[1].order);
-          return sorted.map(([cat, group]) => html`
-            <div key=${cat} style="margin-bottom: 20px;">
-              <div style="display: flex; align-items: center; gap: 8px; margin-bottom: 10px; padding-bottom: 6px; border-bottom: 1px solid var(--color-border, #2a304060);">
-                <span class="icon-inline" style="font-size: 16px;">${resolveIcon(group.icon) || ICONS.dot}</span>
-                <span style="font-size: 13px; font-weight: 600; color: var(--color-text-secondary, #8b95a5);">${group.label}</span>
-                <span style="font-size: 11px; color: var(--color-text-secondary, #6b7280);">(${group.items.length})</span>
-              </div>
-              <div style="display: grid; gap: 10px; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));">
-                ${group.items.map(t => html`
-                  <div key=${t.id} class="wf-card wf-template-card" style="background: var(--color-bg-secondary, #1a1f2e); border-radius: 12px; padding: 14px; border: 1px solid var(--color-border, #2a304080);">
-                    <div style="display: flex; align-items: center; gap: 8px; margin-bottom: 8px;">
-                      <span class="icon-inline" style="font-size: 14px;">${resolveIcon(t.categoryIcon || group.icon) || ICONS.dot}</span>
-                      <span style="font-weight: 600; font-size: 14px; flex: 1;">${t.name}</span>
-                      ${t.recommended && html`
-                        <span class="wf-badge" style="background: #10b98125; color: #10b981; border-color: #10b98140; font-size: 10px; padding: 2px 8px; font-weight: 600; letter-spacing: 0.3px; display: inline-flex; align-items: center; gap: 4px;">
-                          <span class="icon-inline">${resolveIcon("star")}</span>
-                          Recommended
-                        </span>
-                      `}
-                    </div>
-                    <div style="font-size: 12px; color: var(--color-text-secondary, #8b95a5); margin-bottom: 10px; line-height: 1.4;">
-                      ${t.description?.slice(0, 120)}${(t.description?.length || 0) > 120 ? "…" : ""}
-                    </div>
-                    <div style="display: flex; gap: 6px; flex-wrap: wrap; margin-bottom: 10px;">
-                      ${(t.tags || []).map(tag => html`
-                        <span key=${tag} class="wf-badge" style="font-size: 10px; padding: 2px 6px;">${tag}</span>
-                      `)}
-                    </div>
-                    <div style="display: flex; gap: 8px; align-items: center;">
-                      <span style="font-size: 11px; color: var(--color-text-secondary, #6b7280);">${t.nodeCount} nodes</span>
-                      <div style="flex: 1;"></div>
-                      <${Button}
-                        variant="contained"
-                        size="small"
-                        onClick=${() => openInstallTemplateDialog(t.id)}
-                      >
-                        Install →
-                      <//>
-                    </div>
-                  </div>
-                `)}
-              </div>
+        ${availableTemplateGroups.map((group) => html`
+          <div key=${group.key} style="margin-bottom: 20px;">
+            <div style="display: flex; align-items: center; gap: 8px; margin-bottom: 10px; padding-bottom: 6px; border-bottom: 1px solid var(--color-border, #2a304060);">
+              <span class="icon-inline" style="font-size: 16px;">${resolveIcon(group.icon) || ICONS.dot}</span>
+              <span style="font-size: 13px; font-weight: 600; color: var(--color-text-secondary, #8b95a5);">${group.label}</span>
+              <span style="font-size: 11px; color: var(--color-text-secondary, #6b7280);">(${group.items.length})</span>
             </div>
-          `);
-        })()}
+            <div style="display: grid; gap: 10px; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));">
+              ${group.items.map(t => html`
+                <div key=${t.id} class="wf-card wf-template-card" style="background: var(--color-bg-secondary, #1a1f2e); border-radius: 12px; padding: 14px; border: 1px solid var(--color-border, #2a304080);">
+                  <div style="display: flex; align-items: center; gap: 8px; margin-bottom: 8px;">
+                    <span class="icon-inline" style="font-size: 14px;">${resolveIcon(t.categoryIcon || group.icon) || ICONS.dot}</span>
+                    <span style="font-weight: 600; font-size: 14px; flex: 1;">${t.name}</span>
+                    ${t.recommended && html`
+                      <span class="wf-badge" style="background: #10b98125; color: #10b981; border-color: #10b98140; font-size: 10px; padding: 2px 8px; font-weight: 600; letter-spacing: 0.3px; display: inline-flex; align-items: center; gap: 4px;">
+                        <span class="icon-inline">${resolveIcon("star")}</span>
+                        Recommended
+                      </span>
+                    `}
+                  </div>
+                  <div style="font-size: 12px; color: var(--color-text-secondary, #8b95a5); margin-bottom: 10px; line-height: 1.4;">
+                    ${t.description?.slice(0, 120)}${(t.description?.length || 0) > 120 ? "…" : ""}
+                  </div>
+                  <div style="display: flex; gap: 6px; flex-wrap: wrap; margin-bottom: 10px;">
+                    ${(t.tags || []).map(tag => html`
+                      <span key=${tag} class="wf-badge" style="font-size: 10px; padding: 2px 6px;">${tag}</span>
+                    `)}
+                  </div>
+                  <div style="display: flex; gap: 8px; align-items: center;">
+                    <span style="font-size: 11px; color: var(--color-text-secondary, #6b7280);">${t.nodeCount} nodes</span>
+                    <div style="flex: 1;"></div>
+                    <${Button}
+                      variant="contained"
+                      size="small"
+                      onClick=${() => openInstallTemplateDialog(t.id)}
+                    >
+                      Install →
+                    <//>
+                  </div>
+                </div>
+              `)}
+            </div>
+          </div>
+        `)}
       </div>
     </div>
   `;
@@ -3083,9 +3229,6 @@ function RunHistoryView() {
   const [nowTick, setNowTick] = useState(Date.now());
   const hasRunningRuns = runs.some((run) => run?.status === "running");
   const selectedRunIsRunning = selectedRun?.status === "running";
-  const autoLoadMoreRef = useRef(false);
-  const tailSentinelRef = useRef(null);
-  const lastAutoLoadCountRef = useRef(-1);
   const [statusFilter, setStatusFilter] = useState("all");
   const [workflowFilter, setWorkflowFilter] = useState("all");
   const [triggerFilter, setTriggerFilter] = useState("all");
@@ -3170,12 +3313,6 @@ function RunHistoryView() {
 
   const canLoadMoreRuns =
     hasMoreRuns && runs.length < WORKFLOW_RUN_MAX_FETCH;
-  const hasRunFilters =
-    statusFilter !== "all" ||
-    workflowFilter !== "all" ||
-    triggerFilter !== "all" ||
-    Boolean(normalizedSearch);
-
   const triggerLoadMoreRuns = useCallback(() => {
     if (!canLoadMoreRuns || loadingMoreRuns) return false;
     const nextOffset = Number(workflowRunsNextOffset.value || runs.length);
@@ -3187,61 +3324,6 @@ function RunHistoryView() {
     });
     return true;
   }, [canLoadMoreRuns, loadingMoreRuns, runs.length, totalRuns]);
-
-  useEffect(() => {
-    if (!hasRunFilters || filteredRuns.length > 0 || !canLoadMoreRuns) {
-      autoLoadMoreRef.current = false;
-      return;
-    }
-    if (autoLoadMoreRef.current) return;
-    autoLoadMoreRef.current = true;
-    Promise.resolve(triggerLoadMoreRuns())
-      .finally(() => {
-        autoLoadMoreRef.current = false;
-      });
-  }, [hasRunFilters, filteredRuns.length, canLoadMoreRuns, triggerLoadMoreRuns, statusFilter, workflowFilter, triggerFilter, normalizedSearch]);
-
-  useEffect(() => {
-    if (selectedRun || !canLoadMoreRuns || typeof IntersectionObserver !== "function") {
-      lastAutoLoadCountRef.current = -1;
-      return;
-    }
-    const sentinel = tailSentinelRef.current;
-    if (!sentinel) return;
-    const observer = new IntersectionObserver(
-      (entries) => {
-        for (const entry of entries) {
-          if (!entry.isIntersecting) continue;
-          const key = runs.length;
-          if (lastAutoLoadCountRef.current === key || loadingMoreRuns) continue;
-          lastAutoLoadCountRef.current = key;
-          triggerLoadMoreRuns();
-        }
-      },
-      {
-        root: null,
-        rootMargin: "0px 0px 240px 0px",
-        threshold: 0,
-      },
-    );
-    observer.observe(sentinel);
-    return () => observer.disconnect();
-  }, [selectedRun, canLoadMoreRuns, loadingMoreRuns, runs.length, triggerLoadMoreRuns]);
-
-  useEffect(() => {
-    if (selectedRun || !canLoadMoreRuns || loadingMoreRuns || typeof window === "undefined") return;
-    const doc = document?.documentElement;
-    const body = document?.body;
-    const scrollHeight = Math.max(
-      Number(doc?.scrollHeight || 0),
-      Number(body?.scrollHeight || 0),
-    );
-    if (scrollHeight > window.innerHeight + 240) return;
-    const key = runs.length;
-    if (lastAutoLoadCountRef.current === key) return;
-    lastAutoLoadCountRef.current = key;
-    triggerLoadMoreRuns();
-  }, [selectedRun, canLoadMoreRuns, loadingMoreRuns, runs.length, filteredRuns.length, triggerLoadMoreRuns]);
 
   if (selectedRun) {
     const statusStyles = getRunStatusBadgeStyles(selectedRun.status);
@@ -3437,7 +3519,7 @@ function RunHistoryView() {
         <div style="text-align: center; padding: 28px; opacity: 0.6;">
           <div>No runs match the current filters yet.</div>
           ${canLoadMoreRuns && html`
-            <div style="margin-top: 6px;">Bosun has loaded ${runs.length} of ${totalRuns} run(s); older history will keep loading while the filter is active.</div>
+            <div style="margin-top: 6px;">Bosun has loaded ${runs.length} of ${totalRuns} run(s); use Load more runs to search older history.</div>
           `}
         </div>
       `}
@@ -3492,9 +3574,6 @@ function RunHistoryView() {
             <//>
           `;
         })}
-        ${canLoadMoreRuns && html`
-          <div ref=${tailSentinelRef} style="height: 1px;"></div>
-        `}
       </div>
       ${canLoadMoreRuns && html`
         <div style="display: flex; justify-content: center; margin-top: 12px;">

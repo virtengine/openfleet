@@ -3828,8 +3828,16 @@
               { relPath: '.github/agents/frontend.agent.md', fileName: 'frontend.agent.md', kind: 'agent', name: 'Frontend', description: 'Frontend development agent', selected: true },
               { relPath: '.github/plugins/azure-sdk-dotnet/skills/azure-identity-dotnet/SKILL.md', fileName: 'SKILL.md', kind: 'skill', name: 'Azure Identity .NET', description: 'Azure identity SDK skill', selected: true },
               { relPath: '.github/plugins/azure-sdk-dotnet/skills/azure-ai-openai-dotnet/SKILL.md', fileName: 'SKILL.md', kind: 'skill', name: 'Azure OpenAI .NET', description: 'Azure OpenAI SDK skill', selected: true },
-              { relPath: '.github/prompts/code-review.prompt.md', fileName: 'code-review.prompt.md', kind: 'prompt', name: 'Code Review', description: 'Code review prompt template', selected: true },
+              { relPath: '.github/prompts/code-review.prompt.md', fileName: 'code-review.prompt.md', kind: 'prompt', name: 'Code Review', description: 'Code review prompt template', selected: false },
             ],
+            duplicates: {
+              '.github/prompts/code-review.prompt.md': {
+                existingEntries: [{ id: 'code-review-prompt', name: 'Code Review', type: 'prompt' }],
+                similarity: 1.0,
+                reason: 'exact-name',
+              },
+            },
+            intraDuplicates: {},
           },
         };
       }
