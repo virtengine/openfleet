@@ -289,6 +289,7 @@
     "workflow/workflow-engine.mjs",
     "workflow/workflow-migration.mjs",
     "workflow/workflow-nodes.mjs",
+    "workflow/project-detection.mjs",
     "workflow/workflow-templates.mjs",
     "workflow/workflow-contract.mjs",
     "workflow/pipeline.mjs",
