@@ -334,6 +334,14 @@ async function fetchLibrarySources() {
   return res?.data || [];
 }
 
+async function previewLibrarySource(payload = {}) {
+  return apiFetch("/api/library/preview", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload || {}),
+  });
+}
+
 async function importLibrarySource(payload = {}) {
   return apiFetch("/api/library/import", {
     method: "POST",
@@ -1586,13 +1594,124 @@ function ProfileMatcher() {
   `;
 }
 
+function parseApiError(err) {
+  const msg = String(err?.message || err || "Unknown error");
+  try {
+    const parsed = JSON.parse(msg);
+    if (parsed?.error) return String(parsed.error);
+  } catch { /* not JSON */ }
+  return msg;
+}
+
+function ImportPreviewModal({ candidates, source, onConfirm, onClose, loading }) {
+  const [selection, setSelection] = useState(() => {
+    const map = {};
+    for (const c of (candidates || [])) map[c.relPath] = c.selected !== false;
+    return map;
+  });
+  const [typeFilter, setTypeFilter] = useState("all");
+
+  const filtered = useMemo(() => {
+    if (typeFilter === "all") return candidates || [];
+    return (candidates || []).filter((c) => c.kind === typeFilter);
+  }, [candidates, typeFilter]);
+
+  const selectedCount = useMemo(() => Object.values(selection).filter(Boolean).length, [selection]);
+  const typeCounts = useMemo(() => {
+    const counts = { agent: 0, skill: 0, prompt: 0 };
+    for (const c of (candidates || [])) counts[c.kind] = (counts[c.kind] || 0) + 1;
+    return counts;
+  }, [candidates]);
+
+  const toggleAll = useCallback((checked) => {
+    setSelection((prev) => {
+      const next = { ...prev };
+      for (const c of filtered) next[c.relPath] = checked;
+      return next;
+    });
+  }, [filtered]);
+
+  const toggle = useCallback((relPath) => {
+    setSelection((prev) => ({ ...prev, [relPath]: !prev[relPath] }));
+  }, []);
+
+  const handleConfirm = useCallback(() => {
+    const selected = Object.entries(selection).filter(([, v]) => v).map(([k]) => k);
+    onConfirm(selected);
+  }, [selection, onConfirm]);
+
+  const kindIcon = { agent: "🤖", skill: "⚡", prompt: "📝" };
+  const allFilteredSelected = filtered.length > 0 && filtered.every((c) => selection[c.relPath]);
+
+  return html`
+    <${Modal} title="Select Items to Import" onClose=${onClose} wide=${true}>
+      <div style="display:flex;flex-direction:column;gap:10px;max-height:70vh;">
+        <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;">
+          <span style="font-size:0.85em;font-weight:600;">${source?.name || "Repository"}</span>
+          <span style="font-size:0.8em;color:var(--text-secondary);">·</span>
+          <span style="font-size:0.8em;color:var(--text-secondary);">${(candidates || []).length} items found</span>
+          <span style="font-size:0.8em;color:var(--text-secondary);">·</span>
+          <span style="font-size:0.8em;color:var(--text-secondary);">${selectedCount} selected</span>
+        </div>
+        <div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap;">
+          ${[
+            ["all", "All", (candidates || []).length],
+            ["agent", "Agents", typeCounts.agent],
+            ["skill", "Skills", typeCounts.skill],
+            ["prompt", "Prompts", typeCounts.prompt],
+          ].filter(([, , count]) => count > 0 || true).map(([key, label, count]) => html`
+            <button key=${key} onClick=${() => setTypeFilter(key)}
+              style="padding:3px 10px;border-radius:12px;border:1px solid var(--border,#333);background:${typeFilter === key ? "var(--accent,#3b82f6)" : "transparent"};color:${typeFilter === key ? "#fff" : "var(--text-secondary)"};font-size:0.78em;cursor:pointer;">
+              ${label} (${count})
+            </button>
+          `)}
+          <span style="flex:1;" />
+          <button onClick=${() => toggleAll(true)} style="padding:3px 8px;border:1px solid var(--border,#333);border-radius:8px;background:transparent;color:var(--text-secondary);font-size:0.75em;cursor:pointer;">Select All</button>
+          <button onClick=${() => toggleAll(false)} style="padding:3px 8px;border:1px solid var(--border,#333);border-radius:8px;background:transparent;color:var(--text-secondary);font-size:0.75em;cursor:pointer;">Deselect All</button>
+        </div>
+        <div style="display:flex;align-items:center;gap:6px;padding:4px 0;border-bottom:1px solid var(--border,#333);">
+          <input type="checkbox" checked=${allFilteredSelected} onChange=${(e) => toggleAll(e.currentTarget.checked)} />
+          <span style="font-size:0.75em;font-weight:600;color:var(--text-secondary);flex:1;">NAME</span>
+          <span style="font-size:0.75em;font-weight:600;color:var(--text-secondary);width:60px;text-align:center;">TYPE</span>
+        </div>
+        <div style="overflow-y:auto;max-height:50vh;display:flex;flex-direction:column;">
+          ${filtered.map((c) => html`
+            <label key=${c.relPath} style="display:flex;align-items:flex-start;gap:6px;padding:5px 0;border-bottom:1px solid var(--border,#222);cursor:pointer;opacity:${selection[c.relPath] ? 1 : 0.5};">
+              <input type="checkbox" checked=${Boolean(selection[c.relPath])} onChange=${() => toggle(c.relPath)} style="margin-top:2px;" />
+              <div style="flex:1;min-width:0;">
+                <div style="font-size:0.82em;font-weight:500;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${c.name || c.fileName}</div>
+                <div style="font-size:0.72em;color:var(--text-secondary);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;" title=${c.relPath}>${c.relPath}</div>
+                ${c.description ? html`<div style="font-size:0.72em;color:var(--text-secondary);margin-top:2px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${String(c.description || "").slice(0, 120)}</div>` : null}
+              </div>
+              <span style="font-size:0.72em;padding:2px 6px;border-radius:999px;background:${c.kind === "agent" ? "rgba(59,130,246,0.18)" : c.kind === "skill" ? "rgba(34,197,94,0.18)" : "rgba(168,85,247,0.18)"};color:var(--text-secondary);width:60px;text-align:center;flex-shrink:0;">${kindIcon[c.kind] || ""} ${c.kind}</span>
+            </label>
+          `)}
+          ${filtered.length === 0 ? html`<div style="padding:20px;text-align:center;color:var(--text-secondary);font-size:0.85em;">No items found</div>` : null}
+        </div>
+        <div style="display:flex;gap:8px;justify-content:flex-end;padding-top:8px;border-top:1px solid var(--border,#333);">
+          <${Button} variant="text" size="small" onClick=${onClose} disabled=${loading}>Cancel<//>
+          <${Button} variant="contained" size="small" onClick=${handleConfirm} disabled=${loading || selectedCount === 0}>
+            ${loading ? html`<${Spinner} size=${14} />` : iconText(`:download: Import ${selectedCount} Items`)}
+          <//>
+        </div>
+      </div>
+    <//>
+  `;
+}
+
 function AgentLibraryImporter({ onImported }) {
   const [sources, setSources] = useState([]);
-  const [sourceId, setSourceId] = useState("microsoft-hve-core");
+  const [sourceId, setSourceId] = useState("microsoft-skills");
   const [repoUrl, setRepoUrl] = useState("");
   const [branch, setBranch] = useState("main");
-  const [maxProfiles, setMaxProfiles] = useState("80");
-  const [loading, setLoading] = useState(false);
+  const [maxProfiles, setMaxProfiles] = useState("200");
+  const [scanning, setScanning] = useState(false);
+  const [importing, setImporting] = useState(false);
+  const [previewData, setPreviewData] = useState(null);
+  const [importAgents, setImportAgents] = useState(true);
+  const [importSkills, setImportSkills] = useState(true);
+  const [importPrompts, setImportPrompts] = useState(true);
+  const [importTools, setImportTools] = useState(true);
   const selectedSource = useMemo(() => (sources || []).find((source) => source.id === sourceId) || null, [sources, sourceId]);
 
   useEffect(() => {
@@ -1606,40 +1725,88 @@ function AgentLibraryImporter({ onImported }) {
     return () => { alive = false; };
   }, []);
 
-  const doImport = useCallback(async () => {
-    setLoading(true);
+  const doPreview = useCallback(async () => {
+    setScanning(true);
     try {
       const payload = {
-        sourceId: sourceId || undefined,
+        sourceId: repoUrl.trim() ? undefined : (sourceId || undefined),
         repoUrl: repoUrl.trim() || undefined,
         branch: branch.trim() || undefined,
-        maxProfiles: Number.parseInt(String(maxProfiles || ""), 10) || undefined,
-        importPrompts: true,
+        maxEntries: Number.parseInt(String(maxProfiles || ""), 10) || undefined,
+      };
+      const res = await previewLibrarySource(payload);
+      if (!res?.ok) throw new Error(res?.error || "Preview failed");
+      const data = res?.data;
+      if (!data?.candidates?.length) {
+        showToast("No importable items found in this repository", "warning");
+      } else {
+        setPreviewData(data);
+      }
+    } catch (err) {
+      showToast(`Preview failed: ${parseApiError(err)}`, "error");
+    }
+    setScanning(false);
+  }, [sourceId, repoUrl, branch, maxProfiles]);
+
+  const doImport = useCallback(async (selectedPaths) => {
+    setImporting(true);
+    try {
+      if (!importAgents && !importPrompts && !importSkills && !importTools) {
+        throw new Error("Select at least one import type");
+      }
+      const payload = {
+        sourceId: repoUrl.trim() ? undefined : (sourceId || undefined),
+        repoUrl: repoUrl.trim() || undefined,
+        branch: branch.trim() || undefined,
+        maxEntries: Number.parseInt(String(maxProfiles || ""), 10) || undefined,
+        importAgents,
+        importSkills,
+        importPrompts,
+        importTools,
+        includeEntries: selectedPaths,
       };
       const res = await importLibrarySource(payload);
       if (!res?.ok) throw new Error(res?.error || "Import failed");
       const count = Number(res?.data?.importedCount || 0);
-      showToast(`Imported ${count} profiles`, "success");
+      const byType = res?.data?.importedByType || {};
+      const details = [
+        `agents ${Number(byType?.agent || 0)}`,
+        `prompts ${Number(byType?.prompt || 0)}`,
+        `skills ${Number(byType?.skill || 0)}`,
+        `tools ${Number(byType?.mcp || 0)}`,
+      ].join(", ");
+      showToast(`Imported ${count} entries (${details})`, "success");
+      setPreviewData(null);
       if (typeof onImported === "function") onImported();
     } catch (err) {
-      showToast(`Import failed: ${err.message}`, "error");
+      showToast(`Import failed: ${parseApiError(err)}`, "error");
     }
-    setLoading(false);
-  }, [sourceId, repoUrl, branch, maxProfiles, onImported]);
+    setImporting(false);
+  }, [sourceId, repoUrl, branch, maxProfiles, importAgents, importSkills, importPrompts, importTools, onImported]);
 
   return html`
     <div style="margin-top:10px;padding:10px;border:1px solid var(--border,#333);border-radius:10px;">
-      <div style="font-size:0.9em;font-weight:600;margin-bottom:6px;">${iconText(":package: Import Agent Library")}</div>
+      <div style="font-size:0.9em;font-weight:600;margin-bottom:6px;">${iconText(":package: Import Library Content")}</div>
       <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:8px;">
         <label style="display:flex;flex-direction:column;gap:4px;font-size:0.82em;color:var(--text-secondary);">
           Source
           <select value=${sourceId} onChange=${(e) => setSourceId(e.currentTarget.value)}>
             ${(sources.length ? sources : [
-              { id: "microsoft-hve-core", name: "Microsoft HVE Core" },
               { id: "microsoft-skills", name: "Microsoft Skills" },
+              { id: "microsoft-hve-core", name: "Microsoft HVE Core" },
+              { id: "microsoft-vscode", name: "Microsoft VS Code" },
+              { id: "microsoft-powertoys", name: "Microsoft PowerToys" },
+              { id: "microsoft-typespec", name: "Microsoft TypeSpec" },
+              { id: "microsoft-copilot-for-azure", name: "GitHub Copilot for Azure" },
+              { id: "microsoft-vscode-python-environments", name: "VS Code Python Environments" },
               { id: "github-copilot-sdk", name: "GitHub Copilot SDK" },
+              { id: "github-desktop", name: "GitHub Desktop" },
               { id: "azure-sdk-for-js", name: "Azure SDK for JavaScript" },
-              { id: "microsoft-vscode-python-environments", name: "Microsoft VS Code Python Environments" },
+              { id: "mastra-ai-mastra", name: "Mastra AI Framework" },
+              { id: "canonical-copilot-collections", name: "Canonical Copilot Collections" },
+              { id: "copilot-kit", name: "Copilot Kit" },
+              { id: "copilot-prompts-collection", name: "GitHub Copilot Prompts" },
+              { id: "playwright-mcp-prompts", name: "Playwright MCP Prompts" },
             ]).map((s) => html`<option key=${s.id} value=${s.id}>${s.name}</option>`)}
           </select>
         </label>
@@ -1648,14 +1815,20 @@ function AgentLibraryImporter({ onImported }) {
           <input value=${branch} onInput=${(e) => setBranch(e.currentTarget.value)} placeholder="main" />
         </label>
         <label style="display:flex;flex-direction:column;gap:4px;font-size:0.82em;color:var(--text-secondary);">
-          Max Profiles
-          <input value=${maxProfiles} onInput=${(e) => setMaxProfiles(e.currentTarget.value)} placeholder="80" />
+          Max Entries
+          <input value=${maxProfiles} onInput=${(e) => setMaxProfiles(e.currentTarget.value)} placeholder="200" />
         </label>
       </div>
       <label style="display:flex;flex-direction:column;gap:4px;font-size:0.82em;color:var(--text-secondary);margin-top:8px;">
-        Custom Repo URL (optional)
+        Custom Repo URL (optional — overrides source selection)
         <input value=${repoUrl} onInput=${(e) => setRepoUrl(e.currentTarget.value)} placeholder="https://github.com/org/repo.git" />
       </label>
+      <div style="margin-top:8px;display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:6px;">
+        <label style="display:flex;align-items:center;gap:6px;font-size:0.8em;color:var(--text-secondary);"><input type="checkbox" checked=${importAgents} onChange=${(e) => setImportAgents(Boolean(e.currentTarget.checked))} /> Agent Profiles</label>
+        <label style="display:flex;align-items:center;gap:6px;font-size:0.8em;color:var(--text-secondary);"><input type="checkbox" checked=${importPrompts} onChange=${(e) => setImportPrompts(Boolean(e.currentTarget.checked))} /> Prompts</label>
+        <label style="display:flex;align-items:center;gap:6px;font-size:0.8em;color:var(--text-secondary);"><input type="checkbox" checked=${importSkills} onChange=${(e) => setImportSkills(Boolean(e.currentTarget.checked))} /> Skills</label>
+        <label style="display:flex;align-items:center;gap:6px;font-size:0.8em;color:var(--text-secondary);"><input type="checkbox" checked=${importTools} onChange=${(e) => setImportTools(Boolean(e.currentTarget.checked))} /> Tools (MCP)</label>
+      </div>
       ${selectedSource ? html`
         <div style="margin-top:8px;padding:8px 10px;border:1px solid var(--border,#333);border-radius:10px;background:var(--surface-2,rgba(255,255,255,0.03));display:flex;flex-direction:column;gap:6px;">
           <div style="display:flex;flex-wrap:wrap;gap:6px;align-items:center;">
@@ -1670,11 +1843,20 @@ function AgentLibraryImporter({ onImported }) {
         </div>
       ` : null}
       <div class="library-actions">
-        <${Button} variant="outlined" size="small" onClick=${doImport} disabled=${loading || selectedSource?.enabled === false}>
-          ${loading ? html`<${Spinner} size=${14} />` : iconText(":download: Import")}
+        <${Button} variant="outlined" size="small" onClick=${doPreview} disabled=${scanning || importing || selectedSource?.enabled === false}>
+          ${scanning ? html`<${Spinner} size=${14} /> Scanning…` : iconText(":mag: Preview & Select")}
         <//>
       </div>
     </div>
+    ${previewData ? html`
+      <${ImportPreviewModal}
+        candidates=${previewData.candidates}
+        source=${previewData.source}
+        onConfirm=${doImport}
+        onClose=${() => setPreviewData(null)}
+        loading=${importing}
+      />
+    ` : null}
   `;
 }
 

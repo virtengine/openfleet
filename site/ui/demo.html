@@ -3814,6 +3814,25 @@
           ],
         };
       }
+      if (route === '/api/library/preview') {
+        return {
+          ok: true,
+          data: {
+            source: { id: 'microsoft-skills', name: 'Microsoft Skills' },
+            repoUrl: 'https://github.com/microsoft/skills.git',
+            branch: 'main',
+            totalCandidates: 5,
+            candidatesByType: { agent: 2, skill: 2, prompt: 1 },
+            candidates: [
+              { relPath: '.github/agents/backend.agent.md', fileName: 'backend.agent.md', kind: 'agent', name: 'Backend', description: 'Backend development agent', selected: true },
+              { relPath: '.github/agents/frontend.agent.md', fileName: 'frontend.agent.md', kind: 'agent', name: 'Frontend', description: 'Frontend development agent', selected: true },
+              { relPath: '.github/plugins/azure-sdk-dotnet/skills/azure-identity-dotnet/SKILL.md', fileName: 'SKILL.md', kind: 'skill', name: 'Azure Identity .NET', description: 'Azure identity SDK skill', selected: true },
+              { relPath: '.github/plugins/azure-sdk-dotnet/skills/azure-ai-openai-dotnet/SKILL.md', fileName: 'SKILL.md', kind: 'skill', name: 'Azure OpenAI .NET', description: 'Azure OpenAI SDK skill', selected: true },
+              { relPath: '.github/prompts/code-review.prompt.md', fileName: 'code-review.prompt.md', kind: 'prompt', name: 'Code Review', description: 'Code review prompt template', selected: true },
+            ],
+          },
+        };
+      }
       if (route === '/api/library/import') {
         return {
           ok: true,

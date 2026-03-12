@@ -73,6 +73,7 @@ import {
   listWellKnownAgentSources,
   probeWellKnownAgentSources,
   importAgentProfilesFromRepository,
+  scanRepositoryForImport,
   loadManifest,
   getManifestPath,
   scaffoldAgentProfiles,
@@ -11549,6 +11550,22 @@ async function handleApi(req, res, url) {
     return;
   }
 
+  if (path === "/api/library/preview" && req.method === "POST") {
+    try {
+      const body = await readJsonBody(req).catch(() => ({}));
+      const result = scanRepositoryForImport({
+        sourceId: String(body?.sourceId || "").trim() || undefined,
+        repoUrl: String(body?.repoUrl || "").trim() || undefined,
+        branch: String(body?.branch || "").trim() || undefined,
+        maxEntries: Number.parseInt(String(body?.maxEntries ?? ""), 10) || undefined,
+      });
+      jsonResponse(res, 200, { ok: true, data: result });
+    } catch (err) {
+      jsonResponse(res, 500, { ok: false, error: err.message });
+    }
+    return;
+  }
+
   if (path === "/api/library/import" && req.method === "POST") {
     try {
       const workspaceContext = resolveWorkspaceContextFromRequest(url, { allowAll: false });
@@ -11559,6 +11576,7 @@ async function handleApi(req, res, url) {
       const body = await readJsonBody(req).catch(() => ({}));
       const requestedScope = normalizeLibraryStorageScope(body?.storageScope || body?.source, "repo");
       const targetRoot = resolveLibraryTargetRoot(workspaceContext, requestedScope, null);
+      const includeEntries = Array.isArray(body?.includeEntries) ? body.includeEntries : null;
       const result = importAgentProfilesFromRepository(targetRoot.rootDir, {
         sourceId: String(body?.sourceId || "").trim() || undefined,
         repoUrl: String(body?.repoUrl || "").trim() || undefined,
@@ -11568,6 +11586,7 @@ async function handleApi(req, res, url) {
         importSkills: body?.importSkills !== false,
         importPrompts: body?.importPrompts !== false,
         importTools: body?.importTools !== false,
+        includeEntries,
       });
 
       broadcastUiEvent(["library"], "invalidate", {
