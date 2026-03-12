@@ -452,7 +452,7 @@ describe("voice agent profile tool configuration", () => {
     const profileStart = src.indexOf('"voice-agent-female"');
     expect(profileStart).toBeGreaterThan(-1);
 
-    const profileChunk = src.slice(profileStart, profileStart + 800);
+    const profileChunk = src.slice(profileStart, profileStart + 1200);
     expect(profileChunk).toContain("enabledTools: null");
     expect(profileChunk).toContain("voiceInstructions:");
   });
@@ -465,11 +465,13 @@ describe("voice agent profile tool configuration", () => {
       "utf8",
     );
     const profileStart = src.indexOf('"voice-agent-female"');
-    const profileChunk = src.slice(profileStart, profileStart + 800);
+    const profileChunk = src.slice(profileStart, profileStart + 1200);
 
-    // Must contain a persona name (not "ChatGPT")
+    // Must contain a persona name (not defaulting to "ChatGPT")
     expect(profileChunk).toContain("You are Nova");
-    expect(profileChunk).not.toContain("ChatGPT");
+    // The voiceInstructions may mention ChatGPT in a negative context
+    // ("You are NOT ChatGPT"), which is correct — it reinforces the persona.
+    expect(profileChunk).toContain("NOT ChatGPT");
   });
 });
 

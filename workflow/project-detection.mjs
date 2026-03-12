@@ -7,7 +7,7 @@
  */
 
 import { existsSync, readFileSync, readdirSync } from "node:fs";
-import { resolve, basename } from "node:path";
+import { resolve } from "node:path";
 
 // ── Stack Definitions ────────────────────────────────────────────────────────
 

@@ -1020,6 +1020,7 @@ class ExecutorScheduler {
       maxConcurrent: wsExecutorConfig.maxConcurrent ?? 3,
       pool: wsExecutorConfig.pool ?? "shared",
       weight: wsExecutorConfig.weight ?? 1.0,
+      executors: wsExecutorConfig.executors ?? null,
     });
     if (!this._workspaceActiveCount.has(workspaceId)) {
       this._workspaceActiveCount.set(workspaceId, 0);

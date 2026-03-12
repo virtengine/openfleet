@@ -13227,18 +13227,13 @@ async function handleApi(req, res, url) {
           return;
         }
         // Update enabledWorkflows / disabledWorkflows in workspace config
-        const config = JSON.parse((await import("node:fs")).readFileSync(
-          (await import("node:path")).resolve(configDir, "bosun.config.json"), "utf8",
-        ));
+        const { configPath, configData: config } = readConfigDocument();
         const workspaces = Array.isArray(config.workspaces) ? config.workspaces : [];
         const target = workspaces.find((w) => (w.id || "").toLowerCase() === wsId.toLowerCase());
         if (target) {
           if (body.enabledWorkflows !== undefined) target.enabledWorkflows = body.enabledWorkflows;
           if (body.disabledWorkflows !== undefined) target.disabledWorkflows = body.disabledWorkflows;
-          (await import("node:fs")).writeFileSync(
-            (await import("node:path")).resolve(configDir, "bosun.config.json"),
-            JSON.stringify(config, null, 2) + "\n", "utf8",
-          );
+          writeFileSync(configPath, JSON.stringify(config, null, 2) + "\n", "utf8");
         }
         jsonResponse(res, 200, { ok: true });
         broadcastUiEvent(["workspaces"], "invalidate", { reason: "workflows-changed", workspaceId: wsId });
