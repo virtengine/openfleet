@@ -27,6 +27,11 @@ import { getToolsPromptBlock } from "../agent/agent-custom-tools.mjs";
 import { buildRelevantSkillsPromptBlock, findRelevantSkills } from "../agent/bosun-skills.mjs";
 import { readBenchmarkModeState, taskMatchesBenchmarkMode } from "../bench/benchmark-mode.mjs";
 import { getSessionTracker } from "../infra/session-tracker.mjs";
+import {
+  buildWorkflowContractPromptBlock,
+  loadWorkflowContract,
+  validateWorkflowContract,
+} from "./workflow-contract.mjs";
 import { fixGitConfigCorruption } from "../workspace/worktree-manager.mjs";
 import { clearBlockedWorktreeIdentity } from "../git/git-safety.mjs";
 import { getGitHubToken } from "../github/github-auth-manager.mjs";
@@ -9188,6 +9193,155 @@ registerNodeType("action.release_worktree", {
   },
 });
 
+const readWorkflowContractHandler = {
+  describe: () =>
+    "Read a project WORKFLOW.md runtime contract and stage it for session-start prompt injection.",
+  schema: {
+    type: "object",
+    properties: {
+      projectRoot: { type: "string", description: "Project root containing WORKFLOW.md" },
+      repoRoot: { type: "string", description: "Fallback project root" },
+      worktreePath: { type: "string", description: "Active project worktree path" },
+      outputVariable: { type: "string", description: "Optional ctx.data key for the loaded contract" },
+      logPreviewChars: {
+        type: "number",
+        default: 1200,
+        description: "Maximum contract characters to include in the workflow log",
+      },
+    },
+  },
+  async execute(node, ctx) {
+    const projectRoot = cfgOrCtx(node, ctx, "projectRoot")
+      || cfgOrCtx(node, ctx, "worktreePath")
+      || cfgOrCtx(node, ctx, "repoRoot")
+      || process.cwd();
+    const outputVariable = cfgOrCtx(node, ctx, "outputVariable") || "_workflowContract";
+    const logPreviewChars = Number(cfgOrCtx(node, ctx, "logPreviewChars") || 1200);
+    const contract = loadWorkflowContract(projectRoot, { useCache: false });
+
+    ctx.data._workflowContractProjectRoot = projectRoot;
+    ctx.data._workflowContractPath = contract.path || "";
+    ctx.data._workflowContract = contract;
+
+    if (outputVariable) {
+      ctx.data[outputVariable] = contract;
+    }
+
+    if (!contract.exists) {
+      ctx.data._workflowContractPromptBlock = "";
+      ctx.log(node.id, "No WORKFLOW.md detected at " + contract.path);
+      return {
+        success: true,
+        found: false,
+        skipped: true,
+        projectRoot,
+        path: contract.path,
+      };
+    }
+
+    const promptBlock = buildWorkflowContractPromptBlock(contract);
+    ctx.data._workflowContractPromptBlock = promptBlock;
+    const preview = promptBlock.length > logPreviewChars
+      ? promptBlock.slice(0, logPreviewChars) + "…"
+      : promptBlock;
+    ctx.log(node.id, "Injected WORKFLOW.md contract into session context:\n" + preview);
+
+    return {
+      success: true,
+      found: true,
+      skipped: false,
+      projectRoot,
+      path: contract.path,
+      contract,
+      promptBlock,
+    };
+  },
+};
+
+registerNodeType("read-workflow-contract", readWorkflowContractHandler);
+registerNodeType("action.read_workflow_contract", readWorkflowContractHandler);
+
+const workflowContractValidationHandler = {
+  describe: () =>
+    "Validate required WORKFLOW.md contract fields before session work begins.",
+  schema: {
+    type: "object",
+    properties: {
+      projectRoot: { type: "string", description: "Project root containing WORKFLOW.md" },
+      contractVariable: {
+        type: "string",
+        description: "ctx.data key containing a previously loaded contract object",
+      },
+      failOnInvalid: {
+        type: "boolean",
+        default: true,
+        description: "Throw when required WORKFLOW.md fields are missing",
+      },
+    },
+  },
+  async execute(node, ctx) {
+    const projectRoot = cfgOrCtx(node, ctx, "projectRoot")
+      || cfgOrCtx(node, ctx, "worktreePath")
+      || cfgOrCtx(node, ctx, "repoRoot")
+      || ctx.data?._workflowContractProjectRoot
+      || process.cwd();
+    const contractVariable = cfgOrCtx(node, ctx, "contractVariable") || "_workflowContract";
+    const failOnInvalid = node.config?.failOnInvalid !== false;
+    const loadedContract =
+      ctx.data?.[contractVariable] && typeof ctx.data[contractVariable] === "object"
+        ? ctx.data[contractVariable]
+        : loadWorkflowContract(projectRoot, { useCache: false });
+    const validation = validateWorkflowContract(loadedContract);
+
+    ctx.data._workflowContractValidation = validation;
+
+    if (!loadedContract.exists) {
+      ctx.log(node.id, "No WORKFLOW.md found — skipping contract validation");
+      return {
+        success: true,
+        skipped: true,
+        found: false,
+        valid: true,
+        contract: loadedContract,
+        errors: [],
+      };
+    }
+
+    if (!validation.valid) {
+      const detail = validation.errors.map((entry) => entry.message).join(" ");
+      const message = "WORKFLOW.md contract validation failed for " + loadedContract.path + ". " + detail;
+      ctx.log(node.id, message, "error");
+      if (failOnInvalid) {
+        throw new Error(message);
+      }
+      return {
+        success: false,
+        skipped: false,
+        found: true,
+        valid: false,
+        contract: loadedContract,
+        errors: validation.errors,
+      };
+    }
+
+    ctx.log(
+      node.id,
+      "Validated WORKFLOW.md contract: terminalStates=[" + validation.contract.terminalStates.join(", ") + "], forbiddenPatterns=" + validation.contract.forbiddenPatterns.length,
+    );
+    return {
+      success: true,
+      skipped: false,
+      found: true,
+      valid: true,
+      contract: validation.contract,
+      errors: [],
+    };
+  },
+};
+
+registerNodeType("workflow-contract-validation", workflowContractValidationHandler);
+registerNodeType("action.workflow_contract_validation", workflowContractValidationHandler);
+
 // ── action.build_task_prompt ────────────────────────────────────────────────
 
 registerNodeType("action.build_task_prompt", {
@@ -9374,6 +9528,27 @@ registerNodeType("action.build_task_prompt", {
     parts.push("3. If required work depends on an unlisted repository, stop and report `blocked: cross-repo dependency`.");
     parts.push("4. In completion notes, list every repository you touched and why.");
     parts.push("");
+
+    let workflowContractPromptBlock = String(ctx.data?._workflowContractPromptBlock || "").trim();
+    if (!workflowContractPromptBlock) {
+      const workflowContract = ctx.data?._workflowContract;
+      if (workflowContract?.raw && workflowContract?.found) {
+        const sourcePath = workflowContract.path || "WORKFLOW.md";
+        workflowContractPromptBlock = [
+          "## WORKFLOW.md Contract",
+          `- **Source:** ${sourcePath}`,
+          "- **Behavior:** Treat this file as a project-specific runtime contract.",
+          "",
+          String(workflowContract.raw).trim(),
+        ].join("\n").trim();
+      } else if (workflowContract?.exists && workflowContract?.content) {
+        workflowContractPromptBlock = buildWorkflowContractPromptBlock(workflowContract);
+      }
+    }
+    if (workflowContractPromptBlock) {
+      parts.push(workflowContractPromptBlock);
+      parts.push("");
+    }
 
     // AGENTS.md + copilot-instructions.md
     if (includeAgentsMd) {
