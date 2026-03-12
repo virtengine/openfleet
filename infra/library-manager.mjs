@@ -948,31 +948,143 @@ export function matchAgentProfile(rootDir, taskTitle) {
   return result.best || null;
 }
 
-const TRUSTED_GITHUB_OWNERS = new Set(["microsoft", "github", "azure"]);
+const TRUSTED_GITHUB_OWNERS = new Set(["microsoft", "github", "azure", "desktop", "canonical", "mastra-ai"]);
 
 export const WELL_KNOWN_AGENT_SOURCES = Object.freeze([
+  // ── Microsoft — Official ──────────────────────────────────────────────────
+  {
+    id: "microsoft-skills",
+    name: "Microsoft Skills",
+    repoUrl: "https://github.com/microsoft/skills.git",
+    defaultBranch: "main",
+    description: "Microsoft-maintained backend, frontend, planner, infrastructure, and scaffolder agents with hundreds of Azure SDK skills.",
+    owner: "microsoft",
+    trustTier: "official",
+    importCoverage: "high",
+    focuses: ["backend", "frontend", "planner", "infra", "scaffolding", "azure"],
+  },
   {
     id: "microsoft-hve-core",
     name: "Microsoft HVE Core",
     repoUrl: "https://github.com/microsoft/hve-core.git",
     defaultBranch: "main",
-    description: "Core HVE agent library with domain and plugin agent templates.",
+    description: "Core HVE agent library with domain and plugin agent templates and experimental skills.",
     owner: "microsoft",
     trustTier: "official",
     importCoverage: "high",
     focuses: ["core", "plugins", "platform"],
   },
   {
-    id: "microsoft-skills",
-    name: "Microsoft Skills",
-    repoUrl: "https://github.com/microsoft/skills.git",
+    id: "microsoft-vscode",
+    name: "Microsoft VS Code",
+    repoUrl: "https://github.com/microsoft/vscode.git",
     defaultBranch: "main",
-    description: "Microsoft-maintained backend, frontend, planner, infrastructure, and scaffolder agent catalog.",
+    description: "VS Code editor skills for hygiene, testing, and extension development workflows.",
+    owner: "microsoft",
+    trustTier: "official",
+    importCoverage: "medium",
+    focuses: ["vscode", "editor", "extensions", "testing"],
+  },
+  {
+    id: "microsoft-powertoys",
+    name: "Microsoft PowerToys",
+    repoUrl: "https://github.com/microsoft/PowerToys.git",
+    defaultBranch: "main",
+    description: "PowerToys development skills for Windows utility and plugin engineering.",
+    owner: "microsoft",
+    trustTier: "official",
+    importCoverage: "medium",
+    focuses: ["windows", "utilities", "c-sharp", "plugins"],
+  },
+  {
+    id: "microsoft-typespec",
+    name: "Microsoft TypeSpec",
+    repoUrl: "https://github.com/microsoft/typespec.git",
+    defaultBranch: "main",
+    description: "TypeSpec API definition language skills for code generation and API design workflows.",
+    owner: "microsoft",
+    trustTier: "official",
+    importCoverage: "medium",
+    focuses: ["api", "code-generation", "typescript", "openapi"],
+  },
+  {
+    id: "microsoft-copilot-for-azure",
+    name: "GitHub Copilot for Azure",
+    repoUrl: "https://github.com/microsoft/GitHub-Copilot-for-Azure.git",
+    defaultBranch: "main",
+    description: "Azure-focused Copilot skills for cloud infrastructure, deployment, and resource management.",
     owner: "microsoft",
     trustTier: "official",
     importCoverage: "high",
-    focuses: ["backend", "frontend", "planner", "infra", "scaffolding"],
+    focuses: ["azure", "cloud", "infrastructure", "deployment"],
   },
+  {
+    id: "microsoft-vscode-python-environments",
+    name: "Microsoft VS Code Python Environments",
+    repoUrl: "https://github.com/microsoft/vscode-python-environments.git",
+    defaultBranch: "main",
+    description: "Maintainer, reviewer, and documentation agents for a production VS Code extension.",
+    owner: "microsoft",
+    trustTier: "official",
+    importCoverage: "medium",
+    focuses: ["vscode", "python", "extension", "maintainer"],
+  },
+  {
+    id: "microsoft-vscode-docs",
+    name: "Microsoft VS Code Documentation",
+    repoUrl: "https://github.com/microsoft/vscode-docs.git",
+    defaultBranch: "main",
+    description: "Skills for VS Code documentation authoring, editing, and review workflows.",
+    owner: "microsoft",
+    trustTier: "official",
+    importCoverage: "medium",
+    focuses: ["documentation", "vscode", "markdown", "authoring"],
+  },
+  {
+    id: "microsoft-windowsappsdk",
+    name: "Microsoft Windows App SDK",
+    repoUrl: "https://github.com/microsoft/WindowsAppSDK.git",
+    defaultBranch: "main",
+    description: "Windows App SDK skills for WinUI and Windows platform development.",
+    owner: "microsoft",
+    trustTier: "official",
+    importCoverage: "medium",
+    focuses: ["windows", "winui", "sdk", "desktop"],
+  },
+  {
+    id: "microsoft-vscode-java-pack",
+    name: "Microsoft VS Code Java Pack",
+    repoUrl: "https://github.com/microsoft/vscode-java-pack.git",
+    defaultBranch: "main",
+    description: "Java development skills for VS Code including debugging, testing, and project management.",
+    owner: "microsoft",
+    trustTier: "official",
+    importCoverage: "medium",
+    focuses: ["java", "vscode", "debugging", "testing"],
+  },
+  {
+    id: "microsoft-duroxide",
+    name: "Microsoft Duroxide",
+    repoUrl: "https://github.com/microsoft/duroxide.git",
+    defaultBranch: "main",
+    description: "Durable Functions in Rust — skills for building resilient serverless workflows.",
+    owner: "microsoft",
+    trustTier: "official",
+    importCoverage: "medium",
+    focuses: ["rust", "serverless", "durable-functions", "workflows"],
+  },
+  {
+    id: "microsoft-ebpf-for-windows",
+    name: "Microsoft eBPF for Windows",
+    repoUrl: "https://github.com/microsoft/ebpf-for-windows.git",
+    defaultBranch: "main",
+    description: "eBPF development skills for Windows kernel and networking instrumentation.",
+    owner: "microsoft",
+    trustTier: "official",
+    importCoverage: "medium",
+    focuses: ["ebpf", "windows", "kernel", "networking"],
+  },
+  // ── GitHub — Official ─────────────────────────────────────────────────────
   {
     id: "github-copilot-sdk",
     name: "GitHub Copilot SDK",
@@ -985,26 +1097,138 @@ export const WELL_KNOWN_AGENT_SOURCES = Object.freeze([
     focuses: ["copilot", "workflow", "docs"],
   },
   {
+    id: "github-desktop",
+    name: "GitHub Desktop",
+    repoUrl: "https://github.com/desktop/desktop.git",
+    defaultBranch: "development",
+    description: "GitHub Desktop app agent profiles for Electron, TypeScript, and Git workflow development.",
+    owner: "desktop",
+    trustTier: "official",
+    importCoverage: "medium",
+    focuses: ["electron", "typescript", "git", "desktop"],
+  },
+  // ── Azure — Official ──────────────────────────────────────────────────────
+  {
     id: "azure-sdk-for-js",
     name: "Azure SDK for JavaScript",
     repoUrl: "https://github.com/Azure/azure-sdk-for-js.git",
     defaultBranch: "main",
-    description: "Official Azure JavaScript SDK repo with agentic workflow authoring guidance and prompts.",
+    description: "Azure JavaScript SDK repo with agentic workflow authoring guidance and prompts.",
     owner: "azure",
     trustTier: "official",
     importCoverage: "medium",
     focuses: ["azure", "javascript", "sdk", "workflow"],
   },
+  // ── Community — Verified ──────────────────────────────────────────────────
   {
-    id: "microsoft-vscode-python-environments",
-    name: "Microsoft VS Code Python Environments",
-    repoUrl: "https://github.com/microsoft/vscode-python-environments.git",
+    id: "mastra-ai-mastra",
+    name: "Mastra AI Framework",
+    repoUrl: "https://github.com/mastra-ai/mastra.git",
     defaultBranch: "main",
-    description: "Microsoft-maintained maintainer, reviewer, and documentation agents for a production VS Code extension.",
-    owner: "microsoft",
-    trustTier: "official",
+    description: "AI agent framework with extensive prompt templates for issue tracking, code review, and workflow automation.",
+    owner: "mastra-ai",
+    trustTier: "community",
+    importCoverage: "high",
+    focuses: ["ai", "agents", "prompts", "automation"],
+  },
+  {
+    id: "z3prover-z3",
+    name: "Z3 Theorem Prover",
+    repoUrl: "https://github.com/Z3Prover/z3.git",
+    defaultBranch: "master",
+    description: "Z3 SMT solver agent profiles for formal verification and constraint solving workflows.",
+    owner: "Z3Prover",
+    trustTier: "community",
+    importCoverage: "low",
+    focuses: ["formal-verification", "smt", "solver", "c++"],
+  },
+  {
+    id: "likec4-likec4",
+    name: "LikeC4",
+    repoUrl: "https://github.com/likec4/likec4.git",
+    defaultBranch: "main",
+    description: "Architecture-as-code tool with agents for diagram generation and architecture documentation.",
+    owner: "likec4",
+    trustTier: "community",
     importCoverage: "medium",
-    focuses: ["vscode", "python", "extension", "maintainer"],
+    focuses: ["architecture", "diagrams", "documentation", "c4"],
+  },
+  {
+    id: "canonical-copilot-collections",
+    name: "Canonical Copilot Collections",
+    repoUrl: "https://github.com/canonical/copilot-collections.git",
+    defaultBranch: "main",
+    description: "Canonical's curated collection of Copilot agent definitions for Ubuntu and open-source development.",
+    owner: "canonical",
+    trustTier: "community",
+    importCoverage: "high",
+    focuses: ["ubuntu", "linux", "open-source", "devops"],
+  },
+  {
+    id: "playwright-mcp-prompts",
+    name: "Playwright MCP Prompts",
+    repoUrl: "https://github.com/debs-obrien/playwright-mcp-prompts.git",
+    defaultBranch: "main",
+    description: "Prompt templates for Playwright end-to-end testing, page objects, and test generation.",
+    owner: "debs-obrien",
+    trustTier: "community",
+    importCoverage: "high",
+    focuses: ["playwright", "testing", "e2e", "automation"],
+  },
+  {
+    id: "copilot-prompts-collection",
+    name: "GitHub Copilot Prompts",
+    repoUrl: "https://github.com/raffertyuy/github-copilot-prompts.git",
+    defaultBranch: "main",
+    description: "Curated collection of GitHub Copilot prompt files for code review, refactoring, and documentation.",
+    owner: "raffertyuy",
+    trustTier: "community",
+    importCoverage: "high",
+    focuses: ["prompts", "code-review", "refactoring", "docs"],
+  },
+  {
+    id: "copilot-kit",
+    name: "Copilot Kit",
+    repoUrl: "https://github.com/TheSethRose/Copilot-Kit.git",
+    defaultBranch: "main",
+    description: "Comprehensive Copilot customization kit with agent profiles, skills, and prompt templates.",
+    owner: "TheSethRose",
+    trustTier: "community",
+    importCoverage: "high",
+    focuses: ["copilot", "agents", "skills", "prompts"],
+  },
+  {
+    id: "dataplat-dbatools",
+    name: "dbatools",
+    repoUrl: "https://github.com/dataplat/dbatools.git",
+    defaultBranch: "development",
+    description: "SQL Server and database administration prompts for DBA workflows and automation.",
+    owner: "dataplat",
+    trustTier: "community",
+    importCoverage: "medium",
+    focuses: ["sql-server", "database", "powershell", "administration"],
+  },
+  {
+    id: "quran-frontend",
+    name: "Quran.com Frontend",
+    repoUrl: "https://github.com/quran/quran.com-frontend-next.git",
+    defaultBranch: "master",
+    description: "Next.js frontend agent profiles and prompts for internationalized web application development.",
+    owner: "quran",
+    trustTier: "community",
+    importCoverage: "medium",
+    focuses: ["nextjs", "react", "i18n", "frontend"],
+  },
+  {
+    id: "finops-focus-spec",
+    name: "FinOps FOCUS Spec",
+    repoUrl: "https://github.com/FinOps-Open-Cost-and-Usage-Spec/FOCUS_Spec.git",
+    defaultBranch: "working_draft",
+    description: "FinOps specification prompts for cloud cost management and financial operations workflows.",
+    owner: "FinOps-Open-Cost-and-Usage-Spec",
+    trustTier: "community",
+    importCoverage: "medium",
+    focuses: ["finops", "cloud-costs", "specification", "governance"],
   },
 ]);
 
@@ -1335,12 +1559,14 @@ function inferImportedEntryKind(relPath = "", fileName = "", attrs = {}) {
   if (
     fileLower === "skill.md"
     || /\.skill\.md$/i.test(fileLower)
-
+    || /\/\.github\/skills\//i.test(pathLower)
+    || /\/\.github\/plugins\/.*\/skills\//i.test(pathLower)
   ) return "skill";
   if (
     /\.prompt\.md$/i.test(fileLower)
     || /\/prompts\//i.test(pathLower)
     || /\/\.github\/prompts\//i.test(pathLower)
+    || fileLower === "copilot-instructions.md"
   ) return "prompt";
   return null;
 }
@@ -1671,18 +1897,116 @@ export function syncAutoDiscoveredLibraryEntries(rootDir) {
   };
 }
 
+export function scanRepositoryForImport(options = {}) {
+  const sourceId = String(options?.sourceId || "").trim().toLowerCase();
+  const known = WELL_KNOWN_AGENT_SOURCES.find((source) => source.id === sourceId) || null;
+  const repoUrl = String(options?.repoUrl || known?.repoUrl || "").trim();
+  if (!repoUrl) throw new Error("Repository URL or source is required");
+
+  const branch = String(options?.branch || known?.defaultBranch || "main").trim() || "main";
+  if (!isSafeGitRepositorySource(repoUrl)) {
+    throw new Error("URL must be a valid http(s), ssh, or git repository address");
+  }
+  if (!isSafeGitRefName(branch)) {
+    throw new Error("Branch name contains invalid characters");
+  }
+  const maxEntries = Math.max(
+    1,
+    Math.min(
+      500,
+      Number.parseInt(String(options?.maxEntries ?? "200"), 10) || 200,
+    ),
+  );
+
+  const cacheRoot = ensureDir(resolve(getBosunHomeDir(), ".bosun", ".cache", "imports"));
+  const checkoutDir = resolve(cacheRoot, `scan-${Date.now()}-${Math.random().toString(16).slice(2, 8)}`);
+  ensureDir(checkoutDir);
+
+  const clone = spawnSync("git", ["clone", "--depth", "1", "--branch", branch, "--", repoUrl, checkoutDir], {
+    encoding: "utf8",
+    stdio: ["ignore", "pipe", "pipe"],
+    timeout: 120_000,
+  });
+  if (clone.status !== 0) {
+    rmSync(checkoutDir, { recursive: true, force: true });
+    const stderr = String(clone.stderr || "").trim();
+    if (/repository not found/i.test(stderr)) {
+      throw new Error(`Repository not found: ${repoUrl}`);
+    }
+    if (/could not read from remote/i.test(stderr)) {
+      throw new Error(`Cannot access repository (may be private or require authentication): ${repoUrl}`);
+    }
+    if (/not found in upstream/i.test(stderr) || /remote branch.*not found/i.test(stderr)) {
+      throw new Error(`Branch "${branch}" not found in ${repoUrl}`);
+    }
+    if (clone.signal === "SIGTERM") {
+      throw new Error(`Clone timed out — repository may be too large: ${repoUrl}`);
+    }
+    throw new Error(`Failed to clone repository: ${stderr || "unknown error"}`);
+  }
+
+  try {
+    const files = walkFilesRecursive(checkoutDir);
+    const candidates = files
+      .filter((fullPath) => /\.md$/i.test(fullPath))
+      .map((fullPath) => {
+        const relPath = fullPath.slice(checkoutDir.length + 1).replace(/\\/g, "/");
+        const fileName = basename(fullPath);
+        let parsed = { attrs: {}, body: "" };
+        try {
+          const raw = readFileSync(fullPath, "utf8");
+          parsed = parseSimpleFrontmatter(raw);
+        } catch { /* skip unreadable */ }
+        const kind = inferImportedEntryKind(relPath, fileName, parsed.attrs);
+        if (!kind) return null;
+        const fileStem = basename(fileName, ".md");
+        const relSegments = relPath.split(/[\\/]/).filter(Boolean);
+        const parentSegment = relSegments.length > 1 ? relSegments[relSegments.length - 2] : "";
+        const fallbackNameBase = fileStem.toLowerCase() === "skill" && parentSegment ? parentSegment : fileStem;
+        const fallbackName = fallbackNameBase.replace(/\.agent$/i, "").replace(/\.skill$/i, "").replace(/\.prompt$/i, "");
+        const name = String(getFrontmatterValue(parsed.attrs, ["name", "title"]) || fallbackName.replace(/[-_.]+/g, " ")).trim();
+        const description = normalizeImportedDescription(getFrontmatterValue(parsed.attrs, ["description", "summary"]), parsed.body);
+        return { relPath, fileName, kind, name, description, selected: true };
+      })
+      .filter(Boolean)
+      .sort((a, b) => {
+        const rank = { agent: 0, prompt: 1, skill: 2 };
+        const aRank = Number(rank[a.kind] ?? 99);
+        const bRank = Number(rank[b.kind] ?? 99);
+        if (aRank !== bRank) return aRank - bRank;
+        return String(a.relPath || "").localeCompare(String(b.relPath || ""));
+      })
+      .slice(0, maxEntries);
+
+    const byType = { agent: 0, prompt: 0, skill: 0 };
+    for (const c of candidates) byType[c.kind] = (byType[c.kind] || 0) + 1;
+
+    return {
+      ok: true,
+      source: known ? { id: known.id, name: known.name } : { id: sourceId || "custom", name: repoUrl },
+      repoUrl,
+      branch,
+      totalCandidates: candidates.length,
+      candidatesByType: byType,
+      candidates,
+    };
+  } finally {
+    rmSync(checkoutDir, { recursive: true, force: true });
+  }
+}
+
 export function importAgentProfilesFromRepository(rootDir, options = {}) {
   const sourceId = String(options?.sourceId || "").trim().toLowerCase();
   const known = WELL_KNOWN_AGENT_SOURCES.find((source) => source.id === sourceId) || null;
   const repoUrl = String(options?.repoUrl || known?.repoUrl || "").trim();
-  if (!repoUrl) throw new Error("repoUrl or sourceId is required");
+  if (!repoUrl) throw new Error("Repository URL or source is required");
 
   const branch = String(options?.branch || known?.defaultBranch || "main").trim() || "main";
   if (!isSafeGitRepositorySource(repoUrl)) {
-    throw new Error("repoUrl must be a valid http(s)/ssh git repository URL");
+    throw new Error("URL must be a valid http(s), ssh, or git repository address");
   }
   if (!isSafeGitRefName(branch)) {
-    throw new Error("branch contains unsafe characters");
+    throw new Error("Branch name contains invalid characters");
   }
   const maxProfiles = Math.max(
     1,
@@ -1695,6 +2019,7 @@ export function importAgentProfilesFromRepository(rootDir, options = {}) {
   const importSkills = options?.importSkills !== false;
   const importPrompts = options?.importPrompts !== false;
   const importTools = options?.importTools !== false;
+  const includeEntries = Array.isArray(options?.includeEntries) ? new Set(options.includeEntries.map((e) => String(e || "").trim()).filter(Boolean)) : null;
 
   const cacheRoot = ensureDir(resolve(rootDir || getBosunHomeDir(), ".bosun", ".cache", "imports"));
   const checkoutDir = resolve(cacheRoot, `import-${Date.now()}-${Math.random().toString(16).slice(2, 8)}`);
@@ -1703,10 +2028,24 @@ export function importAgentProfilesFromRepository(rootDir, options = {}) {
   const clone = spawnSync("git", ["clone", "--depth", "1", "--branch", branch, "--", repoUrl, checkoutDir], {
     encoding: "utf8",
     stdio: ["ignore", "pipe", "pipe"],
+    timeout: 120_000,
   });
   if (clone.status !== 0) {
     rmSync(checkoutDir, { recursive: true, force: true });
-    throw new Error(String(clone.stderr || clone.stdout || "git clone failed").trim());
+    const stderr = String(clone.stderr || "").trim();
+    if (/repository not found/i.test(stderr)) {
+      throw new Error(`Repository not found: ${repoUrl}`);
+    }
+    if (/could not read from remote/i.test(stderr)) {
+      throw new Error(`Cannot access repository (may be private or require authentication): ${repoUrl}`);
+    }
+    if (/not found in upstream/i.test(stderr) || /remote branch.*not found/i.test(stderr)) {
+      throw new Error(`Branch "${branch}" not found in ${repoUrl}`);
+    }
+    if (clone.signal === "SIGTERM") {
+      throw new Error(`Clone timed out — repository may be too large: ${repoUrl}`);
+    }
+    throw new Error(`Failed to clone repository: ${stderr || "unknown error"}`);
   }
 
   const files = walkFilesRecursive(checkoutDir);
@@ -1749,6 +2088,7 @@ export function importAgentProfilesFromRepository(rootDir, options = {}) {
   try {
     for (const candidate of candidates) {
       const { attrs, body, relPath, fileName, kind } = candidate;
+      if (includeEntries && !includeEntries.has(relPath)) continue;
       const fileStem = basename(fileName, ".md");
       const relSegments = relPath.split(/[\\/]/).filter(Boolean);
       const parentSegment = relSegments.length > 1 ? relSegments[relSegments.length - 2] : "";

@@ -822,7 +822,7 @@ const MAX_IDLE_CONTINUES = 5;
 const WATCHDOG_WARMUP_MS = 5 * 60_000; // 5 minutes warmup
 const SHARED_STATE_ENABLED = process.env.SHARED_STATE_ENABLED !== "false";
 const SHARED_STATE_STALE_THRESHOLD_MS =
-  Number(process.env.SHARED_STATE_STALE_THRESHOLD_MS) || 300_000;
+  Number(process.env.SHARED_STATE_STALE_THRESHOLD_MS) || 600_000;
 const NO_COMMIT_STATE_FILE = resolve(
   dirname(fileURLToPath(import.meta.url)),
   "..",
@@ -3900,9 +3900,12 @@ class TaskExecutor {
           const ownerId = sharedState?.ownerId || null;
           const heartbeat =
             sharedState?.ownerHeartbeat || sharedState?.heartbeat || null;
+          // Any non-stale owner (workflow run or executor instance) should
+          // block recovery re-dispatch. Removing the ownerId !== instanceId
+          // guard ensures workflow-owned tasks (wf-<uuid> owners) are also
+          // protected when action.claim_task IS used.
           if (
             ownerId &&
-            ownerId !== this._instanceId &&
             !isSharedHeartbeatStale(heartbeat, SHARED_STATE_STALE_THRESHOLD_MS)
           ) {
             skippedForActiveClaim++;
@@ -3977,6 +3980,43 @@ class TaskExecutor {
       }
       const isFreshEnough =
         ageMs === 0 || ageMs <= INPROGRESS_RECOVERY_MAX_AGE_MS;
+
+      // In workflow-owned mode, calling executeTask() fires task.assigned
+      // which launches a new workflow run. If one already exists (evidenced by
+      // an alive agent thread), that creates two competing runs → owner_mismatch.
+      // trigger.task_assigned workflows don't call action.claim_task, so ownerId
+      // is null and the shared-state guard above cannot protect against this.
+      // • Active thread → workflow is still managing it; leave it alone.
+      // • No active thread but fresh → agent died; reset to todo so
+      //   trigger.task_available re-dispatches cleanly, without double-dispatch.
+      if (this.workflowOwnsTaskLifecycle) {
+        if (hasThread) {
+          skippedForActiveClaim++;
+          continue;
+        }
+        if (isFreshEnough) {
+          try {
+            await transitionTaskStatus(id, "todo", {
+              source: "task-executor-recovery-workflow-owned",
+            });
+          } catch {
+            /* best effort */
+          }
+          try {
+            transitionInternalTaskStatus(
+              id,
+              "todo",
+              "task-executor-recovery-workflow-owned",
+            );
+          } catch {
+            /* best effort */
+          }
+          this._removeRuntimeSlot(id);
+          resetToTodo++;
+          continue;
+        }
+      }
+
       if (hasThread || isFreshEnough) {
         if (!internalTask) {
           try {

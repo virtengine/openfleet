@@ -176,7 +176,7 @@ const ALLOWED_STATE_TRANSITIONS = Object.freeze({
   backlog: new Set(["inprogress", "cancelled", "blocked"]),
   inprogress: new Set(["paused", "inreview", "done", "blocked", "cancelled", "backlog"]),
   paused: new Set(["inprogress", "cancelled", "blocked", "backlog"]),
-  inreview: new Set(["inprogress", "done", "blocked", "cancelled", "paused"]),
+  inreview: new Set(["todo", "inprogress", "done", "blocked", "cancelled", "paused"]),
   done: new Set([]),
   cancelled: new Set([]),
   blocked: new Set(["backlog", "inprogress", "cancelled", "paused"]),

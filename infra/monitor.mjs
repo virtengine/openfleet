@@ -1,5 +1,5 @@
 import { execSync, spawn, spawnSync } from "node:child_process";
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import {
   existsSync,
   mkdirSync,
@@ -381,6 +381,36 @@ function parseEnvInteger(value, defaultValue, { min = null, max = null } = {}) {
   return parsed;
 }
 
+const DEFAULT_AGENT_ENDPOINT_PORT = 18432;
+const REPO_SCOPED_AGENT_ENDPOINT_PORT_WINDOW = 2048;
+
+function deriveRepoScopedAgentEndpointPort(repoRoot) {
+  const normalizedRoot = resolve(String(repoRoot || process.cwd()))
+    .replace(/\\/g, "/")
+    .toLowerCase();
+  const digest = createHash("sha1").update(normalizedRoot, "utf8").digest();
+  const offset = ((digest[0] << 8) | digest[1]) % REPO_SCOPED_AGENT_ENDPOINT_PORT_WINDOW;
+  return DEFAULT_AGENT_ENDPOINT_PORT + offset;
+}
+
+function resolveMonitorAgentEndpointPort(repoRoot) {
+  const explicit = parseEnvInteger(
+    process.env.AGENT_ENDPOINT_PORT ?? process.env.BOSUN_AGENT_ENDPOINT_PORT,
+    Number.NaN,
+    { min: 1, max: 65535 },
+  );
+  if (Number.isFinite(explicit)) return explicit;
+  return deriveRepoScopedAgentEndpointPort(repoRoot);
+}
+
+function syncAgentEndpointPortEnv(port) {
+  const normalized = Number(port);
+  if (!Number.isInteger(normalized) || normalized <= 0 || normalized > 65535) return;
+  const value = String(normalized);
+  process.env.BOSUN_AGENT_ENDPOINT_PORT = value;
+  process.env.AGENT_ENDPOINT_PORT = value;
+}
+
 let workflowAutomationEnabled = false;
 let workflowEventDedupWindowMs = 15_000;
 const workflowEventDedup = new Map();
@@ -568,7 +598,11 @@ async function ensureWorkflowAutomationEngine() {
         anomalyDetector: anomalyDetector || null,
       };
 
-      const engine = getWorkflowEngine({ services });
+      const engine = getWorkflowEngine({
+        services,
+        workflowDir: resolve(repoRoot, ".bosun", "workflows"),
+        runsDir: resolve(repoRoot, ".bosun", "workflow-runs"),
+      });
 
       const configuredWorkflowProfile =
         config?.workflowDefaults && typeof config.workflowDefaults === "object"
@@ -2136,6 +2170,7 @@ const SELF_RESTART_FORCE_ACTIVE_SLOT_MIN_AGE_MS = Math.max(
 );
 let selfWatcher = null;
 let selfWatcherLib = null;
+let selfWatcherExtra = []; // watchers for sibling source dirs (task/, workspace/, etc.)
 let selfWatcherDebounce = null;
 let selfRestartTimer = null;
 let selfRestartLastChangeAt = 0;
@@ -4322,7 +4357,7 @@ async function getAttemptInfo(attemptId) {
 }
 
 function ghAvailable() {
-  const res = spawnSync("gh", ["--version"], { stdio: "ignore" });
+  const res = spawnSync("gh", ["--version"], { stdio: "ignore", timeout: 8000 });
   return res.status === 0;
 }
 
@@ -4399,7 +4434,7 @@ async function findExistingPrForBranchInRepo(branch, repoOverride = "") {
   const res = spawnSync(
     "gh",
     args,
-    { encoding: "utf8" },
+    { encoding: "utf8", timeout: 15000 },
   );
   if (res.status !== 0) {
     return null;
@@ -4430,14 +4465,22 @@ async function findExistingPrForBranchApiInRepo(branch, repoOverride = "") {
     head,
   )}`;
   try {
-    const res = await fetch(url, {
-      headers: {
-        Authorization: `Bearer ${githubToken}`,
-        Accept: "application/vnd.github+json",
-        "X-GitHub-Api-Version": "2022-11-28",
-        "User-Agent": "bosun",
-      },
-    });
+    const abort = new AbortController();
+    const abortTimer = setTimeout(() => abort.abort(), 15000);
+    let res;
+    try {
+      res = await fetch(url, {
+        headers: {
+          Authorization: `Bearer ${githubToken}`,
+          Accept: "application/vnd.github+json",
+          "X-GitHub-Api-Version": "2022-11-28",
+          "User-Agent": "bosun",
+        },
+        signal: abort.signal,
+      });
+    } finally {
+      clearTimeout(abortTimer);
+    }
     if (!res || !res.ok) {
       const text = res ? await res.text().catch(() => "") : "";
       const status = res?.status || "no response";
@@ -4473,7 +4516,7 @@ async function getPullRequestByNumber(prNumber, repoOverride = "") {
     const res = spawnSync(
       "gh",
       args,
-      { encoding: "utf8" },
+      { encoding: "utf8", timeout: 15000 },
     );
     if (res.status === 0) {
       try {
@@ -4488,14 +4531,22 @@ async function getPullRequestByNumber(prNumber, repoOverride = "") {
   if (!owner || !repo) return null;
   const url = `https://api.github.com/repos/${owner}/${repo}/pulls/${prNumber}`;
   try {
-    const res = await fetch(url, {
-      headers: {
-        Authorization: `Bearer ${githubToken}`,
-        Accept: "application/vnd.github+json",
-        "X-GitHub-Api-Version": "2022-11-28",
-        "User-Agent": "bosun",
-      },
-    });
+    const abort = new AbortController();
+    const abortTimer = setTimeout(() => abort.abort(), 15000);
+    let res;
+    try {
+      res = await fetch(url, {
+        headers: {
+          Authorization: `Bearer ${githubToken}`,
+          Accept: "application/vnd.github+json",
+          "X-GitHub-Api-Version": "2022-11-28",
+          "User-Agent": "bosun",
+        },
+        signal: abort.signal,
+      });
+    } finally {
+      clearTimeout(abortTimer);
+    }
     if (!res || !res.ok) {
       const text = res ? await res.text().catch(() => "") : "";
       const status = res?.status || "no response";
@@ -6084,14 +6135,25 @@ loadRecoveryCache();
  */
 async function checkMergedPRsAndUpdateTasks() {
   if (workflowTaskReconcileInFlight) {
-    return {
-      checked: 0,
-      movedDone: 0,
-      movedReview: 0,
-      movedTodo: 0,
-      skippedByWorkflowReplacement: false,
-      skippedReason: "already_running",
-    };
+    // Safety release: if the in-flight flag has been stuck for >2 minutes (e.g.
+    // due to a hung fetch/spawnSync that resolved but the finally never ran),
+    // force-release it so reconcile can run again.
+    const staleMs = Date.now() - workflowTaskReconcileLastAt;
+    if (staleMs > 2 * 60 * 1000) {
+      console.warn(
+        `[monitor] review reconcile: in-flight flag stale (${staleMs}ms) — force releasing`,
+      );
+      workflowTaskReconcileInFlight = false;
+    } else {
+      return {
+        checked: 0,
+        movedDone: 0,
+        movedReview: 0,
+        movedTodo: 0,
+        skippedByWorkflowReplacement: false,
+        skippedReason: "already_running",
+      };
+    }
   }
   const now = Date.now();
   if (
@@ -12827,6 +12889,10 @@ function stopSelfWatcher() {
     selfWatcherLib.close();
     selfWatcherLib = null;
   }
+  for (const w of selfWatcherExtra) {
+    try { w.close(); } catch {}
+  }
+  selfWatcherExtra = [];
   if (selfWatcherDebounce) {
     clearTimeout(selfWatcherDebounce);
     selfWatcherDebounce = null;
@@ -13184,10 +13250,21 @@ function startSelfWatcher() {
     const libDir = resolve(__dirname, "lib");
     if (existsSync(libDir)) {
       selfWatcherLib = watch(libDir, { persistent: true }, handleSourceChange);
-      console.log("[monitor] watching own source files (root + lib/) for self-restart");
-    } else {
-      console.log("[monitor] watching own source files for self-restart");
     }
+    // Watch sibling source directories that contain runtime-critical modules
+    const repoRoot = resolve(__dirname, "..");
+    const siblingDirs = ["task", "workspace", "workflow", "workflow-templates", "agent", "shell", "kanban", "github", "config"];
+    const watchedDirs = ["infra/", "infra/lib/"];
+    for (const dir of siblingDirs) {
+      const dirPath = resolve(repoRoot, dir);
+      if (existsSync(dirPath)) {
+        try {
+          selfWatcherExtra.push(watch(dirPath, { persistent: true }, handleSourceChange));
+          watchedDirs.push(`${dir}/`);
+        } catch {}
+      }
+    }
+    console.log(`[monitor] watching source files for self-restart: ${watchedDirs.join(", ")}`);
   } catch (err) {
     console.warn(`[monitor] self-watcher failed: ${err.message}`);
   }
@@ -14665,11 +14742,6 @@ if (isExecutorDisabled()) {
     };
     internalTaskExecutor = getTaskExecutor(execOpts);
     internalTaskExecutor.start();
-    if (workflowOwnsTaskExecutorLifecycle) {
-      void pollWorkflowSchedulesOnce("startup").catch((err) => {
-        console.warn(`[workflows] startup poll error: ${err?.message || err}`);
-      });
-    }
 
     // Write executor slots to status file every 30s for Telegram /tasks
     startStatusFileWriter(30000);
@@ -14679,8 +14751,14 @@ if (isExecutorDisabled()) {
 
     // ── Agent Endpoint ──
     try {
+      const requestedAgentEndpointPort = resolveMonitorAgentEndpointPort(repoRoot);
+      syncAgentEndpointPortEnv(requestedAgentEndpointPort);
       agentEndpoint = createAgentEndpoint({
-        port: Number(process.env.AGENT_ENDPOINT_PORT || 18432),
+        port: requestedAgentEndpointPort,
+        allowConflictKill: parseEnvBoolean(
+          process.env.BOSUN_AGENT_ENDPOINT_REAP_CONFLICTS,
+          false,
+        ),
         taskStore: {
           listTasks: (_projectId, { status } = {}) => {
             const normalized = String(status || "")
@@ -14788,20 +14866,17 @@ if (isExecutorDisabled()) {
           }
         },
       });
-      agentEndpoint
-        .start()
-        .then(() => {
-          console.log("[monitor] agent endpoint started");
-        })
-        .catch((err) => {
-          console.warn(
-            `[monitor] agent endpoint failed to start: ${err.message}`,
-          );
-          agentEndpoint = null;
-        });
+      await agentEndpoint.start();
+      syncAgentEndpointPortEnv(agentEndpoint.getPort());
+      console.log(`[monitor] agent endpoint started on port ${agentEndpoint.getPort()}`);
     } catch (err) {
       console.warn(`[monitor] agent endpoint creation failed: ${err.message}`);
       agentEndpoint = null;
+    }
+    if (workflowOwnsTaskExecutorLifecycle) {
+      void pollWorkflowSchedulesOnce("startup").catch((err) => {
+        console.warn(`[workflows] startup poll error: ${err?.message || err}`);
+      });
     }
 
     // ── Agent Event Bus ──
@@ -15302,7 +15377,6 @@ export {
   // Workflow event bridge — for fleet/kanban modules to emit events
   queueWorkflowEvent,
 };
-
 
 
 

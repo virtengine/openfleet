@@ -40,6 +40,8 @@
  */
 
 import { resolve, dirname } from "node:path";
+import { existsSync, readFileSync } from "node:fs";
+import { homedir } from "node:os";
 import { fileURLToPath } from "node:url";
 import { loadConfig } from "../config/config.mjs";
 import { resolveRepoRoot, resolveAgentRepoRoot } from "../config/repo-root.mjs";
@@ -566,16 +568,28 @@ function hasSdkPrerequisites(name, runtimeEnv = process.env) {
   }
 
   if (name === "codex") {
-    // Codex needs an OpenAI API key (or Azure key, or profile-specific key)
+    // Codex needs an OpenAI API key (or Azure key, or profile-specific key),
+    // OR a valid ~/.codex/config.toml where an env_key reference is satisfied.
     const hasKey =
       runtimeEnv.OPENAI_API_KEY ||
       runtimeEnv.AZURE_OPENAI_API_KEY ||
       runtimeEnv.CODEX_MODEL_PROFILE_XL_API_KEY ||
       runtimeEnv.CODEX_MODEL_PROFILE_M_API_KEY;
-    if (!hasKey) {
-      return { ok: false, reason: "no API key (OPENAI_API_KEY / AZURE_OPENAI_API_KEY)" };
+    if (hasKey) return { ok: true, reason: null };
+    // Check ~/.codex/config.toml — Codex CLI SDK reads auth env_key refs from there
+    try {
+      const configToml = resolve(homedir(), ".codex", "config.toml");
+      if (existsSync(configToml)) {
+        const tomlText = readFileSync(configToml, "utf8");
+        // Extract all env_key = "VAR_NAME" entries and check if any are set
+        for (const match of tomlText.matchAll(/env_key\s*=\s*"([^"]+)"/g)) {
+          if (runtimeEnv[match[1]]) return { ok: true, reason: null };
+        }
+      }
+    } catch {
+      // best effort — fall through to failure
     }
-    return { ok: true, reason: null };
+    return { ok: false, reason: "no API key (OPENAI_API_KEY / AZURE_OPENAI_API_KEY) and no satisfied env_key in ~/.codex/config.toml" };
   }
   if (name === "copilot") {
     // Copilot auth can come from multiple sources (OAuth manager, gh auth,

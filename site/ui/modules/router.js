@@ -17,6 +17,7 @@ const tabHistory = [];
 const ROUTE_TABS = new Set([
   "dashboard",
   "tasks",
+  "benchmarks",
   "chat",
   "workflows",
   "manual-flows",
@@ -249,6 +250,7 @@ export function shouldBlockTabSwipe(target, tabId = activeTab.value) {
 export const TAB_CONFIG = [
   { id: "dashboard", label: "Pulse", icon: "grid" },
   { id: "tasks", label: "Work", icon: "check" },
+  { id: "benchmarks", label: "Bench", icon: "chart" },
   { id: "chat", label: "Chat", icon: "chat" },
   { id: "workflows", label: "Flows", icon: "workflow" },
   { id: "agents", label: "Fleet", icon: "cpu" },

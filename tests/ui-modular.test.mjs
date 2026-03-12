@@ -26,6 +26,7 @@ describe("modular mini app structure", () => {
     "components/forms.js",
     "tabs/dashboard.js",
     "tabs/tasks.js",
+    "tabs/benchmarks.js",
     "tabs/agents.js",
     "tabs/infra.js",
     "tabs/control.js",

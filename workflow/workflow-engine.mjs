@@ -1738,6 +1738,7 @@ export class WorkflowEngine extends EventEmitter {
           }
 
           ctx.setNodeStatus(nodeId, NodeStatus.RUNNING);
+          console.log(`${TAG} node:start ${nodeId} (${node.type}) [${node.label || ""}] wf=${ctx.data?._workflowName || ctx.data?._workflowId || "?"}`);
           this.emit("node:start", { nodeId, type: node.type, label: node.label });
           await this._emitTaskTraceEvent("workflow.node.start", {
             ctx,
@@ -1781,6 +1782,8 @@ export class WorkflowEngine extends EventEmitter {
               ctx.setNodeOutput(nodeId, result);
               ctx.setNodeStatus(nodeId, NodeStatus.COMPLETED);
               executed.add(nodeId);
+              const resultSuffix = node.type?.startsWith("condition.") ? ` result=${JSON.stringify(result?.result ?? result)}` : "";
+              console.log(`${TAG} node:complete ${nodeId} (${node.type}) [${node.label || ""}]${resultSuffix}`);
               this.emit("node:complete", { nodeId, type: node.type });
               await this._emitTaskTraceEvent("workflow.node.complete", {
                 ctx,
@@ -1808,6 +1811,7 @@ export class WorkflowEngine extends EventEmitter {
           ctx.error(nodeId, lastErr);
           ctx.setNodeStatus(nodeId, NodeStatus.FAILED);
           executed.add(nodeId);
+          console.warn(`${TAG} node:FAILED ${nodeId} (${node.type}) [${node.label || ""}]: ${lastErr?.message || lastErr}`);
           this.emit("node:error", { nodeId, error: lastErr.message, retries: ctx.getRetryCount(nodeId) });
           await this._emitTaskTraceEvent("workflow.node.error", {
             ctx,
@@ -1989,6 +1993,8 @@ export class WorkflowEngine extends EventEmitter {
             } else {
               ctx.setNodeStatus(targetNodeId, NodeStatus.SKIPPED);
               executed.add(targetNodeId);
+              const skippedNode = nodeMap.get(targetNodeId);
+              console.log(`${TAG} node:SKIPPED ${targetNodeId} (${skippedNode?.type || "?"}) [${skippedNode?.label || ""}] — no satisfied edges`);
             }
           }
         };
@@ -2675,7 +2681,59 @@ export class WorkflowEngine extends EventEmitter {
 
       console.log(`${TAG} Resuming ${runs.length} interrupted run(s)...`);
 
+      // ── Deduplicate by taskId: keep only the most recent run per task ────
+      // After N crash/restart cycles, N run entries accumulate for the same
+      // taskId. Resuming all of them causes competing workflow runs that race
+      // to claim the task → "claim was stolen" errors on every restart.
+      // Solution: pre-scan detail files, keep latest startedAt per taskId,
+      // and mark older duplicates as not-resumable before we even try them.
+      const runDetailCache = new Map(); // runId → parsed detail
+      const latestByTaskId = new Map(); // taskId → run entry (highest startedAt)
+
       for (const run of runs) {
+        const dp = resolve(this.runsDir, `${run.runId}.json`);
+        if (!existsSync(dp)) continue;
+        try {
+          const d = JSON.parse(readFileSync(dp, "utf8"));
+          runDetailCache.set(run.runId, d);
+          const tid = d.data?.taskId || d.inputData?.taskId;
+          if (!tid) continue;
+          const prev = latestByTaskId.get(tid);
+          if (!prev || (run.startedAt || 0) >= (prev.startedAt || 0)) {
+            latestByTaskId.set(tid, run);
+          }
+        } catch {
+          /* unreadable detail — handled in the main loop below */
+        }
+      }
+
+      // Mark older duplicate runs as not-resumable before entering the loop
+      let dedupedCount = 0;
+      for (const run of runs) {
+        const d = runDetailCache.get(run.runId);
+        const tid = d?.data?.taskId || d?.inputData?.taskId;
+        if (!tid) continue;
+        const latest = latestByTaskId.get(tid);
+        if (latest && latest.runId !== run.runId) {
+          this._markRunUnresumable(run.runId, "duplicate_task_run");
+          dedupedCount++;
+        }
+      }
+      if (dedupedCount > 0) {
+        console.log(
+          `${TAG} Skipped ${dedupedCount} duplicate interrupted run(s) (kept latest per taskId)`,
+        );
+      }
+
+      for (const run of runs) {
+        // Skip runs that were marked as duplicates above
+        const _runDetail = runDetailCache.get(run.runId);
+        const _tid = _runDetail?.data?.taskId || _runDetail?.inputData?.taskId;
+        if (_tid) {
+          const latest = latestByTaskId.get(_tid);
+          if (latest && latest.runId !== run.runId) continue;
+        }
+
         try {
           // Check if the workflow definition still exists
           const def = this.get(run.workflowId);
@@ -2693,7 +2751,8 @@ export class WorkflowEngine extends EventEmitter {
             continue;
           }
 
-          const detail = JSON.parse(readFileSync(detailPath, "utf8"));
+          // Reuse cached detail if available (already parsed above)
+          const detail = runDetailCache.get(run.runId) ?? JSON.parse(readFileSync(detailPath, "utf8"));
           const nodeStatuses = detail.nodeStatuses || {};
           const hasCompletedNodes = Object.values(nodeStatuses).some(
             (s) => s === NodeStatus.COMPLETED,

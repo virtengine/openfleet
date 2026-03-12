@@ -1036,7 +1036,7 @@ describe("task-executor", () => {
 
   describe("in-progress recovery", () => {
     it("resumes fresh in-progress tasks on startup recovery", async () => {
-      const ex = new TaskExecutor({ projectId: "proj-1", maxParallel: 2 });
+      const ex = new TaskExecutor({ projectId: "proj-1", maxParallel: 2, workflowOwnsTaskLifecycle: false });
       ex._running = true;
       const executeSpy = vi
         .spyOn(ex, "executeTask")
@@ -1061,7 +1061,7 @@ describe("task-executor", () => {
     });
 
     it("moves stale in-progress tasks back to todo when no resumable thread exists", async () => {
-      const ex = new TaskExecutor({ projectId: "proj-1", maxParallel: 2 });
+      const ex = new TaskExecutor({ projectId: "proj-1", maxParallel: 2, workflowOwnsTaskLifecycle: false });
       ex._running = true;
       const executeSpy = vi
         .spyOn(ex, "executeTask")
@@ -1089,7 +1089,7 @@ describe("task-executor", () => {
     });
 
     it("resets unstarted in-progress tasks beyond slot capacity so backlog can flow", async () => {
-      const ex = new TaskExecutor({ projectId: "proj-1", maxParallel: 1 });
+      const ex = new TaskExecutor({ projectId: "proj-1", maxParallel: 1, workflowOwnsTaskLifecycle: false });
       ex._running = true;
       const executeSpy = vi
         .spyOn(ex, "executeTask")
@@ -1169,7 +1169,7 @@ describe("task-executor", () => {
     });
 
     it("still resumes in-progress tasks when no-commit count is below block threshold", async () => {
-      const ex = new TaskExecutor({ projectId: "proj-1", maxParallel: 2 });
+      const ex = new TaskExecutor({ projectId: "proj-1", maxParallel: 2, workflowOwnsTaskLifecycle: false });
       ex._running = true;
       ex._noCommitCounts.set("resume-2", 2);
       const executeSpy = vi

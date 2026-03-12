@@ -228,17 +228,25 @@ export class AgentEndpoint {
   /**
    * @param {object} options
    * @param {number}   [options.port]            — Listen port (default: env or 18432)
+   * @param {boolean}  [options.allowConflictKill] — Allow forced cleanup of conflicting listeners
    * @param {object}   [options.taskStore]        — Task store instance (kanban adapter)
    * @param {Function} [options.onTaskComplete]   — (taskId, data) => void
    * @param {Function} [options.onTaskError]      — (taskId, data) => void
    * @param {Function} [options.onStatusChange]   — (taskId, newStatus, source) => void
    */
   constructor(options = {}) {
-    this._port =
-      options.port ||
-      (process.env.AGENT_ENDPOINT_PORT
+    const configuredPort =
+      options.port ??
+      (process.env.AGENT_ENDPOINT_PORT != null
         ? Number(process.env.AGENT_ENDPOINT_PORT)
-        : DEFAULT_PORT);
+        : process.env.BOSUN_AGENT_ENDPOINT_PORT != null
+          ? Number(process.env.BOSUN_AGENT_ENDPOINT_PORT)
+          : DEFAULT_PORT);
+    this._port =
+      Number.isInteger(configuredPort) && configuredPort > 0 && configuredPort <= 65535
+        ? configuredPort
+        : DEFAULT_PORT;
+    this._allowConflictKill = options.allowConflictKill === true;
     this._taskStore = options.taskStore || null;
     this._onTaskComplete = options.onTaskComplete || null;
     this._onTaskError = options.onTaskError || null;
@@ -274,6 +282,12 @@ export class AgentEndpoint {
       } catch (err) {
         lastErr = err;
         if (err.code === "EADDRINUSE") {
+          if (!this._allowConflictKill) {
+            console.warn(
+              `${TAG} Port ${port} in use (attempt ${attempt + 1}/${MAX_PORT_RETRIES}), skipping forced kill and trying next port`,
+            );
+            continue;
+          }
           const deniedAt = accessDeniedPorts.get(port);
           const nowMs = Date.now();
           if (deniedAt && nowMs - deniedAt < ACCESS_DENIED_COOLDOWN_MS) {

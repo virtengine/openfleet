@@ -52,6 +52,7 @@ import {
 } from "../infra/presence.mjs";
 import {
   claimTaskInSharedState,
+  forceClaimTaskInSharedState,
   renewSharedStateHeartbeat,
   releaseSharedState,
 } from "../workspace/shared-state-manager.mjs";
@@ -109,9 +110,20 @@ function withRegistryLock(fn) {
   _registryLockChain = next.catch(() => {});
   return next;
 }
-function isFatalSharedClaimConflict(reason) {
+function normalizeSharedClaimConflictReason(reason) {
   const normalized = String(reason || "").trim().toLowerCase();
-  if (!normalized) return false;
+  if (normalized.startsWith("conflict:")) {
+    return normalized.slice("conflict:".length).trim();
+  }
+  return normalized;
+}
+
+function isFatalSharedClaimConflict(reason, { treatWrappedAsFatal = true } = {}) {
+  const raw = String(reason || "").trim().toLowerCase();
+  if (!raw) return false;
+  // For a first-claim or conflict-resolution context, unwrap "conflict:" prefix and check.
+  // For a stale-override context, conflict:-prefixed reasons are non-fatal (local stale detection wins).
+  const normalized = treatWrappedAsFatal ? normalizeSharedClaimConflictReason(raw) : raw;
   if (SHARED_STATE_FATAL_CLAIM_REASONS.has(normalized)) return true;
   if (normalized.startsWith("task_ignored")) return true;
   return false;
@@ -636,6 +648,7 @@ async function _claimTaskInner(opts) {
     warningLabel,
     successLabel,
     rollbackClaim = null,
+    isStaleOverride = false,
   }) => {
     if (!SHARED_STATE_ENABLED) return { success: true };
 
@@ -651,7 +664,8 @@ async function _claimTaskInner(opts) {
         const reason = sharedResult.reason || "shared_state_claim_failed";
         console.info(`[task-claims] ${warningLabel} for ${taskId}: ${reason}`);
 
-        if (isFatalSharedClaimConflict(reason)) {
+        if (isFatalSharedClaimConflict(reason, { treatWrappedAsFatal: !isStaleOverride })) {
+          const normalizedReason = normalizeSharedClaimConflictReason(reason) || reason;
           if (rollbackClaim) {
             registry.claims[taskId] = rollbackClaim;
           } else {
@@ -663,10 +677,31 @@ async function _claimTaskInner(opts) {
             task_id: taskId,
             instance_id: instanceId,
             claim_token: claimToken,
-            rollback_reason: reason,
+            rollback_reason: normalizedReason,
             rollback_to_instance: rollbackClaim?.instance_id || null,
           });
-          return { success: false, error: reason };
+          return { success: false, error: normalizedReason };
+        }
+
+        // Non-fatal rejection on stale override: force-update the shared state
+        // so heartbeat renewals match the actual (local) owner.
+        if (isStaleOverride) {
+          try {
+            const forceResult = await forceClaimTaskInSharedState(
+              taskId,
+              instanceId,
+              claimToken,
+              Math.floor(SHARED_STATE_STALE_THRESHOLD_MS / 1000),
+              state.repoRoot,
+            );
+            if (forceResult.success) {
+              console.info(`[task-claims] Shared state force-claimed after stale override for ${taskId}`);
+            } else {
+              console.warn(`[task-claims] Shared state force-claim failed for ${taskId}: ${forceResult.reason}`);
+            }
+          } catch (forceErr) {
+            console.warn(`[task-claims] Shared state force-claim error for ${taskId}: ${forceErr.message}`);
+          }
         }
 
         return { success: true };
@@ -728,6 +763,7 @@ async function _claimTaskInner(opts) {
       warningLabel: "Shared state override warning",
       successLabel: "Shared state synced after override",
       rollbackClaim: null,
+      isStaleOverride: true,
     });
     if (!sharedSync.success) {
       return { success: false, error: sharedSync.error };
@@ -876,7 +912,8 @@ async function _releaseTaskInner(opts) {
         claim.claim_token,
         force ? "abandoned" : "complete",
         force ? "Force released by user" : undefined,
-        state.repoRoot
+        state.repoRoot,
+        { ownerId: claim.instance_id },
       );
       if (!sharedResult.success) {
         console.info(`[task-claims] Shared state release warning for ${taskId}: ${sharedResult.reason}`);
@@ -1105,7 +1142,6 @@ export const _test = {
   retryFsOperation,
   isRetriableFsError,
 };
-
 
 
 
