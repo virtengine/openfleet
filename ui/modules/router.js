@@ -250,7 +250,6 @@ export function shouldBlockTabSwipe(target, tabId = activeTab.value) {
 export const TAB_CONFIG = [
   { id: "dashboard", label: "Pulse", icon: "grid" },
   { id: "tasks", label: "Work", icon: "check" },
-  { id: "benchmarks", label: "Bench", icon: "chart" },
   { id: "chat", label: "Chat", icon: "chat" },
   { id: "workflows", label: "Flows", icon: "workflow" },
   { id: "agents", label: "Fleet", icon: "cpu" },
@@ -261,6 +260,7 @@ export const TAB_CONFIG = [
   { id: "library", label: "Library", icon: "book" },
   { id: "manual-flows", label: "Run Flows", icon: "zap" },
   { id: "telemetry", label: "Telemetry", icon: "chart" },
+  { id: "benchmarks", label: "Bench", icon: "chart" },
   { id: "settings", label: "Settings", icon: "settings" },
 ];
 
