@@ -1738,7 +1738,7 @@ export class WorkflowEngine extends EventEmitter {
           }
 
           ctx.setNodeStatus(nodeId, NodeStatus.RUNNING);
-          console.info(`${TAG} node:start ${nodeId} (${node.type}) [${node.label || ""}] wf=${ctx.data?._workflowName || ctx.data?._workflowId || "?"}`);
+          console.log(`${TAG} node:start ${nodeId} (${node.type}) [${node.label || ""}] wf=${ctx.data?._workflowName || ctx.data?._workflowId || "?"}`);
           this.emit("node:start", { nodeId, type: node.type, label: node.label });
           await this._emitTaskTraceEvent("workflow.node.start", {
             ctx,
@@ -1782,7 +1782,8 @@ export class WorkflowEngine extends EventEmitter {
               ctx.setNodeOutput(nodeId, result);
               ctx.setNodeStatus(nodeId, NodeStatus.COMPLETED);
               executed.add(nodeId);
-              console.info(`${TAG} node:complete ${nodeId} (${node.type}) [${node.label || ""}]`);
+              const resultSuffix = node.type?.startsWith("condition.") ? ` result=${JSON.stringify(result?.result ?? result)}` : "";
+              console.log(`${TAG} node:complete ${nodeId} (${node.type}) [${node.label || ""}]${resultSuffix}`);
               this.emit("node:complete", { nodeId, type: node.type });
               await this._emitTaskTraceEvent("workflow.node.complete", {
                 ctx,
@@ -1993,7 +1994,7 @@ export class WorkflowEngine extends EventEmitter {
               ctx.setNodeStatus(targetNodeId, NodeStatus.SKIPPED);
               executed.add(targetNodeId);
               const skippedNode = nodeMap.get(targetNodeId);
-              console.info(`${TAG} node:SKIPPED ${targetNodeId} (${skippedNode?.type || "?"}) [${skippedNode?.label || ""}] — no satisfied edges`);
+              console.log(`${TAG} node:SKIPPED ${targetNodeId} (${skippedNode?.type || "?"}) [${skippedNode?.label || ""}] — no satisfied edges`);
             }
           }
         };

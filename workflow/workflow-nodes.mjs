@@ -3533,6 +3533,7 @@ registerNodeType("action.create_pr", {
     if (reviewers.length) args.push("--reviewer", reviewers.join(","));
 
     const cmd = args.join(" ");
+    console.log(`[workflow-nodes] create-pr: branch=${branch || "(empty)"} base=${base} cwd=${cwd} repo=${repoSlug || "(auto)"}`);
     ctx.log(node.id, `Creating PR: ${cmd}`);
 
     if (shouldBypassGhPrCreationForTests()) {
@@ -3579,12 +3580,15 @@ registerNodeType("action.create_pr", {
       };
     } catch (err) {
       const errorMsg = err?.stderr?.toString?.()?.trim() || err?.message || String(err);
+      console.warn(`[workflow-nodes] create-pr FAILED: ${errorMsg.substring(0, 200)} (branch=${branch || "(empty)"})`);
       ctx.log(node.id, `PR creation failed: ${errorMsg}`);
       const existingPr = findExistingPr();
       if (existingPr) {
+        console.log(`[workflow-nodes] create-pr: resolved existing PR #${existingPr.prNumber}`);
         ctx.log(node.id, `Resolved existing PR #${existingPr.prNumber}: ${existingPr.prUrl || "(url unavailable)"}`);
         return existingPr;
       }
+      console.warn(`[workflow-nodes] create-pr: no existing PR found for branch=${branch || "(empty)"}, falling back`);
       if (failOnError) {
         return { success: false, error: errorMsg, command: cmd };
       }
