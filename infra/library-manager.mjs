@@ -2217,7 +2217,7 @@ function inferImportedEntryKind(relPath = "", fileName = "", attrs = {}) {
     fileLower === "skill.md"
     || /\.skill\.md$/i.test(fileLower)
     || /\/\.github\/skills\//i.test(pathLower)
-    || /\/\.github\/plugins\/.*\/skills\//i.test(pathLower)
+    || /\/\.github\/plugins\/[^/]+\/skills\//i.test(pathLower)
   ) return "skill";
   if (
     /\.prompt\.md$/i.test(fileLower)
