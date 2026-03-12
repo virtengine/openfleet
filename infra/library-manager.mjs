@@ -1803,17 +1803,6 @@ export const WELL_KNOWN_AGENT_SOURCES = Object.freeze([
     focuses: ["sql-server", "database", "powershell", "administration"],
   },
   {
-    id: "quran-frontend",
-    name: "Quran.com Frontend",
-    repoUrl: "https://github.com/quran/quran.com-frontend-next.git",
-    defaultBranch: "master",
-    description: "Next.js frontend agent profiles and prompts for internationalized web application development.",
-    owner: "quran",
-    trustTier: "community",
-    importCoverage: "medium",
-    focuses: ["nextjs", "react", "i18n", "frontend"],
-  },
-  {
     id: "finops-focus-spec",
     name: "FinOps FOCUS Spec",
     repoUrl: "https://github.com/FinOps-Open-Cost-and-Usage-Spec/FOCUS_Spec.git",
@@ -1968,13 +1957,17 @@ export function computeWellKnownSourceTrust(source, probe = {}, options = {}) {
   }
 
   score = Math.round(clampNumber(score, 0, 100));
-  const enabled = score >= 55 && probe?.archived !== true && probe?.disabled !== true && probe?.reachable !== false && probe?.branchExists !== false;
-  const status = !enabled ? "disabled" : score >= 85 ? "healthy" : score >= 65 ? "warning" : "degraded";
+  // Hard-disable only for unreachable/archived/disabled repos — low score gets a warning but remains importable
+  const hardBlocked = probe?.archived === true || probe?.disabled === true || probe?.reachable === false || probe?.branchExists === false;
+  const enabled = !hardBlocked;
+  const lowTrust = score < 55;
+  const status = hardBlocked ? "disabled" : score >= 85 ? "healthy" : score >= 65 ? "warning" : score >= 55 ? "degraded" : "low-trust";
 
   return {
     score,
     status,
     enabled,
+    lowTrust,
     reasons: uniqueStrings(reasons),
   };
 }
@@ -2588,7 +2581,7 @@ export function scanRepositoryForImport(options = {}) {
     ),
   );
 
-  const cacheRoot = ensureDir(resolve(getBosunHomeDir(), ".bosun", ".cache", "imports"));
+  const cacheRoot = ensureDir(resolve(getBosunHomeDir(), ".cache", "imports"));
   const checkoutDir = resolve(cacheRoot, `scan-${Date.now()}-${Math.random().toString(16).slice(2, 8)}`);
   ensureDir(checkoutDir);
 
@@ -2597,22 +2590,24 @@ export function scanRepositoryForImport(options = {}) {
     stdio: ["ignore", "pipe", "pipe"],
     timeout: 120_000,
   });
-  if (clone.status !== 0) {
+  const cloneStderr = String(clone.stderr || "").trim();
+  // Treat "clone succeeded, but checkout failed" (long paths on Windows) as OK
+  const checkoutWarning = /clone succeeded.*checkout failed/i.test(cloneStderr);
+  if (clone.status !== 0 && !checkoutWarning) {
     rmSync(checkoutDir, { recursive: true, force: true });
-    const stderr = String(clone.stderr || "").trim();
-    if (/repository not found/i.test(stderr)) {
+    if (/repository not found/i.test(cloneStderr)) {
       throw new Error(`Repository not found: ${repoUrl}`);
     }
-    if (/could not read from remote/i.test(stderr)) {
+    if (/could not read from remote/i.test(cloneStderr)) {
       throw new Error(`Cannot access repository (may be private or require authentication): ${repoUrl}`);
     }
-    if (/not found in upstream/i.test(stderr) || /remote branch.*not found/i.test(stderr)) {
+    if (/not found in upstream/i.test(cloneStderr) || /remote branch.*not found/i.test(cloneStderr)) {
       throw new Error(`Branch "${branch}" not found in ${repoUrl}`);
     }
     if (clone.signal === "SIGTERM") {
       throw new Error(`Clone timed out — repository may be too large: ${repoUrl}`);
     }
-    throw new Error(`Failed to clone repository: ${stderr || "unknown error"}`);
+    throw new Error(`Failed to clone repository: ${cloneStderr || "unknown error"}`);
   }
 
   try {
@@ -2655,7 +2650,9 @@ export function scanRepositoryForImport(options = {}) {
     const mcpConfigPaths = [
       resolve(checkoutDir, ".codex", "config.toml"),
       resolve(checkoutDir, ".mcp.json"),
+      resolve(checkoutDir, "mcp.json"),
       resolve(checkoutDir, ".vscode", "mcp.json"),
+      resolve(checkoutDir, "claude_desktop_config.json"),
     ];
     for (const configPath of mcpConfigPaths) {
       if (!existsSync(configPath)) continue;
@@ -2676,7 +2673,6 @@ export function scanRepositoryForImport(options = {}) {
           byType.mcp += 1;
         }
       } else {
-        // JSON-based MCP config (.mcp.json / .vscode/mcp.json)
         const discovered = parseMcpServersFromJson(raw, relPath);
         for (const mcp of discovered) {
           candidates.push({
@@ -2685,6 +2681,69 @@ export function scanRepositoryForImport(options = {}) {
             kind: "mcp",
             name: mcp.name || mcp.id,
             description: `${mcp.transport === "stdio" ? "stdio" : "url"} MCP server${mcp.command ? ": " + mcp.command : ""}`,
+            selected: true,
+          });
+          byType.mcp += 1;
+        }
+      }
+    }
+
+    // Discover MCP servers from package.json bin entries and pyproject.toml scripts
+    const mcpSeenIds = new Set(candidates.filter((c) => c.kind === "mcp").map((c) => c.name));
+    for (const fullPath of files) {
+      const fileName = basename(fullPath);
+      if (fileName !== "package.json" && fileName !== "pyproject.toml") continue;
+      const relPath = relative(checkoutDir, fullPath).replace(/\\/g, "/");
+      // Skip root-level package.json (monorepo manifest, not an MCP server)
+      if (relPath === "package.json") continue;
+      let raw = "";
+      try { raw = readFileSync(fullPath, "utf8"); } catch { continue; }
+
+      if (fileName === "package.json") {
+        let pkg;
+        try { pkg = JSON.parse(raw); } catch { continue; }
+        if (!pkg || typeof pkg !== "object") continue;
+        const bin = pkg.bin;
+        if (!bin || typeof bin !== "object") continue;
+        const mcpBins = Object.entries(bin).filter(([k]) => /^mcp[-_]?server/i.test(k) || /^mcp-/i.test(k));
+        if (mcpBins.length === 0) continue;
+        for (const [cmd] of mcpBins) {
+          const id = slugifyIdentifier(cmd);
+          if (mcpSeenIds.has(cmd) || mcpSeenIds.has(id)) continue;
+          mcpSeenIds.add(cmd);
+          const name = String(pkg.mcpName || pkg.name || cmd).trim();
+          const desc = String(pkg.description || "").trim();
+          candidates.push({
+            relPath: `${relPath}#${cmd}`,
+            fileName,
+            kind: "mcp",
+            name: name.startsWith("@") ? cmd : name,
+            description: desc || `stdio MCP server: ${cmd}`,
+            selected: true,
+          });
+          byType.mcp += 1;
+        }
+      } else if (fileName === "pyproject.toml") {
+        // Look for [project.scripts] entries matching mcp-server-*
+        const scriptMatch = raw.match(/\[project\.scripts\]([\s\S]*?)(?:\n\[|\n$)/);
+        if (!scriptMatch) continue;
+        const scriptBlock = scriptMatch[1];
+        const scriptLines = scriptBlock.split(/\r?\n/);
+        for (const line of scriptLines) {
+          const kv = line.match(/^\s*(mcp[-_]?server[-_]?\S*)\s*=/i);
+          if (!kv) continue;
+          const cmd = kv[1].trim();
+          if (mcpSeenIds.has(cmd)) continue;
+          mcpSeenIds.add(cmd);
+          // Try to get project name/description from TOML
+          const nameMatch = raw.match(/^\s*name\s*=\s*"([^"]+)"/m);
+          const descMatch = raw.match(/^\s*description\s*=\s*"([^"]+)"/m);
+          candidates.push({
+            relPath: `${relPath}#${cmd}`,
+            fileName,
+            kind: "mcp",
+            name: nameMatch ? nameMatch[1] : cmd,
+            description: descMatch ? descMatch[1] : `stdio MCP server: ${cmd}`,
             selected: true,
           });
           byType.mcp += 1;
@@ -2757,7 +2816,7 @@ export function importAgentProfilesFromRepository(rootDir, options = {}) {
   const importTools = options?.importTools !== false;
   const includeEntries = Array.isArray(options?.includeEntries) ? new Set(options.includeEntries.map((e) => String(e || "").trim()).filter(Boolean)) : null;
 
-  const cacheRoot = ensureDir(resolve(getBosunHomeDir(), ".bosun", ".cache", "imports"));
+  const cacheRoot = ensureDir(resolve(getBosunHomeDir(), ".cache", "imports"));
   const checkoutDir = resolve(cacheRoot, `import-${Date.now()}-${Math.random().toString(16).slice(2, 8)}`);
   ensureDir(checkoutDir);
 
@@ -2766,22 +2825,23 @@ export function importAgentProfilesFromRepository(rootDir, options = {}) {
     stdio: ["ignore", "pipe", "pipe"],
     timeout: 120_000,
   });
-  if (clone.status !== 0) {
+  const cloneStderr = String(clone.stderr || "").trim();
+  const checkoutWarning = /clone succeeded.*checkout failed/i.test(cloneStderr);
+  if (clone.status !== 0 && !checkoutWarning) {
     rmSync(checkoutDir, { recursive: true, force: true });
-    const stderr = String(clone.stderr || "").trim();
-    if (/repository not found/i.test(stderr)) {
+    if (/repository not found/i.test(cloneStderr)) {
       throw new Error(`Repository not found: ${repoUrl}`);
     }
-    if (/could not read from remote/i.test(stderr)) {
+    if (/could not read from remote/i.test(cloneStderr)) {
       throw new Error(`Cannot access repository (may be private or require authentication): ${repoUrl}`);
     }
-    if (/not found in upstream/i.test(stderr) || /remote branch.*not found/i.test(stderr)) {
+    if (/not found in upstream/i.test(cloneStderr) || /remote branch.*not found/i.test(cloneStderr)) {
       throw new Error(`Branch "${branch}" not found in ${repoUrl}`);
     }
     if (clone.signal === "SIGTERM") {
       throw new Error(`Clone timed out — repository may be too large: ${repoUrl}`);
     }
-    throw new Error(`Failed to clone repository: ${stderr || "unknown error"}`);
+    throw new Error(`Failed to clone repository: ${cloneStderr || "unknown error"}`);
   }
 
   const files = walkFilesRecursive(checkoutDir);

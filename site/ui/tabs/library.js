@@ -1877,12 +1877,14 @@ function AgentLibraryImporter({ onImported }) {
         <div style="margin-top:8px;padding:8px 10px;border:1px solid var(--border,#333);border-radius:10px;background:var(--surface-2,rgba(255,255,255,0.03));display:flex;flex-direction:column;gap:6px;">
           <div style="display:flex;flex-wrap:wrap;gap:6px;align-items:center;">
             <span style="font-size:0.8em;font-weight:600;">${selectedSource.name}</span>
-            <span style="font-size:0.75em;padding:2px 6px;border-radius:999px;background:${selectedSource.status === "healthy" ? "rgba(34,197,94,0.18)" : selectedSource.status === "warning" ? "rgba(245,158,11,0.18)" : "rgba(239,68,68,0.18)"};color:var(--text-secondary);">${String(selectedSource.status || "unknown").toUpperCase()}</span>
-            <span style="font-size:0.75em;padding:2px 6px;border-radius:999px;background:rgba(59,130,246,0.16);color:var(--text-secondary);">Trust ${Number(selectedSource?.trust?.score || 0)}/100</span>
-            ${selectedSource.enabled === false ? html`<span style="font-size:0.75em;padding:2px 6px;border-radius:999px;background:rgba(239,68,68,0.18);color:var(--text-secondary);">AUTO-DISABLED</span>` : null}
+            <span style="font-size:0.75em;padding:2px 6px;border-radius:999px;background:${selectedSource.status === "healthy" ? "rgba(34,197,94,0.18)" : selectedSource.status === "warning" ? "rgba(245,158,11,0.18)" : selectedSource.status === "low-trust" ? "rgba(245,158,11,0.18)" : "rgba(239,68,68,0.18)"};color:var(--text-secondary);">${String(selectedSource.status || "unknown").toUpperCase()}</span>
+            <span style="font-size:0.75em;padding:2px 6px;border-radius:999px;background:rgba(59,130,246,0.16);color:var(--text-secondary);cursor:help;" title="Trust score (0-100) based on: source tier (official/partner/community), GitHub owner reputation, import coverage (high/medium/low), HTTPS hosting bonus, repository age & stars, recent probe (reachable, branch exists, not archived).">Trust ${Number(selectedSource?.trust?.score || 0)}/100</span>
+            ${selectedSource.enabled === false ? html`<span style="font-size:0.75em;padding:2px 6px;border-radius:999px;background:rgba(239,68,68,0.18);color:var(--text-secondary);">UNAVAILABLE</span>` : null}
+            ${selectedSource?.trust?.lowTrust ? html`<span style="font-size:0.75em;padding:2px 6px;border-radius:999px;background:rgba(245,158,11,0.22);color:var(--text-secondary);">⚠ LOW TRUST</span>` : null}
           </div>
           <div style="font-size:0.8em;color:var(--text-secondary);">${selectedSource.description || ""}</div>
-          ${(selectedSource?.trust?.reasons?.length || 0) ? html`<div style="font-size:0.75em;color:var(--text-secondary);">Signals: ${selectedSource.trust.reasons.slice(0, 4).join(", ")}</div>` : null}
+          ${selectedSource?.trust?.lowTrust && selectedSource.enabled !== false ? html`<div style="font-size:0.78em;color:var(--warning,#f59e0b);padding:4px 6px;border-radius:6px;background:rgba(245,158,11,0.08);">⚠ Low trust score — import with caution. Review items before using in production.</div>` : null}
+          ${(selectedSource?.trust?.reasons?.length || 0) ? html`<div style="font-size:0.75em;color:var(--text-secondary);">Signals: ${selectedSource.trust.reasons.slice(0, 6).join(", ")}</div>` : null}
           ${selectedSource?.probe?.checkedAt ? html`<div style="font-size:0.75em;color:var(--text-secondary);">Last probe: ${new Date(selectedSource.probe.checkedAt).toLocaleString()}${selectedSource?.probe?.error ? ` · ${selectedSource.probe.error}` : ""}</div>` : null}
         </div>
       ` : null}
