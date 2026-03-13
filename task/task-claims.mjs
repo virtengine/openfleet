@@ -980,9 +980,6 @@ async function _renewClaimInner(opts) {
   // Renew the claim
   const now = new Date();
   const expiresAt = new Date(now.getTime() + ttlMinutes * 60 * 1000);
-  const previousClaimSnapshot = {
-    ...claim,
-  };
   claim.expires_at = expiresAt.toISOString();
   claim.ttl_minutes = ttlMinutes;
   claim.renewed_at = now.toISOString();
@@ -1018,18 +1015,18 @@ async function _renewClaimInner(opts) {
       );
       if (!sharedResult.success) {
         const reason = sharedResult.reason || "unknown";
-        // Token mismatch in shared state means another orchestrator has taken
-        // over — surface as a fatal claim renewal failure so the task-executor
-        // can abort the now-orphaned agent instead of letting it run forever.
+        // Token/owner mismatch in shared state means another orchestrator has
+        // taken over. Remove local ownership so this process does not retain a
+        // stale claim that blocks redispatch after we abort.
         if (reason === "attempt_token_mismatch" || reason === "owner_mismatch") {
-          registry.claims[taskId] = previousClaimSnapshot;
+          delete registry.claims[taskId];
           await saveClaimsRegistry(registry);
           await appendAuditEntry({
-            action: "renew_rollback",
+            action: "renew_forfeit",
             task_id: taskId,
             instance_id: instanceId,
             claim_token: claimToken,
-            rollback_reason: reason,
+            forfeit_reason: reason,
           });
           console.warn(`[task-claims] Shared state heartbeat FATAL for ${taskId}: ${reason} — surfacing as claim failure`);
           return { success: false, error: reason };
@@ -1142,7 +1139,6 @@ export const _test = {
   retryFsOperation,
   isRetriableFsError,
 };
-
 
 
 

@@ -19,6 +19,7 @@ import { fileURLToPath } from "node:url";
 import { createRequire } from "node:module";
 import { execSync } from "node:child_process";
 import { homedir } from "node:os";
+import { ensureTestRuntimeSandbox } from "../infra/test-runtime.mjs";
 import { scaffoldSkills } from "../agent/bosun-skills.mjs";
 import { ensureCodexConfig, ensureTrustedProjects } from "../shell/codex-config.mjs";
 import {
@@ -1419,6 +1420,9 @@ function resolveConfigDir() {
       existsSync(resolve(cwd, ".env"));
     if (isExpectedHome) return cwd;
   }
+
+  const sandbox = ensureTestRuntimeSandbox();
+  if (sandbox?.configDir) return sandbox.configDir;
 
   const preferWindowsDirs =
     process.platform === "win32" && !isWslInteropRuntime();
@@ -2995,4 +2999,3 @@ if (process.argv[1] && resolve(process.argv[1]) === resolve(__filename_setup_web
     process.exit(1);
   });
 }
-

@@ -38,6 +38,26 @@ import { writeFile as writeFileAsync } from "node:fs/promises";
 import { resolve, basename, extname, join } from "node:path";
 import { randomUUID } from "node:crypto";
 import { EventEmitter } from "node:events";
+import {
+  ensureTestRuntimeSandbox,
+  resolvePathForTestRuntime,
+} from "../infra/test-runtime.mjs";
+
+// Lazy-loaded workspace manager for workspace-aware scheduling
+let _workspaceManagerMod = null;
+async function ensureWorkspaceManager() {
+  if (_workspaceManagerMod) return _workspaceManagerMod;
+  try {
+    _workspaceManagerMod = await import("../workspace/workspace-manager.mjs");
+  } catch {
+    _workspaceManagerMod = null;
+  }
+  return _workspaceManagerMod;
+}
+function ensureWorkspaceManagerSync() {
+  if (_workspaceManagerMod) return _workspaceManagerMod;
+  return null;
+}
 
 // ── Constants ───────────────────────────────────────────────────────────────
 
@@ -223,6 +243,7 @@ export function listNodeTypes() {
  * @property {string} [description] - What this workflow does
  * @property {string} [category] - Grouping category
  * @property {boolean} [enabled] - Whether this workflow is active
+ * @property {boolean} [core] - Core workflows cannot be disabled or deleted
  * @property {string} [trigger] - Primary trigger type
  * @property {WorkflowNode[]} nodes - All nodes in the workflow
  * @property {WorkflowEdge[]} edges - Connections between nodes
@@ -393,8 +414,20 @@ export class WorkflowEngine extends EventEmitter {
    */
   constructor(opts = {}) {
     super();
-    this.workflowDir = opts.workflowDir || resolve(process.cwd(), ".bosun", WORKFLOW_DIR_NAME);
-    this.runsDir = opts.runsDir || resolve(process.cwd(), ".bosun", WORKFLOW_RUNS_DIR);
+    const sandbox = ensureTestRuntimeSandbox();
+    const defaultWorkflowDir = resolve(process.cwd(), ".bosun", WORKFLOW_DIR_NAME);
+    const defaultRunsDir = resolve(process.cwd(), ".bosun", WORKFLOW_RUNS_DIR);
+    this.workflowDir = resolvePathForTestRuntime(
+      opts.workflowDir || defaultWorkflowDir,
+      defaultWorkflowDir,
+      sandbox?.workflowDir,
+    );
+    this.runsDir = resolvePathForTestRuntime(
+      opts.runsDir || defaultRunsDir,
+      defaultRunsDir,
+      sandbox?.runsDir,
+    );
+    this._configDir = opts.configDir || process.cwd();
     this.detectInterruptedRuns = opts.detectInterruptedRuns !== false;
     this.services = opts.services || {};
     this._workflows = new Map();
@@ -421,6 +454,9 @@ export class WorkflowEngine extends EventEmitter {
     this._runQueue = [];             // FIFO queue of { resolve, reject, args }
     this._runIndexCache = null;      // cached run index (invalidated on writes)
     this._runIndexCacheMtime = 0;    // mtime of the cached index file
+
+    // Lazy-load workspace manager for schedule evaluation
+    void ensureWorkspaceManager().catch(() => {});
   }
 
 
@@ -689,6 +725,7 @@ export class WorkflowEngine extends EventEmitter {
       description: w.description,
       category: w.category,
       enabled: w.enabled !== false,
+      core: w.core === true,
       trigger: w.trigger,
       nodeCount: w.nodes?.length || 0,
       edgeCount: w.edges?.length || 0,
@@ -711,6 +748,16 @@ export class WorkflowEngine extends EventEmitter {
       def.metadata.createdAt = def.metadata.updatedAt;
     }
     def.metadata.version = (def.metadata.version || 0) + 1;
+
+    // Prevent disabling core workflows
+    const existing = this._workflows.get(def.id);
+    if (existing?.core === true && def.enabled === false) {
+      def.enabled = true;
+    }
+    // Preserve core flag — cannot be removed via save
+    if (existing?.core === true) {
+      def.core = true;
+    }
 
     this._ensureDirs();
     this._workflows.set(def.id, def);
@@ -760,6 +807,10 @@ export class WorkflowEngine extends EventEmitter {
 
   /** Delete a workflow */
   delete(id) {
+    const existing = this._workflows.get(id);
+    if (existing?.core === true) {
+      throw new Error(`Cannot delete core workflow "${existing.name || id}"`);
+    }
     this._workflows.delete(id);
     const filePath = resolve(this.workflowDir, `${id}.json`);
     try {
@@ -1289,17 +1340,44 @@ export class WorkflowEngine extends EventEmitter {
    * Unlike evaluateTriggers() (event-driven), this is polling-based and should
    * be called periodically (e.g. every 60s) by the monitor.
    *
-   * Returns an array of { workflowId, triggeredBy } for workflows whose
-   * polling interval has elapsed since their last completed run.
+   * Returns an array of { workflowId, triggeredBy, workspaceId } for workflows
+   * whose polling interval has elapsed since their last completed run.
+   *
+   * @param {{ configDir?: string }} [opts] Options for workspace-aware evaluation.
    */
-  evaluateScheduleTriggers() {
+  evaluateScheduleTriggers(opts = {}) {
     if (!this._loaded) this.load();
 
     const triggered = [];
     const runIndex = this._readRunIndex();
 
+    // Load workspace state for filtering
+    const wsMgr = ensureWorkspaceManagerSync();
+    const configDir = opts?.configDir || this._configDir || process.cwd();
+    let workspaceSummary = null;
+    if (wsMgr?.getWorkspaceStateSummary) {
+      try {
+        workspaceSummary = wsMgr.getWorkspaceStateSummary(configDir);
+      } catch { /* workspace manager not available — skip workspace filtering */ }
+    }
+
     for (const [id, def] of this._workflows) {
       if (def.enabled === false) continue;
+
+      // ── Workspace gate ──────────────────────────────────────────────
+      const wfWorkspaceId = def.workspaceId || def.workspace || null;
+      if (wfWorkspaceId && workspaceSummary) {
+        const ws = workspaceSummary.find((w) => w.id === wfWorkspaceId);
+        if (ws && !ws.isActive) {
+          continue; // workspace paused or disabled — skip
+        }
+        if (ws && wsMgr?.isWorkflowAllowedForWorkspace) {
+          const fullWs = wsMgr.getWorkspace(configDir, wfWorkspaceId);
+          if (fullWs && !wsMgr.isWorkflowAllowedForWorkspace(fullWs, id)) {
+            continue; // workflow blacklisted or not in whitelist for this workspace
+          }
+        }
+      }
 
       // Skip workflows that are already running
       const alreadyRunning = Array.from(this._activeRuns.values()).some(
@@ -1334,7 +1412,7 @@ export class WorkflowEngine extends EventEmitter {
 
         const elapsed = Date.now() - lastRunAt;
         if (elapsed >= intervalMs) {
-          triggered.push({ workflowId: id, triggeredBy: tNode.id });
+          triggered.push({ workflowId: id, triggeredBy: tNode.id, workspaceId: wfWorkspaceId });
 
           // For scheduled_once, only fire if never run before
           if (tNode.type === "trigger.scheduled_once" && lastRunAt > 0) {
@@ -1774,7 +1852,10 @@ export class WorkflowEngine extends EventEmitter {
           }
 
           ctx.setNodeStatus(nodeId, NodeStatus.RUNNING);
-          console.log(`${TAG} node:start ${nodeId} (${node.type}) [${node.label || ""}] wf=${ctx.data?._workflowName || ctx.data?._workflowId || "?"}`);
+          const isTriggerNode = node.type?.startsWith("trigger.");
+          if (!isTriggerNode) {
+            console.log(`${TAG} node:start ${nodeId} (${node.type}) [${node.label || ""}] wf=${ctx.data?._workflowName || ctx.data?._workflowId || "?"}`);
+          }
           emitNodeEvent("node:start", node, { status: NodeStatus.RUNNING });
           await this._emitTaskTraceEvent("workflow.node.start", {
             ctx,
@@ -1818,8 +1899,16 @@ export class WorkflowEngine extends EventEmitter {
               ctx.setNodeOutput(nodeId, result);
               ctx.setNodeStatus(nodeId, NodeStatus.COMPLETED);
               executed.add(nodeId);
-              const resultSuffix = node.type?.startsWith("condition.") ? ` result=${JSON.stringify(result?.result ?? result)}` : "";
-              console.log(`${TAG} node:complete ${nodeId} (${node.type}) [${node.label || ""}]${resultSuffix}`);
+              // Quiet mode for trigger nodes: only log when they actually fire
+              if (isTriggerNode) {
+                if (result?.triggered === true) {
+                  console.log(`${TAG} trigger:fired ${nodeId} (${node.type}) [${node.label || ""}] wf=${ctx.data?._workflowName || ctx.data?._workflowId || "?"}`);
+                }
+                // triggered: false → silent (reduces noise from non-firing polls)
+              } else {
+                const resultSuffix = node.type?.startsWith("condition.") ? ` result=${JSON.stringify(result?.result ?? result)}` : "";
+                console.log(`${TAG} node:complete ${nodeId} (${node.type}) [${node.label || ""}]${resultSuffix}`);
+              }
               emitNodeEvent("node:complete", node, {
                 status: NodeStatus.COMPLETED,
                 output: result,
@@ -2966,3 +3055,4 @@ export function listWorkflows(opts) { return getWorkflowEngine(opts).list(); }
 export function getWorkflow(id, opts) { return getWorkflowEngine(opts).get(id); }
 export async function executeWorkflow(id, data, opts) { return getWorkflowEngine(opts).execute(id, data, opts); }
 export async function retryWorkflowRun(runId, retryOpts, engineOpts) { return getWorkflowEngine(engineOpts).retryRun(runId, retryOpts); }
+

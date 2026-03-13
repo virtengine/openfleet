@@ -602,6 +602,7 @@ async function ensureWorkflowAutomationEngine() {
         services,
         workflowDir: resolve(repoRoot, ".bosun", "workflows"),
         runsDir: resolve(repoRoot, ".bosun", "workflow-runs"),
+        configDir: repoRoot,
       });
 
       const configuredWorkflowProfile =
@@ -845,6 +846,133 @@ function resolvePlannerPromptFallback() {
   };
 }
 
+const PLANNER_PATTERN_COUNTER_RELATIVE_PATH =
+  ".bosun/workflow-runs/planner-pattern-feedback.json";
+const PLANNER_FAILURE_SIGNAL_WEIGHTS = Object.freeze({
+  agentAttempts: 0.35,
+  consecutiveNoCommits: 1.25,
+  blockedReason: 1.5,
+  debtTrend: 0.4,
+  taskDebt: 0.5,
+});
+const PLANNER_FAILURE_COUNTER_DECAY = 0.8;
+const PLANNER_FAILURE_COUNTER_IDLE_DECAY = 0.95;
+const PLANNER_FAILURE_THRESHOLD = 2.5;
+
+function normalizePlannerAreaKey(value) {
+  return String(value || "").trim().toLowerCase();
+}
+
+function normalizePlannerArchetypeKey(value) {
+  const normalized = String(value || "")
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "_")
+    .replace(/^_+|_+$/g, "");
+  return normalized || "general";
+}
+
+function inferPlannerTaskArchetype(task) {
+  const explicit =
+    task?.meta?.planner?.archetype ||
+    task?.meta?.archetype ||
+    task?.archetype ||
+    "";
+  if (String(explicit || "").trim()) {
+    return normalizePlannerArchetypeKey(explicit);
+  }
+  const title = String(task?.title || "").trim().toLowerCase();
+  const conventional = title.match(
+    /^(?:\[[^\]]+\]\s*)?([a-z][a-z0-9_-]*)(?:\([^)]*\))?:/,
+  );
+  if (conventional?.[1]) return normalizePlannerArchetypeKey(conventional[1]);
+  if (title.includes("test")) return "test";
+  if (title.includes("doc")) return "docs";
+  if (title.includes("refactor")) return "refactor";
+  return "general";
+}
+
+function resolvePlannerTaskPatternAreas(task) {
+  const candidates = []
+    .concat(Array.isArray(task?.repo_areas) ? task.repo_areas : [])
+    .concat(Array.isArray(task?.repoAreas) ? task.repoAreas : [])
+    .concat(Array.isArray(task?.meta?.repo_areas) ? task.meta.repo_areas : [])
+    .concat(Array.isArray(task?.meta?.repoAreas) ? task.meta.repoAreas : [])
+    .concat(
+      Array.isArray(task?.meta?.planner?.repo_areas)
+        ? task.meta.planner.repo_areas
+        : [],
+    )
+    .concat(
+      Array.isArray(task?.meta?.planner?.repoAreas)
+        ? task.meta.planner.repoAreas
+        : [],
+    );
+  if (!candidates.length) return ["global"];
+  const dedup = new Set();
+  const areas = [];
+  for (const candidate of candidates) {
+    const areaKey = normalizePlannerAreaKey(candidate);
+    if (!areaKey || dedup.has(areaKey)) continue;
+    dedup.add(areaKey);
+    areas.push(areaKey);
+  }
+  return areas.length > 0 ? areas : ["global"];
+}
+
+function buildPlannerPatternKey(repoArea, archetype) {
+  return `${normalizePlannerAreaKey(repoArea) || "global"}::${normalizePlannerArchetypeKey(archetype)}`;
+}
+
+function readPlannerPatternCounterState(baseDir) {
+  const statePath = resolve(
+    baseDir || process.cwd(),
+    PLANNER_PATTERN_COUNTER_RELATIVE_PATH,
+  );
+  if (!existsSync(statePath)) {
+    return { statePath, state: { patterns: {} } };
+  }
+  try {
+    const parsed = JSON.parse(readFileSync(statePath, "utf8"));
+    const patterns =
+      parsed?.patterns && typeof parsed.patterns === "object"
+        ? parsed.patterns
+        : {};
+    return {
+      statePath,
+      state: {
+        updatedAt: String(parsed?.updatedAt || "").trim() || null,
+        patterns,
+      },
+    };
+  } catch {
+    return { statePath, state: { patterns: {} } };
+  }
+}
+
+function writePlannerPatternCounterState(statePath, state) {
+  try {
+    mkdirSync(dirname(statePath), { recursive: true });
+    writeFileSync(
+      statePath,
+      JSON.stringify(
+        {
+          updatedAt: new Date().toISOString(),
+          patterns:
+            state?.patterns && typeof state.patterns === "object"
+              ? state.patterns
+              : {},
+        },
+        null,
+        2,
+      ),
+      "utf8",
+    );
+  } catch {
+    // best effort
+  }
+}
+
 function buildPlannerFeedback() {
   const tasks = Array.isArray(getAllInternalTasks?.()) ? getAllInternalTasks() : [];
   const statusCounts = {
@@ -857,8 +985,70 @@ function buildPlannerFeedback() {
   };
   const blockedReasonCounts = new Map();
   const hotTasks = [];
+  const patternObservations = new Map();
+  const taskDebtWeightById = new Map();
   let attemptedCount = 0;
   let noCommitCount = 0;
+
+  let debtEntries = [];
+  try {
+    debtEntries = readTaskDebtEntries({ baseDir: repoRoot, limit: 300 });
+  } catch {
+    debtEntries = [];
+  }
+
+  const now = Date.now();
+  const recentWindowMs = 7 * 24 * 60 * 60 * 1000;
+  const previousWindowMs = 14 * 24 * 60 * 60 * 1000;
+  const recentDebtEntries = debtEntries.filter((entry) => {
+    const ts = Date.parse(String(entry?.recordedAt || ""));
+    return Number.isFinite(ts) && now - ts <= recentWindowMs;
+  });
+  const previousDebtEntries = debtEntries.filter((entry) => {
+    const ts = Date.parse(String(entry?.recordedAt || ""));
+    return Number.isFinite(ts) && now - ts > recentWindowMs && now - ts <= previousWindowMs;
+  });
+  const debtSeverityCounts = { critical: 0, high: 0, medium: 0, low: 0 };
+  const previousDebtSeverityCounts = { critical: 0, high: 0, medium: 0, low: 0 };
+  for (const entry of recentDebtEntries) {
+    for (const item of Array.isArray(entry?.debtItems) ? entry.debtItems : []) {
+      const severity = String(item?.severity || "").trim().toLowerCase();
+      if (Object.prototype.hasOwnProperty.call(debtSeverityCounts, severity)) {
+        debtSeverityCounts[severity] += 1;
+        const taskId = String(entry?.taskId || "").trim();
+        if (taskId) {
+          const severityWeight = severity === "critical"
+            ? 2
+            : severity === "high"
+              ? 1.5
+              : severity === "medium"
+                ? 1
+                : 0.5;
+          taskDebtWeightById.set(
+            taskId,
+            (taskDebtWeightById.get(taskId) || 0) + severityWeight,
+          );
+        }
+      }
+    }
+  }
+  for (const entry of previousDebtEntries) {
+    for (const item of Array.isArray(entry?.debtItems) ? entry.debtItems : []) {
+      const severity = String(item?.severity || "").trim().toLowerCase();
+      if (Object.prototype.hasOwnProperty.call(previousDebtSeverityCounts, severity)) {
+        previousDebtSeverityCounts[severity] += 1;
+      }
+    }
+  }
+
+  const weightedDebtSeverity = (counts) =>
+    (counts.critical * 2) + (counts.high * 1.5) + counts.medium + (counts.low * 0.5);
+  const recentDebtWeighted = weightedDebtSeverity(debtSeverityCounts);
+  const previousDebtWeighted = weightedDebtSeverity(previousDebtSeverityCounts);
+  const debtTrendDelta = recentDebtWeighted - previousDebtWeighted;
+  const debtTrendPenalty = debtTrendDelta > 0
+    ? Math.min(2, (debtTrendDelta / 8) * PLANNER_FAILURE_SIGNAL_WEIGHTS.debtTrend)
+    : 0;
 
   for (const task of tasks) {
     const status = String(task?.status || "").trim().toLowerCase();
@@ -868,6 +1058,7 @@ function buildPlannerFeedback() {
       statusCounts.other += 1;
     }
 
+    const taskId = String(task?.id || "").trim();
     const agentAttempts = Number(task?.agentAttempts || 0);
     const consecutiveNoCommits = Number(task?.consecutiveNoCommits || 0);
     const blockedReason = String(task?.blockedReason || "").trim();
@@ -880,6 +1071,57 @@ function buildPlannerFeedback() {
       );
     }
 
+    const attemptPenalty =
+      Math.min(Math.max(0, agentAttempts), 6) * PLANNER_FAILURE_SIGNAL_WEIGHTS.agentAttempts;
+    const noCommitPenalty =
+      Math.min(Math.max(0, consecutiveNoCommits), 4) * PLANNER_FAILURE_SIGNAL_WEIGHTS.consecutiveNoCommits;
+    const blockedPenalty = blockedReason ? PLANNER_FAILURE_SIGNAL_WEIGHTS.blockedReason : 0;
+    const taskDebtPenalty =
+      Math.min(2, (taskDebtWeightById.get(taskId) || 0) * PLANNER_FAILURE_SIGNAL_WEIGHTS.taskDebt);
+    const failureSignal =
+      attemptPenalty +
+      noCommitPenalty +
+      blockedPenalty +
+      taskDebtPenalty +
+      debtTrendPenalty;
+    const terminalSuccess = ["done", "completed", "closed"].includes(status);
+    const successSignal =
+      terminalSuccess &&
+      agentAttempts > 0 &&
+      consecutiveNoCommits <= 0 &&
+      !blockedReason
+        ? 1
+        : 0;
+    const archetype = inferPlannerTaskArchetype(task);
+    const areas = resolvePlannerTaskPatternAreas(task);
+
+    for (const area of areas) {
+      const key = buildPlannerPatternKey(area, archetype);
+      let entry = patternObservations.get(key);
+      if (!entry) {
+        entry = {
+          key,
+          repoArea: area,
+          archetype,
+          failures: 0,
+          successes: 0,
+          failureSignalTotal: 0,
+          successSignalTotal: 0,
+        };
+        patternObservations.set(key, entry);
+      }
+      if (failureSignal > 0) {
+        entry.failureSignalTotal += failureSignal;
+      }
+      if (failureSignal >= 0.75) {
+        entry.failures += 1;
+      }
+      if (successSignal > 0) {
+        entry.successSignalTotal += successSignal;
+        entry.successes += 1;
+      }
+    }
+
     if (
       agentAttempts > 0 ||
       consecutiveNoCommits > 0 ||
@@ -887,17 +1129,23 @@ function buildPlannerFeedback() {
       status === "blocked"
     ) {
       hotTasks.push({
-        taskId: String(task?.id || "").trim(),
+        taskId,
         title: String(task?.title || "").trim(),
         status: status || null,
         agentAttempts: agentAttempts || 0,
         consecutiveNoCommits: consecutiveNoCommits || 0,
         blockedReason: blockedReason || null,
+        failureSignal: Number(failureSignal.toFixed(2)),
+        archetype,
+        repoAreas: areas,
       });
     }
   }
 
   hotTasks.sort((a, b) => {
+    if ((b.failureSignal || 0) !== (a.failureSignal || 0)) {
+      return (b.failureSignal || 0) - (a.failureSignal || 0);
+    }
     if ((b.consecutiveNoCommits || 0) !== (a.consecutiveNoCommits || 0)) {
       return (b.consecutiveNoCommits || 0) - (a.consecutiveNoCommits || 0);
     }
@@ -907,28 +1155,80 @@ function buildPlannerFeedback() {
     return String(a.taskId || "").localeCompare(String(b.taskId || ""));
   });
 
-  let debtEntries = [];
-  try {
-    debtEntries = readTaskDebtEntries({ baseDir: repoRoot, limit: 300 });
-  } catch {
-    debtEntries = [];
+  const persistedCounter = readPlannerPatternCounterState(repoRoot);
+  const previousPatternState =
+    persistedCounter?.state?.patterns && typeof persistedCounter.state.patterns === "object"
+      ? persistedCounter.state.patterns
+      : {};
+  const nextPatternState = {};
+  const observedKeys = new Set(patternObservations.keys());
+
+  for (const [key, observation] of patternObservations.entries()) {
+    const previous = previousPatternState[key] || {};
+    const previousCounter = Number(previous.failureCounter || 0);
+    const nextCounter = Math.max(
+      0,
+      (previousCounter * PLANNER_FAILURE_COUNTER_DECAY) +
+        observation.failureSignalTotal -
+        (observation.successSignalTotal * 1.1),
+    );
+    nextPatternState[key] = {
+      key,
+      repoArea: observation.repoArea,
+      archetype: observation.archetype,
+      observations: Number(previous.observations || 0) + 1,
+      failures: Number(previous.failures || 0) + observation.failures,
+      successes: Number(previous.successes || 0) + observation.successes,
+      failureSignal: Number(observation.failureSignalTotal.toFixed(2)),
+      successSignal: Number(observation.successSignalTotal.toFixed(2)),
+      failureCounter: Number(nextCounter.toFixed(3)),
+      lastUpdatedAt: new Date().toISOString(),
+    };
   }
 
-  const now = Date.now();
-  const recentWindowMs = 7 * 24 * 60 * 60 * 1000;
-  const recentDebtEntries = debtEntries.filter((entry) => {
-    const ts = Date.parse(String(entry?.recordedAt || ""));
-    return Number.isFinite(ts) && now - ts <= recentWindowMs;
-  });
-  const debtSeverityCounts = { critical: 0, high: 0, medium: 0, low: 0 };
-  for (const entry of recentDebtEntries) {
-    for (const item of Array.isArray(entry?.debtItems) ? entry.debtItems : []) {
-      const severity = String(item?.severity || "").trim().toLowerCase();
-      if (Object.prototype.hasOwnProperty.call(debtSeverityCounts, severity)) {
-        debtSeverityCounts[severity] += 1;
-      }
-    }
+  for (const [key, previous] of Object.entries(previousPatternState)) {
+    if (observedKeys.has(key)) continue;
+    const previousCounter = Number(previous?.failureCounter || 0);
+    if (previousCounter <= 0) continue;
+    nextPatternState[key] = {
+      ...previous,
+      failureCounter: Number(
+        Math.max(0, previousCounter * PLANNER_FAILURE_COUNTER_IDLE_DECAY).toFixed(3),
+      ),
+      lastUpdatedAt: new Date().toISOString(),
+    };
   }
+
+  writePlannerPatternCounterState(persistedCounter.statePath, {
+    patterns: nextPatternState,
+  });
+
+  const rankedPatternCounters = Object.values(nextPatternState)
+    .map((entry) => {
+      const failureCounter = Number(entry?.failureCounter || 0);
+      const negativePrior = failureCounter > PLANNER_FAILURE_THRESHOLD
+        ? Number(((failureCounter - PLANNER_FAILURE_THRESHOLD) * 0.6).toFixed(3))
+        : 0;
+      return {
+        key: String(entry?.key || "").trim(),
+        repoArea: String(entry?.repoArea || "").trim() || "global",
+        archetype: normalizePlannerArchetypeKey(entry?.archetype),
+        failureCounter,
+        failures: Number(entry?.failures || 0),
+        successes: Number(entry?.successes || 0),
+        negativePrior,
+      };
+    })
+    .sort((a, b) => {
+      if ((b.negativePrior || 0) !== (a.negativePrior || 0)) {
+        return (b.negativePrior || 0) - (a.negativePrior || 0);
+      }
+      if ((b.failureCounter || 0) !== (a.failureCounter || 0)) {
+        return (b.failureCounter || 0) - (a.failureCounter || 0);
+      }
+      return String(a.key || "").localeCompare(String(b.key || ""));
+    })
+    .slice(0, 50);
 
   const blockedTop = [...blockedReasonCounts.entries()]
     .sort((a, b) => b[1] - a[1])
@@ -946,6 +1246,8 @@ function buildPlannerFeedback() {
     `noCommitHot=${noCommitCount}`,
     `debtRecent7d=${recentDebtEntries.length}`,
     `debtCriticalHigh=${debtSeverityCounts.critical + debtSeverityCounts.high}`,
+    `debtTrendDelta=${Number(debtTrendDelta.toFixed(2))}`,
+    `penalizedPatterns=${rankedPatternCounters.filter((entry) => entry.negativePrior > 0).length}`,
   ];
   const blockedSummary = blockedTop.length > 0
     ? blockedTop.map((item) => `${item.reason}(${item.count})`).join(", ")
@@ -969,6 +1271,15 @@ function buildPlannerFeedback() {
       totalEntries: debtEntries.length,
       recentEntries7d: recentDebtEntries.length,
       severityCounts7d: debtSeverityCounts,
+      previousSeverityCounts7d: previousDebtSeverityCounts,
+      trendDelta: Number(debtTrendDelta.toFixed(2)),
+    },
+    rankingSignals: {
+      failureThreshold: PLANNER_FAILURE_THRESHOLD,
+      debtTrendDelta: Number(debtTrendDelta.toFixed(2)),
+      debtTrendPenalty: Number(debtTrendPenalty.toFixed(3)),
+      weights: PLANNER_FAILURE_SIGNAL_WEIGHTS,
+      patterns: rankedPatternCounters,
     },
   };
 }
@@ -14065,7 +14376,7 @@ safeSetInterval("flush-error-queue", () => flushErrorQueue(), 60 * 1000);
 // Check all installed polling workflows (trigger.schedule, trigger.scheduled_once,
 // trigger.task_available, trigger.task_low) and fire any whose interval has elapsed.
 // This keeps scheduled and task-poll lifecycle templates executing without hardcoded
-// per-workflow timers.
+// per-workflow timers.  Workspace-aware: skips workflows for paused/disabled workspaces.
 const scheduleCheckIntervalMs = 60 * 1000; // check every 60s
 pollWorkflowSchedulesOnce = async function pollWorkflowSchedulesOnce(
   triggerSource = "schedule-poll",
@@ -14076,7 +14387,7 @@ pollWorkflowSchedulesOnce = async function pollWorkflowSchedulesOnce(
     if (!engine?.evaluateScheduleTriggers) return;
     const includeTaskPoll = opts?.includeTaskPoll !== false;
 
-    const triggered = engine.evaluateScheduleTriggers();
+    const triggered = engine.evaluateScheduleTriggers({ configDir: repoRoot });
     if (!Array.isArray(triggered) || triggered.length === 0) return;
 
     for (const match of triggered) {
@@ -14095,10 +14406,15 @@ pollWorkflowSchedulesOnce = async function pollWorkflowSchedulesOnce(
         .execute(workflowId, {
           _triggerSource: triggerSource,
           _triggeredBy: match?.triggeredBy || null,
+          _workspaceId: match?.workspaceId || null,
           repoRoot,
         })
         .then((ctx) => {
           const runId = ctx?.id || "unknown";
+          // Quiet mode: don't log completed runs where trigger didn't fire
+          const triggerNodeId = match?.triggeredBy;
+          const triggerOutput = triggerNodeId ? ctx?.getNodeOutput?.(triggerNodeId) : null;
+          if (triggerOutput?.triggered === false) return; // silent — trigger didn't fire
           const runStatus =
             Array.isArray(ctx?.errors) && ctx.errors.length > 0
               ? "failed"
@@ -15377,8 +15693,3 @@ export {
   // Workflow event bridge — for fleet/kanban modules to emit events
   queueWorkflowEvent,
 };
-
-
-
-
-

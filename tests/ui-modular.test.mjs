@@ -8,10 +8,12 @@ import {
   searchNodeTypes,
   undoHistory,
 } from "../ui/tabs/workflow-canvas-utils.mjs";
-import { existsSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { resolve } from "node:path";
 
 const uiDir = resolve(process.cwd(), "ui");
+const uiComponentsCss = readFileSync(resolve(process.cwd(), "ui/styles/components.css"), "utf8");
+const siteComponentsCss = readFileSync(resolve(process.cwd(), "site/ui/styles/components.css"), "utf8");
 
 describe("modular mini app structure", () => {
   const requiredModules = [
@@ -243,5 +245,20 @@ describe("workflow canvas helpers", () => {
       "node-a": "failed",
       "node-b": "failed",
     });
+  });
+});
+
+describe("shared icon sizing rules", () => {
+  it("keeps shared icon wrappers from letting inline svg render at intrinsic size", () => {
+    for (const source of [uiComponentsCss, siteComponentsCss]) {
+      expect(source).toContain(".btn-icon svg");
+      expect(source).toContain(".dashboard-action-icon svg");
+      expect(source).toContain(".fleet-rest-icon svg");
+      expect(source).toContain(".dashboard-welcome-icon svg");
+      expect(source).toContain("width: 1em;");
+      expect(source).toContain("height: 1em;");
+      expect(source).toContain("max-width: 100%;");
+      expect(source).toContain("max-height: 100%;");
+    }
   });
 });

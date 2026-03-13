@@ -17,7 +17,8 @@ import { ICONS } from "../modules/icons.js";
 import { resolveIcon } from "../modules/icon-utils.js";
 import { formatDate, formatDuration, formatRelative } from "../modules/utils.js";
 import {
-  buildNodeStatusesFromRunDetail,
+  HISTORY_LIMIT,
+  HISTORY_COMMIT_DEBOUNCE_MS,
   createHistoryState,
   getNodeSearchMetadata,
   parseGraphSnapshot,
@@ -315,6 +316,11 @@ function humanizeVarKey(key) {
 /** Infer a short helper text for a variable key */
 function inferVarHelp(key, value) {
   const k = key.toLowerCase();
+  if (k.includes("testcommand") || k.includes("test_command") || k === "testframework" || k === "test_framework") return "Test command for your project — select from presets or enter custom";
+  if (k.includes("buildcommand") || k.includes("build_command")) return "Build command for your project — select from presets or enter custom";
+  if (k.includes("lintcommand") || k.includes("lint_command") || k.includes("lintcmd")) return "Lint/style check command — select from presets or enter custom";
+  if (k.includes("syntaxcheck") || k.includes("syntax_check")) return "Syntax/compile check command — select from presets or enter custom";
+  if (k === "basebranch" || k === "base_branch" || k === "defaultbasebranch") return "Base branch for PRs — select from common options or enter custom";
   if (k.includes("timeout") || k.includes("delay") || k.includes("cooldown")) return "Duration in milliseconds";
   if (k.includes("branch")) return "Git branch name";
   if (k.includes("url") || k.includes("endpoint")) return "URL / endpoint";
@@ -330,12 +336,24 @@ function inferVarHelp(key, value) {
 function inferVarOptions(key, value) {
   const k = String(key || "").toLowerCase();
   const options = [];
+
   if (k.includes("executor") || k.includes("sdk")) {
     options.push("auto", "codex", "claude", "copilot");
   } else if (k.includes("bumptype") || k.includes("bump_type")) {
     options.push("patch", "minor", "major");
+  } else if (k.includes("testcommand") || k.includes("test_command") || k === "testframework" || k === "test_framework") {
+    options.push("npm test", "yarn test", "pnpm test", "pytest", "poetry run pytest", "go test ./...", "cargo test", "mvn test", "./gradlew test", "dotnet test", "bundle exec rspec", "make test");
+  } else if (k.includes("buildcommand") || k.includes("build_command")) {
+    options.push("npm run build", "yarn build", "pnpm build", "go build ./...", "cargo build", "mvn package -DskipTests", "./gradlew build", "dotnet build", "python -m build", "make");
+  } else if (k.includes("lintcommand") || k.includes("lint_command") || k.includes("lintcmd")) {
+    options.push("npm run lint", "npx eslint .", "ruff check .", "golangci-lint run", "cargo clippy -- -D warnings", "dotnet format --verify-no-changes", "bundle exec rubocop");
+  } else if (k.includes("syntaxcheck") || k.includes("syntax_check")) {
+    options.push("node --check", "npx tsc --noEmit", "python -m py_compile", "go vet ./...", "cargo check", "dotnet build --no-restore");
+  } else if (k === "basebranch" || k === "base_branch" || k === "defaultbasebranch" || k === "targetbranch") {
+    options.push("main", "master", "develop", "staging");
   }
-  // Keep typed value only when this field already has known preset options.
+
+  // Keep typed value when this field has known preset options.
   if (options.length > 0 && typeof value === "string" && value.trim()) {
     options.unshift(value.trim());
   }
@@ -384,7 +402,12 @@ function isQuickVarKey(key) {
     k.includes("sdk") ||
     k.includes("model") ||
     k.includes("branch") ||
-    k.includes("title")
+    k.includes("title") ||
+    k.includes("testcommand") || k.includes("test_command") ||
+    k === "testframework" || k === "test_framework" ||
+    k.includes("buildcommand") || k.includes("build_command") ||
+    k.includes("lintcommand") || k.includes("lint_command") ||
+    k.includes("syntaxcheck") || k.includes("syntax_check")
   );
 }
 
@@ -1680,8 +1703,6 @@ function WorkflowCanvas({ workflow, onSave, nodeTypes: availableNodeTypes = [] }
   const NODE_H = 138;
   const NODE_HEADER_H = 62;
   const PORT_R = 8;
-  const HISTORY_LIMIT = 50;
-  const HISTORY_COMMIT_DEBOUNCE_MS = 220;
 
   const toCanvas = useCallback((clientX, clientY) => {
     const rect = canvasRef.current?.getBoundingClientRect();
@@ -2063,6 +2084,16 @@ function WorkflowCanvas({ workflow, onSave, nodeTypes: availableNodeTypes = [] }
     setZoom(z => Math.max(0.2, Math.min(3, z + delta)));
   }, []);
 
+  const onCanvasDoubleClick = useCallback((e) => {
+    const target = e.target;
+    const isBackgroundTarget =
+      target === e.currentTarget ||
+      target?.classList?.contains?.("canvas-bg");
+    if (!isBackgroundTarget) return;
+    e.preventDefault();
+    openNodePalette(toCanvas(e.clientX, e.clientY));
+  }, [openNodePalette, toCanvas]);
+
   // ── Node interaction ──────────────────────────────────────
 
   const onNodeMouseDown = useCallback((nodeId, e) => {
@@ -2338,7 +2369,7 @@ function WorkflowCanvas({ workflow, onSave, nodeTypes: availableNodeTypes = [] }
           <span class="btn-icon">${resolveIcon("play")}</span>
           Run
         <//>
-        <${Button}
+        ${workflow?.core !== true && html`<${Button}
           variant="outlined"
           size="small"
           onClick=${() => {
@@ -2348,7 +2379,8 @@ function WorkflowCanvas({ workflow, onSave, nodeTypes: availableNodeTypes = [] }
         >
           <span class="btn-icon">${resolveIcon(workflow?.enabled === false ? "play" : "pause")}</span>
           ${workflow?.enabled === false ? "Resume" : "Pause"}
-        <//>
+        <//>`}
+        ${workflow?.core === true && html`<span class="wf-badge" style="background: #8b5cf620; color: #a78bfa; font-size: 11px; font-weight: 600;">Core</span>`}
         <${Button} variant="text" size="small" disabled=${historyState.past.length === 0} onClick=${undoCanvas}>Undo<//>
         <${Button} variant="text" size="small" disabled=${historyState.future.length === 0} onClick=${redoCanvas}>Redo<//>
         <${Button} variant="text" size="small" onClick=${() => setShowShortcutOverlay(true)}>Shortcuts ?<//>
@@ -2416,6 +2448,7 @@ function WorkflowCanvas({ workflow, onSave, nodeTypes: availableNodeTypes = [] }
         onPointerUp=${onPointerUp}
         onPointerCancel=${onPointerUp}
         onWheel=${onWheel}
+        onDblClick=${onCanvasDoubleClick}
         onContextMenu=${(e) => e.preventDefault()}
       >
         <defs>
@@ -2434,7 +2467,7 @@ function WorkflowCanvas({ workflow, onSave, nodeTypes: availableNodeTypes = [] }
         </defs>
 
         <!-- Background grid — covers entire pannable area -->
-        <rect class="canvas-bg" x="-10000" y="-10000" width="30000" height="30000" fill="url(#grid-pattern)" onDblClick=${(e) => { e.preventDefault(); openNodePalette(toCanvas(e.clientX, e.clientY)); }} />
+        <rect class="canvas-bg" x="-10000" y="-10000" width="30000" height="30000" fill="url(#grid-pattern)" />
 
         <g transform="translate(${pan.x} ${pan.y}) scale(${zoom})">
 
@@ -2778,24 +2811,37 @@ function NodePalette({
     setSelectedIndex(0);
   }, [results.length, selectedIndex]);
 
+  const renderChips = (items = [], fallback = "None") => {
+    const safeList = Array.isArray(items) ? items : [];
+    if (!safeList.length) {
+      return html`<span class="wf-node-chip wf-node-chip-fallback">${fallback}</span>`;
+    }
+    const limit = 4;
+    const visible = safeList.slice(0, limit);
+    const remainder = Math.max(0, safeList.length - visible.length);
+    return html`
+      ${visible.map((value, index) => html`<span key=${`${value}-${index}`} class="wf-node-chip">${value}</span>`)}
+      ${remainder > 0 && html`<span class="wf-node-chip wf-node-chip-more">+${remainder}</span>`}
+    `;
+  };
+
   if (!open) return null;
 
+  const totalTypes = types?.length || 0;
   const selected = results[selectedIndex] || results[0] || null;
   const submit = (item) => {
     if (!item) return;
     onSelect(item.type);
   };
+  const pointLabel = `${Math.round(insertPoint?.x || 0)}, ${Math.round(insertPoint?.y || 0)}`;
 
   return html`
-    <div
-      style="position: absolute; inset: 0; z-index: 32; background: rgba(3, 7, 18, 0.55); backdrop-filter: blur(2px);"
-      onClick=${(e) => { if (e.target === e.currentTarget) onClose(); }}
-    >
-      <div class="wf-palette" style="position: absolute; top: 72px; left: 50%; transform: translateX(-50%); width: min(760px, calc(100% - 32px)); max-height: min(70vh, 720px); overflow: hidden; background: var(--color-bg, #0d1117); border: 1px solid var(--color-border, #2a3040); border-radius: 16px; padding: 14px; box-shadow: 0 18px 48px rgba(0,0,0,0.45); display: flex; flex-direction: column; gap: 12px;">
-        <div style="display: flex; align-items: center; gap: 10px;">
-          <div style="flex: 1; min-width: 0;">
-            <div style="font-size: 14px; font-weight: 700; color: var(--color-text, white);">Insert workflow node</div>
-            <div style="font-size: 11px; opacity: 0.7; margin-top: 3px;">${types?.length || 0} node types · insert at ${Math.round(insertPoint?.x || 0)}, ${Math.round(insertPoint?.y || 0)}</div>
+    <div class="wf-palette-backdrop" onClick=${(e) => { if (e.target === e.currentTarget) onClose(); }}>
+      <div class="wf-palette">
+        <div class="wf-palette-header">
+          <div class="wf-palette-title-group">
+            <div class="wf-palette-title">Insert workflow node</div>
+            <div class="wf-palette-subtitle">${totalTypes} node types · insert at ${pointLabel}</div>
           </div>
           <${IconButton} size="small" onClick=${onClose} sx=${{ fontSize: '16px', lineHeight: 1 }}>
             <span class="icon-inline">${resolveIcon("✕")}</span>
@@ -2831,45 +2877,56 @@ function NodePalette({
           sx=${{ flex: 1 }}
           autoFocus
         />
-        <div style="display: flex; align-items: center; gap: 8px; font-size: 11px; opacity: 0.7;">
+        <div class="wf-palette-hints">
           <span>${results.length} matches</span>
           <span>·</span>
           <span>↵ insert</span>
           <span>·</span>
           <span>↑↓ navigate</span>
         </div>
-        <div style="display: flex; flex-direction: column; gap: 8px; overflow-y: auto; padding-right: 2px;">
+        <div class="wf-palette-results">
           ${results.map((item, index) => {
             const meta = NODE_CATEGORY_META[item.category] || { color: "#6b7280", bg: "#6b728020", label: item.category };
             const io = getNodeSearchMetadata(item);
-            const inputText = io.inputs.length
-              ? `Inputs: ${io.inputs.slice(0, 4).join(", ")}${io.inputs.length > 4 ? ` +${io.inputs.length - 4}` : ""}`
-              : "Inputs: none";
-            const outputText = `Outputs: ${io.outputs.join(", ")}`;
             return html`
               <button
                 key=${item.type}
                 type="button"
                 class=${`wf-node-search-item ${index === selectedIndex ? "active" : ""}`}
-                style=${`display:flex; flex-direction:column; gap:8px; width:100%; text-align:left; border:1px solid ${index === selectedIndex ? '#3b82f6aa' : 'var(--color-border, #2a3040)'}; border-radius:12px; padding:12px 14px; background:${index === selectedIndex ? 'rgba(59,130,246,0.12)' : 'var(--color-bg-secondary, #131722)'}; color:var(--color-text, white); cursor:pointer;`}
+                style=${`border-color: ${index === selectedIndex ? '#3b82f6aa' : 'var(--color-border, #2a3040)'}; background: ${index === selectedIndex ? 'rgba(59,130,246,0.12)' : 'var(--color-bg-secondary, #131722)'};`}
                 onMouseEnter=${() => setSelectedIndex(index)}
                 onClick=${() => submit(item)}
               >
-                <div style="display:flex; align-items:center; gap:8px; flex-wrap:wrap;">
-                  <span style="font-weight:700; font-size:13px;">${item.label}</span>
-                  <span style=${`display:inline-flex; align-items:center; padding:2px 8px; border-radius:999px; font-size:10px; letter-spacing:0.04em; text-transform:uppercase; color:${meta.color}; background:${meta.bg}; border:1px solid ${meta.color}33;`}>${meta.label || item.category}</span>
-                  <span style="font-size:11px; opacity:0.55;">${item.type}</span>
+                <div class="wf-node-search-item-top">
+                  <span class="wf-node-search-label">${item.label}</span>
+                  <span
+                    class="wf-node-category-badge"
+                    style=${`color:${meta.color}; background:${meta.bg}; border-color:${meta.color}33;`}
+                  >
+                    ${meta.label || item.category}
+                  </span>
+                  <span class="wf-node-search-type">${item.type}</span>
                 </div>
-                <div style="font-size:12px; opacity:0.78; line-height:1.4;">${item.description || "No description available."}</div>
-                <div style="display:flex; gap:10px; flex-wrap:wrap; font-size:11px; opacity:0.72;">
-                  <span>${inputText}</span>
-                  <span>${outputText}</span>
+                <div class="wf-node-search-description">${item.description || "No description available."}</div>
+                <div class="wf-node-chip-row">
+                  <div class="wf-node-chip-group">
+                    <span class="wf-node-chip-label">Inputs</span>
+                    <div class="wf-node-chip-list">
+                      ${renderChips(io.inputs, "None")}
+                    </div>
+                  </div>
+                  <div class="wf-node-chip-group">
+                    <span class="wf-node-chip-label">Outputs</span>
+                    <div class="wf-node-chip-list">
+                      ${renderChips(io.outputs, "Default")}
+                    </div>
+                  </div>
                 </div>
               </button>
             `;
           })}
           ${results.length === 0 && html`
-            <div style="text-align: center; padding: 20px; opacity: 0.6;">No matching nodes</div>
+            <div class="wf-node-search-empty">No matching nodes</div>
           `}
         </div>
       </div>
@@ -2885,9 +2942,9 @@ function KeyboardShortcutOverlay({ open, onClose, canUndo, canRedo }) {
     { keys: "?", description: "Show this shortcut reference" },
     { keys: "Ctrl/Cmd + Z", description: canUndo ? "Undo last graph change" : "Undo unavailable" },
     { keys: "Ctrl/Cmd + Shift + Z", description: canRedo ? "Redo last undone change" : "Redo unavailable" },
-    { keys: "Ctrl/Cmd + Y", description: canRedo ? "Alternate redo shortcut" : "Alternate redo shortcut" },
-    { keys: "Delete / Backspace", description: "Delete selected node or edge" },
+    { keys: "Ctrl/Cmd + Y", description: canRedo ? "Alternate redo shortcut" : "Alternate redo unavailable" },
     { keys: "Ctrl/Cmd + A", description: "Select all nodes" },
+    { keys: "Delete / Backspace", description: "Delete selected node or edge" },
     { keys: "Space + drag", description: "Pan the canvas" },
     { keys: "Ctrl/Cmd + drag", description: "Alternate mouse panning" },
     { keys: "Shift + click", description: "Add or remove a node from the selection" },
@@ -2896,11 +2953,11 @@ function KeyboardShortcutOverlay({ open, onClose, canUndo, canRedo }) {
     <${Dialog} open=${open} onClose=${onClose} maxWidth="sm" fullWidth>
       <${DialogTitle}>Canvas Shortcuts<//>
       <${DialogContent} dividers>
-        <div style="display:flex; flex-direction:column; gap:10px;">
+        <div class="wf-shortcuts-grid">
           ${shortcuts.map((shortcut) => html`
-            <div key=${shortcut.keys} style="display:flex; align-items:flex-start; justify-content:space-between; gap:16px;">
-              <code style="font-size:12px; padding:3px 8px; border-radius:8px; background:rgba(148,163,184,0.14);">${shortcut.keys}</code>
-              <span style="font-size:13px; opacity:0.82; text-align:right;">${shortcut.description}</span>
+            <div key=${shortcut.keys} class="wf-shortcut-row">
+              <code class="wf-shortcut-key">${shortcut.keys}</code>
+              <span class="wf-shortcut-desc">${shortcut.description}</span>
             </div>
           `)}
         </div>
@@ -2918,14 +2975,45 @@ function KeyboardShortcutOverlay({ open, onClose, canUndo, canRedo }) {
 
 const COMMAND_PRESETS = {
   testing: [
-    { label: "Run Tests", cmd: "npm test", icon: "beaker" },
+    { label: "Run Tests (npm)", cmd: "npm test", icon: "beaker" },
+    { label: "Run Tests (yarn)", cmd: "yarn test", icon: "beaker" },
+    { label: "Run Tests (pnpm)", cmd: "pnpm test", icon: "beaker" },
+    { label: "Run Tests (pytest)", cmd: "pytest", icon: "beaker" },
+    { label: "Run Tests (Go)", cmd: "go test ./...", icon: "beaker" },
+    { label: "Run Tests (Rust)", cmd: "cargo test", icon: "beaker" },
+    { label: "Run Tests (Java/Maven)", cmd: "mvn test", icon: "beaker" },
+    { label: "Run Tests (Java/Gradle)", cmd: "./gradlew test", icon: "beaker" },
+    { label: "Run Tests (.NET)", cmd: "dotnet test", icon: "beaker" },
+    { label: "Run Tests (Ruby)", cmd: "bundle exec rspec", icon: "beaker" },
     { label: "Run Single File", cmd: 'npx vitest run tests/{{testFile}}', icon: "target" },
-    { label: "Syntax Check", cmd: "npm run syntax:check", icon: "check" },
+    { label: "Syntax Check (Node)", cmd: "npm run syntax:check", icon: "check" },
+    { label: "Syntax Check (Python)", cmd: "python -m py_compile", icon: "check" },
+    { label: "Syntax Check (Go)", cmd: "go vet ./...", icon: "check" },
+    { label: "Syntax Check (Rust)", cmd: "cargo check", icon: "check" },
   ],
   build: [
-    { label: "Build Project", cmd: "npm run build", icon: "hammer" },
+    { label: "Build (npm)", cmd: "npm run build", icon: "hammer" },
+    { label: "Build (yarn)", cmd: "yarn build", icon: "hammer" },
+    { label: "Build (pnpm)", cmd: "pnpm build", icon: "hammer" },
+    { label: "Build (Go)", cmd: "go build ./...", icon: "hammer" },
+    { label: "Build (Rust)", cmd: "cargo build", icon: "hammer" },
+    { label: "Build (Maven)", cmd: "mvn package -DskipTests", icon: "hammer" },
+    { label: "Build (Gradle)", cmd: "./gradlew build", icon: "hammer" },
+    { label: "Build (.NET)", cmd: "dotnet build", icon: "hammer" },
+    { label: "Build (Python)", cmd: "python -m build", icon: "hammer" },
+    { label: "Build (Make)", cmd: "make", icon: "hammer" },
     { label: "Build Watch", cmd: "npm run build -- --watch", icon: "eye" },
-    { label: "Type Check", cmd: "npx tsc --noEmit", icon: "ruler" },
+    { label: "Type Check (TS)", cmd: "npx tsc --noEmit", icon: "ruler" },
+  ],
+  lint: [
+    { label: "Lint (npm)", cmd: "npm run lint", icon: "search" },
+    { label: "Lint (ESLint)", cmd: "npx eslint .", icon: "search" },
+    { label: "Lint (Python/Ruff)", cmd: "ruff check .", icon: "search" },
+    { label: "Lint (Python/Flake8)", cmd: "flake8", icon: "search" },
+    { label: "Lint (Go)", cmd: "golangci-lint run", icon: "search" },
+    { label: "Lint (Rust)", cmd: "cargo clippy -- -D warnings", icon: "search" },
+    { label: "Lint (Ruby)", cmd: "bundle exec rubocop", icon: "search" },
+    { label: "Lint (.NET)", cmd: "dotnet format --verify-no-changes", icon: "search" },
   ],
   git: [
     { label: "Diff Stats", cmd: "git diff --stat main...HEAD", icon: "chart" },
@@ -3395,16 +3483,33 @@ function NodeConfigEditor({ node, nodeTypes: types, onUpdate, onUpdateLabel, onC
             ${[
               ...(nodeAction === "build" ? [
                 { label: "npm run build", cmd: "npm run build" },
+                { label: "yarn build", cmd: "yarn build" },
+                { label: "go build", cmd: "go build ./..." },
+                { label: "cargo build", cmd: "cargo build" },
+                { label: "mvn package", cmd: "mvn package -DskipTests" },
+                { label: "gradlew build", cmd: "./gradlew build" },
+                { label: "dotnet build", cmd: "dotnet build" },
+                { label: "make", cmd: "make" },
                 { label: "Zero Warnings", cmd: "npm run build", extra: { zeroWarnings: true } },
               ] : []),
               ...(nodeAction === "tests" ? [
                 { label: "npm test", cmd: "npm test" },
                 { label: "Vitest", cmd: "npx vitest run" },
                 { label: "Jest", cmd: "npx jest" },
+                { label: "pytest", cmd: "pytest" },
+                { label: "go test", cmd: "go test ./..." },
+                { label: "cargo test", cmd: "cargo test" },
+                { label: "mvn test", cmd: "mvn test" },
+                { label: "dotnet test", cmd: "dotnet test" },
+                { label: "rspec", cmd: "bundle exec rspec" },
               ] : []),
               ...(nodeAction === "lint" ? [
                 { label: "npm run lint", cmd: "npm run lint" },
                 { label: "ESLint", cmd: "npx eslint ." },
+                { label: "Ruff", cmd: "ruff check ." },
+                { label: "golangci-lint", cmd: "golangci-lint run" },
+                { label: "Clippy", cmd: "cargo clippy -- -D warnings" },
+                { label: "Rubocop", cmd: "bundle exec rubocop" },
               ] : []),
             ].map(p => html`
               <${Button}
@@ -3554,6 +3659,52 @@ function NodeConfigEditor({ node, nodeTypes: types, onUpdate, onUpdateLabel, onC
  *  Workflow List View
  * ═══════════════════════════════════════════════════════════════ */
 
+function humanizeWorkflowCategory(category) {
+  const normalized = String(category || "custom").trim();
+  if (!normalized) return "Custom";
+  return normalized
+    .replace(/[-_]+/g, " ")
+    .replace(/\b\w/g, (char) => char.toUpperCase());
+}
+
+function normalizeWorkflowCategoryMeta(source, fallbackCategory = "custom") {
+  const key = String(source?.category || fallbackCategory || "custom").trim() || "custom";
+  const order = Number(source?.categoryOrder);
+  return {
+    key,
+    label: String(source?.categoryLabel || humanizeWorkflowCategory(key)),
+    icon: String(source?.categoryIcon || "settings"),
+    order: Number.isFinite(order) ? order : 99,
+  };
+}
+
+function groupItemsByWorkflowCategory(items, getSource) {
+  const groups = new Map();
+  for (const item of items || []) {
+    const meta = normalizeWorkflowCategoryMeta(getSource(item), item?.category);
+    if (!groups.has(meta.key)) groups.set(meta.key, { ...meta, items: [] });
+    groups.get(meta.key).items.push(item);
+  }
+  return Array.from(groups.values()).sort((a, b) => a.order - b.order || a.label.localeCompare(b.label));
+}
+
+function resolveWorkflowTemplateSource(workflow, templateLookupById, templateLookupByName) {
+  const templateState = workflow?.metadata?.templateState || null;
+  const candidates = [
+    templateState?.templateId,
+    workflow?.metadata?.installedFrom,
+    templateState?.templateName,
+    workflow?.name,
+  ];
+  for (const candidate of candidates) {
+    const key = String(candidate || "").trim();
+    if (!key) continue;
+    if (templateLookupById.has(key)) return templateLookupById.get(key);
+    if (templateLookupByName.has(key)) return templateLookupByName.get(key);
+  }
+  return null;
+}
+
 function WorkflowListView() {
   const wfs = workflows.value || [];
   const tmpls = templates.value || [];
@@ -3566,6 +3717,28 @@ function WorkflowListView() {
     if (installedTemplateIds.has(t.id) || installedTemplateIds.has(t.name)) return false;
     return true;
   });
+  const templateLookup = useMemo(() => {
+    const byId = new Map();
+    const byName = new Map();
+    tmpls.forEach((template) => {
+      const id = String(template?.id || "").trim();
+      const name = String(template?.name || "").trim();
+      if (id) byId.set(id, template);
+      if (name) byName.set(name, template);
+    });
+    return { byId, byName };
+  }, [tmpls]);
+  const workflowGroups = useMemo(() => {
+    return groupItemsByWorkflowCategory(wfs, (wf) => {
+      return (
+        resolveWorkflowTemplateSource(wf, templateLookup.byId, templateLookup.byName)
+        || { category: wf?.category || "custom" }
+      );
+    });
+  }, [wfs, templateLookup]);
+  const availableTemplateGroups = useMemo(() => {
+    return groupItemsByWorkflowCategory(availableTemplates, (template) => template);
+  }, [availableTemplates]);
 
   return html`
     <div style="padding: 0 4px;">
@@ -3610,127 +3783,144 @@ function WorkflowListView() {
           <h3 style="font-size: 14px; font-weight: 600; color: var(--color-text-secondary, #8b95a5); margin-bottom: 12px; text-transform: uppercase; letter-spacing: 0.5px;">
             Your Workflows (${wfs.length})
           </h3>
-          <div style="display: grid; gap: 10px; grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));">
-            ${wfs.map(wf => html`
-              ${(() => {
-                const templateState = wf.metadata?.templateState || null;
-                const hasTemplateUpdate = templateState?.updateAvailable === true;
-                const isCustomizedTemplate = templateState?.isCustomized === true;
-                return html`
-              <div key=${wf.id} class="wf-card" style="background: var(--color-bg-secondary, #1a1f2e); border-radius: 12px; padding: 14px; border: 1px solid var(--color-border, #2a3040); cursor: pointer; transition: border-color 0.15s;"
-                   onClick=${() => {
-                     apiFetch("/api/workflows/" + wf.id).then(d => {
-                       activeWorkflow.value = d?.workflow || wf;
-                       viewMode.value = "canvas";
-                     }).catch(() => { activeWorkflow.value = wf; viewMode.value = "canvas"; });
-                   }}>
-                <div style="display: flex; align-items: center; gap: 8px; margin-bottom: 8px;">
-                  <span class="icon-inline" style="font-size: 14px;">${resolveIcon(getNodeMeta(wf.trigger || "action")?.icon) || ICONS.dot}</span>
-                  <span style="font-weight: 600; font-size: 14px; flex: 1;">${wf.name}</span>
-                  <span class="wf-badge" style="background: ${wf.enabled ? '#10b98130' : '#6b728030'}; color: ${wf.enabled ? '#10b981' : '#6b7280'}; font-size: 10px;">
-                    ${wf.enabled ? "Active" : "Paused"}
-                  </span>
-                  ${templateState?.templateId && html`
-                    <span class="wf-badge" style="background: #3b82f620; color: #60a5fa; font-size: 10px;">
-                      Template
-                    </span>
-                  `}
-                  ${isCustomizedTemplate && html`
-                    <span class="wf-badge" style="background: #f59e0b20; color: #f59e0b; font-size: 10px;">
-                      Customized
-                    </span>
-                  `}
-                  ${hasTemplateUpdate && html`
-                    <span class="wf-badge" style="background: #ef444420; color: #f87171; font-size: 10px;">
-                      Update Available
-                    </span>
-                  `}
-                </div>
-                ${wf.description && html`
-                  <div style="font-size: 12px; color: var(--color-text-secondary, #8b95a5); margin-bottom: 8px; line-height: 1.4;">
-                    ${wf.description.slice(0, 120)}${wf.description.length > 120 ? "…" : ""}
-                  </div>
-                `}
-                ${templateState?.templateId && html`
-                  <div style="font-size: 11px; color: var(--color-text-secondary, #7f8aa0); margin-bottom: 8px;">
-                    ${templateState.templateName || templateState.templateId}
-                    ${templateState.installedTemplateVersion && templateState.templateVersion && templateState.installedTemplateVersion !== templateState.templateVersion && html`
-                      <span> · v${templateState.installedTemplateVersion} → v${templateState.templateVersion}</span>
-                    `}
-                  </div>
-                `}
-                <div style="display: flex; gap: 8px; align-items: center; font-size: 11px; color: var(--color-text-secondary, #6b7280);">
-                  <span>${wf.nodeCount || 0} nodes</span>
-                  <span>·</span>
-                  <span>${wf.category || "custom"}</span>
-                  <div style="flex: 1;"></div>
-                  ${hasTemplateUpdate && html`
-                    <${Button}
-                      variant="text"
-                      size="small"
-                      sx=${{ fontSize: '11px', borderColor: '#f59e0b80', color: '#f59e0b', textTransform: 'none' }}
-                      onClick=${async (e) => {
-                        e.stopPropagation();
-                        if (!isCustomizedTemplate) {
-                          await applyTemplateUpdate(wf.id, "replace", true);
-                          return;
-                        }
-                        const choice = window.prompt(
-                          "Template update available for customized workflow.\nType 'copy' to create an updated copy, or 'replace' to overwrite this workflow.",
-                          "copy",
-                        );
-                        const normalized = String(choice || "").trim().toLowerCase();
-                        if (normalized === "copy") {
-                          await applyTemplateUpdate(wf.id, "copy", false);
-                          return;
-                        }
-                        if (normalized === "replace") {
-                          const ok = window.confirm("Replace this customized workflow with latest template? This cannot be undone.");
-                          if (!ok) return;
-                          await applyTemplateUpdate(wf.id, "replace", true);
-                        }
-                      }}
-                    >
-                      <span class="icon-inline">${resolveIcon("refresh")}</span>
-                      Update
-                    <//>
-                  `}
-                  <${Button}
-                    variant="text"
-                    size="small"
-                    sx=${{ fontSize: '11px', textTransform: 'none' }}
-                    onClick=${(e) => {
-                      e.stopPropagation();
-                      setWorkflowEnabled(wf.id, !wf.enabled);
-                    }}
-                  >
-                    <span class="icon-inline">${resolveIcon(wf.enabled ? "pause" : "play")}</span>
-                    ${wf.enabled ? "Pause" : "Resume"}
-                  <//>
-                  <${Button}
-                    variant="text"
-                    size="small"
-                    sx=${{ fontSize: '11px', textTransform: 'none', ...(wf.enabled ? {} : { opacity: 0.65 }) }}
-                    onClick=${(e) => {
-                      e.stopPropagation();
-                      if (!wf.enabled) {
-                        showToast("Workflow is paused. Resume it before running.", "warning");
-                        return;
-                      }
-                      openExecuteDialog(wf.id);
-                    }}
-                  >
-                    <span class="icon-inline">${resolveIcon("play")}</span>
-                  <//>
-                  <${Button} variant="text" size="small" sx=${{ fontSize: '11px', color: '#ef4444', textTransform: 'none' }} onClick=${(e) => { e.stopPropagation(); if (confirm("Delete " + wf.name + "?")) deleteWorkflow(wf.id); }}>
-                    <span class="icon-inline">${resolveIcon("trash")}</span>
-                  <//>
-                </div>
+          ${workflowGroups.map((group) => html`
+            <div key=${group.key} style="margin-bottom: 20px;">
+              <div style="display: flex; align-items: center; gap: 8px; margin-bottom: 10px; padding-bottom: 6px; border-bottom: 1px solid var(--color-border, #2a304060);">
+                <span class="icon-inline" style="font-size: 16px;">${resolveIcon(group.icon) || ICONS.dot}</span>
+                <span style="font-size: 13px; font-weight: 600; color: var(--color-text-secondary, #8b95a5);">${group.label}</span>
+                <span style="font-size: 11px; color: var(--color-text-secondary, #6b7280);">(${group.items.length})</span>
               </div>
-            `;
-              })()}
-            `)}
-          </div>
+              <div style="display: grid; gap: 10px; grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));">
+                ${group.items.map(wf => html`
+                  ${(() => {
+                    const templateState = wf.metadata?.templateState || null;
+                    const hasTemplateUpdate = templateState?.updateAvailable === true;
+                    const isCustomizedTemplate = templateState?.isCustomized === true;
+                    const isCore = wf.core === true;
+                    return html`
+                  <div key=${wf.id} class="wf-card" style="background: var(--color-bg-secondary, #1a1f2e); border-radius: 12px; padding: 14px; border: 1px solid var(--color-border, #2a3040); cursor: pointer; transition: border-color 0.15s;"
+                       onClick=${() => {
+                         apiFetch("/api/workflows/" + wf.id).then(d => {
+                           activeWorkflow.value = d?.workflow || wf;
+                           viewMode.value = "canvas";
+                         }).catch(() => { activeWorkflow.value = wf; viewMode.value = "canvas"; });
+                       }}>
+                    <div style="display: flex; align-items: center; gap: 8px; margin-bottom: 8px;">
+                      <span class="icon-inline" style="font-size: 14px;">${resolveIcon(getNodeMeta(wf.trigger || "action")?.icon) || ICONS.dot}</span>
+                      <span style="font-weight: 600; font-size: 14px; flex: 1;">${wf.name}</span>
+                      <span class="wf-badge" style="background: ${wf.enabled ? '#10b98130' : '#6b728030'}; color: ${wf.enabled ? '#10b981' : '#6b7280'}; font-size: 10px;">
+                        ${wf.enabled ? "Active" : "Paused"}
+                      </span>
+                      ${isCore && html`
+                        <span class="wf-badge" style="background: #8b5cf620; color: #a78bfa; font-size: 10px; font-weight: 600;">
+                          Core
+                        </span>
+                      `}
+                      ${templateState?.templateId && html`
+                        <span class="wf-badge" style="background: #3b82f620; color: #60a5fa; font-size: 10px;">
+                          Template
+                        </span>
+                      `}
+                      ${isCustomizedTemplate && html`
+                        <span class="wf-badge" style="background: #f59e0b20; color: #f59e0b; font-size: 10px;">
+                          Customized
+                        </span>
+                      `}
+                      ${hasTemplateUpdate && html`
+                        <span class="wf-badge" style="background: #ef444420; color: #f87171; font-size: 10px;">
+                          Update Available
+                        </span>
+                      `}
+                    </div>
+                    ${wf.description && html`
+                      <div style="font-size: 12px; color: var(--color-text-secondary, #8b95a5); margin-bottom: 8px; line-height: 1.4;">
+                        ${wf.description.slice(0, 120)}${wf.description.length > 120 ? "…" : ""}
+                      </div>
+                    `}
+                    ${templateState?.templateId && html`
+                      <div style="font-size: 11px; color: var(--color-text-secondary, #7f8aa0); margin-bottom: 8px;">
+                        ${templateState.templateName || templateState.templateId}
+                        ${templateState.installedTemplateVersion && templateState.templateVersion && templateState.installedTemplateVersion !== templateState.templateVersion && html`
+                          <span> · v${templateState.installedTemplateVersion} → v${templateState.templateVersion}</span>
+                        `}
+                      </div>
+                    `}
+                    <div style="display: flex; gap: 8px; align-items: center; font-size: 11px; color: var(--color-text-secondary, #6b7280);">
+                      <span>${wf.nodeCount || 0} nodes</span>
+                      <span>·</span>
+                      <span class="wf-badge" style="font-size: 10px; padding: 2px 8px; background: var(--color-bg, #0d1117); color: var(--color-text-secondary, #8b95a5);">
+                        ${group.label}
+                      </span>
+                      <div style="flex: 1;"></div>
+                      ${hasTemplateUpdate && html`
+                        <${Button}
+                          variant="text"
+                          size="small"
+                          sx=${{ fontSize: '11px', borderColor: '#f59e0b80', color: '#f59e0b', textTransform: 'none' }}
+                          onClick=${async (e) => {
+                            e.stopPropagation();
+                            if (!isCustomizedTemplate) {
+                              await applyTemplateUpdate(wf.id, "replace", true);
+                              return;
+                            }
+                            const choice = window.prompt(
+                              "Template update available for customized workflow.\nType 'copy' to create an updated copy, or 'replace' to overwrite this workflow.",
+                              "copy",
+                            );
+                            const normalized = String(choice || "").trim().toLowerCase();
+                            if (normalized === "copy") {
+                              await applyTemplateUpdate(wf.id, "copy", false);
+                              return;
+                            }
+                            if (normalized === "replace") {
+                              const ok = window.confirm("Replace this customized workflow with latest template? This cannot be undone.");
+                              if (!ok) return;
+                              await applyTemplateUpdate(wf.id, "replace", true);
+                            }
+                          }}
+                        >
+                          <span class="icon-inline">${resolveIcon("refresh")}</span>
+                          Update
+                        <//>
+                      `}
+                      ${!isCore && html`<${Button}
+                        variant="text"
+                        size="small"
+                        sx=${{ fontSize: '11px', textTransform: 'none' }}
+                        onClick=${(e) => {
+                          e.stopPropagation();
+                          setWorkflowEnabled(wf.id, !wf.enabled);
+                        }}
+                      >
+                        <span class="icon-inline">${resolveIcon(wf.enabled ? "pause" : "play")}</span>
+                        ${wf.enabled ? "Pause" : "Resume"}
+                      <//>`}
+                      <${Button}
+                        variant="text"
+                        size="small"
+                        sx=${{ fontSize: '11px', textTransform: 'none', ...(wf.enabled ? {} : { opacity: 0.65 }) }}
+                        onClick=${(e) => {
+                          e.stopPropagation();
+                          if (!wf.enabled) {
+                            showToast("Workflow is paused. Resume it before running.", "warning");
+                            return;
+                          }
+                          openExecuteDialog(wf.id);
+                        }}
+                      >
+                        <span class="icon-inline">${resolveIcon("play")}</span>
+                      <//>
+                      ${!isCore && html`<${Button} variant="text" size="small" sx=${{ fontSize: '11px', color: '#ef4444', textTransform: 'none' }} onClick=${(e) => { e.stopPropagation(); if (confirm("Delete " + wf.name + "?")) deleteWorkflow(wf.id); }}>
+                        <span class="icon-inline">${resolveIcon("trash")}</span>
+                      <//>`}
+                    </div>
+                  </div>
+                `;
+                  })()}
+                `)}
+              </div>
+            </div>
+          `)}
         </div>
       `}
 
@@ -3770,60 +3960,50 @@ function WorkflowListView() {
             <span>All templates are installed!</span>
           </div>
         `}
-        ${(() => {
-          // Group templates by category
-          const groups = {};
-          availableTemplates.forEach(t => {
-            const key = t.category || "custom";
-            if (!groups[key]) groups[key] = { label: t.categoryLabel || key, icon: t.categoryIcon || "settings", order: t.categoryOrder || 99, items: [] };
-            groups[key].items.push(t);
-          });
-          const sorted = Object.entries(groups).sort((a, b) => a[1].order - b[1].order);
-          return sorted.map(([cat, group]) => html`
-            <div key=${cat} style="margin-bottom: 20px;">
-              <div style="display: flex; align-items: center; gap: 8px; margin-bottom: 10px; padding-bottom: 6px; border-bottom: 1px solid var(--color-border, #2a304060);">
-                <span class="icon-inline" style="font-size: 16px;">${resolveIcon(group.icon) || ICONS.dot}</span>
-                <span style="font-size: 13px; font-weight: 600; color: var(--color-text-secondary, #8b95a5);">${group.label}</span>
-                <span style="font-size: 11px; color: var(--color-text-secondary, #6b7280);">(${group.items.length})</span>
-              </div>
-              <div style="display: grid; gap: 10px; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));">
-                ${group.items.map(t => html`
-                  <div key=${t.id} class="wf-card wf-template-card" style="background: var(--color-bg-secondary, #1a1f2e); border-radius: 12px; padding: 14px; border: 1px solid var(--color-border, #2a304080);">
-                    <div style="display: flex; align-items: center; gap: 8px; margin-bottom: 8px;">
-                      <span class="icon-inline" style="font-size: 14px;">${resolveIcon(t.categoryIcon || group.icon) || ICONS.dot}</span>
-                      <span style="font-weight: 600; font-size: 14px; flex: 1;">${t.name}</span>
-                      ${t.recommended && html`
-                        <span class="wf-badge" style="background: #10b98125; color: #10b981; border-color: #10b98140; font-size: 10px; padding: 2px 8px; font-weight: 600; letter-spacing: 0.3px; display: inline-flex; align-items: center; gap: 4px;">
-                          <span class="icon-inline">${resolveIcon("star")}</span>
-                          Recommended
-                        </span>
-                      `}
-                    </div>
-                    <div style="font-size: 12px; color: var(--color-text-secondary, #8b95a5); margin-bottom: 10px; line-height: 1.4;">
-                      ${t.description?.slice(0, 120)}${(t.description?.length || 0) > 120 ? "…" : ""}
-                    </div>
-                    <div style="display: flex; gap: 6px; flex-wrap: wrap; margin-bottom: 10px;">
-                      ${(t.tags || []).map(tag => html`
-                        <span key=${tag} class="wf-badge" style="font-size: 10px; padding: 2px 6px;">${tag}</span>
-                      `)}
-                    </div>
-                    <div style="display: flex; gap: 8px; align-items: center;">
-                      <span style="font-size: 11px; color: var(--color-text-secondary, #6b7280);">${t.nodeCount} nodes</span>
-                      <div style="flex: 1;"></div>
-                      <${Button}
-                        variant="contained"
-                        size="small"
-                        onClick=${() => openInstallTemplateDialog(t.id)}
-                      >
-                        Install →
-                      <//>
-                    </div>
-                  </div>
-                `)}
-              </div>
+        ${availableTemplateGroups.map((group) => html`
+          <div key=${group.key} style="margin-bottom: 20px;">
+            <div style="display: flex; align-items: center; gap: 8px; margin-bottom: 10px; padding-bottom: 6px; border-bottom: 1px solid var(--color-border, #2a304060);">
+              <span class="icon-inline" style="font-size: 16px;">${resolveIcon(group.icon) || ICONS.dot}</span>
+              <span style="font-size: 13px; font-weight: 600; color: var(--color-text-secondary, #8b95a5);">${group.label}</span>
+              <span style="font-size: 11px; color: var(--color-text-secondary, #6b7280);">(${group.items.length})</span>
             </div>
-          `);
-        })()}
+            <div style="display: grid; gap: 10px; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));">
+              ${group.items.map(t => html`
+                <div key=${t.id} class="wf-card wf-template-card" style="background: var(--color-bg-secondary, #1a1f2e); border-radius: 12px; padding: 14px; border: 1px solid var(--color-border, #2a304080);">
+                  <div style="display: flex; align-items: center; gap: 8px; margin-bottom: 8px;">
+                    <span class="icon-inline" style="font-size: 14px;">${resolveIcon(t.categoryIcon || group.icon) || ICONS.dot}</span>
+                    <span style="font-weight: 600; font-size: 14px; flex: 1;">${t.name}</span>
+                    ${t.recommended && html`
+                      <span class="wf-badge" style="background: #10b98125; color: #10b981; border-color: #10b98140; font-size: 10px; padding: 2px 8px; font-weight: 600; letter-spacing: 0.3px; display: inline-flex; align-items: center; gap: 4px;">
+                        <span class="icon-inline">${resolveIcon("star")}</span>
+                        Recommended
+                      </span>
+                    `}
+                  </div>
+                  <div style="font-size: 12px; color: var(--color-text-secondary, #8b95a5); margin-bottom: 10px; line-height: 1.4;">
+                    ${t.description?.slice(0, 120)}${(t.description?.length || 0) > 120 ? "…" : ""}
+                  </div>
+                  <div style="display: flex; gap: 6px; flex-wrap: wrap; margin-bottom: 10px;">
+                    ${(t.tags || []).map(tag => html`
+                      <span key=${tag} class="wf-badge" style="font-size: 10px; padding: 2px 6px;">${tag}</span>
+                    `)}
+                  </div>
+                  <div style="display: flex; gap: 8px; align-items: center;">
+                    <span style="font-size: 11px; color: var(--color-text-secondary, #6b7280);">${t.nodeCount} nodes</span>
+                    <div style="flex: 1;"></div>
+                    <${Button}
+                      variant="contained"
+                      size="small"
+                      onClick=${() => openInstallTemplateDialog(t.id)}
+                    >
+                      Install →
+                    <//>
+                  </div>
+                </div>
+              `)}
+            </div>
+          </div>
+        `)}
       </div>
     </div>
   `;
@@ -3936,9 +4116,6 @@ function RunHistoryView() {
   const [nowTick, setNowTick] = useState(Date.now());
   const hasRunningRuns = runs.some((run) => run?.status === "running");
   const selectedRunIsRunning = selectedRun?.status === "running";
-  const autoLoadMoreRef = useRef(false);
-  const tailSentinelRef = useRef(null);
-  const lastAutoLoadCountRef = useRef(-1);
   const [statusFilter, setStatusFilter] = useState("all");
   const [workflowFilter, setWorkflowFilter] = useState("all");
   const [triggerFilter, setTriggerFilter] = useState("all");
@@ -4023,12 +4200,6 @@ function RunHistoryView() {
 
   const canLoadMoreRuns =
     hasMoreRuns && runs.length < WORKFLOW_RUN_MAX_FETCH;
-  const hasRunFilters =
-    statusFilter !== "all" ||
-    workflowFilter !== "all" ||
-    triggerFilter !== "all" ||
-    Boolean(normalizedSearch);
-
   const triggerLoadMoreRuns = useCallback(() => {
     if (!canLoadMoreRuns || loadingMoreRuns) return false;
     const nextOffset = Number(workflowRunsNextOffset.value || runs.length);
@@ -4040,61 +4211,6 @@ function RunHistoryView() {
     });
     return true;
   }, [canLoadMoreRuns, loadingMoreRuns, runs.length, totalRuns]);
-
-  useEffect(() => {
-    if (!hasRunFilters || filteredRuns.length > 0 || !canLoadMoreRuns) {
-      autoLoadMoreRef.current = false;
-      return;
-    }
-    if (autoLoadMoreRef.current) return;
-    autoLoadMoreRef.current = true;
-    Promise.resolve(triggerLoadMoreRuns())
-      .finally(() => {
-        autoLoadMoreRef.current = false;
-      });
-  }, [hasRunFilters, filteredRuns.length, canLoadMoreRuns, triggerLoadMoreRuns, statusFilter, workflowFilter, triggerFilter, normalizedSearch]);
-
-  useEffect(() => {
-    if (selectedRun || !canLoadMoreRuns || typeof IntersectionObserver !== "function") {
-      lastAutoLoadCountRef.current = -1;
-      return;
-    }
-    const sentinel = tailSentinelRef.current;
-    if (!sentinel) return;
-    const observer = new IntersectionObserver(
-      (entries) => {
-        for (const entry of entries) {
-          if (!entry.isIntersecting) continue;
-          const key = runs.length;
-          if (lastAutoLoadCountRef.current === key || loadingMoreRuns) continue;
-          lastAutoLoadCountRef.current = key;
-          triggerLoadMoreRuns();
-        }
-      },
-      {
-        root: null,
-        rootMargin: "0px 0px 240px 0px",
-        threshold: 0,
-      },
-    );
-    observer.observe(sentinel);
-    return () => observer.disconnect();
-  }, [selectedRun, canLoadMoreRuns, loadingMoreRuns, runs.length, triggerLoadMoreRuns]);
-
-  useEffect(() => {
-    if (selectedRun || !canLoadMoreRuns || loadingMoreRuns || typeof window === "undefined") return;
-    const doc = document?.documentElement;
-    const body = document?.body;
-    const scrollHeight = Math.max(
-      Number(doc?.scrollHeight || 0),
-      Number(body?.scrollHeight || 0),
-    );
-    if (scrollHeight > window.innerHeight + 240) return;
-    const key = runs.length;
-    if (lastAutoLoadCountRef.current === key) return;
-    lastAutoLoadCountRef.current = key;
-    triggerLoadMoreRuns();
-  }, [selectedRun, canLoadMoreRuns, loadingMoreRuns, runs.length, filteredRuns.length, triggerLoadMoreRuns]);
 
   if (selectedRun) {
     const statusStyles = getRunStatusBadgeStyles(selectedRun.status);
@@ -4297,7 +4413,7 @@ function RunHistoryView() {
         <div style="text-align: center; padding: 28px; opacity: 0.6;">
           <div>No runs match the current filters yet.</div>
           ${canLoadMoreRuns && html`
-            <div style="margin-top: 6px;">Bosun has loaded ${runs.length} of ${totalRuns} run(s); older history will keep loading while the filter is active.</div>
+            <div style="margin-top: 6px;">Bosun has loaded ${runs.length} of ${totalRuns} run(s); use Load more runs to search older history.</div>
           `}
         </div>
       `}
@@ -4352,9 +4468,6 @@ function RunHistoryView() {
             <//>
           `;
         })}
-        ${canLoadMoreRuns && html`
-          <div ref=${tailSentinelRef} style="height: 1px;"></div>
-        `}
       </div>
       ${canLoadMoreRuns && html`
         <div style="display: flex; justify-content: center; margin-top: 12px;">
