@@ -125,7 +125,7 @@
           "type": "action.run_command",
           "label": "Inspect Single PR",
           "config": {
-            "command": "node -e \" const {execFileSync}=require('child_process'); const ctx=(()=>{try{return JSON.parse(String(process.env.BOSUN_PR_CONTEXT||'{}'))}catch{return {}}})(); const repo=String(ctx.repo||'').trim(); const branch=String(ctx.branch||'').trim(); const baseBranch=String(ctx.baseBranch||'main').trim()||'main'; const rawNumber=String(ctx.prNumber||'').trim(); const prNumber=Number.parseInt(rawNumber,10); if(!repo||!Number.isFinite(prNumber)||prNumber<=0){   console.log(JSON.stringify({success:false,classification:'missing',reason:'missing_repo_or_pr',repo,prNumber:Number.isFinite(prNumber)?prNumber:null,branch,baseBranch}));   process.exit(0); } function gh(args){return execFileSync('gh',args,{encoding:'utf8',stdio:['pipe','pipe','pipe']}).trim();} const raw=gh(['pr','view',String(prNumber),'--repo',repo,'--json','number,title,url,headRefName,baseRefName,isDraft,mergeable,statusCheckRollup']); const pr=(()=>{try{return JSON.parse(raw||'{}')}catch{return {}}})(); const checks=Array.isArray(pr.statusCheckRollup)?pr.statusCheckRollup:[]; const failStates=new Set(['FAILURE','ERROR','TIMED_OUT','CANCELLED','STARTUP_FAILURE']); const pendingStates=new Set(['QUEUED','IN_PROGRESS','PENDING','WAITING','REQUESTED']); const conflictMergeables=new Set(['CONFLICTING','DIRTY','UNKNOWN']); const hasFailure=checks.some((c)=>{const s=String(c?.state||'').toUpperCase();const b=String(c?.bucket||'').toUpperCase();return failStates.has(s)||b==='FAIL';}); const hasPending=checks.some((c)=>pendingStates.has(String(c?.state||'').toUpperCase())); let classification='ready'; let reason='ready_for_review'; let ciKicked=false; if(pr?.isDraft===true){classification='draft';reason='draft_pr';} else if(conflictMergeables.has(String(pr?.mergeable||'').toUpperCase())){classification='conflict';reason='merge_conflict';} else if(hasFailure){classification='ci_failure';reason='ci_failed';} else if(hasPending){classification='pending';reason='ci_pending';} else if(checks.length===0 && branch){   try{gh(['workflow','run','ci.yaml','--repo',repo,'--ref',branch]);ciKicked=true;classification='pending';reason='ci_kicked';}   catch{classification='ready';reason='ready_without_checks';} } console.log(JSON.stringify({success:true,repo,prNumber,url:String(pr?.url||ctx.prUrl||''),branch:String(pr?.headRefName||branch||''),baseBranch:String(pr?.baseRefName||baseBranch||'main'),title:String(pr?.title||ctx.taskTitle||''),classification,reason,ciKicked,hasFailure,hasPending})); \"",
+            "command": "node -e \" const {execFileSync}=require('child_process'); const ctx=(()=>{try{return JSON.parse(String(process.env.BOSUN_PR_CONTEXT||'{}'))}catch{return {}}})(); const repo=String(ctx.repo||'').trim(); const branch=String(ctx.branch||'').trim(); const baseBranch=String(ctx.baseBranch||'main').trim()||'main'; const rawNumber=String(ctx.prNumber||'').trim(); const prNumber=Number.parseInt(rawNumber,10); if(!repo||!Number.isFinite(prNumber)||prNumber<=0){   console.log(JSON.stringify({success:false,classification:'missing',reason:'missing_repo_or_pr',repo,prNumber:Number.isFinite(prNumber)?prNumber:null,branch,baseBranch}));   process.exit(0); } function gh(args){return execFileSync('gh',args,{encoding:'utf8',stdio:['pipe','pipe','pipe']}).trim();} const raw=gh(['pr','view',String(prNumber),'--repo',repo,'--json','number,title,url,headRefName,baseRefName,isDraft,mergeable,statusCheckRollup']); const pr=(()=>{try{return JSON.parse(raw||'{}')}catch{return {}}})(); const checks=Array.isArray(pr.statusCheckRollup)?pr.statusCheckRollup:[]; const failStates=new Set(['FAILURE','ERROR','TIMED_OUT','CANCELLED','STARTUP_FAILURE']); const pendingStates=new Set(['QUEUED','IN_PROGRESS','PENDING','WAITING','REQUESTED']); const conflictMergeables=new Set(['CONFLICTING','DIRTY','UNKNOWN']); const failedCheckNames=checks.filter((c)=>{const s=String(c?.state||'').toUpperCase();const b=String(c?.bucket||'').toUpperCase();return failStates.has(s)||b==='FAIL';}).map((c)=>String(c?.name||c?.context||c?.workflowName||'').trim()).filter(Boolean); const hasFailure=checks.some((c)=>{const s=String(c?.state||'').toUpperCase();const b=String(c?.bucket||'').toUpperCase();return failStates.has(s)||b==='FAIL';}); const hasPending=checks.some((c)=>pendingStates.has(String(c?.state||'').toUpperCase())); let classification='ready'; let reason='ready_for_review'; let ciKicked=false; if(pr?.isDraft===true){classification='draft';reason='draft_pr';} else if(conflictMergeables.has(String(pr?.mergeable||'').toUpperCase())){classification='conflict';reason='merge_conflict';} else if(hasFailure){classification='ci_failure';reason='ci_failed';} else if(hasPending){classification='pending';reason='ci_pending';} else if(checks.length===0 && branch){   try{gh(['workflow','run','ci.yaml','--repo',repo,'--ref',branch]);ciKicked=true;classification='pending';reason='ci_kicked';}   catch{classification='ready';reason='ready_without_checks';} } console.log(JSON.stringify({success:true,repo,prNumber,url:String(pr?.url||ctx.prUrl||''),branch:String(pr?.headRefName||branch||''),baseBranch:String(pr?.baseRefName||baseBranch||'main'),title:String(pr?.title||ctx.taskTitle||''),classification,reason,ciKicked,hasFailure,hasPending,failedCheckNames})); \"",
             "continueOnError": true,
             "failOnError": false,
             "env": {
@@ -160,7 +160,7 @@
           "type": "action.run_command",
           "label": "Repair Attempt",
           "config": {
-            "command": "node -e \" const {execFileSync}=require('child_process'); const data=(()=>{try{return JSON.parse(String(process.env.BOSUN_PR_INSPECT||'{}'))}catch{return {}}})(); const repo=String(data.repo||'').trim(); const branch=String(data.branch||'').trim(); const prNumber=Number.parseInt(String(data.prNumber||''),10); const classification=String(data.classification||'').trim(); const labelFix=String('{{labelNeedsFix}}'||'bosun-needs-fix'); function gh(args){return execFileSync('gh',args,{encoding:'utf8',stdio:['pipe','pipe','pipe']}).trim();} if(repo&&Number.isFinite(prNumber)&&prNumber>0){   try{gh(['pr','edit',String(prNumber),'--repo',repo,'--add-label',labelFix]);}catch{} } if(classification==='ci_failure'&&repo&&branch){   try{     const listRaw=gh(['run','list','--repo',repo,'--branch',branch,'--json','databaseId,conclusion,status','--limit','8']);     const runs=(()=>{try{return JSON.parse(listRaw||'[]')}catch{return []}})();     const failed=(Array.isArray(runs)?runs:[]).find((r)=>{const c=String(r?.conclusion||'').toUpperCase();return c==='FAILURE'||c==='ERROR'||c==='TIMED_OUT'||c==='CANCELLED';});     if(failed?.databaseId){gh(['run','rerun',String(failed.databaseId),'--repo',repo]);console.log(JSON.stringify({success:true,rerunRequested:true,needsAgent:false,reason:'rerun_requested'}));process.exit(0);}   }catch(e){     console.log(JSON.stringify({success:false,rerunRequested:false,needsAgent:true,reason:'ci_rerun_failed',error:String(e?.message||e)}));     process.exit(0);   }   console.log(JSON.stringify({success:false,rerunRequested:false,needsAgent:true,reason:'no_rerunnable_failed_run_found'}));   process.exit(0); } console.log(JSON.stringify({success:false,rerunRequested:false,needsAgent:true,reason:classification==='conflict'?'merge_conflict_requires_code_resolution':'repair_required'})); \"",
+            "command": "node -e \" const {execFileSync}=require('child_process'); const data=(()=>{try{return JSON.parse(String(process.env.BOSUN_PR_INSPECT||'{}'))}catch{return {}}})(); const repo=String(data.repo||'').trim(); const branch=String(data.branch||'').trim(); const prNumber=Number.parseInt(String(data.prNumber||''),10); const classification=String(data.classification||'').trim(); const failedCheckNames=Array.isArray(data.failedCheckNames)?data.failedCheckNames:[]; const labelFix=String('{{labelNeedsFix}}'||'bosun-needs-fix'); const FAIL_STATES=new Set(['FAILURE','ERROR','TIMED_OUT','CANCELLED','STARTUP_FAILURE']); const MAX_AUTO_RERUN_ATTEMPT=1; function gh(args){return execFileSync('gh',args,{encoding:'utf8',stdio:['pipe','pipe','pipe']}).trim();} function normalizeRun(run){if(!run||typeof run!=='object')return null;return {databaseId:Number(run.databaseId||0)||null,attempt:Number(run.attempt||0)||0,conclusion:String(run.conclusion||''),status:String(run.status||''),workflowName:String(run.workflowName||run.name||''),displayTitle:String(run.displayTitle||run.name||''),url:String(run.url||''),createdAt:String(run.createdAt||''),updatedAt:String(run.updatedAt||'')}} function normalizeJob(job){if(!job||typeof job!=='object')return null;const steps=Array.isArray(job.steps)?job.steps:[];return {databaseId:Number(job.databaseId||0)||null,name:String(job.name||''),status:String(job.status||''),conclusion:String(job.conclusion||''),url:String(job.url||''),failedSteps:steps.filter((step)=>FAIL_STATES.has(String(step?.conclusion||step?.status||'').toUpperCase())).map((step)=>({name:String(step?.name||''),number:Number(step?.number||0)||null,status:String(step?.status||''),conclusion:String(step?.conclusion||'')})).filter((step)=>step.name).slice(0,10)}} function truncateText(value,max){const text=String(value||'').replace(/\\r/g,'').trim();if(!text)return '';return text.length>max?text.slice(0,Math.max(0,max-19))+'\\n...[truncated]':text;} function collectCiDiagnostics(run){const info={failedRun:normalizeRun(run),failedJobs:[],failedLogExcerpt:'',diagnosticsError:''};const runId=Number(run?.databaseId||0)||0;if(!runId)return info;try{const viewRaw=gh(['run','view',String(runId),'--repo',repo,'--json','attempt,conclusion,status,workflowName,displayTitle,url,createdAt,updatedAt,jobs']);const view=(()=>{try{return JSON.parse(viewRaw||'{}')}catch{return {}}})();info.failedRun=normalizeRun({...run,...view});const jobs=Array.isArray(view.jobs)?view.jobs:[];info.failedJobs=jobs.map(normalizeJob).filter((job)=>job&&(FAIL_STATES.has(String(job.conclusion||'').toUpperCase())||job.failedSteps.length>0)).slice(0,10);}catch(e){info.diagnosticsError=String(e?.message||e);}try{info.failedLogExcerpt=truncateText(gh(['run','view',String(runId),'--repo',repo,'--log-failed']),6000);}catch(e){const message=String(e?.message||e);if(message&&message!==info.diagnosticsError){info.diagnosticsError=info.diagnosticsError?info.diagnosticsError+' | '+message:message;}}return info;} if(repo&&Number.isFinite(prNumber)&&prNumber>0){   try{gh(['pr','edit',String(prNumber),'--repo',repo,'--add-label',labelFix]);}catch{} } if(classification==='ci_failure'&&repo&&branch){   try{     const listRaw=gh(['run','list','--repo',repo,'--branch',branch,'--json','databaseId,attempt,conclusion,status,workflowName,displayTitle,url,createdAt,updatedAt','--limit','8']);     const runs=(()=>{try{return JSON.parse(listRaw||'[]')}catch{return []}})();     const failed=(Array.isArray(runs)?runs:[]).find((r)=>FAIL_STATES.has(String(r?.conclusion||'').toUpperCase()));     const failedRun=normalizeRun(failed);     if(failedRun?.databaseId&&failedRun.attempt<=MAX_AUTO_RERUN_ATTEMPT){gh(['run','rerun',String(failedRun.databaseId),'--repo',repo]);console.log(JSON.stringify({success:true,rerunRequested:true,needsAgent:false,reason:'rerun_requested',failedCheckNames,failedRun}));process.exit(0);}     if(failedRun?.databaseId){const diagnostics=collectCiDiagnostics(failedRun);console.log(JSON.stringify({success:false,rerunRequested:false,needsAgent:true,reason:'auto_rerun_limit_reached',failedCheckNames,rerunAttempts:failedRun.attempt||0,...diagnostics}));process.exit(0);}     console.log(JSON.stringify({success:false,rerunRequested:false,needsAgent:true,reason:'no_rerunnable_failed_run_found',failedCheckNames,recentRuns:(Array.isArray(runs)?runs:[]).map(normalizeRun).filter(Boolean).slice(0,5)}));     process.exit(0);   }catch(e){     console.log(JSON.stringify({success:false,rerunRequested:false,needsAgent:true,reason:'ci_rerun_failed',failedCheckNames,error:String(e?.message||e)}));     process.exit(0);   } } console.log(JSON.stringify({success:false,rerunRequested:false,needsAgent:true,reason:classification==='conflict'?'merge_conflict_requires_code_resolution':'repair_required',failedCheckNames})); \"",
             "continueOnError": true,
             "failOnError": false,
             "env": {
@@ -418,8 +418,8 @@
         "bosun-attached",
         "safety"
       ],
-      "nodeCount": 12,
-      "edgeCount": 14,
+      "nodeCount": 17,
+      "edgeCount": 22,
       "recommended": true,
       "enabled": true,
       "trigger": "trigger.schedule",
@@ -477,7 +477,7 @@
           "type": "action.run_command",
           "label": "Fetch, Classify & Label PRs",
           "config": {
-            "command": "node -e \" const fs=require('fs'); const path=require('path'); const {execFileSync}=require('child_process'); const LABEL_FIX='{{labelNeedsFix}}'; const MAX_PRS=Math.max(1,Number('{{maxPrs}}')||25); const REPO_SCOPE=String('{{repoScope}}'||'auto').trim(); const FIELDS='number,title,headRefName,baseRefName,isDraft,mergeable,statusCheckRollup,labels,url'; const FAIL_STATES=new Set(['FAILURE','ERROR','TIMED_OUT','CANCELLED','STARTUP_FAILURE']); const PEND_STATES=new Set(['PENDING','IN_PROGRESS','QUEUED','WAITING','REQUESTED','EXPECTED']); const CONFLICT_MERGEABLES=new Set(['CONFLICTING','BEHIND','DIRTY']); function ghJson(args){const out=execFileSync('gh',args,{encoding:'utf8',stdio:['pipe','pipe','pipe']}).trim();return out?JSON.parse(out):[];} function configPath(){   const home=String(process.env.BOSUN_HOME||process.env.VK_PROJECT_DIR||'').trim();   return home?path.join(home,'bosun.config.json'):path.join(process.cwd(),'bosun.config.json'); } function collectReposFromConfig(){   const repos=[];   try{     const cfg=JSON.parse(fs.readFileSync(configPath(),'utf8'));     const workspaces=Array.isArray(cfg?.workspaces)?cfg.workspaces:[];     if(workspaces.length>0){       const active=String(cfg?.activeWorkspace||'').trim().toLowerCase();       const activeWs=active?workspaces.find(w=>String(w?.id||'').trim().toLowerCase()===active):null;       const wsList=activeWs?[activeWs]:workspaces;       for(const ws of wsList){         for(const repo of (Array.isArray(ws?.repos)?ws.repos:[])){           const slug=typeof repo==='string'?String(repo).trim():String(repo?.slug||'').trim();           if(slug) repos.push(slug);         }       }     }     if(repos.length===0){       for(const repo of (Array.isArray(cfg?.repos)?cfg.repos:[])){         const slug=typeof repo==='string'?String(repo).trim():String(repo?.slug||'').trim();         if(slug) repos.push(slug);       }     }   }catch{}   return repos; } function resolveRepoTargets(){   if(REPO_SCOPE&&REPO_SCOPE!=='auto'&&REPO_SCOPE!=='all'&&REPO_SCOPE!=='current'){     return [...new Set(REPO_SCOPE.split(',').map(v=>v.trim()).filter(Boolean))];   }   if(REPO_SCOPE==='current') return [''];   const fromConfig=collectReposFromConfig();   if(fromConfig.length>0) return [...new Set(fromConfig)];   const envRepo=String(process.env.GITHUB_REPOSITORY||'').trim();   if(envRepo) return [envRepo];   return ['']; } function parseRepoFromUrl(url){   const raw=String(url||'');   const marker='github.com/';   const idx=raw.toLowerCase().indexOf(marker);   if(idx<0) return '';   const tail=raw.slice(idx+marker.length).split('/');   if(tail.length<2) return '';   const owner=String(tail[0]||'').trim();   const repo=String(tail[1]||'').trim();   return owner&&repo?(owner+'/'+repo):''; } const repoTargets=resolveRepoTargets(); const prs=[]; const repoErrors=[]; for(const target of repoTargets){   const repo=String(target||'').trim();   const args=['pr','list','--label','bosun-attached','--state','open','--json',FIELDS,'--limit',String(MAX_PRS)];   if(repo) args.push('--repo',repo);   try{     const list=ghJson(args);     for(const pr of (Array.isArray(list)?list:[])){       const prRepo=repo||parseRepoFromUrl(pr?.url)||String(process.env.GITHUB_REPOSITORY||'').trim();       prs.push({...pr,__repo:prRepo});     }   }catch(e){     repoErrors.push({repo:repo||'current',error:String(e?.message||e)});   } } const readyCandidates=[],conflicts=[],ciFailures=[],pending=[],drafted=[]; let newlyLabeled=0,staleLabelCleared=0,ciKicked=0; for(const pr of prs){   const labels=(pr.labels||[]).map(l=>typeof l==='string'?l:l?.name).filter(Boolean);   const hasFixLabel=labels.includes(LABEL_FIX);   const checks=pr.statusCheckRollup||[];   const hasFail=checks.some(c=>FAIL_STATES.has(c.conclusion||c.state||''));   const hasPend=checks.some(c=>PEND_STATES.has(c.conclusion||c.state||''));   const isConflict=CONFLICT_MERGEABLES.has(String(pr.mergeable||'').toUpperCase());   const isDraft=pr.isDraft===true;   const repo=String(pr.__repo||'').trim();   if(isDraft){drafted.push({n:pr.number,repo});continue;}   if(isConflict){     conflicts.push({n:pr.number,repo,branch:pr.headRefName,base:pr.baseRefName,url:pr.url});     if(!hasFixLabel){       try{const editArgs=['pr','edit',String(pr.number),'--add-label',LABEL_FIX];if(repo)editArgs.push('--repo',repo);execFileSync('gh',editArgs,{encoding:'utf8',stdio:['pipe','pipe','pipe']});newlyLabeled++;}       catch(e){process.stderr.write('label err '+(repo?repo+' ':'')+'#'+pr.number+': '+(e?.message||e)+'\\\\n');}     }   } else if(hasFail){     ciFailures.push({n:pr.number,repo,branch:pr.headRefName,url:pr.url});     if(!hasFixLabel){       try{const editArgs=['pr','edit',String(pr.number),'--add-label',LABEL_FIX];if(repo)editArgs.push('--repo',repo);execFileSync('gh',editArgs,{encoding:'utf8',stdio:['pipe','pipe','pipe']});newlyLabeled++;}       catch(e){process.stderr.write('label err '+(repo?repo+' ':'')+'#'+pr.number+': '+(e?.message||e)+'\\\\n');}     }   } else {     if(hasFixLabel&&!hasPend){       try{         const rmArgs=['pr','edit',String(pr.number),'--remove-label',LABEL_FIX];         if(repo)rmArgs.push('--repo',repo);         execFileSync('gh',rmArgs,{encoding:'utf8',stdio:['pipe','pipe','pipe']});         staleLabelCleared++;       }catch(e){process.stderr.write('stale-label-rm err '+(repo?repo+' ':'')+'#'+pr.number+': '+(e?.message||e)+'\\\\n');}     } else if(checks.length>0&&!hasFixLabel){       if(hasPend) pending.push({n:pr.number,repo});       readyCandidates.push({n:pr.number,repo,branch:pr.headRefName,base:pr.baseRefName,url:pr.url,title:pr.title,pendingChecks:hasPend});     }     if(checks.length===0&&repo&&pr.headRefName&&!isDraft){       try{execFileSync('gh',['workflow','run','ci.yaml','--repo',repo,'--ref',pr.headRefName],{encoding:'utf8',stdio:['pipe','pipe','pipe']});ciKicked++;}       catch{}     }   } } console.log(JSON.stringify({   total:prs.length,   reposScanned:repoTargets.length,   repoErrors,   readyCandidates,   conflicts,   ciFailures,   pending:pending.length,   drafted:drafted.length,   newlyLabeled,   staleLabelCleared,   ciKicked,   fixNeeded:conflicts.length+ciFailures.length })); \"",
+            "command": "node -e \" const fs=require('fs'); const path=require('path'); const {execFileSync}=require('child_process'); const LABEL_FIX='{{labelNeedsFix}}'; const MAX_PRS=Math.max(1,Number('{{maxPrs}}')||25); const REPO_SCOPE=String('{{repoScope}}'||'auto').trim(); const FIELDS='number,title,headRefName,baseRefName,isDraft,mergeable,statusCheckRollup,labels,url'; const FAIL_STATES=new Set(['FAILURE','ERROR','TIMED_OUT','CANCELLED','STARTUP_FAILURE']); const PEND_STATES=new Set(['PENDING','IN_PROGRESS','QUEUED','WAITING','REQUESTED','EXPECTED']); const CONFLICT_MERGEABLES=new Set(['CONFLICTING','BEHIND','DIRTY']); const SECURITY_CHECK_RE=/(^|[^a-z])(codeql|code scanning|security|sarif|codacy)([^a-z]|$)/i; function readCheckName(check){return String(check?.name||check?.context||check?.workflowName||check?.displayTitle||'').trim();} function isFailedCheck(check){return FAIL_STATES.has(check?.conclusion||check?.state||'');} function isSecurityCheckName(name){return SECURITY_CHECK_RE.test(String(name||''));} function ghJson(args){const out=execFileSync('gh',args,{encoding:'utf8',stdio:['pipe','pipe','pipe']}).trim();return out?JSON.parse(out):[];} function configPath(){   const home=String(process.env.BOSUN_HOME||process.env.VK_PROJECT_DIR||'').trim();   return home?path.join(home,'bosun.config.json'):path.join(process.cwd(),'bosun.config.json'); } function collectReposFromConfig(){   const repos=[];   try{     const cfg=JSON.parse(fs.readFileSync(configPath(),'utf8'));     const workspaces=Array.isArray(cfg?.workspaces)?cfg.workspaces:[];     if(workspaces.length>0){       const active=String(cfg?.activeWorkspace||'').trim().toLowerCase();       const activeWs=active?workspaces.find(w=>String(w?.id||'').trim().toLowerCase()===active):null;       const wsList=activeWs?[activeWs]:workspaces;       for(const ws of wsList){         for(const repo of (Array.isArray(ws?.repos)?ws.repos:[])){           const slug=typeof repo==='string'?String(repo).trim():String(repo?.slug||'').trim();           if(slug) repos.push(slug);         }       }     }     if(repos.length===0){       for(const repo of (Array.isArray(cfg?.repos)?cfg.repos:[])){         const slug=typeof repo==='string'?String(repo).trim():String(repo?.slug||'').trim();         if(slug) repos.push(slug);       }     }   }catch{}   return repos; } function resolveRepoTargets(){   if(REPO_SCOPE&&REPO_SCOPE!=='auto'&&REPO_SCOPE!=='all'&&REPO_SCOPE!=='current'){     return [...new Set(REPO_SCOPE.split(',').map(v=>v.trim()).filter(Boolean))];   }   if(REPO_SCOPE==='current') return [''];   const fromConfig=collectReposFromConfig();   if(fromConfig.length>0) return [...new Set(fromConfig)];   const envRepo=String(process.env.GITHUB_REPOSITORY||'').trim();   if(envRepo) return [envRepo];   return ['']; } function parseRepoFromUrl(url){   const raw=String(url||'');   const marker='github.com/';   const idx=raw.toLowerCase().indexOf(marker);   if(idx<0) return '';   const tail=raw.slice(idx+marker.length).split('/');   if(tail.length<2) return '';   const owner=String(tail[0]||'').trim();   const repo=String(tail[1]||'').trim();   return owner&&repo?(owner+'/'+repo):''; } const repoTargets=resolveRepoTargets(); const prs=[]; const repoErrors=[]; for(const target of repoTargets){   const repo=String(target||'').trim();   const args=['pr','list','--label','bosun-attached','--state','open','--json',FIELDS,'--limit',String(MAX_PRS)];   if(repo) args.push('--repo',repo);   try{     const list=ghJson(args);     for(const pr of (Array.isArray(list)?list:[])){       const prRepo=repo||parseRepoFromUrl(pr?.url)||String(process.env.GITHUB_REPOSITORY||'').trim();       prs.push({...pr,__repo:prRepo});     }   }catch(e){     repoErrors.push({repo:repo||'current',error:String(e?.message||e)});   } } const readyCandidates=[],conflicts=[],securityFailures=[],ciFailures=[],pending=[],drafted=[]; let newlyLabeled=0,staleLabelCleared=0,ciKicked=0; for(const pr of prs){   const labels=(pr.labels||[]).map(l=>typeof l==='string'?l:l?.name).filter(Boolean);   const hasFixLabel=labels.includes(LABEL_FIX);   const checks=pr.statusCheckRollup||[];   const failedChecks=checks.filter(isFailedCheck);   const failedCheckNames=failedChecks.map(readCheckName).filter(Boolean);   const securityCheckNames=failedCheckNames.filter(isSecurityCheckName);   const hasFail=failedChecks.length>0;   const hasSecurityFail=securityCheckNames.length>0;   const hasPend=checks.some(c=>PEND_STATES.has(c.conclusion||c.state||''));   const isConflict=CONFLICT_MERGEABLES.has(String(pr.mergeable||'').toUpperCase());   const isDraft=pr.isDraft===true;   const repo=String(pr.__repo||'').trim();   if(isDraft){drafted.push({n:pr.number,repo});continue;}   if(isConflict){     conflicts.push({n:pr.number,repo,branch:pr.headRefName,base:pr.baseRefName,url:pr.url});     if(!hasFixLabel){       try{const editArgs=['pr','edit',String(pr.number),'--add-label',LABEL_FIX];if(repo)editArgs.push('--repo',repo);execFileSync('gh',editArgs,{encoding:'utf8',stdio:['pipe','pipe','pipe']});newlyLabeled++;}       catch(e){process.stderr.write('label err '+(repo?repo+' ':'')+'#'+pr.number+': '+(e?.message||e)+'\\\\n');}     }   } else if(hasSecurityFail){     securityFailures.push({n:pr.number,repo,branch:pr.headRefName,base:pr.baseRefName,url:pr.url,title:pr.title,failedCheckNames,securityCheckNames});     if(!hasFixLabel){       try{const editArgs=['pr','edit',String(pr.number),'--add-label',LABEL_FIX];if(repo)editArgs.push('--repo',repo);execFileSync('gh',editArgs,{encoding:'utf8',stdio:['pipe','pipe','pipe']});newlyLabeled++;}       catch(e){process.stderr.write('label err '+(repo?repo+' ':'')+'#'+pr.number+': '+(e?.message||e)+'\\n');}     }   } else if(hasFail){     ciFailures.push({n:pr.number,repo,branch:pr.headRefName,url:pr.url,failedCheckNames});     if(!hasFixLabel){       try{const editArgs=['pr','edit',String(pr.number),'--add-label',LABEL_FIX];if(repo)editArgs.push('--repo',repo);execFileSync('gh',editArgs,{encoding:'utf8',stdio:['pipe','pipe','pipe']});newlyLabeled++;}       catch(e){process.stderr.write('label err '+(repo?repo+' ':'')+'#'+pr.number+': '+(e?.message||e)+'\\\\n');}     }   } else {     if(hasFixLabel&&!hasPend){       try{         const rmArgs=['pr','edit',String(pr.number),'--remove-label',LABEL_FIX];         if(repo)rmArgs.push('--repo',repo);         execFileSync('gh',rmArgs,{encoding:'utf8',stdio:['pipe','pipe','pipe']});         staleLabelCleared++;       }catch(e){process.stderr.write('stale-label-rm err '+(repo?repo+' ':'')+'#'+pr.number+': '+(e?.message||e)+'\\\\n');}     } else if(checks.length>0&&!hasFixLabel){       if(hasPend) pending.push({n:pr.number,repo});       readyCandidates.push({n:pr.number,repo,branch:pr.headRefName,base:pr.baseRefName,url:pr.url,title:pr.title,pendingChecks:hasPend});     }     if(checks.length===0&&repo&&pr.headRefName&&!isDraft){       try{execFileSync('gh',['workflow','run','ci.yaml','--repo',repo,'--ref',pr.headRefName],{encoding:'utf8',stdio:['pipe','pipe','pipe']});ciKicked++;}       catch{}     }   } } console.log(JSON.stringify({   total:prs.length,   reposScanned:repoTargets.length,   repoErrors,   readyCandidates,   conflicts,   securityFailures,   ciFailures,   pending:pending.length,   drafted:drafted.length,   newlyLabeled,   staleLabelCleared,   ciKicked,   fixNeeded:conflicts.length+securityFailures.length+ciFailures.length })); \"",
             "continueOnError": false,
             "failOnError": true
           },
@@ -520,11 +520,26 @@
           ]
         },
         {
-          "id": "programmatic-fix",
-          "type": "action.run_command",
-          "label": "Programmatic Fix Pass",
+          "id": "security-fix-needed",
+          "type": "condition.expression",
+          "label": "Security Fix Needed?",
           "config": {
-            "command": "node -e \" const {execFileSync}=require('child_process'); const raw=String(process.env.BOSUN_FETCH_AND_CLASSIFY||''); const payload=(()=>{try{return JSON.parse(raw||'{}')}catch{return {}}})(); const ciFailures=Array.isArray(payload.ciFailures)?payload.ciFailures:[]; const conflicts=Array.isArray(payload.conflicts)?payload.conflicts:[]; const needsAgent=[]; let rerunRequested=0; function runGh(args){return execFileSync('gh',args,{encoding:'utf8',stdio:['pipe','pipe','pipe']}).trim();} for(const item of ciFailures){   const repo=String(item?.repo||'').trim();   const branch=String(item?.branch||'').trim();   const n=String(item?.n||'').trim();   if(!repo||!branch){needsAgent.push({repo,number:n,reason:'missing_repo_or_branch'});continue;}   try{     const listRaw=runGh(['run','list','--repo',repo,'--branch',branch,'--json','databaseId,conclusion,status','--limit','8']);     const runs=(()=>{try{return JSON.parse(listRaw||'[]')}catch{return []}})();     const failed=(Array.isArray(runs)?runs:[]).find((r)=>{       const c=String(r?.conclusion||'').toUpperCase();       return c==='FAILURE'||c==='ERROR'||c==='TIMED_OUT'||c==='CANCELLED';     });     if(failed?.databaseId){runGh(['run','rerun',String(failed.databaseId),'--repo',repo]);rerunRequested++;}     else{needsAgent.push({repo,number:n,reason:'no_rerunnable_failed_run_found'});}   }catch(e){needsAgent.push({repo,number:n,reason:'ci_rerun_failed',error:String(e?.message||e)});} } for(const item of conflicts){   needsAgent.push({repo:String(item?.repo||'').trim(),number:String(item?.n||'').trim(),branch:String(item?.branch||'').trim(),base:String(item?.base||'').trim(),reason:'merge_conflict_requires_code_resolution'}); } console.log(JSON.stringify({rerunRequested,ciFailureCount:ciFailures.length,conflictCount:conflicts.length,needsAgentCount:needsAgent.length,needsAgent})); \"",
+            "expression": "(()=>{try{const o=$ctx.getNodeOutput('fetch-and-classify')?.output;return (JSON.parse(o||'{}').securityFailures||[]).length>0;}catch(e){return false;}})()"
+          },
+          "position": {
+            "x": 120,
+            "y": 640
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "programmatic-security-fix",
+          "type": "action.run_command",
+          "label": "Collect Security Alerts",
+          "config": {
+            "command": "node -e \" const {execFileSync}=require('child_process'); const raw=String(process.env.BOSUN_FETCH_AND_CLASSIFY||''); const payload=(()=>{try{return JSON.parse(raw||'{}')}catch{return {}}})(); const securityFailures=Array.isArray(payload.securityFailures)?payload.securityFailures:[]; const needsAgent=[]; let alertsFetched=0; function gh(args){return execFileSync('gh',args,{encoding:'utf8',stdio:['pipe','pipe','pipe']}).trim();} function compactAlert(alert){   const instance=alert?.most_recent_instance||{};   const location=instance?.location||{};   const rule=alert?.rule||{};   const tool=alert?.tool||{};   return {     number: alert?.number ?? null,     state: String(alert?.state||''),     ruleId: String(rule?.id||alert?.rule_id||''),     ruleName: String(rule?.name||alert?.rule_name||''),     severity: String(rule?.severity||alert?.severity||''),     securitySeverity: String(rule?.security_severity_level||alert?.security_severity_level||''),     tool: String(tool?.name||alert?.tool_name||''),     path: String(location?.path||''),     startLine: Number(location?.start_line||0)||null,     url: String(alert?.html_url||''),   }; } for(const item of securityFailures){   const repo=String(item?.repo||'').trim();   const branch=String(item?.branch||'').trim();   const n=String(item?.n||'').trim();   const securityCheckNames=Array.isArray(item?.securityCheckNames)?item.securityCheckNames:[];   if(!repo||!branch){needsAgent.push({repo,number:n,branch,reason:'missing_repo_or_branch',securityCheckNames,alerts:[]});continue;}   let alerts=[];   let fetchError='';   try{     const alertsRaw=gh(['api','--method','GET','repos/'+repo+'/code-scanning/alerts','--raw-field','state=open','--raw-field','per_page=20','--raw-field','ref=refs/heads/'+branch]);     const parsed=(()=>{try{return JSON.parse(alertsRaw||'[]')}catch{return []}})();     alerts=(Array.isArray(parsed)?parsed:[]).map(compactAlert).filter(a=>a.ruleId||a.ruleName||a.path).slice(0,10);     if(alerts.length>0) alertsFetched++;   }catch(e){fetchError=String(e?.message||e);}   needsAgent.push({repo,number:n,branch,base:String(item?.base||'').trim(),url:String(item?.url||''),title:String(item?.title||''),reason:'security_code_scanning_failure',securityCheckNames,failedCheckNames:Array.isArray(item?.failedCheckNames)?item.failedCheckNames:[],alerts,fetchError}); } console.log(JSON.stringify({securityFailureCount:securityFailures.length,alertsFetched,needsAgentCount:needsAgent.length,needsAgent})); \"",
             "continueOnError": true,
             "failOnError": false,
             "env": {
@@ -532,8 +547,78 @@
             }
           },
           "position": {
-            "x": 200,
+            "x": 120,
+            "y": 750
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "security-agent-needed",
+          "type": "condition.expression",
+          "label": "Needs Security Agent?",
+          "config": {
+            "expression": "(()=>{try{const o=$ctx.getNodeOutput('programmatic-security-fix')?.output;return (JSON.parse(o||'{}').needsAgentCount||0)>0;}catch(e){return false;}})()"
+          },
+          "position": {
+            "x": 120,
+            "y": 860
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "dispatch-security-fix-agent",
+          "type": "action.run_agent",
+          "label": "Dispatch Security Fix Agent",
+          "config": {
+            "prompt": "You are a Bosun PR security remediation agent. Work only the PRs in this JSON:\n\n{{$ctx.getNodeOutput('programmatic-security-fix')?.output}}\n\nEach item represents a bosun-attached PR blocked by CodeQL or GitHub code scanning.\nUse the supplied alert data and failing security check names to make the smallest safe code change that resolves the finding.\nFor each repaired PR: check out the branch, fix only the reported code-scanning issue, run targeted validation, push the branch, and remove bosun-needs-fix after success.\n\nSTRICT RULES:\n- Only fix the listed code-scanning or CodeQL findings.\n- No unrelated refactors, dependency churn, merges, approvals, or PR closure.\n- If alert fetch failed, inspect the PR checks and relevant source to resolve the security failure directly.\n- Do NOT touch PRs that are not bosun-attached.",
+            "sdk": "auto",
+            "timeoutMs": 1800000,
+            "maxRetries": 2,
+            "retryDelayMs": 30000,
+            "continueOnError": true
+          },
+          "position": {
+            "x": 120,
+            "y": 970
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "generic-fix-needed",
+          "type": "condition.expression",
+          "label": "Generic Fix Needed?",
+          "config": {
+            "expression": "(()=>{try{const o=$ctx.getNodeOutput('fetch-and-classify')?.output;const d=JSON.parse(o||'{}');return ((d.conflicts||[]).length+(d.ciFailures||[]).length)>0;}catch(e){return false;}})()"
+          },
+          "position": {
+            "x": 280,
             "y": 640
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "programmatic-fix",
+          "type": "action.run_command",
+          "label": "Programmatic Fix Pass",
+          "config": {
+            "command": "node -e \" const {execFileSync}=require('child_process'); const raw=String(process.env.BOSUN_FETCH_AND_CLASSIFY||''); const payload=(()=>{try{return JSON.parse(raw||'{}')}catch{return {}}})(); const ciFailures=Array.isArray(payload.ciFailures)?payload.ciFailures:[]; const conflicts=Array.isArray(payload.conflicts)?payload.conflicts:[]; const needsAgent=[]; let rerunRequested=0; const FAIL_STATES=new Set(['FAILURE','ERROR','TIMED_OUT','CANCELLED','STARTUP_FAILURE']); const MAX_AUTO_RERUN_ATTEMPT=1; function runGh(args){return execFileSync('gh',args,{encoding:'utf8',stdio:['pipe','pipe','pipe']}).trim();} function normalizeRun(run){if(!run||typeof run!=='object')return null;return {databaseId:Number(run.databaseId||0)||null,attempt:Number(run.attempt||0)||0,conclusion:String(run.conclusion||''),status:String(run.status||''),workflowName:String(run.workflowName||run.name||''),displayTitle:String(run.displayTitle||run.name||''),url:String(run.url||''),createdAt:String(run.createdAt||''),updatedAt:String(run.updatedAt||'')}} function normalizeJob(job){if(!job||typeof job!=='object')return null;const steps=Array.isArray(job.steps)?job.steps:[];return {databaseId:Number(job.databaseId||0)||null,name:String(job.name||''),status:String(job.status||''),conclusion:String(job.conclusion||''),url:String(job.url||''),failedSteps:steps.filter((step)=>FAIL_STATES.has(String(step?.conclusion||step?.status||'').toUpperCase())).map((step)=>({name:String(step?.name||''),number:Number(step?.number||0)||null,status:String(step?.status||''),conclusion:String(step?.conclusion||'')})).filter((step)=>step.name).slice(0,10)}} function truncateText(value,max){const text=String(value||'').replace(/\\r/g,'').trim();if(!text)return '';return text.length>max?text.slice(0,Math.max(0,max-19))+'\\n...[truncated]':text;} function collectCiDiagnostics(repo,run){const info={failedRun:normalizeRun(run),failedJobs:[],failedLogExcerpt:'',diagnosticsError:''};const runId=Number(run?.databaseId||0)||0;if(!runId)return info;try{const viewRaw=runGh(['run','view',String(runId),'--repo',repo,'--json','attempt,conclusion,status,workflowName,displayTitle,url,createdAt,updatedAt,jobs']);const view=(()=>{try{return JSON.parse(viewRaw||'{}')}catch{return {}}})();info.failedRun=normalizeRun({...run,...view});const jobs=Array.isArray(view.jobs)?view.jobs:[];info.failedJobs=jobs.map(normalizeJob).filter((job)=>job&&(FAIL_STATES.has(String(job.conclusion||'').toUpperCase())||job.failedSteps.length>0)).slice(0,10);}catch(e){info.diagnosticsError=String(e?.message||e);}try{info.failedLogExcerpt=truncateText(runGh(['run','view',String(runId),'--repo',repo,'--log-failed']),6000);}catch(e){const message=String(e?.message||e);if(message&&message!==info.diagnosticsError){info.diagnosticsError=info.diagnosticsError?info.diagnosticsError+' | '+message:message;}}return info;} for(const item of ciFailures){   const repo=String(item?.repo||'').trim();   const branch=String(item?.branch||'').trim();   const n=String(item?.n||'').trim();   const failedCheckNames=Array.isArray(item?.failedCheckNames)?item.failedCheckNames:[];   const url=String(item?.url||'').trim();   const title=String(item?.title||'').trim();   if(!repo||!branch){needsAgent.push({repo,number:n,branch,url,title,failedCheckNames,reason:'missing_repo_or_branch'});continue;}   let runs=[];   try{     const listRaw=runGh(['run','list','--repo',repo,'--branch',branch,'--json','databaseId,attempt,conclusion,status,workflowName,displayTitle,url,createdAt,updatedAt','--limit','8']);     const parsedRuns=(()=>{try{return JSON.parse(listRaw||'[]')}catch{return []}})();     runs=Array.isArray(parsedRuns)?parsedRuns:[];   }catch(e){needsAgent.push({repo,number:n,branch,url,title,failedCheckNames,reason:'ci_run_listing_failed',error:String(e?.message||e)});continue;}   const failed=runs.find((r)=>FAIL_STATES.has(String(r?.conclusion||'').toUpperCase()));   const failedRun=normalizeRun(failed);   if(failedRun?.databaseId&&failedRun.attempt<=MAX_AUTO_RERUN_ATTEMPT){     try{runGh(['run','rerun',String(failedRun.databaseId),'--repo',repo]);rerunRequested++;continue;}     catch(e){needsAgent.push({repo,number:n,branch,url,title,failedCheckNames,reason:'ci_rerun_failed',error:String(e?.message||e),...collectCiDiagnostics(repo,failedRun)});continue;}   }   if(failedRun?.databaseId){needsAgent.push({repo,number:n,branch,url,title,failedCheckNames,reason:'auto_rerun_limit_reached',rerunAttempts:failedRun.attempt||0,...collectCiDiagnostics(repo,failedRun)});continue;}   needsAgent.push({repo,number:n,branch,url,title,failedCheckNames,reason:'no_rerunnable_failed_run_found',recentRuns:runs.map(normalizeRun).filter(Boolean).slice(0,5)}); } for(const item of conflicts){   needsAgent.push({repo:String(item?.repo||'').trim(),number:String(item?.n||'').trim(),branch:String(item?.branch||'').trim(),base:String(item?.base||'').trim(),reason:'merge_conflict_requires_code_resolution'}); } console.log(JSON.stringify({rerunRequested,ciFailureCount:ciFailures.length,conflictCount:conflicts.length,needsAgentCount:needsAgent.length,needsAgent})); \"",
+            "continueOnError": true,
+            "failOnError": false,
+            "env": {
+              "BOSUN_FETCH_AND_CLASSIFY": "{{$ctx.getNodeOutput('fetch-and-classify')?.output || '{}'}}"
+            }
+          },
+          "position": {
+            "x": 280,
+            "y": 750
           },
           "outputs": [
             "default"
@@ -547,8 +632,8 @@
             "expression": "(()=>{try{const o=$ctx.getNodeOutput('programmatic-fix')?.output;return (JSON.parse(o||'{}').needsAgentCount||0)>0;}catch(e){return false;}})()"
           },
           "position": {
-            "x": 200,
-            "y": 750
+            "x": 280,
+            "y": 860
           },
           "outputs": [
             "default"
@@ -559,7 +644,7 @@
           "type": "action.run_agent",
           "label": "Dispatch Fix Agent (Fallback)",
           "config": {
-            "prompt": "You are a Bosun PR repair fallback agent. A deterministic CLI fix pass has already run. Only work unresolved items from this JSON:\n\n{{$ctx.getNodeOutput('programmatic-fix')?.output}}\n\nFor conflict items: rebase/merge branch onto base, resolve conflicts, run tests, push with --force-with-lease if needed.\nFor CI-failure items: inspect failed logs, apply minimal fix, commit and push.\nAfter successful repair remove bosun-needs-fix label.\n\nSTRICT RULES:\n- Fix only CI/conflict issues. No scope creep.\n- Do NOT merge/close/approve PRs.\n- Do NOT touch PRs without bosun-attached.",
+            "prompt": "You are a Bosun PR repair fallback agent. A deterministic CLI fix pass has already run. Only work unresolved items from this JSON:\n\n{{$ctx.getNodeOutput('programmatic-fix')?.output}}\n\nFor conflict items: rebase/merge branch onto base, resolve conflicts, run tests, push with --force-with-lease if needed.\nFor CI-failure items: start from failedCheckNames, failedRun, failedJobs, and failedLogExcerpt to identify the actual failing workflow step, then apply the minimal fix, commit, and push.\nAfter successful repair remove bosun-needs-fix label.\n\nSTRICT RULES:\n- Fix only CI/conflict issues. No scope creep.\n- Do NOT merge/close/approve PRs.\n- Do NOT touch PRs without bosun-attached.",
             "sdk": "auto",
             "timeoutMs": 1800000,
             "maxRetries": 2,
@@ -567,8 +652,8 @@
             "continueOnError": true
           },
           "position": {
-            "x": 200,
-            "y": 860
+            "x": 280,
+            "y": 970
           },
           "outputs": [
             "default"
@@ -690,15 +775,69 @@
           "condition": "$output?.result !== true"
         },
         {
-          "id": "fix-needed->programmatic-fix",
+          "id": "fix-needed->security-fix-needed",
           "source": "fix-needed",
-          "target": "programmatic-fix",
+          "target": "security-fix-needed",
           "sourcePort": "default",
           "condition": "$output?.result === true"
         },
         {
           "id": "fix-needed->review-needed",
           "source": "fix-needed",
+          "target": "review-needed",
+          "sourcePort": "default",
+          "condition": "$output?.result !== true"
+        },
+        {
+          "id": "security-fix-needed->programmatic-security-fix",
+          "source": "security-fix-needed",
+          "target": "programmatic-security-fix",
+          "sourcePort": "default",
+          "condition": "$output?.result === true"
+        },
+        {
+          "id": "security-fix-needed->generic-fix-needed",
+          "source": "security-fix-needed",
+          "target": "generic-fix-needed",
+          "sourcePort": "default",
+          "condition": "$output?.result !== true"
+        },
+        {
+          "id": "programmatic-security-fix->security-agent-needed",
+          "source": "programmatic-security-fix",
+          "target": "security-agent-needed",
+          "sourcePort": "default"
+        },
+        {
+          "id": "security-agent-needed->dispatch-security-fix-agent",
+          "source": "security-agent-needed",
+          "target": "dispatch-security-fix-agent",
+          "sourcePort": "default",
+          "condition": "$output?.result === true"
+        },
+        {
+          "id": "security-agent-needed->generic-fix-needed",
+          "source": "security-agent-needed",
+          "target": "generic-fix-needed",
+          "sourcePort": "default",
+          "condition": "$output?.result !== true"
+        },
+        {
+          "id": "dispatch-security-fix-agent->generic-fix-needed",
+          "source": "dispatch-security-fix-agent",
+          "target": "generic-fix-needed",
+          "sourcePort": "default"
+        },
+        {
+          "id": "generic-fix-needed->programmatic-fix",
+          "source": "generic-fix-needed",
+          "target": "programmatic-fix",
+          "sourcePort": "default",
+          "condition": "$output?.result === true"
+        },
+        {
+          "id": "generic-fix-needed->review-needed",
+          "source": "generic-fix-needed",
           "target": "review-needed",
           "sourcePort": "default",
           "condition": "$output?.result !== true"
@@ -8039,8 +8178,8 @@
         "external-status",
         "stuck-detection"
       ],
-      "nodeCount": 28,
-      "edgeCount": 30,
+      "nodeCount": 33,
+      "edgeCount": 36,
       "recommended": false,
       "enabled": true,
       "trigger": "trigger.manual",
@@ -8054,6 +8193,7 @@
           "cancelled"
         ],
         "stuckThresholdMs": 300000,
+        "maxStuckAutoRetries": 1,
         "onStuck": "escalate",
         "continuePrompt": "Continue this task from the current state. Focus on the next missing step and push toward completion.",
         "retryPrompt": "No progress was detected recently. Try a different approach and make concrete progress (commit or file updates).",
@@ -8065,7 +8205,7 @@
         "author": "bosun",
         "version": 1,
         "createdAt": "2026-03-10T00:00:00Z",
-        "templateVersion": "1.0.0",
+        "templateVersion": "1.1.0",
         "tags": [
           "continuation",
           "loop",
@@ -8135,6 +8275,23 @@
           "position": {
             "x": 420,
             "y": 390
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "init-stuck-retry-count",
+          "type": "action.set_variable",
+          "label": "Initialize Stuck Retry Count",
+          "config": {
+            "key": "stuckRetryCount",
+            "value": "0",
+            "isExpression": true
+          },
+          "position": {
+            "x": 420,
+            "y": 450
           },
           "outputs": [
             "default"
@@ -8356,6 +8513,23 @@
           ]
         },
         {
+          "id": "reset-stuck-retry-count",
+          "type": "action.set_variable",
+          "label": "Reset Stuck Retry Count On Progress",
+          "config": {
+            "key": "stuckRetryCount",
+            "value": "(() => { const changed = String($data?.currentProgressSignature || '') !== String($data?.lastProgressSignature || ''); return changed ? 0 : Number($data?.stuckRetryCount || 0); })()",
+            "isExpression": true
+          },
+          "position": {
+            "x": 680,
+            "y": 1710
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
           "id": "stuck-check",
           "type": "condition.expression",
           "label": "Session Stuck?",
@@ -8364,7 +8538,7 @@
           },
           "position": {
             "x": 980,
-            "y": 1710
+            "y": 1820
           },
           "outputs": [
             "yes",
@@ -8382,7 +8556,16 @@
               "turn": "{{continuationTurn}}",
               "externalStatus": "{{currentExternalStatus}}",
               "stuckThresholdMs": "{{stuckThresholdMs}}",
-              "onStuck": "{{onStuck}}"
+              "stuckForMs": "{{Math.max(0, Date.now() - Number($data?.lastProgressAt || 0))}}",
+              "onStuck": "{{onStuck}}",
+              "stuckRetryCount": "{{stuckRetryCount}}",
+              "maxStuckAutoRetries": "{{maxStuckAutoRetries}}",
+              "lastProgressAt": "{{lastProgressAt}}",
+              "lastProgressSignature": "{{lastProgressSignature}}",
+              "currentProgressSignature": "{{currentProgressSignature}}",
+              "progressSnapshot": "{{$ctx.getNodeOutput('capture-progress')?.output || ''}}",
+              "lastAgentSuccess": "{{$ctx.getNodeOutput('run-agent')?.success === true}}",
+              "lastAgentOutput": "{{$ctx.getNodeOutput('run-agent')?.output || ''}}"
             },
             "outputVariable": "sessionStuckEvent"
           },
@@ -8418,11 +8601,27 @@
           ]
         },
         {
+          "id": "stuck-retry-budget",
+          "type": "condition.expression",
+          "label": "Stuck Retry Budget Remaining?",
+          "config": {
+            "expression": "Number($data?.stuckRetryCount || 0) < Number($data?.maxStuckAutoRetries || 0)"
+          },
+          "position": {
+            "x": 760,
+            "y": 1820
+          },
+          "outputs": [
+            "yes",
+            "no"
+          ]
+        },
+        {
           "id": "stuck-retry",
           "type": "action.run_agent",
           "label": "Retry After Stuck",
           "config": {
-            "prompt": "{{retryPrompt}}",
+            "prompt": "{{retryPrompt}}\n\nStuck context:\n- taskId: {{taskId}}\n- externalStatus: {{currentExternalStatus}}\n- turn: {{continuationTurn}}\n- stuckRetryCount: {{stuckRetryCount}}/{{maxStuckAutoRetries}}\n- stuckForMs: {{Math.max(0, Date.now() - Number($data?.lastProgressAt || 0))}}\n- lastProgressSignature: {{lastProgressSignature}}\n- currentProgressSignature: {{currentProgressSignature}}\n- progressSnapshot: {{$ctx.getNodeOutput('capture-progress')?.output || ''}}\n- lastAgentOutput: {{$ctx.getNodeOutput('run-agent')?.output || ''}}\n\nTry a materially different approach. If you cannot create progress, explain the specific blocker.",
             "taskId": "{{taskId}}",
             "cwd": "{{worktreePath}}",
             "sdk": "{{sdk}}",
@@ -8439,16 +8638,49 @@
           ]
         },
         {
+          "id": "increment-stuck-retry-count",
+          "type": "action.set_variable",
+          "label": "Increment Stuck Retry Count",
+          "config": {
+            "key": "stuckRetryCount",
+            "value": "Number($data?.stuckRetryCount || 0) + 1",
+            "isExpression": true
+          },
+          "position": {
+            "x": 760,
+            "y": 1940
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
           "id": "stuck-escalate",
           "type": "notify.log",
           "label": "Escalate Stuck Session",
           "config": {
             "level": "warn",
-            "message": "session-stuck: escalation requested for task {{taskId}} at turn {{continuationTurn}} (externalStatus={{currentExternalStatus}})"
+            "message": "session-stuck: escalation requested for task {{taskId}} at turn {{continuationTurn}} (externalStatus={{currentExternalStatus}}, stuckForMs={{Math.max(0, Date.now() - Number($data?.lastProgressAt || 0))}}, stuckRetryCount={{stuckRetryCount}}/{{maxStuckAutoRetries}}, lastProgressSignature={{lastProgressSignature}}, currentProgressSignature={{currentProgressSignature}})"
           },
           "position": {
             "x": 980,
             "y": 1830
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "stuck-escalate-budget",
+          "type": "notify.log",
+          "label": "Escalate Stuck Session (Retry Limit)",
+          "config": {
+            "level": "warn",
+            "message": "session-stuck: retry budget exhausted for task {{taskId}} at turn {{continuationTurn}} (externalStatus={{currentExternalStatus}}, stuckForMs={{Math.max(0, Date.now() - Number($data?.lastProgressAt || 0))}}, stuckRetryCount={{stuckRetryCount}}/{{maxStuckAutoRetries}}, lastProgressSignature={{lastProgressSignature}}, currentProgressSignature={{currentProgressSignature}})"
+          },
+          "position": {
+            "x": 760,
+            "y": 2050
           },
           "outputs": [
             "default"
@@ -8480,7 +8712,9 @@
             "output": {
               "reason": "stuck_escalated",
               "taskId": "{{taskId}}",
-              "event": "{{sessionStuckEvent.eventType}}"
+              "event": "{{sessionStuckEvent.eventType}}",
+              "stuckRetryCount": "{{stuckRetryCount}}",
+              "maxStuckAutoRetries": "{{maxStuckAutoRetries}}"
             }
           },
           "position": {
@@ -8599,8 +8833,14 @@
           "sourcePort": "default"
         },
         {
-          "id": "init-signature->poll-task",
+          "id": "init-signature->init-stuck-retry-count",
           "source": "init-signature",
+          "target": "init-stuck-retry-count",
+          "sourcePort": "default"
+        },
+        {
+          "id": "init-stuck-retry-count->poll-task",
+          "source": "init-stuck-retry-count",
           "target": "poll-task",
           "sourcePort": "default"
         },
@@ -8675,8 +8915,14 @@
           "sourcePort": "default"
         },
         {
-          "id": "mark-progress-sig->stuck-check",
+          "id": "mark-progress-sig->reset-stuck-retry-count",
           "source": "mark-progress-sig",
+          "target": "reset-stuck-retry-count",
+          "sourcePort": "default"
+        },
+        {
+          "id": "reset-stuck-retry-count->stuck-check",
+          "source": "reset-stuck-retry-count",
           "target": "stuck-check",
           "sourcePort": "default"
         },
@@ -8701,9 +8947,9 @@
           "sourcePort": "default"
         },
         {
-          "id": "stuck-route->stuck-retry",
+          "id": "stuck-route->stuck-retry-budget",
           "source": "stuck-route",
-          "target": "stuck-retry",
+          "target": "stuck-retry-budget",
           "sourcePort": "retry"
         },
         {
@@ -8725,14 +8971,40 @@
           "sourcePort": "default"
         },
         {
-          "id": "stuck-retry->wait-next-turn",
+          "id": "stuck-retry-budget->stuck-retry",
+          "source": "stuck-retry-budget",
+          "target": "stuck-retry",
+          "sourcePort": "yes",
+          "condition": "$output?.result === true"
+        },
+        {
+          "id": "stuck-retry-budget->stuck-escalate-budget",
+          "source": "stuck-retry-budget",
+          "target": "stuck-escalate-budget",
+          "sourcePort": "no",
+          "condition": "$output?.result !== true"
+        },
+        {
+          "id": "stuck-retry->increment-stuck-retry-count",
           "source": "stuck-retry",
+          "target": "increment-stuck-retry-count",
+          "sourcePort": "default"
+        },
+        {
+          "id": "increment-stuck-retry-count->wait-next-turn",
+          "source": "increment-stuck-retry-count",
           "target": "wait-next-turn",
           "sourcePort": "default"
         },
         {
           "id": "stuck-escalate->end-escalated",
           "source": "stuck-escalate",
+          "target": "end-escalated",
+          "sourcePort": "default"
+        },
+        {
+          "id": "stuck-escalate-budget->end-escalated",
+          "source": "stuck-escalate-budget",
           "target": "end-escalated",
           "sourcePort": "default"
         },
@@ -8787,8 +9059,8 @@
         "external-status",
         "stuck-detection"
       ],
-      "nodeCount": 28,
-      "edgeCount": 30,
+      "nodeCount": 33,
+      "edgeCount": 36,
       "recommended": false,
       "enabled": true,
       "trigger": "trigger.manual",
@@ -8802,6 +9074,7 @@
           "cancelled"
         ],
         "stuckThresholdMs": 300000,
+        "maxStuckAutoRetries": 1,
         "onStuck": "escalate",
         "continuePrompt": "Continue this task from the current state. Focus on the next missing step and push toward completion.",
         "retryPrompt": "No progress was detected recently. Try a different approach and make concrete progress (commit or file updates).",
@@ -8813,7 +9086,7 @@
         "author": "bosun",
         "version": 1,
         "createdAt": "2026-03-10T00:00:00Z",
-        "templateVersion": "1.0.0",
+        "templateVersion": "1.1.0",
         "tags": [
           "continuation",
           "loop",
@@ -8883,6 +9156,23 @@
           "position": {
             "x": 420,
             "y": 390
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "init-stuck-retry-count",
+          "type": "action.set_variable",
+          "label": "Initialize Stuck Retry Count",
+          "config": {
+            "key": "stuckRetryCount",
+            "value": "0",
+            "isExpression": true
+          },
+          "position": {
+            "x": 420,
+            "y": 450
           },
           "outputs": [
             "default"
@@ -9104,6 +9394,23 @@
           ]
         },
         {
+          "id": "reset-stuck-retry-count",
+          "type": "action.set_variable",
+          "label": "Reset Stuck Retry Count On Progress",
+          "config": {
+            "key": "stuckRetryCount",
+            "value": "(() => { const changed = String($data?.currentProgressSignature || '') !== String($data?.lastProgressSignature || ''); return changed ? 0 : Number($data?.stuckRetryCount || 0); })()",
+            "isExpression": true
+          },
+          "position": {
+            "x": 680,
+            "y": 1710
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
           "id": "stuck-check",
           "type": "condition.expression",
           "label": "Session Stuck?",
@@ -9112,7 +9419,7 @@
           },
           "position": {
             "x": 980,
-            "y": 1710
+            "y": 1820
           },
           "outputs": [
             "yes",
@@ -9130,7 +9437,16 @@
               "turn": "{{continuationTurn}}",
               "externalStatus": "{{currentExternalStatus}}",
               "stuckThresholdMs": "{{stuckThresholdMs}}",
-              "onStuck": "{{onStuck}}"
+              "stuckForMs": "{{Math.max(0, Date.now() - Number($data?.lastProgressAt || 0))}}",
+              "onStuck": "{{onStuck}}",
+              "stuckRetryCount": "{{stuckRetryCount}}",
+              "maxStuckAutoRetries": "{{maxStuckAutoRetries}}",
+              "lastProgressAt": "{{lastProgressAt}}",
+              "lastProgressSignature": "{{lastProgressSignature}}",
+              "currentProgressSignature": "{{currentProgressSignature}}",
+              "progressSnapshot": "{{$ctx.getNodeOutput('capture-progress')?.output || ''}}",
+              "lastAgentSuccess": "{{$ctx.getNodeOutput('run-agent')?.success === true}}",
+              "lastAgentOutput": "{{$ctx.getNodeOutput('run-agent')?.output || ''}}"
             },
             "outputVariable": "sessionStuckEvent"
           },
@@ -9166,11 +9482,27 @@
           ]
         },
         {
+          "id": "stuck-retry-budget",
+          "type": "condition.expression",
+          "label": "Stuck Retry Budget Remaining?",
+          "config": {
+            "expression": "Number($data?.stuckRetryCount || 0) < Number($data?.maxStuckAutoRetries || 0)"
+          },
+          "position": {
+            "x": 760,
+            "y": 1820
+          },
+          "outputs": [
+            "yes",
+            "no"
+          ]
+        },
+        {
           "id": "stuck-retry",
           "type": "action.run_agent",
           "label": "Retry After Stuck",
           "config": {
-            "prompt": "{{retryPrompt}}",
+            "prompt": "{{retryPrompt}}\n\nStuck context:\n- taskId: {{taskId}}\n- externalStatus: {{currentExternalStatus}}\n- turn: {{continuationTurn}}\n- stuckRetryCount: {{stuckRetryCount}}/{{maxStuckAutoRetries}}\n- stuckForMs: {{Math.max(0, Date.now() - Number($data?.lastProgressAt || 0))}}\n- lastProgressSignature: {{lastProgressSignature}}\n- currentProgressSignature: {{currentProgressSignature}}\n- progressSnapshot: {{$ctx.getNodeOutput('capture-progress')?.output || ''}}\n- lastAgentOutput: {{$ctx.getNodeOutput('run-agent')?.output || ''}}\n\nTry a materially different approach. If you cannot create progress, explain the specific blocker.",
             "taskId": "{{taskId}}",
             "cwd": "{{worktreePath}}",
             "sdk": "{{sdk}}",
@@ -9187,16 +9519,49 @@
           ]
         },
         {
+          "id": "increment-stuck-retry-count",
+          "type": "action.set_variable",
+          "label": "Increment Stuck Retry Count",
+          "config": {
+            "key": "stuckRetryCount",
+            "value": "Number($data?.stuckRetryCount || 0) + 1",
+            "isExpression": true
+          },
+          "position": {
+            "x": 760,
+            "y": 1940
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
           "id": "stuck-escalate",
           "type": "notify.log",
           "label": "Escalate Stuck Session",
           "config": {
             "level": "warn",
-            "message": "session-stuck: escalation requested for task {{taskId}} at turn {{continuationTurn}} (externalStatus={{currentExternalStatus}})"
+            "message": "session-stuck: escalation requested for task {{taskId}} at turn {{continuationTurn}} (externalStatus={{currentExternalStatus}}, stuckForMs={{Math.max(0, Date.now() - Number($data?.lastProgressAt || 0))}}, stuckRetryCount={{stuckRetryCount}}/{{maxStuckAutoRetries}}, lastProgressSignature={{lastProgressSignature}}, currentProgressSignature={{currentProgressSignature}})"
           },
           "position": {
             "x": 980,
             "y": 1830
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "stuck-escalate-budget",
+          "type": "notify.log",
+          "label": "Escalate Stuck Session (Retry Limit)",
+          "config": {
+            "level": "warn",
+            "message": "session-stuck: retry budget exhausted for task {{taskId}} at turn {{continuationTurn}} (externalStatus={{currentExternalStatus}}, stuckForMs={{Math.max(0, Date.now() - Number($data?.lastProgressAt || 0))}}, stuckRetryCount={{stuckRetryCount}}/{{maxStuckAutoRetries}}, lastProgressSignature={{lastProgressSignature}}, currentProgressSignature={{currentProgressSignature}})"
+          },
+          "position": {
+            "x": 760,
+            "y": 2050
           },
           "outputs": [
             "default"
@@ -9228,7 +9593,9 @@
             "output": {
               "reason": "stuck_escalated",
               "taskId": "{{taskId}}",
-              "event": "{{sessionStuckEvent.eventType}}"
+              "event": "{{sessionStuckEvent.eventType}}",
+              "stuckRetryCount": "{{stuckRetryCount}}",
+              "maxStuckAutoRetries": "{{maxStuckAutoRetries}}"
             }
           },
           "position": {
@@ -9347,8 +9714,14 @@
           "sourcePort": "default"
         },
         {
-          "id": "init-signature->poll-task",
+          "id": "init-signature->init-stuck-retry-count",
           "source": "init-signature",
+          "target": "init-stuck-retry-count",
+          "sourcePort": "default"
+        },
+        {
+          "id": "init-stuck-retry-count->poll-task",
+          "source": "init-stuck-retry-count",
           "target": "poll-task",
           "sourcePort": "default"
         },
@@ -9423,8 +9796,14 @@
           "sourcePort": "default"
         },
         {
-          "id": "mark-progress-sig->stuck-check",
+          "id": "mark-progress-sig->reset-stuck-retry-count",
           "source": "mark-progress-sig",
+          "target": "reset-stuck-retry-count",
+          "sourcePort": "default"
+        },
+        {
+          "id": "reset-stuck-retry-count->stuck-check",
+          "source": "reset-stuck-retry-count",
           "target": "stuck-check",
           "sourcePort": "default"
         },
@@ -9449,9 +9828,9 @@
           "sourcePort": "default"
         },
         {
-          "id": "stuck-route->stuck-retry",
+          "id": "stuck-route->stuck-retry-budget",
           "source": "stuck-route",
-          "target": "stuck-retry",
+          "target": "stuck-retry-budget",
           "sourcePort": "retry"
         },
         {
@@ -9473,14 +9852,40 @@
           "sourcePort": "default"
         },
         {
-          "id": "stuck-retry->wait-next-turn",
+          "id": "stuck-retry-budget->stuck-retry",
+          "source": "stuck-retry-budget",
+          "target": "stuck-retry",
+          "sourcePort": "yes",
+          "condition": "$output?.result === true"
+        },
+        {
+          "id": "stuck-retry-budget->stuck-escalate-budget",
+          "source": "stuck-retry-budget",
+          "target": "stuck-escalate-budget",
+          "sourcePort": "no",
+          "condition": "$output?.result !== true"
+        },
+        {
+          "id": "stuck-retry->increment-stuck-retry-count",
           "source": "stuck-retry",
+          "target": "increment-stuck-retry-count",
+          "sourcePort": "default"
+        },
+        {
+          "id": "increment-stuck-retry-count->wait-next-turn",
+          "source": "increment-stuck-retry-count",
           "target": "wait-next-turn",
           "sourcePort": "default"
         },
         {
           "id": "stuck-escalate->end-escalated",
           "source": "stuck-escalate",
+          "target": "end-escalated",
+          "sourcePort": "default"
+        },
+        {
+          "id": "stuck-escalate-budget->end-escalated",
+          "source": "stuck-escalate-budget",
           "target": "end-escalated",
           "sourcePort": "default"
         },
@@ -9545,7 +9950,7 @@
         "author": "bosun",
         "version": 1,
         "createdAt": "2025-02-24T00:00:00Z",
-        "templateVersion": "1.0.1",
+        "templateVersion": "1.1.0",
         "tags": [
           "error",
           "recovery",
@@ -9601,7 +10006,7 @@
           "type": "action.run_agent",
           "label": "Analyze Failure",
           "config": {
-            "prompt": "Analyze the following error and suggest a fix:\n\n{{lastError}}\n\nTask: {{taskTitle}}",
+            "prompt": "Analyze the following task failure and suggest the most likely minimal fix.\n\nTask: {{taskTitle}} ({{taskId}})\nRetry attempt: {{$data?.retryCount || 0}}/{{$data?.maxRetries || 3}}\nBranch: {{branch}}\nBase branch: {{baseBranch}}\nWorktree: {{worktreePath}}\n\nLast error:\n{{lastError}}",
             "timeoutMs": 300000
           },
           "position": {
@@ -9617,7 +10022,7 @@
           "type": "action.run_agent",
           "label": "Retry Task",
           "config": {
-            "prompt": "{{taskExecutorRetryPrompt}}",
+            "prompt": "{{taskExecutorRetryPrompt}}\n\nFailure context:\n- taskId: {{taskId}}\n- taskTitle: {{taskTitle}}\n- branch: {{branch}}\n- baseBranch: {{baseBranch}}\n- worktreePath: {{worktreePath}}\n- retryCount: {{$data?.retryCount || 0}}/{{$data?.maxRetries || 3}}\n- lastError: {{lastError}}\n- recoveryAnalysis: {{$ctx.getNodeOutput('analyze-error')?.output || ''}}\n\nUse the analysis to choose a different approach if the previous attempt failed.",
             "timeoutMs": 3600000,
             "failOnError": true,
             "maxRetries": "{{maxRetries}}",
@@ -9669,7 +10074,7 @@
           "type": "notify.telegram",
           "label": "Escalate to Human",
           "config": {
-            "message": ":alert: Task **{{taskTitle}}** failed after {{maxRetries}} attempts. Manual intervention needed.\n\nLast error: {{lastError}}"
+            "message": ":alert: Task **{{taskTitle}}** failed after {{maxRetries}} attempts. Manual intervention needed.\n\nLast error: {{lastError}}\n\nRecovery analysis: {{$ctx.getNodeOutput('analyze-error')?.output || ''}}"
           },
           "position": {
             "x": 600,
@@ -9686,7 +10091,7 @@
           "config": {
             "workflowId": "template-task-repair-worktree",
             "mode": "dispatch",
-            "input": "({taskId: $data?.taskId, taskTitle: $data?.taskTitle, worktreePath: $data?.worktreePath, branch: $data?.branch, baseBranch: $data?.baseBranch, error: $data?.lastError})"
+            "input": "(() => { const analysisRaw = String($ctx.getNodeOutput('analyze-error')?.output || '').trim(); const retryOutputRaw = String($ctx.getNodeOutput('retry-task')?.output || '').trim(); const retryErrorRaw = String($ctx.getNodeOutput('retry-task')?.error || '').trim(); const truncate = (value, limit = 2000) => value.length > limit ? `${value.slice(0, limit)}...` : value; const diagnostics = [String($data?.lastError || '').trim(), analysisRaw ? `Recovery analysis:\n${truncate(analysisRaw)}` : '', retryOutputRaw ? `Retry output:\n${truncate(retryOutputRaw)}` : '', retryErrorRaw ? `Retry error:\n${truncate(retryErrorRaw)}` : ''].filter(Boolean).join('\n\n'); return { taskId: $data?.taskId, taskTitle: $data?.taskTitle, worktreePath: $data?.worktreePath, branch: $data?.branch, baseBranch: $data?.baseBranch, error: diagnostics || String($data?.lastError || ''), recoveryAnalysis: truncate(analysisRaw), retryResult: { success: $ctx.getNodeOutput('retry-task')?.success === true, output: truncate(retryOutputRaw), error: truncate(retryErrorRaw) } }; })()"
           },
           "position": {
             "x": 400,
@@ -20404,7 +20809,7 @@
           "type": "action.run_command",
           "label": "Inspect Single PR",
           "config": {
-            "command": "node -e \" const {execFileSync}=require('child_process'); const ctx=(()=>{try{return JSON.parse(String(process.env.BOSUN_PR_CONTEXT||'{}'))}catch{return {}}})(); const repo=String(ctx.repo||'').trim(); const branch=String(ctx.branch||'').trim(); const baseBranch=String(ctx.baseBranch||'main').trim()||'main'; const rawNumber=String(ctx.prNumber||'').trim(); const prNumber=Number.parseInt(rawNumber,10); if(!repo||!Number.isFinite(prNumber)||prNumber<=0){   console.log(JSON.stringify({success:false,classification:'missing',reason:'missing_repo_or_pr',repo,prNumber:Number.isFinite(prNumber)?prNumber:null,branch,baseBranch}));   process.exit(0); } function gh(args){return execFileSync('gh',args,{encoding:'utf8',stdio:['pipe','pipe','pipe']}).trim();} const raw=gh(['pr','view',String(prNumber),'--repo',repo,'--json','number,title,url,headRefName,baseRefName,isDraft,mergeable,statusCheckRollup']); const pr=(()=>{try{return JSON.parse(raw||'{}')}catch{return {}}})(); const checks=Array.isArray(pr.statusCheckRollup)?pr.statusCheckRollup:[]; const failStates=new Set(['FAILURE','ERROR','TIMED_OUT','CANCELLED','STARTUP_FAILURE']); const pendingStates=new Set(['QUEUED','IN_PROGRESS','PENDING','WAITING','REQUESTED']); const conflictMergeables=new Set(['CONFLICTING','DIRTY','UNKNOWN']); const hasFailure=checks.some((c)=>{const s=String(c?.state||'').toUpperCase();const b=String(c?.bucket||'').toUpperCase();return failStates.has(s)||b==='FAIL';}); const hasPending=checks.some((c)=>pendingStates.has(String(c?.state||'').toUpperCase())); let classification='ready'; let reason='ready_for_review'; let ciKicked=false; if(pr?.isDraft===true){classification='draft';reason='draft_pr';} else if(conflictMergeables.has(String(pr?.mergeable||'').toUpperCase())){classification='conflict';reason='merge_conflict';} else if(hasFailure){classification='ci_failure';reason='ci_failed';} else if(hasPending){classification='pending';reason='ci_pending';} else if(checks.length===0 && branch){   try{gh(['workflow','run','ci.yaml','--repo',repo,'--ref',branch]);ciKicked=true;classification='pending';reason='ci_kicked';}   catch{classification='ready';reason='ready_without_checks';} } console.log(JSON.stringify({success:true,repo,prNumber,url:String(pr?.url||ctx.prUrl||''),branch:String(pr?.headRefName||branch||''),baseBranch:String(pr?.baseRefName||baseBranch||'main'),title:String(pr?.title||ctx.taskTitle||''),classification,reason,ciKicked,hasFailure,hasPending})); \"",
+            "command": "node -e \" const {execFileSync}=require('child_process'); const ctx=(()=>{try{return JSON.parse(String(process.env.BOSUN_PR_CONTEXT||'{}'))}catch{return {}}})(); const repo=String(ctx.repo||'').trim(); const branch=String(ctx.branch||'').trim(); const baseBranch=String(ctx.baseBranch||'main').trim()||'main'; const rawNumber=String(ctx.prNumber||'').trim(); const prNumber=Number.parseInt(rawNumber,10); if(!repo||!Number.isFinite(prNumber)||prNumber<=0){   console.log(JSON.stringify({success:false,classification:'missing',reason:'missing_repo_or_pr',repo,prNumber:Number.isFinite(prNumber)?prNumber:null,branch,baseBranch}));   process.exit(0); } function gh(args){return execFileSync('gh',args,{encoding:'utf8',stdio:['pipe','pipe','pipe']}).trim();} const raw=gh(['pr','view',String(prNumber),'--repo',repo,'--json','number,title,url,headRefName,baseRefName,isDraft,mergeable,statusCheckRollup']); const pr=(()=>{try{return JSON.parse(raw||'{}')}catch{return {}}})(); const checks=Array.isArray(pr.statusCheckRollup)?pr.statusCheckRollup:[]; const failStates=new Set(['FAILURE','ERROR','TIMED_OUT','CANCELLED','STARTUP_FAILURE']); const pendingStates=new Set(['QUEUED','IN_PROGRESS','PENDING','WAITING','REQUESTED']); const conflictMergeables=new Set(['CONFLICTING','DIRTY','UNKNOWN']); const failedCheckNames=checks.filter((c)=>{const s=String(c?.state||'').toUpperCase();const b=String(c?.bucket||'').toUpperCase();return failStates.has(s)||b==='FAIL';}).map((c)=>String(c?.name||c?.context||c?.workflowName||'').trim()).filter(Boolean); const hasFailure=checks.some((c)=>{const s=String(c?.state||'').toUpperCase();const b=String(c?.bucket||'').toUpperCase();return failStates.has(s)||b==='FAIL';}); const hasPending=checks.some((c)=>pendingStates.has(String(c?.state||'').toUpperCase())); let classification='ready'; let reason='ready_for_review'; let ciKicked=false; if(pr?.isDraft===true){classification='draft';reason='draft_pr';} else if(conflictMergeables.has(String(pr?.mergeable||'').toUpperCase())){classification='conflict';reason='merge_conflict';} else if(hasFailure){classification='ci_failure';reason='ci_failed';} else if(hasPending){classification='pending';reason='ci_pending';} else if(checks.length===0 && branch){   try{gh(['workflow','run','ci.yaml','--repo',repo,'--ref',branch]);ciKicked=true;classification='pending';reason='ci_kicked';}   catch{classification='ready';reason='ready_without_checks';} } console.log(JSON.stringify({success:true,repo,prNumber,url:String(pr?.url||ctx.prUrl||''),branch:String(pr?.headRefName||branch||''),baseBranch:String(pr?.baseRefName||baseBranch||'main'),title:String(pr?.title||ctx.taskTitle||''),classification,reason,ciKicked,hasFailure,hasPending,failedCheckNames})); \"",
             "continueOnError": true,
             "failOnError": false,
             "env": {
@@ -20439,7 +20844,7 @@
           "type": "action.run_command",
           "label": "Repair Attempt",
           "config": {
-            "command": "node -e \" const {execFileSync}=require('child_process'); const data=(()=>{try{return JSON.parse(String(process.env.BOSUN_PR_INSPECT||'{}'))}catch{return {}}})(); const repo=String(data.repo||'').trim(); const branch=String(data.branch||'').trim(); const prNumber=Number.parseInt(String(data.prNumber||''),10); const classification=String(data.classification||'').trim(); const labelFix=String('{{labelNeedsFix}}'||'bosun-needs-fix'); function gh(args){return execFileSync('gh',args,{encoding:'utf8',stdio:['pipe','pipe','pipe']}).trim();} if(repo&&Number.isFinite(prNumber)&&prNumber>0){   try{gh(['pr','edit',String(prNumber),'--repo',repo,'--add-label',labelFix]);}catch{} } if(classification==='ci_failure'&&repo&&branch){   try{     const listRaw=gh(['run','list','--repo',repo,'--branch',branch,'--json','databaseId,conclusion,status','--limit','8']);     const runs=(()=>{try{return JSON.parse(listRaw||'[]')}catch{return []}})();     const failed=(Array.isArray(runs)?runs:[]).find((r)=>{const c=String(r?.conclusion||'').toUpperCase();return c==='FAILURE'||c==='ERROR'||c==='TIMED_OUT'||c==='CANCELLED';});     if(failed?.databaseId){gh(['run','rerun',String(failed.databaseId),'--repo',repo]);console.log(JSON.stringify({success:true,rerunRequested:true,needsAgent:false,reason:'rerun_requested'}));process.exit(0);}   }catch(e){     console.log(JSON.stringify({success:false,rerunRequested:false,needsAgent:true,reason:'ci_rerun_failed',error:String(e?.message||e)}));     process.exit(0);   }   console.log(JSON.stringify({success:false,rerunRequested:false,needsAgent:true,reason:'no_rerunnable_failed_run_found'}));   process.exit(0); } console.log(JSON.stringify({success:false,rerunRequested:false,needsAgent:true,reason:classification==='conflict'?'merge_conflict_requires_code_resolution':'repair_required'})); \"",
+            "command": "node -e \" const {execFileSync}=require('child_process'); const data=(()=>{try{return JSON.parse(String(process.env.BOSUN_PR_INSPECT||'{}'))}catch{return {}}})(); const repo=String(data.repo||'').trim(); const branch=String(data.branch||'').trim(); const prNumber=Number.parseInt(String(data.prNumber||''),10); const classification=String(data.classification||'').trim(); const failedCheckNames=Array.isArray(data.failedCheckNames)?data.failedCheckNames:[]; const labelFix=String('{{labelNeedsFix}}'||'bosun-needs-fix'); const FAIL_STATES=new Set(['FAILURE','ERROR','TIMED_OUT','CANCELLED','STARTUP_FAILURE']); const MAX_AUTO_RERUN_ATTEMPT=1; function gh(args){return execFileSync('gh',args,{encoding:'utf8',stdio:['pipe','pipe','pipe']}).trim();} function normalizeRun(run){if(!run||typeof run!=='object')return null;return {databaseId:Number(run.databaseId||0)||null,attempt:Number(run.attempt||0)||0,conclusion:String(run.conclusion||''),status:String(run.status||''),workflowName:String(run.workflowName||run.name||''),displayTitle:String(run.displayTitle||run.name||''),url:String(run.url||''),createdAt:String(run.createdAt||''),updatedAt:String(run.updatedAt||'')}} function normalizeJob(job){if(!job||typeof job!=='object')return null;const steps=Array.isArray(job.steps)?job.steps:[];return {databaseId:Number(job.databaseId||0)||null,name:String(job.name||''),status:String(job.status||''),conclusion:String(job.conclusion||''),url:String(job.url||''),failedSteps:steps.filter((step)=>FAIL_STATES.has(String(step?.conclusion||step?.status||'').toUpperCase())).map((step)=>({name:String(step?.name||''),number:Number(step?.number||0)||null,status:String(step?.status||''),conclusion:String(step?.conclusion||'')})).filter((step)=>step.name).slice(0,10)}} function truncateText(value,max){const text=String(value||'').replace(/\\r/g,'').trim();if(!text)return '';return text.length>max?text.slice(0,Math.max(0,max-19))+'\\n...[truncated]':text;} function collectCiDiagnostics(run){const info={failedRun:normalizeRun(run),failedJobs:[],failedLogExcerpt:'',diagnosticsError:''};const runId=Number(run?.databaseId||0)||0;if(!runId)return info;try{const viewRaw=gh(['run','view',String(runId),'--repo',repo,'--json','attempt,conclusion,status,workflowName,displayTitle,url,createdAt,updatedAt,jobs']);const view=(()=>{try{return JSON.parse(viewRaw||'{}')}catch{return {}}})();info.failedRun=normalizeRun({...run,...view});const jobs=Array.isArray(view.jobs)?view.jobs:[];info.failedJobs=jobs.map(normalizeJob).filter((job)=>job&&(FAIL_STATES.has(String(job.conclusion||'').toUpperCase())||job.failedSteps.length>0)).slice(0,10);}catch(e){info.diagnosticsError=String(e?.message||e);}try{info.failedLogExcerpt=truncateText(gh(['run','view',String(runId),'--repo',repo,'--log-failed']),6000);}catch(e){const message=String(e?.message||e);if(message&&message!==info.diagnosticsError){info.diagnosticsError=info.diagnosticsError?info.diagnosticsError+' | '+message:message;}}return info;} if(repo&&Number.isFinite(prNumber)&&prNumber>0){   try{gh(['pr','edit',String(prNumber),'--repo',repo,'--add-label',labelFix]);}catch{} } if(classification==='ci_failure'&&repo&&branch){   try{     const listRaw=gh(['run','list','--repo',repo,'--branch',branch,'--json','databaseId,attempt,conclusion,status,workflowName,displayTitle,url,createdAt,updatedAt','--limit','8']);     const runs=(()=>{try{return JSON.parse(listRaw||'[]')}catch{return []}})();     const failed=(Array.isArray(runs)?runs:[]).find((r)=>FAIL_STATES.has(String(r?.conclusion||'').toUpperCase()));     const failedRun=normalizeRun(failed);     if(failedRun?.databaseId&&failedRun.attempt<=MAX_AUTO_RERUN_ATTEMPT){gh(['run','rerun',String(failedRun.databaseId),'--repo',repo]);console.log(JSON.stringify({success:true,rerunRequested:true,needsAgent:false,reason:'rerun_requested',failedCheckNames,failedRun}));process.exit(0);}     if(failedRun?.databaseId){const diagnostics=collectCiDiagnostics(failedRun);console.log(JSON.stringify({success:false,rerunRequested:false,needsAgent:true,reason:'auto_rerun_limit_reached',failedCheckNames,rerunAttempts:failedRun.attempt||0,...diagnostics}));process.exit(0);}     console.log(JSON.stringify({success:false,rerunRequested:false,needsAgent:true,reason:'no_rerunnable_failed_run_found',failedCheckNames,recentRuns:(Array.isArray(runs)?runs:[]).map(normalizeRun).filter(Boolean).slice(0,5)}));     process.exit(0);   }catch(e){     console.log(JSON.stringify({success:false,rerunRequested:false,needsAgent:true,reason:'ci_rerun_failed',failedCheckNames,error:String(e?.message||e)}));     process.exit(0);   } } console.log(JSON.stringify({success:false,rerunRequested:false,needsAgent:true,reason:classification==='conflict'?'merge_conflict_requires_code_resolution':'repair_required',failedCheckNames})); \"",
             "continueOnError": true,
             "failOnError": false,
             "env": {
@@ -20699,7 +21104,7 @@
       "description": "Scans open bosun-attached PRs on a schedule. Makes one gh pr list call per target repo to fetch and classify PRs, then: labels conflicting or failing-CI PRs with bosun-needs-fix and dispatches a repair agent; sends merge candidates through a MANDATORY agent review gate that checks diff stats before any merge — preventing destructive PRs (e.g. -183k lines) from being silently auto-merged. External-contributor PRs without bosun-attached are never touched.",
       "category": "github",
       "enabled": true,
-      "nodeCount": 12,
+      "nodeCount": 17,
       "trigger": "trigger.schedule",
       "variables": {
         "mergeMethod": "squash",
@@ -20732,7 +21137,7 @@
           "type": "action.run_command",
           "label": "Fetch, Classify & Label PRs",
           "config": {
-            "command": "node -e \" const fs=require('fs'); const path=require('path'); const {execFileSync}=require('child_process'); const LABEL_FIX='{{labelNeedsFix}}'; const MAX_PRS=Math.max(1,Number('{{maxPrs}}')||25); const REPO_SCOPE=String('{{repoScope}}'||'auto').trim(); const FIELDS='number,title,headRefName,baseRefName,isDraft,mergeable,statusCheckRollup,labels,url'; const FAIL_STATES=new Set(['FAILURE','ERROR','TIMED_OUT','CANCELLED','STARTUP_FAILURE']); const PEND_STATES=new Set(['PENDING','IN_PROGRESS','QUEUED','WAITING','REQUESTED','EXPECTED']); const CONFLICT_MERGEABLES=new Set(['CONFLICTING','BEHIND','DIRTY']); function ghJson(args){const out=execFileSync('gh',args,{encoding:'utf8',stdio:['pipe','pipe','pipe']}).trim();return out?JSON.parse(out):[];} function configPath(){   const home=String(process.env.BOSUN_HOME||process.env.VK_PROJECT_DIR||'').trim();   return home?path.join(home,'bosun.config.json'):path.join(process.cwd(),'bosun.config.json'); } function collectReposFromConfig(){   const repos=[];   try{     const cfg=JSON.parse(fs.readFileSync(configPath(),'utf8'));     const workspaces=Array.isArray(cfg?.workspaces)?cfg.workspaces:[];     if(workspaces.length>0){       const active=String(cfg?.activeWorkspace||'').trim().toLowerCase();       const activeWs=active?workspaces.find(w=>String(w?.id||'').trim().toLowerCase()===active):null;       const wsList=activeWs?[activeWs]:workspaces;       for(const ws of wsList){         for(const repo of (Array.isArray(ws?.repos)?ws.repos:[])){           const slug=typeof repo==='string'?String(repo).trim():String(repo?.slug||'').trim();           if(slug) repos.push(slug);         }       }     }     if(repos.length===0){       for(const repo of (Array.isArray(cfg?.repos)?cfg.repos:[])){         const slug=typeof repo==='string'?String(repo).trim():String(repo?.slug||'').trim();         if(slug) repos.push(slug);       }     }   }catch{}   return repos; } function resolveRepoTargets(){   if(REPO_SCOPE&&REPO_SCOPE!=='auto'&&REPO_SCOPE!=='all'&&REPO_SCOPE!=='current'){     return [...new Set(REPO_SCOPE.split(',').map(v=>v.trim()).filter(Boolean))];   }   if(REPO_SCOPE==='current') return [''];   const fromConfig=collectReposFromConfig();   if(fromConfig.length>0) return [...new Set(fromConfig)];   const envRepo=String(process.env.GITHUB_REPOSITORY||'').trim();   if(envRepo) return [envRepo];   return ['']; } function parseRepoFromUrl(url){   const raw=String(url||'');   const marker='github.com/';   const idx=raw.toLowerCase().indexOf(marker);   if(idx<0) return '';   const tail=raw.slice(idx+marker.length).split('/');   if(tail.length<2) return '';   const owner=String(tail[0]||'').trim();   const repo=String(tail[1]||'').trim();   return owner&&repo?(owner+'/'+repo):''; } const repoTargets=resolveRepoTargets(); const prs=[]; const repoErrors=[]; for(const target of repoTargets){   const repo=String(target||'').trim();   const args=['pr','list','--label','bosun-attached','--state','open','--json',FIELDS,'--limit',String(MAX_PRS)];   if(repo) args.push('--repo',repo);   try{     const list=ghJson(args);     for(const pr of (Array.isArray(list)?list:[])){       const prRepo=repo||parseRepoFromUrl(pr?.url)||String(process.env.GITHUB_REPOSITORY||'').trim();       prs.push({...pr,__repo:prRepo});     }   }catch(e){     repoErrors.push({repo:repo||'current',error:String(e?.message||e)});   } } const readyCandidates=[],conflicts=[],ciFailures=[],pending=[],drafted=[]; let newlyLabeled=0,staleLabelCleared=0,ciKicked=0; for(const pr of prs){   const labels=(pr.labels||[]).map(l=>typeof l==='string'?l:l?.name).filter(Boolean);   const hasFixLabel=labels.includes(LABEL_FIX);   const checks=pr.statusCheckRollup||[];   const hasFail=checks.some(c=>FAIL_STATES.has(c.conclusion||c.state||''));   const hasPend=checks.some(c=>PEND_STATES.has(c.conclusion||c.state||''));   const isConflict=CONFLICT_MERGEABLES.has(String(pr.mergeable||'').toUpperCase());   const isDraft=pr.isDraft===true;   const repo=String(pr.__repo||'').trim();   if(isDraft){drafted.push({n:pr.number,repo});continue;}   if(isConflict){     conflicts.push({n:pr.number,repo,branch:pr.headRefName,base:pr.baseRefName,url:pr.url});     if(!hasFixLabel){       try{const editArgs=['pr','edit',String(pr.number),'--add-label',LABEL_FIX];if(repo)editArgs.push('--repo',repo);execFileSync('gh',editArgs,{encoding:'utf8',stdio:['pipe','pipe','pipe']});newlyLabeled++;}       catch(e){process.stderr.write('label err '+(repo?repo+' ':'')+'#'+pr.number+': '+(e?.message||e)+'\\\\n');}     }   } else if(hasFail){     ciFailures.push({n:pr.number,repo,branch:pr.headRefName,url:pr.url});     if(!hasFixLabel){       try{const editArgs=['pr','edit',String(pr.number),'--add-label',LABEL_FIX];if(repo)editArgs.push('--repo',repo);execFileSync('gh',editArgs,{encoding:'utf8',stdio:['pipe','pipe','pipe']});newlyLabeled++;}       catch(e){process.stderr.write('label err '+(repo?repo+' ':'')+'#'+pr.number+': '+(e?.message||e)+'\\\\n');}     }   } else {     if(hasFixLabel&&!hasPend){       try{         const rmArgs=['pr','edit',String(pr.number),'--remove-label',LABEL_FIX];         if(repo)rmArgs.push('--repo',repo);         execFileSync('gh',rmArgs,{encoding:'utf8',stdio:['pipe','pipe','pipe']});         staleLabelCleared++;       }catch(e){process.stderr.write('stale-label-rm err '+(repo?repo+' ':'')+'#'+pr.number+': '+(e?.message||e)+'\\\\n');}     } else if(checks.length>0&&!hasFixLabel){       if(hasPend) pending.push({n:pr.number,repo});       readyCandidates.push({n:pr.number,repo,branch:pr.headRefName,base:pr.baseRefName,url:pr.url,title:pr.title,pendingChecks:hasPend});     }     if(checks.length===0&&repo&&pr.headRefName&&!isDraft){       try{execFileSync('gh',['workflow','run','ci.yaml','--repo',repo,'--ref',pr.headRefName],{encoding:'utf8',stdio:['pipe','pipe','pipe']});ciKicked++;}       catch{}     }   } } console.log(JSON.stringify({   total:prs.length,   reposScanned:repoTargets.length,   repoErrors,   readyCandidates,   conflicts,   ciFailures,   pending:pending.length,   drafted:drafted.length,   newlyLabeled,   staleLabelCleared,   ciKicked,   fixNeeded:conflicts.length+ciFailures.length })); \"",
+            "command": "node -e \" const fs=require('fs'); const path=require('path'); const {execFileSync}=require('child_process'); const LABEL_FIX='{{labelNeedsFix}}'; const MAX_PRS=Math.max(1,Number('{{maxPrs}}')||25); const REPO_SCOPE=String('{{repoScope}}'||'auto').trim(); const FIELDS='number,title,headRefName,baseRefName,isDraft,mergeable,statusCheckRollup,labels,url'; const FAIL_STATES=new Set(['FAILURE','ERROR','TIMED_OUT','CANCELLED','STARTUP_FAILURE']); const PEND_STATES=new Set(['PENDING','IN_PROGRESS','QUEUED','WAITING','REQUESTED','EXPECTED']); const CONFLICT_MERGEABLES=new Set(['CONFLICTING','BEHIND','DIRTY']); const SECURITY_CHECK_RE=/(^|[^a-z])(codeql|code scanning|security|sarif|codacy)([^a-z]|$)/i; function readCheckName(check){return String(check?.name||check?.context||check?.workflowName||check?.displayTitle||'').trim();} function isFailedCheck(check){return FAIL_STATES.has(check?.conclusion||check?.state||'');} function isSecurityCheckName(name){return SECURITY_CHECK_RE.test(String(name||''));} function ghJson(args){const out=execFileSync('gh',args,{encoding:'utf8',stdio:['pipe','pipe','pipe']}).trim();return out?JSON.parse(out):[];} function configPath(){   const home=String(process.env.BOSUN_HOME||process.env.VK_PROJECT_DIR||'').trim();   return home?path.join(home,'bosun.config.json'):path.join(process.cwd(),'bosun.config.json'); } function collectReposFromConfig(){   const repos=[];   try{     const cfg=JSON.parse(fs.readFileSync(configPath(),'utf8'));     const workspaces=Array.isArray(cfg?.workspaces)?cfg.workspaces:[];     if(workspaces.length>0){       const active=String(cfg?.activeWorkspace||'').trim().toLowerCase();       const activeWs=active?workspaces.find(w=>String(w?.id||'').trim().toLowerCase()===active):null;       const wsList=activeWs?[activeWs]:workspaces;       for(const ws of wsList){         for(const repo of (Array.isArray(ws?.repos)?ws.repos:[])){           const slug=typeof repo==='string'?String(repo).trim():String(repo?.slug||'').trim();           if(slug) repos.push(slug);         }       }     }     if(repos.length===0){       for(const repo of (Array.isArray(cfg?.repos)?cfg.repos:[])){         const slug=typeof repo==='string'?String(repo).trim():String(repo?.slug||'').trim();         if(slug) repos.push(slug);       }     }   }catch{}   return repos; } function resolveRepoTargets(){   if(REPO_SCOPE&&REPO_SCOPE!=='auto'&&REPO_SCOPE!=='all'&&REPO_SCOPE!=='current'){     return [...new Set(REPO_SCOPE.split(',').map(v=>v.trim()).filter(Boolean))];   }   if(REPO_SCOPE==='current') return [''];   const fromConfig=collectReposFromConfig();   if(fromConfig.length>0) return [...new Set(fromConfig)];   const envRepo=String(process.env.GITHUB_REPOSITORY||'').trim();   if(envRepo) return [envRepo];   return ['']; } function parseRepoFromUrl(url){   const raw=String(url||'');   const marker='github.com/';   const idx=raw.toLowerCase().indexOf(marker);   if(idx<0) return '';   const tail=raw.slice(idx+marker.length).split('/');   if(tail.length<2) return '';   const owner=String(tail[0]||'').trim();   const repo=String(tail[1]||'').trim();   return owner&&repo?(owner+'/'+repo):''; } const repoTargets=resolveRepoTargets(); const prs=[]; const repoErrors=[]; for(const target of repoTargets){   const repo=String(target||'').trim();   const args=['pr','list','--label','bosun-attached','--state','open','--json',FIELDS,'--limit',String(MAX_PRS)];   if(repo) args.push('--repo',repo);   try{     const list=ghJson(args);     for(const pr of (Array.isArray(list)?list:[])){       const prRepo=repo||parseRepoFromUrl(pr?.url)||String(process.env.GITHUB_REPOSITORY||'').trim();       prs.push({...pr,__repo:prRepo});     }   }catch(e){     repoErrors.push({repo:repo||'current',error:String(e?.message||e)});   } } const readyCandidates=[],conflicts=[],securityFailures=[],ciFailures=[],pending=[],drafted=[]; let newlyLabeled=0,staleLabelCleared=0,ciKicked=0; for(const pr of prs){   const labels=(pr.labels||[]).map(l=>typeof l==='string'?l:l?.name).filter(Boolean);   const hasFixLabel=labels.includes(LABEL_FIX);   const checks=pr.statusCheckRollup||[];   const failedChecks=checks.filter(isFailedCheck);   const failedCheckNames=failedChecks.map(readCheckName).filter(Boolean);   const securityCheckNames=failedCheckNames.filter(isSecurityCheckName);   const hasFail=failedChecks.length>0;   const hasSecurityFail=securityCheckNames.length>0;   const hasPend=checks.some(c=>PEND_STATES.has(c.conclusion||c.state||''));   const isConflict=CONFLICT_MERGEABLES.has(String(pr.mergeable||'').toUpperCase());   const isDraft=pr.isDraft===true;   const repo=String(pr.__repo||'').trim();   if(isDraft){drafted.push({n:pr.number,repo});continue;}   if(isConflict){     conflicts.push({n:pr.number,repo,branch:pr.headRefName,base:pr.baseRefName,url:pr.url});     if(!hasFixLabel){       try{const editArgs=['pr','edit',String(pr.number),'--add-label',LABEL_FIX];if(repo)editArgs.push('--repo',repo);execFileSync('gh',editArgs,{encoding:'utf8',stdio:['pipe','pipe','pipe']});newlyLabeled++;}       catch(e){process.stderr.write('label err '+(repo?repo+' ':'')+'#'+pr.number+': '+(e?.message||e)+'\\\\n');}     }   } else if(hasSecurityFail){     securityFailures.push({n:pr.number,repo,branch:pr.headRefName,base:pr.baseRefName,url:pr.url,title:pr.title,failedCheckNames,securityCheckNames});     if(!hasFixLabel){       try{const editArgs=['pr','edit',String(pr.number),'--add-label',LABEL_FIX];if(repo)editArgs.push('--repo',repo);execFileSync('gh',editArgs,{encoding:'utf8',stdio:['pipe','pipe','pipe']});newlyLabeled++;}       catch(e){process.stderr.write('label err '+(repo?repo+' ':'')+'#'+pr.number+': '+(e?.message||e)+'\\n');}     }   } else if(hasFail){     ciFailures.push({n:pr.number,repo,branch:pr.headRefName,url:pr.url,failedCheckNames});     if(!hasFixLabel){       try{const editArgs=['pr','edit',String(pr.number),'--add-label',LABEL_FIX];if(repo)editArgs.push('--repo',repo);execFileSync('gh',editArgs,{encoding:'utf8',stdio:['pipe','pipe','pipe']});newlyLabeled++;}       catch(e){process.stderr.write('label err '+(repo?repo+' ':'')+'#'+pr.number+': '+(e?.message||e)+'\\\\n');}     }   } else {     if(hasFixLabel&&!hasPend){       try{         const rmArgs=['pr','edit',String(pr.number),'--remove-label',LABEL_FIX];         if(repo)rmArgs.push('--repo',repo);         execFileSync('gh',rmArgs,{encoding:'utf8',stdio:['pipe','pipe','pipe']});         staleLabelCleared++;       }catch(e){process.stderr.write('stale-label-rm err '+(repo?repo+' ':'')+'#'+pr.number+': '+(e?.message||e)+'\\\\n');}     } else if(checks.length>0&&!hasFixLabel){       if(hasPend) pending.push({n:pr.number,repo});       readyCandidates.push({n:pr.number,repo,branch:pr.headRefName,base:pr.baseRefName,url:pr.url,title:pr.title,pendingChecks:hasPend});     }     if(checks.length===0&&repo&&pr.headRefName&&!isDraft){       try{execFileSync('gh',['workflow','run','ci.yaml','--repo',repo,'--ref',pr.headRefName],{encoding:'utf8',stdio:['pipe','pipe','pipe']});ciKicked++;}       catch{}     }   } } console.log(JSON.stringify({   total:prs.length,   reposScanned:repoTargets.length,   repoErrors,   readyCandidates,   conflicts,   securityFailures,   ciFailures,   pending:pending.length,   drafted:drafted.length,   newlyLabeled,   staleLabelCleared,   ciKicked,   fixNeeded:conflicts.length+securityFailures.length+ciFailures.length })); \"",
             "continueOnError": false,
             "failOnError": true
           },
@@ -20775,11 +21180,26 @@
           ]
         },
         {
-          "id": "programmatic-fix",
-          "type": "action.run_command",
-          "label": "Programmatic Fix Pass",
+          "id": "security-fix-needed",
+          "type": "condition.expression",
+          "label": "Security Fix Needed?",
           "config": {
-            "command": "node -e \" const {execFileSync}=require('child_process'); const raw=String(process.env.BOSUN_FETCH_AND_CLASSIFY||''); const payload=(()=>{try{return JSON.parse(raw||'{}')}catch{return {}}})(); const ciFailures=Array.isArray(payload.ciFailures)?payload.ciFailures:[]; const conflicts=Array.isArray(payload.conflicts)?payload.conflicts:[]; const needsAgent=[]; let rerunRequested=0; function runGh(args){return execFileSync('gh',args,{encoding:'utf8',stdio:['pipe','pipe','pipe']}).trim();} for(const item of ciFailures){   const repo=String(item?.repo||'').trim();   const branch=String(item?.branch||'').trim();   const n=String(item?.n||'').trim();   if(!repo||!branch){needsAgent.push({repo,number:n,reason:'missing_repo_or_branch'});continue;}   try{     const listRaw=runGh(['run','list','--repo',repo,'--branch',branch,'--json','databaseId,conclusion,status','--limit','8']);     const runs=(()=>{try{return JSON.parse(listRaw||'[]')}catch{return []}})();     const failed=(Array.isArray(runs)?runs:[]).find((r)=>{       const c=String(r?.conclusion||'').toUpperCase();       return c==='FAILURE'||c==='ERROR'||c==='TIMED_OUT'||c==='CANCELLED';     });     if(failed?.databaseId){runGh(['run','rerun',String(failed.databaseId),'--repo',repo]);rerunRequested++;}     else{needsAgent.push({repo,number:n,reason:'no_rerunnable_failed_run_found'});}   }catch(e){needsAgent.push({repo,number:n,reason:'ci_rerun_failed',error:String(e?.message||e)});} } for(const item of conflicts){   needsAgent.push({repo:String(item?.repo||'').trim(),number:String(item?.n||'').trim(),branch:String(item?.branch||'').trim(),base:String(item?.base||'').trim(),reason:'merge_conflict_requires_code_resolution'}); } console.log(JSON.stringify({rerunRequested,ciFailureCount:ciFailures.length,conflictCount:conflicts.length,needsAgentCount:needsAgent.length,needsAgent})); \"",
+            "expression": "(()=>{try{const o=$ctx.getNodeOutput('fetch-and-classify')?.output;return (JSON.parse(o||'{}').securityFailures||[]).length>0;}catch(e){return false;}})()"
+          },
+          "position": {
+            "x": 120,
+            "y": 640
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "programmatic-security-fix",
+          "type": "action.run_command",
+          "label": "Collect Security Alerts",
+          "config": {
+            "command": "node -e \" const {execFileSync}=require('child_process'); const raw=String(process.env.BOSUN_FETCH_AND_CLASSIFY||''); const payload=(()=>{try{return JSON.parse(raw||'{}')}catch{return {}}})(); const securityFailures=Array.isArray(payload.securityFailures)?payload.securityFailures:[]; const needsAgent=[]; let alertsFetched=0; function gh(args){return execFileSync('gh',args,{encoding:'utf8',stdio:['pipe','pipe','pipe']}).trim();} function compactAlert(alert){   const instance=alert?.most_recent_instance||{};   const location=instance?.location||{};   const rule=alert?.rule||{};   const tool=alert?.tool||{};   return {     number: alert?.number ?? null,     state: String(alert?.state||''),     ruleId: String(rule?.id||alert?.rule_id||''),     ruleName: String(rule?.name||alert?.rule_name||''),     severity: String(rule?.severity||alert?.severity||''),     securitySeverity: String(rule?.security_severity_level||alert?.security_severity_level||''),     tool: String(tool?.name||alert?.tool_name||''),     path: String(location?.path||''),     startLine: Number(location?.start_line||0)||null,     url: String(alert?.html_url||''),   }; } for(const item of securityFailures){   const repo=String(item?.repo||'').trim();   const branch=String(item?.branch||'').trim();   const n=String(item?.n||'').trim();   const securityCheckNames=Array.isArray(item?.securityCheckNames)?item.securityCheckNames:[];   if(!repo||!branch){needsAgent.push({repo,number:n,branch,reason:'missing_repo_or_branch',securityCheckNames,alerts:[]});continue;}   let alerts=[];   let fetchError='';   try{     const alertsRaw=gh(['api','--method','GET','repos/'+repo+'/code-scanning/alerts','--raw-field','state=open','--raw-field','per_page=20','--raw-field','ref=refs/heads/'+branch]);     const parsed=(()=>{try{return JSON.parse(alertsRaw||'[]')}catch{return []}})();     alerts=(Array.isArray(parsed)?parsed:[]).map(compactAlert).filter(a=>a.ruleId||a.ruleName||a.path).slice(0,10);     if(alerts.length>0) alertsFetched++;   }catch(e){fetchError=String(e?.message||e);}   needsAgent.push({repo,number:n,branch,base:String(item?.base||'').trim(),url:String(item?.url||''),title:String(item?.title||''),reason:'security_code_scanning_failure',securityCheckNames,failedCheckNames:Array.isArray(item?.failedCheckNames)?item.failedCheckNames:[],alerts,fetchError}); } console.log(JSON.stringify({securityFailureCount:securityFailures.length,alertsFetched,needsAgentCount:needsAgent.length,needsAgent})); \"",
             "continueOnError": true,
             "failOnError": false,
             "env": {
@@ -20787,8 +21207,78 @@
             }
           },
           "position": {
-            "x": 200,
+            "x": 120,
+            "y": 750
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "security-agent-needed",
+          "type": "condition.expression",
+          "label": "Needs Security Agent?",
+          "config": {
+            "expression": "(()=>{try{const o=$ctx.getNodeOutput('programmatic-security-fix')?.output;return (JSON.parse(o||'{}').needsAgentCount||0)>0;}catch(e){return false;}})()"
+          },
+          "position": {
+            "x": 120,
+            "y": 860
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "dispatch-security-fix-agent",
+          "type": "action.run_agent",
+          "label": "Dispatch Security Fix Agent",
+          "config": {
+            "prompt": "You are a Bosun PR security remediation agent. Work only the PRs in this JSON:\n\n{{$ctx.getNodeOutput('programmatic-security-fix')?.output}}\n\nEach item represents a bosun-attached PR blocked by CodeQL or GitHub code scanning.\nUse the supplied alert data and failing security check names to make the smallest safe code change that resolves the finding.\nFor each repaired PR: check out the branch, fix only the reported code-scanning issue, run targeted validation, push the branch, and remove bosun-needs-fix after success.\n\nSTRICT RULES:\n- Only fix the listed code-scanning or CodeQL findings.\n- No unrelated refactors, dependency churn, merges, approvals, or PR closure.\n- If alert fetch failed, inspect the PR checks and relevant source to resolve the security failure directly.\n- Do NOT touch PRs that are not bosun-attached.",
+            "sdk": "auto",
+            "timeoutMs": 1800000,
+            "maxRetries": 2,
+            "retryDelayMs": 30000,
+            "continueOnError": true
+          },
+          "position": {
+            "x": 120,
+            "y": 970
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "generic-fix-needed",
+          "type": "condition.expression",
+          "label": "Generic Fix Needed?",
+          "config": {
+            "expression": "(()=>{try{const o=$ctx.getNodeOutput('fetch-and-classify')?.output;const d=JSON.parse(o||'{}');return ((d.conflicts||[]).length+(d.ciFailures||[]).length)>0;}catch(e){return false;}})()"
+          },
+          "position": {
+            "x": 280,
             "y": 640
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "programmatic-fix",
+          "type": "action.run_command",
+          "label": "Programmatic Fix Pass",
+          "config": {
+            "command": "node -e \" const {execFileSync}=require('child_process'); const raw=String(process.env.BOSUN_FETCH_AND_CLASSIFY||''); const payload=(()=>{try{return JSON.parse(raw||'{}')}catch{return {}}})(); const ciFailures=Array.isArray(payload.ciFailures)?payload.ciFailures:[]; const conflicts=Array.isArray(payload.conflicts)?payload.conflicts:[]; const needsAgent=[]; let rerunRequested=0; const FAIL_STATES=new Set(['FAILURE','ERROR','TIMED_OUT','CANCELLED','STARTUP_FAILURE']); const MAX_AUTO_RERUN_ATTEMPT=1; function runGh(args){return execFileSync('gh',args,{encoding:'utf8',stdio:['pipe','pipe','pipe']}).trim();} function normalizeRun(run){if(!run||typeof run!=='object')return null;return {databaseId:Number(run.databaseId||0)||null,attempt:Number(run.attempt||0)||0,conclusion:String(run.conclusion||''),status:String(run.status||''),workflowName:String(run.workflowName||run.name||''),displayTitle:String(run.displayTitle||run.name||''),url:String(run.url||''),createdAt:String(run.createdAt||''),updatedAt:String(run.updatedAt||'')}} function normalizeJob(job){if(!job||typeof job!=='object')return null;const steps=Array.isArray(job.steps)?job.steps:[];return {databaseId:Number(job.databaseId||0)||null,name:String(job.name||''),status:String(job.status||''),conclusion:String(job.conclusion||''),url:String(job.url||''),failedSteps:steps.filter((step)=>FAIL_STATES.has(String(step?.conclusion||step?.status||'').toUpperCase())).map((step)=>({name:String(step?.name||''),number:Number(step?.number||0)||null,status:String(step?.status||''),conclusion:String(step?.conclusion||'')})).filter((step)=>step.name).slice(0,10)}} function truncateText(value,max){const text=String(value||'').replace(/\\r/g,'').trim();if(!text)return '';return text.length>max?text.slice(0,Math.max(0,max-19))+'\\n...[truncated]':text;} function collectCiDiagnostics(repo,run){const info={failedRun:normalizeRun(run),failedJobs:[],failedLogExcerpt:'',diagnosticsError:''};const runId=Number(run?.databaseId||0)||0;if(!runId)return info;try{const viewRaw=runGh(['run','view',String(runId),'--repo',repo,'--json','attempt,conclusion,status,workflowName,displayTitle,url,createdAt,updatedAt,jobs']);const view=(()=>{try{return JSON.parse(viewRaw||'{}')}catch{return {}}})();info.failedRun=normalizeRun({...run,...view});const jobs=Array.isArray(view.jobs)?view.jobs:[];info.failedJobs=jobs.map(normalizeJob).filter((job)=>job&&(FAIL_STATES.has(String(job.conclusion||'').toUpperCase())||job.failedSteps.length>0)).slice(0,10);}catch(e){info.diagnosticsError=String(e?.message||e);}try{info.failedLogExcerpt=truncateText(runGh(['run','view',String(runId),'--repo',repo,'--log-failed']),6000);}catch(e){const message=String(e?.message||e);if(message&&message!==info.diagnosticsError){info.diagnosticsError=info.diagnosticsError?info.diagnosticsError+' | '+message:message;}}return info;} for(const item of ciFailures){   const repo=String(item?.repo||'').trim();   const branch=String(item?.branch||'').trim();   const n=String(item?.n||'').trim();   const failedCheckNames=Array.isArray(item?.failedCheckNames)?item.failedCheckNames:[];   const url=String(item?.url||'').trim();   const title=String(item?.title||'').trim();   if(!repo||!branch){needsAgent.push({repo,number:n,branch,url,title,failedCheckNames,reason:'missing_repo_or_branch'});continue;}   let runs=[];   try{     const listRaw=runGh(['run','list','--repo',repo,'--branch',branch,'--json','databaseId,attempt,conclusion,status,workflowName,displayTitle,url,createdAt,updatedAt','--limit','8']);     const parsedRuns=(()=>{try{return JSON.parse(listRaw||'[]')}catch{return []}})();     runs=Array.isArray(parsedRuns)?parsedRuns:[];   }catch(e){needsAgent.push({repo,number:n,branch,url,title,failedCheckNames,reason:'ci_run_listing_failed',error:String(e?.message||e)});continue;}   const failed=runs.find((r)=>FAIL_STATES.has(String(r?.conclusion||'').toUpperCase()));   const failedRun=normalizeRun(failed);   if(failedRun?.databaseId&&failedRun.attempt<=MAX_AUTO_RERUN_ATTEMPT){     try{runGh(['run','rerun',String(failedRun.databaseId),'--repo',repo]);rerunRequested++;continue;}     catch(e){needsAgent.push({repo,number:n,branch,url,title,failedCheckNames,reason:'ci_rerun_failed',error:String(e?.message||e),...collectCiDiagnostics(repo,failedRun)});continue;}   }   if(failedRun?.databaseId){needsAgent.push({repo,number:n,branch,url,title,failedCheckNames,reason:'auto_rerun_limit_reached',rerunAttempts:failedRun.attempt||0,...collectCiDiagnostics(repo,failedRun)});continue;}   needsAgent.push({repo,number:n,branch,url,title,failedCheckNames,reason:'no_rerunnable_failed_run_found',recentRuns:runs.map(normalizeRun).filter(Boolean).slice(0,5)}); } for(const item of conflicts){   needsAgent.push({repo:String(item?.repo||'').trim(),number:String(item?.n||'').trim(),branch:String(item?.branch||'').trim(),base:String(item?.base||'').trim(),reason:'merge_conflict_requires_code_resolution'}); } console.log(JSON.stringify({rerunRequested,ciFailureCount:ciFailures.length,conflictCount:conflicts.length,needsAgentCount:needsAgent.length,needsAgent})); \"",
+            "continueOnError": true,
+            "failOnError": false,
+            "env": {
+              "BOSUN_FETCH_AND_CLASSIFY": "{{$ctx.getNodeOutput('fetch-and-classify')?.output || '{}'}}"
+            }
+          },
+          "position": {
+            "x": 280,
+            "y": 750
           },
           "outputs": [
             "default"
@@ -20802,8 +21292,8 @@
             "expression": "(()=>{try{const o=$ctx.getNodeOutput('programmatic-fix')?.output;return (JSON.parse(o||'{}').needsAgentCount||0)>0;}catch(e){return false;}})()"
           },
           "position": {
-            "x": 200,
-            "y": 750
+            "x": 280,
+            "y": 860
           },
           "outputs": [
             "default"
@@ -20814,7 +21304,7 @@
           "type": "action.run_agent",
           "label": "Dispatch Fix Agent (Fallback)",
           "config": {
-            "prompt": "You are a Bosun PR repair fallback agent. A deterministic CLI fix pass has already run. Only work unresolved items from this JSON:\n\n{{$ctx.getNodeOutput('programmatic-fix')?.output}}\n\nFor conflict items: rebase/merge branch onto base, resolve conflicts, run tests, push with --force-with-lease if needed.\nFor CI-failure items: inspect failed logs, apply minimal fix, commit and push.\nAfter successful repair remove bosun-needs-fix label.\n\nSTRICT RULES:\n- Fix only CI/conflict issues. No scope creep.\n- Do NOT merge/close/approve PRs.\n- Do NOT touch PRs without bosun-attached.",
+            "prompt": "You are a Bosun PR repair fallback agent. A deterministic CLI fix pass has already run. Only work unresolved items from this JSON:\n\n{{$ctx.getNodeOutput('programmatic-fix')?.output}}\n\nFor conflict items: rebase/merge branch onto base, resolve conflicts, run tests, push with --force-with-lease if needed.\nFor CI-failure items: start from failedCheckNames, failedRun, failedJobs, and failedLogExcerpt to identify the actual failing workflow step, then apply the minimal fix, commit, and push.\nAfter successful repair remove bosun-needs-fix label.\n\nSTRICT RULES:\n- Fix only CI/conflict issues. No scope creep.\n- Do NOT merge/close/approve PRs.\n- Do NOT touch PRs without bosun-attached.",
             "sdk": "auto",
             "timeoutMs": 1800000,
             "maxRetries": 2,
@@ -20822,8 +21312,8 @@
             "continueOnError": true
           },
           "position": {
-            "x": 200,
-            "y": 860
+            "x": 280,
+            "y": 970
           },
           "outputs": [
             "default"
@@ -20945,15 +21435,69 @@
           "condition": "$output?.result !== true"
         },
         {
-          "id": "fix-needed->programmatic-fix",
+          "id": "fix-needed->security-fix-needed",
           "source": "fix-needed",
-          "target": "programmatic-fix",
+          "target": "security-fix-needed",
           "sourcePort": "default",
           "condition": "$output?.result === true"
         },
         {
           "id": "fix-needed->review-needed",
           "source": "fix-needed",
+          "target": "review-needed",
+          "sourcePort": "default",
+          "condition": "$output?.result !== true"
+        },
+        {
+          "id": "security-fix-needed->programmatic-security-fix",
+          "source": "security-fix-needed",
+          "target": "programmatic-security-fix",
+          "sourcePort": "default",
+          "condition": "$output?.result === true"
+        },
+        {
+          "id": "security-fix-needed->generic-fix-needed",
+          "source": "security-fix-needed",
+          "target": "generic-fix-needed",
+          "sourcePort": "default",
+          "condition": "$output?.result !== true"
+        },
+        {
+          "id": "programmatic-security-fix->security-agent-needed",
+          "source": "programmatic-security-fix",
+          "target": "security-agent-needed",
+          "sourcePort": "default"
+        },
+        {
+          "id": "security-agent-needed->dispatch-security-fix-agent",
+          "source": "security-agent-needed",
+          "target": "dispatch-security-fix-agent",
+          "sourcePort": "default",
+          "condition": "$output?.result === true"
+        },
+        {
+          "id": "security-agent-needed->generic-fix-needed",
+          "source": "security-agent-needed",
+          "target": "generic-fix-needed",
+          "sourcePort": "default",
+          "condition": "$output?.result !== true"
+        },
+        {
+          "id": "dispatch-security-fix-agent->generic-fix-needed",
+          "source": "dispatch-security-fix-agent",
+          "target": "generic-fix-needed",
+          "sourcePort": "default"
+        },
+        {
+          "id": "generic-fix-needed->programmatic-fix",
+          "source": "generic-fix-needed",
+          "target": "programmatic-fix",
+          "sourcePort": "default",
+          "condition": "$output?.result === true"
+        },
+        {
+          "id": "generic-fix-needed->review-needed",
+          "source": "generic-fix-needed",
           "target": "review-needed",
           "sourcePort": "default",
           "condition": "$output?.result !== true"
@@ -27835,7 +28379,7 @@
       "description": "Issue-state continuation loop. Polls externalStatus, keeps driving the agent until terminal state or max turns, and handles stuck sessions with retry/escalate/pause.",
       "category": "reliability",
       "enabled": true,
-      "nodeCount": 28,
+      "nodeCount": 33,
       "trigger": "trigger.manual",
       "variables": {
         "taskId": "",
@@ -27847,6 +28391,7 @@
           "cancelled"
         ],
         "stuckThresholdMs": 300000,
+        "maxStuckAutoRetries": 1,
         "onStuck": "escalate",
         "continuePrompt": "Continue this task from the current state. Focus on the next missing step and push toward completion.",
         "retryPrompt": "No progress was detected recently. Try a different approach and make concrete progress (commit or file updates).",
@@ -27914,6 +28459,23 @@
           "position": {
             "x": 420,
             "y": 390
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "init-stuck-retry-count",
+          "type": "action.set_variable",
+          "label": "Initialize Stuck Retry Count",
+          "config": {
+            "key": "stuckRetryCount",
+            "value": "0",
+            "isExpression": true
+          },
+          "position": {
+            "x": 420,
+            "y": 450
           },
           "outputs": [
             "default"
@@ -28135,6 +28697,23 @@
           ]
         },
         {
+          "id": "reset-stuck-retry-count",
+          "type": "action.set_variable",
+          "label": "Reset Stuck Retry Count On Progress",
+          "config": {
+            "key": "stuckRetryCount",
+            "value": "(() => { const changed = String($data?.currentProgressSignature || '') !== String($data?.lastProgressSignature || ''); return changed ? 0 : Number($data?.stuckRetryCount || 0); })()",
+            "isExpression": true
+          },
+          "position": {
+            "x": 680,
+            "y": 1710
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
           "id": "stuck-check",
           "type": "condition.expression",
           "label": "Session Stuck?",
@@ -28143,7 +28722,7 @@
           },
           "position": {
             "x": 980,
-            "y": 1710
+            "y": 1820
           },
           "outputs": [
             "yes",
@@ -28161,7 +28740,16 @@
               "turn": "{{continuationTurn}}",
               "externalStatus": "{{currentExternalStatus}}",
               "stuckThresholdMs": "{{stuckThresholdMs}}",
-              "onStuck": "{{onStuck}}"
+              "stuckForMs": "{{Math.max(0, Date.now() - Number($data?.lastProgressAt || 0))}}",
+              "onStuck": "{{onStuck}}",
+              "stuckRetryCount": "{{stuckRetryCount}}",
+              "maxStuckAutoRetries": "{{maxStuckAutoRetries}}",
+              "lastProgressAt": "{{lastProgressAt}}",
+              "lastProgressSignature": "{{lastProgressSignature}}",
+              "currentProgressSignature": "{{currentProgressSignature}}",
+              "progressSnapshot": "{{$ctx.getNodeOutput('capture-progress')?.output || ''}}",
+              "lastAgentSuccess": "{{$ctx.getNodeOutput('run-agent')?.success === true}}",
+              "lastAgentOutput": "{{$ctx.getNodeOutput('run-agent')?.output || ''}}"
             },
             "outputVariable": "sessionStuckEvent"
           },
@@ -28197,11 +28785,27 @@
           ]
         },
         {
+          "id": "stuck-retry-budget",
+          "type": "condition.expression",
+          "label": "Stuck Retry Budget Remaining?",
+          "config": {
+            "expression": "Number($data?.stuckRetryCount || 0) < Number($data?.maxStuckAutoRetries || 0)"
+          },
+          "position": {
+            "x": 760,
+            "y": 1820
+          },
+          "outputs": [
+            "yes",
+            "no"
+          ]
+        },
+        {
           "id": "stuck-retry",
           "type": "action.run_agent",
           "label": "Retry After Stuck",
           "config": {
-            "prompt": "{{retryPrompt}}",
+            "prompt": "{{retryPrompt}}\n\nStuck context:\n- taskId: {{taskId}}\n- externalStatus: {{currentExternalStatus}}\n- turn: {{continuationTurn}}\n- stuckRetryCount: {{stuckRetryCount}}/{{maxStuckAutoRetries}}\n- stuckForMs: {{Math.max(0, Date.now() - Number($data?.lastProgressAt || 0))}}\n- lastProgressSignature: {{lastProgressSignature}}\n- currentProgressSignature: {{currentProgressSignature}}\n- progressSnapshot: {{$ctx.getNodeOutput('capture-progress')?.output || ''}}\n- lastAgentOutput: {{$ctx.getNodeOutput('run-agent')?.output || ''}}\n\nTry a materially different approach. If you cannot create progress, explain the specific blocker.",
             "taskId": "{{taskId}}",
             "cwd": "{{worktreePath}}",
             "sdk": "{{sdk}}",
@@ -28218,16 +28822,49 @@
           ]
         },
         {
+          "id": "increment-stuck-retry-count",
+          "type": "action.set_variable",
+          "label": "Increment Stuck Retry Count",
+          "config": {
+            "key": "stuckRetryCount",
+            "value": "Number($data?.stuckRetryCount || 0) + 1",
+            "isExpression": true
+          },
+          "position": {
+            "x": 760,
+            "y": 1940
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
           "id": "stuck-escalate",
           "type": "notify.log",
           "label": "Escalate Stuck Session",
           "config": {
             "level": "warn",
-            "message": "session-stuck: escalation requested for task {{taskId}} at turn {{continuationTurn}} (externalStatus={{currentExternalStatus}})"
+            "message": "session-stuck: escalation requested for task {{taskId}} at turn {{continuationTurn}} (externalStatus={{currentExternalStatus}}, stuckForMs={{Math.max(0, Date.now() - Number($data?.lastProgressAt || 0))}}, stuckRetryCount={{stuckRetryCount}}/{{maxStuckAutoRetries}}, lastProgressSignature={{lastProgressSignature}}, currentProgressSignature={{currentProgressSignature}})"
           },
           "position": {
             "x": 980,
             "y": 1830
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "stuck-escalate-budget",
+          "type": "notify.log",
+          "label": "Escalate Stuck Session (Retry Limit)",
+          "config": {
+            "level": "warn",
+            "message": "session-stuck: retry budget exhausted for task {{taskId}} at turn {{continuationTurn}} (externalStatus={{currentExternalStatus}}, stuckForMs={{Math.max(0, Date.now() - Number($data?.lastProgressAt || 0))}}, stuckRetryCount={{stuckRetryCount}}/{{maxStuckAutoRetries}}, lastProgressSignature={{lastProgressSignature}}, currentProgressSignature={{currentProgressSignature}})"
+          },
+          "position": {
+            "x": 760,
+            "y": 2050
           },
           "outputs": [
             "default"
@@ -28259,7 +28896,9 @@
             "output": {
               "reason": "stuck_escalated",
               "taskId": "{{taskId}}",
-              "event": "{{sessionStuckEvent.eventType}}"
+              "event": "{{sessionStuckEvent.eventType}}",
+              "stuckRetryCount": "{{stuckRetryCount}}",
+              "maxStuckAutoRetries": "{{maxStuckAutoRetries}}"
             }
           },
           "position": {
@@ -28378,8 +29017,14 @@
           "sourcePort": "default"
         },
         {
-          "id": "init-signature->poll-task",
+          "id": "init-signature->init-stuck-retry-count",
           "source": "init-signature",
+          "target": "init-stuck-retry-count",
+          "sourcePort": "default"
+        },
+        {
+          "id": "init-stuck-retry-count->poll-task",
+          "source": "init-stuck-retry-count",
           "target": "poll-task",
           "sourcePort": "default"
         },
@@ -28454,8 +29099,14 @@
           "sourcePort": "default"
         },
         {
-          "id": "mark-progress-sig->stuck-check",
+          "id": "mark-progress-sig->reset-stuck-retry-count",
           "source": "mark-progress-sig",
+          "target": "reset-stuck-retry-count",
+          "sourcePort": "default"
+        },
+        {
+          "id": "reset-stuck-retry-count->stuck-check",
+          "source": "reset-stuck-retry-count",
           "target": "stuck-check",
           "sourcePort": "default"
         },
@@ -28480,9 +29131,9 @@
           "sourcePort": "default"
         },
         {
-          "id": "stuck-route->stuck-retry",
+          "id": "stuck-route->stuck-retry-budget",
           "source": "stuck-route",
-          "target": "stuck-retry",
+          "target": "stuck-retry-budget",
           "sourcePort": "retry"
         },
         {
@@ -28504,14 +29155,40 @@
           "sourcePort": "default"
         },
         {
-          "id": "stuck-retry->wait-next-turn",
+          "id": "stuck-retry-budget->stuck-retry",
+          "source": "stuck-retry-budget",
+          "target": "stuck-retry",
+          "sourcePort": "yes",
+          "condition": "$output?.result === true"
+        },
+        {
+          "id": "stuck-retry-budget->stuck-escalate-budget",
+          "source": "stuck-retry-budget",
+          "target": "stuck-escalate-budget",
+          "sourcePort": "no",
+          "condition": "$output?.result !== true"
+        },
+        {
+          "id": "stuck-retry->increment-stuck-retry-count",
           "source": "stuck-retry",
+          "target": "increment-stuck-retry-count",
+          "sourcePort": "default"
+        },
+        {
+          "id": "increment-stuck-retry-count->wait-next-turn",
+          "source": "increment-stuck-retry-count",
           "target": "wait-next-turn",
           "sourcePort": "default"
         },
         {
           "id": "stuck-escalate->end-escalated",
           "source": "stuck-escalate",
+          "target": "end-escalated",
+          "sourcePort": "default"
+        },
+        {
+          "id": "stuck-escalate-budget->end-escalated",
+          "source": "stuck-escalate-budget",
           "target": "end-escalated",
           "sourcePort": "default"
         },
@@ -28557,8 +29234,8 @@
         "templateState": {
           "templateId": "template-continuation-loop",
           "templateName": "Continuation Loop",
-          "templateVersion": "1.0.0",
-          "installedTemplateVersion": "1.0.0",
+          "templateVersion": "1.1.0",
+          "installedTemplateVersion": "1.1.0",
           "isCustomized": false,
           "updateAvailable": false
         }
@@ -28570,7 +29247,7 @@
       "description": "Issue-state continuation loop. Polls externalStatus, keeps driving the agent until terminal state or max turns, and handles stuck sessions with retry/escalate/pause.",
       "category": "reliability",
       "enabled": true,
-      "nodeCount": 28,
+      "nodeCount": 33,
       "trigger": "trigger.manual",
       "variables": {
         "taskId": "",
@@ -28582,6 +29259,7 @@
           "cancelled"
         ],
         "stuckThresholdMs": 300000,
+        "maxStuckAutoRetries": 1,
         "onStuck": "escalate",
         "continuePrompt": "Continue this task from the current state. Focus on the next missing step and push toward completion.",
         "retryPrompt": "No progress was detected recently. Try a different approach and make concrete progress (commit or file updates).",
@@ -28649,6 +29327,23 @@
           "position": {
             "x": 420,
             "y": 390
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "init-stuck-retry-count",
+          "type": "action.set_variable",
+          "label": "Initialize Stuck Retry Count",
+          "config": {
+            "key": "stuckRetryCount",
+            "value": "0",
+            "isExpression": true
+          },
+          "position": {
+            "x": 420,
+            "y": 450
           },
           "outputs": [
             "default"
@@ -28870,6 +29565,23 @@
           ]
         },
         {
+          "id": "reset-stuck-retry-count",
+          "type": "action.set_variable",
+          "label": "Reset Stuck Retry Count On Progress",
+          "config": {
+            "key": "stuckRetryCount",
+            "value": "(() => { const changed = String($data?.currentProgressSignature || '') !== String($data?.lastProgressSignature || ''); return changed ? 0 : Number($data?.stuckRetryCount || 0); })()",
+            "isExpression": true
+          },
+          "position": {
+            "x": 680,
+            "y": 1710
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
           "id": "stuck-check",
           "type": "condition.expression",
           "label": "Session Stuck?",
@@ -28878,7 +29590,7 @@
           },
           "position": {
             "x": 980,
-            "y": 1710
+            "y": 1820
           },
           "outputs": [
             "yes",
@@ -28896,7 +29608,16 @@
               "turn": "{{continuationTurn}}",
               "externalStatus": "{{currentExternalStatus}}",
               "stuckThresholdMs": "{{stuckThresholdMs}}",
-              "onStuck": "{{onStuck}}"
+              "stuckForMs": "{{Math.max(0, Date.now() - Number($data?.lastProgressAt || 0))}}",
+              "onStuck": "{{onStuck}}",
+              "stuckRetryCount": "{{stuckRetryCount}}",
+              "maxStuckAutoRetries": "{{maxStuckAutoRetries}}",
+              "lastProgressAt": "{{lastProgressAt}}",
+              "lastProgressSignature": "{{lastProgressSignature}}",
+              "currentProgressSignature": "{{currentProgressSignature}}",
+              "progressSnapshot": "{{$ctx.getNodeOutput('capture-progress')?.output || ''}}",
+              "lastAgentSuccess": "{{$ctx.getNodeOutput('run-agent')?.success === true}}",
+              "lastAgentOutput": "{{$ctx.getNodeOutput('run-agent')?.output || ''}}"
             },
             "outputVariable": "sessionStuckEvent"
           },
@@ -28932,11 +29653,27 @@
           ]
         },
         {
+          "id": "stuck-retry-budget",
+          "type": "condition.expression",
+          "label": "Stuck Retry Budget Remaining?",
+          "config": {
+            "expression": "Number($data?.stuckRetryCount || 0) < Number($data?.maxStuckAutoRetries || 0)"
+          },
+          "position": {
+            "x": 760,
+            "y": 1820
+          },
+          "outputs": [
+            "yes",
+            "no"
+          ]
+        },
+        {
           "id": "stuck-retry",
           "type": "action.run_agent",
           "label": "Retry After Stuck",
           "config": {
-            "prompt": "{{retryPrompt}}",
+            "prompt": "{{retryPrompt}}\n\nStuck context:\n- taskId: {{taskId}}\n- externalStatus: {{currentExternalStatus}}\n- turn: {{continuationTurn}}\n- stuckRetryCount: {{stuckRetryCount}}/{{maxStuckAutoRetries}}\n- stuckForMs: {{Math.max(0, Date.now() - Number($data?.lastProgressAt || 0))}}\n- lastProgressSignature: {{lastProgressSignature}}\n- currentProgressSignature: {{currentProgressSignature}}\n- progressSnapshot: {{$ctx.getNodeOutput('capture-progress')?.output || ''}}\n- lastAgentOutput: {{$ctx.getNodeOutput('run-agent')?.output || ''}}\n\nTry a materially different approach. If you cannot create progress, explain the specific blocker.",
             "taskId": "{{taskId}}",
             "cwd": "{{worktreePath}}",
             "sdk": "{{sdk}}",
@@ -28953,16 +29690,49 @@
           ]
         },
         {
+          "id": "increment-stuck-retry-count",
+          "type": "action.set_variable",
+          "label": "Increment Stuck Retry Count",
+          "config": {
+            "key": "stuckRetryCount",
+            "value": "Number($data?.stuckRetryCount || 0) + 1",
+            "isExpression": true
+          },
+          "position": {
+            "x": 760,
+            "y": 1940
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
           "id": "stuck-escalate",
           "type": "notify.log",
           "label": "Escalate Stuck Session",
           "config": {
             "level": "warn",
-            "message": "session-stuck: escalation requested for task {{taskId}} at turn {{continuationTurn}} (externalStatus={{currentExternalStatus}})"
+            "message": "session-stuck: escalation requested for task {{taskId}} at turn {{continuationTurn}} (externalStatus={{currentExternalStatus}}, stuckForMs={{Math.max(0, Date.now() - Number($data?.lastProgressAt || 0))}}, stuckRetryCount={{stuckRetryCount}}/{{maxStuckAutoRetries}}, lastProgressSignature={{lastProgressSignature}}, currentProgressSignature={{currentProgressSignature}})"
           },
           "position": {
             "x": 980,
             "y": 1830
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "stuck-escalate-budget",
+          "type": "notify.log",
+          "label": "Escalate Stuck Session (Retry Limit)",
+          "config": {
+            "level": "warn",
+            "message": "session-stuck: retry budget exhausted for task {{taskId}} at turn {{continuationTurn}} (externalStatus={{currentExternalStatus}}, stuckForMs={{Math.max(0, Date.now() - Number($data?.lastProgressAt || 0))}}, stuckRetryCount={{stuckRetryCount}}/{{maxStuckAutoRetries}}, lastProgressSignature={{lastProgressSignature}}, currentProgressSignature={{currentProgressSignature}})"
+          },
+          "position": {
+            "x": 760,
+            "y": 2050
           },
           "outputs": [
             "default"
@@ -28994,7 +29764,9 @@
             "output": {
               "reason": "stuck_escalated",
               "taskId": "{{taskId}}",
-              "event": "{{sessionStuckEvent.eventType}}"
+              "event": "{{sessionStuckEvent.eventType}}",
+              "stuckRetryCount": "{{stuckRetryCount}}",
+              "maxStuckAutoRetries": "{{maxStuckAutoRetries}}"
             }
           },
           "position": {
@@ -29113,8 +29885,14 @@
           "sourcePort": "default"
         },
         {
-          "id": "init-signature->poll-task",
+          "id": "init-signature->init-stuck-retry-count",
           "source": "init-signature",
+          "target": "init-stuck-retry-count",
+          "sourcePort": "default"
+        },
+        {
+          "id": "init-stuck-retry-count->poll-task",
+          "source": "init-stuck-retry-count",
           "target": "poll-task",
           "sourcePort": "default"
         },
@@ -29189,8 +29967,14 @@
           "sourcePort": "default"
         },
         {
-          "id": "mark-progress-sig->stuck-check",
+          "id": "mark-progress-sig->reset-stuck-retry-count",
           "source": "mark-progress-sig",
+          "target": "reset-stuck-retry-count",
+          "sourcePort": "default"
+        },
+        {
+          "id": "reset-stuck-retry-count->stuck-check",
+          "source": "reset-stuck-retry-count",
           "target": "stuck-check",
           "sourcePort": "default"
         },
@@ -29215,9 +29999,9 @@
           "sourcePort": "default"
         },
         {
-          "id": "stuck-route->stuck-retry",
+          "id": "stuck-route->stuck-retry-budget",
           "source": "stuck-route",
-          "target": "stuck-retry",
+          "target": "stuck-retry-budget",
           "sourcePort": "retry"
         },
         {
@@ -29239,14 +30023,40 @@
           "sourcePort": "default"
         },
         {
-          "id": "stuck-retry->wait-next-turn",
+          "id": "stuck-retry-budget->stuck-retry",
+          "source": "stuck-retry-budget",
+          "target": "stuck-retry",
+          "sourcePort": "yes",
+          "condition": "$output?.result === true"
+        },
+        {
+          "id": "stuck-retry-budget->stuck-escalate-budget",
+          "source": "stuck-retry-budget",
+          "target": "stuck-escalate-budget",
+          "sourcePort": "no",
+          "condition": "$output?.result !== true"
+        },
+        {
+          "id": "stuck-retry->increment-stuck-retry-count",
           "source": "stuck-retry",
+          "target": "increment-stuck-retry-count",
+          "sourcePort": "default"
+        },
+        {
+          "id": "increment-stuck-retry-count->wait-next-turn",
+          "source": "increment-stuck-retry-count",
           "target": "wait-next-turn",
           "sourcePort": "default"
         },
         {
           "id": "stuck-escalate->end-escalated",
           "source": "stuck-escalate",
+          "target": "end-escalated",
+          "sourcePort": "default"
+        },
+        {
+          "id": "stuck-escalate-budget->end-escalated",
+          "source": "stuck-escalate-budget",
           "target": "end-escalated",
           "sourcePort": "default"
         },
@@ -29292,8 +30102,8 @@
         "templateState": {
           "templateId": "template-continuation-loop",
           "templateName": "Continuation Loop",
-          "templateVersion": "1.0.0",
-          "installedTemplateVersion": "1.0.0",
+          "templateVersion": "1.1.0",
+          "installedTemplateVersion": "1.1.0",
           "isCustomized": false,
           "updateAvailable": false
         }
@@ -29346,7 +30156,7 @@
           "type": "action.run_agent",
           "label": "Analyze Failure",
           "config": {
-            "prompt": "Analyze the following error and suggest a fix:\n\n{{lastError}}\n\nTask: {{taskTitle}}",
+            "prompt": "Analyze the following task failure and suggest the most likely minimal fix.\n\nTask: {{taskTitle}} ({{taskId}})\nRetry attempt: {{$data?.retryCount || 0}}/{{$data?.maxRetries || 3}}\nBranch: {{branch}}\nBase branch: {{baseBranch}}\nWorktree: {{worktreePath}}\n\nLast error:\n{{lastError}}",
             "timeoutMs": 300000
           },
           "position": {
@@ -29362,7 +30172,7 @@
           "type": "action.run_agent",
           "label": "Retry Task",
           "config": {
-            "prompt": "{{taskExecutorRetryPrompt}}",
+            "prompt": "{{taskExecutorRetryPrompt}}\n\nFailure context:\n- taskId: {{taskId}}\n- taskTitle: {{taskTitle}}\n- branch: {{branch}}\n- baseBranch: {{baseBranch}}\n- worktreePath: {{worktreePath}}\n- retryCount: {{$data?.retryCount || 0}}/{{$data?.maxRetries || 3}}\n- lastError: {{lastError}}\n- recoveryAnalysis: {{$ctx.getNodeOutput('analyze-error')?.output || ''}}\n\nUse the analysis to choose a different approach if the previous attempt failed.",
             "timeoutMs": 3600000,
             "failOnError": true,
             "maxRetries": "{{maxRetries}}",
@@ -29414,7 +30224,7 @@
           "type": "notify.telegram",
           "label": "Escalate to Human",
           "config": {
-            "message": ":alert: Task **{{taskTitle}}** failed after {{maxRetries}} attempts. Manual intervention needed.\n\nLast error: {{lastError}}"
+            "message": ":alert: Task **{{taskTitle}}** failed after {{maxRetries}} attempts. Manual intervention needed.\n\nLast error: {{lastError}}\n\nRecovery analysis: {{$ctx.getNodeOutput('analyze-error')?.output || ''}}"
           },
           "position": {
             "x": 600,
@@ -29431,7 +30241,7 @@
           "config": {
             "workflowId": "template-task-repair-worktree",
             "mode": "dispatch",
-            "input": "({taskId: $data?.taskId, taskTitle: $data?.taskTitle, worktreePath: $data?.worktreePath, branch: $data?.branch, baseBranch: $data?.baseBranch, error: $data?.lastError})"
+            "input": "(() => { const analysisRaw = String($ctx.getNodeOutput('analyze-error')?.output || '').trim(); const retryOutputRaw = String($ctx.getNodeOutput('retry-task')?.output || '').trim(); const retryErrorRaw = String($ctx.getNodeOutput('retry-task')?.error || '').trim(); const truncate = (value, limit = 2000) => value.length > limit ? `${value.slice(0, limit)}...` : value; const diagnostics = [String($data?.lastError || '').trim(), analysisRaw ? `Recovery analysis:\n${truncate(analysisRaw)}` : '', retryOutputRaw ? `Retry output:\n${truncate(retryOutputRaw)}` : '', retryErrorRaw ? `Retry error:\n${truncate(retryErrorRaw)}` : ''].filter(Boolean).join('\n\n'); return { taskId: $data?.taskId, taskTitle: $data?.taskTitle, worktreePath: $data?.worktreePath, branch: $data?.branch, baseBranch: $data?.baseBranch, error: diagnostics || String($data?.lastError || ''), recoveryAnalysis: truncate(analysisRaw), retryResult: { success: $ctx.getNodeOutput('retry-task')?.success === true, output: truncate(retryOutputRaw), error: truncate(retryErrorRaw) } }; })()"
           },
           "position": {
             "x": 400,
@@ -29503,8 +30313,8 @@
         "templateState": {
           "templateId": "template-error-recovery",
           "templateName": "Error Recovery",
-          "templateVersion": "1.0.1",
-          "installedTemplateVersion": "1.0.1",
+          "templateVersion": "1.1.0",
+          "installedTemplateVersion": "1.1.0",
           "isCustomized": false,
           "updateAvailable": false
         }
@@ -39537,7 +40347,7 @@
       "workflowId": "wf-bosun-pr-watchdog",
       "workflowName": "Bosun PR Watchdog",
       "status": "completed",
-      "nodeCount": 12,
+      "nodeCount": 17,
       "duration": 29000,
       "errorCount": 0,
       "triggerSource": "manual",

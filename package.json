@@ -115,6 +115,8 @@
     "test:vitest": "node --max-old-space-size=4096 node_modules/vitest/vitest.mjs run --config vitest.config.mjs",
     "test:node": "node --import ./tests/node-test-bootstrap.mjs --test tests/*.node.test.mjs",
     "test:all": "npm run test:vitest && npm run test:node",
+    "test:e2e": "npx playwright test server/playwright-ui-e2e.mjs",
+    "test:e2e:all": "npx playwright test server/playwright-ui-e2e.mjs server/playwright-ui-smoke.mjs",
     "test:voice-provider-smoke": "vitest run --config vitest.config.mjs tests/voice-provider-smoke.test.mjs",
     "check:native-call-parity": "vitest run --config vitest.config.mjs tests/voice-provider-smoke.test.mjs tests/native-call-parity-checklist.test.mjs",
     "test:watch": "vitest",

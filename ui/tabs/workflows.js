@@ -1427,6 +1427,18 @@ function WorkflowCanvas({ workflow, onSave, nodeTypes: availableNodeTypes = [] }
     () => new Map((availableNodeTypes || []).map((type) => [type.type, type])),
     [availableNodeTypes],
   );
+  const ensureNodePortMetadata = useCallback((node) => {
+    const ports = resolveNodePorts(node, nodeTypeMap);
+    return {
+      ...node,
+      inputPorts: ports.inputs,
+      outputPorts: ports.outputs,
+    };
+  }, [nodeTypeMap]);
+
+  const normalizeNodesForCanvas = useCallback((nodeList = []) => (
+    (Array.isArray(nodeList) ? nodeList : []).map((node) => ensureNodePortMetadata(node))
+  ), [ensureNodePortMetadata]);
   useEffect(() => { selectedNodeIdsRef.current = selectedNodeIds; }, [selectedNodeIds]);
   useEffect(() => {
     nodesRef.current = nodes;
@@ -1742,18 +1754,6 @@ function WorkflowCanvas({ workflow, onSave, nodeTypes: availableNodeTypes = [] }
     };
   }, [zoom, pan]);
 
-  const ensureNodePortMetadata = useCallback((node) => {
-    const ports = resolveNodePorts(node, nodeTypeMap);
-    return {
-      ...node,
-      inputPorts: ports.inputs,
-      outputPorts: ports.outputs,
-    };
-  }, [nodeTypeMap]);
-
-  const normalizeNodesForCanvas = useCallback((nodeList = []) => (
-    (Array.isArray(nodeList) ? nodeList : []).map((node) => ensureNodePortMetadata(node))
-  ), [ensureNodePortMetadata]);
 
   const setHistory = useCallback((nextHistory) => {
     historyRef.current = nextHistory;
