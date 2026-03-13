@@ -271,6 +271,53 @@ describe("dangerous shell payload containment", () => {
   }, 30_000);
 });
 
+describe("action.run_command env interpolation", () => {
+  it("resolves template env values before executing commands", async () => {
+    const nodeType = getNodeType("action.run_command");
+    const node = makeNode("action.run_command", {
+      command: 'node -p "process.env.BOSUN_FETCH_AND_CLASSIFY"',
+      env: {
+        BOSUN_FETCH_AND_CLASSIFY: "{{payload}}",
+      },
+    });
+    const ctx = makeCtx({
+      payload: {
+        conflicts: [{ n: 241 }, { n: 243 }],
+        ciFailures: [{ n: 765 }],
+      },
+    });
+
+    const result = await nodeType.execute(node, ctx);
+    expect(result.success).toBe(true);
+    const parsed = JSON.parse(result.output);
+    expect(parsed.conflicts).toHaveLength(2);
+    expect(parsed.ciFailures).toHaveLength(1);
+  });
+
+  it("resolves expression-style env templates using $ctx node outputs", async () => {
+    const nodeType = getNodeType("action.run_command");
+    const node = makeNode("action.run_command", {
+      command: 'node -p "process.env.BOSUN_FETCH_AND_CLASSIFY"',
+      env: {
+        BOSUN_FETCH_AND_CLASSIFY: "{{$ctx.getNodeOutput('fetch-and-classify')?.output || '{}'}}",
+      },
+    });
+    const ctx = makeCtx();
+    ctx.setNodeOutput("fetch-and-classify", {
+      output: JSON.stringify({
+        conflicts: [{ n: 246 }, { n: 245 }],
+        ciFailures: [{ n: 765 }],
+      }),
+    });
+
+    const result = await nodeType.execute(node, ctx);
+    expect(result.success).toBe(true);
+    const parsed = JSON.parse(result.output);
+    expect(parsed.conflicts).toHaveLength(2);
+    expect(parsed.ciFailures).toHaveLength(1);
+  });
+});
+
 // -- action.git_operations Safety ----------------------------------------------
 
 describe("action.git_operations schema safety", () => {

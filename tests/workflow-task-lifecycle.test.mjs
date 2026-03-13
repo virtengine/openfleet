@@ -17,6 +17,7 @@ import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { execSync } from "node:child_process";
 import { getNodeType } from "../workflow/workflow-nodes.mjs";
+import { clearContractCache } from "../workflow/workflow-contract.mjs";
 import {
   WorkflowEngine,
   WorkflowContext,
@@ -105,6 +106,8 @@ describe("task lifecycle node type registration", () => {
     "action.resolve_executor",
     "action.acquire_worktree",
     "action.release_worktree",
+    "read-workflow-contract",
+    "workflow-contract-validation",
     "action.build_task_prompt",
     "action.detect_new_commits",
     "action.push_branch",
@@ -970,6 +973,66 @@ describe("action.resolve_executor", () => {
     rmSync(root, { recursive: true, force: true });
   });
 
+  it("does not auto-apply low-confidence profile matches", async () => {
+    const nt = getNodeType("action.resolve_executor");
+    const root = mkdtempSync(join(tmpdir(), "wf-resolve-executor-low-confidence-"));
+    const bosunDir = join(root, ".bosun");
+    const profilesDir = join(bosunDir, "profiles");
+    mkdirSync(profilesDir, { recursive: true });
+
+    const now = new Date().toISOString();
+    writeFileSync(join(bosunDir, "library.json"), JSON.stringify({
+      generated: now,
+      entries: [
+        {
+          id: "generic-agent",
+          type: "agent",
+          name: "Generic Agent",
+          description: "Broad profile with weak pattern",
+          filename: "generic-agent.json",
+          tags: ["generic"],
+          scope: "global",
+          workspace: null,
+          meta: {},
+          createdAt: now,
+          updatedAt: now,
+        },
+      ],
+    }, null, 2));
+    writeFileSync(
+      join(profilesDir, "generic-agent.json"),
+      JSON.stringify({
+        id: "generic-agent",
+        name: "Generic Agent",
+        description: "Broad profile",
+        titlePatterns: ["\\bwith\\b"],
+        scopes: ["generic"],
+        tags: ["generic"],
+      }, null, 2),
+    );
+
+    const ctx = makeCtx({
+      repoRoot: root,
+      task: {
+        tags: ["workflow", "automation"],
+      },
+    });
+    const node = makeNode("action.resolve_executor", {
+      taskTitle: "feat(workflow): issue-state continuation loop workflow template",
+      taskDescription: "Design continuation-loop workflow template with maxTurns and stuckDetection",
+      repoRoot: root,
+      defaultSdk: "codex",
+    });
+
+    const result = await nt.execute(node, ctx);
+    expect(result.success).toBe(true);
+    expect(result.tier).not.toBe("profile");
+    expect(ctx.data.agentProfile).toBeUndefined();
+    expect(ctx.data.resolvedAgentProfile).toBeUndefined();
+
+    rmSync(root, { recursive: true, force: true });
+  });
+
   it("honors profile sdk/model preference when defined", async () => {
     const nt = getNodeType("action.resolve_executor");
     const root = mkdtempSync(join(tmpdir(), "wf-resolve-executor-profile-sdk-"));
@@ -1193,7 +1256,14 @@ describe("action.acquire_worktree", () => {
       encoding: "utf8",
     }).trim();
     expect(isGit).toBe("true");
-  });
+
+    const topLevel = gitExec("git rev-parse --show-toplevel", {
+      cwd: second.worktreePath,
+      encoding: "utf8",
+    }).trim().replace(/\\/g, "/");
+    const expectedRoot = String(second.worktreePath).replace(/\\/g, "/");
+    expect(topLevel).toBe(expectedRoot);
+  }, 15000);
 
   it("enables core.longpaths before checkout", async () => {
     const nt = getNodeType("action.acquire_worktree");
@@ -1272,7 +1342,13 @@ describe("action.build_task_prompt", () => {
     expect(result.prompt.length).toBeGreaterThan(50);
     expect(result.prompt).toContain("Fix the widget");
     expect(result.prompt).toContain("TASK-42");
+    expect(typeof result.systemPrompt).toBe("string");
+    expect(result.systemPrompt.length).toBeGreaterThan(50);
+    expect(result.systemPrompt).not.toContain("TASK-42");
+    expect(result.systemPrompt).not.toContain("Fix the widget");
     expect(ctx.data._taskPrompt).toBe(result.prompt);
+    expect(ctx.data._taskUserPrompt).toBe(result.prompt);
+    expect(ctx.data._taskSystemPrompt).toBe(result.systemPrompt);
   });
 
   it("includes branch and repo info", async () => {
@@ -1299,8 +1375,8 @@ describe("action.build_task_prompt", () => {
       taskDescription: "Desc",
     });
     const result = await nt.execute(node, ctx);
-    // Should have autonomous agent instructions
-    expect(result.prompt).toContain("commit");
+    // Autonomous execution instructions now live in systemPrompt.
+    expect(result.systemPrompt).toContain("commit");
   });
 
   it("renders workspace scope contract from explicit repo metadata", async () => {
@@ -1342,6 +1418,106 @@ describe("action.build_task_prompt", () => {
     expect(result.prompt).toContain("**Workspace:** workspace-a");
     expect(result.prompt).toContain("**Primary Repository:** org/primary");
     expect(result.prompt).toContain("org/shared-lib");
+  });
+
+  it("injects WORKFLOW.md content when a contract was loaded earlier in the workflow", async () => {
+    const nt = getNodeType("action.build_task_prompt");
+    const ctx = makeCtx({
+      _workflowContract: {
+        found: true,
+        path: "/tmp/project/WORKFLOW.md",
+        raw: "projectDescription: Demo\nterminalStates: [done]\nforbiddenPatterns: [git push --force]",
+        parsed: {
+          projectDescription: "Demo",
+          terminalStates: ["done"],
+          forbiddenPatterns: ["git push --force"],
+          preferredTools: [],
+          preferredModel: "",
+          escalationContact: "",
+          escalationPaths: [],
+          rules: [],
+        },
+      },
+    });
+    const node = makeNode("action.build_task_prompt", {
+      taskTitle: "Respect contract",
+      taskDescription: "Build prompt with contract",
+    });
+
+    const result = await nt.execute(node, ctx);
+
+    expect(result.prompt).toContain("## WORKFLOW.md Contract");
+    expect(result.prompt).toContain("terminalStates: [done]");
+    expect(result.prompt).toContain("forbiddenPatterns: [git push --force]");
+  });
+  it("reads WORKFLOW.md into workflow context", async () => {
+    const projectDir = mkdtempSync(join(tmpdir(), "wf-contract-read-"));
+    writeFileSync(join(projectDir, "WORKFLOW.md"), [
+      "# Demo Contract",
+      "terminalStates: [done]",
+      "forbiddenPatterns:",
+      "  - git push --force",
+    ].join("\n"));
+
+    const nt = getNodeType("read-workflow-contract");
+    const ctx = makeCtx({ repoRoot: projectDir });
+    const node = makeNode("read-workflow-contract", { repoRoot: projectDir });
+    const result = await nt.execute(node, ctx);
+
+    expect(result.found).toBe(true);
+    expect(result.contract.terminalStates).toEqual(["done"]);
+    expect(result.contract.forbiddenPatterns).toEqual(["git push --force"]);
+    expect(ctx.data._workflowContract.path).toBe(join(projectDir, "WORKFLOW.md"));
+    expect(ctx.log).toHaveBeenCalled();
+
+    rmSync(projectDir, { recursive: true, force: true });
+    clearContractCache(projectDir);
+  });
+
+  it("fails fast when WORKFLOW.md is malformed", async () => {
+    const projectDir = mkdtempSync(join(tmpdir(), "wf-contract-invalid-"));
+    writeFileSync(join(projectDir, "WORKFLOW.md"), [
+      "# Broken Contract",
+      "forbiddenPatterns:",
+      "  - rm -rf /",
+    ].join("\n"));
+
+    const readNode = makeNode("read-workflow-contract", { repoRoot: projectDir }, "read-contract");
+    const validateNode = makeNode("workflow-contract-validation", { repoRoot: projectDir }, "validate-contract");
+    const ctx = makeCtx({ repoRoot: projectDir });
+
+    await getNodeType("read-workflow-contract").execute(readNode, ctx);
+    await expect(getNodeType("workflow-contract-validation").execute(validateNode, ctx))
+      .rejects
+      .toThrow(/terminalStates/i);
+
+    rmSync(projectDir, { recursive: true, force: true });
+    clearContractCache(projectDir);
+  });
+
+  it("enforces strict cache anchoring by keeping task-specific markers out of system prompt", async () => {
+    const prev = process.env.BOSUN_CACHE_ANCHOR_MODE;
+    process.env.BOSUN_CACHE_ANCHOR_MODE = "strict";
+    try {
+      const nt = getNodeType("action.build_task_prompt");
+      const ctx = makeCtx({});
+      const node = makeNode("action.build_task_prompt", {
+        taskId: "STRICT-1",
+        taskTitle: "Strict cache prompt",
+        taskDescription: "Validate strict anchoring guard",
+        branch: "feat/strict-anchor",
+        worktreePath: "/tmp/wt-strict",
+      });
+      const result = await nt.execute(node, ctx);
+      expect(result.success).toBe(true);
+      expect(result.cacheAnchorMode).toBe("strict");
+      expect(result.systemPrompt).not.toContain("STRICT-1");
+      expect(result.systemPrompt).not.toContain("Strict cache prompt");
+      expect(result.systemPrompt).not.toContain("/tmp/wt-strict");
+    } finally {
+      if (prev === undefined) delete process.env.BOSUN_CACHE_ANCHOR_MODE;
+      else process.env.BOSUN_CACHE_ANCHOR_MODE = prev;
+    }
   });
 });
 
@@ -1523,9 +1699,11 @@ describe("action.push_branch", () => {
     await expect(nt.execute(node, ctx)).rejects.toThrow("worktreePath");
   });
 
-  it("schema has rebaseBeforePush and emptyDiffGuard options", () => {
+  it("schema has push safety options including skipHooks", () => {
     const nt = getNodeType("action.push_branch");
     expect(nt.schema.properties.rebaseBeforePush).toBeDefined();
+    expect(nt.schema.properties.skipHooks).toBeDefined();
+    expect(nt.schema.properties.skipHooks.default).toBe(true);
     expect(nt.schema.properties.emptyDiffGuard).toBeDefined();
     expect(nt.schema.properties.syncMainForModuleBranch).toBeDefined();
   });
@@ -1817,7 +1995,7 @@ describe("template-task-lifecycle", () => {
     const t = getTemplate("template-task-lifecycle");
     expect(t).toBeDefined();
     expect(t.name).toBe("Task Lifecycle");
-    expect(t.category).toBe("lifecycle");
+    expect(t.category).toBe("task-execution");
     expect(t.enabled).toBe(true);
     expect(t.recommended).toBe(true);
   });
@@ -1828,7 +2006,8 @@ describe("template-task-lifecycle", () => {
     const required = [
       "trigger", "check-slots", "allocate-slot", "claim-task",
       "claim-ok", "set-inprogress", "acquire-worktree", "worktree-ok",
-      "resolve-executor", "record-head", "build-prompt", "run-agent-plan", "run-agent-tests", "run-agent-implement",
+      "resolve-executor", "record-head", "read-workflow-contract",
+      "workflow-contract-validation", "build-prompt", "run-agent-plan", "run-agent-tests", "run-agent-implement",
       "claim-stolen", "detect-commits", "has-commits",
       "push-branch", "push-ok", "create-pr", "set-inreview", "log-success",
       "log-no-commits", "set-todo-cooldown", "create-pr-retry", "pr-created-stolen", "set-inreview-stolen", "log-claim-stolen-recovered",
@@ -2037,7 +2216,7 @@ describe("template-ve-orchestrator-lite", () => {
     const t = getTemplate("template-ve-orchestrator-lite");
     expect(t).toBeDefined();
     expect(t.name).toBe("VE Orchestrator Lite");
-    expect(t.category).toBe("lifecycle");
+    expect(t.category).toBe("task-execution");
     expect(t.enabled).toBe(true);
     expect(t.recommended).toBe(false);
   });
@@ -2139,4 +2318,3 @@ describe("template-ve-orchestrator-lite", () => {
     expect(Array.isArray(t.variables.protectedBranches)).toBe(true);
   });
 });
-

@@ -339,61 +339,18 @@ export function shouldShowToast(toast) {
 }
 
 /* ═══════════════════════════════════════════════════════════════
- *  EXECUTOR DEFAULTS — apply stored settings on first load
+ *  LEGACY STORED DEFAULTS MIGRATION HOOK
  * ═══════════════════════════════════════════════════════════════ */
 
 let _defaultsApplied = false;
 
 /**
- * Read stored executor defaults from CloudStorage and POST them to
- * the server if they differ from the current config.
- * Only runs once per app lifecycle (not on tab switches).
+ * Reserved for one-time client preference migrations.
+ * Executor runtime defaults now live only in Server Config.
  */
 export async function applyStoredDefaults() {
   if (_defaultsApplied) return;
   _defaultsApplied = true;
-
-  const [maxP, sdk, region] = await Promise.all([
-    _cloudGet("defaultMaxParallel"),
-    _cloudGet("defaultSdk"),
-    _cloudGet("defaultRegion"),
-  ]);
-
-  const promises = [];
-
-  if (maxP != null) {
-    const current = executorData.value;
-    const currentMax =
-      current?.data?.maxParallel ??
-      current?.maxParallel ??
-      null;
-    const isPaused = Boolean(current?.paused || current?.data?.paused);
-    if (!isPaused && currentMax !== maxP) {
-      promises.push(
-        apiFetch("/api/executor/maxparallel", {
-          method: "POST",
-          body: JSON.stringify({ maxParallel: maxP }),
-          _silent: true,
-        }).catch(() => {}),
-      );
-    }
-  }
-
-  const settingsUpdates = {};
-  if (sdk && sdk !== "auto") settingsUpdates.INTERNAL_EXECUTOR_SDK = sdk;
-  if (region && region !== "auto") settingsUpdates.EXECUTOR_REGIONS = region;
-
-  if (Object.keys(settingsUpdates).length) {
-    promises.push(
-      apiFetch("/api/settings/update", {
-        method: "POST",
-        body: JSON.stringify({ changes: settingsUpdates }),
-        _silent: true,
-      }).catch(() => {}),
-    );
-  }
-
-  if (promises.length) await Promise.all(promises);
 }
 
 /* ═══════════════════════════════════════════════════════════════

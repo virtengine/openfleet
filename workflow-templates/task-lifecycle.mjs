@@ -51,8 +51,9 @@ export const TASK_LIFECYCLE_TEMPLATE = {
     "agent dispatch → commit detection → PR creation → status transition. " +
     "Replaces the monolithic TaskExecutor.executeTask() method with a " +
     "composable workflow DAG.",
-  category: "lifecycle",
+  category: "task-execution",
   enabled: true,
+  core: true,
   recommended: true,
   trigger: "trigger.task_available",
   variables: {
@@ -144,6 +145,17 @@ export const TASK_LIFECYCLE_TEMPLATE = {
       cwd: "{{worktreePath}}",
     }, { x: 200, y: 1220 }),
 
+    // ── Optional per-project WORKFLOW.md contract ───────────────────────
+    node("read-workflow-contract", "read-workflow-contract", "Read WORKFLOW.md", {
+      repoRoot: "{{repoRoot}}",
+      worktreePath: "{{worktreePath}}",
+    }, { x: 200, y: 1350 }),
+
+    node("workflow-contract-validation", "workflow-contract-validation", "Validate WORKFLOW.md", {
+      repoRoot: "{{repoRoot}}",
+      worktreePath: "{{worktreePath}}",
+    }, { x: 200, y: 1480 }),
+
     // ── Build agent prompt ───────────────────────────────────────────────
     node("build-prompt", "action.build_task_prompt", "Build Prompt", {
       taskId: "{{taskId}}",
@@ -157,7 +169,7 @@ export const TASK_LIFECYCLE_TEMPLATE = {
       workspace: "{{workspace}}",
       repository: "{{repository}}",
       repositories: "{{repositories}}",
-    }, { x: 200, y: 1350 }),
+    }, { x: 200, y: 1610 }),
     // ── Execute agent (phase 1: planning) ───────────────────────────────
     node("run-agent-plan", "action.run_agent", "Agent Plan", {
       prompt: "{{_taskPrompt}}\n\nExecution phase: planning. Produce a concrete implementation plan and identify required tests. Do not make code changes in this phase.",
@@ -170,7 +182,7 @@ export const TASK_LIFECYCLE_TEMPLATE = {
       maxRetries: "{{maxRetries}}",
       maxContinues: "{{maxContinues}}",
       failOnError: false,
-    }, { x: 200, y: 1480 }),
+    }, { x: 200, y: 1740 }),
 
     // ── Execute agent (phase 2: tests-first) ────────────────────────────
     node("run-agent-tests", "action.run_agent", "Agent Tests", {
@@ -222,6 +234,7 @@ export const TASK_LIFECYCLE_TEMPLATE = {
       branch: "{{branch}}",
       baseBranch: "{{baseBranch}}",
       rebaseBeforePush: true,
+      skipHooks: true,
       emptyDiffGuard: true,
       protectedBranches: "{{protectedBranches}}",
     }, { x: 0, y: 2000 }),
@@ -377,7 +390,9 @@ export const TASK_LIFECYCLE_TEMPLATE = {
     edge("acquire-worktree", "worktree-ok"),
     edge("worktree-ok", "resolve-executor", { condition: "$output?.result === true", port: "yes" }),
     edge("resolve-executor", "record-head"),
-    edge("record-head", "build-prompt"),
+    edge("record-head", "read-workflow-contract"),
+    edge("read-workflow-contract", "workflow-contract-validation"),
+    edge("workflow-contract-validation", "build-prompt"),
     edge("build-prompt", "run-agent-plan"),
     edge("run-agent-plan", "run-agent-tests"),
     edge("run-agent-tests", "run-agent-implement"),
@@ -468,7 +483,7 @@ export const VE_ORCHESTRATOR_LITE_TEMPLATE = {
     "Simplified task lifecycle for lightweight deployments. Same core " +
     "flow as the full Task Lifecycle (slot → claim → worktree → agent → " +
     "push → PR) but with fewer failure branches and no anti-thrash.",
-  category: "lifecycle",
+  category: "task-execution",
   enabled: true,
   recommended: false,
   trigger: "trigger.task_available",
@@ -543,6 +558,16 @@ export const VE_ORCHESTRATOR_LITE_TEMPLATE = {
       cwd: "{{worktreePath}}",
     }, { x: 300, y: 1090 }),
 
+    node("read-workflow-contract", "read-workflow-contract", "Read WORKFLOW.md", {
+      repoRoot: "{{repoRoot}}",
+      worktreePath: "{{worktreePath}}",
+    }, { x: 300, y: 1220 }),
+
+    node("workflow-contract-validation", "workflow-contract-validation", "Validate WORKFLOW.md", {
+      repoRoot: "{{repoRoot}}",
+      worktreePath: "{{worktreePath}}",
+    }, { x: 300, y: 1350 }),
+
     // ── Build prompt ─────────────────────────────────────────────────────
     node("prompt", "action.build_task_prompt", "Build Prompt", {
       taskTitle: "{{taskTitle}}",
@@ -552,7 +577,7 @@ export const VE_ORCHESTRATOR_LITE_TEMPLATE = {
       workspace: "{{workspace}}",
       repository: "{{repository}}",
       repositories: "{{repositories}}",
-    }, { x: 300, y: 1220 }),
+    }, { x: 300, y: 1480 }),
 
     // ── Run agent ────────────────────────────────────────────────────────
     node("agent", "action.run_agent", "Run Agent", {
@@ -565,7 +590,7 @@ export const VE_ORCHESTRATOR_LITE_TEMPLATE = {
       timeoutMs: "{{taskTimeoutMs}}",
       maxRetries: "{{maxRetries}}",
       failOnError: false,
-    }, { x: 300, y: 1350 }),
+    }, { x: 300, y: 1610 }),
 
     // ── Detect commits ───────────────────────────────────────────────────
     node("commits", "action.detect_new_commits", "Check Commits", {
@@ -654,7 +679,9 @@ export const VE_ORCHESTRATOR_LITE_TEMPLATE = {
     edge("set-inprogress", "acquire-worktree"),
     edge("acquire-worktree", "resolve"),
     edge("resolve", "record-head"),
-    edge("record-head", "prompt"),
+    edge("record-head", "read-workflow-contract"),
+    edge("read-workflow-contract", "workflow-contract-validation"),
+    edge("workflow-contract-validation", "prompt"),
     edge("prompt", "agent"),
     edge("agent", "commits"),
     edge("commits", "has-commits"),

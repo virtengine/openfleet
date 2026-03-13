@@ -1,6 +1,6 @@
 {
   "name": "bosun",
-  "version": "0.40.21",
+  "version": "0.41.0",
   "description": "Bosun Autonomous Engineering — manages AI agent executors with failover, extremely powerful workflow builder, and a massive amount of included default workflow templates for autonomous engineering, creates PRs via Vibe-Kanban API, and sends Telegram notifications. Supports N executors with weighted distribution, multi-repo projects, and auto-setup.",
   "type": "module",
   "license": "Apache-2.0",
@@ -71,10 +71,17 @@
     "./container-runner": "./infra/container-runner.mjs",
     "./compat": "./compat.mjs",
     "./task-cli": "./task/task-cli.mjs",
+    "./task-pipeline": "./task/pipeline.mjs",
+    "./task-msg-hub": "./task/msg-hub.mjs",
+    "./workflow-cli": "./workflow/workflow-cli.mjs",
+    "./pipeline-workflows": "./workflow/pipeline-workflows.mjs",
     "./github-auth-manager": "./github/github-auth-manager.mjs",
     "./git-commit-helpers": "./git/git-commit-helpers.mjs",
     "./opencode-shell": "./shell/opencode-shell.mjs",
-    "./context-indexer": "./workspace/context-indexer.mjs"
+    "./context-indexer": "./workspace/context-indexer.mjs",
+    "./msg-hub": "./workflow/msg-hub.mjs",
+    "./declarative-workflows": "./workflow/declarative-workflows.mjs",
+    "./pipeline": "./workflow/pipeline.mjs"
   },
   "bin": {
     "bosun": "cli.mjs",
@@ -106,7 +113,7 @@
     "pretest": "npm run syntax:check",
     "test": "node --max-old-space-size=4096 node_modules/vitest/vitest.mjs run --config vitest.config.mjs",
     "test:vitest": "node --max-old-space-size=4096 node_modules/vitest/vitest.mjs run --config vitest.config.mjs",
-    "test:node": "node --test tests/*.node.test.mjs",
+    "test:node": "node --import ./tests/node-test-bootstrap.mjs --test tests/*.node.test.mjs",
     "test:all": "npm run test:vitest && npm run test:node",
     "test:voice-provider-smoke": "vitest run --config vitest.config.mjs tests/voice-provider-smoke.test.mjs",
     "check:native-call-parity": "vitest run --config vitest.config.mjs tests/voice-provider-smoke.test.mjs tests/native-call-parity-checklist.test.mjs",
@@ -147,6 +154,7 @@
     "agent/agent-custom-tools.mjs",
     "agent/agent-endpoint.mjs",
     "agent/agent-event-bus.mjs",
+    "agent/retry-queue.mjs",
     "agent/agent-pool.mjs",
     "agent/agent-prompts.mjs",
     "agent/agent-sdk.mjs",
@@ -200,7 +208,8 @@
     "infra/library-manager.mjs",
     "infra/maintenance.mjs",
     "workflow/manual-flows.mjs",
-    "workflow-templates/code-quality.mjs",
+    "workflow/pipeline-workflows.mjs",
+    "workflow/workflow-cli.mjs",
     "workflow/mcp-discovery-proxy.mjs",
     "workflow/mcp-workflow-adapter.mjs",
     "workflow/mcp-registry.mjs",
@@ -222,6 +231,7 @@
     "agent/review-agent.mjs",
     "git/sdk-conflict-resolver.mjs",
     "infra/session-tracker.mjs",
+    "infra/test-runtime.mjs",
     "setup.mjs",
     "server/setup-web-server.mjs",
     "shell/pwsh-runtime.mjs",
@@ -241,7 +251,10 @@
     "task/task-claims.mjs",
     "task/task-context.mjs",
     "task/task-attachments.mjs",
+    "task/pipeline.mjs",
+    "task/msg-hub.mjs",
     "task/task-executor.mjs",
+    "task/task-executor-pipeline.mjs",
     "task/task-store.mjs",
     "telegram/telegram-bot.mjs",
     "server/ui-server.mjs",
@@ -289,6 +302,7 @@
     "workflow/workflow-engine.mjs",
     "workflow/workflow-migration.mjs",
     "workflow/workflow-nodes.mjs",
+    "workflow/project-detection.mjs",
     "workflow/workflow-templates.mjs",
     "workflow/workflow-contract.mjs",
     "workflow/pipeline.mjs",
@@ -303,13 +317,17 @@
     "workflow-templates/research.mjs",
     "workflow-templates/security.mjs",
     "workflow-templates/task-batch.mjs",
+    "workflow-templates/task-execution.mjs",
     "workflow-templates/task-lifecycle.mjs",
     "workflow-templates/issue-continuation.mjs",
+    "workflow-templates/code-quality.mjs",
     "workflow-templates/bosun-native.mjs",
     "bosun-tui.mjs",
     "tui/",
     "tools/",
-    "ui/vendor/"
+    "ui/vendor/",
+    "workflow/msg-hub.mjs",
+    "workflow/declarative-workflows.mjs"
   ],
   "dependencies": {
     "@anthropic-ai/claude-agent-sdk": "latest",
@@ -327,12 +345,12 @@
     "express-rate-limit": "^8.0.0",
     "hono": "^4.12.7",
     "htm": "3.1.1",
+    "ink": "^5.0.0",
+    "ink-text-input": "^6.0.0",
     "preact": "10.25.4",
     "qrcode-terminal": "^0.12.0",
     "vibe-kanban": "latest",
-    "ws": "^8.19.0",
-    "ink": "^5.0.0",
-    "ink-text-input": "^6.0.0"
+    "ws": "^8.19.0"
   },
   "devDependencies": {
     "@emotion/react": "^11.14.0",
@@ -354,3 +372,4 @@
     "gaxios": "7.1.4"
   }
 }
+

@@ -389,6 +389,19 @@ describe("workflow-templates", () => {
     expect(template?.variables?.maxFollowupTasks).toBe(4);
     expect(template?.variables?.createFollowupTasks).toBe(true);
 
+    const taskNode = template.nodes.find((n) => n.id === "task-metrics");
+    expect(taskNode?.type).toBe("action.bosun_cli");
+    expect(taskNode?.config?.subcommand).toBe("task list");
+    expect(taskNode?.config?.args).toContain("--json");
+
+    const summaryNode = template.nodes.find((n) => n.id === "summarize-fitness-metrics");
+    expect(summaryNode?.type).toBe("action.set_variable");
+    expect(summaryNode?.config?.key).toBe("fitnessSummary");
+
+    const latestArtifactNode = template.nodes.find((n) => n.id === "persist-fitness-summary");
+    expect(latestArtifactNode?.type).toBe("action.write_file");
+    expect(latestArtifactNode?.config?.path).toBe(".bosun/workflow-runs/weekly-fitness-summary.latest.json");
+
     const evaluateNode = template.nodes.find((n) => n.id === "evaluate-fitness");
     expect(evaluateNode?.type).toBe("action.run_agent");
     const prompt = String(evaluateNode?.config?.prompt || "").toLowerCase();
@@ -397,10 +410,17 @@ describe("workflow-templates", () => {
     expect(prompt).toContain("merge success");
     expect(prompt).toContain("reopened tasks");
     expect(prompt).toContain("debt growth");
+    expect(prompt).toContain("confidence");
+    expect(prompt).toContain("weekly fitness json");
 
     const materializeNode = template.nodes.find((n) => n.id === "materialize-followups");
     expect(materializeNode?.type).toBe("action.materialize_planner_tasks");
     expect(materializeNode?.config?.maxTasks).toBe("{{maxFollowupTasks}}");
+
+    const artifactEdge = template.edges.find(
+      (e) => e.source === "persist-fitness-summary" && e.target === "evaluate-fitness",
+    );
+    expect(artifactEdge).toBeDefined();
 
     const createFlowEdge = template.edges.find(
       (e) => e.source === "has-followups" && e.target === "build-followup-json",
@@ -408,13 +428,14 @@ describe("workflow-templates", () => {
     expect(createFlowEdge).toBeDefined();
   });
 
-  it("backend agent template keeps backend/api trigger filter", () => {
+  it("backend agent template triggers on task_assigned without restrictive filter", () => {
     const template = getTemplate("template-backend-agent");
     expect(template).toBeDefined();
 
     const triggerNode = template.nodes.find((n) => n.id === "trigger");
     expect(triggerNode?.type).toBe("trigger.task_assigned");
-    expect(triggerNode?.config?.filter).toBe("task.tags?.some(t => t === 'backend' || t === 'api')");
+    // No restrictive filter — triggers on any assigned task (language-agnostic)
+    expect(triggerNode?.config?.filter).toBeUndefined();
   });
 
   it("agent templates only advance to inreview after a real PR is linked", () => {
@@ -1041,6 +1062,31 @@ describe("github template CLI compatibility", () => {
     expect(fetchNode?.config?.command).toContain("pendingChecks:hasPend");
     expect(reviewNode?.config?.command).toContain("mergeArgs.push('--auto')");
     expect(reviewNode?.config?.command).toContain("reason:'ci_failed'");
+    expect(reviewNode?.config?.command).toContain("reason:'ci_pending'");
+    expect(reviewNode?.config?.command).toContain("--json','name,state,bucket'");
+    expect(reviewNode?.config?.command).not.toContain("name,state,conclusion");
+  });
+
+  it("PR watchdog and GitHub sync pass node outputs via template interpolation env vars", () => {
+    const watchdogTemplate = getTemplate("template-bosun-pr-watchdog");
+    const syncTemplate = getTemplate("template-github-kanban-sync");
+
+    const watchdogFixNode = watchdogTemplate.nodes.find((n) => n.id === "programmatic-fix");
+    const watchdogReviewNode = watchdogTemplate.nodes.find((n) => n.id === "programmatic-review");
+    const syncNode = syncTemplate.nodes.find((n) => n.id === "sync-programmatic");
+    const syncCommand = syncNode?.config?.command || "";
+
+    expect(watchdogFixNode?.config?.env?.BOSUN_FETCH_AND_CLASSIFY)
+      .toBe("{{$ctx.getNodeOutput('fetch-and-classify')?.output || '{}'}}");
+    expect(watchdogReviewNode?.config?.env?.BOSUN_FETCH_AND_CLASSIFY)
+      .toBe("{{$ctx.getNodeOutput('fetch-and-classify')?.output || '{}'}}");
+    expect(syncNode?.config?.env?.BOSUN_FETCH_PR_STATE)
+      .toBe("{{$ctx.getNodeOutput('fetch-pr-state')?.output || '{}'}}");
+    expect(syncCommand).toContain("reviewStatus");
+    expect(syncCommand).toContain("changes_requested_pending_fix");    expect(syncCommand).toContain("local_progress_state");
+    expect(syncCommand).toContain("parseJsonObject(raw)");
+    expect(syncCommand).toContain("const task=parseJsonObject(raw)");
+    expect(syncCommand).toContain("current==='todo'||current==='inprogress'");
   });
 });
 
@@ -1123,3 +1169,5 @@ describe("template category coverage", () => {
     }
   });
 });
+
+

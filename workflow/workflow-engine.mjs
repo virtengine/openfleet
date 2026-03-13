@@ -34,10 +34,29 @@
  */
 
 import { existsSync, readFileSync, writeFileSync, mkdirSync, readdirSync, unlinkSync, statSync } from "node:fs";
-import { writeFile as writeFileAsync } from "node:fs/promises";
 import { resolve, basename, extname, join } from "node:path";
 import { randomUUID } from "node:crypto";
 import { EventEmitter } from "node:events";
+import {
+  ensureTestRuntimeSandbox,
+  resolvePathForTestRuntime,
+} from "../infra/test-runtime.mjs";
+
+// Lazy-loaded workspace manager for workspace-aware scheduling
+let _workspaceManagerMod = null;
+async function ensureWorkspaceManager() {
+  if (_workspaceManagerMod) return _workspaceManagerMod;
+  try {
+    _workspaceManagerMod = await import("../workspace/workspace-manager.mjs");
+  } catch {
+    _workspaceManagerMod = null;
+  }
+  return _workspaceManagerMod;
+}
+function ensureWorkspaceManagerSync() {
+  if (_workspaceManagerMod) return _workspaceManagerMod;
+  return null;
+}
 
 // ── Constants ───────────────────────────────────────────────────────────────
 
@@ -150,6 +169,214 @@ export const WorkflowStatus = Object.freeze({
 // ── Node Type Registry ──────────────────────────────────────────────────────
 
 const _nodeTypeRegistry = new Map();
+const _normalizedHandlerCache = new WeakMap();
+
+function clonePortDescriptor(port) {
+  if (!port || typeof port !== "object") return null;
+  return {
+    name: String(port.name || "default").trim() || "default",
+    label: String(port.label || port.name || "default").trim() || "default",
+    type: String(port.type || "Any").trim() || "Any",
+    description: String(port.description || "").trim(),
+    color: typeof port.color === "string" && port.color.trim() ? port.color.trim() : null,
+    accepts: Array.isArray(port.accepts)
+      ? Array.from(new Set(port.accepts.map((value) => String(value || "").trim()).filter(Boolean)))
+      : [],
+  };
+}
+
+function normalizePortDescriptor(port, direction, index) {
+  const fallbackName = index === 0 ? "default" : `${direction}-${index + 1}`;
+  if (typeof port === "string") {
+    return {
+      name: fallbackName,
+      label: fallbackName,
+      type: port,
+      description: "",
+      color: null,
+      accepts: [],
+    };
+  }
+
+  if (!port || typeof port !== "object") {
+    return {
+      name: fallbackName,
+      label: fallbackName,
+      type: "Any",
+      description: "",
+      color: null,
+      accepts: [],
+    };
+  }
+
+  return clonePortDescriptor({
+    ...port,
+    name: port.name || fallbackName,
+    label: port.label || port.name || fallbackName,
+    type: port.type || "Any",
+  });
+}
+
+function normalizePortList(ports, direction) {
+  if (!Array.isArray(ports)) return [];
+  return ports
+    .map((port, index) => normalizePortDescriptor(port, direction, index))
+    .filter(Boolean);
+}
+
+function normalizeNodeUi(ui = {}) {
+  const primaryFields = Array.isArray(ui?.primaryFields)
+    ? Array.from(new Set(ui.primaryFields.map((value) => String(value || "").trim()).filter(Boolean)))
+    : [];
+  return {
+    ...ui,
+    primaryFields,
+  };
+}
+
+function normalizeHandlerMetadata(handler) {
+  if (_normalizedHandlerCache.has(handler)) {
+    return _normalizedHandlerCache.get(handler);
+  }
+
+  const inputPorts = normalizePortList(handler?.inputs ?? handler?.ports?.inputs, "input");
+  const outputPorts = normalizePortList(handler?.outputs ?? handler?.ports?.outputs, "output");
+
+  const normalized = {
+    ...handler,
+    ports: {
+      inputs: inputPorts,
+      outputs: outputPorts,
+    },
+    ui: normalizeNodeUi(handler?.ui),
+  };
+  _normalizedHandlerCache.set(handler, normalized);
+  return normalized;
+}
+
+function resolveNodePorts(node) {
+  const handler = node?.type ? _nodeTypeRegistry.get(node.type) : null;
+  const handlerPorts = handler?.ports || {};
+  const inputPorts = normalizePortList(node?.inputPorts, "input");
+  const outputPorts = normalizePortList(node?.outputPorts, "output");
+
+  return {
+    inputs: inputPorts.length > 0 ? inputPorts : normalizePortList(handlerPorts.inputs, "input"),
+    outputs: outputPorts.length > 0 ? outputPorts : normalizePortList(handlerPorts.outputs, "output"),
+  };
+}
+
+function resolvePortByName(ports, requestedName, direction) {
+  if (!Array.isArray(ports) || ports.length === 0) return null;
+  const normalizedName = String(requestedName || "").trim();
+  if (!normalizedName) return ports[0];
+  const matched = ports.find((port) => port.name === normalizedName);
+  if (matched) return matched;
+  return normalizePortDescriptor({
+    name: normalizedName,
+    label: normalizedName,
+    type: "Any",
+  }, direction, 0);
+}
+
+function isWildcardPortType(type) {
+  const normalized = String(type || "").trim();
+  return normalized === "*" || normalized === "Any";
+}
+
+export function isPortConnectionCompatible(sourcePort, targetPort) {
+  if (!sourcePort || !targetPort) {
+    return { compatible: true, reason: null };
+  }
+
+  const sourceType = String(sourcePort.type || "Any").trim() || "Any";
+  const targetType = String(targetPort.type || "Any").trim() || "Any";
+  const accepted = new Set(
+    [targetType, ...(Array.isArray(targetPort.accepts) ? targetPort.accepts : [])]
+      .map((value) => String(value || "").trim())
+      .filter(Boolean),
+  );
+
+  if (isWildcardPortType(sourceType) || isWildcardPortType(targetType) || accepted.has("*") || accepted.has("Any")) {
+    return { compatible: true, reason: null };
+  }
+
+  if (sourceType === targetType || accepted.has(sourceType)) {
+    return { compatible: true, reason: null };
+  }
+
+  return {
+    compatible: false,
+    reason: `${sourcePort.label || sourcePort.name} emits ${sourceType}, but ${targetPort.label || targetPort.name} expects ${targetType}`,
+  };
+}
+
+function hydrateWorkflowDefinition(def, { strict = false } = {}) {
+  const normalized = {
+    ...(def || {}),
+    nodes: Array.isArray(def?.nodes) ? def.nodes.map((node) => ({ ...node })) : [],
+    edges: Array.isArray(def?.edges) ? def.edges.map((edge) => ({ ...edge })) : [],
+    metadata: { ...(def?.metadata || {}) },
+  };
+
+  const nodeMap = new Map();
+  normalized.nodes = normalized.nodes.map((node) => {
+    const ports = resolveNodePorts(node);
+    const explicitOutputs = Array.isArray(node?.outputs)
+      ? Array.from(new Set(node.outputs.map((value) => String(value || "").trim()).filter(Boolean)))
+      : undefined;
+    const nextNode = {
+      ...node,
+      inputPorts: ports.inputs.map((port) => clonePortDescriptor(port)),
+      outputPorts: ports.outputs.map((port) => clonePortDescriptor(port)),
+      ...(explicitOutputs !== undefined ? { outputs: explicitOutputs } : {}),
+    };
+    nodeMap.set(nextNode.id, nextNode);
+    return nextNode;
+  });
+
+  const issues = [];
+
+  normalized.edges = normalized.edges.map((edge) => {
+    const sourceNode = nodeMap.get(edge.source);
+    const targetNode = nodeMap.get(edge.target);
+    const sourcePorts = resolveNodePorts(sourceNode);
+    const targetPorts = resolveNodePorts(targetNode);
+    const sourcePort = resolvePortByName(sourcePorts.outputs, edge.sourcePort || "default", "output");
+    const targetPort = resolvePortByName(targetPorts.inputs, edge.targetPort || "default", "input");
+    const compatibility = isPortConnectionCompatible(sourcePort, targetPort);
+
+    if (!compatibility.compatible) {
+      issues.push({
+        edgeId: edge.id || `${edge.source}->${edge.target}`,
+        source: edge.source,
+        target: edge.target,
+        sourcePort: sourcePort?.name || "default",
+        targetPort: targetPort?.name || "default",
+        sourceType: sourcePort?.type || null,
+        targetType: targetPort?.type || null,
+        severity: "error",
+        message: compatibility.reason,
+      });
+    }
+
+    return {
+      ...edge,
+      sourcePort: sourcePort?.name || String(edge.sourcePort || "default").trim() || "default",
+      targetPort: targetPort?.name || String(edge.targetPort || "default").trim() || "default",
+      sourcePortType: sourcePort?.type || null,
+      targetPortType: targetPort?.type || null,
+    };
+  });
+
+  normalized.metadata.validationIssues = issues;
+
+  if (strict && issues.length > 0) {
+    throw new Error(`Workflow port validation failed: ${issues.map((issue) => issue.message).join("; ")}`);
+  }
+
+  return normalized;
+}
 
 /**
  * Register a node type handler.
@@ -160,7 +387,7 @@ export function registerNodeType(type, handler) {
   if (!handler || typeof handler.execute !== "function") {
     throw new Error(`${TAG} Node type "${type}" must have an execute function`);
   }
-  _nodeTypeRegistry.set(type, handler);
+  _nodeTypeRegistry.set(type, normalizeHandlerMetadata(handler));
 }
 
 /**
@@ -185,6 +412,11 @@ export function listNodeTypes() {
       category,
       description: handler.describe?.() || type,
       schema: handler.schema || null,
+      ports: {
+        inputs: (handler.ports?.inputs || []).map((port) => clonePortDescriptor(port)),
+        outputs: (handler.ports?.outputs || []).map((port) => clonePortDescriptor(port)),
+      },
+      ui: normalizeNodeUi(handler.ui),
     });
   }
   return result;
@@ -223,6 +455,7 @@ export function listNodeTypes() {
  * @property {string} [description] - What this workflow does
  * @property {string} [category] - Grouping category
  * @property {boolean} [enabled] - Whether this workflow is active
+ * @property {boolean} [core] - Core workflows cannot be disabled or deleted
  * @property {string} [trigger] - Primary trigger type
  * @property {WorkflowNode[]} nodes - All nodes in the workflow
  * @property {WorkflowEdge[]} edges - Connections between nodes
@@ -393,8 +626,20 @@ export class WorkflowEngine extends EventEmitter {
    */
   constructor(opts = {}) {
     super();
-    this.workflowDir = opts.workflowDir || resolve(process.cwd(), ".bosun", WORKFLOW_DIR_NAME);
-    this.runsDir = opts.runsDir || resolve(process.cwd(), ".bosun", WORKFLOW_RUNS_DIR);
+    const sandbox = ensureTestRuntimeSandbox();
+    const defaultWorkflowDir = resolve(process.cwd(), ".bosun", WORKFLOW_DIR_NAME);
+    const defaultRunsDir = resolve(process.cwd(), ".bosun", WORKFLOW_RUNS_DIR);
+    this.workflowDir = resolvePathForTestRuntime(
+      opts.workflowDir || defaultWorkflowDir,
+      defaultWorkflowDir,
+      sandbox?.workflowDir,
+    );
+    this.runsDir = resolvePathForTestRuntime(
+      opts.runsDir || defaultRunsDir,
+      defaultRunsDir,
+      sandbox?.runsDir,
+    );
+    this._configDir = opts.configDir || process.cwd();
     this.detectInterruptedRuns = opts.detectInterruptedRuns !== false;
     this.services = opts.services || {};
     this._workflows = new Map();
@@ -421,6 +666,9 @@ export class WorkflowEngine extends EventEmitter {
     this._runQueue = [];             // FIFO queue of { resolve, reject, args }
     this._runIndexCache = null;      // cached run index (invalidated on writes)
     this._runIndexCacheMtime = 0;    // mtime of the cached index file
+
+    // Lazy-load workspace manager for schedule evaluation
+    void ensureWorkspaceManager().catch(() => {});
   }
 
 
@@ -653,7 +901,7 @@ export class WorkflowEngine extends EventEmitter {
     for (const file of files) {
       try {
         const raw = readFileSync(resolve(this.workflowDir, file), "utf8");
-        const def = JSON.parse(raw);
+        const def = hydrateWorkflowDefinition(JSON.parse(raw));
         if (def.id) {
           this._workflows.set(def.id, def);
         }
@@ -689,6 +937,7 @@ export class WorkflowEngine extends EventEmitter {
       description: w.description,
       category: w.category,
       enabled: w.enabled !== false,
+      core: w.core === true,
       trigger: w.trigger,
       nodeCount: w.nodes?.length || 0,
       edgeCount: w.edges?.length || 0,
@@ -704,6 +953,7 @@ export class WorkflowEngine extends EventEmitter {
 
   /** Save (create or update) a workflow definition */
   save(def) {
+    def = hydrateWorkflowDefinition(def, { strict: true });
     if (!def.id) def.id = randomUUID();
     if (!def.metadata) def.metadata = {};
     def.metadata.updatedAt = new Date().toISOString();
@@ -711,6 +961,16 @@ export class WorkflowEngine extends EventEmitter {
       def.metadata.createdAt = def.metadata.updatedAt;
     }
     def.metadata.version = (def.metadata.version || 0) + 1;
+
+    // Prevent disabling core workflows
+    const existing = this._workflows.get(def.id);
+    if (existing?.core === true && def.enabled === false) {
+      def.enabled = true;
+    }
+    // Preserve core flag — cannot be removed via save
+    if (existing?.core === true) {
+      def.core = true;
+    }
 
     this._ensureDirs();
     this._workflows.set(def.id, def);
@@ -760,6 +1020,10 @@ export class WorkflowEngine extends EventEmitter {
 
   /** Delete a workflow */
   delete(id) {
+    const existing = this._workflows.get(id);
+    if (existing?.core === true) {
+      throw new Error(`Cannot delete core workflow "${existing.name || id}"`);
+    }
     this._workflows.delete(id);
     const filePath = resolve(this.workflowDir, `${id}.json`);
     try {
@@ -1289,17 +1553,44 @@ export class WorkflowEngine extends EventEmitter {
    * Unlike evaluateTriggers() (event-driven), this is polling-based and should
    * be called periodically (e.g. every 60s) by the monitor.
    *
-   * Returns an array of { workflowId, triggeredBy } for workflows whose
-   * polling interval has elapsed since their last completed run.
+   * Returns an array of { workflowId, triggeredBy, workspaceId } for workflows
+   * whose polling interval has elapsed since their last completed run.
+   *
+   * @param {{ configDir?: string }} [opts] Options for workspace-aware evaluation.
    */
-  evaluateScheduleTriggers() {
+  evaluateScheduleTriggers(opts = {}) {
     if (!this._loaded) this.load();
 
     const triggered = [];
     const runIndex = this._readRunIndex();
 
+    // Load workspace state for filtering
+    const wsMgr = ensureWorkspaceManagerSync();
+    const configDir = opts?.configDir || this._configDir || process.cwd();
+    let workspaceSummary = null;
+    if (wsMgr?.getWorkspaceStateSummary) {
+      try {
+        workspaceSummary = wsMgr.getWorkspaceStateSummary(configDir);
+      } catch { /* workspace manager not available — skip workspace filtering */ }
+    }
+
     for (const [id, def] of this._workflows) {
       if (def.enabled === false) continue;
+
+      // ── Workspace gate ──────────────────────────────────────────────
+      const wfWorkspaceId = def.workspaceId || def.workspace || null;
+      if (wfWorkspaceId && workspaceSummary) {
+        const ws = workspaceSummary.find((w) => w.id === wfWorkspaceId);
+        if (ws && !ws.isActive) {
+          continue; // workspace paused or disabled — skip
+        }
+        if (ws && wsMgr?.isWorkflowAllowedForWorkspace) {
+          const fullWs = wsMgr.getWorkspace(configDir, wfWorkspaceId);
+          if (fullWs && !wsMgr.isWorkflowAllowedForWorkspace(fullWs, id)) {
+            continue; // workflow blacklisted or not in whitelist for this workspace
+          }
+        }
+      }
 
       // Skip workflows that are already running
       const alreadyRunning = Array.from(this._activeRuns.values()).some(
@@ -1314,14 +1605,25 @@ export class WorkflowEngine extends EventEmitter {
         || n.type === "trigger.task_low",
       );
 
+      const scheduleCtx = new WorkflowContext({
+        ...(def.variables || {}),
+        ...(def.data || {}),
+      });
+
+      const resolvePositiveInterval = (rawValue, fallbackMs) => {
+        const resolved = scheduleCtx.resolve(rawValue);
+        const parsed = Number(resolved);
+        return Number.isFinite(parsed) && parsed > 0 ? parsed : fallbackMs;
+      };
+
       for (const tNode of triggerNodes) {
         let intervalMs = 3600000;
         if (tNode.type === "trigger.task_available") {
-          intervalMs = Number(tNode.config?.pollIntervalMs) || 30000;
+          intervalMs = resolvePositiveInterval(tNode.config?.pollIntervalMs, 30000);
         } else if (tNode.type === "trigger.task_low") {
-          intervalMs = Number(tNode.config?.pollIntervalMs) || 60000;
+          intervalMs = resolvePositiveInterval(tNode.config?.pollIntervalMs, 60000);
         } else {
-          intervalMs = Number(tNode.config?.intervalMs) || 3600000;
+          intervalMs = resolvePositiveInterval(tNode.config?.intervalMs, 3600000);
         }
 
         // Find the most recent completed run for this workflow
@@ -1334,7 +1636,7 @@ export class WorkflowEngine extends EventEmitter {
 
         const elapsed = Date.now() - lastRunAt;
         if (elapsed >= intervalMs) {
-          triggered.push({ workflowId: id, triggeredBy: tNode.id });
+          triggered.push({ workflowId: id, triggeredBy: tNode.id, workspaceId: wfWorkspaceId });
 
           // For scheduled_once, only fire if never run before
           if (tNode.type === "trigger.scheduled_once" && lastRunAt > 0) {
@@ -1648,6 +1950,42 @@ export class WorkflowEngine extends EventEmitter {
     const executed = new Set();
     const queue = [...entryNodes.map((n) => n.id)];
     const nodeMap = new Map((def.nodes || []).map((n) => [n.id, n]));
+    const workflowId = ctx?.data?._workflowId || null;
+    const workflowName = ctx?.data?._workflowName || null;
+    const emitNodeEvent = (type, node, payload = {}) => {
+      this.emit(type, {
+        runId: ctx.id,
+        workflowId,
+        workflowName,
+        nodeId: node?.id || payload?.nodeId || null,
+        nodeType: node?.type || payload?.nodeType || null,
+        nodeLabel: node?.label || payload?.nodeLabel || null,
+        ...payload,
+      });
+    };
+    const emitEdgeFlow = (edge, payload = {}) => {
+      if (!edge) return;
+      this.emit("edge:flow", {
+        runId: ctx.id,
+        workflowId,
+        workflowName,
+        edgeId: edge.id || `${edge.source}->${edge.target}`,
+        source: edge.source,
+        target: edge.target,
+        sourcePort: String(edge.sourcePort || "default").trim() || "default",
+        backEdge: edge.backEdge === true,
+        ...payload,
+      });
+    };
+    const markNodeSkipped = (nodeId, reason = "skipped", payload = {}) => {
+      const node = nodeMap.get(nodeId) || null;
+      ctx.setNodeStatus(nodeId, NodeStatus.SKIPPED);
+      emitNodeEvent("node:skip", node, {
+        status: NodeStatus.SKIPPED,
+        reason,
+        ...payload,
+      });
+    };
 
     // ── Resume support (retry from_failed) ──────────────────────────────
     // If nodes are already marked COMPLETED in the context (pre-seeded by
@@ -1710,7 +2048,7 @@ export class WorkflowEngine extends EventEmitter {
         ctx.data._workflowTerminalAt = Date.now();
         for (const [nid] of nodeMap) {
           if (!executed.has(nid)) {
-            ctx.setNodeStatus(nid, NodeStatus.SKIPPED);
+            markNodeSkipped(nid, "run-cancelled");
             executed.add(nid);
           }
         }
@@ -1732,19 +2070,22 @@ export class WorkflowEngine extends EventEmitter {
 
           const activeInfo = this._activeRuns.get(ctx.id);
           if (activeInfo?.cancelRequested) {
-            ctx.setNodeStatus(nodeId, NodeStatus.SKIPPED);
+            markNodeSkipped(nodeId, "run-cancelled");
             executed.add(nodeId);
             return { nodeId, result: null, skipped: true };
           }
 
           ctx.setNodeStatus(nodeId, NodeStatus.RUNNING);
-          console.log(`${TAG} node:start ${nodeId} (${node.type}) [${node.label || ""}] wf=${ctx.data?._workflowName || ctx.data?._workflowId || "?"}`);
-          this.emit("node:start", { nodeId, type: node.type, label: node.label });
+          const isTriggerNode = node.type?.startsWith("trigger.");
+          if (!isTriggerNode) {
+            console.log(`${TAG} node:start ${nodeId} (${node.type}) [${node.label || ""}] wf=${ctx.data?._workflowName || ctx.data?._workflowId || "?"}`);
+          }
+          emitNodeEvent("node:start", node, { status: NodeStatus.RUNNING });
           await this._emitTaskTraceEvent("workflow.node.start", {
             ctx,
             runId: ctx.id,
-            workflowId: ctx.data?._workflowId || null,
-            workflowName: ctx.data?._workflowName || null,
+            workflowId,
+            workflowName,
             node,
             status: NodeStatus.RUNNING,
           });
@@ -1774,7 +2115,7 @@ export class WorkflowEngine extends EventEmitter {
                 ctx.incrementRetry(nodeId);
                 const backoffMs = Math.min(baseRetryDelay * Math.pow(2, attempt - 1), 30000);
                 ctx.log(nodeId, `Retry ${attempt}/${maxRetries} after ${backoffMs}ms`, "warn");
-                this.emit("node:retry", { nodeId, attempt, maxRetries, backoffMs });
+                emitNodeEvent("node:retry", node, { attempt, maxRetries, backoffMs });
                 await new Promise((r) => setTimeout(r, backoffMs));
                 ctx.setNodeStatus(nodeId, NodeStatus.RUNNING);
               }
@@ -1782,14 +2123,25 @@ export class WorkflowEngine extends EventEmitter {
               ctx.setNodeOutput(nodeId, result);
               ctx.setNodeStatus(nodeId, NodeStatus.COMPLETED);
               executed.add(nodeId);
-              const resultSuffix = node.type?.startsWith("condition.") ? ` result=${JSON.stringify(result?.result ?? result)}` : "";
-              console.log(`${TAG} node:complete ${nodeId} (${node.type}) [${node.label || ""}]${resultSuffix}`);
-              this.emit("node:complete", { nodeId, type: node.type });
+              // Quiet mode for trigger nodes: only log when they actually fire
+              if (isTriggerNode) {
+                if (result?.triggered === true) {
+                  console.log(`${TAG} trigger:fired ${nodeId} (${node.type}) [${node.label || ""}] wf=${ctx.data?._workflowName || ctx.data?._workflowId || "?"}`);
+                }
+                // triggered: false → silent (reduces noise from non-firing polls)
+              } else {
+                const resultSuffix = node.type?.startsWith("condition.") ? ` result=${JSON.stringify(result?.result ?? result)}` : "";
+                console.log(`${TAG} node:complete ${nodeId} (${node.type}) [${node.label || ""}]${resultSuffix}`);
+              }
+              emitNodeEvent("node:complete", node, {
+                status: NodeStatus.COMPLETED,
+                output: result,
+              });
               await this._emitTaskTraceEvent("workflow.node.complete", {
                 ctx,
                 runId: ctx.id,
-                workflowId: ctx.data?._workflowId || null,
-                workflowName: ctx.data?._workflowName || null,
+                workflowId,
+                workflowName,
                 node,
                 result,
                 status: NodeStatus.COMPLETED,
@@ -1812,12 +2164,16 @@ export class WorkflowEngine extends EventEmitter {
           ctx.setNodeStatus(nodeId, NodeStatus.FAILED);
           executed.add(nodeId);
           console.warn(`${TAG} node:FAILED ${nodeId} (${node.type}) [${node.label || ""}]: ${lastErr?.message || lastErr}`);
-          this.emit("node:error", { nodeId, error: lastErr.message, retries: ctx.getRetryCount(nodeId) });
+          emitNodeEvent("node:error", node, {
+            status: NodeStatus.FAILED,
+            error: lastErr.message,
+            retries: ctx.getRetryCount(nodeId),
+          });
           await this._emitTaskTraceEvent("workflow.node.error", {
             ctx,
             runId: ctx.id,
-            workflowId: ctx.data?._workflowId || null,
-            workflowName: ctx.data?._workflowName || null,
+            workflowId,
+            workflowName,
             node,
             status: NodeStatus.FAILED,
             error: lastErr?.message || String(lastErr),
@@ -1841,7 +2197,7 @@ export class WorkflowEngine extends EventEmitter {
           // If any node fails hard, mark remaining as skipped
           for (const [nid] of nodeMap) {
             if (!executed.has(nid)) {
-              ctx.setNodeStatus(nid, NodeStatus.SKIPPED);
+              markNodeSkipped(nid, "upstream-failed");
             }
           }
           return;
@@ -1855,7 +2211,7 @@ export class WorkflowEngine extends EventEmitter {
         ctx.data._workflowTerminalAt = Date.now();
         for (const [nid] of nodeMap) {
           if (!executed.has(nid)) {
-            ctx.setNodeStatus(nid, NodeStatus.SKIPPED);
+            markNodeSkipped(nid, "run-cancelled");
             executed.add(nid);
           }
         }
@@ -1885,7 +2241,7 @@ export class WorkflowEngine extends EventEmitter {
 
         for (const [nid] of nodeMap) {
           if (!executed.has(nid)) {
-            ctx.setNodeStatus(nid, NodeStatus.SKIPPED);
+            markNodeSkipped(nid, "workflow-ended");
             executed.add(nid);
           }
         }
@@ -1913,7 +2269,7 @@ export class WorkflowEngine extends EventEmitter {
             const newDegree = (inDegree.get(edge.target) || 1) - 1;
             inDegree.set(edge.target, newDegree);
             if (newDegree <= 0 && !executed.has(edge.target)) {
-              ctx.setNodeStatus(edge.target, NodeStatus.SKIPPED);
+              markNodeSkipped(edge.target, "trigger-not-fired", { sourceNodeId: nodeId });
               executed.add(edge.target);
             }
           }
@@ -1978,7 +2334,7 @@ export class WorkflowEngine extends EventEmitter {
           }
         }
 
-        const consumeEdgeDependency = (targetNodeId, matched) => {
+        const consumeEdgeDependency = (targetNodeId, matched, skipInfo = null) => {
           const nextDegree = (inDegree.get(targetNodeId) || 1) - 1;
           inDegree.set(targetNodeId, nextDegree);
           if (matched) {
@@ -1991,7 +2347,7 @@ export class WorkflowEngine extends EventEmitter {
             if ((incomingSatisfiedCount.get(targetNodeId) || 0) > 0) {
               ready.add(targetNodeId);
             } else {
-              ctx.setNodeStatus(targetNodeId, NodeStatus.SKIPPED);
+              markNodeSkipped(targetNodeId, skipInfo?.reason || "skipped", skipInfo?.payload || {});
               executed.add(targetNodeId);
               const skippedNode = nodeMap.get(targetNodeId);
               console.log(`${TAG} node:SKIPPED ${targetNodeId} (${skippedNode?.type || "?"}) [${skippedNode?.label || ""}] — no satisfied edges`);
@@ -2003,7 +2359,13 @@ export class WorkflowEngine extends EventEmitter {
           const edgePort = String(edge?.sourcePort || "default").trim() || "default";
           if (selectedPort && edgePort !== selectedPort) {
             if (!edge.backEdge) {
-              consumeEdgeDependency(edge.target, false);
+              consumeEdgeDependency(edge.target, false, {
+                reason: "edge-port-mismatch",
+                payload: {
+                  sourceNodeId: nodeId,
+                  edgeId: edge.id || `${edge.source}->${edge.target}`,
+                },
+              });
             }
             continue;
           }
@@ -2015,7 +2377,13 @@ export class WorkflowEngine extends EventEmitter {
               if (!condResult) {
                 // For back-edges, a false condition simply means "don't loop"
                 if (!edge.backEdge) {
-                  consumeEdgeDependency(edge.target, false);
+                  consumeEdgeDependency(edge.target, false, {
+                    reason: "edge-condition-false",
+                    payload: {
+                      sourceNodeId: nodeId,
+                      edgeId: edge.id || `${edge.source}->${edge.target}`,
+                    },
+                  });
                 }
                 continue;
               }
@@ -2039,6 +2407,11 @@ export class WorkflowEngine extends EventEmitter {
             }
 
             backEdgeIterations.set(edgeKey, iterCount);
+            emitEdgeFlow(edge, {
+              reason: "back-edge",
+              iteration: iterCount,
+              maxIterations: maxIter,
+            });
             this.emit("loop:back_edge", {
               edgeId: edgeKey,
               source: edge.source,
@@ -2081,6 +2454,9 @@ export class WorkflowEngine extends EventEmitter {
           }
 
           // Decrement in-degree (forward edges only)
+          emitEdgeFlow(edge, {
+            reason: selectedPort ? "selected-port" : "forward",
+          });
           consumeEdgeDependency(edge.target, true);
         }
       }
@@ -2440,8 +2816,7 @@ export class WorkflowEngine extends EventEmitter {
 
       // Write initial detail file so we can resume from it
       const detail = this._serializeRunContext(ctx, true);
-      const detailPath = resolve(this.runsDir, `${runId}.json`);
-      writeFileSync(detailPath, JSON.stringify(detail, null, 2), "utf8");
+      this._writeRunDetail(runId, detail);
 
       // Also ensure the run appears in the main index (with RUNNING status)
       // so that getRunDetail() can find it even before completion.
@@ -2465,13 +2840,12 @@ export class WorkflowEngine extends EventEmitter {
     const timer = setTimeout(() => {
       this._checkpointTimers.delete(runId);
       try {
+        // If the run has already been finalized/removed, skip writing a
+        // late checkpoint snapshot that could overwrite terminal detail.
+        if (!this._activeRuns.has(runId)) return;
         this._ensureDirs();
         const detail = this._serializeRunContext(ctx, true);
-        const detailPath = resolve(this.runsDir, `${runId}.json`);
-        // Async write — checkpoint is fire-and-forget, no need to block event loop
-        writeFileAsync(detailPath, JSON.stringify(detail, null, 2), "utf8").catch((err) => {
-          console.error(`${TAG} Checkpoint write failed for run ${runId}:`, err.message);
-        });
+        this._writeRunDetail(runId, detail);
       } catch (err) {
         console.error(`${TAG} Checkpoint failed for run ${runId}:`, err.message);
       }
@@ -2832,11 +3206,15 @@ export class WorkflowEngine extends EventEmitter {
       writeFileSync(indexPath, JSON.stringify({ runs }, null, 2), "utf8");
 
       // Save full run detail
-      const detailPath = resolve(this.runsDir, `${runId}.json`);
-      writeFileSync(detailPath, JSON.stringify(detail, null, 2), "utf8");
+      this._writeRunDetail(runId, detail);
     } catch (err) {
       console.error(`${TAG} Failed to persist run log:`, err.message);
     }
+  }
+
+  _writeRunDetail(runId, detail) {
+    const detailPath = resolve(this.runsDir, `${runId}.json`);
+    writeFileSync(detailPath, JSON.stringify(detail, null, 2), "utf8");
   }
 }
 
@@ -2903,5 +3281,3 @@ export function listWorkflows(opts) { return getWorkflowEngine(opts).list(); }
 export function getWorkflow(id, opts) { return getWorkflowEngine(opts).get(id); }
 export async function executeWorkflow(id, data, opts) { return getWorkflowEngine(opts).execute(id, data, opts); }
 export async function retryWorkflowRun(runId, retryOpts, engineOpts) { return getWorkflowEngine(engineOpts).retryRun(runId, retryOpts); }
-
-

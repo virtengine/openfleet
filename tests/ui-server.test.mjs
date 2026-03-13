@@ -1418,6 +1418,48 @@ describe("ui-server mini app", () => {
     rmSync(tmpDir, { recursive: true, force: true });
   }, 15000);
 
+  it("exposes typed workflow node ports and inline UI metadata", async () => {
+    process.env.TELEGRAM_UI_TUNNEL = "disabled";
+    const mod = await import("../server/ui-server.mjs");
+    const server = await mod.startTelegramUiServer({
+      port: await getFreePort(),
+      host: "127.0.0.1",
+      skipInstanceLock: true,
+      skipAutoOpen: true,
+    });
+    const port = server.address().port;
+
+    const response = await fetch(`http://127.0.0.1:${port}/api/workflows/node-types`);
+    const payload = await response.json();
+    expect(response.status).toBe(200);
+    expect(payload.ok).toBe(true);
+    expect(Array.isArray(payload.nodeTypes)).toBe(true);
+    expect(payload.nodeTypes.length).toBeGreaterThan(10);
+
+    const manualTrigger = payload.nodeTypes.find((nodeType) => nodeType.type === "trigger.manual");
+    expect(manualTrigger).toBeTruthy();
+    expect(Array.isArray(manualTrigger.ports?.outputs)).toBe(true);
+    expect(manualTrigger.ports.outputs[0]).toMatchObject({
+      name: "default",
+      type: "TaskDef",
+    });
+
+    const runAgent = payload.nodeTypes.find((nodeType) => nodeType.type === "action.run_agent");
+    expect(runAgent).toBeTruthy();
+    expect(Array.isArray(runAgent.ports?.inputs)).toBe(true);
+    expect(Array.isArray(runAgent.ports?.outputs)).toBe(true);
+    expect(runAgent.ports.inputs[0]).toMatchObject({
+      name: "default",
+      type: "TaskDef",
+    });
+    expect(runAgent.ports.outputs[0]).toMatchObject({
+      name: "default",
+      type: "AgentResult",
+    });
+    expect(Array.isArray(runAgent.ui?.primaryFields)).toBe(true);
+    expect(runAgent.ui.primaryFields).toContain("model");
+  }, 20000);
+
   it("exposes and executes shared bosun tools via /api/agents/tool parity endpoints", async () => {
     const mod = await import("../server/ui-server.mjs");
     const server = await mod.startTelegramUiServer({
@@ -1528,6 +1570,98 @@ describe("ui-server mini app", () => {
     expect(paused.ok).toBe(true);
     expect(paused.lifecycle.action).toBe("pause");
     expect(abortTask).toHaveBeenCalledWith(taskId, "task_lifecycle_pause");
+  });
+
+  it("serves retry queue snapshots from the agent event bus when available", async () => {
+    process.env.TELEGRAM_UI_TUNNEL = "disabled";
+    const mod = await import("../server/ui-server.mjs");
+    const getRetryQueue = vi.fn(() => ({
+      count: 1,
+      items: [
+        {
+          taskId: "retry-task-1",
+          retryCount: 2,
+          lastError: "Build failed",
+          nextAttemptAt: Date.now() + 10_000,
+        },
+      ],
+      stats: {
+        totalRetriesToday: 7,
+        peakRetryDepth: 3,
+        exhaustedTaskIds: ["retry-task-old"],
+      },
+    }));
+    mod.injectUiDependencies({
+      getAgentEventBus: () => ({
+        getRetryQueue,
+      }),
+    });
+
+    const server = await mod.startTelegramUiServer({
+      port: await getFreePort(),
+      host: "127.0.0.1",
+      skipInstanceLock: true,
+      skipAutoOpen: true,
+    });
+    const port = server.address().port;
+
+    const payload = await fetch(`http://127.0.0.1:${port}/api/retry-queue`).then((r) => r.json());
+    expect(payload.ok).toBe(true);
+    expect(payload.count).toBe(1);
+    expect(payload.items[0].taskId).toBe("retry-task-1");
+    expect(payload.stats.totalRetriesToday).toBe(7);
+    expect(getRetryQueue).toHaveBeenCalled();
+  });
+
+  it("retries tasks immediately and clears retry queue entries via the event bus", async () => {
+    process.env.TELEGRAM_UI_TUNNEL = "disabled";
+    process.env.EXECUTOR_MODE = "internal";
+
+    const mod = await import("../server/ui-server.mjs");
+    const executeTask = vi.fn(async () => {});
+    const clearRetryQueueTask = vi.fn();
+    mod.injectUiDependencies({
+      getInternalExecutor: () => ({
+        getStatus: () => ({ maxParallel: 4, activeSlots: 0, slots: [] }),
+        executeTask,
+        isPaused: () => false,
+      }),
+      getAgentEventBus: () => ({
+        clearRetryQueueTask,
+      }),
+    });
+
+    const server = await mod.startTelegramUiServer({
+      port: await getFreePort(),
+      host: "127.0.0.1",
+      skipInstanceLock: true,
+      skipAutoOpen: true,
+    });
+    const port = server.address().port;
+
+    const created = await fetch(`http://127.0.0.1:${port}/api/tasks/create`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        title: "Retry queue manual retry test",
+        description: "ensures retry now bypasses cooldown",
+        status: "error",
+      }),
+    }).then((r) => r.json());
+    expect(created.ok).toBe(true);
+    const taskId = created.data.id;
+
+    const retried = await fetch(`http://127.0.0.1:${port}/api/tasks/retry`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ taskId }),
+    }).then((r) => r.json());
+
+    expect(retried.ok).toBe(true);
+    expect(retried.taskId).toBe(taskId);
+    expect(executeTask).toHaveBeenCalledTimes(1);
+    expect(executeTask.mock.calls[0][0]?.id).toBe(taskId);
+    expect(clearRetryQueueTask).toHaveBeenCalledWith(taskId, "manual-retry-now");
   });
 
   it("queues task starts when no executor slots are free and reports truthful runtime state", async () => {
@@ -1656,7 +1790,7 @@ describe("ui-server mini app", () => {
     expect(Array.isArray(detail.data.workflowRuns)).toBe(true);
     expect(detail.data.workflowRuns.length).toBeGreaterThan(0);
     expect(detail.data.workflowRuns.some((run) => run.workflowId === workflowId)).toBe(true);
-  }, 30000);
+  }, 20000);
 
   it("reports epic dependency blockers from start guards", async () => {
     process.env.TELEGRAM_UI_TUNNEL = "disabled";
@@ -2420,6 +2554,70 @@ describe("ui-server mini app", () => {
     }
   });
 
+  it("merges bounded system log tails across monitor, error, and daemon logs", async () => {
+    process.env.TELEGRAM_UI_TUNNEL = "disabled";
+
+    const mod = await import("../server/ui-server.mjs");
+    const server = await mod.startTelegramUiServer({
+      port: await getFreePort(),
+      host: "127.0.0.1",
+      skipInstanceLock: true,
+      skipAutoOpen: true,
+    });
+    const port = server.address().port;
+
+    const logDir = join(process.cwd(), "logs");
+    mkdirSync(logDir, { recursive: true });
+    const logNames = ["monitor.log", "monitor-error.log", "daemon.log"];
+    const backup = new Map(
+      logNames.map((name) => {
+        const filePath = join(logDir, name);
+        return [name, existsSync(filePath) ? readFileSync(filePath, "utf8") : null];
+      }),
+    );
+
+    const fixtures = {
+      "daemon.log": [
+        "2026-03-04T04:08:15.429Z [INFO] [daemon] bootstrap",
+        "2026-03-04T04:08:15.442Z [INFO] [daemon] heartbeat",
+      ].join("\n") + "\n",
+      "monitor.log": [
+        "2026-03-04T04:08:15.430Z [INFO] [kanban] using jira backend",
+        "2026-03-04T04:08:15.434Z [INFO] [task-store] no store file found",
+      ].join("\n") + "\n",
+      "monitor-error.log": [
+        "2026-03-04T04:08:15.431Z [WARN] [kanban] switched to jira backend",
+        "2026-03-04T04:08:15.440Z [ERROR] [task-store] removed task",
+      ].join("\n") + "\n",
+    };
+
+    try {
+      for (const [name, content] of Object.entries(fixtures)) {
+        writeFileSync(join(logDir, name), content, "utf8");
+      }
+
+      const payload = await fetch(`http://127.0.0.1:${port}/api/logs?lines=6`).then((r) => r.json());
+
+      expect(payload.ok).toBe(true);
+      expect(payload.data?.files).toEqual(["monitor.log", "monitor-error.log", "daemon.log"]);
+      expect(payload.data?.lines).toEqual([
+        "2026-03-04T04:08:15.429Z [INFO] [daemon] bootstrap",
+        "2026-03-04T04:08:15.430Z [INFO] [kanban] using jira backend",
+        "2026-03-04T04:08:15.431Z [WARN] [kanban] switched to jira backend",
+        "2026-03-04T04:08:15.434Z [INFO] [task-store] no store file found",
+        "2026-03-04T04:08:15.440Z [ERROR] [task-store] removed task",
+        "2026-03-04T04:08:15.442Z [INFO] [daemon] heartbeat",
+      ]);
+      expect(payload.data?.truncated).toBe(false);
+    } finally {
+      for (const [name, content] of backup.entries()) {
+        const filePath = join(logDir, name);
+        if (content == null) rmSync(filePath, { force: true });
+        else writeFileSync(filePath, content, "utf8");
+      }
+    }
+  });
+
   it("falls back to session workspaceDir for diff view", async () => {
     process.env.TELEGRAM_UI_TUNNEL = "disabled";
 
@@ -2534,12 +2732,13 @@ describe("ui-server mini app", () => {
       const response = await fetch(`http://127.0.0.1:${port}/api/telemetry/shredding?days=30`);
       const payload = await response.json();
       expect(payload.ok).toBe(true);
-      expect(Number(payload?.data?.stageCounts?.live_tool_compaction || 0)).toBeGreaterThanOrEqual(2);
-      expect(Number(payload?.data?.stageCounts?.session_total || 0)).toBeGreaterThanOrEqual(1);
-      expect(Number(payload?.data?.liveCompaction?.totalEvents || 0)).toBeGreaterThanOrEqual(2);
-      expect(Number(payload?.data?.liveCompaction?.totalSavedChars || 0)).toBeGreaterThanOrEqual(10000);
-      expect(payload.data.topCompactionFamilies.some((entry) => entry.name === "search")).toBe(true);
-      expect(payload.data.topCommandFamilies.some((entry) => entry.name === "git")).toBe(true);
+      expect(Number(payload.data?.stageCounts?.live_tool_compaction || 0)).toBeGreaterThanOrEqual(2);
+      expect(Number(payload.data?.stageCounts?.session_total || 0)).toBeGreaterThanOrEqual(1);
+      expect(Number(payload.data?.liveCompaction?.totalEvents || 0)).toBeGreaterThanOrEqual(2);
+      expect(Number(payload.data?.liveCompaction?.totalSavedChars || 0)).toBeGreaterThanOrEqual(10000);
+      expect(Number(payload.data?.liveCompaction?.avgSavedPct || 0)).toBeGreaterThanOrEqual(60);
+      expect(payload.data.topCompactionFamilies.some((entry) => entry.name === "search" && entry.count >= 1)).toBe(true);
+      expect(payload.data.topCommandFamilies.some((entry) => entry.name === "git" && entry.count >= 1)).toBe(true);
       expect(payload.data.recentEvents[0]).toHaveProperty("stage");
     } finally {
       if (previousStats == null) rmSync(shreddingPath, { force: true });

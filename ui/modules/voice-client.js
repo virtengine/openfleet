@@ -756,7 +756,7 @@ function sendSessionUpdate(tokenData = {}) {
       : {}),
     ...(turnDetection === "semantic_vad"
       ? {
-          eagerness: "medium",
+          eagerness: "low",
           create_response: true,
           interrupt_response: true,
         }
@@ -769,6 +769,18 @@ function sendSessionUpdate(tokenData = {}) {
   const transcriptionEnabled =
     sessionConfig?.input_audio_transcription !== undefined;
 
+  // Include instructions from the server session config so the voice agent
+  // receives its system prompt (persona, tools, behaviour rules).
+  const instructions = sessionConfig?.instructions || tokenData?.instructions || undefined;
+
+  // Include tool definitions so the realtime model can invoke them.
+  const tools = Array.isArray(sessionConfig?.tools) && sessionConfig.tools.length
+    ? sessionConfig.tools
+    : Array.isArray(tokenData?.tools) && tokenData.tools.length
+      ? tokenData.tools
+      : undefined;
+  const toolChoice = sessionConfig?.tool_choice || undefined;
+
   sendRealtimeEvent({
     type: "session.update",
     session: {
@@ -776,6 +788,8 @@ function sendSessionUpdate(tokenData = {}) {
       voice: voiceId,
       input_audio_format: "pcm16",
       output_audio_format: "pcm16",
+      ...(instructions ? { instructions } : {}),
+      ...(tools ? { tools, tool_choice: toolChoice || "auto" } : {}),
       ...(transcriptionEnabled
         ? { input_audio_transcription: { model: transcriptionModel } }
         : {}),
@@ -1606,6 +1620,23 @@ async function handleToolCall(event) {
     });
     const result = await res.json();
 
+    // Normalize tool output — handle empty strings, objects, and large payloads
+    let toolOutput = "";
+    if (result.error) {
+      toolOutput = `Tool error: ${result.error}`;
+    } else if (result.result != null && result.result !== "") {
+      toolOutput = typeof result.result === "string"
+        ? result.result
+        : JSON.stringify(result.result);
+    } else {
+      toolOutput = "Tool completed with no output";
+    }
+    // Truncate very large outputs to avoid overwhelming the Realtime API context
+    const VOICE_TOOL_OUTPUT_MAX = 6000;
+    if (toolOutput.length > VOICE_TOOL_OUTPUT_MAX) {
+      toolOutput = toolOutput.slice(0, VOICE_TOOL_OUTPUT_MAX) + "\n... (truncated for voice — full result available in chat)";
+    }
+
     // Update tool call status
     voiceToolCalls.value = voiceToolCalls.value.map(tc =>
       tc.callId === callId ? { ...tc, status: "complete", result: result.result } : tc
@@ -1617,7 +1648,7 @@ async function handleToolCall(event) {
       item: {
         type: "function_call_output",
         call_id: callId,
-        output: result.result || result.error || "No output",
+        output: toolOutput,
       },
     });
     // Trigger response generation

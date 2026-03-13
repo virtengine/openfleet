@@ -13,16 +13,20 @@
 
 import { existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync, unlinkSync } from "node:fs";
 import { resolve, dirname } from "node:path";
+import { randomBytes } from "node:crypto";
 import { fileURLToPath } from "node:url";
 import { buildSessionInsights } from "../lib/session-insights.mjs";
+import { isTestRuntime } from "./test-runtime.mjs";
+import { addCompletedSession } from "./runtime-accumulator.mjs";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const SESSIONS_DIR = resolve(__dirname, "..", "logs", "sessions");
 
 const TAG = "[session-tracker]";
 
-/** Default: keep last 10 messages per task session. */
-const DEFAULT_MAX_MESSAGES = 10;
+/** Default: keep last 300 messages per task session.
+ *  Previously 10 — far too few for historic session review. */
+const DEFAULT_MAX_MESSAGES = 300;
 
 /** Default: keep a larger history for manual/primary chat sessions. */
 const DEFAULT_CHAT_MAX_MESSAGES = 2000;
@@ -35,6 +39,22 @@ const MAX_MESSAGE_CHARS = 100_000;
 
 /** Maximum total sessions to keep in memory. */
 const MAX_SESSIONS = 100;
+const TERMINAL_SESSION_STATUSES = new Set(["completed", "failed", "idle", "archived"]);
+
+function isTerminalSessionStatus(status) {
+  return TERMINAL_SESSION_STATUSES.has(String(status || "").trim().toLowerCase());
+}
+
+function randomToken(length = 8) {
+  return randomBytes(Math.ceil(length / 2)).toString("hex").slice(0, length);
+}
+
+function resolveSessionTrackerPersistDir(options = {}) {
+  if (options.persistDir !== undefined) {
+    return options.persistDir;
+  }
+  return isTestRuntime() ? null : SESSIONS_DIR;
+}
 
 function resolveSessionMaxMessages(type, metadata, explicitMax, fallbackMax) {
   if (Number.isFinite(explicitMax)) {
@@ -173,6 +193,7 @@ export class SessionTracker {
       taskId,
       taskTitle,
       id: taskId,
+      sessionKey: `${taskId}:${Date.now()}:${randomToken(8)}`,
       type: "task",
       maxMessages: this.#maxMessages,
       startedAt: Date.now(),
@@ -183,6 +204,7 @@ export class SessionTracker {
       totalEvents: 0,
       turnCount: 0,
       status: "active",
+      accumulatedAt: null,
       lastActivityAt: Date.now(),
       metadata: {},
       insights: buildSessionInsights({ messages: [] }),
@@ -246,7 +268,7 @@ export class SessionTracker {
     // Direct message format (role/content)
     if (event && event.role && event.content !== undefined) {
       const msg = {
-        id: event.id || `msg-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+      id: event.id || `msg-${Date.now()}-${randomToken(6)}`,
         type: event.type || undefined,
         role: event.role,
         content: String(event.content).slice(0, MAX_MESSAGE_CHARS),
@@ -303,25 +325,8 @@ export class SessionTracker {
     session.endedAt = Date.now();
     session.status = status;
     this.#refreshDerivedState(session);
+    this.#accumulateCompletedSession(session, taskId);
     this.#markDirty(taskId);
-
-    // Lazy import to avoid top-level await issues
-    import("./runtime-accumulator.mjs")
-      .then((module) => {
-        if (module.addCompletedSession) {
-          module.addCompletedSession({
-            id: taskId,
-            taskId: taskId,
-            taskTitle: session.taskTitle,
-            executor: session.executor,
-            model: session.model,
-            startedAt: session.startedAt,
-            endedAt: session.endedAt,
-            status: status,
-          });
-        }
-      })
-      .catch(() => {});
   }
 
   /**
@@ -485,6 +490,8 @@ export class SessionTracker {
    * @param {string} taskId
    */
   removeSession(taskId) {
+    const session = this.#sessions.get(taskId);
+    this.#accumulateCompletedSession(session, taskId);
     this.#sessions.delete(taskId);
     this.#dirty.delete(taskId);
     // Remove persisted session file if it exists
@@ -516,7 +523,7 @@ export class SessionTracker {
    * Create a new session with explicit options.
    * @param {{ id: string, type?: string, taskId?: string, metadata?: Object }} opts
    */
-  createSession({ id, type = "manual", taskId, metadata = {}, maxMessages }) {
+  createSession({ id, type = "manual", taskId, metadata = {}, maxMessages, sessionKey }) {
     // Evict oldest non-active sessions if at capacity
     if (this.#sessions.size >= MAX_SESSIONS && !this.#sessions.has(id)) {
       this.#evictOldest();
@@ -533,6 +540,9 @@ export class SessionTracker {
       id,
       taskId: taskId || id,
       taskTitle: metadata.title || id,
+      sessionKey:
+        String(sessionKey || "").trim() ||
+        `${taskId || id}:${Date.now()}:${randomToken(8)}`,
       type,
       status: "active",
       createdAt: now,
@@ -543,6 +553,7 @@ export class SessionTracker {
       totalEvents: 0,
       turnCount: 0,
       lastActivityAt: Date.now(),
+      accumulatedAt: null,
       metadata,
       maxMessages: resolvedMax,
       insights: buildSessionInsights({ messages: [] }),
@@ -611,10 +622,11 @@ export class SessionTracker {
     const session = this.#sessions.get(sessionId);
     if (!session) return;
     session.status = status;
-    if (status === "completed" || status === "archived") {
+    if (status === "completed" || status === "archived" || status === "failed" || status === "idle") {
       session.endedAt = Date.now();
     }
     this.#refreshDerivedState(session);
+    this.#accumulateCompletedSession(session, sessionId);
     this.#markDirty(sessionId);
   }
 
@@ -687,7 +699,7 @@ export class SessionTracker {
       return { ok: false, error: "Only user messages can be edited" };
     }
 
-    target.id = target.id || `msg-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+    target.id = target.id || `msg-${Date.now()}-${randomToken(6)}`;
     target.content = nextContent.slice(0, MAX_MESSAGE_CHARS);
     target.edited = true;
     target.editedAt = new Date().toISOString();
@@ -807,6 +819,7 @@ export class SessionTracker {
     const type = event._sessionType || "task";
     this.createSession({
       id: taskId,
+      sessionKey: `${taskId}:${Date.now()}:${randomToken(8)}`,
       type,
       taskId,
       metadata: { autoCreated: true },
@@ -828,7 +841,8 @@ export class SessionTracker {
         return (a[1].lastActivityAt || a[1].startedAt) - (b[1].lastActivityAt || b[1].startedAt);
       });
     const toEvict = sorted.slice(0, evictCount);
-    for (const [id] of toEvict) {
+    for (const [id, session] of toEvict) {
+      this.#accumulateCompletedSession(session, id);
       this.#sessions.delete(id);
     }
   }
@@ -848,6 +862,7 @@ export class SessionTracker {
         session.status = "completed";
         session.endedAt = now;
         this.#refreshDerivedState(session);
+        this.#accumulateCompletedSession(session, id);
         this.#markDirty(id);
         reaped++;
       }
@@ -869,6 +884,43 @@ export class SessionTracker {
     if (this.#persistDir) {
       this.#dirty.add(sessionId);
     }
+  }
+
+  #accumulateCompletedSession(session, fallbackTaskId = "") {
+    if (!session || session.accumulatedAt) return false;
+    if (!isTerminalSessionStatus(session.status)) return false;
+    const taskId = String(session.taskId || session.id || fallbackTaskId || "").trim();
+    if (!taskId) return false;
+
+    const now = Date.now();
+    const endedAt = Number.isFinite(Number(session.endedAt)) && Number(session.endedAt) > 0
+      ? Number(session.endedAt)
+      : now;
+    const startedAt = Number.isFinite(Number(session.startedAt))
+      ? Number(session.startedAt)
+      : endedAt;
+    const tokenUsage = session.insights?.tokenUsage || null;
+
+    addCompletedSession({
+      id: session.id || taskId,
+      sessionId: session.id || taskId,
+      sessionKey: session.sessionKey || `${taskId}:${startedAt}:${endedAt}`,
+      taskId,
+      taskTitle: session.taskTitle,
+      executor: session.executor,
+      model: session.model,
+      startedAt,
+      endedAt,
+      durationMs: Math.max(0, endedAt - startedAt),
+      tokenCount: tokenUsage?.totalTokens || 0,
+      inputTokens: tokenUsage?.inputTokens || 0,
+      outputTokens: tokenUsage?.outputTokens || 0,
+      tokenUsage,
+      insights: session.insights || null,
+      status: String(session.status || "completed"),
+    });
+    session.accumulatedAt = new Date().toISOString();
+    return true;
   }
 
   #refreshDerivedState(session) {
@@ -908,10 +960,14 @@ export class SessionTracker {
           taskId: session.taskId,
           title: session.taskTitle || session.title || null,
           taskTitle: session.taskTitle || null,
+          sessionKey: session.sessionKey || null,
           type: session.type || "task",
           status: session.status,
           createdAt: session.createdAt || new Date(session.startedAt).toISOString(),
           lastActiveAt: session.lastActiveAt || new Date(session.lastActivityAt).toISOString(),
+          startedAt: session.startedAt || null,
+          endedAt: session.endedAt || null,
+          accumulatedAt: session.accumulatedAt || null,
           turnCount: session.turnCount || 0,
           messages: session.messages || [],
           metadata: session.metadata || {},
@@ -978,20 +1034,30 @@ export class SessionTracker {
         this.#sessions.set(id, {
           id,
           taskId: data.taskId || id,
-          taskTitle: data.metadata?.title || id,
+          taskTitle: data.taskTitle || data.title || data.metadata?.title || id,
+          sessionKey:
+            String(data.sessionKey || "").trim() ||
+            `${data.taskId || id}:${data.startedAt || Date.now()}:${endedAt || data.startedAt || Date.now()}`,
           type: data.type || "task",
           status,
           createdAt: data.createdAt || new Date().toISOString(),
           lastActiveAt: data.lastActiveAt || new Date().toISOString(),
-          startedAt: data.createdAt ? new Date(data.createdAt).getTime() : Date.now(),
+          startedAt: data.startedAt || (data.createdAt ? new Date(data.createdAt).getTime() : Date.now()),
           endedAt,
           messages: data.messages || [],
           totalEvents: (data.messages || []).length,
           turnCount: data.turnCount || 0,
+          accumulatedAt: data.accumulatedAt || null,
           lastActivityAt: lastActive || Date.now(),
           metadata: data.metadata || {},
           insights: data.insights || buildSessionInsights({ messages: data.messages || [] }),
         });
+        const restored = this.#sessions.get(id);
+        if (restored && isTerminalSessionStatus(restored.status) && !restored.accumulatedAt) {
+          if (this.#accumulateCompletedSession(restored, id)) {
+            this.#markDirty(id);
+          }
+        }
       }
     } catch {
       // Directory read failed — proceed without disk data
@@ -1524,9 +1590,10 @@ let _instance = null;
  */
 export function getSessionTracker(options) {
   if (!_instance) {
+    const persistDir = resolveSessionTrackerPersistDir(options || {});
     _instance = new SessionTracker({
-      persistDir: SESSIONS_DIR,
       ...options,
+      persistDir,
     });
     console.log(`${TAG} initialized (maxMessages=${_instance.getStats ? DEFAULT_MAX_MESSAGES : "?"})`);
   }

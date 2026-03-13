@@ -163,6 +163,16 @@ const INTENTIONALLY_SKIPPED = new Set([
   "/api/workflows/concurrency",
   // Telemetry — server-only
   "/api/telemetry/shredding",
+  // Project detection — server-only (requires filesystem access)
+  "/api/workflows/detect-project",
+  // Workspace management — server-only (requires filesystem + config access)
+  "/api/workspaces/state",
+  "/api/workspaces/executors",
+  "/api/workspaces/workflows",
+  // Task execution plan — server-only (requires task store + library resolver)
+  "/api/tasks/execution-plan",
+  // Agent modes — server-only (requires primary-agent runtime)
+  "/api/agent/modes",
 ]);
 
 // ── Session actions intentionally skipped in demo ─────────────────────

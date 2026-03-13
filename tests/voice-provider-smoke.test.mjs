@@ -21,10 +21,7 @@ const ISOLATED_BOSUN_DIR = join(
 const ENV_KEYS = [
   "BOSUN_HOME",
   "BOSUN_DIR",
-  "CODEX_MONITOR_HOME",
-  "CODEX_MONITOR_DIR",
-  "HOME",
-  "USERPROFILE",
+  "BOSUN_HOME",
   "TELEGRAM_UI_TLS_DISABLE",
   "TELEGRAM_UI_ALLOW_UNSAFE",
   "TELEGRAM_UI_TUNNEL",
@@ -36,6 +33,7 @@ const ENV_KEYS = [
   "VOICE_ENABLED",
   "VOICE_PROVIDERS",
   "VOICE_PROVIDER",
+  "VOICE_PROVIDERS",
   "VOICE_MODEL",
   "VOICE_VISION_MODEL",
   "VOICE_FALLBACK_MODE",
@@ -211,24 +209,12 @@ beforeEach(() => {
   process.env.VOICE_ENABLED = "true";
   process.env.VOICE_PROVIDERS = "";
   process.env.VOICE_FALLBACK_MODE = "browser";
+  process.env.VOICE_PROVIDERS = "";
   // Isolate from the developer's ~/.bosun config dir and .env file so that
   // real Azure credentials don't leak into provider-selection logic.
   process.env.BOSUN_HOME = ISOLATED_BOSUN_DIR;
   process.env.BOSUN_DIR = ISOLATED_BOSUN_DIR;
-  process.env.CODEX_MONITOR_HOME = ISOLATED_BOSUN_DIR;
-  process.env.CODEX_MONITOR_DIR = ISOLATED_BOSUN_DIR;
-  process.env.HOME = ISOLATED_BOSUN_DIR;
-  process.env.USERPROFILE = ISOLATED_BOSUN_DIR;
-  process.argv = process.argv.filter((arg, index) => {
-    if (arg === "--config-dir") {
-      return false;
-    }
-    if (index > 0 && process.argv[index - 1] === "--config-dir") {
-      return false;
-    }
-    return !arg.startsWith("--config-dir=");
-  });
-  process.argv.push("--config-dir", ISOLATED_BOSUN_DIR);
+  process.env.BOSUN_HOME = ISOLATED_BOSUN_DIR;
 
   // Set credential keys to empty strings instead of deleting them so that
   // loadDotEnv ({ override: false }) in loadConfig() won't re-populate them

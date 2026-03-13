@@ -138,6 +138,10 @@ describe("monitor workflow startup guards", () => {
     );
     expect(monitorSource).toContain("setInternalTaskStatus(taskId, \"todo\", \"review-agent-rehydrate\")");
     expect(monitorSource).toContain("await updateTaskStatus(taskId, \"todo\");");
+    expect(monitorSource).toContain("dispatchFixTask: (taskId, issues) => {");
+    expect(monitorSource).toContain("supervisor dispatch-fix: no active session");
+    expect(monitorSource).toContain("review-fix-redispatch");
+    expect(monitorSource).toContain("workflowEvent: \"task.review_fix_requested\"");
   });
 
   it("resolves repo slug from task/PR context before flow-gate merge and review rehydrate", () => {
@@ -184,11 +188,11 @@ describe("task-executor in-progress recovery owner_mismatch guards", () => {
     expect(wfGuardPos).toBeLessThan(resumablePushPos);
   });
 
-  it("resets fresh workflow-owned task to todo when agent thread died instead of re-dispatching", () => {
-    // When workflowOwnsTaskLifecycle is true and there is no active thread
-    // but the task is fresh, recovery must reset to todo (not call executeTask).
-    // Resetting to todo lets trigger.task_available re-dispatch cleanly.
-    expect(executorSource).toContain("source: \"task-executor-recovery-workflow-owned\"");
+  it("keeps fresh workflow-owned task in inprogress when agent thread key is absent", () => {
+    // In workflow-owned mode, thread registry visibility can lag while workflow
+    // nodes are actively running. Fresh tasks must not be force-reset to todo
+    // solely because no executor thread key is visible.
+    expect(executorSource).not.toContain("source: \"task-executor-recovery-workflow-owned\"");
   });
 
   it("uses stale threshold of 600s so recovery interval cannot race heartbeat renewal", () => {

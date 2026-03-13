@@ -38,9 +38,11 @@ async function getMcpRegistry() {
 // ── Configuration ────────────────────────────────────────────────────────────
 
 const DEFAULT_TIMEOUT_MS = 60 * 60 * 1000; // 60 min for agentic tasks
+const MAX_TIMER_DELAY_MS = 2_147_483_647; // Node.js timer clamp (2^31 - 1)
 const STATE_FILE = resolve(__dirname, "..", "logs", "copilot-shell-state.json");
 const SESSION_LOG_DIR = resolve(__dirname, "..", "logs", "copilot-sessions");
 const REPO_ROOT = resolveRepoRoot();
+const timeoutNormalizationWarningKey = new Set();
 
 // Valid reasoning effort levels for models that support it
 const VALID_REASONING_EFFORTS = ["low", "medium", "high", "xhigh"];
@@ -198,6 +200,28 @@ function safeStringify(value, maxLen = 8000) {
     text = text.slice(0, maxLen) + "...";
   }
   return text;
+}
+
+function parsePositiveTimeoutMs(value, fallback = DEFAULT_TIMEOUT_MS) {
+  const fallbackValue = Number(fallback);
+  if (!Number.isFinite(fallbackValue) || fallbackValue <= 0) {
+    throw new Error("parsePositiveTimeoutMs requires a positive finite fallback");
+  }
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed) || parsed <= 0) return fallbackValue;
+  return parsed;
+}
+
+function normalizeTimeoutMs(value, { fallback = DEFAULT_TIMEOUT_MS, label = "timeoutMs" } = {}) {
+  const parsed = parsePositiveTimeoutMs(value, fallback);
+  const normalized = Math.min(parsed, MAX_TIMER_DELAY_MS);
+  if (normalized !== parsed && !timeoutNormalizationWarningKey.has(label)) {
+    timeoutNormalizationWarningKey.add(label);
+    console.warn(
+      `[copilot-shell] ${label} ${parsed}ms exceeds Node.js timer max; clamped to ${MAX_TIMER_DELAY_MS}ms`,
+    );
+  }
+  return normalized;
 }
 
 function initSessionLog(sessionId, prompt, timeoutMs) {
@@ -588,8 +612,10 @@ async function ensureClientStarted() {
     );
   }
 
-  const START_TIMEOUT_MS =
-    Number(process.env.COPILOT_START_TIMEOUT_MS) || 20_000;
+  const START_TIMEOUT_MS = normalizeTimeoutMs(process.env.COPILOT_START_TIMEOUT_MS, {
+    fallback: 20_000,
+    label: "COPILOT_START_TIMEOUT_MS",
+  });
 
   await withSanitizedOpenAiEnv(async () => {
     copilotClient = new Cls(clientOptions);
@@ -859,6 +885,10 @@ export async function execCopilotPrompt(userMessage, options = {}) {
     persistent = false,
     mode = null,
   } = options;
+  const normalizedTimeoutMs = normalizeTimeoutMs(timeoutMs, {
+    fallback: DEFAULT_TIMEOUT_MS,
+    label: "execCopilotPrompt.timeoutMs",
+  });
 
   if (activeTurn && !options._holdActiveTurn) {
     return {
@@ -880,7 +910,7 @@ export async function execCopilotPrompt(userMessage, options = {}) {
 
   let unsubscribe = null;
   const session = await getSession();
-  const logPath = initSessionLog(activeSessionId, userMessage, timeoutMs);
+  const logPath = initSessionLog(activeSessionId, userMessage, normalizedTimeoutMs);
   const items = [];
   let finalResponse = "";
   let responseFromMessage = false;
@@ -923,7 +953,7 @@ export async function execCopilotPrompt(userMessage, options = {}) {
     }
 
     const controller = abortController || new AbortController();
-    const timer = setTimeout(() => controller.abort("timeout"), timeoutMs);
+    const timer = setTimeout(() => controller.abort("timeout"), normalizedTimeoutMs);
 
     const onAbort = () => {
       const reason = controller.signal.reason || "user_stop";
@@ -963,7 +993,7 @@ export async function execCopilotPrompt(userMessage, options = {}) {
 
     // Pass timeout parameter to sendAndWait to override 60s SDK default
     const sendPromise = session.sendAndWait
-      ? sendFn.call(session, { prompt }, timeoutMs)
+      ? sendFn.call(session, { prompt }, normalizedTimeoutMs)
       : sendFn.call(session, { prompt });
 
     // If send() returns before idle, wait for session.idle if available
@@ -978,9 +1008,21 @@ export async function execCopilotPrompt(userMessage, options = {}) {
         };
         const off = session.on ? session.on(idleHandler) : null;
         Promise.resolve(sendPromise).catch(reject);
-        setTimeout(resolve, timeoutMs + 1000);
+        setTimeout(
+          resolve,
+          normalizeTimeoutMs(normalizedTimeoutMs + 1000, {
+            fallback: DEFAULT_TIMEOUT_MS,
+            label: "execCopilotPrompt.idleWaitResolveTimeoutMs",
+          }),
+        );
         if (typeof off === "function") {
-          setTimeout(() => off(), timeoutMs + 2000);
+          setTimeout(
+            () => off(),
+            normalizeTimeoutMs(normalizedTimeoutMs + 2000, {
+              fallback: DEFAULT_TIMEOUT_MS,
+              label: "execCopilotPrompt.idleWaitCleanupTimeoutMs",
+            }),
+          );
         }
       });
     } else {
@@ -1008,7 +1050,7 @@ export async function execCopilotPrompt(userMessage, options = {}) {
       const msg =
         reason === "user_stop"
           ? ":close: Agent stopped by user."
-          : `:clock: Agent timed out after ${timeoutMs / 1000}s`;
+          : `:clock: Agent timed out after ${normalizedTimeoutMs / 1000}s`;
       return { finalResponse: msg, items: [], usage: null };
     }
     // ── Transient stream retry ──────────────────────────────────────────────────
