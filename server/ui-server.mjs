@@ -15486,6 +15486,14 @@ async function handleApi(req, res, url) {
           `[telegram-ui] failed to retry task ${taskId}: ${error.message}`,
         );
       });
+      const bus = _resolveEventBus();
+      if (bus && typeof bus.clearRetryQueueTask === "function") {
+        try {
+          bus.clearRetryQueueTask(taskId, "manual-retry-now");
+        } catch {
+          /* best effort */
+        }
+      }
       jsonResponse(res, 200, { ok: true, taskId });
       broadcastUiEvent(
         ["tasks", "overview", "executor", "agents"],
@@ -15526,9 +15534,20 @@ async function handleApi(req, res, url) {
         ok: true,
         count: retryQueue.count || 0,
         items: retryQueue.items || [],
+        stats: retryQueue.stats || {
+          totalRetriesToday: 0,
+          peakRetryDepth: 0,
+          exhaustedTaskIds: [],
+        },
       });
     } catch (err) {
-      jsonResponse(res, 500, { ok: false, error: err.message, count: 0, items: [] });
+      jsonResponse(res, 500, {
+        ok: false,
+        error: err.message,
+        count: 0,
+        items: [],
+        stats: { totalRetriesToday: 0, peakRetryDepth: 0, exhaustedTaskIds: [] },
+      });
     }
     return;
   }
