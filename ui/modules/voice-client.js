@@ -252,9 +252,9 @@ const MAX_RECONNECT_ATTEMPTS = 3;
 const AUTO_BARGE_IN_COOLDOWN_MS = 700;
 const AUTO_BARGE_IN_MIC_LEVEL_THRESHOLD = 0.08;
 const AUTO_BARGE_IN_FADE_MS = 220;
-// Noise-control default: disable user-side live ASR transcript output/persistence.
-// Assistant response text remains enabled.
-const ENABLE_USER_TRANSCRIPT = false;
+// User transcript is always enabled — transcription is surfaced from the API's
+// input_audio_transcription feature (primary) or browser SpeechRecognition (backup).
+const ENABLE_USER_TRANSCRIPT = true;
 let _reconnectAttempts = 0;
 let _pendingResponseCreateTimer = null;
 let _awaitingAutoResponse = false;
@@ -265,6 +265,64 @@ let _lastTokenData = null; // cached tokenData for reconnect short-circuiting
 const SpeechRecognition = typeof globalThis !== "undefined"
   ? (globalThis.SpeechRecognition || globalThis.webkitSpeechRecognition)
   : null;
+
+// ── Browser SpeechRecognition (parallel backup for user transcription) ──────
+
+let _browserRecognition = null;
+let _browserTranscriptActive = false;
+let _apiTranscriptDelivered = false;
+
+function _startBrowserTranscription() {
+  if (!SpeechRecognition || _browserRecognition) return;
+  try {
+    const recognition = new SpeechRecognition();
+    recognition.continuous = true;
+    recognition.interimResults = true;
+    recognition.maxAlternatives = 1;
+    recognition.lang = navigator?.language || "en-US";
+
+    recognition.onresult = (event) => {
+      if (_apiTranscriptDelivered) return;
+      let transcript = "";
+      for (let i = event.resultIndex; i < event.results.length; i++) {
+        transcript += event.results[i][0].transcript;
+      }
+      const text = transcript.trim();
+      if (!text) return;
+      voiceTranscript.value = text;
+      emit("transcript", { text, final: event.results[event.resultIndex]?.isFinal || false, source: "browser" });
+      if (event.results[event.resultIndex]?.isFinal) {
+        _recordVoiceTranscriptIfNew("user", text, "browser.speech_recognition.final");
+      }
+    };
+
+    recognition.onerror = (e) => {
+      if (e.error !== "no-speech" && e.error !== "aborted") {
+        console.warn("[voice-client] Browser SpeechRecognition error:", e.error);
+      }
+    };
+
+    recognition.onend = () => {
+      if (_browserTranscriptActive && (_dc || _ws)) {
+        try { recognition.start(); } catch { /* already running or stopped */ }
+      }
+    };
+
+    recognition.start();
+    _browserRecognition = recognition;
+    _browserTranscriptActive = true;
+  } catch (err) {
+    console.warn("[voice-client] Browser SpeechRecognition unavailable:", err?.message);
+  }
+}
+
+function _stopBrowserTranscription() {
+  _browserTranscriptActive = false;
+  if (_browserRecognition) {
+    try { _browserRecognition.stop(); } catch { /* ignore */ }
+    _browserRecognition = null;
+  }
+}
 
 function _normalizeCallContext(options = {}) {
   const sessionId = String(options?.sessionId || "").trim() || null;
@@ -448,12 +506,8 @@ async function _processResponsesAudioTurn(text) {
   });
 
   voiceState.value = "thinking";
-  if (ENABLE_USER_TRANSCRIPT) {
-    voiceTranscript.value = inputText;
-    emit("transcript", { text: inputText, final: true });
-  } else {
-    voiceTranscript.value = "";
-  }
+  voiceTranscript.value = inputText;
+  emit("transcript", { text: inputText, final: true, source: "api" });
   _recordVoiceTranscriptIfNew("user", inputText, "responses-audio.user_input");
 
   if (_responsesAbortController) {
@@ -586,6 +640,7 @@ async function _startResponsesAudioSession(tokenData) {
     callContext: { ..._callContext },
     transport: "responses-audio",
   });
+  _startBrowserTranscription();
   _startResponsesRecognition();
 }
 
@@ -971,6 +1026,8 @@ async function _startWebSocketTransport(tokenData, mediaStream) {
         transport: "websocket",
       });
 
+      _startBrowserTranscription();
+
       resolve();
     };
 
@@ -1222,6 +1279,7 @@ export async function startVoiceSession(options = {}) {
       voiceSessionId.value = _callContext.sessionId || `voice-${Date.now()}`;
       startDurationTimer();
       startReconnectTimer();
+      _startBrowserTranscription();
       emit("connected", {
         provider: tokenData.provider,
         sessionId: voiceSessionId.value,
@@ -1340,6 +1398,7 @@ export function stopVoiceSession() {
   _explicitStop = true;
   emit("session-ending", { sessionId: voiceSessionId.value });
   _stopMicLevelMonitor();
+  _stopBrowserTranscription();
   cleanup();
   voiceState.value = "idle";
   voiceTranscript.value = "";
@@ -1385,18 +1444,18 @@ function handleServerEvent(event) {
       break;
 
     case "conversation.item.input_audio_transcription.completed":
-      if (ENABLE_USER_TRANSCRIPT) {
-        voiceTranscript.value = event.transcript || "";
-        emit("transcript", { text: event.transcript, final: true });
-      } else {
-        voiceTranscript.value = "";
-      }
+      // API-level transcript delivered — prefer over browser SpeechRecognition
+      _apiTranscriptDelivered = true;
+      voiceTranscript.value = event.transcript || "";
+      emit("transcript", { text: event.transcript, final: true, source: "api" });
       _recordVoiceTranscriptIfNew(
         "user",
         event.transcript || "",
         "conversation.item.input_audio_transcription.completed",
       );
       scheduleManualResponseCreate("transcription-completed");
+      // Reset for next utterance
+      setTimeout(() => { _apiTranscriptDelivered = false; }, 500);
       break;
 
     case "conversation.item.created": {
@@ -1407,11 +1466,11 @@ function handleServerEvent(event) {
           .map((part) => String(part?.transcript || part?.text || ""))
           .join("")
           .trim();
-        if (transcript && ENABLE_USER_TRANSCRIPT) {
+        if (transcript) {
+          _apiTranscriptDelivered = true;
           voiceTranscript.value = transcript;
-          emit("transcript", { text: transcript, final: true });
-        } else if (!ENABLE_USER_TRANSCRIPT) {
-          voiceTranscript.value = "";
+          emit("transcript", { text: transcript, final: true, source: "api" });
+          setTimeout(() => { _apiTranscriptDelivered = false; }, 500);
         }
         _recordVoiceTranscriptIfNew(
           "user",
