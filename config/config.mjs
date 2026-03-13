@@ -26,6 +26,7 @@ import {
 } from "../agent/agent-prompts.mjs";
 import { resolveAgentRepoRoot, resolveRepoLocalBosunDir } from "./repo-root.mjs";
 import { applyAllCompatibility } from "../compat.mjs";
+import { ensureTestRuntimeSandbox } from "../infra/test-runtime.mjs";
 import {
   normalizeExecutorKey,
   getModelsForExecutor,
