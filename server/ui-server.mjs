@@ -14731,6 +14731,10 @@ async function handleApi(req, res, url) {
           category: nt.type.split(".")[0],
           description: nt.description || "",
           schema: nt.schema || {},
+          source: nt.source || "builtin",
+          badge: nt.badge || null,
+          isCustom: nt.isCustom === true,
+          filePath: nt.filePath || null,
           ports,
           ui: nt?.ui && typeof nt.ui === "object" ? nt.ui : {},
         };

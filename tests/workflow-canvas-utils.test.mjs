@@ -77,6 +77,26 @@ describe("workflow canvas node search", () => {
     const results = searchNodeTypes(nodeTypeFixtures, "", 10);
     expect(results.length).toBe(nodeTypeFixtures.length);
   });
+
+  it("finds custom nodes through fuzzy query and keeps custom metadata", () => {
+    const customFixtures = [
+      ...nodeTypeFixtures,
+      {
+        type: "custom.my_notifier",
+        category: "custom",
+        description: "Custom node: my notifier",
+        inputs: ["message"],
+        outputs: ["success", "error"],
+        badge: "custom",
+        isCustom: true,
+      },
+    ];
+    const results = searchNodeTypes(customFixtures, "my notifier");
+    expect(results.length).toBeGreaterThan(0);
+    expect(results[0].type).toBe("custom.my_notifier");
+    expect(results[0].isCustom).toBe(true);
+    expect(results[0].badge).toBe("custom");
+  });
 });
 
 describe("workflow canvas history", () => {

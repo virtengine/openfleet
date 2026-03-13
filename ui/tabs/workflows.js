@@ -3118,6 +3118,14 @@ function NodePalette({
                   >
                     ${meta.label || item.category}
                   </span>
+                  ${item.badge
+                    ? html`<span
+                        class="wf-node-category-badge"
+                        style=${`color:${item.isCustom ? "#f472b6" : "#cbd5e1"}; background:${item.isCustom ? "rgba(244,114,182,0.2)" : "rgba(148,163,184,0.2)"}; border-color:${item.isCustom ? "#f472b655" : "#94a3b855"};`}
+                      >
+                        ${item.badge}
+                      </span>`
+                    : ""}
                   <span class="wf-node-search-type">${item.type}</span>
                 </div>
                 <div class="wf-node-search-description">${item.description || "No description available."}</div>

@@ -167,6 +167,27 @@ describe("workflow canvas helpers", () => {
     expect(categoryResults[0].type).toBe("logic.branch");
   });
 
+  it("indexes explicit node inputs even when schema is absent", () => {
+    const results = searchNodeTypes([
+      {
+        type: "custom.notify_ops",
+        category: "custom",
+        description: "Route notification payloads",
+        inputs: ["room", "severity"],
+        outputs: ["success", "error"],
+      },
+      {
+        type: "action.run_command",
+        category: "action",
+        description: "Execute a shell command",
+        schema: { properties: { command: { type: "string" } } },
+      },
+    ], "severity", 10);
+
+    expect(results.map((item) => item.type)).toEqual(["custom.notify_ops"]);
+    expect(results[0].inputs).toEqual(["room", "severity"]);
+  });
+
   it("caps history depth and supports undo redo", () => {
     let history = createHistoryState([{ id: "node-0" }], []);
     for (let index = 1; index <= 55; index += 1) {

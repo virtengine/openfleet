@@ -17,7 +17,12 @@
  *   schema → object                             — JSON Schema for node config
  */
 
-import { registerNodeType } from "./workflow-engine.mjs";
+import {
+  getNodeType,
+  listNodeTypes,
+  registerNodeType,
+  unregisterNodeType,
+} from "./workflow-engine.mjs";
 import { existsSync, readFileSync, writeFileSync, mkdirSync, rmSync } from "node:fs";
 import { resolve, dirname } from "node:path";
 import { execSync, execFileSync, spawn, spawnSync } from "node:child_process";
@@ -35,8 +40,18 @@ import {
 import { fixGitConfigCorruption } from "../workspace/worktree-manager.mjs";
 import { clearBlockedWorktreeIdentity } from "../git/git-safety.mjs";
 import { getGitHubToken, invalidateTokenType } from "../github/github-auth-manager.mjs";
+import {
+  CUSTOM_NODE_DIR_NAME,
+  ensureCustomWorkflowNodesLoaded,
+  getCustomNodeDir,
+  scaffoldCustomNodeFile,
+  startCustomNodeDiscovery,
+  stopCustomNodeDiscovery,
+} from "./workflow-nodes/custom-loader.mjs";
 
 const TAG = "[workflow-nodes]";
+let customLoadPromise = null;
+let customDiscoveryStarted = false;
 const PORTABLE_WORKTREE_COUNT_COMMAND = "node -e \"const cp=require('node:child_process');const wt=cp.execSync('git worktree list --porcelain',{encoding:'utf8'});const count=(wt.match(/^worktree /gm)||[]).length;process.stdout.write(String(count)+'\\\\n');\"";
 const PORTABLE_PRUNE_AND_COUNT_WORKTREES_COMMAND = "node -e \"const cp=require('node:child_process');cp.execSync('git worktree prune',{stdio:'ignore'});const wt=cp.execSync('git worktree list --porcelain',{encoding:'utf8'});const count=(wt.match(/^worktree /gm)||[]).length;process.stdout.write(String(count)+'\\\\n');\"";
 const WORKFLOW_AGENT_HEARTBEAT_MS = (() => {
@@ -11255,3 +11270,23 @@ registerBuiltinNodeType("action.web_search", {
 
 export { registerNodeType, getNodeType, listNodeTypes } from "./workflow-engine.mjs";
 export { evaluateTaskAssignedTriggerConfig };
+export {
+  CUSTOM_NODE_DIR_NAME,
+  getCustomNodeDir,
+  scaffoldCustomNodeFile,
+  startCustomNodeDiscovery,
+  stopCustomNodeDiscovery,
+  unregisterNodeType,
+};
+
+export async function ensureWorkflowNodeTypesLoaded(options = {}) {
+  if (!customLoadPromise || options.forceReload) {
+    customLoadPromise = ensureCustomWorkflowNodesLoaded(options);
+  }
+  await customLoadPromise;
+  if (!customDiscoveryStarted) {
+    startCustomNodeDiscovery(options);
+    customDiscoveryStarted = true;
+  }
+  return listNodeTypes();
+}

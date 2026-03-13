@@ -169,6 +169,7 @@ export const WorkflowStatus = Object.freeze({
 // ── Node Type Registry ──────────────────────────────────────────────────────
 
 const _nodeTypeRegistry = new Map();
+const _nodeTypeMetaRegistry = new Map();
 const _normalizedHandlerCache = new WeakMap();
 
 function clonePortDescriptor(port) {
@@ -383,11 +384,28 @@ function hydrateWorkflowDefinition(def, { strict = false } = {}) {
  * @param {string} type - Node type identifier (e.g., "trigger.task_low", "action.run_agent")
  * @param {object} handler - { execute(node, context, engine), validate?(node), describe?() }
  */
-export function registerNodeType(type, handler) {
+export function registerNodeType(type, handler, options = {}) {
   if (!handler || typeof handler.execute !== "function") {
     throw new Error(`${TAG} Node type "${type}" must have an execute function`);
   }
-  _nodeTypeRegistry.set(type, normalizeHandlerMetadata(handler));
+  const normalized = normalizeHandlerMetadata(handler);
+  _nodeTypeRegistry.set(type, normalized);
+  _nodeTypeMetaRegistry.set(type, {
+    source: String(options.source || handler.source || "builtin"),
+    badge: options.badge || handler.badge || null,
+    isCustom: options.isCustom === true || handler.isCustom === true || String(options.source || handler.source || "").toLowerCase() === "custom",
+    filePath: options.filePath || handler.filePath || null,
+    inputs: Array.isArray(options.inputs)
+      ? options.inputs
+      : Array.isArray(handler.inputs)
+        ? handler.inputs
+        : (normalized.ports?.inputs || []).map((port) => port?.name || "default"),
+    outputs: Array.isArray(options.outputs)
+      ? options.outputs
+      : Array.isArray(handler.outputs)
+        ? handler.outputs
+        : (normalized.ports?.outputs || []).map((port) => port?.name || "default"),
+  });
 }
 
 /**
@@ -399,6 +417,15 @@ export function getNodeType(type) {
   return _nodeTypeRegistry.get(type) || null;
 }
 
+export function getNodeTypeMeta(type) {
+  return _nodeTypeMetaRegistry.get(type) || null;
+}
+
+export function unregisterNodeType(type) {
+  _nodeTypeRegistry.delete(type);
+  _nodeTypeMetaRegistry.delete(type);
+}
+
 /**
  * List all registered node types with metadata.
  * @returns {Array<{type: string, category: string, description: string}>}
@@ -407,11 +434,18 @@ export function listNodeTypes() {
   const result = [];
   for (const [type, handler] of _nodeTypeRegistry) {
     const [category] = type.split(".");
+    const metadata = _nodeTypeMetaRegistry.get(type) || {};
     result.push({
       type,
       category,
       description: handler.describe?.() || type,
       schema: handler.schema || null,
+      source: metadata.source || "builtin",
+      badge: metadata.badge || null,
+      isCustom: metadata.isCustom === true,
+      filePath: metadata.filePath || null,
+      inputs: Array.isArray(metadata.inputs) ? [...metadata.inputs] : [],
+      outputs: Array.isArray(metadata.outputs) ? [...metadata.outputs] : [],
       ports: {
         inputs: (handler.ports?.inputs || []).map((port) => clonePortDescriptor(port)),
         outputs: (handler.ports?.outputs || []).map((port) => clonePortDescriptor(port)),

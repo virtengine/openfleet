@@ -34,7 +34,7 @@ describe("voice tool capability injection regressions", () => {
 
   it("injects tool capability contracts for primary and workflow agents", () => {
     const primary = readFileSync(resolve(process.cwd(), "agent/primary-agent.mjs"), "utf8");
-    const workflow = readFileSync(resolve(process.cwd(), "workflow/workflow-nodes.mjs"), "utf8");
+    const workflow = readFileSync(resolve(process.cwd(), "workflow/workflow-nodes/definitions.mjs"), "utf8");
     expect(primary).toContain("## Tool Capability Contract");
     expect(primary).toContain("Enabled tools JSON:");
     expect(workflow).toContain("buildWorkflowAgentToolContract");
