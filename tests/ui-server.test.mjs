@@ -1418,6 +1418,48 @@ describe("ui-server mini app", () => {
     rmSync(tmpDir, { recursive: true, force: true });
   }, 15000);
 
+  it("exposes typed workflow node ports and inline UI metadata", async () => {
+    process.env.TELEGRAM_UI_TUNNEL = "disabled";
+    const mod = await import("../server/ui-server.mjs");
+    const server = await mod.startTelegramUiServer({
+      port: await getFreePort(),
+      host: "127.0.0.1",
+      skipInstanceLock: true,
+      skipAutoOpen: true,
+    });
+    const port = server.address().port;
+
+    const response = await fetch(`http://127.0.0.1:${port}/api/workflows/node-types`);
+    const payload = await response.json();
+    expect(response.status).toBe(200);
+    expect(payload.ok).toBe(true);
+    expect(Array.isArray(payload.nodeTypes)).toBe(true);
+    expect(payload.nodeTypes.length).toBeGreaterThan(10);
+
+    const manualTrigger = payload.nodeTypes.find((nodeType) => nodeType.type === "trigger.manual");
+    expect(manualTrigger).toBeTruthy();
+    expect(Array.isArray(manualTrigger.ports?.outputs)).toBe(true);
+    expect(manualTrigger.ports.outputs[0]).toMatchObject({
+      name: "default",
+      type: "TaskDef",
+    });
+
+    const runAgent = payload.nodeTypes.find((nodeType) => nodeType.type === "action.run_agent");
+    expect(runAgent).toBeTruthy();
+    expect(Array.isArray(runAgent.ports?.inputs)).toBe(true);
+    expect(Array.isArray(runAgent.ports?.outputs)).toBe(true);
+    expect(runAgent.ports.inputs[0]).toMatchObject({
+      name: "default",
+      type: "TaskDef",
+    });
+    expect(runAgent.ports.outputs[0]).toMatchObject({
+      name: "default",
+      type: "AgentResult",
+    });
+    expect(Array.isArray(runAgent.ui?.primaryFields)).toBe(true);
+    expect(runAgent.ui.primaryFields).toContain("model");
+  }, 20000);
+
   it("exposes and executes shared bosun tools via /api/agents/tool parity endpoints", async () => {
     const mod = await import("../server/ui-server.mjs");
     const server = await mod.startTelegramUiServer({
@@ -1748,7 +1790,7 @@ describe("ui-server mini app", () => {
     expect(Array.isArray(detail.data.workflowRuns)).toBe(true);
     expect(detail.data.workflowRuns.length).toBeGreaterThan(0);
     expect(detail.data.workflowRuns.some((run) => run.workflowId === workflowId)).toBe(true);
-  }, 30000);
+  }, 20000);
 
   it("reports epic dependency blockers from start guards", async () => {
     process.env.TELEGRAM_UI_TUNNEL = "disabled";
@@ -2626,12 +2668,13 @@ describe("ui-server mini app", () => {
       const response = await fetch(`http://127.0.0.1:${port}/api/telemetry/shredding?days=30`);
       const payload = await response.json();
       expect(payload.ok).toBe(true);
-      expect(Number(payload?.data?.stageCounts?.live_tool_compaction || 0)).toBeGreaterThanOrEqual(2);
-      expect(Number(payload?.data?.stageCounts?.session_total || 0)).toBeGreaterThanOrEqual(1);
-      expect(Number(payload?.data?.liveCompaction?.totalEvents || 0)).toBeGreaterThanOrEqual(2);
-      expect(Number(payload?.data?.liveCompaction?.totalSavedChars || 0)).toBeGreaterThanOrEqual(10000);
-      expect(payload.data.topCompactionFamilies.some((entry) => entry.name === "search")).toBe(true);
-      expect(payload.data.topCommandFamilies.some((entry) => entry.name === "git")).toBe(true);
+      expect(Number(payload.data?.stageCounts?.live_tool_compaction || 0)).toBeGreaterThanOrEqual(2);
+      expect(Number(payload.data?.stageCounts?.session_total || 0)).toBeGreaterThanOrEqual(1);
+      expect(Number(payload.data?.liveCompaction?.totalEvents || 0)).toBeGreaterThanOrEqual(2);
+      expect(Number(payload.data?.liveCompaction?.totalSavedChars || 0)).toBeGreaterThanOrEqual(10000);
+      expect(Number(payload.data?.liveCompaction?.avgSavedPct || 0)).toBeGreaterThanOrEqual(60);
+      expect(payload.data.topCompactionFamilies.some((entry) => entry.name === "search" && entry.count >= 1)).toBe(true);
+      expect(payload.data.topCommandFamilies.some((entry) => entry.name === "git" && entry.count >= 1)).toBe(true);
       expect(payload.data.recentEvents[0]).toHaveProperty("stage");
     } finally {
       if (previousStats == null) rmSync(shreddingPath, { force: true });

@@ -51,6 +51,269 @@ const WORKFLOW_AGENT_EVENT_PREVIEW_LIMIT = (() => {
 })();
 const BOSUN_ATTACHED_PR_LABEL = "bosun-attached";
 
+const PORT_TYPE_DESCRIPTIONS = Object.freeze({
+  Any: "Wildcard payload",
+  TaskDef: "Task definition/context payload",
+  TriggerEvent: "Event payload emitted by trigger nodes",
+  AgentResult: "Agent execution output",
+  String: "Text payload",
+  Boolean: "Boolean flag",
+  Number: "Numeric payload",
+  JSON: "Structured JSON payload",
+  GitRef: "Git branch/hash/ref payload",
+  PRUrl: "Pull request URL payload",
+  LogStream: "Log output or command transcript",
+  SessionRef: "Session identifier payload",
+  CommandResult: "Command execution result",
+});
+
+const PORT_TYPE_COLORS = Object.freeze({
+  Any: "#9ca3af",
+  TaskDef: "#10b981",
+  TriggerEvent: "#22c55e",
+  AgentResult: "#8b5cf6",
+  String: "#3b82f6",
+  Boolean: "#14b8a6",
+  Number: "#0ea5e9",
+  JSON: "#06b6d4",
+  GitRef: "#f97316",
+  PRUrl: "#f43f5e",
+  LogStream: "#eab308",
+  SessionRef: "#a855f7",
+  CommandResult: "#f59e0b",
+});
+
+function clonePortSpec(port, fallbackName = "default") {
+  if (!port || typeof port !== "object") {
+    const type = "Any";
+    return {
+      name: fallbackName,
+      label: fallbackName,
+      type,
+      description: PORT_TYPE_DESCRIPTIONS[type],
+      color: PORT_TYPE_COLORS[type] || null,
+      accepts: [],
+    };
+  }
+  const type = String(port.type || "Any").trim() || "Any";
+  return {
+    ...port,
+    name: String(port.name || fallbackName).trim() || fallbackName,
+    label: String(port.label || port.name || fallbackName).trim() || fallbackName,
+    type,
+    description: String(port.description || PORT_TYPE_DESCRIPTIONS[type] || "").trim(),
+    color: String(port.color || PORT_TYPE_COLORS[type] || "").trim() || null,
+    accepts: Array.isArray(port.accepts)
+      ? Array.from(new Set(port.accepts.map((value) => String(value || "").trim()).filter(Boolean)))
+      : [],
+  };
+}
+
+function makePort(name, type, description = "", extra = {}) {
+  return clonePortSpec({
+    name,
+    label: name,
+    type,
+    description: description || PORT_TYPE_DESCRIPTIONS[type] || "",
+    color: PORT_TYPE_COLORS[type] || null,
+    ...extra,
+  }, name || "default");
+}
+
+const CATEGORY_PORT_DEFAULTS = Object.freeze({
+  trigger: Object.freeze({
+    inputs: [],
+    outputs: [makePort("default", "TriggerEvent")],
+  }),
+  condition: Object.freeze({
+    inputs: [makePort("default", "JSON", "", { accepts: ["TriggerEvent", "TaskDef", "AgentResult", "String", "Any"] })],
+    outputs: [makePort("default", "Boolean")],
+  }),
+  action: Object.freeze({
+    inputs: [makePort("default", "TaskDef", "", { accepts: ["TriggerEvent", "JSON", "String", "Boolean", "Any"] })],
+    outputs: [makePort("default", "JSON")],
+  }),
+  validation: Object.freeze({
+    inputs: [makePort("default", "JSON", "", { accepts: ["TaskDef", "Any"] })],
+    outputs: [makePort("default", "Boolean")],
+  }),
+  transform: Object.freeze({
+    inputs: [makePort("default", "JSON", "", { accepts: ["Any", "String"] })],
+    outputs: [makePort("default", "JSON")],
+  }),
+  notify: Object.freeze({
+    inputs: [makePort("default", "String", "", { accepts: ["Any", "JSON", "AgentResult", "LogStream"] })],
+    outputs: [makePort("default", "Any")],
+  }),
+  flow: Object.freeze({
+    inputs: [makePort("default", "Any")],
+    outputs: [makePort("default", "Any")],
+  }),
+  loop: Object.freeze({
+    inputs: [makePort("default", "Any")],
+    outputs: [makePort("default", "Any")],
+  }),
+  meeting: Object.freeze({
+    inputs: [makePort("default", "SessionRef", "", { accepts: ["TriggerEvent", "Any"] })],
+    outputs: [makePort("default", "JSON")],
+  }),
+  agent: Object.freeze({
+    inputs: [makePort("default", "TaskDef", "", { accepts: ["TriggerEvent", "JSON", "String", "Any"] })],
+    outputs: [makePort("default", "AgentResult")],
+  }),
+});
+
+const NODE_PORT_OVERRIDES = Object.freeze({
+  "trigger.manual": {
+    outputs: [makePort("default", "TaskDef", "Manual dispatch payload")],
+  },
+  "trigger.event": {
+    outputs: [makePort("default", "TriggerEvent", "Event payload")],
+  },
+  "action.run_agent": {
+    inputs: [makePort("default", "TaskDef", "", { accepts: ["TriggerEvent", "String", "JSON", "Boolean", "Any"] })],
+    outputs: [makePort("default", "AgentResult", "Agent response payload")],
+  },
+  "action.run_command": {
+    inputs: [makePort("default", "String", "", { accepts: ["TaskDef", "JSON", "TriggerEvent", "Boolean", "Any"] })],
+    outputs: [makePort("default", "CommandResult", "Command execution output", { accepts: ["LogStream"] })],
+  },
+  "action.git_operations": {
+    inputs: [makePort("default", "GitRef", "", { accepts: ["TaskDef", "JSON", "TriggerEvent", "Boolean", "String", "Any"] })],
+    outputs: [makePort("default", "GitRef", "Git operation result/ref")],
+  },
+  "action.push_branch": {
+    inputs: [makePort("default", "GitRef", "", { accepts: ["TaskDef", "JSON", "TriggerEvent", "Boolean", "String", "Any"] })],
+    outputs: [makePort("default", "GitRef")],
+  },
+  "action.detect_new_commits": {
+    inputs: [makePort("default", "GitRef", "", { accepts: ["TaskDef", "JSON", "TriggerEvent", "Boolean", "String", "Any"] })],
+    outputs: [makePort("default", "GitRef", "Commit detection summary")],
+  },
+  "action.create_pr": {
+    inputs: [makePort("default", "GitRef", "", { accepts: ["TaskDef", "JSON", "TriggerEvent", "Boolean", "String", "Any"] })],
+    outputs: [makePort("default", "PRUrl", "Pull request link payload")],
+  },
+  "transform.json_parse": {
+    inputs: [makePort("default", "String", "", { accepts: ["JSON", "Any"] })],
+    outputs: [makePort("default", "JSON")],
+  },
+  "condition.expression": {
+    inputs: [makePort("default", "JSON", "", { accepts: ["TaskDef", "AgentResult", "Any"] })],
+    outputs: [makePort("default", "Boolean")],
+  },
+  "notify.log": {
+    inputs: [makePort("default", "LogStream", "", { accepts: ["String", "Any", "JSON"] })],
+    outputs: [makePort("default", "LogStream")],
+  },
+  "action.continue_session": {
+    inputs: [makePort("default", "SessionRef", "", { accepts: ["TaskDef", "Any"] })],
+    outputs: [makePort("default", "AgentResult")],
+  },
+  "action.restart_agent": {
+    inputs: [makePort("default", "SessionRef", "", { accepts: ["TaskDef", "Any"] })],
+    outputs: [makePort("default", "AgentResult")],
+  },
+});
+
+const NODE_PRIMARY_FIELD_OVERRIDES = Object.freeze({
+  "action.run_agent": ["model", "prompt", "stream"],
+  "condition.expression": ["expression"],
+  "trigger.event": ["eventType", "filter"],
+  "trigger.schedule": ["intervalMs", "cron"],
+  "trigger.scheduled_once": ["runAt", "timezone"],
+  "action.git_operations": ["operation", "branch", "targetBranch"],
+  "action.create_pr": ["title", "baseBranch", "headBranch"],
+  "action.run_command": ["command", "cwd"],
+  "notify.telegram": ["chatId", "message"],
+});
+
+function inferPrimaryFields(schemaProps = {}) {
+  const keys = Object.keys(schemaProps || {});
+  if (keys.length === 0) return [];
+  const priority = [
+    "model",
+    "expression",
+    "enabled",
+    "branch",
+    "branchName",
+    "baseBranch",
+    "headBranch",
+    "eventType",
+    "command",
+    "message",
+    "prompt",
+    "query",
+    "operation",
+    "timeout",
+  ];
+  const selected = [];
+  for (const key of priority) {
+    if (keys.includes(key) && !selected.includes(key)) selected.push(key);
+    if (selected.length >= 3) return selected;
+  }
+  for (const key of keys) {
+    const field = schemaProps[key] || {};
+    const type = String(field.type || "string");
+    const isShortString = type === "string" && !field.format && !String(key).toLowerCase().includes("path");
+    const isBoolean = type === "boolean";
+    if (field.enum || isShortString || isBoolean) {
+      if (!selected.includes(key)) selected.push(key);
+    }
+    if (selected.length >= 3) break;
+  }
+  return selected.slice(0, 3);
+}
+
+function buildNodePorts(type, handler) {
+  const explicitPorts = handler?.ports || {};
+  const explicitInputs = Array.isArray(handler?.inputs) ? handler.inputs : explicitPorts.inputs;
+  const explicitOutputs = Array.isArray(handler?.outputs) ? handler.outputs : explicitPorts.outputs;
+  if (Array.isArray(explicitInputs) || Array.isArray(explicitOutputs)) {
+    return {
+      inputs: (explicitInputs || []).map((port, index) => clonePortSpec(port, index === 0 ? "default" : `input-${index + 1}`)),
+      outputs: (explicitOutputs || []).map((port, index) => clonePortSpec(port, index === 0 ? "default" : `output-${index + 1}`)),
+    };
+  }
+
+  const override = NODE_PORT_OVERRIDES[type];
+  if (override) {
+    return {
+      inputs: (override.inputs || []).map((port, index) => clonePortSpec(port, index === 0 ? "default" : `input-${index + 1}`)),
+      outputs: (override.outputs || []).map((port, index) => clonePortSpec(port, index === 0 ? "default" : `output-${index + 1}`)),
+    };
+  }
+
+  const [category] = String(type || "").split(".");
+  const fallback = CATEGORY_PORT_DEFAULTS[category] || CATEGORY_PORT_DEFAULTS.flow;
+  return {
+    inputs: (fallback.inputs || []).map((port, index) => clonePortSpec(port, index === 0 ? "default" : `input-${index + 1}`)),
+    outputs: (fallback.outputs || []).map((port, index) => clonePortSpec(port, index === 0 ? "default" : `output-${index + 1}`)),
+  };
+}
+
+function buildNodeUi(type, handler) {
+  const schemaProps = handler?.schema?.properties || {};
+  const explicitPrimaryFields = Array.isArray(handler?.ui?.primaryFields)
+    ? handler.ui.primaryFields
+    : null;
+  const inferred = NODE_PRIMARY_FIELD_OVERRIDES[type] || inferPrimaryFields(schemaProps);
+  return {
+    ...(handler?.ui || {}),
+    primaryFields: (explicitPrimaryFields || inferred)
+      .map((value) => String(value || "").trim())
+      .filter(Boolean),
+  };
+}
+
+function registerBuiltinNodeType(type, handler) {
+  const ports = buildNodePorts(type, handler);
+  const ui = buildNodeUi(type, handler);
+  handler.ports = ports;
+  handler.ui = ui;
+  registerNodeType(type, handler);
+}
+
 function shouldBypassGhPrCreationForTests() {
   return Boolean(process.env.VITEST) && process.env.BOSUN_TEST_ALLOW_GH !== "true";
 }
@@ -1152,7 +1415,7 @@ function buildWorkflowAgentToolContract(rootDir, agentProfileId = "") {
 //  TRIGGERS — Events that initiate a workflow
 // ═══════════════════════════════════════════════════════════════════════════
 
-registerNodeType("trigger.manual", {
+registerBuiltinNodeType("trigger.manual", {
   describe: () => "Manual trigger — workflow starts on user request",
   schema: {
     type: "object",
@@ -1164,7 +1427,7 @@ registerNodeType("trigger.manual", {
   },
 });
 
-registerNodeType("trigger.task_low", {
+registerBuiltinNodeType("trigger.task_low", {
   describe: () =>
     "Fires when backlog task count drops below threshold. Self-queries kanban " +
     "when todoCount is not pre-populated in context data. Workspace-aware: " +
@@ -1230,7 +1493,7 @@ registerNodeType("trigger.task_low", {
   },
 });
 
-registerNodeType("trigger.schedule", {
+registerBuiltinNodeType("trigger.schedule", {
   describe: () => "Fires on a cron-like schedule (checked by supervisor loop)",
   schema: {
     type: "object",
@@ -1249,7 +1512,7 @@ registerNodeType("trigger.schedule", {
   },
 });
 
-registerNodeType("trigger.event", {
+registerBuiltinNodeType("trigger.event", {
   describe: () => "Fires on a specific bosun event (task.complete, pr.merged, etc.)",
   schema: {
     type: "object",
@@ -1274,7 +1537,7 @@ registerNodeType("trigger.event", {
   },
 });
 
-registerNodeType("trigger.meeting.wake_phrase", {
+registerBuiltinNodeType("trigger.meeting.wake_phrase", {
   describe: () => "Fires when a transcript/event payload contains the configured wake phrase",
   schema: {
     type: "object",
@@ -1433,7 +1696,7 @@ registerNodeType("trigger.meeting.wake_phrase", {
   },
 });
 
-registerNodeType("trigger.webhook", {
+registerBuiltinNodeType("trigger.webhook", {
   describe: () => "Fires when a webhook is received at the workflow's endpoint",
   schema: {
     type: "object",
@@ -1447,7 +1710,7 @@ registerNodeType("trigger.webhook", {
   },
 });
 
-registerNodeType("trigger.pr_event", {
+registerBuiltinNodeType("trigger.pr_event", {
   describe: () => "Fires on PR events (opened, merged, review requested, etc.)",
   schema: {
     type: "object",
@@ -1484,7 +1747,7 @@ registerNodeType("trigger.pr_event", {
   },
 });
 
-registerNodeType("trigger.task_assigned", {
+registerBuiltinNodeType("trigger.task_assigned", {
   describe: () => "Fires when a task is assigned to an agent",
   schema: {
     type: "object",
@@ -1500,7 +1763,7 @@ registerNodeType("trigger.task_assigned", {
   },
 });
 
-registerNodeType("trigger.anomaly", {
+registerBuiltinNodeType("trigger.anomaly", {
   describe: () => "Fires when the anomaly detector reports an anomaly matching the configured criteria",
   schema: {
     type: "object",
@@ -1540,7 +1803,7 @@ registerNodeType("trigger.anomaly", {
   },
 });
 
-registerNodeType("trigger.scheduled_once", {
+registerBuiltinNodeType("trigger.scheduled_once", {
   describe: () => "Fires once at or after a specific scheduled time (persistent — survives restarts)",
   schema: {
     type: "object",
@@ -1577,7 +1840,7 @@ registerNodeType("trigger.scheduled_once", {
   },
 });
 
-registerNodeType("trigger.workflow_call", {
+registerBuiltinNodeType("trigger.workflow_call", {
   describe: () =>
     "Fires when this workflow is invoked by another workflow via action.execute_workflow. " +
     "Defines expected input parameters that callers should provide.",
@@ -1642,7 +1905,7 @@ registerNodeType("trigger.workflow_call", {
 //  CONDITIONS — Branching / routing logic
 // ═══════════════════════════════════════════════════════════════════════════
 
-registerNodeType("condition.expression", {
+registerBuiltinNodeType("condition.expression", {
   describe: () => "Evaluate a JS expression to branch workflow execution",
   schema: {
     type: "object",
@@ -1667,7 +1930,7 @@ registerNodeType("condition.expression", {
   },
 });
 
-registerNodeType("condition.task_has_tag", {
+registerBuiltinNodeType("condition.task_has_tag", {
   describe: () => "Check if current task has a specific tag or label",
   schema: {
     type: "object",
@@ -1689,7 +1952,7 @@ registerNodeType("condition.task_has_tag", {
   },
 });
 
-registerNodeType("condition.file_exists", {
+registerBuiltinNodeType("condition.file_exists", {
   describe: () => "Check if a file or directory exists in the workspace",
   schema: {
     type: "object",
@@ -1706,7 +1969,7 @@ registerNodeType("condition.file_exists", {
   },
 });
 
-registerNodeType("condition.switch", {
+registerBuiltinNodeType("condition.switch", {
   describe: () => "Multi-way branch based on a value matching cases",
   schema: {
     type: "object",
@@ -1759,7 +2022,7 @@ registerNodeType("condition.switch", {
 //  ACTIONS — Side-effect operations
 // ═══════════════════════════════════════════════════════════════════════════
 
-registerNodeType("action.run_agent", {
+registerBuiltinNodeType("action.run_agent", {
   describe: () => "Run a bosun agent with a prompt to perform work",
   schema: {
     type: "object",
@@ -2489,7 +2752,7 @@ registerNodeType("action.run_agent", {
   },
 });
 
-registerNodeType("action.run_command", {
+registerBuiltinNodeType("action.run_command", {
   describe: () => "Execute a shell command in the workspace",
   schema: {
     type: "object",
@@ -2542,7 +2805,7 @@ registerNodeType("action.run_command", {
   },
 });
 
-registerNodeType("action.execute_workflow", {
+registerBuiltinNodeType("action.execute_workflow", {
   describe: () => "Execute another workflow by ID (synchronously or dispatch mode)",
   schema: {
     type: "object",
@@ -2763,7 +3026,7 @@ registerNodeType("action.execute_workflow", {
   },
 });
 
-registerNodeType("meeting.start", {
+registerBuiltinNodeType("meeting.start", {
   describe: () => "Create or reuse a meeting session for workflow-driven voice/video orchestration",
   schema: {
     type: "object",
@@ -2843,7 +3106,7 @@ registerNodeType("meeting.start", {
   },
 });
 
-registerNodeType("meeting.send", {
+registerBuiltinNodeType("meeting.send", {
   describe: () => "Send a meeting message through the meeting session dispatcher",
   schema: {
     type: "object",
@@ -2920,7 +3183,7 @@ registerNodeType("meeting.send", {
   },
 });
 
-registerNodeType("meeting.transcript", {
+registerBuiltinNodeType("meeting.transcript", {
   describe: () => "Fetch meeting transcript pages and optionally project as plain text",
   schema: {
     type: "object",
@@ -2991,7 +3254,7 @@ registerNodeType("meeting.transcript", {
   },
 });
 
-registerNodeType("meeting.vision", {
+registerBuiltinNodeType("meeting.vision", {
   describe: () => "Analyze a meeting video frame and persist a vision summary",
   schema: {
     type: "object",
@@ -3088,7 +3351,7 @@ registerNodeType("meeting.vision", {
   },
 });
 
-registerNodeType("meeting.finalize", {
+registerBuiltinNodeType("meeting.finalize", {
   describe: () => "Finalize a meeting session with status and optional note",
   schema: {
     type: "object",
@@ -3140,7 +3403,7 @@ registerNodeType("meeting.finalize", {
   },
 });
 
-registerNodeType("action.create_task", {
+registerBuiltinNodeType("action.create_task", {
   describe: () => "Create a new task in the kanban board",
   schema: {
     type: "object",
@@ -3186,7 +3449,7 @@ registerNodeType("action.create_task", {
   },
 });
 
-registerNodeType("action.update_task_status", {
+registerBuiltinNodeType("action.update_task_status", {
   describe: () => "Update the status of an existing task",
   schema: {
     type: "object",
@@ -3335,7 +3598,7 @@ registerNodeType("action.update_task_status", {
   },
 });
 
-registerNodeType("action.git_operations", {
+registerBuiltinNodeType("action.git_operations", {
   describe: () => "Perform git operations (commit, push, create branch, etc.)",
   schema: {
     type: "object",
@@ -3435,7 +3698,7 @@ registerNodeType("action.git_operations", {
   },
 });
 
-registerNodeType("action.create_pr", {
+registerBuiltinNodeType("action.create_pr", {
   describe: () =>
     "Create a pull request via GitHub CLI. Falls back to Bosun-managed handoff " +
     "when gh is unavailable or the operation fails with failOnError=false.",
@@ -3718,7 +3981,7 @@ registerNodeType("action.create_pr", {
   },
 });
 
-registerNodeType("action.write_file", {
+registerBuiltinNodeType("action.write_file", {
   describe: () => "Write content to a file in the workspace",
   schema: {
     type: "object",
@@ -3747,7 +4010,7 @@ registerNodeType("action.write_file", {
   },
 });
 
-registerNodeType("action.read_file", {
+registerBuiltinNodeType("action.read_file", {
   describe: () => "Read content from a file",
   schema: {
     type: "object",
@@ -3766,7 +4029,7 @@ registerNodeType("action.read_file", {
   },
 });
 
-registerNodeType("action.set_variable", {
+registerBuiltinNodeType("action.set_variable", {
   describe: () => "Set a variable in the workflow context for downstream nodes",
   schema: {
     type: "object",
@@ -3796,7 +4059,7 @@ registerNodeType("action.set_variable", {
   },
 });
 
-registerNodeType("action.delay", {
+registerBuiltinNodeType("action.delay", {
   describe: () => "Wait for a specified duration before continuing (supports ms, seconds, minutes, hours)",
   schema: {
     type: "object",
@@ -3849,7 +4112,7 @@ registerNodeType("action.delay", {
 //  VALIDATION — Verification gates
 // ═══════════════════════════════════════════════════════════════════════════
 
-registerNodeType("validation.screenshot", {
+registerBuiltinNodeType("validation.screenshot", {
   describe: () => "Take a screenshot for visual verification and store in evidence",
   schema: {
     type: "object",
@@ -3963,7 +4226,7 @@ registerNodeType("validation.screenshot", {
   },
 });
 
-registerNodeType("validation.model_review", {
+registerBuiltinNodeType("validation.model_review", {
   describe: () => "Send evidence (screenshots, code, logs) to a non-agent model for independent verification",
   schema: {
     type: "object",
@@ -4081,7 +4344,7 @@ Respond with exactly one of:
   },
 });
 
-registerNodeType("validation.tests", {
+registerBuiltinNodeType("validation.tests", {
   describe: () => "Run test suite and verify results",
   schema: {
     type: "object",
@@ -4110,7 +4373,7 @@ registerNodeType("validation.tests", {
   },
 });
 
-registerNodeType("validation.build", {
+registerBuiltinNodeType("validation.build", {
   describe: () => "Run build and verify it succeeds with 0 errors",
   schema: {
     type: "object",
@@ -4144,7 +4407,7 @@ registerNodeType("validation.build", {
   },
 });
 
-registerNodeType("validation.lint", {
+registerBuiltinNodeType("validation.lint", {
   describe: () => "Run linter and verify results",
   schema: {
     type: "object",
@@ -4173,7 +4436,7 @@ registerNodeType("validation.lint", {
 //  TRANSFORM — Data manipulation
 // ═══════════════════════════════════════════════════════════════════════════
 
-registerNodeType("transform.json_parse", {
+registerBuiltinNodeType("transform.json_parse", {
   describe: () => "Parse JSON from a previous node's output",
   schema: {
     type: "object",
@@ -4195,7 +4458,7 @@ registerNodeType("transform.json_parse", {
   },
 });
 
-registerNodeType("transform.template", {
+registerBuiltinNodeType("transform.template", {
   describe: () => "Render a text template with context variables",
   schema: {
     type: "object",
@@ -4210,7 +4473,7 @@ registerNodeType("transform.template", {
   },
 });
 
-registerNodeType("transform.aggregate", {
+registerBuiltinNodeType("transform.aggregate", {
   describe: () => "Aggregate outputs from multiple nodes into a single object",
   schema: {
     type: "object",
@@ -4228,7 +4491,7 @@ registerNodeType("transform.aggregate", {
   },
 });
 
-registerNodeType("transform.llm_parse", {
+registerBuiltinNodeType("transform.llm_parse", {
   describe: () =>
     "Parse unstructured LLM output into structured fields using regex patterns " +
     "or keyword extraction. Essential for routing decisions based on LLM verdicts " +
@@ -4339,7 +4602,7 @@ registerNodeType("transform.llm_parse", {
 //  NOTIFY — Notifications
 // ═══════════════════════════════════════════════════════════════════════════
 
-registerNodeType("notify.log", {
+registerBuiltinNodeType("notify.log", {
   describe: () => "Log a message (to console and workflow run log)",
   schema: {
     type: "object",
@@ -4358,7 +4621,7 @@ registerNodeType("notify.log", {
   },
 });
 
-registerNodeType("notify.telegram", {
+registerBuiltinNodeType("notify.telegram", {
   describe: () => "Send a message to Telegram chat",
   schema: {
     type: "object",
@@ -4391,7 +4654,7 @@ registerNodeType("notify.telegram", {
   },
 });
 
-registerNodeType("notify.webhook_out", {
+registerBuiltinNodeType("notify.webhook_out", {
   describe: () => "Send an HTTP webhook notification",
   schema: {
     type: "object",
@@ -4429,7 +4692,7 @@ registerNodeType("notify.webhook_out", {
 //  AGENT-SPECIFIC — Specialized agent operations
 // ═══════════════════════════════════════════════════════════════════════════
 
-registerNodeType("agent.select_profile", {
+registerBuiltinNodeType("agent.select_profile", {
   describe: () => "Select an agent profile based on task characteristics",
   schema: {
     type: "object",
@@ -5290,7 +5553,7 @@ function buildPlannerSkipReasonHistogram(skipped = []) {
   return histogram;
 }
 
-registerNodeType("action.materialize_planner_tasks", {
+registerBuiltinNodeType("action.materialize_planner_tasks", {
   describe: () => "Parse planner JSON output and create backlog tasks in Kanban",
   schema: {
     type: "object",
@@ -5655,7 +5918,7 @@ registerNodeType("action.materialize_planner_tasks", {
     };
   },
 });
-registerNodeType("agent.run_planner", {
+registerBuiltinNodeType("agent.run_planner", {
   describe: () => "Run the task planner agent to generate new backlog tasks",
   schema: {
     type: "object",
@@ -5798,7 +6061,7 @@ registerNodeType("agent.run_planner", {
     };
   },
 });
-registerNodeType("agent.evidence_collect", {
+registerBuiltinNodeType("agent.evidence_collect", {
   describe: () => "Collect all evidence from .bosun/evidence for review",
   schema: {
     type: "object",
@@ -5835,7 +6098,7 @@ registerNodeType("agent.evidence_collect", {
 //  FLOW CONTROL — Gates, barriers, and routing
 // ═══════════════════════════════════════════════════════════════════════════
 
-registerNodeType("flow.gate", {
+registerBuiltinNodeType("flow.gate", {
   describe: () => "Pause workflow execution until a condition is met or manual approval is given",
   schema: {
     type: "object",
@@ -5906,7 +6169,7 @@ registerNodeType("flow.gate", {
   },
 });
 
-registerNodeType("flow.join", {
+registerBuiltinNodeType("flow.join", {
   describe: () => "Explicitly join multiple branches before continuing",
   schema: {
     type: "object",
@@ -6005,7 +6268,7 @@ registerNodeType("flow.join", {
   },
 });
 
-registerNodeType("flow.end", {
+registerBuiltinNodeType("flow.end", {
   describe: () => "End the workflow immediately with explicit terminal status",
   schema: {
     type: "object",
@@ -6161,14 +6424,14 @@ const UNIVERSAL_FLOW_NODE = {
   },
 };
 
-registerNodeType("flow.universal", UNIVERSAL_FLOW_NODE);
-registerNodeType("flow.universial", UNIVERSAL_FLOW_NODE);
+registerBuiltinNodeType("flow.universal", UNIVERSAL_FLOW_NODE);
+registerBuiltinNodeType("flow.universial", UNIVERSAL_FLOW_NODE);
 
 // ═══════════════════════════════════════════════════════════════════════════
 //  LOOP / ITERATION
 // ═══════════════════════════════════════════════════════════════════════════
 
-registerNodeType("loop.for_each", {
+registerBuiltinNodeType("loop.for_each", {
   describe: () =>
     "Iterate over an array, executing a sub-workflow for each item. " +
     "Supports parallel fan-out via maxConcurrent and provides per-item " +
@@ -6261,7 +6524,7 @@ registerNodeType("loop.for_each", {
   },
 });
 
-registerNodeType("loop.while", {
+registerBuiltinNodeType("loop.while", {
   describe: () =>
     "Repeat a sub-workflow until a condition evaluates to false or max iterations " +
     "are reached. Enables convergence loops (generate→verify→revise) by executing " +
@@ -6401,7 +6664,7 @@ registerNodeType("loop.while", {
 //  SESSION / AGENT MANAGEMENT — Direct session control
 // ═══════════════════════════════════════════════════════════════════════════
 
-registerNodeType("action.continue_session", {
+registerBuiltinNodeType("action.continue_session", {
   describe: () => "Re-attach to an existing agent session and send a continuation prompt",
   schema: {
     type: "object",
@@ -6459,7 +6722,7 @@ registerNodeType("action.continue_session", {
   },
 });
 
-registerNodeType("action.restart_agent", {
+registerBuiltinNodeType("action.restart_agent", {
   describe: () => "Kill and restart an agent session from scratch",
   schema: {
     type: "object",
@@ -6515,7 +6778,7 @@ registerNodeType("action.restart_agent", {
   },
 });
 
-registerNodeType("action.bosun_cli", {
+registerBuiltinNodeType("action.bosun_cli", {
   describe: () => "Run a bosun CLI command (task, monitor, agent, etc.)",
   schema: {
     type: "object",
@@ -6585,7 +6848,7 @@ async function getKanbanMod() {
 // input/output. Unlike action.bosun_cli (which shells out), this executes
 // the tool script directly in-process and returns parsed, structured data.
 
-registerNodeType("action.bosun_tool", {
+registerBuiltinNodeType("action.bosun_tool", {
   describe: () =>
     "Invoke a Bosun built-in or custom tool programmatically. Returns " +
     "structured output that downstream workflow nodes can consume via " +
@@ -6788,7 +7051,7 @@ registerNodeType("action.bosun_tool", {
 // simpler ergonomics for the common case of "run workflow X and pipe
 // its output to the next node".
 
-registerNodeType("action.invoke_workflow", {
+registerBuiltinNodeType("action.invoke_workflow", {
   describe: () =>
     "Invoke another workflow and pipe its output to downstream nodes. " +
     "Simpler than action.execute_workflow — designed for workflow-to-workflow " +
@@ -7214,7 +7477,7 @@ const BOSUN_FUNCTION_REGISTRY = Object.freeze({
   },
 });
 
-registerNodeType("action.bosun_function", {
+registerBuiltinNodeType("action.bosun_function", {
   describe: () =>
     "Invoke an internal Bosun function directly (tasks, git, tools, workflows, config). " +
     "Returns structured output that downstream nodes can consume. More powerful " +
@@ -7327,7 +7590,7 @@ registerNodeType("action.bosun_function", {
   },
 });
 
-registerNodeType("action.handle_rate_limit", {
+registerBuiltinNodeType("action.handle_rate_limit", {
   describe: () => "Intelligently handle API rate limits with exponential backoff and provider rotation",
   schema: {
     type: "object",
@@ -7374,7 +7637,7 @@ registerNodeType("action.handle_rate_limit", {
   },
 });
 
-registerNodeType("action.ask_user", {
+registerBuiltinNodeType("action.ask_user", {
   describe: () => "Pause workflow and ask the user for input via Telegram or UI",
   schema: {
     type: "object",
@@ -7420,7 +7683,7 @@ registerNodeType("action.ask_user", {
   },
 });
 
-registerNodeType("action.analyze_errors", {
+registerBuiltinNodeType("action.analyze_errors", {
   describe: () => "Run the error detector on recent logs and classify failures",
   schema: {
     type: "object",
@@ -7482,7 +7745,7 @@ registerNodeType("action.analyze_errors", {
   },
 });
 
-registerNodeType("action.refresh_worktree", {
+registerBuiltinNodeType("action.refresh_worktree", {
   describe: () => "Refresh git worktree state — fetch, pull, or reset to clean state",
   schema: {
     type: "object",
@@ -7763,7 +8026,7 @@ async function _executeMcpToolCall(serverId, toolName, input, timeoutMs, ctx) {
   };
 }
 
-registerNodeType("action.mcp_tool_call", {
+registerBuiltinNodeType("action.mcp_tool_call", {
   describe: () =>
     "Call a tool on an installed MCP server with structured output extraction. " +
     "Supports field extraction, output mapping, type coercion, and port-based " +
@@ -7915,7 +8178,7 @@ registerNodeType("action.mcp_tool_call", {
   },
 });
 
-registerNodeType("action.mcp_list_tools", {
+registerBuiltinNodeType("action.mcp_list_tools", {
   describe: () =>
     "List available tools on an installed MCP server, including their input " +
     "schemas. Useful for dynamic tool discovery and auto-wiring in pipelines.",
@@ -8000,7 +8263,7 @@ registerNodeType("action.mcp_list_tools", {
 
 // ── action.mcp_pipeline — Chain multiple MCP tool calls with data piping ──
 
-registerNodeType("action.mcp_pipeline", {
+registerBuiltinNodeType("action.mcp_pipeline", {
   describe: () =>
     "Execute a chain of MCP tool calls in sequence, piping structured output " +
     "from each step to the next. Each step can extract specific fields from " +
@@ -8224,7 +8487,7 @@ registerNodeType("action.mcp_pipeline", {
 
 // ── transform.mcp_extract — Extract structured data from any MCP output ──
 
-registerNodeType("transform.mcp_extract", {
+registerBuiltinNodeType("transform.mcp_extract", {
   describe: () =>
     "Extract and reshape structured data from an upstream MCP tool call or " +
     "any node output. Supports dot-path fields, JSON pointers, array wildcards, " +
@@ -8741,7 +9004,7 @@ const STRICT_START_GUARD_MISSING_TASK = /^(1|true|yes|on)$/i.test(
 
 // ── trigger.task_available ──────────────────────────────────────────────────
 
-registerNodeType("trigger.task_available", {
+registerBuiltinNodeType("trigger.task_available", {
   describe: () =>
     "Polling trigger that fires when todo tasks are available. Handles " +
     "slot limits, anti-thrash filtering, cooldowns, task sorting (fire " +
@@ -9122,7 +9385,7 @@ registerNodeType("trigger.task_available", {
 });
 // ── condition.slot_available ────────────────────────────────────────────────
 
-registerNodeType("condition.slot_available", {
+registerBuiltinNodeType("condition.slot_available", {
   describe: () =>
     "Gate checking both global and per-base-branch concurrency limits.",
   schema: {
@@ -9157,7 +9420,7 @@ registerNodeType("condition.slot_available", {
 
 // ── action.allocate_slot ────────────────────────────────────────────────────
 
-registerNodeType("action.allocate_slot", {
+registerBuiltinNodeType("action.allocate_slot", {
   describe: () =>
     "Reserve a parallel execution slot. Saves process env snapshot for " +
     "parallel isolation and stores slot metadata in workflow context.",
@@ -9215,7 +9478,7 @@ registerNodeType("action.allocate_slot", {
 
 // ── action.release_slot ─────────────────────────────────────────────────────
 
-registerNodeType("action.release_slot", {
+registerBuiltinNodeType("action.release_slot", {
   describe: () =>
     "Release a previously allocated execution slot. Restores saved env vars " +
     "for parallel isolation. Idempotent — safe on double-call.",
@@ -9250,7 +9513,7 @@ registerNodeType("action.release_slot", {
 
 // ── action.claim_task ───────────────────────────────────────────────────────
 
-registerNodeType("action.claim_task", {
+registerBuiltinNodeType("action.claim_task", {
   describe: () =>
     "Acquire a distributed task claim with auto-renewal. Prevents duplicate " +
     "execution across orchestrators. Stores claim token + renewal timer in " +
@@ -9380,7 +9643,7 @@ registerNodeType("action.claim_task", {
 
 // ── action.release_claim ────────────────────────────────────────────────────
 
-registerNodeType("action.release_claim", {
+registerBuiltinNodeType("action.release_claim", {
   describe: () =>
     "Release a distributed task claim + cancel renewal timer. Idempotent.",
   schema: {
@@ -9444,7 +9707,7 @@ registerNodeType("action.release_claim", {
 
 // ── action.resolve_executor ─────────────────────────────────────────────────
 
-registerNodeType("action.resolve_executor", {
+registerBuiltinNodeType("action.resolve_executor", {
   describe: () =>
     "Pick SDK + model via complexity routing, env overrides, or defaults.",
   schema: {
@@ -9627,7 +9890,7 @@ registerNodeType("action.resolve_executor", {
 
 // ── action.acquire_worktree ─────────────────────────────────────────────────
 
-registerNodeType("action.acquire_worktree", {
+registerBuiltinNodeType("action.acquire_worktree", {
   describe: () =>
     "Create or checkout a git worktree for isolated task execution. " +
     "Fetches base branch, creates worktree, handles branch conflicts.",
@@ -9801,7 +10064,7 @@ registerNodeType("action.acquire_worktree", {
 
 // ── action.release_worktree ─────────────────────────────────────────────────
 
-registerNodeType("action.release_worktree", {
+registerBuiltinNodeType("action.release_worktree", {
   describe: () =>
     "Release a git worktree. Idempotent. Optionally prunes stale entries.",
   schema: {
@@ -10012,7 +10275,7 @@ registerNodeType("action.workflow_contract_validation", workflowContractValidati
 
 // ── action.build_task_prompt ────────────────────────────────────────────────
 
-registerNodeType("action.build_task_prompt", {
+registerBuiltinNodeType("action.build_task_prompt", {
   describe: () =>
     "Compose the full agent prompt from task data, AGENTS.md, comments, " +
     "copilot-instructions.md, agent status endpoint, and co-author trailer.",
@@ -10446,7 +10709,7 @@ registerNodeType("action.build_task_prompt", {
 
 // ── action.detect_new_commits ───────────────────────────────────────────────
 
-registerNodeType("action.detect_new_commits", {
+registerBuiltinNodeType("action.detect_new_commits", {
   describe: () =>
     "Compare pre/post execution HEAD to detect new commits. Also checks " +
     "for unpushed commits vs base and collects diff stats.",
@@ -10570,7 +10833,7 @@ registerNodeType("action.detect_new_commits", {
 
 // ── action.push_branch ──────────────────────────────────────────────────────
 
-registerNodeType("action.push_branch", {
+registerBuiltinNodeType("action.push_branch", {
   describe: () =>
     "Push the current branch to the remote. Includes rebase-before-push, " +
     "empty-diff guard, protected branch safety, and optional main-branch sync.",
@@ -10744,7 +11007,7 @@ registerNodeType("action.push_branch", {
 //  WEB SEARCH — Structured web search for research workflows
 // ═══════════════════════════════════════════════════════════════════════════
 
-registerNodeType("action.web_search", {
+registerBuiltinNodeType("action.web_search", {
   describe: () =>
     "Perform a structured web search query and return results. Useful for " +
     "research workflows (e.g., Aletheia-style math/science agents) that need " +

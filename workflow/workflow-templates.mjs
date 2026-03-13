@@ -499,7 +499,8 @@ export function reconcileInstalledTemplates(engine, opts = {}) {
     result.scanned += 1;
 
     try {
-      const before = stableStringify(def.metadata?.templateState || null);
+      const previousState = def.metadata?.templateState || null;
+      const before = stableStringify(previousState);
       applyWorkflowTemplateState(def);
       const state = def.metadata?.templateState || null;
       const after = stableStringify(state);
@@ -537,7 +538,8 @@ export function reconcileInstalledTemplates(engine, opts = {}) {
         continue;
       }
 
-      if (autoUpdateUnmodified && state.updateAvailable === true && state.isCustomized !== true) {
+      const wasCustomized = previousState?.isCustomized === true;
+      if (autoUpdateUnmodified && state.updateAvailable === true && !wasCustomized) {
         const saved = updateWorkflowFromTemplate(engine, def.id, { mode: "replace", force: true });
         result.autoUpdated += 1;
         result.updatedWorkflowIds.push(saved.id);
@@ -1256,4 +1258,3 @@ export function installRecommendedTemplates(engine, overridesById = {}) {
     .map((template) => template.id);
   return installTemplateSet(engine, recommendedIds, overridesById);
 }
-

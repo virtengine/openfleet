@@ -1015,4 +1015,3 @@ export const MEETING_SUBWORKFLOW_CHAIN_TEMPLATE = {
     requiredTemplates: ["template-task-planner"],
   },
 };
-

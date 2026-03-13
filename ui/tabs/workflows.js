@@ -1236,107 +1236,142 @@ function stripEmoji(text) {
     .trim();
 }
 
-function normalizeLiveNodeStatus(status) {
-  const normalized = String(status || "").trim().toLowerCase();
-  if (normalized === "completed" || normalized === "success") return "success";
-  if (normalized === "failed" || normalized === "fail" || normalized === "error") return "fail";
-  if (normalized === "skipped" || normalized === "skip") return "skipped";
-  if (normalized === "running") return "running";
-  if (normalized === "waiting" || normalized === "pending") return "waiting";
-  return normalized || "";
-}
+const PORT_TYPE_META = {
+  Any: { color: "#9ca3af", description: "Wildcard payload" },
+  TaskDef: { color: "#10b981", description: "Task definition/context payload" },
+  TriggerEvent: { color: "#22c55e", description: "Event payload emitted by trigger nodes" },
+  AgentResult: { color: "#8b5cf6", description: "Agent execution output" },
+  String: { color: "#3b82f6", description: "Text payload" },
+  Boolean: { color: "#14b8a6", description: "Boolean flag" },
+  Number: { color: "#0ea5e9", description: "Numeric payload" },
+  JSON: { color: "#06b6d4", description: "Structured JSON payload" },
+  GitRef: { color: "#f97316", description: "Git branch/hash/ref payload" },
+  PRUrl: { color: "#f43f5e", description: "Pull request URL payload" },
+  LogStream: { color: "#eab308", description: "Log output or command transcript" },
+  SessionRef: { color: "#a855f7", description: "Session identifier payload" },
+  CommandResult: { color: "#f59e0b", description: "Command execution result" },
+};
 
-function toNodeStatusLabel(status) {
-  if (status === "success") return "success";
-  if (status === "fail") return "fail";
-  if (status === "skipped") return "skipped";
-  return status || "";
-}
-
-function getCanvasNodeExecutionVisuals(status, isSelected, selectedColor, flashState = "") {
-  if (status === "running") {
+function normalizePortDescriptor(port, direction, index) {
+  const fallbackName = index === 0 ? "default" : `${direction}-${index + 1}`;
+  if (!port || typeof port !== "object") {
     return {
-      fill: "#10233f",
-      stroke: "#60a5fa",
-      strokeWidth: 2.5,
-      filter: "url(#node-glow)",
+      name: fallbackName,
+      label: fallbackName,
+      type: "Any",
+      description: PORT_TYPE_META.Any.description,
+      accepts: [],
+      color: PORT_TYPE_META.Any.color,
     };
   }
-  if (status === "fail" || flashState === "fail") {
-    return {
-      fill: "#2a1217",
-      stroke: "#ef4444",
-      strokeWidth: 2.25,
-      filter: "url(#node-shadow)",
-    };
-  }
-  if (status === "success" || flashState === "success") {
-    return {
-      fill: "#0f2a23",
-      stroke: "#10b981",
-      strokeWidth: 2,
-      filter: "url(#node-shadow)",
-    };
-  }
-  if (status === "skipped" || flashState === "skipped") {
-    return {
-      fill: "#1f2430",
-      stroke: "#94a3b8",
-      strokeWidth: 2,
-      filter: "url(#node-shadow)",
-    };
-  }
-  if (status === "waiting" || status === "pending") {
-    return {
-      fill: "#2f2310",
-      stroke: "#f59e0b",
-      strokeWidth: 2,
-      filter: "url(#node-shadow)",
-    };
-  }
+  const type = String(port.type || "Any").trim() || "Any";
+  const typeMeta = PORT_TYPE_META[type] || PORT_TYPE_META.Any;
   return {
-    fill: isSelected ? "#1e293b" : "#1a1f2e",
-    stroke: isSelected ? selectedColor : "#2a3040",
-    strokeWidth: isSelected ? 2 : 1,
-    filter: isSelected ? "url(#node-glow)" : "url(#node-shadow)",
+    ...port,
+    name: String(port.name || fallbackName).trim() || fallbackName,
+    label: String(port.label || port.name || fallbackName).trim() || fallbackName,
+    type,
+    description: String(port.description || typeMeta.description || "").trim(),
+    accepts: Array.isArray(port.accepts)
+      ? Array.from(new Set(port.accepts.map((value) => String(value || "").trim()).filter(Boolean)))
+      : [],
+    color: String(port.color || typeMeta.color || "").trim() || typeMeta.color,
   };
 }
 
-function resolveNodeOutputPreview(nodeType, preview = {}, fallbackOutput = null) {
-  const lines = Array.isArray(preview?.lines) ? preview.lines : [];
-  const tokenCount = Number.isFinite(Number(preview?.tokenCount))
-    ? Math.max(0, Math.round(Number(preview.tokenCount)))
-    : null;
-  if (lines.length) {
-    return {
-      lines: lines.slice(0, 3).map((line) => String(line || "").trim()).filter(Boolean),
-      tokenCount,
-    };
+function isWildcardPortType(type) {
+  const normalized = String(type || "").trim();
+  return normalized === "*" || normalized === "Any";
+}
+
+function isPortConnectionCompatible(sourcePort, targetPort) {
+  if (!sourcePort || !targetPort) return { compatible: true, reason: null };
+  const sourceType = String(sourcePort.type || "Any").trim() || "Any";
+  const targetType = String(targetPort.type || "Any").trim() || "Any";
+  const accepted = new Set(
+    [targetType, ...(Array.isArray(targetPort.accepts) ? targetPort.accepts : [])]
+      .map((value) => String(value || "").trim())
+      .filter(Boolean),
+  );
+  if (isWildcardPortType(sourceType) || isWildcardPortType(targetType) || accepted.has("*") || accepted.has("Any")) {
+    return { compatible: true, reason: null };
   }
-  const type = String(nodeType || "").trim().toLowerCase();
-  const output = fallbackOutput && typeof fallbackOutput === "object" ? fallbackOutput : {};
-  const fallbackLines = [];
-  if (type.startsWith("condition.")) {
-    const branch = String(output.matchedPort || output.port || "").trim();
-    if (branch) fallbackLines.push(`Branch: ${branch}`);
-    if (Object.prototype.hasOwnProperty.call(output, "value")) {
-      fallbackLines.push(`Value: ${String(output.value)}`);
-    }
-  } else if (type.startsWith("git.") || type.startsWith("github.")) {
-    const shaRaw = String(output.commitSha || output.sha || output.head || "").trim();
-    const sha = /^[0-9a-f]{7,40}$/i.test(shaRaw) ? shaRaw.slice(0, 12) : "";
-    if (sha) fallbackLines.push(`Commit: ${sha}`);
-    const prUrl = String(output.prUrl || output.url || "").trim();
-    if (prUrl) fallbackLines.push(`PR: ${prUrl}`);
-  }
-  if (!fallbackLines.length) {
-    const text = String(output.summary || output.output || output.message || output.error || "").trim();
-    if (text) fallbackLines.push(...text.split(/\r?\n/).map((line) => line.trim()).filter(Boolean).slice(0, 3));
+  if (sourceType === targetType || accepted.has(sourceType)) {
+    return { compatible: true, reason: null };
   }
   return {
-    lines: fallbackLines.slice(0, 3),
-    tokenCount,
+    compatible: false,
+    reason: `${sourcePort.label || sourcePort.name} emits ${sourceType}, but ${targetPort.label || targetPort.name} expects ${targetType}`,
   };
+}
+
+function resolveNodePorts(node, nodeTypeMap) {
+  const typeInfo = nodeTypeMap.get(node?.type) || null;
+  const typePorts = typeInfo?.ports || {};
+  const inputSource = Array.isArray(node?.inputPorts) && node.inputPorts.length
+    ? node.inputPorts
+    : typePorts.inputs;
+  const outputSource = Array.isArray(node?.outputPorts) && node.outputPorts.length
+    ? node.outputPorts
+    : typePorts.outputs;
+  const inputs = (Array.isArray(inputSource) ? inputSource : [])
+    .map((port, index) => normalizePortDescriptor(port, "input", index));
+  const outputs = (Array.isArray(outputSource) ? outputSource : [])
+    .map((port, index) => normalizePortDescriptor(port, "output", index));
+  return {
+    inputs: inputs.length ? inputs : [normalizePortDescriptor(null, "input", 0)],
+    outputs: outputs.length ? outputs : [normalizePortDescriptor(null, "output", 0)],
+  };
+}
+
+function sanitizeInlineFieldValue(value) {
+  if (value == null) return "";
+  if (typeof value === "object") return JSON.stringify(value);
+  return value;
+}
+
+function pickInlineFieldKeys(typeInfo, node, maxFields = 3) {
+  const schema = typeInfo?.schema?.properties || {};
+  const keys = Object.keys(schema);
+  const preferred = Array.isArray(typeInfo?.ui?.primaryFields)
+    ? typeInfo.ui.primaryFields
+    : [];
+  const selected = [];
+  for (const key of preferred) {
+    if (keys.includes(key) && !selected.includes(key)) selected.push(key);
+  }
+  if (selected.length >= maxFields) return selected.slice(0, maxFields);
+  const fallbackPriority = ["model", "expression", "enabled", "branch", "branchName", "eventType", "command", "message", "prompt"];
+  for (const key of fallbackPriority) {
+    if (keys.includes(key) && !selected.includes(key)) selected.push(key);
+    if (selected.length >= maxFields) break;
+  }
+  return selected.slice(0, maxFields);
+}
+
+function getInlineFieldDescriptors(typeInfo, node, maxFields = 3) {
+  const schema = typeInfo?.schema?.properties || {};
+  const config = node?.config || {};
+  const keys = pickInlineFieldKeys(typeInfo, node, maxFields);
+  return keys
+    .map((key) => {
+      const fieldSchema = schema[key] || {};
+      const value = config[key] ?? fieldSchema.default ?? "";
+      const type = fieldSchema.type || "string";
+      const isEnum = Array.isArray(fieldSchema.enum) && fieldSchema.enum.length > 0;
+      const shortString = type === "string" && String(value || "").length <= 42;
+      const supported = isEnum || type === "boolean" || type === "number" || shortString;
+      if (!supported) return null;
+      return {
+        key,
+        value: sanitizeInlineFieldValue(value),
+        schema: fieldSchema,
+        fieldType: type,
+        isEnum,
+      };
+    })
+    .filter(Boolean)
+    .slice(0, maxFields);
 }
 
 /* ═══════════════════════════════════════════════════════════════
@@ -1360,6 +1395,8 @@ function WorkflowCanvas({ workflow, onSave, nodeTypes: availableNodeTypes = [] }
   const [pan, setPan] = useState({ x: 0, y: 0 });
   const [contextMenu, setContextMenu] = useState(null);
   const [spacePanning, setSpacePanning] = useState(false);
+  const [connectionHint, setConnectionHint] = useState(null);
+  const [portHoverHint, setPortHoverHint] = useState(null);
   const [selectedNodeIds, setSelectedNodeIds] = useState(new Set());
   const [historyState, setHistoryState] = useState(() => createHistoryState(workflow?.nodes || [], workflow?.edges || []));
   const [marquee, setMarquee] = useState(null);
@@ -1386,11 +1423,10 @@ function WorkflowCanvas({ workflow, onSave, nodeTypes: availableNodeTypes = [] }
     () => serializeGraphSnapshot(workflow?.nodes || [], workflow?.edges || []),
     [workflow?.nodes, workflow?.edges],
   );
-  const hasLiveStatuses = Object.keys(liveNodeStatuses).length > 0;
-  const liveRunDuration = liveRun?.status === "running" && liveRun?.startedAt
-    ? Math.max(0, liveNowTick - Number(liveRun.startedAt))
-    : Number(liveRun?.duration) || 0;
-  const liveActiveNodes = Object.values(liveNodeStatuses).filter((status) => status === "running").length;
+  const nodeTypeMap = useMemo(
+    () => new Map((availableNodeTypes || []).map((type) => [type.type, type])),
+    [availableNodeTypes],
+  );
   useEffect(() => { selectedNodeIdsRef.current = selectedNodeIds; }, [selectedNodeIds]);
   useEffect(() => {
     nodesRef.current = nodes;
@@ -1398,7 +1434,7 @@ function WorkflowCanvas({ workflow, onSave, nodeTypes: availableNodeTypes = [] }
   }, [nodes, edges]);
 
   useEffect(() => {
-    const nextNodes = workflow?.nodes || [];
+    const nextNodes = normalizeNodesForCanvas(workflow?.nodes || []);
     const nextEdges = workflow?.edges || [];
     if (historyTimerRef.current) clearTimeout(historyTimerRef.current);
     historyPendingSnapshotRef.current = null;
@@ -1415,13 +1451,7 @@ function WorkflowCanvas({ workflow, onSave, nodeTypes: availableNodeTypes = [] }
     setEditingNode(null);
     setContextMenu(null);
     setShowNodePalette(false);
-    setLiveRun(null);
-    setLiveNodeStatuses({});
-    setLiveNodeOutputPreviews({});
-    setLiveNodeFlashStates({});
-    setLiveNodeRunningHints({});
-    setLiveEdgeActivity({});
-  }, [workflow?.id, workflowSnapshotKey]);
+  }, [workflow?.id, workflowSnapshotKey, normalizeNodesForCanvas]);
 
   useEffect(() => {
     if (!liveHighlightEnabled || !workflow?.id) {
@@ -1700,8 +1730,7 @@ function WorkflowCanvas({ workflow, onSave, nodeTypes: availableNodeTypes = [] }
 
   // Canvas dimensions
   const NODE_W = 220;
-  const NODE_H = 138;
-  const NODE_HEADER_H = 62;
+  const NODE_H = 118;
   const PORT_R = 8;
 
   const toCanvas = useCallback((clientX, clientY) => {
@@ -1712,6 +1741,19 @@ function WorkflowCanvas({ workflow, onSave, nodeTypes: availableNodeTypes = [] }
       y: (clientY - rect.top - pan.y) / zoom,
     };
   }, [zoom, pan]);
+
+  const ensureNodePortMetadata = useCallback((node) => {
+    const ports = resolveNodePorts(node, nodeTypeMap);
+    return {
+      ...node,
+      inputPorts: ports.inputs,
+      outputPorts: ports.outputs,
+    };
+  }, [nodeTypeMap]);
+
+  const normalizeNodesForCanvas = useCallback((nodeList = []) => (
+    (Array.isArray(nodeList) ? nodeList : []).map((node) => ensureNodePortMetadata(node))
+  ), [ensureNodePortMetadata]);
 
   const setHistory = useCallback((nextHistory) => {
     historyRef.current = nextHistory;
@@ -1743,20 +1785,20 @@ function WorkflowCanvas({ workflow, onSave, nodeTypes: availableNodeTypes = [] }
 
   const scheduleSave = useCallback((nextNodes, nextEdges) => {
     if (saveTimer.current) clearTimeout(saveTimer.current);
-    const snapshot = serializeGraphSnapshot(nextNodes, nextEdges);
+    const snapshot = serializeGraphSnapshot(normalizeNodesForCanvas(nextNodes), nextEdges);
     saveTimer.current = setTimeout(() => {
       if (!workflow?.id) return;
       const latest = parseGraphSnapshot(snapshot);
-      saveWorkflow({ ...workflow, nodes: latest.nodes, edges: latest.edges });
+      saveWorkflow({ ...workflow, nodes: normalizeNodesForCanvas(latest.nodes), edges: latest.edges });
     }, 1500);
-  }, [workflow]);
+  }, [normalizeNodesForCanvas, workflow]);
 
   const applyGraphChange = useCallback((updater, options = {}) => {
     const currentNodes = nodesRef.current;
     const currentEdges = edgesRef.current;
     const nextGraph = updater({ nodes: currentNodes, edges: currentEdges });
     if (!nextGraph) return null;
-    const nextNodes = nextGraph.nodes ?? currentNodes;
+    const nextNodes = normalizeNodesForCanvas(nextGraph.nodes ?? currentNodes);
     const nextEdges = nextGraph.edges ?? currentEdges;
     if (nextNodes === currentNodes && nextEdges === currentEdges) return null;
     nodesRef.current = nextNodes;
@@ -1772,7 +1814,7 @@ function WorkflowCanvas({ workflow, onSave, nodeTypes: availableNodeTypes = [] }
       if (nextHistory !== historyRef.current) setHistory(nextHistory);
     }
     return { nodes: nextNodes, edges: nextEdges };
-  }, [flushPendingHistory, scheduleHistoryCommit, scheduleSave, setHistory]);
+  }, [flushPendingHistory, normalizeNodesForCanvas, scheduleHistoryCommit, scheduleSave, setHistory]);
 
   const getDefaultInsertPoint = useCallback(() => {
     if ((mousePos.x || mousePos.y) && Number.isFinite(mousePos.x) && Number.isFinite(mousePos.y)) {
@@ -1796,7 +1838,7 @@ function WorkflowCanvas({ workflow, onSave, nodeTypes: availableNodeTypes = [] }
   }, []);
 
   const applyHistorySnapshot = useCallback((snapshot) => {
-    const nextNodes = snapshot?.nodes || [];
+    const nextNodes = normalizeNodesForCanvas(snapshot?.nodes || []);
     const nextEdges = snapshot?.edges || [];
     if (historyTimerRef.current) clearTimeout(historyTimerRef.current);
     historyPendingSnapshotRef.current = null;
@@ -1810,7 +1852,7 @@ function WorkflowCanvas({ workflow, onSave, nodeTypes: availableNodeTypes = [] }
     setEditingNode(null);
     setContextMenu(null);
     scheduleSave(nextNodes, nextEdges);
-  }, [scheduleSave]);
+  }, [normalizeNodesForCanvas, scheduleSave]);
 
   const undoCanvas = useCallback(() => {
     const readyHistory = flushPendingHistory();
@@ -2173,26 +2215,95 @@ function WorkflowCanvas({ workflow, onSave, nodeTypes: availableNodeTypes = [] }
 
   // ── Port / connection interaction ─────────────────────────
 
-  const onOutputPortMouseDown = useCallback((nodeId, e) => {
-    e.stopPropagation();
-    setConnecting({ sourceId: nodeId, startX: e.clientX, startY: e.clientY });
+  const showConnectionHint = useCallback((message, clientX, clientY) => {
+    setConnectionHint({
+      message,
+      x: Math.max(12, Math.round(clientX || 0) + 12),
+      y: Math.max(12, Math.round(clientY || 0) + 12),
+      expiresAt: Date.now() + 2200,
+    });
   }, []);
 
-  const onOutputPortPointerDown = useCallback((nodeId, e) => {
+  const showPortHoverHint = useCallback((port, clientX, clientY) => {
+    if (!port) {
+      setPortHoverHint(null);
+      return;
+    }
+    const type = String(port.type || "Any").trim() || "Any";
+    const description = String(port.description || "").trim();
+    const label = String(port.label || port.name || "Port").trim() || "Port";
+    setPortHoverHint({
+      message: `${label} (${type})${description ? ` - ${description}` : ""}`,
+      x: Math.max(12, Math.round(clientX || 0) + 12),
+      y: Math.max(12, Math.round(clientY || 0) + 12),
+    });
+  }, []);
+
+  const getNodeById = useCallback((nodeId) => nodesRef.current.find((node) => node.id === nodeId) || null, []);
+
+  const getOutputPortDescriptor = useCallback((nodeId, portName = "default") => {
+    const node = getNodeById(nodeId);
+    if (!node) return null;
+    const ports = resolveNodePorts(node, nodeTypeMap).outputs;
+    return ports.find((port) => port.name === portName) || ports[0] || null;
+  }, [getNodeById, nodeTypeMap]);
+
+  const getInputPortDescriptor = useCallback((nodeId, portName = "default") => {
+    const node = getNodeById(nodeId);
+    if (!node) return null;
+    const ports = resolveNodePorts(node, nodeTypeMap).inputs;
+    return ports.find((port) => port.name === portName) || ports[0] || null;
+  }, [getNodeById, nodeTypeMap]);
+
+  const onOutputPortMouseDown = useCallback((nodeId, portName, e) => {
+    e.stopPropagation();
+    const sourcePort = getOutputPortDescriptor(nodeId, portName);
+    setConnecting({
+      sourceId: nodeId,
+      sourcePort: sourcePort?.name || portName || "default",
+      startX: e.clientX,
+      startY: e.clientY,
+    });
+  }, [getOutputPortDescriptor]);
+
+  const onOutputPortPointerDown = useCallback((nodeId, portName, e) => {
     if (e.pointerType !== "touch" && e.pointerType !== "pen") return;
     e.stopPropagation();
-    setConnecting({ sourceId: nodeId, startX: e.clientX, startY: e.clientY });
+    const sourcePort = getOutputPortDescriptor(nodeId, portName);
+    setConnecting({
+      sourceId: nodeId,
+      sourcePort: sourcePort?.name || portName || "default",
+      startX: e.clientX,
+      startY: e.clientY,
+    });
     movePointer(e.clientX, e.clientY);
     try {
       canvasRef.current?.setPointerCapture?.(e.pointerId);
     } catch {}
     e.preventDefault();
-  }, [movePointer]);
+  }, [getOutputPortDescriptor, movePointer]);
 
-  const onInputPortMouseUp = useCallback((nodeId) => {
+  const onInputPortMouseUp = useCallback((nodeId, targetPortName = "default", eventMeta = null) => {
     if (connecting && connecting.sourceId !== nodeId) {
-      const edgeId = `${connecting.sourceId}->${nodeId}`;
-      const exists = edgesRef.current.some((edge) => edge.source === connecting.sourceId && edge.target === nodeId);
+      const sourcePort = getOutputPortDescriptor(connecting.sourceId, connecting.sourcePort || "default");
+      const targetPort = getInputPortDescriptor(nodeId, targetPortName);
+      const compatibility = isPortConnectionCompatible(sourcePort, targetPort);
+      if (!compatibility.compatible) {
+        showConnectionHint(
+          compatibility.reason || "Incompatible port types",
+          eventMeta?.clientX || mousePos.x,
+          eventMeta?.clientY || mousePos.y,
+        );
+        setConnecting(null);
+        return;
+      }
+      const edgeId = `${connecting.sourceId}:${sourcePort?.name || "default"}->${nodeId}:${targetPort?.name || "default"}`;
+      const exists = edgesRef.current.some((edge) =>
+        edge.source === connecting.sourceId
+        && edge.target === nodeId
+        && String(edge.sourcePort || "default") === String(sourcePort?.name || "default")
+        && String(edge.targetPort || "default") === String(targetPort?.name || "default")
+      );
       if (!exists) {
         applyGraphChange(({ nodes: currentNodes, edges: currentEdges }) => ({
           nodes: currentNodes,
@@ -2200,18 +2311,21 @@ function WorkflowCanvas({ workflow, onSave, nodeTypes: availableNodeTypes = [] }
             id: edgeId,
             source: connecting.sourceId,
             target: nodeId,
-            sourcePort: "default",
+            sourcePort: sourcePort?.name || "default",
+            targetPort: targetPort?.name || "default",
+            sourcePortType: sourcePort?.type || "Any",
+            targetPortType: targetPort?.type || "Any",
           }],
         }));
       }
     }
     setConnecting(null);
-  }, [applyGraphChange, connecting]);
+  }, [applyGraphChange, connecting, getInputPortDescriptor, getOutputPortDescriptor, mousePos.x, mousePos.y, showConnectionHint]);
 
-  const onInputPortPointerUp = useCallback((nodeId, e) => {
+  const onInputPortPointerUp = useCallback((nodeId, portName, e) => {
     if (e.pointerType !== "touch" && e.pointerType !== "pen") return;
     e.stopPropagation();
-    onInputPortMouseUp(nodeId);
+    onInputPortMouseUp(nodeId, portName, { clientX: e.clientX, clientY: e.clientY });
     e.preventDefault();
   }, [onInputPortMouseUp]);
 
@@ -2220,12 +2334,23 @@ function WorkflowCanvas({ workflow, onSave, nodeTypes: availableNodeTypes = [] }
   const addNode = useCallback((type, position = paletteInsertPoint || getDefaultInsertPoint()) => {
     const id = `node-${Date.now()}-${Math.round(Math.random() * 1000)}`;
     const name = type.split(".").pop();
+    const typeInfo = nodeTypeMap.get(type) || null;
+    const nextConfig = {};
+    const schemaProps = typeInfo?.schema?.properties || {};
+    for (const [key, field] of Object.entries(schemaProps)) {
+      if (Object.prototype.hasOwnProperty.call(field || {}, "default")) {
+        nextConfig[key] = field.default;
+      }
+    }
+    const ports = resolveNodePorts({ type }, nodeTypeMap);
     const newNode = {
       id,
       type,
       label: name?.replace(/_/g, " ") || type,
-      config: {},
+      config: nextConfig,
       position: position || { x: 300, y: 300 },
+      inputPorts: ports.inputs,
+      outputPorts: ports.outputs,
       outputs: ["default"],
     };
     applyGraphChange(({ nodes: currentNodes, edges: currentEdges }) => ({
@@ -2237,7 +2362,7 @@ function WorkflowCanvas({ workflow, onSave, nodeTypes: availableNodeTypes = [] }
     setSelectedNodeIds(new Set([id]));
     closeNodePalette();
     haptic("light");
-  }, [applyGraphChange, closeNodePalette, getDefaultInsertPoint, paletteInsertPoint]);
+  }, [applyGraphChange, closeNodePalette, getDefaultInsertPoint, nodeTypeMap, paletteInsertPoint]);
 
   const deleteNode = useCallback((nodeId) => {
     applyGraphChange(({ nodes: currentNodes, edges: currentEdges }) => ({
@@ -2306,24 +2431,44 @@ function WorkflowCanvas({ workflow, onSave, nodeTypes: availableNodeTypes = [] }
     if (historyTimerRef.current) clearTimeout(historyTimerRef.current);
   }, []);
 
+  useEffect(() => {
+    if (!connectionHint) return undefined;
+    const remaining = Math.max(120, (connectionHint.expiresAt || Date.now() + 1200) - Date.now());
+    const timer = setTimeout(() => {
+      setConnectionHint((current) => (current === connectionHint ? null : current));
+    }, remaining);
+    return () => clearTimeout(timer);
+  }, [connectionHint]);
+
+  useEffect(() => {
+    if (connecting) return undefined;
+    setPortHoverHint(null);
+    return undefined;
+  }, [connecting]);
+
   // ── Render helpers ────────────────────────────────────────
 
   const getNodeCenter = (nodeId) => {
-    const n = nodes.find(n => n.id === nodeId);
+    const n = nodes.find((value) => value.id === nodeId);
     if (!n) return { x: 0, y: 0 };
     return { x: (n.position?.x || 0) + NODE_W / 2, y: (n.position?.y || 0) + NODE_H / 2 };
   };
 
-  const getInputPort = (nodeId) => {
-    const n = nodes.find(n => n.id === nodeId);
+  const getNodePortPosition = (nodeId, direction, portName = "default") => {
+    const n = nodes.find((value) => value.id === nodeId);
     if (!n) return { x: 0, y: 0 };
-    return { x: (n.position?.x || 0), y: (n.position?.y || 0) + NODE_H / 2 };
-  };
-
-  const getOutputPort = (nodeId) => {
-    const n = nodes.find(n => n.id === nodeId);
-    if (!n) return { x: 0, y: 0 };
-    return { x: (n.position?.x || 0) + NODE_W, y: (n.position?.y || 0) + NODE_H / 2 };
+    const ports = resolveNodePorts(n, nodeTypeMap)[direction === "input" ? "inputs" : "outputs"];
+    const index = Math.max(
+      0,
+      ports.findIndex((port) => port.name === portName),
+    );
+    const spread = 24;
+    const centerY = NODE_H / 2 + 10;
+    const offsetY = (index - ((ports.length - 1) / 2)) * spread;
+    return {
+      x: (n.position?.x || 0) + (direction === "input" ? 0 : NODE_W),
+      y: (n.position?.y || 0) + centerY + offsetY,
+    };
   };
 
   // Bezier curve between points
@@ -2349,7 +2494,7 @@ function WorkflowCanvas({ workflow, onSave, nodeTypes: availableNodeTypes = [] }
         <${Button} variant="contained" size="small" onClick=${() => openNodePalette()} sx=${{ display: 'flex', alignItems: 'center', gap: '6px' }}>
           <span style="font-size: 18px;">+</span> Add Node /
         <//>
-        <${Button} variant="outlined" size="small" onClick=${() => { if (workflow) saveWorkflow({ ...workflow, nodes: nodesRef.current, edges: edgesRef.current }); }}>
+        <${Button} variant="outlined" size="small" onClick=${() => { if (workflow) saveWorkflow({ ...workflow, nodes: normalizeNodesForCanvas(nodesRef.current), edges: edgesRef.current }); }}>
           <span class="btn-icon">${resolveIcon("save")}</span>
           Save
         <//>
@@ -2473,21 +2618,19 @@ function WorkflowCanvas({ workflow, onSave, nodeTypes: availableNodeTypes = [] }
 
           <!-- Edges -->
           ${edges.map(edge => {
-            const from = getOutputPort(edge.source);
-            const to = getInputPort(edge.target);
+            const sourcePort = getOutputPortDescriptor(edge.source, edge.sourcePort || "default");
+            const from = getNodePortPosition(edge.source, "output", edge.sourcePort || "default");
+            const to = getNodePortPosition(edge.target, "input", edge.targetPort || "default");
             const isSelected = selectedEdgeId.value === edge.id;
             const hasCondition = !!edge.condition;
-            const edgeKey = edge.id || `${edge.source}->${edge.target}`;
-            const edgeActivity = liveHighlightEnabled ? liveEdgeActivity[edgeKey] : null;
-            const isActiveFlow = Boolean(edgeActivity);
-            const edgePath = curvePath(from.x, from.y, to.x, to.y);
+            const edgeColor = sourcePort?.color || (hasCondition ? "#f59e0b" : "#6b7280");
             return html`
               <g key=${edge.id} class="wf-edge" onClick=${(e) => { e.stopPropagation(); selectedEdgeId.value = edge.id; }}>
                 <path
                   d=${edgePath}
                   fill="none"
-                  stroke=${isSelected ? "#3b82f6" : isActiveFlow ? "#60a5fa" : hasCondition ? "#f59e0b" : "#6b7280"}
-                  stroke-width=${isSelected ? 3 : isActiveFlow ? 2.8 : 2}
+                  stroke=${isSelected ? "#3b82f6" : edgeColor}
+                  stroke-width=${isSelected ? 3 : 2}
                   stroke-dasharray=${hasCondition ? "6,4" : "none"}
                   marker-end="url(#arrowhead)"
                   style=${`cursor: pointer; transition: stroke 0.15s, stroke-width 0.15s; ${isActiveFlow ? "filter: drop-shadow(0 0 6px rgba(96,165,250,0.45));" : ""}`}
@@ -2546,20 +2689,29 @@ function WorkflowCanvas({ workflow, onSave, nodeTypes: availableNodeTypes = [] }
 
           <!-- Connecting line (while dragging) -->
           ${connecting && html`
+            ${(() => {
+              const start = getNodePortPosition(connecting.sourceId, "output", connecting.sourcePort || "default");
+              const sourcePort = getOutputPortDescriptor(connecting.sourceId, connecting.sourcePort || "default");
+              return html`
             <line
-              x1=${getOutputPort(connecting.sourceId).x}
-              y1=${getOutputPort(connecting.sourceId).y}
+              x1=${start.x}
+              y1=${start.y}
               x2=${mousePos.x}
               y2=${mousePos.y}
-              stroke="#3b82f680"
+              stroke=${(sourcePort?.color || "#3b82f6") + "80"}
               stroke-width="2"
               stroke-dasharray="6,4"
             />
+            `;
+            })()}
           `}
 
           <!-- Nodes -->
           ${nodes.map(node => {
             const meta = getNodeMeta(node.type);
+            const typeInfo = nodeTypeMap.get(node.type) || null;
+            const ports = resolveNodePorts(node, nodeTypeMap);
+            const inlineFields = getInlineFieldDescriptors(typeInfo, node, 2);
             const isSelected = selectedNodeIds.has(node.id);
             const nodeRunStatus = liveHighlightEnabled ? normalizeLiveNodeStatus(liveNodeStatuses[node.id]) : null;
             const nodeFlash = liveNodeFlashStates[node.id] || null;
@@ -2625,7 +2777,7 @@ function WorkflowCanvas({ workflow, onSave, nodeTypes: availableNodeTypes = [] }
                 <!-- Label -->
                 <text
                   x=${NODE_W / 2}
-                  y="22"
+                  y="24"
                   text-anchor="middle"
                   fill="white"
                   font-size="13"
@@ -2641,92 +2793,129 @@ function WorkflowCanvas({ workflow, onSave, nodeTypes: availableNodeTypes = [] }
                   font-size="10"
                 >${node.type}</text>
 
-                ${nodeRunStatus && html`
-                  <g transform="translate(${NODE_W - 74} 8)">
-                    <rect
-                      width="66"
-                      height="18"
-                      rx="9"
-                      fill=${nodeStatusStyles.bg}
-                      stroke=${nodeStatusStyles.color}
-                      stroke-opacity="0.4"
-                    />
-                    <text
-                      x="33"
-                      y="12"
-                      text-anchor="middle"
-                      fill=${nodeStatusStyles.color}
-                      font-size="10"
-                      font-weight="700"
-                    >${toNodeStatusLabel(nodeRunStatus)}</text>
-                  </g>
+                ${inlineFields.length > 0 && html`
+                  <foreignObject
+                    x="10"
+                    y="48"
+                    width=${NODE_W - 20}
+                    height="56"
+                    style="overflow: visible;"
+                    onMouseDown=${(e) => e.stopPropagation()}
+                    onPointerDown=${(e) => e.stopPropagation()}
+                  >
+                    <div xmlns="http://www.w3.org/1999/xhtml" style="display:flex; flex-direction:column; gap:4px; font-size:10px;">
+                      ${inlineFields.map((field) => {
+                        const label = String(field.key || "").replace(/([A-Z])/g, " $1").replace(/_/g, " ").trim();
+                        if (field.isEnum) {
+                          return html`
+                            <label key=${field.key} style="display:flex; flex-direction:column; gap:2px; color:#94a3b8;">
+                              <span>${label}</span>
+                              <select
+                                value=${field.value ?? ""}
+                                style="height:18px; border:1px solid #334155; border-radius:4px; background:#0f172a; color:#e2e8f0; font-size:10px;"
+                                onInput=${(e) => updateNodeConfig(node.id, { [field.key]: e.target.value })}
+                                onMouseDown=${(e) => e.stopPropagation()}
+                              >
+                                <option value="">-</option>
+                                ${(field.schema.enum || []).map((opt) => html`<option key=${String(opt)} value=${opt}>${String(opt)}</option>`)}
+                              </select>
+                            </label>
+                          `;
+                        }
+                        if (field.fieldType === "boolean") {
+                          return html`
+                            <label key=${field.key} style="display:flex; align-items:center; gap:6px; color:#94a3b8;">
+                              <input
+                                type="checkbox"
+                                checked=${Boolean(field.value)}
+                                onInput=${(e) => updateNodeConfig(node.id, { [field.key]: e.target.checked })}
+                                onMouseDown=${(e) => e.stopPropagation()}
+                              />
+                              <span>${label}</span>
+                            </label>
+                          `;
+                        }
+                        return html`
+                          <label key=${field.key} style="display:flex; flex-direction:column; gap:2px; color:#94a3b8;">
+                            <span>${label}</span>
+                            <input
+                              type=${field.fieldType === "number" ? "number" : "text"}
+                              value=${field.value ?? ""}
+                              style="height:18px; border:1px solid #334155; border-radius:4px; background:#0f172a; color:#e2e8f0; font-size:10px; padding:0 4px;"
+                              onInput=${(e) => updateNodeConfig(node.id, {
+                                [field.key]: field.fieldType === "number" ? Number(e.target.value || 0) : e.target.value,
+                              })}
+                              onMouseDown=${(e) => e.stopPropagation()}
+                            />
+                          </label>
+                        `;
+                      })}
+                    </div>
+                  </foreignObject>
                 `}
 
-                ${spinnerVisible && html`
-                  <g transform="translate(${NODE_W - 22} ${NODE_HEADER_H - 18})">
-                    <circle r="9" cx="0" cy="0" fill="rgba(15, 23, 42, 0.72)" stroke="#93c5fd44" stroke-width="1.2" />
-                    <circle r="6.8" cx="0" cy="0" fill="none" stroke="#93c5fd33" stroke-width="1.2" />
-                    <path d="M 0 -6.8 A 6.8 6.8 0 0 1 5.4 -4.2" fill="none" stroke="#93c5fd" stroke-width="1.8" stroke-linecap="round">
-                      <animateTransform attributeName="transform" type="rotate" from="0 0 0" to="360 0 0" dur="0.8s" repeatCount="indefinite" />
-                    </path>
-                  </g>
-                `}
+                ${ports.inputs.map((port) => {
+                  const pos = getNodePortPosition(node.id, "input", port.name);
+                  const localY = pos.y - y;
+                  const sourcePort = connecting ? getOutputPortDescriptor(connecting.sourceId, connecting.sourcePort || "default") : null;
+                  const compatibility = connecting && connecting.sourceId !== node.id
+                    ? isPortConnectionCompatible(sourcePort, port)
+                    : { compatible: true };
+                  const strokeColor = connecting && connecting.sourceId !== node.id
+                    ? (compatibility.compatible ? "#22c55e" : "#ef4444")
+                    : (port.color || "#4a5568");
+                  const cursorStyle = connecting && connecting.sourceId !== node.id && !compatibility.compatible
+                    ? "not-allowed"
+                    : "crosshair";
+                  return html`
+                    <circle
+                      key=${`in-${node.id}-${port.name}`}
+                      cx="0"
+                      cy=${localY}
+                      r=${PORT_R}
+                      fill="#0f172a"
+                      stroke=${strokeColor}
+                      stroke-width="2"
+                      style=${`cursor: ${cursorStyle};`}
+                      onMouseUp=${(e) => onInputPortMouseUp(node.id, port.name, { clientX: e.clientX, clientY: e.clientY })}
+                      onPointerUp=${(e) => onInputPortPointerUp(node.id, port.name, e)}
+                      onMouseEnter=${(e) => {
+                        showPortHoverHint(port, e.clientX, e.clientY);
+                        if (connecting && connecting.sourceId !== node.id && !compatibility.compatible) {
+                          showConnectionHint(compatibility.reason || "Incompatible port types", e.clientX, e.clientY);
+                        }
+                      }}
+                      onMouseMove=${(e) => showPortHoverHint(port, e.clientX, e.clientY)}
+                      onMouseLeave=${() => setPortHoverHint(null)}
+                    >
+                      <title>${`${port.label} (${port.type})${port.description ? ` - ${port.description}` : ""}`}</title>
+                    </circle>
+                  `;
+                })}
 
-                <line x1="8" y1=${NODE_HEADER_H} x2=${NODE_W - 8} y2=${NODE_HEADER_H} stroke="#2e3748" stroke-width="1" opacity="0.85" />
-                <rect
-                  x="8"
-                  y=${previewPanelY}
-                  width=${NODE_W - 16}
-                  height=${previewPanelH}
-                  rx="6"
-                  fill="rgba(15, 23, 42, 0.45)"
-                  stroke=${hasPreview ? "rgba(148, 163, 184, 0.28)" : "rgba(71, 85, 105, 0.2)"}
-                  stroke-width="1"
-                />
-
-                ${hasPreview && html`
-                  <text x="14" y=${previewPanelY + 14} fill="#cbd5e1" font-size="10" font-family="ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace">
-                    ${previewLines.map((line, index) => html`
-                      <tspan x="14" dy=${index === 0 ? 0 : 13}>${line.slice(0, 44)}</tspan>
-                    `)}
-                  </text>
-                `}
-                ${preview.tokenCount != null && html`
-                  <text
-                    x=${NODE_W - 14}
-                    y=${NODE_H - 10}
-                    text-anchor="end"
-                    fill="#93c5fd"
-                    font-size="10"
-                    font-family="ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace"
-                  >${preview.tokenCount} tok</text>
-                `}
-
-                <!-- Input port (left) -->
-                <circle
-                  cx="0"
-                  cy=${NODE_H / 2}
-                  r=${PORT_R}
-                  fill="#1a1f2e"
-                  stroke=${connecting ? "#10b981" : "#4a5568"}
-                  stroke-width="2"
-                  style="cursor: crosshair;"
-                  onMouseUp=${() => onInputPortMouseUp(node.id)}
-                  onPointerUp=${(e) => onInputPortPointerUp(node.id, e)}
-                />
-
-                <!-- Output port (right) -->
-                <circle
-                  cx=${NODE_W}
-                  cy=${NODE_H / 2}
-                  r=${PORT_R}
-                  fill="#1a1f2e"
-                  stroke=${meta.color}
-                  stroke-width="2"
-                  style="cursor: crosshair;"
-                  onMouseDown=${(e) => onOutputPortMouseDown(node.id, e)}
-                  onPointerDown=${(e) => onOutputPortPointerDown(node.id, e)}
-                />
+                ${ports.outputs.map((port) => {
+                  const pos = getNodePortPosition(node.id, "output", port.name);
+                  const localY = pos.y - y;
+                  return html`
+                    <circle
+                      key=${`out-${node.id}-${port.name}`}
+                      cx=${NODE_W}
+                      cy=${localY}
+                      r=${PORT_R}
+                      fill="#0f172a"
+                      stroke=${port.color || meta.color}
+                      stroke-width="2"
+                      style="cursor: crosshair;"
+                      onMouseDown=${(e) => onOutputPortMouseDown(node.id, port.name, e)}
+                      onPointerDown=${(e) => onOutputPortPointerDown(node.id, port.name, e)}
+                      onMouseEnter=${(e) => showPortHoverHint(port, e.clientX, e.clientY)}
+                      onMouseMove=${(e) => showPortHoverHint(port, e.clientX, e.clientY)}
+                      onMouseLeave=${() => setPortHoverHint(null)}
+                    >
+                      <title>${`${port.label} (${port.type})${port.description ? ` - ${port.description}` : ""}`}</title>
+                    </circle>
+                  `;
+                })}
               </g>
             `;
           })}
@@ -2748,6 +2937,22 @@ function WorkflowCanvas({ workflow, onSave, nodeTypes: availableNodeTypes = [] }
         </g>
       </svg>
 
+      ${connectionHint && html`
+        <div
+          style="position: fixed; left: ${connectionHint.x}px; top: ${connectionHint.y}px; z-index: 40; max-width: 320px; padding: 6px 8px; border-radius: 6px; background: #111827; color: #fca5a5; border: 1px solid #ef444480; font-size: 11px; pointer-events: none; box-shadow: 0 8px 24px rgba(0,0,0,0.35);"
+        >
+          ${connectionHint.message}
+        </div>
+      `}
+
+      ${portHoverHint && html`
+        <div
+          style="position: fixed; left: ${portHoverHint.x}px; top: ${portHoverHint.y}px; z-index: 39; max-width: 340px; padding: 6px 8px; border-radius: 6px; background: #0f172a; color: #cbd5e1; border: 1px solid #334155; font-size: 11px; pointer-events: none; box-shadow: 0 8px 24px rgba(0,0,0,0.35);"
+        >
+          ${portHoverHint.message}
+        </div>
+      `}
+
       <!-- Context Menu -->
       ${contextMenu && html`
         <div class="wf-context-menu" style="position: fixed; left: ${contextMenu.x}px; top: ${contextMenu.y}px; z-index: 50;">
@@ -2768,14 +2973,22 @@ function WorkflowCanvas({ workflow, onSave, nodeTypes: availableNodeTypes = [] }
 
       <!-- Node Config Editor (side panel) -->
       ${editingNode && html`
+        ${(() => {
+          const editingNodeDef = nodes.find((n) => n.id === editingNode) || null;
+          const editingTypeInfo = nodeTypeMap.get(editingNodeDef?.type) || null;
+          const inlineDescriptors = getInlineFieldDescriptors(editingTypeInfo, editingNodeDef, 3);
+          return html`
         <${NodeConfigEditor}
-          node=${nodes.find(n => n.id === editingNode)}
-          nodeTypes=${nodeTypes.value}
+          node=${editingNodeDef}
+          nodeTypes=${availableNodeTypes}
+          inlineFieldKeys=${inlineDescriptors.map((field) => field.key)}
           onUpdate=${(config) => updateNodeConfig(editingNode, config)}
           onUpdateLabel=${(label) => updateNodeLabel(editingNode, label)}
           onClose=${() => setEditingNode(null)}
           onDelete=${() => deleteNode(editingNode)}
         />
+          `;
+        })()}
       `}
     </div>
   `;
@@ -3174,13 +3387,15 @@ function WorkflowAgentLibraryPicker({ config, onUpdate }) {
  *  Node Config Editor (right side panel)
  * ═══════════════════════════════════════════════════════════════ */
 
-function NodeConfigEditor({ node, nodeTypes: types, onUpdate, onUpdateLabel, onClose, onDelete }) {
+function NodeConfigEditor({ node, nodeTypes: types, inlineFieldKeys = [], onUpdate, onUpdateLabel, onClose, onDelete }) {
   if (!node) return null;
 
   const meta = getNodeMeta(node.type);
   const typeInfo = (types || []).find(nt => nt.type === node.type);
   const schema = typeInfo?.schema?.properties || {};
   const config = node.config || {};
+  const hiddenInlineKeys = new Set((inlineFieldKeys || []).map((key) => String(key || "").trim()).filter(Boolean));
+  const schemaEntries = Object.entries(schema).filter(([key]) => !hiddenInlineKeys.has(key));
   const [presetExpanded, setPresetExpanded] = useState(true);
 
   const onFieldChange = useCallback((key, value) => {
@@ -3528,7 +3743,7 @@ function NodeConfigEditor({ node, nodeTypes: types, onUpdate, onUpdateLabel, onC
 
       <!-- ═══ Config Fields (schema-driven) ═══ -->
       <div style="display: flex; flex-direction: column; gap: 12px;">
-        ${Object.entries(schema).map(([key, fieldSchema]) => {
+        ${schemaEntries.map(([key, fieldSchema]) => {
           const value = config[key] ?? fieldSchema.default ?? "";
           const fieldType = fieldSchema.type || "string";
           const isRequired = typeInfo?.schema?.required?.includes(key);
@@ -3599,10 +3814,10 @@ function NodeConfigEditor({ node, nodeTypes: types, onUpdate, onUpdateLabel, onC
       </div>
 
       <!-- No schema fields hint -->
-      ${Object.keys(schema).length === 0 && html`
+      ${schemaEntries.length === 0 && html`
         <div style="padding: 12px; background: var(--color-bg-secondary, #1a1f2e); border-radius: 8px; text-align: center; margin-bottom: 12px;">
-          <div style="font-size: 12px; color: #6b7280;">This node has no configurable fields.</div>
-          <div style="font-size: 10px; color: #4b5563; margin-top: 4px;">It executes with defaults or inherits from workflow context.</div>
+          <div style="font-size: 12px; color: #6b7280;">Advanced settings only.</div>
+          <div style="font-size: 10px; color: #4b5563; margin-top: 4px;">Primary fields are editable inline on the node body.</div>
         </div>
       `}
 

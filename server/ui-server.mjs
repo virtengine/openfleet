@@ -14603,12 +14603,21 @@ async function handleApi(req, res, url) {
       }
       const wfMod = wfCtx.wfMod;
       const types = wfMod.listNodeTypes();
-      jsonResponse(res, 200, { ok: true, nodeTypes: types.map(nt => ({
-        type: nt.type,
-        category: nt.type.split(".")[0],
-        description: nt.description || "",
-        schema: nt.schema || {},
-      })) });
+      jsonResponse(res, 200, { ok: true, nodeTypes: types.map((nt) => {
+        const rawPorts = nt?.ports && typeof nt.ports === "object" ? nt.ports : {};
+        const ports = {
+          inputs: Array.isArray(rawPorts.inputs) ? rawPorts.inputs : [],
+          outputs: Array.isArray(rawPorts.outputs) ? rawPorts.outputs : [],
+        };
+        return {
+          type: nt.type,
+          category: nt.type.split(".")[0],
+          description: nt.description || "",
+          schema: nt.schema || {},
+          ports,
+          ui: nt?.ui && typeof nt.ui === "object" ? nt.ui : {},
+        };
+      }) });
     } catch (err) {
       jsonResponse(res, 500, { ok: false, error: err.message });
     }
@@ -18689,4 +18698,3 @@ export function stopTelegramUiServer() {
 }
 
 export { getLocalLanIp };
-
