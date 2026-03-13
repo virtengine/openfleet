@@ -2,12 +2,14 @@
  * Minimal static server for Playwright UI inspection.
  * Serves ui/ files with proper MIME types + mock API endpoints.
  * Proxies MUI/Emotion vendor files through esm.sh to get ESM-safe bundles.
+ * Includes WebSocket stub and E2E-test-mode HTML for Playwright E2E tests.
  */
 import { createServer } from "node:http";
 import { readFile, writeFile, mkdir } from "node:fs/promises";
 import { existsSync } from "node:fs";
 import { resolve, extname, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
+import { WebSocketServer } from "ws";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const uiRoot = resolve(__dirname, "..", "ui");
@@ -293,26 +295,128 @@ const server = createServer(async (req, res) => {
     res.writeHead(403); res.end("Forbidden"); return;
   }
 
+  let isSpaFallback = false;
   if (!existsSync(filePath)) {
     // SPA fallback
     const looksLikeFile = /\.[a-z0-9]+$/i.test(pathname);
     if (!looksLikeFile) {
       filePath = resolve(uiRoot, "index.html");
+      isSpaFallback = true;
     } else {
       res.writeHead(404); res.end("Not Found"); return;
     }
   }
 
   try {
-    const data = await readFile(filePath);
+    let data = await readFile(filePath);
     const ext = extname(filePath).toLowerCase();
+    const contentType = MIME[ext] || "application/octet-stream";
+
+    // For HTML files (index.html or SPA fallback), strip the boot-loader
+    // complexity so that E2E tests get a clean, fast-booting page.
+    if ((ext === ".html" || isSpaFallback) && filePath.endsWith("index.html")) {
+      let html = data.toString("utf-8");
+      html = transformHtmlForE2E(html);
+      data = Buffer.from(html, "utf-8");
+    }
+
     res.writeHead(200, {
-      "Content-Type": MIME[ext] || "application/octet-stream",
+      "Content-Type": contentType,
       "Cache-Control": "no-store",
     });
     res.end(data);
   } catch (err) {
     res.writeHead(500); res.end(err.message);
+  }
+});
+
+/**
+ * Transform index.html for E2E testing:
+ * 1. Remove es-module-shims polyfill loader (not needed — Chromium supports native import maps)
+ * 2. Replace boot-loader script with a direct native import
+ * 3. Remove the 12s hardcoded timeout that shows "Failed to load app modules"
+ * 4. Block external resources (Telegram SDK, analytics)
+ */
+function transformHtmlForE2E(html) {
+  // 1. Remove es-module-shims loader script
+  html = html.replace(
+    /<script>\s*\(function\(\)\s*\{\s*var shim[\s\S]*?<\/script>/,
+    "<!-- [e2e] esm-shim removed -->"
+  );
+
+  // 2. Remove importmap-shim (not needed without es-module-shims)
+  html = html.replace(
+    /<script type="importmap-shim">[\s\S]*?<\/script>/,
+    "<!-- [e2e] importmap-shim removed -->"
+  );
+
+  // 3. Replace boot-loader script with direct native import
+  html = html.replace(
+    /<script type="module">[\s\S]*?<\/script>/,
+    `<script type="module">
+      console.log("[e2e-boot] script executing");
+      try {
+        console.log("[e2e-boot] starting import");
+        await import("/app.js");
+        console.log("[e2e-boot] import complete, removing boot-loader");
+        const bl = document.getElementById("boot-loader");
+        if (bl) bl.remove();
+        console.log("[e2e-boot] done");
+      } catch (e) {
+        console.error("[e2e-boot] import failed:", e);
+        const s = document.getElementById("boot-status");
+        if (s) s.textContent = "E2E boot error: " + e.message;
+      }
+    </script>`
+  );
+
+  // 4. Remove the 12s timeout fallback script
+  html = html.replace(
+    /<script>\s*\/\/ Signal Telegram[\s\S]*?setTimeout\(function\(\)\s*\{[\s\S]*?<\/script>/,
+    "<!-- [e2e] timeout fallback removed -->"
+  );
+
+  // 5. Remove Telegram SDK script tag
+  html = html.replace(
+    /<script[^>]*telegram\.org[^>]*><\/script>/,
+    "<!-- [e2e] telegram removed -->"
+  );
+
+  // 6. Remove analytics (umami)
+  html = html.replace(
+    /<script[^>]*umami\.is[^>]*><\/script>/,
+    "<!-- [e2e] analytics removed -->"
+  );
+  html = html.replace(
+    /<img[^>]*umami\.is[^>]*\/>/,
+    "<!-- [e2e] analytics pixel removed -->"
+  );
+
+  return html;
+}
+
+// ── WebSocket stub ──────────────────────────────────────────────────
+// The UI app connects to /ws for live updates. Without a WS handler the
+// connection fails immediately which can cause render issues.
+const wss = new WebSocketServer({ noServer: true });
+
+server.on("upgrade", (req, socket, head) => {
+  const url = new URL(req.url, `http://localhost:${PORT}`);
+  if (url.pathname === "/ws") {
+    wss.handleUpgrade(req, socket, head, (ws) => {
+      wss.emit("connection", ws, req);
+      // Respond to pings from the UI
+      ws.on("message", (raw) => {
+        try {
+          const msg = JSON.parse(raw.toString());
+          if (msg.type === "ping") {
+            ws.send(JSON.stringify({ type: "pong", ts: msg.ts || Date.now() }));
+          }
+        } catch { /* ignore non-JSON */ }
+      });
+    });
+  } else {
+    socket.destroy();
   }
 });
 
