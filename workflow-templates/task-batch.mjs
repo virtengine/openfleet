@@ -35,8 +35,9 @@ export const TASK_BATCH_PROCESSOR_TEMPLATE = {
     "using the Task Lifecycle sub-workflow. Automatically picks up tasks " +
     "when backlog drops below threshold, fans out execution across " +
     "available slots, and reports batch results.",
-  category: "lifecycle",
+  category: "task-execution",
   enabled: true,
+  core: true,
   recommended: true,
   trigger: "trigger.task_available",
   variables: {
@@ -145,7 +146,7 @@ export const TASK_BATCH_PR_TEMPLATE = {
     "Simplified batch processor that picks todo tasks, runs the agent on " +
     "each, and creates pull requests for any that produce commits. Ideal " +
     "for autonomous mode where tasks should flow straight to PRs.",
-  category: "lifecycle",
+  category: "task-execution",
   enabled: true,
   recommended: false,
   trigger: "trigger.task_available",

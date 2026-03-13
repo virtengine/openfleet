@@ -217,6 +217,11 @@ export function sha256File(pathLike) {
 
 export function safeGit(args, cwd = process.cwd()) {
   try {
+    // Block dangerous git arguments that could execute arbitrary commands
+    const blocked = ["--upload-pack", "--exec", "-c"];
+    for (const a of args) {
+      if (blocked.some((b) => String(a).startsWith(b))) return "";
+    }
     return execFileSync("git", args, { encoding: "utf8", cwd }).trim();
   } catch {
     return "";

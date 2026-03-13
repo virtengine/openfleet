@@ -442,16 +442,18 @@ export const BACKEND_AGENT_TEMPLATE = {
   id: "template-backend-agent",
   name: "Task Completion Agent",
   description:
-    "Spins up an agent focused on backend/API development with a " +
-    "test-first methodology. Writes tests first, implements the feature, " +
-    "validates with build + lint, then creates a PR.",
+    "General-purpose task completion agent with a test-first methodology. " +
+    "Writes tests first, implements the feature, validates with build + lint, " +
+    "then creates a PR. Works with any language/framework — commands are " +
+    "auto-detected from your project or fully customizable.",
   category: "agents",
   enabled: true,
   recommended: true,
   trigger: "trigger.task_assigned",
   variables: {
-    testFramework: "node --test",
+    testCommand: "npm test",
     buildCommand: "npm run build",
+    lintCommand: "",
     baseBranch: "main",
     protectedBranches: ["main", "master", "develop", "production"],
     agentSdk: "auto",
@@ -460,7 +462,6 @@ export const BACKEND_AGENT_TEMPLATE = {
   },
   nodes: [
     node("trigger", "trigger.task_assigned", "Task Assigned", {
-      filter: "task.tags?.some(t => t === 'backend' || t === 'api')",
     }, { x: 400, y: 50 }),
 
     node("plan-work", "agent.run_planner", "Plan Implementation", {
@@ -479,14 +480,14 @@ Write comprehensive tests FIRST before any implementation:
 2. Integration tests for API endpoints if applicable
 3. Edge cases and error scenarios
 
-Use the project's existing test framework: {{testFramework}}
+Use the project's test command: {{testCommand}}
 Commit with message "test: add tests for [feature]"`,
       sdk: "{{agentSdk}}",
       timeoutMs: "{{timeoutMs}}",
     }, { x: 400, y: 330 }),
 
     node("implement", "action.run_agent", "Implement Feature", {
-      prompt: `# Implement Backend Feature
+      prompt: `# Implement Feature
 
 The tests have been written. Now implement the feature to make them pass:
 1. Follow existing code conventions
@@ -494,7 +495,7 @@ The tests have been written. Now implement the feature to make them pass:
 3. Ensure all new tests pass
 4. Do NOT modify the tests — make the code fit the contract
 
-Run \`{{testFramework}}\` after implementation.
+Run \`{{testCommand}}\` after implementation.
 Commit with message "feat: implement [feature]"`,
       sdk: "{{agentSdk}}",
       timeoutMs: "{{timeoutMs}}",
@@ -506,11 +507,11 @@ Commit with message "feat: implement [feature]"`,
     }, { x: 400, y: 650 }),
 
     node("test-final", "validation.tests", "Final Test Run", {
-      command: "{{testFramework}}",
+      command: "{{testCommand}}",
     }, { x: 400, y: 780 }),
 
     node("lint", "validation.lint", "Lint Check", {
-      command: "npm run lint 2>/dev/null || echo 'no lint script'",
+      command: "{{lintCommand}}",
     }, { x: 400, y: 910 }),
 
     node("all-passed", "condition.expression", "All Checks Passed?", {
@@ -568,7 +569,7 @@ Commit with message "feat: implement [feature]"`,
     }, { x: 620, y: 1090 }),
 
     node("auto-fix", "action.run_agent", "Auto-Fix Validation Failures", {
-      prompt: `# Fix Backend Validation Failures
+      prompt: `# Fix Validation Failures
 
 The first validation pass failed for task **{{taskTitle}}**.
 
@@ -583,7 +584,7 @@ Do NOT weaken, remove, or bypass tests.
 Keep the original task scope.
 
 Run build + tests + lint locally before finishing.
-Commit with message "fix: address backend workflow validation failures"`,
+Commit with message "fix: address validation failures"`,
       sdk: "{{agentSdk}}",
       timeoutMs: "{{autoFixTimeoutMs}}",
     }, { x: 620, y: 1170 }),
@@ -594,11 +595,11 @@ Commit with message "fix: address backend workflow validation failures"`,
     }, { x: 620, y: 1300 }),
 
     node("test-retry", "validation.tests", "Final Test Run (Retry)", {
-      command: "{{testFramework}}",
+      command: "{{testCommand}}",
     }, { x: 620, y: 1430 }),
 
     node("lint-retry", "validation.lint", "Lint Check (Retry)", {
-      command: "npm run lint 2>/dev/null || echo 'no lint script'",
+      command: "{{lintCommand}}",
     }, { x: 620, y: 1560 }),
 
     node("retry-passed", "condition.expression", "Retry Checks Passed?", {
@@ -686,18 +687,18 @@ Commit with message "fix: address backend workflow validation failures"`,
   ],
   metadata: {
     author: "bosun",
-    version: 1,
+    version: 2,
     createdAt: "2025-02-25T00:00:00Z",
-    templateVersion: "1.0.0",
-    tags: ["agent", "backend", "api", "test-first", "tdd"],
+    templateVersion: "2.0.0",
+    tags: ["agent", "task-completion", "test-first", "tdd", "multi-language"],
     replaces: {
       module: "primary-agent.mjs",
       functions: ["runAgentWithTask"],
       calledFrom: ["task-executor.mjs:executeTask"],
       description:
-        "Replaces generic agent task execution with a structured backend " +
+        "Replaces generic agent task execution with a structured " +
         "workflow. Test-first methodology, build/lint gates, and Bosun-managed PR lifecycle handoff " +
-        "are enforced as distinct workflow stages.",
+        "are enforced as distinct workflow stages. Works with any language/framework.",
     },
   },
 };

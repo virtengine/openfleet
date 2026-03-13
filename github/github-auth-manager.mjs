@@ -21,6 +21,10 @@ import {
 
 const BOSUN_AUTH_STATE_PATH = join(homedir(), ".bosun", "github-auth-state.json");
 
+/** Set of token types that have been invalidated due to 401 errors (resets after 5 min). */
+const _invalidatedTypes = new Map(); // type → expiry timestamp
+const INVALIDATION_TTL_MS = 5 * 60 * 1000;
+
 // ── OAuth state loader ────────────────────────────────────────────────────────
 
 /**
@@ -30,13 +34,13 @@ const BOSUN_AUTH_STATE_PATH = join(homedir(), ".bosun", "github-auth-state.json"
 async function loadSavedOAuthToken() {
   // First check env override
   const envToken = process.env.BOSUN_GITHUB_USER_TOKEN;
-  if (envToken) return envToken;
+  if (envToken && looksLikeRealToken(envToken)) return envToken;
 
   try {
     const raw = await readFile(BOSUN_AUTH_STATE_PATH, "utf8");
     const data = JSON.parse(raw);
     const token = data?.accessToken || data?.access_token || null;
-    if (!token) return null;
+    if (!token || !looksLikeRealToken(token)) return null;
 
     // If there's an expiry, check it
     if (data.expiresAt || data.expires_at) {
@@ -51,6 +55,23 @@ async function loadSavedOAuthToken() {
   } catch {
     return null;
   }
+}
+
+/**
+ * Sanity-check that a token string looks like a real GitHub token.
+ * Rejects placeholder values, very short strings, and obvious non-tokens.
+ */
+function looksLikeRealToken(token) {
+  if (!token || typeof token !== "string") return false;
+  const t = token.trim();
+  if (t.length < 8) return false;
+  // Reject common placeholder values
+  const PLACEHOLDERS = [
+    "oauth-token", "your-token", "token-here", "placeholder",
+    "xxxx", "test-token", "fake-token", "replace-me", "changeme",
+  ];
+  if (PLACEHOLDERS.includes(t.toLowerCase())) return false;
+  return true;
 }
 
 // ── gh CLI fallback ───────────────────────────────────────────────────────────
@@ -97,27 +118,41 @@ async function verifyToken(token) {
 
 /**
  * Get the best available token for GitHub API calls.
+ * Skips token sources that have been recently invalidated (401 errors).
  *
  * @param {Object} [options]
  * @param {string} [options.owner] - repo owner (for installation token resolution)
  * @param {string} [options.repo]  - repo name (for installation token resolution)
  * @param {boolean} [options.verify] - verify token via /user API (default: false for perf)
+ * @param {string} [options.skipType] - skip a specific token type (used during retry)
  * @returns {Promise<{token: string, type: 'oauth'|'installation'|'gh-cli'|'env', login?: string}>}
  */
 export async function getGitHubToken(options = {}) {
-  const { owner, repo, verify = false } = options;
+  const { owner, repo, verify = false, skipType } = options;
+  const now = Date.now();
+
+  // Purge expired invalidations
+  for (const [key, expiry] of _invalidatedTypes) {
+    if (now >= expiry) _invalidatedTypes.delete(key);
+  }
+
+  const isSkipped = (type) =>
+    type === skipType || _invalidatedTypes.has(type);
 
   // ── 1. OAuth user token ───────────────────────────────────────────────────
-  const oauthToken = await loadSavedOAuthToken();
-  if (oauthToken) {
-    const login = verify ? await verifyToken(oauthToken) : undefined;
-    if (!verify || login) {
-      return { token: oauthToken, type: "oauth", login: login ?? undefined };
+  if (!isSkipped("oauth")) {
+    const oauthToken = await loadSavedOAuthToken();
+    if (oauthToken) {
+      const login = verify ? await verifyToken(oauthToken) : undefined;
+      if (!verify || login) {
+        return { token: oauthToken, type: "oauth", login: login ?? undefined };
+      }
+      // verify failed — skip oauth for this resolution cycle
     }
   }
 
   // ── 2. GitHub App installation token ─────────────────────────────────────
-  if (owner && repo && isAppConfigured()) {
+  if (!isSkipped("installation") && owner && repo && isAppConfigured()) {
     try {
       const { token } = await getInstallationTokenForRepo(owner, repo);
       if (token) {
@@ -129,19 +164,23 @@ export async function getGitHubToken(options = {}) {
   }
 
   // ── 3. gh CLI token ───────────────────────────────────────────────────────
-  const ghCliToken = await getGhCliToken();
-  if (ghCliToken) {
-    return { token: ghCliToken, type: "gh-cli" };
+  if (!isSkipped("gh-cli")) {
+    const ghCliToken = await getGhCliToken();
+    if (ghCliToken) {
+      return { token: ghCliToken, type: "gh-cli" };
+    }
   }
 
   // ── 4. Environment variable fallback ─────────────────────────────────────
-  const envToken =
-    process.env.GITHUB_TOKEN ||
-    process.env.GH_TOKEN ||
-    process.env.GITHUB_PAT ||
-    "";
-  if (envToken) {
-    return { token: envToken, type: "env" };
+  if (!isSkipped("env")) {
+    const envToken =
+      process.env.GITHUB_TOKEN ||
+      process.env.GH_TOKEN ||
+      process.env.GITHUB_PAT ||
+      "";
+    if (envToken) {
+      return { token: envToken, type: "env" };
+    }
   }
 
   throw new Error(
@@ -262,4 +301,16 @@ export async function getAuthStatus() {
     available: false,
     message: `No GitHub authentication available. ${hints.join(". ")}`,
   };
+}
+
+/**
+ * Mark a token type as invalid for 5 minutes so getGitHubToken() will skip it.
+ * Call this when a GitHub API call returns 401 to trigger fallback to the next source.
+ *
+ * @param {string} type - 'oauth' | 'installation' | 'gh-cli' | 'env'
+ */
+export function invalidateTokenType(type) {
+  if (type) {
+    _invalidatedTypes.set(type, Date.now() + INVALIDATION_TTL_MS);
+  }
 }

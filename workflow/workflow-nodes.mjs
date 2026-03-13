@@ -27,9 +27,14 @@ import { getToolsPromptBlock } from "../agent/agent-custom-tools.mjs";
 import { buildRelevantSkillsPromptBlock, findRelevantSkills } from "../agent/bosun-skills.mjs";
 import { readBenchmarkModeState, taskMatchesBenchmarkMode } from "../bench/benchmark-mode.mjs";
 import { getSessionTracker } from "../infra/session-tracker.mjs";
+import {
+  buildWorkflowContractPromptBlock,
+  loadWorkflowContract,
+  validateWorkflowContract,
+} from "./workflow-contract.mjs";
 import { fixGitConfigCorruption } from "../workspace/worktree-manager.mjs";
 import { clearBlockedWorktreeIdentity } from "../git/git-safety.mjs";
-import { getGitHubToken } from "../github/github-auth-manager.mjs";
+import { getGitHubToken, invalidateTokenType } from "../github/github-auth-manager.mjs";
 
 const TAG = "[workflow-nodes]";
 const PORTABLE_WORKTREE_COUNT_COMMAND = "node -e \"const cp=require('node:child_process');const wt=cp.execSync('git worktree list --porcelain',{encoding:'utf8'});const count=(wt.match(/^worktree /gm)||[]).length;process.stdout.write(String(count)+'\\\\n');\"";
@@ -1162,34 +1167,57 @@ registerNodeType("trigger.manual", {
 registerNodeType("trigger.task_low", {
   describe: () =>
     "Fires when backlog task count drops below threshold. Self-queries kanban " +
-    "when todoCount is not pre-populated in context data.",
+    "when todoCount is not pre-populated in context data. Workspace-aware: " +
+    "uses workspace context to scope the kanban query.",
   schema: {
     type: "object",
     properties: {
       threshold: { type: "number", default: 3, description: "Minimum todo count before triggering" },
       status: { type: "string", default: "todo", description: "Task status to count" },
       projectId: { type: "string", description: "Project ID to check (optional)" },
+      countDraftTasks: { type: "boolean", default: false, description: "Also count draft tasks toward threshold" },
     },
   },
   async execute(node, ctx) {
     const threshold = node.config?.threshold ?? 3;
     const status = node.config?.status ?? "todo";
+    const countDrafts = node.config?.countDraftTasks === true;
     let todoCount = ctx.data?.todoCount ?? ctx.data?.backlogCount ?? null;
 
     // Self-query kanban if todoCount not pre-populated
     if (todoCount == null) {
       try {
         const projectId = cfgOrCtx(node, ctx, "projectId") || undefined;
+        const workspaceId = ctx.data?._workspaceId || cfgOrCtx(node, ctx, "workspaceId") || undefined;
         const kanban = ctx.data?._services?.kanban;
         let tasks;
+        const queryOpts = { status };
+        if (workspaceId) queryOpts.workspace = workspaceId;
         if (kanban?.listTasks) {
-          tasks = await kanban.listTasks(projectId, { status });
+          tasks = await kanban.listTasks(projectId, queryOpts);
         } else {
           const ka = await ensureKanbanAdapterMod();
-          tasks = await ka.listTasks(projectId, { status });
+          tasks = await ka.listTasks(projectId, queryOpts);
         }
         todoCount = Array.isArray(tasks) ? tasks.length : 0;
-        ctx.log(node.id, `Self-queried kanban: ${todoCount} task(s) with status "${status}"`);
+
+        // Optionally also count draft tasks
+        if (countDrafts) {
+          let draftTasks;
+          const draftOpts = { status: "draft" };
+          if (workspaceId) draftOpts.workspace = workspaceId;
+          if (kanban?.listTasks) {
+            draftTasks = await kanban.listTasks(projectId, draftOpts);
+          } else {
+            const ka = await ensureKanbanAdapterMod();
+            draftTasks = await ka.listTasks(projectId, draftOpts);
+          }
+          const draftCount = Array.isArray(draftTasks) ? draftTasks.length : 0;
+          todoCount += draftCount;
+          ctx.log(node.id, `Self-queried kanban: ${todoCount} task(s) (todo + ${draftCount} draft) for workspace="${workspaceId || "all"}"`);
+        } else {
+          ctx.log(node.id, `Self-queried kanban: ${todoCount} task(s) with status "${status}" for workspace="${workspaceId || "all"}"`);
+        }
       } catch (err) {
         ctx.log(node.id, `Kanban query failed: ${err?.message || err} — using 0`);
         todoCount = 0;
@@ -3452,9 +3480,11 @@ registerNodeType("action.create_pr", {
     // for events caused by GITHUB_TOKEN (loop-prevention), so using a real user
     // token here is what allows CI to fire automatically on the created PR.
     let ghTokenEnv = {};
+    let resolvedTokenType = null;
     try {
       const [ghOwner, ghRepo] = repoSlug ? repoSlug.split("/") : [];
       const { token, type } = await getGitHubToken({ owner: ghOwner, repo: ghRepo });
+      resolvedTokenType = type;
       // Only inject when we have a real user/app token, not an env-fallback
       // (which would be GITHUB_TOKEN itself — injecting it would be redundant).
       if (type !== "env") {
@@ -3463,12 +3493,38 @@ registerNodeType("action.create_pr", {
     } catch {
       // No auth available — fall back to ambient environment
     }
+
     const execOptions = {
       cwd,
       encoding: "utf8",
       timeout: 60000,
       env: makeIsolatedGitEnv(ghTokenEnv),
       stdio: ["pipe", "pipe", "pipe"],
+    };
+
+    /** Re-resolve token after invalidating the current one (401 retry). */
+    const retryWithFallbackToken = async () => {
+      if (!resolvedTokenType) return false;
+      invalidateTokenType(resolvedTokenType);
+      try {
+        const [ghOwner, ghRepo] = repoSlug ? repoSlug.split("/") : [];
+        const { token, type } = await getGitHubToken({
+          owner: ghOwner,
+          repo: ghRepo,
+          skipType: resolvedTokenType,
+        });
+        resolvedTokenType = type;
+        if (type !== "env") {
+          ghTokenEnv = { GH_TOKEN: token };
+        } else {
+          ghTokenEnv = {};
+        }
+        execOptions.env = makeIsolatedGitEnv(ghTokenEnv);
+        ctx.log(node.id, `Retrying with fallback token (type=${type})`);
+        return true;
+      } catch {
+        return false;
+      }
     };
 
     const findExistingPr = () => {
@@ -3580,7 +3636,42 @@ registerNodeType("action.create_pr", {
       };
     } catch (err) {
       const errorMsg = err?.stderr?.toString?.()?.trim() || err?.message || String(err);
-      console.warn(`[workflow-nodes] create-pr FAILED: ${errorMsg.substring(0, 200)} (branch=${branch || "(empty)"})`);
+      const is401 = /401|bad credentials|requires authentication/i.test(errorMsg);
+
+      // On 401: invalidate current token and retry once with the next fallback
+      if (is401 && resolvedTokenType) {
+        console.warn(`${TAG} create-pr: 401 from token type="${resolvedTokenType}", attempting fallback`);
+        const retried = await retryWithFallbackToken();
+        if (retried) {
+          try {
+            const retryOutput = execSync(cmd, execOptions);
+            const trimmed = (retryOutput || "").trim();
+            const urlMatch = trimmed.match(/https:\/\/github\.com\/[^\s]+\/pull\/(\d+)/);
+            const prNumber = urlMatch ? parseInt(urlMatch[1], 10) : null;
+            const prUrl = urlMatch ? urlMatch[0] : trimmed;
+            ctx.log(node.id, `PR created (after auth retry): ${prUrl}`);
+            return {
+              success: true,
+              prUrl,
+              prNumber,
+              repoSlug: repoSlug || null,
+              title,
+              base,
+              branch: branch || null,
+              draft,
+              labels,
+              reviewers,
+              output: trimmed,
+            };
+          } catch (retryErr) {
+            const retryMsg = retryErr?.stderr?.toString?.()?.trim() || retryErr?.message || String(retryErr);
+            console.warn(`${TAG} create-pr FAILED (after retry): ${retryMsg.substring(0, 200)}`);
+            ctx.log(node.id, `PR creation failed after auth retry: ${retryMsg}`);
+          }
+        }
+      }
+
+      console.warn(`${TAG} create-pr FAILED: ${errorMsg.substring(0, 200)} (branch=${branch || "(empty)"})`);
       ctx.log(node.id, `PR creation failed: ${errorMsg}`);
       const existingPr = findExistingPr();
       if (existingPr) {
@@ -4053,6 +4144,9 @@ registerNodeType("validation.lint", {
   },
   async execute(node, ctx) {
     const command = ctx.resolve(node.config?.command || "npm run lint");
+    if (!command || !command.trim()) {
+      return { passed: true, output: "no lint configured", skipped: true };
+    }
     const cwd = ctx.resolve(node.config?.cwd || ctx.data?.worktreePath || process.cwd());
     try {
       const output = execSync(command, { cwd, timeout: node.config?.timeoutMs || 120000, encoding: "utf8", stdio: "pipe" });
@@ -8823,6 +8917,7 @@ registerNodeType("action.resolve_executor", {
           title: task.title,
           description: task.description,
           tags: task.tags,
+          repoRoot,
         },
         { topN: 1 },
       );
@@ -9188,6 +9283,155 @@ registerNodeType("action.release_worktree", {
   },
 });
 
+const readWorkflowContractHandler = {
+  describe: () =>
+    "Read a project WORKFLOW.md runtime contract and stage it for session-start prompt injection.",
+  schema: {
+    type: "object",
+    properties: {
+      projectRoot: { type: "string", description: "Project root containing WORKFLOW.md" },
+      repoRoot: { type: "string", description: "Fallback project root" },
+      worktreePath: { type: "string", description: "Active project worktree path" },
+      outputVariable: { type: "string", description: "Optional ctx.data key for the loaded contract" },
+      logPreviewChars: {
+        type: "number",
+        default: 1200,
+        description: "Maximum contract characters to include in the workflow log",
+      },
+    },
+  },
+  async execute(node, ctx) {
+    const projectRoot = cfgOrCtx(node, ctx, "projectRoot")
+      || cfgOrCtx(node, ctx, "worktreePath")
+      || cfgOrCtx(node, ctx, "repoRoot")
+      || process.cwd();
+    const outputVariable = cfgOrCtx(node, ctx, "outputVariable") || "_workflowContract";
+    const logPreviewChars = Number(cfgOrCtx(node, ctx, "logPreviewChars") || 1200);
+    const contract = loadWorkflowContract(projectRoot, { useCache: false });
+
+    ctx.data._workflowContractProjectRoot = projectRoot;
+    ctx.data._workflowContractPath = contract.path || "";
+    ctx.data._workflowContract = contract;
+
+    if (outputVariable) {
+      ctx.data[outputVariable] = contract;
+    }
+
+    if (!contract.exists) {
+      ctx.data._workflowContractPromptBlock = "";
+      ctx.log(node.id, "No WORKFLOW.md detected at " + contract.path);
+      return {
+        success: true,
+        found: false,
+        skipped: true,
+        projectRoot,
+        path: contract.path,
+      };
+    }
+
+    const promptBlock = buildWorkflowContractPromptBlock(contract);
+    ctx.data._workflowContractPromptBlock = promptBlock;
+    const preview = promptBlock.length > logPreviewChars
+      ? promptBlock.slice(0, logPreviewChars) + "…"
+      : promptBlock;
+    ctx.log(node.id, "Injected WORKFLOW.md contract into session context:\n" + preview);
+
+    return {
+      success: true,
+      found: true,
+      skipped: false,
+      projectRoot,
+      path: contract.path,
+      contract,
+      promptBlock,
+    };
+  },
+};
+
+registerNodeType("read-workflow-contract", readWorkflowContractHandler);
+registerNodeType("action.read_workflow_contract", readWorkflowContractHandler);
+
+const workflowContractValidationHandler = {
+  describe: () =>
+    "Validate required WORKFLOW.md contract fields before session work begins.",
+  schema: {
+    type: "object",
+    properties: {
+      projectRoot: { type: "string", description: "Project root containing WORKFLOW.md" },
+      contractVariable: {
+        type: "string",
+        description: "ctx.data key containing a previously loaded contract object",
+      },
+      failOnInvalid: {
+        type: "boolean",
+        default: true,
+        description: "Throw when required WORKFLOW.md fields are missing",
+      },
+    },
+  },
+  async execute(node, ctx) {
+    const projectRoot = cfgOrCtx(node, ctx, "projectRoot")
+      || cfgOrCtx(node, ctx, "worktreePath")
+      || cfgOrCtx(node, ctx, "repoRoot")
+      || ctx.data?._workflowContractProjectRoot
+      || process.cwd();
+    const contractVariable = cfgOrCtx(node, ctx, "contractVariable") || "_workflowContract";
+    const failOnInvalid = node.config?.failOnInvalid !== false;
+    const loadedContract =
+      ctx.data?.[contractVariable] && typeof ctx.data[contractVariable] === "object"
+        ? ctx.data[contractVariable]
+        : loadWorkflowContract(projectRoot, { useCache: false });
+    const validation = validateWorkflowContract(loadedContract);
+
+    ctx.data._workflowContractValidation = validation;
+
+    if (!loadedContract.exists) {
+      ctx.log(node.id, "No WORKFLOW.md found — skipping contract validation");
+      return {
+        success: true,
+        skipped: true,
+        found: false,
+        valid: true,
+        contract: loadedContract,
+        errors: [],
+      };
+    }
+
+    if (!validation.valid) {
+      const detail = validation.errors.map((entry) => entry.message).join(" ");
+      const message = "WORKFLOW.md contract validation failed for " + loadedContract.path + ". " + detail;
+      ctx.log(node.id, message, "error");
+      if (failOnInvalid) {
+        throw new Error(message);
+      }
+      return {
+        success: false,
+        skipped: false,
+        found: true,
+        valid: false,
+        contract: loadedContract,
+        errors: validation.errors,
+      };
+    }
+
+    ctx.log(
+      node.id,
+      "Validated WORKFLOW.md contract: terminalStates=[" + validation.contract.terminalStates.join(", ") + "], forbiddenPatterns=" + validation.contract.forbiddenPatterns.length,
+    );
+    return {
+      success: true,
+      skipped: false,
+      found: true,
+      valid: true,
+      contract: validation.contract,
+      errors: [],
+    };
+  },
+};
+
+registerNodeType("workflow-contract-validation", workflowContractValidationHandler);
+registerNodeType("action.workflow_contract_validation", workflowContractValidationHandler);
+
 // ── action.build_task_prompt ────────────────────────────────────────────────
 
 registerNodeType("action.build_task_prompt", {
@@ -9375,6 +9619,27 @@ registerNodeType("action.build_task_prompt", {
     parts.push("4. In completion notes, list every repository you touched and why.");
     parts.push("");
 
+    let workflowContractPromptBlock = String(ctx.data?._workflowContractPromptBlock || "").trim();
+    if (!workflowContractPromptBlock) {
+      const workflowContract = ctx.data?._workflowContract;
+      if (workflowContract?.raw && workflowContract?.found) {
+        const sourcePath = workflowContract.path || "WORKFLOW.md";
+        workflowContractPromptBlock = [
+          "## WORKFLOW.md Contract",
+          `- **Source:** ${sourcePath}`,
+          "- **Behavior:** Treat this file as a project-specific runtime contract.",
+          "",
+          String(workflowContract.raw).trim(),
+        ].join("\n").trim();
+      } else if (workflowContract?.exists && workflowContract?.content) {
+        workflowContractPromptBlock = buildWorkflowContractPromptBlock(workflowContract);
+      }
+    }
+    if (workflowContractPromptBlock) {
+      parts.push(workflowContractPromptBlock);
+      parts.push("");
+    }
+
     // AGENTS.md + copilot-instructions.md
     if (includeAgentsMd) {
       const searchDirs = [worktreePath || repoRoot, repoRoot].filter(Boolean);
@@ -9421,6 +9686,37 @@ registerNodeType("action.build_task_prompt", {
     if (relevantSkillsBlock) {
       parts.push(relevantSkillsBlock);
       parts.push("");
+    }
+
+    // Inject library-resolved skills from agent.select_profile.
+    // These are skills assigned to the matched agent profile or scored by
+    // the library resolver's buildSkillSelection — distinct from the
+    // filesystem-based .bosun/skills/ resolved above.
+    const librarySkillIds = Array.isArray(ctx.data?.resolvedSkillIds) ? ctx.data.resolvedSkillIds : [];
+    if (librarySkillIds.length > 0) {
+      try {
+        const library = await ensureLibraryManagerMod();
+        const libraryRoot = repoRoot || process.cwd();
+        const fsSkillNames = new Set(matchedSkills.map((s) => String(s.filename || "").replace(/\.md$/i, "").toLowerCase()));
+        const librarySkillParts = [];
+        for (const skillId of librarySkillIds) {
+          if (fsSkillNames.has(skillId.toLowerCase())) continue;
+          const entry = library.getEntry?.(libraryRoot, skillId);
+          if (!entry) continue;
+          const content = library.getEntryContent?.(libraryRoot, entry);
+          if (!content || (typeof content === "string" && !content.trim())) continue;
+          const body = typeof content === "string" ? content.trim() : JSON.stringify(content, null, 2);
+          librarySkillParts.push(`### Skill: ${entry.name || skillId} (\`${skillId}\`)`);
+          librarySkillParts.push(body);
+          librarySkillParts.push("");
+        }
+        if (librarySkillParts.length > 0) {
+          parts.push("## Library Skills");
+          parts.push(...librarySkillParts);
+        }
+      } catch (err) {
+        ctx.log(node.id, `Library skill injection failed (non-fatal): ${err.message}`);
+      }
     }
 
     parts.push("## Tool Discovery");
@@ -9959,3 +10255,5 @@ registerNodeType("action.web_search", {
 // ═══════════════════════════════════════════════════════════════════════════
 
 export { registerNodeType, getNodeType, listNodeTypes } from "./workflow-engine.mjs";
+
+export { evaluateTaskAssignedTriggerConfig };

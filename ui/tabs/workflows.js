@@ -10,7 +10,7 @@ import htm from "htm";
 const html = htm.bind(h);
 
 import { haptic } from "../modules/telegram.js";
-import { apiFetch } from "../modules/api.js";
+import { apiFetch, onWsMessage } from "../modules/api.js";
 import { showToast, refreshTab } from "../modules/state.js";
 import { navigateTo, routeParams, setRouteParams } from "../modules/router.js";
 import { ICONS } from "../modules/icons.js";
@@ -62,6 +62,11 @@ const connectingFrom = signal(null);
 const viewMode = signal("list"); // "list" | "canvas" | "runs"
 const WORKFLOW_RUN_PAGE_SIZE = 50;
 const WORKFLOW_RUN_MAX_FETCH = 5000;
+const WORKFLOW_LIVE_POLL_MS = 3000;
+const WORKFLOW_LIVE_WS_BATCH_MS = 90;
+const NODE_COMPLETION_FLASH_MS = 1400;
+const NODE_RUNNING_HINT_MS = 500;
+const EDGE_FLOW_ANIMATION_MS = 1200;
 const workflowRunsLimit = signal(WORKFLOW_RUN_PAGE_SIZE);
 
 // ── Execute Dialog state ──────────────────────────────────────────────────
@@ -311,6 +316,11 @@ function humanizeVarKey(key) {
 /** Infer a short helper text for a variable key */
 function inferVarHelp(key, value) {
   const k = key.toLowerCase();
+  if (k.includes("testcommand") || k.includes("test_command") || k === "testframework" || k === "test_framework") return "Test command for your project — select from presets or enter custom";
+  if (k.includes("buildcommand") || k.includes("build_command")) return "Build command for your project — select from presets or enter custom";
+  if (k.includes("lintcommand") || k.includes("lint_command") || k.includes("lintcmd")) return "Lint/style check command — select from presets or enter custom";
+  if (k.includes("syntaxcheck") || k.includes("syntax_check")) return "Syntax/compile check command — select from presets or enter custom";
+  if (k === "basebranch" || k === "base_branch" || k === "defaultbasebranch") return "Base branch for PRs — select from common options or enter custom";
   if (k.includes("timeout") || k.includes("delay") || k.includes("cooldown")) return "Duration in milliseconds";
   if (k.includes("branch")) return "Git branch name";
   if (k.includes("url") || k.includes("endpoint")) return "URL / endpoint";
@@ -326,12 +336,24 @@ function inferVarHelp(key, value) {
 function inferVarOptions(key, value) {
   const k = String(key || "").toLowerCase();
   const options = [];
+
   if (k.includes("executor") || k.includes("sdk")) {
     options.push("auto", "codex", "claude", "copilot");
   } else if (k.includes("bumptype") || k.includes("bump_type")) {
     options.push("patch", "minor", "major");
+  } else if (k.includes("testcommand") || k.includes("test_command") || k === "testframework" || k === "test_framework") {
+    options.push("npm test", "yarn test", "pnpm test", "pytest", "poetry run pytest", "go test ./...", "cargo test", "mvn test", "./gradlew test", "dotnet test", "bundle exec rspec", "make test");
+  } else if (k.includes("buildcommand") || k.includes("build_command")) {
+    options.push("npm run build", "yarn build", "pnpm build", "go build ./...", "cargo build", "mvn package -DskipTests", "./gradlew build", "dotnet build", "python -m build", "make");
+  } else if (k.includes("lintcommand") || k.includes("lint_command") || k.includes("lintcmd")) {
+    options.push("npm run lint", "npx eslint .", "ruff check .", "golangci-lint run", "cargo clippy -- -D warnings", "dotnet format --verify-no-changes", "bundle exec rubocop");
+  } else if (k.includes("syntaxcheck") || k.includes("syntax_check")) {
+    options.push("node --check", "npx tsc --noEmit", "python -m py_compile", "go vet ./...", "cargo check", "dotnet build --no-restore");
+  } else if (k === "basebranch" || k === "base_branch" || k === "defaultbasebranch" || k === "targetbranch") {
+    options.push("main", "master", "develop", "staging");
   }
-  // Keep typed value only when this field already has known preset options.
+
+  // Keep typed value when this field has known preset options.
   if (options.length > 0 && typeof value === "string" && value.trim()) {
     options.unshift(value.trim());
   }
@@ -380,7 +402,12 @@ function isQuickVarKey(key) {
     k.includes("sdk") ||
     k.includes("model") ||
     k.includes("branch") ||
-    k.includes("title")
+    k.includes("title") ||
+    k.includes("testcommand") || k.includes("test_command") ||
+    k === "testframework" || k === "test_framework" ||
+    k.includes("buildcommand") || k.includes("build_command") ||
+    k.includes("lintcommand") || k.includes("lint_command") ||
+    k.includes("syntaxcheck") || k.includes("syntax_check")
   );
 }
 
@@ -1209,6 +1236,109 @@ function stripEmoji(text) {
     .trim();
 }
 
+function normalizeLiveNodeStatus(status) {
+  const normalized = String(status || "").trim().toLowerCase();
+  if (normalized === "completed" || normalized === "success") return "success";
+  if (normalized === "failed" || normalized === "fail" || normalized === "error") return "fail";
+  if (normalized === "skipped" || normalized === "skip") return "skipped";
+  if (normalized === "running") return "running";
+  if (normalized === "waiting" || normalized === "pending") return "waiting";
+  return normalized || "";
+}
+
+function toNodeStatusLabel(status) {
+  if (status === "success") return "success";
+  if (status === "fail") return "fail";
+  if (status === "skipped") return "skipped";
+  return status || "";
+}
+
+function getCanvasNodeExecutionVisuals(status, isSelected, selectedColor, flashState = "") {
+  if (status === "running") {
+    return {
+      fill: "#10233f",
+      stroke: "#60a5fa",
+      strokeWidth: 2.5,
+      filter: "url(#node-glow)",
+    };
+  }
+  if (status === "fail" || flashState === "fail") {
+    return {
+      fill: "#2a1217",
+      stroke: "#ef4444",
+      strokeWidth: 2.25,
+      filter: "url(#node-shadow)",
+    };
+  }
+  if (status === "success" || flashState === "success") {
+    return {
+      fill: "#0f2a23",
+      stroke: "#10b981",
+      strokeWidth: 2,
+      filter: "url(#node-shadow)",
+    };
+  }
+  if (status === "skipped" || flashState === "skipped") {
+    return {
+      fill: "#1f2430",
+      stroke: "#94a3b8",
+      strokeWidth: 2,
+      filter: "url(#node-shadow)",
+    };
+  }
+  if (status === "waiting" || status === "pending") {
+    return {
+      fill: "#2f2310",
+      stroke: "#f59e0b",
+      strokeWidth: 2,
+      filter: "url(#node-shadow)",
+    };
+  }
+  return {
+    fill: isSelected ? "#1e293b" : "#1a1f2e",
+    stroke: isSelected ? selectedColor : "#2a3040",
+    strokeWidth: isSelected ? 2 : 1,
+    filter: isSelected ? "url(#node-glow)" : "url(#node-shadow)",
+  };
+}
+
+function resolveNodeOutputPreview(nodeType, preview = {}, fallbackOutput = null) {
+  const lines = Array.isArray(preview?.lines) ? preview.lines : [];
+  const tokenCount = Number.isFinite(Number(preview?.tokenCount))
+    ? Math.max(0, Math.round(Number(preview.tokenCount)))
+    : null;
+  if (lines.length) {
+    return {
+      lines: lines.slice(0, 3).map((line) => String(line || "").trim()).filter(Boolean),
+      tokenCount,
+    };
+  }
+  const type = String(nodeType || "").trim().toLowerCase();
+  const output = fallbackOutput && typeof fallbackOutput === "object" ? fallbackOutput : {};
+  const fallbackLines = [];
+  if (type.startsWith("condition.")) {
+    const branch = String(output.matchedPort || output.port || "").trim();
+    if (branch) fallbackLines.push(`Branch: ${branch}`);
+    if (Object.prototype.hasOwnProperty.call(output, "value")) {
+      fallbackLines.push(`Value: ${String(output.value)}`);
+    }
+  } else if (type.startsWith("git.") || type.startsWith("github.")) {
+    const shaRaw = String(output.commitSha || output.sha || output.head || "").trim();
+    const sha = /^[0-9a-f]{7,40}$/i.test(shaRaw) ? shaRaw.slice(0, 12) : "";
+    if (sha) fallbackLines.push(`Commit: ${sha}`);
+    const prUrl = String(output.prUrl || output.url || "").trim();
+    if (prUrl) fallbackLines.push(`PR: ${prUrl}`);
+  }
+  if (!fallbackLines.length) {
+    const text = String(output.summary || output.output || output.message || output.error || "").trim();
+    if (text) fallbackLines.push(...text.split(/\r?\n/).map((line) => line.trim()).filter(Boolean).slice(0, 3));
+  }
+  return {
+    lines: fallbackLines.slice(0, 3),
+    tokenCount,
+  };
+}
+
 /* ═══════════════════════════════════════════════════════════════
  *  Canvas — SVG-based Workflow Editor
  * ═══════════════════════════════════════════════════════════════ */
@@ -1233,6 +1363,14 @@ function WorkflowCanvas({ workflow, onSave, nodeTypes: availableNodeTypes = [] }
   const [selectedNodeIds, setSelectedNodeIds] = useState(new Set());
   const [historyState, setHistoryState] = useState(() => createHistoryState(workflow?.nodes || [], workflow?.edges || []));
   const [marquee, setMarquee] = useState(null);
+  const [liveHighlightEnabled, setLiveHighlightEnabled] = useState(true);
+  const [liveRun, setLiveRun] = useState(null);
+  const [liveNodeStatuses, setLiveNodeStatuses] = useState({});
+  const [liveNodeOutputPreviews, setLiveNodeOutputPreviews] = useState({});
+  const [liveNodeFlashStates, setLiveNodeFlashStates] = useState({});
+  const [liveNodeRunningHints, setLiveNodeRunningHints] = useState({});
+  const [liveEdgeActivity, setLiveEdgeActivity] = useState({});
+  const [liveNowTick, setLiveNowTick] = useState(Date.now());
   const marqueeStartRef = useRef(null);
   const multiDragRef = useRef({});
   const nodesRef = useRef(nodes);
@@ -1242,10 +1380,17 @@ function WorkflowCanvas({ workflow, onSave, nodeTypes: availableNodeTypes = [] }
   const historyPendingSnapshotRef = useRef(null);
   const saveTimer = useRef(null);
   const selectedNodeIdsRef = useRef(selectedNodeIds);
+  const liveEventQueueRef = useRef([]);
+  const liveEventFlushTimerRef = useRef(null);
   const workflowSnapshotKey = useMemo(
     () => serializeGraphSnapshot(workflow?.nodes || [], workflow?.edges || []),
     [workflow?.nodes, workflow?.edges],
   );
+  const hasLiveStatuses = Object.keys(liveNodeStatuses).length > 0;
+  const liveRunDuration = liveRun?.status === "running" && liveRun?.startedAt
+    ? Math.max(0, liveNowTick - Number(liveRun.startedAt))
+    : Number(liveRun?.duration) || 0;
+  const liveActiveNodes = Object.values(liveNodeStatuses).filter((status) => status === "running").length;
   useEffect(() => { selectedNodeIdsRef.current = selectedNodeIds; }, [selectedNodeIds]);
   useEffect(() => {
     nodesRef.current = nodes;
@@ -1270,11 +1415,293 @@ function WorkflowCanvas({ workflow, onSave, nodeTypes: availableNodeTypes = [] }
     setEditingNode(null);
     setContextMenu(null);
     setShowNodePalette(false);
+    setLiveRun(null);
+    setLiveNodeStatuses({});
+    setLiveNodeOutputPreviews({});
+    setLiveNodeFlashStates({});
+    setLiveNodeRunningHints({});
+    setLiveEdgeActivity({});
   }, [workflow?.id, workflowSnapshotKey]);
+
+  useEffect(() => {
+    if (!liveHighlightEnabled || !workflow?.id) {
+      setLiveRun(null);
+      setLiveNodeStatuses({});
+      setLiveNodeOutputPreviews({});
+      setLiveNodeFlashStates({});
+      setLiveNodeRunningHints({});
+      setLiveEdgeActivity({});
+      return;
+    }
+    let cancelled = false;
+
+    const pollLiveRun = async () => {
+      try {
+        const data = await apiFetch(`/api/workflows/runs?workflowId=${encodeURIComponent(workflow.id)}&limit=10`);
+        if (cancelled) return;
+        const runs = Array.isArray(data?.runs) ? data.runs : [];
+        const running = runs.find((run) => run?.status === "running");
+        const targetRun = running || runs[0] || null;
+        if (!targetRun?.runId) {
+          setLiveRun(null);
+          setLiveNodeStatuses({});
+          setLiveNodeRunningHints({});
+          setLiveNodeOutputPreviews({});
+          setLiveNodeFlashStates({});
+          setLiveEdgeActivity({});
+          return;
+        }
+        if (targetRun.status !== "running") {
+          setLiveRun(targetRun);
+          setLiveNodeStatuses({});
+          return;
+        }
+        const detailResponse = await apiFetch(`/api/workflows/runs/${targetRun.runId}`);
+        if (cancelled) return;
+        const detailedRun = detailResponse?.run || targetRun;
+        setLiveRun(detailedRun);
+        const runStatuses = buildNodeStatusesFromRunDetail(detailedRun);
+        const normalizedStatuses = {};
+        for (const [nodeId, status] of Object.entries(runStatuses || {})) {
+          normalizedStatuses[nodeId] = normalizeLiveNodeStatus(status);
+        }
+        setLiveNodeStatuses(normalizedStatuses);
+        const nodeOutputs = detailedRun?.detail?.nodeOutputs && typeof detailedRun.detail.nodeOutputs === "object"
+          ? detailedRun.detail.nodeOutputs
+          : {};
+        setLiveNodeOutputPreviews((prev) => {
+          const next = { ...prev };
+          for (const node of nodesRef.current || []) {
+            const nodeId = String(node?.id || "").trim();
+            if (!nodeId || !Object.prototype.hasOwnProperty.call(nodeOutputs, nodeId)) continue;
+            const preview = resolveNodeOutputPreview(node?.type, null, nodeOutputs[nodeId]);
+            const lines = Array.isArray(preview?.lines)
+              ? preview.lines.map((line) => String(line || "").trim()).filter(Boolean).slice(0, 3)
+              : [];
+            if (!lines.length && preview?.tokenCount == null) continue;
+            next[nodeId] = {
+              lines,
+              tokenCount: Number.isFinite(Number(preview?.tokenCount))
+                ? Math.max(0, Math.round(Number(preview.tokenCount)))
+                : null,
+              updatedAt: Date.now(),
+            };
+          }
+          return next;
+        });
+      } catch {
+        if (cancelled) return;
+      }
+    };
+
+    pollLiveRun();
+    const pollTimer = setInterval(pollLiveRun, WORKFLOW_LIVE_POLL_MS);
+    return () => {
+      cancelled = true;
+      clearInterval(pollTimer);
+    };
+  }, [liveHighlightEnabled, workflow?.id]);
+
+  useEffect(() => {
+    if (!liveHighlightEnabled) return undefined;
+    const timer = setInterval(() => setLiveNowTick(Date.now()), 1000);
+    return () => clearInterval(timer);
+  }, [liveHighlightEnabled, liveRun?.status]);
+
+  useEffect(() => {
+    if (!liveHighlightEnabled) return;
+    const now = Date.now();
+    setLiveNodeFlashStates((prev) => {
+      let changed = false;
+      const next = { ...prev };
+      for (const [nodeId, flash] of Object.entries(next)) {
+        if (!flash || Number(flash.until) <= now) {
+          delete next[nodeId];
+          changed = true;
+        }
+      }
+      return changed ? next : prev;
+    });
+    setLiveNodeRunningHints((prev) => {
+      let changed = false;
+      const next = { ...prev };
+      for (const [nodeId, until] of Object.entries(next)) {
+        if (Number(until || 0) <= now) {
+          delete next[nodeId];
+          changed = true;
+        }
+      }
+      return changed ? next : prev;
+    });
+    setLiveEdgeActivity((prev) => {
+      let changed = false;
+      const next = { ...prev };
+      for (const [edgeId, info] of Object.entries(next)) {
+        if (!info || now - Number(info.ts || 0) > EDGE_FLOW_ANIMATION_MS) {
+          delete next[edgeId];
+          changed = true;
+        }
+      }
+      return changed ? next : prev;
+    });
+  }, [liveNowTick, liveHighlightEnabled]);
+
+  useEffect(() => {
+    if (!liveHighlightEnabled || !workflow?.id) return undefined;
+    const flushQueuedEvents = () => {
+      if (liveEventFlushTimerRef.current) {
+        clearTimeout(liveEventFlushTimerRef.current);
+        liveEventFlushTimerRef.current = null;
+      }
+      const queued = liveEventQueueRef.current.splice(0, liveEventQueueRef.current.length);
+      if (!queued.length) return;
+      setLiveNowTick(Date.now());
+      setLiveRun((prev) => {
+        let next = prev;
+        for (const event of queued) {
+          if (event.kind !== "run") continue;
+          if (!next || next.runId !== event.runId) {
+            next = {
+              ...(next || {}),
+              runId: event.runId,
+              workflowId: event.workflowId || workflow.id,
+              workflowName: event.workflowName || workflow.name,
+              startedAt: event.timestamp || Date.now(),
+            };
+          }
+          next = {
+            ...next,
+            runId: event.runId,
+            workflowId: event.workflowId || next.workflowId || workflow.id,
+            workflowName: event.workflowName || next.workflowName || workflow.name,
+            status: event.status || next.status || "running",
+            duration: Number.isFinite(Number(event.duration)) ? Number(event.duration) : next.duration,
+            endedAt: event.status && event.status !== "running"
+              ? (event.timestamp || Date.now())
+              : next.endedAt,
+          };
+        }
+        return next;
+      });
+      setLiveNodeStatuses((prev) => {
+        const next = { ...prev };
+        for (const event of queued) {
+          if (event.kind !== "node" || !event.nodeId) continue;
+          next[event.nodeId] = normalizeLiveNodeStatus(event.status);
+        }
+        return next;
+      });
+      setLiveNodeOutputPreviews((prev) => {
+        const next = { ...prev };
+        for (const event of queued) {
+          if (event.kind !== "node" || !event.nodeId) continue;
+          if (event.outputPreview || event.error) {
+            const lines = Array.isArray(event.outputPreview?.lines)
+              ? event.outputPreview.lines
+              : (event.error ? [String(event.error)] : []);
+            next[event.nodeId] = {
+              lines: lines.slice(0, 3),
+              tokenCount: Number.isFinite(Number(event.outputPreview?.tokenCount))
+                ? Math.max(0, Math.round(Number(event.outputPreview.tokenCount)))
+                : null,
+              updatedAt: event.timestamp || Date.now(),
+            };
+          }
+        }
+        return next;
+      });
+      setLiveNodeFlashStates((prev) => {
+        const next = { ...prev };
+        const now = Date.now();
+        for (const event of queued) {
+          if (event.kind !== "node" || !event.nodeId) continue;
+          const normalized = normalizeLiveNodeStatus(event.status);
+          if (normalized === "success" || normalized === "fail" || normalized === "skipped") {
+            next[event.nodeId] = {
+              state: normalized,
+              until: now + NODE_COMPLETION_FLASH_MS,
+            };
+          }
+        }
+        for (const [nodeId, flash] of Object.entries(next)) {
+          if (!flash || Number(flash.until) <= now) delete next[nodeId];
+        }
+        return next;
+      });
+      setLiveNodeRunningHints((prev) => {
+        const next = { ...prev };
+        const now = Date.now();
+        let changed = false;
+        for (const event of queued) {
+          if (event.kind !== "node" || !event.nodeId) continue;
+          const normalized = normalizeLiveNodeStatus(event.status);
+          if (normalized === "running") {
+            next[event.nodeId] = now + NODE_RUNNING_HINT_MS;
+            changed = true;
+            continue;
+          }
+          if (normalized === "success" || normalized === "fail" || normalized === "skipped") {
+            if (next[event.nodeId]) {
+              delete next[event.nodeId];
+              changed = true;
+            }
+          }
+        }
+        return changed ? next : prev;
+      });
+      setLiveEdgeActivity((prev) => {
+        const next = { ...prev };
+        const now = Date.now();
+        for (const event of queued) {
+          if (event.kind !== "edge" || !event.edgeId) continue;
+          next[event.edgeId] = {
+            ts: Number(event.timestamp) || now,
+            source: event.source || null,
+            target: event.target || null,
+            reason: event.reason || "flow",
+          };
+        }
+        for (const [edgeId, info] of Object.entries(next)) {
+          if (!info || now - Number(info.ts || 0) > EDGE_FLOW_ANIMATION_MS) {
+            delete next[edgeId];
+          }
+        }
+        return next;
+      });
+    };
+
+    const scheduleEventFlush = () => {
+      if (liveEventFlushTimerRef.current) return;
+      liveEventFlushTimerRef.current = setTimeout(flushQueuedEvents, WORKFLOW_LIVE_WS_BATCH_MS);
+    };
+
+    const unsub = onWsMessage((msg) => {
+      if (msg?.type !== "workflow-run-events") return;
+      const payload = msg?.payload || {};
+      const payloadWorkflowId = String(payload.workflowId || "").trim();
+      if (payloadWorkflowId !== String(workflow.id || "").trim()) return;
+      const events = Array.isArray(payload.events) ? payload.events : [];
+      if (!events.length) return;
+      liveEventQueueRef.current.push(...events);
+      scheduleEventFlush();
+    });
+
+    return () => {
+      if (liveEventFlushTimerRef.current) {
+        clearTimeout(liveEventFlushTimerRef.current);
+        liveEventFlushTimerRef.current = null;
+      }
+      liveEventQueueRef.current = [];
+      try {
+        unsub?.();
+      } catch {}
+    };
+  }, [liveHighlightEnabled, workflow?.id, workflow?.name]);
 
   // Canvas dimensions
   const NODE_W = 220;
-  const NODE_H = 60;
+  const NODE_H = 138;
+  const NODE_HEADER_H = 62;
   const PORT_R = 8;
 
   const toCanvas = useCallback((clientX, clientY) => {
@@ -1942,7 +2369,7 @@ function WorkflowCanvas({ workflow, onSave, nodeTypes: availableNodeTypes = [] }
           <span class="btn-icon">${resolveIcon("play")}</span>
           Run
         <//>
-        <${Button}
+        ${workflow?.core !== true && html`<${Button}
           variant="outlined"
           size="small"
           onClick=${() => {
@@ -1952,7 +2379,8 @@ function WorkflowCanvas({ workflow, onSave, nodeTypes: availableNodeTypes = [] }
         >
           <span class="btn-icon">${resolveIcon(workflow?.enabled === false ? "play" : "pause")}</span>
           ${workflow?.enabled === false ? "Resume" : "Pause"}
-        <//>
+        <//>`}
+        ${workflow?.core === true && html`<span class="wf-badge" style="background: #8b5cf620; color: #a78bfa; font-size: 11px; font-weight: 600;">Core</span>`}
         <${Button} variant="text" size="small" disabled=${historyState.past.length === 0} onClick=${undoCanvas}>Undo<//>
         <${Button} variant="text" size="small" disabled=${historyState.future.length === 0} onClick=${redoCanvas}>Redo<//>
         <${Button} variant="text" size="small" onClick=${() => setShowShortcutOverlay(true)}>Shortcuts ?<//>
@@ -1968,6 +2396,24 @@ function WorkflowCanvas({ workflow, onSave, nodeTypes: availableNodeTypes = [] }
         <span class="wf-badge" style="font-size: 11px; opacity: 0.75;">
           ${workflow?.enabled === false ? "Paused" : "Active"} · Pan: touch drag, Ctrl/Space + drag
         </span>
+        <div style="display: inline-flex; align-items: center; gap: 4px; font-size: 11px; color: var(--color-text-secondary, #8b95a5);">
+          <${Switch}
+            size="small"
+            checked=${liveHighlightEnabled}
+            onChange=${(e) => setLiveHighlightEnabled(Boolean(e.target.checked))}
+          />
+          <span>Live highlights</span>
+        </div>
+        ${liveHighlightEnabled && liveRun?.runId && html`
+          <span class="wf-badge" style="font-size: 11px; background: ${getRunStatusBadgeStyles(liveRun.status).bg}; color: ${getRunStatusBadgeStyles(liveRun.status).color};">
+            ${liveRun.status === "running" ? "Live Run" : "Last Run"} · ${formatDuration(liveRunDuration)}
+          </span>
+        `}
+        ${liveHighlightEnabled && hasLiveStatuses && html`
+          <span class="wf-badge" style="font-size: 11px; background: #3b82f630; color: #60a5fa;">
+            ${liveActiveNodes} active node${liveActiveNodes === 1 ? "" : "s"}
+          </span>
+        `}
         <${Button} variant="text" size="small" onClick=${() => setZoom(1)}>Reset Zoom<//>
         <${Button} variant="text" size="small" onClick=${() => setPan({ x: 0, y: 0 })}>Reset Pan<//>
         <${Button} variant="text" size="small" onClick=${returnToWorkflowList}>← Back to Workflows<//>
@@ -2031,25 +2477,48 @@ function WorkflowCanvas({ workflow, onSave, nodeTypes: availableNodeTypes = [] }
             const to = getInputPort(edge.target);
             const isSelected = selectedEdgeId.value === edge.id;
             const hasCondition = !!edge.condition;
+            const edgeKey = edge.id || `${edge.source}->${edge.target}`;
+            const edgeActivity = liveHighlightEnabled ? liveEdgeActivity[edgeKey] : null;
+            const isActiveFlow = Boolean(edgeActivity);
+            const edgePath = curvePath(from.x, from.y, to.x, to.y);
             return html`
               <g key=${edge.id} class="wf-edge" onClick=${(e) => { e.stopPropagation(); selectedEdgeId.value = edge.id; }}>
                 <path
-                  d=${curvePath(from.x, from.y, to.x, to.y)}
+                  d=${edgePath}
                   fill="none"
-                  stroke=${isSelected ? "#3b82f6" : hasCondition ? "#f59e0b" : "#6b7280"}
-                  stroke-width=${isSelected ? 3 : 2}
+                  stroke=${isSelected ? "#3b82f6" : isActiveFlow ? "#60a5fa" : hasCondition ? "#f59e0b" : "#6b7280"}
+                  stroke-width=${isSelected ? 3 : isActiveFlow ? 2.8 : 2}
                   stroke-dasharray=${hasCondition ? "6,4" : "none"}
                   marker-end="url(#arrowhead)"
-                  style="cursor: pointer; transition: stroke 0.15s;"
+                  style=${`cursor: pointer; transition: stroke 0.15s, stroke-width 0.15s; ${isActiveFlow ? "filter: drop-shadow(0 0 6px rgba(96,165,250,0.45));" : ""}`}
                 />
+                ${isActiveFlow && html`
+                  <path
+                    d=${edgePath}
+                    fill="none"
+                    stroke="#93c5fd"
+                    stroke-width="1.6"
+                    stroke-dasharray="12,8"
+                    marker-end="url(#arrowhead)"
+                    opacity="0.9"
+                    style="pointer-events: none;"
+                  >
+                    <animate attributeName="stroke-dashoffset" values="0;-20" dur="0.45s" repeatCount="indefinite" />
+                  </path>
+                `}
                 <!-- Invisible wider hit area -->
                 <path
-                  d=${curvePath(from.x, from.y, to.x, to.y)}
+                  d=${edgePath}
                   fill="none"
                   stroke="transparent"
                   stroke-width="12"
                   style="cursor: pointer;"
                 />
+                ${isActiveFlow && html`
+                  <circle r="3.4" fill="#93c5fd" opacity="0.95">
+                    <animateMotion dur="0.95s" repeatCount="1" rotate="auto" path=${edgePath} />
+                  </circle>
+                `}
                 ${hasCondition && html`
                   <text
                     x=${(from.x + to.x) / 2}
@@ -2092,29 +2561,58 @@ function WorkflowCanvas({ workflow, onSave, nodeTypes: availableNodeTypes = [] }
           ${nodes.map(node => {
             const meta = getNodeMeta(node.type);
             const isSelected = selectedNodeIds.has(node.id);
+            const nodeRunStatus = liveHighlightEnabled ? normalizeLiveNodeStatus(liveNodeStatuses[node.id]) : null;
+            const nodeFlash = liveNodeFlashStates[node.id] || null;
+            const flashState = nodeFlash?.state || "";
+            const executionVisuals = getCanvasNodeExecutionVisuals(nodeRunStatus, isSelected, meta.color, flashState);
+            const nodeStatusStyles = getRunStatusBadgeStyles(nodeRunStatus);
+            const preview = resolveNodeOutputPreview(node.type, liveNodeOutputPreviews[node.id], null);
+            const previewLines = preview.lines.slice(0, 3);
+            const hasPreview = previewLines.length > 0 || preview.tokenCount != null;
+            const runningHintUntil = Number(liveNodeRunningHints[node.id] || 0);
+            const hasRunningHint = runningHintUntil > liveNowTick;
+            const spinnerVisible = nodeRunStatus === "running" || hasRunningHint;
+            const previewPanelY = NODE_HEADER_H + 8;
+            const previewPanelH = Math.max(30, NODE_H - previewPanelY - 8);
             const x = node.position?.x || 0;
             const y = node.position?.y || 0;
             return html`
               <g
                 key=${node.id}
-                class="wf-node"
+                class=${`wf-node${spinnerVisible ? " wf-node-running" : ""}${flashState ? ` wf-node-flash-${flashState}` : ""}`}
                 transform="translate(${x} ${y})"
                 onMouseDown=${(e) => onNodeMouseDown(node.id, e)}
                 onPointerDown=${(e) => onNodePointerDown(node.id, e)}
                 onDblClick=${() => onNodeDoubleClick(node.id)}
                 onContextMenu=${(e) => onNodeContextMenu(node.id, e)}
                 style="cursor: grab;"
-                filter=${isSelected ? "url(#node-glow)" : "url(#node-shadow)"}
+                filter=${executionVisuals.filter}
               >
                 <!-- Node body -->
                 <rect
                   width=${NODE_W}
                   height=${NODE_H}
                   rx="8"
-                  fill=${isSelected ? "#1e293b" : "#1a1f2e"}
-                  stroke=${isSelected ? meta.color : "#2a3040"}
-                  stroke-width=${isSelected ? 2 : 1}
+                  fill=${executionVisuals.fill}
+                  stroke=${executionVisuals.stroke}
+                  stroke-width=${executionVisuals.strokeWidth}
                 />
+                ${spinnerVisible && html`
+                  <rect
+                    x="1.5"
+                    y="1.5"
+                    width=${NODE_W - 3}
+                    height=${NODE_H - 3}
+                    rx="7"
+                    fill="none"
+                    stroke="#93c5fd"
+                    stroke-opacity="0.85"
+                    stroke-width="1.6"
+                    stroke-dasharray="10 6"
+                  >
+                    <animate attributeName="stroke-dashoffset" values="0;-32" dur="1s" repeatCount="indefinite" />
+                  </rect>
+                `}
 
                 <!-- Category color strip -->
                 <rect
@@ -2127,7 +2625,7 @@ function WorkflowCanvas({ workflow, onSave, nodeTypes: availableNodeTypes = [] }
                 <!-- Label -->
                 <text
                   x=${NODE_W / 2}
-                  y=${NODE_H / 2 - 6}
+                  y="22"
                   text-anchor="middle"
                   fill="white"
                   font-size="13"
@@ -2137,11 +2635,72 @@ function WorkflowCanvas({ workflow, onSave, nodeTypes: availableNodeTypes = [] }
                 <!-- Type subtitle -->
                 <text
                   x=${NODE_W / 2}
-                  y=${NODE_H / 2 + 12}
+                  y="40"
                   text-anchor="middle"
                   fill="#94a3b8"
                   font-size="10"
                 >${node.type}</text>
+
+                ${nodeRunStatus && html`
+                  <g transform="translate(${NODE_W - 74} 8)">
+                    <rect
+                      width="66"
+                      height="18"
+                      rx="9"
+                      fill=${nodeStatusStyles.bg}
+                      stroke=${nodeStatusStyles.color}
+                      stroke-opacity="0.4"
+                    />
+                    <text
+                      x="33"
+                      y="12"
+                      text-anchor="middle"
+                      fill=${nodeStatusStyles.color}
+                      font-size="10"
+                      font-weight="700"
+                    >${toNodeStatusLabel(nodeRunStatus)}</text>
+                  </g>
+                `}
+
+                ${spinnerVisible && html`
+                  <g transform="translate(${NODE_W - 22} ${NODE_HEADER_H - 18})">
+                    <circle r="9" cx="0" cy="0" fill="rgba(15, 23, 42, 0.72)" stroke="#93c5fd44" stroke-width="1.2" />
+                    <circle r="6.8" cx="0" cy="0" fill="none" stroke="#93c5fd33" stroke-width="1.2" />
+                    <path d="M 0 -6.8 A 6.8 6.8 0 0 1 5.4 -4.2" fill="none" stroke="#93c5fd" stroke-width="1.8" stroke-linecap="round">
+                      <animateTransform attributeName="transform" type="rotate" from="0 0 0" to="360 0 0" dur="0.8s" repeatCount="indefinite" />
+                    </path>
+                  </g>
+                `}
+
+                <line x1="8" y1=${NODE_HEADER_H} x2=${NODE_W - 8} y2=${NODE_HEADER_H} stroke="#2e3748" stroke-width="1" opacity="0.85" />
+                <rect
+                  x="8"
+                  y=${previewPanelY}
+                  width=${NODE_W - 16}
+                  height=${previewPanelH}
+                  rx="6"
+                  fill="rgba(15, 23, 42, 0.45)"
+                  stroke=${hasPreview ? "rgba(148, 163, 184, 0.28)" : "rgba(71, 85, 105, 0.2)"}
+                  stroke-width="1"
+                />
+
+                ${hasPreview && html`
+                  <text x="14" y=${previewPanelY + 14} fill="#cbd5e1" font-size="10" font-family="ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace">
+                    ${previewLines.map((line, index) => html`
+                      <tspan x="14" dy=${index === 0 ? 0 : 13}>${line.slice(0, 44)}</tspan>
+                    `)}
+                  </text>
+                `}
+                ${preview.tokenCount != null && html`
+                  <text
+                    x=${NODE_W - 14}
+                    y=${NODE_H - 10}
+                    text-anchor="end"
+                    fill="#93c5fd"
+                    font-size="10"
+                    font-family="ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace"
+                  >${preview.tokenCount} tok</text>
+                `}
 
                 <!-- Input port (left) -->
                 <circle
@@ -2416,14 +2975,45 @@ function KeyboardShortcutOverlay({ open, onClose, canUndo, canRedo }) {
 
 const COMMAND_PRESETS = {
   testing: [
-    { label: "Run Tests", cmd: "npm test", icon: "beaker" },
+    { label: "Run Tests (npm)", cmd: "npm test", icon: "beaker" },
+    { label: "Run Tests (yarn)", cmd: "yarn test", icon: "beaker" },
+    { label: "Run Tests (pnpm)", cmd: "pnpm test", icon: "beaker" },
+    { label: "Run Tests (pytest)", cmd: "pytest", icon: "beaker" },
+    { label: "Run Tests (Go)", cmd: "go test ./...", icon: "beaker" },
+    { label: "Run Tests (Rust)", cmd: "cargo test", icon: "beaker" },
+    { label: "Run Tests (Java/Maven)", cmd: "mvn test", icon: "beaker" },
+    { label: "Run Tests (Java/Gradle)", cmd: "./gradlew test", icon: "beaker" },
+    { label: "Run Tests (.NET)", cmd: "dotnet test", icon: "beaker" },
+    { label: "Run Tests (Ruby)", cmd: "bundle exec rspec", icon: "beaker" },
     { label: "Run Single File", cmd: 'npx vitest run tests/{{testFile}}', icon: "target" },
-    { label: "Syntax Check", cmd: "npm run syntax:check", icon: "check" },
+    { label: "Syntax Check (Node)", cmd: "npm run syntax:check", icon: "check" },
+    { label: "Syntax Check (Python)", cmd: "python -m py_compile", icon: "check" },
+    { label: "Syntax Check (Go)", cmd: "go vet ./...", icon: "check" },
+    { label: "Syntax Check (Rust)", cmd: "cargo check", icon: "check" },
   ],
   build: [
-    { label: "Build Project", cmd: "npm run build", icon: "hammer" },
+    { label: "Build (npm)", cmd: "npm run build", icon: "hammer" },
+    { label: "Build (yarn)", cmd: "yarn build", icon: "hammer" },
+    { label: "Build (pnpm)", cmd: "pnpm build", icon: "hammer" },
+    { label: "Build (Go)", cmd: "go build ./...", icon: "hammer" },
+    { label: "Build (Rust)", cmd: "cargo build", icon: "hammer" },
+    { label: "Build (Maven)", cmd: "mvn package -DskipTests", icon: "hammer" },
+    { label: "Build (Gradle)", cmd: "./gradlew build", icon: "hammer" },
+    { label: "Build (.NET)", cmd: "dotnet build", icon: "hammer" },
+    { label: "Build (Python)", cmd: "python -m build", icon: "hammer" },
+    { label: "Build (Make)", cmd: "make", icon: "hammer" },
     { label: "Build Watch", cmd: "npm run build -- --watch", icon: "eye" },
-    { label: "Type Check", cmd: "npx tsc --noEmit", icon: "ruler" },
+    { label: "Type Check (TS)", cmd: "npx tsc --noEmit", icon: "ruler" },
+  ],
+  lint: [
+    { label: "Lint (npm)", cmd: "npm run lint", icon: "search" },
+    { label: "Lint (ESLint)", cmd: "npx eslint .", icon: "search" },
+    { label: "Lint (Python/Ruff)", cmd: "ruff check .", icon: "search" },
+    { label: "Lint (Python/Flake8)", cmd: "flake8", icon: "search" },
+    { label: "Lint (Go)", cmd: "golangci-lint run", icon: "search" },
+    { label: "Lint (Rust)", cmd: "cargo clippy -- -D warnings", icon: "search" },
+    { label: "Lint (Ruby)", cmd: "bundle exec rubocop", icon: "search" },
+    { label: "Lint (.NET)", cmd: "dotnet format --verify-no-changes", icon: "search" },
   ],
   git: [
     { label: "Diff Stats", cmd: "git diff --stat main...HEAD", icon: "chart" },
@@ -2893,16 +3483,33 @@ function NodeConfigEditor({ node, nodeTypes: types, onUpdate, onUpdateLabel, onC
             ${[
               ...(nodeAction === "build" ? [
                 { label: "npm run build", cmd: "npm run build" },
+                { label: "yarn build", cmd: "yarn build" },
+                { label: "go build", cmd: "go build ./..." },
+                { label: "cargo build", cmd: "cargo build" },
+                { label: "mvn package", cmd: "mvn package -DskipTests" },
+                { label: "gradlew build", cmd: "./gradlew build" },
+                { label: "dotnet build", cmd: "dotnet build" },
+                { label: "make", cmd: "make" },
                 { label: "Zero Warnings", cmd: "npm run build", extra: { zeroWarnings: true } },
               ] : []),
               ...(nodeAction === "tests" ? [
                 { label: "npm test", cmd: "npm test" },
                 { label: "Vitest", cmd: "npx vitest run" },
                 { label: "Jest", cmd: "npx jest" },
+                { label: "pytest", cmd: "pytest" },
+                { label: "go test", cmd: "go test ./..." },
+                { label: "cargo test", cmd: "cargo test" },
+                { label: "mvn test", cmd: "mvn test" },
+                { label: "dotnet test", cmd: "dotnet test" },
+                { label: "rspec", cmd: "bundle exec rspec" },
               ] : []),
               ...(nodeAction === "lint" ? [
                 { label: "npm run lint", cmd: "npm run lint" },
                 { label: "ESLint", cmd: "npx eslint ." },
+                { label: "Ruff", cmd: "ruff check ." },
+                { label: "golangci-lint", cmd: "golangci-lint run" },
+                { label: "Clippy", cmd: "cargo clippy -- -D warnings" },
+                { label: "Rubocop", cmd: "bundle exec rubocop" },
               ] : []),
             ].map(p => html`
               <${Button}
@@ -3052,6 +3659,52 @@ function NodeConfigEditor({ node, nodeTypes: types, onUpdate, onUpdateLabel, onC
  *  Workflow List View
  * ═══════════════════════════════════════════════════════════════ */
 
+function humanizeWorkflowCategory(category) {
+  const normalized = String(category || "custom").trim();
+  if (!normalized) return "Custom";
+  return normalized
+    .replace(/[-_]+/g, " ")
+    .replace(/\b\w/g, (char) => char.toUpperCase());
+}
+
+function normalizeWorkflowCategoryMeta(source, fallbackCategory = "custom") {
+  const key = String(source?.category || fallbackCategory || "custom").trim() || "custom";
+  const order = Number(source?.categoryOrder);
+  return {
+    key,
+    label: String(source?.categoryLabel || humanizeWorkflowCategory(key)),
+    icon: String(source?.categoryIcon || "settings"),
+    order: Number.isFinite(order) ? order : 99,
+  };
+}
+
+function groupItemsByWorkflowCategory(items, getSource) {
+  const groups = new Map();
+  for (const item of items || []) {
+    const meta = normalizeWorkflowCategoryMeta(getSource(item), item?.category);
+    if (!groups.has(meta.key)) groups.set(meta.key, { ...meta, items: [] });
+    groups.get(meta.key).items.push(item);
+  }
+  return Array.from(groups.values()).sort((a, b) => a.order - b.order || a.label.localeCompare(b.label));
+}
+
+function resolveWorkflowTemplateSource(workflow, templateLookupById, templateLookupByName) {
+  const templateState = workflow?.metadata?.templateState || null;
+  const candidates = [
+    templateState?.templateId,
+    workflow?.metadata?.installedFrom,
+    templateState?.templateName,
+    workflow?.name,
+  ];
+  for (const candidate of candidates) {
+    const key = String(candidate || "").trim();
+    if (!key) continue;
+    if (templateLookupById.has(key)) return templateLookupById.get(key);
+    if (templateLookupByName.has(key)) return templateLookupByName.get(key);
+  }
+  return null;
+}
+
 function WorkflowListView() {
   const wfs = workflows.value || [];
   const tmpls = templates.value || [];
@@ -3064,6 +3717,28 @@ function WorkflowListView() {
     if (installedTemplateIds.has(t.id) || installedTemplateIds.has(t.name)) return false;
     return true;
   });
+  const templateLookup = useMemo(() => {
+    const byId = new Map();
+    const byName = new Map();
+    tmpls.forEach((template) => {
+      const id = String(template?.id || "").trim();
+      const name = String(template?.name || "").trim();
+      if (id) byId.set(id, template);
+      if (name) byName.set(name, template);
+    });
+    return { byId, byName };
+  }, [tmpls]);
+  const workflowGroups = useMemo(() => {
+    return groupItemsByWorkflowCategory(wfs, (wf) => {
+      return (
+        resolveWorkflowTemplateSource(wf, templateLookup.byId, templateLookup.byName)
+        || { category: wf?.category || "custom" }
+      );
+    });
+  }, [wfs, templateLookup]);
+  const availableTemplateGroups = useMemo(() => {
+    return groupItemsByWorkflowCategory(availableTemplates, (template) => template);
+  }, [availableTemplates]);
 
   return html`
     <div style="padding: 0 4px;">
@@ -3108,127 +3783,144 @@ function WorkflowListView() {
           <h3 style="font-size: 14px; font-weight: 600; color: var(--color-text-secondary, #8b95a5); margin-bottom: 12px; text-transform: uppercase; letter-spacing: 0.5px;">
             Your Workflows (${wfs.length})
           </h3>
-          <div style="display: grid; gap: 10px; grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));">
-            ${wfs.map(wf => html`
-              ${(() => {
-                const templateState = wf.metadata?.templateState || null;
-                const hasTemplateUpdate = templateState?.updateAvailable === true;
-                const isCustomizedTemplate = templateState?.isCustomized === true;
-                return html`
-              <div key=${wf.id} class="wf-card" style="background: var(--color-bg-secondary, #1a1f2e); border-radius: 12px; padding: 14px; border: 1px solid var(--color-border, #2a3040); cursor: pointer; transition: border-color 0.15s;"
-                   onClick=${() => {
-                     apiFetch("/api/workflows/" + wf.id).then(d => {
-                       activeWorkflow.value = d?.workflow || wf;
-                       viewMode.value = "canvas";
-                     }).catch(() => { activeWorkflow.value = wf; viewMode.value = "canvas"; });
-                   }}>
-                <div style="display: flex; align-items: center; gap: 8px; margin-bottom: 8px;">
-                  <span class="icon-inline" style="font-size: 14px;">${resolveIcon(getNodeMeta(wf.trigger || "action")?.icon) || ICONS.dot}</span>
-                  <span style="font-weight: 600; font-size: 14px; flex: 1;">${wf.name}</span>
-                  <span class="wf-badge" style="background: ${wf.enabled ? '#10b98130' : '#6b728030'}; color: ${wf.enabled ? '#10b981' : '#6b7280'}; font-size: 10px;">
-                    ${wf.enabled ? "Active" : "Paused"}
-                  </span>
-                  ${templateState?.templateId && html`
-                    <span class="wf-badge" style="background: #3b82f620; color: #60a5fa; font-size: 10px;">
-                      Template
-                    </span>
-                  `}
-                  ${isCustomizedTemplate && html`
-                    <span class="wf-badge" style="background: #f59e0b20; color: #f59e0b; font-size: 10px;">
-                      Customized
-                    </span>
-                  `}
-                  ${hasTemplateUpdate && html`
-                    <span class="wf-badge" style="background: #ef444420; color: #f87171; font-size: 10px;">
-                      Update Available
-                    </span>
-                  `}
-                </div>
-                ${wf.description && html`
-                  <div style="font-size: 12px; color: var(--color-text-secondary, #8b95a5); margin-bottom: 8px; line-height: 1.4;">
-                    ${wf.description.slice(0, 120)}${wf.description.length > 120 ? "…" : ""}
-                  </div>
-                `}
-                ${templateState?.templateId && html`
-                  <div style="font-size: 11px; color: var(--color-text-secondary, #7f8aa0); margin-bottom: 8px;">
-                    ${templateState.templateName || templateState.templateId}
-                    ${templateState.installedTemplateVersion && templateState.templateVersion && templateState.installedTemplateVersion !== templateState.templateVersion && html`
-                      <span> · v${templateState.installedTemplateVersion} → v${templateState.templateVersion}</span>
-                    `}
-                  </div>
-                `}
-                <div style="display: flex; gap: 8px; align-items: center; font-size: 11px; color: var(--color-text-secondary, #6b7280);">
-                  <span>${wf.nodeCount || 0} nodes</span>
-                  <span>·</span>
-                  <span>${wf.category || "custom"}</span>
-                  <div style="flex: 1;"></div>
-                  ${hasTemplateUpdate && html`
-                    <${Button}
-                      variant="text"
-                      size="small"
-                      sx=${{ fontSize: '11px', borderColor: '#f59e0b80', color: '#f59e0b', textTransform: 'none' }}
-                      onClick=${async (e) => {
-                        e.stopPropagation();
-                        if (!isCustomizedTemplate) {
-                          await applyTemplateUpdate(wf.id, "replace", true);
-                          return;
-                        }
-                        const choice = window.prompt(
-                          "Template update available for customized workflow.\nType 'copy' to create an updated copy, or 'replace' to overwrite this workflow.",
-                          "copy",
-                        );
-                        const normalized = String(choice || "").trim().toLowerCase();
-                        if (normalized === "copy") {
-                          await applyTemplateUpdate(wf.id, "copy", false);
-                          return;
-                        }
-                        if (normalized === "replace") {
-                          const ok = window.confirm("Replace this customized workflow with latest template? This cannot be undone.");
-                          if (!ok) return;
-                          await applyTemplateUpdate(wf.id, "replace", true);
-                        }
-                      }}
-                    >
-                      <span class="icon-inline">${resolveIcon("refresh")}</span>
-                      Update
-                    <//>
-                  `}
-                  <${Button}
-                    variant="text"
-                    size="small"
-                    sx=${{ fontSize: '11px', textTransform: 'none' }}
-                    onClick=${(e) => {
-                      e.stopPropagation();
-                      setWorkflowEnabled(wf.id, !wf.enabled);
-                    }}
-                  >
-                    <span class="icon-inline">${resolveIcon(wf.enabled ? "pause" : "play")}</span>
-                    ${wf.enabled ? "Pause" : "Resume"}
-                  <//>
-                  <${Button}
-                    variant="text"
-                    size="small"
-                    sx=${{ fontSize: '11px', textTransform: 'none', ...(wf.enabled ? {} : { opacity: 0.65 }) }}
-                    onClick=${(e) => {
-                      e.stopPropagation();
-                      if (!wf.enabled) {
-                        showToast("Workflow is paused. Resume it before running.", "warning");
-                        return;
-                      }
-                      openExecuteDialog(wf.id);
-                    }}
-                  >
-                    <span class="icon-inline">${resolveIcon("play")}</span>
-                  <//>
-                  <${Button} variant="text" size="small" sx=${{ fontSize: '11px', color: '#ef4444', textTransform: 'none' }} onClick=${(e) => { e.stopPropagation(); if (confirm("Delete " + wf.name + "?")) deleteWorkflow(wf.id); }}>
-                    <span class="icon-inline">${resolveIcon("trash")}</span>
-                  <//>
-                </div>
+          ${workflowGroups.map((group) => html`
+            <div key=${group.key} style="margin-bottom: 20px;">
+              <div style="display: flex; align-items: center; gap: 8px; margin-bottom: 10px; padding-bottom: 6px; border-bottom: 1px solid var(--color-border, #2a304060);">
+                <span class="icon-inline" style="font-size: 16px;">${resolveIcon(group.icon) || ICONS.dot}</span>
+                <span style="font-size: 13px; font-weight: 600; color: var(--color-text-secondary, #8b95a5);">${group.label}</span>
+                <span style="font-size: 11px; color: var(--color-text-secondary, #6b7280);">(${group.items.length})</span>
               </div>
-            `;
-              })()}
-            `)}
-          </div>
+              <div style="display: grid; gap: 10px; grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));">
+                ${group.items.map(wf => html`
+                  ${(() => {
+                    const templateState = wf.metadata?.templateState || null;
+                    const hasTemplateUpdate = templateState?.updateAvailable === true;
+                    const isCustomizedTemplate = templateState?.isCustomized === true;
+                    const isCore = wf.core === true;
+                    return html`
+                  <div key=${wf.id} class="wf-card" style="background: var(--color-bg-secondary, #1a1f2e); border-radius: 12px; padding: 14px; border: 1px solid var(--color-border, #2a3040); cursor: pointer; transition: border-color 0.15s;"
+                       onClick=${() => {
+                         apiFetch("/api/workflows/" + wf.id).then(d => {
+                           activeWorkflow.value = d?.workflow || wf;
+                           viewMode.value = "canvas";
+                         }).catch(() => { activeWorkflow.value = wf; viewMode.value = "canvas"; });
+                       }}>
+                    <div style="display: flex; align-items: center; gap: 8px; margin-bottom: 8px;">
+                      <span class="icon-inline" style="font-size: 14px;">${resolveIcon(getNodeMeta(wf.trigger || "action")?.icon) || ICONS.dot}</span>
+                      <span style="font-weight: 600; font-size: 14px; flex: 1;">${wf.name}</span>
+                      <span class="wf-badge" style="background: ${wf.enabled ? '#10b98130' : '#6b728030'}; color: ${wf.enabled ? '#10b981' : '#6b7280'}; font-size: 10px;">
+                        ${wf.enabled ? "Active" : "Paused"}
+                      </span>
+                      ${isCore && html`
+                        <span class="wf-badge" style="background: #8b5cf620; color: #a78bfa; font-size: 10px; font-weight: 600;">
+                          Core
+                        </span>
+                      `}
+                      ${templateState?.templateId && html`
+                        <span class="wf-badge" style="background: #3b82f620; color: #60a5fa; font-size: 10px;">
+                          Template
+                        </span>
+                      `}
+                      ${isCustomizedTemplate && html`
+                        <span class="wf-badge" style="background: #f59e0b20; color: #f59e0b; font-size: 10px;">
+                          Customized
+                        </span>
+                      `}
+                      ${hasTemplateUpdate && html`
+                        <span class="wf-badge" style="background: #ef444420; color: #f87171; font-size: 10px;">
+                          Update Available
+                        </span>
+                      `}
+                    </div>
+                    ${wf.description && html`
+                      <div style="font-size: 12px; color: var(--color-text-secondary, #8b95a5); margin-bottom: 8px; line-height: 1.4;">
+                        ${wf.description.slice(0, 120)}${wf.description.length > 120 ? "…" : ""}
+                      </div>
+                    `}
+                    ${templateState?.templateId && html`
+                      <div style="font-size: 11px; color: var(--color-text-secondary, #7f8aa0); margin-bottom: 8px;">
+                        ${templateState.templateName || templateState.templateId}
+                        ${templateState.installedTemplateVersion && templateState.templateVersion && templateState.installedTemplateVersion !== templateState.templateVersion && html`
+                          <span> · v${templateState.installedTemplateVersion} → v${templateState.templateVersion}</span>
+                        `}
+                      </div>
+                    `}
+                    <div style="display: flex; gap: 8px; align-items: center; font-size: 11px; color: var(--color-text-secondary, #6b7280);">
+                      <span>${wf.nodeCount || 0} nodes</span>
+                      <span>·</span>
+                      <span class="wf-badge" style="font-size: 10px; padding: 2px 8px; background: var(--color-bg, #0d1117); color: var(--color-text-secondary, #8b95a5);">
+                        ${group.label}
+                      </span>
+                      <div style="flex: 1;"></div>
+                      ${hasTemplateUpdate && html`
+                        <${Button}
+                          variant="text"
+                          size="small"
+                          sx=${{ fontSize: '11px', borderColor: '#f59e0b80', color: '#f59e0b', textTransform: 'none' }}
+                          onClick=${async (e) => {
+                            e.stopPropagation();
+                            if (!isCustomizedTemplate) {
+                              await applyTemplateUpdate(wf.id, "replace", true);
+                              return;
+                            }
+                            const choice = window.prompt(
+                              "Template update available for customized workflow.\nType 'copy' to create an updated copy, or 'replace' to overwrite this workflow.",
+                              "copy",
+                            );
+                            const normalized = String(choice || "").trim().toLowerCase();
+                            if (normalized === "copy") {
+                              await applyTemplateUpdate(wf.id, "copy", false);
+                              return;
+                            }
+                            if (normalized === "replace") {
+                              const ok = window.confirm("Replace this customized workflow with latest template? This cannot be undone.");
+                              if (!ok) return;
+                              await applyTemplateUpdate(wf.id, "replace", true);
+                            }
+                          }}
+                        >
+                          <span class="icon-inline">${resolveIcon("refresh")}</span>
+                          Update
+                        <//>
+                      `}
+                      ${!isCore && html`<${Button}
+                        variant="text"
+                        size="small"
+                        sx=${{ fontSize: '11px', textTransform: 'none' }}
+                        onClick=${(e) => {
+                          e.stopPropagation();
+                          setWorkflowEnabled(wf.id, !wf.enabled);
+                        }}
+                      >
+                        <span class="icon-inline">${resolveIcon(wf.enabled ? "pause" : "play")}</span>
+                        ${wf.enabled ? "Pause" : "Resume"}
+                      <//>`}
+                      <${Button}
+                        variant="text"
+                        size="small"
+                        sx=${{ fontSize: '11px', textTransform: 'none', ...(wf.enabled ? {} : { opacity: 0.65 }) }}
+                        onClick=${(e) => {
+                          e.stopPropagation();
+                          if (!wf.enabled) {
+                            showToast("Workflow is paused. Resume it before running.", "warning");
+                            return;
+                          }
+                          openExecuteDialog(wf.id);
+                        }}
+                      >
+                        <span class="icon-inline">${resolveIcon("play")}</span>
+                      <//>
+                      ${!isCore && html`<${Button} variant="text" size="small" sx=${{ fontSize: '11px', color: '#ef4444', textTransform: 'none' }} onClick=${(e) => { e.stopPropagation(); if (confirm("Delete " + wf.name + "?")) deleteWorkflow(wf.id); }}>
+                        <span class="icon-inline">${resolveIcon("trash")}</span>
+                      <//>`}
+                    </div>
+                  </div>
+                `;
+                  })()}
+                `)}
+              </div>
+            </div>
+          `)}
         </div>
       `}
 
@@ -3268,60 +3960,50 @@ function WorkflowListView() {
             <span>All templates are installed!</span>
           </div>
         `}
-        ${(() => {
-          // Group templates by category
-          const groups = {};
-          availableTemplates.forEach(t => {
-            const key = t.category || "custom";
-            if (!groups[key]) groups[key] = { label: t.categoryLabel || key, icon: t.categoryIcon || "settings", order: t.categoryOrder || 99, items: [] };
-            groups[key].items.push(t);
-          });
-          const sorted = Object.entries(groups).sort((a, b) => a[1].order - b[1].order);
-          return sorted.map(([cat, group]) => html`
-            <div key=${cat} style="margin-bottom: 20px;">
-              <div style="display: flex; align-items: center; gap: 8px; margin-bottom: 10px; padding-bottom: 6px; border-bottom: 1px solid var(--color-border, #2a304060);">
-                <span class="icon-inline" style="font-size: 16px;">${resolveIcon(group.icon) || ICONS.dot}</span>
-                <span style="font-size: 13px; font-weight: 600; color: var(--color-text-secondary, #8b95a5);">${group.label}</span>
-                <span style="font-size: 11px; color: var(--color-text-secondary, #6b7280);">(${group.items.length})</span>
-              </div>
-              <div style="display: grid; gap: 10px; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));">
-                ${group.items.map(t => html`
-                  <div key=${t.id} class="wf-card wf-template-card" style="background: var(--color-bg-secondary, #1a1f2e); border-radius: 12px; padding: 14px; border: 1px solid var(--color-border, #2a304080);">
-                    <div style="display: flex; align-items: center; gap: 8px; margin-bottom: 8px;">
-                      <span class="icon-inline" style="font-size: 14px;">${resolveIcon(t.categoryIcon || group.icon) || ICONS.dot}</span>
-                      <span style="font-weight: 600; font-size: 14px; flex: 1;">${t.name}</span>
-                      ${t.recommended && html`
-                        <span class="wf-badge" style="background: #10b98125; color: #10b981; border-color: #10b98140; font-size: 10px; padding: 2px 8px; font-weight: 600; letter-spacing: 0.3px; display: inline-flex; align-items: center; gap: 4px;">
-                          <span class="icon-inline">${resolveIcon("star")}</span>
-                          Recommended
-                        </span>
-                      `}
-                    </div>
-                    <div style="font-size: 12px; color: var(--color-text-secondary, #8b95a5); margin-bottom: 10px; line-height: 1.4;">
-                      ${t.description?.slice(0, 120)}${(t.description?.length || 0) > 120 ? "…" : ""}
-                    </div>
-                    <div style="display: flex; gap: 6px; flex-wrap: wrap; margin-bottom: 10px;">
-                      ${(t.tags || []).map(tag => html`
-                        <span key=${tag} class="wf-badge" style="font-size: 10px; padding: 2px 6px;">${tag}</span>
-                      `)}
-                    </div>
-                    <div style="display: flex; gap: 8px; align-items: center;">
-                      <span style="font-size: 11px; color: var(--color-text-secondary, #6b7280);">${t.nodeCount} nodes</span>
-                      <div style="flex: 1;"></div>
-                      <${Button}
-                        variant="contained"
-                        size="small"
-                        onClick=${() => openInstallTemplateDialog(t.id)}
-                      >
-                        Install →
-                      <//>
-                    </div>
-                  </div>
-                `)}
-              </div>
+        ${availableTemplateGroups.map((group) => html`
+          <div key=${group.key} style="margin-bottom: 20px;">
+            <div style="display: flex; align-items: center; gap: 8px; margin-bottom: 10px; padding-bottom: 6px; border-bottom: 1px solid var(--color-border, #2a304060);">
+              <span class="icon-inline" style="font-size: 16px;">${resolveIcon(group.icon) || ICONS.dot}</span>
+              <span style="font-size: 13px; font-weight: 600; color: var(--color-text-secondary, #8b95a5);">${group.label}</span>
+              <span style="font-size: 11px; color: var(--color-text-secondary, #6b7280);">(${group.items.length})</span>
             </div>
-          `);
-        })()}
+            <div style="display: grid; gap: 10px; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));">
+              ${group.items.map(t => html`
+                <div key=${t.id} class="wf-card wf-template-card" style="background: var(--color-bg-secondary, #1a1f2e); border-radius: 12px; padding: 14px; border: 1px solid var(--color-border, #2a304080);">
+                  <div style="display: flex; align-items: center; gap: 8px; margin-bottom: 8px;">
+                    <span class="icon-inline" style="font-size: 14px;">${resolveIcon(t.categoryIcon || group.icon) || ICONS.dot}</span>
+                    <span style="font-weight: 600; font-size: 14px; flex: 1;">${t.name}</span>
+                    ${t.recommended && html`
+                      <span class="wf-badge" style="background: #10b98125; color: #10b981; border-color: #10b98140; font-size: 10px; padding: 2px 8px; font-weight: 600; letter-spacing: 0.3px; display: inline-flex; align-items: center; gap: 4px;">
+                        <span class="icon-inline">${resolveIcon("star")}</span>
+                        Recommended
+                      </span>
+                    `}
+                  </div>
+                  <div style="font-size: 12px; color: var(--color-text-secondary, #8b95a5); margin-bottom: 10px; line-height: 1.4;">
+                    ${t.description?.slice(0, 120)}${(t.description?.length || 0) > 120 ? "…" : ""}
+                  </div>
+                  <div style="display: flex; gap: 6px; flex-wrap: wrap; margin-bottom: 10px;">
+                    ${(t.tags || []).map(tag => html`
+                      <span key=${tag} class="wf-badge" style="font-size: 10px; padding: 2px 6px;">${tag}</span>
+                    `)}
+                  </div>
+                  <div style="display: flex; gap: 8px; align-items: center;">
+                    <span style="font-size: 11px; color: var(--color-text-secondary, #6b7280);">${t.nodeCount} nodes</span>
+                    <div style="flex: 1;"></div>
+                    <${Button}
+                      variant="contained"
+                      size="small"
+                      onClick=${() => openInstallTemplateDialog(t.id)}
+                    >
+                      Install →
+                    <//>
+                  </div>
+                </div>
+              `)}
+            </div>
+          </div>
+        `)}
       </div>
     </div>
   `;
@@ -3332,19 +4014,22 @@ function WorkflowListView() {
  * ═══════════════════════════════════════════════════════════════ */
 
 function getRunStatusBadgeStyles(status) {
-  if (status === "completed") return { bg: "#10b98130", color: "#10b981" };
-  if (status === "failed") return { bg: "#ef444430", color: "#ef4444" };
-  if (status === "running") return { bg: "#3b82f630", color: "#60a5fa" };
+  const normalized = normalizeLiveNodeStatus(status) || String(status || "").trim().toLowerCase();
+  if (normalized === "completed" || normalized === "success") return { bg: "#10b98130", color: "#10b981" };
+  if (normalized === "failed" || normalized === "fail") return { bg: "#ef444430", color: "#ef4444" };
+  if (normalized === "running") return { bg: "#3b82f630", color: "#60a5fa" };
+  if (normalized === "skipped") return { bg: "#94a3b830", color: "#94a3b8" };
   return { bg: "#6b728030", color: "#9ca3af" };
 }
 
 function getNodeStatusRank(status) {
-  if (status === "running") return 0;
-  if (status === "failed") return 1;
+  const normalized = normalizeLiveNodeStatus(status) || status;
+  if (normalized === "running") return 0;
+  if (normalized === "failed" || normalized === "fail") return 1;
   if (status === "waiting") return 2;
   if (status === "pending") return 3;
-  if (status === "completed") return 4;
-  if (status === "skipped") return 5;
+  if (normalized === "completed" || normalized === "success") return 4;
+  if (normalized === "skipped") return 5;
   return 6;
 }
 
@@ -3402,36 +4087,6 @@ function getWorkflowRunTriggerLabel(run) {
   return rawSource || normalizedSource || "unknown";
 }
 
-function buildNodeStatusesFromRunDetail(run) {
-  const detail = run?.detail || {};
-  const statuses = { ...(detail?.nodeStatuses || {}) };
-  const statusEvents = Array.isArray(detail?.nodeStatusEvents) ? detail.nodeStatusEvents : [];
-  const logs = Array.isArray(detail?.logs) ? detail.logs : [];
-
-  for (const event of statusEvents) {
-    const nodeId = String(event?.nodeId || "").trim();
-    const status = String(event?.status || "").trim();
-    if (!nodeId || !status) continue;
-    statuses[nodeId] = status;
-  }
-
-  // Backfill older runs that only recorded nodeId in logs.
-  if (Object.keys(statuses).length === 0) {
-    const fallbackStatus = run?.status === "failed"
-      ? "failed"
-      : run?.status === "completed"
-        ? "completed"
-        : "running";
-    for (const entry of logs) {
-      const nodeId = String(entry?.nodeId || "").trim();
-      if (!nodeId || statuses[nodeId]) continue;
-      statuses[nodeId] = fallbackStatus;
-    }
-  }
-
-  return statuses;
-}
-
 function getNodeCardBorder(status) {
   if (status === "running") return "#3b82f680";
   if (status === "failed") return "#ef444480";
@@ -3461,9 +4116,6 @@ function RunHistoryView() {
   const [nowTick, setNowTick] = useState(Date.now());
   const hasRunningRuns = runs.some((run) => run?.status === "running");
   const selectedRunIsRunning = selectedRun?.status === "running";
-  const autoLoadMoreRef = useRef(false);
-  const tailSentinelRef = useRef(null);
-  const lastAutoLoadCountRef = useRef(-1);
   const [statusFilter, setStatusFilter] = useState("all");
   const [workflowFilter, setWorkflowFilter] = useState("all");
   const [triggerFilter, setTriggerFilter] = useState("all");
@@ -3548,12 +4200,6 @@ function RunHistoryView() {
 
   const canLoadMoreRuns =
     hasMoreRuns && runs.length < WORKFLOW_RUN_MAX_FETCH;
-  const hasRunFilters =
-    statusFilter !== "all" ||
-    workflowFilter !== "all" ||
-    triggerFilter !== "all" ||
-    Boolean(normalizedSearch);
-
   const triggerLoadMoreRuns = useCallback(() => {
     if (!canLoadMoreRuns || loadingMoreRuns) return false;
     const nextOffset = Number(workflowRunsNextOffset.value || runs.length);
@@ -3565,61 +4211,6 @@ function RunHistoryView() {
     });
     return true;
   }, [canLoadMoreRuns, loadingMoreRuns, runs.length, totalRuns]);
-
-  useEffect(() => {
-    if (!hasRunFilters || filteredRuns.length > 0 || !canLoadMoreRuns) {
-      autoLoadMoreRef.current = false;
-      return;
-    }
-    if (autoLoadMoreRef.current) return;
-    autoLoadMoreRef.current = true;
-    Promise.resolve(triggerLoadMoreRuns())
-      .finally(() => {
-        autoLoadMoreRef.current = false;
-      });
-  }, [hasRunFilters, filteredRuns.length, canLoadMoreRuns, triggerLoadMoreRuns, statusFilter, workflowFilter, triggerFilter, normalizedSearch]);
-
-  useEffect(() => {
-    if (selectedRun || !canLoadMoreRuns || typeof IntersectionObserver !== "function") {
-      lastAutoLoadCountRef.current = -1;
-      return;
-    }
-    const sentinel = tailSentinelRef.current;
-    if (!sentinel) return;
-    const observer = new IntersectionObserver(
-      (entries) => {
-        for (const entry of entries) {
-          if (!entry.isIntersecting) continue;
-          const key = runs.length;
-          if (lastAutoLoadCountRef.current === key || loadingMoreRuns) continue;
-          lastAutoLoadCountRef.current = key;
-          triggerLoadMoreRuns();
-        }
-      },
-      {
-        root: null,
-        rootMargin: "0px 0px 240px 0px",
-        threshold: 0,
-      },
-    );
-    observer.observe(sentinel);
-    return () => observer.disconnect();
-  }, [selectedRun, canLoadMoreRuns, loadingMoreRuns, runs.length, triggerLoadMoreRuns]);
-
-  useEffect(() => {
-    if (selectedRun || !canLoadMoreRuns || loadingMoreRuns || typeof window === "undefined") return;
-    const doc = document?.documentElement;
-    const body = document?.body;
-    const scrollHeight = Math.max(
-      Number(doc?.scrollHeight || 0),
-      Number(body?.scrollHeight || 0),
-    );
-    if (scrollHeight > window.innerHeight + 240) return;
-    const key = runs.length;
-    if (lastAutoLoadCountRef.current === key) return;
-    lastAutoLoadCountRef.current = key;
-    triggerLoadMoreRuns();
-  }, [selectedRun, canLoadMoreRuns, loadingMoreRuns, runs.length, filteredRuns.length, triggerLoadMoreRuns]);
 
   if (selectedRun) {
     const statusStyles = getRunStatusBadgeStyles(selectedRun.status);
@@ -3822,7 +4413,7 @@ function RunHistoryView() {
         <div style="text-align: center; padding: 28px; opacity: 0.6;">
           <div>No runs match the current filters yet.</div>
           ${canLoadMoreRuns && html`
-            <div style="margin-top: 6px;">Bosun has loaded ${runs.length} of ${totalRuns} run(s); older history will keep loading while the filter is active.</div>
+            <div style="margin-top: 6px;">Bosun has loaded ${runs.length} of ${totalRuns} run(s); use Load more runs to search older history.</div>
           `}
         </div>
       `}
@@ -3877,9 +4468,6 @@ function RunHistoryView() {
             <//>
           `;
         })}
-        ${canLoadMoreRuns && html`
-          <div ref=${tailSentinelRef} style="height: 1px;"></div>
-        `}
       </div>
       ${canLoadMoreRuns && html`
         <div style="display: flex; justify-content: center; margin-top: 12px;">
@@ -4129,6 +4717,34 @@ export function WorkflowsTab() {
       .wf-preset-btn:hover { border-color: #3b82f6 !important; background: var(--bg-card-hover) !important; }
       .wf-preset-section { animation: wf-fade-in 0.15s ease; }
       @keyframes wf-fade-in { from { opacity: 0; transform: translateY(-4px); } to { opacity: 1; transform: none; } }
+      .wf-node-running rect:first-child {
+        animation: wf-node-running-pulse 1.1s ease-in-out infinite;
+      }
+      .wf-node-flash-success rect:first-child {
+        animation: wf-node-flash-success 0.45s ease-in-out 2;
+      }
+      .wf-node-flash-fail rect:first-child {
+        animation: wf-node-flash-fail 0.45s ease-in-out 2;
+      }
+      .wf-node-flash-skipped rect:first-child {
+        animation: wf-node-flash-skipped 0.45s ease-in-out 2;
+      }
+      @keyframes wf-node-running-pulse {
+        0%, 100% { stroke-opacity: 0.6; }
+        50% { stroke-opacity: 1; }
+      }
+      @keyframes wf-node-flash-success {
+        0%, 100% { filter: none; }
+        50% { filter: drop-shadow(0 0 10px rgba(16, 185, 129, 0.65)); }
+      }
+      @keyframes wf-node-flash-fail {
+        0%, 100% { filter: none; }
+        50% { filter: drop-shadow(0 0 10px rgba(239, 68, 68, 0.65)); }
+      }
+      @keyframes wf-node-flash-skipped {
+        0%, 100% { filter: none; }
+        50% { filter: drop-shadow(0 0 8px rgba(148, 163, 184, 0.55)); }
+      }
       .wf-canvas-container { height: calc(100vh - 140px); min-height: 500px; }
       @media (min-width: 1200px) { .wf-canvas-container { height: calc(100vh - 120px); min-height: 700px; } }
     </style>

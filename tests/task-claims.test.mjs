@@ -274,7 +274,7 @@ describe("task-claims", () => {
       expect(persisted?.instance_id).toBe("instance-1");
       expect(claimInSharedStateMock).toHaveBeenCalledTimes(2);
     });
-    it("rolls back local renewal timestamp when shared heartbeat reports owner mismatch", async () => {
+    it("forfeits local claim when shared heartbeat reports owner mismatch", async () => {
       const claimInSharedStateMock = vi.fn(async () => ({ success: true }));
       const renewSharedStateHeartbeatMock = vi
         .fn()
@@ -318,7 +318,7 @@ describe("task-claims", () => {
       expect(renewedTwice.error).toBe("owner_mismatch");
 
       const afterFatal = await getClaim("task-shared-renew-mismatch");
-      expect(afterFatal?.renewed_at).toBe(snapshotBeforeFatal?.renewed_at);
+      expect(afterFatal).toBeNull();
       expect(renewSharedStateHeartbeatMock).toHaveBeenCalledTimes(2);
     });
   });
@@ -840,4 +840,3 @@ describe("task-claims", () => {
     });
   });
 });
-
