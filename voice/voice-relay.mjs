@@ -1236,16 +1236,16 @@ async function createOpenAIEphemeralToken(cfg, toolDefinitions = [], callContext
     turn_detection: {
       type: cfg.turnDetection,
       ...(cfg.turnDetection === "server_vad" ? {
-        threshold: 0.55,
+        threshold: 0.75,
         prefix_padding_ms: 500,
         silence_duration_ms: 1800,
         create_response: true,
-        interrupt_response: true,
+        interrupt_response: false,
       } : {}),
       ...(cfg.turnDetection === "semantic_vad" ? {
         eagerness: "low",
         create_response: true,
-        interrupt_response: true,
+        interrupt_response: false,
       } : {}),
     },
     ...(transcriptionEnabled ? { input_audio_transcription: { model: transcriptionModel } } : {}),
@@ -1335,16 +1335,16 @@ async function createAzureEphemeralToken(cfg, toolDefinitions = [], callContext 
     turn_detection: {
       type: cfg.turnDetection,
       ...(cfg.turnDetection === "server_vad" ? {
-        threshold: 0.55,
+        threshold: 0.75,
         prefix_padding_ms: 500,
         silence_duration_ms: 1800,
         create_response: true,
-        interrupt_response: true,
+        interrupt_response: false,
       } : {}),
       ...(cfg.turnDetection === "semantic_vad" ? {
         eagerness: "low",
         create_response: true,
-        interrupt_response: true,
+        interrupt_response: false,
       } : {}),
     },
     ...(transcriptionEnabled ? { input_audio_transcription: { model: transcriptionModel } } : {}),

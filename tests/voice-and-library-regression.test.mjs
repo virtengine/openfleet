@@ -177,8 +177,8 @@ describe("voice turn detection settings", () => {
     expect(td.type).toBe("server_vad");
     // Silence duration should be >= 1500ms for natural pauses
     expect(td.silence_duration_ms).toBeGreaterThanOrEqual(1500);
-    // Threshold should be <= 0.6 to avoid triggering on background noise
-    expect(td.threshold).toBeLessThanOrEqual(0.6);
+    // Threshold should be >= 0.7 to filter keyboard/ambient noise from triggering VAD
+    expect(td.threshold).toBeGreaterThanOrEqual(0.7);
     // Prefix padding should allow natural speech starts
     expect(td.prefix_padding_ms).toBeGreaterThanOrEqual(400);
   });
