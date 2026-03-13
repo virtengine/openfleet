@@ -133,7 +133,11 @@ registerNodeType("validation.screenshot", {
               await browser.close();
             })();
           `;
-          execSync(`node -e "${script.replace(/\n/g, " ").replace(/"/g, '\\"')}"`, {
+          const escapedScript = script
+            .replace(/\n/g, " ")
+            .replace(/\\/g, "\\\\")
+            .replace(/"/g, '\\"');
+          execSync(`node -e "${escapedScript}"`, {
             timeout: 60000,
             stdio: "pipe",
           });
@@ -391,5 +395,4 @@ registerNodeType("validation.lint", {
 // ═══════════════════════════════════════════════════════════════════════════
 //  TRANSFORM — Data manipulation
 // ═══════════════════════════════════════════════════════════════════════════
-
 

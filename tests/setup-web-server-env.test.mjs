@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   applyNonBlockingSetupEnvDefaults,
   applyTelegramMiniAppSetupEnv,
+  handleTelegramChatIdLookup,
   normalizeRepoConfigEntry,
   normalizeTelegramUiPort,
   normalizeWorkflowTemplateOverrides,
@@ -105,6 +106,47 @@ describe("setup web server telegram defaults", () => {
     );
 
     expect(envMap.TELEGRAM_UI_TUNNEL).toBe("named");
+  });
+
+  it("discovers and deduplicates Telegram chats from updates", async () => {
+    const originalFetch = global.fetch;
+    global.fetch = async () => ({
+      ok: true,
+      json: async () => ({
+        result: [
+          { message: { chat: { id: 123, type: "private", username: "alice" } } },
+          { channel_post: { chat: { id: -1001, type: "supergroup", title: "Ops" } } },
+          { edited_message: { chat: { id: 123, type: "private", username: "alice" } } },
+        ],
+      }),
+    });
+
+    try {
+      const result = await handleTelegramChatIdLookup({ token: "123456:abc-token" });
+      expect(result).toMatchObject({ ok: true, status: 200, message: null });
+      expect(result.chats).toEqual([
+        { id: 123, type: "private", title: "", username: "alice" },
+        { id: -1001, type: "supergroup", title: "Ops", username: "" },
+      ]);
+    } finally {
+      global.fetch = originalFetch;
+    }
+  });
+
+  it("returns instructional message when Telegram updates are empty", async () => {
+    const originalFetch = global.fetch;
+    global.fetch = async () => ({
+      ok: true,
+      json: async () => ({ result: [] }),
+    });
+
+    try {
+      const result = await handleTelegramChatIdLookup({ token: "123456:abc-token" });
+      expect(result).toMatchObject({ ok: true, status: 200, chats: [] });
+      expect(result.message).toContain("Send a message to the bot first");
+    } finally {
+      global.fetch = originalFetch;
+    }
   });
 });
 

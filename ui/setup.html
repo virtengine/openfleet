@@ -909,6 +909,9 @@ function App() {
   const [kanbanBackend, setKanbanBackend] = useState("internal");
   const [telegramToken, setTelegramToken] = useState("");
   const [telegramChatId, setTelegramChatId] = useState("");
+  const [telegramDiscoveredChats, setTelegramDiscoveredChats] = useState([]);
+  const [telegramChatLookupLoading, setTelegramChatLookupLoading] = useState(false);
+  const [telegramChatLookupMessage, setTelegramChatLookupMessage] = useState("");
   const [maxParallel, setMaxParallel] = useState(4);
   const [maxRetries, setMaxRetries] = useState(3);
   const [failoverStrategy, setFailoverStrategy] = useState("next-in-line");
@@ -2268,6 +2271,42 @@ function App() {
   const goPrev = () => setStep((s) => Math.max(s - 1, 0));
   const goTo = (idx) => {
     if (idx <= step || completedSteps.has(idx)) setStep(idx);
+  };
+
+  const discoverTelegramChatIds = async () => {
+    const token = String(telegramToken || "").trim();
+    if (!token) {
+      setTelegramDiscoveredChats([]);
+      setTelegramChatLookupMessage("Enter a Telegram bot token first.");
+      return;
+    }
+
+    setTelegramChatLookupLoading(true);
+    setTelegramChatLookupMessage("");
+    try {
+      const result = await apiPost("telegram-chat-id", { token });
+      if (!result?.ok) {
+        setTelegramDiscoveredChats([]);
+        setTelegramChatLookupMessage(result?.error || "Failed to discover Telegram chats.");
+        return;
+      }
+
+      const chats = Array.isArray(result.chats) ? result.chats : [];
+      setTelegramDiscoveredChats(chats);
+      if (chats.length === 1) {
+        setTelegramChatId(String(chats[0].id));
+        setTelegramChatLookupMessage(`Found 1 chat: ${chats[0].id}`);
+      } else if (chats.length > 1) {
+        setTelegramChatLookupMessage(`Found ${chats.length} chats. Choose the one Bosun should use.`);
+      } else {
+        setTelegramChatLookupMessage(result.message || "No chats found yet. Send a message to your bot, then try again.");
+      }
+    } catch (err) {
+      setTelegramDiscoveredChats([]);
+      setTelegramChatLookupMessage(err.message || "Failed to discover Telegram chats.");
+    } finally {
+      setTelegramChatLookupLoading(false);
+    }
   };
 
   // ── Build EXECUTORS env string ─────────────────────────────────────────────
@@ -3645,7 +3684,11 @@ function App() {
     ${telegramEnabled && html`
       <div class="form-group">
         <label>Telegram Bot Token</label>
-        <input type="password" value=${telegramToken} oninput=${(e) => setTelegramToken(e.target.value)}
+        <input type="password" value=${telegramToken} oninput=${(e) => {
+          setTelegramToken(e.target.value);
+          setTelegramDiscoveredChats([]);
+          setTelegramChatLookupMessage("");
+        }}
           placeholder="123456:ABCdefGHIjklMNO..." />
         <div class="hint">Create a bot via <a href="https://t.me/botfather" target="_blank">@BotFather</a>.</div>
       </div>
@@ -3653,7 +3696,30 @@ function App() {
         <label>Telegram Chat ID</label>
         <input type="text" value=${telegramChatId} oninput=${(e) => setTelegramChatId(e.target.value)}
           placeholder="-1001234567890" />
-        <div class="hint">Use <code style="font-family:var(--font-mono)">bosun --get-chat-id</code> to find your chat ID after the bot is running.</div>
+        <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin-top:8px">
+          <button class="btn" type="button" onclick=${discoverTelegramChatIds}
+            disabled=${telegramChatLookupLoading || !String(telegramToken || "").trim()}>
+            ${telegramChatLookupLoading ? "Finding Chats..." : "Discover Chats"}
+          </button>
+          ${telegramDiscoveredChats.length > 1 && html`
+            <select
+              value=${telegramDiscoveredChats.some((chat) => String(chat.id) === String(telegramChatId)) ? String(telegramChatId) : ""}
+              onchange=${(e) => setTelegramChatId(e.target.value)}
+              style="min-width:260px;flex:1"
+            >
+              <option value="">Choose a discovered chat</option>
+              ${telegramDiscoveredChats.map((chat) => html`
+                <option value=${String(chat.id)}>
+                  ${`${chat.id}${chat.username ? ` · @${chat.username}` : ""}${chat.title ? ` · ${chat.title}` : ""}${chat.type ? ` · ${chat.type}` : ""}`}
+                </option>
+              `)}
+            </select>
+          `}
+        </div>
+        ${telegramChatLookupMessage && html`
+          <div class="hint" style="margin-top:8px">${telegramChatLookupMessage}</div>
+        `}
+        <div class="hint">Use Discover Chats after sending your bot a message, or run <code style="font-family:var(--font-mono)">bosun --get-chat-id</code>.</div>
       </div>
     `}
     <div class="nav-buttons">

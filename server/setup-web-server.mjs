@@ -29,6 +29,7 @@ import {
   resolveWorkflowTemplateIds,
   normalizeTemplateOverridesById,
 } from "../workflow/workflow-templates.mjs";
+import { discoverTelegramChats } from "../telegram/get-telegram-chat-id.mjs";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
@@ -1981,6 +1982,20 @@ function handleValidate(body) {
   return { ok: true, valid: Object.keys(errors).length === 0, errors };
 }
 
+async function handleTelegramChatIdLookup(body) {
+  const token = String(body?.token || "").trim();
+  if (!token) {
+    return { ok: false, status: 400, error: "TELEGRAM_BOT_TOKEN is required" };
+  }
+
+  try {
+    const { chats, message } = await discoverTelegramChats(token);
+    return { ok: true, status: 200, chats, message };
+  } catch (err) {
+    return { ok: false, status: 500, error: err.message || String(err) };
+  }
+}
+
 function handleApply(body) {
   try {
     const { env = {}, configJson = {} } = body || {};
@@ -2579,6 +2594,15 @@ async function handleRequest(req, res) {
           }
           jsonResponse(res, 200, handleValidate(await readBody(req)));
           return;
+        case "telegram-chat-id": {
+          if (req.method !== "POST") {
+            jsonResponse(res, 405, { ok: false, error: "POST required" });
+            return;
+          }
+          const result = await handleTelegramChatIdLookup(await readBody(req));
+          jsonResponse(res, result.status, result);
+          return;
+        }
         case "apply":
           if (req.method !== "POST") {
             jsonResponse(res, 405, { ok: false, error: "POST required" });
@@ -2984,6 +3008,7 @@ export async function startSetupServer(options = {}) {
 export {
   applyTelegramMiniAppSetupEnv,
   applyNonBlockingSetupEnvDefaults,
+  handleTelegramChatIdLookup,
   normalizeWorkflowTemplateOverrides,
   normalizeTelegramUiPort,
   normalizeRepoConfigEntry,

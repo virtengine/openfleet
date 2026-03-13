@@ -20,6 +20,7 @@
 import {
   getNodeType,
   listNodeTypes,
+  NodeStatus,
   registerNodeType,
   unregisterNodeType,
 } from "./workflow-engine.mjs";
@@ -3067,6 +3068,312 @@ registerBuiltinNodeType("action.execute_workflow", {
     if (status === "failed" && failOnChildError) {
       const reason = childErrors[0]?.error || "child workflow failed";
       const err = new Error(`action.execute_workflow: child workflow "${workflowId}" failed: ${reason}`);
+      err.childWorkflow = output;
+      throw err;
+    }
+
+    return output;
+  },
+});
+
+registerBuiltinNodeType("action.inline_workflow", {
+  describe: () =>
+    "Execute an embedded workflow definition inline (sync or dispatch) without saving it. " +
+    "Useful for parent workflows that need a local subgraph with its own run/context boundary.",
+  schema: {
+    type: "object",
+    properties: {
+      workflow: {
+        type: "object",
+        description:
+          "Embedded workflow definition fragment. Supports { name, variables, nodes, edges, trigger, metadata }.",
+        additionalProperties: true,
+      },
+      mode: { type: "string", enum: ["sync", "dispatch"], default: "sync" },
+      input: {
+        type: "object",
+        description: "Input payload passed to the embedded workflow",
+        additionalProperties: true,
+      },
+      inheritContext: {
+        type: "boolean",
+        default: false,
+        description: "Copy parent workflow context data into child input before applying input overrides",
+      },
+      includeKeys: {
+        type: "array",
+        items: { type: "string" },
+        description: "Optional allow-list of parent context keys to inherit when inheritContext=true",
+      },
+      outputVariable: {
+        type: "string",
+        description: "Optional context key to store execution summary output",
+      },
+      failOnChildError: {
+        type: "boolean",
+        default: true,
+        description: "In sync mode, throw when the embedded workflow completes with errors",
+      },
+      forwardFields: {
+        type: "array",
+        items: { type: "string" },
+        description:
+          "Optional allow-list of top-level fields from the embedded workflow's extracted outputs " +
+          "to promote onto this node's output.",
+      },
+      extractFromNodes: {
+        type: "array",
+        items: { type: "string" },
+        description:
+          "Optional child node IDs to extract outputs from. When omitted, the last completed " +
+          "child node output is used.",
+      },
+      allowRecursive: {
+        type: "boolean",
+        default: false,
+        description: "Allow recursive embedded workflow execution when true",
+      },
+    },
+    required: ["workflow"],
+  },
+  async execute(node, ctx, engine) {
+    const workflowDef = resolveWorkflowNodeValue(node.config?.workflow ?? null, ctx);
+    const modeRaw = String(ctx.resolve(node.config?.mode || "sync") || "sync")
+      .trim()
+      .toLowerCase();
+    const mode = modeRaw || "sync";
+    const outputVariable = String(ctx.resolve(node.config?.outputVariable || "") || "").trim();
+    const inheritContext = parseBooleanSetting(
+      resolveWorkflowNodeValue(node.config?.inheritContext ?? false, ctx),
+      false,
+    );
+    const failOnChildError = parseBooleanSetting(
+      resolveWorkflowNodeValue(node.config?.failOnChildError ?? true, ctx),
+      true,
+    );
+    const allowRecursive = parseBooleanSetting(
+      resolveWorkflowNodeValue(node.config?.allowRecursive ?? false, ctx),
+      false,
+    );
+    const includeKeys = Array.isArray(node.config?.includeKeys)
+      ? node.config.includeKeys
+          .map((value) => String(resolveWorkflowNodeValue(value, ctx) || "").trim())
+          .filter(Boolean)
+      : [];
+    const forwardFields = Array.isArray(node.config?.forwardFields)
+      ? node.config.forwardFields
+          .map((value) => String(resolveWorkflowNodeValue(value, ctx) || "").trim())
+          .filter(Boolean)
+      : [];
+    const extractFromNodes = Array.isArray(node.config?.extractFromNodes)
+      ? node.config.extractFromNodes
+          .map((value) => String(resolveWorkflowNodeValue(value, ctx) || "").trim())
+          .filter(Boolean)
+      : [];
+
+    if (!workflowDef || typeof workflowDef !== "object" || Array.isArray(workflowDef)) {
+      throw new Error("action.inline_workflow: 'workflow' must resolve to an object");
+    }
+    if (mode !== "sync" && mode !== "dispatch") {
+      throw new Error(`action.inline_workflow: invalid mode "${mode}". Expected "sync" or "dispatch".`);
+    }
+    if (!engine || typeof engine.executeDefinition !== "function") {
+      throw new Error("action.inline_workflow: workflow engine is not available");
+    }
+
+    const resolvedInputConfig = resolveWorkflowNodeValue(node.config?.input ?? {}, ctx);
+    if (
+      resolvedInputConfig != null &&
+      (typeof resolvedInputConfig !== "object" || Array.isArray(resolvedInputConfig))
+    ) {
+      throw new Error("action.inline_workflow: 'input' must resolve to an object");
+    }
+    const configuredInput =
+      resolvedInputConfig && typeof resolvedInputConfig === "object"
+        ? resolvedInputConfig
+        : {};
+
+    const sourceData =
+      ctx.data && typeof ctx.data === "object"
+        ? ctx.data
+        : {};
+    const inheritedInput = {};
+    if (inheritContext) {
+      if (includeKeys.length > 0) {
+        for (const key of includeKeys) {
+          if (Object.prototype.hasOwnProperty.call(sourceData, key)) {
+            inheritedInput[key] = sourceData[key];
+          }
+        }
+      } else {
+        Object.assign(inheritedInput, sourceData);
+      }
+    }
+
+    const parentWorkflowId = String(ctx.data?._workflowId || "").trim() || "inline-parent";
+    const workflowStack = normalizeWorkflowStack(ctx.data?._workflowStack);
+    if (parentWorkflowId && workflowStack[workflowStack.length - 1] !== parentWorkflowId) {
+      workflowStack.push(parentWorkflowId);
+    }
+    const inlineWorkflowId = String(workflowDef.id || `inline:${parentWorkflowId}:${node.id}`).trim();
+    if (!allowRecursive && workflowStack.includes(inlineWorkflowId)) {
+      const cyclePath = [...workflowStack, inlineWorkflowId].join(" -> ");
+      throw new Error(
+        `action.inline_workflow: recursive inline workflow call blocked (${cyclePath}). ` +
+          "Set allowRecursive=true to override.",
+      );
+    }
+
+    const childInput = {
+      ...inheritedInput,
+      ...configuredInput,
+      _workflowStack: [...workflowStack, inlineWorkflowId],
+      _parentWorkflowId: parentWorkflowId,
+    };
+
+    const inlineName = String(workflowDef.name || node.label || `Inline ${node.id}`).trim() || inlineWorkflowId;
+    const executeInline = () => engine.executeDefinition({
+      trigger: workflowDef.trigger || "trigger.workflow_call",
+      ...workflowDef,
+      id: inlineWorkflowId,
+      name: inlineName,
+      metadata: {
+        ...(workflowDef.metadata || {}),
+        inline: true,
+        sourceNodeId: node.id,
+        parentWorkflowId,
+      },
+    }, childInput, {
+      force: true,
+      sourceNodeId: node.id,
+      inlineWorkflowId,
+      inlineWorkflowName: inlineName,
+    });
+
+    const extractChildOutputs = (childCtx) => {
+      const childOutputs = childCtx?.nodeOutputs instanceof Map
+        ? Object.fromEntries(childCtx.nodeOutputs)
+        : childCtx?.nodeOutputs && typeof childCtx.nodeOutputs === "object"
+          ? { ...childCtx.nodeOutputs }
+          : {};
+
+      let extracted = {};
+      if (extractFromNodes.length > 0) {
+        for (const childNodeId of extractFromNodes) {
+          if (Object.prototype.hasOwnProperty.call(childOutputs, childNodeId)) {
+            extracted[childNodeId] = childOutputs[childNodeId];
+          }
+        }
+        if (extractFromNodes.length === 1) {
+          const single = extracted[extractFromNodes[0]];
+          if (
+            single &&
+            typeof single === "object" &&
+            single._workflowEnd === true &&
+            single.output &&
+            typeof single.output === "object" &&
+            !Array.isArray(single.output)
+          ) {
+            extracted = { ...single.output };
+          }
+        }
+      } else {
+        const completedNodeIds = Array.from(childCtx?.nodeStatuses?.entries?.() || [])
+          .filter(([, status]) => status === NodeStatus.COMPLETED)
+          .map(([childNodeId]) => childNodeId);
+        const lastCompletedNodeId = completedNodeIds[completedNodeIds.length - 1];
+        if (lastCompletedNodeId && Object.prototype.hasOwnProperty.call(childOutputs, lastCompletedNodeId)) {
+          const candidate = childOutputs[lastCompletedNodeId];
+          if (
+            candidate &&
+            typeof candidate === "object" &&
+            candidate._workflowEnd === true &&
+            candidate.output &&
+            typeof candidate.output === "object" &&
+            !Array.isArray(candidate.output)
+          ) {
+            extracted = { ...candidate.output };
+          } else if (candidate && typeof candidate === "object" && !Array.isArray(candidate)) {
+            extracted = { ...candidate };
+          } else {
+            extracted = { result: candidate };
+          }
+        }
+      }
+
+      if (forwardFields.length > 0 && extracted && typeof extracted === "object") {
+        return Object.fromEntries(
+          forwardFields
+            .filter((field) => Object.prototype.hasOwnProperty.call(extracted, field))
+            .map((field) => [field, extracted[field]]),
+        );
+      }
+      return extracted;
+    };
+
+    if (mode === "dispatch") {
+      ctx.log(node.id, `Dispatching inline workflow "${inlineWorkflowId}"`);
+      let dispatched;
+      try {
+        dispatched = Promise.resolve(executeInline());
+      } catch (err) {
+        dispatched = Promise.reject(err);
+      }
+      dispatched
+        .then((childCtx) => {
+          const status = childCtx?.errors?.length ? "failed" : "completed";
+          ctx.log(node.id, `Dispatched inline workflow "${inlineWorkflowId}" finished with status=${status}`);
+        })
+        .catch((err) => {
+          ctx.log(node.id, `Dispatched inline workflow "${inlineWorkflowId}" failed: ${err.message}`, "error");
+        });
+
+      const output = {
+        success: true,
+        dispatched: true,
+        mode: "dispatch",
+        workflowId: inlineWorkflowId,
+        matchedPort: "default",
+        port: "default",
+      };
+      if (outputVariable) {
+        ctx.data[outputVariable] = output;
+      }
+      return output;
+    }
+
+    ctx.log(node.id, `Executing inline workflow "${inlineWorkflowId}" (sync)`);
+    const childCtx = await executeInline();
+    const childErrors = Array.isArray(childCtx?.errors)
+      ? childCtx.errors.map((entry) => ({
+          nodeId: entry?.nodeId || null,
+          error: String(entry?.error || "unknown child workflow error"),
+        }))
+      : [];
+    const status = childErrors.length > 0 ? "failed" : "completed";
+    const extracted = extractChildOutputs(childCtx);
+    const output = {
+      success: status === "completed",
+      dispatched: false,
+      mode: "sync",
+      workflowId: inlineWorkflowId,
+      runId: childCtx?.id || null,
+      status,
+      errorCount: childErrors.length,
+      errors: childErrors,
+      matchedPort: status === "completed" ? "default" : "error",
+      port: status === "completed" ? "default" : "error",
+      childOutputs: extracted,
+      ...(extracted && typeof extracted === "object" ? extracted : {}),
+    };
+
+    if (outputVariable) {
+      ctx.data[outputVariable] = output;
+    }
+
+    if (status === "failed" && failOnChildError) {
+      const reason = childErrors[0]?.error || "inline workflow failed";
+      const err = new Error(`action.inline_workflow: child inline workflow "${inlineWorkflowId}" failed: ${reason}`);
       err.childWorkflow = output;
       throw err;
     }

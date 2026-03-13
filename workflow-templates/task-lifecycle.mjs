@@ -300,11 +300,25 @@ export const TASK_LIFECYCLE_TEMPLATE = {
       taskTitle: "{{taskTitle}}",
     }, { x: 0, y: 2390 }),
 
+    node("handoff-pr-progressor", "action.execute_workflow", "Handoff PR Progressor", {
+      workflowId: "template-bosun-pr-progressor",
+      mode: "dispatch",
+      input: {
+        taskId: "{{taskId}}",
+        taskTitle: "{{taskTitle}}",
+        branch: "{{branch}}",
+        baseBranch: "{{baseBranch}}",
+        prNumber: "{{$ctx.getNodeOutput('create-pr')?.prNumber ?? $data?.prNumber ?? null}}",
+        prUrl: "{{$ctx.getNodeOutput('create-pr')?.prUrl || $data?.prUrl || ''}}",
+        repo: "{{$ctx.getNodeOutput('create-pr')?.repoSlug || $data?.repo || $data?.repoSlug || $data?.repository || ''}}",
+      },
+    }, { x: -120, y: 2520 }),
+
     // ── SUCCESS PATH: Log success ────────────────────────────────────────
     node("log-success", "notify.log", "Log Success", {
       message: "Task \"{{taskTitle}}\" ({{taskId}}) completed — PR created",
       level: "info",
-    }, { x: 0, y: 2520 }),
+    }, { x: -120, y: 2650 }),
 
     // ── NO COMMITS PATH: Log no-commit ───────────────────────────────────
     node("log-no-commits", "notify.log", "Log No Commits", {
@@ -348,10 +362,24 @@ export const TASK_LIFECYCLE_TEMPLATE = {
       taskTitle: "{{taskTitle}}",
     }, { x: 250, y: 2000 }),
 
+    node("handoff-pr-progressor-stolen", "action.execute_workflow", "Handoff PR Progressor (Recovered)", {
+      workflowId: "template-bosun-pr-progressor",
+      mode: "dispatch",
+      input: {
+        taskId: "{{taskId}}",
+        taskTitle: "{{taskTitle}}",
+        branch: "{{branch}}",
+        baseBranch: "{{baseBranch}}",
+        prNumber: "{{$ctx.getNodeOutput('create-pr-retry')?.prNumber ?? $data?.prNumber ?? null}}",
+        prUrl: "{{$ctx.getNodeOutput('create-pr-retry')?.prUrl || $data?.prUrl || ''}}",
+        repo: "{{$ctx.getNodeOutput('create-pr-retry')?.repoSlug || $data?.repo || $data?.repoSlug || $data?.repository || ''}}",
+      },
+    }, { x: 120, y: 2130 }),
+
     node("log-claim-stolen-recovered", "notify.log", "Log Claim Loss Recovery", {
       message: "Task \"{{taskTitle}}\" ({{taskId}}) — claim lost after PR link recovery, keeping inreview",
       level: "warn",
-    }, { x: 250, y: 2130 }),
+    }, { x: 120, y: 2260 }),
 
     node("log-claim-stolen", "notify.log", "Log Claim Stolen", {
       message: "Task \"{{taskTitle}}\" ({{taskId}}) — claim was stolen, aborting",
@@ -452,7 +480,8 @@ export const TASK_LIFECYCLE_TEMPLATE = {
     edge("create-pr", "pr-created"),
     edge("pr-created", "set-inreview", { condition: "$output?.result === true", port: "yes" }),
     edge("pr-created", "set-todo-push-failed", { condition: "$output?.result !== true", port: "no" }),
-    edge("set-inreview", "log-success"),
+    edge("set-inreview", "handoff-pr-progressor"),
+    edge("handoff-pr-progressor", "log-success"),
     edge("log-success", "join-outcomes"),
 
     // Push failed path
@@ -468,7 +497,8 @@ export const TASK_LIFECYCLE_TEMPLATE = {
     edge("claim-stolen", "create-pr-retry", { condition: "$output?.result === true", port: "yes" }),
     edge("create-pr-retry", "pr-created-stolen"),
     edge("pr-created-stolen", "set-inreview-stolen", { condition: "$output?.result === true", port: "yes" }),
-    edge("set-inreview-stolen", "log-claim-stolen-recovered"),
+    edge("set-inreview-stolen", "handoff-pr-progressor-stolen"),
+    edge("handoff-pr-progressor-stolen", "log-claim-stolen-recovered"),
     edge("log-claim-stolen-recovered", "join-outcomes"),
     edge("pr-created-stolen", "log-claim-stolen", { condition: "$output?.result !== true", port: "no" }),
     edge("log-claim-stolen", "set-todo-stolen"),
@@ -495,6 +525,7 @@ export const TASK_LIFECYCLE_TEMPLATE = {
     createdAt: "2026-03-01T00:00:00Z",
     templateVersion: "2.0.0",
     tags: ["task", "lifecycle", "executor", "workflow-first", "core"],
+    requiredTemplates: ["template-bosun-pr-progressor"],
     replaces: {
       module: "task-executor.mjs",
       functions: [

@@ -2010,8 +2010,8 @@ describe("template-task-lifecycle", () => {
       "workflow-contract-validation", "build-prompt", "run-agent-plan", "run-agent-tests", "run-agent-implement",
       "claim-stolen", "detect-commits", "has-commits",
       "pre-pr-validation", "pre-pr-validation-ok", "log-validation-failed", "set-todo-validation-failed",
-      "push-branch", "push-ok", "create-pr", "set-inreview", "log-success",
-      "log-no-commits", "set-todo-cooldown", "create-pr-retry", "pr-created-stolen", "set-inreview-stolen", "log-claim-stolen-recovered",
+      "push-branch", "push-ok", "create-pr", "set-inreview", "handoff-pr-progressor", "log-success",
+      "log-no-commits", "set-todo-cooldown", "create-pr-retry", "pr-created-stolen", "set-inreview-stolen", "handoff-pr-progressor-stolen", "log-claim-stolen-recovered",
       "release-worktree", "release-claim", "release-slot",
     ];
     for (const id of required) {
@@ -2073,6 +2073,8 @@ describe("template-task-lifecycle", () => {
     expect(t.edges.find((e) => e.source === "create-pr" && e.target === "pr-created")).toBeDefined();
     expect(t.edges.find((e) => e.source === "pr-created" && e.target === "set-inreview")).toBeDefined();
     expect(t.edges.find((e) => e.source === "pr-created" && e.target === "set-todo-push-failed")).toBeDefined();
+    expect(t.edges.find((e) => e.source === "set-inreview" && e.target === "handoff-pr-progressor")).toBeDefined();
+    expect(t.edges.find((e) => e.source === "handoff-pr-progressor" && e.target === "log-success")).toBeDefined();
   });
 
   it("runs pre-PR validation before pushing", () => {
@@ -2124,6 +2126,8 @@ describe("template-task-lifecycle", () => {
     expect(t.edges.find((e) => e.source === "claim-stolen" && e.target === "create-pr-retry")).toBeDefined();
     expect(t.edges.find((e) => e.source === "create-pr-retry" && e.target === "pr-created-stolen")).toBeDefined();
     expect(t.edges.find((e) => e.source === "pr-created-stolen" && e.target === "set-inreview-stolen")).toBeDefined();
+    expect(t.edges.find((e) => e.source === "set-inreview-stolen" && e.target === "handoff-pr-progressor-stolen")).toBeDefined();
+    expect(t.edges.find((e) => e.source === "handoff-pr-progressor-stolen" && e.target === "log-claim-stolen-recovered")).toBeDefined();
     expect(t.edges.find((e) => e.source === "pr-created-stolen" && e.target === "log-claim-stolen")).toBeDefined();
   });
 
