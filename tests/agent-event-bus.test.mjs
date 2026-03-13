@@ -44,6 +44,7 @@ describe("agent-event-bus", () => {
       expect(AGENT_EVENT.AGENT_HEARTBEAT).toBe("agent:heartbeat");
       expect(AGENT_EVENT.AGENT_ERROR).toBe("agent:error");
       expect(AGENT_EVENT.AUTO_RETRY).toBe("agent:auto-retry");
+      expect(AGENT_EVENT.RETRY_QUEUE_UPDATED).toBe("agent:retry-queue-updated");
       expect(AGENT_EVENT.ERROR_CLASSIFIED).toBe("agent:error-classified");
       expect(AGENT_EVENT.AGENT_STALE).toBe("agent:stale");
     });
@@ -166,10 +167,9 @@ describe("agent-event-bus", () => {
         { id: "task-1", title: "Fix bug" },
         { sdk: "copilot-sdk", branch: "ve/test" },
       );
-      const log = bus.getEventLog();
-      expect(log).toHaveLength(1);
-      expect(log[0].type).toBe(AGENT_EVENT.TASK_STARTED);
-      expect(log[0].payload.sdk).toBe("copilot-sdk");
+      const event = bus.getEventLog().find((e) => e.type === AGENT_EVENT.TASK_STARTED);
+      expect(event).toBeTruthy();
+      expect(event.payload.sdk).toBe("copilot-sdk");
     });
   });
 
@@ -179,10 +179,9 @@ describe("agent-event-bus", () => {
         { id: "task-1", title: "Fix bug" },
         { success: true, hasCommits: true, branch: "ve/test" },
       );
-      const log = bus.getEventLog();
-      expect(log).toHaveLength(1);
-      expect(log[0].type).toBe(AGENT_EVENT.TASK_COMPLETED);
-      expect(log[0].payload.success).toBe(true);
+      const event = bus.getEventLog().find((e) => e.type === AGENT_EVENT.TASK_COMPLETED);
+      expect(event).toBeTruthy();
+      expect(event.payload.success).toBe(true);
     });
 
     it("triggers auto-review when review agent is available", () => {
@@ -299,10 +298,9 @@ describe("agent-event-bus", () => {
   describe("onStatusChange", () => {
     it("emits TASK_STATUS_CHANGE", () => {
       bus.onStatusChange("task-1", "inprogress", "agent");
-      const log = bus.getEventLog();
-      expect(log).toHaveLength(1);
-      expect(log[0].type).toBe(AGENT_EVENT.TASK_STATUS_CHANGE);
-      expect(log[0].payload.status).toBe("inprogress");
+      const event = bus.getEventLog().find((e) => e.type === AGENT_EVENT.TASK_STATUS_CHANGE);
+      expect(event).toBeTruthy();
+      expect(event.payload.status).toBe("inprogress");
     });
 
     it("sends telegram on blocked status", () => {
@@ -473,6 +471,59 @@ describe("agent-event-bus", () => {
       expect(staleEvents.length).toBeGreaterThanOrEqual(1);
       expect(staleEvents[0].taskId).toBe("task-1");
     });
+
+    it("does not emit retry queue updates when expire check makes no changes", () => {
+      const setRetryQueueData = vi.fn();
+      bus.stop();
+      bus = createAgentEventBus({
+        broadcastUiEvent: mockBroadcast,
+        staleThresholdMs: 5000,
+        staleCheckIntervalMs: 2000,
+        setRetryQueueData,
+      });
+
+      bus._checkStaleAgents();
+
+      const queueEvents = bus
+        .getEventLog()
+        .filter((e) => e.type === AGENT_EVENT.RETRY_QUEUE_UPDATED);
+      expect(setRetryQueueData).not.toHaveBeenCalled();
+      expect(queueEvents).toHaveLength(0);
+    });
+
+    it("emits retry queue updates when expire check removes queued tasks", () => {
+      const setRetryQueueData = vi.fn();
+      bus.stop();
+      bus = createAgentEventBus({
+        broadcastUiEvent: mockBroadcast,
+        staleThresholdMs: 5000,
+        staleCheckIntervalMs: 2000,
+        setRetryQueueData,
+      });
+
+      bus._updateRetryQueue(
+        {
+          type: "add",
+          item: {
+            taskId: "task-1",
+            retryCount: 1,
+            nextAttemptAt: 0,
+            expiresAt: 0,
+          },
+        },
+        { reason: "seed", taskId: "task-1" },
+      );
+      setRetryQueueData.mockClear();
+
+      bus._checkStaleAgents();
+
+      const queueEvents = bus
+        .getEventLog()
+        .filter((e) => e.type === AGENT_EVENT.RETRY_QUEUE_UPDATED);
+      expect(setRetryQueueData).toHaveBeenCalledTimes(1);
+      expect(bus.getRetryQueue().count).toBe(0);
+      expect(queueEvents.at(-1)?.payload?.reason).toBe("expire");
+    });
   });
 
   // ── Auto-Actions ────────────────────────────────────────────────────
@@ -500,7 +551,7 @@ describe("agent-event-bus", () => {
       });
 
       // First start the task to initialize auto-action state
-      bus.onTaskStarted({ id: "task-1" }, {});
+      bus.onTaskStarted({ id: "task-1", title: "Retry queue title test" }, {});
       vi.advanceTimersByTime(600);
       bus.onTaskFailed({ id: "task-1" }, "build error");
 
@@ -509,6 +560,47 @@ describe("agent-event-bus", () => {
         .filter((e) => e.type === AGENT_EVENT.AUTO_RETRY);
       expect(retryEvents.length).toBe(1);
       expect(retryEvents[0].payload.retryCount).toBe(1);
+      const queue = bus.getRetryQueue();
+      expect(queue.count).toBe(1);
+      expect(queue.items[0].taskId).toBe("task-1");
+      expect(queue.items[0].taskTitle).toBe("Retry queue title test");
+    });
+
+    it("invokes threshold hook instead of retry when threshold is reached", () => {
+      const thresholdHook = vi.fn();
+      bus.stop();
+      bus = createAgentEventBus({
+        broadcastUiEvent: mockBroadcast,
+        maxAutoRetries: 5,
+        retryReviewThreshold: 2,
+        onRetryThresholdExceeded: thresholdHook,
+      });
+      mockDetector.classify.mockReturnValue({
+        pattern: "build_failure",
+        confidence: 0.9,
+      });
+      mockDetector.recordError.mockReturnValue({
+        action: "retry_with_prompt",
+        errorCount: 1,
+        reason: "build error",
+      });
+      bus._errorDetector = mockDetector;
+
+      bus.onTaskStarted({ id: "task-1" }, {});
+      vi.advanceTimersByTime(600);
+      bus.onTaskFailed({ id: "task-1" }, "build error #1");
+      vi.advanceTimersByTime(600);
+      bus.onTaskFailed({ id: "task-1" }, "build error #2");
+      vi.advanceTimersByTime(600);
+      bus.onTaskFailed({ id: "task-1" }, "build error #3");
+
+      expect(thresholdHook).toHaveBeenCalledOnce();
+      const reviewEvents = bus
+        .getEventLog()
+        .filter((e) => e.type === AGENT_EVENT.AUTO_REVIEW);
+      expect(reviewEvents.length).toBeGreaterThanOrEqual(1);
+      const queue = bus.getRetryQueue();
+      expect(queue.stats.exhaustedTaskIds).toContain("task-1");
     });
 
     it("emits AUTO_COOLDOWN when action is cooldown", () => {
@@ -578,6 +670,41 @@ describe("agent-event-bus", () => {
       expect(mockTelegram).toHaveBeenCalledWith(
         expect.stringContaining("Auto-blocked"),
       );
+    });
+
+    it("clears cooldown on manual retry queue clear", () => {
+      mockDetector.classify.mockReturnValue({
+        pattern: "rate_limit",
+        confidence: 0.95,
+      });
+      mockDetector.recordError.mockReturnValue({
+        action: "cooldown",
+        cooldownMs: 60_000,
+        reason: "rate limited",
+      });
+
+      bus.onTaskStarted({ id: "task-1" }, {});
+      vi.advanceTimersByTime(600);
+      bus.onTaskFailed({ id: "task-1" }, "rate limited");
+
+      mockDetector.classify.mockReturnValue({
+        pattern: "build_failure",
+        confidence: 0.9,
+      });
+      mockDetector.recordError.mockReturnValue({
+        action: "retry_with_prompt",
+        errorCount: 1,
+        reason: "build error",
+      });
+
+      bus.clearRetryQueueTask("task-1", "manual-retry-now");
+      vi.advanceTimersByTime(600);
+      bus.onTaskFailed({ id: "task-1" }, "build failed after manual retry");
+
+      const retryEvents = bus
+        .getEventLog()
+        .filter((e) => e.type === AGENT_EVENT.AUTO_RETRY);
+      expect(retryEvents.length).toBe(1);
     });
   });
 

@@ -28,6 +28,8 @@ import {
   loadTelemetryAlerts,
   loadUsageAnalytics,
   loadShreddingTelemetry,
+  loadRetryQueue,
+  retryQueueData,
   scheduleRefresh,
 } from "../modules/state.js";
 import {
@@ -495,12 +497,14 @@ function ShreddingPanel({ period }) {
 
 export function TelemetryTab() {
   const data = usageAnalytics.value;
+  const retryQueue = retryQueueData.value || { count: 0, items: [], stats: {} };
   const [period, setPeriod] = useState(30);
   const [trendTab, setTrendTab] = useState("agents");
 
   useEffect(() => {
     loadUsageAnalytics(period).catch(() => {});
     loadShreddingTelemetry(period).catch(() => {});
+    loadRetryQueue().catch(() => {});
   }, [period]);
 
   const trend = data?.trend;
@@ -555,6 +559,7 @@ export function TelemetryTab() {
             loadTelemetryErrors();
             loadTelemetryExecutors();
             loadTelemetryAlerts();
+            loadRetryQueue();
             scheduleRefresh(4000);
           }}>Refresh<//>
         <//>
@@ -572,6 +577,12 @@ export function TelemetryTab() {
           value=${data ? formatCount(data.avgPerDay) : "–"} />
         <${AnalyticsStat} icon="🕐" label="Last Active"
           value=${data?.lastActiveAt ? formatRelative(data.lastActiveAt) : "–"} />
+        <${AnalyticsStat} icon="↻" label="Retries Today"
+          value=${formatCount(retryQueue?.stats?.totalRetriesToday || 0)} />
+        <${AnalyticsStat} icon="⇡" label="Peak Retry Depth"
+          value=${formatCount(retryQueue?.stats?.peakRetryDepth || 0)} />
+        <${AnalyticsStat} icon="⚠" label="Exhausted Tasks"
+          value=${formatCount((retryQueue?.stats?.exhaustedTaskIds || []).length)} />
       <//>
 
       <!-- Activity trend chart -->

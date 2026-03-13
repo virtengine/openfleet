@@ -1,1 +1,1183 @@
-/**\n * workflow-templates.mjs — Pre-built Workflow Templates for Bosun\n *\n * Ready-to-use workflow definitions that users can install with one click\n * from the visual builder. Each template encodes a complete flow that\n * previously required custom code or env-var configuration.\n *\n * Templates are split into category modules for easy extension:\n *   workflow-templates/github.mjs     — PR Merge Strategy, Triage, Conflict Resolver, Stale Reaper, Release Drafter, SDK Conflict Resolver\n *   workflow-templates/agents.mjs     — Frontend Agent, Review Agent, Custom Agent, Session Monitor, Backend Agent, Meeting Orchestrator + Subworkflow Chain\n *   workflow-templates/planning.mjs   — Task Planner, Task Replenish, Nightly Report, Sprint Retrospective, Weekly Fitness Summary\n *   workflow-templates/ci-cd.mjs      — Build & Deploy, Release Pipeline, Canary Deploy\n *   workflow-templates/reliability.mjs — Error Recovery, Anomaly Watchdog, Workspace Hygiene, Health Check, Task Finalization Guard, Task Repair Worktree, Task Orphan Worktree Recovery, Incident Response, Task Archiver, Sync Engine\n *   workflow-templates/security.mjs   — Dependency Audit, Secret Scanner\n *   workflow-templates/code-quality.mjs — Code Quality Striker\n *\n * To add a new template:\n *   1. Choose the appropriate category file (or create a new one)\n *   2. Import { node, edge, resetLayout } from "../_helpers.mjs"\n *   3. Define and export your template constant\n *   4. Add the export to this index file's WORKFLOW_TEMPLATES array\n *\n * Categories: github, agents, planning, ci-cd, reliability, security, custom\n *\n * EXPORTS:\n *   WORKFLOW_TEMPLATES     — Array of all built-in templates\n *   TEMPLATE_CATEGORIES    — Category metadata (label, icon, order)\n *   getTemplate(id)        — Get a single template by ID\n *   installTemplate(id, engine) — Install a template into the workflow engine\n *   listTemplates()        — List all available templates\n */\n\nimport { createHash, randomUUID } from "node:crypto";\n\n// ── Re-export helpers for external consumers ────────────────────────────────\nexport { node, edge, resetLayout } from "../workflow-templates/_helpers.mjs";\n\n// ── Import templates from category modules ──────────────────────────────────\n\n// GitHub\nimport {\n  PR_MERGE_STRATEGY_TEMPLATE,\n  PR_TRIAGE_TEMPLATE,\n  PR_CONFLICT_RESOLVER_TEMPLATE,\n  STALE_PR_REAPER_TEMPLATE,\n  RELEASE_DRAFTER_TEMPLATE,\n  BOSUN_PR_WATCHDOG_TEMPLATE,\n  GITHUB_KANBAN_SYNC_TEMPLATE,\n  SDK_CONFLICT_RESOLVER_TEMPLATE,\n} from "../workflow-templates/github.mjs";\n\n// Agents\nimport {\n  FRONTEND_AGENT_TEMPLATE,\n  REVIEW_AGENT_TEMPLATE,\n  CUSTOM_AGENT_TEMPLATE,\n  AGENT_SESSION_MONITOR_TEMPLATE,\n  BACKEND_AGENT_TEMPLATE,\n  VOICE_VIDEO_PARALLEL_ROLLOUT_TEMPLATE,\n  MEETING_SUBWORKFLOW_CHAIN_TEMPLATE,\n} from "../workflow-templates/agents.mjs";\n\n// Planning\nimport {\n  TASK_PLANNER_TEMPLATE,\n  TASK_REPLENISH_TEMPLATE,\n  NIGHTLY_REPORT_TEMPLATE,\n  SPRINT_RETROSPECTIVE_TEMPLATE,\n  WEEKLY_FITNESS_SUMMARY_TEMPLATE,\n} from "../workflow-templates/planning.mjs";\n\n// CI/CD\nimport {\n  BUILD_DEPLOY_TEMPLATE,\n  RELEASE_PIPELINE_TEMPLATE,\n  CANARY_DEPLOY_TEMPLATE,\n} from "../workflow-templates/ci-cd.mjs";\n\n// Reliability\nimport {\n  ERROR_RECOVERY_TEMPLATE,\n  ANOMALY_WATCHDOG_TEMPLATE,\n  WORKSPACE_HYGIENE_TEMPLATE,\n  HEALTH_CHECK_TEMPLATE,\n  TASK_FINALIZATION_GUARD_TEMPLATE,\n  TASK_REPAIR_WORKTREE_TEMPLATE,\n  TASK_ORPHAN_WORKTREE_RECOVERY_TEMPLATE,\n  TASK_STATUS_TRANSITION_MANAGER_TEMPLATE,\n  INCIDENT_RESPONSE_TEMPLATE,\n  TASK_ARCHIVER_TEMPLATE,\n  SYNC_ENGINE_TEMPLATE,\n} from "../workflow-templates/reliability.mjs";\n\n// Security\nimport {\n  DEPENDENCY_AUDIT_TEMPLATE,\n  SECRET_SCANNER_TEMPLATE,\n} from "../workflow-templates/security.mjs";\n\n// Code Quality (structural refactor, agentic maintenance)\nimport {\n  CODE_QUALITY_STRIKER_TEMPLATE,\n} from "../workflow-templates/code-quality.mjs";\n\n// Task Lifecycle (workflow-first core)\nimport {\n  TASK_LIFECYCLE_TEMPLATE,\n  VE_ORCHESTRATOR_LITE_TEMPLATE,\n} from "../workflow-templates/task-lifecycle.mjs";\n\n// Task Batch (parallel dispatch)\nimport {\n  TASK_BATCH_PROCESSOR_TEMPLATE,\n  TASK_BATCH_PR_TEMPLATE,\n} from "../workflow-templates/task-batch.mjs";\n\n// Research (iterative verification loops)\nimport {\n  RESEARCH_AGENT_TEMPLATE,\n} from "../workflow-templates/research.mjs";\n\n// Coverage (node-type coverage templates)\nimport {\n  WEBHOOK_TASK_ROUTER_TEMPLATE,\n  SCHEDULED_MAINTENANCE_TEMPLATE,\n  MCP_RESEARCH_PROBE_TEMPLATE,\n  AGENT_EXECUTION_PIPELINE_TEMPLATE,\n  FLOW_CONTROL_SUITE_TEMPLATE,\n} from "../workflow-templates/coverage.mjs";\n\n// MCP Integration (MCP tool → workflow data piping)\nimport {\n  MCP_TOOL_CHAIN_TEMPLATE,\n  MCP_GITHUB_PR_MONITOR_TEMPLATE,\n  MCP_CROSS_SERVER_PIPELINE_TEMPLATE,\n  MCP_ITERATIVE_RESEARCH_TEMPLATE,\n} from "../workflow-templates/mcp-integration.mjs";\n\n// Bosun Native (built-in tools, sub-workflows, internal functions)\nimport {\n  BOSUN_TOOL_PIPELINE_TEMPLATE,\n  WORKFLOW_COMPOSITION_TEMPLATE,\n  MCP_TO_BOSUN_BRIDGE_TEMPLATE,\n  GIT_HEALTH_PIPELINE_TEMPLATE,\n} from "../workflow-templates/bosun-native.mjs";\n\n// ── Re-export individual templates for direct import ────────────────────────\n\nexport {\n  PR_MERGE_STRATEGY_TEMPLATE,\n  PR_TRIAGE_TEMPLATE,\n  PR_CONFLICT_RESOLVER_TEMPLATE,\n  STALE_PR_REAPER_TEMPLATE,\n  RELEASE_DRAFTER_TEMPLATE,\n  BOSUN_PR_WATCHDOG_TEMPLATE,\n  GITHUB_KANBAN_SYNC_TEMPLATE,\n  SDK_CONFLICT_RESOLVER_TEMPLATE,\n  FRONTEND_AGENT_TEMPLATE,\n  REVIEW_AGENT_TEMPLATE,\n  CUSTOM_AGENT_TEMPLATE,\n  AGENT_SESSION_MONITOR_TEMPLATE,\n  BACKEND_AGENT_TEMPLATE,\n  VOICE_VIDEO_PARALLEL_ROLLOUT_TEMPLATE,\n  MEETING_SUBWORKFLOW_CHAIN_TEMPLATE,\n  TASK_PLANNER_TEMPLATE,\n  TASK_REPLENISH_TEMPLATE,\n  NIGHTLY_REPORT_TEMPLATE,\n  SPRINT_RETROSPECTIVE_TEMPLATE,\n  WEEKLY_FITNESS_SUMMARY_TEMPLATE,\n  BUILD_DEPLOY_TEMPLATE,\n  RELEASE_PIPELINE_TEMPLATE,\n  CANARY_DEPLOY_TEMPLATE,\n  ERROR_RECOVERY_TEMPLATE,\n  ANOMALY_WATCHDOG_TEMPLATE,\n  WORKSPACE_HYGIENE_TEMPLATE,\n  HEALTH_CHECK_TEMPLATE,\n  TASK_FINALIZATION_GUARD_TEMPLATE,\n  TASK_REPAIR_WORKTREE_TEMPLATE,\n  TASK_ORPHAN_WORKTREE_RECOVERY_TEMPLATE,\n  TASK_STATUS_TRANSITION_MANAGER_TEMPLATE,\n  INCIDENT_RESPONSE_TEMPLATE,\n  TASK_ARCHIVER_TEMPLATE,\n  SYNC_ENGINE_TEMPLATE,\n  DEPENDENCY_AUDIT_TEMPLATE,\n  SECRET_SCANNER_TEMPLATE,\n  CODE_QUALITY_STRIKER_TEMPLATE,\n  TASK_LIFECYCLE_TEMPLATE,\n  VE_ORCHESTRATOR_LITE_TEMPLATE,\n  TASK_BATCH_PROCESSOR_TEMPLATE,\n  TASK_BATCH_PR_TEMPLATE,\n  RESEARCH_AGENT_TEMPLATE,\n  WEBHOOK_TASK_ROUTER_TEMPLATE,\n  SCHEDULED_MAINTENANCE_TEMPLATE,\n  MCP_RESEARCH_PROBE_TEMPLATE,\n  AGENT_EXECUTION_PIPELINE_TEMPLATE,\n  FLOW_CONTROL_SUITE_TEMPLATE,\n  MCP_TOOL_CHAIN_TEMPLATE,\n  MCP_GITHUB_PR_MONITOR_TEMPLATE,\n  MCP_CROSS_SERVER_PIPELINE_TEMPLATE,\n  MCP_ITERATIVE_RESEARCH_TEMPLATE,\n  BOSUN_TOOL_PIPELINE_TEMPLATE,\n  WORKFLOW_COMPOSITION_TEMPLATE,\n  MCP_TO_BOSUN_BRIDGE_TEMPLATE,\n  GIT_HEALTH_PIPELINE_TEMPLATE,\n};\n\n// ═══════════════════════════════════════════════════════════════════════════\n//  EXPORTS\n// ═══════════════════════════════════════════════════════════════════════════\n\n/** Category metadata for UI grouping. */\nexport const TEMPLATE_CATEGORIES = Object.freeze({\n  github:      { label: "GitHub",       icon: ":git:", order: 1 },\n  agents:      { label: "Agents",       icon: ":bot:", order: 2 },\n  planning:    { label: "Planning",     icon: ":clipboard:", order: 3 },\n  "ci-cd":     { label: "CI / CD",      icon: ":refresh:", order: 4 },\n  reliability: { label: "Reliability",  icon: ":shield:", order: 5 },\n  security:    { label: "Security",     icon: ":lock:", order: 6 },\n  lifecycle:   { label: "Lifecycle",    icon: ":rocket:", order: 7 },\n  research:    { label: "Research",     icon: ":microscope:", order: 8 },\n  coverage:    { label: "Coverage",     icon: ":chart:", order: 9 },\n  "mcp-integration": { label: "MCP Integration", icon: ":plug:", order: 10 },\n  maintenance: { label: "Maintenance",   icon: ":wrench:",   order: 11 },\n  custom:      { label: "Custom",       icon: ":settings:", order: 12 },\n});\n\nexport const WORKFLOW_TEMPLATES = Object.freeze([\n  // ── GitHub ──\n  PR_MERGE_STRATEGY_TEMPLATE,\n  PR_TRIAGE_TEMPLATE,\n  PR_CONFLICT_RESOLVER_TEMPLATE,\n  STALE_PR_REAPER_TEMPLATE,\n  RELEASE_DRAFTER_TEMPLATE,\n  BOSUN_PR_WATCHDOG_TEMPLATE,\n  GITHUB_KANBAN_SYNC_TEMPLATE,\n  SDK_CONFLICT_RESOLVER_TEMPLATE,\n  // ── Agents ──\n  REVIEW_AGENT_TEMPLATE,\n  FRONTEND_AGENT_TEMPLATE,\n  CUSTOM_AGENT_TEMPLATE,\n  AGENT_SESSION_MONITOR_TEMPLATE,\n  BACKEND_AGENT_TEMPLATE,\n  VOICE_VIDEO_PARALLEL_ROLLOUT_TEMPLATE,\n  MEETING_SUBWORKFLOW_CHAIN_TEMPLATE,\n  // ── Planning ──\n  TASK_PLANNER_TEMPLATE,\n  TASK_REPLENISH_TEMPLATE,\n  NIGHTLY_REPORT_TEMPLATE,\n  SPRINT_RETROSPECTIVE_TEMPLATE,\n  WEEKLY_FITNESS_SUMMARY_TEMPLATE,\n  // ── CI/CD ──\n  BUILD_DEPLOY_TEMPLATE,\n  RELEASE_PIPELINE_TEMPLATE,\n  CANARY_DEPLOY_TEMPLATE,\n  // ── Reliability ──\n  ERROR_RECOVERY_TEMPLATE,\n  ANOMALY_WATCHDOG_TEMPLATE,\n  WORKSPACE_HYGIENE_TEMPLATE,\n  HEALTH_CHECK_TEMPLATE,\n  TASK_FINALIZATION_GUARD_TEMPLATE,\n  TASK_REPAIR_WORKTREE_TEMPLATE,\n  TASK_ORPHAN_WORKTREE_RECOVERY_TEMPLATE,\n  TASK_STATUS_TRANSITION_MANAGER_TEMPLATE,\n  INCIDENT_RESPONSE_TEMPLATE,\n  TASK_ARCHIVER_TEMPLATE,\n  SYNC_ENGINE_TEMPLATE,\n  // ── Security ──\n  DEPENDENCY_AUDIT_TEMPLATE,\n  SECRET_SCANNER_TEMPLATE,\n  // ── Maintenance (structural quality, agentic dev) ──\n  CODE_QUALITY_STRIKER_TEMPLATE,\n  // ── Task Lifecycle (workflow-first core) ──\n  TASK_LIFECYCLE_TEMPLATE,\n  VE_ORCHESTRATOR_LITE_TEMPLATE,\n  // ── Task Batch (parallel dispatch) ──\n  TASK_BATCH_PROCESSOR_TEMPLATE,\n  TASK_BATCH_PR_TEMPLATE,\n  // ── Research (iterative verification loops) ──\n  RESEARCH_AGENT_TEMPLATE,\n  // ── Coverage (node-type coverage) ──\n  WEBHOOK_TASK_ROUTER_TEMPLATE,\n  SCHEDULED_MAINTENANCE_TEMPLATE,\n  MCP_RESEARCH_PROBE_TEMPLATE,\n  AGENT_EXECUTION_PIPELINE_TEMPLATE,\n  FLOW_CONTROL_SUITE_TEMPLATE,\n  // ── MCP Integration (MCP tool → workflow data piping) ──\n  MCP_TOOL_CHAIN_TEMPLATE,\n  MCP_GITHUB_PR_MONITOR_TEMPLATE,\n  MCP_CROSS_SERVER_PIPELINE_TEMPLATE,\n  MCP_ITERATIVE_RESEARCH_TEMPLATE,\n  // ── Bosun Native (tools, sub-workflows, functions) ──\n  BOSUN_TOOL_PIPELINE_TEMPLATE,\n  WORKFLOW_COMPOSITION_TEMPLATE,\n  MCP_TO_BOSUN_BRIDGE_TEMPLATE,\n  GIT_HEALTH_PIPELINE_TEMPLATE,\n]);\n\nconst _TEMPLATE_BY_ID = new Map(\n  WORKFLOW_TEMPLATES.map((template) => [template.id, template]),\n);\nconst TEMPLATE_STATE_VERSION = 1;\n\nfunction stableNormalize(value) {\n  if (Array.isArray(value)) {\n    return value.map((entry) => stableNormalize(entry));\n  }\n  if (value && typeof value === "object") {\n    const normalized = {};\n    for (const key of Object.keys(value).sort()) {\n      normalized[key] = stableNormalize(value[key]);\n    }\n    return normalized;\n  }\n  return value;\n}\n\nfunction stableStringify(value) {\n  return JSON.stringify(stableNormalize(value));\n}\n\nfunction hashContent(value) {\n  return createHash("sha256").update(stableStringify(value)).digest("hex");\n}\n\nfunction normalizeFingerprintNode(node = {}) {\n  const normalized = { ...(node || {}) };\n  // Engine hydration may synthesize derived output aliases for execution routing.\n  // Exclude these from template drift checks so unmodified workflows stay stable.\n  delete normalized.outputs;\n  delete normalized.inputPorts;\n  delete normalized.outputPorts;\n  return normalized;\n}\n\nfunction normalizeFingerprintEdge(edge = {}) {\n  const normalized = { ...(edge || {}) };\n  delete normalized.sourcePortType;\n  delete normalized.targetPortType;\n  if (normalized.sourcePort === "default") delete normalized.sourcePort;\n  if (normalized.targetPort === "default") delete normalized.targetPort;\n  return normalized;\n}\n\nfunction toWorkflowFingerprintPayload(def = {}) {\n  return {\n    name: def.name || "",\n    description: def.description || "",\n    category: def.category || "custom",\n    trigger: def.trigger || "",\n    variables: def.variables || {},\n    nodes: Array.isArray(def.nodes) ? def.nodes.map((node) => normalizeFingerprintNode(node)) : [],\n    edges: Array.isArray(def.edges) ? def.edges.map((edge) => normalizeFingerprintEdge(edge)) : [],\n  };\n}\n\nexport function computeWorkflowFingerprint(def = {}) {\n  return hashContent(toWorkflowFingerprintPayload(def));\n}\n\nfunction cloneTemplateDefinition(template) {\n  return JSON.parse(JSON.stringify(template));\n}\n\nfunction getTemplateVersion(templateId) {\n  const template = getTemplate(templateId);\n  if (!template) return null;\n  return computeWorkflowFingerprint(template).slice(0, 12);\n}\n\nfunction deriveTemplateState(def, template) {\n  const nowIso = new Date().toISOString();\n  const currentFingerprint = computeWorkflowFingerprint(def);\n  const templateFingerprint = computeWorkflowFingerprint(template);\n  const previousState = def?.metadata?.templateState || {};\n\n  const installedTemplateFingerprint = typeof previousState.installedTemplateFingerprint === "string"\n    ? previousState.installedTemplateFingerprint\n    : (currentFingerprint === templateFingerprint ? templateFingerprint : null);\n\n  const installedFingerprint = typeof previousState.installedFingerprint === "string"\n    ? previousState.installedFingerprint\n    : currentFingerprint;\n\n  const isCustomized = currentFingerprint !== installedFingerprint;\n  const updateAvailable = installedTemplateFingerprint\n    ? installedTemplateFingerprint !== templateFingerprint\n    : false;\n\n  return {\n    stateVersion: TEMPLATE_STATE_VERSION,\n    templateId: template.id,\n    templateName: template.name,\n    templateVersion: templateFingerprint.slice(0, 12),\n    templateFingerprint,\n    installedTemplateFingerprint,\n    installedTemplateVersion: installedTemplateFingerprint\n      ? installedTemplateFingerprint.slice(0, 12)\n      : null,\n    installedFingerprint,\n    currentFingerprint,\n    isCustomized,\n    updateAvailable,\n    refreshedAt: nowIso,\n  };\n}\n\nexport function applyWorkflowTemplateState(def = {}) {\n  if (!def || typeof def !== "object") return def;\n  const templateId = String(def?.metadata?.installedFrom || "").trim();\n  if (!templateId) return def;\n  const template = getTemplate(templateId);\n  if (!template) return def;\n  if (!def.metadata || typeof def.metadata !== "object") def.metadata = {};\n  def.metadata.templateState = deriveTemplateState(def, template);\n  return def;\n}\n\nfunction makeUpdatedWorkflowFromTemplate(existing, template, mode = "replace") {\n  const templateClone = cloneTemplateDefinition(template);\n  const nowIso = new Date().toISOString();\n  const mergedVariables = {\n    ...(templateClone.variables || {}),\n    ...(existing.variables || {}),\n  };\n  const next = {\n    ...templateClone,\n    id: mode === "copy" ? randomUUID() : existing.id,\n    name: mode === "copy" ? `${existing.name} (Updated)` : existing.name,\n    enabled: existing.enabled !== false,\n    variables: mergedVariables,\n    metadata: {\n      ...(existing.metadata || {}),\n      ...(templateClone.metadata || {}),\n      installedFrom: template.id,\n      templateUpdatedAt: nowIso,\n    },\n  };\n  delete next.metadata.templateState;\n  if (mode === "copy") {\n    next.metadata.createdAt = nowIso;\n    next.metadata.updatedAt = nowIso;\n  }\n  return applyWorkflowTemplateState(next);\n}\n\nexport function updateWorkflowFromTemplate(engine, workflowId, opts = {}) {\n  const mode = String(opts.mode || "replace").toLowerCase();\n  if (!["replace", "copy"].includes(mode)) {\n    throw new Error(`Unsupported template update mode "${mode}"`);\n  }\n  const existing = engine.get(workflowId);\n  if (!existing) throw new Error(`Workflow "${workflowId}" not found`);\n  const templateId = String(existing?.metadata?.installedFrom || "").trim();\n  if (!templateId) throw new Error(`Workflow "${workflowId}" is not template-backed`);\n  const template = getTemplate(templateId);\n  if (!template) throw new Error(`Template "${templateId}" not found`);\n\n  const hydrated = applyWorkflowTemplateState(existing);\n  if (mode === "replace" && hydrated?.metadata?.templateState?.isCustomized && opts.force !== true) {\n    throw new Error("Workflow has custom changes; pass force=true to replace it");\n  }\n\n  const next = makeUpdatedWorkflowFromTemplate(hydrated, template, mode);\n  return engine.save(next);\n}\n\nexport function reconcileInstalledTemplates(engine, opts = {}) {\n  const autoUpdateUnmodified = opts.autoUpdateUnmodified !== false;\n  const workflows = engine.list();\n  const result = {\n    scanned: 0,\n    metadataUpdated: 0,\n    autoUpdated: 0,\n    updateAvailable: [],\n    customized: [],\n    updatedWorkflowIds: [],\n    errors: [],\n  };\n\n  for (const summary of workflows) {\n    const wfId = summary?.id;\n    if (!wfId) continue;\n    const def = engine.get(wfId);\n    if (!def?.metadata?.installedFrom) continue;\n    result.scanned += 1;\n\n    try {\n      const before = stableStringify(def.metadata?.templateState || null);\n      applyWorkflowTemplateState(def);\n      const state = def.metadata?.templateState || null;\n      const after = stableStringify(state);\n      if (before !== after) {\n        engine.save(def);\n        result.metadataUpdated += 1;\n      }\n\n      if (!state) continue;\n      if (state.isCustomized) {\n        result.customized.push({\n          workflowId: def.id,\n          name: def.name,\n          templateId: state.templateId,\n          updateAvailable: state.updateAvailable === true,\n        });\n      }\n      if (state.updateAvailable === true) {\n        result.updateAvailable.push({\n          workflowId: def.id,\n          name: def.name,\n          templateId: state.templateId,\n          isCustomized: state.isCustomized === true,\n        });\n      }\n\n      if (autoUpdateUnmodified && state.updateAvailable === true && state.isCustomized !== true) {\n        const saved = updateWorkflowFromTemplate(engine, def.id, { mode: "replace", force: true });\n        result.autoUpdated += 1;\n        result.updatedWorkflowIds.push(saved.id);\n      }\n    } catch (err) {\n      result.errors.push({\n        workflowId: wfId,\n        error: err.message,\n      });\n    }\n  }\n\n  return result;\n}\n\n/**\n * Setup workflow profiles used by `bosun --setup`.\n * - `manual`: human-driven dispatch with reliability safety nets.\n * - `balanced`: recommended default for most teams.\n * - `autonomous`: higher automation with planning + maintenance workflows.\n */\nexport const WORKFLOW_SETUP_PROFILES = Object.freeze({\n  manual: Object.freeze({\n    id: "manual",\n    name: "Manual Dispatch",\n    description:\n      "Best for teams that dispatch tasks manually and want guardrails, " +\n      "review automation, and recovery paths.",\n    recommendedFor: "Hands-on workflow control with low automation risk.",\n    workflowAutomationEnabled: false,\n    templateIds: Object.freeze([\n      "template-error-recovery",\n      "template-task-finalization-guard",\n      "template-task-repair-worktree",\n      "template-task-status-transition-manager",\n      "template-review-agent",\n      "template-health-check",\n    ]),\n  }),\n  balanced: Object.freeze({\n    id: "balanced",\n    name: "Balanced (Recommended)",\n    description:\n      "Reliable default with automated PR quality gates and targeted " +\n      "self-healing, without over-automating planning.",\n    recommendedFor: "Most repos and teams adopting Bosun for daily delivery.",\n    workflowAutomationEnabled: true,\n    templateIds: Object.freeze([\n      "template-pr-merge-strategy",\n      "template-review-agent",\n      "template-backend-agent",\n      "template-error-recovery",\n      "template-anomaly-watchdog",\n      "template-agent-session-monitor",\n      "template-task-finalization-guard",\n      "template-task-repair-worktree",\n      "template-task-status-transition-manager",\n      "template-dependency-audit",\n    ]),\n  }),\n  autonomous: Object.freeze({\n    id: "autonomous",\n    name: "Autonomous",\n    description:\n      "Higher automation for end-to-end flow: planning, recovery, conflict " +\n      "handling, maintenance, and incident response.",\n    recommendedFor: "Teams optimizing for maximum unattended throughput.",\n    workflowAutomationEnabled: true,\n    templateIds: Object.freeze([\n      "template-pr-merge-strategy",\n      "template-bosun-pr-watchdog",\n      "template-review-agent",\n      "template-backend-agent",\n      "template-task-planner",\n      "template-task-replenish",\n      "template-error-recovery",\n      "template-anomaly-watchdog",\n      "template-agent-session-monitor",\n      "template-workspace-hygiene",\n      "template-task-finalization-guard",\n      "template-task-repair-worktree",\n      "template-task-status-transition-manager",\n      "template-incident-response",\n      "template-release-pipeline",\n      "template-dependency-audit",\n      "template-task-archiver",\n      "template-sync-engine",\n      "template-sdk-conflict-resolver",\n      "template-task-batch-processor",\n    ]),\n  }),\n  workflowfirst: Object.freeze({\n    id: "workflowFirst",\n    name: "Workflow-First (Full)",\n    description:\n      "Everything runs as a workflow — including the core task execution " +\n      "lifecycle. Bosun becomes a thin shell around the workflow engine. " +\n      "Enables workflowOwnsTaskLifecycle for complete workflow-driven control.",\n    recommendedFor:\n      "Teams ready for full workflow-first operation where every " +\n      "bosun behavior is a composable, visual workflow.",\n    workflowAutomationEnabled: true,\n    workflowFirst: true,\n    templateIds: Object.freeze([\n      // Core lifecycle\n      "template-task-lifecycle",\n      // GitHub\n      "template-pr-merge-strategy",\n      "template-bosun-pr-watchdog",\n      "template-github-kanban-sync",\n      "template-stale-pr-reaper",\n      "template-sdk-conflict-resolver",\n      // Agents\n      "template-review-agent",\n      "template-backend-agent",\n      "template-agent-session-monitor",\n      // Planning\n      "template-task-planner",\n      "template-task-replenish",\n      // Reliability\n      "template-error-recovery",\n      "template-anomaly-watchdog",\n      "template-workspace-hygiene",\n      "template-task-finalization-guard",\n      "template-task-repair-worktree",\n      "template-task-status-transition-manager",\n      "template-incident-response",\n      "template-task-archiver",\n      "template-sync-engine",\n      // CI/CD\n      "template-release-pipeline",\n      // Security\n      "template-dependency-audit",\n      // Batch dispatch\n      "template-task-batch-processor",\n      "template-task-batch-pr",\n    ]),\n  }),\n});\n\nfunction normalizeTemplateIdList(templateIds = []) {\n  const source = Array.isArray(templateIds)\n    ? templateIds\n    : String(templateIds || "").split(",");\n  const normalized = [];\n  for (const raw of source) {\n    const id = String(raw || "").trim();\n    if (!id || !_TEMPLATE_BY_ID.has(id) || normalized.includes(id)) continue;\n    normalized.push(id);\n  }\n  return normalized;\n}\n\nfunction resolveProfileTemplateIds(profileId) {\n  const normalized = String(profileId || "").trim().toLowerCase();\n  const profile =\n    WORKFLOW_SETUP_PROFILES[normalized] || WORKFLOW_SETUP_PROFILES.balanced;\n  return [...profile.templateIds];\n}\n\nconst WORKFLOW_TYPE_TEMPLATE_MAP = Object.freeze({\n  "continuation-loop": "template-continuation-loop",\n});\n\nconst WORKFLOW_CONFIG_RESERVED_KEYS = new Set([\n  "type",\n  "templateId",\n  "enabled",\n  "name",\n  "options",\n]);\n\nfunction normalizeWorkflowConfigEntries(rawEntries = []) {\n  const source = Array.isArray(rawEntries) ? rawEntries : [];\n  const normalized = [];\n  for (const raw of source) {\n    if (!raw || typeof raw !== "object" || Array.isArray(raw)) continue;\n    const type = String(raw.type || "").trim().toLowerCase();\n    if (!type) continue;\n    const templateId = WORKFLOW_TYPE_TEMPLATE_MAP[type];\n    if (!templateId || !_TEMPLATE_BY_ID.has(templateId)) continue;\n    const enabled = raw.enabled !== false;\n    const entry = { ...raw, type, templateId, enabled };\n    normalized.push(entry);\n  }\n  return normalized;\n}\n\nfunction toTemplateOverridesFromWorkflowEntry(entry = {}) {\n  const template = getTemplate(entry.templateId);\n  if (!template) return {};\n  const templateVars = template.variables && typeof template.variables === "object"\n    ? template.variables\n    : {};\n  const picks = {};\n  for (const [key, value] of Object.entries(entry)) {\n    if (WORKFLOW_CONFIG_RESERVED_KEYS.has(key)) continue;\n    if (!Object.prototype.hasOwnProperty.call(templateVars, key)) continue;\n    picks[key] = coerceTemplateVariableValue(value, templateVars[key]);\n  }\n  if (entry.options && typeof entry.options === "object" && !Array.isArray(entry.options)) {\n    for (const [key, value] of Object.entries(entry.options)) {\n      if (!Object.prototype.hasOwnProperty.call(templateVars, key)) continue;\n      picks[key] = coerceTemplateVariableValue(value, templateVars[key]);\n    }\n  }\n  return picks;\n}\n\nexport function resolveWorkflowTemplateConfig(rawEntries = []) {\n  const entries = normalizeWorkflowConfigEntries(rawEntries);\n  const templateIds = [];\n  const overridesById = {};\n  for (const entry of entries) {\n    if (entry.enabled !== true) continue;\n    if (!templateIds.includes(entry.templateId)) templateIds.push(entry.templateId);\n    const overrides = toTemplateOverridesFromWorkflowEntry(entry);\n    if (Object.keys(overrides).length > 0) {\n      overridesById[entry.templateId] = {\n        ...(overridesById[entry.templateId] || {}),\n        ...overrides,\n      };\n    }\n  }\n  return { templateIds, overridesById };\n}\n/**\n * Get a template by ID.\n * @param {string} id\n * @returns {object|null}\n */\nexport function getTemplate(id) {\n  return _TEMPLATE_BY_ID.get(id) || null;\n}\n\n// ── Grouped Flows ──────────────────────────────────────────────────────────\n// Templates that use action.execute_workflow to chain into other templates\n// declare metadata.requiredTemplates. When one template in a group is\n// installed or enabled, all members of the group must be installed/enabled\n// together so that the chain doesn't break at runtime.\n\n/**\n * Resolve the full dependency group for a template.\n * Walks `metadata.requiredTemplates` transitively to collect every template\n * that must be co-installed.\n * @param {string} templateId\n * @returns {{ root: string, members: string[] } | null}\n */\nexport function getTemplateGroup(templateId) {\n  const root = getTemplate(templateId);\n  if (!root) return null;\n\n  const members = new Set([templateId]);\n  const queue = [...(root.metadata?.requiredTemplates || [])];\n  while (queue.length > 0) {\n    const depId = queue.shift();\n    if (members.has(depId)) continue;\n    const dep = getTemplate(depId);\n    if (!dep) continue;\n    members.add(depId);\n    const nested = dep.metadata?.requiredTemplates || [];\n    for (const n of nested) {\n      if (!members.has(n)) queue.push(n);\n    }\n  }\n\n  return { root: templateId, members: [...members] };\n}\n\n/**\n * Expand a list of template IDs to include all required group members.\n * @param {string[]} templateIds\n * @returns {string[]} Expanded list with dependencies (no duplicates, order preserved)\n */\nexport function expandTemplateGroups(templateIds) {\n  const seen = new Set();\n  const expanded = [];\n  for (const id of templateIds) {\n    if (seen.has(id)) continue;\n    seen.add(id);\n    expanded.push(id);\n    const group = getTemplateGroup(id);\n    if (!group) continue;\n    for (const memberId of group.members) {\n      if (!seen.has(memberId)) {\n        seen.add(memberId);\n        expanded.push(memberId);\n      }\n    }\n  }\n  return expanded;\n}\n\n/**\n * List all available templates with metadata.\n * @returns {Array<{id, name, description, category, tags, replaces?}>}\n */\nfunction inferVariableInputAndOptions(key, defaultValue) {\n  const normalized = String(key || "").trim().toLowerCase();\n  if (typeof defaultValue === "boolean") return { input: "toggle", options: [] };\n  if (typeof defaultValue === "number") return { input: "number", options: [] };\n  if (Array.isArray(defaultValue) || (defaultValue && typeof defaultValue === "object")) {\n    return { input: "json", options: [] };\n  }\n\n  const optionValues = [];\n  if (normalized.includes("executor") || normalized.includes("sdk")) {\n    optionValues.push("auto", "codex", "claude", "copilot");\n  } else if (normalized.includes("bumptype") || normalized.includes("bump_type")) {\n    optionValues.push("patch", "minor", "major");\n  }\n\n  if (typeof defaultValue === "string" && defaultValue.trim()) {\n    optionValues.unshift(defaultValue.trim());\n  }\n\n  const deduped = [];\n  for (const value of optionValues) {\n    if (!value) continue;\n    if (!deduped.includes(value)) deduped.push(value);\n  }\n  if (deduped.length > 0) {\n    return {\n      input: "select",\n      options: deduped.map((value) => ({ value, label: value })),\n    };\n  }\n\n  return { input: "text", options: [] };\n}\n\nfunction inferVariableDescription(key, defaultValue) {\n  const normalized = String(key || "").trim().toLowerCase();\n  if (normalized.includes("taskid") || normalized.includes("task_id")) return "Task identifier (for example TASK-123).";\n  if (normalized.includes("prompt") || normalized.includes("problem") || normalized.includes("description")) return "Free-form instruction text.";\n  if (normalized.includes("branch")) return "Git branch name.";\n  if (normalized.includes("timeout") || normalized.includes("delay") || normalized.includes("cooldown")) return "Duration in milliseconds.";\n  if (normalized.includes("executor") || normalized.includes("sdk")) return "Executor profile used by agent nodes.";\n  if (normalized.includes("model")) return "Model id used by agent nodes.";\n  if (typeof defaultValue === "boolean") return "Toggle this setting on or off.";\n  if (typeof defaultValue === "number") return "Numeric workflow setting.";\n  return "";\n}\n\nconst TEMPLATE_CAPABILITY_NODE_TYPES = Object.freeze({\n  branch: Object.freeze(["flow.branch"]),\n  join: Object.freeze(["flow.join"]),\n  gate: Object.freeze(["flow.gate"]),\n  universal: Object.freeze(["flow.universal", "flow.universial"]),\n  end: Object.freeze(["flow.end"]),\n});\n\nfunction collectTemplateCapabilities(template) {\n  const counts = {\n    branch: 0,\n    join: 0,\n    gate: 0,\n    universal: 0,\n    end: 0,\n  };\n\n  const nodes = Array.isArray(template?.nodes) ? template.nodes : [];\n  for (const node of nodes) {\n    const nodeType = String(node?.type || "").trim().toLowerCase();\n    if (!nodeType) continue;\n    for (const [capability, types] of Object.entries(TEMPLATE_CAPABILITY_NODE_TYPES)) {\n      if (types.includes(nodeType)) counts[capability] += 1;\n    }\n  }\n\n  return {\n    capabilities: {\n      branch: counts.branch > 0,\n      join: counts.join > 0,\n      gate: counts.gate > 0,\n      universal: counts.universal > 0,\n      end: counts.end > 0,\n    },\n    capabilityCounts: counts,\n  };\n}\n\nexport function listTemplates() {\n  return WORKFLOW_TEMPLATES.map((t) => {\n    const cat = TEMPLATE_CATEGORIES[t.category] || TEMPLATE_CATEGORIES.custom;\n    const fingerprint = computeWorkflowFingerprint(t);\n    const capabilitySummary = collectTemplateCapabilities(t);\n    return {\n      id: t.id,\n      name: t.name,\n      description: t.description,\n      category: t.category,\n      categoryLabel: cat.label,\n      categoryIcon: cat.icon,\n      categoryOrder: cat.order,\n      tags: t.metadata?.tags || [],\n      nodeCount: t.nodes?.length || 0,\n      edgeCount: t.edges?.length || 0,\n      version: fingerprint.slice(0, 12),\n      fingerprint,\n      replaces: t.metadata?.replaces || null,\n      recommended: t.recommended === true,\n      enabled: t.enabled !== false,\n      trigger: t.trigger || null,\n      capabilities: capabilitySummary.capabilities,\n      capabilityCounts: capabilitySummary.capabilityCounts,\n      variables: t.variables && typeof t.variables === "object"\n        ? Object.entries(t.variables).map(([key, defaultValue]) => {\n            const required = defaultValue === "" || defaultValue == null;\n            const inferred = inferVariableInputAndOptions(key, defaultValue);\n            return {\n              key,\n              defaultValue,\n              required,\n              type: typeof defaultValue === "number"  ? "number"\n                  : typeof defaultValue === "boolean" ? "toggle"\n                  : "text",\n              input: inferred.input,\n              options: inferred.options,\n              description: inferVariableDescription(key, defaultValue),\n            };\n          })\n        : [],\n    };\n  });\n}\n\n/**\n * List setup workflow profiles for the setup wizard.\n * @returns {Array<{id: string, name: string, description: string, recommendedFor: string, workflowAutomationEnabled: boolean, templateIds: string[]}>}\n */\nexport function listWorkflowSetupProfiles() {\n  return Object.values(WORKFLOW_SETUP_PROFILES).map((profile) => ({\n    id: profile.id,\n    name: profile.name,\n    description: profile.description,\n    recommendedFor: profile.recommendedFor,\n    workflowAutomationEnabled: profile.workflowAutomationEnabled === true,\n    templateIds: [...profile.templateIds],\n  }));\n}\n\n/**\n * Get a single setup profile by id.\n * Falls back to `balanced` when unknown.\n * @param {string} profileId\n * @returns {{id: string, name: string, description: string, recommendedFor: string, workflowAutomationEnabled: boolean, templateIds: string[]}}\n */\nexport function getWorkflowSetupProfile(profileId = "balanced") {\n  const normalized = String(profileId || "").trim().toLowerCase();\n  const profile =\n    WORKFLOW_SETUP_PROFILES[normalized] || WORKFLOW_SETUP_PROFILES.balanced;\n  return {\n    id: profile.id,\n    name: profile.name,\n    description: profile.description,\n    recommendedFor: profile.recommendedFor,\n    workflowAutomationEnabled: profile.workflowAutomationEnabled === true,\n    templateIds: [...profile.templateIds],\n  };\n}\n\n/**\n * Resolve template IDs from a setup profile and/or explicit custom template IDs.\n * Explicit template IDs win when provided.\n * @param {object} opts\n * @param {string} [opts.profileId]\n * @param {string[]|string} [opts.templateIds]\n * @returns {string[]}\n */\nexport function resolveWorkflowTemplateIds(opts = {}) {\n  const explicit = normalizeTemplateIdList(opts.templateIds || []);\n  if (explicit.length > 0) return explicit;\n  return resolveProfileTemplateIds(opts.profileId || "balanced");\n}\n\nfunction coerceTemplateVariableValue(rawValue, defaultValue) {\n  if (typeof defaultValue === "number") {\n    const parsed = Number(rawValue);\n    return Number.isFinite(parsed) ? parsed : defaultValue;\n  }\n  if (typeof defaultValue === "boolean") {\n    if (typeof rawValue === "boolean") return rawValue;\n    const normalized = String(rawValue || "").trim().toLowerCase();\n    if (["1", "true", "yes", "on", "y"].includes(normalized)) return true;\n    if (["0", "false", "no", "off", "n"].includes(normalized)) return false;\n    return defaultValue;\n  }\n  if (Array.isArray(defaultValue) || (defaultValue && typeof defaultValue === "object")) {\n    if (typeof rawValue === "string") {\n      try {\n        return JSON.parse(rawValue);\n      } catch {\n        return defaultValue;\n      }\n    }\n    return rawValue && typeof rawValue === "object" ? rawValue : defaultValue;\n  }\n  if (rawValue === undefined || rawValue === null) return defaultValue;\n  return String(rawValue);\n}\n\nexport function normalizeTemplateOverridesById(rawOverrides = {}, allowedTemplateIds = null) {\n  const input = rawOverrides && typeof rawOverrides === "object" ? rawOverrides : {};\n  const allowed = Array.isArray(allowedTemplateIds)\n    ? new Set(allowedTemplateIds.map((value) => String(value || "").trim()).filter(Boolean))\n    : null;\n  const normalized = {};\n\n  for (const [templateId, overrides] of Object.entries(input)) {\n    const id = String(templateId || "").trim();\n    if (!id) continue;\n    if (allowed && !allowed.has(id)) continue;\n    const template = getTemplate(id);\n    if (!template) continue;\n    if (!overrides || typeof overrides !== "object" || Array.isArray(overrides)) continue;\n\n    const templateVars = template.variables && typeof template.variables === "object"\n      ? template.variables\n      : {};\n    const nextOverrides = {};\n    for (const [key, rawValue] of Object.entries(overrides)) {\n      if (!Object.prototype.hasOwnProperty.call(templateVars, key)) continue;\n      nextOverrides[key] = coerceTemplateVariableValue(rawValue, templateVars[key]);\n    }\n    if (Object.keys(nextOverrides).length > 0) {\n      normalized[id] = nextOverrides;\n    }\n  }\n\n  return normalized;\n}\n\n/**\n * List recommended templates only.\n * @returns {Array<object>}\n */\nexport function listRecommendedTemplates() {\n  return WORKFLOW_TEMPLATES.filter((t) => t.recommended === true);\n}\n\n/**\n * Install a template into a workflow engine, creating a new workflow instance.\n * The user can then customize names, variables, and node configs.\n * @param {string} templateId\n * @param {import('./workflow-engine.mjs').WorkflowEngine} engine\n * @param {object} [overrides] - Variable overrides\n * @returns {object} The saved workflow definition\n */\nexport function installTemplate(templateId, engine, overrides = {}) {\n  const template = getTemplate(templateId);\n  if (!template) throw new Error(`Template "${templateId}" not found`);\n\n  // Dedup check: prevent installing a template that's already installed\n  const existing = engine.list();\n  const alreadyInstalled = existing.some(\n    (wf) => wf.metadata?.installedFrom === templateId || wf.name === template.name\n  );\n  if (alreadyInstalled) {\n    throw new Error(`Template "${template.name}" is already installed`);\n  }\n\n  // Deep clone\n  const def = cloneTemplateDefinition(template);\n  def.id = randomUUID(); // New unique ID\n  def.metadata = {\n    ...def.metadata,\n    installedFrom: templateId,\n    createdAt: new Date().toISOString(),\n    updatedAt: new Date().toISOString(),\n  };\n\n  // Apply variable overrides\n  if (overrides) {\n    def.variables = { ...def.variables, ...overrides };\n  }\n\n  applyWorkflowTemplateState(def);\n  const saved = engine.save(def);\n\n  // ── Grouped flows: auto-install required sibling templates ────────────\n  const requiredIds = template.metadata?.requiredTemplates || [];\n  for (const depId of requiredIds) {\n    const depTemplate = getTemplate(depId);\n    if (!depTemplate) continue;\n    const depExists = engine.list().some(\n      (wf) => wf.metadata?.installedFrom === depId || wf.name === depTemplate.name,\n    );\n    if (depExists) continue;\n    try {\n      installTemplate(depId, engine, overrides);\n    } catch {\n      /* best-effort — dedup check may fire if installed concurrently */\n    }\n  }\n\n  return saved;\n}\n\n/**\n * Install a specific set of template IDs.\n * @param {import('./workflow-engine.mjs').WorkflowEngine} engine\n * @param {string[]|string} templateIds\n * @param {Record<string, object>} [overridesById]\n * @returns {{installed: object[], skipped: string[], errors: Array<{id: string, error: string}>}}\n */\nexport function installTemplateSet(engine, templateIds = [], overridesById = {}) {\n  const source = Array.isArray(templateIds)\n    ? templateIds\n    : String(templateIds || "").split(",");\n  const requested = [];\n  for (const raw of source) {\n    const id = String(raw || "").trim();\n    if (!id || requested.includes(id)) continue;\n    requested.push(id);\n  }\n  // Expand grouped flows so required siblings are always included\n  const expanded = expandTemplateGroups(requested);\n\n  const existing = engine.list();\n  const installedLookup = new Set(\n    existing.flatMap((wf) => [wf.metadata?.installedFrom, wf.name]).filter(Boolean),\n  );\n  const results = { installed: [], skipped: [], errors: [] };\n\n  for (const templateId of expanded) {\n    const template = getTemplate(templateId);\n    if (!template) {\n      results.errors.push({ id: templateId, error: `Template "${templateId}" not found` });\n      continue;\n    }\n    if (installedLookup.has(template.id) || installedLookup.has(template.name)) {\n      results.skipped.push(template.id);\n      continue;\n    }\n    try {\n      const overrides = overridesById[template.id] || overridesById[template.name] || {};\n      const wf = installTemplate(template.id, engine, overrides);\n      results.installed.push(wf);\n      installedLookup.add(template.id);\n      installedLookup.add(template.name);\n      // Auto-install may have added sibling templates; refresh the lookup\n      // so they are correctly skipped rather than triggering errors.\n      for (const existing of engine.list()) {\n        if (existing.metadata?.installedFrom) installedLookup.add(existing.metadata.installedFrom);\n        if (existing.name) installedLookup.add(existing.name);\n      }\n    } catch (err) {\n      results.errors.push({ id: template.id, error: err.message });\n    }\n  }\n\n  return results;\n}\n\n/**\n * Ensure all recommended templates are installed.\n * @param {import('./workflow-engine.mjs').WorkflowEngine} engine\n * @param {Record<string, object>} [overridesById] Optional variable overrides keyed by template id.\n * @returns {{installed: object[], skipped: string[], errors: Array<{id: string, error: string}>}}\n */\nexport function installRecommendedTemplates(engine, overridesById = {}) {\n  const recommendedIds = WORKFLOW_TEMPLATES\n    .filter((template) => template.recommended === true)\n    .map((template) => template.id);\n  return installTemplateSet(engine, recommendedIds, overridesById);\n}\n\n
+/**
+ * workflow-templates.mjs — Pre-built Workflow Templates for Bosun
+ *
+ * Ready-to-use workflow definitions that users can install with one click
+ * from the visual builder. Each template encodes a complete flow that
+ * previously required custom code or env-var configuration.
+ *
+ * Templates are split into category modules for easy extension:
+ *   workflow-templates/github.mjs     — PR Merge Strategy, Triage, Conflict Resolver, Stale Reaper, Release Drafter, SDK Conflict Resolver
+ *   workflow-templates/agents.mjs     — Frontend Agent, Review Agent, Custom Agent, Session Monitor, Backend Agent, Meeting Orchestrator + Subworkflow Chain
+ *   workflow-templates/planning.mjs   — Task Planner, Task Replenish, Nightly Report, Sprint Retrospective, Weekly Fitness Summary
+ *   workflow-templates/ci-cd.mjs      — Build & Deploy, Release Pipeline, Canary Deploy
+ *   workflow-templates/reliability.mjs — Error Recovery, Anomaly Watchdog, Workspace Hygiene, Health Check, Task Finalization Guard, Task Repair Worktree, Task Orphan Worktree Recovery, Incident Response, Task Archiver, Sync Engine
+ *   workflow-templates/security.mjs   — Dependency Audit, Secret Scanner
+ *   workflow-templates/code-quality.mjs — Code Quality Striker
+ *
+ * To add a new template:
+ *   1. Choose the appropriate category file (or create a new one)
+ *   2. Import { node, edge, resetLayout } from "../_helpers.mjs"
+ *   3. Define and export your template constant
+ *   4. Add the export to this index file's WORKFLOW_TEMPLATES array
+ *
+ * Categories: github, agents, planning, ci-cd, reliability, security, custom
+ *
+ * EXPORTS:
+ *   WORKFLOW_TEMPLATES     — Array of all built-in templates
+ *   TEMPLATE_CATEGORIES    — Category metadata (label, icon, order)
+ *   getTemplate(id)        — Get a single template by ID
+ *   installTemplate(id, engine) — Install a template into the workflow engine
+ *   listTemplates()        — List all available templates
+ */
+
+import { createHash, randomUUID } from "node:crypto";
+
+// ── Re-export helpers for external consumers ────────────────────────────────
+export { node, edge, resetLayout } from "../workflow-templates/_helpers.mjs";
+
+// ── Import templates from category modules ──────────────────────────────────
+
+// GitHub
+import {
+  PR_MERGE_STRATEGY_TEMPLATE,
+  PR_TRIAGE_TEMPLATE,
+  PR_CONFLICT_RESOLVER_TEMPLATE,
+  STALE_PR_REAPER_TEMPLATE,
+  RELEASE_DRAFTER_TEMPLATE,
+  BOSUN_PR_WATCHDOG_TEMPLATE,
+  GITHUB_KANBAN_SYNC_TEMPLATE,
+  SDK_CONFLICT_RESOLVER_TEMPLATE,
+} from "../workflow-templates/github.mjs";
+
+// Agents
+import {
+  FRONTEND_AGENT_TEMPLATE,
+  REVIEW_AGENT_TEMPLATE,
+  CUSTOM_AGENT_TEMPLATE,
+  AGENT_SESSION_MONITOR_TEMPLATE,
+  BACKEND_AGENT_TEMPLATE,
+  VOICE_VIDEO_PARALLEL_ROLLOUT_TEMPLATE,
+  MEETING_SUBWORKFLOW_CHAIN_TEMPLATE,
+} from "../workflow-templates/agents.mjs";
+
+// Planning
+import {
+  TASK_PLANNER_TEMPLATE,
+  TASK_REPLENISH_TEMPLATE,
+  NIGHTLY_REPORT_TEMPLATE,
+  SPRINT_RETROSPECTIVE_TEMPLATE,
+  WEEKLY_FITNESS_SUMMARY_TEMPLATE,
+} from "../workflow-templates/planning.mjs";
+
+// CI/CD
+import {
+  BUILD_DEPLOY_TEMPLATE,
+  RELEASE_PIPELINE_TEMPLATE,
+  CANARY_DEPLOY_TEMPLATE,
+} from "../workflow-templates/ci-cd.mjs";
+
+// Reliability
+import {
+  ERROR_RECOVERY_TEMPLATE,
+  ANOMALY_WATCHDOG_TEMPLATE,
+  WORKSPACE_HYGIENE_TEMPLATE,
+  HEALTH_CHECK_TEMPLATE,
+  TASK_FINALIZATION_GUARD_TEMPLATE,
+  TASK_REPAIR_WORKTREE_TEMPLATE,
+  TASK_ORPHAN_WORKTREE_RECOVERY_TEMPLATE,
+  TASK_STATUS_TRANSITION_MANAGER_TEMPLATE,
+  INCIDENT_RESPONSE_TEMPLATE,
+  TASK_ARCHIVER_TEMPLATE,
+  SYNC_ENGINE_TEMPLATE,
+} from "../workflow-templates/reliability.mjs";
+
+// Security
+import {
+  DEPENDENCY_AUDIT_TEMPLATE,
+  SECRET_SCANNER_TEMPLATE,
+} from "../workflow-templates/security.mjs";
+
+// Code Quality (structural refactor, agentic maintenance)
+import {
+  CODE_QUALITY_STRIKER_TEMPLATE,
+} from "../workflow-templates/code-quality.mjs";
+
+// Task Lifecycle (workflow-first core)
+import {
+  TASK_LIFECYCLE_TEMPLATE,
+  VE_ORCHESTRATOR_LITE_TEMPLATE,
+} from "../workflow-templates/task-lifecycle.mjs";
+
+// Task Batch (parallel dispatch)
+import {
+  TASK_BATCH_PROCESSOR_TEMPLATE,
+  TASK_BATCH_PR_TEMPLATE,
+} from "../workflow-templates/task-batch.mjs";
+
+// Research (iterative verification loops)
+import {
+  RESEARCH_AGENT_TEMPLATE,
+} from "../workflow-templates/research.mjs";
+
+// Coverage (node-type coverage templates)
+import {
+  WEBHOOK_TASK_ROUTER_TEMPLATE,
+  SCHEDULED_MAINTENANCE_TEMPLATE,
+  MCP_RESEARCH_PROBE_TEMPLATE,
+  AGENT_EXECUTION_PIPELINE_TEMPLATE,
+  FLOW_CONTROL_SUITE_TEMPLATE,
+} from "../workflow-templates/coverage.mjs";
+
+// MCP Integration (MCP tool → workflow data piping)
+import {
+  MCP_TOOL_CHAIN_TEMPLATE,
+  MCP_GITHUB_PR_MONITOR_TEMPLATE,
+  MCP_CROSS_SERVER_PIPELINE_TEMPLATE,
+  MCP_ITERATIVE_RESEARCH_TEMPLATE,
+} from "../workflow-templates/mcp-integration.mjs";
+
+// Bosun Native (built-in tools, sub-workflows, internal functions)
+import {
+  BOSUN_TOOL_PIPELINE_TEMPLATE,
+  WORKFLOW_COMPOSITION_TEMPLATE,
+  MCP_TO_BOSUN_BRIDGE_TEMPLATE,
+  GIT_HEALTH_PIPELINE_TEMPLATE,
+} from "../workflow-templates/bosun-native.mjs";
+
+// ── Re-export individual templates for direct import ────────────────────────
+
+export {
+  PR_MERGE_STRATEGY_TEMPLATE,
+  PR_TRIAGE_TEMPLATE,
+  PR_CONFLICT_RESOLVER_TEMPLATE,
+  STALE_PR_REAPER_TEMPLATE,
+  RELEASE_DRAFTER_TEMPLATE,
+  BOSUN_PR_WATCHDOG_TEMPLATE,
+  GITHUB_KANBAN_SYNC_TEMPLATE,
+  SDK_CONFLICT_RESOLVER_TEMPLATE,
+  FRONTEND_AGENT_TEMPLATE,
+  REVIEW_AGENT_TEMPLATE,
+  CUSTOM_AGENT_TEMPLATE,
+  AGENT_SESSION_MONITOR_TEMPLATE,
+  BACKEND_AGENT_TEMPLATE,
+  VOICE_VIDEO_PARALLEL_ROLLOUT_TEMPLATE,
+  MEETING_SUBWORKFLOW_CHAIN_TEMPLATE,
+  TASK_PLANNER_TEMPLATE,
+  TASK_REPLENISH_TEMPLATE,
+  NIGHTLY_REPORT_TEMPLATE,
+  SPRINT_RETROSPECTIVE_TEMPLATE,
+  WEEKLY_FITNESS_SUMMARY_TEMPLATE,
+  BUILD_DEPLOY_TEMPLATE,
+  RELEASE_PIPELINE_TEMPLATE,
+  CANARY_DEPLOY_TEMPLATE,
+  ERROR_RECOVERY_TEMPLATE,
+  ANOMALY_WATCHDOG_TEMPLATE,
+  WORKSPACE_HYGIENE_TEMPLATE,
+  HEALTH_CHECK_TEMPLATE,
+  TASK_FINALIZATION_GUARD_TEMPLATE,
+  TASK_REPAIR_WORKTREE_TEMPLATE,
+  TASK_ORPHAN_WORKTREE_RECOVERY_TEMPLATE,
+  TASK_STATUS_TRANSITION_MANAGER_TEMPLATE,
+  INCIDENT_RESPONSE_TEMPLATE,
+  TASK_ARCHIVER_TEMPLATE,
+  SYNC_ENGINE_TEMPLATE,
+  DEPENDENCY_AUDIT_TEMPLATE,
+  SECRET_SCANNER_TEMPLATE,
+  CODE_QUALITY_STRIKER_TEMPLATE,
+  TASK_LIFECYCLE_TEMPLATE,
+  VE_ORCHESTRATOR_LITE_TEMPLATE,
+  TASK_BATCH_PROCESSOR_TEMPLATE,
+  TASK_BATCH_PR_TEMPLATE,
+  RESEARCH_AGENT_TEMPLATE,
+  WEBHOOK_TASK_ROUTER_TEMPLATE,
+  SCHEDULED_MAINTENANCE_TEMPLATE,
+  MCP_RESEARCH_PROBE_TEMPLATE,
+  AGENT_EXECUTION_PIPELINE_TEMPLATE,
+  FLOW_CONTROL_SUITE_TEMPLATE,
+  MCP_TOOL_CHAIN_TEMPLATE,
+  MCP_GITHUB_PR_MONITOR_TEMPLATE,
+  MCP_CROSS_SERVER_PIPELINE_TEMPLATE,
+  MCP_ITERATIVE_RESEARCH_TEMPLATE,
+  BOSUN_TOOL_PIPELINE_TEMPLATE,
+  WORKFLOW_COMPOSITION_TEMPLATE,
+  MCP_TO_BOSUN_BRIDGE_TEMPLATE,
+  GIT_HEALTH_PIPELINE_TEMPLATE,
+};
+
+// ═══════════════════════════════════════════════════════════════════════════
+//  EXPORTS
+// ═══════════════════════════════════════════════════════════════════════════
+
+/** Category metadata for UI grouping. */
+export const TEMPLATE_CATEGORIES = Object.freeze({
+  github:      { label: "GitHub",       icon: ":git:", order: 1 },
+  agents:      { label: "Agents",       icon: ":bot:", order: 2 },
+  planning:    { label: "Planning",     icon: ":clipboard:", order: 3 },
+  "ci-cd":     { label: "CI / CD",      icon: ":refresh:", order: 4 },
+  reliability: { label: "Reliability",  icon: ":shield:", order: 5 },
+  security:    { label: "Security",     icon: ":lock:", order: 6 },
+  lifecycle:   { label: "Lifecycle",    icon: ":rocket:", order: 7 },
+  research:    { label: "Research",     icon: ":microscope:", order: 8 },
+  coverage:    { label: "Coverage",     icon: ":chart:", order: 9 },
+  "mcp-integration": { label: "MCP Integration", icon: ":plug:", order: 10 },
+  maintenance: { label: "Maintenance",   icon: ":wrench:",   order: 11 },
+  custom:      { label: "Custom",       icon: ":settings:", order: 12 },
+});
+
+export const WORKFLOW_TEMPLATES = Object.freeze([
+  // ── GitHub ──
+  PR_MERGE_STRATEGY_TEMPLATE,
+  PR_TRIAGE_TEMPLATE,
+  PR_CONFLICT_RESOLVER_TEMPLATE,
+  STALE_PR_REAPER_TEMPLATE,
+  RELEASE_DRAFTER_TEMPLATE,
+  BOSUN_PR_WATCHDOG_TEMPLATE,
+  GITHUB_KANBAN_SYNC_TEMPLATE,
+  SDK_CONFLICT_RESOLVER_TEMPLATE,
+  // ── Agents ──
+  REVIEW_AGENT_TEMPLATE,
+  FRONTEND_AGENT_TEMPLATE,
+  CUSTOM_AGENT_TEMPLATE,
+  AGENT_SESSION_MONITOR_TEMPLATE,
+  BACKEND_AGENT_TEMPLATE,
+  VOICE_VIDEO_PARALLEL_ROLLOUT_TEMPLATE,
+  MEETING_SUBWORKFLOW_CHAIN_TEMPLATE,
+  // ── Planning ──
+  TASK_PLANNER_TEMPLATE,
+  TASK_REPLENISH_TEMPLATE,
+  NIGHTLY_REPORT_TEMPLATE,
+  SPRINT_RETROSPECTIVE_TEMPLATE,
+  WEEKLY_FITNESS_SUMMARY_TEMPLATE,
+  // ── CI/CD ──
+  BUILD_DEPLOY_TEMPLATE,
+  RELEASE_PIPELINE_TEMPLATE,
+  CANARY_DEPLOY_TEMPLATE,
+  // ── Reliability ──
+  ERROR_RECOVERY_TEMPLATE,
+  ANOMALY_WATCHDOG_TEMPLATE,
+  WORKSPACE_HYGIENE_TEMPLATE,
+  HEALTH_CHECK_TEMPLATE,
+  TASK_FINALIZATION_GUARD_TEMPLATE,
+  TASK_REPAIR_WORKTREE_TEMPLATE,
+  TASK_ORPHAN_WORKTREE_RECOVERY_TEMPLATE,
+  TASK_STATUS_TRANSITION_MANAGER_TEMPLATE,
+  INCIDENT_RESPONSE_TEMPLATE,
+  TASK_ARCHIVER_TEMPLATE,
+  SYNC_ENGINE_TEMPLATE,
+  // ── Security ──
+  DEPENDENCY_AUDIT_TEMPLATE,
+  SECRET_SCANNER_TEMPLATE,
+  // ── Maintenance (structural quality, agentic dev) ──
+  CODE_QUALITY_STRIKER_TEMPLATE,
+  // ── Task Lifecycle (workflow-first core) ──
+  TASK_LIFECYCLE_TEMPLATE,
+  VE_ORCHESTRATOR_LITE_TEMPLATE,
+  // ── Task Batch (parallel dispatch) ──
+  TASK_BATCH_PROCESSOR_TEMPLATE,
+  TASK_BATCH_PR_TEMPLATE,
+  // ── Research (iterative verification loops) ──
+  RESEARCH_AGENT_TEMPLATE,
+  // ── Coverage (node-type coverage) ──
+  WEBHOOK_TASK_ROUTER_TEMPLATE,
+  SCHEDULED_MAINTENANCE_TEMPLATE,
+  MCP_RESEARCH_PROBE_TEMPLATE,
+  AGENT_EXECUTION_PIPELINE_TEMPLATE,
+  FLOW_CONTROL_SUITE_TEMPLATE,
+  // ── MCP Integration (MCP tool → workflow data piping) ──
+  MCP_TOOL_CHAIN_TEMPLATE,
+  MCP_GITHUB_PR_MONITOR_TEMPLATE,
+  MCP_CROSS_SERVER_PIPELINE_TEMPLATE,
+  MCP_ITERATIVE_RESEARCH_TEMPLATE,
+  // ── Bosun Native (tools, sub-workflows, functions) ──
+  BOSUN_TOOL_PIPELINE_TEMPLATE,
+  WORKFLOW_COMPOSITION_TEMPLATE,
+  MCP_TO_BOSUN_BRIDGE_TEMPLATE,
+  GIT_HEALTH_PIPELINE_TEMPLATE,
+]);
+
+const _TEMPLATE_BY_ID = new Map(
+  WORKFLOW_TEMPLATES.map((template) => [template.id, template]),
+);
+const TEMPLATE_STATE_VERSION = 1;
+
+function stableNormalize(value) {
+  if (Array.isArray(value)) {
+    return value.map((entry) => stableNormalize(entry));
+  }
+  if (value && typeof value === "object") {
+    const normalized = {};
+    for (const key of Object.keys(value).sort()) {
+      normalized[key] = stableNormalize(value[key]);
+    }
+    return normalized;
+  }
+  return value;
+}
+
+function stableStringify(value) {
+  return JSON.stringify(stableNormalize(value));
+}
+
+function hashContent(value) {
+  return createHash("sha256").update(stableStringify(value)).digest("hex");
+}
+
+function normalizeFingerprintNode(node = {}) {
+  const normalized = { ...(node || {}) };
+  // Engine hydration may synthesize derived output aliases for execution routing.
+  // Exclude these from template drift checks so unmodified workflows stay stable.
+  delete normalized.outputs;
+  delete normalized.inputPorts;
+  delete normalized.outputPorts;
+  return normalized;
+}
+
+function normalizeFingerprintEdge(edge = {}) {
+  const normalized = { ...(edge || {}) };
+  delete normalized.sourcePortType;
+  delete normalized.targetPortType;
+  if (normalized.sourcePort === "default") delete normalized.sourcePort;
+  if (normalized.targetPort === "default") delete normalized.targetPort;
+  return normalized;
+}
+
+function toWorkflowFingerprintPayload(def = {}) {
+  return {
+    name: def.name || "",
+    description: def.description || "",
+    category: def.category || "custom",
+    trigger: def.trigger || "",
+    variables: def.variables || {},
+    nodes: Array.isArray(def.nodes) ? def.nodes.map((node) => normalizeFingerprintNode(node)) : [],
+    edges: Array.isArray(def.edges) ? def.edges.map((edge) => normalizeFingerprintEdge(edge)) : [],
+  };
+}
+
+export function computeWorkflowFingerprint(def = {}) {
+  return hashContent(toWorkflowFingerprintPayload(def));
+}
+
+function cloneTemplateDefinition(template) {
+  return JSON.parse(JSON.stringify(template));
+}
+
+function getTemplateVersion(templateId) {
+  const template = getTemplate(templateId);
+  if (!template) return null;
+  return computeWorkflowFingerprint(template).slice(0, 12);
+}
+
+function deriveTemplateState(def, template) {
+  const nowIso = new Date().toISOString();
+  const currentFingerprint = computeWorkflowFingerprint(def);
+  const templateFingerprint = computeWorkflowFingerprint(template);
+  const previousState = def?.metadata?.templateState || {};
+
+  const installedTemplateFingerprint = typeof previousState.installedTemplateFingerprint === "string"
+    ? previousState.installedTemplateFingerprint
+    : (currentFingerprint === templateFingerprint ? templateFingerprint : null);
+
+  const installedFingerprint = typeof previousState.installedFingerprint === "string"
+    ? previousState.installedFingerprint
+    : currentFingerprint;
+
+  const isCustomized = currentFingerprint !== installedFingerprint;
+  const updateAvailable = installedTemplateFingerprint
+    ? installedTemplateFingerprint !== templateFingerprint
+    : false;
+
+  return {
+    stateVersion: TEMPLATE_STATE_VERSION,
+    templateId: template.id,
+    templateName: template.name,
+    templateVersion: templateFingerprint.slice(0, 12),
+    templateFingerprint,
+    installedTemplateFingerprint,
+    installedTemplateVersion: installedTemplateFingerprint
+      ? installedTemplateFingerprint.slice(0, 12)
+      : null,
+    installedFingerprint,
+    currentFingerprint,
+    isCustomized,
+    updateAvailable,
+    refreshedAt: nowIso,
+  };
+}
+
+export function applyWorkflowTemplateState(def = {}) {
+  if (!def || typeof def !== "object") return def;
+  const templateId = String(def?.metadata?.installedFrom || "").trim();
+  if (!templateId) return def;
+  const template = getTemplate(templateId);
+  if (!template) return def;
+  if (!def.metadata || typeof def.metadata !== "object") def.metadata = {};
+  def.metadata.templateState = deriveTemplateState(def, template);
+  return def;
+}
+
+function makeUpdatedWorkflowFromTemplate(existing, template, mode = "replace") {
+  const templateClone = cloneTemplateDefinition(template);
+  const nowIso = new Date().toISOString();
+  const mergedVariables = {
+    ...(templateClone.variables || {}),
+    ...(existing.variables || {}),
+  };
+  const next = {
+    ...templateClone,
+    id: mode === "copy" ? randomUUID() : existing.id,
+    name: mode === "copy" ? `${existing.name} (Updated)` : existing.name,
+    enabled: existing.enabled !== false,
+    variables: mergedVariables,
+    metadata: {
+      ...(existing.metadata || {}),
+      ...(templateClone.metadata || {}),
+      installedFrom: template.id,
+      templateUpdatedAt: nowIso,
+    },
+  };
+  delete next.metadata.templateState;
+  if (mode === "copy") {
+    next.metadata.createdAt = nowIso;
+    next.metadata.updatedAt = nowIso;
+  }
+  return applyWorkflowTemplateState(next);
+}
+
+export function updateWorkflowFromTemplate(engine, workflowId, opts = {}) {
+  const mode = String(opts.mode || "replace").toLowerCase();
+  if (!["replace", "copy"].includes(mode)) {
+    throw new Error(`Unsupported template update mode "${mode}"`);
+  }
+  const existing = engine.get(workflowId);
+  if (!existing) throw new Error(`Workflow "${workflowId}" not found`);
+  const templateId = String(existing?.metadata?.installedFrom || "").trim();
+  if (!templateId) throw new Error(`Workflow "${workflowId}" is not template-backed`);
+  const template = getTemplate(templateId);
+  if (!template) throw new Error(`Template "${templateId}" not found`);
+
+  const hydrated = applyWorkflowTemplateState(existing);
+  if (mode === "replace" && hydrated?.metadata?.templateState?.isCustomized && opts.force !== true) {
+    throw new Error("Workflow has custom changes; pass force=true to replace it");
+  }
+
+  const next = makeUpdatedWorkflowFromTemplate(hydrated, template, mode);
+  return engine.save(next);
+}
+
+export function reconcileInstalledTemplates(engine, opts = {}) {
+  const autoUpdateUnmodified = opts.autoUpdateUnmodified !== false;
+  const workflows = engine.list();
+  const result = {
+    scanned: 0,
+    metadataUpdated: 0,
+    autoUpdated: 0,
+    updateAvailable: [],
+    customized: [],
+    updatedWorkflowIds: [],
+    errors: [],
+  };
+
+  for (const summary of workflows) {
+    const wfId = summary?.id;
+    if (!wfId) continue;
+    const def = engine.get(wfId);
+    if (!def?.metadata?.installedFrom) continue;
+    result.scanned += 1;
+
+    try {
+      const before = stableStringify(def.metadata?.templateState || null);
+      applyWorkflowTemplateState(def);
+      const state = def.metadata?.templateState || null;
+      const after = stableStringify(state);
+      if (before !== after) {
+        engine.save(def);
+        result.metadataUpdated += 1;
+      }
+
+      if (!state) continue;
+      if (state.isCustomized) {
+        result.customized.push({
+          workflowId: def.id,
+          name: def.name,
+          templateId: state.templateId,
+          updateAvailable: state.updateAvailable === true,
+        });
+      }
+      if (state.updateAvailable === true) {
+        result.updateAvailable.push({
+          workflowId: def.id,
+          name: def.name,
+          templateId: state.templateId,
+          isCustomized: state.isCustomized === true,
+        });
+      }
+
+      if (autoUpdateUnmodified && state.updateAvailable === true && state.isCustomized !== true) {
+        const saved = updateWorkflowFromTemplate(engine, def.id, { mode: "replace", force: true });
+        result.autoUpdated += 1;
+        result.updatedWorkflowIds.push(saved.id);
+      }
+    } catch (err) {
+      result.errors.push({
+        workflowId: wfId,
+        error: err.message,
+      });
+    }
+  }
+
+  return result;
+}
+
+/**
+ * Setup workflow profiles used by `bosun --setup`.
+ * - `manual`: human-driven dispatch with reliability safety nets.
+ * - `balanced`: recommended default for most teams.
+ * - `autonomous`: higher automation with planning + maintenance workflows.
+ */
+export const WORKFLOW_SETUP_PROFILES = Object.freeze({
+  manual: Object.freeze({
+    id: "manual",
+    name: "Manual Dispatch",
+    description:
+      "Best for teams that dispatch tasks manually and want guardrails, " +
+      "review automation, and recovery paths.",
+    recommendedFor: "Hands-on workflow control with low automation risk.",
+    workflowAutomationEnabled: false,
+    templateIds: Object.freeze([
+      "template-error-recovery",
+      "template-task-finalization-guard",
+      "template-task-repair-worktree",
+      "template-task-status-transition-manager",
+      "template-review-agent",
+      "template-health-check",
+    ]),
+  }),
+  balanced: Object.freeze({
+    id: "balanced",
+    name: "Balanced (Recommended)",
+    description:
+      "Reliable default with automated PR quality gates and targeted " +
+      "self-healing, without over-automating planning.",
+    recommendedFor: "Most repos and teams adopting Bosun for daily delivery.",
+    workflowAutomationEnabled: true,
+    templateIds: Object.freeze([
+      "template-pr-merge-strategy",
+      "template-review-agent",
+      "template-backend-agent",
+      "template-error-recovery",
+      "template-anomaly-watchdog",
+      "template-agent-session-monitor",
+      "template-task-finalization-guard",
+      "template-task-repair-worktree",
+      "template-task-status-transition-manager",
+      "template-dependency-audit",
+    ]),
+  }),
+  autonomous: Object.freeze({
+    id: "autonomous",
+    name: "Autonomous",
+    description:
+      "Higher automation for end-to-end flow: planning, recovery, conflict " +
+      "handling, maintenance, and incident response.",
+    recommendedFor: "Teams optimizing for maximum unattended throughput.",
+    workflowAutomationEnabled: true,
+    templateIds: Object.freeze([
+      "template-pr-merge-strategy",
+      "template-bosun-pr-watchdog",
+      "template-review-agent",
+      "template-backend-agent",
+      "template-task-planner",
+      "template-task-replenish",
+      "template-error-recovery",
+      "template-anomaly-watchdog",
+      "template-agent-session-monitor",
+      "template-workspace-hygiene",
+      "template-task-finalization-guard",
+      "template-task-repair-worktree",
+      "template-task-status-transition-manager",
+      "template-incident-response",
+      "template-release-pipeline",
+      "template-dependency-audit",
+      "template-task-archiver",
+      "template-sync-engine",
+      "template-sdk-conflict-resolver",
+      "template-task-batch-processor",
+    ]),
+  }),
+  workflowfirst: Object.freeze({
+    id: "workflowFirst",
+    name: "Workflow-First (Full)",
+    description:
+      "Everything runs as a workflow — including the core task execution " +
+      "lifecycle. Bosun becomes a thin shell around the workflow engine. " +
+      "Enables workflowOwnsTaskLifecycle for complete workflow-driven control.",
+    recommendedFor:
+      "Teams ready for full workflow-first operation where every " +
+      "bosun behavior is a composable, visual workflow.",
+    workflowAutomationEnabled: true,
+    workflowFirst: true,
+    templateIds: Object.freeze([
+      // Core lifecycle
+      "template-task-lifecycle",
+      // GitHub
+      "template-pr-merge-strategy",
+      "template-bosun-pr-watchdog",
+      "template-github-kanban-sync",
+      "template-stale-pr-reaper",
+      "template-sdk-conflict-resolver",
+      // Agents
+      "template-review-agent",
+      "template-backend-agent",
+      "template-agent-session-monitor",
+      // Planning
+      "template-task-planner",
+      "template-task-replenish",
+      // Reliability
+      "template-error-recovery",
+      "template-anomaly-watchdog",
+      "template-workspace-hygiene",
+      "template-task-finalization-guard",
+      "template-task-repair-worktree",
+      "template-task-status-transition-manager",
+      "template-incident-response",
+      "template-task-archiver",
+      "template-sync-engine",
+      // CI/CD
+      "template-release-pipeline",
+      // Security
+      "template-dependency-audit",
+      // Batch dispatch
+      "template-task-batch-processor",
+      "template-task-batch-pr",
+    ]),
+  }),
+});
+
+function normalizeTemplateIdList(templateIds = []) {
+  const source = Array.isArray(templateIds)
+    ? templateIds
+    : String(templateIds || "").split(",");
+  const normalized = [];
+  for (const raw of source) {
+    const id = String(raw || "").trim();
+    if (!id || !_TEMPLATE_BY_ID.has(id) || normalized.includes(id)) continue;
+    normalized.push(id);
+  }
+  return normalized;
+}
+
+function resolveProfileTemplateIds(profileId) {
+  const normalized = String(profileId || "").trim().toLowerCase();
+  const profile =
+    WORKFLOW_SETUP_PROFILES[normalized] || WORKFLOW_SETUP_PROFILES.balanced;
+  return [...profile.templateIds];
+}
+
+const WORKFLOW_TYPE_TEMPLATE_MAP = Object.freeze({
+  "continuation-loop": "template-continuation-loop",
+});
+
+const WORKFLOW_CONFIG_RESERVED_KEYS = new Set([
+  "type",
+  "templateId",
+  "enabled",
+  "name",
+  "options",
+]);
+
+function normalizeWorkflowConfigEntries(rawEntries = []) {
+  const source = Array.isArray(rawEntries) ? rawEntries : [];
+  const normalized = [];
+  for (const raw of source) {
+    if (!raw || typeof raw !== "object" || Array.isArray(raw)) continue;
+    const type = String(raw.type || "").trim().toLowerCase();
+    if (!type) continue;
+    const templateId = WORKFLOW_TYPE_TEMPLATE_MAP[type];
+    if (!templateId || !_TEMPLATE_BY_ID.has(templateId)) continue;
+    const enabled = raw.enabled !== false;
+    const entry = { ...raw, type, templateId, enabled };
+    normalized.push(entry);
+  }
+  return normalized;
+}
+
+function toTemplateOverridesFromWorkflowEntry(entry = {}) {
+  const template = getTemplate(entry.templateId);
+  if (!template) return {};
+  const templateVars = template.variables && typeof template.variables === "object"
+    ? template.variables
+    : {};
+  const picks = {};
+  for (const [key, value] of Object.entries(entry)) {
+    if (WORKFLOW_CONFIG_RESERVED_KEYS.has(key)) continue;
+    if (!Object.prototype.hasOwnProperty.call(templateVars, key)) continue;
+    picks[key] = coerceTemplateVariableValue(value, templateVars[key]);
+  }
+  if (entry.options && typeof entry.options === "object" && !Array.isArray(entry.options)) {
+    for (const [key, value] of Object.entries(entry.options)) {
+      if (!Object.prototype.hasOwnProperty.call(templateVars, key)) continue;
+      picks[key] = coerceTemplateVariableValue(value, templateVars[key]);
+    }
+  }
+  return picks;
+}
+
+export function resolveWorkflowTemplateConfig(rawEntries = []) {
+  const entries = normalizeWorkflowConfigEntries(rawEntries);
+  const templateIds = [];
+  const overridesById = {};
+  for (const entry of entries) {
+    if (entry.enabled !== true) continue;
+    if (!templateIds.includes(entry.templateId)) templateIds.push(entry.templateId);
+    const overrides = toTemplateOverridesFromWorkflowEntry(entry);
+    if (Object.keys(overrides).length > 0) {
+      overridesById[entry.templateId] = {
+        ...(overridesById[entry.templateId] || {}),
+        ...overrides,
+      };
+    }
+  }
+  return { templateIds, overridesById };
+}
+/**
+ * Get a template by ID.
+ * @param {string} id
+ * @returns {object|null}
+ */
+export function getTemplate(id) {
+  return _TEMPLATE_BY_ID.get(id) || null;
+}
+
+// ── Grouped Flows ──────────────────────────────────────────────────────────
+// Templates that use action.execute_workflow to chain into other templates
+// declare metadata.requiredTemplates. When one template in a group is
+// installed or enabled, all members of the group must be installed/enabled
+// together so that the chain doesn't break at runtime.
+
+/**
+ * Resolve the full dependency group for a template.
+ * Walks `metadata.requiredTemplates` transitively to collect every template
+ * that must be co-installed.
+ * @param {string} templateId
+ * @returns {{ root: string, members: string[] } | null}
+ */
+export function getTemplateGroup(templateId) {
+  const root = getTemplate(templateId);
+  if (!root) return null;
+
+  const members = new Set([templateId]);
+  const queue = [...(root.metadata?.requiredTemplates || [])];
+  while (queue.length > 0) {
+    const depId = queue.shift();
+    if (members.has(depId)) continue;
+    const dep = getTemplate(depId);
+    if (!dep) continue;
+    members.add(depId);
+    const nested = dep.metadata?.requiredTemplates || [];
+    for (const n of nested) {
+      if (!members.has(n)) queue.push(n);
+    }
+  }
+
+  return { root: templateId, members: [...members] };
+}
+
+/**
+ * Expand a list of template IDs to include all required group members.
+ * @param {string[]} templateIds
+ * @returns {string[]} Expanded list with dependencies (no duplicates, order preserved)
+ */
+export function expandTemplateGroups(templateIds) {
+  const seen = new Set();
+  const expanded = [];
+  for (const id of templateIds) {
+    if (seen.has(id)) continue;
+    seen.add(id);
+    expanded.push(id);
+    const group = getTemplateGroup(id);
+    if (!group) continue;
+    for (const memberId of group.members) {
+      if (!seen.has(memberId)) {
+        seen.add(memberId);
+        expanded.push(memberId);
+      }
+    }
+  }
+  return expanded;
+}
+
+/**
+ * List all available templates with metadata.
+ * @returns {Array<{id, name, description, category, tags, replaces?}>}
+ */
+function inferVariableInputAndOptions(key, defaultValue) {
+  const normalized = String(key || "").trim().toLowerCase();
+  if (typeof defaultValue === "boolean") return { input: "toggle", options: [] };
+  if (typeof defaultValue === "number") return { input: "number", options: [] };
+  if (Array.isArray(defaultValue) || (defaultValue && typeof defaultValue === "object")) {
+    return { input: "json", options: [] };
+  }
+
+  const optionValues = [];
+  if (normalized.includes("executor") || normalized.includes("sdk")) {
+    optionValues.push("auto", "codex", "claude", "copilot");
+  } else if (normalized.includes("bumptype") || normalized.includes("bump_type")) {
+    optionValues.push("patch", "minor", "major");
+  }
+
+  if (typeof defaultValue === "string" && defaultValue.trim()) {
+    optionValues.unshift(defaultValue.trim());
+  }
+
+  const deduped = [];
+  for (const value of optionValues) {
+    if (!value) continue;
+    if (!deduped.includes(value)) deduped.push(value);
+  }
+  if (deduped.length > 0) {
+    return {
+      input: "select",
+      options: deduped.map((value) => ({ value, label: value })),
+    };
+  }
+
+  return { input: "text", options: [] };
+}
+
+function inferVariableDescription(key, defaultValue) {
+  const normalized = String(key || "").trim().toLowerCase();
+  if (normalized.includes("taskid") || normalized.includes("task_id")) return "Task identifier (for example TASK-123).";
+  if (normalized.includes("prompt") || normalized.includes("problem") || normalized.includes("description")) return "Free-form instruction text.";
+  if (normalized.includes("branch")) return "Git branch name.";
+  if (normalized.includes("timeout") || normalized.includes("delay") || normalized.includes("cooldown")) return "Duration in milliseconds.";
+  if (normalized.includes("executor") || normalized.includes("sdk")) return "Executor profile used by agent nodes.";
+  if (normalized.includes("model")) return "Model id used by agent nodes.";
+  if (typeof defaultValue === "boolean") return "Toggle this setting on or off.";
+  if (typeof defaultValue === "number") return "Numeric workflow setting.";
+  return "";
+}
+
+const TEMPLATE_CAPABILITY_NODE_TYPES = Object.freeze({
+  branch: Object.freeze(["flow.branch"]),
+  join: Object.freeze(["flow.join"]),
+  gate: Object.freeze(["flow.gate"]),
+  universal: Object.freeze(["flow.universal", "flow.universial"]),
+  end: Object.freeze(["flow.end"]),
+});
+
+function collectTemplateCapabilities(template) {
+  const counts = {
+    branch: 0,
+    join: 0,
+    gate: 0,
+    universal: 0,
+    end: 0,
+  };
+
+  const nodes = Array.isArray(template?.nodes) ? template.nodes : [];
+  for (const node of nodes) {
+    const nodeType = String(node?.type || "").trim().toLowerCase();
+    if (!nodeType) continue;
+    for (const [capability, types] of Object.entries(TEMPLATE_CAPABILITY_NODE_TYPES)) {
+      if (types.includes(nodeType)) counts[capability] += 1;
+    }
+  }
+
+  return {
+    capabilities: {
+      branch: counts.branch > 0,
+      join: counts.join > 0,
+      gate: counts.gate > 0,
+      universal: counts.universal > 0,
+      end: counts.end > 0,
+    },
+    capabilityCounts: counts,
+  };
+}
+
+export function listTemplates() {
+  return WORKFLOW_TEMPLATES.map((t) => {
+    const cat = TEMPLATE_CATEGORIES[t.category] || TEMPLATE_CATEGORIES.custom;
+    const fingerprint = computeWorkflowFingerprint(t);
+    const capabilitySummary = collectTemplateCapabilities(t);
+    return {
+      id: t.id,
+      name: t.name,
+      description: t.description,
+      category: t.category,
+      categoryLabel: cat.label,
+      categoryIcon: cat.icon,
+      categoryOrder: cat.order,
+      tags: t.metadata?.tags || [],
+      nodeCount: t.nodes?.length || 0,
+      edgeCount: t.edges?.length || 0,
+      version: fingerprint.slice(0, 12),
+      fingerprint,
+      replaces: t.metadata?.replaces || null,
+      recommended: t.recommended === true,
+      enabled: t.enabled !== false,
+      trigger: t.trigger || null,
+      capabilities: capabilitySummary.capabilities,
+      capabilityCounts: capabilitySummary.capabilityCounts,
+      variables: t.variables && typeof t.variables === "object"
+        ? Object.entries(t.variables).map(([key, defaultValue]) => {
+            const required = defaultValue === "" || defaultValue == null;
+            const inferred = inferVariableInputAndOptions(key, defaultValue);
+            return {
+              key,
+              defaultValue,
+              required,
+              type: typeof defaultValue === "number"  ? "number"
+                  : typeof defaultValue === "boolean" ? "toggle"
+                  : "text",
+              input: inferred.input,
+              options: inferred.options,
+              description: inferVariableDescription(key, defaultValue),
+            };
+          })
+        : [],
+    };
+  });
+}
+
+/**
+ * List setup workflow profiles for the setup wizard.
+ * @returns {Array<{id: string, name: string, description: string, recommendedFor: string, workflowAutomationEnabled: boolean, templateIds: string[]}>}
+ */
+export function listWorkflowSetupProfiles() {
+  return Object.values(WORKFLOW_SETUP_PROFILES).map((profile) => ({
+    id: profile.id,
+    name: profile.name,
+    description: profile.description,
+    recommendedFor: profile.recommendedFor,
+    workflowAutomationEnabled: profile.workflowAutomationEnabled === true,
+    templateIds: [...profile.templateIds],
+  }));
+}
+
+/**
+ * Get a single setup profile by id.
+ * Falls back to `balanced` when unknown.
+ * @param {string} profileId
+ * @returns {{id: string, name: string, description: string, recommendedFor: string, workflowAutomationEnabled: boolean, templateIds: string[]}}
+ */
+export function getWorkflowSetupProfile(profileId = "balanced") {
+  const normalized = String(profileId || "").trim().toLowerCase();
+  const profile =
+    WORKFLOW_SETUP_PROFILES[normalized] || WORKFLOW_SETUP_PROFILES.balanced;
+  return {
+    id: profile.id,
+    name: profile.name,
+    description: profile.description,
+    recommendedFor: profile.recommendedFor,
+    workflowAutomationEnabled: profile.workflowAutomationEnabled === true,
+    templateIds: [...profile.templateIds],
+  };
+}
+
+/**
+ * Resolve template IDs from a setup profile and/or explicit custom template IDs.
+ * Explicit template IDs win when provided.
+ * @param {object} opts
+ * @param {string} [opts.profileId]
+ * @param {string[]|string} [opts.templateIds]
+ * @returns {string[]}
+ */
+export function resolveWorkflowTemplateIds(opts = {}) {
+  const explicit = normalizeTemplateIdList(opts.templateIds || []);
+  if (explicit.length > 0) return explicit;
+  return resolveProfileTemplateIds(opts.profileId || "balanced");
+}
+
+function coerceTemplateVariableValue(rawValue, defaultValue) {
+  if (typeof defaultValue === "number") {
+    const parsed = Number(rawValue);
+    return Number.isFinite(parsed) ? parsed : defaultValue;
+  }
+  if (typeof defaultValue === "boolean") {
+    if (typeof rawValue === "boolean") return rawValue;
+    const normalized = String(rawValue || "").trim().toLowerCase();
+    if (["1", "true", "yes", "on", "y"].includes(normalized)) return true;
+    if (["0", "false", "no", "off", "n"].includes(normalized)) return false;
+    return defaultValue;
+  }
+  if (Array.isArray(defaultValue) || (defaultValue && typeof defaultValue === "object")) {
+    if (typeof rawValue === "string") {
+      try {
+        return JSON.parse(rawValue);
+      } catch {
+        return defaultValue;
+      }
+    }
+    return rawValue && typeof rawValue === "object" ? rawValue : defaultValue;
+  }
+  if (rawValue === undefined || rawValue === null) return defaultValue;
+  return String(rawValue);
+}
+
+export function normalizeTemplateOverridesById(rawOverrides = {}, allowedTemplateIds = null) {
+  const input = rawOverrides && typeof rawOverrides === "object" ? rawOverrides : {};
+  const allowed = Array.isArray(allowedTemplateIds)
+    ? new Set(allowedTemplateIds.map((value) => String(value || "").trim()).filter(Boolean))
+    : null;
+  const normalized = {};
+
+  for (const [templateId, overrides] of Object.entries(input)) {
+    const id = String(templateId || "").trim();
+    if (!id) continue;
+    if (allowed && !allowed.has(id)) continue;
+    const template = getTemplate(id);
+    if (!template) continue;
+    if (!overrides || typeof overrides !== "object" || Array.isArray(overrides)) continue;
+
+    const templateVars = template.variables && typeof template.variables === "object"
+      ? template.variables
+      : {};
+    const nextOverrides = {};
+    for (const [key, rawValue] of Object.entries(overrides)) {
+      if (!Object.prototype.hasOwnProperty.call(templateVars, key)) continue;
+      nextOverrides[key] = coerceTemplateVariableValue(rawValue, templateVars[key]);
+    }
+    if (Object.keys(nextOverrides).length > 0) {
+      normalized[id] = nextOverrides;
+    }
+  }
+
+  return normalized;
+}
+
+/**
+ * List recommended templates only.
+ * @returns {Array<object>}
+ */
+export function listRecommendedTemplates() {
+  return WORKFLOW_TEMPLATES.filter((t) => t.recommended === true);
+}
+
+/**
+ * Install a template into a workflow engine, creating a new workflow instance.
+ * The user can then customize names, variables, and node configs.
+ * @param {string} templateId
+ * @param {import('./workflow-engine.mjs').WorkflowEngine} engine
+ * @param {object} [overrides] - Variable overrides
+ * @returns {object} The saved workflow definition
+ */
+export function installTemplate(templateId, engine, overrides = {}) {
+  const template = getTemplate(templateId);
+  if (!template) throw new Error(`Template "${templateId}" not found`);
+
+  // Dedup check: prevent installing a template that's already installed
+  const existing = engine.list();
+  const alreadyInstalled = existing.some(
+    (wf) => wf.metadata?.installedFrom === templateId || wf.name === template.name
+  );
+  if (alreadyInstalled) {
+    throw new Error(`Template "${template.name}" is already installed`);
+  }
+
+  // Deep clone
+  const def = cloneTemplateDefinition(template);
+  def.id = randomUUID(); // New unique ID
+  def.metadata = {
+    ...def.metadata,
+    installedFrom: templateId,
+    createdAt: new Date().toISOString(),
+    updatedAt: new Date().toISOString(),
+  };
+
+  // Apply variable overrides
+  if (overrides) {
+    def.variables = { ...def.variables, ...overrides };
+  }
+
+  applyWorkflowTemplateState(def);
+  const saved = engine.save(def);
+
+  // ── Grouped flows: auto-install required sibling templates ────────────
+  const requiredIds = template.metadata?.requiredTemplates || [];
+  for (const depId of requiredIds) {
+    const depTemplate = getTemplate(depId);
+    if (!depTemplate) continue;
+    const depExists = engine.list().some(
+      (wf) => wf.metadata?.installedFrom === depId || wf.name === depTemplate.name,
+    );
+    if (depExists) continue;
+    try {
+      installTemplate(depId, engine, overrides);
+    } catch {
+      /* best-effort — dedup check may fire if installed concurrently */
+    }
+  }
+
+  return saved;
+}
+
+/**
+ * Install a specific set of template IDs.
+ * @param {import('./workflow-engine.mjs').WorkflowEngine} engine
+ * @param {string[]|string} templateIds
+ * @param {Record<string, object>} [overridesById]
+ * @returns {{installed: object[], skipped: string[], errors: Array<{id: string, error: string}>}}
+ */
+export function installTemplateSet(engine, templateIds = [], overridesById = {}) {
+  const source = Array.isArray(templateIds)
+    ? templateIds
+    : String(templateIds || "").split(",");
+  const requested = [];
+  for (const raw of source) {
+    const id = String(raw || "").trim();
+    if (!id || requested.includes(id)) continue;
+    requested.push(id);
+  }
+  // Expand grouped flows so required siblings are always included
+  const expanded = expandTemplateGroups(requested);
+
+  const existing = engine.list();
+  const installedLookup = new Set(
+    existing.flatMap((wf) => [wf.metadata?.installedFrom, wf.name]).filter(Boolean),
+  );
+  const results = { installed: [], skipped: [], errors: [] };
+
+  for (const templateId of expanded) {
+    const template = getTemplate(templateId);
+    if (!template) {
+      results.errors.push({ id: templateId, error: `Template "${templateId}" not found` });
+      continue;
+    }
+    if (installedLookup.has(template.id) || installedLookup.has(template.name)) {
+      results.skipped.push(template.id);
+      continue;
+    }
+    try {
+      const overrides = overridesById[template.id] || overridesById[template.name] || {};
+      const wf = installTemplate(template.id, engine, overrides);
+      results.installed.push(wf);
+      installedLookup.add(template.id);
+      installedLookup.add(template.name);
+      // Auto-install may have added sibling templates; refresh the lookup
+      // so they are correctly skipped rather than triggering errors.
+      for (const existing of engine.list()) {
+        if (existing.metadata?.installedFrom) installedLookup.add(existing.metadata.installedFrom);
+        if (existing.name) installedLookup.add(existing.name);
+      }
+    } catch (err) {
+      results.errors.push({ id: template.id, error: err.message });
+    }
+  }
+
+  return results;
+}
+
+/**
+ * Ensure all recommended templates are installed.
+ * @param {import('./workflow-engine.mjs').WorkflowEngine} engine
+ * @param {Record<string, object>} [overridesById] Optional variable overrides keyed by template id.
+ * @returns {{installed: object[], skipped: string[], errors: Array<{id: string, error: string}>}}
+ */
+export function installRecommendedTemplates(engine, overridesById = {}) {
+  const recommendedIds = WORKFLOW_TEMPLATES
+    .filter((template) => template.recommended === true)
+    .map((template) => template.id);
+  return installTemplateSet(engine, recommendedIds, overridesById);
+}
+

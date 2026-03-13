@@ -1572,6 +1572,98 @@ describe("ui-server mini app", () => {
     expect(abortTask).toHaveBeenCalledWith(taskId, "task_lifecycle_pause");
   });
 
+  it("serves retry queue snapshots from the agent event bus when available", async () => {
+    process.env.TELEGRAM_UI_TUNNEL = "disabled";
+    const mod = await import("../server/ui-server.mjs");
+    const getRetryQueue = vi.fn(() => ({
+      count: 1,
+      items: [
+        {
+          taskId: "retry-task-1",
+          retryCount: 2,
+          lastError: "Build failed",
+          nextAttemptAt: Date.now() + 10_000,
+        },
+      ],
+      stats: {
+        totalRetriesToday: 7,
+        peakRetryDepth: 3,
+        exhaustedTaskIds: ["retry-task-old"],
+      },
+    }));
+    mod.injectUiDependencies({
+      getAgentEventBus: () => ({
+        getRetryQueue,
+      }),
+    });
+
+    const server = await mod.startTelegramUiServer({
+      port: await getFreePort(),
+      host: "127.0.0.1",
+      skipInstanceLock: true,
+      skipAutoOpen: true,
+    });
+    const port = server.address().port;
+
+    const payload = await fetch(`http://127.0.0.1:${port}/api/retry-queue`).then((r) => r.json());
+    expect(payload.ok).toBe(true);
+    expect(payload.count).toBe(1);
+    expect(payload.items[0].taskId).toBe("retry-task-1");
+    expect(payload.stats.totalRetriesToday).toBe(7);
+    expect(getRetryQueue).toHaveBeenCalled();
+  });
+
+  it("retries tasks immediately and clears retry queue entries via the event bus", async () => {
+    process.env.TELEGRAM_UI_TUNNEL = "disabled";
+    process.env.EXECUTOR_MODE = "internal";
+
+    const mod = await import("../server/ui-server.mjs");
+    const executeTask = vi.fn(async () => {});
+    const clearRetryQueueTask = vi.fn();
+    mod.injectUiDependencies({
+      getInternalExecutor: () => ({
+        getStatus: () => ({ maxParallel: 4, activeSlots: 0, slots: [] }),
+        executeTask,
+        isPaused: () => false,
+      }),
+      getAgentEventBus: () => ({
+        clearRetryQueueTask,
+      }),
+    });
+
+    const server = await mod.startTelegramUiServer({
+      port: await getFreePort(),
+      host: "127.0.0.1",
+      skipInstanceLock: true,
+      skipAutoOpen: true,
+    });
+    const port = server.address().port;
+
+    const created = await fetch(`http://127.0.0.1:${port}/api/tasks/create`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        title: "Retry queue manual retry test",
+        description: "ensures retry now bypasses cooldown",
+        status: "error",
+      }),
+    }).then((r) => r.json());
+    expect(created.ok).toBe(true);
+    const taskId = created.data.id;
+
+    const retried = await fetch(`http://127.0.0.1:${port}/api/tasks/retry`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ taskId }),
+    }).then((r) => r.json());
+
+    expect(retried.ok).toBe(true);
+    expect(retried.taskId).toBe(taskId);
+    expect(executeTask).toHaveBeenCalledTimes(1);
+    expect(executeTask.mock.calls[0][0]?.id).toBe(taskId);
+    expect(clearRetryQueueTask).toHaveBeenCalledWith(taskId, "manual-retry-now");
+  });
+
   it("queues task starts when no executor slots are free and reports truthful runtime state", async () => {
     const isolatedDir = mkdtempSync(join(tmpdir(), "bosun-ui-queue-"));
     process.env.TELEGRAM_UI_TUNNEL = "disabled";
