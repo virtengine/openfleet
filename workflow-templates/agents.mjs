@@ -451,7 +451,7 @@ export const BACKEND_AGENT_TEMPLATE = {
   recommended: true,
   trigger: "trigger.task_assigned",
   variables: {
-    testFramework: "npm test",
+    testCommand: "npm test",
     buildCommand: "npm run build",
     lintCommand: "",
     baseBranch: "main",
@@ -1015,4 +1015,3 @@ export const MEETING_SUBWORKFLOW_CHAIN_TEMPLATE = {
     requiredTemplates: ["template-task-planner"],
   },
 };
-
