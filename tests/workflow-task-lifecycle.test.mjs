@@ -1275,7 +1275,13 @@ describe("action.build_task_prompt", () => {
     expect(result.prompt.length).toBeGreaterThan(50);
     expect(result.prompt).toContain("Fix the widget");
     expect(result.prompt).toContain("TASK-42");
+    expect(typeof result.systemPrompt).toBe("string");
+    expect(result.systemPrompt.length).toBeGreaterThan(50);
+    expect(result.systemPrompt).not.toContain("TASK-42");
+    expect(result.systemPrompt).not.toContain("Fix the widget");
     expect(ctx.data._taskPrompt).toBe(result.prompt);
+    expect(ctx.data._taskUserPrompt).toBe(result.prompt);
+    expect(ctx.data._taskSystemPrompt).toBe(result.systemPrompt);
   });
 
   it("includes branch and repo info", async () => {
@@ -1302,8 +1308,8 @@ describe("action.build_task_prompt", () => {
       taskDescription: "Desc",
     });
     const result = await nt.execute(node, ctx);
-    // Should have autonomous agent instructions
-    expect(result.prompt).toContain("commit");
+    // Autonomous execution instructions now live in systemPrompt.
+    expect(result.systemPrompt).toContain("commit");
   });
 
   it("renders workspace scope contract from explicit repo metadata", async () => {
@@ -1377,9 +1383,6 @@ describe("action.build_task_prompt", () => {
     expect(result.prompt).toContain("terminalStates: [done]");
     expect(result.prompt).toContain("forbiddenPatterns: [git push --force]");
   });
-});
-
-describe("workflow contract nodes", () => {
   it("reads WORKFLOW.md into workflow context", async () => {
     const projectDir = mkdtempSync(join(tmpdir(), "wf-contract-read-"));
     writeFileSync(join(projectDir, "WORKFLOW.md"), [
@@ -1423,6 +1426,31 @@ describe("workflow contract nodes", () => {
 
     rmSync(projectDir, { recursive: true, force: true });
     clearContractCache(projectDir);
+  });
+
+  it("enforces strict cache anchoring by keeping task-specific markers out of system prompt", async () => {
+    const prev = process.env.BOSUN_CACHE_ANCHOR_MODE;
+    process.env.BOSUN_CACHE_ANCHOR_MODE = "strict";
+    try {
+      const nt = getNodeType("action.build_task_prompt");
+      const ctx = makeCtx({});
+      const node = makeNode("action.build_task_prompt", {
+        taskId: "STRICT-1",
+        taskTitle: "Strict cache prompt",
+        taskDescription: "Validate strict anchoring guard",
+        branch: "feat/strict-anchor",
+        worktreePath: "/tmp/wt-strict",
+      });
+      const result = await nt.execute(node, ctx);
+      expect(result.success).toBe(true);
+      expect(result.cacheAnchorMode).toBe("strict");
+      expect(result.systemPrompt).not.toContain("STRICT-1");
+      expect(result.systemPrompt).not.toContain("Strict cache prompt");
+      expect(result.systemPrompt).not.toContain("/tmp/wt-strict");
+    } finally {
+      if (prev === undefined) delete process.env.BOSUN_CACHE_ANCHOR_MODE;
+      else process.env.BOSUN_CACHE_ANCHOR_MODE = prev;
+    }
   });
 });
 
@@ -2221,4 +2249,3 @@ describe("template-ve-orchestrator-lite", () => {
     expect(Array.isArray(t.variables.protectedBranches)).toBe(true);
   });
 });
-

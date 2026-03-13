@@ -1765,6 +1765,7 @@ registerNodeType("action.run_agent", {
     type: "object",
     properties: {
       prompt: { type: "string", description: "Agent prompt (supports {{variables}})" },
+      systemPrompt: { type: "string", description: "Optional stable system prompt for cache anchoring" },
       sdk: { type: "string", enum: ["codex", "copilot", "claude", "auto"], default: "auto" },
       model: { type: "string", description: "Optional model override for the selected SDK" },
       taskId: { type: "string", description: "Optional task ID used for task metadata lookup" },
@@ -1822,8 +1823,16 @@ registerNodeType("action.run_agent", {
       ? Math.max(1000, Math.trunc(Number(resolvedTimeoutMs)))
       : 3600000;
     const includeTaskContext = node.config?.includeTaskContext !== false;
+    const configuredSystemPrompt =
+      ctx.resolve(node.config?.systemPrompt || "") ||
+      ctx.data?._taskSystemPrompt ||
+      "";
     const toolContract = buildWorkflowAgentToolContract(cwd, agentProfileId);
-    let finalPrompt = `${toolContract}\n\n${prompt}`;
+    const effectiveSystemPrompt = [configuredSystemPrompt, toolContract]
+      .map((value) => String(value || "").trim())
+      .filter(Boolean)
+      .join("\n\n");
+    let finalPrompt = prompt;
     if (includeTaskContext) {
       const explicitContext =
         ctx.data?.taskContext ||
@@ -1831,7 +1840,7 @@ registerNodeType("action.run_agent", {
         null;
       const task = ctx.data?.task || ctx.data?.taskDetail || ctx.data?.taskInfo || null;
       const contextBlock = explicitContext || buildTaskContextBlock(task);
-      if (contextBlock) finalPrompt = `${prompt}\n\n${contextBlock}`;
+      if (contextBlock) finalPrompt = `${finalPrompt}\n\n${contextBlock}`;
     }
 
     ctx.log(node.id, `Running agent (${sdk}) in ${cwd}`);
@@ -2167,6 +2176,7 @@ registerNodeType("action.run_agent", {
               sdk: sdkOverride,
               model: modelOverride,
               onEvent: launchExtra.onEvent,
+              systemPrompt: effectiveSystemPrompt,
             });
           }
 
@@ -2178,10 +2188,12 @@ registerNodeType("action.run_agent", {
               sdk: sdkOverride,
               model: modelOverride,
               onEvent: launchExtra.onEvent,
+              systemPrompt: effectiveSystemPrompt,
             });
           }
 
           if (!result) {
+            launchExtra.systemPrompt = effectiveSystemPrompt;
             result = await agentPool.launchEphemeralThread(passPrompt, cwd, timeoutMs, launchExtra);
           }
           success = result?.success === true;
@@ -10107,70 +10119,161 @@ registerNodeType("action.build_task_prompt", {
     const allowedRepositories = normalizeStringArray(repositories, primaryRepository);
     const matchedSkills = findRelevantSkills(repoRoot, taskTitle, taskDescription || "", {});
     const activeSkillFiles = matchedSkills.map((skill) => skill.filename);
+    const strictCacheAnchoring =
+      String(process.env.BOSUN_CACHE_ANCHOR_MODE || "")
+        .trim()
+        .toLowerCase() === "strict";
+
+    const buildStableSystemPrompt = () => {
+      const systemParts = [];
+      if (includeAgentsMd) {
+        const searchDirs = [repoRoot].filter(Boolean);
+        const docFiles = ["AGENTS.md", ".github/copilot-instructions.md"];
+        const loaded = new Set();
+        for (const dir of searchDirs) {
+          for (const doc of docFiles) {
+            if (loaded.has(doc)) continue;
+            const fullPath = resolve(dir, doc);
+            try {
+              if (!existsSync(fullPath)) continue;
+              const content = readFileSync(fullPath, "utf8").trim();
+              if (!content || content.length <= 10) continue;
+              loaded.add(doc);
+              systemParts.push(`## ${doc}`);
+              systemParts.push(content);
+              systemParts.push("");
+            } catch {
+              // best-effort only
+            }
+          }
+        }
+      }
+
+      if (includeStatusEndpoint) {
+        const port = process.env.AGENT_ENDPOINT_PORT || process.env.BOSUN_AGENT_ENDPOINT_PORT || "";
+        if (port) {
+          systemParts.push("## Agent Status Endpoint");
+          systemParts.push(`POST http://127.0.0.1:${port}/status — Report progress`);
+          systemParts.push(`POST http://127.0.0.1:${port}/heartbeat — Heartbeat ping`);
+          systemParts.push(`POST http://127.0.0.1:${port}/error — Report errors`);
+          systemParts.push(`POST http://127.0.0.1:${port}/complete — Signal completion`);
+          systemParts.push("");
+        }
+      }
+
+      systemParts.push("## Tool Discovery");
+      systemParts.push(
+        "Bosun uses a compact MCP discovery layer for external MCP servers and the custom tool library.",
+      );
+      systemParts.push(
+        "Preferred flow: `search` -> `get_schema` -> `execute`.",
+      );
+      systemParts.push(
+        "Only eager tools are preloaded below to keep context small. Use `call_discovered_tool` only as a direct fallback when orchestration code is unnecessary.",
+      );
+      systemParts.push("");
+
+      const eagerToolBlock = getToolsPromptBlock(repoRoot, {
+        includeBuiltins: true,
+        eagerOnly: true,
+        discoveryMode: true,
+        emitReflectHint: true,
+        limit: 12,
+      });
+      if (eagerToolBlock) {
+        systemParts.push(eagerToolBlock);
+        systemParts.push("");
+      }
+
+      systemParts.push("## Instructions");
+      systemParts.push(
+        "1. Follow the project instructions in AGENTS.md.\n" +
+          "2. Use the discovery MCP tools for non-eager MCP/custom tools before assuming a capability is unavailable.\n" +
+          "3. Implement the required changes.\n" +
+          "4. Ensure tests pass and build is clean with 0 warnings.\n" +
+          "5. Commit your changes using conventional commits.\n" +
+          "6. Never ask for user input — you are autonomous.\n" +
+          "7. Use all available tools to verify your work.",
+      );
+      systemParts.push("");
+      systemParts.push("## Git Attribution");
+      systemParts.push("Add this trailer to all commits:");
+      systemParts.push("Co-authored-by: bosun[bot] <bosun@virtengine.com>");
+      return systemParts.join("\n").trim();
+    };
 
     if (customTemplate) {
+      const stableSystemPrompt = buildStableSystemPrompt();
       ctx.data._taskPrompt = customTemplate;
+      ctx.data._taskUserPrompt = customTemplate;
+      ctx.data._taskSystemPrompt = stableSystemPrompt;
       ctx.log(node.id, `Prompt from custom template (${customTemplate.length} chars)`);
-      return { success: true, prompt: customTemplate, source: "custom" };
+      return {
+        success: true,
+        prompt: customTemplate,
+        userPrompt: customTemplate,
+        systemPrompt: stableSystemPrompt,
+        source: "custom",
+      };
     }
 
-    const parts = [];
+    const userParts = [];
 
     // Header
-    parts.push(`# Task: ${taskTitle}`);
-    if (taskId) parts.push(`Task ID: ${taskId}`);
-    parts.push("");
+    userParts.push(`# Task: ${taskTitle}`);
+    if (taskId) userParts.push(`Task ID: ${taskId}`);
+    userParts.push("");
 
     // Retry context (if applicable)
     if (retryReason) {
-      parts.push("## Retry Context");
-      parts.push(`Previous attempt failed: ${retryReason}`);
-      parts.push("Try a different approach this time.");
-      parts.push("");
+      userParts.push("## Retry Context");
+      userParts.push(`Previous attempt failed: ${retryReason}`);
+      userParts.push("Try a different approach this time.");
+      userParts.push("");
     }
 
     // Description
     if (taskDescription) {
-      parts.push("## Description");
-      parts.push(taskDescription);
-      parts.push("");
+      userParts.push("## Description");
+      userParts.push(taskDescription);
+      userParts.push("");
     }
 
     // Environment context
-    parts.push("## Environment");
+    userParts.push("## Environment");
     const envLines = [];
     if (worktreePath) envLines.push(`- **Working Directory:** ${worktreePath}`);
     if (branch) envLines.push(`- **Branch:** ${branch}`);
     if (baseBranch) envLines.push(`- **Base Branch:** ${baseBranch}`);
     if (repoSlug) envLines.push(`- **Repository:** ${repoSlug}`);
     if (repoRoot) envLines.push(`- **Repo Root:** ${repoRoot}`);
-    if (envLines.length) parts.push(envLines.join("\n"));
-    parts.push("");
+    if (envLines.length) userParts.push(envLines.join("\n"));
+    userParts.push("");
 
     // Workspace and repository scope guardrails.
-    parts.push("## Workspace Scope Contract");
-    if (workspace) parts.push(`- **Workspace:** ${workspace}`);
-    if (primaryRepository) parts.push(`- **Primary Repository:** ${primaryRepository}`);
+    userParts.push("## Workspace Scope Contract");
+    if (workspace) userParts.push(`- **Workspace:** ${workspace}`);
+    if (primaryRepository) userParts.push(`- **Primary Repository:** ${primaryRepository}`);
     if (allowedRepositories.length > 0) {
-      parts.push("- **Allowed Repositories:**");
+      userParts.push("- **Allowed Repositories:**");
       for (const allowedRepo of allowedRepositories) {
-        parts.push(`  - ${allowedRepo}`);
+        userParts.push(`  - ${allowedRepo}`);
       }
     } else {
-      parts.push("- **Allowed Repositories:** (not declared)");
+      userParts.push("- **Allowed Repositories:** (not declared)");
     }
-    if (worktreePath) parts.push(`- **Write Scope Root:** ${worktreePath}`);
-    parts.push("");
-    parts.push("Hard boundaries:");
+    if (worktreePath) userParts.push(`- **Write Scope Root:** ${worktreePath}`);
+    userParts.push("");
+    userParts.push("Hard boundaries:");
     if (worktreePath) {
-      parts.push(`1. Modify files only inside \`${worktreePath}\`.`);
+      userParts.push(`1. Modify files only inside \`${worktreePath}\`.`);
     } else {
-      parts.push("1. Modify files only inside the active repository working directory.");
+      userParts.push("1. Modify files only inside the active repository working directory.");
     }
-    parts.push("2. Modify code only in the allowed repositories listed above.");
-    parts.push("3. If required work depends on an unlisted repository, stop and report `blocked: cross-repo dependency`.");
-    parts.push("4. In completion notes, list every repository you touched and why.");
-    parts.push("");
+    userParts.push("2. Modify code only in the allowed repositories listed above.");
+    userParts.push("3. If required work depends on an unlisted repository, stop and report `blocked: cross-repo dependency`.");
+    userParts.push("4. In completion notes, list every repository you touched and why.");
+    userParts.push("");
 
     let workflowContractPromptBlock = String(ctx.data?._workflowContractPromptBlock || "").trim();
     if (!workflowContractPromptBlock) {
@@ -10189,8 +10292,8 @@ registerNodeType("action.build_task_prompt", {
       }
     }
     if (workflowContractPromptBlock) {
-      parts.push(workflowContractPromptBlock);
-      parts.push("");
+      userParts.push(workflowContractPromptBlock);
+      userParts.push("");
     }
 
     // AGENTS.md + copilot-instructions.md
@@ -10207,9 +10310,9 @@ registerNodeType("action.build_task_prompt", {
               const content = readFileSync(fullPath, "utf8").trim();
               if (content && content.length > 10) {
                 loaded.add(doc);
-                parts.push(`## ${doc}`);
-                parts.push(content);
-                parts.push("");
+                userParts.push(`## ${doc}`);
+                userParts.push(content);
+                userParts.push("");
               }
             }
           } catch { /* best-effort */ }
@@ -10221,12 +10324,12 @@ registerNodeType("action.build_task_prompt", {
     if (includeStatusEndpoint) {
       const port = process.env.AGENT_ENDPOINT_PORT || process.env.BOSUN_AGENT_ENDPOINT_PORT || "";
       if (port) {
-        parts.push("## Agent Status Endpoint");
-        parts.push(`POST http://127.0.0.1:${port}/status — Report progress`);
-        parts.push(`POST http://127.0.0.1:${port}/heartbeat — Heartbeat ping`);
-        parts.push(`POST http://127.0.0.1:${port}/error — Report errors`);
-        parts.push(`POST http://127.0.0.1:${port}/complete — Signal completion`);
-        parts.push("");
+        userParts.push("## Agent Status Endpoint");
+        userParts.push(`POST http://127.0.0.1:${port}/status — Report progress`);
+        userParts.push(`POST http://127.0.0.1:${port}/heartbeat — Heartbeat ping`);
+        userParts.push(`POST http://127.0.0.1:${port}/error — Report errors`);
+        userParts.push(`POST http://127.0.0.1:${port}/complete — Signal completion`);
+        userParts.push("");
       }
     }
 
@@ -10237,8 +10340,8 @@ registerNodeType("action.build_task_prompt", {
       {},
     );
     if (relevantSkillsBlock) {
-      parts.push(relevantSkillsBlock);
-      parts.push("");
+      userParts.push(relevantSkillsBlock);
+      userParts.push("");
     }
 
     // Inject library-resolved skills from agent.select_profile.
@@ -10264,64 +10367,67 @@ registerNodeType("action.build_task_prompt", {
           librarySkillParts.push("");
         }
         if (librarySkillParts.length > 0) {
-          parts.push("## Library Skills");
-          parts.push(...librarySkillParts);
+          userParts.push("## Library Skills");
+          userParts.push(...librarySkillParts);
         }
       } catch (err) {
         ctx.log(node.id, `Library skill injection failed (non-fatal): ${err.message}`);
       }
     }
-
-    parts.push("## Tool Discovery");
-    parts.push(
-      "Bosun uses a compact MCP discovery layer for external MCP servers and the custom tool library.",
-    );
-    parts.push(
-      "Preferred flow: `search` -> `get_schema` -> `execute`.",
-    );
-    parts.push(
-      "Only eager tools are preloaded below to keep context small. Use `call_discovered_tool` only as a direct fallback when orchestration code is unnecessary.",
-    );
-    parts.push("");
-
-    const eagerToolBlock = getToolsPromptBlock(repoRoot, {
+    // Skill-driven eager tools belong with task context to preserve cache anchoring.
+    const taskScopedEagerTools = getToolsPromptBlock(repoRoot, {
       activeSkills: activeSkillFiles,
       includeBuiltins: true,
       eagerOnly: true,
       discoveryMode: true,
-      emitReflectHint: true,
+      emitReflectHint: false,
       limit: 12,
     });
-    if (eagerToolBlock) {
-      parts.push(eagerToolBlock);
-      parts.push("");
+    if (taskScopedEagerTools) {
+      userParts.push(taskScopedEagerTools);
+      userParts.push("");
     }
 
-    // Instructions
-    parts.push("## Instructions");
-    parts.push(
-      "1. Read and understand the task description above.\n" +
-      "2. Follow the project instructions in AGENTS.md.\n" +
-      "3. Respect the Workspace Scope Contract and never cross repository boundaries.\n" +
-      "4. Load and apply the matched important skills already inlined above.\n" +
-      "5. Use the discovery MCP tools for non-eager MCP/custom tools before assuming a capability is unavailable.\n" +
-      "6. Implement the required changes.\n" +
-      "7. Ensure tests pass and build is clean with 0 warnings.\n" +
-      "8. Commit your changes using conventional commits.\n" +
-      "9. Never ask for user input — you are autonomous.\n" +
-      "10. Use all available tools to verify your work.",
+    const userPrompt = userParts.join("\n").trim();
+    const systemPrompt = buildStableSystemPrompt();
+
+    if (strictCacheAnchoring) {
+      const dynamicMarkers = [
+        taskId,
+        taskTitle,
+        taskDescription,
+        retryReason,
+        branch,
+        baseBranch,
+        worktreePath,
+      ]
+        .map((value) => String(value || "").trim())
+        .filter(Boolean);
+      const leaked = dynamicMarkers.find((marker) => systemPrompt.includes(marker));
+      if (leaked) {
+        throw new Error(
+          `BOSUN_CACHE_ANCHOR_MODE=strict violation: system prompt leaked task-specific marker "${leaked}"`,
+        );
+      }
+    }
+
+    ctx.data._taskPrompt = userPrompt;
+    ctx.data._taskUserPrompt = userPrompt;
+    ctx.data._taskSystemPrompt = systemPrompt;
+    ctx.log(
+      node.id,
+      `Prompt built (user=${userPrompt.length} chars, system=${systemPrompt.length} chars, strict=${strictCacheAnchoring})`,
     );
-    parts.push("");
-
-    // Co-author trailer
-    parts.push("## Git Attribution");
-    parts.push("Add this trailer to all commits:");
-    parts.push("Co-authored-by: bosun[bot] <bosun@virtengine.com>");
-
-    const prompt = parts.join("\n");
-    ctx.data._taskPrompt = prompt;
-    ctx.log(node.id, `Prompt built (${prompt.length} chars)`);
-    return { success: true, prompt, source: "generated", length: prompt.length };
+    return {
+      success: true,
+      prompt: userPrompt,
+      userPrompt,
+      systemPrompt,
+      source: "generated",
+      length: userPrompt.length,
+      systemLength: systemPrompt.length,
+      cacheAnchorMode: strictCacheAnchoring ? "strict" : "default",
+    };
   },
 });
 
@@ -10808,3 +10914,4 @@ registerNodeType("action.web_search", {
 // ═══════════════════════════════════════════════════════════════════════════
 
 export { registerNodeType, getNodeType, listNodeTypes } from "./workflow-engine.mjs";
+export { evaluateTaskAssignedTriggerConfig };
