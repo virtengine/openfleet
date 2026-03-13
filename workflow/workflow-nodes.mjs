@@ -107,15 +107,32 @@ const HTML_TEXT_BREAK_TAGS = new Set([
 ]);
 
 function decodeHtmlEntities(value = "") {
-  return String(value)
-    .replace(/&nbsp;/gi, " ")
-    .replace(/&amp;/gi, "&")
-    .replace(/&lt;/gi, "<")
-    .replace(/&gt;/gi, ">")
-    .replace(/&quot;/gi, '"')
-    .replace(/&(apos|#39);/gi, "'")
-    .replace(/&#(\d+);/g, (_, digits) => String.fromCodePoint(Number.parseInt(digits, 10)))
-    .replace(/&#x([0-9a-f]+);/gi, (_, hex) => String.fromCodePoint(Number.parseInt(hex, 16)));
+  return String(value).replace(/&(?:nbsp|amp|lt|gt|quot|apos|#39|#\d+|#x[0-9a-f]+);/gi, (entity) => {
+    const normalized = entity.toLowerCase();
+    switch (normalized) {
+      case "&nbsp;":
+        return " ";
+      case "&amp;":
+        return "&";
+      case "&lt;":
+        return "<";
+      case "&gt;":
+        return ">";
+      case "&quot;":
+        return '"';
+      case "&apos;":
+      case "&#39;":
+        return "'";
+      default:
+        if (normalized.startsWith("&#x")) {
+          return String.fromCodePoint(Number.parseInt(normalized.slice(3, -1), 16));
+        }
+        if (normalized.startsWith("&#")) {
+          return String.fromCodePoint(Number.parseInt(normalized.slice(2, -1), 10));
+        }
+        return entity;
+    }
+  });
 }
 
 function stripHtmlToText(html = "") {
