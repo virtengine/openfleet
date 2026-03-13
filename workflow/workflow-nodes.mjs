@@ -67,6 +67,131 @@ const WORKFLOW_AGENT_EVENT_PREVIEW_LIMIT = (() => {
 })();
 const BOSUN_ATTACHED_PR_LABEL = "bosun-attached";
 
+const HTML_TEXT_BREAK_TAGS = new Set([
+  "address",
+  "article",
+  "aside",
+  "blockquote",
+  "br",
+  "dd",
+  "div",
+  "dl",
+  "dt",
+  "figcaption",
+  "figure",
+  "footer",
+  "form",
+  "h1",
+  "h2",
+  "h3",
+  "h4",
+  "h5",
+  "h6",
+  "header",
+  "hr",
+  "li",
+  "main",
+  "nav",
+  "ol",
+  "p",
+  "pre",
+  "section",
+  "table",
+  "tbody",
+  "td",
+  "tfoot",
+  "th",
+  "thead",
+  "tr",
+  "ul",
+]);
+
+function decodeHtmlEntities(value = "") {
+  return String(value).replace(/&(?:nbsp|amp|lt|gt|quot|apos|#39|#\d+|#x[0-9a-f]+);/gi, (entity) => {
+    const normalized = entity.toLowerCase();
+    switch (normalized) {
+      case "&nbsp;":
+        return " ";
+      case "&amp;":
+        return "&";
+      case "&lt;":
+        return "<";
+      case "&gt;":
+        return ">";
+      case "&quot;":
+        return '"';
+      case "&apos;":
+      case "&#39;":
+        return "'";
+      default:
+        if (normalized.startsWith("&#x")) {
+          return String.fromCodePoint(Number.parseInt(normalized.slice(3, -1), 16));
+        }
+        if (normalized.startsWith("&#")) {
+          return String.fromCodePoint(Number.parseInt(normalized.slice(2, -1), 10));
+        }
+        return entity;
+    }
+  });
+}
+
+function stripHtmlToText(html = "") {
+  const input = String(html ?? "");
+  let plain = "";
+  let index = 0;
+  let skippedTagName = null;
+
+  while (index < input.length) {
+    const tagStart = input.indexOf("<", index);
+    if (tagStart === -1) {
+      if (!skippedTagName) plain += input.slice(index);
+      break;
+    }
+
+    if (!skippedTagName && tagStart > index) {
+      plain += input.slice(index, tagStart);
+    }
+
+    const tagEnd = input.indexOf(">", tagStart + 1);
+    if (tagEnd === -1) {
+      if (!skippedTagName) plain += input.slice(tagStart).replace(/</g, " ");
+      break;
+    }
+
+    const rawTag = input.slice(tagStart + 1, tagEnd).trim();
+    const loweredTag = rawTag.toLowerCase();
+    const isClosingTag = loweredTag.startsWith("/");
+    const normalizedTag = isClosingTag ? loweredTag.slice(1).trimStart() : loweredTag;
+    const tagName = normalizedTag.match(/^[a-z0-9]+/i)?.[0] ?? "";
+
+    if (skippedTagName) {
+      if (isClosingTag && tagName === skippedTagName) {
+        skippedTagName = null;
+        plain += " ";
+      }
+      index = tagEnd + 1;
+      continue;
+    }
+
+    if (tagName === "script" || tagName === "style") {
+      if (!isClosingTag && !normalizedTag.endsWith("/")) {
+        skippedTagName = tagName;
+      }
+      index = tagEnd + 1;
+      continue;
+    }
+
+    if (HTML_TEXT_BREAK_TAGS.has(tagName)) {
+      plain += " ";
+    }
+
+    index = tagEnd + 1;
+  }
+
+  return decodeHtmlEntities(plain);
+}
+
+
 const PORT_TYPE_DESCRIPTIONS = Object.freeze({
   Any: "Wildcard payload",
   TaskDef: "Task definition/context payload",
