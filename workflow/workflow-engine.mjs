@@ -34,7 +34,6 @@
  */
 
 import { existsSync, readFileSync, writeFileSync, mkdirSync, readdirSync, unlinkSync, statSync } from "node:fs";
-import { writeFile as writeFileAsync } from "node:fs/promises";
 import { resolve, basename, extname, join } from "node:path";
 import { randomUUID } from "node:crypto";
 import { EventEmitter } from "node:events";
@@ -1392,14 +1391,25 @@ export class WorkflowEngine extends EventEmitter {
         || n.type === "trigger.task_low",
       );
 
+      const scheduleCtx = new WorkflowContext({
+        ...(def.variables || {}),
+        ...(def.data || {}),
+      });
+
+      const resolvePositiveInterval = (rawValue, fallbackMs) => {
+        const resolved = scheduleCtx.resolve(rawValue);
+        const parsed = Number(resolved);
+        return Number.isFinite(parsed) && parsed > 0 ? parsed : fallbackMs;
+      };
+
       for (const tNode of triggerNodes) {
         let intervalMs = 3600000;
         if (tNode.type === "trigger.task_available") {
-          intervalMs = Number(tNode.config?.pollIntervalMs) || 30000;
+          intervalMs = resolvePositiveInterval(tNode.config?.pollIntervalMs, 30000);
         } else if (tNode.type === "trigger.task_low") {
-          intervalMs = Number(tNode.config?.pollIntervalMs) || 60000;
+          intervalMs = resolvePositiveInterval(tNode.config?.pollIntervalMs, 60000);
         } else {
-          intervalMs = Number(tNode.config?.intervalMs) || 3600000;
+          intervalMs = resolvePositiveInterval(tNode.config?.intervalMs, 3600000);
         }
 
         // Find the most recent completed run for this workflow
@@ -2592,8 +2602,7 @@ export class WorkflowEngine extends EventEmitter {
 
       // Write initial detail file so we can resume from it
       const detail = this._serializeRunContext(ctx, true);
-      const detailPath = resolve(this.runsDir, `${runId}.json`);
-      writeFileSync(detailPath, JSON.stringify(detail, null, 2), "utf8");
+      this._writeRunDetail(runId, detail);
 
       // Also ensure the run appears in the main index (with RUNNING status)
       // so that getRunDetail() can find it even before completion.
@@ -2617,13 +2626,12 @@ export class WorkflowEngine extends EventEmitter {
     const timer = setTimeout(() => {
       this._checkpointTimers.delete(runId);
       try {
+        // If the run has already been finalized/removed, skip writing a
+        // late checkpoint snapshot that could overwrite terminal detail.
+        if (!this._activeRuns.has(runId)) return;
         this._ensureDirs();
         const detail = this._serializeRunContext(ctx, true);
-        const detailPath = resolve(this.runsDir, `${runId}.json`);
-        // Async write — checkpoint is fire-and-forget, no need to block event loop
-        writeFileAsync(detailPath, JSON.stringify(detail, null, 2), "utf8").catch((err) => {
-          console.error(`${TAG} Checkpoint write failed for run ${runId}:`, err.message);
-        });
+        this._writeRunDetail(runId, detail);
       } catch (err) {
         console.error(`${TAG} Checkpoint failed for run ${runId}:`, err.message);
       }
@@ -2984,11 +2992,15 @@ export class WorkflowEngine extends EventEmitter {
       writeFileSync(indexPath, JSON.stringify({ runs }, null, 2), "utf8");
 
       // Save full run detail
-      const detailPath = resolve(this.runsDir, `${runId}.json`);
-      writeFileSync(detailPath, JSON.stringify(detail, null, 2), "utf8");
+      this._writeRunDetail(runId, detail);
     } catch (err) {
       console.error(`${TAG} Failed to persist run log:`, err.message);
     }
+  }
+
+  _writeRunDetail(runId, detail) {
+    const detailPath = resolve(this.runsDir, `${runId}.json`);
+    writeFileSync(detailPath, JSON.stringify(detail, null, 2), "utf8");
   }
 }
 

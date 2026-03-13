@@ -2147,6 +2147,10 @@ const SELF_RESTART_QUIET_MS = Math.max(
   90_000,
   Number(process.env.SELF_RESTART_QUIET_MS || "90000"),
 );
+const ENV_RELOAD_DELAY_MS = Math.max(
+  500,
+  Number(process.env.ENV_RELOAD_DELAY_MS || "5000") || 5000,
+);
 const SELF_RESTART_RETRY_MS = Math.max(
   15_000,
   Number(process.env.SELF_RESTART_RETRY_MS || "30000"),
@@ -13360,7 +13364,7 @@ function scheduleEnvReload(reason) {
     runDetached("config-reload:env-change", () =>
       reloadConfig(reason || "env-change"),
     );
-  }, 400);
+  }, ENV_RELOAD_DELAY_MS);
 }
 
 function startEnvWatchers() {
@@ -14942,6 +14946,73 @@ if (isExecutorDisabled()) {
           } else {
             console.warn(`[monitor] supervisor continue: no active session for ${taskId}`);
           }
+        },
+        dispatchFixTask: (taskId, issues) => {
+          const normalizedTaskId = String(taskId || "").trim();
+          if (!normalizedTaskId) return;
+          const task = getInternalTask(normalizedTaskId);
+          const issueList = Array.isArray(issues) ? issues : [];
+          const issueCount = issueList.length;
+          const status = String(task?.status || "").trim().toLowerCase();
+
+          if (status && status !== "inreview") {
+            console.warn(
+              `[monitor] supervisor dispatch-fix skipped for ${normalizedTaskId}: status=${status}`,
+            );
+            return;
+          }
+
+          if (hasActiveSession(normalizedTaskId)) {
+            const issueSummary = issueList
+              .slice(0, 5)
+              .map((issue) => {
+                const severity = String(issue?.severity || "major");
+                const category = String(issue?.category || "review");
+                const file = String(issue?.file || "(unknown)");
+                const line = Number.isFinite(Number(issue?.line))
+                  ? `:${Number(issue.line)}`
+                  : "";
+                const description = String(issue?.description || "").trim();
+                return `- [${severity}/${category}] ${file}${line}${description ? ` - ${description}` : ""}`;
+              })
+              .join("\n");
+            const prompt = [
+              `Review requested changes for task "${task?.title || normalizedTaskId}".`,
+              issueSummary
+                ? `Fix these review issues first:\n${issueSummary}`
+                : "Fix the reported review issues first.",
+              "Stay on the current branch, run relevant tests, commit the fixes, and continue toward PR update.",
+            ].join("\n\n");
+            console.log(
+              `[monitor] supervisor dispatch-fix steering active session for ${normalizedTaskId}`,
+            );
+            steerActiveThread(normalizedTaskId, prompt);
+            return;
+          }
+
+          console.warn(
+            `[monitor] supervisor dispatch-fix: no active session for ${normalizedTaskId}; resetting task to todo`,
+          );
+          try {
+            setInternalTaskStatus(
+              normalizedTaskId,
+              "todo",
+              "review-fix-redispatch",
+            );
+          } catch {
+            /* best-effort */
+          }
+          void updateTaskStatus(normalizedTaskId, "todo", {
+            source: "review-fix-redispatch",
+            workflowEvent: "task.review_fix_requested",
+            workflowData: {
+              reviewIssueCount: issueCount,
+            },
+          }).catch((err) => {
+            console.warn(
+              `[monitor] supervisor dispatch-fix transition failed for ${normalizedTaskId}: ${err?.message || err}`,
+            );
+          });
         },
       });
       agentSupervisor.start();

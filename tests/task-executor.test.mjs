@@ -1140,6 +1140,33 @@ describe("task-executor", () => {
       );
     });
 
+    it("does not reset fresh in-progress tasks in workflow-owned mode when no executor thread exists", async () => {
+      const ex = new TaskExecutor({ projectId: "proj-1", maxParallel: 2, workflowOwnsTaskLifecycle: true });
+      ex._running = true;
+      const executeSpy = vi
+        .spyOn(ex, "executeTask")
+        .mockResolvedValue(undefined);
+
+      listTasks.mockResolvedValueOnce([
+        {
+          id: "wf-owned-1",
+          title: "Workflow-owned active run",
+          status: "inprogress",
+          updated_at: new Date().toISOString(),
+          agentAttempts: 0,
+        },
+      ]);
+      getActiveThreads.mockReturnValueOnce([]);
+
+      await ex._recoverInterruptedInProgressTasks();
+
+      expect(updateTaskStatus).not.toHaveBeenCalledWith(
+        "wf-owned-1",
+        "todo",
+        expect.objectContaining({ source: "task-executor-recovery-workflow-owned" }),
+      );
+      expect(executeSpy).not.toHaveBeenCalled();
+    });
     it("does not resume in-progress tasks already blocked for no-commit thrash", async () => {
       const ex = new TaskExecutor({ projectId: "proj-1", maxParallel: 2 });
       ex._running = true;

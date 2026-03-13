@@ -234,6 +234,7 @@ export const TASK_LIFECYCLE_TEMPLATE = {
       branch: "{{branch}}",
       baseBranch: "{{baseBranch}}",
       rebaseBeforePush: true,
+      skipHooks: true,
       emptyDiffGuard: true,
       protectedBranches: "{{protectedBranches}}",
     }, { x: 0, y: 2000 }),

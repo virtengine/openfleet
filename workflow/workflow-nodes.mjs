@@ -885,7 +885,25 @@ function normalizeLegacyWorkflowCommand(command) {
 }
 
 function resolveWorkflowNodeValue(value, ctx) {
-  if (typeof value === "string") return ctx.resolve(value);
+  if (typeof value === "string") {
+    const resolved = ctx.resolve(value);
+    if (resolved !== value) return resolved;
+
+    const exactExpr = value.match(/^\{\{([\s\S]+)\}\}$/);
+    if (exactExpr) {
+      const expr = String(exactExpr[1] || "").trim();
+      if (expr.includes("$ctx") || expr.includes("$data") || expr.includes("$output")) {
+        try {
+          const fn = new Function("$data", "$ctx", "$output", `return (${expr});`);
+          const evalResult = fn(ctx.data || {}, ctx, null);
+          if (evalResult !== undefined) return evalResult;
+        } catch {
+          // Fall through to unresolved template string when expression is invalid.
+        }
+      }
+    }
+    return resolved;
+  }
   if (Array.isArray(value)) {
     return value.map((item) => resolveWorkflowNodeValue(item, ctx));
   }
@@ -2484,6 +2502,7 @@ registerNodeType("action.run_command", {
     properties: {
       command: { type: "string", description: "Shell command to run" },
       cwd: { type: "string", description: "Working directory" },
+      env: { type: "object", description: "Environment variables passed to the command (supports templates)", additionalProperties: true },
       timeoutMs: { type: "number", default: 300000 },
       shell: { type: "string", default: "auto", enum: ["auto", "bash", "pwsh", "cmd"] },
       captureOutput: { type: "boolean", default: true },
@@ -2495,6 +2514,20 @@ registerNodeType("action.run_command", {
     const resolvedCommand = ctx.resolve(node.config?.command || "");
     const command = normalizeLegacyWorkflowCommand(resolvedCommand);
     const cwd = ctx.resolve(node.config?.cwd || ctx.data?.worktreePath || process.cwd());
+    const resolvedEnvConfig = resolveWorkflowNodeValue(node.config?.env ?? {}, ctx);
+    const commandEnv = { ...process.env };
+    if (resolvedEnvConfig && typeof resolvedEnvConfig === "object" && !Array.isArray(resolvedEnvConfig)) {
+      for (const [key, value] of Object.entries(resolvedEnvConfig)) {
+        const name = String(key || "").trim();
+        if (!name) continue;
+        if (value == null) {
+          delete commandEnv[name];
+          continue;
+        }
+        commandEnv[name] = typeof value === "string" ? value : JSON.stringify(value);
+      }
+    }
+
     const timeout = node.config?.timeoutMs || 300000;
 
     if (command !== resolvedCommand) {
@@ -2508,6 +2541,7 @@ registerNodeType("action.run_command", {
         encoding: "utf8",
         maxBuffer: 10 * 1024 * 1024,
         stdio: node.config?.captureOutput !== false ? "pipe" : "inherit",
+        env: commandEnv,
       });
       ctx.log(node.id, `Command succeeded`);
       return { success: true, output: output?.trim(), exitCode: 0 };
@@ -8906,6 +8940,12 @@ registerNodeType("action.resolve_executor", {
       description: cfgOrCtx(node, ctx, "taskDescription"),
       tags: Array.isArray(ctx.data?.task?.tags) ? ctx.data.task.tags : [],
     };
+    const requestedAgentProfileId = String(
+      cfgOrCtx(node, ctx, "agentProfile")
+      || ctx.data?.task?.agentProfile
+      || ctx.data?.agentProfile
+      || "",
+    ).trim();
     let profileDecision = null;
     let configuredExecutorPreference = null;
 
@@ -8930,12 +8970,32 @@ registerNodeType("action.resolve_executor", {
           title: task.title,
           description: task.description,
           tags: task.tags,
+          agentType: ctx.data?.task?.agentType || ctx.data?.agentType || "",
           repoRoot,
         },
-        { topN: 1 },
+        { topN: Math.max(10, requestedAgentProfileId ? 25 : 10) },
       );
-      const profile = match?.best?.profile || null;
-      const profileId = String(match?.best?.id || "").trim();
+      const candidates = Array.isArray(match?.candidates) ? match.candidates : [];
+      const bestCandidate = match?.best || null;
+      const autoMinScore = Number(match?.auto?.thresholds?.minScore || 12);
+      const scoreQualified = Number(bestCandidate?.score || 0) >= autoMinScore;
+      const matchedCandidate = requestedAgentProfileId
+        ? candidates.find((candidate) => String(candidate?.id || "").trim() === requestedAgentProfileId) || null
+        : ((match?.auto?.shouldAutoApply || scoreQualified) ? bestCandidate : null);
+      if (!requestedAgentProfileId && bestCandidate && !match?.auto?.shouldAutoApply) {
+        ctx.log(
+          node.id,
+          `Profile match below auto threshold; ignoring candidate ${String(bestCandidate.id || "unknown")}`,
+        );
+      }
+      const profile = matchedCandidate?.profile || null;
+      const profileId = String(matchedCandidate?.id || "").trim();
+      if (requestedAgentProfileId && !profileId) {
+        ctx.log(
+          node.id,
+          `Requested agent profile "${requestedAgentProfileId}" not found; falling back to executor defaults`,
+        );
+      }
       if (profileId && profile) {
         profileDecision = { id: profileId, profile };
         ctx.data.agentProfile = profileId;
@@ -9923,6 +9983,7 @@ registerNodeType("action.push_branch", {
       baseBranch: { type: "string", description: "Base branch to rebase onto" },
       remote: { type: "string", default: "origin", description: "Remote name" },
       forceWithLease: { type: "boolean", default: true, description: "Use --force-with-lease" },
+      skipHooks: { type: "boolean", default: true, description: "Skip git pre-push hooks (--no-verify)" },
       rebaseBeforePush: { type: "boolean", default: true, description: "Rebase onto base before push" },
       emptyDiffGuard: { type: "boolean", default: true, description: "Abort if no files changed vs base" },
       syncMainForModuleBranch: { type: "boolean", default: false, description: "Also sync base with main" },
@@ -9941,6 +10002,7 @@ registerNodeType("action.push_branch", {
     const baseBranch = cfgOrCtx(node, ctx, "baseBranch", "origin/main");
     const remote = node.config?.remote || "origin";
     const forceWithLease = node.config?.forceWithLease !== false;
+    const skipHooks = node.config?.skipHooks !== false;
     const rebaseBeforePush = node.config?.rebaseBeforePush !== false;
     const emptyDiffGuard = node.config?.emptyDiffGuard !== false;
     const syncMain = node.config?.syncMainForModuleBranch === true;
@@ -10052,8 +10114,10 @@ registerNodeType("action.push_branch", {
     }
 
     // ── Push ──
-    const pushFlags = forceWithLease ? "--force-with-lease" : "";
-    const cmd = `git push ${pushFlags} --set-upstream ${remote} HEAD`.trim();
+    const pushFlags = [];
+    if (forceWithLease) pushFlags.push("--force-with-lease");
+    if (skipHooks) pushFlags.push("--no-verify");
+    const cmd = `git push ${pushFlags.join(" ")} --set-upstream ${remote} HEAD`.trim();
 
     try {
       const output = execSync(cmd, {

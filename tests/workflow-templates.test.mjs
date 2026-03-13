@@ -948,6 +948,30 @@ describe("github template CLI compatibility", () => {
     expect(fetchNode?.config?.command).toContain("pendingChecks:hasPend");
     expect(reviewNode?.config?.command).toContain("mergeArgs.push('--auto')");
     expect(reviewNode?.config?.command).toContain("reason:'ci_failed'");
+    expect(reviewNode?.config?.command).toContain("reason:'ci_pending'");
+    expect(reviewNode?.config?.command).toContain("--json','name,state,bucket'");
+    expect(reviewNode?.config?.command).not.toContain("name,state,conclusion");
+  });
+
+  it("PR watchdog and GitHub sync pass node outputs via template interpolation env vars", () => {
+    const watchdogTemplate = getTemplate("template-bosun-pr-watchdog");
+    const syncTemplate = getTemplate("template-github-kanban-sync");
+
+    const watchdogFixNode = watchdogTemplate.nodes.find((n) => n.id === "programmatic-fix");
+    const watchdogReviewNode = watchdogTemplate.nodes.find((n) => n.id === "programmatic-review");
+    const syncNode = syncTemplate.nodes.find((n) => n.id === "sync-programmatic");
+    const syncCommand = syncNode?.config?.command || "";
+
+    expect(watchdogFixNode?.config?.env?.BOSUN_FETCH_AND_CLASSIFY)
+      .toBe("{{$ctx.getNodeOutput('fetch-and-classify')?.output || '{}'}}");
+    expect(watchdogReviewNode?.config?.env?.BOSUN_FETCH_AND_CLASSIFY)
+      .toBe("{{$ctx.getNodeOutput('fetch-and-classify')?.output || '{}'}}");
+    expect(syncNode?.config?.env?.BOSUN_FETCH_PR_STATE)
+      .toBe("{{$ctx.getNodeOutput('fetch-pr-state')?.output || '{}'}}");
+    expect(syncCommand).toContain("reviewStatus");
+    expect(syncCommand).toContain("changes_requested_pending_fix");
+    expect(syncCommand).toContain("local_progress_state");
+    expect(syncCommand).toContain("current==='todo'||current==='inprogress'");
   });
 });
 
@@ -1030,3 +1054,5 @@ describe("template category coverage", () => {
     }
   });
 });
+
+

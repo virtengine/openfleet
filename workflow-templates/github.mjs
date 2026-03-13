@@ -950,7 +950,7 @@ export const BOSUN_PR_WATCHDOG_TEMPLATE = {
       failOnError: false,
       env: {
         BOSUN_FETCH_AND_CLASSIFY:
-          "(()=>{const r=$ctx.getNodeOutput('fetch-and-classify');return r&&r.success!==false?String(r.output||'{}'):'{}';})()",
+          "{{$ctx.getNodeOutput('fetch-and-classify')?.output || '{}'}}",
       },
     }, { x: 200, y: 640 }),
 
@@ -1026,14 +1026,19 @@ export const BOSUN_PR_WATCHDOG_TEMPLATE = {
         "      held.push({repo,number:n,reason:destructive?'destructive_diff':'changed_files_too_large',additions:add,deletions:del,changedFiles:changed});",
         "      continue;",
         "    }",
-        "    const checksRaw=gh(['pr','checks',n,'--repo',repo,'--json','name,state,conclusion']);",
+        "    const checksRaw=gh(['pr','checks',n,'--repo',repo,'--json','name,state,bucket']);",
         "    const checks=(()=>{try{return JSON.parse(checksRaw||'[]')}catch{return []}})();",
         "    const hasFailure=(Array.isArray(checks)?checks:[]).some((x)=>{",
-        "      const c=String(x?.conclusion||'').toUpperCase();",
         "      const s=String(x?.state||'').toUpperCase();",
-        "      return ['FAILURE','ERROR','TIMED_OUT','CANCELLED'].includes(c) || ['STARTUP_FAILURE'].includes(s);",
+        "      const b=String(x?.bucket||'').toUpperCase();",
+        "      return ['FAILURE','ERROR','TIMED_OUT','CANCELLED','STARTUP_FAILURE'].includes(s) || b==='FAIL';",
+        "    });",
+        "    const hasPending=(Array.isArray(checks)?checks:[]).some((x)=>{",
+        "      const s=String(x?.state||'').toUpperCase();",
+        "      return ['QUEUED','IN_PROGRESS','PENDING','WAITING','REQUESTED'].includes(s);",
         "    });",
         "    if(hasFailure){skipped.push({repo,number:n,reason:'ci_failed'});continue;}",
+        "    if(hasPending){skipped.push({repo,number:n,reason:'ci_pending'});continue;}",
         "    const mergeArgs=['pr','merge',n,'--repo',repo,'--delete-branch'];",
         "    mergeArgs.push('--auto');",
         "    if(method==='rebase') mergeArgs.push('--rebase');",
@@ -1052,7 +1057,7 @@ export const BOSUN_PR_WATCHDOG_TEMPLATE = {
       failOnError: false,
       env: {
         BOSUN_FETCH_AND_CLASSIFY:
-          "(()=>{const r=$ctx.getNodeOutput('fetch-and-classify');return r&&r.success!==false?String(r.output||'{}'):'{}';})()",
+          "{{$ctx.getNodeOutput('fetch-and-classify')?.output || '{}'}}",
       },
     }, { x: 600, y: 700 }),
 
@@ -1188,8 +1193,8 @@ export const GITHUB_KANBAN_SYNC_TEMPLATE = {
         "  process.exit(0);",
         "}",
         "function runTask(args){return execFileSync('node',[taskCli,...args],{encoding:'utf8',stdio:['pipe','pipe','pipe']}).trim();}",
-        "function getTaskStatus(id){",
-        "  try{const raw=runTask(['get',id,'--json']);return JSON.parse(raw||'{}')?.status||null;}catch{return null;}",
+        "function getTaskSnapshot(id){",
+        "  try{const raw=runTask(['get',id,'--json']);const task=JSON.parse(raw||'{}');return {status:task?.status||null,reviewStatus:task?.reviewStatus||null};}catch{return {status:null,reviewStatus:null};}",
         "}",
         "for(const item of merged){",
         "  const id=String(item?.taskId||'').trim();",
@@ -1199,7 +1204,7 @@ export const GITHUB_KANBAN_SYNC_TEMPLATE = {
         "for(const item of open){",
         "  const id=String(item?.taskId||'').trim();",
         "  if(!id) continue;",
-        "  try{const current=getTaskStatus(id);if(current==='inreview'||current==='done'){updates.push({taskId:id,status:current,skipped:true});continue;}runTask(['update',id,'--status','inreview']);updates.push({taskId:id,status:'inreview'});}catch(e){unresolved.push({taskId:id,status:'inreview',error:String(e?.message||e)});}",
+        "  try{const snap=getTaskSnapshot(id);const current=snap?.status;const review=String(snap?.reviewStatus||'').toLowerCase();if(current==='inreview'||current==='done'){updates.push({taskId:id,status:current,skipped:true});continue;}if(current==='todo'||current==='inprogress'){const reason=(review==='changes_requested'||review==='change_requested'||review==='requested_changes')?'changes_requested_pending_fix':'local_progress_state';updates.push({taskId:id,status:current,skipped:true,reason});continue;}runTask(['update',id,'--status','inreview']);updates.push({taskId:id,status:'inreview'});}catch(e){unresolved.push({taskId:id,status:'inreview',error:String(e?.message||e)});}",
         "}",
         "console.log(JSON.stringify({updated:updates.length,updates,unresolved,needsAgent:unresolved.length>0}));",
         "\"",
@@ -1208,7 +1213,7 @@ export const GITHUB_KANBAN_SYNC_TEMPLATE = {
       failOnError: false,
       env: {
         BOSUN_FETCH_PR_STATE:
-          "(()=>{const r=$ctx.getNodeOutput('fetch-pr-state');return r&&r.success!==false?String(r.output||'{}'):'{}';})()",
+          "{{$ctx.getNodeOutput('fetch-pr-state')?.output || '{}'}}",
       },
     }, { x: 400, y: 530 }),
 
@@ -1516,4 +1521,7 @@ export const SDK_CONFLICT_RESOLVER_TEMPLATE = {
     },
   },
 };
+
+
+
 
