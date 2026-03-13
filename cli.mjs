@@ -77,12 +77,14 @@ function showHelp() {
     bosun [options]
 
   COMMANDS
-    audit <command> [options]   Codebase annotation audit workflows (scan/generate/warn/manifest/index/trim/conformity/migrate)
-    --setup                     Launch the web-based setup wizard (default)
+    workflow list              List declarative pipeline workflows
+    workflow run <name>        Run a declarative pipeline workflow
+    --setup                    Launch the web-based setup wizard (default)
     --setup-terminal            Run the legacy terminal setup wizard
     --where                     Show the resolved bosun config directory
     --doctor                    Validate bosun .env/config setup
     --tool-log <ID|list|prune>  Retrieve/list/prune cached tool outputs
+    node:create <name>          Scaffold a custom workflow node in custom-nodes/
     --context-index [mode]      Run context index workflow (run|status|search)
     --context-index-query <text> Query text for context index search mode
     --context-index-limit <n>   Max results for context index search (default: 25)
@@ -158,6 +160,12 @@ function showHelp() {
     task import <file.json>     Bulk import tasks from JSON file
 
     Run 'bosun task --help' for complete task CLI documentation and examples.
+
+  WORKFLOWS
+    workflow list               List built-in and configured workflows
+    workflow run <name>         Run a declarative fresh-context workflow
+
+    Run 'bosun workflow --help' for workflow CLI examples.
 
   VIBE-KANBAN
     --no-vk-spawn               Don't auto-spawn Vibe-Kanban
@@ -1334,7 +1342,21 @@ async function main() {
     process.exit(0);
   }
 
-  // Handle 'audit' subcommand before --help so command-specific help works.
+  const workflowFlagIndex = args.indexOf("--workflow");
+  const workflowCommandIndex =
+    args[0] === "workflow"
+      ? 0
+      : args[0]?.startsWith("--")
+        ? args.indexOf("workflow")
+        : -1;
+  if (workflowCommandIndex >= 0 || workflowFlagIndex >= 0) {
+    const { runWorkflowCli } = await import("./workflow/workflow-cli.mjs");
+    const commandStartIndex = workflowCommandIndex >= 0 ? workflowCommandIndex : workflowFlagIndex;
+    const workflowArgs = args.slice(commandStartIndex + 1);
+    await runWorkflowCli(workflowArgs);
+    process.exit(0);
+  }
+
   const auditFlagIndex = args.indexOf("--audit");
   const auditCommandIndex =
     args[0] === "audit"
@@ -1346,8 +1368,27 @@ async function main() {
     const { runAuditCli } = await import("./lib/codebase-audit.mjs");
     const commandStartIndex = auditCommandIndex >= 0 ? auditCommandIndex : auditFlagIndex;
     const auditArgs = args.slice(commandStartIndex + 1);
-    const result = await runAuditCli(auditArgs);
-    process.exit(Number.isInteger(result?.exitCode) ? result.exitCode : 0);
+    await runAuditCli(auditArgs);
+    process.exit(0);
+  }
+
+  if (args[0] === "node:create" || (args[0] === "node" && args[1] === "create")) {
+    const name = args[0] === "node:create" ? args[1] : args[2];
+    if (!name) {
+      console.error("Usage: bosun node:create <name>");
+      process.exit(1);
+    }
+    const { scaffoldCustomNodeFile } = await import("./workflow/workflow-nodes.mjs");
+    try {
+      const result = scaffoldCustomNodeFile(name, { repoRoot: runtimeRepoRoot });
+      console.log(`\n  ✓ Created custom node \"${result.type}\"`);
+      console.log(`    File: ${result.filePath}`);
+      console.log("");
+    } catch (err) {
+      console.error(`  Error: ${err.message}`);
+      process.exit(1);
+    }
+    process.exit(0);
   }
 
   // Handle --help

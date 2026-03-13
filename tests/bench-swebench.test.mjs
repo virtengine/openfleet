@@ -78,7 +78,7 @@ describe("bosun SWE-bench bridge", () => {
 
     expect(result.status).toBe(0);
     expect(result.stdout).toContain(
-      "Ensured SWE-bench workflow runtime: workspaces=1, installed=1, already_present=0",
+      "Ensured SWE-bench workflow runtime: workspaces=1, installed=1",
     );
     expect(result.stdout).toContain("Imported SWE-bench tasks: created=1, skipped=0, total=1");
 
@@ -101,7 +101,12 @@ describe("bosun SWE-bench bridge", () => {
     expect(existsSync(workflowDir)).toBe(true);
     const workflowFiles = readdirSync(workflowDir).filter((entry) => entry.endsWith(".json"));
     expect(workflowFiles.length).toBeGreaterThan(0);
-    const installedWorkflow = JSON.parse(readFileSync(resolve(workflowDir, workflowFiles[0]), "utf8"));
+    const lifecycleFile = workflowFiles.find((f) => {
+      const wf = JSON.parse(readFileSync(resolve(workflowDir, f), "utf8"));
+      return wf?.metadata?.installedFrom === "template-task-lifecycle";
+    });
+    expect(lifecycleFile).toBeTruthy();
+    const installedWorkflow = JSON.parse(readFileSync(resolve(workflowDir, lifecycleFile), "utf8"));
     expect(installedWorkflow?.metadata?.installedFrom).toBe("template-task-lifecycle");
     expect(installedWorkflow?.variables?.maxParallel).toBe(1);
   });

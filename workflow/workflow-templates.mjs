@@ -45,6 +45,7 @@ import {
   PR_CONFLICT_RESOLVER_TEMPLATE,
   STALE_PR_REAPER_TEMPLATE,
   RELEASE_DRAFTER_TEMPLATE,
+  BOSUN_PR_PROGRESSOR_TEMPLATE,
   BOSUN_PR_WATCHDOG_TEMPLATE,
   GITHUB_KANBAN_SYNC_TEMPLATE,
   SDK_CONFLICT_RESOLVER_TEMPLATE,
@@ -139,6 +140,11 @@ import {
   FLOW_CONTROL_SUITE_TEMPLATE,
 } from "../workflow-templates/coverage.mjs";
 
+// Continuation Loop (issue-state continuation polling)
+import {
+  CONTINUATION_LOOP_TEMPLATE,
+} from "../workflow-templates/continuation-loop.mjs";
+
 // MCP Integration (MCP tool → workflow data piping)
 import {
   MCP_TOOL_CHAIN_TEMPLATE,
@@ -151,6 +157,7 @@ import {
 import {
   BOSUN_TOOL_PIPELINE_TEMPLATE,
   WORKFLOW_COMPOSITION_TEMPLATE,
+  INLINE_WORKFLOW_COMPOSITION_TEMPLATE,
   MCP_TO_BOSUN_BRIDGE_TEMPLATE,
   GIT_HEALTH_PIPELINE_TEMPLATE,
 } from "../workflow-templates/bosun-native.mjs";
@@ -163,6 +170,7 @@ export {
   PR_CONFLICT_RESOLVER_TEMPLATE,
   STALE_PR_REAPER_TEMPLATE,
   RELEASE_DRAFTER_TEMPLATE,
+  BOSUN_PR_PROGRESSOR_TEMPLATE,
   BOSUN_PR_WATCHDOG_TEMPLATE,
   GITHUB_KANBAN_SYNC_TEMPLATE,
   SDK_CONFLICT_RESOLVER_TEMPLATE,
@@ -211,12 +219,14 @@ export {
   MCP_RESEARCH_PROBE_TEMPLATE,
   AGENT_EXECUTION_PIPELINE_TEMPLATE,
   FLOW_CONTROL_SUITE_TEMPLATE,
+  CONTINUATION_LOOP_TEMPLATE,
   MCP_TOOL_CHAIN_TEMPLATE,
   MCP_GITHUB_PR_MONITOR_TEMPLATE,
   MCP_CROSS_SERVER_PIPELINE_TEMPLATE,
   MCP_ITERATIVE_RESEARCH_TEMPLATE,
   BOSUN_TOOL_PIPELINE_TEMPLATE,
   WORKFLOW_COMPOSITION_TEMPLATE,
+  INLINE_WORKFLOW_COMPOSITION_TEMPLATE,
   MCP_TO_BOSUN_BRIDGE_TEMPLATE,
   GIT_HEALTH_PIPELINE_TEMPLATE,
 };
@@ -249,6 +259,7 @@ export const WORKFLOW_TEMPLATES = Object.freeze([
   PR_CONFLICT_RESOLVER_TEMPLATE,
   STALE_PR_REAPER_TEMPLATE,
   RELEASE_DRAFTER_TEMPLATE,
+  BOSUN_PR_PROGRESSOR_TEMPLATE,
   BOSUN_PR_WATCHDOG_TEMPLATE,
   GITHUB_KANBAN_SYNC_TEMPLATE,
   SDK_CONFLICT_RESOLVER_TEMPLATE,
@@ -308,6 +319,8 @@ export const WORKFLOW_TEMPLATES = Object.freeze([
   MCP_RESEARCH_PROBE_TEMPLATE,
   AGENT_EXECUTION_PIPELINE_TEMPLATE,
   FLOW_CONTROL_SUITE_TEMPLATE,
+  // ── Continuation Loop ──
+  CONTINUATION_LOOP_TEMPLATE,
   // ── MCP Integration (MCP tool → workflow data piping) ──
   MCP_TOOL_CHAIN_TEMPLATE,
   MCP_GITHUB_PR_MONITOR_TEMPLATE,
@@ -316,6 +329,7 @@ export const WORKFLOW_TEMPLATES = Object.freeze([
   // ── Bosun Native (tools, sub-workflows, functions) ──
   BOSUN_TOOL_PIPELINE_TEMPLATE,
   WORKFLOW_COMPOSITION_TEMPLATE,
+  INLINE_WORKFLOW_COMPOSITION_TEMPLATE,
   MCP_TO_BOSUN_BRIDGE_TEMPLATE,
   GIT_HEALTH_PIPELINE_TEMPLATE,
 ]);
@@ -527,9 +541,8 @@ export function reconcileInstalledTemplates(engine, opts = {}) {
         });
       }
 
-      const shouldForceUpdate =
-        state.updateAvailable === true &&
-        forceUpdateTemplateIds.has(String(state.templateId || "").trim());
+      const templateId = String(state.templateId || "").trim();
+      const shouldForceUpdate = templateId && forceUpdateTemplateIds.has(templateId);
       if (shouldForceUpdate) {
         const saved = updateWorkflowFromTemplate(engine, def.id, { mode: "replace", force: true });
         result.autoUpdated += 1;
@@ -1062,9 +1075,13 @@ export function getWorkflowSetupProfile(profileId = "balanced") {
  * @returns {string[]}
  */
 export function resolveWorkflowTemplateIds(opts = {}) {
+  const fromWorkflowConfig = resolveWorkflowTemplateConfig(opts.workflows || []);
   const explicit = normalizeTemplateIdList(opts.templateIds || []);
-  if (explicit.length > 0) return explicit;
-  return resolveProfileTemplateIds(opts.profileId || "balanced");
+  if (explicit.length > 0) {
+    return normalizeTemplateIdList([...explicit, ...fromWorkflowConfig.templateIds]);
+  }
+  const fromProfile = resolveProfileTemplateIds(opts.profileId || "balanced");
+  return normalizeTemplateIdList([...fromProfile, ...fromWorkflowConfig.templateIds]);
 }
 
 function coerceTemplateVariableValue(rawValue, defaultValue) {

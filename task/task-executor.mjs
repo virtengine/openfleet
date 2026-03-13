@@ -102,6 +102,11 @@ import {
 } from "./task-claims.mjs";
 import { initPresence, getPresenceState } from "../infra/presence.mjs";
 import { getSharedState } from "../workspace/shared-state-manager.mjs";
+import {
+  createExecutionPipeline as createTaskExecutionPipeline,
+  runExecutionPipeline as runTaskExecutionPipeline,
+  runExecutionPipelineAgent,
+} from "./task-executor-pipeline.mjs";
 
 // ── Constants ───────────────────────────────────────────────────────────────
 
@@ -5021,6 +5026,30 @@ class TaskExecutor {
     // See workflow-templates/task-lifecycle.mjs
   }
 
+  createExecutionPipeline(mode = "single", agents = [], options = {}) {
+    return createTaskExecutionPipeline(mode, agents, {
+      ...options,
+      agentRunner:
+        options.agentRunner || this._runExecutionPipelineAgent.bind(this),
+    });
+  }
+
+  async runExecutionPipeline(mode, agents, input, options = {}) {
+    return await runTaskExecutionPipeline(mode, agents, input, {
+      ...options,
+      agentRunner:
+        options.agentRunner || this._runExecutionPipelineAgent.bind(this),
+    });
+  }
+
+  async _runExecutionPipelineAgent(agent, input, context) {
+    return runExecutionPipelineAgent(agent, input, context, {
+      execWithRetry,
+      repoRoot: this.repoRoot || process.cwd(),
+      timeoutMs: this.timeoutMs || 0,
+    });
+  }
+
   // ── Task Execution ────────────────────────────────────────────────────────
 
   _getWorktreeManager(repoRoot) {
@@ -5471,7 +5500,7 @@ export function loadExecutorOptionsFromConfig() {
   return {
     mode: envMode || configExec.mode || "internal",
     maxParallel: Number(
-      process.env.INTERNAL_EXECUTOR_PARALLEL || configExec.maxParallel || 3,
+      process.env.INTERNAL_EXECUTOR_PARALLEL || configExec.maxParallel || 5,
     ),
     baseBranchParallelLimit: Number(
       process.env.INTERNAL_EXECUTOR_BASE_BRANCH_PARALLEL ||

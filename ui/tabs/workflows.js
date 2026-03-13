@@ -1427,6 +1427,18 @@ function WorkflowCanvas({ workflow, onSave, nodeTypes: availableNodeTypes = [] }
     () => new Map((availableNodeTypes || []).map((type) => [type.type, type])),
     [availableNodeTypes],
   );
+  const ensureNodePortMetadata = useCallback((node) => {
+    const ports = resolveNodePorts(node, nodeTypeMap);
+    return {
+      ...node,
+      inputPorts: ports.inputs,
+      outputPorts: ports.outputs,
+    };
+  }, [nodeTypeMap]);
+
+  const normalizeNodesForCanvas = useCallback((nodeList = []) => (
+    (Array.isArray(nodeList) ? nodeList : []).map((node) => ensureNodePortMetadata(node))
+  ), [ensureNodePortMetadata]);
   useEffect(() => { selectedNodeIdsRef.current = selectedNodeIds; }, [selectedNodeIds]);
   useEffect(() => {
     nodesRef.current = nodes;
@@ -1742,18 +1754,6 @@ function WorkflowCanvas({ workflow, onSave, nodeTypes: availableNodeTypes = [] }
     };
   }, [zoom, pan]);
 
-  const ensureNodePortMetadata = useCallback((node) => {
-    const ports = resolveNodePorts(node, nodeTypeMap);
-    return {
-      ...node,
-      inputPorts: ports.inputs,
-      outputPorts: ports.outputs,
-    };
-  }, [nodeTypeMap]);
-
-  const normalizeNodesForCanvas = useCallback((nodeList = []) => (
-    (Array.isArray(nodeList) ? nodeList : []).map((node) => ensureNodePortMetadata(node))
-  ), [ensureNodePortMetadata]);
 
   const setHistory = useCallback((nextHistory) => {
     historyRef.current = nextHistory;
@@ -3118,6 +3118,14 @@ function NodePalette({
                   >
                     ${meta.label || item.category}
                   </span>
+                  ${item.badge
+                    ? html`<span
+                        class="wf-node-category-badge"
+                        style=${`color:${item.isCustom ? "#f472b6" : "#cbd5e1"}; background:${item.isCustom ? "rgba(244,114,182,0.2)" : "rgba(148,163,184,0.2)"}; border-color:${item.isCustom ? "#f472b655" : "#94a3b855"};`}
+                      >
+                        ${item.badge}
+                      </span>`
+                    : ""}
                   <span class="wf-node-search-type">${item.type}</span>
                 </div>
                 <div class="wf-node-search-description">${item.description || "No description available."}</div>

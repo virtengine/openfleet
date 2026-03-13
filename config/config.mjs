@@ -26,12 +26,13 @@ import {
 } from "../agent/agent-prompts.mjs";
 import { resolveAgentRepoRoot, resolveRepoLocalBosunDir } from "./repo-root.mjs";
 import { applyAllCompatibility } from "../compat.mjs";
+import { ensureTestRuntimeSandbox } from "../infra/test-runtime.mjs";
 import {
   normalizeExecutorKey,
   getModelsForExecutor,
   MODEL_ALIASES,
 } from "../task/task-complexity.mjs";
-import { ensureTestRuntimeSandbox } from "../infra/test-runtime.mjs";
+import { normalizePipelineWorkflows } from "../workflow/pipeline-workflows.mjs";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
@@ -633,6 +634,86 @@ function resolveTriggerSystemConfig(configData, defaults) {
     templates,
     defaults: defaults.defaults,
   });
+}
+
+function toBoundedInt(value, fallback, min, max) {
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed)) return fallback;
+  const rounded = Math.trunc(parsed);
+  return Math.min(max, Math.max(min, rounded));
+}
+
+function normalizeStatusList(rawStates) {
+  const source = Array.isArray(rawStates)
+    ? rawStates
+    : String(rawStates || "").split(",");
+  const values = [];
+  for (const raw of source) {
+    const normalized = String(raw || "").trim().toLowerCase();
+    if (!normalized || values.includes(normalized)) continue;
+    values.push(normalized);
+  }
+  return values.length > 0 ? values : ["done", "cancelled"];
+}
+
+function resolveWorkflowConfig(configData = {}) {
+  const rawWorkflows = configData?.workflows;
+  const rawEntries = Array.isArray(rawWorkflows) ? rawWorkflows : [];
+  const normalized = [];
+
+  for (const rawEntry of rawEntries) {
+    if (!rawEntry || typeof rawEntry !== "object" || Array.isArray(rawEntry)) continue;
+    const type = String(rawEntry.type || "").trim().toLowerCase();
+    if (!type) continue;
+
+    const entryBase = {
+      type,
+      enabled: rawEntry.enabled !== false,
+      name: String(rawEntry.name || "").trim() || null,
+    };
+
+    if (type !== "continuation-loop") {
+      normalized.push(Object.freeze(entryBase));
+      continue;
+    }
+
+    const onStuckRaw = String(rawEntry.onStuck || "escalate").trim().toLowerCase();
+    const onStuck = ["retry", "escalate", "pause"].includes(onStuckRaw)
+      ? onStuckRaw
+      : "escalate";
+
+    normalized.push(Object.freeze({
+      ...entryBase,
+      taskId: String(rawEntry.taskId || "").trim(),
+      worktreePath: String(rawEntry.worktreePath || "").trim(),
+      maxTurns: toBoundedInt(rawEntry.maxTurns, 8, 1, 1000),
+      pollIntervalMs: toBoundedInt(rawEntry.pollIntervalMs, 30000, 1000, 3600000),
+      terminalStates: normalizeStatusList(rawEntry.terminalStates),
+      stuckThresholdMs: toBoundedInt(rawEntry.stuckThresholdMs, 300000, 1000, 86400000),
+      onStuck,
+      continuePrompt: String(rawEntry.continuePrompt || "").trim(),
+      retryPrompt: String(rawEntry.retryPrompt || "").trim(),
+      sdk: String(rawEntry.sdk || "auto").trim() || "auto",
+      model: String(rawEntry.model || "").trim(),
+      timeoutMs: toBoundedInt(rawEntry.timeoutMs, 1800000, 1000, 21600000),
+    }));
+  }
+
+  // Support declarative pipeline workflow maps while keeping backward-compatible
+  // array semantics for continuation-loop style entries.
+  if (rawWorkflows && typeof rawWorkflows === "object" && !Array.isArray(rawWorkflows)) {
+    const namedWorkflows = normalizePipelineWorkflows(rawWorkflows);
+    for (const [workflowName, workflowDefinition] of Object.entries(namedWorkflows)) {
+      Object.defineProperty(normalized, workflowName, {
+        value: workflowDefinition,
+        enumerable: true,
+        configurable: false,
+        writable: false,
+      });
+    }
+  }
+
+  return Object.freeze(normalized);
 }
 
 // ── Git helpers ──────────────────────────────────────────────────────────────
@@ -2129,6 +2210,7 @@ export function loadConfig(argv = process.argv, options = {}) {
     configData,
     triggerSystemDefaults,
   );
+  const workflows = resolveWorkflowConfig(configData);
 
   // ── GitHub Reconciler ───────────────────────────────────
   const ghReconcileEnabled = isEnvEnabled(
@@ -2212,6 +2294,21 @@ export function loadConfig(argv = process.argv, options = {}) {
     autoRebaseOnMerge,
     assessWithSdk,
   });
+
+  const workflowDefaults =
+    configData.workflowDefaults && typeof configData.workflowDefaults === "object"
+      ? {
+          ...configData.workflowDefaults,
+          templates: Array.isArray(configData.workflowDefaults.templates)
+            ? [...configData.workflowDefaults.templates]
+            : configData.workflowDefaults.templates,
+          templateOverridesById:
+            configData.workflowDefaults.templateOverridesById &&
+            typeof configData.workflowDefaults.templateOverridesById === "object"
+              ? { ...configData.workflowDefaults.templateOverridesById }
+              : {},
+        }
+      : {};
 
   // ── Fleet Coordination ─────────────────────────────────────
   // Multi-workstation collaboration: when 2+ bosun instances share
@@ -2395,6 +2492,7 @@ export function loadConfig(argv = process.argv, options = {}) {
     telegramVerbosity,
 
     triggerSystem,
+    workflows,
 
     // GitHub Reconciler
     githubReconcile: {
@@ -2416,6 +2514,10 @@ export function loadConfig(argv = process.argv, options = {}) {
     // Fleet Coordination
     fleet,
 
+    // Workflow template defaults + opt-in typed workflow entries
+    workflowDefaults: Object.freeze(workflowDefaults),
+    workflows,
+
     // Paths
     statusPath,
     telegramPollLockPath,
@@ -2431,6 +2533,7 @@ export function loadConfig(argv = process.argv, options = {}) {
     workspacesDir,
     activeWorkspace,
     agentRepoRoot,
+    workflows,
 
     // Agent prompts
     agentPrompts,

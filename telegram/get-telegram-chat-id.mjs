@@ -1,71 +1,81 @@
 #!/usr/bin/env node
 
-const token = process.env.TELEGRAM_BOT_TOKEN;
+import { resolve } from "node:path";
+import { fileURLToPath } from "node:url";
 
-if (!token) {
-  console.error("Missing TELEGRAM_BOT_TOKEN environment variable.");
-  process.exit(1);
-}
-
-const url = `https://api.telegram.org/bot${token}/getUpdates`;
-
-async function main() {
-  let res;
-  try {
-    res = await fetch(url);
-  } catch (err) {
-    console.error(`Fetch error: ${err.message}`);
-    process.exit(1);
-  }
-
-  if (!res.ok) {
-    const body = await res.text();
-    console.error(`Request failed: ${res.status} ${body}`);
-    process.exit(1);
-  }
-
-  const data = await res.json();
-  if (!data.result || data.result.length === 0) {
-    console.log(
-      "No updates found. Send a message to the bot first, then retry.",
-    );
-    return;
-  }
-
+export function extractTelegramChatsFromUpdates(updates) {
   const chats = new Map();
-  for (const update of data.result) {
-    const message =
-      update.message || update.channel_post || update.edited_message;
-    if (!message || !message.chat) {
+  for (const update of Array.isArray(updates) ? updates : []) {
+    const message = update?.message || update?.channel_post || update?.edited_message;
+    const chat = message?.chat;
+    if (!chat?.id) {
       continue;
     }
-    const chat = message.chat;
     if (!chats.has(chat.id)) {
       chats.set(chat.id, {
         id: chat.id,
-        type: chat.type,
+        type: chat.type || "unknown",
         title: chat.title || "",
         username: chat.username || "",
       });
     }
   }
+  return Array.from(chats.values());
+}
 
-  if (chats.size === 0) {
-    console.log(
-      "No chat IDs found in updates. Send a message to the bot first.",
-    );
+export async function discoverTelegramChats(token, { fetchImpl = fetch } = {}) {
+  const normalizedToken = String(token || "").trim();
+  if (!normalizedToken) {
+    throw new Error("Missing TELEGRAM_BOT_TOKEN environment variable.");
+  }
+
+  const url = `https://api.telegram.org/bot${normalizedToken}/getUpdates`;
+  const response = await fetchImpl(url);
+  if (!response.ok) {
+    const body = await response.text().catch(() => "");
+    throw new Error(`Request failed: ${response.status}${body ? ` ${body}` : ""}`);
+  }
+
+  const data = await response.json();
+  const updates = data?.result;
+  const chats = extractTelegramChatsFromUpdates(updates);
+  if (Array.isArray(updates) && updates.length === 0) {
+    return {
+      chats,
+      message: "No updates found. Send a message to the bot first, then retry.",
+    };
+  }
+  if (chats.length === 0) {
+    return {
+      chats,
+      message: "No chat IDs found in updates. Send a message to the bot first.",
+    };
+  }
+  return { chats, message: null };
+}
+
+async function main() {
+  const token = process.env.TELEGRAM_BOT_TOKEN;
+  const { chats, message } = await discoverTelegramChats(token);
+  if (message) {
+    console.log(message);
     return;
   }
 
   console.log("Found chat IDs:");
-  for (const chat of chats.values()) {
-    const titlePart = chat.title ? ` title=\"${chat.title}\"` : "";
+  for (const chat of chats) {
+    const titlePart = chat.title ? ` title="${chat.title}"` : "";
     const userPart = chat.username ? ` username=@${chat.username}` : "";
     console.log(`- id=${chat.id} type=${chat.type}${userPart}${titlePart}`);
   }
 }
 
-main().catch((err) => {
-  console.error(`Error: ${err.message || err}`);
-  process.exit(1);
-});
+const __filename = fileURLToPath(import.meta.url);
+if (process.argv[1] && resolve(process.argv[1]) === resolve(__filename)) {
+  try {
+    await main();
+  } catch (err) {
+    console.error(`Error: ${err.message || err}`);
+    process.exit(1);
+  }
+}

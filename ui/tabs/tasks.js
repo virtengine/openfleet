@@ -2457,6 +2457,25 @@ export function TaskDetailModal({ task, onClose, onStart, presentation = "modal"
     task?.assignees,
     task?.meta,
   ]);
+  const lifetimeTotals = task?.lifetimeTotals
+    || task?.meta?.lifetimeTotals
+    || task?.runtimeSnapshot?.lifetimeTotals
+    || null;
+  const lifetimeAttempts = Number(lifetimeTotals?.attemptsCount || 0);
+  const lifetimeTokenCount = Number(lifetimeTotals?.tokenCount || 0);
+  const lifetimeDurationMs = Number(lifetimeTotals?.durationMs || 0);
+  const formatLifetimeDuration = (durationMs) => {
+    const value = Number(durationMs || 0);
+    if (!Number.isFinite(value) || value <= 0) return "0s";
+    const seconds = Math.floor(value / 1000);
+    if (seconds < 60) return `${seconds}s`;
+    const minutes = Math.floor(seconds / 60);
+    const remSeconds = seconds % 60;
+    if (minutes < 60) return remSeconds ? `${minutes}m ${remSeconds}s` : `${minutes}m`;
+    const hours = Math.floor(minutes / 60);
+    const remMinutes = minutes % 60;
+    return remMinutes ? `${hours}h ${remMinutes}m` : `${hours}h`;
+  };
 
   const currentDependencyIds = useMemo(() => normalizeDependencyInput(dependenciesInput), [dependenciesInput]);
   const taskCatalogOptions = useMemo(() => (taskCatalog || []).filter((entry) => toText(entry?.id) && toText(entry?.id) !== toText(task?.id)), [taskCatalog, task?.id]);
@@ -3510,6 +3529,18 @@ export function TaskDetailModal({ task, onClose, onStart, presentation = "modal"
                 inputProps=${{ min: 1, step: 1 }}
                 style=${{ width: "60px" }}
               />
+            </div>
+            <div class="task-comment-item">
+              <div class="task-comment-meta">Attempts count</div>
+              <div class="task-comment-body">${lifetimeAttempts.toLocaleString("en-US")}</div>
+            </div>
+            <div class="task-comment-item">
+              <div class="task-comment-meta">Total tokens across all attempts</div>
+              <div class="task-comment-body">${lifetimeTokenCount.toLocaleString("en-US")}</div>
+            </div>
+            <div class="task-comment-item">
+              <div class="task-comment-meta">Total runtime across all attempts</div>
+              <div class="task-comment-body">${formatLifetimeDuration(lifetimeDurationMs)}</div>
             </div>
           </div>
         </div>
@@ -6991,7 +7022,6 @@ function CreateTaskModalInline({ onClose, initialValues = null, sprintOptions = 
     <//>
   `;
 }
-
 
 
 

@@ -42,6 +42,7 @@ export const AGENT_EVENT = Object.freeze({
   TASK_FAILED: "agent:task-failed",
   TASK_BLOCKED: "agent:task-blocked",
   TASK_STATUS_CHANGE: "agent:task-status-change",
+  SESSION_ACCUMULATED: "session-accumulated",
 
   // ── Agent self-reports (from agent-endpoint) ──
   AGENT_HEARTBEAT: "agent:heartbeat",
@@ -1061,3 +1062,4 @@ export class AgentEventBus {
 export function createAgentEventBus(options) {
   return new AgentEventBus(options);
 }
+

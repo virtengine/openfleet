@@ -940,6 +940,16 @@ describe("Bosun native templates", () => {
     expect(nodeTypes).toContain("action.invoke_workflow");
   });
 
+  it("INLINE_WORKFLOW_COMPOSITION_TEMPLATE has valid structure", async () => {
+    const { INLINE_WORKFLOW_COMPOSITION_TEMPLATE } = await import("../workflow-templates/bosun-native.mjs");
+    expect(INLINE_WORKFLOW_COMPOSITION_TEMPLATE.id).toBe("template-inline-workflow-composition");
+    expect(INLINE_WORKFLOW_COMPOSITION_TEMPLATE.nodes.length).toBeGreaterThan(3);
+
+    const nodeTypes = INLINE_WORKFLOW_COMPOSITION_TEMPLATE.nodes.map((n) => n.type);
+    expect(nodeTypes).toContain("action.inline_workflow");
+    expect(nodeTypes).toContain("notify.log");
+  });
+
   it("MCP_TO_BOSUN_BRIDGE_TEMPLATE has valid structure", async () => {
     const { MCP_TO_BOSUN_BRIDGE_TEMPLATE } = await import("../workflow-templates/bosun-native.mjs");
     expect(MCP_TO_BOSUN_BRIDGE_TEMPLATE.id).toBe("template-mcp-to-bosun-bridge");
@@ -965,17 +975,19 @@ describe("Bosun native templates", () => {
     const ids = WORKFLOW_TEMPLATES.map((t) => t.id);
     expect(ids).toContain("template-bosun-tool-pipeline");
     expect(ids).toContain("template-workflow-composition");
+    expect(ids).toContain("template-inline-workflow-composition");
     expect(ids).toContain("template-mcp-to-bosun-bridge");
     expect(ids).toContain("template-git-health-pipeline");
   });
 
   it("all template nodes reference valid registered node types", async () => {
-    const { BOSUN_TOOL_PIPELINE_TEMPLATE, WORKFLOW_COMPOSITION_TEMPLATE, MCP_TO_BOSUN_BRIDGE_TEMPLATE, GIT_HEALTH_PIPELINE_TEMPLATE } =
+    const { BOSUN_TOOL_PIPELINE_TEMPLATE, WORKFLOW_COMPOSITION_TEMPLATE, INLINE_WORKFLOW_COMPOSITION_TEMPLATE, MCP_TO_BOSUN_BRIDGE_TEMPLATE, GIT_HEALTH_PIPELINE_TEMPLATE } =
       await import("../workflow-templates/bosun-native.mjs");
 
     const templates = [
       BOSUN_TOOL_PIPELINE_TEMPLATE,
       WORKFLOW_COMPOSITION_TEMPLATE,
+      INLINE_WORKFLOW_COMPOSITION_TEMPLATE,
       MCP_TO_BOSUN_BRIDGE_TEMPLATE,
       GIT_HEALTH_PIPELINE_TEMPLATE,
     ];

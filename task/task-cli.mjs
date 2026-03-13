@@ -30,6 +30,7 @@ import { homedir } from "node:os";
 import { fileURLToPath } from "node:url";
 import { readFileSync, existsSync, statSync } from "node:fs";
 import { randomUUID } from "node:crypto";
+import { getTaskLifetimeTotals } from "../infra/runtime-accumulator.mjs";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
@@ -359,6 +360,34 @@ export async function taskList(filters = {}) {
   return tasks;
 }
 
+function withTaskLifetimeTotals(task) {
+  if (!task || typeof task !== "object") return task;
+  const taskId = String(task.id || task.taskId || "").trim();
+  const lifetimeTotals = taskId ? getTaskLifetimeTotals(taskId) : null;
+  return {
+    ...task,
+    lifetimeTotals,
+    meta: {
+      ...(task.meta || {}),
+      lifetimeTotals,
+    },
+  };
+}
+
+function formatDurationMs(ms) {
+  const value = Number(ms || 0);
+  if (!Number.isFinite(value) || value <= 0) return "0s";
+  if (value < 1000) return `${Math.round(value)}ms`;
+  const seconds = Math.round(value / 1000);
+  if (seconds < 60) return `${seconds}s`;
+  const minutes = Math.floor(seconds / 60);
+  const remSeconds = seconds % 60;
+  if (minutes < 60) return remSeconds > 0 ? `${minutes}m ${remSeconds}s` : `${minutes}m`;
+  const hours = Math.floor(minutes / 60);
+  const remMinutes = minutes % 60;
+  return remMinutes > 0 ? `${hours}h ${remMinutes}m` : `${hours}h`;
+}
+
 /**
  * Get a single task by ID.
  * @param {string} id - Task ID (UUID or partial prefix)
@@ -369,12 +398,12 @@ export async function taskGet(id) {
 
   // Try exact match first
   let task = store.getTask(id);
-  if (task) return task;
+  if (task) return withTaskLifetimeTotals(task);
 
   // Try prefix match
   const all = store.getAllTasks();
   const matches = all.filter((t) => t.id?.startsWith(id));
-  if (matches.length === 1) return matches[0];
+  if (matches.length === 1) return withTaskLifetimeTotals(matches[0]);
   if (matches.length > 1) {
     throw new Error(
       `Ambiguous task ID prefix "${id}" — matches ${matches.length} tasks. Use a longer prefix.`,
@@ -1234,6 +1263,12 @@ async function cliGet(args) {
     console.log(`  Branch:      ${task.baseBranch || "main"}`);
     console.log(`  Created:     ${task.createdAt || "?"}`);
     console.log(`  Updated:     ${task.updatedAt || "?"}`);
+    const lifetimeTotals = task.lifetimeTotals || task.meta?.lifetimeTotals || null;
+    if (lifetimeTotals) {
+      console.log(`  Attempts count:                     ${lifetimeTotals.attemptsCount || 0}`);
+      console.log(`  Total tokens across all attempts:   ${lifetimeTotals.tokenCount || 0}`);
+      console.log(`  Total runtime across all attempts:  ${formatDurationMs(lifetimeTotals.durationMs || 0)}`);
+    }
     if (task.workspace) console.log(`  Workspace:   ${task.workspace}`);
     if (task.repository) console.log(`  Repository:  ${task.repository}`);
     if (task.description) {
@@ -1662,3 +1697,4 @@ if (process.argv[1] && resolve(process.argv[1]) === __filename) {
     process.exit(1);
   });
 }
+
