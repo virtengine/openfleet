@@ -17101,8 +17101,8 @@
         "workflow-first",
         "core"
       ],
-      "nodeCount": 44,
-      "edgeCount": 48,
+      "nodeCount": 48,
+      "edgeCount": 53,
       "recommended": true,
       "enabled": true,
       "trigger": "trigger.task_available",
@@ -17115,6 +17115,10 @@
         "defaultSdk": "auto",
         "defaultTargetBranch": "origin/main",
         "taskTimeoutMs": 21600000,
+        "prePrValidationEnabled": true,
+        "prePrValidationCommand": "npm run prepush:check",
+        "autoMergeOnCreate": false,
+        "autoMergeMethod": "squash",
         "maxRetries": 2,
         "maxContinues": 3,
         "protectedBranches": [
@@ -17508,6 +17512,72 @@
           ]
         },
         {
+          "id": "pre-pr-validation",
+          "type": "action.run_command",
+          "label": "Pre-PR Validation",
+          "config": {
+            "command": "{{prePrValidationCommand}}",
+            "cwd": "{{worktreePath}}",
+            "failOnError": false
+          },
+          "position": {
+            "x": -120,
+            "y": 1940
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "pre-pr-validation-ok",
+          "type": "condition.expression",
+          "label": "Validation Passed?",
+          "config": {
+            "expression": "(() => {const enabled = $data?.prePrValidationEnabled !== false;if (!enabled) return true;const out = $ctx.getNodeOutput('pre-pr-validation');if (!out) return false;if (out.success === true) return true;const code = Number(out.exitCode);return Number.isFinite(code) && code === 0;})()"
+          },
+          "position": {
+            "x": -120,
+            "y": 2060
+          },
+          "outputs": [
+            "yes",
+            "no"
+          ]
+        },
+        {
+          "id": "log-validation-failed",
+          "type": "notify.log",
+          "label": "Log Validation Failed",
+          "config": {
+            "message": "Task \"{{taskTitle}}\" ({{taskId}}) — pre-PR validation failed, returning to todo",
+            "level": "warn"
+          },
+          "position": {
+            "x": 300,
+            "y": 2000
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "set-todo-validation-failed",
+          "type": "action.update_task_status",
+          "label": "Set Todo (Validation Fail)",
+          "config": {
+            "taskId": "{{taskId}}",
+            "status": "todo",
+            "taskTitle": "{{taskTitle}}"
+          },
+          "position": {
+            "x": 300,
+            "y": 2130
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
           "id": "push-branch",
           "type": "action.push_branch",
           "label": "Push Branch",
@@ -17553,7 +17623,9 @@
             "body": "Task-ID: {{taskId}}\n\nAutomated PR for task {{taskId}}",
             "base": "{{baseBranch}}",
             "branch": "{{branch}}",
-            "cwd": "{{worktreePath}}"
+            "cwd": "{{worktreePath}}",
+            "enableAutoMerge": "{{autoMergeOnCreate}}",
+            "autoMergeMethod": "{{autoMergeMethod}}"
           },
           "position": {
             "x": 0,
@@ -17672,7 +17744,9 @@
             "base": "{{baseBranch}}",
             "branch": "{{branch}}",
             "cwd": "{{worktreePath}}",
-            "failOnError": false
+            "failOnError": false,
+            "enableAutoMerge": "{{autoMergeOnCreate}}",
+            "autoMergeMethod": "{{autoMergeMethod}}"
           },
           "position": {
             "x": 400,
@@ -17774,6 +17848,7 @@
               "log-success",
               "set-todo-push-failed",
               "set-todo-cooldown",
+              "set-todo-validation-failed",
               "set-todo-stolen",
               "log-claim-stolen-recovered"
             ],
@@ -18042,11 +18117,43 @@
           "sourcePort": "default"
         },
         {
-          "id": "has-commits->push-branch",
+          "id": "has-commits->pre-pr-validation",
           "source": "has-commits",
+          "target": "pre-pr-validation",
+          "sourcePort": "yes",
+          "condition": "$output?.result === true"
+        },
+        {
+          "id": "pre-pr-validation->pre-pr-validation-ok",
+          "source": "pre-pr-validation",
+          "target": "pre-pr-validation-ok",
+          "sourcePort": "default"
+        },
+        {
+          "id": "pre-pr-validation-ok->push-branch",
+          "source": "pre-pr-validation-ok",
           "target": "push-branch",
           "sourcePort": "yes",
           "condition": "$output?.result === true"
+        },
+        {
+          "id": "pre-pr-validation-ok->log-validation-failed",
+          "source": "pre-pr-validation-ok",
+          "target": "log-validation-failed",
+          "sourcePort": "no",
+          "condition": "$output?.result !== true"
+        },
+        {
+          "id": "log-validation-failed->set-todo-validation-failed",
+          "source": "log-validation-failed",
+          "target": "set-todo-validation-failed",
+          "sourcePort": "default"
+        },
+        {
+          "id": "set-todo-validation-failed->join-outcomes",
+          "source": "set-todo-validation-failed",
+          "target": "join-outcomes",
+          "sourcePort": "default"
         },
         {
           "id": "push-branch->push-ok",
@@ -35361,7 +35468,7 @@
       "description": "Complete task execution pipeline: poll for tasks → claim → worktree → agent dispatch → commit detection → PR creation → status transition. Replaces the monolithic TaskExecutor.executeTask() method with a composable workflow DAG.",
       "category": "task-execution",
       "enabled": true,
-      "nodeCount": 44,
+      "nodeCount": 48,
       "trigger": "trigger.task_available",
       "variables": {
         "maxParallel": 3,
@@ -35372,6 +35479,10 @@
         "defaultSdk": "auto",
         "defaultTargetBranch": "origin/main",
         "taskTimeoutMs": 21600000,
+        "prePrValidationEnabled": true,
+        "prePrValidationCommand": "npm run prepush:check",
+        "autoMergeOnCreate": false,
+        "autoMergeMethod": "squash",
         "maxRetries": 2,
         "maxContinues": 3,
         "protectedBranches": [
@@ -35737,6 +35848,72 @@
           ]
         },
         {
+          "id": "pre-pr-validation",
+          "type": "action.run_command",
+          "label": "Pre-PR Validation",
+          "config": {
+            "command": "{{prePrValidationCommand}}",
+            "cwd": "{{worktreePath}}",
+            "failOnError": false
+          },
+          "position": {
+            "x": -120,
+            "y": 1940
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "pre-pr-validation-ok",
+          "type": "condition.expression",
+          "label": "Validation Passed?",
+          "config": {
+            "expression": "(() => {const enabled = $data?.prePrValidationEnabled !== false;if (!enabled) return true;const out = $ctx.getNodeOutput('pre-pr-validation');if (!out) return false;if (out.success === true) return true;const code = Number(out.exitCode);return Number.isFinite(code) && code === 0;})()"
+          },
+          "position": {
+            "x": -120,
+            "y": 2060
+          },
+          "outputs": [
+            "yes",
+            "no"
+          ]
+        },
+        {
+          "id": "log-validation-failed",
+          "type": "notify.log",
+          "label": "Log Validation Failed",
+          "config": {
+            "message": "Task \"{{taskTitle}}\" ({{taskId}}) — pre-PR validation failed, returning to todo",
+            "level": "warn"
+          },
+          "position": {
+            "x": 300,
+            "y": 2000
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "set-todo-validation-failed",
+          "type": "action.update_task_status",
+          "label": "Set Todo (Validation Fail)",
+          "config": {
+            "taskId": "{{taskId}}",
+            "status": "todo",
+            "taskTitle": "{{taskTitle}}"
+          },
+          "position": {
+            "x": 300,
+            "y": 2130
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
           "id": "push-branch",
           "type": "action.push_branch",
           "label": "Push Branch",
@@ -35782,7 +35959,9 @@
             "body": "Task-ID: {{taskId}}\n\nAutomated PR for task {{taskId}}",
             "base": "{{baseBranch}}",
             "branch": "{{branch}}",
-            "cwd": "{{worktreePath}}"
+            "cwd": "{{worktreePath}}",
+            "enableAutoMerge": "{{autoMergeOnCreate}}",
+            "autoMergeMethod": "{{autoMergeMethod}}"
           },
           "position": {
             "x": 0,
@@ -35901,7 +36080,9 @@
             "base": "{{baseBranch}}",
             "branch": "{{branch}}",
             "cwd": "{{worktreePath}}",
-            "failOnError": false
+            "failOnError": false,
+            "enableAutoMerge": "{{autoMergeOnCreate}}",
+            "autoMergeMethod": "{{autoMergeMethod}}"
           },
           "position": {
             "x": 400,
@@ -36003,6 +36184,7 @@
               "log-success",
               "set-todo-push-failed",
               "set-todo-cooldown",
+              "set-todo-validation-failed",
               "set-todo-stolen",
               "log-claim-stolen-recovered"
             ],
@@ -36271,11 +36453,43 @@
           "sourcePort": "default"
         },
         {
-          "id": "has-commits->push-branch",
+          "id": "has-commits->pre-pr-validation",
           "source": "has-commits",
+          "target": "pre-pr-validation",
+          "sourcePort": "yes",
+          "condition": "$output?.result === true"
+        },
+        {
+          "id": "pre-pr-validation->pre-pr-validation-ok",
+          "source": "pre-pr-validation",
+          "target": "pre-pr-validation-ok",
+          "sourcePort": "default"
+        },
+        {
+          "id": "pre-pr-validation-ok->push-branch",
+          "source": "pre-pr-validation-ok",
           "target": "push-branch",
           "sourcePort": "yes",
           "condition": "$output?.result === true"
+        },
+        {
+          "id": "pre-pr-validation-ok->log-validation-failed",
+          "source": "pre-pr-validation-ok",
+          "target": "log-validation-failed",
+          "sourcePort": "no",
+          "condition": "$output?.result !== true"
+        },
+        {
+          "id": "log-validation-failed->set-todo-validation-failed",
+          "source": "log-validation-failed",
+          "target": "set-todo-validation-failed",
+          "sourcePort": "default"
+        },
+        {
+          "id": "set-todo-validation-failed->join-outcomes",
+          "source": "set-todo-validation-failed",
+          "target": "join-outcomes",
+          "sourcePort": "default"
         },
         {
           "id": "push-branch->push-ok",

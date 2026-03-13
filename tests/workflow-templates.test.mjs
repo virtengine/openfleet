@@ -722,14 +722,12 @@ describe("template drift + update behavior", () => {
     expect(result.updateAvailable.some((entry) => entry.workflowId === wf.id)).toBe(true);
   });
 
-  it("force-updates customized workflows for selected template ids", () => {
+  it("force-updates customized workflows for selected template ids even without updateAvailable", () => {
     const installed = installTemplate("template-error-recovery", engine);
     const wf = engine.get(installed.id);
     wf.variables.customNote = "edited";
     applyWorkflowTemplateState(wf);
-    wf.metadata.templateState.installedTemplateFingerprint = "0000-outdated";
-    wf.metadata.templateState.installedTemplateVersion = "0000-outdated";
-    wf.metadata.templateState.updateAvailable = true;
+    wf.metadata.templateState.updateAvailable = false;
     engine.save(wf);
 
     const result = reconcileInstalledTemplates(engine, {

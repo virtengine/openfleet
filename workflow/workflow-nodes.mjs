@@ -3769,6 +3769,26 @@ registerBuiltinNodeType("action.create_pr", {
         oneOf: [{ type: "string" }, { type: "array", items: { type: "string" } }],
         description: "Comma-separated or array of reviewer handles",
       },
+      enableAutoMerge: {
+        type: "boolean",
+        default: false,
+        description: "Enable gh auto-merge immediately after PR creation/linking",
+      },
+      autoMerge: {
+        type: "boolean",
+        description: "Legacy alias for enableAutoMerge",
+      },
+      autoMergeMethod: {
+        type: "string",
+        enum: ["merge", "squash", "rebase"],
+        default: "squash",
+        description: "Merge method used with gh pr merge --auto",
+      },
+      mergeMethod: {
+        type: "string",
+        enum: ["merge", "squash", "rebase"],
+        description: "Legacy alias for autoMergeMethod",
+      },
       cwd: { type: "string" },
       failOnError: { type: "boolean", default: false, description: "If true, throw on gh failure instead of falling back" },
     },
@@ -3784,6 +3804,16 @@ registerBuiltinNodeType("action.create_pr", {
     ).trim();
     const draft = node.config?.draft === true;
     const failOnError = node.config?.failOnError === true;
+    const enableAutoMerge = parseBooleanSetting(
+      resolveWorkflowNodeValue(node.config?.enableAutoMerge ?? node.config?.autoMerge ?? false, ctx),
+      false,
+    );
+    const autoMergeMethodRaw = String(
+      ctx.resolve(node.config?.autoMergeMethod || node.config?.mergeMethod || "squash"),
+    ).trim().toLowerCase();
+    const autoMergeMethod = ["merge", "squash", "rebase"].includes(autoMergeMethodRaw)
+      ? autoMergeMethodRaw
+      : "squash";
     const cwd = ctx.resolve(node.config?.cwd || ctx.data?.worktreePath || process.cwd());
 
     // Normalize labels/reviewers to arrays
@@ -3824,6 +3854,46 @@ registerBuiltinNodeType("action.create_pr", {
       timeout: 60000,
       env: makeIsolatedGitEnv(ghTokenEnv),
       stdio: ["pipe", "pipe", "pipe"],
+    };
+
+    const maybeEnableAutoMerge = (prNumber) => {
+      if (!enableAutoMerge) {
+        return { enabled: false, attempted: false, success: false };
+      }
+      if (draft) {
+        return { enabled: true, attempted: false, success: false, reason: "draft_pr", method: autoMergeMethod };
+      }
+      const parsedPrNumber = Number.parseInt(String(prNumber || ""), 10);
+      if (!Number.isFinite(parsedPrNumber) || parsedPrNumber <= 0) {
+        return { enabled: true, attempted: false, success: false, reason: "missing_pr_number", method: autoMergeMethod };
+      }
+      if (shouldBypassGhPrCreationForTests()) {
+        return { enabled: true, attempted: false, success: false, reason: "test_runtime_skip", method: autoMergeMethod };
+      }
+      try {
+        const mergeArgs = ["pr", "merge", String(parsedPrNumber), "--auto", `--${autoMergeMethod}`];
+        if (repoSlug) mergeArgs.push("--repo", repoSlug);
+        execFileSync("gh", mergeArgs, execOptions);
+        ctx.log(node.id, `Auto-merge requested for PR #${parsedPrNumber} (${autoMergeMethod})`);
+        return {
+          enabled: true,
+          attempted: true,
+          success: true,
+          method: autoMergeMethod,
+          prNumber: parsedPrNumber,
+        };
+      } catch (err) {
+        const error = err?.stderr?.toString?.()?.trim() || err?.message || String(err);
+        ctx.log(node.id, `Auto-merge request failed for PR #${parsedPrNumber}: ${error}`);
+        return {
+          enabled: true,
+          attempted: true,
+          success: false,
+          method: autoMergeMethod,
+          prNumber: parsedPrNumber,
+          error,
+        };
+      }
     };
 
     /** Re-resolve token after invalidating the current one (401 retry). */
@@ -3881,6 +3951,7 @@ registerBuiltinNodeType("action.create_pr", {
           } catch {
           }
         }
+        const autoMergeState = maybeEnableAutoMerge(prNumber);
         return {
           success: true,
           existing: true,
@@ -3894,6 +3965,7 @@ registerBuiltinNodeType("action.create_pr", {
           labels,
           reviewers,
           output: String(existing?.url || `existing-pr-${prNumber}`),
+          autoMerge: autoMergeState,
         };
       } catch {
         return null;
@@ -3934,6 +4006,13 @@ registerBuiltinNodeType("action.create_pr", {
         cwd,
         repoSlug: repoSlug || null,
         ghError: "skipped_in_test_runtime",
+        autoMerge: {
+          enabled: enableAutoMerge,
+          attempted: false,
+          success: false,
+          reason: "test_runtime_skip",
+          method: autoMergeMethod,
+        },
       };
     }
 
@@ -3944,6 +4023,7 @@ registerBuiltinNodeType("action.create_pr", {
       const urlMatch = trimmed.match(/https:\/\/github\.com\/[^\s]+\/pull\/(\d+)/);
       const prNumber = urlMatch ? parseInt(urlMatch[1], 10) : null;
       const prUrl = urlMatch ? urlMatch[0] : trimmed;
+      const autoMergeState = maybeEnableAutoMerge(prNumber);
       ctx.log(node.id, `PR created: ${prUrl}`);
       return {
         success: true,
@@ -3957,6 +4037,7 @@ registerBuiltinNodeType("action.create_pr", {
         labels,
         reviewers,
         output: trimmed,
+        autoMerge: autoMergeState,
       };
     } catch (err) {
       const errorMsg = err?.stderr?.toString?.()?.trim() || err?.message || String(err);
@@ -3973,6 +4054,7 @@ registerBuiltinNodeType("action.create_pr", {
             const urlMatch = trimmed.match(/https:\/\/github\.com\/[^\s]+\/pull\/(\d+)/);
             const prNumber = urlMatch ? parseInt(urlMatch[1], 10) : null;
             const prUrl = urlMatch ? urlMatch[0] : trimmed;
+            const autoMergeState = maybeEnableAutoMerge(prNumber);
             ctx.log(node.id, `PR created (after auth retry): ${prUrl}`);
             return {
               success: true,
@@ -3986,6 +4068,7 @@ registerBuiltinNodeType("action.create_pr", {
               labels,
               reviewers,
               output: trimmed,
+              autoMerge: autoMergeState,
             };
           } catch (retryErr) {
             const retryMsg = retryErr?.stderr?.toString?.()?.trim() || retryErr?.message || String(retryErr);
@@ -4025,6 +4108,13 @@ registerBuiltinNodeType("action.create_pr", {
         reviewers,
         cwd,
         ghError: errorMsg,
+        autoMerge: {
+          enabled: enableAutoMerge,
+          attempted: false,
+          success: false,
+          reason: "pr_creation_failed",
+          method: autoMergeMethod,
+        },
       };
     }
   },

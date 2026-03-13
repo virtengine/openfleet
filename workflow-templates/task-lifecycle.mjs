@@ -65,6 +65,10 @@ export const TASK_LIFECYCLE_TEMPLATE = {
     defaultSdk: "auto",
     defaultTargetBranch: "origin/main",
     taskTimeoutMs: 21600000, // 6 hours
+    prePrValidationEnabled: true,
+    prePrValidationCommand: "npm run prepush:check",
+    autoMergeOnCreate: false,
+    autoMergeMethod: "squash",
     maxRetries: 2,
     maxContinues: 3,
     protectedBranches: ["main", "master", "develop", "production"],
@@ -228,6 +232,36 @@ export const TASK_LIFECYCLE_TEMPLATE = {
       expression: "$ctx.getNodeOutput('detect-commits')?.hasCommits === true",
     }, { x: 120, y: 1870, outputs: ["yes", "no"] }),
 
+    // ── SUCCESS PATH: Local quality gate before push/PR ──────────────────
+    node("pre-pr-validation", "action.run_command", "Pre-PR Validation", {
+      command: "{{prePrValidationCommand}}",
+      cwd: "{{worktreePath}}",
+      failOnError: false,
+    }, { x: -120, y: 1940 }),
+
+    node("pre-pr-validation-ok", "condition.expression", "Validation Passed?", {
+      expression:
+        "(() => {" +
+        "const enabled = $data?.prePrValidationEnabled !== false;" +
+        "if (!enabled) return true;" +
+        "const out = $ctx.getNodeOutput('pre-pr-validation');" +
+        "if (!out) return false;" +
+        "if (out.success === true) return true;" +
+        "const code = Number(out.exitCode);" +
+        "return Number.isFinite(code) && code === 0;" +
+        "})()",
+    }, { x: -120, y: 2060, outputs: ["yes", "no"] }),
+
+    node("log-validation-failed", "notify.log", "Log Validation Failed", {
+      message: "Task \"{{taskTitle}}\" ({{taskId}}) — pre-PR validation failed, returning to todo",
+      level: "warn",
+    }, { x: 300, y: 2000 }),
+
+    node("set-todo-validation-failed", "action.update_task_status", "Set Todo (Validation Fail)", {
+      taskId: "{{taskId}}",
+      status: "todo",
+      taskTitle: "{{taskTitle}}",
+    }, { x: 300, y: 2130 }),
     // ── SUCCESS PATH: Push branch (with rebase + empty-diff guard) ───────
     node("push-branch", "action.push_branch", "Push Branch", {
       worktreePath: "{{worktreePath}}",
@@ -251,6 +285,8 @@ export const TASK_LIFECYCLE_TEMPLATE = {
       base: "{{baseBranch}}",
       branch: "{{branch}}",
       cwd: "{{worktreePath}}",
+      enableAutoMerge: "{{autoMergeOnCreate}}",
+      autoMergeMethod: "{{autoMergeMethod}}",
     }, { x: 0, y: 2260 }),
 
     node("pr-created", "condition.expression", "PR Linked?", {
@@ -298,6 +334,8 @@ export const TASK_LIFECYCLE_TEMPLATE = {
       branch: "{{branch}}",
       cwd: "{{worktreePath}}",
       failOnError: false,
+      enableAutoMerge: "{{autoMergeOnCreate}}",
+      autoMergeMethod: "{{autoMergeMethod}}",
     }, { x: 400, y: 1740 }),
 
     node("pr-created-stolen", "condition.expression", "PR Linked After Claim Loss?", {
@@ -329,7 +367,7 @@ export const TASK_LIFECYCLE_TEMPLATE = {
 
     node("join-outcomes", "flow.join", "Join Outcome Paths", {
       mode: "all",
-      sourceNodeIds: ["log-success", "set-todo-push-failed", "set-todo-cooldown", "set-todo-stolen", "log-claim-stolen-recovered"],
+      sourceNodeIds: ["log-success", "set-todo-push-failed", "set-todo-cooldown", "set-todo-validation-failed", "set-todo-stolen", "log-claim-stolen-recovered"],
       includeSkipped: true,
     }, { x: 200, y: 2560 }),
 
@@ -403,7 +441,12 @@ export const TASK_LIFECYCLE_TEMPLATE = {
     edge("detect-commits", "has-commits"),
 
     // Success path (has commits)
-    edge("has-commits", "push-branch", { condition: "$output?.result === true", port: "yes" }),
+    edge("has-commits", "pre-pr-validation", { condition: "$output?.result === true", port: "yes" }),
+    edge("pre-pr-validation", "pre-pr-validation-ok"),
+    edge("pre-pr-validation-ok", "push-branch", { condition: "$output?.result === true", port: "yes" }),
+    edge("pre-pr-validation-ok", "log-validation-failed", { condition: "$output?.result !== true", port: "no" }),
+    edge("log-validation-failed", "set-todo-validation-failed"),
+    edge("set-todo-validation-failed", "join-outcomes"),
     edge("push-branch", "push-ok"),
     edge("push-ok", "create-pr", { condition: "$output?.result === true", port: "yes" }),
     edge("create-pr", "pr-created"),
@@ -726,3 +769,5 @@ export const VE_ORCHESTRATOR_LITE_TEMPLATE = {
     },
   },
 };
+
+

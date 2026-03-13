@@ -535,9 +535,8 @@ export function reconcileInstalledTemplates(engine, opts = {}) {
         });
       }
 
-      const shouldForceUpdate =
-        state.updateAvailable === true &&
-        forceUpdateTemplateIds.has(String(state.templateId || "").trim());
+      const templateId = String(state.templateId || "").trim();
+      const shouldForceUpdate = templateId && forceUpdateTemplateIds.has(templateId);
       if (shouldForceUpdate) {
         const saved = updateWorkflowFromTemplate(engine, def.id, { mode: "replace", force: true });
         result.autoUpdated += 1;
