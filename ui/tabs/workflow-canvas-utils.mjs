@@ -64,6 +64,9 @@ export function parseGraphSnapshot(snapshot) {
   }
 }
 
+export const HISTORY_LIMIT = 50;
+export const HISTORY_COMMIT_DEBOUNCE_MS = 220;
+
 export function createHistoryState(nodes = [], edges = []) {
   return {
     past: [],

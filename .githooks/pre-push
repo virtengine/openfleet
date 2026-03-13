@@ -74,7 +74,7 @@ ADJACENCY_MAP=(
   "config/|config-*|bosun-skills*|codex-config*"
   "telegram/|telegram-*|whatsapp-*"
   "voice/|voice-*|mic-*|native-call*"
-  "ui/|ui-*|static-relative*|mui-theme*|tab-swipe*|session-theme*|session-history*|demo-*|fleet-tab*"
+  "ui/|ui-*|workflow-canvas-utils*|static-relative*|mui-theme*|tab-swipe*|session-theme*|session-history*|demo-*|fleet-tab*"
   "site/|ui-*|static-relative*|demo-*"
   "server/|ui-server*|setup-web*|tunnel-*|ui-realtime*|presence*"
   "github/|github-*|hook-profiles*"

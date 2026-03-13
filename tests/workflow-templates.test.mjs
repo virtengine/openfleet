@@ -388,6 +388,19 @@ describe("workflow-templates", () => {
     expect(template?.variables?.maxFollowupTasks).toBe(4);
     expect(template?.variables?.createFollowupTasks).toBe(true);
 
+    const taskNode = template.nodes.find((n) => n.id === "task-metrics");
+    expect(taskNode?.type).toBe("action.bosun_cli");
+    expect(taskNode?.config?.subcommand).toBe("task list");
+    expect(taskNode?.config?.args).toContain("--json");
+
+    const summaryNode = template.nodes.find((n) => n.id === "summarize-fitness-metrics");
+    expect(summaryNode?.type).toBe("action.set_variable");
+    expect(summaryNode?.config?.key).toBe("fitnessSummary");
+
+    const latestArtifactNode = template.nodes.find((n) => n.id === "persist-fitness-summary");
+    expect(latestArtifactNode?.type).toBe("action.write_file");
+    expect(latestArtifactNode?.config?.path).toBe(".bosun/workflow-runs/weekly-fitness-summary.latest.json");
+
     const evaluateNode = template.nodes.find((n) => n.id === "evaluate-fitness");
     expect(evaluateNode?.type).toBe("action.run_agent");
     const prompt = String(evaluateNode?.config?.prompt || "").toLowerCase();
@@ -396,10 +409,17 @@ describe("workflow-templates", () => {
     expect(prompt).toContain("merge success");
     expect(prompt).toContain("reopened tasks");
     expect(prompt).toContain("debt growth");
+    expect(prompt).toContain("confidence");
+    expect(prompt).toContain("weekly fitness json");
 
     const materializeNode = template.nodes.find((n) => n.id === "materialize-followups");
     expect(materializeNode?.type).toBe("action.materialize_planner_tasks");
     expect(materializeNode?.config?.maxTasks).toBe("{{maxFollowupTasks}}");
+
+    const artifactEdge = template.edges.find(
+      (e) => e.source === "persist-fitness-summary" && e.target === "evaluate-fitness",
+    );
+    expect(artifactEdge).toBeDefined();
 
     const createFlowEdge = template.edges.find(
       (e) => e.source === "has-followups" && e.target === "build-followup-json",

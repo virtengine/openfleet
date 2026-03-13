@@ -54,6 +54,7 @@ const CACHE_TTL = {
   benchmarks: 8000,
   telemetry: 15000,
   analytics: 30000,
+  "retry-queue": 5000,
 };
 
 function _cacheKey(url) { return url; }
@@ -158,11 +159,31 @@ export const tasksStatusCounts = signal({ draft: 0, backlog: 0, inProgress: 0, i
 export const retryQueueData = signal({ count: 0, items: [] });
 export const retryQueueLoaded = signal(false);
 
+function normalizeRetryQueuePayload(payload) {
+  return {
+    count: Number(payload?.count || 0),
+    items: Array.isArray(payload?.items) ? payload.items : [],
+    stats: payload?.stats && typeof payload.stats === "object"
+      ? {
+          totalRetriesToday: Number(payload.stats.totalRetriesToday || 0),
+          peakRetryDepth: Number(payload.stats.peakRetryDepth || 0),
+          exhaustedTaskIds: Array.isArray(payload.stats.exhaustedTaskIds) ? payload.stats.exhaustedTaskIds : [],
+        }
+      : {
+          totalRetriesToday: 0,
+          peakRetryDepth: 0,
+          exhaustedTaskIds: [],
+        },
+  };
+}
+
 export async function loadRetryQueue() {
-  const res = await apiFetch("/api/retry-queue", { _silent: true }).catch(() => ({ ok: false, items: [], count: 0 }));
-  if (res?.ok) {
-    retryQueueData.value = { count: res.count || 0, items: res.items || [] };
-  }
+  const url = "/api/retry-queue";
+  if (_cacheFresh(url, "retry-queue")) return;
+  const res = await apiFetch(url, { _silent: true }).catch(() => ({ ok: false, items: [], count: 0, stats: null }));
+  retryQueueData.value = normalizeRetryQueuePayload(res);
+  _cacheSet(url, retryQueueData.value);
+  _markFresh("retry-queue");
   retryQueueLoaded.value = true;
 }
 
@@ -884,7 +905,7 @@ export async function loadBenchmarks(providerId = "") {
 
 const TAB_LOADERS = {
   dashboard: () =>
-    Promise.all([loadStatus(), loadExecutor(), loadProjectSummary()]),
+    Promise.all([loadStatus(), loadExecutor(), loadProjectSummary(), loadRetryQueue()]),
   tasks: () => loadTasks(),
   benchmarks: () => loadBenchmarks(),
   agents: () => Promise.all([loadAgents(), loadExecutor(), import("../components/session-list.js").then((m) => m.loadSessions()).catch(() => {})]),
@@ -905,6 +926,7 @@ const TAB_LOADERS = {
       loadTelemetryExecutors(),
       loadTelemetryAlerts(),
       loadUsageAnalytics(30),
+      loadRetryQueue(),
     ]),
   settings: () => Promise.all([loadStatus(), loadConfig()]),
 };
@@ -990,20 +1012,27 @@ export function scheduleRefresh(ms = 5000) {
 /* ─── WebSocket invalidation listener ─── */
 
 const WS_CHANNEL_MAP = {
-  dashboard: ["overview", "executor", "tasks", "agents"],
+  dashboard: ["overview", "executor", "tasks", "agents", "retry-queue"],
   tasks: ["tasks"],
   benchmarks: ["benchmarks", "tasks", "executor", "workflows", "workspaces", "library"],
   agents: ["agents", "executor"],
   infra: ["worktrees", "workspaces", "presence"],
   control: ["executor", "overview"],
   logs: ["*"],
-  telemetry: ["*"],
+  telemetry: ["*", "retry-queue"],
   settings: ["overview"],
 };
 
 /** Start listening for WS invalidation messages and auto-refreshing. */
 export function initWsInvalidationListener() {
   onWsMessage((msg) => {
+    if (msg?.type === "retry-queue-updated") {
+      retryQueueData.value = normalizeRetryQueuePayload(msg?.payload);
+      _cacheSet("/api/retry-queue", retryQueueData.value);
+      _markFresh("retry-queue");
+      retryQueueLoaded.value = true;
+      return;
+    }
     if (msg?.type !== "invalidate") return;
     const channels = Array.isArray(msg.channels) ? msg.channels : [];
     // Clear cache for invalidated channels so next fetch is fresh

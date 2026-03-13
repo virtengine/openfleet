@@ -8055,7 +8055,24 @@ async function collectUiStats() {
     queuedTasks: taskStats.queued,
     activeSlots: orchestratorStatus?.active_slots || "0/0",
     executorMode: orchestratorStatus?.executor_mode || "unknown",
-    retryQueue: globalThis.__bosun_setRetryQueueData ? _retryQueue : { count: 0, items: [] },
+    retryQueue: (() => {
+      const bus = _resolveEventBus();
+      if (bus && typeof bus.getRetryQueue === "function") {
+        try {
+          const snapshot = bus.getRetryQueue();
+          if (snapshot && typeof snapshot === "object") return snapshot;
+        } catch {
+          /* best effort */
+        }
+      }
+      return globalThis.__bosun_setRetryQueueData
+        ? _retryQueue
+        : {
+            count: 0,
+            items: [],
+            stats: { totalRetriesToday: 0, peakRetryDepth: 0, exhaustedTaskIds: [] },
+          };
+    })(),
     workflows: {
       active: globalThis.__bosun_activeWorkflows || [],
       total: globalThis.__bosun_totalWorkflows || 0,
@@ -15469,6 +15486,14 @@ async function handleApi(req, res, url) {
           `[telegram-ui] failed to retry task ${taskId}: ${error.message}`,
         );
       });
+      const bus = _resolveEventBus();
+      if (bus && typeof bus.clearRetryQueueTask === "function") {
+        try {
+          bus.clearRetryQueueTask(taskId, "manual-retry-now");
+        } catch {
+          /* best effort */
+        }
+      }
       jsonResponse(res, 200, { ok: true, taskId });
       broadcastUiEvent(
         ["tasks", "overview", "executor", "agents"],
@@ -15484,14 +15509,45 @@ async function handleApi(req, res, url) {
   // ── GET /api/retry-queue ───────────────────────────────────────────
   if (path === "/api/retry-queue" && req.method === "GET") {
     try {
-      const retryQueue = globalThis.__bosun_setRetryQueueData ? _retryQueue : { count: 0, items: [] };
+      const bus = _resolveEventBus();
+      let retryQueue = null;
+      if (bus && typeof bus.getRetryQueue === "function") {
+        try {
+          const snapshot = bus.getRetryQueue();
+          if (snapshot && typeof snapshot === "object") {
+            retryQueue = snapshot;
+          }
+        } catch {
+          /* best effort */
+        }
+      }
+      if (!retryQueue) {
+        retryQueue = globalThis.__bosun_setRetryQueueData
+          ? _retryQueue
+          : {
+              count: 0,
+              items: [],
+              stats: { totalRetriesToday: 0, peakRetryDepth: 0, exhaustedTaskIds: [] },
+            };
+      }
       jsonResponse(res, 200, {
         ok: true,
         count: retryQueue.count || 0,
         items: retryQueue.items || [],
+        stats: retryQueue.stats || {
+          totalRetriesToday: 0,
+          peakRetryDepth: 0,
+          exhaustedTaskIds: [],
+        },
       });
     } catch (err) {
-      jsonResponse(res, 500, { ok: false, error: err.message, count: 0, items: [] });
+      jsonResponse(res, 500, {
+        ok: false,
+        error: err.message,
+        count: 0,
+        items: [],
+        stats: { totalRetriesToday: 0, peakRetryDepth: 0, exhaustedTaskIds: [] },
+      });
     }
     return;
   }
@@ -18050,7 +18106,29 @@ export async function startTelegramUiServer(options = {}) {
     // Retry queue tracking
     let _retryQueue = { count: 0, items: [] };
     function setRetryQueueData(data) {
-      _retryQueue = data || { count: 0, items: [] };
+      const normalized = data && typeof data === "object" ? data : {};
+      _retryQueue = {
+        count: Number(normalized.count || 0),
+        items: Array.isArray(normalized.items) ? normalized.items : [],
+        stats: normalized.stats && typeof normalized.stats === "object"
+          ? {
+              totalRetriesToday: Number(normalized.stats.totalRetriesToday || 0),
+              peakRetryDepth: Number(normalized.stats.peakRetryDepth || 0),
+              exhaustedTaskIds: Array.isArray(normalized.stats.exhaustedTaskIds)
+                ? normalized.stats.exhaustedTaskIds
+                : [],
+            }
+          : {
+              totalRetriesToday: 0,
+              peakRetryDepth: 0,
+            exhaustedTaskIds: [],
+          },
+      };
+      broadcastUiEvent(["retry-queue", "overview", "telemetry", "tasks"], "retry-queue-updated", _retryQueue);
+      broadcastUiEvent(["overview", "telemetry", "retry-queue"], "invalidate", {
+        reason: "retry-queue-updated",
+        count: _retryQueue.count,
+      });
     }
     globalThis.__bosun_setRetryQueueData = setRetryQueueData;
 
@@ -18611,3 +18689,4 @@ export function stopTelegramUiServer() {
 }
 
 export { getLocalLanIp };
+

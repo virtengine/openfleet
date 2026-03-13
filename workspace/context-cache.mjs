@@ -856,14 +856,55 @@ function extractCommandText(item) {
   return "";
 }
 
-function normalizeGitDescriptor(item) {
-  const toolName = extractToolName(item);
-  const commandText = extractCommandText(item);
-  return `${toolName} ${commandText}`
+function normalizeGitTokenSource(value) {
+  return String(value || "")
     .toLowerCase()
-    .replaceAll(/_+/g, " ")
+    .replaceAll(/[^a-z0-9]+/g, " ")
     .replaceAll(/\s+/g, " ")
     .trim();
+}
+
+function inferGitCommandSignals(toolName, commandText) {
+  const normalizedToolName = normalizeGitTokenSource(toolName);
+  const normalizedCommand = normalizeGitTokenSource(commandText);
+  const merged = `${normalizedCommand} ${normalizedToolName}`.trim();
+
+  const commandLooksGit = /\bgit\b/.test(normalizedCommand);
+  const toolLooksGit = normalizedToolName.includes("git");
+  if (!toolLooksGit && !commandLooksGit) {
+    return {
+      eligible: false,
+      boundedDiff: false,
+      hasLog: false,
+      hasShortlog: false,
+      hasReflog: false,
+      hasDiff: false,
+      hasShow: false,
+      hasStatus: false,
+    };
+  }
+
+  let commandBody = normalizedCommand.startsWith("git ")
+    ? normalizedCommand.slice(4).trim()
+    : normalizedCommand;
+
+  if (!commandBody && toolLooksGit) {
+    commandBody = normalizedToolName
+      .replaceAll(/\bgit\b/g, " ")
+      .replaceAll(/\s+/g, " ")
+      .trim();
+  }
+
+  const source = `${commandBody} ${normalizedToolName}`.trim();
+  const hasShortlog = /\bshortlog\b/.test(source);
+  const hasReflog = /\breflog\b/.test(source);
+  const hasLog = !hasShortlog && !hasReflog && /\blog\b/.test(source);
+  const hasDiff = /\bdiff\b/.test(source);
+  const hasShow = /\bshow\b/.test(source);
+  const hasStatus = /\bstatus\b/.test(source);
+  const boundedDiff = /(?:^|\s)--(?:stat|shortstat|numstat|name-only|name-status|summary)\b/.test(commandBody)
+    || /\bdiff(?:\s|-)*(?:stat|shortstat|numstat|name only|name status|summary)\b/.test(merged);
+  return { eligible: true, boundedDiff, hasLog, hasShortlog, hasReflog, hasDiff, hasShow, hasStatus };
 }
 
 function classifyImmediateGitOutput(item, opts) {
@@ -873,17 +914,25 @@ function classifyImmediateGitOutput(item, opts) {
   const text = getItemText(item);
   if (typeof text !== "string" || text.length <= maxChars) return null;
 
-  const descriptor = normalizeGitDescriptor(item);
-  if (!descriptor.includes("git")) return null;
+  const toolName = extractToolName(item);
+  const commandText = extractCommandText(item);
+  const {
+    eligible,
+    boundedDiff,
+    hasLog,
+    hasShortlog,
+    hasReflog,
+    hasDiff,
+    hasShow,
+    hasStatus,
+  } = inferGitCommandSignals(toolName, commandText);
+  if (!eligible) return null;
 
-  if (/\bgit\s+log\b/.test(descriptor)) return { kind: "log", text };
-  if (/\bgit\s+shortlog\b/.test(descriptor)) return { kind: "shortlog", text };
-  if (/\bgit\s+reflog\b/.test(descriptor)) return { kind: "reflog", text };
-
-  if (/\bgit\s+diff\b/.test(descriptor)) {
-    const boundedDiff = /(?:^|\s)--(?:stat|shortstat|numstat|name-only|name-status|summary)\b/.test(descriptor);
-    if (!boundedDiff) return { kind: "diff", text };
-  }
+  if (hasStatus || hasShow) return null;
+  if (hasShortlog) return { kind: "shortlog", text };
+  if (hasReflog) return { kind: "reflog", text };
+  if (hasLog) return { kind: "log", text };
+  if (hasDiff && !boundedDiff) return { kind: "diff", text };
 
   return null;
 }
@@ -899,7 +948,7 @@ function compressImmediateGitText(text, logId, opts) {
   const tail = tailChars > 0 ? text.slice(-tailChars) : "";
   const omitted = text.length - headChars - (tailChars > 0 ? tailChars : 0);
   const lineCount = text.length === 0 ? 0 : (text.match(/\n/g) || []).length + 1;
-  const note = `\n\n[…git capped: ${lineCount} lines, ${omitted} chars hidden. Full: bosun --tool-log ${logId}]\n\n`;
+  const note = `\n\n[…git capped: ${lineCount} lines, ${omitted} chars suppressed. Full: bosun --tool-log ${logId}]\n\n`;
   return head + note + tail;
 }
 
@@ -2412,5 +2461,4 @@ export async function maybeCompressSessionItems(
 
   return compressedItems;
 }
-
 

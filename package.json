@@ -147,6 +147,7 @@
     "agent/agent-custom-tools.mjs",
     "agent/agent-endpoint.mjs",
     "agent/agent-event-bus.mjs",
+    "agent/retry-queue.mjs",
     "agent/agent-pool.mjs",
     "agent/agent-prompts.mjs",
     "agent/agent-sdk.mjs",

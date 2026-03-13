@@ -164,7 +164,7 @@ describe("context-cache", () => {
       expect(result[0]._cachedLogId).toBeDefined();
       expect(result[0].aggregated_output.length).toBeLessThan(1000);
       expect(result[0].aggregated_output).toContain("bosun --tool-log");
-      expect(result[0].aggregated_output).toMatch(/git capped: \d+ lines, \d+ chars hidden/i);
+      expect(result[0].aggregated_output).toMatch(/git capped: \d+ lines, \d+ chars suppressed/i);
 
       const retrieved = await contextCache.retrieveToolLog(result[0]._cachedLogId);
       expect(retrieved.found).toBe(true);
@@ -178,6 +178,11 @@ describe("context-cache", () => {
         { command: "git reflog", field: "aggregated_output" },
         { command: "git diff HEAD~20 HEAD", field: "aggregated_output" },
         { tool_name: "git", arguments: ["log", "--oneline"], field: "output" },
+        { tool_name: "workspace_git_runner", command: "log --oneline", field: "aggregated_output" },
+        { tool_name: "git_log_runner", field: "output" },
+        { tool_name: "workspace-git-log-runner", field: "output" },
+        { tool_name: "workspace-git-reflog-runner", field: "output" },
+        { tool_name: "workspace-git-diff-runner", field: "output" },
       ];
 
       for (const entry of cases) {
@@ -212,10 +217,28 @@ describe("context-cache", () => {
         command: "git show HEAD~1",
         aggregated_output: largeOutput,
       }];
+      const diffStatToolNameOnlyItems = [{
+        type: "function_call_output",
+        tool_name: "git_diff_stat",
+        output: largeOutput,
+      }];
+      const showToolNameOnlyItems = [{
+        type: "function_call_output",
+        tool_name: "workspace-git-show-runner",
+        output: largeOutput,
+      }];
+      const statusToolNameOnlyItems = [{
+        type: "function_call_output",
+        tool_name: "workspace-git-status-runner",
+        output: largeOutput,
+      }];
 
       const [statusResult] = await contextCache.cacheAndCompressItems(statusItems);
       const [diffStatResult] = await contextCache.cacheAndCompressItems(diffStatItems);
       const [showResult] = await contextCache.cacheAndCompressItems(showItems);
+      const [diffStatToolNameOnlyResult] = await contextCache.cacheAndCompressItems(diffStatToolNameOnlyItems);
+      const [showToolNameOnlyResult] = await contextCache.cacheAndCompressItems(showToolNameOnlyItems);
+      const [statusToolNameOnlyResult] = await contextCache.cacheAndCompressItems(statusToolNameOnlyItems);
 
       expect(statusResult._cachedLogId).toBeUndefined();
       expect(statusResult.aggregated_output).toBe(largeOutput);
@@ -223,6 +246,12 @@ describe("context-cache", () => {
       expect(diffStatResult.aggregated_output).toBe(largeOutput);
       expect(showResult._cachedLogId).toBeUndefined();
       expect(showResult.aggregated_output).toBe(largeOutput);
+      expect(diffStatToolNameOnlyResult._cachedLogId).toBeUndefined();
+      expect(diffStatToolNameOnlyResult.output).toBe(largeOutput);
+      expect(showToolNameOnlyResult._cachedLogId).toBeUndefined();
+      expect(showToolNameOnlyResult.output).toBe(largeOutput);
+      expect(statusToolNameOnlyResult._cachedLogId).toBeUndefined();
+      expect(statusToolNameOnlyResult.output).toBe(largeOutput);
     });
 
     it("disables the immediate git cap when BOSUN_GIT_OUTPUT_MAX_CHARS=0", async () => {
@@ -239,6 +268,27 @@ describe("context-cache", () => {
 
       expect(result._cachedLogId).toBeUndefined();
       expect(result.aggregated_output).toBe(fullOutput);
+    });
+
+    it("applies the immediate git cap when BOSUN_GIT_OUTPUT_MAX_CHARS is set below tier-2 span", async () => {
+      process.env.BOSUN_GIT_OUTPUT_MAX_CHARS = "900";
+
+      const fullOutput = makeLargeGitOutput(60);
+      const items = [{
+        type: "command_execution",
+        command: "git log --oneline",
+        aggregated_output: fullOutput,
+      }];
+
+      const [result] = await contextCache.cacheAndCompressItems(items);
+
+      expect(result._cachedLogId).toBeDefined();
+      expect(result.aggregated_output).toContain("bosun --tool-log");
+      expect(result.aggregated_output).not.toBe(fullOutput);
+
+      const retrieved = await contextCache.retrieveToolLog(result._cachedLogId);
+      expect(retrieved.found).toBe(true);
+      expect(retrieved.entry.item.aggregated_output).toBe(fullOutput);
     });
   });
 
