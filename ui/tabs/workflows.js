@@ -17,7 +17,8 @@ import { ICONS } from "../modules/icons.js";
 import { resolveIcon } from "../modules/icon-utils.js";
 import { formatDate, formatDuration, formatRelative } from "../modules/utils.js";
 import {
-  buildNodeStatusesFromRunDetail,
+  HISTORY_LIMIT,
+  HISTORY_COMMIT_DEBOUNCE_MS,
   createHistoryState,
   getNodeSearchMetadata,
   parseGraphSnapshot,
@@ -1702,8 +1703,6 @@ function WorkflowCanvas({ workflow, onSave, nodeTypes: availableNodeTypes = [] }
   const NODE_H = 138;
   const NODE_HEADER_H = 62;
   const PORT_R = 8;
-  const HISTORY_LIMIT = 50;
-  const HISTORY_COMMIT_DEBOUNCE_MS = 220;
 
   const toCanvas = useCallback((clientX, clientY) => {
     const rect = canvasRef.current?.getBoundingClientRect();
@@ -2085,6 +2084,16 @@ function WorkflowCanvas({ workflow, onSave, nodeTypes: availableNodeTypes = [] }
     setZoom(z => Math.max(0.2, Math.min(3, z + delta)));
   }, []);
 
+  const onCanvasDoubleClick = useCallback((e) => {
+    const target = e.target;
+    const isBackgroundTarget =
+      target === e.currentTarget ||
+      target?.classList?.contains?.("canvas-bg");
+    if (!isBackgroundTarget) return;
+    e.preventDefault();
+    openNodePalette(toCanvas(e.clientX, e.clientY));
+  }, [openNodePalette, toCanvas]);
+
   // ── Node interaction ──────────────────────────────────────
 
   const onNodeMouseDown = useCallback((nodeId, e) => {
@@ -2439,6 +2448,7 @@ function WorkflowCanvas({ workflow, onSave, nodeTypes: availableNodeTypes = [] }
         onPointerUp=${onPointerUp}
         onPointerCancel=${onPointerUp}
         onWheel=${onWheel}
+        onDblClick=${onCanvasDoubleClick}
         onContextMenu=${(e) => e.preventDefault()}
       >
         <defs>
@@ -2457,7 +2467,7 @@ function WorkflowCanvas({ workflow, onSave, nodeTypes: availableNodeTypes = [] }
         </defs>
 
         <!-- Background grid — covers entire pannable area -->
-        <rect class="canvas-bg" x="-10000" y="-10000" width="30000" height="30000" fill="url(#grid-pattern)" onDblClick=${(e) => { e.preventDefault(); openNodePalette(toCanvas(e.clientX, e.clientY)); }} />
+        <rect class="canvas-bg" x="-10000" y="-10000" width="30000" height="30000" fill="url(#grid-pattern)" />
 
         <g transform="translate(${pan.x} ${pan.y}) scale(${zoom})">
 
@@ -2801,24 +2811,37 @@ function NodePalette({
     setSelectedIndex(0);
   }, [results.length, selectedIndex]);
 
+  const renderChips = (items = [], fallback = "None") => {
+    const safeList = Array.isArray(items) ? items : [];
+    if (!safeList.length) {
+      return html`<span class="wf-node-chip wf-node-chip-fallback">${fallback}</span>`;
+    }
+    const limit = 4;
+    const visible = safeList.slice(0, limit);
+    const remainder = Math.max(0, safeList.length - visible.length);
+    return html`
+      ${visible.map((value, index) => html`<span key=${`${value}-${index}`} class="wf-node-chip">${value}</span>`)}
+      ${remainder > 0 && html`<span class="wf-node-chip wf-node-chip-more">+${remainder}</span>`}
+    `;
+  };
+
   if (!open) return null;
 
+  const totalTypes = types?.length || 0;
   const selected = results[selectedIndex] || results[0] || null;
   const submit = (item) => {
     if (!item) return;
     onSelect(item.type);
   };
+  const pointLabel = `${Math.round(insertPoint?.x || 0)}, ${Math.round(insertPoint?.y || 0)}`;
 
   return html`
-    <div
-      style="position: absolute; inset: 0; z-index: 32; background: rgba(3, 7, 18, 0.55); backdrop-filter: blur(2px);"
-      onClick=${(e) => { if (e.target === e.currentTarget) onClose(); }}
-    >
-      <div class="wf-palette" style="position: absolute; top: 72px; left: 50%; transform: translateX(-50%); width: min(760px, calc(100% - 32px)); max-height: min(70vh, 720px); overflow: hidden; background: var(--color-bg, #0d1117); border: 1px solid var(--color-border, #2a3040); border-radius: 16px; padding: 14px; box-shadow: 0 18px 48px rgba(0,0,0,0.45); display: flex; flex-direction: column; gap: 12px;">
-        <div style="display: flex; align-items: center; gap: 10px;">
-          <div style="flex: 1; min-width: 0;">
-            <div style="font-size: 14px; font-weight: 700; color: var(--color-text, white);">Insert workflow node</div>
-            <div style="font-size: 11px; opacity: 0.7; margin-top: 3px;">${types?.length || 0} node types · insert at ${Math.round(insertPoint?.x || 0)}, ${Math.round(insertPoint?.y || 0)}</div>
+    <div class="wf-palette-backdrop" onClick=${(e) => { if (e.target === e.currentTarget) onClose(); }}>
+      <div class="wf-palette">
+        <div class="wf-palette-header">
+          <div class="wf-palette-title-group">
+            <div class="wf-palette-title">Insert workflow node</div>
+            <div class="wf-palette-subtitle">${totalTypes} node types · insert at ${pointLabel}</div>
           </div>
           <${IconButton} size="small" onClick=${onClose} sx=${{ fontSize: '16px', lineHeight: 1 }}>
             <span class="icon-inline">${resolveIcon("✕")}</span>
@@ -2854,45 +2877,56 @@ function NodePalette({
           sx=${{ flex: 1 }}
           autoFocus
         />
-        <div style="display: flex; align-items: center; gap: 8px; font-size: 11px; opacity: 0.7;">
+        <div class="wf-palette-hints">
           <span>${results.length} matches</span>
           <span>·</span>
           <span>↵ insert</span>
           <span>·</span>
           <span>↑↓ navigate</span>
         </div>
-        <div style="display: flex; flex-direction: column; gap: 8px; overflow-y: auto; padding-right: 2px;">
+        <div class="wf-palette-results">
           ${results.map((item, index) => {
             const meta = NODE_CATEGORY_META[item.category] || { color: "#6b7280", bg: "#6b728020", label: item.category };
             const io = getNodeSearchMetadata(item);
-            const inputText = io.inputs.length
-              ? `Inputs: ${io.inputs.slice(0, 4).join(", ")}${io.inputs.length > 4 ? ` +${io.inputs.length - 4}` : ""}`
-              : "Inputs: none";
-            const outputText = `Outputs: ${io.outputs.join(", ")}`;
             return html`
               <button
                 key=${item.type}
                 type="button"
                 class=${`wf-node-search-item ${index === selectedIndex ? "active" : ""}`}
-                style=${`display:flex; flex-direction:column; gap:8px; width:100%; text-align:left; border:1px solid ${index === selectedIndex ? '#3b82f6aa' : 'var(--color-border, #2a3040)'}; border-radius:12px; padding:12px 14px; background:${index === selectedIndex ? 'rgba(59,130,246,0.12)' : 'var(--color-bg-secondary, #131722)'}; color:var(--color-text, white); cursor:pointer;`}
+                style=${`border-color: ${index === selectedIndex ? '#3b82f6aa' : 'var(--color-border, #2a3040)'}; background: ${index === selectedIndex ? 'rgba(59,130,246,0.12)' : 'var(--color-bg-secondary, #131722)'};`}
                 onMouseEnter=${() => setSelectedIndex(index)}
                 onClick=${() => submit(item)}
               >
-                <div style="display:flex; align-items:center; gap:8px; flex-wrap:wrap;">
-                  <span style="font-weight:700; font-size:13px;">${item.label}</span>
-                  <span style=${`display:inline-flex; align-items:center; padding:2px 8px; border-radius:999px; font-size:10px; letter-spacing:0.04em; text-transform:uppercase; color:${meta.color}; background:${meta.bg}; border:1px solid ${meta.color}33;`}>${meta.label || item.category}</span>
-                  <span style="font-size:11px; opacity:0.55;">${item.type}</span>
+                <div class="wf-node-search-item-top">
+                  <span class="wf-node-search-label">${item.label}</span>
+                  <span
+                    class="wf-node-category-badge"
+                    style=${`color:${meta.color}; background:${meta.bg}; border-color:${meta.color}33;`}
+                  >
+                    ${meta.label || item.category}
+                  </span>
+                  <span class="wf-node-search-type">${item.type}</span>
                 </div>
-                <div style="font-size:12px; opacity:0.78; line-height:1.4;">${item.description || "No description available."}</div>
-                <div style="display:flex; gap:10px; flex-wrap:wrap; font-size:11px; opacity:0.72;">
-                  <span>${inputText}</span>
-                  <span>${outputText}</span>
+                <div class="wf-node-search-description">${item.description || "No description available."}</div>
+                <div class="wf-node-chip-row">
+                  <div class="wf-node-chip-group">
+                    <span class="wf-node-chip-label">Inputs</span>
+                    <div class="wf-node-chip-list">
+                      ${renderChips(io.inputs, "None")}
+                    </div>
+                  </div>
+                  <div class="wf-node-chip-group">
+                    <span class="wf-node-chip-label">Outputs</span>
+                    <div class="wf-node-chip-list">
+                      ${renderChips(io.outputs, "Default")}
+                    </div>
+                  </div>
                 </div>
               </button>
             `;
           })}
           ${results.length === 0 && html`
-            <div style="text-align: center; padding: 20px; opacity: 0.6;">No matching nodes</div>
+            <div class="wf-node-search-empty">No matching nodes</div>
           `}
         </div>
       </div>
@@ -2908,9 +2942,9 @@ function KeyboardShortcutOverlay({ open, onClose, canUndo, canRedo }) {
     { keys: "?", description: "Show this shortcut reference" },
     { keys: "Ctrl/Cmd + Z", description: canUndo ? "Undo last graph change" : "Undo unavailable" },
     { keys: "Ctrl/Cmd + Shift + Z", description: canRedo ? "Redo last undone change" : "Redo unavailable" },
-    { keys: "Ctrl/Cmd + Y", description: canRedo ? "Alternate redo shortcut" : "Alternate redo shortcut" },
-    { keys: "Delete / Backspace", description: "Delete selected node or edge" },
+    { keys: "Ctrl/Cmd + Y", description: canRedo ? "Alternate redo shortcut" : "Alternate redo unavailable" },
     { keys: "Ctrl/Cmd + A", description: "Select all nodes" },
+    { keys: "Delete / Backspace", description: "Delete selected node or edge" },
     { keys: "Space + drag", description: "Pan the canvas" },
     { keys: "Ctrl/Cmd + drag", description: "Alternate mouse panning" },
     { keys: "Shift + click", description: "Add or remove a node from the selection" },
@@ -2919,11 +2953,11 @@ function KeyboardShortcutOverlay({ open, onClose, canUndo, canRedo }) {
     <${Dialog} open=${open} onClose=${onClose} maxWidth="sm" fullWidth>
       <${DialogTitle}>Canvas Shortcuts<//>
       <${DialogContent} dividers>
-        <div style="display:flex; flex-direction:column; gap:10px;">
+        <div class="wf-shortcuts-grid">
           ${shortcuts.map((shortcut) => html`
-            <div key=${shortcut.keys} style="display:flex; align-items:flex-start; justify-content:space-between; gap:16px;">
-              <code style="font-size:12px; padding:3px 8px; border-radius:8px; background:rgba(148,163,184,0.14);">${shortcut.keys}</code>
-              <span style="font-size:13px; opacity:0.82; text-align:right;">${shortcut.description}</span>
+            <div key=${shortcut.keys} class="wf-shortcut-row">
+              <code class="wf-shortcut-key">${shortcut.keys}</code>
+              <span class="wf-shortcut-desc">${shortcut.description}</span>
             </div>
           `)}
         </div>
