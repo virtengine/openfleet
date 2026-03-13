@@ -23,7 +23,6 @@ import {
   loadStatus,
   loadProjectSummary,
   loadRetryQueue,
-  retryQueueData,
   showToast,
   refreshTab,
   runOptimistic,
@@ -32,6 +31,7 @@ import {
   getDashboardHistory,
   setPendingChange,
   clearPendingChange,
+  retryQueueData,
 } from "../modules/state.js";
 import { navigateTo } from "../modules/router.js";
 import { ICONS } from "../modules/icons.js";
@@ -306,49 +306,443 @@ export function CreateTaskModal({ onClose }) {
           onDiscard=${resetToInitial}
           saving=${submitting}
         />
-</div>
-        <//>
+      </div>
+    <//>
+  `;
+}
 
-        ${retryQueueData.value?.count > 0 ? html`
-        <${Card}
-          title=${html`<span class="dashboard-card-title"
-            ><span class="dashboard-title-icon" style="color:var(--color-error)">⚠</span>Retry Queue</span
-          >`}
-          className="dashboard-card dashboard-retry-queue"
-        >
-          <div class="dashboard-retry-queue-count">
-            <span class="dashboard-retry-number">${retryQueueData.value.count}</span>
-            <span class="dashboard-retry-label">tasks waiting</span>
-          </div>
-          <div class="dashboard-retry-items">
-            ${retryQueueData.value.items.slice(0, 5).map((item) => html`
-              <div class="dashboard-retry-item">
-                <div class="dashboard-retry-task">${truncate(item.taskTitle || item.taskId || "Unknown", 40)}</div>
-                <div class="dashboard-retry-meta">
-                  <span style="color:var(--color-inreview)">${item.retryCount || 1}x</span>
-                  <span> · </span>
-                  <span class="dashboard-retry-error">${truncate(item.lastError || "Unknown error", 50)}</span>
-                </div>
-              </div>
-            `)}
-            ${retryQueueData.value.items.length > 5 ? html`
-              <div class="dashboard-retry-more">
-                +${retryQueueData.value.items.length - 5} more tasks
-              </div>
-            ` : null}
-          </div>
-          <div class="dashboard-retry-actions">
-            <${Button}
-              variant="outlined"
-              size="small"
-              onClick=${() => navigateTo("control")}
-            >
-              View All
+/* ─── DashboardTab ─── */
+export function DashboardTab() {
+  const [showCreate, setShowCreate] = useState(false);
+  const [showStartModal, setShowStartModal] = useState(false);
+  const [uptime, setUptime] = useState(null);
+  const [healthStats, setHealthStats] = useState(null);
+  // New state
+  const [now, setNow] = useState(() => new Date());
+  const [recentCommits, setRecentCommits] = useState([]);
+  const [flashKey, setFlashKey] = useState(0);
+  const prevCounts = useRef(null);
+  const status = statusData.value;
+  const executor = executorData.value;
+  const retryQueue = retryQueueData.value || { count: 0, items: [], stats: {} };
+  const project = projectSummary.value;
+  const counts = status?.counts || {};
+  const summary = status?.success_metrics || {};
+  const execData = executor?.data;
+  const mode = executor?.mode || "vk";
+  const defaultSdk = execData?.sdk || "auto";
+
+  const running = Number(counts.running || counts.inprogress || 0);
+  const review = Number(counts.review || counts.inreview || 0);
+  const blocked = Number(counts.error || 0);
+  const done = Number(counts.done || 0);
+  const backlog = Number(status?.backlog_remaining || counts.todo || 0);
+  const totalTasks = running + review + blocked + backlog + done;
+  const errorRateValue = totalTasks > 0 ? (blocked / totalTasks) * 100 : 0;
+  const errorRate = errorRateValue.toFixed(1);
+
+  const totalActive = running + review + blocked;
+  const progressPct =
+    backlog + totalActive > 0
+      ? Math.round((totalActive / (backlog + totalActive)) * 100)
+      : 0;
+  const slotPct = execData?.maxParallel
+    ? ((execData.activeSlots || 0) / execData.maxParallel) * 100
+    : 0;
+
+  // ── Health score (0–100) based on real 6h run history ──
+  let healthScore = 100;
+  if (executor?.paused) healthScore -= 20;
+  if (healthStats?.total > 0) {
+    // Primary signal: failure rate over last 6 hours
+    healthScore -= Math.min(50, Math.round(healthStats.failRate * 60));
+  } else {
+    // No run history yet — fall back to current snapshot blocked ratio
+    healthScore -= Math.min(30, Math.round(errorRateValue * 1.5));
+  }
+  if ((execData?.activeSlots ?? 0) === 0 && backlog > 0) healthScore -= 10;
+  if (blocked > 0) healthScore -= Math.min(15, blocked * 5);
+  if (slotPct > 50 && blocked === 0 && (!healthStats || healthStats.failRate < 0.1)) healthScore += 5;
+  healthScore = Math.min(100, Math.max(0, Math.round(healthScore)));
+
+  // ── Clock ──
+  const timeStr = now.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" });
+  const tzStr = Intl.DateTimeFormat().resolvedOptions().timeZone;
+
+  const headerLine = `${totalActive} active · ${backlog} backlog · ${done} done${
+    blocked ? ` · ${blocked} blocked` : ""
+  }`;
+
+  // ── Dynamic headline ──
+  const headline =
+    totalActive === 0
+      ? "Fleet idle"
+      : blocked > 0
+        ? "Needs attention"
+        : "All systems running";
+  const headlineClass =
+    totalActive === 0
+      ? "dashboard-headline-idle"
+      : blocked > 0
+        ? "dashboard-headline-warn"
+        : "dashboard-headline-ok";
+
+  // ── Hero badge: all tasks done and nothing pending ──
+  const fleetAtRest = totalTasks > 0 && done > 0 && backlog === 0 && totalActive === 0;
+
+  // ── Uptime fetch on mount ──
+  useEffect(() => {
+    let active = true;
+    apiFetch("/api/health", { _silent: true })
+      .then((res) => {
+        if (!active) return;
+        const secs = Number(res?.uptime || 0);
+        if (!secs) return;
+        const d = Math.floor(secs / 86400);
+        const h = Math.floor((secs % 86400) / 3600);
+        const m = Math.floor((secs % 3600) / 60);
+        const parts = [];
+        if (d > 0) parts.push(`${d}d`);
+        if (h > 0) parts.push(`${h}h`);
+        if (m > 0 && d === 0) parts.push(`${m}m`);
+        setUptime(parts.length ? `up ${parts.join(" ")}` : "up < 1m");
+      })
+      .catch(() => {});
+    return () => { active = false; };
+  }, []);
+
+  // ── 6-hour run health stats (refreshes every 30s) ──
+  useEffect(() => {
+    let active = true;
+    const fetch6h = () => {
+      apiFetch("/api/health-stats", { _silent: true })
+        .then((res) => { if (active && res?.ok) setHealthStats(res); })
+        .catch(() => {});
+    };
+    fetch6h();
+    const t = setInterval(fetch6h, 30_000);
+    return () => { active = false; clearInterval(t); };
+  }, []);
+
+  // ── Listen for ve:create-task keyboard shortcut ──
+  useEffect(() => {
+    const handler = () => setShowCreate(true);
+    window.addEventListener("ve:create-task", handler);
+    return () => window.removeEventListener("ve:create-task", handler);
+  }, []);
+
+  // ── Real-time clock ──
+  useEffect(() => {
+    const t = setInterval(() => setNow(new Date()), 1000);
+    return () => clearInterval(t);
+  }, []);
+
+  // ── Recent commits (graceful 404) ──
+  useEffect(() => {
+    apiFetch("/api/recent-commits", { _silent: true })
+      .then((res) => {
+        const commits = Array.isArray(res?.data)
+          ? res.data
+          : Array.isArray(res)
+            ? res
+            : [];
+        setRecentCommits(commits.slice(0, 3));
+      })
+      .catch(() => {});
+  }, []);
+
+  useEffect(() => {
+    loadRetryQueue().catch(() => {});
+  }, []);
+
+  // ── Flash metrics on counts change ──
+  useEffect(() => {
+    const current = JSON.stringify(counts);
+    const previous = JSON.stringify(prevCounts.current);
+    if (previous !== current) {
+      prevCounts.current = counts;
+      setFlashKey((k) => k + 1);
+    }
+  });
+
+  const overviewMetrics = [
+    {
+      label: "Total tasks",
+      value: totalTasks,
+      color: "var(--text-primary)",
+      trend: getTrend("total"),
+      spark: "total",
+      tab: "tasks",
+    },
+    {
+      label: "In progress",
+      value: running,
+      color: "var(--color-inprogress)",
+      trend: getTrend("running"),
+      spark: "running",
+      tab: "tasks",
+    },
+    {
+      label: "Done",
+      value: done,
+      color: "var(--color-done)",
+      trend: getTrend("done"),
+      spark: "done",
+      tab: "tasks",
+    },
+    {
+      label: "Error rate",
+      value: `${errorRate}%`,
+      color: "var(--color-error)",
+      trend: -getTrend("errors"),
+      spark: "errors",
+      tab: "tasks",
+    },
+  ];
+
+  // ── Live fleet ticker data (3 most recent tasks) ──
+  const tickerTasks = (tasksData.value || []).slice(0, 3);
+
+  const workItems = [
+    { label: "Running", value: running, color: "var(--color-inprogress)" },
+    { label: "Review", value: review, color: "var(--color-inreview)" },
+    { label: "Backlog", value: backlog, color: "var(--color-todo)" },
+    { label: "Done", value: done, color: "var(--color-done)" },
+  ];
+
+  const alertItems = [
+    {
+      label: "Blocked tasks",
+      value: blocked,
+      tone: blocked > 0 ? "error" : "ok",
+    },
+    {
+      label: "Error rate",
+      value: `${errorRate}%`,
+      tone: errorRateValue > 0 ? "warning" : "ok",
+    },
+  ];
+  const hasAlerts = alertItems.some((item) => item.tone !== "ok");
+
+  const qualityItems = [
+    {
+      label: "First-shot",
+      value: `${summary.first_shot_rate ?? 0}%`,
+      tone: "good",
+    },
+    {
+      label: "Needed Fix",
+      value: summary.needed_fix ?? 0,
+      tone: "warn",
+    },
+    {
+      label: "Failed",
+      value: summary.failed ?? 0,
+      tone: "error",
+    },
+  ];
+
+  /* Trend indicator helper */
+  const trend = (val) =>
+    val > 0
+      ? html`<span class="stat-trend up">▲</span>`
+      : val < 0
+        ? html`<span class="stat-trend down">▼</span>`
+        : null;
+
+  /* Historical sparkline data */
+  const history = getDashboardHistory();
+  const sparkData = (metric) => history.map((h) => h[metric] ?? 0);
+
+  const segments = [
+    { label: "Running", value: running, color: "var(--color-inprogress)" },
+    { label: "Review", value: review, color: "var(--color-inreview)" },
+    { label: "Blocked", value: blocked, color: "var(--color-error)" },
+    { label: "Backlog", value: backlog, color: "var(--color-todo)" },
+    { label: "Done", value: done, color: "var(--color-done)" },
+  ].filter((s) => s.value > 0);
+
+  /* ── Executor controls ── */
+  const handlePause = async () => {
+    haptic("medium");
+    const confirmed = await showConfirm(
+      "Pause the executor? Active tasks will finish but no new ones will start.",
+    );
+    if (!confirmed) return;
+    const prev = cloneValue(executor);
+    await runOptimistic(
+      () => {
+        if (executorData.value)
+          executorData.value = { ...executorData.value, paused: true };
+      },
+      () => apiFetch("/api/executor/pause", { method: "POST" }),
+      () => {
+        executorData.value = prev;
+      },
+    ).catch(() => {});
+    scheduleRefresh(120);
+  };
+
+  const handleResume = async () => {
+    haptic("medium");
+    const prev = cloneValue(executor);
+    await runOptimistic(
+      () => {
+        if (executorData.value)
+          executorData.value = { ...executorData.value, paused: false };
+      },
+      () => apiFetch("/api/executor/resume", { method: "POST" }),
+      () => {
+        executorData.value = prev;
+      },
+    ).catch(() => {});
+    scheduleRefresh(120);
+  };
+
+  /* ── Quick-action handler ── */
+  const handleQuickAction = async (action, e) => {
+    haptic();
+    if (action.targetTab) {
+      navigateTo(action.targetTab, {
+        resetHistory: action.targetTab === "dashboard",
+        forceRefresh: true,
+      });
+    }
+    if (action.action === "create") {
+      setShowCreate(true);
+    } else if (action.action === "start") {
+      setShowStartModal(true);
+    } else if (action.cmd) {
+      try {
+        if (action.cmd.startsWith("/status")) {
+          await refreshTab("dashboard", { force: true });
+          showToast("Status refreshed", "success");
+        } else if (action.cmd.startsWith("/health")) {
+          const res = await apiFetch("/api/health", { _silent: true });
+          const uptime = Number(res?.uptime || 0);
+          showToast(`Health OK · uptime ${Math.round(uptime)}s`, "success");
+        } else if (action.cmd.startsWith("/logs")) {
+          await refreshTab("logs", { force: true });
+          showToast("Opened logs", "success");
+        } else if (action.cmd.startsWith("/menu")) {
+          await sendCommandToChat(action.cmd);
+          showToast("Opened control panel", "success");
+          scheduleRefresh(60);
+        } else if (action.cmd.startsWith("/plan")) {
+          await sendCommandToChat(action.cmd);
+          showToast("Planner dispatched", "success");
+          scheduleRefresh(120);
+        } else {
+          await sendCommandToChat(action.cmd);
+          showToast(`Sent: ${action.cmd}`, "success");
+          scheduleRefresh(120);
+        }
+        const btn = e?.currentTarget;
+        if (btn) {
+          btn.classList.add("quick-action-sent");
+          setTimeout(() => btn.classList.remove("quick-action-sent"), 1500);
+        }
+      } catch {
+        showToast("Command failed", "error");
+      }
+    }
+  };
+
+  const handleModalStart = useCallback(async ({ taskId, sdk, model }) => {
+    if (!taskId) return;
+    await apiFetch("/api/tasks/start", {
+      method: "POST",
+      body: JSON.stringify({
+        taskId,
+        ...(sdk ? { sdk } : {}),
+        ...(model ? { model } : {}),
+      }),
+    });
+    showToast("Task started", "success");
+    scheduleRefresh(150);
+  }, []);
+
+  /* ── Recent activity (last 5 tasks from global tasks signal) ── */
+  const recentTasks = (tasksData.value || []).slice(0, 5);
+  const retryItems = Array.isArray(retryQueue.items) ? retryQueue.items : [];
+
+  const formatRetryCountdown = useCallback((nextAttemptAt) => {
+    const target = Number(nextAttemptAt || 0);
+    if (!Number.isFinite(target) || target <= 0) return "Now";
+    const remainingMs = target - now.getTime();
+    if (remainingMs <= 0) return "Now";
+    const totalSec = Math.ceil(remainingMs / 1000);
+    const min = Math.floor(totalSec / 60);
+    const sec = totalSec % 60;
+    if (min > 0) return `${min}m ${String(sec).padStart(2, "0")}s`;
+    return `${sec}s`;
+  }, [now]);
+
+  const handleRetryNow = useCallback(async (taskId) => {
+    const id = String(taskId || "").trim();
+    if (!id) return;
+    try {
+      await apiFetch("/api/tasks/retry", {
+        method: "POST",
+        body: JSON.stringify({ taskId: id }),
+      });
+      showToast(`Retry requested for ${id}`, "success");
+      scheduleRefresh(100);
+    } catch {
+      /* toast shown by apiFetch */
+    }
+  }, []);
+
+  /* ── Loading skeleton ── */
+  if (!status && !executor)
+    return html`<${Card} title="Loading…"><${SkeletonCard} count=${4} /><//>`;
+
+  /* ── Welcome empty state ── */
+  if (totalTasks === 0 && !executor) {
+    return html`
+      <div class="dashboard-shell">
+        <${Card} className="dashboard-card">
+          <div class="dashboard-welcome-card">
+            <div class="dashboard-welcome-icon">${resolveIcon("sliders")}</div>
+            <div class="dashboard-welcome-title">Welcome to VirtEngine Control Center</div>
+            <div class="dashboard-welcome-desc">
+              Your AI development fleet is ready. Create your first task to get started.
+            </div>
+            <${Button} variant="contained" size="small" onClick=${() => setShowCreate(true)}>
+              ${iconText(":plus: Create your first task")}
             <//>
           </div>
         <//>
-        ` : null}
+        ${showCreate &&
+          html`<${CreateTaskModal} onClose=${() => setShowCreate(false)} />`}
+      </div>
+    `;
+  }
 
+  return html`
+    <div class="dashboard-shell">
+      <div class="dashboard-header">
+        <div class="dashboard-header-text">
+          <div class="dashboard-eyebrow">Pulse</div>
+          <div class="dashboard-title ${headlineClass}">${headline}</div>
+          <div class="dashboard-subtitle">${headerLine}</div>
+        </div>
+        <div class="dashboard-header-meta">
+          <span class="dashboard-chip">Mode ${mode}</span>
+          <span class="dashboard-chip">SDK ${defaultSdk}</span>
+          ${uptime ? html`<span class="dashboard-chip">${uptime}</span>` : null}
+          <span class="dashboard-chip dashboard-chip-clock">
+            ${timeStr} <span class="dashboard-chip-tz">${tzStr}</span>
+          </span>
+          ${executor
+            ? executor.paused
+              ? html`<${Badge} status="error" text="Paused" />`
+              : html`<${Badge} status="done" text="Running" />`
+            : html`<span class="dashboard-chip">Executor · —</span>`}
+        </div>
+      </div>
+
+      <div class="dashboard-grid">
         <${Card}
           title=${html`<span class="dashboard-card-title"
             ><span class="dashboard-title-icon">${ICONS.shield}</span>Health
@@ -620,6 +1014,45 @@ export function CreateTaskModal({ onClose }) {
               `,
             )}
           </div>
+        <//>
+
+        <${Card}
+          title=${html`<span class="dashboard-card-title"
+            ><span class="dashboard-title-icon">${ICONS.refresh || resolveIcon("refresh")}</span>Retry Queue</span
+          >`}
+          className="dashboard-card dashboard-retry-queue"
+        >
+          ${retryItems.length
+            ? html`
+              <div class="dashboard-retry-list">
+                ${retryItems.map((item) => html`
+                  <div key=${item.taskId} class="dashboard-retry-item">
+                    <div class="dashboard-retry-main">
+                      <div class="dashboard-retry-task">${item.taskId}</div>
+                      ${item.taskTitle
+                        ? html`<div class="dashboard-retry-task-title">${truncate(item.taskTitle, 72)}</div>`
+                        : null}
+                      <div class="dashboard-retry-error">${truncate(item.lastError || item.reason || "Unknown retry reason", 120)}</div>
+                    </div>
+                    <div class="dashboard-retry-meta">
+                      <span class="dashboard-retry-pill">Attempt ${item.retryCount || 0}</span>
+                      <span class="dashboard-retry-pill">Next ${formatRetryCountdown(item.nextAttemptAt)}</span>
+                      <${Button}
+                        variant="outlined"
+                        size="small"
+                        onClick=${() => {
+                          haptic("medium");
+                          void handleRetryNow(item.taskId);
+                        }}
+                      >
+                        Retry Now
+                      <//>
+                    </div>
+                  </div>
+                `)}
+              </div>
+            `
+            : html`<${EmptyState} title="No queued retries" description="Failed tasks waiting to retry appear here automatically." />`}
         <//>
 
         <${Card}

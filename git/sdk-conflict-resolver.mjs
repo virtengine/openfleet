@@ -25,6 +25,7 @@ import { resolveCodexProfileRuntime } from "../shell/codex-model-profiles.mjs";
 import {
   evaluateBranchSafetyForPush,
   normalizeBaseBranch,
+  sanitizeGitEnv,
 } from "./git-safety.mjs";
 
 // ── Configuration ────────────────────────────────────────────────────────────
@@ -73,6 +74,7 @@ function gitExec(args, cwd, timeoutMs = 30_000) {
       stdio: ["ignore", "pipe", "pipe"],
       shell: false,
       timeout: timeoutMs,
+      env: sanitizeGitEnv(),
     });
 
     let stdout = "";

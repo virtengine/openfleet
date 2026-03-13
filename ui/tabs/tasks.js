@@ -501,6 +501,64 @@ function normalizeDagNode(node, index) {
   };
 }
 
+function buildDagDepthMap(levelSource = []) {
+  const levels = Array.isArray(levelSource) ? levelSource : [];
+  const depthMap = new Map();
+  levels.forEach((level, depth) => {
+    const entries = Array.isArray(level)
+      ? level
+      : Array.isArray(level?.nodes)
+        ? level.nodes
+        : [];
+    entries.forEach((entry) => {
+      const id = toText(entry?.id || entry?.taskId || entry);
+      if (id && !depthMap.has(id)) depthMap.set(id, depth);
+    });
+  });
+  return depthMap;
+}
+
+function buildTopologicalDepthMap(nodes = [], rawEdges = []) {
+  const depthMap = new Map();
+  const indegree = new Map();
+  const outgoing = new Map();
+  const ids = new Set();
+  for (const node of nodes) {
+    const id = toText(node?.id || node?.taskId);
+    if (!id) continue;
+    ids.add(id);
+    indegree.set(id, 0);
+    outgoing.set(id, []);
+  }
+  for (const edge of rawEdges || []) {
+    const sourceId = toText(edge?.source || edge?.from || edge?.parent || edge?.dependsOn);
+    const targetId = toText(edge?.target || edge?.to || edge?.child || edge?.taskId);
+    if (!sourceId || !targetId || !ids.has(sourceId) || !ids.has(targetId) || sourceId === targetId) continue;
+    outgoing.get(sourceId)?.push(targetId);
+    indegree.set(targetId, (indegree.get(targetId) || 0) + 1);
+  }
+
+  const queue = [...indegree.entries()]
+    .filter(([, degree]) => degree === 0)
+    .map(([id]) => id);
+  queue.forEach((id) => depthMap.set(id, 0));
+
+  while (queue.length) {
+    const sourceId = queue.shift();
+    const nextDepth = (depthMap.get(sourceId) || 0) + 1;
+    for (const targetId of outgoing.get(sourceId) || []) {
+      if (!depthMap.has(targetId) || (depthMap.get(targetId) || 0) < nextDepth) {
+        depthMap.set(targetId, nextDepth);
+      }
+      const nextDegree = (indegree.get(targetId) || 0) - 1;
+      indegree.set(targetId, nextDegree);
+      if (nextDegree === 0) queue.push(targetId);
+    }
+  }
+
+  return depthMap;
+}
+
 function normalizeDagGraph(raw, fallbackTitle = "") {
   const payload = extractDagPayload(raw);
   const graph =
@@ -531,15 +589,31 @@ function normalizeDagGraph(raw, fallbackTitle = "") {
 
   const rawNodes =
     nodeSourceCandidates.find((value) => Array.isArray(value) && value.length > 0) || [];
-  const nodes = rawNodes.map(normalizeDagNode).filter((node) => node && node.id);
+  const depthByLevel = buildDagDepthMap(graph?.levels || payload?.levels || []);
+  const provisionalNodes = rawNodes.map(normalizeDagNode).filter((node) => node && node.id);
+  const rawEdges =
+    edgeSourceCandidates.find((value) => Array.isArray(value) && value.length > 0) || [];
+  const depthByTopology = depthByLevel.size
+    ? new Map()
+    : buildTopologicalDepthMap(provisionalNodes, rawEdges);
+  const nodes = provisionalNodes.map((node) => {
+    const depth = Number.isFinite(Number(node?.depth))
+      ? Number(node.depth)
+      : depthByLevel.get(node.id)
+        ?? (node.taskId ? depthByLevel.get(node.taskId) : null)
+        ?? depthByTopology.get(node.id)
+        ?? (node.taskId ? depthByTopology.get(node.taskId) : null);
+    return {
+      ...node,
+      depth: Number.isFinite(Number(depth)) ? Number(depth) : null,
+    };
+  });
   const idLookup = new Map();
   for (const node of nodes) {
     idLookup.set(node.id, node.id);
     if (node.taskId) idLookup.set(node.taskId, node.id);
   }
 
-  const rawEdges =
-    edgeSourceCandidates.find((value) => Array.isArray(value) && value.length > 0) || [];
   const edges = [];
   const seen = new Set();
   const pushEdge = (source, target, kind = "depends-on") => {
@@ -2332,6 +2406,43 @@ export function TaskDetailModal({ task, onClose, onStart, presentation = "modal"
     task?.workflowHistory,
     task?.workflows,
   ]);
+
+  // ── Execution Plan state ──────────────────────────────────────────────────
+  const [executionPlan, setExecutionPlan] = useState(null);
+  const [executionPlanLoading, setExecutionPlanLoading] = useState(false);
+  const [expandedNodes, setExpandedNodes] = useState({});
+  const [expandedStages, setExpandedStages] = useState({});
+  const [dryRunLoading, setDryRunLoading] = useState(false);
+  const [dryRunResults, setDryRunResults] = useState(null);
+  const [fullScreen, setFullScreen] = useState(false);
+  const [activeTab, setActiveTab] = useState("details");
+
+  const fetchExecutionPlan = useCallback((mode = "resolve") => {
+    if (!task?.id) return;
+    if (mode === "resolve") { setExecutionPlan(null); setExecutionPlanLoading(true); }
+    else { setDryRunLoading(true); }
+    const wsParam = typeof window !== "undefined" && window.__bosunWorkspaceId ? `&workspace=${encodeURIComponent(window.__bosunWorkspaceId)}` : "";
+    fetch(`/api/tasks/execution-plan?taskId=${encodeURIComponent(task.id)}${wsParam}&mode=${mode}`)
+      .then((r) => r.json())
+      .then((data) => {
+        if (data?.ok) {
+          if (mode === "resolve") setExecutionPlan(data);
+          else { setExecutionPlan(data); setDryRunResults(data.dryRunResults || null); }
+        }
+      })
+      .catch(() => {})
+      .finally(() => { setExecutionPlanLoading(false); setDryRunLoading(false); });
+  }, [task?.id]);
+
+  useEffect(() => { fetchExecutionPlan("resolve"); }, [task?.id]);
+
+  const toggleNodeExpand = useCallback((stageIdx, nodeId) => {
+    setExpandedNodes((prev) => ({ ...prev, [`${stageIdx}-${nodeId}`]: !prev[`${stageIdx}-${nodeId}`] }));
+  }, []);
+  const toggleStageExpand = useCallback((stageIdx) => {
+    setExpandedStages((prev) => ({ ...prev, [stageIdx]: !prev[stageIdx] }));
+  }, []);
+
   const relatedLinks = useMemo(() => buildTaskRelatedLinks(task), [
     task?.id,
     task?.branch,
@@ -2981,9 +3092,11 @@ export function TaskDetailModal({ task, onClose, onStart, presentation = "modal"
     <${Modal}
       title=${task?.title || "Task Detail"}
       onClose=${onClose}
-      contentClassName=${"modal-content-wide task-detail-modal-jira" + (presentation === "side-sheet" ? " task-detail-side-sheet" : "")}
-      layout=${presentation === "side-sheet" ? "side-sheet" : "sheet"}
-      resizable=${presentation === "side-sheet"}
+      contentClassName=${fullScreen
+        ? "task-detail-fullscreen"
+        : "modal-content-wide task-detail-modal-jira" + (presentation === "side-sheet" ? " task-detail-side-sheet" : "")}
+      layout=${fullScreen ? "sheet" : (presentation === "side-sheet" ? "side-sheet" : "sheet")}
+      resizable=${!fullScreen && presentation === "side-sheet"}
       widthStorageKey="tasks.task-detail.width"
       defaultWidth=${900}
       unsavedChanges=${changeCount}
@@ -2994,71 +3107,1047 @@ export function TaskDetailModal({ task, onClose, onStart, presentation = "modal"
       }}
       activeOperationLabel=${activeOperationLabel}
     >
-      <div class="task-modal-summary jira-task-summary">
-        <div class="task-modal-id" style="user-select:all">ID: ${task?.id}</div>
-        <div class="task-modal-badges">
-          <${Badge} status=${task?.status} text=${task?.status} />
-          ${task?.priority &&
-          html`<${Badge} status=${task.priority} text=${task.priority} />`}
-          ${manualOverride && html`<${Badge} status="warning" text="manual" />`}
+      ${/* ── Breadcrumb ── */ ""}
+      <div class="task-detail-breadcrumb">
+        <span>Tasks</span>
+        <span>/</span>
+        <span style="color:var(--color-text);font-weight:500;user-select:all;">${task?.id?.slice(0, 8) || "New"}</span>
+        ${task?.priority && html`<span class="task-priority-dot" data-priority=${task.priority}></span>`}
+        ${manualOverride && html`<span class="exec-plan-badge" style="background:#fbbf2420;color:#fbbf24;">MANUAL</span>`}
+      </div>
+
+      ${/* ── Title + Actions ── */ ""}
+      <div class="task-detail-title-area" style="display:flex;gap:12px;align-items:flex-start;">
+        <div style="flex:1;min-width:0;">
+          <input class="task-detail-title-input" value=${title} onInput=${(e) => setTitle(e.target.value)} placeholder="Task title" />
         </div>
-        ${canDispatch &&
-        html`
-          <div class="task-modal-actions">
+        <div style="display:flex;gap:6px;align-items:center;padding-top:6px;flex-shrink:0;">
+          <button class="task-status-btn" data-status=${status}>
+            ${(status || "todo").toUpperCase()}
+          </button>
+          ${canDispatch && html`
             <${Button} variant="contained" size="small" onClick=${handleStart}>
-              ${iconText(":play: Dispatch Task")}
+              ${iconText(":play: Dispatch")}
             <//>
+          `}
+          <button class="task-action-icon-btn"
+            onClick=${() => setFullScreen(!fullScreen)}
+            title=${fullScreen ? "Exit fullscreen" : "Fullscreen"}>
+            ${fullScreen ? resolveIcon("minimize") || "⊟" : resolveIcon("maximize") || "⊞"}
+          </button>
+        </div>
+      </div>
+
+      ${/* ── Tab Bar (Jira style) ── */ ""}
+      <div class="task-tab-bar">
+        <button class="task-tab-btn" data-active=${activeTab === "details"} onClick=${() => setActiveTab("details")}>
+          ${resolveIcon("edit") || "✎"} Details
+        </button>
+        <button class="task-tab-btn" data-active=${activeTab === "execution"} onClick=${() => setActiveTab("execution")}>
+          ${resolveIcon("play")} Execution Plan
+          ${executionPlan?.stageCount > 0 && html`<span class="task-tab-count">${executionPlan.stageCount}</span>`}
+        </button>
+        <button class="task-tab-btn" data-active=${activeTab === "history"} onClick=${() => setActiveTab("history")}>
+          ${resolveIcon("clock") || "⏱"} History
+          ${historyEntries.length > 0 && html`<span class="task-tab-count">${historyEntries.length}</span>`}
+        </button>
+      </div>
+
+      ${/* ── Content Body ───────────────────────────────────────────── */ ""}
+      <div style="padding:${fullScreen ? '20px 24px' : '0'};overflow-y:auto;max-height:${fullScreen ? 'calc(100dvh - 140px)' : 'auto'};">
+
+      ${/* ── DETAILS TAB — Two-column Jira layout ─────────────────── */ ""}
+      ${activeTab === "details" && html`<div class="task-detail-columns" style="max-height:${fullScreen ? 'calc(100dvh - 160px)' : '65vh'};overflow:hidden;">
+
+      ${/* ── LEFT: Main Content ── */ ""}
+      <div class="task-detail-main">
+
+        ${/* Description */ ""}
+        <div class="task-section">
+          <div class="task-section-title">Description</div>
+          <div class="task-section-body">
+            <div class="textarea-with-mic" style="position:relative">
+              <${TextField} multiline rows=${4} size="small" placeholder="Add a description..." value=${description} onInput=${(e) => setDescription(e.target.value)} style=${{ paddingRight: "36px" }} fullWidth />
+              <${VoiceMicButton}
+                onTranscript=${(t) => setDescription((prev) => (prev ? prev + " " + t : t))}
+                disabled=${saving || rewriting}
+                size="sm"
+                className="textarea-mic-btn"
+              />
+            </div>
+            <div style="display:flex;gap:6px;margin-top:8px;">
+              <${Tooltip} title="Use AI to expand and improve this task description">
+                <${Button}
+                  variant="text" size="small"
+                  style=${{ display: "flex", alignItems: "center", gap: "6px", fontSize: "12px", padding: "5px 10px", opacity: !title.trim() ? 0.45 : 1 }}
+                  disabled=${!title.trim() || rewriting || saving}
+                  onClick=${async () => {
+                    if (!title.trim() || rewriting) return;
+                    setRewriting(true);
+                    haptic("medium");
+                    try {
+                      const res = await apiFetch("/api/tasks/rewrite", {
+                        method: "POST",
+                        body: JSON.stringify({ title: title.trim(), description: description.trim() }),
+                      });
+                      if (res?.data) {
+                        if (res.data.title) setTitle(res.data.title);
+                        if (res.data.description) setDescription(res.data.description);
+                        showToast("Task description improved", "success");
+                        haptic("medium");
+                      }
+                    } catch { /* toast via apiFetch */ }
+                    setRewriting(false);
+                  }}
+                >
+                  ${rewriting
+                    ? html`<span style="display:inline-block;animation:spin 0.8s linear infinite">${resolveIcon(":clock:")}</span> Improving…`
+                    : html`${iconText(":star: Improve with AI")}`
+                  }
+                <//>
+              <//>
+            </div>
+          </div>
+        </div>
+
+        ${/* Attachments */ ""}
+        <div class="task-section" onPaste=${handleAttachmentPaste}>
+          <div class="task-section-title">
+            Attachments
+            <span class="task-tab-count">${attachments.length}</span>
+            <span style="margin-left:auto;">
+              <${Button}
+                variant="text" size="small"
+                type="button"
+                onClick=${() => attachmentInputRef.current && attachmentInputRef.current.click()}
+                disabled=${uploadingAttachment}
+              >
+                Upload
+              <//>
+            </span>
+          </div>
+          <div class="task-section-body">
+            <input
+              ref=${attachmentInputRef}
+              type="file"
+              multiple
+              style="display:none"
+              onChange=${handleAttachmentPick}
+            />
+            ${attachments.length === 0 && !uploadingAttachment && html`
+              <div class="meta-text">No attachments uploaded.</div>
+            `}
+            ${uploadingAttachment && html`
+              <div class="meta-text">Uploading attachments...</div>
+            `}
+            ${attachments.length > 0 && html`
+              <div class="task-attachments-list">
+                ${attachments.map((att, index) => {
+                  const name = att.name || att.filename || "attachment";
+                  const url = att.url || att.filePath || att.path || "";
+                  const size = att.size ? formatBytes(att.size) : "";
+                  const isImage = isImageAttachment(att);
+                  return html`
+                    <div class="task-attachment-item" key=${att.id || `${name}-${index}`}>
+                      ${isImage && url
+                        ? html`<img class="task-attachment-thumb" src=${url} alt=${name} />`
+                        : html`<span class="task-attachment-icon">${resolveIcon(":link:")}</span>`}
+                      <div class="task-attachment-meta">
+                        ${url
+                          ? html`<a class="task-attachment-name" href=${url} target="_blank" rel="noopener">${name}</a>`
+                          : html`<span class="task-attachment-name">${name}</span>`}
+                        <div class="task-attachment-sub">
+                          ${(att.kind || "file")}${size ? ` · ${size}` : ""}
+                        </div>
+                      </div>
+                    </div>
+                  `;
+                })}
+              </div>
+            `}
+          </div>
+        </div>
+
+        ${/* Subtasks */ ""}
+        <div class="task-section">
+          <div class="task-section-title">
+            Subtasks
+            ${subtasks.length > 0 && html`<span class="task-tab-count">${subtasks.length}</span>`}
+            <span style="margin-left:auto;">
+              <${Button}
+                variant="text"
+                size="small"
+                onClick=${loadSubtasks}
+                disabled=${subtasksLoading || creatingSubtask}
+              >
+                ${subtasksLoading ? "Refreshing…" : "Refresh"}
+              <//>
+            </span>
+          </div>
+          <div class="task-section-body">
+            <div class="task-comment-composer" style=${{ marginBottom: "8px" }}>
+              <${TextField}
+                size="small"
+                placeholder="Create subtask summary"
+                value=${subtaskTitle}
+                onInput=${(e) => setSubtaskTitle(e.target.value)}
+                fullWidth
+              />
+              <${Button}
+                variant="contained"
+                size="small"
+                disabled=${creatingSubtask || !sanitizeTaskText(subtaskTitle || "").trim()}
+                onClick=${handleCreateSubtask}
+              >
+                ${creatingSubtask ? "Creating…" : "Add"}
+              <//>
+            </div>
+            <div class="task-comments-list">
+              ${!subtasksLoading && !subtasks.length && html`<div class="meta-text">No subtasks yet.</div>`}
+              ${subtasks.map((subtask) => html`
+                <div class="task-comment-item" key=${subtask.id}>
+                  <div class="task-comment-meta">
+                    <span style="user-select:all">${subtask.id}</span>
+                    ${subtask.status ? ` · ${subtask.status}` : ""}
+                    ${subtask.storyPoints ? ` · ${subtask.storyPoints} pts` : ""}
+                  </div>
+                  <div class="task-comment-body">${subtask.title}</div>
+                  ${subtask.assignee && html`<div class="task-comment-meta">Assignee: ${subtask.assignee}</div>`}
+                </div>
+              `)}
+            </div>
+          </div>
+        </div>
+
+        ${/* Comments & Updates */ ""}
+        <div class="task-section">
+          <div class="task-section-title">
+            Comments & Updates
+            ${comments.length > 0 && html`<span class="task-tab-count">${comments.length}</span>`}
+          </div>
+          <div class="task-section-body">
+            <div class="task-comments-list">
+              ${comments.length > 0
+                ? comments.map((comment, index) => html`
+                  <div class="task-comment-item" key=${comment.id || `comment-${index}`}>
+                    <div class="task-comment-meta">
+                      ${comment.author ? `@${comment.author}` : "comment"}
+                      ${comment.createdAt ? ` · ${formatRelative(comment.createdAt)}` : ""}
+                    </div>
+                    <div class="task-comment-body">${comment.body}</div>
+                  </div>
+                `)
+                : html`<div class="meta-text">No comments yet. Add one below.</div>`}
+            </div>
+            <div class="task-comment-composer" style=${{ marginTop: "10px" }}>
+              <${TextField}
+                multiline
+                rows=${2}
+                size="small"
+                placeholder="Add a comment or status update..."
+                value=${commentDraft}
+                onInput=${(e) => setCommentDraft(e.target.value)}
+                fullWidth
+              />
+              <${Button}
+                variant="contained"
+                size="small"
+                disabled=${postingComment || !sanitizeTaskText(commentDraft || "").trim()}
+                onClick=${handlePostComment}
+              >
+                ${postingComment ? "Posting…" : "Post Comment"}
+              <//>
+            </div>
+          </div>
+        </div>
+
+        ${/* Tracking Overview */ ""}
+        <div class="task-section">
+          <div class="task-section-title">Tracking Overview</div>
+          <div class="task-section-body">
+            <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:10px;">
+              <div class="task-comment-item">
+                <div class="task-comment-meta">Assigned Agents</div>
+                <div class="task-comment-body">${taskAgents.length ? taskAgents.join(" · ") : "No agent assignment recorded."}</div>
+              </div>
+              <div class="task-comment-item">
+                <div class="task-comment-meta">Workflow Runs</div>
+                <div class="task-comment-body">${workflowRuns.length ? `${workflowRuns.length} linked runs` : "No workflow runs linked yet."}</div>
+              </div>
+              <div class="task-comment-item">
+                <div class="task-comment-meta">Timeline Events</div>
+                <div class="task-comment-body">${historyEntries.length ? `${historyEntries.length} recorded entries` : "No timeline history yet."}</div>
+              </div>
+              <div class="task-comment-item">
+                <div class="task-comment-meta">Branch / PR</div>
+                <div class="task-comment-body">${relatedLinks.length ? relatedLinks.map((item) => `${item.kind}: ${item.value}`).join(" · ") : "No branch or PR links recorded."}</div>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        ${/* Workflow Activity */ ""}
+        ${workflowRuns.length > 0 && html`
+          <div class="task-section">
+            <div class="task-section-title">Workflow Activity</div>
+            <div class="task-section-body">
+              <div class="task-comments-list">
+                ${workflowRuns.map((run, index) => html`
+                  <div class="task-comment-item" key=${`workflow-${index}`}>
+                    <div class="task-comment-meta">
+                      ${run.workflowId || "workflow"}
+                      ${run.runId ? ` · run ${run.runId}` : ""}
+                      ${run.timestamp ? ` · ${formatRelative(run.timestamp)}` : ""}
+                    </div>
+                    <div class="task-comment-body">${run.status || run.result || "No status summary"}</div>
+                    ${run.result && run.status && run.result !== run.status && html`
+                      <div class="task-comment-body">${run.result}</div>
+                    `}
+                  </div>
+                `)}
+              </div>
+            </div>
           </div>
         `}
+
       </div>
 
+      ${/* ── RIGHT: Sidebar ── */ ""}
+      <div class="task-detail-sidebar">
 
-      <div class="modal-form-span">
-        <div class="task-comments-block jira-panel" style="padding:12px;border:1px solid var(--border);border-radius:12px;background:var(--bg-surface)">
-          <div class="task-attachments-title">Tracking Overview</div>
-          <div class="task-comments-list" style="display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:10px;">
-            <div class="task-comment-item">
-              <div class="task-comment-meta">Assigned Agents</div>
-              <div class="task-comment-body">${taskAgents.length ? taskAgents.join(" · ") : "No agent assignment recorded."}</div>
-            </div>
-            <div class="task-comment-item">
-              <div class="task-comment-meta">Workflow Runs</div>
-              <div class="task-comment-body">${workflowRuns.length ? `${workflowRuns.length} linked runs` : "No workflow runs linked yet."}</div>
-            </div>
-            <div class="task-comment-item">
-              <div class="task-comment-meta">Timeline Events</div>
-              <div class="task-comment-body">${historyEntries.length ? `${historyEntries.length} recorded entries` : "No timeline history yet."}</div>
-            </div>
-            <div class="task-comment-item">
-              <div class="task-comment-meta">Branch / PR</div>
-              <div class="task-comment-body">${relatedLinks.length ? relatedLinks.map((item) => `${item.kind}: ${item.value}`).join(" · ") : "No branch or PR links recorded."}</div>
+        ${/* Status */ ""}
+        <div class="task-sidebar-field">
+          <div class="task-sidebar-label">Status</div>
+          <div class="task-sidebar-value">
+            <${Select}
+              size="small"
+              value=${status}
+              onChange=${(e) => {
+                const next = e.target.value;
+                setStatus(next);
+                if (next === "draft") setDraft(true);
+                else if (draft) setDraft(false);
+              }}
+              fullWidth
+            >
+              ${["draft", "todo", "inprogress", "inreview", "done", "cancelled"].map(
+                (s) => html`<${MenuItem} value=${s}>${s}</${MenuItem}>`,
+              )}
+            </${Select}>
+          </div>
+        </div>
+
+        ${/* Priority */ ""}
+        <div class="task-sidebar-field">
+          <div class="task-sidebar-label">Priority</div>
+          <div class="task-sidebar-value">
+            <${Select}
+              size="small"
+              value=${priority}
+              onChange=${(e) => setPriority(e.target.value)}
+              fullWidth
+            >
+              <${MenuItem} value="">No priority</${MenuItem}>
+              ${["low", "medium", "high", "critical"].map(
+                (p) => html`<${MenuItem} value=${p}>${p}</${MenuItem}>`,
+              )}
+            </${Select}>
+          </div>
+        </div>
+
+        ${/* Assignee */ ""}
+        <div class="task-sidebar-field">
+          <div class="task-sidebar-label">Assignee</div>
+          <div class="task-sidebar-value">
+            <${TextField}
+              size="small"
+              variant="outlined"
+              placeholder="Assignee"
+              value=${assignee}
+              onInput=${(e) => setAssignee(e.target.value)}
+              fullWidth
+            />
+          </div>
+        </div>
+
+        ${/* Assignees */ ""}
+        <div class="task-sidebar-field">
+          <div class="task-sidebar-label">Assignees</div>
+          <div class="task-sidebar-value">
+            <${TextField}
+              size="small"
+              variant="outlined"
+              placeholder="alice, bob"
+              value=${assigneesInput}
+              onInput=${(e) => setAssigneesInput(e.target.value)}
+              fullWidth
+            />
+          </div>
+        </div>
+
+        ${/* Sprint */ ""}
+        <div class="task-sidebar-field">
+          <div class="task-sidebar-label">Sprint</div>
+          <div class="task-sidebar-value">
+            <div style="display:flex;gap:6px;">
+              <${Select}
+                size="small"
+                value=${selectedSprintId}
+                onChange=${(e) => setSelectedSprintId(e.target.value)}
+                style=${{ flex: 1 }}
+              >
+                <${MenuItem} value="">No sprint</${MenuItem}>
+                ${sprintOptions.map((sprint) => html`
+                  <${MenuItem} key=${sprint.id} value=${sprint.id}>${sprint.label}</${MenuItem}>
+                `)}
+              </${Select}>
+              <${TextField}
+                size="small"
+                type="number"
+                placeholder="#"
+                value=${sprintOrderInput}
+                onInput=${(e) => setSprintOrderInput(e.target.value)}
+                inputProps=${{ min: 1, step: 1 }}
+                style=${{ width: "60px" }}
+              />
             </div>
           </div>
         </div>
+
+        ${/* Story Points */ ""}
+        <div class="task-sidebar-field">
+          <div class="task-sidebar-label">Story Points</div>
+          <div class="task-sidebar-value">
+            <${TextField}
+              size="small"
+              variant="outlined"
+              type="number"
+              placeholder="Points"
+              value=${storyPoints}
+              onInput=${(e) => setStoryPoints(e.target.value)}
+              fullWidth
+            />
+          </div>
+        </div>
+
+        ${/* Due Date */ ""}
+        <div class="task-sidebar-field">
+          <div class="task-sidebar-label">Due Date</div>
+          <div class="task-sidebar-value">
+            <${TextField}
+              size="small"
+              variant="outlined"
+              type="date"
+              value=${dueDate}
+              onInput=${(e) => setDueDate(e.target.value)}
+              InputLabelProps=${{ shrink: true }}
+              fullWidth
+            />
+          </div>
+        </div>
+
+        ${/* Epic */ ""}
+        <div class="task-sidebar-field">
+          <div class="task-sidebar-label">Epic</div>
+          <div class="task-sidebar-value">
+            <${TextField}
+              size="small"
+              variant="outlined"
+              placeholder="Epic"
+              value=${epicId}
+              onInput=${(e) => setEpicId(e.target.value)}
+              fullWidth
+            />
+            ${epicCatalog.length > 0 && html`
+              <div class="tag-row" style=${{ marginTop: "6px" }}>
+                ${epicCatalog.slice(0, 6).map((entry) => html`<button type="button" class="tag-chip task-structure-chip ${epicId === entry.id ? "task-structure-chip-active" : ""}" style="font-size:10px;" onClick=${() => setEpicId(entry.id)}>${entry.label}</button>`)}
+              </div>
+            `}
+          </div>
+        </div>
+
+        ${/* Parent Task */ ""}
+        <div class="task-sidebar-field">
+          <div class="task-sidebar-label">Parent Task</div>
+          <div class="task-sidebar-value">
+            <${TextField}
+              size="small"
+              variant="outlined"
+              placeholder="Parent task ID"
+              value=${parentTaskId}
+              onInput=${(e) => setParentTaskId(e.target.value)}
+              fullWidth
+            />
+          </div>
+        </div>
+
+        ${/* Tags */ ""}
+        <div class="task-sidebar-field">
+          <div class="task-sidebar-label">Tags</div>
+          <div class="task-sidebar-value">
+            <${TextField} size="small" variant="outlined" placeholder="Tags (comma-separated)" value=${tagsInput} onInput=${(e) => setTagsInput(e.target.value)} fullWidth />
+            ${normalizeTagInput(tagsInput).length > 0 && html`
+              <div class="tag-row" style=${{ marginTop: "4px" }}>
+                ${normalizeTagInput(tagsInput).map(
+                  (tag) => html`<span class="tag-chip">#${tag}</span>`,
+                )}
+              </div>
+            `}
+          </div>
+        </div>
+
+        ${/* Workspace & Repository */ ""}
+        <div class="task-sidebar-field">
+          <div class="task-sidebar-label">Workspace</div>
+          <div class="task-sidebar-value">
+            <${Select}
+              size="small"
+              value=${workspaceId}
+              onChange=${(e) => setWorkspaceId(e.target.value)}
+              fullWidth
+            >
+              <${MenuItem} value="">Active workspace</${MenuItem}>
+              ${workspaceOptions.map(
+                (ws) => html`<${MenuItem} value=${ws.id}>${ws.name || ws.id}</${MenuItem}>`,
+              )}
+            </${Select}>
+          </div>
+        </div>
+
+        <div class="task-sidebar-field">
+          <div class="task-sidebar-label">Repository</div>
+          <div class="task-sidebar-value">
+            <${Select}
+              size="small"
+              value=${repository}
+              onChange=${(e) => setRepository(e.target.value)}
+              disabled=${!repositoryOptions.length}
+              fullWidth
+            >
+              <${MenuItem} value="">
+                ${repositoryOptions.length ? "Auto repository" : "No repos in workspace"}
+              </${MenuItem}>
+              ${repositoryOptions.map(
+                (repo) =>
+                  html`<${MenuItem} value=${repo.slug}>${repo.name}${repo.primary ? " (Primary)" : ""}</${MenuItem}>`,
+              )}
+            </${Select}>
+          </div>
+        </div>
+
+        ${/* Base Branch */ ""}
+        <div class="task-sidebar-field">
+          <div class="task-sidebar-label">Base Branch</div>
+          <div class="task-sidebar-value">
+            <${TextField} size="small" variant="outlined" placeholder="e.g. feature/xyz" value=${baseBranch} onInput=${(e) => setBaseBranch(e.target.value)} fullWidth />
+          </div>
+        </div>
+
+        ${/* Draft toggle */ ""}
+        <div class="task-sidebar-field">
+          <div class="task-sidebar-label">Draft</div>
+          <div class="task-sidebar-value">
+            <${Toggle}
+              label="Keep in backlog"
+              checked=${draft}
+              onChange=${(next) => {
+                setDraft(next);
+                if (next) setStatus("draft");
+                else if (status === "draft") setStatus("todo");
+              }}
+            />
+          </div>
+        </div>
+
+        ${/* Manual Override toggle */ ""}
+        <div class="task-sidebar-field">
+          <div class="task-sidebar-label">Manual</div>
+          <div class="task-sidebar-value">
+            <${Toggle}
+              label="Exclude from automation"
+              checked=${manualOverride}
+              disabled=${manualBusy || !task?.id}
+              onChange=${handleManualToggle}
+            />
+            ${manualOverride && html`
+              <${TextField} size="small" variant="outlined" placeholder="Reason (optional)" value=${manualReason} disabled=${manualBusy} onInput=${(e) => setManualReason(e.target.value)} fullWidth style=${{ marginTop: "6px" }} />
+              <div class="meta-text" style=${{ marginTop: "4px" }}>Bosun will skip this task until cleared.</div>
+            `}
+          </div>
+        </div>
+
+        ${/* Dependencies */ ""}
+        <div class="task-sidebar-field" style="flex-direction:column;gap:6px;">
+          <div class="task-sidebar-label" style="width:auto;">Dependencies</div>
+          <div class="task-sidebar-value">
+            ${currentEpicEntry && html`<div class="meta-text" style=${{ marginBottom: "6px" }}>Epic: ${currentEpicEntry.label} · ${currentEpicEntry.taskCount} tasks</div>`}
+            <${TextField}
+              multiline
+              rows=${2}
+              size="small"
+              placeholder="Dependency task IDs (comma or newline separated)"
+              value=${dependenciesInput}
+              onInput=${(e) => setDependenciesInput(e.target.value)}
+              fullWidth
+            />
+            ${currentDependencyIds.length > 0 && html`
+              <div class="tag-row" style=${{ marginTop: "6px" }}>
+                ${currentDependencyIds.map((depId) => html`<button type="button" class="tag-chip task-structure-chip" onClick=${() => handleDependencyChipRemove(depId)} title="Remove dependency">${depId} ×</button>`)}
+              </div>
+            `}
+            ${dependencySuggestions.length > 0 && html`
+              <div style=${{ marginTop: "6px" }}>
+                <div class="meta-text" style=${{ marginBottom: "4px" }}>Quick add</div>
+                <div class="tag-row">
+                  ${dependencySuggestions.map((entry) => html`<button type="button" class="tag-chip task-structure-chip task-structure-chip-muted" onClick=${() => handleDependencyChipAdd(entry.id)}>${entry.id}: ${truncate(entry.title || entry.id, 20)}</button>`)}
+                </div>
+              </div>
+            `}
+            <div style="display:flex;gap:4px;margin-top:6px;flex-wrap:wrap;">
+              <${Button} variant="outlined" size="small" disabled=${savingDependencies} onClick=${handleSaveDependencies}>
+                ${savingDependencies ? "Saving…" : "Save Deps"}
+              <//>
+              <${Button} variant="outlined" size="small" disabled=${savingSprint || !selectedSprintId} onClick=${handleSaveSprintAssignment}>
+                ${savingSprint ? "Saving…" : "Save Sprint"}
+              <//>
+              <${Button} variant="text" size="small" disabled=${savingSprint} onClick=${() => handleSprintOrderNudge(-1)}>↑<//>
+              <${Button} variant="text" size="small" disabled=${savingSprint} onClick=${() => handleSprintOrderNudge(1)}>↓<//>
+            </div>
+            ${dependencyFeedback && html`<span class="meta-text">${dependencyFeedback}</span>`}
+          </div>
+        </div>
+
+        ${/* Meta info */ ""}
+        ${task?.meta?.triggerTemplate?.id && html`
+          <div class="task-sidebar-field">
+            <div class="task-sidebar-label">Trigger</div>
+            <div class="task-sidebar-value" style="font-size:11px;opacity:0.7;">${task.meta.triggerTemplate.id}</div>
+          </div>
+        `}
+        ${(task?.meta?.execution?.sdk || task?.meta?.execution?.model) && html`
+          <div class="task-sidebar-field">
+            <div class="task-sidebar-label">Exec Override</div>
+            <div class="task-sidebar-value" style="font-size:11px;opacity:0.7;">
+              ${task?.meta?.execution?.sdk || "auto"}${task?.meta?.execution?.model ? ` · ${task.meta.execution.model}` : ""}
+            </div>
+          </div>
+        `}
+        ${task?.branch && html`
+          <div class="task-sidebar-field">
+            <div class="task-sidebar-label">Branch</div>
+            <div class="task-sidebar-value" style="font-size:11px;user-select:all;word-break:break-all;">${task.branch}</div>
+          </div>
+        `}
+
+        ${/* Timestamps */ ""}
+        <div class="task-timestamps">
+          ${task?.created_at && html`<div class="task-timestamp-row">Created ${new Date(task.created_at).toLocaleString()}</div>`}
+          ${task?.updated_at && html`<div class="task-timestamp-row">Updated ${formatRelative(task.updated_at)}</div>`}
+        </div>
+
+        ${/* Save bar */ ""}
+        <div class="task-save-bar">
+          <${SaveDiscardBar}
+            dirty=${hasUnsaved}
+            message=${unsavedChangesMessage(changeCount)}
+            saveLabel="Save Changes"
+            discardLabel="Discard"
+            onSave=${() => {
+              void handleSave({ closeAfterSave: false });
+            }}
+            onDiscard=${handleDiscardChanges}
+            saving=${saving}
+            disabled=${Boolean(activeOperationLabel && !saving)}
+          />
+        </div>
+
+        <div style="display:flex;gap:4px;flex-wrap:wrap;">
+          ${(task?.status === "error" || task?.status === "cancelled") && html`
+            <${Button} variant="contained" size="small" onClick=${handleRetry}>↻ Retry<//>
+          `}
+          <${Button}
+            variant="outlined" size="small"
+            onClick=${() => { void handleSave({ closeAfterSave: true }); }}
+            disabled=${saving}
+          >
+            ${saving ? "Saving…" : iconText(":save: Save")}
+          <//>
+          <${Button} variant="text" size="small" onClick=${() => handleStatusUpdate("inreview")}>→ Review<//>
+          <${Button} variant="text" size="small" onClick=${() => handleStatusUpdate("done")}>${iconText("✓ Done")}<//>
+          ${task?.status !== "cancelled" && html`
+            <${Button}
+              variant="text" size="small"
+              style=${{ color: "var(--color-error)" }}
+              onClick=${handleCancel}
+            >
+              ${iconText("✕ Cancel")}
+            <//>
+          `}
+          ${task?.id && html`
+            <${Button}
+              variant="text" size="small"
+              onClick=${() => {
+                haptic();
+                sendCommandToChat("/logs " + task.id);
+              }}
+            >
+              ${iconText(":file: Logs")}
+            <//>
+          `}
+        </div>
+
       </div>
 
-      ${workflowRuns.length > 0 && html`
-        <div class="task-comments-block modal-form-span jira-panel">
-          <div class="task-attachments-title">Workflow Activity</div>
-          <div class="task-comments-list">
-            ${workflowRuns.map((run, index) => html`
-              <div class="task-comment-item" key=${`workflow-${index}`}>
-                <div class="task-comment-meta">
-                  ${run.workflowId || "workflow"}
-                  ${run.runId ? ` · run ${run.runId}` : ""}
-                  ${run.timestamp ? ` · ${formatRelative(run.timestamp)}` : ""}
+      </div>`}
+
+      ${/* ── EXECUTION TAB ───────────────────────────────────────────── */ ""}
+      ${activeTab === "execution" && html`<div style="display:contents;">
+
+      ${/* ── Execution Plan Visualization (Premium) ─────────────────── */ ""}
+      <div class="exec-plan-stage" style="margin:0 0 14px;">
+        <div class="exec-plan-stage-header" style="background:transparent;border-bottom:none;padding:12px 16px;">
+          <span style="font-weight:700;font-size:0.9em;flex:1;">${resolveIcon("play")} Execution Plan</span>
+          ${executionPlanLoading && html`<span style="font-size:0.8em;opacity:0.6;">Loading…</span>`}
+          ${executionPlan && html`<span style="font-size:0.8em;opacity:0.6;">${executionPlan.stageCount || 0} workflows · ${executionPlan.agentRunTotal || 0} agent runs</span>`}
+          ${executionPlan?.validationIssues?.length > 0 && html`
+            <span class="exec-plan-badge" style="background:#ef444420;color:#f87171;">
+              ${executionPlan.validationIssues.filter((v) => v.level === "error").length} errors
+            </span>
+          `}
+        </div>
+        <div class="exec-plan-stage-body">
+          ${/* ── Action buttons ── */ ""}
+          <div style="display:flex;gap:8px;margin-bottom:14px;align-items:center;">
+            <button style="padding:6px 14px;border-radius:6px;border:1px solid var(--border-color,#444);background:var(--color-bg-secondary,#1a1f2e);color:var(--color-text,#e0e0e0);font-size:0.8em;cursor:pointer;"
+              onClick=${() => fetchExecutionPlan("resolve")} disabled=${executionPlanLoading}>
+              ${resolveIcon("refresh")} Refresh Plan
+            </button>
+            <button style="padding:6px 14px;border-radius:6px;border:1px solid #3b82f660;background:#3b82f620;color:#60a5fa;font-size:0.8em;cursor:pointer;font-weight:600;"
+              onClick=${() => fetchExecutionPlan("dry-run")} disabled=${dryRunLoading || executionPlanLoading}>
+              ${dryRunLoading ? "Simulating…" : `${resolveIcon("play")} Dry Run Simulation`}
+            </button>
+            ${executionPlan?.mode === "dry-run" && html`
+              <span style="font-size:0.8em;color:#10b981;font-weight:600;">${resolveIcon("check") || "✓"} Dry-run complete</span>
+            `}
+          </div>
+
+            ${/* ── Validation Issues ── */ ""}
+            ${executionPlan?.validationIssues?.length > 0 && html`
+              <div style="margin-bottom:10px;border:1px solid #ef444440;border-radius:6px;padding:8px;background:#ef444410;">
+                <div style="font-weight:600;font-size:0.8em;color:#f87171;margin-bottom:4px;">${resolveIcon("warning")} Validation Issues</div>
+                ${executionPlan.validationIssues.map((issue, ii) => html`
+                  <div key=${`vi-${ii}`} style="font-size:0.75em;padding:2px 0;display:flex;gap:4px;align-items:start;">
+                    <span style="color:${issue.level === 'error' ? '#f87171' : '#fbbf24'};flex-shrink:0;">${issue.level === "error" ? "✗" : "⚠"}</span>
+                    <span><strong>${issue.workflowName}:</strong> ${issue.message}</span>
+                  </div>
+                `)}
+              </div>
+            `}
+
+            ${!executionPlan && !executionPlanLoading && html`
+              <div style="opacity:0.6;font-size:0.85em;padding:8px;">No execution plan data available.</div>
+            `}
+
+            ${/* ── Workflow Stages (Enhanced) ── */ ""}
+            ${executionPlan?.stages?.map((stage, si) => {
+              const matchColors = {
+                task_assigned: { bg: "#3b82f620", color: "#60a5fa", label: "Task Match" },
+                polling: { bg: "#6b728020", color: "#9ca3af", label: "Lifecycle" },
+                pr_event: { bg: "#8b5cf620", color: "#a78bfa", label: "PR Event" },
+                schedule: { bg: "#06b6d420", color: "#22d3ee", label: "Scheduled" },
+                event: { bg: "#f5932020", color: "#fb923c", label: "Event" },
+                anomaly: { bg: "#ef444420", color: "#f87171", label: "Anomaly" },
+                webhook: { bg: "#84cc1620", color: "#a3e635", label: "Webhook" },
+                manual: { bg: "#6b728020", color: "#d1d5db", label: "Manual" },
+                workflow_call: { bg: "#14b8a620", color: "#2dd4bf", label: "Sub-call" },
+              };
+              const mc = matchColors[stage.matchType] || { bg: "#33333320", color: "#888", label: stage.matchType };
+
+              return html`
+              <div key=${`stage-${si}`} class="exec-plan-stage">
+                <div class="exec-plan-stage-header" onClick=${() => toggleStageExpand(si)}>
+                  <span style="font-size:0.8em;opacity:0.5;">${expandedStages[si] !== false ? "▾" : "▸"}</span>
+                  ${stage.core ? html`<span class="exec-plan-badge" style="background:#8b5cf620;color:#a78bfa;">CORE</span>` : ""}
+                  <strong style="font-size:0.9em;flex:1;">${stage.workflowName}</strong>
+                  <span class="exec-plan-badge" style="background:${mc.bg};color:${mc.color};">${mc.label}</span>
+                  <span style="font-size:0.75em;opacity:0.5;">${stage.nodeCount} nodes · ${stage.agentRunCount} agents</span>
+                  <span style="font-size:0.65em;opacity:0.35;text-transform:uppercase;">${stage.category || ""}</span>
                 </div>
-                <div class="task-comment-body">${run.status || run.result || "No status summary"}</div>
-                ${run.result && run.status && run.result !== run.status && html`
-                  <div class="task-comment-body">${run.result}</div>
+
+                ${expandedStages[si] !== false && html`
+                  <div class="exec-plan-stage-body">
+                    ${stage.description ? html`<div style="font-size:0.8em;opacity:0.6;margin-bottom:10px;">${stage.description}</div>` : ""}
+
+                    ${/* ── Node Pipeline ── */ ""}
+                    <div style="display:flex;flex-direction:column;gap:0;">
+                      ${(stage.nodes || []).map((nd, ni) => {
+                        const isExpanded = expandedNodes[`${si}-${nd.id}`];
+                        const nodeColor = nd.isAgentRun ? "#3b82f6"
+                          : nd.isTrigger ? "#eab308"
+                          : nd.isCondition ? "#8b5cf6"
+                          : nd.isCommand || nd.isValidation ? "#22c55e"
+                          : nd.isStatusUpdate ? "#ef4444"
+                          : nd.isPromptBuilder ? "#f59e0b"
+                          : nd.isCreatePr || nd.isPushBranch ? "#06b6d4"
+                          : nd.isSubWorkflow ? "#14b8a6"
+                          : nd.isNotify ? "#64748b"
+                          : "#6b7280";
+                        const hasIssue = nd.expressionValid === false || !nd.typeRegistered || (nd.unresolvedVars?.length > 0);
+                        const dryRunNode = dryRunResults?.find((dr) => dr.workflowId === stage.workflowId)?.nodes?.find((dn) => dn.id === nd.id);
+
+                        return html`
+                          <div key=${`n-${ni}`}>
+                            ${ni > 0 && html`<div class="exec-plan-connector"></div>`}
+                            <div class="exec-plan-node" style="border-color:${hasIssue ? '#ef4444' : nodeColor + '40'};">
+                              <div class="exec-plan-node-header" onClick=${() => toggleNodeExpand(si, nd.id)}>
+                                <span style="width:22px;height:22px;border-radius:6px;background:${nodeColor}20;color:${nodeColor};display:flex;align-items:center;justify-content:center;font-size:10px;font-weight:700;flex-shrink:0;">${ni + 1}</span>
+                                <span style="font-size:0.7em;color:${nodeColor};opacity:0.8;min-width:70px;font-weight:500;">${nd.type.split(".").pop()}</span>
+                                <strong style="flex:1;font-size:0.85em;">${nd.label}</strong>
+                                ${hasIssue ? html`<span style="color:#ef4444;font-size:0.7em;">✗</span>` : ""}
+
+                                ${/* Agent badges */ ""}
+                                ${nd.isAgentRun && nd.resolvedAgent ? html`
+                                  <span class="exec-plan-skill-tag" style="background:${nodeColor}15;color:${nodeColor};border-color:${nodeColor}30;">
+                                    ${resolveIcon("bot")} ${nd.resolvedAgent} ${nd.confidence ? `(${Math.round(nd.confidence * 100)}%)` : ""}
+                                  </span>
+                                ` : ""}
+                                ${nd.isAgentRun && !nd.resolvedAgent && nd.resolveMode === "library" ? html`
+                                  <span class="exec-plan-badge" style="background:#f59e0b20;color:#fbbf24;">Auto-Resolve</span>
+                                ` : ""}
+
+                                ${/* Context flow chips */ ""}
+                                ${nd.contextPreview?.hasTaskPrompt ? html`<span class="exec-plan-context-chip">TaskPrompt</span>` : ""}
+                                ${nd.contextPreview?.hasPreviousOutput ? html`<span class="exec-plan-context-chip" style="background:#8b5cf615;color:#a78bfa;border-color:#8b5cf630;">PrevOutput</span>` : ""}
+
+                                ${/* Status indicators */ ""}
+                                ${nd.isStatusUpdate ? html`<span class="exec-plan-badge" style="background:#ef444420;color:#fca5a5;">→ ${nd.targetStatus}</span>` : ""}
+                                ${nd.isCommand ? html`<span style="font-size:0.65em;font-family:monospace;opacity:0.5;max-width:180px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${nd.commandResolved || nd.commandRaw}</span>` : ""}
+                                ${nd.isPromptBuilder ? html`<span class="exec-plan-badge" style="background:#f59e0b20;color:#fbbf24;">Builds TaskPrompt</span>` : ""}
+                                ${nd.isCreatePr ? html`<span class="exec-plan-badge" style="background:#06b6d420;color:#22d3ee;">Creates PR</span>` : ""}
+
+                                ${dryRunNode ? html`<span style="font-size:0.65em;color:${dryRunNode.status === 'simulated' || dryRunNode.status === 'COMPLETED' ? '#10b981' : '#fbbf24'};">● ${dryRunNode.status}</span>` : ""}
+                                <span style="font-size:0.65em;opacity:0.3;">${isExpanded ? "▾" : "▸"}</span>
+                              </div>
+
+                              ${isExpanded && html`
+                                <div class="exec-plan-node-body">
+                                  ${/* ── Inputs from previous nodes ── */ ""}
+                                  ${nd.inputsFrom?.length > 0 ? html`
+                                    <div style="margin-bottom:8px;padding:6px 8px;background:var(--bg-surface,#0d1117);border-radius:6px;border:1px solid var(--border-color,#333);">
+                                      <div style="font-size:0.85em;opacity:0.6;margin-bottom:4px;font-weight:600;">Inputs From:</div>
+                                      <div style="display:flex;flex-wrap:wrap;gap:4px;">
+                                        ${nd.inputsFrom.map((inp) => html`
+                                          <span class="exec-plan-context-chip" style="background:#3b82f610;color:#60a5fa;border-color:#3b82f625;">
+                                            ${inp.nodeLabel} ${inp.port ? `[${inp.port}]` : ""} ${inp.condition ? `if: ${inp.condition.slice(0, 30)}` : ""}
+                                          </span>
+                                        `)}
+                                      </div>
+                                    </div>
+                                  ` : ""}
+
+                                  <div style="display:grid;grid-template-columns:auto 1fr;gap:3px 12px;align-items:start;">
+                                    <span style="opacity:0.5;">Type:</span>
+                                    <span style="font-family:monospace;">${nd.type}${!nd.typeRegistered ? html` <span style="color:#ef4444;">✗ unregistered</span>` : ""}</span>
+
+                                    ${nd.isTrigger && nd.taskPattern ? html`
+                                      <span style="opacity:0.5;">Pattern:</span>
+                                      <span style="font-family:monospace;">${nd.taskPattern} ${nd.patternMatches === true ? html`<span style="color:#10b981;">✓ matches</span>` : nd.patternMatches === false ? html`<span style="color:#ef4444;">✗ no match</span>` : ""}</span>
+                                    ` : ""}
+
+                                    ${nd.isTrigger && nd.prEvents ? html`
+                                      <span style="opacity:0.5;">PR Events:</span>
+                                      <span>${nd.prEvents.join(", ")}</span>
+                                    ` : ""}
+
+                                    ${nd.isTrigger && nd.eventTypes?.length > 0 ? html`
+                                      <span style="opacity:0.5;">Event Types:</span>
+                                      <span>${nd.eventTypes.join(", ")}</span>
+                                    ` : ""}
+
+                                    ${nd.isTrigger && nd.intervalMs ? html`
+                                      <span style="opacity:0.5;">Interval:</span>
+                                      <span>${Math.round(nd.intervalMs / 60000)}min</span>
+                                    ` : ""}
+
+                                    ${nd.isCondition && nd.expression ? html`
+                                      <span style="opacity:0.5;">Expression:</span>
+                                      <span style="font-family:monospace;word-break:break-all;">${nd.expression}${nd.expressionValid === false ? html` <span style="color:#ef4444;">✗ ${nd.expressionError}</span>` : html` <span style="color:#10b981;">✓</span>`}</span>
+                                    ` : ""}
+                                    ${nd.isCondition && nd.cases ? html`
+                                      <span style="opacity:0.5;">Cases:</span>
+                                      <span>${nd.cases.join(", ")}</span>
+                                    ` : ""}
+
+                                    ${nd.isAgentRun ? html`
+                                      <span style="opacity:0.5;">SDK:</span><span>${nd.sdk || "auto"}</span>
+                                      <span style="opacity:0.5;">Model:</span><span>${nd.model || "auto"}</span>
+                                      <span style="opacity:0.5;">Timeout:</span><span>${Math.round((nd.timeoutMs || 3600000) / 60000)}min</span>
+                                      <span style="opacity:0.5;">Retries:</span><span>${nd.maxRetries ?? 2} retries, ${nd.maxContinues ?? 2} continues</span>
+                                      <span style="opacity:0.5;">Resolve:</span><span style="font-weight:500;color:${nd.resolveMode === 'library' ? '#f59e0b' : '#60a5fa'};">${nd.resolveMode || "manual"}${nd.resolveMode === "library" ? " (auto)" : ""}</span>
+                                      <span style="opacity:0.5;">CWD:</span><span style="font-family:monospace;">${nd.cwd || "auto"}</span>
+                                    ` : ""}
+
+                                    ${nd.isCommand ? html`
+                                      <span style="opacity:0.5;">Command:</span>
+                                      <span style="font-family:monospace;word-break:break-all;">${nd.commandResolved || nd.commandRaw}</span>
+                                      <span style="opacity:0.5;">CWD:</span><span style="font-family:monospace;">${nd.commandCwd}</span>
+                                      <span style="opacity:0.5;">Timeout:</span><span>${Math.round((nd.commandTimeout || 300000) / 1000)}s</span>
+                                      <span style="opacity:0.5;">Fail on error:</span><span>${nd.failOnError ? "Yes" : "No"}</span>
+                                    ` : ""}
+
+                                    ${nd.isResolveExecutor ? html`
+                                      <span style="opacity:0.5;">SDK Override:</span><span>${nd.sdkOverride || "auto"}</span>
+                                      <span style="opacity:0.5;">Model Override:</span><span>${nd.modelOverride || "auto"}</span>
+                                    ` : ""}
+
+                                    ${nd.isSubWorkflow ? html`
+                                      <span style="opacity:0.5;">Sub-workflow:</span><span style="font-family:monospace;">${nd.targetWorkflowId || "—"}</span>
+                                      <span style="opacity:0.5;">Inherit ctx:</span><span>${nd.inheritContext ? "Yes" : "No"}</span>
+                                    ` : ""}
+
+                                    ${nd.isValidation ? html`
+                                      <span style="opacity:0.5;">${nd.validationType} cmd:</span>
+                                      <span style="font-family:monospace;">${nd.commandResolved || nd.commandRaw || "auto-detect"}</span>
+                                    ` : ""}
+
+                                    ${nd.isPromptBuilder ? html`
+                                      <span style="opacity:0.5;">Output:</span><span>${"{{TaskPrompt}}"}</span>
+                                      <span style="opacity:0.5;">Include Skills:</span><span>${nd.includeSkills !== false ? "Yes" : "No"}</span>
+                                      <span style="opacity:0.5;">Include Agent Instructions:</span><span>${nd.includeAgentInstructions !== false ? "Yes" : "No"}</span>
+                                    ` : ""}
+
+                                    ${nd.isCreatePr ? html`
+                                      <span style="opacity:0.5;">PR Title:</span><span>${nd.prTitle || "auto"}</span>
+                                      <span style="opacity:0.5;">Base Branch:</span><span>${nd.prBaseBranch || "main"}</span>
+                                    ` : ""}
+
+                                    ${nd.joinMode ? html`
+                                      <span style="opacity:0.5;">Join mode:</span><span>${nd.joinMode}</span>
+                                    ` : ""}
+
+                                    ${nd.isNotify && nd.logMessage ? html`
+                                      <span style="opacity:0.5;">Message:</span><span>${nd.logMessage}</span>
+                                    ` : ""}
+
+                                    ${nd.unresolvedVars?.length > 0 ? html`
+                                      <span style="opacity:0.5;color:#fbbf24;">Unresolved:</span>
+                                      <span style="color:#fbbf24;">${nd.unresolvedVars.map((v) => `{{${v}}}`).join(", ")}</span>
+                                    ` : ""}
+                                  </div>
+
+                                  ${/* ── Agent: Context Preview ── */ ""}
+                                  ${nd.isAgentRun && nd.contextPreview ? html`
+                                    <div style="margin-top:8px;padding:6px 8px;background:#1a1a2e;border-radius:6px;border:1px solid #333;">
+                                      <div style="font-size:0.85em;opacity:0.6;margin-bottom:4px;font-weight:600;">${resolveIcon("link") || "🔗"} Context Injected:</div>
+                                      <div style="display:flex;flex-wrap:wrap;gap:4px;">
+                                        ${nd.contextPreview.hasTaskPrompt ? html`<span class="exec-plan-context-chip">Task Prompt (built by build_task_prompt)</span>` : ""}
+                                        ${nd.contextPreview.hasPreviousOutput ? html`<span class="exec-plan-context-chip" style="background:#8b5cf615;color:#a78bfa;border-color:#8b5cf630;">Previous Agent Output</span>` : ""}
+                                        ${nd.contextPreview.hasWorktreePath ? html`<span class="exec-plan-context-chip" style="background:#22c55e15;color:#4ade80;border-color:#22c55e30;">Worktree Path</span>` : ""}
+                                        ${nd.contextPreview.hasBranchName ? html`<span class="exec-plan-context-chip" style="background:#06b6d415;color:#22d3ee;border-color:#06b6d430;">Branch Name</span>` : ""}
+                                        ${nd.contextPreview.hasPrUrl ? html`<span class="exec-plan-context-chip" style="background:#8b5cf615;color:#c4b5fd;border-color:#8b5cf630;">PR Link</span>` : ""}
+                                        ${nd.includeTaskContext ? html`<span class="exec-plan-context-chip" style="background:#f59e0b15;color:#fbbf24;border-color:#f59e0b30;">Full Task Context</span>` : ""}
+                                        ${(nd.contextPreview.injectedVariables || []).map((v) => html`
+                                          <span class="exec-plan-context-chip" style="background:#64748b15;color:#94a3b8;border-color:#64748b30;">${"{{" + v + "}}"}</span>
+                                        `)}
+                                      </div>
+                                    </div>
+                                  ` : ""}
+
+                                  ${/* ── Agent: resolved skills with descriptions ── */ ""}
+                                  ${nd.isAgentRun && nd.resolvedSkills?.length > 0 ? html`
+                                    <div style="margin-top:8px;padding:8px;background:var(--bg-surface,#0d1117);border-radius:6px;border:1px solid var(--border-color,#333);">
+                                      <div style="font-size:0.85em;opacity:0.6;margin-bottom:6px;font-weight:600;">${resolveIcon("star")} Resolved Skills (${nd.resolvedSkills.length}):</div>
+                                      ${nd.resolvedSkills.map((sk) => html`
+                                        <div style="display:flex;gap:8px;padding:4px 0;align-items:start;border-bottom:1px solid var(--border-color,#222);">
+                                          <span class="exec-plan-skill-tag">${sk.name} ${sk.score ? `${Math.round(sk.score * 100)}%` : ""}</span>
+                                          ${sk.source ? html`<span style="opacity:0.35;font-size:0.85em;">(${sk.source})</span>` : ""}
+                                          ${sk.description ? html`<span style="opacity:0.5;font-size:0.85em;flex:1;">${sk.description.slice(0, 120)}${sk.description.length > 120 ? "…" : ""}</span>` : ""}
+                                        </div>
+                                      `)}
+                                    </div>
+                                  ` : ""}
+
+                                  ${/* ── Agent: resolved tools ── */ ""}
+                                  ${nd.isAgentRun && nd.resolvedTools && (nd.resolvedTools.builtin?.length > 0 || nd.resolvedTools.mcp?.length > 0) ? html`
+                                    <div style="margin-top:6px;display:flex;flex-wrap:wrap;gap:4px;align-items:center;">
+                                      <span style="opacity:0.6;font-size:0.85em;">${resolveIcon("tool")} Tools:</span>
+                                      ${[...(nd.resolvedTools.builtin || []), ...(nd.resolvedTools.mcp || [])].map((t) => html`
+                                        <span style="padding:1px 6px;border-radius:4px;font-size:0.75em;background:#22c55e10;color:#4ade80;border:1px solid #22c55e25;">${t}</span>
+                                      `)}
+                                    </div>
+                                  ` : ""}
+
+                                  ${/* ── Agent: alternatives ── */ ""}
+                                  ${nd.isAgentRun && nd.alternatives?.length > 0 ? html`
+                                    <div style="margin-top:6px;opacity:0.5;font-size:0.85em;">
+                                      <span>Alternatives: ${nd.alternatives.map((a) => `${a.name} (${Math.round((a.confidence || 0) * 100)}%)`).join(", ")}</span>
+                                    </div>
+                                  ` : ""}
+
+                                  ${/* ── Agent: prompt preview ── */ ""}
+                                  ${nd.isAgentRun && nd.promptResolved ? html`
+                                    <details style="margin-top:8px;">
+                                      <summary style="cursor:pointer;opacity:0.6;font-size:0.85em;font-weight:500;">Prompt Preview (${nd.promptResolved.length} chars)</summary>
+                                      <pre style="margin-top:4px;padding:8px;background:#00000030;border-radius:6px;white-space:pre-wrap;word-break:break-word;max-height:300px;overflow-y:auto;font-size:0.8em;line-height:1.5;">${nd.promptResolved.slice(0, 3000)}${nd.promptResolved.length > 3000 ? "\n…(truncated)" : ""}</pre>
+                                    </details>
+                                  ` : ""}
+                                </div>
+                              `}
+                            </div>
+                          </div>
+                        `;
+                      })}
+                    </div>
+
+                    ${/* ── Edge routing ── */ ""}
+                    ${stage.edges?.some((e) => e.condition || e.sourcePort || e.isBackEdge) && html`
+                      <details style="margin-top:10px;">
+                        <summary style="cursor:pointer;font-size:0.8em;opacity:0.5;font-weight:500;">Edge Routing (${stage.edges.length} edges)</summary>
+                        <div style="margin-top:6px;font-size:0.75em;font-family:monospace;">
+                          ${stage.edges.filter((e) => e.condition || e.sourcePort || e.isBackEdge).map((e) => html`
+                            <div style="padding:3px 0;display:flex;gap:6px;align-items:center;">
+                              <span>${e.source}</span>
+                              <span style="opacity:0.3;">→</span>
+                              <span>${e.target}</span>
+                              ${e.sourcePort ? html`<span style="color:#a78bfa;">[${e.sourcePort}]</span>` : ""}
+                              ${e.condition ? html`<span style="opacity:0.5;color:${e.conditionValid === false ? '#ef4444' : '#4ade80'};">${e.condition.length > 60 ? e.condition.slice(0, 60) + "…" : e.condition}</span>` : ""}
+                              ${e.isBackEdge ? html`<span style="color:#fbbf24;">↩ loop</span>` : ""}
+                              ${e.conditionValid === false ? html`<span style="color:#ef4444;">✗ ${e.conditionError}</span>` : ""}
+                            </div>
+                          `)}
+                        </div>
+                      </details>
+                    `}
+                  </div>
                 `}
               </div>
-            `)}
-          </div>
-        </div>
-      `}
+            `;})}
 
-      ${historyEntries.length > 0 && html`
+            ${/* ── Dry-run results summary ── */ ""}
+            ${dryRunResults && html`
+              <div style="margin-top:10px;border:1px solid #10b98140;border-radius:8px;padding:10px;background:#10b98110;">
+                <div style="font-weight:600;font-size:0.85em;color:#10b981;margin-bottom:6px;">${resolveIcon("check")} Dry-Run Simulation Results</div>
+                ${dryRunResults.map((dr) => html`
+                  <div style="font-size:0.8em;padding:3px 0;display:flex;gap:8px;align-items:center;">
+                    <span style="font-weight:500;">${dr.workflowName}</span>
+                    <span class="exec-plan-badge" style="background:${dr.status === 'completed' ? '#10b98120' : dr.status === 'error' ? '#ef444420' : '#fbbf2420'};color:${dr.status === 'completed' ? '#10b981' : dr.status === 'error' ? '#ef4444' : '#fbbf24'};">
+                      ${dr.status}
+                    </span>
+                    ${dr.error ? html`<span style="color:#ef4444;font-size:0.9em;">${dr.error}</span>` : ""}
+                    ${dr.nodes?.length > 0 ? html`<span style="opacity:0.5;">(${dr.nodes.length} nodes simulated)</span>` : ""}
+                  </div>
+                `)}
+              </div>
+            `}
+        </div>
+      </div>
+
+      </div>`}
+
+      ${/* ── HISTORY TAB ─────────────────────────────────────────────── */ ""}
+      ${activeTab === "history" && html`<div style="display:contents;">
+
+      ${historyEntries.length > 0 ? html`
         <div class="task-comments-block modal-form-span jira-panel">
           <div class="task-attachments-title">History Timeline</div>
           <div class="task-comments-list">
@@ -3073,7 +4162,7 @@ export function TaskDetailModal({ task, onClose, onStart, presentation = "modal"
             `)}
           </div>
         </div>
-      `}
+      ` : ""}
 
       ${relatedLinks.length > 0 && html`
         <div class="task-comments-block modal-form-span jira-panel">
@@ -3091,502 +4180,33 @@ export function TaskDetailModal({ task, onClose, onStart, presentation = "modal"
             `)}
           </div>
         </div>
-      `}        <div class="flex-col gap-md modal-form-grid jira-task-layout">
-        <div class="input-with-mic modal-form-span">
-          <${TextField} size="small" variant="outlined" placeholder="Title" value=${title} onInput=${(e) => setTitle(e.target.value)} fullWidth />
-          <${VoiceMicButtonInline}
-            onTranscript=${(t) => setTitle((prev) => (prev ? prev + " " + t : t))}
-            disabled=${saving || rewriting}
-          />
-        </div>
-        <div class="textarea-with-mic modal-form-span" style="position:relative">
-          <${TextField} multiline rows=${5} size="small" placeholder="Description" value=${description} onInput=${(e) => setDescription(e.target.value)} style=${{ paddingRight: "36px" }} fullWidth />
-          <${VoiceMicButton}
-            onTranscript=${(t) => setDescription((prev) => (prev ? prev + " " + t : t))}
-            disabled=${saving || rewriting}
-            size="sm"
-            className="textarea-mic-btn"
-          />
-        </div>
-        <div
-          class="task-attachments-block modal-form-span jira-panel"
-          onPaste=${handleAttachmentPaste}
-        >
-          <div class="task-attachments-header">
-            <div class="task-attachments-title">Attachments</div>
-            <div class="task-attachments-actions">
-              <${Button}
-                variant="text" size="small"
-                type="button"
-                onClick=${() => attachmentInputRef.current && attachmentInputRef.current.click()}
-                disabled=${uploadingAttachment}
-              >
-                Upload
-              <//>
-            </div>
-          </div>
-          <input
-            ref=${attachmentInputRef}
-            type="file"
-            multiple
-            style="display:none"
-            onChange=${handleAttachmentPick}
-          />
-          ${attachments.length === 0 && !uploadingAttachment && html`
-            <div class="meta-text">No attachments uploaded.</div>
-          `}
-          ${uploadingAttachment && html`
-            <div class="meta-text">Uploading attachments...</div>
-          `}
-          ${attachments.length > 0 && html`
-            <div class="task-attachments-list">
-              ${attachments.map((att, index) => {
-                const name = att.name || att.filename || "attachment";
-                const url = att.url || att.filePath || att.path || "";
-                const size = att.size ? formatBytes(att.size) : "";
-                const isImage = isImageAttachment(att);
-                return html`
-                  <div class="task-attachment-item" key=${att.id || `${name}-${index}`}>
-                    ${isImage && url
-                      ? html`<img class="task-attachment-thumb" src=${url} alt=${name} />`
-                      : html`<span class="task-attachment-icon">${resolveIcon(":link:")}</span>`}
-                    <div class="task-attachment-meta">
-                      ${url
-                        ? html`<a class="task-attachment-name" href=${url} target="_blank" rel="noopener">${name}</a>`
-                        : html`<span class="task-attachment-name">${name}</span>`}
-                      <div class="task-attachment-sub">
-                        ${(att.kind || "file")}${size ? ` · ${size}` : ""}
-                      </div>
-                    </div>
-                  </div>
-                `;
-              })}
-            </div>
-          `}
-        </div>
-                <div class="task-comments-block modal-form-span jira-panel">
-          <div class="task-attachments-title">Comments & Updates</div>
+      `}
+
+      ${/* workflow activity in history tab too */ ""}
+      ${workflowRuns.length > 0 && html`
+        <div class="task-comments-block modal-form-span jira-panel">
+          <div class="task-attachments-title">Workflow Activity</div>
           <div class="task-comments-list">
-            ${comments.length > 0
-              ? comments.map((comment, index) => html`
-                <div class="task-comment-item" key=${comment.id || `comment-${index}`}>
-                  <div class="task-comment-meta">
-                    ${comment.author ? `@${comment.author}` : "comment"}
-                    ${comment.createdAt ? ` · ${formatRelative(comment.createdAt)}` : ""}
-                  </div>
-                  <div class="task-comment-body">${comment.body}</div>
-                </div>
-              `)
-              : html`<div class="meta-text">No comments yet. Add one below.</div>`}
-          </div>
-          <div class="task-comment-composer">
-            <${TextField}
-              multiline
-              rows=${2}
-              size="small"
-              placeholder="Add a comment or status update..."
-              value=${commentDraft}
-              onInput=${(e) => setCommentDraft(e.target.value)}
-              fullWidth
-            />
-            <${Button}
-              variant="contained"
-              size="small"
-              disabled=${postingComment || !sanitizeTaskText(commentDraft || "").trim()}
-              onClick=${handlePostComment}
-            >
-              ${postingComment ? "Posting…" : "Post Comment"}
-            <//>
-          </div>
-        </div>
-        <div class="task-comments-block modal-form-span jira-subtasks-panel">
-          <div class="task-attachments-header">
-            <div class="task-attachments-title">Subtasks</div>
-            <div class="task-attachments-actions">
-              <${Button}
-                variant="text"
-                size="small"
-                onClick=${loadSubtasks}
-                disabled=${subtasksLoading || creatingSubtask}
-              >
-                ${subtasksLoading ? "Refreshing…" : "Refresh"}
-              <//>
-            </div>
-          </div>
-          <div class="task-comment-composer" style=${{ marginTop: "8px" }}>
-            <${TextField}
-              size="small"
-              placeholder="Create subtask summary"
-              value=${subtaskTitle}
-              onInput=${(e) => setSubtaskTitle(e.target.value)}
-              fullWidth
-            />
-            <${Button}
-              variant="contained"
-              size="small"
-              disabled=${creatingSubtask || !sanitizeTaskText(subtaskTitle || "").trim()}
-              onClick=${handleCreateSubtask}
-            >
-              ${creatingSubtask ? "Creating…" : "Add"}
-            <//>
-          </div>
-          <div class="task-comments-list" style=${{ marginTop: "8px" }}>
-            ${!subtasksLoading && !subtasks.length && html`<div class="meta-text">No subtasks yet.</div>`}
-            ${subtasks.map((subtask) => html`
-              <div class="task-comment-item" key=${subtask.id}>
+            ${workflowRuns.map((run, index) => html`
+              <div class="task-comment-item" key=${`wf-hist-${index}`}>
                 <div class="task-comment-meta">
-                  <span style="user-select:all">${subtask.id}</span>
-                  ${subtask.status ? ` · ${subtask.status}` : ""}
-                  ${subtask.storyPoints ? ` · ${subtask.storyPoints} pts` : ""}
+                  ${run.workflowId || "workflow"}
+                  ${run.runId ? ` · run ${run.runId}` : ""}
+                  ${run.timestamp ? ` · ${formatRelative(run.timestamp)}` : ""}
                 </div>
-                <div class="task-comment-body">${subtask.title}</div>
-                ${subtask.assignee && html`<div class="task-comment-meta">Assignee: ${subtask.assignee}</div>`}
+                <div class="task-comment-body">${run.status || run.result || "No status summary"}</div>
               </div>
             `)}
           </div>
         </div>
-        <div class="task-comments-block modal-form-span jira-panel">
-          <div class="task-attachments-title">Dependencies & Sprint Wiring</div>
-          ${currentEpicEntry && html`<div class="meta-text" style=${{ marginBottom: "8px" }}>Epic: ${currentEpicEntry.label} · ${currentEpicEntry.taskCount} tasks</div>`}
-          <${TextField}
-            multiline
-            rows=${2}
-            size="small"
-            placeholder="Dependency task IDs (comma or newline separated)"
-            value=${dependenciesInput}
-            onInput=${(e) => setDependenciesInput(e.target.value)}
-            fullWidth
-          />
-          ${currentDependencyIds.length > 0 && html`
-            <div class="tag-row" style=${{ marginTop: "8px" }}>
-              ${currentDependencyIds.map((depId) => html`<button type="button" class="tag-chip task-structure-chip" onClick=${() => handleDependencyChipRemove(depId)} title="Remove dependency">${depId} ×</button>`)}
-            </div>
-          `}
-          ${dependencySuggestions.length > 0 && html`
-            <div style=${{ marginTop: "8px" }}>
-              <div class="meta-text" style=${{ marginBottom: "6px" }}>Quick add dependencies</div>
-              <div class="tag-row">
-                ${dependencySuggestions.map((entry) => html`<button type="button" class="tag-chip task-structure-chip task-structure-chip-muted" onClick=${() => handleDependencyChipAdd(entry.id)}>${entry.id}: ${truncate(entry.title || entry.id, 26)}</button>`)}
-              </div>
-            </div>
-          `}
-          <div class="input-row" style=${{ marginTop: "8px" }}>
-            <${Select}
-              size="small"
-              value=${selectedSprintId}
-              onChange=${(e) => setSelectedSprintId(e.target.value)}
-            >
-              <${MenuItem} value="">No sprint</${MenuItem}>
-              ${sprintOptions.map((sprint) => html`
-                <${MenuItem} key=${sprint.id} value=${sprint.id}>${sprint.label}</${MenuItem}>
-              `)}
-            </${Select}>
-            <${TextField}
-              size="small"
-              type="number"
-              placeholder="Sprint order"
-              value=${sprintOrderInput}
-              onInput=${(e) => setSprintOrderInput(e.target.value)}
-              inputProps=${{ min: 1, step: 1 }}
-            />
-          </div>
-          <div class="btn-row" style=${{ marginTop: "8px", flexWrap: "wrap" }}>
-            <${Button} variant="outlined" size="small" disabled=${savingDependencies} onClick=${handleSaveDependencies}>
-              ${savingDependencies ? "Saving…" : "Save Dependencies"}
-            <//>
-            <${Button} variant="outlined" size="small" disabled=${savingSprint || !selectedSprintId} onClick=${handleSaveSprintAssignment}>
-              ${savingSprint ? "Saving…" : "Save Sprint Assignment"}
-            <//>
-            <${Button} variant="text" size="small" disabled=${savingSprint} onClick=${() => handleSprintOrderNudge(-1)}>↑ Earlier</${Button}>
-            <${Button} variant="text" size="small" disabled=${savingSprint} onClick=${() => handleSprintOrderNudge(1)}>↓ Later</${Button}>
-            ${dependencyFeedback && html`<span class="meta-text">${dependencyFeedback}</span>`}
-          </div>
-          ${epicCatalog.length > 0 && html`
-            <div style=${{ marginTop: "10px" }}>
-              <div class="meta-text" style=${{ marginBottom: "6px" }}>Epic shortcuts</div>
-              <div class="tag-row">
-                ${epicCatalog.slice(0, 12).map((entry) => html`<button type="button" class="tag-chip task-structure-chip ${epicId === entry.id ? "task-structure-chip-active" : ""}" onClick=${() => setEpicId(entry.id)}>${entry.label}</button>`)}
-              </div>
-            </div>
-          `}
-        </div>
-        <${Tooltip} title="Use AI to expand and improve this task description"><${Button}
-          variant="text" size="small"
-          style=${{ display: "flex", alignItems: "center", gap: "6px", alignSelf: "flex-start", fontSize: "12px", padding: "5px 10px", opacity: !title.trim() ? 0.45 : 1 }}
-          disabled=${!title.trim() || rewriting || saving}
-          onClick=${async () => {
-            if (!title.trim() || rewriting) return;
-            setRewriting(true);
-            haptic("medium");
-            try {
-              const res = await apiFetch("/api/tasks/rewrite", {
-                method: "POST",
-                body: JSON.stringify({ title: title.trim(), description: description.trim() }),
-              });
-              if (res?.data) {
-                if (res.data.title) setTitle(res.data.title);
-                if (res.data.description) setDescription(res.data.description);
-                showToast("Task description improved", "success");
-                haptic("medium");
-              }
-            } catch { /* toast via apiFetch */ }
-            setRewriting(false);
-          }}
-        >
-          ${rewriting
-            ? html`<span style="display:inline-block;animation:spin 0.8s linear infinite">${resolveIcon(":clock:")}</span> Improving…`
-            : html`${iconText(":star: Improve with AI")}`
-          }
-        <//><//> 
-        <${TextField} size="small" variant="outlined" className="modal-form-span" placeholder="Base branch (optional, e.g. feature/xyz)" value=${baseBranch} onInput=${(e) => setBaseBranch(e.target.value)} fullWidth />        <div class="modal-form-span jira-meta-grid">
-          <${TextField}
-            size="small"
-            variant="outlined"
-            label="Assignee"
-            value=${assignee}
-            onInput=${(e) => setAssignee(e.target.value)}
-            fullWidth
-          />
-          <${TextField}
-            size="small"
-            variant="outlined"
-            label="Assignees"
-            placeholder="alice, bob"
-            value=${assigneesInput}
-            onInput=${(e) => setAssigneesInput(e.target.value)}
-            fullWidth
-          />
-          <${TextField}
-            size="small"
-            variant="outlined"
-            label="Epic"
-            value=${epicId}
-            onInput=${(e) => setEpicId(e.target.value)}
-            fullWidth
-          />
-          <${TextField}
-            size="small"
-            variant="outlined"
-            type="number"
-            label="Story Points"
-            value=${storyPoints}
-            onInput=${(e) => setStoryPoints(e.target.value)}
-            fullWidth
-          />
-          <${TextField}
-            size="small"
-            variant="outlined"
-            type="date"
-            label="Due Date"
-            value=${dueDate}
-            onInput=${(e) => setDueDate(e.target.value)}
-            InputLabelProps=${{ shrink: true }}
-            fullWidth
-          />
-          <${TextField}
-            size="small"
-            variant="outlined"
-            label="Parent Task"
-            value=${parentTaskId}
-            onInput=${(e) => setParentTaskId(e.target.value)}
-            fullWidth
-          />
-        </div>
-        <div class="input-row modal-form-span">
-          <${Select}
-            size="small"
-            value=${workspaceId}
-            onChange=${(e) => setWorkspaceId(e.target.value)}
-          >
-            <${MenuItem} value="">Active workspace</${MenuItem}>
-            ${workspaceOptions.map(
-              (ws) => html`<${MenuItem} value=${ws.id}>${ws.name || ws.id}</${MenuItem}>`,
-            )}
-          </${Select}>
-          <${Select}
-            size="small"
-            value=${repository}
-            onChange=${(e) => setRepository(e.target.value)}
-            disabled=${!repositoryOptions.length}
-          >
-            <${MenuItem} value="">
-              ${repositoryOptions.length ? "Auto repository" : "No repos in workspace"}
-            </${MenuItem}>
-            ${repositoryOptions.map(
-              (repo) =>
-                html`<${MenuItem} value=${repo.slug}>${repo.name}${repo.primary ? " (Primary)" : ""}</${MenuItem}>`,
-            )}
-          </${Select}>
-        </div>
-        <${TextField} size="small" variant="outlined" className="modal-form-span" placeholder="Tags (comma-separated)" value=${tagsInput} onInput=${(e) => setTagsInput(e.target.value)} fullWidth />
-        ${normalizeTagInput(tagsInput).length > 0 &&
-        html`
-          <div class="tag-row modal-form-span">
-            ${normalizeTagInput(tagsInput).map(
-              (tag) => html`<span class="tag-chip">#${tag}</span>`,
-            )}
-          </div>
-        `}
+      `}
 
-        <div class="input-row modal-form-span">
-          <${Select}
-            size="small"
-            value=${status}
-            onChange=${(e) => {
-              const next = e.target.value;
-              setStatus(next);
-              if (next === "draft") setDraft(true);
-              else if (draft) setDraft(false);
-            }}
-          >
-            ${["draft", "todo", "inprogress", "inreview", "done", "cancelled"].map(
-              (s) => html`<${MenuItem} value=${s}>${s}</${MenuItem}>`,
-            )}
-          </${Select}>
-          <${Select}
-            size="small"
-            value=${priority}
-            onChange=${(e) => setPriority(e.target.value)}
-          >
-            <${MenuItem} value="">No priority</${MenuItem}>
-            ${["low", "medium", "high", "critical"].map(
-              (p) => html`<${MenuItem} value=${p}>${p}</${MenuItem}>`,
-            )}
-          </${Select}>
-        </div>
-        <div class="modal-form-span">
-          <${Toggle}
-            label="Draft (keep in backlog)"
-            checked=${draft}
-            onChange=${(next) => {
-              setDraft(next);
-              if (next) setStatus("draft");
-              else if (status === "draft") setStatus("todo");
-            }}
-          />
-        </div>
-        <div class="modal-form-span">
-          <${Toggle}
-            label="Manual takeover (exclude from automation)"
-            checked=${manualOverride}
-            disabled=${manualBusy || !task?.id}
-            onChange=${handleManualToggle}
-          />
-        </div>
-        <${TextField} size="small" variant="outlined" className="modal-form-span" placeholder="Manual reason (optional)" value=${manualReason} disabled=${manualBusy} onInput=${(e) => setManualReason(e.target.value)} fullWidth />
-        ${manualOverride &&
-        html`
-          <div class="modal-form-span">
-            <div class="meta-text">
-              Bosun will skip this task until manual takeover is cleared.
-            </div>
-            ${manualReason &&
-            html`<div class="meta-text">Reason: ${manualReason}</div>`}
-          </div>
-        `}
+      ${historyEntries.length === 0 && workflowRuns.length === 0 && relatedLinks.length === 0 ? html`
+        <div style="padding:24px;text-align:center;opacity:0.5;font-size:0.9em;">No history, workflow runs, or links recorded yet.</div>
+      ` : ""}
 
-        ${task?.created_at &&
-        html`
-          <div class="meta-text modal-form-span">
-            Created: ${new Date(task.created_at).toLocaleString()}
-          </div>
-        `}
-        ${task?.updated_at &&
-        html`
-          <div class="meta-text modal-form-span">
-            Updated: ${formatRelative(task.updated_at)}
-          </div>
-        `}
-        ${task?.meta?.triggerTemplate?.id &&
-        html`
-          <div class="meta-text modal-form-span">
-            Trigger Template: ${task.meta.triggerTemplate.id}
-          </div>
-        `}
-        ${(task?.meta?.execution?.sdk || task?.meta?.execution?.model) &&
-        html`
-          <div class="meta-text modal-form-span">
-            Execution Override:
-            ${task?.meta?.execution?.sdk || "auto"}
-            ${task?.meta?.execution?.model
-              ? html` · ${task.meta.execution.model}`
-              : ""}
-          </div>
-        `}
-        ${task?.assignee &&
-        html` <div class="meta-text modal-form-span">Assignee: ${task.assignee}</div> `}
-        ${task?.branch &&
-        html`
-          <div class="meta-text modal-form-span" style="user-select:all">
-            Branch: ${task.branch}
-          </div>
-        `}
+      </div>`}
 
-        <${SaveDiscardBar}
-          dirty=${hasUnsaved}
-          message=${unsavedChangesMessage(changeCount)}
-          saveLabel="Save Changes"
-          discardLabel="Discard"
-          onSave=${() => {
-            void handleSave({ closeAfterSave: false });
-          }}
-          onDiscard=${handleDiscardChanges}
-          saving=${saving}
-          disabled=${Boolean(activeOperationLabel && !saving)}
-        />
-
-        <div class="btn-row modal-form-span">
-          ${(task?.status === "error" || task?.status === "cancelled") &&
-          html`
-            <${Button} variant="contained" size="small" onClick=${handleRetry}>
-              ↻ Retry
-            <//>
-          `}
-          <${Button}
-            variant="outlined" size="small"
-            onClick=${() => {
-              void handleSave({ closeAfterSave: true });
-            }}
-            disabled=${saving}
-          >
-            ${saving ? "Saving…" : iconText(":save: Save")}
-          <//>
-          <${Button}
-            variant="text" size="small"
-            onClick=${() => handleStatusUpdate("inreview")}
-          >
-            → Review
-          <//>
-          <${Button}
-            variant="text" size="small"
-            onClick=${() => handleStatusUpdate("done")}
-          >
-            ${iconText("✓ Done")}
-          <//>
-          ${task?.status !== "cancelled" &&
-          html`
-            <${Button}
-              variant="text" size="small"
-              style=${{ color: "var(--color-error)" }}
-              onClick=${handleCancel}
-            >
-              ${iconText("✕ Cancel")}
-            <//>
-          `}
-        </div>
-
-        ${task?.id &&
-        html`
-          <${Button}
-            variant="text" size="small"
-            onClick=${() => {
-              haptic();
-              sendCommandToChat("/logs " + task.id);
-            }}
-          >
-            ${iconText(":file: View Agent Logs")}
-          <//>
-        `}
       </div>
     <//>
   `;
@@ -3597,6 +4217,7 @@ function DagGraphSection({
   description = "",
   graph = EMPTY_DAG_GRAPH,
   onOpenTask,
+  onActivateNode,
   onCreateEdge,
   onDeleteEdge,
   allowWiring = false,
@@ -3612,7 +4233,11 @@ function DagGraphSection({
   const [wireSourceId, setWireSourceId] = useState("");
   const [wiringBusy, setWiringBusy] = useState(false);
   const [selectedEdgeKey, setSelectedEdgeKey] = useState("");
+  const [wireDrag, setWireDrag] = useState(null);
+  const [wireHoverId, setWireHoverId] = useState("");
   const isWireMode = allowWiring && interactionMode === "wire";
+  const wireHoverIdRef = useRef("");
+  const wireDragCleanupRef = useRef(null);
 
   const sortedNodes = useMemo(() => {
     const nodes = [...(graph?.nodes || [])];
@@ -3721,7 +4346,16 @@ function DagGraphSection({
   useEffect(() => {
     setWireSourceId("");
     setSelectedEdgeKey("");
+    setWireDrag(null);
+    setWireHoverId("");
   }, [graphKey, interactionMode]);
+
+  useEffect(() => () => {
+    if (typeof wireDragCleanupRef.current === "function") {
+      wireDragCleanupRef.current();
+      wireDragCleanupRef.current = null;
+    }
+  }, []);
 
   const applyZoomAtPoint = useCallback((nextZoom, clientX, clientY) => {
     const el = stageRef.current;
@@ -3803,8 +4437,12 @@ function DagGraphSection({
       }
       return;
     }
+    if (typeof onActivateNode === "function") {
+      onActivateNode(node);
+      return;
+    }
     if (node?.taskId) onOpenTask?.(node.taskId);
-  }, [isWireMode, onCreateEdge, onOpenTask, wireSourceId, nodeById, wiringBusy]);
+  }, [isWireMode, onActivateNode, onCreateEdge, onOpenTask, wireSourceId, nodeById, wiringBusy]);
 
   const handleEdgeClick = useCallback((edge, event) => {
     event?.stopPropagation?.();
@@ -3823,6 +4461,83 @@ function DagGraphSection({
       setWiringBusy(false);
     }
   }, [onDeleteEdge, selectedEdge]);
+
+  const commitWireConnection = useCallback(async (sourceId, targetId) => {
+    if (!isWireMode || typeof onCreateEdge !== "function") return;
+    if (!sourceId || !targetId || sourceId === targetId || wiringBusy) {
+      setWireSourceId("");
+      setWireHoverId("");
+      return;
+    }
+    const sourceNode = nodeById.get(sourceId) || null;
+    const targetNode = nodeById.get(targetId) || null;
+    if (!sourceNode || !targetNode) {
+      setWireSourceId("");
+      setWireHoverId("");
+      return;
+    }
+    setWiringBusy(true);
+    try {
+      await onCreateEdge({ sourceNode, targetNode });
+    } finally {
+      setWireSourceId("");
+      setWireHoverId("");
+      setWiringBusy(false);
+    }
+  }, [isWireMode, nodeById, onCreateEdge, wiringBusy]);
+
+  const beginWireDrag = useCallback((node, event) => {
+    if (!isWireMode || typeof onCreateEdge !== "function" || wiringBusy) return;
+    const sourceId = String(node?.id || "").trim();
+    if (!sourceId) return;
+    event?.preventDefault?.();
+    event?.stopPropagation?.();
+    if (typeof wireDragCleanupRef.current === "function") {
+      wireDragCleanupRef.current();
+      wireDragCleanupRef.current = null;
+    }
+    setWireSourceId(sourceId);
+    setSelectedEdgeKey("");
+    setWireHoverId("");
+    wireHoverIdRef.current = "";
+    setWireDrag({ sourceId, clientX: event.clientX, clientY: event.clientY });
+
+    const handleMove = (moveEvent) => {
+      setWireDrag((current) => current
+        ? { ...current, clientX: moveEvent.clientX, clientY: moveEvent.clientY }
+        : current);
+    };
+    const finish = async () => {
+      const targetId = wireHoverIdRef.current;
+      if (typeof wireDragCleanupRef.current === "function") {
+        wireDragCleanupRef.current();
+        wireDragCleanupRef.current = null;
+      }
+      setWireDrag(null);
+      await commitWireConnection(sourceId, targetId);
+    };
+    const cleanup = () => {
+      window.removeEventListener("pointermove", handleMove);
+      window.removeEventListener("pointerup", finish);
+    };
+    wireDragCleanupRef.current = cleanup;
+    window.addEventListener("pointermove", handleMove);
+    window.addEventListener("pointerup", finish, { once: true });
+  }, [commitWireConnection, isWireMode, onCreateEdge, wiringBusy]);
+
+  const previewPath = (() => {
+    if (!wireDrag || !stageRef.current) return null;
+    const source = layout.positions.get(String(wireDrag.sourceId));
+    if (!source) return null;
+    const rect = stageRef.current.getBoundingClientRect();
+    const x1 = source.x + source.width;
+    const y1 = source.y + source.height / 2;
+    const x2 = (wireDrag.clientX - rect.left - pan.x) / zoom;
+    const y2 = (wireDrag.clientY - rect.top - pan.y) / zoom;
+    const c1 = x1 + Math.max(40, (x2 - x1) * 0.35);
+    const c2 = x2 - Math.max(30, (x2 - x1) * 0.35);
+    return `M ${x1} ${y1} C ${c1} ${y1}, ${c2} ${y2}, ${x2} ${y2}`;
+  })();
 
   if (!sortedNodes.length) {
     return html`
@@ -3846,8 +4561,11 @@ function DagGraphSection({
           <${Button} size="small" variant="outlined" onClick=${fitToView}>Fit</${Button}>
           <${Button} size="small" variant="text" onClick=${() => { setZoom(1); setPan({ x: 24, y: 24 }); }}>Reset</${Button}>
           <span class="task-dag-zoom-pill">${Math.round(zoom * 100)}%</span>
+          ${selectedEdge && typeof onDeleteEdge === "function"
+            ? html`<${Button} size="small" variant="outlined" color="error" disabled=${wiringBusy} onClick=${handleDeleteSelectedEdge}>Delete edge</${Button}>`
+            : null}
           ${allowWiring
-            ? html`<span class="task-dag-wire-pill">${wireSourceId ? `Source: ${wireSourceId}` : wiringBusy ? "Saving edge…" : "Wiring: click source then target"}</span>`
+            ? html`<span class="task-dag-wire-pill">${wireDrag ? "Drag to a target node to connect" : wireSourceId ? `Source: ${wireSourceId}` : wiringBusy ? "Saving edge…" : "Wire by drag or click"}</span>`
             : null}
         </div>
       </div>
@@ -3865,7 +4583,8 @@ function DagGraphSection({
           </defs>
           <g transform=${`translate(${pan.x} ${pan.y}) scale(${zoom})`}>
             <rect x="0" y="0" width=${worldBounds.width} height=${worldBounds.height} fill="transparent" />
-            ${edges.map(({ source, target, kind }, idx) => {
+            ${edges.map((edge, idx) => {
+              const { source, target, kind } = edge;
               const x1 = source.x + source.width;
               const y1 = source.y + source.height / 2;
               const x2 = target.x;
@@ -3880,22 +4599,46 @@ function DagGraphSection({
                   fill="none"
                   stroke=${style.color}
                   stroke-dasharray=${style.dash || ""}
-                  stroke-opacity="0.75"
-                  stroke-width="2"
+                  stroke-opacity=${selectedEdgeKey === edge.key ? "1" : "0.75"}
+                  stroke-width=${selectedEdgeKey === edge.key ? "3" : "2"}
                   marker-end=${`url(#dag-arrow-${graphKey})`}
+                  onClick=${(event) => handleEdgeClick(edge, event)}
                 />
               `;
             })}
+            ${previewPath ? html`
+              <path
+                d=${previewPath}
+                fill="none"
+                stroke="var(--accent)"
+                stroke-width="2.5"
+                stroke-dasharray="6 5"
+                stroke-opacity="0.9"
+                marker-end=${`url(#dag-arrow-${graphKey})`}
+                pointer-events="none"
+              />
+            ` : null}
             ${sortedNodes.map((node) => {
               const pos = layout.positions.get(String(node.id));
               if (!pos) return null;
               const selected = wireSourceId && String(node.id) === wireSourceId;
+              const hoverTarget = wireHoverId && String(node.id) === wireHoverId;
               const highlighted = highlightedIds.has(String(node.id)) || highlightedIds.has(String(node.taskId || ""));
               return html`
                 <g
                   key=${node.id}
-                  class=${`dag-node ${selected ? "dag-node-selected" : ""} ${highlighted ? "dag-node-highlighted" : ""}`}
+                  class=${`dag-node ${selected ? "dag-node-selected" : ""} ${hoverTarget ? "dag-node-hover-target" : ""} ${highlighted ? "dag-node-highlighted" : ""}`}
                   onPointerDown=${(event) => event.stopPropagation()}
+                  onPointerEnter=${() => {
+                    if (!wireDrag || String(node.id) === String(wireDrag.sourceId)) return;
+                    wireHoverIdRef.current = String(node.id);
+                    setWireHoverId(String(node.id));
+                  }}
+                  onPointerLeave=${() => {
+                    if (wireHoverIdRef.current !== String(node.id)) return;
+                    wireHoverIdRef.current = "";
+                    setWireHoverId("");
+                  }}
                   onClick=${(event) => handleNodeClick(node, event)}
                   style=${{ cursor: isWireMode || node.taskId ? "pointer" : "default" }}
                 >
@@ -3907,8 +4650,8 @@ function DagGraphSection({
                     rx="14"
                     ry="14"
                     fill="var(--bg-surface)"
-                    stroke=${selected ? "var(--accent)" : highlighted ? "var(--color-done)" : "var(--border)"}
-                    stroke-width=${selected || highlighted ? "2.2" : "1.5"}
+                    stroke=${selected ? "var(--accent)" : hoverTarget ? "var(--color-warning)" : highlighted ? "var(--color-done)" : "var(--border)"}
+                    stroke-width=${selected || hoverTarget || highlighted ? "2.2" : "1.5"}
                   />
                   <text x=${pos.x + 12} y=${pos.y + 24} fill="var(--text-primary)" font-size="13" font-weight="700">
                     ${truncate(node.title || "(untitled)", 34)}
@@ -3919,6 +4662,17 @@ function DagGraphSection({
                   <text x=${pos.x + 12} y=${pos.y + 64} fill="var(--accent)" font-size="11">
                     ${String(node.status || "todo")}
                   </text>
+                  ${isWireMode ? html`
+                    <circle
+                      cx=${pos.x + pos.width - 14}
+                      cy=${pos.y + pos.height / 2}
+                      r="8"
+                      fill=${selected ? "var(--accent)" : "var(--bg-canvas, #0f1115)"}
+                      stroke="var(--accent)"
+                      stroke-width="2"
+                      onPointerDown=${(event) => beginWireDrag(node, event)}
+                    />
+                  ` : null}
                   ${Number.isFinite(node.order) && html`<text x=${pos.x + pos.width - 16} y=${pos.y + 22} text-anchor="end" fill="var(--text-muted)" font-size="11">#${node.order}</text>`}
                   ${highlighted && html`<text x=${pos.x + pos.width - 12} y=${pos.y + pos.height - 12} text-anchor="end" fill="var(--color-done)" font-size="11" font-weight="700">Ready</text>`}
                 </g>
@@ -4590,6 +5344,33 @@ export function TasksTab() {
     showToast(`Wired dependency: ${srcTaskId} -> ${dstTaskId}`, "success");
     await loadDagViews();
   }, [loadDagViews]);
+
+  const handleDeleteDagEdge = useCallback(async ({ sourceId, targetId, graphKind }) => {
+    const srcId = toText(sourceId);
+    const dstId = toText(targetId);
+    if (!srcId || !dstId || srcId === dstId) return;
+
+    if (graphKind === "epic") {
+      const epic = dagEpicCatalog.find((entry) => toText(entry?.id) === dstId);
+      const remaining = normalizeDependencyInput((epic?.dependencies || []).filter((id) => id !== srcId));
+      await apiFetch("/api/tasks/epic-dependencies", {
+        method: "PUT",
+        body: JSON.stringify({ epicId: dstId, dependencies: remaining }),
+      });
+      showToast(`Removed epic dependency: ${srcId} -> ${dstId}`, "success");
+      await loadDagViews();
+      return;
+    }
+
+    const task = dagTaskCatalog.find((entry) => toText(entry?.id) === dstId);
+    const remaining = normalizeDependencyInput(getTaskDependencyIds(task).filter((id) => id !== srcId));
+    await apiFetch("/api/tasks/dependencies", {
+      method: "PUT",
+      body: JSON.stringify({ taskId: dstId, dependencies: remaining }),
+    });
+    showToast(`Removed dependency: ${srcId} -> ${dstId}`, "success");
+    await loadDagViews();
+  }, [dagEpicCatalog, dagTaskCatalog, loadDagViews]);
 
   const handleSprintChange = useCallback((nextSprint) => {
     const sprintId = toText(nextSprint, "all");
@@ -5409,6 +6190,7 @@ export function TasksTab() {
             graphKey="sprint"
             onOpenTask=${openDetail}
             onCreateEdge={({ sourceNode, targetNode }) => handleCreateDagEdge({ sourceNode, targetNode, graphKind: "task" })}
+            onDeleteEdge=${(edge) => handleDeleteDagEdge({ sourceId: edge?.sourceId, targetId: edge?.targetId, graphKind: "task" })}
             allowWiring=${true}
             interactionMode=${dagInteractionMode}
             highlightNodeIds=${dagReadyHighlightIds}
@@ -5419,10 +6201,9 @@ export function TasksTab() {
             description=${dagGlobalGraph.description || "Cross-sprint dependency overview."}
             graph=${dagGlobalGraphView}
             graphKey="global"
-            onOpenTask=${openDetail}
-            onCreateEdge={({ sourceNode, targetNode }) => handleCreateDagEdge({ sourceNode, targetNode, graphKind: "task" })}
-            allowWiring=${true}
-            interactionMode=${dagInteractionMode}
+            onActivateNode=${(node) => handleSprintChange(node?.sprintId || node?.id || "all")}
+            allowWiring=${false}
+            interactionMode="open"
             emptyMessage="No global DAG data available yet."
           ><//>
           <${DagGraphSection}
@@ -5430,8 +6211,12 @@ export function TasksTab() {
             description=${dagEpicGraph.description || "Epics and their run prerequisites."}
             graph=${dagEpicGraphView}
             graphKey="epic"
-            onOpenTask=${openDetail}
+            onActivateNode=${(node) => {
+              const epic = dagEpicCatalog.find((entry) => toText(entry?.id) === toText(node?.epicId || node?.id));
+              if (epic?.anchorTaskId) openDetail(epic.anchorTaskId);
+            }}
             onCreateEdge={({ sourceNode, targetNode }) => handleCreateDagEdge({ sourceNode, targetNode, graphKind: "epic" })}
+            onDeleteEdge=${(edge) => handleDeleteDagEdge({ sourceId: edge?.sourceId, targetId: edge?.targetId, graphKind: "epic" })}
             allowWiring=${true}
             interactionMode=${dagInteractionMode}
             emptyMessage="No epic DAG data available yet."
@@ -6206,10 +6991,6 @@ function CreateTaskModalInline({ onClose, initialValues = null, sprintOptions = 
     <//>
   `;
 }
-
-
-
-
 
 
 

@@ -17,6 +17,7 @@ import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { execSync } from "node:child_process";
 import { getNodeType } from "../workflow/workflow-nodes.mjs";
+import { clearContractCache } from "../workflow/workflow-contract.mjs";
 import {
   WorkflowEngine,
   WorkflowContext,
@@ -105,6 +106,8 @@ describe("task lifecycle node type registration", () => {
     "action.resolve_executor",
     "action.acquire_worktree",
     "action.release_worktree",
+    "read-workflow-contract",
+    "workflow-contract-validation",
     "action.build_task_prompt",
     "action.detect_new_commits",
     "action.push_branch",
@@ -732,6 +735,45 @@ describe("action.claim_task", () => {
       vi.useRealTimers();
     }
   });
+
+  it("marks claim as stolen when renewal returns owner_mismatch without throwing", async () => {
+    vi.useFakeTimers();
+    const nt = getNodeType("action.claim_task");
+    const claims = await import("../task/task-claims.mjs");
+    const initSpy = vi.spyOn(claims, "initTaskClaims").mockResolvedValue();
+    const claimSpy = vi.spyOn(claims, "claimTask").mockResolvedValue({
+      success: true,
+      token: "claim-token-fatal",
+    });
+    const renewSpy = vi.spyOn(claims, "renewClaim").mockResolvedValue({
+      success: false,
+      error: "owner_mismatch",
+    });
+
+    const ctx = makeCtx({ repoRoot: "/tmp/repo-root" });
+    try {
+      const node = makeNode("action.claim_task", {
+        taskId: "task-renew-fatal",
+        taskTitle: "Renew fatal",
+        renewIntervalMs: 50,
+      });
+
+      const result = await nt.execute(node, ctx);
+      expect(result.success).toBe(true);
+
+      await vi.advanceTimersByTimeAsync(60);
+      expect(renewSpy).toHaveBeenCalledTimes(1);
+      expect(ctx.data._claimStolen).toBe(true);
+      expect(ctx.__workflowRuntimeState?.claimRenewTimer || null).toBeNull();
+    } finally {
+      const runtimeTimer = ctx.__workflowRuntimeState?.claimRenewTimer || ctx.data?._claimRenewTimer;
+      if (runtimeTimer) clearInterval(runtimeTimer);
+      initSpy.mockRestore();
+      claimSpy.mockRestore();
+      renewSpy.mockRestore();
+      vi.useRealTimers();
+    }
+  });
 });
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -765,6 +807,235 @@ describe("action.resolve_executor", () => {
     });
     const result = await nt.execute(node, ctx);
     expect(ctx.data.resolvedSdk).toBeDefined();
+  });
+
+  it("uses configured executor defaults when no library profile matches", async () => {
+    const configMod = await import("../config/config.mjs");
+    const loadConfigSpy = vi.spyOn(configMod, "loadConfig").mockReturnValue({
+      executorConfig: {
+        executors: [
+          {
+            name: "copilot-default",
+            executor: "COPILOT",
+            variant: "DEFAULT",
+            role: "primary",
+            weight: 100,
+            enabled: true,
+            models: [],
+          },
+        ],
+      },
+      internalExecutor: { sdk: "codex" },
+      primaryAgent: "codex",
+    });
+    const saved = { ...process.env };
+    delete process.env.COPILOT_MODEL;
+    delete process.env.CLAUDE_MODEL;
+    delete process.env.CODEX_MODEL;
+
+    try {
+      const nt = getNodeType("action.resolve_executor");
+      const ctx = makeCtx({});
+      const node = makeNode("action.resolve_executor", {
+        defaultSdk: "auto",
+      });
+      const result = await nt.execute(node, ctx);
+      expect(result.success).toBe(true);
+      expect(result.sdk).toBe("copilot");
+      expect(ctx.data.resolvedSdk).toBe("copilot");
+    } finally {
+      loadConfigSpy.mockRestore();
+      for (const key of Object.keys(process.env)) {
+        if (!(key in saved)) delete process.env[key];
+      }
+      Object.assign(process.env, saved);
+    }
+  });
+
+  it("keeps an explicit defaultSdk from silently falling back to codex", async () => {
+    const configMod = await import("../config/config.mjs");
+    const loadConfigSpy = vi.spyOn(configMod, "loadConfig").mockReturnValue({
+      executorConfig: {
+        executors: [
+          {
+            name: "codex-default",
+            executor: "CODEX",
+            variant: "DEFAULT",
+            role: "primary",
+            weight: 100,
+            enabled: true,
+            models: [],
+          },
+        ],
+      },
+      internalExecutor: { sdk: "codex" },
+      primaryAgent: "codex",
+    });
+    const saved = { ...process.env };
+    delete process.env.COPILOT_MODEL;
+    delete process.env.CLAUDE_MODEL;
+    delete process.env.CODEX_MODEL;
+
+    try {
+      const nt = getNodeType("action.resolve_executor");
+      const ctx = makeCtx({});
+      const node = makeNode("action.resolve_executor", {
+        defaultSdk: "copilot",
+      });
+      const result = await nt.execute(node, ctx);
+      expect(result.success).toBe(true);
+      expect(result.sdk).toBe("copilot");
+      expect(ctx.data.resolvedSdk).toBe("copilot");
+    } finally {
+      loadConfigSpy.mockRestore();
+      for (const key of Object.keys(process.env)) {
+        if (!(key in saved)) delete process.env[key];
+      }
+      Object.assign(process.env, saved);
+    }
+  });
+
+  it("applies library profile and skill resolution into context", async () => {
+    const nt = getNodeType("action.resolve_executor");
+    const root = mkdtempSync(join(tmpdir(), "wf-resolve-executor-library-"));
+    const bosunDir = join(root, ".bosun");
+    const profilesDir = join(bosunDir, "profiles");
+    const skillsDir = join(bosunDir, "skills");
+    mkdirSync(profilesDir, { recursive: true });
+    mkdirSync(skillsDir, { recursive: true });
+
+    const manifest = {
+      generated: new Date().toISOString(),
+      entries: [
+        {
+          id: "backend-agent",
+          type: "agent",
+          name: "Backend Agent",
+          description: "Backend profile",
+          filename: "backend-agent.json",
+          tags: ["backend", "api"],
+          scope: "global",
+          workspace: null,
+          meta: {},
+          createdAt: new Date().toISOString(),
+          updatedAt: new Date().toISOString(),
+        },
+        {
+          id: "background-task-execution",
+          type: "skill",
+          name: "Background Task Execution",
+          description: "Background worker guidance",
+          filename: "background-task-execution.md",
+          tags: ["backend", "api"],
+          scope: "global",
+          workspace: null,
+          meta: {},
+          createdAt: new Date().toISOString(),
+          updatedAt: new Date().toISOString(),
+        },
+      ],
+    };
+    writeFileSync(join(bosunDir, "library.json"), JSON.stringify(manifest, null, 2));
+    writeFileSync(
+      join(profilesDir, "backend-agent.json"),
+      JSON.stringify({
+        id: "backend-agent",
+        name: "Backend Agent",
+        description: "Backend specialist",
+        titlePatterns: ["\\(api\\)", "\\bapi\\b"],
+        scopes: ["api", "backend"],
+        tags: ["backend", "api"],
+        skills: ["background-task-execution"],
+      }, null, 2),
+    );
+    writeFileSync(join(skillsDir, "background-task-execution.md"), "# Skill\nRun background task updates.");
+
+    const ctx = makeCtx({
+      repoRoot: root,
+      task: {
+        tags: ["backend", "api"],
+      },
+    });
+    const node = makeNode("action.resolve_executor", {
+      taskTitle: "feat(api): add webhooks endpoint",
+      taskDescription: "Implement backend API endpoint and worker",
+      repoRoot: root,
+      defaultSdk: "auto",
+    });
+
+    const result = await nt.execute(node, ctx);
+    expect(result.success).toBe(true);
+    expect(ctx.data.agentProfile).toBe("backend-agent");
+    expect(ctx.data.resolvedAgentProfile?.id).toBe("backend-agent");
+    expect(Array.isArray(ctx.data.resolvedSkillIds)).toBe(true);
+    expect(ctx.data.resolvedSkillIds).toContain("background-task-execution");
+
+    rmSync(root, { recursive: true, force: true });
+  });
+
+  it("honors profile sdk/model preference when defined", async () => {
+    const nt = getNodeType("action.resolve_executor");
+    const root = mkdtempSync(join(tmpdir(), "wf-resolve-executor-profile-sdk-"));
+    const bosunDir = join(root, ".bosun");
+    const profilesDir = join(bosunDir, "profiles");
+    mkdirSync(profilesDir, { recursive: true });
+
+    const now = new Date().toISOString();
+    writeFileSync(join(bosunDir, "library.json"), JSON.stringify({
+      generated: now,
+      entries: [
+        {
+          id: "devops-agent",
+          type: "agent",
+          name: "DevOps Agent",
+          description: "CI profile",
+          filename: "devops-agent.json",
+          tags: ["ci", "cd"],
+          scope: "global",
+          workspace: null,
+          meta: {},
+          createdAt: now,
+          updatedAt: now,
+        },
+      ],
+    }, null, 2));
+    writeFileSync(
+      join(profilesDir, "devops-agent.json"),
+      JSON.stringify({
+        id: "devops-agent",
+        name: "DevOps Agent",
+        description: "CI/CD specialist",
+        titlePatterns: ["\\(ci\\)", "\\bpipeline\\b"],
+        scopes: ["ci", "cd"],
+        tags: ["ci", "cd", "devops"],
+        sdk: "CLAUDE_CODE",
+        model: "claude-sonnet-4",
+      }, null, 2),
+    );
+
+    const saved = { ...process.env };
+    delete process.env.COPILOT_MODEL;
+    delete process.env.CLAUDE_MODEL;
+    delete process.env.CODEX_MODEL;
+
+    try {
+      const ctx = makeCtx({ repoRoot: root, task: { tags: ["ci"] } });
+      const node = makeNode("action.resolve_executor", {
+        taskTitle: "chore(ci): stabilize pipeline cache",
+        taskDescription: "Improve CI reliability",
+        repoRoot: root,
+        defaultSdk: "copilot",
+      });
+      const result = await nt.execute(node, ctx);
+      expect(result.success).toBe(true);
+      expect(result.tier).toBe("profile");
+      expect(result.sdk).toBe("claude");
+      expect(result.model).toBe("claude-sonnet-4");
+      expect(ctx.data.agentProfile).toBe("devops-agent");
+    } finally {
+      Object.assign(process.env, saved);
+      rmSync(root, { recursive: true, force: true });
+    }
   });
 });
 
@@ -870,7 +1141,7 @@ describe("action.acquire_worktree", () => {
     expect(result.created).toBe(false);
     expect(String(result.worktreePath).replace(/\\/g, "/")).toBe(String(legacyPath).replace(/\\/g, "/"));
     expect(ctx.data._worktreeManaged).toBe(true);
-  });
+  }, 10000);
   it("uses a short managed worktree directory derived from task id", async () => {
     const nt = getNodeType("action.acquire_worktree");
     const ctx = makeCtx({});
@@ -1074,6 +1345,84 @@ describe("action.build_task_prompt", () => {
     expect(result.prompt).toContain("**Workspace:** workspace-a");
     expect(result.prompt).toContain("**Primary Repository:** org/primary");
     expect(result.prompt).toContain("org/shared-lib");
+  });
+
+  it("injects WORKFLOW.md content when a contract was loaded earlier in the workflow", async () => {
+    const nt = getNodeType("action.build_task_prompt");
+    const ctx = makeCtx({
+      _workflowContract: {
+        found: true,
+        path: "/tmp/project/WORKFLOW.md",
+        raw: "projectDescription: Demo\nterminalStates: [done]\nforbiddenPatterns: [git push --force]",
+        parsed: {
+          projectDescription: "Demo",
+          terminalStates: ["done"],
+          forbiddenPatterns: ["git push --force"],
+          preferredTools: [],
+          preferredModel: "",
+          escalationContact: "",
+          escalationPaths: [],
+          rules: [],
+        },
+      },
+    });
+    const node = makeNode("action.build_task_prompt", {
+      taskTitle: "Respect contract",
+      taskDescription: "Build prompt with contract",
+    });
+
+    const result = await nt.execute(node, ctx);
+
+    expect(result.prompt).toContain("## WORKFLOW.md Contract");
+    expect(result.prompt).toContain("terminalStates: [done]");
+    expect(result.prompt).toContain("forbiddenPatterns: [git push --force]");
+  });
+});
+
+describe("workflow contract nodes", () => {
+  it("reads WORKFLOW.md into workflow context", async () => {
+    const projectDir = mkdtempSync(join(tmpdir(), "wf-contract-read-"));
+    writeFileSync(join(projectDir, "WORKFLOW.md"), [
+      "# Demo Contract",
+      "terminalStates: [done]",
+      "forbiddenPatterns:",
+      "  - git push --force",
+    ].join("\n"));
+
+    const nt = getNodeType("read-workflow-contract");
+    const ctx = makeCtx({ repoRoot: projectDir });
+    const node = makeNode("read-workflow-contract", { repoRoot: projectDir });
+    const result = await nt.execute(node, ctx);
+
+    expect(result.found).toBe(true);
+    expect(result.contract.terminalStates).toEqual(["done"]);
+    expect(result.contract.forbiddenPatterns).toEqual(["git push --force"]);
+    expect(ctx.data._workflowContract.path).toBe(join(projectDir, "WORKFLOW.md"));
+    expect(ctx.log).toHaveBeenCalled();
+
+    rmSync(projectDir, { recursive: true, force: true });
+    clearContractCache(projectDir);
+  });
+
+  it("fails fast when WORKFLOW.md is malformed", async () => {
+    const projectDir = mkdtempSync(join(tmpdir(), "wf-contract-invalid-"));
+    writeFileSync(join(projectDir, "WORKFLOW.md"), [
+      "# Broken Contract",
+      "forbiddenPatterns:",
+      "  - rm -rf /",
+    ].join("\n"));
+
+    const readNode = makeNode("read-workflow-contract", { repoRoot: projectDir }, "read-contract");
+    const validateNode = makeNode("workflow-contract-validation", { repoRoot: projectDir }, "validate-contract");
+    const ctx = makeCtx({ repoRoot: projectDir });
+
+    await getNodeType("read-workflow-contract").execute(readNode, ctx);
+    await expect(getNodeType("workflow-contract-validation").execute(validateNode, ctx))
+      .rejects
+      .toThrow(/terminalStates/i);
+
+    rmSync(projectDir, { recursive: true, force: true });
+    clearContractCache(projectDir);
   });
 });
 
@@ -1487,6 +1836,56 @@ describe("action.update_task_status", () => {
       }),
     );
   });
+
+  it("persists PR linkage metadata from VE Orchestrator Lite pr node output", async () => {
+    const nt = getNodeType("action.update_task_status");
+    const updateTaskStatus = vi.fn().mockResolvedValue(true);
+    const updateTask = vi.fn().mockResolvedValue(true);
+    const ctx = makeCtx({
+      taskId: "task-lite-review-123",
+      taskTitle: "Lite review task",
+      branch: "task/task-lite-review-123",
+    });
+    ctx.getNodeOutput = vi.fn((id) => {
+      if (id !== "pr") return null;
+      return {
+        prNumber: 321,
+        prUrl: "https://github.com/virtengine/bosun/pull/321",
+        branch: "task/task-lite-review-123",
+      };
+    });
+    const node = makeNode("action.update_task_status", {
+      taskId: "{{taskId}}",
+      status: "inreview",
+      taskTitle: "{{taskTitle}}",
+    });
+
+    const result = await nt.execute(node, ctx, {
+      services: {
+        kanban: { updateTaskStatus, updateTask },
+      },
+    });
+
+    expect(result.success).toBe(true);
+    expect(updateTaskStatus).toHaveBeenCalledWith(
+      "task-lite-review-123",
+      "inreview",
+      expect.objectContaining({
+        source: "workflow",
+        branchName: "task/task-lite-review-123",
+        prNumber: 321,
+        prUrl: "https://github.com/virtengine/bosun/pull/321",
+      }),
+    );
+    expect(updateTask).toHaveBeenCalledWith(
+      "task-lite-review-123",
+      expect.objectContaining({
+        branchName: "task/task-lite-review-123",
+        prNumber: 321,
+        prUrl: "https://github.com/virtengine/bosun/pull/321",
+      }),
+    );
+  });
 });
 
 describe("template-task-lifecycle", () => {
@@ -1499,7 +1898,7 @@ describe("template-task-lifecycle", () => {
     const t = getTemplate("template-task-lifecycle");
     expect(t).toBeDefined();
     expect(t.name).toBe("Task Lifecycle");
-    expect(t.category).toBe("lifecycle");
+    expect(t.category).toBe("task-execution");
     expect(t.enabled).toBe(true);
     expect(t.recommended).toBe(true);
   });
@@ -1510,10 +1909,11 @@ describe("template-task-lifecycle", () => {
     const required = [
       "trigger", "check-slots", "allocate-slot", "claim-task",
       "claim-ok", "set-inprogress", "acquire-worktree", "worktree-ok",
-      "resolve-executor", "record-head", "build-prompt", "run-agent",
+      "resolve-executor", "record-head", "read-workflow-contract",
+      "workflow-contract-validation", "build-prompt", "run-agent-plan", "run-agent-tests", "run-agent-implement",
       "claim-stolen", "detect-commits", "has-commits",
       "push-branch", "push-ok", "create-pr", "set-inreview", "log-success",
-      "log-no-commits", "set-todo-cooldown",
+      "log-no-commits", "set-todo-cooldown", "create-pr-retry", "pr-created-stolen", "set-inreview-stolen", "log-claim-stolen-recovered",
       "release-worktree", "release-claim", "release-slot",
     ];
     for (const id of required) {
@@ -1540,12 +1940,12 @@ describe("template-task-lifecycle", () => {
     expect(resolveEdge.source).toBe("worktree-ok");
   });
 
-  it("has claim-stolen check after run-agent", () => {
+  it("has claim-stolen check after the 3-phase agent sequence", () => {
     const t = getTemplate("template-task-lifecycle");
-    const edge = t.edges.find(
-      (e) => e.source === "run-agent" && e.target === "claim-stolen",
-    );
-    expect(edge).toBeDefined();
+    expect(t.edges.find((e) => e.source === "build-prompt" && e.target === "run-agent-plan")).toBeDefined();
+    expect(t.edges.find((e) => e.source === "run-agent-plan" && e.target === "run-agent-tests")).toBeDefined();
+    expect(t.edges.find((e) => e.source === "run-agent-tests" && e.target === "run-agent-implement")).toBeDefined();
+    expect(t.edges.find((e) => e.source === "run-agent-implement" && e.target === "claim-stolen")).toBeDefined();
   });
 
   it("push-branch has baseBranch and rebaseBeforePush config", () => {
@@ -1564,6 +1964,12 @@ describe("template-task-lifecycle", () => {
 
     expect(createPr?.config?.body).toContain("Task-ID: {{taskId}}");
     expect(prCreated?.config?.expression).toContain("create-pr");
+    expect(prCreated?.config?.expression).toContain("prNumber");
+    expect(prCreated?.config?.expression).toContain("prUrl");
+    // handedOff without a real PR number must NOT satisfy the pr-created gate
+    expect(prCreated?.config?.expression).not.toContain("handedOff");
+    // gate requires success AND an actual PR reference
+    expect(prCreated?.config?.expression).toContain("success === true");
     expect(t.edges.find((e) => e.source === "create-pr" && e.target === "pr-created")).toBeDefined();
     expect(t.edges.find((e) => e.source === "pr-created" && e.target === "set-inreview")).toBeDefined();
     expect(t.edges.find((e) => e.source === "pr-created" && e.target === "set-todo-push-failed")).toBeDefined();
@@ -1592,6 +1998,7 @@ describe("template-task-lifecycle", () => {
     expect(t.edges.find((e) => e.source === "log-success" && e.target === "join-outcomes")).toBeDefined();
     expect(t.edges.find((e) => e.source === "set-todo-cooldown" && e.target === "join-outcomes")).toBeDefined();
     expect(t.edges.find((e) => e.source === "set-todo-stolen" && e.target === "join-outcomes")).toBeDefined();
+    expect(t.edges.find((e) => e.source === "log-claim-stolen-recovered" && e.target === "join-outcomes")).toBeDefined();
     expect(t.edges.find((e) => e.source === "set-todo-push-failed" && e.target === "join-outcomes")).toBeDefined();
     // join-outcomes → release-worktree
     expect(t.edges.find((e) => e.source === "join-outcomes" && e.target === "release-worktree")).toBeDefined();
@@ -1599,6 +2006,24 @@ describe("template-task-lifecycle", () => {
     expect(t.edges.find((e) => e.source === "release-worktree" && e.target === "release-claim")).toBeDefined();
     expect(t.edges.find((e) => e.source === "release-claim" && e.target === "release-slot")).toBeDefined();
   });
+
+  it("tries to recover PR linkage before sending a stolen claim back to todo", () => {
+    const t = getTemplate("template-task-lifecycle");
+    const retryPr = t.nodes.find((n) => n.id === "create-pr-retry");
+    const prCreatedStolen = t.nodes.find((n) => n.id === "pr-created-stolen");
+
+    expect(retryPr?.config?.body).toContain("Task-ID: {{taskId}}");
+    expect(retryPr?.config?.branch).toBe("{{branch}}");
+    expect(prCreatedStolen?.config?.expression).toContain("create-pr-retry");
+    expect(prCreatedStolen?.config?.expression).toContain("prNumber");
+    expect(prCreatedStolen?.config?.expression).toContain("prUrl");
+
+    expect(t.edges.find((e) => e.source === "claim-stolen" && e.target === "create-pr-retry")).toBeDefined();
+    expect(t.edges.find((e) => e.source === "create-pr-retry" && e.target === "pr-created-stolen")).toBeDefined();
+    expect(t.edges.find((e) => e.source === "pr-created-stolen" && e.target === "set-inreview-stolen")).toBeDefined();
+    expect(t.edges.find((e) => e.source === "pr-created-stolen" && e.target === "log-claim-stolen")).toBeDefined();
+  });
+
 
   it("claim-failed path releases slot", () => {
     const t = getTemplate("template-task-lifecycle");
@@ -1635,7 +2060,7 @@ describe("template-task-lifecycle", () => {
     const t = getTemplate("template-task-lifecycle");
     expect(t.variables.maxParallel).toBe(3);
     expect(t.variables.claimTtlMinutes).toBe(180);
-    expect(t.variables.claimRenewIntervalMs).toBe(300000);
+    expect(t.variables.claimRenewIntervalMs).toBe(60000);
     expect(t.variables.taskTimeoutMs).toBe(21600000);
     expect(t.variables.defaultSdk).toBe("auto");
     expect(Array.isArray(t.variables.protectedBranches)).toBe(true);
@@ -1694,7 +2119,7 @@ describe("template-ve-orchestrator-lite", () => {
     const t = getTemplate("template-ve-orchestrator-lite");
     expect(t).toBeDefined();
     expect(t.name).toBe("VE Orchestrator Lite");
-    expect(t.category).toBe("lifecycle");
+    expect(t.category).toBe("task-execution");
     expect(t.enabled).toBe(true);
     expect(t.recommended).toBe(false);
   });
@@ -1759,6 +2184,16 @@ describe("template-ve-orchestrator-lite", () => {
     expect(t.edges.find((e) => e.source === "release-claim" && e.target === "release-slot")).toBeDefined();
   });
 
+  it("requires confirmed PR reference before transitioning to inreview", () => {
+    const t = getTemplate("template-ve-orchestrator-lite");
+    const prCreated = t.nodes.find((n) => n.id === "pr-created");
+    // handedOff without a real PR number must NOT satisfy the gate — tasks
+    // must have an actual prNumber or prUrl to enter inreview.
+    expect(prCreated?.config?.expression).not.toContain("handedOff");
+    expect(prCreated?.config?.expression).toContain("success === true");
+    expect(prCreated?.config?.expression).toContain("prNumber");
+  });
+
   it("claim-failed path releases slot", () => {
     const t = getTemplate("template-ve-orchestrator-lite");
     expect(t.edges.find((e) => e.source === "claim-check" && e.target === "release-slot-skip")).toBeDefined();
@@ -1786,11 +2221,4 @@ describe("template-ve-orchestrator-lite", () => {
     expect(Array.isArray(t.variables.protectedBranches)).toBe(true);
   });
 });
-
-
-
-
-
-
-
 

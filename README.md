@@ -144,16 +144,26 @@ Key places to start:
 
 Bosun enforces a strict quality pipeline in both local hooks and CI:
 
-- **Pre-commit hooks** auto-format and lint staged files.
+- **Pre-commit hooks** run syntax checks and warn when staged source files are missing `CLAUDE:SUMMARY` annotations.
 - **Pre-push hooks** run targeted checks based on changed files (Go, portal, docs).
 - **Demo load smoke test** runs in `npm test` and blocks push if `site/index.html` or `site/ui/demo.html` fails to load required assets.
 - **Prepublish checks** validate package contents and release readiness.
+
+
+Notes:
+
+- `bosun audit --ci` exits non-zero on missing summaries, stale warnings, stale `INDEX.map` entries, or credential-like secrets.
+- `.githooks/pre-commit` already warns on newly staged files that are missing `CLAUDE:SUMMARY`.
+- GitHub Actions can opt into the audit gate by setting the repository variable `BOSUN_AUDIT_CI=1`.
 
 Local commands you can run any time:
 
 ```bash
 # Syntax + tests for bosun package
 npm test
+
+# Annotation conformity gate
+npm run audit:ci
 
 # Prepublish safety checks
 npm run prepublishOnly

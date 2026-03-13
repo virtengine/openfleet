@@ -23,6 +23,12 @@ const sourceFiles = [
 
 for (const { relPath, source } of sourceFiles) {
   describe(`FleetSessionsPanel render stability (${relPath})`, () => {
+    it("treats detached sessions as active based on status, not history-only placement", () => {
+      expect(source).toContain("function isFleetEntryActive(entry)");
+      expect(source).not.toContain("if (entry.isHistory) return false;");
+      expect(source).toContain('return status === "active" || status === "running" || status === "busy" || status === "inprogress";');
+    });
+
     it("uses useMemo for entries array to prevent infinite render loops", () => {
       // The entries array must be memoised with useMemo, not rebuilt inline
       expect(source).toContain("useMemo");
@@ -54,7 +60,7 @@ for (const { relPath, source } of sourceFiles) {
       );
       // Should NOT contain multiple sibling `detailTab === "..." &&` patterns
       // at the same nesting level inside fleet-session-body
-      const bodyChunk = bodySection.slice(0, 2000);
+      const bodyChunk = bodySection.slice(0, 6000);
       const andPatterns = (bodyChunk.match(/detailTab\s*===\s*["'][^"']+["']\s*&&/g) || []);
       // With a chained ternary, we should only see ternary (? :) patterns, not &&
       expect(andPatterns.length).toBe(0);
@@ -207,3 +213,4 @@ describe("fleet entry building logic", () => {
     }
   });
 });
+

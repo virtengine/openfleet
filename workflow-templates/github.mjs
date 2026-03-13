@@ -38,8 +38,9 @@ export const PR_MERGE_STRATEGY_TEMPLATE = {
     baseBranch: "main",
   },
   nodes: [
-    node("trigger", "trigger.pr_event", "PR Ready for Review", {
+    node("trigger", "trigger.pr_event", "PR Ready for Merge Decision", {
       event: "review_requested",
+      events: ["review_requested", "approved", "opened"],
     }, { x: 400, y: 50 }),
 
     node("check-ci", "validation.build", "Check CI Status", {
@@ -829,7 +830,7 @@ export const BOSUN_PR_WATCHDOG_TEMPLATE = {
         "  }",
         "}",
         "const readyCandidates=[],conflicts=[],ciFailures=[],pending=[],drafted=[];",
-        "let newlyLabeled=0;",
+        "let newlyLabeled=0,staleLabelCleared=0,ciKicked=0;",
         "for(const pr of prs){",
         "  const labels=(pr.labels||[]).map(l=>typeof l==='string'?l:l?.name).filter(Boolean);",
         "  const hasFixLabel=labels.includes(LABEL_FIX);",
@@ -852,9 +853,22 @@ export const BOSUN_PR_WATCHDOG_TEMPLATE = {
         "      try{const editArgs=['pr','edit',String(pr.number),'--add-label',LABEL_FIX];if(repo)editArgs.push('--repo',repo);execFileSync('gh',editArgs,{encoding:'utf8',stdio:['pipe','pipe','pipe']});newlyLabeled++;}",
         "      catch(e){process.stderr.write('label err '+(repo?repo+' ':'')+'#'+pr.number+': '+(e?.message||e)+'\\\\n');}",
         "    }",
-        "  } else if(checks.length>0&&!hasFixLabel){",
-        "    if(hasPend) pending.push({n:pr.number,repo});",
-        "    readyCandidates.push({n:pr.number,repo,branch:pr.headRefName,base:pr.baseRefName,url:pr.url,title:pr.title,pendingChecks:hasPend});",
+        "  } else {",
+        "    if(hasFixLabel&&!hasPend){",
+        "      try{",
+        "        const rmArgs=['pr','edit',String(pr.number),'--remove-label',LABEL_FIX];",
+        "        if(repo)rmArgs.push('--repo',repo);",
+        "        execFileSync('gh',rmArgs,{encoding:'utf8',stdio:['pipe','pipe','pipe']});",
+        "        staleLabelCleared++;",
+        "      }catch(e){process.stderr.write('stale-label-rm err '+(repo?repo+' ':'')+'#'+pr.number+': '+(e?.message||e)+'\\\\n');}",
+        "    } else if(checks.length>0&&!hasFixLabel){",
+        "      if(hasPend) pending.push({n:pr.number,repo});",
+        "      readyCandidates.push({n:pr.number,repo,branch:pr.headRefName,base:pr.baseRefName,url:pr.url,title:pr.title,pendingChecks:hasPend});",
+        "    }",
+        "    if(checks.length===0&&repo&&pr.headRefName&&!isDraft){",
+        "      try{execFileSync('gh',['workflow','run','ci.yaml','--repo',repo,'--ref',pr.headRefName],{encoding:'utf8',stdio:['pipe','pipe','pipe']});ciKicked++;}",
+        "      catch{}",
+        "    }",
         "  }",
         "}",
         "console.log(JSON.stringify({",
@@ -867,6 +881,8 @@ export const BOSUN_PR_WATCHDOG_TEMPLATE = {
         "  pending:pending.length,",
         "  drafted:drafted.length,",
         "  newlyLabeled,",
+        "  staleLabelCleared,",
+        "  ciKicked,",
         "  fixNeeded:conflicts.length+ciFailures.length",
         "}));",
         "\"",
@@ -1500,3 +1516,4 @@ export const SDK_CONFLICT_RESOLVER_TEMPLATE = {
     },
   },
 };
+

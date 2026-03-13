@@ -734,6 +734,11 @@ function Ensure-GitIdentity {
     $email = Get-EnvFallback -Name "VE_GIT_AUTHOR_EMAIL"
     if (-not $email) { $email = Get-EnvFallback -Name "GIT_AUTHOR_EMAIL" }
 
+    $blockedEmails = @("test@example.com", "bosun-tests@example.com")
+    if ($email -and ($blockedEmails -contains $email.ToLowerInvariant())) {
+        throw "Refusing to configure test git identity in live orchestrator environment: $email"
+    }
+
     if ($name) {
         try { git config user.name $name | Out-Null } catch { }
         Set-EnvValue -Name "GIT_AUTHOR_NAME" -Value $name

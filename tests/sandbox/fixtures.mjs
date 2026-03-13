@@ -306,6 +306,7 @@ export const TEMPLATE_FIXTURES = {
   "template-sync-engine":                 { scenario: scenarios.kanbanState(),     inputVars: {} },
   "template-dependency-audit":            { scenario: scenarios.securityAudit(),   inputVars: {} },
   "template-secret-scanner":             { scenario: scenarios.securityAudit(),   inputVars: {} },
+  "template-code-quality-striker":       { scenario: scenarios.greenPR(202),      inputVars: {} },
   "template-task-lifecycle":              { scenario: scenarios.greenPR(98),      inputVars: { taskId: "TASK-7", worktreePath: "/tmp/wt/task-7", branch: "feat/task-7", baseBranch: "main", prNumber: 98 } },
   "template-ve-orchestrator-lite":        { scenario: scenarios.kanbanState(),     inputVars: { maxConcurrent: 2 } },
   "template-task-batch-processor":        { scenario: scenarios.kanbanState(),     inputVars: { batchSize: 3 } },
@@ -325,6 +326,12 @@ export const TEMPLATE_FIXTURES = {
   "template-mcp-tool-chain":             { scenario: scenarios.kanbanState(),     inputVars: { mcpServer: "github", toolName: "list_pull_requests", toolInput: "{}" } },
   "template-mcp-github-pr-monitor":      { scenario: scenarios.kanbanState(),     inputVars: { owner: "virtengine", repo: "bosun", checkInterval: "*/30 * * * *", prThreshold: "5" } },
   "template-mcp-cross-server-pipeline":  { scenario: scenarios.kanbanState(),     inputVars: { githubOwner: "virtengine", githubRepo: "bosun" } },
+  "template-task-fullstack":             { scenario: scenarios.greenPR(210),      inputVars: { taskId: "TASK-FS-1", worktreePath: "/tmp/wt/fullstack", branch: "feat/fullstack", baseBranch: "main", taskTimeoutMs: 21600000, maxRetries: 2, maxContinues: 3, testCommand: "auto", buildCommand: "auto", lintCommand: "auto" } },
+  "template-task-backend":               { scenario: scenarios.greenPR(211),      inputVars: { taskId: "TASK-BE-1", worktreePath: "/tmp/wt/backend", branch: "feat/backend", baseBranch: "main", taskTimeoutMs: 21600000, maxRetries: 2, maxContinues: 3, testCommand: "auto", buildCommand: "auto", lintCommand: "auto" } },
+  "template-task-frontend":              { scenario: scenarios.greenPR(212),      inputVars: { taskId: "TASK-FE-1", worktreePath: "/tmp/wt/frontend", branch: "feat/frontend", baseBranch: "main", taskTimeoutMs: 21600000, maxRetries: 2, maxContinues: 3, testCommand: "auto", buildCommand: "auto", lintCommand: "auto" } },
+  "template-task-debug":                 { scenario: scenarios.greenPR(213),      inputVars: { taskId: "TASK-DBG-1", worktreePath: "/tmp/wt/debug", branch: "fix/debug", baseBranch: "main", taskTimeoutMs: 21600000, maxRetries: 3, maxContinues: 4, testCommand: "auto", buildCommand: "auto", lintCommand: "auto" } },
+  "template-task-cicd":                  { scenario: scenarios.cicdDeploy(),      inputVars: { taskId: "TASK-CI-1", worktreePath: "/tmp/wt/cicd", branch: "feat/cicd", baseBranch: "main", taskTimeoutMs: 21600000, maxRetries: 2, maxContinues: 3, testCommand: "auto", buildCommand: "auto", lintCommand: "auto" } },
+  "template-task-design":                { scenario: scenarios.greenPR(214),      inputVars: { taskId: "TASK-DS-1", worktreePath: "/tmp/wt/design", branch: "feat/design", baseBranch: "main", taskTimeoutMs: 21600000, maxRetries: 2, maxContinues: 3, testCommand: "auto", buildCommand: "auto", lintCommand: "auto" } },
 };
 
 

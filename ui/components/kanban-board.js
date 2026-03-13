@@ -64,6 +64,7 @@ const PRIORITY_LABELS = {
 };
 
 const LOAD_MORE_THRESHOLD_PX = 140;
+const AUTO_LOAD_MAX_TASKS = 300;
 
 function matchTaskId(a, b) {
   return String(a) === String(b);
@@ -544,6 +545,7 @@ function KanbanColumn({
   hasMoreTasks = false,
   loadingMoreTasks = false,
   onLoadMoreTasks = null,
+  autoLoadMore = true,
 }) {
   const [showCreate, setShowCreate] = useState(false);
   const inputRef = useRef(null);
@@ -562,7 +564,7 @@ function KanbanColumn({
   }, [hasMoreTasks, loadingMoreTasks, onLoadMoreTasks]);
 
   useEffect(() => {
-    if (!hasMoreTasks || typeof onLoadMoreTasks !== "function") {
+    if (!autoLoadMore || !hasMoreTasks || typeof onLoadMoreTasks !== "function") {
       lastAutoLoadCountRef.current = -1;
       return;
     }
@@ -587,11 +589,11 @@ function KanbanColumn({
     );
     observer.observe(sentinel);
     return () => observer.disconnect();
-  }, [hasMoreTasks, loadingMoreTasks, onLoadMoreTasks, tasks.length]);
+  }, [autoLoadMore, hasMoreTasks, loadingMoreTasks, onLoadMoreTasks, tasks.length]);
 
   useLayoutEffect(() => {
     const root = cardsRef.current;
-    if (!root || !hasMoreTasks || loadingMoreTasks || typeof onLoadMoreTasks !== "function") return;
+    if (!autoLoadMore || !root || !hasMoreTasks || loadingMoreTasks || typeof onLoadMoreTasks !== "function") return;
     const remaining = root.scrollHeight - root.scrollTop - root.clientHeight;
     const underfilled = root.scrollHeight <= root.clientHeight + LOAD_MORE_THRESHOLD_PX;
     if (!underfilled && remaining > LOAD_MORE_THRESHOLD_PX) return;
@@ -599,16 +601,17 @@ function KanbanColumn({
     if (lastAutoLoadCountRef.current === key) return;
     lastAutoLoadCountRef.current = key;
     void onLoadMoreTasks();
-  }, [hasMoreTasks, loadingMoreTasks, onLoadMoreTasks, tasks.length, showCreate]);
+  }, [autoLoadMore, hasMoreTasks, loadingMoreTasks, onLoadMoreTasks, tasks.length, showCreate]);
 
   const onCardsScroll = useCallback((event) => {
+    if (!autoLoadMore) return;
     const el = event?.currentTarget;
     if (!el) return;
     const remaining = el.scrollHeight - el.scrollTop - el.clientHeight;
     if (remaining > LOAD_MORE_THRESHOLD_PX) return;
     lastAutoLoadCountRef.current = tasks.length;
     triggerLoadMore();
-  }, [tasks.length, triggerLoadMore]);
+  }, [autoLoadMore, tasks.length, triggerLoadMore]);
 
   const onCardsWheel = useCallback((event) => {
     const el = event?.currentTarget;
@@ -917,10 +920,19 @@ export function KanbanBoard({ onOpenTask, hasMoreTasks = false, loadingMoreTasks
     return result;
   }, [filteredTasks]);
 
+  const hasBoardFilters = Boolean(filters.repo || filters.assignee || filters.priority || filters.search);
+  const resolvedTotalTasks = Number.isFinite(Number(totalTasks)) && Number(totalTasks) > 0
+    ? Number(totalTasks)
+    : allTasks.length;
+  const autoLoadMore = !hasBoardFilters && resolvedTotalTasks <= AUTO_LOAD_MAX_TASKS;
+
   return html`
     <${Box} className="kanban-container">
       <${KanbanFilter} tasks=${allTasks} filters=${filters} onFilterChange=${setFilters} />
-      <${Box} sx=${{ px: 1, pb: 0.5, color: "text.secondary", fontSize: 12 }}>Total tasks: ${Number.isFinite(Number(totalTasks)) && Number(totalTasks) > 0 ? totalTasks : allTasks.length}</${Box}>
+      <${Box} sx=${{ px: 1, pb: 0.5, color: "text.secondary", fontSize: 12 }}>
+        Total tasks: ${resolvedTotalTasks}
+        ${!autoLoadMore ? " · Auto-load paused for large boards (use Load more per column)." : ""}
+      </${Box}>
       <${Box} className="kanban-board" sx=${{ display: 'flex', gap: 2, overflowX: 'auto', pb: 1 }}>
         ${COLUMNS.map((col) => html`
           <${KanbanColumn}
@@ -931,6 +943,7 @@ export function KanbanBoard({ onOpenTask, hasMoreTasks = false, loadingMoreTasks
             hasMoreTasks=${hasMoreTasks}
             loadingMoreTasks=${loadingMoreTasks}
             onLoadMoreTasks=${onLoadMoreTasks}
+            autoLoadMore=${autoLoadMore}
             onOpen=${onOpenTask}
           />
         `)}
@@ -938,9 +951,5 @@ export function KanbanBoard({ onOpenTask, hasMoreTasks = false, loadingMoreTasks
     </${Box}>
   `;
 }
-
-
-
-
 
 

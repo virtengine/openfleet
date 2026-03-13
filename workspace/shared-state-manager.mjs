@@ -88,6 +88,13 @@ async function safeUnlink(path) {
   }
 }
 
+function getWriteFileOptions() {
+  if (process.env.VITEST) {
+    return { encoding: "utf-8" };
+  }
+  return { encoding: "utf-8", flush: true };
+}
+
 /**
  * Get the path to the shared state registry file
  * @param {string} [repoRoot] - Repository root path
@@ -124,15 +131,22 @@ async function loadRegistry(registryPath) {
     const registry = JSON.parse(content);
 
     // Validate structure
-    if (
-      !registry.version ||
-      !registry.tasks ||
-      typeof registry.tasks !== "object"
-    ) {
+    // Repair instead of wipe: preserve any valid task entries while fixing
+    // missing/invalid structural fields. Wiping on minor corruption was causing
+    // active claims to be lost, leading to cascading "claim was stolen" failures.
+    let repaired = false;
+    if (!registry.version) {
+      registry.version = REGISTRY_VERSION;
+      repaired = true;
+    }
+    if (!registry.tasks || typeof registry.tasks !== "object" || Array.isArray(registry.tasks)) {
+      registry.tasks = {};
+      repaired = true;
+    }
+    if (repaired) {
       console.warn(
-        "[SharedStateManager] Invalid registry structure, resetting",
+        "[SharedStateManager] Invalid registry structure, repaired (preserved existing task entries)",
       );
-      return createEmptyRegistry();
     }
 
     return registry;
@@ -187,7 +201,7 @@ async function saveRegistry(registryPath, registry) {
 
   try {
     const payload = JSON.stringify(registry, null, 2);
-    await writeFile(tempPath, payload, { encoding: "utf-8", flush: true });
+    await writeFile(tempPath, payload, getWriteFileOptions());
 
     // Atomic rename (with retries for Windows file-lock hiccups)
     try {
@@ -214,7 +228,7 @@ async function saveRegistry(registryPath, registry) {
         // Final fallback: direct write to target.
         try {
           await retryFsOperation(
-            () => writeFile(registryPath, payload, { encoding: "utf-8", flush: true }),
+            () => writeFile(registryPath, payload, getWriteFileOptions()),
             { maxRetries: WRITE_MAX_RETRIES, delayMs: RENAME_RETRY_DELAY_MS },
           );
           await safeUnlink(tempPath);
@@ -440,6 +454,62 @@ export async function claimTaskInSharedState(
 }
 
 /**
+ * Force-claim a task in shared state, bypassing conflict resolution.
+ *
+ * Used when local stale detection has confirmed the previous owner is dead
+ * but the shared state heartbeat is still fresh (e.g., after a release that
+ * refreshed the heartbeat). This ensures the shared state reflects the actual
+ * current owner so heartbeat renewals succeed.
+ *
+ * @param {string} taskId - Task identifier
+ * @param {string} ownerId - New owner identifier
+ * @param {string} attemptToken - New attempt token
+ * @param {number} [ttlSeconds] - TTL for stale detection
+ * @param {string} [repoRoot] - Repository root path
+ * @returns {Promise<{success: boolean, state?: TaskSharedState, reason?: string}>}
+ */
+export async function forceClaimTaskInSharedState(
+  taskId,
+  ownerId,
+  attemptToken,
+  ttlSeconds = DEFAULT_TTL_SECONDS,
+  repoRoot = process.cwd(),
+) {
+  const registryPath = getRegistryPath(repoRoot);
+  try {
+    const registry = await loadRegistry(registryPath);
+    const existing = registry.tasks[taskId];
+    const now = new Date().toISOString();
+
+    const newState = {
+      taskId,
+      ownerId,
+      ownerHeartbeat: now,
+      attemptToken,
+      attemptStarted: now,
+      attemptStatus: "claimed",
+      retryCount: existing ? (existing.retryCount || 0) + 1 : 0,
+      ttlSeconds,
+      eventLog: existing?.eventLog || [],
+    };
+    if (existing?.lastError) newState.lastError = existing.lastError;
+
+    logEvent(
+      newState,
+      "conflict",
+      ownerId,
+      `force_takeover: local_stale_override (prev: ${existing?.ownerId || "none"})`,
+    );
+    registry.tasks[taskId] = newState;
+    await saveRegistry(registryPath, registry);
+    return { success: true, state: newState };
+  } catch (error) {
+    console.error("[SharedStateManager] Failed to force-claim task:", error);
+    return { success: false, reason: `error: ${error.message}` };
+  }
+}
+
+/**
  * Renew heartbeat for an active task claim
  *
  * @param {string} taskId - Task identifier
@@ -523,6 +593,7 @@ export async function releaseSharedState(
   status,
   errorMessage,
   repoRoot = process.cwd(),
+  { ownerId } = {},
 ) {
   const registryPath = getRegistryPath(repoRoot);
 
@@ -538,15 +609,20 @@ export async function releaseSharedState(
     }
 
     if (state.attemptToken !== attemptToken) {
-      return {
-        success: false,
-        reason: "attempt_token_mismatch",
-      };
+      // Fallback: allow release by ownerId when token doesn't match
+      // (token can diverge after claim-stolen rollbacks or takeovers)
+      if (!ownerId || state.ownerId !== ownerId) {
+        return {
+          success: false,
+          reason: "attempt_token_mismatch",
+        };
+      }
     }
 
-    const now = new Date().toISOString();
     state.attemptStatus = status;
-    state.ownerHeartbeat = now;
+    // Clear heartbeat so the entry is immediately stale for resolveConflict.
+    // A released task should never block the next claim attempt.
+    state.ownerHeartbeat = null;
 
     if (errorMessage) {
       state.lastError = errorMessage;
@@ -835,8 +911,8 @@ export async function cleanupOldStates(
         continue;
       }
 
-      // Check if old enough
-      const lastUpdate = new Date(state.ownerHeartbeat).getTime();
+      // Check if old enough (use attemptStarted as fallback when heartbeat was cleared on release)
+      const lastUpdate = new Date(state.ownerHeartbeat || state.attemptStarted || 0).getTime();
       if (lastUpdate < cutoffTime) {
         delete registry.tasks[taskId];
         cleanedTasks.push(taskId);
@@ -886,6 +962,11 @@ export async function getStateStatistics(repoRoot = process.cwd()) {
         stats.ignored++;
       } else {
         stats[state.attemptStatus] = (stats[state.attemptStatus] || 0) + 1;
+
+        if (!stats.byOwner[state.ownerId]) {
+          stats.byOwner[state.ownerId] = 0;
+        }
+        stats.byOwner[state.ownerId]++;
       }
 
       if (
@@ -898,11 +979,6 @@ export async function getStateStatistics(repoRoot = process.cwd()) {
           stats.stale++;
         }
       }
-
-      if (!stats.byOwner[state.ownerId]) {
-        stats.byOwner[state.ownerId] = 0;
-      }
-      stats.byOwner[state.ownerId]++;
     }
 
     return stats;

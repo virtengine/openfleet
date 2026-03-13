@@ -25,6 +25,7 @@ import {
 import { readFile, writeFile, mkdir } from "node:fs/promises";
 import { resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { sanitizeGitEnv } from "../git/git-safety.mjs";
 
 // ── Path Setup ──────────────────────────────────────────────────────────────
 
@@ -69,7 +70,7 @@ function fixGitConfigCorruption(repoRoot) {
       cwd: repoRoot,
       encoding: "utf8",
       timeout: 5000,
-      env: { ...process.env, ...GIT_ENV },
+      env: gitEnv(),
     });
     if (bareResult.stdout?.trim() === "true") {
       console.warn(
@@ -79,13 +80,13 @@ function fixGitConfigCorruption(repoRoot) {
         cwd: repoRoot,
         encoding: "utf8",
         timeout: 5000,
-        env: { ...process.env, ...GIT_ENV },
+        env: gitEnv(),
       });
       spawnSync("git", ["config", "--local", "--unset-all", "core.worktree"], {
         cwd: repoRoot,
         encoding: "utf8",
         timeout: 5000,
-        env: { ...process.env, ...GIT_ENV },
+        env: gitEnv(),
       });
     }
   } catch {
@@ -131,7 +132,7 @@ function sanitizeBranchName(branch) {
  * @returns {NodeJS.ProcessEnv}
  */
 function gitEnv() {
-  return { ...process.env, ...GIT_ENV };
+  return sanitizeGitEnv(process.env, GIT_ENV);
 }
 
 /**

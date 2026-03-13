@@ -12,6 +12,7 @@
  *   workflow-templates/ci-cd.mjs      — Build & Deploy, Release Pipeline, Canary Deploy
  *   workflow-templates/reliability.mjs — Error Recovery, Anomaly Watchdog, Workspace Hygiene, Health Check, Task Finalization Guard, Task Repair Worktree, Task Orphan Worktree Recovery, Incident Response, Task Archiver, Sync Engine
  *   workflow-templates/security.mjs   — Dependency Audit, Secret Scanner
+ *   workflow-templates/code-quality.mjs — Code Quality Striker
  *
  * To add a new template:
  *   1. Choose the appropriate category file (or create a new one)
@@ -30,6 +31,7 @@
  */
 
 import { createHash, randomUUID } from "node:crypto";
+import { detectProjectStack, getCommandPresets } from "./project-detection.mjs";
 
 // ── Re-export helpers for external consumers ────────────────────────────────
 export { node, edge, resetLayout } from "../workflow-templates/_helpers.mjs";
@@ -95,6 +97,21 @@ import {
   DEPENDENCY_AUDIT_TEMPLATE,
   SECRET_SCANNER_TEMPLATE,
 } from "../workflow-templates/security.mjs";
+
+// Code Quality (structural refactor, agentic maintenance)
+import {
+  CODE_QUALITY_STRIKER_TEMPLATE,
+} from "../workflow-templates/code-quality.mjs";
+
+// Task Execution (task-type-specific workflows)
+import {
+  FULLSTACK_TASK_TEMPLATE,
+  BACKEND_TASK_TEMPLATE,
+  FRONTEND_TASK_TEMPLATE,
+  DEBUG_TASK_TEMPLATE,
+  CICD_TASK_TEMPLATE,
+  DESIGN_TASK_TEMPLATE,
+} from "../workflow-templates/task-execution.mjs";
 
 // Task Lifecycle (workflow-first core)
 import {
@@ -177,6 +194,13 @@ export {
   SYNC_ENGINE_TEMPLATE,
   DEPENDENCY_AUDIT_TEMPLATE,
   SECRET_SCANNER_TEMPLATE,
+  CODE_QUALITY_STRIKER_TEMPLATE,
+  FULLSTACK_TASK_TEMPLATE,
+  BACKEND_TASK_TEMPLATE,
+  FRONTEND_TASK_TEMPLATE,
+  DEBUG_TASK_TEMPLATE,
+  CICD_TASK_TEMPLATE,
+  DESIGN_TASK_TEMPLATE,
   TASK_LIFECYCLE_TEMPLATE,
   VE_ORCHESTRATOR_LITE_TEMPLATE,
   TASK_BATCH_PROCESSOR_TEMPLATE,
@@ -203,17 +227,19 @@ export {
 
 /** Category metadata for UI grouping. */
 export const TEMPLATE_CATEGORIES = Object.freeze({
-  github:      { label: "GitHub",       icon: ":git:", order: 1 },
-  agents:      { label: "Agents",       icon: ":bot:", order: 2 },
-  planning:    { label: "Planning",     icon: ":clipboard:", order: 3 },
-  "ci-cd":     { label: "CI / CD",      icon: ":refresh:", order: 4 },
-  reliability: { label: "Reliability",  icon: ":shield:", order: 5 },
-  security:    { label: "Security",     icon: ":lock:", order: 6 },
-  lifecycle:   { label: "Lifecycle",    icon: ":rocket:", order: 7 },
-  research:    { label: "Research",     icon: ":microscope:", order: 8 },
-  coverage:    { label: "Coverage",     icon: ":chart:", order: 9 },
-  "mcp-integration": { label: "MCP Integration", icon: ":plug:", order: 10 },
-  custom:      { label: "Custom",       icon: ":settings:", order: 11 },
+  "task-execution": { label: "Task Execution", icon: ":play:", order: 1 },
+  github:      { label: "GitHub",       icon: ":git:", order: 2 },
+  agents:      { label: "Agents",       icon: ":bot:", order: 3 },
+  planning:    { label: "Planning",     icon: ":clipboard:", order: 4 },
+  "ci-cd":     { label: "CI / CD",      icon: ":refresh:", order: 5 },
+  reliability: { label: "Reliability",  icon: ":shield:", order: 6 },
+  security:    { label: "Security",     icon: ":lock:", order: 7 },
+  lifecycle:   { label: "Lifecycle",    icon: ":rocket:", order: 8 },
+  research:    { label: "Research",     icon: ":microscope:", order: 9 },
+  coverage:    { label: "Coverage",     icon: ":chart:", order: 10 },
+  "mcp-integration": { label: "MCP Integration", icon: ":plug:", order: 11 },
+  maintenance: { label: "Maintenance",   icon: ":wrench:",   order: 12 },
+  custom:      { label: "Custom",       icon: ":settings:", order: 13 },
 });
 
 export const WORKFLOW_TEMPLATES = Object.freeze([
@@ -259,6 +285,15 @@ export const WORKFLOW_TEMPLATES = Object.freeze([
   // ── Security ──
   DEPENDENCY_AUDIT_TEMPLATE,
   SECRET_SCANNER_TEMPLATE,
+  // ── Maintenance (structural quality, agentic dev) ──
+  CODE_QUALITY_STRIKER_TEMPLATE,
+  // ── Task Execution (task-type workflows + core lifecycle) ──
+  FULLSTACK_TASK_TEMPLATE,
+  BACKEND_TASK_TEMPLATE,
+  FRONTEND_TASK_TEMPLATE,
+  DEBUG_TASK_TEMPLATE,
+  CICD_TASK_TEMPLATE,
+  DESIGN_TASK_TEMPLATE,
   // ── Task Lifecycle (workflow-first core) ──
   TASK_LIFECYCLE_TEMPLATE,
   VE_ORCHESTRATOR_LITE_TEMPLATE,
@@ -437,11 +472,19 @@ export function updateWorkflowFromTemplate(engine, workflowId, opts = {}) {
 
 export function reconcileInstalledTemplates(engine, opts = {}) {
   const autoUpdateUnmodified = opts.autoUpdateUnmodified !== false;
+  const forceUpdateTemplateIds = new Set(
+    (Array.isArray(opts.forceUpdateTemplateIds)
+      ? opts.forceUpdateTemplateIds
+      : [opts.forceUpdateTemplateIds])
+      .map((value) => String(value || "").trim())
+      .filter(Boolean),
+  );
   const workflows = engine.list();
   const result = {
     scanned: 0,
     metadataUpdated: 0,
     autoUpdated: 0,
+    forceUpdated: [],
     updateAvailable: [],
     customized: [],
     updatedWorkflowIds: [],
@@ -481,6 +524,17 @@ export function reconcileInstalledTemplates(engine, opts = {}) {
           templateId: state.templateId,
           isCustomized: state.isCustomized === true,
         });
+      }
+
+      const shouldForceUpdate =
+        state.updateAvailable === true &&
+        forceUpdateTemplateIds.has(String(state.templateId || "").trim());
+      if (shouldForceUpdate) {
+        const saved = updateWorkflowFromTemplate(engine, def.id, { mode: "replace", force: true });
+        result.autoUpdated += 1;
+        result.updatedWorkflowIds.push(saved.id);
+        result.forceUpdated.push(saved.id);
+        continue;
       }
 
       if (autoUpdateUnmodified && state.updateAvailable === true && state.isCustomized !== true) {
@@ -644,6 +698,72 @@ function resolveProfileTemplateIds(profileId) {
   return [...profile.templateIds];
 }
 
+const WORKFLOW_TYPE_TEMPLATE_MAP = Object.freeze({
+  "continuation-loop": "template-continuation-loop",
+});
+
+const WORKFLOW_CONFIG_RESERVED_KEYS = new Set([
+  "type",
+  "templateId",
+  "enabled",
+  "name",
+  "options",
+]);
+
+function normalizeWorkflowConfigEntries(rawEntries = []) {
+  const source = Array.isArray(rawEntries) ? rawEntries : [];
+  const normalized = [];
+  for (const raw of source) {
+    if (!raw || typeof raw !== "object" || Array.isArray(raw)) continue;
+    const type = String(raw.type || "").trim().toLowerCase();
+    if (!type) continue;
+    const templateId = WORKFLOW_TYPE_TEMPLATE_MAP[type];
+    if (!templateId || !_TEMPLATE_BY_ID.has(templateId)) continue;
+    const enabled = raw.enabled !== false;
+    const entry = { ...raw, type, templateId, enabled };
+    normalized.push(entry);
+  }
+  return normalized;
+}
+
+function toTemplateOverridesFromWorkflowEntry(entry = {}) {
+  const template = getTemplate(entry.templateId);
+  if (!template) return {};
+  const templateVars = template.variables && typeof template.variables === "object"
+    ? template.variables
+    : {};
+  const picks = {};
+  for (const [key, value] of Object.entries(entry)) {
+    if (WORKFLOW_CONFIG_RESERVED_KEYS.has(key)) continue;
+    if (!Object.prototype.hasOwnProperty.call(templateVars, key)) continue;
+    picks[key] = coerceTemplateVariableValue(value, templateVars[key]);
+  }
+  if (entry.options && typeof entry.options === "object" && !Array.isArray(entry.options)) {
+    for (const [key, value] of Object.entries(entry.options)) {
+      if (!Object.prototype.hasOwnProperty.call(templateVars, key)) continue;
+      picks[key] = coerceTemplateVariableValue(value, templateVars[key]);
+    }
+  }
+  return picks;
+}
+
+export function resolveWorkflowTemplateConfig(rawEntries = []) {
+  const entries = normalizeWorkflowConfigEntries(rawEntries);
+  const templateIds = [];
+  const overridesById = {};
+  for (const entry of entries) {
+    if (entry.enabled !== true) continue;
+    if (!templateIds.includes(entry.templateId)) templateIds.push(entry.templateId);
+    const overrides = toTemplateOverridesFromWorkflowEntry(entry);
+    if (Object.keys(overrides).length > 0) {
+      overridesById[entry.templateId] = {
+        ...(overridesById[entry.templateId] || {}),
+        ...overrides,
+      };
+    }
+  }
+  return { templateIds, overridesById };
+}
 /**
  * Get a template by ID.
  * @param {string} id
@@ -715,7 +835,33 @@ export function expandTemplateGroups(templateIds) {
  * List all available templates with metadata.
  * @returns {Array<{id, name, description, category, tags, replaces?}>}
  */
-function inferVariableInputAndOptions(key, defaultValue) {
+/**
+ * Classify a variable key into a command category if it matches.
+ * Returns "test" | "build" | "lint" | "syntaxCheck" | null.
+ */
+function classifyCommandVariable(key) {
+  const k = String(key || "").toLowerCase();
+  if (k.includes("testcommand") || k.includes("test_command") || k === "testframework" || k === "test_framework") return "test";
+  if (k.includes("buildcommand") || k.includes("build_command")) return "build";
+  if (k.includes("lintcommand") || k.includes("lint_command") || k.includes("lintcmd")) return "lint";
+  if (k.includes("syntaxcheck") || k.includes("syntax_check") || k.includes("typecheckcommand") || k.includes("type_check")) return "syntaxCheck";
+  return null;
+}
+
+let _cachedDetection = null;
+let _cachedDetectionRoot = null;
+
+function getCachedDetection(rootDir) {
+  if (!rootDir) return null;
+  if (_cachedDetectionRoot === rootDir && _cachedDetection) return _cachedDetection;
+  try {
+    _cachedDetection = detectProjectStack(rootDir);
+    _cachedDetectionRoot = rootDir;
+  } catch { _cachedDetection = null; }
+  return _cachedDetection;
+}
+
+function inferVariableInputAndOptions(key, defaultValue, rootDir) {
   const normalized = String(key || "").trim().toLowerCase();
   if (typeof defaultValue === "boolean") return { input: "toggle", options: [] };
   if (typeof defaultValue === "number") return { input: "number", options: [] };
@@ -724,10 +870,30 @@ function inferVariableInputAndOptions(key, defaultValue) {
   }
 
   const optionValues = [];
-  if (normalized.includes("executor") || normalized.includes("sdk")) {
+
+  // Command-type variables get auto-detected + multi-language presets
+  const cmdCategory = classifyCommandVariable(normalized);
+  if (cmdCategory) {
+    const detected = rootDir ? getCachedDetection(rootDir) : null;
+    const presets = getCommandPresets(detected);
+    const presetList = presets[cmdCategory] || [];
+
+    if (presetList.length > 0) {
+      // Put current default first if not already in presets
+      const existingValues = new Set(presetList.map(p => p.value));
+      if (typeof defaultValue === "string" && defaultValue.trim() && !existingValues.has(defaultValue.trim())) {
+        optionValues.push(defaultValue.trim());
+      }
+      for (const p of presetList) {
+        optionValues.push(p.value);
+      }
+    }
+  } else if (normalized.includes("executor") || normalized.includes("sdk")) {
     optionValues.push("auto", "codex", "claude", "copilot");
   } else if (normalized.includes("bumptype") || normalized.includes("bump_type")) {
     optionValues.push("patch", "minor", "major");
+  } else if (normalized === "basebranch" || normalized === "base_branch" || normalized === "defaultbasebranch" || normalized === "targetbranch" || normalized === "default_target_branch") {
+    optionValues.push("main", "master", "develop", "staging");
   }
 
   if (typeof defaultValue === "string" && defaultValue.trim()) {
@@ -753,10 +919,15 @@ function inferVariableDescription(key, defaultValue) {
   const normalized = String(key || "").trim().toLowerCase();
   if (normalized.includes("taskid") || normalized.includes("task_id")) return "Task identifier (for example TASK-123).";
   if (normalized.includes("prompt") || normalized.includes("problem") || normalized.includes("description")) return "Free-form instruction text.";
+  if (normalized === "basebranch" || normalized === "base_branch" || normalized === "defaultbasebranch") return "Base branch for PRs (e.g. main, master, develop). Select from common options or type a custom branch.";
   if (normalized.includes("branch")) return "Git branch name.";
   if (normalized.includes("timeout") || normalized.includes("delay") || normalized.includes("cooldown")) return "Duration in milliseconds.";
   if (normalized.includes("executor") || normalized.includes("sdk")) return "Executor profile used by agent nodes.";
   if (normalized.includes("model")) return "Model id used by agent nodes.";
+  if (classifyCommandVariable(normalized) === "test") return "Test command for your project. Auto-detected from project files when available.";
+  if (classifyCommandVariable(normalized) === "build") return "Build command for your project. Auto-detected from project files when available.";
+  if (classifyCommandVariable(normalized) === "lint") return "Lint/style check command. Auto-detected from project files when available.";
+  if (classifyCommandVariable(normalized) === "syntaxCheck") return "Syntax/compile check command. Auto-detected from project files when available.";
   if (typeof defaultValue === "boolean") return "Toggle this setting on or off.";
   if (typeof defaultValue === "number") return "Numeric workflow setting.";
   return "";
@@ -800,7 +971,7 @@ function collectTemplateCapabilities(template) {
   };
 }
 
-export function listTemplates() {
+export function listTemplates(rootDir) {
   return WORKFLOW_TEMPLATES.map((t) => {
     const cat = TEMPLATE_CATEGORIES[t.category] || TEMPLATE_CATEGORIES.custom;
     const fingerprint = computeWorkflowFingerprint(t);
@@ -827,7 +998,7 @@ export function listTemplates() {
       variables: t.variables && typeof t.variables === "object"
         ? Object.entries(t.variables).map(([key, defaultValue]) => {
             const required = defaultValue === "" || defaultValue == null;
-            const inferred = inferVariableInputAndOptions(key, defaultValue);
+            const inferred = inferVariableInputAndOptions(key, defaultValue, rootDir);
             return {
               key,
               defaultValue,
@@ -1085,5 +1256,4 @@ export function installRecommendedTemplates(engine, overridesById = {}) {
     .map((template) => template.id);
   return installTemplateSet(engine, recommendedIds, overridesById);
 }
-
 

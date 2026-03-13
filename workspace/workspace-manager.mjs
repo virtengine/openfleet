@@ -9,10 +9,18 @@
  *     {
  *       "id": "virtengine",
  *       "name": "VirtEngine",
+ *       "state": "active",               // "active" | "paused" | "disabled"
  *       "repos": [
  *         { "name": "virtengine", "url": "git@github.com:virtengine/virtengine.git", "slug": "virtengine/virtengine", "primary": true },
  *         { "name": "bosun", "url": "git@github.com:virtengine/bosun.git", "slug": "virtengine/bosun" }
  *       ],
+ *       "executors": {                    // per-workspace executor config
+ *         "maxConcurrent": 3,             // max parallel executors
+ *         "pool": "shared",               // "shared" | "dedicated"
+ *         "weight": 1.0                   // relative priority in shared pool
+ *       },
+ *       "enabledWorkflows": [],           // workflow whitelist (empty = all)
+ *       "disabledWorkflows": [],          // workflow blacklist (takes precedence)
  *       "createdAt": "2025-01-01T00:00:00.000Z",
  *       "activeRepo": "virtengine"
  *     }
@@ -48,7 +56,13 @@ function sanitizeGitProcessEnv(baseEnv = process.env) {
   const env = { ...baseEnv };
   delete env.GIT_DIR;
   delete env.GIT_WORK_TREE;
+  delete env.GIT_COMMON_DIR;
   delete env.GIT_INDEX_FILE;
+  delete env.GIT_OBJECT_DIRECTORY;
+  delete env.GIT_ALTERNATE_OBJECT_DIRECTORIES;
+  delete env.GIT_NAMESPACE;
+  delete env.GIT_PREFIX;
+  delete env.GIT_SUPER_PREFIX;
   return env;
 }
 
@@ -187,6 +201,28 @@ function normalizeWorkspaceRepoEntry(repo, index = 0) {
   };
 }
 
+const VALID_WORKSPACE_STATES = ["active", "paused", "disabled"];
+const VALID_POOL_MODES = ["shared", "dedicated"];
+
+function normalizeWorkspaceState(raw) {
+  const s = String(raw || "active").trim().toLowerCase();
+  return VALID_WORKSPACE_STATES.includes(s) ? s : "active";
+}
+
+function normalizeExecutorsConfig(raw) {
+  if (!raw || typeof raw !== "object") {
+    return { maxConcurrent: 3, pool: "shared", weight: 1.0 };
+  }
+  const maxConcurrent = Number.isFinite(Number(raw.maxConcurrent))
+    ? Math.max(1, Math.round(Number(raw.maxConcurrent)))
+    : 3;
+  const pool = VALID_POOL_MODES.includes(String(raw.pool || "").trim().toLowerCase())
+    ? String(raw.pool).trim().toLowerCase()
+    : "shared";
+  const weight = Number.isFinite(Number(raw.weight)) ? Math.max(0.1, Number(raw.weight)) : 1.0;
+  return { maxConcurrent, pool, weight };
+}
+
 function normalizeWorkspaceEntry(workspace, index = 0) {
   if (!workspace || typeof workspace !== "object") return null;
   const fallbackId = `workspace-${index + 1}`;
@@ -206,7 +242,11 @@ function normalizeWorkspaceEntry(workspace, index = 0) {
     ...workspace,
     id,
     name: String(workspace.name || workspace.id || id).trim() || id,
+    state: normalizeWorkspaceState(workspace.state),
     repos,
+    executors: normalizeExecutorsConfig(workspace.executors),
+    enabledWorkflows: Array.isArray(workspace.enabledWorkflows) ? workspace.enabledWorkflows : [],
+    disabledWorkflows: Array.isArray(workspace.disabledWorkflows) ? workspace.disabledWorkflows : [],
     createdAt: workspace.createdAt || new Date().toISOString(),
     activeRepo: activeRepo || null,
   };
@@ -490,7 +530,11 @@ export function createWorkspace(configDir, { name, id }) {
   const workspace = {
     id: wsId,
     name: name || wsId,
+    state: "active",
     repos: [],
+    executors: { maxConcurrent: 3, pool: "shared", weight: 1.0 },
+    enabledWorkflows: [],
+    disabledWorkflows: [],
     createdAt: new Date().toISOString(),
     activeRepo: null,
   };
@@ -556,6 +600,119 @@ export function setActiveWorkspace(configDir, workspaceId) {
   saveBosunConfig(configDir, config);
   console.log(TAG, `Active workspace set to "${wsId}"`);
   return true;
+}
+
+// ── Workspace State Management ───────────────────────────────────────────────
+
+/**
+ * Get workspace state.
+ * @param {string} configDir
+ * @param {string} workspaceId
+ * @returns {"active"|"paused"|"disabled"|null}
+ */
+export function getWorkspaceState(configDir, workspaceId) {
+  const ws = getWorkspace(configDir, workspaceId);
+  return ws?.state || null;
+}
+
+/**
+ * Set workspace state.
+ * @param {string} configDir
+ * @param {string} workspaceId
+ * @param {"active"|"paused"|"disabled"} state
+ * @returns {boolean}
+ */
+export function setWorkspaceState(configDir, workspaceId, state) {
+  const normalizedState = normalizeWorkspaceState(state);
+  const wsId = normalizeId(workspaceId);
+  const config = loadBosunConfig(configDir);
+  const workspaces = normalizeWorkspaceList(config.workspaces);
+  const ws = workspaces.find((w) => w.id === wsId);
+  if (!ws) throw new Error(`Workspace "${wsId}" not found`);
+  const prevState = ws.state;
+  ws.state = normalizedState;
+  config.workspaces = workspaces;
+  saveBosunConfig(configDir, config);
+  console.log(TAG, `Workspace "${wsId}" state: ${prevState} → ${normalizedState}`);
+  return true;
+}
+
+/** Pause a workspace — no new workflows start, in-flight ones finish. */
+export function pauseWorkspace(configDir, workspaceId) {
+  return setWorkspaceState(configDir, workspaceId, "paused");
+}
+
+/** Resume a paused workspace. */
+export function resumeWorkspace(configDir, workspaceId) {
+  return setWorkspaceState(configDir, workspaceId, "active");
+}
+
+/** Disable a workspace — no workflows, no executors. */
+export function disableWorkspace(configDir, workspaceId) {
+  return setWorkspaceState(configDir, workspaceId, "disabled");
+}
+
+/**
+ * Check if a workflow is allowed to run for a given workspace.
+ * Uses enabledWorkflows (whitelist) and disabledWorkflows (blacklist).
+ * Blacklist takes precedence. Empty whitelist = all allowed.
+ */
+export function isWorkflowAllowedForWorkspace(workspace, workflowId) {
+  if (!workspace || workspace.state === "disabled") return false;
+  if (workspace.state === "paused") return false;
+  const wfId = String(workflowId || "").trim();
+  if (!wfId) return false;
+  const disabled = workspace.disabledWorkflows || [];
+  if (disabled.includes(wfId)) return false;
+  const enabled = workspace.enabledWorkflows || [];
+  if (enabled.length > 0 && !enabled.includes(wfId)) return false;
+  return true;
+}
+
+/**
+ * Update per-workspace executor config.
+ * @param {string} configDir
+ * @param {string} workspaceId
+ * @param {{ maxConcurrent?: number, pool?: "shared"|"dedicated", weight?: number }} executorOpts
+ */
+export function setWorkspaceExecutors(configDir, workspaceId, executorOpts) {
+  const wsId = normalizeId(workspaceId);
+  const config = loadBosunConfig(configDir);
+  const workspaces = normalizeWorkspaceList(config.workspaces);
+  const ws = workspaces.find((w) => w.id === wsId);
+  if (!ws) throw new Error(`Workspace "${wsId}" not found`);
+  const current = ws.executors || {};
+  ws.executors = normalizeExecutorsConfig({ ...current, ...executorOpts });
+  config.workspaces = workspaces;
+  saveBosunConfig(configDir, config);
+  console.log(TAG, `Workspace "${wsId}" executors updated:`, ws.executors);
+  return ws.executors;
+}
+
+/**
+ * Get all active workspaces (state === "active").
+ */
+export function getActiveWorkspaces(configDir) {
+  return getWorkspacesFromConfig(configDir).filter((ws) => ws.state === "active");
+}
+
+/**
+ * Get workspace state summary for all workspaces.
+ */
+export function getWorkspaceStateSummary(configDir) {
+  const workspaces = getWorkspacesFromConfig(configDir);
+  const config = loadBosunConfig(configDir);
+  return workspaces.map((ws) => ({
+    id: ws.id,
+    name: ws.name,
+    state: ws.state,
+    isActive: ws.state === "active",
+    isCurrent: ws.id === config.activeWorkspace,
+    executors: ws.executors,
+    enabledWorkflows: ws.enabledWorkflows,
+    disabledWorkflows: ws.disabledWorkflows,
+    repoCount: (ws.repos || []).length,
+  }));
 }
 
 // ── Repo Management ──────────────────────────────────────────────────────────
@@ -1016,4 +1173,3 @@ export function initializeWorkspaces(configDir, opts = {}) {
 
   return { workspaces: [], isNew: true };
 }
-

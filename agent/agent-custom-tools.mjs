@@ -561,12 +561,30 @@ export async function invokeCustomTool(rootDir, toolId, args = [], opts = {}) {
       timeout,
       maxBuffer: 10 * 1024 * 1024, // 10 MB
     });
-    stdout = out.stdout;
-    stderr = out.stderr;
+    // Node versions/environments may resolve promisified execFile as:
+    // - { stdout, stderr } (modern child_process custom promisify)
+    // - stdout string/buffer only (legacy/mocked fallback)
+    // - [stdout, stderr] tuple (some custom wrappers)
+    if (out && typeof out === "object" && !Array.isArray(out)) {
+      stdout = String(out.stdout ?? "");
+      stderr = String(out.stderr ?? "");
+    } else if (Array.isArray(out)) {
+      stdout = String(out[0] ?? "");
+      stderr = String(out[1] ?? "");
+    } else {
+      stdout = String(out ?? "");
+      stderr = "";
+    }
   } catch (err) {
-    stdout = err.stdout || "";
-    stderr = err.stderr || err.message || "";
-    exitCode = err.code ?? 1;
+    stdout = String(err?.stdout ?? "");
+    stderr = String(err?.stderr ?? err?.message ?? "");
+    const numericExit = Number(err?.code);
+    const numericStatus = Number(err?.status);
+    exitCode = Number.isFinite(numericExit)
+      ? numericExit
+      : Number.isFinite(numericStatus)
+        ? numericStatus
+        : 1;
   }
 
   // Record usage non-blocking

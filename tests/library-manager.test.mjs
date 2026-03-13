@@ -802,19 +802,42 @@ describe("well-known source import", () => {
     expect(sources.some((s) => s.id === "microsoft-vscode-python-environments")).toBe(true);
   });
 
-  it("imports agent profile + prompt from a git repository", () => {
+  it("imports agent profile, prompt, skill, and mcp entries from a git repository", () => {
     const srcRepo = mkdtempSync(join(tmpdir(), "lib-src-"));
     try {
       mkdirSync(join(srcRepo, ".github", "agents"), { recursive: true });
+      mkdirSync(join(srcRepo, "skills", "triage"), { recursive: true });
+      mkdirSync(join(srcRepo, "prompts"), { recursive: true });
+      mkdirSync(join(srcRepo, ".codex"), { recursive: true });
       writeFileSync(
         join(srcRepo, ".github", "agents", "TaskPlanner.agent.md"),
         [
           "---",
           "name: Task Planner",
-          "description: Plans and routes engineering tasks",
+          "description: 'Plans and routes engineering tasks'",
           "tools: ['search', 'edit']",
+          "skills: ['triage-skill']",
           "---",
           "Use this agent to break down complex tasks.",
+        ].join("\n"),
+        "utf8",
+      );
+      writeFileSync(
+        join(srcRepo, "skills", "triage", "SKILL.md"),
+        "# Skill: Triage\n\nPrioritize incidents quickly.",
+        "utf8",
+      );
+      writeFileSync(
+        join(srcRepo, "prompts", "chat.prompt.md"),
+        "# Chat Prompt\n\nAlways ask clarifying questions when ambiguous.",
+        "utf8",
+      );
+      writeFileSync(
+        join(srcRepo, ".codex", "config.toml"),
+        [
+          "[mcp_servers.github]",
+          'command = "npx"',
+          'args = ["-y", "@anthropic/mcp-github"]',
         ].join("\n"),
         "utf8",
       );
@@ -828,15 +851,40 @@ describe("well-known source import", () => {
       const result = importAgentProfilesFromRepository(tmpDir, {
         repoUrl: srcRepo,
         branch,
-        maxProfiles: 5,
+        maxEntries: 20,
         importPrompts: true,
+        importAgents: true,
+        importSkills: true,
+        importTools: true,
       });
 
       expect(result.importedCount).toBeGreaterThan(0);
+      expect(result.importedByType).toEqual(expect.objectContaining({
+        agent: 1,
+        skill: 1,
+        mcp: 1,
+      }));
+      expect(Number(result.importedByType.prompt || 0)).toBeGreaterThanOrEqual(2);
+
       const agents = listEntries(tmpDir, { type: "agent" });
       const prompts = listEntries(tmpDir, { type: "prompt" });
+      const skills = listEntries(tmpDir, { type: "skill" });
+      const mcps = listEntries(tmpDir, { type: "mcp" });
       expect(agents.length).toBeGreaterThan(0);
       expect(prompts.length).toBeGreaterThan(0);
+      expect(skills.length).toBeGreaterThan(0);
+      expect(mcps.length).toBeGreaterThan(0);
+
+      const taskPlanner = agents.find((entry) => entry.id.includes("task-planner"));
+      expect(taskPlanner).toBeTruthy();
+      const taskPlannerProfile = getEntryContent(tmpDir, taskPlanner);
+      expect(taskPlannerProfile.description).toBe("Plans and routes engineering tasks");
+      expect(taskPlannerProfile.skills).toContain("triage-skill");
+
+      const importedSkill = skills.find((entry) => entry.id.includes("triage"));
+      expect(importedSkill).toBeTruthy();
+      const importedSkillBody = String(getEntryContent(tmpDir, importedSkill) || "");
+      expect(importedSkillBody).toContain("Prioritize incidents quickly.");
     } finally {
       rmSync(srcRepo, { recursive: true, force: true });
     }

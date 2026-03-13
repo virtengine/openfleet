@@ -107,3 +107,15 @@
 - Tooling notes:
   - No new installs this pass.
   - Free OSS CLI stack remains: `semgrep`, `gitleaks`, `osv-scanner`, `trivy`, `npm audit`.
+
+## 2026-03-09 22:30:00 +11:00
+
+- Scope: CodeQL taint-flow cleanup for persistent `js/stack-trace-exposure` finding after 5xx masking changes.
+- Files hardened: `server/ui-server.mjs`, `workflow/manual-flows.mjs`.
+- Security strategy:
+  - replaced restart metadata exception leak (`task_lookup_failed`) with fixed public-safe message.
+  - changed manual-flow run failure storage from raw exception messages to fixed `Execution failed` while logging detailed error server-side.
+- Validation evidence:
+  - `npm test -- tests/manual-flows.test.mjs tests/ui-server.test.mjs tests/voice-provider-smoke.test.mjs` passed.
+- Tooling notes:
+  - No new CLI tools added; retained free stack: `semgrep`, `gitleaks`, `osv-scanner`, `trivy`, `npm audit`.

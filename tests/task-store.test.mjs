@@ -510,5 +510,157 @@ describe("task-store sprint and DAG primitives", () => {
     expect(allowed.canStart).toBe(true);
     expect(allowed.reason).toBe("ok");
   });
+
+  it("startTask blocks on unresolved epic dependencies unless forced", async () => {
+    const dir = makeTempDir("task-store-start-epic-guard-");
+    const storePath = join(dir, "kanban-state.json");
+
+    const ts = await loadTaskStoreModule();
+    ts.configureTaskStore({ storePath });
+    ts.loadStore();
+
+    ts.addTask({ id: "epic-b-task-1", title: "Epic B task", status: "todo", epicId: "EPIC-B" });
+    ts.addTask({ id: "epic-a-task-1", title: "Epic A task", status: "todo", epicId: "EPIC-A" });
+    ts.setEpicDependencies("EPIC-A", ["EPIC-B"]);
+
+    const blocked = ts.startTask("epic-a-task-1");
+    expect(blocked.ok).toBe(false);
+    expect(blocked.error).toBe("start_guard_blocked");
+    expect(blocked.canStart?.reason).toBe("epic_dependencies_unresolved");
+    expect(ts.getTask("epic-a-task-1")?.status).toBe("todo");
+
+    const forced = ts.startTask("epic-a-task-1", { force: true });
+    expect(forced.ok).toBe(true);
+    expect(forced.toStatus).toBe("inprogress");
+    expect(ts.getTask("epic-a-task-1")?.status).toBe("inprogress");
+  });
 });
 
+describe("task-store comment handling", () => {
+  it("loads legacy comments from task meta and normalizes comment fields", async () => {
+    const dir = makeTempDir("task-store-legacy-comments-");
+    const storePath = join(dir, "kanban-state.json");
+    const legacyStore = {
+      _meta: {
+        version: 1,
+        projectId: null,
+        lastFullSync: null,
+        taskCount: 1,
+        stats: {
+          draft: 0,
+          todo: 1,
+          inprogress: 0,
+          inreview: 0,
+          done: 0,
+          blocked: 0,
+        },
+      },
+      tasks: {
+        "legacy-comments": {
+          id: "legacy-comments",
+          title: "Legacy comments",
+          status: "todo",
+          meta: {
+            comments: [
+              "  first note  ",
+              {
+                id: 17,
+                text: " second note ",
+                user: "reviewer",
+                created_at: "2026-03-08T09:11:22.557Z",
+                source: "jira",
+                kind: "status",
+                meta: { severity: "info" },
+              },
+              { body: "   " },
+            ],
+          },
+        },
+      },
+    };
+    writeFileSync(storePath, JSON.stringify(legacyStore, null, 2), "utf8");
+
+    const ts = await loadTaskStoreModule();
+    ts.configureTaskStore({ storePath });
+    ts.loadStore();
+
+    expect(ts.getTaskComments("legacy-comments")).toEqual([
+      expect.objectContaining({
+        id: null,
+        body: "first note",
+        author: null,
+        source: "task",
+        kind: "comment",
+        meta: {},
+      }),
+      expect.objectContaining({
+        id: "17",
+        body: "second note",
+        author: "reviewer",
+        createdAt: "2026-03-08T09:11:22.557Z",
+        source: "jira",
+        kind: "status",
+        meta: { severity: "info" },
+      }),
+    ]);
+  });
+
+  it("updates, appends, and caps normalized task comments", async () => {
+    const dir = makeTempDir("task-store-comments-");
+    const storePath = join(dir, "kanban-state.json");
+
+    const ts = await loadTaskStoreModule();
+    ts.configureTaskStore({ storePath });
+    ts.loadStore();
+
+    ts.addTask({ id: "task-comments", title: "Comment task", status: "todo" });
+    const seedComments = Array.from({ length: 205 }, (_, index) => ` comment ${index + 1} `);
+
+    ts.updateTask("task-comments", { comments: seedComments });
+
+    const normalized = ts.getTaskComments("task-comments");
+    expect(normalized).toHaveLength(200);
+    expect(normalized[0]).toMatchObject({ body: "comment 6" });
+    expect(normalized.at(-1)).toMatchObject({ body: "comment 205" });
+
+    const added = ts.addTaskComment("task-comments", {
+      id: 999,
+      content: " final review note ",
+      author: "bosun",
+      createdAt: "2026-03-09T00:00:00.000Z",
+      source: "github",
+      kind: "review",
+      meta: { commentUrl: "https://example.test/comments/999" },
+    });
+
+    expect(added).toMatchObject({
+      id: "999",
+      body: "final review note",
+      author: "bosun",
+      createdAt: "2026-03-09T00:00:00.000Z",
+      source: "github",
+      kind: "review",
+      meta: { commentUrl: "https://example.test/comments/999" },
+    });
+    expect(ts.addTaskComment("task-comments", { body: "   " })).toBeNull();
+
+    const comments = ts.getTaskComments("task-comments");
+    expect(comments).toHaveLength(200);
+    expect(comments[0]).toMatchObject({ body: "comment 7" });
+    expect(comments.at(-1)).toMatchObject({
+      id: "999",
+      body: "final review note",
+      author: "bosun",
+      source: "github",
+      kind: "review",
+    });
+
+    expect(ts.getTask("task-comments").timeline.at(-1)).toMatchObject({
+      type: "task.comment",
+      source: "github",
+      actor: "bosun",
+      message: "final review note",
+      payload: { commentId: "999" },
+    });
+  });
+});
