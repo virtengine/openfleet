@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
-import { mkdtempSync, rmSync, writeFileSync, readFileSync } from "node:fs";
+import { mkdtempSync, rmSync, writeFileSync, readFileSync, existsSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { execSync } from "node:child_process";
@@ -700,6 +700,24 @@ describe("WorkflowEngine - run history details", () => {
       if (prevThreshold === undefined) delete process.env.WORKFLOW_RUN_STUCK_THRESHOLD_MS;
       else process.env.WORKFLOW_RUN_STUCK_THRESHOLD_MS = prevThreshold;
     }
+  });
+
+
+  it("skips checkpoint writes once a run is no longer active", async () => {
+    const runId = "run-inactive-checkpoint";
+    const runsDir = join(tmpDir, "runs");
+    const detailPath = join(runsDir, `${runId}.json`);
+
+    const ctx = new WorkflowContext(runId, {
+      _workflowId: "wf-checkpoint-skip",
+      _workflowName: "Checkpoint Skip",
+    });
+
+    // Simulate a debounced checkpoint firing for a run that was already removed.
+    engine._checkpointRun(ctx);
+
+    await new Promise((resolve) => setTimeout(resolve, 700));
+    expect(existsSync(detailPath)).toBe(false);
   });
 
   it("reclassifies stale RUNNING index entries as interrupted on startup recovery", () => {
@@ -1753,6 +1771,36 @@ describe("WorkflowEngine trigger evaluation", () => {
     });
   });
 
+  it("evaluateScheduleTriggers resolves templated schedule interval from workflow variables", async () => {
+    const wf = makeSimpleWorkflow(
+      [
+        {
+          id: "sched-trigger",
+          type: "trigger.schedule",
+          label: "Every 5min (templated)",
+          config: { intervalMs: "{{intervalMs}}" },
+        },
+      ],
+      [],
+      {
+        id: "sched-wf-templated-interval",
+        name: "Scheduled Workflow Templated Interval",
+        variables: { intervalMs: 300000 },
+      },
+    );
+    engine.save(wf);
+
+    await engine.execute("sched-wf-templated-interval");
+    const indexPath = join(engine.runsDir, "index.json");
+    const index = JSON.parse(readFileSync(indexPath, "utf8"));
+    const run = (index.runs || []).find((entry) => entry.workflowId === "sched-wf-templated-interval");
+    expect(run).toBeTruthy();
+    run.startedAt = Date.now() - 10 * 60 * 1000; // 10 minutes ago
+    writeFileSync(indexPath, JSON.stringify(index, null, 2), "utf8");
+
+    const hits = engine.evaluateScheduleTriggers();
+    expect(hits.some((h) => h.workflowId === "sched-wf-templated-interval")).toBe(true);
+  });
   it("evaluateScheduleTriggers polls trigger.task_available workflows", () => {
     const wf = makeSimpleWorkflow(
       [

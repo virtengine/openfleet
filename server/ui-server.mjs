@@ -8128,20 +8128,30 @@ async function listDirFilesWithMtime(dir, predicate = () => true) {
   return entries.filter(Boolean);
 }
 
-async function resolvePreferredSystemLogPath() {
+const SYSTEM_LOG_PRIORITY = Object.freeze({
+  "monitor.log": 300,
+  "monitor-error.log": 250,
+  "daemon.log": 200,
+});
+
+async function listPreferredSystemLogEntries(limit = 4) {
   const rootLogEntries = await listDirFilesWithMtime(
     logsDir,
     (name) => name.endsWith(".log"),
   );
-  const nonDaemonEntries = rootLogEntries.filter((entry) => entry.name !== "daemon.log");
+  return rootLogEntries
+    .sort((a, b) => {
+      const priorityDelta =
+        (SYSTEM_LOG_PRIORITY[b.name] || 0) - (SYSTEM_LOG_PRIORITY[a.name] || 0);
+      if (priorityDelta !== 0) return priorityDelta;
+      return b.mtimeMs - a.mtimeMs;
+    })
+    .slice(0, Math.max(1, limit));
+}
 
-  const preferredEntries = [...nonDaemonEntries].sort(
-    (a, b) => b.mtimeMs - a.mtimeMs,
-  );
-  if (preferredEntries.length > 0) return preferredEntries[0].path;
-
-  const daemonEntry = rootLogEntries.find((entry) => entry.name === "daemon.log");
-  return daemonEntry ? daemonEntry.path : null;
+async function resolvePreferredSystemLogPath() {
+  const preferredEntries = await listPreferredSystemLogEntries(1);
+  return preferredEntries[0]?.path || null;
 }
 
 /**
@@ -9319,10 +9329,70 @@ function withTaskMetadataTopLevel(task) {
 }
 
 async function getLatestLogTail(lineCount) {
-  const logPath = await resolvePreferredSystemLogPath();
-  if (!logPath) return { file: null, lines: [] };
-  const tail = await tailFile(logPath, lineCount);
-  return { file: basename(logPath), lines: tail.lines || [] };
+  return getMergedSystemLogTail(lineCount);
+}
+
+function parseSystemLogTimestamp(line) {
+  const match = String(line || "").match(/^\s*(\d{4}-\d{2}-\d{2}T[^\s]+)/);
+  if (!match?.[1]) return Number.NaN;
+  const parsed = Date.parse(match[1]);
+  return Number.isFinite(parsed) ? parsed : Number.NaN;
+}
+
+async function getMergedSystemLogTail(
+  lineCount,
+  {
+    fileLimit = 4,
+    maxBytesPerFile = 350_000,
+  } = {},
+) {
+  const entries = await listPreferredSystemLogEntries(fileLimit);
+  if (!entries.length) {
+    return { file: null, files: [], lines: [], truncated: false };
+  }
+
+  const perFileLineBudget = Math.max(lineCount * 2, 160);
+  const tails = await Promise.all(
+    entries.map((entry) => tailFile(entry.path, perFileLineBudget, maxBytesPerFile).catch(() => null)),
+  );
+
+  const merged = [];
+  let truncated = false;
+  tails.forEach((tail, sourceIndex) => {
+    if (!tail) return;
+    truncated = truncated || tail.truncated === true;
+    const lines = Array.isArray(tail.lines) ? tail.lines : [];
+    lines.forEach((line, lineIndex) => {
+      merged.push({
+        line,
+        timestamp: parseSystemLogTimestamp(line),
+        sourceIndex,
+        lineIndex,
+      });
+    });
+  });
+
+  merged.sort((a, b) => {
+    const aHasTs = Number.isFinite(a.timestamp);
+    const bHasTs = Number.isFinite(b.timestamp);
+    if (aHasTs && bHasTs && a.timestamp !== b.timestamp) {
+      return a.timestamp - b.timestamp;
+    }
+    if (aHasTs !== bHasTs) {
+      return aHasTs ? -1 : 1;
+    }
+    if (a.sourceIndex !== b.sourceIndex) {
+      return a.sourceIndex - b.sourceIndex;
+    }
+    return a.lineIndex - b.lineIndex;
+  });
+
+  return {
+    file: entries[0]?.name || null,
+    files: entries.map((entry) => entry.name),
+    lines: merged.slice(-lineCount).map((entry) => entry.line),
+    truncated,
+  };
 }
 
 async function tailFile(filePath, lineCount, maxBytes = 1_000_000) {
