@@ -7577,6 +7577,1502 @@
       ]
     },
     {
+      "id": "template-continuation-loop",
+      "name": "Continuation Loop",
+      "description": "Issue-state continuation loop. Polls externalStatus, keeps driving the agent until terminal state or max turns, and handles stuck sessions with retry/escalate/pause.",
+      "category": "reliability",
+      "categoryLabel": "Reliability",
+      "categoryIcon": ":shield:",
+      "categoryOrder": 5,
+      "tags": [
+        "continuation",
+        "loop",
+        "linear",
+        "external-status",
+        "stuck-detection"
+      ],
+      "nodeCount": 28,
+      "edgeCount": 30,
+      "recommended": false,
+      "enabled": true,
+      "trigger": "trigger.manual",
+      "variables": {
+        "taskId": "",
+        "worktreePath": "",
+        "maxTurns": 8,
+        "pollIntervalMs": 30000,
+        "terminalStates": [
+          "done",
+          "cancelled"
+        ],
+        "stuckThresholdMs": 300000,
+        "onStuck": "escalate",
+        "continuePrompt": "Continue this task from the current state. Focus on the next missing step and push toward completion.",
+        "retryPrompt": "No progress was detected recently. Try a different approach and make concrete progress (commit or file updates).",
+        "sdk": "auto",
+        "model": "",
+        "timeoutMs": 1800000
+      },
+      "metadata": {
+        "author": "bosun",
+        "version": 1,
+        "createdAt": "2026-03-10T00:00:00Z",
+        "templateVersion": "1.0.0",
+        "tags": [
+          "continuation",
+          "loop",
+          "linear",
+          "external-status",
+          "stuck-detection"
+        ],
+        "configType": "continuation-loop"
+      },
+      "nodes": [
+        {
+          "id": "trigger",
+          "type": "trigger.manual",
+          "label": "Start Continuation Loop",
+          "config": {},
+          "position": {
+            "x": 420,
+            "y": 60
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "init-turn",
+          "type": "action.set_variable",
+          "label": "Initialize Turn Counter",
+          "config": {
+            "key": "continuationTurn",
+            "value": "0",
+            "isExpression": true
+          },
+          "position": {
+            "x": 420,
+            "y": 170
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "init-progress-at",
+          "type": "action.set_variable",
+          "label": "Initialize Progress Clock",
+          "config": {
+            "key": "lastProgressAt",
+            "value": "Date.now()",
+            "isExpression": true
+          },
+          "position": {
+            "x": 420,
+            "y": 280
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "init-signature",
+          "type": "action.set_variable",
+          "label": "Initialize Progress Signature",
+          "config": {
+            "key": "lastProgressSignature",
+            "value": "''",
+            "isExpression": true
+          },
+          "position": {
+            "x": 420,
+            "y": 390
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "poll-task",
+          "type": "action.bosun_function",
+          "label": "Poll External Task State",
+          "config": {
+            "function": "tasks.get",
+            "args": {
+              "taskId": "{{taskId}}"
+            },
+            "outputVariable": "continuationTask"
+          },
+          "position": {
+            "x": 420,
+            "y": 500
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "derive-status",
+          "type": "action.set_variable",
+          "label": "Derive External Status",
+          "config": {
+            "key": "currentExternalStatus",
+            "value": "String(($data?.continuationTask?.externalStatus ?? $data?.continuationTask?.status ?? '') || '').trim().toLowerCase()",
+            "isExpression": true
+          },
+          "position": {
+            "x": 420,
+            "y": 610
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "terminal-check",
+          "type": "condition.expression",
+          "label": "Terminal State Reached?",
+          "config": {
+            "expression": "(() => { const s = String($data?.currentExternalStatus || '').trim().toLowerCase(); const t = Array.isArray($data?.terminalStates) ? $data.terminalStates.map(v => String(v || '').trim().toLowerCase()).filter(Boolean) : []; return Boolean(s) && t.includes(s); })()"
+          },
+          "position": {
+            "x": 420,
+            "y": 720
+          },
+          "outputs": [
+            "yes",
+            "no"
+          ]
+        },
+        {
+          "id": "end-terminal",
+          "type": "flow.end",
+          "label": "End: Terminal State",
+          "config": {
+            "status": "completed",
+            "message": "Continuation loop completed: terminal external state '{{currentExternalStatus}}' reached for task {{taskId}}.",
+            "output": {
+              "reason": "terminal_state",
+              "taskId": "{{taskId}}",
+              "externalStatus": "{{currentExternalStatus}}"
+            }
+          },
+          "position": {
+            "x": 160,
+            "y": 860
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "max-turns-check",
+          "type": "condition.expression",
+          "label": "Max Turns Reached?",
+          "config": {
+            "expression": "Number($data?.continuationTurn || 0) >= Number($data?.maxTurns || 0)"
+          },
+          "position": {
+            "x": 620,
+            "y": 860
+          },
+          "outputs": [
+            "yes",
+            "no"
+          ]
+        },
+        {
+          "id": "end-max-turns",
+          "type": "flow.end",
+          "label": "End: Max Turns",
+          "config": {
+            "status": "failed",
+            "message": "Continuation loop stopped after reaching maxTurns={{maxTurns}} for task {{taskId}}.",
+            "output": {
+              "reason": "max_turns",
+              "taskId": "{{taskId}}",
+              "turns": "{{continuationTurn}}"
+            }
+          },
+          "position": {
+            "x": 460,
+            "y": 1000
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "run-agent",
+          "type": "action.run_agent",
+          "label": "Drive Agent",
+          "config": {
+            "prompt": "{{continuePrompt}}",
+            "taskId": "{{taskId}}",
+            "cwd": "{{worktreePath}}",
+            "sdk": "{{sdk}}",
+            "model": "{{model}}",
+            "timeoutMs": "{{timeoutMs}}",
+            "failOnError": false
+          },
+          "position": {
+            "x": 800,
+            "y": 1000
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "capture-progress",
+          "type": "action.run_command",
+          "label": "Capture Progress Signature",
+          "config": {
+            "command": "node -e \"const cp=require('node:child_process');const crypto=require('node:crypto');const head=(cp.execSync('git rev-parse HEAD',{encoding:'utf8'}).trim()||'');const dirtyRaw=cp.execSync('git status --porcelain=v1',{encoding:'utf8'});const dirtyCount=dirtyRaw.split(/\\r?\\n/).filter(Boolean).length;const statusDigest=crypto.createHash('sha1').update(dirtyRaw).digest('hex').slice(0,16);process.stdout.write(JSON.stringify({head,dirtyCount,statusDigest}));\"",
+            "cwd": "{{worktreePath}}",
+            "failOnError": false
+          },
+          "position": {
+            "x": 800,
+            "y": 1120
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "derive-signature",
+          "type": "action.set_variable",
+          "label": "Derive Signature",
+          "config": {
+            "key": "currentProgressSignature",
+            "value": "(() => { const raw = String($ctx.getNodeOutput('capture-progress')?.output || '').trim(); try { const parsed = JSON.parse(raw); const head = String(parsed?.head || ''); const dirty = Number(parsed?.dirtyCount || 0); const statusDigest = String(parsed?.statusDigest || ''); return `${head}:${dirty}:${statusDigest}`; } catch { return ''; } })()",
+            "isExpression": true
+          },
+          "position": {
+            "x": 800,
+            "y": 1240
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "progress-changed",
+          "type": "condition.expression",
+          "label": "Progress Changed?",
+          "config": {
+            "expression": "String($data?.currentProgressSignature || '') !== String($data?.lastProgressSignature || '')"
+          },
+          "position": {
+            "x": 800,
+            "y": 1360
+          },
+          "outputs": [
+            "yes",
+            "no"
+          ]
+        },
+        {
+          "id": "mark-progress-at",
+          "type": "action.set_variable",
+          "label": "Update Progress Clock",
+          "config": {
+            "key": "lastProgressAt",
+            "value": "(() => { const changed = String($data?.currentProgressSignature || '') !== String($data?.lastProgressSignature || ''); return changed ? Date.now() : Number($data?.lastProgressAt || 0); })()",
+            "isExpression": true
+          },
+          "position": {
+            "x": 680,
+            "y": 1490
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "mark-progress-sig",
+          "type": "action.set_variable",
+          "label": "Update Progress Signature",
+          "config": {
+            "key": "lastProgressSignature",
+            "value": "$data?.currentProgressSignature || ''",
+            "isExpression": true
+          },
+          "position": {
+            "x": 680,
+            "y": 1600
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "stuck-check",
+          "type": "condition.expression",
+          "label": "Session Stuck?",
+          "config": {
+            "expression": "(Date.now() - Number($data?.lastProgressAt || 0)) >= Number($data?.stuckThresholdMs || 0)"
+          },
+          "position": {
+            "x": 980,
+            "y": 1710
+          },
+          "outputs": [
+            "yes",
+            "no"
+          ]
+        },
+        {
+          "id": "emit-stuck",
+          "type": "action.emit_event",
+          "label": "Emit session-stuck",
+          "config": {
+            "eventType": "session-stuck",
+            "payload": {
+              "taskId": "{{taskId}}",
+              "turn": "{{continuationTurn}}",
+              "externalStatus": "{{currentExternalStatus}}",
+              "stuckThresholdMs": "{{stuckThresholdMs}}",
+              "onStuck": "{{onStuck}}"
+            },
+            "outputVariable": "sessionStuckEvent"
+          },
+          "position": {
+            "x": 980,
+            "y": 1600
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "stuck-route",
+          "type": "condition.switch",
+          "label": "Route onStuck Action",
+          "config": {
+            "value": "$data?.onStuck || 'escalate'",
+            "cases": {
+              "retry": "retry",
+              "escalate": "escalate",
+              "pause": "pause"
+            }
+          },
+          "position": {
+            "x": 980,
+            "y": 1710
+          },
+          "outputs": [
+            "retry",
+            "escalate",
+            "pause",
+            "default"
+          ]
+        },
+        {
+          "id": "stuck-retry",
+          "type": "action.run_agent",
+          "label": "Retry After Stuck",
+          "config": {
+            "prompt": "{{retryPrompt}}",
+            "taskId": "{{taskId}}",
+            "cwd": "{{worktreePath}}",
+            "sdk": "{{sdk}}",
+            "model": "{{model}}",
+            "timeoutMs": "{{timeoutMs}}",
+            "failOnError": false
+          },
+          "position": {
+            "x": 760,
+            "y": 1830
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "stuck-escalate",
+          "type": "notify.log",
+          "label": "Escalate Stuck Session",
+          "config": {
+            "level": "warn",
+            "message": "session-stuck: escalation requested for task {{taskId}} at turn {{continuationTurn}} (externalStatus={{currentExternalStatus}})"
+          },
+          "position": {
+            "x": 980,
+            "y": 1830
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "stuck-pause",
+          "type": "notify.log",
+          "label": "Pause Stuck Session",
+          "config": {
+            "level": "warn",
+            "message": "session-stuck: paused task {{taskId}} at turn {{continuationTurn}} (externalStatus={{currentExternalStatus}})"
+          },
+          "position": {
+            "x": 1200,
+            "y": 1830
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "end-escalated",
+          "type": "flow.end",
+          "label": "End: Escalated",
+          "config": {
+            "status": "failed",
+            "message": "Continuation loop escalated due to session-stuck for task {{taskId}}.",
+            "output": {
+              "reason": "stuck_escalated",
+              "taskId": "{{taskId}}",
+              "event": "{{sessionStuckEvent.eventType}}"
+            }
+          },
+          "position": {
+            "x": 980,
+            "y": 1950
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "end-paused",
+          "type": "flow.end",
+          "label": "End: Paused",
+          "config": {
+            "status": "completed",
+            "message": "Continuation loop paused due to session-stuck for task {{taskId}}.",
+            "output": {
+              "reason": "stuck_paused",
+              "taskId": "{{taskId}}",
+              "event": "{{sessionStuckEvent.eventType}}"
+            }
+          },
+          "position": {
+            "x": 1200,
+            "y": 1950
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "wait-next-turn",
+          "type": "action.delay",
+          "label": "Wait Poll Interval",
+          "config": {
+            "ms": "{{pollIntervalMs}}",
+            "reason": "Waiting before next external status poll"
+          },
+          "position": {
+            "x": 760,
+            "y": 1950
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "increment-turn",
+          "type": "action.set_variable",
+          "label": "Increment Turn",
+          "config": {
+            "key": "continuationTurn",
+            "value": "Number($data?.continuationTurn || 0) + 1",
+            "isExpression": true
+          },
+          "position": {
+            "x": 760,
+            "y": 2060
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "wait-next-turn-no-stuck",
+          "type": "action.delay",
+          "label": "Wait (No Stuck)",
+          "config": {
+            "ms": "{{pollIntervalMs}}",
+            "reason": "Waiting before next external status poll"
+          },
+          "position": {
+            "x": 1080,
+            "y": 1950
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "increment-turn-no-stuck",
+          "type": "action.set_variable",
+          "label": "Increment Turn (No Stuck)",
+          "config": {
+            "key": "continuationTurn",
+            "value": "Number($data?.continuationTurn || 0) + 1",
+            "isExpression": true
+          },
+          "position": {
+            "x": 1080,
+            "y": 2060
+          },
+          "outputs": [
+            "default"
+          ]
+        }
+      ],
+      "edges": [
+        {
+          "id": "trigger->init-turn",
+          "source": "trigger",
+          "target": "init-turn",
+          "sourcePort": "default"
+        },
+        {
+          "id": "init-turn->init-progress-at",
+          "source": "init-turn",
+          "target": "init-progress-at",
+          "sourcePort": "default"
+        },
+        {
+          "id": "init-progress-at->init-signature",
+          "source": "init-progress-at",
+          "target": "init-signature",
+          "sourcePort": "default"
+        },
+        {
+          "id": "init-signature->poll-task",
+          "source": "init-signature",
+          "target": "poll-task",
+          "sourcePort": "default"
+        },
+        {
+          "id": "poll-task->derive-status",
+          "source": "poll-task",
+          "target": "derive-status",
+          "sourcePort": "default"
+        },
+        {
+          "id": "derive-status->terminal-check",
+          "source": "derive-status",
+          "target": "terminal-check",
+          "sourcePort": "default"
+        },
+        {
+          "id": "terminal-check->end-terminal",
+          "source": "terminal-check",
+          "target": "end-terminal",
+          "sourcePort": "yes",
+          "condition": "$output?.result === true"
+        },
+        {
+          "id": "terminal-check->max-turns-check",
+          "source": "terminal-check",
+          "target": "max-turns-check",
+          "sourcePort": "no",
+          "condition": "$output?.result !== true"
+        },
+        {
+          "id": "max-turns-check->end-max-turns",
+          "source": "max-turns-check",
+          "target": "end-max-turns",
+          "sourcePort": "yes",
+          "condition": "$output?.result === true"
+        },
+        {
+          "id": "max-turns-check->run-agent",
+          "source": "max-turns-check",
+          "target": "run-agent",
+          "sourcePort": "no",
+          "condition": "$output?.result !== true"
+        },
+        {
+          "id": "run-agent->capture-progress",
+          "source": "run-agent",
+          "target": "capture-progress",
+          "sourcePort": "default"
+        },
+        {
+          "id": "capture-progress->derive-signature",
+          "source": "capture-progress",
+          "target": "derive-signature",
+          "sourcePort": "default"
+        },
+        {
+          "id": "derive-signature->progress-changed",
+          "source": "derive-signature",
+          "target": "progress-changed",
+          "sourcePort": "default"
+        },
+        {
+          "id": "progress-changed->mark-progress-at",
+          "source": "progress-changed",
+          "target": "mark-progress-at",
+          "sourcePort": "default"
+        },
+        {
+          "id": "mark-progress-at->mark-progress-sig",
+          "source": "mark-progress-at",
+          "target": "mark-progress-sig",
+          "sourcePort": "default"
+        },
+        {
+          "id": "mark-progress-sig->stuck-check",
+          "source": "mark-progress-sig",
+          "target": "stuck-check",
+          "sourcePort": "default"
+        },
+        {
+          "id": "stuck-check->emit-stuck",
+          "source": "stuck-check",
+          "target": "emit-stuck",
+          "sourcePort": "yes",
+          "condition": "$output?.result === true"
+        },
+        {
+          "id": "stuck-check->wait-next-turn-no-stuck",
+          "source": "stuck-check",
+          "target": "wait-next-turn-no-stuck",
+          "sourcePort": "no",
+          "condition": "$output?.result !== true"
+        },
+        {
+          "id": "emit-stuck->stuck-route",
+          "source": "emit-stuck",
+          "target": "stuck-route",
+          "sourcePort": "default"
+        },
+        {
+          "id": "stuck-route->stuck-retry",
+          "source": "stuck-route",
+          "target": "stuck-retry",
+          "sourcePort": "retry"
+        },
+        {
+          "id": "stuck-route->stuck-escalate",
+          "source": "stuck-route",
+          "target": "stuck-escalate",
+          "sourcePort": "escalate"
+        },
+        {
+          "id": "stuck-route->stuck-pause",
+          "source": "stuck-route",
+          "target": "stuck-pause",
+          "sourcePort": "pause"
+        },
+        {
+          "id": "stuck-route->stuck-escalate",
+          "source": "stuck-route",
+          "target": "stuck-escalate",
+          "sourcePort": "default"
+        },
+        {
+          "id": "stuck-retry->wait-next-turn",
+          "source": "stuck-retry",
+          "target": "wait-next-turn",
+          "sourcePort": "default"
+        },
+        {
+          "id": "stuck-escalate->end-escalated",
+          "source": "stuck-escalate",
+          "target": "end-escalated",
+          "sourcePort": "default"
+        },
+        {
+          "id": "stuck-pause->end-paused",
+          "source": "stuck-pause",
+          "target": "end-paused",
+          "sourcePort": "default"
+        },
+        {
+          "id": "wait-next-turn->increment-turn",
+          "source": "wait-next-turn",
+          "target": "increment-turn",
+          "sourcePort": "default"
+        },
+        {
+          "id": "wait-next-turn-no-stuck->increment-turn-no-stuck",
+          "source": "wait-next-turn-no-stuck",
+          "target": "increment-turn-no-stuck",
+          "sourcePort": "default"
+        },
+        {
+          "id": "increment-turn->poll-task",
+          "source": "increment-turn",
+          "target": "poll-task",
+          "sourcePort": "default",
+          "backEdge": true,
+          "maxIterations": 500
+        },
+        {
+          "id": "increment-turn-no-stuck->poll-task",
+          "source": "increment-turn-no-stuck",
+          "target": "poll-task",
+          "sourcePort": "default",
+          "backEdge": true,
+          "maxIterations": 500
+        }
+      ]
+    },
+    {
+      "id": "template-continuation-loop",
+      "name": "Continuation Loop",
+      "description": "Issue-state continuation loop. Polls externalStatus, keeps driving the agent until terminal state or max turns, and handles stuck sessions with retry/escalate/pause.",
+      "category": "reliability",
+      "categoryLabel": "Reliability",
+      "categoryIcon": ":shield:",
+      "categoryOrder": 5,
+      "tags": [
+        "continuation",
+        "loop",
+        "linear",
+        "external-status",
+        "stuck-detection"
+      ],
+      "nodeCount": 28,
+      "edgeCount": 30,
+      "recommended": false,
+      "enabled": true,
+      "trigger": "trigger.manual",
+      "variables": {
+        "taskId": "",
+        "worktreePath": "",
+        "maxTurns": 8,
+        "pollIntervalMs": 30000,
+        "terminalStates": [
+          "done",
+          "cancelled"
+        ],
+        "stuckThresholdMs": 300000,
+        "onStuck": "escalate",
+        "continuePrompt": "Continue this task from the current state. Focus on the next missing step and push toward completion.",
+        "retryPrompt": "No progress was detected recently. Try a different approach and make concrete progress (commit or file updates).",
+        "sdk": "auto",
+        "model": "",
+        "timeoutMs": 1800000
+      },
+      "metadata": {
+        "author": "bosun",
+        "version": 1,
+        "createdAt": "2026-03-10T00:00:00Z",
+        "templateVersion": "1.0.0",
+        "tags": [
+          "continuation",
+          "loop",
+          "linear",
+          "external-status",
+          "stuck-detection"
+        ],
+        "configType": "continuation-loop"
+      },
+      "nodes": [
+        {
+          "id": "trigger",
+          "type": "trigger.manual",
+          "label": "Start Continuation Loop",
+          "config": {},
+          "position": {
+            "x": 420,
+            "y": 60
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "init-turn",
+          "type": "action.set_variable",
+          "label": "Initialize Turn Counter",
+          "config": {
+            "key": "continuationTurn",
+            "value": "0",
+            "isExpression": true
+          },
+          "position": {
+            "x": 420,
+            "y": 170
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "init-progress-at",
+          "type": "action.set_variable",
+          "label": "Initialize Progress Clock",
+          "config": {
+            "key": "lastProgressAt",
+            "value": "Date.now()",
+            "isExpression": true
+          },
+          "position": {
+            "x": 420,
+            "y": 280
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "init-signature",
+          "type": "action.set_variable",
+          "label": "Initialize Progress Signature",
+          "config": {
+            "key": "lastProgressSignature",
+            "value": "''",
+            "isExpression": true
+          },
+          "position": {
+            "x": 420,
+            "y": 390
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "poll-task",
+          "type": "action.bosun_function",
+          "label": "Poll External Task State",
+          "config": {
+            "function": "tasks.get",
+            "args": {
+              "taskId": "{{taskId}}"
+            },
+            "outputVariable": "continuationTask"
+          },
+          "position": {
+            "x": 420,
+            "y": 500
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "derive-status",
+          "type": "action.set_variable",
+          "label": "Derive External Status",
+          "config": {
+            "key": "currentExternalStatus",
+            "value": "String(($data?.continuationTask?.externalStatus ?? $data?.continuationTask?.status ?? '') || '').trim().toLowerCase()",
+            "isExpression": true
+          },
+          "position": {
+            "x": 420,
+            "y": 610
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "terminal-check",
+          "type": "condition.expression",
+          "label": "Terminal State Reached?",
+          "config": {
+            "expression": "(() => { const s = String($data?.currentExternalStatus || '').trim().toLowerCase(); const t = Array.isArray($data?.terminalStates) ? $data.terminalStates.map(v => String(v || '').trim().toLowerCase()).filter(Boolean) : []; return Boolean(s) && t.includes(s); })()"
+          },
+          "position": {
+            "x": 420,
+            "y": 720
+          },
+          "outputs": [
+            "yes",
+            "no"
+          ]
+        },
+        {
+          "id": "end-terminal",
+          "type": "flow.end",
+          "label": "End: Terminal State",
+          "config": {
+            "status": "completed",
+            "message": "Continuation loop completed: terminal external state '{{currentExternalStatus}}' reached for task {{taskId}}.",
+            "output": {
+              "reason": "terminal_state",
+              "taskId": "{{taskId}}",
+              "externalStatus": "{{currentExternalStatus}}"
+            }
+          },
+          "position": {
+            "x": 160,
+            "y": 860
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "max-turns-check",
+          "type": "condition.expression",
+          "label": "Max Turns Reached?",
+          "config": {
+            "expression": "Number($data?.continuationTurn || 0) >= Number($data?.maxTurns || 0)"
+          },
+          "position": {
+            "x": 620,
+            "y": 860
+          },
+          "outputs": [
+            "yes",
+            "no"
+          ]
+        },
+        {
+          "id": "end-max-turns",
+          "type": "flow.end",
+          "label": "End: Max Turns",
+          "config": {
+            "status": "failed",
+            "message": "Continuation loop stopped after reaching maxTurns={{maxTurns}} for task {{taskId}}.",
+            "output": {
+              "reason": "max_turns",
+              "taskId": "{{taskId}}",
+              "turns": "{{continuationTurn}}"
+            }
+          },
+          "position": {
+            "x": 460,
+            "y": 1000
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "run-agent",
+          "type": "action.run_agent",
+          "label": "Drive Agent",
+          "config": {
+            "prompt": "{{continuePrompt}}",
+            "taskId": "{{taskId}}",
+            "cwd": "{{worktreePath}}",
+            "sdk": "{{sdk}}",
+            "model": "{{model}}",
+            "timeoutMs": "{{timeoutMs}}",
+            "failOnError": false
+          },
+          "position": {
+            "x": 800,
+            "y": 1000
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "capture-progress",
+          "type": "action.run_command",
+          "label": "Capture Progress Signature",
+          "config": {
+            "command": "node -e \"const cp=require('node:child_process');const crypto=require('node:crypto');const head=(cp.execSync('git rev-parse HEAD',{encoding:'utf8'}).trim()||'');const dirtyRaw=cp.execSync('git status --porcelain=v1',{encoding:'utf8'});const dirtyCount=dirtyRaw.split(/\\r?\\n/).filter(Boolean).length;const statusDigest=crypto.createHash('sha1').update(dirtyRaw).digest('hex').slice(0,16);process.stdout.write(JSON.stringify({head,dirtyCount,statusDigest}));\"",
+            "cwd": "{{worktreePath}}",
+            "failOnError": false
+          },
+          "position": {
+            "x": 800,
+            "y": 1120
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "derive-signature",
+          "type": "action.set_variable",
+          "label": "Derive Signature",
+          "config": {
+            "key": "currentProgressSignature",
+            "value": "(() => { const raw = String($ctx.getNodeOutput('capture-progress')?.output || '').trim(); try { const parsed = JSON.parse(raw); const head = String(parsed?.head || ''); const dirty = Number(parsed?.dirtyCount || 0); const statusDigest = String(parsed?.statusDigest || ''); return `${head}:${dirty}:${statusDigest}`; } catch { return ''; } })()",
+            "isExpression": true
+          },
+          "position": {
+            "x": 800,
+            "y": 1240
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "progress-changed",
+          "type": "condition.expression",
+          "label": "Progress Changed?",
+          "config": {
+            "expression": "String($data?.currentProgressSignature || '') !== String($data?.lastProgressSignature || '')"
+          },
+          "position": {
+            "x": 800,
+            "y": 1360
+          },
+          "outputs": [
+            "yes",
+            "no"
+          ]
+        },
+        {
+          "id": "mark-progress-at",
+          "type": "action.set_variable",
+          "label": "Update Progress Clock",
+          "config": {
+            "key": "lastProgressAt",
+            "value": "(() => { const changed = String($data?.currentProgressSignature || '') !== String($data?.lastProgressSignature || ''); return changed ? Date.now() : Number($data?.lastProgressAt || 0); })()",
+            "isExpression": true
+          },
+          "position": {
+            "x": 680,
+            "y": 1490
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "mark-progress-sig",
+          "type": "action.set_variable",
+          "label": "Update Progress Signature",
+          "config": {
+            "key": "lastProgressSignature",
+            "value": "$data?.currentProgressSignature || ''",
+            "isExpression": true
+          },
+          "position": {
+            "x": 680,
+            "y": 1600
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "stuck-check",
+          "type": "condition.expression",
+          "label": "Session Stuck?",
+          "config": {
+            "expression": "(Date.now() - Number($data?.lastProgressAt || 0)) >= Number($data?.stuckThresholdMs || 0)"
+          },
+          "position": {
+            "x": 980,
+            "y": 1710
+          },
+          "outputs": [
+            "yes",
+            "no"
+          ]
+        },
+        {
+          "id": "emit-stuck",
+          "type": "action.emit_event",
+          "label": "Emit session-stuck",
+          "config": {
+            "eventType": "session-stuck",
+            "payload": {
+              "taskId": "{{taskId}}",
+              "turn": "{{continuationTurn}}",
+              "externalStatus": "{{currentExternalStatus}}",
+              "stuckThresholdMs": "{{stuckThresholdMs}}",
+              "onStuck": "{{onStuck}}"
+            },
+            "outputVariable": "sessionStuckEvent"
+          },
+          "position": {
+            "x": 980,
+            "y": 1600
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "stuck-route",
+          "type": "condition.switch",
+          "label": "Route onStuck Action",
+          "config": {
+            "value": "$data?.onStuck || 'escalate'",
+            "cases": {
+              "retry": "retry",
+              "escalate": "escalate",
+              "pause": "pause"
+            }
+          },
+          "position": {
+            "x": 980,
+            "y": 1710
+          },
+          "outputs": [
+            "retry",
+            "escalate",
+            "pause",
+            "default"
+          ]
+        },
+        {
+          "id": "stuck-retry",
+          "type": "action.run_agent",
+          "label": "Retry After Stuck",
+          "config": {
+            "prompt": "{{retryPrompt}}",
+            "taskId": "{{taskId}}",
+            "cwd": "{{worktreePath}}",
+            "sdk": "{{sdk}}",
+            "model": "{{model}}",
+            "timeoutMs": "{{timeoutMs}}",
+            "failOnError": false
+          },
+          "position": {
+            "x": 760,
+            "y": 1830
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "stuck-escalate",
+          "type": "notify.log",
+          "label": "Escalate Stuck Session",
+          "config": {
+            "level": "warn",
+            "message": "session-stuck: escalation requested for task {{taskId}} at turn {{continuationTurn}} (externalStatus={{currentExternalStatus}})"
+          },
+          "position": {
+            "x": 980,
+            "y": 1830
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "stuck-pause",
+          "type": "notify.log",
+          "label": "Pause Stuck Session",
+          "config": {
+            "level": "warn",
+            "message": "session-stuck: paused task {{taskId}} at turn {{continuationTurn}} (externalStatus={{currentExternalStatus}})"
+          },
+          "position": {
+            "x": 1200,
+            "y": 1830
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "end-escalated",
+          "type": "flow.end",
+          "label": "End: Escalated",
+          "config": {
+            "status": "failed",
+            "message": "Continuation loop escalated due to session-stuck for task {{taskId}}.",
+            "output": {
+              "reason": "stuck_escalated",
+              "taskId": "{{taskId}}",
+              "event": "{{sessionStuckEvent.eventType}}"
+            }
+          },
+          "position": {
+            "x": 980,
+            "y": 1950
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "end-paused",
+          "type": "flow.end",
+          "label": "End: Paused",
+          "config": {
+            "status": "completed",
+            "message": "Continuation loop paused due to session-stuck for task {{taskId}}.",
+            "output": {
+              "reason": "stuck_paused",
+              "taskId": "{{taskId}}",
+              "event": "{{sessionStuckEvent.eventType}}"
+            }
+          },
+          "position": {
+            "x": 1200,
+            "y": 1950
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "wait-next-turn",
+          "type": "action.delay",
+          "label": "Wait Poll Interval",
+          "config": {
+            "ms": "{{pollIntervalMs}}",
+            "reason": "Waiting before next external status poll"
+          },
+          "position": {
+            "x": 760,
+            "y": 1950
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "increment-turn",
+          "type": "action.set_variable",
+          "label": "Increment Turn",
+          "config": {
+            "key": "continuationTurn",
+            "value": "Number($data?.continuationTurn || 0) + 1",
+            "isExpression": true
+          },
+          "position": {
+            "x": 760,
+            "y": 2060
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "wait-next-turn-no-stuck",
+          "type": "action.delay",
+          "label": "Wait (No Stuck)",
+          "config": {
+            "ms": "{{pollIntervalMs}}",
+            "reason": "Waiting before next external status poll"
+          },
+          "position": {
+            "x": 1080,
+            "y": 1950
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "increment-turn-no-stuck",
+          "type": "action.set_variable",
+          "label": "Increment Turn (No Stuck)",
+          "config": {
+            "key": "continuationTurn",
+            "value": "Number($data?.continuationTurn || 0) + 1",
+            "isExpression": true
+          },
+          "position": {
+            "x": 1080,
+            "y": 2060
+          },
+          "outputs": [
+            "default"
+          ]
+        }
+      ],
+      "edges": [
+        {
+          "id": "trigger->init-turn",
+          "source": "trigger",
+          "target": "init-turn",
+          "sourcePort": "default"
+        },
+        {
+          "id": "init-turn->init-progress-at",
+          "source": "init-turn",
+          "target": "init-progress-at",
+          "sourcePort": "default"
+        },
+        {
+          "id": "init-progress-at->init-signature",
+          "source": "init-progress-at",
+          "target": "init-signature",
+          "sourcePort": "default"
+        },
+        {
+          "id": "init-signature->poll-task",
+          "source": "init-signature",
+          "target": "poll-task",
+          "sourcePort": "default"
+        },
+        {
+          "id": "poll-task->derive-status",
+          "source": "poll-task",
+          "target": "derive-status",
+          "sourcePort": "default"
+        },
+        {
+          "id": "derive-status->terminal-check",
+          "source": "derive-status",
+          "target": "terminal-check",
+          "sourcePort": "default"
+        },
+        {
+          "id": "terminal-check->end-terminal",
+          "source": "terminal-check",
+          "target": "end-terminal",
+          "sourcePort": "yes",
+          "condition": "$output?.result === true"
+        },
+        {
+          "id": "terminal-check->max-turns-check",
+          "source": "terminal-check",
+          "target": "max-turns-check",
+          "sourcePort": "no",
+          "condition": "$output?.result !== true"
+        },
+        {
+          "id": "max-turns-check->end-max-turns",
+          "source": "max-turns-check",
+          "target": "end-max-turns",
+          "sourcePort": "yes",
+          "condition": "$output?.result === true"
+        },
+        {
+          "id": "max-turns-check->run-agent",
+          "source": "max-turns-check",
+          "target": "run-agent",
+          "sourcePort": "no",
+          "condition": "$output?.result !== true"
+        },
+        {
+          "id": "run-agent->capture-progress",
+          "source": "run-agent",
+          "target": "capture-progress",
+          "sourcePort": "default"
+        },
+        {
+          "id": "capture-progress->derive-signature",
+          "source": "capture-progress",
+          "target": "derive-signature",
+          "sourcePort": "default"
+        },
+        {
+          "id": "derive-signature->progress-changed",
+          "source": "derive-signature",
+          "target": "progress-changed",
+          "sourcePort": "default"
+        },
+        {
+          "id": "progress-changed->mark-progress-at",
+          "source": "progress-changed",
+          "target": "mark-progress-at",
+          "sourcePort": "default"
+        },
+        {
+          "id": "mark-progress-at->mark-progress-sig",
+          "source": "mark-progress-at",
+          "target": "mark-progress-sig",
+          "sourcePort": "default"
+        },
+        {
+          "id": "mark-progress-sig->stuck-check",
+          "source": "mark-progress-sig",
+          "target": "stuck-check",
+          "sourcePort": "default"
+        },
+        {
+          "id": "stuck-check->emit-stuck",
+          "source": "stuck-check",
+          "target": "emit-stuck",
+          "sourcePort": "yes",
+          "condition": "$output?.result === true"
+        },
+        {
+          "id": "stuck-check->wait-next-turn-no-stuck",
+          "source": "stuck-check",
+          "target": "wait-next-turn-no-stuck",
+          "sourcePort": "no",
+          "condition": "$output?.result !== true"
+        },
+        {
+          "id": "emit-stuck->stuck-route",
+          "source": "emit-stuck",
+          "target": "stuck-route",
+          "sourcePort": "default"
+        },
+        {
+          "id": "stuck-route->stuck-retry",
+          "source": "stuck-route",
+          "target": "stuck-retry",
+          "sourcePort": "retry"
+        },
+        {
+          "id": "stuck-route->stuck-escalate",
+          "source": "stuck-route",
+          "target": "stuck-escalate",
+          "sourcePort": "escalate"
+        },
+        {
+          "id": "stuck-route->stuck-pause",
+          "source": "stuck-route",
+          "target": "stuck-pause",
+          "sourcePort": "pause"
+        },
+        {
+          "id": "stuck-route->stuck-escalate",
+          "source": "stuck-route",
+          "target": "stuck-escalate",
+          "sourcePort": "default"
+        },
+        {
+          "id": "stuck-retry->wait-next-turn",
+          "source": "stuck-retry",
+          "target": "wait-next-turn",
+          "sourcePort": "default"
+        },
+        {
+          "id": "stuck-escalate->end-escalated",
+          "source": "stuck-escalate",
+          "target": "end-escalated",
+          "sourcePort": "default"
+        },
+        {
+          "id": "stuck-pause->end-paused",
+          "source": "stuck-pause",
+          "target": "end-paused",
+          "sourcePort": "default"
+        },
+        {
+          "id": "wait-next-turn->increment-turn",
+          "source": "wait-next-turn",
+          "target": "increment-turn",
+          "sourcePort": "default"
+        },
+        {
+          "id": "wait-next-turn-no-stuck->increment-turn-no-stuck",
+          "source": "wait-next-turn-no-stuck",
+          "target": "increment-turn-no-stuck",
+          "sourcePort": "default"
+        },
+        {
+          "id": "increment-turn->poll-task",
+          "source": "increment-turn",
+          "target": "poll-task",
+          "sourcePort": "default",
+          "backEdge": true,
+          "maxIterations": 500
+        },
+        {
+          "id": "increment-turn-no-stuck->poll-task",
+          "source": "increment-turn-no-stuck",
+          "target": "poll-task",
+          "sourcePort": "default",
+          "backEdge": true,
+          "maxIterations": 500
+        }
+      ]
+    },
+    {
       "id": "template-error-recovery",
       "name": "Error Recovery",
       "description": "Automated error recovery flow when an agent crashes or fails. Analyzes logs, attempts auto-fix, and escalates if needed.",
@@ -13886,486 +15382,6 @@
           "source": "churn-check",
           "target": "log-healthy",
           "sourcePort": "false"
-        }
-      ]
-    },
-    {
-      "id": "template-issue-continuation-loop",
-      "name": "Issue Continuation Loop",
-      "description": "Monitor GitHub issues and automatically continue working when state changes",
-      "category": "automation",
-      "categoryLabel": "Automation",
-      "categoryIcon": ":settings:",
-      "categoryOrder": 99,
-      "tags": [
-        "github",
-        "issues",
-        "automation",
-        "loop"
-      ],
-      "nodeCount": 7,
-      "edgeCount": 6,
-      "recommended": false,
-      "enabled": true,
-      "trigger": "github-list-issues",
-      "variables": {
-        "repo": {
-          "type": "string",
-          "required": true,
-          "description": "GitHub repository (owner/repo)"
-        },
-        "issueState": {
-          "type": "string",
-          "default": "open",
-          "description": "Issue state to monitor (open, all)"
-        },
-        "issueLabels": {
-          "type": "string",
-          "default": "",
-          "description": "Comma-separated labels to filter issues"
-        },
-        "watchStates": {
-          "type": "string",
-          "default": "in_progress,ready_for_review",
-          "description": "States that trigger continuation"
-        },
-        "pollIntervalMs": {
-          "type": "number",
-          "default": 60000,
-          "description": "How often to poll for state changes (ms)"
-        },
-        "maxConcurrent": {
-          "type": "number",
-          "default": 3,
-          "description": "Maximum concurrent issue workflows"
-        },
-        "assignOnStart": {
-          "type": "boolean",
-          "default": true,
-          "description": "Assign issue to bot when starting work"
-        },
-        "commentOnStart": {
-          "type": "string",
-          "default": "Starting automated work on this issue.",
-          "description": "Comment to post when starting work"
-        },
-        "commentOnComplete": {
-          "type": "string",
-          "default": "Automated work completed. Ready for review.",
-          "description": "Comment to post when work is complete"
-        },
-        "botUsername": {
-          "type": "string",
-          "default": "bosun[bot]",
-          "description": "Bot username for assignments"
-        }
-      },
-      "metadata": {
-        "author": "bosun",
-        "tags": [
-          "github",
-          "issues",
-          "automation",
-          "loop"
-        ],
-        "repoRequired": true
-      },
-      "nodes": [
-        {
-          "id": "check-issues",
-          "type": "github-list-issues",
-          "label": "Check Issues",
-          "config": {
-            "repo": "{{repo}}",
-            "state": "{{issueState}}",
-            "labels": "{{issueLabels}}",
-            "sort": "updated",
-            "direction": "desc"
-          }
-        },
-        {
-          "id": "filter-issues",
-          "type": "filter",
-          "label": "Filter by Watch States",
-          "config": {
-            "items": "{{check-issues.output}}",
-            "expression": "((item) => {\n\t\t\t\t\tconst watchStates = String(\"{{watchStates}}\").split(\",\").map(s => s.trim());\n\t\t\t\t\tconst state = String(item.state || \"\").toLowerCase();\n\t\t\t\t\tconst label = String(item.labels || \"\").toLowerCase();\n\t\t\t\t\treturn watchStates.some(ws => state.includes(ws) || label.includes(ws));\n\t\t\t\t})"
-          }
-        },
-        {
-          "id": "check-already-working",
-          "type": "filter",
-          "label": "Filter Out Already Working",
-          "config": {
-            "items": "{{filter-issues.output}}",
-            "expression": "((item) => {\n\t\t\t\t\tconst assignees = item.assignees || [];\n\t\t\t\t\tconst botName = String(\"{{botUsername}}\").toLowerCase();\n\t\t\t\t\treturn !assignees.some(a => String(a.login || a || \"\").toLowerCase().includes(botName));\n\t\t\t\t})"
-          }
-        },
-        {
-          "id": "limit-concurrent",
-          "type": "limit",
-          "label": "Limit Concurrent",
-          "config": {
-            "items": "{{check-already-working.output}}",
-            "limit": "{{maxConcurrent}}"
-          }
-        },
-        {
-          "id": "for-each-issue",
-          "type": "for-each",
-          "label": "Process Each Issue",
-          "items": "{{limit-concurrent.output}}",
-          "nodes": [
-            {
-              "id": "assign-issue",
-              "type": "github-add-issue-assignees",
-              "label": "Assign Issue",
-              "condition": "{{assignOnStart}}",
-              "config": {
-                "repo": "{{repo}}",
-                "issueNumber": "{{for-each-issue.item.number}}",
-                "assignees": [
-                  "{{botUsername}}"
-                ]
-              }
-            },
-            {
-              "id": "comment-start",
-              "type": "github-create-issue-comment",
-              "label": "Comment on Start",
-              "condition": "{{commentOnStart}}",
-              "config": {
-                "repo": "{{repo}}",
-                "issueNumber": "{{for-each-issue.item.number}}",
-                "body": "{{commentOnStart}}"
-              }
-            },
-            {
-              "id": "analyze-issue",
-              "type": "agent-prompt",
-              "label": "Analyze Issue",
-              "config": {
-                "prompt": "Analyze this GitHub issue and create a task plan:\n\nTitle: {{for-each-issue.item.title}}\nBody: {{for-each-issue.item.body}}\n\nProvide:\n1. Summary of the issue\n2. Steps to reproduce (if bug)\n3. Proposed solution\n4. Files likely to be modified",
-                "executor": "codex",
-                "model": "auto"
-              }
-            },
-            {
-              "id": "execute-work",
-              "type": "agent-execute",
-              "label": "Execute Work",
-              "config": {
-                "prompt": "{{analyze-issue.output}}",
-                "taskKey": "issue-{{for-each-issue.item.number}}",
-                "executor": "codex",
-                "model": "auto",
-                "timeoutMs": 600000
-              }
-            },
-            {
-              "id": "update-issue-state",
-              "type": "github-update-issue",
-              "label": "Update Issue State",
-              "config": {
-                "repo": "{{repo}}",
-                "issueNumber": "{{for-each-issue.item.number}}",
-                "state": "open",
-                "labels": "{{for-each-issue.item.labels}},in-review"
-              }
-            },
-            {
-              "id": "comment-complete",
-              "type": "github-create-issue-comment",
-              "label": "Comment on Complete",
-              "condition": "{{commentOnComplete}}",
-              "config": {
-                "repo": "{{repo}}",
-                "issueNumber": "{{for-each-issue.item.number}}",
-                "body": "{{commentOnComplete}}\n\n---\nWork completed by Bosun.\n{{execute-work.output}}"
-              }
-            }
-          ]
-        },
-        {
-          "id": "wait",
-          "type": "delay",
-          "label": "Wait Before Next Poll",
-          "config": {
-            "delayMs": "{{pollIntervalMs}}"
-          }
-        },
-        {
-          "id": "loop",
-          "type": "loop",
-          "label": "Continue Loop",
-          "source": "wait",
-          "target": "check-issues"
-        }
-      ],
-      "edges": [
-        {
-          "source": "check-issues",
-          "target": "filter-issues"
-        },
-        {
-          "source": "filter-issues",
-          "target": "check-already-working"
-        },
-        {
-          "source": "check-already-working",
-          "target": "limit-concurrent"
-        },
-        {
-          "source": "limit-concurrent",
-          "target": "for-each-issue"
-        },
-        {
-          "source": "for-each-issue",
-          "target": "wait"
-        },
-        {
-          "source": "wait",
-          "target": "loop"
-        }
-      ]
-    },
-    {
-      "id": "template-issue-continuation-loop",
-      "name": "Issue Continuation Loop",
-      "description": "Monitor GitHub issues and automatically continue working when state changes",
-      "category": "automation",
-      "categoryLabel": "Automation",
-      "categoryIcon": ":settings:",
-      "categoryOrder": 99,
-      "tags": [
-        "github",
-        "issues",
-        "automation",
-        "loop"
-      ],
-      "nodeCount": 7,
-      "edgeCount": 6,
-      "recommended": false,
-      "enabled": true,
-      "trigger": "github-list-issues",
-      "variables": {
-        "repo": {
-          "type": "string",
-          "required": true,
-          "description": "GitHub repository (owner/repo)"
-        },
-        "issueState": {
-          "type": "string",
-          "default": "open",
-          "description": "Issue state to monitor (open, all)"
-        },
-        "issueLabels": {
-          "type": "string",
-          "default": "",
-          "description": "Comma-separated labels to filter issues"
-        },
-        "watchStates": {
-          "type": "string",
-          "default": "in_progress,ready_for_review",
-          "description": "States that trigger continuation"
-        },
-        "pollIntervalMs": {
-          "type": "number",
-          "default": 60000,
-          "description": "How often to poll for state changes (ms)"
-        },
-        "maxConcurrent": {
-          "type": "number",
-          "default": 3,
-          "description": "Maximum concurrent issue workflows"
-        },
-        "assignOnStart": {
-          "type": "boolean",
-          "default": true,
-          "description": "Assign issue to bot when starting work"
-        },
-        "commentOnStart": {
-          "type": "string",
-          "default": "Starting automated work on this issue.",
-          "description": "Comment to post when starting work"
-        },
-        "commentOnComplete": {
-          "type": "string",
-          "default": "Automated work completed. Ready for review.",
-          "description": "Comment to post when work is complete"
-        },
-        "botUsername": {
-          "type": "string",
-          "default": "bosun[bot]",
-          "description": "Bot username for assignments"
-        }
-      },
-      "metadata": {
-        "author": "bosun",
-        "tags": [
-          "github",
-          "issues",
-          "automation",
-          "loop"
-        ],
-        "repoRequired": true
-      },
-      "nodes": [
-        {
-          "id": "check-issues",
-          "type": "github-list-issues",
-          "label": "Check Issues",
-          "config": {
-            "repo": "{{repo}}",
-            "state": "{{issueState}}",
-            "labels": "{{issueLabels}}",
-            "sort": "updated",
-            "direction": "desc"
-          }
-        },
-        {
-          "id": "filter-issues",
-          "type": "filter",
-          "label": "Filter by Watch States",
-          "config": {
-            "items": "{{check-issues.output}}",
-            "expression": "((item) => {\n\t\t\t\t\tconst watchStates = String(\"{{watchStates}}\").split(\",\").map(s => s.trim());\n\t\t\t\t\tconst state = String(item.state || \"\").toLowerCase();\n\t\t\t\t\tconst label = String(item.labels || \"\").toLowerCase();\n\t\t\t\t\treturn watchStates.some(ws => state.includes(ws) || label.includes(ws));\n\t\t\t\t})"
-          }
-        },
-        {
-          "id": "check-already-working",
-          "type": "filter",
-          "label": "Filter Out Already Working",
-          "config": {
-            "items": "{{filter-issues.output}}",
-            "expression": "((item) => {\n\t\t\t\t\tconst assignees = item.assignees || [];\n\t\t\t\t\tconst botName = String(\"{{botUsername}}\").toLowerCase();\n\t\t\t\t\treturn !assignees.some(a => String(a.login || a || \"\").toLowerCase().includes(botName));\n\t\t\t\t})"
-          }
-        },
-        {
-          "id": "limit-concurrent",
-          "type": "limit",
-          "label": "Limit Concurrent",
-          "config": {
-            "items": "{{check-already-working.output}}",
-            "limit": "{{maxConcurrent}}"
-          }
-        },
-        {
-          "id": "for-each-issue",
-          "type": "for-each",
-          "label": "Process Each Issue",
-          "items": "{{limit-concurrent.output}}",
-          "nodes": [
-            {
-              "id": "assign-issue",
-              "type": "github-add-issue-assignees",
-              "label": "Assign Issue",
-              "condition": "{{assignOnStart}}",
-              "config": {
-                "repo": "{{repo}}",
-                "issueNumber": "{{for-each-issue.item.number}}",
-                "assignees": [
-                  "{{botUsername}}"
-                ]
-              }
-            },
-            {
-              "id": "comment-start",
-              "type": "github-create-issue-comment",
-              "label": "Comment on Start",
-              "condition": "{{commentOnStart}}",
-              "config": {
-                "repo": "{{repo}}",
-                "issueNumber": "{{for-each-issue.item.number}}",
-                "body": "{{commentOnStart}}"
-              }
-            },
-            {
-              "id": "analyze-issue",
-              "type": "agent-prompt",
-              "label": "Analyze Issue",
-              "config": {
-                "prompt": "Analyze this GitHub issue and create a task plan:\n\nTitle: {{for-each-issue.item.title}}\nBody: {{for-each-issue.item.body}}\n\nProvide:\n1. Summary of the issue\n2. Steps to reproduce (if bug)\n3. Proposed solution\n4. Files likely to be modified",
-                "executor": "codex",
-                "model": "auto"
-              }
-            },
-            {
-              "id": "execute-work",
-              "type": "agent-execute",
-              "label": "Execute Work",
-              "config": {
-                "prompt": "{{analyze-issue.output}}",
-                "taskKey": "issue-{{for-each-issue.item.number}}",
-                "executor": "codex",
-                "model": "auto",
-                "timeoutMs": 600000
-              }
-            },
-            {
-              "id": "update-issue-state",
-              "type": "github-update-issue",
-              "label": "Update Issue State",
-              "config": {
-                "repo": "{{repo}}",
-                "issueNumber": "{{for-each-issue.item.number}}",
-                "state": "open",
-                "labels": "{{for-each-issue.item.labels}},in-review"
-              }
-            },
-            {
-              "id": "comment-complete",
-              "type": "github-create-issue-comment",
-              "label": "Comment on Complete",
-              "condition": "{{commentOnComplete}}",
-              "config": {
-                "repo": "{{repo}}",
-                "issueNumber": "{{for-each-issue.item.number}}",
-                "body": "{{commentOnComplete}}\n\n---\nWork completed by Bosun.\n{{execute-work.output}}"
-              }
-            }
-          ]
-        },
-        {
-          "id": "wait",
-          "type": "delay",
-          "label": "Wait Before Next Poll",
-          "config": {
-            "delayMs": "{{pollIntervalMs}}"
-          }
-        },
-        {
-          "id": "loop",
-          "type": "loop",
-          "label": "Continue Loop",
-          "source": "wait",
-          "target": "check-issues"
-        }
-      ],
-      "edges": [
-        {
-          "source": "check-issues",
-          "target": "filter-issues"
-        },
-        {
-          "source": "filter-issues",
-          "target": "check-already-working"
-        },
-        {
-          "source": "check-already-working",
-          "target": "limit-concurrent"
-        },
-        {
-          "source": "limit-concurrent",
-          "target": "for-each-issue"
-        },
-        {
-          "source": "for-each-issue",
-          "target": "wait"
-        },
-        {
-          "source": "wait",
-          "target": "loop"
         }
       ]
     },
@@ -25340,6 +26356,1476 @@
       }
     },
     {
+      "id": "wf-continuation-loop",
+      "name": "Continuation Loop",
+      "description": "Issue-state continuation loop. Polls externalStatus, keeps driving the agent until terminal state or max turns, and handles stuck sessions with retry/escalate/pause.",
+      "category": "reliability",
+      "enabled": true,
+      "nodeCount": 28,
+      "trigger": "trigger.manual",
+      "variables": {
+        "taskId": "",
+        "worktreePath": "",
+        "maxTurns": 8,
+        "pollIntervalMs": 30000,
+        "terminalStates": [
+          "done",
+          "cancelled"
+        ],
+        "stuckThresholdMs": 300000,
+        "onStuck": "escalate",
+        "continuePrompt": "Continue this task from the current state. Focus on the next missing step and push toward completion.",
+        "retryPrompt": "No progress was detected recently. Try a different approach and make concrete progress (commit or file updates).",
+        "sdk": "auto",
+        "model": "",
+        "timeoutMs": 1800000
+      },
+      "nodes": [
+        {
+          "id": "trigger",
+          "type": "trigger.manual",
+          "label": "Start Continuation Loop",
+          "config": {},
+          "position": {
+            "x": 420,
+            "y": 60
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "init-turn",
+          "type": "action.set_variable",
+          "label": "Initialize Turn Counter",
+          "config": {
+            "key": "continuationTurn",
+            "value": "0",
+            "isExpression": true
+          },
+          "position": {
+            "x": 420,
+            "y": 170
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "init-progress-at",
+          "type": "action.set_variable",
+          "label": "Initialize Progress Clock",
+          "config": {
+            "key": "lastProgressAt",
+            "value": "Date.now()",
+            "isExpression": true
+          },
+          "position": {
+            "x": 420,
+            "y": 280
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "init-signature",
+          "type": "action.set_variable",
+          "label": "Initialize Progress Signature",
+          "config": {
+            "key": "lastProgressSignature",
+            "value": "''",
+            "isExpression": true
+          },
+          "position": {
+            "x": 420,
+            "y": 390
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "poll-task",
+          "type": "action.bosun_function",
+          "label": "Poll External Task State",
+          "config": {
+            "function": "tasks.get",
+            "args": {
+              "taskId": "{{taskId}}"
+            },
+            "outputVariable": "continuationTask"
+          },
+          "position": {
+            "x": 420,
+            "y": 500
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "derive-status",
+          "type": "action.set_variable",
+          "label": "Derive External Status",
+          "config": {
+            "key": "currentExternalStatus",
+            "value": "String(($data?.continuationTask?.externalStatus ?? $data?.continuationTask?.status ?? '') || '').trim().toLowerCase()",
+            "isExpression": true
+          },
+          "position": {
+            "x": 420,
+            "y": 610
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "terminal-check",
+          "type": "condition.expression",
+          "label": "Terminal State Reached?",
+          "config": {
+            "expression": "(() => { const s = String($data?.currentExternalStatus || '').trim().toLowerCase(); const t = Array.isArray($data?.terminalStates) ? $data.terminalStates.map(v => String(v || '').trim().toLowerCase()).filter(Boolean) : []; return Boolean(s) && t.includes(s); })()"
+          },
+          "position": {
+            "x": 420,
+            "y": 720
+          },
+          "outputs": [
+            "yes",
+            "no"
+          ]
+        },
+        {
+          "id": "end-terminal",
+          "type": "flow.end",
+          "label": "End: Terminal State",
+          "config": {
+            "status": "completed",
+            "message": "Continuation loop completed: terminal external state '{{currentExternalStatus}}' reached for task {{taskId}}.",
+            "output": {
+              "reason": "terminal_state",
+              "taskId": "{{taskId}}",
+              "externalStatus": "{{currentExternalStatus}}"
+            }
+          },
+          "position": {
+            "x": 160,
+            "y": 860
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "max-turns-check",
+          "type": "condition.expression",
+          "label": "Max Turns Reached?",
+          "config": {
+            "expression": "Number($data?.continuationTurn || 0) >= Number($data?.maxTurns || 0)"
+          },
+          "position": {
+            "x": 620,
+            "y": 860
+          },
+          "outputs": [
+            "yes",
+            "no"
+          ]
+        },
+        {
+          "id": "end-max-turns",
+          "type": "flow.end",
+          "label": "End: Max Turns",
+          "config": {
+            "status": "failed",
+            "message": "Continuation loop stopped after reaching maxTurns={{maxTurns}} for task {{taskId}}.",
+            "output": {
+              "reason": "max_turns",
+              "taskId": "{{taskId}}",
+              "turns": "{{continuationTurn}}"
+            }
+          },
+          "position": {
+            "x": 460,
+            "y": 1000
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "run-agent",
+          "type": "action.run_agent",
+          "label": "Drive Agent",
+          "config": {
+            "prompt": "{{continuePrompt}}",
+            "taskId": "{{taskId}}",
+            "cwd": "{{worktreePath}}",
+            "sdk": "{{sdk}}",
+            "model": "{{model}}",
+            "timeoutMs": "{{timeoutMs}}",
+            "failOnError": false
+          },
+          "position": {
+            "x": 800,
+            "y": 1000
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "capture-progress",
+          "type": "action.run_command",
+          "label": "Capture Progress Signature",
+          "config": {
+            "command": "node -e \"const cp=require('node:child_process');const crypto=require('node:crypto');const head=(cp.execSync('git rev-parse HEAD',{encoding:'utf8'}).trim()||'');const dirtyRaw=cp.execSync('git status --porcelain=v1',{encoding:'utf8'});const dirtyCount=dirtyRaw.split(/\\r?\\n/).filter(Boolean).length;const statusDigest=crypto.createHash('sha1').update(dirtyRaw).digest('hex').slice(0,16);process.stdout.write(JSON.stringify({head,dirtyCount,statusDigest}));\"",
+            "cwd": "{{worktreePath}}",
+            "failOnError": false
+          },
+          "position": {
+            "x": 800,
+            "y": 1120
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "derive-signature",
+          "type": "action.set_variable",
+          "label": "Derive Signature",
+          "config": {
+            "key": "currentProgressSignature",
+            "value": "(() => { const raw = String($ctx.getNodeOutput('capture-progress')?.output || '').trim(); try { const parsed = JSON.parse(raw); const head = String(parsed?.head || ''); const dirty = Number(parsed?.dirtyCount || 0); const statusDigest = String(parsed?.statusDigest || ''); return `${head}:${dirty}:${statusDigest}`; } catch { return ''; } })()",
+            "isExpression": true
+          },
+          "position": {
+            "x": 800,
+            "y": 1240
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "progress-changed",
+          "type": "condition.expression",
+          "label": "Progress Changed?",
+          "config": {
+            "expression": "String($data?.currentProgressSignature || '') !== String($data?.lastProgressSignature || '')"
+          },
+          "position": {
+            "x": 800,
+            "y": 1360
+          },
+          "outputs": [
+            "yes",
+            "no"
+          ]
+        },
+        {
+          "id": "mark-progress-at",
+          "type": "action.set_variable",
+          "label": "Update Progress Clock",
+          "config": {
+            "key": "lastProgressAt",
+            "value": "(() => { const changed = String($data?.currentProgressSignature || '') !== String($data?.lastProgressSignature || ''); return changed ? Date.now() : Number($data?.lastProgressAt || 0); })()",
+            "isExpression": true
+          },
+          "position": {
+            "x": 680,
+            "y": 1490
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "mark-progress-sig",
+          "type": "action.set_variable",
+          "label": "Update Progress Signature",
+          "config": {
+            "key": "lastProgressSignature",
+            "value": "$data?.currentProgressSignature || ''",
+            "isExpression": true
+          },
+          "position": {
+            "x": 680,
+            "y": 1600
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "stuck-check",
+          "type": "condition.expression",
+          "label": "Session Stuck?",
+          "config": {
+            "expression": "(Date.now() - Number($data?.lastProgressAt || 0)) >= Number($data?.stuckThresholdMs || 0)"
+          },
+          "position": {
+            "x": 980,
+            "y": 1710
+          },
+          "outputs": [
+            "yes",
+            "no"
+          ]
+        },
+        {
+          "id": "emit-stuck",
+          "type": "action.emit_event",
+          "label": "Emit session-stuck",
+          "config": {
+            "eventType": "session-stuck",
+            "payload": {
+              "taskId": "{{taskId}}",
+              "turn": "{{continuationTurn}}",
+              "externalStatus": "{{currentExternalStatus}}",
+              "stuckThresholdMs": "{{stuckThresholdMs}}",
+              "onStuck": "{{onStuck}}"
+            },
+            "outputVariable": "sessionStuckEvent"
+          },
+          "position": {
+            "x": 980,
+            "y": 1600
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "stuck-route",
+          "type": "condition.switch",
+          "label": "Route onStuck Action",
+          "config": {
+            "value": "$data?.onStuck || 'escalate'",
+            "cases": {
+              "retry": "retry",
+              "escalate": "escalate",
+              "pause": "pause"
+            }
+          },
+          "position": {
+            "x": 980,
+            "y": 1710
+          },
+          "outputs": [
+            "retry",
+            "escalate",
+            "pause",
+            "default"
+          ]
+        },
+        {
+          "id": "stuck-retry",
+          "type": "action.run_agent",
+          "label": "Retry After Stuck",
+          "config": {
+            "prompt": "{{retryPrompt}}",
+            "taskId": "{{taskId}}",
+            "cwd": "{{worktreePath}}",
+            "sdk": "{{sdk}}",
+            "model": "{{model}}",
+            "timeoutMs": "{{timeoutMs}}",
+            "failOnError": false
+          },
+          "position": {
+            "x": 760,
+            "y": 1830
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "stuck-escalate",
+          "type": "notify.log",
+          "label": "Escalate Stuck Session",
+          "config": {
+            "level": "warn",
+            "message": "session-stuck: escalation requested for task {{taskId}} at turn {{continuationTurn}} (externalStatus={{currentExternalStatus}})"
+          },
+          "position": {
+            "x": 980,
+            "y": 1830
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "stuck-pause",
+          "type": "notify.log",
+          "label": "Pause Stuck Session",
+          "config": {
+            "level": "warn",
+            "message": "session-stuck: paused task {{taskId}} at turn {{continuationTurn}} (externalStatus={{currentExternalStatus}})"
+          },
+          "position": {
+            "x": 1200,
+            "y": 1830
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "end-escalated",
+          "type": "flow.end",
+          "label": "End: Escalated",
+          "config": {
+            "status": "failed",
+            "message": "Continuation loop escalated due to session-stuck for task {{taskId}}.",
+            "output": {
+              "reason": "stuck_escalated",
+              "taskId": "{{taskId}}",
+              "event": "{{sessionStuckEvent.eventType}}"
+            }
+          },
+          "position": {
+            "x": 980,
+            "y": 1950
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "end-paused",
+          "type": "flow.end",
+          "label": "End: Paused",
+          "config": {
+            "status": "completed",
+            "message": "Continuation loop paused due to session-stuck for task {{taskId}}.",
+            "output": {
+              "reason": "stuck_paused",
+              "taskId": "{{taskId}}",
+              "event": "{{sessionStuckEvent.eventType}}"
+            }
+          },
+          "position": {
+            "x": 1200,
+            "y": 1950
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "wait-next-turn",
+          "type": "action.delay",
+          "label": "Wait Poll Interval",
+          "config": {
+            "ms": "{{pollIntervalMs}}",
+            "reason": "Waiting before next external status poll"
+          },
+          "position": {
+            "x": 760,
+            "y": 1950
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "increment-turn",
+          "type": "action.set_variable",
+          "label": "Increment Turn",
+          "config": {
+            "key": "continuationTurn",
+            "value": "Number($data?.continuationTurn || 0) + 1",
+            "isExpression": true
+          },
+          "position": {
+            "x": 760,
+            "y": 2060
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "wait-next-turn-no-stuck",
+          "type": "action.delay",
+          "label": "Wait (No Stuck)",
+          "config": {
+            "ms": "{{pollIntervalMs}}",
+            "reason": "Waiting before next external status poll"
+          },
+          "position": {
+            "x": 1080,
+            "y": 1950
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "increment-turn-no-stuck",
+          "type": "action.set_variable",
+          "label": "Increment Turn (No Stuck)",
+          "config": {
+            "key": "continuationTurn",
+            "value": "Number($data?.continuationTurn || 0) + 1",
+            "isExpression": true
+          },
+          "position": {
+            "x": 1080,
+            "y": 2060
+          },
+          "outputs": [
+            "default"
+          ]
+        }
+      ],
+      "edges": [
+        {
+          "id": "trigger->init-turn",
+          "source": "trigger",
+          "target": "init-turn",
+          "sourcePort": "default"
+        },
+        {
+          "id": "init-turn->init-progress-at",
+          "source": "init-turn",
+          "target": "init-progress-at",
+          "sourcePort": "default"
+        },
+        {
+          "id": "init-progress-at->init-signature",
+          "source": "init-progress-at",
+          "target": "init-signature",
+          "sourcePort": "default"
+        },
+        {
+          "id": "init-signature->poll-task",
+          "source": "init-signature",
+          "target": "poll-task",
+          "sourcePort": "default"
+        },
+        {
+          "id": "poll-task->derive-status",
+          "source": "poll-task",
+          "target": "derive-status",
+          "sourcePort": "default"
+        },
+        {
+          "id": "derive-status->terminal-check",
+          "source": "derive-status",
+          "target": "terminal-check",
+          "sourcePort": "default"
+        },
+        {
+          "id": "terminal-check->end-terminal",
+          "source": "terminal-check",
+          "target": "end-terminal",
+          "sourcePort": "yes",
+          "condition": "$output?.result === true"
+        },
+        {
+          "id": "terminal-check->max-turns-check",
+          "source": "terminal-check",
+          "target": "max-turns-check",
+          "sourcePort": "no",
+          "condition": "$output?.result !== true"
+        },
+        {
+          "id": "max-turns-check->end-max-turns",
+          "source": "max-turns-check",
+          "target": "end-max-turns",
+          "sourcePort": "yes",
+          "condition": "$output?.result === true"
+        },
+        {
+          "id": "max-turns-check->run-agent",
+          "source": "max-turns-check",
+          "target": "run-agent",
+          "sourcePort": "no",
+          "condition": "$output?.result !== true"
+        },
+        {
+          "id": "run-agent->capture-progress",
+          "source": "run-agent",
+          "target": "capture-progress",
+          "sourcePort": "default"
+        },
+        {
+          "id": "capture-progress->derive-signature",
+          "source": "capture-progress",
+          "target": "derive-signature",
+          "sourcePort": "default"
+        },
+        {
+          "id": "derive-signature->progress-changed",
+          "source": "derive-signature",
+          "target": "progress-changed",
+          "sourcePort": "default"
+        },
+        {
+          "id": "progress-changed->mark-progress-at",
+          "source": "progress-changed",
+          "target": "mark-progress-at",
+          "sourcePort": "default"
+        },
+        {
+          "id": "mark-progress-at->mark-progress-sig",
+          "source": "mark-progress-at",
+          "target": "mark-progress-sig",
+          "sourcePort": "default"
+        },
+        {
+          "id": "mark-progress-sig->stuck-check",
+          "source": "mark-progress-sig",
+          "target": "stuck-check",
+          "sourcePort": "default"
+        },
+        {
+          "id": "stuck-check->emit-stuck",
+          "source": "stuck-check",
+          "target": "emit-stuck",
+          "sourcePort": "yes",
+          "condition": "$output?.result === true"
+        },
+        {
+          "id": "stuck-check->wait-next-turn-no-stuck",
+          "source": "stuck-check",
+          "target": "wait-next-turn-no-stuck",
+          "sourcePort": "no",
+          "condition": "$output?.result !== true"
+        },
+        {
+          "id": "emit-stuck->stuck-route",
+          "source": "emit-stuck",
+          "target": "stuck-route",
+          "sourcePort": "default"
+        },
+        {
+          "id": "stuck-route->stuck-retry",
+          "source": "stuck-route",
+          "target": "stuck-retry",
+          "sourcePort": "retry"
+        },
+        {
+          "id": "stuck-route->stuck-escalate",
+          "source": "stuck-route",
+          "target": "stuck-escalate",
+          "sourcePort": "escalate"
+        },
+        {
+          "id": "stuck-route->stuck-pause",
+          "source": "stuck-route",
+          "target": "stuck-pause",
+          "sourcePort": "pause"
+        },
+        {
+          "id": "stuck-route->stuck-escalate",
+          "source": "stuck-route",
+          "target": "stuck-escalate",
+          "sourcePort": "default"
+        },
+        {
+          "id": "stuck-retry->wait-next-turn",
+          "source": "stuck-retry",
+          "target": "wait-next-turn",
+          "sourcePort": "default"
+        },
+        {
+          "id": "stuck-escalate->end-escalated",
+          "source": "stuck-escalate",
+          "target": "end-escalated",
+          "sourcePort": "default"
+        },
+        {
+          "id": "stuck-pause->end-paused",
+          "source": "stuck-pause",
+          "target": "end-paused",
+          "sourcePort": "default"
+        },
+        {
+          "id": "wait-next-turn->increment-turn",
+          "source": "wait-next-turn",
+          "target": "increment-turn",
+          "sourcePort": "default"
+        },
+        {
+          "id": "wait-next-turn-no-stuck->increment-turn-no-stuck",
+          "source": "wait-next-turn-no-stuck",
+          "target": "increment-turn-no-stuck",
+          "sourcePort": "default"
+        },
+        {
+          "id": "increment-turn->poll-task",
+          "source": "increment-turn",
+          "target": "poll-task",
+          "sourcePort": "default",
+          "backEdge": true,
+          "maxIterations": 500
+        },
+        {
+          "id": "increment-turn-no-stuck->poll-task",
+          "source": "increment-turn-no-stuck",
+          "target": "poll-task",
+          "sourcePort": "default",
+          "backEdge": true,
+          "maxIterations": 500
+        }
+      ],
+      "metadata": {
+        "author": "bosun-demo",
+        "createdAt": "2026-03-25T12:00:00.000Z",
+        "updatedAt": "2026-03-25T12:00:00.000Z",
+        "templateState": {
+          "templateId": "template-continuation-loop",
+          "templateName": "Continuation Loop",
+          "templateVersion": "1.0.0",
+          "installedTemplateVersion": "1.0.0",
+          "isCustomized": false,
+          "updateAvailable": false
+        }
+      }
+    },
+    {
+      "id": "wf-continuation-loop",
+      "name": "Continuation Loop",
+      "description": "Issue-state continuation loop. Polls externalStatus, keeps driving the agent until terminal state or max turns, and handles stuck sessions with retry/escalate/pause.",
+      "category": "reliability",
+      "enabled": true,
+      "nodeCount": 28,
+      "trigger": "trigger.manual",
+      "variables": {
+        "taskId": "",
+        "worktreePath": "",
+        "maxTurns": 8,
+        "pollIntervalMs": 30000,
+        "terminalStates": [
+          "done",
+          "cancelled"
+        ],
+        "stuckThresholdMs": 300000,
+        "onStuck": "escalate",
+        "continuePrompt": "Continue this task from the current state. Focus on the next missing step and push toward completion.",
+        "retryPrompt": "No progress was detected recently. Try a different approach and make concrete progress (commit or file updates).",
+        "sdk": "auto",
+        "model": "",
+        "timeoutMs": 1800000
+      },
+      "nodes": [
+        {
+          "id": "trigger",
+          "type": "trigger.manual",
+          "label": "Start Continuation Loop",
+          "config": {},
+          "position": {
+            "x": 420,
+            "y": 60
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "init-turn",
+          "type": "action.set_variable",
+          "label": "Initialize Turn Counter",
+          "config": {
+            "key": "continuationTurn",
+            "value": "0",
+            "isExpression": true
+          },
+          "position": {
+            "x": 420,
+            "y": 170
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "init-progress-at",
+          "type": "action.set_variable",
+          "label": "Initialize Progress Clock",
+          "config": {
+            "key": "lastProgressAt",
+            "value": "Date.now()",
+            "isExpression": true
+          },
+          "position": {
+            "x": 420,
+            "y": 280
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "init-signature",
+          "type": "action.set_variable",
+          "label": "Initialize Progress Signature",
+          "config": {
+            "key": "lastProgressSignature",
+            "value": "''",
+            "isExpression": true
+          },
+          "position": {
+            "x": 420,
+            "y": 390
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "poll-task",
+          "type": "action.bosun_function",
+          "label": "Poll External Task State",
+          "config": {
+            "function": "tasks.get",
+            "args": {
+              "taskId": "{{taskId}}"
+            },
+            "outputVariable": "continuationTask"
+          },
+          "position": {
+            "x": 420,
+            "y": 500
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "derive-status",
+          "type": "action.set_variable",
+          "label": "Derive External Status",
+          "config": {
+            "key": "currentExternalStatus",
+            "value": "String(($data?.continuationTask?.externalStatus ?? $data?.continuationTask?.status ?? '') || '').trim().toLowerCase()",
+            "isExpression": true
+          },
+          "position": {
+            "x": 420,
+            "y": 610
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "terminal-check",
+          "type": "condition.expression",
+          "label": "Terminal State Reached?",
+          "config": {
+            "expression": "(() => { const s = String($data?.currentExternalStatus || '').trim().toLowerCase(); const t = Array.isArray($data?.terminalStates) ? $data.terminalStates.map(v => String(v || '').trim().toLowerCase()).filter(Boolean) : []; return Boolean(s) && t.includes(s); })()"
+          },
+          "position": {
+            "x": 420,
+            "y": 720
+          },
+          "outputs": [
+            "yes",
+            "no"
+          ]
+        },
+        {
+          "id": "end-terminal",
+          "type": "flow.end",
+          "label": "End: Terminal State",
+          "config": {
+            "status": "completed",
+            "message": "Continuation loop completed: terminal external state '{{currentExternalStatus}}' reached for task {{taskId}}.",
+            "output": {
+              "reason": "terminal_state",
+              "taskId": "{{taskId}}",
+              "externalStatus": "{{currentExternalStatus}}"
+            }
+          },
+          "position": {
+            "x": 160,
+            "y": 860
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "max-turns-check",
+          "type": "condition.expression",
+          "label": "Max Turns Reached?",
+          "config": {
+            "expression": "Number($data?.continuationTurn || 0) >= Number($data?.maxTurns || 0)"
+          },
+          "position": {
+            "x": 620,
+            "y": 860
+          },
+          "outputs": [
+            "yes",
+            "no"
+          ]
+        },
+        {
+          "id": "end-max-turns",
+          "type": "flow.end",
+          "label": "End: Max Turns",
+          "config": {
+            "status": "failed",
+            "message": "Continuation loop stopped after reaching maxTurns={{maxTurns}} for task {{taskId}}.",
+            "output": {
+              "reason": "max_turns",
+              "taskId": "{{taskId}}",
+              "turns": "{{continuationTurn}}"
+            }
+          },
+          "position": {
+            "x": 460,
+            "y": 1000
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "run-agent",
+          "type": "action.run_agent",
+          "label": "Drive Agent",
+          "config": {
+            "prompt": "{{continuePrompt}}",
+            "taskId": "{{taskId}}",
+            "cwd": "{{worktreePath}}",
+            "sdk": "{{sdk}}",
+            "model": "{{model}}",
+            "timeoutMs": "{{timeoutMs}}",
+            "failOnError": false
+          },
+          "position": {
+            "x": 800,
+            "y": 1000
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "capture-progress",
+          "type": "action.run_command",
+          "label": "Capture Progress Signature",
+          "config": {
+            "command": "node -e \"const cp=require('node:child_process');const crypto=require('node:crypto');const head=(cp.execSync('git rev-parse HEAD',{encoding:'utf8'}).trim()||'');const dirtyRaw=cp.execSync('git status --porcelain=v1',{encoding:'utf8'});const dirtyCount=dirtyRaw.split(/\\r?\\n/).filter(Boolean).length;const statusDigest=crypto.createHash('sha1').update(dirtyRaw).digest('hex').slice(0,16);process.stdout.write(JSON.stringify({head,dirtyCount,statusDigest}));\"",
+            "cwd": "{{worktreePath}}",
+            "failOnError": false
+          },
+          "position": {
+            "x": 800,
+            "y": 1120
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "derive-signature",
+          "type": "action.set_variable",
+          "label": "Derive Signature",
+          "config": {
+            "key": "currentProgressSignature",
+            "value": "(() => { const raw = String($ctx.getNodeOutput('capture-progress')?.output || '').trim(); try { const parsed = JSON.parse(raw); const head = String(parsed?.head || ''); const dirty = Number(parsed?.dirtyCount || 0); const statusDigest = String(parsed?.statusDigest || ''); return `${head}:${dirty}:${statusDigest}`; } catch { return ''; } })()",
+            "isExpression": true
+          },
+          "position": {
+            "x": 800,
+            "y": 1240
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "progress-changed",
+          "type": "condition.expression",
+          "label": "Progress Changed?",
+          "config": {
+            "expression": "String($data?.currentProgressSignature || '') !== String($data?.lastProgressSignature || '')"
+          },
+          "position": {
+            "x": 800,
+            "y": 1360
+          },
+          "outputs": [
+            "yes",
+            "no"
+          ]
+        },
+        {
+          "id": "mark-progress-at",
+          "type": "action.set_variable",
+          "label": "Update Progress Clock",
+          "config": {
+            "key": "lastProgressAt",
+            "value": "(() => { const changed = String($data?.currentProgressSignature || '') !== String($data?.lastProgressSignature || ''); return changed ? Date.now() : Number($data?.lastProgressAt || 0); })()",
+            "isExpression": true
+          },
+          "position": {
+            "x": 680,
+            "y": 1490
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "mark-progress-sig",
+          "type": "action.set_variable",
+          "label": "Update Progress Signature",
+          "config": {
+            "key": "lastProgressSignature",
+            "value": "$data?.currentProgressSignature || ''",
+            "isExpression": true
+          },
+          "position": {
+            "x": 680,
+            "y": 1600
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "stuck-check",
+          "type": "condition.expression",
+          "label": "Session Stuck?",
+          "config": {
+            "expression": "(Date.now() - Number($data?.lastProgressAt || 0)) >= Number($data?.stuckThresholdMs || 0)"
+          },
+          "position": {
+            "x": 980,
+            "y": 1710
+          },
+          "outputs": [
+            "yes",
+            "no"
+          ]
+        },
+        {
+          "id": "emit-stuck",
+          "type": "action.emit_event",
+          "label": "Emit session-stuck",
+          "config": {
+            "eventType": "session-stuck",
+            "payload": {
+              "taskId": "{{taskId}}",
+              "turn": "{{continuationTurn}}",
+              "externalStatus": "{{currentExternalStatus}}",
+              "stuckThresholdMs": "{{stuckThresholdMs}}",
+              "onStuck": "{{onStuck}}"
+            },
+            "outputVariable": "sessionStuckEvent"
+          },
+          "position": {
+            "x": 980,
+            "y": 1600
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "stuck-route",
+          "type": "condition.switch",
+          "label": "Route onStuck Action",
+          "config": {
+            "value": "$data?.onStuck || 'escalate'",
+            "cases": {
+              "retry": "retry",
+              "escalate": "escalate",
+              "pause": "pause"
+            }
+          },
+          "position": {
+            "x": 980,
+            "y": 1710
+          },
+          "outputs": [
+            "retry",
+            "escalate",
+            "pause",
+            "default"
+          ]
+        },
+        {
+          "id": "stuck-retry",
+          "type": "action.run_agent",
+          "label": "Retry After Stuck",
+          "config": {
+            "prompt": "{{retryPrompt}}",
+            "taskId": "{{taskId}}",
+            "cwd": "{{worktreePath}}",
+            "sdk": "{{sdk}}",
+            "model": "{{model}}",
+            "timeoutMs": "{{timeoutMs}}",
+            "failOnError": false
+          },
+          "position": {
+            "x": 760,
+            "y": 1830
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "stuck-escalate",
+          "type": "notify.log",
+          "label": "Escalate Stuck Session",
+          "config": {
+            "level": "warn",
+            "message": "session-stuck: escalation requested for task {{taskId}} at turn {{continuationTurn}} (externalStatus={{currentExternalStatus}})"
+          },
+          "position": {
+            "x": 980,
+            "y": 1830
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "stuck-pause",
+          "type": "notify.log",
+          "label": "Pause Stuck Session",
+          "config": {
+            "level": "warn",
+            "message": "session-stuck: paused task {{taskId}} at turn {{continuationTurn}} (externalStatus={{currentExternalStatus}})"
+          },
+          "position": {
+            "x": 1200,
+            "y": 1830
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "end-escalated",
+          "type": "flow.end",
+          "label": "End: Escalated",
+          "config": {
+            "status": "failed",
+            "message": "Continuation loop escalated due to session-stuck for task {{taskId}}.",
+            "output": {
+              "reason": "stuck_escalated",
+              "taskId": "{{taskId}}",
+              "event": "{{sessionStuckEvent.eventType}}"
+            }
+          },
+          "position": {
+            "x": 980,
+            "y": 1950
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "end-paused",
+          "type": "flow.end",
+          "label": "End: Paused",
+          "config": {
+            "status": "completed",
+            "message": "Continuation loop paused due to session-stuck for task {{taskId}}.",
+            "output": {
+              "reason": "stuck_paused",
+              "taskId": "{{taskId}}",
+              "event": "{{sessionStuckEvent.eventType}}"
+            }
+          },
+          "position": {
+            "x": 1200,
+            "y": 1950
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "wait-next-turn",
+          "type": "action.delay",
+          "label": "Wait Poll Interval",
+          "config": {
+            "ms": "{{pollIntervalMs}}",
+            "reason": "Waiting before next external status poll"
+          },
+          "position": {
+            "x": 760,
+            "y": 1950
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "increment-turn",
+          "type": "action.set_variable",
+          "label": "Increment Turn",
+          "config": {
+            "key": "continuationTurn",
+            "value": "Number($data?.continuationTurn || 0) + 1",
+            "isExpression": true
+          },
+          "position": {
+            "x": 760,
+            "y": 2060
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "wait-next-turn-no-stuck",
+          "type": "action.delay",
+          "label": "Wait (No Stuck)",
+          "config": {
+            "ms": "{{pollIntervalMs}}",
+            "reason": "Waiting before next external status poll"
+          },
+          "position": {
+            "x": 1080,
+            "y": 1950
+          },
+          "outputs": [
+            "default"
+          ]
+        },
+        {
+          "id": "increment-turn-no-stuck",
+          "type": "action.set_variable",
+          "label": "Increment Turn (No Stuck)",
+          "config": {
+            "key": "continuationTurn",
+            "value": "Number($data?.continuationTurn || 0) + 1",
+            "isExpression": true
+          },
+          "position": {
+            "x": 1080,
+            "y": 2060
+          },
+          "outputs": [
+            "default"
+          ]
+        }
+      ],
+      "edges": [
+        {
+          "id": "trigger->init-turn",
+          "source": "trigger",
+          "target": "init-turn",
+          "sourcePort": "default"
+        },
+        {
+          "id": "init-turn->init-progress-at",
+          "source": "init-turn",
+          "target": "init-progress-at",
+          "sourcePort": "default"
+        },
+        {
+          "id": "init-progress-at->init-signature",
+          "source": "init-progress-at",
+          "target": "init-signature",
+          "sourcePort": "default"
+        },
+        {
+          "id": "init-signature->poll-task",
+          "source": "init-signature",
+          "target": "poll-task",
+          "sourcePort": "default"
+        },
+        {
+          "id": "poll-task->derive-status",
+          "source": "poll-task",
+          "target": "derive-status",
+          "sourcePort": "default"
+        },
+        {
+          "id": "derive-status->terminal-check",
+          "source": "derive-status",
+          "target": "terminal-check",
+          "sourcePort": "default"
+        },
+        {
+          "id": "terminal-check->end-terminal",
+          "source": "terminal-check",
+          "target": "end-terminal",
+          "sourcePort": "yes",
+          "condition": "$output?.result === true"
+        },
+        {
+          "id": "terminal-check->max-turns-check",
+          "source": "terminal-check",
+          "target": "max-turns-check",
+          "sourcePort": "no",
+          "condition": "$output?.result !== true"
+        },
+        {
+          "id": "max-turns-check->end-max-turns",
+          "source": "max-turns-check",
+          "target": "end-max-turns",
+          "sourcePort": "yes",
+          "condition": "$output?.result === true"
+        },
+        {
+          "id": "max-turns-check->run-agent",
+          "source": "max-turns-check",
+          "target": "run-agent",
+          "sourcePort": "no",
+          "condition": "$output?.result !== true"
+        },
+        {
+          "id": "run-agent->capture-progress",
+          "source": "run-agent",
+          "target": "capture-progress",
+          "sourcePort": "default"
+        },
+        {
+          "id": "capture-progress->derive-signature",
+          "source": "capture-progress",
+          "target": "derive-signature",
+          "sourcePort": "default"
+        },
+        {
+          "id": "derive-signature->progress-changed",
+          "source": "derive-signature",
+          "target": "progress-changed",
+          "sourcePort": "default"
+        },
+        {
+          "id": "progress-changed->mark-progress-at",
+          "source": "progress-changed",
+          "target": "mark-progress-at",
+          "sourcePort": "default"
+        },
+        {
+          "id": "mark-progress-at->mark-progress-sig",
+          "source": "mark-progress-at",
+          "target": "mark-progress-sig",
+          "sourcePort": "default"
+        },
+        {
+          "id": "mark-progress-sig->stuck-check",
+          "source": "mark-progress-sig",
+          "target": "stuck-check",
+          "sourcePort": "default"
+        },
+        {
+          "id": "stuck-check->emit-stuck",
+          "source": "stuck-check",
+          "target": "emit-stuck",
+          "sourcePort": "yes",
+          "condition": "$output?.result === true"
+        },
+        {
+          "id": "stuck-check->wait-next-turn-no-stuck",
+          "source": "stuck-check",
+          "target": "wait-next-turn-no-stuck",
+          "sourcePort": "no",
+          "condition": "$output?.result !== true"
+        },
+        {
+          "id": "emit-stuck->stuck-route",
+          "source": "emit-stuck",
+          "target": "stuck-route",
+          "sourcePort": "default"
+        },
+        {
+          "id": "stuck-route->stuck-retry",
+          "source": "stuck-route",
+          "target": "stuck-retry",
+          "sourcePort": "retry"
+        },
+        {
+          "id": "stuck-route->stuck-escalate",
+          "source": "stuck-route",
+          "target": "stuck-escalate",
+          "sourcePort": "escalate"
+        },
+        {
+          "id": "stuck-route->stuck-pause",
+          "source": "stuck-route",
+          "target": "stuck-pause",
+          "sourcePort": "pause"
+        },
+        {
+          "id": "stuck-route->stuck-escalate",
+          "source": "stuck-route",
+          "target": "stuck-escalate",
+          "sourcePort": "default"
+        },
+        {
+          "id": "stuck-retry->wait-next-turn",
+          "source": "stuck-retry",
+          "target": "wait-next-turn",
+          "sourcePort": "default"
+        },
+        {
+          "id": "stuck-escalate->end-escalated",
+          "source": "stuck-escalate",
+          "target": "end-escalated",
+          "sourcePort": "default"
+        },
+        {
+          "id": "stuck-pause->end-paused",
+          "source": "stuck-pause",
+          "target": "end-paused",
+          "sourcePort": "default"
+        },
+        {
+          "id": "wait-next-turn->increment-turn",
+          "source": "wait-next-turn",
+          "target": "increment-turn",
+          "sourcePort": "default"
+        },
+        {
+          "id": "wait-next-turn-no-stuck->increment-turn-no-stuck",
+          "source": "wait-next-turn-no-stuck",
+          "target": "increment-turn-no-stuck",
+          "sourcePort": "default"
+        },
+        {
+          "id": "increment-turn->poll-task",
+          "source": "increment-turn",
+          "target": "poll-task",
+          "sourcePort": "default",
+          "backEdge": true,
+          "maxIterations": 500
+        },
+        {
+          "id": "increment-turn-no-stuck->poll-task",
+          "source": "increment-turn-no-stuck",
+          "target": "poll-task",
+          "sourcePort": "default",
+          "backEdge": true,
+          "maxIterations": 500
+        }
+      ],
+      "metadata": {
+        "author": "bosun-demo",
+        "createdAt": "2026-03-26T12:00:00.000Z",
+        "updatedAt": "2026-03-26T12:00:00.000Z",
+        "templateState": {
+          "templateId": "template-continuation-loop",
+          "templateName": "Continuation Loop",
+          "templateVersion": "1.0.0",
+          "installedTemplateVersion": "1.0.0",
+          "isCustomized": false,
+          "updateAvailable": false
+        }
+      }
+    },
+    {
       "id": "wf-error-recovery",
       "name": "Error Recovery",
       "description": "Automated error recovery flow when an agent crashes or fails. Analyzes logs, attempts auto-fix, and escalates if needed.",
@@ -25538,8 +28024,8 @@
       ],
       "metadata": {
         "author": "bosun-demo",
-        "createdAt": "2026-03-25T12:00:00.000Z",
-        "updatedAt": "2026-03-25T12:00:00.000Z",
+        "createdAt": "2026-03-27T12:00:00.000Z",
+        "updatedAt": "2026-03-27T12:00:00.000Z",
         "templateState": {
           "templateId": "template-error-recovery",
           "templateName": "Error Recovery",
@@ -25727,8 +28213,8 @@
       ],
       "metadata": {
         "author": "bosun-demo",
-        "createdAt": "2026-03-26T12:00:00.000Z",
-        "updatedAt": "2026-03-26T12:00:00.000Z",
+        "createdAt": "2026-03-28T12:00:00.000Z",
+        "updatedAt": "2026-03-28T12:00:00.000Z",
         "templateState": {
           "templateId": "template-health-check",
           "templateName": "Health Check",
@@ -26025,8 +28511,8 @@
       ],
       "metadata": {
         "author": "bosun-demo",
-        "createdAt": "2026-03-27T12:00:00.000Z",
-        "updatedAt": "2026-03-27T12:00:00.000Z",
+        "createdAt": "2026-03-28T12:00:00.000Z",
+        "updatedAt": "2026-03-28T12:00:00.000Z",
         "templateState": {
           "templateId": "template-incident-response",
           "templateName": "Incident Response",
@@ -31234,470 +33720,6 @@
         "templateState": {
           "templateId": "template-git-health-pipeline",
           "templateName": "Git Health Pipeline",
-          "templateVersion": "1.0.0",
-          "installedTemplateVersion": "1.0.0",
-          "isCustomized": false,
-          "updateAvailable": false
-        }
-      }
-    },
-    {
-      "id": "wf-issue-continuation-loop",
-      "name": "Issue Continuation Loop",
-      "description": "Monitor GitHub issues and automatically continue working when state changes",
-      "category": "automation",
-      "enabled": true,
-      "nodeCount": 7,
-      "trigger": "github-list-issues",
-      "variables": {
-        "repo": {
-          "type": "string",
-          "required": true,
-          "description": "GitHub repository (owner/repo)"
-        },
-        "issueState": {
-          "type": "string",
-          "default": "open",
-          "description": "Issue state to monitor (open, all)"
-        },
-        "issueLabels": {
-          "type": "string",
-          "default": "",
-          "description": "Comma-separated labels to filter issues"
-        },
-        "watchStates": {
-          "type": "string",
-          "default": "in_progress,ready_for_review",
-          "description": "States that trigger continuation"
-        },
-        "pollIntervalMs": {
-          "type": "number",
-          "default": 60000,
-          "description": "How often to poll for state changes (ms)"
-        },
-        "maxConcurrent": {
-          "type": "number",
-          "default": 3,
-          "description": "Maximum concurrent issue workflows"
-        },
-        "assignOnStart": {
-          "type": "boolean",
-          "default": true,
-          "description": "Assign issue to bot when starting work"
-        },
-        "commentOnStart": {
-          "type": "string",
-          "default": "Starting automated work on this issue.",
-          "description": "Comment to post when starting work"
-        },
-        "commentOnComplete": {
-          "type": "string",
-          "default": "Automated work completed. Ready for review.",
-          "description": "Comment to post when work is complete"
-        },
-        "botUsername": {
-          "type": "string",
-          "default": "bosun[bot]",
-          "description": "Bot username for assignments"
-        }
-      },
-      "nodes": [
-        {
-          "id": "check-issues",
-          "type": "github-list-issues",
-          "label": "Check Issues",
-          "config": {
-            "repo": "{{repo}}",
-            "state": "{{issueState}}",
-            "labels": "{{issueLabels}}",
-            "sort": "updated",
-            "direction": "desc"
-          }
-        },
-        {
-          "id": "filter-issues",
-          "type": "filter",
-          "label": "Filter by Watch States",
-          "config": {
-            "items": "{{check-issues.output}}",
-            "expression": "((item) => {\n\t\t\t\t\tconst watchStates = String(\"{{watchStates}}\").split(\",\").map(s => s.trim());\n\t\t\t\t\tconst state = String(item.state || \"\").toLowerCase();\n\t\t\t\t\tconst label = String(item.labels || \"\").toLowerCase();\n\t\t\t\t\treturn watchStates.some(ws => state.includes(ws) || label.includes(ws));\n\t\t\t\t})"
-          }
-        },
-        {
-          "id": "check-already-working",
-          "type": "filter",
-          "label": "Filter Out Already Working",
-          "config": {
-            "items": "{{filter-issues.output}}",
-            "expression": "((item) => {\n\t\t\t\t\tconst assignees = item.assignees || [];\n\t\t\t\t\tconst botName = String(\"{{botUsername}}\").toLowerCase();\n\t\t\t\t\treturn !assignees.some(a => String(a.login || a || \"\").toLowerCase().includes(botName));\n\t\t\t\t})"
-          }
-        },
-        {
-          "id": "limit-concurrent",
-          "type": "limit",
-          "label": "Limit Concurrent",
-          "config": {
-            "items": "{{check-already-working.output}}",
-            "limit": "{{maxConcurrent}}"
-          }
-        },
-        {
-          "id": "for-each-issue",
-          "type": "for-each",
-          "label": "Process Each Issue",
-          "items": "{{limit-concurrent.output}}",
-          "nodes": [
-            {
-              "id": "assign-issue",
-              "type": "github-add-issue-assignees",
-              "label": "Assign Issue",
-              "condition": "{{assignOnStart}}",
-              "config": {
-                "repo": "{{repo}}",
-                "issueNumber": "{{for-each-issue.item.number}}",
-                "assignees": [
-                  "{{botUsername}}"
-                ]
-              }
-            },
-            {
-              "id": "comment-start",
-              "type": "github-create-issue-comment",
-              "label": "Comment on Start",
-              "condition": "{{commentOnStart}}",
-              "config": {
-                "repo": "{{repo}}",
-                "issueNumber": "{{for-each-issue.item.number}}",
-                "body": "{{commentOnStart}}"
-              }
-            },
-            {
-              "id": "analyze-issue",
-              "type": "agent-prompt",
-              "label": "Analyze Issue",
-              "config": {
-                "prompt": "Analyze this GitHub issue and create a task plan:\n\nTitle: {{for-each-issue.item.title}}\nBody: {{for-each-issue.item.body}}\n\nProvide:\n1. Summary of the issue\n2. Steps to reproduce (if bug)\n3. Proposed solution\n4. Files likely to be modified",
-                "executor": "codex",
-                "model": "auto"
-              }
-            },
-            {
-              "id": "execute-work",
-              "type": "agent-execute",
-              "label": "Execute Work",
-              "config": {
-                "prompt": "{{analyze-issue.output}}",
-                "taskKey": "issue-{{for-each-issue.item.number}}",
-                "executor": "codex",
-                "model": "auto",
-                "timeoutMs": 600000
-              }
-            },
-            {
-              "id": "update-issue-state",
-              "type": "github-update-issue",
-              "label": "Update Issue State",
-              "config": {
-                "repo": "{{repo}}",
-                "issueNumber": "{{for-each-issue.item.number}}",
-                "state": "open",
-                "labels": "{{for-each-issue.item.labels}},in-review"
-              }
-            },
-            {
-              "id": "comment-complete",
-              "type": "github-create-issue-comment",
-              "label": "Comment on Complete",
-              "condition": "{{commentOnComplete}}",
-              "config": {
-                "repo": "{{repo}}",
-                "issueNumber": "{{for-each-issue.item.number}}",
-                "body": "{{commentOnComplete}}\n\n---\nWork completed by Bosun.\n{{execute-work.output}}"
-              }
-            }
-          ]
-        },
-        {
-          "id": "wait",
-          "type": "delay",
-          "label": "Wait Before Next Poll",
-          "config": {
-            "delayMs": "{{pollIntervalMs}}"
-          }
-        },
-        {
-          "id": "loop",
-          "type": "loop",
-          "label": "Continue Loop",
-          "source": "wait",
-          "target": "check-issues"
-        }
-      ],
-      "edges": [
-        {
-          "source": "check-issues",
-          "target": "filter-issues"
-        },
-        {
-          "source": "filter-issues",
-          "target": "check-already-working"
-        },
-        {
-          "source": "check-already-working",
-          "target": "limit-concurrent"
-        },
-        {
-          "source": "limit-concurrent",
-          "target": "for-each-issue"
-        },
-        {
-          "source": "for-each-issue",
-          "target": "wait"
-        },
-        {
-          "source": "wait",
-          "target": "loop"
-        }
-      ],
-      "metadata": {
-        "author": "bosun-demo",
-        "createdAt": "2026-03-28T12:00:00.000Z",
-        "updatedAt": "2026-03-28T12:00:00.000Z",
-        "templateState": {
-          "templateId": "template-issue-continuation-loop",
-          "templateName": "Issue Continuation Loop",
-          "templateVersion": "1.0.0",
-          "installedTemplateVersion": "1.0.0",
-          "isCustomized": false,
-          "updateAvailable": false
-        }
-      }
-    },
-    {
-      "id": "wf-issue-continuation-loop",
-      "name": "Issue Continuation Loop",
-      "description": "Monitor GitHub issues and automatically continue working when state changes",
-      "category": "automation",
-      "enabled": true,
-      "nodeCount": 7,
-      "trigger": "github-list-issues",
-      "variables": {
-        "repo": {
-          "type": "string",
-          "required": true,
-          "description": "GitHub repository (owner/repo)"
-        },
-        "issueState": {
-          "type": "string",
-          "default": "open",
-          "description": "Issue state to monitor (open, all)"
-        },
-        "issueLabels": {
-          "type": "string",
-          "default": "",
-          "description": "Comma-separated labels to filter issues"
-        },
-        "watchStates": {
-          "type": "string",
-          "default": "in_progress,ready_for_review",
-          "description": "States that trigger continuation"
-        },
-        "pollIntervalMs": {
-          "type": "number",
-          "default": 60000,
-          "description": "How often to poll for state changes (ms)"
-        },
-        "maxConcurrent": {
-          "type": "number",
-          "default": 3,
-          "description": "Maximum concurrent issue workflows"
-        },
-        "assignOnStart": {
-          "type": "boolean",
-          "default": true,
-          "description": "Assign issue to bot when starting work"
-        },
-        "commentOnStart": {
-          "type": "string",
-          "default": "Starting automated work on this issue.",
-          "description": "Comment to post when starting work"
-        },
-        "commentOnComplete": {
-          "type": "string",
-          "default": "Automated work completed. Ready for review.",
-          "description": "Comment to post when work is complete"
-        },
-        "botUsername": {
-          "type": "string",
-          "default": "bosun[bot]",
-          "description": "Bot username for assignments"
-        }
-      },
-      "nodes": [
-        {
-          "id": "check-issues",
-          "type": "github-list-issues",
-          "label": "Check Issues",
-          "config": {
-            "repo": "{{repo}}",
-            "state": "{{issueState}}",
-            "labels": "{{issueLabels}}",
-            "sort": "updated",
-            "direction": "desc"
-          }
-        },
-        {
-          "id": "filter-issues",
-          "type": "filter",
-          "label": "Filter by Watch States",
-          "config": {
-            "items": "{{check-issues.output}}",
-            "expression": "((item) => {\n\t\t\t\t\tconst watchStates = String(\"{{watchStates}}\").split(\",\").map(s => s.trim());\n\t\t\t\t\tconst state = String(item.state || \"\").toLowerCase();\n\t\t\t\t\tconst label = String(item.labels || \"\").toLowerCase();\n\t\t\t\t\treturn watchStates.some(ws => state.includes(ws) || label.includes(ws));\n\t\t\t\t})"
-          }
-        },
-        {
-          "id": "check-already-working",
-          "type": "filter",
-          "label": "Filter Out Already Working",
-          "config": {
-            "items": "{{filter-issues.output}}",
-            "expression": "((item) => {\n\t\t\t\t\tconst assignees = item.assignees || [];\n\t\t\t\t\tconst botName = String(\"{{botUsername}}\").toLowerCase();\n\t\t\t\t\treturn !assignees.some(a => String(a.login || a || \"\").toLowerCase().includes(botName));\n\t\t\t\t})"
-          }
-        },
-        {
-          "id": "limit-concurrent",
-          "type": "limit",
-          "label": "Limit Concurrent",
-          "config": {
-            "items": "{{check-already-working.output}}",
-            "limit": "{{maxConcurrent}}"
-          }
-        },
-        {
-          "id": "for-each-issue",
-          "type": "for-each",
-          "label": "Process Each Issue",
-          "items": "{{limit-concurrent.output}}",
-          "nodes": [
-            {
-              "id": "assign-issue",
-              "type": "github-add-issue-assignees",
-              "label": "Assign Issue",
-              "condition": "{{assignOnStart}}",
-              "config": {
-                "repo": "{{repo}}",
-                "issueNumber": "{{for-each-issue.item.number}}",
-                "assignees": [
-                  "{{botUsername}}"
-                ]
-              }
-            },
-            {
-              "id": "comment-start",
-              "type": "github-create-issue-comment",
-              "label": "Comment on Start",
-              "condition": "{{commentOnStart}}",
-              "config": {
-                "repo": "{{repo}}",
-                "issueNumber": "{{for-each-issue.item.number}}",
-                "body": "{{commentOnStart}}"
-              }
-            },
-            {
-              "id": "analyze-issue",
-              "type": "agent-prompt",
-              "label": "Analyze Issue",
-              "config": {
-                "prompt": "Analyze this GitHub issue and create a task plan:\n\nTitle: {{for-each-issue.item.title}}\nBody: {{for-each-issue.item.body}}\n\nProvide:\n1. Summary of the issue\n2. Steps to reproduce (if bug)\n3. Proposed solution\n4. Files likely to be modified",
-                "executor": "codex",
-                "model": "auto"
-              }
-            },
-            {
-              "id": "execute-work",
-              "type": "agent-execute",
-              "label": "Execute Work",
-              "config": {
-                "prompt": "{{analyze-issue.output}}",
-                "taskKey": "issue-{{for-each-issue.item.number}}",
-                "executor": "codex",
-                "model": "auto",
-                "timeoutMs": 600000
-              }
-            },
-            {
-              "id": "update-issue-state",
-              "type": "github-update-issue",
-              "label": "Update Issue State",
-              "config": {
-                "repo": "{{repo}}",
-                "issueNumber": "{{for-each-issue.item.number}}",
-                "state": "open",
-                "labels": "{{for-each-issue.item.labels}},in-review"
-              }
-            },
-            {
-              "id": "comment-complete",
-              "type": "github-create-issue-comment",
-              "label": "Comment on Complete",
-              "condition": "{{commentOnComplete}}",
-              "config": {
-                "repo": "{{repo}}",
-                "issueNumber": "{{for-each-issue.item.number}}",
-                "body": "{{commentOnComplete}}\n\n---\nWork completed by Bosun.\n{{execute-work.output}}"
-              }
-            }
-          ]
-        },
-        {
-          "id": "wait",
-          "type": "delay",
-          "label": "Wait Before Next Poll",
-          "config": {
-            "delayMs": "{{pollIntervalMs}}"
-          }
-        },
-        {
-          "id": "loop",
-          "type": "loop",
-          "label": "Continue Loop",
-          "source": "wait",
-          "target": "check-issues"
-        }
-      ],
-      "edges": [
-        {
-          "source": "check-issues",
-          "target": "filter-issues"
-        },
-        {
-          "source": "filter-issues",
-          "target": "check-already-working"
-        },
-        {
-          "source": "check-already-working",
-          "target": "limit-concurrent"
-        },
-        {
-          "source": "limit-concurrent",
-          "target": "for-each-issue"
-        },
-        {
-          "source": "for-each-issue",
-          "target": "wait"
-        },
-        {
-          "source": "wait",
-          "target": "loop"
-        }
-      ],
-      "metadata": {
-        "author": "bosun-demo",
-        "createdAt": "2026-03-28T12:00:00.000Z",
-        "updatedAt": "2026-03-28T12:00:00.000Z",
-        "templateState": {
-          "templateId": "template-issue-continuation-loop",
-          "templateName": "Issue Continuation Loop",
           "templateVersion": "1.0.0",
           "installedTemplateVersion": "1.0.0",
           "isCustomized": false,

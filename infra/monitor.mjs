@@ -499,7 +499,7 @@ async function ensureWorkflowAutomationEngine() {
 
   workflowAutomationInitPromise = (async () => {
     try {
-      const [{ getWorkflowEngine }, { createTask }, wfNodes, workflowTemplates] = await Promise.all([
+      const [{ getWorkflowEngine }, { createTask, getTask }, wfNodes, workflowTemplates] = await Promise.all([
         import("../workflow/workflow-engine.mjs"),
         import("../kanban/kanban-adapter.mjs"),
         import("../workflow/workflow-nodes.mjs"),
@@ -532,6 +532,8 @@ async function ensureWorkflowAutomationEngine() {
           ),
         listTasks: async (projectId, filters = {}) =>
           listKanbanTasks(String(projectId || ""), filters || {}),
+        getTask: async (taskId) =>
+          getTask(String(taskId || "").trim()),
       };
 
       const agentPoolService = {
@@ -613,15 +615,47 @@ async function ensureWorkflowAutomationEngine() {
         config?.workflowDefaults && typeof config.workflowDefaults === "object"
           ? config.workflowDefaults.templates || []
           : [];
+      const typedWorkflowTemplateConfig =
+        typeof workflowTemplates?.resolveWorkflowTemplateConfig === "function"
+          ? workflowTemplates.resolveWorkflowTemplateConfig(config?.workflows || [])
+          : { templateIds: [], overridesById: {} };
+
       const requestedTemplateIds = new Set(
         typeof workflowTemplates?.resolveWorkflowTemplateIds === "function"
           ? workflowTemplates.resolveWorkflowTemplateIds({
               profileId: configuredWorkflowProfile,
               templateIds: configuredWorkflowTemplates,
+              workflows: config?.workflows || [],
             })
           : [],
       );
-      const staleWorkflowTemplateIds = ["template-task-batch-pr"];
+      for (const templateId of typedWorkflowTemplateConfig.templateIds || []) {
+        const overrides = typedWorkflowTemplateConfig.overridesById?.[templateId] || {};
+        let installed = (engine.list?.() || []).find(
+          (wf) => String(wf?.metadata?.installedFrom || "").trim() === templateId,
+        );
+
+        if (!installed && typeof workflowTemplates?.installTemplate === "function") {
+          installed = workflowTemplates.installTemplate(templateId, engine, overrides);
+        }
+
+        if (!installed) continue;
+        const def = engine.get?.(installed.id);
+        if (!def) continue;
+
+        def.enabled = true;
+        def.variables = {
+          ...(def.variables || {}),
+          ...overrides,
+        };
+        def.metadata = {
+          ...(def.metadata || {}),
+          configuredFrom: "workflows.config",
+        };
+        engine.save(def);
+      }
+
+      const staleWorkflowTemplateIds = ["template-task-batch-pr", "template-continuation-loop"];
       if (typeof workflowTemplates?.reconcileInstalledTemplates === "function") {
         const reconcile = workflowTemplates.reconcileInstalledTemplates(engine, {
           autoUpdateUnmodified: true,
@@ -647,7 +681,7 @@ async function ensureWorkflowAutomationEngine() {
         def.metadata = {
           ...(def.metadata || {}),
           autoDisabledReason:
-            "disabled on startup because the template is no longer requested by workflowDefaults",
+            "disabled on startup because the template is no longer requested by workflowDefaults/workflows config",
         };
         engine.save(def);
         console.log(

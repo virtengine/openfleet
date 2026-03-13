@@ -307,6 +307,7 @@ export const TEMPLATE_FIXTURES = {
   "template-dependency-audit":            { scenario: scenarios.securityAudit(),   inputVars: {} },
   "template-secret-scanner":             { scenario: scenarios.securityAudit(),   inputVars: {} },
   "template-code-quality-striker":       { scenario: scenarios.greenPR(202),      inputVars: {} },
+  "template-continuation-loop":         { scenario: scenarios.kanbanState(),     inputVars: { taskId: "TASK-1", worktreePath: "/tmp/wt/task-1", pollIntervalMs: 1, maxTurns: 1, stuckThresholdMs: 1, onStuck: "pause", terminalStates: ["done", "cancelled"] } },
   "template-task-lifecycle":              { scenario: scenarios.greenPR(98),      inputVars: { taskId: "TASK-7", worktreePath: "/tmp/wt/task-7", branch: "feat/task-7", baseBranch: "main", prNumber: 98 } },
   "template-ve-orchestrator-lite":        { scenario: scenarios.kanbanState(),     inputVars: { maxConcurrent: 2 } },
   "template-task-batch-processor":        { scenario: scenarios.kanbanState(),     inputVars: { batchSize: 3 } },
@@ -333,5 +334,4 @@ export const TEMPLATE_FIXTURES = {
   "template-task-cicd":                  { scenario: scenarios.cicdDeploy(),      inputVars: { taskId: "TASK-CI-1", worktreePath: "/tmp/wt/cicd", branch: "feat/cicd", baseBranch: "main", taskTimeoutMs: 21600000, maxRetries: 2, maxContinues: 3, testCommand: "auto", buildCommand: "auto", lintCommand: "auto" } },
   "template-task-design":                { scenario: scenarios.greenPR(214),      inputVars: { taskId: "TASK-DS-1", worktreePath: "/tmp/wt/design", branch: "feat/design", baseBranch: "main", taskTimeoutMs: 21600000, maxRetries: 2, maxContinues: 3, testCommand: "auto", buildCommand: "auto", lintCommand: "auto" } },
 };
-
 
