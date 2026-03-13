@@ -141,7 +141,13 @@ let _toolCompletionAckTimer = null;
 let _assistantBaselineBeforeToolAck = "";
 const _sdkCapturedMicStreams = new Set();
 let _lastAutoBargeInAt = 0;
-const AUTO_BARGE_IN_COOLDOWN_MS = 700;
+const AUTO_BARGE_IN_COOLDOWN_MS = 1200;
+// Minimum speech duration (ms) before an interrupt is allowed — filters keyboard/click noise
+let _speechStartedAt = 0;
+const MIN_SPEECH_DURATION_FOR_INTERRUPT_MS = 400;
+// Delayed response clear — keep response visible in center after turn ends
+let _responseClearTimer = null;
+const RESPONSE_DISPLAY_HOLD_MS = 8000;
 let _traceTurnCounter = 0;
 let _traceCurrentTurnId = null;
 let _traceTurnActive = false;
@@ -175,6 +181,14 @@ function emit(event, data) {
 
 function maybeAutoInterruptSdkResponse(reason = "speech-started") {
   const now = Date.now();
+  // Only interrupt if speech has been ongoing long enough to be real speech
+  // (filters out keyboard clicks, mouse clicks, coughs, etc.)
+  if (_speechStartedAt > 0) {
+    const speechDuration = now - _speechStartedAt;
+    if (speechDuration < MIN_SPEECH_DURATION_FOR_INTERRUPT_MS) {
+      return false;
+    }
+  }
   if (!shouldAutoBargeIn({
     muted: isVoiceMicMuted.value,
     audioActive: Boolean(_session),
@@ -530,7 +544,11 @@ let _pendingToolResultTimers = new Map();
 let _toolResultInjected = new Set(); // call IDs that were manually injected
 
 function _ensureToolResultInjected(session, callId, toolName, resultStr) {
-  // Track that we're waiting for the model to acknowledge this tool result
+  // Immediately inject the tool result into the model's conversation context.
+  // The SDK's auto-injection is unreliable — the result gets stored in the
+  // session tracker / chat history but doesn't always reach the model's
+  // realtime conversation context, causing the model to say "I'm having
+  // trouble" even though the tool succeeded.
   const key = String(callId || "");
   if (!key) return;
 
@@ -542,51 +560,33 @@ function _ensureToolResultInjected(session, callId, toolName, resultStr) {
       + "\n... (truncated for voice — full result available in chat)";
   }
 
-  // Wait a short window for the SDK to handle it, then check
-  const timer = setTimeout(() => {
-    _pendingToolResultTimers.delete(key);
-    // If the model already acknowledged (responded differently than baseline), skip
-    if (!_awaitingToolCompletionAck) return;
-    // If already manually injected, skip
-    if (_toolResultInjected.has(key)) return;
+  // Mark as injected immediately to prevent duplicate injections
+  _toolResultInjected.add(key);
 
-    console.warn(
-      `[voice-client-sdk] SDK may not have injected tool result for ${toolName} (${callId}); ` +
-      "manually injecting via sendEvent fallback",
-    );
-    _toolResultInjected.add(key);
-
-    // Try sendEvent for raw function_call_output injection
-    if (session && typeof session.sendEvent === "function") {
-      try {
-        session.sendEvent({
-          type: "conversation.item.create",
-          item: {
-            type: "function_call_output",
-            call_id: callId,
-            output,
-          },
-        });
-        session.sendEvent({ type: "response.create" });
-        console.info(`[voice-client-sdk] Manually injected tool result for ${toolName} (${callId})`);
-      } catch (err) {
-        console.warn("[voice-client-sdk] sendEvent fallback failed:", err?.message);
-        // Last resort: inject as a user message with context
-        _injectContextMessage(
-          session,
-          `[Tool Result — ${toolName}]\n${output}`,
-        );
-      }
-    } else {
-      // No sendEvent — inject as user message
-      _injectContextMessage(
-        session,
-        `[Tool Result — ${toolName}]\n${output}`,
-      );
+  // Inject NOW — don't wait for SDK auto-injection
+  if (session && typeof session.sendEvent === "function") {
+    try {
+      session.sendEvent({
+        type: "conversation.item.create",
+        item: {
+          type: "function_call_output",
+          call_id: callId,
+          output,
+        },
+      });
+      session.sendEvent({ type: "response.create" });
+      console.info(`[voice-client-sdk] Injected tool result for ${toolName} (${callId})`);
+      return;
+    } catch (err) {
+      console.warn("[voice-client-sdk] sendEvent injection failed:", err?.message);
     }
-  }, 2500); // 2.5s grace period for SDK auto-injection
+  }
 
-  _pendingToolResultTimers.set(key, timer);
+  // Fallback: inject as user-role context message
+  _injectContextMessage(
+    session,
+    `[Tool Result — ${toolName}]\n${output}`,
+  );
 }
 
 /**
@@ -742,7 +742,6 @@ function _scheduleAssistantTranscriptFinalize(text) {
     _pendingAssistantTranscriptTimer = null;
     const finalText = String(_pendingAssistantTranscriptText || "").trim();
     if (!finalText) return;
-    sdkVoiceState.value = "thinking";
     _sdkTraceMarkLlmFirstToken("llm_first_token", { reason: "assistant_transcript.final" });
     _sdkTraceMarkTtsFirstAudio("tts_first_audio", { reason: "assistant_transcript.final" });
     sdkVoiceResponse.value = finalText;
@@ -750,8 +749,37 @@ function _scheduleAssistantTranscriptFinalize(text) {
     _persistTranscriptIfNew("assistant", finalText, "sdk.history_updated.assistant.final");
     _markAssistantToolResponseObserved(finalText);
     _sdkTraceEndTurn("turn_end", { reason: "assistant_transcript.final" });
+    // Keep response visible in center — schedule delayed clear instead of
+    // immediately setting sdkVoiceResponse to "". The response will persist
+    // until the user starts speaking or the hold timer expires.
+    _scheduleResponseClear();
     sdkVoiceState.value = "listening";
   }, 700);
+}
+
+/**
+ * Schedule a delayed clear of the assistant response from the center display.
+ * The response stays visible for RESPONSE_DISPLAY_HOLD_MS or until the user
+ * starts speaking (whichever comes first).
+ */
+function _scheduleResponseClear() {
+  if (_responseClearTimer) clearTimeout(_responseClearTimer);
+  _responseClearTimer = setTimeout(() => {
+    _responseClearTimer = null;
+    sdkVoiceResponse.value = "";
+  }, RESPONSE_DISPLAY_HOLD_MS);
+}
+
+/**
+ * Immediately clear the response display — called when the user starts
+ * speaking so the center area shows their new transcript.
+ */
+function _clearResponseForNewTurn() {
+  if (_responseClearTimer) {
+    clearTimeout(_responseClearTimer);
+    _responseClearTimer = null;
+  }
+  sdkVoiceResponse.value = "";
 }
 
 // ── OpenAI/Azure Agents SDK Session ─────────────────────────────────────────
@@ -897,22 +925,22 @@ async function startAgentsSdkSession(config, options = {}) {
     type: turnDetection,
     ...(turnDetection === "server_vad"
       ? {
-          threshold: 0.7,
-          prefix_padding_ms: 400,
-          silence_duration_ms: 1300,
+          threshold: 0.82,
+          prefix_padding_ms: 500,
+          silence_duration_ms: 1600,
           create_response: true,
-          interrupt_response: true,
+          interrupt_response: false,
           createResponse: true,
-          interruptResponse: true,
+          interruptResponse: false,
         }
       : {}),
     ...(turnDetection === "semantic_vad"
       ? {
           eagerness: "low",
           create_response: true,
-          interrupt_response: true,
+          interrupt_response: false,
           createResponse: true,
-          interruptResponse: true,
+          interruptResponse: false,
         }
       : {}),
   };
@@ -983,9 +1011,22 @@ async function startAgentsSdkSession(config, options = {}) {
   session.on("transport_event", (event) => {
     const eventType = event?.type || "";
     if (eventType === "input_audio_buffer.speech_started") {
+      _speechStartedAt = Date.now();
       _sdkTraceBeginTurn("turn_start", { reason: "speech_started" });
-      maybeAutoInterruptSdkResponse("speech-started");
+      // Clear any lingering response so the center shows user's new transcript
+      _clearResponseForNewTurn();
+      // Don't interrupt immediately — the barge-in will check speech duration
+      // in maybeAutoInterruptSdkResponse when called from the debounced path.
+      // Only attempt barge-in after MIN_SPEECH_DURATION_FOR_INTERRUPT_MS.
+      setTimeout(() => {
+        if (_speechStartedAt > 0 && (Date.now() - _speechStartedAt) >= MIN_SPEECH_DURATION_FOR_INTERRUPT_MS) {
+          maybeAutoInterruptSdkResponse("speech-started-confirmed");
+        }
+      }, MIN_SPEECH_DURATION_FOR_INTERRUPT_MS);
       emit("speech-started", {});
+    }
+    if (eventType === "input_audio_buffer.speech_stopped") {
+      _speechStartedAt = 0;
     }
   });
 
@@ -1581,6 +1622,8 @@ export async function startSdkVoiceSession(options = {}) {
   sdkVoiceToolCalls.value = [];
   _usingLegacyFallback = false;
   _lastAutoBargeInAt = 0;
+  _speechStartedAt = 0;
+  if (_responseClearTimer) { clearTimeout(_responseClearTimer); _responseClearTimer = null; }
   _resetTranscriptPersistenceState();
 
   try {
@@ -1694,6 +1737,8 @@ export function stopSdkVoiceSession() {
 
   clearInterval(_durationTimer);
   _durationTimer = null;
+  if (_responseClearTimer) { clearTimeout(_responseClearTimer); _responseClearTimer = null; }
+  _speechStartedAt = 0;
 
   sdkVoiceState.value = "idle";
   sdkVoiceTranscript.value = "";
