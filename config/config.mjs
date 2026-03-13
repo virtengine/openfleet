@@ -26,12 +26,13 @@ import {
 } from "../agent/agent-prompts.mjs";
 import { resolveAgentRepoRoot, resolveRepoLocalBosunDir } from "./repo-root.mjs";
 import { applyAllCompatibility } from "../compat.mjs";
+import { ensureTestRuntimeSandbox } from "../infra/test-runtime.mjs";
 import {
   normalizeExecutorKey,
   getModelsForExecutor,
   MODEL_ALIASES,
 } from "../task/task-complexity.mjs";
-import { ensureTestRuntimeSandbox } from "../infra/test-runtime.mjs";
+import { normalizePipelineWorkflows } from "../workflow/pipeline-workflows.mjs";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
@@ -2129,6 +2130,7 @@ export function loadConfig(argv = process.argv, options = {}) {
     configData,
     triggerSystemDefaults,
   );
+  const workflows = normalizePipelineWorkflows(configData.workflows || {});
 
   // ── GitHub Reconciler ───────────────────────────────────
   const ghReconcileEnabled = isEnvEnabled(
@@ -2395,6 +2397,7 @@ export function loadConfig(argv = process.argv, options = {}) {
     telegramVerbosity,
 
     triggerSystem,
+    workflows,
 
     // GitHub Reconciler
     githubReconcile: {
@@ -2431,6 +2434,7 @@ export function loadConfig(argv = process.argv, options = {}) {
     workspacesDir,
     activeWorkspace,
     agentRepoRoot,
+    workflows,
 
     // Agent prompts
     agentPrompts,

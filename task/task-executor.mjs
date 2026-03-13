@@ -102,6 +102,11 @@ import {
 } from "./task-claims.mjs";
 import { initPresence, getPresenceState } from "../infra/presence.mjs";
 import { getSharedState } from "../workspace/shared-state-manager.mjs";
+import {
+  createExecutionPipeline as createTaskExecutionPipeline,
+  runExecutionPipeline as runTaskExecutionPipeline,
+  runExecutionPipelineAgent,
+} from "./task-executor-pipeline.mjs";
 
 // ── Constants ───────────────────────────────────────────────────────────────
 
@@ -5019,6 +5024,30 @@ class TaskExecutor {
   async _pollLoop() {
     // [LEGACY REMOVED] Replaced by workflow node: trigger.task_available + condition.slot_available
     // See workflow-templates/task-lifecycle.mjs
+  }
+
+  createExecutionPipeline(mode = "single", agents = [], options = {}) {
+    return createTaskExecutionPipeline(mode, agents, {
+      ...options,
+      agentRunner:
+        options.agentRunner || this._runExecutionPipelineAgent.bind(this),
+    });
+  }
+
+  async runExecutionPipeline(mode, agents, input, options = {}) {
+    return await runTaskExecutionPipeline(mode, agents, input, {
+      ...options,
+      agentRunner:
+        options.agentRunner || this._runExecutionPipelineAgent.bind(this),
+    });
+  }
+
+  async _runExecutionPipelineAgent(agent, input, context) {
+    return runExecutionPipelineAgent(agent, input, context, {
+      execWithRetry,
+      repoRoot: this.repoRoot || process.cwd(),
+      timeoutMs: this.timeoutMs || 0,
+    });
   }
 
   // ── Task Execution ────────────────────────────────────────────────────────
