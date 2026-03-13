@@ -1135,6 +1135,59 @@ export class WorkflowEngine extends EventEmitter {
   }
 
   /**
+   * Execute an ephemeral workflow definition without saving it to the registry.
+   * Useful for inline/embedded workflow composition where the child flow should
+   * have its own run/context history but not become an installed workflow.
+   *
+   * @param {object} workflowDef
+   * @param {object} inputData
+   * @param {object} [opts]
+   * @returns {Promise<WorkflowContext>}
+   */
+  async executeDefinition(workflowDef, inputData = {}, opts = {}) {
+    const requestedId = String(workflowDef?.id || opts.inlineWorkflowId || "").trim();
+    const workflowId = requestedId || `inline:${randomUUID()}`;
+    const normalized = hydrateWorkflowDefinition({
+      enabled: true,
+      trigger: workflowDef?.trigger || "trigger.workflow_call",
+      ...workflowDef,
+      id: workflowId,
+      name: String(workflowDef?.name || opts.inlineWorkflowName || workflowId).trim() || workflowId,
+      metadata: {
+        ...(workflowDef?.metadata || {}),
+        inline: true,
+        ephemeral: true,
+        sourceNodeId: opts.sourceNodeId || workflowDef?.metadata?.sourceNodeId || null,
+      },
+    }, { strict: true });
+
+    if (normalized.enabled === false && !opts.force) {
+      throw new Error(`${TAG} Inline workflow "${normalized.name}" is disabled`);
+    }
+
+    if (this._runSlots >= MAX_CONCURRENT_RUNS) {
+      this.emit("run:queued", { workflowId: normalized.id, name: normalized.name, queueDepth: this._runQueue.length + 1 });
+      await new Promise((resolve, reject) => {
+        this._runQueue.push({ resolve, reject });
+      });
+    }
+    this._runSlots++;
+
+    try {
+      return await this._executeInner(normalized, normalized.id, inputData, {
+        ...opts,
+        force: true,
+      });
+    } finally {
+      this._runSlots--;
+      if (this._runQueue.length > 0) {
+        const next = this._runQueue.shift();
+        next.resolve();
+      }
+    }
+  }
+
+  /**
    * Inner execute logic — called only once a concurrency slot is acquired.
    * @private
    */

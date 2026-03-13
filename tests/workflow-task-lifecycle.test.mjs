@@ -2009,8 +2009,9 @@ describe("template-task-lifecycle", () => {
       "resolve-executor", "record-head", "read-workflow-contract",
       "workflow-contract-validation", "build-prompt", "run-agent-plan", "run-agent-tests", "run-agent-implement",
       "claim-stolen", "detect-commits", "has-commits",
-      "push-branch", "push-ok", "create-pr", "set-inreview", "log-success",
-      "log-no-commits", "set-todo-cooldown", "create-pr-retry", "pr-created-stolen", "set-inreview-stolen", "log-claim-stolen-recovered",
+      "pre-pr-validation", "pre-pr-validation-ok", "log-validation-failed", "set-todo-validation-failed",
+      "push-branch", "push-ok", "create-pr", "set-inreview", "handoff-pr-progressor", "log-success",
+      "log-no-commits", "set-todo-cooldown", "create-pr-retry", "pr-created-stolen", "set-inreview-stolen", "handoff-pr-progressor-stolen", "log-claim-stolen-recovered",
       "release-worktree", "release-claim", "release-slot",
     ];
     for (const id of required) {
@@ -2060,6 +2061,8 @@ describe("template-task-lifecycle", () => {
     const prCreated = t.nodes.find((n) => n.id === "pr-created");
 
     expect(createPr?.config?.body).toContain("Task-ID: {{taskId}}");
+    expect(createPr?.config?.enableAutoMerge).toBe("{{autoMergeOnCreate}}");
+    expect(createPr?.config?.autoMergeMethod).toBe("{{autoMergeMethod}}");
     expect(prCreated?.config?.expression).toContain("create-pr");
     expect(prCreated?.config?.expression).toContain("prNumber");
     expect(prCreated?.config?.expression).toContain("prUrl");
@@ -2070,14 +2073,19 @@ describe("template-task-lifecycle", () => {
     expect(t.edges.find((e) => e.source === "create-pr" && e.target === "pr-created")).toBeDefined();
     expect(t.edges.find((e) => e.source === "pr-created" && e.target === "set-inreview")).toBeDefined();
     expect(t.edges.find((e) => e.source === "pr-created" && e.target === "set-todo-push-failed")).toBeDefined();
+    expect(t.edges.find((e) => e.source === "set-inreview" && e.target === "handoff-pr-progressor")).toBeDefined();
+    expect(t.edges.find((e) => e.source === "handoff-pr-progressor" && e.target === "log-success")).toBeDefined();
   });
 
-  it("has push-ok check after push-branch", () => {
+  it("runs pre-PR validation before pushing", () => {
     const t = getTemplate("template-task-lifecycle");
-    const edge = t.edges.find(
-      (e) => e.source === "push-branch" && e.target === "push-ok",
-    );
-    expect(edge).toBeDefined();
+    expect(t.edges.find((e) => e.source === "has-commits" && e.target === "pre-pr-validation")).toBeDefined();
+    expect(t.edges.find((e) => e.source === "pre-pr-validation" && e.target === "pre-pr-validation-ok")).toBeDefined();
+    expect(t.edges.find((e) => e.source === "pre-pr-validation-ok" && e.target === "push-branch")).toBeDefined();
+    expect(t.edges.find((e) => e.source === "pre-pr-validation-ok" && e.target === "log-validation-failed")).toBeDefined();
+    expect(t.edges.find((e) => e.source === "log-validation-failed" && e.target === "set-todo-validation-failed")).toBeDefined();
+    expect(t.edges.find((e) => e.source === "set-todo-validation-failed" && e.target === "join-outcomes")).toBeDefined();
+    expect(t.edges.find((e) => e.source === "push-branch" && e.target === "push-ok")).toBeDefined();
   });
 
   it("passes repository scope metadata into build-prompt node", () => {
@@ -2118,6 +2126,8 @@ describe("template-task-lifecycle", () => {
     expect(t.edges.find((e) => e.source === "claim-stolen" && e.target === "create-pr-retry")).toBeDefined();
     expect(t.edges.find((e) => e.source === "create-pr-retry" && e.target === "pr-created-stolen")).toBeDefined();
     expect(t.edges.find((e) => e.source === "pr-created-stolen" && e.target === "set-inreview-stolen")).toBeDefined();
+    expect(t.edges.find((e) => e.source === "set-inreview-stolen" && e.target === "handoff-pr-progressor-stolen")).toBeDefined();
+    expect(t.edges.find((e) => e.source === "handoff-pr-progressor-stolen" && e.target === "log-claim-stolen-recovered")).toBeDefined();
     expect(t.edges.find((e) => e.source === "pr-created-stolen" && e.target === "log-claim-stolen")).toBeDefined();
   });
 
@@ -2159,6 +2169,10 @@ describe("template-task-lifecycle", () => {
     expect(t.variables.claimTtlMinutes).toBe(180);
     expect(t.variables.claimRenewIntervalMs).toBe(60000);
     expect(t.variables.taskTimeoutMs).toBe(21600000);
+    expect(t.variables.prePrValidationEnabled).toBe(true);
+    expect(t.variables.prePrValidationCommand).toBe("npm run prepush:check");
+    expect(t.variables.autoMergeOnCreate).toBe(false);
+    expect(t.variables.autoMergeMethod).toBe("squash");
     expect(t.variables.defaultSdk).toBe("auto");
     expect(Array.isArray(t.variables.protectedBranches)).toBe(true);
   });
@@ -2318,3 +2332,4 @@ describe("template-ve-orchestrator-lite", () => {
     expect(Array.isArray(t.variables.protectedBranches)).toBe(true);
   });
 });
+

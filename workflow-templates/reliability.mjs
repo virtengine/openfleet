@@ -458,6 +458,20 @@ export const TASK_FINALIZATION_GUARD_TEMPLATE = {
       },
     }, { x: 240, y: 900 }),
 
+    node("handoff-pr-progressor", "action.execute_workflow", "Dispatch PR Progressor", {
+      workflowId: "template-bosun-pr-progressor",
+      mode: "dispatch",
+      input: {
+        taskId: "{{taskId}}",
+        taskTitle: "{{taskTitle}}",
+        branch: "{{branch}}",
+        baseBranch: "{{baseBranch}}",
+        prNumber: "{{$data?.prNumber ?? $ctx.getNodeOutput('create-pr')?.prNumber ?? null}}",
+        prUrl: "{{$data?.prUrl || $ctx.getNodeOutput('create-pr')?.prUrl || ''}}",
+        repo: "{{$data?.repo || $data?.repoSlug || $data?.repository || $ctx.getNodeOutput('create-pr')?.repoSlug || ''}}",
+      },
+    }, { x: 240, y: 1040 }),
+
     node("mark-todo-failed", "action.update_task_status", "Mark Todo (Checks Failed)", {
       taskId: "{{taskId}}",
       status: "todo",
@@ -497,13 +511,13 @@ export const TASK_FINALIZATION_GUARD_TEMPLATE = {
     node("notify-pass", "notify.log", "Log Finalization Success", {
       message: "Task {{taskId}} finalization passed — moved to inreview",
       level: "info",
-    }, { x: 240, y: 1040 }),
+    }, { x: 240, y: 1180 }),
 
     node("chain-archiver", "flow.universal", "Queue Archival", {
       workflowId: "template-task-archiver",
       mode: "dispatch",
       input: "({taskId: $data?.taskId, taskTitle: $data?.taskTitle, completedAt: new Date().toISOString(), taskJson: JSON.stringify($data?.task || {id: $data?.taskId, title: $data?.taskTitle})})",
-    }, { x: 240, y: 1180 }),
+    }, { x: 240, y: 1320 }),
 
     node("end-success", "flow.end", "End Success", {
       status: "completed",
@@ -513,7 +527,7 @@ export const TASK_FINALIZATION_GUARD_TEMPLATE = {
         taskId: "{{taskId}}",
         taskTitle: "{{taskTitle}}",
       },
-    }, { x: 240, y: 1310 }),
+    }, { x: 240, y: 1450 }),
 
     node("notify-fail", "notify.telegram", "Notify Finalization Failure", {
       message: ":alert: Task finalization failed for **{{taskTitle}}** ({{taskId}}). Repair workflow handoff triggered.",
@@ -543,7 +557,8 @@ export const TASK_FINALIZATION_GUARD_TEMPLATE = {
     edge("create-pr", "create-pr-success"),
     edge("create-pr-success", "mark-inreview", { condition: "$output?.result === true", port: "yes" }),
     edge("create-pr-success", "mark-todo-failed", { condition: "$output?.result !== true", port: "no" }),
-    edge("mark-inreview", "notify-pass"),
+    edge("mark-inreview", "handoff-pr-progressor"),
+    edge("handoff-pr-progressor", "notify-pass"),
     edge("notify-skip-missing-context", "end-success"),
     edge("notify-pass", "chain-archiver"),
     edge("chain-archiver", "end-success"),
@@ -557,7 +572,7 @@ export const TASK_FINALIZATION_GUARD_TEMPLATE = {
     createdAt: "2026-02-26T00:00:00Z",
     templateVersion: "1.0.1",
     tags: ["finalization", "quality-gate", "prepush", "handoff", "reliability"],
-    requiredTemplates: ["template-task-archiver"],
+    requiredTemplates: ["template-task-archiver", "template-bosun-pr-progressor"],
     replaces: {
       module: "task-executor.mjs",
       functions: ["_handleTaskResult finalization gate"],
@@ -659,6 +674,20 @@ export const TASK_REPAIR_WORKTREE_TEMPLATE = {
       },
     }, { x: 250, y: 1020 }),
 
+    node("handoff-pr-progressor", "action.execute_workflow", "Dispatch PR Progressor", {
+      workflowId: "template-bosun-pr-progressor",
+      mode: "dispatch",
+      input: {
+        taskId: "{{taskId}}",
+        taskTitle: "{{taskTitle}}",
+        branch: "{{branch}}",
+        baseBranch: "{{baseBranch}}",
+        prNumber: "{{$data?.prNumber ?? $ctx.getNodeOutput('create-pr')?.prNumber ?? null}}",
+        prUrl: "{{$data?.prUrl || $ctx.getNodeOutput('create-pr')?.prUrl || ''}}",
+        repo: "{{$data?.repo || $data?.repoSlug || $data?.repository || $ctx.getNodeOutput('create-pr')?.repoSlug || ''}}",
+      },
+    }, { x: 250, y: 1160 }),
+
     node("mark-todo", "action.update_task_status", "Mark Todo (Repair Failed)", {
       taskId: "{{taskId}}",
       status: "todo",
@@ -676,7 +705,7 @@ export const TASK_REPAIR_WORKTREE_TEMPLATE = {
     node("notify-success", "notify.telegram", "Notify Repair Success", {
       message: ":check: Repair workflow recovered **{{taskTitle}}** ({{taskId}}) and moved it to inreview.",
       silent: true,
-    }, { x: 250, y: 1160 }),
+    }, { x: 250, y: 1300 }),
 
     node("notify-escalate", "notify.telegram", "Escalate Repair Failure", {
       message: ":alert: Repair workflow could not recover **{{taskTitle}}** ({{taskId}}). Manual intervention required.",
@@ -700,7 +729,8 @@ export const TASK_REPAIR_WORKTREE_TEMPLATE = {
     edge("create-pr", "create-pr-success"),
     edge("create-pr-success", "mark-inreview", { condition: "$output?.result === true", port: "yes" }),
     edge("create-pr-success", "mark-todo", { condition: "$output?.result !== true", port: "no" }),
-    edge("mark-inreview", "notify-success"),
+    edge("mark-inreview", "handoff-pr-progressor"),
+    edge("handoff-pr-progressor", "notify-success"),
     edge("mark-todo", "notify-escalate"),
     edge("no-worktree", "notify-escalate"),
   ],
@@ -710,6 +740,7 @@ export const TASK_REPAIR_WORKTREE_TEMPLATE = {
     createdAt: "2026-02-26T00:00:00Z",
     templateVersion: "1.0.1",
     tags: ["repair", "recovery", "worktree", "resilience", "automation"],
+    requiredTemplates: ["template-bosun-pr-progressor"],
     replaces: {
       module: "task-executor.mjs",
       functions: ["retry/escalation recovery path"],

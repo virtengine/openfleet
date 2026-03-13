@@ -5500,7 +5500,7 @@ export function loadExecutorOptionsFromConfig() {
   return {
     mode: envMode || configExec.mode || "internal",
     maxParallel: Number(
-      process.env.INTERNAL_EXECUTOR_PARALLEL || configExec.maxParallel || 3,
+      process.env.INTERNAL_EXECUTOR_PARALLEL || configExec.maxParallel || 5,
     ),
     baseBranchParallelLimit: Number(
       process.env.INTERNAL_EXECUTOR_BASE_BRANCH_PARALLEL ||

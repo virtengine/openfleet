@@ -13859,7 +13859,6 @@ async function startWatcher(force = false) {
     stopWatcher();
   }
   let targetPath = watchPath;
-  let missingWatchPath = false;
   try {
     const stats = await (await import("node:fs/promises")).stat(watchPath);
     if (stats.isFile()) {
@@ -13867,21 +13866,15 @@ async function startWatcher(force = false) {
       targetPath = watchPath.split(/[\\/]/).slice(0, -1).join("/") || ".";
     }
   } catch {
-    // The configured path may not exist yet (common for stale ORCHESTRATOR_SCRIPT paths).
-    // Fall back to watching its parent directory if present; otherwise watch repoRoot.
-    missingWatchPath = true;
-    const candidateFile = watchPath.split(/[\\/]/).pop() || null;
-    const candidateDir = watchPath.split(/[\\/]/).slice(0, -1).join("/") || ".";
-    if (existsSync(candidateDir)) {
-      targetPath = candidateDir;
-      watchFileName = candidateFile;
-    } else if (existsSync(repoRoot)) {
-      targetPath = repoRoot;
-      watchFileName = null;
-    } else {
-      targetPath = process.cwd();
-      watchFileName = null;
-    }
+    // The configured path does not exist.  Previous behaviour fell back to
+    // watching the parent directory, which could be extremely broad (e.g. the
+    // entire AppData/Roaming tree) and trigger spurious restarts.  Disable the
+    // watcher entirely instead — the auto-update loop handles updates in
+    // npm/prod mode, and in dev mode the source-dir watcher covers restarts.
+    console.warn(
+      `[monitor] watcher disabled — configured watch path does not exist: ${watchPath}`,
+    );
+    return;
   }
 
   if (!existsSync(targetPath)) {
@@ -13889,11 +13882,6 @@ async function startWatcher(force = false) {
       `[monitor] watcher disabled — target path does not exist: ${targetPath}`,
     );
     return;
-  }
-  if (missingWatchPath) {
-    console.warn(
-      `[monitor] watch path not found: ${watchPath} — watching ${targetPath} instead`,
-    );
   }
 
   try {

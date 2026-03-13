@@ -63,6 +63,13 @@ describe("action.create_pr schema integrity", () => {
     expect(props.repoSlug.type).toBe("string");
   });
 
+  it("schema accepts auto-merge configuration", () => {
+    const nodeType = getNodeType("action.create_pr");
+    const props = nodeType.schema?.properties ?? {};
+    expect(props).toHaveProperty("enableAutoMerge");
+    expect(props).toHaveProperty("autoMergeMethod");
+    expect(props.autoMergeMethod.enum).toEqual(["merge", "squash", "rebase"]);
+  });
   it("schema requires 'title' but not 'base' or 'branch'", () => {
     const nodeType = getNodeType("action.create_pr");
     const required = nodeType.schema?.required ?? [];
@@ -268,7 +275,26 @@ describe("dangerous shell payload containment", () => {
     expect(Array.isArray(result.labels)).toBe(true);
     expect(result.labels).toContain("custom-label");
     expect(result.labels).toContain("bosun-attached");
+    expect(result.autoMerge?.enabled).toBe(false);
   }, 30_000);
+
+  it("returns autoMerge metadata when auto-merge is enabled in test runtime", async () => {
+    const nodeType = getNodeType("action.create_pr");
+    const node = makeNode("action.create_pr", {
+      title: "Auto-merge metadata",
+      body: "Auto-merge metadata",
+      branch: "feat/auto-merge-metadata",
+      enableAutoMerge: true,
+      autoMergeMethod: "rebase",
+    });
+
+    const result = await nodeType.execute(node, makeCtx());
+    expect(result.success).toBe(true);
+    expect(result.autoMerge?.enabled).toBe(true);
+    expect(result.autoMerge?.attempted).toBe(false);
+    expect(result.autoMerge?.reason).toBe("test_runtime_skip");
+    expect(result.autoMerge?.method).toBe("rebase");
+  });
 });
 
 describe("action.run_command env interpolation", () => {
@@ -372,3 +398,4 @@ describe("WorkflowContext template resolution is not a shell evaluator", () => {
     expect(result).not.toBeNull();
   });
 });
+

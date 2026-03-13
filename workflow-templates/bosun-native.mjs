@@ -175,7 +175,217 @@ export const WORKFLOW_COMPOSITION_TEMPLATE = {
   },
 };
 
-// ── Template 3: MCP-to-Bosun Bridge ─────────────────────────────────────────
+// ── Template 3: Inline Workflow Composition ────────────────────────────────
+// Demonstrates: Parent workflow containing multiple embedded child workflows
+// Pattern: Inline preflight → inline execution plan → inline summary
+
+resetLayout();
+export const INLINE_WORKFLOW_COMPOSITION_TEMPLATE = {
+  id: "template-inline-workflow-composition",
+  name: "Inline Workflow Composition",
+  category: "mcp-integration",
+  enabled: true,
+  trigger: "trigger.manual",
+  description:
+    "Compose a parent workflow from embedded child workflows using action.inline_workflow. " +
+    "Demonstrates bounded sequential stages that stay inside the parent workflow " +
+    "while preserving child run/context boundaries and structured output handoff.",
+  variables: {
+    inputPayload: "{\"steps\":[\"lint\",\"test\",\"build\"],\"strict\":true}",
+    defaultStageOwner: "bosun",
+  },
+  nodes: [
+    node("trigger", "trigger.manual", "Start"),
+
+    node("inline-prepare", "action.inline_workflow", "Inline Prepare", {
+      mode: "sync",
+      outputVariable: "inlinePrepareResult",
+      input: {
+        inputPayload: "{{inputPayload}}",
+        defaultStageOwner: "{{defaultStageOwner}}",
+      },
+      workflow: {
+        trigger: "trigger.workflow_call",
+        nodes: [
+          {
+            id: "trigger",
+            type: "trigger.workflow_call",
+            label: "Inline Trigger",
+            config: {
+              inputs: {
+                inputPayload: { type: "string", required: false },
+                defaultStageOwner: { type: "string", required: false },
+              },
+            },
+          },
+          {
+            id: "normalize-payload",
+            type: "action.set_variable",
+            label: "Normalize Payload",
+            config: {
+              key: "normalizedPayload",
+              value:
+                "(() => {" +
+                "const raw = $data?.inputPayload;" +
+                "if (raw && typeof raw === 'object') return raw;" +
+                "const text = String(raw || '').trim();" +
+                "if (!text) return { steps: [] };" +
+                "try { return JSON.parse(text); } catch { return { steps: [text] }; }" +
+                "})()",
+              isExpression: true,
+            },
+          },
+          {
+            id: "finish",
+            type: "flow.end",
+            label: "Finish Prepare",
+            config: {
+              status: "completed",
+              output: {
+                stageOwner: "{{defaultStageOwner}}",
+                normalizedPayload: "{{$data?.normalizedPayload || { steps: [] }}}",
+                stepCount:
+                  "{{$data?.normalizedPayload && Array.isArray($data.normalizedPayload.steps) ? $data.normalizedPayload.steps.length : 0}}",
+              },
+            },
+          },
+        ],
+        edges: [
+          { id: "e1", source: "trigger", target: "normalize-payload" },
+          { id: "e2", source: "normalize-payload", target: "finish" },
+        ],
+      },
+    }),
+
+    node("inline-plan", "action.inline_workflow", "Inline Stage Plan", {
+      mode: "sync",
+      outputVariable: "inlinePlanResult",
+      input: {
+        stageOwner: "{{$ctx.getNodeOutput('inline-prepare')?.stageOwner || $data?.defaultStageOwner || 'bosun'}}",
+        normalizedPayload: "{{$ctx.getNodeOutput('inline-prepare')?.normalizedPayload || { steps: [] }}}",
+      },
+      workflow: {
+        trigger: "trigger.workflow_call",
+        nodes: [
+          {
+            id: "trigger",
+            type: "trigger.workflow_call",
+            label: "Inline Trigger",
+            config: {
+              inputs: {
+                stageOwner: { type: "string", required: false },
+                normalizedPayload: { type: "object", required: false },
+              },
+            },
+          },
+          {
+            id: "build-plan",
+            type: "action.set_variable",
+            label: "Build Stage Plan",
+            config: {
+              key: "stagePlan",
+              value:
+                "(() => {" +
+                "const steps = Array.isArray($data?.normalizedPayload?.steps) ? $data.normalizedPayload.steps : [];" +
+                "return steps.map((step, index) => ({ index: index + 1, step: String(step || ''), owner: String($data?.stageOwner || 'bosun') }));" +
+                "})()",
+              isExpression: true,
+            },
+          },
+          {
+            id: "finish",
+            type: "flow.end",
+            label: "Finish Plan",
+            config: {
+              status: "completed",
+              output: {
+                stagePlan: "{{$data?.stagePlan || []}}",
+                stageCount: "{{$data?.stagePlan?.length || 0}}",
+              },
+            },
+          },
+        ],
+        edges: [
+          { id: "e1", source: "trigger", target: "build-plan" },
+          { id: "e2", source: "build-plan", target: "finish" },
+        ],
+      },
+    }),
+
+    node("inline-summarize", "action.inline_workflow", "Inline Summary", {
+      mode: "sync",
+      outputVariable: "inlineSummaryResult",
+      input: {
+        stagePlan: "{{$ctx.getNodeOutput('inline-plan')?.stagePlan || []}}",
+        stepCount: "{{$ctx.getNodeOutput('inline-prepare')?.stepCount || 0}}",
+      },
+      workflow: {
+        trigger: "trigger.workflow_call",
+        nodes: [
+          {
+            id: "trigger",
+            type: "trigger.workflow_call",
+            label: "Inline Trigger",
+            config: {
+              inputs: {
+                stagePlan: { type: "array", required: false },
+                stepCount: { type: "number", required: false },
+              },
+            },
+          },
+          {
+            id: "summarize",
+            type: "action.set_variable",
+            label: "Summarize Plan",
+            config: {
+              key: "summary",
+              value:
+                "(() => {" +
+                "const plan = Array.isArray($data?.stagePlan) ? $data.stagePlan : [];" +
+                "const labels = plan.map((entry) => String(entry.index) + ':' + String(entry.step || '')).join(', ');" +
+                "return {" +
+                "  summaryMessage: 'Prepared ' + String(Number($data?.stepCount || 0)) + ' inline stage(s)' + (labels ? ' -> ' + labels : '')," +
+                "  plannedSteps: plan," +
+                "};" +
+                "})()",
+              isExpression: true,
+            },
+          },
+          {
+            id: "finish",
+            type: "flow.end",
+            label: "Finish Summary",
+            config: {
+              status: "completed",
+              output: "{{$data?.summary || { summaryMessage: 'Prepared 0 inline stage(s)', plannedSteps: [] }}}",
+            },
+          },
+        ],
+        edges: [
+          { id: "e1", source: "trigger", target: "summarize" },
+          { id: "e2", source: "summarize", target: "finish" },
+        ],
+      },
+    }),
+
+    node("log-summary", "notify.log", "Log Inline Summary", {
+      message: "{{inline-summarize.summaryMessage}}",
+      level: "info",
+    }),
+  ],
+  edges: [
+    edge("trigger", "inline-prepare"),
+    edge("inline-prepare", "inline-plan"),
+    edge("inline-plan", "inline-summarize"),
+    edge("inline-summarize", "log-summary"),
+  ],
+  metadata: {
+    author: "virtengine",
+    tags: ["workflow", "composition", "inline", "parent-workflow", "embedded"],
+  },
+};
+
+// ── Template 4: MCP-to-Bosun Bridge ─────────────────────────────────────────
 // Demonstrates: MCP Tool → Extract → Bosun Function → Sub-Workflow
 // Pattern: External MCP data → Bosun internal actions → Workflow dispatch
 
@@ -277,7 +487,7 @@ export const MCP_TO_BOSUN_BRIDGE_TEMPLATE = {
   },
 };
 
-// ── Template 4: Git Health → Tool Analysis → Sub-Workflow ───────────────────
+// ── Template 5: Git Health → Tool Analysis → Sub-Workflow ───────────────────
 // Demonstrates: Bosun functions + tools + sub-workflow in one pipeline
 
 resetLayout();
