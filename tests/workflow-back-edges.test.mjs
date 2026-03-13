@@ -762,6 +762,66 @@ describe("action.web_search", () => {
     const searchOutput = result.getNodeOutput("search");
     expect(searchOutput.query).toBe("Riemann hypothesis proof verification");
   });
+
+  it("extracts plain text content without preserving script or style payloads", async () => {
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = vi.fn(async (url) => {
+      if (String(url).includes("api.duckduckgo.com")) {
+        return {
+          ok: true,
+          async json() {
+            return {
+              RelatedTopics: [
+                {
+                  Text: "Example result",
+                  FirstURL: "https://example.com/article",
+                },
+              ],
+            };
+          },
+        };
+      }
+
+      return {
+        ok: true,
+        async text() {
+          return '<html><body><h1>Headline</h1><script >alert(1)</script><style>body{color:red}</style><p>Body &amp; copy</p></body></html>';
+        },
+      };
+    });
+
+    try {
+      const wf = makeWorkflow(
+        [
+          { id: "trigger", type: "trigger.manual", label: "Start", config: {} },
+          {
+            id: "search",
+            type: "action.web_search",
+            label: "Search",
+            config: {
+              query: "safe extraction",
+              maxResults: 1,
+              engine: "fetch",
+              extractContent: true,
+            },
+          },
+        ],
+        [{ id: "e1", source: "trigger", target: "search" }],
+      );
+
+      engine.save(wf);
+      const result = await engine.execute(wf.id, {});
+      const searchOutput = result.getNodeOutput("search");
+      expect(searchOutput.results[0].content).toContain("Headline");
+      expect(searchOutput.results[0].content).toContain("Body & copy");
+      expect(searchOutput.results[0].content).not.toContain("alert(1)");
+      expect(searchOutput.results[0].content).not.toContain("color:red");
+      expect(searchOutput.results[0].content).not.toContain("<script");
+      expect(searchOutput.results[0].content).not.toContain("<style");
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
 });
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -921,3 +981,4 @@ describe("Edge helper backEdge support", () => {
     expect(e.label).toBeUndefined();
   });
 });
+
