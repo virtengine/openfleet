@@ -1,5 +1,5 @@
 import { execSync, spawn, spawnSync } from "node:child_process";
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import {
   existsSync,
   mkdirSync,
@@ -197,7 +197,7 @@ import {
   installConsoleInterceptor,
   setErrorLogFile,
 } from "../lib/logger.mjs";
-import { fixGitConfigCorruption } from "../workspace/worktree-manager.mjs";
+import { fixGitConfigCorruption, listActiveWorktrees } from "../workspace/worktree-manager.mjs";
 // ── Task management subsystem imports ──────────────────────────────────────
 import {
   configureTaskStore,
@@ -381,6 +381,36 @@ function parseEnvInteger(value, defaultValue, { min = null, max = null } = {}) {
   return parsed;
 }
 
+const DEFAULT_AGENT_ENDPOINT_PORT = 18432;
+const REPO_SCOPED_AGENT_ENDPOINT_PORT_WINDOW = 2048;
+
+function deriveRepoScopedAgentEndpointPort(repoRoot) {
+  const normalizedRoot = resolve(String(repoRoot || process.cwd()))
+    .replace(/\\/g, "/")
+    .toLowerCase();
+  const digest = createHash("sha1").update(normalizedRoot, "utf8").digest();
+  const offset = ((digest[0] << 8) | digest[1]) % REPO_SCOPED_AGENT_ENDPOINT_PORT_WINDOW;
+  return DEFAULT_AGENT_ENDPOINT_PORT + offset;
+}
+
+function resolveMonitorAgentEndpointPort(repoRoot) {
+  const explicit = parseEnvInteger(
+    process.env.AGENT_ENDPOINT_PORT ?? process.env.BOSUN_AGENT_ENDPOINT_PORT,
+    Number.NaN,
+    { min: 1, max: 65535 },
+  );
+  if (Number.isFinite(explicit)) return explicit;
+  return deriveRepoScopedAgentEndpointPort(repoRoot);
+}
+
+function syncAgentEndpointPortEnv(port) {
+  const normalized = Number(port);
+  if (!Number.isInteger(normalized) || normalized <= 0 || normalized > 65535) return;
+  const value = String(normalized);
+  process.env.BOSUN_AGENT_ENDPOINT_PORT = value;
+  process.env.AGENT_ENDPOINT_PORT = value;
+}
+
 let workflowAutomationEnabled = false;
 let workflowEventDedupWindowMs = 15_000;
 const workflowEventDedup = new Map();
@@ -392,6 +422,9 @@ let workflowAutomationReadyLogged = false;
 let workflowAutomationUnavailableLogged = false;
 let workflowConflictResolverPausedLogged = false;
 let workflowTaskReconcilePausedLogged = false;
+let workflowTaskReconcileInFlight = false;
+let workflowTaskReconcileLastAt = 0;
+const WORKFLOW_TASK_RECONCILE_MIN_INTERVAL_MS = 45 * 1000;
 
 /**
  * Cache of module names that have an enabled workflow replacement.
@@ -565,7 +598,12 @@ async function ensureWorkflowAutomationEngine() {
         anomalyDetector: anomalyDetector || null,
       };
 
-      const engine = getWorkflowEngine({ services });
+      const engine = getWorkflowEngine({
+        services,
+        workflowDir: resolve(repoRoot, ".bosun", "workflows"),
+        runsDir: resolve(repoRoot, ".bosun", "workflow-runs"),
+        configDir: repoRoot,
+      });
 
       const configuredWorkflowProfile =
         config?.workflowDefaults && typeof config.workflowDefaults === "object"
@@ -584,6 +622,20 @@ async function ensureWorkflowAutomationEngine() {
           : [],
       );
       const staleWorkflowTemplateIds = ["template-task-batch-pr"];
+      if (typeof workflowTemplates?.reconcileInstalledTemplates === "function") {
+        const reconcile = workflowTemplates.reconcileInstalledTemplates(engine, {
+          autoUpdateUnmodified: true,
+          forceUpdateTemplateIds: ["template-task-lifecycle", "template-task-finalization-guard"],
+        });
+        if (Number(reconcile?.autoUpdated || 0) > 0) {
+          console.log(
+            `[workflows] reconciled template-backed workflow(s): ${reconcile.autoUpdated} updated` +
+              (Array.isArray(reconcile?.forceUpdated) && reconcile.forceUpdated.length > 0
+                ? ` (${reconcile.forceUpdated.length} forced)`
+                : ""),
+          );
+        }
+      }
       for (const summary of engine.list?.() || []) {
         const installedFrom = String(summary?.metadata?.installedFrom || "").trim();
         if (!staleWorkflowTemplateIds.includes(installedFrom)) continue;
@@ -634,8 +686,10 @@ async function ensureWorkflowAutomationEngine() {
           );
         }
       }
+      workflowAutomationInitDone = true;
       return engine;
     } catch (err) {
+      workflowAutomationInitDone = false;
       if (!workflowAutomationUnavailableLogged) {
         workflowAutomationUnavailableLogged = true;
         console.warn(
@@ -644,7 +698,6 @@ async function ensureWorkflowAutomationEngine() {
       }
       return null;
     } finally {
-      workflowAutomationInitDone = true;
       workflowAutomationInitPromise = null;
     }
   })();
@@ -1274,7 +1327,7 @@ try {
 }
 workflowAutomationEnabled = parseEnvBoolean(
   process.env.WORKFLOW_AUTOMATION_ENABLED,
-  false,
+  true,
 );
 {
   const dedupMs = Number(process.env.WORKFLOW_EVENT_DEDUP_WINDOW_MS || "15000");
@@ -2346,6 +2399,7 @@ const SELF_RESTART_FORCE_ACTIVE_SLOT_MIN_AGE_MS = Math.max(
 );
 let selfWatcher = null;
 let selfWatcherLib = null;
+let selfWatcherExtra = []; // watchers for sibling source dirs (task/, workspace/, etc.)
 let selfWatcherDebounce = null;
 let selfRestartTimer = null;
 let selfRestartLastChangeAt = 0;
@@ -4532,7 +4586,7 @@ async function getAttemptInfo(attemptId) {
 }
 
 function ghAvailable() {
-  const res = spawnSync("gh", ["--version"], { stdio: "ignore" });
+  const res = spawnSync("gh", ["--version"], { stdio: "ignore", timeout: 8000 });
   return res.status === 0;
 }
 
@@ -4584,21 +4638,32 @@ function findWorktreeForBranch(branch) {
 
 async function findExistingPrForBranch(branch) {
   if (!branch || !ghAvailable()) return null;
+  const normalizedRepo = normalizeRepoSlugCandidate(repoSlug);
+  return await findExistingPrForBranchInRepo(branch, normalizedRepo);
+}
+
+async function findExistingPrForBranchInRepo(branch, repoOverride = "") {
+  if (!branch || !ghAvailable()) return null;
+  const resolvedRepo =
+    normalizeRepoSlugCandidate(repoOverride) ||
+    normalizeRepoSlugCandidate(repoSlug);
+  const args = [
+    "pr",
+    "list",
+    "--head",
+    branch,
+    "--state",
+    "all",
+    "--limit",
+    "5",
+    "--json",
+    "number,state,title,url,mergedAt,closedAt",
+  ];
+  if (resolvedRepo) args.push("--repo", resolvedRepo);
   const res = spawnSync(
     "gh",
-    [
-      "pr",
-      "list",
-      "--head",
-      branch,
-      "--state",
-      "all",
-      "--limit",
-      "5",
-      "--json",
-      "number,state,title,url,mergedAt,closedAt",
-    ],
-    { encoding: "utf8" },
+    args,
+    { encoding: "utf8", timeout: 15000 },
   );
   if (res.status !== 0) {
     return null;
@@ -4612,22 +4677,39 @@ async function findExistingPrForBranch(branch) {
 }
 
 async function findExistingPrForBranchApi(branch) {
-  if (!branch || !githubToken || !repoSlug) return null;
-  const [owner, repo] = repoSlug.split("/");
+  const normalizedRepo = normalizeRepoSlugCandidate(repoSlug);
+  return await findExistingPrForBranchApiInRepo(branch, normalizedRepo);
+}
+
+async function findExistingPrForBranchApiInRepo(branch, repoOverride = "") {
+  if (!branch || !githubToken) return null;
+  const resolvedRepo =
+    normalizeRepoSlugCandidate(repoOverride) ||
+    normalizeRepoSlugCandidate(repoSlug);
+  if (!resolvedRepo) return null;
+  const [owner, repo] = resolvedRepo.split("/");
   if (!owner || !repo) return null;
   const head = `${owner}:${branch}`;
   const url = `https://api.github.com/repos/${owner}/${repo}/pulls?state=all&head=${encodeURIComponent(
     head,
   )}`;
   try {
-    const res = await fetch(url, {
-      headers: {
-        Authorization: `Bearer ${githubToken}`,
-        Accept: "application/vnd.github+json",
-        "X-GitHub-Api-Version": "2022-11-28",
-        "User-Agent": "bosun",
-      },
-    });
+    const abort = new AbortController();
+    const abortTimer = setTimeout(() => abort.abort(), 15000);
+    let res;
+    try {
+      res = await fetch(url, {
+        headers: {
+          Authorization: `Bearer ${githubToken}`,
+          Accept: "application/vnd.github+json",
+          "X-GitHub-Api-Version": "2022-11-28",
+          "User-Agent": "bosun",
+        },
+        signal: abort.signal,
+      });
+    } finally {
+      clearTimeout(abortTimer);
+    }
     if (!res || !res.ok) {
       const text = res ? await res.text().catch(() => "") : "";
       const status = res?.status || "no response";
@@ -4646,19 +4728,24 @@ async function findExistingPrForBranchApi(branch) {
   }
 }
 
-async function getPullRequestByNumber(prNumber) {
+async function getPullRequestByNumber(prNumber, repoOverride = "") {
   if (!Number.isFinite(prNumber) || prNumber <= 0) return null;
+  const resolvedRepo =
+    normalizeRepoSlugCandidate(repoOverride) ||
+    normalizeRepoSlugCandidate(repoSlug);
   if (ghAvailable()) {
+    const args = [
+      "pr",
+      "view",
+      String(prNumber),
+      "--json",
+      "number,state,title,url,mergedAt,closedAt,mergeable,mergeStateStatus",
+    ];
+    if (resolvedRepo) args.push("--repo", resolvedRepo);
     const res = spawnSync(
       "gh",
-      [
-        "pr",
-        "view",
-        String(prNumber),
-        "--json",
-        "number,state,title,url,mergedAt,closedAt,mergeable,mergeStateStatus",
-      ],
-      { encoding: "utf8" },
+      args,
+      { encoding: "utf8", timeout: 15000 },
     );
     if (res.status === 0) {
       try {
@@ -4668,19 +4755,27 @@ async function getPullRequestByNumber(prNumber) {
       }
     }
   }
-  if (!githubToken || !repoSlug) return null;
-  const [owner, repo] = repoSlug.split("/");
+  if (!githubToken || !resolvedRepo) return null;
+  const [owner, repo] = resolvedRepo.split("/");
   if (!owner || !repo) return null;
   const url = `https://api.github.com/repos/${owner}/${repo}/pulls/${prNumber}`;
   try {
-    const res = await fetch(url, {
-      headers: {
-        Authorization: `Bearer ${githubToken}`,
-        Accept: "application/vnd.github+json",
-        "X-GitHub-Api-Version": "2022-11-28",
-        "User-Agent": "bosun",
-      },
-    });
+    const abort = new AbortController();
+    const abortTimer = setTimeout(() => abort.abort(), 15000);
+    let res;
+    try {
+      res = await fetch(url, {
+        headers: {
+          Authorization: `Bearer ${githubToken}`,
+          Accept: "application/vnd.github+json",
+          "X-GitHub-Api-Version": "2022-11-28",
+          "User-Agent": "bosun",
+        },
+        signal: abort.signal,
+      });
+    } finally {
+      clearTimeout(abortTimer);
+    }
     if (!res || !res.ok) {
       const text = res ? await res.text().catch(() => "") : "";
       const status = res?.status || "no response";
@@ -6268,19 +6363,203 @@ loadRecoveryCache();
  * Also detects open PRs with merge conflicts and triggers resolution.
  */
 async function checkMergedPRsAndUpdateTasks() {
-  if (!workflowTaskReconcilePausedLogged) {
-    workflowTaskReconcilePausedLogged = true;
-    console.log(
-      "[monitor] legacy task-status reconciliation path removed — use workflows",
-    );
+  if (workflowTaskReconcileInFlight) {
+    // Safety release: if the in-flight flag has been stuck for >2 minutes (e.g.
+    // due to a hung fetch/spawnSync that resolved but the finally never ran),
+    // force-release it so reconcile can run again.
+    const staleMs = Date.now() - workflowTaskReconcileLastAt;
+    if (staleMs > 2 * 60 * 1000) {
+      console.warn(
+        `[monitor] review reconcile: in-flight flag stale (${staleMs}ms) — force releasing`,
+      );
+      workflowTaskReconcileInFlight = false;
+    } else {
+      return {
+        checked: 0,
+        movedDone: 0,
+        movedReview: 0,
+        movedTodo: 0,
+        skippedByWorkflowReplacement: false,
+        skippedReason: "already_running",
+      };
+    }
   }
-  return {
+  const now = Date.now();
+  if (
+    workflowTaskReconcileLastAt > 0 &&
+    now - workflowTaskReconcileLastAt < WORKFLOW_TASK_RECONCILE_MIN_INTERVAL_MS
+  ) {
+    return {
+      checked: 0,
+      movedDone: 0,
+      movedReview: 0,
+      movedTodo: 0,
+      skippedByWorkflowReplacement: false,
+      skippedReason: "cooldown",
+    };
+  }
+
+  workflowTaskReconcileInFlight = true;
+  workflowTaskReconcileLastAt = now;
+
+  const summary = {
     checked: 0,
     movedDone: 0,
     movedReview: 0,
     movedTodo: 0,
-    skippedByWorkflowReplacement: true,
+    skippedByWorkflowReplacement: false,
   };
+  try {
+    const pendingReview = Array.isArray(getTasksPendingReview())
+      ? getTasksPendingReview()
+      : [];
+    const mergedRecoveryCandidates = [
+      ...(getInternalTasksByStatus("todo") || []),
+      ...(getInternalTasksByStatus("inprogress") || []),
+      ...(getInternalTasksByStatus("inreview") || []),
+    ].filter((task) => {
+      const status = String(task?.status || "").trim().toLowerCase();
+      if (!status || status === "done") return false;
+      const prNumber =
+        parsePositivePrNumber(task?.prNumber) ||
+        parsePositivePrNumber(task?.pr_number) ||
+        extractPrNumberFromUrl(task?.prUrl || task?.pr_url || "");
+      return Boolean(prNumber);
+    });
+    const pendingById = new Map();
+    for (const task of [...pendingReview, ...mergedRecoveryCandidates]) {
+      const id = String(task?.id || "").trim();
+      if (!id || pendingById.has(id)) continue;
+      pendingById.set(id, task);
+    }
+    const pending = [...pendingById.values()];
+    if (pending.length === 0) {
+      return summary;
+    }
+
+    for (const task of pending) {
+      const taskId = String(task?.id || "").trim();
+      if (!taskId) continue;
+      const taskStatus = String(task?.status || "").trim().toLowerCase();
+      const allowsMergedRecovery =
+        taskStatus === "todo" || taskStatus === "inprogress";
+
+      const approved =
+        String(task?.reviewStatus || "").trim().toLowerCase() === "approved" ||
+        isTaskReviewApprovedForFlow(taskId);
+      // inreview tasks must always be checked — their PR may have merged even if
+      // the review-approval flag was never set (e.g. FLOW_REQUIRE_REVIEW=false or
+      // auto-merge on GitHub without a Bosun review pass).
+      const allowsInreviewMergeCheck = taskStatus === "inreview";
+      if (!approved && !allowsMergedRecovery && !allowsInreviewMergeCheck) continue;
+
+      let prUrl = String(task?.prUrl || task?.pr_url || "").trim();
+      let prNumber =
+        parsePositivePrNumber(task?.prNumber) ||
+        parsePositivePrNumber(task?.pr_number) ||
+        null;
+      if (!prNumber && prUrl) {
+        prNumber = extractPrNumberFromUrl(prUrl);
+      }
+
+      const resolvedRepoSlug = resolveTaskRepoSlug(task, { prUrl, prNumber });
+      if (!prNumber) {
+        const branch = String(task?.branchName || task?.branch || "").trim();
+        if (branch) {
+          let existingPr = await findExistingPrForBranchInRepo(
+            branch,
+            resolvedRepoSlug,
+          );
+          if (!existingPr) {
+            existingPr = await findExistingPrForBranchApiInRepo(
+              branch,
+              resolvedRepoSlug,
+            );
+          }
+          if (existingPr?.number) {
+            prNumber = parsePositivePrNumber(existingPr.number);
+            prUrl = prUrl || String(existingPr.url || "").trim();
+          }
+        }
+      }
+      if (!prNumber) {
+        // inreview tasks with no discoverable PR are stuck — reset them to todo
+        // so the workflow can retry PR creation. Allow a grace period of 2 minutes
+        // to avoid racing with a very recently created inreview status.
+        if (allowsInreviewMergeCheck) {
+          const updatedAt = Date.parse(task?.updatedAt || task?.updated_at || "");
+          const ageMs = Number.isFinite(updatedAt) ? Date.now() - updatedAt : Infinity;
+          if (ageMs > 2 * 60 * 1000) {
+            console.warn(
+              `[monitor] review reconcile: inreview task ${taskId} has no discoverable PR — resetting to todo`,
+            );
+            try { setInternalTaskStatus(taskId, "todo", "review-reconcile-no-pr"); } catch { /* best-effort */ }
+            try { await updateTaskStatus(taskId, "todo"); } catch { /* best-effort */ }
+            summary.resetNopr = (summary.resetNopr || 0) + 1;
+          }
+        }
+        continue;
+      }
+      if (!prUrl) {
+        prUrl = `${getRepoUrlBaseForSlug(resolvedRepoSlug)}/pull/${prNumber}`;
+      }
+
+      summary.checked += 1;
+      const prInfo = await getPullRequestByNumber(prNumber, resolvedRepoSlug);
+      const prState = String(prInfo?.state || "").trim().toUpperCase();
+      const mergedAt = String(prInfo?.mergedAt || prInfo?.merged_at || "").trim();
+      const isMerged = prState === "MERGED" || Boolean(mergedAt);
+      if (!isMerged) continue;
+
+      const recoverySuffix = allowsMergedRecovery
+        ? ` (status=${taskStatus || "unknown"})`
+        : "";
+      console.log(
+        `[monitor] review reconcile: PR #${prNumber} merged (${resolvedRepoSlug || "repo-unknown"}) — marking ${taskId} done${recoverySuffix}`,
+      );
+      try {
+        setInternalTaskStatus(taskId, "done", "review-merge-reconcile");
+      } catch {
+        /* best-effort */
+      }
+      try {
+        updateInternalTask(taskId, {
+          prNumber,
+          prUrl,
+          repository:
+            normalizeRepoSlugCandidate(task?.repository) ||
+            resolvedRepoSlug ||
+            undefined,
+        });
+      } catch {
+        /* best-effort */
+      }
+      try {
+        await updateTaskStatus(taskId, "done", {
+          source: "review-merge-reconcile",
+          workflowData: {
+            prNumber,
+            prUrl,
+            repository: resolvedRepoSlug || task?.repository || null,
+          },
+        });
+      } catch {
+        /* best-effort */
+      }
+      summary.movedDone += 1;
+    }
+
+    if (!workflowTaskReconcilePausedLogged) {
+      workflowTaskReconcilePausedLogged = true;
+      console.log(
+        "[monitor] workflow review reconciliation enabled for inreview tasks with merged PRs",
+      );
+    }
+
+    return summary;
+  } finally {
+    workflowTaskReconcileInFlight = false;
+  }
 }
 
 async function reconcileTaskStatuses(reason = "manual") {
@@ -7224,14 +7503,24 @@ async function queueFlowReview(taskId, ctx, reason = "") {
   const id = String(taskId || "").trim();
   if (!id) return false;
   try {
+    const task = getInternalTask(id);
+    const resolvedRepoSlug = resolveTaskRepoSlug(task, ctx);
+    const resolvedRepoUrlBase = getRepoUrlBaseForSlug(resolvedRepoSlug);
+    const resolvedPrNumber =
+      parsePositivePrNumber(ctx?.prNumber) ||
+      parsePositivePrNumber(task?.prNumber) ||
+      parsePositivePrNumber(task?.pr_number) ||
+      null;
     const prUrl =
       ctx?.prUrl ||
-      (ctx?.prNumber ? `${repoUrlBase}/pull/${ctx.prNumber}` : "");
+      (resolvedPrNumber ? `${resolvedRepoUrlBase}/pull/${resolvedPrNumber}` : "");
     await reviewAgent.queueReview({
       id,
       title: ctx?.taskTitle || id,
       branchName: ctx?.branch || "",
       prUrl,
+      prNumber: resolvedPrNumber,
+      repoSlug: resolvedRepoSlug || undefined,
       description: ctx?.taskDescription || "",
       taskContext: reason ? `Flow gate reason: ${reason}` : "",
       worktreePath: ctx?.worktreeDir || null,
@@ -7254,8 +7543,47 @@ function parsePositivePrNumber(value) {
 
 function extractPrNumberFromUrl(prUrl) {
   const raw = String(prUrl || "");
-  const match = raw.match(/\/pull\/(\d+)(?:$|[/?#])/i);
-  return match ? parsePositivePrNumber(match[1]) : null;
+  return parsePositivePrNumber(parsePrNumberFromUrl(raw));
+}
+
+function normalizeRepoSlugCandidate(value) {
+  const raw = String(value || "").trim();
+  if (!raw) return "";
+  const trimmed = raw
+    .replace(/^https?:\/\/github\.com\//i, "")
+    .replace(/^github\.com\//i, "")
+    .replace(/\/+$/g, "");
+  const parts = trimmed.split("/").filter(Boolean);
+  if (parts.length < 2) return "";
+  const owner = String(parts[0] || "").trim();
+  const repo = String(parts[1] || "").trim();
+  if (!owner || !repo) return "";
+  return `${owner}/${repo}`;
+}
+
+function extractRepoSlugFromPrUrl(prUrl) {
+  const raw = String(prUrl || "").trim();
+  if (!raw) return "";
+  const match = raw.match(/github\.com\/([^/]+\/[^/#?]+)\/pull\//i);
+  return normalizeRepoSlugCandidate(match?.[1] || "");
+}
+
+function resolveTaskRepoSlug(task, context = {}) {
+  return (
+    normalizeRepoSlugCandidate(context?.repoSlug) ||
+    normalizeRepoSlugCandidate(context?.repository) ||
+    extractRepoSlugFromPrUrl(context?.prUrl) ||
+    normalizeRepoSlugCandidate(task?.repository) ||
+    normalizeRepoSlugCandidate(task?.repoSlug) ||
+    extractRepoSlugFromPrUrl(task?.prUrl || task?.pr_url || "") ||
+    normalizeRepoSlugCandidate(repoSlug)
+  );
+}
+
+function getRepoUrlBaseForSlug(slug) {
+  const normalizedSlug = normalizeRepoSlugCandidate(slug);
+  if (normalizedSlug) return `https://github.com/${normalizedSlug}`;
+  return String(repoUrlBase || "https://github.com").replace(/\/+$/g, "");
 }
 
 function buildFlowGateMergeBody(taskTitle, taskId) {
@@ -7283,6 +7611,8 @@ async function triggerFlowPostReviewMerge(taskId, context = {}) {
   if (!id) return false;
 
   const task = getInternalTask(id);
+  const resolvedRepoSlug = resolveTaskRepoSlug(task, context);
+  const resolvedRepoUrlBase = getRepoUrlBaseForSlug(resolvedRepoSlug);
   const branch = String(
     context.branch || task?.branchName || task?.branch || "",
   ).trim();
@@ -7302,9 +7632,15 @@ async function triggerFlowPostReviewMerge(taskId, context = {}) {
   }
 
   if (!prNumber && branch) {
-    let existingPr = await findExistingPrForBranch(branch);
+    let existingPr = await findExistingPrForBranchInRepo(
+      branch,
+      resolvedRepoSlug,
+    );
     if (!existingPr) {
-      existingPr = await findExistingPrForBranchApi(branch);
+      existingPr = await findExistingPrForBranchApiInRepo(
+        branch,
+        resolvedRepoSlug,
+      );
     }
     if (existingPr?.number) {
       prNumber = parsePositivePrNumber(existingPr.number);
@@ -7318,9 +7654,12 @@ async function triggerFlowPostReviewMerge(taskId, context = {}) {
     );
     return false;
   }
+  if (!prUrl) {
+    prUrl = `${resolvedRepoUrlBase}/pull/${prNumber}`;
+  }
 
   const autoArgs = ["pr", "merge", String(prNumber)];
-  if (repoSlug) autoArgs.push("--repo", repoSlug);
+  if (resolvedRepoSlug) autoArgs.push("--repo", resolvedRepoSlug);
   autoArgs.push("--body", buildFlowGateMergeBody(taskTitle, id));
   autoArgs.push("--auto", "--squash");
 
@@ -7342,7 +7681,7 @@ async function triggerFlowPostReviewMerge(taskId, context = {}) {
   ).trim();
   if (/clean status|not in the correct state/i.test(autoErr)) {
     const directArgs = ["pr", "merge", String(prNumber)];
-    if (repoSlug) directArgs.push("--repo", repoSlug);
+    if (resolvedRepoSlug) directArgs.push("--repo", resolvedRepoSlug);
     directArgs.push("--body", buildFlowGateMergeBody(taskTitle, id));
     directArgs.push("--squash");
     const directResult = spawnSync("gh", directArgs, {
@@ -7407,6 +7746,8 @@ async function shouldFinalizeMergedTask(task, context = {}) {
 
   const branch = context.branch || task?.branch || task?.workspace_branch || "";
   const prNumber = context.prNumber || task?.pr_number || null;
+  const resolvedRepoSlug = resolveTaskRepoSlug(task, context);
+  const resolvedRepoUrlBase = getRepoUrlBaseForSlug(resolvedRepoSlug);
   const reason = context.reason || "merged_before_review";
   console.log(
     `[flow-gate] Task "${task?.title || taskId}" merged but review is not approved yet — holding in inreview`,
@@ -7425,9 +7766,12 @@ async function shouldFinalizeMergedTask(task, context = {}) {
     taskDescription: task?.description || task?.body || "",
     branch,
     prNumber,
+    repoSlug: resolvedRepoSlug || null,
     prUrl:
       context.prUrl ||
-      (prNumber ? `${repoUrlBase}/pull/${prNumber}` : task?.pr_url || ""),
+      task?.prUrl ||
+      task?.pr_url ||
+      (prNumber ? `${resolvedRepoUrlBase}/pull/${prNumber}` : ""),
   }, reason);
   return false;
 }
@@ -12774,6 +13118,10 @@ function stopSelfWatcher() {
     selfWatcherLib.close();
     selfWatcherLib = null;
   }
+  for (const w of selfWatcherExtra) {
+    try { w.close(); } catch {}
+  }
+  selfWatcherExtra = [];
   if (selfWatcherDebounce) {
     clearTimeout(selfWatcherDebounce);
     selfWatcherDebounce = null;
@@ -13131,10 +13479,21 @@ function startSelfWatcher() {
     const libDir = resolve(__dirname, "lib");
     if (existsSync(libDir)) {
       selfWatcherLib = watch(libDir, { persistent: true }, handleSourceChange);
-      console.log("[monitor] watching own source files (root + lib/) for self-restart");
-    } else {
-      console.log("[monitor] watching own source files for self-restart");
     }
+    // Watch sibling source directories that contain runtime-critical modules
+    const repoRoot = resolve(__dirname, "..");
+    const siblingDirs = ["task", "workspace", "workflow", "workflow-templates", "agent", "shell", "kanban", "github", "config"];
+    const watchedDirs = ["infra/", "infra/lib/"];
+    for (const dir of siblingDirs) {
+      const dirPath = resolve(repoRoot, dir);
+      if (existsSync(dirPath)) {
+        try {
+          selfWatcherExtra.push(watch(dirPath, { persistent: true }, handleSourceChange));
+          watchedDirs.push(`${dir}/`);
+        } catch {}
+      }
+    }
+    console.log(`[monitor] watching source files for self-restart: ${watchedDirs.join(", ")}`);
   } catch (err) {
     console.warn(`[monitor] self-watcher failed: ${err.message}`);
   }
@@ -13935,7 +14294,7 @@ safeSetInterval("flush-error-queue", () => flushErrorQueue(), 60 * 1000);
 // Check all installed polling workflows (trigger.schedule, trigger.scheduled_once,
 // trigger.task_available, trigger.task_low) and fire any whose interval has elapsed.
 // This keeps scheduled and task-poll lifecycle templates executing without hardcoded
-// per-workflow timers.
+// per-workflow timers.  Workspace-aware: skips workflows for paused/disabled workspaces.
 const scheduleCheckIntervalMs = 60 * 1000; // check every 60s
 pollWorkflowSchedulesOnce = async function pollWorkflowSchedulesOnce(
   triggerSource = "schedule-poll",
@@ -13946,7 +14305,7 @@ pollWorkflowSchedulesOnce = async function pollWorkflowSchedulesOnce(
     if (!engine?.evaluateScheduleTriggers) return;
     const includeTaskPoll = opts?.includeTaskPoll !== false;
 
-    const triggered = engine.evaluateScheduleTriggers();
+    const triggered = engine.evaluateScheduleTriggers({ configDir: repoRoot });
     if (!Array.isArray(triggered) || triggered.length === 0) return;
 
     for (const match of triggered) {
@@ -13965,10 +14324,15 @@ pollWorkflowSchedulesOnce = async function pollWorkflowSchedulesOnce(
         .execute(workflowId, {
           _triggerSource: triggerSource,
           _triggeredBy: match?.triggeredBy || null,
+          _workspaceId: match?.workspaceId || null,
           repoRoot,
         })
         .then((ctx) => {
           const runId = ctx?.id || "unknown";
+          // Quiet mode: don't log completed runs where trigger didn't fire
+          const triggerNodeId = match?.triggeredBy;
+          const triggerOutput = triggerNodeId ? ctx?.getNodeOutput?.(triggerNodeId) : null;
+          if (triggerOutput?.triggered === false) return; // silent — trigger didn't fire
           const runStatus =
             Array.isArray(ctx?.errors) && ctx.errors.length > 0
               ? "failed"
@@ -13998,7 +14362,108 @@ safeSetInterval("workflow-schedule-check", async () => {
   await pollWorkflowSchedulesOnce();
 }, scheduleCheckIntervalMs);
 
+safeSetInterval("workflow-review-merge-reconcile", async () => {
+  const result = await checkMergedPRsAndUpdateTasks();
+  if ((result?.movedDone || 0) > 0) {
+    console.log(
+      `[monitor] review merge reconcile moved ${result.movedDone} task(s) to done`,
+    );
+  }
+}, scheduleCheckIntervalMs);
+
 // Legacy merged PR check removed (workflow-only control).
+
+// ── Periodic stale worktree sync: every 5 min ─────────────────────────────
+// Detects task worktrees that are diverged from their remote (local commits
+// not pushed, or remote has newer commits from a previous run).  For each
+// diverged worktree it: fetches remote, rebases local onto the remote tracking
+// ref for that branch, then pushes with --force-with-lease.  This keeps the
+// VS Code source-control view clean and unblocks tasks that got stuck mid-push.
+async function syncDivergedWorktrees() {
+  const worktrees = listActiveWorktrees(repoRoot);
+  let synced = 0;
+  let failed = 0;
+
+  for (const wt of worktrees) {
+    const { path: wtPath, branch } = wt;
+    if (!wtPath || !branch || !branch.startsWith("task/")) continue;
+
+    try {
+      // Fetch remote to update tracking refs
+      execSync("git fetch origin --no-tags", {
+        cwd: wtPath, timeout: 30_000, stdio: ["ignore", "pipe", "pipe"],
+      });
+
+      // Check ahead/behind vs remote tracking ref
+      const remoteRef = `origin/${branch}`;
+      let remoteExists = false;
+      try {
+        execSync(`git rev-parse --verify ${remoteRef}`, {
+          cwd: wtPath, timeout: 5_000, stdio: ["ignore", "pipe", "pipe"],
+        });
+        remoteExists = true;
+      } catch { /* branch not yet pushed — nothing to sync */ }
+
+      if (!remoteExists) continue;
+
+      const ahead = parseInt(
+        execSync(`git rev-list --count ${remoteRef}..HEAD`, {
+          cwd: wtPath, encoding: "utf8", timeout: 10_000, stdio: ["ignore", "pipe", "pipe"],
+        }).trim(), 10);
+      const behind = parseInt(
+        execSync(`git rev-list --count HEAD..${remoteRef}`, {
+          cwd: wtPath, encoding: "utf8", timeout: 10_000, stdio: ["ignore", "pipe", "pipe"],
+        }).trim(), 10);
+
+      // Only act on diverged worktrees (behind > 0 AND ahead > 0)
+      if (ahead === 0 || behind === 0) continue;
+
+      console.log(
+        `[monitor:worktree-sync] ${branch} diverged: ${ahead} ahead, ${behind} behind — rebasing and pushing`,
+      );
+
+      // Rebase local onto remote tracking ref to incorporate remote commits
+      let rebased = false;
+      try {
+        execSync(`git rebase ${remoteRef}`, {
+          cwd: wtPath, encoding: "utf8", timeout: 60_000, stdio: ["ignore", "pipe", "pipe"],
+        });
+        rebased = true;
+      } catch (rebaseErr) {
+        try { execSync("git rebase --abort", { cwd: wtPath, timeout: 10_000, stdio: ["ignore", "pipe", "pipe"] }); } catch { /* ok */ }
+        console.warn(
+          `[monitor:worktree-sync] ${branch} rebase conflict — skipping push: ${rebaseErr.message?.slice(0, 200)}`,
+        );
+        failed++;
+        continue;
+      }
+
+      // Push with --force-with-lease (safe: we just fetched fresh remote refs)
+      try {
+        execSync(`git push --force-with-lease --set-upstream origin HEAD`, {
+          cwd: wtPath, encoding: "utf8", timeout: 30_000, stdio: ["ignore", "pipe", "pipe"],
+        });
+        console.log(`[monitor:worktree-sync] ${branch} sync-pushed successfully`);
+        synced++;
+      } catch (pushErr) {
+        console.warn(
+          `[monitor:worktree-sync] ${branch} push failed: ${pushErr.message?.slice(0, 200)}`,
+        );
+        failed++;
+      }
+    } catch (err) {
+      console.warn(`[monitor:worktree-sync] ${branch} error: ${err.message?.slice(0, 200)}`);
+      failed++;
+    }
+  }
+
+  if (synced > 0 || failed > 0) {
+    console.log(`[monitor:worktree-sync] cycle complete — synced=${synced} failed=${failed}`);
+  }
+}
+
+const worktreeSyncIntervalMs = 5 * 60 * 1000; // 5 min
+safeSetInterval("worktree-sync", syncDivergedWorktrees, worktreeSyncIntervalMs);
 
 // ── Periodic epic branch sync/merge: every 15 min ──────────────────────────
 const epicMergeIntervalMs = 15 * 60 * 1000;
@@ -14256,6 +14721,7 @@ let agentEventBus = null;
 let reviewAgent = null;
 /** @type {Map<string, { approved: boolean, reviewedAt: string }>} */
 const reviewGateResults = new Map();
+const pendingMergeStrategyByTask = new Map();
 /** @type {null} Sync engine lifecycle now managed by workflow template */
 let syncEngine = null;
 /** @type {import("./error-detector.mjs").ErrorDetector|null} */
@@ -14510,11 +14976,6 @@ if (isExecutorDisabled()) {
     };
     internalTaskExecutor = getTaskExecutor(execOpts);
     internalTaskExecutor.start();
-    if (workflowOwnsTaskExecutorLifecycle) {
-      void pollWorkflowSchedulesOnce("startup").catch((err) => {
-        console.warn(`[workflows] startup poll error: ${err?.message || err}`);
-      });
-    }
 
     // Write executor slots to status file every 30s for Telegram /tasks
     startStatusFileWriter(30000);
@@ -14524,8 +14985,14 @@ if (isExecutorDisabled()) {
 
     // ── Agent Endpoint ──
     try {
+      const requestedAgentEndpointPort = resolveMonitorAgentEndpointPort(repoRoot);
+      syncAgentEndpointPortEnv(requestedAgentEndpointPort);
       agentEndpoint = createAgentEndpoint({
-        port: Number(process.env.AGENT_ENDPOINT_PORT || 18432),
+        port: requestedAgentEndpointPort,
+        allowConflictKill: parseEnvBoolean(
+          process.env.BOSUN_AGENT_ENDPOINT_REAP_CONFLICTS,
+          false,
+        ),
         taskStore: {
           listTasks: (_projectId, { status } = {}) => {
             const normalized = String(status || "")
@@ -14633,20 +15100,17 @@ if (isExecutorDisabled()) {
           }
         },
       });
-      agentEndpoint
-        .start()
-        .then(() => {
-          console.log("[monitor] agent endpoint started");
-        })
-        .catch((err) => {
-          console.warn(
-            `[monitor] agent endpoint failed to start: ${err.message}`,
-          );
-          agentEndpoint = null;
-        });
+      await agentEndpoint.start();
+      syncAgentEndpointPortEnv(agentEndpoint.getPort());
+      console.log(`[monitor] agent endpoint started on port ${agentEndpoint.getPort()}`);
     } catch (err) {
       console.warn(`[monitor] agent endpoint creation failed: ${err.message}`);
       agentEndpoint = null;
+    }
+    if (workflowOwnsTaskExecutorLifecycle) {
+      void pollWorkflowSchedulesOnce("startup").catch((err) => {
+        console.warn(`[workflows] startup poll error: ${err?.message || err}`);
+      });
     }
 
     // ── Agent Event Bus ──
@@ -14785,6 +15249,9 @@ if (isExecutorDisabled()) {
                 branch: pendingCtx?.branch || "",
                 prNumber: pendingCtx?.prNumber || null,
                 prUrl: pendingCtx?.prUrl || "",
+                repoSlug:
+                  pendingCtx?.repoSlug ||
+                  resolveTaskRepoSlug(getInternalTask(taskId), pendingCtx || {}),
               });
             } else {
               console.log(
@@ -14821,12 +15288,45 @@ if (isExecutorDisabled()) {
               const taskId = String(task?.id || "").trim();
               if (!taskId) continue;
               const branchName = String(task?.branchName || "").trim();
-              const prUrl = String(task?.prUrl || "").trim();
-              const prNumber = String(task?.prNumber || "").trim();
-              const hasReviewReference = Boolean(prUrl || prNumber || branchName);
+              let prUrl = String(task?.prUrl || "").trim();
+              let prNumber = String(task?.prNumber || "").trim();
+              const taskRepoSlug = resolveTaskRepoSlug(task, {
+                prUrl,
+                prNumber,
+                branch: branchName,
+              });
+              if (!prUrl && !prNumber && branchName) {
+                let existingPr = await findExistingPrForBranchInRepo(
+                  branchName,
+                  taskRepoSlug,
+                );
+                if (!existingPr) {
+                  existingPr = await findExistingPrForBranchApiInRepo(
+                    branchName,
+                    taskRepoSlug,
+                  );
+                }
+                if (existingPr?.number) {
+                  prNumber = String(existingPr.number).trim();
+                  prUrl = String(existingPr.url || "").trim();
+                  try {
+                    updateInternalTask(taskId, {
+                      branchName,
+                      prNumber: parsePositivePrNumber(prNumber),
+                      prUrl: prUrl || undefined,
+                    });
+                  } catch {
+                    /* best-effort */
+                  }
+                }
+              }
+              if (!prUrl && prNumber) {
+                prUrl = `${getRepoUrlBaseForSlug(taskRepoSlug)}/pull/${prNumber}`;
+              }
+              const hasReviewReference = Boolean(prUrl || prNumber);
               if (!hasReviewReference) {
                 console.warn(
-                  `[monitor] review rehydrate reset ${taskId} to todo: missing prUrl/prNumber/branchName`,
+                  `[monitor] review rehydrate reset ${taskId} to todo: missing prUrl/prNumber`,
                 );
                 try {
                   setInternalTaskStatus(taskId, "todo", "review-agent-rehydrate");
@@ -14847,6 +15347,7 @@ if (isExecutorDisabled()) {
                 branchName,
                 prUrl,
                 prNumber,
+                repoSlug: taskRepoSlug || undefined,
                 description: task?.description || "",
                 taskContext: task?._taskContextBlock || task?.meta?.taskContextBlock || "",
                 worktreePath: null,

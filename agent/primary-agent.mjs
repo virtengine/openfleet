@@ -67,7 +67,9 @@ import {
 import { getModelsForExecutor, normalizeExecutorKey } from "../task/task-complexity.mjs";
 
 /** Valid agent interaction modes */
-const VALID_MODES = ["ask", "agent", "plan", "web", "instant"];
+const CORE_MODES = ["ask", "agent", "plan", "web", "instant"];
+/** Custom modes loaded from library */
+const _customModes = new Map();
 
 const MODE_ALIASES = Object.freeze({
   code: "agent",
@@ -116,7 +118,37 @@ function normalizeAgentMode(rawMode, fallback = "agent") {
   const normalized = String(rawMode || "").trim().toLowerCase();
   if (!normalized) return fallback;
   const mapped = MODE_ALIASES[normalized] || normalized;
-  return VALID_MODES.includes(mapped) ? mapped : fallback;
+  return getValidModes().includes(mapped) ? mapped : fallback;
+}
+
+/**
+ * Get all valid modes including dynamically registered custom modes.
+ * @returns {string[]}
+ */
+function getValidModes() {
+  return [...CORE_MODES, ..._customModes.keys()];
+}
+
+/**
+ * Get mode prefix for a given mode, including custom modes.
+ * @param {string} mode
+ * @returns {string}
+ */
+function getModePrefix(mode) {
+  if (MODE_PREFIXES[mode] !== undefined) return MODE_PREFIXES[mode];
+  const custom = _customModes.get(mode);
+  return custom?.prefix || "";
+}
+
+/**
+ * Get execution policy for a given mode, including custom modes.
+ * @param {string} mode
+ * @returns {object|null}
+ */
+function getModeExecPolicy(mode) {
+  if (MODE_EXEC_POLICIES[mode]) return MODE_EXEC_POLICIES[mode];
+  const custom = _customModes.get(mode);
+  return custom?.execPolicy || null;
 }
 
 function normalizeAttachments(input) {
@@ -908,7 +940,7 @@ export async function execPrimaryPrompt(userMessage, options = {}) {
     (options && options.sessionType ? String(options.sessionType) : "") ||
     "primary";
   const effectiveMode = normalizeAgentMode(options.mode || agentMode, agentMode);
-  const modePolicy = MODE_EXEC_POLICIES[effectiveMode] || null;
+  const modePolicy = getModeExecPolicy(effectiveMode);
   const timeoutMs = options.timeoutMs || modePolicy?.timeoutMs || PRIMARY_EXEC_TIMEOUT_MS;
   const maxFailoverAttempts = Number.isInteger(options.maxFailoverAttempts)
     ? Math.max(0, Number(options.maxFailoverAttempts))
@@ -918,7 +950,7 @@ export async function execPrimaryPrompt(userMessage, options = {}) {
   const attachmentsAppended = options.attachmentsAppended === true;
 
   // Apply mode prefix (options.mode overrides the global setting for this call)
-  const modePrefix = MODE_PREFIXES[effectiveMode] || "";
+  const modePrefix = getModePrefix(effectiveMode);
   const messageWithAttachments = attachments.length && !attachmentsAppended
     ? appendAttachmentsToPrompt(userMessage, attachments).message
     : userMessage;
@@ -1241,8 +1273,8 @@ export function getAgentMode() {
  */
 export function setAgentMode(mode) {
   const normalized = normalizeAgentMode(mode, "");
-  if (!VALID_MODES.includes(normalized)) {
-    return { ok: false, mode: agentMode, error: `Invalid mode "${mode}". Valid: ${VALID_MODES.join(", ")}` };
+  if (!getValidModes().includes(normalized)) {
+    return { ok: false, mode: agentMode, error: `Invalid mode "${mode}". Valid: ${getValidModes().join(", ")}` };
   }
   agentMode = normalized;
   return { ok: true, mode: agentMode };
@@ -1254,8 +1286,50 @@ export function setAgentMode(mode) {
  * @returns {string}
  */
 export function applyModePrefix(userMessage) {
-  const prefix = MODE_PREFIXES[agentMode] || "";
+  const prefix = getModePrefix(agentMode);
   return prefix ? prefix + userMessage : userMessage;
+}
+
+/**
+ * Register a custom interaction mode at runtime.
+ * Core modes cannot be overridden.
+ * @param {string} id
+ * @param {{ prefix?: string, execPolicy?: object|null, toolFilter?: object|null, description?: string }} config
+ */
+export function registerCustomMode(id, config) {
+  if (!id || typeof id !== "string") return;
+  const modeId = id.trim().toLowerCase();
+  if (CORE_MODES.includes(modeId)) return;
+  _customModes.set(modeId, {
+    prefix: config.prefix || "",
+    execPolicy: config.execPolicy || null,
+    toolFilter: config.toolFilter || null,
+    description: config.description || "",
+  });
+}
+
+/**
+ * List all available modes (core + custom) with metadata.
+ * @returns {Array<{id: string, description: string, core: boolean}>}
+ */
+export function listAvailableModes() {
+  const modes = CORE_MODES.map((m) => ({
+    id: m,
+    description: MODE_PREFIXES[m]?.slice(0, 80) || "Full agentic behavior",
+    core: true,
+  }));
+  for (const [id, cfg] of _customModes) {
+    modes.push({ id, description: cfg.description, core: false });
+  }
+  return modes;
+}
+
+/**
+ * Get all registered custom modes.
+ * @returns {Array<{id: string, prefix: string, execPolicy: object|null, toolFilter: object|null, description: string}>}
+ */
+export function getCustomModes() {
+  return [..._customModes.entries()].map(([id, cfg]) => ({ id, ...cfg }));
 }
 
 /**

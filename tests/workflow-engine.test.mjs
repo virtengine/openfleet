@@ -492,6 +492,38 @@ describe("WorkflowEngine - source port routing", () => {
     expect(result.errors).toEqual([]);
     expect(visited).toEqual(["left"]);
   });
+
+  it("keeps shared downstream nodes runnable when one conditional edge is false", async () => {
+    const visited = [];
+    registerNodeType("test.capture_multi_edge", {
+      describe: () => "Capture multi-edge convergence",
+      schema: { type: "object", properties: {} },
+      async execute(node) {
+        visited.push(node.id);
+        return { ok: true };
+      },
+    });
+
+    const wf = makeSimpleWorkflow(
+      [
+        { id: "trigger", type: "trigger.manual", label: "Start", config: {} },
+        { id: "branch", type: "notify.log", label: "Branch", config: { message: "branch" } },
+        { id: "shared", type: "test.capture_multi_edge", label: "Shared", config: {} },
+      ],
+      [
+        { id: "e1", source: "trigger", target: "branch" },
+        { id: "e2", source: "branch", target: "shared", condition: "false" },
+        { id: "e3", source: "branch", target: "shared", condition: "true" },
+      ],
+      { name: "Conditional Convergence Workflow" },
+    );
+
+    engine.save(wf);
+    const result = await engine.execute(wf.id, {});
+    expect(result.errors).toEqual([]);
+    expect(visited).toEqual(["shared"]);
+    expect(result.getNodeStatus("shared")).toBe(NodeStatus.COMPLETED);
+  });
 });
 
 // ── Run History / Detail Tests ──────────────────────────────────────────────
@@ -555,6 +587,53 @@ describe("WorkflowEngine - run history details", () => {
     expect(history.length).toBeGreaterThanOrEqual(2);
     expect(history[0].startedAt).toBeGreaterThanOrEqual(history[1].startedAt);
     expect(engine.getRunDetail("does-not-exist")).toBeNull();
+  });
+
+  it("returns paginated run history metadata without dropping total counts", async () => {
+    const wf = makeSimpleWorkflow(
+      [{ id: "trigger", type: "trigger.manual", label: "Start", config: {} }],
+      [],
+      { name: "Paged History Workflow" },
+    );
+
+    engine.save(wf);
+    await engine.execute(wf.id, { run: 1 });
+    await engine.execute(wf.id, { run: 2 });
+    await engine.execute(wf.id, { run: 3 });
+
+    const page = engine.getRunHistoryPage(wf.id, { offset: 1, limit: 1 });
+    expect(page.total).toBeGreaterThanOrEqual(3);
+    expect(page.offset).toBe(1);
+    expect(page.limit).toBe(1);
+    expect(page.count).toBe(1);
+    expect(Array.isArray(page.runs)).toBe(true);
+    expect(page.runs).toHaveLength(1);
+    expect(page.hasMore).toBe(true);
+    expect(page.nextOffset).toBe(2);
+  });
+  it("paginates global run history beyond the initial page size", async () => {
+    const wf = makeSimpleWorkflow(
+      [{ id: "trigger", type: "trigger.manual", label: "Start", config: {} }],
+      [],
+      { name: "Global Paged History Workflow" },
+    );
+
+    engine.save(wf);
+    for (let i = 0; i < 35; i += 1) {
+      await engine.execute(wf.id, { run: i + 1 });
+    }
+
+    const all = engine.getRunHistory();
+    expect(all.length).toBeGreaterThanOrEqual(35);
+
+    const page = engine.getRunHistoryPage(null, { offset: 20, limit: 10 });
+    expect(page.total).toBeGreaterThanOrEqual(35);
+    expect(page.offset).toBe(20);
+    expect(page.limit).toBe(10);
+    expect(page.count).toBe(10);
+    expect(page.runs).toHaveLength(10);
+    expect(page.hasMore).toBe(true);
+    expect(page.nextOffset).toBe(30);
   });
 
   it("includes active runs in history and exposes live run detail while executing", async () => {
@@ -3931,3 +4010,4 @@ describe("WorkflowEngine.getTaskTraceEvents", () => {
     expect(reread[0].taskId).toBe("TASK-TRACE-READBACK");
   });
 });
+

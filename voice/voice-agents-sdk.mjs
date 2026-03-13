@@ -294,7 +294,7 @@ export async function createRealtimeSession(agent, provider, config = {}, option
               ? { threshold: 0.5, prefix_padding_ms: 300, silence_duration_ms: 500 }
               : {}),
             ...(turnDetection === "semantic_vad"
-              ? { eagerness: "medium" }
+              ? { eagerness: "low" }
               : {}),
           },
         },

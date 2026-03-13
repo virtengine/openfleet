@@ -375,15 +375,19 @@ async function processLogFile(startPosition) {
  * @param {Object} event - Parsed JSONL event
  */
 async function analyzeEvent(event) {
-  const { attempt_id, event_type, timestamp } = event;
+  const { event_type, timestamp } = event;
+  const attemptId = String(event?.attempt_id || "").trim();
+  if (!attemptId) {
+    return;
+  }
   const parsedTs = Date.parse(timestamp);
   const eventTime = Number.isFinite(parsedTs) ? parsedTs : Date.now();
   const eventIso = new Date(eventTime).toISOString();
 
   // Initialize session state if needed
-  if (!activeSessions.has(attempt_id)) {
-    activeSessions.set(attempt_id, {
-      attempt_id,
+  if (!activeSessions.has(attemptId)) {
+    activeSessions.set(attemptId, {
+      attempt_id: attemptId,
       errors: [],
       toolCalls: [],
       lastActivity: eventIso,
@@ -393,7 +397,7 @@ async function analyzeEvent(event) {
     });
   }
 
-  const session = activeSessions.get(attempt_id);
+  const session = activeSessions.get(attemptId);
   session.lastActivity = eventIso;
 
   // Route to specific analyzers
@@ -409,7 +413,7 @@ async function analyzeEvent(event) {
       break;
     case "session_end":
       await analyzeSessionEnd(session, event);
-      activeSessions.delete(attempt_id);
+      activeSessions.delete(attemptId);
       break;
   }
 
@@ -655,7 +659,10 @@ async function emitAlert(alert) {
     ...alert,
   };
 
-  console.error(`[ALERT] ${alert.type}: ${alert.attempt_id}`);
+  const alertScope = String(
+    alert?.attempt_id || alert?.task_id || alert?.executor || "unknown",
+  );
+  console.error(`[ALERT] ${alert.type}: ${alertScope}`);
 
   // Append to alerts log
   try {

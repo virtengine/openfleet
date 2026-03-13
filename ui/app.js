@@ -302,6 +302,7 @@ import { VoiceOverlay } from "./modules/voice-overlay.js";
 /* ── Tab imports ── */
 import { DashboardTab } from "./tabs/dashboard.js";
 import { TasksTab } from "./tabs/tasks.js";
+import { BenchmarksTab } from "./tabs/benchmarks.js";
 import { ChatTab } from "./tabs/chat.js";
 import { AgentsTab, FleetSessionsTab } from "./tabs/agents.js";
 import { InfraTab } from "./tabs/infra.js";
@@ -602,6 +603,7 @@ class TabErrorBoundary extends Component {
 const TAB_COMPONENTS = {
   dashboard: DashboardTab,
   tasks: TasksTab,
+  benchmarks: BenchmarksTab,
   chat: ChatTab,
   agents: AgentsTab,
   "fleet-sessions": FleetSessionsTab,

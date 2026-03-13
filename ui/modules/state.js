@@ -51,6 +51,7 @@ const CACHE_TTL = {
   threads: 5000, logs: 15000, worktrees: 30000, workspaces: 30000,
   presence: 30000, config: 60000, projects: 60000, git: 20000,
   infra: 30000,
+  benchmarks: 8000,
   telemetry: 15000,
   analytics: 30000,
 };
@@ -261,6 +262,10 @@ export const usageAnalytics = signal(null);
 // ── Config (routing, regions, etc.)
 export const configData = signal(null);
 
+// ── Benchmarks
+export const benchmarksData = signal(null);
+export const benchmarksLoaded = signal(false);
+
 // ── Toasts
 export const toasts = signal([]);
 
@@ -388,15 +393,15 @@ export async function applyStoredDefaults() {
     }
   }
 
-  const configUpdates = {};
-  if (sdk && sdk !== "auto") configUpdates.sdk = sdk;
-  if (region && region !== "auto") configUpdates.region = region;
+  const settingsUpdates = {};
+  if (sdk && sdk !== "auto") settingsUpdates.INTERNAL_EXECUTOR_SDK = sdk;
+  if (region && region !== "auto") settingsUpdates.EXECUTOR_REGIONS = region;
 
-  if (Object.keys(configUpdates).length) {
+  if (Object.keys(settingsUpdates).length) {
     promises.push(
-      apiFetch("/api/config/update", {
+      apiFetch("/api/settings/update", {
         method: "POST",
-        body: JSON.stringify(configUpdates),
+        body: JSON.stringify({ changes: settingsUpdates }),
         _silent: true,
       }).catch(() => {}),
     );
@@ -859,6 +864,20 @@ export async function loadUsageAnalytics(days = 30) {
   }
 }
 
+export async function loadBenchmarks(providerId = "") {
+  const params = new URLSearchParams();
+  if (providerId) params.set("provider", providerId);
+  const url = params.size > 0 ? `/api/benchmarks?${params}` : "/api/benchmarks";
+  const cached = _cacheGet(url);
+  if (_cacheFresh(url, "benchmarks")) return;
+  if (cached) benchmarksData.value = cached.data;
+  const res = await apiFetch(url, { _silent: true }).catch(() => ({ ok: false }));
+  benchmarksData.value = res?.data ?? null;
+  benchmarksLoaded.value = true;
+  _cacheSet(url, benchmarksData.value);
+  _markFresh("benchmarks");
+}
+
 /* ═══════════════════════════════════════════════════════════════
  *  TAB REFRESH — map tab names to their required loaders
  * ═══════════════════════════════════════════════════════════════ */
@@ -867,6 +886,7 @@ const TAB_LOADERS = {
   dashboard: () =>
     Promise.all([loadStatus(), loadExecutor(), loadProjectSummary()]),
   tasks: () => loadTasks(),
+  benchmarks: () => loadBenchmarks(),
   agents: () => Promise.all([loadAgents(), loadExecutor(), import("../components/session-list.js").then((m) => m.loadSessions()).catch(() => {})]),
   infra: () =>
     Promise.all([
@@ -972,6 +992,7 @@ export function scheduleRefresh(ms = 5000) {
 const WS_CHANNEL_MAP = {
   dashboard: ["overview", "executor", "tasks", "agents"],
   tasks: ["tasks"],
+  benchmarks: ["benchmarks", "tasks", "executor", "workflows", "workspaces", "library"],
   agents: ["agents", "executor"],
   infra: ["worktrees", "workspaces", "presence"],
   control: ["executor", "overview"],

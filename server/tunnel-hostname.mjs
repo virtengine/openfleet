@@ -1,6 +1,7 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { homedir, userInfo as getOsUserInfo } from "node:os";
 import { dirname, resolve } from "node:path";
+import { ensureTestRuntimeSandbox } from "../infra/test-runtime.mjs";
 
 const TUNNEL_MODE_NAMED = "named";
 const TUNNEL_MODE_QUICK = "quick";
@@ -126,7 +127,12 @@ function resolveTunnelConfigDir(configDir = "") {
       || process.env.LOCALAPPDATA
       || homedir();
 
-  const dir = process.env.BOSUN_HOME || process.env.BOSUN_DIR || resolve(baseDir, "bosun");
+  const sandbox = ensureTestRuntimeSandbox();
+  const dir =
+    process.env.BOSUN_HOME ||
+    process.env.BOSUN_DIR ||
+    sandbox?.configDir ||
+    resolve(baseDir, "bosun");
   try { mkdirSync(dir, { recursive: true }); } catch { /* ok */ }
   return dir;
 }
