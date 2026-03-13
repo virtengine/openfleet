@@ -114,4 +114,48 @@ describe("continuation-loop template integration", () => {
     expect(launchEphemeralThread.mock.calls.length).toBeGreaterThanOrEqual(2);
     expect(ctx.getNodeOutput("end-terminal")?.output?.externalStatus).toBe("done");
   }, 15000);
+
+  it("bounds stuck auto-retries and escalates with retry diagnostics after the limit", async () => {
+    const kanban = {
+      getTask: vi.fn(async (taskId) => ({
+        id: taskId,
+        title: `Task ${taskId}`,
+        externalStatus: "inprogress",
+      })),
+    };
+    const launchEphemeralThread = vi.fn(async (prompt) => ({
+      success: true,
+      output: `continued:${prompt}`,
+      threadId: "session-stuck-limit",
+    }));
+    makeTmpEngine({
+      kanban,
+      agentPool: { launchEphemeralThread },
+    });
+
+    const installed = installTemplate("template-continuation-loop", engine, {
+      taskId: "TASK-201",
+      worktreePath: tmpDir,
+      pollIntervalMs: 0,
+      maxTurns: 5,
+      terminalStates: ["done", "cancelled"],
+      stuckThresholdMs: 0,
+      onStuck: "retry",
+      maxStuckAutoRetries: 1,
+    });
+
+    const ctx = await engine.execute(installed.id, {
+      taskId: "TASK-201",
+      sessionId: "session-stuck-limit",
+      worktreePath: tmpDir,
+    }, { force: true });
+
+    expect(ctx.errors).toEqual([]);
+    expect(ctx.getNodeOutput("emit-stuck")?.payload?.stuckRetryCount).toBe(1);
+    expect(ctx.getNodeOutput("emit-stuck")?.payload?.maxStuckAutoRetries).toBe(1);
+    expect(ctx.getNodeOutput("stuck-retry-budget")?.result).toBe(false);
+    expect(ctx.getNodeStatus("stuck-escalate-budget")).toBe("completed");
+    expect(ctx.getNodeStatus("end-escalated")).toBe("completed");
+    expect(launchEphemeralThread.mock.calls.length).toBeGreaterThanOrEqual(3);
+  }, 15000);
 });

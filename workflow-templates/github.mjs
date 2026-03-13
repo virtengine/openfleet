@@ -766,6 +766,7 @@ export const BOSUN_PR_PROGRESSOR_TEMPLATE = {
         "const failStates=new Set(['FAILURE','ERROR','TIMED_OUT','CANCELLED','STARTUP_FAILURE']);",
         "const pendingStates=new Set(['QUEUED','IN_PROGRESS','PENDING','WAITING','REQUESTED']);",
         "const conflictMergeables=new Set(['CONFLICTING','DIRTY','UNKNOWN']);",
+        "const failedCheckNames=checks.filter((c)=>{const s=String(c?.state||'').toUpperCase();const b=String(c?.bucket||'').toUpperCase();return failStates.has(s)||b==='FAIL';}).map((c)=>String(c?.name||c?.context||c?.workflowName||'').trim()).filter(Boolean);",
         "const hasFailure=checks.some((c)=>{const s=String(c?.state||'').toUpperCase();const b=String(c?.bucket||'').toUpperCase();return failStates.has(s)||b==='FAIL';});",
         "const hasPending=checks.some((c)=>pendingStates.has(String(c?.state||'').toUpperCase()));",
         "let classification='ready';",
@@ -779,7 +780,7 @@ export const BOSUN_PR_PROGRESSOR_TEMPLATE = {
         "  try{gh(['workflow','run','ci.yaml','--repo',repo,'--ref',branch]);ciKicked=true;classification='pending';reason='ci_kicked';}",
         "  catch{classification='ready';reason='ready_without_checks';}",
         "}",
-        "console.log(JSON.stringify({success:true,repo,prNumber,url:String(pr?.url||ctx.prUrl||''),branch:String(pr?.headRefName||branch||''),baseBranch:String(pr?.baseRefName||baseBranch||'main'),title:String(pr?.title||ctx.taskTitle||''),classification,reason,ciKicked,hasFailure,hasPending}));",
+        "console.log(JSON.stringify({success:true,repo,prNumber,url:String(pr?.url||ctx.prUrl||''),branch:String(pr?.headRefName||branch||''),baseBranch:String(pr?.baseRefName||baseBranch||'main'),title:String(pr?.title||ctx.taskTitle||''),classification,reason,ciKicked,hasFailure,hasPending,failedCheckNames}));",
         "\"",
       ].join(" "),
       continueOnError: true,
@@ -807,25 +808,34 @@ export const BOSUN_PR_PROGRESSOR_TEMPLATE = {
         "const branch=String(data.branch||'').trim();",
         "const prNumber=Number.parseInt(String(data.prNumber||''),10);",
         "const classification=String(data.classification||'').trim();",
+        "const failedCheckNames=Array.isArray(data.failedCheckNames)?data.failedCheckNames:[];",
         "const labelFix=String('{{labelNeedsFix}}'||'bosun-needs-fix');",
+        "const FAIL_STATES=new Set(['FAILURE','ERROR','TIMED_OUT','CANCELLED','STARTUP_FAILURE']);",
+        "const MAX_AUTO_RERUN_ATTEMPT=1;",
         "function gh(args){return execFileSync('gh',args,{encoding:'utf8',stdio:['pipe','pipe','pipe']}).trim();}",
+        "function normalizeRun(run){if(!run||typeof run!=='object')return null;return {databaseId:Number(run.databaseId||0)||null,attempt:Number(run.attempt||0)||0,conclusion:String(run.conclusion||''),status:String(run.status||''),workflowName:String(run.workflowName||run.name||''),displayTitle:String(run.displayTitle||run.name||''),url:String(run.url||''),createdAt:String(run.createdAt||''),updatedAt:String(run.updatedAt||'')}}",
+        "function normalizeJob(job){if(!job||typeof job!=='object')return null;const steps=Array.isArray(job.steps)?job.steps:[];return {databaseId:Number(job.databaseId||0)||null,name:String(job.name||''),status:String(job.status||''),conclusion:String(job.conclusion||''),url:String(job.url||''),failedSteps:steps.filter((step)=>FAIL_STATES.has(String(step?.conclusion||step?.status||'').toUpperCase())).map((step)=>({name:String(step?.name||''),number:Number(step?.number||0)||null,status:String(step?.status||''),conclusion:String(step?.conclusion||'')})).filter((step)=>step.name).slice(0,10)}}",
+        "function truncateText(value,max){const text=String(value||'').replace(/\\r/g,'').trim();if(!text)return '';return text.length>max?text.slice(0,Math.max(0,max-19))+'\\n...[truncated]':text;}",
+        "function collectCiDiagnostics(run){const info={failedRun:normalizeRun(run),failedJobs:[],failedLogExcerpt:'',diagnosticsError:''};const runId=Number(run?.databaseId||0)||0;if(!runId)return info;try{const viewRaw=gh(['run','view',String(runId),'--repo',repo,'--json','attempt,conclusion,status,workflowName,displayTitle,url,createdAt,updatedAt,jobs']);const view=(()=>{try{return JSON.parse(viewRaw||'{}')}catch{return {}}})();info.failedRun=normalizeRun({...run,...view});const jobs=Array.isArray(view.jobs)?view.jobs:[];info.failedJobs=jobs.map(normalizeJob).filter((job)=>job&&(FAIL_STATES.has(String(job.conclusion||'').toUpperCase())||job.failedSteps.length>0)).slice(0,10);}catch(e){info.diagnosticsError=String(e?.message||e);}try{info.failedLogExcerpt=truncateText(gh(['run','view',String(runId),'--repo',repo,'--log-failed']),6000);}catch(e){const message=String(e?.message||e);if(message&&message!==info.diagnosticsError){info.diagnosticsError=info.diagnosticsError?info.diagnosticsError+' | '+message:message;}}return info;}",
         "if(repo&&Number.isFinite(prNumber)&&prNumber>0){",
         "  try{gh(['pr','edit',String(prNumber),'--repo',repo,'--add-label',labelFix]);}catch{}",
         "}",
         "if(classification==='ci_failure'&&repo&&branch){",
         "  try{",
-        "    const listRaw=gh(['run','list','--repo',repo,'--branch',branch,'--json','databaseId,conclusion,status','--limit','8']);",
+        "    const listRaw=gh(['run','list','--repo',repo,'--branch',branch,'--json','databaseId,attempt,conclusion,status,workflowName,displayTitle,url,createdAt,updatedAt','--limit','8']);",
         "    const runs=(()=>{try{return JSON.parse(listRaw||'[]')}catch{return []}})();",
-        "    const failed=(Array.isArray(runs)?runs:[]).find((r)=>{const c=String(r?.conclusion||'').toUpperCase();return c==='FAILURE'||c==='ERROR'||c==='TIMED_OUT'||c==='CANCELLED';});",
-        "    if(failed?.databaseId){gh(['run','rerun',String(failed.databaseId),'--repo',repo]);console.log(JSON.stringify({success:true,rerunRequested:true,needsAgent:false,reason:'rerun_requested'}));process.exit(0);}",
+        "    const failed=(Array.isArray(runs)?runs:[]).find((r)=>FAIL_STATES.has(String(r?.conclusion||'').toUpperCase()));",
+        "    const failedRun=normalizeRun(failed);",
+        "    if(failedRun?.databaseId&&failedRun.attempt<=MAX_AUTO_RERUN_ATTEMPT){gh(['run','rerun',String(failedRun.databaseId),'--repo',repo]);console.log(JSON.stringify({success:true,rerunRequested:true,needsAgent:false,reason:'rerun_requested',failedCheckNames,failedRun}));process.exit(0);}",
+        "    if(failedRun?.databaseId){const diagnostics=collectCiDiagnostics(failedRun);console.log(JSON.stringify({success:false,rerunRequested:false,needsAgent:true,reason:'auto_rerun_limit_reached',failedCheckNames,rerunAttempts:failedRun.attempt||0,...diagnostics}));process.exit(0);}",
+        "    console.log(JSON.stringify({success:false,rerunRequested:false,needsAgent:true,reason:'no_rerunnable_failed_run_found',failedCheckNames,recentRuns:(Array.isArray(runs)?runs:[]).map(normalizeRun).filter(Boolean).slice(0,5)}));",
+        "    process.exit(0);",
         "  }catch(e){",
-        "    console.log(JSON.stringify({success:false,rerunRequested:false,needsAgent:true,reason:'ci_rerun_failed',error:String(e?.message||e)}));",
+        "    console.log(JSON.stringify({success:false,rerunRequested:false,needsAgent:true,reason:'ci_rerun_failed',failedCheckNames,error:String(e?.message||e)}));",
         "    process.exit(0);",
         "  }",
-        "  console.log(JSON.stringify({success:false,rerunRequested:false,needsAgent:true,reason:'no_rerunnable_failed_run_found'}));",
-        "  process.exit(0);",
         "}",
-        "console.log(JSON.stringify({success:false,rerunRequested:false,needsAgent:true,reason:classification==='conflict'?'merge_conflict_requires_code_resolution':'repair_required'}));",
+        "console.log(JSON.stringify({success:false,rerunRequested:false,needsAgent:true,reason:classification==='conflict'?'merge_conflict_requires_code_resolution':'repair_required',failedCheckNames}));",
         "\"",
       ].join(" "),
       continueOnError: true,
@@ -984,6 +994,8 @@ resetLayout();
  *   2. Merge any PR whose CI checks are all passing (not draft, not pending).
  *   3. Label any PR whose CI checks have failures with `bosun-needs-fix` and
  *      dispatch a repair agent to fix the branch.
+ *   4. Route CodeQL/code-scanning failures through a dedicated security repair
+ *      branch so security findings are fixed instead of treated as generic CI.
  *
  * Disable:  set `enabled: false` in your bosun config, or delete the workflow.
  * Interval: default 90s — change `intervalMs`.
@@ -1029,8 +1041,8 @@ export const BOSUN_PR_WATCHDOG_TEMPLATE = {
       // Fetches all open bosun-attached PRs with every field needed for
       // classification. Runs one list call per target repo (auto-discovered
       // from bosun.config.json workspaces by default), then:
-      //   • Classifies each PR into: ready | conflict | ci_failure | pending | draft
-      //   • Labels conflict/ci_failure PRs with bosun-needs-fix (skips if already present)
+      //   • Classifies each PR into: ready | conflict | security_failure | ci_failure | pending | draft
+      //   • Labels conflict/security_failure/ci_failure PRs with bosun-needs-fix (skips if already present)
       //   • Outputs a JSON summary used by all downstream nodes/agents
       // Total gh API calls this node makes: R list calls + N edits
       // (R = target repos, N = newly-broken PRs needing fix label).
@@ -1046,6 +1058,10 @@ export const BOSUN_PR_WATCHDOG_TEMPLATE = {
         "const FAIL_STATES=new Set(['FAILURE','ERROR','TIMED_OUT','CANCELLED','STARTUP_FAILURE']);",
         "const PEND_STATES=new Set(['PENDING','IN_PROGRESS','QUEUED','WAITING','REQUESTED','EXPECTED']);",
         "const CONFLICT_MERGEABLES=new Set(['CONFLICTING','BEHIND','DIRTY']);",
+        "const SECURITY_CHECK_RE=/(^|[^a-z])(codeql|code scanning|security|sarif|codacy)([^a-z]|$)/i;",
+        "function readCheckName(check){return String(check?.name||check?.context||check?.workflowName||check?.displayTitle||'').trim();}",
+        "function isFailedCheck(check){return FAIL_STATES.has(check?.conclusion||check?.state||'');}",
+        "function isSecurityCheckName(name){return SECURITY_CHECK_RE.test(String(name||''));}",
         "function ghJson(args){const out=execFileSync('gh',args,{encoding:'utf8',stdio:['pipe','pipe','pipe']}).trim();return out?JSON.parse(out):[];}",
         "function configPath(){",
         "  const home=String(process.env.BOSUN_HOME||process.env.VK_PROJECT_DIR||'').trim();",
@@ -1115,13 +1131,17 @@ export const BOSUN_PR_WATCHDOG_TEMPLATE = {
         "    repoErrors.push({repo:repo||'current',error:String(e?.message||e)});",
         "  }",
         "}",
-        "const readyCandidates=[],conflicts=[],ciFailures=[],pending=[],drafted=[];",
+        "const readyCandidates=[],conflicts=[],securityFailures=[],ciFailures=[],pending=[],drafted=[];",
         "let newlyLabeled=0,staleLabelCleared=0,ciKicked=0;",
         "for(const pr of prs){",
         "  const labels=(pr.labels||[]).map(l=>typeof l==='string'?l:l?.name).filter(Boolean);",
         "  const hasFixLabel=labels.includes(LABEL_FIX);",
         "  const checks=pr.statusCheckRollup||[];",
-        "  const hasFail=checks.some(c=>FAIL_STATES.has(c.conclusion||c.state||''));",
+        "  const failedChecks=checks.filter(isFailedCheck);",
+        "  const failedCheckNames=failedChecks.map(readCheckName).filter(Boolean);",
+        "  const securityCheckNames=failedCheckNames.filter(isSecurityCheckName);",
+        "  const hasFail=failedChecks.length>0;",
+        "  const hasSecurityFail=securityCheckNames.length>0;",
         "  const hasPend=checks.some(c=>PEND_STATES.has(c.conclusion||c.state||''));",
         "  const isConflict=CONFLICT_MERGEABLES.has(String(pr.mergeable||'').toUpperCase());",
         "  const isDraft=pr.isDraft===true;",
@@ -1133,8 +1153,14 @@ export const BOSUN_PR_WATCHDOG_TEMPLATE = {
         "      try{const editArgs=['pr','edit',String(pr.number),'--add-label',LABEL_FIX];if(repo)editArgs.push('--repo',repo);execFileSync('gh',editArgs,{encoding:'utf8',stdio:['pipe','pipe','pipe']});newlyLabeled++;}",
         "      catch(e){process.stderr.write('label err '+(repo?repo+' ':'')+'#'+pr.number+': '+(e?.message||e)+'\\\\n');}",
         "    }",
+        "  } else if(hasSecurityFail){",
+        "    securityFailures.push({n:pr.number,repo,branch:pr.headRefName,base:pr.baseRefName,url:pr.url,title:pr.title,failedCheckNames,securityCheckNames});",
+        "    if(!hasFixLabel){",
+        "      try{const editArgs=['pr','edit',String(pr.number),'--add-label',LABEL_FIX];if(repo)editArgs.push('--repo',repo);execFileSync('gh',editArgs,{encoding:'utf8',stdio:['pipe','pipe','pipe']});newlyLabeled++;}",
+        "      catch(e){process.stderr.write('label err '+(repo?repo+' ':'')+'#'+pr.number+': '+(e?.message||e)+'\\n');}",
+        "    }",
         "  } else if(hasFail){",
-        "    ciFailures.push({n:pr.number,repo,branch:pr.headRefName,url:pr.url});",
+        "    ciFailures.push({n:pr.number,repo,branch:pr.headRefName,url:pr.url,failedCheckNames});",
         "    if(!hasFixLabel){",
         "      try{const editArgs=['pr','edit',String(pr.number),'--add-label',LABEL_FIX];if(repo)editArgs.push('--repo',repo);execFileSync('gh',editArgs,{encoding:'utf8',stdio:['pipe','pipe','pipe']});newlyLabeled++;}",
         "      catch(e){process.stderr.write('label err '+(repo?repo+' ':'')+'#'+pr.number+': '+(e?.message||e)+'\\\\n');}",
@@ -1163,13 +1189,14 @@ export const BOSUN_PR_WATCHDOG_TEMPLATE = {
         "  repoErrors,",
         "  readyCandidates,",
         "  conflicts,",
+        "  securityFailures,",
         "  ciFailures,",
         "  pending:pending.length,",
         "  drafted:drafted.length,",
         "  newlyLabeled,",
         "  staleLabelCleared,",
         "  ciKicked,",
-        "  fixNeeded:conflicts.length+ciFailures.length",
+        "  fixNeeded:conflicts.length+securityFailures.length+ciFailures.length",
         "}));",
         "\"",
       ].join(" "),
@@ -1188,8 +1215,8 @@ export const BOSUN_PR_WATCHDOG_TEMPLATE = {
     }, { x: 400, y: 370 }),
 
     // ─────────────────────────────────────────────────────────────────────────
-    // STEP 2a: Fix path — dispatch ONE agent for all conflicts + CI failures.
-    // The agent handles rebase/conflict-resolution AND CI lint/test fixes.
+    // STEP 2a: Fix path — route security failures separately, then dispatch
+    // the generic agent path for conflicts + non-security CI failures.
     // ─────────────────────────────────────────────────────────────────────────
     node("fix-needed", "condition.expression", "Fix Needed?", {
       expression:
@@ -1198,6 +1225,105 @@ export const BOSUN_PR_WATCHDOG_TEMPLATE = {
         "return (JSON.parse(o||'{}').fixNeeded||0)>0;" +
         "}catch(e){return false;}})()",
     }, { x: 200, y: 530 }),
+
+    node("security-fix-needed", "condition.expression", "Security Fix Needed?", {
+      expression:
+        "(()=>{try{" +
+        "const o=$ctx.getNodeOutput('fetch-and-classify')?.output;" +
+        "return (JSON.parse(o||'{}').securityFailures||[]).length>0;" +
+        "}catch(e){return false;}})()",
+    }, { x: 120, y: 640 }),
+
+    node("programmatic-security-fix", "action.run_command", "Collect Security Alerts", {
+      command: [
+        "node -e \"",
+        "const {execFileSync}=require('child_process');",
+        "const raw=String(process.env.BOSUN_FETCH_AND_CLASSIFY||'');",
+        "const payload=(()=>{try{return JSON.parse(raw||'{}')}catch{return {}}})();",
+        "const securityFailures=Array.isArray(payload.securityFailures)?payload.securityFailures:[];",
+        "const needsAgent=[];",
+        "let alertsFetched=0;",
+        "function gh(args){return execFileSync('gh',args,{encoding:'utf8',stdio:['pipe','pipe','pipe']}).trim();}",
+        "function compactAlert(alert){",
+        "  const instance=alert?.most_recent_instance||{};",
+        "  const location=instance?.location||{};",
+        "  const rule=alert?.rule||{};",
+        "  const tool=alert?.tool||{};",
+        "  return {",
+        "    number: alert?.number ?? null,",
+        "    state: String(alert?.state||''),",
+        "    ruleId: String(rule?.id||alert?.rule_id||''),",
+        "    ruleName: String(rule?.name||alert?.rule_name||''),",
+        "    severity: String(rule?.severity||alert?.severity||''),",
+        "    securitySeverity: String(rule?.security_severity_level||alert?.security_severity_level||''),",
+        "    tool: String(tool?.name||alert?.tool_name||''),",
+        "    path: String(location?.path||''),",
+        "    startLine: Number(location?.start_line||0)||null,",
+        "    url: String(alert?.html_url||''),",
+        "  };",
+        "}",
+        "for(const item of securityFailures){",
+        "  const repo=String(item?.repo||'').trim();",
+        "  const branch=String(item?.branch||'').trim();",
+        "  const n=String(item?.n||'').trim();",
+        "  const securityCheckNames=Array.isArray(item?.securityCheckNames)?item.securityCheckNames:[];",
+        "  if(!repo||!branch){needsAgent.push({repo,number:n,branch,reason:'missing_repo_or_branch',securityCheckNames,alerts:[]});continue;}",
+        "  let alerts=[];",
+        "  let fetchError='';",
+        "  try{",
+        "    const alertsRaw=gh(['api','--method','GET','repos/'+repo+'/code-scanning/alerts','--raw-field','state=open','--raw-field','per_page=20','--raw-field','ref=refs/heads/'+branch]);",
+        "    const parsed=(()=>{try{return JSON.parse(alertsRaw||'[]')}catch{return []}})();",
+        "    alerts=(Array.isArray(parsed)?parsed:[]).map(compactAlert).filter(a=>a.ruleId||a.ruleName||a.path).slice(0,10);",
+        "    if(alerts.length>0) alertsFetched++;",
+        "  }catch(e){fetchError=String(e?.message||e);}",
+        "  needsAgent.push({repo,number:n,branch,base:String(item?.base||'').trim(),url:String(item?.url||''),title:String(item?.title||''),reason:'security_code_scanning_failure',securityCheckNames,failedCheckNames:Array.isArray(item?.failedCheckNames)?item.failedCheckNames:[],alerts,fetchError});",
+        "}",
+        "console.log(JSON.stringify({securityFailureCount:securityFailures.length,alertsFetched,needsAgentCount:needsAgent.length,needsAgent}));",
+        "\"",
+      ].join(" "),
+      continueOnError: true,
+      failOnError: false,
+      env: {
+        BOSUN_FETCH_AND_CLASSIFY:
+          "{{$ctx.getNodeOutput('fetch-and-classify')?.output || '{}'}}",
+      },
+    }, { x: 120, y: 750 }),
+
+    node("security-agent-needed", "condition.expression", "Needs Security Agent?", {
+      expression:
+        "(()=>{try{" +
+        "const o=$ctx.getNodeOutput('programmatic-security-fix')?.output;" +
+        "return (JSON.parse(o||'{}').needsAgentCount||0)>0;" +
+        "}catch(e){return false;}})()",
+    }, { x: 120, y: 860 }),
+
+    node("dispatch-security-fix-agent", "action.run_agent", "Dispatch Security Fix Agent", {
+      prompt:
+        "You are a Bosun PR security remediation agent. Work only the PRs in this JSON:\n\n" +
+        "{{$ctx.getNodeOutput('programmatic-security-fix')?.output}}\n\n" +
+        "Each item represents a bosun-attached PR blocked by CodeQL or GitHub code scanning.\n" +
+        "Use the supplied alert data and failing security check names to make the smallest safe code change that resolves the finding.\n" +
+        "For each repaired PR: check out the branch, fix only the reported code-scanning issue, run targeted validation, push the branch, and remove bosun-needs-fix after success.\n\n" +
+        "STRICT RULES:\n" +
+        "- Only fix the listed code-scanning or CodeQL findings.\n" +
+        "- No unrelated refactors, dependency churn, merges, approvals, or PR closure.\n" +
+        "- If alert fetch failed, inspect the PR checks and relevant source to resolve the security failure directly.\n" +
+        "- Do NOT touch PRs that are not bosun-attached.",
+      sdk: "auto",
+      timeoutMs: 1_800_000,
+      maxRetries: 2,
+      retryDelayMs: 30_000,
+      continueOnError: true,
+    }, { x: 120, y: 970 }),
+
+    node("generic-fix-needed", "condition.expression", "Generic Fix Needed?", {
+      expression:
+        "(()=>{try{" +
+        "const o=$ctx.getNodeOutput('fetch-and-classify')?.output;" +
+        "const d=JSON.parse(o||'{}');" +
+        "return ((d.conflicts||[]).length+(d.ciFailures||[]).length)>0;" +
+        "}catch(e){return false;}})()",
+    }, { x: 280, y: 640 }),
 
     node("programmatic-fix", "action.run_command", "Programmatic Fix Pass", {
       command: [
@@ -1209,22 +1335,35 @@ export const BOSUN_PR_WATCHDOG_TEMPLATE = {
         "const conflicts=Array.isArray(payload.conflicts)?payload.conflicts:[];",
         "const needsAgent=[];",
         "let rerunRequested=0;",
+        "const FAIL_STATES=new Set(['FAILURE','ERROR','TIMED_OUT','CANCELLED','STARTUP_FAILURE']);",
+        "const MAX_AUTO_RERUN_ATTEMPT=1;",
         "function runGh(args){return execFileSync('gh',args,{encoding:'utf8',stdio:['pipe','pipe','pipe']}).trim();}",
+        "function normalizeRun(run){if(!run||typeof run!=='object')return null;return {databaseId:Number(run.databaseId||0)||null,attempt:Number(run.attempt||0)||0,conclusion:String(run.conclusion||''),status:String(run.status||''),workflowName:String(run.workflowName||run.name||''),displayTitle:String(run.displayTitle||run.name||''),url:String(run.url||''),createdAt:String(run.createdAt||''),updatedAt:String(run.updatedAt||'')}}",
+        "function normalizeJob(job){if(!job||typeof job!=='object')return null;const steps=Array.isArray(job.steps)?job.steps:[];return {databaseId:Number(job.databaseId||0)||null,name:String(job.name||''),status:String(job.status||''),conclusion:String(job.conclusion||''),url:String(job.url||''),failedSteps:steps.filter((step)=>FAIL_STATES.has(String(step?.conclusion||step?.status||'').toUpperCase())).map((step)=>({name:String(step?.name||''),number:Number(step?.number||0)||null,status:String(step?.status||''),conclusion:String(step?.conclusion||'')})).filter((step)=>step.name).slice(0,10)}}",
+        "function truncateText(value,max){const text=String(value||'').replace(/\\r/g,'').trim();if(!text)return '';return text.length>max?text.slice(0,Math.max(0,max-19))+'\\n...[truncated]':text;}",
+        "function collectCiDiagnostics(repo,run){const info={failedRun:normalizeRun(run),failedJobs:[],failedLogExcerpt:'',diagnosticsError:''};const runId=Number(run?.databaseId||0)||0;if(!runId)return info;try{const viewRaw=runGh(['run','view',String(runId),'--repo',repo,'--json','attempt,conclusion,status,workflowName,displayTitle,url,createdAt,updatedAt,jobs']);const view=(()=>{try{return JSON.parse(viewRaw||'{}')}catch{return {}}})();info.failedRun=normalizeRun({...run,...view});const jobs=Array.isArray(view.jobs)?view.jobs:[];info.failedJobs=jobs.map(normalizeJob).filter((job)=>job&&(FAIL_STATES.has(String(job.conclusion||'').toUpperCase())||job.failedSteps.length>0)).slice(0,10);}catch(e){info.diagnosticsError=String(e?.message||e);}try{info.failedLogExcerpt=truncateText(runGh(['run','view',String(runId),'--repo',repo,'--log-failed']),6000);}catch(e){const message=String(e?.message||e);if(message&&message!==info.diagnosticsError){info.diagnosticsError=info.diagnosticsError?info.diagnosticsError+' | '+message:message;}}return info;}",
         "for(const item of ciFailures){",
         "  const repo=String(item?.repo||'').trim();",
         "  const branch=String(item?.branch||'').trim();",
         "  const n=String(item?.n||'').trim();",
-        "  if(!repo||!branch){needsAgent.push({repo,number:n,reason:'missing_repo_or_branch'});continue;}",
+        "  const failedCheckNames=Array.isArray(item?.failedCheckNames)?item.failedCheckNames:[];",
+        "  const url=String(item?.url||'').trim();",
+        "  const title=String(item?.title||'').trim();",
+        "  if(!repo||!branch){needsAgent.push({repo,number:n,branch,url,title,failedCheckNames,reason:'missing_repo_or_branch'});continue;}",
+        "  let runs=[];",
         "  try{",
-        "    const listRaw=runGh(['run','list','--repo',repo,'--branch',branch,'--json','databaseId,conclusion,status','--limit','8']);",
-        "    const runs=(()=>{try{return JSON.parse(listRaw||'[]')}catch{return []}})();",
-        "    const failed=(Array.isArray(runs)?runs:[]).find((r)=>{",
-        "      const c=String(r?.conclusion||'').toUpperCase();",
-        "      return c==='FAILURE'||c==='ERROR'||c==='TIMED_OUT'||c==='CANCELLED';",
-        "    });",
-        "    if(failed?.databaseId){runGh(['run','rerun',String(failed.databaseId),'--repo',repo]);rerunRequested++;}",
-        "    else{needsAgent.push({repo,number:n,reason:'no_rerunnable_failed_run_found'});}",
-        "  }catch(e){needsAgent.push({repo,number:n,reason:'ci_rerun_failed',error:String(e?.message||e)});}",
+        "    const listRaw=runGh(['run','list','--repo',repo,'--branch',branch,'--json','databaseId,attempt,conclusion,status,workflowName,displayTitle,url,createdAt,updatedAt','--limit','8']);",
+        "    const parsedRuns=(()=>{try{return JSON.parse(listRaw||'[]')}catch{return []}})();",
+        "    runs=Array.isArray(parsedRuns)?parsedRuns:[];",
+        "  }catch(e){needsAgent.push({repo,number:n,branch,url,title,failedCheckNames,reason:'ci_run_listing_failed',error:String(e?.message||e)});continue;}",
+        "  const failed=runs.find((r)=>FAIL_STATES.has(String(r?.conclusion||'').toUpperCase()));",
+        "  const failedRun=normalizeRun(failed);",
+        "  if(failedRun?.databaseId&&failedRun.attempt<=MAX_AUTO_RERUN_ATTEMPT){",
+        "    try{runGh(['run','rerun',String(failedRun.databaseId),'--repo',repo]);rerunRequested++;continue;}",
+        "    catch(e){needsAgent.push({repo,number:n,branch,url,title,failedCheckNames,reason:'ci_rerun_failed',error:String(e?.message||e),...collectCiDiagnostics(repo,failedRun)});continue;}",
+        "  }",
+        "  if(failedRun?.databaseId){needsAgent.push({repo,number:n,branch,url,title,failedCheckNames,reason:'auto_rerun_limit_reached',rerunAttempts:failedRun.attempt||0,...collectCiDiagnostics(repo,failedRun)});continue;}",
+        "  needsAgent.push({repo,number:n,branch,url,title,failedCheckNames,reason:'no_rerunnable_failed_run_found',recentRuns:runs.map(normalizeRun).filter(Boolean).slice(0,5)});",
         "}",
         "for(const item of conflicts){",
         "  needsAgent.push({repo:String(item?.repo||'').trim(),number:String(item?.n||'').trim(),branch:String(item?.branch||'').trim(),base:String(item?.base||'').trim(),reason:'merge_conflict_requires_code_resolution'});",
@@ -1238,7 +1377,7 @@ export const BOSUN_PR_WATCHDOG_TEMPLATE = {
         BOSUN_FETCH_AND_CLASSIFY:
           "{{$ctx.getNodeOutput('fetch-and-classify')?.output || '{}'}}",
       },
-    }, { x: 200, y: 640 }),
+    }, { x: 280, y: 750 }),
 
     node("fix-agent-needed", "condition.expression", "Needs Agent Fix?", {
       expression:
@@ -1246,7 +1385,7 @@ export const BOSUN_PR_WATCHDOG_TEMPLATE = {
         "const o=$ctx.getNodeOutput('programmatic-fix')?.output;" +
         "return (JSON.parse(o||'{}').needsAgentCount||0)>0;" +
         "}catch(e){return false;}})()",
-    }, { x: 200, y: 750 }),
+    }, { x: 280, y: 860 }),
 
     node("dispatch-fix-agent", "action.run_agent", "Dispatch Fix Agent (Fallback)", {
       prompt:
@@ -1254,7 +1393,7 @@ export const BOSUN_PR_WATCHDOG_TEMPLATE = {
         "Only work unresolved items from this JSON:\n\n" +
         "{{$ctx.getNodeOutput('programmatic-fix')?.output}}\n\n" +
         "For conflict items: rebase/merge branch onto base, resolve conflicts, run tests, push with --force-with-lease if needed.\n" +
-        "For CI-failure items: inspect failed logs, apply minimal fix, commit and push.\n" +
+        "For CI-failure items: start from failedCheckNames, failedRun, failedJobs, and failedLogExcerpt to identify the actual failing workflow step, then apply the minimal fix, commit, and push.\n" +
         "After successful repair remove bosun-needs-fix label.\n\n" +
         "STRICT RULES:\n" +
         "- Fix only CI/conflict issues. No scope creep.\n" +
@@ -1265,7 +1404,7 @@ export const BOSUN_PR_WATCHDOG_TEMPLATE = {
       maxRetries: 2,
       retryDelayMs: 30_000,
       continueOnError: true,
-    }, { x: 200, y: 860 }),
+    }, { x: 280, y: 970 }),
 
     // ─────────────────────────────────────────────────────────────────────────
     // STEP 2b: Review gate — MANDATORY before any merge.
@@ -1398,9 +1537,17 @@ export const BOSUN_PR_WATCHDOG_TEMPLATE = {
     edge("fetch-and-classify","has-prs"),
     edge("has-prs",          "fix-needed",      { condition: "$output?.result === true" }),
     edge("has-prs",          "no-prs",          { condition: "$output?.result !== true" }),
-    // Fix path (conflicts + CI failures)
-    edge("fix-needed",       "programmatic-fix",{ condition: "$output?.result === true" }),
-    edge("fix-needed",       "review-needed",   { condition: "$output?.result !== true" }),
+    // Fix path (security failures, then conflicts + non-security CI failures)
+    edge("fix-needed",       "security-fix-needed", { condition: "$output?.result === true" }),
+    edge("fix-needed",       "review-needed",       { condition: "$output?.result !== true" }),
+    edge("security-fix-needed","programmatic-security-fix", { condition: "$output?.result === true" }),
+    edge("security-fix-needed","generic-fix-needed",       { condition: "$output?.result !== true" }),
+    edge("programmatic-security-fix", "security-agent-needed"),
+    edge("security-agent-needed", "dispatch-security-fix-agent", { condition: "$output?.result === true" }),
+    edge("security-agent-needed", "generic-fix-needed",         { condition: "$output?.result !== true" }),
+    edge("dispatch-security-fix-agent", "generic-fix-needed"),
+    edge("generic-fix-needed", "programmatic-fix", { condition: "$output?.result === true" }),
+    edge("generic-fix-needed", "review-needed",    { condition: "$output?.result !== true" }),
     edge("programmatic-fix", "fix-agent-needed"),
     edge("fix-agent-needed", "dispatch-fix-agent", { condition: "$output?.result === true" }),
     edge("fix-agent-needed", "review-needed",      { condition: "$output?.result !== true" }),

@@ -30,6 +30,7 @@ export const CONTINUATION_LOOP_TEMPLATE = {
     pollIntervalMs: 30000,
     terminalStates: ["done", "cancelled"],
     stuckThresholdMs: 300000,
+    maxStuckAutoRetries: 1,
     onStuck: "escalate", // retry | escalate | pause
     continuePrompt:
       "Continue this task from the current state. Focus on the next missing step and push toward completion.",
@@ -59,6 +60,12 @@ export const CONTINUATION_LOOP_TEMPLATE = {
       value: "''",
       isExpression: true,
     }, { x: 420, y: 390 }),
+
+    node("init-stuck-retry-count", "action.set_variable", "Initialize Stuck Retry Count", {
+      key: "stuckRetryCount",
+      value: "0",
+      isExpression: true,
+    }, { x: 420, y: 450 }),
 
     node("poll-task", "action.bosun_function", "Poll External Task State", {
       function: "tasks.get",
@@ -145,10 +152,17 @@ export const CONTINUATION_LOOP_TEMPLATE = {
       isExpression: true,
     }, { x: 680, y: 1600 }),
 
+    node("reset-stuck-retry-count", "action.set_variable", "Reset Stuck Retry Count On Progress", {
+      key: "stuckRetryCount",
+      value:
+        "(() => { const changed = String($data?.currentProgressSignature || '') !== String($data?.lastProgressSignature || ''); return changed ? 0 : Number($data?.stuckRetryCount || 0); })()",
+      isExpression: true,
+    }, { x: 680, y: 1710 }),
+
     node("stuck-check", "condition.expression", "Session Stuck?", {
       expression:
         "(Date.now() - Number($data?.lastProgressAt || 0)) >= Number($data?.stuckThresholdMs || 0)",
-    }, { x: 980, y: 1710, outputs: ["yes", "no"] }),
+    }, { x: 980, y: 1820, outputs: ["yes", "no"] }),
 
     node("emit-stuck", "action.emit_event", "Emit session-stuck", {
       eventType: "session-stuck",
@@ -157,7 +171,16 @@ export const CONTINUATION_LOOP_TEMPLATE = {
         turn: "{{continuationTurn}}",
         externalStatus: "{{currentExternalStatus}}",
         stuckThresholdMs: "{{stuckThresholdMs}}",
+        stuckForMs: "{{Math.max(0, Date.now() - Number($data?.lastProgressAt || 0))}}",
         onStuck: "{{onStuck}}",
+        stuckRetryCount: "{{stuckRetryCount}}",
+        maxStuckAutoRetries: "{{maxStuckAutoRetries}}",
+        lastProgressAt: "{{lastProgressAt}}",
+        lastProgressSignature: "{{lastProgressSignature}}",
+        currentProgressSignature: "{{currentProgressSignature}}",
+        progressSnapshot: "{{$ctx.getNodeOutput('capture-progress')?.output || ''}}",
+        lastAgentSuccess: "{{$ctx.getNodeOutput('run-agent')?.success === true}}",
+        lastAgentOutput: "{{$ctx.getNodeOutput('run-agent')?.output || ''}}",
       },
       outputVariable: "sessionStuckEvent",
     }, { x: 980, y: 1600 }),
@@ -171,8 +194,24 @@ export const CONTINUATION_LOOP_TEMPLATE = {
       },
     }, { x: 980, y: 1710, outputs: ["retry", "escalate", "pause", "default"] }),
 
+    node("stuck-retry-budget", "condition.expression", "Stuck Retry Budget Remaining?", {
+      expression: "Number($data?.stuckRetryCount || 0) < Number($data?.maxStuckAutoRetries || 0)",
+    }, { x: 760, y: 1820, outputs: ["yes", "no"] }),
+
     node("stuck-retry", "action.run_agent", "Retry After Stuck", {
-      prompt: "{{retryPrompt}}",
+      prompt:
+        "{{retryPrompt}}\n\n" +
+        "Stuck context:\n" +
+        "- taskId: {{taskId}}\n" +
+        "- externalStatus: {{currentExternalStatus}}\n" +
+        "- turn: {{continuationTurn}}\n" +
+        "- stuckRetryCount: {{stuckRetryCount}}/{{maxStuckAutoRetries}}\n" +
+        "- stuckForMs: {{Math.max(0, Date.now() - Number($data?.lastProgressAt || 0))}}\n" +
+        "- lastProgressSignature: {{lastProgressSignature}}\n" +
+        "- currentProgressSignature: {{currentProgressSignature}}\n" +
+        "- progressSnapshot: {{$ctx.getNodeOutput('capture-progress')?.output || ''}}\n" +
+        "- lastAgentOutput: {{$ctx.getNodeOutput('run-agent')?.output || ''}}\n\n" +
+        "Try a materially different approach. If you cannot create progress, explain the specific blocker.",
       taskId: "{{taskId}}",
       cwd: "{{worktreePath}}",
       sdk: "{{sdk}}",
@@ -181,11 +220,23 @@ export const CONTINUATION_LOOP_TEMPLATE = {
       failOnError: false,
     }, { x: 760, y: 1830 }),
 
+    node("increment-stuck-retry-count", "action.set_variable", "Increment Stuck Retry Count", {
+      key: "stuckRetryCount",
+      value: "Number($data?.stuckRetryCount || 0) + 1",
+      isExpression: true,
+    }, { x: 760, y: 1940 }),
+
     node("stuck-escalate", "notify.log", "Escalate Stuck Session", {
       level: "warn",
       message:
-        "session-stuck: escalation requested for task {{taskId}} at turn {{continuationTurn}} (externalStatus={{currentExternalStatus}})",
+        "session-stuck: escalation requested for task {{taskId}} at turn {{continuationTurn}} (externalStatus={{currentExternalStatus}}, stuckForMs={{Math.max(0, Date.now() - Number($data?.lastProgressAt || 0))}}, stuckRetryCount={{stuckRetryCount}}/{{maxStuckAutoRetries}}, lastProgressSignature={{lastProgressSignature}}, currentProgressSignature={{currentProgressSignature}})",
     }, { x: 980, y: 1830 }),
+
+    node("stuck-escalate-budget", "notify.log", "Escalate Stuck Session (Retry Limit)", {
+      level: "warn",
+      message:
+        "session-stuck: retry budget exhausted for task {{taskId}} at turn {{continuationTurn}} (externalStatus={{currentExternalStatus}}, stuckForMs={{Math.max(0, Date.now() - Number($data?.lastProgressAt || 0))}}, stuckRetryCount={{stuckRetryCount}}/{{maxStuckAutoRetries}}, lastProgressSignature={{lastProgressSignature}}, currentProgressSignature={{currentProgressSignature}})",
+    }, { x: 760, y: 2050 }),
 
     node("stuck-pause", "notify.log", "Pause Stuck Session", {
       level: "warn",
@@ -200,6 +251,8 @@ export const CONTINUATION_LOOP_TEMPLATE = {
         reason: "stuck_escalated",
         taskId: "{{taskId}}",
         event: "{{sessionStuckEvent.eventType}}",
+        stuckRetryCount: "{{stuckRetryCount}}",
+        maxStuckAutoRetries: "{{maxStuckAutoRetries}}",
       },
     }, { x: 980, y: 1950 }),
 
@@ -239,7 +292,8 @@ export const CONTINUATION_LOOP_TEMPLATE = {
     edge("trigger", "init-turn"),
     edge("init-turn", "init-progress-at"),
     edge("init-progress-at", "init-signature"),
-    edge("init-signature", "poll-task"),
+    edge("init-signature", "init-stuck-retry-count"),
+    edge("init-stuck-retry-count", "poll-task"),
     edge("poll-task", "derive-status"),
     edge("derive-status", "terminal-check"),
     edge("terminal-check", "end-terminal", { condition: "$output?.result === true", port: "yes" }),
@@ -251,16 +305,21 @@ export const CONTINUATION_LOOP_TEMPLATE = {
     edge("derive-signature", "progress-changed"),
     edge("progress-changed", "mark-progress-at"),
     edge("mark-progress-at", "mark-progress-sig"),
-    edge("mark-progress-sig", "stuck-check"),
+    edge("mark-progress-sig", "reset-stuck-retry-count"),
+    edge("reset-stuck-retry-count", "stuck-check"),
     edge("stuck-check", "emit-stuck", { condition: "$output?.result === true", port: "yes" }),
     edge("stuck-check", "wait-next-turn-no-stuck", { condition: "$output?.result !== true", port: "no" }),
     edge("emit-stuck", "stuck-route"),
-    edge("stuck-route", "stuck-retry", { port: "retry" }),
+    edge("stuck-route", "stuck-retry-budget", { port: "retry" }),
     edge("stuck-route", "stuck-escalate", { port: "escalate" }),
     edge("stuck-route", "stuck-pause", { port: "pause" }),
     edge("stuck-route", "stuck-escalate", { port: "default" }),
-    edge("stuck-retry", "wait-next-turn"),
+    edge("stuck-retry-budget", "stuck-retry", { condition: "$output?.result === true", port: "yes" }),
+    edge("stuck-retry-budget", "stuck-escalate-budget", { condition: "$output?.result !== true", port: "no" }),
+    edge("stuck-retry", "increment-stuck-retry-count"),
+    edge("increment-stuck-retry-count", "wait-next-turn"),
     edge("stuck-escalate", "end-escalated"),
+    edge("stuck-escalate-budget", "end-escalated"),
     edge("stuck-pause", "end-paused"),
     edge("wait-next-turn", "increment-turn"),
     edge("wait-next-turn-no-stuck", "increment-turn-no-stuck"),
@@ -271,7 +330,7 @@ export const CONTINUATION_LOOP_TEMPLATE = {
     author: "bosun",
     version: 1,
     createdAt: "2026-03-10T00:00:00Z",
-    templateVersion: "1.0.0",
+    templateVersion: "1.1.0",
     tags: ["continuation", "loop", "linear", "external-status", "stuck-detection"],
     configType: "continuation-loop",
   },

@@ -510,17 +510,26 @@ describe("workflow-templates", () => {
     expect(template?.variables?.maxTurns).toBe(8);
     expect(template?.variables?.terminalStates).toEqual(["done", "cancelled"]);
     expect(template?.variables?.stuckThresholdMs).toBe(300000);
+    expect(template?.variables?.maxStuckAutoRetries).toBe(1);
     expect(template?.variables?.onStuck).toBe("escalate");
 
     const emitNode = template?.nodes?.find((n) => n.id === "emit-stuck");
     expect(emitNode?.type).toBe("action.emit_event");
     expect(emitNode?.config?.eventType).toBe("session-stuck");
+    expect(emitNode?.config?.payload).toMatchObject({
+      stuckRetryCount: "{{stuckRetryCount}}",
+      maxStuckAutoRetries: "{{maxStuckAutoRetries}}",
+    });
 
     const routeNode = template?.nodes?.find((n) => n.id === "stuck-route");
     expect(routeNode?.type).toBe("condition.switch");
     expect(routeNode?.config?.cases?.retry).toBe("retry");
     expect(routeNode?.config?.cases?.escalate).toBe("escalate");
     expect(routeNode?.config?.cases?.pause).toBe("pause");
+
+    const retryBudget = template?.nodes?.find((n) => n.id === "stuck-retry-budget");
+    expect(retryBudget?.type).toBe("condition.expression");
+    expect(retryBudget?.config?.expression).toContain("maxStuckAutoRetries");
   });
 
   it("pr merge strategy template listens to review, approval, and opened aliases", () => {
@@ -543,10 +552,14 @@ describe("workflow-templates", () => {
     const pollTask = template.nodes.find((n) => n.id === "poll-task");
     const captureProgress = template.nodes.find((n) => n.id === "capture-progress");
     const deriveSignature = template.nodes.find((n) => n.id === "derive-signature");
+    const resetStuckRetries = template.nodes.find((n) => n.id === "reset-stuck-retry-count");
     const stuckSwitch = template.nodes.find((n) => n.id === "stuck-route");
+    const stuckRetryBudget = template.nodes.find((n) => n.id === "stuck-retry-budget");
+    const incrementStuckRetries = template.nodes.find((n) => n.id === "increment-stuck-retry-count");
     const endTerminal = template.nodes.find((n) => n.id === "end-terminal");
     const endMaxTurns = template.nodes.find((n) => n.id === "end-max-turns");
     const stuckEvent = template.nodes.find((n) => n.id === "emit-stuck");
+    const stuckRetry = template.nodes.find((n) => n.id === "stuck-retry");
 
     expect(pollTask?.type).toBe("action.bosun_function");
     expect(pollTask?.config?.function).toBe("tasks.get");
@@ -557,11 +570,37 @@ describe("workflow-templates", () => {
     expect(captureProgress?.config?.command).toContain("git status --porcelain=v1");
     expect(captureProgress?.config?.command).toContain("statusDigest");
     expect(deriveSignature?.config?.value).toContain("statusDigest");
+    expect(resetStuckRetries?.config?.value).toContain("stuckRetryCount");
+    expect(stuckRetryBudget?.config?.expression).toContain("maxStuckAutoRetries");
+    expect(incrementStuckRetries?.config?.value).toContain("stuckRetryCount");
+    expect(stuckRetry?.config?.prompt).toContain("lastAgentOutput");
 
     const loopBackEdge = template.edges.find(
       (e) => e.source === "increment-turn" && e.target === "poll-task",
     );
     expect(loopBackEdge?.backEdge).toBe(true);
+
+    const retryRoute = template.edges.find(
+      (e) => e.source === "stuck-route" && e.target === "stuck-retry-budget",
+    );
+    expect(retryRoute).toBeDefined();
+  });
+
+  it("error recovery template forwards analysis into retry and repair handoff", () => {
+    const template = getTemplate("template-error-recovery");
+    expect(template).toBeDefined();
+
+    const analyzeError = template.nodes.find((n) => n.id === "analyze-error");
+    const retryTask = template.nodes.find((n) => n.id === "retry-task");
+    const escalate = template.nodes.find((n) => n.id === "escalate");
+    const chainRepair = template.nodes.find((n) => n.id === "chain-repair");
+
+    expect(analyzeError?.config?.prompt).toContain("Retry attempt");
+    expect(analyzeError?.config?.prompt).toContain("Worktree");
+    expect(retryTask?.config?.prompt).toContain("recoveryAnalysis");
+    expect(escalate?.config?.message).toContain("Recovery analysis");
+    expect(chainRepair?.config?.input).toContain("recoveryAnalysis");
+    expect(chainRepair?.config?.input).toContain("retryResult");
   });
 });
 
@@ -1109,14 +1148,57 @@ describe("github template CLI compatibility", () => {
     expect(triggerNode?.config?.cron).toBeUndefined();
   });
 
+  it("PR watchdog routes CodeQL-style failures through a dedicated security repair branch", () => {
+    const watchdogTemplate = getTemplate("template-bosun-pr-watchdog");
+    const fetchNode = watchdogTemplate.nodes.find((n) => n.id === "fetch-and-classify");
+    const securityNode = watchdogTemplate.nodes.find((n) => n.id === "programmatic-security-fix");
+    const securityAgentNode = watchdogTemplate.nodes.find((n) => n.id === "dispatch-security-fix-agent");
+
+    expect(fetchNode?.config?.command).toContain("SECURITY_CHECK_RE");
+    expect(fetchNode?.config?.command).toContain("securityFailures");
+    expect(fetchNode?.config?.command).toContain("securityCheckNames");
+    expect(fetchNode?.config?.command).toContain("fixNeeded:conflicts.length+securityFailures.length+ciFailures.length");
+
+    expect(securityNode?.config?.command).toContain("/code-scanning/alerts");
+    expect(securityNode?.config?.command).toContain("reason:'security_code_scanning_failure'");
+    expect(securityAgentNode?.config?.prompt).toContain("CodeQL or GitHub code scanning");
+    expect(securityAgentNode?.config?.prompt).toContain("Only fix the listed code-scanning or CodeQL findings");
+
+    expect(watchdogTemplate.edges.find((e) => e.source === "fix-needed" && e.target === "security-fix-needed")).toBeDefined();
+    expect(watchdogTemplate.edges.find((e) => e.source === "security-agent-needed" && e.target === "dispatch-security-fix-agent")).toBeDefined();
+    expect(watchdogTemplate.edges.find((e) => e.source === "dispatch-security-fix-agent" && e.target === "generic-fix-needed")).toBeDefined();
+  });
+
+  it("PR watchdog enriches generic CI fallback with run diagnostics and bounded reruns", () => {
+    const watchdogTemplate = getTemplate("template-bosun-pr-watchdog");
+    const fixNode = watchdogTemplate.nodes.find((n) => n.id === "programmatic-fix");
+    const fixAgentNode = watchdogTemplate.nodes.find((n) => n.id === "dispatch-fix-agent");
+    const command = fixNode?.config?.command || "";
+
+    expect(command).toContain("MAX_AUTO_RERUN_ATTEMPT=1");
+    expect(command).toContain("databaseId,attempt,conclusion,status,workflowName,displayTitle,url,createdAt,updatedAt");
+    expect(command).toContain("runGh(['run','view',String(runId),'--repo',repo,'--json','attempt,conclusion,status,workflowName,displayTitle,url,createdAt,updatedAt,jobs'])");
+    expect(command).toContain("runGh(['run','view',String(runId),'--repo',repo,'--log-failed'])");
+    expect(command).toContain("reason:'auto_rerun_limit_reached'");
+    expect(command).toContain("failedLogExcerpt");
+    expect(command).toContain("failedJobs");
+
+    expect(fixAgentNode?.config?.prompt).toContain("failedCheckNames, failedRun, failedJobs, and failedLogExcerpt");
+  });
+
   it("PR progressor is registered as the immediate single-PR handoff workflow", () => {
     const progressorTemplate = getTemplate("template-bosun-pr-progressor");
     expect(progressorTemplate).toBeDefined();
     expect(progressorTemplate.trigger).toBe("trigger.workflow_call");
 
     const inspectNode = progressorTemplate.nodes.find((n) => n.id === "inspect-pr");
+    const fixNode = progressorTemplate.nodes.find((n) => n.id === "programmatic-fix");
     const reviewNode = progressorTemplate.nodes.find((n) => n.id === "programmatic-review");
     expect(inspectNode?.config?.command).toContain("gh(['pr','view'");
+    expect(inspectNode?.config?.command).toContain("failedCheckNames");
+    expect(fixNode?.config?.command).toContain("MAX_AUTO_RERUN_ATTEMPT=1");
+    expect(fixNode?.config?.command).toContain("--log-failed");
+    expect(fixNode?.config?.command).toContain("reason:'auto_rerun_limit_reached'");
     expect(reviewNode?.config?.command).toContain("mergeArgs=['pr','merge'");
   });
 
@@ -1151,11 +1233,14 @@ describe("github template CLI compatibility", () => {
     const syncTemplate = getTemplate("template-github-kanban-sync");
 
     const watchdogFixNode = watchdogTemplate.nodes.find((n) => n.id === "programmatic-fix");
+    const watchdogSecurityNode = watchdogTemplate.nodes.find((n) => n.id === "programmatic-security-fix");
     const watchdogReviewNode = watchdogTemplate.nodes.find((n) => n.id === "programmatic-review");
     const syncNode = syncTemplate.nodes.find((n) => n.id === "sync-programmatic");
     const syncCommand = syncNode?.config?.command || "";
 
     expect(watchdogFixNode?.config?.env?.BOSUN_FETCH_AND_CLASSIFY)
+      .toBe("{{$ctx.getNodeOutput('fetch-and-classify')?.output || '{}'}}");
+    expect(watchdogSecurityNode?.config?.env?.BOSUN_FETCH_AND_CLASSIFY)
       .toBe("{{$ctx.getNodeOutput('fetch-and-classify')?.output || '{}'}}");
     expect(watchdogReviewNode?.config?.env?.BOSUN_FETCH_AND_CLASSIFY)
       .toBe("{{$ctx.getNodeOutput('fetch-and-classify')?.output || '{}'}}");

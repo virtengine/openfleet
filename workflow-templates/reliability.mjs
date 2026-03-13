@@ -46,12 +46,30 @@ export const ERROR_RECOVERY_TEMPLATE = {
     }, { x: 400, y: 180 }),
 
     node("analyze-error", "action.run_agent", "Analyze Failure", {
-      prompt: "Analyze the following error and suggest a fix:\n\n{{lastError}}\n\nTask: {{taskTitle}}",
+      prompt:
+        "Analyze the following task failure and suggest the most likely minimal fix.\n\n" +
+        "Task: {{taskTitle}} ({{taskId}})\n" +
+        "Retry attempt: {{$data?.retryCount || 0}}/{{$data?.maxRetries || 3}}\n" +
+        "Branch: {{branch}}\n" +
+        "Base branch: {{baseBranch}}\n" +
+        "Worktree: {{worktreePath}}\n\n" +
+        "Last error:\n{{lastError}}",
       timeoutMs: 300000,
     }, { x: 200, y: 330 }),
 
     node("retry-task", "action.run_agent", "Retry Task", {
-      prompt: "{{taskExecutorRetryPrompt}}",
+      prompt:
+        "{{taskExecutorRetryPrompt}}\n\n" +
+        "Failure context:\n" +
+        "- taskId: {{taskId}}\n" +
+        "- taskTitle: {{taskTitle}}\n" +
+        "- branch: {{branch}}\n" +
+        "- baseBranch: {{baseBranch}}\n" +
+        "- worktreePath: {{worktreePath}}\n" +
+        "- retryCount: {{$data?.retryCount || 0}}/{{$data?.maxRetries || 3}}\n" +
+        "- lastError: {{lastError}}\n" +
+        "- recoveryAnalysis: {{$ctx.getNodeOutput('analyze-error')?.output || ''}}\n\n" +
+        "Use the analysis to choose a different approach if the previous attempt failed.",
       timeoutMs: 3600000,
       failOnError: true,
       maxRetries: "{{maxRetries}}",
@@ -69,13 +87,17 @@ export const ERROR_RECOVERY_TEMPLATE = {
     }, { x: 90, y: 760 }),
 
     node("escalate", "notify.telegram", "Escalate to Human", {
-      message: ":alert: Task **{{taskTitle}}** failed after {{maxRetries}} attempts. Manual intervention needed.\n\nLast error: {{lastError}}",
+      message:
+        ":alert: Task **{{taskTitle}}** failed after {{maxRetries}} attempts. Manual intervention needed.\n\n" +
+        "Last error: {{lastError}}\n\n" +
+        "Recovery analysis: {{$ctx.getNodeOutput('analyze-error')?.output || ''}}",
     }, { x: 600, y: 620 }),
 
     node("chain-repair", "action.execute_workflow", "Trigger Repair Workflow", {
       workflowId: "template-task-repair-worktree",
       mode: "dispatch",
-      input: "({taskId: $data?.taskId, taskTitle: $data?.taskTitle, worktreePath: $data?.worktreePath, branch: $data?.branch, baseBranch: $data?.baseBranch, error: $data?.lastError})",
+      input:
+        "(() => { const analysisRaw = String($ctx.getNodeOutput('analyze-error')?.output || '').trim(); const retryOutputRaw = String($ctx.getNodeOutput('retry-task')?.output || '').trim(); const retryErrorRaw = String($ctx.getNodeOutput('retry-task')?.error || '').trim(); const truncate = (value, limit = 2000) => value.length > limit ? `${value.slice(0, limit)}...` : value; const diagnostics = [String($data?.lastError || '').trim(), analysisRaw ? `Recovery analysis:\n${truncate(analysisRaw)}` : '', retryOutputRaw ? `Retry output:\n${truncate(retryOutputRaw)}` : '', retryErrorRaw ? `Retry error:\n${truncate(retryErrorRaw)}` : ''].filter(Boolean).join('\n\n'); return { taskId: $data?.taskId, taskTitle: $data?.taskTitle, worktreePath: $data?.worktreePath, branch: $data?.branch, baseBranch: $data?.baseBranch, error: diagnostics || String($data?.lastError || ''), recoveryAnalysis: truncate(analysisRaw), retryResult: { success: $ctx.getNodeOutput('retry-task')?.success === true, output: truncate(retryOutputRaw), error: truncate(retryErrorRaw) } }; })()",
     }, { x: 400, y: 760 }),
   ],
   edges: [
@@ -92,7 +114,7 @@ export const ERROR_RECOVERY_TEMPLATE = {
     author: "bosun",
     version: 1,
     createdAt: "2025-02-24T00:00:00Z",
-    templateVersion: "1.0.1",
+    templateVersion: "1.1.0",
     tags: ["error", "recovery", "autofix"],
     requiredTemplates: ["template-task-repair-worktree"],
     replaces: {
